@@ -132,7 +132,13 @@
         // 只对实验组弹；已决议但非实验组直接返回。
         if (!_isExperimentBranch()) return;
         if (typeof window.showDecisionPrompt !== 'function') return;
-        if (_promptOpen) return;
+        // 已有弹窗开着：暂存这次，等当前弹窗关掉（finally 里 drain）再重放，别直接丢
+        // ——否则用户开着 play 弹窗时切到工作，work 信号会被吞且不再重试。同类重复入
+        // Set 自动去重，重放时 _shownX 也会拦掉已弹过的。
+        if (_promptOpen) {
+            _pendingContexts.add(context);
+            return;
+        }
         if (context === 'play' && _shownPlay) return;
         if (context === 'work' && _shownWork) return;
         if (!_isActionable(context)) {
@@ -165,24 +171,30 @@
             console.warn('[context-prompt] 弹窗失败:', e);
         } finally {
             _promptOpen = false;
+            // 弹窗开着期间攒下的另一类 context，关窗后接着重放。
+            _drainPending();
         }
     }
 
-    // branch 决议后重放暂存的事件（app-settings.js 在拿到 telemetryBranch 后广播）。
-    // 此时 window.nekoTelemetryBranch 已就绪：非实验组会在 handle 里早退并丢弃暂存。
-    window.addEventListener('neko:telemetry-branch-resolved', function () {
+    // 串行重放暂存的 context。两处会攒 pending：①branch 未决议时收到的事件；②已有
+    // 弹窗开着时收到的事件。两种都靠这里重放。必须串行 await——handle() 开窗时置
+    // _promptOpen=true 并在 modal 上挂起，若并发触发第二个 ctx 会撞 _promptOpen 早退被
+    // 永久丢弃；逐个 await 让第二个弹窗等第一个关掉再弹。开头先清空 Set，重入安全
+    // （重放途中新攒的事件由当前弹窗 finally 再触发一次 drain 接住）。
+    function _drainPending() {
         if (_pendingContexts.size === 0) return;
         const pend = Array.from(_pendingContexts);
         _pendingContexts.clear();
-        // 必须串行 await：handle() 开窗时置 _promptOpen=true 并在 modal 上挂起，若并发
-        // 调用第二个 ctx 会撞 _promptOpen 早退被永久丢弃。逐个 await 让第二个弹窗等第
-        // 一个关掉再弹。
         (async function () {
             for (const ctx of pend) {
                 await handle(ctx);
             }
         })();
-    });
+    }
+
+    // branch 决议后重放暂存的事件（app-settings.js 在拿到 telemetryBranch 后广播）。
+    // 此时 window.nekoTelemetryBranch 已就绪：非实验组会在 handle 里早退并丢弃暂存。
+    window.addEventListener('neko:telemetry-branch-resolved', _drainPending);
 
     window.appContextPrompt = { handle };
 })();
