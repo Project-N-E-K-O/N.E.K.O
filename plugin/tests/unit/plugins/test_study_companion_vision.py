@@ -17,6 +17,7 @@ from plugin.plugins.study_companion.state import build_initial_state
 from plugin.plugins.study_companion.study_ocr_pipeline import StudyOcrPipeline
 from plugin.plugins.study_companion.tutor_llm_agent import TutorLLMAgent, TutorReply
 from plugin.sdk.plugin import Err, Ok
+from plugin.sdk.shared.constants import EVENT_META_ATTR
 
 pytestmark = pytest.mark.unit
 
@@ -71,12 +72,25 @@ PNG_IMAGE_BASE64 = base64.b64encode(b"\x89PNG\r\n\x1a\nfake-png").decode("ascii"
         ("gpt-4o", True),
         ("claude-4-sonnet", True),
         ("gemini-2.5-pro", True),
+        ("glm-4.6v", True),
+        ("glm-5v-turbo", True),
+        ("glm-4-plus", False),
         ("gpt-4", False),
         ("", False),
     ],
 )
 def test_model_supports_vision(model: str, expected: bool) -> None:
     assert TutorLLMAgent._model_supports_vision(model) is expected
+
+
+def test_study_explain_text_schema_accepts_vision_image() -> None:
+    meta = getattr(StudyCompanionPlugin.study_explain_text, EVENT_META_ATTR)
+    properties = meta.input_schema["properties"]
+
+    assert properties["vision_image_base64"] == {
+        "type": "string",
+        "default": "",
+    }
 
 
 def test_attach_vision_image_adds_to_last_user_msg() -> None:

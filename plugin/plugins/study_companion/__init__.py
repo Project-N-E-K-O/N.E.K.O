@@ -2811,6 +2811,7 @@ class StudyCompanionPlugin(NekoPluginBase):
             "type": "object",
             "properties": {
                 "text": {"type": "string", "default": ""},
+                "vision_image_base64": {"type": "string", "default": ""},
             },
         },
         timeout=45.0,

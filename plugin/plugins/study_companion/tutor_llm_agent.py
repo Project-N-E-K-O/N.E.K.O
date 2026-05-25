@@ -800,6 +800,11 @@ class TutorLLMAgent:
         normalized = str(model or "").strip().lower()
         if not normalized:
             return False
+        if normalized.startswith("glm-") and re.search(
+            r"(?:^|[-_.])\d+(?:\.\d+)?v(?:[-_.]|$)",
+            normalized,
+        ):
+            return True
         return any(
             marker in normalized
             for marker in (
