@@ -1611,8 +1611,9 @@ def _build_save_connectivity_targets(core_cfg: dict, api_config: dict) -> dict[s
         }
 
     core_provider = str(core_cfg.get("coreApi") or "qwen").strip()
-    assist_provider = str(core_cfg.get("assistApi") or "free").strip()
-    if core_provider == "free":
+    raw_assist_provider = str(core_cfg.get("assistApi") or "").strip()
+    assist_provider = raw_assist_provider or "free"
+    if core_provider == "free" and not raw_assist_provider:
         assist_provider = "free"
 
     _add("core", core_provider)

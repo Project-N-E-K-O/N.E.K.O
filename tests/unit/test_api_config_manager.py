@@ -268,8 +268,8 @@ class TestAssistFollowsCore:
     def test_missing_assist_defaults_to_free(self, config_manager):
         """core_config 未写 assistApi 时默认使用 free。"""
         _write_core_config(config_manager, {
-            'coreApiKey': 'free-access',
-            'coreApi': 'free',
+            'coreApiKey': 'sk-core',
+            'coreApi': 'qwen',
         })
         cfg = config_manager.get_core_config()
 
