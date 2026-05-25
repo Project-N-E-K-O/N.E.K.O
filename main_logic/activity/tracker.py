@@ -319,6 +319,11 @@ class UserActivityTracker:
         #     —— context 取 'play'（游戏/娱乐）或 'work'（专注工作）。未注入则不推。
         self._context_prompt_pending: dict | None = None
         self._on_context_prompt: Callable[[str], Awaitable[None]] | None = None
+        # 情境弹窗专属的「上一状态」基线，独立于 break-reminder 的 _last_known_state
+        # ——这样可以在每个 session 开始时单独清掉（reset_context_prompt_baseline），让
+        # 「跨 session 仍在同一状态」也能重新算作一次「进入」并再弹（前端按 app 会话去
+        # 重），同时不扰动 break/anti-slack 的状态机。
+        self._context_prompt_last_state: ActivityState | None = None
 
     # ── hooks (called from core.py and friends) ─────────────────
 
@@ -655,6 +660,7 @@ class UserActivityTracker:
                 #     reference is now ancient.
                 self._work_acc_seconds = 0.0
                 self._last_known_state = None
+                self._context_prompt_last_state = None
                 self._work_break_pending = None
                 self._anti_slack_pending = None
 
@@ -731,17 +737,22 @@ class UserActivityTracker:
             self._anti_slack_pending = None
 
         # ── 情境弹窗一次性检测（A/B 实验组前端用）────────────────
-        # 只在「进入」目标状态那一刻置 pending（state != prev_known），状态保持期间
-        # 不重复触发，避免 20s 心跳刷屏。分组判定 + 每会话去重都在前端。
+        # 只在「进入」目标状态那一刻置 pending（state != 上一状态），状态保持期间不重复
+        # 触发，避免 20s 心跳刷屏。分组判定 + 每会话去重都在前端。
         #   gaming / casual_browsing（=娱乐，进游戏/看番/视频）→ 'play'
         #   focused_work（进专注工作）                       → 'work'
-        # prev_known 为 None（首个观测 / 不安全 delta 重置后）也算「进入」，前端的
-        # 每会话去重会兜住启动即在游戏里这类场景。
-        if state != prev_known:
+        # 用 _context_prompt_last_state（情境弹窗专属基线）而非 _last_known_state：后者
+        # 跨 session 长存，会让「上个 session 结束时在游戏、新 session 仍在游戏」检测不到
+        # 进入、漏弹；专属基线在每个 session 开始时被 reset_context_prompt_baseline 清成
+        # None，于是当前状态重新算作一次「进入」。为 None（首启 / 不安全 delta 重置 /
+        # 新 session）都算「进入」，前端按 app 会话去重兜住重复。
+        ctx_prev = self._context_prompt_last_state
+        if state != ctx_prev:
             if state in ('gaming', 'casual_browsing'):
                 self._context_prompt_pending = {'context': 'play', 'set_at': now}
             elif state == 'focused_work':
                 self._context_prompt_pending = {'context': 'work', 'set_at': now}
+        self._context_prompt_last_state = state
 
         self._last_known_state = state
 
@@ -837,6 +848,15 @@ class UserActivityTracker:
         self._anti_slack_pending = None
 
     # ── 情境弹窗（A/B 实验组前端用）──────────────────────────────
+
+    def reset_context_prompt_baseline(self) -> None:
+        """清掉情境弹窗的「上一状态」基线，让下一 tick 把当前状态重新算作一次「进入」。
+
+        在每个 session 开始时调用（core.py 的实验组 kick 里）。tracker 跨 session 长存，
+        若不清，「上个 session 结束时在游戏、新 session 仍在游戏」就检测不到进入、漏弹。
+        只动情境弹窗专属基线，不碰 break/anti-slack 的 _last_known_state。
+        """
+        self._context_prompt_last_state = None
 
     def set_context_prompt_callback(
         self, callback: Callable[[str], Awaitable[None]] | None

@@ -3801,6 +3801,9 @@ class LLMSessionManager:
             from main_logic.activity.tracker import _privacy_mode_active
             if _privacy_mode_active():
                 return
+            # 清情境弹窗基线：tracker 跨 session 长存，若用户上个 session 结束时就在
+            # 游戏/工作、这个 session 仍在同一状态，不清就检测不到「进入」、本会话漏弹。
+            self._activity_tracker.reset_context_prompt_baseline()
             await self._activity_tracker.get_snapshot()
         except Exception as e:
             logger.debug("[%s] 实验组活动心跳 kick 失败: %s", self.lanlan_name, e)

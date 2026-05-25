@@ -1036,6 +1036,33 @@ def _tick_for_seconds(tracker, *, state: str, seconds: float, step: float = 20.0
     return now
 
 
+@pytest.mark.unit
+def test_context_prompt_reemits_after_session_baseline_reset():
+    """跨 session 仍在同一状态时，reset 基线后应重新算作「进入」再置 pending。
+
+    回归保护 Codex P2：tracker 跨 session 长存，若不在 session 开始清情境弹窗基线，
+    「上个 session 在游戏、新 session 仍在游戏」就检测不到进入、漏弹。也确认这只动情境
+    弹窗专属基线、状态保持期间不会重复触发。
+    """
+    tracker = _make_tracker_for_break_tests()
+
+    # session A：进入 gaming → 置 play pending
+    tracker._tick_break_reminders(_snap_for_state('gaming', app='Game'), now=1000.0)
+    assert tracker._context_prompt_pending is not None
+    assert tracker._context_prompt_pending['context'] == 'play'
+
+    # 模拟 drain 消费掉；仍在 gaming → 状态保持，下一 tick 不重复触发
+    tracker._context_prompt_pending = None
+    tracker._tick_break_reminders(_snap_for_state('gaming', app='Game'), now=1020.0)
+    assert tracker._context_prompt_pending is None
+
+    # 新 session：清基线 → 仍在 gaming 也重新算「进入」→ 再置 play pending
+    tracker.reset_context_prompt_baseline()
+    tracker._tick_break_reminders(_snap_for_state('gaming', app='Game'), now=1040.0)
+    assert tracker._context_prompt_pending is not None
+    assert tracker._context_prompt_pending['context'] == 'play'
+
+
 def test_break_acc_advances_during_focused_work():
     """Accumulator credits real time spent in focused_work."""
     tracker = _make_tracker_for_break_tests()
