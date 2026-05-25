@@ -548,14 +548,21 @@ def _detect_int8_fast_path_arm() -> tuple[bool, bool]:
       * macOS — Apple Silicon (M1+) universally has dotprod; Apple has
         never shipped an ARM Mac without it, so we short-circuit to
         ``(True, True)``.
-      * Any OS — numpy ``__cpu_features__['ASIMDDP']`` is the primary
-        source (compiled C probe, cross-platform incl. Windows-on-ARM).
-      * Linux fallback — ``/proc/cpuinfo`` ``Features`` line if numpy's
-        map is unavailable. The ARM SBC ecosystem still has plenty of
+      * numpy ``__cpu_features__`` "asimddp" — but its *trustworthiness is
+        OS-dependent*. numpy only runtime-probes ARM features (HWCAP) on
+        Linux/BSD; on Windows it falls back to compile-time baseline macros,
+        so a win-arm64 wheel's conservative baseline reports ``ASIMDDP=False``
+        even on dotprod-capable Snapdragon X. We therefore trust a numpy
+        *positive* on any OS, but a numpy *negative* only on Linux. A Windows
+        numpy-negative is NOT confirmed — it falls through to the kernel
+        probe below (Codex P1 on PR #1525, restoring PR #1394's intent).
+      * Linux fallback — ``/proc/cpuinfo`` ``Features`` line if numpy's map
+        is unavailable. The ARM SBC ecosystem still has plenty of
         Cortex-A53 / A57 / A72 cores that predate dotprod (Pi-3 class).
-      * Windows fallback — ``IsProcessorFeaturePresent`` kernel32 API (a
-        documented call, not executable-memory injection) if numpy's map
-        is unavailable.
+      * Windows — ``IsProcessorFeaturePresent`` kernel32 API (a documented
+        call, not executable-memory injection). Its 0 return is ambiguous
+        (lacks dotprod OR old Win build that returns 0 for unknown feature
+        ids), reported as inconclusive so ``auto`` stays optimistic.
 
     Returns ``(has_dotprod, absence_confirmed)``. Inconclusive cases let
     ``auto`` quantization still pick int8 without claiming a definitive
@@ -566,8 +573,13 @@ def _detect_int8_fast_path_arm() -> tuple[bool, bool]:
         return True, True
 
     feats = _numpy_cpu_features()
-    if feats is not None:
-        return _np_feature(feats, "asimddp", "dotprod"), True
+    if feats is not None and _np_feature(feats, "asimddp", "dotprod"):
+        # Positive is authoritative on any OS — the flag is only set when the
+        # feature is genuinely present.
+        return True, True
+    if feats is not None and system == "Linux":
+        # numpy runtime-probes ARM HWCAP on Linux, so a negative is reliable.
+        return False, True
 
     if system == "Linux":
         try:
@@ -586,7 +598,9 @@ def _detect_int8_fast_path_arm() -> tuple[bool, bool]:
         try:
             import ctypes
             # PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE = 43 — the canonical
-            # Win32 feature constant for ARMv8.2 dotprod instructions.
+            # Win32 feature constant for ARMv8.2 dotprod instructions. This
+            # is the path numpy's compile-time-baseline negative can't be
+            # trusted to replace.
             if ctypes.windll.kernel32.IsProcessorFeaturePresent(43):
                 return True, True
             # 0 from this API is ambiguous: the CPU truly lacks dotprod
