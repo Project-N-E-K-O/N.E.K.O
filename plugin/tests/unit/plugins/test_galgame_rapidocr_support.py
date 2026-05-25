@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from plugin.plugins.galgame_plugin import rapidocr_support
+from plugin.plugins._shared.rapidocr import rapidocr_support
 
 
 pytestmark = pytest.mark.plugin_unit
@@ -50,6 +50,21 @@ def test_rapidocr_kwargs_resolve_configured_model_paths(tmp_path: Path) -> None:
         "rec_model_path": str(rec_path),
         "engine_type": "onnxruntime",
     }
+
+
+def test_default_rapidocr_install_target_rejects_path_traversal_plugin_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(rapidocr_support, "is_windows_platform", lambda: True)
+    monkeypatch.setattr(
+        rapidocr_support,
+        "get_config_manager",
+        lambda: SimpleNamespace(app_docs_dir=tmp_path),
+    )
+
+    with pytest.raises(ValueError):
+        rapidocr_support.default_rapidocr_install_target_raw("../study_companion")
 
 
 def test_rapidocr_kwargs_prefers_user_model_cache(tmp_path: Path) -> None:
@@ -275,6 +290,31 @@ async def test_download_rapidocr_models_uses_modelscope_urls(
     assert requested_urls == [spec["url"] for spec in expected_files]
     for name, content in file_bytes.items():
         assert (install_target / "models" / name).read_bytes() == content
+
+
+@pytest.mark.asyncio
+async def test_download_rapidocr_models_warns_when_task_id_has_no_state_updater(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_target = tmp_path / "RapidOCR"
+    monkeypatch.setattr(
+        rapidocr_support,
+        "required_rapidocr_model_files",
+        lambda **_kwargs: [],
+    )
+    warnings: list[str] = []
+
+    result = await rapidocr_support.download_rapidocr_models(
+        logger=SimpleNamespace(warning=lambda message, *args, **kwargs: warnings.append(str(message))),
+        install_target_dir_raw=str(install_target),
+        lang_type="ch",
+        ocr_version="PP-OCRv4",
+        task_id="run-without-state-updater",
+    )
+
+    assert result["skipped_bundled"] is True
+    assert any("no install state updater" in message for message in warnings)
 
 
 @pytest.mark.asyncio

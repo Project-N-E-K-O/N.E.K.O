@@ -238,6 +238,7 @@ def required_rapidocr_model_files(
     ocr_version: str,
     lang_type: str,
     model_type: str = DEFAULT_RAPIDOCR_MODEL_TYPE,
+    plugin_id: str = "study_companion",
 ) -> list[dict[str, Any]]:
     """Files that must exist on disk for a given selection. Empty for the bundled combo."""
     key = _normalize_model_key(ocr_version, lang_type)
@@ -246,7 +247,10 @@ def required_rapidocr_model_files(
     registry = _RAPIDOCR_MODEL_REGISTRY.get(key)
     if not registry:
         return []
-    cache_dir = resolve_rapidocr_model_cache_dir(install_target_dir_raw)
+    cache_dir = resolve_rapidocr_model_cache_dir(
+        install_target_dir_raw,
+        plugin_id=plugin_id,
+    )
     files: list[dict[str, Any]] = []
     for kind in ("det", "rec", "cls"):
         spec = registry.get(kind)
@@ -270,6 +274,7 @@ def missing_rapidocr_model_files(
     ocr_version: str,
     lang_type: str,
     model_type: str = DEFAULT_RAPIDOCR_MODEL_TYPE,
+    plugin_id: str = "study_companion",
 ) -> list[dict[str, Any]]:
     """Required files that the resolver can't locate on disk.
 
@@ -289,11 +294,15 @@ def missing_rapidocr_model_files(
         ocr_version=ocr_version,
         lang_type=lang_type,
         model_type=model_type,
+        plugin_id=plugin_id,
     )
     if not required:
         return []
 
-    cache_dir = resolve_rapidocr_model_cache_dir(install_target_dir_raw)
+    cache_dir = resolve_rapidocr_model_cache_dir(
+        install_target_dir_raw,
+        plugin_id=plugin_id,
+    )
     # Two possible `<package>/models/` dirs to scan:
     # 1. The bundled-import path's models dir (find_spec → wheel models).
     # 2. The legacy plugin-isolated install's package dir, which sits at
@@ -311,7 +320,7 @@ def missing_rapidocr_model_files(
     except (ImportError, ValueError):
         pass
     from ._runtime import _rapidocr_package_dir
-    legacy_pkg = _rapidocr_package_dir(install_target_dir_raw)
+    legacy_pkg = _rapidocr_package_dir(install_target_dir_raw, plugin_id=plugin_id)
     if legacy_pkg and legacy_pkg.exists():
         candidate_package_dirs.append(legacy_pkg / "models")
     if not candidate_package_dirs:

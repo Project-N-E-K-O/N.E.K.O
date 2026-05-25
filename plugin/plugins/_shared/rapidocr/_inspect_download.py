@@ -39,16 +39,35 @@ def inspect_rapidocr_installation(
     lang_type: str = DEFAULT_RAPIDOCR_LANG_TYPE,
     model_type: str = DEFAULT_RAPIDOCR_MODEL_TYPE,
     ocr_version: str = DEFAULT_RAPIDOCR_OCR_VERSION,
+    plugin_id: str = "study_companion",
     platform_fn: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     checker = platform_fn or is_windows_platform
     supported = bool(checker())
-    target_dir = resolve_rapidocr_install_target(install_target_dir_raw)
-    runtime_dir = resolve_rapidocr_runtime_dir(install_target_dir_raw)
-    site_packages_dir = resolve_rapidocr_site_packages_dir(install_target_dir_raw)
-    model_cache_dir = resolve_rapidocr_model_cache_dir(install_target_dir_raw)
-    package_dir = _runtime._rapidocr_package_dir(install_target_dir_raw)
-    install_state_path = _rapidocr_install_state_path(install_target_dir_raw)
+    target_dir = resolve_rapidocr_install_target(
+        install_target_dir_raw,
+        plugin_id=plugin_id,
+    )
+    runtime_dir = resolve_rapidocr_runtime_dir(
+        install_target_dir_raw,
+        plugin_id=plugin_id,
+    )
+    site_packages_dir = resolve_rapidocr_site_packages_dir(
+        install_target_dir_raw,
+        plugin_id=plugin_id,
+    )
+    model_cache_dir = resolve_rapidocr_model_cache_dir(
+        install_target_dir_raw,
+        plugin_id=plugin_id,
+    )
+    package_dir = _runtime._rapidocr_package_dir(
+        install_target_dir_raw,
+        plugin_id=plugin_id,
+    )
+    install_state_path = _rapidocr_install_state_path(
+        install_target_dir_raw,
+        plugin_id=plugin_id,
+    )
     selected_model = rapidocr_selected_model_name(
         ocr_version=ocr_version,
         lang_type=lang_type,
@@ -100,6 +119,7 @@ def inspect_rapidocr_installation(
             ocr_version=ocr_version,
             lang_type=lang_type,
             model_type=model_type,
+            plugin_id=plugin_id,
         )
         if missing:
             detail = "missing_model_files"
@@ -117,6 +137,7 @@ def inspect_rapidocr_installation(
                 lang_type=lang_type,
                 model_type=model_type,
                 ocr_version=ocr_version,
+                plugin_id=plugin_id,
             )
             detected_path = str(runtime_meta.get("detected_path") or detected_path)
             detail = "installed"
@@ -131,6 +152,7 @@ def inspect_rapidocr_installation(
                 ocr_version=ocr_version,
                 lang_type=lang_type,
                 model_type=model_type,
+                plugin_id=plugin_id,
             )
             if legacy_missing:
                 detail = "missing_model_files"
@@ -144,6 +166,7 @@ def inspect_rapidocr_installation(
         ocr_version=ocr_version,
         lang_type=lang_type,
         model_type=model_type,
+        plugin_id=plugin_id,
     )
     total_size_estimate = sum(int(f.get("size") or 0) for f in missing_files)
     return {
@@ -236,6 +259,10 @@ async def download_rapidocr_models(
     Failures preserve specific error text (HTTP status, timeout, network) so
     the UI can show actionable copy.
     """
+    if task_id and install_state_updater is None:
+        logger.warning(
+            "rapidocr model download has task_id but no install state updater; progress will not persist"
+        )
     update_install_task_state = install_state_updater or _noop_install_state_updater
 
     async def _before_completed() -> None:
@@ -253,7 +280,10 @@ async def download_rapidocr_models(
         except Exception:  # noqa: BLE001
             logger.warning("failed to run rapidocr_models completion callback", exc_info=True)
 
-    cache_dir = resolve_rapidocr_model_cache_dir(install_target_dir_raw)
+    cache_dir = resolve_rapidocr_model_cache_dir(
+        install_target_dir_raw,
+        plugin_id=plugin_id,
+    )
     if not cache_dir:
         raise RuntimeError("missing RapidOCR model cache directory")
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -263,6 +293,7 @@ async def download_rapidocr_models(
         ocr_version=ocr_version,
         lang_type=lang_type,
         model_type=model_type,
+        plugin_id=plugin_id,
     )
     if not required:
         await _before_completed_safely()
@@ -346,7 +377,7 @@ async def download_rapidocr_models(
             url = str(spec["url"])
             headers = {
                 "Accept": "application/octet-stream",
-                "User-Agent": "N.E.K.O/study_companion",
+                "User-Agent": f"N.E.K.O/{plugin_id}",
             }
             source_label = "ModelScope"
             running_message = (

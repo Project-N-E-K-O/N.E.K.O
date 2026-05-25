@@ -92,8 +92,15 @@ def _rapidocr_import_context(
                     pass
 
 
-def _rapidocr_package_dir(raw_target_dir: str) -> Path:
-    site_packages_dir = resolve_rapidocr_site_packages_dir(raw_target_dir)
+def _rapidocr_package_dir(
+    raw_target_dir: str,
+    *,
+    plugin_id: str = "study_companion",
+) -> Path:
+    site_packages_dir = resolve_rapidocr_site_packages_dir(
+        raw_target_dir,
+        plugin_id=plugin_id,
+    )
     return site_packages_dir / RAPIDOCR_PACKAGE_NAME if site_packages_dir else Path()
 
 def _build_runtime_constructor_kwargs(
@@ -248,9 +255,16 @@ def load_rapidocr_runtime(
     lang_type: str,
     model_type: str,
     ocr_version: str,
+    plugin_id: str = "study_companion",
 ) -> tuple[Any, dict[str, str]]:
-    site_packages_dir = resolve_rapidocr_site_packages_dir(install_target_dir_raw)
-    model_cache_dir = resolve_rapidocr_model_cache_dir(install_target_dir_raw)
+    site_packages_dir = resolve_rapidocr_site_packages_dir(
+        install_target_dir_raw,
+        plugin_id=plugin_id,
+    )
+    model_cache_dir = resolve_rapidocr_model_cache_dir(
+        install_target_dir_raw,
+        plugin_id=plugin_id,
+    )
     with _rapidocr_import_context(
         site_packages_dir=site_packages_dir,
         model_cache_dir=model_cache_dir,

@@ -115,7 +115,9 @@ from ..dependency_status import (
     infer_inspection_failed_dependencies,
     infer_missing_dependencies,
 )
-from ..rapidocr_support import inspect_rapidocr_installation
+from plugin.plugins._shared.rapidocr.rapidocr_support import (
+    inspect_rapidocr_installation as _inspect_rapidocr_installation,
+)
 from ..dxcam_support import inspect_dxcam_installation
 from ..reader import tail_events_jsonl, warmup_replay_events
 from ..service import (
@@ -194,6 +196,11 @@ from ..plugin_ocr_helpers import (
     _OCR_BRIDGE_DIAGNOSTIC_RUNTIME_KEYS,
     _merge_ocr_runtime_preserving_bridge_diagnostics,
 )
+
+
+def inspect_rapidocr_installation(**kwargs):
+    kwargs.setdefault("plugin_id", "galgame_plugin")
+    return _inspect_rapidocr_installation(**kwargs)
 
 
 def _coerce_int_range(value: Any, *, default: int, minimum: int, maximum: int) -> int:

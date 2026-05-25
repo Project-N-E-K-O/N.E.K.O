@@ -24,8 +24,8 @@ from plugin.plugins.galgame_plugin.ocr_capture_backends import pyautogui as galg
 from plugin.plugins.galgame_plugin.ocr_capture_backends import _helpers as galgame_ocr_capture_helpers
 from plugin.plugins.galgame_plugin import ocr_rapidocr_backend as galgame_ocr_rapidocr_backend
 from plugin.plugins.galgame_plugin import ocr_reader as galgame_ocr_reader
-from plugin.plugins.galgame_plugin import rapidocr_support as galgame_rapidocr_support
-from plugin.plugins.galgame_plugin import install_tasks as galgame_install_tasks
+from plugin.plugins._shared.rapidocr import rapidocr_support as galgame_rapidocr_support
+from plugin.server.routes import _install_task_store as galgame_install_tasks
 from plugin.plugins.galgame_plugin.models import (
     DEFAULT_OCR_CAPTURE_BOTTOM_INSET_RATIO,
     DEFAULT_OCR_CAPTURE_TOP_RATIO,
@@ -5556,8 +5556,8 @@ def test_rapidocr_default_install_target_uses_app_docs_runtime_root(
         lambda: SimpleNamespace(app_docs_dir=app_docs_dir),
     )
 
-    raw_target = galgame_rapidocr_support.default_rapidocr_install_target_raw()
-    resolved = galgame_rapidocr_support.resolve_rapidocr_install_target("")
+    raw_target = galgame_rapidocr_support.default_rapidocr_install_target_raw(plugin_id="galgame_plugin")
+    resolved = galgame_rapidocr_support.resolve_rapidocr_install_target("", plugin_id="galgame_plugin")
 
     assert raw_target == str(app_docs_dir / "runtimes" / "galgame_plugin" / "RapidOCR")
     assert resolved == app_docs_dir / "runtimes" / "galgame_plugin" / "RapidOCR"
@@ -5576,7 +5576,13 @@ def test_rapidocr_explicit_install_target_overrides_new_and_legacy_defaults(
         lambda: SimpleNamespace(app_docs_dir=app_docs_dir),
     )
 
-    assert galgame_rapidocr_support.resolve_rapidocr_install_target(str(explicit_target)) == explicit_target
+    assert (
+        galgame_rapidocr_support.resolve_rapidocr_install_target(
+            str(explicit_target),
+            plugin_id="galgame_plugin",
+        )
+        == explicit_target
+    )
 
 
 def test_rapidocr_resolve_uses_legacy_install_when_new_target_missing(
@@ -5594,7 +5600,10 @@ def test_rapidocr_resolve_uses_legacy_install_when_new_target_missing(
         lambda: SimpleNamespace(app_docs_dir=app_docs_dir),
     )
 
-    assert galgame_rapidocr_support.resolve_rapidocr_install_target("") == legacy_target
+    assert (
+        galgame_rapidocr_support.resolve_rapidocr_install_target("", plugin_id="galgame_plugin")
+        == legacy_target
+    )
 
 
 def test_rapidocr_resolve_prefers_existing_new_target_over_legacy_install(
@@ -5614,7 +5623,10 @@ def test_rapidocr_resolve_prefers_existing_new_target_over_legacy_install(
         lambda: SimpleNamespace(app_docs_dir=app_docs_dir),
     )
 
-    assert galgame_rapidocr_support.resolve_rapidocr_install_target("") == new_target
+    assert (
+        galgame_rapidocr_support.resolve_rapidocr_install_target("", plugin_id="galgame_plugin")
+        == new_target
+    )
 
 
 def test_inspect_rapidocr_installation_reports_legacy_target_when_used(
@@ -5665,6 +5677,7 @@ def test_inspect_rapidocr_installation_reports_legacy_target_when_used(
         install_target_dir_raw="",
         lang_type="ch",
         ocr_version="PP-OCRv4",
+        plugin_id="galgame_plugin",
         platform_fn=lambda: True,
     )
 
@@ -5715,6 +5728,7 @@ def test_inspect_rapidocr_installation_uses_current_model_selection_over_legacy_
         lang_type="japan",
         model_type="mobile",
         ocr_version="PP-OCRv5",
+        plugin_id="galgame_plugin",
         platform_fn=lambda: True,
     )
 
@@ -5735,10 +5749,19 @@ def test_install_task_runtime_root_uses_app_docs_dir(
         lambda: SimpleNamespace(app_docs_dir=app_docs_dir),
     )
 
-    state_path = galgame_install_tasks.install_task_state_path("run-1", kind="rapidocr_models")
+    state_path = galgame_install_tasks.install_task_state_path(
+        "run-1",
+        kind="rapidocr_models",
+        plugin_id="galgame_plugin",
+    )
 
     assert state_path == (
-        app_docs_dir / "plugin-runtime" / "galgame_plugin" / "rapidocr_models-installs" / "run-1.json"
+        app_docs_dir
+        / "plugin-runtime"
+        / "plugin-installs"
+        / "galgame_plugin"
+        / "rapidocr_models-installs"
+        / "run-1.json"
     )
 
 

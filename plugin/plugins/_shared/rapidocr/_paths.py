@@ -19,8 +19,18 @@ def is_windows_platform() -> bool:
     return sys.platform == "win32"
 
 
-def _app_runtimes_root() -> Path:
-    return get_config_manager().app_docs_dir / "runtimes" / "study_companion"
+def _normalize_plugin_id(plugin_id: str = "study_companion") -> str:
+    normalized = str(plugin_id or "").strip() or "study_companion"
+    if ".." in normalized or "/" in normalized or "\\" in normalized:
+        raise ValueError("invalid plugin_id")
+    if not all(char.isalnum() or char in {"_", "-"} for char in normalized):
+        raise ValueError("invalid plugin_id")
+    return normalized
+
+
+def _app_runtimes_root(plugin_id: str = "study_companion") -> Path:
+    normalized = _normalize_plugin_id(plugin_id)
+    return get_config_manager().app_docs_dir / "runtimes" / normalized
 
 
 def _legacy_galgame_rapidocr_target() -> Path:
@@ -35,9 +45,11 @@ def _rapidocr_target_has_assets(target: Path, package_name: str) -> bool:
     return models_dir.is_dir() and any(models_dir.iterdir())
 
 
-def default_rapidocr_install_target_raw() -> str:
+def default_rapidocr_install_target_raw(
+    plugin_id: str = "study_companion",
+) -> str:
     if is_windows_platform():
-        return str(_app_runtimes_root() / "RapidOCR")
+        return str(_app_runtimes_root(plugin_id) / "RapidOCR")
     return ""
 
 
@@ -47,17 +59,25 @@ def default_rapidocr_install_target_raw_legacy() -> str:
     return ""
 
 
-def resolve_rapidocr_install_target(raw_target_dir: str) -> Path:
+def resolve_rapidocr_install_target(
+    raw_target_dir: str,
+    *,
+    plugin_id: str = "study_companion",
+) -> Path:
     from ._model_registry import RAPIDOCR_PACKAGE_NAME
 
+    normalized_plugin_id = _normalize_plugin_id(plugin_id)
     normalized = str(raw_target_dir or "").strip()
     if normalized:
         return _expand_candidate_path(normalized)
 
-    target = _app_runtimes_root() / "RapidOCR"
+    target = _app_runtimes_root(normalized_plugin_id) / "RapidOCR"
     if not target.exists():
         galgame_target = _legacy_galgame_rapidocr_target()
-        if _rapidocr_target_has_assets(galgame_target, RAPIDOCR_PACKAGE_NAME):
+        if (
+            normalized_plugin_id != "galgame_plugin"
+            and _rapidocr_target_has_assets(galgame_target, RAPIDOCR_PACKAGE_NAME)
+        ):
             return galgame_target
         legacy_raw = default_rapidocr_install_target_raw_legacy()
         if legacy_raw:
@@ -70,21 +90,37 @@ def resolve_rapidocr_install_target(raw_target_dir: str) -> Path:
     return target
 
 
-def resolve_rapidocr_runtime_dir(raw_target_dir: str) -> Path:
-    target_dir = resolve_rapidocr_install_target(raw_target_dir)
+def resolve_rapidocr_runtime_dir(
+    raw_target_dir: str,
+    *,
+    plugin_id: str = "study_companion",
+) -> Path:
+    target_dir = resolve_rapidocr_install_target(raw_target_dir, plugin_id=plugin_id)
     return target_dir / "runtime" if target_dir else Path()
 
 
-def resolve_rapidocr_site_packages_dir(raw_target_dir: str) -> Path:
-    runtime_dir = resolve_rapidocr_runtime_dir(raw_target_dir)
+def resolve_rapidocr_site_packages_dir(
+    raw_target_dir: str,
+    *,
+    plugin_id: str = "study_companion",
+) -> Path:
+    runtime_dir = resolve_rapidocr_runtime_dir(raw_target_dir, plugin_id=plugin_id)
     return runtime_dir / "site-packages" if runtime_dir else Path()
 
 
-def resolve_rapidocr_model_cache_dir(raw_target_dir: str) -> Path:
-    target_dir = resolve_rapidocr_install_target(raw_target_dir)
+def resolve_rapidocr_model_cache_dir(
+    raw_target_dir: str,
+    *,
+    plugin_id: str = "study_companion",
+) -> Path:
+    target_dir = resolve_rapidocr_install_target(raw_target_dir, plugin_id=plugin_id)
     return target_dir / "models" if target_dir else Path()
 
 
-def _rapidocr_install_state_path(raw_target_dir: str) -> Path:
-    target_dir = resolve_rapidocr_install_target(raw_target_dir)
+def _rapidocr_install_state_path(
+    raw_target_dir: str,
+    *,
+    plugin_id: str = "study_companion",
+) -> Path:
+    target_dir = resolve_rapidocr_install_target(raw_target_dir, plugin_id=plugin_id)
     return target_dir / _INSTALL_STATE_NAME if target_dir else Path()

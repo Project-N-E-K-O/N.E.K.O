@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import importlib
 import sys
 import types as _types
 from typing import Any
+
+import httpx
 
 from utils.config_manager import get_config_manager
 
@@ -46,6 +49,7 @@ from ._inspect_download import (
 # old test-time semantics survive the split unchanged.
 _PROXY_TO_INSPECT_DOWNLOAD = frozenset(
     {
+        "httpx",
         "_verify_model_sha256",
         "required_rapidocr_model_files",
         "missing_rapidocr_model_files",
@@ -53,6 +57,7 @@ _PROXY_TO_INSPECT_DOWNLOAD = frozenset(
 )
 _PROXY_TO_RUNTIME = frozenset(
     {
+        "importlib",
         "_onnxruntime_intra_op_thread_cap",
         "_build_runtime_constructor_kwargs",
         "load_rapidocr_runtime",

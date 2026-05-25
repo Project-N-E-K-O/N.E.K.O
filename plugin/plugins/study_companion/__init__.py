@@ -74,6 +74,42 @@ from .ui_api import build_contribution_settings_payload, build_knowledge_map_pay
 from .ui_api import build_habit_dashboard_payload, build_pomodoro_status_payload
 
 
+def _register_install_routes() -> None:
+    from plugin.server.routes.plugin_install import (
+        InstallKindRegistration,
+        register_install_plugin,
+    )
+
+    register_install_plugin(
+        "study_companion",
+        install_kinds={
+            "rapidocr_models": InstallKindRegistration(
+                entry_id="study_download_rapidocr_models",
+                label="RapidOCR Models",
+                queued_message="RapidOCR model download queued",
+            ),
+            "tesseract": InstallKindRegistration(
+                entry_id="study_install_tesseract",
+                label="Tesseract",
+                queued_message="Tesseract install queued",
+            ),
+        },
+        ui_i18n_dir=Path(__file__).resolve().parent / "i18n",
+        tutorial_enabled=True,
+    )
+
+
+try:
+    _register_install_routes()
+except Exception:  # noqa: BLE001 - route registration should not block package import.
+    from plugin.logging_config import get_logger
+
+    get_logger("study.install_routes").warning(
+        "study install route registration failed",
+        exc_info=True,
+    )
+
+
 def _validated_pomodoro_focus_minutes(
     config: StudyConfig, focus_minutes: Any | None
 ) -> int:
@@ -2675,6 +2711,7 @@ class StudyCompanionPlugin(NekoPluginBase):
             from plugin.plugins._shared.rapidocr.rapidocr_support import (
                 download_rapidocr_models,
             )
+            from plugin.server.routes._install_task_store import update_install_task_state
 
             result = await download_rapidocr_models(
                 logger=self.logger,
@@ -2687,6 +2724,7 @@ class StudyCompanionPlugin(NekoPluginBase):
                 plugin_id=self.plugin_id,
                 progress_callback=self._resolve_install_progress_callback(run_id),
                 before_completed_callback=lambda: None,
+                install_state_updater=update_install_task_state,
             )
             self._refresh_dependency_status()
             await self._persist_state()

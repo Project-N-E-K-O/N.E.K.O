@@ -108,7 +108,7 @@ from .dependency_status import (
     infer_inspection_failed_dependencies,
     infer_missing_dependencies,
 )
-from .rapidocr_support import inspect_rapidocr_installation
+from plugin.plugins._shared.rapidocr.rapidocr_support import inspect_rapidocr_installation
 from .dxcam_support import inspect_dxcam_installation
 from .reader import tail_events_jsonl, warmup_replay_events
 from .service import (
@@ -312,6 +312,7 @@ class GalgamePlugin(
         super().__init__(ctx)
         self.file_logger = self.enable_file_logging(log_level="INFO")
         self.logger = self.file_logger
+        self._register_install_route_migrations()
         self._state_lock = threading.Lock()
         self._poll_bridge_locks: dict[int, asyncio.Lock] = {}
         self._poll_bridge_thread_lock = threading.Lock()
@@ -395,6 +396,24 @@ class GalgamePlugin(
             "galgame_get_story_so_far": deque(maxlen=1),
             "galgame_get_push_history": deque(maxlen=10),
         }
+
+    def _register_install_route_migrations(self) -> None:
+        try:
+            from plugin.server.routes.plugin_install import register_tutorial_migration_hook
+
+            from ._tutorial_migration import copy_legacy_tutorial_progress_if_missing
+
+            register_tutorial_migration_hook(
+                copy_legacy_tutorial_progress_if_missing,
+                plugin_id=self.plugin_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - hook registration should not block plugin startup.
+            _log_plugin_noncritical(
+                self.logger,
+                "warning",
+                "galgame tutorial migration hook registration failed: {}",
+                exc,
+            )
 
     def _not_configured_message(self) -> str:
         return self.i18n.t(
@@ -2991,6 +3010,7 @@ class GalgamePlugin(
                 lang_type=self._cfg.rapidocr_lang_type,
                 model_type=self._cfg.rapidocr_model_type,
                 ocr_version=self._cfg.rapidocr_ocr_version,
+                plugin_id="galgame_plugin",
             )
             rapidocr["auto_detect_lang"] = bool(
                 getattr(self._cfg, "rapidocr_auto_detect_lang", True)

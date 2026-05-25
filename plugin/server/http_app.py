@@ -205,8 +205,8 @@ def build_plugin_server_app(title: str = "N.E.K.O User Plugin Server") -> FastAP
     # import-time failures must not prevent the base plugin server from starting.
     _include_optional_router(
         app,
-        module_name="plugin.plugins.galgame_plugin.install_routes",
-        label="galgame install routes",
+        module_name="plugin.server.routes.plugin_install",
+        label="plugin install routes",
     )
     _include_optional_router(
         app,
