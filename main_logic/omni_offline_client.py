@@ -922,6 +922,18 @@ class OmniOfflineClient:
                 pt = chunk.usage_metadata.get("prompt_tokens")
                 if pt:
                     self._last_prompt_tokens = pt
+            # 与常规 tool-loop 路径一致：不向下游转发 thinking 模型的纯
+            # reasoning chunk（有 reasoning_content、无 content / tool delta /
+            # finish / usage）。stream_text 在首个 yield 的 chunk 上记 TTFT，
+            # 放行 reasoning-only 会把"首推理 token"误当首 token，污染封顶轮延迟埋点。
+            if (
+                getattr(chunk, "reasoning_content", None)
+                and not getattr(chunk, "content", None)
+                and not chunk.tool_call_deltas
+                and not chunk.finish_reason
+                and not chunk.usage_metadata
+            ):
+                continue
             yield chunk
         self._last_finish_reason = final_finish_reason
 

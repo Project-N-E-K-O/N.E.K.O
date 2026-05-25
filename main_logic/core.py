@@ -2919,6 +2919,16 @@ class LLMSessionManager:
                 # 主动把管线（worker 线程 + response handler 任务）拉起来，让 worker
                 # 在检索这几秒内就绪，filler 一就绪即被 handler flush 合成播放。
                 await self.ensure_tts_pipeline_alive()
+                # 冷启动有界等待：ensure_tts_pipeline_alive 只拉起 worker/handler，
+                # 不等 __ready__。首轮 recall 紧接着 emit 时 tts_ready 可能还是 False，
+                # 导致 _emit_recall_filler_tts 直接返回 False、首轮空窗依旧。TTS 通常
+                # ~0.1s 就绪，这里给 ~1s 有界等待；超时则优雅放弃 filler（不阻塞回忆
+                # 检索主流程），由后续 recall 调用或正文兜底。
+                if not self.tts_ready:
+                    for _ in range(20):
+                        await asyncio.sleep(0.05)
+                        if self.tts_ready or self.current_speech_id != cur_sid:
+                            break
                 # 用独立 worker-sid 把 filler 作为一段完整 utterance 立即合成出声，
                 # 既能在检索空窗里马上播，又不会让正文（同 turn sid）被 worker 当成
                 # "text_done 之后的残余文本"丢弃。详见 _emit_recall_filler_tts。
