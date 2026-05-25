@@ -28,10 +28,11 @@
     let _shownWork = false;
     // 同一时刻只允许一个情境弹窗，避免两类信号叠出两个 modal。
     let _promptOpen = false;
-    // branch 还没决议出来时收到的事件先暂存（只留最新一次），等 branch 决议后重放。
+    // branch 还没决议出来时收到的事件先按类别暂存，等 branch 决议后逐类重放。
     // 后端这条信号是「进入态」一次性推送、不会自动重发；分支 GET 慢时若直接丢，
-    // 实验组本会话就再也看不到这次弹窗了。
-    let _pendingContext = null;
+    // 实验组本会话就再也看不到这次弹窗了。按类别存（而非单槽）避免决议前先后收到
+    // play + work 时只剩最后一个、另一类被吞——与「每会话每类一次」语义保持一致。
+    const _pendingContexts = new Set();
 
     function _isExperimentBranch() {
         return window.nekoTelemetryBranch === _AB_BRANCH;
@@ -125,7 +126,7 @@
         // 再重放。不能直接丢——后端一次性推送不会重发。GET 失败时 branch 永远是
         // undefined、该事件也永不重放，等于 fail-closed（确认不了实验组就不弹）。
         if (typeof window.nekoTelemetryBranch === 'undefined') {
-            _pendingContext = context;
+            _pendingContexts.add(context);
             return;
         }
         // 只对实验组弹；已决议但非实验组直接返回。
@@ -170,9 +171,10 @@
     // branch 决议后重放暂存的事件（app-settings.js 在拿到 telemetryBranch 后广播）。
     // 此时 window.nekoTelemetryBranch 已就绪：非实验组会在 handle 里早退并丢弃暂存。
     window.addEventListener('neko:telemetry-branch-resolved', function () {
-        const ctx = _pendingContext;
-        _pendingContext = null;
-        if (ctx) handle(ctx);
+        if (_pendingContexts.size === 0) return;
+        const pend = Array.from(_pendingContexts);
+        _pendingContexts.clear();
+        pend.forEach(function (ctx) { handle(ctx); });
     });
 
     window.appContextPrompt = { handle };
