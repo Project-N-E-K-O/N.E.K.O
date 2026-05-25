@@ -1063,8 +1063,6 @@ proactive_generate_zh = """你的人设：
 当前内心：
 {inner_thoughts}
 
-{state_section}
-
 对话历史：
 {memory_context}
 
@@ -1073,6 +1071,8 @@ proactive_generate_zh = """你的人设：
 {external_section}
 {music_section}
 {meme_section}
+
+{state_section}
 
 ======以下为向{master_name}进行搭话的决策方式======
 
@@ -1105,8 +1105,6 @@ proactive_generate_en = """Your persona:
 Inner state:
 {inner_thoughts}
 
-{state_section}
-
 Conversation history:
 {memory_context}
 
@@ -1115,6 +1113,8 @@ Conversation history:
 {external_section}
 {music_section}
 {meme_section}
+
+{state_section}
 
 ======以下为向{master_name}进行搭话的决策方式======
 
@@ -1147,8 +1147,6 @@ proactive_generate_ja = """あなたのキャラ設定：
 現在の内面：
 {inner_thoughts}
 
-{state_section}
-
 会話履歴：
 {memory_context}
 
@@ -1157,6 +1155,8 @@ proactive_generate_ja = """あなたのキャラ設定：
 {external_section}
 {music_section}
 {meme_section}
+
+{state_section}
 
 ======以下为向{master_name}进行搭话的决策方式======
 
@@ -1189,8 +1189,6 @@ proactive_generate_ko = """당신의 캐릭터 설정:
 현재 내면:
 {inner_thoughts}
 
-{state_section}
-
 대화 기록:
 {memory_context}
 
@@ -1199,6 +1197,8 @@ proactive_generate_ko = """당신의 캐릭터 설정:
 {external_section}
 {music_section}
 {meme_section}
+
+{state_section}
 
 ======以下为向{master_name}进行搭话的决策方式======
 
@@ -1231,8 +1231,6 @@ proactive_generate_ru = """Ваша роль:
 Внутреннее состояние:
 {inner_thoughts}
 
-{state_section}
-
 История разговора:
 {memory_context}
 
@@ -1241,6 +1239,8 @@ proactive_generate_ru = """Ваша роль:
 {external_section}
 {music_section}
 {meme_section}
+
+{state_section}
 
 ======以下为向{master_name}进行搭话的决策方式======
 
@@ -1745,8 +1745,6 @@ proactive_generate_es = """Tu persona:
 Estado interno:
 {inner_thoughts}
 
-{state_section}
-
 Historial de conversación:
 {memory_context}
 
@@ -1755,6 +1753,8 @@ Historial de conversación:
 {external_section}
 {music_section}
 {meme_section}
+
+{state_section}
 
 ======以下为向{master_name}进行搭话的决策方式======
 
@@ -1787,8 +1787,6 @@ proactive_generate_pt = """Sua persona:
 Estado interno:
 {inner_thoughts}
 
-{state_section}
-
 Histórico da conversa:
 {memory_context}
 
@@ -1797,6 +1795,8 @@ Histórico da conversa:
 {external_section}
 {music_section}
 {meme_section}
+
+{state_section}
 
 ======以下为向{master_name}进行搭话的决策方式======
 

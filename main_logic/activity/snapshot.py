@@ -637,48 +637,6 @@ def format_activity_state_section(snap: 'ActivitySnapshot', lang: str = 'zh') ->
     # Line 1: state + propensity directive on a single line.
     lines.append(f"{snap.state}（{state_label}）→ {propensity_directive}")
 
-    # Line 1.5: tone hint (style modifier orthogonal to propensity).
-    # ``closed`` snapshots already returned '' at the top of this
-    # function, so no closed-guard is needed here.
-    #
-    # Each tone slot in ACTIVITY_TONE_HINTS holds a short list of
-    # distinct *angles* on the scene (e.g. competitive gaming → reflex
-    # play-by-play / sideline heckling / short tactical callout). All
-    # angles are rendered as a bullet list so the model sees the full
-    # menu and picks whichever one fits the current round's content —
-    # they are illustrative direction hints, NOT lines to speak and
-    # NOT a sampling pool. The multi-variant header uses
-    # ``tone_menu_label`` (falls back to ``tone_label``), which spells
-    # out that the bullets are references to be performed through the
-    # character's own persona — never copied verbatim and never at
-    # the cost of breaking character.
-    #
-    # Backward compat: if a tone slot still holds a single string
-    # (legacy callers / mirrored tables), we wrap it into a list so
-    # both shapes render to the same output.
-    tone_hints = ACTIVITY_TONE_HINTS.get(L, ACTIVITY_TONE_HINTS['en'])
-    tone_variants = tone_hints.get(snap.tone)
-    if isinstance(tone_variants, str):
-        tone_variants = [tone_variants]
-    if tone_variants:
-        if len(tone_variants) == 1:
-            tone_label = labels.get('tone_label', 'tone')
-            lines.append(f"{tone_label}: {tone_variants[0]}")
-        else:
-            tone_label = labels.get('tone_menu_label') or labels.get('tone_label', 'tone')
-            lines.append(f"{tone_label}:")
-            lines.extend(f"- {v}" for v in tone_variants)
-
-    # Line 1.6: quality bar for tones that ship one (currently only
-    # ``witty``). Rendered as one extra line telling the model to [PASS]
-    # rather than force a flat, unfunny line — entertainment is only worth
-    # interrupting for when there's a genuinely good riff. Most tones have
-    # no bar (key absent) and this is a no-op.
-    quality_bars = ACTIVITY_TONE_QUALITY_BARS.get(L, ACTIVITY_TONE_QUALITY_BARS['en'])
-    quality_bar = quality_bars.get(snap.tone)
-    if quality_bar:
-        lines.append(quality_bar)
-
     # Line 2: rule reasons (skip if empty — happens for unknown states).
     if snap.propensity_reasons:
         rendered_reasons = [_render_reason(r, L) for r in snap.propensity_reasons]
@@ -734,6 +692,29 @@ def format_activity_state_section(snap: 'ActivitySnapshot', lang: str = 'zh') ->
         lines.append(f"{labels['open_threads_label']}:")
         for thread_text in snap.open_threads[:3]:
             lines.append(f'- {thread_text}')
+
+    # 口吻（+ 质量闸）渲染在状态块**最末**，紧贴下方「决策方式」段——state_section 整体
+    # 已挪到决策段上方（见 prompts_proactive 各 generate 模板），把口吻放块尾就让它直接
+    # 挨着决策规则；AI 决定「怎么说」时口吻就在眼前，不被中间的 reasons/scores/叙述/未收
+    # 尾话题冲淡。closed snapshot 已在函数开头返回空串，这里无需再判。tone bullets 是
+    # 角度参考非台词（菜单标签已说明，每轮结合实时上下文自造、勿照搬）；多数语气没有质量
+    # 闸（key 缺失即 no-op），只有 witty 带「没梗就 [PASS]」那行。
+    tone_hints = ACTIVITY_TONE_HINTS.get(L, ACTIVITY_TONE_HINTS['en'])
+    tone_variants = tone_hints.get(snap.tone)
+    if isinstance(tone_variants, str):
+        tone_variants = [tone_variants]
+    if tone_variants:
+        if len(tone_variants) == 1:
+            tone_label = labels.get('tone_label', 'tone')
+            lines.append(f"{tone_label}: {tone_variants[0]}")
+        else:
+            tone_label = labels.get('tone_menu_label') or labels.get('tone_label', 'tone')
+            lines.append(f"{tone_label}:")
+            lines.extend(f"- {v}" for v in tone_variants)
+    quality_bars = ACTIVITY_TONE_QUALITY_BARS.get(L, ACTIVITY_TONE_QUALITY_BARS['en'])
+    quality_bar = quality_bars.get(snap.tone)
+    if quality_bar:
+        lines.append(quality_bar)
 
     lines.append(labels['footer'])
     return '\n'.join(lines)
