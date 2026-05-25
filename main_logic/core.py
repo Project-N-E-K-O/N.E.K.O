@@ -80,6 +80,13 @@ from config.prompts.prompts_memory import (
     RECALL_MEMORY_TOOL_FOUND_HEADER,
 )
 
+# recall 占位语音用的合成 worker-sid 后缀。仅用于在 TTS worker 层把 filler 切成
+# 一段独立 utterance（见 _emit_recall_filler_tts）；``send_speech`` 在发往前端前会
+# 把它剥掉、归一回本轮 turn sid。否则在「把 request-id 透传进音频事件」的 provider
+# （如 minimax 的 ("__audio__", sid, ...) 路径）下，filler 音频会带着合成 sid 到前端，
+# 用户打断时前端按 turn sid 匹配不到 filler chunk，barge-in 取消不掉 filler。
+_RECALL_FILLER_SID_SUFFIX = "::recall-filler"
+
 
 # 内部 item 渲染时的视觉标记。状态信息已在外层 SYSTEM_NOTIFICATION_TASK_ACTIVE
 # 表达，emoji 仅作快速视觉识别用。
@@ -1204,7 +1211,7 @@ class LLMSessionManager:
                 return False
             if not (self.tts_ready and self.tts_thread and self.tts_thread.is_alive()):
                 return False
-            filler_sid = f"{turn_sid}::recall-filler"
+            filler_sid = f"{turn_sid}{_RECALL_FILLER_SID_SUFFIX}"
             self._enqueue_tts_text_chunk(filler_sid, text)
             # flush 这段独立 utterance。用 filler_sid 而非 turn sid，所以**不**触碰
             # 本轮 _tts_done_queued_for_turn——正文之后仍按正常 turn-end 流程 flush。
@@ -6941,6 +6948,11 @@ class LLMSessionManager:
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 effective_speech_id = speech_id if speech_id is not None else self.current_speech_id
+                # recall 占位语音在 worker 层用合成 sid 切分 utterance；对前端必须归一回
+                # turn sid，否则透传 request-id 的 provider 下，filler 音频带着合成 sid，
+                # 打断时前端按 turn sid 匹配不到 → barge-in 取消不掉 filler。
+                if isinstance(effective_speech_id, str) and effective_speech_id.endswith(_RECALL_FILLER_SID_SUFFIX):
+                    effective_speech_id = effective_speech_id[: -len(_RECALL_FILLER_SID_SUFFIX)]
                 await self.websocket.send_json({
                     "type": "audio_chunk",
                     "speech_id": effective_speech_id
