@@ -2,6 +2,12 @@
 
 > 跟进 [issue #1479](https://github.com/Project-N-E-K-O/N.E.K.O/issues/1479) / [PR #1477](https://github.com/Project-N-E-K-O/N.E.K.O/pull/1477) / [PR #1530](https://github.com/Project-N-E-K-O/N.E.K.O/pull/1530) / [PR #1532](https://github.com/Project-N-E-K-O/N.E.K.O/pull/1532)。本文件覆盖 N.E.K.O. 后端所有 browser-facing 的「本地变更端点」（local mutation endpoint）所共享的 CSRF/Origin 校验合同：威胁模型边界、规则矩阵、Token 流转、前端调用约定、迁移指引。
 
+> ⚠️ **状态说明**：本文件描述的是 issue #1479 三个 PR **全部合并后**的目标状态。当前 main 分支上：
+> - PR #1477 已合并（activity_signal 端点 + 临时 Origin-only gate）
+> - PR #1530（Step 1：8 个端点收编 + 前端 token 注入 + `tests/unit/test_uncovered_endpoints_csrf.py` canary）— **尚未合并**
+> - PR #1532（Step 2：activity_signal 收编进统一守卫 + 前端 stop-the-heartbeat 退避）— **尚未合并**
+> - 本 PR #1533（Step 3：本文件）跟上面两个 PR 平行；建议 merge 顺序 `#1530 → #1532 → #1533`，否则本文件描述的部分内容（如第 6.2/6.3 节、第 8.1 节引用的测试文件）在 main 上还看不到对应代码。
+
 ## 1. 背景
 
 N.E.K.O. 既能跑在 Electron 桌面壳（与渲染器同源），也支持「后端跑在远端／前端跑在用户浏览器」的部署形态。后端有一批「本地变更类」HTTP 端点（POST，且会修改服务端状态或触发副作用）暴露给浏览器/渲染器：
@@ -186,13 +192,17 @@ if validation_error is not None:
 - `POST /api/screenshot/interactive`
 - `POST /api/mini_game/invite/respond`
 
-### 6.2 PR #1530 (#1479 Step 1)
+### 6.2 PR #1530 — #1479 Step 1（**待合并**）
 
-`POST /api/pending-notices/ack`、`/api/emotion/analysis`、`/api/steam/set-achievement-status/{name}`、`/api/steam/update-playtime`、`/api/proactive_chat`、`/api/proactive/music_played_through`、`/api/translate`、`/api/personal_dynamics`（dead-code 端点，仍接入守卫作为防御性默认；删除决定单独跟进）。
+PR #1530 把下列端点接入 `_validate_local_mutation_request`，并改造对应前端调用方注入 `X-CSRF-Token`：`POST /api/pending-notices/ack`、`/api/emotion/analysis`、`/api/steam/set-achievement-status/{name}`、`/api/steam/update-playtime`、`/api/proactive_chat`、`/api/proactive/music_played_through`、`/api/translate`、`/api/personal_dynamics`（dead-code 端点，仍接入守卫作为防御性默认；删除决定单独跟进）。
 
-### 6.3 PR #1532 (#1479 Step 2)
+> 在 #1530 合并之前，main 分支上这些端点**仍然没有 CSRF 守卫**——本节内容描述的是合并后状态，不是当前 main 的事实。
 
-`POST /api/activity_signal`：从 PR #1477 的临时 Origin-only gate 收编到统一守卫；前端 `static/app-activity-signal.js` 改用 `getMutationHeaders()` + 连续 6 次 csrf_validation_failed 后 stop 心跳（避免静默永久降级）。
+### 6.3 PR #1532 — #1479 Step 2（**待合并**）
+
+PR #1532 把 `POST /api/activity_signal` 从 PR #1477 的临时 Origin-only gate 收编到统一守卫；前端 `static/app-activity-signal.js` 改用 `getMutationHeaders()` + 连续 6 次 csrf_validation_failed 后 stop 心跳（避免静默永久降级）。
+
+> 在 #1532 合并之前，main 分支上 activity_signal 端点**仍然走的是 PR #1477 落地的临时 Origin-only gate**（`raw_origin == "null"` 显式拒绝 + same-origin 集合检查），返回的 403 body 也仍然是 `{"success": false, "error": "origin not allowed"}` 而不是统一的 `csrf_validation_failed`。本节内容描述的是合并后状态。
 
 ---
 
@@ -257,7 +267,7 @@ if (response.status === 403 && sec && typeof sec.refreshToken === 'function') {
 1. handler 第一行就调 `_validate_local_mutation_request(request)` 或带 `error_defaults` 的变体
 2. 失败时 return validation_error（必要时先 `_set_no_store_headers`）
 3. 前端调用方走 `getMutationHeaders()` 注入 token，必要时加 CSRF-403 retry-once
-4. 测试：参考 `tests/unit/test_uncovered_endpoints_csrf.py`，对每个端点 parametrize 两条 canary（无 token → 403、错 token → 403）
+4. 测试：参考 `tests/unit/test_uncovered_endpoints_csrf.py`（PR #1530 引入；在 #1530 merge 之前可暂参考 `tests/unit/test_tutorial_prompt_router.py` 里的 `unauthenticated_prompt_client` fixture 模式），对每个端点 parametrize 两条 canary（无 token → 403、错 token → 403）
 
 ### 8.2 部署时序
 
