@@ -5547,9 +5547,14 @@ async def sync_workshop_character_cards(
                     logger.info("sync_workshop_character_cards: 无需更新，所有角色卡已存在")
         
     except Exception as e:
+        # 真实后端异常（磁盘/Steamworks/序列化等）必须显式标记为同步失败，
+        # 否则下游 API 只按业务 code 分支，会把它误判成
+        # WORKSHOP_CHARACTER_NOT_FOUND / NOT_ADDED，让前端把服务端故障当成
+        # “此订阅里没有角色卡”。用专属 code 兜住，区别于逐角色的部分错误。
         logger.error(f"sync_workshop_character_cards: 同步过程出错: {e}", exc_info=True)
         error_count += 1
-    
+        return _sync_result(code="WORKSHOP_SYNC_FAILED")
+
     return _sync_result()
 
 
@@ -5581,6 +5586,16 @@ async def api_sync_workshop_character_cards():
                     "success": False,
                     "code": "WORKSHOP_SUBSCRIPTIONS_UNAVAILABLE",
                     "error": "获取订阅物品失败，请确认 Steam 客户端已运行并已登录。",
+                    **result,
+                },
+            )
+        if result.get("code") == "WORKSHOP_SYNC_FAILED":
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "code": "WORKSHOP_SYNC_FAILED",
+                    "error": "同步创意工坊角色卡时发生内部错误，请稍后重试。",
                     **result,
                 },
             )
@@ -5633,6 +5648,17 @@ async def api_sync_single_workshop_character_card(item_id: str):
                     "success": False,
                     "code": "WORKSHOP_SUBSCRIPTIONS_UNAVAILABLE",
                     "error": "获取订阅物品失败，请确认 Steam 客户端已运行并已登录。",
+                    **result,
+                },
+            )
+
+        if result.get("code") == "WORKSHOP_SYNC_FAILED":
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "code": "WORKSHOP_SYNC_FAILED",
+                    "error": "同步创意工坊角色卡时发生内部错误，请稍后重试。",
                     **result,
                 },
             )

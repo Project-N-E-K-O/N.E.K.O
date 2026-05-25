@@ -1170,6 +1170,22 @@ async def test_sync_single_workshop_character_card_treats_restored_existing_as_s
             422,
             "WORKSHOP_CHARACTER_NOT_ADDED",
         ),
+        (
+            # 真实后端异常被显式标记为 WORKSHOP_SYNC_FAILED 时，必须回 500，
+            # 不能因 target_found / found_character_names 的残留值被误判成业务态。
+            {
+                "added": 0,
+                "backfilled_faces": 0,
+                "skipped": 0,
+                "errors": 1,
+                "target_found": True,
+                "found_character_names": [],
+                "existing_character_names": [],
+                "code": "WORKSHOP_SYNC_FAILED",
+            },
+            500,
+            "WORKSHOP_SYNC_FAILED",
+        ),
     ],
 )
 async def test_sync_single_workshop_character_card_uses_error_status_codes(
@@ -1216,6 +1232,34 @@ async def test_batch_workshop_character_sync_reports_subscription_unavailable():
     assert response.status_code == 503
     assert payload["success"] is False
     assert payload["code"] == "WORKSHOP_SUBSCRIPTIONS_UNAVAILABLE"
+    assert payload["errors"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_batch_workshop_character_sync_reports_internal_failure_as_500():
+    # 后端异常被标记为 WORKSHOP_SYNC_FAILED 时，批量入口也要回 500，
+    # 不能伪装成 success 的“同步完成”。
+    workshop_router_module = reload_module("main_routers.workshop_router")
+    sync_result = {
+        "added": 0,
+        "backfilled_faces": 0,
+        "skipped": 0,
+        "errors": 1,
+        "code": "WORKSHOP_SYNC_FAILED",
+    }
+
+    with patch.object(
+        workshop_router_module,
+        "sync_workshop_character_cards",
+        AsyncMock(return_value=sync_result),
+    ):
+        response = await workshop_router_module.api_sync_workshop_character_cards()
+
+    payload = json.loads(response.body.decode("utf-8"))
+    assert response.status_code == 500
+    assert payload["success"] is False
+    assert payload["code"] == "WORKSHOP_SYNC_FAILED"
     assert payload["errors"] == 1
 
 
