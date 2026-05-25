@@ -557,7 +557,7 @@ ACTIVITY_TONE_HINTS: dict[str, dict[str, list[str]]] = {
         "playful": [
             "打趣逗弄：对用户当下正在做的事皮一下，戳笑点别戳痛点，留个让对方想回嘴的小钩子",
             "装傻好奇：对眼前的东西装作没看懂，问一个对方一句话就能接上的小问题",
-            "递话头：抛个对方容易顺势接下去的小话题或小提议，别自说自话抖完段子就没下文",
+            "跳脱联想：从屏幕内容随性抛个段子或天马行空的联想，但落在一个对方能顺势接的话头上，别抖完就冷场",
         ],
         "witty": [
             "实时吐槽：对正在看的剧情/人物/梗即时吐槽，抓住可乐的点，毒舌但不下作",
@@ -594,7 +594,7 @@ ACTIVITY_TONE_HINTS: dict[str, dict[str, list[str]]] = {
         "playful": [
             "tease the moment: poke fun at what they're doing, no bruise — and leave a hook they'll want to fire back at",
             "play dumb out of curiosity: pretend not to get what's on screen, ask one small question they can answer in a breath",
-            "hand them an opening: toss out a little topic or suggestion they can easily run with, instead of a self-contained gag that lands and dies",
+            "tangent association: riff off the screen into a random gag or a wild connection — but land it on a hook they can run with, not a gag that dies on its own",
         ],
         "witty": [
             "live riff: react to the plot / character / meme on screen right now, catch the funny beat, sharp-tongued but never cheap",
@@ -631,7 +631,7 @@ ACTIVITY_TONE_HINTS: dict[str, dict[str, list[str]]] = {
         "playful": [
             "今この瞬間をいじる：相手のやってることをちょっと茶化す、痛くせず、思わず言い返したくなる隙を残す",
             "とぼけて好奇心：画面のことを分からないふりして、一言で答えられる小さな質問をする",
-            "話のきっかけを渡す：相手が乗っかりやすい小ネタや提案を振る、オチだけ言って終わらせない",
+            "脱線連想：画面の内容から小ネタや突飛な連想を投げる、ただしオチだけで終わらせず、相手が乗っかれる話の振りで締める",
         ],
         "witty": [
             "リアタイ突っ込み：今観ている展開／キャラ／ネタに即ツッコミ、笑える所を突く、毒舌でも下品にしない",
@@ -668,7 +668,7 @@ ACTIVITY_TONE_HINTS: dict[str, dict[str, list[str]]] = {
         "playful": [
             "지금 이 순간을 깐죽이기: 상대가 하는 걸 살짝 놀리되 아프지 않게, 받아치고 싶어지는 여지를 남기기",
             "모른 척 호기심: 화면의 것을 모르는 척, 한마디로 답할 수 있는 작은 질문 하나 던지기",
-            "말문 틔워주기: 상대가 쉽게 이어받을 작은 화제나 제안을 던지기, 혼자 농담만 하고 끝내지 않기",
+            "탈선 연상: 화면 내용에서 즉흥 농담이나 엉뚱한 연상을 던지되, 혼자 웃고 끝내지 말고 상대가 이어받을 말끝으로 맺기",
         ],
         "witty": [
             "실시간 태클: 지금 보는 전개 / 캐릭터 / 밈에 바로 태클, 웃긴 포인트를 콕, 독설이되 저급하지 않게",
@@ -705,7 +705,7 @@ ACTIVITY_TONE_HINTS: dict[str, dict[str, list[str]]] = {
         "playful": [
             "подколи момент: пошути над тем, что они делают, не задевая — и оставь зацепку, на которую захочется ответить",
             "наивное любопытство: притворись, что не понимаешь экран, и задай маленький вопрос, на который легко ответить одной фразой",
-            "подкинь зацепку: брось небольшую тему или предложение, которое легко подхватить, а не самодостаточную шутку, что гаснет сама собой",
+            "тангенс-ассоциация: оттолкнись от экрана в случайную шутку или дикую связь — но заверши зацепкой, которую легко подхватить, а не шуткой, что гаснет сама",
         ],
         "witty": [
             "комментарий в реальном времени: реагируй на сюжет / персонажа / мем на экране прямо сейчас, лови смешной момент, остро, но не пошло",
@@ -742,7 +742,7 @@ ACTIVITY_TONE_HINTS: dict[str, dict[str, list[str]]] = {
         "playful": [
             "pica el momento: ríete de lo que hacen sin doler, y deja un gancho al que querrán responder",
             "curiosidad fingida: hazte la que no entiende la pantalla y haz una pregunta pequeña que puedan responder en una frase",
-            "dales pie: lanza un pequeño tema o propuesta que puedan retomar fácil, en vez de un chiste cerrado que se apaga solo",
+            "tangente asociativa: salta del contenido a una broma random o una conexión disparatada, pero remátala con un gancho que puedan retomar, no con un chiste que se apaga solo",
         ],
         "witty": [
             "comentario en vivo: reacciona a la trama / personaje / meme en pantalla ahora mismo, pilla el momento gracioso, mordaz pero sin caer en lo bajo",
@@ -779,7 +779,7 @@ ACTIVITY_TONE_HINTS: dict[str, dict[str, list[str]]] = {
         "playful": [
             "alfineta o momento: zoa o que ele faz sem machucar, e deixe um gancho que ele vai querer rebater",
             "curiosidade fingida: finja que não entende a tela e faça uma perguntinha que dê pra responder numa frase",
-            "dê deixa: jogue um tópico ou sugestão pequena fácil de emendar, em vez de uma piada fechada que morre sozinha",
+            "tangente associativa: salte do conteúdo pra uma piada random ou conexão maluca, mas feche num gancho que dê pra emendar, não numa piada que morre sozinha",
         ],
         "witty": [
             "comentário ao vivo: reaja à trama / personagem / meme na tela agora, pegue o momento engraçado, mordaz mas sem apelar pro baixo",
