@@ -2792,8 +2792,9 @@ class StudyCompanionPlugin(NekoPluginBase):
         if not bool(self._cfg.llm_vision_enabled):
             return Err(SdkError("llm_vision_enabled is not enabled"))
         normalized_text = str(text or "").strip()
-        with self._lock:
-            self._state.last_ocr_text = normalized_text
+        if normalized_text:
+            with self._lock:
+                self._state.last_ocr_text = normalized_text
         source_text = normalized_text or "请查看这张图片的内容"
         return await self.study_explain_text(
             text=source_text,

@@ -471,6 +471,28 @@ async def test_study_submit_image_stores_base64_and_delegates() -> None:
 
 
 @pytest.mark.asyncio
+async def test_study_submit_image_without_caption_preserves_ocr_fallback() -> None:
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    plugin._cfg = StudyConfig(llm_vision_enabled=True)
+    plugin._state = build_initial_state()
+    plugin._state.last_ocr_text = "previous OCR context"
+    plugin._lock = threading.RLock()
+    calls: list[str] = []
+
+    async def _study_explain_text(self: StudyCompanionPlugin, text: str = "", **_: Any):
+        calls.append(text)
+        return Ok({"reply": "done"})
+
+    plugin.study_explain_text = MethodType(_study_explain_text, plugin)
+
+    result = await plugin.study_submit_image(JPEG_IMAGE_BASE64)
+
+    assert isinstance(result, Ok)
+    assert calls == ["请查看这张图片的内容"]
+    assert plugin._state.last_ocr_text == "previous OCR context"
+
+
+@pytest.mark.asyncio
 async def test_study_submit_image_uses_call_local_image_for_overlap() -> None:
     plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
     plugin._cfg = StudyConfig(llm_vision_enabled=True)
