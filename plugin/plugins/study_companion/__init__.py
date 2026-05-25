@@ -892,12 +892,12 @@ class StudyCompanionPlugin(NekoPluginBase):
             ).strip()
             or "default"
         )
-        mastery_before = (
-            await asyncio.to_thread(self._knowledge_tracker.get_mastery, topic)
-            if topic
-            else 0.0
-        )
         try:
+            mastery_before = (
+                await asyncio.to_thread(self._knowledge_tracker.get_mastery, topic)
+                if topic
+                else 0.0
+            )
             tracking_result = await asyncio.to_thread(
                 self._knowledge_tracker.on_answer,
                 topic_id=topic,
@@ -1202,6 +1202,7 @@ class StudyCompanionPlugin(NekoPluginBase):
         with self._lock:
             seed = dict(self._state.session_summary_seed)
         answer_count = int(seed.get("answer_count") or 0)
+        question_count = int(seed.get("question_count") or 0)
         verdict_counts = dict(seed.get("verdict_counts") or {})
         correct = int(verdict_counts.get("correct") or 0)
         fallback_correct_rate = (correct / answer_count) if answer_count > 0 else 0.0
@@ -1212,7 +1213,7 @@ class StudyCompanionPlugin(NekoPluginBase):
                     "duration_minutes": 0,
                     "questions_attempted": int(
                         payload.get("questions_attempted")
-                        or seed.get("question_count")
+                        or max(question_count, answer_count)
                         or 0
                     ),
                     "correct_rate": _event_ratio(
@@ -2336,7 +2337,12 @@ class StudyCompanionPlugin(NekoPluginBase):
                         "applied": 0,
                         "error": str(bridge_exc),
                     }
-            await self._emit_memory_review_answer_event(payload)
+            try:
+                await self._emit_memory_review_answer_event(payload)
+            except Exception as emit_exc:
+                self.logger.warning(
+                    "memory review event emission degraded: {}", emit_exc
+                )
             return Ok(payload)
         except Exception as exc:
             return Err(SdkError(str(exc)))
@@ -2397,7 +2403,12 @@ class StudyCompanionPlugin(NekoPluginBase):
                         "applied": 0,
                         "error": str(bridge_exc),
                     }
-            await self._emit_recitation_answer_event(payload)
+            try:
+                await self._emit_recitation_answer_event(payload)
+            except Exception as emit_exc:
+                self.logger.warning(
+                    "memory recitation event emission degraded: {}", emit_exc
+                )
             return Ok(payload)
         except Exception as exc:
             return Err(SdkError(str(exc)))
@@ -2902,11 +2913,15 @@ class StudyCompanionPlugin(NekoPluginBase):
             or tutor_context.get("topic")
             or ""
         ).strip()
-        mastery_after = (
-            await asyncio.to_thread(self._knowledge_tracker.get_mastery, topic)
-            if topic
-            else -1.0
-        )
+        try:
+            mastery_after = (
+                await asyncio.to_thread(self._knowledge_tracker.get_mastery, topic)
+                if topic
+                else -1.0
+            )
+        except Exception as exc:
+            self.logger.warning("study answer mastery enrichment failed: {}", exc)
+            mastery_after = -1.0
         await self._emit_answer_evaluated_event(
             verdict=str(payload.get("verdict") or ""),
             score=payload.get("score", 0.0),

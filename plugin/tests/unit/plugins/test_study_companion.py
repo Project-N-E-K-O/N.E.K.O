@@ -3241,6 +3241,85 @@ async def test_evaluate_answer_emits_answer_evaluated(
 
 
 @pytest.mark.asyncio
+async def test_evaluate_answer_mastery_lookup_failure_is_best_effort(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _TopicTrackingAgent(_FakeTutorAgent):
+        async def answer_evaluate(
+            self,
+            *,
+            question: str = "",
+            answer: str = "",
+            expected_answer: str = "",
+            mode: str = MODE_COMPANION,
+            context: dict[str, object] | None = None,
+        ) -> TutorReply:
+            self.evaluations.append(
+                (question, answer, expected_answer, dict(context or {}), mode)
+            )
+            return TutorReply(
+                operation="answer_evaluate",
+                input_text=answer,
+                reply="evaluated",
+                payload={
+                    "verdict": "partial",
+                    "score": 50,
+                    "topic": "derivatives",
+                    "feedback": "review derivative rules",
+                },
+                created_at="2026-05-11T00:00:00Z",
+            )
+
+        async def knowledge_track(
+            self,
+            *,
+            mode: str = MODE_COMPANION,
+            context: dict[str, object] | None = None,
+        ) -> TutorReply:
+            return TutorReply(
+                operation="knowledge_track",
+                input_text=str((context or {}).get("input_text") or ""),
+                reply="derivatives",
+                payload={"topic": "derivatives"},
+                created_at="2026-05-11T00:00:00Z",
+            )
+
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    plugin.logger = ctx.logger
+    plugin._agent = _TopicTrackingAgent()
+
+    def _fail_get_mastery(_topic: str) -> float:
+        raise RuntimeError("mastery read failed")
+
+    monkeypatch.setattr(plugin._knowledge_tracker, "get_mastery", _fail_get_mastery)
+    try:
+        evaluated = await plugin.study_evaluate_answer(
+            question="What is a derivative?",
+            expected_answer="A rate of change.",
+            answer="A slope.",
+        )
+
+        assert isinstance(evaluated, Ok)
+        await _drain_scheduled_events()
+        assert any("[Answer Evaluated]" in text for text in _study_push_texts(ctx))
+        warnings = [str(args[0]) for args, _kwargs in ctx.logger.warnings]
+        assert any(
+            "study knowledge tracker persistence failed" in item for item in warnings
+        )
+        assert any(
+            "study answer mastery enrichment failed" in item for item in warnings
+        )
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_memory_review_emits_answer_evaluated(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3268,6 +3347,47 @@ async def test_memory_review_emits_answer_evaluated(
         assert isinstance(reviewed, Ok)
         await _drain_scheduled_events()
         assert any("[Answer Evaluated]" in text for text in _study_push_texts(ctx))
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_memory_review_event_failure_does_not_fail_review(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    try:
+        assert isinstance(result, Ok)
+        plugin.logger = ctx.logger
+        deck = plugin._memory_deck_store.create_deck(
+            name="Exam Words", deck_type="word", language="en"
+        )
+        item = plugin._memory_deck_store.add_word(
+            deck_id=deck["id"],
+            word="abandon",
+            meaning="give up",
+        )["item"]
+
+        async def _fail_emit(_payload: dict[str, object]) -> None:
+            raise RuntimeError("event enrichment failed")
+
+        plugin._emit_memory_review_answer_event = _fail_emit  # type: ignore[method-assign]
+
+        reviewed = await plugin.study_memory_review_item(
+            item_id=item["id"], rating="good", correct=True
+        )
+
+        assert isinstance(reviewed, Ok)
+        assert reviewed.value["review_record"]["item_id"] == item["id"]
+        assert any(
+            "memory review event emission degraded" in str(args[0])
+            for args, _kwargs in ctx.logger.warnings
+        )
     finally:
         await plugin.shutdown()
 
@@ -3430,6 +3550,38 @@ async def test_summarize_session_emits_event(
         texts = _study_push_texts(ctx)
         assert any("[Session Summarized]" in text for text in texts)
         assert any("Derivative rules improved." in text for text in texts)
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_session_summarized_falls_back_to_answer_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    try:
+        assert isinstance(result, Ok)
+        with plugin._lock:
+            plugin._state.session_summary_seed = {
+                "answer_count": 3,
+                "question_count": 0,
+                "verdict_counts": {"correct": 2},
+                "last_topic": "Derivatives",
+            }
+
+        await plugin._emit_session_summarized_event(
+            {"summary": "Answered supplied derivative questions."}
+        )
+        await _drain_scheduled_events()
+
+        texts = _study_push_texts(ctx)
+        assert any("3 question(s)" in text for text in texts)
+        assert any("67%" in text for text in texts)
     finally:
         await plugin.shutdown()
 

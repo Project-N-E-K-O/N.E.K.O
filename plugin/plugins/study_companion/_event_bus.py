@@ -26,7 +26,6 @@ class StudyEvent:
 class _EmitDecision:
     allowed: bool
     throttle_key: str = ""
-    throttle_at: float = 0.0
     screen_context_type: str = ""
 
 
@@ -114,7 +113,7 @@ class StudyEventBus:
             if not decision.allowed:
                 self._block_count += 1
                 return
-            behavior, respond_at = self._resolve_behavior(event, now)
+            behavior, mark_respond = self._resolve_behavior(event, now)
             text = self._format(event)
             visibility = VISIBILITY_MAP.get(event.name, [])
             priority = PRIORITY_MAP.get(event.name, 2)
@@ -129,7 +128,7 @@ class StudyEventBus:
                 result = await result
             if isinstance(result, dict) and result.get("ok") is False:
                 raise RuntimeError("study event push_message returned ok=false")
-            self._commit_emit(decision, respond_at)
+            self._commit_emit(decision, mark_respond=mark_respond)
 
     def _emit_decision(self, event: StudyEvent, now: float) -> _EmitDecision:
         if event.name == "screen_context_changed":
@@ -143,14 +142,15 @@ class StudyEventBus:
         return _EmitDecision(allowed=True)
 
     def _commit_emit(
-        self, decision: _EmitDecision, respond_at: float | None = None
+        self, decision: _EmitDecision, *, mark_respond: bool = False
     ) -> None:
+        committed_at = time.monotonic()
         if decision.throttle_key:
-            self._throttle[decision.throttle_key] = decision.throttle_at
+            self._throttle[decision.throttle_key] = committed_at
         if decision.screen_context_type:
             self._last_screen_context_type = decision.screen_context_type
-        if respond_at is not None:
-            self._last_respond_at = respond_at
+        if mark_respond:
+            self._last_respond_at = committed_at
         self._emit_count += 1
 
     def _prune_throttle(self, now: float) -> None:
@@ -192,7 +192,6 @@ class StudyEventBus:
         return _EmitDecision(
             allowed=True,
             throttle_key=key,
-            throttle_at=now,
             screen_context_type=screen_type,
         )
 
@@ -215,27 +214,27 @@ class StudyEventBus:
         last = self._throttle.get(key)
         if last is not None and now - last < 600.0:
             return _EmitDecision(allowed=False)
-        return _EmitDecision(allowed=True, throttle_key=key, throttle_at=now)
+        return _EmitDecision(allowed=True, throttle_key=key)
 
     def _throttle_review_due(self, event: StudyEvent, now: float) -> _EmitDecision:
         key = "review_due"
         last = self._throttle.get(key)
         if last is not None and now - last < 1800.0:
             return _EmitDecision(allowed=False)
-        return _EmitDecision(allowed=True, throttle_key=key, throttle_at=now)
+        return _EmitDecision(allowed=True, throttle_key=key)
 
     def _resolve_behavior(
         self, event: StudyEvent, now: float
-    ) -> tuple[str, float | None]:
+    ) -> tuple[str, bool]:
         behavior = BEHAVIOR_MAP.get(event.name, "read")
         if event.name != "answer_evaluated":
-            return behavior, None
+            return behavior, False
         verdict = str(event.payload.get("verdict") or "").strip().lower()
         if verdict not in {"incorrect", "partial", "wrong", "dont_know"}:
-            return behavior, None
+            return behavior, False
         if now - self._last_respond_at < self._RESPOND_COOLDOWN:
-            return behavior, None
-        return "respond", now
+            return behavior, False
+        return "respond", True
 
     def _format(self, event: StudyEvent) -> str:
         formatter = _FORMATTERS.get(event.name)

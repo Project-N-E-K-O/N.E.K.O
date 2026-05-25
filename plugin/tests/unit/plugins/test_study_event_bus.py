@@ -117,6 +117,39 @@ async def test_emit_answer_evaluated_respond_cooldown_30s() -> None:
 
 
 @pytest.mark.asyncio
+async def test_emit_answer_respond_cooldown_starts_after_async_push(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current = 100.0
+    monkeypatch.setattr(event_bus_module.time, "monotonic", lambda: current)
+
+    class _SlowCtx(_Ctx):
+        async def push_message(self, **kwargs):
+            nonlocal current
+            self.messages.append(dict(kwargs))
+            current = 140.0
+            return {"ok": True}
+
+    ctx = _SlowCtx()
+    bus = StudyEventBus(plugin_ctx=ctx)
+    event = StudyEvent(
+        name="answer_evaluated",
+        payload={
+            "verdict": "incorrect",
+            "score": 0.1,
+            "question_summary": "Q",
+            "user_answer_summary": "A",
+        },
+    )
+
+    await bus.emit(event)
+    current = 140.1
+    await bus.emit(event)
+
+    assert [item["ai_behavior"] for item in ctx.messages] == ["respond", "read"]
+
+
+@pytest.mark.asyncio
 async def test_emit_mastery_updated_ignores_small_changes() -> None:
     ctx = _Ctx()
     bus = StudyEventBus(plugin_ctx=ctx)
