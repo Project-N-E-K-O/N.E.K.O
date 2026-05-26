@@ -27,6 +27,9 @@ def test_phase9_static_math_assets_are_local_and_registered() -> None:
     assert "\\\\lt " in renderer
     assert "/[<>]/.test" not in renderer
     assert "escapeHTML" in renderer
+    assert "function hasEscapedDelimiter" in renderer
+    assert "function isCurrencyDollar" in renderer
+    assert "function findMathDelimiter" in renderer
     assert "trust: false" in renderer
 
 
@@ -45,6 +48,8 @@ def test_phase9_hosted_study_panel_uses_span_based_katex_rendering() -> None:
     assert "findMathDelimiter(source, index + 1, '$')" in source
     assert "/[<>]/.test" not in source
     assert "const hasInFlightRequest = !!explainControllerRef.current" in source
+    assert "targetElement?.closest?.('.study-panel')" in source
+    assert "if (!isInsidePanel) {" in source
     assert "document.addEventListener('keydown', closeOrCancelOnEscape, true)" in source
 
 
