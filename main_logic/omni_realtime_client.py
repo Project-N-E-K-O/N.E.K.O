@@ -1829,6 +1829,62 @@ class OmniRealtimeClient:
             return
         self._inject_rejection_handlers.pop(event_id, None)
 
+    @staticmethod
+    def _looks_like_response_conflict(error_msg: str) -> bool:
+        """Heuristic: does this ``error`` message look like the server
+        rejecting a ``response.create`` because a response is already active?
+
+        That ``response_already_active`` class is the ONLY async rejection a
+        proactive inject can provoke (our inject is the only client-issued
+        ``response.create`` on the voice path). Matching its content lets us
+        route the rejection even when the provider's error doesn't echo our
+        client ``event_id``. Kept deliberately broad across phrasings /
+        providers but still scoped to response-conflict wording so unrelated
+        errors (auth / quota / 503 / idle-timeout) don't trip it."""
+        low = error_msg.lower()
+        if "response_already_active" in low:
+            return True
+        return "response" in low and any(
+            k in low for k in ("already", "active", "in progress", "in_progress", "exists", "ongoing")
+        )
+
+    def _route_inject_rejection(self, err_event_id, error_msg: str) -> None:
+        """Deliver a server rejection to the matching proactive-inject
+        ``on_rejected`` handler so the caller re-enqueues the cb.
+
+        Two correlation paths:
+          1. **By id (precise)** — OpenAI Realtime (and any provider that
+             echoes the offending client ``event_id``): pop and fire the exact
+             handler.
+          2. **By content (fallback)** — providers that reject without a
+             client-correlated id: if the error looks like a response-conflict
+             (``_looks_like_response_conflict``) and handlers are pending, fire
+             them all. Injects are serialized by
+             ``_voice_proactive_inject_lock`` so there's effectively one logical
+             pending inject; ``_reject_once`` + the caller's delivery-id dedup
+             make a spurious fire cost at most a bounded duplicate re-add, which
+             is strictly better than a silent drop (Codex P1)."""
+        if not self._inject_rejection_handlers:
+            return
+
+        def _fire(handler) -> None:
+            try:
+                handler(error_msg)
+            except Exception as cb_exc:
+                logger.warning("proactive inject rejection handler raised: %s", cb_exc)
+
+        if err_event_id and err_event_id in self._inject_rejection_handlers:
+            handler = self._inject_rejection_handlers.pop(err_event_id, None)
+            if handler is not None:
+                _fire(handler)
+            return
+
+        # No id correlation — fall back to content matching.
+        if self._looks_like_response_conflict(error_msg):
+            for handler in list(self._inject_rejection_handlers.values()):
+                _fire(handler)
+            self._inject_rejection_handlers.clear()
+
     def _sweep_inject_rejection_handlers(self) -> None:
         """Drop all pending inject rejection handlers on a ``response.done``
         lifecycle boundary.
@@ -2221,26 +2277,16 @@ class OmniRealtimeClient:
                     error_msg = str(event.get('error', ''))
                     logger.error(f"API Error: {error_msg}")
 
-                    # If this error is the server rejecting a proactive
-                    # ``response.create`` we stamped with a tracked event_id
-                    # (e.g. ``response_already_active`` from a VAD race),
-                    # invoke the per-inject rejection handler so the caller
-                    # can re-enqueue the optimistically-pruned cb. ``error``
-                    # events normally echo the offending client event_id at
-                    # ``error.event_id``; fall back to the top-level
-                    # ``event_id`` for providers that put it there instead.
+                    # Route server rejections of a proactive inject's
+                    # ``response.create`` / ``conversation.item.create`` back to
+                    # the caller so it can re-enqueue the optimistically-pruned
+                    # cb (see _route_inject_rejection). ``error`` events
+                    # normally echo the offending client event_id at
+                    # ``error.event_id``; some providers put it top-level or
+                    # omit it entirely — the helper handles all three.
                     err_obj = event.get('error') if isinstance(event.get('error'), dict) else {}
                     err_event_id = err_obj.get('event_id') or event.get('event_id')
-                    if err_event_id:
-                        handler = self._inject_rejection_handlers.pop(err_event_id, None)
-                        if handler is not None:
-                            try:
-                                handler(error_msg)
-                            except Exception as cb_exc:
-                                logger.warning(
-                                    "proactive inject rejection handler raised: %s",
-                                    cb_exc,
-                                )
+                    self._route_inject_rejection(err_event_id, error_msg)
 
                     # 检测503过载错误，触发backpressure节流
                     if '503' in error_msg or 'overloaded' in error_msg.lower():

@@ -462,6 +462,46 @@ async def test_sweep_inject_rejection_handlers_clears_dict():
     assert sess._inject_rejection_handlers == {}
 
 
+async def test_route_inject_rejection_id_match():
+    """精确路径：error 携带我们 stamp 的 client event_id → 命中并 fire 对应 handler。"""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    fired = []
+    sess = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    sess._inject_rejection_handlers = {"event_inject_resp_x": lambda msg: fired.append(msg)}
+    sess._route_inject_rejection("event_inject_resp_x", "response_already_active")
+    assert fired == ["response_already_active"]
+    assert sess._inject_rejection_handlers == {}  # popped
+
+
+async def test_route_inject_rejection_content_fallback_no_id():
+    """fallback 路径（Codex P1）：provider 拒绝 response.create 但 error 不带
+    client event_id。只要内容像 response-conflict 就 fire 所有 pending handler，
+    避免静默丢失。"""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    fired = []
+    sess = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    sess._inject_rejection_handlers = {"k1": lambda msg: fired.append(msg)}
+    # err_event_id 缺失 / 不匹配，但消息是 response-conflict
+    sess._route_inject_rejection(None, "Conversation already has an active response")
+    assert len(fired) == 1
+    assert sess._inject_rejection_handlers == {}
+
+
+async def test_route_inject_rejection_unrelated_error_does_not_fire():
+    """无 id 匹配 + 错误不像 response-conflict（如 503/quota）→ 不应 fire，
+    避免把无关错误误当成 inject 拒绝、错误回补造成重复投递。"""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    fired = []
+    sess = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    sess._inject_rejection_handlers = {"k1": lambda msg: fired.append(msg)}
+    sess._route_inject_rejection(None, "503 service overloaded, try again later")
+    assert fired == []
+    assert sess._inject_rejection_handlers == {"k1": sess._inject_rejection_handlers["k1"]}
+
+
 async def test_voice_mode_inject_exception_keeps_cbs_for_retry():
     """Voice 模式（inject 抛非 NotImplementedError）：cb 留在队列等重试。"""
     sess = _make_voice_sess()
