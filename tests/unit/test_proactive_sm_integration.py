@@ -2,7 +2,10 @@
 ``SessionStateMachine`` 之后的关键行为契约。
 
 覆盖点：
-1. Voice 模式走 hot-swap，**不**触碰 SM（不 fire PROACTIVE_START，清 callbacks）
+1. Voice 模式主路径是 realtime inject（conversation.item.create + response.create），
+   **不**进 SM proactive 流水线（不 fire PROACTIVE_START）；只有 provider 抛
+   NotImplementedError 才回退 hot-swap。serialize / reject 回补 / TOCTOU 等竞态见
+   下面 voice_mode_* 用例。
 2. Text 模式在 SM 被另一路 proactive 占用时拒绝投递，callbacks 保留重试
 3. Text 模式在 ``session._is_responding == True`` 时 SM 拒绝，callbacks 保留
 4. 正常 text 投递：IDLE → PHASE1（claim）→ CLAIM → PHASE2 → DONE 事件序列
@@ -361,6 +364,7 @@ async def test_voice_mode_concurrent_triggers_inject_once():
     from main_logic.omni_realtime_client import OmniRealtimeClient
 
     release = asyncio.Event()
+    entered_inject = asyncio.Event()
 
     class _VoiceSess(OmniRealtimeClient):
         def __init__(self):
@@ -372,7 +376,9 @@ async def test_voice_mode_concurrent_triggers_inject_once():
 
         async def inject_text_and_request_response(self, text: str, *, on_rejected=None) -> None:
             self.inject_calls += 1
-            # 卡住第一个 inject，给第二个 task 机会抢同一 snapshot
+            # 标记第一个 inject 真正进入临界区（持锁中），再卡住，给第二个 task
+            # 确定性地去抢锁——不靠固定 tick 数赌时序。
+            entered_inject.set()
             await release.wait()
 
     sess = _VoiceSess()
@@ -384,9 +390,10 @@ async def test_voice_mode_concurrent_triggers_inject_once():
 
     t1 = asyncio.create_task(LLMSessionManager.trigger_agent_callbacks(mgr))
     t2 = asyncio.create_task(LLMSessionManager.trigger_agent_callbacks(mgr))
-    # 让两个 task 都跑起来：t1 拿锁卡在 inject，t2 阻塞在锁上
-    for _ in range(5):
-        await asyncio.sleep(0)
+    # 等第一个 inject 真的进入持锁段，再给第二个 task 一个调度点去阻塞在锁上，
+    # 然后才放行——确保「两个 task 竞争同一 snapshot」这个场景真的发生。
+    await asyncio.wait_for(entered_inject.wait(), timeout=5)
+    await asyncio.sleep(0)
     release.set()
     # 本地超时：若 _voice_proactive_inject_lock 以后回归成死等，这里快速失败
     # 而不是挂到 CI 全局超时。
