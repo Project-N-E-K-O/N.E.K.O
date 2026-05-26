@@ -45,6 +45,11 @@ function getWorkshopHiddenFields() {
     return _uniqueFields([...cfg.all_reserved_fields]);
 }
 
+function isCharacterReservedFieldName(fieldName) {
+    if (!fieldName) return false;
+    return getWorkshopHiddenFields().includes(fieldName);
+}
+
 function loadCharacterReservedFieldsConfig() {
     _reservedFieldsReady = ReservedFieldsUtils.load().then(cfg => {
         characterReservedFieldsConfig = cfg;
@@ -9803,6 +9808,11 @@ function renderMasterForm(master) {
     nameInput.required = true;
     nameInput.value = master['档案名'] || '';
     nameInput.autocomplete = 'off';
+    nameInput.readOnly = true;
+    nameInput.setAttribute('aria-readonly', 'true');
+    nameInput.title = window.t
+        ? window.t('character.profileNameRenameOnlyHint')
+        : '请通过“修改名称”按钮修改档案名';
     fieldRow.appendChild(nameInput);
     baseWrapper.appendChild(fieldRow);
 
@@ -9812,7 +9822,10 @@ function renderMasterForm(master) {
     renameBtn.className = 'btn sm';
     renameBtn.style.minWidth = '70px';
     const renameText = window.t ? window.t('character.rename') : '修改名称';
+    const renameTitle = window.t ? window.t('character.renameMasterTitle') : '重命名主人';
     renameBtn.textContent = renameText;
+    renameBtn.title = renameTitle;
+    renameBtn.setAttribute('aria-label', renameTitle);
     renameBtn.onclick = renameMaster;
     baseWrapper.appendChild(renameBtn);
 
@@ -9820,7 +9833,7 @@ function renderMasterForm(master) {
 
     // 自定义字段
     Object.keys(master).forEach(k => {
-        if (k === '档案名') return;
+        if (k === '档案名' || isCharacterReservedFieldName(k)) return;
         const wrapper = document.createElement('div');
         wrapper.className = 'field-row-wrapper custom-row';
 
@@ -9895,10 +9908,7 @@ function renderMasterForm(master) {
 
     form.appendChild(btnArea);
 
-    // 为档案名输入框添加自动保存和变化监听
-    attachAutoSaveListener(nameInput, 'master');
-    nameInput.addEventListener('input', showMasterActionButtons);
-    nameInput.addEventListener('change', showMasterActionButtons);
+    // 档案名只允许通过重命名接口修改，避免绕过改名事件记录。
 }
 
 function showMasterActionButtons() {
@@ -9920,7 +9930,7 @@ async function saveMasterForm() {
     }
     const data = {};
     for (const [k, v] of new FormData(form).entries()) {
-        if (k && v) data[k] = v;
+        if (k && v && !isCharacterReservedFieldName(k)) data[k] = v;
     }
     try {
         const resp = await fetch('/api/characters/master', {
@@ -9976,10 +9986,10 @@ async function autoSaveMasterField(input) {
     if (!form || form.id !== 'master-form') return;
     const fieldName = input.name;
     if (!fieldName) return;
-    if (fieldName === '档案名' && !input.value.trim()) return;
+    if (fieldName === '档案名') return;
     const allData = {};
     for (const [k, v] of new FormData(form).entries()) {
-        if (k && v) allData[k] = v;
+        if (k && v && !isCharacterReservedFieldName(k)) allData[k] = v;
     }
     if (!allData['档案名']) return;
     try {
@@ -10079,7 +10089,7 @@ async function addMasterField() {
     } else {
         key = prompt(window.t ? window.t('character.addMasterFieldPrompt') : '请输入新设定的名称（键名）');
     }
-    if (!key || key === '档案名') return;
+    if (!key || key === '档案名' || isCharacterReservedFieldName(key)) return;
     const exists = Array.from(form.querySelectorAll('textarea, input')).some(el => el.name === key);
     if (exists) {
         showMessage(window.t ? window.t('character.fieldExists') : '该设定已存在', 'error');
@@ -10128,15 +10138,17 @@ async function renameMaster() {
     if (!form) return;
     const nameInput = form.querySelector('input[name="档案名"]');
     const oldName = nameInput?.value || '';
+    const promptText = window.t ? window.t('character.renameMasterPrompt') : '请输入新的主人档案名';
+    const titleText = window.t ? window.t('character.renameMasterTitle') : '重命名主人';
     let newName;
     if (typeof showPrompt === 'function') {
         newName = await showPrompt(
-            window.t ? window.t('character.renamePrompt') : '请输入新的档案名',
+            promptText,
             oldName,
-            window.t ? window.t('character.renameTitle') : '修改名称'
+            titleText
         );
     } else {
-        newName = prompt(window.t ? window.t('character.renamePrompt') : '请输入新的档案名', oldName);
+        newName = prompt(promptText, oldName);
     }
     if (!newName || newName.trim() === '' || newName.trim() === oldName) return;
     try {

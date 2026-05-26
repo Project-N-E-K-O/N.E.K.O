@@ -3160,15 +3160,27 @@ async def update_master(request: Request):
         return JSONResponse({'success': False, 'error': '请求体必须是合法的JSON格式'}, status_code=400)
     if not data:
         return JSONResponse({'success': False, 'error': '档案名为必填项'}, status_code=400)
-    profile_name = data.get('档案名')
-    err = _validate_profile_name(profile_name)
-    if err:
-        return JSONResponse({'success': False, 'error': err}, status_code=400)
-    data['档案名'] = str(profile_name).strip()
     _config_manager = get_config_manager()
     initialize_character_data = get_initialize_character_data()
     characters = await _config_manager.aload_characters()
-    characters['主人'] = {k: v for k, v in data.items() if v}
+    previous_master = characters.get('主人') if isinstance(characters.get('主人'), dict) else {}
+    previous_profile_name = ""
+    if isinstance(previous_master, dict):
+        previous_profile_name = str(previous_master.get('档案名') or '').strip()
+    requested_profile_name = str(data.get('档案名') or '').strip()
+    profile_name = previous_profile_name or requested_profile_name
+    err = _validate_profile_name(profile_name)
+    if err:
+        return JSONResponse({'success': False, 'error': err}, status_code=400)
+    next_master = {
+        k: v
+        for k, v in data.items()
+        if v and k not in CHARACTER_RESERVED_FIELD_SET and k != '档案名'
+    }
+    next_master['档案名'] = profile_name
+    if isinstance(previous_master, dict) and isinstance(previous_master.get('_reserved'), dict):
+        next_master['_reserved'] = copy.deepcopy(previous_master['_reserved'])
+    characters['主人'] = next_master
     await _config_manager.asave_characters(characters)
     # 自动重新加载配置
     await initialize_character_data()
@@ -3206,6 +3218,7 @@ async def rename_master(old_name: str, request: Request):
             return JSONResponse({'success': False, 'error': '新档案名与已有猫娘名称冲突'}, status_code=400)
 
         characters['主人']['档案名'] = new_name
+        _append_profile_rename_event(characters['主人'], old_name, new_name)
         await _config_manager.asave_characters(characters)
 
     try:
