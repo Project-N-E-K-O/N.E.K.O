@@ -261,3 +261,20 @@ class QQClient:
         await self.ws.send(json.dumps(payload))
         if self.logger:
             self.logger.debug(f"Sent group message to {group_id}")
+
+    async def send_group_message_segments(self, group_id: str, segments: list[Dict[str, Any]]):
+        """发送群聊消息片段"""
+        if not self.ws:
+            raise RuntimeError("Not connected to OneBot")
+
+        payload = {
+            "action": "send_group_msg",
+            "params": {
+                "group_id": int(group_id),
+                "message": segments,
+            },
+        }
+
+        await self.ws.send(json.dumps(payload))
+        if self.logger:
+            self.logger.debug(f"Sent segmented group message to {group_id}")

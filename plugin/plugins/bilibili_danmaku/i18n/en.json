@@ -1,4 +1,6 @@
 {
+  "plugin.name": "Bilibili Danmaku Monitor",
+  "plugin.description": "Monitor Bilibili live stream danmaku in real time, filter it, and push it to the AI for analysis and replies",
   "account.already_logged_in": "Already logged in",
   "account.check_cred": "Check Credential",
   "account.check_cred_failed": "Check credential failed:",

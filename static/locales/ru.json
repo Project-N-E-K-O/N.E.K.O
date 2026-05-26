@@ -61,6 +61,20 @@
         "enableFailed": "Сейчас не удалось включить автозапуск. Попробуйте еще раз позже.",
         "requiresApproval": "Сначала разрешите автозапуск в настройках системы. После одобрения он включится."
     },
+    "contextPrompt": {
+        "play": {
+            "title": "Можно посмотреть на экран вместе с тобой?",
+            "message": "Ты играешь / смотришь что-то. Я могу включить показ экрана для проактивных реплик и комментировать вместе с тем, что у тебя на экране. Включить?",
+            "accept": "Давай, включи",
+            "decline": "Не сейчас"
+        },
+        "work": {
+            "title": "Помолчать и не смотреть на экран?",
+            "message": "Похоже, ты сосредоточен на работе. Я могу отключить показ экрана для проактивных реплик — не буду отвлекать и подглядывать. Отключить?",
+            "accept": "Да, отключи показ экрана",
+            "decline": "Нет, оставь"
+        }
+    },
     "tutorialPrompt": {
         "title": "Запустить обучение на главной странице?",
         "message": "Я быстро покажу основные разделы на главной странице, чтобы вы могли как можно быстрее начать пользоваться N.E.K.O.",
@@ -194,6 +208,14 @@
         "uploadReady": "Готово к загрузке {{itemName}}",
         "pageDescription": "На этой странице можно просматривать, редактировать, загружать, импортировать и экспортировать карточки персонажей, а также управлять моделями Live2D и голосами в Мастерской Steam",
         "openVoiceClone": "Открыть в клонировании голоса",
+        "workshopAddCharacterCard": "Добавить карточку",
+        "workshopAddingCharacterCard": "Добавление...",
+        "unknownCharacterCard": "Неизвестная карточка персонажа",
+        "characterCardAlreadyExistsTitle": "Карточка уже существует",
+        "characterCardAlreadyExistsMessage": "Карточка персонажа уже существует: {{names}}",
+        "workshopCharacterAdded": "Карточка персонажа добавлена: {{names}}",
+        "workshopCharacterNotFound": "В этой подписке не найдена карточка персонажа. Убедитесь, что загрузка содержимого завершена.",
+        "workshopCharacterAddFailed": "Не удалось добавить карточку персонажа: {{error}}",
         "configurePath": "Настроить путь",
         "localModPathConfig": "Настройка пути к локальным модам",
         "localModFolder": "Путь к папке локальных модов",
@@ -397,6 +419,7 @@
         "loadingItemDetailsById": "Загрузка деталей предмета ID: {{id}}...",
         "characterCardsRefreshed": "Список карточек обновлён, всего {{count}} карточек",
         "characterCardsRefreshedEmpty": "Список карточек обновлён, карточки отсутствуют",
+        "characterCardsRefreshFailed": "Не удалось обновить список: {{error}}",
         "requiredFieldsMissing": "Заполните следующие обязательные поля: {{fields}}",
         "refreshLive2DPreview": "Обновить предпросмотр Live2D",
         "removeTag": "Удалить тег",
@@ -532,7 +555,7 @@
         "steamNotRunningTitle": "Steam не запущен",
         "steamNotRunningMessage": "Клиент Steam не запущен или не выполнен вход.\n\nДля работы Мастерской необходим клиент Steam:\n1. Скачайте и установите клиент Steam\n2. Запустите Steam и войдите в свой аккаунт\n3. Откройте эту страницу заново",
         "addNewCatgirl": "Добавить нового персонажа",
-        "noCardImage": "Нажмите, чтобы\nустановить обложку",
+        "noCardImage": "Обложка карты пока не настроена",
         "searchCharacterCards": "Поиск карточек персонажей...",
         "cardView": "Вид карточек",
         "listView": "Список"
@@ -1163,7 +1186,23 @@
             "modelDataNotReady": "Внутренние данные модели не готовы",
             "managerNotFound": "Live2DManager не найден",
             "select": "Выбрать",
-            "defaultClickAnim": "Анимация клика по умолчанию"
+            "defaultClickAnim": "Анимация клика по умолчанию",
+            "customAreaButton": "Своя область",
+            "customAreaTitle": "Своя область: {{name}}",
+            "newCustomAreaTitle": "Новая своя область",
+            "editCustomAreaTitle": "Изменить свою область",
+            "customAreaName": "Название области",
+            "customAreaNameDefault": "Своя область {{index}}",
+            "saveCustomArea": "Сохранить область",
+            "editCustomArea": "Изменить",
+            "deleteCustomArea": "Удалить",
+            "deleteCustomAreaConfirmTitle": "Удалить свою область",
+            "deleteCustomAreaConfirm": "Удалить свою область «{{name}}»? Привязанные движения и выражения тоже будут удалены.",
+            "previewUnavailable": "Предпросмотр своей области недоступен",
+            "modelBoundsUnavailable": "Не удалось прочитать границы модели",
+            "selectAreaFirst": "Сначала выделите допустимую область",
+            "customAreaCoveredByExisting": "Эта область полностью перекрыта ранее созданной своей областью",
+            "cancel": "Отмена"
         },
         "emotionConfig": "Эмоции",
         "saveSettings": "Сохранить настройки",

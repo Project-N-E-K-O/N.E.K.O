@@ -12,10 +12,51 @@ from __future__ import annotations
 
 import contextvars
 import json as _json
+import re
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Union
 
 from openai import AsyncOpenAI, OpenAI
+
+
+# ────────────────────────────────────────────────────────────────
+# Reasoning-trace stripping (non-streaming defensive cleanup)
+# ────────────────────────────────────────────────────────────────
+# Well-formed <think>...</think> / <thinking>...</thinking> blocks.
+_THINK_PAIRED_RE = re.compile(r"<think(?:ing)?\s*>.*?</think(?:ing)?\s*>", re.IGNORECASE | re.DOTALL)
+# A *dangling* close tag with no matching open. This is the Qwen3.5/3.6
+# OpenAI-compat leak shape: unlike qwen3-vl-* (which route reasoning to the
+# ``reasoning_content`` field), the 3.5/3.6 hybrid models never populate
+# ``reasoning_content`` — the whole chain-of-thought lands in ``content`` with
+# only a lone ``</think>`` (implicit open) separating it from the real answer.
+# A paired-tag regex alone can't catch this; we strip everything up to and
+# including the first unmatched close tag.
+_THINK_DANGLING_CLOSE_RE = re.compile(r"^.*?</think(?:ing)?\s*>", re.IGNORECASE | re.DOTALL)
+_THINK_ANY_CLOSE_RE = re.compile(r"</think(?:ing)?\s*>", re.IGNORECASE)
+
+
+def strip_thinking_segments(text: str | None) -> str:
+    """Remove leaked chain-of-thought from a *non-streaming* model reply.
+
+    Handles two shapes:
+      1. Well-formed ``<think>...</think>`` blocks (any count).
+      2. Qwen3.5/3.6 leak: reasoning dumped into ``content`` with only a
+         dangling ``</think>`` (no opening tag) before the answer.
+
+    Conservative — only acts when a think tag is present, so clean replies
+    (qwen3-vl-*, gpt, claude, etc.) pass through untouched. Streaming is *not*
+    covered here on purpose: when the chain-of-thought arrives token-by-token
+    in ``delta.content`` with no delimiter there's nothing reliable to strip.
+    """
+    if not text:
+        return text or ""
+    s = str(text)
+    # 1) drop well-formed blocks first
+    s = _THINK_PAIRED_RE.sub("", s)
+    # 2) any close tag still present is unmatched → preceding text is thinking
+    if _THINK_ANY_CLOSE_RE.search(s):
+        s = _THINK_DANGLING_CLOSE_RE.sub("", s, count=1)
+    return s.strip()
 
 
 # ────────────────────────────────────────────────────────────────
@@ -475,18 +516,18 @@ class ChatOpenAI:
         # message=None 的合法响应，直接 .message.content 会 NoneType 崩溃。
         choice = resp.choices[0] if resp.choices else None
         msg = choice.message if choice else None
-        content = getattr(msg, "content", None)
+        content = strip_thinking_segments(getattr(msg, "content", None))
         usage_dict = resp.usage.model_dump() if resp.usage else {}
-        return LLMResponse(content=content or "", response_metadata={"token_usage": usage_dict})
+        return LLMResponse(content=content, response_metadata={"token_usage": usage_dict})
 
     def invoke(self, messages: Any, **overrides: Any) -> LLMResponse:
         """Sync twin of ``ainvoke``. See its docstring for ``overrides``."""
         resp = self._client.chat.completions.create(**self._params(messages, **overrides))
         choice = resp.choices[0] if resp.choices else None
         msg = choice.message if choice else None
-        content = getattr(msg, "content", None)
+        content = strip_thinking_segments(getattr(msg, "content", None))
         usage_dict = resp.usage.model_dump() if resp.usage else {}
-        return LLMResponse(content=content or "", response_metadata={"token_usage": usage_dict})
+        return LLMResponse(content=content, response_metadata={"token_usage": usage_dict})
 
     # --- raw-resp invoke (for callers needing reasoning_content / raw choices) ---
 

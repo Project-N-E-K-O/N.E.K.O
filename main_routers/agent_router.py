@@ -26,6 +26,7 @@ import httpx
 from .shared_state import get_session_manager, get_config_manager, get_templates
 from config import TOOL_SERVER_PORT, USER_PLUGIN_BASE
 from main_logic.agent_event_bus import publish_session_event
+from main_logic.activity.system_signals import is_remote_backend_deployment
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 logger = get_module_logger(__name__, "Main")
@@ -54,6 +55,37 @@ _AGENT_OFF_FLAGS = {
     "openclaw_enabled": False,
     "openfang_enabled": False,
 }
+
+
+def _remote_backend_block() -> JSONResponse | None:
+    """Reject agent mutation when backend is deployed away from the user.
+
+    In remote mode (``NEKO_ACTIVITY_TRACKER_REMOTE=1``) the "computer"
+    that computer_use / browser_use / openclaw would control is the
+    *server's*, not the user's — there's no useful action to take, and
+    silently forwarding the command to a localhost tool_server on the
+    server side is actively dangerous (anyone who can reach the public
+    backend HTTP can drive the agent on the server). Returning 501
+    matches the same-env block on ``/api/screenshot`` in
+    ``main_routers/system_router.py`` so the frontend can surface a
+    uniform "agent unavailable on remote backend" state.
+
+    Threat model context: a deeper CSRF + Origin guard (defending
+    against DNS-rebinding-style attacks on a *local* backend) is
+    deferred to a follow-up — it needs the ~15 frontend agent fetch
+    sites to start sending ``X-CSRF-Token`` first, which doesn't fit
+    PR B's scope. See issue #1023 for the audit + scope decision.
+    """
+    if is_remote_backend_deployment():
+        return JSONResponse(
+            {
+                "success": False,
+                "error": "agent disabled in remote backend deployment "
+                         "(NEKO_ACTIVITY_TRACKER_REMOTE)",
+            },
+            status_code=501,
+        )
+    return None
 
 
 async def force_disable_agent_for_character_switch(current_lanlan: str, previous_lanlan: str | None = None) -> bool:
@@ -197,6 +229,9 @@ async def _close_http_client():
 @router.post('/flags')
 async def update_agent_flags(request: Request):
     """来自前端的Agent开关更新，级联到各自的session manager。"""
+    blocked = _remote_backend_block()
+    if blocked is not None:
+        return blocked
     try:
         data = await request.json()
         _config_manager = get_config_manager()
@@ -276,6 +311,9 @@ async def get_agent_state():
 @router.post('/command')
 async def post_agent_command(request: Request):
     """统一命令入口，前端只发送 command，不直接操作多路开关。"""
+    blocked = _remote_backend_block()
+    if blocked is not None:
+        return blocked
     t0 = time.perf_counter()
     try:
         data = await request.json()
@@ -521,6 +559,9 @@ async def proxy_task_detail(task_id: str):
 @router.post('/tasks/{task_id}/cancel')
 async def proxy_task_cancel(task_id: str):
     """Cancel a specific task via tool server proxy."""
+    blocked = _remote_backend_block()
+    if blocked is not None:
+        return blocked
     try:
         client = _get_http_client()
         r = await client.post(f"{TOOL_SERVER_BASE}/tasks/{task_id}/cancel", timeout=5.0)
@@ -534,6 +575,9 @@ async def proxy_task_cancel(task_id: str):
 @router.post('/admin/control')
 async def proxy_admin_control(payload: dict = Body(...)):
     """Proxy admin control commands to tool server."""
+    blocked = _remote_backend_block()
+    if blocked is not None:
+        return blocked
     try:
         client = _get_http_client()
         r = await client.post(f"{TOOL_SERVER_BASE}/admin/control", json=payload, timeout=5.0)

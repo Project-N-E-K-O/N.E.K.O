@@ -1001,6 +1001,7 @@ PERSONA_RENDER_ENCODING = "o200k_base"   # tiktoken encoding
 # 杀掉，BM25 兜底功能等于死掉（codex P1 review on PR #1385）。
 HYBRID_RECALL_BUDGET_EACH = 4            # 每路（BM25 / embedding）top-K 上限
 HYBRID_RECALL_BUDGET_TOTAL = 8           # RRF 融合后总条数上限（两路去重 + 取分前 N）
+HYBRID_RECALL_TIME_BUDGET = 8            # 按时间回溯（recall_memory time 参数）返回的最接近条数上限
 HYBRID_RECALL_COSINE_THRESHOLD = 0.3     # cosine < 阈值视为不相关
 HYBRID_RECALL_BM25_THRESHOLD = 0.1       # BM25 < 阈值视为不相关（保 small-pool exact match）
 HYBRID_RECALL_RRF_K = 60                 # RRF 常数（k=60 = Elastic / OpenSearch 默认）
@@ -1183,6 +1184,22 @@ MEMORY_LIVENESS_MAX_ATTEMPTS = 5
 - 失败定义：LLM 返 None / 抛异常 / handler raise / parse 失败等终态。
 - 5 跟 `MEMORY_RECHECK_MAX_ATTEMPTS` 同口径——按 40s 一轮算 3 分钟级窗口，
   跨过偶发 transient failure 够用；再多就属于真正 poison。"""
+
+MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS = 5 * 60 * 60
+"""dead-letter 的时间冷却自愈窗口（秒）。
+
+- 问题：达 `MEMORY_LIVENESS_MAX_ATTEMPTS` 被冻结的 entry（reflection synth /
+  schema recheck / refine cluster）只在"成功"或"输入变化"时才解冻。但当失败
+  其实是**一次性持续故障**（correction 模型快照下线一直超时 / cloudsave 卡
+  维护态 / FS 只读）时，故障期间会把一批无辜 entry 一路 bump 到 MAX 永久冻死，
+  故障恢复后也不会自愈（内容没变、又进不了候选）。
+- 治理：给这些 dead-letter 加时间冷却——冻结后每过本窗口放行**一次** probe。
+  probe 成功 → 计数清零彻底恢复；probe 失败 → 重新计时、再等一个窗口。这样
+  一次性故障 5h 后自愈，真正 poison 仍被压到"每 5h 一次"不空烧。
+- **不适用 memory_review**：它的恢复机制是"对话尾部 fingerprint 变化即复位"
+  （master 一发新消息就重试），不需要也不应该有时间自愈——挂机期间就该一直停。
+- 5h：refine cron 30min 一轮 → 一次 >2.5h 的模型宕机会把 entry 顶到 MAX；
+  5h 冷却确保宕机恢复后下一轮就能 probe，又远大于偶发抖动窗口。"""
 
 # ---- Memory: followup picker (memory/reflection.py) ─
 REFLECTION_FOLLOWUP_WEIGHTED = True
@@ -2004,6 +2021,7 @@ __all__ = [
     'PERSONA_CORRECTION_BATCH_LIMIT',
     'PERSONA_VERSION_HISTORY_MAX',
     'MEMORY_LLM_HARD_TIMEOUT_SECONDS',
+    'MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS',
     'MEMORY_REFINE_COSINE_THRESHOLD',
     'MEMORY_REFINE_TOPK_PER_ENTRY',
     'MEMORY_REFINE_CLUSTER_SIZE_MAX',

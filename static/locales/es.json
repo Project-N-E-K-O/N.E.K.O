@@ -61,6 +61,20 @@
         "enableFailed": "El inicio automático no se pudo habilitar en este momento. Inténtelo de nuevo más tarde.",
         "requiresApproval": "Primero apruebe el inicio automático en la configuración de su sistema. Entrará en vigor después de la aprobación."
     },
+    "contextPrompt": {
+        "play": {
+            "title": "¿Quieres que mire la pantalla contigo?",
+            "message": "Estás jugando / viendo algo. Puedo activar la fuente de pantalla compartida de la charla proactiva y comentar contigo lo que tienes en pantalla. ¿La activo?",
+            "accept": "Sí, actívala",
+            "decline": "Ahora no"
+        },
+        "work": {
+            "title": "¿Me quedo callada y dejo de mirar la pantalla?",
+            "message": "Parece que estás concentrado en el trabajo. Puedo desactivar la fuente de pantalla compartida de la charla proactiva, así no te distraigo ni parece que espío. ¿La desactivo?",
+            "accept": "Sí, desactiva la pantalla compartida",
+            "decline": "No, déjala"
+        }
+    },
     "tutorialPrompt": {
         "title": "¿Quieres empezar el tutorial en casa?",
         "message": "Puedo mostrarte rápidamente los principales puntos de entrada en la pantalla de inicio para que puedas comenzar con N.E.K.O de inmediato.",
@@ -194,6 +208,14 @@
         "uploadReady": "Listo para cargar {{itemName}}",
         "pageDescription": "Gestiona tarjetas de personaje: explora, edita, importa/exporta tarjetas y administra modelos y voces (incluyendo Steam Workshop como fuente opcional)",
         "openVoiceClone": "Abrir en clon de voz",
+        "workshopAddCharacterCard": "Añadir tarjeta",
+        "workshopAddingCharacterCard": "Añadiendo...",
+        "unknownCharacterCard": "Tarjeta de personaje desconocida",
+        "characterCardAlreadyExistsTitle": "La tarjeta ya existe",
+        "characterCardAlreadyExistsMessage": "La tarjeta de personaje ya existe: {{names}}",
+        "workshopCharacterAdded": "Tarjeta de personaje añadida: {{names}}",
+        "workshopCharacterNotFound": "No se encontró una tarjeta de personaje en esta suscripción. Asegúrate de que el contenido haya terminado de descargarse.",
+        "workshopCharacterAddFailed": "No se pudo añadir la tarjeta de personaje: {{error}}",
         "configurePath": "Configurar ruta",
         "localModPathConfig": "Configuración de ruta de modificación local",
         "localModFolder": "Ruta de la carpeta de modificación local",
@@ -397,6 +419,7 @@
         "loadingItemDetailsById": "Cargando detalles para el ID del artículo: {{id}}...",
         "characterCardsRefreshed": "Lista de tarjetas de personaje actualizada, {{count}} tarjetas de personaje en total",
         "characterCardsRefreshedEmpty": "Lista de cartas de personaje actualizada, no hay cartas de personaje disponibles",
+        "characterCardsRefreshFailed": "Error al actualizar la lista: {{error}}",
         "requiredFieldsMissing": "Por favor complete los siguientes campos obligatorios: {{fields}}",
         "refreshLive2DPreview": "Actualizar vista previa de Live2D",
         "removeTag": "Quitar etiqueta",
@@ -532,7 +555,7 @@
         "steamNotRunningTitle": "El vapor no funciona",
         "steamNotRunningMessage": "El cliente Steam no se está ejecutando o no ha iniciado sesión.\n\nLas funciones de Workshop requieren el cliente Steam. Por favor:\n1. Descargue e instale el cliente Steam\n2. Inicie Steam e inicie sesión en su cuenta\n3. Reabrir esta página",
         "addNewCatgirl": "Añadir nuevo NEKO",
-        "noCardImage": "Haga clic aquí para configurar la tarjeta",
+        "noCardImage": "Cara de tarjeta aún no configurada",
         "searchCharacterCards": "Buscar tarjetas de personajes...",
         "cardView": "Vista de tarjetas",
         "listView": "Vista de lista"
@@ -1163,7 +1186,23 @@
             "modelDataNotReady": "Los datos internos del modelo no están listos",
             "managerNotFound": "Live2DManager no encontrado",
             "select": "Seleccionar",
-            "defaultClickAnim": "Animación de clic predeterminada"
+            "defaultClickAnim": "Animación de clic predeterminada",
+            "customAreaButton": "Área personalizada",
+            "customAreaTitle": "Área personalizada: {{name}}",
+            "newCustomAreaTitle": "Nueva área personalizada",
+            "editCustomAreaTitle": "Editar área personalizada",
+            "customAreaName": "Nombre del área",
+            "customAreaNameDefault": "Área personalizada {{index}}",
+            "saveCustomArea": "Guardar área",
+            "editCustomArea": "Editar",
+            "deleteCustomArea": "Eliminar",
+            "deleteCustomAreaConfirmTitle": "Eliminar área personalizada",
+            "deleteCustomAreaConfirm": "¿Eliminar el área personalizada \"{{name}}\"? También se quitarán sus movimientos y expresiones vinculados.",
+            "previewUnavailable": "La vista previa del área personalizada no está disponible",
+            "modelBoundsUnavailable": "No se pudieron leer los límites del modelo",
+            "selectAreaFirst": "Primero marca un área válida",
+            "customAreaCoveredByExisting": "Esta área está completamente cubierta por un área personalizada anterior",
+            "cancel": "Cancelar"
         },
         "emotionConfig": "Emociones",
         "saveSettings": "Guardar configuración",

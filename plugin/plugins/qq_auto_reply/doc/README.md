@@ -13,10 +13,10 @@ https://github.com/NapNeko/NapCatQQ/releases
 2. 启动NapCat，打开NapCat配置页
 3. 再左侧工具栏选择网络配置
 4. 添加WS服务器，并点击启用，之后保存
-1. 启动插件
-2. 返回一次
-3. 再打开本插件的面板
-4. 按引导顺序完成
+5. 启动插件
+6. 返回一次
+7. 再打开本插件的面板
+8. 按引导顺序完成
 
 当前流程说明：
 - 插件 `startup` 时会自动生成业务配置文件（如果还不存在）
@@ -64,6 +64,18 @@ https://github.com/NapNeko/NapCatQQ/releases
 | `trusted_groups` | array | 信任群聊列表，包含群号和权限等级 |
 | `normal_relay_probability` | float | 普通用户/普通群聊消息转述给管理员的概率 |
 | `truth_reply_probability` | float | `open` 群聊在未 @ 机器人的情况下触发直接回复的概率 |
+
+### 群聊里的概率字段
+
+`trusted_groups` 里的每个群除了 `group_id` 和 `level` 之外，还可以带两个可选概率字段：
+
+- `normal_relay_probability`：只对 `level = normal` 的群生效。群消息命中“转述给主人”路径时，会用这个值覆盖全局默认转述概率。
+- `open_reply_probability`：只对 `level = open` 的群生效。开放群里在没有 @ 机器人的情况下，会用这个值覆盖全局默认主动回复概率。
+
+说明：
+- 这两个字段都是 `0 ~ 1` 之间的小数。
+- 留空时会沿用全局配置里的默认值。
+- `trusted` 群不会使用这两个字段，因为 `trusted` 群只在 @ 机器人时直接进入正常回复逻辑。
 
 ## 权限等级
 

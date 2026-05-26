@@ -1993,6 +1993,83 @@ html #chat-container {
   background: rgba(74, 163, 223, 0.18);
 }
 
+[data-theme="dark"] .hitarea-btn-danger {
+  background: #d9534f;
+  color: #ffffff;
+}
+
+[data-theme="dark"] .hitarea-btn-danger:hover {
+  background: #c9433f;
+}
+
+[data-theme="dark"] .touch-confirm-message {
+  color: #e0e0e0;
+}
+
+[data-theme="dark"] .hitarea-icon-btn,
+[data-theme="dark"] .touch-custom-name-input {
+  background: #252525;
+  border-color: #3a5a6e;
+  color: #8dd1ff;
+}
+
+[data-theme="dark"] .hitarea-icon-btn:hover {
+  background: rgba(74, 163, 223, 0.18);
+  border-color: #4aa3df;
+}
+
+[data-theme="dark"] .hitarea-icon-btn-danger {
+  color: #ff8a8a;
+}
+
+[data-theme="dark"] .touch-custom-name-input:focus {
+  border-color: #4aa3df;
+  box-shadow: 0 0 0 3px rgba(74, 163, 223, 0.22);
+}
+
+[data-theme="dark"] .touch-custom-preview-wrap {
+  border-color: #3a5a6e;
+  background-color: #111b24;
+  background-image:
+    linear-gradient(rgba(141, 209, 255, 0.22) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(141, 209, 255, 0.22) 1px, transparent 1px),
+    linear-gradient(rgba(141, 209, 255, 0.09) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(141, 209, 255, 0.09) 1px, transparent 1px);
+  background-size: 100px 100px, 100px 100px, 20px 20px, 20px 20px;
+  background-position: 0 0;
+}
+
+[data-theme="dark"] .touch-custom-model-bounds {
+  border-color: rgba(141, 209, 255, 0.7);
+}
+
+[data-theme="dark"] .touch-custom-selection {
+  border-color: #5cb8f0;
+  background: rgba(74, 163, 223, 0.10);
+  box-shadow: 0 0 0 1px rgba(10, 20, 28, 0.8) inset;
+}
+
+[data-theme="dark"] .touch-custom-selection.is-editing {
+  background: rgba(74, 163, 223, 0.16);
+}
+
+[data-theme="dark"] .touch-custom-hover-label {
+  background: rgba(30, 38, 45, 0.94);
+  border-color: rgba(141, 209, 255, 0.58);
+  color: #e0e0e0;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.42);
+}
+
+[data-theme="dark"] .touch-custom-resize-handle {
+  background: #1e1e1e;
+  border-color: #8dd1ff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+
+[data-theme="dark"] .touch-custom-status {
+  color: #ff8a8a;
+}
+
 /* ===== Live2D 参数编辑器（Face Editor / Parameters） =====
    参数列表卡片、搜索框、下拉框、参数项的暗色覆盖。
    #reset-all-btn / #save-btn 使用图片背景，已在前面规则保持原样不被覆盖。 */

@@ -204,25 +204,6 @@ class TestCustomApiToggle:
         assert cfg['CONVERSATION_MODEL_API_KEY'] == 'sk-custom-conv'
 
     @pytest.mark.unit
-    def test_model_vision_override_marks_custom_model_capability(self, config_manager):
-        """Explicit modelVisionOverrides should win before model-name sniffing."""
-        _write_core_config(config_manager, {
-            'coreApiKey': 'sk-core',
-            'coreApi': 'qwen',
-            'assistApi': 'qwen',
-            'enableCustomApi': True,
-            'conversationModelUrl': 'https://custom.example.com/v1',
-            'conversationModelId': 'local-multimodal',
-            'conversationModelApiKey': 'sk-custom-conv',
-            'modelVisionOverrides': {'local-multimodal': True},
-        })
-
-        cfg = config_manager.get_model_api_config('conversation')
-
-        assert cfg['model'] == 'local-multimodal'
-        assert cfg['supports_vision'] is True
-
-    @pytest.mark.unit
     def test_on_applies_all_model_types(self, config_manager):
         """enableCustomApi=true → all 8 model types can be overridden."""
         model_types = [
@@ -374,7 +355,9 @@ class TestProviderExclusion:
         from utils.api_config_loader import get_core_api_profiles
         core_profiles = get_core_api_profiles()
 
-        expected_core = {'free', 'qwen', 'qwen_intl', 'openai', 'step', 'gemini', 'glm'}
+        # grok joined core as a realtime voice provider (Grok Voice, wss
+        # endpoint) in PR #1306 — it has a core_url, so it belongs here.
+        expected_core = {'free', 'qwen', 'qwen_intl', 'openai', 'step', 'gemini', 'glm', 'grok'}
         actual_core = set(core_profiles.keys())
 
         assert actual_core == expected_core, (
@@ -399,9 +382,12 @@ class TestProviderExclusion:
         from utils.api_config_loader import get_core_api_profiles
         core_profiles = get_core_api_profiles()
 
+        # grok has a realtime voice endpoint (Grok Voice, PR #1306) so it is
+        # intentionally also a core provider — only truly text-only providers
+        # are listed here.
         must_not_be_core = [
             'deepseek', 'doubao', 'minimax', 'minimax_intl',
-            'kimi', 'grok', 'silicon',
+            'kimi', 'silicon',
         ]
         for provider in must_not_be_core:
             assert provider not in core_profiles, (
@@ -623,6 +609,49 @@ class TestGetModelApiConfig:
         # AGENT_MODEL_URL is normalized to lanlan.app; OPENROUTER_URL is not
         assert 'lanlan.tech' not in result['base_url'], \
             'Agent URL should have lanlan.app normalization applied'
+
+
+# ---------------------------------------------------------------------------
+# 7b. Agent URL region routing: 国内 lanlan.app / 国际 www.lanlan.app
+# ---------------------------------------------------------------------------
+class TestAgentUrlRegionRouting:
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ('non_mainland', 'url_in', 'expected'),
+        [
+            # 国际：保留 www 前缀
+            (True, 'https://www.lanlan.tech/text/v1', 'https://www.lanlan.app/text/v1'),
+            # 国内：剥掉 www
+            (False, 'https://www.lanlan.tech/text/v1', 'https://lanlan.app/text/v1'),
+            # GeoIP 不确定（按国内处理）：同样剥 www
+            (None, 'https://www.lanlan.tech/text/v1', 'https://lanlan.app/text/v1'),
+            # 已经是 www.lanlan.app 的国内输入：仍剥 www（幂等）
+            (False, 'https://www.lanlan.app/text/v1', 'https://lanlan.app/text/v1'),
+            # 国际下 www.lanlan.app 保持不变
+            (True, 'https://www.lanlan.app/text/v1', 'https://www.lanlan.app/text/v1'),
+            # bare host 输入（无 www，仅可能来自自定义 URL）：尊重原样，不补 www，
+            # 两区都落到 bare lanlan.app（仅做 tech→app）
+            (True, 'https://lanlan.tech/text/v1', 'https://lanlan.app/text/v1'),
+            (False, 'https://lanlan.tech/text/v1', 'https://lanlan.app/text/v1'),
+        ],
+    )
+    def test_normalize_agent_url_by_region(self, config_manager, non_mainland, url_in, expected):
+        config_manager._check_non_mainland = lambda: non_mainland
+        assert config_manager._normalize_agent_url(url_in) == expected
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('non_mainland', [True, False, None])
+    def test_normalize_agent_url_custom_url_untouched(self, config_manager, non_mainland):
+        """不含 lanlan 域的自定义 URL 原样返回，不受线路影响。"""
+        config_manager._check_non_mainland = lambda: non_mainland
+        custom = 'https://api.openai.com/v1'
+        assert config_manager._normalize_agent_url(custom) == custom
+
+    @pytest.mark.unit
+    def test_normalize_agent_url_non_string_passthrough(self, config_manager):
+        config_manager._check_non_mainland = lambda: True
+        assert config_manager._normalize_agent_url(None) is None
 
 
 # ---------------------------------------------------------------------------

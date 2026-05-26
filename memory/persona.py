@@ -2239,6 +2239,10 @@ class PersonaManager:
                         continue
                     new_attempts = safe_int_field(e, 'refine_attempts') + 1
                     e['refine_attempts'] = new_attempts
+                    # 戳失败时刻供 dead-letter 时间自愈（cooldown_elapsed）：
+                    # 一次性 correction 模型宕机把 entry 顶到 MAX 后，过 5h 冷却
+                    # 重新进候选 probe，避免宕机恢复后仍永久冻结。
+                    e['last_refine_attempt_at'] = datetime.now().isoformat()
                     modified = True
                     if new_attempts == MEMORY_LIVENESS_MAX_ATTEMPTS:
                         logger.warning(

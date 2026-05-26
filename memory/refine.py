@@ -103,11 +103,10 @@ ApplyFn = Callable[[list[dict], list[dict], str], Awaitable[set[str]]]
 
 # Manager-supplied failure callback signature.
 # Args: cluster (annotated entries), cluster_hash.
-# Triggered ONLY when ``_resolve_cluster`` returns False (LLM 输出空 /
-# parse 失败 / 非 list 等 LLM-decision 持续性问题)。**Exception 路径不调**
-# ——`_resolve_cluster` 内部 `await apply_fn(...)` 的 manager 端持久化异常
-# （cloudsave 维护态 / atomic_write IO / 锁竞争）+ LLM 网络 transient
-# 都按 transient 处理，不触发该回调（Codex P1 round-3 on PR #1412）。
+# Triggered when ``_resolve_cluster`` returns False（LLM 输出空 / parse 失败 /
+# 非 list）**或**抛异常（LLM 超时 / apply_fn 持久化异常等）。先前只在 False
+# 时调、异常按 transient 不计（Codex P1 round-3 on PR #1412），但持续性故障
+# （模型快照下线一直超时）那样会变成每 30min 无限重打；现在异常也计入预算。
 # Manager bumps ``refine_attempts`` on each non-fact cluster member (and
 # saves persona/reflection file), so the next refine pass can filter
 # out entries that have repeatedly failed (Site 4 liveness 兜底)。
@@ -141,15 +140,19 @@ class MemoryRefineEngine:
 
         Embedding 不可用 → 返回零计数，no-op。
 
-        ``failure_fn``: 可选回调，**仅在** ``_resolve_cluster`` 返 False（LLM
-        输出空 / parse 失败 / 非 list 等 LLM-decision 持续性问题）时调用，
-        传入 ``(cluster, cluster_hash)``。Exception 路径按 transient 不调
-        回调——apply_fn 持久化失败 (cloudsave / IO / 锁) + LLM 网络瞬态
-        都属于跟 cluster 内容无关的瞬时故障，不该让 entry refine_attempts
-        被冤枉计数 (Codex P1 round-3 on PR #1412)。Manager 在回调里 bump
-        ``refine_attempts`` 字段做 liveness 兜底——同 cluster 反复 LLM 失败
-        N 次后 manager 在下次候选 gather 时把成员过滤掉，避免毒 cluster
-        持续占用 starvation-first ordering 第一名空跑 LLM。
+        ``failure_fn``: 可选回调，在 ``_resolve_cluster`` 返 False（LLM 输出
+        空 / parse 失败 / 非 list）**或** 抛异常（LLM 超时 / apply_fn 持久化
+        失败等）时都调用，传入 ``(cluster, cluster_hash)``。Manager 在回调里
+        bump ``refine_attempts``，达 N 次后下次候选 gather 把成员过滤掉。
+
+        为什么异常路径也计数（修正先前 Codex P1 round-3 on PR #1412 的设计）：
+        原本把异常按"瞬态、不计数"处理，怕单次网络/IO 抖动冤枉具体 entry。
+        但当"瞬态"其实是**持续性**的——correction 模型快照下线一直超时、
+        cloudsave 卡维护态、FS 只读——这条不计数路径就变成无限重试风暴，
+        每 30min 把同一个毒 cluster 原样重打 LLM 永不放弃。N=
+        ``MEMORY_LIVENESS_MAX_ATTEMPTS`` 的预算足够跨过偶发抖动（要连续
+        失败才 dead-letter），且 cluster 内容一变 hash 就变、attempts 随
+        新成员天然复位，所以持续故障收敛、偶发抖动无损。
         """
         zero = {
             'clusters_seen': 0,
@@ -196,14 +199,11 @@ class MemoryRefineEngine:
         resolved = 0
         failed = 0
         for entity, cluster, cluster_hash in to_process:
-            # 只在 ``_resolve_cluster`` 返 False 时 bump refine_attempts
-            # （= LLM 输出空 / parse 失败 / 非 list 等持续性问题，跟 cluster
-            # 内容相关）。raise 路径不 bump（Codex P1）——抓不到的异常来源
-            # 不确定，可能是 ``apply_fn`` 的 manager 端持久化 transient
-            # （cloudsave 维护态 / atomic_write IO / 锁竞争）或 LLM 网络
-            # transient，把这类错算到 cluster 成员的 refine_attempts 上会
-            # 让磁盘 / 锁瞬态错误冤枉具体 entry，触发非必要 dead-letter。
-            llm_decision_failed = False
+            # _resolve_cluster 返 False（LLM 输出空 / parse 失败 / 非 list）
+            # 或抛异常（LLM 超时 / apply_fn 持久化失败）都 bump refine_attempts。
+            # 持续性故障必须计入预算才能 dead-letter（见函数 docstring）；偶发
+            # 抖动靠 N 次预算 + cluster 内容变即复位兜住，不会冤枉。
+            cluster_failed = False
             try:
                 ok = await self._resolve_cluster(
                     entity, cluster, cluster_hash, apply_fn,
@@ -212,14 +212,15 @@ class MemoryRefineEngine:
                     resolved += 1
                 else:
                     failed += 1
-                    llm_decision_failed = True
+                    cluster_failed = True
             except Exception as e:  # noqa: BLE001 — refine is best-effort
                 failed += 1
+                cluster_failed = True
                 logger.warning(
                     f"[Refine] {scope_label} cluster {cluster_hash} 异常"
-                    f"（按 transient 不计 refine_attempts）: {e}"
+                    f"（计入 refine_attempts）: {e}"
                 )
-            if llm_decision_failed and failure_fn is not None:
+            if cluster_failed and failure_fn is not None:
                 try:
                     await failure_fn(cluster, cluster_hash)
                 except Exception as fe:  # noqa: BLE001 — failure_fn 是兜底，自己再失败也不该挂主路径

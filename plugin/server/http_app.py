@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import faulthandler
+import importlib
 import os
 import signal
 import threading
@@ -45,6 +46,26 @@ else:
 
 def _can_register_faulthandler_signal() -> bool:
     return hasattr(faulthandler, "register") and hasattr(signal, "SIGUSR1")
+
+
+def _include_optional_router(app: FastAPI, module_name: str, description: str) -> None:
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as exc:
+        logger.warning(
+            "{} unavailable, endpoints will be 404: err_type={}, err={}",
+            description,
+            type(exc).__name__,
+            str(exc),
+        )
+        return
+
+    router = getattr(module, "router", None)
+    if router is None:
+        logger.warning("{} unavailable, endpoints will be 404: missing router", description)
+        return
+
+    app.include_router(router)
 
 
 @asynccontextmanager
@@ -168,33 +189,20 @@ def build_plugin_server_app(title: str = "N.E.K.O User Plugin Server") -> FastAP
     app.include_router(frontend_router)
     app.include_router(websocket_router)
     app.include_router(plugin_ui_router)
-    # galgame_plugin install routes 是可选模块：plugin import-time 副作用
-    # （缺 dxcam / tesseract / textractor 等可选依赖、非 Windows 运行时等）不应让
-    # 整个 plugin server 启动失败；失败时只让 install 端点返回 404。
-    try:
-        from plugin.plugins.galgame_plugin.install_routes import (
-            router as galgame_install_router,
-        )
-        app.include_router(galgame_install_router)
-    except ImportError as exc:
-        logger.warning(
-            "galgame install routes unavailable, install endpoints will be 404: "
-            "err_type={}, err={}",
-            type(exc).__name__,
-            str(exc),
-        )
-    # bilibili_danmaku 插件 i18n / 测试接口
-    try:
-        from plugin.plugins.bilibili_danmaku.i18n_routes import (
-            router as bilibili_i18n_router,
-        )
-        app.include_router(bilibili_i18n_router)
-    except ModuleNotFoundError as exc:
-        logger.warning(
-            "bilibili i18n routes unavailable: err_type={}, err={}",
-            type(exc).__name__,
-            str(exc),
-        )
+
+    # Built-in plugin routes are optional. In AppImage/Nuitka builds,
+    # ``plugin.plugins`` can be intentionally excluded, and optional plugin
+    # import-time failures must not prevent the base plugin server from starting.
+    _include_optional_router(
+        app,
+        "plugin.plugins.galgame_plugin.install_routes",
+        "galgame install routes",
+    )
+    _include_optional_router(
+        app,
+        "plugin.plugins.bilibili_danmaku.i18n_routes",
+        "bilibili i18n routes",
+    )
     app.include_router(plugin_cli_router)
     app.include_router(llm_tools_router)
     return app
