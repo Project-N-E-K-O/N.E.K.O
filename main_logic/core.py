@@ -3980,19 +3980,22 @@ class LLMSessionManager:
             # audio 会话根本没起（CodeRabbit）。跨模式时维持原静默 return（与改动前
             # 完全一致，不更差）。
             if (self._starting_input_mode or input_mode) == input_mode:
-                logger.warning("⚠️ Session正在启动中，等待 in-flight 启动 ready 后给本请求补发 session_started")
+                logger.warning("⚠️ Session正在启动中，等 in-flight 启动落定后给本请求补发 session_started")
+                # 等 in-flight 那次启动**自己落定**（_starting_session_count 归 0）。
+                # 不拿 session_ready 当谓词：它可能还残留上一个 session 的 True
+                # （in-flight start 要过几个 await 才把它重置），那样循环会被直接
+                # 跳过、在 in-flight 还没真正起好时就误发 started 假阳性（Codex P1）。
+                # 20s 仅为防 in-flight 异常永不归零的兜底安全阀，非功能时序。
                 _waited = 0.0
-                while self._starting_session_count > 0 and not self.session_ready and _waited < 14.0:
+                while self._starting_session_count > 0 and _waited < 20.0:
                     await asyncio.sleep(0.05)
                     _waited += 0.05
-                if self.session_ready and self.session and self.is_active:
+                # in-flight 落定后看**真实状态**：起好了才补发 session_started（与
+                # in-flight 自身发的那条幂等，前端 resolver 一次性）。**不**发
+                # session_failed——in-flight 可能仍在跑/或其失败路径已通知前端，过早
+                # 发 failed 会被前端当终态打断本会成功的启动（Codex 前一条 P1）。
+                if self.session and self.is_active:
                     await self.send_session_started(input_mode)
-                # 仅在 in-flight 启动确认 ready 时补发 session_started。**不**在此发
-                # session_failed：in-flight 那次启动可能还在跑、稍后才成功，而前端把
-                # session_failed 当终态（reject start + 触发 end_session），过早发会把
-                # 本会在 15s 客户端窗口内成功的启动打断（Codex P1）。失败通知交由
-                # in-flight 启动自身的失败路径处理；in-flight 真挂了则维持原有的前端
-                # 超时兜底，不比改动前更差。
             else:
                 logger.warning("⚠️ Session正在启动中（跨模式重复请求），忽略")
             return
