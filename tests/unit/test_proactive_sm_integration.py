@@ -286,8 +286,10 @@ async def test_voice_mode_server_rejection_re_enqueues_cb():
 
 
 async def test_voice_mode_not_implemented_falls_back_to_hot_swap():
-    """Voice 模式（Gemini/Qwen 抛 NotImplementedError）：drop proactive cb，
-    走现有 hot-swap 路径（pending_extra_replies 保留供下一 hot-swap 注入）。"""
+    """Voice 模式（Gemini Live 抛 NotImplementedError）：drop proactive cb，
+    走现有 hot-swap 路径（pending_extra_replies 保留供下一 hot-swap 注入）。
+    注：Qwen 经实测支持 conversation.item.create 文本注入，已不再走此 fallback；
+    Gemini Live 用独立 SDK（send_client_content）仍走这里。"""
     from main_logic.omni_realtime_client import OmniRealtimeClient
 
     class _VoiceSess(OmniRealtimeClient):

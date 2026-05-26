@@ -5620,7 +5620,7 @@ class LLMSessionManager:
                     instruction, on_rejected=_on_voice_inject_rejected
                 )
             except NotImplementedError:
-                # Provider doesn't support manual inject (Gemini Live / Qwen).
+                # Provider doesn't support manual inject (Gemini Live).
                 # Fall through to the legacy hot-swap path: drop the proactive
                 # cbs so they don't loop forever, but keep ``pending_extra_replies``
                 # populated for the next user-turn prime_context() drain.

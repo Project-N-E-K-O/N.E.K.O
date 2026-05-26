@@ -1666,15 +1666,14 @@ class OmniRealtimeClient:
         it to put the optimistically-pruned cb back in the queue.
 
         Provider dispatch:
-          - **OpenAI / GLM / Step / free / GPT**: ``conversation.item.create``
-            (role=user, input_text) + ``response.create``. Uses user role
-            rather than system to avoid permanent drift of session
-            instruction context — the rendered body already self-identifies
-            as a system notification via its ``======[系统通知]======``
-            header wrapper.
-          - **Qwen**: does not accept ``conversation.item.create`` — raises
-            ``NotImplementedError`` so the caller can fall back to the
-            hot-swap path.
+          - **OpenAI / GLM / Step / free / GPT / Qwen**:
+            ``conversation.item.create`` (role=user, input_text) +
+            ``response.create``. Uses user role rather than system to avoid
+            permanent drift of session instruction context — the rendered
+            body already self-identifies as a system notification via its
+            ``======[系统通知]======`` header wrapper. (Qwen included: the
+            Aliyun doc claiming function_call_output-only is stale for
+            qwen3.5-omni-flash-realtime; verified live.)
           - **Gemini Live**: protocol does not model a "fire response now
             without a user turn" primitive cleanly — raises
             ``NotImplementedError`` so the caller can fall back.
@@ -1689,11 +1688,13 @@ class OmniRealtimeClient:
                 "Gemini Live does not support proactive inject_text_and_request_response; "
                 "fall back to hot-swap"
             )
-        if "qwen" in self._model_lower:
-            raise NotImplementedError(
-                "Qwen Realtime does not accept conversation.item.create; "
-                "fall back to hot-swap"
-            )
+        # NOTE on Qwen: the Aliyun realtime doc states conversation.item.create
+        # "currently only supports function_call_output items". That is stale
+        # for qwen3.5-omni-flash-realtime — empirically it accepts a
+        # ``role=user`` ``input_text`` message item and responds to it (no
+        # error event), identical to OpenAI / GLM / Step. Verified live against
+        # the dashscope realtime endpoint. So Qwen takes the same path below;
+        # do NOT re-add a Qwen exclusion without re-checking the live API.
         if self.ws is None:
             raise RuntimeError("realtime websocket is not connected")
 
