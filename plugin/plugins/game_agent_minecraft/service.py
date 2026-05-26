@@ -378,7 +378,7 @@ class GameAgentService:
         # for an in-game action and the dialog LLM responds with chat
         # only (no function call) leaves the plugin in a state where
         # nudge fires never trigger — _last_task_finished_at stays 0,
-        # keep_going's ``> 0`` guard fails, and Kuro stands still with
+        # keep_going's ``> 0`` guard fails, and Neko stands still with
         # no self-prompt to push her into actually dispatching.
         self._last_task_finished_at = time.time()
         self._log_info("started, ws_url={}", self._ws_url)

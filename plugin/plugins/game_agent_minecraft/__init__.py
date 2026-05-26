@@ -101,7 +101,7 @@ MINECRAFT_TASK_DESCRIPTION = (
     "reasons. **CRITICAL**: when a 'busy' response comes back AND the user "
     "is actively correcting you, you MUST re-invoke with overwrite=true on "
     "the same turn — silently accepting busy while the user is asking for "
-    "a change leaves Kuro standing still doing the wrong thing.\n\n"
+    "a change leaves Neko standing still doing the wrong thing.\n\n"
     "When the cue includes a 『背包』 line, that is the character's actual "
     "inventory after the action — items not in that line don't exist; do "
     "not narrate items the line doesn't show."
@@ -274,7 +274,7 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
         Without eager-start at all, user-reported symptom: 75+s of dead
         air between "go chop trees" → dialog LLM chats but doesn't call
         ``minecraft_task`` → plugin process never wakes service → nudge
-        loop never starts → no self-prompt → Kuro stands still until
+        loop never starts → no self-prompt → Neko stands still until
         the user prods her into a second turn and analyzer finally
         lands on ``game_agent_status``.
         """
