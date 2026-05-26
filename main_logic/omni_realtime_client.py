@@ -717,6 +717,13 @@ class OmniRealtimeClient:
         if self.turn_detection_mode not in (TurnDetectionMode.MANUAL, TurnDetectionMode.SERVER_VAD):
             raise ValueError(f"Invalid turn detection mode: {self.turn_detection_mode}")
 
+        # [ISSUE4c] Reset the tool-call flood window on every (re)connect. The
+        # same OmniRealtimeClient instance is reused across sessions, so stale
+        # timestamps from a previous connection must not carry over and make the
+        # new session's first tool calls look like a burst. Cleared before the
+        # provider branch so it covers both Gemini and the WS providers.
+        self._recent_tool_call_times = []
+
         # Gemini uses google-genai SDK, not raw WebSocket
         if self._is_gemini:
             await self._connect_gemini(instructions, native_audio)

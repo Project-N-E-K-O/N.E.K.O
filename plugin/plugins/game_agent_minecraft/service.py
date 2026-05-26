@@ -1405,8 +1405,14 @@ class GameAgentService:
             _KEEP_GOING_AFTER, _KEEP_GOING_COOLDOWN,
             self._system_prompt_interval,
         )
-        try:
-            while True:
+        # [ISSUE4a] Per-iteration try/except (NOT a recursive restart): a single
+        # tick raising used to fall through and RETURN, killing self-prompt for
+        # the rest of the session. We catch each iteration, log, briefly pause to
+        # avoid hot-spin, and CONTINUE the same loop — iterative, so a persistent
+        # exception can never grow the call stack into RecursionError. Only
+        # CancelledError exits cleanly.
+        while True:
+            try:
                 await asyncio.sleep(0.5)
                 now = time.time()
 
@@ -1463,24 +1469,17 @@ class GameAgentService:
                 )
                 await self._fire_system_prompt()
                 self._last_system_prompt_time = time.time()
-        except asyncio.CancelledError:
-            return
-        except Exception as exc:
-            # [ISSUE4a] Backstop: previously an unhandled exception here let the
-            # loop fall through and RETURN — self-prompt then stayed dead for the
-            # rest of the session. For an autonomous companion that's the worst
-            # failure mode. Log, pause briefly to avoid hot-spin, and restart the
-            # loop so self-prompt never dies permanently. (CancelledError above
-            # is the only clean exit.)
-            self._log_error(
-                "system prompt loop crashed; restarting in 2s: {}: {}",
-                type(exc).__name__, exc,
-            )
-            try:
-                await asyncio.sleep(2.0)
             except asyncio.CancelledError:
                 return
-            await self._system_prompt_loop()
+            except Exception as exc:
+                self._log_error(
+                    "system prompt loop iteration failed (continuing): {}: {}",
+                    type(exc).__name__, exc,
+                )
+                try:
+                    await asyncio.sleep(2.0)
+                except asyncio.CancelledError:
+                    return
 
     async def _fire_in_progress_nudge(self) -> None:
         """Push a "what are you feeling right now?" prompt + latest

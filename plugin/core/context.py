@@ -1039,6 +1039,10 @@ class PluginContext:
                                             canonical.get("ai_behavior"), canonical.get("priority"),
                                         )
                                 except Exception:
+                                    # This is a best-effort diagnostic on the hot
+                                    # backpressure path; a logging failure (rotation
+                                    # race, bad arg) must never propagate and turn a
+                                    # dropped-cue observation into a real crash.
                                     pass
                                 # Backpressure: do not fall back to control-plane (it will amplify overload).
                                 try:
