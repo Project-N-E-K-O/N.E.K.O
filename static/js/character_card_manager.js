@@ -9930,7 +9930,9 @@ function renderMasterForm(master) {
         // textarea自动调整
         _panelAttachTextareaAutoResize(textarea);
         // 自动保存和变化监听
-        attachAutoSaveListener(textarea, 'master');
+        if (hasMasterProfileName) {
+            attachAutoSaveListener(textarea, 'master');
+        }
         textarea.addEventListener('input', showMasterActionButtons);
         textarea.addEventListener('change', showMasterActionButtons);
     });
@@ -9989,6 +9991,11 @@ function showMasterActionButtons() {
     const cancelBtn = form.querySelector('#cancel-master-btn');
     if (saveBtn) saveBtn.style.display = '';
     if (cancelBtn) cancelBtn.style.display = '';
+}
+
+function hasMasterFormProfileName(form) {
+    const nameInput = form?.querySelector('input[name="档案名"]');
+    return !!normalizeCharacterFieldName(nameInput?.value || '');
 }
 
 async function saveMasterForm() {
@@ -10062,6 +10069,7 @@ function attachAutoSaveListener(input, type, catgirlName) {
 async function autoSaveMasterField(input) {
     const form = input.closest('form');
     if (!form || form.id !== 'master-form') return;
+    if (!hasMasterFormProfileName(form)) return;
     const fieldName = normalizeCharacterFieldName(input.name);
     if (!fieldName) return;
     if (fieldName === '档案名') return;
@@ -10202,7 +10210,9 @@ async function addMasterField() {
 
     form.insertBefore(wrapper, form.querySelector('.btn-area'));
     _panelAttachTextareaAutoResize(textarea);
-    attachAutoSaveListener(textarea, 'master');
+    if (hasMasterFormProfileName(form)) {
+        attachAutoSaveListener(textarea, 'master');
+    }
     textarea.addEventListener('input', showMasterActionButtons);
     textarea.addEventListener('change', showMasterActionButtons);
     textarea.focus();
