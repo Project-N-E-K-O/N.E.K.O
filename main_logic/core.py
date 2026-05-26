@@ -5620,10 +5620,15 @@ class LLMSessionManager:
                     instruction, on_rejected=_on_voice_inject_rejected
                 )
             except NotImplementedError:
-                # Provider doesn't support manual inject (Gemini Live).
-                # Fall through to the legacy hot-swap path: drop the proactive
-                # cbs so they don't loop forever, but keep ``pending_extra_replies``
-                # populated for the next user-turn prime_context() drain.
+                # Defensive fallback. As of now every realtime provider
+                # (OpenAI / GLM / Step / free / GPT / Qwen / Grok via
+                # conversation.item.create, Gemini via send_client_content)
+                # supports manual inject, so this branch is unreachable in
+                # practice — kept so a hypothetical future provider that
+                # raises NotImplementedError degrades to hot-swap instead of
+                # losing the cb. Drop the proactive cbs so they don't loop
+                # forever, but keep ``pending_extra_replies`` populated for the
+                # next user-turn prime_context() drain.
                 voice_ids = {id(cb) for cb in voice_snapshot}
                 self.pending_agent_callbacks = [
                     cb for cb in self.pending_agent_callbacks

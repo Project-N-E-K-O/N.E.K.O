@@ -1600,29 +1600,41 @@ class OmniRealtimeClient:
         logger.info("Creating response with user message")
         await self.send_event({"type": "response.create"})
     
+    async def _gemini_send_user_turn(self, text: str) -> None:
+        """Inject ``text`` as a Gemini user turn and trigger a response via
+        ``send_client_content(turn_complete=True)``.
+
+        This is Gemini Live's idiomatic equivalent of OpenAI-Realtime's
+        ``conversation.item.create(role=user) + response.create``. Shared by
+        ``_create_response_gemini`` (hot-swap priming — tolerates errors) and
+        ``inject_text_and_request_response`` (proactive — must propagate
+        errors so the caller can re-queue). Errors propagate here; callers
+        that need to swallow wrap it.
+        """
+        from google.genai import types as genai_types
+
+        content = genai_types.Content(
+            parts=[genai_types.Part(text=text)],
+            role="user",
+        )
+        await self._gemini_session.send_client_content(
+            turns=[content],
+            turn_complete=True,
+        )
+
     async def _create_response_gemini(self, instructions: str) -> None:
         """Send text content to Gemini and trigger response."""
         if not self._gemini_session:
             logger.warning("Gemini session not available for create_response")
             return
-        
+
         # 跳过空内容的发送，避免预热时污染 Gemini 对话历史
         if not instructions or not instructions.strip():
             logger.info("Gemini: skipping empty content (warmup or empty message)")
             return
-        
-        try:
-            # Gemini 使用 send_client_content 发送文本
-            from google.genai import types as genai_types
 
-            content = genai_types.Content(
-                parts=[genai_types.Part(text=instructions)],
-                role="user"
-            )
-            await self._gemini_session.send_client_content(
-                turns=[content],
-                turn_complete=True
-            )
+        try:
+            await self._gemini_send_user_turn(instructions)
             logger.info("Gemini: sent client content, waiting for response")
         except Exception as e:
             logger.error(f"Error sending client content to Gemini: {e}")
@@ -1665,8 +1677,9 @@ class OmniRealtimeClient:
         client-side id we stamp on ``response.create``. The caller can use
         it to put the optimistically-pruned cb back in the queue.
 
-        Provider dispatch:
-          - **OpenAI / GLM / Step / free / GPT / Qwen**:
+        Provider dispatch (all realtime providers supported — symmetric with
+        ``create_response``):
+          - **OpenAI / GLM / Step / free / GPT / Qwen / Grok**:
             ``conversation.item.create`` (role=user, input_text) +
             ``response.create``. Uses user role rather than system to avoid
             permanent drift of session instruction context — the rendered
@@ -1674,9 +1687,11 @@ class OmniRealtimeClient:
             ``======[系统通知]======`` header wrapper. (Qwen included: the
             Aliyun doc claiming function_call_output-only is stale for
             qwen3.5-omni-flash-realtime; verified live.)
-          - **Gemini Live**: protocol does not model a "fire response now
-            without a user turn" primitive cleanly — raises
-            ``NotImplementedError`` so the caller can fall back.
+          - **Gemini Live**: ``send_client_content(turn_complete=True)`` via
+            the shared ``_gemini_send_user_turn`` helper — Gemini's idiomatic
+            inject+trigger. No ``on_rejected`` async ack (Gemini has no
+            ``response.create`` error-event channel); failures raise
+            synchronously here so the caller's ``except`` branch re-queues.
         """
         if self._fatal_error_occurred:
             raise RuntimeError("realtime session has fatal_error_occurred set")
@@ -1684,10 +1699,14 @@ class OmniRealtimeClient:
             return
 
         if self._is_gemini:
-            raise NotImplementedError(
-                "Gemini Live does not support proactive inject_text_and_request_response; "
-                "fall back to hot-swap"
-            )
+            # Symmetric with create_response → _create_response_gemini.
+            # send_client_content(turn_complete=True) injects a user turn and
+            # triggers a response. Errors propagate (unlike the swallowing
+            # _create_response_gemini wrapper) so the caller keeps the cb.
+            if self._gemini_session is None:
+                raise RuntimeError("Gemini session not available for proactive inject")
+            await self._gemini_send_user_turn(text)
+            return
         # NOTE on Qwen: the Aliyun realtime doc states conversation.item.create
         # "currently only supports function_call_output items". That is stale
         # for qwen3.5-omni-flash-realtime — empirically it accepts a

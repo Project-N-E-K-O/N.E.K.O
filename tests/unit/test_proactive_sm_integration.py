@@ -286,10 +286,12 @@ async def test_voice_mode_server_rejection_re_enqueues_cb():
 
 
 async def test_voice_mode_not_implemented_falls_back_to_hot_swap():
-    """Voice 模式（Gemini Live 抛 NotImplementedError）：drop proactive cb，
-    走现有 hot-swap 路径（pending_extra_replies 保留供下一 hot-swap 注入）。
-    注：Qwen 经实测支持 conversation.item.create 文本注入，已不再走此 fallback；
-    Gemini Live 用独立 SDK（send_client_content）仍走这里。"""
+    """Voice 模式 defensive fallback：若某 provider 抛 NotImplementedError，
+    drop proactive cb，走现有 hot-swap 路径（pending_extra_replies 保留供下一
+    hot-swap 注入）。注：现役 provider 全部支持 manual inject（含 Qwen 走
+    conversation.item.create、Gemini 走 send_client_content），此分支实际已
+    unreachable，仅为未来 provider 兜底——用一个显式抛 NotImplementedError 的
+    假 session 验证兜底逻辑仍正确。"""
     from main_logic.omni_realtime_client import OmniRealtimeClient
 
     class _VoiceSess(OmniRealtimeClient):
@@ -312,6 +314,54 @@ async def test_voice_mode_not_implemented_falls_back_to_hot_swap():
 
     assert mgr.pending_agent_callbacks == []  # proactive cb dropped
     assert mgr.pending_extra_replies  # hot-swap channel preserved
+
+
+async def test_inject_gemini_routes_through_send_client_content():
+    """对偶性回归：inject_text_and_request_response 对 Gemini 也支持（走
+    send_client_content(turn_complete=True)），与 create_response →
+    _create_response_gemini 对称，不再抛 NotImplementedError。直接调真实
+    OmniRealtimeClient.inject_text_and_request_response（绕过 SM），验证它
+    把文本作为 user turn 注入并 turn_complete=True 触发响应。"""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    sent = {}
+
+    class _FakeGeminiSession:
+        async def send_client_content(self, *, turns, turn_complete):
+            sent["turns"] = turns
+            sent["turn_complete"] = turn_complete
+
+    sess = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    sess._fatal_error_occurred = False
+    sess._is_gemini = True
+    sess._gemini_session = _FakeGeminiSession()
+
+    # google.genai types 在测试环境不一定可用 —— 若缺则跳过（CI 装了 SDK 会跑）
+    try:
+        import google.genai  # noqa: F401
+    except Exception:
+        import pytest
+        pytest.skip("google-genai SDK not installed in this env")
+
+    await OmniRealtimeClient.inject_text_and_request_response(sess, "（系统通知）任务完成了。")
+
+    assert sent.get("turn_complete") is True
+    assert sent.get("turns") is not None
+
+
+async def test_inject_gemini_missing_session_raises():
+    """Gemini session 不可用时 inject 必须 raise（让 caller 保留 cb），
+    不能静默成功。"""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    sess = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    sess._fatal_error_occurred = False
+    sess._is_gemini = True
+    sess._gemini_session = None
+
+    import pytest
+    with pytest.raises(RuntimeError):
+        await OmniRealtimeClient.inject_text_and_request_response(sess, "x")
 
 
 async def test_voice_mode_inject_exception_keeps_cbs_for_retry():
