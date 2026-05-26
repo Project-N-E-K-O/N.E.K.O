@@ -398,12 +398,11 @@ async def test_inject_gemini_routes_through_send_client_content():
     sess._is_gemini = True
     sess._gemini_session = _FakeGeminiSession()
 
-    # google.genai types 在测试环境不一定可用 —— 若缺则跳过（CI 装了 SDK 会跑）
-    try:
-        import google.genai  # noqa: F401
-    except Exception:
-        import pytest
-        pytest.skip("google-genai SDK not installed in this env")
+    # google.genai 在测试环境不一定装了 —— 缺则跳过（CI 装了 SDK 会跑）。
+    # 用 importorskip 而非 try/except Exception：只在 ImportError 时 skip，
+    # SDK 真实运行时错误仍会冒出来，不会被误吞成 skip 掩盖回归。
+    import pytest
+    pytest.importorskip("google.genai")
 
     await OmniRealtimeClient.inject_text_and_request_response(sess, "（系统通知）任务完成了。")
 
