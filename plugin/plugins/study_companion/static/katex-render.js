@@ -14,7 +14,7 @@
   }
 
   function isLikelyCurrencyStart(source, index) {
-    return /^\$\d{1,3}(?:,\d{3})*(?:\.\d+)?(?=$|[\s)\],.;!?])/.test(source.slice(index));
+    return /^\$(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?(?=$|[\s)\],.;!?-])/.test(source.slice(index));
   }
 
   function findMathDelimiter(source, start, delimiter) {
