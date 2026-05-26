@@ -59,6 +59,60 @@
         return translateText(key, fallback);
     }
 
+    function buildWindowControlCssHtml() {
+        return '<link rel="stylesheet" href="/static/css/window_controls.css">';
+    }
+
+    function buildWindowControlScriptHtml() {
+        return '<script src="/static/js/window_controls.js" defer data-neko-window-controls="1"></script>';
+    }
+
+    function buildWindowControlAssetsHtml() {
+        return buildWindowControlCssHtml() + buildWindowControlScriptHtml();
+    }
+
+    function setWindowControlButtonLabel(button, key, fallback) {
+        if (!button) return;
+        var label = translateLabel(key, fallback);
+        button.setAttribute('data-i18n-title', key);
+        button.setAttribute('data-i18n-aria', key);
+        button.setAttribute('title', label);
+        button.setAttribute('aria-label', label);
+    }
+
+    function createWindowControlButton(doc, control, key, fallback, iconClass) {
+        var button = doc.createElement('button');
+        button.type = 'button';
+        button.className = 'neko-window-control-btn';
+        button.setAttribute('data-neko-window-control', control);
+        setWindowControlButtonLabel(button, key, fallback);
+        var icon = doc.createElement('span');
+        icon.className = iconClass;
+        button.appendChild(icon);
+        return button;
+    }
+
+    function ensureWindowControlsForDocument(doc) {
+        if (!doc || !doc.head) return;
+        var view = doc.defaultView || null;
+        if (view && view.nekoWindowControls && typeof view.nekoWindowControls.init === 'function') {
+            view.nekoWindowControls.init();
+            return;
+        }
+        if (doc.querySelector('script[data-neko-window-controls="1"]')) return;
+        var script = doc.createElement('script');
+        script.src = '/static/js/window_controls.js';
+        script.defer = true;
+        script.setAttribute('data-neko-window-controls', '1');
+        script.addEventListener('load', function () {
+            var loadedView = doc.defaultView || null;
+            if (loadedView && loadedView.nekoWindowControls && typeof loadedView.nekoWindowControls.init === 'function') {
+                loadedView.nekoWindowControls.init();
+            }
+        });
+        doc.head.appendChild(script);
+    }
+
     function showToast(key, fallback, duration) {
         if (typeof window.showStatusToast !== 'function') return;
         window.showStatusToast(translateLabel(key, fallback), duration || 3000);
@@ -1797,6 +1851,31 @@
         var summary = doc.createElement('div');
         summary.className = 'chat-export-preview-summary';
 
+        var isStandaloneWindow = !!(doc.body && doc.body.classList.contains('chat-export-window'));
+        var windowControls = null;
+        var minimizeButton = null;
+        var maximizeButton = null;
+        if (isStandaloneWindow) {
+            windowControls = doc.createElement('div');
+            windowControls.className = 'neko-window-controls chat-export-preview-window-controls';
+            minimizeButton = createWindowControlButton(
+                doc,
+                'minimize',
+                'common.minimize',
+                'Minimize',
+                'neko-window-minimize-icon'
+            );
+            maximizeButton = createWindowControlButton(
+                doc,
+                'maximize',
+                'common.maximize',
+                'Maximize',
+                'neko-window-maximize-icon'
+            );
+            windowControls.appendChild(minimizeButton);
+            windowControls.appendChild(maximizeButton);
+        }
+
         var closeButton = doc.createElement('button');
         closeButton.type = 'button';
         closeButton.className = 'chat-export-preview-close close-btn';
@@ -1809,7 +1888,12 @@
 
         header.appendChild(title);
         header.appendChild(summary);
-        header.appendChild(closeButton);
+        if (windowControls) {
+            windowControls.appendChild(closeButton);
+            header.appendChild(windowControls);
+        } else {
+            header.appendChild(closeButton);
+        }
 
         var selectionSection = doc.createElement('div');
         selectionSection.className = 'chat-export-selection-section';
@@ -1916,6 +2000,8 @@
             panel: panel,
             title: title,
             summary: summary,
+            minimizeButton: minimizeButton,
+            maximizeButton: maximizeButton,
             closeButton: closeButton,
             closeIcon: closeIcon,
             selectionToolbar: selectionToolbar,
@@ -1985,9 +2071,10 @@
         openWindowButton.addEventListener('click', handleOpenWindowClick);
         downloadButton.addEventListener('click', handleDownloadClick);
 
-        // Update localized modal attributes when the app locale changes
+        // 应用语言变化时同步预览窗口文案
         var localeHandler = function () {
             closeButton.setAttribute('aria-label', translateLabel('common.close', 'Close'));
+            setWindowControlButtonLabel(minimizeButton, 'common.minimize', 'Minimize');
             title.textContent = translateLabel('chat.exportPreviewTitle', 'Export Preview');
             title.setAttribute('data-text', title.textContent);
             frame.setAttribute('title', translateLabel('chat.exportPreviewTitle', 'Export Preview'));
@@ -1998,9 +2085,19 @@
             selectInvertButton.textContent = translateLabel('chat.exportSelectInvert', 'Invert');
             copyButton.textContent = translateLabel('chat.copyToClipboard', 'Copy to Clipboard');
             openWindowButton.textContent = translateLabel('chat.previewOpenWindow', 'Open In Window');
+            var view = doc.defaultView || null;
+            if (view && view.nekoWindowControls && typeof view.nekoWindowControls.refresh === 'function') {
+                view.nekoWindowControls.refresh();
+            } else {
+                setWindowControlButtonLabel(maximizeButton, 'common.maximize', 'Maximize');
+            }
         };
         window.addEventListener('localechange', localeHandler);
         modal._localeHandler = localeHandler;
+
+        if (isStandaloneWindow) {
+            ensureWindowControlsForDocument(doc);
+        }
 
         return modal;
     }
@@ -2336,6 +2433,7 @@
             + '<title>' + escapeHtml(previewTitle) + '</title>'
             + '<link rel="stylesheet" href="/static/css/api_key_settings.css">'
             + '<link rel="stylesheet" href="/static/css/index.css">'
+            + buildWindowControlAssetsHtml()
             + '<link rel="stylesheet" href="/static/css/dark-mode.css">'
             + '<style>'
             + 'html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#f8fafc;}'
@@ -2345,6 +2443,7 @@
             + 'body.chat-export-window .chat-export-preview-header.container-header{position:sticky;top:0;z-index:100;flex-shrink:0;border-bottom:0;}'
             + 'body.chat-export-window .chat-export-preview-title{white-space:nowrap;}'
             + 'body.chat-export-window .chat-export-preview-summary{color:rgba(255,255,255,.92);font-weight:600;text-shadow:0 1px 2px rgba(0,80,140,.24);}'
+            + 'body.chat-export-window .chat-export-preview-window-controls{margin-left:8px;}'
             + 'body.chat-export-window .chat-export-preview-close img{pointer-events:none;}'
             + 'body.chat-export-window .chat-export-preview-body{max-height:none;}'
             + '</style></head><body class="chat-export-window"></body></html>');
@@ -2478,7 +2577,7 @@
         }
     }
 
-    /** Build the HTML for a draggable title-bar with a close button (for frameless Electron windows). */
+    /** 构建无边框 Electron 窗口使用的自绘标题栏。 */
     function buildWindowChromeHtml(title) {
         var closeLabel = escapeHtml(translateLabel('chat.previewClose', 'Close'));
         var scrollbarCss = '<style>'
@@ -2535,9 +2634,9 @@
                 return;
             }
             var doc = payload.previewDocument;
-            // Sanitize any unsafe protocol URLs before injecting into the new window
+            // 写入新窗口前先清理不安全协议
             doc = sanitizeHtmlUrls(doc);
-            // Inject window chrome (title bar + close button) into the preview document
+            // 注入自绘标题栏并给正文留出顶部空间
             doc = doc.replace(/(<body[^>]*>)/, '$1' + chromeHtml + '<div style="padding-top:36px;">');
             doc = doc.replace(/<\/body>/, '</div></body>');
             var win = window.open('', '_blank');
