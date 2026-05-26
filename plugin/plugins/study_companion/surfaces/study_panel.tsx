@@ -69,7 +69,7 @@ function hasEscapedDelimiter(source: string, index: number) {
 }
 
 function isLikelyCurrencyStart(source: string, index: number) {
-  return /^\$\d{1,3}(?:,\d{3})*(?:\.\d+)?(?=$|[\s)\],.;!?])/.test(source.slice(index));
+  return /^\$(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?(?=$|[\s)\],.;!?-])/.test(source.slice(index));
 }
 
 function findMathDelimiter(source: string, start: number, delimiter: '$' | '$$') {
