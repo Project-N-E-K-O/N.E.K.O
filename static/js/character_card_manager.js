@@ -55,6 +55,52 @@ function isCharacterReservedFieldName(fieldName) {
     return getWorkshopHiddenFields().includes(normalizedFieldName);
 }
 
+function normalizeCharacterFieldValue(value) {
+    return typeof value === 'string' ? value.trim() : value;
+}
+
+function collectCharacterFields(form, options = {}) {
+    const {
+        baseData = {},
+        excludeFieldNames = [],
+        includeProfileName = false,
+    } = options;
+    const data = {};
+    const seen = new Set();
+
+    Object.entries(baseData || {}).forEach(([key, value]) => {
+        const normalizedKey = normalizeCharacterFieldName(key);
+        if (!normalizedKey) return;
+        data[normalizedKey] = value;
+        seen.add(normalizedKey);
+    });
+
+    const excluded = new Set(
+        (excludeFieldNames || []).map(normalizeCharacterFieldName).filter(Boolean)
+    );
+    if (!includeProfileName) {
+        excluded.add('档案名');
+    }
+
+    for (const [rawKey, rawValue] of new FormData(form).entries()) {
+        const key = normalizeCharacterFieldName(rawKey);
+        if (!key || excluded.has(key) || isCharacterReservedFieldName(key)) {
+            continue;
+        }
+        const value = normalizeCharacterFieldValue(rawValue);
+        if (!value) {
+            continue;
+        }
+        if (seen.has(key)) {
+            return { data, duplicateKey: key };
+        }
+        data[key] = value;
+        seen.add(key);
+    }
+
+    return { data, duplicateKey: '' };
+}
+
 function loadCharacterReservedFieldsConfig() {
     _reservedFieldsReady = ReservedFieldsUtils.load().then(cfg => {
         characterReservedFieldsConfig = cfg;
@@ -5165,10 +5211,13 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
 
     // 自定义字段
     const ALL_RESERVED = typeof getWorkshopHiddenFields === 'function' ? ['档案名', ...getWorkshopHiddenFields()] : ['档案名'];
+    const renderedCustomFields = new Set();
     Object.keys(cat).forEach(k => {
-        if (ALL_RESERVED.includes(k)) return;
+        const normalizedKey = normalizeCharacterFieldName(k);
+        if (!normalizedKey || ALL_RESERVED.includes(normalizedKey) || renderedCustomFields.has(normalizedKey)) return;
         const val = cat[k];
         if (val === null || val === undefined) return;
+        renderedCustomFields.add(normalizedKey);
 
         const wrapper = document.createElement('div');
         wrapper.className = 'field-row-wrapper custom-row setting-field-row';
@@ -5178,13 +5227,13 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
             : '<img src="/static/icons/delete.png" alt="" class="delete-icon"> 删除设定';
 
         const labelEl = document.createElement('label');
-        _panelSetFieldLabel(labelEl, k);
+        _panelSetFieldLabel(labelEl, normalizedKey);
         wrapper.appendChild(labelEl);
 
         const fr = document.createElement('div');
         fr.className = 'field-row';
         const textareaEl = document.createElement('textarea');
-        textareaEl.name = k;
+        textareaEl.name = normalizedKey;
         textareaEl.rows = 1;
         textareaEl.placeholder = (window.t && typeof window.t === 'function')
             ? window.t('character.detailDescriptionPlaceholder')
@@ -5249,9 +5298,10 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
         } else {
             key = prompt(window.t ? window.t('character.addCatgirlFieldPrompt') : '请输入新设定的名称（键名）');
         }
+        key = normalizeCharacterFieldName(key);
         const FORBIDDEN = ALL_RESERVED;
         if (!key || FORBIDDEN.includes(key)) return;
-        if (form.querySelector('[name="' + CSS.escape(key) + '"]')) {
+        if (Array.from(form.querySelectorAll('input, textarea, select')).some(el => normalizeCharacterFieldName(el.name) === key)) {
             if (typeof showAlert === 'function') {
                 await showAlert(window.t ? window.t('character.fieldExists') : '该设定已存在');
             } else {
@@ -6296,27 +6346,22 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             await form._voicesLoadPromise;
         }
 
-        const data = {};
-
         // 收集表单数据
         const nameInput = form.querySelector('input[name="档案名"]');
         if (!nameInput || !nameInput.value.trim()) {
             await showAlertDialog(window.t ? window.t('character.profileNameRequired') : '请输入档案名', { type: 'warning' });
             return;
         }
-        data['档案名'] = nameInput.value.trim();
 
-        // 收集已有字段（通过 FormData 统一收集，跳过voice_id）
-        const fd = new FormData(form);
         const selectedVoiceId = (form.querySelector('select[name="voice_id"]')?.value ?? '').trim();
         const previousVoiceId = form._previousVoiceId || '';
-
-        for (const [k, v] of fd.entries()) {
-            if (k === 'voice_id') continue;
-            const normalizedValue = typeof v === 'string' ? v.trim() : v;
-            if (k && normalizedValue) {
-                data[k] = normalizedValue;
-            }
+        const { data, duplicateKey } = collectCharacterFields(form, {
+            baseData: { '档案名': nameInput.value.trim() },
+            excludeFieldNames: ['档案名', 'voice_id'],
+        });
+        if (duplicateKey) {
+            showMessage(window.t ? window.t('character.fieldExists') : '该设定已存在', 'error');
+            return;
         }
 
         // 如果新建猫娘已被临时保存（自动创建），则改用 PUT 更新
@@ -9934,12 +9979,12 @@ async function saveMasterForm() {
         showMessage(window.t ? window.t('character.profileNameRequired') : '档案名为必填项', 'error');
         return;
     }
-    const data = {};
-    for (const [k, v] of new FormData(form).entries()) {
-        const normalizedKey = normalizeCharacterFieldName(k);
-        if (normalizedKey && v && !isCharacterReservedFieldName(normalizedKey)) {
-            data[normalizedKey] = v;
-        }
+    const { data, duplicateKey } = collectCharacterFields(form, {
+        excludeFieldNames: ['档案名'],
+    });
+    if (duplicateKey) {
+        showMessage(window.t ? window.t('character.fieldExists') : '该设定已存在', 'error');
+        return;
     }
     try {
         const resp = await fetch('/api/characters/master', {
@@ -9996,14 +10041,14 @@ async function autoSaveMasterField(input) {
     const fieldName = normalizeCharacterFieldName(input.name);
     if (!fieldName) return;
     if (fieldName === '档案名') return;
-    const allData = {};
-    for (const [k, v] of new FormData(form).entries()) {
-        const normalizedKey = normalizeCharacterFieldName(k);
-        if (normalizedKey && v && !isCharacterReservedFieldName(normalizedKey)) {
-            allData[normalizedKey] = v;
-        }
+    const { data: allData, duplicateKey } = collectCharacterFields(form, {
+        excludeFieldNames: ['档案名'],
+    });
+    if (duplicateKey) {
+        showMessage(window.t ? window.t('character.fieldExists') : '该设定已存在', 'error');
+        return;
     }
-    if (!allData['档案名']) return;
+    if (!Object.keys(allData).length) return;
     try {
         const resp = await fetch('/api/characters/master', {
             method: 'POST',
@@ -10034,15 +10079,14 @@ async function panelAutoSaveCatgirlField(input, catgirlName) {
     if (!form) return;
     const fieldName = normalizeCharacterFieldName(input.name);
     if (!fieldName || fieldName === '档案名' || fieldName === 'voice_id') return;
-    const data = { '档案名': catgirlName };
-    const ALL_RESERVED_FIELDS = ['档案名', ...getWorkshopHiddenFields()];
-    const inputs = form.querySelectorAll('input, textarea');
-    inputs.forEach(inp => {
-        const normalizedName = normalizeCharacterFieldName(inp.name);
-        if (normalizedName && !ALL_RESERVED_FIELDS.includes(normalizedName) && inp.value) {
-            data[normalizedName] = inp.value;
-        }
+    const { data, duplicateKey } = collectCharacterFields(form, {
+        baseData: { '档案名': catgirlName },
+        excludeFieldNames: ['档案名', 'voice_id'],
     });
+    if (duplicateKey) {
+        showMessage(window.t ? window.t('character.fieldExists') : '该设定已存在', 'error');
+        return;
+    }
     try {
         const resp = await fetch('/api/characters/catgirl/' + encodeURIComponent(catgirlName), {
             method: 'PUT',

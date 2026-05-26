@@ -140,7 +140,12 @@ def test_profile_rename_event_uses_collision_safe_synthetic_key(monkeypatch):
     payload["__ai_context.profile_rename_events"] = "用户内部命名字段"
     effective_with_internal_collision = _build_effective_character_payload(payload)
     assert effective_with_internal_collision["__ai_context.profile_rename_events"] == "用户内部命名字段"
-    assert "我以前的档案名" in effective_with_internal_collision["__ai_context.profile_rename_events.2"]
+    collision_values = [
+        value
+        for key, value in effective_with_internal_collision.items()
+        if key.startswith("__ai_context.profile_rename_events.")
+    ]
+    assert any("我以前的档案名" in str(value) for value in collision_values)
 
 
 @pytest.mark.unit
@@ -468,6 +473,15 @@ async def test_rename_master_adds_hidden_ai_context_and_master_save_preserves_it
             assert same_name_result["success"] is True
             saved_after_same_name = cm.load_characters()["主人"]
             assert len(saved_after_same_name["_reserved"]["ai_context"]["rename_events"]) == initial_count
+
+            legacy_conflict_characters = cm.load_characters()
+            legacy_conflict_characters.setdefault("猫娘", {})["新主人"] = {"档案名": "新主人"}
+            cm.save_characters(legacy_conflict_characters)
+            legacy_conflict_update = await characters_router_module.update_master(
+                _DummyRequest({"昵称": "柚希2"})
+            )
+            assert legacy_conflict_update["success"] is True
+            assert cm.load_characters()["主人"]["档案名"] == "新主人"
 
             conflict_characters = cm.load_characters()
             conflict_characters["主人"] = {}

@@ -3163,8 +3163,8 @@ async def update_master(request: Request):
     except Exception as e:
         logger.warning(f"解析主人更新请求体失败: {e}")
         return JSONResponse({'success': False, 'error': '请求体必须是合法的JSON格式'}, status_code=400)
-    if not data:
-        return JSONResponse({'success': False, 'error': '档案名为必填项'}, status_code=400)
+    if not isinstance(data, dict):
+        return JSONResponse({'success': False, 'error': '请求体必须是JSON对象'}, status_code=400)
     _config_manager = get_config_manager()
     initialize_character_data = get_initialize_character_data()
     characters = await _config_manager.aload_characters()
@@ -3178,7 +3178,7 @@ async def update_master(request: Request):
     if err:
         return JSONResponse({'success': False, 'error': err}, status_code=400)
     catgirl_profiles = characters.get('猫娘') if isinstance(characters.get('猫娘'), dict) else {}
-    if profile_name in catgirl_profiles:
+    if not previous_profile_name and profile_name in catgirl_profiles:
         return JSONResponse({'success': False, 'error': '档案名已被占用'}, status_code=400)
     next_master = {
         k: v
