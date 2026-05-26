@@ -9882,9 +9882,16 @@ function renderMasterForm(master) {
     form.appendChild(baseWrapper);
 
     // 自定义字段
+    const renderedCustomFields = new Set();
     Object.keys(master).forEach(k => {
         const normalizedKey = normalizeCharacterFieldName(k);
-        if (!normalizedKey || normalizedKey === '档案名' || isCharacterReservedFieldName(normalizedKey)) return;
+        if (
+            !normalizedKey
+            || normalizedKey === '档案名'
+            || isCharacterReservedFieldName(normalizedKey)
+            || renderedCustomFields.has(normalizedKey)
+        ) return;
+        renderedCustomFields.add(normalizedKey);
         const wrapper = document.createElement('div');
         wrapper.className = 'field-row-wrapper custom-row';
 
