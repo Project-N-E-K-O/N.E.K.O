@@ -242,6 +242,14 @@ class GameAgentService:
     # cycle is needed to make the new value real.
     _TRANSPORT_KEYS = ("_ws_url", "_reconnect_interval")
 
+    # [ISSUE4c] Anti-thrash floor: minimum seconds a just-claimed task must run
+    # before an overwrite=True can interrupt it. Weak dialog LLMs (esp. realtime,
+    # which has no per-turn tool-call cap) set overwrite=True on nearly every
+    # minecraft_task call, interrupting each freshly-sent task ~1s later and
+    # thrashing mc-agent between goals. A genuine {MASTER_NAME} correction of a
+    # <2s-old task is implausible; sub-2s overwrites are the runaway signature.
+    _OVERWRITE_MIN_SURVIVAL_S = 2.0
+
     def set_lang(self, lang: str) -> None:
         """Set the locale used for every push_message cue + result
         summary this service emits. Called by the plugin facade after
@@ -605,6 +613,22 @@ class GameAgentService:
         async with self._pending_lock:
             if self._pending is not None:
                 if not overwrite:
+                    return None
+                # [ISSUE4c] Anti-thrash guard: even with overwrite=True, refuse
+                # to interrupt a task that has barely started (< _OVERWRITE_MIN_
+                # SURVIVAL_S). This is the structural stop for the dispatch storm
+                # — the busy-without-overwrite gate never engaged because the LLM
+                # set overwrite=True on every call. Give a freshly-sent task a
+                # floor of run time; a real correction arrives seconds later and
+                # clears the floor. Rejected → caller returns the busy summary.
+                age = time.time() - self._pending.start_time
+                if age < self._OVERWRITE_MIN_SURVIVAL_S:
+                    self._log_info(
+                        "overwrite rejected (anti-thrash): current task age={:.2f}s "
+                        "< {:.1f}s — keeping {!r}, refusing {!r}",
+                        age, self._OVERWRITE_MIN_SURVIVAL_S,
+                        self._pending.task_text[:40], task[:40],
+                    )
                     return None
                 # overwrite=True: wake the old handler with an
                 # "interrupted" verdict before claiming the slot.
@@ -1352,23 +1376,29 @@ class GameAgentService:
         only about not flooding main_server with redundant wake-ups,
         not about real-time conversation politeness.
         """
-        # Anchor thresholds tuned from user testing: 5/5 was too tight
-        # (stream of 5-line bursts), 12/12 was too loose. Settle on 8s
-        # for both in_progress + keep_going cooldowns. nudge tone is
-        # soft ("有新内容再说") so even when fires hit, she paces
-        # naturally instead of being forced to speak every tick.
-        #   in-progress: 8s elapsed + 8s cooldown
-        #   keep-going:  8s post-finish + 8s cooldown, max 90s window
-        # (90s window matches the bumped task_timeout_seconds default so
-        # the keep_going branch can still cover a freshly timed-out task
-        # before drifting into "user has moved on" territory)
+        # Anchor thresholds. in-progress: nudge 8s into a long task, then every
+        # 8s. keep-going: first self-prompt 8s after a task ends, then re-prompt
+        # every 10s while STILL idle.
+        #
+        # [ISSUE4a] The old design had a 90s ``_KEEP_GOING_MAX_WINDOW`` upper
+        # bound: once a task had been finished for >90s, keep_going stopped
+        # firing entirely ("user has moved on"). In practice that PERMANENTLY
+        # killed the autonomous self-prompt — after one >90s idle stretch she
+        # went dead-air until something external (mc-agent self-prompt / user)
+        # restarted her (the user-reported "self-prompt 停了很久才恢复"). For an
+        # autonomous game companion the desired behaviour is the opposite: keep
+        # nudging her to play as long as she's idle. So the upper bound is gone —
+        # keep_going now fires whenever idle, forever, paced by the cooldown.
+        # (User present/absent gating is main_server's proactive SM job, not the
+        # plugin's; the plugin only paces wake-ups.)
         _IN_PROGRESS_AFTER = 8.0
         _IN_PROGRESS_COOLDOWN = 8.0
         _KEEP_GOING_AFTER = 8.0
-        _KEEP_GOING_COOLDOWN = 8.0
-        _KEEP_GOING_MAX_WINDOW = 90.0
+        _KEEP_GOING_COOLDOWN = 10.0
 
-        self._log_debug(
+        # [ISSUE4-DIAG] INFO (not DEBUG): plugin subprocess logs only surface at
+        # INFO in the captured stream, so self-prompt loop visibility must be INFO.
+        self._log_info(
             "system_prompt_loop started (in_progress={}/{}, keep_going={}/{}, "
             "general_interval={}s)",
             _IN_PROGRESS_AFTER, _IN_PROGRESS_COOLDOWN,
@@ -1385,7 +1415,7 @@ class GameAgentService:
                     elapsed_pending = now - self._pending.start_time
                     since_last = now - self._last_in_progress_nudge_at
                     if elapsed_pending >= _IN_PROGRESS_AFTER and since_last >= _IN_PROGRESS_COOLDOWN:
-                        self._log_debug(
+                        self._log_info(
                             "firing in_progress nudge (elapsed={:.1f}s, since_last={:.1f}s)",
                             elapsed_pending, since_last,
                         )
@@ -1404,11 +1434,13 @@ class GameAgentService:
                 ):
                     since_finish = now - self._last_task_finished_at
                     since_last_keep = now - self._last_keep_going_nudge_at
+                    # No upper bound (see _KEEP_GOING_MAX_WINDOW removal note):
+                    # idle → keep nudging forever, paced by the cooldown.
                     if (
-                        _KEEP_GOING_AFTER <= since_finish <= _KEEP_GOING_MAX_WINDOW
+                        since_finish >= _KEEP_GOING_AFTER
                         and since_last_keep >= _KEEP_GOING_COOLDOWN
                     ):
-                        self._log_debug(
+                        self._log_info(
                             "firing keep_going nudge (since_finish={:.1f}s, "
                             "since_last_keep={:.1f}s)",
                             since_finish, since_last_keep,
@@ -1424,7 +1456,7 @@ class GameAgentService:
                     continue
                 if not self._log_cache and not self._screenshot_cache and self._task_finished:
                     continue
-                self._log_debug(
+                self._log_info(
                     "firing general nudge (task_finished={}, pending={})",
                     self._task_finished,
                     self._pending.task_text[:40] if self._pending else None,
@@ -1434,9 +1466,21 @@ class GameAgentService:
         except asyncio.CancelledError:
             return
         except Exception as exc:
+            # [ISSUE4a] Backstop: previously an unhandled exception here let the
+            # loop fall through and RETURN — self-prompt then stayed dead for the
+            # rest of the session. For an autonomous companion that's the worst
+            # failure mode. Log, pause briefly to avoid hot-spin, and restart the
+            # loop so self-prompt never dies permanently. (CancelledError above
+            # is the only clean exit.)
             self._log_error(
-                "system prompt loop failed: {}: {}", type(exc).__name__, exc,
+                "system prompt loop crashed; restarting in 2s: {}: {}",
+                type(exc).__name__, exc,
             )
+            try:
+                await asyncio.sleep(2.0)
+            except asyncio.CancelledError:
+                return
+            await self._system_prompt_loop()
 
     async def _fire_in_progress_nudge(self) -> None:
         """Push a "what are you feeling right now?" prompt + latest

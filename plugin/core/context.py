@@ -1025,6 +1025,21 @@ class PluginContext:
                             try:
                                 batcher.enqueue(item)
                             except Exception:
+                                # [ISSUE4-DIAG] An important proactive cue
+                                # (ai_behavior!="read": respond completion /
+                                # keep-going self-prompt / alert) must never
+                                # vanish silently — log every such drop loudly.
+                                # High-freq "read" (screenshots/logs) stay on the
+                                # rate-limited aggregate below.
+                                try:
+                                    if canonical.get("ai_behavior") != "read":
+                                        self.logger.error(
+                                            "[PluginContext] message_plane DROP (fast batcher): plugin_id={} source={} ai_behavior={} priority={} — important cue lost to backpressure",
+                                            self.plugin_id, canonical.get("source"),
+                                            canonical.get("ai_behavior"), canonical.get("priority"),
+                                        )
+                                except Exception:
+                                    pass
                                 # Backpressure: do not fall back to control-plane (it will amplify overload).
                                 try:
                                     last_ts = float(getattr(self, "_mp_backpressure_last_ts", 0.0) or 0.0)
@@ -1128,10 +1143,17 @@ class PluginContext:
                     return
             except Exception as e:
                 # Catch all ZMQ/Batcher errors to prevent plugin crash
+                # [ISSUE4-DIAG] Enrich so we can tell WHAT got dropped on
+                # backpressure. ai_behavior!="read" → an important proactive cue
+                # (respond completion / keep-going self-prompt / alert) was
+                # silently dropped — that's the "猫娘 goes silent" mechanism.
                 try:
-                    self.logger.warning(
-                        "[PluginContext] message_plane error: plugin_id={} error={}",
-                        self.plugin_id, e
+                    _beh = canonical.get("ai_behavior")
+                    _lvl = self.logger.error if _beh != "read" else self.logger.warning
+                    _lvl(
+                        "[PluginContext] message_plane DROP (slow PUSH): plugin_id={} source={} ai_behavior={} priority={} err={}: {}",
+                        self.plugin_id, canonical.get("source"), _beh,
+                        canonical.get("priority"), type(e).__name__, e,
                     )
                 except Exception:
                     pass

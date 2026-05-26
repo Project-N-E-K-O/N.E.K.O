@@ -295,6 +295,19 @@ class OmniRealtimeClient:
         self._last_response_transcript = ""
         self._speech_started_total = 0  # diagnostic: server VAD start events observed
         self._speech_stopped_total = 0  # diagnostic: server VAD stop events observed
+        # [ISSUE4c] Realtime tool-call flood guard. Unlike OmniOfflineClient
+        # (max_tool_iterations=3 per turn), realtime has no per-turn tool-call
+        # cap — _send_tool_result unconditionally response.create's, so a weak
+        # model can chain function_call → result → function_call indefinitely
+        # (observed: minecraft_task fired ~9× in 30s). We can't hot-swap the
+        # tool list out (realtime API doesn't support mid-session tool changes),
+        # so instead we count tool calls in a sliding time window and, once the
+        # window is saturated, short-circuit with a hard STOP warning result
+        # (the tool is NOT executed) so the model is told to stop calling tools
+        # and just speak. Window-based (not strict per-turn) so paced autonomous
+        # self-play (~1 call / 10s via the plugin keep-going nudge) is never
+        # blocked — only true bursts are.
+        self._recent_tool_call_times: list[float] = []
         # Track image recognition per turn
         self._image_recognized_this_turn = False
         self._image_sent_this_turn = False
@@ -2180,6 +2193,40 @@ class OmniRealtimeClient:
                 call_id=call.call_id, name=call.name,
                 output={"error": msg}, is_error=True, error_message=msg,
             )
+
+        # [ISSUE4c] Sliding-window tool-call flood guard. Count tool executions
+        # in the last _TOOL_CALL_WINDOW_S; once it exceeds _TOOL_CALL_WINDOW_MAX,
+        # do NOT execute — return a hard STOP warning as the function_call_output
+        # so the model (which has no per-turn tool cap of its own) is told to
+        # stop calling tools and respond by voice instead. The function_call and
+        # this warning output both stay in the conversation via the normal
+        # function_call_output path, so the model still "sees" that it tried.
+        _TOOL_CALL_WINDOW_S = 15.0
+        _TOOL_CALL_WINDOW_MAX = 4
+        _now_tc = time.time()
+        self._recent_tool_call_times = [
+            t for t in self._recent_tool_call_times if _now_tc - t < _TOOL_CALL_WINDOW_S
+        ]
+        if len(self._recent_tool_call_times) >= _TOOL_CALL_WINDOW_MAX:
+            logger.warning(
+                "OmniRealtimeClient: tool-call flood guard tripped (%d calls in %.0fs) — "
+                "refusing '%s', telling model to stop",
+                len(self._recent_tool_call_times), _TOOL_CALL_WINDOW_S, call.name,
+            )
+            return ToolResult(
+                call_id=call.call_id, name=call.name,
+                output={
+                    "stop": True,
+                    "warning": (
+                        f"本轮短时间内已调用工具 {len(self._recent_tool_call_times)} 次，已达上限。"
+                        f"停止调用任何工具（包括 {call.name}），不要重试、不要换措辞再调。"
+                        "直接用语音回应，等需要时再调用。本次未执行。"
+                    ),
+                },
+                is_error=True, error_message="tool-call rate limit reached",
+            )
+        self._recent_tool_call_times.append(_now_tc)
+
         try:
             return await self.on_tool_call(call)
         except Exception as e:
@@ -2551,7 +2598,24 @@ class OmniRealtimeClient:
                         await self.on_input_transcript(transcript)
                 elif event_type in ["response.audio_transcript.done", "response.output_audio_transcript.done"]:
                     self._print_input_transcript = False
-                    if self._output_transcript_buffer and self.on_output_transcript and not self._skip_until_next_response and not self._interrupted:
+                    # [ISSUE4b] Voice-without-text fix. Audio deltas and transcript
+                    # deltas are gated by _skip_until_next_response/_interrupted at
+                    # delta time. But this transcript.done re-checks those flags at
+                    # *done* time — if a flag flipped True between audio playing and
+                    # done (session-transition / proactive-inject race), the audio
+                    # was already spoken yet the transcript got dropped → 前端有声无字.
+                    # If audio already went out this response (_audio_delta_count>0),
+                    # always forward the matching transcript regardless of a late
+                    # flag flip; only suppress when nothing was spoken (interrupted
+                    # before any audio).
+                    _audio_already_spoken = self._audio_delta_count > 0
+                    if (
+                        self._output_transcript_buffer and self.on_output_transcript
+                        and (
+                            (not self._skip_until_next_response and not self._interrupted)
+                            or _audio_already_spoken
+                        )
+                    ):
                         await self.on_output_transcript(self._output_transcript_buffer, self._is_first_transcript_chunk)
                         self._is_first_transcript_chunk = False
                     self._output_transcript_buffer = ""
