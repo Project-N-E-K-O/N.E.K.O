@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from plugin._types.models import RunCreateRequest
 from plugin.logging_config import get_logger
+from plugin.sdk.shared.core.base_runtime import resolve_runtime_data_root
 from plugin.plugins.galgame_plugin.store import GalgameStore
 from plugin.plugins.galgame_plugin.install_tasks import (
     INSTALL_TERMINAL_STATUSES,
@@ -47,6 +48,7 @@ async def get_galgame_ui_locale(plugin_id: str) -> JSONResponse:
 
         locale = _normalize_ui_locale(str(get_global_language_full()))
     except Exception:
+        logger.warning("galgame ui locale detection failed; falling back to en", exc_info=True)
         locale = "en"
     return JSONResponse({"locale": locale})
 
@@ -591,13 +593,62 @@ _TUTORIAL_DEFAULTS = {
 _tutorial_store_instance: GalgameStore | None = None
 
 
+def _copy_legacy_tutorial_progress_if_missing(
+    legacy_store_path: Path,
+    runtime_store_path: Path,
+) -> None:
+    legacy_store = GalgameStore(legacy_store_path, logger)
+    legacy_progress = legacy_store.load_tutorial_progress()
+    if not isinstance(legacy_progress, dict):
+        return
+    runtime_store = GalgameStore(runtime_store_path, logger)
+    if runtime_store.load_tutorial_progress() is not None:
+        return
+    runtime_store.save_tutorial_progress(legacy_progress)
+
+
 def _tutorial_store() -> GalgameStore:
     global _tutorial_store_instance
     if _tutorial_store_instance is not None:
         return _tutorial_store_instance
     plugin_dir = Path(__file__).resolve().parent
+    legacy_store_path = plugin_dir / "data" / "galgame_store.json"
+    runtime_store_path = (
+        resolve_runtime_data_root()
+        / "plugins"
+        / "galgame_plugin"
+        / "data"
+        / "galgame_store.json"
+    )
+    store_path = runtime_store_path
+    if legacy_store_path.exists() and not runtime_store_path.exists():
+        try:
+            runtime_store_path.parent.mkdir(parents=True, exist_ok=True)
+            runtime_store_path.write_bytes(legacy_store_path.read_bytes())
+        except OSError:
+            logger.warning(
+                "tutorial progress store migration failed; using legacy store",
+                exc_info=True,
+            )
+            store_path = legacy_store_path
+    elif legacy_store_path.exists():
+        try:
+            _copy_legacy_tutorial_progress_if_missing(
+                legacy_store_path,
+                runtime_store_path,
+            )
+        except OSError:
+            logger.warning(
+                "tutorial progress store merge skipped; keeping runtime store",
+                exc_info=True,
+            )
+        except (TypeError, ValueError):
+            logger.warning(
+                "tutorial progress store merge skipped; keeping runtime store",
+                exc_info=True,
+            )
     _tutorial_store_instance = GalgameStore(
-        plugin_dir / "data" / "galgame_store.json",
+        store_path,
         logger,
     )
     return _tutorial_store_instance

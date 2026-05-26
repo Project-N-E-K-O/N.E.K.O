@@ -5,6 +5,12 @@
 (function () {
     'use strict';
 
+    function isDesktopLinuxX11Runtime() {
+        return !!(window.__NEKO_DESKTOP_RUNTIME__ && window.__NEKO_DESKTOP_RUNTIME__.isLinuxX11);
+    }
+
+    const DEFAULT_RENDER_QUALITY = isDesktopLinuxX11Runtime() ? 'low' : 'medium';
+
     // ======================== 常量 ========================
     window.appConst = Object.freeze({
         HEARTBEAT_INTERVAL: 30000,           // WebSocket 心跳间隔 (ms)
@@ -14,6 +20,7 @@
         DEFAULT_SPEAKER_VOLUME: 100,         // 扬声器默认音量
         DEFAULT_SPATIAL_AUDIO_ENABLED: true, // 空间音频默认开启
         SPATIAL_AUDIO_MIN_GAIN: 0.4,         // 副屏远端最低音量保底（防止猫娘飞远后听不见）
+        SPATIAL_AUDIO_MAX_PAN: 0.85,         // pan 绝对值上限（防止完全单声道，另一边留 ~12% 信号）
         SPATIAL_AUDIO_FALLOFF_RATE: 0.35,    // 超出主屏后每个 refDist 衰减比例
         SPATIAL_AUDIO_RAMP_SECONDS: 0.12,    // pan/gain 平滑过渡时长，避免突变 click
         SPATIAL_AUDIO_POLL_MS: 500,          // 位置轮询周期（兜底，事件驱动为主）
@@ -106,6 +113,11 @@
         assistantTurnStartedAt: 0,
         assistantPendingTurnServerId: null,
         assistantTurnAwaitingBubble: false,
+        // 文本会话刚把 WS payload 发出去（text 和/或 screenshot），但 gemini_response
+        // 还没回第一个 chunk 的那段空窗。用 ms 时间戳 + 15s 上限自我兜底，避免
+        // 错过 clear 时永远卡 true。专门给 isAssistantTextResponseInFlight()
+        // 用（_lastSubmittedRequestId 对纯截图请求会被故意清空，挡不住这段空窗）。
+        pendingTextTurnSubmitAt: 0,
         assistantTurnSeq: 0,
         assistantTurnCompletedId: null,
         assistantTurnCompletionSource: null,
@@ -165,7 +177,7 @@
         // --- UI / 杂项 ---
         focusModeEnabled: false,
         avatarReactionBubbleEnabled: true,
-        renderQuality: 'medium',
+        renderQuality: DEFAULT_RENDER_QUALITY,
         targetFrameRate: 60,
         screenshotCounter: 0,
         statusToastTimeout: null,

@@ -31,12 +31,13 @@ from config import (
     REFLECTION_RENDER_TOKEN_BUDGET,
 )
 from memory.evidence import evidence_score
+from memory.facts import safe_int_field
 from memory.stop_names import (
     acollect_stop_names,
     collect_stop_names,
     strip_stop_names,
 )
-from utils.cloudsave_runtime import assert_cloudsave_writable
+from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.config_manager import get_config_manager
 from utils.file_utils import (
     atomic_write_json,
@@ -1615,9 +1616,19 @@ class PersonaManager:
             # 合并所有矛盾为单个 prompt。受 PERSONA_CORRECTION_BATCH_LIMIT
             # 限制：corrections 队列可能堆积，单次只处理前 N 条，剩下的下次
             # 触发时再处理。
-            from config import PERSONA_CORRECTION_BATCH_LIMIT
+            #
+            # Liveness：过滤已达 ``MEMORY_LIVENESS_MAX_ATTEMPTS`` 的 dead-letter
+            # entry（防御性——下面 _abump_correction_attempts_and_dead_letter
+            # 命中阈值时会直接从 queue 删除，正常路径不会让 attempts ≥ MAX 的
+            # entry 还留在 queue。这里只是 race-condition 防御 + schema 兼容）。
+            from config import (
+                MEMORY_LIVENESS_MAX_ATTEMPTS,
+                PERSONA_CORRECTION_BATCH_LIMIT,
+            )
             pairs = []
             for i, item in enumerate(corrections):
+                if safe_int_field(item, 'resolve_attempts') >= MEMORY_LIVENESS_MAX_ATTEMPTS:
+                    continue
                 old_text = item.get('old_text', '')
                 new_text = item.get('new_text', '')
                 if old_text and new_text:
@@ -1671,12 +1682,35 @@ class PersonaManager:
                     results = [results]
             except Exception as e:
                 logger.warning(f"[Persona] {name}: correction model 调用失败: {e}")
+                # Liveness 兜底：给本批 corrections bump resolve_attempts 字段，
+                # 达 MEMORY_LIVENESS_MAX_ATTEMPTS 的 entry 从 queue dead-letter
+                # 丢弃。否则同样的 (old_text, new_text) 队头 entry 每次 resolve
+                # tick 都被送进相同 prompt，LLM 同样失败，永久卡住后续 corrections
+                # （safety filter / 长 prompt token 超限 / 永远 parse 不出来 等
+                # 毒 payload 场景）。
+                await self._abump_correction_attempts_and_dead_letter(
+                    name, [item for _, item in pairs],
+                )
                 return 0
 
             # ── 短临界 2: load fresh persona + apply + save ──
-            return await self._apply_correction_results(
+            resolved = await self._apply_correction_results(
                 name, corrections, allowed_indices, results,
             )
+            # 对偶 fact_dedup：LLM 返了 list 但 ``_apply_correction_results_locked``
+            # 没消费任何 correction（全 invalid index / 全 unknown action），
+            # corrections queue 原样保留 → 队头同样 N 条下次 tick 重新喂同样
+            # prompt → 仍然 0 resolved → 永久卡死。算 attempts 一次。
+            if resolved == 0:
+                logger.warning(
+                    f"[Persona] {name}: correction model 输出 {len(results)} "
+                    f"条 action 全部无效（invalid index / unknown action），"
+                    f"batch 0 条 correction 消费，按 attempt 失败计"
+                )
+                await self._abump_correction_attempts_and_dead_letter(
+                    name, [item for _, item in pairs],
+                )
+            return resolved
 
     async def _apply_correction_results(
         self,
@@ -1811,6 +1845,72 @@ class PersonaManager:
                                           indent=2, ensure_ascii=False)
             logger.info(f"[Persona] {name}: 批量审视完成 {resolved} 条矛盾，剩余 {len(remaining)} 条")
         return resolved
+
+    async def _abump_correction_attempts_and_dead_letter(
+        self, name: str, batch_items: list[dict],
+    ) -> None:
+        """resolve_corrections LLM 失败时的 liveness 兜底。
+
+        给本批 corrections 的每条 entry bump ``resolve_attempts`` 字段，
+        累计 ≥ ``MEMORY_LIVENESS_MAX_ATTEMPTS`` 的 entry 直接从 queue
+        删除并 WARN。
+
+        Why: 队头若是毒 payload（safety filter / prompt 过长 / 永远 parse
+        不出来），resolve_corrections 每个 tick 都按 FIFO 取相同前 N 条进
+        prompt，LLM 同样失败 → 整条 corrections 链路永久卡死。这跟
+        signal extraction 的毒窗口同源——cursor 不动 + 无 counter。
+        """
+        from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+        if not batch_items:
+            return
+        bumped_keys = {
+            it.get('created_at', '') for it in batch_items if it.get('created_at')
+        }
+        if not bumped_keys:
+            return
+        async with self._get_alock(name):
+            current = await self.aload_pending_corrections(name)
+            kept: list[dict] = []
+            dropped = 0
+            for c in current:
+                key = c.get('created_at', '')
+                if key in bumped_keys:
+                    new_attempts = safe_int_field(c, 'resolve_attempts') + 1
+                    if new_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS:
+                        dropped += 1
+                        logger.warning(
+                            f"[Persona] {name}: correction dead-letter "
+                            f"(old={(c.get('old_text', '') or '')[:30]!r} "
+                            f"new={(c.get('new_text', '') or '')[:30]!r}) "
+                            f"resolve {new_attempts} 次失败 ≥ "
+                            f"{MEMORY_LIVENESS_MAX_ATTEMPTS}，丢弃"
+                        )
+                        continue
+                    c['resolve_attempts'] = new_attempts
+                kept.append(c)
+            try:
+                assert_cloudsave_writable(
+                    self._config_manager,
+                    operation="save",
+                    target=f"memory/{name}/persona_corrections.json",
+                )
+                await atomic_write_json_async(
+                    self._corrections_path(name), kept,
+                    indent=2, ensure_ascii=False,
+                )
+            except MaintenanceModeError as e:
+                logger.debug(
+                    f"[Persona] {name}: 维护态跳过 correction attempts 写盘: {e}"
+                )
+            except OSError as e:
+                logger.warning(
+                    f"[Persona] {name}: correction attempts 写盘失败: {e}"
+                )
+            if dropped:
+                logger.info(
+                    f"[Persona] {name}: dead-letter 丢弃 {dropped} 条 correction，"
+                    f"剩余 {len(kept)} 条"
+                )
 
     # ── refine apply (Phase A-3 MemoryRefineEngine) ──────────────────
 
@@ -2073,6 +2173,11 @@ class PersonaManager:
                 if eid in cluster_ids and eid not in consumed:
                     e['last_refine_cluster_hash'] = cluster_hash
                     e['last_refine_at'] = now_iso
+                    # 成功 stamp → 清 Site 4 liveness 计数器：之前因毒 cluster
+                    # 邻居拖累的累计 attempts 一笔勾销，让本 entry 后续可以
+                    # 重新进新 cluster 接受 LLM 判断。
+                    if e.get('refine_attempts'):
+                        e['refine_attempts'] = 0
                     stamped += 1
 
             if applied == 0 and stamped == 0:
@@ -2088,6 +2193,68 @@ class PersonaManager:
                 f"+{len(produced)} produced, -{len(consumed)} consumed)"
             )
         return applied
+
+    async def _abump_refine_attempts(
+        self, name: str, cluster: list[dict], cluster_hash: str,
+    ) -> None:
+        """Site 4 liveness 兜底：refine cluster LLM 失败时给非 fact 成员
+        bump ``refine_attempts``。达 ``MEMORY_LIVENESS_MAX_ATTEMPTS`` 的
+        entry 在下次 ``_run_persona_refine_for_character`` 候选 gather 时
+        被过滤掉，避免毒 cluster 持续占用 starvation-first ordering 名额
+        空跑 LLM。
+
+        Recovery：成功 refine（apply_refine_actions 跑到 stamp 分支）会把
+        ``refine_attempts`` 清回 0；或人工编辑 persona.json。
+
+        Why 不 in-memory：refine stamp `last_refine_at` 本身就落盘，counter
+        也得落盘——否则重启清零让 dead-letter 失效（参考 issue #1409 "落盘
+        与否的 dual" 部分）。
+        """
+        from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+        from memory.refine import REFINE_ENTITY_KEY, REFINE_TYPE_KEY
+
+        # 按 entity 收集需要 bump 的 entry id（fact 不算——fact 是 readonly
+        # 信息源，refine 永远不会改它，自然也不应记 refine_attempts）。
+        member_ids_by_entity: dict[str, set[str]] = {}
+        for e in cluster:
+            if not isinstance(e, dict):
+                continue
+            if e.get(REFINE_TYPE_KEY) == 'fact':
+                continue
+            ent = e.get(REFINE_ENTITY_KEY)
+            eid = e.get('id')
+            if not ent or not eid:
+                continue
+            member_ids_by_entity.setdefault(ent, set()).add(eid)
+        if not member_ids_by_entity:
+            return
+
+        async with self._get_alock(name):
+            persona = await self._aensure_persona_locked(name)
+            modified = False
+            for entity, ids in member_ids_by_entity.items():
+                section = self._get_section_facts(persona, entity)
+                for e in section:
+                    if not isinstance(e, dict) or e.get('id') not in ids:
+                        continue
+                    new_attempts = safe_int_field(e, 'refine_attempts') + 1
+                    e['refine_attempts'] = new_attempts
+                    # 戳失败时刻供 dead-letter 时间自愈（cooldown_elapsed）：
+                    # 一次性 correction 模型宕机把 entry 顶到 MAX 后，过 5h 冷却
+                    # 重新进候选 probe，避免宕机恢复后仍永久冻结。
+                    e['last_refine_attempt_at'] = datetime.now().isoformat()
+                    modified = True
+                    if new_attempts == MEMORY_LIVENESS_MAX_ATTEMPTS:
+                        logger.warning(
+                            f"[PersonaRefine] {name}: persona entry "
+                            f"id={e.get('id')} entity={entity} "
+                            f"refine_attempts={new_attempts} ≥ "
+                            f"{MEMORY_LIVENESS_MAX_ATTEMPTS}（dead-letter，"
+                            f"cluster_hash={cluster_hash}）。下次 refine "
+                            f"gather 不再选入，避免毒 cluster 占用名额。"
+                        )
+            if modified:
+                await self.asave_persona(name, persona)
 
     # ── 提及疲劳：记录 + 更新 suppress ───────────────────────────
 

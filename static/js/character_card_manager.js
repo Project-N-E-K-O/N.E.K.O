@@ -90,9 +90,152 @@ function notifyVoiceConfigSwitching(lanlanName, active, opId) {
     }
 }
 
+const WORKSHOP_VOICE_PROVIDER_REGISTRY_KEYS = Object.freeze({
+    cosyvoice: 'qwen',
+    cosyvoice_intl: 'qwen_intl',
+    minimax: 'minimax',
+    minimax_intl: 'minimax_intl',
+});
+const workshopVoiceProviderRestrictionState = {
+    loaded: false,
+    loadingPromise: null,
+    isMainlandChinaUser: false,
+    apiKeyRegistry: {},
+};
+const WORKSHOP_VOICE_PROVIDER_FETCH_TIMEOUT_MS = 5000;
+const WORKSHOP_VOICE_PROVIDER_FETCH_ATTEMPTS = 3;
+const WORKSHOP_VOICE_PROVIDER_FETCH_BACKOFF_MS = 250;
+
+function sleepWorkshopVoiceProviderRetry(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function fetchWorkshopVoiceProviderJson(url, options = {}) {
+    let lastError = null;
+    for (let attempt = 1; attempt <= WORKSHOP_VOICE_PROVIDER_FETCH_ATTEMPTS; attempt += 1) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), WORKSHOP_VOICE_PROVIDER_FETCH_TIMEOUT_MS);
+        try {
+            const response = await fetch(url, {
+                ...options,
+                signal: controller.signal,
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            return data;
+        } catch (error) {
+            lastError = error;
+            if (attempt >= WORKSHOP_VOICE_PROVIDER_FETCH_ATTEMPTS) break;
+            await sleepWorkshopVoiceProviderRetry(WORKSHOP_VOICE_PROVIDER_FETCH_BACKOFF_MS * attempt);
+        } finally {
+            clearTimeout(timeoutId);
+        }
+    }
+    throw lastError || new Error('请求失败');
+}
+
+function getWorkshopVoiceProviderRegistryKey(provider) {
+    return WORKSHOP_VOICE_PROVIDER_REGISTRY_KEYS[provider] || provider;
+}
+
+async function checkWorkshopVoiceMainlandChinaUser() {
+    const data = await fetchWorkshopVoiceProviderJson('/api/config/steam_language', {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' }
+    });
+    return data && data.is_mainland_china === true;
+}
+
+async function loadWorkshopVoiceProviderRestrictionState() {
+    if (workshopVoiceProviderRestrictionState.loaded) {
+        return workshopVoiceProviderRestrictionState;
+    }
+    if (workshopVoiceProviderRestrictionState.loadingPromise) {
+        return workshopVoiceProviderRestrictionState.loadingPromise;
+    }
+
+    workshopVoiceProviderRestrictionState.loadingPromise = (async () => {
+        const [isMainlandChinaUser, providersResponse] = await Promise.all([
+            checkWorkshopVoiceMainlandChinaUser(),
+            fetchWorkshopVoiceProviderJson('/api/config/api_providers')
+        ]);
+        let apiKeyRegistry = {};
+        if (providersResponse && providersResponse.success) {
+            apiKeyRegistry = providersResponse.api_key_registry || {};
+        } else {
+            throw new Error('api_providers config unavailable');
+        }
+        workshopVoiceProviderRestrictionState.isMainlandChinaUser = !!isMainlandChinaUser;
+        workshopVoiceProviderRestrictionState.apiKeyRegistry = apiKeyRegistry;
+        workshopVoiceProviderRestrictionState.loaded = true;
+        return workshopVoiceProviderRestrictionState;
+    }).finally(() => {
+        workshopVoiceProviderRestrictionState.loadingPromise = null;
+    });
+
+    return workshopVoiceProviderRestrictionState.loadingPromise;
+}
+
+async function ensureWorkshopVoiceProviderRestrictionsLoaded() {
+    try {
+        await loadWorkshopVoiceProviderRestrictionState();
+    } catch (error) {
+        console.warn('参考语音服务商地区配置加载失败，使用默认显示策略:', error);
+    }
+    return workshopVoiceProviderRestrictionState;
+}
+
+function isWorkshopVoiceProviderRestricted(provider) {
+    if (!workshopVoiceProviderRestrictionState.isMainlandChinaUser) return false;
+    const registryKey = getWorkshopVoiceProviderRegistryKey(provider);
+    const entry = workshopVoiceProviderRestrictionState.apiKeyRegistry[registryKey];
+    return !!(entry && entry.restricted === true);
+}
+
+function getFirstAvailableWorkshopVoiceProviderValue(providerSelect) {
+    if (!providerSelect) return '';
+    const options = Array.from(providerSelect.options || []);
+    const availableOption = options.find(option => !option.disabled && !option.hidden && option.style.display !== 'none');
+    return availableOption ? availableOption.value : '';
+}
+
+async function applyWorkshopVoiceProviderRestrictions(providerSelect) {
+    await ensureWorkshopVoiceProviderRestrictionsLoaded();
+    if (!providerSelect) return false;
+    const previousValue = providerSelect.value;
+    Array.from(providerSelect.options || []).forEach(option => {
+        const restricted = isWorkshopVoiceProviderRestricted(option.value);
+        option.disabled = restricted;
+        option.hidden = restricted;
+        option.style.display = restricted ? 'none' : '';
+    });
+
+    const selectedOption = providerSelect.options[providerSelect.selectedIndex];
+    if (selectedOption && !selectedOption.disabled && !selectedOption.hidden && selectedOption.style.display !== 'none') {
+        return false;
+    }
+
+    const fallbackValue = getFirstAvailableWorkshopVoiceProviderValue(providerSelect);
+    if (fallbackValue) {
+        providerSelect.value = fallbackValue;
+    }
+    return providerSelect.value !== previousValue;
+}
+
+async function initWorkshopVoiceProviderRestrictions() {
+    const providerSelect = document.getElementById('voice-reference-provider-hint');
+    await applyWorkshopVoiceProviderRestrictions(providerSelect);
+    return workshopVoiceProviderRestrictionState;
+}
+
 // 顶部 tab 按钮初始化（旧版自定义 tooltip 因为文本与按钮文字重复且定位有误已移除）
 document.addEventListener('DOMContentLoaded', function () {
     void loadCharacterReservedFieldsConfig();
+    initWorkshopVoiceProviderRestrictions().catch(error => {
+        console.warn('初始化参考语音服务商地区过滤失败:', error);
+    });
 
     // 云存档管理按钮
     const openCloudsaveManagerBtn = document.getElementById('open-cloudsave-manager-btn');
@@ -1362,7 +1505,7 @@ function selectReferenceAudio() {
     fileInput.click();
 }
 
-function resetWorkshopVoiceReferenceFields(defaultTitle = '') {
+async function resetWorkshopVoiceReferenceFields(defaultTitle = '') {
     const displayNameInput = document.getElementById('voice-reference-display-name');
     const prefixInput = document.getElementById('voice-reference-prefix');
     const languageSelect = document.getElementById('voice-reference-language');
@@ -1372,7 +1515,10 @@ function resetWorkshopVoiceReferenceFields(defaultTitle = '') {
     if (displayNameInput) displayNameInput.value = defaultTitle || '';
     if (prefixInput) prefixInput.value = sanitizeWorkshopVoicePrefix(defaultTitle, 'voice');
     if (languageSelect) languageSelect.value = 'ch';
-    if (providerSelect) providerSelect.value = 'cosyvoice';
+    if (providerSelect) {
+        providerSelect.value = 'cosyvoice';
+        await applyWorkshopVoiceProviderRestrictions(providerSelect);
+    }
 }
 
 async function uploadWorkshopReferenceAudio(contentFolder, defaultTitle) {
@@ -1395,7 +1541,8 @@ async function uploadWorkshopReferenceAudio(contentFolder, defaultTitle) {
     formData.append('prefix', prefix);
     formData.append('display_name', displayNameInput?.value.trim() || defaultTitle || prefix);
     formData.append('ref_language', languageSelect?.value || 'ch');
-    formData.append('provider_hint', providerSelect?.value || 'cosyvoice');
+    await applyWorkshopVoiceProviderRestrictions(providerSelect);
+    formData.append('provider_hint', providerSelect?.value || getFirstAvailableWorkshopVoiceProviderValue(providerSelect) || 'cosyvoice');
 
     showMessage('正在写入参考语音...', 'info');
     const response = await fetch('/api/steam/workshop/upload-reference-audio', {
@@ -1546,7 +1693,7 @@ function uploadItem() {
             }
             return data;
         })
-        .then(data => {
+        .then(async data => {
             // 恢复按钮状态
             if (uploadButton) {
                 uploadButton.textContent = originalText;
@@ -1632,6 +1779,7 @@ function uploadItem() {
                     }
                 });
                 clearReferenceAudioSelection();
+                await applyWorkshopVoiceProviderRestrictions(document.getElementById('voice-reference-provider-hint'));
 
                 // 清空标签
                 const tagsContainer = document.getElementById('tags-container');
@@ -1916,12 +2064,101 @@ function renderSubscriptionsPage() {
                         <button class="button button-primary" onclick="openWorkshopVoiceClone('${formattedItem.id}')" title="${formattedItem.voiceReferenceDisplayName || ''}" style="margin-bottom: 8px;">
                             ${window.t ? window.t('steam.openVoiceClone') : '在语音克隆页打开'}
                         </button>` : ''}
+                        <button class="button button-primary" data-item-id="${formattedItem.id}" data-item-name="${formattedItem.name}" onclick="addWorkshopCharacterCardFromSubscription(this)" style="margin-bottom: 8px;">${window.t ? window.t('steam.workshopAddCharacterCard') : '加入角色卡'}</button>
                         <button class="button button-danger" data-item-id="${formattedItem.id}" data-item-name="${formattedItem.name}" onclick="unsubscribeItem(this.dataset.itemId, this.dataset.itemName)">${window.t ? window.t('steam.unsubscribe') : '取消订阅'}</button>
                     </div>
                 </div>
             </div>
         `;
     }).join('');
+}
+
+function formatWorkshopCharacterNameList(names) {
+    const list = Array.isArray(names)
+        ? names.map(name => String(name || '').trim()).filter(Boolean)
+        : [];
+    return list.length > 0 ? list.join('、') : (window.t ? window.t('steam.unknownCharacterCard') : '未知角色卡');
+}
+
+async function showWorkshopCharacterAddAlert(message, type = 'info') {
+    if (typeof showAlertDialog === 'function') {
+        const title = type === 'info'
+            ? (window.t ? window.t('steam.characterCardAlreadyExistsTitle') : '角色卡已存在')
+            : (window.t ? window.t('common.warning') : '提示');
+        await showAlertDialog(message, {
+            type,
+            title,
+        });
+        return;
+    }
+    window.alert(message);
+}
+
+async function addWorkshopCharacterCardFromSubscription(button) {
+    const itemId = button?.dataset?.itemId || '';
+    if (!itemId) return;
+
+    const originalText = button.textContent;
+    button.disabled = true;
+    button.textContent = window.t ? window.t('steam.workshopAddingCharacterCard') : '正在加入...';
+
+    try {
+        const response = await fetch(`/api/steam/workshop/sync-character/${encodeURIComponent(itemId)}`, {
+            method: 'POST',
+        });
+        let data = {};
+        try {
+            data = await response.json();
+        } catch (_) {
+            data = {};
+        }
+
+        if (data.code === 'WORKSHOP_CHARACTER_ALREADY_EXISTS') {
+            const namesText = formatWorkshopCharacterNameList(data.existing_character_names);
+            const message = window.t
+                ? window.t('steam.characterCardAlreadyExistsMessage', { names: namesText })
+                : `角色卡已存在：${namesText}`;
+            await showWorkshopCharacterAddAlert(message, 'info');
+            return;
+        }
+
+        if (!response.ok || !data.success) {
+            const fallbackError = data.error || data.message || (window.t ? window.t('common.unknownError') : 'Unknown error');
+            const key = data.code === 'WORKSHOP_CHARACTER_NOT_FOUND'
+                ? 'steam.workshopCharacterNotFound'
+                : 'steam.workshopCharacterAddFailed';
+            const message = window.t
+                ? window.t(key, { error: fallbackError })
+                : (data.code === 'WORKSHOP_CHARACTER_NOT_FOUND'
+                    ? '此订阅内容中未找到可加入的角色卡，请确认内容已下载完成。'
+                    : `加入角色卡失败: ${fallbackError}`);
+            await showWorkshopCharacterAddAlert(message, 'warning');
+            return;
+        }
+
+        const namesText = formatWorkshopCharacterNameList(data.added_character_names);
+        const successMessage = window.t
+            ? window.t('steam.workshopCharacterAdded', { names: namesText })
+            : `已加入角色卡：${namesText}`;
+        showMessage(successMessage, 'success');
+        try {
+            await loadCharacterCards();
+        } catch (refreshError) {
+            console.warn('刷新角色卡列表失败:', refreshError);
+            const refreshMessage = window.t
+                ? window.t('steam.characterCardsRefreshFailed', { error: refreshError.message })
+                : `刷新列表失败: ${refreshError.message}`;
+            showMessage(refreshMessage, 'warning');
+        }
+    } catch (error) {
+        const message = window.t
+            ? window.t('steam.workshopCharacterAddFailed', { error: error.message })
+            : `加入角色卡失败: ${error.message}`;
+        showMessage(message, 'error');
+    } finally {
+        button.disabled = false;
+        button.textContent = originalText;
+    }
 }
 
 // 更新分页控件
@@ -4027,7 +4264,10 @@ function renderCharaCardsGrid(container, cards, currentCatgirl, hiddenKeys) {
         avatar.className = 'card-avatar';
         const placeholderSpan = document.createElement('span');
         placeholderSpan.className = 'card-avatar-placeholder';
-        placeholderSpan.textContent = window.t ? window.t('steam.noCardImage') : '点击此处\n设置卡面';
+        const translatedNoCardImage = window.t && window.t('steam.noCardImage');
+        placeholderSpan.textContent = translatedNoCardImage && translatedNoCardImage !== 'steam.noCardImage'
+            ? translatedNoCardImage
+            : '暂未设置卡面';
         avatar.appendChild(placeholderSpan);
 
         // 加载已有的卡面图片（仅在服务器侧确实存在时才请求，避免 404 噪声）
@@ -4298,7 +4538,10 @@ function openCatgirlPanel(card, originEl) {
     cardImage.className = 'catgirl-panel-card-image';
     const imgPlaceholder = document.createElement('span');
     imgPlaceholder.className = 'card-avatar-placeholder';
-    imgPlaceholder.textContent = window.t ? window.t('steam.noCardImage') : '点击此处\n设置卡面';
+    const translatedNoCardImage = window.t && window.t('steam.noCardImage');
+    imgPlaceholder.textContent = translatedNoCardImage && translatedNoCardImage !== 'steam.noCardImage'
+        ? translatedNoCardImage
+        : '暂未设置卡面';
     cardImage.appendChild(imgPlaceholder);
 
     const cardActionOverlay = document.createElement('div');
@@ -4410,19 +4653,7 @@ function openCatgirlPanel(card, originEl) {
         };
         actions.appendChild(exportBtn);
 
-        const switchBtn = document.createElement('button');
-        switchBtn.type = 'button';
-        switchBtn.className = 'card-panel-action-btn switch-btn';
         const isCurrentChara = (window._workshopCurrentCatgirl || '') === name;
-        switchBtn.disabled = isCurrentChara;
-        switchBtn.title = window.t ? window.t('character.switchCard') : '切换该角色';
-        switchBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>'
-            + '<span>' + (window.t ? window.t('character.switchCard') : '切换该角色') + '</span>';
-        switchBtn.onclick = function (e) {
-            e.stopPropagation();
-            workshopSwitchCatgirl(name);
-        };
-        actions.appendChild(switchBtn);
 
         const deleteBtn = document.createElement('button');
         deleteBtn.type = 'button';
@@ -4769,19 +5000,7 @@ function buildCreatedCatgirlPanelActions(name) {
     };
     actions.appendChild(exportBtn);
 
-    const switchBtn = document.createElement('button');
-    switchBtn.type = 'button';
-    switchBtn.className = 'card-panel-action-btn switch-btn';
     const isCurrentChara = (window._workshopCurrentCatgirl || '') === name;
-    switchBtn.disabled = isCurrentChara;
-    switchBtn.title = window.t ? window.t('character.switchCard') : '切换该角色';
-    switchBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>'
-        + '<span>' + (window.t ? window.t('character.switchCard') : '切换该角色') + '</span>';
-    switchBtn.onclick = function (e) {
-        e.stopPropagation();
-        workshopSwitchCatgirl(name);
-    };
-    actions.appendChild(switchBtn);
 
     const deleteBtn = document.createElement('button');
     deleteBtn.type = 'button';
@@ -4940,7 +5159,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
 
     // 档案名
     const baseWrapper = document.createElement('div');
-    baseWrapper.className = 'field-row-wrapper';
+    baseWrapper.className = 'field-row-wrapper profile-row';
 
     const baseLabel = document.createElement('label');
     const profileNameText = (window.t && typeof window.t === 'function') ? window.t('character.profileName') : '档案名';
@@ -4974,10 +5193,8 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     if (!isNew) {
         const renameBtn = document.createElement('button');
         renameBtn.type = 'button';
-        renameBtn.className = 'btn sm';
+        renameBtn.className = 'btn sm row-action-btn rename-action';
         renameBtn.id = 'rename-catgirl-btn';
-        renameBtn.style.marginLeft = '8px';
-        renameBtn.style.minWidth = '120px';
         const renameText = (window.t && typeof window.t === 'function')
             ? '<img src="/static/icons/edit.png" alt="" class="edit-icon"> <span data-i18n="character.rename">' + window.t('character.rename') + '</span>'
             : '<img src="/static/icons/edit.png" alt="" class="edit-icon"> 修改名称';
@@ -5033,7 +5250,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
         if (val === null || val === undefined) return;
 
         const wrapper = document.createElement('div');
-        wrapper.className = 'field-row-wrapper custom-row';
+        wrapper.className = 'field-row-wrapper custom-row setting-field-row';
 
         const deleteFieldText = (window.t && typeof window.t === 'function')
             ? '<img src="/static/icons/delete.png" alt="" class="delete-icon"> <span data-i18n="character.deleteField">' + window.t('character.deleteField') + '</span>'
@@ -5057,7 +5274,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
 
         const delBtn = document.createElement('button');
         delBtn.type = 'button';
-        delBtn.className = 'btn sm delete';
+        delBtn.className = 'btn sm delete row-action-btn delete-action';
         delBtn.innerHTML = deleteFieldText;
         delBtn.addEventListener('click', function () {
             wrapper.remove();
@@ -5076,7 +5293,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
 
     // 新增设定按钮区
     const addFieldArea = document.createElement('div');
-    addFieldArea.className = 'btn-area add-field-area';
+    addFieldArea.className = 'btn-area add-field-area settings-toolbar-row';
     addFieldArea.style.display = 'flex';
     addFieldArea.style.alignItems = 'center';
     addFieldArea.style.marginTop = '10px';
@@ -5094,9 +5311,8 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
 
     const addFieldBtn = document.createElement('button');
     addFieldBtn.type = 'button';
-    addFieldBtn.className = 'btn sm add';
+    addFieldBtn.className = 'btn sm add settings-primary-action';
     addFieldBtn.id = 'panel-add-catgirl-field-btn';
-    addFieldBtn.style.minWidth = '120px';
     const addFieldText = (window.t && typeof window.t === 'function')
         ? '<img src="/static/icons/add.png" alt="" class="add-icon"> <span data-i18n="character.addField">' + window.t('character.addField') + '</span>'
         : '<img src="/static/icons/add.png" alt="" class="add-icon"> 新增设定';
@@ -5123,7 +5339,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
             return;
         }
         const wrapper = document.createElement('div');
-        wrapper.className = 'field-row-wrapper custom-row';
+        wrapper.className = 'field-row-wrapper custom-row setting-field-row';
 
         const deleteFieldText = (window.t && typeof window.t === 'function')
             ? '<img src="/static/icons/delete.png" alt="" class="delete-icon"> <span data-i18n="character.deleteField">' + window.t('character.deleteField') + '</span>'
@@ -5146,7 +5362,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
 
         const delBtn = document.createElement('button');
         delBtn.type = 'button';
-        delBtn.className = 'btn sm delete';
+        delBtn.className = 'btn sm delete row-action-btn delete-action';
         delBtn.innerHTML = deleteFieldText;
         delBtn.addEventListener('click', function () {
             wrapper.remove();
@@ -5227,7 +5443,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     }
 
     const personalityWrapper = document.createElement('div');
-    personalityWrapper.className = 'field-row-wrapper';
+    personalityWrapper.className = 'field-row-wrapper personality-row';
     const personalityLabel = document.createElement('label');
     personalityLabel.textContent = window.t ? window.t('character.personalitySetting') : '人格设定';
     personalityLabel.style.fontSize = '1rem';
@@ -5252,11 +5468,10 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
 
     const personalitySelectBtn = document.createElement('button');
     personalitySelectBtn.type = 'button';
-    personalitySelectBtn.className = 'btn sm';
-    personalitySelectBtn.style.marginLeft = '8px';
-    personalitySelectBtn.style.minWidth = '120px';
+    personalitySelectBtn.className = 'btn sm row-action-btn personality-select-action';
     personalitySelectBtn.dataset.testid = 'character-personality-select';
-    personalitySelectBtn.textContent = window.t ? window.t('character.personalitySelect') : '选择人格';
+    personalitySelectBtn.innerHTML = '<img src="/static/icons/character_icon.png" alt="" class="personality-icon"> <span>'
+        + (window.t ? window.t('character.personalitySelect') : '选择人格') + '</span>';
     personalitySelectBtn.disabled = !!isNew;
     personalitySelectBtn.addEventListener('click', async function () {
         if (isNew) {
@@ -5274,11 +5489,10 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
 
     const personalityClearBtn = document.createElement('button');
     personalityClearBtn.type = 'button';
-    personalityClearBtn.className = 'btn sm delete';
-    personalityClearBtn.style.marginLeft = '8px';
-    personalityClearBtn.style.minWidth = '120px';
+    personalityClearBtn.className = 'btn sm delete row-action-btn personality-clear-action';
     personalityClearBtn.dataset.testid = 'character-personality-clear';
-    personalityClearBtn.textContent = window.t ? window.t('character.personalityClear') : '恢复默认';
+    personalityClearBtn.innerHTML = '<img src="/static/icons/roload_icon.png" alt="" class="restore-icon"> <span>'
+        + (window.t ? window.t('character.personalityClear') : '恢复默认') + '</span>';
     personalityClearBtn.disabled = !personalitySelection.hasOverride;
     personalityClearBtn.addEventListener('click', async function () {
         if (!name || personalityClearBtn.disabled) {
@@ -5326,7 +5540,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
 
     // 音色设定
     const voiceWrapper = document.createElement('div');
-    voiceWrapper.className = 'field-row-wrapper';
+    voiceWrapper.className = 'field-row-wrapper voice-row';
     const voiceLabel = document.createElement('label');
     voiceLabel.textContent = window.t ? window.t('character.voiceSetting') : '音色设定';
     voiceLabel.style.fontSize = '1rem';
@@ -5337,10 +5551,6 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     voiceRow.style.overflow = 'visible';
     voiceRow.style.position = 'relative';
     voiceRow.style.alignItems = 'center';
-    voiceRow.style.flex = '1 1 360px';
-    voiceRow.style.width = 'auto';
-    voiceRow.style.minWidth = '240px';
-    voiceRow.style.maxWidth = '560px';
     const voiceSelect = document.createElement('select');
     voiceSelect.name = 'voice_id';
     voiceSelect.className = 'form-control voice-native-select';
@@ -5367,9 +5577,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     // 注册新声音按钮
     const registerVoiceBtn = document.createElement('button');
     registerVoiceBtn.type = 'button';
-    registerVoiceBtn.className = 'btn sm';
-    registerVoiceBtn.style.marginLeft = '8px';
-    registerVoiceBtn.style.minWidth = '120px';
+    registerVoiceBtn.className = 'btn sm row-action-btn voice-register-action';
     const registerVoiceText = (window.t && typeof window.t === 'function')
         ? '<img src="/static/icons/sound.png" alt="" class="sound-icon"> <span data-i18n="character.registerNewVoice">' + window.t('character.registerNewVoice') + '</span>'
         : '<img src="/static/icons/sound.png" alt="" class="sound-icon"> 注册新声音';
@@ -5404,7 +5612,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
 
     // 操作按钮区
     const btnArea = document.createElement('div');
-    btnArea.className = 'btn-area';
+    btnArea.className = 'btn-area settings-action-row';
     btnArea.style.display = 'flex';
     btnArea.style.alignItems = 'center';
     btnArea.style.marginTop = '10px';
@@ -5422,22 +5630,23 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     const saveButton = document.createElement('button');
     saveButton.type = 'button';
     saveButton.id = 'save-button';
-    saveButton.className = 'btn sm';
-    saveButton.style.minWidth = '120px';
+    saveButton.className = 'btn sm settings-save-action';
     if (!isNew) saveButton.style.display = 'none';
-    saveButton.textContent = isNew
-        ? (window.t ? window.t('character.confirmNewCatgirl') : '确认新猫娘')
-        : (window.t ? window.t('character.saveChanges') : '保存修改');
+    saveButton.innerHTML = '<img src="/static/icons/set_on.png" alt="" class="save-icon"> <span>'
+        + (isNew
+            ? (window.t ? window.t('character.confirmNewCatgirl') : '确认新猫娘')
+            : (window.t ? window.t('character.saveChanges') : '保存修改'))
+        + '</span>';
     saveButton.onclick = function () { saveCatgirlFromPanel(form, name, isNew); };
     btnArea.appendChild(saveButton);
 
     const cancelButton = document.createElement('button');
     cancelButton.type = 'button';
     cancelButton.id = 'cancel-button';
-    cancelButton.className = 'btn sm';
-    cancelButton.style.minWidth = '120px';
+    cancelButton.className = 'btn sm settings-cancel-action';
     if (!isNew) cancelButton.style.display = 'none';
-    cancelButton.textContent = window.t ? window.t('character.cancel') : '取消';
+    cancelButton.innerHTML = '<img src="/static/icons/close_button.png" alt="" class="cancel-icon"> <span>'
+        + (window.t ? window.t('character.cancel') : '取消') + '</span>';
     cancelButton.onclick = function () {
         if (saveButton) saveButton.style.display = 'none';
         if (cancelButton) cancelButton.style.display = 'none';
@@ -7595,7 +7804,7 @@ async function performUpload(data) {
                 }
                 return response.json();
             })
-            .then(result => {
+            .then(async result => {
                 if (result.success) {
                     // 不再显示"上传准备完成"消息，模态框弹出本身就表明准备工作已完成
 
@@ -7628,7 +7837,7 @@ async function performUpload(data) {
                         previewImageInput.value = result.preview_image;
                         previewImageInput.classList.remove('error');
                     }
-                    resetWorkshopVoiceReferenceFields(cardName);
+                    await resetWorkshopVoiceReferenceFields(cardName);
 
                     // 添加角色卡标签到上传标签（允许用户编辑）
                     if (tagsContainer) {
@@ -7968,7 +8177,7 @@ function setFormDisabled(disabled) {
     if (registerBtn) registerBtn.disabled = disabled;
 }
 
-function registerVoice() {
+async function registerVoice() {
     const fileInput = document.getElementById('audioFile');
     const prefix = document.getElementById('prefix').value.trim();
     const resultDiv = document.getElementById('voice-register-result');
@@ -8006,6 +8215,10 @@ function registerVoice() {
     const formData = new FormData();
     formData.append('file', fileInput.files[0]);
     formData.append('prefix', prefix);
+    const providerSelect = document.getElementById('voice-reference-provider-hint');
+    await applyWorkshopVoiceProviderRestrictions(providerSelect);
+    const providerValue = providerSelect && providerSelect.value ? providerSelect.value.trim() : '';
+    formData.append('provider', providerValue || getFirstAvailableWorkshopVoiceProviderValue(providerSelect) || 'cosyvoice');
 
     fetch('/api/characters/voice_clone', {
         method: 'POST',

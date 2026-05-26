@@ -4,7 +4,7 @@
 根据 QQ 号管理用户权限等级
 """
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 
 class PermissionManager:
@@ -12,25 +12,27 @@ class PermissionManager:
 
     VALID_LEVELS = {"admin", "trusted", "normal"}
 
-    def __init__(self, trusted_users: List[Dict[str, str]] = None):
+    def __init__(self, trusted_users: List[Dict[str, Any]] = None):
         """
         初始化权限管理器
 
         Args:
             trusted_users: 信任用户列表，格式: [{"qq": "123456", "level": "admin", "nickname": "小明"}, ...]
         """
-        self._users: Dict[str, str] = {}  # {qq: level}
-        self._nicknames: Dict[str, str] = {}  # {qq: nickname}
+        self._users: Dict[str, Dict[str, Any]] = {}  # {qq: {level, nickname?, normal_relay_probability?}}
 
         if trusted_users:
             for user in trusted_users:
                 qq = self._normalize_qq(user.get("qq", ""))
                 level = self._normalize_level(user.get("level", "trusted"))
-                nickname = user.get("nickname", "")
+                nickname = str(user.get("nickname", "") or "").strip()
+                normal_relay_probability = self._normalize_probability(user.get("normal_relay_probability"))
                 if qq:
-                    self._users[qq] = level
-                    if nickname:
-                        self._nicknames[qq] = nickname
+                    self._users[qq] = {
+                        "level": level,
+                        "nickname": nickname,
+                        "normal_relay_probability": normal_relay_probability,
+                    }
 
     @staticmethod
     def _normalize_qq(qq_number: str) -> str:
@@ -41,7 +43,19 @@ class PermissionManager:
         level_text = str(level or "trusted").strip().lower()
         return level_text if level_text in cls.VALID_LEVELS else "trusted"
 
-    def add_user(self, qq_number: str, level: str = "trusted", nickname: str = ""):
+    @staticmethod
+    def _normalize_probability(value: Any) -> Optional[float]:
+        if value in (None, ""):
+            return None
+        try:
+            normalized = float(value)
+        except Exception:
+            return None
+        if normalized < 0.0 or normalized > 1.0:
+            return None
+        return normalized
+
+    def add_user(self, qq_number: str, level: str = "trusted", nickname: str = "", normal_relay_probability: Any = None):
         """
         添加用户
 
@@ -53,19 +67,17 @@ class PermissionManager:
         qq_str = self._normalize_qq(qq_number)
         if not qq_str:
             return
-        self._users[qq_str] = self._normalize_level(level)
-        if nickname:
-            self._nicknames[qq_str] = nickname
-        elif qq_str in self._nicknames:
-            del self._nicknames[qq_str]
+        self._users[qq_str] = {
+            "level": self._normalize_level(level),
+            "nickname": str(nickname or "").strip(),
+            "normal_relay_probability": self._normalize_probability(normal_relay_probability),
+        }
 
     def remove_user(self, qq_number: str):
         """移除用户"""
         qq_str = self._normalize_qq(qq_number)
         if qq_str in self._users:
             del self._users[qq_str]
-        if qq_str in self._nicknames:
-            del self._nicknames[qq_str]
 
     def get_permission_level(self, qq_number: str) -> str:
         """
@@ -78,43 +90,54 @@ class PermissionManager:
             权限等级: admin, trusted, normal, none
         """
         qq_str = self._normalize_qq(qq_number)
-        return self._users.get(qq_str, "none")
+        user = self._users.get(qq_str) or {}
+        return str(user.get("level") or "none")
 
-    def list_users(self) -> List[Dict[str, str]]:
+    def list_users(self) -> List[Dict[str, Any]]:
         """列出所有用户"""
         result = []
-        for qq, level in self._users.items():
-            user_info = {"qq": qq, "level": level}
-            if qq in self._nicknames:
-                user_info["nickname"] = self._nicknames[qq]
+        for qq, user in self._users.items():
+            user_info: Dict[str, Any] = {"qq": qq, "level": user.get("level", "trusted")}
+            nickname = str(user.get("nickname") or "").strip()
+            if nickname:
+                user_info["nickname"] = nickname
+            probability = self._normalize_probability(user.get("normal_relay_probability"))
+            if probability is not None:
+                user_info["normal_relay_probability"] = probability
             result.append(user_info)
         return result
 
     def get_nickname(self, qq_number: str) -> Optional[str]:
         """获取用户昵称"""
-        return self._nicknames.get(self._normalize_qq(qq_number))
+        user = self._users.get(self._normalize_qq(qq_number)) or {}
+        nickname = str(user.get("nickname") or "").strip()
+        return nickname or None
+
+    def get_normal_relay_probability(self, qq_number: str) -> Optional[float]:
+        user = self._users.get(self._normalize_qq(qq_number)) or {}
+        return self._normalize_probability(user.get("normal_relay_probability"))
 
     def set_nickname(self, qq_number: str, nickname: str):
         """设置用户昵称"""
         qq_str = self._normalize_qq(qq_number)
         if qq_str in self._users:
-            if nickname:
-                self._nicknames[qq_str] = nickname
-            else:
-                if qq_str in self._nicknames:
-                    del self._nicknames[qq_str]
+            self._users[qq_str]["nickname"] = str(nickname or "").strip()
             return True
         return False
 
-    def find_users_by_nickname(self, nickname: str) -> List[Dict[str, str]]:
+    def find_users_by_nickname(self, nickname: str) -> List[Dict[str, Any]]:
         """按配置昵称查找用户（精确匹配）"""
         target = str(nickname or "").strip()
         if not target:
             return []
         result = []
-        for qq, saved_nickname in self._nicknames.items():
-            if saved_nickname == target and qq in self._users:
-                user_info = {"qq": qq, "level": self._users[qq], "nickname": saved_nickname}
+        for qq, user in self._users.items():
+            saved_nickname = str(user.get("nickname") or "").strip()
+            if saved_nickname == target:
+                user_info: Dict[str, Any] = {"qq": qq, "level": user.get("level", "trusted"), "nickname": saved_nickname}
+                probability = self._normalize_probability(user.get("normal_relay_probability"))
+                if probability is not None:
+                    user_info["normal_relay_probability"] = probability
                 result.append(user_info)
         return result
 

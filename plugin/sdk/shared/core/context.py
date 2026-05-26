@@ -363,6 +363,17 @@ class SdkContext:
               still fires).
         ``reply`` is the deprecated bool alias (``True``→proactive,
         ``False``→silent). When both are provided ``delivery`` wins.
+
+        Role-aware text contract: ``data['summary']`` / ``data['detail']``
+        (and any text field that flows into the dialog channel) MAY contain
+        ``{MASTER_NAME}`` / ``{LANLAN_NAME}`` placeholders. The host
+        substitutes them at the LLM-injection boundary (and at verbatim
+        ``direct_reply`` exits), per session. Plugin code can't pick the
+        right name itself — visibility filtering decides which session
+        receives the text, so substitution has to happen host-side. Prefer
+        the placeholders over hardcoded ``"用户"`` / ``"master"`` /
+        ``"主人"``. See PLUGIN_DEVELOPMENT_GUIDE.md ("Writing role-aware
+        text") for details.
         """
         normalized_data = normalize_structured_data(data)
         resolved = normalize_delivery(delivery, reply)
@@ -416,6 +427,16 @@ class SdkContext:
         ``parts`` is an ordered list of content parts (``text``,
         ``image``, ``audio``, ``video``, ``ui_action``).  See
         :mod:`plugin.sdk.shared.core.push_message_schema` for full shapes.
+
+        Role-aware text contract: any text field that ends up in the dialog
+        channel (``parts[*].text`` for ``ai_behavior="respond"|"read"`` /
+        ``visibility=["chat"]``) MAY contain ``{MASTER_NAME}`` /
+        ``{LANLAN_NAME}`` placeholders; the host expands them per session at
+        the injection boundary. Plugin code can't pick the right name
+        itself — visibility filtering happens host-side. Prefer the
+        placeholders over hardcoded ``"用户"`` / ``"master"`` / ``"主人"``.
+        See PLUGIN_DEVELOPMENT_GUIDE.md ("Writing role-aware text") for
+        details.
 
         All other parameters are deprecated and emit ``DeprecationWarning``;
         scheduled for removal in v0.9 (``docs/changelog``).

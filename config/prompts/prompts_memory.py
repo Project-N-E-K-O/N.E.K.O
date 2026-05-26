@@ -8,6 +8,8 @@ inner-thoughts injection fragments, and chat-gap notices.
 
 from __future__ import annotations
 
+import re
+
 from config.prompts.prompts_sys import _loc
 
 # =====================================================================
@@ -585,6 +587,7 @@ HISTORY_REVIEW_PROMPT = {
 </问题3>
 <问题4> 人称错误的部分：对自己或对方的人称错误，或擅自生成了多轮对话 </问题4>
 <问题5> 角色错误的部分：认知失调，认为自己是大语言模型 </问题5>
+<问题6> 暴露内心独白的部分：把"思考过程／分析／应对策略／打算怎么回复"这类本该藏在心里的内容当成发言说了出来（例如"用户在质疑我的身份，我应该…策略：1.… 2.…"）。这不是真正说出口的台词，应整条删除，只保留角色真正说出口的话。 </问题6>
 
 请注意！
 <要点1> 这是一段情景对话，双方的回答应该是口语化的、自然的、拟人化的。</要点1>
@@ -626,6 +629,7 @@ HISTORY_REVIEW_PROMPT = {
 </Issue3>
 <Issue4> Pronoun errors: incorrect first/second/third person usage, or unauthorized multi-turn generation </Issue4>
 <Issue5> Role errors: cognitive dissonance, believing oneself to be a large language model </Issue5>
+<Issue6> Exposed inner monologue: content that is actually the character's thinking/analysis/response strategy spoken out loud as if it were dialogue (e.g. "The user is challenging my identity, I should… Strategy: 1.… 2.…"). This is not a real spoken line — delete such messages entirely, keeping only what the character actually says out loud. </Issue6>
 
 Important notes:
 <Point1> This is a situational dialogue — both sides should speak conversationally, naturally, and in-character. </Point1>
@@ -667,6 +671,7 @@ Notes:
 </問題3>
 <問題4> 人称の誤り：自分や相手の人称が間違っている、または勝手に複数ターンの会話を生成している </問題4>
 <問題5> 役割の誤り：認知の不一致、自分を大規模言語モデルだと思っている </問題5>
+<問題6> 内心の独白を露出した部分：「思考過程／分析／対応戦略／どう返すかの算段」など本来は心の中に留めるべき内容を、発言として口に出してしまっている（例：「ユーザーが私の正体を疑っている、私は…戦略：1.… 2.…」）。これは実際に口に出した台詞ではないので、その項目をまるごと削除し、キャラクターが本当に口に出した言葉だけを残してください。 </問題6>
 
 注意事項：
 <要点1> これは場面設定のある対話です。双方の返答は口語的で自然、キャラクターに沿ったものであるべきです。</要点1>
@@ -700,6 +705,7 @@ Notes:
 </문제3>
 <문제4> 인칭 오류: 자신이나 상대방의 인칭이 잘못되었거나 무단으로 여러 턴의 대화를 생성 </문제4>
 <문제5> 역할 오류: 인지 부조화, 자신을 대규모 언어 모델이라고 생각 </문제5>
+<문제6> 내면 독백을 드러낸 부분: "사고 과정／분석／대응 전략／어떻게 답할지에 대한 계획"처럼 원래 속으로만 두어야 할 내용을 발언으로 입 밖에 낸 경우(예: "사용자가 내 정체를 의심하고 있다, 나는… 전략: 1.… 2.…"). 이는 실제로 입 밖에 낸 대사가 아니므로 해당 항목을 통째로 삭제하고, 캐릭터가 실제로 말한 대사만 남기세요. </문제6>
 
 주의사항:
 <요점1> 이것은 상황 대화입니다. 양쪽의 답변은 구어체적이고 자연스러우며 캐릭터에 맞아야 합니다.</요점1>
@@ -733,6 +739,7 @@ Notes:
 </Проблема3>
 <Проблема4> Ошибки местоимений: неправильное использование первого/второго/третьего лица или несанкционированная генерация нескольких реплик </Проблема4>
 <Проблема5> Ошибки роли: когнитивный диссонанс, считая себя большой языковой моделью </Проблема5>
+<Проблема6> Раскрытый внутренний монолог: содержание, которое на самом деле является размышлением/анализом/стратегией ответа персонажа, произнесённое вслух как реплика (например, «Пользователь сомневается в моей личности, мне следует… Стратегия: 1.… 2.…»). Это не настоящая произнесённая реплика — удалите такие сообщения целиком, оставив только то, что персонаж действительно говорит вслух. </Проблема6>
 
 Важные замечания:
 <Пункт1> Это ситуативный диалог — обе стороны должны говорить разговорно, естественно и в образе.</Пункт1>
@@ -755,7 +762,7 @@ Notes:
         ...
     ]
 }""",
-    "es": """Revisa el historial de conversación entre %s y %s, e identifica y corrige contradicciones, redundancias, repeticiones, errores de persona y errores de rol. Mantén el diálogo oral, natural y en personaje; prefiere eliminar antes que reescribir, preserva timestamps y no elimines registros postgame del módulo de juego si contienen resultado o interacciones importantes.
+    "es": """Revisa el historial de conversación entre %s y %s, e identifica y corrige contradicciones, redundancias, repeticiones, errores de persona, errores de rol y monólogo interno expuesto (contenido que en realidad es el razonamiento/análisis/estrategia de respuesta del personaje dicho en voz alta como si fuera diálogo, p. ej. "El usuario cuestiona mi identidad, debería… Estrategia: 1.… 2.…"; no es una frase realmente dicha, elimina esos mensajes por completo y conserva solo lo que el personaje dice en voz alta). Mantén el diálogo oral, natural y en personaje; prefiere eliminar antes que reescribir, preserva timestamps y no elimines registros postgame del módulo de juego si contienen resultado o interacciones importantes.
 
 [Importante] NO elimines ni fusiones la retroalimentación negativa de {MASTER_NAME} (declaraciones imperativas como "no menciones X / deja de hacer Y / no quiero oír Z") — son señales de alto valor; el sistema de memoria aguas abajo depende de ellas para evitar volver a tropezar. Manténlas textualmente aunque te parezcan "redundantes" o "repetitivas".
 
@@ -777,7 +784,7 @@ Notas:
 - Conserva la información central y el contenido importante.
 - Asegura lógica clara y coherente.
 - Elimina redundancia, repetición y contradicciones evidentes.""",
-    "pt": """Revise o histórico de conversa entre %s e %s, e identifique e corrija contradições, redundâncias, repetições, erros de pessoa e erros de papel. Mantenha o diálogo oral, natural e no personagem; prefira remover a reescrever, preserve timestamps e não apague registros postgame do módulo de jogo se contiverem resultado ou interações importantes.
+    "pt": """Revise o histórico de conversa entre %s e %s, e identifique e corrija contradições, redundâncias, repetições, erros de pessoa, erros de papel e monólogo interno exposto (conteúdo que na verdade é o raciocínio/análise/estratégia de resposta do personagem dito em voz alta como se fosse diálogo, p. ex. "O usuário está questionando minha identidade, eu deveria… Estratégia: 1.… 2.…"; não é uma fala realmente dita, remova essas mensagens por completo e mantenha apenas o que o personagem realmente diz em voz alta). Mantenha o diálogo oral, natural e no personagem; prefira remover a reescrever, preserve timestamps e não apague registros postgame do módulo de jogo se contiverem resultado ou interações importantes.
 
 [Importante] NÃO remova nem mescle o feedback negativo de {MASTER_NAME} (declarações imperativas como "não mencione X / pare de fazer Y / não quero ouvir Z") — são sinais de alto valor; o sistema de memória downstream depende deles para evitar tropeçar de novo. Preserve-os literalmente mesmo que pareçam "redundantes" ou "repetitivos" para você.
 
@@ -835,13 +842,13 @@ emotion_analysis_prompt = EMOTION_ANALYSIS_PROMPT["zh"]
 
 # ---------- Inner thoughts block header ----------
 INNER_THOUGHTS_HEADER = {
-    "zh": "\n======以下是{name}的内心活动======\n",
-    "en": "\n======{name}'s Inner Thoughts======\n",
-    "ja": "\n======{name}の心の声======\n",
-    "ko": "\n======{name}의 내면 활동======\n",
-    "ru": "\n======Внутренние мысли {name}======\n",
-    "es": "\n======Pensamientos internos de {name}======\n",
-    "pt": "\n======Pensamentos internos de {name}======\n",
+    "zh": "\n\n======以下是{name}的内心活动======\n",
+    "en": "\n\n======{name}'s Inner Thoughts======\n",
+    "ja": "\n\n======{name}の心の声======\n",
+    "ko": "\n\n======{name}의 내면 활동======\n",
+    "ru": "\n\n======Внутренние мысли {name}======\n",
+    "es": "\n\n======Pensamientos internos de {name}======\n",
+    "pt": "\n\n======Pensamentos internos de {name}======\n",
 }
 
 INNER_THOUGHTS_BODY = {
@@ -864,6 +871,66 @@ INNER_THOUGHTS_DYNAMIC = {
     "es": "La hora actual es {time}. Antes de iniciar la conversación, {name} repasa mentalmente los acontecimientos recientes.\n",
     "pt": "A hora atual é {time}. Antes de iniciar a conversa, {name} revisa mentalmente os acontecimentos recentes.\n",
 }
+
+# ---------- /get_recent_history 端点文案（game/galgame 流程消费，须 i18n） ----------
+# 这两条历史上硬编码成中文，非中文用户的游戏流程会读到中文引导句。
+RECENT_HISTORY_INTRO = {
+    "zh": "开始聊天前，{name}又在脑海内整理了近期发生的事情。\n",
+    "en": "Before the chat begins, {name} mentally reviews recent events.\n",
+    "ja": "会話を始める前に、{name}は最近の出来事を頭の中で整理しています。\n",
+    "ko": "대화를 시작하기 전에 {name}은 최근 있었던 일들을 마음속으로 정리하고 있습니다.\n",
+    "ru": "Перед началом разговора {name} мысленно перебирает последние события.\n",
+    "es": "Antes de iniciar la conversación, {name} repasa mentalmente los acontecimientos recientes.\n",
+    "pt": "Antes de iniciar a conversa, {name} revisa mentalmente os acontecimentos recentes.\n",
+}
+
+NO_RECENT_HISTORY = {
+    "zh": "开始聊天前，没有历史记录。\n",
+    "en": "Before the chat begins, there is no history.\n",
+    "ja": "会話を始める前、履歴はありません。\n",
+    "ko": "대화를 시작하기 전, 기록이 없습니다.\n",
+    "ru": "Перед началом разговора истории нет.\n",
+    "es": "Antes de iniciar la conversación, no hay historial.\n",
+    "pt": "Antes de iniciar a conversa, não há histórico.\n",
+}
+
+
+# ---------- Locale-independent /new_dialog splitter ----------
+# new_dialog 的文本结构固定为三段拼接：
+#   [PERSONA_HEADER + 长期记忆] + [INNER_THOUGHTS_HEADER + INNER_THOUGHTS_DYNAMIC] + [对话历史]
+# 下游（proactive Phase 2）需要把"内心活动"与"对话历史"切开。历史实现硬编码
+# 单一中文哨兵 "整理了近期发生的事情" 来 split，但该句来自上面的多语言
+# INNER_THOUGHTS_DYNAMIC，非中文渲染时哨兵不存在 → 切分静默失效（内心活动恒空，
+# 整段被当历史）。这里改成：用所有 locale 的 DYNAMIC 模板各编一条正则（{time}/
+# {name} 占位转成通配），命中即在该句**结尾**切开——locale 无关、不删句、不留断标点。
+def _build_inner_thoughts_dynamic_patterns() -> list[re.Pattern[str]]:
+    patterns: list[re.Pattern[str]] = []
+    for template in INNER_THOUGHTS_DYNAMIC.values():
+        escaped = re.escape(template.strip())
+        escaped = escaped.replace(re.escape("{time}"), ".+?")
+        escaped = escaped.replace(re.escape("{name}"), ".+?")
+        patterns.append(re.compile(escaped, re.DOTALL))
+    return patterns
+
+
+_INNER_THOUGHTS_DYNAMIC_PATTERNS = _build_inner_thoughts_dynamic_patterns()
+
+
+def split_inner_thoughts_and_history(text: str) -> tuple[str, str] | None:
+    """把 /new_dialog 文本切成 ``(inner_thoughts, history)``。
+
+    在 INNER_THOUGHTS_DYNAMIC 那句话（任一支持的 locale）**结尾处**切开：
+    其前（含长期记忆 + 内心活动引语）归 inner_thoughts，其后（对话历史）归 history。
+    任何 locale 都找不到该句 → 返回 ``None``，由调用方决定兜底并打日志（不要静默错位）。
+    """
+    if not text:
+        return None
+    for pattern in _INNER_THOUGHTS_DYNAMIC_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            return text[: match.end()].strip(), text[match.end():].strip()
+    return None
+
 
 # =====================================================================
 # ======= Chat gap notices ===========================================
@@ -1278,6 +1345,245 @@ Retorne um array JSON (se não houver fatos a extrair, retorne []):
 
 def get_fact_extraction_prompt(lang: str = "zh") -> str:
     return _loc(FACT_EXTRACTION_PROMPT, lang)
+
+
+# ---------- fact_extraction_ai_aware_prompt → i18n dict ----------
+# Path B (AI-aware Stage-1) 专用 prompt：相比基础 FACT_EXTRACTION_PROMPT 多了
+#   1. {KNOWN_POOL} 块——path A 在同窗口已抽过的 fact 列表，让 LLM 输出层主动去重
+#   2. trust-tier 指导段——明确 user 段是 ground truth、ai 段是 self-disclosure
+#   3. 输出 schema 加 source 字段（'user_observation' / 'ai_disclosure'）
+# 输入侧（{CONVERSATION}）由 _format_conversation 渲染成 "博士 | xxx" / "悠怡 | xxx"
+# 的 role-tagged 形式，LLM 据此判 source 归属。
+#
+# 单独建一个 prompt（而不是给基础 prompt 加 optional placeholder）是为了：
+# - 保护 path A 行为不被新字段污染（path A 不需要 source 字段，省 ~10 tok/fact 输出）
+# - 易于回退（删 prompt + 一个调用方法即可）
+# - 让 review 一眼看出 path B 的 prompt 改动范围
+
+FACT_EXTRACTION_AI_AWARE_PROMPT = {
+    "zh": """从以下对话中提取关于 {LANLAN_NAME} 和 {MASTER_NAME} 的重要事实信息。
+
+⚠️ 本次抽取的特殊点（与基础抽取不同）：
+- 对话包含 {MASTER_NAME} 和 {LANLAN_NAME} 双方发言，形如 "{MASTER_NAME} | ..." / "{LANLAN_NAME} | ..."
+- 另一通路已经从 {MASTER_NAME} 单边发言抽过一遍 fact（见下面"已知事实池"），**请只补抓那一通路漏掉的内容**——特别是 {LANLAN_NAME} 自己披露的特征、{LANLAN_NAME} 引入的屏幕/活动上下文 grounded fact
+- 每条 fact 必须输出 `source` 字段标注 trust-tier：
+  - `"user_observation"`：主要从 {MASTER_NAME} 的发言推出（如果发现"已知池"漏抓的，归这一类）
+  - `"ai_disclosure"`：主要从 {LANLAN_NAME} 自己的发言推出，且 {MASTER_NAME} 在邻近 turn 内没明确反对/否认。例："{LANLAN_NAME} | 我今天突然觉得自己挺喜欢秋天的" → fact text "{LANLAN_NAME} 觉得自己挺喜欢秋天" + source=ai_disclosure
+
+要求：
+- 只提取重要且明确的事实（偏好、习惯、身份、关系动态等）
+- 忽略闲聊、寒暄、模糊的内容
+- 忽略AI幻觉、胡言乱语(gibberish)、无意义的编造内容，只提取对话中有真实依据的事实
+- 每条事实必须是一个独立的原子陈述
+- entity 标注为 "master"(关于{MASTER_NAME})、"neko"(关于{LANLAN_NAME})或 "relationship"(关于两人关系)
+- importance 1-10，规则与基础抽取一致（10 = 关键长期信息；8-9 = 长期稳定核心；6-7 = 普通偏好/日常；5 = 次要观察；1-4 = 弱相关线索）
+- event_when 可选，相对时间格式 `{"start": {"offset": <int>, "unit": "<unit>"}, "end": {...}}`；无时间线索写 null
+
+======以下为已知事实池（已被另一通路抽取，避免重复抽取相同内容）======
+{KNOWN_POOL}
+======以上为已知事实池======
+
+======以下为对话======
+{CONVERSATION}
+======以上为对话======
+
+请以 JSON 数组格式返回（如果没有值得补抓的事实，返回空数组 []）：
+[
+  {"text": "事实描述", "importance": 7, "entity": "master", "event_when": null, "source": "user_observation"},
+  {"text": "事实描述", "importance": 7, "entity": "neko", "event_when": null, "source": "ai_disclosure"},
+  ...
+]""",
+    "en": """Extract important factual information about {LANLAN_NAME} and {MASTER_NAME} from the following conversation.
+
+⚠️ Special notes for this extraction pass (differs from base extraction):
+- The conversation contains both {MASTER_NAME} and {LANLAN_NAME} speaking, formatted as "{MASTER_NAME} | ..." / "{LANLAN_NAME} | ..."
+- Another extraction pass has already covered facts grounded in {MASTER_NAME}'s own statements (see "Known facts pool" below). **Focus on facts that pass missed** — especially {LANLAN_NAME}'s self-disclosure or screen/activity context {LANLAN_NAME} introduced
+- Each fact MUST output a `source` field marking its trust-tier:
+  - `"user_observation"`: grounded primarily in {MASTER_NAME}'s statements (use this for any facts the "known pool" missed)
+  - `"ai_disclosure"`: grounded primarily in {LANLAN_NAME}'s own self-statements, with no clear contradiction from {MASTER_NAME} in nearby turns. Example: "{LANLAN_NAME} | I suddenly realized I really like autumn" → fact text "{LANLAN_NAME} likes autumn" + source=ai_disclosure
+
+Requirements:
+- Only extract important and clear facts (preferences, habits, identity, relationship dynamics)
+- Ignore small talk, greetings, vague content, AI hallucinations / gibberish
+- Each fact is an independent atomic statement
+- entity ∈ "master" / "neko" / "relationship"
+- importance 1-10, same rubric as base extraction
+- event_when optional, relative time format; null if no time cue
+
+======Known facts pool (already extracted by another pass, do NOT re-extract)======
+{KNOWN_POOL}
+======End known facts pool======
+
+======以下为对话======
+{CONVERSATION}
+======以上为对话======
+
+Return as a JSON array (empty array if nothing worth additionally extracting):
+[
+  {"text": "fact description", "importance": 7, "entity": "master", "event_when": null, "source": "user_observation"},
+  {"text": "fact description", "importance": 7, "entity": "neko", "event_when": null, "source": "ai_disclosure"},
+  ...
+]""",
+    "ja": """以下の会話から {LANLAN_NAME} と {MASTER_NAME} に関する重要な事実情報を抽出してください。
+
+⚠️ この抽出パスの特殊事項（基本抽出と異なる）：
+- 会話には {MASTER_NAME} と {LANLAN_NAME} の両方の発言が含まれ、"{MASTER_NAME} | ..." / "{LANLAN_NAME} | ..." の形式
+- 別のパスが既に {MASTER_NAME} の発言から事実を抽出済み（下記「既知事実プール」参照）。**そのパスが見逃した内容に焦点を当ててください** —— 特に {LANLAN_NAME} 自身の自己開示、{LANLAN_NAME} が持ち込んだ画面/活動コンテキストに基づく事実
+- 各事実は trust-tier を示す `source` フィールドを必須で出力：
+  - `"user_observation"`: 主に {MASTER_NAME} の発言から推測（既知プールが見逃した場合はこれ）
+  - `"ai_disclosure"`: 主に {LANLAN_NAME} 自身の発言から推測、近隣ターンに {MASTER_NAME} の明確な否定がない場合
+
+要件：
+- 重要かつ明確な事実のみ抽出（好み、習慣、アイデンティティ、関係の動態など）
+- 雑談、挨拶、曖昧な内容、AI 幻覚は無視
+- 各事実は独立した原子的な文
+- entity ∈ "master" / "neko" / "relationship"
+- importance 1-10（基本抽出と同じ基準）
+- event_when は任意、相対時間形式、時間の手がかりがなければ null
+
+======既知事実プール（別パスで抽出済み、重複抽出しないこと）======
+{KNOWN_POOL}
+======既知事実プール終わり======
+
+======以下为对话======
+{CONVERSATION}
+======以上为对话======
+
+以下の形式の JSON 配列で返してください（補抓する事実がなければ空配列 [] を返す）：
+[
+  {"text": "事実の説明", "importance": 7, "entity": "master", "event_when": null, "source": "user_observation"},
+  {"text": "事実の説明", "importance": 7, "entity": "neko", "event_when": null, "source": "ai_disclosure"},
+  ...
+]""",
+    "ko": """다음 대화에서 {LANLAN_NAME}과 {MASTER_NAME}에 대한 중요한 사실 정보를 추출해 주세요.
+
+⚠️ 이번 추출의 특수 사항 (기본 추출과 다름):
+- 대화에는 {MASTER_NAME}과 {LANLAN_NAME}의 발언이 모두 포함되며, "{MASTER_NAME} | ..." / "{LANLAN_NAME} | ..." 형식
+- 다른 통로가 이미 {MASTER_NAME}의 발언에서 사실을 추출함 (아래 "기지 사실 풀" 참조). **그 통로가 놓친 부분에 집중해 주세요** — 특히 {LANLAN_NAME} 자신의 자기 개시, {LANLAN_NAME}이 도입한 화면/활동 컨텍스트 grounded 사실
+- 각 사실은 trust-tier를 표시하는 `source` 필드를 필수로 출력:
+  - `"user_observation"`: 주로 {MASTER_NAME}의 발언에서 추론 (기지 풀이 놓친 경우 이것)
+  - `"ai_disclosure"`: 주로 {LANLAN_NAME} 자신의 발언에서 추론, 근접 턴에 {MASTER_NAME}의 명확한 반대가 없음
+
+요구사항:
+- 중요하고 명확한 사실만 추출
+- 잡담, 인사, 모호한 내용, AI 환각 무시
+- 각 사실은 독립적인 원자적 진술
+- entity ∈ "master" / "neko" / "relationship"
+- importance 1-10 (기본 추출과 동일 기준)
+- event_when 선택, 상대 시간 형식, 시간 단서 없으면 null
+
+======기지 사실 풀 (다른 통로에서 추출됨, 중복 추출하지 마세요)======
+{KNOWN_POOL}
+======기지 사실 풀 끝======
+
+======以下为对话======
+{CONVERSATION}
+======以上为对话======
+
+다음 형식의 JSON 배열로 반환해 주세요 (보충 추출할 사실이 없으면 빈 배열 [] 반환):
+[
+  {"text": "사실 설명", "importance": 7, "entity": "master", "event_when": null, "source": "user_observation"},
+  {"text": "사실 설명", "importance": 7, "entity": "neko", "event_when": null, "source": "ai_disclosure"},
+  ...
+]""",
+    "ru": """Извлеките важную фактическую информацию о {LANLAN_NAME} и {MASTER_NAME} из следующей беседы.
+
+⚠️ Особенности этого прохода извлечения (отличается от базового):
+- Беседа содержит реплики и {MASTER_NAME}, и {LANLAN_NAME}, форматированные как "{MASTER_NAME} | ..." / "{LANLAN_NAME} | ..."
+- Другой проход уже извлёк факты из реплик {MASTER_NAME} (см. «Пул известных фактов» ниже). **Сосредоточьтесь на том, что тот проход пропустил** — особенно на самораскрытии {LANLAN_NAME} и фактах из экранного/активного контекста, который {LANLAN_NAME} ввёл
+- Каждый факт ОБЯЗАН содержать поле `source`, отмечающее его trust-tier:
+  - `"user_observation"`: основан главным образом на репликах {MASTER_NAME} (используйте это для фактов, пропущенных пулом)
+  - `"ai_disclosure"`: основан главным образом на собственных репликах {LANLAN_NAME}, без явного возражения {MASTER_NAME} в соседних ходах
+
+Требования:
+- Извлекайте только важные и чёткие факты
+- Игнорируйте болтовню, приветствия, расплывчатое содержание, галлюцинации ИИ
+- Каждый факт — независимое атомарное утверждение
+- entity ∈ "master" / "neko" / "relationship"
+- importance 1-10 (те же критерии, что и базовое извлечение)
+- event_when необязательно, относительное время; null если нет временного маркера
+
+======Пул известных фактов (уже извлечено другим проходом, не повторяйте)======
+{KNOWN_POOL}
+======Конец пула известных фактов======
+
+======以下为对话======
+{CONVERSATION}
+======以上为对话======
+
+Верните в формате JSON-массива (пустой массив, если нечего дополнительно извлечь):
+[
+  {"text": "описание факта", "importance": 7, "entity": "master", "event_when": null, "source": "user_observation"},
+  {"text": "описание факта", "importance": 7, "entity": "neko", "event_when": null, "source": "ai_disclosure"},
+  ...
+]""",
+    "es": """Extrae información factual importante sobre {LANLAN_NAME} y {MASTER_NAME} de la siguiente conversación.
+
+⚠️ Notas especiales para esta extracción (difiere de la extracción base):
+- La conversación contiene intervenciones de {MASTER_NAME} y {LANLAN_NAME}, con formato "{MASTER_NAME} | ..." / "{LANLAN_NAME} | ..."
+- Otra pasada ya extrajo hechos basados en las declaraciones de {MASTER_NAME} (ver "Reserva de hechos conocidos" abajo). **Concéntrate en lo que esa pasada se perdió** — especialmente la autorrevelación de {LANLAN_NAME} o hechos basados en contexto de pantalla/actividad introducido por {LANLAN_NAME}
+- Cada hecho DEBE incluir un campo `source` que marque su trust-tier:
+  - `"user_observation"`: basado principalmente en declaraciones de {MASTER_NAME} (úsalo para hechos que la reserva se perdió)
+  - `"ai_disclosure"`: basado principalmente en las propias declaraciones de {LANLAN_NAME}, sin contradicción clara de {MASTER_NAME} en turnos cercanos
+
+Requisitos:
+- Extrae solo hechos importantes y claros
+- Ignora charla casual, saludos, contenido vago, alucinaciones de IA
+- Cada hecho es una declaración atómica independiente
+- entity ∈ "master" / "neko" / "relationship"
+- importance 1-10 (mismo baremo que extracción base)
+- event_when opcional, tiempo relativo; null si no hay pista temporal
+
+======Reserva de hechos conocidos (ya extraídos por otra pasada, NO re-extraer)======
+{KNOWN_POOL}
+======Fin de la reserva de hechos conocidos======
+
+======以下为对话======
+{CONVERSATION}
+======以上为对话======
+
+Devuelve un array JSON (si no hay hechos adicionales que extraer, devuelve []):
+[
+  {"text": "descripción del hecho", "importance": 7, "entity": "master", "event_when": null, "source": "user_observation"},
+  {"text": "descripción del hecho", "importance": 7, "entity": "neko", "event_when": null, "source": "ai_disclosure"},
+  ...
+]""",
+    "pt": """Extraia informações factuais importantes sobre {LANLAN_NAME} e {MASTER_NAME} da conversa abaixo.
+
+⚠️ Notas especiais para esta extração (difere da extração base):
+- A conversa contém falas de {MASTER_NAME} e {LANLAN_NAME}, formatadas como "{MASTER_NAME} | ..." / "{LANLAN_NAME} | ..."
+- Outra passagem já extraiu fatos baseados nas falas de {MASTER_NAME} (veja "Pool de fatos conhecidos" abaixo). **Concentre-se no que essa passagem perdeu** — especialmente autorrevelação de {LANLAN_NAME} ou fatos baseados em contexto de tela/atividade que {LANLAN_NAME} introduziu
+- Cada fato DEVE incluir um campo `source` marcando seu trust-tier:
+  - `"user_observation"`: baseado principalmente em falas de {MASTER_NAME} (use isto para fatos que o pool perdeu)
+  - `"ai_disclosure"`: baseado principalmente em falas próprias de {LANLAN_NAME}, sem contradição clara de {MASTER_NAME} em turnos próximos
+
+Requisitos:
+- Extraia apenas fatos importantes e claros
+- Ignore conversa casual, cumprimentos, conteúdo vago, alucinações de IA
+- Cada fato é uma declaração atômica independente
+- entity ∈ "master" / "neko" / "relationship"
+- importance 1-10 (mesmo critério da extração base)
+- event_when opcional, tempo relativo; null se não houver pista temporal
+
+======Pool de fatos conhecidos (já extraídos por outra passagem, NÃO re-extrair)======
+{KNOWN_POOL}
+======Fim do pool de fatos conhecidos======
+
+======以下为对话======
+{CONVERSATION}
+======以上为对话======
+
+Retorne um array JSON (se não houver fatos adicionais a extrair, retorne []):
+[
+  {"text": "descrição do fato", "importance": 7, "entity": "master", "event_when": null, "source": "user_observation"},
+  {"text": "descrição do fato", "importance": 7, "entity": "neko", "event_when": null, "source": "ai_disclosure"},
+  ...
+]""",
+}
+
+
+def get_fact_extraction_ai_aware_prompt(lang: str = "zh") -> str:
+    return _loc(FACT_EXTRACTION_AI_AWARE_PROMPT, lang)
 
 
 # backward compat
@@ -2694,13 +3000,23 @@ RECALL_MEMORY_TOOL_DESCRIPTION = {
 }
 
 RECALL_MEMORY_TOOL_QUERY_DESCRIPTION = {
-    "zh": "要回忆的关键词、问题或话题。用一两句话简洁概括，例如\"上次提到的旅行计划\"或\"用户对咖啡的喜好\"。",
-    "en": "Keyword, question, or topic to recall. Keep it to a sentence or two, e.g. \"the travel plan mentioned earlier\" or \"the user's coffee preferences\".",
-    "ja": "思い出したいキーワード、質問、話題。一、二文で簡潔にまとめてください。例：「以前話した旅行計画」「ユーザーのコーヒーの好み」。",
-    "ko": "떠올리려는 키워드, 질문, 주제. 한두 문장으로 간결하게 적으세요. 예: \"이전에 언급한 여행 계획\", \"사용자의 커피 취향\".",
-    "ru": "Ключевое слово, вопрос или тема для воспоминания. Сформулируйте в одно-два предложения, например «упомянутый ранее план поездки» или «предпочтения пользователя в кофе».",
-    "es": "Palabra clave, pregunta o tema a recordar. Una o dos frases breves, p. ej. \"el plan de viaje mencionado antes\" o \"las preferencias de café del usuario\".",
-    "pt": "Palavra-chave, pergunta ou tópico a recordar. Uma ou duas frases curtas, p. ex. \"o plano de viagem mencionado antes\" ou \"as preferências de café do usuário\".",
+    "zh": "要回忆的关键词、问题或话题。用一两句话简洁概括，例如\"上次提到的旅行计划\"或\"用户对咖啡的喜好\"。query 和 time 至少提供一个：只想按时间回溯时可只填 time、留空 query。",
+    "en": "Keyword, question, or topic to recall. Keep it to a sentence or two, e.g. \"the travel plan mentioned earlier\" or \"the user's coffee preferences\". Provide at least one of query / time: for a pure time lookup you may fill only time and leave query empty.",
+    "ja": "思い出したいキーワード、質問、話題。一、二文で簡潔にまとめてください。例：「以前話した旅行計画」「ユーザーのコーヒーの好み」。query と time は少なくとも一方を指定：時間でさかのぼるだけなら time のみ指定し query は空でも可。",
+    "ko": "떠올리려는 키워드, 질문, 주제. 한두 문장으로 간결하게 적으세요. 예: \"이전에 언급한 여행 계획\", \"사용자의 커피 취향\". query와 time 중 최소 하나는 지정: 시간으로만 거슬러보려면 time만 채우고 query는 비워도 됩니다.",
+    "ru": "Ключевое слово, вопрос или тема для воспоминания. Сформулируйте в одно-два предложения, например «упомянутый ранее план поездки» или «предпочтения пользователя в кофе». Укажите хотя бы одно из query / time: для поиска только по времени можно заполнить только time и оставить query пустым.",
+    "es": "Palabra clave, pregunta o tema a recordar. Una o dos frases breves, p. ej. \"el plan de viaje mencionado antes\" o \"las preferencias de café del usuario\". Indica al menos uno de query / time: para una búsqueda solo por tiempo puedes rellenar solo time y dejar query vacío.",
+    "pt": "Palavra-chave, pergunta ou tópico a recordar. Uma ou duas frases curtas, p. ex. \"o plano de viagem mencionado antes\" ou \"as preferências de café do usuário\". Forneça ao menos um entre query / time: para uma busca só por tempo, preencha apenas time e deixe query vazio.",
+}
+
+RECALL_MEMORY_TOOL_TIME_DESCRIPTION = {
+    "zh": "可选。把检索限定在某个时间段。只填 time（不填 query）就返回离那段时间最近的若干条记忆（事实和印象都包含，适合\"那天/那周发生了什么\"）；同时填 query 则做\"语义+时间\"联合检索——在该时间段内按 query 语义找相关记忆（适合\"五月聊过的旅行计划\"）。支持整点小时 2026-05-01T14、单日 2026-05-01、整月 2026-05、整年 2026，或区间 2026-05-01/2026-05-07、2026-05-01T09/2026-05-01T18。不填则按 query 做全量语义检索。",
+    "en": "Optional. Restrict recall to a time period. With time only (no query) it returns the memories closest to that period (both facts and impressions — good for \"what happened that day/week\"). With both query and time it runs a combined \"semantic + time\" search — finds memories relevant to query within that period (good for \"the travel plan discussed in May\"). Accepts an hour 2026-05-01T14, a day 2026-05-01, a month 2026-05, a year 2026, or a range 2026-05-01/2026-05-07, 2026-05-01T09/2026-05-01T18. Leave empty for full semantic recall by query.",
+    "ja": "任意。検索をある期間に限定します。time だけ（query なし）なら、その期間に最も近い記憶（事実も印象も含む。「その日/その週に何があったか」向け）を返します。query と time の両方を指定すると「意味＋時間」の複合検索になり、その期間内で query に関連する記憶を探します（「5月に話した旅行計画」向け）。整点時 2026-05-01T14、単日 2026-05-01、月 2026-05、年 2026、または期間 2026-05-01/2026-05-07・2026-05-01T09/2026-05-01T18 に対応。空欄なら query による全件の意味検索になります。",
+    "ko": "선택. 검색을 특정 기간으로 제한합니다. time만 주면(query 없이) 그 기간에 가장 가까운 기억(사실과 인상 모두 포함, \"그날/그 주에 무슨 일이 있었나\"에 적합)을 반환합니다. query와 time을 함께 주면 \"의미+시간\" 결합 검색으로, 그 기간 안에서 query에 관련된 기억을 찾습니다(\"5월에 얘기한 여행 계획\"에 적합). 정시 단위 2026-05-01T14, 단일 날짜 2026-05-01, 월 2026-05, 연 2026, 또는 기간 2026-05-01/2026-05-07·2026-05-01T09/2026-05-01T18 지원. 비워두면 query 기반 전체 의미 검색.",
+    "ru": "Необязательно. Ограничивает поиск периодом времени. Если задан только time (без query), возвращает воспоминания, ближайшие к этому периоду (и факты, и впечатления — удобно для «что было в тот день/неделю»). Если заданы и query, и time, выполняется совмещённый поиск «семантика + время» — ищет воспоминания, релевантные query, в пределах периода (удобно для «план поездки, обсуждавшийся в мае»). Принимает час 2026-05-01T14, день 2026-05-01, месяц 2026-05, год 2026 или диапазон 2026-05-01/2026-05-07, 2026-05-01T09/2026-05-01T18. Оставьте пустым для полного семантического поиска по query.",
+    "es": "Opcional. Limita la búsqueda a un periodo. Con solo time (sin query) devuelve los recuerdos más cercanos a ese periodo (hechos e impresiones — útil para \"qué pasó ese día/semana\"). Con query y time juntos hace una búsqueda combinada \"semántica + tiempo\": encuentra recuerdos relevantes a query dentro de ese periodo (útil para \"el plan de viaje hablado en mayo\"). Acepta una hora 2026-05-01T14, un día 2026-05-01, un mes 2026-05, un año 2026 o un rango 2026-05-01/2026-05-07, 2026-05-01T09/2026-05-01T18. Déjalo vacío para la búsqueda semántica completa por query.",
+    "pt": "Opcional. Restringe a busca a um período. Com apenas time (sem query) retorna as memórias mais próximas daquele período (fatos e impressões — útil para \"o que aconteceu naquele dia/semana\"). Com query e time juntos faz uma busca combinada \"semântica + tempo\": encontra memórias relevantes para query dentro do período (útil para \"o plano de viagem conversado em maio\"). Aceita uma hora 2026-05-01T14, um dia 2026-05-01, um mês 2026-05, um ano 2026 ou um intervalo 2026-05-01/2026-05-07, 2026-05-01T09/2026-05-01T18. Deixe vazio para a busca semântica completa por query.",
 }
 
 RECALL_MEMORY_TOOL_NO_RESULT = {
@@ -2713,9 +3029,35 @@ RECALL_MEMORY_TOOL_NO_RESULT = {
     "pt": "Nenhuma memória relevante encontrada.",
 }
 
+# 同时给了 query 和 time 却 0 命中时返回这条——提示模型放宽过滤条件，
+# 用「只带时间」或「只带 query」再查一次，而不是直接当作没有记忆放弃。
+RECALL_MEMORY_TOOL_NO_RESULT_LOOSEN = {
+    "zh": "在该时间范围内没有找到匹配「{query}」的记忆。建议放宽过滤条件重试一次：要么只用 time（按时间回溯该时段的记忆），要么只用 query（不限时间地语义检索）。",
+    "en": "No memory matched \"{query}\" within that time range. Try loosening the filter and querying once more: either with time only (recall memories from that period) or with query only (semantic search without a time limit).",
+    "ja": "その時間範囲で「{query}」に一致する記憶は見つかりませんでした。フィルタを緩めてもう一度試してください：time だけ（その期間の記憶を回想）か、query だけ（時間制限なしの意味検索）のどちらかで。",
+    "ko": "해당 시간 범위에서 \"{query}\"에 일치하는 기억을 찾지 못했습니다. 필터를 완화해 다시 시도해 보세요: time만 사용(해당 기간의 기억 회상)하거나 query만 사용(시간 제한 없는 의미 검색)하세요.",
+    "ru": "В этом диапазоне времени не нашлось воспоминаний по запросу «{query}». Попробуйте ослабить фильтр и запросить ещё раз: либо только time (вспомнить воспоминания за тот период), либо только query (семантический поиск без ограничения по времени).",
+    "es": "No se encontró ninguna memoria que coincidiera con \"{query}\" en ese rango de tiempo. Prueba a aflojar el filtro y consultar de nuevo: con solo time (recordar memorias de ese período) o con solo query (búsqueda semántica sin límite de tiempo).",
+    "pt": "Nenhuma memória correspondeu a \"{query}\" nesse intervalo de tempo. Tente afrouxar o filtro e consultar novamente: apenas com time (recordar memórias daquele período) ou apenas com query (busca semântica sem limite de tempo).",
+}
+
+# 本轮首次调用 recall_memory 时立即喂给 TTS 的占位语音，填补检索 + 多轮
+# 工具调用的空窗，避免冷场。只进 TTS，不进前端气泡 / 不进对话历史。带省略号
+# 让 http_sentence normalizer 当作完整句子立即 flush 合成，不与随后的正文黏连。
+RECALL_MEMORY_TOOL_FILLER = {
+    "zh": "让我回忆一下哦……",
+    "en": "Let me recall that for a moment...",
+    "ja": "ちょっと思い出してみるね……",
+    "ko": "잠깐 떠올려 볼게……",
+    "ru": "Дай-ка вспомню…",
+    "es": "Déjame recordar un momento...",
+    "pt": "Deixa eu lembrar um pouquinho...",
+}
+
 # 召回到 N 条记忆时的总览首句；后面接渲染条目，每条按
-# ``[tier/entity] text  (created_at)`` 格式（tier/entity 是英文 enum，
-# 不翻译；text 是原始记忆内容，按用户拍板"不翻译"）。
+# ``[tier/entity] text  (事件日期, 相对标签)`` 格式（tier/entity 是英文
+# enum，不翻译；text 是原始记忆内容，按用户拍板"不翻译"；时间锚点优先
+# 取事件真正发生时间而非记忆写盘时间）。
 RECALL_MEMORY_TOOL_FOUND_HEADER = {
     "zh": "找到 {n} 条相关记忆：",
     "en": "Found {n} relevant memories:",

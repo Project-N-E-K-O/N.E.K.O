@@ -8,8 +8,16 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from .memory_deck_store import MemoryDeckStore, ensure_memory_schema
 from .mode_manager import normalize_mode
-from .models import STORE_CONFIG, STORE_STATE, StudyConfig, StudyState, build_config, json_copy
+from .models import (
+    STORE_CONFIG,
+    STORE_STATE,
+    StudyConfig,
+    StudyState,
+    build_config,
+    json_copy,
+)
 
 _DROP = object()
 _STATE_ITEM_FLOAT_KEYS = {"at", "created_at", "updated_at", "expires_at", "lock_until"}
@@ -41,7 +49,9 @@ def _sanitize_suggestion_cooldowns(value: Any) -> dict[str, float]:
     return cleaned
 
 
-def _sanitize_state_item_list(value: Any, *, required_float_key: str | None = None) -> list[dict[str, Any]]:
+def _sanitize_state_item_list(
+    value: Any, *, required_float_key: str | None = None
+) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     cleaned: list[dict[str, Any]] = []
@@ -69,10 +79,20 @@ def _sanitize_state_item_list(value: Any, *, required_float_key: str | None = No
 class StudyStore:
     """SQLite main store with JSON import/export support for seeds and backups."""
 
-    def __init__(self, db_path: Path, seed_json_path: Path, logger: Any, knowledge_seed_json_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        seed_json_path: Path,
+        logger: Any,
+        knowledge_seed_json_path: Path | None = None,
+    ) -> None:
         self.db_path = Path(db_path)
         self.seed_json_path = Path(seed_json_path)
-        self.knowledge_seed_json_path = Path(knowledge_seed_json_path) if knowledge_seed_json_path is not None else None
+        self.knowledge_seed_json_path = (
+            Path(knowledge_seed_json_path)
+            if knowledge_seed_json_path is not None
+            else None
+        )
         self._logger = logger
         self._lock = threading.RLock()
         self._conn: sqlite3.Connection | None = None
@@ -80,7 +100,9 @@ class StudyStore:
     def open(self) -> None:
         with self._lock:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
-            self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False, timeout=10.0)
+            self._conn = sqlite3.connect(
+                str(self.db_path), check_same_thread=False, timeout=10.0
+            )
             self._conn.execute("PRAGMA foreign_keys = ON")
             self._conn.row_factory = sqlite3.Row
             self._init_db()
@@ -291,20 +313,41 @@ class StudyStore:
             )
             """
         )
+        ensure_memory_schema(conn)
         self._ensure_column(conn, "candidate_knowledge_items", "dedupe_key", "TEXT")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_mastery_topic_updated ON mastery_snapshots(topic_id, updated_at DESC, id DESC)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_wrong_topic_status ON wrong_questions(topic_id, status)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_qa_topic_created ON qa_records(topic_id, created_at DESC, id DESC)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_review_topic_created ON review_log(topic_id, created_at DESC, id DESC)")
-        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_candidate_knowledge_dedupe ON candidate_knowledge_items(item_type, dedupe_key) WHERE dedupe_key IS NOT NULL")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_candidate_knowledge_status ON candidate_knowledge_items(status, item_type, updated_at DESC)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_evidence_item ON knowledge_evidence(item_id, created_at DESC)")
-        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_anonymous_knowledge_stats_key ON anonymous_knowledge_stats(stat_type, stat_key)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_contribution_queue_status ON knowledge_contribution_queue(status, updated_at DESC)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_mastery_topic_updated ON mastery_snapshots(topic_id, updated_at DESC, id DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_wrong_topic_status ON wrong_questions(topic_id, status)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_qa_topic_created ON qa_records(topic_id, created_at DESC, id DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_review_topic_created ON review_log(topic_id, created_at DESC, id DESC)"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_candidate_knowledge_dedupe ON candidate_knowledge_items(item_type, dedupe_key) WHERE dedupe_key IS NOT NULL"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_candidate_knowledge_status ON candidate_knowledge_items(status, item_type, updated_at DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_knowledge_evidence_item ON knowledge_evidence(item_id, created_at DESC)"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_anonymous_knowledge_stats_key ON anonymous_knowledge_stats(stat_type, stat_key)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_contribution_queue_status ON knowledge_contribution_queue(status, updated_at DESC)"
+        )
         conn.commit()
 
     @staticmethod
-    def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    def _ensure_column(
+        conn: sqlite3.Connection, table: str, column: str, definition: str
+    ) -> None:
         rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
         if column in {str(row["name"]) for row in rows}:
             return
@@ -355,7 +398,10 @@ class StudyStore:
     def _load_seed_if_empty(self) -> None:
         if not self.seed_json_path.is_file():
             return
-        if self.get_raw(STORE_CONFIG) is not None or self.get_raw(STORE_STATE) is not None:
+        if (
+            self.get_raw(STORE_CONFIG) is not None
+            or self.get_raw(STORE_STATE) is not None
+        ):
             return
         if self.get_raw("interactions") or self._has_interactions():
             return
@@ -396,7 +442,9 @@ class StudyStore:
             "difficulty": safe_float(row["difficulty"], 0.5),
             "prerequisites": StudyStore._json_loads(row["prerequisites"], []),
             "related": StudyStore._json_loads(row["related"], []),
-            "typical_misconceptions": StudyStore._json_loads(row["typical_misconceptions"], []),
+            "typical_misconceptions": StudyStore._json_loads(
+                row["typical_misconceptions"], []
+            ),
             "source": str(row["source"] or ""),
             "created_at": str(row["created_at"] or ""),
             "updated_at": str(row["updated_at"] or ""),
@@ -476,13 +524,21 @@ class StudyStore:
                     {
                         "id": topic_id,
                         "name": name,
-                        "subject": str(item.get("subject") or payload.get("subject") or "math"),
+                        "subject": str(
+                            item.get("subject") or payload.get("subject") or "math"
+                        ),
                         "chapter": str(item.get("chapter") or ""),
                         "depth": safe_int(item.get("depth"), 1),
                         "difficulty": safe_float(item.get("difficulty"), 0.5),
-                        "prerequisites": item.get("prerequisites") if isinstance(item.get("prerequisites"), list) else [],
-                        "related": item.get("related") if isinstance(item.get("related"), list) else [],
-                        "typical_misconceptions": item.get("typical_misconceptions") if isinstance(item.get("typical_misconceptions"), list) else [],
+                        "prerequisites": item.get("prerequisites")
+                        if isinstance(item.get("prerequisites"), list)
+                        else [],
+                        "related": item.get("related")
+                        if isinstance(item.get("related"), list)
+                        else [],
+                        "typical_misconceptions": item.get("typical_misconceptions")
+                        if isinstance(item.get("typical_misconceptions"), list)
+                        else [],
                         "source": "seed",
                     },
                     commit=False,
@@ -501,12 +557,20 @@ class StudyStore:
 
     def _has_interactions(self) -> bool:
         with self._lock:
-            row = self._require_conn().execute("SELECT 1 FROM interactions LIMIT 1").fetchone()
+            row = (
+                self._require_conn()
+                .execute("SELECT 1 FROM interactions LIMIT 1")
+                .fetchone()
+            )
             return row is not None
 
     def get_raw(self, key: str) -> dict[str, Any] | None:
         with self._lock:
-            row = self._require_conn().execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()
+            row = (
+                self._require_conn()
+                .execute("SELECT value FROM kv WHERE key = ?", (key,))
+                .fetchone()
+            )
             if row is None:
                 return None
             try:
@@ -524,7 +588,11 @@ class StudyStore:
                 VALUES (?, ?, ?)
                 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
                 """,
-                (key, json.dumps(json_copy(value), ensure_ascii=False, sort_keys=True), now),
+                (
+                    key,
+                    json.dumps(json_copy(value), ensure_ascii=False, sort_keys=True),
+                    now,
+                ),
             )
             self._require_conn().commit()
 
@@ -545,14 +613,20 @@ class StudyStore:
             return fallback
         merged = fallback.to_dict()
         merged.update(raw)
-        merged["active_mode"] = normalize_mode(merged.get("active_mode") or fallback.active_mode)
+        merged["active_mode"] = normalize_mode(
+            merged.get("active_mode") or fallback.active_mode
+        )
         merged["mode_started_at"] = safe_float(merged.get("mode_started_at"), 0.0)
         merged["recent_mode_switches"] = _sanitize_state_item_list(
             merged.get("recent_mode_switches"),
             required_float_key="at",
         )
-        merged["suggestion_cooldowns"] = _sanitize_suggestion_cooldowns(merged.get("suggestion_cooldowns"))
-        merged["session_suggestions"] = _sanitize_state_item_list(merged.get("session_suggestions"))
+        merged["suggestion_cooldowns"] = _sanitize_suggestion_cooldowns(
+            merged.get("suggestion_cooldowns")
+        )
+        merged["session_suggestions"] = _sanitize_state_item_list(
+            merged.get("session_suggestions")
+        )
         merged["mode_lock_until"] = safe_float(merged.get("mode_lock_until"), 0.0)
         return StudyState(**{key: merged[key] for key in fallback.to_dict().keys()})
 
@@ -579,7 +653,9 @@ class StudyStore:
                     kind,
                     input_text,
                     output_text,
-                    json.dumps(json_copy(metadata or {}), ensure_ascii=False, sort_keys=True),
+                    json.dumps(
+                        json_copy(metadata or {}), ensure_ascii=False, sort_keys=True
+                    ),
                     time.time(),
                 ),
             )
@@ -596,15 +672,19 @@ class StudyStore:
 
     def list_interactions(self, limit: int = 20) -> list[dict[str, Any]]:
         with self._lock:
-            rows = self._require_conn().execute(
-                """
+            rows = (
+                self._require_conn()
+                .execute(
+                    """
                 SELECT id, kind, input_text, output_text, metadata, created_at
                 FROM interactions
                 ORDER BY id DESC
                 LIMIT ?
                 """,
-                (max(1, int(limit)),),
-            ).fetchall()
+                    (max(1, int(limit)),),
+                )
+                .fetchall()
+            )
         result: list[dict[str, Any]] = []
         for row in rows:
             try:
@@ -655,8 +735,16 @@ class StudyStore:
                     str(topic.get("chapter") or ""),
                     safe_int(topic.get("depth"), 1),
                     safe_float(topic.get("difficulty"), 0.5),
-                    self._json_dumps(topic.get("prerequisites") if isinstance(topic.get("prerequisites"), list) else []),
-                    self._json_dumps(topic.get("related") if isinstance(topic.get("related"), list) else []),
+                    self._json_dumps(
+                        topic.get("prerequisites")
+                        if isinstance(topic.get("prerequisites"), list)
+                        else []
+                    ),
+                    self._json_dumps(
+                        topic.get("related")
+                        if isinstance(topic.get("related"), list)
+                        else []
+                    ),
                     self._json_dumps(
                         topic.get("typical_misconceptions")
                         if isinstance(topic.get("typical_misconceptions"), list)
@@ -696,7 +784,11 @@ class StudyStore:
 
     def get_topic(self, topic_id: str) -> dict[str, Any] | None:
         with self._lock:
-            row = self._require_conn().execute("SELECT * FROM topics WHERE id = ?", (str(topic_id or ""),)).fetchone()
+            row = (
+                self._require_conn()
+                .execute("SELECT * FROM topics WHERE id = ?", (str(topic_id or ""),))
+                .fetchone()
+            )
         return self._topic_from_row(row)
 
     def find_topic_by_name(self, name: str) -> dict[str, Any] | None:
@@ -704,42 +796,70 @@ class StudyStore:
         if not text:
             return None
         with self._lock:
-            row = self._require_conn().execute(
-                "SELECT * FROM topics WHERE name = ? OR id = ? LIMIT 1",
-                (text, text),
-            ).fetchone()
+            row = (
+                self._require_conn()
+                .execute(
+                    "SELECT * FROM topics WHERE name = ? OR id = ? LIMIT 1",
+                    (text, text),
+                )
+                .fetchone()
+            )
         return self._topic_from_row(row)
 
-    def list_topics(self, limit: int = 100, subject: str | None = None) -> list[dict[str, Any]]:
+    def list_topics(
+        self, limit: int = 100, subject: str | None = None
+    ) -> list[dict[str, Any]]:
         with self._lock:
             if subject:
-                rows = self._require_conn().execute(
-                    "SELECT * FROM topics WHERE subject = ? ORDER BY chapter, depth, id LIMIT ?",
-                    (subject, max(1, int(limit))),
-                ).fetchall()
+                rows = (
+                    self._require_conn()
+                    .execute(
+                        "SELECT * FROM topics WHERE subject = ? ORDER BY chapter, depth, id LIMIT ?",
+                        (subject, max(1, int(limit))),
+                    )
+                    .fetchall()
+                )
             else:
-                rows = self._require_conn().execute(
-                    "SELECT * FROM topics ORDER BY subject, chapter, depth, id LIMIT ?",
-                    (max(1, int(limit)),),
-                ).fetchall()
-        return [topic for topic in (self._topic_from_row(row) for row in rows) if topic is not None]
+                rows = (
+                    self._require_conn()
+                    .execute(
+                        "SELECT * FROM topics ORDER BY subject, chapter, depth, id LIMIT ?",
+                        (max(1, int(limit)),),
+                    )
+                    .fetchall()
+                )
+        return [
+            topic
+            for topic in (self._topic_from_row(row) for row in rows)
+            if topic is not None
+        ]
 
     def count_topics(self) -> int:
         with self._lock:
-            row = self._require_conn().execute("SELECT COUNT(*) AS count FROM topics").fetchone()
+            row = (
+                self._require_conn()
+                .execute("SELECT COUNT(*) AS count FROM topics")
+                .fetchone()
+            )
         return int(row["count"] if row is not None else 0)
 
     def count_tracked_mastery_topics(self) -> int:
         with self._lock:
-            row = self._require_conn().execute(
-                "SELECT COUNT(DISTINCT topic_id) AS count FROM mastery_snapshots"
-            ).fetchone()
+            row = (
+                self._require_conn()
+                .execute(
+                    "SELECT COUNT(DISTINCT topic_id) AS count FROM mastery_snapshots"
+                )
+                .fetchone()
+            )
         return int(row["count"] if row is not None else 0)
 
     def average_latest_mastery(self) -> float:
         with self._lock:
-            row = self._require_conn().execute(
-                """
+            row = (
+                self._require_conn()
+                .execute(
+                    """
                 SELECT AVG(ms.mastery) AS average_mastery
                 FROM mastery_snapshots ms
                 JOIN (
@@ -748,7 +868,9 @@ class StudyStore:
                     GROUP BY topic_id
                 ) latest ON latest.max_id = ms.id
                 """
-            ).fetchone()
+                )
+                .fetchone()
+            )
         return float(row["average_mastery"] or 0.0) if row is not None else 0.0
 
     def upsert_candidate_item(
@@ -781,7 +903,14 @@ class StudyStore:
                     )
                     VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
                     """,
-                    (item_id, item_type, dedupe_key, payload_json, source_value, status),
+                    (
+                        item_id,
+                        item_type,
+                        dedupe_key,
+                        payload_json,
+                        source_value,
+                        status,
+                    ),
                 )
             else:
                 item_id = str(existing["id"])
@@ -796,7 +925,9 @@ class StudyStore:
                     (payload_json, source_value, item_id),
                 )
             conn.commit()
-            row = conn.execute("SELECT * FROM candidate_knowledge_items WHERE id = ?", (item_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM candidate_knowledge_items WHERE id = ?", (item_id,)
+            ).fetchone()
         candidate = self._candidate_from_row(row)
         if candidate is None:
             raise RuntimeError("candidate upsert failed")
@@ -836,7 +967,10 @@ class StudyStore:
                 history_limit=history_limit,
             )
             conn.commit()
-            row = conn.execute("SELECT * FROM knowledge_evidence WHERE id = ?", (int(cursor.lastrowid),)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM knowledge_evidence WHERE id = ?",
+                (int(cursor.lastrowid),),
+            ).fetchone()
         evidence = self._evidence_from_row(row)
         if evidence is None:
             raise RuntimeError("knowledge evidence insert failed")
@@ -844,18 +978,28 @@ class StudyStore:
 
     def get_candidate_item(self, item_id: str) -> dict[str, Any] | None:
         with self._lock:
-            row = self._require_conn().execute(
-                "SELECT * FROM candidate_knowledge_items WHERE id = ?",
-                (str(item_id or ""),),
-            ).fetchone()
+            row = (
+                self._require_conn()
+                .execute(
+                    "SELECT * FROM candidate_knowledge_items WHERE id = ?",
+                    (str(item_id or ""),),
+                )
+                .fetchone()
+            )
         return self._candidate_from_row(row)
 
-    def get_candidate_by_key(self, *, item_type: str, dedupe_key: str) -> dict[str, Any] | None:
+    def get_candidate_by_key(
+        self, *, item_type: str, dedupe_key: str
+    ) -> dict[str, Any] | None:
         with self._lock:
-            row = self._require_conn().execute(
-                "SELECT * FROM candidate_knowledge_items WHERE item_type = ? AND dedupe_key = ? LIMIT 1",
-                (str(item_type or ""), str(dedupe_key or "")),
-            ).fetchone()
+            row = (
+                self._require_conn()
+                .execute(
+                    "SELECT * FROM candidate_knowledge_items WHERE item_type = ? AND dedupe_key = ? LIMIT 1",
+                    (str(item_type or ""), str(dedupe_key or "")),
+                )
+                .fetchone()
+            )
         return self._candidate_from_row(row)
 
     def list_candidate_items(
@@ -896,57 +1040,91 @@ class StudyStore:
         where = "WHERE " + " AND ".join(clauses) if clauses else ""
         params.append(max(1, int(limit)))
         with self._lock:
-            rows = self._require_conn().execute(
-                f"""
+            rows = (
+                self._require_conn()
+                .execute(
+                    f"""
                 SELECT *
                 FROM candidate_knowledge_items
                 {where}
                 ORDER BY updated_at DESC, created_at DESC
                 LIMIT ?
                 """,
-                tuple(params),
-            ).fetchall()
-        return [item for item in (self._candidate_from_row(row) for row in rows) if item is not None]
+                    tuple(params),
+                )
+                .fetchall()
+            )
+        return [
+            item
+            for item in (self._candidate_from_row(row) for row in rows)
+            if item is not None
+        ]
 
-    def list_knowledge_evidence(self, item_id: str | None = None, limit: int = 1000) -> list[dict[str, Any]]:
+    def list_knowledge_evidence(
+        self, item_id: str | None = None, limit: int = 1000
+    ) -> list[dict[str, Any]]:
         item_key = str(item_id or "").strip()
         if not item_key:
             with self._lock:
-                rows = self._require_conn().execute(
-                    """
+                rows = (
+                    self._require_conn()
+                    .execute(
+                        """
                     SELECT *
                     FROM knowledge_evidence
                     ORDER BY id DESC
                     LIMIT ?
                     """,
-                    (max(1, int(limit)),),
-                ).fetchall()
-            return [item for item in (self._evidence_from_row(row) for row in reversed(rows)) if item is not None]
+                        (max(1, int(limit)),),
+                    )
+                    .fetchall()
+                )
+            return [
+                item
+                for item in (self._evidence_from_row(row) for row in reversed(rows))
+                if item is not None
+            ]
         with self._lock:
-            rows = self._require_conn().execute(
-                """
+            rows = (
+                self._require_conn()
+                .execute(
+                    """
                 SELECT *
                 FROM knowledge_evidence
                 WHERE item_id = ?
                 ORDER BY id DESC
                 LIMIT ?
                 """,
-                (item_key, max(1, int(limit))),
-            ).fetchall()
-        return [item for item in (self._evidence_from_row(row) for row in reversed(rows)) if item is not None]
+                    (item_key, max(1, int(limit))),
+                )
+                .fetchall()
+            )
+        return [
+            item
+            for item in (self._evidence_from_row(row) for row in reversed(rows))
+            if item is not None
+        ]
 
     def list_recent_knowledge_evidence(self, limit: int = 20) -> list[dict[str, Any]]:
         with self._lock:
-            rows = self._require_conn().execute(
-                """
+            rows = (
+                self._require_conn()
+                .execute(
+                    """
                 SELECT *
                 FROM knowledge_evidence
                 ORDER BY id DESC
                 LIMIT ?
                 """,
-                (max(1, int(limit)),),
-            ).fetchall()
-        return [item for item in (self._evidence_from_row(row) for row in rows) if item is not None]
+                    (max(1, int(limit)),),
+                )
+                .fetchall()
+            )
+        return [
+            item
+            for item in (self._evidence_from_row(row) for row in rows)
+            if item is not None
+        ]
 
     def update_candidate_score_status(
         self,
@@ -986,14 +1164,22 @@ class StudyStore:
 
     def candidate_status_counts(self) -> dict[str, Any]:
         with self._lock:
-            rows = self._require_conn().execute(
-                """
+            rows = (
+                self._require_conn()
+                .execute(
+                    """
                 SELECT status, item_type, COUNT(*) AS count
                 FROM candidate_knowledge_items
                 GROUP BY status, item_type
                 """
-            ).fetchall()
-            total_row = self._require_conn().execute("SELECT COUNT(*) AS count FROM candidate_knowledge_items").fetchone()
+                )
+                .fetchall()
+            )
+            total_row = (
+                self._require_conn()
+                .execute("SELECT COUNT(*) AS count FROM candidate_knowledge_items")
+                .fetchone()
+            )
         by_status: dict[str, int] = {}
         by_type: dict[str, int] = {}
         for row in rows:
@@ -1060,27 +1246,43 @@ class StudyStore:
 
     def list_anonymous_knowledge_stats(self, limit: int = 100) -> list[dict[str, Any]]:
         with self._lock:
-            rows = self._require_conn().execute(
-                """
+            rows = (
+                self._require_conn()
+                .execute(
+                    """
                 SELECT *
                 FROM anonymous_knowledge_stats
                 ORDER BY updated_at DESC, created_at DESC
                 LIMIT ?
                 """,
-                (max(1, int(limit)),),
-            ).fetchall()
-        return [item for item in (self._anonymous_stat_from_row(row) for row in rows) if item is not None]
+                    (max(1, int(limit)),),
+                )
+                .fetchall()
+            )
+        return [
+            item
+            for item in (self._anonymous_stat_from_row(row) for row in rows)
+            if item is not None
+        ]
 
     def anonymous_knowledge_stats_summary(self) -> dict[str, Any]:
         with self._lock:
-            rows = self._require_conn().execute(
-                """
+            rows = (
+                self._require_conn()
+                .execute(
+                    """
                 SELECT stat_type, min_sample_met, COUNT(*) AS count, COALESCE(SUM(sample_count), 0) AS samples
                 FROM anonymous_knowledge_stats
                 GROUP BY stat_type, min_sample_met
                 """
-            ).fetchall()
-            queue_row = self._require_conn().execute("SELECT COUNT(*) AS count FROM knowledge_contribution_queue").fetchone()
+                )
+                .fetchall()
+            )
+            queue_row = (
+                self._require_conn()
+                .execute("SELECT COUNT(*) AS count FROM knowledge_contribution_queue")
+                .fetchone()
+            )
         by_type: dict[str, int] = {}
         min_sample_met = 0
         sample_count = 0
@@ -1128,7 +1330,9 @@ class StudyStore:
                 order_by="rowid DESC",
             )
             conn.commit()
-            row = conn.execute("SELECT * FROM knowledge_contribution_queue WHERE id = ?", (queue_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM knowledge_contribution_queue WHERE id = ?", (queue_id,)
+            ).fetchone()
         return {
             "id": str(row["id"]),
             "stats": self._json_loads(row["stats_json"], []),
@@ -1137,17 +1341,23 @@ class StudyStore:
             "updated_at": str(row["updated_at"] or ""),
         }
 
-    def list_knowledge_contribution_queue(self, limit: int = 50) -> list[dict[str, Any]]:
+    def list_knowledge_contribution_queue(
+        self, limit: int = 50
+    ) -> list[dict[str, Any]]:
         with self._lock:
-            rows = self._require_conn().execute(
-                """
+            rows = (
+                self._require_conn()
+                .execute(
+                    """
                 SELECT *
                 FROM knowledge_contribution_queue
                 ORDER BY updated_at DESC, created_at DESC
                 LIMIT ?
                 """,
-                (max(1, int(limit)),),
-            ).fetchall()
+                    (max(1, int(limit)),),
+                )
+                .fetchall()
+            )
         return [
             {
                 "id": str(row["id"]),
@@ -1161,7 +1371,9 @@ class StudyStore:
 
     def clear_knowledge_contribution_queue(self) -> int:
         with self._lock:
-            cursor = self._require_conn().execute("DELETE FROM knowledge_contribution_queue")
+            cursor = self._require_conn().execute(
+                "DELETE FROM knowledge_contribution_queue"
+            )
             self._require_conn().commit()
         return int(cursor.rowcount or 0)
 
@@ -1191,7 +1403,11 @@ class StudyStore:
                     float(snapshot.get("confidence") or 0.0),
                     str(snapshot.get("level") or ""),
                     int(snapshot.get("attempts") or 0),
-                    self._json_dumps(snapshot.get("flags") if isinstance(snapshot.get("flags"), list) else []),
+                    self._json_dumps(
+                        snapshot.get("flags")
+                        if isinstance(snapshot.get("flags"), list)
+                        else []
+                    ),
                 ),
             )
             self._trim_append_only_rows(
@@ -1205,8 +1421,10 @@ class StudyStore:
 
     def get_latest_mastery(self, topic_id: str) -> dict[str, Any] | None:
         with self._lock:
-            row = self._require_conn().execute(
-                """
+            row = (
+                self._require_conn()
+                .execute(
+                    """
                 SELECT ms.*, t.name AS topic_name, t.chapter AS chapter, t.subject AS subject
                 FROM mastery_snapshots ms
                 LEFT JOIN topics t ON t.id = ms.topic_id
@@ -1214,14 +1432,18 @@ class StudyStore:
                 ORDER BY ms.id DESC
                 LIMIT 1
                 """,
-                (str(topic_id or ""),),
-            ).fetchone()
+                    (str(topic_id or ""),),
+                )
+                .fetchone()
+            )
         return self._mastery_from_row(row)
 
     def list_mastery_overview(self, limit: int = 20) -> list[dict[str, Any]]:
         with self._lock:
-            rows = self._require_conn().execute(
-                """
+            rows = (
+                self._require_conn()
+                .execute(
+                    """
                 SELECT ms.*, t.name AS topic_name, t.chapter AS chapter, t.subject AS subject
                 FROM mastery_snapshots ms
                 JOIN (
@@ -1233,9 +1455,15 @@ class StudyStore:
                 ORDER BY ms.updated_at DESC, ms.id DESC
                 LIMIT ?
                 """,
-                (max(1, int(limit)),),
-            ).fetchall()
-        return [item for item in (self._mastery_from_row(row) for row in rows) if item is not None]
+                    (max(1, int(limit)),),
+                )
+                .fetchall()
+            )
+        return [
+            item
+            for item in (self._mastery_from_row(row) for row in rows)
+            if item is not None
+        ]
 
     @staticmethod
     def _mastery_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -1273,15 +1501,19 @@ class StudyStore:
 
     def list_sessions(self, limit: int = 100) -> list[dict[str, Any]]:
         with self._lock:
-            rows = self._require_conn().execute(
-                """
+            rows = (
+                self._require_conn()
+                .execute(
+                    """
                 SELECT *
                 FROM sessions
                 ORDER BY started_at DESC, id DESC
                 LIMIT ?
                 """,
-                (max(1, int(limit)),),
-            ).fetchall()
+                    (max(1, int(limit)),),
+                )
+                .fetchall()
+            )
         return [
             {
                 "id": str(row["id"]),
@@ -1332,8 +1564,12 @@ class StudyStore:
                     int(response_time_ms) if response_time_ms is not None else None,
                 ),
             )
-            row = conn.execute("SELECT topics_touched FROM sessions WHERE id = ?", (session_key,)).fetchone()
-            touched = self._json_loads(row["topics_touched"], []) if row is not None else []
+            row = conn.execute(
+                "SELECT topics_touched FROM sessions WHERE id = ?", (session_key,)
+            ).fetchone()
+            touched = (
+                self._json_loads(row["topics_touched"], []) if row is not None else []
+            )
             if topic_key and topic_key not in touched:
                 touched.append(topic_key)
             conn.execute(
@@ -1355,18 +1591,28 @@ class StudyStore:
 
     def list_qa_records(self, limit: int = 100) -> list[dict[str, Any]]:
         with self._lock:
-            rows = self._require_conn().execute(
-                """
+            rows = (
+                self._require_conn()
+                .execute(
+                    """
                 SELECT *
                 FROM qa_records
                 ORDER BY id DESC
                 LIMIT ?
                 """,
-                (max(1, int(limit)),),
-            ).fetchall()
-        return [item for item in (self._qa_record_from_row(row) for row in reversed(rows)) if item is not None]
+                    (max(1, int(limit)),),
+                )
+                .fetchall()
+            )
+        return [
+            item
+            for item in (self._qa_record_from_row(row) for row in reversed(rows))
+            if item is not None
+        ]
 
-    def list_qa_records_for_topic(self, topic_id: str, limit: int = 10) -> list[dict[str, Any]]:
+    def list_qa_records_for_topic(
+        self, topic_id: str, limit: int = 10
+    ) -> list[dict[str, Any]]:
         topic_key = str(topic_id or "").strip()
         topic_predicate = "topic_id = ?"
         params: list[Any] = [topic_key]
@@ -1375,17 +1621,25 @@ class StudyStore:
             params = []
         params.append(max(1, int(limit)))
         with self._lock:
-            rows = self._require_conn().execute(
-                f"""
+            rows = (
+                self._require_conn()
+                .execute(
+                    f"""
                 SELECT *
                 FROM qa_records
                 WHERE {topic_predicate}
                 ORDER BY id DESC
                 LIMIT ?
                 """,
-                tuple(params),
-            ).fetchall()
-        return [item for item in (self._qa_record_from_row(row) for row in reversed(rows)) if item is not None]
+                    tuple(params),
+                )
+                .fetchall()
+            )
+        return [
+            item
+            for item in (self._qa_record_from_row(row) for row in reversed(rows))
+            if item is not None
+        ]
 
     def _qa_record_from_row(self, row: sqlite3.Row | None) -> dict[str, Any] | None:
         if row is None:
@@ -1437,7 +1691,9 @@ class StudyStore:
         return question_id
 
     def get_retry_wrong_question(self, topic_id: str) -> dict[str, Any] | None:
-        rows = self.list_wrong_questions(limit=1, topic_id=topic_id, statuses=("active", "retrying"))
+        rows = self.list_wrong_questions(
+            limit=1, topic_id=topic_id, statuses=("active", "retrying")
+        )
         return rows[0] if rows else None
 
     def list_wrong_questions(
@@ -1458,8 +1714,10 @@ class StudyStore:
             params.append(str(topic_id))
         params.append(max(1, int(limit)))
         with self._lock:
-            rows = self._require_conn().execute(
-                f"""
+            rows = (
+                self._require_conn()
+                .execute(
+                    f"""
                 SELECT *
                 FROM wrong_questions
                 WHERE {where}
@@ -1470,8 +1728,10 @@ class StudyStore:
                     id DESC
                 LIMIT ?
                 """,
-                tuple(params),
-            ).fetchall()
+                    tuple(params),
+                )
+                .fetchall()
+            )
         return [self._wrong_question_from_row(row) for row in rows]
 
     def _wrong_question_from_row(self, row: sqlite3.Row) -> dict[str, Any]:
@@ -1506,10 +1766,14 @@ class StudyStore:
             )
             self._require_conn().commit()
 
-    def record_wrong_question_correct(self, *, topic_id: str, error_type: str, difficulty: int) -> None:
+    def record_wrong_question_correct(
+        self, *, topic_id: str, error_type: str, difficulty: int
+    ) -> None:
         with self._lock:
-            rows = self._require_conn().execute(
-                """
+            rows = (
+                self._require_conn()
+                .execute(
+                    """
                 SELECT *
                 FROM wrong_questions
                 WHERE topic_id = ? AND status IN ('active', 'retrying')
@@ -1520,8 +1784,10 @@ class StudyStore:
                     id DESC
                 LIMIT 5
                 """,
-                (str(topic_id or ""),),
-            ).fetchall()
+                    (str(topic_id or ""),),
+                )
+                .fetchall()
+            )
             matched_generic_correct = False
             current_error_type = str(error_type or "none").strip()
             processed_error_types: set[str] = set()
@@ -1538,7 +1804,9 @@ class StudyStore:
                 if row_error_type in processed_error_types:
                     continue
                 consecutive = int(row["consecutive_correct"] or 0) + 1
-                max_difficulty = max(int(row["max_correct_difficulty"] or 0), int(difficulty or 0))
+                max_difficulty = max(
+                    int(row["max_correct_difficulty"] or 0), int(difficulty or 0)
+                )
                 old_enough = bool(
                     self._require_conn()
                     .execute(
@@ -1584,10 +1852,14 @@ class StudyStore:
 
     def get_fsrs_card(self, topic_id: str) -> dict[str, Any] | None:
         with self._lock:
-            row = self._require_conn().execute(
-                "SELECT * FROM fsrs_cards WHERE topic_id = ?",
-                (str(topic_id or ""),),
-            ).fetchone()
+            row = (
+                self._require_conn()
+                .execute(
+                    "SELECT * FROM fsrs_cards WHERE topic_id = ?",
+                    (str(topic_id or ""),),
+                )
+                .fetchone()
+            )
         if row is None:
             return None
         return {
@@ -1599,7 +1871,9 @@ class StudyStore:
             "updated_at": str(row["updated_at"] or ""),
         }
 
-    def upsert_fsrs_card(self, *, topic_id: str, card: dict[str, Any], last_rating: int) -> None:
+    def upsert_fsrs_card(
+        self, *, topic_id: str, card: dict[str, Any], last_rating: int
+    ) -> None:
         with self._lock:
             self._require_conn().execute(
                 """
@@ -1623,14 +1897,22 @@ class StudyStore:
     def list_fsrs_cards(self, limit: int | None = 100) -> list[dict[str, Any]]:
         with self._lock:
             if limit is None:
-                rows = self._require_conn().execute(
-                    "SELECT * FROM fsrs_cards ORDER BY updated_at DESC, id DESC",
-                ).fetchall()
+                rows = (
+                    self._require_conn()
+                    .execute(
+                        "SELECT * FROM fsrs_cards ORDER BY updated_at DESC, id DESC",
+                    )
+                    .fetchall()
+                )
             else:
-                rows = self._require_conn().execute(
-                    "SELECT * FROM fsrs_cards ORDER BY updated_at DESC, id DESC LIMIT ?",
-                    (max(1, int(limit)),),
-                ).fetchall()
+                rows = (
+                    self._require_conn()
+                    .execute(
+                        "SELECT * FROM fsrs_cards ORDER BY updated_at DESC, id DESC LIMIT ?",
+                        (max(1, int(limit)),),
+                    )
+                    .fetchall()
+                )
         return [
             {
                 "id": int(row["id"]),
@@ -1661,7 +1943,13 @@ class StudyStore:
                 INSERT INTO review_log (topic_id, card_id, rating, scheduled_days, actual_days, created_at)
                 VALUES (?, ?, ?, ?, ?, datetime('now'))
                 """,
-                (topic_key, card_id, int(rating or 0), int(scheduled_days or 0), int(actual_days or 0)),
+                (
+                    topic_key,
+                    card_id,
+                    int(rating or 0),
+                    int(scheduled_days or 0),
+                    int(actual_days or 0),
+                ),
             )
             self._trim_append_only_rows(
                 conn,
@@ -1674,15 +1962,19 @@ class StudyStore:
 
     def list_review_log(self, limit: int = 100) -> list[dict[str, Any]]:
         with self._lock:
-            rows = self._require_conn().execute(
-                """
+            rows = (
+                self._require_conn()
+                .execute(
+                    """
                 SELECT *
                 FROM review_log
                 ORDER BY id DESC
                 LIMIT ?
                 """,
-                (max(1, int(limit)),),
-            ).fetchall()
+                    (max(1, int(limit)),),
+                )
+                .fetchall()
+            )
         return [
             {
                 "id": int(row["id"]),
@@ -1697,6 +1989,7 @@ class StudyStore:
         ]
 
     def export_json(self) -> dict[str, Any]:
+        memory_decks = MemoryDeckStore(self)
         return {
             STORE_CONFIG: self.get_raw(STORE_CONFIG) or {},
             STORE_STATE: self.get_raw(STORE_STATE) or {},
@@ -1710,6 +2003,13 @@ class StudyStore:
             "review_log": self.list_review_log(limit=5000),
             "candidate_knowledge_items": self.list_candidate_items(limit=5000),
             "knowledge_evidence": self.list_knowledge_evidence(limit=5000),
-            "anonymous_knowledge_stats": self.list_anonymous_knowledge_stats(limit=5000),
-            "knowledge_contribution_queue": self.list_knowledge_contribution_queue(limit=5000),
+            "anonymous_knowledge_stats": self.list_anonymous_knowledge_stats(
+                limit=5000
+            ),
+            "knowledge_contribution_queue": self.list_knowledge_contribution_queue(
+                limit=5000
+            ),
+            "memory_decks": memory_decks.list_decks(limit=5000),
+            "memory_items": memory_decks.list_items(limit=5000, include_archived=True),
+            "memory_due_reviews": memory_decks.due_reviews(limit=5000),
         }

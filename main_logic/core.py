@@ -73,9 +73,19 @@ from config.prompts.prompts_sys import (
 from config.prompts.prompts_memory import (
     RECALL_MEMORY_TOOL_DESCRIPTION,
     RECALL_MEMORY_TOOL_QUERY_DESCRIPTION,
+    RECALL_MEMORY_TOOL_TIME_DESCRIPTION,
     RECALL_MEMORY_TOOL_NO_RESULT,
+    RECALL_MEMORY_TOOL_NO_RESULT_LOOSEN,
+    RECALL_MEMORY_TOOL_FILLER,
     RECALL_MEMORY_TOOL_FOUND_HEADER,
 )
+
+# recall 占位语音用的合成 worker-sid 后缀。仅用于在 TTS worker 层把 filler 切成
+# 一段独立 utterance（见 _emit_recall_filler_tts）；``send_speech`` 在发往前端前会
+# 把它剥掉、归一回本轮 turn sid。否则在「把 request-id 透传进音频事件」的 provider
+# （如 minimax 的 ("__audio__", sid, ...) 路径）下，filler 音频会带着合成 sid 到前端，
+# 用户打断时前端按 turn sid 匹配不到 filler chunk，barge-in 取消不掉 filler。
+_RECALL_FILLER_SID_SUFFIX = "::recall-filler"
 
 
 # 内部 item 渲染时的视觉标记。状态信息已在外层 SYSTEM_NOTIFICATION_TASK_ACTIVE
@@ -148,6 +158,40 @@ def _format_callback_source(cb: dict, lang: str) -> str:
     return _loc(descriptor, lang).format(name=name)
 
 
+def apply_role_placeholders(
+    text: str,
+    *,
+    lanlan_name: str = "",
+    master_name: str = "",
+) -> str:
+    """Substitute ``{MASTER_NAME}`` / ``{LANLAN_NAME}`` placeholders in
+    plugin-supplied text at the LLM-injection boundary.
+
+    Plugin authors don't know which ``LLMSessionManager`` (and therefore which
+    ``master_name`` / ``lanlan_name`` pair) the text will route to — that's a
+    host-side visibility decision. So the canonical contract is:
+
+        plugin writes ``"向 {MASTER_NAME} 汇报…"`` →
+        host expands at the injection site, per session.
+
+    Uses ``str.replace`` rather than ``str.format`` so that other braces in
+    the text (JSON fragments, code snippets, user content containing stray
+    ``{``) don't raise ``KeyError``. Empty names short-circuit — the
+    placeholder is left in place rather than replaced with ``""``, on the
+    theory that the literal token is less misleading than an empty hole.
+
+    This is the SINGLE source of truth for the placeholder contract. New
+    plugin-text injection sites should funnel through this helper.
+    """
+    if not text:
+        return text
+    if isinstance(master_name, str) and master_name:
+        text = text.replace("{MASTER_NAME}", master_name)
+    if isinstance(lanlan_name, str) and lanlan_name:
+        text = text.replace("{LANLAN_NAME}", lanlan_name)
+    return text
+
+
 def _render_callback_inner_item(
     cb: dict,
     lang: str,
@@ -161,21 +205,17 @@ def _render_callback_inner_item(
     and detail empty); the caller can then drop the line and rely on the
     outer header alone to express that something happened.
 
-    ``{MASTER_NAME}`` and ``{LANLAN_NAME}`` placeholders in plugin-supplied
-    ``summary``/``detail`` are substituted here so plugin authors can write
-    role-aware text without having to learn the live character names. The
-    substitution uses ``str.replace`` rather than ``str.format`` so that
-    other braces in the text (e.g. JSON fragments in detail) don't trigger
-    a KeyError.
+    Plugin-supplied ``summary``/``detail`` may contain ``{MASTER_NAME}`` /
+    ``{LANLAN_NAME}`` placeholders; see :func:`apply_role_placeholders`.
     """
-    summary = (cb.get("summary") or "").strip()
-    detail = (cb.get("detail") or "").strip()
-    if master_name:
-        summary = summary.replace("{MASTER_NAME}", master_name)
-        detail = detail.replace("{MASTER_NAME}", master_name)
-    if lanlan_name:
-        summary = summary.replace("{LANLAN_NAME}", lanlan_name)
-        detail = detail.replace("{LANLAN_NAME}", lanlan_name)
+    summary = apply_role_placeholders(
+        (cb.get("summary") or "").strip(),
+        lanlan_name=lanlan_name, master_name=master_name,
+    )
+    detail = apply_role_placeholders(
+        (cb.get("detail") or "").strip(),
+        lanlan_name=lanlan_name, master_name=master_name,
+    )
     text = summary or detail
     if not text:
         return ""
@@ -304,7 +344,13 @@ def _build_callback_instruction(
     return "\n\n".join(parts)
 
 
-def _format_voice_swap_item(entry: dict, lang: str) -> str:
+def _format_voice_swap_item(
+    entry: dict,
+    lang: str,
+    *,
+    lanlan_name: str = "",
+    master_name: str = "",
+) -> str:
     """Render a single voice-mode pending_extra_replies entry to a bulleted
     line for the hot-swap injection.
 
@@ -315,11 +361,22 @@ def _format_voice_swap_item(entry: dict, lang: str) -> str:
     (the voice-mode equivalent of the header-only branch in
     ``_build_callback_instruction``).
 
+    Plugin-supplied ``summary``/``detail`` may contain ``{MASTER_NAME}`` /
+    ``{LANLAN_NAME}`` placeholders; see :func:`apply_role_placeholders`. The
+    synthesized placeholder fallback uses host-side localized phrases so it
+    needs no role substitution.
+
     Returns ``""`` when the entry is genuinely empty (no body, no error, and
     a benign ``completed`` status) — caller filters those out.
     """
-    summary = (entry.get("summary") or "").strip()
-    detail = (entry.get("detail") or "").strip()
+    summary = apply_role_placeholders(
+        (entry.get("summary") or "").strip(),
+        lanlan_name=lanlan_name, master_name=master_name,
+    )
+    detail = apply_role_placeholders(
+        (entry.get("detail") or "").strip(),
+        lanlan_name=lanlan_name, master_name=master_name,
+    )
     text = summary or detail
     status = entry.get("status") or "completed"
     emoji = _STATUS_EMOJI.get(status, "•")
@@ -400,7 +457,10 @@ def _render_pending_extra_replies_by_origin(
 
     blocks: list[str] = []
     if task_entries:
-        items = [_format_voice_swap_item(e, lang) for e in task_entries]
+        items = [
+            _format_voice_swap_item(e, lang, lanlan_name=lanlan_name, master_name=master_name)
+            for e in task_entries
+        ]
         items = [s for s in items if s]
         if items:
             blocks.append(
@@ -409,7 +469,10 @@ def _render_pending_extra_replies_by_origin(
                 + _loc(CONTEXT_SUMMARY_TASK_FOOTER, lang)
             )
     if event_entries:
-        items = [_format_voice_swap_item(e, lang) for e in event_entries]
+        items = [
+            _format_voice_swap_item(e, lang, lanlan_name=lanlan_name, master_name=master_name)
+            for e in event_entries
+        ]
         items = [s for s in items if s]
         if items:
             blocks.append(
@@ -465,6 +528,12 @@ logger = get_module_logger(__name__, "Main")
 # 一整轮。
 IDLE_SESSION_RESET_THRESHOLD_SECONDS = 1800
 IDLE_SESSION_RESET_CHECK_INTERVAL_SECONDS = 60
+
+# 前端文本会话 start_session 等 session_started 的硬超时（static/app-buttons.js
+# 的 setTimeout(..., 15000)）。start_session 去重路径等 in-flight 启动落定后给
+# 本请求补发 ack 时，等待上限绑到这个值：超过前端这个超时再补发 session_started
+# 已无意义（前端早已 reject 并发 end_session），故以它为有意义窗口的天然上界。
+FRONTEND_START_SESSION_TIMEOUT_SECONDS = 15.0
 
 # 主动搭话（proactive）调用 prompt_ephemeral 时设置的 sid 期望值。
 # 目的：prompt_ephemeral 内部通过 on_text_delta=handle_text_data 回调 enqueue TTS，
@@ -805,6 +874,40 @@ class LLMSessionManager:
         from main_logic.activity import UserActivityTracker
         self._activity_tracker = UserActivityTracker(lanlan_name)
 
+        # 进入游戏/娱乐 或 进入专注工作时，给前端推一次性情境信号——前端（仅 A/B
+        # 实验组 vision_chat_default_off、每会话每类一次）据此弹窗问要不要开/关主动搭话
+        # 里的屏幕分享来源。后端只检测「进入」那一刻并推送，去重在前端。
+        # 屏幕分享来源只在隐私关（vision 开）时才有意义；隐私开时 tracker 心跳本就不
+        # tick（见 _activity_guess_loop 的 _privacy_mode_active 早退），自然不会触发。
+        async def _push_activity_context_prompt(context: str) -> None:
+            # 后端这里也按 branch 把关：非实验组（main）压根不推这条信号，连前端 drop
+            # 的开销都省，确保控制组完全无感（前端 _isExperimentBranch 是第二道闸）。
+            # 活动 loop 在「主动搭话已开」的 main 用户上也会跑，故这道后端 gate 必要。
+            try:
+                from utils.token_tracker import get_telemetry_branch
+                if get_telemetry_branch() != 'vision_chat_default_off':
+                    return
+            except Exception:
+                return
+            ws = self.websocket
+            if not (
+                ws
+                and hasattr(ws, 'client_state')
+                and ws.client_state == ws.client_state.CONNECTED
+            ):
+                return
+            try:
+                await ws.send_json({
+                    'type': 'activity_context_prompt',
+                    'context': context,
+                })
+            except Exception as e:
+                logger.debug(
+                    '[%s] activity_context_prompt WS send failed: %s',
+                    self.lanlan_name, e,
+                )
+        self._activity_tracker.set_context_prompt_callback(_push_activity_context_prompt)
+
         # AI 当前轮文本 buffer：每个 send_lanlan_response chunk 累加，turn end
         # 时连同 on_ai_message 一起喂给 tracker。后者用末尾文本判断是否问问号
         # → 触发 unfinished_thread 机制（5 分钟内允许至多 2 次跟进）。
@@ -1086,6 +1189,61 @@ class LLMSessionManager:
 
         return status
 
+    async def _emit_recall_filler_tts(self, text: str, turn_sid: str) -> bool:
+        """把 recall 占位语音作为一个**独立 worker utterance 立即合成播放**。
+
+        关键设计——用一个区别于本轮 turn sid 的 *worker-only* filler sid 入队，
+        随后发 ``(None, None)`` flush：
+
+        - TTS worker 把 filler 当成一段完整 utterance 立即 commit 合成出声（填补
+          检索空窗）；
+        - 之后正文用真正的 turn sid 入队时，worker 看到 ``current_speech_id != sid``
+          会自动开新 utterance 并 reset ``text_done_sent``。若 filler 复用同一个
+          turn sid，worker 的 ``sid is None`` 分支只置 ``text_done_sent=True`` 却不
+          换 sid，正文就会在 ``if text_done_sent: 丢弃残余文本`` 处被整段丢掉
+          （= 正文没声音）。用独立 sid 正是绕开这个 worker 行为。
+
+        注意：worker 内部 sid 仅用于切分 utterance；发往前端的音频仍带 core 的
+        ``self.current_speech_id``（= turn sid），所以前端看到的是同一轮连续音频，
+        无需改动前端。
+
+        未就绪时直接放弃即时 filler（返回 False），**不**退化成"塞进 pending 等
+        正文一起 flush"——那正是之前"filler 粘在正文前"的旧 bug。
+        """
+        if not self.use_tts:
+            return False
+        async with self.tts_cache_lock:
+            if self.current_speech_id != turn_sid:
+                return False
+            if not (self.tts_ready and self.tts_thread and self.tts_thread.is_alive()):
+                return False
+            # 切到 filler 的 worker-sid 之前，先处理本轮 turn_sid 可能还在管线里的
+            # pre-tool 正文（provider 先吐 content 再进 tool_calls 时会有，见
+            # _astream_openai_with_tools 的 streamed_text_buffer）。直接 _enqueue
+            # filler_sid 会让 _enqueue_tts_text_chunk 因 sid 变化 reset stripper、丢掉
+            # turn_sid 仍 pending 的文本，且 worker 换连接也会丢 server 端缓冲，造成同轮
+            # 正文缺字（Codex P2）。所以先把 stripper pending flush 出去、并用 (None,None)
+            # 把 turn_sid utterance commit 掉（worker 发 text.done 后才换 sid，不丢内容）。
+            # 仅当本轮确有 turn_sid 文本入过队（_tts_norm_speech_id == turn_sid）才触发；
+            # 模型首动作即调 recall（无 pre-tool 文本）时跳过，行为不变。
+            if self._tts_norm_speech_id == turn_sid:
+                pre_tool = self._tts_markdown_stripper.flush()
+                if pre_tool:
+                    pre_tool = self._tts_bracket_stripper.feed(pre_tool)
+                self._tts_bracket_stripper.flush()
+                if pre_tool:
+                    self.tts_request_queue.put((turn_sid, pre_tool))
+                    self._remember_pending_ai_voice_echo(turn_sid, pre_tool)
+                # 直接放 (None,None)，不走 _request_tts_done_locked，故不置
+                # _tts_done_queued_for_turn——正文/收尾仍各自正常 flush。
+                self.tts_request_queue.put((None, None))
+            filler_sid = f"{turn_sid}{_RECALL_FILLER_SID_SUFFIX}"
+            self._enqueue_tts_text_chunk(filler_sid, text)
+            # flush 这段独立 utterance。用 filler_sid 而非 turn sid，所以**不**触碰
+            # 本轮 _tts_done_queued_for_turn——正文之后仍按正常 turn-end 流程 flush。
+            self.tts_request_queue.put((None, None))
+            return True
+
     def _remember_avatar_interaction_id(self, interaction_id: str) -> None:
         if interaction_id in self._recent_avatar_interaction_id_set:
             return
@@ -1283,10 +1441,26 @@ class LLMSessionManager:
         async with self.lock:
             self.current_speech_id = str(uuid4())
 
-    async def handle_text_data(self, text: str, is_first_chunk: bool = False):
-        """文本回调：处理文本显示和TTS（用于文本模式）"""
+    async def handle_text_data(
+        self,
+        text: str,
+        is_first_chunk: bool = False,
+        *,
+        ui_enabled: bool = True,
+        tts_enabled: bool = True,
+    ):
+        """文本回调：处理文本显示和 TTS（用于文本模式）。
+
+        ``ui_enabled`` / ``tts_enabled`` 拆分由 OmniOfflineClient 的长回复
+        summary 路径用：cutover 之后的 tail 文本只走 UI（保持前端"显示全文"），
+        summary LLM 算出来的浓缩版只走 TTS（保持 TTS 不读完整尾巴）。两个标
+        志互斥也成立——既不去 UI 又不去 TTS 等于丢弃整段，直接 return。
+        """
         if self._takeover_active:
             logger.info("[%s] session takeover active: dropping ordinary realtime text chunk len=%d", self.lanlan_name, len(text or ""))
+            return
+
+        if not ui_enabled and not tts_enabled:
             return
 
         # 主动搭话 race guard：prompt_ephemeral 路径会设置 _proactive_expected_sid
@@ -1302,8 +1476,17 @@ class LLMSessionManager:
             )
             return
 
-        # 如果是新消息的第一个chunk，清空TTS队列和缓存以打断之前的语音
-        if is_first_chunk and self.use_tts:
+        # 如果是新消息的第一个chunk，清空TTS队列和缓存以打断之前的语音。
+        # summary epilogue 触发的 TTS-only 注入 is_first_chunk=False，不会
+        # 误清掉本轮已经播放/排队的 prefix 音频。
+        #
+        # 注意：这里**不**为 recall 占位语音（filler）开例外。filler 走独立 worker
+        # sid 并在检索期间就立即 flush + 经 tts_response_handler 发往前端，正文首
+        # chunk 到达时 filler 早已送达，pending / response_queue 里不再有它，清理碰
+        # 不到。反过来，这个首包清理在某些路径（如 no-server-VAD 的 response.done
+        # 只 rotate sid、不清 TTS）是下一个唯一的打断点，若为 filler 跳过会让上一轮
+        # 残留音频漏清、与新轮重叠，破坏 barge-in（Codex P1）。故保持无条件清理。
+        if is_first_chunk and self.use_tts and tts_enabled:
             async with self.tts_cache_lock:
                 self.tts_pending_chunks.clear()
                 self._discard_pending_ai_voice_echo()
@@ -1317,14 +1500,15 @@ class LLMSessionManager:
                         break
 
         # 文本模式下，无论是否使用TTS，都要发送文本到前端显示
-        await self.send_lanlan_response(
-            text,
-            is_first_chunk,
-            remember_voice_echo=not self.use_tts,
-        )
-        
+        if ui_enabled:
+            await self.send_lanlan_response(
+                text,
+                is_first_chunk,
+                remember_voice_echo=not self.use_tts,
+            )
+
         # 如果配置了TTS，将文本发送到TTS队列或缓存
-        if self.use_tts:
+        if self.use_tts and tts_enabled:
             async with self.tts_cache_lock:
                 # 检查TTS是否就绪
                 if self.tts_ready and self.tts_thread and self.tts_thread.is_alive():
@@ -1947,6 +2131,18 @@ class LLMSessionManager:
             if transcript_text:
                 self._activity_tracker.on_user_message(text=transcript)
                 self._session_turn_count += 1
+                # Telemetry：D1 漏斗——本进程首条用户消息（语音路径）。
+                try:
+                    from utils.token_tracker import TokenTracker as _TT
+                    _tt = _TT.get_instance()
+                    _tt.note_first_user_message("voice")
+                    # 每条用户消息：user_message_sent counter（轮数 + voice/text 占比）
+                    # + 累加 per-session 轮数（session_end emit session_turn_count）。
+                    # 只在此真语音消息点调，避开 2041 openclaw 文本 handoff 复用，杜绝双计。
+                    _tt.note_user_message("voice")
+                except Exception:
+                    # 埋点 best-effort，绝不阻塞语音转录消息处理（同文本路径）。
+                    pass
                 # 与 on_user_message 对偶：把"用户原话"推到插件总线 user-context
                 # bucket。文本路径在 _process_stream_data_internal 已自行调用，
                 # 这里只覆盖语音路径，避免 openclaw handoff（is_voice_source=False）
@@ -2679,8 +2875,15 @@ class LLMSessionManager:
                         "type": "string",
                         "description": _loc(RECALL_MEMORY_TOOL_QUERY_DESCRIPTION, _lang),
                     },
+                    "time": {
+                        "type": "string",
+                        "description": _loc(RECALL_MEMORY_TOOL_TIME_DESCRIPTION, _lang),
+                    },
                 },
-                "required": ["query"],
+                # query / time 至少给一个：只给 time 就按时间回溯（不依赖
+                # 内容），只给 query 就语义检索。两者都空时 handler 早退回
+                # "没有找到相关记忆"。故 required 留空，靠 handler 兜底。
+                "required": [],
             },
             handler=self._handle_recall_memory_call,
             metadata={"source": "builtin"},
@@ -2710,10 +2913,15 @@ class LLMSessionManager:
         raw_query = args_dict.get("query")
         if isinstance(raw_query, str):
             query = raw_query.strip()
+        time_arg = ""
+        raw_time = args_dict.get("time")
+        if isinstance(raw_time, str):
+            time_arg = raw_time.strip()
         session_kind = type(self.session).__name__ if self.session is not None else "no-session"
 
-        # 空 query 早退：模型偶尔会用空 args 调一下"探探工具是否可用"，省一次 HTTP。
-        if not query:
+        # 空入参早退：模型偶尔会用空 args 调一下"探探工具是否可用"，省一次
+        # HTTP。但只要带了 time（按时间回溯，不依赖 query），就不算空入参。
+        if not query and not time_arg:
             logger.info(
                 "[recall_memory] called by name=%s mode=%s session=%s lang=%s "
                 "→ empty query, no fetch",
@@ -2722,14 +2930,78 @@ class LLMSessionManager:
             logger.debug("[recall_memory] empty-query args=%s", args_dict)
             return _loc(RECALL_MEMORY_TOOL_NO_RESULT, _lang)
 
-        # POST 到 memory_server
+        # 本轮首次真正发起回忆检索时，立刻喂一段"让我回忆一下"占位语音给 TTS，
+        # 填补 hybrid_recall + 可能的多轮工具调用造成的空窗，避免猫娘那边长时间
+        # 沉默。用 current_speech_id 去重，保证一轮只播一次（模型一轮里可能连调
+        # 好几次 recall）。只进 TTS，不进前端气泡 / 不进历史；voice 模式下
+        # feed_tts_chunk 因 use_tts=False 自动 no-op。
+        cur_sid = self.current_speech_id
+        if cur_sid and self.use_tts and getattr(self, "_recall_filler_spoken_sid", None) != cur_sid:
+            try:
+                # 关键：这一轮的 TTS worker 通常在正文首个 chunk 才懒启动，而
+                # recall 发生在正文之前——若此时 worker 没起，filler 只会进
+                # tts_pending_chunks，等正文来了 worker ready 才一起 flush，导致
+                # 占位语音被粘在正文前一起播、失去"填补空窗"的意义。所以这里
+                # 主动把管线（worker 线程 + response handler 任务）拉起来，让 worker
+                # 在检索这几秒内就绪，filler 一就绪即被 handler flush 合成播放。
+                # 但 NO_RETRY_TTS_CODES（API_ARREARS / API_KEY_REJECTED 等不可恢复态）下
+                # 不要拉起：ensure_tts_pipeline_alive 直接调 _start_tts_thread，会绕过
+                # _respawn_tts_worker 的 no-retry 闸，等于同轮每次 recall 都重启一次注定
+                # 失败的 worker。此时跳过，直接走下面的早退放弃 filler。
+                if getattr(self, "_last_tts_error_code", None) not in NO_RETRY_TTS_CODES:
+                    await self.ensure_tts_pipeline_alive()
+                # 冷启动有界等待：ensure_tts_pipeline_alive 只拉起 worker/handler，
+                # 不等 __ready__。首轮 recall 紧接着 emit 时 tts_ready 可能还是 False，
+                # 导致 _emit_recall_filler_tts 直接返回 False、首轮空窗依旧。TTS 通常
+                # ~0.1s 就绪，这里给 ~1s 有界等待；超时则优雅放弃 filler（不阻塞回忆
+                # 检索主流程），由后续 recall 调用或正文兜底。
+                # 提前退出：sid 变化（用户打断）、worker 没起来/已挂、或已进入
+                # NO_RETRY_TTS_CODES 这类不可恢复错误时，TTS 不可能再 ready，别白等
+                # 满 1s——否则 TTS 确定失败时同轮每次 recall 都会吃满这段延迟。
+                if not self.tts_ready:
+                    for _ in range(20):
+                        if (
+                            self.current_speech_id != cur_sid
+                            or not (self.tts_thread and self.tts_thread.is_alive())
+                            or getattr(self, "_last_tts_error_code", None) in NO_RETRY_TTS_CODES
+                        ):
+                            break
+                        await asyncio.sleep(0.05)
+                        if self.tts_ready:
+                            break
+                # 用独立 worker-sid 把 filler 作为一段完整 utterance 立即合成出声，
+                # 既能在检索空窗里马上播，又不会让正文（同 turn sid）被 worker 当成
+                # "text_done 之后的残余文本"丢弃。详见 _emit_recall_filler_tts。
+                _filler_ok = await self._emit_recall_filler_tts(
+                    _loc(RECALL_MEMORY_TOOL_FILLER, _lang), cur_sid,
+                )
+                # 仅在真正入队成功后才标记"本轮已播过"：否则（worker 未 ready 等
+                # 返回 False）会误判已预热，本轮后续 recall 不再补发 filler，且
+                # handle_text_data 的 barge-in 守卫也会按"已预热"误跳过。
+                if _filler_ok:
+                    self._recall_filler_spoken_sid = cur_sid
+                logger.debug(
+                    "[recall_memory] filler TTS emitted=%s (sid=%s tts_ready=%s)",
+                    _filler_ok, cur_sid, self.tts_ready,
+                )
+            except Exception as _filler_err:
+                logger.debug("[recall_memory] filler TTS skipped: %s", _filler_err)
+
+        # POST 到 memory_server。query 始终原样下传，不能因为带了 time 就清空
+        # —— 下游路由：query + time → hybrid_recall(query, time_window=...) 做
+        # "语义 + 时间"联合检索（窗口内按 query 排序，语义匹配保留）；只有 time
+        # → 纯时间邻近回溯；time 解析失败还要靠 query 回落语义检索。
+        post_body = {"query": query}
+        if time_arg:
+            post_body["time"] = time_arg
         result_payload: dict = {}
+        recall_request_ok = False  # 仅当 memory server 真正成功返回时才置真
         try:
             from utils.internal_http_client import get_internal_http_client
             client = get_internal_http_client()
             resp = await client.post(
                 f"http://127.0.0.1:{self.memory_server_port}/query_memory/{self.lanlan_name}",
-                json={"query": query},
+                json=post_body,
                 timeout=5.0,
             )
             if not resp.is_success:
@@ -2747,6 +3019,7 @@ class LLMSessionManager:
                 )
             else:
                 result_payload = resp.json()
+                recall_request_ok = True
         except Exception as exc:
             logger.warning(
                 "[recall_memory] memory_server call failed (%s: %s); "
@@ -2758,39 +3031,79 @@ class LLMSessionManager:
         results = results if isinstance(results, list) else []
         elapsed_ms = result_payload.get("elapsed_ms", 0) if isinstance(result_payload, dict) else 0
 
+        # INFO 只记 has_time（布尔），不落 time_arg 原值——time_arg 是用户
+        # 原始输入，按本函数 docstring 立的隐私分层规矩（INFO 可能被打包外送）
+        # 原文只进下面的 DEBUG。
         logger.info(
             "[recall_memory] called by name=%s mode=%s session=%s lang=%s "
-            "→ hits=%d elapsed=%.0fms",
+            "has_time=%s → hits=%d elapsed=%.0fms",
             self.lanlan_name, self.input_mode, session_kind, _lang,
-            len(results), elapsed_ms,
+            bool(time_arg), len(results), elapsed_ms,
         )
         logger.debug(
-            "[recall_memory] args=%s query=%r ids=%s",
-            args_dict, query,
+            "[recall_memory] args=%s query=%r time=%r ids=%s",
+            args_dict, query, time_arg,
             [r.get("id") for r in results],
         )
 
         if not results:
+            # 同时带了 query 和 time 却 0 命中：八成是两个过滤条件叠加太窄
+            # （时间窗口里没有语义匹配的条目）。别直接报"没有记忆"让模型放弃，
+            # 提示它放宽——只留 time 或只留 query 再查一次。
+            # 仅在请求**真正成功返回**时才给放宽提示：non-2xx / 异常也会落到
+            # results=[]，那是 memory server 临时故障，不该误导模型"换条件重试"
+            # 白烧刚收紧的工具迭代预算。
+            if recall_request_ok and query and time_arg:
+                return _loc(RECALL_MEMORY_TOOL_NO_RESULT_LOOSEN, _lang).format(query=query)
             return _loc(RECALL_MEMORY_TOOL_NO_RESULT, _lang)
 
         # 渲染：首行 i18n 总览 + 每条 markdown bullet
-        # 格式: ``1. [tier/entity] text  (created_at)``
+        # 格式: ``1. [tier/entity] text  (2026-05-01, 23 天前)``
         # tier/entity 是英文 enum 不翻译；text 是原始记忆原文不翻译
-        # （按用户拍板）。created_at 取首 10 位日期部分省噪音。
+        # （按用户拍板）。时间锚点优先取事件真正发生时间 event_end_at →
+        # event_start_at → created_at（与 persona 过时 block / temporal
+        # _past_anchor 同口径），让模型看到的是"事件什么时候发生"而不是
+        # "记忆什么时候写下"；再附一个本地化相对标签（X 天/周/月前）。
+        from memory.temporal import (
+            time_since_label as _time_label,
+            _parse_iso_safe,
+            to_naive_local,
+        )
         lines = [_loc(RECALL_MEMORY_TOOL_FOUND_HEADER, _lang).format(n=len(results))]
         for i, r in enumerate(results, start=1):
             tier = r.get("tier") or "?"
             entity = r.get("entity") or "-"
             # str() coerce 防 malformed memory entry：facts/reflections.json
-            # 走 JSON 序列化往返，理论上 text/created_at 应是 str，但 manual
+            # 走 JSON 序列化往返，理论上 text / 时间字段应是 str，但 manual
             # edit / 老格式残留 / 迁移 bug 都可能让它们变 list / int 等
-            # truthy non-string（created_at 尤其常见，老数据可能存 epoch int）。
+            # truthy non-string（时间戳尤其常见，老数据可能存 epoch int）。
             # codex review (2 轮): 不 coerce → .strip() / [:10] crash → 整条
             # tool call 翻 is_error，模型反而不能正常走。
             text = str(r.get("text") or "").strip()
-            created_at = str(r.get("created_at") or "")[:10]  # YYYY-MM-DD
-            date_suffix = f"  ({created_at})" if created_at else ""
-            lines.append(f"{i}. [{tier}/{entity}] {text}{date_suffix}")
+            # 锚点取 event_end_at → event_start_at → created_at 里**第一个能
+            # 解析出来**的（不是第一个 truthy 的）：manual edit / 迁移可能让
+            # 高优先级字段是个非空但解析不了的脏值，按 truthiness 选会卡住、
+            # 把本可用的低优先级字段挡掉，渲染出乱码日期（Codex）。
+            # _parse_iso_safe 对 None / int / list 等都安全返回 None。
+            # date_part 和 rel 都从同一个归一后的 datetime 出，口径一致。
+            anchor_dt = None
+            for _cand in (
+                r.get("event_end_at"),
+                r.get("event_start_at"),
+                r.get("created_at"),
+            ):
+                anchor_dt = to_naive_local(_parse_iso_safe(_cand))
+                if anchor_dt is not None:
+                    break
+            date_part = anchor_dt.strftime("%Y-%m-%d") if anchor_dt else ""
+            rel = _time_label(anchor_dt.isoformat(), lang=_lang) if anchor_dt else ""
+            if date_part and rel:
+                time_suffix = f"  ({date_part}, {rel})"
+            elif date_part:
+                time_suffix = f"  ({date_part})"
+            else:
+                time_suffix = ""
+            lines.append(f"{i}. [{tier}/{entity}] {text}{time_suffix}")
         return "\n".join(lines)
 
     async def _sync_tools_to_active_session(self, *, raise_on_failure: bool = False) -> None:
@@ -3291,6 +3604,19 @@ class LLMSessionManager:
 
         if input_mode == 'text':
             return True
+        # Livestream 上游是 free 路 Gemini 系，服务端始终承担原生 TTS。客户端
+        # 角色卡的 voice_id 不论是不是 free preset，都不应该再开外部 TTS——
+        # 否则文本会被客户端按整句喂给 tts_proxy，丢掉服务端 Gemini → core_proxy
+        # → CV3 那条真 bistream 路径的首音频延迟优势。
+        #
+        # PR #1369 在原 free-preset gate 第三个条件里 OR 了 livestream-active，
+        # 但前两个 AND（_is_free_preset_voice / core_api_type='free'）没拆，
+        # 导致 livestream + 非 free preset 音色（克隆 / 空 voice_id / 主播
+        # 自定义未识别为 preset）仍会 fallback 到外部 TTS。这里独立早退兜底。
+        # _is_livestream_active 内部已经 gate 了 core_api_type='free'。
+        if self._is_livestream_active():
+            logger.info(f"{log_prefix}🎙️ livestream 模式：使用服务端原生语音，跳过外部 TTS")
+            return False
         base_url = realtime_config.get('base_url', '')
         if should_block_free_native_voice(
             self.core_api_type, self.voice_id, base_url,
@@ -3309,14 +3635,8 @@ class LLMSessionManager:
         if (
             self._is_free_preset_voice
             and self.core_api_type == 'free'
-            and ('lanlan.tech' in realtime_config.get('base_url', '') or self._is_livestream_active())
+            and 'lanlan.tech' in realtime_config.get('base_url', '')
         ):
-            # livestream 启用后 base_url 被重写成主播自建 server_prefix
-            # （非 lanlan.tech 域），导致原 lanlan.tech 字面量判定失效，会 fallback
-            # 到外部 TTS 流水线。但 livestream 上游同样是 free 路 Gemini 系，
-            # 原生音色（voice_id 由 livestream_config 覆盖成 neon 等）直接走
-            # session config 即可，不需要再开外部 TTS。把 livestream-active
-            # 视为与 lanlan.tech 对偶的免费原生音色路径。
             logger.info(f"{log_prefix}🆓 免费预设音色 '{self.voice_id}' 将直接传入 session config，不启动外部 TTS")
             return False
         if self.voice_id or has_custom_tts_config:
@@ -3437,6 +3757,16 @@ class LLMSessionManager:
         self.session_start_failure_count += 1
         self.session_start_last_failure_time = datetime.now()
         logger.error(f"[语音会话诊断] start_session 失败 (总耗时: {time.time() - diag_start:.2f}秒): {e}")
+        # Telemetry：语音会话启动失败 —— 语音优先桌宠，voice 在用户开口前就坏掉
+        # = 静默 D1 流失（现在完全看不到）。reason 用异常类名（低基数 enum）。
+        # **仅 audio 模式计**：本收口对 text/audio 两种 start_session 都用，text
+        # 启动失败不该误标成 voice_setup_failed 污染该信号。best-effort 不阻塞收口。
+        if input_mode == 'audio':
+            try:
+                from utils.instrument import counter as _instr_counter
+                _instr_counter("voice_setup_failed", reason=type(e).__name__[:32])
+            except Exception:
+                pass  # 埋点 best-effort：instrument 不可用也不能挡失败收口流程
         error_str = str(e)
 
         is_memory_server_error = isinstance(e, ConnectionError) and any(
@@ -3590,6 +3920,38 @@ class LLMSessionManager:
             except Exception as e:
                 logger.warning("[%s] idle_session_reset 单轮异常: %s", self.lanlan_name, e)
 
+    async def _maybe_kick_activity_loop_for_experiment(self) -> None:
+        """A/B 实验组（vision_chat_default_off）：启动活动 tracker 后台心跳。
+
+        情境弹窗（进游戏/娱乐 / 进专注工作）的检测挂在 tracker 的 20s 心跳上，而心跳
+        只在首次 get_snapshot 时懒启动；get_snapshot 又只被「主动搭话已开」的路径调用。
+        主动搭话首启默认是关的，所以实验组若不主动 kick，进游戏也检测不到、弹窗永远
+        不弹。这里在 session 起来时为实验组 kick 一次（get_snapshot 幂等，不会重复起
+        loop）。
+
+        只 kick 实验组：避免给没开主动搭话的普通用户平白加 activity_guess 的 LLM
+        开销。实验组里隐私开（海外默认）的用户，心跳本身会 _privacy_mode_active 早退，
+        同样零 LLM 成本。后端 branch 与前端同源（都来自 token_tracker），即便这里判断
+        失误，最终弹窗仍由前端按自己的 branch 把关，不会误弹给控制组。
+        """
+        try:
+            from utils.token_tracker import get_telemetry_branch
+            if get_telemetry_branch() != 'vision_chat_default_off':
+                return
+            # 隐私模式开（vision 关）时绝不 kick：get_snapshot 会起 SystemSignalCollector
+            # 并采集窗口/进程信号，绕过隐私模式（loop 只跳过 LLM、collector 仍在采）。
+            # privacy-on 的实验组本就是 no-op（屏幕分享来源开不了），不 kick 即可；隐私关
+            # 时才采集，符合 vision 开的预期。
+            from main_logic.activity.tracker import _privacy_mode_active
+            if _privacy_mode_active():
+                return
+            # 清情境弹窗基线：tracker 跨 session 长存，若用户上个 session 结束时就在
+            # 游戏/工作、这个 session 仍在同一状态，不清就检测不到「进入」、本会话漏弹。
+            self._activity_tracker.reset_context_prompt_baseline()
+            await self._activity_tracker.get_snapshot()
+        except Exception as e:
+            logger.debug("[%s] 实验组活动心跳 kick 失败: %s", self.lanlan_name, e)
+
     async def start_session(self, websocket: WebSocket, new=False, input_mode='audio'):
         # 之前每次 start_session 都无脑用 get_global_language() 覆盖 user_language，
         # 想"语言变更即时生效"，但实际效果是把 ws greeting_check 已经推上来的
@@ -3612,7 +3974,40 @@ class LLMSessionManager:
             return
         # 检查是否正在启动中
         if self._starting_session_count > 0:
-            logger.warning("⚠️ Session正在启动中，忽略重复请求")
+            # 另一路 start_session（典型是 greeting 的 auto-start）已在飞。早期实现
+            # 直接静默 return，但前端的 start_session 在 await 一个 session_started
+            # ack——若它撞在这里被去重，ack 永远不来，前端 15s 后超时并卡死（用户
+            # 在 greeting 出现前抢发消息触发的竞态：greeting 先把 in-flight 占住，
+            # 而它完成时发的 ack 又早于前端开始 await，前端两头落空）。
+            #
+            # 仅对**同模式**的去重请求补发 ack：in-flight 启的是它自己的模式，
+            # 跨模式（如 greeting 拉 text、另一路同刻请求 audio）若复用 in-flight 的
+            # session_started(text)，前端会按 text 切 UI、收口 promise，而用户要的
+            # audio 会话根本没起（CodeRabbit）。跨模式时维持原静默 return（与改动前
+            # 完全一致，不更差）。
+            if (self._starting_input_mode or input_mode) == input_mode:
+                logger.warning("⚠️ Session正在启动中，等 in-flight 启动落定后给本请求补发 session_started")
+                # 等 in-flight 那次启动**自己落定**（_starting_session_count 归 0）。
+                # 不拿 session_ready 当谓词：它可能还残留上一个 session 的 True
+                # （in-flight start 要过几个 await 才把它重置），那样循环会被直接
+                # 跳过、在 in-flight 还没真正起好时就误发 started 假阳性（Codex P1）。
+                # 等待上限绑前端的 start_session 超时：超过它再补发 ack 已无意义
+                # （前端早已 reject + end_session），故以它为窗口上界兼防挂安全阀。
+                _waited = 0.0
+                while self._starting_session_count > 0 and _waited < FRONTEND_START_SESSION_TIMEOUT_SECONDS:
+                    await asyncio.sleep(0.05)
+                    _waited += 0.05
+                # 仅当 in-flight 真正落定（count 归 0、即循环是「落定退出」而非
+                # 「超时退出」）且会话确实活跃时才补发 session_started（与
+                # in-flight 自身发的那条幂等，前端 resolver 一次性）。若是超时退出
+                # （count 仍 >0、in-flight 没结束），self.session/is_active 在 restart
+                # 流程里可能是上一个 session 残留的 True，补发会是假阳性（Codex P1），
+                # 故一律不发。也**不**发 session_failed——in-flight 可能仍在跑/或其
+                # 失败路径已通知前端，过早发 failed 会被前端当终态打断本会成功的启动。
+                if self._starting_session_count == 0 and self.session and self.is_active:
+                    await self.send_session_started(input_mode)
+            else:
+                logger.warning("⚠️ Session正在启动中（跨模式重复请求），忽略")
             return
 
         # 标记正在启动（使用计数器，避免并发 start_session 的 finally 互相覆盖）
@@ -3644,6 +4039,11 @@ class LLMSessionManager:
             self.websocket = websocket
             self.input_mode = input_mode
             self._reset_voice_echo_suppression_cache()
+
+            # A/B 实验组：拉起活动 tracker 心跳，让进游戏/娱乐/工作的情境弹窗检测得到
+            # （详见 _maybe_kick_activity_loop_for_experiment）。fire-and-forget，不阻塞
+            # 会话启动；非实验组直接早退、零成本。
+            self._fire_task(self._maybe_kick_activity_loop_for_experiment())
         
             # 立即通知前端系统正在准备（静默期开始）
             await self.send_session_preparing(input_mode)
@@ -3939,6 +4339,17 @@ class LLMSessionManager:
                         master_name=self.master_name,
                         on_tool_call=self._on_tool_call,
                         tool_definitions=_initial_tool_defs,
+                        # 长回复 summary 必须有"真的会发声的 TTS"才有意义：summary
+                        # 文本是 `tts_enabled=True, ui_enabled=False` 注入的，若 TTS
+                        # 实际不发声它会被 handle_text_data 静默丢掉，但 history 仍被
+                        # 重写成 prefix+summary —— 静音会话会"live 看到全文、reload 看
+                        # 不到尾巴"，是隐性内容丢失。注意 `_resolve_session_use_tts` 对
+                        # text mode 永远返回 True；真正的"发声"还要 DISABLE_TTS=False，
+                        # 否则 tts_worker 会被换成 dummy_tts_worker。
+                        enable_long_response_summary=(
+                            self.use_tts
+                            and not core_config_snapshot.get('DISABLE_TTS', False)
+                        ),
                     )
                     new_session.on_proactive_done = self.handle_proactive_complete
                 else:
@@ -4393,6 +4804,14 @@ class LLMSessionManager:
                     master_name=self.master_name,
                     on_tool_call=self._on_tool_call,
                     tool_definitions=_pending_tool_defs,
+                    # 与上方对偶：长回复 summary 必须有"真的会发声的 TTS"才有意义
+                    # （理由见 main session 构造点的注释）。pending_use_tts 是热切换
+                    # 准备时已 resolve 的下一轮 use_tts；DISABLE_TTS 仍需独立检查
+                    # 因为它会把 worker 换成 dummy_tts_worker。
+                    enable_long_response_summary=(
+                        self.pending_use_tts
+                        and not core_config_snapshot.get('DISABLE_TTS', False)
+                    ),
                 )
                 self.pending_session.on_proactive_done = self.handle_proactive_complete
                 logger.info("🔄 热切换准备: 创建文本模式 OmniOfflineClient")
@@ -6020,6 +6439,18 @@ class LLMSessionManager:
                     # main_routers/system_router.py），那不算用户活动。
                     # text 进 buffer 给 emotion-tier 用。
                     self._activity_tracker.on_user_message(text=data if isinstance(data, str) else None)
+                    # Telemetry：D1 漏斗——本进程首条用户消息（lazy import 防循环）。
+                    try:
+                        from utils.token_tracker import TokenTracker as _TT
+                        _tt = _TT.get_instance()
+                        _tt.note_first_user_message("text")
+                        # 每条用户消息：user_message_sent counter + 累加 per-session 轮数。
+                        # 此处是文本侧 on_user_message 唯一入口，每条真实消息恰好一次。
+                        _tt.note_user_message("text")
+                    except Exception:
+                        # 埋点 best-effort，绝不阻塞用户消息处理；note_first_user_message
+                        # 自身幂等，丢一次也不影响 D1 漏斗统计。
+                        pass
                     # 与 on_user_message 对偶：把"用户原话"推到插件总线 user-context
                     # bucket。语音路径在 handle_input_transcript 里发布，这里只覆盖
                     # 文本路径，避免 openclaw handoff（会再走一次 handle_input_transcript
@@ -6079,30 +6510,38 @@ class LLMSessionManager:
                             return
                         logger.info("[%s] openclaw handoff fallback: publish failed, continue local LLM reply", self.lanlan_name)
 
-                    # 文本模式：在发送用户输入前，将挂起的 agent 任务回调通过
-                    # prompt_ephemeral 注入 — 指令不持久化，只保留 AI 回复。
+                    # 文本模式：把挂起的 agent 任务回调**就地拼到本轮 user
+                    # message 的 content 前缀**——LLM 把它当作"用户当前发声那
+                    # 一刻附带的额外上下文"，在同一轮回答里自然提及，不再起
+                    # 独立 turn（issue #1033）。drain 出来的字符串已含
+                    # ``======[系统通知] 来自xxx的xxx======`` watermark，LLM
+                    # 看得出来是 system notice 而不是用户原话。
+                    #
+                    # 与 voice mode 的对偶：``prime_context(skipped=False)`` 在
+                    # GPT/GLM/Step 上同样走 ``create_response`` 把 callback
+                    # 注入成 user role 消息，offline 这边 inline 进 user
+                    # content 跟那条路径语义一致——callback 文本随 user message
+                    # 进 transcript 持久化（issue 旧注释里担忧的"持久化污染"作
+                    # 废，passive callback 跟用户输入一起留在 history 让 AI
+                    # 后续仍能 reference）。
+                    #
+                    # best-effort 注入：drain 的 ``finally clear`` 是 PR #1032
+                    # 的设计决定（passive=单次软通知），即便 drain 或 stream_text
+                    # 失败也不回填——延续到这条路径仍是这样，不在 caller 加
+                    # snapshot 回滚。
+                    _agent_cb_ctx = ""
                     if self.pending_agent_callbacks:
                         try:
-                            ctx = self.drain_agent_callbacks_for_llm()
-                            if ctx:
-                                # ``ctx`` already includes its own grouped
-                                # SYSTEM_NOTIFICATION_PROACTIVE / PASSIVE outer
-                                # headers per (status, source). No extra wrap.
-                                await self.session.prompt_ephemeral(ctx)
-                                # prompt_ephemeral 通过 on_proactive_done → handle_proactive_complete
-                                # 发送 (None, None) 并置 _tts_done_queued_for_turn = True。
-                                # 对于 qwen-tts 的 server_commit 模式，需要为主回复生成新的
-                                # speech_id（触发 qwen worker 重建连接、重置 buffer_committed），
-                                # 并重置 done flag 允许 handle_response_complete 正常发送。
-                                async with self.lock:
-                                    self.current_speech_id = str(uuid4())
-                                    self._tts_done_queued_for_turn = False
-                                    self._tts_done_pending_until_ready = False
+                            _agent_cb_ctx = self.drain_agent_callbacks_for_llm() or ""
                         except Exception as _cb_err:
-                            logger.warning(f"⚠️ Agent callback injection failed: {_cb_err}")
+                            logger.warning(f"⚠️ Agent callback drain failed: {_cb_err}")
+                            _agent_cb_ctx = ""
 
                     self._active_text_request_id = message.get("request_id")
-                    await self.session.stream_text(data)
+                    await self.session.stream_text(
+                        data,
+                        system_prefix=_agent_cb_ctx or None,
+                    )
                 else:
                     logger.error(f"💥 Stream: Invalid text data type: {type(data)}")
                 return
@@ -6600,6 +7039,11 @@ class LLMSessionManager:
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
                 effective_speech_id = speech_id if speech_id is not None else self.current_speech_id
+                # recall 占位语音在 worker 层用合成 sid 切分 utterance；对前端必须归一回
+                # turn sid，否则透传 request-id 的 provider 下，filler 音频带着合成 sid，
+                # 打断时前端按 turn sid 匹配不到 → barge-in 取消不掉 filler。
+                if isinstance(effective_speech_id, str) and effective_speech_id.endswith(_RECALL_FILLER_SID_SUFFIX):
+                    effective_speech_id = effective_speech_id[: -len(_RECALL_FILLER_SID_SUFFIX)]
                 await self.websocket.send_json({
                     "type": "audio_chunk",
                     "speech_id": effective_speech_id
@@ -6762,6 +7206,22 @@ class LLMSessionManager:
                             else:
                                 user_msg = json.dumps({"code": "TTS_CONNECTION_FAILED", "details": {"msg": error_msg_text}})
                                 self._last_tts_error_code = 'TTS_CONNECTION_FAILED'
+                        # Telemetry：TTS 失败。code 是已归一化的低基数枚举
+                        # （API_ARREARS / API_KEY_REJECTED / TTS_CONNECTION_FAILED ...）。
+                        # 首日听不到语音是核心体验断裂，D1 流失重要信号。
+                        try:
+                            from utils.instrument import counter as _instr_counter
+                            # before_first_loop：TTS 在用户体验到核心 loop 前就坏 =
+                            # 首次体验障碍（开了口但没听到回复）。低基数 true/false/unknown。
+                            try:
+                                from utils.token_tracker import TokenTracker as _TT
+                                _bfl = "false" if _TT.get_instance().has_completed_core_loop() else "true"
+                            except Exception:
+                                _bfl = "unknown"
+                            _instr_counter("tts_error", code=str(self._last_tts_error_code or "unknown")[:32], before_first_loop=_bfl)
+                        except Exception:
+                            # 埋点 best-effort，绝不影响 TTS 错误的重试/上报主流程。
+                            pass
                         # 可重试的错误：前2次静默重试，第3次失败时上报前端
                         if self._last_tts_error_code not in IMMEDIATE_REPORT_TTS_CODES:
                             self._tts_retry_notify_count += 1
@@ -6774,6 +7234,16 @@ class LLMSessionManager:
                     _, speech_id, audio_payload = data
                     if await self.send_speech(audio_payload, speech_id=speech_id):
                         self._confirm_pending_ai_voice_echo(speech_id)
+                        # Telemetry：音频成功投递 = 用户听到了角色的声音。配合
+                        # note_core_loop_completed 的"用户已开口"前置，构成 D1
+                        # 核心 loop 完成信号（每进程一次，内部幂等）。
+                        try:
+                            from utils.token_tracker import TokenTracker as _TT
+                            _TT.get_instance().note_core_loop_completed()
+                        except Exception:
+                            # 埋点 best-effort，绝不影响音频投递主流程；
+                            # note_core_loop_completed 自身幂等。
+                            pass
                     else:
                         self._discard_pending_ai_voice_echo()
                     continue

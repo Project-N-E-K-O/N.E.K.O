@@ -130,7 +130,17 @@ template_dir = _get_app_root()
 
 templates = Jinja2Templates(directory=template_dir)
 
-def initialize_steamworks():
+def initialize_steamworks(*, quiet: bool = False):
+    # quiet=True 供后台静默重试使用：无 Steam 环境（如远端服务器部署）下，
+    # 前端轮询会每隔几秒触发一次重试，若按 ERROR/print 输出会无限刷屏。静默
+    # 模式把进度与失败日志统一降到 DEBUG，只有首次启动的尝试保持可见。
+    def _trace(msg: str) -> None:
+        if quiet:
+            if 'logger' in globals():
+                logger.debug(msg)
+        else:
+            print(msg)
+
     try:
         # 明确读取steam_appid.txt文件以获取应用ID
         app_id = None
@@ -138,34 +148,61 @@ def initialize_steamworks():
         if os.path.exists(app_id_file):
             with open(app_id_file, 'r') as f:
                 app_id = f.read().strip()
-            print(f"从steam_appid.txt读取到应用ID: {app_id}")
+            _trace(f"从steam_appid.txt读取到应用ID: {app_id}")
         
         # 创建并初始化Steamworks实例
         from steamworks import STEAMWORKS
         steamworks = STEAMWORKS()
         # 显示Steamworks初始化过程的详细日志
-        print("正在初始化Steamworks...")
+        _trace("正在初始化Steamworks...")
         steamworks.initialize()
         steamworks.UserStats.RequestCurrentStats()
         # 初始化后再次获取应用ID以确认
         actual_app_id = steamworks.app_id
-        print(f"Steamworks初始化完成，实际使用的应用ID: {actual_app_id}")
+        _trace(f"Steamworks初始化完成，实际使用的应用ID: {actual_app_id}")
         
         # 检查全局logger是否已初始化，如果已初始化则记录成功信息
         if 'logger' in globals():
             logger.info(f"Steamworks初始化成功，应用ID: {actual_app_id}")
             logger.info(f"Steam客户端运行状态: {steamworks.IsSteamRunning()}")
-            logger.info(f"Steam覆盖层启用状态: {steamworks.IsOverlayEnabled()}")
+            try:
+                logger.info(f"Steam覆盖层启用状态: {steamworks.IsOverlayEnabled()}")
+            except Exception as overlay_error:
+                logger.info("Steam覆盖层状态不可用，跳过覆盖层诊断: %s", overlay_error)
         
         return steamworks
     except Exception as e:
         # 检查全局logger是否已初始化，如果已初始化则记录错误，否则使用print
         error_msg = f"初始化Steamworks失败: {e}"
-        if 'logger' in globals():
+        if quiet:
+            if 'logger' in globals():
+                logger.debug(error_msg)
+        elif 'logger' in globals():
             logger.error(error_msg)
         else:
             print(error_msg)
         return None
+
+
+def ensure_steamworks_initialized():
+    """Retry Steamworks initialization after Steam is opened post-startup."""
+    global steamworks
+    if steamworks is not None:
+        return steamworks
+
+    logger.debug("尝试重新初始化 Steamworks...")
+    steamworks = initialize_steamworks(quiet=True)
+    try:
+        from main_routers.shared_state import set_steamworks
+
+        set_steamworks(steamworks)
+    except Exception as exc:
+        logger.debug("Steamworks shared-state update failed during retry: %s", exc, exc_info=True)
+
+    if steamworks is not None:
+        get_default_steam_info()
+    return steamworks
+
 
 def get_default_steam_info():
     global steamworks
@@ -723,6 +760,19 @@ async def _handle_agent_event(event: dict):
             if text:
                 if event.get("direct_reply"):
                     detail_text = (event.get("detail") or text).strip()
+                    # Plugin-supplied direct_reply text bypasses the LLM and
+                    # speaks/types verbatim. Plugin authors may write
+                    # ``{MASTER_NAME}``/``{LANLAN_NAME}`` placeholders since
+                    # they don't know which session their text will route to;
+                    # expand here so the placeholder doesn't reach TTS/UI
+                    # literally. (See main_logic.core.apply_role_placeholders
+                    # for the contract — same helper as the LLM-injection path
+                    # so all plugin-text exits share one spelling.)
+                    detail_text = core.apply_role_placeholders(
+                        detail_text,
+                        lanlan_name=getattr(mgr, "lanlan_name", "") or "",
+                        master_name=getattr(mgr, "master_name", "") or "",
+                    )
                     delivered = False
                     if detail_text and hasattr(mgr, "send_lanlan_response"):
                         try:
@@ -870,9 +920,19 @@ async def _handle_agent_event(event: dict):
                         # return — otherwise we emit turn-end without a matching
                         # turn-start (frontend never opened the assistant
                         # lifecycle), corrupting proactive rescheduling.
+                        # Same role-placeholder contract as the direct_reply
+                        # path: blind-passthrough text reaches the chat bubble
+                        # verbatim without going through the LLM, so the
+                        # placeholder has to be expanded here or the literal
+                        # ``{MASTER_NAME}`` token would render in the bubble.
+                        passthrough_text = core.apply_role_placeholders(
+                            raw_text,
+                            lanlan_name=getattr(mgr, "lanlan_name", "") or "",
+                            master_name=getattr(mgr, "master_name", "") or "",
+                        )
                         passthrough_dispatched = bool(
                             await mgr.passthrough_to_chat_bubble(
-                                raw_text,
+                                passthrough_text,
                                 request_id=event.get("task_id") or None,
                                 source=passthrough_source,
                             )
@@ -917,9 +977,18 @@ async def _handle_agent_event(event: dict):
                     )
                 elif _is_websocket_connected(ws):
                     try:
+                        # HUD agent_notification renders verbatim to the user;
+                        # expand role placeholders so plugin authors can write
+                        # ``"通知 {MASTER_NAME}..."`` without the literal token
+                        # showing up in the toast.
+                        notif_text = core.apply_role_placeholders(
+                            text,
+                            lanlan_name=getattr(mgr, "lanlan_name", "") or "",
+                            master_name=getattr(mgr, "master_name", "") or "",
+                        )
                         notif = {
                             "type": "agent_notification",
-                            "text": text,
+                            "text": notif_text,
                             "source": "brain",
                             "status": cb_status,
                         }
@@ -1332,6 +1401,9 @@ _MAIN_LIMITED_MODE_ALLOWED_PAGE_PATHS = {
 _MAIN_LIMITED_MODE_ALLOWED_PREFIXES = (
     "/static/",
     "/api/storage/location/",
+    # 诊断观测：limited-mode 本身就是要排查的故障形态之一（启动阻断），
+    # 这时候反而最需要 /api/debug/health 能读到 ring + watchdog 落盘。
+    "/api/debug/",
 )
 
 
@@ -1472,6 +1544,7 @@ if _IS_MAIN_PROCESS:
 # --- 初始化共享状态并挂载路由 ---
 # 显式从各子模块导入 router，避免与包级模块导出产生同名遮蔽。
 from main_routers.agent_router import router as agent_router # noqa
+from main_routers.capture_router import router as capture_router # noqa
 from main_routers.characters_router import router as characters_router # noqa
 from main_routers.cloudsave_router import router as cloudsave_router # noqa
 from main_routers.config_router import router as config_router # noqa
@@ -1491,7 +1564,8 @@ from main_routers.websocket_router import router as websocket_router # noqa
 from main_routers.workshop_router import router as workshop_router # noqa
 from main_routers.cookies_login_router import router as cookies_login_router # noqa
 from main_routers.game_router import router as game_router # noqa
-from main_routers.shared_state import init_shared_state # noqa
+from main_routers.debug_router import router as debug_router, start_watchdog as _start_debug_health_watchdog # noqa
+from main_routers.shared_state import init_shared_state, set_steamworks_initializer # noqa
 
 
 # ── 健康检查 / 指纹端点 ──────────────────────────────────────────
@@ -1540,7 +1614,9 @@ app.include_router(tool_router)
 app.include_router(music_router)
 app.include_router(galgame_router)
 app.include_router(game_router)
+app.include_router(capture_router)
 app.include_router(cookies_login_router) # Cookies登录相关路由，放在最后以避免与其他API路由冲突
+app.include_router(debug_router)  # 诊断观测：/api/debug/health（轻量、零侵入，详见 debug_router.py 头注释）
 app.include_router(pages_router)  # 兜底路由需最后挂载
 
 # 后台预加载任务
@@ -1548,7 +1624,6 @@ _preload_task: asyncio.Task = None
 _game_cleanup_task: asyncio.Task = None
 _runtime_startup_init_lock = asyncio.Lock()
 _runtime_startup_init_completed = False
-_heavy_import_prewarm_started = False
 
 
 async def _background_preload():
@@ -1700,25 +1775,6 @@ async def _sync_memory_server_after_startup_import(import_result):
         logger.warning(f"Steam Auto-Cloud startup import could not sync memory_server: {e}")
 
 
-async def _prewarm_heavy_imports():
-    import importlib
-
-    for mod in ("dashscope", "dashscope.audio.tts_v2"):
-        try:
-            await asyncio.to_thread(importlib.import_module, mod)
-            logger.debug(f"[prewarm] imported {mod}")
-        except Exception as e:
-            logger.debug(f"[prewarm] import {mod} failed (ignored): {e}")
-
-
-def _maybe_schedule_heavy_import_prewarm() -> None:
-    global _heavy_import_prewarm_started
-    if _heavy_import_prewarm_started:
-        return
-    _heavy_import_prewarm_started = True
-    asyncio.create_task(_prewarm_heavy_imports())
-
-
 async def _cancel_task_if_running(task: asyncio.Task | None, *, name: str, timeout: float = 1.0) -> None:
     if task is None:
         return
@@ -1815,8 +1871,6 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
             return False
 
         try:
-            _maybe_schedule_heavy_import_prewarm()
-
             bootstrap_local_cloudsave_environment(_config_manager)
             import_result = None
             try:
@@ -1856,66 +1910,19 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
             except Exception as e:
                 logger.warning(f"Agent event bridge startup failed: {e}")
 
+            # 创意工坊：目录挂载保持同步（开销小，且必须在 ready 前完成，
+            # 否则 /workshop 静态资源在挂载窗口内会 404 —— 见 PR #1496 review）。
+            # 真正慢的 UGC 缓存预热 + 角色卡网络同步仍后台化（与原始行为一致）。
             await _init_and_mount_workshop()
-
-            if steamworks:
-                _wr = importlib.import_module("main_routers.workshop_router")
-
-                async def _warmup_only():
-                    try:
-                        await warmup_ugc_cache()
-                    except Exception as e:
-                        logger.warning(f"UGC 缓存预热失败: {e}")
-
-                async def _sync_characters_only():
-                    max_fence_retries = 15
-                    retry_interval_seconds = 2
-                    for attempt in range(1, max_fence_retries + 1):
-                        if not is_write_fence_active(_config_manager):
-                            break
-                        logger.info(
-                            "创意工坊角色卡同步检测到维护态写围栏，等待解除后重试 (%s/%s)",
-                            attempt,
-                            max_fence_retries,
-                        )
-                        await asyncio.sleep(retry_interval_seconds)
-                    else:
-                        logger.info("创意工坊角色卡同步等待维护态解除超时，30s 后重新排队重试")
-
-                        async def _retry_sync_after_delay():
-                            try:
-                                await asyncio.sleep(30)
-                                await _sync_characters_only()
-                            except Exception as retry_exc:
-                                logger.warning(f"创意工坊角色卡同步重试任务失败: {retry_exc}")
-
-                        _wr._ugc_sync_task = asyncio.create_task(_retry_sync_after_delay())
-                        return
-                    if _wr._ugc_warmup_task is not None:
-                        try:
-                            await asyncio.wait_for(asyncio.shield(_wr._ugc_warmup_task), timeout=20)
-                        except asyncio.TimeoutError:
-                            logger.warning("等待 UGC 预热任务超时（20s），继续角色卡同步")
-                        except Exception as e:
-                            logger.debug(f"等待 UGC 预热任务时异常（不影响角色卡同步）: {e}")
-                    try:
-                        sync_result = await sync_workshop_character_cards()
-                        if sync_result["added"] > 0:
-                            logger.info(f"✅ 创意工坊角色卡同步完成：新增 {sync_result['added']} 个，跳过 {sync_result['skipped']} 个")
-                        else:
-                            logger.info("创意工坊角色卡同步完成：无新增角色卡")
-                    except Exception as e:
-                        logger.warning(f"创意工坊角色卡同步失败（不影响启动）: {e}")
-
-                _wr._ugc_warmup_task = asyncio.create_task(_warmup_only())
-                _wr._ugc_sync_task = asyncio.create_task(_sync_characters_only())
+            _schedule_workshop_sync(steamworks)
 
             try:
                 from utils.token_tracker import TokenTracker, install_hooks
 
                 install_hooks()
                 TokenTracker.get_instance().start_periodic_save()
-                TokenTracker.get_instance().record_app_start()
+                # process 字段进 session_start / session_end 维度，跨进程诊断必须区分
+                TokenTracker.get_instance().record_app_start(process="main_server")
                 logger.info("Token usage tracker initialized")
             except Exception as e:
                 logger.warning(f"Token tracker initialization failed (non-critical): {e}")
@@ -1951,6 +1958,16 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
 
             _runtime_startup_init_completed = True
             _disable_main_storage_limited_mode()
+
+            # runtime init 完成后再起后台预热：把已改 lazy 的重模块（genai+mcp /
+            # translatepy / 功能路由依赖）提前 import 好，用户首次用到时不等。放在
+            # 这里而非 on_startup 开头，是为了不在关键启动路径上和 runtime init 抢 GIL。
+            try:
+                from utils.module_warmup import MAIN_SERVER_WARMUP, start_background_warmup
+                start_background_warmup(MAIN_SERVER_WARMUP, label="main")
+            except Exception as _warmup_exc:
+                logger.debug(f"[warmup] main_server warmup not started: {_warmup_exc}")
+
             return True
         except Exception:
             _runtime_startup_init_completed = False
@@ -1989,6 +2006,7 @@ async def on_startup():
     if _IS_MAIN_PROCESS:
         global _server_loop
         _server_loop = asyncio.get_running_loop()
+
         init_shared_state(
             role_state=role_state,
             steamworks=steamworks,
@@ -2002,6 +2020,7 @@ async def on_startup():
             request_app_shutdown=lambda: asyncio.create_task(request_application_shutdown_async()),
             release_storage_startup_barrier=release_storage_startup_barrier,
         )
+        set_steamworks_initializer(ensure_steamworks_initialized)
         # asyncio 的慢回调告警只在 loop debug 模式下输出。默认关闭，
         # 需要排查事件循环停顿时设 NEKO_DEBUG_ASYNC=1 启用（会略微增加每 callback 开销）。
         if os.environ.get("NEKO_DEBUG_ASYNC") == "1":
@@ -2027,6 +2046,14 @@ async def on_startup():
                     _last = _now
             asyncio.create_task(_event_loop_heartbeat())
             logger.info("[asyncio] heartbeat enabled (stalls > 300ms will be logged)")
+
+        # 诊断观测 watchdog：5-min 周期采集 counter 写内存 ring buffer，
+        # NEKO_DEBUG_HEALTH_LOG=1 时同时落盘 jsonl。详见 main_routers/debug_router.py。
+        # 无条件启动 —— 单 task + 5-min 周期，开销远低于 heartbeat。
+        try:
+            _start_debug_health_watchdog()
+        except Exception as _e:
+            logger.debug(f"[debug_health] start watchdog failed: {_e}")
 
         blocking_reason = get_storage_startup_blocking_reason(_config_manager)
         if blocking_reason:
@@ -2286,6 +2313,71 @@ async def request_application_shutdown_async():
             return
 
     await shutdown_server_async()
+
+
+def _schedule_workshop_sync(steamworks) -> None:
+    """把创意工坊里真正慢的部分（UGC 缓存预热 + 角色卡网络同步）丢到后台 task。
+
+    目录挂载已由调用方在 ready 前同步完成（``_init_and_mount_workshop``），这里
+    只调度网络密集的预热/同步——与本次重构前的原始行为一致（原本它们就是
+    ``create_task``）。greeting 不依赖这两步。
+    """
+    try:
+        if not steamworks:
+            return
+
+        _wr = importlib.import_module("main_routers.workshop_router")
+
+        async def _warmup_only():
+            try:
+                await warmup_ugc_cache()
+            except Exception as e:
+                logger.warning(f"UGC 缓存预热失败: {e}")
+
+        async def _sync_characters_only():
+            max_fence_retries = 15
+            retry_interval_seconds = 2
+            for attempt in range(1, max_fence_retries + 1):
+                if not is_write_fence_active(_config_manager):
+                    break
+                logger.info(
+                    "创意工坊角色卡同步检测到维护态写围栏，等待解除后重试 (%s/%s)",
+                    attempt,
+                    max_fence_retries,
+                )
+                await asyncio.sleep(retry_interval_seconds)
+            else:
+                logger.info("创意工坊角色卡同步等待维护态解除超时，30s 后重新排队重试")
+
+                async def _retry_sync_after_delay():
+                    try:
+                        await asyncio.sleep(30)
+                        await _sync_characters_only()
+                    except Exception as retry_exc:
+                        logger.warning(f"创意工坊角色卡同步重试任务失败: {retry_exc}")
+
+                _wr._ugc_sync_task = asyncio.create_task(_retry_sync_after_delay())
+                return
+            if _wr._ugc_warmup_task is not None:
+                try:
+                    await asyncio.wait_for(asyncio.shield(_wr._ugc_warmup_task), timeout=20)
+                except asyncio.TimeoutError:
+                    logger.warning("等待 UGC 预热任务超时（20s），继续角色卡同步")
+                except Exception as e:
+                    logger.debug(f"等待 UGC 预热任务时异常（不影响角色卡同步）: {e}")
+            try:
+                sync_result = await sync_workshop_character_cards()
+                if sync_result["added"] > 0:
+                    logger.info(f"✅ 创意工坊角色卡同步完成：新增 {sync_result['added']} 个，跳过 {sync_result['skipped']} 个")
+                else:
+                    logger.info("创意工坊角色卡同步完成：无新增角色卡")
+            except Exception as e:
+                logger.warning(f"创意工坊角色卡同步失败（不影响启动）: {e}")
+
+        _wr._ugc_warmup_task = asyncio.create_task(_warmup_only())
+        _wr._ugc_sync_task = asyncio.create_task(_sync_characters_only())
+    except Exception as e:
+        logger.warning(f"创意工坊 UGC 预热/同步调度失败（不影响启动）: {e}")
 
 
 async def _init_and_mount_workshop():

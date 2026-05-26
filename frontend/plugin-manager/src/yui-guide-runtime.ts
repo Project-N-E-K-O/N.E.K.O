@@ -1406,11 +1406,7 @@ class PluginDashboardGuideRuntime {
       return
     }
 
-    if (
-      typeof window.MouseEvent !== 'undefined'
-      && event instanceof window.MouseEvent
-      && this.forwardHomeSkipClick(event)
-    ) {
+    if (this.forwardHomeSkipClick(event)) {
       return
     }
 
@@ -1828,8 +1824,47 @@ class PluginDashboardGuideRuntime {
     return 6
   }
 
-  forwardHomeSkipClick(event: PointerEvent | MouseEvent) {
+  getEventScreenPoint(event: Event) {
+    if (
+      typeof window.MouseEvent !== 'undefined'
+      && event instanceof window.MouseEvent
+    ) {
+      return {
+        screenX: Number(event.screenX),
+        screenY: Number(event.screenY),
+      }
+    }
+
+    if (
+      typeof window.TouchEvent !== 'undefined'
+      && event instanceof window.TouchEvent
+    ) {
+      const touch = event.changedTouches[0] || event.touches[0]
+      if (touch) {
+        return {
+          screenX: Number(touch.screenX),
+          screenY: Number(touch.screenY),
+        }
+      }
+    }
+
+    return null
+  }
+
+  isHomeSkipForwardActivationEvent(event: Event) {
+    return (
+      event.type === 'pointerdown'
+      || event.type === 'mousedown'
+      || event.type === 'touchstart'
+      || event.type === 'click'
+    )
+  }
+
+  forwardHomeSkipClick(event: Event) {
     if (!this.running || !event || !this.activeSessionId) {
+      return false
+    }
+    if (!this.isHomeSkipForwardActivationEvent(event)) {
       return false
     }
 
@@ -1838,8 +1873,9 @@ class PluginDashboardGuideRuntime {
       return false
     }
 
-    const screenX = Number.isFinite(event.screenX) ? Number(event.screenX) : NaN
-    const screenY = Number.isFinite(event.screenY) ? Number(event.screenY) : NaN
+    const point = this.getEventScreenPoint(event)
+    const screenX = point && Number.isFinite(point.screenX) ? point.screenX : NaN
+    const screenY = point && Number.isFinite(point.screenY) ? point.screenY : NaN
     if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) {
       return false
     }

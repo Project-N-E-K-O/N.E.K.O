@@ -1,4 +1,6 @@
 {
+  "plugin.name": "Bilibili 탄막 모니터",
+  "plugin.description": "Bilibili 라이브 방송 탄막을 실시간으로 모니터링하고 필터링하여 AI에 전달해 분석과 답변을 수행합니다",
   "account.already_logged_in": "이미 로그인됨",
   "account.check_cred": "자격 증명 확인",
   "account.check_cred_failed": "자격 증명 확인 실패：",

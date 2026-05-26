@@ -71,6 +71,7 @@ from config import (
     HYBRID_RECALL_BUDGET_TOTAL,
     HYBRID_RECALL_COSINE_THRESHOLD,
     HYBRID_RECALL_RRF_K,
+    HYBRID_RECALL_TIME_BUDGET,
 )
 from utils.logger_config import get_module_logger
 
@@ -421,6 +422,50 @@ def _tag_tier(items: list[dict], tier: str) -> list[dict]:
     return out
 
 
+def _entry_event_window(entry: dict):
+    """取条目的事件时间区间 ``(start, end)``（naive 本地）。无可解析时间戳
+    返回 None。
+
+    锚点优先级和 persona 过时 block / ``temporal._past_anchor`` 一致——
+    ``event_end_at → event_start_at → created_at``。``created_at``（写盘时间）
+    只在完全没有事件时间时才兜底；只有 ``event_end_at`` 的条目用 end 当锚点，
+    不会被误判成无时间、也不会拿写盘时间入窗/排序（CodeRabbit）。
+
+    - 双端齐全 → [start, end]
+    - 只有 start → [start, start]
+    - 只有 end   → [end, end]
+    - 都没有     → [created_at, created_at]
+
+    fact / reflection 共用同一套锚点字段（schema v2），按时间过滤/排序口径
+    统一。归档 fact 也走这套。
+    """
+    from memory.temporal import _parse_iso_safe, to_naive_local
+    # aware（import/迁移的 +00:00 / Z）统一先转本地再剥 tz，避免 day 级窗口
+    # 在日界处归错天（Codex）。to_naive_local 对 naive / None 是 no-op。
+    start = to_naive_local(_parse_iso_safe(entry.get('event_start_at')))
+    end = to_naive_local(_parse_iso_safe(entry.get('event_end_at')))
+    created = to_naive_local(_parse_iso_safe(entry.get('created_at')))
+    anchor = end or start or created
+    if anchor is None:
+        return None
+    s = start or anchor
+    e = end or anchor
+    if e < s:  # 防 manual edit / 迁移把 start/end 写反
+        s, e = e, s
+    return (s, e)
+
+
+def _overlaps_window(entry: dict, win_start, win_end) -> bool:
+    """条目事件区间 [s, e] 与半开窗口 [win_start, win_end) 是否有交集。
+    无可解析时间戳的条目判为不在窗口内（时间检索下宁可漏不可错挂）。
+    """
+    win = _entry_event_window(entry)
+    if win is None:
+        return False
+    s, e = win
+    return s < win_end and e >= win_start
+
+
 # ── public entry ──────────────────────────────────────────────────────
 
 
@@ -431,6 +476,7 @@ async def hybrid_recall(
     fact_store,
     reflection_engine,
     config_manager,
+    time_window: tuple | None = None,
 ) -> dict[str, Any]:
     """End-to-end hybrid recall — the function the ``/query_memory``
     HTTP endpoint should call.
@@ -444,6 +490,11 @@ async def hybrid_recall(
       reflection_engine: ``memory.reflection.ReflectionEngine`` instance
       config_manager: needed by ``collect_stop_names`` to derive the
         master/lanlan name filter
+      time_window: 可选 ``(start, end)`` naive 时间区间（来自
+        ``recall_memory(query=..., time=...)`` 同时给两者的"语义 + 时间"
+        联合检索）。给了就把候选池**先按事件时间窗口硬过滤**，再在窗口内
+        条目上跑常规 BM25 + cosine + RRF —— 即"那段时间里和 query 相关的
+        记忆"。不给则全量语义检索（旧行为）。
 
     Returns:
       ::
@@ -485,15 +536,20 @@ async def hybrid_recall(
     active_facts = active_facts or []
     active_reflections = active_reflections or []
 
-    bm25_pool_raw = (
-        _tag_tier(active_facts, 'fact')
-        + _tag_tier(active_reflections, 'reflection')
-        + _tag_tier(archive_facts, 'fact_archive')
-    )
-    embedding_pool_raw = (
-        _tag_tier(active_facts, 'fact')
-        + _tag_tier(active_reflections, 'reflection')
-    )
+    facts_tagged = _tag_tier(active_facts, 'fact')
+    refl_tagged = _tag_tier(active_reflections, 'reflection')
+    arch_tagged = _tag_tier(archive_facts or [], 'fact_archive')
+
+    # "语义 + 时间"联合检索：给了 time_window 就先把候选池按事件时间窗口
+    # 硬过滤，只让落在该区间的条目进入后续 BM25 / cosine 打分。
+    if time_window is not None:
+        ws, we = time_window
+        facts_tagged = [d for d in facts_tagged if _overlaps_window(d, ws, we)]
+        refl_tagged = [d for d in refl_tagged if _overlaps_window(d, ws, we)]
+        arch_tagged = [d for d in arch_tagged if _overlaps_window(d, ws, we)]
+
+    bm25_pool_raw = facts_tagged + refl_tagged + arch_tagged
+    embedding_pool_raw = facts_tagged + refl_tagged
 
     # Hard filter (drop score<0 / suppressed / terminal reflection / protected).
     # Imported lazily so a circular-import-safe boot path stays viable.
@@ -538,25 +594,154 @@ async def hybrid_recall(
             "tier": d.get('_tier') or 'unknown',
             "entity": d.get('entity'),
             "score": round(d.get('_rrf_score', 0.0), 6),
+            # created_at = 记忆写盘时间；event_start/end_at = 事件真正发生
+            # 的时间锚点（schema v2，由 event_when_raw 解算）。两者可能差很
+            # 远（"上周通宵"今天才被写进记忆），所以都带上，渲染侧优先用
+            # event 锚点回答"事件什么时候发生"。
             "created_at": d.get('created_at'),
+            "event_start_at": d.get('event_start_at'),
+            "event_end_at": d.get('event_end_at'),
         }
         for d in fused
     ]
 
     elapsed_ms = (time.time() - start) * 1000.0
+    # 嵌入服务状态：把 emb 路径"为啥是 0"直接写进这条 log。否则
+    # ``emb=0`` 在"服务没起来(disabled)"和"服务起来了但池子里一条向量都没
+    # 缓存"两种情况下长得一模一样，排障时必须翻 embeddings.py 的日志才能区分
+    # —— 而那条历史上还进不了 Memory 日志文件。读 service 状态不触发加载、
+    # 不抛异常（纯属性读），失败也只是降级成 "unknown"，不影响召回结果。
+    try:
+        from memory.embeddings import get_embedding_service
+        _svc = get_embedding_service()
+        emb_state = "ready" if _svc.is_available() else (
+            "disabled:%s" % _svc.disable_reason() if _svc.is_disabled() else "not_ready"
+        )
+    except Exception as exc:  # noqa: BLE001
+        emb_state = "unknown(%s)" % type(exc).__name__
     # union pool size for observability — bm25 pool is the superset.
+    # `passed` = items surviving the per-side threshold; `thresh` is the
+    # cutoff constant. 历史上这条 log 把 `passed` 数挂在 `(>thresh %d)`
+    # 字段里，被读成"阈值=N"误导调参，所以拆成 passed + thresh 两段。
     logger.info(
-        "[hybrid_recall] %s: pool bm25=%d emb=%d | scored bm25=%d (>thresh %d) "
-        "emb=%d (>thresh %d) | fused=%d | %.0fms",
+        "[hybrid_recall] %s: pool bm25=%d emb=%d | "
+        "scored bm25=%d (passed %d, thresh=%.2f) "
+        "emb=%d (passed %d, thresh=%.2f) | emb_svc=%s | fused=%d | %.0fms",
         lanlan_name,
         len(bm25_pool), len(embedding_pool),
-        len(bm25_scored), len(bm25_top),
-        len(cosine_scored), len(cosine_top),
+        len(bm25_scored), len(bm25_top), HYBRID_RECALL_BM25_THRESHOLD,
+        len(cosine_scored), len(cosine_top), HYBRID_RECALL_COSINE_THRESHOLD,
+        emb_state,
         len(results), elapsed_ms,
     )
     return {
         "results": results,
         "query": query,
         "candidates_total": len(bm25_pool),
+        "elapsed_ms": round(elapsed_ms, 1),
+    }
+
+
+async def recall_by_time(
+    *,
+    lanlan_name: str,
+    time_spec: str,
+    fact_store,
+    reflection_engine,
+) -> dict[str, Any]:
+    """按时间回溯——返回离 ``time_spec`` 窗口**最接近的若干条**记忆
+    （fact + reflection 混合）。
+
+    这是 ``recall_memory(time=...)`` 走的路径：不做 BM25 / cosine 语义打分，
+    纯按事件时间锚点排序，所以"那天/那周/那段时间"的记忆都能被拎出来，不会
+    因为语义不匹配 query 而漏掉，且不需要 query —— 只给 time 即可。
+
+    排序口径：取每条的事件窗口 ``[event_start_at, event_end_at]``（缺 start
+    退回 ``created_at``，缺 end 退回 start），算它与 ``parse_time_window``
+    解出的 ``[win_start, win_end)`` 的时间距离——落在窗口内距离为 0，否则
+    取到最近窗口边界的秒数。按 (距离 ASC, 事件起点 DESC) 排序后取前
+    ``HYBRID_RECALL_TIME_BUDGET`` 条。所以窗口内的条目（距离 0）天然排在
+    最前，窗口为空时则回落到时间上最邻近的几条。
+
+    候选池 = 活跃 facts + 活跃 reflections + 归档 facts（归档对老时间回溯
+    有用），再过 ``_hard_filter`` 丢 score<0 / suppressed / 终态，口径与
+    ``hybrid_recall`` 一致。``time_spec`` 解析失败时返回空 results。
+    """
+    from memory.temporal import parse_time_window
+    start_t = time.time()
+    window = parse_time_window(time_spec)
+    if window is None:
+        logger.info(
+            "[recall_by_time] %s: unparseable time=%r → empty", lanlan_name, time_spec,
+        )
+        return {
+            "results": [], "query": "", "time": time_spec or "",
+            "candidates_total": 0, "elapsed_ms": 0.0,
+        }
+    win_start, win_end = window
+
+    active_facts, active_reflections, archive_facts = await asyncio.gather(
+        fact_store.aload_facts(lanlan_name),
+        reflection_engine.aload_reflections(lanlan_name),
+        _aload_archive_facts(fact_store, lanlan_name),
+    )
+    pool_raw = (
+        _tag_tier(active_facts or [], 'fact')
+        + _tag_tier(active_reflections or [], 'reflection')
+        + _tag_tier(archive_facts or [], 'fact_archive')
+    )
+    from memory.recall import MemoryRecallReranker
+    pool = MemoryRecallReranker._hard_filter(pool_raw)
+
+    # (是否窗口外 0/1, 距离秒数, 事件起点 s, doc)。
+    scored: list[tuple[int, float, datetime, dict]] = []
+    for d in pool:
+        win = _entry_event_window(d)
+        if win is None:
+            continue
+        s, e = win
+        # 半开窗口 [win_start, win_end)：事件闭区间 [s, e] 与之有交即在窗口内。
+        in_window = s < win_end and e >= win_start
+        if in_window:
+            dist = 0.0
+        elif e < win_start:          # 整体早于窗口
+            dist = (win_start - e).total_seconds()
+        else:                        # 整体在右界 win_end 当点或之后
+            dist = (s - win_end).total_seconds()
+        # 主键 in_window 摆第一位：右界事件（s == win_end，半开窗口判为窗口
+        # 外）的 dist 也是 0，若只按 dist 排会和真窗口内条目并列、再被次键
+        # 顶到前面——给个 0/1 主键保证"窗口内永远排在窗口外前面"（Codex）。
+        scored.append((0 if in_window else 1, dist, s, d))
+
+    # 次键 dist 升序；三键用 (win_start - s) timedelta 升序 = s 降序（近发生
+    # 的在前），不用 datetime.timestamp()（naive 走本地时区、DST 含糊、
+    # pre-1970 Windows 会 OSError）。doc 不进 key 避免比较 dict。
+    scored.sort(key=lambda t: (t[0], t[1], win_start - t[2]))
+    top = scored[:HYBRID_RECALL_TIME_BUDGET]
+    results = [
+        {
+            "id": d.get('id') or '',
+            "text": d.get('text') or '',
+            "tier": d.get('_tier') or 'unknown',
+            "entity": d.get('entity'),
+            "score": None,  # 时间路径无语义打分
+            "created_at": d.get('created_at'),
+            "event_start_at": d.get('event_start_at'),
+            "event_end_at": d.get('event_end_at'),
+        }
+        for _, _, _, d in top
+    ]
+    elapsed_ms = (time.time() - start_t) * 1000.0
+    logger.info(
+        "[recall_by_time] %s: time=%s window=[%s,%s) pool=%d returned=%d | %.0fms",
+        lanlan_name, time_spec,
+        win_start.isoformat(), win_end.isoformat(),
+        len(pool), len(results), elapsed_ms,
+    )
+    return {
+        "results": results,
+        "query": "",
+        "time": time_spec,
+        "candidates_total": len(pool),
         "elapsed_ms": round(elapsed_ms, 1),
     }

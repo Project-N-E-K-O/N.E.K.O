@@ -36,6 +36,80 @@ def test_scene_selected_choices_filters_action_and_scene() -> None:
     assert result == [{"action": "selected", "scene_id": "a", "choice_id": "second"}]
 
 
+def test_build_suggest_context_includes_fixed_character_pov_reference() -> None:
+    local_state = {
+        "active_game_id": "game-a",
+        "active_session_id": "session-a",
+        "latest_snapshot": {
+            "scene_id": "scene-a",
+            "route_id": "route-a",
+            "choices": [{"choice_id": "c1", "text": "Protect the promise", "index": 0}],
+        },
+        "history_lines": [{"scene_id": "scene-a", "line_id": "l1", "speaker": "A", "text": "line"}],
+        "history_observed_lines": [],
+        "history_choices": [],
+        "character_mode": "fixed",
+        "character_fixed_name": "Murasame",
+        "character_profile_game_id": "senren_banka",
+        "character_profile_match_reason": "window_title_contains",
+        "character_profiles": {
+            "Murasame": {
+                "identity": "A guarded blade spirit",
+                "relationships": {"Mas臣": "contract holder"},
+                "background": ["sealed for centuries"],
+                "character_voice": {
+                    "core_traits": [
+                        {
+                            "trait": "proud but caring",
+                            "speech_effect": "rejects concern before revealing it",
+                        }
+                    ],
+                    "first_person_pronoun": "warawa",
+                },
+            }
+        },
+        "character_runtime_state": {
+            "Murasame": {"current_emotion": "guarded hope"}
+        },
+    }
+
+    context = context_builder.build_suggest_context(local_state)
+
+    pov = context["fixed_character_pov"]
+    assert pov["character_name"] == "Murasame"
+    assert pov["profile_known"] is True
+    assert pov["role"] == "bounded_strategy_reference"
+    assert "strategy lens" in pov["strategy_instruction"]
+    assert pov["identity"] == "A guarded blade spirit"
+    assert pov["runtime_state"]["current_emotion"] == "guarded hope"
+
+
+def test_build_summarize_context_marks_missing_fixed_profile_without_crashing() -> None:
+    local_state = {
+        "active_game_id": "game-a",
+        "active_session_id": "session-a",
+        "latest_snapshot": {"scene_id": "scene-a", "route_id": "route-a"},
+        "history_lines": [{"scene_id": "scene-a", "line_id": "l1", "speaker": "A", "text": "line"}],
+        "history_observed_lines": [],
+        "history_choices": [],
+        "character_mode": "fixed",
+        "character_fixed_name": "Missing",
+        "character_profiles": {},
+    }
+
+    context = context_builder.build_summarize_context(local_state, scene_id="scene-a")
+
+    pov = context["fixed_character_pov"]
+    assert pov["character_name"] == "Missing"
+    assert pov["profile_known"] is False
+    assert pov["applies_to"] == [
+        "suggest_choice",
+        "scene_summary",
+        "cat_consultation",
+        "push",
+    ]
+
+
 def test_append_unique_line_dedupes_by_scene_speaker_text() -> None:
     existing = [{"scene_id": "s", "speaker": "A", "text": "hello", "line_id": "1"}]
 
@@ -83,6 +157,25 @@ def test_build_input_degraded_context_marks_ocr_identifiers() -> None:
         "ocr_reader_line",
         "ocr_reader_choice",
     ]
+
+
+def test_build_fallback_summary_uses_template_and_key_dialogue() -> None:
+    summary = context_builder.build_fallback_summary(
+        "scene-a",
+        [
+            {"speaker": "A", "text": "ただいま", "line_id": "1"},
+            {"speaker": "B", "text": "どうしてここに！？", "line_id": "2"},
+            {"speaker": "C", "text": "secret", "line_id": "3", "route_id": "r"},
+        ],
+        [{"choice_id": "choice-a"}],
+        {},
+    )
+
+    assert summary.startswith("场景 scene-a：A、B、C正在对话。")
+    assert "已做出 1 次选择。" in summary
+    assert "关键对白：" in summary
+    assert "B：どうしてここに！？" in summary
+    assert "；" not in summary
 
 
 def test_resolve_target_line_prefers_history_matches() -> None:

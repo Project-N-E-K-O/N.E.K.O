@@ -1,6 +1,6 @@
 # 快速开始
 
-`sts2_autoplay` 用于把 `STS2 AI Agent` 暴露出来的本地《Slay the Spire 2》状态接入到 N.E.K.O。插件可以读取局面、执行合法动作、按策略自动游玩、让猫娘选择单张牌、向前端推送观察信息，并允许猫娘在后台任务中发送软指导来影响下一轮决策。
+`sts2_autoplay` 会把本地 `STS2 AI Agent` 暴露出来的《Slay the Spire 2》局面接入到 N.E.K.O，让你既可以看局面、看建议，也可以把尖塔交给她短时托管，并在中途用自然语言调整策略。当前这版的交互面已经收敛成几类核心能力：看状态 / 看当前局面、自动游玩控制、陪玩模式、按一句话调整策略、查看下一步建议，以及按建议执行一步。
 
 ## 使用教程
 
@@ -43,9 +43,11 @@ Slay the Spire 2/
 
 先正常启动游戏，让 Mod 随游戏加载。
 
-第一次切换mod模式会闪退一次，属于正常现象，再次启动游戏即可。
+第一次加载 mod 后如果游戏出现一次异常退出，重新启动游戏即可。
 
 在加载mod后，在NEKO中，启用猫爪，开启插件，进入插件面板，手动启动杀戮尖塔插件
+
+如果你在打开插件或初始化插件的同时，刚好也在《杀戮尖塔 2》里进行操作，插件第一次回应可能会比平时慢一拍，属于正常现象。等当前局面同步完成后，后续响应通常会恢复正常。
 
 ### 可使用的指令
 
@@ -68,14 +70,14 @@ NEKO运行日志
 
 ## 功能概览
 
-- 连接本地 `STS2 AI Agent` HTTP 服务并读取游戏状态。
-- 支持手动执行一步、后台半自动游玩、暂停、恢复和停止。
-- 支持三种决策模式：`full-program`、`half-program`、`full-model`。
-- 支持按角色加载策略文档，策略文件位于 `strategies/`。
-- 支持猫娘单次选牌：只从当前可打出的 `play_card` 动作中选择一张牌，先推送原因，再执行。
-- 支持猫娘软指导：用户或猫娘可以发送自然语言指导，下一轮 LLM 决策会参考。
-- 支持后台观察汇报：把当前楼层、战斗、手牌、敌人意图、LLM 理由等推送给前端。
-- 支持安全保护：低血量暂停、Boss/危险攻击减速、血量恢复后自动恢复、残血求生策略、收益最大化和连携评分。
+- 连接本地 `STS2 AI Agent` HTTP 服务并读取当前尖塔局面。
+- 支持一键查看当前局面：会刷新一次状态，并同时整理快照、局势摘要和猫娘同步包。
+- 支持后台自动游玩控制：启动、暂停、恢复、停止，以及按建议执行一步。
+- 支持陪玩模式：在不打断主流程的前提下，按配置推送观察、点评和提醒。
+- 支持自然语言策略调整：用户一句话就可以把当前事件/敌人级偏好写进策略覆盖。
+- 支持查看下一步建议：先看看她准备怎么走，再决定是否按建议走一步。
+- 支持安全保护：低血量暂停、危险攻击减速、危险解除后恢复速度，以及必要时自动恢复自动游玩。
+- 支持前端被动推送：局面同步、观察信息、陪玩提示和控制反馈都会通过插件消息通道发送给宿主。
 
 ## 本插件配置
 
@@ -93,331 +95,153 @@ NEKO运行日志
 | `action_interval_seconds` | `1.5` | 每个动作之间的额外间隔。 |
 | `post_action_delay_seconds` | `0.5` | 动作执行后等待局面稳定的间隔。 |
 | `autoplay_on_start` | `false` | 插件启动后是否自动开始游玩。 |
-| `semi_auto_autoplay` | `true` | 启动自动游玩时是否创建半自动任务上下文。 |
-| `mode` | `half-program` | 当前自动游玩模式。 |
-| `character_strategy` | `defect` | 角色策略名称，对应 `strategies/<name>.md`。 |
-| `max_consecutive_errors` | `3` | 最大连续错误次数，超过后视为断开。 |
-| `push_notifications` | `true` | 历史保留字段。 |
-| `event_stream_enabled` | `false` | 预留字段，目前未实际启用。 |
+| `character_strategy` | `defect` | 当前默认策略名，会按当前局面自动匹配到对应策略上下文。 |
+| `max_consecutive_errors` | `3` | 最大连续错误次数，超过后视为连接异常。 |
 
-### 决策模式
-
-`mode` 支持以下值，也支持对应中文别名：
-
-| 模式 | 中文别名 | 说明 |
-| --- | --- | --- |
-| `full-program` | `全程序` | 纯程序启发式，不调用模型。 |
-| `half-program` | `半程序` | 先进行程序预检查，再调用一次模型决策，并做合法性校验/回退。 |
-| `full-model` | `全模型` | 两次模型调用：先 reasoning，再 final action；中间进行程序检查，最终再做合法性验证。 |
-
-### 角色策略
-
-`character_strategy` 会按 `strategies/<name>.md` 查找策略文档。当前内置策略：
-
-- `defect`
-- `ironclad`
-- `silent_hunter`
-- `necrobinder`
-- `regent`
-
-你可以在 `strategies/` 中新增 Markdown 文件扩展策略。例如：
-
-```text
-strategies/my_strategy.md
-```
-
-然后把配置或入口参数设置为：
-
-```text
-my_strategy
-```
-
-### 前端推送与猫娘观察
+### 前端推送与陪玩观察
 
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
-| `llm_frontend_output_enabled` | `true` | 是否把自动游玩动作/错误主动推送到前端。 |
-| `llm_frontend_output_probability` | `0.15` | 普通动作推送概率，范围会收敛到 `0.0 ~ 1.0`。错误会强制推送。 |
-| `neko_reporting_enabled` | `true` | 是否推送猫娘观察报告。 |
-| `neko_report_interval_steps` | `1` | 每隔多少个自动游玩步骤推送一次观察报告，至少为 `1`。 |
-| `neko_commentary_enabled` | `true` | 是否在观察报告中生成猫娘实时解说。关闭后仍可推送结构化观察报告，但 `live_commentary.text` 会保持空。 |
-| `neko_commentary_probability` | `0.65` | 普通低优先级解说的触发概率，范围会收敛到 `0.0 ~ 1.0`；低血量、斩杀、高攻击等高优先级场景可绕过概率。 |
-| `neko_commentary_min_interval_seconds` | `4` | 同一低优先级场景重复解说的最小间隔秒数，用于减少刷屏和重复口播。 |
-| `neko_critical_commentary_always` | `true` | 是否让 `critical` / `high` 紧急度解说总是播报，例如残血、斩杀、敌人高攻击。 |
-| `neko_guidance_max_queue` | `50` | 猫娘软指导队列最大长度。 |
+| `llm_frontend_output_enabled` | `true` | 是否允许把自动游玩动作/错误主动推送到前端。 |
+| `llm_frontend_output_probability` | `1.0` | 普通动作推送概率。错误和关键控制信息仍可强制推送。 |
+| `autoplay_push_probability` | `0.5` | 非陪玩状态下，普通局面同步推送的概率。 |
+| `companion_push_probability` | `0.7` | 陪玩模式下，普通局面同步推送的概率。 |
+| `neko_reporting_enabled` | `true` | 是否启用猫娘观察能力。 |
+| `neko_report_interval_steps` | `1` | 每隔多少个自动游玩步骤整理一次观察内容。 |
+| `neko_report_hud_enabled` | `true` | 是否把整理好的观察内容实际推送到前端 HUD / 消息通道。 |
+| `neko_commentary_enabled` | `true` | 是否允许生成陪玩点评与提醒。 |
+| `neko_commentary_probability` | `0.65` | 普通低优先级点评的触发概率。 |
+| `neko_commentary_min_interval_seconds` | `4` | 同类点评的最小间隔，用来减少刷屏。 |
+| `neko_critical_commentary_always` | `true` | 高优先级提醒是否总是播报。 |
+| `neko_guidance_max_queue` | `50` | 指导/偏好相关上下文的内部队列上限。 |
 
-猫娘观察报告会携带精简后的 `report`、`neko_context`、`live_commentary`、`task` 等 metadata，供前端或对话逻辑判断这是“过程观察”，不是任务完成通知。为节省用户 token，推送内容只保留当前动作、血量、手牌、敌人、战术摘要、已消费指导和任务摘要。
-
-`live_commentary` 会给前端/TTS 提供短口播字段：`text`、`scene`、`mood`、`urgency`、`priority`、`tts`、`interrupt`、`tone`、`character_strategy`。解说会按场景从模板池随机选择，减少重复；也会按角色策略调整倾向，例如 `defect` 偏理性、`ironclad` 偏稳健。当前覆盖残血、低血量、斩杀、敌人来袭、防守、普通战斗、奖励、商店、休息点、事件、地图，以及战斗结束、关键遗物、路线选择完成等事件级解说。
-
-### 安全保护与自主动作
+### 自动保护与节奏控制
 
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
-| `neko_auto_low_hp_threshold` | `0.3` | 当前血量比例低于该值时，后台自动游玩会自主暂停。 |
-| `neko_auto_safe_hp_threshold` | `0.5` | 血量恢复到该比例后，可自动恢复。 |
-| `neko_auto_dangerous_attack_threshold` | `20` | 敌人来袭伤害达到该值且会破防时，自动减速。 |
-| `neko_auto_resume_after_low_hp` | `true` | 低血量暂停后是否允许血量恢复时自动恢复。 |
+| `neko_auto_low_hp_threshold` | `0.3` | 血量比例低于该值时，自动游玩会优先暂停。 |
+| `neko_auto_safe_hp_threshold` | `0.5` | 血量恢复到该比例后，可重新视为安全。 |
+| `neko_auto_dangerous_attack_threshold` | `20` | 敌人高伤意图达到该阈值时，可能触发减速保护。 |
+| `neko_auto_resume_after_low_hp` | `true` | 低血量暂停后，恢复安全时是否允许自动恢复。 |
 | `neko_desperate_enabled` | `true` | 是否启用残血求生策略。 |
 | `neko_desperate_hp_threshold` | `0.2` | 触发残血求生策略的血量比例。 |
-| `neko_maximize_enabled` | `true` | 是否启用收益最大化出牌选择。 |
-| `neko_synergy_enabled` | `true` | 是否启用连携/协同评分。 |
-
-当前自主动作包括：
-
-- `pause`：低血量时暂停，等待用户或猫娘指令。
-- `slow_down`：Boss 战或危险攻击时把动作间隔临时调慢。
-- `resume`：满足安全血量条件后恢复。
+| `neko_maximize_enabled` | `true` | 是否启用偏收益最大化的决策倾向。 |
 
 ## 普通用户推荐说法
 
-普通用户不需要记住下面的底层入口。优先把用户原话交给 `sts2_neko_command`，由插件内部判断是查看状态、给建议、实际出牌、执行一步、开启自动游玩、暂停、恢复、停止、复盘最近出牌、回答自动游玩疑问，还是把话术作为自动游玩中的软指导。
+普通用户不需要记住底层参数。优先把原话交给当前保留的高层入口，让插件自己判断你是在看局面、调整策略，还是准备按建议执行一步。
 
-推荐交互规则：
+推荐理解方式：
 
-| 用户说法 | 插件行为 |
+| 你想表达什么 | 更适合用什么能力 |
 | --- | --- |
-| `尖塔连上了吗` / `现在什么情况` | 只查看连接、状态或快照，不操作游戏。 |
-| `这回合怎么打` / `打哪张牌好` | 只推荐一张可打出的牌并说明理由，不自动出牌。 |
-| `帮我打一张牌` / `选一张牌打出去` | 明确授权后，只从 `play_card` 动作里选一张并打出。 |
-| `帮我打一步` / `执行一步` | 明确授权后执行一步合法动作，可能包含结束回合、选奖励或走地图。 |
-| `帮我打这一关` / `自动打一下` | 启动半自动游玩，默认以当前楼层完成为停止条件。 |
-| `先防一下` / `别贪输出` | 自动游玩运行中会作为软指导进入下一轮决策；未运行时会保守要求澄清，不会擅自执行。 |
-| `刚才打得怎么样` / `复盘一下刚才那张牌` | 根据最近轻量快照给出牌感点评，不会操作游戏。 |
-| `为什么这么打` / `你在干嘛` | 自动游玩运行中回答当前策略和局面依据，不会额外操作。 |
-| `暂停一下` / `继续` / `停了吧` | 分别暂停、恢复或停止自动游玩。 |
+| `看看现在什么情况` | `sts2_get_status` |
+| `看看当前局面` | `sts2_read_state` |
+| `让她自己玩起来` / `先停一下自动玩` / `继续让她自己玩` / `别让她自己玩了` | autoplay 控制入口 |
+| `按我这句来调整策略：这个事件优先低代价路线` | `sts2_apply_user_override` |
+| `看看她准备怎么走` | `sts2_get_planned_operation` |
+| `按建议走一步` | `sts2_execute_planned_operation` |
+| `打开陪玩模式` / `关掉陪玩模式` | companion mode 控制入口 |
 
-安全默认：咨询不操作，模糊表达不执行危险动作；只有用户明确说“帮我打”“执行”“自动打”“托管”时才会实际操作。
+当前推荐的交互顺序是：
+1. 先看局面
+2. 再看她准备怎么走
+3. 如果你有想法，用一句话调整策略
+4. 最后决定是按建议走一步，还是让她继续自动玩
 
 ## 插件入口
 
-下面这些入口已经暴露给宿主，可直接在 N.E.K.O 中调用。普通用户场景建议优先调用 `sts2_neko_command`，其他入口主要作为开发者精确控制接口。
-
-### `sts2_neko_command`
-
-杀戮尖塔自然语言总入口。用户没有明确指定底层工具时优先调用它。
-
-参数：
-
-- `command`：必填，用户原话。例如：`这回合怎么打`、`帮我打一张牌`、`先防一下`、`暂停一下`。
-- `scope`：可选，默认 `auto`。可选值：`auto`、`status`、`advice`、`one_card`、`one_action`、`autoplay`、`control`、`guidance`、`review`、`question`、`chat`。
-- `confirm`：可选，默认 `false`。用于确认持续托管等高风险操作。
-
-返回中会包含 `intent`、`action`、`executed`、`needs_confirmation`、`summary` 和底层 `result`。
+下面这些入口是当前主脚本真正保留的对外能力。名称已经尽量改成自然语言表达，但底层 entry id 仍保持稳定，便于宿主继续调用。
 
 ### `sts2_health_check`
 
-检查本地尖塔 Agent 服务是否可用。
-
-### `sts2_refresh_state`
-
-强制刷新一次当前尖塔状态。
+看看本地尖塔 Agent 服务有没有正常连上。适合在联调、启动后自检、报错排查时先用一次。
 
 ### `sts2_get_status`
 
-获取连接状态、自动游玩状态、当前模式、角色策略、半自动任务、最近错误、最近动作等信息。
+看看当前整体状态：连接是否正常、当前界面是什么、自动游玩是否正在运行、当前是不是 standby、最近错误和当前模式如何。
 
-### `sts2_get_snapshot`
+### `sts2_read_state`
 
-获取最近缓存的游戏快照和当前可执行动作。
+顺手刷新一次当前局面，并把三层信息一起整理出来：
+- 当前快照
+- 当前局势摘要
+- 当前猫娘同步包
 
-### `sts2_step_once`
+适合在真正决定下一步前先读一眼完整状态。
 
-按当前策略执行一步。
+### `sts2_set_standby`
 
-### `sts2_play_one_card_by_neko`
-
-让猫娘选择并打出一张牌。
-
-参数：
-
-- `objective`：可选，用户授权目标。例如：`帮我选一张牌打出去`。
-
-行为：
-
-1. 读取当前玩家、手牌、敌人和合法动作。
-2. 只保留 `play_card` 动作。
-3. 让当前模式/策略选择一张牌。
-4. 先向前端推送“准备打出哪张牌和原因”。
-5. 重新校验动作仍然合法。
-6. 执行出牌并推送完成观察。
-
-如果当前没有可打出的牌，会返回 `idle`，并推送失败原因。
+切换待机模式。待机模式下不会继续执行动作，但会保留状态整理与同步能力。
 
 ### `sts2_start_autoplay`
 
-启动后台半自动游玩循环。
-
-参数：
-
-- `objective`：可选，用户授权目标。例如：`帮我打这一关`。
-- `stop_condition`：停止条件，默认 `current_floor`。
-
-`stop_condition` 支持：
-
-- `current_floor`：当前楼层完成或进入下一层后结束。
-- `current_combat` / `combat`：任务期间只要进入过战斗，随后离开战斗后结束。
-- `manual` / `none`：不自动完成，需要手动停止。
-
-启动后插件会创建半自动任务上下文，并向前端推送任务开始事件。任务完成时会推送 `semi_auto_task_completed`。
+让她自己玩起来。会启动后台自动游玩循环，让当前局面继续往下推进。
 
 ### `sts2_pause_autoplay`
 
-暂停自动游玩。
+先停一下自动玩。适合你想自己接管、或者准备临时改策略的时候使用。
 
 ### `sts2_resume_autoplay`
 
-恢复已暂停且后台任务仍存在的自动游玩。如果后台任务已经不存在，会安全返回 `idle`，不会隐式重新启动自动游玩。
+继续让她自己玩。从暂停处恢复自动游玩。
 
 ### `sts2_stop_autoplay`
 
-停止自动游玩并清除半自动任务上下文。
+别让她自己玩了。会停止后台自动游玩，把控制权完全收回来。
 
-### `sts2_get_history`
+### `sts2_enable_companion_mode`
 
-获取最近动作和状态历史。
+打开陪玩模式。开启后会更积极地整理局面、推送观察内容，并在合适的时候给点评和提醒。
 
-参数：
+### `sts2_disable_companion_mode`
 
-- `limit`：返回条数，默认 `20`，范围会限制在 `1 ~ 100`。
+关掉陪玩模式。关闭陪玩点评，但不影响基础状态读取和自动游玩控制。
 
-### `sts2_send_neko_guidance`
+### `sts2_apply_user_override`
 
-向后台自动游玩发送猫娘软指导。指导会进入队列，并在下一轮 LLM 决策时注入上下文。
+按你一句话来调整策略。它会结合当前场景，把你的自然语言偏好提取成对应的事件级或敌人级覆盖。
 
-参数：
+当前这条入口还有一个额外保护：
+- 如果自动游玩正在运行，会**先暂停自动游玩**
+- 更新完策略后，会提示你**如要继续请手动恢复自动游玩**
+- 不会在你没确认前擅自继续往下打
 
-- `content`：必填，自然语言指导内容。例如：`先防一下，别急着输出`。
-- `step`：可选，对应步数。
-- `type`：可选，默认 `soft_guidance`。
+### `sts2_get_planned_operation`
 
-### `sts2_set_mode`
+看看她准备怎么走。适合你先想知道系统下一步打算做什么，而不是马上执行。
 
-设置自动游玩模式。
+### `sts2_execute_planned_operation`
 
-参数：
-
-- `mode`：支持 `full-program` / `全程序`、`half-program` / `半程序`、`full-model` / `全模型`。
-
-### `sts2_set_character_strategy`
-
-设置角色策略名称。
-
-参数：
-
-- `character_strategy`：会经过名称标准化后匹配 `strategies/<name>.md`。例如 `defect` 会匹配 `strategies/defect.md`。
-
-### `sts2_set_speed`
-
-设置速度参数，并写回本地 `plugin.toml`。
-
-参数：
-
-- `action_interval_seconds`
-- `post_action_delay_seconds`
-- `poll_interval_active_seconds`
-
-## 典型使用方式
-
-### 检查连接
-
-1. 启动《Slay the Spire 2》。
-2. 确认 `http://127.0.0.1:8080/health` 可访问。
-3. 在 N.E.K.O 中调用 `sts2_health_check`。
-
-### 手动执行一步
-
-调用：
-
-```text
-sts2_step_once
-```
-
-插件会根据当前 `mode` 和 `character_strategy` 选择一个合法动作并执行。
-
-### 让猫娘打一张牌
-
-用户可以对猫娘说类似：
-
-```text
-帮我选一张牌打出去
-```
-
-宿主应调用：
-
-```text
-sts2_play_one_card_by_neko
-```
-
-插件会只从当前可打出的卡牌中选择，不会选择结束回合、地图、奖励或其他动作。
-
-### 让猫娘帮忙打一关
-
-用户可以说：
-
-```text
-帮我打这一关
-```
-
-宿主应调用：
-
-```text
-sts2_start_autoplay
-```
-
-推荐参数：
-
-```json
-{
-  "objective": "帮我打这一关",
-  "stop_condition": "current_floor"
-}
-```
-
-任务运行期间，观察事件只是过程汇报，不代表完成。只有收到半自动任务完成事件时，才应告诉用户这一关完成。
-
-### 中途指导
-
-自动游玩中，用户或猫娘可以发送指导：
-
-```text
-先防一下吧，别吃太多伤害
-```
-
-应调用：
-
-```text
-sts2_send_neko_guidance
-```
-
-推荐参数：
-
-```json
-{
-  "content": "先防一下吧，别吃太多伤害",
-  "type": "soft_guidance"
-}
-```
-
-指导会在下一轮 LLM 决策时被参考。`full-program` 模式不依赖模型，软指导影响有限。
+按建议走一步。会直接执行当前建议的下一步动作。
 
 ## 前端推送事件
 
-插件会通过宿主的消息通道推送以下几类事件。除任务开始/完成、错误和单卡预告外，普通观察会尽量使用短文本和精简 metadata，以减少用户 token 消耗。
+插件会通过宿主消息通道发送几类被动信息，主要分成三组：
 
-| 事件类型 | 说明 |
-| --- | --- |
-| `action` | 普通自动游玩动作观察，受概率控制。 |
-| `error` | 自动游玩错误，强制推送。 |
-| `neko_report` | 完整猫娘观察报告，包含当前局面、手牌、敌人、战术摘要和模型理由。 |
-| `neko_card_task_planned` | 猫娘单卡任务计划打出某张牌。 |
-| `neko_card_task_completed` | 猫娘单卡任务已执行。 |
-| `neko_card_task_failed` | 猫娘单卡任务无法执行。 |
-| `semi_auto_task_started` | 半自动任务开始。 |
-| `semi_auto_task_completed` | 半自动任务完成。 |
-| `neko_autonomous_action` | 系统自主暂停、减速或恢复。 |
+1. **状态与局面同步**
+   - 当前局面摘要
+   - 当前建议摘要
+   - 当前陪玩模式下的同步信息
 
-注意：`neko_report` 是过程观察，不是任务完成通知。前端或对话逻辑不应把单步动作、出牌、结束回合或状态刷新说成“任务完成”“打完 Boss”“战斗结束”或“通关”。如果猫娘要影响下一轮决策，应调用 `sts2_send_neko_guidance`；如果要硬控制流程，应调用暂停、恢复或停止入口。
+2. **自动游玩控制反馈**
+   - 已开始自动游玩
+   - 已暂停 / 已恢复 / 已停止
+   - 策略更新后要求你手动恢复
+
+3. **陪玩与保护提示**
+   - 陪玩点评
+   - 风险提醒
+   - 低血量暂停
+   - 危险攻击减速
+   - 危险解除后恢复速度或恢复自动游玩
+
+这些推送默认都走被动投递语义，不会强行打断主对话；具体出现频率还会受到：
+- `autoplay_push_probability`
+- `companion_push_probability`
+- `neko_commentary_probability`
+- `neko_report_hud_enabled`
+等配置影响。
 
 ## 常见排查
 
@@ -454,7 +278,7 @@ sts2_send_neko_guidance
 
 检查：
 
-- 当前模式是否为 `half-program` 或 `full-model`。
+- 当前是否处于待机状态。
 - `sts2_send_neko_guidance` 是否返回 `ok`。
 - 指导内容是否足够具体，例如“优先防御”“先打最低血敌人”“保留药水”。
 - 当前合法动作是否真的能满足指导。
@@ -478,7 +302,7 @@ sts2_send_neko_guidance
 - `choose_event_option`
 - `proceed`
 
-如果仍卡住，先用 `sts2_get_snapshot` 查看当前 `screen` 和 `available_actions`。
+如果仍卡住，先用 `sts2_read_state` 查看当前 `screen` 和 `available_actions`。
 
 ### 自动游玩突然暂停或变慢
 

@@ -207,6 +207,51 @@ def _read_list_env(var_name: str) -> tuple[str, ...]:
     return ()
 
 
+def _read_str_env(
+    var_name: str, default: str, *, allowed: tuple[str, ...] | None = None,
+) -> str:
+    """字符串型配置的 env 覆盖。键序同端口：``NEKO_<NAME>`` 优先，裸 ``<NAME>``
+    兼容。``allowed`` 非空时，越界值被忽略并 warning（回退 default），避免一个
+    typo 把功能整块带挂。空串视为未设置。"""
+    for key in (f"NEKO_{var_name}", var_name):
+        raw = os.getenv(key)
+        if raw is None:
+            continue
+        val = raw.strip()
+        if not val:
+            continue
+        if allowed is not None and val not in allowed:
+            logger.warning(
+                "Ignoring %s=%r (not in %s); using default %r",
+                key, val, allowed, default,
+            )
+            continue
+        return val
+    return default
+
+
+def _read_bool_env(var_name: str, default: bool) -> bool:
+    """布尔型配置的 env 覆盖。1/true/yes/on → True；0/false/no/off → False；
+    其余/未设置 → default。键序同上。"""
+    for key in (f"NEKO_{var_name}", var_name):
+        raw = os.getenv(key)
+        if raw is None:
+            continue
+        val = raw.strip().lower()
+        if val in ("1", "true", "yes", "on"):
+            return True
+        if val in ("0", "false", "no", "off"):
+            return False
+        if val:
+            # 非空但不可识别（如 typo "ture"）：警告并回退，别静默吞掉让用户
+            # 摸不着头脑"为什么开关没生效"。与 _read_str_env 的 allowed 行为一致。
+            logger.warning(
+                "Ignoring %s=%r (not a boolean); using default %s",
+                key, raw, default,
+            )
+    return default
+
+
 def _build_local_allowed_origins(port: int, *, extra_origins: tuple[str, ...] = ()) -> tuple[str, ...]:
     origins = [
         f"http://127.0.0.1:{port}",
@@ -660,6 +705,10 @@ DEFAULT_CORE_API_PROFILES = {
         'CORE_URL': "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
         'CORE_MODEL': "qwen3-omni-flash-realtime",
     },
+    'qwen_intl': {
+        'CORE_URL': "wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime",
+        'CORE_MODEL': "qwen3-omni-flash-realtime",
+    },
     'glm': {
         'CORE_URL': "wss://open.bigmodel.cn/api/paas/v4/realtime",
         'CORE_MODEL': "glm-realtime-air",
@@ -697,6 +746,19 @@ DEFAULT_ASSIST_API_PROFILES = {
     },
     'qwen': {
         'OPENROUTER_URL': "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        'CONVERSATION_MODEL' : "qwen3.6-plus",
+        'SUMMARY_MODEL': "qwen3.6-plus",
+        'CORRECTION_MODEL': "qwen3.6-plus",
+        'EMOTION_MODEL': "qwen3.6-flash-2026-04-16",
+        'VISION_MODEL': "qwen3.6-plus",
+        'AGENT_MODEL': "qwen3.6-plus",
+    },
+    'qwen_intl': {
+        'OPENROUTER_URL': "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        'OPENROUTER_URLS': [
+            "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+            "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
+        ],
         'CONVERSATION_MODEL' : "qwen3.6-plus",
         'SUMMARY_MODEL': "qwen3.6-plus",
         'CORRECTION_MODEL': "qwen3.6-plus",
@@ -881,6 +943,29 @@ EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES = 5           # 或空闲 N 分钟触发
 EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS = 40      # 轮询间隔（与 IDLE_CHECK_INTERVAL 对齐）
 EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS = 30    # Stage-2 LLM rerank 后进 prompt 的 obs 上限（减少 NxM 配对决策点）
 
+# ── AI-aware Stage-1 (path B) ─────────────────────────────────────────
+# 原 SignalLoop (path A) 只看 user 消息，导致 PR #1346 之后 AI 自我披露 + proactive
+# 引入的屏幕/活动上下文全失明。Path B 走每 N 个 A tick 触发一次的 piggyback
+# 节奏：A 跑完后 b_tick_counter++，达到 N 就跑 B；窗口下游边界用 A 实际处理过
+# 的最晚 msg ts（不是 wall-clock now）保证 B 看的消息严格被 A 看过。
+EVIDENCE_AI_AWARE_EVERY_N_A_TICKS = 3
+"""Path B 每 N 次 A tick 触发一次（piggyback 在 A 循环里，不维护独立 wall-clock cadence）。
+- 选 3：A 平均 5 min 一次 tick → B 平均 15 min 一次。tempo 跟着对话强度自适应——
+  用户聊得越多 B 越频繁，符合"对话量大才需要补抓 AI fact"的直觉
+- B cold start lookback 自动 = N × EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES = 15 min"""
+
+MAX_AI_AWARE_WINDOW_MSGS = 200
+"""Path B 单次窗口 SQL LIMIT 上限。挂机后重启 / 长 idle 突发 burst 可能让
+[last_b_check_ts, last_a_msg_ts] 窗口跨越数小时百余条消息——cap 住防 prompt
+爆炸。LIMIT 在 SQL 层执行（aretrieve_original_by_timeframe 的 limit_rows 参数），
+ORDER BY ts ASC 取最早 N 条而不是最新（保 cursor 单调推进）。"""
+
+MAX_KNOWN_POOL_FACTS = 30
+"""Path B prompt 里塞的"已知 fact 池"上限（按 importance DESC 取前 N）。
+- 30 × ~30 tok = ~900 tok overhead，控制在 prompt 总 budget 的 ~20%
+- 作用：让 path B 的 LLM 知道哪些 fact 已被 path A 抽出，主动避免重抽 user 段
+  内容；命中的 fact 通常带 source='user_observation'"""
+
 # §3.5 / §6.5 Gate 4：归档扫描背景循环间隔
 # 1 小时一次：sub_zero_days 计数本身按"自然日"防抖（每天最多 +1），
 # 所以扫描频率 ≥ 一天即可保证不漏；选 1h 是为了让"score 跌穿 0 当天"
@@ -916,6 +1001,7 @@ PERSONA_RENDER_ENCODING = "o200k_base"   # tiktoken encoding
 # 杀掉，BM25 兜底功能等于死掉（codex P1 review on PR #1385）。
 HYBRID_RECALL_BUDGET_EACH = 4            # 每路（BM25 / embedding）top-K 上限
 HYBRID_RECALL_BUDGET_TOTAL = 8           # RRF 融合后总条数上限（两路去重 + 取分前 N）
+HYBRID_RECALL_TIME_BUDGET = 8            # 按时间回溯（recall_memory time 参数）返回的最接近条数上限
 HYBRID_RECALL_COSINE_THRESHOLD = 0.3     # cosine < 阈值视为不相关
 HYBRID_RECALL_BM25_THRESHOLD = 0.1       # BM25 < 阈值视为不相关（保 small-pool exact match）
 HYBRID_RECALL_RRF_K = 60                 # RRF 常数（k=60 = Elastic / OpenSearch 默认）
@@ -1086,6 +1172,34 @@ MEMORY_RECHECK_MAX_ATTEMPTS = 5
 - 计数字段：reflection / fact entry 上的 `recheck_attempts` (int)。
 - 命中阈值的条目仍保留 schema_version<2（不静默升版洗白），但被 filter
   排除，让循环把名额匀给其它 v1 条目。dev 可读 logger.debug 看积压。"""
+
+MEMORY_LIVENESS_MAX_ATTEMPTS = 5
+"""LLM 终态失败 N 次后强推 progress marker / dead-letter 的统一上限。
+- 适用场景：所有"同点 input + 无 counter + LLM 永久失败 → 永久卡死"的后台
+  路径。包括 signal extraction path A/B、rebuttal feedback、persona
+  corrections resolve、fact dedup resolve、refine cluster、outbox handler。
+- 治理思路：参考 `MEMORY_RECHECK_MAX_ATTEMPTS` (schema 重判 dead-letter) 的
+  套路，把"同一 cursor / 队头 / cluster_hash / op 反复打 LLM"收敛掉，避免
+  毒窗口 / 毒 payload 让整条 pipeline 哑火。
+- 失败定义：LLM 返 None / 抛异常 / handler raise / parse 失败等终态。
+- 5 跟 `MEMORY_RECHECK_MAX_ATTEMPTS` 同口径——按 40s 一轮算 3 分钟级窗口，
+  跨过偶发 transient failure 够用；再多就属于真正 poison。"""
+
+MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS = 5 * 60 * 60
+"""dead-letter 的时间冷却自愈窗口（秒）。
+
+- 问题：达 `MEMORY_LIVENESS_MAX_ATTEMPTS` 被冻结的 entry（reflection synth /
+  schema recheck / refine cluster）只在"成功"或"输入变化"时才解冻。但当失败
+  其实是**一次性持续故障**（correction 模型快照下线一直超时 / cloudsave 卡
+  维护态 / FS 只读）时，故障期间会把一批无辜 entry 一路 bump 到 MAX 永久冻死，
+  故障恢复后也不会自愈（内容没变、又进不了候选）。
+- 治理：给这些 dead-letter 加时间冷却——冻结后每过本窗口放行**一次** probe。
+  probe 成功 → 计数清零彻底恢复；probe 失败 → 重新计时、再等一个窗口。这样
+  一次性故障 5h 后自愈，真正 poison 仍被压到"每 5h 一次"不空烧。
+- **不适用 memory_review**：它的恢复机制是"对话尾部 fingerprint 变化即复位"
+  （master 一发新消息就重试），不需要也不应该有时间自愈——挂机期间就该一直停。
+- 5h：refine cron 30min 一轮 → 一次 >2.5h 的模型宕机会把 entry 顶到 MAX；
+  5h 冷却确保宕机恢复后下一轮就能 probe，又远大于偶发抖动窗口。"""
 
 # ---- Memory: followup picker (memory/reflection.py) ─
 REFLECTION_FOLLOWUP_WEIGHTED = True
@@ -1577,13 +1691,20 @@ MINI_GAME_INVITE_TRIGGER_PROBABILITY = 0.12
 - 取值约定：[0.0, 1.0]，0.0=禁用（等价于 ENABLED=False），1.0=每次都邀请。
 - 上游：random.random() < 此值 → 命中 → 走邀请短路。"""
 
-MINI_GAME_INVITE_COOLDOWN_SECONDS = 3600
-"""一次邀请被回应后的最小静默秒数（默认 1h）。
+MINI_GAME_INVITE_COOLDOWN_AFTER_ACCEPT_SECONDS = 2 * 3600
+"""accept 后的最小静默秒数（默认 2h）。
 - 配合 MINI_GAME_INVITE_COOLDOWN_CHATS：两条件都跨过才允许下次掷骰。
-- 上游：_mini_game_invite_in_cooldown 时间侧判定。
-- 历史：原 24h，PR follow-up #1 改成 1h —— 24h 太长、用户日常重启或重新打开
-  app 都可能跨进过该窗口又被首次打开计数器骗回 force-trigger，体感邀请密度
-  反而抖动；1h 是「一次会话内不重复打扰」的合理平衡。"""
+- 上游：_mini_game_invite_in_cooldown 时间侧判定（state.last_response_choice='accept'）。
+- 历史：原统一 1h（PR follow-up #1 从 24h 降下来），后再拆成 accept/decline 双
+  阈值——accept 体感"刚玩完一局"短一些（2h），decline 表达"不感兴趣"延长到 5h
+  避免短期复扰；之间没有 chats 门差异，10 条仍共用。"""
+
+MINI_GAME_INVITE_COOLDOWN_AFTER_DECLINE_SECONDS = 5 * 3600
+"""decline 后的最小静默秒数（默认 5h）。
+- 配合 MINI_GAME_INVITE_COOLDOWN_CHATS：两条件都跨过才允许下次掷骰。
+- 上游：_mini_game_invite_in_cooldown 时间侧判定（state.last_response_choice='decline'）。
+- 比 accept 长是因为 decline 是明确"不想玩"信号，短期复扰体感差；5h 跨过一般
+  的"刚拒绝完几分钟又问"窗口，又不至于一整天彻底沉默。"""
 
 MINI_GAME_INVITE_NEW_USER_FORCE_AT = 4
 """新用户在第 N 次「成功投递的主动搭话」时强制触发 mini-game 邀请。
@@ -1605,7 +1726,8 @@ MINI_GAME_INVITE_AVAILABLE_GAMES: tuple[str, ...] = ("soccer",)
 
 MINI_GAME_INVITE_COOLDOWN_CHATS = 10
 """一次邀请被回应后，需要再经过的"成功投递的主动搭话"次数。
-- 与 MINI_GAME_INVITE_COOLDOWN_SECONDS 同时满足才解禁；任一不满足都继续抑制。
+- 与 MINI_GAME_INVITE_COOLDOWN_AFTER_{ACCEPT,DECLINE}_SECONDS 同时满足才解禁；
+  任一不满足都继续抑制。chats 门 accept/decline 共用，不按 choice 拆。
 - 上游：_mini_game_invite_in_cooldown 计数侧判定。"""
 
 MINI_GAME_INVITE_LATER_SUPPRESS_SECONDS = 5 * 60
@@ -1725,9 +1847,14 @@ EVIDENCE_PROMOTION_MERGE_MODEL_TIER = "correction"  # Promote 合并决策
 # model file. See memory/embeddings.py docstring for the full fallback
 # matrix. Defaults are tuned so the feature is opt-out at the install
 # level (drop the model file → on; remove it → off) without a config edit.
-VECTORS_ENABLED = True                       # master kill switch
+# 默认值不变；额外支持 env 覆盖（opt-in 逃生口，不设就走原 auto 策略）。
+# 典型用途：无 AVX-VNNI 的老 CPU 上 auto 会自动关闭向量，用户可设
+# NEKO_VECTORS_QUANTIZATION=int8 强制照跑 int8（慢但正确），无需重新打包。
+VECTORS_ENABLED = _read_bool_env("VECTORS_ENABLED", True)        # master kill switch
 VECTORS_EMBEDDING_DIM = "auto"               # "auto" | 32/64/128/256/512/768
-VECTORS_QUANTIZATION = "auto"                # "auto" | "int8" | "fp32" (fp32 needs model.onnx on disk)
+VECTORS_QUANTIZATION = _read_str_env(        # "auto" | "int8" | "fp32" (fp32 needs model.onnx on disk)
+    "VECTORS_QUANTIZATION", "auto", allowed=("auto", "int8", "fp32"),
+)
 VECTORS_MIN_RAM_GB = 4.0                     # below this → disabled regardless
 VECTORS_MODEL_PROFILE_ID = "local-text-retrieval-v1"  # anonymous profile id + local model folder
 # Warmup: the ONNX session (~150 MB unpack) loads on first triggering
@@ -1870,6 +1997,9 @@ __all__ = [
     'EVIDENCE_SIGNAL_CHECK_ENABLED',
     'EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS',
     'EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES',
+    'EVIDENCE_AI_AWARE_EVERY_N_A_TICKS',
+    'MAX_AI_AWARE_WINDOW_MSGS',
+    'MAX_KNOWN_POOL_FACTS',
     'EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS',
     'EVIDENCE_DETECT_SIGNALS_MAX_OBSERVATIONS',
     'EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS',
@@ -1891,6 +2021,7 @@ __all__ = [
     'PERSONA_CORRECTION_BATCH_LIMIT',
     'PERSONA_VERSION_HISTORY_MAX',
     'MEMORY_LLM_HARD_TIMEOUT_SECONDS',
+    'MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS',
     'MEMORY_REFINE_COSINE_THRESHOLD',
     'MEMORY_REFINE_TOPK_PER_ENTRY',
     'MEMORY_REFINE_CLUSTER_SIZE_MAX',
@@ -1949,7 +2080,8 @@ __all__ = [
     'PROACTIVE_CHAT_HISTORY_MAX',
     'MINI_GAME_INVITE_ENABLED',
     'MINI_GAME_INVITE_TRIGGER_PROBABILITY',
-    'MINI_GAME_INVITE_COOLDOWN_SECONDS',
+    'MINI_GAME_INVITE_COOLDOWN_AFTER_ACCEPT_SECONDS',
+    'MINI_GAME_INVITE_COOLDOWN_AFTER_DECLINE_SECONDS',
     'MINI_GAME_INVITE_COOLDOWN_CHATS',
     'MINI_GAME_INVITE_NEW_USER_FORCE_AT',
     'MINI_GAME_INVITE_AVAILABLE_GAMES',

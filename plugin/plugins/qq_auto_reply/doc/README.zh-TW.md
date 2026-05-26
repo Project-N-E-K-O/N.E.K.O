@@ -64,6 +64,18 @@
 | `normal_relay_probability` | float | 一般私聊 / 群聊訊息轉述給主人的機率 |
 | `truth_reply_probability` | float | 在 `open` 群組中無需 `@` 就直接回覆的機率 |
 
+### 群聊中的機率欄位
+
+`trusted_groups` 裡的每個群，除了 `group_id` 和 `level` 之外，還可以帶兩個可選的機率欄位：
+
+- `normal_relay_probability`：只在 `level = normal` 的群聊中生效。當群訊息進入「轉述給主人」路徑時，會用這個值覆蓋該群的全域預設轉述機率。
+- `open_reply_probability`：只在 `level = open` 的群聊中生效。在開放群裡，沒有人 `@` 機器人時，會用這個值覆蓋該群的全域預設主動回覆機率。
+
+說明：
+- 這兩個欄位都必須是 `0 ~ 1` 之間的小數。
+- 若留空，插件會回退到全域預設設定。
+- `trusted` 群不會使用這兩個欄位，因為 `trusted` 群只有在明確 `@` 機器人後才會進入正常回覆流程。
+
 ## 權限等級
 
 ### 使用者權限

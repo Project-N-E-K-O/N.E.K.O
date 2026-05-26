@@ -1177,10 +1177,12 @@ function createAnimationSettingsSidePanel(manager, prefix) {
         updateRowStyle();
         updateTrackingModeToggleState();
         trackingClickArea.setAttribute('aria-checked', String(enabled));
-        if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
+        // 必须先跑回调写 window.mouseTrackingEnabled，再 save——saveSettings 是从该
+        // 全局变量读值落盘的，顺序反了会把切换前的旧值持久化（刷新后看着像被重置）
         if (typeof manager._onMouseTrackingToggle === 'function') {
             manager._onMouseTrackingToggle(enabled);
         }
+        if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
     };
 
     trackingClickArea.addEventListener('click', (e) => {

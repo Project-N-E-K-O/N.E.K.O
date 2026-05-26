@@ -42,6 +42,9 @@ from config import (
     EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS,
     EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES,
     EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS,
+    EVIDENCE_AI_AWARE_EVERY_N_A_TICKS,
+    MAX_AI_AWARE_WINDOW_MSGS,
+    MAX_KNOWN_POOL_FACTS,
     MEMORY_REFLECTION_SYNTHESIS_INTERVAL_SECONDS,
     IGNORED_REINFORCEMENT_DELTA,
     MEMORY_RECHECK_ENABLED,
@@ -62,6 +65,7 @@ from config.prompts.prompts_memory import (
     CHAT_HOLIDAY_CONTEXT,
     MEMORY_RECALL_HEADER, MEMORY_RESULTS_HEADER,
     PERSONA_HEADER, INNER_THOUGHTS_DYNAMIC,
+    RECENT_HISTORY_INTRO, NO_RECENT_HISTORY,
 )
 # Negative-intent prompts/scanner 已迁到 ``prompts_directives``（与 ban-topic
 # regex 同源——同是"用户负面 / 回避指令"的语义层）。``prompts_memory`` 保留
@@ -594,14 +598,49 @@ async def _run_outbox_op(name: str, op: dict, sem: asyncio.Semaphore | None = No
 
     `sem`：startup replay 路径传入共享 Semaphore 限制 LLM fan-out；日常单次
     spawn 路径传 None 即不限流。
+
+    Liveness 兜底（Site 7）：handler 失败时 append_attempt 一行记录失败。
+    若同 op_id 累计 attempt 数（含本次） ≥ ``MEMORY_LIVENESS_MAX_ATTEMPTS``
+    则 append_done 当 dead-letter 放弃该 op + WARN。否则毒 op（payload 触
+    发 handler 永久 raise，例如 LLM safety filter / parse 永久失败）每次重启
+    都重跑且永远不出 pending → ``compact`` 永久阻塞 → outbox.ndjson 线性增
+    长。``op.get('_attempt_count', 0)`` 来自 ``pending_ops`` scan 时的累计，
+    日常 spawn 路径调 _run_outbox_op 时 op 是临时构造的不带这个字段，按 0
+    起算（首次失败 → attempt=1，远 < N，正常 pending 等重启重放）。
     """
+    from config import MEMORY_LIVENESS_MAX_ATTEMPTS
     op_id = op.get('op_id')
     op_type = op.get('type')
     payload = op.get('payload') or {}
+    from memory.facts import safe_int_field
+    prior_attempts = safe_int_field(op, '_attempt_count')
     handler = _OUTBOX_HANDLERS.get(op_type)
     if handler is None:
         logger.warning(f"[Outbox] {name}: 未注册的 op type {op_type}, 跳过 {op_id}")
         return
+
+    # CodeRabbit: 已达 dead-letter 阈值的 op 直接补写 done，不要再跑 handler。
+    # 边缘 case：上一轮 ``aappend_attempt`` 成功把 _attempt_count 推到 N，但
+    # 紧接着 ``aappend_done`` 写盘失败（IO transient）→ op 留在 pending →
+    # 重启 replay 看到 ``_attempt_count=N`` 又进 handler 再失败再尝试 done。
+    # 对幂等 handler 只是浪费一次调用；对非幂等 handler（outbox 契约要求幂等
+    # 但不保证）就是真重复副作用。进门先短路保证"达阈值后绝不再执行"。
+    if prior_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS:
+        logger.warning(
+            f"[Outbox] {name}/{op_type}/{op_id}: 进入时已达 dead-letter 阈值 "
+            f"({prior_attempts}/{MEMORY_LIVENESS_MAX_ATTEMPTS})，跳过 handler "
+            f"直接补写 done。Why: 上一轮 append_done 可能 IO 失败留 pending，"
+            f"避免毒 op 重复执行 + 副作用重放。"
+        )
+        try:
+            await outbox.aappend_done(name, op_id)
+        except Exception as de:
+            logger.warning(
+                f"[Outbox] {name}/{op_type}/{op_id}: dead-letter "
+                f"append_done 仍失败（保持 pending 等下次重放再补 done）: {de}"
+            )
+        return
+
     acquired = False
     if sem is not None:
         await sem.acquire()
@@ -610,7 +649,50 @@ async def _run_outbox_op(name: str, op: dict, sem: asyncio.Semaphore | None = No
         try:
             await handler(name, payload)
         except Exception as e:
-            logger.warning(f"[Outbox] {name}/{op_type}/{op_id} 执行失败（保持 pending）: {e}")
+            try:
+                await outbox.aappend_attempt(name, op_id)
+                attempt_persisted = True
+            except Exception as ae:
+                attempt_persisted = False
+                logger.warning(
+                    f"[Outbox] {name}/{op_type}/{op_id}: append_attempt 失败: {ae}"
+                )
+
+            # Codex P1：不能基于"未落盘的 +1"触发 dead-letter。
+            # 如果本次 aappend_attempt 失败 + 接着 aappend_done 成功 →
+            # 重启后只看到磁盘上 prior_attempts 个 attempt 行 + 1 个 done →
+            # op 永久丢失而磁盘记录看起来"只失败了 N-1 次就 done"，违背 "≥ N
+            # 次失败才放弃" 的契约。Attempt 没落盘 → 本次失败按 transient 处理
+            # （保留 pending，下次重试自然再走一次 attempt），不进 dead-letter
+            # 判定。
+            if not attempt_persisted:
+                logger.warning(
+                    f"[Outbox] {name}/{op_type}/{op_id} 执行失败（attempt 持久化"
+                    f"失败，按 transient 保留 pending 等下次重放）: {e}"
+                )
+                return
+
+            total_attempts = prior_attempts + 1
+            if total_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS:
+                logger.warning(
+                    f"[Outbox] {name}/{op_type}/{op_id}: handler 累计失败 "
+                    f"{total_attempts} 次 ≥ {MEMORY_LIVENESS_MAX_ATTEMPTS}，"
+                    f"dead-letter 放弃该 op（最近一次失败: {e}）。"
+                    f"Why: liveness 兜底，避免毒 payload 让重启 replay 永远卡住 + "
+                    f"compact 永久阻塞。"
+                )
+                try:
+                    await outbox.aappend_done(name, op_id)
+                except Exception as de:
+                    logger.warning(
+                        f"[Outbox] {name}/{op_type}/{op_id}: dead-letter "
+                        f"append_done 失败: {de}"
+                    )
+            else:
+                logger.warning(
+                    f"[Outbox] {name}/{op_type}/{op_id} 执行失败（保持 pending，"
+                    f"attempts={total_attempts}/{MEMORY_LIVENESS_MAX_ATTEMPTS}）: {e}"
+                )
             return
         try:
             await outbox.aappend_done(name, op_id)
@@ -735,23 +817,34 @@ REBUTTAL_SQL_ROW_LIMIT = 200
 
 
 def _coerce_db_ts(ts) -> datetime | None:
-    """归一化 SQL 行里的 timestamp 字段为 datetime。
+    """归一化 SQL 行里的 timestamp 字段为 **naive** datetime。
 
     SQLAlchemy + SQLite 在某些 driver 配置下返回字符串而非 datetime；与
     memory/timeindex.py:get_last_conversation_time 同款归一化。返回 None
     表示无法解析（caller 应跳过此行而不是把 None 写进 cursor）。
+
+    若解析出 TZ-aware datetime（import / migration 路径写入 "...+00:00"
+    之类），强制 `replace(tzinfo=None)` 转 naive——本文件所有 cursor /
+    比较都按 naive 语义工作（last_b_check_ts / last_a_msg_ts / facts.json
+    `created_at` 全是 naive `datetime.now().isoformat()`），aware 跟 naive
+    比较会抛 TypeError 让 caller 永久哑火（Codex P1+P2 round-7/8 on PR
+    #1408 双侧 case）。
     """
     if isinstance(ts, datetime):
-        return ts
-    if isinstance(ts, str):
+        result = ts
+    elif isinstance(ts, str):
         try:
-            return datetime.fromisoformat(ts)
+            result = datetime.fromisoformat(ts)
         except ValueError:
             try:
-                return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S.%f")
+                result = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S.%f")
             except ValueError:
                 return None
-    return None
+    else:
+        return None
+    if result.tzinfo is not None:
+        result = result.replace(tzinfo=None)
+    return result
 
 
 def _extract_user_messages_with_ts_from_rows(rows: list) -> list[tuple[str, datetime]]:
@@ -813,6 +906,76 @@ def _extract_user_messages_from_rows(rows: list) -> list[str]:
     return user_msgs
 
 
+def _extract_role_tagged_messages_from_rows(rows: list) -> list[dict]:
+    """Path B 用的全消息提取——保留 user + ai 两种 type，输出 message_dict
+    list 直接喂 ``convert_to_messages``。
+
+    跟 ``_extract_user_messages_from_rows`` 的区别：
+    - 收 type ∈ {'human', 'ai'} 两种（不再仅 human）
+    - 返回 [{'type': 'human'|'ai', 'data': {'content': str}}, ...] 而不是
+      纯 str list，让下游 ``convert_to_messages`` 还原成 HumanMessage/AIMessage
+      让 ``FactStore._format_conversation`` 渲染时按 type → name_mapping 出
+      "{MASTER_NAME} | xxx" / "{LANLAN_NAME} | xxx" 形式，path B prompt 据此
+      判每条 fact 的 source 归属（user_observation / ai_disclosure）
+
+    PR #1399 的教训：这里返回 list[dict] 让 caller 拼 message_dicts 后用
+    ``convert_to_messages(message_dicts)`` 直接转——**不要** ``json.dumps``
+    包一层（convert_to_messages 只接 list，str 会被静默吞成 []）。
+    """
+    out: list[dict] = []
+    for _, _, msg_json in rows:
+        try:
+            msg = json.loads(msg_json) if isinstance(msg_json, str) else msg_json
+            if not isinstance(msg, dict):
+                continue
+            msg_type = msg.get('type')
+            if msg_type not in ('human', 'ai'):
+                continue
+            content = msg.get('data', {}).get('content', '')
+            # content 归一化：内部可能是 str 或 [{type:'text', text:'...'}, ...]
+            # 后者拼回单个 str（path B prompt 不需要细粒度 part 结构，
+            # FactStore._format_conversation 把 list content 拼成 ''.join 也是
+            # 同样语义）。
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                parts = [
+                    p.get('text', '')
+                    for p in content
+                    if isinstance(p, dict) and p.get('type') == 'text'
+                ]
+                text = ''.join(parts)
+            else:
+                continue
+            if not text.strip():
+                continue
+            out.append({'type': msg_type, 'data': {'content': text}})
+        except (json.JSONDecodeError, TypeError):
+            continue
+    return out
+
+
+def _trim_to_user_msg_bracket(message_dicts: list[dict]) -> list[dict]:
+    """只保留首条 human msg 到末条 human msg 之间（含两端）的消息。
+
+    Product thesis 防廉价层污染：AI 在首条 user msg **之前**的内容是 user
+    还没印证的 proactive 试探，AI 在末条 user msg **之后**的内容是 user
+    还没回应过的独白——两段都是廉价层，不该当 fact 沉淀。只有夹在两条
+    user msg 中间的 AI 内容才意味着 "user 看到了 / 认可了这段对话上下
+    文"，才有资格被 path B 拣回当 ai_disclosure fact。
+
+    完全无 human msg → 返 []（caller 视作 AI-only 窗口跳过）。
+    只有一条 human msg → 返该条（bracket 退化为单点，仍合法：那条本身
+    就是 user 发声，path B 可借 known_pool 看相邻 AI 上下文）。
+    """
+    human_indices = [
+        i for i, m in enumerate(message_dicts) if m.get('type') == 'human'
+    ]
+    if not human_indices:
+        return []
+    return message_dicts[human_indices[0]:human_indices[-1] + 1]
+
+
 async def _resolve_rebuttal_start_time(name: str, now: datetime):
     """决定 rebuttal_loop 本轮查询的起始时间。
 
@@ -859,6 +1022,32 @@ async def _resolve_rebuttal_start_time(name: str, now: datetime):
             logger.debug(f"[Rebuttal] {name}: rollback 自愈写入失败（将在下轮重试）: {e}")
         return fallback
     return cursor
+
+
+_rebuttal_failures: dict[str, dict[str, int]] = {}
+"""Per-character rebuttal LLM 失败计数：``{name: {cursor_iso: count}}``。
+
+In-memory only（cursor 本身落盘到 cursors.json，但 counter 重启清零）。
+Why in-memory: 重启后再试 ``MEMORY_LIVENESS_MAX_ATTEMPTS`` 次再 dead-letter，
+避免内存 counter 错把短暂 transient 失败永久放弃；user-visible 代价 = 重启
+后多卡 N × REBUTTAL_CHECK_INTERVAL 一段时间，可接受。
+
+Liveness 兜底原因：``check_feedback_for_confirmed`` 返 None 时原代码直接
+``return`` 不动 cursor → 下轮重读相同 [cursor, now] 窗口含同样的毒 user
+msg → 仍失败 → 永久卡死 rebuttal 链路（毒窗口让 user 反驳信号永远进不来
+evidence loop）。"""
+
+
+def _rebuttal_bump_failure(name: str, cursor_key: str) -> int:
+    """Bump 失败计数，返回当前累计次数。Caller 自行判 ≥ MEMORY_LIVENESS_MAX_ATTEMPTS。"""
+    fails = _rebuttal_failures.setdefault(name, {})
+    fails[cursor_key] = int(fails.get(cursor_key, 0) or 0) + 1
+    return fails[cursor_key]
+
+
+def _rebuttal_clear_failures(name: str) -> None:
+    """Cursor 推进（成功）或 dead-letter 强推后清零 counter。"""
+    _rebuttal_failures.pop(name, None)
 
 
 async def _periodic_rebuttal_loop():
@@ -931,6 +1120,7 @@ async def _periodic_rebuttal_loop():
                     await cursor_store.aset_cursor(
                         name, CURSOR_REBUTTAL_CHECKED_UNTIL, now,
                     )
+                    _rebuttal_clear_failures(name)
                     return
 
                 start_time = await _resolve_rebuttal_start_time(name, now)
@@ -942,6 +1132,7 @@ async def _periodic_rebuttal_loop():
                     await cursor_store.aset_cursor(
                         name, CURSOR_REBUTTAL_CHECKED_UNTIL, now,
                     )
+                    _rebuttal_clear_failures(name)
                     return
 
                 # 提取 (msg, ts) 元组（ASC by ts；ts 已归一化为 datetime）
@@ -960,6 +1151,7 @@ async def _periodic_rebuttal_loop():
                         await cursor_store.aset_cursor(
                             name, CURSOR_REBUTTAL_CHECKED_UNTIL, now,
                         )
+                    _rebuttal_clear_failures(name)
                     return
 
                 # Drain 取前 N 条 user msg。然后扩展 batch 把和 batch 末位
@@ -988,8 +1180,34 @@ async def _periodic_rebuttal_loop():
                     name, confirmed, user_msgs,
                 )
                 if feedbacks is None:
-                    # LLM 调用失败 → 不推进游标，下次重试这批消息
-                    logger.warning(f"[Rebuttal] {name}: 反驳检查失败，保留游标待重试")
+                    # LLM 调用失败 → 不推进游标，下次重试这批消息。
+                    # Liveness 兜底：同一 cursor 反复失败 ≥
+                    # MEMORY_LIVENESS_MAX_ATTEMPTS 时强推 cursor 到 now 放弃这段
+                    # 窗口（dead-letter），避免毒 user msg 让 rebuttal 链路永久
+                    # 卡死。cursor 落盘到 cursors.json，stuck cursor 重启都不
+                    # 复活，比 in-memory 的 signal extraction cursor 更顽固。
+                    from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+                    cursor_key = (
+                        start_time.isoformat(timespec='microseconds')
+                        if start_time else 'cold'
+                    )
+                    attempts = _rebuttal_bump_failure(name, cursor_key)
+                    if attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS:
+                        logger.warning(
+                            f"[Rebuttal] {name}: 反驳检查在 cursor {cursor_key!r} "
+                            f"累计失败 {attempts} 次 ≥ {MEMORY_LIVENESS_MAX_ATTEMPTS}，"
+                            f"强推 cursor 到 {now.isoformat(timespec='seconds')} "
+                            f"放弃该窗口（dead-letter）。Why: 毒窗口 liveness 兜底。"
+                        )
+                        await cursor_store.aset_cursor(
+                            name, CURSOR_REBUTTAL_CHECKED_UNTIL, now,
+                        )
+                        _rebuttal_clear_failures(name)
+                    else:
+                        logger.warning(
+                            f"[Rebuttal] {name}: 反驳检查失败，保留游标待重试 "
+                            f"({attempts}/{MEMORY_LIVENESS_MAX_ATTEMPTS})"
+                        )
                     return
 
                 # 成功才推进游标并持久化。Drain 推进规则：
@@ -1020,6 +1238,9 @@ async def _periodic_rebuttal_loop():
                 await cursor_store.aset_cursor(
                     name, CURSOR_REBUTTAL_CHECKED_UNTIL, new_cursor,
                 )
+                # Cursor 推进 → 旧 cursor key 永远不会再被命中，清空 counter
+                # 避免内存 dict 随 cursor 历史无限增长（对偶 Site 0a/0b）。
+                _rebuttal_clear_failures(name)
                 for fb in feedbacks:
                     if isinstance(fb, dict) and fb.get('feedback') == 'denied':
                         rid = fb.get('reflection_id')
@@ -1631,7 +1852,24 @@ async def _periodic_archive_sweep_loop():
 
 # ── memory-evidence-rfc §3.4.3: background signal extraction loop ───
 
-_signal_check_state: dict[str, dict] = {}  # {name: {turns_since, last_check_ts}}
+_signal_check_state: dict[str, dict] = {}
+"""Per-character signal extraction state.
+
+Schema:
+  {
+    'turns_since': int,           # turn counter since last successful check
+    'last_check_ts': str | None,  # ISO cursor for path A window start
+    'last_a_msg_ts': datetime,    # path A 实际处理过的最晚 msg ts (path B 上游边界)
+    'last_b_check_ts': datetime,  # ISO cursor for path B window start
+    'b_tick_counter': int,        # ticks since last path B trigger
+    # Liveness counters (in-memory only)：cursor key → 连续失败次数。
+    # 成功 mark_done 时清空对应 path 的 counter。重启清零是有意为之的"软兜底"
+    # ——重启后再试 MEMORY_LIVENESS_MAX_ATTEMPTS 次再 dead-letter，避免内存
+    # counter 错误地把短暂 transient 失败永久放弃。
+    'a_extract_failures': dict[str, int],  # path A cursor (last_check_ts) → fail count
+    'b_extract_failures': dict[str, int],  # path B cursor (last_b_check_ts) → fail count
+  }
+"""
 
 
 def _signal_check_should_run(name: str, now: datetime) -> bool:
@@ -1660,6 +1898,72 @@ def _signal_check_mark_done(name: str, now: datetime) -> None:
     state = _signal_check_state.setdefault(name, {'turns_since': 0, 'last_check_ts': None})
     state['turns_since'] = 0
     state['last_check_ts'] = now.isoformat()
+    # Cursor 推进 → path A 的旧 cursor key 永远不会再被命中，清空 counter
+    # 避免内存 dict 随 cursor 历史无限增长。同时把"曾经失败但靠新数据冲过去
+    # 了"的窗口归零，下次毒窗口出现按 fresh attempt 计算。
+    state['a_extract_failures'] = {}
+
+
+def _stage1_path_a_bump_failure(
+    name: str, state: dict, cursor_key: str, now: datetime,
+) -> bool:
+    """Path A Stage-1 LLM 终态失败的 liveness 兜底。
+
+    给 (cursor_key) 当前窗口 bump 失败计数；达 ``MEMORY_LIVENESS_MAX_ATTEMPTS``
+    时强推 cursor 到 now（视为放弃该窗口的 fact 抽取），返回 True；未达上限
+    返回 False（caller 走原有"保留 cursor 下轮重试"路径）。
+
+    Why: 毒 msg（safety filter / content policy / 永远 parse 不出来的畸形
+    输出）让 ``_allm_call_with_retries`` 永久耗尽，原代码捕获后直接 return
+    不动 cursor → 下轮重读同窗口 → 永远卡死该角色的 fact pipeline（类似
+    PR #1399 "26 天 0 fact" 事故的 liveness 缺口）。强推 cursor 等于
+    放弃这段窗口的 fact 抽取，代价上限 = N × interval (≈ 3 分钟)，远比
+    "永久 0 fact" 划算。
+    """
+    from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+    fails = state.setdefault('a_extract_failures', {})
+    fails[cursor_key] = int(fails.get(cursor_key, 0) or 0) + 1
+    if fails[cursor_key] < MEMORY_LIVENESS_MAX_ATTEMPTS:
+        return False
+    logger.warning(
+        f"[SignalLoop] {name}: Stage-1 path A 在 cursor {cursor_key!r} "
+        f"累计失败 {fails[cursor_key]} 次 ≥ {MEMORY_LIVENESS_MAX_ATTEMPTS}，"
+        f"强推 cursor 到 {now.isoformat(timespec='seconds')} "
+        f"放弃该窗口（dead-letter）。Why: 毒窗口 liveness 兜底。"
+    )
+    _signal_check_mark_done(name, now)  # 会顺带把 a_extract_failures 清空
+    return True
+
+
+def _stage1_path_b_bump_failure(
+    name: str, state: dict, cursor_key: str, force_to: datetime,
+) -> bool:
+    """Path B Stage-1 LLM 终态失败的 liveness 兜底（path A 的对偶）。
+
+    给 (cursor_key) 当前 B 窗口 bump 失败计数；达
+    ``MEMORY_LIVENESS_MAX_ATTEMPTS`` 时强推 ``state['last_b_check_ts']``
+    到 ``force_to`` (= last_fetched_ts)，返回 True；未达上限返回 False
+    （caller 走原有"保留 cursor 下次 trigger 重试"路径）。
+
+    Why: 跟 path A 同源问题——B 的 ``persisted is None`` 分支原代码直接
+    return 不动 ``last_b_check_ts`` → 下次 B trigger 重读 [last_b_check_ts,
+    last_a_msg_ts] 同窗口 → 仍卡。强推 cursor 到 last_fetched_ts 等于
+    放弃 AI-aware 视角下的这段窗口，代价上限 = N × B trigger 间隔。
+    """
+    from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+    fails = state.setdefault('b_extract_failures', {})
+    fails[cursor_key] = int(fails.get(cursor_key, 0) or 0) + 1
+    if fails[cursor_key] < MEMORY_LIVENESS_MAX_ATTEMPTS:
+        return False
+    logger.warning(
+        f"[PathB] {name}: Stage-1 path B 在 cursor {cursor_key!r} "
+        f"累计失败 {fails[cursor_key]} 次 ≥ {MEMORY_LIVENESS_MAX_ATTEMPTS}，"
+        f"强推 last_b_check_ts 到 {force_to.isoformat(timespec='seconds')} "
+        f"放弃该窗口（dead-letter）。Why: 毒窗口 liveness 兜底。"
+    )
+    state['last_b_check_ts'] = force_to
+    state['b_extract_failures'] = {}
+    return True
 
 
 def _signal_check_window_start(name: str, now: datetime) -> datetime:
@@ -1760,6 +2064,252 @@ async def _adispatch_evidence_signals(
     return all_ok
 
 
+async def _run_path_b(name: str, state: dict) -> None:
+    """Path B: AI-aware Stage-1 only（不进 Stage-2 evidence loop）。
+
+    Piggyback 在 path A 循环里，每 ``EVIDENCE_AI_AWARE_EVERY_N_A_TICKS`` 次 A
+    tick 触发一次。窗口下游边界用 path A 实际处理过的最晚 msg ts，保证 B
+    看到的消息严格被 A 看过——避免"A scan SQL 完成那一刻之后才入 SQLite 的
+    msg 被 B 抢先处理"的 race。
+
+    设计要点：
+      1. 窗口 = [last_b_check_ts, last_a_msg_ts]。cold start last_b 推算 =
+         last_a_msg_ts - max(N_TICKS, N_TURNS) × IDLE_MINUTES（取两种 A 触发
+         节律的较保守值，cover sparse turn 场景）
+      2. SQL 层 LIMIT MAX_AI_AWARE_WINDOW_MSGS 防极端长窗口爆 prompt
+      3. 已知 fact 池：从 facts.json 拉 created_at ≥ last_b 的 fact（不设
+         上界——A idle delay 让最新一批 A facts 的 created_at 略晚于
+         last_a_msg_ts，设上界会把它们整批漏掉），按 importance DESC 取
+         前 MAX_KNOWN_POOL_FACTS 塞 prompt，让 LLM 输出层主动去重 path A
+         已抽内容
+      4. 落盘 default_source='ai_disclosure'；LLM 显式 source 字段优先
+         注：喂给 Stage-1 的消息会先 trim 到 user-msg-bracket（首条 user msg
+         到末条 user msg 之间，含两端）——product thesis 防廉价层污染，
+         首尾的 AI 残段不该被 path B 当 fact 沉淀
+      5. Cursor 推进规则：
+         - SQL 返 0 rows → 推到 last_a_msg_ts（窗口确实空）
+         - SQL 返 N rows 但全 system/空 msg → 推到 last fetched row ts
+           （未取尾巴可能有内容）
+         - Stage-1 LLM 终态失败（aextract_facts_with_known_pool 返 None）
+           → cursor 不推进，下次 trigger 重试同窗口（fact dedup 防双写）
+         - 其它正常路径 → 推到 last fetched row ts（截断时 < last_a_msg_ts）
+
+    与 path A 区别：
+    - 不进 Stage-2 evidence loop（_apersist_new_facts 写 signal_processed=True
+      + aextract_facts_and_detect_signals 内部 source filter 双重防御）
+    - Stage-1 失败 swallow 不抛（path A 自己的 FactExtractionFailed 有独立
+      retry 路径，B 是补抓性质不该阻塞），但 cursor 必须保留——失败窗口
+      下次 trigger 重试，不能折叠成"成功 0 抽"静默 skip
+    """
+    last_a_msg_ts = state.get('last_a_msg_ts')
+    if last_a_msg_ts is None:
+        # A 还没成功处理过任何 batch，B 无源可看
+        return
+    # 防御性 TZ normalize：`_coerce_db_ts` 已经在写入 state 时归一化成 naive
+    # 是主路径保护，但外部 state injection / 升级前残留的 aware 值仍可能漏进
+    # 来——下面所有 cursor 比较 + known_pool created_at 比较都按 naive 工作，
+    # 这里再 strip 一遍把整个 _run_path_b 变成自包含 naive-only 域（Codex P2
+    # round-8 on PR #1408 双侧 case）。
+    if last_a_msg_ts.tzinfo is not None:
+        last_a_msg_ts = last_a_msg_ts.replace(tzinfo=None)
+        state['last_a_msg_ts'] = last_a_msg_ts
+
+    last_b = state.get('last_b_check_ts')
+    if last_b is not None and last_b.tzinfo is not None:
+        last_b = last_b.replace(tzinfo=None)
+        state['last_b_check_ts'] = last_b
+    if last_b is None:
+        # Cold start lookback：B 第一次 trigger 时 last_b 无值，需要估个起点。
+        # A tick 不一定按 IDLE gate 节律走——也可能被 turn-count gate
+        # (EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS 累积) 触发，或在 sparse turn
+        # 场景（user 间歇性发声、turn 间隔 >> IDLE_MIN）下两 tick 之间跨度
+        # 远超 IDLE_MIN。只按 piggyback 估算 (N_TICKS × IDLE_MIN) 会让 cold
+        # start 起点落在 A 真正处理过的范围之内，B 永久 skip 那段之前的
+        # AI-only msg（Codex P2 round-6 on PR #1408）。
+        # 修法：取 max(piggyback 节律, turn-count 节律) × IDLE_MIN 当估算
+        # 上限。默认下 max(3, 10) × 10min = 100min。LIMIT 兜底防爆 prompt，
+        # Stage-1 dedup hash 防双写——overshoot 是安全的。
+        cold_start_ticks_estimate = max(
+            EVIDENCE_AI_AWARE_EVERY_N_A_TICKS,
+            EVIDENCE_SIGNAL_CHECK_EVERY_N_TURNS,
+        )
+        estimated_a_coverage = timedelta(
+            minutes=cold_start_ticks_estimate * EVIDENCE_SIGNAL_CHECK_IDLE_MINUTES
+        )
+        last_b = last_a_msg_ts - estimated_a_coverage
+
+    if last_b >= last_a_msg_ts:
+        # 窗口为空（B 已追上 A）
+        return
+
+    try:
+        rows = await time_manager.aretrieve_original_by_timeframe(
+            name, last_b, last_a_msg_ts,
+            limit_rows=MAX_AI_AWARE_WINDOW_MSGS,
+        )
+    except Exception as e:
+        logger.warning(f"[PathB] {name}: 读取窗口失败: {e}")
+        return
+    if not rows:
+        # `aretrieve_original_by_timeframe` 在 SQL exception / engine init 失败
+        # / 维护态等情况下都 swallow + 返 []（见 timeindex.py 实现），从 caller
+        # 端无法区分"真空窗口"vs"transient 读失败"。保守起见 cursor 不推：
+        # - 真空窗口：A 刚成功处理了同段范围，B 这里几乎不可能真空（除非
+        #   A 的 SQL 看到 row 但 B 的 SQL 同段读不到——意味着 SQL 层异常）。
+        #   下次 B trigger 再 query 一次 0 rows 也是常数代价（SQLite 空范围
+        #   scan 极快）。
+        # - Transient 失败：保留 cursor 让下次 trigger 重试该窗口，避免把整段
+        #   [last_b, last_a_msg_ts] 永久 skip（Codex P1 round-5 on PR #1408）。
+        logger.debug(
+            f"[PathB] {name}: 窗口 {last_b.isoformat(timespec='seconds')} → "
+            f"{last_a_msg_ts.isoformat(timespec='seconds')} 取回 0 rows "
+            f"(可能 SQL transient 失败 swallow 成 []), 保留 cursor 下次 trigger 复查"
+        )
+        return
+
+    # 解析 SQL 实际取到的最后一行 ts —— 后续所有 cursor 推进点都用这个值，
+    # 不能用 last_a_msg_ts。差别只在窗口被 MAX_AI_AWARE_WINDOW_MSGS LIMIT
+    # 截断时显现：截断时 last_fetched_ts < last_a_msg_ts，未取到的尾巴留
+    # 给下次 B trigger 继续处理；若推到 last_a_msg_ts 会让尾巴永久 skip
+    # （Codex P1 round-1 on PR #1408, P2 round-2 covers filtered-empty case）。
+    last_fetched_ts = _coerce_db_ts(rows[-1][0])
+    if last_fetched_ts is None:
+        # 防御：_coerce_db_ts 解析失败退回 last_a_msg_ts（避免 cursor 不动
+        # 死循环）。正常路径不触发——rows[-1][0] 是 SQLite 返回的 ts 字符串。
+        last_fetched_ts = last_a_msg_ts
+
+    # 同 ts 簇 LIMIT 截断死循环防御（Codex P2 round-3 on PR #1408）：
+    # aretrieve_original_by_timeframe 用 inclusive `BETWEEN`，若窗口里
+    # > MAX_AI_AWARE_WINDOW_MSGS 行共享同一 ts（极端情况：bulk import 或
+    # store_conversation 给一次请求里所有 row 写同 ts），那么 LIMIT 切出
+    # 的最早 N 行全在同 ts，cursor 推到 last_fetched_ts 后下次 BETWEEN
+    # 仍把这批 row 全部捞回来 → 无限循环、该 ts 簇后面的 row 永远 skip。
+    # 检测：LIMIT 拉满 AND 所有 fetched row 同 ts → cursor +1μs 越过该 ts。
+    # 代价：该 ts 簇 LIMIT 之后的 tail row 被 skip（罕见——一次正常对话
+    # turn 写 2~5 行，远 < MAX_AI_AWARE_WINDOW_MSGS=200）。无更便宜的修法
+    # 除非把 cursor 改成 (ts, rowid) 复合键、改写 SQL，太重不划算。
+    first_fetched_ts = _coerce_db_ts(rows[0][0])
+    if (
+        len(rows) >= MAX_AI_AWARE_WINDOW_MSGS
+        and first_fetched_ts is not None
+        and last_fetched_ts == first_fetched_ts
+    ):
+        logger.warning(
+            f"[PathB] {name}: 同 ts 簇 {first_fetched_ts.isoformat(timespec='microseconds')} "
+            f"行数 ≥ LIMIT ({MAX_AI_AWARE_WINDOW_MSGS})，cursor +1μs 越过避免死循环；"
+            f"该 ts 簇 LIMIT 之后的 tail row 会被 skip"
+        )
+        last_fetched_ts = last_fetched_ts + timedelta(microseconds=1)
+
+    message_dicts = _extract_role_tagged_messages_from_rows(rows)
+    if not message_dicts:
+        # 全是 system msg / 空内容。cursor 推到 last fetched（不是 last_a_msg_ts），
+        # 截断时未取尾巴可能含有效 msg。
+        state['last_b_check_ts'] = last_fetched_ts
+        state['b_extract_failures'] = {}
+        return
+
+    # 截到 user msg bracket：首条 user msg 到末条 user msg 之间（含两端）。
+    # Product thesis 防廉价层污染——首尾的 AI 残段（user 没印证过的试探 /
+    # user 没回应过的独白）不该当 fact 沉淀。
+    message_dicts = _trim_to_user_msg_bracket(message_dicts)
+    if not message_dicts:
+        # 窗口内完全无 user msg → AI-only 廉价层，故意 skip。cursor 照常推
+        # 进，下次 B trigger 不会再来覆盖这段。
+        logger.debug(
+            f"[PathB] {name}: 窗口 {last_b.isoformat(timespec='seconds')} → "
+            f"{last_fetched_ts.isoformat(timespec='seconds')} 无 user msg bracket "
+            f"(纯 AI-only 内容，product thesis 跳过)"
+        )
+        state['last_b_check_ts'] = last_fetched_ts
+        state['b_extract_failures'] = {}
+        return
+
+    from utils.llm_client import convert_to_messages
+    messages = convert_to_messages(message_dicts)
+
+    # 已知 fact 池：用 path A 在本 B 窗口内 / 之后写的 fact 当 do-not-repeat 提示。
+    # 只设下界 ``created_at >= last_b``、不设上界（CodeRabbit on PR #1408）：
+    # A 的 idle/polling 延迟让"刚扫完本 B 窗口"那批 fact 的 created_at 普遍
+    # 略晚于 last_a_msg_ts，若用 created_at <= last_a_msg_ts 过滤会把最新一
+    # 批 A facts 整批排除——known_pool 对"刚被 A 抽过的内容"失效，path B 更
+    # 容易和 A 重复抽同一窗口。多包含一些"窗口后"的 A fact 是安全的：known
+    # _pool 只是 LLM 的提示，多余条目至多让 B 多抑制少量新 fact，且 Stage-1
+    # dedup hash 仍是兜底。按 importance DESC 取前 MAX_KNOWN_POOL_FACTS。
+    try:
+        all_facts = await fact_store.aload_facts(name)
+    except Exception as e:
+        logger.debug(f"[PathB] {name}: aload_facts 失败，known pool 留空: {e}")
+        all_facts = []
+
+    # Importance 用 safe_importance 兜底——legacy/手改 facts.json 里可能
+    # 有 'importance': "high" / None / list 等脏值，raw int(...) cast 会
+    # ValueError 把整个 B 跑挂、下次 trigger 又同样脏值同样挂，path B 对该
+    # 角色永久哑火（Codex P2 round-1 on PR #1408）。
+    from memory.facts import safe_importance
+
+    known_pool: list[dict] = []
+    for f in all_facts:
+        if not isinstance(f, dict):
+            continue
+        created_at_raw = f.get('created_at') or ''
+        try:
+            # 完整 ISO 解析（含微秒）—— `created_at` 是 datetime.now().isoformat()
+            # 写盘的，截到 [:19] 会丢微秒，让 created_at == last_b + 0.x 秒的
+            # fact 在 `>= last_b` 比较里被误判出窗口（CodeRabbit on PR #1408）。
+            created_at = datetime.fromisoformat(created_at_raw)
+        except (ValueError, TypeError):
+            continue
+        # 防御：本仓库 `_apersist_new_facts` 写的 `created_at` 都是 naive
+        # datetime.now().isoformat()，但若 import/migration 路径写入了 TZ-aware
+        # 值（如 "...+00:00"），跟 naive 的 last_b 比较会抛 TypeError 让
+        # `_run_path_b` 一直 fail，path B 对该角色永久哑火（Codex P1 round-7
+        # on PR #1408）。比较口径上把 aware 当 naive 处理——绝大多数场景就是
+        # 同一 wall-clock 时间，时区差异不应让 fact 抽取整段挂掉。
+        if created_at.tzinfo is not None:
+            created_at = created_at.replace(tzinfo=None)
+        if created_at >= last_b:
+            known_pool.append(f)
+    known_pool.sort(key=lambda f: -safe_importance(f))
+    known_pool = known_pool[:MAX_KNOWN_POOL_FACTS]
+
+    persisted = await fact_store.aextract_facts_with_known_pool(
+        name, messages, known_pool,
+    )
+    if persisted is None:
+        # Stage-1 LLM 终态失败（重试耗尽）。cursor 保留不推进，下次 B trigger
+        # 重试同窗口（fact dedup hash 防双写）。区分 None vs [] 至关重要：
+        # 若把失败折叠成"成功 0 抽"，失败窗口会被永久 skip（CodeRabbit / Codex
+        # P1 round-2 on PR #1408）。
+        #
+        # Liveness 兜底（path A 的对偶）：同一 last_b_check_ts cursor 反复
+        # 失败 ≥ MEMORY_LIVENESS_MAX_ATTEMPTS 时强推 cursor 到 last_fetched_ts，
+        # 避免毒窗口让 B pipeline 永久卡死该角色的 AI-aware fact 抽取。
+        cursor_key = (
+            last_b.isoformat(timespec='microseconds') if last_b else 'cold'
+        )
+        if not _stage1_path_b_bump_failure(name, state, cursor_key, last_fetched_ts):
+            logger.warning(
+                f"[PathB] {name}: Stage-1 终态失败，保留 cursor 下次 trigger 重试 "
+                f"(window={last_b.isoformat(timespec='seconds')} → "
+                f"{last_fetched_ts.isoformat(timespec='seconds')})"
+            )
+        return
+    if persisted:
+        logger.info(
+            f"[PathB] {name}: AI-aware Stage-1 抽出 {len(persisted)} 条新 fact "
+            f"(window={last_b.isoformat(timespec='seconds')} → "
+            f"{last_fetched_ts.isoformat(timespec='seconds')}, "
+            f"known_pool={len(known_pool)})"
+        )
+
+    state['last_b_check_ts'] = last_fetched_ts
+    # Cursor 推进 → 旧 cursor key 永远不会再被命中，清空 path-B counter
+    # 避免内存 dict 随 cursor 历史无限增长（对偶 _signal_check_mark_done
+    # 在 path A 成功路径上清 a_extract_failures）。
+    state['b_extract_failures'] = {}
+
+
 async def _periodic_signal_extraction_loop():
     """每 EVIDENCE_SIGNAL_CHECK_INTERVAL_SECONDS 轮询，满足触发条件时对每个
     catgirl 跑 Stage-1 + Stage-2 + signal dispatch（RFC §3.4.3）。
@@ -1823,6 +2373,15 @@ async def _periodic_signal_extraction_loop():
                     return
                 user_msgs_text = _extract_user_messages_from_rows(rows)
                 if not user_msgs_text:
+                    # 窗口里没 user msg —— 纯 proactive / AI 自言自语 / tool
+                    # turn。这种内容**故意**不进 memory：
+                    # 1. Path A 抽 user_observation fact 需要 user 发声当源
+                    # 2. Path B 拣 AI 自我披露**也**只在 user 有 engagement
+                    #    的窗口里跑（B 是 piggyback A，不是独立路径）
+                    # 设计原则：用户不搭理 = 内容廉价层 ("90% 没心没肺"
+                    # product thesis)，不该被自动当 fact 沉淀污染 memory。
+                    # cursor 照常推进、计数清零，让下次有 user msg 的窗口
+                    # 直接进入正常 A+B 流程。
                     _signal_check_mark_done(name, now)
                     return
 
@@ -1847,10 +2406,26 @@ async def _periodic_signal_extraction_loop():
                     )
                 except FactExtractionFailed as e:
                     # Stage-1 terminal failure — cursor NOT advanced, next
-                    # cycle retries the same message window (§3.4.3).
-                    logger.warning(
-                        f"[SignalLoop] {name}: Stage-1 失败保留 cursor 重试: {e}"
+                    # cycle retries the same message window (§3.4.3)。
+                    # Liveness 兜底：同一窗口反复失败 ≥ MEMORY_LIVENESS
+                    # _MAX_ATTEMPTS 强推 cursor 到 now，避免毒窗口让
+                    # fact pipeline 永久卡死。
+                    state = _signal_check_state.setdefault(
+                        name, {'turns_since': 0, 'last_check_ts': None},
                     )
+                    # CodeRabbit: 用 start_time 当 key，不要字面 'cold'。
+                    # 字面 'cold' 把所有冷启动多轮失败聚合到同一桶，
+                    # 第 N 次会强推 cursor 到当时的 now，把那段时间内进来的
+                    # 正常 msg 也跟着 dead-letter。改用 start_time（每轮
+                    # window 起点）：有稳定 cursor 时 start_time == cursor
+                    # （`_signal_check_window_start` 直接返 cursor），冷启动
+                    # 时 start_time 是 `now - IDLE_MINUTES*2`，每轮不同 →
+                    # 冷启动阶段不会错误聚合 dead-letter。
+                    cursor_key = start_time.isoformat(timespec='microseconds')
+                    if not _stage1_path_a_bump_failure(name, state, cursor_key, now):
+                        logger.warning(
+                            f"[SignalLoop] {name}: Stage-1 失败保留 cursor 重试: {e}"
+                        )
                     return
 
                 # 先 dispatch 再 mark_done：dispatch 中途有任何 aapply 失败
@@ -1890,6 +2465,34 @@ async def _periodic_signal_extraction_loop():
 
                 # Stage-1 + dispatch 都跨过了，cursor 推进。
                 _signal_check_mark_done(name, now)
+
+                # 记录 A 实际处理过的最晚 msg ts，给 path B 当下游边界用
+                # （rows 已 ORDER BY ts ASC，最后一行就是 window 内最晚 msg）。
+                # 用真实 msg ts 而不是 wall-clock now：保证 path B 看到的
+                # 消息严格被 path A 看过，避免"A scan SQL 完成那一刻之后才入
+                # SQLite 的 msg 被 B 抢先处理"的 race。
+                state = _signal_check_state.setdefault(
+                    name, {'turns_since': 0, 'last_check_ts': None},
+                )
+                last_msg_ts = _coerce_db_ts(rows[-1][0])
+                if last_msg_ts is not None:
+                    state['last_a_msg_ts'] = last_msg_ts
+
+                # Path B trigger：A 成功跑完后 bump counter；达 N 触发
+                # _run_path_b（AI-aware Stage-1 only，详见函数 docstring）。
+                state['b_tick_counter'] = state.get('b_tick_counter', 0) + 1
+                if state['b_tick_counter'] >= EVIDENCE_AI_AWARE_EVERY_N_A_TICKS:
+                    state['b_tick_counter'] = 0
+                    try:
+                        await _run_path_b(name, state)
+                    except Exception as e:
+                        # B 失败完全不应该影响 A 路径（A 已经在 mark_done 之
+                        # 后了）；只 log warning。下次 b_tick_counter 又满 N
+                        # 时 B 自动重试，cursor 是 last_b_check_ts 推进的，
+                        # 失败时不推 cursor → 下次 B 重新覆盖同窗口。
+                        logger.warning(
+                            f"[PathB] {name}: AI-aware Stage-1 失败 (skip 本轮，下次 B trigger 重试): {e}"
+                        )
             except Exception as e:
                 logger.debug(f"[SignalLoop] {name}: 处理失败: {e}")
 
@@ -1998,6 +2601,12 @@ async def _amaybe_trigger_negative_keyword_hook(
 async def _run_persona_refine_for_character(character: str) -> None:
     """单角色 persona refine pass。embedding 不可用 / cluster_hash 全
     skip / 候选不足 → 整 pass no-op。"""
+    from config import (
+        MEMORY_LIVENESS_MAX_ATTEMPTS,
+        MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
+    )
+    from memory.facts import safe_int_field
+    from memory.temporal import cooldown_elapsed
     from memory.refine import (
         MemoryRefineEngine,
         REFINE_ENTITY_KEY,
@@ -2011,10 +2620,26 @@ async def _run_persona_refine_for_character(character: str) -> None:
     candidates_by_entity: dict[str, list[dict]] = {}
     for entity in ('master', 'neko', 'relationship'):
         section = pm._get_section_facts(persona, entity)
+        # Liveness 过滤：refine_attempts ≥ MEMORY_LIVENESS_MAX_ATTEMPTS 的
+        # entry 不再进 cluster gather。Site 4 dead-letter——同 entry 在多
+        # cluster 反复 LLM 失败后被 frozen，避免持续占用 starvation-first
+        # ordering 名额空跑 LLM。recovery 路径：apply_refine_actions 在
+        # stamp 成功时会清回 0；或人工编辑 persona.json；或时间自愈——
+        # 冻结后过 MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS 放行一次 probe，让
+        # 一次性 correction 模型宕机恢复后自愈（不再永久冻死无辜 entry）。
         entries = [
             annotate_entry(e, type_='persona', entity=entity)
             for e in section
-            if isinstance(e, dict) and not e.get('protected') and e.get('id')
+            if isinstance(e, dict)
+            and not e.get('protected')
+            and e.get('id')
+            and (
+                safe_int_field(e, 'refine_attempts') < MEMORY_LIVENESS_MAX_ATTEMPTS
+                or cooldown_elapsed(
+                    e.get('last_refine_attempt_at'),
+                    MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
+                )
+            )
         ]
         if entries:
             candidates_by_entity[entity] = entries
@@ -2032,10 +2657,14 @@ async def _run_persona_refine_for_character(character: str) -> None:
         )
         await pm.apply_refine_actions(character, ent, cluster, actions, cluster_hash)
 
+    async def _failure(cluster, cluster_hash):
+        await pm._abump_refine_attempts(character, cluster, cluster_hash)
+
     result = await engine.refine_pass(
         candidates_by_entity,
         apply_fn=_apply,
         scope_label=f"persona/{character}",
+        failure_fn=_failure,
     )
     if result['clusters_resolved'] or result['clusters_failed']:
         logger.info(
@@ -2077,6 +2706,12 @@ async def _run_reflection_refine_for_character(character: str) -> None:
     """单角色 reflection refine pass。cluster 内可混入同 entity 的
     absorbed fact 作只读信息源（fact 不可被 split/discard/modify，apply
     层代码兜底）。"""
+    from config import (
+        MEMORY_LIVENESS_MAX_ATTEMPTS,
+        MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
+    )
+    from memory.facts import safe_int_field
+    from memory.temporal import cooldown_elapsed
     from memory.refine import (
         MemoryRefineEngine,
         REFINE_ENTITY_KEY,
@@ -2097,10 +2732,24 @@ async def _run_reflection_refine_for_character(character: str) -> None:
 
     candidates_by_entity: dict[str, list[dict]] = {}
     for entity in ('master', 'neko', 'relationship'):
+        # Liveness 过滤：refine_attempts ≥ MEMORY_LIVENESS_MAX_ATTEMPTS 的
+        # reflection 不再进 cluster gather（同 persona refine）。fact 不算
+        # ——fact 是 readonly 信息源，不会被 refine 改，自然不会 bump
+        # attempts。时间自愈：冻结后过 MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS
+        # 放行一次 probe，让一次性宕机恢复后自愈。
         entity_refls = [
             annotate_entry(r, type_='reflection', entity=entity)
             for r in refls
-            if isinstance(r, dict) and r.get('entity') == entity and r.get('id')
+            if isinstance(r, dict)
+            and r.get('entity') == entity
+            and r.get('id')
+            and (
+                safe_int_field(r, 'refine_attempts') < MEMORY_LIVENESS_MAX_ATTEMPTS
+                or cooldown_elapsed(
+                    r.get('last_refine_attempt_at'),
+                    MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
+                )
+            )
         ]
         entity_facts = [
             annotate_entry(f, type_='fact', entity=entity)
@@ -2123,10 +2772,14 @@ async def _run_reflection_refine_for_character(character: str) -> None:
         )
         await engine_ref.apply_refine_actions(character, ent, cluster, actions, cluster_hash)
 
+    async def _failure(cluster, cluster_hash):
+        await engine_ref._abump_refine_attempts(character, cluster, cluster_hash)
+
     result = await engine.refine_pass(
         candidates_by_entity,
         apply_fn=_apply,
         scope_label=f"reflection/{character}",
+        failure_fn=_failure,
     )
     if result['clusters_resolved'] or result['clusters_failed']:
         logger.info(
@@ -2213,6 +2866,66 @@ async def _periodic_reflection_synthesis_loop():
         await asyncio.sleep(interval)
 
 
+async def _bootstrap_embedding_worker() -> None:
+    """ready 后在后台 bootstrap 向量预热 / 去重 worker。
+
+    重 import（``memory.embedding_worker`` 拉起 embedding 栈 ~0.6s）和服务构造
+    （``get_embedding_service()`` 可能 probe/load 模型）全程在 ``to_thread`` 里跑，
+    不阻塞 event loop；``start()`` 是轻量的（只 ``create_task``），回到 loop 上调。
+    worker 自带 warmup 延迟、向量不可用也会降级，所以从 memory 启动关键路径移出来
+    对 greeting 零影响。
+
+    ⚠️ 故意**不**把 manager 作为参数传入：worker 的 getter（``lambda: persona_manager``
+    等）必须解析到模块全局，这样 /reload 重绑全局后下一轮 sweep 能看到新实例。
+    传参会让闭包捕获启动期的旧实例，绕过 worker 设计的 reload-staleness 防护。
+    """
+    global embedding_warmup_worker, fact_dedup_resolver
+    try:
+        def _build():
+            from memory.embedding_worker import EmbeddingWarmupWorker
+            from memory.fact_dedup import FactDedupResolver
+            from config import VECTORS_WARMUP_DELAY_SECONDS
+
+            def _current_catgirl_names() -> list[str]:
+                try:
+                    data = _config_manager.load_characters()
+                    return list((data or {}).get('猫娘', {}).keys())
+                except Exception:
+                    return []
+
+            bound_fact_store = fact_store
+            resolver = FactDedupResolver(bound_fact_store)
+            worker = EmbeddingWarmupWorker(
+                get_persona_manager=lambda: persona_manager,
+                get_reflection_engine=lambda: reflection_engine,
+                get_fact_store=lambda: fact_store,
+                get_character_names=_current_catgirl_names,
+                warmup_delay_seconds=VECTORS_WARMUP_DELAY_SECONDS,
+                get_dedup_resolver=lambda: fact_dedup_resolver,
+            )
+            return worker, resolver, bound_fact_store
+
+        worker, resolver, bound_fact_store = await asyncio.to_thread(_build)
+        # worker 用 getter 读全局，天然 reload-safe，直接发布。
+        embedding_warmup_worker = worker
+        # 但 resolver 是绑定到具体 fact_store 的实例：若 await（重 import + 构造）期间
+        # reload_memory_components() 换了 fact_store 并重绑了 fact_dedup_resolver，
+        # 这里再无条件赋值会用绑旧 store 的 resolver 覆盖掉 reload 的新 resolver，
+        # 导致 worker 的 get_fact_store 读新 store、get_dedup_resolver 读旧 resolver 错配。
+        # 因此只在当前全局 fact_store 仍是 resolver 绑定的那个时才发布。
+        if fact_store is bound_fact_store:
+            fact_dedup_resolver = resolver
+        else:
+            logger.info("[Memory] embedding worker bootstrap 与 reload 竞争，沿用 reload 已重绑的 fact_dedup_resolver")
+        embedding_warmup_worker.start()
+    except Exception as e:
+        logger.warning(f"[Memory] embedding worker bootstrap failed: {e}")
+        embedding_warmup_worker = None
+        # 不清 fact_dedup_resolver：若 await 期间 reload 已重绑了一个绑定新 store 的
+        # resolver，这里清成 None 会把 reload 的成果抹掉。bootstrap 失败本就只代表
+        # "没有 warmup worker"，resolver 该保留（None 维持原样，reload 设的则保留）。
+
+
 async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
     global recent_history_manager, settings_manager, time_manager, fact_store
     global persona_manager, reflection_engine, cursor_store, outbox, event_log, reconciler
@@ -2260,7 +2973,8 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
 
             install_hooks()
             TokenTracker.get_instance().start_periodic_save()
-            TokenTracker.get_instance().record_app_start()
+            # process 字段进 session_start / session_end 维度，跨进程诊断必须区分
+            TokenTracker.get_instance().record_app_start(process="memory_server")
         except Exception as e:
             logger.warning(f"[Memory] Token tracker init failed: {e}")
 
@@ -2358,35 +3072,12 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             _memory_background_tasks_started = True
 
         # memory-enhancements P2: vector embedding warmup + backfill worker.
-        # The worker is optional; startup should continue if vectors are
-        # unavailable or its bootstrap fails.
-        try:
-            from memory.embedding_worker import EmbeddingWarmupWorker
-            from memory.fact_dedup import FactDedupResolver
-            from config import VECTORS_WARMUP_DELAY_SECONDS
-
-            def _current_catgirl_names() -> list[str]:
-                try:
-                    data = _config_manager.load_characters()
-                    return list((data or {}).get('猫娘', {}).keys())
-                except Exception:
-                    return list(catgirl_names)
-
-            fact_dedup_resolver = FactDedupResolver(fact_store)
-
-            embedding_warmup_worker = EmbeddingWarmupWorker(
-                get_persona_manager=lambda: persona_manager,
-                get_reflection_engine=lambda: reflection_engine,
-                get_fact_store=lambda: fact_store,
-                get_character_names=_current_catgirl_names,
-                warmup_delay_seconds=VECTORS_WARMUP_DELAY_SECONDS,
-                get_dedup_resolver=lambda: fact_dedup_resolver,
-            )
-            embedding_warmup_worker.start()
-        except Exception as e:
-            logger.warning(f"[Memory] embedding worker bootstrap failed: {e}")
-            embedding_warmup_worker = None
-            fact_dedup_resolver = None
+        # 这块的 import（embedding 栈 ~0.6s）+ 服务构造原本同步跑在 startup
+        # handler 里，uvicorn 要等 handler 返回才开端口，于是把 memory 端口
+        # 就绪足足推后 ~1.3s（合并单进程下又被串行放大）。worker 本身是可选的、
+        # 自带 warmup 延迟，greeting 不依赖向量——所以挪到后台 task，重活全程
+        # 在 to_thread 里跑，绝不阻塞 event loop / 拖慢端口就绪。
+        _spawn_background_task(_bootstrap_embedding_worker())
 
         _memory_runtime_init_completed = True
         logger.info("[Memory] 运行态初始化完成 (reason=%s)", reason or "manual")
@@ -2604,6 +3295,30 @@ async def maybe_spawn_review(name: str) -> None:
                 f"[Review/spawn] {name}: 长挂机 bypass MIN_NEW_MSGS_FOR_REVIEW "
                 f"(new_msgs={new_msg_count}, idle={idle_secs:.0f}s)"
             )
+        # Gate 6: 失败退避（dead-letter）。review 连续失败 ≥
+        # MEMORY_LIVENESS_MAX_ATTEMPTS 次且**输入未变**（当前 history 末尾 K 条
+        # fingerprint == 上次失败时记下的）→ 跳过本次 spawn，不再每轮空烧
+        # 3×110s 超时。输入一变（master 发了新消息，尾部 fingerprint 变）→ 视为
+        # 新输入，清掉失败计数放行重试。
+        # 必须放在 Gate 5 之后：长挂机 bypass 在 correction 模型持续超时时会
+        # 主动给死循环续命，本闸门要能压过它（用户审计 #1：实锤的整夜无限重烧）。
+        from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+        from memory.recent import build_review_fingerprint
+        state = _maint_state.setdefault(name, {})
+        fail_attempts = state.get('review_fail_attempts', 0) or 0
+        if fail_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS:
+            cur_fp = build_review_fingerprint(history)
+            if state.get('review_fail_fp') == cur_fp:
+                logger.debug(
+                    f"[Review/spawn] {name}: 失败退避 dead-letter "
+                    f"(连续失败 {fail_attempts} 次 ≥ {MEMORY_LIVENESS_MAX_ATTEMPTS} "
+                    f"且输入未变)，跳过本轮"
+                )
+                return
+            # 输入已变 → 旧失败计数过期，复位后放行重试
+            state['review_fail_attempts'] = 0
+            state['review_fail_fp'] = None
+            await _asave_maint_state()
         # 全过 → spawn
         logger.info(f"[Review/spawn] {name}: 触发 review (history_len={len(history)})")
         cancel_event = asyncio.Event()
@@ -2613,6 +3328,24 @@ async def maybe_spawn_review(name: str) -> None:
         # 这样 task 自己持有的 event 引用不会被并发的新 spawn 覆盖。
         task = asyncio.create_task(_run_review_in_background(name, snapshot, cancel_event))
         correction_tasks[name] = task
+
+
+async def _record_review_failure(lanlan_name: str, snapshot: list) -> int:
+    """记一次 review 失败到失败退避计数（Gate 6 用），返回累计次数。
+
+    输入 fingerprint 与上次失败记录不同 → 先把预算归零再 +1，让每段
+    history tail 各享独立的 N 次预算，不跨输入累积（Codex P2）。'failed'
+    返回分支和 except 异常分支共用本函数，避免两处逻辑漂移。
+    """
+    from memory.recent import build_review_fingerprint
+    state = _maint_state.setdefault(lanlan_name, {})
+    cur_fp = build_review_fingerprint(snapshot)
+    if state.get('review_fail_fp') != cur_fp:
+        state['review_fail_attempts'] = 0
+    state['review_fail_attempts'] = (state.get('review_fail_attempts', 0) or 0) + 1
+    state['review_fail_fp'] = cur_fp
+    await _asave_maint_state()
+    return state['review_fail_attempts']
 
 
 async def _run_review_in_background(
@@ -2642,9 +3375,20 @@ async def _run_review_in_background(
       race，但身份检查是廉价的防御。
     """
     try:
-        result = await recent_history_manager.review_history(
-            lanlan_name, snapshot, cancel_event=cancel_event,
-        )
+        # 只把 review_history 调用本身包进内层 try：它抛异常才算"review 失败"，
+        # 收口成 ('failed', None) 走下面统一的失败分支记一次退避。成功后的 result
+        # 处理 / state 落盘异常**不**能被当成 review 失败（否则 patched/white 的
+        # save 抖动会误判成失败、误触 Gate 6 dead-letter；'failed' 分支自己 save
+        # 抛异常也会被重复记一次）——那类异常交给外层 except 纯兜底、不 bump。
+        # 注：asyncio.CancelledError 是 BaseException，不被 except Exception 捕获，
+        # 会正常冒泡到外层 CancelledError 分支。
+        try:
+            result = await recent_history_manager.review_history(
+                lanlan_name, snapshot, cancel_event=cancel_event,
+            )
+        except Exception as e:
+            logger.error(f"❌ {lanlan_name} 的 review_history 抛异常，按失败处理: {e}")
+            result = ('failed', None)
         # 兼容意外的返回类型，统一解包
         if isinstance(result, tuple) and len(result) == 2:
             status, fingerprint = result
@@ -2657,6 +3401,9 @@ async def _run_review_in_background(
             state['review_clean'] = True
             state['last_review_ts'] = datetime.now().isoformat()
             state['last_reviewed_cutoff_tail'] = fingerprint
+            # 成功 → 清掉失败退避计数（Gate 6）
+            state['review_fail_attempts'] = 0
+            state['review_fail_fp'] = None
             await _asave_maint_state()
         elif status == 'white':
             logger.info(
@@ -2665,13 +3412,32 @@ async def _run_review_in_background(
             state['last_reviewed_cutoff_tail'] = None
             # 故意不更新 last_review_ts：让下轮 gate 4 用旧 ts（通常已过 30/60s）
             # 直接放行，配合 fingerprint=None 触发 gate 5 的 ∞ 通行 → 立即重 review。
+            # 白 review 是 cutoff 失配（输入实际已变）而非失败，清退避计数允许立即重建锚点。
+            state['review_fail_attempts'] = 0
+            state['review_fail_fp'] = None
             await _asave_maint_state()
+        elif cancel_event.is_set():
+            # review_history 在 cancel_event 置位时也返回 ('failed', None)，但这是
+            # 主动取消（cancel_correction：记忆编辑后立即生效）而非失败，不能计入
+            # 失败退避——否则用户频繁编辑记忆会被误判成 poison。
+            logger.info(f"ℹ️ {lanlan_name} 的记忆整理被取消（不计入失败退避）")
         else:
-            logger.info(f"ℹ️ {lanlan_name} 的记忆整理未执行（被跳过或失败）")
+            # 'failed'：LLM 持续失败 / 超时 / 格式错误。bump 失败退避计数 + 记下
+            # 本次失败的输入 fingerprint，供 Gate 6 在输入不变时 dead-letter，避免
+            # correction 模型一直超时 + 长挂机 bypass 续命导致整夜空烧（用户审计 #1）。
+            attempts = await _record_review_failure(lanlan_name, snapshot)
+            logger.info(
+                f"ℹ️ {lanlan_name} 的记忆整理未执行（被跳过或失败），"
+                f"失败退避计数 → {attempts}"
+            )
     except asyncio.CancelledError:
         logger.info(f"⚠️ {lanlan_name} 的记忆整理任务被取消")
     except Exception as e:
-        logger.error(f"❌ {lanlan_name} 的记忆整理任务出错: {e}")
+        # 纯兜底：能到这里的只剩 result 处理 / state 持久化等"非 review 失败"
+        # 的异常（review_history 自身抛已在内层收口成 'failed'）。这类异常**不**
+        # 计入失败退避——否则成功 review 的 save 抖动会被误判成失败、误触
+        # Gate 6 dead-letter 压住后续 review（Codex P2）。
+        logger.error(f"❌ {lanlan_name} 的记忆整理后处理出错（不计入失败退避）: {e}")
     finally:
         # 按 task/event 身份比对再清理：如果并发的新 spawn 已经写入了新 task /
         # 新 event，本 task 不应该把它们清掉。
@@ -2805,8 +3571,13 @@ async def _run_post_turn_signals(messages: list, lanlan_name: str):
     user_msgs = _extract_user_messages(messages)
 
     # 本轮算入 signal-extraction 触发计数器（RFC §3.4.3）—— batch loop
-    # 靠这个 counter 在累积 10 turn 时触发 Stage-1+Stage-2，所以 per-turn
-    # bump 是 RFC 设计意图保留下来的，不能省。
+    # 靠这个 counter 在累积 N 轮时触发 _signal_check_one。
+    # 只在 user 有发声时 bump，**故意不**算 AI-only / proactive turn：
+    # path A 抽的是 user_observation fact，没 user 发声就抽不出料；
+    # path B 是 piggyback A 的 trigger 跑（不独立调度），也跟着只在 user
+    # 有 engagement 的窗口里跑。这是 product thesis 的"90% 没心没肺"——
+    # AI 自言自语 + user 不搭理的内容是廉价层，不该自动当 fact 沉淀污染
+    # memory；只有 user 印证过的才升级到神明降临层。
     try:
         if user_msgs:
             _signal_check_record_turn(lanlan_name)
@@ -3154,21 +3925,22 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
 @app.get("/get_recent_history/{lanlan_name}")
 async def get_recent_history(lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
+    _lang = get_global_language()
     # 检查角色是否存在于配置中
     try:
         character_data = await _config_manager.aload_characters()
         catgirl_names = list(character_data.get('猫娘', {}).keys())
         if lanlan_name not in catgirl_names:
             logger.warning(f"角色 '{lanlan_name}' 不在配置中，返回空历史记录")
-            return "开始聊天前，没有历史记录。\n"
+            return _loc(NO_RECENT_HISTORY, _lang)
     except Exception as e:
         logger.error(f"检查角色配置失败: {e}")
-        return "开始聊天前，没有历史记录。\n"
+        return _loc(NO_RECENT_HISTORY, _lang)
 
     history = await recent_history_manager.aget_recent_history(lanlan_name)
     _, _, _, _, name_mapping, _, _, _, _ = await _config_manager.aget_character_data()
     name_mapping['ai'] = lanlan_name
-    result = f"开始聊天前，{lanlan_name}又在脑海内整理了近期发生的事情。\n"
+    result = _loc(RECENT_HISTORY_INTRO, _lang).format(name=lanlan_name)
     for i in history:
         if i.type == 'system':
             result += i.content + "\n"
@@ -3196,18 +3968,38 @@ async def get_memory(query: str, lanlan_name: str):
 
 
 class QueryMemoryRequest(BaseModel):
-    query: str
+    # query / time 都可选，至少给一个有效值即可（time-only 是新支持的用法）。
+    # 两者都空时不报错，hybrid_recall 对空 query 短路返回空 results，调用方
+    # 把空结果翻成"没有找到相关记忆"——和本端点"绝不让召回失败/空入参把
+    # tool call 整死"的设计一致，所以这里不做 422/400 硬校验。
+    query: str | None = None
+    # 可选时间回溯：填了就把检索限定在该时间窗口。配合 query 时做"语义 +
+    # 时间"联合检索（窗口内按 query 排序）；只给 time 时按事件时间返回最
+    # 接近的 fact + reflection。格式见 memory.temporal.parse_time_window
+    # （整点小时 / 单日 / 整月 / 整年 / 区间）。不填或解析失败则走常规全量
+    # 语义检索。
+    time: str | None = None
 
 
 @app.post("/query_memory/{lanlan_name}")
 async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
     """混合检索 entry point —— BM25 + cosine embedding 并行召回 + RRF 融合。
 
-    POST body: ``{"query": "<自然语言查询>"}``
+    POST body: ``{"query": "<自然语言查询>", "time": "<可选 ISO 时间>"}``
 
     返回 ``hybrid_recall`` 的结构化结果（见 ``memory.hybrid_recall``
     docstring）。``main_server`` 的 ``recall_memory`` 工具 handler 调
     本端点拿结果，再格式化给模型看。
+
+    路由（query / time 三种组合）：
+    - **query + time**：``hybrid_recall(query, time_window=...)`` —— 先按事件
+      时间窗口硬过滤候选池，再在窗口内条目上跑语义检索（"那段时间里和
+      query 相关的记忆"）。
+    - **只有 time**：``recall_by_time`` —— 按事件时间锚点返回离该窗口最接近
+      的若干条 fact + reflection，不做语义打分（"那天/那周发生的事"）。
+    - **只有 query**：``hybrid_recall(query)`` —— 全量语义检索。
+    - time 解析失败时按"没给 time"处理，回落到纯 query 语义检索（不能让
+      一个坏 time 把 query 的语义召回也一起吞掉返回空，Codex P2）。
 
     ⚠️ 候选范围、阈值、budget 都在 ``config.HYBRID_RECALL_*`` 里配置；
     persona 整段不入池（已经常态渲染进 system prompt），facts +
@@ -3219,17 +4011,40 @@ async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
             status_code=503,
             detail="memory_server not fully initialized (limited mode or startup incomplete)",
         )
+    time_spec = (req.time or "").strip()
+    query_text = (req.query or "").strip()
     try:
         # Import 移进 try：若 memory.hybrid_recall 自身 import 失败（循环
         # import / 依赖缺失），仍然走下面的兜底返回空 results，避免端点
         # 直接 500 把 tool call 整死。
+        time_window = None
+        if time_spec:
+            from memory.temporal import parse_time_window
+            time_window = parse_time_window(time_spec)
+            if time_window is None:
+                logger.info(
+                    "[query_memory] %s: time=%r 无法解析为时间窗口，回落语义检索",
+                    lanlan_name, time_spec,
+                )
+            elif not query_text:
+                # 只给 time、没 query → 按时间邻近返回最接近的若干条。
+                from memory.hybrid_recall import recall_by_time
+                return await recall_by_time(
+                    lanlan_name=lanlan_name,
+                    time_spec=time_spec,
+                    fact_store=fact_store,
+                    reflection_engine=reflection_engine,
+                )
+        # query（+ 可选 time_window）→ 语义检索；time_window 非空即"语义 +
+        # 时间"联合检索（窗口内按 query 排序）。
         from memory.hybrid_recall import hybrid_recall
         return await hybrid_recall(
             lanlan_name=lanlan_name,
-            query=req.query or "",
+            query=query_text,
             fact_store=fact_store,
             reflection_engine=reflection_engine,
             config_manager=_config_manager,
+            time_window=time_window,
         )
     except Exception as exc:
         # 永不让一次召回失败把 tool call 整死——返回空 results，main_server

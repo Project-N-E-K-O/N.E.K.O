@@ -333,6 +333,9 @@ window.addEventListener('load', async () => {
                         ? resolvedChangelogTitle
                         : '更新内容';
                     return window.showProminentNotice({
+                        kind: 'changelog',
+                        version: entry.version,
+                        title: changelogTitle,
                         message: `**v${entry.version} ${changelogTitle}**\n\n${(entry.content || '').trim()}`,
                     });
                 });
