@@ -95,6 +95,16 @@ function ensureHostedKatex() {
     return katexLoadPromise;
   }
   katexLoadPromise = new Promise((resolve) => {
+    const resolveLoad = (script: HTMLScriptElement) => {
+      script.dataset.studyKatexLoaded = 'true';
+      resolve();
+    };
+    const resolveError = (script: HTMLScriptElement) => {
+      script.dataset.studyKatexFailed = 'true';
+      katexLoadPromise = null;
+      script.remove();
+      resolve();
+    };
     if (!document.getElementById('study-companion-katex-css')) {
       const link = document.createElement('link');
       link.id = 'study-companion-katex-css';
@@ -104,16 +114,20 @@ function ensureHostedKatex() {
     }
     const existing = document.getElementById('study-companion-katex-script') as HTMLScriptElement | null;
     if (existing) {
-      existing.addEventListener('load', () => resolve(), { once: true });
-      existing.addEventListener('error', () => resolve(), { once: true });
-      return;
+      if (existing.dataset.studyKatexFailed === 'true') {
+        existing.remove();
+      } else {
+        existing.addEventListener('load', () => resolveLoad(existing), { once: true });
+        existing.addEventListener('error', () => resolveError(existing), { once: true });
+        return;
+      }
     }
     const script = document.createElement('script');
     script.id = 'study-companion-katex-script';
     script.src = KATEX_SCRIPT_URL;
     script.async = true;
-    script.addEventListener('load', () => resolve(), { once: true });
-    script.addEventListener('error', () => resolve(), { once: true });
+    script.addEventListener('load', () => resolveLoad(script), { once: true });
+    script.addEventListener('error', () => resolveError(script), { once: true });
     document.head.appendChild(script);
   });
   return katexLoadPromise;
@@ -583,17 +597,20 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       if (event.key !== 'Escape') {
         return;
       }
-      const activeElement = document.activeElement as HTMLElement | null;
-      const isInsidePanel = !!activeElement?.closest?.('.study-panel');
-      if (!isInsidePanel && !explainControllerRef.current) {
+      const hasInFlightRequest = !!explainControllerRef.current;
+      if (!hasInFlightRequest) {
         return;
       }
+      const activeElement = document.activeElement as HTMLElement | null;
+      const isInsidePanel = !!activeElement?.closest?.('.study-panel');
       event.preventDefault();
       event.stopPropagation();
       explainControllerRef.current?.abort();
       explainControllerRef.current = null;
       setBusy(false);
-      activeElement?.blur?.();
+      if (isInsidePanel) {
+        activeElement?.blur?.();
+      }
     };
     document.addEventListener('keydown', closeOrCancelOnEscape, true);
     return () => {
