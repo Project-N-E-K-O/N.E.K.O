@@ -275,8 +275,15 @@ export default function App() {
     qs.set('include_absorbed', 'true')
     qs.set('min_importance', '0')
     qs.set('limit', '5')
-    const usedFactIds = forgedInventory.map(card => card.sourceFactId).filter(Boolean)
-    const usedFactHashes = forgedInventory.map(card => card.sourceFactHash).filter(Boolean)
+    // exclude 只能算当前猫娘已铸造过的 fact —— inventory 里可能含来自其他猫娘
+    // 的卡牌 (用户切换过猫娘),把它们一并 exclude 会让本猫娘的可用 fact 池被错误地缩水。
+    // 没有 sourceCharacter 字段的旧卡 (历史 / 临时) 当作"属于任意猫娘",保留 exclude
+    // 以维持向后兼容。
+    const inventoryForActiveCharacter = forgedInventory.filter(card => (
+      !card.sourceCharacter || card.sourceCharacter === activeCharacterName
+    ))
+    const usedFactIds = inventoryForActiveCharacter.map(card => card.sourceFactId).filter(Boolean)
+    const usedFactHashes = inventoryForActiveCharacter.map(card => card.sourceFactHash).filter(Boolean)
     if (usedFactIds.length > 0) qs.set('exclude_fact_ids', Array.from(new Set(usedFactIds)).join(','))
     if (usedFactHashes.length > 0) qs.set('exclude_hashes', Array.from(new Set(usedFactHashes)).join(','))
     try {

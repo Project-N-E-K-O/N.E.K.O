@@ -177,11 +177,18 @@ export function loadForgedBrawlCards() {
 }
 
 export function saveForgedBrawlCards(cards) {
-  if (typeof window === 'undefined') return
-  window.localStorage.setItem(
-    FORGED_BRAWL_CARDS_STORAGE_KEY,
-    JSON.stringify((Array.isArray(cards) ? cards : []).map(normalizeForgedBrawlCard).filter(Boolean))
-  )
+  if (typeof window === 'undefined' || !window.localStorage) return
+  // setItem 在私密浏览模式 / localStorage 被禁用 / 配额超出时会抛 DOMException。
+  // 这里只是把已铸造卡牌镜像到 storage，失败时 console 提示一下就好，
+  // 不要让铸造主流程 (createForgedBrawlCard → setForgedInventory) 跟着崩。
+  try {
+    window.localStorage.setItem(
+      FORGED_BRAWL_CARDS_STORAGE_KEY,
+      JSON.stringify((Array.isArray(cards) ? cards : []).map(normalizeForgedBrawlCard).filter(Boolean))
+    )
+  } catch (error) {
+    console.warn('[card-forge] saveForgedBrawlCards: localStorage 不可用，已跳过持久化:', error)
+  }
 }
 
 export function deleteForgedBrawlCard(cardRef) {

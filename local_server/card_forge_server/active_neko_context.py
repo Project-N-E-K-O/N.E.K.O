@@ -45,19 +45,26 @@ def _resolve_memory_dir(config_manager: Any) -> Path | None:
     return Path(memory_dir) if memory_dir else None
 
 
-def _known_character_names(config_manager: Any) -> set[str]:
+def _known_character_names(config_manager: Any) -> set[str] | None:
     """Configured catgirl names — the only valid memory sources.
 
     Used to validate `runtime_character_hint` / `character_override` so an
     untrusted caller can't make us open `facts.json` for an arbitrary path
     component — only catgirls actually configured in NEKO are accepted.
+
+    Return semantics (must be distinguished by caller):
+    - `None`  → whitelist unavailable (config_manager 异常)。caller 应当**保守拒绝**
+      所有 hint / override，回退到 `active_lanlan`，避免在配置短暂不可用时
+      被绕过校验。
+    - `set()` → 配置可读但里面就是 0 只猫娘 (理论上 NEKO 还没初始化才会到这步)。
+    - `{...}` → 正常白名单，hint 必须在集合内。
     """
     try:
         character_data = config_manager.get_character_data()
         prompt_map = character_data[5] if len(character_data) > 5 and isinstance(character_data[5], dict) else {}
         return {str(name).strip() for name in prompt_map.keys() if isinstance(name, str) and name.strip()}
     except Exception:
-        return set()
+        return None
 
 
 def _resolve_prompt(config_manager: Any, lanlan_name: str, master_name: str) -> str:
@@ -83,12 +90,19 @@ def _build_context(
     # for debug endpoints and old callers; normal forge flow should omit it.
     # Both hint and override must match a configured catgirl name — anything else
     # is dropped so the facts.json path can't be steered to an unknown directory
-    # by an untrusted caller. When the config can't be enumerated we fall back to
-    # the legacy "trust safe_character_segment" behavior to avoid blocking dev.
+    # by an untrusted caller.
+    #
+    # 配置不可用时 (_known_character_names → None) 取保守策略：直接丢弃 hint /
+    # override，回退到 active_lanlan。空 set 表示配置可读但确实没有任何猫娘
+    # (NEKO 没初始化完)，此时再去白名单校验就把所有 hint 都拒掉，反而妨碍开发，
+    # 因此当 set() 时跳过校验、按原意走 hint。
     known_names = _known_character_names(config_manager)
     runtime_hint = safe_character_segment(runtime_character_hint)
     debug_override = safe_character_segment(character_override)
-    if known_names:
+    if known_names is None:
+        runtime_hint = None
+        debug_override = None
+    elif known_names:
         if runtime_hint and runtime_hint not in known_names:
             runtime_hint = None
         if debug_override and debug_override not in known_names:

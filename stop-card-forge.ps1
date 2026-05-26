@@ -34,6 +34,17 @@ function Test-CardForgeProcess {
   return $false
 }
 
+# 不能在 [skip] 日志里写出被跳过进程的完整 CommandLine —— 那是别人家的进程,
+# 参数里可能含 API token、--password=*、私密文件路径等。截短到 60 字符的预览,
+# 用来在终端上肉眼判断"看着像啥就够"。
+function Get-SafeCommandPreview {
+  param([string]$CommandLine, [int]$MaxLength = 60)
+  if (-not $CommandLine) { return "(unknown)" }
+  $trimmed = $CommandLine.Trim()
+  if ($trimmed.Length -le $MaxLength) { return $trimmed }
+  return $trimmed.Substring(0, $MaxLength) + "…"
+}
+
 foreach ($port in $ports) {
   $connections = Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue
   if (-not $connections) {
@@ -45,7 +56,8 @@ foreach ($port in $ports) {
   foreach ($processId in $processIds) {
     $cmdLine = Get-ProcessCommandLine -ProcId $processId
     if (-not (Test-CardForgeProcess -CommandLine $cmdLine)) {
-      Write-Host ("[skip] Port {0} PID {1} does not look like a card-forge process; leaving it alone. CommandLine: {2}" -f $port, $processId, $cmdLine)
+      $preview = Get-SafeCommandPreview -CommandLine $cmdLine
+      Write-Host ("[skip] Port {0} PID {1} does not look like a card-forge process; leaving it alone. Preview: {2}" -f $port, $processId, $preview)
       continue
     }
     try {
