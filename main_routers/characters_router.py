@@ -3177,9 +3177,6 @@ async def update_master(request: Request):
     err = _validate_profile_name(profile_name)
     if err:
         return JSONResponse({'success': False, 'error': err}, status_code=400)
-    catgirl_profiles = characters.get('猫娘') if isinstance(characters.get('猫娘'), dict) else {}
-    if not previous_profile_name and profile_name in catgirl_profiles:
-        return JSONResponse({'success': False, 'error': '档案名已被占用'}, status_code=400)
     next_master = {
         k: v
         for k, v in data.items()
@@ -3221,9 +3218,6 @@ async def rename_master(old_name: str, request: Request):
         current_master = characters['主人'].get('档案名', '')
         if current_master != old_name:
             return JSONResponse({'success': False, 'error': '原主人档案名不匹配'}, status_code=400)
-
-        if new_name in characters.get('猫娘', {}):
-            return JSONResponse({'success': False, 'error': '新档案名与已有猫娘名称冲突'}, status_code=400)
 
         characters['主人']['档案名'] = new_name
         _append_profile_rename_event(characters['主人'], old_name, new_name)

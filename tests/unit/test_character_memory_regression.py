@@ -483,6 +483,18 @@ async def test_rename_master_adds_hidden_ai_context_and_master_save_preserves_it
             assert legacy_conflict_update["success"] is True
             assert cm.load_characters()["主人"]["档案名"] == "新主人"
 
+            rename_conflict_characters = cm.load_characters()
+            rename_conflict_characters.setdefault("猫娘", {})["主人同名猫娘"] = {"档案名": "主人同名猫娘"}
+            cm.save_characters(rename_conflict_characters)
+            cross_namespace_rename = await characters_router_module.rename_master(
+                "新主人",
+                _DummyRequest({"new_name": "主人同名猫娘"}),
+            )
+            assert cross_namespace_rename["success"] is True
+            saved_after_cross_namespace_rename = cm.load_characters()["主人"]
+            assert saved_after_cross_namespace_rename["档案名"] == "主人同名猫娘"
+            assert saved_after_cross_namespace_rename["_reserved"]["ai_context"]["rename_events"][-1]["new_name"] == "主人同名猫娘"
+
             conflict_characters = cm.load_characters()
             conflict_characters["主人"] = {}
             conflict_characters.setdefault("猫娘", {})["占用名"] = {"档案名": "占用名"}
@@ -490,7 +502,8 @@ async def test_rename_master_adds_hidden_ai_context_and_master_save_preserves_it
             conflict_result = await characters_router_module.update_master(
                 _DummyRequest({"档案名": "占用名", "昵称": "柚希"})
             )
-            assert getattr(conflict_result, "status_code", None) == 400
+            assert conflict_result["success"] is True
+            assert cm.load_characters()["主人"]["档案名"] == "占用名"
 
 
 @pytest.mark.unit
