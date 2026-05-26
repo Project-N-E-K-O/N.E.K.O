@@ -535,8 +535,8 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="game_agent_status",
-        name="查询游戏代理状态",
-        description="查询 Minecraft Agent 连接状态、当前任务和缓存大小。",
+        name="查询 mc-agent 连接状态",
+        description="查询 mc-agent 连接状态、当前任务和缓存大小。",
         llm_result_fields=["summary"],
         input_schema={"type": "object", "properties": {}},
     )
@@ -632,7 +632,7 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
 
     @plugin_entry(
         id="game_agent_reload_config",
-        name="重载游戏代理配置",
+        name="重载游戏插件配置",
         description=(
             "重新读取 plugin.toml [game_agent] 配置；纯数据项 (timeouts、"
             "intervals、screenshot 开关) 直接生效，ws_url 或重连间隔变更则会"

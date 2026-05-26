@@ -1,9 +1,9 @@
 [plugin]
 id = "game_agent_minecraft"
-name = "Minecraft 游戏代理"
-description = "桥接本地 Minecraft Agent，可查询游戏状态、查询库存、热更配置。"
+name = "Minecraft 游戏插件"
+description = "桥接本地 mc-agent，可查询游戏状态、查询库存、热更配置。"
 short_description = "Minecraft autonomous gameplay with voice commentary."
-keywords = ["minecraft", "game-agent", "autonomous"]
+keywords = ["minecraft", "game", "autonomous"]
 version = "0.1.0"
 entry = "plugin.plugins.game_agent_minecraft:GameAgentMinecraftPlugin"
 

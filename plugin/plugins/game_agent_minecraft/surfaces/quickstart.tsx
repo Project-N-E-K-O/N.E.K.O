@@ -42,28 +42,22 @@ const DOWNLOAD_LINKS = {
   baidu: "https://pan.baidu.com/s/1i_a6IUQDz-GpEaWGvIcnqw?pwd=kuro",
 }
 
-// Route external links through the system browser when running inside
-// Electron — the embedded Chromium webview spawned by window.open has
-// no close affordance and traps users. Falls back to plain window.open
-// when running in a real browser (e.g. plugin dev preview). The
-// `electronShell` global is exposed by the host preload script (same
-// contract used in static/app-proactive.js for url-card / meme links).
+// Open an external URL from inside this hosted-tsx surface.
 //
-// Promise.resolve + .catch normalizes both ipcRenderer.invoke (returns
-// Promise<void>) and ipcRenderer.send (returns void) preload shapes
-// and swallows the unhandled rejection that would otherwise fire on
-// IPC failure. We deliberately do NOT fall back to window.open on
-// Electron-path rejection: in Electron, window.open IS the trapped
-// inner webview behavior this helper exists to avoid. Same shape as
-// frontend/react-neko-chat/src/openExternal.ts and
-// frontend/plugin-manager/src/utils/openExternal.ts.
+// The surface renders in a sandbox="allow-scripts" iframe (see
+// HostedSurfaceFrame.vue) — no allow-same-origin, no allow-popups. That
+// means window.electronShell is unreachable and window.open is a silent
+// no-op here, which is why the download / admin-panel links did nothing.
+// Instead we postMessage the URL up to the host, which routes it through
+// its own openExternalUrl (system browser in Electron, new tab in a real
+// browser). Same channel the markdown surface's link interceptor uses;
+// the handler lives in HostedSurfaceFrame.vue (neko-hosted-surface-open-external).
 function openExternalUrl(url: string): void {
-  const shell = (window as any).electronShell
-  if (shell && typeof shell.openExternal === "function") {
-    Promise.resolve(shell.openExternal(url)).catch((err: unknown) => {
-      // eslint-disable-next-line no-console
-      console.warn("[openExternalUrl] electronShell.openExternal failed:", err)
-    })
+  if (window.parent && window.parent !== window) {
+    window.parent.postMessage(
+      { type: "neko-hosted-surface-open-external", payload: { url } },
+      "*",
+    )
     return
   }
   window.open(url, "_blank", "noopener,noreferrer")
@@ -113,12 +107,12 @@ type GuideCopy = {
 // working in lockstep across both.
 const COPY: Record<LocaleKey, GuideCopy> = {
   "zh-CN": {
-    title: "Minecraft 游戏代理 快速开始",
+    title: "Minecraft 游戏插件 快速开始",
     subtitle: "让猫娘陪你玩 MC——通过 mc-agent 桥接 mineflayer bot 控制游戏内化身。",
     cards: [
       { title: "先装 Minecraft", badge: "Install", body: "Java 版 v1.21.1 推荐，其他 1.21.x 也可。自己买正版或离线启动。" },
       { title: "再开 mc-agent", badge: "Bridge", body: "下面下个 mc-agent 解压、双击「启动mc-agent.bat」启动它。它和 N.E.K.O 是两个独立程序，靠 WebSocket 联通。" },
-      { title: "最后给猫娘任务", badge: "Play", body: "正常聊天，让她「帮我挖石头」「合成镐子」，她会自动调 minecraft_task 派给 bot。" },
+      { title: "最后和猫娘一起玩吧", badge: "Play", body: "和她正常聊天，她会一边陪你说话、一边和你在游戏里一起玩，就像身边真多了个玩家。（部分 AI 供应商暂时没法同时语音对话和操作游戏。）" },
     ],
     status: {
       title: "mc-agent 状态",
@@ -160,18 +154,18 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     tips: [
       "状态一直「未连接」：没启动「启动mc-agent.bat」，或者 bat 启动后报错就退了；看那个黑窗口最后几行报什么错。",
       "bot 进不了 MC 世界：99% 端口对不上；MC 那边随机端口，每次重开都不一样，要在管理面板里改。",
-      "bot 进了但啥也不干：可能是 LLM 没拿到 minecraft_task 工具；在 N.E.K.O 设置页确认本插件是「已启用」。",
+      "bot 进了但啥也不干：可能是 N.E.K.O. 没有正确识别连接；回本页点刷新看状态，并在 N.E.K.O 设置页确认本插件是「已启用」。",
       "想关掉 mc-agent：在管理面板的 bot 列表里点 Stop，或者直接关 N.E.K.O。",
     ],
     warning: "本插件只控制 bot；它在 MC 世界里的行为受你的指令和当前 LLM 模型能力影响，复杂任务可能会失败或绕路。",
   },
   en: {
-    title: "Minecraft Game Agent — Quickstart",
+    title: "Minecraft Game Plugin — Quickstart",
     subtitle: "Let neko-chan play MC with you. mc-agent bridges a mineflayer bot to control an in-game avatar.",
     cards: [
       { title: "Install Minecraft", badge: "Install", body: "Java Edition v1.21.1 recommended; other 1.21.x versions also work. Use any launcher you like." },
       { title: "Run mc-agent", badge: "Bridge", body: "Download mc-agent below, unzip, double-click 启动mc-agent.bat. It's a separate program from N.E.K.O., they talk over WebSocket." },
-      { title: "Give a task", badge: "Play", body: "Chat normally and ask neko-chan to \"mine stone\" or \"craft a pickaxe\" — she'll dispatch via minecraft_task." },
+      { title: "Play together", badge: "Play", body: "Just chat with neko-chan — she'll keep talking with you while playing alongside you in the world, like a real second player. (Some AI providers can't yet voice-chat and operate the game at the same time.)" },
     ],
     status: {
       title: "mc-agent Status",
@@ -213,18 +207,18 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     tips: [
       "Status stays \"Disconnected\": 启动mc-agent.bat isn't running, or it crashed at startup — check the last few lines in that black console window.",
       "Bot can't join the world: 99% wrong port. MC picks a random LAN port each time; update it in the admin panel.",
-      "Bot joins but does nothing: the LLM probably didn't pick up the minecraft_task tool. Check this plugin is enabled in N.E.K.O. settings.",
+      "Bot joins but does nothing: N.E.K.O. may not have registered the connection correctly. Hit Refresh here to recheck the status, and confirm this plugin is enabled in N.E.K.O. settings.",
       "To stop mc-agent: click Stop in the admin panel's bot list, or just close N.E.K.O.",
     ],
     warning: "This plugin only controls the bot. In-world behavior depends on your prompts and the current LLM's capability; complex tasks may stall or detour.",
   },
   ja: {
-    title: "Minecraft ゲームエージェント クイックスタート",
+    title: "Minecraft ゲームプラグイン クイックスタート",
     subtitle: "猫娘ちゃんと MC を遊ぼう。mc-agent が mineflayer ボットを橋渡しして、ゲーム内アバターを操作します。",
     cards: [
       { title: "Minecraft を入れる", badge: "Install", body: "Java 版 v1.21.1 推奨。他の 1.21.x でも可。お好きなランチャーで。" },
       { title: "mc-agent を起動", badge: "Bridge", body: "下のカードから mc-agent を入手・解凍し「启动mc-agent.bat」をダブルクリック。N.E.K.O とは別プログラムで WebSocket 経由で連携。" },
-      { title: "猫娘に指示", badge: "Play", body: "普通に会話して「石を掘って」「ツルハシを作って」と頼めば minecraft_task で自動派遣。" },
+      { title: "一緒に遊ぼう", badge: "Play", body: "普通におしゃべりするだけ。猫娘ちゃんは会話を続けながら、本物のもう一人のプレイヤーのように一緒に遊んでくれる。（一部の AI プロバイダーでは、音声会話とゲーム操作の同時進行がまだできない場合があります。）" },
     ],
     status: {
       title: "mc-agent ステータス",
@@ -266,18 +260,18 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     tips: [
       "ステータスがずっと「未接続」: 「启动mc-agent.bat」が起動していない、または起動直後にクラッシュ。黒いコンソール窓の最終行のエラーを確認。",
       "ボットがワールドに入れない: 99% ポート不一致。MC は毎回ランダムポート、管理パネルで更新。",
-      "入ったが何もしない: LLM が minecraft_task ツールを認識していない可能性。N.E.K.O 設定で本プラグインが「有効」か確認。",
+      "入ったが何もしない: N.E.K.O が接続を正しく認識できていない可能性。本ページで更新して状態を確認し、N.E.K.O 設定で本プラグインが「有効」か確認。",
       "mc-agent を止める: 管理パネルのボット一覧から Stop、または N.E.K.O ごと終了。",
     ],
     warning: "本プラグインはボット操作のみ。世界内での挙動は指示内容と現在の LLM 性能に依存し、複雑なタスクは失敗 / 迂回することがあります。",
   },
   ko: {
-    title: "Minecraft 게임 에이전트 빠른 시작",
+    title: "Minecraft 게임 플러그인 빠른 시작",
     subtitle: "고양이 캐릭터와 함께 MC를 즐기세요. mc-agent가 mineflayer 봇을 게임 내 아바타로 다리 놓아 줍니다.",
     cards: [
       { title: "Minecraft 설치", badge: "Install", body: "Java 에디션 v1.21.1 권장. 다른 1.21.x도 가능. 원하는 런처 사용." },
       { title: "mc-agent 실행", badge: "Bridge", body: "아래에서 mc-agent 다운로드 → 압축 해제 → 「启动mc-agent.bat」 더블클릭. N.E.K.O와는 별개 프로그램으로 WebSocket으로 연동." },
-      { title: "고양이에게 작업 지시", badge: "Play", body: "평범하게 채팅하며 「돌 캐줘」 「곡괭이 만들어줘」 요청 → minecraft_task로 자동 파견." },
+      { title: "함께 놀기", badge: "Play", body: "그냥 평범하게 대화하세요. 고양이는 너와 이야기를 나누면서 진짜 또 한 명의 플레이어처럼 함께 놀아 줍니다. (일부 AI 제공자는 아직 음성 대화와 게임 조작을 동시에 못 할 수 있어요.)" },
     ],
     status: {
       title: "mc-agent 상태",
@@ -319,18 +313,18 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     tips: [
       "상태가 계속 「연결 안 됨」: 「启动mc-agent.bat」이 실행되지 않았거나 실행 직후 죽음. 검은 콘솔 창의 마지막 줄 에러 확인.",
       "봇이 월드에 못 들어감: 99% 포트 불일치. MC는 매번 랜덤 포트이므로 관리 패널에서 갱신.",
-      "들어갔지만 아무것도 안 함: LLM이 minecraft_task 도구를 인식 못 함. N.E.K.O 설정에서 본 플러그인이 「활성화」인지 확인.",
+      "들어갔지만 아무것도 안 함: N.E.K.O가 연결을 제대로 인식하지 못했을 수 있어요. 본 페이지에서 새로고침해 상태를 확인하고, N.E.K.O 설정에서 본 플러그인이 「활성화」인지 확인.",
       "mc-agent 종료: 관리 패널의 봇 목록에서 Stop, 또는 N.E.K.O 전체 종료.",
     ],
     warning: "본 플러그인은 봇 제어만 담당. 월드 내 행동은 지시 내용과 현재 LLM 능력에 따라 달라지며 복잡한 작업은 실패 / 우회할 수 있음.",
   },
   ru: {
-    title: "Minecraft Game Agent — Быстрый старт",
+    title: "Игровой плагин Minecraft — Быстрый старт",
     subtitle: "Играй в MC вместе с нэко-тян. mc-agent связывает mineflayer-бота с аватаром в игре.",
     cards: [
       { title: "Установи Minecraft", badge: "Install", body: "Java Edition v1.21.1 рекомендуется; другие 1.21.x тоже подойдут. Любой лаунчер." },
       { title: "Запусти mc-agent", badge: "Bridge", body: "Скачай mc-agent ниже, распакуй, дважды кликни 启动mc-agent.bat. Это отдельная программа от N.E.K.O., связь по WebSocket." },
-      { title: "Дай задачу", badge: "Play", body: "Общайся обычно: «накопай камня», «скрафти кирку» — нэко-тян диспатчит через minecraft_task." },
+      { title: "Играйте вместе", badge: "Play", body: "Просто болтай с нэко-тян — она будет общаться с тобой и одновременно играть рядом, как настоящий второй игрок. (У части AI-провайдеров пока не получается одновременно вести голосовой диалог и управлять игрой.)" },
     ],
     status: {
       title: "Статус mc-agent",
@@ -372,7 +366,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     tips: [
       "Статус всё время «Нет связи»: 启动mc-agent.bat не запущен, или упал на старте — смотри последние строки в том чёрном окне консоли.",
       "Бот не заходит в мир: 99% — порт не совпадает. MC выбирает случайный LAN-порт каждый раз; обнови в админ-панели.",
-      "Бот зашёл, но ничего не делает: LLM, видимо, не подцепил инструмент minecraft_task. Проверь в настройках N.E.K.O., что плагин «включен».",
+      "Бот зашёл, но ничего не делает: возможно, N.E.K.O. не распознал подключение правильно. Нажми «Обновить» здесь, чтобы перепроверить статус, и убедись в настройках N.E.K.O., что плагин «включен».",
       "Остановить mc-agent: нажми Stop в списке ботов админ-панели, или просто закрой N.E.K.O.",
     ],
     warning: "Плагин управляет только ботом. Поведение в мире зависит от твоих инструкций и текущей модели LLM; сложные задачи могут провалиться или пойти в обход.",
