@@ -83,6 +83,16 @@ class _DummyGetRequest:
         self.headers = headers or {}
 
 
+class _FakeTranslationService:
+    async def translate_dict(self, data, target_lang, fields_to_translate=None):
+        result = dict(data)
+        for field in fields_to_translate or []:
+            value = result.get(field)
+            if isinstance(value, str) and value:
+                result[field] = f"{target_lang}:{value}"
+        return result
+
+
 @pytest.mark.unit
 def test_profile_rename_event_prompt_i18n_is_complete_and_first_person():
     from config.prompts.prompts_memory import (
@@ -280,6 +290,60 @@ async def test_character_read_endpoints_disable_caching():
             assert characters_response.headers["Pragma"] == "no-cache"
             assert current_response.headers["Cache-Control"] == "no-store, no-cache, must-revalidate, max-age=0"
             assert current_response.headers["Pragma"] == "no-cache"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_get_characters_preserves_profile_names_when_translating_display_fields():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+        characters = cm.load_characters()
+        characters["主人"] = {"档案名": "主人原名", "昵称": "主人昵称"}
+        characters["猫娘"] = {
+            "猫娘原名": {
+                "档案名": "猫娘原名",
+                "昵称": "猫娘昵称",
+                "性别": "女",
+            }
+        }
+        characters["当前猫娘"] = "猫娘原名"
+        cm.save_characters(characters)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm), patch(
+            "utils.language_utils.get_translation_service",
+            return_value=_FakeTranslationService(),
+        ):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            characters_router_module = reload_module("main_routers.characters_router")
+            response = await characters_router_module.get_characters(
+                _DummyGetRequest(headers={"Accept-Language": "en-US"})
+            )
+            payload = json.loads(response.body.decode("utf-8"))
+
+            assert payload["主人"]["档案名"] == "主人原名"
+            assert payload["主人"]["昵称"] == "en:主人昵称"
+            assert "猫娘原名" in payload["猫娘"]
+            assert payload["猫娘"]["猫娘原名"]["档案名"] == "猫娘原名"
+            assert payload["猫娘"]["猫娘原名"]["昵称"] == "en:猫娘昵称"
+            assert payload["猫娘"]["猫娘原名"]["性别"] == "en:女"
 
 
 @pytest.mark.unit

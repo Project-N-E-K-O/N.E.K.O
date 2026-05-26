@@ -1535,7 +1535,7 @@ async def get_characters(request: Request):
             characters_data['主人'] = await translation_service.translate_dict(
                 characters_data['主人'],
                 user_language,
-                fields_to_translate=['档案名', '昵称']
+                fields_to_translate=['昵称']
             )
 
         # 翻译猫娘数据（并行翻译以提升性能）
@@ -1544,7 +1544,7 @@ async def get_characters(request: Request):
                 if isinstance(data, dict):
                     return name, await translation_service.translate_dict(
                         data, user_language,
-                        fields_to_translate=['档案名', '昵称', '性别']  # 注意：不翻译 system_prompt
+                        fields_to_translate=['昵称', '性别']  # 注意：不翻译档案名和 system_prompt
                     )
                 return name, data
 
