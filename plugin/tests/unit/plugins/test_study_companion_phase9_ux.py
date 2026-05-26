@@ -28,7 +28,7 @@ def test_phase9_static_math_assets_are_local_and_registered() -> None:
     assert "/[<>]/.test" not in renderer
     assert "escapeHTML" in renderer
     assert "function hasEscapedDelimiter" in renderer
-    assert "function isCurrencyDollar" in renderer
+    assert "function isLikelyCurrencyStart" in renderer
     assert "function findMathDelimiter" in renderer
     assert "trust: false" in renderer
 
@@ -44,8 +44,9 @@ def test_phase9_hosted_study_panel_uses_span_based_katex_rendering() -> None:
     assert "dataset.studyKatexFailed" in source
     assert "data-study-math" in source
     assert "function hasEscapedDelimiter" in source
-    assert "function isCurrencyDollar" in source
+    assert "function isLikelyCurrencyStart" in source
     assert "findMathDelimiter(source, index + 1, '$')" in source
+    assert "isLikelyCurrencyStart(source, inlineCloser)" not in source
     assert "/[<>]/.test" not in source
     assert "const hasInFlightRequest = !!explainControllerRef.current" in source
     assert "targetElement?.closest?.('.study-panel')" in source

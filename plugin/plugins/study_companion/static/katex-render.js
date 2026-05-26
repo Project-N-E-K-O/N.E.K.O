@@ -13,8 +13,8 @@
     return slashes % 2 === 1;
   }
 
-  function isCurrencyDollar(source, index) {
-    return /\d/.test(source[index + 1] || '') || /\d/.test(source[index - 1] || '');
+  function isLikelyCurrencyStart(source, index) {
+    return /^\$\d{1,3}(?:,\d{3})*(?:\.\d+)?(?=$|[\s)\],.;!?])/.test(source.slice(index));
   }
 
   function findMathDelimiter(source, start, delimiter) {
@@ -67,17 +67,13 @@
         continue;
       }
 
-      if (isCurrencyDollar(source, index)) {
+      if (isLikelyCurrencyStart(source, index)) {
         index += 1;
         continue;
       }
       const inlineCloser = findMathDelimiter(source, index + 1, '$');
       if (inlineCloser === -1) {
         index += 1;
-        continue;
-      }
-      if (isCurrencyDollar(source, inlineCloser)) {
-        index = inlineCloser + 1;
         continue;
       }
       if (index > last) {
@@ -137,7 +133,7 @@
   window.__studyCompanionMath = {
     escapeHTML,
     hasEscapedDelimiter,
-    isCurrencyDollar,
+    isLikelyCurrencyStart,
     findMathDelimiter,
     normalizeLatexForKatex,
     splitByMath,
