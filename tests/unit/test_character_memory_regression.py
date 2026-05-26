@@ -109,6 +109,41 @@ def test_profile_rename_event_prompt_i18n_is_complete_and_first_person():
 
 
 @pytest.mark.unit
+def test_profile_rename_event_uses_collision_safe_synthetic_key(monkeypatch):
+    monkeypatch.setattr("utils.language_utils.get_global_language_full", lambda: "zh-CN")
+    from utils.config_manager import _build_effective_character_payload
+
+    payload = {
+        "档案名": "新角色",
+        "我的改名记录": "用户自己写的字段",
+        "_reserved": {
+            "ai_context": {
+                "rename_events": [
+                    {
+                        "type": "profile_rename",
+                        "old_name": "旧角色",
+                        "new_name": "新角色",
+                    }
+                ]
+            }
+        },
+    }
+    effective = _build_effective_character_payload(payload)
+
+    assert effective["我的改名记录"] == "用户自己写的字段"
+    hidden_context = effective["__ai_context.profile_rename_events"]
+    assert "我的改名记录" in hidden_context
+    assert "我以前的档案名" in hidden_context
+    assert "旧角色" in hidden_context
+    assert "新角色" in hidden_context
+
+    payload["__ai_context.profile_rename_events"] = "用户内部命名字段"
+    effective_with_internal_collision = _build_effective_character_payload(payload)
+    assert effective_with_internal_collision["__ai_context.profile_rename_events"] == "用户内部命名字段"
+    assert "我以前的档案名" in effective_with_internal_collision["__ai_context.profile_rename_events.2"]
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_character_management_and_recent_save_regression():
     with TemporaryDirectory() as td:
@@ -321,12 +356,14 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage(monkeypatc
             assert "text" not in rename_events[-1]
 
             _, _, _, effective_character_data, _, _, _, _, _ = cm.get_character_data()
-            hidden_context = effective_character_data["新角色"]["我的改名记录"]
+            hidden_context = effective_character_data["新角色"]["__ai_context.profile_rename_events"]
+            assert "我的改名记录" in hidden_context
             assert "我以前的档案名" in hidden_context
             assert "旧角色" in hidden_context
             assert "新角色" in hidden_context
             from memory.persona import PersonaManager
             persona_md = PersonaManager().render_persona_markdown("新角色")
+            assert "__ai_context.profile_rename_events" in persona_md
             assert "我的改名记录" in persona_md
             assert "我以前的档案名" in persona_md
             assert "旧角色" in persona_md
@@ -393,13 +430,15 @@ async def test_rename_master_adds_hidden_ai_context_and_master_save_preserves_it
             assert "text" not in rename_events[-1]
 
             _, _, master_basic_config, _, _, _, _, _, _ = cm.get_character_data()
-            hidden_context = master_basic_config["我的改名记录"]
+            hidden_context = master_basic_config["__ai_context.profile_rename_events"]
+            assert "我的改名记录" in hidden_context
             assert "我以前的档案名" in hidden_context
             assert old_master_name in hidden_context
             assert "新主人" in hidden_context
 
             from memory.persona import PersonaManager
             persona_md = PersonaManager().render_persona_markdown(current_catgirl)
+            assert "__ai_context.profile_rename_events" in persona_md
             assert "我的改名记录" in persona_md
             assert old_master_name in persona_md
             assert "新主人" in persona_md
@@ -411,6 +450,7 @@ async def test_rename_master_adds_hidden_ai_context_and_master_save_preserves_it
             saved_after_update = cm.load_characters()["主人"]
             assert saved_after_update["档案名"] == "新主人"
             assert saved_after_update["_reserved"]["ai_context"]["rename_events"][-1]["new_name"] == "新主人"
+            initial_count = len(saved_after_update["_reserved"]["ai_context"]["rename_events"])
 
             bypass_result = await characters_router_module.update_master(
                 _DummyRequest({"档案名": "绕过改名", "昵称": "柚希"})
@@ -419,6 +459,24 @@ async def test_rename_master_adds_hidden_ai_context_and_master_save_preserves_it
             saved_after_bypass = cm.load_characters()["主人"]
             assert saved_after_bypass["档案名"] == "新主人"
             assert saved_after_bypass["_reserved"]["ai_context"]["rename_events"][-1]["new_name"] == "新主人"
+            assert len(saved_after_bypass["_reserved"]["ai_context"]["rename_events"]) == initial_count
+
+            same_name_result = await characters_router_module.rename_master(
+                "新主人",
+                _DummyRequest({"new_name": "新主人"}),
+            )
+            assert same_name_result["success"] is True
+            saved_after_same_name = cm.load_characters()["主人"]
+            assert len(saved_after_same_name["_reserved"]["ai_context"]["rename_events"]) == initial_count
+
+            conflict_characters = cm.load_characters()
+            conflict_characters["主人"] = {}
+            conflict_characters.setdefault("猫娘", {})["占用名"] = {"档案名": "占用名"}
+            cm.save_characters(conflict_characters)
+            conflict_result = await characters_router_module.update_master(
+                _DummyRequest({"档案名": "占用名", "昵称": "柚希"})
+            )
+            assert getattr(conflict_result, "status_code", None) == 400
 
 
 @pytest.mark.unit

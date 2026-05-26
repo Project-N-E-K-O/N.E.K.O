@@ -424,6 +424,11 @@ def _append_profile_rename_event(character_payload: dict, old_name: str, new_nam
     if not isinstance(character_payload, dict):
         return
 
+    old_name = str(old_name or "").strip()
+    new_name = str(new_name or "").strip()
+    if old_name == new_name:
+        return
+
     existing = get_reserved(
         character_payload,
         "ai_context",
@@ -3172,6 +3177,9 @@ async def update_master(request: Request):
     err = _validate_profile_name(profile_name)
     if err:
         return JSONResponse({'success': False, 'error': err}, status_code=400)
+    catgirl_profiles = characters.get('猫娘') if isinstance(characters.get('猫娘'), dict) else {}
+    if profile_name in catgirl_profiles:
+        return JSONResponse({'success': False, 'error': '档案名已被占用'}, status_code=400)
     next_master = {
         k: v
         for k, v in data.items()

@@ -45,9 +45,14 @@ function getWorkshopHiddenFields() {
     return _uniqueFields([...cfg.all_reserved_fields]);
 }
 
+function normalizeCharacterFieldName(fieldName) {
+    return String(fieldName ?? '').trim();
+}
+
 function isCharacterReservedFieldName(fieldName) {
-    if (!fieldName) return false;
-    return getWorkshopHiddenFields().includes(fieldName);
+    const normalizedFieldName = normalizeCharacterFieldName(fieldName);
+    if (!normalizedFieldName) return false;
+    return getWorkshopHiddenFields().includes(normalizedFieldName);
 }
 
 function loadCharacterReservedFieldsConfig() {
@@ -9833,18 +9838,19 @@ function renderMasterForm(master) {
 
     // 自定义字段
     Object.keys(master).forEach(k => {
-        if (k === '档案名' || isCharacterReservedFieldName(k)) return;
+        const normalizedKey = normalizeCharacterFieldName(k);
+        if (!normalizedKey || normalizedKey === '档案名' || isCharacterReservedFieldName(normalizedKey)) return;
         const wrapper = document.createElement('div');
         wrapper.className = 'field-row-wrapper custom-row';
 
         const label = document.createElement('label');
-        label.textContent = k;
+        label.textContent = normalizedKey;
         wrapper.appendChild(label);
 
         const row = document.createElement('div');
         row.className = 'field-row';
         const textarea = document.createElement('textarea');
-        textarea.name = k;
+        textarea.name = normalizedKey;
         textarea.rows = 1;
         textarea.value = master[k];
         row.appendChild(textarea);
@@ -9930,7 +9936,10 @@ async function saveMasterForm() {
     }
     const data = {};
     for (const [k, v] of new FormData(form).entries()) {
-        if (k && v && !isCharacterReservedFieldName(k)) data[k] = v;
+        const normalizedKey = normalizeCharacterFieldName(k);
+        if (normalizedKey && v && !isCharacterReservedFieldName(normalizedKey)) {
+            data[normalizedKey] = v;
+        }
     }
     try {
         const resp = await fetch('/api/characters/master', {
@@ -9984,12 +9993,15 @@ function attachAutoSaveListener(input, type, catgirlName) {
 async function autoSaveMasterField(input) {
     const form = input.closest('form');
     if (!form || form.id !== 'master-form') return;
-    const fieldName = input.name;
+    const fieldName = normalizeCharacterFieldName(input.name);
     if (!fieldName) return;
     if (fieldName === '档案名') return;
     const allData = {};
     for (const [k, v] of new FormData(form).entries()) {
-        if (k && v && !isCharacterReservedFieldName(k)) allData[k] = v;
+        const normalizedKey = normalizeCharacterFieldName(k);
+        if (normalizedKey && v && !isCharacterReservedFieldName(normalizedKey)) {
+            allData[normalizedKey] = v;
+        }
     }
     if (!allData['档案名']) return;
     try {
@@ -10020,14 +10032,15 @@ async function panelAutoSaveCatgirlField(input, catgirlName) {
     if (!catgirlName) return;
     const form = input.closest('form');
     if (!form) return;
-    const fieldName = input.name;
+    const fieldName = normalizeCharacterFieldName(input.name);
     if (!fieldName || fieldName === '档案名' || fieldName === 'voice_id') return;
     const data = { '档案名': catgirlName };
     const ALL_RESERVED_FIELDS = ['档案名', ...getWorkshopHiddenFields()];
     const inputs = form.querySelectorAll('input, textarea');
     inputs.forEach(inp => {
-        if (inp.name && !ALL_RESERVED_FIELDS.includes(inp.name) && inp.value) {
-            data[inp.name] = inp.value;
+        const normalizedName = normalizeCharacterFieldName(inp.name);
+        if (normalizedName && !ALL_RESERVED_FIELDS.includes(normalizedName) && inp.value) {
+            data[normalizedName] = inp.value;
         }
     });
     try {
@@ -10089,8 +10102,11 @@ async function addMasterField() {
     } else {
         key = prompt(window.t ? window.t('character.addMasterFieldPrompt') : '请输入新设定的名称（键名）');
     }
+    key = normalizeCharacterFieldName(key);
     if (!key || key === '档案名' || isCharacterReservedFieldName(key)) return;
-    const exists = Array.from(form.querySelectorAll('textarea, input')).some(el => el.name === key);
+    const exists = Array.from(form.querySelectorAll('textarea, input')).some(
+        el => normalizeCharacterFieldName(el.name) === key
+    );
     if (exists) {
         showMessage(window.t ? window.t('character.fieldExists') : '该设定已存在', 'error');
         return;

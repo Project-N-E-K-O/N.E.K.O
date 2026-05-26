@@ -302,14 +302,20 @@ def _build_effective_character_payload(character_payload: dict) -> dict:
     effective_payload = deepcopy(character_payload)
     override = _get_persona_override(character_payload)
     if not isinstance(override, dict):
-        for field, value in _build_ai_context_fields(character_payload).items():
+        for field, value in _build_ai_context_fields(
+            character_payload,
+            existing_fields=set(effective_payload.keys()),
+        ).items():
             effective_payload[field] = value
         return effective_payload
 
     profile = _normalize_persona_override_profile(override.get("profile"))
     for field, value in profile.items():
         effective_payload[field] = value
-    for field, value in _build_ai_context_fields(character_payload).items():
+    for field, value in _build_ai_context_fields(
+        character_payload,
+        existing_fields=set(effective_payload.keys()),
+    ).items():
         effective_payload[field] = value
     return effective_payload
 
@@ -350,10 +356,24 @@ def _append_persona_guidance_to_prompt(prompt_text: str, character_payload: dict
     return f"{prompt_text}\n\nAdditional role guidance: {guidance}"
 
 
-_AI_CONTEXT_RENAME_EVENT_FIELD = "内部改名事件"
+_AI_CONTEXT_RENAME_EVENT_FIELD = "__ai_context.profile_rename_events"
 
 
-def _build_ai_context_fields(character_payload: dict) -> dict[str, str]:
+def _unique_ai_context_field_name(existing_fields: set[str] | None) -> str:
+    existing = {str(field) for field in (existing_fields or set())}
+    if _AI_CONTEXT_RENAME_EVENT_FIELD not in existing:
+        return _AI_CONTEXT_RENAME_EVENT_FIELD
+
+    index = 2
+    while f"{_AI_CONTEXT_RENAME_EVENT_FIELD}.{index}" in existing:
+        index += 1
+    return f"{_AI_CONTEXT_RENAME_EVENT_FIELD}.{index}"
+
+
+def _build_ai_context_fields(
+    character_payload: dict,
+    existing_fields: set[str] | None = None,
+) -> dict[str, str]:
     """把隐藏运行时事件展开成只给 prompt/记忆同步使用的合成字段。"""
     if not isinstance(character_payload, dict):
         return {}
@@ -378,7 +398,7 @@ def _build_ai_context_fields(character_payload: dict) -> dict[str, str]:
     except Exception:
         render_profile_rename_event_context = None
 
-    field_name = _AI_CONTEXT_RENAME_EVENT_FIELD
+    field_name = _unique_ai_context_field_name(existing_fields)
     lines: list[str] = []
     for event in rename_events:
         if not isinstance(event, dict):
@@ -388,7 +408,8 @@ def _build_ai_context_fields(character_payload: dict) -> dict[str, str]:
         old_name = str(event.get("old_name") or "").strip()
         new_name = str(event.get("new_name") or "").strip()
         if old_name and new_name and render_profile_rename_event_context is not None:
-            field_name, text = render_profile_rename_event_context(lang, old_name, new_name)
+            label, text = render_profile_rename_event_context(lang, old_name, new_name)
+            text = f"{label}: {text}"
         elif old_name and new_name:
             text = (
                 f"我以前的档案名是「{old_name}」，现在已经改名为「{new_name}」。"
