@@ -316,16 +316,17 @@ async def test_voice_mode_reject_during_await_not_pruned():
 
     class _VoiceSess(OmniRealtimeClient):
         def __init__(self):
-            self._is_responding = True  # 模拟 VAD 抢跑：拒绝时已有 active response
+            self._is_responding = False  # gate 时 idle，让 inject 启动
             self.inject_calls = 0
 
         def is_active_response(self) -> bool:
-            # gate 检查时返回 False（让 inject 启动），inject 内再翻 True 模拟竞态
-            return False
+            return self._is_responding
 
         async def inject_text_and_request_response(self, text: str, *, on_rejected=None) -> None:
             self.inject_calls += 1
-            # 模拟 server error 事件在 await 期间到达（prune 之前）
+            # 模拟 VAD 抢跑：reject 到达时 server 已经有 active response（busy），
+            # 且发生在 await 期间（prune 之前）。
+            self._is_responding = True
             if on_rejected is not None:
                 on_rejected("response_already_active")
             # inject 本身正常返回（拒绝是异步事件，不是异常）
@@ -346,6 +347,9 @@ async def test_voice_mode_reject_during_await_not_pruned():
     assert mgr.pending_agent_callbacks[0]["_callback_delivery_id"] == "id-toctou"
     assert len(mgr.pending_extra_replies) == 1
     assert mgr.pending_extra_replies[0]["_callback_delivery_id"] == "id-toctou"
+    # busy（is_active_response True）时 handler 不应立即 re-fire —— 留给
+    # response.done 后的 _finalize_turn_after_emit 重试，避免 response_already_active 死循环。
+    assert mgr._fired_tasks == []
 
 
 async def test_voice_mode_concurrent_triggers_inject_once():

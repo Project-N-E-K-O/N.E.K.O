@@ -5666,6 +5666,14 @@ class LLMSessionManager:
                         for cb in self.pending_agent_callbacks
                         if cb.get("_callback_delivery_id")
                     }
+                    # Object-identity fallback, symmetric with the success-path
+                    # prune: an unstamped cb (no _callback_delivery_id, e.g. a
+                    # future caller bypassing enqueue_agent_callback) would
+                    # otherwise fail the id-based dedup and get re-appended even
+                    # when it's still in the queue (case a) — then skip-prune
+                    # keeps both copies → double-delivery on retry. Dedup such
+                    # entries by Python id().
+                    existing_cb_obj_ids = {id(cb) for cb in self.pending_agent_callbacks}
                     existing_extra_ids = {
                         extra.get("_callback_delivery_id")
                         for extra in self.pending_extra_replies
@@ -5673,9 +5681,15 @@ class LLMSessionManager:
                     }
                     for cb in _snapshot:
                         cb_id = cb.get("_callback_delivery_id")
-                        if cb_id and cb_id in existing_cb_ids:
+                        if (cb_id and cb_id in existing_cb_ids) or (
+                            not cb_id and id(cb) in existing_cb_obj_ids
+                        ):
                             continue
                         self.pending_agent_callbacks.append(cb)
+                        if cb_id:
+                            existing_cb_ids.add(cb_id)
+                        else:
+                            existing_cb_obj_ids.add(id(cb))
                     for extra in _extra_snapshot:
                         extra_id = extra.get("_callback_delivery_id")
                         if extra_id and extra_id in existing_extra_ids:
