@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import platform
 import subprocess
 import sys
 import time
@@ -34,7 +35,26 @@ def ensure_path(path: Path, label: str) -> None:
         raise FileNotFoundError(f"{label} not found: {path}")
 
 
+# 这个一键启动脚本目前只支持 Windows：依赖 powershell.exe / CREATE_NEW_CONSOLE
+# 弹三个独立 cmd 窗口。其他平台没有等价的"打开三个新终端 + 在每个里跑一条命令"
+# 的统一 API，强行启动会直接抛 FileNotFoundError 或 ValueError，没有任何价值，
+# 所以早判退出并打印手动步骤，避免误以为脚本只是"卡住了"。
+def _ensure_windows() -> None:
+    if platform.system() == "Windows":
+        return
+    msg = [
+        "[startup error] start_card_forge.py 目前只支持 Windows "
+        "(依赖 powershell.exe 和 CREATE_NEW_CONSOLE 弹独立窗口)。",
+        "在 macOS / Linux 上请分别在三个终端里手动执行：",
+        f"  1) cd {PROJECT_ROOT} && uv run launcher.py",
+        f"  2) cd {FORGE_SERVER_ROOT} && uv run server.py",
+        f"  3) cd {FRONTEND_ROOT} && npm run dev",
+    ]
+    raise SystemExit("\n".join(msg))
+
+
 def main() -> int:
+    _ensure_windows()
     ensure_path(PROJECT_ROOT / "launcher.py", "N.E.K.O launcher")
     ensure_path(FORGE_SERVER_ROOT / "server.py", "Card forge server")
     ensure_path(FRONTEND_ROOT / "package.json", "Card forge frontend")

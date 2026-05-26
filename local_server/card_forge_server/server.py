@@ -679,9 +679,16 @@ if __name__ == "__main__":
     # 默认只监听 loopback：facts 含个人化记忆，禁止开箱即用就被局域网读取。
     # 若确需在其他网卡监听，请显式设置 NEKO_CARD_FORGE_HOST="0.0.0.0"
     # （并相应收紧 NEKO_CARD_FORGE_ALLOWED_ORIGINS）。
+    #
+    # app_dir 必传：reload=True 时 uvicorn 会 fork worker 子进程，再用
+    # `"server:app"` 字符串 import-by-name；worker 不会继承 __main__ 里给
+    # sys.path 加的 SERVER_ROOT，所以从项目根 (`uv run local_server/card_forge_server/server.py`)
+    # 启动时 worker 找不到 `server` 模块。显式 app_dir=SERVER_ROOT 把目录交给 uvicorn
+    # 自己加到 worker 的 sys.path 上。
     uvicorn.run(
         "server:app",
         host=os.environ.get("NEKO_CARD_FORGE_HOST", "127.0.0.1"),
         port=int(os.environ.get("NEKO_CARD_FORGE_PORT", "3001")),
         reload=True,
+        app_dir=str(SERVER_ROOT),
     )
