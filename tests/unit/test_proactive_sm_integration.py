@@ -83,6 +83,8 @@ def _make_mgr(session=None) -> LLMSessionManager:
         try:
             coro.close()
         except (RuntimeError, AttributeError):
+            # Coroutine already closed/started or not a coroutine — there is
+            # nothing to clean up; intentionally ignored in this test shim.
             pass
     mgr._fire_task = _fake_fire
     mgr.current_speech_id = None
