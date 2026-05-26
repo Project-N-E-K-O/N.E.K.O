@@ -10,7 +10,7 @@ import {
 } from 'react';
 import { i18n } from './i18n';
 import MessageBlockView from './MessageBlockView';
-import { type ChatMessage, type MessageAction } from './message-schema';
+import { type ChatMessage } from './message-schema';
 
 export const COMPACT_EXPORT_SELECTION_LIMIT = 100;
 
@@ -58,7 +58,6 @@ type CompactExportHistoryPanelProps = {
   onBuildPreview: (request: CompactExportActionRequest) => Promise<CompactExportPreviewResult> | CompactExportPreviewResult;
   onCopyExport: (request: CompactExportActionRequest) => Promise<void> | void;
   onDownloadExport: (request: CompactExportActionRequest) => Promise<void> | void;
-  onAction?: (message: ChatMessage, action: MessageAction) => void;
 };
 
 type PointerIntentState = {
@@ -182,7 +181,6 @@ export default function CompactExportHistoryPanel({
   onBuildPreview,
   onCopyExport,
   onDownloadExport,
-  onAction,
 }: CompactExportHistoryPanelProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const pointerIntentRef = useRef<PointerIntentState | null>(null);
@@ -412,7 +410,6 @@ export default function CompactExportHistoryPanel({
                       block={block}
                       message={message}
                       isStreaming={streaming}
-                      onAction={onAction}
                     />
                   ))}
                 </div>
@@ -656,7 +653,6 @@ export default function CompactExportHistoryPanel({
                                 block={block}
                                 message={message}
                                 isStreaming={streaming}
-                                onAction={onAction}
                               />
                             ))}
                           </div>

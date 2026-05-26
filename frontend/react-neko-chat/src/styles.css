@@ -120,9 +120,9 @@ svg {
   --drop-rotation: 0deg;
   --drop-scale: 1;
   --drop-delay: 0ms;
-  position: absolute;
-  left: calc(100% - 30px);
-  top: 33px;
+  position: fixed;
+  left: 0;
+  top: 0;
   z-index: 10000;
   pointer-events: none;
   opacity: 1;
@@ -1904,14 +1904,14 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   max-height: 54px;
   box-sizing: border-box;
   padding: 0 20px;
-  border: 1px solid rgba(255, 255, 255, 0.6);
+  border: var(--neko-btn-border, 1px solid rgba(255, 255, 255, 0.18));
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
+  background: transparent;
   box-shadow:
-    0 0 0 1px rgba(208, 233, 255, 0.22),
-    0 8px 16px rgba(8, 22, 40, 0.03);
-  backdrop-filter: blur(8px) saturate(1.1) brightness(1.08);
-  -webkit-backdrop-filter: blur(8px) saturate(1.1) brightness(1.08);
+    var(--neko-btn-shadow, 0 2px 4px rgba(0, 0, 0, 0.04), 0 4px 8px rgba(0, 0, 0, 0.08)),
+    0 0 0 1px rgba(208, 233, 255, 0.18);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 .compact-chat-surface-frame[data-compact-chat-state="input"] {
@@ -1925,6 +1925,30 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 
 .compact-chat-surface-frame::after {
   content: none;
+}
+
+:root:not([data-theme="dark"]) body:not([data-theme="dark"]) .compact-chat-surface-frame::before {
+  content: "";
+  position: absolute;
+  inset: -12px;
+  z-index: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse at 18% 50%, rgba(255, 255, 255, 0.88) 0%, rgba(255, 255, 255, 0.34) 58%, transparent 78%),
+    radial-gradient(ellipse at 82% 50%, rgba(205, 232, 255, 0.58) 0%, rgba(255, 255, 255, 0.28) 55%, transparent 76%),
+    var(--neko-btn-bg, rgba(255, 255, 255, 0.72));
+  filter: blur(12px);
+}
+
+:root:not([data-theme="dark"]) body:not([data-theme="dark"]) .compact-chat-surface-frame::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+  pointer-events: none;
+  background: rgba(255, 255, 255, 0.16);
 }
 
 .compact-chat-surface-frame > * {
@@ -3648,11 +3672,35 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 [data-theme="dark"] .compact-chat-surface-frame {
-  background: rgba(255, 255, 255, 0.06);
+  background: transparent;
   box-shadow:
-    0 0 0 1px rgba(208, 233, 255, 0.22),
-    0 8px 16px rgba(8, 22, 40, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.6);
+    0 0 0 1px rgba(95, 176, 255, 0.16),
+    0 8px 18px rgba(3, 9, 20, 0.22);
+  border: 1px solid rgba(180, 218, 255, 0.22);
+}
+
+[data-theme="dark"] .compact-chat-surface-frame::before {
+  content: "";
+  position: absolute;
+  inset: -12px;
+  z-index: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse at 18% 50%, rgba(52, 85, 124, 0.88) 0%, rgba(25, 38, 58, 0.5) 58%, transparent 78%),
+    radial-gradient(ellipse at 82% 50%, rgba(22, 68, 104, 0.68) 0%, rgba(18, 28, 44, 0.46) 55%, transparent 76%),
+    rgba(16, 25, 40, 0.86);
+  filter: blur(12px);
+}
+
+[data-theme="dark"] .compact-chat-surface-frame::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+  pointer-events: none;
+  background: rgba(10, 18, 30, 0.28);
 }
 
 [data-theme="dark"] .compact-chat-surface-shell[data-compact-chat-state="input"],

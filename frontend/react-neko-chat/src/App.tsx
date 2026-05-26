@@ -2045,9 +2045,7 @@ export default function App({
   ]);
 
   const shouldOpenCompactToolFanOnHover = useCallback((event: ReactPointerEvent) => {
-    if (event.pointerType !== 'mouse') return false;
-    if (typeof window.matchMedia !== 'function') return false;
-    return window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+    return event.pointerType === 'mouse';
   }, []);
 
   const isCompactInputToolPointerInHoverRegion = useCallback((clientX: number, clientY: number, relatedTarget?: EventTarget | null) => {
@@ -3758,7 +3756,6 @@ export default function App({
       onBuildPreview={handleCompactInlineBuildPreview}
       onCopyExport={handleCompactInlineCopyExport}
       onDownloadExport={handleCompactInlineDownloadExport}
-      onAction={onMessageAction}
     />
   ) : null;
   const compactExportHistoryNode = compactExportHistoryElement;

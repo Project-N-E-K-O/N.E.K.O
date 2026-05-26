@@ -27,6 +27,19 @@ describe('App', () => {
     return exportButton!;
   };
 
+  const mockHoverCapableMatchMedia = (hoverCapable = true) => {
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: hoverCapable && query === '(hover: hover) and (pointer: fine)',
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
+  };
+
   it('renders the empty state when there are no messages', () => {
     render(<App />);
 
@@ -315,6 +328,45 @@ describe('App', () => {
 
     expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
     expect(container.querySelector('.compact-input-tool-item-export')).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('keeps compact export history message actions read-only', async () => {
+    const onMessageAction = vi.fn();
+    const message = parseChatMessage({
+      id: 'assistant-history-action-readonly',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [
+        { type: 'text', text: 'Choose from history only.' },
+        {
+          type: 'buttons',
+          buttons: [
+            { id: 'invite', label: 'Invite', action: 'mini_game_invite', variant: 'primary' },
+          ],
+        },
+      ],
+      status: 'sent',
+    });
+
+    const { container } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        messages={[message]}
+        onMessageAction={onMessageAction}
+      />,
+    );
+
+    await clickCompactExportTool();
+    const actionButton = container.querySelector<HTMLButtonElement>('.compact-export-history-content .message-action-button');
+    expect(actionButton).not.toBeNull();
+
+    fireEvent.click(actionButton!);
+
+    expect(onMessageAction).not.toHaveBeenCalled();
+    expect(container.querySelector('.compact-export-history-message')).not.toHaveClass('is-selected');
   });
 
   it('keeps compact inline history open without an empty state when there are no messages', async () => {
@@ -1810,16 +1862,7 @@ describe('App', () => {
 
   it('opens compact input tools on hover-capable pointer enter', () => {
     const originalMatchMedia = window.matchMedia;
-    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
-      matches: query === '(hover: hover) and (pointer: fine)',
-      media: query,
-      onchange: null,
-      addListener: vi.fn(),
-      removeListener: vi.fn(),
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      dispatchEvent: vi.fn(),
-    }));
+    mockHoverCapableMatchMedia();
 
     try {
       render(<App chatSurfaceMode="compact" compactChatState="input" />);
@@ -1836,18 +1879,29 @@ describe('App', () => {
     }
   });
 
+  it('opens compact input tools on mouse hover even when fine-hover media query is false', () => {
+    const originalMatchMedia = window.matchMedia;
+    mockHoverCapableMatchMedia(false);
+
+    try {
+      render(<App chatSurfaceMode="compact" compactChatState="input" />);
+
+      const actionButton = document.body.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+      const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+      expect(actionButton).not.toBeNull();
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+
+      fireEvent.pointerEnter(actionButton, { pointerType: 'mouse' });
+
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+    } finally {
+      window.matchMedia = originalMatchMedia;
+    }
+  });
+
   it('closes compact input tools when a click follows hover open', () => {
     const originalMatchMedia = window.matchMedia;
-    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
-      matches: query === '(hover: hover) and (pointer: fine)',
-      media: query,
-      onchange: null,
-      addListener: vi.fn(),
-      removeListener: vi.fn(),
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      dispatchEvent: vi.fn(),
-    }));
+    mockHoverCapableMatchMedia();
 
     try {
       render(<App chatSurfaceMode="compact" compactChatState="input" />);
@@ -1866,16 +1920,7 @@ describe('App', () => {
   it('closes compact input tools when pointer press follows hover open', async () => {
     vi.useFakeTimers();
     const originalMatchMedia = window.matchMedia;
-    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
-      matches: query === '(hover: hover) and (pointer: fine)',
-      media: query,
-      onchange: null,
-      addListener: vi.fn(),
-      removeListener: vi.fn(),
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      dispatchEvent: vi.fn(),
-    }));
+    mockHoverCapableMatchMedia();
 
     try {
       render(<App chatSurfaceMode="compact" compactChatState="input" />);
@@ -2289,16 +2334,7 @@ describe('App', () => {
   it('uses hover for enter and leave while click only toggles compact input tools', async () => {
     vi.useFakeTimers();
     const originalMatchMedia = window.matchMedia;
-    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
-      matches: query === '(hover: hover) and (pointer: fine)',
-      media: query,
-      onchange: null,
-      addListener: vi.fn(),
-      removeListener: vi.fn(),
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      dispatchEvent: vi.fn(),
-    }));
+    mockHoverCapableMatchMedia();
 
     try {
       render(<App chatSurfaceMode="compact" compactChatState="input" />);
