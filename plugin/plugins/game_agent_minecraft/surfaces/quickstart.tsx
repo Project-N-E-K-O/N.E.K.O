@@ -138,7 +138,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     setupTitle: "完整流程",
     setupSteps: [
       { title: "1. 装 Minecraft Java Edition", body: "推荐 v1.21.1（1.21.x 系列都行）。自己选择正版 / 离线启动器。" },
-      { title: "2. 装 mc-agent（如果上面状态显示「未连接」）", body: "用上面的下载卡片，三个网盘挑一个下 mc-agent.zip，解压到任意目录。首次启动前：进 src/ 目录，把 keys.example.json 复制成 keys.json，填上你的 OPENAI_API_KEY（或其他 LLM 提供商的 key）。然后双击外层「启动mc-agent.bat」启动它（会开一个命令行黑窗口，别关）。N.E.K.O 这边会自动连上。" },
+      { title: "2. 装 mc-agent（如果上面状态显示「未连接」）", body: "用上面的下载卡片，三个网盘挑一个下 mc-agent.zip，解压到任意目录。首次启动前：在解压出来的根目录（和「启动mc-agent.bat」同一层）把 keys.example.json 复制成 keys.json，填上你的 OPENAI_API_KEY（或其他 LLM 提供商的 key）。如果用的不是 OpenAI 而是别家的 key，记得同步把 neko.json 里的模型名改成该提供商支持的模型。然后双击「启动mc-agent.bat」启动它（会开一个命令行黑窗口，别关）。N.E.K.O 这边会自动连上。" },
       { title: "3. 开 MC 世界并 Open to LAN", body: "进入单人世界 → ESC → Open to LAN → 选游戏模式 → 开放。MC 会在聊天框显示「Local game hosted on port XXXXX」，记下这个端口号。" },
       { title: "4. 在管理面板里把 MC 端口改成你抄下的那个", body: "点上面「打开管理面板」按钮 → 找到 bot 配置 → 修改 port 字段 → 保存。bot 会自动重启用新端口连进 MC 世界。" },
       { title: "5. 验证 bot 进游戏了", body: "MC 聊天框会看到「Kuro joined the game」。看不到就刷新本页状态，或者看「启动mc-agent.bat」那个黑窗口报什么错。" },
@@ -191,7 +191,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     setupTitle: "Full setup flow",
     setupSteps: [
       { title: "1. Install Minecraft Java Edition", body: "v1.21.1 recommended (any 1.21.x is fine). Pick any launcher (official, MultiMC, Prism, etc.)." },
-      { title: "2. Install mc-agent (if status above is \"Disconnected\")", body: "Use the download card above — pick any of the three drives, grab mc-agent.zip, extract anywhere. First-time setup: open the src/ folder, copy keys.example.json to keys.json, and fill in your OPENAI_API_KEY (or another LLM provider's key). Then double-click 启动mc-agent.bat at the top level (it opens a black console window — don't close it). N.E.K.O. will auto-connect." },
+      { title: "2. Install mc-agent (if status above is \"Disconnected\")", body: "Use the download card above — pick any of the three drives, grab mc-agent.zip, extract anywhere. First-time setup: in the extracted root folder (same level as 启动mc-agent.bat), copy keys.example.json to keys.json, and fill in your OPENAI_API_KEY (or another LLM provider's key). If you use a non-OpenAI provider, also change the model name in neko.json to one that provider supports. Then double-click 启动mc-agent.bat (it opens a black console window — don't close it). N.E.K.O. will auto-connect." },
       { title: "3. Open a world to LAN", body: "Single player → ESC → Open to LAN → pick game mode → Start. MC will print \"Local game hosted on port XXXXX\" in chat. Note the port number." },
       { title: "4. Change MC port via admin panel", body: "Click \"Open admin panel\" above → find your bot config → change the port field to the number you wrote down → save. The bot will restart and join your world." },
       { title: "5. Confirm the bot joined", body: "You should see \"Kuro joined the game\" in MC chat. If not, refresh status here or check the 启动mc-agent.bat console window for errors." },
@@ -244,7 +244,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     setupTitle: "セットアップ全体",
     setupSteps: [
       { title: "1. Minecraft Java 版をインストール", body: "v1.21.1 推奨（1.21.x なら何でも）。公式 / MultiMC / Prism いずれでも。" },
-      { title: "2. mc-agent をインストール（上が「未接続」なら）", body: "上のダウンロードカードから mc-agent.zip を取得し、任意の場所に解凍。初回起動の前に：src/ フォルダに入り、keys.example.json を keys.json にコピーして OPENAI_API_KEY（または他の LLM プロバイダの key）を書き込む。そのあと外側の「启动mc-agent.bat」をダブルクリックして起動（黒いコンソール窓が開く、閉じないこと）。N.E.K.O が自動で接続。" },
+      { title: "2. mc-agent をインストール（上が「未接続」なら）", body: "上のダウンロードカードから mc-agent.zip を取得し、任意の場所に解凍。初回起動の前に：解凍したルートフォルダ（「启动mc-agent.bat」と同じ階層）で keys.example.json を keys.json にコピーして OPENAI_API_KEY（または他の LLM プロバイダの key）を書き込む。OpenAI 以外のプロバイダの key を使う場合は、neko.json のモデル名もそのプロバイダが対応するモデルに変更して。そのあと「启动mc-agent.bat」をダブルクリックして起動（黒いコンソール窓が開く、閉じないこと）。N.E.K.O が自動で接続。" },
       { title: "3. ワールドを LAN 公開", body: "シングルプレイ → ESC → LAN 公開 → モード選択 → 開始。チャットに「Local game hosted on port XXXXX」と出るのでポート番号を控える。" },
       { title: "4. 管理パネルで MC ポートを書き換え", body: "上の「管理パネルを開く」→ ボット設定 → port を控えた番号に変更 → 保存。ボットが再起動して新ポートでワールドに参加。" },
       { title: "5. ボットの参加を確認", body: "MC のチャットに「Kuro joined the game」と出れば成功。出なければ本ページの状態を更新、または「启动mc-agent.bat」の黒い窓のエラーを確認。" },
@@ -297,7 +297,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     setupTitle: "전체 설정 흐름",
     setupSteps: [
       { title: "1. Minecraft Java 에디션 설치", body: "v1.21.1 권장 (1.21.x 모두 가능). 공식 / MultiMC / Prism 등 원하는 런처." },
-      { title: "2. mc-agent 설치 (위 상태가 「연결 안 됨」이면)", body: "위 다운로드 카드에서 mc-agent.zip을 받아 임의 폴더에 압축 해제. 첫 실행 전: src/ 폴더로 들어가 keys.example.json을 keys.json으로 복사하고 OPENAI_API_KEY (또는 다른 LLM 제공자의 key)를 채워 넣어. 그다음 바깥쪽의 「启动mc-agent.bat」을 더블클릭해 실행 (검은 콘솔 창이 열림, 닫지 말 것). N.E.K.O가 자동 연결." },
+      { title: "2. mc-agent 설치 (위 상태가 「연결 안 됨」이면)", body: "위 다운로드 카드에서 mc-agent.zip을 받아 임의 폴더에 압축 해제. 첫 실행 전: 압축 푼 루트 폴더에서 (「启动mc-agent.bat」와 같은 위치) keys.example.json을 keys.json으로 복사하고 OPENAI_API_KEY (또는 다른 LLM 제공자의 key)를 채워 넣어. OpenAI가 아닌 다른 제공자의 key를 쓰면 neko.json의 모델명도 그 제공자가 지원하는 모델로 같이 바꿔. 그다음 「启动mc-agent.bat」을 더블클릭해 실행 (검은 콘솔 창이 열림, 닫지 말 것). N.E.K.O가 자동 연결." },
       { title: "3. 월드를 LAN 공개", body: "싱글 플레이 → ESC → LAN 공개 → 게임 모드 선택 → 시작. 채팅창에 「Local game hosted on port XXXXX」가 표시되니 포트 번호 기록." },
       { title: "4. 관리 패널에서 MC 포트 변경", body: "위「관리 패널 열기」클릭 → 봇 설정 → port 필드를 기록한 번호로 변경 → 저장. 봇이 재시작되어 새 포트로 월드에 참가." },
       { title: "5. 봇 참가 확인", body: "MC 채팅에「Kuro joined the game」이 보이면 성공. 안 보이면 본 페이지 상태를 새로고침하거나 「启动mc-agent.bat」 콘솔 창의 에러 확인." },
@@ -350,7 +350,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     setupTitle: "Полный путь настройки",
     setupSteps: [
       { title: "1. Установи Minecraft Java Edition", body: "v1.21.1 рекомендуется (любой 1.21.x подойдёт). Любой лаунчер: официальный, MultiMC, Prism." },
-      { title: "2. Установи mc-agent (если статус выше «Нет связи»)", body: "Через карточку «Скачать» выше скачай mc-agent.zip, распакуй в любую папку. Перед первым запуском: зайди в папку src/, скопируй keys.example.json как keys.json и впиши свой OPENAI_API_KEY (или ключ другого LLM-провайдера). Затем дважды кликни 启动mc-agent.bat в корне (откроется чёрное окно консоли — не закрывай). N.E.K.O автоматически подключится." },
+      { title: "2. Установи mc-agent (если статус выше «Нет связи»)", body: "Через карточку «Скачать» выше скачай mc-agent.zip, распакуй в любую папку. Перед первым запуском: в распакованной корневой папке (там же, где 启动mc-agent.bat) скопируй keys.example.json как keys.json и впиши свой OPENAI_API_KEY (или ключ другого LLM-провайдера). Если используешь не-OpenAI провайдера, поменяй и название модели в neko.json на ту, что этот провайдер поддерживает. Затем дважды кликни 启动mc-agent.bat (откроется чёрное окно консоли — не закрывай). N.E.K.O автоматически подключится." },
       { title: "3. Открой мир в LAN", body: "Одиночная игра → ESC → Открыть для сети → выбери режим → Старт. MC напишет в чате «Local game hosted on port XXXXX». Запомни порт." },
       { title: "4. Поменяй MC-порт в админ-панели", body: "Жми «Открыть админ-панель» сверху → найди конфиг бота → измени port на записанный номер → сохрани. Бот перезапустится и зайдёт в твой мир." },
       { title: "5. Подтверди вход бота", body: "В чате MC появится «Kuro joined the game». Если нет — обнови статус здесь или посмотри ошибки в чёрном окне 启动mc-agent.bat." },
@@ -390,47 +390,17 @@ type StatusState = {
   error: string
 }
 
-async function readJsonResponse(response: Response, label: string) {
-  if (!response.ok) {
-    throw new Error(`${label} HTTP ${response.status}`)
+// Unwrap the hosted-surface action envelope. ``props.api.call`` resolves to
+// ``{plugin_id, action_id, result}`` where ``result`` is the plugin entry's
+// own return value (here: the ``game_agent_status`` status dict). Be
+// defensive about a bare-dict shape too so a future host change that returns
+// the entry value directly doesn't break the surface.
+function unwrapActionResult(envelope: any): Record<string, any> {
+  if (envelope && typeof envelope === "object") {
+    if (envelope.result && typeof envelope.result === "object") return envelope.result
+    return envelope
   }
-  return await response.json()
-}
-
-// Calls a plugin entry via the run API and waits for the JSON result.
-// Polling shape matches the convention in plugin/plugins/study_companion/
-// surfaces/knowledge_map.tsx — it's the canonical pattern for surfaces
-// that need to read backend state.
-async function callPlugin(entryId: string, args: Record<string, unknown> = {}) {
-  const createResp = await fetch("/runs", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ plugin_id: "game_agent_minecraft", entry_id: entryId, args }),
-  })
-  const created = await readJsonResponse(createResp, "Run create")
-  const runId = created.run_id || created.id
-  if (!runId) {
-    throw new Error("Run id missing")
-  }
-  for (let attempt = 0; attempt < 30; attempt += 1) {
-    await new Promise((resolve) => window.setTimeout(resolve, 200))
-    const run = await readJsonResponse(await fetch(`/runs/${runId}`), "Run poll")
-    if (run.status === "succeeded") {
-      const exported = await readJsonResponse(await fetch(`/runs/${runId}/export`), "Run export")
-      const item = (exported.items || []).find((c: any) => c.type === "json" && c.json)
-      if (!item) {
-        throw new Error("Run export missing JSON result")
-      }
-      if (item.json.success === false || item.json.error) {
-        throw new Error(item.json.error?.message || item.json.message || "Plugin call failed")
-      }
-      return item.json.data || {}
-    }
-    if (["failed", "canceled", "timeout"].includes(run.status)) {
-      throw new Error(run.error?.message || run.message || run.status)
-    }
-  }
-  throw new Error("Plugin call timed out")
+  return {}
 }
 
 export default function GameAgentMinecraftQuickstart(props: PluginSurfaceProps) {
@@ -456,8 +426,15 @@ export default function GameAgentMinecraftQuickstart(props: PluginSurfaceProps) 
     refreshingRef.current = true
     setState((prev) => ({ ...prev, loading: true, error: "" }))
     try {
-      const data = await callPlugin("game_agent_status")
+      // Hosted surfaces run in a sandbox="allow-scripts" (no allow-same-origin)
+      // iframe, so a raw fetch("/runs") has an opaque origin and fails with
+      // "Failed to fetch". The supported path is props.api.call, which bridges
+      // to the host via postMessage → callPluginHostedSurfaceAction. Requires
+      // the guide to declare permissions=["action:call"] and game_agent_status
+      // to be exposed as a UI action (@ui.action) — see plugin.toml / __init__.py.
+      const envelope = await props.api.call("game_agent_status")
       if (unmountedRef.current) return
+      const data = unwrapActionResult(envelope)
       setState({
         loading: false,
         connected: Boolean(data.connected),
@@ -467,11 +444,19 @@ export default function GameAgentMinecraftQuickstart(props: PluginSurfaceProps) 
       })
     } catch (exc: any) {
       if (unmountedRef.current) return
+      const raw = String(exc?.message || exc)
+      // The plugin is manual-start (auto_start=false); until it's enabled the
+      // hosted-action route rejects with PLUGIN_NOT_RUNNING. On this setup page
+      // that's an expected state — keep polling so the badge keeps reflecting
+      // the live enable status, but DON'T surface any alert for it (the
+      // "disconnected" badge already shows it). Only real/unexpected errors
+      // get an alert.
+      const notRunning = /not running|PLUGIN_NOT_RUNNING|not started/i.test(raw)
       setState((prev) => ({
         ...prev,
         loading: false,
         connected: false,
-        error: String(exc?.message || exc),
+        error: notRunning ? "" : status.errorPrefix + raw,
       }))
     } finally {
       refreshingRef.current = false
@@ -517,7 +502,7 @@ export default function GameAgentMinecraftQuickstart(props: PluginSurfaceProps) 
         <Stack>
           <StatusBadge tone={tone}>{badgeText}</StatusBadge>
           {state.error ? (
-            <Alert tone="warning">{status.errorPrefix + state.error}</Alert>
+            <Alert tone="warning">{state.error}</Alert>
           ) : null}
           <KeyValue items={statusItems} />
           <ButtonGroup>

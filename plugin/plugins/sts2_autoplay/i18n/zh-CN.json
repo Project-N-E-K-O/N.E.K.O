@@ -1,7 +1,7 @@
 {
-  "plugin.name": "杀戮尖塔 2 陪玩",
+  "plugin.name": "杀戮尖塔 2 游戏插件",
   "plugin.description": "连接本地杀戮尖塔 2 Agent 服务，读取游戏局面并执行自动游玩、单步操作、出牌建议、自然语言指令、猫娘软指导、局面汇报与实况短评。目前主要支持原版角色",
-  "plugin.short_description": "杀戮尖塔2陪玩与局面汇报",
+  "plugin.short_description": "杀戮尖塔2游戏与局面汇报",
   "tools.sts2_get_status.description": "获取杀戮尖塔连接状态、当前界面和基础分类信息。",
   "errors.internal": "尖塔插件内部错误: {error}",
   "entries.sts2_health_check.name": "看看尖塔连上没",

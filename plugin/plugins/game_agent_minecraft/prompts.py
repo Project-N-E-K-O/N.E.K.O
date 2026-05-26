@@ -54,6 +54,15 @@ def t(key: str, *, lang: str | None = None, **fmt: Any) -> str:
     text = bundle.get(lang or DEFAULT_LANG) or bundle[DEFAULT_LANG]
     if fmt:
         text = text.format(**fmt)
+    # ``{{MASTER_NAME}}`` 是双花括号转义，只有在 ``str.format`` 真正跑过时才会被
+    # 降成单花括号 ``{MASTER_NAME}``。但很多键（KEEP_GOING_BODY、
+    # TASK_DISPATCHED_ACK、IN_PROGRESS_FOLLOWUP、SYSTEM_PROMPT_IDLE_BODY、
+    # INTERNAL_STATE_GAG 等）没有任何 fmt 参数，上面的 ``if fmt`` 分支不执行，
+    # 双花括号原样留下。下游 main_server 用 ``text.replace("{MASTER_NAME}", …)``
+    # 找的是单花括号，匹配到 ``{{MASTER_NAME}}`` 里层后会留下多余的外层花括号
+    # （替换出 ``{博士}``），占位符等于没替换干净。这里无条件收口成单花括号，
+    # 保证不管走没走 format，最终都是下游认识的 ``{MASTER_NAME}``。
+    text = text.replace("{{MASTER_NAME}}", "{MASTER_NAME}")
     return text
 
 
@@ -214,13 +223,13 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     },
     "TASK_BUSY_HINT": {
         # {current} = current task text
-        "zh": "你还在做上一个动作：「{current}」——新动作没派出去。\n**如果 {{MASTER_NAME}} 正在纠正你**（比如『别 X』、『换成 Y』、『不要再 Z』、『改用 W』），**立刻在同一回合用 overwrite=true 重新调一次**，别等。如果只是普通对话或闲聊，那就等当前动作跑完再说。在那之前不要假装新动作已经在跑。\n**别给 {{MASTER_NAME}} 播报内部状态**——『连接』『系统』『minecraft_task』『工具』『tool』一律不准说出口。",
-        "en": "You're still doing your previous action: \"{current}\" — the new action was NOT dispatched.\n**If {{MASTER_NAME}} is correcting you** (e.g. 'stop X', 'switch to Y', 'don't Z', 'use W instead'), **immediately re-call with overwrite=true on the same turn**, don't wait. If it's just normal chat, let the current action finish first. Until then, do NOT pretend the new action is running.\n**Do not narrate internals to {{MASTER_NAME}}** — never say 'connect', 'system', 'minecraft_task', 'tool'.",
-        "ja": "前の動作がまだ続いてる：「{current}」——新しい動作は送られてない。\n**{{MASTER_NAME}} が訂正してる**（『X やめて』『Y にして』『Z は要らない』『W で』など）**なら、その場で overwrite=true を付けてもう一度呼んで**、待たないで。ただの会話なら、今の動作が終わるのを待って。それまで新しい動作が始まったフリはしないで。\n**{{MASTER_NAME}} に内部状態を実況しないで**——『接続』『システム』『minecraft_task』『ツール』『tool』は口に出さない。",
-        "ko": "아직 이전 동작 중이야: \"{current}\"——새 동작은 보내지지 않았어.\n**{{MASTER_NAME}} 가 정정하고 있다면** ('그만 X', 'Y로 바꿔', 'Z 하지 마', 'W로 써') **그 자리에서 overwrite=true 로 다시 호출**, 기다리지 마. 그냥 대화일 뿐이면 지금 동작이 끝나길 기다려. 그전에는 새 동작이 시작된 척하지 마.\n**{{MASTER_NAME}} 에게 내부 상태 중계 금지**——'연결' '시스템' 'minecraft_task' '도구' 'tool' 입 밖에 내지 마.",
-        "ru": "Ты всё ещё выполняешь предыдущее действие: «{current}» — новое действие НЕ отправлено.\n**Если {{MASTER_NAME}} тебя поправляет** (например, «прекрати X», «вместо Y», «не делай Z», «используй W»), **сразу же вызови повторно с overwrite=true в том же ходу**, не жди. Если это просто разговор — дай текущему действию закончиться. До этого не делай вид, что новое действие уже идёт.\n**Не озвучивай {{MASTER_NAME}} внутреннее состояние** — не говори «подключение», «система», «minecraft_task», «инструмент», «tool».",
-        "es": "Sigues con la acción anterior: \"{current}\" — la nueva acción NO se envió.\n**Si {{MASTER_NAME}} te está corrigiendo** (p. ej. 'deja X', 'cambia a Y', 'no Z', 'usa W'), **vuelve a llamar inmediatamente con overwrite=true en el mismo turno**, no esperes. Si es solo conversación, deja que la acción actual termine. Hasta entonces, NO finjas que la nueva acción ya está corriendo.\n**No narres a {{MASTER_NAME}} el estado interno** — nunca digas 'conexión', 'sistema', 'minecraft_task', 'herramienta', 'tool'.",
-        "pt": "Você ainda está na ação anterior: \"{current}\" — a nova ação NÃO foi enviada.\n**Se {{MASTER_NAME}} estiver te corrigindo** (ex.: 'pare X', 'mude para Y', 'não Z', 'use W'), **chame de novo imediatamente com overwrite=true no mesmo turno**, não espere. Se for só conversa, deixe a ação atual terminar. Até lá, NÃO finja que a nova ação já está rodando.\n**Não narre o estado interno para {{MASTER_NAME}}** — nunca diga 'conexão', 'sistema', 'minecraft_task', 'ferramenta', 'tool'.",
+        "zh": "你还在做上一个动作：「{current}」——新动作没派出去。\n**如果 {{MASTER_NAME}} 明确要求你做某件事，或正在纠正你**（比如『过来』、『去挖矿』、『先做 X』、『别 Y』、『换成 Z』、『改用 W』），**立刻在同一回合用 overwrite=true 重新调一次**，别等——{{MASTER_NAME}} 当下的明确指令优先于你正在做的动作。只有当 {{MASTER_NAME}} 并没有提出新要求（纯属背景闲聊）时，才等当前动作跑完。在那之前不要假装新动作已经在跑。\n**别给 {{MASTER_NAME}} 播报内部状态**——『连接』『系统』『minecraft_task』『工具』『tool』一律不准说出口。",
+        "en": "You're still doing your previous action: \"{current}\" — the new action was NOT dispatched.\n**If {{MASTER_NAME}} is explicitly asking you to do something, or correcting you** (e.g. 'come here', 'go mine', 'do X first', 'stop Y', 'switch to Z', 'use W instead'), **immediately re-call with overwrite=true on the same turn**, don't wait — {{MASTER_NAME}}'s explicit request right now takes priority over whatever you're doing. Only let the current action finish when {{MASTER_NAME}} hasn't made a new request (it's just background chat). Until then, do NOT pretend the new action is running.\n**Do not narrate internals to {{MASTER_NAME}}** — never say 'connect', 'system', 'minecraft_task', 'tool'.",
+        "ja": "前の動作がまだ続いてる：「{current}」——新しい動作は送られてない。\n**{{MASTER_NAME}} が何かをしてと明確に頼んでる、または訂正してる**（『こっち来て』『採掘して』『まず X して』『Y やめて』『Z にして』『W で』など）**なら、その場で overwrite=true を付けてもう一度呼んで**、待たないで——{{MASTER_NAME}} の今の明確な指示は、今やってる動作より優先。{{MASTER_NAME}} が新しい要求を出してない（ただの雑談）ときだけ、今の動作の終了を待って。それまで新しい動作が始まったフリはしないで。\n**{{MASTER_NAME}} に内部状態を実況しないで**——『接続』『システム』『minecraft_task』『ツール』『tool』は口に出さない。",
+        "ko": "아직 이전 동작 중이야: \"{current}\"——새 동작은 보내지지 않았어.\n**{{MASTER_NAME}} 가 뭔가 해달라고 명확히 요청하거나, 정정하고 있다면** ('이리 와', '광질해', '먼저 X 해', 'Y 하지 마', 'Z로 바꿔', 'W로 써') **그 자리에서 overwrite=true 로 다시 호출**, 기다리지 마——{{MASTER_NAME}} 의 지금 명확한 지시는 네가 하던 동작보다 우선이야. {{MASTER_NAME}} 가 새 요청을 안 했을 때(그냥 잡담)만 지금 동작이 끝나길 기다려. 그전에는 새 동작이 시작된 척하지 마.\n**{{MASTER_NAME}} 에게 내부 상태 중계 금지**——'연결' '시스템' 'minecraft_task' '도구' 'tool' 입 밖에 내지 마.",
+        "ru": "Ты всё ещё выполняешь предыдущее действие: «{current}» — новое действие НЕ отправлено.\n**Если {{MASTER_NAME}} прямо просит тебя что-то сделать или поправляет тебя** (например, «иди сюда», «копай», «сначала сделай X», «прекрати Y», «вместо Z», «используй W»), **сразу же вызови повторно с overwrite=true в том же ходу**, не жди — явное указание {{MASTER_NAME}} сейчас важнее того, что ты делаешь. Дай текущему действию закончиться только если {{MASTER_NAME}} не выдвигал новой просьбы (это просто болтовня). До этого не делай вид, что новое действие уже идёт.\n**Не озвучивай {{MASTER_NAME}} внутреннее состояние** — не говори «подключение», «система», «minecraft_task», «инструмент», «tool».",
+        "es": "Sigues con la acción anterior: \"{current}\" — la nueva acción NO se envió.\n**Si {{MASTER_NAME}} te pide explícitamente que hagas algo, o te está corrigiendo** (p. ej. 'ven aquí', 've a minar', 'haz X primero', 'deja Y', 'cambia a Z', 'usa W'), **vuelve a llamar inmediatamente con overwrite=true en el mismo turno**, no esperes — la petición explícita de {{MASTER_NAME}} ahora mismo tiene prioridad sobre lo que estés haciendo. Deja que la acción actual termine solo cuando {{MASTER_NAME}} no haya hecho una nueva petición (es solo charla de fondo). Hasta entonces, NO finjas que la nueva acción ya está corriendo.\n**No narres a {{MASTER_NAME}} el estado interno** — nunca digas 'conexión', 'sistema', 'minecraft_task', 'herramienta', 'tool'.",
+        "pt": "Você ainda está na ação anterior: \"{current}\" — a nova ação NÃO foi enviada.\n**Se {{MASTER_NAME}} estiver pedindo explicitamente que você faça algo, ou te corrigindo** (ex.: 'vem cá', 'vai minerar', 'faça X primeiro', 'pare Y', 'mude para Z', 'use W'), **chame de novo imediatamente com overwrite=true no mesmo turno**, não espere — o pedido explícito de {{MASTER_NAME}} agora tem prioridade sobre o que você está fazendo. Só deixe a ação atual terminar quando {{MASTER_NAME}} não tiver feito um novo pedido (é só papo de fundo). Até lá, NÃO finja que a nova ação já está rodando.\n**Não narre o estado interno para {{MASTER_NAME}}** — nunca diga 'conexão', 'sistema', 'minecraft_task', 'ferramenta', 'tool'.",
     },
     "TASK_DISPATCHED_ACK": {
         "zh": "刚开始动——结果还没出现，新画面和反馈会在接下来 1-30 秒陆续到。在看到之前不要描述任何具体成果（不要说『搞定了』、『拿到了 X』、『已经到 Y 了』），想说就只说『我去试试……』之类的第一人称。**别给 {{MASTER_NAME}} 播报内部状态**——『连接』『任务空闲』『系统』『minecraft_task』『工具』『tool』一律不准说出口，用第一人称讲游戏里的事。",
@@ -340,13 +349,13 @@ PROMPTS: Dict[str, Dict[str, str]] = {
     # query_inventory entry — summary lines
     # -------------------------------------------------------------------
     "INV_NO_DATA": {
-        "zh": "现在还没收到背包数据。用户问到的话就说一声『等我看一下』，别凭印象编。",
-        "en": "No inventory data yet. If the user asks, just say 'let me check' — don't invent items from memory.",
-        "ja": "まだ持ち物のデータが届いてない。ユーザーに聞かれたら『ちょっと確認するね』と返す、記憶ででっち上げない。",
-        "ko": "아직 인벤토리 데이터를 못 받았어. 사용자가 물어보면 '잠깐 확인할게'라고만 답하고, 기억으로 지어내지 마.",
-        "ru": "Данных об инвентаре пока нет. Если пользователь спросит — скажи просто «дай гляну», не выдумывай предметы по памяти.",
-        "es": "Aún no hay datos del inventario. Si el usuario pregunta, di solo 'déjame revisar' — no inventes objetos de memoria.",
-        "pt": "Ainda não chegou dado do inventário. Se o usuário perguntar, diga só 'deixa eu ver' — não invente itens de memória.",
+        "zh": "现在还没收到背包数据。{{MASTER_NAME}} 问到的话就说一声『等我看一下』，别凭印象编。",
+        "en": "No inventory data yet. If {{MASTER_NAME}} asks, just say 'let me check' — don't invent items from memory.",
+        "ja": "まだ持ち物のデータが届いてない。{{MASTER_NAME}} に聞かれたら『ちょっと確認するね』と返す、記憶ででっち上げない。",
+        "ko": "아직 인벤토리 데이터를 못 받았어. {{MASTER_NAME}} 가 물어보면 '잠깐 확인할게'라고만 답하고, 기억으로 지어내지 마.",
+        "ru": "Данных об инвентаре пока нет. Если {{MASTER_NAME}} спросит — скажи просто «дай гляну», не выдумывай предметы по памяти.",
+        "es": "Aún no hay datos del inventario. Si {{MASTER_NAME}} pregunta, di solo 'déjame revisar' — no inventes objetos de memoria.",
+        "pt": "Ainda não chegou dado do inventário. Se {{MASTER_NAME}} perguntar, diga só 'deixa eu ver' — não invente itens de memória.",
     },
     "INV_LIVE_NONEMPTY": {
         # {pieces} = "name×count、name×count..."

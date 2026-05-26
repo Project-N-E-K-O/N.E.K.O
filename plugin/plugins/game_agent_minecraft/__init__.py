@@ -23,6 +23,7 @@ autonomously when the user is silent.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from typing import Any, Dict
 
@@ -35,6 +36,7 @@ from plugin.sdk.plugin import (
     llm_tool,
     neko_plugin,
     plugin_entry,
+    ui,
 )
 
 from . import prompts
@@ -91,7 +93,7 @@ MINECRAFT_TASK_DESCRIPTION = (
     "'cancel that, do X', '别 Y', '换成 Z', '改用 X', '不要再 Y') — these "
     "are corrections that supersede whatever you're doing,\n"
     "    (b) you have directly observed the current task is hopelessly "
-    "stuck (blocked for 30s+ with zero progress in screenshots), or\n"
+    "stuck (blocked for 15s+ with zero progress in screenshots), or\n"
     "    (c) the user complains the in-game behavior is wrong (wrong tool, "
     "wrong target, wrong direction) — apply the fix immediately, don't "
     "wait for the current task to finish.\n"
@@ -116,7 +118,17 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
 
     def __init__(self, ctx):
         super().__init__(ctx)
-        self.file_logger = self.enable_file_logging(log_level="INFO")
+        # 跟随全局 NEKO_LOG_LEVEL（默认 INFO）。此前硬编码 "INFO" 会把
+        # 自主 nudge loop 的 fire 决策（_log_debug "firing keep_going/
+        # in_progress/general nudge"）和其它 DEBUG 诊断永久吞掉——排查
+        # 「任务结束后猫娘不再开口 / self-prompt 没了」时根本看不到 nudge
+        # 到底有没有 fire、有没有走到 push。改成跟随环境变量，开 DEBUG 即可见。
+        _log_level = (os.environ.get("NEKO_LOG_LEVEL") or "INFO").strip().upper()
+        try:
+            self.file_logger = self.enable_file_logging(log_level=_log_level)
+        except ValueError:
+            # 未知级别（理论上不会发生）兜底回 INFO，别让插件因日志配置崩在 __init__。
+            self.file_logger = self.enable_file_logging(log_level="INFO")
         self.logger = self.file_logger
         self._cfg: Dict[str, Any] = {}
         # User-language short code for prompt resolution. Set tentatively
@@ -473,6 +485,13 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
                 "obstacle", "obstructed", "not found", "could not", "couldn't",
                 "unable", "failed", "no path", "blocked", "missing",
                 "cannot", "can't",
+                # status=ok 但实际没目标 / 要更多信息也算受阻：mc-agent 对
+                # 「过来」「跟着我」这类缺玩家名/坐标的指令会回 status=ok +
+                # "Target unavailable. Please provide the exact player name or
+                # coordinates."，旧标记词表漏了 unavailable，导致被当成功 →
+                # 猫娘叙述「我来啦」其实化身没动。
+                "unavailable", "please provide", "provide the exact",
+                "no target", "target not",
             )
             d_lower = detail.lower()
             if any(m in d_lower for m in blocked_markers):
@@ -530,13 +549,43 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
         return prompts.t("CUE_PREFIX_DONE", lang=self._lang) + "\n" + "\n".join(lines)
 
     # ------------------------------------------------------------------
+    # Hosted surface UI context
+    # ------------------------------------------------------------------
+
+    @ui.context(id="quickstart")
+    async def quickstart_ui_context(self, **_):
+        """quickstart guide surface 的只读上下文 provider。
+
+        必须存在：hosted-surface 的 ``api.call`` 走 ``call_surface_action`` →
+        ``host.get_ui_context(<surface 的 context_id>)``。surface 没声明
+        ``context`` 时 context_id 取 surface id（这里 "quickstart"），缺了对应
+        provider 会让 get_ui_context 直接报 "UI context not found"，连带
+        ``_collect_ui_actions()`` 暴露的 action 列表也拿不到，``api.call`` 必败。
+
+        surface 自身通过 ``props.api.call("game_agent_status")`` 拉实时状态，
+        所以这里返回轻量快照即可（不强制 lazy-start，避免每次取 context 都阻塞
+        3s 等 WS 握手）。返回值会和 host 注入的 ``actions`` 合并下发。
+        """
+        try:
+            return {"status": self._service.get_status()}
+        except Exception:
+            return {"status": {}}
+
+    # ------------------------------------------------------------------
     # Diagnostic plugin entries (callable from the plugin UI / CLI)
     # ------------------------------------------------------------------
 
+    @ui.action(id="game_agent_status", label="刷新状态")
     @plugin_entry(
         id="game_agent_status",
         name="查询 mc-agent 连接状态",
-        description="查询 mc-agent 连接状态、当前任务和缓存大小。",
+        description=(
+            "查询 mc-agent 的 WebSocket 连接状态、当前任务和缓存大小。"
+            "适合在对话里明确出现连接异常（连不上 / 掉线 / 插件没反应 / 「mc-agent 连上了吗」）、"
+            "或刚要开始玩、想确认 mc-agent 是否就绪时调用。"
+            "不要在对话是要让化身在游戏里做事（过来、挖矿、建造、跟随等）、或普通闲聊时调用——"
+            "那些场景不需要查询连接状态。"
+        ),
         llm_result_fields=["summary"],
         input_schema={"type": "object", "properties": {}},
     )
