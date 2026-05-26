@@ -2085,11 +2085,10 @@
             selectInvertButton.textContent = translateLabel('chat.exportSelectInvert', 'Invert');
             copyButton.textContent = translateLabel('chat.copyToClipboard', 'Copy to Clipboard');
             openWindowButton.textContent = translateLabel('chat.previewOpenWindow', 'Open In Window');
+            setWindowControlButtonLabel(maximizeButton, 'common.maximize', 'Maximize');
             var view = doc.defaultView || null;
             if (view && view.nekoWindowControls && typeof view.nekoWindowControls.refresh === 'function') {
                 view.nekoWindowControls.refresh();
-            } else {
-                setWindowControlButtonLabel(maximizeButton, 'common.maximize', 'Maximize');
             }
         };
         window.addEventListener('localechange', localeHandler);
