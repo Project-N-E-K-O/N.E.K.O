@@ -5695,17 +5695,19 @@ class LLMSessionManager:
                         if extra_id and extra_id in existing_extra_ids:
                             continue
                         self.pending_extra_replies.append(extra)
-                    # If we re-added (case b, queues were already pruned) and the
-                    # session is idle now, re-fire so the restored cb doesn't sit
-                    # until the next unrelated turn. (Case a stays in-queue and
-                    # is retried via _finalize_turn_after_emit / the lock-blocked
-                    # task scheduled below.)
-                    if (
-                        self.state.phase is ProactivePhase.IDLE
-                        and isinstance(self.session, OmniRealtimeClient)
-                        and not self.session.is_active_response()
-                    ):
-                        self._fire_task(self.trigger_agent_callbacks())
+                    # Do NOT immediately re-fire trigger here. The dominant
+                    # rejection is ``response_already_active``, which by
+                    # definition means an active response exists — but the
+                    # client may not have processed its ``response.created``
+                    # yet, so ``is_active_response()`` reads a STALE False. A
+                    # re-fire on that stale state would re-inject → re-reject →
+                    # tight loop until state flips (Codex P1). Instead rely on
+                    # the retry guaranteed by that active response's
+                    # ``response.done`` → ``handle_response_complete`` →
+                    # ``_finalize_turn_after_emit`` (which re-calls this when
+                    # ``pending_agent_callbacks`` is non-empty). The cb is kept
+                    # queued above, so the retry is not lost — just deferred to
+                    # the loop-free turn-end hook.
 
                 try:
                     await voice_sess.inject_text_and_request_response(

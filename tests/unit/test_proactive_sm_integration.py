@@ -301,9 +301,11 @@ async def test_voice_mode_server_rejection_re_enqueues_cb():
     # 配对的 extras 也必须被回补（否则后续 hot-swap fallback 会丢补报内容）
     assert len(mgr.pending_extra_replies) == 1
     assert mgr.pending_extra_replies[0]["_callback_delivery_id"] == "id-race"
-    # reject 可能晚于 response.done 到达，handler 在 idle 时应主动 re-fire 一次
-    # trigger（否则 cb 会挂到下次无关 turn）。session idle → 应已调度。
-    assert len(mgr._fired_tasks) == 1
+    # handler 不立即 re-fire trigger（Codex P1）：response_already_active 时
+    # is_active_response() 可能读到 stale False，立即 re-fire 会 re-inject→
+    # re-reject 死循环。retry 交给那个 active response 的 response.done →
+    # _finalize_turn_after_emit。所以这里不应有立即调度。
+    assert mgr._fired_tasks == []
 
 
 async def test_voice_mode_reject_during_await_not_pruned():
