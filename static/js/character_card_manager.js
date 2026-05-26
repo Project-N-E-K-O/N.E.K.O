@@ -10055,7 +10055,7 @@ async function autoSaveMasterField(input) {
         showMessage(window.t ? window.t('character.fieldExists') : '该设定已存在', 'error');
         return;
     }
-    if (!Object.keys(allData).length) return;
+    // 空对象用于持久化“清空最后一个自定义字段”的自动保存。
     try {
         const resp = await fetch('/api/characters/master', {
             method: 'POST',

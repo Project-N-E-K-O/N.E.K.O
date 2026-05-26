@@ -482,6 +482,12 @@ async def test_rename_master_adds_hidden_ai_context_and_master_save_preserves_it
             )
             assert legacy_conflict_update["success"] is True
             assert cm.load_characters()["主人"]["档案名"] == "新主人"
+            empty_update = await characters_router_module.update_master(_DummyRequest({}))
+            assert empty_update["success"] is True
+            saved_after_empty_update = cm.load_characters()["主人"]
+            assert saved_after_empty_update["档案名"] == "新主人"
+            assert "昵称" not in saved_after_empty_update
+            assert len(saved_after_empty_update["_reserved"]["ai_context"]["rename_events"]) == initial_count
 
             rename_conflict_characters = cm.load_characters()
             rename_conflict_characters.setdefault("猫娘", {})["主人同名猫娘"] = {"档案名": "主人同名猫娘"}
