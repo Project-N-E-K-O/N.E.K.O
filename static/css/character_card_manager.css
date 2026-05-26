@@ -2675,11 +2675,13 @@ line-height: 1.4;
 
 /* 卡片操作按钮 - workshop-card专用（按钮区域） */
 .workshop-card .card-actions {
-    background-color: #bcf1ff;
-    padding: 6px;
-    border-radius: 50px;
+    background: transparent;
+    padding: 0;
+    border-radius: 0;
     margin: auto 8px 0 8px;
-    display: block;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
 }
 
 .workshop-card .card-actions button,
@@ -2693,7 +2695,9 @@ line-height: 1.4;
     font-weight: 900;
     letter-spacing: 2px;
     padding: 14px 0;
+    margin: 0 !important;
     cursor: pointer;
+    box-shadow: 0 0 0 6px #bcf1ff;
     text-shadow: 0px 1px 2px rgba(0, 0, 0, 0.1);
     transition: filter 0.2s;
 }
@@ -2702,7 +2706,7 @@ line-height: 1.4;
 .workshop-card .card-actions .button:hover {
     filter: brightness(1.05);
     transform: none;
-    box-shadow: none;
+    box-shadow: 0 0 0 6px #bcf1ff;
 }
 
 /* 已发布/禁用按钮 - 非交互外观 */
@@ -2712,13 +2716,14 @@ line-height: 1.4;
     color: rgba(255, 255, 255, 0.8);
     cursor: not-allowed;
     opacity: 0.7;
+    box-shadow: 0 0 0 6px #bcf1ff;
 }
 
 .workshop-card .card-actions .button-disabled:hover,
 .workshop-card .card-actions button[disabled]:hover {
     filter: none;
     transform: none;
-    box-shadow: none;
+    box-shadow: 0 0 0 6px #bcf1ff;
 }
 
 /* 卡片操作按钮 */
@@ -7043,10 +7048,26 @@ margin-top: 10px;
     color: #93c5fd;
 }
 
-[data-theme="dark"] .workshop-card .card-path,
-[data-theme="dark"] .workshop-card .card-actions {
+[data-theme="dark"] .workshop-card .card-path {
     background: rgba(15, 23, 42, 0.42);
     border: 1px solid rgba(125, 211, 252, 0.18);
+}
+
+/* 订阅卡操作区保持透明，按钮各自保留独立底板。 */
+[data-theme="dark"] .workshop-card .card-actions {
+    background: transparent;
+    border: 0;
+}
+
+[data-theme="dark"] .workshop-card .card-actions button,
+[data-theme="dark"] .workshop-card .card-actions .button,
+[data-theme="dark"] .workshop-card .card-actions button:hover,
+[data-theme="dark"] .workshop-card .card-actions .button:hover,
+[data-theme="dark"] .workshop-card .card-actions .button-disabled,
+[data-theme="dark"] .workshop-card .card-actions button[disabled],
+[data-theme="dark"] .workshop-card .card-actions .button-disabled:hover,
+[data-theme="dark"] .workshop-card .card-actions button[disabled]:hover {
+    box-shadow: 0 0 0 6px rgba(15, 23, 42, 0.42);
 }
 
 [data-theme="dark"] .card-info-body,

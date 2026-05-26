@@ -1,4 +1,4 @@
 {
-  "plugin.name": "Minecraft 遊戲代理",
-  "plugin.description": "橋接本地 Minecraft Agent（WebSocket），讓 AI 透過 minecraft_task 工具下達指令並即時觀看遊戲畫面進行解說"
+  "plugin.name": "Minecraft 遊戲插件",
+  "plugin.description": "橋接本地 mc-agent（WebSocket），讓貓娘一邊和你聊天、一邊在 Minecraft 裡陪你一起玩，並即時觀看遊戲畫面進行解說"
 }

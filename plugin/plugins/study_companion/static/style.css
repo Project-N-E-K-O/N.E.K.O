@@ -217,6 +217,19 @@ textarea {
   flex-wrap: wrap;
 }
 
+.study-panel__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  padding: 8px 0;
+}
+
+.study-panel__row span {
+  overflow-wrap: anywhere;
+}
+
 .reply-panel {
   border-top: 1px solid #d8dde6;
   padding-top: 18px;
@@ -274,5 +287,9 @@ pre {
   .mode-strip button {
     flex: 1 1 0;
     min-width: 0;
+  }
+
+  .study-panel__row {
+    grid-template-columns: 1fr;
   }
 }

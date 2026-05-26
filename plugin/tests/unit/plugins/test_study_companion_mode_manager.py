@@ -5,6 +5,10 @@ import sys
 from types import ModuleType
 from pathlib import Path
 
+import pytest
+
+pytestmark = pytest.mark.unit
+
 
 def _load_mode_manager() -> ModuleType:
     plugin_root = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"

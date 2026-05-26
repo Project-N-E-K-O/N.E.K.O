@@ -2129,7 +2129,9 @@ async def test_stream_text_length_guard_after_tool_call_rejects_pretool_only_rec
 @pytest.mark.asyncio
 async def test_offline_iteration_cap_breaks_runaway_loop():
     """If the model keeps requesting tools forever, we stop after
-    ``max_tool_iterations`` LLM calls instead of looping indefinitely."""
+    ``max_tool_iterations`` tool rounds and then do ONE forced-finalize
+    call (tools removed) so the user gets a final answer instead of
+    silence."""
     from utils.llm_client import LLMStreamChunk
     from main_logic.omni_offline_client import OmniOfflineClient
     from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
@@ -2139,8 +2141,8 @@ async def test_offline_iteration_cap_breaks_runaway_loop():
 
     tool = ToolDefinition(name="loop", description="", handler=loop_tool)
 
-    # Every scripted call returns another tool_call.
-    def chunks():
+    # Every tool round returns another tool_call.
+    def loop_chunks():
         return [
             LLMStreamChunk(
                 content="",
@@ -2153,7 +2155,11 @@ async def test_offline_iteration_cap_breaks_runaway_loop():
             LLMStreamChunk(content="", finish_reason="tool_calls"),
         ]
 
-    fake_llm = _FakeLLM([chunks() for _ in range(10)])
+    # The forced-finalize call (4th) can no longer call tools → returns text.
+    final_text_chunks = [
+        LLMStreamChunk(content="最终答案", finish_reason="stop"),
+    ]
+    fake_llm = _FakeLLM([loop_chunks(), loop_chunks(), loop_chunks(), final_text_chunks])
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
     client.llm = fake_llm
@@ -2161,6 +2167,8 @@ async def test_offline_iteration_cap_breaks_runaway_loop():
     client.max_tool_iterations = 3
     client._use_genai_sdk = False
     client._genai_tools_unsupported = False
+    client._last_finish_reason = None
+    client._last_prompt_tokens = None
 
     async def handler(call: ToolCall) -> ToolResult:
         return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
@@ -2168,11 +2176,19 @@ async def test_offline_iteration_cap_breaks_runaway_loop():
     client.on_tool_call = handler
 
     messages = [{"role": "user", "content": "loop forever"}]
-    async for _ in client._astream_with_tools(messages):
-        pass
+    streamed = ""
+    async for c in client._astream_with_tools(messages):
+        if getattr(c, "content", ""):
+            streamed += c.content
 
-    # Exactly max_tool_iterations LLM calls occurred — no infinite loop.
-    assert len(fake_llm.calls) == 3
+    # max_tool_iterations tool rounds + 1 forced-finalize call.
+    assert len(fake_llm.calls) == 4
+    # Forced-finalize streamed real text instead of leaving the turn silent.
+    assert "最终答案" in streamed
+    # The forced-finalize call must NOT advertise tools/tool_choice.
+    _final_overrides = fake_llm.calls[-1][1]
+    assert "tools" not in _final_overrides
+    assert "tool_choice" not in _final_overrides
 
 
 # ---------------------------------------------------------------------------

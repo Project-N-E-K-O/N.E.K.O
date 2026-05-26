@@ -101,10 +101,28 @@ function waitForPoll(signal?: AbortSignal): Promise<void> {
     return Promise.reject(new Error('Plugin call aborted'));
   }
   return new Promise((resolve, reject) => {
-    const timeoutId = window.setTimeout(resolve, POLL_INTERVAL_MS);
-    signal?.addEventListener('abort', () => {
+    let settled = false;
+    let timeoutId = 0;
+    const onAbort = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
       window.clearTimeout(timeoutId);
+      signal?.removeEventListener('abort', onAbort);
       reject(new Error('Plugin call aborted'));
-    }, { once: true });
+    };
+    timeoutId = window.setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, POLL_INTERVAL_MS);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) {
+      onAbort();
+    }
   });
 }

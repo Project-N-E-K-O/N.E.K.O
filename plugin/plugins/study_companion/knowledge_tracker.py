@@ -653,7 +653,12 @@ class KnowledgeTracker:
 
     def get_memory_deck_status(self, *, limit: int = 8) -> dict[str, Any]:
         if self._memory_deck_summary_provider is not None:
-            return self._memory_deck_summary_provider(limit=limit)
+            try:
+                return self._memory_deck_summary_provider(limit=limit)
+            except Exception as exc:
+                self._log_quality_warning(
+                    "Memory deck summary provider failed: %s", exc
+                )
         rows = self._memory_card_rows(include_topic_cards=False)
         due_count = len(self.fsrs.get_due_reviews([row["card"] for row in rows]))
         return {
