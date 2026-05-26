@@ -150,6 +150,8 @@ def test_empty_transcript_is_ignored() -> None:
         ("long-term reading material", "default"),
         ("re-entry reading material", "default"),
         ("x-ray reading material", "default"),
+        ("grade a - excellent", "default"),
+        ("part a - 1", "default"),
         ("x - y = 3", "math"),
         ("x-1=0", "math"),
         ("普通阅读材料", "default"),

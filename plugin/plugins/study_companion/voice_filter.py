@@ -294,7 +294,7 @@ def _derive_subject(ocr_text: str) -> str:
         r"[a-z]\s*(?:=|[+*/^²³])"
         r"|[a-z]-\d"
         r"|\d-\s*[a-z]"
-        r"|[a-z]\s+-\s+(?:[a-z]|\d)"
+        r"|[a-z]\s+-\s+(?:[a-z]|\d)\s*(?=[=+*/^²³])"
         r")"
     )
     if any(token in text for token in chemistry_hits) or chemistry_formula_re.search(text):
