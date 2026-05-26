@@ -17,6 +17,7 @@
 
     var MAX_EXPORT_SELECTION = 100;
     var DEFAULT_USER_EXPORT_AVATAR = '/static/icons/avatar/master-avatar.png';
+    var EXPORT_PREVIEW_SHELL_URL = '/static/chat-export-preview-shell.html';
 
     // ======================== State ========================
 
@@ -111,6 +112,72 @@
             }
         });
         doc.head.appendChild(script);
+    }
+
+    function getExportPreviewShellUrl() {
+        try {
+            return new URL(EXPORT_PREVIEW_SHELL_URL, window.location.href).href;
+        } catch (_) {
+            return EXPORT_PREVIEW_SHELL_URL;
+        }
+    }
+
+    function waitForExportPreviewShell(previewWindow) {
+        return new Promise(function (resolve) {
+            if (!previewWindow || previewWindow.closed) {
+                resolve(false);
+                return;
+            }
+
+            var shellUrl = getExportPreviewShellUrl();
+            var isShellReady = function () {
+                try {
+                    var currentUrl = previewWindow.location.href;
+                    var doc = previewWindow.document;
+                    return currentUrl
+                        && currentUrl !== 'about:blank'
+                        && currentUrl.split('#')[0] === shellUrl.split('#')[0]
+                        && doc
+                        && doc.readyState
+                        && doc.readyState !== 'loading';
+                } catch (_) {
+                    return false;
+                }
+            };
+
+            var settled = false;
+            var timer = null;
+            var onLoad = null;
+            var finish = function (ok) {
+                if (settled) return;
+                settled = true;
+                if (timer) window.clearTimeout(timer);
+                if (onLoad) {
+                    try {
+                        previewWindow.removeEventListener('load', onLoad);
+                    } catch (_) {}
+                }
+                resolve(ok !== false && !!previewWindow && !previewWindow.closed);
+            };
+
+            if (isShellReady()) {
+                finish(true);
+                return;
+            }
+
+            try {
+                onLoad = function () {
+                    finish(isShellReady());
+                };
+                previewWindow.addEventListener('load', onLoad, { once: true });
+            } catch (_) {
+                finish(false);
+                return;
+            }
+            timer = window.setTimeout(function () {
+                finish(isShellReady());
+            }, 1500);
+        });
     }
 
     function showToast(key, fallback, duration) {
@@ -2413,16 +2480,24 @@
             + width + ',height=' + height + ',left=' + left + ',top=' + top;
     }
 
-    function openExportPreviewWindow() {
+    async function openExportPreviewWindow() {
         var previewTitle = translateLabel('chat.exportPreviewTitle', 'Export Preview');
         var isExistingWindow = !!(state.previewWindow && !state.previewWindow.closed);
         var previewWindow = isExistingWindow
             ? state.previewWindow
-            : window.open('', 'neko-chat-export-preview', buildExportWindowFeatures());
+            : window.open(getExportPreviewShellUrl(), 'neko-chat-export-preview', buildExportWindowFeatures());
         if (!previewWindow) return null;
 
         if (isExistingWindow) {
             disposePreviewModal(false);
+        } else {
+            var shellReady = await waitForExportPreviewShell(previewWindow);
+            if (!shellReady) {
+                try {
+                    previewWindow.close();
+                } catch (_) {}
+                return null;
+            }
         }
         state.previewWindow = previewWindow;
         var doc = previewWindow.document;
@@ -2461,7 +2536,7 @@
     }
 
     async function openPreviewModal(previewWindow) {
-        previewWindow = previewWindow || openExportPreviewWindow();
+        previewWindow = previewWindow || await openExportPreviewWindow();
         if (!previewWindow) {
             showToast('chat.previewOpenBlocked', 'Unable to open a new preview window.', 4000);
             return;
@@ -2677,14 +2752,13 @@
             return;
         }
 
-        var previewWindow = openExportPreviewWindow();
-        if (!previewWindow) {
-            showToast('chat.previewOpenBlocked', 'Unable to open a new preview window.', 4000);
-            return;
-        }
-
         state.isPreparingPreview = true;
         try {
+            var previewWindow = await openExportPreviewWindow();
+            if (!previewWindow) {
+                showToast('chat.previewOpenBlocked', 'Unable to open a new preview window.', 4000);
+                return;
+            }
             state.allMessages = messages;
             state.selectedIds = new Set();
             clearPreviewCache();
