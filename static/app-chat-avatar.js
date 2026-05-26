@@ -346,6 +346,23 @@
         );
     }
 
+    /**
+     * 把当前头像 dataUrl 和猫娘名推送到 card-forge 后端（非关键，静默失败）。
+     * 用于"奇遇铸造机" (card-forge) 前端读取当前猫娘名作为 runtime_character_hint。
+     * 上游未运行 card-forge 时本接口仍存在，POST 只是空写无副作用。
+     */
+    function syncAvatarToCardForge(dataUrl) {
+        if (!dataUrl) return;
+        var _nekoName = (typeof lanlan_config !== 'undefined' && lanlan_config.lanlan_name)
+            ? lanlan_config.lanlan_name
+            : '';
+        fetch('/card-forge/active-character', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ dataUrl: dataUrl, name: _nekoName })
+        }).catch(function () { /* card-forge 未运行时静默失败 */ });
+    }
+
     function applyPreviewResult(result, cacheKey) {
         cachedPreview = {
             cacheKey,
@@ -354,6 +371,7 @@
             capturedAt: Date.now()
         };
         saveToStorage(cachedPreview);
+        syncAvatarToCardForge(cachedPreview.dataUrl);
 
         setPreviewImage(cachedPreview.dataUrl);
         setPreviewStatus(
@@ -1122,6 +1140,7 @@
             // （加载时 lanlan_config.lanlan_name 可能尚未就绪，保存会静默失败）。
             cachedPreview.cacheKey = getCurrentModelCacheKey();
             saveToStorage(cachedPreview);
+            syncAvatarToCardForge(cachedPreview.dataUrl);
             setPreviewImage(cachedPreview.dataUrl);
             setPreviewStatus(
                 translateLabel('chat.avatarPreviewReady', '头像已更新') + ' · ' + normalizeModelLabel(cachedPreview.modelType)
@@ -1134,6 +1153,7 @@
                 modelType: stored.modelType,
                 capturedAt: stored.capturedAt
             };
+            syncAvatarToCardForge(cachedPreview.dataUrl);
             setPreviewImage(cachedPreview.dataUrl);
             setPreviewStatus(
                 translateLabel('chat.avatarPreviewReady', '头像已更新') + ' · ' + normalizeModelLabel(cachedPreview.modelType)
@@ -1285,6 +1305,7 @@
                 capturedAt: Date.now()
             };
             saveToStorage(cachedPreview);
+            syncAvatarToCardForge(cachedPreview.dataUrl);
         }
 
         // 如果弹窗已打开且本地没有本窗口可采集的模型，就直接把 IPC 数据显示出来。

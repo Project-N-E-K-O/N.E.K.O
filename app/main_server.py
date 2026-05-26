@@ -1578,6 +1578,33 @@ async def health():
     return build_health_response("main", instance_id=INSTANCE_ID)
 
 
+# ── Card-Forge 跨进程当前猫娘同步端点 ────────────────────────────
+# 奇遇铸造机 (card-forge) 前端会轮询本端点，拿到当前猫娘名作为
+# /arena/forge-facts 的 runtime_character_hint；不要求 card-forge 后端
+# 知道 NEKO 内部状态，只通过此端点把"当前 NEKO 在前台展示的猫娘"广播给它。
+_card_forge_active_character: dict = {}  # {dataUrl, name}
+
+
+@app.post('/card-forge/active-character')
+async def set_card_forge_active_character(payload: dict):
+    """由 app-chat-avatar.js 在捕获头像后调用，存储当前猫娘名（与头像 dataUrl）供 card-forge 获取。"""
+    data_url = str(payload.get('dataUrl', ''))
+    name = str(payload.get('name', ''))
+    if name or data_url:
+        _card_forge_active_character.update({'dataUrl': data_url, 'name': name})
+    return {"ok": True}
+
+
+@app.get('/card-forge/active-character')
+async def get_card_forge_active_character():
+    """card-forge 前端轮询此端点获取最新猫娘名（与头像 dataUrl）。"""
+    from fastapi.responses import JSONResponse
+    return JSONResponse({
+        'dataUrl': _card_forge_active_character.get('dataUrl', ''),
+        'name': _card_forge_active_character.get('name', ''),
+    })
+
+
 @app.post('/api/beacon/shutdown')
 async def beacon_shutdown():
     """Beacon 接口：用于优雅关闭服务器"""
