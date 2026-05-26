@@ -1587,11 +1587,16 @@ _card_forge_active_character: dict = {}  # {dataUrl, name}
 
 @app.post('/card-forge/active-character')
 async def set_card_forge_active_character(payload: dict):
-    """由 app-chat-avatar.js 在捕获头像后调用，存储当前猫娘名（与头像 dataUrl）供 card-forge 获取。"""
+    """由 app-chat-avatar.js 在捕获头像后调用，存储当前猫娘名（与头像 dataUrl）供 card-forge 获取。
+
+    只更新载荷里实际给出的字段，避免无 name 的纯头像同步把已存储的猫娘名擦掉。
+    """
     data_url = str(payload.get('dataUrl', ''))
     name = str(payload.get('name', ''))
-    if name or data_url:
-        _card_forge_active_character.update({'dataUrl': data_url, 'name': name})
+    if data_url:
+        _card_forge_active_character['dataUrl'] = data_url
+    if name:
+        _card_forge_active_character['name'] = name
     return {"ok": True}
 
 

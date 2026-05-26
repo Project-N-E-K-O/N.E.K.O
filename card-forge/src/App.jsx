@@ -235,6 +235,7 @@ export default function App() {
   }, [forgedInventory])
 
   // 从 NEKO 主服务同步当前猫娘名，作为 runtime_character_hint 提供给 /arena/forge-facts。
+  // 拿到空 name 时也要把本地 state 清掉，否则服务端缓存清空（例如重启）后前端仍会显示旧猫娘名。
   useEffect(() => {
     let timer = null
     async function fetchActiveCharacter() {
@@ -242,7 +243,7 @@ export default function App() {
         const res = await fetch('/card-forge/active-character')
         if (!res.ok) return
         const { name } = await res.json()
-        if (name) setActiveCharacterName(name)
+        setActiveCharacterName(name ? name : null)
       } catch {
         // NEKO 主服务未运行时静默忽略
       }
