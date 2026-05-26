@@ -3976,16 +3976,20 @@ class LLMSessionManager:
             # in-flight 那次启动落定，复用其结果给本请求补一个 ack——成功补
             # session_started、失败补 session_failed，让前端正常收口而不是干等超时。
             # 仅作用于这条"本就会超时"的去重死路，不碰任何正常单次启动路径。
-            logger.warning("⚠️ Session正在启动中，等待 in-flight 启动落定后给本请求补发 ack")
+            logger.warning("⚠️ Session正在启动中，等待 in-flight 启动 ready 后给本请求补发 session_started")
             _dedup_input_mode = self._starting_input_mode or input_mode
             _waited = 0.0
-            while self._starting_session_count > 0 and not self.session_ready and _waited < 12.0:
+            while self._starting_session_count > 0 and not self.session_ready and _waited < 14.0:
                 await asyncio.sleep(0.05)
                 _waited += 0.05
             if self.session_ready and self.session and self.is_active:
                 await self.send_session_started(_dedup_input_mode)
-            else:
-                await self.send_session_failed(_dedup_input_mode)
+            # 仅在 in-flight 启动确认 ready 时补发 session_started。**不**在此发
+            # session_failed：in-flight 那次启动可能还在跑、稍后才成功，而前端把
+            # session_failed 当终态（reject start + 触发 end_session），过早发会把
+            # 本会在 15s 客户端窗口内成功的启动打断（Codex P1）。失败通知交由
+            # in-flight 启动自身的失败路径处理；in-flight 真挂了则维持原有的前端
+            # 超时兜底，不比改动前更差。
             return
 
         # 标记正在启动（使用计数器，避免并发 start_session 的 finally 互相覆盖）
