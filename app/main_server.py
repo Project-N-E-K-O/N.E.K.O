@@ -1605,13 +1605,20 @@ async def set_card_forge_active_character(payload: dict):
 
 
 @app.get('/card-forge/active-character')
-async def get_card_forge_active_character():
-    """card-forge 前端轮询此端点获取最新猫娘名（与头像 dataUrl）。"""
+async def get_card_forge_active_character(include_avatar: bool = False):
+    """card-forge 前端轮询此端点获取最新猫娘名。
+
+    默认不返回 avatar dataUrl —— card-forge 前端目前每 5 秒轮询一次,只读 `name`,
+    把几十 KB 的 base64 dataUrl 一起回包纯属浪费。需要 avatar 的调用方
+    (例如未来的卡仓预览面板) 显式传 `?include_avatar=true`。
+    """
     from fastapi.responses import JSONResponse
-    return JSONResponse({
-        'dataUrl': _card_forge_active_character.get('dataUrl', ''),
+    payload: dict[str, str] = {
         'name': _card_forge_active_character.get('name', ''),
-    })
+    }
+    if include_avatar:
+        payload['dataUrl'] = _card_forge_active_character.get('dataUrl', '')
+    return JSONResponse(payload)
 
 
 @app.post('/api/beacon/shutdown')

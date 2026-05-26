@@ -430,12 +430,36 @@ def _select_archive_distant_fact(
     }
 
 
-def _forge_route_log(request_id: str, event: str, **fields: Any) -> None:
-    """Print forge-card diagnostics to the server console only; no local log file."""
+# 与 forge_story_generator._FORGE_SENSITIVE_FIELDS 对齐:route 层 log 里只有
+# storyLead 来源敏感(其余是 id/provider/model/elapsedMs 之类的元数据)。
+# 仍然单独维护一份,避免 server.py 反向依赖 generator 的内部实现细节。
+_FORGE_ROUTE_SENSITIVE_FIELDS = frozenset({"storyLead"})
+_FORGE_ROUTE_LOG_PREVIEW_CHARS = 40
 
+
+def _mask_route_sensitive(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    clipped = text[:_FORGE_ROUTE_LOG_PREVIEW_CHARS]
+    suffix = "…" if len(text) > _FORGE_ROUTE_LOG_PREVIEW_CHARS else ""
+    return f"{clipped}{suffix}(len={len(text)})"
+
+
+def _forge_route_log(request_id: str, event: str, **fields: Any) -> None:
+    """Print forge-card diagnostics to the server console only; no local log file.
+
+    敏感字段 (storyLead) 在打印前先脱敏 —— 个人化记忆不能整段进控制台日志,
+    跟 forge_story_generator._forge_log 行为保持一致。
+    """
+
+    safe_fields = {
+        key: (_mask_route_sensitive(value) if key in _FORGE_ROUTE_SENSITIVE_FIELDS else value)
+        for key, value in fields.items()
+    }
     print(
         f"[forge-card-story][{request_id}][route.{event}] "
-        f"{json.dumps(fields, ensure_ascii=False, default=str)}",
+        f"{json.dumps(safe_fields, ensure_ascii=False, default=str)}",
         flush=True,
     )
 
