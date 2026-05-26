@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from plugin.plugins.study_companion.fsrs_bridge import (
     FSRSBridge,
     StudyFsrsRating,
@@ -10,6 +12,8 @@ from plugin.plugins.study_companion.fsrs_bridge import (
     rate_answer,
     retrievability,
 )
+
+pytestmark = pytest.mark.unit
 
 
 def test_study_fsrs_rating_updates_stability_difficulty_and_due() -> None:

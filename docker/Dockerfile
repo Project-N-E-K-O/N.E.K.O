@@ -42,7 +42,10 @@ ARG HTTPS_PROXY
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
-ENV UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+# Per-request HTTP timeout for uv downloads (default 30s). Bumped because the
+# build runs on US Azure runners while the package mirror is in China, so large
+# wheels are slow to transfer; 30s caused spurious "operation timed out" failures.
+ENV UV_HTTP_TIMEOUT=120
 
 # Set working directory
 WORKDIR /app
@@ -101,11 +104,20 @@ COPY --from=ghcr.io/astral-sh/uv:0.6.17 /uv /usr/local/bin/uv
 RUN chmod +x /usr/local/bin/uv && \
     echo 'export PATH="/usr/local/bin:$PATH"' >> /root/.bashrc
 
-# 5. Configure uv to use Aliyun mirror
+# 5. Configure uv mirrors + fallback.
+# Two China mirrors are tried in order (aliyun -> tsinghua); neither is marked
+# default, so the implicit default (pypi.org) stays as the final fallback -- which
+# is actually fastest on the US runner. If any mirror is missing a package or
+# stalls, uv walks down the list instead of single-pointing at aliyun.
 RUN mkdir -p /root/.config/uv && \
-    echo '[[index]]' > /root/.config/uv/uv.toml && \
-    echo 'url = "https://mirrors.aliyun.com/pypi/simple/"' >> /root/.config/uv/uv.toml && \
-    echo 'default = true' >> /root/.config/uv/uv.toml
+    printf '%s\n' \
+      '[[index]]' \
+      'name = "aliyun"' \
+      'url = "https://mirrors.aliyun.com/pypi/simple/"' \
+      '[[index]]' \
+      'name = "tsinghua"' \
+      'url = "https://pypi.tuna.tsinghua.edu.cn/simple/"' \
+      > /root/.config/uv/uv.toml
 
 # 6. Copy N.E.K.O. project from local build context (with correct ownership)
 COPY --chown=neko:neko . /app
@@ -129,7 +141,29 @@ RUN cd /app && \
     unset http_proxy && \
     unset https_proxy
 
-# 8b. Fix ownership after root operations (uv sync creates files as root)
+# 8b. Bundle the local embedding model so vectors work out-of-the-box (offline).
+# Without this the image ships no weights and EmbeddingService sticky-disables
+# at first load (NO_MODEL_FILE) — vector recall / fact dedup silently degrade.
+# repo+revision are pinned identically to .github/workflows/build-desktop.yml so
+# every build path resolves the same on-disk profile. Standard image ships only
+# the int8 variant (the runtime `auto` default) to stay lightweight; the full
+# image bundles fp32 too. Pure-stdlib downloader; needs network (honors proxy ARGs).
+ARG EMBEDDING_MODEL_REPO=jinaai/jina-embeddings-v5-text-nano-retrieval
+ARG EMBEDDING_MODEL_REVISION=ac5d898c8d382b17167c33e5c8af644a3519b47d
+ARG EMBEDDING_MODEL_PROFILE_ID=local-text-retrieval-v1
+RUN cd /app && \
+    if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
+    if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
+    uv run --no-sync python scripts/prepare_embedding_model.py \
+        --repo "$EMBEDDING_MODEL_REPO" \
+        --revision "$EMBEDDING_MODEL_REVISION" \
+        --profile-id "$EMBEDDING_MODEL_PROFILE_ID" \
+        --output-root data/embedding_models \
+        --variant int8 && \
+    unset http_proxy && \
+    unset https_proxy
+
+# 8c. Fix ownership after root operations (uv sync + model download create files as root)
 RUN chown -R neko:neko /app
 
 # 9. Set Playwright environment variable

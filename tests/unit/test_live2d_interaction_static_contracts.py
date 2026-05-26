@@ -8,10 +8,11 @@ def _live2d_source() -> str:
     return (PROJECT_ROOT / "static/live2d-interaction.js").read_text(encoding="utf-8")
 
 
-def test_live2d_web_drag_snap_keeps_visible_area_threshold():
+def test_live2d_drag_snap_keeps_visible_area_threshold_on_all_platforms():
     source = _live2d_source()
 
-    assert "const isDesktopPetWindow = Boolean(" in source
+    # 桌宠窗口不再单独走 margin 回弹，与网页端统一用可见面积阈值。
+    assert "const isDesktopPetWindow = Boolean(" not in source
     assert "const visibleWidth = Math.max(0, visibleRight - visibleLeft);" in source
     assert "const visibleHeight = Math.max(0, visibleBottom - visibleTop);" in source
     assert "const needsSnapHorizontal = visibleWidth < threshold && (overflowLeft > 0 || overflowRight > 0);" in source
@@ -19,10 +20,11 @@ def test_live2d_web_drag_snap_keeps_visible_area_threshold():
     assert "needsSnapBottom = overflowBottom > 0 && needsSnapVertical;" in source
 
 
-def test_live2d_desktop_drag_snap_uses_edge_margin():
+def test_live2d_only_display_switch_uses_edge_margin():
     source = _live2d_source()
 
-    assert "if (afterDisplaySwitch || isDesktopPetWindow) {" in source
+    assert "if (afterDisplaySwitch) {" in source
+    assert "if (afterDisplaySwitch || isDesktopPetWindow) {" not in source
     assert "needsSnapLeft = overflowLeft > margin;" in source
     assert "needsSnapRight = overflowRight > margin;" in source
     assert "needsSnapTop = overflowTop > margin;" in source

@@ -1624,7 +1624,6 @@ _preload_task: asyncio.Task = None
 _game_cleanup_task: asyncio.Task = None
 _runtime_startup_init_lock = asyncio.Lock()
 _runtime_startup_init_completed = False
-_heavy_import_prewarm_started = False
 
 
 async def _background_preload():
@@ -1776,25 +1775,6 @@ async def _sync_memory_server_after_startup_import(import_result):
         logger.warning(f"Steam Auto-Cloud startup import could not sync memory_server: {e}")
 
 
-async def _prewarm_heavy_imports():
-    import importlib
-
-    for mod in ("dashscope", "dashscope.audio.tts_v2"):
-        try:
-            await asyncio.to_thread(importlib.import_module, mod)
-            logger.debug(f"[prewarm] imported {mod}")
-        except Exception as e:
-            logger.debug(f"[prewarm] import {mod} failed (ignored): {e}")
-
-
-def _maybe_schedule_heavy_import_prewarm() -> None:
-    global _heavy_import_prewarm_started
-    if _heavy_import_prewarm_started:
-        return
-    _heavy_import_prewarm_started = True
-    asyncio.create_task(_prewarm_heavy_imports())
-
-
 async def _cancel_task_if_running(task: asyncio.Task | None, *, name: str, timeout: float = 1.0) -> None:
     if task is None:
         return
@@ -1891,8 +1871,6 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
             return False
 
         try:
-            _maybe_schedule_heavy_import_prewarm()
-
             bootstrap_local_cloudsave_environment(_config_manager)
             import_result = None
             try:
@@ -1932,59 +1910,11 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
             except Exception as e:
                 logger.warning(f"Agent event bridge startup failed: {e}")
 
+            # 创意工坊：目录挂载保持同步（开销小，且必须在 ready 前完成，
+            # 否则 /workshop 静态资源在挂载窗口内会 404 —— 见 PR #1496 review）。
+            # 真正慢的 UGC 缓存预热 + 角色卡网络同步仍后台化（与原始行为一致）。
             await _init_and_mount_workshop()
-
-            if steamworks:
-                _wr = importlib.import_module("main_routers.workshop_router")
-
-                async def _warmup_only():
-                    try:
-                        await warmup_ugc_cache()
-                    except Exception as e:
-                        logger.warning(f"UGC 缓存预热失败: {e}")
-
-                async def _sync_characters_only():
-                    max_fence_retries = 15
-                    retry_interval_seconds = 2
-                    for attempt in range(1, max_fence_retries + 1):
-                        if not is_write_fence_active(_config_manager):
-                            break
-                        logger.info(
-                            "创意工坊角色卡同步检测到维护态写围栏，等待解除后重试 (%s/%s)",
-                            attempt,
-                            max_fence_retries,
-                        )
-                        await asyncio.sleep(retry_interval_seconds)
-                    else:
-                        logger.info("创意工坊角色卡同步等待维护态解除超时，30s 后重新排队重试")
-
-                        async def _retry_sync_after_delay():
-                            try:
-                                await asyncio.sleep(30)
-                                await _sync_characters_only()
-                            except Exception as retry_exc:
-                                logger.warning(f"创意工坊角色卡同步重试任务失败: {retry_exc}")
-
-                        _wr._ugc_sync_task = asyncio.create_task(_retry_sync_after_delay())
-                        return
-                    if _wr._ugc_warmup_task is not None:
-                        try:
-                            await asyncio.wait_for(asyncio.shield(_wr._ugc_warmup_task), timeout=20)
-                        except asyncio.TimeoutError:
-                            logger.warning("等待 UGC 预热任务超时（20s），继续角色卡同步")
-                        except Exception as e:
-                            logger.debug(f"等待 UGC 预热任务时异常（不影响角色卡同步）: {e}")
-                    try:
-                        sync_result = await sync_workshop_character_cards()
-                        if sync_result["added"] > 0:
-                            logger.info(f"✅ 创意工坊角色卡同步完成：新增 {sync_result['added']} 个，跳过 {sync_result['skipped']} 个")
-                        else:
-                            logger.info("创意工坊角色卡同步完成：无新增角色卡")
-                    except Exception as e:
-                        logger.warning(f"创意工坊角色卡同步失败（不影响启动）: {e}")
-
-                _wr._ugc_warmup_task = asyncio.create_task(_warmup_only())
-                _wr._ugc_sync_task = asyncio.create_task(_sync_characters_only())
+            _schedule_workshop_sync(steamworks)
 
             try:
                 from utils.token_tracker import TokenTracker, install_hooks
@@ -2028,6 +1958,16 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
 
             _runtime_startup_init_completed = True
             _disable_main_storage_limited_mode()
+
+            # runtime init 完成后再起后台预热：把已改 lazy 的重模块（genai+mcp /
+            # translatepy / 功能路由依赖）提前 import 好，用户首次用到时不等。放在
+            # 这里而非 on_startup 开头，是为了不在关键启动路径上和 runtime init 抢 GIL。
+            try:
+                from utils.module_warmup import MAIN_SERVER_WARMUP, start_background_warmup
+                start_background_warmup(MAIN_SERVER_WARMUP, label="main")
+            except Exception as _warmup_exc:
+                logger.debug(f"[warmup] main_server warmup not started: {_warmup_exc}")
+
             return True
         except Exception:
             _runtime_startup_init_completed = False
@@ -2066,6 +2006,7 @@ async def on_startup():
     if _IS_MAIN_PROCESS:
         global _server_loop
         _server_loop = asyncio.get_running_loop()
+
         init_shared_state(
             role_state=role_state,
             steamworks=steamworks,
@@ -2372,6 +2313,71 @@ async def request_application_shutdown_async():
             return
 
     await shutdown_server_async()
+
+
+def _schedule_workshop_sync(steamworks) -> None:
+    """把创意工坊里真正慢的部分（UGC 缓存预热 + 角色卡网络同步）丢到后台 task。
+
+    目录挂载已由调用方在 ready 前同步完成（``_init_and_mount_workshop``），这里
+    只调度网络密集的预热/同步——与本次重构前的原始行为一致（原本它们就是
+    ``create_task``）。greeting 不依赖这两步。
+    """
+    try:
+        if not steamworks:
+            return
+
+        _wr = importlib.import_module("main_routers.workshop_router")
+
+        async def _warmup_only():
+            try:
+                await warmup_ugc_cache()
+            except Exception as e:
+                logger.warning(f"UGC 缓存预热失败: {e}")
+
+        async def _sync_characters_only():
+            max_fence_retries = 15
+            retry_interval_seconds = 2
+            for attempt in range(1, max_fence_retries + 1):
+                if not is_write_fence_active(_config_manager):
+                    break
+                logger.info(
+                    "创意工坊角色卡同步检测到维护态写围栏，等待解除后重试 (%s/%s)",
+                    attempt,
+                    max_fence_retries,
+                )
+                await asyncio.sleep(retry_interval_seconds)
+            else:
+                logger.info("创意工坊角色卡同步等待维护态解除超时，30s 后重新排队重试")
+
+                async def _retry_sync_after_delay():
+                    try:
+                        await asyncio.sleep(30)
+                        await _sync_characters_only()
+                    except Exception as retry_exc:
+                        logger.warning(f"创意工坊角色卡同步重试任务失败: {retry_exc}")
+
+                _wr._ugc_sync_task = asyncio.create_task(_retry_sync_after_delay())
+                return
+            if _wr._ugc_warmup_task is not None:
+                try:
+                    await asyncio.wait_for(asyncio.shield(_wr._ugc_warmup_task), timeout=20)
+                except asyncio.TimeoutError:
+                    logger.warning("等待 UGC 预热任务超时（20s），继续角色卡同步")
+                except Exception as e:
+                    logger.debug(f"等待 UGC 预热任务时异常（不影响角色卡同步）: {e}")
+            try:
+                sync_result = await sync_workshop_character_cards()
+                if sync_result["added"] > 0:
+                    logger.info(f"✅ 创意工坊角色卡同步完成：新增 {sync_result['added']} 个，跳过 {sync_result['skipped']} 个")
+                else:
+                    logger.info("创意工坊角色卡同步完成：无新增角色卡")
+            except Exception as e:
+                logger.warning(f"创意工坊角色卡同步失败（不影响启动）: {e}")
+
+        _wr._ugc_warmup_task = asyncio.create_task(_warmup_only())
+        _wr._ugc_sync_task = asyncio.create_task(_sync_characters_only())
+    except Exception as e:
+        logger.warning(f"创意工坊 UGC 预热/同步调度失败（不影响启动）: {e}")
 
 
 async def _init_and_mount_workshop():

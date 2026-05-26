@@ -4,7 +4,14 @@ import { callPlugin, errorMessage, text } from './memory_shared';
 
 type RecitationPayload = {
   diff?: unknown;
+  habit_progress?: {
+    applied?: number;
+  };
 };
+
+function sanitizeHintCount(value: number): number {
+  return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+}
 
 export default function PassageRecitation(props: PluginSurfaceProps) {
   const [itemId, setItemId] = useState('');
@@ -20,12 +27,14 @@ export default function PassageRecitation(props: PluginSurfaceProps) {
     }
     setBusy(true);
     try {
+      const sanitizedHintCount = sanitizeHintCount(hintCount);
       const payload = await callPlugin<RecitationPayload>('study_memory_recitation_attempt', {
         item_id: itemId,
         user_input_text: userInput,
-        hint_count: hintCount,
+        hint_count: sanitizedHintCount,
       });
-      setResult(JSON.stringify(payload.diff || payload, null, 2));
+      const resultText = JSON.stringify(payload.diff || payload, null, 2);
+      setResult(payload.habit_progress?.applied ? `${text(props, 'ui.memory.review_goal_updated', 'Goal updated')}\n${resultText}` : resultText);
     } catch (error) {
       setResult(errorMessage(error));
     } finally {
@@ -48,7 +57,14 @@ export default function PassageRecitation(props: PluginSurfaceProps) {
         </label>
         <label>
           <span>{text(props, 'ui.memory.hint_count', 'Hints')}</span>
-          <input type="number" value={hintCount} disabled={busy} onChange={(event) => setHintCount(Number(event.target.value) || 0)} />
+          <input
+            type="number"
+            min={0}
+            step={1}
+            value={hintCount}
+            disabled={busy}
+            onChange={(event) => setHintCount(sanitizeHintCount(Number(event.target.value)))}
+          />
         </label>
       </section>
       <textarea value={userInput} disabled={busy} onChange={(event) => setUserInput(event.target.value)} />

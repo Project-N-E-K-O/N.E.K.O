@@ -136,14 +136,64 @@ async def test_non_native_vision_fallback():
     client = _make_client("step-realtime", supports_native_image=False)
     # Mark the image description as "analyzing" to trigger the vision model path
     client._image_description = "实时屏幕截图或相机画面正在分析中"
-    
+
     # Mock the _analyze_image_with_vision_model method
     client._analyze_image_with_vision_model = AsyncMock()
-    
+
     await client.stream_image(DUMMY_IMAGE_B64)
-    
+
     # Should have called vision model fallback
     assert client._analyze_image_with_vision_model.called
     assert client._analyze_image_with_vision_model.call_args[0][0] == DUMMY_IMAGE_B64
-    
+
+    await client.close()
+
+
+@pytest.mark.unit
+def test_livestream_free_supports_native_vision():
+    """Livestream 主播自建 server_prefix 上游同为 Gemini 系，free 路应被判定为原生视觉，
+    哪怕 base_url 既不含 lanlan.app 也不含 lanlan.tech（已被派生为自建地址）。"""
+    client = OmniRealtimeClient(
+        base_url="ws://streamer.example:8080/tok/core",
+        api_key="test-key",
+        model="free-model",
+        turn_detection_mode=TurnDetectionMode.SERVER_VAD,
+        api_type="free",
+        livestream_mode=True,
+    )
+    assert client._is_free_proxy is True
+    assert client._supports_native_image is True
+    # livestream 自建上游是 Gemini 系，不应被当成有 server VAD 的 StepFun proxy
+    assert client._has_server_vad is False
+
+
+@pytest.mark.unit
+async def test_livestream_free_image_streaming():
+    """Livestream free 发图应走 input_image_buffer.append（Gemini 代理协议），
+    不落入 VISION_MODEL 分析通道。"""
+    client = OmniRealtimeClient(
+        base_url="ws://streamer.example:8080/tok/core",
+        api_key="test-key",
+        model="free-model",
+        turn_detection_mode=TurnDetectionMode.SERVER_VAD,
+        api_type="free",
+        livestream_mode=True,
+    )
+    client.ws = AsyncMock()
+    client._audio_in_buffer = True
+    client._last_native_image_time = 0
+    client._analyze_image_with_vision_model = AsyncMock()
+
+    await client.stream_image(DUMMY_IMAGE_B64)
+
+    assert not client._analyze_image_with_vision_model.called, (
+        "Livestream free 不应走分析通道"
+    )
+    image_event_found = False
+    for call_args in client.ws.send.call_args_list:
+        msg = json.loads(call_args[0][0])
+        if msg.get("type") == "input_image_buffer.append":
+            image_event_found = True
+            assert msg["image"] == DUMMY_IMAGE_B64
+    assert image_event_found, "Expected input_image_buffer.append event for livestream free"
     await client.close()

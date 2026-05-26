@@ -316,6 +316,7 @@ def _append_persona_guidance_to_prompt(prompt_text: str, character_payload: dict
         return prompt_text
 
     guidance = ""
+    from_preset = False
     preset_id = str(override.get("preset_id") or "").strip()
     if preset_id:
         # 运行时按当前全局语言重新解析，使 persona prompt 与基础 LANLAN prompt
@@ -323,6 +324,7 @@ def _append_persona_guidance_to_prompt(prompt_text: str, character_payload: dict
         try:
             from utils.persona_presets import get_persona_prompt_guidance
             guidance = (get_persona_prompt_guidance(preset_id) or "").strip()
+            from_preset = bool(guidance)
         except Exception:
             guidance = ""
 
@@ -331,6 +333,15 @@ def _append_persona_guidance_to_prompt(prompt_text: str, character_payload: dict
 
     if not guidance:
         return prompt_text
+
+    # preset 的 guidance 是一份**完整独立**的人设 prompt，骨架（fictional-character
+    # 前言 + <Context Awareness> + <WARNING> + <IMPORTANT>）与默认 base 逐字相同。
+    # 直接 append 会让整套骨架重复一遍（~1500 字），且这段经 lanlan_prompt_map 流向
+    # 主对话 system prompt、proactive、break reminder、各插件等**所有**消费点。
+    # 当 base 仍是默认 prompt 时，preset 本身就是完整人设 → 用它替换 base，避免重复；
+    # 仅当用户写过自定义 system_prompt（非默认）时才退回 append 以保留其自定义内容。
+    if from_preset and is_default_prompt(prompt_text):
+        return guidance
 
     return f"{prompt_text}\n\nAdditional role guidance: {guidance}"
 

@@ -41,8 +41,8 @@ from fastapi import APIRouter, Request, File, UploadFile, Form
 from fastapi.responses import JSONResponse, Response
 import aiohttp
 import httpx
-import dashscope
-from dashscope.audio.tts_v2 import SpeechSynthesizer
+# dashscope 仅用于声音克隆 TTS 预览（_do_preview_synthesize），import 偏重
+# （~0.1s）且不在 greeting/启动链上，改成用到时再 import；由 module_warmup 预热。
 
 from config.prompts.prompts_sys import _loc
 from config.prompts.prompts_voice import VOICE_PREVIEW_TEXTS
@@ -3929,6 +3929,8 @@ async def get_voice_preview(
         clone_model = (voice_data or {}).get('clone_model') or get_cosyvoice_clone_model(provider)
 
         def _do_preview_synthesize():
+            import dashscope
+            from dashscope.audio.tts_v2 import SpeechSynthesizer
             # 写 module-global + 构造 SpeechSynthesizer + synthesizer.call 全程
             # 拿 DASHSCOPE_GLOBAL_LOCK：dashscope.api_key / base_*_api_url 是
             # 同进程多流程共享的写点，并发跑会互相覆盖、拿别人的 key/地域请求。

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from plugin.plugins.study_companion.knowledge_quality import (
     KnowledgeCandidateStatus,
     KnowledgeCandidateType,
@@ -10,6 +12,8 @@ from plugin.plugins.study_companion.knowledge_quality import (
 )
 from plugin.plugins.study_companion.knowledge_tracker import KnowledgeGraph, KnowledgeTracker
 from plugin.plugins.study_companion.store import StudyStore
+
+pytestmark = pytest.mark.unit
 
 
 class _Logger:

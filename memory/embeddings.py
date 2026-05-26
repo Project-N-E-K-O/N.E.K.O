@@ -291,7 +291,7 @@ def detect_total_ram_gb() -> float | None:
 # no inline machine code, no AV heuristic match.
 #
 # Conservative: a "yes" from the table is authoritative (confirmed=True);
-# an "I don't know" falls through to py-cpuinfo / /proc/cpuinfo flags so
+# an "I don't know" falls through to numpy CPU features / /proc/cpuinfo so
 # brand-new microarchitectures aren't false-negatived just because the
 # table predates them.
 _INTEL_VNNI_MIN_MODEL_FAMILY_6 = 0x97  # Alder Lake — also covers Raptor,
@@ -393,7 +393,7 @@ def _vnni_via_family_model() -> tuple[bool, bool]:
     Returns ``(has_vnni, confirmed)``. ``confirmed=True`` means the
     family/model fell inside (or strictly below) a known range and the
     answer is final. ``(False, False)`` means the table doesn't know —
-    let the caller fall through to py-cpuinfo / ``/proc/cpuinfo``.
+    let the caller fall through to numpy CPU features / ``/proc/cpuinfo``.
 
     Replaces the deleted CPUID shellcode probe. Strictly less precise
     in one direction (brand-new microarchitectures that ship before the
@@ -410,8 +410,8 @@ def _vnni_via_family_model() -> tuple[bool, bool]:
         # All Intel client microarchitectures shipping AVX-VNNI live in
         # Family 6 with model >= Alder Lake's 0x97. Earlier Family-6
         # parts that carry AVX512-VNNI (Ice Lake server, Tiger/Rocket
-        # Lake, Sapphire Rapids) are detected by py-cpuinfo's
-        # ``avx512_vnni`` flag and don't need enumeration here.
+        # Lake, Sapphire Rapids) are detected by numpy's ``AVX512VNNI``
+        # feature flag and don't need enumeration here.
         if family == 6 and model >= _INTEL_VNNI_MIN_MODEL_FAMILY_6:
             return True, True
     elif vendor == "AuthenticAMD":
@@ -431,7 +431,7 @@ def _vnni_via_family_model() -> tuple[bool, bool]:
                     return False, True
             # An unmapped Family-19h model (e.g. a future stepping not
             # yet covered by AMD's published groupings) stays
-            # inconclusive so py-cpuinfo's flag list can have a try
+            # inconclusive so numpy's feature map can have a try
             # instead of silently picking the wrong path.
             return False, False
         # Family < 0x19 covers Zen 1 / Zen 2 (0x17), Excavator (0x15) and
@@ -440,37 +440,92 @@ def _vnni_via_family_model() -> tuple[bool, bool]:
     return False, False
 
 
-def _detect_int8_fast_path_x86() -> tuple[bool, bool]:
-    """x86 INT8 fast path = AVX-VNNI (or AVX512-VNNI).
+def _numpy_cpu_features() -> dict | None:
+    """Read numpy's runtime CPU SIMD feature map, or None if unavailable.
 
-    Detection order (no-shellcode):
+    numpy probes CPU features in its compiled C core at import (for kernel
+    dispatch) and exposes the result as ``__cpu_features__`` — a plain
+    ``{feature_name: bool}`` dict. We read it instead of calling py-cpuinfo
+    because py-cpuinfo detects features by allocating an *executable* memory
+    page and running inline CPUID machine code inside a ``multiprocessing``
+    child (its ``ASM`` class: VirtualAlloc → VirtualProtect(PAGE_EXECUTE) →
+    CFUNCTYPE → call). That is the exact VirtualAlloc+shellcode pattern
+    PR #1437 stripped out of *this* module — Huorong's heuristic scanner
+    flags it as ``Trojan/Python.ShellLoader`` and quarantines this file (it's
+    the module on the import stack when py-cpuinfo's cpuid subprocess fires,
+    which is why the AV report blames ``embeddings.py`` running under
+    ``multiprocessing.spawn``). numpy's detection is pure compiled C — no
+    user-space RWX page, no subprocess — so the heuristic has nothing to
+    bite, and numpy is already a hard dependency we import for inference.
+
+    Returns None on exotic builds where the private attribute is gone, so
+    callers fall through to ``/proc/cpuinfo`` (Linux) or stay inconclusive.
+    """
+    import warnings
+    # numpy >= 2.0 renamed the private module ``numpy.core`` → ``numpy._core``
+    # and warns on the old path; try the new spelling first, suppress the
+    # DeprecationWarning on the legacy one for numpy 1.x.
+    for modpath in ("numpy._core._multiarray_umath",
+                    "numpy.core._multiarray_umath"):
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                mod = __import__(modpath, fromlist=["__cpu_features__"])
+            feats = getattr(mod, "__cpu_features__", None)
+            if isinstance(feats, dict) and feats:
+                return feats
+        except Exception:
+            continue
+    return None
+
+
+def _np_feature(feats: dict, *needles: str) -> bool:
+    """Case-insensitive substring test against numpy's CPU feature map.
+
+    numpy's ``__cpu_features__`` keys are stable upper-case spellings today
+    (``AVX2`` / ``AVX512VNNI`` / ``ASIMDDP``), but we case-fold and match a
+    substring so a future numpy that re-cases or lightly renames a key (e.g.
+    ``AVX512_VNNI``) still resolves — the same forgiving stance the old
+    py-cpuinfo ``any("vnni" in flag)`` search had. Returns True when *any*
+    needle matches a present key whose value is truthy.
+
+    ``"vnni"`` also matches Knights-Mill ``AVX5124VNNIW`` (a different,
+    extinct instruction set), but that part still carries AVX512 so int8
+    kernels run fine on it anyway — the resulting "pick int8" decision is the
+    right one, so the loose match costs nothing.
+    """
+    lowered = [n.lower() for n in needles]
+    return any(
+        v and any(n in k.lower() for n in lowered)
+        for k, v in feats.items()
+    )
+
+
+def _detect_int8_fast_path_x86() -> tuple[bool, bool]:
+    """x86 INT8 fast path = AVX-VNNI (client) or AVX512-VNNI (server).
+
+    Detection order (no shellcode, no subprocess):
       1. CPU family/model lookup (:func:`_vnni_via_family_model`) — the
          only path that authoritatively answers for Alder-Lake+ Intel
-         client CPUs on Windows, where py-cpuinfo's backend silently
-         omits ``avx_vnni`` from its flag list.
-      2. ``py-cpuinfo`` flags — primary path on Linux / macOS and the
-         fallback on Windows for AVX512-VNNI parts (Cascade / Ice
-         Lake-server / Sapphire Rapids) which py-cpuinfo handles
-         correctly.
-      3. ``/proc/cpuinfo`` on Linux — text parse if py-cpuinfo failed.
+         *client* CPUs, whose AVX-VNNI flag numpy's feature map does not
+         track (it only carries the AVX512 variant).
+      2. numpy ``__cpu_features__`` "vnni" match — server VNNI parts
+         (Cascade / Ice Lake-SP / Sapphire Rapids, key ``AVX512VNNI``).
+         Client AVX-VNNI parts are all Alder-Lake+ and already answered
+         authoritatively by (1).
+      3. ``/proc/cpuinfo`` on Linux — text parse if numpy's map is gone.
 
     Returns ``(has_vnni, absence_confirmed)``. ``absence_confirmed=False``
-    means no path could read CPU flags — the caller stays optimistic and
-    picks INT8 in that case (consistent with the ARM branch).
+    means no source could read CPU features — the caller stays optimistic
+    and picks INT8 in that case (consistent with the ARM branch).
     """
     has_vnni, confirmed = _vnni_via_family_model()
     if confirmed:
         return has_vnni, True
 
-    try:
-        import cpuinfo  # type: ignore
-        flags = cpuinfo.get_cpu_info().get("flags", []) or []
-        # Empty flags (e.g. some virtualised hosts) is *not* a confirmed
-        # absence — fall through so /proc/cpuinfo can have a try.
-        if flags:
-            return any("vnni" in f for f in flags), True
-    except Exception:
-        pass
+    feats = _numpy_cpu_features()
+    if feats is not None:
+        return _np_feature(feats, "vnni"), True
 
     if platform.system() == "Linux":
         try:
@@ -488,20 +543,26 @@ def _detect_int8_fast_path_x86() -> tuple[bool, bool]:
 def _detect_int8_fast_path_arm() -> tuple[bool, bool]:
     """ARM64 INT8 fast path = ARMv8.2-A NEON sdot/udot (``asimddp`` feature).
 
-    Per-OS strategy:
+    Strategy (no shellcode, no subprocess):
 
       * macOS — Apple Silicon (M1+) universally has dotprod; Apple has
         never shipped an ARM Mac without it, so we short-circuit to
         ``(True, True)``.
-      * Windows — use the canonical
-        ``IsProcessorFeaturePresent(PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE)``
-        kernel API. Modern Snapdragon X / 8cx have dotprod, but first-gen
-        Windows-on-ARM (Snapdragon 835, ~2017) is ARMv8-A and lacks it —
-        assuming support there would silently enable a slow INT8 path.
-      * Linux — check the ``asimddp`` / ``dotprod`` feature flag (cpuinfo
-        first, ``/proc/cpuinfo`` ``Features`` line as fallback). The ARM
-        SBC ecosystem still includes plenty of Cortex-A53 / A57 / A72
-        cores that predate dotprod (Raspberry Pi 3 class).
+      * numpy ``__cpu_features__`` "asimddp" — but its *trustworthiness is
+        OS-dependent*. numpy only runtime-probes ARM features (HWCAP) on
+        Linux/BSD; on Windows it falls back to compile-time baseline macros,
+        so a win-arm64 wheel's conservative baseline reports ``ASIMDDP=False``
+        even on dotprod-capable Snapdragon X. We therefore trust a numpy
+        *positive* on any OS, but a numpy *negative* only on Linux. A Windows
+        numpy-negative is NOT confirmed — it falls through to the kernel
+        probe below (Codex P1 on PR #1525, restoring PR #1394's intent).
+      * Linux fallback — ``/proc/cpuinfo`` ``Features`` line if numpy's map
+        is unavailable. The ARM SBC ecosystem still has plenty of
+        Cortex-A53 / A57 / A72 cores that predate dotprod (Pi-3 class).
+      * Windows — ``IsProcessorFeaturePresent`` kernel32 API (a documented
+        call, not executable-memory injection). Its 0 return is ambiguous
+        (lacks dotprod OR old Win build that returns 0 for unknown feature
+        ids), reported as inconclusive so ``auto`` stays optimistic.
 
     Returns ``(has_dotprod, absence_confirmed)``. Inconclusive cases let
     ``auto`` quantization still pick int8 without claiming a definitive
@@ -511,11 +572,35 @@ def _detect_int8_fast_path_arm() -> tuple[bool, bool]:
     if system == "Darwin":
         return True, True
 
+    feats = _numpy_cpu_features()
+    if feats is not None and _np_feature(feats, "asimddp", "dotprod"):
+        # Positive is authoritative on any OS — the flag is only set when the
+        # feature is genuinely present.
+        return True, True
+    if feats is not None and system == "Linux":
+        # numpy runtime-probes ARM HWCAP on Linux, so a negative is reliable.
+        return False, True
+
+    if system == "Linux":
+        try:
+            # ARM Linux /proc/cpuinfo uses "Features" (capital F), not "flags".
+            with open("/proc/cpuinfo", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("Features") and (
+                        "asimddp" in line or "dotprod" in line
+                    ):
+                        return True, True
+            return False, True
+        except Exception:
+            return False, False
+
     if system == "Windows":
         try:
             import ctypes
             # PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE = 43 — the canonical
-            # Win32 feature constant for ARMv8.2 dotprod instructions.
+            # Win32 feature constant for ARMv8.2 dotprod instructions. This
+            # is the path numpy's compile-time-baseline negative can't be
+            # trusted to replace.
             if ctypes.windll.kernel32.IsProcessorFeaturePresent(43):
                 return True, True
             # 0 from this API is ambiguous: the CPU truly lacks dotprod
@@ -529,29 +614,6 @@ def _detect_int8_fast_path_arm() -> tuple[bool, bool]:
             # ctypes call failed on a non-standard runtime — be
             # inconclusive rather than wrong in either direction.
             return True, False
-
-    if system == "Linux":
-        try:
-            import cpuinfo  # type: ignore
-            flags = cpuinfo.get_cpu_info().get("flags", []) or []
-            if flags:
-                # py-cpuinfo surfaces ARM features under the same "flags" key.
-                return any(f in ("asimddp", "dotprod") for f in flags), True
-        except Exception:
-            # py-cpuinfo not installed / failed on this ARM host — fall
-            # through to the /proc/cpuinfo probe below.
-            pass
-        try:
-            # ARM Linux /proc/cpuinfo uses "Features" (capital F), not "flags".
-            with open("/proc/cpuinfo", encoding="utf-8") as f:
-                for line in f:
-                    if line.startswith("Features") and (
-                        "asimddp" in line or "dotprod" in line
-                    ):
-                        return True, True
-            return False, True
-        except Exception:
-            return False, False
 
     # Unknown OS on ARM64 — modern ARM64 almost certainly has dotprod,
     # but we can't confirm.
@@ -570,8 +632,8 @@ def _log_int8_fast_path_decision(has_vnni: bool, confirmed: bool) -> None:
 
     Triaging "why are my vectors disabled?" needs to know whether
     detection was authoritative (the family/model table or a CPU that
-    truly lacks VNNI) or just inconclusive (sandboxed host, missing
-    py-cpuinfo, exotic arch). Including the vendor/family/model in the
+    truly lacks VNNI) or just inconclusive (exotic build with no numpy
+    feature map, unknown arch). Including the vendor/family/model in the
     log lets us extend the lookup table for future microarchitectures
     based on real reports instead of guesses.
 
@@ -643,11 +705,12 @@ def detect_avx2_details() -> tuple[bool, bool]:
     ~2× SSE throughput) — fine for our nano model + small corpus. Below AVX2
     (SSE-only) int8 would be too slow to auto-enable.
 
-    Unlike VNNI, ``avx2`` *is* reliably reported by py-cpuinfo's CPUID probe on
-    Windows (the VNNI Windows gap was specific to the ``avx_vnni`` flag), so we
-    don't need the family/model table here. ``absence_confirmed=False`` means
-    no source could read CPU flags — caller stays optimistic (picks int8),
-    matching the VNNI-inconclusive policy.
+    Source is numpy ``__cpu_features__['AVX2']`` (compiled C probe) rather
+    than py-cpuinfo, whose CPUID probe allocates an executable page and runs
+    machine code in a multiprocessing child — the VirtualAlloc+shellcode
+    pattern Huorong quarantines as ShellLoader (see :func:`_numpy_cpu_features`).
+    ``absence_confirmed=False`` means no source could read CPU features —
+    caller stays optimistic (picks int8), matching the VNNI-inconclusive policy.
     """
     if platform.machine().lower() in ("arm64", "aarch64"):
         # On ARM the only tier boundary we act on is dotprod — it plays VNNI's
@@ -659,17 +722,9 @@ def detect_avx2_details() -> tuple[bool, bool]:
         # (Cortex-A53/A57/A72, Pi-3 class) still disable under auto, exactly as
         # before. The AVX2 broadening is x86-only. (Codex P2 on PR #1482.)
         return _detect_int8_fast_path_arm()
-    try:
-        import cpuinfo  # type: ignore
-        flags = cpuinfo.get_cpu_info().get("flags", []) or []
-        if flags:
-            return ("avx2" in flags), True
-    except Exception:  # noqa: BLE001
-        # cpuinfo not installed / CPUID probe failed / empty flags. Don't fail
-        # hard — fall through to the /proc/cpuinfo parse (Linux) or to the
-        # inconclusive (False, False) return, where auto stays optimistic and
-        # still picks int8. Same degrade-don't-disable stance as VNNI detect.
-        pass
+    feats = _numpy_cpu_features()
+    if feats is not None:
+        return _np_feature(feats, "avx2"), True
     if platform.system() == "Linux":
         try:
             with open("/proc/cpuinfo", encoding="utf-8") as f:

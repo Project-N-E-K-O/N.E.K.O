@@ -38,6 +38,7 @@ import asyncio
 import logging
 import time
 from collections import deque
+from collections.abc import Awaitable, Callable
 from dataclasses import replace as dc_replace
 
 from main_logic.activity.snapshot import (
@@ -168,6 +169,28 @@ def _privacy_mode_active() -> bool:
         return True
 
 
+def _proactive_chat_enabled() -> bool:
+    """主动搭话总开关是否打开。
+
+    ``activity_guess`` 的 emotion-tier LLM 叙述只喂 proactive Phase 2 的
+    state_section，没有别的消费方；主动搭话关时算它纯属浪费。loop 用它跳过
+    LLM 部分——这样「实验组为弹窗 kick 起 loop、但用户没开主动搭话」时只剩廉价
+    规则轮询 + 情境弹窗检测，零 LLM 开销。
+
+    fail-open：key 缺失 *或* 读取异常都返回 True。误判「关」会把 proactive-on 用户该有
+    的活动叙述吞掉（伤用户可见功能），误判「开」只是多算一次叙述（小成本），两害相权
+    取「宁可多算」。真正明确关掉主动搭话的用户 key=false（前端总会同步这个键），照样
+    走 skip 分支，成本修复对主流场景依旧生效；只有从没同步过设置的全新会话才落到缺失→
+    True 这条窄路径，可忽略。
+    """
+    try:
+        from utils.preferences import load_global_conversation_settings
+        return bool(load_global_conversation_settings().get('proactiveChatEnabled', True))
+    except Exception as e:
+        logger.debug('proactive_chat_enabled check failed, defaulting to True: %s', e)
+        return True
+
+
 class UserActivityTracker:
     """Per-character activity inference engine.
 
@@ -283,6 +306,24 @@ class UserActivityTracker:
         # these.
         self._work_break_pending: dict | None = None
         self._anti_slack_pending: dict | None = None
+
+        # ── 情境弹窗（A/B 实验组前端用）──────────────────────────
+        # 当用户「进入」游戏/娱乐 或「进入」专注工作时，给前端推一次性信号，让前端
+        # （仅实验组、每会话每类一次）弹窗问要不要开/关屏幕分享来源。后端只负责检测
+        # 「进入」这一刻并推送，分组判定 + 去重都在前端。
+        #   * ``_context_prompt_pending``：一次性槽位，由 ``_tick_break_reminders``
+        #     在检测到进入目标状态时 set（同步安全，只置 dict），由异步
+        #     ``_activity_guess_loop`` 心跳 drain 后 await 推送回调。后写覆盖前写
+        #     （两次 drain 间多次切换只推最新那次，够用）。
+        #   * ``_on_context_prompt``：core.py 注入的 async 回调，签名 ``(context: str)``
+        #     —— context 取 'play'（游戏/娱乐）或 'work'（专注工作）。未注入则不推。
+        self._context_prompt_pending: dict | None = None
+        self._on_context_prompt: Callable[[str], Awaitable[None]] | None = None
+        # 情境弹窗专属的「上一状态」基线，独立于 break-reminder 的 _last_known_state
+        # ——这样可以在每个 session 开始时单独清掉（reset_context_prompt_baseline），让
+        # 「跨 session 仍在同一状态」也能重新算作一次「进入」并再弹（前端按 app 会话去
+        # 重），同时不扰动 break/anti-slack 的状态机。
+        self._context_prompt_last_state: ActivityState | None = None
 
     # ── hooks (called from core.py and friends) ─────────────────
 
@@ -619,6 +660,7 @@ class UserActivityTracker:
                 #     reference is now ancient.
                 self._work_acc_seconds = 0.0
                 self._last_known_state = None
+                self._context_prompt_last_state = None
                 self._work_break_pending = None
                 self._anti_slack_pending = None
 
@@ -693,6 +735,32 @@ class UserActivityTracker:
             and (now - self._anti_slack_pending['set_at']) > anti_slack_window
         ):
             self._anti_slack_pending = None
+
+        # ── 情境弹窗一次性检测（A/B 实验组前端用）────────────────
+        # 只在「进入」目标状态那一刻置 pending（state != 上一状态），状态保持期间不重复
+        # 触发，避免 20s 心跳刷屏。分组判定 + 每会话去重都在前端。
+        #   gaming / casual_browsing（=娱乐，进游戏/看番/视频）→ 'play'
+        #   focused_work（进专注工作）                       → 'work'
+        # 用 _context_prompt_last_state（情境弹窗专属基线）而非 _last_known_state：后者
+        # 跨 session 长存，会让「上个 session 结束时在游戏、新 session 仍在游戏」检测不到
+        # 进入、漏弹；专属基线在每个 session 开始时被 reset_context_prompt_baseline 清成
+        # None，于是当前状态重新算作一次「进入」。为 None（首启 / 不安全 delta 重置 /
+        # 新 session）都算「进入」，前端按 app 会话去重兜住重复。
+        ctx_prev = self._context_prompt_last_state
+        _CONTEXT_PROMPT_TARGET_STATES = ('gaming', 'casual_browsing', 'focused_work')
+        if state != ctx_prev:
+            if state in ('gaming', 'casual_browsing'):
+                self._context_prompt_pending = {'context': 'play', 'set_at': now}
+            elif state == 'focused_work':
+                self._context_prompt_pending = {'context': 'work', 'set_at': now}
+        # 离开目标状态（进 idle/away/chatting/transitioning/private 等非目标态）时，清掉
+        # 还没 drain 的过期 pending：pending 可能是 get_snapshot 路径（实验组 kick）置的、
+        # 还没等到 loop drain，用户就离开了游戏/工作；若不清，loop 会把「已经离开的场景」
+        # 推成过期弹窗，甚至据此翻错设置。目标态之间切换（gaming↔casual_browsing↔
+        # focused_work）由上面的 overwrite 处理，不受影响。
+        if state not in _CONTEXT_PROMPT_TARGET_STATES:
+            self._context_prompt_pending = None
+        self._context_prompt_last_state = state
 
         self._last_known_state = state
 
@@ -786,6 +854,54 @@ class UserActivityTracker:
         ts = now if now is not None else time.time()
         self._anti_slack_last_fired_at = ts
         self._anti_slack_pending = None
+
+    # ── 情境弹窗（A/B 实验组前端用）──────────────────────────────
+
+    def reset_context_prompt_baseline(self) -> None:
+        """清掉情境弹窗的「上一状态」基线，让下一 tick 把当前状态重新算作一次「进入」。
+
+        在每个 session 开始时调用（core.py 的实验组 kick 里）。tracker 跨 session 长存，
+        若不清，「上个 session 结束时在游戏、新 session 仍在游戏」就检测不到进入、漏弹。
+        只动情境弹窗专属基线，不碰 break/anti-slack 的 _last_known_state。
+
+        同时清掉可能遗留的 pending：上个 session 置了 pending 但没来得及 drain（loop 没
+        tick 到就 end_session）时，残留会被新 session 的首个 tick 推成过期弹窗。清掉后
+        紧跟的 kick get_snapshot 会按新 session 的当前状态重新置 pending。
+        """
+        self._context_prompt_last_state = None
+        self._context_prompt_pending = None
+
+    def set_context_prompt_callback(
+        self, callback: Callable[[str], Awaitable[None]] | None
+    ) -> None:
+        """注入「进入游戏/娱乐 或 进入专注工作」时往前端推送的 async 回调。
+
+        由 core.py 在建好 tracker 后调用，回调内部把信号经 WebSocket 发给前端。
+        ``callback(context)`` 的 context 取 'play'（游戏/娱乐）或 'work'（专注工作）。
+        传 None 解除注入（如会话结束）。
+        """
+        self._on_context_prompt = callback
+
+    async def _drain_context_prompt(self) -> None:
+        """把 ``_tick_break_reminders`` 攒下的一次性情境信号推给前端。
+
+        只在异步心跳里调用（async 上下文才能 await 回调）。一次消费一个槽位，
+        推送失败静默吞掉——埋点性质的提示，丢一次也不该把心跳搞崩。
+        """
+        pending = self._context_prompt_pending
+        if pending is None:
+            return
+        self._context_prompt_pending = None
+        callback = self._on_context_prompt
+        if callback is None:
+            return
+        try:
+            await callback(pending['context'])
+        except Exception as e:  # noqa: BLE001 — 推送失败不能让心跳挂掉
+            logger.debug(
+                '[%s] context prompt push failed (%s): %s',
+                self.lanlan_name, pending.get('context'), e,
+            )
 
     # ── enrichment kickoff ──────────────────────────────────────
 
@@ -914,6 +1030,21 @@ class UserActivityTracker:
                 # weren't actually doing. This is the canonical heartbeat
                 # for the break-reminder timers.
                 self._tick_break_reminders(rule_snap, now=ts)
+
+                # Drain 情境弹窗 pending 并推送（必须在下面 away/private 的 bail 之前，
+                # 否则进 away/private 那一 tick 设的 pending 会被 continue 跳过永不推；
+                # 实际进游戏/娱乐/工作都不会是 away/private，这里只是防御性早 drain）。
+                # 这是唯一的 drain 点：心跳每 tick 都跑、且是 async 上下文，能 await 回调。
+                # get_snapshot 路径也调 _tick_break_reminders 设 pending，但 _last_known_state
+                # 已被它更新，本 drain 把那次 pending 一并发出，不会漏也不会重。
+                await self._drain_context_prompt()
+
+                # 主动搭话关时跳过 activity_guess 的 LLM 叙述：它只喂 proactive Phase 2，
+                # 没开主动搭话就没有消费方。上面的 _tick_break_reminders + 情境弹窗 drain
+                # 是纯规则、已经跑过，所以「进游戏/工作」检测照常工作。这样实验组为弹窗
+                # kick 起的 loop 在用户没开主动搭话时只有廉价规则轮询、零 LLM 开销。
+                if not _proactive_chat_enabled():
+                    continue
 
                 # Bail on away — nothing useful to narrate.
                 if rule_snap.state == 'away':

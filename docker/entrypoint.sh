@@ -886,7 +886,7 @@ setup_dependencies() {
     else
         echo "📦 Playwright Chromium not found, installing..."
         # 尝试安装 Chromium，失败时不中断启动
-        if uv run python -m playwright install chromium --with-deps 2>&1; then
+        if uv run --no-sync python -m playwright install chromium --with-deps 2>&1; then
             echo "✅ Playwright Chromium installed successfully"
         else
             echo "⚠️ Playwright Chromium installation failed (will retry on next start)"

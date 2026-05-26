@@ -18,17 +18,46 @@ from main_logic.tool_calling import (
     parse_arguments_json,
 )
 
-# Lazy-import flag for google-genai (offline Gemini path). The SDK is already
-# imported by omni_realtime_client at module load; we duplicate the guard
-# here so the offline client can degrade gracefully if it isn't available.
-try:
-    from google import genai as _genai
-    from google.genai import types as _genai_types
-    _GENAI_AVAILABLE = True
-except Exception:  # pragma: no cover — environment-specific
-    _genai = None
-    _genai_types = None
-    _GENAI_AVAILABLE = False
+# google-genai 懒加载。该 SDK import 很重（~0.6s），且在 import 时会捎带 mcp
+# （~0.5s），但 offline 路径只有用户用 native-Gemini 端点时才需要它。改成首次使用
+# 时再 import，并由 utils.module_warmup 在 ready 后用后台线程提前预热，所以常规
+# 启动（OpenAI-compat 端点 / greeting）完全不付这笔钱。
+_genai = None
+_genai_types = None
+_GENAI_AVAILABLE: bool | None = None  # None = 尚未尝试导入
+
+
+def _ensure_genai() -> bool:
+    """首次调用时 import google-genai，并缓存结果（成功或失败）。
+
+    返回 SDK 是否可用。并发竞态下最坏只是重复 import 一次，Python 的模块缓存
+    让其幂等，无副作用。
+    """
+    global _genai, _genai_types, _GENAI_AVAILABLE
+    # 显式强制不可用优先级最高（测试用它当强制降级开关）→ 即便对象已塞进全局也降级。
+    if _GENAI_AVAILABLE is False:
+        return False
+    # 对象已就位（真 import 过 / 测试注入了 mock）→ 直接信任，不重导入。
+    if _genai is not None and _genai_types is not None:
+        _GENAI_AVAILABLE = True
+        return True
+    try:
+        from google import genai as genai_mod
+        from google.genai import types as genai_types_mod
+        # 只补缺失的，保住测试可能注入的 _genai mock。
+        if _genai is None:
+            _genai = genai_mod
+        if _genai_types is None:
+            _genai_types = genai_types_mod
+        _GENAI_AVAILABLE = True
+    except Exception:  # pragma: no cover — environment-specific
+        # 不覆盖外部强制设过的可用性标志；也不清空可能被测试注入的 _genai/_genai_types
+        # （只补缺失原则——导入失败时保留已注入的部分 mock）。
+        if _GENAI_AVAILABLE is None:
+            _GENAI_AVAILABLE = False
+    # 只有可用标志为真且对象确实就位才算可用——避免 forced True 但 import 失败时
+    # 谎报可用、让调用点在 None 上解引用 _genai_types。
+    return bool(_GENAI_AVAILABLE) and _genai is not None and _genai_types is not None
 
 
 # Hostname / model fragments that indicate the request should go through
@@ -253,7 +282,7 @@ def _genai_messages_to_contents(
     ``Content(role="model", parts=[Part(function_call=...)])``; role=tool
     becomes ``Content(role="user", parts=[Part(function_response=...)])``.
     """
-    if not _GENAI_AVAILABLE:
+    if not _ensure_genai():
         raise _GenaiToolsUnsupported("google-genai SDK not importable")
     types = _genai_types
     system_instruction: Optional[str] = None
@@ -422,15 +451,22 @@ def _should_use_genai_sdk(model: str, base_url: str | None) -> bool:
     its base_url ('lanlan.app') stays on the OpenAI path. Tools won't
     work there until the proxy is upgraded — see TODO in core.py.
     """
-    if not _GENAI_AVAILABLE:
-        return False
+    # 先做便宜的字符串判断：只有路由确实指向 native Gemini 时才去 import SDK。
+    # 这样常规 OpenAI-compat 端点（含 greeting）构造 client 时不会触发 genai
+    # 这条重 import；而真要走 genai 的用户，本来下一步就得用到它。
     bl = (base_url or "").lower()
     ml = (model or "").lower()
-    if any(h in bl for h in _GENAI_NATIVE_BASE_URL_HINTS):
-        return True
-    if not bl and any(h in ml for h in _GENAI_NATIVE_MODEL_HINTS):
-        return True
-    return False
+    native = (
+        any(h in bl for h in _GENAI_NATIVE_BASE_URL_HINTS)
+        or (not bl and any(h in ml for h in _GENAI_NATIVE_MODEL_HINTS))
+    )
+    if not native:
+        return False
+    # 路由判断只需"是否可用"这个布尔；尊重已知/被强制的标志（测试会 force
+    # _GENAI_AVAILABLE 而不装 google-genai），只有真未知时才去付 lazy import。
+    if _GENAI_AVAILABLE is None:
+        return _ensure_genai()
+    return bool(_GENAI_AVAILABLE)
 
 class OmniOfflineClient:
     """
@@ -492,7 +528,7 @@ class OmniOfflineClient:
         master_name: str = "",
         on_tool_call: Optional[OnToolCallCallback] = None,
         tool_definitions: Optional[List[ToolDefinition]] = None,
-        max_tool_iterations: int = 6,
+        max_tool_iterations: int = 3,
         enable_long_response_summary: bool = False,
     ):
         # Use base_url directly without conversion
@@ -868,9 +904,43 @@ class OmniOfflineClient:
                 continue
             return
         logger.warning(
-            "OmniOfflineClient: tool iteration cap %d reached, stopping",
+            "OmniOfflineClient: tool iteration cap %d reached; forcing final answer without tools",
             self.max_tool_iterations,
         )
+        # Forced-finalize：工具轮次封顶后，去掉 tools 再调一次，逼模型基于已
+        # 积累的 tool 结果给出最终文本。否则弱模型在 finish_reason=tool_calls
+        # 上死循环到封顶后整轮静默，上游只能报"未产生文本回复"，用户那边就
+        # 表现为不回话。去掉 tools 后模型无法再发起调用，必须输出文本。
+        final_overrides = {
+            k: v for k, v in overrides.items() if k not in ("tools", "tool_choice")
+        }
+        final_finish_reason: Optional[str] = None
+        final_prompt_tokens: Optional[int] = None
+        async for chunk in self.llm.astream(messages, **final_overrides):
+            if chunk.finish_reason:
+                final_finish_reason = chunk.finish_reason
+            if chunk.usage_metadata:
+                pt = chunk.usage_metadata.get("prompt_tokens")
+                if pt:
+                    final_prompt_tokens = pt
+            # 与常规 tool-loop 路径一致：不向下游转发 thinking 模型的纯
+            # reasoning chunk（有 reasoning_content、无 content / tool delta /
+            # finish / usage）。stream_text 在首个 yield 的 chunk 上记 TTFT，
+            # 放行 reasoning-only 会把"首推理 token"误当首 token，污染封顶轮延迟埋点。
+            if (
+                getattr(chunk, "reasoning_content", None)
+                and not getattr(chunk, "content", None)
+                and not chunk.tool_call_deltas
+                and not chunk.finish_reason
+                and not chunk.usage_metadata
+            ):
+                continue
+            yield chunk
+        # prompt_tokens 走局部变量、流结束后无条件回填（与 genai 路径同口径）：这次
+        # forced-finalize 没给 usage 时写回 None，而非沿用上一轮 tool-iteration 的旧
+        # 值，避免上层 empty-completion 诊断串台。
+        self._last_finish_reason = final_finish_reason
+        self._last_prompt_tokens = final_prompt_tokens
 
     async def _astream_genai_with_tools(self, messages, **overrides):
         """google-genai streaming with tool support. Yields
@@ -888,7 +958,7 @@ class OmniOfflineClient:
         Raises ``_GenaiToolsUnsupported`` if the SDK or this model
         cannot handle tools — caller falls back to OpenAI-compat."""
         from utils.llm_client import LLMStreamChunk
-        if not _GENAI_AVAILABLE:
+        if not _ensure_genai():
             raise _GenaiToolsUnsupported("google-genai SDK not importable")
         types = _genai_types
 
@@ -1126,9 +1196,73 @@ class OmniOfflineClient:
                 continue
             return
         logger.warning(
-            "OmniOfflineClient(genai): tool iteration cap %d reached",
+            "OmniOfflineClient(genai): tool iteration cap %d reached; forcing final answer without tools",
             self.max_tool_iterations,
         )
+        # Forced-finalize：与 OpenAI 路径对偶。去掉 tools 再生成一次，逼模型
+        # 基于已积累的 tool 结果输出最终文本，避免封顶后整轮静默。
+        # 不吞异常：与 OpenAI 路径一致，让 SDK 调用失败原样向上抛，由 stream_text /
+        # prompt_ephemeral 现成的 retry / 状态上报 / response_discarded 清泡泡逻辑
+        # 接管。若在这里 try/except 成 warning，就把真实失败伪装成"空回复"，弱模型
+        # 超限后反而可能重回静音态，与本兜底目标冲突。
+        final_cfg_kw = {k: v for k, v in gen_config_kw.items() if k != "tools"}
+        final_system_instruction, final_contents = _genai_messages_to_contents(messages)
+        if final_system_instruction:
+            final_cfg_kw["system_instruction"] = final_system_instruction
+        final_config = types.GenerateContentConfig(**final_cfg_kw)
+        final_stream = await self._genai_client.aio.models.generate_content_stream(
+            model=self.model,
+            contents=final_contents,
+            config=final_config,
+        )
+        final_finish_reason: Optional[str] = None
+        final_block_reason: Optional[str] = None
+        final_prompt_tokens: Optional[int] = None
+        final_had_text = False
+        async for chunk in final_stream:
+            # 与常规 genai 分支对偶地采集空回复诊断：block_reason / finish_reason /
+            # prompt_tokens。否则若 forced-finalize 也被 safety / recitation /
+            # max-tokens 挡住而无文本，上层只能引用上一轮 tool-iteration 的过期
+            # finish_reason，诊断失真。
+            pf = getattr(chunk, "prompt_feedback", None)
+            if pf is not None:
+                br = getattr(pf, "block_reason", None)
+                if br:
+                    final_block_reason = str(br)
+            usage_meta = getattr(chunk, "usage_metadata", None)
+            if usage_meta is not None:
+                pt = getattr(usage_meta, "prompt_token_count", 0) or 0
+                if pt:
+                    final_prompt_tokens = pt
+            candidates = getattr(chunk, "candidates", None) or []
+            if not candidates:
+                continue
+            cand = candidates[0]
+            fr = getattr(cand, "finish_reason", None)
+            if fr:
+                final_finish_reason = str(fr)
+            cand_content = getattr(cand, "content", None)
+            for part in (getattr(cand_content, "parts", None) or []):
+                if getattr(part, "thought", False):
+                    continue
+                text = getattr(part, "text", None) or ""
+                if text:
+                    final_had_text = True
+                    yield LLMStreamChunk(content=text)
+        # 统一回填本次 forced-finalize 自己的诊断值（含 prompt_tokens）。prompt_tokens
+        # 走局部变量、流结束后无条件回填：若这次被挡住/没给 usage，写回 None 而非沿用
+        # 上一轮 tool-iteration 的旧值，避免 INFO log / 上层 LLM_NO_RESPONSE 诊断串台。
+        self._last_finish_reason = final_finish_reason
+        self._last_block_reason = final_block_reason
+        self._last_prompt_tokens = final_prompt_tokens
+        if not final_had_text:
+            logger.info(
+                "OmniOfflineClient(genai): forced-finalize empty completion "
+                "finish_reason=%s block_reason=%s model=%s prompt_tokens=%s",
+                final_finish_reason, final_block_reason,
+                getattr(self, "model", None),
+                final_prompt_tokens,
+            )
 
     def update_max_response_length(self, max_length: int) -> None:
         """更新回复 token 上限（用户可能在对话期间修改设置）。

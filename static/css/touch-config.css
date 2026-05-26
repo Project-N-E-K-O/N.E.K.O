@@ -160,6 +160,12 @@
     overflow-y: visible;
 }
 
+.touch-config-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: var(--spacing-lg);
+}
+
 .hitarea-item {
     margin-bottom: var(--spacing-xl);
     padding: var(--spacing-lg);
@@ -181,18 +187,57 @@
     border-radius: 2px;
 }
 
+.hitarea-title-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--spacing-md);
+    margin-bottom: var(--spacing-md);
+}
+
 .hitarea-title {
     font-weight: 600;
     color: var(--color-text-dark);
-    margin-bottom: var(--spacing-md);
+    margin-bottom: 0;
     font-size: 15px;
     display: flex;
     align-items: center;
     gap: var(--spacing-sm);
+    min-width: 0;
+    word-break: break-word;
 }
 
 .hitarea-title::before {
     display: none;
+}
+
+.hitarea-custom-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    flex-shrink: 0;
+}
+
+.hitarea-icon-btn {
+    border: 1px solid var(--color-n-border);
+    background: white;
+    color: var(--color-n-deep);
+    border-radius: var(--radius-item);
+    padding: 6px 10px;
+    font-size: 12px;
+    line-height: 1;
+    cursor: pointer;
+    transition: background 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+}
+
+.hitarea-icon-btn:hover {
+    background: var(--color-n-light);
+    border-color: var(--color-n-main);
+    transform: translateY(-1px);
+}
+
+.hitarea-icon-btn-danger {
+    color: var(--color-error);
 }
 
 .hitarea-section {
@@ -411,6 +456,205 @@
 
 .hitarea-btn-secondary:hover {
     background: var(--color-n-light);
+}
+
+.hitarea-btn-danger {
+    background: var(--color-error);
+    color: white;
+}
+
+.hitarea-btn-danger:hover {
+    background: #e04444;
+    transform: translateY(-1px);
+}
+
+.touch-confirm-window {
+    max-width: 460px;
+}
+
+.touch-confirm-message {
+    margin: 0;
+    color: var(--color-text-dark);
+    font-size: 14px;
+    line-height: 1.7;
+    word-break: break-word;
+}
+
+.touch-confirm-buttons {
+    margin-top: var(--spacing-xl);
+}
+
+.touch-custom-window {
+    max-width: 760px;
+    width: 94%;
+    max-height: 96vh;
+    overflow: hidden;
+}
+
+.touch-custom-window .touch-config-content {
+    overflow-y: auto;
+}
+
+.touch-custom-name-row {
+    margin-bottom: var(--spacing-lg);
+}
+
+.touch-custom-name-input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 10px 14px;
+    border: 2px solid var(--color-n-border);
+    border-radius: var(--radius-item);
+    color: var(--color-text-dark);
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.touch-custom-name-input:focus {
+    border-color: var(--color-n-main);
+    box-shadow: 0 0 0 3px rgba(64, 197, 241, 0.16);
+}
+
+.touch-custom-preview-wrap {
+    position: relative;
+    width: 100%;
+    height: min(58vh, 560px);
+    min-height: 420px;
+    overflow: hidden;
+    border: 2px solid var(--color-n-border);
+    border-radius: var(--radius-item);
+    background-color: #eef8fb;
+    background-image:
+        linear-gradient(rgba(26, 120, 162, 0.24) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(26, 120, 162, 0.24) 1px, transparent 1px),
+        linear-gradient(rgba(26, 120, 162, 0.11) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(26, 120, 162, 0.11) 1px, transparent 1px);
+    background-size: 100px 100px, 100px 100px, 20px 20px, 20px 20px;
+    background-position: 0 0;
+    cursor: crosshair;
+    user-select: none;
+    touch-action: none;
+}
+
+.touch-custom-preview-canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+}
+
+.touch-custom-model-bounds {
+    position: absolute;
+    display: none;
+    border: 1px dashed rgba(64, 197, 241, 0.65);
+    pointer-events: none;
+    box-sizing: border-box;
+}
+
+.touch-custom-selection {
+    position: absolute;
+    display: none;
+    border: 2px solid var(--color-n-main);
+    background: rgba(64, 197, 241, 0.07);
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.7) inset;
+    pointer-events: none;
+    box-sizing: border-box;
+}
+
+.touch-custom-selection.is-editing {
+    background: rgba(64, 197, 241, 0.11);
+}
+
+.touch-custom-hover-label {
+    position: absolute;
+    left: 0;
+    top: 0;
+    z-index: 6;
+    max-width: min(220px, calc(100% - 24px));
+    padding: 6px 10px;
+    border: 1px solid rgba(34, 179, 255, 0.55);
+    border-radius: var(--radius-item);
+    background: rgba(255, 255, 255, 0.94);
+    color: var(--color-text-dark);
+    font-size: 12px;
+    line-height: 1.35;
+    box-shadow: 0 6px 18px rgba(34, 179, 255, 0.18);
+    opacity: 0;
+    pointer-events: none;
+    transform: translate3d(0, 0, 0);
+    transition: opacity 0.12s ease;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    will-change: transform, opacity;
+}
+
+.touch-custom-hover-label.is-visible {
+    opacity: 1;
+}
+
+.touch-custom-resize-handle {
+    position: absolute;
+    width: 10px;
+    height: 10px;
+    background: white;
+    border: 2px solid var(--color-n-main);
+    border-radius: 50%;
+    box-sizing: border-box;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.22);
+}
+
+.touch-custom-resize-nw {
+    left: -6px;
+    top: -6px;
+}
+
+.touch-custom-resize-n {
+    left: calc(50% - 5px);
+    top: -6px;
+}
+
+.touch-custom-resize-ne {
+    right: -6px;
+    top: -6px;
+}
+
+.touch-custom-resize-e {
+    right: -6px;
+    top: calc(50% - 5px);
+}
+
+.touch-custom-resize-se {
+    right: -6px;
+    bottom: -6px;
+}
+
+.touch-custom-resize-s {
+    left: calc(50% - 5px);
+    bottom: -6px;
+}
+
+.touch-custom-resize-sw {
+    left: -6px;
+    bottom: -6px;
+}
+
+.touch-custom-resize-w {
+    left: -6px;
+    top: calc(50% - 5px);
+}
+
+.touch-custom-status {
+    min-height: 20px;
+    margin-top: var(--spacing-sm);
+    color: var(--color-error);
+    font-size: 13px;
+}
+
+.touch-custom-buttons {
+    margin-top: var(--spacing-md);
 }
 
 #touch-set-save-indicator {
