@@ -4,6 +4,12 @@ import App from './App';
 import { parseChatMessage, type CompactChatState } from './message-schema';
 
 describe('App', () => {
+  const COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY = 'neko.reactChatWindow.compactExportHistoryOpen';
+
+  beforeEach(() => {
+    window.localStorage.removeItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
+  });
+
   const clickCompactExportTool = async () => {
     try {
       vi.useFakeTimers();
@@ -282,11 +288,33 @@ describe('App', () => {
     expect(container.querySelector('.compact-export-history-message')).not.toHaveAttribute('aria-pressed');
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('role', 'button');
     expect(exportButton).toHaveAttribute('aria-pressed', 'true');
+    expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
 
     await clickCompactExportTool();
     expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
     expect(container.querySelector('[data-compact-hit-region-id^="history:"]')).toBeNull();
     expect(exportButton).toHaveAttribute('aria-pressed', 'false');
+    expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('false');
+  });
+
+  it('restores compact inline history from persisted open state after remount', () => {
+    const message = parseChatMessage({
+      id: 'assistant-history-persisted',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: 'Keep history open after refresh.' }],
+      status: 'sent',
+    });
+    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'true');
+
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />,
+    );
+
+    expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
+    expect(container.querySelector('.compact-input-tool-item-export')).toHaveAttribute('aria-pressed', 'true');
   });
 
   it('keeps compact inline history open without an empty state when there are no messages', async () => {
@@ -297,6 +325,82 @@ describe('App', () => {
     expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
     expect(container.querySelector('.compact-export-history-empty')).toBeNull();
     expect(container).not.toHaveTextContent('There is no conversation to export yet.');
+  });
+
+  it('applies stable casual spacing tokens to compact inline history messages', async () => {
+    const firstAssistant = parseChatMessage({
+      id: 'assistant-history-casual-1',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: 'First old line.' }],
+      status: 'sent',
+    });
+    const secondAssistant = parseChatMessage({
+      id: 'assistant-history-casual-2',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:01',
+      createdAt: 2,
+      blocks: [{ type: 'text', text: 'Same role should stay visually close.' }],
+      status: 'sent',
+    });
+    const userMessage = parseChatMessage({
+      id: 'user-history-casual',
+      role: 'user',
+      author: 'You',
+      time: '10:02',
+      createdAt: 3,
+      blocks: [{ type: 'text', text: 'Role switch gets a little more air.' }],
+      status: 'sent',
+    });
+    const imageMessage = parseChatMessage({
+      id: 'assistant-history-casual-image',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:03',
+      createdAt: 4,
+      blocks: [{ type: 'image', url: 'https://example.com/neko.png', alt: 'Neko memory' }],
+      status: 'sent',
+    });
+    const { container, rerender } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[firstAssistant, secondAssistant, userMessage, imageMessage]} />,
+    );
+
+    await clickCompactExportTool();
+
+    const first = container.querySelector<HTMLElement>('[data-compact-export-history-message-id="assistant-history-casual-1"]');
+    const second = container.querySelector<HTMLElement>('[data-compact-export-history-message-id="assistant-history-casual-2"]');
+    const user = container.querySelector<HTMLElement>('[data-compact-export-history-message-id="user-history-casual"]');
+    const image = container.querySelector<HTMLElement>('[data-compact-export-history-message-id="assistant-history-casual-image"]');
+    expect(first).toHaveAttribute('data-compact-history-group', 'first');
+    expect(second).toHaveAttribute('data-compact-history-group', 'same');
+    expect(user).toHaveAttribute('data-compact-history-group', 'switch');
+    expect(image).toHaveAttribute('data-compact-history-complexity', 'rich');
+    expect(second?.style.getPropertyValue('--compact-history-bubble-max-ratio')).toMatch(/%$/);
+    expect(second?.style.getPropertyValue('--compact-history-stagger-x')).toMatch(/px$/);
+    expect(user?.style.getPropertyValue('--compact-history-stagger-x')).toMatch(/^-?\d+px$/);
+    const stableOffset = second?.style.getPropertyValue('--compact-history-stagger-x');
+    const stableWidth = second?.style.getPropertyValue('--compact-history-bubble-max-ratio');
+    const stableRotate = second?.style.getPropertyValue('--compact-history-rotate');
+
+    const updatedSecondAssistant = parseChatMessage({
+      ...secondAssistant,
+      blocks: [{ type: 'text', text: 'Same id changes text but not the casual layout tokens.' }],
+    });
+    rerender(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        messages={[firstAssistant, updatedSecondAssistant, userMessage, imageMessage]}
+      />,
+    );
+
+    const rerenderedSecond = container.querySelector<HTMLElement>('[data-compact-export-history-message-id="assistant-history-casual-2"]');
+    expect(rerenderedSecond?.style.getPropertyValue('--compact-history-stagger-x')).toBe(stableOffset);
+    expect(rerenderedSecond?.style.getPropertyValue('--compact-history-bubble-max-ratio')).toBe(stableWidth);
+    expect(rerenderedSecond?.style.getPropertyValue('--compact-history-rotate')).toBe(stableRotate);
   });
 
   it('opens compact inline preview with disabled final actions when nothing is selected', async () => {
@@ -576,7 +680,7 @@ describe('App', () => {
     expect(message).not.toHaveClass('is-selected');
   });
 
-  it('closes compact inline history when leaving compact mode', async () => {
+  it('hides compact inline history outside compact mode and restores it when compact returns', async () => {
     const message = parseChatMessage({
       id: 'assistant-history-close',
       role: 'assistant',
@@ -597,6 +701,11 @@ describe('App', () => {
 
     expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
     expect(container.querySelector('[data-compact-hit-region-id^="history:"]')).toBeNull();
+    expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
+
+    rerender(<App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />);
+
+    expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
   });
 
   it('elevates compact state to options when choices are visible', () => {

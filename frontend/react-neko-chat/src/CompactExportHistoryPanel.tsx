@@ -3,6 +3,7 @@ import {
   useEffect,
   useRef,
   useState,
+  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
@@ -68,6 +69,12 @@ type PointerIntentState = {
   cancelled: boolean;
 };
 
+type CompactHistoryBubbleTone = {
+  group: 'first' | 'same' | 'switch';
+  complexity: 'plain' | 'rich';
+  style: CSSProperties & Record<string, string>;
+};
+
 export function isCompactExportMessageSelectable(message: ChatMessage) {
   return !!message.id && message.status !== 'sending';
 }
@@ -89,6 +96,71 @@ function getCompactHistoryMessageClassName(message: ChatMessage, selected: boole
     'is-streaming': message.status === 'streaming',
     'is-failed': message.status === 'failed',
   });
+}
+
+function getCompactHistoryRoleGroup(message?: ChatMessage) {
+  if (!message) return 'none';
+  if (message.role === 'user') return 'user';
+  if (message.role === 'assistant' || message.role === 'tool') return 'assistant';
+  return 'system';
+}
+
+function getStableCompactHistoryHash(seed: string) {
+  let hash = 0;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash = ((hash << 5) - hash + seed.charCodeAt(index)) | 0;
+  }
+  return Math.abs(hash);
+}
+
+function hasRichCompactHistoryContent(message: ChatMessage) {
+  return message.blocks.some(block => block.type === 'image' || block.type === 'buttons');
+}
+
+function getCompactHistoryBubbleTone(
+  message: ChatMessage,
+  index: number,
+  previousMessage?: ChatMessage,
+): CompactHistoryBubbleTone {
+  const roleGroup = getCompactHistoryRoleGroup(message);
+  const previousRoleGroup = getCompactHistoryRoleGroup(previousMessage);
+  const group: CompactHistoryBubbleTone['group'] = index === 0
+    ? 'first'
+    : previousRoleGroup === roleGroup
+      ? 'same'
+      : 'switch';
+  const richContent = hasRichCompactHistoryContent(message);
+  const seed = message.id || `${message.role}:${message.createdAt ?? message.time}:${index}`;
+  const hash = getStableCompactHistoryHash(seed);
+  const widthSteps = roleGroup === 'system'
+    ? ['84%', '90%', '94%']
+    : richContent
+      ? ['76%', '82%', '88%']
+      : ['70%', '78%', '86%', '92%'];
+  const offsetSteps = richContent ? [0, 6, 10] : [0, 8, 14, 20];
+  const baseOffset = offsetSteps[Math.floor(hash / 7) % offsetSteps.length];
+  const signedOffset = roleGroup === 'user'
+    ? -baseOffset
+    : roleGroup === 'assistant'
+      ? baseOffset
+      : 0;
+  const sameGroupGaps = ['4px', '7px', '10px'];
+  const switchGroupGaps = ['15px', '19px', '23px'];
+  const gapSteps = group === 'same' ? sameGroupGaps : group === 'switch' ? switchGroupGaps : ['0px'];
+  const rotateSteps = richContent || roleGroup === 'system'
+    ? ['0deg']
+    : ['-0.5deg', '-0.25deg', '0deg', '0.25deg', '0.5deg'];
+
+  return {
+    group,
+    complexity: richContent ? 'rich' : 'plain',
+    style: {
+      '--compact-history-bubble-max-ratio': widthSteps[hash % widthSteps.length],
+      '--compact-history-stagger-x': `${signedOffset}px`,
+      '--compact-history-gap-before': gapSteps[Math.floor(hash / 31) % gapSteps.length],
+      '--compact-history-rotate': rotateSteps[Math.floor(hash / 127) % rotateSteps.length],
+    },
+  };
 }
 
 export default function CompactExportHistoryPanel({
@@ -536,17 +608,21 @@ export default function CompactExportHistoryPanel({
             >
               {messages.length > 0 ? (
                 <div className="compact-export-history-scroll-content">
-                  {messages.map((message) => {
+                  {messages.map((message, index) => {
                     const selectable = isCompactExportMessageSelectable(message);
                     const selected = selectedIds.has(message.id);
                     const failed = message.status === 'failed';
                     const streaming = message.status === 'streaming';
+                    const tone = getCompactHistoryBubbleTone(message, index, messages[index - 1]);
                     return (
                       <article
                         key={message.id}
                         className={getCompactHistoryMessageClassName(message, selected, selectable, selectedCount > 0)}
+                        style={tone.style}
                         role="listitem"
                         data-compact-export-history-message-id={message.id}
+                        data-compact-history-group={tone.group}
+                        data-compact-history-complexity={tone.complexity}
                         data-message-role={message.role}
                         data-message-status={message.status || ''}
                       >

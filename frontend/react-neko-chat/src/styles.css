@@ -2113,7 +2113,7 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
     min(calc(var(--compact-export-surface-width) * 1.18), 63vh)
   );
   --compact-export-history-viewport-gutter: 24px;
-  --compact-export-history-width-ratio: 1.28;
+  --compact-export-history-width-ratio: 1.36;
   --compact-export-history-max-inline-size: calc(100vw - var(--compact-export-history-viewport-gutter));
   --compact-export-history-inline-size: min(
     calc(var(--compact-export-surface-width) * var(--compact-export-history-width-ratio)),
@@ -2194,7 +2194,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 .compact-export-history-scroll-content {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 0;
   min-height: 100%;
   pointer-events: none;
 }
@@ -2241,6 +2241,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   display: flex;
   width: 100%;
   min-width: 0;
+  margin-top: var(--compact-history-gap-before, 8px);
   border: 0;
   background: transparent;
   color: inherit;
@@ -2271,7 +2272,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 .compact-export-history-bubble {
   position: relative;
-  max-width: var(--compact-export-history-bubble-max-ratio);
+  max-width: var(--compact-history-bubble-max-ratio, var(--compact-export-history-bubble-max-ratio));
   min-width: 0;
   padding: 8px 10px;
   border: 1.5px solid transparent;
@@ -2283,6 +2284,8 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   -webkit-backdrop-filter: blur(8px) saturate(1.08);
   cursor: pointer;
   pointer-events: auto;
+  transform-origin: center center;
+  transform: translateX(var(--compact-history-stagger-x, 0px)) rotate(var(--compact-history-rotate, 0deg));
   transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
 }
 
@@ -2297,9 +2300,13 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 .compact-export-history-message.is-system .compact-export-history-bubble {
-  max-width: var(--compact-export-history-system-bubble-max-ratio);
+  max-width: var(--compact-history-bubble-max-ratio, var(--compact-export-history-system-bubble-max-ratio));
   background: rgba(131, 148, 175, 0.18);
   color: #607086;
+}
+
+.compact-export-history-message[data-compact-history-complexity="rich"] .compact-export-history-bubble {
+  --compact-history-rotate: 0deg;
 }
 
 .compact-export-history-message.is-selected .compact-export-history-bubble {

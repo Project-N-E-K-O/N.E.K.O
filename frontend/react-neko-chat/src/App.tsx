@@ -76,6 +76,7 @@ const COMPACT_PREVIEW_MAX_LENGTH = 84;
 const COMPACT_SPEECH_REVEAL_MAX_CHARS_PER_SECOND = 8;
 const SPEECH_PLAYBACK_STATE_STORAGE_KEY = 'neko_speech_playback_state';
 const SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';
+const COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY = 'neko.reactChatWindow.compactExportHistoryOpen';
 const COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT = 7;
 const COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD = 28;
 const COMPACT_INPUT_TOOL_FAN_ORIGIN_CLOSE_SIZE = 48;
@@ -159,6 +160,24 @@ function isDesktopCompactSurfaceLayoutActive(): boolean {
     && !!(window as typeof window & {
       __nekoDesktopCompactLayout?: { windowBounds?: unknown } | null;
     }).__nekoDesktopCompactLayout?.windowBounds;
+}
+
+function readPersistedCompactExportHistoryOpen(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.localStorage?.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function persistCompactExportHistoryOpen(open: boolean) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage?.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, open ? 'true' : 'false');
+  } catch {
+    // localStorage can be unavailable in restricted hosts; keep the in-memory state.
+  }
 }
 
 type SpeechPlaybackState = {
@@ -950,7 +969,7 @@ export default function App({
   const [compactInputToolFanInteractive, setCompactInputToolFanInteractive] = useState(false);
   const [compactInputToolWheelIndex, setCompactInputToolWheelIndex] = useState(0);
   const [compactSurfaceResizeWidth, setCompactSurfaceResizeWidth] = useState<number | null>(null);
-  const [compactExportHistoryOpen, setCompactExportHistoryOpen] = useState(false);
+  const [compactExportHistoryOpen, setCompactExportHistoryOpen] = useState(readPersistedCompactExportHistoryOpen);
   const [compactExportPreviewOpen, setCompactExportPreviewOpen] = useState(false);
   const [compactExportSelectedIds, setCompactExportSelectedIds] = useState<Set<string>>(() => new Set());
   const [compactExportAutoScrollToBottom, setCompactExportAutoScrollToBottom] = useState(true);
@@ -1172,6 +1191,7 @@ export default function App({
     }
     setCompactExportHistoryOpen((open) => {
       const nextOpen = !open;
+      persistCompactExportHistoryOpen(nextOpen);
       if (nextOpen) {
         setCompactExportAutoScrollToBottom(true);
       } else {
@@ -1260,7 +1280,6 @@ export default function App({
 
   useEffect(() => {
     if (isCompactSurface) return;
-    setCompactExportHistoryOpen(false);
     setCompactExportPreviewOpen(false);
     setCompactExportSelectedIds(prev => (prev.size === 0 ? prev : new Set()));
     setCompactExportAutoScrollToBottom(true);
