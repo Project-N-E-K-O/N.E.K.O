@@ -476,31 +476,50 @@ async def test_route_inject_rejection_id_match():
 
 async def test_route_inject_rejection_content_fallback_no_id():
     """fallback 路径（Codex P1）：provider 拒绝 response.create 但 error 不带
-    client event_id。只要内容像 response-conflict 就 fire 所有 pending handler，
-    避免静默丢失。"""
+    client event_id。proactive inject 正等待 outcome（flag True）且内容像
+    response-conflict 时 fire 所有 pending handler，避免静默丢失。"""
     from main_logic.omni_realtime_client import OmniRealtimeClient
 
     fired = []
     sess = OmniRealtimeClient.__new__(OmniRealtimeClient)
     sess._inject_rejection_handlers = {"k1": lambda msg: fired.append(msg)}
-    # err_event_id 缺失 / 不匹配，但消息是 response-conflict
+    sess._proactive_inject_awaiting_outcome = True  # inject 刚发出，正等 outcome
+    # err_event_id 缺失，但消息是 response-conflict
     sess._route_inject_rejection(None, "Conversation already has an active response")
     assert len(fired) == 1
     assert sess._inject_rejection_handlers == {}
+    assert sess._proactive_inject_awaiting_outcome is False  # 窗口已消费
+
+
+async def test_route_inject_rejection_no_id_but_not_awaiting_does_not_fire():
+    """CodeRabbit Major：无 id 的 response-conflict，但当前没有 proactive inject
+    在等 outcome（flag False，例如 handler 是上一次成功 inject 的残留，或这条
+    冲突来自 create_response / tool-result / signal_user_activity_end 等别的
+    response.create 发送方）→ 绝不能 fire，否则把已接受的 cb 误回补造成重复。"""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    fired = []
+    sess = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    sess._inject_rejection_handlers = {"k1": lambda msg: fired.append(msg)}
+    sess._proactive_inject_awaiting_outcome = False  # 没有 inject 在等
+    sess._route_inject_rejection(None, "response_already_active")
+    assert fired == []
+    assert "k1" in sess._inject_rejection_handlers  # 未动
 
 
 async def test_route_inject_rejection_nonmatching_id_does_not_fire_fallback():
     """Codex P1：error 带了 client event_id 但不匹配我们任何 pending handler
     → 说明这是别的 response.create（create_response / tool-result 续传 /
     signal_user_activity_end，都被 send_event setdefault 打了时间戳 id）的拒绝，
-    不是我们的 inject。即使消息文本像 response_already_active 也**不能** fire，
-    否则会把模型其实已接受的 cb 误回补造成重复播报。content fallback 只在完全
-    没有 client id 时才走。"""
+    不是我们的 inject。即使消息文本像 response_already_active、即使有 inject 在
+    等 outcome，也**不能** fire（id present 只精确匹配），否则把模型其实已接受的
+    cb 误回补造成重复播报。content fallback 只在完全没有 client id 时才走。"""
     from main_logic.omni_realtime_client import OmniRealtimeClient
 
     fired = []
     sess = OmniRealtimeClient.__new__(OmniRealtimeClient)
     sess._inject_rejection_handlers = {"event_inject_resp_ours": lambda msg: fired.append(msg)}
+    sess._proactive_inject_awaiting_outcome = True  # 即便在等，也不能被别人的 id 触发
     # 别的请求的 event_id + response-conflict 文本
     sess._route_inject_rejection("event_create_response_other", "response_already_active")
     assert fired == []
@@ -515,6 +534,7 @@ async def test_route_inject_rejection_unrelated_error_does_not_fire():
     fired = []
     sess = OmniRealtimeClient.__new__(OmniRealtimeClient)
     sess._inject_rejection_handlers = {"k1": lambda msg: fired.append(msg)}
+    sess._proactive_inject_awaiting_outcome = True
     sess._route_inject_rejection(None, "503 service overloaded, try again later")
     assert fired == []
     assert sess._inject_rejection_handlers == {"k1": sess._inject_rejection_handlers["k1"]}

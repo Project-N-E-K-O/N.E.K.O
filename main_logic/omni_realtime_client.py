@@ -473,6 +473,15 @@ class OmniRealtimeClient:
         # was optimistically pruned after send. Entries also self-expire to
         # avoid leaks if the server never acks.
         self._inject_rejection_handlers: Dict[str, Callable[[str], None]] = {}
+        # One-shot gate for the no-event_id content fallback in
+        # ``_route_inject_rejection``. True only between "a proactive inject
+        # just sent its ``response.create``" and "that inject's outcome was
+        # observed" (rejection fired, or a response lifecycle event arrived).
+        # Without this, a no-id ``response_already_active`` from a DIFFERENT
+        # ``response.create`` sender (create_response / tool-result /
+        # signal_user_activity_end) could content-match a lingering — already
+        # succeeded — proactive handler and wrongly re-enqueue its cb.
+        self._proactive_inject_awaiting_outcome = False
 
     def _fire_task(self, coro):
         """Create a background task with GC protection."""
@@ -1771,6 +1780,11 @@ class OmniRealtimeClient:
             # under transient backpressure is still caught (Codex P2).
             self._fire_task(self._expire_inject_rejection_handler(item_event_id, 30.0))
             self._fire_task(self._expire_inject_rejection_handler(create_event_id, 30.0))
+            # Open the no-id content-fallback window for THIS inject. Closed
+            # when its outcome is observed (rejection fired, or the next
+            # response lifecycle event / done sweep) — see
+            # _route_inject_rejection.
+            self._proactive_inject_awaiting_outcome = True
 
         item_event: Dict[str, Any] = {
             "type": "conversation.item.create",
@@ -1889,11 +1903,21 @@ class OmniRealtimeClient:
             # belongs to some other request's rejection — not ours.
             handler = self._inject_rejection_handlers.pop(err_event_id, None)
             if handler is not None:
+                self._proactive_inject_awaiting_outcome = False
                 _fire(handler)
             return
 
-        # No client-correlation id at all — fall back to content matching.
-        if self._looks_like_response_conflict(error_msg):
+        # No client-correlation id at all — fall back to content matching,
+        # but ONLY while a proactive inject is genuinely awaiting its outcome
+        # (one-shot window). This excludes a no-id response-conflict raised by
+        # a DIFFERENT response.create sender (create_response / tool-result /
+        # signal_user_activity_end) from hitting a lingering, already-succeeded
+        # proactive handler.
+        if (
+            self._proactive_inject_awaiting_outcome
+            and self._looks_like_response_conflict(error_msg)
+        ):
+            self._proactive_inject_awaiting_outcome = False
             for handler in list(self._inject_rejection_handlers.values()):
                 _fire(handler)
             self._inject_rejection_handlers.clear()
@@ -1918,6 +1942,9 @@ class OmniRealtimeClient:
         in the dict belongs to an inject that SUCCEEDED (no rejection coming)
         — exactly the leak the fixed TTL was meant to clean, now reaped
         promptly and lifecycle-tied instead of on a wall clock."""
+        # The inject's outcome has been observed (a response completed), so
+        # close the no-id content-fallback window too.
+        self._proactive_inject_awaiting_outcome = False
         if self._inject_rejection_handlers:
             self._inject_rejection_handlers.clear()
 
@@ -2465,6 +2492,12 @@ class OmniRealtimeClient:
                 elif event_type == "response.created":
                     self._response_created_total += 1
                     self._last_response_created_time = time.time()
+                    # A response started — our proactive inject's response.create
+                    # was either accepted (this IS its response) or a different
+                    # response is now active; either way close the no-id
+                    # content-fallback window so a later unrelated no-id
+                    # conflict can't fire a lingering (accepted) inject handler.
+                    self._proactive_inject_awaiting_outcome = False
                     self._current_response_id = event.get("response", {}).get("id")
                     self._is_responding = True
                     self._interrupted = False  # Clear interruption flag on new response
