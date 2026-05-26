@@ -74,9 +74,12 @@ def _make_mgr(session=None) -> LLMSessionManager:
 
     def _fake_fire(coro):
         mgr._fired_tasks.append(coro)
+        # Close the coroutine so it doesn't run / warn "never awaited". Only
+        # the cleanup-related errors are expected here; anything else should
+        # surface rather than be silently swallowed.
         try:
             coro.close()
-        except Exception:
+        except (RuntimeError, AttributeError):
             pass
     mgr._fire_task = _fake_fire
     mgr.current_speech_id = None
@@ -379,7 +382,9 @@ async def test_voice_mode_concurrent_triggers_inject_once():
     for _ in range(5):
         await asyncio.sleep(0)
     release.set()
-    await asyncio.gather(t1, t2)
+    # 本地超时：若 _voice_proactive_inject_lock 以后回归成死等，这里快速失败
+    # 而不是挂到 CI 全局超时。
+    await asyncio.wait_for(asyncio.gather(t1, t2), timeout=5)
 
     # 关键：只 inject 一次，没有重复播报
     assert sess.inject_calls == 1

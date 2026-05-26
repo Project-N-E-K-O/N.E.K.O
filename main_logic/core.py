@@ -5569,13 +5569,21 @@ class LLMSessionManager:
         # 流水线在跑，也跳。两条都不满足时 callbacks 留在队列，等
         # _finalize_turn_after_emit 在 response.done 之后重新调用本函数重试。
         if isinstance(self.session, OmniRealtimeClient):
-            voice_sess = self.session
             # Serialize the whole check-and-claim against concurrent trigger
             # tasks (see ``_voice_proactive_inject_lock``). Hold the lock across
             # gate → render → inject → prune; a second task blocks here and,
             # once it acquires, re-filters the (now-pruned) queue and finds
             # nothing left to send.
             async with self._voice_proactive_inject_lock:
+                # Read the session INSIDE the lock — start_session / end_session
+                # / hot-swap may have swapped or torn it down while we waited
+                # for the lock. Re-check the type; if it's no longer a voice
+                # session, bail (a text-mode path / no session shouldn't be
+                # driven from this branch). Using the lock-time instance for
+                # gate + inject avoids injecting into a closing old session.
+                voice_sess = self.session
+                if not isinstance(voice_sess, OmniRealtimeClient):
+                    return
                 # Re-filter inside the lock: a concurrent task may have already
                 # injected+pruned these cbs while we waited on the lock.
                 proactive_cbs = [
