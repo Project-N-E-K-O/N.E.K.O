@@ -4225,6 +4225,7 @@
                 return false;
             }
 
+            this.collapseAvatarFloatingSidePanelsExcept(sidePanel);
             if (typeof sidePanel._expand === 'function') {
                 sidePanel._expand();
             } else {
@@ -5452,11 +5453,46 @@
                 : null;
         }
 
+        collapseAvatarFloatingSidePanelsExcept(currentPanel) {
+            document.querySelectorAll('[data-neko-sidepanel]').forEach((panel) => {
+                if (!panel || panel === currentPanel) {
+                    return;
+                }
+
+                if (panel._hoverCollapseTimer) {
+                    window.clearTimeout(panel._hoverCollapseTimer);
+                    panel._hoverCollapseTimer = null;
+                }
+                if (panel._expandFrameId) {
+                    window.cancelAnimationFrame(panel._expandFrameId);
+                    panel._expandFrameId = null;
+                }
+                if (typeof panel._stopHoverPointerTracking === 'function') {
+                    panel._stopHoverPointerTracking();
+                }
+                if (typeof panel._collapse === 'function') {
+                    panel._collapse();
+                    return;
+                }
+
+                if (panel._collapseTimeout) {
+                    window.clearTimeout(panel._collapseTimeout);
+                    panel._collapseTimeout = null;
+                }
+                panel.style.transition = 'none';
+                panel.style.opacity = '0';
+                panel.style.display = 'none';
+                panel.style.pointerEvents = 'none';
+                panel.style.transition = '';
+            });
+        }
+
         async expandAvatarFloatingSidePanel(panel, anchor) {
             if (!panel) {
                 return false;
             }
             const targetAnchor = anchor || panel._anchorElement || null;
+            this.collapseAvatarFloatingSidePanelsExcept(panel);
             if (typeof panel._expand === 'function') {
                 if (panel._hoverCollapseTimer) {
                     window.clearTimeout(panel._hoverCollapseTimer);
@@ -5519,6 +5555,37 @@
             return Array.from(panel.querySelectorAll('button, [role="button"], [role="switch"], input, a, [id]'))
                 .filter((element) => element !== panel && this.isElementVisible(element))
                 .slice(0, maxItems);
+        }
+
+        getAvatarFloatingCursorTourTargets(scene, primaryTarget) {
+            const normalizedScene = scene || {};
+            const targetKey = typeof normalizedScene.target === 'string' ? normalizedScene.target : '';
+            const operation = typeof normalizedScene.operation === 'string' ? normalizedScene.operation : '';
+            if (targetKey === 'agent-capabilities') {
+                return this.getAvatarFloatingAgentCapabilityTargets();
+            }
+            if (targetKey.indexOf('settings-sidepanel:') === 0) {
+                return this.getAvatarFloatingVisibleChildren(
+                    this.getAvatarFloatingSidePanel(targetKey.split(':')[1] || ''),
+                    4
+                );
+            }
+            if (operation.indexOf('show-settings-sidepanel:') === 0) {
+                return this.getAvatarFloatingVisibleChildren(
+                    this.getAvatarFloatingSidePanel(operation.split(':')[1] || ''),
+                    4
+                );
+            }
+            if (primaryTarget && primaryTarget.hasAttribute && primaryTarget.hasAttribute('data-neko-sidepanel')) {
+                return this.getAvatarFloatingVisibleChildren(primaryTarget, 4);
+            }
+            if (
+                primaryTarget
+                && primaryTarget.id === 'agent-task-hud'
+            ) {
+                return this.getAvatarFloatingVisibleChildren(primaryTarget, 4);
+            }
+            return [];
         }
 
         getChatAvatarToolMenuTargets(limit) {
@@ -5653,7 +5720,8 @@
             return this.resolveAvatarFloatingSelector(targetKey);
         }
 
-        async resolveAvatarFloatingPersistent(scene) {
+        async resolveAvatarFloatingPersistent(scene, options) {
+            const normalizedOptions = options || {};
             const persistent = typeof scene.persistent === 'string' ? scene.persistent : '';
             if (persistent) {
                 const target = this.resolveAvatarFloatingSelector(persistent);
@@ -5661,7 +5729,10 @@
                     return target;
                 }
             }
-            return this.getAvatarFloatingBaseTarget('chat-window');
+            if (normalizedOptions.fallbackToChatWindow === true) {
+                return this.getAvatarFloatingBaseTarget('chat-window');
+            }
+            return null;
         }
 
         async prepareAvatarFloatingScene(scene) {
@@ -5915,10 +5986,7 @@
             const action = scene.cursorAction || 'move';
             const targets = [primaryTarget, secondaryTarget].filter(Boolean);
             if (action === 'tour') {
-                const panel = primaryTarget && primaryTarget.hasAttribute && primaryTarget.hasAttribute('data-neko-sidepanel')
-                    ? primaryTarget
-                    : null;
-                targets.push.apply(targets, this.getAvatarFloatingVisibleChildren(panel, 4));
+                targets.push.apply(targets, this.getAvatarFloatingCursorTourTargets(scene, primaryTarget));
             }
             const uniqueTargets = Array.from(new Set(targets));
             if (uniqueTargets.length === 0) {
@@ -5948,6 +6016,7 @@
 
         async closeAvatarFloatingGuidePanels() {
             this.closeChatToolPopover();
+            this.collapseAvatarFloatingSidePanelsExcept(null);
             this.clearSceneExtraSpotlights();
             this.clearRetainedExtraSpotlights();
             this.clearPreciseHighlights();
@@ -5978,9 +6047,6 @@
             this.clearSceneExtraSpotlights();
             this.clearAllVirtualSpotlights();
             this.clearSpotlightGeometryHints();
-            if (!scene.cleanupBefore) {
-                this.overlay.clearActionSpotlight();
-            }
 
             await this.prepareAvatarFloatingScene(scene);
             if (sceneRunId !== this.sceneRunId || this.isStopping()) {
@@ -6000,7 +6066,18 @@
                 this.applyGuideEmotion(sceneEmotion);
             }
 
-            const persistentTarget = await this.resolveAvatarFloatingPersistent(scene);
+            const isFirstDailyScene = index === 0;
+            const introChatSpotlightTarget = isFirstDailyScene
+                ? this.getAvatarFloatingBaseTarget('chat-window')
+                : null;
+            if (introChatSpotlightTarget) {
+                this.addRetainedExtraSpotlight(introChatSpotlightTarget);
+            }
+
+            const persistentTarget = await this.resolveAvatarFloatingPersistent(scene, {
+                fallbackToChatWindow: isFirstDailyScene
+            });
+            const firstSceneUsesChatPersistent = persistentTarget && persistentTarget === introChatSpotlightTarget;
             const primaryTarget = await this.resolveAvatarFloatingTarget(scene, 'primary');
             const secondaryTarget = await this.resolveAvatarFloatingTarget(scene, 'secondary');
             this.applyGuideHighlights({
@@ -6030,7 +6107,9 @@
             await this.runAvatarFloatingSceneOperation(scene, primaryTarget, narrationStartedAt);
             this.applyGuideHighlights({
                 key: scene.id + '-settled',
-                persistent: await this.resolveAvatarFloatingPersistent(scene),
+                persistent: await this.resolveAvatarFloatingPersistent(scene, {
+                    fallbackToChatWindow: isFirstDailyScene
+                }),
                 primary: await this.resolveAvatarFloatingTarget(scene, 'primary'),
                 secondary: await this.resolveAvatarFloatingTarget(scene, 'secondary')
             });
@@ -6048,6 +6127,12 @@
                 : null;
 
             await narrationPromise;
+            if (introChatSpotlightTarget) {
+                this.removeRetainedExtraSpotlight(introChatSpotlightTarget);
+                if (firstSceneUsesChatPersistent) {
+                    this.overlay.clearPersistentSpotlight();
+                }
+            }
             if (petalTransitionPromise) {
                 await petalTransitionPromise;
             }
@@ -6424,6 +6509,7 @@
                     return false;
                 }
 
+                this.collapseAvatarFloatingSidePanelsExcept(sidePanel);
                 if (typeof sidePanel._expand === 'function') {
                     if (sidePanel._hoverCollapseTimer) {
                         window.clearTimeout(sidePanel._hoverCollapseTimer);
@@ -8804,7 +8890,22 @@
                 let settingsPeekPanicPromise = Promise.resolve();
                 let stopSettingsDetailTour = false;
                 let settingsProactiveChatSpotlightStarted = false;
+                let characterSidePanelClosedForSecondLine = false;
                 const shouldRunSettingsPeekPanic = /换掉|快关掉|不行/.test(detailTextPart2 || '');
+                const closeCharacterSidePanelBeforeSecondLine = () => {
+                    if (characterSidePanelClosedForSecondLine) {
+                        return;
+                    }
+
+                    characterSidePanelClosedForSecondLine = true;
+                    stopSettingsDetailTour = true;
+                    this.collapseCharacterSettingsSidePanel();
+                    this.clearVirtualSpotlight('settings-character-children-bundle');
+                    this.clearVirtualSpotlight('settings-entry-bundle');
+                    this.setSceneExtraSpotlights([
+                        settingsSpotlightTarget
+                    ].filter(Boolean));
+                };
                 const startSettingsPeekProactiveChatSpotlight = () => {
                     if (
                         settingsProactiveChatSpotlightStarted
@@ -8816,7 +8917,7 @@
                     }
 
                     settingsProactiveChatSpotlightStarted = true;
-                    stopSettingsDetailTour = true;
+                    closeCharacterSidePanelBeforeSecondLine();
                     void (async () => {
                         const proactivePanel = await this.ensureAvatarFloatingSettingsSidePanel('interval-proactive-chat');
                         if (runId !== this.sceneRunId || this.isStopping() || settingsPeekHighlightsCleared) {
@@ -8871,11 +8972,12 @@
                     }
 
                     settingsDetailSecondLineDisplayed = true;
+                    closeCharacterSidePanelBeforeSecondLine();
                     this.appendGuideChatMessage(detailTextPart2, {
                         textKey: TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2_KEY,
                         voiceKey: detailVoiceKey,
-                            streamDurationMs: detailPart2StreamDurationMs
-                        });
+                        streamDurationMs: detailPart2StreamDurationMs
+                    });
                     startSettingsPeekProactiveChatSpotlight();
                     if (shouldRunSettingsPeekPanic) {
                         settingsPeekPanicPromise = this.runSettingsPeekPanicPerformance({
