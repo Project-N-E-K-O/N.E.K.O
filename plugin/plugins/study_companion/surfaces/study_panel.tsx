@@ -68,11 +68,8 @@ function hasEscapedDelimiter(source: string, index: number) {
   return slashes % 2 === 1;
 }
 
-function isCurrencyDollar(source: string, index: number) {
-  return (
-    /\d/.test(source[index + 1] || '') ||
-    /\d/.test(source[index - 1] || '')
-  );
+function isLikelyCurrencyStart(source: string, index: number) {
+  return /^\$\d{1,3}(?:,\d{3})*(?:\.\d+)?(?=$|[\s)\],.;!?])/.test(source.slice(index));
 }
 
 function findMathDelimiter(source: string, start: number, delimiter: '$' | '$$') {
@@ -125,17 +122,13 @@ function splitMathText(value: string): MathTextPart[] {
       continue;
     }
 
-    if (isCurrencyDollar(source, index)) {
+    if (isLikelyCurrencyStart(source, index)) {
       index += 1;
       continue;
     }
     const inlineCloser = findMathDelimiter(source, index + 1, '$');
     if (inlineCloser === -1) {
       index += 1;
-      continue;
-    }
-    if (isCurrencyDollar(source, inlineCloser)) {
-      index = inlineCloser + 1;
       continue;
     }
     if (index > last) {
@@ -670,10 +663,6 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       if (event.key !== 'Escape') {
         return;
       }
-      const hasInFlightRequest = !!explainControllerRef.current;
-      if (!hasInFlightRequest) {
-        return;
-      }
       const activeElement = document.activeElement as HTMLElement | null;
       const targetElement = event.target instanceof HTMLElement ? event.target : null;
       const isInsidePanel = !!(
@@ -681,6 +670,10 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         activeElement?.closest?.('.study-panel')
       );
       if (!isInsidePanel) {
+        return;
+      }
+      const hasInFlightRequest = !!explainControllerRef.current;
+      if (!hasInFlightRequest) {
         return;
       }
       event.preventDefault();
