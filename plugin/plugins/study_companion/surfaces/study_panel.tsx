@@ -50,6 +50,148 @@ const MODE_ORDER: Array<{ id: StudyMode; labelKey: string; fallback: string }> =
   { id: 'interactive', labelKey: 'status.mode.interactive', fallback: 'Interactive' },
   { id: 'teaching', labelKey: 'status.mode.teaching', fallback: 'Teaching' },
 ];
+const KATEX_CSS_URL = '/plugin/study_companion/ui/katex.min.css';
+const KATEX_SCRIPT_URL = '/plugin/study_companion/ui/katex.min.js';
+let katexLoadPromise: Promise<void> | null = null;
+
+type MathTextPart = {
+  type: 'text' | 'math';
+  value: string;
+  display?: boolean;
+};
+
+function splitMathText(value: string): MathTextPart[] {
+  const source = String(value || '');
+  const regex = /\$\$([\s\S]+?)\$\$|\$(.+?)\$/g;
+  const parts: MathTextPart[] = [];
+  let last = 0;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(source)) !== null) {
+    if (match.index > last) {
+      parts.push({ type: 'text', value: source.slice(last, match.index) });
+    }
+    if (match[1] !== undefined) {
+      parts.push({ type: 'math', value: match[1].trim(), display: true });
+    } else {
+      parts.push({ type: 'math', value: match[2].trim(), display: false });
+    }
+    last = regex.lastIndex;
+  }
+  if (last < source.length) {
+    parts.push({ type: 'text', value: source.slice(last) });
+  }
+  return parts.length ? parts : [{ type: 'text', value: source }];
+}
+
+function normalizeLatexForKatex(value: string) {
+  return String(value || '').replace(/</g, '\\lt ').replace(/>/g, '\\gt ');
+}
+
+function ensureHostedKatex() {
+  if ((window as any).katex && typeof (window as any).katex.render === 'function') {
+    return Promise.resolve();
+  }
+  if (katexLoadPromise) {
+    return katexLoadPromise;
+  }
+  katexLoadPromise = new Promise((resolve) => {
+    if (!document.getElementById('study-companion-katex-css')) {
+      const link = document.createElement('link');
+      link.id = 'study-companion-katex-css';
+      link.rel = 'stylesheet';
+      link.href = KATEX_CSS_URL;
+      document.head.appendChild(link);
+    }
+    const existing = document.getElementById('study-companion-katex-script') as HTMLScriptElement | null;
+    if (existing) {
+      existing.addEventListener('load', () => resolve(), { once: true });
+      existing.addEventListener('error', () => resolve(), { once: true });
+      return;
+    }
+    const script = document.createElement('script');
+    script.id = 'study-companion-katex-script';
+    script.src = KATEX_SCRIPT_URL;
+    script.async = true;
+    script.addEventListener('load', () => resolve(), { once: true });
+    script.addEventListener('error', () => resolve(), { once: true });
+    document.head.appendChild(script);
+  });
+  return katexLoadPromise;
+}
+
+function renderMathSpans(root: HTMLElement | null) {
+  const katex = (window as any).katex;
+  if (!root || !katex || typeof katex.render !== 'function') {
+    return;
+  }
+  root.querySelectorAll<HTMLElement>('[data-study-math]').forEach((node) => {
+    const tex = normalizeLatexForKatex(node.getAttribute('data-math') || '');
+    if (!tex) {
+      return;
+    }
+    try {
+      katex.render(tex, node, {
+        displayMode: node.getAttribute('data-display') === 'true',
+        throwOnError: false,
+        trust: false,
+      });
+    } catch (_error) {
+      // Keep the source text fallback already rendered in the span.
+    }
+  });
+}
+
+function MathReply({ text, label }: { text: string; label: string }) {
+  const containerRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    let active = true;
+    ensureHostedKatex().then(() => {
+      if (active) {
+        renderMathSpans(containerRef.current);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [text]);
+  const parts = splitMathText(text);
+  return (
+    <div
+      ref={containerRef}
+      className="study-panel__math-reply"
+      role="status"
+      aria-live="polite"
+      aria-label={label}
+      style={{
+        minHeight: '180px',
+        whiteSpace: 'pre-wrap',
+        overflowWrap: 'break-word',
+        border: '1px solid rgba(148, 163, 184, 0.36)',
+        borderRadius: '8px',
+        background: 'rgba(255, 255, 255, 0.84)',
+        padding: '12px',
+        lineHeight: '1.5',
+      }}
+    >
+      {parts.map((part, index) => {
+        if (part.type === 'math') {
+          const wrapper = part.display ? '$$' : '$';
+          return (
+            <span
+              key={`math-${index}`}
+              data-study-math="true"
+              data-display={part.display ? 'true' : 'false'}
+              data-math={part.value}
+            >
+              {wrapper}{part.value}{wrapper}
+            </span>
+          );
+        }
+        return <span key={`text-${index}`}>{part.value}</span>;
+      })}
+    </div>
+  );
+}
 
 function delay(ms: number, signal?: AbortSignal) {
   return new Promise<void>((resolve, reject) => {
@@ -436,6 +578,29 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     };
   }, []);
 
+  useEffect(() => {
+    const closeOrCancelOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') {
+        return;
+      }
+      const activeElement = document.activeElement as HTMLElement | null;
+      const isInsidePanel = !!activeElement?.closest?.('.study-panel');
+      if (!isInsidePanel && !explainControllerRef.current) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      explainControllerRef.current?.abort();
+      explainControllerRef.current = null;
+      setBusy(false);
+      activeElement?.blur?.();
+    };
+    document.addEventListener('keydown', closeOrCancelOnEscape, true);
+    return () => {
+      document.removeEventListener('keydown', closeOrCancelOnEscape, true);
+    };
+  }, []);
+
   const stateValue = status.status || 'unknown';
   const stateLabel = t(`status.state.${stateValue}`, stateValue);
   const explainLabel = busy ? t('ui.button.loading', 'Loading...') : t('ui.button.explain', 'Explain');
@@ -443,7 +608,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const evaluation = status.last_answer_evaluation;
 
   return (
-    <div className="study-panel">
+    <div className="study-panel" role="region" aria-label={t('ui.surface.study_panel', 'Study Panel')}>
       <header className="study-panel__header">
         <div>
           <h1>{t('ui.title', 'Study Companion')}</h1>
@@ -522,7 +687,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         </button>
       </div>
       <div className="study-panel__reply-label">{t('ui.label.reply', 'Reply')}</div>
-      <pre>{reply}</pre>
+      <MathReply text={reply} label={t('ui.label.reply', 'Reply')} />
     </div>
   );
 }
