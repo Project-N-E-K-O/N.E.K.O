@@ -40,6 +40,9 @@ def test_phase9_hosted_study_panel_uses_span_based_katex_rendering() -> None:
     assert "katexLoadPromise = null" in source
     assert "dataset.studyKatexFailed" in source
     assert "data-study-math" in source
+    assert "function hasEscapedDelimiter" in source
+    assert "function isCurrencyDollar" in source
+    assert "findMathDelimiter(source, index + 1, '$')" in source
     assert "/[<>]/.test" not in source
     assert "const hasInFlightRequest = !!explainControllerRef.current" in source
     assert "document.addEventListener('keydown', closeOrCancelOnEscape, true)" in source
