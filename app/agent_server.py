@@ -1648,6 +1648,65 @@ async def _emit_agent_status_update(lanlan_name: Optional[str] = None) -> None:
         pass
 
 
+async def _handle_voice_transcript_request(event: Dict[str, Any]) -> None:
+    event_id = str((event or {}).get("event_id") or "")
+    lanlan_name = (event or {}).get("lanlan_name")
+    transcript = str((event or {}).get("transcript") or "").strip()
+    result: Dict[str, Any] = {"action": "noop", "reason": "unavailable"}
+
+    try:
+        if not transcript:
+            result = {"action": "noop", "reason": "empty_transcript"}
+        elif not Modules.agent_flags.get("user_plugin_enabled", False):
+            result = {"action": "noop", "reason": "user_plugin_disabled"}
+        else:
+            if not Modules.plugin_lifecycle_started:
+                await _ensure_plugin_lifecycle_started()
+
+            from plugin.server.application.plugins.dispatch_service import (
+                PluginDispatchService,
+            )
+
+            dispatch_service = PluginDispatchService()
+            plugin_result = await dispatch_service.trigger_custom_event(
+                to_plugin="study_companion",
+                event_type="voice_transcript",
+                event_id="handle_transcript",
+                args={
+                    "transcript": transcript,
+                    "lanlan_name": lanlan_name or "",
+                    "metadata": (event or {}).get("metadata")
+                    if isinstance((event or {}).get("metadata"), dict)
+                    else {},
+                },
+                timeout=0.5,
+            )
+            result = (
+                dict(plugin_result)
+                if isinstance(plugin_result, dict)
+                else {"action": "noop", "reason": "invalid_plugin_result"}
+            )
+    except Exception as exc:
+        logger.debug(
+            "[VoiceBridge] study_companion dispatch failed: event_id=%s lanlan=%s err=%s",
+            event_id,
+            lanlan_name,
+            exc,
+        )
+        result = {
+            "action": "noop",
+            "reason": "dispatch_failed",
+            "error_type": type(exc).__name__,
+        }
+
+    await _emit_main_event(
+        "voice_bridge_result",
+        lanlan_name if isinstance(lanlan_name, str) else None,
+        event_id=event_id,
+        result=result,
+    )
+
+
 async def _on_session_event(event: Dict[str, Any]) -> None:
     event_type = (event or {}).get("event_type")
     if event_type == "agent_intent_restore_signal":
@@ -1659,6 +1718,11 @@ async def _on_session_event(event: Dict[str, Any]) -> None:
         # before the user actually opens a session. The restore helper
         # has its own once-flag, so this is safe to spam.
         await _maybe_restore_agent_intent()
+        return
+    if event_type == "voice_transcript_request":
+        task = asyncio.create_task(_handle_voice_transcript_request(event))
+        Modules._background_tasks.add(task)
+        task.add_done_callback(Modules._background_tasks.discard)
         return
     if event_type == "analyze_request":
         messages = event.get("messages", [])
