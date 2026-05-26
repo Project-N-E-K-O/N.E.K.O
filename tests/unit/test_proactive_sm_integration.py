@@ -67,6 +67,18 @@ def _make_mgr(session=None) -> LLMSessionManager:
     mgr.websocket = None
     mgr.lock = asyncio.Lock()
     mgr._proactive_write_lock = asyncio.Lock()
+    mgr._voice_proactive_inject_lock = asyncio.Lock()
+    # Record _fire_task calls (e.g. the rejection-path re-trigger) and close
+    # the coroutine so it doesn't run recursively / warn "never awaited".
+    mgr._fired_tasks = []
+
+    def _fake_fire(coro):
+        mgr._fired_tasks.append(coro)
+        try:
+            coro.close()
+        except Exception:
+            pass
+    mgr._fire_task = _fake_fire
     mgr.current_speech_id = None
     mgr._tts_done_queued_for_turn = False
     mgr.pending_agent_callbacks = []
@@ -283,6 +295,54 @@ async def test_voice_mode_server_rejection_re_enqueues_cb():
     # cb 被 on_rejected 回到 pending_agent_callbacks，等下次 trigger 重投
     assert len(mgr.pending_agent_callbacks) == 1
     assert mgr.pending_agent_callbacks[0]["_callback_delivery_id"] == "id-race"
+    # 配对的 extras 也必须被回补（否则后续 hot-swap fallback 会丢补报内容）
+    assert len(mgr.pending_extra_replies) == 1
+    assert mgr.pending_extra_replies[0]["_callback_delivery_id"] == "id-race"
+    # reject 可能晚于 response.done 到达，handler 在 idle 时应主动 re-fire 一次
+    # trigger（否则 cb 会挂到下次无关 turn）。session idle → 应已调度。
+    assert len(mgr._fired_tasks) == 1
+
+
+async def test_voice_mode_concurrent_triggers_inject_once():
+    """并发回归（Codex P1）：两个 trigger_agent_callbacks task 同时进 voice
+    分支，_voice_proactive_inject_lock 必须把 check-and-claim 串起来——只有
+    一个真正 inject，另一个拿到锁后重新过滤发现队列已空、不再重复 inject。"""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    release = asyncio.Event()
+
+    class _VoiceSess(OmniRealtimeClient):
+        def __init__(self):
+            self._is_responding = False
+            self.inject_calls = 0
+
+        def is_active_response(self) -> bool:
+            return False
+
+        async def inject_text_and_request_response(self, text: str, *, on_rejected=None) -> None:
+            self.inject_calls += 1
+            # 卡住第一个 inject，给第二个 task 机会抢同一 snapshot
+            await release.wait()
+
+    sess = _VoiceSess()
+    mgr = _make_mgr(session=sess)
+    cb = {"_callback_delivery_id": "id-concurrent", "status": "completed", "summary": "once"}
+    extra = {"_callback_delivery_id": "id-concurrent", "origin": "task_result", "summary": "once"}
+    mgr.pending_agent_callbacks = [cb]
+    mgr.pending_extra_replies = [extra]
+
+    t1 = asyncio.create_task(LLMSessionManager.trigger_agent_callbacks(mgr))
+    t2 = asyncio.create_task(LLMSessionManager.trigger_agent_callbacks(mgr))
+    # 让两个 task 都跑起来：t1 拿锁卡在 inject，t2 阻塞在锁上
+    for _ in range(5):
+        await asyncio.sleep(0)
+    release.set()
+    await asyncio.gather(t1, t2)
+
+    # 关键：只 inject 一次，没有重复播报
+    assert sess.inject_calls == 1
+    assert mgr.pending_agent_callbacks == []
+    assert mgr.pending_extra_replies == []
 
 
 async def test_voice_mode_not_implemented_falls_back_to_hot_swap():
@@ -307,13 +367,15 @@ async def test_voice_mode_not_implemented_falls_back_to_hot_swap():
     sess = _VoiceSess()
     mgr = _make_mgr(session=sess)
     mgr.pending_agent_callbacks = [{"status": "completed", "summary": "hot-swap fallback"}]
-    mgr.pending_extra_replies = [{"summary": "hot-swap fallback"}]
+    original_extras = [{"summary": "hot-swap fallback"}]
+    mgr.pending_extra_replies = list(original_extras)
 
     await LLMSessionManager.trigger_agent_callbacks(mgr)
     await asyncio.sleep(0)
 
     assert mgr.pending_agent_callbacks == []  # proactive cb dropped
-    assert mgr.pending_extra_replies  # hot-swap channel preserved
+    # 精确相等而非 truthy：锁死 fallback 不会误改/重复 pending_extra_replies
+    assert mgr.pending_extra_replies == original_extras  # hot-swap channel preserved
 
 
 async def test_inject_gemini_routes_through_send_client_content():
@@ -371,11 +433,13 @@ async def test_voice_mode_inject_exception_keeps_cbs_for_retry():
     class _VoiceSess(OmniRealtimeClient):
         def __init__(self):
             self._is_responding = False
+            self.inject_calls = 0
 
         def is_active_response(self) -> bool:
             return False
 
         async def inject_text_and_request_response(self, text: str, *, on_rejected=None) -> None:
+            self.inject_calls += 1
             raise RuntimeError("ws boom")
 
     sess = _VoiceSess()
@@ -386,6 +450,8 @@ async def test_voice_mode_inject_exception_keeps_cbs_for_retry():
     await LLMSessionManager.trigger_agent_callbacks(mgr)
     await asyncio.sleep(0)
 
+    # inject 确实被调用过一次（证明走的是 inject-异常分支，而非更早的 guard 早退）
+    assert sess.inject_calls == 1
     assert mgr.pending_agent_callbacks == original
 
 

@@ -793,6 +793,17 @@ class LLMSessionManager:
         self.pending_agent_callbacks: list[dict] = []
         # 防止 trigger_agent_callbacks 和 finish_proactive_delivery 并发写 WS/sync_message_queue
         self._proactive_write_lock = asyncio.Lock()
+        # Serializes the voice-mode proactive inject path. trigger_agent_callbacks
+        # is fired via asyncio.create_task from multiple sites (EventBus per-
+        # callback scheduling, _finalize_turn_after_emit, start_session), so two
+        # tasks can race: both pass the (phase / is_active_response) gate before
+        # either sends, then both inject the SAME snapshot → duplicate
+        # conversation.item.create and a response_already_active on the second
+        # response.create. The voice branch holds this lock across
+        # gate-check → render → inject → prune and re-filters the queue inside,
+        # making check-and-claim atomic. (Text mode uses the SM's
+        # try_start_proactive claim instead; voice deliberately bypasses the SM.)
+        self._voice_proactive_inject_lock = asyncio.Lock()
         # ── Session takeover ──────────────────────────────────────────
         # 当某个外部 controller 接管这个 session 时，本地 chat LLM 的输出
         # （text/audio delta、output transcript、response.complete、
@@ -5559,143 +5570,177 @@ class LLMSessionManager:
         # _finalize_turn_after_emit 在 response.done 之后重新调用本函数重试。
         if isinstance(self.session, OmniRealtimeClient):
             voice_sess = self.session
-            if self.state.phase is not ProactivePhase.IDLE or voice_sess.is_active_response():
-                logger.debug(
-                    "[%s] trigger_agent_callbacks: voice session busy (phase=%s, active_response=%s); deferring proactive (n=%d)",
-                    self.lanlan_name,
-                    self.state.phase.value,
-                    voice_sess.is_active_response(),
-                    len(proactive_cbs),
+            # Serialize the whole check-and-claim against concurrent trigger
+            # tasks (see ``_voice_proactive_inject_lock``). Hold the lock across
+            # gate → render → inject → prune; a second task blocks here and,
+            # once it acquires, re-filters the (now-pruned) queue and finds
+            # nothing left to send.
+            async with self._voice_proactive_inject_lock:
+                # Re-filter inside the lock: a concurrent task may have already
+                # injected+pruned these cbs while we waited on the lock.
+                proactive_cbs = [
+                    cb for cb in self.pending_agent_callbacks
+                    if cb.get("delivery_mode") != "passive"
+                ]
+                if not proactive_cbs:
+                    return
+                if self.state.phase is not ProactivePhase.IDLE or voice_sess.is_active_response():
+                    logger.debug(
+                        "[%s] trigger_agent_callbacks: voice session busy (phase=%s, active_response=%s); deferring proactive (n=%d)",
+                        self.lanlan_name,
+                        self.state.phase.value,
+                        voice_sess.is_active_response(),
+                        len(proactive_cbs),
+                    )
+                    return
+
+                _lang = normalize_language_code(self.user_language, format='short')
+                instruction = _build_callback_instruction(
+                    proactive_cbs,
+                    lang=_lang,
+                    lanlan_name=self.lanlan_name,
+                    master_name=self.master_name,
+                    passive=False,
                 )
-                return
-
-            _lang = normalize_language_code(self.user_language, format='short')
-            instruction = _build_callback_instruction(
-                proactive_cbs,
-                lang=_lang,
-                lanlan_name=self.lanlan_name,
-                master_name=self.master_name,
-                passive=False,
-            )
-            voice_snapshot = list(proactive_cbs)
-
-            # Server-side rejection of ``response.create`` (e.g.
-            # ``response_already_active`` from a VAD race winning between
-            # our gate check and our send) is delivered asynchronously as
-            # an ``error`` event, not via this call's return value or an
-            # exception. Without a rejection callback, the optimistic prune
-            # below would silently drop the cb. Re-enqueue the snapshot on
-            # rejection so the next ``_finalize_turn_after_emit`` retry
-            # picks it up cleanly.
-            lanlan_name_snapshot = self.lanlan_name
-
-            def _on_voice_inject_rejected(error_msg: str, _snapshot=voice_snapshot, _lanlan=lanlan_name_snapshot) -> None:
-                logger.warning(
-                    "[%s] voice proactive inject rejected by server: %s; re-enqueuing %d cb(s) for retry",
-                    _lanlan, error_msg, len(_snapshot),
-                )
-                # Only re-add cbs whose delivery_id is not currently in either
-                # queue — guards against double-add if the caller's exception
-                # branch also restored them (defensive; the inject_*
-                # implementation drops the rejection handler on synchronous
-                # send failure so this path only fires for server-side errors).
-                existing_ids = {
+                voice_snapshot = list(proactive_cbs)
+                # Snapshot the paired extras entries NOW (before prune) so the
+                # rejection handler can restore BOTH queues if the server
+                # rejects asynchronously.
+                delivered_ids = {
                     cb.get("_callback_delivery_id")
-                    for cb in self.pending_agent_callbacks
+                    for cb in voice_snapshot
                     if cb.get("_callback_delivery_id")
                 }
-                existing_ids.update(
-                    extra.get("_callback_delivery_id")
-                    for extra in self.pending_extra_replies
-                    if extra.get("_callback_delivery_id")
-                )
-                for cb in _snapshot:
-                    cb_id = cb.get("_callback_delivery_id")
-                    if cb_id and cb_id in existing_ids:
-                        continue
-                    self.pending_agent_callbacks.append(cb)
+                voice_extra_snapshot = [
+                    extra for extra in self.pending_extra_replies
+                    if extra.get("_callback_delivery_id") in delivered_ids
+                ]
 
-            try:
-                await voice_sess.inject_text_and_request_response(
-                    instruction, on_rejected=_on_voice_inject_rejected
-                )
-            except NotImplementedError:
-                # Defensive fallback. As of now every realtime provider
-                # (OpenAI / GLM / Step / free / GPT / Qwen / Grok via
-                # conversation.item.create, Gemini via send_client_content)
-                # supports manual inject, so this branch is unreachable in
-                # practice — kept so a hypothetical future provider that
-                # raises NotImplementedError degrades to hot-swap instead of
-                # losing the cb. Drop the proactive cbs so they don't loop
-                # forever, but keep ``pending_extra_replies`` populated for the
-                # next user-turn prime_context() drain.
-                voice_ids = {id(cb) for cb in voice_snapshot}
+                # Server-side rejection of ``response.create`` (e.g.
+                # ``response_already_active`` from a VAD race winning between
+                # our gate check and our send) is delivered asynchronously as
+                # an ``error`` event, not via this call's return value or an
+                # exception. Without a rejection callback, the optimistic prune
+                # below would silently drop the cb. Re-enqueue the snapshot on
+                # rejection so a retry picks it up.
+                lanlan_name_snapshot = self.lanlan_name
+
+                def _on_voice_inject_rejected(
+                    error_msg: str,
+                    _snapshot=voice_snapshot,
+                    _extra_snapshot=voice_extra_snapshot,
+                    _lanlan=lanlan_name_snapshot,
+                ) -> None:
+                    logger.warning(
+                        "[%s] voice proactive inject rejected by server: %s; re-enqueuing %d cb(s) for retry",
+                        _lanlan, error_msg, len(_snapshot),
+                    )
+                    # Restore BOTH queues in lockstep — only entries whose
+                    # delivery_id is not already present (guards against
+                    # double-add). Restoring ``pending_extra_replies`` keeps the
+                    # hot-swap prime copy alive if a later fallback path runs.
+                    existing_cb_ids = {
+                        cb.get("_callback_delivery_id")
+                        for cb in self.pending_agent_callbacks
+                        if cb.get("_callback_delivery_id")
+                    }
+                    existing_extra_ids = {
+                        extra.get("_callback_delivery_id")
+                        for extra in self.pending_extra_replies
+                        if extra.get("_callback_delivery_id")
+                    }
+                    for cb in _snapshot:
+                        cb_id = cb.get("_callback_delivery_id")
+                        if cb_id and cb_id in existing_cb_ids:
+                            continue
+                        self.pending_agent_callbacks.append(cb)
+                    for extra in _extra_snapshot:
+                        extra_id = extra.get("_callback_delivery_id")
+                        if extra_id and extra_id in existing_extra_ids:
+                            continue
+                        self.pending_extra_replies.append(extra)
+                    # The reject can land AFTER the response.done that would
+                    # otherwise re-fire trigger via _finalize_turn_after_emit;
+                    # if the session is idle now, re-fire immediately so the
+                    # restored cb doesn't sit until the next unrelated turn.
+                    if (
+                        self.state.phase is ProactivePhase.IDLE
+                        and isinstance(self.session, OmniRealtimeClient)
+                        and not self.session.is_active_response()
+                    ):
+                        self._fire_task(self.trigger_agent_callbacks())
+
+                try:
+                    await voice_sess.inject_text_and_request_response(
+                        instruction, on_rejected=_on_voice_inject_rejected
+                    )
+                except NotImplementedError:
+                    # Defensive fallback. As of now every realtime provider
+                    # (OpenAI / GLM / Step / free / GPT / Qwen / Grok via
+                    # conversation.item.create, Gemini via send_client_content)
+                    # supports manual inject, so this branch is unreachable in
+                    # practice — kept so a hypothetical future provider that
+                    # raises NotImplementedError degrades to hot-swap instead of
+                    # losing the cb. Drop the proactive cbs so they don't loop
+                    # forever, but keep ``pending_extra_replies`` populated for
+                    # the next user-turn prime_context() drain.
+                    voice_ids = {id(cb) for cb in voice_snapshot}
+                    self.pending_agent_callbacks = [
+                        cb for cb in self.pending_agent_callbacks
+                        if id(cb) not in voice_ids
+                    ]
+                    logger.info(
+                        "[%s] trigger_agent_callbacks: voice provider does not support manual inject; falling back to hot-swap (n=%d)",
+                        self.lanlan_name, len(voice_snapshot),
+                    )
+                    return
+                except Exception as exc:
+                    # WS error / fatal / response_already_active race — keep cbs
+                    # in the queue so the next phase-idle hook retries them.
+                    logger.warning(
+                        "[%s] trigger_agent_callbacks: voice proactive inject failed: %s; keeping cbs for retry",
+                        self.lanlan_name, exc,
+                    )
+                    return
+
+                # Inject succeeded. Drop the cbs we delivered from BOTH queues:
+                # ``pending_agent_callbacks`` (text-mode drain + proactive
+                # trigger) AND the matching ``pending_extra_replies`` entries
+                # (voice hot-swap prime channel). Leaving the extras intact would
+                # have two concrete bad consequences:
+                #   1. ``_finalize_turn_after_emit`` gates immediate session
+                #      preparation on ``bool(pending_extra_replies)`` — stale
+                #      entries trigger needless background hot-swap prep.
+                #   2. The eventual hot-swap re-primes the new session with cbs
+                #      the AI already spoke about, producing duplicate
+                #      announcements.
+                # Match by the stable ``_callback_delivery_id`` stamped on both
+                # entries by ``enqueue_agent_callback``. Length-based alignment
+                # would be unsafe — ``drain_agent_callbacks_for_llm`` clears
+                # ``pending_agent_callbacks`` while leaving
+                # ``pending_extra_replies`` intact, so the queues legitimately
+                # drift apart across user turns.
+                # Object-identity fallback for pending_agent_callbacks: defense
+                # in depth against any future code path that appends a cb
+                # without going through ``enqueue_agent_callback`` (the only
+                # stamper of ``_callback_delivery_id``). extras dicts are fresh
+                # objects so there is no id() link — extras rely on the
+                # delivery_id contract.
+                voice_obj_ids = {id(cb) for cb in voice_snapshot}
                 self.pending_agent_callbacks = [
                     cb for cb in self.pending_agent_callbacks
-                    if id(cb) not in voice_ids
+                    if cb.get("_callback_delivery_id") not in delivered_ids
+                    and id(cb) not in voice_obj_ids
+                ]
+                self.pending_extra_replies = [
+                    extra for extra in self.pending_extra_replies
+                    if extra.get("_callback_delivery_id") not in delivered_ids
                 ]
                 logger.info(
-                    "[%s] trigger_agent_callbacks: voice provider does not support manual inject; falling back to hot-swap (n=%d)",
+                    "[%s] trigger_agent_callbacks: voice proactive inject sent (n=%d)",
                     self.lanlan_name, len(voice_snapshot),
                 )
                 return
-            except Exception as exc:
-                # WS error / fatal / response_already_active race — keep cbs in
-                # the queue so the next phase-idle hook retries them.
-                logger.warning(
-                    "[%s] trigger_agent_callbacks: voice proactive inject failed: %s; keeping cbs for retry",
-                    self.lanlan_name, exc,
-                )
-                return
-
-            # Inject succeeded. Drop the cbs we delivered from BOTH queues:
-            # ``pending_agent_callbacks`` (text-mode drain + proactive trigger)
-            # AND the matching ``pending_extra_replies`` entries (voice
-            # hot-swap prime channel). Leaving the extras intact would have
-            # two concrete bad consequences:
-            #   1. ``_finalize_turn_after_emit`` gates immediate session
-            #      preparation on ``bool(pending_extra_replies)`` — stale
-            #      entries trigger needless background hot-swap prep.
-            #   2. The eventual hot-swap re-primes the new session with cbs
-            #      the AI already spoke about, producing duplicate
-            #      announcements.
-            # Match by the stable ``_callback_delivery_id`` stamped on both
-            # entries by ``enqueue_agent_callback``. Length-based alignment
-            # would be unsafe — ``drain_agent_callbacks_for_llm`` clears
-            # ``pending_agent_callbacks`` while leaving ``pending_extra_replies``
-            # intact, so the queues legitimately drift apart across user turns
-            # and a "queues are aligned iff len matches" check would skip
-            # extras cleanup whenever a drain ran beforehand.
-            delivered_ids = {
-                cb.get("_callback_delivery_id")
-                for cb in voice_snapshot
-                if cb.get("_callback_delivery_id")
-            }
-            # Object-identity fallback for pending_agent_callbacks: defense
-            # in depth against any future code path that appends a cb
-            # without going through ``enqueue_agent_callback`` (which is
-            # the only stamper of ``_callback_delivery_id``). All current
-            # production callers route through it, but matching by Python
-            # ``id()`` lets us still prune unstamped snapshot entries here
-            # rather than have them re-deliver on every retry. extras dicts
-            # are constructed fresh in ``enqueue_agent_callback`` so there
-            # is no object link from voice_snapshot → extras; extras must
-            # rely on the delivery_id contract.
-            voice_obj_ids = {id(cb) for cb in voice_snapshot}
-            self.pending_agent_callbacks = [
-                cb for cb in self.pending_agent_callbacks
-                if cb.get("_callback_delivery_id") not in delivered_ids
-                and id(cb) not in voice_obj_ids
-            ]
-            self.pending_extra_replies = [
-                extra for extra in self.pending_extra_replies
-                if extra.get("_callback_delivery_id") not in delivered_ids
-            ]
-            logger.info(
-                "[%s] trigger_agent_callbacks: voice proactive inject sent (n=%d)",
-                self.lanlan_name, len(voice_snapshot),
-            )
-            return
 
         _lang = normalize_language_code(self.user_language, format='short')
         # Render via _build_callback_instruction on the proactive subset only.

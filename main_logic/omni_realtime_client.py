@@ -1729,7 +1729,44 @@ class OmniRealtimeClient:
         # ``======[系统通知] ...======`` header that makes the model
         # treat it as a one-shot system notification rather than user
         # speech. Matches the existing ``create_response`` precedent.
-        item_event = {
+        # Stamp stable client event_ids on BOTH events so the server's
+        # ``error.event_id`` can be matched back to this specific request
+        # whichever event it rejects (the item itself, or the
+        # ``response.create`` — e.g. ``response_already_active`` from a VAD
+        # race). ``send_event()`` would otherwise overwrite a missing
+        # event_id with its own timestamp-based string — fine for routing but
+        # useless for rejection matching since the caller has no view of it.
+        # A single ``_reject_once`` wrapper fires ``on_rejected`` at most once
+        # even if both event_ids somehow error, and unregisters both handlers.
+        item_event_id: Optional[str] = None
+        create_event_id: Optional[str] = None
+        if on_rejected is not None:
+            item_event_id = f"event_inject_item_{uuid.uuid4().hex}"
+            create_event_id = f"event_inject_resp_{uuid.uuid4().hex}"
+
+            _fired = False
+
+            def _reject_once(error_msg: str) -> None:
+                nonlocal _fired
+                # Unregister both regardless so neither lingers.
+                self._inject_rejection_handlers.pop(item_event_id, None)
+                self._inject_rejection_handlers.pop(create_event_id, None)
+                if _fired:
+                    return
+                _fired = True
+                on_rejected(error_msg)
+
+            self._inject_rejection_handlers[item_event_id] = _reject_once
+            self._inject_rejection_handlers[create_event_id] = _reject_once
+            # The realtime API echoes our event_id on ``error`` but NOT on
+            # ``response.created`` — so a successful inject leaves the handlers
+            # registered with no natural cleanup signal. TTL-expire both after
+            # 3s (well beyond any realistic server round-trip) to keep the
+            # dict from growing per proactive cb over the session.
+            self._fire_task(self._expire_inject_rejection_handler(item_event_id, 3.0))
+            self._fire_task(self._expire_inject_rejection_handler(create_event_id, 3.0))
+
+        item_event: Dict[str, Any] = {
             "type": "conversation.item.create",
             "item": {
                 "type": "message",
@@ -1742,49 +1779,35 @@ class OmniRealtimeClient:
                 ],
             },
         }
+        if item_event_id is not None:
+            item_event["event_id"] = item_event_id
+
         # send_event() silently returns when ws drops to None or fatal flag
         # flips mid-flight (it does not raise). Without the post-send checks,
         # a connection lost in the brief await window between the entry guard
         # and the actual send would look like a successful inject — caller
         # would prune the cb but nothing reached the model. Re-check after
         # each send and raise so the caller's exception branch keeps the cb
-        # for retry.
-        await self.send_event(item_event)
-        if self._fatal_error_occurred or self.ws is None:
-            raise RuntimeError(
-                "realtime connection lost after proactive conversation.item.create"
-            )
-        # Stamp a stable client event_id on response.create so the server's
-        # ``error.event_id`` can be matched back to this specific request if
-        # the realtime API rejects it (e.g. ``response_already_active`` from
-        # a VAD race winning between the caller's gate check and our send).
-        # ``send_event()`` would otherwise overwrite a missing event_id with
-        # its own timestamp-based string — fine for routing but useless for
-        # rejection matching since the caller has no view of it.
-        create_event_id: Optional[str] = None
-        if on_rejected is not None:
-            create_event_id = f"event_inject_{uuid.uuid4().hex}"
-            self._inject_rejection_handlers[create_event_id] = on_rejected
-            # The realtime API echoes our event_id on ``error`` but NOT on
-            # ``response.created`` — so a successful inject leaves the handler
-            # registered with no natural cleanup signal. TTL-expire it after
-            # 3s (well beyond any realistic server round-trip) to keep the
-            # dict from growing one entry per proactive cb over the session.
-            self._fire_task(self._expire_inject_rejection_handler(create_event_id, 3.0))
-        create_event: Dict[str, Any] = {"type": "response.create"}
-        if create_event_id is not None:
-            create_event["event_id"] = create_event_id
+        # for retry. On any synchronous send failure, drop both rejection
+        # handlers so the caller's ``except`` path is the single source of
+        # truth and a late error event can't double-fire the re-queue.
         try:
+            await self.send_event(item_event)
+            if self._fatal_error_occurred or self.ws is None:
+                raise RuntimeError(
+                    "realtime connection lost after proactive conversation.item.create"
+                )
+            create_event: Dict[str, Any] = {"type": "response.create"}
+            if create_event_id is not None:
+                create_event["event_id"] = create_event_id
             await self.send_event(create_event)
             if self._fatal_error_occurred or self.ws is None:
                 raise RuntimeError(
                     "realtime connection lost after proactive response.create"
                 )
         except Exception:
-            # Send itself blew up — drop the rejection handler so the caller's
-            # synchronous ``except`` path is the single source of truth and we
-            # don't double-fire (re-queue via except AND via a late error
-            # event that arrives after WS recovery).
+            if item_event_id is not None:
+                self._inject_rejection_handlers.pop(item_event_id, None)
             if create_event_id is not None:
                 self._inject_rejection_handlers.pop(create_event_id, None)
             raise
