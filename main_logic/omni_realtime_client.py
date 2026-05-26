@@ -1830,8 +1830,13 @@ class OmniRealtimeClient:
         self._inject_rejection_handlers.pop(event_id, None)
 
     def _sweep_inject_rejection_handlers(self) -> None:
-        """Drop all pending inject rejection handlers on a response lifecycle
-        boundary (``response.done`` / Gemini turn-complete).
+        """Drop all pending inject rejection handlers on a ``response.done``
+        lifecycle boundary.
+
+        (Only the WS-realtime ``response.done`` path calls this — the Gemini
+        branch of ``inject_text_and_request_response`` returns early via
+        ``_gemini_send_user_turn`` and never registers rejection handlers, so
+        Gemini's turn-complete has nothing to sweep.)
 
         Safe because a server rejection of our ``response.create`` /
         ``conversation.item.create`` is emitted the instant the server
