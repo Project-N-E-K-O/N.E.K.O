@@ -147,6 +147,11 @@ def test_empty_transcript_is_ignored() -> None:
         ("CO2 与 H2O 的比例", "chemistry"),
         ("fe", "default"),
         ("safe reading material", "default"),
+        ("long-term reading material", "default"),
+        ("re-entry reading material", "default"),
+        ("x-ray reading material", "default"),
+        ("x - y = 3", "math"),
+        ("x-1=0", "math"),
         ("普通阅读材料", "default"),
     ],
 )

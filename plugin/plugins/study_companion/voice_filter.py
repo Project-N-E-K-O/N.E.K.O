@@ -289,11 +289,19 @@ def _derive_subject(ocr_text: str) -> str:
         "x³",
         "y=",
     )
+    math_expression_re = re.compile(
+        r"(?<![a-z])(?:"
+        r"[a-z]\s*(?:=|[+*/^²³])"
+        r"|[a-z]-\d"
+        r"|\d-\s*[a-z]"
+        r"|[a-z]\s+-\s+(?:[a-z]|\d)"
+        r")"
+    )
     if any(token in text for token in chemistry_hits) or chemistry_formula_re.search(text):
         return "chemistry"
     if any(token in text for token in physics_hits):
         return "physics"
-    if any(token in text for token in math_hits) or re.search(r"[a-z]\s*[=+\-*/^²³]", text):
+    if any(token in text for token in math_hits) or math_expression_re.search(text):
         return "math"
     return "default"
 
