@@ -39,18 +39,22 @@ def ensure_path(path: Path, label: str) -> None:
 # 弹三个独立 cmd 窗口。其他平台没有等价的"打开三个新终端 + 在每个里跑一条命令"
 # 的统一 API，强行启动会直接抛 FileNotFoundError 或 ValueError，没有任何价值，
 # 所以早判退出并打印手动步骤，避免误以为脚本只是"卡住了"。
+#
+# 注意：这里抛 RuntimeError 而不是 SystemExit。SystemExit 继承 BaseException 不是
+# Exception，会绕过 __main__ 块里的 `except Exception` 分支，少了一次 "Press Enter"
+# 暂停 —— 双击运行时窗口会瞬间关闭，用户根本看不到提示。
 def _ensure_windows() -> None:
     if platform.system() == "Windows":
         return
-    msg = [
-        "[startup error] start_card_forge.py 目前只支持 Windows "
+    msg = "\n".join([
+        "start_card_forge.py 目前只支持 Windows "
         "(依赖 powershell.exe 和 CREATE_NEW_CONSOLE 弹独立窗口)。",
         "在 macOS / Linux 上请分别在三个终端里手动执行：",
         f"  1) cd {PROJECT_ROOT} && uv run launcher.py",
         f"  2) cd {FORGE_SERVER_ROOT} && uv run server.py",
         f"  3) cd {FRONTEND_ROOT} && npm run dev",
-    ]
-    raise SystemExit("\n".join(msg))
+    ])
+    raise RuntimeError(msg)
 
 
 def main() -> int:
