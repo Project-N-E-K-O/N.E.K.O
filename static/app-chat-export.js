@@ -18,7 +18,6 @@
     var MAX_EXPORT_SELECTION = 100;
     var DEFAULT_USER_EXPORT_AVATAR = '/static/icons/avatar/master-avatar.png';
     var EXPORT_PREVIEW_SHELL_URL = '/static/chat-export-preview-shell.html';
-    var EXPORT_PREVIEW_SHELL_WAIT_TIMEOUT_MS = 30000;
 
     // ======================== State ========================
 
@@ -121,72 +120,6 @@
         } catch (_) {
             return EXPORT_PREVIEW_SHELL_URL;
         }
-    }
-
-    function waitForExportPreviewShell(previewWindow) {
-        return new Promise(function (resolve) {
-            if (!previewWindow || previewWindow.closed) {
-                resolve(false);
-                return;
-            }
-
-            var shellUrl = getExportPreviewShellUrl();
-            var isShellReady = function () {
-                try {
-                    var currentUrl = previewWindow.location.href;
-                    var doc = previewWindow.document;
-                    return currentUrl
-                        && currentUrl !== 'about:blank'
-                        && currentUrl.split('#')[0] === shellUrl.split('#')[0]
-                        && doc
-                        && doc.readyState
-                        && doc.readyState !== 'loading';
-                } catch (_) {
-                    return false;
-                }
-            };
-
-            var settled = false;
-            var pollTimer = null;
-            var timeoutTimer = null;
-            var onLoad = null;
-            var finish = function (ok) {
-                if (settled) return;
-                settled = true;
-                if (pollTimer) window.clearInterval(pollTimer);
-                if (timeoutTimer) window.clearTimeout(timeoutTimer);
-                if (onLoad) {
-                    try {
-                        previewWindow.removeEventListener('load', onLoad);
-                    } catch (_) {}
-                }
-                resolve(ok !== false && !!previewWindow && !previewWindow.closed);
-            };
-
-            if (isShellReady()) {
-                finish(true);
-                return;
-            }
-
-            try {
-                onLoad = function () {
-                    if (isShellReady()) finish(true);
-                };
-                previewWindow.addEventListener('load', onLoad, { once: true });
-            } catch (_) {
-                onLoad = null;
-            }
-            pollTimer = window.setInterval(function () {
-                if (!previewWindow || previewWindow.closed) {
-                    finish(false);
-                    return;
-                }
-                if (isShellReady()) finish(true);
-            }, 250);
-            timeoutTimer = window.setTimeout(function () {
-                finish(false);
-            }, EXPORT_PREVIEW_SHELL_WAIT_TIMEOUT_MS);
-        });
     }
 
     function showToast(key, fallback, duration) {
@@ -613,7 +546,7 @@
             '[data-theme="dark"] .preview-wrap blockquote{background:#1f2937;color:#9ca3af;border-color:#4b5563;}',
             '[data-theme="dark"] .preview-wrap code{background:#1f2937;}',
             '[data-theme="dark"] .preview-wrap a{color:#93c5fd;}',
-            '@media (prefers-color-scheme:dark){html,body{background:#111827;color:#e5e7eb;}.preview-wrap h1{border-color:#374151;}.preview-wrap h2{color:#cbd5e1;}.preview-wrap blockquote{background:#1f2937;color:#9ca3af;border-color:#4b5563;}.preview-wrap code{background:#1f2937;}}'
+            '@media (prefers-color-scheme:dark){html:not([data-theme]),html:not([data-theme]) body{background:#111827;color:#e5e7eb;}html:not([data-theme]) .preview-wrap h1{border-color:#374151;}html:not([data-theme]) .preview-wrap h2{color:#cbd5e1;}html:not([data-theme]) .preview-wrap blockquote{background:#1f2937;color:#9ca3af;border-color:#4b5563;}html:not([data-theme]) .preview-wrap code{background:#1f2937;}}'
         ].join('');
         return '<!DOCTYPE html><html lang="' + escapeHtml(document.documentElement.lang || 'en')
             + '"' + getPreviewThemeAttributesHtml() + '><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'
@@ -758,7 +691,7 @@
     }
 
     function getPreviewThemeAttributesHtml() {
-        return isDarkTheme() ? ' data-theme="dark" class="dark"' : '';
+        return isDarkTheme() ? ' data-theme="dark" class="dark"' : ' data-theme="light"';
     }
 
     function applyPreviewThemeToDocument(doc) {
@@ -767,7 +700,7 @@
             doc.documentElement.setAttribute('data-theme', 'dark');
             doc.documentElement.classList.add('dark');
         } else {
-            doc.documentElement.removeAttribute('data-theme');
+            doc.documentElement.setAttribute('data-theme', 'light');
             doc.documentElement.classList.remove('dark');
         }
     }
@@ -2531,12 +2464,10 @@
 
         if (isExistingWindow) {
             disposePreviewModal(false);
-        } else {
-            var shellReady = await waitForExportPreviewShell(previewWindow);
-            if (!shellReady) {
-                return null;
-            }
         }
+        try {
+            if (typeof previewWindow.stop === 'function') previewWindow.stop();
+        } catch (_) {}
         state.previewWindow = previewWindow;
         var doc = previewWindow.document;
         doc.open();
@@ -2704,8 +2635,8 @@
             + '::-webkit-scrollbar-thumb:hover{background:rgba(140,140,140,0.6);}'
             + '::-webkit-scrollbar-corner{background:transparent;}'
             + '@media (prefers-color-scheme:dark){'
-            + '::-webkit-scrollbar-thumb{background:rgba(200,200,200,0.25);}'
-            + '::-webkit-scrollbar-thumb:hover{background:rgba(200,200,200,0.4);}'
+            + 'html:not([data-theme])::-webkit-scrollbar-thumb,html:not([data-theme]) ::-webkit-scrollbar-thumb{background:rgba(200,200,200,0.25);}'
+            + 'html:not([data-theme])::-webkit-scrollbar-thumb:hover,html:not([data-theme]) ::-webkit-scrollbar-thumb:hover{background:rgba(200,200,200,0.4);}'
             + '}'
             + '</style>';
         return scrollbarCss
