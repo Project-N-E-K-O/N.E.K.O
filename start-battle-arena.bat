@@ -56,4 +56,6 @@ echo   N.E.K.O main: http://localhost:48911
 echo   Match server: http://localhost:3001/health
 echo.
 echo Keep the three opened command windows running while testing.
+echo To stop these services later, run:
+echo   "%PROJECT_ROOT%\stop-battle-arena.bat"
 pause

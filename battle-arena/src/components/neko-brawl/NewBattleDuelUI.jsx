@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, BookOpen, Clock3, FileText, Flame, Heart, Layers, RotateCcw, Shield, Snowflake, Sparkles, Star, Wind, X, Zap } from 'lucide-react'
+import { ArrowLeft, BookOpen, Clock3, FileText, Flame, Heart, Layers, RotateCcw, Shield, Snowflake, Sparkles, Star, Volume2, VolumeX, Wind, X, Zap } from 'lucide-react'
 import { AnimatePresence, motion } from 'framer-motion'
 import NekoAvatar from '../NekoAvatar'
 import CardInspectModal from './CardInspectModal'
@@ -7,6 +7,14 @@ import BattleResultOverlay from './BattleResultOverlay'
 import BattleTutorialPanel from './BattleTutorialPanel'
 import NekoCardBack from './NekoCardBack'
 import { playNekoBrawlCardSfx } from './nekoBrawlAudio'
+import {
+  ADVENTURE_DECK_SIZE,
+  advanceAdventureRun,
+  calculateAdventureSteps,
+  createAdventureRun,
+  describeAdventureReveal,
+  getCardActionPoint,
+} from '../../data/nekoBrawlAdventureDeck'
 
 const BATTLE_BACKGROUND_SRC = '/neko-brawl/Background_forest.png'
 
@@ -19,7 +27,7 @@ const LOG_HIGHLIGHT_RULES = [
   { pattern: /封锁Boss下回合行动|行动被封锁/y, className: 'font-black text-violet-600' },
   { pattern: /弱化|只能出1张牌/y, className: 'font-black text-amber-600' },
   { pattern: /Boss生命上限\s*\+\d+/y, className: 'font-black text-rose-600' },
-  { pattern: /能量不足|跳过出牌|无牌可出/y, className: 'font-black text-orange-600' },
+  { pattern: /行动力不足|跳过出牌|无牌可出/y, className: 'font-black text-orange-600' },
 ]
 
 const CARD_TEXT_HIGHLIGHT_RULES = [
@@ -283,6 +291,7 @@ function SideBattleRail({
   deckCount = 0,
   handCount,
   energyCount,
+  showActionPointUi = true,
   zoneRef,
   avatarRef,
   statusRef,
@@ -424,13 +433,99 @@ function SideBattleRail({
                 <p className="text-sm font-black">手牌数：{handCount}</p>
               </div>
             )}
-            {typeof energyCount === 'number' && (
-              <p className="text-sm font-black text-amber-300">能量数：{energyCount}</p>
+            {showActionPointUi && typeof energyCount === 'number' && (
+              <p className="text-sm font-black text-amber-300">行动力：{energyCount}</p>
             )}
           </div>
         </div>
       </section>
     </aside>
+  )
+}
+
+function AdventureDeckStack({ count = ADVENTURE_DECK_SIZE }) {
+  return (
+    <div className="pointer-events-auto flex items-center gap-3 rounded-sm border border-emerald-900/20 bg-white/92 px-4 py-3 shadow-[0_12px_32px_rgba(15,23,42,0.18)]">
+      <div className="relative h-20 w-16 shrink-0">
+        <div className="absolute left-0 top-3 h-16 w-12 rotate-[-9deg] rounded-md border-2 border-emerald-900/35 bg-emerald-100 shadow-sm" />
+        <div className="absolute left-2 top-1.5 h-16 w-12 rotate-[-2deg] rounded-md border-2 border-emerald-900/35 bg-lime-100 shadow-sm" />
+        <div className="absolute left-4 top-0 h-16 w-12 rotate-[6deg] overflow-hidden rounded-md border-2 border-emerald-900/70 bg-white shadow-md">
+          <div className="h-5 bg-emerald-700" />
+          <div className="flex h-11 items-center justify-center bg-[linear-gradient(135deg,#ffffff_0%,#ffffff_42%,#dcfce7_42%,#dcfce7_58%,#ffffff_58%)]">
+            <Layers className="h-6 w-6 text-emerald-800" />
+          </div>
+        </div>
+      </div>
+      <div className="min-w-20">
+        <p className="text-xs font-black text-emerald-800">探索牌组</p>
+        <p className="mt-1 text-3xl font-black leading-none text-neutral-950">{count}</p>
+        <p className="mt-1 text-[11px] font-bold text-neutral-500">剩余张数</p>
+      </div>
+    </div>
+  )
+}
+
+function AdventureDeckFillStack({ count = ADVENTURE_DECK_SIZE }) {
+  const cards = Array.from({ length: 12 })
+  return (
+    <div className="mx-auto flex flex-col items-center">
+      <div className="relative h-36 w-28">
+        <div className="absolute inset-x-3 bottom-0 h-4 rounded-full bg-emerald-950/20 blur-md" />
+        {cards.map((_, index) => (
+          <motion.div
+            key={index}
+            className="absolute left-1/2 top-1/2 h-24 w-20 -translate-x-1/2 -translate-y-1/2 rounded-md border-2 border-emerald-900/70 bg-white shadow-md"
+            initial={{
+              opacity: 0,
+              y: -84 - index * 4,
+              x: -40 + index * 7,
+              rotate: -18 + index * 3,
+              scale: 0.86,
+            }}
+            animate={{
+              opacity: 1,
+              y: index * -3,
+              x: 0,
+              rotate: -5 + index * 0.9,
+              scale: 1,
+            }}
+            transition={{
+              delay: index * 0.055,
+              duration: 0.42,
+              ease: [0.22, 1, 0.36, 1],
+            }}
+            style={{ zIndex: index }}
+          >
+            <div className="h-7 rounded-t-[3px] bg-emerald-700" />
+            <div className="flex h-[4.05rem] items-center justify-center bg-[linear-gradient(135deg,#ffffff_0%,#ffffff_42%,#dcfce7_42%,#dcfce7_58%,#ffffff_58%)]">
+              <Layers className="h-8 w-8 text-emerald-800" />
+            </div>
+          </motion.div>
+        ))}
+        <motion.div
+          className="absolute left-1/2 top-1/2 z-20 flex h-24 w-20 -translate-x-1/2 -translate-y-1/2 items-end justify-center rounded-md border-2 border-emerald-950 bg-emerald-800 pb-3 text-white shadow-[0_14px_28px_rgba(6,78,59,0.28)]"
+          initial={{ opacity: 0, y: 24, scale: 0.92 }}
+          animate={{ opacity: 1, y: -38, scale: 1 }}
+          transition={{ delay: 0.72, duration: 0.36, ease: 'easeOut' }}
+        >
+          <Layers className="h-8 w-8" />
+        </motion.div>
+      </div>
+      <div className="mt-3 w-64">
+        <div className="flex justify-between text-[11px] font-black text-emerald-800">
+          <span>探索牌组装填</span>
+          <span>{count} / {ADVENTURE_DECK_SIZE}</span>
+        </div>
+        <div className="mt-1 h-3 overflow-hidden rounded-full border border-emerald-900/30 bg-white">
+          <motion.div
+            className="h-full rounded-full bg-emerald-600"
+            initial={{ width: '0%' }}
+            animate={{ width: `${Math.min(100, Math.round((count / ADVENTURE_DECK_SIZE) * 100))}%` }}
+            transition={{ delay: 0.16, duration: 0.78, ease: 'easeOut' }}
+          />
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -458,6 +553,7 @@ export default function NewBattleDuelUI({
   allyHand,
   allyPlayed = [],
   allyEnergy,
+  showActionPointUi = true,
   playerHp = 6,
   playerShield = 0,
   allyHp = 6,
@@ -474,8 +570,12 @@ export default function NewBattleDuelUI({
   onRestart,
   onBackToClassic,
   onClose,
+  temporaryBgmEnabled = true,
+  onToggleTemporaryBgm,
   gameLog = [],
   comboReference = [],
+  adventureDeckCount = ADVENTURE_DECK_SIZE,
+  adventureMode = false,
 }) {
   const [showBattleLog, setShowBattleLog] = useState(false)
   const [showComboList, setShowComboList] = useState(false)
@@ -488,12 +588,19 @@ export default function NewBattleDuelUI({
   const [flyingCard, setFlyingCard] = useState(null)
   const [starStrike, setStarStrike] = useState(null)
   const [inspectedCard, setInspectedCard] = useState(null)
+  const [adventureRun, setAdventureRun] = useState(() => createAdventureRun())
+  const [adventurePlayerConfirmed, setAdventurePlayerConfirmed] = useState(false)
+  const [adventureAllyConfirmed, setAdventureAllyConfirmed] = useState(false)
+  const [adventureAllyActionCard, setAdventureAllyActionCard] = useState(null)
+  const [adventureResult, setAdventureResult] = useState(null)
   const playZoneRef = useRef(null)
   const bossStageRef = useRef(null)
   const playerAvatarRef = useRef(null)
   const playerStatusRef = useRef(null)
   const handZoneRef = useRef(null)
   const comboAttrs = comboAttrsProp?.length ? comboAttrsProp : boss?.weakness?.weak || []
+  const battleUiActive = !adventureMode
+  const canUseCards = adventureMode ? !adventurePlayerConfirmed && !adventureResult : isPlayerTurn
   const getCardCost = (card) => card?.cost ?? Math.max(1, Math.ceil((card?.power || 0) / 3))
   const selectedCards = mySelected
     .map(id => myHand.find(card => card.id === id))
@@ -503,6 +610,13 @@ export default function NewBattleDuelUI({
   const selectedCost = selectedCards.reduce((sum, card) => sum + getCardCost(card), 0)
   const energy = Math.max(0, energyBase - selectedCost)
   const energyTooLow = selectedCost > energyBase
+  const adventureAllyCards = adventureAllyActionCard ? [adventureAllyActionCard] : []
+  const adventureStepPreview = calculateAdventureSteps(selectedCards, adventureAllyCards)
+  const adventureActiveDeckCount = adventureMode
+    ? adventureRun.activeSideAdventure
+      ? Math.max(0, adventureRun.activeSideAdventure.deck.length - adventureRun.activeSideAdventure.index)
+      : Math.max(0, adventureRun.mainDeck.length - adventureRun.mainIndex)
+    : adventureDeckCount
   const allyCommitted = allyPlayed.length > 0
   const allyThinking = currentActor?.type === 'ally' && !allyCommitted && !gameOver
   const damageText = bossDamagePopup ? `${bossDamagePopup.amount}${bossDamagePopup.weak ? '!' : ''}` : ''
@@ -632,12 +746,56 @@ export default function NewBattleDuelUI({
     onConfirmPlay?.()
   }
 
+  const handleConfirmAdventurePlayer = () => {
+    if (!adventureMode || selectedCards.length === 0 || adventureResult) return
+    setAdventurePlayerConfirmed(true)
+  }
+
+  const handleConfirmAdventureAlly = () => {
+    if (!adventureMode || adventureResult) return
+    setAdventureAllyActionCard(prev => prev || allyHand[0] || null)
+    setAdventureAllyConfirmed(true)
+  }
+
+  const handleContinueAdventure = () => {
+    setAdventurePlayerConfirmed(false)
+    setAdventureAllyConfirmed(false)
+    setAdventureAllyActionCard(null)
+    setAdventureResult(null)
+    onSetPreviewCard?.(null)
+  }
+
+  useEffect(() => {
+    if (!adventureMode || !adventurePlayerConfirmed || !adventureAllyConfirmed || adventureResult) return
+    if (selectedCards.length === 0) return
+
+    const next = advanceAdventureRun(adventureRun, selectedCards, adventureAllyCards)
+    const revealedCard = next.revealedCards[0] || null
+    setAdventureRun(next.run)
+    setAdventureResult({
+      id: `adventure-result-${Date.now()}`,
+      card: revealedCard,
+      trigger: next.triggers[0] || null,
+      stepResult: next.stepResult,
+      revealResult: next.revealResult,
+      description: describeAdventureReveal(next.revealResult),
+    })
+  }, [
+    adventureMode,
+    adventurePlayerConfirmed,
+    adventureAllyConfirmed,
+    adventureResult,
+    adventureRun,
+    selectedCards,
+    adventureAllyCards,
+  ])
+
   const inspectCard = (card, source = 'hand') => {
     setInspectedCard({ card, source })
   }
 
   const handleCardPointerDown = (event, card) => {
-    if (!isPlayerTurn) return
+    if (!canUseCards) return
     event.preventDefault()
     const rect = event.currentTarget.getBoundingClientRect()
     setDragLeftHandZone(false)
@@ -654,7 +812,7 @@ export default function NewBattleDuelUI({
   }
 
   const handleZoneCardPointerDown = (event, card) => {
-    if (!isPlayerTurn || !playerZoneIsPreview) return
+    if (!canUseCards || !playerZoneIsPreview) return
     event.preventDefault()
     const rect = event.currentTarget.getBoundingClientRect()
     setReturnDragState({
@@ -798,28 +956,49 @@ export default function NewBattleDuelUI({
           >
             <ArrowLeft className="h-4 w-4" />
           </button>
-          <button
-            type="button"
-            onClick={onBackToClassic}
-            className="rounded-sm border border-neutral-300 bg-neutral-100 px-3 py-2 text-xs font-bold text-neutral-700 hover:bg-neutral-200"
-          >
-            返回经典UI
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowBattleTutorial(true)}
-            className="flex items-center gap-1 rounded-sm border border-neutral-300 bg-white px-3 py-2 text-xs font-bold text-neutral-700 shadow-sm hover:bg-neutral-100"
-          >
-            <BookOpen className="h-3.5 w-3.5" />
-            教程
-          </button>
+          {battleUiActive && (
+            <button
+              type="button"
+              onClick={onBackToClassic}
+              className="rounded-sm border border-neutral-300 bg-neutral-100 px-3 py-2 text-xs font-bold text-neutral-700 hover:bg-neutral-200"
+            >
+              返回经典UI
+            </button>
+          )}
+          {battleUiActive && (
+            <button
+              type="button"
+              onClick={() => setShowBattleTutorial(true)}
+              className="flex items-center gap-1 rounded-sm border border-neutral-300 bg-white px-3 py-2 text-xs font-bold text-neutral-700 shadow-sm hover:bg-neutral-100"
+            >
+              <BookOpen className="h-3.5 w-3.5" />
+              教程
+            </button>
+          )}
           <div>
-            <h2 className="text-xl font-black tracking-wide text-neutral-950">猫娘大乱斗 · 新版对局UI</h2>
-            <p className="text-xs text-neutral-500">同步出牌 · Combo 属性 · 白底模块原型</p>
+            <h2 className="text-xl font-black tracking-wide text-neutral-950">猫娘大乱斗 · {adventureMode ? '探险开始' : '新版对局UI'}</h2>
+            <p className="text-xs text-neutral-500">
+              {adventureMode ? '探索牌组 · 事件推进 · 战斗模块暂时隐藏' : '同步出牌 · Combo 属性 · 白底模块原型'}
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-2 text-xs font-bold text-neutral-700">
-          <span className="rounded-sm border border-neutral-300 bg-neutral-100 px-3 py-2">当前行动：{currentActor?.name || '整备'}</span>
+          <button
+            type="button"
+            onClick={onToggleTemporaryBgm}
+            className={`flex items-center gap-1 rounded-sm border px-3 py-2 text-xs font-bold shadow-sm ${
+              temporaryBgmEnabled
+                ? 'border-amber-400 bg-amber-50 text-amber-700 hover:bg-amber-100'
+                : 'border-neutral-300 bg-white text-neutral-500 hover:bg-neutral-100'
+            }`}
+            title="临时测试开关，后续会移除"
+          >
+            {temporaryBgmEnabled ? <Volume2 className="h-3.5 w-3.5" /> : <VolumeX className="h-3.5 w-3.5" />}
+            临时BGM：{temporaryBgmEnabled ? '开' : '关'}
+          </button>
+          <span className="rounded-sm border border-neutral-300 bg-neutral-100 px-3 py-2">
+            {adventureMode ? '状态：探险开始' : `当前行动：${currentActor?.name || '整备'}`}
+          </span>
           <span className="rounded-sm border border-neutral-300 bg-neutral-100 px-3 py-2">手牌 {myHand.length}</span>
         </div>
       </header>
@@ -837,17 +1016,20 @@ export default function NewBattleDuelUI({
           statusRef={playerStatusRef}
           zoneCards={playerZoneCards}
           maxCards={myMaxPlay}
-          zoneTitle="玩家出牌区"
-          zoneHint="拖到Boss区打出"
+          zoneTitle={adventureMode ? '玩家行动区' : '玩家出牌区'}
+          zoneHint={adventureMode ? '拖到探索区准备行动' : '拖到探索区打出'}
           zonePreview={playerZoneIsPreview}
-          zoneCardsDraggable={playerZoneIsPreview && isPlayerTurn}
+          zoneCardsDraggable={playerZoneIsPreview && canUseCards}
           returningZoneCardId={returnDragState?.card?.id || returnFlyingCard?.card?.id}
           onZoneCardPointerDown={handleZoneCardPointerDown}
           onInspectCard={inspectCard}
+          showActionPointUi={battleUiActive && showActionPointUi}
         />
 
         <div className="absolute left-1/2 top-6 z-30 w-44 -translate-x-1/2 select-none border-2 border-neutral-300 bg-neutral-100 text-center shadow-sm">
-          <div className="border-b border-neutral-300 py-1 text-[11px] font-bold text-neutral-600">当前回合数</div>
+          <div className="border-b border-neutral-300 py-1 text-[11px] font-bold text-neutral-600">
+            {adventureMode ? '探索回合' : '当前回合数'}
+          </div>
           <div className="py-2 text-5xl font-light text-neutral-950">{round}</div>
         </div>
 
@@ -860,45 +1042,65 @@ export default function NewBattleDuelUI({
           deckCount={allyDeck.length}
           handCount={allyHand.length}
           energyCount={typeof allyEnergy === 'number' ? allyEnergy : 3 + round}
-          zoneCards={allyPlayed}
-          maxCards={Math.max(1, allyPlayed.length)}
-          zoneTitle="队友出牌区"
-          zoneHint={allyThinking ? '还在思考中' : '队友预出牌'}
-          zoneReady={allyCommitted}
-          zoneThinking={allyThinking}
+          showActionPointUi={battleUiActive && showActionPointUi}
+          zoneCards={adventureMode ? adventureAllyCards : allyPlayed}
+          maxCards={adventureMode ? 1 : Math.max(1, allyPlayed.length)}
+          zoneTitle={adventureMode ? '队友行动区' : '队友出牌区'}
+          zoneHint={adventureMode ? (adventureAllyConfirmed ? '准备出发！' : '等待队友确认') : allyThinking ? '还在思考中' : '队友预出牌'}
+          zoneReady={adventureMode ? adventureAllyConfirmed : battleUiActive && allyCommitted}
+          zoneThinking={adventureMode ? !adventureAllyConfirmed : battleUiActive && allyThinking}
           onInspectCard={inspectCard}
           isAlly
         />
 
         <section
           ref={bossStageRef}
-          className={`pointer-events-none absolute bottom-0 left-[18rem] right-[18rem] top-0 z-0 overflow-hidden border-x border-b bg-transparent transition-all duration-200 ${
+          className={`pointer-events-none absolute bottom-0 top-0 z-0 overflow-hidden border-x border-b bg-transparent transition-all duration-200 ${
             dragOverBoss ? 'ring-4 ring-sky-300/70' : ''
-          } ${bossImageTone}`}
+          } ${bossImageTone} left-[18rem] right-[18rem]`}
         >
           <div className="absolute inset-0 flex items-center justify-center">
-            {bossImageSrc ? (
-              <motion.img
-                key={bossImageState}
-                src={bossImageSrc}
-                alt={boss?.name || 'Boss'}
-                initial={{ opacity: 0, scale: 0.98 }}
-                animate={{
-                  opacity: 1,
-                  scale: bossImageState === 'attack' ? 1.04 : 1,
-                  x: bossImageState === 'damageTaken' ? [0, -7, 7, 0] : 0,
-                }}
-                transition={{ duration: 0.18 }}
-                className="h-full w-full object-cover drop-shadow-[0_24px_56px_rgba(15,23,42,0.24)]"
-                draggable={false}
-              />
-            ) : (
-              <div className="text-8xl">{boss?.emoji}</div>
-            )}
+            <div className="w-[min(42rem,58vw)] border-2 border-dashed border-emerald-900/25 bg-white/70 px-8 py-8 text-center shadow-[0_18px_48px_rgba(15,23,42,0.12)]">
+              <p className="mt-4 text-2xl font-black text-emerald-950">{adventureMode ? '探险开始' : '探索区域'}</p>
+              {adventureMode && adventureResult ? (
+                <div className="mt-4 text-left">
+                  <div className="rounded-sm border-2 border-emerald-900/30 bg-white/85 p-4">
+                    <p className="text-xs font-black text-emerald-700">揭示事件</p>
+                    <p className="mt-1 text-xl font-black text-neutral-950">
+                      {adventureResult.card?.title || '没有事件'}
+                    </p>
+                    <p className="mt-2 text-sm font-bold leading-relaxed text-neutral-700">
+                      {adventureResult.card?.summary || '本次没有揭示新的探索牌。'}
+                    </p>
+                    <p className="mt-3 text-xs font-black leading-relaxed text-emerald-800">
+                      {adventureResult.description}
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {adventureMode ? (
+                    <AdventureDeckFillStack count={adventureActiveDeckCount} />
+                  ) : (
+                    <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full border-2 border-emerald-800/30 bg-emerald-50 text-emerald-800">
+                      <Layers className="h-8 w-8" />
+                    </div>
+                  )}
+                  <p className="mt-2 text-sm font-bold text-neutral-600">
+                    {adventureMode ? '先把行动卡拖到左侧行动区，再等待双方确认。' : '把卡牌拖到这里，决定本回合推进到哪一张探索牌。'}
+                  </p>
+                  {adventureMode && (
+                    <p className="mt-3 text-xs font-black text-emerald-800">
+                      双方都确认后，才会根据平均行动力推进探索牌组。
+                    </p>
+                  )}
+                </>
+              )}
+            </div>
           </div>
 
           <AnimatePresence>
-            {comboPopup && (
+            {battleUiActive && comboPopup && (
               <motion.div
                 key={comboPopup.id}
                 initial={{ opacity: 0, scale: 0.45, rotate: -10, y: 28 }}
@@ -922,7 +1124,7 @@ export default function NewBattleDuelUI({
           </AnimatePresence>
 
           <AnimatePresence>
-            {bossDamagePopup && (
+            {battleUiActive && bossDamagePopup && (
               <motion.div
                 key={bossDamagePopup.id}
                 initial={{ opacity: 0, scale: 0.55, rotate: -8, y: 18 }}
@@ -956,63 +1158,65 @@ export default function NewBattleDuelUI({
             )}
           </AnimatePresence>
 
-          <motion.div
-            drag
-            dragMomentum={false}
-            dragElastic={0.06}
-            whileDrag={{ scale: 1.03 }}
-            className="pointer-events-auto absolute left-1/2 top-24 z-10 w-[min(34rem,42vw)] -translate-x-1/2 cursor-grab select-none border border-neutral-300/80 bg-white/90 px-5 py-4 text-center shadow-[0_14px_42px_rgba(15,23,42,0.14)] active:cursor-grabbing"
-            style={{ touchAction: 'none' }}
-            title="临时可拖拽：用于评估 Boss 状态栏位置"
-          >
-            <div className="text-lg font-black text-red-700 drop-shadow-sm">{boss?.name || 'Boss'}</div>
-            <div className="mt-3 w-full px-2">
-              <div className="mb-1 flex justify-between text-xs font-black text-red-700">
-                <span>Boss生命</span>
-                <span>{bossHpValue} / {bossBreakGoal}</span>
+          {battleUiActive && (
+            <motion.div
+              drag
+              dragMomentum={false}
+              dragElastic={0.06}
+              whileDrag={{ scale: 1.03 }}
+              className="pointer-events-auto absolute left-1/2 top-24 z-10 w-[min(34rem,42vw)] -translate-x-1/2 cursor-grab select-none border border-neutral-300/80 bg-white/90 px-5 py-4 text-center shadow-[0_14px_42px_rgba(15,23,42,0.14)] active:cursor-grabbing"
+              style={{ touchAction: 'none' }}
+              title="临时可拖拽：用于评估探索状态栏位置"
+            >
+              <div className="text-lg font-black text-emerald-800 drop-shadow-sm">森林探索</div>
+              <div className="mt-3 w-full px-2">
+                <div className="mb-1 flex justify-between text-xs font-black text-emerald-800">
+                  <span>探索阻力</span>
+                  <span>{bossHpValue} / {bossBreakGoal}</span>
+                </div>
+                <div className="h-3 rounded-full bg-emerald-100">
+                  <div
+                    className="h-full rounded-full bg-emerald-600"
+                    style={{ width: `${bossHpPercent}%` }}
+                  />
+                </div>
               </div>
-              <div className="h-3 rounded-full bg-red-100">
-                <div
-                  className="h-full rounded-full bg-red-600"
-                  style={{ width: `${bossHpPercent}%` }}
-                />
+              <div className="mt-3 w-full border-t border-neutral-300/70 pt-3">
+                <p className="text-[11px] font-black text-emerald-800">当前Combo属性</p>
+                <div className="mt-2 flex justify-center gap-2">
+                  {comboAttrs.map(attr => {
+                    const meta = COMBO_ATTR_META[attr] || {
+                      name: attr,
+                      icon: Sparkles,
+                      text: 'text-neutral-600',
+                      bg: 'bg-white',
+                      border: 'border-neutral-300',
+                      activeText: 'text-neutral-900',
+                      activeBg: 'bg-neutral-100',
+                      activeBorder: 'border-neutral-700',
+                      activeRing: 'ring-neutral-300/75',
+                      activeShadow: 'shadow-[0_0_18px_rgba(82,82,82,0.45)]',
+                    }
+                    const AttrIcon = meta.icon
+                    const isComboMatchedByActiveCard = activeComboAttrId === attr
+                    return (
+                      <div
+                        key={attr}
+                        className={`flex h-9 w-9 items-center justify-center rounded-full border-2 transition-all duration-150 ${
+                          isComboMatchedByActiveCard
+                            ? `scale-110 ${meta.activeBorder} ${meta.activeBg} ${meta.activeShadow} ring-4 ${meta.activeRing}`
+                            : `${meta.border} ${meta.bg} shadow-sm`
+                        }`}
+                        title={meta.name}
+                      >
+                        <AttrIcon className={`${isComboMatchedByActiveCard ? `h-6 w-6 ${meta.activeText} drop-shadow-sm` : `h-5 w-5 ${meta.text}`} transition-all duration-150`} />
+                      </div>
+                    )
+                  })}
+                </div>
               </div>
-            </div>
-            <div className="mt-3 w-full border-t border-neutral-300/70 pt-3">
-              <p className="text-[11px] font-black text-red-700">当前Combo属性</p>
-              <div className="mt-2 flex justify-center gap-2">
-                {comboAttrs.map(attr => {
-                  const meta = COMBO_ATTR_META[attr] || {
-                    name: attr,
-                    icon: Sparkles,
-                    text: 'text-neutral-600',
-                    bg: 'bg-white',
-                    border: 'border-neutral-300',
-                    activeText: 'text-neutral-900',
-                    activeBg: 'bg-neutral-100',
-                    activeBorder: 'border-neutral-700',
-                    activeRing: 'ring-neutral-300/75',
-                    activeShadow: 'shadow-[0_0_18px_rgba(82,82,82,0.45)]',
-                  }
-                  const AttrIcon = meta.icon
-                  const isComboMatchedByActiveCard = activeComboAttrId === attr
-                  return (
-                    <div
-                      key={attr}
-                      className={`flex h-9 w-9 items-center justify-center rounded-full border-2 transition-all duration-150 ${
-                        isComboMatchedByActiveCard
-                          ? `scale-110 ${meta.activeBorder} ${meta.activeBg} ${meta.activeShadow} ring-4 ${meta.activeRing}`
-                          : `${meta.border} ${meta.bg} shadow-sm`
-                      }`}
-                      title={meta.name}
-                    >
-                      <AttrIcon className={`${isComboMatchedByActiveCard ? `h-6 w-6 ${meta.activeText} drop-shadow-sm` : `h-5 w-5 ${meta.text}`} transition-all duration-150`} />
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-          </motion.div>
+            </motion.div>
+          )}
         </section>
 
         <section ref={handZoneRef} className="absolute bottom-[5.8rem] left-1/2 z-20 flex min-h-56 -translate-x-1/2 items-end gap-4 px-5 py-3">
@@ -1025,7 +1229,7 @@ export default function NewBattleDuelUI({
               <MiniCard
                 card={card}
                 selected={mySelected.includes(card.id)}
-                disabled={!isPlayerTurn || getCardCost(card) > energyBase}
+                disabled={!canUseCards || (!adventureMode && getCardCost(card) > energyBase)}
                 dragging={dragState?.card?.id === card.id || flyingCard?.card?.id === card.id}
                 onClick={() => inspectCard(card, 'hand')}
                 onPointerDown={(event) => handleCardPointerDown(event, card)}
@@ -1033,6 +1237,77 @@ export default function NewBattleDuelUI({
             </div>
           ))}
         </section>
+
+        {(!adventureMode || adventureResult) && (
+          <section className="absolute bottom-[6.4rem] right-[19rem] z-30">
+            <AdventureDeckStack count={adventureActiveDeckCount} />
+          </section>
+        )}
+
+        {adventureMode && (
+          <section className="pointer-events-none absolute bottom-3 left-[18rem] right-[18rem] z-30 flex justify-center">
+            <div className="pointer-events-auto flex w-[min(52rem,70vw)] items-center justify-between gap-4 rounded-sm border-2 border-emerald-900/25 bg-white/94 px-5 py-3 shadow-[0_14px_38px_rgba(15,23,42,0.18)]">
+              <div className="min-w-0">
+                <p className="text-xs font-black text-emerald-800">探索确认</p>
+                <p className="mt-1 truncate text-sm font-bold text-neutral-600">
+                  {selectedCards.length === 0
+                    ? '请先拖出一张行动卡。'
+                    : adventureResult
+                      ? adventureResult.description
+                      : `当前平均行动力 ${adventureStepPreview.averageActionPoint.toFixed(1)}，将揭示从牌组顶端向下第 ${adventureStepPreview.revealOrdinal || 0} 张。`}
+                </p>
+                <div className="mt-2 flex flex-wrap gap-2 text-[11px] font-black">
+                  <span className={`rounded-sm border px-2 py-1 ${adventurePlayerConfirmed ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-neutral-300 bg-neutral-100 text-neutral-500'}`}>
+                    玩家：{adventurePlayerConfirmed ? '已确认' : '未确认'}
+                  </span>
+                  <span className={`rounded-sm border px-2 py-1 ${adventureAllyConfirmed ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-neutral-300 bg-neutral-100 text-neutral-500'}`}>
+                    队友：{adventureAllyConfirmed ? '已确认' : '未确认'}
+                  </span>
+                  {selectedCards[0] && (
+                    <span className="rounded-sm border border-orange-300 bg-orange-50 px-2 py-1 text-orange-700">
+                      玩家行动力 {getCardActionPoint(selectedCards[0])}
+                    </span>
+                  )}
+                  {adventureAllyActionCard && (
+                    <span className="rounded-sm border border-sky-300 bg-sky-50 px-2 py-1 text-sky-700">
+                      队友行动力 {getCardActionPoint(adventureAllyActionCard)}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                {adventureResult ? (
+                  <button
+                    type="button"
+                    onClick={handleContinueAdventure}
+                    className="h-12 rounded-sm border-2 border-emerald-800 bg-emerald-700 px-5 text-sm font-black text-white shadow-sm hover:bg-emerald-800"
+                  >
+                    继续探索
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={handleConfirmAdventurePlayer}
+                      disabled={selectedCards.length === 0 || adventurePlayerConfirmed}
+                      className="h-12 rounded-sm border-2 border-neutral-900 bg-neutral-900 px-5 text-sm font-black text-white shadow-sm disabled:cursor-not-allowed disabled:border-neutral-300 disabled:bg-neutral-200 disabled:text-neutral-500"
+                    >
+                      {adventurePlayerConfirmed ? '玩家已确认' : '确认探索'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleConfirmAdventureAlly}
+                      disabled={adventureAllyConfirmed}
+                      className="h-12 rounded-sm border-2 border-sky-700 bg-sky-50 px-5 text-sm font-black text-sky-800 shadow-sm hover:bg-sky-100 disabled:cursor-not-allowed disabled:border-neutral-300 disabled:bg-neutral-100 disabled:text-neutral-400"
+                    >
+                      {adventureAllyConfirmed ? '队友已确认' : '队友确认'}
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          </section>
+        )}
 
         <CardInspectModal
           open={Boolean(inspectedCard)}
@@ -1042,18 +1317,21 @@ export default function NewBattleDuelUI({
         />
 
         <BattleTutorialPanel
-          open={showBattleTutorial}
+          open={battleUiActive && showBattleTutorial}
           onClose={() => setShowBattleTutorial(false)}
         />
 
+        {battleUiActive && (
         <section className="absolute bottom-[6.2rem] left-[calc(18rem+2rem)] z-20 flex flex-col items-center gap-2">
-          <div className="flex h-24 w-24 items-center justify-center rounded-full border-4 border-orange-400 bg-white text-xl font-black shadow-sm">
-            <div className="text-center">
-              <Zap className="mx-auto h-5 w-5" />
-              <p>{energy}</p>
-              <p className="text-[10px] font-bold">能量</p>
+          {showActionPointUi && (
+            <div className="flex h-24 w-24 items-center justify-center rounded-full border-4 border-orange-400 bg-white text-xl font-black shadow-sm">
+              <div className="text-center">
+                <Zap className="mx-auto h-5 w-5" />
+                <p>{energy}</p>
+                <p className="text-[10px] font-bold">行动力</p>
+              </div>
             </div>
-          </div>
+          )}
           <button
             type="button"
             onClick={() => setShowBattleLog(true)}
@@ -1075,7 +1353,9 @@ export default function NewBattleDuelUI({
             Combo列表
           </button>
         </section>
+        )}
 
+        {battleUiActive && (
         <section className="pointer-events-none absolute bottom-3 left-[18rem] right-[18rem] z-30 flex items-center justify-center gap-4">
           <button
             type="button"
@@ -1087,7 +1367,7 @@ export default function NewBattleDuelUI({
                 : 'border-neutral-300 bg-neutral-200 text-neutral-500'
             }`}
           >
-            {energyTooLow ? `能量不足 ${selectedCost}/${energyBase}` : '确认出牌'}
+            {energyTooLow ? `行动力不足 ${selectedCost}/${energyBase}` : '确认出牌'}
           </button>
           <button
             type="button"
@@ -1113,9 +1393,10 @@ export default function NewBattleDuelUI({
             自动战斗
           </button>
         </section>
+        )}
 
         <AnimatePresence>
-          {gameOver && (
+          {battleUiActive && gameOver && (
             <BattleResultOverlay
               outcome={outcome}
               round={round}
@@ -1135,7 +1416,7 @@ export default function NewBattleDuelUI({
         </AnimatePresence>
 
         <AnimatePresence>
-          {showBattleLog && (
+          {battleUiActive && showBattleLog && (
             <motion.div
               key="battle-log-drawer"
               className="absolute inset-0 z-40 bg-transparent"
@@ -1192,7 +1473,7 @@ export default function NewBattleDuelUI({
         </AnimatePresence>
 
         <AnimatePresence>
-          {showComboList && (
+          {battleUiActive && showComboList && (
             <motion.div
               key="combo-list-drawer"
               className="pointer-events-none absolute inset-0 z-40 bg-transparent"
@@ -1246,7 +1527,7 @@ export default function NewBattleDuelUI({
                           <div className="flex min-w-0 items-center gap-2">
                             <p className="min-w-0 flex-1 truncate text-sm font-black text-neutral-950">
                               {card.code} · {card.name}
-                              <span className="ml-2 text-[11px] font-black text-neutral-500">Cost {card.cost}</span>
+                              <span className="ml-2 text-[11px] font-black text-neutral-500">行动力 {card.cost}</span>
                               {isActive && <span className="ml-2 text-[10px] font-black text-amber-700">可触发</span>}
                             </p>
                             <div className={`flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-black ${isActive ? `${meta.activeBorder} bg-white/80 ${meta.activeText || meta.text}` : `${meta.border} ${meta.bg} ${meta.text}`}`}>

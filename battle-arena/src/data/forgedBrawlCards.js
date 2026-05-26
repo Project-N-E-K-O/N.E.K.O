@@ -37,9 +37,11 @@ export const BRAWL_CARD_EFFECT_POOL = [
 // 1. 基础卡效果从 C001-C013 中选择；name、cost、type、主属性、主效果、Combo 效果跟随基础卡编号。
 // 2. Forged 卡名保留 "(Forged)" 后缀，便于在组卡页面和战斗日志中识别来源。
 // 3. Combo 属性目前随机；后续可改为由 facts 内容、LLM 评估或规则表决定。
-// 4. storyLead 是 fact 抽取出的“故事引子”；story 是卡牌专属小故事，且正文必须显式包含原始引子。
+// 4. storyLead 是 fact 抽取出的“故事引子”；story 是卡牌专属小故事。
+//    storyLead 单独保存供鉴赏查看，不再把原始引子硬拼到故事正文里，避免破坏“第三人称叙事 + 末句第一人称台词”的格式。
 // 5. TODO: [LLM 卡牌故事生成]
-//    接入 LLM 后，用 storyLead + 基础卡信息（卡名、主属性、费用、主效果、Combo 效果）作为提示词，
+//    接入 LLM 后，只用 storyLead + 已 Roll 出的主属性作为提示词；
+//    卡名/羁绊名/事件标题/编号/费用/类型/效果/Combo 属性只用于规则和界面展示，不能参与故事生成。
 //    在不改变原有记忆基调的前提下生成卡牌专属小故事，再写入 story / summary。
 //    当前后端故事接口不可用时，前端只生成明确标注的临时占位故事，不能伪装为正式 LLM 故事。
 // 6. 持久化目前使用 localStorage，后续需要确认是否写入角色/账户级存储，以及是否允许同一 fact 重复铸造。
@@ -77,13 +79,11 @@ function getEventName(event = {}, storyLead = '') {
 
 function buildTemporaryForgedStory(storyLead, card = {}) {
   const lead = storyLead || '这段记忆暂时还没有完整记录。'
-  const cardName = card.name || card.title || '这张卡'
-  const mainText = card.mainText || '主效果待确认'
-  const comboText = card.comboText || 'Combo效果待确认'
+  const attrName = card.attrName || '未确认属性'
   return [
     `${lead}`,
-    `${cardName} 从这段记忆里抽取出一瞬间的情绪：它不改变原本的事件，只把那份记忆折成可以在对局中打出的动作。`,
-    `因此它保留基础牌效果“${mainText}”，并把“${comboText}”作为这段回忆在连携时的回响。`,
+    `猫娘会以 ${attrName} 的性格气质重新看待这段记忆，让故事继续沿着原本的情绪发展。`,
+    `正式故事生成接入成功后，只会参考故事引子和主属性性格，不参考卡名、费用、类型、效果或任何游戏规则。`,
     '【临时前端占位】后续接入正式故事生成后，请用真实生成结果替换本段，并继续让故事自然包含原本的事件内容。',
   ].join('\n')
 }
@@ -92,11 +92,7 @@ export function composeForgedCardStory(storyLead, generatedStory, card = {}) {
   const lead = storyLead || ''
   const story = typeof generatedStory === 'string' ? generatedStory.trim() : ''
   if (!story) return buildTemporaryForgedStory(lead, card)
-  if (lead && story.includes(lead)) return story
-  return [
-    lead || '这段记忆暂时还没有完整记录。',
-    story,
-  ].join('\n')
+  return story
 }
 
 export function createForgedBrawlCard(event = {}, options = {}) {

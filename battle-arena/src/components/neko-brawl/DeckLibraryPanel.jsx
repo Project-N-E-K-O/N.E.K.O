@@ -12,6 +12,8 @@ import {
   Sparkles,
   Trash2,
   Upload,
+  Volume2,
+  VolumeX,
   X,
   Wind,
 } from 'lucide-react'
@@ -128,7 +130,13 @@ function getAttackCount(deck, cardPool) {
     .reduce((sum, card) => sum + card.copies, 0)
 }
 
-export default function DeckLibraryPanel({ onClose, onOpenDeckBuilder, forgedCards = [] }) {
+export default function DeckLibraryPanel({
+  onClose,
+  onOpenDeckBuilder,
+  forgedCards = [],
+  temporaryBgmEnabled = true,
+  onToggleTemporaryBgm,
+}) {
   const availableCards = useMemo(() => {
     const propCards = Array.isArray(forgedCards)
       ? forgedCards.map(normalizeForgedBrawlCard).filter(Boolean)
@@ -257,6 +265,19 @@ export default function DeckLibraryPanel({ onClose, onOpenDeckBuilder, forgedCar
           {statusText && <p className="text-xs font-black text-emerald-700">{statusText}</p>}
           <button
             type="button"
+            onClick={onToggleTemporaryBgm}
+            className={`hidden h-10 items-center gap-2 border-2 px-3 text-sm font-black md:flex ${
+              temporaryBgmEnabled
+                ? 'border-amber-500 bg-amber-50 text-amber-700 hover:bg-amber-100'
+                : 'border-zinc-400 bg-white text-zinc-500 hover:bg-zinc-100'
+            }`}
+            title="临时测试开关，后续会移除"
+          >
+            {temporaryBgmEnabled ? <Volume2 className="h-4 w-4" /> : <VolumeX className="h-4 w-4" />}
+            临时BGM：{temporaryBgmEnabled ? '开' : '关'}
+          </button>
+          <button
+            type="button"
             onClick={onOpenDeckBuilder}
             className="flex h-10 items-center gap-2 border-2 border-zinc-950 bg-white px-3 text-sm font-black hover:bg-zinc-100"
           >
@@ -310,7 +331,7 @@ export default function DeckLibraryPanel({ onClose, onOpenDeckBuilder, forgedCar
                     </span>
                     <span className="min-w-0">
                       <span className="block truncate text-sm font-black">{card.name}</span>
-                      <span className="block truncate text-[11px] font-bold text-zinc-500">费用 {card.cost} / {card.type}</span>
+                      <span className="block truncate text-[11px] font-bold text-zinc-500">行动力 {card.cost} / {card.type}</span>
                     </span>
                     <span className="text-right text-sm font-black">x{card.copies}</span>
                   </div>
@@ -401,7 +422,7 @@ export default function DeckLibraryPanel({ onClose, onOpenDeckBuilder, forgedCar
 
                   <div className="mt-4 grid grid-cols-2 gap-2">
                     <div className="border-2 border-orange-300 bg-orange-50 p-3">
-                      <p className="text-[11px] font-black text-orange-700">平均费用</p>
+                      <p className="text-[11px] font-black text-orange-700">平均行动力</p>
                       <p className="mt-1 text-2xl font-black">{getAverageCost(slot.cards, availableCards)}</p>
                     </div>
                     <div className="border-2 border-red-300 bg-red-50 p-3">

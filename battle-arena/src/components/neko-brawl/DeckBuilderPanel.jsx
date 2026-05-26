@@ -28,7 +28,6 @@ import {
 } from '../../data/forgedBrawlCards'
 import CardInspectModal from './CardInspectModal'
 import DeckBuilderTutorialPanel from './DeckBuilderTutorialPanel'
-import { playNekoBrawlSceneBgm, stopNekoBrawlBgm } from './nekoBrawlAudio'
 
 const DECK_SIZE = 18
 const MAX_CARD_COPIES = 3
@@ -148,7 +147,15 @@ function normalizeDeckCodes(deckCodes, cardPool = CARD_POOL) {
   return picked
 }
 
-export default function DeckBuilderPanel({ onClose, onStartBattle, onOpenDeckLibrary, onDeleteForgedCard, forgedCards = [] }) {
+export default function DeckBuilderPanel({
+  onClose,
+  onStartBattle,
+  onOpenDeckLibrary,
+  onDeleteForgedCard,
+  forgedCards = [],
+  temporaryBgmEnabled = true,
+  onToggleTemporaryBgm,
+}) {
   const [deletedForgedCodes, setDeletedForgedCodes] = useState([])
   const availableCards = useMemo(() => {
     const propCards = Array.isArray(forgedCards)
@@ -188,7 +195,6 @@ export default function DeckBuilderPanel({ onClose, onStartBattle, onOpenDeckLib
   const [savedAt, setSavedAt] = useState('')
   const [inspectedCard, setInspectedCard] = useState(null)
   const [showTutorial, setShowTutorial] = useState(false)
-  const [temporaryBgmEnabled, setTemporaryBgmEnabled] = useState(true)
   const favoriteSet = useMemo(() => new Set(favoriteCodes), [favoriteCodes])
 
   useEffect(() => {
@@ -218,19 +224,6 @@ export default function DeckBuilderPanel({ onClose, onStartBattle, onOpenDeckLib
     })
 
   const fullDeck = deck.length >= DECK_SIZE
-
-  const toggleTemporaryBgm = () => {
-    setTemporaryBgmEnabled(prev => {
-      const next = !prev
-      if (next) {
-        // 临时试听开关：当前 BGM 是暂时占位实装用声音，不是最终结果；正式替换后请注明“正式版 BGM”。
-        playNekoBrawlSceneBgm('deckBuilder')
-      } else {
-        stopNekoBrawlBgm()
-      }
-      return next
-    })
-  }
 
   const addCard = (card) => {
     if (deck.length >= DECK_SIZE) return
@@ -326,7 +319,7 @@ export default function DeckBuilderPanel({ onClose, onStartBattle, onOpenDeckLib
         <div className="flex shrink-0 items-center gap-2">
           <button
             type="button"
-            onClick={toggleTemporaryBgm}
+            onClick={onToggleTemporaryBgm}
             className={`hidden h-10 items-center gap-2 border-2 px-3 text-sm font-black md:flex ${
               temporaryBgmEnabled
                 ? 'border-amber-500 bg-amber-50 text-amber-700 hover:bg-amber-100'
@@ -390,7 +383,7 @@ export default function DeckBuilderPanel({ onClose, onStartBattle, onOpenDeckLib
                 <p className="text-3xl font-black">{deck.length}/{DECK_SIZE}</p>
               </div>
               <div className="text-right">
-                <p className="text-xs font-black text-zinc-500">平均费用</p>
+                <p className="text-xs font-black text-zinc-500">平均行动力</p>
                 <p className="text-2xl font-black">{averageCost}</p>
               </div>
             </div>
@@ -455,7 +448,7 @@ export default function DeckBuilderPanel({ onClose, onStartBattle, onOpenDeckLib
                     </span>
                     <span className="min-w-0">
                       <span className="block truncate text-sm font-black">{card.name}</span>
-                      <span className="block truncate text-[11px] font-bold text-zinc-500">费用 {card.cost} / {card.type}</span>
+                      <span className="block truncate text-[11px] font-bold text-zinc-500">行动力 {card.cost} / {card.type}</span>
                     </span>
                     <span className="text-right text-sm font-black">x{card.copies}</span>
                   </button>
@@ -470,7 +463,7 @@ export default function DeckBuilderPanel({ onClose, onStartBattle, onOpenDeckLib
           </div>
         </aside>
 
-        <section className="flex min-w-0 flex-col bg-white">
+        <section className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-white">
           <div className="flex shrink-0 items-center gap-3 border-b-2 border-zinc-950 p-4">
             <div className="flex h-11 min-w-0 flex-1 items-center gap-2 border-2 border-zinc-950 px-3">
               <Search className="h-4 w-4 shrink-0" />
@@ -523,8 +516,11 @@ export default function DeckBuilderPanel({ onClose, onStartBattle, onOpenDeckLib
               </div>
               <p className="text-[11px] font-bold text-zinc-500">向下滚动查看全部卡牌</p>
             </div>
-            <div className="min-h-0 flex-1 overflow-y-scroll overscroll-contain p-4 pr-2 [scrollbar-gutter:stable]">
-              <div className="grid grid-cols-[repeat(auto-fill,minmax(176px,1fr))] gap-3 pb-6">
+            <div
+              className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 pb-28 pr-3 [scrollbar-gutter:stable]"
+              style={{ scrollPaddingBottom: '7rem' }}
+            >
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(176px,1fr))] gap-3 pb-16">
               {filteredCards.map(card => {
                 const copies = cardCopies(deck, card.code)
                 const maxCopies = maxCopiesForCard(card)
@@ -545,7 +541,7 @@ export default function DeckBuilderPanel({ onClose, onStartBattle, onOpenDeckLib
                       }
                     }}
                     aria-disabled={locked}
-                    className={`group flex min-h-[252px] flex-col border-2 p-3 text-left transition ${copies > 0 ? 'border-zinc-950 bg-zinc-50 shadow-[4px_4px_0_#18181b]' : 'border-zinc-950 bg-white hover:bg-zinc-50 hover:shadow-[4px_4px_0_#18181b]'} ${locked ? 'cursor-not-allowed opacity-55' : 'cursor-pointer'}`}
+                    className={`group flex min-h-[252px] scroll-mb-24 flex-col border-2 p-3 text-left transition ${copies > 0 ? 'border-zinc-950 bg-zinc-50 shadow-[4px_4px_0_#18181b]' : 'border-zinc-950 bg-white hover:bg-zinc-50 hover:shadow-[4px_4px_0_#18181b]'} ${locked ? 'cursor-not-allowed opacity-55' : 'cursor-pointer'}`}
                   >
                     <div className="flex items-start justify-between gap-2">
                       <span className="flex h-8 w-8 items-center justify-center rounded-full border-2 border-orange-500 bg-white text-sm font-black text-orange-700">
@@ -671,7 +667,7 @@ export default function DeckBuilderPanel({ onClose, onStartBattle, onOpenDeckLib
                 <p className="mt-1 text-2xl font-black">{groupedDeck.filter(card => ['回复', '防御'].includes(card.type)).reduce((sum, card) => sum + card.copies, 0)}</p>
               </div>
               <div className="border-2 border-zinc-950 p-3">
-                <p className="text-xs font-black text-zinc-500">能量曲线</p>
+                <p className="text-xs font-black text-zinc-500">行动力曲线</p>
                 <div className="mt-3 flex h-24 items-end gap-2">
                   {[1, 2, 3, 4].map(cost => {
                     const count = deck.filter(code => availableCards.find(card => card.code === code)?.cost === cost).length

@@ -10,7 +10,10 @@ LLM changes stay in one place.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
+import time
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -20,6 +23,27 @@ MAX_FIELD_CHARS = 160
 MAX_STORY_CHARS = 260
 FORGE_STORY_TIMEOUT_SECONDS = 25
 FORGE_STORY_MAX_TOKENS = 240
+FORGE_STORY_FORBIDDEN_GAME_TERMS = (
+    "Combo",
+    "combo",
+    "连携",
+    "费用",
+    "行动力",
+    "效果",
+    "伤害",
+    "护盾",
+    "防御",
+    "防御力场",
+    "力场",
+    "Boss",
+    "boss",
+    "抽牌",
+    "回合",
+    "对局",
+    "战斗",
+    "攻击",
+    "卡牌机制",
+)
 
 
 class ForgeStoryGenerationError(RuntimeError):
@@ -32,6 +56,41 @@ class ForgeStoryResult:
     provider: str
     model: str
     source_fact_id: str | None = None
+
+
+def _forge_request_id(payload: dict[str, Any]) -> str:
+    request_id = str(payload.get("requestId") or payload.get("_requestId") or "").strip()
+    return request_id or f"forge-{uuid.uuid4().hex[:10]}"
+
+
+def _log_value(value: Any, *, limit: int = 4000) -> Any:
+    if isinstance(value, dict):
+        return {str(k): _log_value(v, limit=limit) for k, v in value.items() if "api_key" not in str(k).lower()}
+    if isinstance(value, list):
+        return [_log_value(v, limit=limit) for v in value[:20]]
+    if isinstance(value, tuple):
+        return [_log_value(v, limit=limit) for v in value[:20]]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    text = str(value)
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _forge_log(request_id: str, event: str, **fields: Any) -> None:
+    """Emit detailed forge diagnostics to the running server console only.
+
+    These logs are intentionally not written to local files. They are for the
+    temporary card-forging integration pass and should stay free of API keys.
+    """
+
+    payload = {key: _log_value(value) for key, value in fields.items()}
+    print(
+        f"[forge-card-story][{request_id}][{event}] "
+        f"{json.dumps(payload, ensure_ascii=False, default=str)}",
+        flush=True,
+    )
 
 
 def _clip(value: Any, limit: int) -> str:
@@ -71,6 +130,9 @@ def _clean_story(text: str) -> str:
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     if not cleaned:
         raise ForgeStoryGenerationError("empty_story")
+    for term in FORGE_STORY_FORBIDDEN_GAME_TERMS:
+        if term in cleaned:
+            raise ForgeStoryGenerationError(f"game_rule_term_in_story:{term}")
     return _clip(cleaned, MAX_STORY_CHARS)
 
 
@@ -127,43 +189,44 @@ def build_forge_story_prompt(payload: dict[str, Any]) -> tuple[str, str]:
     lanlan_prompt = _clip(payload.get("lanlanPrompt"), 1200)
 
     system_prompt = (
-        "你是“猫娘大乱斗”的卡牌故事写作者。"
+        "你是“猫娘大乱斗”的记忆小故事写作者。"
         f"当前猫娘是{lanlan_name or '当前猫娘'}，主人是{master_name or '主人'}。"
-        "你的任务是把真实记忆事实抽取出的故事引子，改写成一张 Forged 卡牌的专属小故事。"
+        "你的任务是把真实记忆事实抽取出的故事引子，改写成一段猫娘记忆小故事。"
         "必须保留原有事实关系与情绪基调，不要新增现实中不存在的重大事实。"
-        "可以做轻量游戏化演绎，但不要改变事实方向。"
-        "故事主体必须以第三人称叙事描写猫娘的动作、情绪和战斗化想象。"
-        "最后必须用一句猫娘第一人称台词收束，用引号包住，并贴合卡牌主属性与 Combo 属性。"
+        "主属性只表示猫娘推动这个事件时的性格气质，不是卡牌规则。"
+        "例如温柔表示她会用体贴、安抚、照顾、认真倾听的方式推动故事引子继续发展。"
+        "故事的动作、气氛和最后台词只需要贴合主属性代表的性格气质。"
+        "不要参考、复述或迎合卡牌名称、羁绊名称、事件标题、卡牌编号、费用、类型、效果、Combo 属性或 Combo 效果；这些只用于游戏规则和界面展示，不是故事提示词。"
+        "不要写任何游戏规则、战斗画面、技能表现、护盾、防御、力场、伤害、攻击、Boss、抽牌、回合、对局或 Combo。"
+        "故事正文必须严格分成两个部分：前面是第三人称叙事，最后一句是猫娘第一人称台词。"
+        "第三人称叙事必须描写猫娘的日常动作、情绪和关系细节，不能直接照抄故事引子。"
+        "最后一句必须单独作为收束台词，用中文引号“”包住，并以猫娘第一人称说话。"
     )
     if lanlan_prompt:
         system_prompt += f"\n\n当前猫娘人格/背景摘要：\n{lanlan_prompt}"
 
     user_prompt = "\n".join(
         [
-            "请根据下面的故事引子和卡牌模板，生成一段卡牌专属小故事。",
+            "请根据下面的故事引子和本次 Roll 出的主属性，生成一段猫娘记忆小故事。",
             "",
             "硬性要求：",
             "1. 只输出故事正文，不要标题，不要 JSON，不要解释规则。",
             "2. 字数控制在 80-140 个中文字符左右。",
-            "3. 保留故事引子的情绪基调和关系，不要改成相反含义。",
+            "3. 保留故事引子的情绪基调和关系，但不要原样粘贴故事引子；请改写成自然的第三人称叙事。",
             "4. 不要编造新的现实履历、地点、人物关系或长期承诺。",
-            "5. 可以把卡牌效果轻微融入动作、气氛或战斗画面。",
-            "6. 大部分叙事内容使用第三人称，例如“她”“猫娘”“{猫娘名}”，不要全篇用第一人称。",
-            "7. 最后一小句必须是猫娘自己的第一人称台词，用中文引号“”包住；台词要表现猫娘性格，并尽量贴合主属性、Combo 属性与卡牌效果。",
-            "8. 如果主属性偏热情，台词更主动明亮；偏温柔，台词更体贴安抚；偏高冷，台词更克制清冷；偏天然，台词更轻快直觉。",
+            "5. 只能写日常动作、情绪反应和关系细节，不要写战斗化想象，也不要写成卡牌机制、费用、编号或效果说明。",
+            "6. 前面所有叙事句必须使用第三人称，例如“她”“猫娘”“{猫娘名}”；前面叙事句不要用“我”“我们”作为叙事主语。",
+            "7. 最后一小句必须是猫娘自己的第一人称台词，必须用中文引号“”包住；台词要表现猫娘性格，并贴合主属性。",
+            "8. 主属性是本次 Roll 出来的固定性格气质，故事必须围绕它推动引子发展：热情要主动明亮，温柔要体贴安抚，高冷要克制清冷，天然要轻快直觉。",
+            "9. 故事和游戏规则无关，不要写 Combo、连携、费用、效果、伤害、护盾、防御、力场、攻击、Boss、抽牌、回合、对局等规则或战斗内容。",
+            "10. 不要因为卡名、羁绊名、事件标题、编号、费用、类型、效果或 Combo 属性改变故事方向；本请求不会提供这些信息，即使模型猜到也不要使用。",
+            "11. 输出格式必须是：第三人称叙事一到三句 + 最后一小句中文引号内第一人称台词。不要在台词后再追加叙事。",
             "",
             "故事引子：",
             story_lead,
             "",
-            "卡牌信息：",
-            _card_line(card, "name", "卡名"),
-            _card_line(card, "baseCode", "基础编号"),
-            _card_line(card, "type", "类型"),
-            _card_line(card, "cost", "费用"),
+            "本次 Roll 主属性：",
             _card_line(card, "attrName", "主属性"),
-            _card_line(card, "comboAttrName", "Combo 属性"),
-            _card_line(card, "mainText", "主效果"),
-            _card_line(card, "comboText", "Combo 效果"),
         ]
     )
     return system_prompt, user_prompt
@@ -182,11 +245,40 @@ async def generate_forge_card_story(payload: dict[str, Any]) -> ForgeStoryResult
     from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm, reset_active_character, set_active_character
     from utils.token_tracker import set_call_type
 
+    request_id = _forge_request_id(payload)
+    started_at = time.perf_counter()
+    raw_card = payload.get("card") if isinstance(payload.get("card"), dict) else {}
+    _forge_log(
+        request_id,
+        "generator.start",
+        sourceFactId=payload.get("sourceFactId") or payload.get("factId"),
+        storyLead=payload.get("storyLead"),
+        requestedLanlanName=payload.get("lanlanName") or payload.get("character"),
+        requestedMasterName=payload.get("masterName"),
+        card={
+            "attrName": raw_card.get("attrName"),
+        },
+    )
+
     config_manager = get_config_manager()
-    active_context = await resolve_active_neko_context()
+    runtime_hint = (
+        str(payload.get("runtimeCharacterHint") or payload.get("runtime_character_hint") or payload.get("character") or "")
+        .strip()
+    )
+    active_context = await resolve_active_neko_context(runtime_character_hint=runtime_hint or None)
     master_name = active_context.master_name
     lanlan_name = active_context.lanlan_name
     lanlan_prompt = active_context.lanlan_prompt
+    _forge_log(
+        request_id,
+        "active_context.resolved",
+        lanlanName=lanlan_name,
+        masterName=master_name,
+        source=getattr(active_context, "source", None),
+        factsPath=str(getattr(active_context, "facts_path", "") or ""),
+        lanlanPromptChars=len(str(lanlan_prompt or "")),
+        lanlanPromptPreview=lanlan_prompt,
+    )
 
     prompt_payload = {
         **payload,
@@ -196,15 +288,47 @@ async def generate_forge_card_story(payload: dict[str, Any]) -> ForgeStoryResult
         "lanlanPrompt": lanlan_prompt,
     }
     system_prompt, user_prompt = build_forge_story_prompt(prompt_payload)
+    _forge_log(
+        request_id,
+        "prompt.built",
+        systemPromptChars=len(system_prompt),
+        userPromptChars=len(user_prompt),
+        systemPrompt=system_prompt,
+        userPrompt=user_prompt,
+    )
 
     targets = _configured_llm_targets(config_manager)
     if not targets:
+        _forge_log(request_id, "llm.targets.empty", elapsedMs=round((time.perf_counter() - started_at) * 1000, 1))
         raise ForgeStoryGenerationError("llm_model_not_configured")
+    _forge_log(
+        request_id,
+        "llm.targets.ready",
+        targets=[
+            {
+                "tier": tier_name,
+                "model": cfg.get("model"),
+                "baseUrl": cfg.get("base_url"),
+                "hasApiKey": bool(cfg.get("api_key")),
+            }
+            for tier_name, cfg in targets
+        ],
+    )
 
     last_error = ""
     for tier_name, cfg in targets:
         token = set_active_character(master_name, lanlan_name)
         set_call_type("neko_brawl_forge_story")
+        attempt_started_at = time.perf_counter()
+        _forge_log(
+            request_id,
+            "llm.attempt.start",
+            tier=tier_name,
+            model=cfg.get("model"),
+            baseUrl=cfg.get("base_url"),
+            timeoutSeconds=FORGE_STORY_TIMEOUT_SECONDS,
+            maxTokens=FORGE_STORY_MAX_TOKENS,
+        )
         llm = create_chat_llm(
             cfg["model"],
             cfg["base_url"],
@@ -224,7 +348,27 @@ async def generate_forge_card_story(payload: dict[str, Any]) -> ForgeStoryResult
                     ),
                     timeout=FORGE_STORY_TIMEOUT_SECONDS,
                 )
-            story = _clean_story(getattr(result, "content", "") or "")
+            raw_content = getattr(result, "content", "") or ""
+            _forge_log(
+                request_id,
+                "llm.attempt.raw_response",
+                tier=tier_name,
+                elapsedMs=round((time.perf_counter() - attempt_started_at) * 1000, 1),
+                rawChars=len(str(raw_content)),
+                rawContent=raw_content,
+            )
+            story = _clean_story(raw_content)
+            total_elapsed_ms = round((time.perf_counter() - started_at) * 1000, 1)
+            _forge_log(
+                request_id,
+                "generator.success",
+                provider=f"neko-core-{tier_name}",
+                model=cfg["model"],
+                sourceFactId=payload.get("sourceFactId") or payload.get("factId"),
+                storyChars=len(story),
+                story=story,
+                elapsedMs=total_elapsed_ms,
+            )
             return ForgeStoryResult(
                 story=story,
                 provider=f"neko-core-{tier_name}",
@@ -233,9 +377,28 @@ async def generate_forge_card_story(payload: dict[str, Any]) -> ForgeStoryResult
             )
         except asyncio.TimeoutError:
             last_error = f"{tier_name}:timeout"
+            _forge_log(
+                request_id,
+                "llm.attempt.timeout",
+                tier=tier_name,
+                elapsedMs=round((time.perf_counter() - attempt_started_at) * 1000, 1),
+            )
         except Exception as exc:
             last_error = f"{tier_name}:{str(exc) or type(exc).__name__}"
+            _forge_log(
+                request_id,
+                "llm.attempt.failed",
+                tier=tier_name,
+                error=last_error,
+                elapsedMs=round((time.perf_counter() - attempt_started_at) * 1000, 1),
+            )
         finally:
             reset_active_character(token)
 
+    _forge_log(
+        request_id,
+        "generator.failed",
+        error=last_error or "all_llm_targets_failed",
+        elapsedMs=round((time.perf_counter() - started_at) * 1000, 1),
+    )
     raise ForgeStoryGenerationError(last_error or "all_llm_targets_failed")

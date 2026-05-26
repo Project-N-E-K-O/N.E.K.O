@@ -99,7 +99,7 @@ export default function CardInspectModal({ card, open, onClose, source = 'card' 
 
               <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-3">
                 <div className="border-2 border-orange-500 bg-orange-50 p-3">
-                  <p className="text-[11px] font-black text-orange-700">费用</p>
+                  <p className="text-[11px] font-black text-orange-700">行动力</p>
                   <p className="mt-1 text-2xl font-black">{getCost(card)}</p>
                 </div>
                 <div className="border-2 border-neutral-300 bg-neutral-50 p-3">

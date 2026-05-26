@@ -52,7 +52,7 @@ function shuffle(arr) {
 const attrNameById = (id) => CARD_ATTRIBUTES.find(a => a.id === id)?.name || id
 const cardCost = (card) => card?.cost ?? Math.max(1, Math.ceil((card?.power || 0) / 3))
 const INITIAL_PLAYER_ENERGY = 3
-const ENERGY_RECOVER_PER_ROUND = 1
+const ENERGY_RECOVER_PER_ROUND = 3
 
 const LOG_HIGHLIGHT_RULES = [
   { pattern: /造成\s*\d+\s*点(?:（[^）]+）)?|受到\s*\d+\s*点伤害|追加伤害\s*\+\d+/y, className: 'font-black text-red-300' },
@@ -63,7 +63,7 @@ const LOG_HIGHLIGHT_RULES = [
   { pattern: /封锁Boss下回合行动|行动被封锁/y, className: 'font-black text-violet-300' },
   { pattern: /弱化|只能出1张牌/y, className: 'font-black text-amber-300' },
   { pattern: /Boss生命上限\s*\+\d+/y, className: 'font-black text-rose-300' },
-  { pattern: /能量不足|跳过出牌|无牌可出/y, className: 'font-black text-orange-300' },
+  { pattern: /行动力不足|跳过出牌|无牌可出/y, className: 'font-black text-orange-300' },
 ]
 
 function renderBattleLogText(text) {
@@ -202,7 +202,7 @@ const BOSS_IMAGE_DURATION_MS = 1000
 const BOSS_DAMAGE_POPUP_DURATION_MS = 1200
 const COMBO_POPUP_DURATION_MS = 900
 const MAX_PLAYER_HP = 6
-const BOSS_MAX_HP = 30
+const BOSS_MAX_HP = 15
 const BOSS_MAX_TURNS = 20
 const BOSS_IMAGE_SOURCES = {
   normal: '/neko-brawl/Boss_normal_transparent.png?v=transparent-bg-restore',
@@ -452,7 +452,7 @@ function createInitialState() {
 // ─────────────────────────────────────────────────────────────────
 // 主组件
 // ─────────────────────────────────────────────────────────────────
-export default function CardGamePanel({ onClose, nekoName, nekoAvatar }) {
+export default function CardGamePanel({ onClose, nekoName, nekoAvatar, temporaryBgmEnabled = true, onToggleTemporaryBgm }) {
   const cardReferencePool = useMemo(() => getAvailableCardPool(), [])
   // 游戏配置
   const DRAW_COUNT = 5
@@ -958,7 +958,7 @@ export default function CardGamePanel({ onClose, nekoName, nekoAvatar }) {
     const hasPlayableCard = myHand.some(card => cardCost(card) <= playerEnergy)
     if (hasPlayableCard) return
     resetComboVisualChain()
-    addActionLog(`你 因能量不足跳过出牌（当前能量 ${playerEnergy}）`, 'player')
+    addActionLog(`你 因行动力不足跳过出牌（当前行动力 ${playerEnergy}）`, 'player')
     setMyPlayed([])
     setMySelected([])
     setTurnIdx(prev => prev + 1)
@@ -1135,7 +1135,7 @@ export default function CardGamePanel({ onClose, nekoName, nekoAvatar }) {
     }
     if (toPlay.length === 0) {
       resetComboVisualChain()
-      addActionLog(`队友 因能量不足跳过出牌（当前能量 ${allyEnergyValue}）`, 'ally')
+      addActionLog(`队友 因行动力不足跳过出牌（当前行动力 ${allyEnergyValue}）`, 'ally')
       setTurnIdx(prev => prev + 1)
       return
     }
@@ -1435,6 +1435,8 @@ export default function CardGamePanel({ onClose, nekoName, nekoAvatar }) {
         allyHand={allyHand}
         allyPlayed={allyPlayed}
         allyEnergy={allyEnergyValue}
+        showActionPointUi
+        adventureMode
         playerHp={playerHp}
         playerShield={playerShield}
         allyHp={allyHp}
@@ -1452,6 +1454,8 @@ export default function CardGamePanel({ onClose, nekoName, nekoAvatar }) {
         onRestart={restartGame}
         onBackToClassic={() => setUseNewUi(false)}
         onClose={onClose}
+        temporaryBgmEnabled={temporaryBgmEnabled}
+        onToggleTemporaryBgm={onToggleTemporaryBgm}
         gameLog={gameLog}
         comboReference={cardReferencePool.map(card => ({
           code: card.code,

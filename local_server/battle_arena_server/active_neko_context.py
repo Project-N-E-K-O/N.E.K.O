@@ -55,15 +55,20 @@ def _resolve_prompt(config_manager: Any, lanlan_name: str, master_name: str) -> 
         return ""
 
 
-def _build_context(config_manager: Any, character_override: str | None = None) -> ActiveNekoContext:
+def _build_context(
+    config_manager: Any,
+    character_override: str | None = None,
+    runtime_character_hint: str | None = None,
+) -> ActiveNekoContext:
     master_name, current_lanlan, *_rest = config_manager.get_character_data()
     master = str(master_name or "").strip()
     active_lanlan = str(current_lanlan or "").strip()
 
     # The active NEKO catgirl is authoritative. `character_override` exists only
     # for debug endpoints and old callers; normal forge flow should omit it.
+    runtime_hint = safe_character_segment(runtime_character_hint)
     debug_override = safe_character_segment(character_override)
-    lanlan = debug_override or active_lanlan
+    lanlan = runtime_hint or debug_override or active_lanlan
 
     direct_facts = os.environ.get("NEKO_FACTS_JSON", "").strip()
     memory_dir = _resolve_memory_dir(config_manager)
@@ -72,7 +77,7 @@ def _build_context(config_manager: Any, character_override: str | None = None) -
         source = "env-facts-json"
     elif memory_dir and safe_character_segment(lanlan):
         facts_path = memory_dir / lanlan / "facts.json"
-        source = "neko-config"
+        source = "runtime-character-hint" if runtime_hint else "neko-config"
     else:
         facts_path = None
         source = "unresolved"
@@ -87,8 +92,11 @@ def _build_context(config_manager: Any, character_override: str | None = None) -
     )
 
 
-async def resolve_active_neko_context(character_override: str | None = None) -> ActiveNekoContext:
+async def resolve_active_neko_context(
+    character_override: str | None = None,
+    runtime_character_hint: str | None = None,
+) -> ActiveNekoContext:
     from utils.config_manager import get_config_manager
 
     config_manager = get_config_manager()
-    return await asyncio.to_thread(_build_context, config_manager, character_override)
+    return await asyncio.to_thread(_build_context, config_manager, character_override, runtime_character_hint)
