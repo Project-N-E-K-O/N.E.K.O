@@ -1,4 +1,4 @@
-$ErrorActionPreference = "Continue"
+﻿$ErrorActionPreference = "Continue"
 
 $ports = @(48911, 3001, 5173)
 $windowTitles = @(
