@@ -485,6 +485,24 @@ async def test_inject_gemini_missing_session_raises():
         await OmniRealtimeClient.inject_text_and_request_response(sess, "x")
 
 
+async def test_sweep_inject_rejection_handlers_clears_dict():
+    """``response.done`` lifecycle sweep 清空 inject rejection handler 字典
+    （取代固定 3s TTL 作为主清理）。锁死 Codex P2：late reject 不该因 TTL 过期
+    丢失——主清理改成 response.done 触发的 sweep，TTL 只是 hang 兜底。"""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    sess = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    sess._inject_rejection_handlers = {
+        "event_inject_item_x": lambda msg: None,
+        "event_inject_resp_x": lambda msg: None,
+    }
+    sess._sweep_inject_rejection_handlers()
+    assert sess._inject_rejection_handlers == {}
+    # 空字典再 sweep 不报错（idempotent）
+    sess._sweep_inject_rejection_handlers()
+    assert sess._inject_rejection_handlers == {}
+
+
 async def test_voice_mode_inject_exception_keeps_cbs_for_retry():
     """Voice 模式（inject 抛非 NotImplementedError）：cb 留在队列等重试。"""
     from main_logic.omni_realtime_client import OmniRealtimeClient

@@ -1760,11 +1760,17 @@ class OmniRealtimeClient:
             self._inject_rejection_handlers[create_event_id] = _reject_once
             # The realtime API echoes our event_id on ``error`` but NOT on
             # ``response.created`` — so a successful inject leaves the handlers
-            # registered with no natural cleanup signal. TTL-expire both after
-            # 3s (well beyond any realistic server round-trip) to keep the
-            # dict from growing per proactive cb over the session.
-            self._fire_task(self._expire_inject_rejection_handler(item_event_id, 3.0))
-            self._fire_task(self._expire_inject_rejection_handler(create_event_id, 3.0))
+            # registered with no natural cleanup signal. Primary cleanup is
+            # lifecycle-based: ``response.done`` sweeps the dict (see
+            # ``_sweep_inject_rejection_handlers`` — a rejection is always
+            # emitted before the blocking response completes, so any pending
+            # rejection has already fired by any response.done). This TTL is
+            # only a backstop for the pathological "no response.done ever"
+            # case (session hangs); 30s is generous vs the sub-second
+            # rejection latency, so a real ``response_already_active`` reject
+            # under transient backpressure is still caught (Codex P2).
+            self._fire_task(self._expire_inject_rejection_handler(item_event_id, 30.0))
+            self._fire_task(self._expire_inject_rejection_handler(create_event_id, 30.0))
 
         item_event: Dict[str, Any] = {
             "type": "conversation.item.create",
@@ -1813,13 +1819,33 @@ class OmniRealtimeClient:
             raise
 
     async def _expire_inject_rejection_handler(self, event_id: str, ttl: float) -> None:
-        """TTL-cleanup for the inject rejection handler dict (see
-        ``inject_text_and_request_response``)."""
+        """TTL backstop cleanup for the inject rejection handler dict (see
+        ``inject_text_and_request_response``). Primary cleanup is the
+        lifecycle sweep in ``_sweep_inject_rejection_handlers``; this only
+        catches the pathological "no response.done ever" case."""
         try:
             await asyncio.sleep(ttl)
         except asyncio.CancelledError:
             return
         self._inject_rejection_handlers.pop(event_id, None)
+
+    def _sweep_inject_rejection_handlers(self) -> None:
+        """Drop all pending inject rejection handlers on a response lifecycle
+        boundary (``response.done`` / Gemini turn-complete).
+
+        Safe because a server rejection of our ``response.create`` /
+        ``conversation.item.create`` is emitted the instant the server
+        receives a request it can't honor — and the only reason it can't
+        honor a ``response.create`` is that another response is already
+        active. That blocking response's ``response.done`` is therefore
+        strictly LATER than the rejection. So by the time ANY response.done
+        arrives, every pending rejection for a prior send has already fired
+        (and its handler self-removed via ``_reject_once``). Whatever remains
+        in the dict belongs to an inject that SUCCEEDED (no rejection coming)
+        — exactly the leak the fixed TTL was meant to clean, now reaped
+        promptly and lifecycle-tied instead of on a wall clock."""
+        if self._inject_rejection_handlers:
+            self._inject_rejection_handlers.clear()
 
     async def prompt_ephemeral(
         self,
@@ -2316,6 +2342,11 @@ class OmniRealtimeClient:
                 elif event_type == "response.done":
                     self._response_done_total += 1
                     self._last_response_done_time = time.time()
+                    # Lifecycle cleanup of proactive inject rejection handlers
+                    # (see _sweep_inject_rejection_handlers): any pending
+                    # rejection has already fired by now, so the remaining
+                    # entries belong to injects that succeeded — reap them.
+                    self._sweep_inject_rejection_handlers()
                     # 解析实时 API 返回的 token 用量
                     try:
                         resp_data = event.get("response", {})
