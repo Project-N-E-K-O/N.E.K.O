@@ -146,12 +146,12 @@
             };
 
             var settled = false;
-            var timer = null;
+            var pollTimer = null;
             var onLoad = null;
             var finish = function (ok) {
                 if (settled) return;
                 settled = true;
-                if (timer) window.clearTimeout(timer);
+                if (pollTimer) window.clearInterval(pollTimer);
                 if (onLoad) {
                     try {
                         previewWindow.removeEventListener('load', onLoad);
@@ -167,16 +167,19 @@
 
             try {
                 onLoad = function () {
-                    finish(isShellReady());
+                    if (isShellReady()) finish(true);
                 };
                 previewWindow.addEventListener('load', onLoad, { once: true });
             } catch (_) {
-                finish(false);
-                return;
+                onLoad = null;
             }
-            timer = window.setTimeout(function () {
-                finish(isShellReady());
-            }, 1500);
+            pollTimer = window.setInterval(function () {
+                if (!previewWindow || previewWindow.closed) {
+                    finish(false);
+                    return;
+                }
+                if (isShellReady()) finish(true);
+            }, 250);
         });
     }
 
@@ -2493,9 +2496,6 @@
         } else {
             var shellReady = await waitForExportPreviewShell(previewWindow);
             if (!shellReady) {
-                try {
-                    previewWindow.close();
-                } catch (_) {}
                 return null;
             }
         }
