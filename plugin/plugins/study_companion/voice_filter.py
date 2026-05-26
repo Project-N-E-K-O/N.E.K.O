@@ -259,12 +259,8 @@ def _derive_subject(ocr_text: str) -> str:
         "反应",
         "离子",
         "摩尔",
-        "mol",
-        "h2o",
-        "nacl",
-        "fe",
-        "co2",
     )
+    chemistry_formula_re = re.compile(r"(?<![a-z0-9])(?:mol|h2o|nacl|co2)(?![a-z0-9])")
     physics_hits = (
         "速度",
         "加速度",
@@ -293,7 +289,7 @@ def _derive_subject(ocr_text: str) -> str:
         "x³",
         "y=",
     )
-    if any(token in text for token in chemistry_hits):
+    if any(token in text for token in chemistry_hits) or chemistry_formula_re.search(text):
         return "chemistry"
     if any(token in text for token in physics_hits):
         return "physics"
@@ -335,7 +331,8 @@ def build_context_for_catgirl(
     topic = str(context.get("topic") or "").strip()
     mode = str(getattr(state, "active_mode", "") or "").strip()
     if topic or mode:
-        parts.append(f"[状态] {topic} | {mode}".strip())
+        state_parts = [item for item in (topic, mode) if item]
+        parts.append(f"[状态] {' | '.join(state_parts)}")
 
     pre_context = str(result.get("pre_context") or "").strip()
     if pre_context:

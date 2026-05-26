@@ -144,6 +144,9 @@ def test_empty_transcript_is_ignored() -> None:
         ("f(x)=x³+3x²-9x+1，求导数", "math"),
         ("速度 v 和重力加速度 g 的关系", "physics"),
         ("H2O 和 NaCl 的化学反应", "chemistry"),
+        ("CO2 与 H2O 的比例", "chemistry"),
+        ("fe", "default"),
+        ("safe reading material", "default"),
         ("普通阅读材料", "default"),
     ],
 )
@@ -182,6 +185,24 @@ def test_build_context_for_catgirl_includes_screen_state_prelude_and_question() 
     assert "[状态] derivative | teaching" in context
     assert "[铺垫] 我知道幂函数" in context
     assert "[问题] 为什么 x³ 求导是 3x²" in context
+
+
+def test_build_context_for_catgirl_omits_empty_state_separator() -> None:
+    state = SimpleNamespace(
+        last_ocr_text="",
+        last_screen_classification={},
+        active_mode="teaching",
+    )
+
+    context = build_context_for_catgirl(
+        "猫娘讲一下",
+        state,
+        {"topic": ""},
+        {"question": "讲一下这个知识点"},
+    )
+
+    assert "[状态] teaching" in context
+    assert "[状态]  | teaching" not in context
 
 
 class ResourceNotFound(Exception):

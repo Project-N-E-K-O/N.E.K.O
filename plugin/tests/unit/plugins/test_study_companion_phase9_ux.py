@@ -37,8 +37,11 @@ def test_phase9_hosted_study_panel_uses_span_based_katex_rendering() -> None:
     assert "dangerouslySetInnerHTML" not in source
     assert "/plugin/study_companion/ui/katex.min.js" in source
     assert "function normalizeLatexForKatex" in source
+    assert "katexLoadPromise = null" in source
+    assert "dataset.studyKatexFailed" in source
     assert "data-study-math" in source
     assert "/[<>]/.test" not in source
+    assert "const hasInFlightRequest = !!explainControllerRef.current" in source
     assert "document.addEventListener('keydown', closeOrCancelOnEscape, true)" in source
 
 
