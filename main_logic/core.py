@@ -529,6 +529,12 @@ logger = get_module_logger(__name__, "Main")
 IDLE_SESSION_RESET_THRESHOLD_SECONDS = 1800
 IDLE_SESSION_RESET_CHECK_INTERVAL_SECONDS = 60
 
+# 前端文本会话 start_session 等 session_started 的硬超时（static/app-buttons.js
+# 的 setTimeout(..., 15000)）。start_session 去重路径等 in-flight 启动落定后给
+# 本请求补发 ack 时，等待上限绑到这个值：超过前端这个超时再补发 session_started
+# 已无意义（前端早已 reject 并发 end_session），故以它为有意义窗口的天然上界。
+FRONTEND_START_SESSION_TIMEOUT_SECONDS = 15.0
+
 # 主动搭话（proactive）调用 prompt_ephemeral 时设置的 sid 期望值。
 # 目的：prompt_ephemeral 内部通过 on_text_delta=handle_text_data 回调 enqueue TTS，
 # 中间可能被用户输入抢占（user stream_text 清 queue + 换 current_speech_id）。
@@ -3985,13 +3991,14 @@ class LLMSessionManager:
                 # 不拿 session_ready 当谓词：它可能还残留上一个 session 的 True
                 # （in-flight start 要过几个 await 才把它重置），那样循环会被直接
                 # 跳过、在 in-flight 还没真正起好时就误发 started 假阳性（Codex P1）。
-                # 20s 仅为防 in-flight 异常永不归零的兜底安全阀，非功能时序。
+                # 等待上限绑前端的 start_session 超时：超过它再补发 ack 已无意义
+                # （前端早已 reject + end_session），故以它为窗口上界兼防挂安全阀。
                 _waited = 0.0
-                while self._starting_session_count > 0 and _waited < 20.0:
+                while self._starting_session_count > 0 and _waited < FRONTEND_START_SESSION_TIMEOUT_SECONDS:
                     await asyncio.sleep(0.05)
                     _waited += 0.05
                 # 仅当 in-flight 真正落定（count 归 0、即循环是「落定退出」而非
-                # 「20s 超时退出」）且会话确实活跃时才补发 session_started（与
+                # 「超时退出」）且会话确实活跃时才补发 session_started（与
                 # in-flight 自身发的那条幂等，前端 resolver 一次性）。若是超时退出
                 # （count 仍 >0、in-flight 没结束），self.session/is_active 在 restart
                 # 流程里可能是上一个 session 残留的 True，补发会是假阳性（Codex P1），
