@@ -368,6 +368,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const [reply, setReply] = useState('');
   const [busy, setBusy] = useState(false);
   const explainControllerRef = useRef<AbortController | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
   const currentMode = String(status.active_mode || status.mode || 'companion');
 
   function beginStudyRequest() {
@@ -659,17 +660,12 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   }, []);
 
   useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel) {
+      return undefined;
+    }
     const closeOrCancelOnEscape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') {
-        return;
-      }
-      const activeElement = document.activeElement as HTMLElement | null;
-      const targetElement = event.target instanceof HTMLElement ? event.target : null;
-      const isInsidePanel = !!(
-        targetElement?.closest?.('.study-panel') ||
-        activeElement?.closest?.('.study-panel')
-      );
-      if (!isInsidePanel) {
         return;
       }
       const hasInFlightRequest = !!explainControllerRef.current;
@@ -681,11 +677,12 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       explainControllerRef.current?.abort();
       explainControllerRef.current = null;
       setBusy(false);
+      const activeElement = document.activeElement as HTMLElement | null;
       activeElement?.blur?.();
     };
-    document.addEventListener('keydown', closeOrCancelOnEscape, true);
+    panel.addEventListener('keydown', closeOrCancelOnEscape, true);
     return () => {
-      document.removeEventListener('keydown', closeOrCancelOnEscape, true);
+      panel.removeEventListener('keydown', closeOrCancelOnEscape, true);
     };
   }, []);
 
@@ -696,7 +693,12 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const evaluation = status.last_answer_evaluation;
 
   return (
-    <div className="study-panel" role="region" aria-label={t('ui.surface.study_panel', 'Study Panel')}>
+    <div
+      ref={panelRef}
+      className="study-panel"
+      role="region"
+      aria-label={t('ui.surface.study_panel', 'Study Panel')}
+    >
       <header className="study-panel__header">
         <div>
           <h1>{t('ui.title', 'Study Companion')}</h1>

@@ -49,9 +49,10 @@ def test_phase9_hosted_study_panel_uses_span_based_katex_rendering() -> None:
     assert "isLikelyCurrencyStart(source, inlineCloser)" not in source
     assert "/[<>]/.test" not in source
     assert "const hasInFlightRequest = !!explainControllerRef.current" in source
-    assert "targetElement?.closest?.('.study-panel')" in source
-    assert "if (!isInsidePanel) {" in source
-    assert "document.addEventListener('keydown', closeOrCancelOnEscape, true)" in source
+    assert "const panelRef = useRef<HTMLDivElement | null>(null)" in source
+    assert "panel.addEventListener('keydown', closeOrCancelOnEscape, true)" in source
+    assert "panel.removeEventListener('keydown', closeOrCancelOnEscape, true)" in source
+    assert "document.addEventListener('keydown', closeOrCancelOnEscape, true)" not in source
 
 
 def test_phase9_onboarding_doc_is_registered_as_markdown_surface() -> None:
