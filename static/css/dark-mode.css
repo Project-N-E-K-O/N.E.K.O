@@ -2263,18 +2263,18 @@ html #chat-container {
 [data-theme="dark"] .chat-export-format-chip:hover,
 [data-theme="dark"] .chat-export-style-chip:hover,
 [data-theme="dark"] .chat-export-image-format-chip:hover {
-  background: rgba(99, 102, 241, 0.22);
-  border-color: #818cf8;
-  color: #e0e7ff;
+  background: rgba(56, 189, 248, 0.18);
+  border-color: #7dd3fc;
+  color: #bae6fd;
 }
 
 [data-theme="dark"] .chat-export-format-chip.is-active,
 [data-theme="dark"] .chat-export-style-chip.is-active,
 [data-theme="dark"] .chat-export-image-format-chip.is-active {
-  background: #6366f1;
-  border-color: #6366f1;
-  color: #ffffff;
-  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.45);
+  background: rgba(56, 189, 248, 0.28);
+  border-color: #38bdf8;
+  color: #e0f7ff;
+  box-shadow: 0 4px 14px rgba(56, 189, 248, 0.35);
 }
 
 [data-theme="dark"] .chat-export-selection-row:hover {
@@ -2313,23 +2313,23 @@ html #chat-container {
 }
 
 [data-theme="dark"] .chat-export-preview-action:hover:not(:disabled) {
-  background: rgba(99, 102, 241, 0.22);
-  border-color: #818cf8;
-  color: #e0e7ff;
+  background: rgba(56, 189, 248, 0.18);
+  border-color: #7dd3fc;
+  color: #bae6fd;
 }
 
 [data-theme="dark"] .chat-export-preview-action-primary {
-  background: #6366f1;
-  border-color: #6366f1;
+  background: #0ea5e9;
+  border-color: #0ea5e9;
   color: #ffffff;
-  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.45);
+  box-shadow: 0 4px 14px rgba(14, 165, 233, 0.45);
 }
 
 [data-theme="dark"] .chat-export-preview-action-primary:hover:not(:disabled) {
-  background: #4f46e5;
-  border-color: #4f46e5;
+  background: #0284c7;
+  border-color: #0284c7;
   color: #ffffff;
-  box-shadow: 0 6px 18px rgba(79, 70, 229, 0.55);
+  box-shadow: 0 6px 18px rgba(2, 132, 199, 0.5);
 }
 
 /* Steam Workshop 图标保持原样（黑夜模式与白天一致） */
