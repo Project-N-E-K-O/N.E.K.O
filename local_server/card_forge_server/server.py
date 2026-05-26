@@ -38,11 +38,30 @@ if str(PROJECT_ROOT) not in sys.path:
 
 app = FastAPI(title="NEKO 奇遇铸造机服务器", version="0.1.0")
 
+
+def _resolve_cors_origins() -> list[str]:
+    """允许跨域的来源白名单。
+
+    默认只放行本机 card-forge 开发前端 (127.0.0.1:5173 / localhost:5173)。
+    facts / story 接口会返回个人化的猫娘记忆，所以不能像旧版那样 allow_origins=["*"]
+    —— 那样任何浏览器站点都能在用户登录态下读到响应。如需添加额外来源，
+    可设置 NEKO_CARD_FORGE_ALLOWED_ORIGINS 环境变量（逗号分隔），或显式置
+    为 "*" 以恢复旧行为（不推荐）。
+    """
+    raw = os.environ.get("NEKO_CARD_FORGE_ALLOWED_ORIGINS", "").strip()
+    if not raw:
+        return [
+            "http://127.0.0.1:5173",
+            "http://localhost:5173",
+        ]
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_resolve_cors_origins(),
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type"],
 )
 
 
@@ -657,4 +676,12 @@ async def health():
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    uvicorn.run("server:app", host="0.0.0.0", port=3001, reload=True)
+    # 默认只监听 loopback：facts 含个人化记忆，禁止开箱即用就被局域网读取。
+    # 若确需在其他网卡监听，请显式设置 NEKO_CARD_FORGE_HOST="0.0.0.0"
+    # （并相应收紧 NEKO_CARD_FORGE_ALLOWED_ORIGINS）。
+    uvicorn.run(
+        "server:app",
+        host=os.environ.get("NEKO_CARD_FORGE_HOST", "127.0.0.1"),
+        port=int(os.environ.get("NEKO_CARD_FORGE_PORT", "3001")),
+        reload=True,
+    )

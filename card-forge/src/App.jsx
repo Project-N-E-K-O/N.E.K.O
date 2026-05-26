@@ -168,15 +168,22 @@ function buildForgeStoryRequest(card, event, character) {
   }
 }
 
+// 后端 FORGE_STORY_TIMEOUT_SECONDS=25，前端给一点宽裕：30 秒。
+// 超过时长用 AbortController 触发 abort，避免铸造动画无限转圈。
+const FORGE_STORY_FETCH_TIMEOUT_MS = 30_000
+
 async function requestForgeCardStory(card, event, character) {
   if (!card?.storyLead && !event?.storyLead && !event?.factText && !event?.summary) return null
   const runtimeCharacter = character || event?.sourceCharacter || ''
   if (!runtimeCharacter) return null
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), FORGE_STORY_FETCH_TIMEOUT_MS)
   try {
     const res = await fetch('/arena/forge-card-story', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(buildForgeStoryRequest(card, event, runtimeCharacter)),
+      signal: controller.signal,
     })
     const data = await res.json().catch(() => ({}))
     if (!res.ok || !data?.success || !data?.story) return null
@@ -190,7 +197,10 @@ async function requestForgeCardStory(card, event, character) {
       storyProvider: data.provider || '',
     }
   } catch {
+    // AbortError 或网络错误，回退到本地占位故事。
     return null
+  } finally {
+    clearTimeout(timeoutId)
   }
 }
 
@@ -547,7 +557,9 @@ export default function App() {
                 </div>
               )}
 
-              {(machinePhase === 'floating' || machinePhase === 'storyGenerating' || machinePhase === 'flipping' || machinePhase === 'revealed') ? (
+              {(machinePhase === 'floating' || machinePhase === 'storyGenerating' || machinePhase === 'flipping' || machinePhase === 'revealed') ? (() => {
+                const pickedSlot = forgeMachineSlots.find(s => s.id === machinePickedId)
+                return (
                 <div className="flex flex-col items-center justify-center px-5 pb-8 pt-4 min-h-[400px]">
                   <motion.div
                     initial={{ y: 0, scale: 1 }}
@@ -576,12 +588,12 @@ export default function App() {
                         {machinePhase === 'revealed' ? '✨' : machinePhase === 'storyGenerating' ? '✍' : '🎴'}
                       </div>
                       <p className="text-sm font-bold text-white text-center">
-                        {machineForgedCard?.name || forgeMachineSlots.find(s => s.id === machinePickedId)?.name}
+                        {machineForgedCard?.name || pickedSlot?.name}
                       </p>
                       <p className="text-[10px] text-gray-400 text-center mt-2 leading-relaxed">
                         {machinePhase === 'storyGenerating'
                           ? (machineStoryStatus || '正在等待故事生成完成…')
-                          : (machineForgedCard?.story || forgeMachineSlots.find(s => s.id === machinePickedId)?.summary)}
+                          : (machineForgedCard?.story || pickedSlot?.summary)}
                       </p>
                     </div>
                   </motion.div>
@@ -594,7 +606,7 @@ export default function App() {
                     >
                       <p className="text-xs font-black text-violet-100">故事必须先写入卡面，才会完成铸造</p>
                       <p className="mt-1 text-[11px] leading-relaxed text-violet-200/80">
-                        原始引子：{forgeMachineSlots.find(s => s.id === machinePickedId)?.storyLead || forgeMachineSlots.find(s => s.id === machinePickedId)?.summary}
+                        原始引子：{pickedSlot?.storyLead || pickedSlot?.summary}
                       </p>
                     </motion.div>
                   )}
@@ -625,7 +637,8 @@ export default function App() {
                     )}
                   </AnimatePresence>
                 </div>
-              ) : forgeMachineLoading ? (
+                )
+              })() : forgeMachineLoading ? (
                 <div className="flex min-h-[360px] flex-col items-center justify-center px-5 pb-8 pt-6 text-center">
                   <div className="h-12 w-12 animate-spin rounded-full border-4 border-violet-300/20 border-t-violet-300" />
                   <p className="mt-4 text-sm font-black text-white">正在读取猫娘记忆库</p>

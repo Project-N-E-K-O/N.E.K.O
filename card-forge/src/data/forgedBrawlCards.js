@@ -86,7 +86,10 @@ export function createForgedBrawlCard(event = {}, options = {}) {
   const id = `forged-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   const storyLead = getEventStoryLead(event)
   const sourceEventName = getEventName(event, storyLead)
-  const story = composeForgedCardStory(storyLead, event.story || event.generatedStory, source)
+  const rawStory = event.story || event.generatedStory
+  const hasGeneratedStory = typeof rawStory === 'string' ? Boolean(rawStory.trim()) : Boolean(rawStory)
+  const hasFactSource = Boolean(event.sourceFactId || event.factId || event.sourceFactHash || event.factHash)
+  const story = composeForgedCardStory(storyLead, rawStory, source)
 
   return {
     id,
@@ -111,9 +114,9 @@ export function createForgedBrawlCard(event = {}, options = {}) {
     sourceFactId: event.sourceFactId || event.factId || null,
     sourceFactHash: event.sourceFactHash || event.factHash || null,
     sourceCharacter: event.sourceCharacter || null,
-    sourceKind: event.sourceKind || (event.sourceFactId || event.factId ? 'fact' : 'temporary'),
+    sourceKind: event.sourceKind || (hasFactSource ? 'fact' : 'temporary'),
     sourceEventName,
-    storyGenerationStatus: event.story || event.generatedStory ? 'ready' : 'pending-llm',
+    storyGenerationStatus: hasGeneratedStory ? 'ready' : 'pending-llm',
     forgedAt: Date.now(),
   }
 }
@@ -128,6 +131,8 @@ export function normalizeForgedBrawlCard(card) {
     : pickRandom(BRAWL_ATTRS).id
 
   const storyLead = card.storyLead || card.factText || card.text || card.eventLead || card.summary || ''
+  const hasGeneratedStory = typeof card.story === 'string' ? Boolean(card.story.trim()) : Boolean(card.story)
+  const hasFactSource = Boolean(card.sourceFactId || card.factId || card.sourceFactHash || card.factHash)
   const story = composeForgedCardStory(storyLead, card.story, base)
 
   return {
@@ -154,9 +159,9 @@ export function normalizeForgedBrawlCard(card) {
     sourceFactId: card.sourceFactId || card.factId || null,
     sourceFactHash: card.sourceFactHash || card.factHash || null,
     sourceCharacter: card.sourceCharacter || null,
-    sourceKind: card.sourceKind || (card.sourceFactId || card.factId ? 'fact' : 'temporary'),
+    sourceKind: card.sourceKind || (hasFactSource ? 'fact' : 'temporary'),
     sourceEventName: card.sourceEventName || '临时奇遇事件',
-    storyGenerationStatus: card.storyGenerationStatus || (card.story ? 'ready' : 'pending-llm'),
+    storyGenerationStatus: card.storyGenerationStatus || (hasGeneratedStory ? 'ready' : 'pending-llm'),
   }
 }
 

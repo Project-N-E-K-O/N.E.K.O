@@ -63,6 +63,30 @@ def _forge_request_id(payload: dict[str, Any]) -> str:
     return request_id or f"forge-{uuid.uuid4().hex[:10]}"
 
 
+# 写入日志会暴露内容的字段：故事引子、模型 prompt 与 raw response、最终故事。
+# 这些字段都可能携带可识别的个人记忆，控制台日志只保留长度 + 短预览，
+# 不再打印全文。要看完整 prompt 请改用本地调试断点，不要走日志。
+_FORGE_SENSITIVE_FIELDS = frozenset({
+    "storyLead",
+    "lanlanPromptPreview",
+    "systemPrompt",
+    "userPrompt",
+    "rawContent",
+    "story",
+})
+_FORGE_LOG_PREVIEW_CHARS = 40
+
+
+def _mask_sensitive_text(value: Any) -> str:
+    """敏感字段日志专用：只保留 `[40 字符预览]…(len=N)`，避免全文落地。"""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    clipped = text[:_FORGE_LOG_PREVIEW_CHARS]
+    suffix = "…" if len(text) > _FORGE_LOG_PREVIEW_CHARS else ""
+    return f"{clipped}{suffix}(len={len(text)})"
+
+
 def _log_value(value: Any, *, limit: int = 4000) -> Any:
     if isinstance(value, dict):
         return {str(k): _log_value(v, limit=limit) for k, v in value.items() if "api_key" not in str(k).lower()}
@@ -79,9 +103,17 @@ def _log_value(value: Any, *, limit: int = 4000) -> Any:
 
 
 def _forge_log(request_id: str, event: str, **fields: Any) -> None:
-    """Emit detailed forge diagnostics to the running server console only."""
+    """Emit forge diagnostics to the server console only.
 
-    payload = {key: _log_value(value) for key, value in fields.items()}
+    Sensitive fields (storyLead / system+user prompts / raw model output / final
+    story / persona summary) are masked to length+short-preview so logs no longer
+    leak the catgirl's individualized memory text.
+    """
+
+    payload = {
+        key: (_mask_sensitive_text(value) if key in _FORGE_SENSITIVE_FIELDS else _log_value(value))
+        for key, value in fields.items()
+    }
     print(
         f"[forge-card-story][{request_id}][{event}] "
         f"{json.dumps(payload, ensure_ascii=False, default=str)}",

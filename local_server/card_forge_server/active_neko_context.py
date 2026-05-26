@@ -45,6 +45,21 @@ def _resolve_memory_dir(config_manager: Any) -> Path | None:
     return Path(memory_dir) if memory_dir else None
 
 
+def _known_character_names(config_manager: Any) -> set[str]:
+    """Configured catgirl names — the only valid memory sources.
+
+    Used to validate `runtime_character_hint` / `character_override` so an
+    untrusted caller can't make us open `facts.json` for an arbitrary path
+    component — only catgirls actually configured in NEKO are accepted.
+    """
+    try:
+        character_data = config_manager.get_character_data()
+        prompt_map = character_data[5] if len(character_data) > 5 and isinstance(character_data[5], dict) else {}
+        return {str(name).strip() for name in prompt_map.keys() if isinstance(name, str) and name.strip()}
+    except Exception:
+        return set()
+
+
 def _resolve_prompt(config_manager: Any, lanlan_name: str, master_name: str) -> str:
     try:
         character_data = config_manager.get_character_data()
@@ -66,8 +81,18 @@ def _build_context(
 
     # The active NEKO catgirl is authoritative. `character_override` exists only
     # for debug endpoints and old callers; normal forge flow should omit it.
+    # Both hint and override must match a configured catgirl name — anything else
+    # is dropped so the facts.json path can't be steered to an unknown directory
+    # by an untrusted caller. When the config can't be enumerated we fall back to
+    # the legacy "trust safe_character_segment" behavior to avoid blocking dev.
+    known_names = _known_character_names(config_manager)
     runtime_hint = safe_character_segment(runtime_character_hint)
     debug_override = safe_character_segment(character_override)
+    if known_names:
+        if runtime_hint and runtime_hint not in known_names:
+            runtime_hint = None
+        if debug_override and debug_override not in known_names:
+            debug_override = None
     lanlan = runtime_hint or debug_override or active_lanlan
 
     direct_facts = os.environ.get("NEKO_FACTS_JSON", "").strip()

@@ -7,6 +7,33 @@ $windowTitles = @(
   "Neko Card Forge Frontend - 5173"
 )
 
+# Only kill processes whose command line matches a card-forge launcher signature,
+# so an unrelated app that happens to be listening on 48911/3001/5173 (e.g.
+# another developer's Vite project on 5173) isn't taken down with us.
+$cardForgePatterns = @(
+  'launcher\.py',
+  'card_forge_server',
+  'card-forge'
+)
+
+function Get-ProcessCommandLine {
+  param([int]$ProcId)
+  try {
+    return (Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$ProcId" -ErrorAction Stop).CommandLine
+  } catch {
+    return ""
+  }
+}
+
+function Test-CardForgeProcess {
+  param([string]$CommandLine)
+  if (-not $CommandLine) { return $false }
+  foreach ($pattern in $cardForgePatterns) {
+    if ($CommandLine -match $pattern) { return $true }
+  }
+  return $false
+}
+
 foreach ($port in $ports) {
   $connections = Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue
   if (-not $connections) {
@@ -16,6 +43,11 @@ foreach ($port in $ports) {
 
   $processIds = $connections | Select-Object -ExpandProperty OwningProcess -Unique
   foreach ($processId in $processIds) {
+    $cmdLine = Get-ProcessCommandLine -ProcId $processId
+    if (-not (Test-CardForgeProcess -CommandLine $cmdLine)) {
+      Write-Host ("[skip] Port {0} PID {1} does not look like a card-forge process; leaving it alone. CommandLine: {2}" -f $port, $processId, $cmdLine)
+      continue
+    }
     try {
       $proc = Get-Process -Id $processId -ErrorAction Stop
       Write-Host ("[stop] Port {0}: {1} ({2})" -f $port, $proc.ProcessName, $processId)

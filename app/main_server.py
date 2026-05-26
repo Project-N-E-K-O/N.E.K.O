@@ -1589,14 +1589,18 @@ _card_forge_active_character: dict = {}  # {dataUrl, name}
 async def set_card_forge_active_character(payload: dict):
     """由 app-chat-avatar.js 在捕获头像后调用，存储当前猫娘名（与头像 dataUrl）供 card-forge 获取。
 
-    只更新载荷里实际给出的字段，避免无 name 的纯头像同步把已存储的猫娘名擦掉。
+    用 in-payload 语义区分"省略字段（不动）" vs "显式空串（清空）"：
+    - POST {"dataUrl": "x"}        只更新 dataUrl，保留已存 name
+    - POST {"name": ""}            显式清空 name
+    - POST {"dataUrl": "", "name": ""}  显式清空全部
+    前端调用方因此应该 *只在字段有意义时* 把它放进 body，避免误擦。
     """
-    data_url = str(payload.get('dataUrl', ''))
-    name = str(payload.get('name', ''))
-    if data_url:
-        _card_forge_active_character['dataUrl'] = data_url
-    if name:
-        _card_forge_active_character['name'] = name
+    if not isinstance(payload, dict):
+        return {"ok": True}
+    if 'dataUrl' in payload:
+        _card_forge_active_character['dataUrl'] = str(payload.get('dataUrl') or '')
+    if 'name' in payload:
+        _card_forge_active_character['name'] = str(payload.get('name') or '')
     return {"ok": True}
 
 
