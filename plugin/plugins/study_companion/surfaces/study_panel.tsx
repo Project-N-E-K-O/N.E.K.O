@@ -52,6 +52,7 @@ const MODE_ORDER: Array<{ id: StudyMode; labelKey: string; fallback: string }> =
 ];
 const KATEX_CSS_URL = '/plugin/study_companion/ui/katex.min.css';
 const KATEX_SCRIPT_URL = '/plugin/study_companion/ui/katex.min.js';
+const CURRENCY_START_PATTERN = /^\$(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?(?:[A-Z]{2,4}|%)?(?=$|[\s)\],.;!?-])/;
 let katexLoadPromise: Promise<void> | null = null;
 
 type MathTextPart = {
@@ -69,7 +70,7 @@ function hasEscapedDelimiter(source: string, index: number) {
 }
 
 function isLikelyCurrencyStart(source: string, index: number) {
-  return /^\$(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?(?=$|[\s)\],.;!?-])/.test(source.slice(index));
+  return CURRENCY_START_PATTERN.test(source.slice(index));
 }
 
 function findMathDelimiter(source: string, start: number, delimiter: '$' | '$$') {

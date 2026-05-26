@@ -1,4 +1,6 @@
 (function () {
+  const CURRENCY_START_PATTERN = /^\$(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?(?:[A-Z]{2,4}|%)?(?=$|[\s)\],.;!?-])/;
+
   function escapeHTML(value) {
     const div = document.createElement('div');
     div.appendChild(document.createTextNode(String(value || '')));
@@ -14,7 +16,7 @@
   }
 
   function isLikelyCurrencyStart(source, index) {
-    return /^\$(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?(?=$|[\s)\],.;!?-])/.test(source.slice(index));
+    return CURRENCY_START_PATTERN.test(source.slice(index));
   }
 
   function findMathDelimiter(source, start, delimiter) {
