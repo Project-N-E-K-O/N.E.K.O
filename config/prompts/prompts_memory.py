@@ -1093,14 +1093,14 @@ PROFILE_RENAME_EVENT_FIELD = {
 }
 
 PROFILE_RENAME_EVENT_TEXT = {
-    "zh": "我以前的档案名是「{old_name}」，现在已经改名为「{new_name}」。以后请把「{new_name}」当作我的当前名字；「{old_name}」只代表改名前的历史称呼。",
-    "zh-TW": "我以前的檔案名是「{old_name}」，現在已經改名為「{new_name}」。以後請把「{new_name}」當作我的目前名字；「{old_name}」只代表改名前的歷史稱呼。",
-    "en": "My previous profile name was \"{old_name}\"; I have now changed it to \"{new_name}\". Treat \"{new_name}\" as my current name from now on; \"{old_name}\" only refers to my historical name before the rename.",
-    "ja": "以前の私のプロフィール名は「{old_name}」で、今は「{new_name}」に改名しました。これからは「{new_name}」を私の現在の名前として扱ってください。「{old_name}」は改名前の過去の呼び名だけを指します。",
-    "ko": "내 이전 프로필 이름은 \"{old_name}\"였고, 지금은 \"{new_name}\"으로 바뀌었습니다. 앞으로는 \"{new_name}\"을 내 현재 이름으로 여기고, \"{old_name}\"은 개명 전의 과거 이름으로만 이해하세요.",
-    "ru": "Раньше моё имя профиля было «{old_name}», теперь я сменила его на «{new_name}». С этого момента считай «{new_name}» моим текущим именем; «{old_name}» относится только к моему прежнему имени до переименования.",
-    "es": "Mi nombre de perfil anterior era \"{old_name}\"; ahora lo he cambiado a \"{new_name}\". A partir de ahora, trata \"{new_name}\" como mi nombre actual; \"{old_name}\" solo se refiere a mi nombre histórico antes del cambio.",
-    "pt": "Meu nome de perfil anterior era \"{old_name}\"; agora mudei para \"{new_name}\". A partir de agora, trate \"{new_name}\" como meu nome atual; \"{old_name}\" se refere apenas ao meu nome histórico antes da mudança.",
+    "zh": "我以前的档案名是「{old_name}」，现在已经改名为「{new_name}」。以后请把「{new_name}」当作我的当前名字。",
+    "zh-TW": "我以前的檔案名是「{old_name}」，現在已經改名為「{new_name}」。以後請把「{new_name}」當作我的目前名字。",
+    "en": "My previous profile name was \"{old_name}\"; I have now changed it to \"{new_name}\". Treat \"{new_name}\" as my current name from now on.",
+    "ja": "以前の私のプロフィール名は「{old_name}」で、今は「{new_name}」に改名しました。これからは「{new_name}」を私の現在の名前として扱ってください。",
+    "ko": "내 이전 프로필 이름은 \"{old_name}\"였고, 지금은 \"{new_name}\"으로 바뀌었습니다. 앞으로는 \"{new_name}\"을 내 현재 이름으로 여기세요.",
+    "ru": "Раньше моё имя профиля было «{old_name}», теперь я сменила его на «{new_name}». С этого момента считай «{new_name}» моим текущим именем.",
+    "es": "Mi nombre de perfil anterior era \"{old_name}\"; ahora lo he cambiado a \"{new_name}\". A partir de ahora, trata \"{new_name}\" como mi nombre actual.",
+    "pt": "Meu nome de perfil anterior era \"{old_name}\"; agora mudei para \"{new_name}\". A partir de agora, trate \"{new_name}\" como meu nome atual.",
 }
 
 

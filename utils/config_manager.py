@@ -370,6 +370,12 @@ def _unique_ai_context_field_name(existing_fields: set[str] | None) -> str:
     return f"{_AI_CONTEXT_RENAME_EVENT_FIELD}.{index}"
 
 
+def _join_profile_rename_old_names(lang: str | None, names: list[str]) -> str:
+    normalized_lang = str(lang or "").strip().lower()
+    separator = "、" if normalized_lang.startswith(("zh", "ja")) else ", "
+    return separator.join(names)
+
+
 def _build_ai_context_fields(
     character_payload: dict,
     existing_fields: set[str] | None = None,
@@ -399,7 +405,9 @@ def _build_ai_context_fields(
         render_profile_rename_event_context = None
 
     field_name = _unique_ai_context_field_name(existing_fields)
-    lines: list[str] = []
+    old_names: list[str] = []
+    current_name = ""
+    legacy_lines: list[str] = []
     for event in rename_events:
         if not isinstance(event, dict):
             continue
@@ -407,19 +415,33 @@ def _build_ai_context_fields(
             continue
         old_name = str(event.get("old_name") or "").strip()
         new_name = str(event.get("new_name") or "").strip()
-        if old_name and new_name and render_profile_rename_event_context is not None:
-            label, text = render_profile_rename_event_context(lang, old_name, new_name)
-            text = f"{label}: {text}"
-        elif old_name and new_name:
-            text = (
-                f"我以前的档案名是「{old_name}」，现在已经改名为「{new_name}」。"
-                f"以后请把「{new_name}」当作我的当前名字；「{old_name}」只代表改名前的历史称呼。"
-            )
+        if old_name and new_name:
+            if old_name not in old_names:
+                old_names.append(old_name)
+            current_name = new_name
         else:
             text = str(event.get("text") or "").strip()
             if not text:
                 continue
+            legacy_lines.append(text)
+
+    if current_name:
+        old_names = [name for name in old_names if name != current_name]
+
+    lines: list[str] = []
+    if old_names and current_name:
+        old_names_text = _join_profile_rename_old_names(lang, old_names)
+        if render_profile_rename_event_context is not None:
+            label, text = render_profile_rename_event_context(lang, old_names_text, current_name)
+            text = f"{label}: {text}"
+        else:
+            text = (
+                f"我以前的档案名是「{old_names_text}」，现在已经改名为「{current_name}」。"
+                f"以后请把「{current_name}」当作我的当前名字。"
+            )
         lines.append(text)
+
+    lines.extend(legacy_lines)
 
     if not lines:
         return {}

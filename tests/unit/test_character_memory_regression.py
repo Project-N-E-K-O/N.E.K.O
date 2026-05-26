@@ -100,12 +100,14 @@ def test_profile_rename_event_prompt_i18n_is_complete_and_first_person():
     assert "我以前的档案名" in zh_text
     assert "旧角色" in zh_text
     assert "新角色" in zh_text
+    assert "只代表改名前的历史称呼" not in zh_text
 
     en_label, en_text = render_profile_rename_event_context("en", "Old", "New")
     assert en_label == "My Profile Rename Record"
     assert "My previous profile name" in en_text
     assert "Old" in en_text
     assert "New" in en_text
+    assert "historical name before the rename" not in en_text
 
 
 @pytest.mark.unit
@@ -122,6 +124,11 @@ def test_profile_rename_event_uses_collision_safe_synthetic_key(monkeypatch):
                     {
                         "type": "profile_rename",
                         "old_name": "旧角色",
+                        "new_name": "临时角色",
+                    },
+                    {
+                        "type": "profile_rename",
+                        "old_name": "临时角色",
                         "new_name": "新角色",
                     }
                 ]
@@ -135,7 +142,9 @@ def test_profile_rename_event_uses_collision_safe_synthetic_key(monkeypatch):
     assert "我的改名记录" in hidden_context
     assert "我以前的档案名" in hidden_context
     assert "旧角色" in hidden_context
+    assert "临时角色" in hidden_context
     assert "新角色" in hidden_context
+    assert hidden_context.count("我的改名记录") == 1
 
     payload["__ai_context.profile_rename_events"] = "用户内部命名字段"
     effective_with_internal_collision = _build_effective_character_payload(payload)
