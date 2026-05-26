@@ -3990,11 +3990,14 @@ class LLMSessionManager:
                 while self._starting_session_count > 0 and _waited < 20.0:
                     await asyncio.sleep(0.05)
                     _waited += 0.05
-                # in-flight 落定后看**真实状态**：起好了才补发 session_started（与
-                # in-flight 自身发的那条幂等，前端 resolver 一次性）。**不**发
-                # session_failed——in-flight 可能仍在跑/或其失败路径已通知前端，过早
-                # 发 failed 会被前端当终态打断本会成功的启动（Codex 前一条 P1）。
-                if self.session and self.is_active:
+                # 仅当 in-flight 真正落定（count 归 0、即循环是「落定退出」而非
+                # 「20s 超时退出」）且会话确实活跃时才补发 session_started（与
+                # in-flight 自身发的那条幂等，前端 resolver 一次性）。若是超时退出
+                # （count 仍 >0、in-flight 没结束），self.session/is_active 在 restart
+                # 流程里可能是上一个 session 残留的 True，补发会是假阳性（Codex P1），
+                # 故一律不发。也**不**发 session_failed——in-flight 可能仍在跑/或其
+                # 失败路径已通知前端，过早发 failed 会被前端当终态打断本会成功的启动。
+                if self._starting_session_count == 0 and self.session and self.is_active:
                     await self.send_session_started(input_mode)
             else:
                 logger.warning("⚠️ Session正在启动中（跨模式重复请求），忽略")
