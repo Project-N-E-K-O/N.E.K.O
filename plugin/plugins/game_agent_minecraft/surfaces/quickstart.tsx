@@ -165,7 +165,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     cards: [
       { title: "Install Minecraft", badge: "Install", body: "Java Edition v1.21.1 recommended; other 1.21.x versions also work. Use any launcher you like." },
       { title: "Run mc-agent", badge: "Bridge", body: "Download mc-agent below, unzip, double-click 启动mc-agent.bat. It's a separate program from N.E.K.O., they talk over WebSocket. You also need to give neko-chan her own genuine Minecraft (Microsoft) account and log it in inside mc-agent — otherwise she can't join the game." },
-      { title: "Play together", badge: "Play", body: "First Open your single-player world to LAN so neko-chan can connect. Then just chat with neko-chan — she'll keep talking with you while playing alongside you in the world, like a real second player. (Some AI providers can't yet voice-chat and operate the game at the same time.)" },
+      { title: "Play together", badge: "Play", body: "First, open your single-player world to LAN so neko-chan can connect. Then just chat with neko-chan — she'll keep talking with you while playing alongside you in the world, like a real second player. (Some AI providers can't yet voice-chat and operate the game at the same time.)" },
     ],
     status: {
       title: "mc-agent Status",
