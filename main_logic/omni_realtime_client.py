@@ -1856,14 +1856,25 @@ class OmniRealtimeClient:
           1. **By id (precise)** — OpenAI Realtime (and any provider that
              echoes the offending client ``event_id``): pop and fire the exact
              handler.
-          2. **By content (fallback)** — providers that reject without a
-             client-correlated id: if the error looks like a response-conflict
+          2. **By content (fallback)** — ONLY when the provider omits a
+             client-correlation id entirely (``err_event_id`` falsy): if the
+             error looks like a response-conflict
              (``_looks_like_response_conflict``) and handlers are pending, fire
              them all. Injects are serialized by
              ``_voice_proactive_inject_lock`` so there's effectively one logical
              pending inject; ``_reject_once`` + the caller's delivery-id dedup
              make a spurious fire cost at most a bounded duplicate re-add, which
-             is strictly better than a silent drop (Codex P1)."""
+             is strictly better than a silent drop (Codex P1).
+
+        Critically, the content fallback is gated on ``err_event_id`` being
+        absent. If the error DOES carry a client event_id that simply isn't
+        ours, the rejection belongs to a different ``response.create`` (e.g.
+        ``create_response`` hot-swap priming / tool-result continuation /
+        ``signal_user_activity_end`` — all of which get a timestamp event_id
+        from ``send_event``'s setdefault), NOT our inject. Firing our handlers
+        on those would re-enqueue callbacks the model actually accepted →
+        duplicate announcements. So a present-but-non-matching id means "not
+        ours; do nothing"."""
         if not self._inject_rejection_handlers:
             return
 
@@ -1873,13 +1884,15 @@ class OmniRealtimeClient:
             except Exception as cb_exc:
                 logger.warning("proactive inject rejection handler raised: %s", cb_exc)
 
-        if err_event_id and err_event_id in self._inject_rejection_handlers:
+        if err_event_id:
+            # Id present: fire ONLY on an exact match. A non-matching id
+            # belongs to some other request's rejection — not ours.
             handler = self._inject_rejection_handlers.pop(err_event_id, None)
             if handler is not None:
                 _fire(handler)
             return
 
-        # No id correlation — fall back to content matching.
+        # No client-correlation id at all — fall back to content matching.
         if self._looks_like_response_conflict(error_msg):
             for handler in list(self._inject_rejection_handlers.values()):
                 _fire(handler)

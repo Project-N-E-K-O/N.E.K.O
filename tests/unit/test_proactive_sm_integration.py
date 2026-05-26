@@ -489,6 +489,24 @@ async def test_route_inject_rejection_content_fallback_no_id():
     assert sess._inject_rejection_handlers == {}
 
 
+async def test_route_inject_rejection_nonmatching_id_does_not_fire_fallback():
+    """Codex P1：error 带了 client event_id 但不匹配我们任何 pending handler
+    → 说明这是别的 response.create（create_response / tool-result 续传 /
+    signal_user_activity_end，都被 send_event setdefault 打了时间戳 id）的拒绝，
+    不是我们的 inject。即使消息文本像 response_already_active 也**不能** fire，
+    否则会把模型其实已接受的 cb 误回补造成重复播报。content fallback 只在完全
+    没有 client id 时才走。"""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    fired = []
+    sess = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    sess._inject_rejection_handlers = {"event_inject_resp_ours": lambda msg: fired.append(msg)}
+    # 别的请求的 event_id + response-conflict 文本
+    sess._route_inject_rejection("event_create_response_other", "response_already_active")
+    assert fired == []
+    assert "event_inject_resp_ours" in sess._inject_rejection_handlers  # 未动
+
+
 async def test_route_inject_rejection_unrelated_error_does_not_fire():
     """无 id 匹配 + 错误不像 response-conflict（如 503/quota）→ 不应 fire，
     避免把无关错误误当成 inject 拒绝、错误回补造成重复投递。"""
