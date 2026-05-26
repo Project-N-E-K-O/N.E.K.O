@@ -1582,6 +1582,30 @@ function toggleGptSovitsConfig() {
 
 // ==================== 结束 GPT-SoVITS v3 配置相关函数 ====================
 
+function updateAssistApiKeyInputAvailability() {
+    const assistApiSelect = document.getElementById('assistApiSelect');
+    const assistApiKeyInput = document.getElementById('assistApiKeyInput');
+    if (!assistApiSelect || !assistApiKeyInput) return;
+
+    const isFreeAssistApi = assistApiSelect.value === 'free';
+    assistApiKeyInput.disabled = isFreeAssistApi;
+    assistApiKeyInput.required = false;
+
+    if (isFreeAssistApi) {
+        const freeText = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
+        assistApiKeyInput.placeholder = freeText;
+        assistApiKeyInput.dataset.realKey = '';
+        assistApiKeyInput.value = freeText;
+        attachMaskBehavior(assistApiKeyInput);
+        return;
+    }
+
+    assistApiKeyInput.placeholder = window.t ? window.t('api.assistApiKeyPlaceholder') : '留空使用管理簿对应 Key';
+    if (isFreeVersionText(getRealKey(assistApiKeyInput))) {
+        setMaskedInput(assistApiKeyInput, '');
+    }
+}
+
 // 切换自定义API启用状态
 function toggleCustomApi(skipAutoFill) {
     const enableCustomApi = document.getElementById('enableCustomApi');
@@ -1593,13 +1617,11 @@ function toggleCustomApi(skipAutoFill) {
     const isFreeVersion = coreApiSelect && coreApiSelect.value === 'free';
 
     // 禁用或启用相关控件
-    // core=free 时只锁核心 API Key 输入（free-access 不需要用户填），
-    // 辅助 API 选择器和辅助 Key 输入保持可用，让用户能搭「免费 realtime + 付费 assist」。
-    const assistApiKeyInput = document.getElementById('assistApiKeyInput');
+    // core=free 时只锁核心 API Key 输入，辅助 Key 输入由辅助服务商自身决定。
     if (coreApiSelect) coreApiSelect.disabled = false;
     if (assistApiSelect) assistApiSelect.disabled = false;
-    if (assistApiKeyInput) assistApiKeyInput.disabled = false;
     if (apiKeyInput) apiKeyInput.disabled = isFreeVersion;
+    updateAssistApiKeyInputAvailability();
 
     // 控制自定义API容器的折叠状态
     const customApiContainer = document.getElementById('custom-api-container');
@@ -2201,8 +2223,6 @@ function updateAssistApiRecommendation() {
     const apiKeyInput = document.getElementById('apiKeyInput');
     const freeVersionHint = document.getElementById('freeVersionHint');
 
-    const assistApiKeyInput = document.getElementById('assistApiKeyInput');
-
     if (selectedCoreApi === 'free') {
         if (apiKeyInput) {
             apiKeyInput.disabled = true;
@@ -2210,11 +2230,8 @@ function updateAssistApiRecommendation() {
             apiKeyInput.required = false;
             apiKeyInput.value = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
         }
-        // 辅助 API 与核心 API 解耦：core=free 仅锁核心 API Key（免费 realtime 不需要 key），
-        // 辅助 API 选择器和辅助 Key 输入保持可用，允许「免费 realtime + 付费 assist/Agent」组合。
-        if (assistApiKeyInput) {
-            assistApiKeyInput.disabled = false;
-        }
+        // 辅助 API 与核心 API 解耦：core=free 仅锁核心 API Key，
+        // 辅助 Key 输入是否可用由辅助服务商自身决定。
         if (freeVersionHint) {
             freeVersionHint.style.display = 'inline';
         }
@@ -2248,9 +2265,6 @@ function updateAssistApiRecommendation() {
                 setMaskedInput(apiKeyInput, '');
             }
         }
-        if (assistApiKeyInput) {
-            assistApiKeyInput.disabled = false;
-        }
         if (freeVersionHint) {
             freeVersionHint.style.display = 'none';
         }
@@ -2282,6 +2296,8 @@ function updateAssistApiRecommendation() {
             });
         }
     }
+
+    updateAssistApiKeyInputAvailability();
 
     // Auto-fill core API key from book
     autoFillCoreApiKey();
@@ -2341,10 +2357,10 @@ function autoFillAssistApiKey(force) {
 
     const selectedAssistApi = assistApiSelect.value;
     if (selectedAssistApi === 'free') {
-        setMaskedInput(assistApiKeyInput, '');
-        attachMaskBehavior(assistApiKeyInput);
+        updateAssistApiKeyInputAvailability();
         return;
     }
+    updateAssistApiKeyInputAvailability();
 
     const bookKey = syncKeyFromBook(selectedAssistApi);
     // When forced (provider switch, disabling custom API, or init), clear input if no book key
@@ -3894,13 +3910,11 @@ async function initializePage() {
         if (coreApiSelect && apiKeyInput && freeVersionHint) {
             const selectedCoreApi = coreApiSelect.value;
 
-            const assistApiKeyInputInit = document.getElementById('assistApiKeyInput');
             if (selectedCoreApi === 'free') {
                 apiKeyInput.disabled = true;
                 apiKeyInput.placeholder = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
                 apiKeyInput.required = false;
                 apiKeyInput.value = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
-                if (assistApiKeyInputInit) assistApiKeyInputInit.disabled = true;
                 freeVersionHint.style.display = 'inline';
             } else {
                 apiKeyInput.disabled = false;
@@ -3909,9 +3923,9 @@ async function initializePage() {
                 if (isFreeVersionText(getRealKey(apiKeyInput))) {
                     setMaskedInput(apiKeyInput, '');
                 }
-                if (assistApiKeyInputInit) assistApiKeyInputInit.disabled = false;
                 freeVersionHint.style.display = 'none';
             }
+            updateAssistApiKeyInputAvailability();
 
             updateAssistApiRecommendation();
             autoFillCoreApiKey(true);
