@@ -1,27 +1,96 @@
 (function () {
-  const MATH_PATTERN = /\$\$([\s\S]+?)\$\$|\$(.+?)\$/g;
-
   function escapeHTML(value) {
     const div = document.createElement('div');
     div.appendChild(document.createTextNode(String(value || '')));
     return div.innerHTML;
   }
 
+  function hasEscapedDelimiter(source, index) {
+    let slashes = 0;
+    for (let i = index - 1; i >= 0 && source[i] === '\\'; i -= 1) {
+      slashes += 1;
+    }
+    return slashes % 2 === 1;
+  }
+
+  function isCurrencyDollar(source, index) {
+    return /\d/.test(source[index + 1] || '') || /\d/.test(source[index - 1] || '');
+  }
+
+  function findMathDelimiter(source, start, delimiter) {
+    let index = start;
+    while (index < source.length) {
+      const next = source.indexOf(delimiter, index);
+      if (next === -1) {
+        return -1;
+      }
+      if (hasEscapedDelimiter(source, next)) {
+        index = next + delimiter.length;
+        continue;
+      }
+      if (delimiter === '$' && source[next + 1] === '$') {
+        index = next + 2;
+        continue;
+      }
+      return next;
+    }
+    return -1;
+  }
+
   function splitByMath(text) {
     const parts = [];
     const source = String(text || '');
     let last = 0;
-    let match;
-    while ((match = MATH_PATTERN.exec(source)) !== null) {
-      if (match.index > last) {
-        parts.push({ type: 'text', value: source.slice(last, match.index) });
+    let index = 0;
+    while (index < source.length) {
+      if (source[index] !== '$' || hasEscapedDelimiter(source, index)) {
+        index += 1;
+        continue;
       }
-      if (match[1] !== undefined) {
-        parts.push({ type: 'math', value: match[1].trim(), display: true });
+
+      if (source[index + 1] === '$') {
+        const displayCloser = findMathDelimiter(source, index + 2, '$$');
+        if (displayCloser === -1) {
+          index += 2;
+          continue;
+        }
+        if (index > last) {
+          parts.push({ type: 'text', value: source.slice(last, index) });
+        }
+        parts.push({
+          type: 'math',
+          value: source.slice(index + 2, displayCloser).trim(),
+          display: true,
+        });
+        index = displayCloser + 2;
+        last = index;
+        continue;
+      }
+
+      if (isCurrencyDollar(source, index)) {
+        index += 1;
+        continue;
+      }
+      const inlineCloser = findMathDelimiter(source, index + 1, '$');
+      if (inlineCloser === -1) {
+        index += 1;
+        continue;
+      }
+      if (isCurrencyDollar(source, inlineCloser)) {
+        index = inlineCloser + 1;
+        continue;
+      }
+      if (index > last) {
+        parts.push({ type: 'text', value: source.slice(last, index) });
+      }
+      const mathValue = source.slice(index + 1, inlineCloser).trim();
+      if (mathValue) {
+        parts.push({ type: 'math', value: mathValue, display: false });
       } else {
-        parts.push({ type: 'math', value: match[2].trim(), display: false });
+        parts.push({ type: 'text', value: source.slice(index, inlineCloser + 1) });
       }
-      last = MATH_PATTERN.lastIndex;
+      index = inlineCloser + 1;
+      last = index;
     }
     if (last < source.length) {
       parts.push({ type: 'text', value: source.slice(last) });
@@ -67,6 +136,9 @@
   window.renderMathInText = renderMathInText;
   window.__studyCompanionMath = {
     escapeHTML,
+    hasEscapedDelimiter,
+    isCurrencyDollar,
+    findMathDelimiter,
     normalizeLatexForKatex,
     splitByMath,
     renderMathInText,

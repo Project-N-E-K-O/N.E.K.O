@@ -675,15 +675,20 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         return;
       }
       const activeElement = document.activeElement as HTMLElement | null;
-      const isInsidePanel = !!activeElement?.closest?.('.study-panel');
+      const targetElement = event.target instanceof HTMLElement ? event.target : null;
+      const isInsidePanel = !!(
+        targetElement?.closest?.('.study-panel') ||
+        activeElement?.closest?.('.study-panel')
+      );
+      if (!isInsidePanel) {
+        return;
+      }
       event.preventDefault();
       event.stopPropagation();
       explainControllerRef.current?.abort();
       explainControllerRef.current = null;
       setBusy(false);
-      if (isInsidePanel) {
-        activeElement?.blur?.();
-      }
+      activeElement?.blur?.();
     };
     document.addEventListener('keydown', closeOrCancelOnEscape, true);
     return () => {
