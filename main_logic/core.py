@@ -3968,7 +3968,24 @@ class LLMSessionManager:
             return
         # 检查是否正在启动中
         if self._starting_session_count > 0:
-            logger.warning("⚠️ Session正在启动中，忽略重复请求")
+            # 另一路 start_session（典型是 greeting 的 auto-start）已在飞。早期实现
+            # 直接静默 return，但前端的 start_session 在 await 一个 session_started
+            # ack——若它撞在这里被去重，ack 永远不来，前端 15s 后超时并卡死（用户
+            # 在 greeting 出现前抢发消息触发的竞态：greeting 先把 in-flight 占住，
+            # 而它完成时发的 ack 又早于前端开始 await，前端两头落空）。改为：等
+            # in-flight 那次启动落定，复用其结果给本请求补一个 ack——成功补
+            # session_started、失败补 session_failed，让前端正常收口而不是干等超时。
+            # 仅作用于这条"本就会超时"的去重死路，不碰任何正常单次启动路径。
+            logger.warning("⚠️ Session正在启动中，等待 in-flight 启动落定后给本请求补发 ack")
+            _dedup_input_mode = self._starting_input_mode or input_mode
+            _waited = 0.0
+            while self._starting_session_count > 0 and not self.session_ready and _waited < 12.0:
+                await asyncio.sleep(0.05)
+                _waited += 0.05
+            if self.session_ready and self.session and self.is_active:
+                await self.send_session_started(_dedup_input_mode)
+            else:
+                await self.send_session_failed(_dedup_input_mode)
             return
 
         # 标记正在启动（使用计数器，避免并发 start_session 的 finally 互相覆盖）
