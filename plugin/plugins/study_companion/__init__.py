@@ -16,6 +16,7 @@ from plugin.sdk.plugin import (
     NekoPluginBase,
     Ok,
     SdkError,
+    custom_event,
     lifecycle,
     neko_plugin,
     plugin_entry,
@@ -75,6 +76,7 @@ from .tutor_llm_agent import diagnostic_code_for_exception
 from .ui_api import build_open_ui_payload
 from .ui_api import build_contribution_settings_payload, build_knowledge_map_payload
 from .ui_api import build_habit_dashboard_payload, build_pomodoro_status_payload
+from .voice_filter import VoiceFilter, _derive_subject, build_context_for_catgirl
 
 
 def _register_install_routes() -> None:
@@ -218,12 +220,16 @@ class StudyCompanionPlugin(
         self._neko_command_watcher: Any | None = None
         self._worker_crash_count = 0
         self._worker_last_crash_time = 0.0
+        self._voice_filter = VoiceFilter()
 
     @lifecycle(id="startup")
     async def startup(self, **_):
         try:
             raw = await self.config.dump(timeout=5.0)
             self._cfg = build_config(raw if isinstance(raw, dict) else {})
+            self._voice_filter = VoiceFilter(
+                plugin_config=raw if isinstance(raw, dict) else {}
+            )
             await asyncio.to_thread(self._store.open)
             self._cfg = await asyncio.to_thread(self._store.load_config, self._cfg)
             self._knowledge_tracker = KnowledgeTracker(
@@ -701,6 +707,90 @@ class StudyCompanionPlugin(
 
     def _screen_classification_context(self) -> dict[str, Any]:
         return dict(self._state.last_screen_classification)
+
+    @custom_event(
+        event_type="voice_transcript",
+        id="handle_transcript",
+        name="Handle study voice transcript",
+        description="Filter realtime study voice transcripts and return a voice-session action.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "transcript": {"type": "string"},
+                "lanlan_name": {"type": "string"},
+                "metadata": {"type": "object"},
+            },
+            "required": ["transcript"],
+        },
+        trigger_method="manual",
+    )
+    async def handle_voice_transcript(
+        self,
+        transcript: str = "",
+        lanlan_name: str = "",
+        metadata: dict[str, Any] | None = None,
+        **_,
+    ):
+        text = str(transcript or "").strip()
+        if not text:
+            return Ok({"action": "noop", "reason": "empty_transcript"})
+
+        async with self._lock:
+            if self._state.status != STATUS_READY:
+                return Ok({"action": "noop", "reason": "not_ready"})
+            state_payload = self._state.to_dict()
+
+        screen_text = str(state_payload.get("last_ocr_text") or "")
+        screen_classification = (
+            state_payload.get("last_screen_classification")
+            if isinstance(state_payload.get("last_screen_classification"), dict)
+            else {}
+        )
+        screen_type = str(screen_classification.get("screen_type") or "")
+        session_seed = (
+            state_payload.get("session_summary_seed")
+            if isinstance(state_payload.get("session_summary_seed"), dict)
+            else {}
+        )
+        screen_context = {
+            "topic": str(session_seed.get("last_topic") or "").strip(),
+            "subject": _derive_subject(screen_text),
+        }
+        filter_result = self._voice_filter.filter(
+            text,
+            screen_text=screen_text,
+            screen_type=screen_type,
+            subject=screen_context["subject"],
+        )
+        if filter_result is None:
+            return Ok({"action": "noop", "reason": "not_matched"})
+        if not bool(filter_result.get("should_relay")):
+            return Ok({"action": "cancel_response", "filter": dict(filter_result)})
+
+        state_snapshot = SimpleNamespace(**state_payload)
+        context_text = build_context_for_catgirl(
+            text,
+            state_snapshot,
+            screen_context,
+            filter_result,
+        ).strip()
+        if not context_text:
+            return Ok(
+                {
+                    "action": "noop",
+                    "reason": "empty_context",
+                    "filter": dict(filter_result),
+                }
+            )
+        return Ok(
+            {
+                "action": "prime_context",
+                "context": context_text,
+                "skipped": False,
+                "filter": dict(filter_result),
+                "lanlan_name": str(lanlan_name or ""),
+            }
+        )
 
     async def _update_screen_classification(
         self, text: str, *, window_title: str = "", update_empty: bool = True
