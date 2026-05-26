@@ -55,8 +55,12 @@ function isCharacterReservedFieldName(fieldName) {
     return getWorkshopHiddenFields().includes(normalizedFieldName);
 }
 
-function normalizeCharacterFieldValue(value) {
-    return typeof value === 'string' ? value.trim() : value;
+function normalizeCharacterFieldValue(value, fieldName) {
+    const normalizedFieldName = normalizeCharacterFieldName(fieldName);
+    if (normalizedFieldName === '档案名') {
+        return typeof value === 'string' ? value.trim() : value;
+    }
+    return value;
 }
 
 function collectCharacterFields(form, options = {}) {
@@ -87,7 +91,7 @@ function collectCharacterFields(form, options = {}) {
         if (!key || excluded.has(key) || isCharacterReservedFieldName(key)) {
             continue;
         }
-        const value = normalizeCharacterFieldValue(rawValue);
+        const value = normalizeCharacterFieldValue(rawValue, key);
         if (!value) {
             continue;
         }
@@ -9840,6 +9844,8 @@ function renderMasterForm(master) {
     const form = document.getElementById('master-form');
     if (!form) return;
     form.innerHTML = '';
+    const masterProfileName = normalizeCharacterFieldName(master['档案名']);
+    const hasMasterProfileName = !!masterProfileName;
 
     // 档案名
     const baseWrapper = document.createElement('div');
@@ -9856,13 +9862,15 @@ function renderMasterForm(master) {
     nameInput.type = 'text';
     nameInput.name = '档案名';
     nameInput.required = true;
-    nameInput.value = master['档案名'] || '';
+    nameInput.value = masterProfileName;
     nameInput.autocomplete = 'off';
-    nameInput.readOnly = true;
-    nameInput.setAttribute('aria-readonly', 'true');
-    nameInput.title = window.t
-        ? window.t('character.profileNameRenameOnlyHint')
-        : '请通过“修改名称”按钮修改档案名';
+    nameInput.readOnly = hasMasterProfileName;
+    nameInput.setAttribute('aria-readonly', hasMasterProfileName ? 'true' : 'false');
+    if (hasMasterProfileName) {
+        nameInput.title = window.t
+            ? window.t('character.profileNameRenameOnlyHint')
+            : '请通过“修改名称”按钮修改档案名';
+    }
     fieldRow.appendChild(nameInput);
     baseWrapper.appendChild(fieldRow);
 
@@ -9876,6 +9884,7 @@ function renderMasterForm(master) {
     renameBtn.textContent = renameText;
     renameBtn.title = renameTitle;
     renameBtn.setAttribute('aria-label', renameTitle);
+    renameBtn.disabled = !hasMasterProfileName;
     renameBtn.onclick = renameMaster;
     baseWrapper.appendChild(renameBtn);
 
@@ -9946,7 +9955,7 @@ function renderMasterForm(master) {
     saveBtn.type = 'button';
     saveBtn.id = 'save-master-btn';
     saveBtn.className = 'btn sm';
-    saveBtn.style.display = 'none';
+    saveBtn.style.display = hasMasterProfileName ? 'none' : '';
     const saveText = window.t ? window.t('character.saveMaster') : '保存主人设定';
     saveBtn.textContent = saveText;
     saveBtn.onclick = saveMasterForm;
@@ -9967,6 +9976,10 @@ function renderMasterForm(master) {
     form.appendChild(btnArea);
 
     // 档案名只允许通过重命名接口修改，避免绕过改名事件记录。
+    if (!hasMasterProfileName) {
+        nameInput.addEventListener('input', showMasterActionButtons);
+        nameInput.addEventListener('change', showMasterActionButtons);
+    }
 }
 
 function showMasterActionButtons() {
@@ -9986,7 +9999,11 @@ async function saveMasterForm() {
         showMessage(window.t ? window.t('character.profileNameRequired') : '档案名为必填项', 'error');
         return;
     }
+    const baseData = nameInput.readOnly
+        ? {}
+        : { '档案名': normalizeCharacterFieldName(nameInput.value) };
     const { data, duplicateKey } = collectCharacterFields(form, {
+        baseData,
         excludeFieldNames: ['档案名'],
     });
     if (duplicateKey) {
@@ -10204,7 +10221,11 @@ async function renameMaster() {
     const form = document.getElementById('master-form');
     if (!form) return;
     const nameInput = form.querySelector('input[name="档案名"]');
-    const oldName = nameInput?.value || '';
+    const oldName = normalizeCharacterFieldName(nameInput?.value || '');
+    if (!oldName) {
+        showMessage(window.t ? window.t('character.profileNameRequired') : '档案名为必填项', 'error');
+        return;
+    }
     const promptText = window.t ? window.t('character.renameMasterPrompt') : '请输入新的主人档案名';
     const titleText = window.t ? window.t('character.renameMasterTitle') : '重命名主人';
     let newName;
