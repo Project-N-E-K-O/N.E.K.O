@@ -1396,9 +1396,7 @@ class GameAgentService:
         _KEEP_GOING_AFTER = 8.0
         _KEEP_GOING_COOLDOWN = 10.0
 
-        # [ISSUE4-DIAG] INFO (not DEBUG): plugin subprocess logs only surface at
-        # INFO in the captured stream, so self-prompt loop visibility must be INFO.
-        self._log_info(
+        self._log_debug(
             "system_prompt_loop started (in_progress={}/{}, keep_going={}/{}, "
             "general_interval={}s)",
             _IN_PROGRESS_AFTER, _IN_PROGRESS_COOLDOWN,
@@ -1421,7 +1419,7 @@ class GameAgentService:
                     elapsed_pending = now - self._pending.start_time
                     since_last = now - self._last_in_progress_nudge_at
                     if elapsed_pending >= _IN_PROGRESS_AFTER and since_last >= _IN_PROGRESS_COOLDOWN:
-                        self._log_info(
+                        self._log_debug(
                             "firing in_progress nudge (elapsed={:.1f}s, since_last={:.1f}s)",
                             elapsed_pending, since_last,
                         )
@@ -1446,7 +1444,7 @@ class GameAgentService:
                         since_finish >= _KEEP_GOING_AFTER
                         and since_last_keep >= _KEEP_GOING_COOLDOWN
                     ):
-                        self._log_info(
+                        self._log_debug(
                             "firing keep_going nudge (since_finish={:.1f}s, "
                             "since_last_keep={:.1f}s)",
                             since_finish, since_last_keep,
@@ -1462,7 +1460,7 @@ class GameAgentService:
                     continue
                 if not self._log_cache and not self._screenshot_cache and self._task_finished:
                     continue
-                self._log_info(
+                self._log_debug(
                     "firing general nudge (task_finished={}, pending={})",
                     self._task_finished,
                     self._pending.task_text[:40] if self._pending else None,
