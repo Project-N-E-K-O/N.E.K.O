@@ -923,6 +923,76 @@ describe('App', () => {
     }
   });
 
+  it('keeps compact galgame options on the current side near the placement threshold', async () => {
+    const originalInnerHeight = window.innerHeight;
+    Object.defineProperty(window, 'innerHeight', {
+      configurable: true,
+      value: 500,
+    });
+
+    try {
+      const { container } = render(
+        <App
+          chatSurfaceMode="compact"
+          galgameModeEnabled
+          galgameOptions={[
+            { label: 'A', text: 'Option A' },
+            { label: 'B', text: 'Option B' },
+          ]}
+        />,
+      );
+
+      const appShell = container.querySelector('.app-shell');
+      const choiceLayer = document.body.querySelector('body > .compact-chat-choice-anchor');
+      expect(appShell).not.toBeNull();
+      expect(choiceLayer).not.toBeNull();
+
+      Object.defineProperty(appShell!, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({
+          x: 0,
+          y: 0,
+          top: 96,
+          left: 0,
+          right: 420,
+          bottom: 360,
+          width: 420,
+          height: 264,
+          toJSON: () => ({}),
+        }),
+      });
+      Object.defineProperty(choiceLayer!, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({
+          x: 0,
+          y: 0,
+          top: 0,
+          left: 0,
+          right: 420,
+          bottom: 112,
+          width: 420,
+          height: 112,
+          toJSON: () => ({}),
+        }),
+      });
+      Object.defineProperty(choiceLayer!, 'scrollHeight', {
+        configurable: true,
+        value: 112,
+      });
+
+      fireEvent(window, new Event('resize'));
+
+      await waitFor(() => {
+        expect(choiceLayer).toHaveAttribute('data-compact-choice-placement', 'above');
+      });
+    } finally {
+      Object.defineProperty(window, 'innerHeight', {
+        configurable: true,
+        value: originalInnerHeight,
+      });
+    }
+  });
+
   it('places desktop compact options below when the screen work area has room even if the compact window viewport is short', async () => {
     const originalInnerHeight = window.innerHeight;
     const desktopWindow = window as typeof window & { __nekoDesktopCompactLayout?: unknown };
@@ -1912,6 +1982,40 @@ describe('App', () => {
       fireEvent.click(actionButton);
 
       expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+    } finally {
+      window.matchMedia = originalMatchMedia;
+    }
+  });
+
+  it('allows hover reopen after a click close once the pointer moves outside the hover region', () => {
+    const originalMatchMedia = window.matchMedia;
+    mockHoverCapableMatchMedia();
+
+    try {
+      render(<App chatSurfaceMode="compact" compactChatState="input" />);
+
+      const actionButton = screen.getByRole('button', { name: '更多工具' });
+      const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+      vi.spyOn(actionButton, 'getBoundingClientRect').mockReturnValue({
+        left: 0,
+        top: 0,
+        right: 48,
+        bottom: 48,
+        width: 48,
+        height: 48,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      });
+
+      fireEvent.pointerEnter(actionButton, { pointerType: 'mouse' });
+      fireEvent.click(actionButton);
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+
+      fireEvent.pointerMove(document.body, { clientX: 160, clientY: 160, pointerType: 'mouse' });
+      fireEvent.pointerEnter(actionButton, { pointerType: 'mouse' });
+
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
     } finally {
       window.matchMedia = originalMatchMedia;
     }

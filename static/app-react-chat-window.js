@@ -3708,7 +3708,6 @@
                 shell.style.transform = 'none';
             }
             minimized = false;
-            state.chatSurfaceMode = 'full';
             resetCompactChatState();
             savedShellSize = null;
             savedShellPosition = null;

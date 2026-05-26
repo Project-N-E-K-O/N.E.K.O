@@ -191,6 +191,7 @@ export default function CompactExportHistoryPanel({
   const [imageStyle, setImageStyle] = useState<CompactExportImageStyle>('neko');
   const [imageFormat, setImageFormat] = useState<CompactExportImageFormat>('png');
   const [pendingAction, setPendingAction] = useState<'copy' | 'download' | null>(null);
+  const [exportActionError, setExportActionError] = useState<string | null>(null);
   const [previewState, setPreviewState] = useState<CompactExportPreviewState>({ status: 'idle' });
   const selectedMessages = messages.filter(message => selectedIds.has(message.id));
   const previewHasSelection = selectedMessages.length > 0;
@@ -243,7 +244,8 @@ export default function CompactExportHistoryPanel({
     };
     revokeCompactPreviewObjectUrl();
     setPreviewState({ status: 'loading' });
-    Promise.resolve(onBuildPreview(request))
+    Promise.resolve()
+      .then(() => onBuildPreview(request))
       .then((result) => {
         if (cancelled) {
           if (result.previewKind === 'image') {
@@ -352,6 +354,7 @@ export default function CompactExportHistoryPanel({
   async function runExportAction(kind: 'copy' | 'download') {
     if (exportActionsDisabled) return;
     setPendingAction(kind);
+    setExportActionError(null);
     try {
       const request = buildExportActionRequest();
       if (kind === 'copy') {
@@ -359,6 +362,9 @@ export default function CompactExportHistoryPanel({
       } else {
         await onDownloadExport(request);
       }
+    } catch (error) {
+      console.error('[CompactExportHistoryPanel] export action failed', error);
+      setExportActionError(i18n('chat.exportActionFailed', 'Export failed. Please try again.'));
     } finally {
       setPendingAction(null);
     }
@@ -569,6 +575,11 @@ export default function CompactExportHistoryPanel({
           {i18n('chat.exportAction', 'Export')}
         </button>
       </div>
+      {exportActionError ? (
+        <div className="compact-export-preview-error" role="status" aria-live="polite">
+          {exportActionError}
+        </div>
+      ) : null}
     </div>
   );
 

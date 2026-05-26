@@ -84,6 +84,7 @@ const COMPACT_INPUT_TOOL_FAN_INTERACTIVE_DELAY_MS = 220;
 const COMPACT_SURFACE_RESIZE_MIN_WIDTH = 430;
 const COMPACT_SURFACE_RESIZE_MAX_WIDTH = 720;
 const COMPACT_SURFACE_RESIZE_VIEWPORT_GUTTER = 32;
+const COMPACT_CHOICE_PLACEMENT_HYSTERESIS = 24;
 
 type CompactSurfaceResizeSide = 'left' | 'right';
 
@@ -1712,7 +1713,24 @@ export default function App({
           : availableBelow >= availableAbove
             ? 'below'
             : 'above';
-      setCompactChoiceLayerPlacement(current => (current === nextPlacement ? current : nextPlacement));
+      setCompactChoiceLayerPlacement((current) => {
+        if (current === nextPlacement) return current;
+        if (
+          current === 'above'
+          && nextPlacement === 'below'
+          && availableBelow < requiredSpace + COMPACT_CHOICE_PLACEMENT_HYSTERESIS
+        ) {
+          return current;
+        }
+        if (
+          current === 'below'
+          && nextPlacement === 'above'
+          && availableAbove < requiredSpace + COMPACT_CHOICE_PLACEMENT_HYSTERESIS
+        ) {
+          return current;
+        }
+        return nextPlacement;
+      });
     };
 
     const schedulePlacementUpdate = () => {
@@ -1987,6 +2005,11 @@ export default function App({
     setCompactInputToolFanInteractive(interactive);
   }, []);
 
+  const resetCompactInputToolFanHoverBlock = useCallback(() => {
+    compactInputToolFanHoverInsideRef.current = false;
+    compactInputToolFanSuppressHoverUntilLeaveRef.current = false;
+  }, []);
+
   const closeCompactInputToolFan = useCallback((options?: {
     afterClose?: () => void;
     deferDesktopAction?: boolean;
@@ -2079,10 +2102,9 @@ export default function App({
 
   const handleCompactInputToolHoverLeave = useCallback((event: ReactPointerEvent) => {
     if (isCompactInputToolPointerInHoverRegion(event.clientX, event.clientY, event.relatedTarget)) return;
-    compactInputToolFanHoverInsideRef.current = false;
-    compactInputToolFanSuppressHoverUntilLeaveRef.current = false;
+    resetCompactInputToolFanHoverBlock();
     scheduleCompactInputToolFanTransientClose();
-  }, [isCompactInputToolPointerInHoverRegion, scheduleCompactInputToolFanTransientClose]);
+  }, [isCompactInputToolPointerInHoverRegion, resetCompactInputToolFanHoverBlock, scheduleCompactInputToolFanTransientClose]);
 
   const closeCompactInputToolFanFromUserClick = useCallback(() => {
     compactInputToolFanSuppressHoverUntilLeaveRef.current = true;
@@ -2151,6 +2173,29 @@ export default function App({
     clearCompactInputToolFanCloseTimer();
     clearCompactInputToolFanInteractiveTimer();
   }, [clearCompactInputToolFanCloseTimer, clearCompactInputToolFanInteractiveTimer]);
+
+  useEffect(() => {
+    if (!isCompactSurface || effectiveCompactChatState !== 'input') {
+      resetCompactInputToolFanHoverBlock();
+      return;
+    }
+
+    const handlePointerMove = (event: PointerEvent) => {
+      if (!compactInputToolFanSuppressHoverUntilLeaveRef.current) return;
+      if (isCompactInputToolPointerInHoverRegion(event.clientX, event.clientY, event.target)) return;
+      resetCompactInputToolFanHoverBlock();
+    };
+
+    window.addEventListener('pointermove', handlePointerMove, true);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove, true);
+    };
+  }, [
+    effectiveCompactChatState,
+    isCompactInputToolPointerInHoverRegion,
+    isCompactSurface,
+    resetCompactInputToolFanHoverBlock,
+  ]);
 
   const finishCompactToolWheelPointer = useCallback((event?: ReactPointerEvent<HTMLDivElement>) => {
     const pointerState = compactInputToolWheelPointerRef.current;
@@ -2298,6 +2343,7 @@ export default function App({
     if (!isCompactSurface) return;
 
     const handleDesktopCompactPointerOutside = () => {
+      resetCompactInputToolFanHoverBlock();
       closeCompactInputToolFan();
       if (effectiveCompactChatState !== 'input') return;
       if (draftRef.current.trim().length > 0) return;
@@ -2315,6 +2361,7 @@ export default function App({
     effectiveCompactChatState,
     isCompactSurface,
     requestCompactChatState,
+    resetCompactInputToolFanHoverBlock,
   ]);
 
   useEffect(() => {

@@ -2209,7 +2209,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   padding: 4px 6px;
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
-  pointer-events: none;
+  pointer-events: auto;
   -webkit-app-region: no-drag;
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, rgba(0, 0, 0, 0.78) 12px, #000 28px);
   mask-image: linear-gradient(to bottom, transparent 0, rgba(0, 0, 0, 0.78) 12px, #000 28px);
@@ -2713,6 +2713,17 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 .compact-export-preview-action:disabled {
   cursor: not-allowed;
   opacity: 0.48;
+}
+
+.compact-export-preview-error {
+  flex: 0 0 auto;
+  padding: 6px 8px;
+  border-radius: 10px;
+  background: rgba(255, 237, 232, 0.76);
+  color: #a63d2f;
+  font-size: 0.74rem;
+  font-weight: 700;
+  line-height: 1.35;
 }
 
 .compact-export-preview-empty {
@@ -3833,6 +3844,11 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 [data-theme="dark"] .compact-export-preview-stage {
   box-shadow: inset 0 0 0 1px rgba(116, 187, 255, 0.14);
+}
+
+[data-theme="dark"] .compact-export-preview-error {
+  background: rgba(98, 45, 38, 0.72);
+  color: #ffd7cf;
 }
 
 [data-theme="dark"] .compact-export-preview-chip.is-active {

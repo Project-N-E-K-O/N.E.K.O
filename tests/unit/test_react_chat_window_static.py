@@ -59,6 +59,22 @@ def test_chat_surface_mode_preference_is_shared_with_electron():
     assert "localStorage.setItem(CHAT_SURFACE_MODE_STORAGE_KEY, mode)" in persist_block
 
 
+def test_close_from_minimized_preserves_compact_surface_mode():
+    source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    close_block = source.split("function closeWindow()", 1)[1].split(
+        "window.addEventListener('neko:main-ui-hidden-by-model-manager-changed'",
+        1,
+    )[0]
+    minimized_block = close_block.split("if (minimized)", 1)[1].split("overlay.hidden = true;", 1)[0]
+
+    assert "state.chatSurfaceMode = 'full'" not in minimized_block
+    assert "minimized = false;" in minimized_block
+    assert "syncChatSurfaceModeUI();" in minimized_block
+    assert "overlay.hidden = true;" in close_block
+    assert "resetCompactChatState();" in close_block
+
+
 def test_desktop_compact_history_uses_workarea_not_browserwindow_viewport():
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
@@ -115,8 +131,8 @@ def test_compact_history_size_tokens_are_ratio_based_for_ui_optimization():
     assert "--compact-export-history-max-inline-size: calc(100vw - var(--compact-export-history-viewport-gutter));" in anchor_block
     assert "--compact-export-history-max-inline-size: calc(" in desktop_history_block
     assert "var(--compact-desktop-workarea-width, 1440px) - var(--compact-export-history-viewport-gutter)" in desktop_history_block
-    assert "max-width: var(--compact-export-history-bubble-max-ratio);" in bubble_block
-    assert "max-width: var(--compact-export-history-system-bubble-max-ratio);" in system_bubble_block
+    assert "max-width: var(--compact-history-bubble-max-ratio, var(--compact-export-history-bubble-max-ratio));" in bubble_block
+    assert "max-width: var(--compact-history-bubble-max-ratio, var(--compact-export-history-system-bubble-max-ratio));" in system_bubble_block
     assert "max-width: var(--compact-export-preview-bubble-max-ratio);" in preview_bubble_block
     assert "max-width: var(--compact-export-preview-system-bubble-max-ratio);" in preview_system_bubble_block
 
@@ -388,7 +404,8 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
 
     assert "pointer-events: none;" in anchor_block
     assert "pointer-events: none;" in panel_block
-    assert "pointer-events: none;" in scroll_block
+    assert "overflow-y: auto;" in scroll_block
+    assert "pointer-events: none;" not in scroll_block
     assert "pointer-events: none;" in content_block
     assert "pointer-events: none;" in message_block
     assert "pointer-events: auto;" in bubble_block
