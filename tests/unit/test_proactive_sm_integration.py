@@ -303,6 +303,48 @@ async def test_voice_mode_server_rejection_re_enqueues_cb():
     assert len(mgr._fired_tasks) == 1
 
 
+async def test_voice_mode_reject_during_await_not_pruned():
+    """TOCTOU 回归（Codex P1）：error 事件可能在 inject 仍 await 期间由
+    handle_messages 派发 on_rejected——此时 cb 还在队列里（乐观 prune 还没跑）。
+    旧逻辑 handler 按"已存在"跳过 re-add，随后 success 路径又按 delivered_ids
+    把它 prune 掉 → 静默丢失。修法：handler 置 _rejected 标志，await 返回后
+    若 rejected 则跳过 prune，cb 留在队列等重试。"""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    class _VoiceSess(OmniRealtimeClient):
+        def __init__(self):
+            self._is_responding = True  # 模拟 VAD 抢跑：拒绝时已有 active response
+            self.inject_calls = 0
+
+        def is_active_response(self) -> bool:
+            # gate 检查时返回 False（让 inject 启动），inject 内再翻 True 模拟竞态
+            return False
+
+        async def inject_text_and_request_response(self, text: str, *, on_rejected=None) -> None:
+            self.inject_calls += 1
+            # 模拟 server error 事件在 await 期间到达（prune 之前）
+            if on_rejected is not None:
+                on_rejected("response_already_active")
+            # inject 本身正常返回（拒绝是异步事件，不是异常）
+
+    sess = _VoiceSess()
+    mgr = _make_mgr(session=sess)
+    cb = {"_callback_delivery_id": "id-toctou", "status": "completed", "summary": "keep me"}
+    extra = {"_callback_delivery_id": "id-toctou", "origin": "task_result", "summary": "keep me"}
+    mgr.pending_agent_callbacks = [cb]
+    mgr.pending_extra_replies = [extra]
+
+    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.sleep(0)
+
+    # 关键：cb 没被 prune 掉，两队列都还在，等下次 retry
+    assert sess.inject_calls == 1
+    assert len(mgr.pending_agent_callbacks) == 1
+    assert mgr.pending_agent_callbacks[0]["_callback_delivery_id"] == "id-toctou"
+    assert len(mgr.pending_extra_replies) == 1
+    assert mgr.pending_extra_replies[0]["_callback_delivery_id"] == "id-toctou"
+
+
 async def test_voice_mode_concurrent_triggers_inject_once():
     """并发回归（Codex P1）：两个 trigger_agent_callbacks task 同时进 voice
     分支，_voice_proactive_inject_lock 必须把 check-and-claim 串起来——只有

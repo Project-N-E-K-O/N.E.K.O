@@ -5620,25 +5620,39 @@ class LLMSessionManager:
                 # ``response_already_active`` from a VAD race winning between
                 # our gate check and our send) is delivered asynchronously as
                 # an ``error`` event, not via this call's return value or an
-                # exception. Without a rejection callback, the optimistic prune
-                # below would silently drop the cb. Re-enqueue the snapshot on
-                # rejection so a retry picks it up.
+                # exception — and ``handle_messages`` can dispatch it WHILE we
+                # are still awaiting ``inject_text_and_request_response`` (i.e.
+                # BEFORE the optimistic prune below runs). The handler must
+                # survive both orderings:
+                #   (a) reject fires DURING the await (cb still in the queue):
+                #       set ``_rejected`` so the post-await code SKIPS the prune
+                #       — otherwise the success prune would delete a cb the
+                #       server refused. Do NOT re-add here (it's still present).
+                #   (b) reject fires AFTER the trigger returned + pruned (cb
+                #       gone): re-add to BOTH queues by id (dedup-guarded) and,
+                #       if idle, re-fire trigger so it doesn't wait for the next
+                #       unrelated response.done.
+                # The dedup-by-presence check distinguishes the two: present →
+                # case (a) (skip re-add, rely on skip-prune); absent → case (b).
                 lanlan_name_snapshot = self.lanlan_name
+                _reject_state = {"rejected": False}
 
                 def _on_voice_inject_rejected(
                     error_msg: str,
                     _snapshot=voice_snapshot,
                     _extra_snapshot=voice_extra_snapshot,
                     _lanlan=lanlan_name_snapshot,
+                    _state=_reject_state,
                 ) -> None:
+                    _state["rejected"] = True
                     logger.warning(
                         "[%s] voice proactive inject rejected by server: %s; re-enqueuing %d cb(s) for retry",
                         _lanlan, error_msg, len(_snapshot),
                     )
                     # Restore BOTH queues in lockstep — only entries whose
-                    # delivery_id is not already present (guards against
-                    # double-add). Restoring ``pending_extra_replies`` keeps the
-                    # hot-swap prime copy alive if a later fallback path runs.
+                    # delivery_id is not already present. Present means the
+                    # optimistic prune hasn't run yet (case a): leave them and
+                    # let the post-await ``_rejected`` check skip the prune.
                     existing_cb_ids = {
                         cb.get("_callback_delivery_id")
                         for cb in self.pending_agent_callbacks
@@ -5659,10 +5673,11 @@ class LLMSessionManager:
                         if extra_id and extra_id in existing_extra_ids:
                             continue
                         self.pending_extra_replies.append(extra)
-                    # The reject can land AFTER the response.done that would
-                    # otherwise re-fire trigger via _finalize_turn_after_emit;
-                    # if the session is idle now, re-fire immediately so the
-                    # restored cb doesn't sit until the next unrelated turn.
+                    # If we re-added (case b, queues were already pruned) and the
+                    # session is idle now, re-fire so the restored cb doesn't sit
+                    # until the next unrelated turn. (Case a stays in-queue and
+                    # is retried via _finalize_turn_after_emit / the lock-blocked
+                    # task scheduled below.)
                     if (
                         self.state.phase is ProactivePhase.IDLE
                         and isinstance(self.session, OmniRealtimeClient)
@@ -5700,6 +5715,21 @@ class LLMSessionManager:
                     logger.warning(
                         "[%s] trigger_agent_callbacks: voice proactive inject failed: %s; keeping cbs for retry",
                         self.lanlan_name, exc,
+                    )
+                    return
+
+                # If the server rejected asynchronously DURING the await above
+                # (case a — ``_on_voice_inject_rejected`` already fired while
+                # the cbs were still in the queue), the cbs were intentionally
+                # left in place. Pruning now would delete a cb the server
+                # refused → silent loss. Skip the prune; the cbs stay queued and
+                # are retried via _finalize_turn_after_emit (or the re-fire the
+                # handler scheduled). The active response that caused the
+                # rejection will fire response.done and trigger the retry.
+                if _reject_state["rejected"]:
+                    logger.info(
+                        "[%s] trigger_agent_callbacks: voice proactive inject rejected during await; keeping %d cb(s) queued for retry",
+                        self.lanlan_name, len(voice_snapshot),
                     )
                     return
 
