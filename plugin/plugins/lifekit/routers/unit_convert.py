@@ -138,12 +138,12 @@ class UnitConvertRouter(PluginRouter):
             return Err(SdkError(f"不支持的单位「{from_unit}」"))
         if tk is None:
             return Err(SdkError(f"不支持的单位「{to_unit}」"))
-        if fk == tk:
-            return Ok({"summary": f"{value} {from_unit} = {value} {to_unit}（相同单位）", "conversion": {"value": value, "result": value}})
 
         numeric_value = finite_float(value)
         if numeric_value is None:
             return Err(SdkError("Invalid value"))
+        if fk == tk:
+            return Ok({"summary": f"{numeric_value} {from_unit} = {numeric_value} {to_unit}（相同单位）", "conversion": {"value": numeric_value, "result": numeric_value}})
 
         result = _convert(numeric_value, fk, tk)
         if result is None:
@@ -152,16 +152,16 @@ class UnitConvertRouter(PluginRouter):
         converted, fl, tl = result
         converted = round(converted, 4)
 
-        summary = f"{value} {fl} = {converted} {tl}"
+        summary = f"{numeric_value} {fl} = {converted} {tl}"
 
         push_lifekit_content(self.main_plugin, [
-            {"type": "text", "text": f"📐 {value} {fl} → {converted} {tl}"},
+            {"type": "text", "text": f"📐 {numeric_value} {fl} → {converted} {tl}"},
         ])
 
         return Ok({
             "summary": summary,
             "conversion": {
-                "value": value,
+                "value": numeric_value,
                 "from_unit": fl,
                 "result": converted,
                 "to_unit": tl,

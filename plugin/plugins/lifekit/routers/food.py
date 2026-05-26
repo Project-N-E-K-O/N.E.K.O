@@ -71,7 +71,6 @@ class FoodRecommendRouter(PluginRouter):
         radius = clamp_int(radius, 3000, 500, 50000)
 
         # 确定搜索关键词
-        query = cuisine.strip() if cuisine.strip() else None
         query = clean_text(cuisine) or None
         weather_reason = ""
 

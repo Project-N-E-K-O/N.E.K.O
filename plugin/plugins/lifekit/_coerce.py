@@ -22,7 +22,7 @@ def clean_text(value: Any, default: str = "") -> str:
 def finite_float(value: Any, default: float | None = None) -> float | None:
     try:
         result = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
     return result if math.isfinite(result) else default
 
@@ -30,6 +30,6 @@ def finite_float(value: Any, default: float | None = None) -> float | None:
 def clamp_int(value: Any, default: int, minimum: int, maximum: int) -> int:
     try:
         result = int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         result = default
     return max(minimum, min(result, maximum))
