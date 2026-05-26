@@ -157,7 +157,7 @@
     steps.takeover_return_control.performance.cursorTarget = '#${p}-container';
     steps.takeover_return_control.performance.interruptible = true;
     steps.takeover_return_control.performance.timeline = [
-        { at: 0.48, action: 'returnControl' }
+        { at: 0.7, action: 'returnControl' }
     ];
     steps.takeover_return_control.interrupts.mode = 'theatrical_abort';
     steps.takeover_return_control.interrupts.resetOnStepAdvance = false;

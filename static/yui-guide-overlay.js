@@ -78,7 +78,7 @@
             return !!(
                 candidate
                 && typeof candidate.id === 'string'
-                && /-btn-(mic|agent|settings)$/.test(candidate.id)
+                && /-(?:btn-(?:mic|screen|agent|settings|goodbye|return)|lock-icon)$/.test(candidate.id)
             );
         };
 
@@ -89,9 +89,14 @@
         if (typeof element.closest === 'function') {
             return !!element.closest(
                 '#live2d-btn-mic, #vrm-btn-mic, #mmd-btn-mic, ' +
+                '#live2d-btn-screen, #vrm-btn-screen, #mmd-btn-screen, ' +
                 '#live2d-btn-agent, #vrm-btn-agent, #mmd-btn-agent, ' +
                 '#live2d-btn-settings, #vrm-btn-settings, #mmd-btn-settings, ' +
-                '[id$="-btn-mic"], [id$="-btn-agent"], [id$="-btn-settings"]'
+                '#live2d-btn-goodbye, #vrm-btn-goodbye, #mmd-btn-goodbye, ' +
+                '#live2d-btn-return, #vrm-btn-return, #mmd-btn-return, ' +
+                '#live2d-lock-icon, #vrm-lock-icon, #mmd-lock-icon, ' +
+                '[id$="-btn-mic"], [id$="-btn-screen"], [id$="-btn-agent"], ' +
+                '[id$="-btn-settings"], [id$="-btn-goodbye"], [id$="-btn-return"], [id$="-lock-icon"]'
             );
         }
 

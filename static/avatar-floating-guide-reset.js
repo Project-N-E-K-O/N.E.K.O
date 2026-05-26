@@ -6,7 +6,7 @@
     const RESET_BROADCAST_KEY = 'neko_avatar_floating_guide_reset_event';
     const HOME_TUTORIAL_KEYS = ['neko_tutorial_home_yui_v1', 'neko_tutorial_home'];
     const HOME_MANUAL_INTENT_KEY = 'neko_tutorial_home_manual_intent';
-    const ROUND_COUNT = 4;
+    const ROUND_COUNT = 7;
     const RESET_HISTORY_LIMIT = 20;
     const DAY_TUTORIALS = {
         2: {
@@ -71,41 +71,21 @@
             ],
         },
         3: {
-            title: '第 3 天：猫爪、插件与任务小看板',
+            title: '第 3 天：互动、娱乐与摸得到的陪伴',
             steps: [
                 {
-                    id: 'day3_agent_entry',
-                    selector: '#${prefix}-btn-agent',
-                    text: '猫爪入口负责更主动的电脑协助能力，会展示状态灯、总开关和不同小爪子。',
-                    voiceKey: 'avatar_floating_day3_agent_entry',
-                    cursorAction: 'click',
-                    operation: 'safe-click',
-                    keepPanelsOpen: true,
-                    performanceCue: null,
-                },
-                {
-                    id: 'day3_task_hud',
-                    selector: '#agent-task-hud',
-                    text: '任务小看板会显示运行和排队状态，也能终止任务。没有任务时，会展示空状态或说明。',
-                    voiceKey: 'avatar_floating_day3_task_hud',
+                    id: 'day3_chat_tools',
+                    selector: '#react-chat-window-root .composer-bottom-tools',
+                    text: '第三天会强接管聊天窗工具区，介绍 Avatar 互动工具、Galgame 模式和小游戏邀请入口。',
+                    voiceKey: 'avatar_floating_day3_intro',
                     cursorAction: 'show',
                     operation: 'none',
                     performanceCue: null,
                 },
                 {
-                    id: 'day3_settings_entry',
-                    selector: '#${prefix}-btn-settings',
-                    text: '插件段落会尝试打开用户插件管理面板，设置入口则轻扫角色、API、记忆等长期入口。',
-                    voiceKey: 'avatar_floating_day3_settings_entry',
-                    cursorAction: 'click',
-                    operation: 'safe-click',
-                    keepPanelsOpen: true,
-                    performanceCue: null,
-                },
-                {
                     id: 'day3_wrap',
                     selector: '#home-avatar-floating-guide-player',
-                    text: '这一轮会把猫爪、插件入口和任务小看板收起来，让用户继续正常使用。',
+                    text: '这一轮会收起临时工具菜单，把界面还给用户，后续玩法邀请只从聊天窗支线发起。',
                     voiceKey: 'avatar_floating_day3_wrap',
                     cursorAction: 'wobble',
                     operation: 'cleanup',
@@ -149,6 +129,97 @@
                     selector: '#home-avatar-floating-guide-player',
                     text: '四天的教程到这里收尾。之后这些按钮都在模型旁边，想用的时候再叫她就好。',
                     voiceKey: 'avatar_floating_day4_wrap',
+                    cursorAction: 'wobble',
+                    operation: 'cleanup',
+                    performanceCue: null,
+                },
+            ],
+        },
+        5: {
+            title: '第 5 天：个性化与长期配置',
+            steps: [
+                {
+                    id: 'day5_character_settings',
+                    selector: '#${prefix}-btn-settings',
+                    text: '第五天会强接管设置入口，展示角色设置、模型管理、声音克隆与 API 等长期入口。',
+                    voiceKey: 'avatar_floating_day5_character_settings',
+                    cursorAction: 'click',
+                    operation: 'safe-click',
+                    keepPanelsOpen: true,
+                    performanceCue: null,
+                },
+                {
+                    id: 'day5_memory_entry',
+                    selector: '#${prefix}-menu-memory',
+                    text: '随后会高亮记忆浏览入口，只认门，不展开具体记忆内容。',
+                    voiceKey: 'avatar_floating_day5_memory_entry',
+                    cursorAction: 'show',
+                    operation: 'none',
+                    keepPanelsOpen: true,
+                    performanceCue: null,
+                },
+                {
+                    id: 'day5_wrap',
+                    selector: '#home-avatar-floating-guide-player',
+                    text: '这一轮会清理设置弹窗并播放每日花瓣收尾。',
+                    voiceKey: 'avatar_floating_day5_wrap',
+                    cursorAction: 'wobble',
+                    operation: 'cleanup',
+                    performanceCue: null,
+                },
+            ],
+        },
+        6: {
+            title: '第 6 天：Agent、任务 HUD 与能力节奏',
+            steps: [
+                {
+                    id: 'day6_agent_entry',
+                    selector: '#${prefix}-btn-agent',
+                    text: '第六天会强接管猫爪入口，展示状态、权限、用户插件和任务 HUD。',
+                    voiceKey: 'avatar_floating_day6_intro',
+                    cursorAction: 'click',
+                    operation: 'safe-click',
+                    keepPanelsOpen: true,
+                    performanceCue: null,
+                },
+                {
+                    id: 'day6_task_hud',
+                    selector: '#agent-task-hud',
+                    text: '任务 HUD 会展示运行、排队、折叠和终止入口，不创建假的后台任务。',
+                    voiceKey: 'avatar_floating_day6_task_hud',
+                    cursorAction: 'show',
+                    operation: 'none',
+                    performanceCue: null,
+                },
+                {
+                    id: 'day6_wrap',
+                    selector: '#home-avatar-floating-guide-player',
+                    text: '这一轮会收起猫爪、HUD 和侧边面板，并播放每日花瓣收尾。',
+                    voiceKey: 'avatar_floating_day6_wrap',
+                    cursorAction: 'wobble',
+                    operation: 'cleanup',
+                    performanceCue: null,
+                },
+            ],
+        },
+        7: {
+            title: '第 7 天：毕业、进阶入口与共生约定',
+            steps: [
+                {
+                    id: 'day7_memory_review',
+                    selector: '#${prefix}-menu-memory',
+                    text: '第七天会强接管记忆与存储入口，回顾七日教程并强调用户可编辑、可清理。',
+                    voiceKey: 'avatar_floating_day7_memory_review',
+                    cursorAction: 'show',
+                    operation: 'none',
+                    keepPanelsOpen: true,
+                    performanceCue: null,
+                },
+                {
+                    id: 'day7_graduation_wrap',
+                    selector: '#home-avatar-floating-guide-player',
+                    text: '毕业收尾会恢复用户原模型与交互权限，保存第七天完成态。',
+                    voiceKey: 'avatar_floating_day7_wrap',
                     cursorAction: 'wobble',
                     operation: 'cleanup',
                     performanceCue: null,

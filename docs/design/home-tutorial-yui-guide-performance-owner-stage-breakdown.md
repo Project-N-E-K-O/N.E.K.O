@@ -249,6 +249,23 @@ window.createYuiGuideDirector = function createYuiGuideDirector(options) {}
 - `interrupt_resist_light_1` / `interrupt_resist_light_3`：随机 `z2` 或 `z3`
 - `interrupt_angry_exit`：`z3`
 
+新增七日教程普通台词动作层：
+
+- 教程期间临时切换到 `yui-origin` Live2D 后，普通台词可按声明的 emotion 从模型内置 motion 池随机播放。
+- `yui-origin` 当前动作池数量：`happy` 12 个、`sad` 6 个、`angry` 7 个、`neutral` 7 个、`surprised` 5 个、`Idle` 3 个。
+- 随机 motion 只服务普通台词，不替换上面列出的表情轨道和自定义动作。
+- 自定义动作优先级更高：苏醒 pose、语音/鼠标 LookAt、guide idle sway、插件面板角落动作、设置一瞥慌乱动作、轻微抵抗、生气退出、归还控制权挥手和花瓣转场继续按现有实现执行。
+- 当自定义动作已经锁定 `motion`、`params`、`lookAt` 或 `expression` 时，随机 motion 不抢锁；找不到对应资源或 reduced motion 生效时，安全跳过或降级为短表情/Idle。
+- motion 资源解析应通过 `yui-origin` 模型 profile、`emotionMapping`、`fileReferences` 或 runtime motion definitions；不要把具体 motion 文件名硬编码到教程文档、通用 `AvatarPerformance` 或通用 driver 中。
+
+每日收尾花瓣转场：
+
+- Day 1 已落地的 `takeover_return_control` 花瓣转场是基准实现。
+- 七日新手教程每一天的正常 wrap/收尾都要复用花瓣转场：收尾台词播放到约 70% 时隐藏 Ghost Cursor、清理所有 spotlight，并播放花瓣覆盖层。
+- 每日收尾转场播放前，必须先关闭当天临时打开的业务 UI，例如屏幕/麦克风弹窗、设置侧边栏、Agent 面板、任务 HUD、工具菜单或跨页 handoff 高亮。
+- 花瓣转场只属于正常完成路径；skip、angry exit、page destroy、remote terminate 不播放正常收尾花瓣，仍走统一清理。
+- Day 7 的终极长留使用同一套花瓣能力，但语义上是最终毕业转场；转场期间可以恢复用户原模型、按钮组和交互权限，并写入毕业态。
+
 ## 10. 跨页 handoff
 
 普通跨页接力使用 `static/yui-guide-page-handoff.js` 和后端 token：

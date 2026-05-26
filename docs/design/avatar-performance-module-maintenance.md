@@ -339,6 +339,7 @@ performance.emotion
 3. 通用 driver 可以接收 `emotion`，但真实执行由当前 Live2D manager 的 `setEmotion()`、`playExpression()`、`playMotion()` 和资源表决定。
 4. 如果某个模型缺少对应 expression 或 motion，非 required step 应跳过或 fallback。
 5. 不允许为了某个首页 step 在通用模块里新增臆测 emotion。
+6. 七日新手教程可以在 `yui-origin` 模型 profile 或页面 adapter 中声明该模型的情绪 motion 池数量与随机策略，但这属于模型专属配置；不得把 `yui-origin` 的 `happy/sad/angry/neutral/surprised/Idle` 资源假设推广到其他 Live2D 模型或通用 driver。
 
 ## 不同 Live2D 模型资源差异
 

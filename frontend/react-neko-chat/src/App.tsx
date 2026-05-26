@@ -1650,6 +1650,7 @@ export default function App({
               key={item.id}
               className={`composer-icon-button${activeCursorToolId === item.id ? ' is-active' : ''}`}
               type="button"
+              data-avatar-tool-id={item.id}
               aria-pressed={activeCursorToolId === item.id}
               aria-label={itemLabel}
               title={itemLabel}

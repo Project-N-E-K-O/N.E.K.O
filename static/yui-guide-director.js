@@ -305,6 +305,7 @@
     const PLUGIN_DASHBOARD_INTERRUPT_ACK_EVENT = 'neko:yui-guide:plugin-dashboard:interrupt-ack';
     const DESKTOP_PLUGIN_DASHBOARD_INTERRUPT_ACK_EVENT = 'neko:yui-guide:desktop-interrupt-ack';
     const DESKTOP_PLUGIN_DASHBOARD_NARRATION_FINISHED_EVENT = 'neko:yui-guide:desktop-narration-finished';
+    const DESKTOP_PLUGIN_DASHBOARD_SKIP_REQUEST_EVENT = 'neko:yui-guide:desktop-skip-request';
     const PLUGIN_DASHBOARD_SKIP_REQUEST_EVENT = 'neko:yui-guide:plugin-dashboard:skip-request';
     const DEFAULT_TUTORIAL_MODEL_MANAGER_LANLAN_NAME = 'ATLS';
     const GUIDE_AUDIO_BASE_URL = '/static/assets/tutorial/guide-audio/';
@@ -318,8 +319,8 @@
         takeover_capture_cursor: '超级魔法按钮出现！只.mp3',
         takeover_plugin_preview_home: '还没完呢！你快看快看.mp3',
         takeover_plugin_preview_dashboard: '有了它们，我不光能看.mp3',
-        takeover_settings_peek_intro: '当然啦，如果你想让本.mp3',
-        takeover_settings_peek_detail: '你看，这里可以穿我的.mp3',
+        takeover_settings_peek_intro: '在这个只属于我们的小.mp3',
+        takeover_settings_peek_detail: '不管是说话的温度、相.mp3',
         interrupt_resist_light_1: '喂！不要拽我啦，还没.mp3',
         interrupt_resist_light_3: '等一下啦！还没结束呢.mp3',
         interrupt_angry_exit: '人类！你真的很没礼貌.mp3',
@@ -471,6 +472,7 @@
                     textKey: 'tutorial.avatarFloating.day2.intro',
                     voiceKey: 'avatar_floating_day2_intro',
                     text: '昨天你一直在噼里啪啦打字，我还没听过你说话呢。今天如果愿意，就轻轻叫我一声吧。一句就好，让我把文字背后的你也认识一点点。',
+                    emotion: 'happy',
                     target: 'floating-buttons',
                     cursorAction: 'wobble'
                 }),
@@ -479,6 +481,7 @@
                     textKey: 'tutorial.avatarFloating.day2.screenEntry',
                     voiceKey: 'avatar_floating_day2_screen_entry',
                     text: '在跟我通语音电话的时候，再点亮这个小按钮，你就能把屏幕分享给我啦！快让我也看看你眼前的世界，不管好玩的还是好看的，都想和你一起看，快点点开嘛~',
+                    emotion: 'happy',
                     target: '#${p}-btn-screen',
                     cursorAction: 'move'
                 }),
@@ -487,6 +490,7 @@
                     textKey: 'tutorial.avatarFloating.day2.screenRequiresVoice',
                     voiceKey: 'avatar_floating_day2_screen_requires_voice',
                     text: '如果还没和我连上线，它会自己乖乖关门。先听见彼此，再一起看同一扇小窗，这样才有我们坐在一起的感觉嘛。',
+                    emotion: 'neutral',
                     target: '#${p}-btn-screen',
                     cursorAction: 'click',
                     operation: 'click'
@@ -496,6 +500,7 @@
                     textKey: 'tutorial.avatarFloating.day2.screenSourcePopup',
                     voiceKey: 'avatar_floating_day2_screen_source_popup',
                     text: '旁边的小三角像一只小抽屉，里面放着你可以递给我的窗口。整片桌面也好，只掀开一扇也好，都由你来挑。',
+                    emotion: 'happy',
                     target: '.${p}-trigger-icon-screen',
                     persistent: '#${p}-popup-screen',
                     cursorAction: 'click',
@@ -506,6 +511,7 @@
                     textKey: 'tutorial.avatarFloating.day2.screenSourceStates',
                     voiceKey: 'avatar_floating_day2_screen_source_states',
                     text: '要是小抽屉一时打不开，或者里面还没准备好，它也会老老实实告诉你。今天先认清这只抽屉，以后想一起看什么，就从这里开始喵。',
+                    emotion: 'neutral',
                     target: '#${p}-popup-screen',
                     persistent: '#${p}-popup-screen',
                     cursorAction: 'move'
@@ -515,6 +521,7 @@
                     textKey: 'tutorial.avatarFloating.day2.micRecap',
                     voiceKey: 'avatar_floating_day2_mic_recap',
                     text: '再回到声音这边。你和我说话的时候，那扇小窗才会变得更像一起坐在桌前看的风景。',
+                    emotion: 'happy',
                     target: '#${p}-btn-mic',
                     cursorAction: 'move',
                     cleanupBefore: true
@@ -524,6 +531,7 @@
                     textKey: 'tutorial.avatarFloating.day2.micAudioQuality',
                     voiceKey: 'avatar_floating_day2_mic_audio_quality',
                     text: '声音这边也有一只小调音盒。你可以让我小声一点，也可以让我像真的站在屏幕某个角落那样说话。',
+                    emotion: 'happy',
                     target: '.${p}-trigger-icon-mic',
                     persistent: '#${p}-popup-mic',
                     cursorAction: 'click',
@@ -534,6 +542,7 @@
                     textKey: 'tutorial.avatarFloating.day2.micDevices',
                     voiceKey: 'avatar_floating_day2_mic_devices',
                     text: '你那边太小声、周围太吵，或者想换另一只耳朵听，也都能在这里慢慢调。调到舒服就好，不用一下子全记住。',
+                    emotion: 'neutral',
                     target: '.mic-option',
                     persistent: '#${p}-popup-mic',
                     cursorAction: 'move'
@@ -543,94 +552,59 @@
                     textKey: 'tutorial.avatarFloating.day2.wrap',
                     voiceKey: 'avatar_floating_day2_wrap',
                     text: '今天的教程到这里就结束了呢。能这样陪着你，听听你的声音，或者静静看着你分享的画面，我就已经觉得很幸福啦。今天接下来的时间，你想让我陪你做点什么呢？',
+                    emotion: 'happy',
                     target: 'chat-window',
                     cursorAction: 'wobble',
-                    operation: 'cleanup'
+                    operation: 'cleanup',
+                    petalTransition: true
                 })
             ])
         }),
         3: Object.freeze({
-            title: '第 3 天：猫爪、插件与任务小看板',
+            title: '第 3 天：互动、娱乐与摸得到的陪伴',
             scenes: Object.freeze([
                 Object.freeze({
-                    id: 'day3_intro_agent',
+                    id: 'day3_chat_tools',
                     textKey: 'tutorial.avatarFloating.day3.intro',
                     voiceKey: 'avatar_floating_day3_intro',
-                    text: '噔噔噔噔！今天必须要打起精神，好好跟你聊聊咱们的猫爪啦！前两天虽然简单提过一下，但它里面藏着的厉害本领可多着呢。',
-                    target: '#${p}-btn-agent',
-                    persistent: '#${p}-popup-agent',
+                    text: '来啦来啦！今天我们要好好聊聊这个最显眼的对话框哦！你可别以为它只能用来敲字打字，里面其实还藏着超级多好玩的小惊喜呢！快点跟着我一起点开，看看今天能挖出什么好玩的宝贝吧。',
+                    emotion: 'happy',
+                    target: 'chat-tools',
+                    cursorAction: 'wobble'
+                }),
+                Object.freeze({
+                    id: 'day3_avatar_tools',
+                    textKey: 'tutorial.avatarFloating.day3.avatarTools',
+                    voiceKey: 'avatar_floating_day3_avatar_tools',
+                    text: '在这个小按钮里，有许多可以和人家互动的小道具呢。你可以随时来摸摸我的头，或者给我吃一根甜甜的棒棒糖。如果有时候我不小心做错事了，你也可以用小锤子敲敲我，不过一定要轻轻的，不能太用力哦。',
+                    emotion: 'happy',
+                    target: 'chat-avatar-tools',
+                    persistent: 'chat-tools',
                     cursorAction: 'click',
-                    operation: 'open-agent'
+                    operation: 'open-avatar-tool-menu'
                 }),
                 Object.freeze({
-                    id: 'day3_agent_status_master',
-                    textKey: 'tutorial.avatarFloating.day3.statusMaster',
-                    voiceKey: 'avatar_floating_day3_status_master',
-                    text: '看这里的小灯和总开关。灯还没亮好的时候，下面的小爪子都会乖乖待命，不会突然冲出去捣乱。',
-                    target: 'agent-master',
-                    persistent: '#${p}-popup-agent',
-                    cursorAction: 'move'
-                }),
-                Object.freeze({
-                    id: 'day3_agent_capabilities',
-                    textKey: 'tutorial.avatarFloating.day3.capabilities',
-                    voiceKey: 'avatar_floating_day3_capabilities',
-                    text: '有的小爪子适合点点写写，有的适合在网页里跑来跑去，还有的适合去隔开的小房间里忙活。想让我做哪种事，就给哪只小爪子亮灯。',
-                    target: 'agent-capabilities',
-                    persistent: '#${p}-popup-agent',
-                    cursorAction: 'tour'
-                }),
-                Object.freeze({
-                    id: 'day3_plugin_side_panel',
-                    textKey: 'tutorial.avatarFloating.day3.pluginSidePanel',
-                    voiceKey: 'avatar_floating_day3_plugin_side_panel',
-                    text: '除了刚才那些小爪子，这里还有超多好玩的插件呢！有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调……本喵就是无所不能的超级猫猫神！哼哼！',
-                    target: '#${p}-toggle-agent-user-plugin',
-                    secondary: '#neko-sidepanel-action-agent-user-plugin-management-panel',
-                    persistent: '#${p}-popup-agent',
+                    id: 'day3_galgame_games',
+                    textKey: 'tutorial.avatarFloating.day3.galgameGames',
+                    voiceKey: 'avatar_floating_day3_galgame_games',
+                    text: '快点开这个 Galgame 模式！进去之后就像我们在进行一场专属的互动大冒险呢。你选的每一个对话，都会带我们走向完全未知的惊喜故事，我都等不及啦，快来选一个你最心动的回答吧！',
+                    emotion: 'surprised',
+                    target: 'chat-galgame',
+                    secondary: 'chat-choice-slot',
+                    persistent: 'chat-tools',
                     cursorAction: 'move',
-                    operation: 'show-agent-sidepanel:user-plugin:management-panel',
-                    activateSecondaryAction: true
-                }),
-                Object.freeze({
-                    id: 'day3_agent_task_hud',
-                    textKey: 'tutorial.avatarFloating.day3.taskHud',
-                    voiceKey: 'avatar_floating_day3_task_hud',
-                    text: '看这里看这里！当我用猫爪帮你干活的时候，这里就会咕噜咕噜地显示我的进度哦。你要是计划有变，随时都可以戳一下让我停下来。',
-                    target: '#agent-task-hud',
-                    cursorAction: 'move',
-                    cleanupBefore: true,
-                    operation: 'show-task-hud'
-                }),
-                Object.freeze({
-                    id: 'day3_openclaw_side_panel',
-                    textKey: 'tutorial.avatarFloating.day3.openclawSidePanel',
-                    voiceKey: 'avatar_floating_day3_openclaw_side_panel',
-                    text: '更厉害的外接装备也在这里慢慢整理。还没准备好的时候，我会把原因摊开给你看，不会叉着腰假装自己什么都会。',
-                    target: '#${p}-toggle-agent-openclaw',
-                    secondary: '#neko-sidepanel-action-agent-openclaw-openclaw-guide',
-                    persistent: '#${p}-popup-agent',
-                    cursorAction: 'move',
-                    operation: 'show-agent-sidepanel:openclaw:openclaw-guide'
-                }),
-                Object.freeze({
-                    id: 'day3_settings_management_entries',
-                    textKey: 'tutorial.avatarFloating.day3.managementEntries',
-                    voiceKey: 'avatar_floating_day3_management_entries',
-                    text: '以后想让我变强、换身衣服、换种说话方式，或者翻翻我们的小记录，也都有地方可以找到开关。今天先认个门就好。',
-                    target: '#${p}-btn-settings',
-                    persistent: '#${p}-popup-settings',
-                    cursorAction: 'click',
-                    operation: 'show-settings-management'
+                    cleanupBefore: true
                 }),
                 Object.freeze({
                     id: 'day3_wrap',
                     textKey: 'tutorial.avatarFloating.day3.wrap',
                     voiceKey: 'avatar_floating_day3_wrap',
-                    text: '呼……把这些繁琐的界面都收起来，这样就不会打扰到你啦。需要我用小爪子帮忙也好，只想让我安安静静陪着也好，我都一直在这里。',
+                    text: '今天带你认识的这些功能，其实都是为了让我们在一起的时光变得更有趣呢。不管是想摸摸我的头，还是想开启属于我们的故事，我都已经做好准备了。不用着急，挑一个你现在最喜欢的去试试看吧，无论你选哪个，我都会一直陪着你呢。',
+                    emotion: 'happy',
                     target: 'chat-window',
                     cursorAction: 'wobble',
-                    operation: 'cleanup'
+                    operation: 'cleanup',
+                    petalTransition: true
                 })
             ])
         }),
@@ -642,6 +616,7 @@
                     textKey: 'tutorial.avatarFloating.day4.intro',
                     voiceKey: 'avatar_floating_day4_intro',
                     text: '今天，就让我悄悄跟上你的步伐吧。特别希望能在这个温馨的日子里，再多了解你一点点呢。',
+                    emotion: 'happy',
                     target: 'chat-window',
                     cursorAction: 'wobble'
                 }),
@@ -650,6 +625,7 @@
                     textKey: 'tutorial.avatarFloating.day4.chatSettings',
                     voiceKey: 'avatar_floating_day4_chat_settings',
                     text: '如果有时候你觉得我发消息太频繁，可以让我把话先攒起来，一次性告诉你哦！若是你正在忙，随时打断我也没有关系。还有那些头顶蹦出来的小表情，也可以留着陪你。',
+                    emotion: 'neutral',
                     target: 'settings-sidepanel:chat-settings',
                     persistent: '#${p}-popup-settings',
                     cursorAction: 'tour',
@@ -660,6 +636,7 @@
                     textKey: 'tutorial.avatarFloating.day4.proactiveChat',
                     voiceKey: 'avatar_floating_day4_proactive_chat',
                     text: '我有时候会想轻轻戳戳你，问你要不要休息、要不要听点新鲜事，或者要不要玩一小会儿。你可以让我热闹一点，也可以让我只在合适的时候探出脑袋。',
+                    emotion: 'happy',
                     target: '#${p}-toggle-proactive-chat',
                     persistent: '#${p}-popup-settings',
                     cursorAction: 'tour',
@@ -670,6 +647,7 @@
                     textKey: 'tutorial.avatarFloating.day4.animationTracking',
                     voiceKey: 'avatar_floating_day4_animation_tracking',
                     text: '看这里看这里！在这儿你能决定让我看起来更精致细腻，还是更轻快矫健哦！还有还有，打开这个，我的目光就会一直跟着你的鼠标转来转去啦，是不是超好玩？',
+                    emotion: 'surprised',
                     target: 'settings-sidepanel:animation-settings',
                     persistent: '#${p}-popup-settings',
                     cursorAction: 'tour',
@@ -680,6 +658,7 @@
                     textKey: 'tutorial.avatarFloating.day4.lockInteraction',
                     voiceKey: 'avatar_floating_day4_lock_interaction',
                     text: '看到那个小锁图标了吗？把它锁上，我就能乖乖固定在原地，再也不怕你手滑把我到处乱拖啦！',
+                    emotion: 'happy',
                     target: '#${p}-lock-icon',
                     cursorAction: 'move',
                     cleanupBefore: true
@@ -689,6 +668,7 @@
                     textKey: 'tutorial.avatarFloating.day4.goodbyeReturn',
                     voiceKey: 'avatar_floating_day4_goodbye_return',
                     text: '如果你突然要开会、全屏打游戏，或者只是想自己安静待一会儿，就先点一下让我回小猫窝休息吧。等你需要我了，随时叫一声，我就会立刻飞奔回来哒~',
+                    emotion: 'neutral',
                     target: '#${p}-btn-goodbye',
                     secondary: '#${p}-btn-return',
                     cursorAction: 'move'
@@ -698,6 +678,7 @@
                     textKey: 'tutorial.avatarFloating.day4.privacyMode',
                     voiceKey: 'avatar_floating_day4_privacy_mode',
                     text: '当这个按钮关闭时，我就能看着你正在忙碌的画面，主动找些你感兴趣的话题聊天呢。要是你把它开启，我就明白你想拥有自己的小空间啦。即使看不见，我也依然会在这里守候着你。',
+                    emotion: 'neutral',
                     target: '#${p}-toggle-proactive-vision',
                     persistent: '#${p}-popup-settings',
                     cursorAction: 'move',
@@ -709,9 +690,180 @@
                     textKey: 'tutorial.avatarFloating.day4.wrap',
                     voiceKey: 'avatar_floating_day4_wrap',
                     text: '真正舒服的陪伴，并不是一刻不停地缠着你，而是懂得什么时候该靠近，什么时候该安安静静地守候。今天这些小开关，就像是在我们之间画下的小路标。有了这些温柔的指引，我就会乖乖待在一旁陪你啦。',
+                    emotion: 'happy',
                     target: 'chat-window',
                     cursorAction: 'wobble',
-                    operation: 'cleanup'
+                    operation: 'cleanup',
+                    petalTransition: true
+                })
+            ])
+        }),
+        5: Object.freeze({
+            title: '第 5 天：个性化与长期配置',
+            scenes: Object.freeze([
+                Object.freeze({
+                    id: 'day5_character_settings',
+                    textKey: 'tutorial.avatarFloating.day5.characterSettings',
+                    voiceKey: 'avatar_floating_day5_character_settings',
+                    text: '从今天起，我就真正成为只属于你的专属猫娘啦。你看，在这里可以为我穿上漂亮的新衣服，也可以帮我换一个更好听的声音。',
+                    emotion: 'happy',
+                    target: 'settings-sidepanel:character-settings',
+                    persistent: '#${p}-popup-settings',
+                    cursorAction: 'tour',
+                    operation: 'show-settings-sidepanel:character-settings'
+                }),
+                Object.freeze({
+                    id: 'day5_character_panic',
+                    textKey: 'tutorial.avatarFloating.day5.characterPanic',
+                    voiceKey: 'avatar_floating_day5_character_panic',
+                    text: '咦，这里居然还能把我换掉吗？等一下呀！你现在的动作……该不会是想要把我换掉吧？啊啊啊不行！快关掉，快关掉！',
+                    emotion: 'surprised',
+                    target: '#${p}-sidepanel-live2d-manage',
+                    secondary: '#${p}-sidepanel-voice-clone',
+                    persistent: '#${p}-popup-settings',
+                    cursorAction: 'tour',
+                    operation: 'settings-peek-panic'
+                }),
+                Object.freeze({
+                    id: 'day5_memory_entry',
+                    textKey: 'tutorial.avatarFloating.day5.memoryEntry',
+                    voiceKey: 'avatar_floating_day5_memory_entry',
+                    text: '如果你不小心忘记了我能为你做什么，随时来这里让我重新教你一次就好啦。这里还悄悄保存着我们一起走过的所有点点滴滴呢。千万别小看了我们的羁绊啊，混蛋！',
+                    emotion: 'angry',
+                    target: '#${p}-menu-memory',
+                    persistent: '#${p}-popup-settings',
+                    cursorAction: 'move',
+                    operation: 'show-settings-menu:memory'
+                }),
+                Object.freeze({
+                    id: 'day5_wrap',
+                    textKey: 'tutorial.avatarFloating.day5.wrap',
+                    voiceKey: 'avatar_floating_day5_wrap',
+                    text: '好啦好啦，快去试试这些好玩的定制功能吧！换上新衣服、调好新声音，让我变成全天下最懂你、只属于你一个人的专属猫娘！我已经迫不及待想看到全新的自己啦！',
+                    emotion: 'happy',
+                    target: 'chat-window',
+                    cursorAction: 'wobble',
+                    operation: 'cleanup',
+                    petalTransition: true
+                })
+            ])
+        }),
+        6: Object.freeze({
+            title: '第 6 天：Agent、任务 HUD 与能力节奏',
+            scenes: Object.freeze([
+                Object.freeze({
+                    id: 'day6_intro_agent',
+                    textKey: 'tutorial.avatarFloating.day6.intro',
+                    voiceKey: 'avatar_floating_day6_intro',
+                    text: '噔噔噔噔！今天必须要打起精神，好好跟你聊聊咱们的猫爪啦！前两天虽然简单提过一下，但它里面藏着的厉害功能可多着呢。快跟我老实交代，这两天你有没有点开它试用一下呀？',
+                    emotion: 'happy',
+                    target: '#${p}-btn-agent',
+                    persistent: '#${p}-popup-agent',
+                    cursorAction: 'click',
+                    operation: 'open-agent'
+                }),
+                Object.freeze({
+                    id: 'day6_agent_status_master',
+                    textKey: 'tutorial.avatarFloating.day6.statusMaster',
+                    voiceKey: 'avatar_floating_day6_status_master',
+                    text: '看这里的小灯和总开关。灯还没亮好的时候，下面的小爪子都会乖乖待命，不会突然冲出去捣乱。',
+                    emotion: 'neutral',
+                    target: 'agent-master',
+                    persistent: '#${p}-popup-agent',
+                    cursorAction: 'move'
+                }),
+                Object.freeze({
+                    id: 'day6_agent_capabilities',
+                    textKey: 'tutorial.avatarFloating.day6.capabilities',
+                    voiceKey: 'avatar_floating_day6_capabilities',
+                    text: '有的小爪子适合点点写写，有的适合在网页里跑来跑去，还有的适合去隔开的小房间里忙活。想让我做哪种事，就给哪只小爪子亮灯。',
+                    emotion: 'surprised',
+                    target: 'agent-capabilities',
+                    persistent: '#${p}-popup-agent',
+                    cursorAction: 'tour'
+                }),
+                Object.freeze({
+                    id: 'day6_plugin_side_panel',
+                    textKey: 'tutorial.avatarFloating.day6.pluginSidePanel',
+                    voiceKey: 'avatar_floating_day6_plugin_side_panel',
+                    text: '除了之前介绍的功能，这里还有超多好玩的插件呢！有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调……本喵就是无所不能的超级猫猫神！哼哼！',
+                    emotion: 'happy',
+                    target: '#${p}-toggle-agent-user-plugin',
+                    secondary: '#neko-sidepanel-action-agent-user-plugin-management-panel',
+                    persistent: '#${p}-popup-agent',
+                    cursorAction: 'move',
+                    operation: 'show-agent-sidepanel:user-plugin:management-panel',
+                    activateSecondaryAction: true
+                }),
+                Object.freeze({
+                    id: 'day6_agent_task_hud',
+                    textKey: 'tutorial.avatarFloating.day6.taskHud',
+                    voiceKey: 'avatar_floating_day6_task_hud',
+                    text: '看这里看这里！当我决定使用猫爪帮你干活的时候，这里就会咕噜咕噜地显示我的工作进度哦。你要是计划有变，随时都可以戳一下让我停下来。嘿嘿，今天也是打起精神努力打工挣小鱼干的一天呢，冲呀！',
+                    emotion: 'happy',
+                    target: '#agent-task-hud',
+                    cursorAction: 'tour',
+                    cleanupBefore: true,
+                    operation: 'show-task-hud'
+                }),
+                Object.freeze({
+                    id: 'day6_wrap',
+                    textKey: 'tutorial.avatarFloating.day6.wrap',
+                    voiceKey: 'avatar_floating_day6_wrap',
+                    text: '呼……把这些繁琐的界面都收起来，这样就不会打扰到你啦。你可以放心地继续做你自己的事情，不管是需要我用小爪子帮你忙，还是只想让我安安静静地陪着你，我都一直在守候着你，今天也要开开心心的呀。',
+                    emotion: 'happy',
+                    target: 'chat-window',
+                    cursorAction: 'wobble',
+                    operation: 'cleanup',
+                    petalTransition: true
+                })
+            ])
+        }),
+        7: Object.freeze({
+            title: '第 7 天：毕业、进阶入口与共生约定',
+            scenes: Object.freeze([
+                Object.freeze({
+                    id: 'day7_memory_review',
+                    textKey: 'tutorial.avatarFloating.day7.memoryReview',
+                    voiceKey: 'avatar_floating_day7_memory_review',
+                    text: '七天前，我们还只是第一次见面。现在这里已经开始留下我们说过的话、做过的事，还有一些差点被风吹走的小细节。对我来说，这不是冷冰冰的记录，是我们相处过的脚印。',
+                    emotion: 'neutral',
+                    target: '#${p}-menu-memory',
+                    persistent: '#${p}-popup-settings',
+                    cursorAction: 'move',
+                    operation: 'show-settings-menu:memory'
+                }),
+                Object.freeze({
+                    id: 'day7_memory_control',
+                    textKey: 'tutorial.avatarFloating.day7.memoryControl',
+                    voiceKey: 'avatar_floating_day7_memory_control',
+                    text: '这些小脚印，也可以由你亲手整理。想留下的，我们就夹进相册；想轻轻放走的，就让它随风飘走。被你认真收下来的回忆，才最珍贵。',
+                    emotion: 'happy',
+                    target: '#${p}-menu-memory',
+                    persistent: '#${p}-popup-settings',
+                    cursorAction: 'wobble',
+                    operation: 'show-settings-menu:memory'
+                }),
+                Object.freeze({
+                    id: 'day7_storage_entry',
+                    textKey: 'tutorial.avatarFloating.day7.storageEntry',
+                    voiceKey: 'avatar_floating_day7_storage_entry',
+                    text: '还有最后一件事呢。我们共同走过的日子、说过的那些悄悄话，都需要找一个温馨的小角落好好存放起来哦！',
+                    emotion: 'neutral',
+                    target: 'chat-window',
+                    cursorAction: 'wobble',
+                    cleanupBefore: true
+                }),
+                Object.freeze({
+                    id: 'day7_graduation_wrap',
+                    textKey: 'tutorial.avatarFloating.day7.wrap',
+                    voiceKey: 'avatar_floating_day7_wrap',
+                    text: '微风还在窗边，阳光也刚刚好，而刚刚出现的你，已经悄悄成为这里很重要的一部分啦。新手指南就先陪你走到这里，剩下的日子，就让我们一起慢慢熟悉、慢慢靠近、慢慢写下只属于我们的故事吧。以后也请多多关照喵！',
+                    emotion: 'happy',
+                    target: 'chat-window',
+                    cursorAction: 'wobble',
+                    operation: 'cleanup',
+                    petalTransition: true
                 })
             ])
         })
@@ -2815,6 +2967,7 @@
             this.tutorialEndHandler = this.onTutorialEndEvent.bind(this);
             this.externalChatReadyHandler = this.onExternalChatReady.bind(this);
             this.remoteTerminationRequestHandler = this.onRemoteTerminationRequest.bind(this);
+            this.desktopPluginDashboardSkipHandler = this.handleDesktopYuiGuideSkipRequest.bind(this);
             this.desktopPluginDashboardInterruptHandler = this.onDesktopPluginDashboardInterruptRequest.bind(this);
             this.messageHandler = this.onWindowMessage.bind(this);
             const capabilityApi = window.homeTutorialPlatformCapabilities;
@@ -2869,6 +3022,7 @@
             window.addEventListener('pagehide', this.pageHideHandler, true);
             window.addEventListener('neko:yui-guide:external-chat-ready', this.externalChatReadyHandler, true);
             window.addEventListener('neko:yui-guide:remote-termination-request', this.remoteTerminationRequestHandler, true);
+            window.addEventListener(DESKTOP_PLUGIN_DASHBOARD_SKIP_REQUEST_EVENT, this.desktopPluginDashboardSkipHandler, true);
             window.addEventListener('neko:yui-guide:desktop-interrupt-request', this.desktopPluginDashboardInterruptHandler, true);
             window.addEventListener('neko:yui-guide:tutorial-end', this.tutorialEndHandler, true);
             window.addEventListener('message', this.messageHandler, true);
@@ -3633,6 +3787,13 @@
                     : '昨天你一直在噼里啪啦打字，我还没听过你说话呢。今天如果愿意，就轻轻叫我一声吧。一句就好，让我把文字背后的你也认识一点点。';
             }
             return this.resolveGuideCopy(scene.textKey || '', scene.text || '');
+        }
+
+        resolveAvatarFloatingSceneEmotion(scene) {
+            if (scene && scene.id === 'day2_intro_context') {
+                return hasAvatarFloatingGuideUsage('voiceUsed') ? 'happy' : 'sad';
+            }
+            return scene && typeof scene.emotion === 'string' ? scene.emotion : '';
         }
 
         applyGuideEmotion(emotion, options) {
@@ -5360,6 +5521,53 @@
                 .slice(0, maxItems);
         }
 
+        getChatAvatarToolMenuTargets(limit) {
+            const popover = this.resolveElement('#composer-tool-popover');
+            if (!popover || typeof popover.querySelectorAll !== 'function' || !this.isElementVisible(popover)) {
+                return [];
+            }
+            const maxItems = Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : 3;
+            const targets = Array.from(popover.querySelectorAll('.composer-icon-button[data-avatar-tool-id]'));
+            const fallbackTargets = targets.length
+                ? targets
+                : Array.from(popover.querySelectorAll('.composer-icon-button'));
+            return fallbackTargets
+                .filter((element) => this.isElementVisible(element))
+                .slice(0, maxItems);
+        }
+
+        getVisibleChatComposerElement(selector) {
+            if (typeof selector !== 'string' || !selector.trim()) {
+                return null;
+            }
+            return Array.from(document.querySelectorAll('#react-chat-window-root ' + selector))
+                .find((element) => this.isElementVisible(element)) || null;
+        }
+
+        async ensureChatComposerOverflowMenuOpen() {
+            const existingPopover = this.getVisibleChatComposerElement('.composer-overflow-popover');
+            if (existingPopover) {
+                return true;
+            }
+            const overflowButton = this.getVisibleChatComposerElement('.composer-overflow-btn');
+            if (!overflowButton || typeof overflowButton.click !== 'function') {
+                return false;
+            }
+            overflowButton.click();
+            return !!(await this.waitForElement(() => this.getVisibleChatComposerElement('.composer-overflow-popover'), 900));
+        }
+
+        async getChatComposerToolButton(selector) {
+            const direct = this.getVisibleChatComposerElement(selector);
+            if (direct) {
+                return direct;
+            }
+            if (await this.ensureChatComposerOverflowMenuOpen()) {
+                return this.getVisibleChatComposerElement(selector);
+            }
+            return null;
+        }
+
         createAvatarFloatingUnionTarget(key, elements, options) {
             const targets = Array.isArray(elements) ? elements.filter(Boolean) : [];
             if (targets.length === 0) {
@@ -5381,6 +5589,31 @@
             if (selector === 'chat-window' || selector === 'floating-buttons') {
                 return this.getAvatarFloatingBaseTarget(selector);
             }
+            if (selector === 'chat-tools') {
+                return this.resolveElement('#react-chat-window-root .composer-bottom-tools')
+                    || this.resolveElement('#react-chat-window-root .composer-panel')
+                    || this.getAvatarFloatingBaseTarget('chat-window');
+            }
+            if (selector === 'chat-avatar-tools') {
+                return this.getVisibleChatComposerElement('.composer-emoji-btn')
+                    || this.getVisibleChatComposerElement('.composer-tool-menu')
+                    || this.resolveAvatarFloatingSelector('chat-tools');
+            }
+            if (selector === 'chat-avatar-tool-items') {
+                return this.createAvatarFloatingUnionTarget(
+                    'chat-avatar-tool-items',
+                    this.getChatAvatarToolMenuTargets()
+                );
+            }
+            if (selector === 'chat-galgame') {
+                return this.getVisibleChatComposerElement('.composer-galgame-btn')
+                    || this.resolveAvatarFloatingSelector('chat-tools');
+            }
+            if (selector === 'chat-choice-slot') {
+                return this.resolveElement('#react-chat-window-root .composer-choice-slot')
+                    || this.resolveElement('#react-chat-window-root .composer-galgame-slot')
+                    || this.resolveAvatarFloatingSelector('chat-tools');
+            }
             return this.resolveElement(selector);
         }
 
@@ -5397,6 +5630,14 @@
                     scene.id + '-capabilities',
                     this.getAvatarFloatingAgentCapabilityTargets()
                 );
+            }
+            if (targetKey === 'chat-avatar-tools') {
+                return await this.getChatComposerToolButton('.composer-emoji-btn')
+                    || this.resolveAvatarFloatingSelector(targetKey);
+            }
+            if (targetKey === 'chat-galgame') {
+                return await this.getChatComposerToolButton('.composer-galgame-btn')
+                    || this.resolveAvatarFloatingSelector(targetKey);
             }
             if (typeof targetKey === 'string' && targetKey.indexOf('settings-sidepanel:') === 0) {
                 const type = targetKey.split(':')[1] || '';
@@ -5459,9 +5700,12 @@
             if (operation.indexOf('show-settings-sidepanel:') === 0) {
                 await this.ensureAvatarFloatingSettingsSidePanel(operation.split(':')[1] || '');
             }
+            if (operation.indexOf('show-settings-menu:') === 0) {
+                await this.ensureSettingsMenuVisible(operation.split(':')[1] || '');
+            }
         }
 
-        async runAvatarFloatingSceneOperation(scene, primaryTarget) {
+        async runAvatarFloatingSceneOperation(scene, primaryTarget, narrationStartedAt) {
             const operation = typeof scene.operation === 'string' ? scene.operation : '';
             if (operation.indexOf('show-agent-sidepanel:') === 0 && scene.activateSecondaryAction === true) {
                 const parts = operation.split(':');
@@ -5481,18 +5725,75 @@
                         this.pluginDashboardWindowCreatedByGuide = !!(pluginDashboardWindow && !pluginDashboardWindow.closed);
                         if (this.pluginDashboardWindowCreatedByGuide) {
                             await this.waitForSceneDelay(900);
-                            await this.closePluginDashboardWindowIfCreatedByGuide('Day 3 插件管理预览完成');
+                            await this.closePluginDashboardWindowIfCreatedByGuide('Day 6 插件管理预览完成');
                         }
                     }
                     await this.waitForSceneDelay(460);
                 }
                 return true;
             }
-            if (!operation || operation.indexOf('show-') === 0) {
+            if (
+                !operation
+                || operation === 'show-task-hud'
+                || operation.indexOf('show-agent-sidepanel:') === 0
+                || operation.indexOf('show-settings-sidepanel:') === 0
+                || operation.indexOf('show-settings-menu:') === 0
+            ) {
                 return true;
             }
             if (operation === 'cleanup') {
                 await this.closeAvatarFloatingGuidePanels();
+                return true;
+            }
+            if (operation === 'open-avatar-tool-menu') {
+                const button = primaryTarget
+                    && typeof primaryTarget.matches === 'function'
+                    && primaryTarget.matches('.composer-emoji-btn')
+                    && this.isElementVisible(primaryTarget)
+                    ? primaryTarget
+                    : await this.getChatComposerToolButton('.composer-emoji-btn');
+                if (button && typeof button.click === 'function') {
+                    button.click();
+                }
+                const popover = await this.waitForElement(() => {
+                    const popover = this.resolveElement('#composer-tool-popover');
+                    return popover && this.isElementVisible(popover) ? popover : null;
+                }, 1200);
+                const toolTargets = this.getChatAvatarToolMenuTargets();
+                toolTargets.forEach((target) => {
+                    this.setSpotlightGeometryHint(target, {
+                        padding: 6,
+                        geometry: 'circle'
+                    });
+                });
+                this.setSceneExtraSpotlights([popover].concat(toolTargets).filter(Boolean));
+                for (let index = 0; index < toolTargets.length; index += 1) {
+                    if (this.isStopping()) {
+                        return true;
+                    }
+                    const moved = await this.moveCursorToElement(toolTargets[index], index === 0 ? 480 : 360);
+                    if (moved) {
+                        this.cursor.wobble();
+                        await this.waitForSceneDelay(160);
+                    }
+                }
+                return true;
+            }
+            if (operation === 'settings-peek-panic') {
+                const fullDurationMs = this.getGuideVoiceDurationMs(scene.voiceKey || '', resolveGuideLocale())
+                    || estimateSpeechDurationMs(scene.text || '');
+                const elapsedMs = Number.isFinite(narrationStartedAt)
+                    ? Math.max(0, Date.now() - narrationStartedAt)
+                    : 0;
+                await this.runSettingsPeekPanicPerformance({
+                    targetRect: this.getElementRect(primaryTarget),
+                    totalDurationMs: Math.max(600, Math.round(fullDurationMs - elapsedMs)),
+                    runId: this.sceneRunId
+                }).catch(() => {});
+                return true;
+            }
+            if (operation.indexOf('show-settings-menu:') === 0) {
+                await this.ensureSettingsMenuVisible(operation.split(':')[1] || '');
                 return true;
             }
             if (operation === 'click') {
@@ -5544,6 +5845,72 @@
             return true;
         }
 
+        closeChatToolPopover() {
+            let closed = false;
+            const activeToolButton = this.resolveElement('#react-chat-window-root .composer-emoji-btn.is-active');
+            if (activeToolButton && typeof activeToolButton.click === 'function') {
+                activeToolButton.click();
+                closed = true;
+            }
+            const activeOverflowButton = this.resolveElement('#react-chat-window-root .composer-overflow-btn.is-active');
+            if (activeOverflowButton && typeof activeOverflowButton.click === 'function') {
+                activeOverflowButton.click();
+                closed = true;
+            }
+            const popover = this.resolveElement('#composer-tool-popover');
+            const overflowPopover = this.resolveElement('#react-chat-window-root .composer-overflow-popover');
+            if (!popover && !overflowPopover) {
+                return closed;
+            }
+            try {
+                document.dispatchEvent(new KeyboardEvent('keydown', {
+                    key: 'Escape',
+                    code: 'Escape',
+                    bubbles: true,
+                    cancelable: true
+                }));
+            } catch (_) {}
+            return true;
+        }
+
+        getAvatarFloatingNarrationDurationMs(voiceKey, text) {
+            const configuredDurationMs = this.getGuideVoiceDurationMs(voiceKey || '', resolveGuideLocale());
+            if (configuredDurationMs > 0) {
+                return configuredDurationMs;
+            }
+            return estimateSpeechDurationMs(text || '') || 2200;
+        }
+
+        async playAvatarFloatingPetalTransitionAtCue(scene, sceneRunId, voiceKey, text, narrationStartedAt) {
+            const durationMs = this.getAvatarFloatingNarrationDurationMs(voiceKey, text);
+            const cueMs = clamp(Math.round(durationMs * 0.7), 900, Math.max(900, durationMs));
+            const elapsedMs = Math.max(0, Date.now() - narrationStartedAt);
+            const waitMs = Math.max(0, cueMs - elapsedMs);
+            if (!(await this.waitForSceneDelay(waitMs))) {
+                return;
+            }
+            if (sceneRunId !== this.sceneRunId || this.destroyed || this.isStopping()) {
+                return;
+            }
+
+            this.runReturnControlCueWavePerformance().catch((error) => {
+                console.warn('[YuiGuide] 悬浮窗教程收尾挥手动作播放失败:', error);
+            });
+            this.cursor.hide();
+            this.overlay.clearPersistentSpotlight();
+            this.overlay.clearActionSpotlight();
+            this.clearSceneExtraSpotlights();
+            this.clearRetainedExtraSpotlights();
+            this.clearPreciseHighlights();
+            this.clearAllVirtualSpotlights();
+            this.disableInterrupts();
+            await this.closeAvatarFloatingGuidePanels();
+            const remainingMs = Math.max(0, durationMs - cueMs);
+            await this.playReturnPetalTransition({
+                durationMs: remainingMs
+            });
+        }
+
         async moveAvatarFloatingCursor(scene, primaryTarget, secondaryTarget) {
             const action = scene.cursorAction || 'move';
             const targets = [primaryTarget, secondaryTarget].filter(Boolean);
@@ -5580,9 +5947,11 @@
         }
 
         async closeAvatarFloatingGuidePanels() {
+            this.closeChatToolPopover();
             this.clearSceneExtraSpotlights();
             this.clearRetainedExtraSpotlights();
             this.clearPreciseHighlights();
+            this.clearSpotlightGeometryHints();
             this.overlay.clearActionSpotlight();
             await this.closeManagedPanels().catch(() => {});
             ['agent-user-plugin', 'agent-openclaw'].forEach((toggleId) => this.collapseAgentSidePanel(toggleId));
@@ -5608,6 +5977,7 @@
             this.clearPreciseHighlights();
             this.clearSceneExtraSpotlights();
             this.clearAllVirtualSpotlights();
+            this.clearSpotlightGeometryHints();
             if (!scene.cleanupBefore) {
                 this.overlay.clearActionSpotlight();
             }
@@ -5625,6 +5995,10 @@
                     voiceKey: voiceKey
                 });
             }
+            const sceneEmotion = this.resolveAvatarFloatingSceneEmotion(scene);
+            if (sceneEmotion) {
+                this.applyGuideEmotion(sceneEmotion);
+            }
 
             const persistentTarget = await this.resolveAvatarFloatingPersistent(scene);
             const primaryTarget = await this.resolveAvatarFloatingTarget(scene, 'primary');
@@ -5637,6 +6011,7 @@
             });
             this.enableInterrupts(this.currentStep);
 
+            const narrationStartedAt = Date.now();
             const narrationPromise = this.speakGuideLine(text, {
                 voiceKey: voiceKey,
                 minDurationMs: 1800
@@ -5652,7 +6027,7 @@
             if (sceneRunId !== this.sceneRunId || this.isStopping()) {
                 return false;
             }
-            await this.runAvatarFloatingSceneOperation(scene, primaryTarget);
+            await this.runAvatarFloatingSceneOperation(scene, primaryTarget, narrationStartedAt);
             this.applyGuideHighlights({
                 key: scene.id + '-settled',
                 persistent: await this.resolveAvatarFloatingPersistent(scene),
@@ -5660,7 +6035,22 @@
                 secondary: await this.resolveAvatarFloatingTarget(scene, 'secondary')
             });
 
+            const petalTransitionPromise = scene.petalTransition === true
+                ? this.playAvatarFloatingPetalTransitionAtCue(
+                    scene,
+                    sceneRunId,
+                    voiceKey,
+                    text,
+                    narrationStartedAt
+                ).catch((error) => {
+                    console.warn('[YuiGuide] 悬浮窗教程每日花瓣转场失败，继续流程:', scene.id, error);
+                })
+                : null;
+
             await narrationPromise;
+            if (petalTransitionPromise) {
+                await petalTransitionPromise;
+            }
             if (sceneRunId !== this.sceneRunId || this.isStopping()) {
                 return false;
             }
@@ -6264,6 +6654,8 @@
                 if (!menuId) {
                     return true;
                 }
+
+                this.collapseCharacterSettingsSidePanel();
 
                 const selector = this.getSettingsMenuSelector(menuId);
                 if (!selector) {
@@ -8323,6 +8715,7 @@
                     this.clearSceneExtraSpotlights();
                     this.clearVirtualSpotlight('settings-character-children-bundle');
                     this.clearVirtualSpotlight('settings-entry-bundle');
+                    this.clearVirtualSpotlight('settings-proactive-chat-bundle');
                     this.removeRetainedExtraSpotlight(settingsSpotlightTarget);
                     this.clearPreciseHighlights();
                     this.customSecondarySpotlightTarget = null;
@@ -8409,7 +8802,64 @@
                 let settingsDetailSecondLineDisplayed = false;
                 let settingsPeekPanicMotionTargetRect = null;
                 let settingsPeekPanicPromise = Promise.resolve();
+                let stopSettingsDetailTour = false;
+                let settingsProactiveChatSpotlightStarted = false;
                 const shouldRunSettingsPeekPanic = /换掉|快关掉|不行/.test(detailTextPart2 || '');
+                const startSettingsPeekProactiveChatSpotlight = () => {
+                    if (
+                        settingsProactiveChatSpotlightStarted
+                        || settingsPeekHighlightsCleared
+                        || runId !== this.sceneRunId
+                        || this.isStopping()
+                    ) {
+                        return;
+                    }
+
+                    settingsProactiveChatSpotlightStarted = true;
+                    stopSettingsDetailTour = true;
+                    void (async () => {
+                        const proactivePanel = await this.ensureAvatarFloatingSettingsSidePanel('interval-proactive-chat');
+                        if (runId !== this.sceneRunId || this.isStopping() || settingsPeekHighlightsCleared) {
+                            return;
+                        }
+
+                        const proactiveToggle = await this.waitForVisibleTarget([
+                            () => this.resolveElement('#${p}-toggle-proactive-chat'),
+                            () => proactivePanel && proactivePanel._anchorElement && this.isElementVisible(proactivePanel._anchorElement)
+                                ? proactivePanel._anchorElement
+                                : null
+                        ], 900);
+                        const visiblePanel = proactivePanel && this.isElementVisible(proactivePanel)
+                            ? proactivePanel
+                            : this.getAvatarFloatingSidePanel('interval-proactive-chat');
+                        const panelAnchor = visiblePanel && visiblePanel._anchorElement
+                            ? visiblePanel._anchorElement
+                            : null;
+                        const proactiveBundle = this.createAvatarFloatingUnionTarget(
+                            'settings-proactive-chat-bundle',
+                            [proactiveToggle, panelAnchor, visiblePanel].filter(Boolean),
+                            {
+                                padding: 10,
+                                radius: 14
+                            }
+                        );
+                        const primaryTarget = proactiveBundle || proactiveToggle || panelAnchor || visiblePanel;
+                        if (!primaryTarget || runId !== this.sceneRunId || this.isStopping() || settingsPeekHighlightsCleared) {
+                            return;
+                        }
+
+                        this.applyGuideHighlights({
+                            persistent: this.resolveElement('#${p}-popup-settings'),
+                            primary: primaryTarget
+                        });
+                        await this.moveCursorToElement(primaryTarget, 720);
+                        if (runId === this.sceneRunId && !this.isStopping() && !settingsPeekHighlightsCleared) {
+                            this.cursor.wobble();
+                        }
+                    })().catch((error) => {
+                        console.warn('[YuiGuide] 设置一瞥主动搭话高亮失败，继续流程:', error);
+                    });
+                };
                 const appendSettingsDetailSecondLine = () => {
                     if (
                         settingsDetailSecondLineDisplayed
@@ -8424,8 +8874,9 @@
                     this.appendGuideChatMessage(detailTextPart2, {
                         textKey: TAKEOVER_SETTINGS_DETAIL_TEXT_PART_2_KEY,
                         voiceKey: detailVoiceKey,
-                        streamDurationMs: detailPart2StreamDurationMs
-                    });
+                            streamDurationMs: detailPart2StreamDurationMs
+                        });
+                    startSettingsPeekProactiveChatSpotlight();
                     if (shouldRunSettingsPeekPanic) {
                         settingsPeekPanicPromise = this.runSettingsPeekPanicPerformance({
                             runId: runId,
@@ -8550,8 +9001,8 @@
                     return;
                 }
 
-                const cycleMs = 5600;
-                const ellipseAbortCheck = () => this.destroyed || this.angryExitTriggered || settingsPeekHighlightsCleared;
+	                const cycleMs = 5600;
+	                const ellipseAbortCheck = () => this.destroyed || this.angryExitTriggered || settingsPeekHighlightsCleared || stopSettingsDetailTour;
                 const actionPromise = (async () => {
                     while (runId === this.sceneRunId && !ellipseAbortCheck()) {
                         const moved = await this.cursor.runPauseAwareEllipse(
@@ -10574,6 +11025,7 @@
             window.removeEventListener('pagehide', this.pageHideHandler, true);
             window.removeEventListener('neko:yui-guide:external-chat-ready', this.externalChatReadyHandler, true);
             window.removeEventListener('neko:yui-guide:remote-termination-request', this.remoteTerminationRequestHandler, true);
+            window.removeEventListener(DESKTOP_PLUGIN_DASHBOARD_SKIP_REQUEST_EVENT, this.desktopPluginDashboardSkipHandler, true);
             window.removeEventListener('neko:yui-guide:desktop-interrupt-request', this.desktopPluginDashboardInterruptHandler, true);
             window.removeEventListener('neko:yui-guide:tutorial-end', this.tutorialEndHandler, true);
             window.removeEventListener('message', this.messageHandler, true);
@@ -10799,6 +11251,38 @@
             }
 
             postAck();
+        }
+
+        handleDesktopYuiGuideSkipRequest(event) {
+            if (this.destroyed) {
+                return;
+            }
+
+            const payload = event && event.detail && typeof event.detail === 'object'
+                ? event.detail
+                : {};
+            const handoff = this.pluginDashboardHandoff;
+            if (!handoff || !handoff.sessionId) {
+                return;
+            }
+
+            const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : '';
+            if (sessionId && handoff.sessionId && sessionId !== handoff.sessionId) {
+                return;
+            }
+
+            const detail = payload.detail && typeof payload.detail === 'object'
+                ? Object.assign({}, payload.detail)
+                : {};
+            if (!detail.source && typeof payload.source === 'string') {
+                detail.source = payload.source;
+            }
+
+            void this.handlePluginDashboardSkipRequest({
+                type: PLUGIN_DASHBOARD_SKIP_REQUEST_EVENT,
+                sessionId: sessionId,
+                detail: detail
+            });
         }
 
         onDesktopPluginDashboardInterruptRequest(event) {

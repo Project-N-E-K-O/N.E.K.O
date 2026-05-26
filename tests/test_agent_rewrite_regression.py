@@ -415,7 +415,8 @@ def test_yui_guide_overlay_supports_progress_meta_and_viewport_placement():
 
     for expected in (
         "window.TutorialHighlightController",
-        "'[id$=\"-btn-mic\"], [id$=\"-btn-agent\"], [id$=\"-btn-settings\"]'",
+        "'[id$=\"-btn-mic\"], [id$=\"-btn-screen\"], [id$=\"-btn-agent\"],",
+        "'[id$=\"-btn-settings\"], [id$=\"-btn-goodbye\"], [id$=\"-btn-return\"], [id$=\"-lock-icon\"]'",
         "applyCircularFloatingButtonSpotlightHint(element)",
         "data-yui-guide-spotlight-geometry",
         "data-yui-guide-virtual-spotlight",
@@ -522,6 +523,8 @@ def test_plugin_dashboard_skip_contract_uses_skip_request_without_bypass_event()
         "getSafeNarrationResumeAudioOffsetMs(currentGuideAudio)",
         "source: 'plugin_dashboard_button'",
         "neko:yui-guide:desktop-skip-request",
+        "window.addEventListener(DESKTOP_PLUGIN_DASHBOARD_SKIP_REQUEST_EVENT, this.desktopPluginDashboardSkipHandler, true);",
+        "window.removeEventListener(DESKTOP_PLUGIN_DASHBOARD_SKIP_REQUEST_EVENT, this.desktopPluginDashboardSkipHandler, true);",
         "neko:yui-guide:desktop-interrupt-request",
         "neko:yui-guide:desktop-interrupt-ack",
         "neko:yui-guide:desktop-narration-finished",
@@ -1152,7 +1155,7 @@ def test_home_avatar_floating_guide_day_reset_buttons_are_wired():
 
     assert "/static/avatar-floating-guide-reset.js" in template_source
     assert "home-tutorial-reset-controls" in template_source
-    for day in range(1, 5):
+    for day in range(1, 8):
         assert f'data-home-tutorial-reset-day="{day}"' in template_source
 
     assert "neko_avatar_floating_guide_v1" in reset_source
@@ -1200,6 +1203,26 @@ def test_home_avatar_floating_guide_day_reset_buttons_are_wired():
     assert "home-avatar-floating-guide-cursor" in style_source
     assert 'data-home-avatar-floating-guide-role="action"' in style_source
     assert 'data-home-avatar-floating-guide-highlight="true"' in style_source
+
+
+def test_avatar_floating_round_director_flow_matches_day2_to_day7_contracts():
+    source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+
+    for expected in (
+        "resolveAvatarFloatingSceneEmotion(scene)",
+        "return hasAvatarFloatingGuideUsage('voiceUsed') ? 'happy' : 'sad';",
+        "id: 'day3_galgame_games'",
+        "cleanupBefore: true",
+        "this.collapseCharacterSettingsSidePanel();",
+        "Day 6 插件管理预览完成",
+        "id: 'day7_storage_entry'",
+        "target: 'chat-window'",
+    ):
+        assert expected in source
+
+    day7_block = source[source.index("id: 'day7_storage_entry'"):source.index("id: 'day7_graduation_wrap'")]
+    assert "/cloudsave_manager" not in day7_block
+    assert "show-settings-menu" not in day7_block
 
 
 def test_tutorial_destroy_does_not_mark_seen_but_skip_does():
