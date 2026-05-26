@@ -341,15 +341,16 @@ async def generate_forge_card_story(payload: dict[str, Any]) -> ForgeStoryResult
             timeoutSeconds=FORGE_STORY_TIMEOUT_SECONDS,
             maxTokens=FORGE_STORY_MAX_TOKENS,
         )
-        llm = create_chat_llm(
-            cfg["model"],
-            cfg["base_url"],
-            cfg.get("api_key") or "",
-            max_completion_tokens=FORGE_STORY_MAX_TOKENS,
-            timeout=FORGE_STORY_TIMEOUT_SECONDS,
-        )
-
         try:
+            # create_chat_llm 必须在 try 内构造 —— 否则它本身抛异常时,token 不会被
+            # 下面的 finally 重置,后续 tier 重试会带着上一只猫娘的 active character。
+            llm = create_chat_llm(
+                cfg["model"],
+                cfg["base_url"],
+                cfg.get("api_key") or "",
+                max_completion_tokens=FORGE_STORY_MAX_TOKENS,
+                timeout=FORGE_STORY_TIMEOUT_SECONDS,
+            )
             async with llm:
                 result = await asyncio.wait_for(
                     llm.ainvoke(

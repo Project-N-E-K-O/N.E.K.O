@@ -35,12 +35,23 @@ function Test-CardForgeProcess {
 }
 
 # 不能在 [skip] 日志里写出被跳过进程的完整 CommandLine —— 那是别人家的进程,
-# 参数里可能含 API token、--password=*、私密文件路径等。截短到 60 字符的预览,
-# 用来在终端上肉眼判断"看着像啥就够"。
+# 参数里可能含 API token、--password=*、私密文件路径等。
+# 两步处理:先用正则把常见敏感参数替换成 <redacted>,再截到 60 字符。
+# 截短前先脱敏,否则敏感值落在前 60 字内仍会进日志。
+$sensitiveParamPatterns = @(
+  '(?i)(--?(?:token|password|secret|api[-_]?key|access[-_]?key|auth)\s*[=: ]\s*)\S+',
+  '(?i)(Bearer\s+)\S+',
+  '(?i)(Authorization\s*[:=]\s*)\S+'
+)
+
 function Get-SafeCommandPreview {
   param([string]$CommandLine, [int]$MaxLength = 60)
   if (-not $CommandLine) { return "(unknown)" }
-  $trimmed = $CommandLine.Trim()
+  $sanitized = $CommandLine
+  foreach ($pattern in $sensitiveParamPatterns) {
+    $sanitized = [regex]::Replace($sanitized, $pattern, '${1}<redacted>')
+  }
+  $trimmed = $sanitized.Trim()
   if ($trimmed.Length -le $MaxLength) { return $trimmed }
   return $trimmed.Substring(0, $MaxLength) + "…"
 }

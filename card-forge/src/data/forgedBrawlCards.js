@@ -177,12 +177,17 @@ export function loadForgedBrawlCards() {
 }
 
 export function saveForgedBrawlCards(cards) {
-  if (typeof window === 'undefined' || !window.localStorage) return
-  // setItem 在私密浏览模式 / localStorage 被禁用 / 配额超出时会抛 DOMException。
-  // 这里只是把已铸造卡牌镜像到 storage，失败时 console 提示一下就好，
-  // 不要让铸造主流程 (createForgedBrawlCard → setForgedInventory) 跟着崩。
+  if (typeof window === 'undefined') return
+  // 两层都会抛:
+  //   (a) 访问 `window.localStorage` 本身就可能抛 `SecurityError` (源被禁用、
+  //       Safari ITP 等),所以"探测"也必须放在 try 内 —— 早期把
+  //       `!window.localStorage` 当短路守卫反而会被 SecurityError 干掉。
+  //   (b) `setItem` 在私密浏览 / 配额超出 / storage 禁用时抛 DOMException。
+  // 镜像存盘只是 UX 加分项,失败 console.warn 后跳过即可,不让铸造主流程崩。
   try {
-    window.localStorage.setItem(
+    const storage = window.localStorage
+    if (!storage) return
+    storage.setItem(
       FORGED_BRAWL_CARDS_STORAGE_KEY,
       JSON.stringify((Array.isArray(cards) ? cards : []).map(normalizeForgedBrawlCard).filter(Boolean))
     )

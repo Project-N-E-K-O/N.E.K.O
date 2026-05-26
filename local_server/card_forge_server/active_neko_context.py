@@ -31,7 +31,9 @@ def safe_character_segment(name: str | None) -> str | None:
     value = name.strip()
     if not value or len(value) > 80:
         return None
-    if any(part in value for part in ("/", "\\", "..", "\x00")):
+    # ":" 同样要拒绝:Windows 上 `Path('D:/foo') / 'C:bar' / 'facts.json'`
+    # 会直接重置到 `C:bar/facts.json`,绕过 memory_dir 的根。
+    if any(part in value for part in ("/", "\\", "..", "\x00", ":")):
         return None
     return value
 
@@ -53,18 +55,21 @@ def _known_character_names(config_manager: Any) -> set[str] | None:
     component — only catgirls actually configured in NEKO are accepted.
 
     Return semantics (must be distinguished by caller):
-    - `None`  → whitelist unavailable (config_manager 异常)。caller 应当**保守拒绝**
-      所有 hint / override，回退到 `active_lanlan`，避免在配置短暂不可用时
-      被绕过校验。
-    - `set()` → 配置可读但里面就是 0 只猫娘 (理论上 NEKO 还没初始化才会到这步)。
-    - `{...}` → 正常白名单，hint 必须在集合内。
+    - `None`  → whitelist 不可用:config_manager 异常,或 character_data 的
+      `prompt_map` 槽位 (index 5) 缺失 / 不是 dict。无法判定"什么算合法猫娘"
+      就只能保守拒绝所有 hint / override,回退到 `active_lanlan`。
+    - `set()` → 配置可读但里面就是 0 只猫娘 (NEKO 还没初始化完才会到这步)。
+    - `{...}` → 正常白名单,hint 必须在集合内。
     """
     try:
         character_data = config_manager.get_character_data()
-        prompt_map = character_data[5] if len(character_data) > 5 and isinstance(character_data[5], dict) else {}
-        return {str(name).strip() for name in prompt_map.keys() if isinstance(name, str) and name.strip()}
     except Exception:
         return None
+    # malformed shape 也归到"不可用",不能折成空集然后被 caller 当成"0 只猫"放行 hint。
+    if len(character_data) <= 5 or not isinstance(character_data[5], dict):
+        return None
+    prompt_map = character_data[5]
+    return {str(name).strip() for name in prompt_map.keys() if isinstance(name, str) and name.strip()}
 
 
 def _resolve_prompt(config_manager: Any, lanlan_name: str, master_name: str) -> str:
