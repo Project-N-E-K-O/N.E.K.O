@@ -111,8 +111,8 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     subtitle: "让猫娘陪你玩 MC——通过 mc-agent 桥接 mineflayer bot 控制游戏内化身。",
     cards: [
       { title: "先装 Minecraft", badge: "Install", body: "Java 版 v1.21.1 推荐，其他 1.21.x 也可。自己买正版或离线启动。" },
-      { title: "再开 mc-agent", badge: "Bridge", body: "下面下个 mc-agent 解压、双击「启动mc-agent.bat」启动它。它和 N.E.K.O 是两个独立程序，靠 WebSocket 联通。" },
-      { title: "最后和猫娘一起玩吧", badge: "Play", body: "和她正常聊天，她会一边陪你说话、一边和你在游戏里一起玩，就像身边真多了个玩家。（部分 AI 供应商暂时没法同时语音对话和操作游戏。）" },
+      { title: "再开 mc-agent", badge: "Bridge", body: "下面下个 mc-agent 解压、双击「启动mc-agent.bat」启动它。它和 N.E.K.O 是两个独立程序，靠 WebSocket 联通。还要给猫娘准备一个正版 Minecraft（微软）账号、在 mc-agent 里登录，她才进得了游戏。" },
+      { title: "最后和猫娘一起玩吧", badge: "Play", body: "先把你的单人世界 Open to LAN（开放到局域网），猫娘才连得进来。然后和她正常聊天，她会一边陪你说话、一边和你在游戏里一起玩，就像身边真多了个玩家。（部分 AI 供应商暂时没法同时语音对话和操作游戏。）" },
     ],
     status: {
       title: "mc-agent 状态",
@@ -164,8 +164,8 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     subtitle: "Let neko-chan play MC with you. mc-agent bridges a mineflayer bot to control an in-game avatar.",
     cards: [
       { title: "Install Minecraft", badge: "Install", body: "Java Edition v1.21.1 recommended; other 1.21.x versions also work. Use any launcher you like." },
-      { title: "Run mc-agent", badge: "Bridge", body: "Download mc-agent below, unzip, double-click 启动mc-agent.bat. It's a separate program from N.E.K.O., they talk over WebSocket." },
-      { title: "Play together", badge: "Play", body: "Just chat with neko-chan — she'll keep talking with you while playing alongside you in the world, like a real second player. (Some AI providers can't yet voice-chat and operate the game at the same time.)" },
+      { title: "Run mc-agent", badge: "Bridge", body: "Download mc-agent below, unzip, double-click 启动mc-agent.bat. It's a separate program from N.E.K.O., they talk over WebSocket. You also need to give neko-chan her own genuine Minecraft (Microsoft) account and log it in inside mc-agent — otherwise she can't join the game." },
+      { title: "Play together", badge: "Play", body: "First Open your single-player world to LAN so neko-chan can connect. Then just chat with neko-chan — she'll keep talking with you while playing alongside you in the world, like a real second player. (Some AI providers can't yet voice-chat and operate the game at the same time.)" },
     ],
     status: {
       title: "mc-agent Status",
@@ -217,8 +217,8 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     subtitle: "猫娘ちゃんと MC を遊ぼう。mc-agent が mineflayer ボットを橋渡しして、ゲーム内アバターを操作します。",
     cards: [
       { title: "Minecraft を入れる", badge: "Install", body: "Java 版 v1.21.1 推奨。他の 1.21.x でも可。お好きなランチャーで。" },
-      { title: "mc-agent を起動", badge: "Bridge", body: "下のカードから mc-agent を入手・解凍し「启动mc-agent.bat」をダブルクリック。N.E.K.O とは別プログラムで WebSocket 経由で連携。" },
-      { title: "一緒に遊ぼう", badge: "Play", body: "普通におしゃべりするだけ。猫娘ちゃんは会話を続けながら、本物のもう一人のプレイヤーのように一緒に遊んでくれる。（一部の AI プロバイダーでは、音声会話とゲーム操作の同時進行がまだできない場合があります。）" },
+      { title: "mc-agent を起動", badge: "Bridge", body: "下のカードから mc-agent を入手・解凍し「启动mc-agent.bat」をダブルクリック。N.E.K.O とは別プログラムで WebSocket 経由で連携。さらに猫娘ちゃん用の正規 Minecraft（Microsoft）アカウントを用意し、mc-agent でログインしないとゲームに入れません。" },
+      { title: "一緒に遊ぼう", badge: "Play", body: "まず自分のシングルプレイ世界を LAN に公開（Open to LAN）すると猫娘ちゃんが入れます。あとは普通におしゃべりするだけ。猫娘ちゃんは会話を続けながら、本物のもう一人のプレイヤーのように一緒に遊んでくれる。（一部の AI プロバイダーでは、音声会話とゲーム操作の同時進行がまだできない場合があります。）" },
     ],
     status: {
       title: "mc-agent ステータス",
@@ -270,8 +270,8 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     subtitle: "고양이 캐릭터와 함께 MC를 즐기세요. mc-agent가 mineflayer 봇을 게임 내 아바타로 다리 놓아 줍니다.",
     cards: [
       { title: "Minecraft 설치", badge: "Install", body: "Java 에디션 v1.21.1 권장. 다른 1.21.x도 가능. 원하는 런처 사용." },
-      { title: "mc-agent 실행", badge: "Bridge", body: "아래에서 mc-agent 다운로드 → 압축 해제 → 「启动mc-agent.bat」 더블클릭. N.E.K.O와는 별개 프로그램으로 WebSocket으로 연동." },
-      { title: "함께 놀기", badge: "Play", body: "그냥 평범하게 대화하세요. 고양이는 너와 이야기를 나누면서 진짜 또 한 명의 플레이어처럼 함께 놀아 줍니다. (일부 AI 제공자는 아직 음성 대화와 게임 조작을 동시에 못 할 수 있어요.)" },
+      { title: "mc-agent 실행", badge: "Bridge", body: "아래에서 mc-agent 다운로드 → 압축 해제 → 「启动mc-agent.bat」 더블클릭. N.E.K.O와는 별개 프로그램으로 WebSocket으로 연동. 또한 고양이용 정품 Minecraft(Microsoft) 계정을 준비해 mc-agent에서 로그인해야 게임에 들어올 수 있어요." },
+      { title: "함께 놀기", badge: "Play", body: "먼저 본인 싱글플레이 월드를 LAN에 공개(Open to LAN)해야 고양이가 들어올 수 있어요. 그다음 그냥 평범하게 대화하세요. 고양이는 너와 이야기를 나누면서 진짜 또 한 명의 플레이어처럼 함께 놀아 줍니다. (일부 AI 제공자는 아직 음성 대화와 게임 조작을 동시에 못 할 수 있어요.)" },
     ],
     status: {
       title: "mc-agent 상태",
@@ -323,8 +323,8 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     subtitle: "Играй в MC вместе с нэко-тян. mc-agent связывает mineflayer-бота с аватаром в игре.",
     cards: [
       { title: "Установи Minecraft", badge: "Install", body: "Java Edition v1.21.1 рекомендуется; другие 1.21.x тоже подойдут. Любой лаунчер." },
-      { title: "Запусти mc-agent", badge: "Bridge", body: "Скачай mc-agent ниже, распакуй, дважды кликни 启动mc-agent.bat. Это отдельная программа от N.E.K.O., связь по WebSocket." },
-      { title: "Играйте вместе", badge: "Play", body: "Просто болтай с нэко-тян — она будет общаться с тобой и одновременно играть рядом, как настоящий второй игрок. (У части AI-провайдеров пока не получается одновременно вести голосовой диалог и управлять игрой.)" },
+      { title: "Запусти mc-agent", badge: "Bridge", body: "Скачай mc-agent ниже, распакуй, дважды кликни 启动mc-agent.bat. Это отдельная программа от N.E.K.O., связь по WebSocket. Ещё нужно завести для нэко-тян отдельный лицензионный аккаунт Minecraft (Microsoft) и войти под ним в mc-agent — иначе она не сможет зайти в игру." },
+      { title: "Играйте вместе", badge: "Play", body: "Сначала открой свой одиночный мир в LAN (Open to LAN), чтобы нэко-тян смогла подключиться. Затем просто болтай с нэко-тян — она будет общаться с тобой и одновременно играть рядом, как настоящий второй игрок. (У части AI-провайдеров пока не получается одновременно вести голосовой диалог и управлять игрой.)" },
     ],
     status: {
       title: "Статус mc-agent",
