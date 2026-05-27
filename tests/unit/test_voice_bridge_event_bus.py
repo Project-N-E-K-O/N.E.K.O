@@ -41,6 +41,44 @@ async def test_voice_bridge_notify_keeps_waiter_until_loop_resolves() -> None:
             waiter.cancel()
 
 
+def test_voice_bridge_notify_cancels_waiter_when_loop_is_closed() -> None:
+    event_id = "voice-closed-loop"
+
+    class _ClosedLoop:
+        def call_soon_threadsafe(self, _callback):
+            raise RuntimeError("event loop is closed")
+
+    class _Waiter:
+        def __init__(self):
+            self.cancelled = False
+
+        def done(self):
+            return self.cancelled
+
+        def cancel(self):
+            self.cancelled = True
+
+        def get_loop(self):
+            return _ClosedLoop()
+
+    waiter = _Waiter()
+    with agent_event_bus._voice_bridge_waiters_lock:
+        agent_event_bus._voice_bridge_waiters[event_id] = waiter
+        agent_event_bus._voice_bridge_waiters_resolving.discard(event_id)
+
+    try:
+        agent_event_bus.notify_voice_bridge_result(event_id, {"action": "noop"})
+
+        assert waiter.cancelled is True
+        with agent_event_bus._voice_bridge_waiters_lock:
+            assert event_id not in agent_event_bus._voice_bridge_waiters
+            assert event_id not in agent_event_bus._voice_bridge_waiters_resolving
+    finally:
+        with agent_event_bus._voice_bridge_waiters_lock:
+            agent_event_bus._voice_bridge_waiters.pop(event_id, None)
+            agent_event_bus._voice_bridge_waiters_resolving.discard(event_id)
+
+
 @pytest.mark.asyncio
 async def test_voice_transcript_request_returns_agent_result(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}

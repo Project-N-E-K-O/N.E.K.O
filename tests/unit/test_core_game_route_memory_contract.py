@@ -67,6 +67,18 @@ class _FakeActivityTracker:
         self.user_messages.append(text)
 
 
+class _FakeVoiceBridgeSession:
+    def __init__(self):
+        self.cancelled = 0
+        self.primed = []
+
+    async def cancel_response(self):
+        self.cancelled += 1
+
+    async def prime_context(self, context, *, skipped=False):
+        self.primed.append((context, skipped))
+
+
 class _FakeAliveThread:
     def is_alive(self):
         return True
@@ -316,6 +328,46 @@ async def test_takeover_dispatcher_receives_voice_echo_match_before_suppression(
     assert mgr._session_turn_count == 0
     mgr._publish_user_utterance_to_plugin_bus.assert_not_called()
     assert mgr.sync_message_queue.messages == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bridge_result",
+    [
+        {"action": "cancel_response"},
+        {"action": "prime_context", "context": "screen context", "skipped": True},
+    ],
+)
+async def test_voice_bridge_result_is_ignored_after_session_change(
+    monkeypatch,
+    bridge_result,
+):
+    mgr = _make_manager()
+    original_session = _FakeVoiceBridgeSession()
+    replacement_session = _FakeVoiceBridgeSession()
+    mgr.session = original_session
+
+    async def fake_publish(*_args, **_kwargs):
+        mgr.session = replacement_session
+        return bridge_result
+
+    monkeypatch.setattr(
+        core_module,
+        "publish_voice_transcript_request_reliably",
+        fake_publish,
+    )
+
+    action = await core_module.LLMSessionManager._dispatch_voice_transcript_bridge(
+        mgr,
+        "Yui explain this step",
+    )
+
+    assert action == ""
+    assert original_session.cancelled == 0
+    assert original_session.primed == []
+    assert replacement_session.cancelled == 0
+    assert replacement_session.primed == []
 
 
 @pytest.mark.unit

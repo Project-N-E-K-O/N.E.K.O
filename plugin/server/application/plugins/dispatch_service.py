@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import math
 from collections.abc import Mapping
 from typing import Protocol, runtime_checkable
@@ -236,12 +237,13 @@ class PluginDispatchService:
 
         async def _dispatch_handler(plugin_id: str, handler_event_id: str) -> dict[str, object]:
             try:
+                handler_args = copy.deepcopy(normalized_args)
                 result = await asyncio.wait_for(
                     self.trigger_custom_event(
                         to_plugin=plugin_id,
                         event_type=event_type,
                         event_id=handler_event_id,
-                        args=normalized_args,
+                        args=handler_args,
                         timeout=timeout,
                     ),
                     timeout=float(timeout),

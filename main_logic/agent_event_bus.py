@@ -349,6 +349,8 @@ def notify_voice_bridge_result(event_id: str, result: Dict[str, Any]) -> None:
     except RuntimeError:
         with _voice_bridge_waiters_lock:
             if _voice_bridge_waiters.get(event_id) is waiter:
+                if not waiter.done():
+                    waiter.cancel()
                 _voice_bridge_waiters.pop(event_id, None)
             _voice_bridge_waiters_resolving.discard(event_id)
 

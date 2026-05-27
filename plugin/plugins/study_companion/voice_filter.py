@@ -250,7 +250,12 @@ def _find_earliest_name(text: str, names: Iterable[str]) -> tuple[str | None, in
         name = str(raw_name or "").strip()
         if not name:
             continue
-        pos = lower_text.find(name.lower())
+        needle = name.lower()
+        if name.isascii() and name.isalnum():
+            match = re.search(r"\b" + re.escape(needle) + r"\b", lower_text, re.ASCII)
+            pos = match.start() if match else -1
+        else:
+            pos = lower_text.find(needle)
         if pos != -1 and pos < best_pos:
             best_name = name
             best_pos = pos
