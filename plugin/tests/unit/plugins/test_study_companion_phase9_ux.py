@@ -68,8 +68,20 @@ def test_phase9_i18n_keys_and_placeholders_are_consistent() -> None:
         path.name: json.loads(path.read_text(encoding="utf-8"))
         for path in sorted(I18N_DIR.glob("*.json"))
     }
-    assert len(bundles) == 8
     baseline_name = "zh-CN.json"
+    expected_locales = {
+        "zh-CN.json",
+        "zh-TW.json",
+        "en.json",
+        "es.json",
+        "ja.json",
+        "ko.json",
+        "pt.json",
+        "ru.json",
+    }
+    assert baseline_name in bundles
+    assert expected_locales.issubset(set(bundles))
+    assert len(bundles) >= len(expected_locales)
     baseline_keys = set(bundles[baseline_name])
     placeholder_pattern = re.compile(r"\{[a-zA-Z0-9_]+\}")
 

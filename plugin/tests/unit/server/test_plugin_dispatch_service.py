@@ -71,6 +71,26 @@ class _BarrierHost(_Host):
         return self.result
 
 
+class _MutatingHost(_Host):
+    async def trigger_custom_event(
+        self,
+        *,
+        event_type: str,
+        event_id: str,
+        args: dict[str, object],
+        timeout: float,
+    ) -> dict[str, object]:
+        metadata = args.get("metadata")
+        if isinstance(metadata, dict):
+            metadata["mutated_by"] = event_id
+        return await super().trigger_custom_event(
+            event_type=event_type,
+            event_id=event_id,
+            args=args,
+            timeout=timeout,
+        )
+
+
 def _handler(event_type: str, event_id: str) -> SimpleNamespace:
     return SimpleNamespace(meta=SimpleNamespace(event_type=event_type, id=event_id))
 
@@ -234,6 +254,42 @@ async def test_trigger_custom_event_subscribers_runs_handlers_concurrently(
 
     assert [item["plugin_id"] for item in results] == ["alpha", "beta"]
     assert alpha_host.calls and beta_host.calls
+
+
+@pytest.mark.asyncio
+async def test_trigger_custom_event_subscribers_isolates_args_per_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    alpha_host = _MutatingHost({"action": "noop"})
+    beta_host = _Host({"action": "prime_context", "context": "ready"})
+    _patch_handlers_and_hosts(
+        monkeypatch,
+        {
+            "alpha:voice_transcript:one": _handler("voice_transcript", "one"),
+            "beta:voice_transcript:two": _handler("voice_transcript", "two"),
+        },
+        {
+            "alpha": alpha_host,
+            "beta": beta_host,
+        },
+    )
+    args = {"metadata": {"source": "voice"}, "transcript": "Yui explain this"}
+
+    results = await PluginDispatchService().trigger_custom_event_subscribers(
+        event_type="voice_transcript",
+        args=args,
+        timeout=0.25,
+    )
+
+    assert [item["plugin_id"] for item in results] == ["alpha", "beta"]
+    assert args == {"metadata": {"source": "voice"}, "transcript": "Yui explain this"}
+    assert alpha_host.calls[0][2]["metadata"] == {
+        "source": "voice",
+        "mutated_by": "one",
+    }
+    assert beta_host.calls[0][2]["metadata"] == {"source": "voice"}
+    assert alpha_host.calls[0][2] is not beta_host.calls[0][2]
+    assert alpha_host.calls[0][2]["metadata"] is not beta_host.calls[0][2]["metadata"]
 
 
 @pytest.mark.asyncio

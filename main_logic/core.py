@@ -1969,12 +1969,13 @@ class LLMSessionManager:
 
     async def _dispatch_voice_transcript_bridge(self, transcript: str) -> str:
         """Let plugin-side voice filters decide whether to cancel or prime context."""
+        session_snapshot = self.session
         try:
             result = await publish_voice_transcript_request_reliably(
                 self.lanlan_name,
                 transcript,
                 metadata={
-                    "session_type": type(self.session).__name__ if self.session else "",
+                    "session_type": type(session_snapshot).__name__ if session_snapshot else "",
                     "voice_source": True,
                 },
             )
@@ -1984,12 +1985,25 @@ class LLMSessionManager:
         if not isinstance(result, dict) or not result:
             return ""
 
+        def _session_changed() -> bool:
+            if self.session is session_snapshot:
+                return False
+            logger.debug("[%s] voice bridge result ignored after session change", self.lanlan_name)
+            return True
+
+        if _session_changed():
+            return ""
+
         action = str(result.get("action") or "").strip()
         if action == "cancel_response":
-            cancel_response = getattr(self.session, "cancel_response", None)
+            if _session_changed():
+                return ""
+            cancel_response = getattr(session_snapshot, "cancel_response", None)
             if not callable(cancel_response):
                 return action
             try:
+                if _session_changed():
+                    return ""
                 await cancel_response()
                 logger.debug("[%s] voice bridge cancelled current response", self.lanlan_name)
             except Exception as exc:
@@ -2000,11 +2014,15 @@ class LLMSessionManager:
             context_text = str(result.get("context") or "").strip()
             if not context_text:
                 return action
-            prime_context = getattr(self.session, "prime_context", None)
+            if _session_changed():
+                return ""
+            prime_context = getattr(session_snapshot, "prime_context", None)
             if not callable(prime_context):
                 return action
             skipped = bool(result.get("skipped", False))
             try:
+                if _session_changed():
+                    return ""
                 await prime_context(context_text, skipped=skipped)
                 logger.debug(
                     "[%s] voice bridge primed context len=%d skipped=%s",

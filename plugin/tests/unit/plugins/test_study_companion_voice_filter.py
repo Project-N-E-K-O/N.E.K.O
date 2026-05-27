@@ -51,6 +51,26 @@ def test_find_earliest_name_is_case_insensitive_and_uses_first_position() -> Non
     assert pos == 5
 
 
+def test_find_earliest_name_uses_word_boundaries_for_ascii_names() -> None:
+    text = "I was buying time"
+    name, pos = _find_earliest_name(text, ["yui"])
+
+    assert name is None
+    assert pos == len(text)
+
+    name, pos = _find_earliest_name("I was buying time before asking Yui.", ["yui"])
+
+    assert name == "yui"
+    assert pos == 32
+
+
+def test_find_earliest_name_keeps_substring_matching_for_cjk_names() -> None:
+    name, pos = _find_earliest_name("这个题猫娘帮我看一下", ["猫娘"])
+
+    assert name == "猫娘"
+    assert pos == 3
+
+
 def test_name_call_relay_splits_pre_context_and_question() -> None:
     voice_filter = VoiceFilter(names=["猫娘"])
 

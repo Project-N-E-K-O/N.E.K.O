@@ -1658,6 +1658,8 @@ async def _handle_voice_transcript_request(event: Dict[str, Any]) -> None:
 
         if not voice_transcript_bridge.voice_transcript_request_has_text(event):
             result = voice_transcript_bridge.voice_transcript_noop("empty_transcript")
+        elif not Modules.analyzer_enabled:
+            result = voice_transcript_bridge.voice_transcript_noop("agent_disabled")
         elif not Modules.agent_flags.get("user_plugin_enabled", False):
             result = voice_transcript_bridge.voice_transcript_noop(
                 "user_plugin_disabled"
