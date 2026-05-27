@@ -812,6 +812,7 @@ class LLMSessionManager:
         self.proactive_manager = ProactiveDeliveryManager(
             deliver=self._deliver_proactive_batch,
             name=self.lanlan_name,
+            can_release=self._can_release_proactive,
         )
         self.lifecycle_bus.subscribe("voice_play_start", self.proactive_manager.on_playback_start)
         self.lifecycle_bus.subscribe("voice_play_end", self.proactive_manager.on_playback_end)
@@ -6400,6 +6401,33 @@ class LLMSessionManager:
             )
             self._voice_playback_active = False
             return False
+        return True
+
+    def _can_release_proactive(self) -> bool:
+        """Manager-release gate, mirroring the defer conditions in
+        ``trigger_agent_callbacks`` so cues stay UNDER manager ordering
+        (coalescing/priority) until they can actually be delivered — rather
+        than being released into the inner trigger, deferred, and parked in
+        ``pending_agent_callbacks`` outside the manager (Codex P2).
+
+        Returns False while: audio is playing (frontend gate), the SM is not
+        IDLE (another proactive/greeting turn owns it), or the voice session is
+        still GENERATING a response (is_active_response — the window between
+        response.created and voice_play_start the playback gate can't see)."""
+        if self._voice_playback_active:
+            return False
+        try:
+            if self.state.phase is not ProactivePhase.IDLE:
+                return False
+        except Exception:
+            pass
+        sess = self.session
+        if isinstance(sess, OmniRealtimeClient):
+            try:
+                if sess.is_active_response():
+                    return False
+            except Exception:
+                pass
         return True
 
     def _reset_proactive_gate(self) -> None:

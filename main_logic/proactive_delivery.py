@@ -95,6 +95,8 @@ class ProactiveDeliveryManager:
         inflight_timeout_s: float = 12.0,
         ttl_s: float = 90.0,
         max_play_s: float = 30.0,
+        can_release: Optional[Callable[[], bool]] = None,
+        busy_recheck_s: float = 0.5,
     ) -> None:
         # ``deliver`` does the actual hand-off into the existing pipeline
         # (enqueue_agent_callback + trigger_agent_callbacks). Awaited inside
@@ -104,6 +106,16 @@ class ProactiveDeliveryManager:
         self._min_gap_s = float(min_gap_s)
         self._inflight_timeout_s = float(inflight_timeout_s)
         self._ttl_s = float(ttl_s)
+        # Optional predicate (core's gate, inverted): returns False when the
+        # session is busy in ways the playback gate alone can't see — a
+        # response still GENERATING (is_active_response, before any
+        # voice_play_start) or the SM not IDLE. When it returns False we keep
+        # cues IN the manager (so coalescing/priority still apply to later
+        # cues) and recheck shortly, instead of releasing into the inner
+        # trigger which would just defer them into pending_agent_callbacks,
+        # outside manager ordering.
+        self._can_release = can_release
+        self._busy_recheck_s = float(busy_recheck_s)
         # Watchdog: if voice_play_start arrives but voice_play_end never does
         # (frontend disconnect/refresh mid-playback), ``_playing`` would stay
         # True forever and wedge the queue. Treat playback older than this as
@@ -286,6 +298,20 @@ class ProactiveDeliveryManager:
         if self._last_play_end_ts > 0.0 and gap_remaining > 0:
             self._schedule_pump(gap_remaining)
             return
+        # Core-gate parity: the playback gate above can't see a response that's
+        # still GENERATING (is_active_response, before any voice_play_start) or
+        # an SM not-IDLE. Releasing then would have the inner trigger defer the
+        # cues into pending_agent_callbacks — OUTSIDE manager ordering, so later
+        # same-key/higher-priority cues couldn't coalesce/reorder them. Keep
+        # them queued and recheck shortly instead (Codex P2).
+        if self._can_release is not None:
+            try:
+                ok = bool(self._can_release())
+            except Exception:
+                ok = True  # predicate failure must not wedge delivery
+            if not ok:
+                self._schedule_pump(self._busy_recheck_s)
+                return
         # Gate open: release the ENTIRE pending batch in one shot (sorted by
         # priority), preserving the legacy "near-simultaneous proactive cues
         # are drained into ONE LLM turn" behaviour. The playback gate above
