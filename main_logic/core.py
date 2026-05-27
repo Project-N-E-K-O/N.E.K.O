@@ -6337,10 +6337,10 @@ class LLMSessionManager:
 
         Media is LEFT on the cb (NOT popped) until the cb is delivered &
         pruned, so a deferred / failed-and-retried cb re-streams it instead of
-        losing the visual context (text re-stages _pending_images; voice may
-        re-add a conversation.item — acceptable: never lose the image). On a
-        PARTIAL stream failure only the not-yet-streamed tail is kept so we
-        don't re-stream images that already landed."""
+        losing the visual context. On a PARTIAL stream failure the FULL set is
+        kept (not just the tail): a stream failure usually means the session is
+        closing, so the retry lands on a new session that has none of the
+        earlier images — re-streaming everything is correct (Codex P2)."""
         si = getattr(session, "stream_image", None)
         if si is None:
             return True
@@ -6357,16 +6357,21 @@ class LLMSessionManager:
                     await si(b64)
                     streamed += 1
                 except Exception as e:
-                    # Transient failure (session closing / provider reject).
-                    # Keep ONLY the not-yet-streamed tail so a later delivery
-                    # attempt re-streams the rest WITHOUT re-injecting images
-                    # that already landed, and signal the caller to DEFER this
-                    # delivery (don't send text-only and prune away the media).
+                    # Keep the FULL media set (do NOT trim already-streamed
+                    # ones): a voice stream_image failure almost always means
+                    # the session is closing, so the retry runs on a NEW session
+                    # whose conversation has none of the earlier images —
+                    # trimming would permanently drop them. Re-streaming the
+                    # whole set on the (likely new) session is correct; the only
+                    # downside is duplicate items if the SAME session is retried,
+                    # which is rare in a failure path and harmless (Codex P2 —
+                    # overrides the earlier tail-trim). media_images is left
+                    # untouched (already the full set). Signal the caller to
+                    # DEFER (don't send text-only and prune the media away).
                     logger.warning(
-                        "[%s] proactive media stream_image failed; keeping %d remaining for retry: %s",
-                        self.lanlan_name, len(images) - streamed, e,
+                        "[%s] proactive media stream_image failed (streamed %d/%d); keeping FULL set for retry: %s",
+                        self.lanlan_name, streamed, len(images), e,
                     )
-                    cb["media_images"] = list(images[streamed:])
                     all_ok = False
                     break
             # All streamed: keep media_images on the cb until it's delivered+
