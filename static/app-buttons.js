@@ -1497,13 +1497,15 @@
                 }, 15000);
 
                 // Parallel: wait for session + init mic
+                var micCapturePromise = null;
                 try {
                     await window.showCurrentModel();
                     window.showStatusToast(window.t ? window.t('app.initializingMic') : '\u6B63\u5728\u521D\u59CB\u5316\u9EA6\u514B\u98CE...', 3000);
 
+                    micCapturePromise = window.startMicCapture();
                     await Promise.all([
                         sessionStartPromise,
-                        window.startMicCapture()
+                        micCapturePromise
                     ]);
 
                     if (window.sessionTimeoutId) {
@@ -1514,6 +1516,15 @@
                     if (window.sessionTimeoutId) {
                         clearTimeout(window.sessionTimeoutId);
                         window.sessionTimeoutId = null;
+                    }
+                    // session_failed \u4F1A\u7ACB\u523B reject Promise.all\uFF0C\u4F46\u6B64\u65F6 startMicCapture
+                    // \u5F80\u5F80\u8FD8\u5728 await getUserMedia/AudioWorklet\u3002\u82E5\u76F4\u63A5 throw \u8FDB\u5916\u5C42 catch
+                    // \u505A teardown\uFF0CstartMicCapture \u968F\u540E\u624D settle\uFF0C\u4F1A\u628A S.isRecording \u548C
+                    // \u6D6E\u52A8\u9EA6\u6309\u94AE\u91CD\u65B0\u5199\u6210"\u5F55\u97F3\u4E2D"\u2014\u2014\u7ED3\u679C\u6CA1\u6709 session \u5374\u663E\u793A\u5728\u5F55\u97F3\uFF0C\u4E0B\u4E00\u6B21
+                    // \u70B9\u9EA6\u88AB\u5F53\u4F5C toggle-off\uFF08\u5173\u9EA6\uFF09\u9759\u9ED8\u541E\u6389\uFF0C\u770B\u4E0D\u5230\u4EFB\u4F55 banner\u3002\u5148\u7B49\u9EA6\u514B\u98CE
+                    // \u521D\u59CB\u5316\u5F7B\u5E95 settle\uFF0C\u518D\u8BA9\u5916\u5C42 catch \u7684 teardown \u6536\u5C3E\u3002
+                    if (micCapturePromise) {
+                        try { await micCapturePromise; } catch (_e) { }
                     }
                     throw error;
                 }
