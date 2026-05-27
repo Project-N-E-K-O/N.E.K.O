@@ -85,7 +85,9 @@ class ProactiveDeliveryManager:
     def __init__(
         self,
         *,
-        deliver: Callable[[dict], Awaitable[Any]],
+        # Receives the WHOLE released batch (list of callback dicts), not a
+        # single cue — releases are batched (see _pump / _run_deliver).
+        deliver: Callable[[list], Awaitable[Any]],
         name: str = "",
         min_gap_s: float = 2.0,
         inflight_timeout_s: float = 12.0,
@@ -198,13 +200,16 @@ class ProactiveDeliveryManager:
             self._pump_handle = None
 
     def drain_pending(self) -> list:
-        """Pop and return all queued cue callbacks (clearing the queue). Used
-        on session teardown to move not-yet-released cues into
+        """Pop and return all queued cue callbacks (clearing the queue), in the
+        SAME priority order a normal release would use (priority asc, then
+        FIFO). Used on session teardown to move not-yet-released cues into
         pending_agent_callbacks so the reconnect path redelivers them rather
-        than losing them."""
-        callbacks = [c.callback for c in self._queue]
+        than losing them — exporting in queue/append order would drop the
+        priority-asc + FIFO ordering, letting a late high-priority cue trail
+        behind earlier low-priority ones on redelivery."""
+        ordered = sorted(self._queue, key=lambda c: c.sort_key)
         self._queue = []
-        return callbacks
+        return [c.callback for c in ordered]
 
     # ── pump ─────────────────────────────────────────────────────────────
     def _suffix(self) -> str:

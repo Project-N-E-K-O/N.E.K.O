@@ -5752,6 +5752,10 @@ class LLMSessionManager:
                     # queued above, so the retry is not lost — just deferred to
                     # the loop-free turn-end hook.
 
+                # Stream any images carried by these cues into the (guaranteed)
+                # voice session right before inject, so the proactive response
+                # sees the matching visual context (Codex P2).
+                await self._stream_cb_media(voice_snapshot, voice_sess)
                 try:
                     await voice_sess.inject_text_and_request_response(
                         instruction, on_rejected=_on_voice_inject_rejected
@@ -5938,6 +5942,10 @@ class LLMSessionManager:
             # pending_agent_callbacks here — passive cbs would also get wiped.
             # per-task contextvar：prompt_ephemeral 回调链里 handle_text_data
             # 识别本路径 chunk 并在 sid 被用户抢走后丢弃
+            # Stream any images carried by these cues into the (now-started)
+            # text session right before prompt_ephemeral, so the proactive
+            # response sees the matching visual context (Codex P2).
+            await self._stream_cb_media(callbacks_snapshot, self.session)
             _sid_token = _proactive_expected_sid.set(proactive_sid)
             # Text-mode playback boundary for the pacing manager: no frontend
             # audio signal arrives for text delivery, so bracket prompt_ephemeral
@@ -6268,22 +6276,43 @@ class LLMSessionManager:
         how many cues per turn)."""
         if not callbacks:
             return
-        # Stream any images that rode WITH these cues (push_message media_parts
-        # for ai_behavior="respond") into the session NOW — at release — so the
-        # single trigger below produces a response that sees the matching
-        # visual context, instead of the image having been injected seconds
-        # earlier into an unrelated turn (Codex P2).
-        stream_image = getattr(self.session, "stream_image", None)
         for callback in callbacks:
-            images = callback.get("media_images") or []
-            if images and stream_image is not None:
-                for b64 in images:
-                    try:
-                        await stream_image(b64)
-                    except Exception as e:
-                        logger.warning("[%s] proactive media stream_image failed: %s", self.lanlan_name, e)
             self.enqueue_agent_callback(callback)
+        # NOTE: images carried by these cues (push_message media_parts for
+        # ai_behavior="respond") are streamed at the ACTUAL delivery point
+        # inside trigger_agent_callbacks via _stream_cb_media — NOT here. That
+        # binds streaming to a guaranteed session and covers every delivery
+        # path (manager release / reconnect redelivery / turn-end retry),
+        # instead of streaming into a possibly-None / about-to-be-swapped
+        # session at release time (Codex P2).
         await self.trigger_agent_callbacks()
+
+    async def _stream_cb_media(self, callbacks: list, session) -> None:
+        """Stream images carried by proactive callbacks (push_message
+        media_parts with ai_behavior="respond") into ``session`` right before
+        delivery, so the proactive response sees matching visual context.
+
+        Bound to the delivery point (not the manager-release point) so it
+        covers every path that actually delivers a cb — manager release,
+        reconnect redelivery, turn-end retry — and only once a session is
+        guaranteed. If there is no session / no vision input yet, media is LEFT
+        on the cb so the next delivery attempt streams it (no loss). Streamed
+        images are popped so a deferred-then-retried cb doesn't re-stream."""
+        si = getattr(session, "stream_image", None)
+        if si is None:
+            return
+        for cb in callbacks:
+            if not isinstance(cb, dict):
+                continue
+            images = cb.get("media_images")
+            if not images:
+                continue
+            for b64 in images:
+                try:
+                    await si(b64)
+                except Exception as e:
+                    logger.warning("[%s] proactive media stream_image failed: %s", self.lanlan_name, e)
+            cb.pop("media_images", None)
 
     def on_voice_playback_signal(self, *, playing: bool, **meta) -> None:
         """Handle a FRONTEND-reported audio playback boundary.

@@ -149,10 +149,12 @@ async def test_drain_pending_returns_queue_without_delivering():
     delivered = []
     mgr = _make(delivered)
     mgr.on_playback_start()          # gate closed → cues queue up
+    # Submit out of priority order; drain must return priority-asc (FIFO ties)
+    # so redelivery preserves ordering.
+    mgr.submit({"id": "b"}, priority=2)
     mgr.submit({"id": "a"}, priority=1)
-    mgr.submit({"id": "b"}, priority=2, coalesce_key="k")
     drained = mgr.drain_pending()
-    assert sorted(c["id"] for c in drained) == ["a", "b"]
+    assert [c["id"] for c in drained] == ["a", "b"]
     await _settle()
     assert delivered == []           # drained, not delivered by the manager
 
