@@ -1419,6 +1419,9 @@ class OmniRealtimeClient:
                     if elapsed < min_interval:
                         # Skip this image frame due to rate limiting
                         return
+                # Stamp even on the bypass path: a frame WAS sent to the server,
+                # so it must count toward the throttle window — this keeps
+                # back-to-back bypassed cue images from flooding native vision.
                 self._last_native_image_time = current_time
 
             # Gemini uses SDK, not WebSocket events (_audio_in_buffer is not set for Gemini)
