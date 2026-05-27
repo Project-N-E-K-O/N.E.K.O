@@ -3999,9 +3999,6 @@ class LLMSessionManager:
         # 路径独立处理（见 main_routers/config_router.py:steam_language 端点）。
         if not getattr(self, 'user_language', None):
             self.user_language = normalize_language_code(get_global_language(), format='short')
-        # 新 session = 干净的播放门控：清掉上一会话可能残留的 playback flag /
-        # manager 队列（前端中途断线/刷新导致 voice_play_end 丢失时尤为重要）。
-        self._reset_proactive_gate()
         # 重置防刷屏标志
         self.session_closed_by_server = False
         self.last_audio_send_error_time = 0.0
@@ -4053,6 +4050,11 @@ class LLMSessionManager:
         # 标记正在启动（使用计数器，避免并发 start_session 的 finally 互相覆盖）
         self._starting_session_count += 1
         self._starting_input_mode = input_mode
+        # 干净的播放门控：清掉上一会话可能残留的 playback flag / manager 队列
+        # （前端中途断线/刷新导致 voice_play_end 丢失时尤为重要）。放在熔断早退
+        # 与 "正在启动中" 去重早退 *之后*——那些早退不会真正起新 session，提前
+        # reset 会误清掉仍在播放的旧会话门控（Codex P1）。这里已确定要起新会话。
+        self._reset_proactive_gate()
         # 首次 start_session 起算，让 idle reset loop 永久存活
         self._ensure_idle_session_reset_loop()
         # rebase idle 计时基准：last_user_activity_time 是 manager 状态、跨 session 持久。
@@ -7122,10 +7124,6 @@ class LLMSessionManager:
             await self.send_status(json.dumps({"code": "API_UNKNOWN_ERROR", "details": {"msg": error_message}}))
 
     async def end_session(self, by_server=False, *, expected_session=None, reset_starting_count=True):  # 与Core API断开连接
-        # Session teardown: clear the playback gate + manager so a voice_play_end
-        # that never arrived (e.g. end_session fired mid-playback) doesn't leave
-        # the gate stuck closed for the next session.
-        self._reset_proactive_gate()
         # Pre-check: no-side-effect guard before _init_renew_status which mutates
         # pending/prewarm state.  A stale callback must not nuke preparation state.
         _inactive_early = False
@@ -7157,6 +7155,12 @@ class LLMSessionManager:
                 # 尽早取消 TTS 延迟重试任务并清理错误码（持锁状态下），
                 # 防止 _init_renew_status 期间 respawn task 触发无效重试
                 self._reset_tts_retry_state()
+
+        # Clear the playback gate + manager queue on genuine teardown. Placed
+        # AFTER the stale-session guards above (which `return` early) so a stale/
+        # duplicate end_session callback can't reset the CURRENT live session's
+        # gate or drop its queued cues (Codex P1).
+        self._reset_proactive_gate()
 
         if _inactive_early:
             if reset_starting_count:
