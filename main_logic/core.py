@@ -6447,9 +6447,11 @@ class LLMSessionManager:
         ``pending_agent_callbacks`` outside the manager (Codex P2).
 
         Returns False while: audio is playing (frontend gate), the SM is not
-        IDLE (another proactive/greeting turn owns it), or the voice session is
-        still GENERATING a response (is_active_response — the window between
-        response.created and voice_play_start the playback gate can't see)."""
+        IDLE (another proactive/greeting turn owns it), or the session is still
+        GENERATING a response (_is_responding — covers BOTH the realtime
+        response.created→voice_play_start window the playback gate can't see,
+        AND an active offline/text user response where try_start_proactive
+        would deny the claim)."""
         # Time-bounded read (NOT the raw _voice_playback_active flag): if the
         # frontend dropped voice_play_end, _is_voice_playing() self-heals after
         # the 30s watchdog, so a stuck flag can't make can_release return False
@@ -6464,14 +6466,18 @@ class LLMSessionManager:
             # the gate; never block delivery on a phase-read hiccup.
             logger.debug("[%s] _can_release_proactive: state.phase unavailable; treating as IDLE", self.lanlan_name)
         sess = self.session
-        if isinstance(sess, OmniRealtimeClient):
-            try:
-                if sess.is_active_response():
-                    return False
-            except Exception:
-                # is_active_response read failed → treat as not-active rather
-                # than wedging the queue.
-                logger.debug("[%s] _can_release_proactive: is_active_response check failed; treating as not-active", self.lanlan_name)
+        # Both realtime AND offline sessions expose _is_responding (set while
+        # generating a response — user OR proactive); realtime's
+        # is_active_response() is just a read of it. Releasing while True would
+        # have trigger deny/defer the claim (voice: is_active_response gate;
+        # text: try_start_proactive denies during _is_responding) and park the
+        # cue in pending_agent_callbacks outside the manager (Codex P2).
+        try:
+            if sess is not None and getattr(sess, "_is_responding", False):
+                return False
+        except Exception:
+            # Read hiccup → treat as not-responding rather than wedging the queue.
+            logger.debug("[%s] _can_release_proactive: _is_responding check failed; treating as not-responding", self.lanlan_name)
         return True
 
     def _reset_proactive_gate(self) -> None:
