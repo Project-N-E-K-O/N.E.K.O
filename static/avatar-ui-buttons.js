@@ -351,15 +351,14 @@ const AvatarButtonMixin = {
                     iconOn: `/static/icons/mic_icon_on.png${iconVersion}`
                 },
                 {
-                    id: 'screen',
-                    emoji: '🖥️',
-                    title: window.t ? window.t('buttons.screenShare') : '屏幕分享',
-                    titleKey: 'buttons.screenShare',
-                    hasPopup: true,
-                    toggle: true,
-                    separatePopupTrigger: true,
-                    iconOff: `/static/icons/screen_icon_off.png${iconVersion}`,
-                    iconOn: `/static/icons/screen_icon_on.png${iconVersion}`
+                    // N.E.K.O.Servers 社交平台入口（替代原 screen 槽位）。
+                    // 屏幕分享仍可通过聊天界面底部 toolbar 的 #screenButton 触发，
+                    // 不通过悬浮按钮暴露。详见 0N.E.K.Oserver/.claude/decisions.md。
+                    id: 'social',
+                    emoji: '👥',
+                    title: window.t ? window.t('buttons.social') : '猫娘网络',
+                    titleKey: 'buttons.social',
+                    hasPopup: false,
                 },
                 {
                     id: 'agent',
@@ -993,18 +992,8 @@ const AvatarButtonMixin = {
                 this.setButtonActive('mic', isRecording);
             }
 
-            // 屏幕分享状态
-            let isScreenSharing = false;
-            const screenButton = document.getElementById('screenButton');
-            const stopButton = document.getElementById('stopButton');
-            if (screenButton && screenButton.classList.contains('active')) {
-                isScreenSharing = true;
-            } else if (stopButton && !stopButton.disabled) {
-                isScreenSharing = true;
-            }
-            if (this._floatingButtons.screen) {
-                this.setButtonActive('screen', isScreenSharing);
-            }
+            // 旧 screen 浮动按钮已被 social 取代；屏幕分享状态仅同步到聊天界面
+            // 底部 toolbar 的 #screenButton，本悬浮按钮组不再维护 active 状态。
         };
 
         /**

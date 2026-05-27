@@ -2157,6 +2157,65 @@
             console.log('Agent工具按钮被点击，显示弹出框');
         });
 
+        // 猫娘网络（社交平台）按钮：占用原 screen 槽位。
+        // 从 /api/system/social/config 拿云端 base URL，
+        // 从 /api/system/client-id 拿 device 身份，开独立窗口。
+        window.addEventListener('live2d-social-click', async () => {
+            try {
+                const cfgRes = await fetch('/api/system/social/config');
+                if (!cfgRes.ok) {
+                    if (typeof window.showStatusToast === 'function') {
+                        window.showStatusToast(
+                            window.t ? window.t('app.socialUnavailable') : '社交服务不可用 (config fetch failed)',
+                            3000
+                        );
+                    }
+                    return;
+                }
+                const cfg = await cfgRes.json();
+                if (cfg && cfg.enabled === false) {
+                    if (typeof window.showStatusToast === 'function') {
+                        window.showStatusToast(
+                            window.t ? window.t('app.socialDisabled') : '社交服务已禁用',
+                            3000
+                        );
+                    }
+                    return;
+                }
+                let url = (cfg && cfg.social_base_url) ? cfg.social_base_url.replace(/\/+$/, '') + '/feed' : null;
+                if (!url) {
+                    console.warn('[social] no social_base_url from /api/system/social/config');
+                    return;
+                }
+                // 顺手把 client_id 拼进 URL（在新窗口本地 JS 里存到 storage 后用）
+                try {
+                    const cidRes = await fetch('/api/system/client-id');
+                    if (cidRes.ok) {
+                        const cidJson = await cidRes.json();
+                        if (cidJson && cidJson.client_id) {
+                            const sep = url.includes('?') ? '&' : '?';
+                            url = `${url}${sep}cid=${encodeURIComponent(cidJson.client_id)}`;
+                        }
+                    }
+                } catch (cidErr) {
+                    console.warn('[social] client_id fetch failed (non-fatal):', cidErr);
+                }
+                if (typeof window.openOrFocusWindow === 'function') {
+                    window.openOrFocusWindow(url, 'neko-social', 'width=1200,height=800,menubar=no,toolbar=no');
+                } else {
+                    window.open(url, 'neko-social');
+                }
+            } catch (err) {
+                console.error('[social] open failed:', err);
+                if (typeof window.showStatusToast === 'function') {
+                    window.showStatusToast(
+                        window.t ? window.t('app.socialOpenFailed', { error: err.message }) : `社交窗口打开失败：${err.message}`,
+                        4000
+                    );
+                }
+            }
+        });
+
         // 睡觉按钮（请她离开）
         window.addEventListener('live2d-goodbye-click', () => {
             // 第零步：在任何状态变更之前立即捕获 goodbye 按钮位置

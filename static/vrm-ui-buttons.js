@@ -491,7 +491,7 @@ VRMManager.prototype._startUIUpdateLoop = function() {
 
     const getVisibleButtonCount = () => {
         const mobile = window.isMobileWidth && window.isMobileWidth();
-        return [{ id: 'mic' }, { id: 'screen' }, { id: 'agent' }, { id: 'settings' }, { id: 'goodbye' }]
+        return [{ id: 'mic' }, { id: 'social' }, { id: 'agent' }, { id: 'settings' }, { id: 'goodbye' }]
             .filter(c => !(mobile && (c.id === 'agent' || c.id === 'goodbye'))).length;
     };
     const baseButtonSize = 48;

@@ -2098,6 +2098,15 @@ async def on_startup():
         except Exception as _e:
             logger.debug(f"[debug_health] start watchdog failed: {_e}")
 
+        # N.E.K.O.Servers 社交平台 facts_sync worker。默认禁用
+        # （NEKO_FACTS_SYNC_ENABLED=0）；启用后 5 分钟 sweep 一次，把高 importance
+        # facts 推到云端铸造池。完整契约见 N.E.K.O.Servers/.claude/contracts/facts-sync-schema.md。
+        try:
+            from main_logic.facts_sync import start_facts_sync_worker  # noqa: WPS433  (lazy import 避免循环)
+            asyncio.create_task(start_facts_sync_worker())
+        except Exception as _e:
+            logger.debug(f"[facts_sync] start worker failed: {_e}")
+
         blocking_reason = get_storage_startup_blocking_reason(_config_manager)
         if blocking_reason:
             _enable_main_storage_limited_mode(blocking_reason)

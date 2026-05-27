@@ -297,19 +297,8 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
                 }
             }
 
-            if (config.id === 'screen') {
-                const isRecording = window.isRecording || false;
-                const wantToActivate = btn.dataset.active !== 'true';
-                if (wantToActivate && !isRecording) {
-                    if (typeof window.showStatusToast === 'function') {
-                        window.showStatusToast(
-                            window.t ? window.t('app.screenShareRequiresVoice') : '屏幕分享仅用于音视频通话',
-                            3000
-                        );
-                    }
-                    return;
-                }
-            }
+            // 旧 screen 按钮已被 social 取代；avatar 悬浮按钮不再处理屏幕分享，
+            // 该功能保留在聊天界面底部 toolbar 的 #screenButton 上。
 
             if (config.popupToggle) {
                 return;
