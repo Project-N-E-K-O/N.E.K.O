@@ -40,6 +40,8 @@ from main_logic.tool_calling import (
 )
 from utils.llm_client import AIMessage
 from main_logic.session_state import SessionStateMachine, SessionEvent, ProactivePhase
+from main_logic.lifecycle_bus import LifecycleEventBus
+from main_logic.proactive_delivery import ProactiveDeliveryManager
 from main_logic.agent_event_bus import (
     dispatch_text_user_message,
     dispatch_user_utterance,
@@ -791,6 +793,26 @@ class LLMSessionManager:
         self.pending_extra_replies: list[dict] = []
         # 结构化 agent 任务回调队列（用于按会话类型注入）
         self.pending_agent_callbacks: list[dict] = []
+        # ── Proactive delivery front stage ───────────────────────────────
+        # Generic, plugin-agnostic pacing/ordering for proactive cues
+        # (push_message ai_behavior="respond" + agent task results). The
+        # manager OWNS waiting cues and decides which/when to hand one off
+        # into enqueue_agent_callback + trigger_agent_callbacks below; it
+        # does not replace pending_agent_callbacks (which stays the
+        # race-tested delivery buffer). ``_voice_playback_active`` is set by
+        # the FRONTEND-reported voice_play_start/end signals so the voice
+        # inject gate keys off ACTUAL audio playback completion rather than
+        # the realtime API's response.done (generation, not playback).
+        self.lifecycle_bus = LifecycleEventBus(name=self.lanlan_name)
+        self._voice_playback_active = False
+        self.proactive_manager = ProactiveDeliveryManager(
+            deliver=self._deliver_proactive_callback,
+            name=self.lanlan_name,
+        )
+        self.lifecycle_bus.subscribe("voice_play_start", self.proactive_manager.on_playback_start)
+        self.lifecycle_bus.subscribe("voice_play_end", self.proactive_manager.on_playback_end)
+        self.lifecycle_bus.subscribe("text_start", self.proactive_manager.on_text_start)
+        self.lifecycle_bus.subscribe("text_end", self.proactive_manager.on_text_end)
         # 防止 trigger_agent_callbacks 和 finish_proactive_delivery 并发写 WS/sync_message_queue
         self._proactive_write_lock = asyncio.Lock()
         # Serializes the voice-mode proactive inject path. trigger_agent_callbacks
@@ -5592,12 +5614,24 @@ class LLMSessionManager:
                 ]
                 if not proactive_cbs:
                     return
-                if self.state.phase is not ProactivePhase.IDLE or voice_sess.is_active_response():
+                # Playback-aware gate: ``_voice_playback_active`` is True
+                # between the FRONTEND's voice_play_start and voice_play_end,
+                # i.e. while buffered audio is still AUDIBLY playing — which
+                # outlasts the realtime API's response.done (generation end).
+                # Injecting then makes her interrupt herself, so defer; the
+                # voice_play_end signal re-fires this and the manager releases
+                # the next cue only once she has truly stopped talking.
+                if (
+                    self.state.phase is not ProactivePhase.IDLE
+                    or voice_sess.is_active_response()
+                    or self._voice_playback_active
+                ):
                     logger.debug(
-                        "[%s] trigger_agent_callbacks: voice session busy (phase=%s, active_response=%s); deferring proactive (n=%d)",
+                        "[%s] trigger_agent_callbacks: voice session busy (phase=%s, active_response=%s, playback=%s); deferring proactive (n=%d)",
                         self.lanlan_name,
                         self.state.phase.value,
                         voice_sess.is_active_response(),
+                        self._voice_playback_active,
                         len(proactive_cbs),
                     )
                     return
@@ -5896,10 +5930,22 @@ class LLMSessionManager:
             # per-task contextvar：prompt_ephemeral 回调链里 handle_text_data
             # 识别本路径 chunk 并在 sid 被用户抢走后丢弃
             _sid_token = _proactive_expected_sid.set(proactive_sid)
+            # Text-mode playback boundary for the pacing manager: no frontend
+            # audio signal arrives for text delivery, so bracket prompt_ephemeral
+            # with text_start/text_end. text_end clears the manager's in-flight
+            # slot + applies min-gap before the next proactive cue.
+            try:
+                self.lifecycle_bus.emit("text_start")
+            except Exception:
+                pass
             try:
                 delivered = await self.session.prompt_ephemeral(instruction)
             finally:
                 _proactive_expected_sid.reset(_sid_token)
+                try:
+                    self.lifecycle_bus.emit("text_end")
+                except Exception:
+                    pass
             logger.debug("[%s] trigger_agent_callbacks: prompt_ephemeral delivered=%s", self.lanlan_name, delivered)
             if delivered:
                 # pending_extra_replies parallels pending_agent_callbacks but
@@ -6181,6 +6227,50 @@ class LLMSessionManager:
                         logger.warning("[%s] trigger_new_character_greeting: remove pending failed: %s", self.lanlan_name, exc)
             finally:
                 await self.state.fire(SessionEvent.PROACTIVE_DONE)
+
+    def submit_proactive_callback(
+        self,
+        callback: dict,
+        *,
+        priority: int = 0,
+        coalesce_key: Optional[str] = None,
+    ) -> None:
+        """Hand a proactive (ai_behavior="respond") cue to the delivery
+        manager, which paces/orders/coalesces it before release.
+
+        Replaces the EventBus's old "enqueue + immediately fire trigger"
+        for proactive cues. Passive/silent cues do NOT come here — they keep
+        their existing direct enqueue-only path so ``delivery="passive"``'s
+        "don't interrupt" promise is unchanged.
+        """
+        self.proactive_manager.submit(callback, priority=priority, coalesce_key=coalesce_key)
+
+    async def _deliver_proactive_callback(self, callback: dict) -> None:
+        """Release hook invoked by ProactiveDeliveryManager when the gate is
+        open. Funnels into the existing, race-tested delivery core."""
+        self.enqueue_agent_callback(callback)
+        await self.trigger_agent_callbacks()
+
+    def on_voice_playback_signal(self, *, playing: bool, **meta) -> None:
+        """Handle a FRONTEND-reported audio playback boundary.
+
+        ``playing=True`` (voice_play_start) → real audio started; close the
+        voice inject gate. ``playing=False`` (voice_play_end) → the browser's
+        audio queue fully drained (she actually stopped talking) → open the
+        gate and let the manager release the next cue. Re-fires
+        ``trigger_agent_callbacks`` on end so a cue deferred mid-playback is
+        delivered promptly rather than waiting for the next response.done.
+        """
+        self._voice_playback_active = bool(playing)
+        try:
+            self.lifecycle_bus.emit(
+                "voice_play_start" if playing else "voice_play_end", **meta
+            )
+        except Exception:
+            logger.exception("[%s] lifecycle_bus emit failed", self.lanlan_name)
+        if not playing and self.pending_agent_callbacks:
+            # A cue deferred while she was speaking can now go out.
+            self._fire_task(self.trigger_agent_callbacks())
 
     def enqueue_agent_callback(self, callback: dict) -> None:
         """Enqueue a structured agent task callback for LLM injection.

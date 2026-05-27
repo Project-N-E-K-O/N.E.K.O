@@ -214,6 +214,17 @@ class ProactiveBridge:
         if ai_behavior not in AI_BEHAVIOR_VALUES:
             ai_behavior = "respond"
         parts = payload.get("parts") if isinstance(payload.get("parts"), list) else []
+        # Proactive-delivery hints (priority ordering + coalescing). Carried
+        # through to the main_server callback so ProactiveDeliveryManager can
+        # order/coalesce. Lower priority = more urgent; unspecified (0) is
+        # normalised to a neutral band downstream.
+        try:
+            priority = int(payload.get("priority", 0) or 0)
+        except (TypeError, ValueError):
+            priority = 0
+        coalesce_key = payload.get("coalesce_key")
+        if not isinstance(coalesce_key, str):
+            coalesce_key = ""
 
         target_lanlan = payload.get("target_lanlan") or metadata.get("target_lanlan") or None
 
@@ -304,6 +315,8 @@ class ProactiveBridge:
                 "media_parts": media,
                 "visibility": list(visibility),
                 "ai_behavior": ai_behavior,
+                "priority": priority,
+                "coalesce_key": coalesce_key,
             }
             # When ai_behavior=blind we still want the HUD agent_notification
             # to fire (handled by main_server's existing branch).  Setting

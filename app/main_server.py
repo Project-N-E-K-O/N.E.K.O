@@ -843,6 +843,16 @@ async def _handle_agent_event(event: dict):
                     # producer that lands on this branch); see the (event_type in
                     # {"task_result", "proactive_message"}) gate above.
                     origin = "event"
+                # Proactive-delivery hints from push_message (priority +
+                # coalesce_key). Lower priority = more urgent; unspecified
+                # (0) is normalised to a neutral band by the manager.
+                try:
+                    cb_priority = int(event.get("priority", 0) or 0)
+                except (TypeError, ValueError):
+                    cb_priority = 0
+                cb_coalesce_key = event.get("coalesce_key")
+                if not isinstance(cb_coalesce_key, str):
+                    cb_coalesce_key = ""
                 callback = {
                     "event": "agent_task_callback",
                     "origin": origin,
@@ -856,30 +866,35 @@ async def _handle_agent_event(event: dict):
                     "source_kind": source_kind,
                     "source_name": source_name,
                     "delivery_mode": delivery_mode,
+                    "priority": cb_priority,
+                    "coalesce_key": cb_coalesce_key,
                     "timestamp": event.get("timestamp") or "",
                     "metadata": event_metadata,
                     "context_type": event_metadata.get("context_type") or "",
                 }
                 if delivery_mode != "silent":
-                    mgr.enqueue_agent_callback(callback)
                     if delivery_mode == "passive":
+                        # Passive cues keep the direct enqueue-only path:
+                        # they must NOT interrupt; the next user turn drains
+                        # them. The pacing manager only governs proactive.
+                        mgr.enqueue_agent_callback(callback)
                         logger.info(
                             "[EventBus] %s enqueued callback (passive); next user turn will carry it",
                             event_type,
                         )
                     else:
+                        # Proactive: hand to the delivery manager, which
+                        # orders by priority, coalesces by key, and paces
+                        # release on the frontend playback gate + min-gap.
                         logger.info(
-                            "[EventBus] %s enqueued callback, scheduling trigger_agent_callbacks",
-                            event_type,
+                            "[EventBus] %s submitting proactive callback to delivery manager (priority=%s key=%r)",
+                            event_type, cb_priority, cb_coalesce_key or "(source)",
                         )
-
-                        # Create task with exception logging
-                        async def _run_trigger_with_logging():
-                            try:
-                                await mgr.trigger_agent_callbacks()
-                            except Exception as e:
-                                logger.error("[EventBus] trigger_agent_callbacks task failed: %s", e)
-                        mgr._pending_agent_callback_task = asyncio.create_task(_run_trigger_with_logging())
+                        mgr.submit_proactive_callback(
+                            callback,
+                            priority=cb_priority,
+                            coalesce_key=cb_coalesce_key or None,
+                        )
                 else:
                     logger.info(
                         "[EventBus] %s delivery=silent: skipping LLM channel (frontend HUD still fires)",

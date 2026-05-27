@@ -1088,6 +1088,7 @@ class GameAgentService:
                 ai_behavior="respond",
                 parts=[{"type": "text", "text": body}],
                 priority=1,
+                coalesce_key="mc_alert",
             )
         except Exception as exc:
             self._log_error(
@@ -1191,6 +1192,7 @@ class GameAgentService:
                 ai_behavior="respond",
                 parts=[{"type": "text", "text": body}],
                 priority=2,
+                coalesce_key="mc_completion",
             )
         except Exception as exc:
             self._log_error(
@@ -1518,7 +1520,8 @@ class GameAgentService:
                 visibility=[],
                 ai_behavior="respond",
                 parts=parts,
-                priority=2,
+                priority=3,
+                coalesce_key="mc_in_progress",
             )
         except Exception as exc:
             self._log_error(
@@ -1551,7 +1554,8 @@ class GameAgentService:
                 visibility=[],
                 ai_behavior="respond",
                 parts=parts,
-                priority=2,
+                priority=4,
+                coalesce_key="mc_keep_going",
             )
         except Exception as exc:
             self._log_error(
@@ -1611,10 +1615,16 @@ class GameAgentService:
         parts.append({"type": "text", "text": prompt_text})
 
         try:
+            # General periodic state burst (inventory + recent log +
+            # screenshots). This is passive CONTEXT, not a "speak now" cue:
+            # ai_behavior="read" injects it into the model's context without
+            # forcing an AI turn, so it can't make her narrate non-stop or
+            # compete with real alert/completion cues in the pacing manager.
+            # The specific nudges (in_progress / keep_going) remain "respond".
             self._push_message(
                 source="game_agent_minecraft",
                 visibility=[],
-                ai_behavior="respond",
+                ai_behavior="read",
                 parts=parts,
                 priority=4,
             )

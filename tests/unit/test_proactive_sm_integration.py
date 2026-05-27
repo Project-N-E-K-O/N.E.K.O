@@ -91,6 +91,9 @@ def _make_mgr(session=None) -> LLMSessionManager:
     mgr._tts_done_queued_for_turn = False
     mgr.pending_agent_callbacks = []
     mgr.pending_extra_replies = []
+    # Mirror the production __init__ playback-gate flag (the double is built
+    # via __new__, so __init__ never ran). Default False = gate open.
+    mgr._voice_playback_active = False
     mgr._takeover_active = False
     mgr._takeover_input_dispatcher = None
     mgr._get_text_guard_max_length = MagicMock(return_value=200)

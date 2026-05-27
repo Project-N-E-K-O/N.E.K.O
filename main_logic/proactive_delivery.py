@@ -1,0 +1,243 @@
+"""Generic, plugin-agnostic proactive-delivery pacing/ordering front stage.
+
+Problem (observed in voice mode especially): proactive cues — plugin
+``push_message(ai_behavior="respond")``, greeting, agent task results — are
+produced far faster than the assistant can speak them, and the legacy gate
+released the next cue on the realtime API's ``response.done`` (generation
+finished) while the FRONTEND was still playing buffered audio. Result: she
+talks non-stop / interrupts herself, and a low-value "state digest" cue
+competes equally with an urgent "you got hit" cue.
+
+This manager sits IN FRONT of the existing, race-tested
+``LLMSessionManager.enqueue_agent_callback`` + ``trigger_agent_callbacks``
+delivery core (it does NOT replace it). It owns the WAITING cues and decides
+WHICH cue and WHEN to hand one off, applying:
+
+* **Priority ordering** — lower number = more urgent. ``priority`` arrives
+  from ``push_message(priority=...)``. The wire default (0, "unspecified")
+  is mapped to :data:`NEUTRAL_PRIORITY` so a cue that bothered to set any
+  explicit 1..N urgency always outranks one that didn't — and existing
+  plugins that used higher-number-means-important (gift=9, reminder=8) are
+  placed below the explicit-urgent band but above unspecified, instead of
+  being starved or inverted.
+* **Coalescing** — OPT-IN: queued cues sharing an explicit ``coalesce_key``
+  collapse to the newest. An unset key never coalesces (unique per cue), so
+  no existing plugin regresses by having distinct cues silently dropped.
+  Minecraft opts in per category (alert / completion / in_progress /
+  keep_going).
+* **Single-flight + playback gate** — only one cue is released at a time,
+  and never while audio is playing. Release happens after the FRONTEND
+  reports ``voice_play_end`` (or ``text_end``), plus a min-gap.
+* **Min-gap pacing** — never release within ``min_gap_s`` of the last
+  playback end (anti-flood).
+* **Preemption / staleness** — when the gate opens the current highest
+  priority cue wins the slot; a cue that has waited longer than ``ttl_s``
+  is dropped rather than spoken stale.
+
+The manager runs entirely inside the asyncio event loop; all public methods
+are synchronous and schedule the actual (awaitable) hand-off via
+``create_task``. There is therefore no internal lock — the single-threaded
+loop serialises everything between ``await`` points.
+"""
+from __future__ import annotations
+
+import asyncio
+import itertools
+import logging
+import time
+from typing import Any, Awaitable, Callable, Optional
+
+logger = logging.getLogger("main_logic.proactive_delivery")
+
+# Wire ``priority`` default (0) means "unspecified". Mapped to this band so
+# explicitly-prioritised cues (1..N) always sort ahead of unspecified ones.
+NEUTRAL_PRIORITY = 100
+
+
+def effective_priority(raw: Any) -> int:
+    try:
+        p = int(raw)
+    except (TypeError, ValueError):
+        p = 0
+    return p if p > 0 else NEUTRAL_PRIORITY
+
+
+class _QueuedCue:
+    __slots__ = ("eff_priority", "seq", "coalesce_key", "callback", "submitted_at")
+
+    def __init__(self, eff_priority: int, seq: int, coalesce_key: str,
+                 callback: dict, submitted_at: float) -> None:
+        self.eff_priority = eff_priority
+        self.seq = seq
+        self.coalesce_key = coalesce_key
+        self.callback = callback
+        self.submitted_at = submitted_at
+
+    @property
+    def sort_key(self) -> tuple[int, int]:
+        # priority first (lower = more urgent), then FIFO within a priority.
+        return (self.eff_priority, self.seq)
+
+
+class ProactiveDeliveryManager:
+    def __init__(
+        self,
+        *,
+        deliver: Callable[[dict], Awaitable[Any]],
+        name: str = "",
+        min_gap_s: float = 2.0,
+        inflight_timeout_s: float = 12.0,
+        ttl_s: float = 90.0,
+    ) -> None:
+        # ``deliver`` does the actual hand-off into the existing pipeline
+        # (enqueue_agent_callback + trigger_agent_callbacks). Awaited inside
+        # a task so a slow/blocking delivery can't stall the loop.
+        self._deliver = deliver
+        self._name = name
+        self._min_gap_s = float(min_gap_s)
+        self._inflight_timeout_s = float(inflight_timeout_s)
+        self._ttl_s = float(ttl_s)
+
+        self._queue: list[_QueuedCue] = []
+        self._seq = itertools.count()
+
+        # Gate state. ``_playing`` spans voice_play_start..voice_play_end (or
+        # text_start..text_end). ``_inflight`` guards single-flight between a
+        # release and its playback confirmation; ``_inflight_deadline`` lets
+        # us recover if a released cue never produces playback (deferred by
+        # the inner gate, text with no audio, frontend disconnect).
+        self._playing = False
+        self._inflight = False
+        self._inflight_deadline = 0.0
+        self._last_play_end_ts = 0.0
+
+        self._pump_handle: Optional[asyncio.TimerHandle] = None
+
+    # ── helpers ──────────────────────────────────────────────────────────
+    def _now(self) -> float:
+        return time.monotonic()
+
+    def _resolve_key(self, callback: dict, coalesce_key: Optional[str]) -> str:
+        # Coalescing is OPT-IN: a cue collapses with another only when both
+        # set the SAME explicit coalesce_key. An unset key yields a unique
+        # sentinel so the cue never coalesces. This is deliberate — defaulting
+        # to ``source`` would silently drop DISTINCT important cues that share
+        # a source (e.g. a bilibili gift vs a super-chat, two memo reminders,
+        # a study answer vs mastery event), regressing every existing plugin
+        # that emits multiple proactive cues. Plugins opt in by passing
+        # coalesce_key (minecraft tags per category: mc_alert / mc_completion
+        # / mc_in_progress / mc_keep_going).
+        k = (coalesce_key or "").strip()
+        if k:
+            return k
+        return f"__uniq:{next(self._seq)}"
+
+    # ── producer ─────────────────────────────────────────────────────────
+    def submit(self, callback: dict, *, priority: Any = 0,
+               coalesce_key: Optional[str] = None) -> None:
+        key = self._resolve_key(callback, coalesce_key)
+        eff = effective_priority(priority)
+        # Coalesce: newest replaces any queued cue with the same key.
+        if self._queue:
+            dropped = [c for c in self._queue if c.coalesce_key == key]
+            if dropped:
+                self._queue = [c for c in self._queue if c.coalesce_key != key]
+                logger.debug(
+                    "[proactive%s] coalesced %d queued cue(s) on key=%r",
+                    self._suffix(), len(dropped), key,
+                )
+        self._queue.append(
+            _QueuedCue(eff, next(self._seq), key, callback, self._now())
+        )
+        logger.debug(
+            "[proactive%s] submit key=%r eff_priority=%d queue=%d",
+            self._suffix(), key, eff, len(self._queue),
+        )
+        self._schedule_pump(0.0)
+
+    # ── lifecycle signals (from LifecycleEventBus) ───────────────────────
+    def on_playback_start(self, **_: Any) -> None:
+        self._playing = True
+
+    def on_playback_end(self, **_: Any) -> None:
+        self._playing = False
+        self._inflight = False
+        self._last_play_end_ts = self._now()
+        # Wait out the min-gap before the next release.
+        self._schedule_pump(self._min_gap_s)
+
+    # text-mode boundaries reuse the same gating semantics
+    on_text_start = on_playback_start
+    on_text_end = on_playback_end
+
+    # ── pump ─────────────────────────────────────────────────────────────
+    def _suffix(self) -> str:
+        return f":{self._name}" if self._name else ""
+
+    def _schedule_pump(self, delay: float) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop (e.g. constructed before the server is up).
+            # A later signal/submit that runs in-loop will reschedule.
+            return
+        if self._pump_handle is not None:
+            # Collapse multiple scheduled pumps; keep the soonest.
+            self._pump_handle.cancel()
+        self._pump_handle = loop.call_later(max(0.0, delay), self._pump)
+
+    def _drop_stale(self) -> None:
+        if self._ttl_s <= 0 or not self._queue:
+            return
+        now = self._now()
+        fresh: list[_QueuedCue] = []
+        for c in self._queue:
+            if now - c.submitted_at > self._ttl_s:
+                logger.info(
+                    "[proactive%s] dropping stale cue key=%r age=%.1fs (ttl=%.0fs)",
+                    self._suffix(), c.coalesce_key, now - c.submitted_at, self._ttl_s,
+                )
+            else:
+                fresh.append(c)
+        self._queue = fresh
+
+    def _pump(self) -> None:
+        self._pump_handle = None
+        self._drop_stale()
+        if not self._queue:
+            return
+        if self._playing:
+            return  # she's audibly speaking — do not inject
+        now = self._now()
+        if self._inflight:
+            if now < self._inflight_deadline:
+                # Released cue still awaiting playback confirmation.
+                self._schedule_pump(self._inflight_deadline - now)
+                return
+            # Timed out without playback — release the slot and continue.
+            logger.debug("[proactive%s] inflight timed out; releasing slot", self._suffix())
+            self._inflight = False
+        gap_remaining = self._min_gap_s - (now - self._last_play_end_ts)
+        if self._last_play_end_ts > 0.0 and gap_remaining > 0:
+            self._schedule_pump(gap_remaining)
+            return
+        # Gate open: pick the highest-priority (preemption — current best
+        # wins) and release it.
+        self._queue.sort(key=lambda c: c.sort_key)
+        cue = self._queue.pop(0)
+        self._inflight = True
+        self._inflight_deadline = now + self._inflight_timeout_s
+        logger.info(
+            "[proactive%s] release key=%r eff_priority=%d (remaining=%d)",
+            self._suffix(), cue.coalesce_key, cue.eff_priority, len(self._queue),
+        )
+        asyncio.create_task(self._run_deliver(cue.callback))
+
+    async def _run_deliver(self, callback: dict) -> None:
+        try:
+            await self._deliver(callback)
+        except Exception:
+            logger.exception("[proactive%s] deliver failed", self._suffix())
+            # Free the slot so the queue isn't wedged on a failed hand-off.
+            self._inflight = False
+            self._schedule_pump(0.0)

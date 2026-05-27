@@ -422,6 +422,7 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
                 ai_behavior="respond",
                 parts=[{"type": "text", "text": cue}],
                 priority=2,
+                coalesce_key="mc_completion",
             )
         except Exception as exc:
             self.logger.warning(

@@ -793,6 +793,10 @@ class PluginContext:
         visibility: Optional[list] = None,
         ai_behavior: Optional[str] = None,
         parts: Optional[list] = None,
+        # Optional proactive-delivery coalescing key (keyword-only, OPT-IN).
+        # Queued proactive cues sharing the SAME key collapse to the newest;
+        # unset = never coalesce. Use distinct keys per cue category.
+        coalesce_key: Optional[str] = None,
         # ── v1 legacy aliases — emit DeprecationWarning on use ────────
         mime: Optional[str] = None,
         delivery: Any = None,
@@ -834,6 +838,7 @@ class PluginContext:
             metadata=metadata,
             target_lanlan=target_lanlan,
             priority=priority,
+            coalesce_key=coalesce_key,
         )
         # Stamp target_lanlan into metadata too — proactive_bridge and
         # main_server's session router still read ``metadata.target_lanlan``
@@ -920,6 +925,7 @@ class PluginContext:
                 "schema": canonical["schema"],
                 "source": canonical["source"],
                 "priority": canonical["priority"],
+                "coalesce_key": canonical.get("coalesce_key", ""),
                 "visibility": canonical["visibility"],
                 "ai_behavior": canonical["ai_behavior"],
                 "parts": canonical["parts"],
