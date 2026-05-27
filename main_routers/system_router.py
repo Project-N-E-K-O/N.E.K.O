@@ -670,6 +670,58 @@ async def get_system_status(response: Response):
         }
 
 
+@router.get("/system/client-id")
+async def get_system_client_id(response: Response):
+    """Return the persistent ``client_id`` used by N.E.K.O.Servers / 社交平台.
+
+    Loaded from ``state/cloudsave_local_state.json`` (see
+    ``utils.config_manager.ConfigManager.build_default_cloudsave_local_state``).
+    Auto-generated on first call when missing.
+
+    Wire contract: N.E.K.O.Servers ``POST /api/clients/register`` consumes this
+    ``client_id`` so cloud-side guest quotas/cards stay tied to a stable device.
+    Detailed agreement: ``0N.E.K.Oserver/.claude/contracts/api-endpoints.md``.
+    """
+    _set_no_store_headers(response)
+    try:
+        config_manager = _get_system_config_manager()
+        state = config_manager.load_cloudsave_local_state()
+        client_id = state.get("client_id") if isinstance(state, dict) else None
+        if not client_id:
+            new_state = config_manager.build_default_cloudsave_local_state()
+            try:
+                config_manager.save_cloudsave_local_state(new_state)
+            except Exception as save_exc:
+                logger.warning(
+                    "failed to persist freshly-generated client_id: %s", save_exc
+                )
+            client_id = new_state.get("client_id")
+        return {"ok": True, "client_id": client_id}
+    except Exception as exc:
+        logger.warning("system client-id endpoint failed: %s", exc)
+        return JSONResponse(
+            {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
+            status_code=500,
+        )
+
+
+@router.get("/system/social/config")
+async def get_system_social_config(response: Response):
+    """Return the social-platform endpoint config (N.E.K.O.Servers base URL).
+
+    Avoids hard-coding the cloud URL in front-end JS. Default is
+    ``http://localhost:8080`` (dev); override at deploy time via the
+    ``NEKO_SOCIAL_BASE_URL`` environment variable.
+    """
+    _set_no_store_headers(response)
+    base_url = os.environ.get("NEKO_SOCIAL_BASE_URL", "http://localhost:8080").rstrip("/")
+    return {
+        "ok": True,
+        "social_base_url": base_url,
+        "enabled": True,
+    }
+
+
 # 统一的表情包图源白名单由 utils.meme_fetcher 维护，本文件仅用于引入
 
 # 多语言关键词/别名表统一在 config/prompts/prompts_emotion.py 维护，此处只做扁平索引。
