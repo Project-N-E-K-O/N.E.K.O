@@ -2107,6 +2107,15 @@ async def on_startup():
         except Exception as _e:
             logger.debug(f"[facts_sync] start worker failed: {_e}")
 
+        # N.E.K.O.Servers 卡片本地缓存 puller。默认禁用
+        # （NEKO_CARD_CACHE_ENABLED=0）；启用后 5 分钟拉 Servers /api/cards/mine
+        # 自己的卡片到 memory/<lanlan>/cards/<id>.json。
+        try:
+            from main_logic.card_cache import start_card_cache_puller  # noqa: WPS433
+            asyncio.create_task(start_card_cache_puller())
+        except Exception as _e:
+            logger.debug(f"[card_cache] start puller failed: {_e}")
+
         blocking_reason = get_storage_startup_blocking_reason(_config_manager)
         if blocking_reason:
             _enable_main_storage_limited_mode(blocking_reason)
