@@ -522,6 +522,88 @@ def test_react_composer_text_and_screenshot_submit_keeps_single_combined_message
 
 
 @pytest.mark.frontend
+def test_compact_history_drop_sends_only_dropped_image_and_restores_pending_attachment(
+    mock_page: Page,
+    running_server: str,
+):
+    _open_react_chat_page(mock_page, running_server)
+    _install_chat_send_harness(mock_page, resolve_delay_ms=0)
+
+    result = mock_page.evaluate(
+        """async () => {
+            const makeDataUrl = (color) => {
+                const canvas = document.createElement('canvas');
+                canvas.width = 2;
+                canvas.height = 2;
+                const context = canvas.getContext('2d');
+                context.fillStyle = color;
+                context.fillRect(0, 0, 2, 2);
+                return canvas.toDataURL('image/png');
+            };
+            const existing = makeDataUrl('#336699');
+            const dropped = makeDataUrl('#cc3355');
+            window.appButtons.addScreenshotToList(existing, null, {
+                alt: 'Existing pending',
+                source: 'user'
+            });
+            const before = window.appButtons.getPendingComposerAttachments();
+
+            const ok = await window.appButtons.sendCompactHistoryDropPayload({
+                text: 'drop image text',
+                requestId: 'req-compact-history-drop-test',
+                compactHistoryDragSessionId: 'drag-compact-history-drop-test',
+                images: [{ url: dropped, alt: 'Dropped pending' }]
+            });
+
+            const after = window.appButtons.getPendingComposerAttachments();
+            const state = window.reactChatWindowHost.getState();
+            const message = state.messages[0];
+            return {
+                ok,
+                before,
+                after,
+                message: message ? {
+                    status: message.status,
+                    blocks: message.blocks
+                } : null,
+                sentPayloads: window.__chatTest.sentPayloads
+            };
+        }"""
+    )
+
+    assert result["ok"] is True
+    assert len(result["before"]) == 1
+    assert len(result["after"]) == 1
+    assert result["after"][0]["alt"] == "Existing pending"
+    assert result["after"][0]["url"] == result["before"][0]["url"]
+
+    sent_images = [
+        payload
+        for payload in result["sentPayloads"]
+        if payload.get("action") == "stream_data" and payload.get("input_type") == "screen"
+    ]
+    sent_texts = [
+        payload
+        for payload in result["sentPayloads"]
+        if payload.get("action") == "stream_data" and payload.get("input_type") == "text"
+    ]
+    assert len(sent_images) == 1
+    assert sent_images[0]["data"].startswith("data:image/jpeg;base64,")
+    assert sent_images[0]["data"] != result["before"][0]["url"]
+    assert sent_texts == [{
+        "action": "stream_data",
+        "data": "drop image text",
+        "input_type": "text",
+        "request_id": "req-compact-history-drop-test",
+    }]
+
+    assert result["message"]["status"] == "sent"
+    assert [block["type"] for block in result["message"]["blocks"]] == ["text", "image"]
+    assert result["message"]["blocks"][0]["text"] == "drop image text"
+    assert result["message"]["blocks"][1]["url"].startswith("data:image/jpeg;base64,")
+
+
+@pytest.mark.frontend
 def test_react_composer_send_failure_marks_same_message_failed(
     mock_page: Page,
     running_server: str,

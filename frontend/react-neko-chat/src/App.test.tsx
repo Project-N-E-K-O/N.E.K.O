@@ -27,6 +27,12 @@ describe('App', () => {
     return exportButton!;
   };
 
+  const waitForCompactHistoryDragLayerToClear = async () => {
+    await waitFor(() => {
+      expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toBeNull();
+    });
+  };
+
   const mockHoverCapableMatchMedia = (hoverCapable = true) => {
     window.matchMedia = vi.fn().mockImplementation((query: string) => ({
       matches: hoverCapable && query === '(hover: hover) and (pointer: fine)',
@@ -38,6 +44,35 @@ describe('App', () => {
       removeEventListener: vi.fn(),
       dispatchEvent: vi.fn(),
     }));
+  };
+
+  const setupAvatarDropBounds = () => {
+    const live2dContainer = document.createElement('div');
+    live2dContainer.id = 'live2d-container';
+    Object.defineProperty(live2dContainer, 'getClientRects', {
+      configurable: true,
+      value: () => [{ width: 100, height: 100 }],
+    });
+    document.body.appendChild(live2dContainer);
+
+    Object.assign(window, {
+      live2dManager: {
+        currentModel: {},
+        getModelScreenBounds: () => ({
+          left: 100,
+          right: 200,
+          top: 100,
+          bottom: 200,
+          width: 100,
+          height: 100,
+        }),
+      },
+    });
+
+    return () => {
+      delete (window as Window & { live2dManager?: unknown }).live2dManager;
+      live2dContainer.remove();
+    };
   };
 
   it('renders the empty state when there are no messages', () => {
@@ -570,6 +605,607 @@ describe('App', () => {
     } finally {
       exportWindow.appChatExport = previousBridge;
     }
+  });
+
+  it('starts compact history image drag without selecting the source bubble', async () => {
+    const imageMessage = parseChatMessage({
+      id: 'assistant-history-image-drag',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'image', url: 'data:image/png;base64,aW1hZ2U=', alt: 'Memory image' }],
+      status: 'sent',
+    });
+
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[imageMessage]} />,
+    );
+
+    await clickCompactExportTool();
+    const message = container.querySelector<HTMLElement>('.compact-export-history-message')!;
+    const bubble = container.querySelector<HTMLElement>('.compact-export-history-bubble')!;
+    const imageBlock = container.querySelector<HTMLElement>('.message-block-image')!;
+    vi.spyOn(bubble, 'getBoundingClientRect').mockReturnValue({
+      left: 12,
+      top: 18,
+      right: 332,
+      bottom: 138,
+      width: 320,
+      height: 120,
+      x: 12,
+      y: 18,
+      toJSON: () => ({}),
+    } as DOMRect);
+    vi.spyOn(imageBlock, 'getBoundingClientRect').mockReturnValue({
+      left: 40,
+      top: 52,
+      right: 120,
+      bottom: 100,
+      width: 80,
+      height: 48,
+      x: 40,
+      y: 52,
+      toJSON: () => ({}),
+    } as DOMRect);
+
+    fireEvent.pointerDown(imageBlock, {
+      pointerId: 31,
+      clientX: 50,
+      clientY: 62,
+      button: 0,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    fireEvent.pointerMove(bubble, {
+      pointerId: 31,
+      clientX: 78,
+      clientY: 74,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+
+    const dragLayer = document.body.querySelector<HTMLElement>('[data-compact-drag-layer="true"]');
+    expect(dragLayer).not.toBeNull();
+    expect(dragLayer).toHaveAttribute('data-compact-drag-type', 'image');
+    expect(dragLayer).toHaveAttribute('data-compact-drag-message-id', 'assistant-history-image-drag');
+    expect(dragLayer).toHaveAttribute('data-compact-drag-block-index', '0');
+    expect(dragLayer?.parentElement).toBe(document.body);
+    expect(dragLayer?.style.getPropertyValue('--compact-history-drag-left')).toBe('68px');
+    expect(dragLayer?.style.getPropertyValue('--compact-history-drag-top')).toBe('64px');
+    expect(dragLayer?.style.getPropertyValue('--compact-history-drag-width')).toBe('80px');
+    expect(dragLayer?.style.getPropertyValue('--compact-history-drag-height')).toBe('48px');
+    expect(message).toHaveAttribute('data-compact-history-drag-source', 'image');
+    expect(message).not.toHaveClass('is-selected');
+
+    fireEvent.pointerUp(bubble, {
+      pointerId: 31,
+      clientX: 78,
+      clientY: 74,
+      buttons: 0,
+      pointerType: 'mouse',
+    });
+    fireEvent.click(bubble);
+
+    expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toHaveAttribute('data-compact-drag-phase', 'returning');
+    await waitForCompactHistoryDragLayerToClear();
+    expect(message).not.toHaveClass('is-selected');
+  });
+
+  it('starts compact history bubble drag without changing selection', async () => {
+    const textMessage = parseChatMessage({
+      id: 'assistant-history-bubble-drag',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: 'Drag this whole bubble.' }],
+      status: 'sent',
+    });
+
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[textMessage]} />,
+    );
+
+    await clickCompactExportTool();
+    const message = container.querySelector<HTMLElement>('.compact-export-history-message')!;
+    const bubble = container.querySelector<HTMLElement>('.compact-export-history-bubble')!;
+
+    fireEvent.pointerDown(bubble, {
+      pointerId: 32,
+      clientX: 36,
+      clientY: 36,
+      button: 0,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    fireEvent.pointerMove(bubble, {
+      pointerId: 32,
+      clientX: 74,
+      clientY: 39,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+
+    const dragLayer = document.body.querySelector<HTMLElement>('[data-compact-drag-layer="true"]');
+    const anchor = container.querySelector<HTMLElement>('.compact-export-history-anchor')!;
+    expect(dragLayer).not.toBeNull();
+    expect(dragLayer).toHaveAttribute('data-compact-drag-type', 'bubble');
+    expect(dragLayer).toHaveAttribute('data-compact-drag-message-id', 'assistant-history-bubble-drag');
+    expect(dragLayer?.parentElement).toBe(document.body);
+    expect(anchor.contains(dragLayer)).toBe(false);
+    expect(message).toHaveAttribute('data-compact-history-drag-source', 'bubble');
+    expect(message).not.toHaveClass('is-selected');
+
+    fireEvent.pointerUp(bubble, {
+      pointerId: 32,
+      clientX: 74,
+      clientY: 39,
+      buttons: 0,
+      pointerType: 'mouse',
+    });
+
+    expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toHaveAttribute('data-compact-drag-phase', 'returning');
+    await waitForCompactHistoryDragLayerToClear();
+    expect(message).not.toHaveClass('is-selected');
+  });
+
+  it('clears compact history drag when the pointer is released outside the bubble', async () => {
+    const textMessage = parseChatMessage({
+      id: 'assistant-history-global-pointer-up',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: 'Release this outside the bubble.' }],
+      status: 'sent',
+    });
+
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[textMessage]} />,
+    );
+
+    await clickCompactExportTool();
+    const message = container.querySelector<HTMLElement>('.compact-export-history-message')!;
+    const bubble = container.querySelector<HTMLElement>('.compact-export-history-bubble')!;
+
+    fireEvent.pointerDown(bubble, {
+      pointerId: 37,
+      clientX: 36,
+      clientY: 36,
+      button: 0,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    fireEvent.pointerMove(bubble, {
+      pointerId: 37,
+      clientX: 78,
+      clientY: 39,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+
+    expect(document.body.querySelector('[data-compact-drag-layer="true"]')).not.toBeNull();
+
+    fireEvent.pointerUp(window, {
+      pointerId: 37,
+      clientX: 96,
+      clientY: 42,
+      buttons: 0,
+      pointerType: 'mouse',
+    });
+    fireEvent.click(bubble);
+
+    expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toHaveAttribute('data-compact-drag-phase', 'returning');
+    await waitForCompactHistoryDragLayerToClear();
+    expect(message).not.toHaveClass('is-selected');
+  });
+
+  it('sends a compact history text bubble when dropped on the avatar range', async () => {
+    const cleanupAvatar = setupAvatarDropBounds();
+    const onCompactHistoryDrop = vi.fn();
+    const textMessage = parseChatMessage({
+      id: 'assistant-history-drop-text',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: 'Send this memory again.' }],
+      status: 'sent',
+    });
+
+    try {
+      const { container } = render(
+        <App
+          chatSurfaceMode="compact"
+          compactChatState="input"
+          messages={[textMessage]}
+          onCompactHistoryDrop={onCompactHistoryDrop}
+        />,
+      );
+
+      await clickCompactExportTool();
+      const message = container.querySelector<HTMLElement>('.compact-export-history-message')!;
+      const bubble = container.querySelector<HTMLElement>('.compact-export-history-bubble')!;
+
+      fireEvent.pointerDown(bubble, {
+        pointerId: 38,
+        clientX: 36,
+        clientY: 36,
+        button: 0,
+        buttons: 1,
+        pointerType: 'mouse',
+      });
+      fireEvent.pointerMove(bubble, {
+        pointerId: 38,
+        clientX: 150,
+        clientY: 150,
+        buttons: 1,
+        pointerType: 'mouse',
+      });
+
+      const dragLayer = document.body.querySelector<HTMLElement>('[data-compact-drag-layer="true"]');
+      expect(dragLayer).toHaveAttribute('data-compact-drag-over-target', 'true');
+
+      fireEvent.pointerUp(window, {
+        pointerId: 38,
+        clientX: 150,
+        clientY: 150,
+        buttons: 0,
+        pointerType: 'mouse',
+      });
+
+      await waitFor(() => {
+        expect(onCompactHistoryDrop).toHaveBeenCalledTimes(1);
+      });
+      expect(onCompactHistoryDrop).toHaveBeenCalledWith(expect.objectContaining({
+        text: 'Send this memory again.',
+        images: [],
+        sourceMessageId: 'assistant-history-drop-text',
+        dragType: 'bubble',
+      }));
+      expect(message).not.toHaveClass('is-selected');
+      expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toHaveAttribute('data-compact-drag-phase', 'sending');
+      await waitForCompactHistoryDragLayerToClear();
+    } finally {
+      cleanupAvatar();
+    }
+  });
+
+  it('does not send a compact history drag released outside the avatar range', async () => {
+    const cleanupAvatar = setupAvatarDropBounds();
+    const onCompactHistoryDrop = vi.fn();
+    const textMessage = parseChatMessage({
+      id: 'assistant-history-drop-miss',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: 'Do not send this one.' }],
+      status: 'sent',
+    });
+
+    try {
+      const { container } = render(
+        <App
+          chatSurfaceMode="compact"
+          compactChatState="input"
+          messages={[textMessage]}
+          onCompactHistoryDrop={onCompactHistoryDrop}
+        />,
+      );
+
+      await clickCompactExportTool();
+      const message = container.querySelector<HTMLElement>('.compact-export-history-message')!;
+      const bubble = container.querySelector<HTMLElement>('.compact-export-history-bubble')!;
+
+      fireEvent.pointerDown(bubble, {
+        pointerId: 39,
+        clientX: 36,
+        clientY: 36,
+        button: 0,
+        buttons: 1,
+        pointerType: 'mouse',
+      });
+      fireEvent.pointerMove(bubble, {
+        pointerId: 39,
+        clientX: 74,
+        clientY: 39,
+        buttons: 1,
+        pointerType: 'mouse',
+      });
+      fireEvent.pointerUp(window, {
+        pointerId: 39,
+        clientX: 20,
+        clientY: 20,
+        buttons: 0,
+        pointerType: 'mouse',
+      });
+      fireEvent.click(bubble);
+
+      expect(onCompactHistoryDrop).not.toHaveBeenCalled();
+      expect(message).not.toHaveClass('is-selected');
+      expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toHaveAttribute('data-compact-drag-phase', 'returning');
+      await waitForCompactHistoryDragLayerToClear();
+    } finally {
+      cleanupAvatar();
+    }
+  });
+
+  it('sends compact history image and mixed bubble payloads through the drop callback', async () => {
+    const cleanupAvatar = setupAvatarDropBounds();
+    const onCompactHistoryDrop = vi.fn();
+    const imageMessage = parseChatMessage({
+      id: 'assistant-history-drop-image',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'image', url: 'data:image/png;base64,aW1hZ2U=', alt: 'Memory image', width: 80, height: 40 }],
+      status: 'sent',
+    });
+    const mixedMessage = parseChatMessage({
+      id: 'assistant-history-drop-mixed',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:01',
+      createdAt: 2,
+      blocks: [
+        { type: 'text', text: 'Look at this.' },
+        { type: 'image', url: 'data:image/png;base64,bWl4ZWQ=', alt: 'Mixed image' },
+      ],
+      status: 'sent',
+    });
+
+    try {
+      const { container } = render(
+        <App
+          chatSurfaceMode="compact"
+          compactChatState="input"
+          messages={[imageMessage, mixedMessage]}
+          onCompactHistoryDrop={onCompactHistoryDrop}
+        />,
+      );
+
+      await clickCompactExportTool();
+      const bubbles = container.querySelectorAll<HTMLElement>('.compact-export-history-bubble');
+      const imageBlock = container.querySelector<HTMLElement>('.message-block-image')!;
+
+      fireEvent.pointerDown(imageBlock, {
+        pointerId: 40,
+        clientX: 36,
+        clientY: 36,
+        button: 0,
+        buttons: 1,
+        pointerType: 'mouse',
+      });
+      fireEvent.pointerMove(bubbles[0], {
+        pointerId: 40,
+        clientX: 150,
+        clientY: 150,
+        buttons: 1,
+        pointerType: 'mouse',
+      });
+      fireEvent.pointerUp(window, {
+        pointerId: 40,
+        clientX: 150,
+        clientY: 150,
+        buttons: 0,
+        pointerType: 'mouse',
+      });
+
+      await waitFor(() => {
+        expect(onCompactHistoryDrop).toHaveBeenCalledTimes(1);
+      });
+      expect(onCompactHistoryDrop).toHaveBeenLastCalledWith(expect.objectContaining({
+        text: '',
+        images: [expect.objectContaining({
+          url: 'data:image/png;base64,aW1hZ2U=',
+          alt: 'Memory image',
+          width: 80,
+          height: 40,
+        })],
+        dragType: 'image',
+      }));
+
+      fireEvent.pointerDown(bubbles[1], {
+        pointerId: 41,
+        clientX: 36,
+        clientY: 80,
+        button: 0,
+        buttons: 1,
+        pointerType: 'mouse',
+      });
+      fireEvent.pointerMove(bubbles[1], {
+        pointerId: 41,
+        clientX: 150,
+        clientY: 150,
+        buttons: 1,
+        pointerType: 'mouse',
+      });
+      fireEvent.pointerUp(window, {
+        pointerId: 41,
+        clientX: 150,
+        clientY: 150,
+        buttons: 0,
+        pointerType: 'mouse',
+      });
+
+      await waitFor(() => {
+        expect(onCompactHistoryDrop).toHaveBeenCalledTimes(2);
+      });
+      expect(onCompactHistoryDrop).toHaveBeenLastCalledWith(expect.objectContaining({
+        text: 'Look at this.',
+        images: [expect.objectContaining({
+          url: 'data:image/png;base64,bWl4ZWQ=',
+          alt: 'Mixed image',
+        })],
+        sourceMessageId: 'assistant-history-drop-mixed',
+        dragType: 'bubble',
+      }));
+    } finally {
+      cleanupAvatar();
+    }
+  });
+
+  it('treats compact history scroll as cancellation instead of selection or drag', async () => {
+    const textMessage = parseChatMessage({
+      id: 'assistant-history-scroll-cancel',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: 'Scroll past this bubble.' }],
+      status: 'sent',
+    });
+
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[textMessage]} />,
+    );
+
+    await clickCompactExportTool();
+    const message = container.querySelector<HTMLElement>('.compact-export-history-message')!;
+    const bubble = container.querySelector<HTMLElement>('.compact-export-history-bubble')!;
+    const scroll = container.querySelector<HTMLElement>('.compact-export-history-scroll')!;
+
+    fireEvent.pointerDown(bubble, {
+      pointerId: 33,
+      clientX: 36,
+      clientY: 36,
+      button: 0,
+      buttons: 1,
+      pointerType: 'touch',
+    });
+    fireEvent.scroll(scroll);
+    fireEvent.pointerUp(bubble, {
+      pointerId: 33,
+      clientX: 38,
+      clientY: 72,
+      buttons: 0,
+      pointerType: 'touch',
+    });
+
+    expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toBeNull();
+    expect(message).not.toHaveClass('is-selected');
+  });
+
+  it('cancels compact history pointer movement between click and drag thresholds', async () => {
+    const textMessage = parseChatMessage({
+      id: 'assistant-history-threshold-cancel',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: 'Move just enough to cancel selection.' }],
+      status: 'sent',
+    });
+
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[textMessage]} />,
+    );
+
+    await clickCompactExportTool();
+    const message = container.querySelector<HTMLElement>('.compact-export-history-message')!;
+    const bubble = container.querySelector<HTMLElement>('.compact-export-history-bubble')!;
+
+    fireEvent.pointerDown(bubble, {
+      pointerId: 34,
+      clientX: 36,
+      clientY: 36,
+      button: 0,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    fireEvent.pointerMove(bubble, {
+      pointerId: 34,
+      clientX: 43,
+      clientY: 36,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    fireEvent.pointerUp(bubble, {
+      pointerId: 34,
+      clientX: 43,
+      clientY: 36,
+      buttons: 0,
+      pointerType: 'mouse',
+    });
+
+    expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toBeNull();
+    expect(message).not.toHaveClass('is-selected');
+  });
+
+  it('keeps compact history interactive blocks out of bubble drag', async () => {
+    const action = vi.fn();
+    const linkMessage = parseChatMessage({
+      id: 'assistant-history-link-drag-ignore',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'link', url: 'https://example.com', title: 'Reference' }],
+      status: 'sent',
+    });
+    const buttonMessage = parseChatMessage({
+      id: 'assistant-history-button-drag-ignore',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:01',
+      createdAt: 2,
+      blocks: [{
+        type: 'buttons',
+        buttons: [{ id: 'act', label: 'Act', action: 'act' }],
+      }],
+      status: 'sent',
+    });
+
+    const { container } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        messages={[linkMessage, buttonMessage]}
+        onMessageAction={action}
+      />,
+    );
+
+    await clickCompactExportTool();
+    const linkBlock = container.querySelector<HTMLElement>('.message-block-link')!;
+    const actionButton = container.querySelector<HTMLButtonElement>('.message-action-button')!;
+    const bubbles = container.querySelectorAll<HTMLElement>('.compact-export-history-bubble');
+
+    fireEvent.pointerDown(linkBlock, {
+      pointerId: 35,
+      clientX: 36,
+      clientY: 36,
+      button: 0,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    fireEvent.pointerMove(bubbles[0], {
+      pointerId: 35,
+      clientX: 74,
+      clientY: 39,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toBeNull();
+
+    fireEvent.pointerDown(actionButton, {
+      pointerId: 36,
+      clientX: 36,
+      clientY: 60,
+      button: 0,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    fireEvent.pointerMove(bubbles[1], {
+      pointerId: 36,
+      clientX: 74,
+      clientY: 63,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toBeNull();
   });
 
   it('rebuilds compact inline preview when a selected message updates without changing id', async () => {

@@ -15,6 +15,7 @@ import CompactExportHistoryPanel, {
   isCompactExportMessageSelectable,
   type CompactExportActionRequest,
   type CompactExportPreviewResult,
+  type CompactHistoryDropRequest,
 } from './CompactExportHistoryPanel';
 import { i18n } from './i18n';
 import {
@@ -23,9 +24,11 @@ import {
   type ChatWindowSchemaProps,
   type ComposerSubmitPayload,
   type ComposerAttachment,
+  type CompactHistoryDropPayload,
   type AvatarInteractionPayload,
   type AvatarToolStatePayload,
   type CompactChatState,
+  type MessageBlock,
   type GalgameOption,
   type ChoiceOption,
   type ChoicePromptSource,
@@ -37,6 +40,7 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
   onComposerScreenshot?: () => void;
   onComposerRemoveAttachment?: (attachmentId: ComposerAttachment['id']) => void;
   onComposerSubmit?: (payload: ComposerSubmitPayload) => void;
+  onCompactHistoryDrop?: (payload: CompactHistoryDropPayload) => unknown;
   onAvatarInteraction?: (payload: AvatarInteractionPayload) => void;
   onAvatarToolStateChange?: (payload: AvatarToolStatePayload) => void;
   onJukeboxClick?: () => void;
@@ -100,6 +104,80 @@ type CompactSurfaceResizeState = {
   surfaceHeight: number;
   captureTarget: Element | null;
 };
+
+function createCompactHistoryDropRequestId() {
+  return `compact-history-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function normalizeCompactHistoryTextFragment(value: string | undefined) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function getCompactHistoryTextFromBlock(block: MessageBlock) {
+  if (block.type === 'text' || block.type === 'status') {
+    return normalizeCompactHistoryTextFragment(block.text);
+  }
+  if (block.type === 'link') {
+    return [
+      normalizeCompactHistoryTextFragment(block.title),
+      normalizeCompactHistoryTextFragment(block.description),
+      normalizeCompactHistoryTextFragment(block.url),
+    ].filter(Boolean).join('\n');
+  }
+  if (block.type === 'buttons') {
+    return block.buttons
+      .map(button => normalizeCompactHistoryTextFragment(button.label))
+      .filter(Boolean)
+      .join(' / ');
+  }
+  return '';
+}
+
+function buildCompactHistoryDropPayload(request: CompactHistoryDropRequest): CompactHistoryDropPayload {
+  const textParts: string[] = [];
+  const images: NonNullable<CompactHistoryDropPayload['images']> = [];
+
+  if (request.payload.type === 'image') {
+    images.push({
+      url: request.payload.url,
+      alt: request.payload.alt,
+      width: request.payload.width,
+      height: request.payload.height,
+    });
+  } else {
+    for (const block of request.payload.blocks) {
+      if (block.type === 'image') {
+        images.push({
+          url: block.url,
+          alt: block.alt,
+          width: block.width,
+          height: block.height,
+        });
+        continue;
+      }
+      const text = getCompactHistoryTextFromBlock(block);
+      if (text) {
+        textParts.push(text);
+      }
+    }
+  }
+
+  return {
+    text: textParts.join('\n').trim(),
+    images,
+    requestId: createCompactHistoryDropRequestId(),
+    sourceMessageId: request.messageId,
+    dragType: request.type,
+    compactHistoryDragSessionId: createCompactHistoryDropRequestId(),
+  };
+}
+
+function normalizeCompactHistoryDropResult(result: unknown): Promise<boolean | void> | boolean | void {
+  if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
+    return Promise.resolve(result).then(value => (value === false ? false : undefined));
+  }
+  return result === false ? false : undefined;
+}
 
 type CompactToolWheelPointerState = {
   id: number;
@@ -871,6 +949,7 @@ export default function App({
   onComposerScreenshot,
   onComposerRemoveAttachment,
   onComposerSubmit,
+  onCompactHistoryDrop,
   onAvatarInteraction,
   onAvatarToolStateChange,
   onJukeboxClick,
@@ -3130,6 +3209,36 @@ export default function App({
     }
   }
 
+  const isCompactHistoryDropTargetAt = useCallback((point: { clientX: number; clientY: number }) => (
+    isPointerWithinAvatarRange(point.clientX, point.clientY, avatarToolCacheState)
+  ), [avatarToolCacheState]);
+
+  const handleCompactHistoryDropToAvatar = useCallback((request: CompactHistoryDropRequest) => {
+    if (!isPointerWithinAvatarRange(request.point.clientX, request.point.clientY, avatarToolCacheState)) {
+      return false;
+    }
+
+    const payload = buildCompactHistoryDropPayload(request);
+    const hasText = !!payload.text?.trim();
+    const hasImages = (payload.images?.length ?? 0) > 0;
+    if (!hasText && !hasImages) {
+      return false;
+    }
+
+    restoreCompactExportHistoryToBottomForOutgoingMessage();
+    if (onCompactHistoryDrop) {
+      return normalizeCompactHistoryDropResult(onCompactHistoryDrop(payload));
+    }
+    if (hasImages) {
+      return false;
+    }
+    onComposerSubmit?.({
+      text: payload.text ?? '',
+      requestId: payload.requestId,
+    });
+    return true;
+  }, [avatarToolCacheState, compactExportHistoryOpen, onCompactHistoryDrop, onComposerSubmit]);
+
   const translateButtonNode = (
     <button
       className={`composer-tool-btn composer-translate-btn${translateEnabled ? ' is-active' : ''}`}
@@ -3804,6 +3913,8 @@ export default function App({
       onBuildPreview={handleCompactInlineBuildPreview}
       onCopyExport={handleCompactInlineCopyExport}
       onDownloadExport={handleCompactInlineDownloadExport}
+      isDropTargetAt={isCompactHistoryDropTargetAt}
+      onDropToTarget={handleCompactHistoryDropToAvatar}
     />
   ) : null;
   const compactExportHistoryNode = compactExportHistoryElement;

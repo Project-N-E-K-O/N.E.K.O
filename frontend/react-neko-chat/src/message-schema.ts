@@ -48,6 +48,22 @@ const composerAttachmentSchema = z.object({
   alt: z.string().optional(),
 });
 
+const compactHistoryDropImageSchema = z.object({
+  url: z.string().min(1),
+  alt: z.string().optional(),
+  width: z.number().finite().positive().optional(),
+  height: z.number().finite().positive().optional(),
+});
+
+const compactHistoryDropPayloadSchema = z.object({
+  text: z.string().optional(),
+  images: z.array(compactHistoryDropImageSchema).optional(),
+  requestId: z.string().min(1).optional(),
+  sourceMessageId: z.string().min(1).optional(),
+  dragType: z.enum(['image', 'bubble']).optional(),
+  compactHistoryDragSessionId: z.string().min(1).optional(),
+}).strict();
+
 const chatSurfaceModeSchema = z.enum(['full', 'compact', 'minimized']);
 const compactChatStateSchema = z.enum(['default', 'options', 'input']);
 
@@ -238,6 +254,10 @@ export const chatWindowPropsSchema = z.object({
     .args(composerSubmitSchema)
     .returns(z.void())
     .optional(),
+  onCompactHistoryDrop: z.function()
+    .args(compactHistoryDropPayloadSchema)
+    .returns(z.unknown())
+    .optional(),
   onAvatarInteraction: z.function()
     .args(avatarInteractionPayloadSchema)
     .returns(z.void())
@@ -288,6 +308,7 @@ export type LinkBlock = z.infer<typeof linkBlockSchema>;
 export type StatusBlock = z.infer<typeof statusBlockSchema>;
 export type ButtonGroupBlock = z.infer<typeof buttonGroupBlockSchema>;
 export type ComposerAttachment = z.infer<typeof composerAttachmentSchema>;
+export type CompactHistoryDropPayload = z.infer<typeof compactHistoryDropPayloadSchema>;
 export type ChatSurfaceMode = z.infer<typeof chatSurfaceModeSchema>;
 export type CompactChatState = z.infer<typeof compactChatStateSchema>;
 export type GalgameOption = z.infer<typeof galgameOptionSchema>;

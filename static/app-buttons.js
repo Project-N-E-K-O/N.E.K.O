@@ -316,7 +316,8 @@
      * Add a screenshot thumbnail to the pending list.
      * @param {string} dataUrl - image data URL
      */
-    mod.addScreenshotToList = function addScreenshotToList(dataUrl, avatarPosition) {
+    mod.addScreenshotToList = function addScreenshotToList(dataUrl, avatarPosition, options) {
+        options = options || {};
         S.screenshotCounter++;
 
         const screenshotsList = S.dom.screenshotsList;
@@ -327,6 +328,9 @@
         item.className = 'screenshot-item';
         item.dataset.index = S.screenshotCounter;
         item.dataset.attachmentId = 'attachment-' + Date.now() + '-' + S.screenshotCounter;
+        if (options.source) {
+            item.dataset.source = String(options.source);
+        }
         // Store avatar position metadata (captured at screenshot time)
         if (avatarPosition) {
             item.dataset.avatarPosition = JSON.stringify(avatarPosition);
@@ -336,8 +340,12 @@
         const img = document.createElement('img');
         img.className = 'screenshot-thumbnail';
         img.src = dataUrl;
-        img.alt = window.t ? window.t('chat.screenshotAlt', { index: S.screenshotCounter }) : '\u622A\u56FE ' + S.screenshotCounter;
-        img.title = window.t ? window.t('chat.screenshotTitle', { index: S.screenshotCounter }) : '\u70B9\u51FB\u67E5\u770B\u622A\u56FE ' + S.screenshotCounter;
+        img.alt = typeof options.alt === 'string' && options.alt
+            ? options.alt
+            : (window.t ? window.t('chat.screenshotAlt', { index: S.screenshotCounter }) : '\u622A\u56FE ' + S.screenshotCounter);
+        img.title = typeof options.title === 'string' && options.title
+            ? options.title
+            : (window.t ? window.t('chat.screenshotTitle', { index: S.screenshotCounter }) : '\u70B9\u51FB\u67E5\u770B\u622A\u56FE ' + S.screenshotCounter);
 
         // Click thumbnail to view in new tab
         img.addEventListener('click', function () {
@@ -376,6 +384,7 @@
         setTimeout(function () {
             screenshotsList.scrollLeft = screenshotsList.scrollWidth;
         }, 100);
+        return item;
     };
     // Backward compat
     window.addScreenshotToList = mod.addScreenshotToList;
@@ -531,6 +540,164 @@
             mod.removeScreenshotFromList(target);
         }
     };
+
+    function refreshPendingComposerAttachmentList() {
+        var screenshotsList = S.dom.screenshotsList;
+        var screenshotThumbnailContainer = S.dom.screenshotThumbnailContainer;
+        if (!screenshotsList || !screenshotThumbnailContainer) return;
+        mod.updateScreenshotCount();
+        if (screenshotsList.children.length > 0) {
+            screenshotThumbnailContainer.classList.add('show');
+        } else {
+            screenshotThumbnailContainer.classList.remove('show');
+        }
+        mod.syncPendingComposerAttachments();
+    }
+
+    function isUnsafeHistoryImageUrl(rawUrl) {
+        var value = String(rawUrl || '').trim();
+        if (!value) return true;
+        if (/^(?:file:|[a-zA-Z]:[\\/]|~[\\/]|\/Users\/|\/home\/|\/var\/folders\/)/.test(value)) {
+            return true;
+        }
+        if (/[?&](?:access_?token|auth(?:orization)?|signature|sig|token)=/i.test(value)) {
+            return true;
+        }
+        return false;
+    }
+
+    mod.normalizeHistoryImageForPendingList = async function normalizeHistoryImageForPendingList(image) {
+        var rawUrl = typeof image === 'string' ? image : (image && image.url);
+        var url = String(rawUrl || '').trim();
+        if (isUnsafeHistoryImageUrl(url)) {
+            throw new Error('UNSAFE_HISTORY_IMAGE_URL');
+        }
+
+        if (/^data:image\//i.test(url)) {
+            return mod.normalizeImageDataUrlForPendingList(url);
+        }
+
+        var parsedUrl;
+        try {
+            parsedUrl = new URL(url, window.location.href);
+        } catch (error) {
+            throw new Error('INVALID_HISTORY_IMAGE_URL');
+        }
+
+        if (parsedUrl.protocol === 'file:') {
+            throw new Error('UNSAFE_HISTORY_IMAGE_URL');
+        }
+        if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:' && parsedUrl.protocol !== 'blob:') {
+            throw new Error('UNSUPPORTED_HISTORY_IMAGE_URL');
+        }
+        if (/[?&](?:access_?token|auth(?:orization)?|signature|sig|token)=/i.test(parsedUrl.search)) {
+            throw new Error('UNSAFE_HISTORY_IMAGE_URL');
+        }
+
+        var response = await fetch(parsedUrl.href, { credentials: 'same-origin' });
+        if (!response.ok) {
+            throw new Error('HISTORY_IMAGE_FETCH_FAILED');
+        }
+        var blob = await response.blob();
+        if (blob.type && !/^image\//i.test(blob.type)) {
+            throw new Error('INVALID_HISTORY_IMAGE_TYPE');
+        }
+        return mod.normalizeImageBlobForPendingList(blob);
+    };
+
+    mod.addHistoryImageAttachmentToPendingList = async function addHistoryImageAttachmentToPendingList(image) {
+        var dataUrl = await mod.normalizeHistoryImageForPendingList(image);
+        return mod.addScreenshotToList(dataUrl, null, {
+            alt: image && typeof image.alt === 'string' ? image.alt : '',
+            source: 'compact-history'
+        });
+    };
+    window.addHistoryImageAttachmentToPendingList = mod.addHistoryImageAttachmentToPendingList;
+
+    mod.sendCompactHistoryDropPayload = async function sendCompactHistoryDropPayload(payload) {
+        payload = payload || {};
+        var text = typeof payload.text === 'string' ? payload.text.trim() : '';
+        var images = Array.isArray(payload.images) ? payload.images.filter(function (image) {
+            return image && typeof image.url === 'string' && image.url.trim();
+        }) : [];
+        if (!text && images.length === 0) return false;
+        if (isHomeTutorialInteractionLocked()) {
+            showHomeTutorialLockedToast();
+            return false;
+        }
+
+        var normalizedImages = [];
+        try {
+            normalizedImages = await Promise.all(images.map(function (image) {
+                return mod.normalizeHistoryImageForPendingList(image).then(function (dataUrl) {
+                    return {
+                        dataUrl: dataUrl,
+                        alt: typeof image.alt === 'string' ? image.alt : ''
+                    };
+                });
+            }));
+        } catch (error) {
+            console.error('[CompactHistoryDrop] image import failed:', error);
+            window.showStatusToast(
+                window.t ? window.t('app.importImageFailed') : '\u5BFC\u5165\u56FE\u7247\u5931\u8D25',
+                4000
+            );
+            return false;
+        }
+
+        var screenshotsList = S.dom.screenshotsList;
+        if (!screenshotsList) return false;
+        var existingItems = Array.from(screenshotsList.children);
+        var detachedExistingItems = [];
+        existingItems.forEach(function (item) {
+            detachedExistingItems.push(item);
+            item.remove();
+        });
+        refreshPendingComposerAttachmentList();
+
+        var addedItems = [];
+        function restoreExistingItems() {
+            addedItems.forEach(function (item) {
+                if (item && item.isConnected) {
+                    item.remove();
+                }
+            });
+            detachedExistingItems.forEach(function (item) {
+                screenshotsList.appendChild(item);
+            });
+            refreshPendingComposerAttachmentList();
+        }
+
+        try {
+            normalizedImages.forEach(function (image) {
+                var item = mod.addScreenshotToList(image.dataUrl, null, {
+                    alt: image.alt,
+                    source: 'compact-history'
+                });
+                if (item) {
+                    addedItems.push(item);
+                }
+            });
+            var result = await mod.sendTextPayload(text, {
+                source: 'react-chat-window',
+                requestId: typeof payload.requestId === 'string' ? payload.requestId : undefined,
+                compactHistoryDragSessionId: typeof payload.compactHistoryDragSessionId === 'string'
+                    ? payload.compactHistoryDragSessionId
+                    : undefined
+            });
+            restoreExistingItems();
+            return result === false ? false : true;
+        } catch (error) {
+            console.error('[CompactHistoryDrop] send failed:', error);
+            restoreExistingItems();
+            window.showStatusToast(
+                window.t ? window.t('app.sendFailed', { error: error.message || String(error) }) : '\u53D1\u9001\u5931\u8D25: ' + (error.message || String(error)),
+                5000
+            );
+            return false;
+        }
+    };
+    window.sendCompactHistoryDropPayload = mod.sendCompactHistoryDropPayload;
 
     // ======================== Emotion analysis ========================
 
@@ -1191,6 +1358,11 @@
                 requestId: detail && detail.requestId
             });
         });
+        if (typeof host.setOnCompactHistoryDrop === 'function') {
+            host.setOnCompactHistoryDrop(function (detail) {
+                return mod.sendCompactHistoryDropPayload(detail);
+            });
+        }
         host.setOnComposerImportImage(function () {
             return mod.openImageImportPicker();
         });
@@ -2044,7 +2216,7 @@
                     refreshHomeTutorialLockedControls(false);
 
                     updateReactOptimisticMessageStatus('failed');
-                    return; // Don't send if session start failed
+                    return false; // Don't send if session start failed
                 }
             }
 
@@ -2164,6 +2336,7 @@
                     }
 
                     window.showStatusToast(window.t ? window.t('app.textChattingShort') : '\u6B63\u5728\u6587\u672C\u804A\u5929\u4E2D', 2000);
+                    return true;
                 } catch (sendError) {
                     console.error('[Chat] send text payload failed:', sendError);
                     updateReactOptimisticMessageStatus('failed');
@@ -2173,6 +2346,7 @@
                             : '\u53D1\u9001\u5931\u8D25: ' + sendError.message,
                         5000
                     );
+                    return false;
                 }
             } else {
                 updateReactOptimisticMessageStatus('failed');

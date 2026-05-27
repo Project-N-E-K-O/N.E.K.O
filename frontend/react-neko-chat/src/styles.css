@@ -120,9 +120,9 @@ svg {
   --drop-rotation: 0deg;
   --drop-scale: 1;
   --drop-delay: 0ms;
-  position: fixed;
-  left: 0;
-  top: 0;
+  position: absolute;
+  left: calc(100% - 30px);
+  top: 33px;
   z-index: 10000;
   pointer-events: none;
   opacity: 1;
@@ -1904,14 +1904,14 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   max-height: 54px;
   box-sizing: border-box;
   padding: 0 20px;
-  border: var(--neko-btn-border, 1px solid rgba(255, 255, 255, 0.18));
+  border: 1px solid rgba(255, 255, 255, 0.6);
   border-radius: 999px;
-  background: transparent;
+  background: rgba(255, 255, 255, 0.06);
   box-shadow:
-    var(--neko-btn-shadow, 0 2px 4px rgba(0, 0, 0, 0.04), 0 4px 8px rgba(0, 0, 0, 0.08)),
-    0 0 0 1px rgba(208, 233, 255, 0.18);
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
+    0 0 0 1px rgba(208, 233, 255, 0.22),
+    0 8px 16px rgba(8, 22, 40, 0.03);
+  backdrop-filter: blur(8px) saturate(1.1) brightness(1.08);
+  -webkit-backdrop-filter: blur(8px) saturate(1.1) brightness(1.08);
 }
 
 .compact-chat-surface-frame[data-compact-chat-state="input"] {
@@ -1925,30 +1925,6 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 
 .compact-chat-surface-frame::after {
   content: none;
-}
-
-:root:not([data-theme="dark"]) body:not([data-theme="dark"]) .compact-chat-surface-frame::before {
-  content: "";
-  position: absolute;
-  inset: -12px;
-  z-index: 0;
-  border-radius: inherit;
-  pointer-events: none;
-  background:
-    radial-gradient(ellipse at 18% 50%, rgba(255, 255, 255, 0.88) 0%, rgba(255, 255, 255, 0.34) 58%, transparent 78%),
-    radial-gradient(ellipse at 82% 50%, rgba(205, 232, 255, 0.58) 0%, rgba(255, 255, 255, 0.28) 55%, transparent 76%),
-    var(--neko-btn-bg, rgba(255, 255, 255, 0.72));
-  filter: blur(12px);
-}
-
-:root:not([data-theme="dark"]) body:not([data-theme="dark"]) .compact-chat-surface-frame::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  border-radius: inherit;
-  pointer-events: none;
-  background: rgba(255, 255, 255, 0.16);
 }
 
 .compact-chat-surface-frame > * {
@@ -2209,7 +2185,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   padding: 4px 6px;
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
-  pointer-events: auto;
+  pointer-events: none;
   -webkit-app-region: no-drag;
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, rgba(0, 0, 0, 0.78) 12px, #000 28px);
   mask-image: linear-gradient(to bottom, transparent 0, rgba(0, 0, 0, 0.78) 12px, #000 28px);
@@ -2262,6 +2238,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 .compact-export-history-message {
+  position: relative;
   display: flex;
   width: 100%;
   min-width: 0;
@@ -2294,6 +2271,29 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   opacity: 0.85;
 }
 
+.compact-export-history-message[data-compact-history-drag-source] .compact-export-history-bubble {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+
+.compact-export-history-message[data-compact-history-drag-source][data-compact-history-drag-phase="dragging"] .compact-export-history-bubble {
+  opacity: 0;
+}
+
+.compact-export-history-message[data-compact-history-drag-source] .compact-export-history-bubble > * {
+  opacity: var(--compact-history-drag-source-content-opacity, 0);
+  transition: opacity 0.08s linear;
+}
+
+.compact-export-history-message[data-compact-history-drag-phase="returning"] .compact-export-history-bubble {
+  transition: border-color 0.16s ease, box-shadow 0.22s ease, transform 0.26s cubic-bezier(0.22, 1.22, 0.36, 1);
+}
+
+.compact-export-history-message[data-compact-history-drag-phase="sending"] .compact-export-history-bubble {
+  animation: compact-history-source-send 0.34s ease both;
+}
+
 .compact-export-history-bubble {
   position: relative;
   max-width: var(--compact-history-bubble-max-ratio, var(--compact-export-history-bubble-max-ratio));
@@ -2308,7 +2308,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   -webkit-backdrop-filter: blur(8px) saturate(1.08);
   cursor: pointer;
   pointer-events: auto;
-  transform-origin: center center;
+  transform-origin: var(--compact-history-drag-origin-x, 50%) var(--compact-history-drag-origin-y, 50%);
   transform: translateX(var(--compact-history-stagger-x, 0px)) rotate(var(--compact-history-rotate, 0deg));
   transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
 }
@@ -2333,6 +2333,12 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   --compact-history-rotate: 0deg;
 }
 
+.compact-export-history-bubble .message-block-image img,
+.compact-history-drag-bubble .message-block-image img {
+  height: auto;
+  object-fit: contain;
+}
+
 .compact-export-history-message.is-selected .compact-export-history-bubble {
   border-color: rgba(36, 151, 217, 0.82);
   box-shadow:
@@ -2345,6 +2351,232 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   box-shadow:
     0 0 0 3px rgba(36, 151, 217, 0.18),
     0 8px 20px rgba(36, 151, 217, 0.12);
+}
+
+.compact-history-drag-layer {
+  position: fixed;
+  left: var(--compact-history-drag-left, 0px);
+  top: var(--compact-history-drag-top, 0px);
+  width: var(--compact-history-drag-width, 1px);
+  min-width: 1px;
+  min-height: 1px;
+  z-index: 100020;
+  pointer-events: none;
+  -webkit-app-region: no-drag;
+  overflow: visible;
+  transform: translateZ(0);
+  will-change: left, top, transform;
+  contain: layout style;
+}
+
+.compact-history-drag-layer[data-compact-drag-phase="returning"],
+.compact-history-drag-layer[data-compact-drag-phase="sending"] {
+  transition:
+    left 0.26s cubic-bezier(0.22, 1.22, 0.36, 1),
+    top 0.26s cubic-bezier(0.22, 1.22, 0.36, 1);
+}
+
+.compact-history-drag-filter-defs {
+  position: fixed;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.compact-history-drag-elastic {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 100019;
+  pointer-events: none;
+  -webkit-app-region: no-drag;
+  overflow: visible;
+  opacity: var(--compact-history-elastic-opacity, 0.86);
+  filter:
+    drop-shadow(0 10px 20px rgb(var(--compact-history-drag-shadow-rgb, 42 93 145) / 0.16))
+    drop-shadow(0 1px 0 rgb(var(--compact-history-drag-edge-rgb, 77 160 220) / 0.04));
+  transform: translateZ(0);
+  will-change: opacity, filter;
+  contain: layout style paint;
+}
+
+.compact-history-drag-goo-group {
+  filter: url("#compact-history-goo-filter");
+}
+
+.compact-history-drag-elastic-fill,
+.compact-history-drag-bubble-shell-fill {
+  fill: rgb(var(--compact-history-drag-surface-rgb, 255 255 255) / 0.9);
+  stroke: transparent;
+  stroke-width: 0;
+}
+
+.compact-history-drag-bubble-shell-fill {
+  fill: rgb(var(--compact-history-drag-surface-rgb, 255 255 255) / 0.92);
+}
+
+.compact-history-drag-elastic[data-compact-drag-over-target="true"] {
+  opacity: 0.94;
+  filter: drop-shadow(0 12px 26px rgba(46, 178, 132, 0.2));
+}
+
+.compact-history-drag-elastic[data-compact-drag-phase="returning"],
+.compact-history-drag-elastic[data-compact-drag-phase="sending"] {
+  opacity: 0;
+  transition: opacity 0.16s ease;
+}
+
+.compact-history-drag-shadow {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: var(--compact-history-drag-height, 1px);
+  border-radius: inherit;
+  overflow: visible;
+  opacity: 0.94;
+  transform:
+    scaleX(var(--compact-history-drag-scale-x, 1.04))
+    scaleY(var(--compact-history-drag-scale-y, 0.98));
+  transform-origin: var(--compact-history-drag-origin-x, 50%) var(--compact-history-drag-origin-y, 50%);
+  filter: drop-shadow(0 12px 24px rgb(var(--compact-history-drag-shadow-rgb, 42 93 145) / 0.2));
+  transition:
+    opacity 0.2s ease,
+    transform 0.24s cubic-bezier(0.2, 1.1, 0.32, 1),
+    filter 0.2s ease;
+}
+
+.compact-history-drag-layer[data-compact-drag-over-target="true"] .compact-history-drag-shadow {
+  filter: drop-shadow(0 14px 28px rgba(46, 178, 132, 0.22));
+  transform:
+    scaleX(calc(var(--compact-history-drag-scale-x, 1.01) + 0.015))
+    scaleY(calc(var(--compact-history-drag-scale-y, 1) + 0.01));
+}
+
+.compact-history-drag-layer[data-compact-drag-phase="returning"] .compact-history-drag-shadow {
+  opacity: 0;
+  transform: scale(0.72);
+  filter: drop-shadow(0 4px 10px rgba(23, 55, 91, 0.08));
+}
+
+.compact-history-drag-layer[data-compact-drag-phase="sending"] .compact-history-drag-shadow {
+  opacity: 0;
+  transform: scale(0.42) translateY(-8px);
+  filter: drop-shadow(0 4px 16px rgba(46, 178, 132, 0.18));
+}
+
+.compact-history-drag-layer[data-compact-drag-type="image"] .compact-history-drag-shadow {
+  min-height: 0;
+}
+
+.compact-history-drag-layer[data-compact-drag-type="bubble"] .compact-history-drag-shadow {
+  filter: none;
+  transform: none;
+}
+
+.compact-history-drag-image {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 220px;
+  border-radius: 12px;
+  object-fit: contain;
+  background: rgb(var(--compact-history-drag-surface-rgb, 220 228 240) / 0.9);
+  border: 1px solid rgb(var(--compact-history-drag-edge-rgb, 77 160 220) / 0.22);
+}
+
+.compact-history-drag-bubble {
+  box-sizing: border-box;
+  position: relative;
+  isolation: isolate;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1.5px solid transparent;
+  border-radius:
+    var(--compact-history-bubble-radius-tl, 8px)
+    var(--compact-history-bubble-radius-tr, 16px)
+    var(--compact-history-bubble-radius-br, 16px)
+    var(--compact-history-bubble-radius-bl, 16px);
+  color: var(--compact-history-drag-text, #273042);
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.compact-history-drag-layer[data-compact-drag-type="bubble"] .compact-history-drag-bubble {
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.compact-history-drag-layer[data-compact-drag-role="user"] .compact-history-drag-bubble {
+  border-radius:
+    var(--compact-history-bubble-radius-tl, 16px)
+    var(--compact-history-bubble-radius-tr, 8px)
+    var(--compact-history-bubble-radius-br, 16px)
+    var(--compact-history-bubble-radius-bl, 16px);
+  color: #142033;
+}
+
+.compact-history-drag-layer[data-compact-drag-role="system"] .compact-history-drag-bubble {
+  color: #607086;
+}
+
+.compact-history-drag-bubble-content {
+  position: relative;
+  z-index: 1;
+  transform:
+    scaleX(var(--compact-history-bubble-content-scale-x, 1))
+    scaleY(var(--compact-history-bubble-content-scale-y, 1));
+  transform-origin: var(--compact-history-bubble-shell-origin-x, 50%) var(--compact-history-bubble-shell-origin-y, 50%);
+}
+
+@keyframes compact-history-source-send {
+  0% {
+    opacity: 1;
+    transform:
+      translateX(calc(var(--compact-history-stagger-x, 0px) + var(--compact-history-drag-pull-x, 0px)))
+      translateY(var(--compact-history-drag-pull-y, 0px))
+      rotate(var(--compact-history-rotate, 0deg))
+      scaleX(var(--compact-history-drag-stretch-x, 1.02))
+      scaleY(var(--compact-history-drag-stretch-y, 0.985));
+  }
+  42% {
+    opacity: 0.28;
+    transform:
+      translateX(var(--compact-history-stagger-x, 0px))
+      translateY(0)
+      rotate(var(--compact-history-rotate, 0deg))
+      scale(0.9);
+  }
+  100% {
+    opacity: 1;
+    transform:
+      translateX(var(--compact-history-stagger-x, 0px))
+      translateY(0)
+      rotate(var(--compact-history-rotate, 0deg))
+      skewX(0deg)
+      scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .compact-history-drag-layer,
+  .compact-history-drag-shadow,
+  .compact-history-drag-elastic,
+  .compact-export-history-message[data-compact-history-drag-source] .compact-export-history-bubble {
+    transition: none;
+    animation: none;
+  }
+
+  .compact-history-drag-elastic {
+    display: none;
+  }
 }
 
 .compact-export-history-check {
@@ -2715,17 +2947,6 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   opacity: 0.48;
 }
 
-.compact-export-preview-error {
-  flex: 0 0 auto;
-  padding: 6px 8px;
-  border-radius: 10px;
-  background: rgba(255, 237, 232, 0.76);
-  color: #a63d2f;
-  font-size: 0.74rem;
-  font-weight: 700;
-  line-height: 1.35;
-}
-
 .compact-export-preview-empty {
   flex: 1 1 auto;
   display: grid;
@@ -3014,18 +3235,14 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 .compact-input-tool-fan {
   --compact-tool-button-size: 38px;
   --compact-tool-fan-hit-outset: 52px;
-  --compact-tool-fan-focus-x: 42px;
-  --compact-tool-fan-focus-y: 42px;
-  --compact-tool-toggle-center-x: calc(100% - 31px);
-  --compact-tool-toggle-center-y: 31px;
   --compact-tool-button-fill: rgba(255, 255, 255, 0.9);
   --compact-tool-button-hover-fill: rgba(232, 246, 255, 0.96);
   --compact-tool-button-shadow: 0 8px 18px rgba(20, 36, 64, 0.13);
   --compact-tool-preview-fade-left: linear-gradient(99deg, rgba(0, 0, 0, 0.04) 0%, rgba(0, 0, 0, 0.52) 46%, #000 100%);
   --compact-tool-preview-fade-right: linear-gradient(172deg, rgba(0, 0, 0, 0.04) 0%, rgba(0, 0, 0, 0.52) 46%, #000 100%);
   position: absolute;
-  left: calc(var(--compact-tool-toggle-center-x) - var(--compact-tool-fan-focus-x));
-  top: calc(var(--compact-tool-toggle-center-y) - var(--compact-tool-fan-focus-y));
+  left: calc(100% - 30px - var(--compact-tool-fan-hit-outset));
+  top: calc(31px - var(--compact-tool-fan-hit-outset));
   width: calc(126px + var(--compact-tool-fan-hit-outset));
   height: calc(126px + var(--compact-tool-fan-hit-outset));
   pointer-events: none;
@@ -3225,10 +3442,10 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 .compact-input-tool-fan .composer-icon-popover {
-  left: var(--compact-tool-fan-focus-x);
-  right: auto;
-  bottom: calc(100% - var(--compact-tool-fan-focus-y) + 6px);
-  transform: translateX(-50%);
+  left: auto;
+  right: 0;
+  bottom: calc(100% + 6px);
+  transform: none;
   z-index: 13;
 }
 
@@ -3687,35 +3904,11 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 [data-theme="dark"] .compact-chat-surface-frame {
-  background: transparent;
+  background: rgba(255, 255, 255, 0.06);
   box-shadow:
-    0 0 0 1px rgba(95, 176, 255, 0.16),
-    0 8px 18px rgba(3, 9, 20, 0.22);
-  border: 1px solid rgba(180, 218, 255, 0.22);
-}
-
-[data-theme="dark"] .compact-chat-surface-frame::before {
-  content: "";
-  position: absolute;
-  inset: -12px;
-  z-index: 0;
-  border-radius: inherit;
-  pointer-events: none;
-  background:
-    radial-gradient(ellipse at 18% 50%, rgba(52, 85, 124, 0.88) 0%, rgba(25, 38, 58, 0.5) 58%, transparent 78%),
-    radial-gradient(ellipse at 82% 50%, rgba(22, 68, 104, 0.68) 0%, rgba(18, 28, 44, 0.46) 55%, transparent 76%),
-    rgba(16, 25, 40, 0.86);
-  filter: blur(12px);
-}
-
-[data-theme="dark"] .compact-chat-surface-frame::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  border-radius: inherit;
-  pointer-events: none;
-  background: rgba(10, 18, 30, 0.28);
+    0 0 0 1px rgba(208, 233, 255, 0.22),
+    0 8px 16px rgba(8, 22, 40, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.6);
 }
 
 [data-theme="dark"] .compact-chat-surface-shell[data-compact-chat-state="input"],
@@ -3848,11 +4041,6 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 [data-theme="dark"] .compact-export-preview-stage {
   box-shadow: inset 0 0 0 1px rgba(116, 187, 255, 0.14);
-}
-
-[data-theme="dark"] .compact-export-preview-error {
-  background: rgba(98, 45, 38, 0.72);
-  color: #ffd7cf;
 }
 
 [data-theme="dark"] .compact-export-preview-chip.is-active {
