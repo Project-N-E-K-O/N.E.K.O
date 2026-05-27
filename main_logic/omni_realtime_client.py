@@ -1387,8 +1387,15 @@ class OmniRealtimeClient:
                     await self.on_status_message(json.dumps({"code": "IMAGE_BLOCKED"}))
             return "图片识别发生严重错误！"
     
-    async def stream_image(self, image_b64: str) -> None:
-        """Stream raw image data to the API."""
+    async def stream_image(self, image_b64: str, *, bypass_rate_limit: bool = False) -> None:
+        """Stream raw image data to the API.
+
+        ``bypass_rate_limit=True`` skips the native-vision frame-rate throttle
+        for a deliberate single cue image (e.g. a proactive callback's
+        screenshot) so it isn't silently dropped just because a high-frequency
+        screen/camera frame was streamed within NATIVE_IMAGE_MIN_INTERVAL
+        (Codex P2). It's one intentional image, not a stream, so it won't flood.
+        """
         # Cache latest frame for proactive injection
         self._latest_image_b64 = image_b64
         self._proactive_image_consumed = False
@@ -1399,16 +1406,19 @@ class OmniRealtimeClient:
                 await self._analyze_image_with_vision_model(image_b64)
                 return
             
-            # Rate limiting for native image input (with VAD-based throttling)
+            # Rate limiting for native image input (with VAD-based throttling).
+            # A deliberate cue image (bypass_rate_limit) skips the interval check
+            # so it's never silently dropped, but still stamps the timestamp.
             if self._supports_native_image:
                 current_time = time.time()
-                elapsed = current_time - self._last_native_image_time
-                min_interval = NATIVE_IMAGE_MIN_INTERVAL
-                if not self._client_vad_active:
-                    min_interval *= IMAGE_IDLE_RATE_MULTIPLIER
-                if elapsed < min_interval:
-                    # Skip this image frame due to rate limiting
-                    return
+                if not bypass_rate_limit:
+                    elapsed = current_time - self._last_native_image_time
+                    min_interval = NATIVE_IMAGE_MIN_INTERVAL
+                    if not self._client_vad_active:
+                        min_interval *= IMAGE_IDLE_RATE_MULTIPLIER
+                    if elapsed < min_interval:
+                        # Skip this image frame due to rate limiting
+                        return
                 self._last_native_image_time = current_time
 
             # Gemini uses SDK, not WebSocket events (_audio_in_buffer is not set for Gemini)

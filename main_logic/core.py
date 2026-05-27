@@ -6360,7 +6360,10 @@ class LLMSessionManager:
             streamed = 0
             for b64 in images:
                 try:
-                    await si(b64)
+                    # Deliberate cue image: bypass the native-vision frame-rate
+                    # throttle so it isn't silently dropped behind a recent
+                    # high-frequency screen/camera frame (Codex P2).
+                    await si(b64, bypass_rate_limit=True)
                     streamed += 1
                 except Exception as e:
                     # Keep the FULL media set (do NOT trim already-streamed

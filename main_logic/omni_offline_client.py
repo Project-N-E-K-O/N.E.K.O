@@ -2585,10 +2585,14 @@ class OmniOfflineClient:
         """Compatibility method - not used in text mode"""
         pass
     
-    async def stream_image(self, image_b64: str) -> None:
+    async def stream_image(self, image_b64: str, *, bypass_rate_limit: bool = False) -> None:
         """
         Add an image to pending images queue.
         Images will be sent together with the next text message.
+
+        ``bypass_rate_limit`` is accepted for signature parity with the
+        realtime client (text mode has no frame-rate throttle — it's an
+        in-memory append) and is ignored here.
         """
         if not image_b64:
             return
