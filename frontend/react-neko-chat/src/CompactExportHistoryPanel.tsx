@@ -138,6 +138,12 @@ type ActiveCompactHistoryDrag = {
   overDropTarget: boolean;
 };
 
+type CompactHistoryDragRebaseDetail = {
+  sessionId?: string;
+  deltaX?: number;
+  deltaY?: number;
+};
+
 type CompactHistoryElasticGeometry = {
   path: string;
   shellPath?: string;
@@ -216,6 +222,47 @@ function snapshotCompactHistoryRect(rect: DOMRect | ClientRect): CompactHistoryR
     bottom: rect.bottom,
     width: rect.width,
     height: rect.height,
+  };
+}
+
+function translateCompactHistoryRect(rect: CompactHistoryRect, dx: number, dy: number): CompactHistoryRect {
+  return {
+    left: rect.left + dx,
+    top: rect.top + dy,
+    right: rect.right + dx,
+    bottom: rect.bottom + dy,
+    width: rect.width,
+    height: rect.height,
+  };
+}
+
+function translateCompactHistoryActiveDrag(
+  activeDrag: ActiveCompactHistoryDrag,
+  dx: number,
+  dy: number,
+): ActiveCompactHistoryDrag {
+  return {
+    ...activeDrag,
+    originRect: translateCompactHistoryRect(activeDrag.originRect, dx, dy),
+    sourceFrameRect: translateCompactHistoryRect(activeDrag.sourceFrameRect, dx, dy),
+    pointerClient: {
+      x: activeDrag.pointerClient.x + dx,
+      y: activeDrag.pointerClient.y + dy,
+    },
+  };
+}
+
+function translateCompactHistoryPointerIntent(
+  intent: PointerIntentState,
+  dx: number,
+  dy: number,
+): PointerIntentState {
+  return {
+    ...intent,
+    x: intent.x + dx,
+    y: intent.y + dy,
+    originRect: translateCompactHistoryRect(intent.originRect, dx, dy),
+    sourceFrameRect: translateCompactHistoryRect(intent.sourceFrameRect, dx, dy),
   };
 }
 
@@ -1153,6 +1200,7 @@ export default function CompactExportHistoryPanel({
   const dragElasticCurveRef = useRef<{ x: number; y: number } | null>(null);
   const dragAnimationTimerRef = useRef<number | null>(null);
   const dragMoveFrameRef = useRef<number | null>(null);
+  const dragRebasePendingRef = useRef<string | null>(null);
   const dragStateSeqRef = useRef(0);
   const lastDragStateSessionIdRef = useRef<string | null>(null);
   const pendingDragPointRef = useRef<{ intent: PointerIntentState; clientX: number; clientY: number } | null>(null);
@@ -1270,12 +1318,18 @@ export default function CompactExportHistoryPanel({
     activeDragRef.current = activeDrag;
     currentOverDropTargetRef.current = activeDrag?.overDropTarget ?? false;
     if (!activeDrag) {
+      dragRebasePendingRef.current = null;
       clearCompactHistoryStyleVars(dragSourceElementRef.current, COMPACT_HISTORY_SOURCE_DRAG_STYLE_KEYS);
       dragSourceElementRef.current = null;
       return;
     }
+    const rebasePending = dragRebasePendingRef.current === activeDrag.sessionId;
+    const useLiveRects = rebasePending ? false : undefined;
+    dragRebasePendingRef.current = null;
     applyCompactHistoryDragFrame(activeDrag, activeDrag.pointerClient.x, activeDrag.pointerClient.y, {
       updateDropTarget: false,
+      useLiveRects,
+      emitState: !rebasePending,
     });
   }, [activeDrag]);
 
@@ -1304,6 +1358,42 @@ export default function CompactExportHistoryPanel({
     clearCompactHistoryDragAnimationTimer();
     clearCompactHistoryDragMoveFrame();
     clearCompactHistoryElasticCurve();
+  }, []);
+
+  useEffect(() => {
+    function handleDesktopDragRebase(event: Event) {
+      const detail = (event as CustomEvent<CompactHistoryDragRebaseDetail>).detail;
+      const dx = Number(detail?.deltaX);
+      const dy = Number(detail?.deltaY);
+      if (!Number.isFinite(dx) || !Number.isFinite(dy) || (dx === 0 && dy === 0)) return;
+      const current = activeDragRef.current;
+      if (!current || (detail?.sessionId && detail.sessionId !== current.sessionId)) return;
+      const next = translateCompactHistoryActiveDrag(current, dx, dy);
+      activeDragRef.current = next;
+      if (dragElasticCurveRef.current) {
+        dragElasticCurveRef.current = {
+          x: dragElasticCurveRef.current.x + dx,
+          y: dragElasticCurveRef.current.y + dy,
+        };
+      }
+      const intent = pointerIntentRef.current;
+      if (intent && intent.sessionId === next.sessionId) {
+        pointerIntentRef.current = translateCompactHistoryPointerIntent(intent, dx, dy);
+      }
+      applyCompactHistoryDragFrame(next, next.pointerClient.x, next.pointerClient.y, {
+        updateDropTarget: false,
+        useLiveRects: false,
+      });
+      dragRebasePendingRef.current = next.sessionId;
+      setActiveDrag((activeDragState) => (
+        activeDragState && activeDragState.sessionId === next.sessionId ? next : activeDragState
+      ));
+    }
+
+    window.addEventListener('neko:compact-history-drag-rebase', handleDesktopDragRebase);
+    return () => {
+      window.removeEventListener('neko:compact-history-drag-rebase', handleDesktopDragRebase);
+    };
   }, []);
 
   useEffect(() => {
@@ -1391,10 +1481,10 @@ export default function CompactExportHistoryPanel({
     activeDrag: ActiveCompactHistoryDrag,
     clientX: number,
     clientY: number,
-    options: { updateDropTarget?: boolean } = {},
+    options: { updateDropTarget?: boolean; useLiveRects?: boolean; emitState?: boolean } = {},
   ) {
-    const originRect = resolveLiveOriginRect(activeDrag);
-    const sourceFrameRect = resolveLiveSourceFrameRect(activeDrag);
+    const originRect = options.useLiveRects === false ? activeDrag.originRect : resolveLiveOriginRect(activeDrag);
+    const sourceFrameRect = options.useLiveRects === false ? activeDrag.sourceFrameRect : resolveLiveSourceFrameRect(activeDrag);
     const frame: ActiveCompactHistoryDrag = {
       ...activeDrag,
       originRect,
@@ -1435,7 +1525,9 @@ export default function CompactExportHistoryPanel({
         ));
       }
     }
-    emitCompactHistoryDragState(bridgeFrame);
+    if (options.emitState !== false) {
+      emitCompactHistoryDragState(bridgeFrame);
+    }
   }
 
   function applyCompactHistoryElasticFrame(activeDrag: ActiveCompactHistoryDrag) {

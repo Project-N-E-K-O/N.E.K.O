@@ -704,7 +704,7 @@ describe('App', () => {
       status: 'sent',
     });
 
-    const { container } = render(
+    const { container, rerender } = render(
       <App
         chatSurfaceMode="compact"
         compactChatState="input"
@@ -779,10 +779,44 @@ describe('App', () => {
     expect(activeState?.dragVisualRect.width).toBeGreaterThanOrEqual(80);
     expect(activeState?.dragVisualRect.height).toBeGreaterThanOrEqual(47);
 
+    act(() => {
+      window.dispatchEvent(new CustomEvent('neko:compact-history-drag-rebase', {
+        detail: {
+          sessionId: activeState?.sessionId,
+          deltaX: 30,
+          deltaY: 20,
+        },
+      }));
+    });
+
+    const rebasedActiveStates = onCompactHistoryDragStateChange.mock.calls
+      .map(([payload]) => payload)
+      .filter(payload => payload.active === true);
+    const rebasedState = rebasedActiveStates[rebasedActiveStates.length - 1];
+    expect(rebasedState).toEqual(expect.objectContaining({
+      pointerClient: { clientX: 108, clientY: 94 },
+      sourceFrameRect: expect.objectContaining({ left: 38, top: 32, width: 340, height: 144 }),
+      dragHitRect: expect.objectContaining({ left: 88, top: 74, width: 100, height: 68 }),
+    }));
+    expect(rebasedState?.dragVisualRect).toEqual(expect.objectContaining({ left: 98, top: 84 }));
+    const dragLayer = document.body.querySelector<HTMLElement>('[data-compact-drag-layer="true"]');
+    expect(dragLayer?.style.getPropertyValue('--compact-history-drag-left')).toBe('98px');
+    expect(dragLayer?.style.getPropertyValue('--compact-history-drag-top')).toBe('84px');
+    rerender(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        messages={[imageMessage]}
+        onCompactHistoryDragStateChange={onCompactHistoryDragStateChange}
+      />,
+    );
+    expect(dragLayer?.style.getPropertyValue('--compact-history-drag-left')).toBe('98px');
+    expect(dragLayer?.style.getPropertyValue('--compact-history-drag-top')).toBe('84px');
+
     fireEvent.pointerUp(window, {
       pointerId: 42,
-      clientX: 78,
-      clientY: 74,
+      clientX: 108,
+      clientY: 94,
       buttons: 0,
       pointerType: 'mouse',
     });
