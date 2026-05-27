@@ -2724,6 +2724,7 @@ class OmniOfflineClient:
         self,
         instruction: str,
         *,
+        images: Optional[list] = None,
         completion_mode: str = "proactive",
         persist_response: bool = True,
     ) -> bool:
@@ -2764,33 +2765,30 @@ class OmniOfflineClient:
 
         # 临时注入：instruction 已由调用方用 ======== 格式封装，作为 HumanMessage 发送，
         # 不持久化到 _conversation_history，避免污染长期上下文。
-        # Proactive media (text mode): _stream_cb_media stages deferred images
-        # into _pending_images right before this call. Consume them into THIS
-        # ephemeral turn as a multimodal HumanMessage so the proactive response
-        # actually sees them, switching to the vision model exactly like
-        # stream_text does (一旦会话带图就永久切 vision — 既定设计；vision model
-        # 也能处理后续纯文本轮). The instruction itself stays ephemeral (not
-        # persisted to history); the image is consumed only for this call.
-        # Retry-safety: the cb keeps its media_images (popped only after the cb
-        # is delivered & pruned, see core._stream_cb_media), so a failed-LLM /
-        # no-output retry re-stages _pending_images and re-consumes here — no
-        # image loss, and no leak onto a later unrelated user turn.
-        if self._pending_images:
+        # Proactive media is passed EXPLICITLY via ``images`` (per-callback,
+        # carried on cb.media_images by the caller) — it is NOT pulled from
+        # self._pending_images. _pending_images is the USER's screen/camera
+        # staging queue for the next stream_text; consuming it here would steal
+        # the user's pending frame into this proactive/greeting turn and rob the
+        # user's next message of its visual context (Codex P2). When proactive
+        # images are present we switch to the vision model exactly like
+        # stream_text does (一旦带图就永久切 vision — 既定设计；vision model 也能跑
+        # 后续纯文本轮). The instruction itself stays ephemeral (not persisted).
+        if images:
             if self.vision_model and self.vision_model != self.model:
                 logger.info(
                     f"🖼️ prompt_ephemeral: switching to vision model {self.vision_model} (from {self.model}) for proactive media"
                 )
                 await self.switch_model(self.vision_model, use_vision_config=True)
             _ephemeral_content: list = []
-            for img_b64 in self._pending_images:
+            for img_b64 in images:
                 _ephemeral_content.append({
                     "type": "image_url",
                     "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"},
                 })
             _ephemeral_content.append({"type": "text", "text": instruction})
-            logger.info(f"prompt_ephemeral: attaching {len(self._pending_images)} pending image(s)")
+            logger.info(f"prompt_ephemeral: attaching {len(images)} proactive image(s)")
             _ephemeral_msg = HumanMessage(content=_ephemeral_content)
-            self._pending_images.clear()
         else:
             _ephemeral_msg = HumanMessage(content=instruction)
         messages_to_send = self._conversation_history + [_ephemeral_msg]

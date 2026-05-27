@@ -5953,20 +5953,20 @@ class LLMSessionManager:
             # pending_agent_callbacks here — passive cbs would also get wiped.
             # per-task contextvar：prompt_ephemeral 回调链里 handle_text_data
             # 识别本路径 chunk 并在 sid 被用户抢走后丢弃
-            # Stream any images carried by these cues into the (now-started)
-            # text session right before prompt_ephemeral, so the proactive
-            # response sees the matching visual context (Codex P2). On failure,
-            # DEFER: requeue and skip the prompt so the cb retries WITH its
-            # media rather than being delivered text-only and dropped. (Text
-            # stream_image is an in-memory append and won't normally fail; this
-            # is defensive parity with the voice path.)
-            if not await self._stream_cb_media(callbacks_snapshot, self.session):
-                logger.info(
-                    "[%s] trigger_agent_callbacks: proactive media stream failed; deferring text delivery (%d cb requeued)",
-                    self.lanlan_name, len(callbacks_snapshot),
-                )
-                self.pending_agent_callbacks.extend(callbacks_snapshot)
-                return
+            # Collect proactive images carried ON the callbacks and pass them
+            # EXPLICITLY to prompt_ephemeral — separate from the user's
+            # _pending_images staging queue (which holds the user's next
+            # screen/camera frame). Sharing that queue would steal the user's
+            # pending image into this proactive turn and rob the user's next
+            # message of its visual context (Codex P2). Media stays on the cb
+            # until the cb is delivered & pruned, so a failed retry re-collects
+            # and re-passes it (preserve-until-success). NOTE: we do NOT call
+            # _stream_cb_media for text mode (that's the voice path, which uses
+            # the realtime session's persistent conversation.item).
+            _proactive_images: list = []
+            for _cb in callbacks_snapshot:
+                if isinstance(_cb, dict):
+                    _proactive_images.extend(_cb.get("media_images") or [])
             _sid_token = _proactive_expected_sid.set(proactive_sid)
             # Text-mode playback boundary for the pacing manager: no frontend
             # audio signal arrives for text delivery, so bracket prompt_ephemeral
@@ -5980,7 +5980,9 @@ class LLMSessionManager:
                 # this guard only covers an emit() that itself somehow raises.
                 logger.debug("[%s] lifecycle_bus emit(text_start) failed", self.lanlan_name)
             try:
-                delivered = await self.session.prompt_ephemeral(instruction)
+                delivered = await self.session.prompt_ephemeral(
+                    instruction, images=_proactive_images or None
+                )
             finally:
                 _proactive_expected_sid.reset(_sid_token)
                 try:
@@ -6324,16 +6326,14 @@ class LLMSessionManager:
         covers every path that actually delivers a cb — manager release,
         reconnect redelivery, turn-end retry.
 
-        Both session types are fed:
-          * VOICE (OmniRealtimeClient): stream_image() persists the image as a
-            conversation.item the immediately-following proactive
-            response.create sees (same-turn).
-          * TEXT (OmniOfflineClient): stream_image() stages into
-            _pending_images, which prompt_ephemeral() consumes for THIS
-            proactive turn (and switches to the vision model, same as
-            stream_text's image handling — the text session then stays on the
-            vision model). So the image is part of the proactive turn, not a
-            later unrelated user message.
+        VOICE path only: OmniRealtimeClient.stream_image() persists the image
+        as a conversation.item the immediately-following proactive
+        response.create sees (same-turn), and the realtime conversation is an
+        accumulating log (not a single-consume queue), so adding a proactive
+        image can't steal a user's pending frame. TEXT mode does NOT go through
+        here — its proactive images are passed explicitly to prompt_ephemeral()
+        (separate from the user's _pending_images staging queue); see
+        _deliver_agent_callbacks_text.
 
         Media is LEFT on the cb (NOT popped) until the cb is delivered &
         pruned, so a deferred / failed-and-retried cb re-streams it instead of
