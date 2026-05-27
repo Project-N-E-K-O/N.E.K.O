@@ -94,7 +94,7 @@ class ProactiveDeliveryManager:
         min_gap_s: float = 2.0,
         inflight_timeout_s: float = 12.0,
         ttl_s: float = 90.0,
-        max_play_s: float = 180.0,
+        max_play_s: float = 45.0,
         can_release: Optional[Callable[[], bool]] = None,
         busy_recheck_s: float = 0.5,
     ) -> None:
@@ -116,13 +116,13 @@ class ProactiveDeliveryManager:
         # outside manager ordering.
         self._can_release = can_release
         self._busy_recheck_s = float(busy_recheck_s)
-        # Watchdog ceiling for a missing voice_play_end. Deliberately LARGE
-        # (>= any plausible single TTS reply): the common cause of a missing
-        # voice_play_end — frontend disconnect/refresh — is already handled by
-        # session teardown (_reset_proactive_gate on end_session/ws drop). This
-        # ceiling only backstops the rare "connection alive but the end signal
-        # was lost" case; keeping it well above real reply length avoids cutting
-        # off a legitimately long answer mid-playback (Codex P2).
+        # Watchdog ceiling for a missing voice_play_end: above a normal single
+        # reply, but short enough to recover a dropped end-signal reasonably
+        # fast. The common cause (frontend disconnect/refresh) is already
+        # handled by session teardown (_reset_proactive_gate on end_session/ws
+        # drop); this only backstops the rare "connection alive but end signal
+        # lost" case. Set above typical reply length so it doesn't cut off a
+        # long answer mid-playback (Codex P2).
         self._max_play_s = float(max_play_s)
 
         self._queue: list[_QueuedCue] = []
