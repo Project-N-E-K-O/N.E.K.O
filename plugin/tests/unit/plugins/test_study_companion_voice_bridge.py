@@ -53,3 +53,53 @@ async def test_voice_transcript_self_talk_returns_cancel_response() -> None:
     payload = result.value
     assert payload["action"] == "cancel_response"
     assert payload["filter"]["method"] == "ocr_overlap"
+
+
+@pytest.mark.asyncio
+async def test_voice_transcript_name_window_is_isolated_by_lanlan_name() -> None:
+    plugin = _plugin_with_voice_state(screen_text="f(x)=x^3 derivative answer is 3x^2")
+
+    first = await plugin.handle_voice_transcript(
+        "Yui help me",
+        lanlan_name="Yui",
+    )
+    second = await plugin.handle_voice_transcript(
+        "嗯",
+        lanlan_name="Mika",
+    )
+
+    assert isinstance(first, Ok)
+    assert first.value["action"] == "prime_context"
+    assert isinstance(second, Ok)
+    assert second.value["action"] == "cancel_response"
+    assert second.value["filter"]["method"] == "too_short"
+
+
+@pytest.mark.asyncio
+async def test_voice_transcript_name_window_uses_metadata_session_key() -> None:
+    plugin = _plugin_with_voice_state(screen_text="f(x)=x^3 derivative answer is 3x^2")
+
+    first = await plugin.handle_voice_transcript(
+        "Yui help me",
+        lanlan_name="Yui",
+        metadata={"voice_session_id": "voice-a"},
+    )
+    second = await plugin.handle_voice_transcript(
+        "嗯",
+        lanlan_name="Yui",
+        metadata={"voice_session_id": "voice-b"},
+    )
+    third = await plugin.handle_voice_transcript(
+        "嗯",
+        lanlan_name="Yui",
+        metadata={"voice_session_id": "voice-a"},
+    )
+
+    assert isinstance(first, Ok)
+    assert first.value["action"] == "prime_context"
+    assert isinstance(second, Ok)
+    assert second.value["action"] == "cancel_response"
+    assert second.value["filter"]["method"] == "too_short"
+    assert isinstance(third, Ok)
+    assert third.value["action"] == "prime_context"
+    assert third.value["filter"]["method"] == "name_window"

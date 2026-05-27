@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from collections.abc import Mapping
 from datetime import datetime
 import math
 from pathlib import Path
@@ -77,6 +78,16 @@ from .ui_api import build_open_ui_payload
 from .ui_api import build_contribution_settings_payload, build_knowledge_map_payload
 from .ui_api import build_habit_dashboard_payload, build_pomodoro_status_payload
 from .voice_filter import VoiceFilter, _derive_subject, build_context_for_catgirl
+
+
+def _voice_session_key(lanlan_name: str, metadata: Mapping[str, Any] | None) -> str:
+    for key in ("voice_session_id", "session_id", "conversation_id", "request_session_id"):
+        value = metadata.get(key) if isinstance(metadata, Mapping) else None
+        text = str(value or "").strip()
+        if text:
+            return f"session:{text}"
+    name = str(lanlan_name or "").strip()
+    return f"lanlan:{name}" if name else "__default__"
 
 
 def _register_install_routes() -> None:
@@ -699,6 +710,8 @@ class StudyCompanionPlugin(NekoPluginBase):
         text = str(transcript or "").strip()
         if not text:
             return Ok({"action": "noop", "reason": "empty_transcript"})
+        metadata_payload = metadata if isinstance(metadata, dict) else {}
+        session_key = _voice_session_key(lanlan_name, metadata_payload)
 
         with self._lock:
             if self._state.status != STATUS_READY:
@@ -726,6 +739,7 @@ class StudyCompanionPlugin(NekoPluginBase):
             screen_text=screen_text,
             screen_type=screen_type,
             subject=screen_context["subject"],
+            session_key=session_key,
         )
         if filter_result is None:
             return Ok({"action": "noop", "reason": "not_matched"})
