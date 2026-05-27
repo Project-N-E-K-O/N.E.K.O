@@ -6364,8 +6364,26 @@ class LLMSessionManager:
         except Exception:
             logger.exception("[%s] lifecycle_bus emit failed", self.lanlan_name)
         if not playing and self.pending_agent_callbacks:
-            # A cue deferred while she was speaking can now go out.
-            self._fire_task(self.trigger_agent_callbacks())
+            # A cue deferred while she was speaking (gate busy at release) can
+            # now go out — but honor the manager's min-gap so this retry doesn't
+            # start the next proactive turn with ZERO gap right at audio end.
+            # Parity with the manager's own post-playback pump, which also
+            # waits min_gap (Codex P2). trigger_agent_callbacks re-gates itself,
+            # so a fire that lands while she's speaking again just defers.
+            delay = 0.0
+            try:
+                delay = max(0.0, float(self.proactive_manager.min_gap_s))
+            except Exception:
+                delay = 0.0
+            if delay <= 0.0:
+                self._fire_task(self.trigger_agent_callbacks())
+            else:
+                try:
+                    asyncio.get_running_loop().call_later(
+                        delay, lambda: self._fire_task(self.trigger_agent_callbacks())
+                    )
+                except RuntimeError:
+                    self._fire_task(self.trigger_agent_callbacks())
 
     # Playback older than this with no voice_play_end is treated as stale —
     # longer than any single utterance, short enough to self-heal a wedged gate.

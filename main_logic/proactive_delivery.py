@@ -127,6 +127,13 @@ class ProactiveDeliveryManager:
         self._pump_handle: Optional[asyncio.TimerHandle] = None
 
     # ── helpers ──────────────────────────────────────────────────────────
+    @property
+    def min_gap_s(self) -> float:
+        """Min seconds between proactive turns (read-only). Callers that retry
+        delivery outside the manager (e.g. core's voice_play_end re-fire of a
+        deferred cue) should honor this for pacing parity."""
+        return self._min_gap_s
+
     def _now(self) -> float:
         return time.monotonic()
 
