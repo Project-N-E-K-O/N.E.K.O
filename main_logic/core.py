@@ -5756,7 +5756,17 @@ class LLMSessionManager:
                 # Stream any images carried by these cues into the (guaranteed)
                 # voice session right before inject, so the proactive response
                 # sees the matching visual context (Codex P2).
-                await self._stream_cb_media(voice_snapshot, voice_sess)
+                if not await self._stream_cb_media(voice_snapshot, voice_sess):
+                    # A media stream failed — DEFER the whole inject so this cb
+                    # retries WITH its image rather than being delivered
+                    # text-only and pruned (which would lose the retained
+                    # media). cbs are still in pending_agent_callbacks (not yet
+                    # pruned), so the next trigger retries them.
+                    logger.info(
+                        "[%s] trigger_agent_callbacks: proactive media stream failed; deferring voice inject (%d cb kept for retry)",
+                        self.lanlan_name, len(voice_snapshot),
+                    )
+                    return
                 try:
                     await voice_sess.inject_text_and_request_response(
                         instruction, on_rejected=_on_voice_inject_rejected
@@ -5945,8 +5955,18 @@ class LLMSessionManager:
             # 识别本路径 chunk 并在 sid 被用户抢走后丢弃
             # Stream any images carried by these cues into the (now-started)
             # text session right before prompt_ephemeral, so the proactive
-            # response sees the matching visual context (Codex P2).
-            await self._stream_cb_media(callbacks_snapshot, self.session)
+            # response sees the matching visual context (Codex P2). On failure,
+            # DEFER: requeue and skip the prompt so the cb retries WITH its
+            # media rather than being delivered text-only and dropped. (Text
+            # stream_image is an in-memory append and won't normally fail; this
+            # is defensive parity with the voice path.)
+            if not await self._stream_cb_media(callbacks_snapshot, self.session):
+                logger.info(
+                    "[%s] trigger_agent_callbacks: proactive media stream failed; deferring text delivery (%d cb requeued)",
+                    self.lanlan_name, len(callbacks_snapshot),
+                )
+                self.pending_agent_callbacks.extend(callbacks_snapshot)
+                return
             _sid_token = _proactive_expected_sid.set(proactive_sid)
             # Text-mode playback boundary for the pacing manager: no frontend
             # audio signal arrives for text delivery, so bracket prompt_ephemeral
@@ -6288,10 +6308,17 @@ class LLMSessionManager:
         # session at release time (Codex P2).
         await self.trigger_agent_callbacks()
 
-    async def _stream_cb_media(self, callbacks: list, session) -> None:
+    async def _stream_cb_media(self, callbacks: list, session) -> bool:
         """Stream images carried by proactive callbacks (push_message
         media_parts with ai_behavior="respond") into ``session`` right before
         delivery, so the proactive response sees matching visual context.
+
+        Returns False if ANY image failed to stream — the caller must then
+        DEFER the whole delivery (don't inject/prompt the text), so the cb
+        retries WITH its media next time. Delivering text-only here and then
+        pruning the cb would drop the retained media for good (Codex P2).
+        Returns True when every image streamed (or there were none / no
+        session).
 
         Bound to the delivery point (not the manager-release point) so it
         covers every path that actually delivers a cb — manager release,
@@ -6316,7 +6343,8 @@ class LLMSessionManager:
         don't re-stream images that already landed."""
         si = getattr(session, "stream_image", None)
         if si is None:
-            return
+            return True
+        all_ok = True
         for cb in callbacks:
             if not isinstance(cb, dict):
                 continue
@@ -6332,16 +6360,19 @@ class LLMSessionManager:
                     # Transient failure (session closing / provider reject).
                     # Keep ONLY the not-yet-streamed tail so a later delivery
                     # attempt re-streams the rest WITHOUT re-injecting images
-                    # that already landed.
+                    # that already landed, and signal the caller to DEFER this
+                    # delivery (don't send text-only and prune away the media).
                     logger.warning(
                         "[%s] proactive media stream_image failed; keeping %d remaining for retry: %s",
                         self.lanlan_name, len(images) - streamed, e,
                     )
                     cb["media_images"] = list(images[streamed:])
+                    all_ok = False
                     break
             # All streamed: keep media_images on the cb until it's delivered+
             # pruned (preserve-until-success) so an inject/prompt failure retry
             # re-streams it. Successful delivery removes the cb (and its media).
+        return all_ok
 
     def on_voice_playback_signal(self, *, playing: bool, **meta) -> None:
         """Handle a FRONTEND-reported audio playback boundary.
