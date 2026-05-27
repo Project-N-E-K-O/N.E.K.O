@@ -1211,6 +1211,12 @@
             };
         }
 
+        clearCursorPosition() {
+            this.cursorPosition = null;
+            this.cursorTrailLastPoint = null;
+            this.cursorTrailLastAt = 0;
+        }
+
         showCursorAt(x, y) {
             this.ensureRoot();
             const previous = this.cursorPosition;
@@ -1221,9 +1227,9 @@
                 && this.cursorShell.classList.contains('is-visible')
             );
             this.document.body.classList.add('yui-guide-ghost-cursor-active');
-            this.cursorShell.hidden = false;
-            this.cursorShell.classList.add('is-visible');
             if (shouldGlide) {
+                this.cursorShell.hidden = false;
+                this.cursorShell.classList.add('is-visible');
                 this.cursorTrailLastPoint = { x: previous.x, y: previous.y };
                 this.cursorTrailLastAt = 0;
                 return this.moveCursorTo(x, y, { durationMs: 360 });
@@ -1233,6 +1239,8 @@
             this.cursorPosition = { x: x, y: y };
             this.cursorTrailLastPoint = null;
             this.cursorTrailLastAt = 0;
+            this.cursorShell.hidden = false;
+            this.cursorShell.classList.add('is-visible');
             return Promise.resolve(true);
         }
 

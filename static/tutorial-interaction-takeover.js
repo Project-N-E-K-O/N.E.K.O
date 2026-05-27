@@ -260,9 +260,55 @@
             }
         }
 
+        setExternalizedChatCursor(kind, options) {
+            if (!this.isHomeChatExternalized()) {
+                return;
+            }
+
+            const channel = this.getExternalChatChannel();
+            if (!channel || typeof channel.postMessage !== 'function') {
+                return;
+            }
+
+            try {
+                channel.postMessage({
+                    action: 'yui_guide_set_chat_cursor',
+                    kind: typeof kind === 'string' ? kind : '',
+                    effect: options && typeof options.effect === 'string' ? options.effect : '',
+                    timestamp: Date.now()
+                });
+            } catch (error) {
+                console.warn('[TutorialInteractionTakeover] 同步独立聊天窗 Ghost Cursor 失败:', error);
+            }
+        }
+
+        setExternalizedChatAvatarToolMenuOpen(open, reason) {
+            if (!this.isHomeChatExternalized()) {
+                return;
+            }
+
+            const channel = this.getExternalChatChannel();
+            if (!channel || typeof channel.postMessage !== 'function') {
+                return;
+            }
+
+            try {
+                channel.postMessage({
+                    action: 'yui_guide_set_avatar_tool_menu_open',
+                    open: open === true,
+                    reason: typeof reason === 'string' ? reason : '',
+                    timestamp: Date.now()
+                });
+            } catch (error) {
+                console.warn('[TutorialInteractionTakeover] 同步独立聊天窗 Avatar 工具菜单失败:', error);
+            }
+        }
+
         clearExternalizedChatFx() {
             this.externalizedChatSpotlightKind = '';
             this.setExternalizedChatSpotlight('');
+            this.setExternalizedChatCursor('');
+            this.setExternalizedChatAvatarToolMenuOpen(false, 'clear-externalized-chat-fx');
         }
 
         onExternalChatReady() {

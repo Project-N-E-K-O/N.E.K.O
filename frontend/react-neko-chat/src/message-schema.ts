@@ -79,6 +79,12 @@ const choicePromptSchema = z.object({
   gameType: z.string().optional(),
 }).nullable();
 
+const avatarToolMenuOpenRequestSchema = z.object({
+  id: z.string().min(1),
+  open: z.boolean(),
+  reason: z.string().optional(),
+}).nullable();
+
 const avatarInteractionPayloadBaseSchema = z.object({
   interactionId: z.string().min(1),
   target: z.literal('avatar'),
@@ -207,6 +213,7 @@ export const chatWindowPropsSchema = z.object({
   galgameToggleButtonLabel: z.string().optional(),
   galgameToggleButtonAriaLabel: z.string().optional(),
   galgameLoadingLabel: z.string().optional(),
+  avatarToolMenuOpenRequest: avatarToolMenuOpenRequestSchema.optional(),
   onMessageAction: z.function()
     .args(chatMessageSchema, messageActionSchema)
     .returns(z.void())
