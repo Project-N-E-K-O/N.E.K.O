@@ -611,12 +611,12 @@ async def test_screenshot_streaming_disabled_caches_only():
 
 
 @pytest.mark.asyncio
-async def test_system_prompt_replay_preserves_per_frame_mime():
-    """Cached screenshots may have heterogeneous mimes (PNG-converted
-    PNG vs. JPEG-passed-through if Pillow conversion failed). The
-    autonomous-loop replay must use each frame's actual mime, not a
-    hardcoded image/png — otherwise downstream ``stream_image`` would
-    receive mis-tagged JPEG bytes."""
+async def test_system_prompt_bundles_only_latest_frame_with_mime():
+    """The autonomous burst bundles ONLY the most recent cached frame (stacking
+    several into one push blows the message_plane payload cap — each frame is
+    base64'd and the legacy binary_data carries a raw copy). It must also use
+    that frame's actual mime, not a hardcoded image/png, or downstream
+    ``stream_image`` would receive mis-tagged bytes."""
     service, push_calls = _make_service()
     service.configure({"stream_screenshots_to_llm": False})  # cache only
 
@@ -632,12 +632,12 @@ async def test_system_prompt_replay_preserves_per_frame_mime():
     assert len(push_calls) == 1
     parts = push_calls[0]["parts"]
     image_parts = [p for p in parts if p["type"] == "image"]
-    assert len(image_parts) == 2
-    mimes = [p["mime"] for p in image_parts]
-    assert mimes == ["image/png", "image/jpeg"]
-    # And the bytes survived round-trip too.
-    datas = [p["data"] for p in image_parts]
-    assert datas == [b"<png-bytes>", b"<jpeg-bytes>"]
+    # Only the latest frame is sent, with its own mime preserved.
+    assert len(image_parts) == 1
+    assert image_parts[0]["mime"] == "image/jpeg"
+    assert image_parts[0]["data"] == b"<jpeg-bytes>"
+    # The cache is fully drained so stale frames aren't re-sent next burst.
+    assert service.get_status()["screenshot_cache_size"] == 0
 
 
 @pytest.mark.asyncio

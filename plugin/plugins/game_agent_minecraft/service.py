@@ -1682,9 +1682,17 @@ class GameAgentService:
         parts: list[Dict[str, Any]] = []
         screenshots = list(self._screenshot_cache)
         self._screenshot_cache.clear()
-        for img_bytes, img_mime in screenshots:
-            # Preserve the per-frame mime — see ``_screenshot_cache``
-            # field comment for why this isn't always image/png.
+        # Bundle ONLY the most recent frame. Each cached frame is already capped
+        # at ``_screenshot_max_bytes`` individually, but stacking several into one
+        # push blows the message_plane payload cap: every frame is base64'd
+        # (~+37%) AND the legacy ``binary_data`` field carries a raw copy, so even
+        # two frames exceed 256KB and the whole burst is silently dropped at
+        # ingest. The latest frame is the most relevant; older cached frames are
+        # dropped rather than risk losing the entire visual+text cue.
+        if screenshots:
+            img_bytes, img_mime = screenshots[-1]
+            # Preserve the per-frame mime — see ``_screenshot_cache`` field
+            # comment for why this isn't always image/png.
             parts.append({"type": "image", "data": img_bytes, "mime": img_mime})
         parts.append({"type": "text", "text": prompt_text})
 
