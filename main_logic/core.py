@@ -1967,7 +1967,7 @@ class LLMSessionManager:
             # swallowed inside the dispatcher.
             dispatch_user_utterance(bucket, event)
 
-    async def _dispatch_voice_transcript_bridge(self, transcript: str) -> None:
+    async def _dispatch_voice_transcript_bridge(self, transcript: str) -> str:
         """Let plugin-side voice filters decide whether to cancel or prime context."""
         try:
             result = await publish_voice_transcript_request_reliably(
@@ -1980,29 +1980,29 @@ class LLMSessionManager:
             )
         except Exception as exc:
             logger.debug("[%s] voice bridge request failed: %s", self.lanlan_name, exc)
-            return
+            return ""
         if not isinstance(result, dict) or not result:
-            return
+            return ""
 
         action = str(result.get("action") or "").strip()
         if action == "cancel_response":
             cancel_response = getattr(self.session, "cancel_response", None)
             if not callable(cancel_response):
-                return
+                return action
             try:
                 await cancel_response()
                 logger.debug("[%s] voice bridge cancelled current response", self.lanlan_name)
             except Exception as exc:
                 logger.debug("[%s] voice bridge cancel skipped/failed: %s", self.lanlan_name, exc)
-            return
+            return action
 
         if action == "prime_context":
             context_text = str(result.get("context") or "").strip()
             if not context_text:
-                return
+                return action
             prime_context = getattr(self.session, "prime_context", None)
             if not callable(prime_context):
-                return
+                return action
             skipped = bool(result.get("skipped", False))
             try:
                 await prime_context(context_text, skipped=skipped)
@@ -2014,6 +2014,8 @@ class LLMSessionManager:
                 )
             except Exception as exc:
                 logger.debug("[%s] voice bridge prime skipped/failed: %s", self.lanlan_name, exc)
+            return action
+        return action
 
     def _reset_voice_echo_suppression_cache(self) -> None:
         self._recent_ai_voice_echo_text = ''
@@ -2211,6 +2213,11 @@ class LLMSessionManager:
             # 维持 voice_engaged 状态。
             self._activity_tracker.on_voice_rms()
 
+        if is_voice_source and transcript_text:
+            voice_bridge_action = await self._dispatch_voice_transcript_bridge(transcript_text)
+            if voice_bridge_action == "cancel_response":
+                return
+
         if is_voice_source:
             # 仅非空转录才算"用户消息"：on_user_message 会清掉 unfinished_thread、
             # bump _conv_seq（让 open_threads 缓存失效）、把文本进 buffer 给
@@ -2235,7 +2242,6 @@ class LLMSessionManager:
                 # 这里只覆盖语音路径，避免 openclaw handoff（is_voice_source=False）
                 # 重复发布。
                 self._publish_user_utterance_to_plugin_bus(transcript, is_voice_source=True)
-                await self._dispatch_voice_transcript_bridge(transcript_text)
         else:
             # Non-voice reuse of this method (e.g. openclaw text handoff).
             # Skip activity-tracker hooks entirely — the text-mode entry

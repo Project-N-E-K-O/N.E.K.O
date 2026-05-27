@@ -340,6 +340,32 @@ async def test_no_takeover_voice_transcript_uses_ordinary_flow():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_voice_bridge_cancel_skips_user_context_side_effects():
+    mgr = _make_transcript_manager()
+    routed = []
+
+    async def fake_voice_bridge(text):
+        routed.append(text)
+        return "cancel_response"
+
+    mgr._dispatch_voice_transcript_bridge = fake_voice_bridge
+
+    await core_module.LLMSessionManager.handle_input_transcript(
+        mgr,
+        "  f(x)=x^3 derivative answer is 3x^2  ",
+        is_voice_source=True,
+    )
+
+    assert routed == ["f(x)=x^3 derivative answer is 3x^2"]
+    assert mgr._activity_tracker.voice_rms_count == 1
+    assert mgr._activity_tracker.user_messages == []
+    assert mgr._session_turn_count == 0
+    mgr._publish_user_utterance_to_plugin_bus.assert_not_called()
+    assert mgr.sync_message_queue.messages == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_likely_ai_echo_voice_transcript_is_suppressed(monkeypatch):
     mgr = _make_transcript_manager()
     monkeypatch.setattr(core_module, "HIDE_DIRTY_VOICE_TRANSCRIPTS", True)

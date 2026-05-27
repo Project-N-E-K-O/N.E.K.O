@@ -100,6 +100,7 @@ class VoiceFilter:
         screen_type: str = "",
         subject: str = "",
         session_key: str = "",
+        extra_names: Iterable[str] | None = None,
     ) -> dict[str, Any] | None:
         text = str(transcript or "").strip()
         if not text:
@@ -107,7 +108,9 @@ class VoiceFilter:
 
         now = self._clock()
         window_key = _name_window_key(session_key)
-        name, pos = _find_earliest_name(text, self._names)
+        names = list(self._names)
+        _extend_names(names, extra_names)
+        name, pos = _find_earliest_name(text, names)
         if name:
             self._last_name_call_times[window_key] = now
             pre_context = text[:pos].strip()
