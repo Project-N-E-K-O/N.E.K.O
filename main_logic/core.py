@@ -5937,7 +5937,10 @@ class LLMSessionManager:
             try:
                 self.lifecycle_bus.emit("text_start")
             except Exception:
-                pass
+                # A lifecycle signal must never break delivery. The bus
+                # already isolates per-handler failures (logger.exception);
+                # this guard only covers an emit() that itself somehow raises.
+                logger.debug("[%s] lifecycle_bus emit(text_start) failed", self.lanlan_name)
             try:
                 delivered = await self.session.prompt_ephemeral(instruction)
             finally:
@@ -5945,7 +5948,9 @@ class LLMSessionManager:
                 try:
                     self.lifecycle_bus.emit("text_end")
                 except Exception:
-                    pass
+                    # Same rationale as text_start; never let signalling break
+                    # the delivery path's finally cleanup.
+                    logger.debug("[%s] lifecycle_bus emit(text_end) failed", self.lanlan_name)
             logger.debug("[%s] trigger_agent_callbacks: prompt_ephemeral delivered=%s", self.lanlan_name, delivered)
             if delivered:
                 # pending_extra_replies parallels pending_agent_callbacks but

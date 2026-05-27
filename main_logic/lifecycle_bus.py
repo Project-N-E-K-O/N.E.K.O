@@ -42,6 +42,8 @@ class LifecycleEventBus:
             try:
                 self._subs[event].remove(handler)
             except ValueError:
+                # Idempotent unsubscribe: the handler was already removed
+                # (e.g. double-call). Nothing to do — intentionally benign.
                 pass
 
         return _unsubscribe
