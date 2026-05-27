@@ -113,6 +113,10 @@ class GameAgentService:
         # blow past the cap and get silently dropped at ingest.
         self._screenshot_max_edge_px: int = 1024
         self._screenshot_jpeg_quality: int = 80
+        # Hard budget on the raw JPEG bytes. The wire payload base64-encodes the
+        # frame (+~33%) AND carries a raw copy, so packed payload ≈ 2.3x raw +
+        # envelope; 100KB raw → ~238KB < the 256KB message_plane cap.
+        self._screenshot_max_bytes: int = 100 * 1024
 
         # WebSocket lifecycle
         self._client: Optional[GameAgentClient] = None
@@ -326,6 +330,8 @@ class GameAgentService:
         # (re-encode to JPEG only). Quality is clamped to a sane 1..95.
         self._screenshot_max_edge_px = max(0, _i("screenshot_max_edge_px", 1024))
         self._screenshot_jpeg_quality = max(1, min(95, _i("screenshot_jpeg_quality", 80)))
+        # 0 disables the byte budget (resolution/quality caps still apply).
+        self._screenshot_max_bytes = max(0, _i("screenshot_max_bytes", 100 * 1024))
 
     async def reload_config_live(self, cfg: Dict[str, Any]) -> bool:
         """Apply a config update at runtime.
@@ -994,27 +1000,66 @@ class GameAgentService:
                     self._last_task_finished_at = time.time()
 
     def _normalize_screenshot_bytes(self, img_bytes: bytes, src_mime: str) -> tuple[bytes, str]:
-        """Downscale (long edge → ``_screenshot_max_edge_px``) and re-encode to
-        JPEG so a pushed frame stays under the message_plane payload cap.
+        """Downscale + re-encode to JPEG under a *raw-bytes budget* so the pushed
+        frame survives the message_plane payload cap.
 
-        Returns ``(bytes, mime)``. Falls back to the original bytes + their
-        source mime if Pillow is missing or decoding fails — downstream tolerates
-        either mime, and shipping an oversized original is still better than
-        crashing the screenshot path. Pillow is already a transitive project dep
-        (avatar / MMD pipelines)."""
+        Capping resolution + quality alone is not enough: the wire payload encodes
+        the frame as a base64 string (``binary_base64``, +~33%) **and** carries a
+        raw ``binary_data`` copy, so the packed payload is ~2.3x the raw JPEG plus
+        envelope. A high-detail 1024px/q80 frame can land at 150-250KB raw and
+        still trip ``payload_too_big`` after expansion. So we treat
+        ``_screenshot_max_bytes`` as a hard budget on the raw JPEG and step
+        quality (then edge) down until the encode fits.
+
+        Returns ``(bytes, mime)``. Falls back to the original bytes + their source
+        mime if Pillow is missing or decoding fails — downstream tolerates either
+        mime, and shipping an oversized original is still better than crashing the
+        screenshot path. Pillow is already a transitive project dep (avatar / MMD
+        pipelines)."""
         try:
             from PIL import Image
             import io
 
+            budget = int(self._screenshot_max_bytes)
+            base_edge = int(self._screenshot_max_edge_px)
+            base_quality = int(self._screenshot_jpeg_quality)
+
             with Image.open(io.BytesIO(img_bytes)) as im:
                 im = im.convert("RGB")
-                max_edge = int(self._screenshot_max_edge_px)
-                if max_edge > 0 and max(im.size) > max_edge:
-                    # thumbnail() preserves aspect ratio and only ever shrinks.
-                    im.thumbnail((max_edge, max_edge))
-                buf = io.BytesIO()
-                im.save(buf, format="JPEG", quality=int(self._screenshot_jpeg_quality), optimize=True)
-                return buf.getvalue(), "image/jpeg"
+                # Edge ladder: start at the configured max, then halve twice as a
+                # fallback for frames too dense to fit at full size/quality.
+                edges: list[int] = []
+                for e in (base_edge, base_edge // 2, base_edge // 4):
+                    if e and e > 0 and e not in edges:
+                        edges.append(e)
+                if not edges:  # max_edge=0 → resizing disabled; encode at native size
+                    edges = [max(im.size) or 1]
+                # Quality ladder: never go above the configured quality.
+                qualities = [q for q in (base_quality, 65, 50, 40, 30) if q <= base_quality]
+                if not qualities:
+                    qualities = [base_quality]
+
+                smallest: bytes | None = None
+                for edge in edges:
+                    frame = im.copy()
+                    if max(frame.size) > edge:
+                        frame.thumbnail((edge, edge))  # aspect-preserving, shrink-only
+                    for ql in qualities:
+                        buf = io.BytesIO()
+                        frame.save(buf, format="JPEG", quality=ql, optimize=True)
+                        data = buf.getvalue()
+                        if budget <= 0 or len(data) <= budget:
+                            return data, "image/jpeg"
+                        if smallest is None or len(data) < len(smallest):
+                            smallest = data
+                # Nothing fit the budget — ship the smallest attempt (best effort).
+                # Still far better than the original full-res frame, and the ingest
+                # drop diagnostic will surface it if it's somehow still over cap.
+                self._log_warning(
+                    "screenshot still over budget after downscale (smallest={} > budget={}); shipping smallest",
+                    len(smallest) if smallest else -1, budget,
+                )
+                return (smallest if smallest is not None else img_bytes), "image/jpeg"
         except Exception as exc:
             self._log_warning(
                 "screenshot downscale failed, shipping original bytes as-is: {}: {}",

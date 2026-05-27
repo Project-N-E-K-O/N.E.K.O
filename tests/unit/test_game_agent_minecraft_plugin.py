@@ -562,6 +562,42 @@ async def test_screenshot_callback_pushes_image_part():
 
 
 @pytest.mark.asyncio
+async def test_screenshot_high_entropy_frame_fits_byte_budget():
+    """A high-detail frame that exceeds the byte budget at the default
+    edge/quality must be stepped down until it fits. Capping resolution +
+    quality alone is insufficient because the wire payload base64-encodes the
+    frame AND carries a raw copy (~2.3x raw + envelope vs the 256KB cap)."""
+    import base64
+    import io
+    from PIL import Image
+
+    service, push_calls = _make_service()
+    budget = 100 * 1024
+    service.configure({
+        "stream_screenshots_to_llm": True,
+        "screenshot_max_bytes": budget,
+    })
+
+    # Random noise compresses terribly — a 1500x1500 noise frame is multi-100KB
+    # at q80, well over the budget, forcing the quality/edge step-down loop.
+    import os
+    noise = Image.frombytes("RGB", (1500, 1500), os.urandom(1500 * 1500 * 3))
+    raw = io.BytesIO()
+    noise.save(raw, format="PNG")
+    payload = base64.b64encode(raw.getvalue()).decode("ascii")
+
+    await service._on_screenshot(payload, "png")
+
+    assert len(push_calls) == 1
+    part = push_calls[0]["parts"][0]
+    assert part["type"] == "image" and part["mime"] == "image/jpeg"
+    # The whole point: the pushed frame respects the raw-bytes budget.
+    assert len(part["data"]) <= budget, f"frame {len(part['data'])} > budget {budget}"
+    with Image.open(io.BytesIO(part["data"])) as _im:
+        assert _im.format == "JPEG"
+
+
+@pytest.mark.asyncio
 async def test_screenshot_streaming_disabled_caches_only():
     service, push_calls = _make_service()
     service.configure({"stream_screenshots_to_llm": False})

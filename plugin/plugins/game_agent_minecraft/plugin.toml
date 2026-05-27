@@ -82,6 +82,14 @@ screenshot_max_edge_px = 1024
 # tradeoff for a vision model; raise toward 90 for crisper text in-frame.
 screenshot_jpeg_quality = 80
 
+# Hard budget (bytes) on the raw re-encoded JPEG. Resolution + quality caps
+# alone don't guarantee a fit: the wire payload base64-encodes the frame
+# (+~33%) AND carries a raw copy, so the packed payload is ~2.3x the raw JPEG
+# plus envelope. If the first encode exceeds this, quality (then edge) steps
+# down until it fits. 100KB raw → ~238KB < the 256KB message_plane cap. Set 0
+# to disable the byte budget (resolution/quality caps still apply).
+screenshot_max_bytes = 102400
+
 [plugin.ui]
 enabled = true
 
