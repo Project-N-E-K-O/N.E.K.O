@@ -699,10 +699,13 @@ async def get_system_client_id(response: Response):
         return {"ok": True, "client_id": client_id}
     except Exception as exc:
         logger.warning("system client-id endpoint failed: %s", exc)
-        return JSONResponse(
+        return _json_no_store_response(
             {"ok": False, "error": f"{type(exc).__name__}: {exc}"},
             status_code=500,
         )
+
+
+_DEFAULT_NEKO_SOCIAL_BASE_URL = "http://localhost:8080"
 
 
 @router.get("/system/social/config")
@@ -711,10 +714,12 @@ async def get_system_social_config(response: Response):
 
     Avoids hard-coding the cloud URL in front-end JS. Default is
     ``http://localhost:8080`` (dev); override at deploy time via the
-    ``NEKO_SOCIAL_BASE_URL`` environment variable.
+    ``NEKO_SOCIAL_BASE_URL`` environment variable. Whitespace-only values
+    (e.g. ``NEKO_SOCIAL_BASE_URL=`` or accidental spaces) fall back to default.
     """
     _set_no_store_headers(response)
-    base_url = os.environ.get("NEKO_SOCIAL_BASE_URL", "http://localhost:8080").rstrip("/")
+    raw = os.environ.get("NEKO_SOCIAL_BASE_URL", "")
+    base_url = raw.strip().rstrip("/") or _DEFAULT_NEKO_SOCIAL_BASE_URL
     return {
         "ok": True,
         "social_base_url": base_url,
