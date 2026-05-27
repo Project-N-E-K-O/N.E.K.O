@@ -6268,7 +6268,20 @@ class LLMSessionManager:
         how many cues per turn)."""
         if not callbacks:
             return
+        # Stream any images that rode WITH these cues (push_message media_parts
+        # for ai_behavior="respond") into the session NOW — at release — so the
+        # single trigger below produces a response that sees the matching
+        # visual context, instead of the image having been injected seconds
+        # earlier into an unrelated turn (Codex P2).
+        stream_image = getattr(self.session, "stream_image", None)
         for callback in callbacks:
+            images = callback.get("media_images") or []
+            if images and stream_image is not None:
+                for b64 in images:
+                    try:
+                        await stream_image(b64)
+                    except Exception as e:
+                        logger.warning("[%s] proactive media stream_image failed: %s", self.lanlan_name, e)
             self.enqueue_agent_callback(callback)
         await self.trigger_agent_callbacks()
 

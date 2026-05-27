@@ -710,6 +710,14 @@ async def _handle_agent_event(event: dict):
             # ai_behavior=blind suppresses injection entirely.
             media_parts = event.get("media_parts") if isinstance(event.get("media_parts"), list) else []
             ai_behavior_v2 = event.get("ai_behavior")
+            # Images that must travel WITH a proactive (respond) callback so they
+            # can be streamed at the moment the pacing manager releases the cue
+            # (see LLMSessionManager._deliver_proactive_batch). Streaming them
+            # here immediately would land the image in the previous/current turn
+            # (or drop it when no session exists yet) while the text is held back
+            # by the manager — the eventual proactive response would then lack
+            # its matching visual context.
+            deferred_proactive_images: list[str] = []
             if media_parts and ai_behavior_v2 in ("respond", "read"):
                 sess = getattr(mgr, "session", None)
                 stream_image = getattr(sess, "stream_image", None) if sess else None
@@ -730,13 +738,19 @@ async def _handle_agent_event(event: dict):
                             part_type, mime,
                         )
                         continue
-                    if stream_image is None:
-                        logger.debug(
-                            "[EventBus] image media_part dropped: session=%s has no stream_image",
-                            type(sess).__name__ if sess else "None",
-                        )
-                        continue
                     if isinstance(b64, str) and b64:
+                        if ai_behavior_v2 == "respond":
+                            # Defer: stream when the manager releases this cue so
+                            # the image shares the proactive response's context.
+                            deferred_proactive_images.append(b64)
+                            continue
+                        # read (passive): inject now so the next user turn sees it.
+                        if stream_image is None:
+                            logger.debug(
+                                "[EventBus] image media_part dropped: session=%s has no stream_image",
+                                type(sess).__name__ if sess else "None",
+                            )
+                            continue
                         # ``stream_image`` takes a base64 STRING (not bytes); pass through
                         try:
                             await stream_image(b64)
@@ -870,6 +884,9 @@ async def _handle_agent_event(event: dict):
                     "delivery_mode": delivery_mode,
                     "priority": cb_priority,
                     "coalesce_key": cb_coalesce_key,
+                    # Images to stream at manager-release time (respond only;
+                    # empty for read, which already streamed above).
+                    "media_images": deferred_proactive_images,
                     "timestamp": event.get("timestamp") or "",
                     "metadata": event_metadata,
                     "context_type": event_metadata.get("context_type") or "",
