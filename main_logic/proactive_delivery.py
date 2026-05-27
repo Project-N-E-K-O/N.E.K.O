@@ -13,13 +13,12 @@ This manager sits IN FRONT of the existing, race-tested
 delivery core (it does NOT replace it). It owns the WAITING cues and decides
 WHICH cue and WHEN to hand one off, applying:
 
-* **Priority ordering** — lower number = more urgent. ``priority`` arrives
-  from ``push_message(priority=...)``. The wire default (0, "unspecified")
-  is mapped to :data:`NEUTRAL_PRIORITY` so a cue that bothered to set any
-  explicit 1..N urgency always outranks one that didn't — and existing
-  plugins that used higher-number-means-important (gift=9, reminder=8) are
-  placed below the explicit-urgent band but above unspecified, instead of
-  being starved or inverted.
+* **Priority ordering** — HIGHER number = more important (the repo-wide
+  convention shared by existing producers: bilibili gift/SC=9, memo
+  reminder=8, study answer_evaluated=5, and the HUD ``priority_min`` filter).
+  ``priority`` arrives from ``push_message(priority=...)``; unspecified
+  default (0) = least important, so a cue that set a priority always outranks
+  one that didn't. minecraft is tagged on the same scale (alert highest).
 * **Coalescing** — OPT-IN: queued cues sharing an explicit ``coalesce_key``
   collapse to the newest. An unset key never coalesces (unique per cue), so
   no existing plugin regresses by having distinct cues silently dropped.
@@ -51,29 +50,18 @@ from typing import Any, Awaitable, Callable, Optional
 
 logger = logging.getLogger("main_logic.proactive_delivery")
 
-# Wire ``priority`` default (0) means "unspecified". Mapped to this band so
-# explicitly-prioritised cues (1..N) always sort ahead of unspecified ones.
-NEUTRAL_PRIORITY = 100
-
-
 def effective_priority(raw: Any) -> int:
-    # Single global convention: LOWER = more urgent (mc alert=1 .. keep_going=4),
-    # with unspecified(0) → NEUTRAL so any explicit priority outranks "didn't
-    # set one". KNOWN LIMITATION: some legacy plugins use the OPPOSITE
-    # convention for user-facing importance (e.g. bilibili gift/SC=9 as "most
-    # important", guidance=8). Under one linear scale these can't coexist with
-    # mc's 1=most-urgent, so for such a plugin a higher-value cue sorts AFTER a
-    # lower-value one within a single release batch. Impact is bounded: it only
-    # affects ORDER inside one already-batched LLM turn (nothing is dropped),
-    # and those plugins' user-visible HUD toasts fire independently. Migrating
-    # those producers to the lower-is-urgent scale is deferred follow-up; we do
-    # NOT blindly remap legacy values here (their numeric semantics differ per
-    # plugin, so a blanket flip would create new inconsistencies).
+    # Repo-wide convention (the "greatest common denominator" of existing
+    # producers): HIGHER number = more important. Matches every current
+    # producer — bilibili gift/SC=9, memo reminder=8, study answer_evaluated=5
+    # — and the HUD ``priority_min`` filter. Unspecified / invalid → 0 = least
+    # important (a cue that didn't set a priority never preempts one that did).
+    # minecraft is tagged on this SAME scale (alert highest). Within a release
+    # batch, cues sort by importance DESC, then FIFO (see _QueuedCue.sort_key).
     try:
-        p = int(raw)
-    except (TypeError, ValueError):
-        p = 0
-    return p if p > 0 else NEUTRAL_PRIORITY
+        return int(raw)
+    except (TypeError, ValueError, OverflowError):
+        return 0
 
 
 class _QueuedCue:
@@ -89,8 +77,10 @@ class _QueuedCue:
 
     @property
     def sort_key(self) -> tuple[int, int]:
-        # priority first (lower = more urgent), then FIFO within a priority.
-        return (self.eff_priority, self.seq)
+        # Importance DESC (higher = more important → first), then FIFO within
+        # the same importance. Negate priority so a plain ascending sort yields
+        # most-important-first.
+        return (-self.eff_priority, self.seq)
 
 
 class ProactiveDeliveryManager:

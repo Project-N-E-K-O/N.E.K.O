@@ -407,21 +407,21 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
         if not cue:
             return
         try:
-            # ai_behavior="respond" + priority=2: the action just
+            # ai_behavior="respond" + priority=7: the action just
             # finished; the dialog LLM should immediately narrate the
             # outcome to {MASTER_NAME} and (if appropriate) decide a
             # next concrete action. Without ``respond`` the cue would
             # only land in context as silent reading material; the
             # human-facing report would be deferred to the next user
-            # turn, which feels unresponsive. Priority 2 sits between
-            # alert (1, preempts everything) and normal screenshot
-            # stream (3+, background read).
+            # turn, which feels unresponsive. Importance scale is
+            # HIGHER=more important (repo-wide): alert=9 (most important)
+            # > completion=7 > in_progress=4 > keep_going=3.
             self.push_message(
                 source="game_agent_minecraft",
                 visibility=[],
                 ai_behavior="respond",
                 parts=[{"type": "text", "text": cue}],
-                priority=2,
+                priority=7,
                 coalesce_key="mc_completion",
             )
         except Exception as exc:

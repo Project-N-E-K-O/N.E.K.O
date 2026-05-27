@@ -1,18 +1,17 @@
 """Unit tests for the generic ProactiveDeliveryManager front stage.
 
 Covers the behaviours the manager adds in front of the existing enqueue/
-trigger delivery core: priority ordering (lower = more urgent, unspecified
-normalised to a neutral band), OPT-IN coalescing, the playback gate (don't
-release while audio plays), BATCHED release (cues piled up while speaking go
-out together in one turn), min-gap pacing, and drain-on-teardown (cues are
-handed back, never silently dropped).
+trigger delivery core: priority ordering (HIGHER = more important, unspecified
+0 = least), OPT-IN coalescing, the playback gate (don't release while audio
+plays), BATCHED release (cues piled up while speaking go out together in one
+turn), min-gap pacing, and drain-on-teardown (cues are handed back, never
+silently dropped).
 """
 import asyncio
 
 import pytest
 
 from main_logic.proactive_delivery import (
-    NEUTRAL_PRIORITY,
     ProactiveDeliveryManager,
     effective_priority,
 )
@@ -36,24 +35,24 @@ async def _settle():
 
 
 def test_effective_priority_normalisation():
+    # HIGHER = more important; unspecified / invalid → 0 (least important).
     assert effective_priority(1) == 1
     assert effective_priority(9) == 9
-    # Unspecified (0) and junk fall to the neutral band, BELOW any explicit
-    # urgency — so a cue that set any priority outranks one that didn't.
-    assert effective_priority(0) == NEUTRAL_PRIORITY
-    assert effective_priority(None) == NEUTRAL_PRIORITY
-    assert effective_priority("x") == NEUTRAL_PRIORITY
-    assert effective_priority(2) < effective_priority(0)
+    assert effective_priority(0) == 0
+    assert effective_priority(None) == 0
+    assert effective_priority("x") == 0
+    # A cue that set any positive priority outranks an unspecified one.
+    assert effective_priority(2) > effective_priority(0)
 
 
 async def test_batch_released_together_in_priority_order():
     # Cues that pile up while she's speaking are released as ONE batch when
-    # the gate opens, sorted by priority (lower = more urgent first).
+    # the gate opens, sorted by importance DESC (higher first), unspecified last.
     delivered = []
     mgr = _make(delivered)
     mgr.on_playback_start()
-    mgr.submit({"id": "keep_going"}, priority=4, coalesce_key="a")
-    mgr.submit({"id": "alert"}, priority=1, coalesce_key="b")
+    mgr.submit({"id": "keep_going"}, priority=3, coalesce_key="a")
+    mgr.submit({"id": "alert"}, priority=9, coalesce_key="b")
     mgr.submit({"id": "unspecified"}, priority=0, coalesce_key="c")
     await _settle()
     assert delivered == []  # nothing released while playing
@@ -149,12 +148,12 @@ async def test_drain_pending_returns_queue_without_delivering():
     delivered = []
     mgr = _make(delivered)
     mgr.on_playback_start()          # gate closed → cues queue up
-    # Submit out of priority order; drain must return priority-asc (FIFO ties)
-    # so redelivery preserves ordering.
-    mgr.submit({"id": "b"}, priority=2)
+    # Submit out of priority order; drain must return importance-DESC (FIFO
+    # ties) so redelivery preserves ordering.
     mgr.submit({"id": "a"}, priority=1)
+    mgr.submit({"id": "b"}, priority=2)
     drained = mgr.drain_pending()
-    assert [c["id"] for c in drained] == ["a", "b"]
+    assert [c["id"] for c in drained] == ["b", "a"]
     await _settle()
     assert delivered == []           # drained, not delivered by the manager
     # And the queue really is empty now: opening the gate releases nothing.
@@ -173,10 +172,10 @@ async def test_reset_gate_clears_gate_but_keeps_queue():
     # reset_gate alone does NOT release (it cancels the pump, no auto-pump).
     assert delivered == []
     # Next submit re-opens the pump; the preserved cue rides out in the SAME
-    # batch (priority order), proving reset_gate didn't drop the queue.
+    # batch (importance order), proving reset_gate didn't drop the queue.
     mgr.submit({"id": "c"}, priority=1)
     await _settle()
-    assert [c["id"] for c in delivered] == ["c", "queued"]
+    assert [c["id"] for c in delivered] == ["queued", "c"]
 
 
 async def test_stale_cue_dropped_by_ttl():
