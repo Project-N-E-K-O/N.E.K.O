@@ -2764,10 +2764,31 @@ class OmniOfflineClient:
 
         # 临时注入：instruction 已由调用方用 ======== 格式封装，作为 HumanMessage 发送，
         # 不持久化到 _conversation_history，避免污染长期上下文。
-        messages_to_send = (
-            self._conversation_history
-            + [HumanMessage(content=instruction)]
-        )
+        # Consume any pending images (proactive media deferred via stream_image)
+        # into THIS ephemeral turn so the proactive response actually sees them
+        # — otherwise stream_image only fills _pending_images, which is consumed
+        # by the next stream_text (user turn), giving the wrong turn the visual
+        # context (Codex P2). Mirrors stream_text's multi-modal construction +
+        # vision-model switch.
+        if self._pending_images:
+            if self.vision_model and self.vision_model != self.model:
+                logger.info(
+                    f"🖼️ prompt_ephemeral: switching to vision model {self.vision_model} (from {self.model}) for proactive media"
+                )
+                await self.switch_model(self.vision_model, use_vision_config=True)
+            _ephemeral_content: list = []
+            for img_b64 in self._pending_images:
+                _ephemeral_content.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"},
+                })
+            _ephemeral_content.append({"type": "text", "text": instruction})
+            logger.info(f"prompt_ephemeral: attaching {len(self._pending_images)} pending image(s)")
+            _ephemeral_msg = HumanMessage(content=_ephemeral_content)
+            self._pending_images.clear()
+        else:
+            _ephemeral_msg = HumanMessage(content=instruction)
+        messages_to_send = self._conversation_history + [_ephemeral_msg]
 
         # Retry 策略与 stream_text 对偶（max_retries=3, [1, 2]s 间隔）。
         # 但主动搭话语义不同：用户没在等回复，retry 用尽时**静默吞掉**，
