@@ -1,7 +1,7 @@
 {
-  "plugin.name": "슬레이 더 스파이어 2 동행",
+  "plugin.name": "슬레이 더 스파이어 2 게임 플러그인",
   "plugin.description": "로컬 Slay the Spire 2 Agent 서비스에 연결하여 게임 상태를 읽고 자동 플레이, 단일 단계 조작, 플레이 제안, 자연어 명령, 고양이 소녀의 부드러운 가이드, 상황 보고, 짧은 실황 코멘트를 수행합니다. 현재는 주로 기본 캐릭터를 지원합니다.",
-  "plugin.short_description": "STS2 동행 및 상황 보고",
+  "plugin.short_description": "STS2 게임 및 상황 보고",
   "tools.sts2_get_status.description": "Slay the Spire 연결 상태, 현재 화면, 기본 분류 정보를 읽기 전용으로 가져옵니다.",
   "errors.internal": "STS2 플러그인 내부 오류: {error}",
   "entries.sts2_health_check.name": "STS2 서비스 확인",

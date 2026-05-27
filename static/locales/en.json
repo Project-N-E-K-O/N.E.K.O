@@ -61,6 +61,20 @@
         "enableFailed": "Auto launch couldn't be enabled right now. Please try again later.",
         "requiresApproval": "Approve auto launch in your system settings first. It will take effect after approval."
     },
+    "contextPrompt": {
+        "play": {
+            "title": "Want me to watch along with you?",
+            "message": "You're gaming / watching something — I can turn on the screen-sharing source for proactive chat and riff along with what's on your screen. Turn it on?",
+            "accept": "Sure, turn it on",
+            "decline": "Not now"
+        },
+        "work": {
+            "title": "Want me to keep quiet and stop watching?",
+            "message": "Looks like you're focused on work. I can turn off the screen-sharing source for proactive chat, so I won't distract you or seem to be peeking. Turn it off?",
+            "accept": "Yes, turn off screen sharing",
+            "decline": "No, keep it on"
+        }
+    },
     "tutorialPrompt": {
         "title": "Want to start the home tutorial?",
         "message": "I can quickly show you the main entry points on the home screen so you can get started with N.E.K.O right away.",
@@ -194,6 +208,14 @@
         "uploadReady": "Ready to upload {{itemName}}",
         "pageDescription": "From this page you can browse, edit, upload, import and export character cards, and manage Live2D models and voices hosted on the Steam Workshop.",
         "openVoiceClone": "Open in Voice Clone",
+        "workshopAddCharacterCard": "Add Character Card",
+        "workshopAddingCharacterCard": "Adding...",
+        "unknownCharacterCard": "Unknown character card",
+        "characterCardAlreadyExistsTitle": "Character Card Exists",
+        "characterCardAlreadyExistsMessage": "Character card already exists: {{names}}",
+        "workshopCharacterAdded": "Character card added: {{names}}",
+        "workshopCharacterNotFound": "No character card was found in this subscription. Make sure the content has finished downloading.",
+        "workshopCharacterAddFailed": "Failed to add character card: {{error}}",
         "configurePath": "Configure Path",
         "localModPathConfig": "Local Mod Path Configuration",
         "localModFolder": "Local Mod Folder Path",
@@ -397,6 +419,7 @@
         "loadingItemDetailsById": "Loading details for item ID: {{id}}...",
         "characterCardsRefreshed": "Character cards list refreshed, {{count}} character cards in total",
         "characterCardsRefreshedEmpty": "Character cards list refreshed, no character cards available",
+        "characterCardsRefreshFailed": "Failed to refresh list: {{error}}",
         "requiredFieldsMissing": "Please fill in the following required fields: {{fields}}",
         "refreshLive2DPreview": "Refresh Live2D Preview",
         "removeTag": "Remove Tag",
@@ -532,7 +555,7 @@
         "steamNotRunningTitle": "Steam Not Running",
         "steamNotRunningMessage": "Steam client is not running or not logged in.\n\nWorkshop features require the Steam client. Please:\n1. Download and install the Steam client\n2. Launch Steam and log in to your account\n3. Reopen this page",
         "addNewCatgirl": "Add New NEKO",
-        "noCardImage": "Click here to set\nthe card face",
+        "noCardImage": "Card face not set yet",
         "searchCharacterCards": "Search character cards...",
         "cardView": "Card View",
         "listView": "List View"
@@ -865,7 +888,7 @@
         "coreApiKey": "Core API Key",
         "freeVersionHint": "(Not required for Free Version)",
         "coreApiPlaceholder": "Please enter your API Key",
-        "coreApiProvider": "Core API (Voice Chat)",
+        "coreApiProvider": "Core API (Voice Chat, omni-modal only)",
         "assistApiProvider": "Assist API (Memory/Agent/Text Chat/Custom Voice)",
         "saveSettings": "Save Settings",
         "closeSettings": "Close",
@@ -1163,7 +1186,23 @@
             "modelDataNotReady": "Model internal data not ready",
             "managerNotFound": "Live2DManager not found",
             "select": "Select",
-            "defaultClickAnim": "Default Click Animation"
+            "defaultClickAnim": "Default Click Animation",
+            "customAreaButton": "Custom Area",
+            "customAreaTitle": "Custom Area: {{name}}",
+            "newCustomAreaTitle": "New Custom Area",
+            "editCustomAreaTitle": "Edit Custom Area",
+            "customAreaName": "Area Name",
+            "customAreaNameDefault": "Custom Area {{index}}",
+            "saveCustomArea": "Save Area",
+            "editCustomArea": "Edit",
+            "deleteCustomArea": "Delete",
+            "deleteCustomAreaConfirmTitle": "Delete Custom Area",
+            "deleteCustomAreaConfirm": "Delete custom area \"{{name}}\"? Its bound motions and expressions will be removed.",
+            "previewUnavailable": "Custom area preview is unavailable",
+            "modelBoundsUnavailable": "Unable to read model bounds",
+            "selectAreaFirst": "Draw a valid area first",
+            "customAreaCoveredByExisting": "This area is fully covered by an earlier custom area",
+            "cancel": "Cancel"
         },
         "emotionConfig": "Emotions",
         "saveSettings": "Save Settings",

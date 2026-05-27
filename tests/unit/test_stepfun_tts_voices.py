@@ -24,12 +24,12 @@ from utils.stepfun_tts_voices import (
 
 
 def test_stepfun_and_free_catalogs_are_registered():
-    assert STEPFUN_TTS_DEFAULT_VOICE == "linjiameimei"
+    assert STEPFUN_TTS_DEFAULT_VOICE == "qingchunshaonv"
     assert FALLBACK_STEPFUN_TTS_DEFAULT_VOICE == "linjiameimei"
-    assert STEPFUN_TTS_DEFAULT_MALE_VOICE == "cixingnansheng"
+    assert STEPFUN_TTS_DEFAULT_MALE_VOICE == "wenrounansheng"
     assert is_native_voice(STEPFUN_TTS_DEFAULT_VOICE, provider_key="step") is True
     assert is_native_voice(STEPFUN_TTS_DEFAULT_VOICE, provider_key="free") is True
-    assert is_native_voice("清纯少女", provider_key="step") is True
+    assert is_native_voice("青春少女", provider_key="step") is True
     assert is_native_voice("中文男", provider_key="free") is True
 
 
@@ -82,9 +82,9 @@ def test_stepfun_ui_catalog_exposes_provider_label():
     assert STEPFUN_TTS_DEFAULT_VOICE in catalog
     assert catalog[STEPFUN_TTS_DEFAULT_VOICE]["provider"] == "step"
     assert catalog[STEPFUN_TTS_DEFAULT_VOICE]["provider_label"] == "StepFun"
-    assert catalog[STEPFUN_TTS_DEFAULT_VOICE]["display_name"] == "邻家妹妹"
+    assert catalog[STEPFUN_TTS_DEFAULT_VOICE]["display_name"] == "青春少女"
     assert catalog[STEPFUN_TTS_DEFAULT_VOICE]["gender"] == ""
-    assert catalog[STEPFUN_TTS_DEFAULT_VOICE]["prefix"] == "邻家妹妹"
+    assert catalog[STEPFUN_TTS_DEFAULT_VOICE]["prefix"] == "青春少女"
 
 
 def test_free_ui_catalog_uses_voice_label_without_provider_prefix():
@@ -92,17 +92,17 @@ def test_free_ui_catalog_uses_voice_label_without_provider_prefix():
     assert catalog is not None
     assert catalog[STEPFUN_TTS_DEFAULT_VOICE]["provider"] == "free"
     assert catalog[STEPFUN_TTS_DEFAULT_VOICE]["provider_label"] == "免费 API"
-    assert catalog[STEPFUN_TTS_DEFAULT_VOICE]["display_name"] == "邻家妹妹"
+    assert catalog[STEPFUN_TTS_DEFAULT_VOICE]["display_name"] == "青春少女"
     assert catalog[STEPFUN_TTS_DEFAULT_VOICE]["gender"] == ""
-    assert catalog[STEPFUN_TTS_DEFAULT_VOICE]["prefix"] == "邻家妹妹"
-    assert catalog[STEPFUN_TTS_DEFAULT_MALE_VOICE]["prefix"] == "磁性男声"
+    assert catalog[STEPFUN_TTS_DEFAULT_VOICE]["prefix"] == "青春少女"
+    assert catalog[STEPFUN_TTS_DEFAULT_MALE_VOICE]["prefix"] == "温柔男声"
 
 
 def test_stepfun_catalog_is_loaded_from_api_providers_config():
     step_cfg = get_native_tts_voice_provider_config("step")
     free_cfg = get_native_tts_voice_provider_config("free")
 
-    assert step_cfg["voices"][STEPFUN_TTS_DEFAULT_VOICE] == "邻家妹妹"
+    assert step_cfg["voices"][STEPFUN_TTS_DEFAULT_VOICE] == "青春少女"
     assert step_cfg["default_voice"] == STEPFUN_TTS_DEFAULT_VOICE
     assert step_cfg["default_male_voice"] == STEPFUN_TTS_DEFAULT_MALE_VOICE
     assert free_cfg["voices"] == step_cfg["voices"]

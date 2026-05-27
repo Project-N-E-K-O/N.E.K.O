@@ -137,7 +137,7 @@ class StudyOcrPipeline:
     @staticmethod
     def _join_segments(parts: list[str]) -> str:
         try:
-            from plugin.plugins.galgame_plugin.ocr_backends import _join_ocr_segments
+            from plugin.plugins._shared.rapidocr.ocr_backends import _join_ocr_segments
 
             return _join_ocr_segments(parts)
         except Exception:
@@ -164,7 +164,7 @@ class StudyOcrPipeline:
                 languages=self._config.ocr_languages,
             )
         else:
-            from plugin.plugins.galgame_plugin.ocr_backends import RapidOcrBackend
+            from plugin.plugins._shared.rapidocr.ocr_backends import RapidOcrBackend
 
             self._ocr_backend = RapidOcrBackend(
                 install_target_dir_raw=self._config.rapidocr_install_target_dir,
@@ -172,13 +172,14 @@ class StudyOcrPipeline:
                 lang_type=self._config.rapidocr_lang_type,
                 model_type=self._config.rapidocr_model_type,
                 ocr_version=self._config.rapidocr_ocr_version,
+                plugin_id="study_companion",
             )
         return self._ocr_backend
 
     def _resolve_capture_backend(self) -> Any:
         if self._capture_backend is not None:
             return self._capture_backend
-        from plugin.plugins.galgame_plugin.ocr_capture import (
+        from .study_capture_backends import (
             DxcamCaptureBackend,
             MssCaptureBackend,
             PrintWindowCaptureBackend,

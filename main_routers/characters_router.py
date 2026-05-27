@@ -41,8 +41,8 @@ from fastapi import APIRouter, Request, File, UploadFile, Form
 from fastapi.responses import JSONResponse, Response
 import aiohttp
 import httpx
-import dashscope
-from dashscope.audio.tts_v2 import SpeechSynthesizer
+# dashscope 仅用于声音克隆 TTS 预览（_do_preview_synthesize），import 偏重
+# （~0.1s）且不在 greeting/启动链上，改成用到时再 import；由 module_warmup 预热。
 
 from config.prompts.prompts_sys import _loc
 from config.prompts.prompts_voice import VOICE_PREVIEW_TEXTS
@@ -2808,11 +2808,27 @@ async def set_persona_onboarding_state(request: Request):
     if error_response is not None:
         return error_response
     config_manager = get_config_manager()
+    status_in = str((payload or {}).get("status") or "").strip()
     state = await asyncio.to_thread(
         mark_initial_personality_state,
-        str((payload or {}).get("status") or "").strip(),
+        status_in,
         config_manager=config_manager,
     )
+    # Telemetry：onboarding 漏斗的关键节点。**用归一化后的 state["status"]**
+    # 而非请求体原值 status_in：mark_initial_personality_state 会把状态收敛成
+    # 小枚举（pending / completed / skipped 等），客户端可以传任意 status 字符串
+    # 但存储 fallback 成 pending。直接用 raw 会让任意输入变成不同的
+    # onboarding_step dim，污染 funnel 切片 + 吃 instrument key 预算（同
+    # lanlan_name 教训：raw 客户端输入不进 dim）（Codex）。
+    _norm_status = (state.get("status") if isinstance(state, dict) else None) or "unknown"
+    try:
+        from utils.instrument import event as _instr_event, counter as _instr_counter
+        _instr_event("onboarding_step", status=str(_norm_status)[:32])
+        _instr_counter("onboarding_step", status=str(_norm_status)[:32])
+    except Exception:
+        # 埋点失败绝不影响 onboarding endpoint —— 一条 telemetry 走丢比让
+        # 用户卡在角色选择失败重要多了。日志也省，防 import 故障刷屏。
+        pass
     return {
         "success": True,
         "state": state,
@@ -3913,6 +3929,8 @@ async def get_voice_preview(
         clone_model = (voice_data or {}).get('clone_model') or get_cosyvoice_clone_model(provider)
 
         def _do_preview_synthesize():
+            import dashscope
+            from dashscope.audio.tts_v2 import SpeechSynthesizer
             # 写 module-global + 构造 SpeechSynthesizer + synthesizer.call 全程
             # 拿 DASHSCOPE_GLOBAL_LOCK：dashscope.api_key / base_*_api_url 是
             # 同进程多流程共享的写点，并发跑会互相覆盖、拿别人的 key/地域请求。

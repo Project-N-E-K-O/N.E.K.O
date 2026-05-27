@@ -13,9 +13,17 @@ on:
   workflow_dispatch:
     inputs:
       min_versions_to_keep:
-        description: '保留最近 N 个版本（按上传时间），其他不在 ignore-versions 里的版本会被删'
+        description: '保留最近 N 个标签版本（按创建时间），其他不在 exclude-tags 里的会被删'
         required: false
         default: '30'
+
+# 串行化：list-then-delete 式清理并发跑同一 package 会互相基于陈旧列表删，
+# 导致 404 / 误删——正是本 workflow 要修的那类竞态。schedule + 手动 dispatch
+# 可能重叠，加锁让多次运行排队而非并行。cancel-in-progress=false：不打断
+# 进行中的删除，让它跑完再排下一个。
+concurrency:
+  group: ghcr-cleanup
+  cancel-in-progress: false
 
 permissions:
   packages: write
@@ -26,26 +34,38 @@ jobs:
     if: github.repository == 'Project-N-E-K-O/N.E.K.O'
     runs-on: ubuntu-latest
     steps:
+      # 换用 manifest-aware 的 dataaxiom/ghcr-cleanup-action：
+      # 旧的 actions/delete-package-versions@v5 不懂 multi-arch manifest list ↔
+      # per-arch 子 manifest 的引用关系——删父 manifest 触发 GHCR 级联回收子 digest
+      # 后，它仍按开跑前拉到的陈旧列表去删那个已消失的 digest，API 返回 404
+      # "Package not found" 且不吞，每周稳定删到一半挂掉。dataaxiom 删父 manifest
+      # 会连带处理子镜像、不会对级联删除的 digest 二次删。
       - name: Delete old container versions
-        uses: actions/delete-package-versions@v5
+        # 第三方社区 action + GHCR 删除权限/token，固定到 commit SHA 防 tag 被改写。
+        # 下方 SHA 对应 v1.2.0；升级时一并更新 SHA 和行尾版本注释。
+        uses: dataaxiom/ghcr-cleanup-action@374e2028c8fb93b7219f3771cd405fab95d3dec4 # v1.2.0
         with:
+          token: ${{ secrets.GITHUB_TOKEN }}
           owner: project-n-e-k-o
-          package-name: 'n.e.k.o'
-          package-type: 'container'
-          min-versions-to-keep: ${{ github.event.inputs.min_versions_to_keep || 30 }}
-          # 保护：浮动别名 + release 版本号 + standard/full 主版本族，
-          # 以及它们的 per-arch 子 manifest（`-linux-{amd64,arm64}` 后缀）。
-          # 匹配 version 的任一 tag 命中即保留整个 version。
+          packages: 'n.e.k.o'
+          # 保留最近 N 个非 exclude 的标签版本（按创建时间），其余删除。
+          keep-n-tagged: ${{ github.event.inputs.min_versions_to_keep || 30 }}
+          # 清理无引用的孤儿 untagged 镜像，以及子 manifest 全缺失的悬空 manifest list。
+          delete-untagged: true
+          delete-ghost-images: true
+          use-regex: true
+          # 保护（exclude-tags 优先级最高，被命中的 tag 完全不参与删除）：
+          # 浮动别名 + release 版本号 + standard/full 主版本族，以及它们的 per-arch
+          # 子 manifest（`-linux-{amd64,arm64}` 后缀）。
           #
-          # 关键点：multi-arch manifest list（如 `latest-standard`、`0.8.0-full`、
-          # `ci-standard`）通过 digest 引用 per-arch 子 manifest（如
-          # `0.8.0-standard-linux-amd64`）。如果只保护 manifest list 而让
-          # 子 manifest 被回收，list 会指向不存在的 digest，pull 会挂在某个架构上。
-          # 所以下面的正则结尾允许可选的 `-linux-(amd64|arm64)` 后缀。
+          # 子 manifest 在本仓库各自带独立 tag（如 `latest-standard-linux-amd64`），
+          # 虽然 dataaxiom 已是 manifest 感知，但仍显式保护后缀，确保被排除的
+          # manifest list 的子镜像绝不被回收、list 不会指向不存在的 digest。
+          # 正则与旧 action 的 ignore-versions 完全一致。
           #
           # 覆盖（含 per-arch 变体）：
           #   latest, latest-standard, latest-full
           #   v1.2.3 / 1.2.3 / 1.2.3-standard / 1.2.3-full
           #   ci-standard, ci-full
           #   pr-ci-standard, pr-ci-full（PR 触发若未来恢复时仍会浮动）
-          ignore-versions: '^(latest(-(standard|full))?|v?\d+\.\d+\.\d+(-(standard|full))?|(pr-)?ci-(standard|full))(-linux-(amd64|arm64))?$'
+          exclude-tags: '^(latest(-(standard|full))?|v?\d+\.\d+\.\d+(-(standard|full))?|(pr-)?ci-(standard|full))(-linux-(amd64|arm64))?$'

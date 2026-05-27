@@ -1,6 +1,7 @@
 # -- coding: utf-8 --
 
 import asyncio
+import uuid
 import websockets
 import json
 import base64
@@ -34,17 +35,48 @@ from utils.logger_config import get_module_logger
 from utils.ssl_env_diagnostics import write_ssl_diagnostic
 from utils.stepfun_tts_voices import get_stepfun_tts_default_voice
 
-# Gemini Live API SDK (startup-time import)
-try:
-    from google import genai
-    from google.genai import types
-    GEMINI_AVAILABLE = True
-    _GEMINI_IMPORT_ERROR = None
-except Exception as e:
-    GEMINI_AVAILABLE = False
-    _GEMINI_IMPORT_ERROR = e
-    genai = None
-    types = None
+# Gemini Live API SDK 懒加载。该 SDK import 很重（~0.6s）且捎带 mcp（~0.5s），
+# 但只有用户真的用 Gemini Live 语音会话时才需要。改成首次连接时再 import，并由
+# utils.module_warmup 在 ready 后预热，让常规启动（含 greeting）不付这笔钱。
+genai = None
+types = None
+GEMINI_AVAILABLE: bool | None = None  # None = 尚未尝试导入
+_GEMINI_IMPORT_ERROR = None
+
+
+def _ensure_gemini_sdk() -> bool:
+    """首次调用时 import google-genai，缓存结果；失败时落一份 SSL 诊断。
+
+    返回 SDK 是否可用。并发竞态下最坏只是重复 import 一次（Python 模块缓存幂等）。
+    """
+    global genai, types, GEMINI_AVAILABLE, _GEMINI_IMPORT_ERROR
+    # 显式强制不可用优先级最高 → 即便对象已塞进全局也降级。
+    if GEMINI_AVAILABLE is False:
+        return False
+    # 对象已就位（真 import 过 / 测试注入了 mock）→ 直接信任，不重导入。
+    if genai is not None and types is not None:
+        GEMINI_AVAILABLE = True
+        return True
+    try:
+        from google import genai as genai_mod
+        from google.genai import types as types_mod
+        # 只补缺失的，保住测试可能注入的 genai mock。
+        if genai is None:
+            genai = genai_mod
+        if types is None:
+            types = types_mod
+        GEMINI_AVAILABLE = True
+        _GEMINI_IMPORT_ERROR = None
+    except Exception as e:
+        # 不覆盖外部强制设过的可用性标志；也不清空可能被测试注入的 genai/types
+        # （只补缺失原则——导入失败时保留已注入的部分 mock）。
+        if GEMINI_AVAILABLE is None:
+            GEMINI_AVAILABLE = False
+            _GEMINI_IMPORT_ERROR = e
+            _emit_gemini_import_diagnostic(e)
+    # 只有可用标志为真且对象确实就位才算可用——避免 forced True 但 import 失败时
+    # 谎报可用、让 _connect_gemini 在 None 上解引用 genai/types。
+    return bool(GEMINI_AVAILABLE) and genai is not None and types is not None
 
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
@@ -82,7 +114,8 @@ class TurnDetectionMode(Enum):
 
 _config_manager = get_config_manager()
 
-if not GEMINI_AVAILABLE and _GEMINI_IMPORT_ERROR is not None:
+def _emit_gemini_import_diagnostic(import_error) -> None:
+    """genai SDK 首次 import 失败时落一份 SSL 诊断（带 24h 节流去重）。"""
     diagnostics_dir = Path(_config_manager.app_docs_dir) / "logs" / "diagnostics"
     sentinel_path = diagnostics_dir / "gemini_sdk_import_failed.last.json"
     throttle_window_seconds = 24 * 60 * 60
@@ -134,8 +167,8 @@ if not GEMINI_AVAILABLE and _GEMINI_IMPORT_ERROR is not None:
             diag_path = write_ssl_diagnostic(
                 event="gemini_sdk_import_failed",
                 output_dir=str(diagnostics_dir),
-                error=_GEMINI_IMPORT_ERROR,
-                extra={"stage": "module_import"},
+                error=import_error,
+                extra={"stage": "first_use_import"},
             )
             if diag_path:
                 logger.warning(f"Gemini SDK import failed, diagnostic saved: {diag_path}")
@@ -262,6 +295,19 @@ class OmniRealtimeClient:
         self._last_response_transcript = ""
         self._speech_started_total = 0  # diagnostic: server VAD start events observed
         self._speech_stopped_total = 0  # diagnostic: server VAD stop events observed
+        # [ISSUE4c] Realtime tool-call flood guard. Unlike OmniOfflineClient
+        # (max_tool_iterations=3 per turn), realtime has no per-turn tool-call
+        # cap — _send_tool_result unconditionally response.create's, so a weak
+        # model can chain function_call → result → function_call indefinitely
+        # (observed: minecraft_task fired ~9× in 30s). We can't hot-swap the
+        # tool list out (realtime API doesn't support mid-session tool changes),
+        # so instead we count tool calls in a sliding time window and, once the
+        # window is saturated, short-circuit with a hard STOP warning result
+        # (the tool is NOT executed) so the model is told to stop calling tools
+        # and just speak. Window-based (not strict per-turn) so paced autonomous
+        # self-play (~1 call / 10s via the plugin keep-going nudge) is never
+        # blocked — only true bursts are.
+        self._recent_tool_call_times: list[float] = []
         # Track image recognition per turn
         self._image_recognized_this_turn = False
         self._image_sent_this_turn = False
@@ -384,12 +430,21 @@ class OmniRealtimeClient:
             and not bool(livestream_mode)
         )
 
+        # free 经 Gemini 代理（OpenAI-realtime 协议，发图走 input_image_buffer.append、
+        # 服务端 VAD 由代理吞掉）：lanlan.app 海外节点，或 livestream 主播自建 server_prefix。
+        # 二者上游同为 Gemini 系，原生视觉与发图协议一致；lanlan.tech free 上游是
+        # StepFun（无原生视觉，走 VISION_MODEL 分析通道），不在此列。
+        self._is_free_proxy = 'free' in self._model_lower and (
+            'lanlan.app' in (base_url or '')
+            or bool(livestream_mode)
+        )
+
         # Whether this client supports native image input
-        # qwen/glm/gpt/gemini have native vision; lanlan.app replacement server (free, non-mainland) also does
+        # qwen/glm/gpt/gemini have native vision; free Gemini-proxy (lanlan.app / livestream) also does
         self._supports_native_image = (
             any(m in self._model_lower for m in ['qwen', 'glm', 'gpt'])
             or self._is_gemini
-            or ('lanlan.app' in (base_url or '') and 'free' in self._model_lower)
+            or self._is_free_proxy
         )
         self._gemini_client = None  # genai.Client instance
         self._gemini_session = None  # Live session from SDK
@@ -421,6 +476,25 @@ class OmniRealtimeClient:
         # GLM: track response_id+output_index → synthesized call_id since
         # GLM's function_call_arguments.done lacks an explicit call_id field.
         self._glm_tool_index_to_id: Dict[str, str] = {}
+
+        # Proactive inject rejection handlers, keyed by the client-side
+        # event_id we stamp on ``response.create``. When the server rejects
+        # the request (e.g. ``response_already_active`` from a VAD race), it
+        # emits an ``error`` event whose ``error.event_id`` echoes our id —
+        # the message loop pops the matching handler and invokes it so the
+        # caller (core.trigger_agent_callbacks) can re-enqueue the cb that
+        # was optimistically pruned after send. Entries also self-expire to
+        # avoid leaks if the server never acks.
+        self._inject_rejection_handlers: Dict[str, Callable[[str], None]] = {}
+        # One-shot gate for the no-event_id content fallback in
+        # ``_route_inject_rejection``. True only between "a proactive inject
+        # just sent its ``response.create``" and "that inject's outcome was
+        # observed" (rejection fired, or a response lifecycle event arrived).
+        # Without this, a no-id ``response_already_active`` from a DIFFERENT
+        # ``response.create`` sender (create_response / tool-result /
+        # signal_user_activity_end) could content-match a lingering — already
+        # succeeded — proactive handler and wrongly re-enqueue its cb.
+        self._proactive_inject_awaiting_outcome = False
 
     def _fire_task(self, coro):
         """Create a background task with GC protection."""
@@ -643,6 +717,13 @@ class OmniRealtimeClient:
         if self.turn_detection_mode not in (TurnDetectionMode.MANUAL, TurnDetectionMode.SERVER_VAD):
             raise ValueError(f"Invalid turn detection mode: {self.turn_detection_mode}")
 
+        # [ISSUE4c] Reset the tool-call flood window on every (re)connect. The
+        # same OmniRealtimeClient instance is reused across sessions, so stale
+        # timestamps from a previous connection must not carry over and make the
+        # new session's first tool calls look like a burst. Cleared before the
+        # provider branch so it covers both Gemini and the WS providers.
+        self._recent_tool_call_times = []
+
         # Gemini uses google-genai SDK, not raw WebSocket
         if self._is_gemini:
             await self._connect_gemini(instructions, native_audio)
@@ -863,7 +944,7 @@ class OmniRealtimeClient:
     
     async def _connect_gemini(self, instructions: str, native_audio: bool = True) -> None:
         """Establish connection with Gemini Live API using google-genai SDK."""
-        if not GEMINI_AVAILABLE or genai is None or types is None:
+        if not _ensure_gemini_sdk() or genai is None or types is None:
             detail = f": {_GEMINI_IMPORT_ERROR}" if _GEMINI_IMPORT_ERROR else ""
             raise RuntimeError(
                 "google-genai SDK unavailable. "
@@ -1051,7 +1132,11 @@ class OmniRealtimeClient:
         if not self.ws:
             return
         
-        event['event_id'] = "event_" + str(int(time.time() * 1000))
+        # Use setdefault so callers that explicitly stamp an event_id
+        # (e.g. proactive inject paths matching server-side
+        # ``error.event_id`` echoes for rejection callbacks) keep theirs.
+        # Otherwise fall back to the legacy timestamp-based id.
+        event.setdefault('event_id', "event_" + str(int(time.time() * 1000)))
         async with self._send_semaphore:  # 限制并发发送数量
             try:
                 if not self.ws:
@@ -1302,8 +1387,15 @@ class OmniRealtimeClient:
                     await self.on_status_message(json.dumps({"code": "IMAGE_BLOCKED"}))
             return "图片识别发生严重错误！"
     
-    async def stream_image(self, image_b64: str) -> None:
-        """Stream raw image data to the API."""
+    async def stream_image(self, image_b64: str, *, bypass_rate_limit: bool = False) -> None:
+        """Stream raw image data to the API.
+
+        ``bypass_rate_limit=True`` skips the native-vision frame-rate throttle
+        for a deliberate single cue image (e.g. a proactive callback's
+        screenshot) so it isn't silently dropped just because a high-frequency
+        screen/camera frame was streamed within NATIVE_IMAGE_MIN_INTERVAL
+        (Codex P2). It's one intentional image, not a stream, so it won't flood.
+        """
         # Cache latest frame for proactive injection
         self._latest_image_b64 = image_b64
         self._proactive_image_consumed = False
@@ -1314,16 +1406,22 @@ class OmniRealtimeClient:
                 await self._analyze_image_with_vision_model(image_b64)
                 return
             
-            # Rate limiting for native image input (with VAD-based throttling)
+            # Rate limiting for native image input (with VAD-based throttling).
+            # A deliberate cue image (bypass_rate_limit) skips the interval check
+            # so it's never silently dropped, but still stamps the timestamp.
             if self._supports_native_image:
                 current_time = time.time()
-                elapsed = current_time - self._last_native_image_time
-                min_interval = NATIVE_IMAGE_MIN_INTERVAL
-                if not self._client_vad_active:
-                    min_interval *= IMAGE_IDLE_RATE_MULTIPLIER
-                if elapsed < min_interval:
-                    # Skip this image frame due to rate limiting
-                    return
+                if not bypass_rate_limit:
+                    elapsed = current_time - self._last_native_image_time
+                    min_interval = NATIVE_IMAGE_MIN_INTERVAL
+                    if not self._client_vad_active:
+                        min_interval *= IMAGE_IDLE_RATE_MULTIPLIER
+                    if elapsed < min_interval:
+                        # Skip this image frame due to rate limiting
+                        return
+                # Stamp even on the bypass path: a frame WAS sent to the server,
+                # so it must count toward the throttle window — this keeps
+                # back-to-back bypassed cue images from flooding native vision.
                 self._last_native_image_time = current_time
 
             # Gemini uses SDK, not WebSocket events (_audio_in_buffer is not set for Gemini)
@@ -1340,7 +1438,7 @@ class OmniRealtimeClient:
                             self._fatal_error_occurred = True
                 return
 
-            if ('lanlan.app' in self.base_url and 'free' in self._model_lower):
+            if self._is_free_proxy:
                 append_event = {
                     "type": "input_image_buffer.append" ,
                     "image": image_b64
@@ -1544,32 +1642,344 @@ class OmniRealtimeClient:
         logger.info("Creating response with user message")
         await self.send_event({"type": "response.create"})
     
+    async def _gemini_send_user_turn(self, text: str) -> None:
+        """Inject ``text`` as a Gemini user turn and trigger a response via
+        ``send_client_content(turn_complete=True)``.
+
+        This is Gemini Live's idiomatic equivalent of OpenAI-Realtime's
+        ``conversation.item.create(role=user) + response.create``. Shared by
+        ``_create_response_gemini`` (hot-swap priming — tolerates errors) and
+        ``inject_text_and_request_response`` (proactive — must propagate
+        errors so the caller can re-queue). Errors propagate here; callers
+        that need to swallow wrap it.
+        """
+        from google.genai import types as genai_types
+
+        content = genai_types.Content(
+            parts=[genai_types.Part(text=text)],
+            role="user",
+        )
+        await self._gemini_session.send_client_content(
+            turns=[content],
+            turn_complete=True,
+        )
+
     async def _create_response_gemini(self, instructions: str) -> None:
         """Send text content to Gemini and trigger response."""
         if not self._gemini_session:
             logger.warning("Gemini session not available for create_response")
             return
-        
+
         # 跳过空内容的发送，避免预热时污染 Gemini 对话历史
         if not instructions or not instructions.strip():
             logger.info("Gemini: skipping empty content (warmup or empty message)")
             return
-        
+
         try:
-            # Gemini 使用 send_client_content 发送文本
-            from google.genai import types as genai_types
-            
-            content = genai_types.Content(
-                parts=[genai_types.Part(text=instructions)],
-                role="user"
-            )
-            await self._gemini_session.send_client_content(
-                turns=[content],
-                turn_complete=True
-            )
+            await self._gemini_send_user_turn(instructions)
             logger.info("Gemini: sent client content, waiting for response")
         except Exception as e:
             logger.error(f"Error sending client content to Gemini: {e}")
+
+    def is_active_response(self) -> bool:
+        """Return True iff the realtime session is currently producing a response.
+
+        Tracks ``response.created`` → ``response.done`` (OpenAI / GLM / Step /
+        free / GPT) and Gemini's ``turn_complete`` lifecycle via the shared
+        ``_is_responding`` flag, so callers can gate "manual inject + request
+        response" against the realtime API's "one active response at a time"
+        constraint.
+        """
+        return bool(self._is_responding)
+
+    async def inject_text_and_request_response(
+        self,
+        text: str,
+        *,
+        on_rejected: Optional[Callable[[str], None]] = None,
+    ) -> None:
+        """Inject a user-role text item and explicitly trigger a response.
+
+        Used by the voice-mode proactive path (agent task callbacks /
+        plugin push_message ai_behavior="respond") to surface a rendered
+        instruction to the realtime model and have it speak the result
+        immediately — without waiting for the next user turn (which is what
+        the hot-swap pending_extra_replies channel does).
+
+        Caller is responsible for gating against active-response races
+        (see ``is_active_response``) — the realtime API only allows one
+        in-flight response at a time and will reject a second
+        ``response.create`` with ``response_already_active``.
+
+        Server-side rejection (e.g. VAD races in between the caller's gate
+        check and our ``response.create``) does not raise here because the
+        server delivers it asynchronously via an ``error`` event. Pass
+        ``on_rejected=cb(error_msg)`` to receive that rejection — the
+        message loop will invoke it when ``error.event_id`` matches the
+        client-side id we stamp on ``response.create``. The caller can use
+        it to put the optimistically-pruned cb back in the queue.
+
+        Provider dispatch (all realtime providers supported — symmetric with
+        ``create_response``):
+          - **OpenAI / GLM / Step / free / GPT / Qwen / Grok**:
+            ``conversation.item.create`` (role=user, input_text) +
+            ``response.create``. Uses user role rather than system to avoid
+            permanent drift of session instruction context — the rendered
+            body already self-identifies as a system notification via its
+            ``======[系统通知]======`` header wrapper. (Qwen included: the
+            Aliyun doc claiming function_call_output-only is stale for
+            qwen3.5-omni-flash-realtime; verified live.)
+          - **Gemini Live**: ``send_client_content(turn_complete=True)`` via
+            the shared ``_gemini_send_user_turn`` helper — Gemini's idiomatic
+            inject+trigger. No ``on_rejected`` async ack (Gemini has no
+            ``response.create`` error-event channel); failures raise
+            synchronously here so the caller's ``except`` branch re-queues.
+        """
+        if self._fatal_error_occurred:
+            raise RuntimeError("realtime session has fatal_error_occurred set")
+        if not text or not text.strip():
+            return
+
+        if self._is_gemini:
+            # Symmetric with create_response → _create_response_gemini.
+            # send_client_content(turn_complete=True) injects a user turn and
+            # triggers a response. Errors propagate (unlike the swallowing
+            # _create_response_gemini wrapper) so the caller keeps the cb.
+            if self._gemini_session is None:
+                raise RuntimeError("Gemini session not available for proactive inject")
+            await self._gemini_send_user_turn(text)
+            return
+        # NOTE on Qwen: the Aliyun realtime doc states conversation.item.create
+        # "currently only supports function_call_output items". That is stale
+        # for qwen3.5-omni-flash-realtime — empirically it accepts a
+        # ``role=user`` ``input_text`` message item and responds to it (no
+        # error event), identical to OpenAI / GLM / Step. Verified live against
+        # the dashscope realtime endpoint. So Qwen takes the same path below;
+        # do NOT re-add a Qwen exclusion without re-checking the live API.
+        if self.ws is None:
+            raise RuntimeError("realtime websocket is not connected")
+
+        # Role choice: ``user`` (not ``system``).
+        # OpenAI Realtime persists conversation items as part of session
+        # history. ``role="system"`` items are treated as high-priority
+        # instructions that influence every subsequent turn — accumulating
+        # several proactive callbacks under system role causes prompt
+        # drift (model starts repeating meta-behavior or interpreting
+        # stale callback text as standing orders for unrelated turns).
+        # ``role="user"`` keeps the inject in dialog-weight context, and
+        # ``_build_callback_instruction`` already wraps the body in a
+        # ``======[系统通知] ...======`` header that makes the model
+        # treat it as a one-shot system notification rather than user
+        # speech. Matches the existing ``create_response`` precedent.
+        # Stamp stable client event_ids on BOTH events so the server's
+        # ``error.event_id`` can be matched back to this specific request
+        # whichever event it rejects (the item itself, or the
+        # ``response.create`` — e.g. ``response_already_active`` from a VAD
+        # race). ``send_event()`` would otherwise overwrite a missing
+        # event_id with its own timestamp-based string — fine for routing but
+        # useless for rejection matching since the caller has no view of it.
+        # A single ``_reject_once`` wrapper fires ``on_rejected`` at most once
+        # even if both event_ids somehow error, and unregisters both handlers.
+        item_event_id: Optional[str] = None
+        create_event_id: Optional[str] = None
+        if on_rejected is not None:
+            item_event_id = f"event_inject_item_{uuid.uuid4().hex}"
+            create_event_id = f"event_inject_resp_{uuid.uuid4().hex}"
+
+            _fired = False
+
+            def _reject_once(error_msg: str) -> None:
+                nonlocal _fired
+                # Unregister both regardless so neither lingers.
+                self._inject_rejection_handlers.pop(item_event_id, None)
+                self._inject_rejection_handlers.pop(create_event_id, None)
+                if _fired:
+                    return
+                _fired = True
+                on_rejected(error_msg)
+
+            self._inject_rejection_handlers[item_event_id] = _reject_once
+            self._inject_rejection_handlers[create_event_id] = _reject_once
+            # The realtime API echoes our event_id on ``error`` but NOT on
+            # ``response.created`` — so a successful inject leaves the handlers
+            # registered with no natural cleanup signal. Primary cleanup is
+            # lifecycle-based: ``response.done`` sweeps the dict (see
+            # ``_sweep_inject_rejection_handlers`` — a rejection is always
+            # emitted before the blocking response completes, so any pending
+            # rejection has already fired by any response.done). This TTL is
+            # only a backstop for the pathological "no response.done ever"
+            # case (session hangs); 30s is generous vs the sub-second
+            # rejection latency, so a real ``response_already_active`` reject
+            # under transient backpressure is still caught (Codex P2).
+            self._fire_task(self._expire_inject_rejection_handler(item_event_id, 30.0))
+            self._fire_task(self._expire_inject_rejection_handler(create_event_id, 30.0))
+            # Open the no-id content-fallback window for THIS inject. Closed
+            # when its outcome is observed (rejection fired, or the next
+            # response lifecycle event / done sweep) — see
+            # _route_inject_rejection.
+            self._proactive_inject_awaiting_outcome = True
+
+        item_event: Dict[str, Any] = {
+            "type": "conversation.item.create",
+            "item": {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": text,
+                    }
+                ],
+            },
+        }
+        if item_event_id is not None:
+            item_event["event_id"] = item_event_id
+
+        # send_event() silently returns when ws drops to None or fatal flag
+        # flips mid-flight (it does not raise). Without the post-send checks,
+        # a connection lost in the brief await window between the entry guard
+        # and the actual send would look like a successful inject — caller
+        # would prune the cb but nothing reached the model. Re-check after
+        # each send and raise so the caller's exception branch keeps the cb
+        # for retry. On any synchronous send failure, drop both rejection
+        # handlers so the caller's ``except`` path is the single source of
+        # truth and a late error event can't double-fire the re-queue.
+        try:
+            await self.send_event(item_event)
+            if self._fatal_error_occurred or self.ws is None:
+                raise RuntimeError(
+                    "realtime connection lost after proactive conversation.item.create"
+                )
+            create_event: Dict[str, Any] = {"type": "response.create"}
+            if create_event_id is not None:
+                create_event["event_id"] = create_event_id
+            await self.send_event(create_event)
+            if self._fatal_error_occurred or self.ws is None:
+                raise RuntimeError(
+                    "realtime connection lost after proactive response.create"
+                )
+        except Exception:
+            if item_event_id is not None:
+                self._inject_rejection_handlers.pop(item_event_id, None)
+            if create_event_id is not None:
+                self._inject_rejection_handlers.pop(create_event_id, None)
+            raise
+
+    async def _expire_inject_rejection_handler(self, event_id: str, ttl: float) -> None:
+        """TTL backstop cleanup for the inject rejection handler dict (see
+        ``inject_text_and_request_response``). Primary cleanup is the
+        lifecycle sweep in ``_sweep_inject_rejection_handlers``; this only
+        catches the pathological "no response.done ever" case."""
+        try:
+            await asyncio.sleep(ttl)
+        except asyncio.CancelledError:
+            return
+        self._inject_rejection_handlers.pop(event_id, None)
+
+    @staticmethod
+    def _looks_like_response_conflict(error_msg: str) -> bool:
+        """Heuristic: does this ``error`` message look like the server
+        rejecting a ``response.create`` because a response is already active?
+
+        That ``response_already_active`` class is the ONLY async rejection a
+        proactive inject can provoke (our inject is the only client-issued
+        ``response.create`` on the voice path). Matching its content lets us
+        route the rejection even when the provider's error doesn't echo our
+        client ``event_id``. Kept deliberately broad across phrasings /
+        providers but still scoped to response-conflict wording so unrelated
+        errors (auth / quota / 503 / idle-timeout) don't trip it."""
+        low = error_msg.lower()
+        if "response_already_active" in low:
+            return True
+        return "response" in low and any(
+            k in low for k in ("already", "active", "in progress", "in_progress", "exists", "ongoing")
+        )
+
+    def _route_inject_rejection(self, err_event_id, error_msg: str) -> None:
+        """Deliver a server rejection to the matching proactive-inject
+        ``on_rejected`` handler so the caller re-enqueues the cb.
+
+        Two correlation paths:
+          1. **By id (precise)** — OpenAI Realtime (and any provider that
+             echoes the offending client ``event_id``): pop and fire the exact
+             handler.
+          2. **By content (fallback)** — ONLY when the provider omits a
+             client-correlation id entirely (``err_event_id`` falsy): if the
+             error looks like a response-conflict
+             (``_looks_like_response_conflict``) and handlers are pending, fire
+             them all. Injects are serialized by
+             ``_voice_proactive_inject_lock`` so there's effectively one logical
+             pending inject; ``_reject_once`` + the caller's delivery-id dedup
+             make a spurious fire cost at most a bounded duplicate re-add, which
+             is strictly better than a silent drop (Codex P1).
+
+        Critically, the content fallback is gated on ``err_event_id`` being
+        absent. If the error DOES carry a client event_id that simply isn't
+        ours, the rejection belongs to a different ``response.create`` (e.g.
+        ``create_response`` hot-swap priming / tool-result continuation /
+        ``signal_user_activity_end`` — all of which get a timestamp event_id
+        from ``send_event``'s setdefault), NOT our inject. Firing our handlers
+        on those would re-enqueue callbacks the model actually accepted →
+        duplicate announcements. So a present-but-non-matching id means "not
+        ours; do nothing"."""
+        if not self._inject_rejection_handlers:
+            return
+
+        def _fire(handler) -> None:
+            try:
+                handler(error_msg)
+            except Exception as cb_exc:
+                logger.warning("proactive inject rejection handler raised: %s", cb_exc)
+
+        if err_event_id:
+            # Id present: fire ONLY on an exact match. A non-matching id
+            # belongs to some other request's rejection — not ours.
+            handler = self._inject_rejection_handlers.pop(err_event_id, None)
+            if handler is not None:
+                self._proactive_inject_awaiting_outcome = False
+                _fire(handler)
+            return
+
+        # No client-correlation id at all — fall back to content matching,
+        # but ONLY while a proactive inject is genuinely awaiting its outcome
+        # (one-shot window). This excludes a no-id response-conflict raised by
+        # a DIFFERENT response.create sender (create_response / tool-result /
+        # signal_user_activity_end) from hitting a lingering, already-succeeded
+        # proactive handler.
+        if (
+            self._proactive_inject_awaiting_outcome
+            and self._looks_like_response_conflict(error_msg)
+        ):
+            self._proactive_inject_awaiting_outcome = False
+            for handler in list(self._inject_rejection_handlers.values()):
+                _fire(handler)
+            self._inject_rejection_handlers.clear()
+
+    def _sweep_inject_rejection_handlers(self) -> None:
+        """Drop all pending inject rejection handlers on a ``response.done``
+        lifecycle boundary.
+
+        (Only the WS-realtime ``response.done`` path calls this — the Gemini
+        branch of ``inject_text_and_request_response`` returns early via
+        ``_gemini_send_user_turn`` and never registers rejection handlers, so
+        Gemini's turn-complete has nothing to sweep.)
+
+        Safe because a server rejection of our ``response.create`` /
+        ``conversation.item.create`` is emitted the instant the server
+        receives a request it can't honor — and the only reason it can't
+        honor a ``response.create`` is that another response is already
+        active. That blocking response's ``response.done`` is therefore
+        strictly LATER than the rejection. So by the time ANY response.done
+        arrives, every pending rejection for a prior send has already fired
+        (and its handler self-removed via ``_reject_once``). Whatever remains
+        in the dict belongs to an inject that SUCCEEDED (no rejection coming)
+        — exactly the leak the fixed TTL was meant to clean, now reaped
+        promptly and lifecycle-tied instead of on a wall clock."""
+        # The inject's outcome has been observed (a response completed), so
+        # close the no-id content-fallback window too.
+        self._proactive_inject_awaiting_outcome = False
+        if self._inject_rejection_handlers:
+            self._inject_rejection_handlers.clear()
 
     async def prompt_ephemeral(
         self,
@@ -1755,7 +2165,7 @@ class OmniRealtimeClient:
                                 }],
                             },
                         })
-                    elif "qwen" in self._model_lower or ("lanlan.app" in self.base_url and "free" in self._model_lower):
+                    elif "qwen" in self._model_lower or self._is_free_proxy:
                         await self.send_event({
                             "type": "input_image_buffer.append",
                             "image": snapshot_image_b64,
@@ -1803,6 +2213,40 @@ class OmniRealtimeClient:
                 call_id=call.call_id, name=call.name,
                 output={"error": msg}, is_error=True, error_message=msg,
             )
+
+        # [ISSUE4c] Sliding-window tool-call flood guard. Count tool executions
+        # in the last _TOOL_CALL_WINDOW_S; once it exceeds _TOOL_CALL_WINDOW_MAX,
+        # do NOT execute — return a hard STOP warning as the function_call_output
+        # so the model (which has no per-turn tool cap of its own) is told to
+        # stop calling tools and respond by voice instead. The function_call and
+        # this warning output both stay in the conversation via the normal
+        # function_call_output path, so the model still "sees" that it tried.
+        _TOOL_CALL_WINDOW_S = 15.0
+        _TOOL_CALL_WINDOW_MAX = 4
+        _now_tc = time.time()
+        self._recent_tool_call_times = [
+            t for t in self._recent_tool_call_times if _now_tc - t < _TOOL_CALL_WINDOW_S
+        ]
+        if len(self._recent_tool_call_times) >= _TOOL_CALL_WINDOW_MAX:
+            logger.warning(
+                "OmniRealtimeClient: tool-call flood guard tripped (%d calls in %.0fs) — "
+                "refusing '%s', telling model to stop",
+                len(self._recent_tool_call_times), _TOOL_CALL_WINDOW_S, call.name,
+            )
+            return ToolResult(
+                call_id=call.call_id, name=call.name,
+                output={
+                    "stop": True,
+                    "warning": (
+                        f"本轮短时间内已调用工具 {len(self._recent_tool_call_times)} 次，已达上限。"
+                        f"停止调用任何工具（包括 {call.name}），不要重试、不要换措辞再调。"
+                        "直接用语音回应，等需要时再调用。本次未执行。"
+                    ),
+                },
+                is_error=True, error_message="tool-call rate limit reached",
+            )
+        self._recent_tool_call_times.append(_now_tc)
+
         try:
             return await self.on_tool_call(call)
         except Exception as e:
@@ -1939,7 +2383,18 @@ class OmniRealtimeClient:
                 if event_type == "error":
                     error_msg = str(event.get('error', ''))
                     logger.error(f"API Error: {error_msg}")
-                    
+
+                    # Route server rejections of a proactive inject's
+                    # ``response.create`` / ``conversation.item.create`` back to
+                    # the caller so it can re-enqueue the optimistically-pruned
+                    # cb (see _route_inject_rejection). ``error`` events
+                    # normally echo the offending client event_id at
+                    # ``error.event_id``; some providers put it top-level or
+                    # omit it entirely — the helper handles all three.
+                    err_obj = event.get('error') if isinstance(event.get('error'), dict) else {}
+                    err_event_id = err_obj.get('event_id') or event.get('event_id')
+                    self._route_inject_rejection(err_event_id, error_msg)
+
                     # 检测503过载错误，触发backpressure节流
                     if '503' in error_msg or 'overloaded' in error_msg.lower():
                         self._is_throttled = True
@@ -2045,6 +2500,11 @@ class OmniRealtimeClient:
                 elif event_type == "response.done":
                     self._response_done_total += 1
                     self._last_response_done_time = time.time()
+                    # Lifecycle cleanup of proactive inject rejection handlers
+                    # (see _sweep_inject_rejection_handlers): any pending
+                    # rejection has already fired by now, so the remaining
+                    # entries belong to injects that succeeded — reap them.
+                    self._sweep_inject_rejection_handlers()
                     # 解析实时 API 返回的 token 用量
                     try:
                         resp_data = event.get("response", {})
@@ -2099,6 +2559,12 @@ class OmniRealtimeClient:
                 elif event_type == "response.created":
                     self._response_created_total += 1
                     self._last_response_created_time = time.time()
+                    # A response started — our proactive inject's response.create
+                    # was either accepted (this IS its response) or a different
+                    # response is now active; either way close the no-id
+                    # content-fallback window so a later unrelated no-id
+                    # conflict can't fire a lingering (accepted) inject handler.
+                    self._proactive_inject_awaiting_outcome = False
                     self._current_response_id = event.get("response", {}).get("id")
                     self._is_responding = True
                     self._interrupted = False  # Clear interruption flag on new response
@@ -2152,7 +2618,24 @@ class OmniRealtimeClient:
                         await self.on_input_transcript(transcript)
                 elif event_type in ["response.audio_transcript.done", "response.output_audio_transcript.done"]:
                     self._print_input_transcript = False
-                    if self._output_transcript_buffer and self.on_output_transcript and not self._skip_until_next_response and not self._interrupted:
+                    # [ISSUE4b] Voice-without-text fix. Audio deltas and transcript
+                    # deltas are gated by _skip_until_next_response/_interrupted at
+                    # delta time. But this transcript.done re-checks those flags at
+                    # *done* time — if a flag flipped True between audio playing and
+                    # done (session-transition / proactive-inject race), the audio
+                    # was already spoken yet the transcript got dropped → 前端有声无字.
+                    # If audio already went out this response (_audio_delta_count>0),
+                    # always forward the matching transcript regardless of a late
+                    # flag flip; only suppress when nothing was spoken (interrupted
+                    # before any audio).
+                    _audio_already_spoken = self._audio_delta_count > 0
+                    if (
+                        self._output_transcript_buffer and self.on_output_transcript
+                        and (
+                            (not self._skip_until_next_response and not self._interrupted)
+                            or _audio_already_spoken
+                        )
+                    ):
                         await self.on_output_transcript(self._output_transcript_buffer, self._is_first_transcript_chunk)
                         self._is_first_transcript_chunk = False
                     self._output_transcript_buffer = ""

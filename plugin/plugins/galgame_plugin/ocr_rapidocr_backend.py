@@ -16,7 +16,7 @@ from .ocr_runtime_types import (
     _rapidocr_text_from_output,
     _store_rapidocr_runtime_cache,
 )
-from .rapidocr_support import (
+from plugin.plugins._shared.rapidocr.rapidocr_support import (
     inspect_rapidocr_installation,
     load_rapidocr_runtime,
 )
@@ -53,6 +53,7 @@ class RapidOcrBackend:
             lang_type=self._lang_type,
             model_type=self._model_type,
             ocr_version=self._ocr_version,
+            plugin_id="galgame_plugin",
         )
         return bool(inspection.get("installed"))
 
@@ -87,6 +88,7 @@ class RapidOcrBackend:
                         lang_type=self._lang_type,
                         model_type=self._model_type,
                         ocr_version=self._ocr_version,
+                        plugin_id="galgame_plugin",
                     )
                     _store_rapidocr_runtime_cache(key, runtime, now=now)
             self._runtime = runtime

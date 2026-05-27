@@ -228,6 +228,15 @@ async def generate_galgame_options(request: Request):
     if not isinstance(data, dict):
         return JSONResponse({"success": False, "error": "invalid_payload"}, status_code=400)
 
+    # Telemetry：galgame 是 feature 之一，counter 用于"哪些功能被实际触发 +
+    # 多频繁"。**不**带 lanlan_name（用户自定义角色名，PII + 高基数）。
+    try:
+        from utils.instrument import counter as _instr_counter
+        _instr_counter("feature_invoked", feature="galgame_options")
+    except Exception:
+        # 埋点失败不能挡 galgame endpoint —— 静默继续，不打日志防刷屏。
+        pass
+
     messages = _coerce_messages(data.get('messages'))
     if not messages or messages[-1]['role'] != 'assistant':
         return JSONResponse(

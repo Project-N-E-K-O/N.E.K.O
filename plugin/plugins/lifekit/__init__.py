@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -32,6 +33,7 @@ from plugin.sdk.plugin import (
 )
 
 from ._i18n import I18n, LRUCache
+from ._coerce import clamp_int, clean_text, finite_float
 from ._geo import get_system_timezone, detect_vpn_conflict
 from ._api import geoip_locate, geocode_city, fetch_forecast, GeoIPError, GeocodeError, ForecastError, WeatherAPIError
 from .routers import (
@@ -79,6 +81,7 @@ class LifeKitPlugin(NekoPluginBase):
         self._cache = LRUCache(32)
         self._cfg: Dict[str, Any] = {}
         self._i18n = I18n(_LOCALES_DIR)
+        self._locations_lock = asyncio.Lock()
 
         # 注册 routers — 必须在 __init__ 中，collect_entries 在 startup 之前调用
         for router_cls in self.__routers__:
@@ -170,7 +173,7 @@ class LifeKitPlugin(NekoPluginBase):
         成功时 error_key 为空字符串，失败时为 i18n key。
         """
         locale = self._i18n.locale
-        target = (city or "").strip()
+        target = clean_text(city)
 
         # 1. 用户本次指定的城市
         if target:
@@ -250,8 +253,8 @@ class LifeKitPlugin(NekoPluginBase):
 
     async def _get_weather_data(self, loc: Dict[str, Any]) -> tuple[Optional[Dict[str, Any]], str]:
         """获取天气数据。返回 (data, error_key)。"""
-        ttl = int(self._cfg.get("cache_ttl_seconds", 1800))
-        days = int(self._cfg.get("forecast_days", 3))
+        ttl = clamp_int(self._cfg.get("cache_ttl_seconds", 1800), 1800, 0, 86400)
+        days = clamp_int(self._cfg.get("forecast_days", 3), 3, 1, 7)
         tz = str(self._cfg.get("timezone", "Asia/Shanghai"))
         cache_key = f"{loc['lat']:.2f},{loc['lon']:.2f},days={days},tz={tz}"
         cached = self._cache.get(cache_key, ttl)
@@ -285,8 +288,8 @@ class LifeKitPlugin(NekoPluginBase):
 
             def _extract(loc: dict) -> Optional[Dict[str, Any]]:
                 city = loc.get("city")
-                lat = loc.get("lat")
-                lon = loc.get("lon")
+                lat = finite_float(loc.get("lat"))
+                lon = finite_float(loc.get("lon"))
                 if not city or lat is None or lon is None:
                     self.logger.debug("Skipping saved location with missing fields: {}", loc.get("label", "?"))
                     return None

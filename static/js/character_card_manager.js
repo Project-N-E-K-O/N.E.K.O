@@ -2064,12 +2064,101 @@ function renderSubscriptionsPage() {
                         <button class="button button-primary" onclick="openWorkshopVoiceClone('${formattedItem.id}')" title="${formattedItem.voiceReferenceDisplayName || ''}" style="margin-bottom: 8px;">
                             ${window.t ? window.t('steam.openVoiceClone') : '在语音克隆页打开'}
                         </button>` : ''}
+                        <button class="button button-primary" data-item-id="${formattedItem.id}" data-item-name="${formattedItem.name}" onclick="addWorkshopCharacterCardFromSubscription(this)" style="margin-bottom: 8px;">${window.t ? window.t('steam.workshopAddCharacterCard') : '加入角色卡'}</button>
                         <button class="button button-danger" data-item-id="${formattedItem.id}" data-item-name="${formattedItem.name}" onclick="unsubscribeItem(this.dataset.itemId, this.dataset.itemName)">${window.t ? window.t('steam.unsubscribe') : '取消订阅'}</button>
                     </div>
                 </div>
             </div>
         `;
     }).join('');
+}
+
+function formatWorkshopCharacterNameList(names) {
+    const list = Array.isArray(names)
+        ? names.map(name => String(name || '').trim()).filter(Boolean)
+        : [];
+    return list.length > 0 ? list.join('、') : (window.t ? window.t('steam.unknownCharacterCard') : '未知角色卡');
+}
+
+async function showWorkshopCharacterAddAlert(message, type = 'info') {
+    if (typeof showAlertDialog === 'function') {
+        const title = type === 'info'
+            ? (window.t ? window.t('steam.characterCardAlreadyExistsTitle') : '角色卡已存在')
+            : (window.t ? window.t('common.warning') : '提示');
+        await showAlertDialog(message, {
+            type,
+            title,
+        });
+        return;
+    }
+    window.alert(message);
+}
+
+async function addWorkshopCharacterCardFromSubscription(button) {
+    const itemId = button?.dataset?.itemId || '';
+    if (!itemId) return;
+
+    const originalText = button.textContent;
+    button.disabled = true;
+    button.textContent = window.t ? window.t('steam.workshopAddingCharacterCard') : '正在加入...';
+
+    try {
+        const response = await fetch(`/api/steam/workshop/sync-character/${encodeURIComponent(itemId)}`, {
+            method: 'POST',
+        });
+        let data = {};
+        try {
+            data = await response.json();
+        } catch (_) {
+            data = {};
+        }
+
+        if (data.code === 'WORKSHOP_CHARACTER_ALREADY_EXISTS') {
+            const namesText = formatWorkshopCharacterNameList(data.existing_character_names);
+            const message = window.t
+                ? window.t('steam.characterCardAlreadyExistsMessage', { names: namesText })
+                : `角色卡已存在：${namesText}`;
+            await showWorkshopCharacterAddAlert(message, 'info');
+            return;
+        }
+
+        if (!response.ok || !data.success) {
+            const fallbackError = data.error || data.message || (window.t ? window.t('common.unknownError') : 'Unknown error');
+            const key = data.code === 'WORKSHOP_CHARACTER_NOT_FOUND'
+                ? 'steam.workshopCharacterNotFound'
+                : 'steam.workshopCharacterAddFailed';
+            const message = window.t
+                ? window.t(key, { error: fallbackError })
+                : (data.code === 'WORKSHOP_CHARACTER_NOT_FOUND'
+                    ? '此订阅内容中未找到可加入的角色卡，请确认内容已下载完成。'
+                    : `加入角色卡失败: ${fallbackError}`);
+            await showWorkshopCharacterAddAlert(message, 'warning');
+            return;
+        }
+
+        const namesText = formatWorkshopCharacterNameList(data.added_character_names);
+        const successMessage = window.t
+            ? window.t('steam.workshopCharacterAdded', { names: namesText })
+            : `已加入角色卡：${namesText}`;
+        showMessage(successMessage, 'success');
+        try {
+            await loadCharacterCards();
+        } catch (refreshError) {
+            console.warn('刷新角色卡列表失败:', refreshError);
+            const refreshMessage = window.t
+                ? window.t('steam.characterCardsRefreshFailed', { error: refreshError.message })
+                : `刷新列表失败: ${refreshError.message}`;
+            showMessage(refreshMessage, 'warning');
+        }
+    } catch (error) {
+        const message = window.t
+            ? window.t('steam.workshopCharacterAddFailed', { error: error.message })
+            : `加入角色卡失败: ${error.message}`;
+        showMessage(message, 'error');
+    } finally {
+        button.disabled = false;
+        button.textContent = originalText;
+    }
 }
 
 // 更新分页控件
@@ -4175,7 +4264,10 @@ function renderCharaCardsGrid(container, cards, currentCatgirl, hiddenKeys) {
         avatar.className = 'card-avatar';
         const placeholderSpan = document.createElement('span');
         placeholderSpan.className = 'card-avatar-placeholder';
-        placeholderSpan.textContent = window.t ? window.t('steam.noCardImage') : '点击此处\n设置卡面';
+        const translatedNoCardImage = window.t && window.t('steam.noCardImage');
+        placeholderSpan.textContent = translatedNoCardImage && translatedNoCardImage !== 'steam.noCardImage'
+            ? translatedNoCardImage
+            : '暂未设置卡面';
         avatar.appendChild(placeholderSpan);
 
         // 加载已有的卡面图片（仅在服务器侧确实存在时才请求，避免 404 噪声）
@@ -4446,7 +4538,10 @@ function openCatgirlPanel(card, originEl) {
     cardImage.className = 'catgirl-panel-card-image';
     const imgPlaceholder = document.createElement('span');
     imgPlaceholder.className = 'card-avatar-placeholder';
-    imgPlaceholder.textContent = window.t ? window.t('steam.noCardImage') : '点击此处\n设置卡面';
+    const translatedNoCardImage = window.t && window.t('steam.noCardImage');
+    imgPlaceholder.textContent = translatedNoCardImage && translatedNoCardImage !== 'steam.noCardImage'
+        ? translatedNoCardImage
+        : '暂未设置卡面';
     cardImage.appendChild(imgPlaceholder);
 
     const cardActionOverlay = document.createElement('div');

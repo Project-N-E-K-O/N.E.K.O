@@ -61,6 +61,20 @@
         "enableFailed": "暂时无法开启开机自启动，请稍后再试",
         "requiresApproval": "需要先在系统设置里批准开机自启动，批准后会自动生效"
     },
+    "contextPrompt": {
+        "play": {
+            "title": "要不要我陪你一起看屏幕？",
+            "message": "你在打游戏 / 看番呢，我可以开启主动搭话里的屏幕分享，跟着你眼前的画面一起聊、一起吐槽。要开吗？",
+            "accept": "好呀，开启",
+            "decline": "先不用"
+        },
+        "work": {
+            "title": "要不要我安静点、别看屏幕？",
+            "message": "看你在专注工作，我可以关掉主动搭话里的屏幕分享来源，免得打扰你、也避避窥屏的嫌。要关吗？",
+            "accept": "好，关掉屏幕分享",
+            "decline": "不用，继续"
+        }
+    },
     "tutorialPrompt": {
         "title": "要不要开始主页新手引导？",
         "message": "我可以带你快速认识主页上的核心入口，用最短路径上手 N.E.K.O。",
@@ -194,6 +208,14 @@
         "uploadReady": "准备上传 {{itemName}}",
         "pageDescription": "通过此页面，您可以浏览、创建、导入/导出角色卡，并可选上传到 Steam 创意工坊",
         "openVoiceClone": "在语音克隆页打开",
+        "workshopAddCharacterCard": "加入角色卡",
+        "workshopAddingCharacterCard": "正在加入...",
+        "unknownCharacterCard": "未知角色卡",
+        "characterCardAlreadyExistsTitle": "角色卡已存在",
+        "characterCardAlreadyExistsMessage": "角色卡已存在：{{names}}",
+        "workshopCharacterAdded": "已加入角色卡：{{names}}",
+        "workshopCharacterNotFound": "此订阅内容中未找到可加入的角色卡，请确认内容已下载完成。",
+        "workshopCharacterAddFailed": "加入角色卡失败: {{error}}",
         "configurePath": "配置路径",
         "localModPathConfig": "本地mod路径配置",
         "localModFolder": "本地mod文件夹路径",
@@ -397,6 +419,7 @@
         "loadingItemDetailsById": "正在加载物品ID: {{id}} 的详细信息...",
         "characterCardsRefreshed": "已刷新角色卡列表，共 {{count}} 个角色卡",
         "characterCardsRefreshedEmpty": "已刷新角色卡列表，暂无角色卡",
+        "characterCardsRefreshFailed": "刷新列表失败: {{error}}",
         "requiredFieldsMissing": "请先填写以下必填字段：{{fields}}",
         "refreshLive2DPreview": "刷新Live2D预览",
         "removeTag": "删除标签",
@@ -532,7 +555,7 @@
         "steamNotRunningTitle": "Steam 未运行",
         "steamNotRunningMessage": "检测到Steam客户端未运行或未登录。\n\n创意工坊功能需要Steam客户端支持，请：\n1. 下载并安装Steam客户端\n2. 启动Steam并登录您的账号\n3. 重新打开此页面",
         "addNewCatgirl": "新增角色卡",
-        "noCardImage": "点击此处设置卡面",
+        "noCardImage": "暂未设置卡面",
         "searchCharacterCards": "搜索角色卡...",
         "cardView": "卡片视图",
         "listView": "列表视图"
@@ -865,7 +888,7 @@
         "coreApiKey": "核心API Key",
         "freeVersionHint": "（免费版无需填写）",
         "coreApiPlaceholder": "请输入您的API Key",
-        "coreApiProvider": "核心API（语音对话）",
+        "coreApiProvider": "核心API（语音对话，仅支持全模态，DeepSeek 为纯文本不可用）",
         "assistApiProvider": "辅助API（记忆/Agent/文本聊天/自定义语音）",
         "saveSettings": "保存设置",
         "closeSettings": "关闭",
@@ -1163,7 +1186,23 @@
             "modelDataNotReady": "模型内部数据未准备好",
             "managerNotFound": "Live2DManager 未找到",
             "select": "选择",
-            "defaultClickAnim": "默认点击动画"
+            "defaultClickAnim": "默认点击动画",
+            "customAreaButton": "自定义区域",
+            "customAreaTitle": "自定义区域：{{name}}",
+            "newCustomAreaTitle": "新建自定义区域",
+            "editCustomAreaTitle": "编辑自定义区域",
+            "customAreaName": "区域名称",
+            "customAreaNameDefault": "自定义区域 {{index}}",
+            "saveCustomArea": "保存区域",
+            "editCustomArea": "编辑",
+            "deleteCustomArea": "删除",
+            "deleteCustomAreaConfirmTitle": "删除自定义区域",
+            "deleteCustomAreaConfirm": "确定要删除自定义区域“{{name}}”吗？删除后该区域绑定的动作和表情也会移除。",
+            "previewUnavailable": "当前无法打开自定义区域预览",
+            "modelBoundsUnavailable": "无法读取模型边界",
+            "selectAreaFirst": "请先框选一个有效区域",
+            "customAreaCoveredByExisting": "该区域已被更早创建的自定义区域完全覆盖",
+            "cancel": "取消"
         },
         "emotionConfig": "情感",
         "saveSettings": "保存设置",

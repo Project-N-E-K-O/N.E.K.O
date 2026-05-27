@@ -156,6 +156,44 @@ def test_card_maker_model_loading_message_exists_in_all_locales():
     assert missing == [], f"Missing cardExport keys in locale files: {', '.join(missing)}"
 
 
+def test_workshop_add_character_card_messages_exist_in_all_locales():
+    required_keys = [
+        "workshopAddCharacterCard",
+        "workshopAddingCharacterCard",
+        "unknownCharacterCard",
+        "characterCardAlreadyExistsTitle",
+        "characterCardAlreadyExistsMessage",
+        "workshopCharacterAdded",
+        "workshopCharacterNotFound",
+        "workshopCharacterAddFailed",
+        "characterCardsRefreshFailed",
+    ]
+    placeholder_checks = {
+        "characterCardAlreadyExistsMessage": "{{names}}",
+        "workshopCharacterAdded": "{{names}}",
+        "workshopCharacterAddFailed": "{{error}}",
+    }
+    missing_keys = []
+    missing_placeholders = []
+    for locale_path in sorted(LOCALE_DIR.glob("*.json")):
+        payload = json.loads(locale_path.read_text(encoding="utf-8"))
+        steam = payload.get("steam")
+        if not isinstance(steam, dict) or any(key not in steam for key in required_keys):
+            missing_keys.append(locale_path.name)
+            continue
+        if any(
+            not isinstance(steam.get(key), str) or placeholder not in steam.get(key, "")
+            for key, placeholder in placeholder_checks.items()
+        ):
+            missing_placeholders.append(locale_path.name)
+
+    assert missing_keys == [], f"Missing workshop add-card keys in locale files: {', '.join(missing_keys)}"
+    assert missing_placeholders == [], (
+        "Missing workshop add-card placeholders in locale files: "
+        f"{', '.join(missing_placeholders)}"
+    )
+
+
 def test_card_maker_japanese_sticker_variant_translation_is_consistent():
     payload = json.loads((LOCALE_DIR / "ja.json").read_text(encoding="utf-8"))
 

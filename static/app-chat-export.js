@@ -17,6 +17,7 @@
 
     var MAX_EXPORT_SELECTION = 100;
     var DEFAULT_USER_EXPORT_AVATAR = '/static/icons/avatar/master-avatar.png';
+    var EXPORT_PREVIEW_SHELL_URL = '/static/chat-export-preview-shell.html';
 
     // ======================== State ========================
 
@@ -57,6 +58,68 @@
 
     function translateLabel(key, fallback) {
         return translateText(key, fallback);
+    }
+
+    function buildWindowControlCssHtml() {
+        return '<link rel="stylesheet" href="/static/css/window_controls.css">';
+    }
+
+    function buildWindowControlScriptHtml() {
+        return '<script src="/static/js/window_controls.js" defer data-neko-window-controls="1"></script>';
+    }
+
+    function buildWindowControlAssetsHtml() {
+        return buildWindowControlCssHtml() + buildWindowControlScriptHtml();
+    }
+
+    function setWindowControlButtonLabel(button, key, fallback) {
+        if (!button) return;
+        var label = translateLabel(key, fallback);
+        button.setAttribute('data-i18n-title', key);
+        button.setAttribute('data-i18n-aria', key);
+        button.setAttribute('title', label);
+        button.setAttribute('aria-label', label);
+    }
+
+    function createWindowControlButton(doc, control, key, fallback, iconClass) {
+        var button = doc.createElement('button');
+        button.type = 'button';
+        button.className = 'neko-window-control-btn';
+        button.setAttribute('data-neko-window-control', control);
+        setWindowControlButtonLabel(button, key, fallback);
+        var icon = doc.createElement('span');
+        icon.className = iconClass;
+        button.appendChild(icon);
+        return button;
+    }
+
+    function ensureWindowControlsForDocument(doc) {
+        if (!doc || !doc.head) return;
+        var view = doc.defaultView || null;
+        if (view && view.nekoWindowControls && typeof view.nekoWindowControls.init === 'function') {
+            view.nekoWindowControls.init();
+            return;
+        }
+        if (doc.querySelector('script[data-neko-window-controls="1"]')) return;
+        var script = doc.createElement('script');
+        script.src = '/static/js/window_controls.js';
+        script.defer = true;
+        script.setAttribute('data-neko-window-controls', '1');
+        script.addEventListener('load', function () {
+            var loadedView = doc.defaultView || null;
+            if (loadedView && loadedView.nekoWindowControls && typeof loadedView.nekoWindowControls.init === 'function') {
+                loadedView.nekoWindowControls.init();
+            }
+        });
+        doc.head.appendChild(script);
+    }
+
+    function getExportPreviewShellUrl() {
+        try {
+            return new URL(EXPORT_PREVIEW_SHELL_URL, window.location.href).href;
+        } catch (_) {
+            return EXPORT_PREVIEW_SHELL_URL;
+        }
     }
 
     function showToast(key, fallback, duration) {
@@ -477,10 +540,16 @@
             '.preview-wrap img{max-width:100%;height:auto;border-radius:6px;margin:0.5em 0;}',
             '.preview-wrap a{color:#2563eb;text-decoration:none;}',
             '.preview-wrap a:hover{text-decoration:underline;}',
-            '@media (prefers-color-scheme:dark){html,body{background:#111827;color:#e5e7eb;}.preview-wrap h1{border-color:#374151;}.preview-wrap h2{color:#cbd5e1;}.preview-wrap blockquote{background:#1f2937;color:#9ca3af;border-color:#4b5563;}.preview-wrap code{background:#1f2937;}}'
+            '[data-theme="dark"],[data-theme="dark"] body{background:#111827;color:#e5e7eb;}',
+            '[data-theme="dark"] .preview-wrap h1{border-color:#374151;}',
+            '[data-theme="dark"] .preview-wrap h2{color:#cbd5e1;}',
+            '[data-theme="dark"] .preview-wrap blockquote{background:#1f2937;color:#9ca3af;border-color:#4b5563;}',
+            '[data-theme="dark"] .preview-wrap code{background:#1f2937;}',
+            '[data-theme="dark"] .preview-wrap a{color:#93c5fd;}',
+            '@media (prefers-color-scheme:dark){html:not([data-theme]),html:not([data-theme]) body{background:#111827;color:#e5e7eb;}html:not([data-theme]) .preview-wrap h1{border-color:#374151;}html:not([data-theme]) .preview-wrap h2{color:#cbd5e1;}html:not([data-theme]) .preview-wrap blockquote{background:#1f2937;color:#9ca3af;border-color:#4b5563;}html:not([data-theme]) .preview-wrap code{background:#1f2937;}}'
         ].join('');
         return '<!DOCTYPE html><html lang="' + escapeHtml(document.documentElement.lang || 'en')
-            + '"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'
+            + '"' + getPreviewThemeAttributesHtml() + '><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'
             + escapeHtml(translateLabel('chat.exportFileTitle', 'Project N.E.K.O Conversation Export'))
             + '</title><style>' + css + '</style></head><body><div class="preview-wrap">'
             + bodyHtml + '</div></body></html>';
@@ -619,6 +688,21 @@
     function isDarkTheme() {
         return document.documentElement
             && document.documentElement.getAttribute('data-theme') === 'dark';
+    }
+
+    function getPreviewThemeAttributesHtml() {
+        return isDarkTheme() ? ' data-theme="dark" class="dark"' : ' data-theme="light"';
+    }
+
+    function applyPreviewThemeToDocument(doc) {
+        if (!doc || !doc.documentElement) return;
+        if (isDarkTheme()) {
+            doc.documentElement.setAttribute('data-theme', 'dark');
+            doc.documentElement.classList.add('dark');
+        } else {
+            doc.documentElement.setAttribute('data-theme', 'light');
+            doc.documentElement.classList.remove('dark');
+        }
     }
 
     // Canvas helpers: wrap text to a max width and return array of lines.
@@ -1695,12 +1779,13 @@
     function buildPreviewCacheKey(entries, formatId) {
         var currentFormatId = formatId || getCurrentExportFormat().id;
         var locale = document.documentElement.lang || '';
+        var theme = isDarkTheme() ? 'dark' : 'light';
         var signature = (entries || []).map(function (entry) {
             return entry.id + ':' + (entry.textContent || '').length + ':' + (entry.mediaDescriptors ? entry.mediaDescriptors.length : 0);
         }).join('|');
         var imageStyleId = currentFormatId === 'image' ? getCurrentImageExportStyle().id : '';
         var imageFormatId = currentFormatId === 'image' ? getCurrentImageExportFormat().id : '';
-        return [currentFormatId, imageStyleId, imageFormatId, locale, signature].join('::');
+        return [currentFormatId, imageStyleId, imageFormatId, locale, theme, signature].join('::');
     }
 
     function revokePreviewPayload(payload) {
@@ -1797,6 +1882,31 @@
         var summary = doc.createElement('div');
         summary.className = 'chat-export-preview-summary';
 
+        var isStandaloneWindow = !!(doc.body && doc.body.classList.contains('chat-export-window'));
+        var windowControls = null;
+        var minimizeButton = null;
+        var maximizeButton = null;
+        if (isStandaloneWindow) {
+            windowControls = doc.createElement('div');
+            windowControls.className = 'neko-window-controls chat-export-preview-window-controls';
+            minimizeButton = createWindowControlButton(
+                doc,
+                'minimize',
+                'common.minimize',
+                'Minimize',
+                'neko-window-minimize-icon'
+            );
+            maximizeButton = createWindowControlButton(
+                doc,
+                'maximize',
+                'common.maximize',
+                'Maximize',
+                'neko-window-maximize-icon'
+            );
+            windowControls.appendChild(minimizeButton);
+            windowControls.appendChild(maximizeButton);
+        }
+
         var closeButton = doc.createElement('button');
         closeButton.type = 'button';
         closeButton.className = 'chat-export-preview-close close-btn';
@@ -1809,7 +1919,12 @@
 
         header.appendChild(title);
         header.appendChild(summary);
-        header.appendChild(closeButton);
+        if (windowControls) {
+            windowControls.appendChild(closeButton);
+            header.appendChild(windowControls);
+        } else {
+            header.appendChild(closeButton);
+        }
 
         var selectionSection = doc.createElement('div');
         selectionSection.className = 'chat-export-selection-section';
@@ -1916,6 +2031,8 @@
             panel: panel,
             title: title,
             summary: summary,
+            minimizeButton: minimizeButton,
+            maximizeButton: maximizeButton,
             closeButton: closeButton,
             closeIcon: closeIcon,
             selectionToolbar: selectionToolbar,
@@ -1985,9 +2102,10 @@
         openWindowButton.addEventListener('click', handleOpenWindowClick);
         downloadButton.addEventListener('click', handleDownloadClick);
 
-        // Update localized modal attributes when the app locale changes
+        // 应用语言变化时同步预览窗口文案
         var localeHandler = function () {
             closeButton.setAttribute('aria-label', translateLabel('common.close', 'Close'));
+            setWindowControlButtonLabel(minimizeButton, 'common.minimize', 'Minimize');
             title.textContent = translateLabel('chat.exportPreviewTitle', 'Export Preview');
             title.setAttribute('data-text', title.textContent);
             frame.setAttribute('title', translateLabel('chat.exportPreviewTitle', 'Export Preview'));
@@ -1998,9 +2116,18 @@
             selectInvertButton.textContent = translateLabel('chat.exportSelectInvert', 'Invert');
             copyButton.textContent = translateLabel('chat.copyToClipboard', 'Copy to Clipboard');
             openWindowButton.textContent = translateLabel('chat.previewOpenWindow', 'Open In Window');
+            setWindowControlButtonLabel(maximizeButton, 'common.maximize', 'Maximize');
+            var view = doc.defaultView || null;
+            if (view && view.nekoWindowControls && typeof view.nekoWindowControls.refresh === 'function') {
+                view.nekoWindowControls.refresh();
+            }
         };
         window.addEventListener('localechange', localeHandler);
         modal._localeHandler = localeHandler;
+
+        if (isStandaloneWindow) {
+            ensureWindowControlsForDocument(doc);
+        }
 
         return modal;
     }
@@ -2009,6 +2136,16 @@
         if (modal && modal.panel && modal.panel.ownerDocument) return modal.panel.ownerDocument;
         if (state.previewWindow && !state.previewWindow.closed && state.previewWindow.document) return state.previewWindow.document;
         return document;
+    }
+
+    function syncPreviewWindowTheme() {
+        try {
+            if (state.previewWindow && !state.previewWindow.closed && state.previewWindow.document) {
+                applyPreviewThemeToDocument(state.previewWindow.document);
+            } else if (state.previewModal) {
+                applyPreviewThemeToDocument(getPreviewModalDocument(state.previewModal));
+            }
+        } catch (_) {}
     }
 
     function detachPreviewHandlers(modal) {
@@ -2317,25 +2454,29 @@
             + width + ',height=' + height + ',left=' + left + ',top=' + top;
     }
 
-    function openExportPreviewWindow() {
+    async function openExportPreviewWindow() {
         var previewTitle = translateLabel('chat.exportPreviewTitle', 'Export Preview');
         var isExistingWindow = !!(state.previewWindow && !state.previewWindow.closed);
         var previewWindow = isExistingWindow
             ? state.previewWindow
-            : window.open('', 'neko-chat-export-preview', buildExportWindowFeatures());
+            : window.open(getExportPreviewShellUrl(), 'neko-chat-export-preview', buildExportWindowFeatures());
         if (!previewWindow) return null;
 
         if (isExistingWindow) {
             disposePreviewModal(false);
         }
+        try {
+            if (typeof previewWindow.stop === 'function') previewWindow.stop();
+        } catch (_) {}
         state.previewWindow = previewWindow;
         var doc = previewWindow.document;
         doc.open();
-        doc.write('<!DOCTYPE html><html><head><meta charset="utf-8">'
+        doc.write('<!DOCTYPE html><html lang="' + escapeHtml(document.documentElement.lang || 'en') + '"' + getPreviewThemeAttributesHtml() + '><head><meta charset="utf-8">'
             + '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
             + '<title>' + escapeHtml(previewTitle) + '</title>'
             + '<link rel="stylesheet" href="/static/css/api_key_settings.css">'
             + '<link rel="stylesheet" href="/static/css/index.css">'
+            + buildWindowControlAssetsHtml()
             + '<link rel="stylesheet" href="/static/css/dark-mode.css">'
             + '<style>'
             + 'html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#f8fafc;}'
@@ -2345,10 +2486,15 @@
             + 'body.chat-export-window .chat-export-preview-header.container-header{position:sticky;top:0;z-index:100;flex-shrink:0;border-bottom:0;}'
             + 'body.chat-export-window .chat-export-preview-title{white-space:nowrap;}'
             + 'body.chat-export-window .chat-export-preview-summary{color:rgba(255,255,255,.92);font-weight:600;text-shadow:0 1px 2px rgba(0,80,140,.24);}'
+            + 'body.chat-export-window .chat-export-preview-window-controls{margin-left:8px;}'
             + 'body.chat-export-window .chat-export-preview-close img{pointer-events:none;}'
             + 'body.chat-export-window .chat-export-preview-body{max-height:none;}'
+            + 'html[data-theme="dark"],html[data-theme="dark"] body.chat-export-window{background:#0f172a;color:#e2e8f0;}'
+            + 'html[data-theme="dark"] body.chat-export-window .chat-export-preview-panel{background:#1e293b;color:#e2e8f0;}'
+            + 'html[data-theme="dark"] body.chat-export-window .chat-export-preview-body,html[data-theme="dark"] body.chat-export-window .chat-export-preview-frame{background:#0f172a;}'
             + '</style></head><body class="chat-export-window"></body></html>');
         doc.close();
+        applyPreviewThemeToDocument(doc);
         previewWindow.focus();
         if (!previewWindow._chatExportBeforeUnloadHandler) {
             var beforeUnloadHandler = function () {
@@ -2363,12 +2509,13 @@
     }
 
     async function openPreviewModal(previewWindow) {
-        previewWindow = previewWindow || openExportPreviewWindow();
+        previewWindow = previewWindow || await openExportPreviewWindow();
         if (!previewWindow) {
             showToast('chat.previewOpenBlocked', 'Unable to open a new preview window.', 4000);
             return;
         }
         var modal = ensurePreviewModal(previewWindow.document);
+        applyPreviewThemeToDocument(previewWindow.document);
 
         // Re-register localeHandler if it was removed on previous close
         if (!modal._localeHandler) {
@@ -2478,7 +2625,7 @@
         }
     }
 
-    /** Build the HTML for a draggable title-bar with a close button (for frameless Electron windows). */
+    /** 构建无边框 Electron 窗口使用的自绘标题栏。 */
     function buildWindowChromeHtml(title) {
         var closeLabel = escapeHtml(translateLabel('chat.previewClose', 'Close'));
         var scrollbarCss = '<style>'
@@ -2488,8 +2635,8 @@
             + '::-webkit-scrollbar-thumb:hover{background:rgba(140,140,140,0.6);}'
             + '::-webkit-scrollbar-corner{background:transparent;}'
             + '@media (prefers-color-scheme:dark){'
-            + '::-webkit-scrollbar-thumb{background:rgba(200,200,200,0.25);}'
-            + '::-webkit-scrollbar-thumb:hover{background:rgba(200,200,200,0.4);}'
+            + 'html:not([data-theme])::-webkit-scrollbar-thumb,html:not([data-theme]) ::-webkit-scrollbar-thumb{background:rgba(200,200,200,0.25);}'
+            + 'html:not([data-theme])::-webkit-scrollbar-thumb:hover,html:not([data-theme]) ::-webkit-scrollbar-thumb:hover{background:rgba(200,200,200,0.4);}'
             + '}'
             + '</style>';
         return scrollbarCss
@@ -2535,9 +2682,9 @@
                 return;
             }
             var doc = payload.previewDocument;
-            // Sanitize any unsafe protocol URLs before injecting into the new window
+            // 写入新窗口前先清理不安全协议
             doc = sanitizeHtmlUrls(doc);
-            // Inject window chrome (title bar + close button) into the preview document
+            // 注入自绘标题栏并给正文留出顶部空间
             doc = doc.replace(/(<body[^>]*>)/, '$1' + chromeHtml + '<div style="padding-top:36px;">');
             doc = doc.replace(/<\/body>/, '</div></body>');
             var win = window.open('', '_blank');
@@ -2579,14 +2726,13 @@
             return;
         }
 
-        var previewWindow = openExportPreviewWindow();
-        if (!previewWindow) {
-            showToast('chat.previewOpenBlocked', 'Unable to open a new preview window.', 4000);
-            return;
-        }
-
         state.isPreparingPreview = true;
         try {
+            var previewWindow = await openExportPreviewWindow();
+            if (!previewWindow) {
+                showToast('chat.previewOpenBlocked', 'Unable to open a new preview window.', 4000);
+                return;
+            }
             state.allMessages = messages;
             state.selectedIds = new Set();
             clearPreviewCache();
@@ -2614,6 +2760,13 @@
             clearPreviewCache();
             renderSelectionList();
             renderControls();
+            schedulePreviewRender();
+        });
+
+        window.addEventListener('neko-theme-changed', function () {
+            syncPreviewWindowTheme();
+            if (!state.previewModal || state.previewModal.panel.hidden) return;
+            clearPreviewCache();
             schedulePreviewRender();
         });
     }

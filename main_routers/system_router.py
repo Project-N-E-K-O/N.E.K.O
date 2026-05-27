@@ -62,6 +62,8 @@ from cachetools import TTLCache
 
 from .shared_state import ensure_steamworks as get_steamworks, get_config_manager, get_sync_message_queue, get_session_manager
 from main_logic.omni_realtime_client import OmniRealtimeClient
+from main_logic.activity.system_signals import is_remote_backend_deployment
+from main_logic.activity.tracker import _EXTERNAL_SIGNAL_MIN_INTERVAL
 from config import (
     AUTOSTART_ALLOWED_ORIGINS,
     AUTOSTART_CSRF_TOKEN,
@@ -108,7 +110,7 @@ from config.prompts.prompts_emotion import (
     get_emotion_label_aliases_flat,
 )
 from config.prompts.prompts_memory import PROACTIVE_FOLLOWUP_HEADER
-from config.prompts.prompts_directives import render_regen_avoid_instruction
+from config.prompts.prompts_directives import render_regen_avoid_instruction, render_format_fix_instruction
 from config.prompts.prompts_proactive import (
     get_proactive_screen_prompt, get_proactive_generate_prompt,
     get_proactive_music_playing_hint,
@@ -124,6 +126,7 @@ from config.prompts.prompts_proactive import (
     EXTERNAL_TOPIC_HEADER, EXTERNAL_TOPIC_FOOTER,
     MUSIC_SECTION_HEADER, MUSIC_SECTION_FOOTER,
     MEME_SECTION_HEADER, MEME_SECTION_FOOTER,
+    get_meme_topic_line,
     PROACTIVE_SOURCE_LABELS,
     PROACTIVE_MUSIC_TAG_INSTRUCTIONS,
     MUSIC_SEARCH_RESULT_TEXTS,
@@ -199,21 +202,16 @@ def _is_loopback_request(request: Request) -> bool:
         return False
 
 
-def _is_remote_backend_deployment() -> bool:
-    """``NEKO_ACTIVITY_TRACKER_REMOTE`` / ``ACTIVITY_TRACKER_REMOTE`` 兜底开关。
-
-    /screenshot 和 /screenshot/interactive 都是在后端机器上抓屏的，部署到
-    远程服务器时抓出来的是服务器自己的桌面而不是用户的。loopback 校验
-    会被反向代理 / 隧道绕过，这条环境变量是运维显式声明"后端不在用户本机"
-    的硬开关，命中就直接拒绝本地截图。
-
-    用法和 PR #1015 的活动追踪器保持一致，避免再发明一套部署变量。
-    """
-    for key in ("NEKO_ACTIVITY_TRACKER_REMOTE", "ACTIVITY_TRACKER_REMOTE"):
-        raw = os.getenv(key, "").strip().lower()
-        if raw in ("1", "true", "yes", "on"):
-            return True
-    return False
+# /screenshot 和 /screenshot/interactive 都是在后端机器上抓屏的，部署到
+# 远程服务器时抓出来的是服务器自己的桌面而不是用户的。loopback 校验
+# 会被反向代理 / 隧道绕过，``NEKO_ACTIVITY_TRACKER_REMOTE`` 是运维显式
+# 声明"后端不在用户本机"的硬开关，命中就直接拒绝本地截图。
+#
+# 真正的实现在 ``main_logic/activity/system_signals.is_remote_backend_deployment``
+# —— PR #1015 给 activity tracker 用的，这里直接复用避免再发明一套部署变量。
+# 私有别名保留是为了 ``tests/unit/test_system_screenshot_router.py`` 还
+# 在调 ``system_router_module._is_remote_backend_deployment()``。
+_is_remote_backend_deployment = is_remote_backend_deployment
 
 
 def _run_macos_interactive_screenshot(output_path: str) -> tuple[int, str]:
@@ -1848,6 +1846,22 @@ def _record_proactive_chat(lanlan_name: str, message: str, channel: str = ''):
     if lanlan_name not in _proactive_chat_history:
         _proactive_chat_history[lanlan_name] = deque(maxlen=PROACTIVE_CHAT_HISTORY_MAX)
     _proactive_chat_history[lanlan_name].append((time.time(), message, channel))
+
+    # Telemetry：主动搭话实际投递。channel 是低基数 enum（vision/news/video/
+    # personal/music/meme/mini_game/...），截断防意外高基数。配合 settings_state
+    # 的 proactive 配置档，能看深度用户每天实际被主动搭话几次。
+    #
+    # 不在这里做 responded 回应率配对：用户消息分发在 core.py（main_logic 层），
+    # 主动搭话在 main_routers 层，module-layering CI 禁止 core.py 反向 import
+    # system_router；跨层共享"上次投递时刻"状态会破坏分层。回应率由 server 端
+    # 用 proactive_fired 时刻与用户消息活动 timestamp 关联粗估即可，要精确配对
+    # 再单独开 PR。
+    try:
+        from utils.instrument import counter as _instr_counter
+        _instr_counter("proactive_fired", channel=(str(channel) or "default")[:24])
+    except Exception:
+        # 埋点失败不能影响主动搭话投递
+        pass
 
 
 # ---------- Mini-game 邀请短路状态管理 ----------
@@ -4144,6 +4158,321 @@ async def backend_interactive_screenshot(request: Request):
             logger.debug("清理交互截图临时文件失败: %s", tmp_path, exc_info=True)
 
 
+# ── Frontend-pushed activity signals (cross-platform OS signal channel) ──
+#
+# Per-lanlan throttle for ``/api/activity_signal``. Keyed by lanlan_name,
+# value is the timestamp of the last accepted push. Bounded — see
+# ``_ACTIVITY_SIGNAL_THROTTLE_MAX_ENTRIES`` — to defend against an
+# attacker spraying lanlan_names; in practice the dict has 1-3 entries.
+# Concurrent access from FastAPI's worker pool is safe because Python
+# dict ops are atomic under the GIL and we tolerate occasional rate-limit
+# slippage (worst case: an extra push slips through).
+_ACTIVITY_SIGNAL_THROTTLE: dict[str, float] = {}
+_ACTIVITY_SIGNAL_THROTTLE_MAX_ENTRIES = 64
+
+
+def _activity_signal_validate_float(
+    data: dict, key: str, lo: float | None, hi: float | None,
+) -> tuple[float | None, str | None]:
+    """Coerce ``data[key]`` to a bounded float; ``None`` means absent.
+
+    Tracker treats absent fields as neutral defaults (see
+    ``UserActivityTracker.push_external_system_signal`` docstring), so
+    we keep ``None`` distinct from a present-but-invalid value — the
+    latter is a 400 with a specific error.
+
+    Non-finite values (``NaN`` / ``±Infinity``) are rejected explicitly
+    before range comparison — ``float('nan') < lo`` is silently
+    ``False``, so they'd otherwise bypass the bounds check. Worse,
+    serialising them downstream (state-machine logs, JSON responses)
+    crashes since standard JSON forbids them. ``math.isfinite`` is the
+    correct guard: it rejects NaN and both infinities while accepting
+    every normal/subnormal float.
+    """
+    raw = data.get(key)
+    if raw is None:
+        return None, None
+    # Reject booleans before float coercion (Codex F8 on PR #1477).
+    # ``bool`` is a subclass of ``int`` in Python, so ``float(True)``
+    # silently returns ``1.0`` and ``float(False)`` returns ``0.0``,
+    # which would slip past the range checks below as legitimate signal
+    # values. ``isinstance(raw, bool)`` catches both before the int
+    # / float fast paths in ``float()``.
+    if isinstance(raw, bool):
+        return None, f"{key} must be a number"
+    try:
+        val = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError is raised by ``float()`` when the integer is
+        # too large to fit in a C double (Codex F9 on PR #1477) —
+        # JSON allows arbitrary-precision ints which Python loads as
+        # native big ints, and ``float(10**400)`` blows up. Without
+        # this case the request becomes a 500 instead of a clean 400,
+        # giving a low-cost crash vector to anyone POSTing oversized
+        # numeric literals.
+        return None, f"{key} must be a number"
+    if not math.isfinite(val):
+        return None, f"{key} must be finite"
+    if lo is not None and val < lo:
+        return None, f"{key} must be >= {lo}"
+    if hi is not None and val > hi:
+        return None, f"{key} must be <= {hi}"
+    return val, None
+
+
+def _activity_signal_validate_str(
+    data: dict, key: str,
+) -> tuple[str | None, str | None]:
+    raw = data.get(key)
+    if raw is None:
+        return None, None
+    if not isinstance(raw, str):
+        return None, f"{key} must be a string"
+    return raw, None
+
+
+@router.post('/activity_signal')
+async def push_activity_signal(request: Request):
+    """Accept OS-activity signals pushed by the frontend on a heartbeat.
+
+    Companion to ``UserActivityTracker.push_external_system_signal()``
+    (PR #1015 ``main_logic/activity/tracker.py:347``), exposing the
+    push channel as HTTP for the "backend doesn't run on the user's
+    machine" deployments. The frontend (Electron preload reading
+    ``powerMonitor.getSystemIdleTime`` + npm ``active-win`` +
+    ``os.cpus()`` + ``nvidia-smi``) POSTs here every ``~5s``; the
+    tracker treats anything fresher than ``_EXTERNAL_SIGNAL_TTL_SECONDS``
+    (15s) as the authoritative OS view, falling back to the local
+    collector when the heartbeat stops. Same fresh-then-fallback path
+    feeds both the async ``get_snapshot`` and the sync variant — see
+    ``tracker._select_system_snapshot``.
+
+    Auth:
+
+    * Origin-present same-origin gate (zero-frontend-cost defence,
+      suggested by CodeRabbit on PR #1477): when the request carries an
+      ``Origin`` / ``Referer`` header AND that origin isn't in
+      ``_get_allowed_local_origins`` (which always includes the current
+      ``request.base_url``), reject with 403. Browser-mediated requests
+      always carry ``Origin`` for POST, so this single check blocks
+      cross-site drive-by JS without breaking ``curl`` / Electron's
+      same-origin renderer / native scripts (no Origin → allowed).
+    * Per-lanlan 5s rate limit below + the tracker's per-character
+      lookup raise spam cost and bound the impact even if Origin
+      validation passes.
+    * A stricter CSRF token mechanism (parity with screenshot endpoints)
+      is tracked for a follow-up security-hardening PR; the threat
+      model write-up lives in issue #1023.
+
+    Body fields (all optional except ``lanlan_name``):
+      * ``lanlan_name`` (required) — which character's tracker to update
+      * ``window_title`` — string, raw active-window title
+      * ``process_name`` — string, owning process exe name (e.g. ``"Code.exe"``)
+      * ``idle_seconds`` — float ≥ 0, OS-wide keyboard/mouse idle
+      * ``cpu_avg_30s`` — float in ``[0, 100]``, rolling CPU average
+      * ``gpu_utilization`` — float in ``[0, 100]``, primary GPU utilisation
+
+    Returns 200 on success, 400 on malformed payload, 404 if
+    ``lanlan_name`` isn't registered, 429 if pushed faster than
+    ``_EXTERNAL_SIGNAL_MIN_INTERVAL`` (5s), 503 if the character's
+    tracker hasn't initialised yet.
+    """
+    # ── Origin-present same-origin gate ────────────────────────────
+    # When the request carries an Origin (or Referer fallback) but it's
+    # not in our allowed-origins set, refuse — that's the drive-by CSRF
+    # signature. Missing Origin means a non-browser caller (curl, Node,
+    # native script) which we explicitly allow because there's no
+    # mandatory CSRF token yet. Same-origin browser requests pass
+    # naturally because their Origin matches ``request.base_url``,
+    # which ``_get_allowed_local_origins`` always includes.
+    #
+    # Opaque-origin guard (Codex F5 on PR #1477): browsers send the
+    # literal string ``"null"`` as Origin for sandboxed iframes,
+    # ``file://`` pages, and certain extension contexts. ``urlsplit``
+    # parses "null" into an empty scheme/netloc which
+    # ``_normalize_origin_value`` turns into ``""`` — without this
+    # check that bypasses to the no-Origin "allowed" branch. We
+    # explicitly reject the raw "null" string before normalisation, on
+    # both Origin and Referer (the latter is our fallback).
+    raw_origin = (request.headers.get("origin") or "").strip().lower()
+    raw_referer = (request.headers.get("referer") or "").strip().lower()
+    if raw_origin == "null" or raw_referer == "null":
+        return _json_no_store_response(
+            {"success": False, "error": "origin not allowed"},
+            status_code=403,
+        )
+
+    request_origin = _get_request_origin(request)
+    if request_origin:
+        allowed = _get_allowed_local_origins(request)
+        if request_origin not in allowed:
+            return _json_no_store_response(
+                {"success": False, "error": "origin not allowed"},
+                status_code=403,
+            )
+
+    try:
+        data = await request.json()
+    except Exception:
+        return _json_no_store_response(
+            {"success": False, "error": "invalid JSON body"},
+            status_code=400,
+        )
+    if not isinstance(data, dict):
+        return _json_no_store_response(
+            {"success": False, "error": "body must be a JSON object"},
+            status_code=400,
+        )
+
+    lanlan_name = data.get("lanlan_name")
+    if not isinstance(lanlan_name, str) or not lanlan_name.strip():
+        return _json_no_store_response(
+            {"success": False, "error": "lanlan_name required"},
+            status_code=400,
+        )
+    lanlan_name = lanlan_name.strip()
+
+    idle_seconds, err = _activity_signal_validate_float(
+        data, "idle_seconds", 0.0, None,
+    )
+    if err:
+        return _json_no_store_response(
+            {"success": False, "error": err}, status_code=400,
+        )
+    cpu_avg_30s, err = _activity_signal_validate_float(
+        data, "cpu_avg_30s", 0.0, 100.0,
+    )
+    if err:
+        return _json_no_store_response(
+            {"success": False, "error": err}, status_code=400,
+        )
+    gpu_utilization, err = _activity_signal_validate_float(
+        data, "gpu_utilization", 0.0, 100.0,
+    )
+    if err:
+        return _json_no_store_response(
+            {"success": False, "error": err}, status_code=400,
+        )
+
+    window_title, err = _activity_signal_validate_str(data, "window_title")
+    if err:
+        return _json_no_store_response(
+            {"success": False, "error": err}, status_code=400,
+        )
+    process_name, err = _activity_signal_validate_str(data, "process_name")
+    if err:
+        return _json_no_store_response(
+            {"success": False, "error": err}, status_code=400,
+        )
+
+    # ── Empty-signal guard (Codex F6 + CodeRabbit F7 on PR #1477) ──
+    # If every signal field is absent, the tracker's
+    # ``push_external_system_signal`` would still mark
+    # ``os_signals_available=True`` and default missing numerics to
+    # ``0.0`` — i.e., a payload of ``{"lanlan_name": "X"}`` would
+    # silently overwrite real state with synthetic "idle=0 / cpu=0 /
+    # no window". The frontend client already skips empty bridge
+    # snapshots, but a malicious or buggy native caller could still
+    # POST an empty payload, so we reject server-side too.
+    #
+    # Blank-string handling (CodeRabbit F7): ``"window_title": ""`` or
+    # whitespace-only strings carry no information and have the same
+    # poisoning effect as ``None``. Treat them as absent for the
+    # all-empty check; non-blank strings (legit "no foreground window
+    # right now" semantics with explicit ``""``) would still trip the
+    # check if every other field is also None — which is the right
+    # outcome, that payload tells the tracker literally nothing.
+    if all(
+        v is None or (isinstance(v, str) and not v.strip())
+        for v in (
+            idle_seconds, cpu_avg_30s, gpu_utilization,
+            window_title, process_name,
+        )
+    ):
+        return _json_no_store_response(
+            {
+                "success": False,
+                "error": "at least one signal field required",
+            },
+            status_code=400,
+        )
+
+    # Per-lanlan throttle — matches the frontend's 5s heartbeat. TTL
+    # is 15s (3× this interval) so even if 2 of every 3 pushes get
+    # rate-limited the tracker stays inside its freshness window. Spam
+    # control, not auth — the character lookup below is the real
+    # integrity check.
+    now = time.time()
+    last_push = _ACTIVITY_SIGNAL_THROTTLE.get(lanlan_name)
+    if last_push is not None and (now - last_push) < _EXTERNAL_SIGNAL_MIN_INTERVAL:
+        retry_after = max(
+            0.0, _EXTERNAL_SIGNAL_MIN_INTERVAL - (now - last_push),
+        )
+        resp = _json_no_store_response(
+            {
+                "success": False,
+                "error": "rate limited",
+                "retry_after_seconds": round(retry_after, 3),
+            },
+            status_code=429,
+        )
+        # Header is integer seconds per RFC 9110; round up so clients
+        # don't retry into the same window.
+        resp.headers["Retry-After"] = str(int(retry_after) + 1)
+        return resp
+
+    session_manager = get_session_manager()
+    mgr = session_manager.get(lanlan_name)
+    if not mgr:
+        return _json_no_store_response(
+            {
+                "success": False,
+                "error": f"lanlan_name {lanlan_name!r} not registered",
+            },
+            status_code=404,
+        )
+    tracker = getattr(mgr, "_activity_tracker", None)
+    if tracker is None:
+        return _json_no_store_response(
+            {
+                "success": False,
+                "error": "activity tracker not initialised for this character",
+            },
+            status_code=503,
+        )
+
+    try:
+        tracker.push_external_system_signal(
+            window_title=window_title,
+            process_name=process_name,
+            idle_seconds=idle_seconds,
+            cpu_avg_30s=cpu_avg_30s,
+            gpu_utilization=gpu_utilization,
+            now=now,
+        )
+    except Exception as e:
+        logger.exception(
+            "push_external_system_signal failed for %s", lanlan_name,
+        )
+        return _json_no_store_response(
+            {"success": False, "error": f"tracker rejected push: {e}"},
+            status_code=500,
+        )
+
+    _ACTIVITY_SIGNAL_THROTTLE[lanlan_name] = now
+    # Bound the dict: in practice lanlan_names are 1-3, but if an
+    # attacker sprays unique names we trim oldest. Sorted ascending by
+    # timestamp; keep the freshest MAX entries.
+    if len(_ACTIVITY_SIGNAL_THROTTLE) > _ACTIVITY_SIGNAL_THROTTLE_MAX_ENTRIES:
+        excess = sorted(
+            _ACTIVITY_SIGNAL_THROTTLE.items(), key=lambda kv: kv[1],
+        )[:-_ACTIVITY_SIGNAL_THROTTLE_MAX_ENTRIES]
+        for key, _ in excess:
+            _ACTIVITY_SIGNAL_THROTTLE.pop(key, None)
+
+    return _json_no_store_response({"success": True})
+
+
 # ================================================================
 # 主动搭话响应构建 (Response builder pure function)
 # ================================================================
@@ -4994,28 +5323,24 @@ async def proactive_chat(request: Request):
         except Exception as e:
             logger.warning(f"[{lanlan_name}] 获取记忆上下文失败，使用空上下文: {e}")
         
-        # 解析 new_dialog 响应
+        # 解析 new_dialog 响应：把"内心活动"与"对话历史"切开。
+        # 切分逻辑（locale 无关）集中在 prompts_memory.split_inner_thoughts_and_history，
+        # 以 INNER_THOUGHTS_DYNAMIC 的多语言模板为准；任一 locale 都匹配不到时返回
+        # None，这里兜底为"全部当历史、内心活动留空"并打 warning（不再静默错位）。
         def _parse_new_dialog(text: str) -> tuple[str, str]:
-            """
-            解析 new_dialog 的文本响应，尝试分离内心活动和对话历史。
-             - 如果包含分割线 "整理了近期发生的事情"，则将其前部分作为内心活动，后部分作为对话历史。
-             - 该函数的目的是为了在 Phase 1 后能够清晰地获取到内心活动和对话历史，以便在 Phase 2 中更好地生成搭话内容。
-             - 内心活动通常包含角色的当前状态、情绪、想法等信息，而对话历史则是与用户的过去交流记录。
-             - 通过这种方式，我们可以在 Phase 1 中分析内心活动来选择搭话话题，在 Phase 2 中结合对话历史生成更符合上下文的搭话内容。
-            """
             if not text:
                 return "", ""
-            # 尝试找到分割线 "整理了近期发生的事情"
-            split_keyword = "整理了近期发生的事情"
-            if split_keyword in text:
-                parts = text.split(split_keyword, 1)
-                # part[0] 是内心活动+时间，part[1] 是对话历史
-                # 提取内心活动 (去除首尾空白)
-                inner_thoughts_part = parts[0].strip()
-                # 提取对话历史 (去除首尾空白)
-                history_part = parts[1].strip()
-                return history_part, inner_thoughts_part
-            return text, ""
+            from config.prompts.prompts_memory import split_inner_thoughts_and_history
+            split = split_inner_thoughts_and_history(text)
+            if split is None:
+                logger.warning(
+                    "[%s] new_dialog 未匹配到内心活动分隔句（任一 locale），"
+                    "整段归入对话历史，当前内心留空",
+                    lanlan_name,
+                )
+                return text, ""
+            inner_thoughts_part, history_part = split
+            return history_part, inner_thoughts_part
 
         memory_context, inner_thoughts = _parse_new_dialog(raw_memory_context)
 
@@ -5091,27 +5416,31 @@ async def proactive_chat(request: Request):
             return await _end_proactive(JSONResponse(_proactive_preempted_json("phase1_post_reflect")))
 
         # ========== 4. 获取 LLM 配置 ==========
+        # 主动搭话全链路（Phase1 筛选 / Phase2 生成 / regen）用 conversation tier
+        # 而非 correction tier：correction（纠错）模型在不开思考时较难稳定遵循
+        # "第一行写来源标签" 的格式，容易把人设约束块当正文吐出来；conversation
+        # 是主对话主力模型，格式遵循更稳。仍保持 disable_thinking（vision+思考必超时）。
         try:
-            correction_config = _config_manager.get_model_api_config('correction')
-            correction_model = correction_config.get('model')
-            correction_base_url = correction_config.get('base_url')
-            correction_api_key = correction_config.get('api_key')
-            
-            if not correction_model or not correction_api_key:
-                logger.error("纠错模型配置缺失: model或api_key未设置")
+            conversation_config = _config_manager.get_model_api_config('conversation')
+            conversation_model = conversation_config.get('model')
+            conversation_base_url = conversation_config.get('base_url')
+            conversation_api_key = conversation_config.get('api_key')
+
+            if not conversation_model or not conversation_api_key:
+                logger.error("对话模型配置缺失: model或api_key未设置")
                 return await _end_proactive(JSONResponse({
                     "success": False,
-                    "error": "纠错模型配置缺失",
-                    "detail": "请在设置中配置纠错模型的model和api_key"
+                    "error": "对话模型配置缺失",
+                    "detail": "请在设置中配置对话模型的model和api_key"
                 }, status_code=500))
-            
+
             vision_config = _config_manager.get_model_api_config('vision')
             vision_model_name = vision_config.get('model', '')
             vision_base_url = vision_config.get('base_url', '')
             vision_api_key = vision_config.get('api_key', '')
             has_vision_model = bool(vision_model_name and vision_api_key)
             if not has_vision_model:
-                logger.info("Vision 模型未配置，Phase 2 将退回使用 correction 模型")
+                logger.info("Vision 模型未配置，Phase 2 将退回使用对话模型")
         except Exception as e:
             logger.error(f"获取模型配置失败: {e}")
             return await _end_proactive(JSONResponse({
@@ -5129,7 +5458,7 @@ async def proactive_chat(request: Request):
             if use_vision and has_vision_model:
                 m, bu, ak = vision_model_name, vision_base_url, vision_api_key
             else:
-                m, bu, ak = correction_model, correction_base_url, correction_api_key
+                m, bu, ak = conversation_model, conversation_base_url, conversation_api_key
             kw: dict = dict(
                 temperature=temperature,
                 max_completion_tokens=max_completion_tokens,
@@ -5152,7 +5481,6 @@ async def proactive_chat(request: Request):
             带重试的 LLM 调用。image_b64 非空时以多模态方式发送截图。
             dynamic_context: 动态上下文，注入到 HumanMessage 中使 SystemMessage 可被缓存。
             """
-            actual_model = (vision_model_name if use_vision and has_vision_model else correction_model)
             begin_text = _loc(BEGIN_GENERATE, proactive_lang)
             human_text = f"{dynamic_context}\n\n{begin_text}" if dynamic_context else begin_text
             if image_b64:
@@ -5499,22 +5827,31 @@ async def proactive_chat(request: Request):
                 return None
 
         async def _fetch_meme_with_fallback(kw: str):
-            """用 LLM 关键词搜索表情包，失败则随机热词"""
+            """用 LLM 关键词搜索表情包，失败则随机热词。
+
+            ``effective_keyword`` 标注本次实际生效的搜索词：关键词命中时即 kw
+            （描述了梗内容，下游话题会带上它）；走随机热词兜底时置空，避免谎报
+            "这是关于 X 的图"。
+            """
             try:
                 raw = await asyncio.wait_for(
                     fetch_meme_content(keyword=kw, limit=_PHASE1_FETCH_PER_SOURCE),
                     timeout=12.0
                 )
                 if raw and raw.get('success'):
+                    raw['effective_keyword'] = kw
                     return raw
             except Exception as e:
                 logger.warning(f"[{lanlan_name}] 表情包关键词 '{kw}' 搜索异常: {e}")
             logger.warning(f"[{lanlan_name}] 表情包关键词 '{kw}' 搜索失败，尝试随机热词")
             try:
-                return await asyncio.wait_for(
+                raw = await asyncio.wait_for(
                     fetch_meme_content(keyword="", limit=_PHASE1_FETCH_PER_SOURCE),
                     timeout=12.0
                 )
+                if raw:
+                    raw['effective_keyword'] = ""
+                return raw
             except Exception:
                 return None
 
@@ -5555,6 +5892,7 @@ async def proactive_chat(request: Request):
                         'data': result_p1.get('data', []),
                         'raw_data': result_p1,
                         'source': result_p1.get('source', '表情包'),
+                        'keyword': result_p1.get('effective_keyword', ''),
                     }
                     print(f"[{lanlan_name}] 成功获取 {len(result_p1.get('data', []))} 个表情包 (来源: {result_p1.get('source', '?')})")
 
@@ -5637,7 +5975,12 @@ async def proactive_chat(request: Request):
                     if meme_topic_key and _should_skip_source(meme_topic_key):
                         logger.debug(f"[{lanlan_name}]- Phase 1 表情包候选去重命中，跳过: {meme_title[:30]}")
                         continue
-                    single_meme_topic = f"发现一个很有意思的[表情包]：'{meme_title}' (来自 {meme_source})"
+                    single_meme_topic = get_meme_topic_line(
+                        proactive_lang,
+                        keyword=meme_content.get('keyword', ''),
+                        title=meme_title,
+                        source=meme_source,
+                    )
                     logger.debug(f"[{lanlan_name}]- Phase 1 表情包话题已添加 (限额1张): {single_meme_topic}")
                     phase1_topics.append(('meme', single_meme_topic))
                     selected_meme_link = {
@@ -5777,6 +6120,12 @@ async def proactive_chat(request: Request):
             has_meme=bool(meme_section),
             lang=proactive_lang,
         )
+        # 本轮是否启用"来源标签系统"：有 web/music/meme 副作用通道时，
+        # get_proactive_format_sections 用 _of_header（要求第一行写 [TAG]）；三者全无
+        # 时用 _of_none（明确要求纯文本、无 tag，下游靠 source_tag='CHAT' 兜底投递）。
+        # 无 tag gate 只在前者生效，否则会把 _of_none 模式的合法纯文本搭话误判为
+        # 格式泄漏 drop（Codex P1）。
+        _expects_source_tag = bool(external_section) or bool(music_section) or bool(meme_section)
         music_playing_hint = ""
         if is_playing_music and current_track:
             track_name = current_track.get('name') or get_proactive_music_unknown_track_name(proactive_lang)
@@ -5888,7 +6237,7 @@ async def proactive_chat(request: Request):
             human_content = human_text
         messages = [SystemMessage(content=generate_prompt), HumanMessage(content=human_content)]
 
-        actual_model = (vision_model_name if phase2_use_vision else correction_model)
+        actual_model = (vision_model_name if phase2_use_vision else conversation_model)
         print(f"\n{'='*60}\n[PROACTIVE-DEBUG] Phase 2 STREAM: model={actual_model} | vision={phase2_use_vision} | img={'yes' if phase2_use_vision else 'no'}\n{'='*60}\n{generate_prompt}\n{'='*60}\n")
 
         # --- 流式调用 + 在线拦截 ---
@@ -5963,6 +6312,9 @@ async def proactive_chat(request: Request):
                             if m:
                                 cleaned = cleaned[m.end():]
                             # 解析 [PASS] / [CHAT] / [WEB] / [MUSIC] / [MEME]
+                            # 先 lstrip：模型偶尔先吐换行/空格再吐 [CHAT]，不去前导空白
+                            # 会让 ^\[ 匹配失败、source_tag 误留空被当成无 tag（Codex P2）。
+                            cleaned = cleaned.lstrip()
                             tag_match = re.match(r'^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*', cleaned, re.IGNORECASE)
                             if tag_match:
                                 source_tag = tag_match.group(1).upper()
@@ -6018,6 +6370,7 @@ async def proactive_chat(request: Request):
             m = re.search(r'主动搭话\s*\n', cleaned)
             if m:
                 cleaned = cleaned[m.end():]
+            cleaned = cleaned.lstrip()  # 同上：去前导空白再匹配 tag（Codex P2）
             tag_match = re.match(r'^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*', cleaned, re.IGNORECASE)
             if tag_match:
                 source_tag = tag_match.group(1).upper()
@@ -6027,6 +6380,65 @@ async def proactive_chat(request: Request):
             elif cleaned.strip():
                 await _emit_safe(cleaned)
         
+        # 没有解析到合法来源标签（[CHAT]/[WEB]/[MUSIC]/[MEME]）→ 输出不符合格式。
+        # 弱模型（free-model）常把人设里的 Format / 约束块当正文吐出来——线上见过
+        # "No Markdown: Yes."、"* No stage directions/parentheses"、"完全不同的角度或主题"
+        # 这类脚手架泄漏。合法搭话必然以 tag 起头，缺 tag 即判格式泄漏，drop 整轮，
+        # 不要把脚手架念给博士听。（TTS 在本函数后段才真正投递，此处 abort 安全。）
+        if not aborted and full_text.strip() and not source_tag and _expects_source_tag:
+            # 没解析到合法来源标签——多半是模型把人设 Format/约束块当正文吐了出来。
+            # （仅在本轮启用 tag 系统时才判泄漏；_of_none 纯文本模式无 tag 是合法的，
+            #  不进此分支，留给后面的 source_tag='CHAT' 兜底正常投递。）
+            # 不直接 drop，先给一次"格式纠正"regen 自救：重建 Human turn（fix 指令 +
+            # 原 human_text，末尾仍是 BEGIN 触发句），ainvoke 重跑一次再解析 tag。
+            # 解析到合法非 PASS tag → 用自救结果接回主流程（下游 is_duplicate / BM25
+            # 照常生效）；仍无 tag / [PASS] / 空 → 才判格式泄漏 drop。preempt 时放弃。
+            print(f"[{lanlan_name}] Phase 2 输出无合法来源标签，尝试格式自救 regen")
+            if mgr.state.is_proactive_preempted(proactive_sid):
+                aborted = True
+            else:
+                _fix_human_text = f"{render_format_fix_instruction(proactive_lang, master_name_current)}\n\n{human_text}"
+                if phase2_use_vision:
+                    _fix_human_content = [
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{screenshot_b64_for_phase2}"}},
+                        {"type": "text", "text": _fix_human_text},
+                    ]
+                else:
+                    _fix_human_content = _fix_human_text
+                _fix_text = ""
+                try:
+                    async with asyncio.timeout(20.0):
+                        async with _make_llm(
+                            temperature=1.0,
+                            max_completion_tokens=PROACTIVE_PHASE2_GENERATE_MAX_TOKENS,
+                            use_vision=phase2_use_vision,
+                            disable_thinking=True,
+                        ) as _fix_llm:
+                            _fix_resp = await _fix_llm.ainvoke(
+                                [messages[0], HumanMessage(content=_fix_human_content)]
+                            )
+                            _fix_text = (_fix_resp.content if hasattr(_fix_resp, "content") else "") or ""
+                except Exception as _fix_exc:
+                    logger.warning("[%s] Phase 2 格式自救 regen 失败: %s", lanlan_name, _fix_exc)
+                    _fix_text = ""
+                _fc = (_fix_text or "").strip()
+                _fm = re.search(r"主动搭话\s*\n", _fc)
+                if _fm:
+                    _fc = _fc[_fm.end():]
+                _fc = _fc.lstrip()
+                _fix_tag = ""
+                _ftm = re.match(r"^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*", _fc, re.IGNORECASE)
+                if _ftm:
+                    _fix_tag = _ftm.group(1).upper()
+                    _fc = _fc[_ftm.end():]
+                if _fix_tag and _fix_tag != "PASS" and _fc.strip() and "[PASS]" not in _fc.upper():
+                    source_tag = _fix_tag
+                    full_text = _fc.strip()
+                    print(f"[{lanlan_name}] Phase 2 格式自救成功 tag={source_tag}")
+                else:
+                    print(f"[{lanlan_name}] Phase 2 格式自救仍无合法 tag，drop")
+                    aborted = True
+
         # --- 结果处理 ---
         # buffer 是流前 ~80 字符的原始累积（含 [TAG]\n 前缀和正文头部），
         # full_text 是去标签后真正投递给 TTS / send_lanlan_response 的内容。
@@ -6116,8 +6528,25 @@ async def proactive_chat(request: Request):
                 f"[{lanlan_name}] 主动搭话 BM25 触发 regen "
                 f"(score={_bm25_total:.2f} >= {ANTI_REPEAT_REGEN_THRESHOLD}, 避开={avoid_terms})"
             )
-            avoid_msg = render_regen_avoid_instruction(avoid_terms, proactive_lang)
-            regen_messages = list(messages) + [HumanMessage(content=avoid_msg)]
+            avoid_msg = render_regen_avoid_instruction(
+                avoid_terms, proactive_lang, master_name_current,
+            )
+            # 不再把 avoid 指令作为独立的最后一条 HumanMessage 追加在 12.5k 末尾
+            # （弱模型容易把这条 meta 指令的原文/脚手架当正文吐出来）。改为**重建
+            # 同一个 Human turn**：avoid 约束在前，后接原始 human_text。human_text 本身
+            # = dynamic_context_for_phase2 + BEGIN 触发句，所以一来保留了音乐 tag、
+            # 模糊匹配披露、"正在放歌时禁止再推歌"等运行时约束（否则 regen 可能回出被
+            # 禁止的内容，Codex P1 / CodeRabbit），二来它仍以 BEGIN 句结尾，模型看到的
+            # 最后一句还是中性的"请开始"而非可照抄的指令文本。System 段原样复用；vision 图保留。
+            regen_human_text = f"{avoid_msg}\n\n{human_text}"
+            if phase2_use_vision:
+                regen_human_content = [
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{screenshot_b64_for_phase2}"}},
+                    {"type": "text", "text": regen_human_text},
+                ]
+            else:
+                regen_human_content = regen_human_text
+            regen_messages = [messages[0], HumanMessage(content=regen_human_content)]
             regen_text = ""
             # 进入 regen 前再读一次 sticky preempt：与上方流式循环 / Phase1 各
             # 长 await 入口保持一致——用户在初稿出来到这里之间接管的话，免去
@@ -6158,7 +6587,8 @@ async def proactive_chat(request: Request):
             # 让下面的 "MUSIC→非MUSIC clear" 不触发、music 候选继续注入 → 复读
             # 又出去（CodeRabbit Major）。规则：
             #   regen 解析出 tag → 用该 tag
-            #   regen 非空但没 tag → 当成 CHAT（model 偏离格式但产出有效正文）
+            #   regen 非空但没 tag → drop（与初稿同款格式泄漏防护：弱模型常把人设
+            #     Format/约束块当正文吐出来，缺 tag 一律判泄漏，不再当成 CHAT 投递）
             #   regen 空 / [PASS] → 上面 drop 分支拦掉
             _cleaned = (regen_text or "").strip()
             regen_source_tag = ""
@@ -6172,11 +6602,18 @@ async def proactive_chat(request: Request):
                 regen_source_tag = _tag_m.group(1).upper()
                 _cleaned = _cleaned[_tag_m.end():]
             # regen 输出 [PASS] / 空 → 等价于"模型放弃了"，drop 而不是退回原文。
-            # 显式把 ``regen_source_tag == 'PASS'`` 也算 drop——前面剥过 [TAG]
-            # 前缀，剩下的 _cleaned 已经不含 "[PASS]" 字面量，但 regen_source_tag
-            # 已经记下这是 PASS，与"内嵌 [PASS]"等价拦掉（CodeRabbit Minor）。
-            if regen_source_tag == "PASS" or not _cleaned.strip() or "[PASS]" in _cleaned.upper():
-                logger.info("[%s] proactive BM25 regen returned empty/PASS, drop", lanlan_name)
+            # 显式把 ``regen_source_tag == 'PASS'`` 也算 drop（前面剥过 [TAG] 前缀，
+            # _cleaned 已不含字面 "[PASS]"，但 regen_source_tag 记下了是 PASS）。
+            # 无 tag 是否算 drop 与初稿 gate 同款守卫：仅当本轮启用 tag 系统
+            # (_expects_source_tag) 时，无 tag 才判格式泄漏 drop；_of_none 纯文本模式
+            # 无 tag 是合法的，留空交给下游 source_tag='CHAT' 兜底（Codex P2）。
+            if (
+                regen_source_tag == "PASS"
+                or (_expects_source_tag and not regen_source_tag)
+                or not _cleaned.strip()
+                or "[PASS]" in _cleaned.upper()
+            ):
+                logger.info("[%s] proactive BM25 regen returned empty/PASS/untagged, drop", lanlan_name)
                 if not mgr.state.is_proactive_preempted(proactive_sid):
                     await mgr.handle_new_message()
                 return await _end_proactive(JSONResponse({
@@ -6224,10 +6661,9 @@ async def proactive_chat(request: Request):
                     "similarity": _regen_sim,
                     "threshold": _PROACTIVE_SIMILARITY_THRESHOLD,
                 }))
-            # regen 非空 + 没 tag → 视为 CHAT。沿用初稿 tag 会让初稿 [MUSIC]
-            # 但 regen 偏离格式产出纯文本时仍走音乐通道——既不是 user-visible
-            # bug，但与 regen 的语义"换话题"相违（CodeRabbit Major）。
-            source_tag = regen_source_tag or "CHAT"
+            # _expects_source_tag 时 regen_source_tag 必为合法非 PASS tag；_of_none
+            # 模式可能为空（合法无 tag），留空交给下游 source_tag='CHAT' 兜底。
+            source_tag = regen_source_tag
             # regen 后只要最终不是 MUSIC，就清掉本轮 music 候选。
             # 之前的版本只在 _initial_source_tag == "MUSIC" 时清，但 tagless
             # 初稿（_initial 为空）+ phase1 只有 music topic 的场景下，

@@ -61,6 +61,20 @@
         "enableFailed": "今は自動起動を有効にできませんでした。しばらくしてからもう一度お試しください。",
         "requiresApproval": "先にシステム設定で自動起動を許可してください。許可後に有効になります。"
     },
+    "contextPrompt": {
+        "play": {
+            "title": "画面を一緒に見ててもいい？",
+            "message": "ゲーム / 動画を見てるところだね。自発おしゃべりの画面共有をオンにすれば、今映ってる画面に合わせて一緒に喋ったりツッコんだりできるよ。オンにする？",
+            "accept": "うん、オンにして",
+            "decline": "今はいい"
+        },
+        "work": {
+            "title": "静かにして、画面も見ないようにしようか？",
+            "message": "集中して作業してるみたいだね。自発おしゃべりの画面共有をオフにできるよ。邪魔しないし、覗き見の心配もなくなる。オフにする？",
+            "accept": "うん、画面共有をオフに",
+            "decline": "ううん、このままで"
+        }
+    },
     "tutorialPrompt": {
         "title": "ホームのチュートリアルを始めますか？",
         "message": "ホーム画面の主要な入口をすばやく案内して、最短で N.E.K.O を使い始められるようにします。",
@@ -194,6 +208,14 @@
         "uploadReady": "{{itemName}}のアップロード準備完了",
         "pageDescription": "このページではキャラクターカードの閲覧・編集・アップロード・インポート/エクスポート、およびSteamワークショップ内のLive2Dモデルとボイスの管理が行えます",
         "openVoiceClone": "ボイスクローンで開く",
+        "workshopAddCharacterCard": "キャラクターカードを追加",
+        "workshopAddingCharacterCard": "追加中...",
+        "unknownCharacterCard": "不明なキャラクターカード",
+        "characterCardAlreadyExistsTitle": "キャラクターカードは既に存在します",
+        "characterCardAlreadyExistsMessage": "キャラクターカードは既に存在します：{{names}}",
+        "workshopCharacterAdded": "キャラクターカードを追加しました：{{names}}",
+        "workshopCharacterNotFound": "このサブスクリプション内に追加できるキャラクターカードが見つかりません。コンテンツのダウンロード完了を確認してください。",
+        "workshopCharacterAddFailed": "キャラクターカードの追加に失敗しました: {{error}}",
         "configurePath": "パス設定",
         "localModPathConfig": "ローカルMODパス設定",
         "localModFolder": "ローカルMODフォルダパス",
@@ -397,6 +419,7 @@
         "loadingItemDetailsById": "アイテムID: {{id}} の詳細を読み込み中...",
         "characterCardsRefreshed": "キャラクターカードリストを更新しました。合計 {{count}} 枚",
         "characterCardsRefreshedEmpty": "キャラクターカードリストを更新しました。利用可能なカードはありません",
+        "characterCardsRefreshFailed": "リストの更新に失敗しました: {{error}}",
         "requiredFieldsMissing": "以下の必須項目を入力してください: {{fields}}",
         "refreshLive2DPreview": "Live2Dプレビューを更新",
         "removeTag": "タグを削除",
@@ -532,7 +555,7 @@
         "steamNotRunningTitle": "Steamが実行されていません",
         "steamNotRunningMessage": "Steamクライアントが実行されていないか、ログインしていません。\n\nワークショップ機能にはSteamクライアントが必要です：\n1. Steamクライアントをダウンロードしてインストール\n2. Steamを起動してアカウントにログイン\n3. このページを再度開いてください",
         "addNewCatgirl": "新規キャラを追加",
-        "noCardImage": "ここをクリックして\nカードフェイスを設定",
+        "noCardImage": "カードフェイスは未設定です",
         "searchCharacterCards": "キャラカードを検索...",
         "cardView": "カード表示",
         "listView": "リスト表示"
@@ -865,7 +888,7 @@
         "coreApiKey": "Core APIキー",
         "freeVersionHint": "（無料版は不要）",
         "coreApiPlaceholder": "APIキーを入力してください",
-        "coreApiProvider": "Core API（音声会話）",
+        "coreApiProvider": "Core API（音声会話、オムニモーダルのみ）",
         "assistApiProvider": "Assist API（記憶/Agent/テキスト/カスタム音声）",
         "saveSettings": "設定を保存",
         "closeSettings": "閉じる",
@@ -1163,7 +1186,23 @@
             "modelDataNotReady": "モデル内部データの準備ができていません",
             "managerNotFound": "Live2DManagerが見つかりません",
             "select": "選択",
-            "defaultClickAnim": "デフォルトクリックアニメーション"
+            "defaultClickAnim": "デフォルトクリックアニメーション",
+            "customAreaButton": "カスタムエリア",
+            "customAreaTitle": "カスタムエリア：{{name}}",
+            "newCustomAreaTitle": "新しいカスタムエリア",
+            "editCustomAreaTitle": "カスタムエリアを編集",
+            "customAreaName": "エリア名",
+            "customAreaNameDefault": "カスタムエリア {{index}}",
+            "saveCustomArea": "エリアを保存",
+            "editCustomArea": "編集",
+            "deleteCustomArea": "削除",
+            "deleteCustomAreaConfirmTitle": "カスタムエリアを削除",
+            "deleteCustomAreaConfirm": "カスタムエリア「{{name}}」を削除しますか？割り当てたモーションと表情も削除されます。",
+            "previewUnavailable": "カスタムエリアのプレビューを開けません",
+            "modelBoundsUnavailable": "モデルの境界を取得できません",
+            "selectAreaFirst": "有効なエリアを先に選択してください",
+            "customAreaCoveredByExisting": "このエリアは先に作成されたカスタムエリアに完全に覆われています",
+            "cancel": "キャンセル"
         },
         "emotionConfig": "表情",
         "saveSettings": "設定を保存",

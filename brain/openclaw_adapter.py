@@ -20,7 +20,7 @@ import httpx
 
 from config import OPENCLAW_MAGIC_INTENT_MAX_TOKENS
 from utils.file_utils import robust_json_loads
-from utils.llm_client import create_chat_llm
+from utils.llm_client import create_chat_llm, strip_thinking_segments
 from utils.config_manager import get_config_manager
 from utils.logger_config import get_module_logger
 
@@ -458,7 +458,10 @@ class OpenClawAdapter:
 
     @staticmethod
     def _strip_reasoning_trace(text: str) -> str:
-        cleaned = re.sub(r"<think>.*?</think>", "", str(text or ""), flags=re.IGNORECASE | re.DOTALL).strip()
+        # Shared stripper handles both paired <think>...</think> and the
+        # Qwen3.5/3.6 dangling-</think> leak shape; ReAct line filtering below
+        # is openclaw-specific and stays here.
+        cleaned = strip_thinking_segments(text)
         if not cleaned:
             return ""
 

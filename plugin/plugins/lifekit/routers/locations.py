@@ -1,32 +1,38 @@
-"""地点管理 router — 保存/删除/列出常用地点。"""
+"""Saved-location management router for LifeKit."""
 
 from __future__ import annotations
 
 import uuid
 from typing import Any, Dict, List
 
-from plugin.sdk.plugin import plugin_entry, ui, tr, Ok, Err, SdkError
+from plugin.sdk.plugin import Err, Ok, SdkError, plugin_entry, tr, ui
 from plugin.sdk.shared.core.router import PluginRouter
 
 from .._api import GeocodeError, geocode_city
+from .._coerce import clean_text
+from .._contracts import (
+    AddLocationParams,
+    AddLocationResult,
+    ListLocationsResult,
+    LocationIdParams,
+    MessageResult,
+    RemoveLocationResult,
+)
 
 _STORE_KEY = "saved_locations"
 
 
 class LocationsRouter(PluginRouter):
-    """地点管理 entry：增删查 + 设默认。"""
+    """Manage saved locations: list, add, remove, and set default."""
 
     def __init__(self):
         super().__init__(name="locations")
-
-    # ── helpers ──
 
     async def _load(self) -> List[Dict[str, Any]]:
         plugin = self.main_plugin
         if not plugin.store.enabled:
             return []
         result = await plugin.store.get(_STORE_KEY, [])
-        # Result 类型：Ok(value) 或 Err(error)
         if hasattr(result, "is_ok") and callable(result.is_ok):
             if result.is_ok():
                 data = result.value
@@ -37,10 +43,9 @@ class LocationsRouter(PluginRouter):
             data = result.value
         else:
             data = result
-        return data if isinstance(data, list) else []
+        return [dict(item) for item in data if isinstance(item, dict)] if isinstance(data, list) else []
 
     async def _save(self, locations: List[Dict[str, Any]]) -> bool:
-        """保存地点列表。返回是否成功。"""
         plugin = self.main_plugin
         if not plugin.store.enabled:
             plugin.logger.error("PluginStore is disabled, cannot save locations")
@@ -60,13 +65,11 @@ class LocationsRouter(PluginRouter):
                 return candidate
         raise RuntimeError("failed to generate unique location id")
 
-    # ── entries ──
-
     @plugin_entry(
         id="list_locations",
-        name="查看常用地点",
-        description="列出所有保存的常用地点。",
-        llm_result_fields=["count", "locations"],
+        name=tr("entries.listLocations.name", default="List saved locations"),
+        description=tr("entries.listLocations.description", default="List all saved LifeKit locations."),
+        llm_result_model=ListLocationsResult,
     )
     async def list_locations(self, **_):
         locations = await self._load()
@@ -74,7 +77,7 @@ class LocationsRouter(PluginRouter):
 
     @ui.action(
         label=tr("actions.addLocation.label", default="Add location"),
-        icon="➕",
+        icon="+",
         tone="success",
         group="locations",
         order=10,
@@ -82,74 +85,82 @@ class LocationsRouter(PluginRouter):
     )
     @plugin_entry(
         id="add_location",
-        name=tr("entries.addLocation.name", default="添加常用地点"),
-        description=tr("entries.addLocation.description", default="添加一个常用地点。提供标签和城市名，自动获取坐标。"),
-        llm_result_fields=["message"],
-        input_schema={
-            "type": "object",
-            "properties": {
-                "label": {"type": "string", "description": tr("fields.locationLabel.description", default="地点标签（如：家、公司）")},
-                "city": {"type": "string", "description": tr("fields.city.description", default="城市名")},
-                "address": {"type": "string", "description": tr("fields.address.description", default="具体地址（可选）"), "default": ""},
-                "set_default": {"type": "boolean", "description": tr("fields.setDefault.description", default="是否设为默认地点"), "default": False},
-            },
-            "required": ["label", "city"],
-        },
+        name=tr("entries.addLocation.name", default="Add saved location"),
+        description=tr(
+            "entries.addLocation.description",
+            default="Add a saved location by label and city, geocoding coordinates automatically.",
+        ),
+        params=AddLocationParams,
+        llm_result_model=AddLocationResult,
     )
-    async def add_location(self, label: str, city: str, address: str = "", set_default: bool = False, **_):
-        if not label.strip():
-            return Err(SdkError("标签不能为空"))
-        if not city.strip():
-            return Err(SdkError("城市不能为空"))
+    async def add_location(
+        self,
+        params: AddLocationParams | None = None,
+        label: str = "",
+        city: str = "",
+        address: str = "",
+        set_default: bool = False,
+        **_,
+    ):
+        if params is not None:
+            label = params.label
+            city = params.city
+            address = params.address
+            set_default = params.set_default
+
+        clean_label = clean_text(label)
+        clean_city = clean_text(city)
+        if not clean_label:
+            return Err(SdkError("Location label cannot be empty"))
+        if not clean_city:
+            return Err(SdkError("City cannot be empty"))
 
         plugin = self.main_plugin
         plugin._resolve_locale()
         locale = plugin._i18n.locale
 
-        # geocode
         try:
-            geo = await geocode_city(city.strip(), locale=locale)
+            geo = await geocode_city(clean_city, locale=locale)
         except GeocodeError as exc:
-            plugin.logger.warning("geocode failed for {}: {}", city, exc)
-            return Err(SdkError(f"无法定位城市: {city} ({exc.cause})"))
+            plugin.logger.warning("geocode failed for {}: {}", clean_city, exc)
+            return Err(SdkError(f"Unable to locate city: {clean_city} ({exc.cause})"))
         except Exception as exc:
-            plugin.logger.warning("geocode failed for {}: {}", city, exc)
+            plugin.logger.warning("geocode failed for {}: {}", clean_city, exc)
             geo = None
         if not geo:
-            return Err(SdkError(f"无法定位城市: {city}"))
+            return Err(SdkError(f"Unable to locate city: {clean_city}"))
 
-        locations = await self._load()
-
-        # 检查标签重复
-        for loc in locations:
-            if loc.get("label") == label.strip():
-                return Err(SdkError(f"标签 '{label}' 已存在"))
-
-        new_loc: Dict[str, Any] = {
-            "id": self._new_location_id(locations),
-            "label": label.strip(),
-            "city": geo["city"],
-            "address": address.strip(),
-            "lat": geo["lat"],
-            "lon": geo["lon"],
-            "country": geo.get("country", ""),
-            "is_default": False,
-        }
-
-        if set_default or not locations:
+        async with plugin._locations_lock:
+            locations = await self._load()
             for loc in locations:
-                loc["is_default"] = False
-            new_loc["is_default"] = True
+                if loc.get("label") == clean_label:
+                    return Err(SdkError(f"Location label already exists: {clean_label}"))
 
-        locations.append(new_loc)
-        if not await self._save(locations):
-            return Err(SdkError("保存失败，请检查插件存储是否启用"))
+            new_loc: Dict[str, Any] = {
+                "id": self._new_location_id(locations),
+                "label": clean_label,
+                "city": geo["city"],
+                "address": clean_text(address),
+                "lat": geo["lat"],
+                "lon": geo["lon"],
+                "country": geo.get("country", ""),
+                "is_default": False,
+            }
 
-        return Ok({"message": f"已添加地点: {new_loc['label']} ({new_loc['city']})", "location": new_loc})
+            if set_default or not locations:
+                for loc in locations:
+                    loc["is_default"] = False
+                new_loc["is_default"] = True
+
+            locations.append(new_loc)
+            if not await self._save(locations):
+                return Err(SdkError("Save failed. Please check whether plugin storage is enabled."))
+
+        return Ok({"message": f"Added location: {new_loc['label']} ({new_loc['city']})", "location": new_loc})
 
     @ui.action(
         label=tr("actions.removeLocation.label", default="Remove location"),
-        icon="🗑️",
+        icon="x",
         tone="danger",
         group="locations",
         order=30,
@@ -158,36 +169,34 @@ class LocationsRouter(PluginRouter):
     )
     @plugin_entry(
         id="remove_location",
-        name=tr("entries.removeLocation.name", default="删除常用地点"),
-        description=tr("entries.removeLocation.description", default="按 ID 或标签删除一个常用地点。"),
-        llm_result_fields=["message"],
-        input_schema={
-            "type": "object",
-            "properties": {
-                "location_id": {"type": "string", "description": tr("fields.locationId.description", default="地点 ID 或标签")},
-            },
-            "required": ["location_id"],
-        },
+        name=tr("entries.removeLocation.name", default="Remove saved location"),
+        description=tr("entries.removeLocation.description", default="Remove a saved location by ID or label."),
+        params=LocationIdParams,
+        llm_result_model=RemoveLocationResult,
     )
-    async def remove_location(self, location_id: str, **_):
-        locations = await self._load()
-        key = location_id.strip()
-        before = len(locations)
-        locations = [loc for loc in locations if loc.get("id") != key and loc.get("label") != key]
-        if len(locations) == before:
-            return Err(SdkError(f"未找到地点: {key}"))
+    async def remove_location(self, params: LocationIdParams | None = None, location_id: str = "", **_):
+        if params is not None:
+            location_id = params.location_id
 
-        # 如果删掉了默认地点，把第一个设为默认
-        if locations and not any(loc.get("is_default") for loc in locations):
-            locations[0]["is_default"] = True
+        plugin = self.main_plugin
+        key = clean_text(location_id)
+        async with plugin._locations_lock:
+            locations = await self._load()
+            before = len(locations)
+            locations = [loc for loc in locations if loc.get("id") != key and loc.get("label") != key]
+            if len(locations) == before:
+                return Err(SdkError(f"Location not found: {key}"))
 
-        if not await self._save(locations):
-            return Err(SdkError("保存失败"))
-        return Ok({"message": f"已删除地点: {key}", "remaining": len(locations)})
+            if locations and not any(loc.get("is_default") for loc in locations):
+                locations[0]["is_default"] = True
+
+            if not await self._save(locations):
+                return Err(SdkError("Save failed"))
+        return Ok({"message": f"Removed location: {key}", "remaining": len(locations)})
 
     @ui.action(
         label=tr("actions.setDefaultLocation.label", default="Set default"),
-        icon="⭐",
+        icon="*",
         tone="primary",
         group="locations",
         order=20,
@@ -195,29 +204,28 @@ class LocationsRouter(PluginRouter):
     )
     @plugin_entry(
         id="set_default_location",
-        name=tr("entries.setDefaultLocation.name", default="设置默认地点"),
-        description=tr("entries.setDefaultLocation.description", default="将指定地点设为默认（查天气时优先使用）。"),
-        llm_result_fields=["message"],
-        input_schema={
-            "type": "object",
-            "properties": {
-                "location_id": {"type": "string", "description": tr("fields.locationId.description", default="地点 ID 或标签")},
-            },
-            "required": ["location_id"],
-        },
+        name=tr("entries.setDefaultLocation.name", default="Set default location"),
+        description=tr("entries.setDefaultLocation.description", default="Set the location preferred by weather and travel tools."),
+        params=LocationIdParams,
+        llm_result_model=MessageResult,
     )
-    async def set_default_location(self, location_id: str, **_):
-        locations = await self._load()
-        key = location_id.strip()
-        found = False
-        for loc in locations:
-            if loc.get("id") == key or loc.get("label") == key:
-                loc["is_default"] = True
-                found = True
-            else:
-                loc["is_default"] = False
-        if not found:
-            return Err(SdkError(f"未找到地点: {key}"))
-        if not await self._save(locations):
-            return Err(SdkError("保存失败"))
-        return Ok({"message": f"已将 '{key}' 设为默认地点"})
+    async def set_default_location(self, params: LocationIdParams | None = None, location_id: str = "", **_):
+        if params is not None:
+            location_id = params.location_id
+
+        plugin = self.main_plugin
+        key = clean_text(location_id)
+        async with plugin._locations_lock:
+            locations = await self._load()
+            found = False
+            for loc in locations:
+                if loc.get("id") == key or loc.get("label") == key:
+                    loc["is_default"] = True
+                    found = True
+                else:
+                    loc["is_default"] = False
+            if not found:
+                return Err(SdkError(f"Location not found: {key}"))
+            if not await self._save(locations):
+                return Err(SdkError("Save failed"))
+        return Ok({"message": f"Default location set: {key}"})

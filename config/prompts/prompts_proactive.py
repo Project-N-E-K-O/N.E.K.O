@@ -1063,8 +1063,6 @@ proactive_generate_zh = """你的人设：
 当前内心：
 {inner_thoughts}
 
-{state_section}
-
 对话历史：
 {memory_context}
 
@@ -1073,6 +1071,8 @@ proactive_generate_zh = """你的人设：
 {external_section}
 {music_section}
 {meme_section}
+
+{state_section}
 
 ======以下为向{master_name}进行搭话的决策方式======
 
@@ -1105,8 +1105,6 @@ proactive_generate_en = """Your persona:
 Inner state:
 {inner_thoughts}
 
-{state_section}
-
 Conversation history:
 {memory_context}
 
@@ -1115,6 +1113,8 @@ Conversation history:
 {external_section}
 {music_section}
 {meme_section}
+
+{state_section}
 
 ======以下为向{master_name}进行搭话的决策方式======
 
@@ -1147,8 +1147,6 @@ proactive_generate_ja = """あなたのキャラ設定：
 現在の内面：
 {inner_thoughts}
 
-{state_section}
-
 会話履歴：
 {memory_context}
 
@@ -1157,6 +1155,8 @@ proactive_generate_ja = """あなたのキャラ設定：
 {external_section}
 {music_section}
 {meme_section}
+
+{state_section}
 
 ======以下为向{master_name}进行搭话的决策方式======
 
@@ -1189,8 +1189,6 @@ proactive_generate_ko = """당신의 캐릭터 설정:
 현재 내면:
 {inner_thoughts}
 
-{state_section}
-
 대화 기록:
 {memory_context}
 
@@ -1199,6 +1197,8 @@ proactive_generate_ko = """당신의 캐릭터 설정:
 {external_section}
 {music_section}
 {meme_section}
+
+{state_section}
 
 ======以下为向{master_name}进行搭话的决策方式======
 
@@ -1231,8 +1231,6 @@ proactive_generate_ru = """Ваша роль:
 Внутреннее состояние:
 {inner_thoughts}
 
-{state_section}
-
 История разговора:
 {memory_context}
 
@@ -1241,6 +1239,8 @@ proactive_generate_ru = """Ваша роль:
 {external_section}
 {music_section}
 {meme_section}
+
+{state_section}
 
 ======以下为向{master_name}进行搭话的决策方式======
 
@@ -1745,8 +1745,6 @@ proactive_generate_es = """Tu persona:
 Estado interno:
 {inner_thoughts}
 
-{state_section}
-
 Historial de conversación:
 {memory_context}
 
@@ -1755,6 +1753,8 @@ Historial de conversación:
 {external_section}
 {music_section}
 {meme_section}
+
+{state_section}
 
 ======以下为向{master_name}进行搭话的决策方式======
 
@@ -1787,8 +1787,6 @@ proactive_generate_pt = """Sua persona:
 Estado interno:
 {inner_thoughts}
 
-{state_section}
-
 Histórico da conversa:
 {memory_context}
 
@@ -1797,6 +1795,8 @@ Histórico da conversa:
 {external_section}
 {music_section}
 {meme_section}
+
+{state_section}
 
 ======以下为向{master_name}进行搭话的决策方式======
 
@@ -2919,13 +2919,13 @@ def get_proactive_format_sections(
     }
 
     _of_header = {
-        "zh": "输出格式（严格遵守）：\n- 放弃搭话 → 只输出 [PASS]\n- 否则第一行写来源标签，第二行起写你要说的话：",
-        "en": "Output format (strict):\n- To skip → reply only [PASS]\n- Otherwise, first line = source tag, then your message on the next line(s):",
-        "ja": "出力形式（厳守）：\n- パス → [PASS] のみ\n- それ以外 → 1行目にソースタグ、2行目以降にメッセージ：",
-        "ko": "출력 형식 (엄격 준수):\n- 패스 → [PASS]만\n- 그 외 → 첫 줄에 소스 태그, 다음 줄부터 메시지:",
-        "ru": "Формат ответа (строго):\n- Пропустить → ответьте только [PASS]\n- Иначе первая строка = тег источника, далее со следующей строки ваше сообщение:",
-        "es": "Formato de salida (estricto):\n- Para omitir → responde solo [PASS]\n- Si no, primera línea = tag de fuente, luego tu mensaje en la(s) línea(s) siguiente(s):",
-        "pt": "Formato de saída (estrito):\n- Para pular → responda apenas [PASS]\n- Caso contrário, primeira linha = tag de fonte, depois sua mensagem na(s) linha(s) seguinte(s):",
+        "zh": "最终输出格式（严格遵守）：\n- 放弃搭话 → 只输出 [PASS]\n- 否则第一行写来源标签，第二行起写你要说的话：",
+        "en": "Final output format (strict):\n- To skip → reply only [PASS]\n- Otherwise, first line = source tag, then your message on the next line(s):",
+        "ja": "最終出力形式（厳守）：\n- パス → [PASS] のみ\n- それ以外 → 1行目にソースタグ、2行目以降にメッセージ：",
+        "ko": "최종 출력 형식 (엄격 준수):\n- 패스 → [PASS]만\n- 그 외 → 첫 줄에 소스 태그, 다음 줄부터 메시지:",
+        "ru": "Окончательный формат ответа (строго):\n- Пропустить → ответьте только [PASS]\n- Иначе первая строка = тег источника, далее со следующей строки ваше сообщение:",
+        "es": "Formato de salida final (estricto):\n- Para omitir → responde solo [PASS]\n- Si no, primera línea = tag de fuente, luego tu mensaje en la(s) línea(s) siguiente(s):",
+        "pt": "Formato de saída final (estrito):\n- Para pular → responda apenas [PASS]\n- Caso contrário, primeira linha = tag de fonte, depois sua mensagem na(s) linha(s) seguinte(s):",
     }
 
     _of_example = {
@@ -3193,6 +3193,42 @@ MEME_SECTION_FOOTER = {
     "es": "======Arriba está el material de meme======",
     "pt": "======Acima está o material de meme======",
 }
+
+# ---------- 表情包话题描述 ----------
+# 抓取源（尤其国内站）常常没返回有意义的标题，title 退化成占位符 "表情包_N"，
+# 模型完全不知道这张图是关于什么的梗。LLM 当初搜图用的 keyword（如"开心猫咪"）
+# 才是对图片内容/情绪的描述，必须带进话题里，模型才能"利用图片情绪表达"。
+# keyword 为空（fallback 随机热词，无法对应具体描述）时退回不带 keyword 的措辞。
+MEME_TOPIC_WITH_KEYWORD = {
+    "zh": "发现一个关于「{keyword}」的[表情包]：'{title}'（来自 {source}）",
+    "en": "Found a [meme] about \"{keyword}\": '{title}' (from {source})",
+    "ja": "「{keyword}」に関する[ミーム]を見つけた：'{title}'（{source} より）",
+    "ko": "'{keyword}'에 관한 [밈]을 발견했어: '{title}' ({source} 출처)",
+    "ru": "Нашла [мем] про «{keyword}»: '{title}' (из {source})",
+    "es": "Encontré un [meme] sobre «{keyword}»: '{title}' (de {source})",
+    "pt": "Encontrei um [meme] sobre «{keyword}»: '{title}' (de {source})",
+}
+
+MEME_TOPIC_NO_KEYWORD = {
+    "zh": "发现一个很有意思的[表情包]：'{title}'（来自 {source}）",
+    "en": "Found an interesting [meme]: '{title}' (from {source})",
+    "ja": "面白い[ミーム]を見つけた：'{title}'（{source} より）",
+    "ko": "재미있는 [밈]을 발견했어: '{title}' ({source} 출처)",
+    "ru": "Нашла интересный [мем]: '{title}' (из {source})",
+    "es": "Encontré un [meme] interesante: '{title}' (de {source})",
+    "pt": "Encontrei um [meme] interessante: '{title}' (de {source})",
+}
+
+
+def get_meme_topic_line(lang: str, *, keyword: str, title: str, source: str) -> str:
+    """组装表情包话题行；keyword 非空时带上它（描述梗内容），否则退回通用措辞。"""
+    # 先归一化空白：纯空白关键词（"   "）应视为无关键词，否则会误走带关键词模板。
+    normalized_keyword = " ".join((keyword or "").split())
+    if normalized_keyword:
+        return _loc(MEME_TOPIC_WITH_KEYWORD, lang).format(
+            keyword=normalized_keyword, title=title, source=source
+        )
+    return _loc(MEME_TOPIC_NO_KEYWORD, lang).format(title=title, source=source)
 
 # ---------- 主动搭话信息源标签 ----------
 PROACTIVE_SOURCE_LABELS = {

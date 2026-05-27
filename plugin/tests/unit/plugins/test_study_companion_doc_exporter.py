@@ -6,6 +6,8 @@ from zipfile import ZipFile
 
 import pytest
 
+pytestmark = pytest.mark.unit
+
 from plugin.plugins.study_companion.doc_exporter import (
     DocExporter,
     _PDF_CJK_SAMPLE,

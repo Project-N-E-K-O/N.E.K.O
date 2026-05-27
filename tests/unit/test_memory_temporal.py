@@ -19,6 +19,50 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+# ── cooldown_elapsed (dead-letter 时间自愈) ──────────────────────────
+
+
+def test_cooldown_elapsed_true_after_window():
+    from memory.temporal import cooldown_elapsed
+    last = (datetime.now() - timedelta(hours=6)).isoformat()
+    assert cooldown_elapsed(last, 5 * 3600) is True
+
+
+def test_cooldown_elapsed_false_within_window():
+    from memory.temporal import cooldown_elapsed
+    last = (datetime.now() - timedelta(hours=1)).isoformat()
+    assert cooldown_elapsed(last, 5 * 3600) is False
+
+
+def test_cooldown_elapsed_missing_or_garbage_is_eligible():
+    """无时间戳 / 无法解析 → True（给一次 probe，比永久冻死安全）。"""
+    from memory.temporal import cooldown_elapsed
+    assert cooldown_elapsed(None, 5 * 3600) is True
+    assert cooldown_elapsed("", 5 * 3600) is True
+    assert cooldown_elapsed("not-a-date", 5 * 3600) is True
+
+
+def test_cooldown_elapsed_respects_now_arg():
+    from memory.temporal import cooldown_elapsed
+    base = datetime(2026, 5, 24, 12, 0, 0)
+    last = (base - timedelta(hours=4)).isoformat()
+    # 4h < 5h 窗口
+    assert cooldown_elapsed(last, 5 * 3600, now=base) is False
+    # 同一时间戳，6h 窗口外
+    assert cooldown_elapsed(last, 3 * 3600, now=base) is True
+
+
+def test_cooldown_elapsed_handles_aware_timestamp():
+    """aware ISO（+00:00 / Z）不应让相减抛 TypeError（迁移/import 数据防御，
+    CodeRabbit）。aware 与 naive now 经 to_naive_local 归一后正常比较。"""
+    from datetime import timezone
+    from memory.temporal import cooldown_elapsed
+    last_aware_old = (datetime.now(timezone.utc) - timedelta(hours=6)).isoformat()
+    assert cooldown_elapsed(last_aware_old, 5 * 3600) is True
+    last_aware_recent = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    assert cooldown_elapsed(last_aware_recent, 5 * 3600) is False
+
+
 # ── memory.temporal helpers ─────────────────────────────────────────
 
 
@@ -139,6 +183,15 @@ def test_past_anchor_prefers_event_end():
     assert is_past_for_render(e, now) is True
 
 
+def test_is_past_tz_aware_anchor_does_not_crash():
+    """aware anchor（import/迁移的 +00:00）和 naive now 相减不能 TypeError
+    把过时判定打断（CodeRabbit）。"""
+    from memory.temporal import is_past_for_render
+    now = datetime(2026, 5, 20)
+    old = _entry('episode', event_end_at='2026-05-10T00:00:00+00:00')  # 10d 前 aware
+    assert is_past_for_render(old, now) is True
+
+
 # ── time_since_label：Q-α 0-6d 天 / 7-29d 周 / 30d+ 月 ────────────────
 
 
@@ -167,6 +220,98 @@ def test_time_since_unknown_lang_falls_back_zh():
     anchor = (now - timedelta(days=3)).isoformat()
     out = time_since_label(anchor, now=now, lang='xx')
     assert out == '3 天前'
+
+
+def test_to_naive_local_converts_then_strips():
+    """aware → 转本地再剥 tz（保留瞬时，不是直接 replace 丢墙钟）；naive /
+    None 原样返回。"""
+    from datetime import datetime, timezone, timedelta
+    from memory.temporal import to_naive_local
+    aware = datetime(2026, 5, 1, 8, 0, 0, tzinfo=timezone(timedelta(hours=2)))
+    out = to_naive_local(aware)
+    assert out.tzinfo is None
+    # 等价于先 astimezone 本地再剥 tz —— 即保留的是同一瞬时的本地墙钟
+    assert out == aware.astimezone().replace(tzinfo=None)
+    # naive / None 不动
+    naive = datetime(2026, 5, 1, 8, 0, 0)
+    assert to_naive_local(naive) == naive
+    assert to_naive_local(None) is None
+
+
+def test_parse_time_window_hour_granularity():
+    """整点小时 token → 1 小时窗口 [HH:00, HH+1:00)；T 和空格分隔都认。"""
+    from datetime import datetime
+    from memory.temporal import parse_time_window
+    for tok in ('2026-05-01T14', '2026-05-01 14'):
+        assert parse_time_window(tok) == (
+            datetime(2026, 5, 1, 14), datetime(2026, 5, 1, 15)), tok
+
+
+def test_parse_time_window_iso_with_minutes_floors_to_hour():
+    """带分秒的 ISO 向下取整到所在那一小时（精度到小时）。"""
+    from datetime import datetime
+    from memory.temporal import parse_time_window
+    assert parse_time_window('2026-05-01T14:37:12') == (
+        datetime(2026, 5, 1, 14), datetime(2026, 5, 1, 15))
+
+
+def test_parse_time_window_hour_range_union():
+    """小时区间取两端并集：当天 9 点到 19 点。"""
+    from datetime import datetime
+    from memory.temporal import parse_time_window
+    assert parse_time_window('2026-05-01T09/2026-05-01T18') == (
+        datetime(2026, 5, 1, 9), datetime(2026, 5, 1, 19))
+
+
+def test_parse_time_window_date_still_whole_day():
+    """纯日期不带时间仍是整日窗口（不被小时分支误抢）。"""
+    from datetime import datetime
+    from memory.temporal import parse_time_window
+    assert parse_time_window('2026-05-01') == (
+        datetime(2026, 5, 1), datetime(2026, 5, 2))
+
+
+def test_parse_time_window_boundary_overflow_returns_none():
+    """边界输入让窗口右界越过 datetime.max（+1 天 / 年月进位）时返回 None，
+    不冒 OverflowError/ValueError 到上层（Codex）。"""
+    from memory.temporal import parse_time_window
+    for tok in ('9999-12-31', '9999-12', '9999', '9999-12-31T23:59:59'):
+        assert parse_time_window(tok) is None, tok
+
+
+def test_to_naive_local_boundary_overflow_falls_back_to_strip():
+    """边界 aware 值 astimezone 加减 offset 会越过 datetime.min/max 抛
+    OverflowError；to_naive_local 退回直接剥 tz（保墙钟）而非崩（Codex）。"""
+    from datetime import datetime, timezone, timedelta
+    from memory.temporal import to_naive_local
+    # min 附近 + 正 offset → astimezone 转本地（机器 tz）可能下溢
+    near_min = datetime(1, 1, 1, 0, 0, tzinfo=timezone(timedelta(hours=14)))
+    out = to_naive_local(near_min)
+    assert out is not None and out.tzinfo is None
+    near_max = datetime(9999, 12, 31, 23, 59, 59, tzinfo=timezone(timedelta(hours=-14)))
+    out2 = to_naive_local(near_max)
+    assert out2 is not None and out2.tzinfo is None
+
+
+def test_parse_time_window_tz_aware_token_returns_naive():
+    """带 tz 的 ISO time token 不该崩，且返回 naive 区间。带分秒 → 精度到
+    小时（1 小时窗口），tz 先转本地再 floor。"""
+    from memory.temporal import parse_time_window
+    win = parse_time_window('2026-05-01T23:30:00+00:00')
+    assert win is not None
+    start, end = win
+    assert start.tzinfo is None and end.tzinfo is None
+    assert (end - start).total_seconds() == 3600  # 精度到小时
+
+
+def test_time_since_tz_aware_anchor_does_not_crash():
+    """tz-aware anchor（import/迁移路径会写 +00:00 / Z）不能因为和 naive
+    now 相减而 TypeError —— days_since 内部把 aware 转本地剥 tz（Codex）。"""
+    from memory.temporal import days_since, time_since_label
+    now = datetime(2026, 5, 20)
+    # 3 天前的 UTC aware 时间戳；只要不抛异常且落进合理桶即可
+    assert days_since('2026-05-17T00:00:00+00:00', now=now) is not None
+    assert time_since_label('2026-05-17T00:00:00+00:00', now=now, lang='zh').endswith('天前')
 
 
 # ── weighted sampling ──────────────────────────────────────────────

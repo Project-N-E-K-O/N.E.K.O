@@ -138,7 +138,12 @@ def _fix_bilibili_api_env():
         # 最后的兜底，确保此函数无论如何不会导致主程序崩溃
         logger.warning(f"⚠️ 尝试自修复 B站 API 环境时发生非预期异常: {e}")
 
-# 在模块加载时立即执行
+# 在模块加载时立即执行：该修复会在 bilibili_api 安装目录里创建缺失的 data 文件
+# （磁盘级、进程无关、一次性）。除了 web_scraper 自身，plugin/plugins/bilibili_*
+# 也会直接 import bilibili_api 并依赖这些文件已就位——所以这一步必须在 import
+# 期跑（而非 lazy 到 web_scraper 的 B 站函数被调时），否则那些插件在全新环境下
+# 会踩到缺文件错误（见 PR #1496 codex review）。开销主要是首次 import bilibili_api，
+# 相对整体启动优化可忽略。
 _fix_bilibili_api_env()
 
 # ==================================================
@@ -251,7 +256,7 @@ async def fetch_bilibili_trending(limit: int = 30) -> Dict[str, Any]:
     """
     try:
         from bilibili_api import homepage
-        
+
         # 获取认证信息（如果有）
         credential = _get_bilibili_credential()
         

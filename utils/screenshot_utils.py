@@ -18,9 +18,11 @@ logger = get_module_logger(__name__)
 MAX_IMAGE_SIZE_BYTES = 10 * 1024 * 1024
 MAX_BASE64_SIZE = MAX_IMAGE_SIZE_BYTES * 4 // 3 + 100
 
-# 截图压缩默认参数（供 computer_use 等模块复用）
-COMPRESS_TARGET_HEIGHT = 1080
-COMPRESS_JPEG_QUALITY = 75
+# 截图压缩默认参数：与前端手动截图 / 屏幕分享口径对齐（720p, JPEG quality 80）。
+# 前端已统一把发给后端的画面压到 720p，这里的 vision 分析、后端 pyautogui 兜底
+# 等再压也保持同一档位，避免一边 720 一边 1080 的不一致。
+COMPRESS_TARGET_HEIGHT = 720
+COMPRESS_JPEG_QUALITY = 80
 _LANCZOS = getattr(Image, 'LANCZOS', getattr(Image, 'ANTIALIAS', 1))
 
 LOCAL_MAX_PIXELS = 100_000_000

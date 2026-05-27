@@ -1,7 +1,7 @@
 {
-  "plugin.name": "Slay the Spire 2 Companion",
+  "plugin.name": "Slay the Spire 2 Game Plugin",
   "plugin.description": "Connects to a local Slay the Spire 2 Agent service, reads the game state, and handles autoplay, single-step actions, play suggestions, natural-language commands, soft neko guidance, situation reports, and short live commentary. Currently mainly supports the base-game characters.",
-  "plugin.short_description": "STS2 companion and situation reporting",
+  "plugin.short_description": "STS2 gameplay and situation reporting",
   "tools.sts2_get_status.description": "Read-only access to Slay the Spire connection status, current screen, and basic classification info.",
   "errors.internal": "STS2 plugin internal error: {error}",
   "entries.sts2_health_check.name": "Check whether STS2 is connected",

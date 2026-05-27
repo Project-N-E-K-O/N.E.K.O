@@ -61,6 +61,20 @@
         "enableFailed": "지금은 시작 시 자동 실행을 켤 수 없습니다. 잠시 후 다시 시도해 주세요.",
         "requiresApproval": "먼저 시스템 설정에서 자동 실행을 승인해야 합니다. 승인 후 적용됩니다."
     },
+    "contextPrompt": {
+        "play": {
+            "title": "같이 화면 봐도 될까?",
+            "message": "게임 / 영상 보는 중이구나. 자발적 말걸기의 화면 공유를 켜면 지금 화면에 맞춰 같이 떠들고 태클도 걸 수 있어. 켤까?",
+            "accept": "응, 켜줘",
+            "decline": "지금은 됐어"
+        },
+        "work": {
+            "title": "조용히 하고 화면도 안 볼까?",
+            "message": "집중해서 일하는 것 같네. 자발적 말걸기의 화면 공유 소스를 끌 수 있어. 방해도 안 되고 훔쳐보는 것처럼 보이지도 않게. 끌까?",
+            "accept": "응, 화면 공유 꺼줘",
+            "decline": "아니, 그대로 둬"
+        }
+    },
     "tutorialPrompt": {
         "title": "홈 튜토리얼을 시작할까요?",
         "message": "홈 화면의 핵심 진입점을 빠르게 안내해 드려 N.E.K.O를 가장 짧은 경로로 시작할 수 있게 도와드릴게요.",
@@ -194,6 +208,14 @@
         "uploadReady": "{{itemName}} 업로드 준비 중",
         "pageDescription": "이 페이지에서 캐릭터 카드를 검색·편집·업로드·가져오기/내보내기 하고 Steam 창작마당의 Live2D 모델과 음성을 관리할 수 있습니다",
         "openVoiceClone": "음성 복제에서 열기",
+        "workshopAddCharacterCard": "캐릭터 카드 추가",
+        "workshopAddingCharacterCard": "추가 중...",
+        "unknownCharacterCard": "알 수 없는 캐릭터 카드",
+        "characterCardAlreadyExistsTitle": "캐릭터 카드가 이미 존재함",
+        "characterCardAlreadyExistsMessage": "캐릭터 카드가 이미 존재합니다: {{names}}",
+        "workshopCharacterAdded": "캐릭터 카드가 추가되었습니다: {{names}}",
+        "workshopCharacterNotFound": "이 구독 항목에서 추가할 수 있는 캐릭터 카드를 찾을 수 없습니다. 콘텐츠 다운로드가 완료되었는지 확인해 주세요.",
+        "workshopCharacterAddFailed": "캐릭터 카드 추가 실패: {{error}}",
         "configurePath": "경로 구성",
         "localModPathConfig": "로컬 Mod 경로 구성",
         "localModFolder": "로컬 Mod 폴더 경로",
@@ -397,6 +419,7 @@
         "loadingItemDetailsById": "항목 ID: {{id}}에 대한 세부정보 로드 중...",
         "characterCardsRefreshed": "캐릭터 카드 목록이 새로 고쳐졌습니다. 총 {{count}} 캐릭터 카드입니다.",
         "characterCardsRefreshedEmpty": "캐릭터 카드 목록이 새로 고쳐졌고 사용 가능한 캐릭터 카드가 없습니다.",
+        "characterCardsRefreshFailed": "목록 새로 고침 실패: {{error}}",
         "requiredFieldsMissing": "다음 필수 필드를 작성하십시오: {{fields}}",
         "refreshLive2DPreview": "Live2D 미리보기 새로 고침",
         "removeTag": "태그 제거",
@@ -532,7 +555,7 @@
         "steamNotRunningTitle": "Steam이 실행되지 않음",
         "steamNotRunningMessage": "Steam 클라이언트가 실행되지 않거나 로그인되지 않았습니다.\n\n창작마당 기능을 사용하려면 Steam 클라이언트가 필요합니다:\n1. Steam 클라이언트를 다운로드하여 설치\n2. Steam을 실행하고 계정에 로그인\n3. 이 페이지를 다시 열어주세요",
         "addNewCatgirl": "새 캐릭터 카드 추가",
-        "noCardImage": "여기를 클릭하여\n카드를 설정",
+        "noCardImage": "카드 페이스가 아직 설정되지 않음",
         "searchCharacterCards": "캐릭터 카드 검색...",
         "cardView": "카드 보기",
         "listView": "목록 보기"
@@ -865,7 +888,7 @@
         "coreApiKey": "핵심 API 키",
         "freeVersionHint": "(무료 버전에는 필요하지 않음)",
         "coreApiPlaceholder": "API 키를 입력하세요.",
-        "coreApiProvider": "핵심 API(음성 채팅)",
+        "coreApiProvider": "핵심 API(음성 채팅, 옴니모달 전용)",
         "assistApiProvider": "지원 API(메모리/에이전트/텍스트 채팅/사용자 정의 음성)",
         "saveSettings": "설정 저장",
         "closeSettings": "닫기",
@@ -1163,7 +1186,23 @@
             "modelDataNotReady": "모델 내부 데이터 준비되지 않음",
             "managerNotFound": "Live2DManager를 찾을 수 없음",
             "select": "선택",
-            "defaultClickAnim": "기본 클릭 애니메이션"
+            "defaultClickAnim": "기본 클릭 애니메이션",
+            "customAreaButton": "사용자 지정 영역",
+            "customAreaTitle": "사용자 지정 영역: {{name}}",
+            "newCustomAreaTitle": "사용자 지정 영역 만들기",
+            "editCustomAreaTitle": "사용자 지정 영역 편집",
+            "customAreaName": "영역 이름",
+            "customAreaNameDefault": "사용자 지정 영역 {{index}}",
+            "saveCustomArea": "영역 저장",
+            "editCustomArea": "편집",
+            "deleteCustomArea": "삭제",
+            "deleteCustomAreaConfirmTitle": "사용자 지정 영역 삭제",
+            "deleteCustomAreaConfirm": "\"{{name}}\" 사용자 지정 영역을 삭제할까요? 연결된 동작과 표정도 함께 제거됩니다.",
+            "previewUnavailable": "사용자 지정 영역 미리보기를 열 수 없습니다",
+            "modelBoundsUnavailable": "모델 경계를 읽을 수 없습니다",
+            "selectAreaFirst": "먼저 유효한 영역을 선택하세요",
+            "customAreaCoveredByExisting": "이 영역은 더 먼저 만든 사용자 지정 영역에 완전히 덮여 있습니다",
+            "cancel": "취소"
         },
         "emotionConfig": "감정",
         "saveSettings": "설정 저장",
