@@ -739,12 +739,17 @@ async def _handle_agent_event(event: dict):
                         )
                         continue
                     if isinstance(b64, str) and b64:
-                        if ai_behavior_v2 == "respond":
+                        if ai_behavior_v2 == "respond" and text:
                             # Defer: stream when the manager releases this cue so
                             # the image shares the proactive response's context.
+                            # (Only when there's text — the callback that carries
+                            # these images is built in the ``if text:`` block.)
                             deferred_proactive_images.append(b64)
                             continue
-                        # read (passive): inject now so the next user turn sees it.
+                        # read (passive), OR image-only respond with no text to
+                        # carry it through the pacing manager: inject now so it
+                        # isn't lost (image-only respond has no text cue to drive
+                        # a proactive turn anyway).
                         if stream_image is None:
                             logger.debug(
                                 "[EventBus] image media_part dropped: session=%s has no stream_image",
