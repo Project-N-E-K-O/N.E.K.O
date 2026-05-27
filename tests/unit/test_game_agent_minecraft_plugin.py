@@ -549,8 +549,16 @@ async def test_screenshot_callback_pushes_image_part():
     assert len(pc["parts"]) == 1
     part = pc["parts"][0]
     assert part["type"] == "image"
-    assert part["mime"] == "image/png"
-    assert part["data"] == png_bytes
+    # Frames are now downscaled + re-encoded to JPEG so the pushed payload
+    # stays under the message_plane cap (the old JPEG→lossless-PNG path
+    # ballooned frames to multi-MB and got silently dropped at ingest).
+    assert part["mime"] == "image/jpeg"
+    assert isinstance(part["data"], bytes) and len(part["data"]) > 0
+    # The bytes must be a valid JPEG that round-trips through Pillow.
+    from PIL import Image
+    import io
+    with Image.open(io.BytesIO(part["data"])) as _im:
+        assert _im.format == "JPEG"
 
 
 @pytest.mark.asyncio
