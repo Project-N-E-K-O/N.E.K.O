@@ -157,17 +157,26 @@ async def test_drain_pending_returns_queue_without_delivering():
     assert [c["id"] for c in drained] == ["a", "b"]
     await _settle()
     assert delivered == []           # drained, not delivered by the manager
+    # And the queue really is empty now: opening the gate releases nothing.
+    mgr.on_playback_end()
+    await _settle()
+    assert delivered == []
 
 
-async def test_reset_gate_clears_gate_but_not_dropped_queue():
+async def test_reset_gate_clears_gate_but_keeps_queue():
     delivered = []
     mgr = _make(delivered)
-    mgr.on_playback_start()          # gate closed
-    mgr.reset_gate()                 # clears playing/inflight (queue untouched)
+    mgr.on_playback_start()          # gate closed → cue queues up
+    mgr.submit({"id": "queued"}, priority=2)
+    mgr.reset_gate()                 # clears playing/inflight; queue PRESERVED
+    await _settle()
+    # reset_gate alone does NOT release (it cancels the pump, no auto-pump).
+    assert delivered == []
+    # Next submit re-opens the pump; the preserved cue rides out in the SAME
+    # batch (priority order), proving reset_gate didn't drop the queue.
     mgr.submit({"id": "c"}, priority=1)
     await _settle()
-    # Gate cleared → not playing → the new cue delivers immediately.
-    assert [c["id"] for c in delivered] == ["c"]
+    assert [c["id"] for c in delivered] == ["c", "queued"]
 
 
 async def test_stale_cue_dropped_by_ttl():

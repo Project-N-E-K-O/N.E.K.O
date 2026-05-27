@@ -87,7 +87,7 @@ class ProactiveDeliveryManager:
         *,
         # Receives the WHOLE released batch (list of callback dicts), not a
         # single cue — releases are batched (see _pump / _run_deliver).
-        deliver: Callable[[list], Awaitable[Any]],
+        deliver: Callable[[list[dict]], Awaitable[Any]],
         name: str = "",
         min_gap_s: float = 2.0,
         inflight_timeout_s: float = 12.0,
@@ -300,7 +300,7 @@ class ProactiveDeliveryManager:
         # sooner pump anyway.
         self._schedule_pump(self._inflight_timeout_s)
 
-    async def _run_deliver(self, callbacks: list) -> None:
+    async def _run_deliver(self, callbacks: list[dict]) -> None:
         try:
             await self._deliver(callbacks)
         except Exception:
