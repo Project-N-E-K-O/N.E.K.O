@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
@@ -55,6 +56,11 @@ from plugin.plugins.study_companion.models import (
 )
 from plugin.plugins.study_companion.state import build_initial_state
 from plugin.plugins.study_companion.store import StudyStore
+from plugin.plugins.study_companion import study_capture_backends as study_capture_backends_module
+from plugin.plugins.study_companion.study_capture_backends import (
+    PrintWindowCaptureBackend,
+    PyAutoGuiCaptureBackend,
+)
 from plugin.plugins.study_companion.study_ocr_pipeline import (
     StudyCaptureProfile,
     StudyOcrPipeline,
@@ -172,6 +178,23 @@ class _Ctx:
         self.status_updates.append(dict(status))
 
 
+def _study_push_texts(ctx: _Ctx) -> list[str]:
+    texts: list[str] = []
+    for message in ctx.pushed_messages:
+        if message.get("source") != "study_companion":
+            continue
+        parts = message.get("parts") or []
+        if not parts:
+            continue
+        texts.append(str(parts[0].get("text") or ""))
+    return texts
+
+
+async def _drain_scheduled_events() -> None:
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+
 class _FakeOcrBackend:
     def __init__(self, result):
         self.result = result
@@ -204,6 +227,7 @@ class _FakeTutorAgent:
     def __init__(self) -> None:
         self.inputs: list[tuple[str, dict[str, object], str]] = []
         self.evaluations: list[tuple[str, str, str, dict[str, object], str]] = []
+        self.summaries: list[tuple[list[dict[str, object]], dict[str, object], str]] = []
 
     def update_config(self, config: StudyConfig) -> None:
         self._config = config
@@ -251,6 +275,27 @@ class _FakeTutorAgent:
 
     async def shutdown(self) -> None:
         return None
+
+    async def summarize_session(
+        self,
+        history: list[dict[str, object]],
+        *,
+        mode: str = MODE_COMPANION,
+        context: dict[str, object] | None = None,
+    ) -> TutorReply:
+        self.summaries.append((list(history), dict(context or {}), mode))
+        return TutorReply(
+            operation="summarize_session",
+            input_text="session",
+            reply="Study session summary",
+            payload={
+                "summary": "Study session summary",
+                "key_insight": "Derivative rules improved.",
+                "questions_attempted": 2,
+                "correct_rate": 0.5,
+            },
+            created_at="2026-05-11T00:00:00Z",
+        )
 
 
 def test_study_store_round_trip_and_export(tmp_path: Path) -> None:
@@ -1376,11 +1421,209 @@ def test_study_ocr_pipeline_uses_local_capture_profile() -> None:
     assert profile.bottom_inset_ratio == 0.14
 
 
-def test_study_companion_does_not_import_galgame_ocr_reader_directly() -> None:
+def test_study_companion_does_not_import_galgame_namespace_directly() -> None:
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
-    for path in plugin_dir.glob("*.py"):
+    for path in plugin_dir.rglob("*.py"):
         source = path.read_text(encoding="utf-8")
-        assert "plugin.plugins.galgame_plugin.ocr_reader" not in source
+        assert "plugin.plugins.galgame_plugin" not in source
+
+
+def test_printwindow_capture_uses_hwnd_capture_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    from PIL import Image
+
+    calls: list[tuple[int, tuple[int, int, int, int]]] = []
+
+    def _capture_full_window(hwnd: int, rect: tuple[int, int, int, int]):
+        calls.append((hwnd, rect))
+        return Image.new("RGB", (rect[2] - rect[0], rect[3] - rect[1]))
+
+    monkeypatch.setattr(
+        PrintWindowCaptureBackend,
+        "_capture_full_window",
+        staticmethod(_capture_full_window),
+    )
+    target = SimpleNamespace(
+        hwnd=1234,
+        left=10,
+        top=20,
+        width=100,
+        height=80,
+        is_minimized=False,
+        eligible=True,
+    )
+
+    image = PrintWindowCaptureBackend().capture_frame(
+        target,
+        StudyCaptureProfile(left_inset_ratio=0.0, right_inset_ratio=0.0),
+    )
+
+    assert image.size == (100, 80)
+    assert calls == [(1234, (10, 20, 110, 100))]
+
+
+def test_printwindow_capture_requires_hwnd() -> None:
+    target = SimpleNamespace(
+        hwnd=0,
+        left=10,
+        top=20,
+        width=100,
+        height=80,
+        is_minimized=False,
+        eligible=True,
+    )
+
+    with pytest.raises(RuntimeError, match="target hwnd"):
+        PrintWindowCaptureBackend().capture_frame(target, StudyCaptureProfile())
+
+
+def test_printwindow_capture_releases_window_dc_without_deleting_wrapped_hdc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    previous_bitmap = object()
+
+    class _Bitmap:
+        def CreateCompatibleBitmap(self, _source_dc, width: int, height: int) -> None:
+            calls.append(f"create_bitmap:{width}x{height}")
+
+        def GetInfo(self) -> dict[str, int]:
+            return {"bmWidth": 2, "bmHeight": 2}
+
+        def GetBitmapBits(self, _as_bytes: bool) -> bytes:
+            return b"\x00" * 16
+
+        def GetHandle(self) -> int:
+            return 123
+
+    bitmap = _Bitmap()
+
+    class _MemDc:
+        def SelectObject(self, obj):
+            calls.append("restore_bitmap" if obj is previous_bitmap else "select_bitmap")
+            return previous_bitmap
+
+        def GetSafeHdc(self) -> int:
+            return 456
+
+        def BitBlt(self, *_args) -> None:
+            calls.append("bitblt")
+
+        def DeleteDC(self) -> None:
+            calls.append("mem_delete")
+
+    mem_dc = _MemDc()
+
+    class _SourceDc:
+        def CreateCompatibleDC(self):
+            return mem_dc
+
+        def DeleteDC(self) -> None:
+            calls.append("source_delete")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "win32gui",
+        SimpleNamespace(
+            GetWindowDC=lambda _hwnd: 789,
+            DeleteObject=lambda _handle: calls.append("delete_object"),
+            ReleaseDC=lambda _hwnd, _hdc: calls.append("release_dc"),
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "win32ui",
+        SimpleNamespace(
+            CreateDCFromHandle=lambda _hdc: _SourceDc(),
+            CreateBitmap=lambda: bitmap,
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "win32con", SimpleNamespace(SRCCOPY=1))
+    monkeypatch.setattr(
+        study_capture_backends_module.ctypes,
+        "windll",
+        SimpleNamespace(user32=SimpleNamespace(PrintWindow=lambda *_args: 0)),
+        raising=False,
+    )
+
+    image = PrintWindowCaptureBackend._capture_full_window(1234, (0, 0, 2, 2))
+
+    assert image.size == (2, 2)
+    assert calls == [
+        "create_bitmap:2x2",
+        "select_bitmap",
+        "bitblt",
+        "restore_bitmap",
+        "mem_delete",
+        "delete_object",
+        "release_dc",
+    ]
+    assert "source_delete" not in calls
+
+
+def test_win32_target_window_rect_reads_under_dpi_aware_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[object] = []
+
+    class _User32:
+        def SetThreadDpiAwarenessContext(self, context):
+            value = getattr(context, "value", context)
+            calls.append(value)
+            return 99
+
+    monkeypatch.setattr(study_capture_backends_module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        study_capture_backends_module.ctypes,
+        "windll",
+        SimpleNamespace(user32=_User32()),
+        raising=False,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "win32gui",
+        SimpleNamespace(
+            GetWindowRect=lambda _hwnd: calls.append("get_window_rect")
+            or (10, 20, 110, 100)
+        ),
+    )
+
+    rect = study_capture_backends_module._target_window_rect(
+        SimpleNamespace(hwnd=1234)
+    )
+
+    assert rect == (10, 20, 110, 100)
+    per_monitor_v2 = study_capture_backends_module.ctypes.c_void_p(-4).value
+    assert calls == [per_monitor_v2, "get_window_rect", 99]
+
+
+def test_pyautogui_capture_rejects_secondary_monitor_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    screenshot_calls = 0
+
+    def _screenshot(**_kwargs):
+        nonlocal screenshot_calls
+        screenshot_calls += 1
+
+    monkeypatch.setitem(
+        sys.modules,
+        "pyautogui",
+        SimpleNamespace(size=lambda: (1920, 1080), screenshot=_screenshot),
+    )
+    monkeypatch.setattr(study_capture_backends_module.sys, "platform", "win32")
+    target = SimpleNamespace(
+        hwnd=0,
+        left=2000,
+        top=100,
+        width=400,
+        height=300,
+        is_minimized=False,
+        eligible=True,
+    )
+
+    with pytest.raises(RuntimeError, match="secondary_monitor|spans_across"):
+        PyAutoGuiCaptureBackend().capture_frame(target, StudyCaptureProfile())
+    assert screenshot_calls == 0
 
 
 def test_ocr_pipeline_handles_empty_text_repeats_and_errors() -> None:
@@ -3076,6 +3319,559 @@ async def test_study_status_degrades_when_habit_payload_fails(
         assert status.value["status"] == "ready"
         assert status.value["habit"]["available"] is False
         assert "habit db unavailable" in status.value["habit"]["error"]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_communication_disabled_skips_eventbus(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en"},
+            "study_companion": {"communication": {"enabled": False}},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    try:
+        assert isinstance(result, Ok)
+        status = await plugin.study_neko_communication_status()
+        assert isinstance(status, Ok)
+        assert status.value == {
+            "available": False,
+            "events_emitted": 0,
+            "events_blocked": 0,
+        }
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_screen_classification_change_emits_event(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    monkeypatch.setattr(
+        study_companion_module,
+        "classify_screen_from_ocr",
+        lambda *_args, **_kwargs: ScreenClassification(
+            screen_type="question",
+            confidence=0.95,
+            reason="unit-test",
+        ),
+    )
+    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    try:
+        assert isinstance(result, Ok)
+        for _ in range(3):
+            plugin._update_screen_classification("Question: solve x + 1 = 2")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        texts = _study_push_texts(ctx)
+        assert len(texts) == 1
+        assert "[Screen Context Changed]" in texts[0]
+        assert "question" in texts[0]
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_screen_classification_no_change_skips_duplicate_push(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    monkeypatch.setattr(
+        study_companion_module,
+        "classify_screen_from_ocr",
+        lambda *_args, **_kwargs: ScreenClassification(
+            screen_type="question",
+            confidence=0.95,
+            reason="unit-test",
+        ),
+    )
+    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    try:
+        assert isinstance(result, Ok)
+        for _ in range(4):
+            plugin._update_screen_classification("Question: solve x + 1 = 2")
+        await _drain_scheduled_events()
+
+        assert len(_study_push_texts(ctx)) == 1
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_evaluate_answer_emits_answer_evaluated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    plugin._agent = _FakeTutorAgent()
+    try:
+        evaluated = await plugin.study_evaluate_answer(
+            question="What is a derivative?",
+            answer="A slope.",
+        )
+
+        assert isinstance(evaluated, Ok)
+        await _drain_scheduled_events()
+        texts = _study_push_texts(ctx)
+        assert any("[Answer Evaluated]" in text for text in texts)
+        assert any("What is a derivative?" in text for text in texts)
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_evaluate_answer_mastery_lookup_failure_is_best_effort(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _TopicTrackingAgent(_FakeTutorAgent):
+        async def answer_evaluate(
+            self,
+            *,
+            question: str = "",
+            answer: str = "",
+            expected_answer: str = "",
+            mode: str = MODE_COMPANION,
+            context: dict[str, object] | None = None,
+        ) -> TutorReply:
+            self.evaluations.append(
+                (question, answer, expected_answer, dict(context or {}), mode)
+            )
+            return TutorReply(
+                operation="answer_evaluate",
+                input_text=answer,
+                reply="evaluated",
+                payload={
+                    "verdict": "partial",
+                    "score": 50,
+                    "topic": "derivatives",
+                    "feedback": "review derivative rules",
+                },
+                created_at="2026-05-11T00:00:00Z",
+            )
+
+        async def knowledge_track(
+            self,
+            *,
+            mode: str = MODE_COMPANION,
+            context: dict[str, object] | None = None,
+        ) -> TutorReply:
+            return TutorReply(
+                operation="knowledge_track",
+                input_text=str((context or {}).get("input_text") or ""),
+                reply="derivatives",
+                payload={"topic": "derivatives"},
+                created_at="2026-05-11T00:00:00Z",
+            )
+
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    plugin.logger = ctx.logger
+    plugin._agent = _TopicTrackingAgent()
+
+    def _fail_get_mastery(_topic: str) -> float:
+        raise RuntimeError("mastery read failed")
+
+    original_on_answer = plugin._knowledge_tracker.on_answer
+    on_answer_topics: list[str] = []
+
+    def _record_on_answer(**kwargs):
+        on_answer_topics.append(str(kwargs.get("topic_id") or ""))
+        return original_on_answer(**kwargs)
+
+    monkeypatch.setattr(plugin._knowledge_tracker, "get_mastery", _fail_get_mastery)
+    monkeypatch.setattr(plugin._knowledge_tracker, "on_answer", _record_on_answer)
+    try:
+        evaluated = await plugin.study_evaluate_answer(
+            question="What is a derivative?",
+            expected_answer="A rate of change.",
+            answer="A slope.",
+        )
+
+        assert isinstance(evaluated, Ok)
+        assert on_answer_topics == ["derivatives"]
+        await _drain_scheduled_events()
+        assert any("[Answer Evaluated]" in text for text in _study_push_texts(ctx))
+        warnings = [str(args[0]) for args, _kwargs in ctx.logger.warnings]
+        assert any(
+            "study knowledge tracker mastery-before read failed" in item
+            for item in warnings
+        )
+        assert any(
+            "study knowledge tracker mastery-after read failed" in item
+            for item in warnings
+        )
+        assert any(
+            "study answer mastery enrichment failed" in item for item in warnings
+        )
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_memory_review_emits_answer_evaluated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    try:
+        assert isinstance(result, Ok)
+        deck = plugin._memory_deck_store.create_deck(
+            name="Exam Words", deck_type="word", language="en"
+        )
+        item = plugin._memory_deck_store.add_word(
+            deck_id=deck["id"],
+            word="abandon",
+            meaning="give up",
+        )["item"]
+
+        reviewed = await plugin.study_memory_review_item(
+            item_id=item["id"], rating="good", correct=True
+        )
+
+        assert isinstance(reviewed, Ok)
+        await _drain_scheduled_events()
+        assert any("[Answer Evaluated]" in text for text in _study_push_texts(ctx))
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_memory_review_event_failure_does_not_fail_review(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    try:
+        assert isinstance(result, Ok)
+        plugin.logger = ctx.logger
+        deck = plugin._memory_deck_store.create_deck(
+            name="Exam Words", deck_type="word", language="en"
+        )
+        item = plugin._memory_deck_store.add_word(
+            deck_id=deck["id"],
+            word="abandon",
+            meaning="give up",
+        )["item"]
+
+        async def _fail_emit(_payload: dict[str, object]) -> None:
+            raise RuntimeError("event enrichment failed")
+
+        plugin._emit_memory_review_answer_event = _fail_emit  # type: ignore[method-assign]
+
+        reviewed = await plugin.study_memory_review_item(
+            item_id=item["id"], rating="good", correct=True
+        )
+
+        assert isinstance(reviewed, Ok)
+        assert reviewed.value["review_record"]["item_id"] == item["id"]
+        assert any(
+            "memory review event emission degraded" in str(args[0])
+            for args, _kwargs in ctx.logger.warnings
+        )
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_review_due_background_task_emits_without_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    monkeypatch.setattr(
+        study_companion_module,
+        "_REVIEW_DUE_INTERVAL_SECONDS",
+        0.01,
+    )
+    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    try:
+        assert isinstance(result, Ok)
+        assert plugin._review_due_task is not None
+        assert not plugin._review_due_task.done()
+        deck = plugin._memory_deck_store.create_deck(
+            name="Exam Words", deck_type="word", language="en"
+        )
+        plugin._memory_deck_store.add_word(
+            deck_id=deck["id"],
+            word="abandon",
+            meaning="give up",
+        )
+
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            await _drain_scheduled_events()
+            if any("[Review Due]" in text for text in _study_push_texts(ctx)):
+                break
+            await asyncio.sleep(0.02)
+        else:
+            pytest.fail("timed out waiting for review due push")
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_review_due_event_includes_knowledge_tracker_cards(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    try:
+        assert isinstance(result, Ok)
+        await plugin._cancel_review_due_task()
+        plugin._store.ensure_topic(
+            topic_id="derivatives",
+            name="Derivatives",
+            subject="math",
+            chapter="calculus",
+        )
+        card = plugin._knowledge_tracker.fsrs.new_knowledge_card(
+            "derivatives"
+        ).to_dict()
+        plugin._store.upsert_fsrs_card(
+            topic_id="derivatives", card=card, last_rating=0
+        )
+
+        await plugin._emit_review_due_if_needed()
+        await _drain_scheduled_events()
+
+        texts = _study_push_texts(ctx)
+        assert any("[Review Due]" in text for text in texts)
+        assert any("Derivatives" in text for text in texts)
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_status_does_not_drive_review_due_emission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    try:
+        assert isinstance(result, Ok)
+        await plugin._cancel_review_due_task()
+        calls = 0
+
+        async def _count_review_due() -> None:
+            nonlocal calls
+            calls += 1
+
+        plugin._emit_review_due_if_needed = (  # type: ignore[method-assign]
+            _count_review_due
+        )
+
+        status = await plugin.study_status()
+
+        assert isinstance(status, Ok)
+        assert calls == 0
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_recitation_emits_answer_evaluated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    try:
+        assert isinstance(result, Ok)
+        deck = plugin._memory_deck_store.create_deck(name="Texts", deck_type="passage")
+        imported = plugin._memory_deck_store.import_passage(
+            deck_id=deck["id"],
+            title="Short Text",
+            text="First sentence. Second sentence.",
+        )
+
+        recited = await plugin.study_memory_recitation_attempt(
+            item_id=imported["items"][0]["id"],
+            user_input_text="First sentence.",
+        )
+
+        assert isinstance(recited, Ok)
+        await _drain_scheduled_events()
+        assert any("[Answer Evaluated]" in text for text in _study_push_texts(ctx))
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_summarize_session_emits_event(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    plugin._agent = _FakeTutorAgent()
+    try:
+        summarized = await plugin.study_summarize_session()
+
+        assert isinstance(summarized, Ok)
+        await _drain_scheduled_events()
+        texts = _study_push_texts(ctx)
+        assert any("[Session Summarized]" in text for text in texts)
+        assert any("Derivative rules improved." in text for text in texts)
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_session_summarized_falls_back_to_answer_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    try:
+        assert isinstance(result, Ok)
+        with plugin._lock:
+            plugin._state.session_summary_seed = {
+                "answer_count": 3,
+                "question_count": 5,
+                "verdict_counts": {"correct": 2},
+                "last_topic": "Derivatives",
+            }
+
+        await plugin._emit_session_summarized_event(
+            {
+                "duration_minutes": "12.5",
+                "questions_attempted": "two",
+                "summary": "Answered supplied derivative questions.",
+            }
+        )
+        await _drain_scheduled_events()
+
+        texts = _study_push_texts(ctx)
+        assert any("12 min" in text for text in texts)
+        assert any("3 question(s)" in text for text in texts)
+        assert any("67%" in text for text in texts)
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_evaluate_answer_emits_mastery_updated_on_threshold_cross(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _CorrectTrackingAgent(_FakeTutorAgent):
+        async def answer_evaluate(
+            self,
+            *,
+            question: str = "",
+            answer: str = "",
+            expected_answer: str = "",
+            mode: str = MODE_COMPANION,
+            context: dict[str, object] | None = None,
+        ) -> TutorReply:
+            self.evaluations.append(
+                (question, answer, expected_answer, dict(context or {}), mode)
+            )
+            return TutorReply(
+                operation="answer_evaluate",
+                input_text=answer,
+                reply="Correct.",
+                payload={
+                    "verdict": "correct",
+                    "score": 100,
+                    "feedback": "Correct.",
+                },
+                created_at="2026-05-11T00:00:00Z",
+            )
+
+        async def knowledge_track(
+            self,
+            *,
+            mode: str = MODE_COMPANION,
+            context: dict[str, object] | None = None,
+        ) -> TutorReply:
+            return TutorReply(
+                operation="knowledge_track",
+                input_text=str((context or {}).get("input_text") or ""),
+                reply="derivatives",
+                payload={"topic": "derivatives"},
+                created_at="2026-05-11T00:00:00Z",
+            )
+
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    plugin._agent = _CorrectTrackingAgent()
+    try:
+        plugin._store.ensure_topic(topic_id="derivatives", name="Derivatives")
+
+        evaluated = await plugin.study_evaluate_answer(
+            question="What is d/dx x^2?",
+            expected_answer="2x",
+            answer="2x",
+        )
+
+        assert isinstance(evaluated, Ok)
+        await _drain_scheduled_events()
+        texts = _study_push_texts(ctx)
+        assert any("[Mastery Updated]" in text for text in texts)
     finally:
         await plugin.shutdown()
 

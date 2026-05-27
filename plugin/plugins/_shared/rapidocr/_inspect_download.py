@@ -10,8 +10,6 @@ from typing import Any, Awaitable, Callable
 
 import httpx
 
-from .memory_reader import is_windows_platform
-
 from ._model_registry import (
     DEFAULT_RAPIDOCR_ENGINE_TYPE,
     DEFAULT_RAPIDOCR_LANG_TYPE,
@@ -25,6 +23,7 @@ from ._model_registry import (
 )
 from ._paths import (
     _rapidocr_install_state_path,
+    is_windows_platform,
     resolve_rapidocr_install_target,
     resolve_rapidocr_model_cache_dir,
     resolve_rapidocr_runtime_dir,
@@ -40,16 +39,35 @@ def inspect_rapidocr_installation(
     lang_type: str = DEFAULT_RAPIDOCR_LANG_TYPE,
     model_type: str = DEFAULT_RAPIDOCR_MODEL_TYPE,
     ocr_version: str = DEFAULT_RAPIDOCR_OCR_VERSION,
+    plugin_id: str,
     platform_fn: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     checker = platform_fn or is_windows_platform
     supported = bool(checker())
-    target_dir = resolve_rapidocr_install_target(install_target_dir_raw)
-    runtime_dir = resolve_rapidocr_runtime_dir(install_target_dir_raw)
-    site_packages_dir = resolve_rapidocr_site_packages_dir(install_target_dir_raw)
-    model_cache_dir = resolve_rapidocr_model_cache_dir(install_target_dir_raw)
-    package_dir = _runtime._rapidocr_package_dir(install_target_dir_raw)
-    install_state_path = _rapidocr_install_state_path(install_target_dir_raw)
+    target_dir = resolve_rapidocr_install_target(
+        install_target_dir_raw,
+        plugin_id=plugin_id,
+    )
+    runtime_dir = resolve_rapidocr_runtime_dir(
+        install_target_dir_raw,
+        plugin_id=plugin_id,
+    )
+    site_packages_dir = resolve_rapidocr_site_packages_dir(
+        install_target_dir_raw,
+        plugin_id=plugin_id,
+    )
+    model_cache_dir = resolve_rapidocr_model_cache_dir(
+        install_target_dir_raw,
+        plugin_id=plugin_id,
+    )
+    package_dir = _runtime._rapidocr_package_dir(
+        install_target_dir_raw,
+        plugin_id=plugin_id,
+    )
+    install_state_path = _rapidocr_install_state_path(
+        install_target_dir_raw,
+        plugin_id=plugin_id,
+    )
     selected_model = rapidocr_selected_model_name(
         ocr_version=ocr_version,
         lang_type=lang_type,
@@ -71,8 +89,7 @@ def inspect_rapidocr_installation(
         except (OSError, ValueError, TypeError):
             install_state = {}
 
-    # rapidocr-onnxruntime is now bundled into the main program (see
-    # pyproject.toml [dependency-groups] galgame). Treat either source as
+    # rapidocr-onnxruntime is now bundled into the main program. Treat either source as
     # "package present": main interpreter import OR legacy plugin-isolated dir.
     bundled_spec = None
     try:
@@ -102,6 +119,7 @@ def inspect_rapidocr_installation(
             ocr_version=ocr_version,
             lang_type=lang_type,
             model_type=model_type,
+            plugin_id=plugin_id,
         )
         if missing:
             detail = "missing_model_files"
@@ -119,6 +137,7 @@ def inspect_rapidocr_installation(
                 lang_type=lang_type,
                 model_type=model_type,
                 ocr_version=ocr_version,
+                plugin_id=plugin_id,
             )
             detected_path = str(runtime_meta.get("detected_path") or detected_path)
             detail = "installed"
@@ -133,6 +152,7 @@ def inspect_rapidocr_installation(
                 ocr_version=ocr_version,
                 lang_type=lang_type,
                 model_type=model_type,
+                plugin_id=plugin_id,
             )
             if legacy_missing:
                 detail = "missing_model_files"
@@ -146,14 +166,14 @@ def inspect_rapidocr_installation(
         ocr_version=ocr_version,
         lang_type=lang_type,
         model_type=model_type,
+        plugin_id=plugin_id,
     )
     total_size_estimate = sum(int(f.get("size") or 0) for f in missing_files)
     return {
         "install_supported": supported,
         "installed": installed,
-        # rapidocr-onnxruntime is now bundled into the main program (see
-        # pyproject.toml [dependency-groups] galgame). When it's not importable
-        # the user is on a source install without `uv sync --group galgame` —
+        # rapidocr-onnxruntime is now bundled into the main program. When it's not importable
+        # the user is on a source install without the optional OCR dependency group —
         # no in-app install action exists anymore (HTTP routes removed in this
         # refactor), so `can_install` stays False to keep the UI button hidden.
         "can_install": False,
@@ -173,6 +193,7 @@ def inspect_rapidocr_installation(
         "ocr_version": ocr_version,
         "detail": detail,
         "runtime_error": runtime_error,
+        "install_state": install_state,
         "missing_model_files": missing_files,
         "missing_model_total_size": total_size_estimate,
         "model_download_source": _RAPIDOCR_MODELSCOPE_BASE,
@@ -182,6 +203,11 @@ def inspect_rapidocr_installation(
 # ====== Model download ======
 
 ProgressCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
+InstallStateUpdater = Callable[..., dict[str, object]]
+
+
+def _noop_install_state_updater(*_args: Any, **_kwargs: Any) -> dict[str, object]:
+    return {}
 
 
 async def _emit_model_progress(
@@ -220,9 +246,10 @@ async def download_rapidocr_models(
     timeout_seconds: float = 180.0,
     force: bool = False,
     task_id: str | None = None,
-    plugin_id: str = "galgame_plugin",
+    plugin_id: str,
     progress_callback: ProgressCallback | None = None,
     before_completed_callback: Callable[[], Awaitable[None] | None] | None = None,
+    install_state_updater: InstallStateUpdater | None = None,
 ) -> dict[str, Any]:
     """Download all model files required for the (ocr_version, lang_type) selection.
 
@@ -233,7 +260,23 @@ async def download_rapidocr_models(
     Failures preserve specific error text (HTTP status, timeout, network) so
     the UI can show actionable copy.
     """
-    from .install_tasks import update_install_task_state  # local import: avoid cycle
+    if task_id and install_state_updater is None:
+        logger.warning(
+            "rapidocr model download has task_id but no install state updater; progress will not persist"
+        )
+    raw_update_install_task_state = install_state_updater or _noop_install_state_updater
+
+    def update_install_task_state(*args: Any, **kwargs: Any) -> dict[str, object]:
+        try:
+            return raw_update_install_task_state(*args, **kwargs)
+        except Exception:  # noqa: BLE001 - progress persistence must not break downloads.
+            logger.warning(
+                "rapidocr model download install state update failed for task_id=%s plugin_id=%s",
+                args[0] if args else kwargs.get("task_id", ""),
+                plugin_id,
+                exc_info=True,
+            )
+            return {}
 
     async def _before_completed() -> None:
         if before_completed_callback is None:
@@ -250,7 +293,10 @@ async def download_rapidocr_models(
         except Exception:  # noqa: BLE001
             logger.warning("failed to run rapidocr_models completion callback", exc_info=True)
 
-    cache_dir = resolve_rapidocr_model_cache_dir(install_target_dir_raw)
+    cache_dir = resolve_rapidocr_model_cache_dir(
+        install_target_dir_raw,
+        plugin_id=plugin_id,
+    )
     if not cache_dir:
         raise RuntimeError("missing RapidOCR model cache directory")
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -260,6 +306,7 @@ async def download_rapidocr_models(
         ocr_version=ocr_version,
         lang_type=lang_type,
         model_type=model_type,
+        plugin_id=plugin_id,
     )
     if not required:
         await _before_completed_safely()
@@ -343,7 +390,7 @@ async def download_rapidocr_models(
             url = str(spec["url"])
             headers = {
                 "Accept": "application/octet-stream",
-                "User-Agent": "N.E.K.O/galgame_plugin",
+                "User-Agent": f"N.E.K.O/{plugin_id}",
             }
             source_label = "ModelScope"
             running_message = (

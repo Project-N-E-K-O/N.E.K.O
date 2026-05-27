@@ -78,9 +78,9 @@ from .aihong_state import (
     matches_aihong_target as _matches_aihong_target_info,
     normalize_aihong_choice_box_text as _normalize_aihong_choice_box_text,
 )
-from .rapidocr_support import (
-    inspect_rapidocr_installation,
-    load_rapidocr_runtime,
+from plugin.plugins._shared.rapidocr.rapidocr_support import (
+    inspect_rapidocr_installation as _inspect_rapidocr_installation,
+    load_rapidocr_runtime as _load_rapidocr_runtime,
 )
 from .reader import normalize_text
 from .screen_classifier import (
@@ -102,7 +102,6 @@ from .ocr_runtime_types import *
 from .ocr_backend_interface import *
 
 from .ocr_capture_backends import *
-
 from .ocr_rapidocr_backend import *
 from .ocr_input_hooks import *
 from .ocr_window_scanner import (
@@ -118,6 +117,16 @@ from .ocr_manager_text import TextMixin
 from .ocr_manager_poll import PollMixin
 from .ocr_manager_observe import ObserveMixin
 from .ocr_manager_runtime import RuntimeMixin
+
+
+def inspect_rapidocr_installation(**kwargs):
+    kwargs.setdefault("plugin_id", "galgame_plugin")
+    return _inspect_rapidocr_installation(**kwargs)
+
+
+def load_rapidocr_runtime(**kwargs):
+    kwargs.setdefault("plugin_id", "galgame_plugin")
+    return _load_rapidocr_runtime(**kwargs)
 
 
 def _coerce_vision_input_size(value: object) -> tuple[int, int]:

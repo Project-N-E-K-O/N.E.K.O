@@ -6,6 +6,8 @@
     "entries.open_ui.description":  "返回 study_companion 静态 UI 的访问路径。",
     "entries.status.name":  "伴学状态",
     "entries.status.description":  "返回运行状态、依赖状态和最近的伴学互动。",
+    "entries.neko_communication_status.name":  "猫娘实时通信状态",
+    "entries.neko_communication_status.description":  "返回猫娘实时通信是否启用。",
     "entries.dependency_status.name":  "OCR 依赖状态",
     "entries.dependency_status.description":  "检测 study_companion 使用的 RapidOCR、Tesseract 和截图依赖。",
     "entries.ocr_snapshot.name":  "OCR 快照",

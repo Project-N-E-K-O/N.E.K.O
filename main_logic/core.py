@@ -39,7 +39,9 @@ from main_logic.tool_calling import (
     ToolResult,
 )
 from utils.llm_client import AIMessage
-from main_logic.session_state import SessionStateMachine, SessionEvent
+from main_logic.session_state import SessionStateMachine, SessionEvent, ProactivePhase
+from main_logic.lifecycle_bus import LifecycleEventBus
+from main_logic.proactive_delivery import ProactiveDeliveryManager
 from main_logic.agent_event_bus import (
     dispatch_text_user_message,
     dispatch_user_utterance,
@@ -791,8 +793,44 @@ class LLMSessionManager:
         self.pending_extra_replies: list[dict] = []
         # 结构化 agent 任务回调队列（用于按会话类型注入）
         self.pending_agent_callbacks: list[dict] = []
+        # ── Proactive delivery front stage ───────────────────────────────
+        # Generic, plugin-agnostic pacing/ordering for proactive cues
+        # (push_message ai_behavior="respond" + agent task results). The
+        # manager OWNS waiting cues and decides which/when to hand one off
+        # into enqueue_agent_callback + trigger_agent_callbacks below; it
+        # does not replace pending_agent_callbacks (which stays the
+        # race-tested delivery buffer). ``_voice_playback_active`` is set by
+        # the FRONTEND-reported voice_play_start/end signals so the voice
+        # inject gate keys off ACTUAL audio playback completion rather than
+        # the realtime API's response.done (generation, not playback).
+        self.lifecycle_bus = LifecycleEventBus(name=self.lanlan_name)
+        self._voice_playback_active = False
+        # When playback started (monotonic). Used to time-bound the gate so a
+        # missing voice_play_end (frontend disconnect/refresh mid-playback)
+        # can't wedge proactive delivery forever — see _is_voice_playing().
+        self._voice_playback_started_ts = 0.0
+        self.proactive_manager = ProactiveDeliveryManager(
+            deliver=self._deliver_proactive_batch,
+            name=self.lanlan_name,
+            can_release=self._can_release_proactive,
+        )
+        self.lifecycle_bus.subscribe("voice_play_start", self.proactive_manager.on_playback_start)
+        self.lifecycle_bus.subscribe("voice_play_end", self.proactive_manager.on_playback_end)
+        self.lifecycle_bus.subscribe("text_start", self.proactive_manager.on_text_start)
+        self.lifecycle_bus.subscribe("text_end", self.proactive_manager.on_text_end)
         # 防止 trigger_agent_callbacks 和 finish_proactive_delivery 并发写 WS/sync_message_queue
         self._proactive_write_lock = asyncio.Lock()
+        # Serializes the voice-mode proactive inject path. trigger_agent_callbacks
+        # is fired via asyncio.create_task from multiple sites (EventBus per-
+        # callback scheduling, _finalize_turn_after_emit, start_session), so two
+        # tasks can race: both pass the (phase / is_active_response) gate before
+        # either sends, then both inject the SAME snapshot → duplicate
+        # conversation.item.create and a response_already_active on the second
+        # response.create. The voice branch holds this lock across
+        # gate-check → render → inject → prune and re-filters the queue inside,
+        # making check-and-claim atomic. (Text mode uses the SM's
+        # try_start_proactive claim instead; voice deliberately bypasses the SM.)
+        self._voice_proactive_inject_lock = asyncio.Lock()
         # ── Session takeover ──────────────────────────────────────────
         # 当某个外部 controller 接管这个 session 时，本地 chat LLM 的输出
         # （text/audio delta、output transcript、response.complete、
@@ -4013,6 +4051,11 @@ class LLMSessionManager:
         # 标记正在启动（使用计数器，避免并发 start_session 的 finally 互相覆盖）
         self._starting_session_count += 1
         self._starting_input_mode = input_mode
+        # 干净的播放门控：清掉上一会话可能残留的 playback flag / manager 队列
+        # （前端中途断线/刷新导致 voice_play_end 丢失时尤为重要）。放在熔断早退
+        # 与 "正在启动中" 去重早退 *之后*——那些早退不会真正起新 session，提前
+        # reset 会误清掉仍在播放的旧会话门控（Codex P1）。这里已确定要起新会话。
+        self._reset_proactive_gate()
         # 首次 start_session 起算，让 idle reset loop 永久存活
         self._ensure_idle_session_reset_loop()
         # rebase idle 计时基准：last_user_activity_time 是 manager 状态、跨 session 持久。
@@ -5548,15 +5591,274 @@ class LLMSessionManager:
             )
             return
 
-        # Voice mode 走 hot-swap，不进 SM proactive 流水线。Drop only the
-        # proactive cbs from the queue; passive cbs stay for the next drain.
+        # Voice mode：直接 conversation.item.create(role=user) + response.create，
+        # 让 LLM 立即用本角色嗓音主动回应 proactive callback，不等用户开口。
+        #
+        # Gate：realtime API 同一时刻只允许一个 active response。如果 user 正在
+        # 说话（server-VAD 触发 → 自动 response.create）或上一个 response 还
+        # 没结束（含 prompt_ephemeral 走的 fudge response），client 再发
+        # response.create 会被 reject。phase != IDLE 时说明 text-mode proactive
+        # 流水线在跑，也跳。两条都不满足时 callbacks 留在队列，等
+        # _finalize_turn_after_emit 在 response.done 之后重新调用本函数重试。
         if isinstance(self.session, OmniRealtimeClient):
-            self.pending_agent_callbacks = [
-                cb for cb in self.pending_agent_callbacks
-                if cb.get("delivery_mode") == "passive"
-            ]
-            logger.debug("[%s] trigger_agent_callbacks: voice mode, deferring to hot-swap", self.lanlan_name)
-            return
+            # Serialize the whole check-and-claim against concurrent trigger
+            # tasks (see ``_voice_proactive_inject_lock``). Hold the lock across
+            # gate → render → inject → prune; a second task blocks here and,
+            # once it acquires, re-filters the (now-pruned) queue and finds
+            # nothing left to send.
+            async with self._voice_proactive_inject_lock:
+                # Read the session INSIDE the lock — start_session / end_session
+                # / hot-swap may have swapped or torn it down while we waited
+                # for the lock. Re-check the type; if it's no longer a voice
+                # session, bail (a text-mode path / no session shouldn't be
+                # driven from this branch). Using the lock-time instance for
+                # gate + inject avoids injecting into a closing old session.
+                voice_sess = self.session
+                if not isinstance(voice_sess, OmniRealtimeClient):
+                    return
+                # Re-filter inside the lock: a concurrent task may have already
+                # injected+pruned these cbs while we waited on the lock.
+                proactive_cbs = [
+                    cb for cb in self.pending_agent_callbacks
+                    if cb.get("delivery_mode") != "passive"
+                ]
+                if not proactive_cbs:
+                    return
+                # Playback-aware gate: ``_voice_playback_active`` is True
+                # between the FRONTEND's voice_play_start and voice_play_end,
+                # i.e. while buffered audio is still AUDIBLY playing — which
+                # outlasts the realtime API's response.done (generation end).
+                # Injecting then makes her interrupt herself, so defer; the
+                # voice_play_end signal re-fires this and the manager releases
+                # the next cue only once she has truly stopped talking.
+                if (
+                    self.state.phase is not ProactivePhase.IDLE
+                    or voice_sess.is_active_response()
+                    or self._is_voice_playing()
+                ):
+                    logger.debug(
+                        "[%s] trigger_agent_callbacks: voice session busy (phase=%s, active_response=%s, playback=%s); deferring proactive (n=%d)",
+                        self.lanlan_name,
+                        self.state.phase.value,
+                        voice_sess.is_active_response(),
+                        self._voice_playback_active,
+                        len(proactive_cbs),
+                    )
+                    return
+
+                _lang = normalize_language_code(self.user_language, format='short')
+                instruction = _build_callback_instruction(
+                    proactive_cbs,
+                    lang=_lang,
+                    lanlan_name=self.lanlan_name,
+                    master_name=self.master_name,
+                    passive=False,
+                )
+                voice_snapshot = list(proactive_cbs)
+                # Snapshot the paired extras entries NOW (before prune) so the
+                # rejection handler can restore BOTH queues if the server
+                # rejects asynchronously.
+                delivered_ids = {
+                    cb.get("_callback_delivery_id")
+                    for cb in voice_snapshot
+                    if cb.get("_callback_delivery_id")
+                }
+                voice_extra_snapshot = [
+                    extra for extra in self.pending_extra_replies
+                    if extra.get("_callback_delivery_id") in delivered_ids
+                ]
+
+                # Server-side rejection of ``response.create`` (e.g.
+                # ``response_already_active`` from a VAD race winning between
+                # our gate check and our send) is delivered asynchronously as
+                # an ``error`` event, not via this call's return value or an
+                # exception — and ``handle_messages`` can dispatch it WHILE we
+                # are still awaiting ``inject_text_and_request_response`` (i.e.
+                # BEFORE the optimistic prune below runs). The handler must
+                # survive both orderings:
+                #   (a) reject fires DURING the await (cb still in the queue):
+                #       set ``_rejected`` so the post-await code SKIPS the prune
+                #       — otherwise the success prune would delete a cb the
+                #       server refused. Do NOT re-add here (it's still present).
+                #   (b) reject fires AFTER the trigger returned + pruned (cb
+                #       gone): re-add to BOTH queues by id (dedup-guarded) and,
+                #       if idle, re-fire trigger so it doesn't wait for the next
+                #       unrelated response.done.
+                # The dedup-by-presence check distinguishes the two: present →
+                # case (a) (skip re-add, rely on skip-prune); absent → case (b).
+                lanlan_name_snapshot = self.lanlan_name
+                _reject_state = {"rejected": False}
+
+                def _on_voice_inject_rejected(
+                    error_msg: str,
+                    _snapshot=voice_snapshot,
+                    _extra_snapshot=voice_extra_snapshot,
+                    _lanlan=lanlan_name_snapshot,
+                    _state=_reject_state,
+                ) -> None:
+                    _state["rejected"] = True
+                    logger.warning(
+                        "[%s] voice proactive inject rejected by server: %s; re-enqueuing %d cb(s) for retry",
+                        _lanlan, error_msg, len(_snapshot),
+                    )
+                    # Restore BOTH queues in lockstep — only entries whose
+                    # delivery_id is not already present. Present means the
+                    # optimistic prune hasn't run yet (case a): leave them and
+                    # let the post-await ``_rejected`` check skip the prune.
+                    existing_cb_ids = {
+                        cb.get("_callback_delivery_id")
+                        for cb in self.pending_agent_callbacks
+                        if cb.get("_callback_delivery_id")
+                    }
+                    # Object-identity fallback, symmetric with the success-path
+                    # prune: an unstamped cb (no _callback_delivery_id, e.g. a
+                    # future caller bypassing enqueue_agent_callback) would
+                    # otherwise fail the id-based dedup and get re-appended even
+                    # when it's still in the queue (case a) — then skip-prune
+                    # keeps both copies → double-delivery on retry. Dedup such
+                    # entries by Python id().
+                    existing_cb_obj_ids = {id(cb) for cb in self.pending_agent_callbacks}
+                    existing_extra_ids = {
+                        extra.get("_callback_delivery_id")
+                        for extra in self.pending_extra_replies
+                        if extra.get("_callback_delivery_id")
+                    }
+                    for cb in _snapshot:
+                        cb_id = cb.get("_callback_delivery_id")
+                        if (cb_id and cb_id in existing_cb_ids) or (
+                            not cb_id and id(cb) in existing_cb_obj_ids
+                        ):
+                            continue
+                        self.pending_agent_callbacks.append(cb)
+                        if cb_id:
+                            existing_cb_ids.add(cb_id)
+                        else:
+                            existing_cb_obj_ids.add(id(cb))
+                    for extra in _extra_snapshot:
+                        extra_id = extra.get("_callback_delivery_id")
+                        if extra_id and extra_id in existing_extra_ids:
+                            continue
+                        self.pending_extra_replies.append(extra)
+                    # Do NOT immediately re-fire trigger here. The dominant
+                    # rejection is ``response_already_active``, which by
+                    # definition means an active response exists — but the
+                    # client may not have processed its ``response.created``
+                    # yet, so ``is_active_response()`` reads a STALE False. A
+                    # re-fire on that stale state would re-inject → re-reject →
+                    # tight loop until state flips (Codex P1). Instead rely on
+                    # the retry guaranteed by that active response's
+                    # ``response.done`` → ``handle_response_complete`` →
+                    # ``_finalize_turn_after_emit`` (which re-calls this when
+                    # ``pending_agent_callbacks`` is non-empty). The cb is kept
+                    # queued above, so the retry is not lost — just deferred to
+                    # the loop-free turn-end hook.
+
+                # Stream any images carried by these cues into the (guaranteed)
+                # voice session right before inject, so the proactive response
+                # sees the matching visual context (Codex P2).
+                if not await self._stream_cb_media(voice_snapshot, voice_sess):
+                    # A media stream failed — DEFER the whole inject so this cb
+                    # retries WITH its image rather than being delivered
+                    # text-only and pruned (which would lose the retained
+                    # media). cbs are still in pending_agent_callbacks (not yet
+                    # pruned). The manager already emptied its queue and its
+                    # inflight timeout only pumps manager-queued items, and no
+                    # response.create fired (so no response.done / voice_play_end
+                    # to re-drive trigger) — so re-arm a delayed retry here,
+                    # otherwise a transient media/WS failure leaves the cue
+                    # waiting for an unrelated user turn (Codex P2).
+                    logger.info(
+                        "[%s] trigger_agent_callbacks: proactive media stream failed; deferring voice inject (%d cb kept, retry armed)",
+                        self.lanlan_name, len(voice_snapshot),
+                    )
+                    self._schedule_proactive_retry(self.proactive_manager.min_gap_s)
+                    return
+                try:
+                    await voice_sess.inject_text_and_request_response(
+                        instruction, on_rejected=_on_voice_inject_rejected
+                    )
+                except NotImplementedError:
+                    # Defensive fallback. As of now every realtime provider
+                    # (OpenAI / GLM / Step / free / GPT / Qwen / Grok via
+                    # conversation.item.create, Gemini via send_client_content)
+                    # supports manual inject, so this branch is unreachable in
+                    # practice — kept so a hypothetical future provider that
+                    # raises NotImplementedError degrades to hot-swap instead of
+                    # losing the cb. Drop the proactive cbs so they don't loop
+                    # forever, but keep ``pending_extra_replies`` populated for
+                    # the next user-turn prime_context() drain.
+                    voice_ids = {id(cb) for cb in voice_snapshot}
+                    self.pending_agent_callbacks = [
+                        cb for cb in self.pending_agent_callbacks
+                        if id(cb) not in voice_ids
+                    ]
+                    logger.info(
+                        "[%s] trigger_agent_callbacks: voice provider does not support manual inject; falling back to hot-swap (n=%d)",
+                        self.lanlan_name, len(voice_snapshot),
+                    )
+                    return
+                except Exception as exc:
+                    # WS error / fatal / response_already_active race — keep cbs
+                    # in the queue so the next phase-idle hook retries them.
+                    logger.warning(
+                        "[%s] trigger_agent_callbacks: voice proactive inject failed: %s; keeping cbs for retry",
+                        self.lanlan_name, exc,
+                    )
+                    return
+
+                # If the server rejected asynchronously DURING the await above
+                # (case a — ``_on_voice_inject_rejected`` already fired while
+                # the cbs were still in the queue), the cbs were intentionally
+                # left in place. Pruning now would delete a cb the server
+                # refused → silent loss. Skip the prune; the cbs stay queued and
+                # are retried via _finalize_turn_after_emit (or the re-fire the
+                # handler scheduled). The active response that caused the
+                # rejection will fire response.done and trigger the retry.
+                if _reject_state["rejected"]:
+                    logger.info(
+                        "[%s] trigger_agent_callbacks: voice proactive inject rejected during await; keeping %d cb(s) queued for retry",
+                        self.lanlan_name, len(voice_snapshot),
+                    )
+                    return
+
+                # Inject succeeded. Drop the cbs we delivered from BOTH queues:
+                # ``pending_agent_callbacks`` (text-mode drain + proactive
+                # trigger) AND the matching ``pending_extra_replies`` entries
+                # (voice hot-swap prime channel). Leaving the extras intact would
+                # have two concrete bad consequences:
+                #   1. ``_finalize_turn_after_emit`` gates immediate session
+                #      preparation on ``bool(pending_extra_replies)`` — stale
+                #      entries trigger needless background hot-swap prep.
+                #   2. The eventual hot-swap re-primes the new session with cbs
+                #      the AI already spoke about, producing duplicate
+                #      announcements.
+                # Match by the stable ``_callback_delivery_id`` stamped on both
+                # entries by ``enqueue_agent_callback``. Length-based alignment
+                # would be unsafe — ``drain_agent_callbacks_for_llm`` clears
+                # ``pending_agent_callbacks`` while leaving
+                # ``pending_extra_replies`` intact, so the queues legitimately
+                # drift apart across user turns.
+                # Object-identity fallback for pending_agent_callbacks: defense
+                # in depth against any future code path that appends a cb
+                # without going through ``enqueue_agent_callback`` (the only
+                # stamper of ``_callback_delivery_id``). extras dicts are fresh
+                # objects so there is no id() link — extras rely on the
+                # delivery_id contract.
+                voice_obj_ids = {id(cb) for cb in voice_snapshot}
+                self.pending_agent_callbacks = [
+                    cb for cb in self.pending_agent_callbacks
+                    if cb.get("_callback_delivery_id") not in delivered_ids
+                    and id(cb) not in voice_obj_ids
+                ]
+                self.pending_extra_replies = [
+                    extra for extra in self.pending_extra_replies
+                    if extra.get("_callback_delivery_id") not in delivered_ids
+                ]
+                logger.info(
+                    "[%s] trigger_agent_callbacks: voice proactive inject sent (n=%d)",
+                    self.lanlan_name, len(voice_snapshot),
+                )
+                return
 
         _lang = normalize_language_code(self.user_language, format='short')
         # Render via _build_callback_instruction on the proactive subset only.
@@ -5657,11 +5959,44 @@ class LLMSessionManager:
             # pending_agent_callbacks here — passive cbs would also get wiped.
             # per-task contextvar：prompt_ephemeral 回调链里 handle_text_data
             # 识别本路径 chunk 并在 sid 被用户抢走后丢弃
+            # Collect proactive images carried ON the callbacks and pass them
+            # EXPLICITLY to prompt_ephemeral — separate from the user's
+            # _pending_images staging queue (which holds the user's next
+            # screen/camera frame). Sharing that queue would steal the user's
+            # pending image into this proactive turn and rob the user's next
+            # message of its visual context (Codex P2). Media stays on the cb
+            # until the cb is delivered & pruned, so a failed retry re-collects
+            # and re-passes it (preserve-until-success). NOTE: we do NOT call
+            # _stream_cb_media for text mode (that's the voice path, which uses
+            # the realtime session's persistent conversation.item).
+            _proactive_images: list = []
+            for _cb in callbacks_snapshot:
+                if isinstance(_cb, dict):
+                    _proactive_images.extend(_cb.get("media_images") or [])
             _sid_token = _proactive_expected_sid.set(proactive_sid)
+            # Text-mode playback boundary for the pacing manager: no frontend
+            # audio signal arrives for text delivery, so bracket prompt_ephemeral
+            # with text_start/text_end. text_end clears the manager's in-flight
+            # slot + applies min-gap before the next proactive cue.
             try:
-                delivered = await self.session.prompt_ephemeral(instruction)
+                self.lifecycle_bus.emit("text_start")
+            except Exception:
+                # A lifecycle signal must never break delivery. The bus
+                # already isolates per-handler failures (logger.exception);
+                # this guard only covers an emit() that itself somehow raises.
+                logger.debug("[%s] lifecycle_bus emit(text_start) failed", self.lanlan_name)
+            try:
+                delivered = await self.session.prompt_ephemeral(
+                    instruction, images=_proactive_images or None
+                )
             finally:
                 _proactive_expected_sid.reset(_sid_token)
+                try:
+                    self.lifecycle_bus.emit("text_end")
+                except Exception:
+                    # Same rationale as text_start; never let signalling break
+                    # the delivery path's finally cleanup.
+                    logger.debug("[%s] lifecycle_bus emit(text_end) failed", self.lanlan_name)
             logger.debug("[%s] trigger_agent_callbacks: prompt_ephemeral delivered=%s", self.lanlan_name, delivered)
             if delivered:
                 # pending_extra_replies parallels pending_agent_callbacks but
@@ -5944,6 +6279,256 @@ class LLMSessionManager:
             finally:
                 await self.state.fire(SessionEvent.PROACTIVE_DONE)
 
+    def submit_proactive_callback(
+        self,
+        callback: dict,
+        *,
+        priority: int = 0,
+        coalesce_key: Optional[str] = None,
+    ) -> None:
+        """Hand a proactive (ai_behavior="respond") cue to the delivery
+        manager, which paces/orders/coalesces it before release.
+
+        Replaces the EventBus's old "enqueue + immediately fire trigger"
+        for proactive cues. Passive/silent cues do NOT come here — they keep
+        their existing direct enqueue-only path so ``delivery="passive"``'s
+        "don't interrupt" promise is unchanged.
+        """
+        self.proactive_manager.submit(callback, priority=priority, coalesce_key=coalesce_key)
+
+    async def _deliver_proactive_batch(self, callbacks: list) -> None:
+        """Release hook invoked by ProactiveDeliveryManager when the gate is
+        open. Enqueues the WHOLE batch then fires ONE trigger — trigger drains
+        all pending proactive callbacks into a single LLM turn, restoring the
+        legacy "several near-simultaneous cues batched into one turn"
+        behaviour (the manager only governs WHEN the batch is released, not
+        how many cues per turn)."""
+        if not callbacks:
+            return
+        for callback in callbacks:
+            self.enqueue_agent_callback(callback)
+        # NOTE: images carried by these cues (push_message media_parts for
+        # ai_behavior="respond") are streamed at the ACTUAL delivery point
+        # inside trigger_agent_callbacks via _stream_cb_media — NOT here. That
+        # binds streaming to a guaranteed session and covers every delivery
+        # path (manager release / reconnect redelivery / turn-end retry),
+        # instead of streaming into a possibly-None / about-to-be-swapped
+        # session at release time (Codex P2).
+        await self.trigger_agent_callbacks()
+
+    async def _stream_cb_media(self, callbacks: list, session) -> bool:
+        """Stream images carried by proactive callbacks (push_message
+        media_parts with ai_behavior="respond") into ``session`` right before
+        delivery, so the proactive response sees matching visual context.
+
+        Returns False if ANY image failed to stream — the caller must then
+        DEFER the whole delivery (don't inject/prompt the text), so the cb
+        retries WITH its media next time. Delivering text-only here and then
+        pruning the cb would drop the retained media for good (Codex P2).
+        Returns True when every image streamed (or there were none / no
+        session).
+
+        Bound to the delivery point (not the manager-release point) so it
+        covers every path that actually delivers a cb — manager release,
+        reconnect redelivery, turn-end retry.
+
+        VOICE path only: OmniRealtimeClient.stream_image() persists the image
+        as a conversation.item the immediately-following proactive
+        response.create sees (same-turn), and the realtime conversation is an
+        accumulating log (not a single-consume queue), so adding a proactive
+        image can't steal a user's pending frame. TEXT mode does NOT go through
+        here — its proactive images are passed explicitly to prompt_ephemeral()
+        (separate from the user's _pending_images staging queue); see
+        _deliver_agent_callbacks_text.
+
+        Media is LEFT on the cb (NOT popped) until the cb is delivered &
+        pruned, so a deferred / failed-and-retried cb re-streams it instead of
+        losing the visual context. On a PARTIAL stream failure the FULL set is
+        kept (not just the tail): a stream failure usually means the session is
+        closing, so the retry lands on a new session that has none of the
+        earlier images — re-streaming everything is correct (Codex P2)."""
+        si = getattr(session, "stream_image", None)
+        if si is None:
+            return True
+        all_ok = True
+        for cb in callbacks:
+            if not isinstance(cb, dict):
+                continue
+            images = cb.get("media_images")
+            if not images:
+                continue
+            streamed = 0
+            for b64 in images:
+                try:
+                    # Deliberate cue image: bypass the native-vision frame-rate
+                    # throttle so it isn't silently dropped behind a recent
+                    # high-frequency screen/camera frame (Codex P2).
+                    await si(b64, bypass_rate_limit=True)
+                    streamed += 1
+                except Exception as e:
+                    # Keep the FULL media set (do NOT trim already-streamed
+                    # ones): a voice stream_image failure almost always means
+                    # the session is closing, so the retry runs on a NEW session
+                    # whose conversation has none of the earlier images —
+                    # trimming would permanently drop them. Re-streaming the
+                    # whole set on the (likely new) session is correct; the only
+                    # downside is duplicate items if the SAME session is retried,
+                    # which is rare in a failure path and harmless (Codex P2 —
+                    # overrides the earlier tail-trim). media_images is left
+                    # untouched (already the full set). Signal the caller to
+                    # DEFER (don't send text-only and prune the media away).
+                    logger.warning(
+                        "[%s] proactive media stream_image failed (streamed %d/%d); keeping FULL set for retry: %s",
+                        self.lanlan_name, streamed, len(images), e,
+                    )
+                    all_ok = False
+                    break
+            # All streamed: keep media_images on the cb until it's delivered+
+            # pruned (preserve-until-success) so an inject/prompt failure retry
+            # re-streams it. Successful delivery removes the cb (and its media).
+        return all_ok
+
+    def on_voice_playback_signal(self, *, playing: bool, **meta) -> None:
+        """Handle a FRONTEND-reported audio playback boundary.
+
+        ``playing=True`` (voice_play_start) → real audio started; close the
+        voice inject gate. ``playing=False`` (voice_play_end) → the browser's
+        audio queue fully drained (she actually stopped talking) → open the
+        gate and let the manager release the next cue. Re-fires
+        ``trigger_agent_callbacks`` on end so a cue deferred mid-playback is
+        delivered promptly rather than waiting for the next response.done.
+        """
+        self._voice_playback_active = bool(playing)
+        if playing:
+            self._voice_playback_started_ts = time.monotonic()
+        try:
+            self.lifecycle_bus.emit(
+                "voice_play_start" if playing else "voice_play_end", **meta
+            )
+        except Exception:
+            logger.exception("[%s] lifecycle_bus emit failed", self.lanlan_name)
+        if not playing and self.pending_agent_callbacks:
+            # A cue deferred while she was speaking (gate busy at release) can
+            # now go out — but honor the manager's min-gap so this retry doesn't
+            # start the next proactive turn with ZERO gap right at audio end.
+            # Parity with the manager's own post-playback pump, which also
+            # waits min_gap (Codex P2). trigger_agent_callbacks re-gates itself,
+            # so a fire that lands while she's speaking again just defers.
+            try:
+                delay = max(0.0, float(self.proactive_manager.min_gap_s))
+            except Exception:
+                delay = 0.0
+            if delay <= 0.0:
+                self._fire_task(self.trigger_agent_callbacks())
+            else:
+                try:
+                    asyncio.get_running_loop().call_later(
+                        delay, lambda: self._fire_task(self.trigger_agent_callbacks())
+                    )
+                except RuntimeError:
+                    self._fire_task(self.trigger_agent_callbacks())
+
+    # Ceiling for a missing voice_play_end before the playback gate self-heals:
+    # above a normal single reply, but recovers a dropped end-signal reasonably
+    # fast. Disconnect/refresh (the common cause) is already handled by session
+    # teardown reset, so this only backstops the rare "connection alive but end
+    # signal lost" case. Mirror of ProactiveDeliveryManager.max_play_s.
+    _VOICE_PLAYBACK_STALE_S = 45.0
+
+    def _is_voice_playing(self) -> bool:
+        """Time-bounded read of the playback gate. Auto-clears a stuck
+        ``_voice_playback_active`` when no voice_play_end has arrived within
+        ``_VOICE_PLAYBACK_STALE_S`` (frontend disconnect/refresh mid-playback),
+        so the voice inject gate can never wedge proactive delivery forever."""
+        if not self._voice_playback_active:
+            return False
+        if time.monotonic() - self._voice_playback_started_ts > self._VOICE_PLAYBACK_STALE_S:
+            logger.warning(
+                "[%s] voice playback gate watchdog: no voice_play_end after %.0fs; clearing stuck flag",
+                self.lanlan_name, self._VOICE_PLAYBACK_STALE_S,
+            )
+            self._voice_playback_active = False
+            return False
+        return True
+
+    def _schedule_proactive_retry(self, delay: float) -> None:
+        """Schedule a delayed ``trigger_agent_callbacks`` so a cb left in
+        pending_agent_callbacks (e.g. the voice media-stream deferral path) is
+        retried even when nothing else would drive it — the manager has already
+        emptied its queue and its inflight timeout only pumps manager-queued
+        items, and a media failure before response.create means no
+        response.done / voice_play_end arrives to re-fire trigger."""
+        try:
+            asyncio.get_running_loop().call_later(
+                max(0.0, float(delay)),
+                lambda: self._fire_task(self.trigger_agent_callbacks()),
+            )
+        except RuntimeError:
+            self._fire_task(self.trigger_agent_callbacks())
+
+    def _can_release_proactive(self) -> bool:
+        """Manager-release gate, mirroring the defer conditions in
+        ``trigger_agent_callbacks`` so cues stay UNDER manager ordering
+        (coalescing/priority) until they can actually be delivered — rather
+        than being released into the inner trigger, deferred, and parked in
+        ``pending_agent_callbacks`` outside the manager (Codex P2).
+
+        Returns False while: audio is playing (frontend gate), the SM is not
+        IDLE (another proactive/greeting turn owns it), or the session is still
+        GENERATING a response (_is_responding — covers BOTH the realtime
+        response.created→voice_play_start window the playback gate can't see,
+        AND an active offline/text user response where try_start_proactive
+        would deny the claim)."""
+        # Time-bounded read (NOT the raw _voice_playback_active flag): if the
+        # frontend dropped voice_play_end, _is_voice_playing() self-heals after
+        # the 30s watchdog, so a stuck flag can't make can_release return False
+        # forever and wedge the queue in an endless busy-recheck (Codex P1).
+        if self._is_voice_playing():
+            return False
+        try:
+            if self.state.phase is not ProactivePhase.IDLE:
+                return False
+        except Exception:
+            # State unavailable → treat as IDLE and fall through to the rest of
+            # the gate; never block delivery on a phase-read hiccup.
+            logger.debug("[%s] _can_release_proactive: state.phase unavailable; treating as IDLE", self.lanlan_name)
+        sess = self.session
+        # Both realtime AND offline sessions expose _is_responding (set while
+        # generating a response — user OR proactive); realtime's
+        # is_active_response() is just a read of it. Releasing while True would
+        # have trigger deny/defer the claim (voice: is_active_response gate;
+        # text: try_start_proactive denies during _is_responding) and park the
+        # cue in pending_agent_callbacks outside the manager (Codex P2).
+        try:
+            if sess is not None and getattr(sess, "_is_responding", False):
+                return False
+        except Exception:
+            # Read hiccup → treat as not-responding rather than wedging the queue.
+            logger.debug("[%s] _can_release_proactive: _is_responding check failed; treating as not-responding", self.lanlan_name)
+        return True
+
+    def _reset_proactive_gate(self) -> None:
+        """Reset the playback gate on session lifecycle boundaries (session
+        start / end / character switch) so a dropped voice_play_end can't
+        carry stale playback state into the next session and wedge delivery.
+
+        Proactive cues are generally important, so cues still queued in the
+        manager are NOT dropped: they're moved into pending_agent_callbacks,
+        which persists across teardown and is redelivered by the reconnect /
+        next-turn path. Only the gate/single-flight state is cleared."""
+        self._voice_playback_active = False
+        self._voice_playback_started_ts = 0.0
+        try:
+            leftover = self.proactive_manager.drain_pending()
+            for cb in leftover:
+                # Hand back to the persistent queue so the reconnect path
+                # (websocket_router) / next trigger redelivers rather than
+                # losing it.
+                self.enqueue_agent_callback(cb)
+            self.proactive_manager.reset_gate()
+        except Exception:
+            logger.exception("[%s] proactive_manager reset/drain failed", self.lanlan_name)
+
     def enqueue_agent_callback(self, callback: dict) -> None:
         """Enqueue a structured agent task callback for LLM injection.
 
@@ -5993,8 +6578,17 @@ class LLMSessionManager:
             # discarded.
             if not summary and not detail and not error_message and not source_name and status == "completed":
                 return
+            # Stable delivery id so the voice inject success path can
+            # precisely drop the matching extras entry from
+            # ``pending_extra_replies``. Length-based alignment is unsafe:
+            # ``drain_agent_callbacks_for_llm`` clears
+            # ``pending_agent_callbacks`` while leaving
+            # ``pending_extra_replies`` intact, so the queues legitimately
+            # drift apart across user turns.
+            delivery_id = callback.setdefault("_callback_delivery_id", uuid4().hex)
             self.pending_agent_callbacks.append(callback)
             self.pending_extra_replies.append({
+                "_callback_delivery_id": delivery_id,
                 "origin": origin,
                 "summary": summary,
                 "detail": detail,
@@ -6770,6 +7364,12 @@ class LLMSessionManager:
                 # 尽早取消 TTS 延迟重试任务并清理错误码（持锁状态下），
                 # 防止 _init_renew_status 期间 respawn task 触发无效重试
                 self._reset_tts_retry_state()
+
+        # Clear the playback gate + manager queue on genuine teardown. Placed
+        # AFTER the stale-session guards above (which `return` early) so a stale/
+        # duplicate end_session callback can't reset the CURRENT live session's
+        # gate or drop its queued cues (Codex P1).
+        self._reset_proactive_gate()
 
         if _inactive_early:
             if reset_starting_count:

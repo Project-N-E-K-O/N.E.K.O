@@ -1,7 +1,7 @@
 {
-  "plugin.name": "Compañera de Slay the Spire 2",
+  "plugin.name": "Complemento de juego de Slay the Spire 2",
   "plugin.description": "Se conecta a un servicio Agent local de Slay the Spire 2, lee el estado de la partida y ejecuta juego automático, acciones paso a paso, sugerencias de jugadas, comandos en lenguaje natural, guía suave de la neko, reportes de situación y comentarios breves en vivo. Actualmente se centra principalmente en los personajes base.",
-  "plugin.short_description": "Compañera STS2 y reporte de situación",
+  "plugin.short_description": "Juego de STS2 y reporte de situación",
   "tools.sts2_get_status.description": "Acceso de solo lectura al estado de conexión de Slay the Spire, la pantalla actual y la información básica de clasificación.",
   "errors.internal": "Error interno del plugin STS2: {error}",
   "entries.sts2_health_check.name": "Comprobar si STS2 está conectado",

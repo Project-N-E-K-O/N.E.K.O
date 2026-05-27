@@ -711,6 +711,14 @@ async def _handle_agent_event(event: dict):
             # ai_behavior=blind suppresses injection entirely.
             media_parts = event.get("media_parts") if isinstance(event.get("media_parts"), list) else []
             ai_behavior_v2 = event.get("ai_behavior")
+            # Images that must travel WITH a proactive (respond) callback so they
+            # can be streamed at the moment the pacing manager releases the cue
+            # (see LLMSessionManager._deliver_proactive_batch). Streaming them
+            # here immediately would land the image in the previous/current turn
+            # (or drop it when no session exists yet) while the text is held back
+            # by the manager — the eventual proactive response would then lack
+            # its matching visual context.
+            deferred_proactive_images: list[str] = []
             if media_parts and ai_behavior_v2 in ("respond", "read"):
                 sess = getattr(mgr, "session", None)
                 stream_image = getattr(sess, "stream_image", None) if sess else None
@@ -731,13 +739,24 @@ async def _handle_agent_event(event: dict):
                             part_type, mime,
                         )
                         continue
-                    if stream_image is None:
-                        logger.debug(
-                            "[EventBus] image media_part dropped: session=%s has no stream_image",
-                            type(sess).__name__ if sess else "None",
-                        )
-                        continue
                     if isinstance(b64, str) and b64:
+                        if ai_behavior_v2 == "respond" and text:
+                            # Defer: stream when the manager releases this cue so
+                            # the image shares the proactive response's context.
+                            # (Only when there's text — the callback that carries
+                            # these images is built in the ``if text:`` block.)
+                            deferred_proactive_images.append(b64)
+                            continue
+                        # read (passive), OR image-only respond with no text to
+                        # carry it through the pacing manager: inject now so it
+                        # isn't lost (image-only respond has no text cue to drive
+                        # a proactive turn anyway).
+                        if stream_image is None:
+                            logger.debug(
+                                "[EventBus] image media_part dropped: session=%s has no stream_image",
+                                type(sess).__name__ if sess else "None",
+                            )
+                            continue
                         # ``stream_image`` takes a base64 STRING (not bytes); pass through
                         try:
                             await stream_image(b64)
@@ -844,6 +863,18 @@ async def _handle_agent_event(event: dict):
                     # producer that lands on this branch); see the (event_type in
                     # {"task_result", "proactive_message"}) gate above.
                     origin = "event"
+                # Proactive-delivery hints from push_message (priority +
+                # coalesce_key). Lower priority = more urgent; unspecified
+                # (0) is normalised to a neutral band by the manager.
+                try:
+                    # OverflowError: JSON Infinity/-Infinity → float → int() raises;
+                    # must not let a malformed priority drop the whole callback.
+                    cb_priority = int(event.get("priority", 0) or 0)
+                except (TypeError, ValueError, OverflowError):
+                    cb_priority = 0
+                cb_coalesce_key = event.get("coalesce_key")
+                if not isinstance(cb_coalesce_key, str):
+                    cb_coalesce_key = ""
                 callback = {
                     "event": "agent_task_callback",
                     "origin": origin,
@@ -857,30 +888,38 @@ async def _handle_agent_event(event: dict):
                     "source_kind": source_kind,
                     "source_name": source_name,
                     "delivery_mode": delivery_mode,
+                    "priority": cb_priority,
+                    "coalesce_key": cb_coalesce_key,
+                    # Images to stream at manager-release time (respond only;
+                    # empty for read, which already streamed above).
+                    "media_images": deferred_proactive_images,
                     "timestamp": event.get("timestamp") or "",
                     "metadata": event_metadata,
                     "context_type": event_metadata.get("context_type") or "",
                 }
                 if delivery_mode != "silent":
-                    mgr.enqueue_agent_callback(callback)
                     if delivery_mode == "passive":
+                        # Passive cues keep the direct enqueue-only path:
+                        # they must NOT interrupt; the next user turn drains
+                        # them. The pacing manager only governs proactive.
+                        mgr.enqueue_agent_callback(callback)
                         logger.info(
                             "[EventBus] %s enqueued callback (passive); next user turn will carry it",
                             event_type,
                         )
                     else:
+                        # Proactive: hand to the delivery manager, which
+                        # orders by priority, coalesces by key, and paces
+                        # release on the frontend playback gate + min-gap.
                         logger.info(
-                            "[EventBus] %s enqueued callback, scheduling trigger_agent_callbacks",
-                            event_type,
+                            "[EventBus] %s submitting proactive callback to delivery manager (priority=%s key=%r)",
+                            event_type, cb_priority, cb_coalesce_key or "(source)",
                         )
-
-                        # Create task with exception logging
-                        async def _run_trigger_with_logging():
-                            try:
-                                await mgr.trigger_agent_callbacks()
-                            except Exception as e:
-                                logger.error("[EventBus] trigger_agent_callbacks task failed: %s", e)
-                        mgr._pending_agent_callback_task = asyncio.create_task(_run_trigger_with_logging())
+                        mgr.submit_proactive_callback(
+                            callback,
+                            priority=cb_priority,
+                            coalesce_key=cb_coalesce_key or None,
+                        )
                 else:
                     logger.info(
                         "[EventBus] %s delivery=silent: skipping LLM channel (frontend HUD still fires)",

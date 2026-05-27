@@ -34,7 +34,7 @@ from plugin.settings import (
     PROCESS_SHUTDOWN_TIMEOUT,
     PROCESS_TERMINATE_TIMEOUT,
 )
-from plugin.sdk.shared.core.entry_runtime import resolve_entry_timeout
+from plugin.sdk.shared.core.entry_runtime import prepare_entry_kwargs, resolve_entry_timeout
 from plugin.sdk.shared.core.result_contract import model_schema_from_type
 from plugin.sdk.shared.core.router import PluginRouter
 from plugin.sdk.plugin.ui import UI_ACTION_META_ATTR, UI_CONTEXT_META_ATTR
@@ -1076,10 +1076,17 @@ def _plugin_process_runner(
 
                 requested_timeout = msg["timeout"] if "timeout" in msg else _TIMEOUT_UNSET
                 timeout_seconds = _resolve_timeout(entry_id, requested_timeout)
+                call_args = prepare_entry_kwargs(
+                    plugin_id=plugin_id,
+                    entry_id=entry_id,
+                    handler=method,
+                    meta=entry_meta_map.get(entry_id),
+                    args=args,
+                )
 
                 with ctx._handler_scope(f"plugin_entry.{entry_id}"), ctx._run_scope(run_id):
                     result = await _run_with_watchdog(
-                        method(**args), entry_id, timeout_seconds,
+                        method(**call_args), entry_id, timeout_seconds,
                     )
 
                 if hasattr(result, "is_ok") and callable(result.is_ok):

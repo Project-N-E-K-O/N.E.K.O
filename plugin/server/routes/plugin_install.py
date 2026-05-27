@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -12,9 +14,16 @@ from pydantic import BaseModel
 
 from plugin._types.models import RunCreateRequest
 from plugin.logging_config import get_logger
+from plugin.server import install_registry
+from plugin.server.install_registry import (
+    InstallKindRegistration,
+    InstallPluginRegistration,
+    normalize_registered_plugin_id as _normalize_registered_plugin_id,
+    register_install_plugin,
+    register_tutorial_migration_hook,
+)
 from plugin.sdk.shared.core.base_runtime import resolve_runtime_data_root
-from plugin.plugins.galgame_plugin.store import GalgameStore
-from plugin.plugins.galgame_plugin.install_tasks import (
+from ._install_task_store import (
     INSTALL_TERMINAL_STATUSES,
     build_install_task_state,
     load_install_task_state,
@@ -25,15 +34,57 @@ from plugin.server.application.runs import RunService
 from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.error_mapping import raise_http_from_domain
 
-router = APIRouter(tags=["galgame-install"])
-logger = get_logger("galgame.install_routes")
+router = APIRouter(tags=["plugin-install"])
+logger = get_logger("server.plugin_install")
 run_service = RunService()
 
-_INSTALL_PLUGIN_IDS = {"galgame_plugin", "study_companion"}
+_BLOCKING_IO_TIMEOUT_SECONDS = 15.0
 _STALE_INSTALL_STATUS = "failed"
 _STALE_INSTALL_PHASE = "failed"
-_UI_I18N_DIR = Path(__file__).resolve().parent / "i18n" / "ui"
-_ALLOWED_UI_LOCALES = {"zh-CN", "zh-TW", "en", "ja", "ru", "ko"}
+_STALE_INSTALL_MESSAGE_TEMPLATE = (
+    "{label} install task was interrupted before completion; its backend run "
+    "record no longer exists. Previous phase: {previous_phase}. Please start "
+    "the install again."
+)
+_INSTALL_STATE_PERSIST_FAILED = "Install task state could not be saved locally."
+_INSTALL_STREAM_READ_FAILED = "Install task state could not be read. Please retry the install from the setup UI."
+_LOCAL_STATE_RETRY_HINT = (
+    "The backend run was created, but local install state could not be saved. "
+    "Retry status with the returned run_id or start the install again if the UI cannot restore it."
+)
+_ALLOWED_UI_LOCALES = {"zh-CN", "zh-TW", "en", "ja", "ru", "ko", "es", "pt"}
+_INSTALL_KIND_LABELS = {
+    "textractor": "Textractor",
+    "rapidocr_models": "RapidOCR Models",
+    "tesseract": "Tesseract",
+}
+
+
+async def _run_blocking(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    return await asyncio.wait_for(
+        asyncio.to_thread(func, *args, **kwargs),
+        timeout=_BLOCKING_IO_TIMEOUT_SECONDS,
+    )
+
+
+def _get_plugin_registration(plugin_id: str) -> InstallPluginRegistration:
+    try:
+        registration = install_registry.get_install_plugin_registration(plugin_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Plugin has no install API") from exc
+    if registration is None:
+        raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' has no install API")
+    return registration
+
+
+def _ensure_has_install(plugin_id: str) -> None:
+    _get_plugin_registration(plugin_id)
+
+
+def _ensure_tutorial_enabled(plugin_id: str) -> None:
+    registration = _get_plugin_registration(plugin_id)
+    if not registration.tutorial_enabled:
+        raise HTTPException(status_code=404, detail=f"Plugin '{registration.plugin_id}' has no tutorial API")
 
 
 class InstallStartPayload(BaseModel):
@@ -41,28 +92,35 @@ class InstallStartPayload(BaseModel):
 
 
 @router.get("/plugin/{plugin_id}/ui-api/locale")
-async def get_galgame_ui_locale(plugin_id: str) -> JSONResponse:
-    _ensure_has_install(plugin_id)
+async def get_plugin_ui_locale(plugin_id: str) -> JSONResponse:
+    _get_plugin_registration(plugin_id)
     try:
         from utils.language_utils import get_global_language_full
 
         locale = _normalize_ui_locale(str(get_global_language_full()))
     except Exception:
-        logger.warning("galgame ui locale detection failed; falling back to en", exc_info=True)
+        logger.warning("plugin ui locale detection failed; falling back to en", exc_info=True)
         locale = "en"
     return JSONResponse({"locale": locale})
 
 
 @router.get("/plugin/{plugin_id}/ui-api/i18n/ui/{locale}.json")
-async def get_galgame_ui_i18n(plugin_id: str, locale: str) -> Response:
-    _ensure_has_install(plugin_id)
+async def get_plugin_ui_i18n(plugin_id: str, locale: str) -> Response:
+    registration = _get_plugin_registration(plugin_id)
+    if registration.ui_i18n_dir is None:
+        return Response(status_code=404)
     normalized = str(locale or "").strip()
     if ".." in normalized or "/" in normalized or "\\" in normalized:
         return Response(status_code=404)
     if normalized not in _ALLOWED_UI_LOCALES:
         return Response(status_code=404)
-    file = _UI_I18N_DIR / f"{normalized}.json"
-    if not file.is_file():
+    base_dir = registration.ui_i18n_dir.resolve()
+    file = (base_dir / f"{normalized}.json").resolve()
+    try:
+        file.relative_to(base_dir)
+    except ValueError:
+        return Response(status_code=404)
+    if not await _run_blocking(file.is_file):
         return Response(status_code=404)
     return FileResponse(file)
 
@@ -81,62 +139,34 @@ def _normalize_ui_locale(locale: str) -> str:
         return "ru"
     if normalized.startswith("ko"):
         return "ko"
+    if normalized.startswith("es"):
+        return "es"
+    if normalized.startswith("pt"):
+        return "pt"
     return "zh-CN"
 
 
-def _install_entry_id(plugin_id: str, galgame_entry_id: str) -> str:
-    if plugin_id == "study_companion":
-        mapping = {
-            "galgame_download_rapidocr_models": "study_download_rapidocr_models",
-            "study_install_tesseract": "study_install_tesseract",
-        }
-        return mapping.get(galgame_entry_id, galgame_entry_id)
-    return galgame_entry_id
-
-
-def _get_install_kind_spec(kind: str, *, plugin_id: str = "galgame_plugin") -> dict[str, Any]:
+def _get_install_kind_spec(kind: str, *, plugin_id: str) -> dict[str, Any]:
+    registration = _get_plugin_registration(plugin_id)
     normalized = str(kind or "").strip().lower()
-    if plugin_id == "study_companion" and normalized == "textractor":
-        raise HTTPException(status_code=404, detail="Textractor install is not supported by study_companion")
-    if plugin_id != "study_companion" and normalized == "tesseract":
-        raise HTTPException(status_code=404, detail="Tesseract install is only supported by study_companion")
-    # rapidocr + dxcam used to live here as runtime-pip-install entries; both are
-    # now bundled into the main program (see pyproject.toml [dependency-groups]
-    # galgame). textractor still needs runtime install. rapidocr_models is a
-    # model-pack download (not a package install) for non-bundled (lang,
+    # rapidocr + dxcam used to live here as runtime-pip-install entries; both
+    # are now bundled into the main program. textractor still needs runtime
+    # install. rapidocr_models is a model-pack download for non-bundled (lang,
     # version) combos like japan + PP-OCRv4.
-    mapping = {
-        "textractor": {
-            "kind": "textractor",
-            "entry_id": _install_entry_id(plugin_id, "galgame_install_textractor"),
-            "label": "Textractor",
-            "queued_message": "Textractor install queued",
-            "entry_timeout": 600.0,
-        },
-        "rapidocr_models": {
-            "kind": "rapidocr_models",
-            "entry_id": _install_entry_id(plugin_id, "galgame_download_rapidocr_models"),
-            "label": "RapidOCR Models",
-            "queued_message": "RapidOCR model download queued",
-            "entry_timeout": 600.0,
-        },
-        "tesseract": {
-            "kind": "tesseract",
-            "entry_id": _install_entry_id(plugin_id, "study_install_tesseract"),
-            "label": "Tesseract",
-            "queued_message": "Tesseract install queued",
-            "entry_timeout": 600.0,
-        },
-    }
-    spec = mapping.get(normalized)
+    spec = registration.install_kinds.get(normalized)
     if spec is None:
-        raise HTTPException(status_code=404, detail=f"Unsupported install kind: {kind!r}")
-    return spec
-
-
-def _ensure_has_install(plugin_id: str) -> None:
-    if plugin_id not in _INSTALL_PLUGIN_IDS:
-        raise HTTPException(status_code=404, detail=f"Plugin '{plugin_id}' has no install API")
+        label = _INSTALL_KIND_LABELS.get(normalized, normalized or str(kind))
+        raise HTTPException(
+            status_code=404,
+            detail=f"{label} install is not supported by {registration.plugin_id}",
+        )
+    return {
+        "kind": normalized,
+        "entry_id": spec.entry_id,
+        "label": spec.label,
+        "queued_message": spec.queued_message,
+        "entry_timeout": spec.entry_timeout,
+    }
 
 
 def _run_to_install_status(run_status: str) -> str:
@@ -213,6 +243,32 @@ def _persist_install_payload(
     )
 
 
+def _persist_terminal_install_payload(
+    task_id: str,
+    *,
+    plugin_id: str,
+    kind: str,
+    payload: dict[str, object],
+) -> dict[str, object]:
+    try:
+        return _persist_install_payload(
+            task_id,
+            plugin_id=plugin_id,
+            kind=kind,
+            payload=payload,
+        )
+    except Exception:  # noqa: BLE001 - terminal run state should still reach clients.
+        logger.warning(
+            "failed to persist terminal {} install task state: task_id={}",
+            kind,
+            task_id,
+            exc_info=True,
+        )
+        fallback_payload = dict(payload)
+        fallback_payload["local_save_failed"] = True
+        return fallback_payload
+
+
 def _mark_stale_install_task(
     task_id: str,
     *,
@@ -222,9 +278,9 @@ def _mark_stale_install_task(
     payload: dict[str, object],
 ) -> dict[str, object]:
     previous_phase = str(payload.get("phase") or payload.get("status") or "queued")
-    error_message = (
-        f"{label} 安装任务在完成前被中断，对应的后台运行记录已经不存在。"
-        f"上一次阶段：{previous_phase}。请直接重新发起安装。"
+    error_message = _STALE_INSTALL_MESSAGE_TEMPLATE.format(
+        label=label,
+        previous_phase=previous_phase,
     )
     logger.warning(
         "marking stale {} install task as failed: task_id={}, previous_phase={}",
@@ -245,7 +301,58 @@ def _mark_stale_install_task(
             "completed_at": time.time(),
         }
     )
-    return _persist_install_payload(task_id, plugin_id=plugin_id, kind=kind, payload=stale_payload)
+    try:
+        return _persist_install_payload(task_id, plugin_id=plugin_id, kind=kind, payload=stale_payload)
+    except Exception:  # noqa: BLE001 - stale state should still reach the client.
+        logger.warning(
+            "failed to persist stale {} install task failure: task_id={}",
+            kind,
+            task_id,
+            exc_info=True,
+        )
+        stale_payload["local_save_failed"] = True
+        return stale_payload
+
+
+def _queued_install_task_state(
+    *,
+    task_id: str,
+    plugin_id: str,
+    spec: Mapping[str, Any],
+) -> dict[str, object]:
+    return build_install_task_state(
+        task_id=task_id,
+        kind=str(spec["kind"]),
+        plugin_id=plugin_id,
+        run_id=task_id,
+        status="queued",
+        phase="queued",
+        message=str(spec["queued_message"]),
+        progress=0.0,
+    )
+
+
+def _install_stream_error_payload(
+    task_id: str,
+    *,
+    plugin_id: str,
+    kind: str,
+    label: str,
+    error: BaseException,
+) -> dict[str, object]:
+    error_text = str(error or "").strip() or type(error).__name__
+    return build_install_task_state(
+        task_id=task_id,
+        kind=kind,
+        plugin_id=plugin_id,
+        run_id=task_id,
+        status="failed",
+        phase="failed",
+        message=_INSTALL_STREAM_READ_FAILED,
+        progress=0.0,
+        error=f"{label}: {error_text}",
+        extra={"stream_error": True},
+    )
 
 
 def _resolve_install_task_payload(
@@ -282,7 +389,12 @@ def _resolve_install_task_payload(
     if state_payload is None and run_record is not None:
         run_payload = _install_state_from_run(run_record, plugin_id=plugin_id, kind=kind)
         if str(run_payload.get("status") or "") in INSTALL_TERMINAL_STATUSES:
-            return _persist_install_payload(task_id, plugin_id=plugin_id, kind=kind, payload=run_payload)
+            return _persist_terminal_install_payload(
+                task_id,
+                plugin_id=plugin_id,
+                kind=kind,
+                payload=run_payload,
+            )
         return run_payload
 
     payload = dict(state_payload or {})
@@ -318,7 +430,12 @@ def _resolve_install_task_payload(
         payload["detected_path"] = str(run_payload.get("detected_path") or payload.get("detected_path") or "")
         payload["updated_at"] = run_payload.get("updated_at")
         payload["completed_at"] = run_payload.get("completed_at")
-        return _persist_install_payload(task_id, plugin_id=plugin_id, kind=kind, payload=payload)
+        return _persist_terminal_install_payload(
+            task_id,
+            plugin_id=plugin_id,
+            kind=kind,
+            payload=payload,
+        )
 
     payload["status"] = run_status or state_status
     if run_payload.get("phase"):
@@ -365,8 +482,15 @@ async def _start_install_task(
         raise_http_from_domain(error, logger=logger)
 
     local_save_failed = False
+    local_save_error = ""
+    state_payload = _queued_install_task_state(
+        task_id=created.run_id,
+        plugin_id=plugin_id,
+        spec=spec,
+    )
     try:
-        state_payload = update_install_task_state(
+        state_payload = await _run_blocking(
+            update_install_task_state,
             created.run_id,
             kind=spec["kind"],
             plugin_id=plugin_id,
@@ -376,49 +500,88 @@ async def _start_install_task(
             message=spec["queued_message"],
             progress=0.0,
         )
-    except OSError:
-        logger.exception(
-            "failed to persist local install state for run=%s kind=%s",
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - run exists; return retryable metadata.
+        logger.warning(
+            "failed to persist local install state for run={} kind={}",
             created.run_id,
             spec["kind"],
+            exc_info=True,
         )
         local_save_failed = True
-        state_payload = {}
-    return JSONResponse(
-        {
-            "task_id": created.run_id,
-            "run_id": created.run_id,
-            "status": created.status,
-            "state": state_payload,
-            "local_save_failed": local_save_failed,
-        }
-    )
+        local_save_error = f"{type(exc).__name__}: {exc}"
+    response_payload = {
+        "task_id": created.run_id,
+        "run_id": created.run_id,
+        "status": created.status,
+        "state": state_payload,
+        "local_save_failed": local_save_failed,
+    }
+    if local_save_failed:
+        response_payload.update(
+            {
+                "error": "local_state_persist_failed",
+                "message": _INSTALL_STATE_PERSIST_FAILED,
+                "error_detail": local_save_error,
+                "retry_hint": _LOCAL_STATE_RETRY_HINT,
+            }
+        )
+    return JSONResponse(response_payload)
 
 
-def _latest_install_task_payload(*, plugin_id: str, kind: str) -> JSONResponse:
+async def _latest_install_task_payload(*, plugin_id: str, kind: str) -> JSONResponse:
     _ensure_has_install(plugin_id)
     spec = _get_install_kind_spec(kind, plugin_id=plugin_id)
-    payload = load_latest_install_task_state(kind=spec["kind"], plugin_id=plugin_id)
+    payload = await _run_blocking(
+        load_latest_install_task_state,
+        kind=spec["kind"],
+        plugin_id=plugin_id,
+    )
     if payload is None:
         raise HTTPException(status_code=404, detail=f"No {spec['label']} install task found")
     task_id = str(payload.get("task_id") or "").strip()
     return JSONResponse(
-        _resolve_install_task_payload(task_id, plugin_id=plugin_id, kind=spec["kind"], label=spec["label"])
+        await _run_blocking(
+            _resolve_install_task_payload,
+            task_id,
+            plugin_id=plugin_id,
+            kind=spec["kind"],
+            label=spec["label"],
+        )
     )
 
 
-def _get_install_task_payload(*, plugin_id: str, kind: str, task_id: str) -> JSONResponse:
+async def _get_install_task_payload(*, plugin_id: str, kind: str, task_id: str) -> JSONResponse:
     _ensure_has_install(plugin_id)
     spec = _get_install_kind_spec(kind, plugin_id=plugin_id)
     return JSONResponse(
-        _resolve_install_task_payload(task_id, plugin_id=plugin_id, kind=spec["kind"], label=spec["label"])
+        await _run_blocking(
+            _resolve_install_task_payload,
+            task_id,
+            plugin_id=plugin_id,
+            kind=spec["kind"],
+            label=spec["label"],
+        )
     )
 
 
-def _install_stream_response(*, plugin_id: str, kind: str, task_id: str, request: Request) -> StreamingResponse:
+async def _install_stream_response(
+    *,
+    plugin_id: str,
+    kind: str,
+    task_id: str,
+    request: Request,
+) -> StreamingResponse:
     _ensure_has_install(plugin_id)
     spec = _get_install_kind_spec(kind, plugin_id=plugin_id)
-    _resolve_install_task_payload(task_id, plugin_id=plugin_id, kind=spec["kind"], label=spec["label"])
+    await _run_blocking(
+        _resolve_install_task_payload,
+        task_id,
+        plugin_id=plugin_id,
+        kind=spec["kind"],
+        label=spec["label"],
+    )
 
     async def _event_stream():
         last_payload = ""
@@ -426,12 +589,31 @@ def _install_stream_response(*, plugin_id: str, kind: str, task_id: str, request
         while True:
             if await request.is_disconnected():
                 break
-            payload = _resolve_install_task_payload(
-                task_id,
-                plugin_id=plugin_id,
-                kind=spec["kind"],
-                label=spec["label"],
-            )
+            try:
+                payload = await _run_blocking(
+                    _resolve_install_task_payload,
+                    task_id,
+                    plugin_id=plugin_id,
+                    kind=spec["kind"],
+                    label=spec["label"],
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - surface failures through SSE.
+                logger.warning(
+                    "install SSE state read failed: plugin_id={} kind={} task_id={}",
+                    plugin_id,
+                    spec["kind"],
+                    task_id,
+                    exc_info=True,
+                )
+                payload = _install_stream_error_payload(
+                    task_id,
+                    plugin_id=plugin_id,
+                    kind=spec["kind"],
+                    label=spec["label"],
+                    error=exc,
+                )
             serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
             if serialized != last_payload:
                 last_payload = serialized
@@ -457,7 +639,7 @@ def _install_stream_response(*, plugin_id: str, kind: str, task_id: str, request
 
 
 @router.post("/plugin/{plugin_id}/ui-api/textractor/install")
-async def galgame_plugin_start_textractor_install(
+async def plugin_start_textractor_install(
     plugin_id: str,
     payload: InstallStartPayload,
     request: Request,
@@ -471,22 +653,22 @@ async def galgame_plugin_start_textractor_install(
 
 
 @router.get("/plugin/{plugin_id}/ui-api/textractor/install/latest")
-async def galgame_plugin_latest_textractor_install(plugin_id: str):
-    return _latest_install_task_payload(plugin_id=plugin_id, kind="textractor")
+async def plugin_latest_textractor_install(plugin_id: str):
+    return await _latest_install_task_payload(plugin_id=plugin_id, kind="textractor")
 
 
 @router.get("/plugin/{plugin_id}/ui-api/textractor/install/{task_id}")
-async def galgame_plugin_get_textractor_install(plugin_id: str, task_id: str):
-    return _get_install_task_payload(plugin_id=plugin_id, kind="textractor", task_id=task_id)
+async def plugin_get_textractor_install(plugin_id: str, task_id: str):
+    return await _get_install_task_payload(plugin_id=plugin_id, kind="textractor", task_id=task_id)
 
 
 @router.get("/plugin/{plugin_id}/ui-api/textractor/install/{task_id}/stream")
-async def galgame_plugin_stream_textractor_install(
+async def plugin_stream_textractor_install(
     plugin_id: str,
     task_id: str,
     request: Request,
 ):
-    return _install_stream_response(
+    return await _install_stream_response(
         plugin_id=plugin_id,
         kind="textractor",
         task_id=task_id,
@@ -494,11 +676,11 @@ async def galgame_plugin_stream_textractor_install(
     )
 
 
-# ====== Study Companion Tesseract install endpoints ======
+# ====== Tesseract install endpoints ======
 
 
 @router.post("/plugin/{plugin_id}/ui-api/tesseract/install")
-async def galgame_plugin_start_tesseract_install(
+async def plugin_start_tesseract_install(
     plugin_id: str,
     payload: InstallStartPayload,
     request: Request,
@@ -512,22 +694,22 @@ async def galgame_plugin_start_tesseract_install(
 
 
 @router.get("/plugin/{plugin_id}/ui-api/tesseract/install/latest")
-async def galgame_plugin_latest_tesseract_install(plugin_id: str):
-    return _latest_install_task_payload(plugin_id=plugin_id, kind="tesseract")
+async def plugin_latest_tesseract_install(plugin_id: str):
+    return await _latest_install_task_payload(plugin_id=plugin_id, kind="tesseract")
 
 
 @router.get("/plugin/{plugin_id}/ui-api/tesseract/install/{task_id}")
-async def galgame_plugin_get_tesseract_install(plugin_id: str, task_id: str):
-    return _get_install_task_payload(plugin_id=plugin_id, kind="tesseract", task_id=task_id)
+async def plugin_get_tesseract_install(plugin_id: str, task_id: str):
+    return await _get_install_task_payload(plugin_id=plugin_id, kind="tesseract", task_id=task_id)
 
 
 @router.get("/plugin/{plugin_id}/ui-api/tesseract/install/{task_id}/stream")
-async def galgame_plugin_stream_tesseract_install(
+async def plugin_stream_tesseract_install(
     plugin_id: str,
     task_id: str,
     request: Request,
 ):
-    return _install_stream_response(
+    return await _install_stream_response(
         plugin_id=plugin_id,
         kind="tesseract",
         task_id=task_id,
@@ -544,7 +726,7 @@ async def galgame_plugin_stream_tesseract_install(
 
 
 @router.post("/plugin/{plugin_id}/ui-api/rapidocr-models")
-async def galgame_plugin_start_rapidocr_models_download(
+async def plugin_start_rapidocr_models_download(
     plugin_id: str,
     payload: InstallStartPayload,
     request: Request,
@@ -558,22 +740,22 @@ async def galgame_plugin_start_rapidocr_models_download(
 
 
 @router.get("/plugin/{plugin_id}/ui-api/rapidocr-models/latest")
-async def galgame_plugin_latest_rapidocr_models_download(plugin_id: str):
-    return _latest_install_task_payload(plugin_id=plugin_id, kind="rapidocr_models")
+async def plugin_latest_rapidocr_models_download(plugin_id: str):
+    return await _latest_install_task_payload(plugin_id=plugin_id, kind="rapidocr_models")
 
 
 @router.get("/plugin/{plugin_id}/ui-api/rapidocr-models/{task_id}")
-async def galgame_plugin_get_rapidocr_models_download(plugin_id: str, task_id: str):
-    return _get_install_task_payload(plugin_id=plugin_id, kind="rapidocr_models", task_id=task_id)
+async def plugin_get_rapidocr_models_download(plugin_id: str, task_id: str):
+    return await _get_install_task_payload(plugin_id=plugin_id, kind="rapidocr_models", task_id=task_id)
 
 
 @router.get("/plugin/{plugin_id}/ui-api/rapidocr-models/{task_id}/stream")
-async def galgame_plugin_stream_rapidocr_models_download(
+async def plugin_stream_rapidocr_models_download(
     plugin_id: str,
     task_id: str,
     request: Request,
 ):
-    return _install_stream_response(
+    return await _install_stream_response(
         plugin_id=plugin_id,
         kind="rapidocr_models",
         task_id=task_id,
@@ -590,68 +772,39 @@ _TUTORIAL_DEFAULTS = {
     "started_at": 0.0,
     "completed_at": 0.0,
 }
-_tutorial_store_instance: GalgameStore | None = None
+_tutorial_store_instance: Path | None = None
+_tutorial_store_instances: dict[str, Path] = {}
+_tutorial_store_lock = threading.RLock()
+_tutorial_migrated_paths: set[Path] = set()
 
 
-def _copy_legacy_tutorial_progress_if_missing(
-    legacy_store_path: Path,
-    runtime_store_path: Path,
-) -> None:
-    legacy_store = GalgameStore(legacy_store_path, logger)
-    legacy_progress = legacy_store.load_tutorial_progress()
-    if not isinstance(legacy_progress, dict):
+def _run_tutorial_migrations(store_path: Path, *, plugin_id: str) -> None:
+    if store_path in _tutorial_migrated_paths:
         return
-    runtime_store = GalgameStore(runtime_store_path, logger)
-    if runtime_store.load_tutorial_progress() is not None:
-        return
-    runtime_store.save_tutorial_progress(legacy_progress)
+    for hook in install_registry.tutorial_migration_hooks_for(plugin_id):
+        hook(store_path)
+    _tutorial_migrated_paths.add(store_path)
 
 
-def _tutorial_store() -> GalgameStore:
+def _tutorial_store(plugin_id: str = "") -> Path:
     global _tutorial_store_instance
-    if _tutorial_store_instance is not None:
-        return _tutorial_store_instance
-    plugin_dir = Path(__file__).resolve().parent
-    legacy_store_path = plugin_dir / "data" / "galgame_store.json"
-    runtime_store_path = (
-        resolve_runtime_data_root()
-        / "plugins"
-        / "galgame_plugin"
-        / "data"
-        / "galgame_store.json"
-    )
-    store_path = runtime_store_path
-    if legacy_store_path.exists() and not runtime_store_path.exists():
-        try:
-            runtime_store_path.parent.mkdir(parents=True, exist_ok=True)
-            runtime_store_path.write_bytes(legacy_store_path.read_bytes())
-        except OSError:
-            logger.warning(
-                "tutorial progress store migration failed; using legacy store",
-                exc_info=True,
-            )
-            store_path = legacy_store_path
-    elif legacy_store_path.exists():
-        try:
-            _copy_legacy_tutorial_progress_if_missing(
-                legacy_store_path,
-                runtime_store_path,
-            )
-        except OSError:
-            logger.warning(
-                "tutorial progress store merge skipped; keeping runtime store",
-                exc_info=True,
-            )
-        except (TypeError, ValueError):
-            logger.warning(
-                "tutorial progress store merge skipped; keeping runtime store",
-                exc_info=True,
-            )
-    _tutorial_store_instance = GalgameStore(
-        store_path,
-        logger,
-    )
-    return _tutorial_store_instance
+    normalized_plugin_id = _normalize_registered_plugin_id(plugin_id) if plugin_id else ""
+    with _tutorial_store_lock:
+        if not normalized_plugin_id and _tutorial_store_instance is not None:
+            return _tutorial_store_instance
+        existing = _tutorial_store_instances.get(normalized_plugin_id)
+        if existing is not None:
+            return existing
+        store_dir = resolve_runtime_data_root() / "server" / "plugin_install"
+        if normalized_plugin_id:
+            store_dir = store_dir / normalized_plugin_id
+        store_path = store_dir / "tutorial_progress.json"
+        _run_tutorial_migrations(store_path, plugin_id=normalized_plugin_id)
+        if normalized_plugin_id:
+            _tutorial_store_instances[normalized_plugin_id] = store_path
+        else:
+            _tutorial_store_instance = store_path
+        return store_path
 
 
 class TutorialProgressPayload(BaseModel):
@@ -662,17 +815,30 @@ class TutorialProgressPayload(BaseModel):
     completed_at: float = 0.0
 
 
-def _read_tutorial_progress() -> dict[str, Any] | None:
+def _read_tutorial_progress(plugin_id: str = "") -> dict[str, Any] | None:
+    store_path = _tutorial_store(plugin_id)
+    if not store_path.is_file():
+        return None
     try:
-        return _tutorial_store().load_tutorial_progress()
+        raw = json.loads(store_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
     except Exception:
         logger.warning("tutorial progress read failed", exc_info=True)
         raise
+    return raw if isinstance(raw, dict) else None
 
 
-def _write_tutorial_progress(progress: dict[str, Any]) -> None:
+def _write_tutorial_progress(progress: dict[str, Any], plugin_id: str = "") -> None:
+    store_path = _tutorial_store(plugin_id)
+    store_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = store_path.with_suffix(store_path.suffix + ".tmp")
     try:
-        _tutorial_store().save_tutorial_progress(progress)
+        tmp_path.write_text(
+            json.dumps(dict(progress), ensure_ascii=False, sort_keys=True, indent=2),
+            encoding="utf-8",
+        )
+        tmp_path.replace(store_path)
     except Exception:
         logger.warning("tutorial progress write failed", exc_info=True)
         raise
@@ -707,9 +873,9 @@ def _normalize_tutorial_progress(raw: dict[str, Any] | None) -> dict[str, Any]:
 
 @router.get("/plugin/{plugin_id}/ui-api/tutorial/status")
 async def get_tutorial_status(plugin_id: str) -> JSONResponse:
-    _ensure_has_install(plugin_id)
+    _ensure_tutorial_enabled(plugin_id)
     try:
-        raw = _read_tutorial_progress()
+        raw = await _run_blocking(_read_tutorial_progress, plugin_id)
     except Exception:
         logger.error("tutorial progress status read failed", exc_info=True)
         return JSONResponse(
@@ -724,14 +890,10 @@ async def save_tutorial_progress(
     plugin_id: str,
     body: TutorialProgressPayload,
 ) -> JSONResponse:
-    _ensure_has_install(plugin_id)
-    payload = (
-        body.model_dump(exclude_unset=True)
-        if hasattr(body, "model_dump")
-        else body.dict(exclude_unset=True)
-    )
+    _ensure_tutorial_enabled(plugin_id)
+    payload = body.model_dump(exclude_unset=True)
     try:
-        current = _normalize_tutorial_progress(_read_tutorial_progress())
+        current = _normalize_tutorial_progress(await _run_blocking(_read_tutorial_progress, plugin_id))
     except Exception:
         logger.error("tutorial progress save aborted after read failure", exc_info=True)
         return JSONResponse(
@@ -754,7 +916,7 @@ async def save_tutorial_progress(
     if not current["completed"] and not current["skipped"]:
         current["completed_at"] = _TUTORIAL_DEFAULTS["completed_at"]
     try:
-        _write_tutorial_progress(current)
+        await _run_blocking(_write_tutorial_progress, current, plugin_id)
     except Exception:
         logger.warning("tutorial progress save failed", exc_info=True)
         return JSONResponse(

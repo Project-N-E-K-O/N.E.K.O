@@ -6,6 +6,8 @@
     "entries.open_ui.description":  "study_companion의 정적 UI 경로를 반환합니다.",
     "entries.status.name":  "학습 컴패니언 상태",
     "entries.status.description":  "실행 상태, 의존성, 최근 학습 상호작용을 반환합니다.",
+    "entries.neko_communication_status.name":  "Neko 실시간 통신 상태",
+    "entries.neko_communication_status.description":  "Neko 실시간 통신이 활성화되어 있는지 반환합니다.",
     "entries.dependency_status.name":  "학습 OCR 의존성 상태",
     "entries.dependency_status.description":  "study_companion에서 사용하는 RapidOCR, Tesseract, 캡처 의존성을 확인합니다.",
     "entries.ocr_snapshot.name":  "학습 OCR 스냅샷",

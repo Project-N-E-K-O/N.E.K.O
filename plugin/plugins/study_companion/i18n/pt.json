@@ -6,6 +6,8 @@
     "entries.open_ui.description":  "Retorna o caminho da interface estática do study_companion.",
     "entries.status.name":  "Status do Study Companion",
     "entries.status.description":  "Retorna o status de execução, dependências e interações recentes de estudo.",
+    "entries.neko_communication_status.name":  "Status da comunicação com Neko",
+    "entries.neko_communication_status.description":  "Retorna se a comunicação em tempo real com Neko está ativa.",
     "entries.dependency_status.name":  "Status das dependências de OCR",
     "entries.dependency_status.description":  "Inspeciona RapidOCR, Tesseract e dependências de captura usadas pelo study_companion.",
     "entries.ocr_snapshot.name":  "Captura OCR de estudo",

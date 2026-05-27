@@ -158,6 +158,26 @@
         }));
     }
 
+    // Report REAL audio playback boundaries to the backend so the proactive
+    // inject gate keys off actual playback (queue drained) rather than the
+    // realtime API's response.done (generation finished while audio is still
+    // buffered/playing). Rides the same ws as every other action, including
+    // the Electron chat.html WSProxy/IPC bridge → Pet real ws. readyState
+    // may be undefined on a proxy socket — send anyway (try/catch guards).
+    function sendVoicePlaybackSignal(action, turnId) {
+        try {
+            var sock = S.socket;
+            if (sock && typeof sock.send === 'function' &&
+                (sock.readyState === 1 || typeof sock.readyState === 'undefined')) {
+                sock.send(JSON.stringify({
+                    action: action,
+                    turnId: turnId || null,
+                    source: 'audio_playback'
+                }));
+            }
+        } catch (_) { /* noop — best-effort signal */ }
+    }
+
     function getActiveAvatarModelType() {
         // 优先按当前可见容器判断，避免 Live2D 全局引用残留时抢走 VRM/MMD 的口型同步。
         var vrmContainer = document.getElementById('vrm-container');
@@ -307,6 +327,7 @@
             turnId: normalizedTurnId,
             source: 'audio_playback'
         });
+        sendVoicePlaybackSignal('voice_play_start', normalizedTurnId);
     }
 
     function dispatchAssistantSpeechEnd(turnId) {
@@ -326,6 +347,7 @@
             turnId: normalizedTurnId,
             source: 'audio_playback'
         });
+        sendVoicePlaybackSignal('voice_play_end', normalizedTurnId);
     }
 
     function resolveAssistantSpeechCancelTurnId() {
@@ -395,6 +417,9 @@
             turnId: normalizedTurnId,
             source: source || 'audio_playback'
         });
+        // Cancel/interruption also means audio playback has stopped → open
+        // the proactive gate (same as a natural end).
+        sendVoicePlaybackSignal('voice_play_end', normalizedTurnId);
     }
 
     function clearAssistantTurnCompletionFallback() {

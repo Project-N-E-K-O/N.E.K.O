@@ -455,6 +455,11 @@ async def test_overwrite_interrupts_old_task_with_status():
     service, push_calls = _make_service()
     service.configure({"task_timeout_seconds": 5.0})
     service._client = _FakeClient()
+    # This test exercises the interrupt-with-status path in isolation; the
+    # separate anti-thrash floor (_OVERWRITE_MIN_SURVIVAL_S, exercised by its
+    # own test) would otherwise reject this immediate overwrite. Disable it
+    # here so the overwrite reaches the interrupt branch deterministically.
+    service._OVERWRITE_MIN_SURVIVAL_S = 0.0
 
     # Start old task.
     old_runner = asyncio.create_task(

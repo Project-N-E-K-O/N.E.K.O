@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 from datetime import datetime
+import math
 from pathlib import Path
 import threading
 import time
@@ -32,6 +33,7 @@ from .constants import (
 )
 from .doc_exporter import DocExporter, normalize_format
 from .checkin_manager import CheckinManager
+from ._event_bus import StudyEvent, StudyEventBus
 from .pomodoro_timer import PomodoroTimer
 from .screen_classifier import classify_screen_from_ocr
 from .models import (
@@ -74,6 +76,42 @@ from .ui_api import build_contribution_settings_payload, build_knowledge_map_pay
 from .ui_api import build_habit_dashboard_payload, build_pomodoro_status_payload
 
 
+def _register_install_routes() -> None:
+    from plugin.server.install_registry import (
+        InstallKindRegistration,
+        register_install_plugin,
+    )
+
+    register_install_plugin(
+        "study_companion",
+        install_kinds={
+            "rapidocr_models": InstallKindRegistration(
+                entry_id="study_download_rapidocr_models",
+                label="RapidOCR Models",
+                queued_message="RapidOCR model download queued",
+            ),
+            "tesseract": InstallKindRegistration(
+                entry_id="study_install_tesseract",
+                label="Tesseract",
+                queued_message="Tesseract install queued",
+            ),
+        },
+        ui_i18n_dir=Path(__file__).resolve().parent / "i18n",
+        tutorial_enabled=True,
+    )
+
+
+try:
+    _register_install_routes()
+except Exception:  # noqa: BLE001 - route registration should not block package import.
+    from plugin.logging_config import get_logger
+
+    get_logger("study.install_routes").warning(
+        "study install route registration failed",
+        exc_info=True,
+    )
+
+
 def _validated_pomodoro_focus_minutes(
     config: StudyConfig, focus_minutes: Any | None
 ) -> int:
@@ -85,6 +123,39 @@ def _validated_pomodoro_focus_minutes(
     except (TypeError, ValueError):
         return default
     return parsed if 1 <= parsed <= 120 else default
+
+
+_MASTERY_THRESHOLDS = (0.3, 0.5, 0.7, 0.85)
+_REVIEW_DUE_INTERVAL_SECONDS = 1800.0
+
+
+def _detect_mastery_threshold_crossed(before: float, after: float) -> str | None:
+    for threshold in _MASTERY_THRESHOLDS:
+        if (before < threshold <= after) or (before >= threshold > after):
+            return str(threshold)
+    return None
+
+
+def _event_ratio(value: Any, default: float = 0.0) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        number = default
+    if not math.isfinite(number):
+        number = default
+    if number > 1.0:
+        number /= 100.0
+    return max(0.0, min(1.0, number))
+
+
+def _event_nonnegative_float(value: Any, default: float = 0.0) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        number = default
+    if not math.isfinite(number):
+        number = default
+    return max(0.0, number)
 
 
 @neko_plugin
@@ -124,6 +195,8 @@ class StudyCompanionPlugin(NekoPluginBase):
         self._pomodoro_timer: PomodoroTimer | None = None
         self._supervision: SupervisionController | None = None
         self._memory_habit_bridge: MemoryHabitBridge | None = None
+        self._event_bus: StudyEventBus | None = None
+        self._review_due_task: asyncio.Task[None] | None = None
 
     @lifecycle(id="startup")
     async def startup(self, **_):
@@ -161,6 +234,11 @@ class StudyCompanionPlugin(NekoPluginBase):
                 memory=self._memory_deck_store,
                 habits=self._habit_store,
                 checkin_timezone=self._cfg.checkin.streak_timezone,
+            )
+            self._event_bus = (
+                StudyEventBus(plugin_ctx=self.ctx)
+                if self._cfg.communication.enabled
+                else None
             )
             restored = await asyncio.to_thread(
                 self._store.load_state, build_initial_state(mode=self._cfg.mode)
@@ -202,6 +280,7 @@ class StudyCompanionPlugin(NekoPluginBase):
             )
             self._sync_doc_export_entry()
             await self._persist_state()
+            self._start_review_due_task()
             status_payload = await asyncio.to_thread(self._status_payload)
             return Ok({"status": STATUS_READY, "result": status_payload})
         except asyncio.CancelledError:
@@ -215,6 +294,7 @@ class StudyCompanionPlugin(NekoPluginBase):
             return Err(SdkError("failed to start study_companion"))
 
     async def _cleanup_after_failed_startup(self) -> None:
+        await self._cancel_review_due_task()
         agent = self._agent
         self._agent = None
         self._ocr_pipeline = None
@@ -225,6 +305,7 @@ class StudyCompanionPlugin(NekoPluginBase):
         self._pomodoro_timer = None
         self._supervision = None
         self._memory_habit_bridge = None
+        self._event_bus = None
         try:
             self.clear_list_actions()
         except Exception as exc:
@@ -251,6 +332,7 @@ class StudyCompanionPlugin(NekoPluginBase):
 
     @lifecycle(id="shutdown")
     async def shutdown(self, **_):
+        await self._cancel_review_due_task()
         try:
             self.unregister_dynamic_entry("study_export_notes")
         except Exception as exc:
@@ -262,6 +344,50 @@ class StudyCompanionPlugin(NekoPluginBase):
         await asyncio.to_thread(self._store.save_state, self._state)
         await asyncio.to_thread(self._store.close)
         return Ok({"status": STATUS_STOPPED})
+
+    def _start_review_due_task(self) -> None:
+        if self._event_bus is None:
+            return
+        if self._review_due_task is not None and not self._review_due_task.done():
+            return
+        self._review_due_task = asyncio.create_task(self._run_review_due_loop())
+        self._review_due_task.add_done_callback(self._on_review_due_task_done)
+
+    async def _cancel_review_due_task(self) -> None:
+        task = self._review_due_task
+        self._review_due_task = None
+        if task is None:
+            return
+        if task.done():
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                self.logger.warning("study review due task cleanup failed: {}", exc)
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            self.logger.warning("study review due task cleanup failed: {}", exc)
+
+    def _on_review_due_task_done(self, task: asyncio.Task[None]) -> None:
+        if self._review_due_task is task:
+            self._review_due_task = None
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception as exc:
+            self.logger.warning("study review due task failed: {}", exc)
+
+    async def _run_review_due_loop(self) -> None:
+        while True:
+            await self._emit_review_due_if_needed()
+            await asyncio.sleep(max(0.0, _REVIEW_DUE_INTERVAL_SECONDS))
 
     def _refresh_dependency_status(self) -> dict[str, Any]:
         status = build_dependency_status(self._cfg)
@@ -553,6 +679,7 @@ class StudyCompanionPlugin(NekoPluginBase):
                 return dict(self._state.last_screen_classification)
         with self._lock:
             recent = list(self._state.recent_screen_classifications)
+            previous = dict(self._state.last_screen_classification)
         classification = classify_screen_from_ocr(
             normalized, window_title=window_title, recent_classifications=recent
         )
@@ -568,6 +695,23 @@ class StudyCompanionPlugin(NekoPluginBase):
                     payload=payload,
                     seed=self._state.session_summary_seed,
                 )
+        previous_type = str(previous.get("screen_type") or "").strip()
+        new_type = str(payload.get("screen_type") or "").strip()
+        if (
+            self._event_bus is not None
+            and self._event_bus.should_schedule_screen_context(new_type, previous_type)
+        ):
+            self._event_bus.schedule_emit(
+                StudyEvent(
+                    name="screen_context_changed",
+                    payload={
+                        "screen_type": new_type,
+                        "confidence": payload.get("confidence", 0.0),
+                        "ocr_summary": normalized[:200],
+                        "previous_type": previous_type,
+                    },
+                )
+            )
         return payload
 
     async def _build_learning_context(
@@ -797,8 +941,19 @@ class StudyCompanionPlugin(NekoPluginBase):
             ).strip()
             or "default"
         )
+        mastery_before: float | None = 0.0
+        if topic:
+            try:
+                mastery_before = await asyncio.to_thread(
+                    self._knowledge_tracker.get_mastery, topic
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    "study knowledge tracker mastery-before read failed: {}", exc
+                )
+                mastery_before = None
         try:
-            await asyncio.to_thread(
+            tracking_result = await asyncio.to_thread(
                 self._knowledge_tracker.on_answer,
                 topic_id=topic,
                 question=question_payload,
@@ -809,6 +964,44 @@ class StudyCompanionPlugin(NekoPluginBase):
             )
         except Exception as exc:
             self.logger.warning("study knowledge tracker persistence failed: {}", exc)
+            return
+        tracked_topic = str(tracking_result.get("topic_id") or topic).strip()
+        mastery_after: float | None = None
+        if tracked_topic:
+            try:
+                mastery_after = await asyncio.to_thread(
+                    self._knowledge_tracker.get_mastery, tracked_topic
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    "study knowledge tracker mastery-after read failed: {}", exc
+                )
+        crossed = (
+            _detect_mastery_threshold_crossed(mastery_before, mastery_after)
+            if mastery_before is not None and mastery_after is not None
+            else None
+        )
+        if (
+            self._event_bus is not None
+            and crossed is not None
+            and mastery_before is not None
+            and mastery_after is not None
+        ):
+            self._event_bus.schedule_emit(
+                StudyEvent(
+                    name="mastery_updated",
+                    payload={
+                        "topic": tracked_topic,
+                        "mastery": mastery_after,
+                        "mastery_before": mastery_before,
+                        "direction": "up"
+                        if mastery_after > mastery_before
+                        else "down",
+                        "crossed_threshold": crossed,
+                        "evidence_count": 1,
+                    },
+                )
+            )
 
     @staticmethod
     def _guess_track_topic(reply: TutorReply) -> str:
@@ -897,6 +1090,237 @@ class StudyCompanionPlugin(NekoPluginBase):
     async def study_status(self, **_):
         payload = await asyncio.to_thread(self._status_payload)
         return Ok(payload)
+
+    def _require_event_bus(self) -> StudyEventBus:
+        if self._event_bus is None:
+            raise RuntimeError(
+                "Neko communication is not enabled (communication.enabled=false)"
+            )
+        return self._event_bus
+
+    async def _emit_review_due_if_needed(self) -> None:
+        bus = self._event_bus
+        if bus is None:
+            return
+        try:
+            payload = await asyncio.to_thread(self._build_review_due_payload)
+            if not payload:
+                return
+            bus.schedule_emit(StudyEvent(name="review_due", payload=payload))
+        except Exception as exc:
+            self.logger.warning("study review due event emit failed: {}", exc)
+
+    def _build_review_due_payload(self) -> dict[str, Any]:
+        memory_due_count = int(self._memory_deck_store.count_due_reviews() or 0)
+        topic_due_count = int(self._knowledge_tracker.count_due_reviews() or 0)
+        due_count = memory_due_count + topic_due_count
+        if due_count <= 0:
+            return {}
+        memory_reviews = self._memory_deck_store.due_reviews(limit=50)
+        topic_reviews = self._knowledge_tracker.get_review_queue(limit=50)
+        urgent_count = self._count_urgent_due(memory_reviews) + self._count_urgent_due(
+            topic_reviews
+        )
+        topics = self._get_due_topics(memory_reviews, topic_reviews)
+        return {
+            "due_count": due_count,
+            "urgent_count": urgent_count,
+            "topics": topics,
+            "suggestion": (
+                f"Suggested review time: "
+                f"{max(5, due_count * 2)} minutes for "
+                f"{due_count} card(s)."
+            ),
+        }
+
+    @staticmethod
+    def _count_urgent_due(reviews: list[dict[str, Any]]) -> int:
+        return sum(
+            1 for item in reviews if float(item.get("overdue_days") or 0.0) > 0
+        )
+
+    def _get_due_topics(
+        self,
+        memory_reviews: list[dict[str, Any]] | None = None,
+        topic_reviews: list[dict[str, Any]] | None = None,
+    ) -> list[str]:
+        topics: list[str] = []
+        memory_items = (
+            memory_reviews
+            if memory_reviews is not None
+            else self._memory_deck_store.due_reviews(limit=50)
+        )
+        for item in memory_items:
+            deck = item.get("deck") or {}
+            topic = str(deck.get("name") or item.get("topic_id") or "").strip()
+            if topic and topic not in topics:
+                topics.append(topic)
+            if len(topics) >= 5:
+                return topics
+        topic_items = (
+            topic_reviews
+            if topic_reviews is not None
+            else self._knowledge_tracker.get_review_queue(limit=50)
+        )
+        for item in topic_items:
+            topic_payload = (
+                item.get("topic") if isinstance(item.get("topic"), dict) else {}
+            )
+            topic = str(
+                topic_payload.get("name")
+                or topic_payload.get("id")
+                or item.get("topic_id")
+                or ""
+            ).strip()
+            if topic and topic not in topics:
+                topics.append(topic)
+            if len(topics) >= 5:
+                return topics
+        return topics
+
+    async def _emit_answer_evaluated_event(
+        self,
+        *,
+        verdict: str,
+        score: Any,
+        question_summary: str,
+        user_answer_summary: str,
+        correction_hint: str = "",
+        topic: str = "",
+        mastery_before: float = -1.0,
+        mastery_after: float = -1.0,
+    ) -> None:
+        bus = self._event_bus
+        if bus is None:
+            return
+        bus.schedule_emit(
+            StudyEvent(
+                name="answer_evaluated",
+                payload={
+                    "verdict": str(verdict or "").strip(),
+                    "score": _event_ratio(score),
+                    "question_summary": str(question_summary or "").strip()[:200],
+                    "user_answer_summary": str(user_answer_summary or "").strip()[
+                        :200
+                    ],
+                    "correction_hint": str(correction_hint or "").strip()[:200],
+                    "topic": str(topic or "").strip(),
+                    "mastery_before": mastery_before,
+                    "mastery_after": mastery_after,
+                },
+            )
+        )
+
+    async def _emit_memory_review_answer_event(
+        self, payload: dict[str, Any]
+    ) -> None:
+        item = payload.get("item") or {}
+        review = payload.get("review_record") or {}
+        deck = await asyncio.to_thread(
+            self._memory_deck_store.get_deck, str(item.get("deck_id") or "")
+        ) or {}
+        correct = bool(review.get("correct"))
+        rating = payload.get("rating") or review.get("rating") or ""
+        await self._emit_answer_evaluated_event(
+            verdict="correct" if correct else "incorrect",
+            score=1.0 if correct else 0.0,
+            question_summary=str(item.get("prompt") or item.get("front") or ""),
+            user_answer_summary=f"rating={rating}",
+            correction_hint=str(review.get("error_type") or ""),
+            topic=str(deck.get("subject") or deck.get("name") or ""),
+        )
+
+    async def _emit_recitation_answer_event(
+        self, payload: dict[str, Any]
+    ) -> None:
+        diff_data = payload.get("diff") or {}
+        review = payload.get("review") or {}
+        item = review.get("item") or {}
+        deck = await asyncio.to_thread(
+            self._memory_deck_store.get_deck, str(item.get("deck_id") or "")
+        ) or {}
+        score = _event_ratio(diff_data.get("score"))
+        if score >= 0.8:
+            verdict = "correct"
+        elif score >= 0.5:
+            verdict = "partial"
+        else:
+            verdict = "incorrect"
+        attempt = payload.get("attempt") or {}
+        await self._emit_answer_evaluated_event(
+            verdict=verdict,
+            score=score,
+            question_summary=str(item.get("prompt") or item.get("front") or ""),
+            user_answer_summary=str(attempt.get("user_input_text") or ""),
+            correction_hint=(
+                f"Missing: {diff_data.get('missing_count', 0)}, "
+                f"extra: {diff_data.get('extra_count', 0)}"
+            ),
+            topic=str(deck.get("subject") or deck.get("name") or ""),
+        )
+
+    async def _emit_session_summarized_event(
+        self, payload: dict[str, Any]
+    ) -> None:
+        bus = self._event_bus
+        if bus is None:
+            return
+        with self._lock:
+            seed = dict(self._state.session_summary_seed)
+        answer_count = int(seed.get("answer_count") or 0)
+        verdict_counts = dict(seed.get("verdict_counts") or {})
+        correct = int(verdict_counts.get("correct") or 0)
+        fallback_correct_rate = (correct / answer_count) if answer_count > 0 else 0.0
+        bus.schedule_emit(
+            StudyEvent(
+                name="session_summarized",
+                payload={
+                    "duration_minutes": _event_nonnegative_float(
+                        payload.get("duration_minutes"), 0.0
+                    ),
+                    "questions_attempted": int(
+                        _event_nonnegative_float(
+                            payload.get("questions_attempted"), float(answer_count)
+                        )
+                    ),
+                    "correct_rate": _event_ratio(
+                        payload.get("correct_rate", fallback_correct_rate)
+                    ),
+                    "topics_studied": [seed.get("last_topic")]
+                    if seed.get("last_topic")
+                    else [],
+                    "key_insight": str(
+                        payload.get("key_insight")
+                        or payload.get("summary")
+                        or payload.get("reply")
+                        or ""
+                    ).strip()[:240],
+                },
+            )
+        )
+
+    @plugin_entry(
+        id="study_neko_communication_status",
+        name=tr(
+            "entries.neko_communication_status.name",
+            default="Neko Communication Status",
+        ),
+        description=tr(
+            "entries.neko_communication_status.description",
+            default="Return whether real-time neko communication is active.",
+        ),
+        input_schema={"type": "object", "properties": {}},
+        llm_result_fields=["available", "events_emitted", "events_blocked"],
+    )
+    async def study_neko_communication_status(self, **_):
+        bus = self._event_bus
+        return Ok(
+            {
+                "available": bus is not None,
+                "events_emitted": bus.emit_count if bus is not None else 0,
+                "events_blocked": bus.block_count if bus is not None else 0,
+            }
+        )
 
     def _require_habit_components(
         self,
@@ -1980,6 +2404,12 @@ class StudyCompanionPlugin(NekoPluginBase):
                         "applied": 0,
                         "error": str(bridge_exc),
                     }
+            try:
+                await self._emit_memory_review_answer_event(payload)
+            except Exception as emit_exc:
+                self.logger.warning(
+                    "memory review event emission degraded: {}", emit_exc
+                )
             return Ok(payload)
         except Exception as exc:
             return Err(SdkError(str(exc)))
@@ -2040,6 +2470,12 @@ class StudyCompanionPlugin(NekoPluginBase):
                         "applied": 0,
                         "error": str(bridge_exc),
                     }
+            try:
+                await self._emit_recitation_answer_event(payload)
+            except Exception as emit_exc:
+                self.logger.warning(
+                    "memory recitation event emission degraded: {}", emit_exc
+                )
             return Ok(payload)
         except Exception as exc:
             return Err(SdkError(str(exc)))
@@ -2538,6 +2974,35 @@ class StudyCompanionPlugin(NekoPluginBase):
         payload["screen_classification"] = (
             tutor_context.get("screen_classification") or {}
         )
+        topic = str(
+            payload.get("topic")
+            or question_payload.get("topic")
+            or tutor_context.get("topic")
+            or ""
+        ).strip()
+        try:
+            mastery_after = (
+                await asyncio.to_thread(self._knowledge_tracker.get_mastery, topic)
+                if topic
+                else -1.0
+            )
+        except Exception as exc:
+            self.logger.warning("study answer mastery enrichment failed: {}", exc)
+            mastery_after = -1.0
+        await self._emit_answer_evaluated_event(
+            verdict=str(payload.get("verdict") or ""),
+            score=payload.get("score", 0.0),
+            question_summary=resolved_question,
+            user_answer_summary=answer_text,
+            correction_hint=str(
+                payload.get("correction_hint")
+                or payload.get("feedback")
+                or payload.get("next_action")
+                or ""
+            ),
+            topic=topic,
+            mastery_after=mastery_after,
+        )
         return Ok(payload)
 
     @plugin_entry(
@@ -2595,6 +3060,7 @@ class StudyCompanionPlugin(NekoPluginBase):
         payload["screen_classification"] = (
             tutor_context.get("screen_classification") or {}
         )
+        await self._emit_session_summarized_event(payload)
         return Ok(payload)
 
     @plugin_entry(
@@ -2672,9 +3138,10 @@ class StudyCompanionPlugin(NekoPluginBase):
             self._rapidocr_models_in_progress = True
         run_id = self._resolve_current_run_id(kwargs)
         try:
-            from plugin.plugins.galgame_plugin.rapidocr_support import (
+            from plugin.plugins._shared.rapidocr.rapidocr_support import (
                 download_rapidocr_models,
             )
+            from plugin.server.routes._install_task_store import update_install_task_state
 
             result = await download_rapidocr_models(
                 logger=self.logger,
@@ -2687,6 +3154,7 @@ class StudyCompanionPlugin(NekoPluginBase):
                 plugin_id=self.plugin_id,
                 progress_callback=self._resolve_install_progress_callback(run_id),
                 before_completed_callback=lambda: None,
+                install_state_updater=update_install_task_state,
             )
             self._refresh_dependency_status()
             await self._persist_state()

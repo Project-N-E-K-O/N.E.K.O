@@ -6,6 +6,8 @@
     "entries.open_ui.description":  "Вернуть путь к статическому интерфейсу study_companion.",
     "entries.status.name":  "Статус Study Companion",
     "entries.status.description":  "Вернуть состояние выполнения, зависимости и недавние учебные взаимодействия.",
+    "entries.neko_communication_status.name":  "Статус связи Neko",
+    "entries.neko_communication_status.description":  "Вернуть, активна ли связь с Neko в реальном времени.",
     "entries.dependency_status.name":  "Статус OCR-зависимостей",
     "entries.dependency_status.description":  "Проверить RapidOCR, Tesseract и зависимости захвата, используемые study_companion.",
     "entries.ocr_snapshot.name":  "OCR-снимок для учебы",

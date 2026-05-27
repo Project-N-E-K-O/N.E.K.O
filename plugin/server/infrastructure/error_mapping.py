@@ -8,7 +8,8 @@ from plugin.server.domain.errors import ServerDomainError
 
 
 def raise_http_from_domain(error: ServerDomainError, *, logger: Any) -> NoReturn:
-    logger.warning(
+    log = getattr(logger, error.log_level, logger.warning)
+    log(
         "Domain error: code={}, status_code={}, message={}",
         error.code,
         error.status_code,

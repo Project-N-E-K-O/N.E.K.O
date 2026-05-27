@@ -175,6 +175,7 @@ class PluginContextProtocol(Protocol):
         target_lanlan: str | None = None,
         metadata: dict[str, object] | None = None,
         priority: int = 0,
+        coalesce_key: str | None = None,
         # legacy (deprecated; translated by host adapter):
         message_type: str | None = None,
         description: str | None = None,

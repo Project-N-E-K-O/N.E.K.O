@@ -112,6 +112,9 @@ def test_knowledge_tracker_on_answer_updates_mastery_wrong_question_and_fsrs(
         assert result["mastery"]["topic_id"] == "quadratic_vertex_form"
         assert result["wrong_question_id"]
         assert store.get_latest_mastery("quadratic_vertex_form") is not None
+        assert tracker.get_mastery("二次函数顶点式") == tracker.get_mastery(
+            "quadratic_vertex_form"
+        )
         assert store.get_fsrs_card("quadratic_vertex_form") is not None
         assert (
             store.list_wrong_questions(topic_id="quadratic_vertex_form")[0][

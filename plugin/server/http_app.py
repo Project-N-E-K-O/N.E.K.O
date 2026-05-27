@@ -48,21 +48,31 @@ def _can_register_faulthandler_signal() -> bool:
     return hasattr(faulthandler, "register") and hasattr(signal, "SIGUSR1")
 
 
-def _include_optional_router(app: FastAPI, module_name: str, description: str) -> None:
+def _include_optional_router(
+    app: FastAPI,
+    *,
+    module_name: str,
+    router_name: str = "router",
+    label: str,
+) -> None:
     try:
         module = importlib.import_module(module_name)
     except ImportError as exc:
         logger.warning(
             "{} unavailable, endpoints will be 404: err_type={}, err={}",
-            description,
+            label,
             type(exc).__name__,
             str(exc),
         )
         return
 
-    router = getattr(module, "router", None)
+    router = getattr(module, router_name, None)
     if router is None:
-        logger.warning("{} unavailable, endpoints will be 404: missing router", description)
+        logger.error(
+            "{} unavailable, endpoints will be 404: missing {}",
+            label,
+            router_name,
+        )
         return
 
     app.include_router(router)
@@ -195,13 +205,13 @@ def build_plugin_server_app(title: str = "N.E.K.O User Plugin Server") -> FastAP
     # import-time failures must not prevent the base plugin server from starting.
     _include_optional_router(
         app,
-        "plugin.plugins.galgame_plugin.install_routes",
-        "galgame install routes",
+        module_name="plugin.server.routes.plugin_install",
+        label="plugin install routes",
     )
     _include_optional_router(
         app,
-        "plugin.plugins.bilibili_danmaku.i18n_routes",
-        "bilibili i18n routes",
+        module_name="plugin.plugins.bilibili_danmaku.i18n_routes",
+        label="bilibili i18n routes",
     )
     app.include_router(plugin_cli_router)
     app.include_router(llm_tools_router)

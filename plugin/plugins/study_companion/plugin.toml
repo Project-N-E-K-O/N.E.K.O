@@ -52,6 +52,9 @@ streak_timezone = "local"
 makeup_window_days = 3
 auto_derive_from_session = true
 
+[study_companion.communication]
+enabled = true
+
 [llm]
 llm_call_timeout_seconds = 30
 

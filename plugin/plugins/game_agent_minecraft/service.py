@@ -242,6 +242,14 @@ class GameAgentService:
     # cycle is needed to make the new value real.
     _TRANSPORT_KEYS = ("_ws_url", "_reconnect_interval")
 
+    # [ISSUE4c] Anti-thrash floor: minimum seconds a just-claimed task must run
+    # before an overwrite=True can interrupt it. Weak dialog LLMs (esp. realtime,
+    # which has no per-turn tool-call cap) set overwrite=True on nearly every
+    # minecraft_task call, interrupting each freshly-sent task ~1s later and
+    # thrashing mc-agent between goals. A genuine {MASTER_NAME} correction of a
+    # <2s-old task is implausible; sub-2s overwrites are the runaway signature.
+    _OVERWRITE_MIN_SURVIVAL_S = 2.0
+
     def set_lang(self, lang: str) -> None:
         """Set the locale used for every push_message cue + result
         summary this service emits. Called by the plugin facade after
@@ -378,7 +386,7 @@ class GameAgentService:
         # for an in-game action and the dialog LLM responds with chat
         # only (no function call) leaves the plugin in a state where
         # nudge fires never trigger — _last_task_finished_at stays 0,
-        # keep_going's ``> 0`` guard fails, and Kuro stands still with
+        # keep_going's ``> 0`` guard fails, and Neko stands still with
         # no self-prompt to push her into actually dispatching.
         self._last_task_finished_at = time.time()
         self._log_info("started, ws_url={}", self._ws_url)
@@ -605,6 +613,22 @@ class GameAgentService:
         async with self._pending_lock:
             if self._pending is not None:
                 if not overwrite:
+                    return None
+                # [ISSUE4c] Anti-thrash guard: even with overwrite=True, refuse
+                # to interrupt a task that has barely started (< _OVERWRITE_MIN_
+                # SURVIVAL_S). This is the structural stop for the dispatch storm
+                # — the busy-without-overwrite gate never engaged because the LLM
+                # set overwrite=True on every call. Give a freshly-sent task a
+                # floor of run time; a real correction arrives seconds later and
+                # clears the floor. Rejected → caller returns the busy summary.
+                age = time.time() - self._pending.start_time
+                if age < self._OVERWRITE_MIN_SURVIVAL_S:
+                    self._log_info(
+                        "overwrite rejected (anti-thrash): current task age={:.2f}s "
+                        "< {:.1f}s — keeping {!r}, refusing {!r}",
+                        age, self._OVERWRITE_MIN_SURVIVAL_S,
+                        self._pending.task_text[:40], task[:40],
+                    )
                     return None
                 # overwrite=True: wake the old handler with an
                 # "interrupted" verdict before claiming the slot.
@@ -1034,7 +1058,8 @@ class GameAgentService:
     async def _on_alert(self, data: Dict[str, Any]) -> None:
         """High-severity event from mc-agent (HP damage / death / etc.).
 
-        Forwarded with ``ai_behavior="respond"`` + ``priority=1`` so the
+        Forwarded with ``ai_behavior="respond"`` + ``priority=9`` (highest on
+        the repo-wide HIGHER=more-important scale) so the
         dialog LLM hears about a death immediately, not 5s later on a
         nudge tick. ``cause`` (when mc-agent could infer one — nearby
         hostile, lava, fall, etc.) is rendered as a hint inside the cue
@@ -1063,7 +1088,8 @@ class GameAgentService:
                 visibility=[],
                 ai_behavior="respond",
                 parts=[{"type": "text", "text": body}],
-                priority=1,
+                priority=9,
+                coalesce_key="mc_alert",
             )
         except Exception as exc:
             self._log_error(
@@ -1166,7 +1192,8 @@ class GameAgentService:
                 visibility=[],
                 ai_behavior="respond",
                 parts=[{"type": "text", "text": body}],
-                priority=2,
+                priority=7,
+                coalesce_key="mc_completion",
             )
         except Exception as exc:
             self._log_error(
@@ -1352,21 +1379,25 @@ class GameAgentService:
         only about not flooding main_server with redundant wake-ups,
         not about real-time conversation politeness.
         """
-        # Anchor thresholds tuned from user testing: 5/5 was too tight
-        # (stream of 5-line bursts), 12/12 was too loose. Settle on 8s
-        # for both in_progress + keep_going cooldowns. nudge tone is
-        # soft ("有新内容再说") so even when fires hit, she paces
-        # naturally instead of being forced to speak every tick.
-        #   in-progress: 8s elapsed + 8s cooldown
-        #   keep-going:  8s post-finish + 8s cooldown, max 90s window
-        # (90s window matches the bumped task_timeout_seconds default so
-        # the keep_going branch can still cover a freshly timed-out task
-        # before drifting into "user has moved on" territory)
+        # Anchor thresholds. in-progress: nudge 8s into a long task, then every
+        # 8s. keep-going: first self-prompt 8s after a task ends, then re-prompt
+        # every 10s while STILL idle.
+        #
+        # [ISSUE4a] The old design had a 90s ``_KEEP_GOING_MAX_WINDOW`` upper
+        # bound: once a task had been finished for >90s, keep_going stopped
+        # firing entirely ("user has moved on"). In practice that PERMANENTLY
+        # killed the autonomous self-prompt — after one >90s idle stretch she
+        # went dead-air until something external (mc-agent self-prompt / user)
+        # restarted her (the user-reported "self-prompt 停了很久才恢复"). For an
+        # autonomous game companion the desired behaviour is the opposite: keep
+        # nudging her to play as long as she's idle. So the upper bound is gone —
+        # keep_going now fires whenever idle, forever, paced by the cooldown.
+        # (User present/absent gating is main_server's proactive SM job, not the
+        # plugin's; the plugin only paces wake-ups.)
         _IN_PROGRESS_AFTER = 8.0
         _IN_PROGRESS_COOLDOWN = 8.0
         _KEEP_GOING_AFTER = 8.0
-        _KEEP_GOING_COOLDOWN = 8.0
-        _KEEP_GOING_MAX_WINDOW = 90.0
+        _KEEP_GOING_COOLDOWN = 10.0
 
         self._log_debug(
             "system_prompt_loop started (in_progress={}/{}, keep_going={}/{}, "
@@ -1375,8 +1406,14 @@ class GameAgentService:
             _KEEP_GOING_AFTER, _KEEP_GOING_COOLDOWN,
             self._system_prompt_interval,
         )
-        try:
-            while True:
+        # [ISSUE4a] Per-iteration try/except (NOT a recursive restart): a single
+        # tick raising used to fall through and RETURN, killing self-prompt for
+        # the rest of the session. We catch each iteration, log, briefly pause to
+        # avoid hot-spin, and CONTINUE the same loop — iterative, so a persistent
+        # exception can never grow the call stack into RecursionError. Only
+        # CancelledError exits cleanly.
+        while True:
+            try:
                 await asyncio.sleep(0.5)
                 now = time.time()
 
@@ -1404,8 +1441,10 @@ class GameAgentService:
                 ):
                     since_finish = now - self._last_task_finished_at
                     since_last_keep = now - self._last_keep_going_nudge_at
+                    # No upper bound (see _KEEP_GOING_MAX_WINDOW removal note):
+                    # idle → keep nudging forever, paced by the cooldown.
                     if (
-                        _KEEP_GOING_AFTER <= since_finish <= _KEEP_GOING_MAX_WINDOW
+                        since_finish >= _KEEP_GOING_AFTER
                         and since_last_keep >= _KEEP_GOING_COOLDOWN
                     ):
                         self._log_debug(
@@ -1431,12 +1470,17 @@ class GameAgentService:
                 )
                 await self._fire_system_prompt()
                 self._last_system_prompt_time = time.time()
-        except asyncio.CancelledError:
-            return
-        except Exception as exc:
-            self._log_error(
-                "system prompt loop failed: {}: {}", type(exc).__name__, exc,
-            )
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                self._log_error(
+                    "system prompt loop iteration failed (continuing): {}: {}",
+                    type(exc).__name__, exc,
+                )
+                try:
+                    await asyncio.sleep(2.0)
+                except asyncio.CancelledError:
+                    return
 
     async def _fire_in_progress_nudge(self) -> None:
         """Push a "what are you feeling right now?" prompt + latest
@@ -1477,7 +1521,8 @@ class GameAgentService:
                 visibility=[],
                 ai_behavior="respond",
                 parts=parts,
-                priority=2,
+                priority=4,
+                coalesce_key="mc_in_progress",
             )
         except Exception as exc:
             self._log_error(
@@ -1510,7 +1555,8 @@ class GameAgentService:
                 visibility=[],
                 ai_behavior="respond",
                 parts=parts,
-                priority=2,
+                priority=3,
+                coalesce_key="mc_keep_going",
             )
         except Exception as exc:
             self._log_error(
@@ -1570,10 +1616,16 @@ class GameAgentService:
         parts.append({"type": "text", "text": prompt_text})
 
         try:
+            # General periodic state burst (inventory + recent log +
+            # screenshots). This is passive CONTEXT, not a "speak now" cue:
+            # ai_behavior="read" injects it into the model's context without
+            # forcing an AI turn, so it can't make her narrate non-stop or
+            # compete with real alert/completion cues in the pacing manager.
+            # The specific nudges (in_progress / keep_going) remain "respond".
             self._push_message(
                 source="game_agent_minecraft",
                 visibility=[],
-                ai_behavior="respond",
+                ai_behavior="read",
                 parts=parts,
                 priority=4,
             )

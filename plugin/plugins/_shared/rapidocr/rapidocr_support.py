@@ -9,7 +9,6 @@ import httpx
 
 from utils.config_manager import get_config_manager
 
-from .memory_reader import is_windows_platform
 from ._model_registry import (
     DEFAULT_RAPIDOCR_ENGINE_TYPE,
     DEFAULT_RAPIDOCR_LANG_TYPE,
@@ -23,6 +22,7 @@ from ._model_registry import (
 from ._paths import (
     default_rapidocr_install_target_raw,
     default_rapidocr_install_target_raw_legacy,
+    is_windows_platform,
     resolve_rapidocr_install_target,
     resolve_rapidocr_model_cache_dir,
     resolve_rapidocr_runtime_dir,
@@ -49,6 +49,7 @@ from ._inspect_download import (
 # old test-time semantics survive the split unchanged.
 _PROXY_TO_INSPECT_DOWNLOAD = frozenset(
     {
+        "httpx",
         "_verify_model_sha256",
         "required_rapidocr_model_files",
         "missing_rapidocr_model_files",
@@ -56,6 +57,7 @@ _PROXY_TO_INSPECT_DOWNLOAD = frozenset(
 )
 _PROXY_TO_RUNTIME = frozenset(
     {
+        "importlib",
         "_onnxruntime_intra_op_thread_cap",
         "_build_runtime_constructor_kwargs",
         "load_rapidocr_runtime",

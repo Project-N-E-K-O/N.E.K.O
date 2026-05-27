@@ -24,8 +24,8 @@ from plugin.plugins.galgame_plugin.ocr_capture_backends import pyautogui as galg
 from plugin.plugins.galgame_plugin.ocr_capture_backends import _helpers as galgame_ocr_capture_helpers
 from plugin.plugins.galgame_plugin import ocr_rapidocr_backend as galgame_ocr_rapidocr_backend
 from plugin.plugins.galgame_plugin import ocr_reader as galgame_ocr_reader
-from plugin.plugins.galgame_plugin import rapidocr_support as galgame_rapidocr_support
-from plugin.plugins.galgame_plugin import install_tasks as galgame_install_tasks
+from plugin.plugins._shared.rapidocr import rapidocr_support as galgame_rapidocr_support
+from plugin.server.routes import _install_task_store as galgame_install_tasks
 from plugin.plugins.galgame_plugin.models import (
     DEFAULT_OCR_CAPTURE_BOTTOM_INSET_RATIO,
     DEFAULT_OCR_CAPTURE_TOP_RATIO,
@@ -2551,6 +2551,93 @@ def test_printwindow_capture_crops_content_rect_after_full_window_capture(
     assert captured == [(101, (10, 10, 130, 110))]
     assert image.size == (120, 80)
     assert image.getpixel((0, 0)) == (0, 255, 0)
+
+
+def test_galgame_printwindow_releases_window_dc_without_deleting_wrapped_hdc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    previous_bitmap = object()
+
+    class _Bitmap:
+        def CreateCompatibleBitmap(self, _source_dc, width: int, height: int) -> None:
+            calls.append(f"create_bitmap:{width}x{height}")
+
+        def GetInfo(self) -> dict[str, int]:
+            return {"bmWidth": 2, "bmHeight": 2}
+
+        def GetBitmapBits(self, _as_bytes: bool) -> bytes:
+            return b"\x00" * 16
+
+        def GetHandle(self) -> int:
+            return 123
+
+    bitmap = _Bitmap()
+
+    class _MemDc:
+        def SelectObject(self, obj):
+            calls.append("restore_bitmap" if obj is previous_bitmap else "select_bitmap")
+            return previous_bitmap
+
+        def GetSafeHdc(self) -> int:
+            return 456
+
+        def BitBlt(self, *_args) -> None:
+            calls.append("bitblt")
+
+        def DeleteDC(self) -> None:
+            calls.append("mem_delete")
+
+    mem_dc = _MemDc()
+
+    class _SourceDc:
+        def CreateCompatibleDC(self):
+            return mem_dc
+
+        def DeleteDC(self) -> None:
+            calls.append("source_delete")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "win32gui",
+        SimpleNamespace(
+            GetWindowDC=lambda _hwnd: 789,
+            DeleteObject=lambda _handle: calls.append("delete_object"),
+            ReleaseDC=lambda _hwnd, _hdc: calls.append("release_dc"),
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "win32ui",
+        SimpleNamespace(
+            CreateDCFromHandle=lambda _hdc: _SourceDc(),
+            CreateBitmap=lambda: bitmap,
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "win32con", SimpleNamespace(SRCCOPY=1))
+    monkeypatch.setattr(
+        galgame_printwindow_backend.sys,
+        "getwindowsversion",
+        lambda: SimpleNamespace(major=6, minor=2),
+        raising=False,
+    )
+
+    image = galgame_printwindow_backend.PrintWindowCaptureBackend._capture_full_window(
+        1234,
+        (0, 0, 2, 2),
+    )
+
+    assert image.size == (2, 2)
+    assert calls == [
+        "create_bitmap:2x2",
+        "select_bitmap",
+        "bitblt",
+        "restore_bitmap",
+        "mem_delete",
+        "delete_object",
+        "release_dc",
+    ]
+    assert "source_delete" not in calls
 
 
 def test_ocr_capture_samples_dialogue_background_hash_at_low_frequency(tmp_path: Path) -> None:
@@ -5556,8 +5643,8 @@ def test_rapidocr_default_install_target_uses_app_docs_runtime_root(
         lambda: SimpleNamespace(app_docs_dir=app_docs_dir),
     )
 
-    raw_target = galgame_rapidocr_support.default_rapidocr_install_target_raw()
-    resolved = galgame_rapidocr_support.resolve_rapidocr_install_target("")
+    raw_target = galgame_rapidocr_support.default_rapidocr_install_target_raw(plugin_id="galgame_plugin")
+    resolved = galgame_rapidocr_support.resolve_rapidocr_install_target("", plugin_id="galgame_plugin")
 
     assert raw_target == str(app_docs_dir / "runtimes" / "galgame_plugin" / "RapidOCR")
     assert resolved == app_docs_dir / "runtimes" / "galgame_plugin" / "RapidOCR"
@@ -5576,7 +5663,13 @@ def test_rapidocr_explicit_install_target_overrides_new_and_legacy_defaults(
         lambda: SimpleNamespace(app_docs_dir=app_docs_dir),
     )
 
-    assert galgame_rapidocr_support.resolve_rapidocr_install_target(str(explicit_target)) == explicit_target
+    assert (
+        galgame_rapidocr_support.resolve_rapidocr_install_target(
+            str(explicit_target),
+            plugin_id="galgame_plugin",
+        )
+        == explicit_target
+    )
 
 
 def test_rapidocr_resolve_uses_legacy_install_when_new_target_missing(
@@ -5594,7 +5687,10 @@ def test_rapidocr_resolve_uses_legacy_install_when_new_target_missing(
         lambda: SimpleNamespace(app_docs_dir=app_docs_dir),
     )
 
-    assert galgame_rapidocr_support.resolve_rapidocr_install_target("") == legacy_target
+    assert (
+        galgame_rapidocr_support.resolve_rapidocr_install_target("", plugin_id="galgame_plugin")
+        == legacy_target
+    )
 
 
 def test_rapidocr_resolve_prefers_existing_new_target_over_legacy_install(
@@ -5614,7 +5710,10 @@ def test_rapidocr_resolve_prefers_existing_new_target_over_legacy_install(
         lambda: SimpleNamespace(app_docs_dir=app_docs_dir),
     )
 
-    assert galgame_rapidocr_support.resolve_rapidocr_install_target("") == new_target
+    assert (
+        galgame_rapidocr_support.resolve_rapidocr_install_target("", plugin_id="galgame_plugin")
+        == new_target
+    )
 
 
 def test_inspect_rapidocr_installation_reports_legacy_target_when_used(
@@ -5665,6 +5764,7 @@ def test_inspect_rapidocr_installation_reports_legacy_target_when_used(
         install_target_dir_raw="",
         lang_type="ch",
         ocr_version="PP-OCRv4",
+        plugin_id="galgame_plugin",
         platform_fn=lambda: True,
     )
 
@@ -5715,6 +5815,7 @@ def test_inspect_rapidocr_installation_uses_current_model_selection_over_legacy_
         lang_type="japan",
         model_type="mobile",
         ocr_version="PP-OCRv5",
+        plugin_id="galgame_plugin",
         platform_fn=lambda: True,
     )
 
@@ -5735,10 +5836,19 @@ def test_install_task_runtime_root_uses_app_docs_dir(
         lambda: SimpleNamespace(app_docs_dir=app_docs_dir),
     )
 
-    state_path = galgame_install_tasks.install_task_state_path("run-1", kind="rapidocr_models")
+    state_path = galgame_install_tasks.install_task_state_path(
+        "run-1",
+        kind="rapidocr_models",
+        plugin_id="galgame_plugin",
+    )
 
     assert state_path == (
-        app_docs_dir / "plugin-runtime" / "galgame_plugin" / "rapidocr_models-installs" / "run-1.json"
+        app_docs_dir
+        / "plugin-runtime"
+        / "plugin-installs"
+        / "galgame_plugin"
+        / "rapidocr_models-installs"
+        / "run-1.json"
     )
 
 

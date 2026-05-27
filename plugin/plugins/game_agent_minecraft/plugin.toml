@@ -76,4 +76,10 @@ enabled = true
 id = "quickstart"
 title = "快速开始"
 entry = "surfaces/quickstart.tsx"
-permissions = ["state:read"]
+# context 指向 @ui.context(id="quickstart") provider；缺了它 host 的
+# get_ui_context 会报 "UI context not found"，api.call 拿不到 action 列表必败。
+context = "quickstart"
+# action:call 授权该 surface 通过 props.api.call 调用插件 entry（这里是
+# game_agent_status，必须同时在 __init__.py 用 @ui.action 暴露成 UI action）。
+# 没有它，hosted-surface action 路由会以 PLUGIN_UI_ACTION_FORBIDDEN 拒绝。
+permissions = ["state:read", "action:call"]

@@ -415,6 +415,22 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 # 这里 no-op 以避免落到 default 分支推 UNKNOWN_ACTION 状态给前端。
                 pass
 
+            elif action in ("voice_play_start", "voice_play_end"):
+                # FRONTEND-reported real audio playback boundaries. start =
+                # buffered audio actually began playing; end = the audio queue
+                # fully drained (she truly stopped talking). This is strictly
+                # later than the realtime API's response.done (generation),
+                # so the proactive inject gate keys off THIS rather than
+                # response.done to avoid self-interruption. Rides the same ws
+                # path as every other frontend→backend action (incl. the
+                # Electron chat.html WSProxy/IPC bridge → Pet real ws), so no
+                # special proxy handling is needed.
+                session_manager[lanlan_name].on_voice_playback_signal(
+                    playing=(action == "voice_play_start"),
+                    turn_id=message.get("turnId") or message.get("turn_id") or "",
+                    source=message.get("source") or "audio_playback",
+                )
+
             else:
                 logger.warning(f"Unknown action received: {action}")
                 await session_manager[lanlan_name].send_status(json.dumps({"code": "UNKNOWN_ACTION", "details": {"action": action}}))

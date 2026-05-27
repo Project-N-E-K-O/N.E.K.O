@@ -6,6 +6,8 @@
     "entries.open_ui.description":  "回傳 study_companion 靜態 UI 的存取路徑。",
     "entries.status.name":  "伴學狀態",
     "entries.status.description":  "回傳執行狀態、依賴狀態和最近的伴學互動。",
+    "entries.neko_communication_status.name":  "貓娘即時通訊狀態",
+    "entries.neko_communication_status.description":  "回傳貓娘即時通訊是否啟用。",
     "entries.dependency_status.name":  "OCR 依賴狀態",
     "entries.dependency_status.description":  "檢測 study_companion 使用的 RapidOCR、Tesseract 和截圖依賴。",
     "entries.ocr_snapshot.name":  "OCR 快照",

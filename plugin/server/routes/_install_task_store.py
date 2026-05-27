@@ -5,16 +5,23 @@ import time
 from pathlib import Path
 from typing import Any
 
+from plugin.logging_config import get_logger
 from utils.config_manager import get_config_manager
 
 
 INSTALL_TERMINAL_STATUSES = frozenset({"completed", "failed", "canceled"})
-INSTALL_KINDS = frozenset({"textractor", "dxcam", "rapidocr_models", "tesseract"})
-DEFAULT_INSTALL_PLUGIN_ID = "galgame_plugin"
+INSTALL_KINDS = frozenset({"textractor", "rapidocr_models", "tesseract"})
+DEFAULT_INSTALL_PLUGIN_ID = "default"
+LEGACY_GALGAME_PLUGIN_ID = "galgame_plugin"
+logger = get_logger("server.install_task_store")
 
 
 def _runtime_root() -> Path:
-    return get_config_manager().app_docs_dir / "plugin-runtime" / "galgame_plugin"
+    return get_config_manager().app_docs_dir / "plugin-runtime" / "plugin-installs"
+
+
+def _legacy_galgame_runtime_root() -> Path:
+    return get_config_manager().app_docs_dir / "plugin-runtime" / LEGACY_GALGAME_PLUGIN_ID
 
 
 def _normalize_kind(kind: str) -> str:
@@ -37,9 +44,14 @@ def _normalize_plugin_id(plugin_id: str) -> str:
 
 def _plugin_runtime_root(plugin_id: str = DEFAULT_INSTALL_PLUGIN_ID) -> Path:
     normalized_plugin_id = _normalize_plugin_id(plugin_id)
-    if normalized_plugin_id == DEFAULT_INSTALL_PLUGIN_ID:
-        return _runtime_root()
     return _runtime_root() / normalized_plugin_id
+
+
+def _legacy_plugin_runtime_root(plugin_id: str = DEFAULT_INSTALL_PLUGIN_ID) -> Path:
+    normalized_plugin_id = _normalize_plugin_id(plugin_id)
+    if normalized_plugin_id == LEGACY_GALGAME_PLUGIN_ID:
+        return _legacy_galgame_runtime_root()
+    return _legacy_galgame_runtime_root() / normalized_plugin_id
 
 
 def _tasks_dir(kind: str = "textractor", *, plugin_id: str = DEFAULT_INSTALL_PLUGIN_ID) -> Path:
@@ -73,6 +85,29 @@ def latest_install_task_path(
     plugin_id: str = DEFAULT_INSTALL_PLUGIN_ID,
 ) -> Path:
     return _tasks_dir(kind, plugin_id=plugin_id) / "latest.json"
+
+
+def _legacy_install_task_state_path(
+    task_id: str,
+    *,
+    kind: str = "textractor",
+    plugin_id: str = DEFAULT_INSTALL_PLUGIN_ID,
+) -> Path:
+    normalized_kind = _normalize_kind(kind)
+    return (
+        _legacy_plugin_runtime_root(plugin_id)
+        / f"{normalized_kind}-installs"
+        / f"{_normalize_task_id(task_id)}.json"
+    )
+
+
+def _legacy_latest_install_task_path(
+    *,
+    kind: str = "textractor",
+    plugin_id: str = DEFAULT_INSTALL_PLUGIN_ID,
+) -> Path:
+    normalized_kind = _normalize_kind(kind)
+    return _legacy_plugin_runtime_root(plugin_id) / f"{normalized_kind}-installs" / "latest.json"
 
 
 def build_install_task_state(
@@ -193,12 +228,20 @@ def load_install_task_state(
 ) -> dict[str, Any] | None:
     path = install_task_state_path(task_id, kind=kind, plugin_id=plugin_id)
     if not path.is_file():
-        return None
+        legacy_path = _legacy_install_task_state_path(task_id, kind=kind, plugin_id=plugin_id)
+        if not legacy_path.is_file():
+            return None
+        path = legacy_path
+        logger.warning("loading legacy install task state: path={}", path)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
+        logger.warning("failed to load install task state: path={}", path, exc_info=True)
         return None
-    return payload if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        logger.warning("invalid install task state payload type: path={}", path)
+        return None
+    return payload
 
 
 def update_install_task_state(
@@ -237,12 +280,20 @@ def load_latest_install_task_ref(
 ) -> dict[str, Any] | None:
     path = latest_install_task_path(kind=kind, plugin_id=plugin_id)
     if not path.is_file():
-        return None
+        legacy_path = _legacy_latest_install_task_path(kind=kind, plugin_id=plugin_id)
+        if not legacy_path.is_file():
+            return None
+        path = legacy_path
+        logger.warning("loading legacy latest install task ref: path={}", path)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
+        logger.warning("failed to load latest install task ref: path={}", path, exc_info=True)
         return None
-    return payload if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        logger.warning("invalid latest install task ref payload type: path={}", path)
+        return None
+    return payload
 
 
 def load_latest_install_task_state(
