@@ -25,9 +25,11 @@ WHICH cue and WHEN to hand one off, applying:
   no existing plugin regresses by having distinct cues silently dropped.
   Minecraft opts in per category (alert / completion / in_progress /
   keep_going).
-* **Single-flight + playback gate** — only one cue is released at a time,
-  and never while audio is playing. Release happens after the FRONTEND
-  reports ``voice_play_end`` (or ``text_end``), plus a min-gap.
+* **Batched + playback gate** — cues that pile up while she is speaking are
+  released TOGETHER as one batch (the legacy "one LLM turn for several
+  near-simultaneous cues" behaviour), and never while audio is playing.
+  Release happens after the FRONTEND reports ``voice_play_end`` (or
+  ``text_end``), plus a min-gap. Only one batch is in flight at a time.
 * **Min-gap pacing** — never release within ``min_gap_s`` of the last
   playback end (anti-flood).
 * **Preemption / staleness** — when the gate opens the current highest
@@ -178,21 +180,31 @@ class ProactiveDeliveryManager:
     on_text_start = on_playback_start
     on_text_end = on_playback_end
 
-    def reset(self) -> None:
-        """Clear gate + queue state. Call on session lifecycle boundaries
-        (session start / end / character switch) so a dropped voice_play_end
-        — frontend disconnect/refresh or teardown mid-playback — cannot leave
-        the gate stuck closed and wedge all future delivery. Queued cues are
-        dropped because they belonged to the now-gone session."""
+    def reset_gate(self) -> None:
+        """Clear ONLY the playback-gate / single-flight state — NOT the queue.
+        Call on session lifecycle boundaries so a dropped voice_play_end
+        (frontend disconnect/refresh, teardown mid-playback) can't leave the
+        gate stuck closed and wedge delivery. Queued cues are preserved; the
+        caller drains them via drain_pending() and hands them to
+        pending_agent_callbacks for redelivery, so proactive cues are never
+        dropped on teardown (they are generally important)."""
         self._playing = False
         self._play_start_ts = 0.0
         self._inflight = False
         self._inflight_deadline = 0.0
         self._last_play_end_ts = 0.0
-        self._queue.clear()
         if self._pump_handle is not None:
             self._pump_handle.cancel()
             self._pump_handle = None
+
+    def drain_pending(self) -> list:
+        """Pop and return all queued cue callbacks (clearing the queue). Used
+        on session teardown to move not-yet-released cues into
+        pending_agent_callbacks so the reconnect path redelivers them rather
+        than losing them."""
+        callbacks = [c.callback for c in self._queue]
+        self._queue = []
+        return callbacks
 
     # ── pump ─────────────────────────────────────────────────────────────
     def _suffix(self) -> str:
@@ -260,27 +272,32 @@ class ProactiveDeliveryManager:
         if self._last_play_end_ts > 0.0 and gap_remaining > 0:
             self._schedule_pump(gap_remaining)
             return
-        # Gate open: pick the highest-priority (preemption — current best
-        # wins) and release it.
-        self._queue.sort(key=lambda c: c.sort_key)
-        cue = self._queue.pop(0)
+        # Gate open: release the ENTIRE pending batch in one shot (sorted by
+        # priority), preserving the legacy "near-simultaneous proactive cues
+        # are drained into ONE LLM turn" behaviour. The playback gate above
+        # already guaranteed she has finished speaking, so this batch won't
+        # interrupt audio. Cues that arrive while she speaks accumulate and go
+        # out as the next batch after voice_play_end + min-gap.
+        batch = sorted(self._queue, key=lambda c: c.sort_key)
+        self._queue = []
         self._inflight = True
         self._inflight_deadline = now + self._inflight_timeout_s
+        callbacks = [c.callback for c in batch]
         logger.info(
-            "[proactive%s] release key=%r eff_priority=%d (remaining=%d)",
-            self._suffix(), cue.coalesce_key, cue.eff_priority, len(self._queue),
+            "[proactive%s] release batch n=%d keys=%s",
+            self._suffix(), len(callbacks), [c.coalesce_key for c in batch],
         )
-        asyncio.create_task(self._run_deliver(cue.callback))
+        asyncio.create_task(self._run_deliver(callbacks))
         # Arm the inflight-timeout: if no playback signal arrives (deliver
-        # swallowed/deferred by the inner gate, text with no audio, frontend
-        # disconnect) the deadline pump frees the slot so later cues aren't
-        # wedged. Normal completion (playback_end / next submit) reschedules
-        # a sooner pump anyway.
+        # deferred by the inner gate / text with no audio / frontend
+        # disconnect) the deadline pump frees the slot so later batches aren't
+        # wedged. Normal completion (playback_end / next submit) reschedules a
+        # sooner pump anyway.
         self._schedule_pump(self._inflight_timeout_s)
 
-    async def _run_deliver(self, callback: dict) -> None:
+    async def _run_deliver(self, callbacks: list) -> None:
         try:
-            await self._deliver(callback)
+            await self._deliver(callbacks)
         except Exception:
             logger.exception("[proactive%s] deliver failed", self._suffix())
             # Free the slot so the queue isn't wedged on a failed hand-off.

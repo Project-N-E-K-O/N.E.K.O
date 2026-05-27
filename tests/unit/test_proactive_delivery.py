@@ -1,10 +1,11 @@
 """Unit tests for the generic ProactiveDeliveryManager front stage.
 
-Covers the four behaviours the manager adds in front of the existing
-enqueue/trigger delivery core: priority ordering (lower = more urgent,
-unspecified normalised to a neutral band), OPT-IN coalescing, the
-playback gate (single-flight, don't release while audio plays), and
-min-gap pacing.
+Covers the behaviours the manager adds in front of the existing enqueue/
+trigger delivery core: priority ordering (lower = more urgent, unspecified
+normalised to a neutral band), OPT-IN coalescing, the playback gate (don't
+release while audio plays), BATCHED release (cues piled up while speaking go
+out together in one turn), min-gap pacing, and drain-on-teardown (cues are
+handed back, never silently dropped).
 """
 import asyncio
 
@@ -20,8 +21,9 @@ pytestmark = pytest.mark.unit
 
 
 def _make(delivered, **kw):
-    async def deliver(cb):
-        delivered.append(cb)
+    async def deliver(batch):
+        # deliver receives the WHOLE batch (list of callbacks) per release.
+        delivered.extend(batch)
     kw.setdefault("min_gap_s", 0.0)
     kw.setdefault("inflight_timeout_s", 0.05)
     return ProactiveDeliveryManager(deliver=deliver, **kw)
@@ -44,24 +46,20 @@ def test_effective_priority_normalisation():
     assert effective_priority(2) < effective_priority(0)
 
 
-async def test_priority_orders_release_lowest_first():
+async def test_batch_released_together_in_priority_order():
+    # Cues that pile up while she's speaking are released as ONE batch when
+    # the gate opens, sorted by priority (lower = more urgent first).
     delivered = []
     mgr = _make(delivered)
-    # Submit out of priority order while the gate is closed (playing).
     mgr.on_playback_start()
     mgr.submit({"id": "keep_going"}, priority=4, coalesce_key="a")
     mgr.submit({"id": "alert"}, priority=1, coalesce_key="b")
     mgr.submit({"id": "unspecified"}, priority=0, coalesce_key="c")
     await _settle()
     assert delivered == []  # nothing released while playing
-    # Drain one at a time, confirming most-urgent-first order.
-    got = []
-    for _ in range(3):
-        mgr.on_playback_end()      # opens gate, releases one
-        await _settle()
-        mgr.on_playback_start()    # the released cue is now "playing"
-    got = [c["id"] for c in delivered]
-    assert got == ["alert", "keep_going", "unspecified"]
+    mgr.on_playback_end()   # gate opens → whole batch released at once
+    await _settle()
+    assert [c["id"] for c in delivered] == ["alert", "keep_going", "unspecified"]
 
 
 async def test_coalescing_is_opt_in():
@@ -86,10 +84,8 @@ async def test_no_coalesce_key_never_collapses():
     mgr.submit({"id": "a"}, priority=2)
     mgr.submit({"id": "b"}, priority=2)
     await _settle()
-    for _ in range(2):
-        mgr.on_playback_end()
-        await _settle()
-        mgr.on_playback_start()
+    mgr.on_playback_end()
+    await _settle()
     assert sorted(c["id"] for c in delivered) == ["a", "b"]
 
 
@@ -103,6 +99,23 @@ async def test_playback_gate_holds_until_end():
     mgr.on_playback_end()
     await _settle()
     assert [c["id"] for c in delivered] == ["x"]
+
+
+async def test_second_batch_waits_for_next_play_end():
+    # After one batch is released (in-flight), cues that arrive during its
+    # playback must wait for the NEXT voice_play_end, not pile on immediately.
+    delivered = []
+    mgr = _make(delivered, inflight_timeout_s=5.0)
+    mgr.submit({"id": "a"}, priority=1)
+    await _settle()
+    assert [c["id"] for c in delivered] == ["a"]   # first batch out (gate open)
+    mgr.on_playback_start()                         # a is now playing
+    mgr.submit({"id": "b"}, priority=1)             # arrives mid-playback
+    await _settle()
+    assert [c["id"] for c in delivered] == ["a"]   # b held, not delivered
+    mgr.on_playback_end()
+    await _settle()
+    assert [c["id"] for c in delivered] == ["a", "b"]
 
 
 async def test_min_gap_delays_release():
@@ -130,18 +143,28 @@ async def test_playing_watchdog_recovers_missing_play_end():
     assert [c["id"] for c in delivered] == ["x"]
 
 
-async def test_reset_clears_gate_and_queue():
+async def test_drain_pending_returns_queue_without_delivering():
+    # Teardown path: drain_pending hands queued cues back (for the caller to
+    # move into pending_agent_callbacks) instead of dropping them.
     delivered = []
     mgr = _make(delivered)
-    mgr.on_playback_start()
+    mgr.on_playback_start()          # gate closed → cues queue up
     mgr.submit({"id": "a"}, priority=1)
     mgr.submit({"id": "b"}, priority=2, coalesce_key="k")
-    mgr.reset()                      # session teardown
+    drained = mgr.drain_pending()
+    assert sorted(c["id"] for c in drained) == ["a", "b"]
     await _settle()
-    assert delivered == []           # queue dropped
-    # Gate state cleared: a fresh submit delivers immediately (not playing).
+    assert delivered == []           # drained, not delivered by the manager
+
+
+async def test_reset_gate_clears_gate_but_not_dropped_queue():
+    delivered = []
+    mgr = _make(delivered)
+    mgr.on_playback_start()          # gate closed
+    mgr.reset_gate()                 # clears playing/inflight (queue untouched)
     mgr.submit({"id": "c"}, priority=1)
     await _settle()
+    # Gate cleared → not playing → the new cue delivers immediately.
     assert [c["id"] for c in delivered] == ["c"]
 
 

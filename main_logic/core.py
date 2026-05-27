@@ -810,7 +810,7 @@ class LLMSessionManager:
         # can't wedge proactive delivery forever — see _is_voice_playing().
         self._voice_playback_started_ts = 0.0
         self.proactive_manager = ProactiveDeliveryManager(
-            deliver=self._deliver_proactive_callback,
+            deliver=self._deliver_proactive_batch,
             name=self.lanlan_name,
         )
         self.lifecycle_bus.subscribe("voice_play_start", self.proactive_manager.on_playback_start)
@@ -6259,10 +6259,17 @@ class LLMSessionManager:
         """
         self.proactive_manager.submit(callback, priority=priority, coalesce_key=coalesce_key)
 
-    async def _deliver_proactive_callback(self, callback: dict) -> None:
+    async def _deliver_proactive_batch(self, callbacks: list) -> None:
         """Release hook invoked by ProactiveDeliveryManager when the gate is
-        open. Funnels into the existing, race-tested delivery core."""
-        self.enqueue_agent_callback(callback)
+        open. Enqueues the WHOLE batch then fires ONE trigger — trigger drains
+        all pending proactive callbacks into a single LLM turn, restoring the
+        legacy "several near-simultaneous cues batched into one turn"
+        behaviour (the manager only governs WHEN the batch is released, not
+        how many cues per turn)."""
+        if not callbacks:
+            return
+        for callback in callbacks:
+            self.enqueue_agent_callback(callback)
         await self.trigger_agent_callbacks()
 
     def on_voice_playback_signal(self, *, playing: bool, **meta) -> None:
@@ -6309,16 +6316,26 @@ class LLMSessionManager:
         return True
 
     def _reset_proactive_gate(self) -> None:
-        """Reset the playback gate + delivery manager on session lifecycle
-        boundaries (session start / end / character switch) so a dropped
-        voice_play_end can't carry stale playback state into the next session
-        and wedge proactive delivery."""
+        """Reset the playback gate on session lifecycle boundaries (session
+        start / end / character switch) so a dropped voice_play_end can't
+        carry stale playback state into the next session and wedge delivery.
+
+        Proactive cues are generally important, so cues still queued in the
+        manager are NOT dropped: they're moved into pending_agent_callbacks,
+        which persists across teardown and is redelivered by the reconnect /
+        next-turn path. Only the gate/single-flight state is cleared."""
         self._voice_playback_active = False
         self._voice_playback_started_ts = 0.0
         try:
-            self.proactive_manager.reset()
+            leftover = self.proactive_manager.drain_pending()
+            for cb in leftover:
+                # Hand back to the persistent queue so the reconnect path
+                # (websocket_router) / next trigger redelivers rather than
+                # losing it.
+                self.enqueue_agent_callback(cb)
+            self.proactive_manager.reset_gate()
         except Exception:
-            logger.exception("[%s] proactive_manager.reset failed", self.lanlan_name)
+            logger.exception("[%s] proactive_manager reset/drain failed", self.lanlan_name)
 
     def enqueue_agent_callback(self, callback: dict) -> None:
         """Enqueue a structured agent task callback for LLM injection.
