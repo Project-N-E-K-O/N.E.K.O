@@ -27,6 +27,17 @@ HANDLER_MODULE = "plugin.server.market_protocol_handler"
 HANDLER_CMD = f'"{PYTHON_EXE}" -m {HANDLER_MODULE} "%1"'
 
 
+def _desktop_exec_quote(value: str) -> str:
+    """Quote an argv field for freedesktop Exec= lines.
+
+    Desktop entry Exec= values are not shell commands; quoted arguments use
+    double quotes and backslash escapes.
+    """
+
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("`", "\\`").replace("$", "\\$")
+    return f'"{escaped}"'
+
+
 def register() -> bool:
     """注册 neko:// 协议。"""
     system = platform.system()
@@ -189,9 +200,10 @@ def _register_linux() -> bool:
     desktop_dir.mkdir(parents=True, exist_ok=True)
 
     desktop_file = desktop_dir / "neko-protocol-handler.desktop"
+    python_exe = _desktop_exec_quote(PYTHON_EXE)
     desktop_content = f"""[Desktop Entry]
 Name=N.E.K.O Protocol Handler
-Exec={PYTHON_EXE} -m {HANDLER_MODULE} %u
+Exec={python_exe} -m {HANDLER_MODULE} %u
 Type=Application
 NoDisplay=true
 MimeType=x-scheme-handler/neko;

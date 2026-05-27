@@ -243,6 +243,47 @@ def bridge_e2e_env(
 
 
 @pytest.mark.asyncio
+async def test_bridge_token_rejects_trusted_remote_origin(
+    bridge_e2e_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    monkeypatch.setattr(market_bridge_module, "_main_server_port", lambda: 48911)
+
+    res = await bridge_e2e_env["client"].get(
+        "/market/bridge-token",
+        headers={
+            "Host": "127.0.0.1:48911",
+            "Origin": "https://market.example.com",
+        },
+    )
+
+    assert res.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_bridge_token_allows_local_same_origin(
+    bridge_e2e_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    monkeypatch.setattr(market_bridge_module, "_main_server_port", lambda: 48911)
+
+    res = await bridge_e2e_env["client"].get(
+        "/market/bridge-token",
+        headers={
+            "Host": "127.0.0.1:48911",
+            "Origin": "http://127.0.0.1:48911",
+        },
+    )
+
+    assert res.status_code == 200
+    assert res.json()["bridge_token"] == bridge_e2e_env["token"]
+
+
+@pytest.mark.asyncio
 async def test_install_happy_path_writes_v2_lock_entry(
     bridge_e2e_env: dict[str, Any],
 ) -> None:
@@ -851,6 +892,76 @@ async def test_install_identity_mismatch_warns_but_succeeds(
     # Directory exists with the actual id, not the declared slug.
     assert (user_root / actual_plugin_id).is_dir()
     assert not (user_root / declared_slug).exists()
+
+
+@pytest.mark.asyncio
+async def test_install_identity_check_uses_plugin_toml_id_when_directory_renamed(
+    bridge_e2e_env: dict[str, Any],
+) -> None:
+    """rename conflict changes the directory name, not plugin.toml identity."""
+
+    plugin_id = "e2e_rename_identity"
+    version = "1.0.0"
+    zip_bytes, payload_hash = _build_neko_plugin_zip(
+        plugin_id=plugin_id, version=version,
+    )
+    expected_sha256 = hashlib.sha256(zip_bytes).hexdigest()
+
+    client: AsyncClient = bridge_e2e_env["client"]
+    token: str = bridge_e2e_env["token"]
+    user_root: Path = bridge_e2e_env["user_root"]
+    lock_path: Path = bridge_e2e_env["lock_path"]
+
+    existing = user_root / plugin_id
+    existing.mkdir(parents=True)
+    (existing / "plugin.toml").write_text(
+        f'[plugin]\nid = "{plugin_id}"\nversion = "0.9.0"\n',
+        encoding="utf-8",
+    )
+
+    with _serve_bytes(
+        filename=f"{plugin_id}-{version}.neko-plugin", content=zip_bytes,
+    ) as package_url:
+        resp = await client.post(
+            f"/market/install?token={token}",
+            json={
+                "package_url": package_url,
+                "package_sha256": expected_sha256,
+                "payload_hash": payload_hash,
+                "plugin_id": plugin_id,
+                "version": version,
+                "channel": "stable",
+                "mode": "install",
+                "expected_plugin_toml_id": plugin_id,
+                "on_conflict": "rename",
+            },
+        )
+        task_id = resp.json()["task_id"]
+
+        deadline = time.monotonic() + 30
+        final_status: dict[str, Any] | None = None
+        while time.monotonic() < deadline:
+            poll = await client.get(f"/market/tasks/{task_id}?token={token}")
+            body = poll.json()
+            if body["status"] in ("completed", "failed"):
+                final_status = body
+                break
+            await asyncio.sleep(0.05)
+
+    assert final_status is not None
+    assert final_status["status"] == "completed", final_status
+    assert "plugin identity mismatch" not in (
+        final_status.get("install_source_warning") or ""
+    )
+    assert (user_root / f"{plugin_id}_1" / "plugin.toml").is_file()
+
+    doc = json.loads(lock_path.read_bytes())
+    renamed_entries = [
+        e for e in doc["entries"]
+        if e["directory_name"] == f"{plugin_id}_1" and e["channel"] == "market"
+    ]
+    [entry] = renamed_entries
+    assert entry["plugin_id"] == plugin_id
 
 
 @pytest.mark.asyncio

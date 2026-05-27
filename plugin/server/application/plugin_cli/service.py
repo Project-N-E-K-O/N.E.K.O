@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import shutil
+import tomllib
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -275,9 +276,10 @@ class PluginCliService:
                 use_staging=use_staging,
             )
             unpacked_target_dirs = self._extract_unpack_target_dirs(unpack_result)
-            target_dir, target_plugin_id = self._extract_unpack_target(
+            target_dir, _target_directory_plugin_id = self._extract_unpack_target(
                 unpack_result
             )
+            package_plugin_id = self._read_installed_plugin_toml_id(target_dir)
 
             # Step 4 — degrade to imported when market_detail is incomplete.
             market_detail_raw = install_source_override.get("market_detail") or {}
@@ -313,13 +315,13 @@ class PluginCliService:
             if (
                 isinstance(expected_toml_id, str)
                 and expected_toml_id
-                and target_plugin_id
-                and expected_toml_id != target_plugin_id
+                and package_plugin_id
+                and expected_toml_id != package_plugin_id
             ):
                 message = (
                     f"plugin identity mismatch: Market declared "
                     f"'{expected_toml_id}' but the package contains "
-                    f"plugin id '{target_plugin_id}'"
+                    f"plugin id '{package_plugin_id}'"
                 )
                 if install_mode in ("upgrade", "reinstall"):
                     raise ValueError(message)
@@ -369,14 +371,14 @@ class PluginCliService:
                 entry, ism_warnings = mgr.record_market_upgrade(
                     root_id=root_id,
                     directory_name=directory_name,
-                    plugin_id=target_plugin_id,
+                    plugin_id=package_plugin_id,
                     market_detail=market_detail,
                 )
             else:
                 entry, ism_warnings = mgr.record_market_install(
                     root_id=root_id,
                     directory_name=directory_name,
-                    plugin_id=target_plugin_id,
+                    plugin_id=package_plugin_id,
                     market_detail=market_detail,
                 )
             warnings.extend(ism_warnings)
@@ -482,6 +484,24 @@ class PluginCliService:
             raise ValueError("unpack returned no target_dir for plugin")
         target_plugin_id = str(first.get("target_plugin_id", "")) or ""
         return Path(target_dir_raw), target_plugin_id
+
+    @staticmethod
+    def _read_installed_plugin_toml_id(target_dir: Path) -> str:
+        plugin_toml = target_dir / "plugin.toml"
+        try:
+            data = tomllib.loads(plugin_toml.read_text(encoding="utf-8"))
+        except FileNotFoundError as exc:
+            raise ValueError(f"installed plugin.toml not found: {plugin_toml}") from exc
+        except tomllib.TOMLDecodeError as exc:
+            raise ValueError(f"installed plugin.toml is invalid TOML: {plugin_toml}") from exc
+
+        plugin_table = data.get("plugin")
+        if not isinstance(plugin_table, dict):
+            raise ValueError(f"installed plugin.toml missing [plugin] table: {plugin_toml}")
+        plugin_id = plugin_table.get("id")
+        if not isinstance(plugin_id, str) or not plugin_id.strip():
+            raise ValueError(f"installed plugin.toml missing [plugin].id: {plugin_toml}")
+        return plugin_id.strip()
 
     def _compose_install_result(
         self,

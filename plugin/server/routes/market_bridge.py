@@ -22,7 +22,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal
-from urllib.parse import urlencode
+from urllib.parse import urlparse, urlencode
 
 import httpx
 from fastapi import APIRouter, Header, HTTPException, Query, Request
@@ -115,6 +115,46 @@ def _main_server_port() -> int:
         return int(config.MAIN_SERVER_PORT)
     except Exception:  # pragma: no cover - 兜底，避免 bridge 写文件因配置异常崩溃
         return 48911
+
+
+def _is_loopback_host(host: str) -> bool:
+    normalized = host.strip().strip("[]").lower()
+    return normalized in {"localhost", "127.0.0.1", "::1"}
+
+
+def _is_local_bridge_origin(origin: str, expected_port: int) -> bool:
+    try:
+        parsed = urlparse(origin)
+    except ValueError:
+        return False
+    if parsed.scheme != "http" or not parsed.hostname or not _is_loopback_host(parsed.hostname):
+        return False
+    if parsed.username or parsed.password or parsed.path not in ("", "/"):
+        return False
+    if parsed.params or parsed.query or parsed.fragment:
+        return False
+    return (parsed.port or 80) == expected_port
+
+
+def _require_local_bridge_token_access(request: Request) -> None:
+    """Allow bridge-token only to the local plugin-manager origin.
+
+    Remote Market origins are intentionally excluded here even when CORS trusts
+    them; remote pages must pair through /token-exchange instead.
+    """
+
+    host_header = request.headers.get("host", "")
+    try:
+        host = urlparse(f"//{host_header}").hostname or ""
+    except ValueError:
+        host = ""
+    client_host = request.client.host if request.client else ""
+    if not _is_loopback_host(client_host) or not _is_loopback_host(host):
+        raise HTTPException(status_code=403, detail="仅允许本地同源访问")
+
+    origin = request.headers.get("origin")
+    if origin and not _is_local_bridge_origin(origin, _main_server_port()):
+        raise HTTPException(status_code=403, detail="仅允许本地同源访问")
 
 
 def write_bridge_token_file(directory: Path) -> Path:
@@ -544,9 +584,7 @@ async def market_bridge_token(request: Request):
     不需要走 one-time code 配对。只允许 127.0.0.1 / localhost 来源，避免
     被外部网页拿到 token。
     """
-    client_host = request.client.host if request.client else ""
-    if client_host not in ("127.0.0.1", "::1", "localhost"):
-        raise HTTPException(status_code=403, detail="仅允许本地同源访问")
+    _require_local_bridge_token_access(request)
 
     return MarketBridgeTokenResponse(bridge_token=_BRIDGE_TOKEN, port=_main_server_port())
 
