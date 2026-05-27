@@ -1523,8 +1523,16 @@
                     // \u6D6E\u52A8\u9EA6\u6309\u94AE\u91CD\u65B0\u5199\u6210"\u5F55\u97F3\u4E2D"\u2014\u2014\u7ED3\u679C\u6CA1\u6709 session \u5374\u663E\u793A\u5728\u5F55\u97F3\uFF0C\u4E0B\u4E00\u6B21
                     // \u70B9\u9EA6\u88AB\u5F53\u4F5C toggle-off\uFF08\u5173\u9EA6\uFF09\u9759\u9ED8\u541E\u6389\uFF0C\u770B\u4E0D\u5230\u4EFB\u4F55 banner\u3002\u5148\u7B49\u9EA6\u514B\u98CE
                     // \u521D\u59CB\u5316\u5F7B\u5E95 settle\uFF0C\u518D\u8BA9\u5916\u5C42 catch \u7684 teardown \u6536\u5C3E\u3002
+                    // 但这个 await 必须有界：若 startMicCapture 卡在 getUserMedia 权限
+                    // 弹窗（用户忽略不点），它的 promise 会永久 pending，无界 await 会让
+                    // 下面的 teardown 永远到不了——mic 按钮卡 disabled、isMicStarting 不复位，
+                    // 用幽灵录音态换成了永久卡死态。超时后照常 teardown：此时 startMicCapture
+                    // 还没走到置 S.isRecording 那步（卡在 getUserMedia 之前），没有录音态可复活。
                     if (micCapturePromise) {
-                        try { await micCapturePromise; } catch (_e) { }
+                        await Promise.race([
+                            micCapturePromise.catch(function () { }),
+                            new Promise(function (resolve) { setTimeout(resolve, 3000); })
+                        ]);
                     }
                     throw error;
                 }
