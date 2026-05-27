@@ -6414,20 +6414,28 @@ class LLMSessionManager:
         IDLE (another proactive/greeting turn owns it), or the voice session is
         still GENERATING a response (is_active_response — the window between
         response.created and voice_play_start the playback gate can't see)."""
-        if self._voice_playback_active:
+        # Time-bounded read (NOT the raw _voice_playback_active flag): if the
+        # frontend dropped voice_play_end, _is_voice_playing() self-heals after
+        # the 30s watchdog, so a stuck flag can't make can_release return False
+        # forever and wedge the queue in an endless busy-recheck (Codex P1).
+        if self._is_voice_playing():
             return False
         try:
             if self.state.phase is not ProactivePhase.IDLE:
                 return False
         except Exception:
-            pass
+            # State unavailable → treat as IDLE and fall through to the rest of
+            # the gate; never block delivery on a phase-read hiccup.
+            logger.debug("[%s] _can_release_proactive: state.phase unavailable; treating as IDLE", self.lanlan_name)
         sess = self.session
         if isinstance(sess, OmniRealtimeClient):
             try:
                 if sess.is_active_response():
                     return False
             except Exception:
-                pass
+                # is_active_response read failed → treat as not-active rather
+                # than wedging the queue.
+                logger.debug("[%s] _can_release_proactive: is_active_response check failed; treating as not-active", self.lanlan_name)
         return True
 
     def _reset_proactive_gate(self) -> None:
