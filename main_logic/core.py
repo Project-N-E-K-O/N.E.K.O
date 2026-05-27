@@ -6298,6 +6298,20 @@ class LLMSessionManager:
         guaranteed. If there is no session / no vision input yet, media is LEFT
         on the cb so the next delivery attempt streams it (no loss). Streamed
         images are popped so a deferred-then-retried cb doesn't re-stream."""
+        # Only VOICE sessions have same-turn semantics: OmniRealtimeClient.
+        # stream_image() persists the image as a conversation.item that the
+        # immediately-following proactive response.create sees. The TEXT
+        # session's stream_image() merely stages into _pending_images, which
+        # binds to the NEXT stream_text (user turn) — so injecting a respond
+        # cue's image there would attach it to an unrelated later user message
+        # (wrong visual context). For text mode we therefore DON'T inject
+        # proactive images at all (text-mode proactive is text-only); drop them
+        # so they can't leak into _pending_images.
+        if not isinstance(session, OmniRealtimeClient):
+            for cb in callbacks:
+                if isinstance(cb, dict):
+                    cb.pop("media_images", None)
+            return
         si = getattr(session, "stream_image", None)
         if si is None:
             return
