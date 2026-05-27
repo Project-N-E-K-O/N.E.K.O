@@ -57,6 +57,18 @@ NEUTRAL_PRIORITY = 100
 
 
 def effective_priority(raw: Any) -> int:
+    # Single global convention: LOWER = more urgent (mc alert=1 .. keep_going=4),
+    # with unspecified(0) → NEUTRAL so any explicit priority outranks "didn't
+    # set one". KNOWN LIMITATION: some legacy plugins use the OPPOSITE
+    # convention for user-facing importance (e.g. bilibili gift/SC=9 as "most
+    # important", guidance=8). Under one linear scale these can't coexist with
+    # mc's 1=most-urgent, so for such a plugin a higher-value cue sorts AFTER a
+    # lower-value one within a single release batch. Impact is bounded: it only
+    # affects ORDER inside one already-batched LLM turn (nothing is dropped),
+    # and those plugins' user-visible HUD toasts fire independently. Migrating
+    # those producers to the lower-is-urgent scale is deferred follow-up; we do
+    # NOT blindly remap legacy values here (their numeric semantics differ per
+    # plugin, so a blanket flip would create new inconsistencies).
     try:
         p = int(raw)
     except (TypeError, ValueError):
