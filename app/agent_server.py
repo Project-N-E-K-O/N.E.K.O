@@ -1651,37 +1651,30 @@ async def _emit_agent_status_update(lanlan_name: Optional[str] = None) -> None:
 async def _handle_voice_transcript_request(event: Dict[str, Any]) -> None:
     event_id = str((event or {}).get("event_id") or "")
     lanlan_name = (event or {}).get("lanlan_name")
-    transcript = str((event or {}).get("transcript") or "").strip()
     result: Dict[str, Any] = {"action": "noop", "reason": "unavailable"}
 
     try:
-        if not transcript:
-            result = {"action": "noop", "reason": "empty_transcript"}
+        from plugin.server.application.plugins import voice_transcript_bridge
+
+        if not voice_transcript_bridge.voice_transcript_request_has_text(event):
+            result = voice_transcript_bridge.voice_transcript_noop("empty_transcript")
         elif not Modules.agent_flags.get("user_plugin_enabled", False):
-            result = {"action": "noop", "reason": "user_plugin_disabled"}
+            result = voice_transcript_bridge.voice_transcript_noop(
+                "user_plugin_disabled"
+            )
         else:
             lifecycle_ready = bool(Modules.plugin_lifecycle_started)
             if not lifecycle_ready:
                 lifecycle_ready = await _ensure_plugin_lifecycle_started()
 
             if not lifecycle_ready:
-                result = {"action": "noop", "reason": "plugin_lifecycle_start_failed"}
-            else:
-                from plugin.server.application.plugins.dispatch_service import (
-                    PluginDispatchService,
+                result = voice_transcript_bridge.voice_transcript_noop(
+                    "plugin_lifecycle_start_failed"
                 )
-
-                dispatch_service = PluginDispatchService()
-                result = await dispatch_service.trigger_arbitrated_custom_event(
-                    event_type="voice_transcript",
-                    args={
-                        "transcript": transcript,
-                        "lanlan_name": lanlan_name or "",
-                        "metadata": (event or {}).get("metadata")
-                        if isinstance((event or {}).get("metadata"), dict)
-                        else {},
-                    },
-                    timeout=1.0,
+            else:
+                result = await voice_transcript_bridge.resolve_voice_transcript_request(
+                    event,
+                    timeout=voice_transcript_bridge.VOICE_TRANSCRIPT_DISPATCH_TIMEOUT_SECONDS,
                 )
     except Exception as exc:
         logger.debug(
