@@ -549,10 +549,11 @@ async def publish_voice_transcript_request_reliably(
             sent = await publish_session_event(event)
             if not sent:
                 logger.debug(
-                    "[EventBus] voice_transcript_request not sent: no main bridge lanlan=%s",
+                    "[EventBus] voice_transcript_request not sent: no main bridge lanlan=%s attempt=%s",
                     lanlan_name,
+                    attempt,
                 )
-                return None
+                continue
             try:
                 result = await asyncio.wait_for(asyncio.shield(waiter), timeout=timeout_s)
                 return result if isinstance(result, dict) else {}

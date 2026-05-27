@@ -1660,32 +1660,36 @@ async def _handle_voice_transcript_request(event: Dict[str, Any]) -> None:
         elif not Modules.agent_flags.get("user_plugin_enabled", False):
             result = {"action": "noop", "reason": "user_plugin_disabled"}
         else:
-            if not Modules.plugin_lifecycle_started:
-                await _ensure_plugin_lifecycle_started()
+            lifecycle_ready = bool(Modules.plugin_lifecycle_started)
+            if not lifecycle_ready:
+                lifecycle_ready = await _ensure_plugin_lifecycle_started()
 
-            from plugin.server.application.plugins.dispatch_service import (
-                PluginDispatchService,
-            )
+            if not lifecycle_ready:
+                result = {"action": "noop", "reason": "plugin_lifecycle_start_failed"}
+            else:
+                from plugin.server.application.plugins.dispatch_service import (
+                    PluginDispatchService,
+                )
 
-            dispatch_service = PluginDispatchService()
-            plugin_result = await dispatch_service.trigger_custom_event(
-                to_plugin="study_companion",
-                event_type="voice_transcript",
-                event_id="handle_transcript",
-                args={
-                    "transcript": transcript,
-                    "lanlan_name": lanlan_name or "",
-                    "metadata": (event or {}).get("metadata")
-                    if isinstance((event or {}).get("metadata"), dict)
-                    else {},
-                },
-                timeout=0.5,
-            )
-            result = (
-                dict(plugin_result)
-                if isinstance(plugin_result, dict)
-                else {"action": "noop", "reason": "invalid_plugin_result"}
-            )
+                dispatch_service = PluginDispatchService()
+                plugin_result = await dispatch_service.trigger_custom_event(
+                    to_plugin="study_companion",
+                    event_type="voice_transcript",
+                    event_id="handle_transcript",
+                    args={
+                        "transcript": transcript,
+                        "lanlan_name": lanlan_name or "",
+                        "metadata": (event or {}).get("metadata")
+                        if isinstance((event or {}).get("metadata"), dict)
+                        else {},
+                    },
+                    timeout=0.5,
+                )
+                result = (
+                    dict(plugin_result)
+                    if isinstance(plugin_result, dict)
+                    else {"action": "noop", "reason": "invalid_plugin_result"}
+                )
     except Exception as exc:
         logger.debug(
             "[VoiceBridge] study_companion dispatch failed: event_id=%s lanlan=%s err=%s",
