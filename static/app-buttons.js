@@ -1376,7 +1376,7 @@
 
             // Immediately activate
             micButton.classList.add('active');
-            window.syncFloatingMicButtonState(true);
+            if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(true);
             window.isMicStarting = true;
             S.voiceStartPending = true;
             micButton.disabled = true;
