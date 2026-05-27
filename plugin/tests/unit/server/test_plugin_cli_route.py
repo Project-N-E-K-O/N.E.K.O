@@ -10,6 +10,7 @@ from httpx import ASGITransport, AsyncClient
 from plugin.neko_plugin_cli.public import pack_plugin
 from plugin.server.infrastructure.exceptions import register_exception_handlers
 from plugin.server.routes.plugin_cli import router
+from plugin.server.routes import plugin_cli as plugin_cli_routes
 
 pytestmark = pytest.mark.plugin_unit
 FIXTURE_PLUGINS_ROOT = Path(__file__).resolve().parents[2] / "fixtures" / "neko_plugin_cli" / "plugins"
@@ -61,12 +62,54 @@ def _write_vendor_dist(plugin_dir: Path, name: str, version: str) -> None:
     )
 
 
+class _MemoryUploadFile:
+    def __init__(self) -> None:
+        self.filename = "demo.neko-plugin"
+
+    async def read(self) -> bytes:
+        return b"demo"
+
+
 @pytest.fixture
 def plugin_cli_test_app() -> FastAPI:
     app = FastAPI(title="plugin-cli-test-app")
     register_exception_handlers(app)
     app.include_router(router)
     return app
+
+
+def test_upload_and_unpack_legacy_returns_unpack_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_upload_and_install(*_args, **_kwargs) -> dict[str, object]:
+        return {
+            "upload": {"filename": "demo.neko-plugin"},
+            "install": {
+                "installed_plugins": ["demo"],
+                "installed_plugin_count": 1,
+            },
+        }
+
+    monkeypatch.setattr(
+        plugin_cli_routes,
+        "plugin_cli_upload_and_install",
+        fake_upload_and_install,
+    )
+
+    import asyncio
+
+    body = asyncio.run(
+        plugin_cli_routes.plugin_cli_upload_and_unpack_legacy(
+            _MemoryUploadFile(),  # type: ignore[arg-type]
+            on_conflict="rename",
+            _="",
+        )
+    )
+
+    assert "install" not in body
+    assert body["upload"] == {"filename": "demo.neko-plugin"}
+    assert body["unpack"] == {
+        "unpacked_plugins": ["demo"],
+        "unpacked_plugin_count": 1,
+    }
 
 
 @pytest.mark.asyncio

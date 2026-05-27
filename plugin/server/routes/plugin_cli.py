@@ -416,5 +416,6 @@ async def plugin_cli_upload_and_unpack_legacy(
             install["unpacked_plugins"] = install.pop("installed_plugins")
         if "installed_plugin_count" in install:
             install["unpacked_plugin_count"] = install.pop("installed_plugin_count")
-        result = {**result, "install": install}
+        result = {key: value for key, value in result.items() if key != "install"}
+        result["unpack"] = install
     return result

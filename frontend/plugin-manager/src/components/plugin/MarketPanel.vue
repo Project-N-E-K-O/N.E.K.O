@@ -364,6 +364,23 @@ function beginInstallTaskTracking(
   installTaskDialogVisible.value = true
 }
 
+function markInstallTaskFailed(
+  taskId: string,
+  message: string,
+  options: { error?: string } = {},
+) {
+  activeInstallTask.value = {
+    ...(activeInstallTask.value || {
+      task_id: taskId,
+      progress: 0,
+      message,
+    }),
+    status: 'failed',
+    stage: 'failed',
+    error: options.error ?? message,
+  }
+}
+
 function resolveInstallTaskErrorMessage(task: MarketInstallTask): string {
   const code = task.error_code || ''
   if (code === 'version_already_at_target') return t('market.upgradeAlreadyAtTarget')
@@ -849,7 +866,13 @@ async function pollInstallTask(
   while (Date.now() < deadline) {
     try {
       const res = await fetchBridge(`/market/tasks/${taskId}`)
-      if (!res) return false
+      if (!res) {
+        markInstallTaskFailed(taskId, t('market.installFailed'), {
+          error: t('market.pairRequired'),
+        })
+        ElMessage.warning(t('market.pairRequired'))
+        return false
+      }
       if (res.ok) {
         const task = (await res.json()) as MarketInstallTask
         activeInstallTask.value = task
@@ -898,6 +921,10 @@ async function handleInstall(plugin: MarketWorkbenchItem) {
   const payload = await resolveInstallPayload(plugin)
   if (!payload) {
     ElMessage.warning(t('market.noDownloadUrl'))
+    return
+  }
+  if (!payload.package_sha256) {
+    ElMessage.error(t('market.installFailed'))
     return
   }
 
@@ -966,6 +993,10 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
     ElMessage.warning(t('market.noDownloadUrl'))
     return
   }
+  if (!payload.package_sha256) {
+    ElMessage.error(t('market.installFailed'))
+    return
+  }
 
   upgradingId.value = plugin.id
   try {
@@ -1010,6 +1041,8 @@ async function handleUpgrade(plugin: MarketWorkbenchItem) {
       const err = await res.json().catch(() => ({}))
       ElMessage.error(err.detail || t('market.installFailed'))
     }
+  } catch {
+    ElMessage.error(t('market.installFailed'))
   } finally {
     upgradingId.value = null
   }

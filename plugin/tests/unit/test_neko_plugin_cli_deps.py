@@ -74,6 +74,38 @@ class TestHelpers:
         assert '"httpx>=0.27"' in content
         assert '"pydantic>=2.0"' in content
 
+    def test_update_pyproject_dependencies_preserves_extras_array_bounds(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            "\n".join(
+                [
+                    "[project]",
+                    'name = "test"',
+                    "dependencies = [",
+                    '  "requests[security]>=2",',
+                    "]",
+                    "",
+                    "[tool.demo]",
+                    'value = "keep"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        _update_pyproject_dependencies(
+            pyproject,
+            ["requests[security]>=2", "pydantic>=2.0"],
+        )
+
+        content = pyproject.read_text(encoding="utf-8")
+        assert '"requests[security]>=2"' in content
+        assert '"pydantic>=2.0"' in content
+        assert '[tool.demo]\nvalue = "keep"' in content
+
     def test_clean_vendor(self, tmp_path: Path) -> None:
         vendor = tmp_path / "vendor"
         vendor.mkdir()

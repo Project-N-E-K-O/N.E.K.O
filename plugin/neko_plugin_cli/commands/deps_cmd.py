@@ -251,6 +251,61 @@ def _merge_new_packages(existing: list[str], new_packages: list[str]) -> list[st
     return sorted(result_map.values(), key=lambda d: d.lower())
 
 
+def _find_toml_array_end(text: str, start: int) -> int:
+    """Return the exclusive end offset for a TOML array starting at ``start``."""
+
+    if start >= len(text) or text[start] != "[":
+        raise ValueError("expected TOML array start")
+
+    depth = 0
+    quote: str | None = None
+    triple_quote = False
+    escaped = False
+    index = start
+    while index < len(text):
+        char = text[index]
+
+        if quote is not None:
+            if quote == '"' and not triple_quote and escaped:
+                escaped = False
+            elif quote == '"' and not triple_quote and char == "\\":
+                escaped = True
+            elif triple_quote and text.startswith(quote * 3, index):
+                quote = None
+                triple_quote = False
+                index += 2
+            elif not triple_quote and char == quote:
+                quote = None
+            index += 1
+            continue
+
+        if text.startswith('"""', index) or text.startswith("'''", index):
+            quote = text[index]
+            triple_quote = True
+            index += 3
+            continue
+        if char in {'"', "'"}:
+            quote = char
+            triple_quote = False
+            index += 1
+            continue
+        if char == "#":
+            newline = text.find("\n", index)
+            if newline == -1:
+                return len(text)
+            index = newline + 1
+            continue
+        if char == "[":
+            depth += 1
+        elif char == "]":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+        index += 1
+
+    raise ValueError("unterminated TOML array")
+
+
 def _pip_install_to_vendor(
     packages: list[str],
     *,
@@ -344,21 +399,25 @@ def _update_pyproject_dependencies(pyproject_path: Path, deps: list[str]) -> Non
         section_text = section_match.group(0)
         body_start, body_end = section_match.start(), section_match.end()
 
-        # Scoped regex: only matches ``dependencies = [...]`` when it sits
-        # at the start of a line (after optional whitespace) inside the
-        # ``[project]`` body. ``re.MULTILINE | re.DOTALL`` so ``^`` is
-        # line-start and ``.*?`` can span quoted multi-line arrays.
+        # Scoped regex: only matches ``dependencies =`` when it sits at the
+        # start of a line (after optional whitespace) inside the ``[project]``
+        # body. The array end is found with a tiny TOML-aware scanner so extras
+        # like ``"requests[security]>=2"`` do not terminate the match early.
         deps_re = re.compile(
-            r"(?ms)^(?P<lead>[ \t]*)dependencies\s*=\s*\[.*?\]"
+            r"(?m)^(?P<lead>[ \t]*)dependencies\s*=\s*(?P<array>\[)"
         )
         deps_match = deps_re.search(section_text)
         if deps_match is not None:
             lead = deps_match.group("lead")
+            deps_end = _find_toml_array_end(
+                section_text,
+                deps_match.start("array"),
+            )
             replacement = f"{lead}dependencies = {deps_body}"
             new_section = (
                 section_text[: deps_match.start()]
                 + replacement
-                + section_text[deps_match.end():]
+                + section_text[deps_end:]
             )
         else:
             # Section exists but no dependencies field. Append on its
