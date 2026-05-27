@@ -48,12 +48,9 @@
 主要位置：
 
 1. `frontend/react-neko-chat/src/App.tsx`
-2. `frontend/react-neko-chat/src/CompactExportHistoryPanel.tsx`
-3. `frontend/react-neko-chat/src/MessageBlockView.tsx`
-4. `frontend/react-neko-chat/src/styles.css`
-5. `static/app-react-chat-window.js`
-6. `static/app-chat-export.js`
-7. `static/css/index.css`
+2. `frontend/react-neko-chat/src/styles.css`
+3. `static/app-react-chat-window.js`
+4. `static/css/index.css`
 
 已确认事实：
 
@@ -65,19 +62,17 @@
 4. 紧凑态渲染已经走独立分支：
    - `chat-body-compact-surface`
    - `compact-chat-stage`
-   - `compact-chat-surface-shell`
-   - `compact-chat-surface-frame`
+   - `compact-chat-capsule-shell`
+   - `compact-chat-input-shell`
    - `data-compact-chat-state="default|options|input"`
-   - `data-compact-geometry-item="capsule|input|dragHandle|resizeHandle"`
+   - `data-compact-geometry-item="capsule|input|dragHandle"`
 5. 当前文字来源是 React `messages`，由 `getCompactMessagePreview(messages)` 提取紧凑预览。
 6. 当前没有正式的 TTS / 字幕逐句事实桥；音频播放状态只可作为显字开闸和限速参考，不能当成文本事实源。
 7. GalGame options 和 ChoicePrompt 复用原选项语义；紧凑态选项层通过 `compactChoiceLayerNode` 独立挂载，不应塞回胶囊内部。
 8. 紧凑输入态复用 composer 的发送、附件、禁用、工具回调语义，但由紧凑态壳层限制高度和浮层。
-9. 紧凑输入态工具转轮当前作为 `compact-chat-surface-shell` 内部浮层渲染，并带 `data-compact-geometry-item="toolFan"`；宿主 geometry 会为 tool fan 输出 native rect 和可点击子 item。
+9. 紧凑输入态工具转轮通过 `createPortal(..., document.body)` 挂载，并带 `data-compact-geometry-item="toolFan"`。
 10. 蓝线拖拽通过 `data-compact-drag-handle="true"` 标记，必须保留。
-11. 紧凑聊天框本体支持左右 resize handle；宽度状态由 React 控制，并通过 CSS 变量 / 桌面 layout 参与 history 尺寸和 geometry。
-12. 紧凑态内联历史 / 导出层已接入 React：`CompactExportHistoryPanel` 直接消费 `messages`，用 `MessageBlockView` 复用现有 block 渲染，并通过 `window.appChatExport` 的 compact inline API 复用导出能力。
-13. `static/app-react-chat-window.js` 已负责紧凑 surface、小球、geometry snapshot、composite hit region 和 CSS 变量同步。
+11. `static/app-react-chat-window.js` 已负责紧凑 surface、小球、geometry snapshot 和 CSS 变量同步。
 
 ### NEKO-PC 桌面壳
 
@@ -152,13 +147,12 @@
 
 内容：
 
-1. 紧凑聊天框本体：`compact-chat-surface-frame`，通过 `data-compact-geometry-item="capsule|input"` 表达胶囊 / 输入语义。
+1. 紧凑聊天框胶囊。
 2. 紧凑输入框。
 3. GalGame / ChoicePrompt 选项层。
 4. 工具转轮。
-5. 内联历史 / 导出历史层。
+5. 后续内联历史 / 导出历史层。
 6. 蓝线拖拽手柄。
-7. 左右 resize handle。
 
 定位：
 
@@ -209,7 +203,7 @@ Compact Interaction Geometry 是紧凑态的根合同。所有可见、可点、
 每个紧凑态交互区域至少需要表达：
 
 1. `owner: surface | ball`
-2. `kind: capsule | input | choice | history | toolFan | dragHandle | resizeHandle | ball`
+2. `kind: capsule | input | choice | history | toolFan | dragHandle | ball`
 3. `visualRect`
 4. `hitRect`
 5. `nativeRect`
@@ -234,8 +228,7 @@ Compact Interaction Geometry 是紧凑态的根合同。所有可见、可点、
    - `ballRect`
    - `externalBall`
 3. React 组件需要用稳定 `data-compact-geometry-owner` 和 `data-compact-geometry-item` 暴露身份。
-4. 对 history 这类透明外层 + 内部可点击区域，React 侧用 `data-compact-geometry-hit-scope="children"` 和 `data-compact-hit-region="true"` 暴露 composite geometry；宿主输出 `history:native` 和子 hit rect。
-5. NEKO-PC preload 只消费页面 geometry 或同名同义的过渡 selector，不能另算一套产品规则。
+4. NEKO-PC preload 只消费页面 geometry 或同名同义的过渡 selector，不能另算一套产品规则。
 
 ### Electron Native Region
 
@@ -279,11 +272,11 @@ Compact Interaction Geometry 是紧凑态的根合同。所有可见、可点、
 
 ## 输入态合同
 
-1. 当前代码已经统一到 `.compact-chat-surface-shell` 包裹 `.compact-chat-surface-frame`；紧凑框本体语义仍以 `data-compact-geometry-item="capsule|input"` 为准，不以 class 名推断。
-2. `capsule` / `input` 是同一类 base surface anchor；后续若重构 DOM 或 class，需要同步 React、CSS、geometry collector、NEKO-PC preload 和测试。
+1. 当前代码仍保留 `.compact-chat-capsule-shell` 和 `.compact-chat-input-shell` 两套 DOM；紧凑框本体语义以 `data-compact-geometry-item="capsule|input"` 为准，不以 class 名推断。
+2. `capsule` / `input` 是同一类 base surface anchor；后续如果重构为统一 `.compact-chat-surface-frame`，必须先同步 React、CSS、geometry collector、NEKO-PC preload 和测试。
 3. `.composer-input` 允许在上限内增长，超出后内部滚动。
 4. 附件预览不能把紧凑输入态撑成 full composer。
-5. 工具转轮作为 surface 内部浮层浮出，不参与 input 本体高度测量。
+5. 工具转轮通过 portal 浮出，不参与 input 本体高度测量。
 6. 工具转轮打开时仍属于 surface geometry。
 7. 空输入且无附件时，右侧按钮是工具入口；有文本或附件时，右侧按钮是发送。
 8. 进入输入态后必须能回到展示态，不能因为 focus/blur 或工具层状态卡死。
@@ -298,13 +291,13 @@ Compact Interaction Geometry 是紧凑态的根合同。所有可见、可点、
 6. 上下都不足时，选项层应受控压缩并内部滚动。
 7. 选项层关闭后不能保留透明命中区域。
 8. 选项层必须进入 geometry 和桌面 native bounds，否则 Electron 下会被裁切。
-9. 内联历史打开时，选项层可以盖在历史层上方，不参与历史层重排。
+9. 后续内联历史打开时，选项层可以盖在历史层上方，不参与历史层重排。
 
 ## 历史 / 导出入口合同
 
 默认 compact 不展示历史；历史只通过明确入口按需打开。
 
-内联历史功能以 `home-compact-chat-inline-export-history-design.md` 为准，并遵守：
+后续内联历史功能以 `home-compact-chat-inline-export-history-design.md` 为准，并遵守：
 
 1. 历史区域属于 Compact Surface Island。
 2. 历史区域位于紧凑聊天框上方。
@@ -314,7 +307,7 @@ Compact Interaction Geometry 是紧凑态的根合同。所有可见、可点、
 6. 历史选择状态与导出预览共享。
 7. GalGame / ChoicePrompt 选项出现时盖在历史上方。
 8. 历史滚动、气泡点击、多选和后续拖拽必须有明确意图区分。
-9. 历史拖拽发送模型属于后续阶段功能；当前基础历史 / 导出层只做打开、选择、预览、复制 / 下载和 geometry。
+9. 后续历史拖拽发送模型属于第二阶段功能，基础历史 / 导出功能完成前不实施。
 10. 历史区域关闭或为空时，不允许留下透明但吃事件的大占位。
 11. 后续需要把“历史记录中的非对话透明区域”纳入穿透目标：气泡、按钮、预览控件和必要滚动命中可以吃事件；气泡之间、气泡左右留白等非对话透明区不应长期作为 native hit region 遮挡后方。
 
@@ -473,7 +466,7 @@ Surface：
 13. 禁止让历史、选项或工具层参与小球定位。
 14. 禁止让视觉浮层依赖未登记的 `overflow: visible` 逃逸父容器。
 15. 禁止把 NEKO-PC 的实现限制反向改成网页端产品目标。
-16. 禁止把旧 `.compact-chat-capsule-shell` / `.compact-chat-input-shell` 当成当前真实 DOM 链路；当前真实本体是 `.compact-chat-surface-shell` / `.compact-chat-surface-frame`，但 anchor 语义仍只认 `capsule|input`。
+16. 禁止把当前代码不存在的 `.compact-chat-surface-frame` / `.compact-chat-surface-shell` 当成已完成事实写入实施结论；统一框架只能作为后续重构目标。
 
 ## 当前优先级
 
@@ -482,7 +475,7 @@ Surface：
 1. 先保护三层形态和紧凑三态的状态语义。
 2. 再保护 surface / ball 独立、geometry、命中和桌面 bounds。
 3. 再保护选项、输入、工具这些当前核心交互。
-4. 再稳固内联历史 / 导出历史的选择、预览、滚动、导出和 composite geometry。
+4. 再接入内联历史 / 导出历史。
 5. 最后再做拖拽历史气泡、图片拖出、发送给模型等游戏化增强。
 
 原因：紧凑态的根本问题不是某个按钮的位置，而是角色附近交互器的几何、命中、层级和状态边界必须稳定。只有这个基础稳定，后续历史、导出、拖拽和表现层动画才不会继续堆成补丁。
