@@ -27,6 +27,7 @@
     var savedShellSize = null;
     var savedShellPosition = null; // {left, top} before minimize – used to fly back on expand
     var savedExpandedShellPosition = null; // last known full-surface desktop position
+    var lastRestorableChatSurfaceMode = 'full';
     var _sortKeySeq = 0; // monotonically increasing sortKey counter
     var CHAT_SURFACE_MODE_SEQUENCE = ['full', 'compact', 'minimized'];
     var COMPACT_CHAT_STATES = ['default', 'options', 'input'];
@@ -106,6 +107,9 @@
 
     function getNextChatSurfaceMode(mode) {
         var normalized = normalizeChatSurfaceMode(mode);
+        if (normalized === 'minimized') {
+            return normalizeChatSurfaceMode(lastRestorableChatSurfaceMode) === 'compact' ? 'compact' : 'full';
+        }
         var currentIndex = CHAT_SURFACE_MODE_SEQUENCE.indexOf(normalized);
         var nextIndex = currentIndex >= 0
             ? (currentIndex + 1) % CHAT_SURFACE_MODE_SEQUENCE.length
@@ -2912,11 +2916,18 @@
     function setViewProps(nextViewProps) {
         var nextProps = nextViewProps || {};
         if (Object.prototype.hasOwnProperty.call(nextProps, 'chatSurfaceMode')) {
-            if (normalizeChatSurfaceMode(nextProps.chatSurfaceMode) !== getCurrentChatSurfaceMode()
+            var normalizedChatSurfaceMode = normalizeChatSurfaceMode(nextProps.chatSurfaceMode);
+            var previousChatSurfaceMode = getCurrentChatSurfaceMode();
+            if (normalizedChatSurfaceMode !== previousChatSurfaceMode
                 && !Object.prototype.hasOwnProperty.call(nextProps, 'compactChatState')) {
                 resetCompactChatState();
             }
-            state.chatSurfaceMode = normalizeChatSurfaceMode(nextProps.chatSurfaceMode);
+            if (normalizedChatSurfaceMode !== 'minimized') {
+                lastRestorableChatSurfaceMode = normalizedChatSurfaceMode;
+            } else if (previousChatSurfaceMode !== 'minimized') {
+                lastRestorableChatSurfaceMode = previousChatSurfaceMode;
+            }
+            state.chatSurfaceMode = normalizedChatSurfaceMode;
         }
         if (Object.prototype.hasOwnProperty.call(nextProps, 'compactChatState')) {
             state.compactChatState = normalizeCompactChatState(nextProps.compactChatState);
@@ -3224,6 +3235,12 @@
         if (previousMode === normalized) {
             syncChatSurfaceModeUI();
             return normalized;
+        }
+
+        if (!nextMinimized) {
+            lastRestorableChatSurfaceMode = normalized;
+        } else if (!previousMinimized) {
+            lastRestorableChatSurfaceMode = previousMode;
         }
 
         if (!previousMinimized && previousMode === 'full') {
@@ -4194,6 +4211,7 @@
 
         ensureViewProps();
         state.chatSurfaceMode = readChatSurfaceModePreference();
+        lastRestorableChatSurfaceMode = state.chatSurfaceMode;
         resetCompactChatState();
         state.viewProps = Object.assign({}, ensureViewProps(), {
             chatSurfaceMode: getCurrentChatSurfaceMode(),

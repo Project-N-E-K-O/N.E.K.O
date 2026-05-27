@@ -75,6 +75,38 @@ def test_close_from_minimized_preserves_compact_surface_mode():
     assert "resetCompactChatState();" in close_block
 
 
+def test_minimized_restore_uses_previous_real_surface_mode():
+    source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    assert "var lastRestorableChatSurfaceMode = 'full';" in source
+
+    next_mode_block = source.split("function getNextChatSurfaceMode(mode)", 1)[1].split(
+        "function resetCompactChatState()",
+        1,
+    )[0]
+    set_mode_block = source.split("function setChatSurfaceMode(nextMode)", 1)[1].split(
+        "function cycleChatSurfaceMode()",
+        1,
+    )[0]
+    set_view_props_block = source.split("function setViewProps(nextViewProps)", 1)[1].split(
+        "function ensureBundleLoaded()",
+        1,
+    )[0]
+    init_block = source.split("function init()", 1)[1].split(
+        "function initAfterStorageBarrier()",
+        1,
+    )[0]
+
+    assert "if (normalized === 'minimized')" in next_mode_block
+    assert "lastRestorableChatSurfaceMode" in next_mode_block
+    assert "return normalizeChatSurfaceMode(lastRestorableChatSurfaceMode) === 'compact' ? 'compact' : 'full';" in next_mode_block
+    assert "lastRestorableChatSurfaceMode = normalized;" in set_mode_block
+    assert "lastRestorableChatSurfaceMode = previousMode;" in set_mode_block
+    assert "lastRestorableChatSurfaceMode = normalizedChatSurfaceMode;" in set_view_props_block
+    assert "lastRestorableChatSurfaceMode = previousChatSurfaceMode;" in set_view_props_block
+    assert "lastRestorableChatSurfaceMode = state.chatSurfaceMode;" in init_block
+
+
 def test_desktop_compact_history_uses_workarea_not_browserwindow_viewport():
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
@@ -223,8 +255,12 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     fan_block = css_block(styles, ".compact-input-tool-fan {", ".compact-chat-surface-shell *")
 
     assert "position: absolute;" in fan_block
-    assert "left: calc(100% - 30px - var(--compact-tool-fan-hit-outset));" in fan_block
-    assert "top: calc(31px - var(--compact-tool-fan-hit-outset));" in fan_block
+    assert "--compact-tool-fan-focus-x: 42px;" in fan_block
+    assert "--compact-tool-fan-focus-y: 42px;" in fan_block
+    assert "--compact-tool-toggle-center-x: calc(100% - 31px);" in fan_block
+    assert "--compact-tool-toggle-center-y: 31px;" in fan_block
+    assert "left: calc(var(--compact-tool-toggle-center-x) - var(--compact-tool-fan-focus-x));" in fan_block
+    assert "top: calc(var(--compact-tool-toggle-center-y) - var(--compact-tool-fan-focus-y));" in fan_block
     assert "position: fixed;" not in fan_block
     assert "--compact-input-tool-fan-origin-left" not in fan_block
     assert '.compact-input-tool-fan[data-compact-input-tool-fan-open="false"]' in styles

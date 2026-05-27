@@ -3014,14 +3014,18 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 .compact-input-tool-fan {
   --compact-tool-button-size: 38px;
   --compact-tool-fan-hit-outset: 52px;
+  --compact-tool-fan-focus-x: 42px;
+  --compact-tool-fan-focus-y: 42px;
+  --compact-tool-toggle-center-x: calc(100% - 31px);
+  --compact-tool-toggle-center-y: 31px;
   --compact-tool-button-fill: rgba(255, 255, 255, 0.9);
   --compact-tool-button-hover-fill: rgba(232, 246, 255, 0.96);
   --compact-tool-button-shadow: 0 8px 18px rgba(20, 36, 64, 0.13);
   --compact-tool-preview-fade-left: linear-gradient(99deg, rgba(0, 0, 0, 0.04) 0%, rgba(0, 0, 0, 0.52) 46%, #000 100%);
   --compact-tool-preview-fade-right: linear-gradient(172deg, rgba(0, 0, 0, 0.04) 0%, rgba(0, 0, 0, 0.52) 46%, #000 100%);
   position: absolute;
-  left: calc(100% - 30px - var(--compact-tool-fan-hit-outset));
-  top: calc(31px - var(--compact-tool-fan-hit-outset));
+  left: calc(var(--compact-tool-toggle-center-x) - var(--compact-tool-fan-focus-x));
+  top: calc(var(--compact-tool-toggle-center-y) - var(--compact-tool-fan-focus-y));
   width: calc(126px + var(--compact-tool-fan-hit-outset));
   height: calc(126px + var(--compact-tool-fan-hit-outset));
   pointer-events: none;
@@ -3221,10 +3225,10 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 .compact-input-tool-fan .composer-icon-popover {
-  left: auto;
-  right: 0;
-  bottom: calc(100% + 6px);
-  transform: none;
+  left: var(--compact-tool-fan-focus-x);
+  right: auto;
+  bottom: calc(100% - var(--compact-tool-fan-focus-y) + 6px);
+  transform: translateX(-50%);
   z-index: 13;
 }
 

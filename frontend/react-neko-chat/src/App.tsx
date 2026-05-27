@@ -2641,6 +2641,7 @@ export default function App({
       const menuNode = toolMenuRef.current;
       if (!menuNode) return;
       if (menuNode.contains(event.target as Node)) return;
+      if (compactInputToolFanRef.current?.contains(event.target as Node)) return;
       setToolMenuOpen(false);
     };
 
@@ -3597,73 +3598,73 @@ export default function App({
             <span aria-hidden="true">脳</span>
           </button>
         ) : null}
-        {toolMenuOpen && compactInputToolFanOpen ? (
-          <div
-            id="composer-tool-popover-compact"
-            className="composer-icon-popover"
-            role="group"
-            aria-label={toolIconsAriaLabel}
-          >
-            {toolIconItems.map(item => {
-              const itemLabel = getToolItemLabel(item);
-              const menuVariant = activeCursorToolId === item.id
-                ? effectiveCursorVariant
-                : 'primary';
-              const menuVisual = resolveMenuIconVisual(item, menuVariant);
-              return (
-              <button
-                key={item.id}
-                className={`composer-icon-button${activeCursorToolId === item.id ? ' is-active' : ''}`}
-                type="button"
-                aria-pressed={activeCursorToolId === item.id}
-                aria-label={itemLabel}
-                title={itemLabel}
-                disabled={compactInputToolFanActionsDisabled}
-                onClick={(event) => {
-                  if (shouldSuppressCompactToolClick(event)) {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    return;
-                  }
-                  latestPointerPositionRef.current = {
-                    x: event.clientX,
-                    y: event.clientY,
-                  };
-                  latestPointerTargetRef.current = event.currentTarget;
-                  setIsCursorInsideHostWindow(true);
-                  setIsCursorOverCompactCursorZone(true);
-                  setCursorOverAvatarRange(
-                    isPointerWithinAvatarRange(event.clientX, event.clientY, avatarToolCacheState),
-                    { allowHold: true },
-                  );
-                  if (activeCursorToolId === item.id) {
-                    setActiveCursorToolId(null);
-                    setToolMenuOpen(false);
-                    closeCompactInputToolFan();
-                    return;
-                  }
-                  setAvatarRangeCursorVariants(prev => ({ ...prev, [item.id]: 'primary' }));
-                  setOutsideRangeCursorVariants(prev => ({ ...prev, [item.id]: 'primary' }));
-                  setActiveCursorToolId(item.id);
+      </div>
+      {toolMenuOpen && compactInputToolFanOpen ? (
+        <div
+          id="composer-tool-popover-compact"
+          className="composer-icon-popover"
+          role="group"
+          aria-label={toolIconsAriaLabel}
+        >
+          {toolIconItems.map(item => {
+            const itemLabel = getToolItemLabel(item);
+            const menuVariant = activeCursorToolId === item.id
+              ? effectiveCursorVariant
+              : 'primary';
+            const menuVisual = resolveMenuIconVisual(item, menuVariant);
+            return (
+            <button
+              key={item.id}
+              className={`composer-icon-button${activeCursorToolId === item.id ? ' is-active' : ''}`}
+              type="button"
+              aria-pressed={activeCursorToolId === item.id}
+              aria-label={itemLabel}
+              title={itemLabel}
+              disabled={compactInputToolFanActionsDisabled}
+              onClick={(event) => {
+                if (shouldSuppressCompactToolClick(event)) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  return;
+                }
+                latestPointerPositionRef.current = {
+                  x: event.clientX,
+                  y: event.clientY,
+                };
+                latestPointerTargetRef.current = event.currentTarget;
+                setIsCursorInsideHostWindow(true);
+                setIsCursorOverCompactCursorZone(true);
+                setCursorOverAvatarRange(
+                  isPointerWithinAvatarRange(event.clientX, event.clientY, avatarToolCacheState),
+                  { allowHold: true },
+                );
+                if (activeCursorToolId === item.id) {
+                  setActiveCursorToolId(null);
                   setToolMenuOpen(false);
                   closeCompactInputToolFan();
+                  return;
+                }
+                setAvatarRangeCursorVariants(prev => ({ ...prev, [item.id]: 'primary' }));
+                setOutsideRangeCursorVariants(prev => ({ ...prev, [item.id]: 'primary' }));
+                setActiveCursorToolId(item.id);
+                setToolMenuOpen(false);
+                closeCompactInputToolFan();
+              }}
+            >
+              <img
+                className="composer-icon-button-image"
+                src={menuVisual.imagePath}
+                style={{
+                  transform: `translate(${menuVisual.offsetX}px, ${menuVisual.offsetY}px) scale(${item.menuIconScale ?? 1})`,
                 }}
-              >
-                <img
-                  className="composer-icon-button-image"
-                  src={menuVisual.imagePath}
-                  style={{
-                    transform: `translate(${menuVisual.offsetX}px, ${menuVisual.offsetY}px) scale(${item.menuIconScale ?? 1})`,
-                  }}
-                  alt=""
-                  aria-hidden="true"
-                />
-              </button>
-              );
-            })}
-          </div>
-        ) : null}
-      </div>
+                alt=""
+                aria-hidden="true"
+              />
+            </button>
+            );
+          })}
+        </div>
+      ) : null}
     </div>
   ) : null;
 

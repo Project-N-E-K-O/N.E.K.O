@@ -1930,6 +1930,31 @@ describe('App', () => {
     expect(container.querySelectorAll('.send-button-circle')).toHaveLength(1);
   });
 
+  it('anchors compact avatar tool bubbles to the fan origin instead of the rotating tool item', async () => {
+    vi.useFakeTimers();
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+
+      fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(240);
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+
+      const fan = container.querySelector('.compact-input-tool-fan');
+      const avatarToolItem = container.querySelector('.compact-input-tool-item-avatar');
+      const popover = container.querySelector('#composer-tool-popover-compact');
+      expect(fan).not.toBeNull();
+      expect(avatarToolItem).not.toBeNull();
+      expect(popover).not.toBeNull();
+      expect(popover?.parentElement).toBe(fan);
+      expect(avatarToolItem?.contains(popover)).toBe(false);
+      expect(popover).toHaveClass('composer-icon-popover');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('opens compact input tools on hover-capable pointer enter', () => {
     const originalMatchMedia = window.matchMedia;
     mockHoverCapableMatchMedia();
