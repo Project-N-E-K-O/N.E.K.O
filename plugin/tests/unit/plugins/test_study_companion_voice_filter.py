@@ -61,6 +61,22 @@ def test_name_call_relay_splits_pre_context_and_question() -> None:
     assert result["question"] == "为什么这里是3x²"
 
 
+def test_name_call_uses_extra_names_for_current_voice_event() -> None:
+    voice_filter = VoiceFilter(names=["Yui"])
+
+    result = voice_filter.filter(
+        "Mika why is this step valid",
+        "this step is valid",
+        extra_names=["Mika"],
+    )
+
+    assert result is not None
+    assert result["should_relay"] is True
+    assert result["method"] == "name_call"
+    assert result["name"] == "Mika"
+    assert result["question"] == "why is this step valid"
+
+
 def test_short_transcript_without_name_is_dropped() -> None:
     result = VoiceFilter(names=["猫娘"]).filter("嗯?", screen_text="函数求导")
 

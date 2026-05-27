@@ -740,6 +740,7 @@ class StudyCompanionPlugin(NekoPluginBase):
             screen_type=screen_type,
             subject=screen_context["subject"],
             session_key=session_key,
+            extra_names=[lanlan_name],
         )
         if filter_result is None:
             return Ok({"action": "noop", "reason": "not_matched"})

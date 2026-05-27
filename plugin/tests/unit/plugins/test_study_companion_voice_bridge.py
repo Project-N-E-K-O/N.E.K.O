@@ -44,6 +44,25 @@ async def test_voice_transcript_name_call_returns_prime_context() -> None:
 
 
 @pytest.mark.asyncio
+async def test_voice_transcript_uses_active_lanlan_name_as_wake_word() -> None:
+    plugin = _plugin_with_voice_state(
+        screen_text="f(x)=x^3 derivative, explain where 3x^2 comes from"
+    )
+
+    result = await plugin.handle_voice_transcript(
+        "Mika why is it 3x^2",
+        lanlan_name="Mika",
+    )
+
+    assert isinstance(result, Ok)
+    payload = result.value
+    assert payload["action"] == "prime_context"
+    assert "why is it 3x^2" in payload["context"]
+    assert payload["filter"]["method"] == "name_call"
+    assert payload["filter"]["name"] == "Mika"
+
+
+@pytest.mark.asyncio
 async def test_voice_transcript_self_talk_returns_cancel_response() -> None:
     plugin = _plugin_with_voice_state(screen_text="f(x)=x^3 derivative answer is 3x^2")
 
