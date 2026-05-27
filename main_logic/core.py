@@ -5761,11 +5761,17 @@ class LLMSessionManager:
                     # retries WITH its image rather than being delivered
                     # text-only and pruned (which would lose the retained
                     # media). cbs are still in pending_agent_callbacks (not yet
-                    # pruned), so the next trigger retries them.
+                    # pruned). The manager already emptied its queue and its
+                    # inflight timeout only pumps manager-queued items, and no
+                    # response.create fired (so no response.done / voice_play_end
+                    # to re-drive trigger) — so re-arm a delayed retry here,
+                    # otherwise a transient media/WS failure leaves the cue
+                    # waiting for an unrelated user turn (Codex P2).
                     logger.info(
-                        "[%s] trigger_agent_callbacks: proactive media stream failed; deferring voice inject (%d cb kept for retry)",
+                        "[%s] trigger_agent_callbacks: proactive media stream failed; deferring voice inject (%d cb kept, retry armed)",
                         self.lanlan_name, len(voice_snapshot),
                     )
+                    self._schedule_proactive_retry(self.proactive_manager.min_gap_s)
                     return
                 try:
                     await voice_sess.inject_text_and_request_response(
@@ -6441,6 +6447,21 @@ class LLMSessionManager:
             self._voice_playback_active = False
             return False
         return True
+
+    def _schedule_proactive_retry(self, delay: float) -> None:
+        """Schedule a delayed ``trigger_agent_callbacks`` so a cb left in
+        pending_agent_callbacks (e.g. the voice media-stream deferral path) is
+        retried even when nothing else would drive it — the manager has already
+        emptied its queue and its inflight timeout only pumps manager-queued
+        items, and a media failure before response.create means no
+        response.done / voice_play_end arrives to re-fire trigger."""
+        try:
+            asyncio.get_running_loop().call_later(
+                max(0.0, float(delay)),
+                lambda: self._fire_task(self.trigger_agent_callbacks()),
+            )
+        except RuntimeError:
+            self._fire_task(self.trigger_agent_callbacks())
 
     def _can_release_proactive(self) -> bool:
         """Manager-release gate, mirroring the defer conditions in
