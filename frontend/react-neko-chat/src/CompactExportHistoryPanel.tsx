@@ -12,7 +12,7 @@ import {
 import { createPortal } from 'react-dom';
 import { i18n } from './i18n';
 import MessageBlockView from './MessageBlockView';
-import { type ChatMessage, type MessageAction } from './message-schema';
+import { type ChatMessage, type CompactHistoryDragStatePayload, type MessageAction } from './message-schema';
 
 export const COMPACT_EXPORT_SELECTION_LIMIT = 100;
 
@@ -67,6 +67,7 @@ type CompactExportHistoryPanelProps = {
   onAction?: (message: ChatMessage, action: MessageAction) => void;
   isDropTargetAt?: (point: CompactHistoryDropPoint) => boolean;
   onDropToTarget?: (request: CompactHistoryDropRequest) => Promise<boolean | void> | boolean | void;
+  onDragStateChange?: (state: CompactHistoryDragStatePayload) => void;
 };
 
 export type CompactHistoryDragType = 'image' | 'bubble';
@@ -122,6 +123,7 @@ type CompactHistoryDragSource =
     };
 
 type ActiveCompactHistoryDrag = {
+  sessionId: string;
   type: CompactHistoryDragType;
   phase: 'dragging' | 'returning' | 'sending';
   messageId: string;
@@ -168,6 +170,7 @@ type CompactHistoryBubbleShellMetrics = {
 };
 
 type PointerIntentState = {
+  sessionId: string;
   id: number;
   x: number;
   y: number;
@@ -214,6 +217,67 @@ function snapshotCompactHistoryRect(rect: DOMRect | ClientRect): CompactHistoryR
     width: rect.width,
     height: rect.height,
   };
+}
+
+function createCompactHistoryDragSessionId() {
+  return `compact-history-drag-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function getCompactHistoryReducedMotionPreference() {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
+  try {
+    return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  } catch {
+    return false;
+  }
+}
+
+function shouldRequestDesktopBoundsForCompactHistoryDrag() {
+  if (typeof window === 'undefined') return false;
+  const desktopWindow = window as Window & {
+    __NEKO_MULTI_WINDOW__?: boolean;
+    __nekoDesktopCompactLayout?: unknown;
+  };
+  return desktopWindow.__NEKO_MULTI_WINDOW__ === true || !!desktopWindow.__nekoDesktopCompactLayout;
+}
+
+function rectFromCompactHistoryEdges(left: number, top: number, right: number, bottom: number): CompactHistoryRect {
+  return {
+    left,
+    top,
+    right,
+    bottom,
+    width: Math.max(right - left, 0),
+    height: Math.max(bottom - top, 0),
+  };
+}
+
+function inflateCompactHistoryRect(rect: CompactHistoryRect, padding: number): CompactHistoryRect {
+  return rectFromCompactHistoryEdges(
+    rect.left - padding,
+    rect.top - padding,
+    rect.right + padding,
+    rect.bottom + padding,
+  );
+}
+
+function unionCompactHistoryRects(rects: CompactHistoryRect[]): CompactHistoryRect | null {
+  if (!rects.length) return null;
+  return rectFromCompactHistoryEdges(
+    Math.min(...rects.map(rect => rect.left)),
+    Math.min(...rects.map(rect => rect.top)),
+    Math.max(...rects.map(rect => rect.right)),
+    Math.max(...rects.map(rect => rect.bottom)),
+  );
+}
+
+function rectFromCompactHistorySourceNub(nub: CompactHistorySourceNub): CompactHistoryRect {
+  return rectFromCompactHistoryEdges(
+    nub.center.x - nub.width / 2,
+    nub.center.y - nub.height / 2,
+    nub.center.x + nub.width / 2,
+    nub.center.y + nub.height / 2,
+  );
 }
 
 function resolveImageDragSource(
@@ -500,6 +564,45 @@ function getCompactHistoryScaledDragRect(activeDrag: ActiveCompactHistoryDrag): 
     bottom,
     width: right - left,
     height: bottom - top,
+  };
+}
+
+function getCompactHistoryConnectionVisualRect(activeDrag: ActiveCompactHistoryDrag): CompactHistoryRect | null {
+  const sourceNubRect = rectFromCompactHistorySourceNub(getCompactHistorySourceNub(activeDrag));
+  const dragVisualRect = getCompactHistoryScaledDragRect(activeDrag);
+  const connectionRect = unionCompactHistoryRects([sourceNubRect, dragVisualRect]);
+  return connectionRect ? inflateCompactHistoryRect(connectionRect, 24) : null;
+}
+
+function getCompactHistoryDragHitRect(activeDrag: ActiveCompactHistoryDrag): CompactHistoryRect {
+  const dragRect = getCompactHistoryDragRect(activeDrag);
+  return inflateCompactHistoryRect(dragRect, activeDrag.type === 'image' ? 10 : 14);
+}
+
+function buildCompactHistoryDragState(
+  activeDrag: ActiveCompactHistoryDrag,
+  seq: number,
+): CompactHistoryDragStatePayload {
+  return {
+    active: true,
+    sessionId: activeDrag.sessionId,
+    seq,
+    phase: activeDrag.phase,
+    dragType: activeDrag.type,
+    messageId: activeDrag.messageId,
+    blockIndex: activeDrag.blockIndex,
+    pointerClient: {
+      clientX: activeDrag.pointerClient.x,
+      clientY: activeDrag.pointerClient.y,
+    },
+    sourceFrameRect: activeDrag.sourceFrameRect,
+    dragVisualRect: getCompactHistoryScaledDragRect(activeDrag),
+    connectionVisualRect: getCompactHistoryConnectionVisualRect(activeDrag),
+    dragHitRect: getCompactHistoryDragHitRect(activeDrag),
+    overTarget: activeDrag.overDropTarget,
+    needsDesktopBounds: shouldRequestDesktopBoundsForCompactHistoryDrag(),
+    reducedMotion: getCompactHistoryReducedMotionPreference(),
+    timestamp: Date.now(),
   };
 }
 
@@ -1036,6 +1139,7 @@ export default function CompactExportHistoryPanel({
   onAction,
   isDropTargetAt,
   onDropToTarget,
+  onDragStateChange,
 }: CompactExportHistoryPanelProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const pointerIntentRef = useRef<PointerIntentState | null>(null);
@@ -1049,6 +1153,8 @@ export default function CompactExportHistoryPanel({
   const dragElasticCurveRef = useRef<{ x: number; y: number } | null>(null);
   const dragAnimationTimerRef = useRef<number | null>(null);
   const dragMoveFrameRef = useRef<number | null>(null);
+  const dragStateSeqRef = useRef(0);
+  const lastDragStateSessionIdRef = useRef<string | null>(null);
   const pendingDragPointRef = useRef<{ intent: PointerIntentState; clientX: number; clientY: number } | null>(null);
   const suppressClickMessageIdRef = useRef<string | null>(null);
   const previewObjectUrlRef = useRef<string | null>(null);
@@ -1073,6 +1179,25 @@ export default function CompactExportHistoryPanel({
   ].join('\u001e')).join('\u001f');
   const exportBusy = pendingAction !== null;
   const exportActionsDisabled = !previewHasSelection || exportBusy;
+
+  function emitCompactHistoryDragState(activeDragState: ActiveCompactHistoryDrag) {
+    const state = buildCompactHistoryDragState(activeDragState, dragStateSeqRef.current);
+    dragStateSeqRef.current += 1;
+    lastDragStateSessionIdRef.current = activeDragState.sessionId;
+    onDragStateChange?.(state);
+  }
+
+  function emitCompactHistoryDragInactiveState(phase: 'idle' | 'cancelled' = 'idle') {
+    const sessionId = lastDragStateSessionIdRef.current ?? undefined;
+    lastDragStateSessionIdRef.current = null;
+    dragStateSeqRef.current = 0;
+    onDragStateChange?.({
+      active: false,
+      sessionId,
+      phase,
+      timestamp: Date.now(),
+    });
+  }
 
   function revokeCompactPreviewObjectUrl() {
     if (!previewObjectUrlRef.current) return;
@@ -1165,12 +1290,16 @@ export default function CompactExportHistoryPanel({
       currentOverDropTargetRef.current = false;
       setActiveDrag(null);
       pointerIntentRef.current = null;
+      emitCompactHistoryDragInactiveState('cancelled');
       return;
     }
     applyCompactHistoryDragFrame(current, current.pointerClient.x, current.pointerClient.y);
   }, [messages]);
 
   useEffect(() => () => {
+    if (activeDragRef.current) {
+      emitCompactHistoryDragInactiveState('cancelled');
+    }
     pointerIntentRef.current = null;
     clearCompactHistoryDragAnimationTimer();
     clearCompactHistoryDragMoveFrame();
@@ -1283,25 +1412,30 @@ export default function CompactExportHistoryPanel({
     dragSourceElementRef.current = sourceElement;
     applyCompactHistoryStyleVars(sourceElement, getCompactHistorySourceStyle(frame));
 
-    if (options.updateDropTarget === false || frame.phase !== 'dragging') return;
-    const overDropTarget = isCompactHistoryDropTargetAt(clientX, clientY);
-    if (overDropTarget === currentOverDropTargetRef.current) return;
-    currentOverDropTargetRef.current = overDropTarget;
-    const next = {
-      ...frame,
-      overDropTarget,
-    };
-    activeDragRef.current = next;
-    setActiveDrag((current) => (
-      current && current.messageId === next.messageId && current.phase === 'dragging'
-        ? {
-            ...current,
-            originRect: next.originRect,
-            pointerClient: next.pointerClient,
-            overDropTarget,
-          }
-        : current
-    ));
+    let bridgeFrame = frame;
+    if (options.updateDropTarget !== false && frame.phase === 'dragging') {
+      const overDropTarget = isCompactHistoryDropTargetAt(clientX, clientY);
+      if (overDropTarget !== currentOverDropTargetRef.current) {
+        currentOverDropTargetRef.current = overDropTarget;
+        const next = {
+          ...frame,
+          overDropTarget,
+        };
+        bridgeFrame = next;
+        activeDragRef.current = next;
+        setActiveDrag((current) => (
+          current && current.messageId === next.messageId && current.phase === 'dragging'
+            ? {
+                ...current,
+                originRect: next.originRect,
+                pointerClient: next.pointerClient,
+                overDropTarget,
+              }
+            : current
+        ));
+      }
+    }
+    emitCompactHistoryDragState(bridgeFrame);
   }
 
   function applyCompactHistoryElasticFrame(activeDrag: ActiveCompactHistoryDrag) {
@@ -1397,6 +1531,7 @@ export default function CompactExportHistoryPanel({
       activeDragRef.current = null;
       currentOverDropTargetRef.current = false;
       setActiveDrag(null);
+      emitCompactHistoryDragInactiveState('cancelled');
     }
   }
 
@@ -1411,6 +1546,9 @@ export default function CompactExportHistoryPanel({
     activeDragRef.current = null;
     currentOverDropTargetRef.current = false;
     setActiveDrag(null);
+    if (intent && isDraggingPhase(intent.phase)) {
+      emitCompactHistoryDragInactiveState('cancelled');
+    }
   }
 
   function settleCompactHistoryDrag(
@@ -1452,6 +1590,7 @@ export default function CompactExportHistoryPanel({
         activeDragRef.current = null;
         currentOverDropTargetRef.current = false;
         clearCompactHistoryElasticCurve();
+        emitCompactHistoryDragInactiveState('idle');
         return null;
       });
     }, phase === 'sending' ? COMPACT_HISTORY_SEND_ANIMATION_MS : COMPACT_HISTORY_RETURN_ANIMATION_MS);
@@ -1465,6 +1604,7 @@ export default function CompactExportHistoryPanel({
     clearCompactHistoryElasticCurve();
     const role = messages.find(message => message.id === intent.messageId)?.role ?? 'assistant';
     const active: ActiveCompactHistoryDrag = {
+      sessionId: intent.sessionId,
       type: getDragTypeForSource(intent.source),
       phase: 'dragging',
       messageId: intent.messageId,
@@ -1527,6 +1667,7 @@ export default function CompactExportHistoryPanel({
     if (!sourceFrameElement) return;
     const sourceFrameRect = snapshotCompactHistoryRect(sourceFrameElement.getBoundingClientRect());
     pointerIntentRef.current = {
+      sessionId: createCompactHistoryDragSessionId(),
       id: event.pointerId,
       x: event.clientX,
       y: event.clientY,
@@ -1572,7 +1713,7 @@ export default function CompactExportHistoryPanel({
       startCompactHistoryDrag(intent, event.clientX, event.clientY);
       return;
     }
-    intent.phase = 'cancelled';
+    intent.phase = 'click';
   }
 
   function finishPointer(event: ReactPointerEvent<HTMLElement>, message: ChatMessage, selectable: boolean) {

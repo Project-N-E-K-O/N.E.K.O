@@ -43,6 +43,7 @@
         onComposerRemoveAttachment: null,
         onComposerSubmit: null,
         onCompactHistoryDrop: null,
+        onCompactHistoryDragStateChange: null,
         onAvatarInteraction: null,
         onAvatarToolStateChange: null,
         pendingRollbackDrafts: Object.create(null),
@@ -1754,6 +1755,7 @@
             onComposerRemoveAttachment: handleComposerRemoveAttachment,
             onComposerSubmit: handleComposerSubmit,
             onCompactHistoryDrop: handleCompactHistoryDrop,
+            onCompactHistoryDragStateChange: handleCompactHistoryDragStateChange,
             onAvatarInteraction: handleAvatarInteraction,
             onAvatarToolStateChange: handleAvatarToolStateChange,
             onJukeboxClick: handleJukeboxClick,
@@ -2117,6 +2119,21 @@
         }
         console.warn('[ReactChatWindow] no compact history drop handler available');
         return false;
+    }
+
+    function handleCompactHistoryDragStateChange(payload) {
+        var detail = payload || {};
+
+        if (typeof state.onCompactHistoryDragStateChange === 'function') {
+            try {
+                state.onCompactHistoryDragStateChange(detail);
+            } catch (error) {
+                console.error('[ReactChatWindow] onCompactHistoryDragStateChange failed:', error);
+            }
+        }
+
+        dispatchHostEvent('compact-history-drag-state-change', detail);
+        window.dispatchEvent(new CustomEvent('neko:compact-history-drag-state-change', { detail: detail }));
     }
 
     function handleAvatarInteraction(payload) {
@@ -4471,6 +4488,9 @@
         },
         setOnCompactHistoryDrop: function (handler) {
             state.onCompactHistoryDrop = typeof handler === 'function' ? handler : null;
+        },
+        setOnCompactHistoryDragStateChange: function (handler) {
+            state.onCompactHistoryDragStateChange = typeof handler === 'function' ? handler : null;
         },
         setOnAvatarInteraction: function (handler) {
             state.onAvatarInteraction = typeof handler === 'function' ? handler : null;

@@ -25,6 +25,7 @@ import {
   type ComposerSubmitPayload,
   type ComposerAttachment,
   type CompactHistoryDropPayload,
+  type CompactHistoryDragStatePayload,
   type AvatarInteractionPayload,
   type AvatarToolStatePayload,
   type CompactChatState,
@@ -41,6 +42,7 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
   onComposerRemoveAttachment?: (attachmentId: ComposerAttachment['id']) => void;
   onComposerSubmit?: (payload: ComposerSubmitPayload) => void;
   onCompactHistoryDrop?: (payload: CompactHistoryDropPayload) => unknown;
+  onCompactHistoryDragStateChange?: (payload: CompactHistoryDragStatePayload) => void;
   onAvatarInteraction?: (payload: AvatarInteractionPayload) => void;
   onAvatarToolStateChange?: (payload: AvatarToolStatePayload) => void;
   onJukeboxClick?: () => void;
@@ -950,6 +952,7 @@ export default function App({
   onComposerRemoveAttachment,
   onComposerSubmit,
   onCompactHistoryDrop,
+  onCompactHistoryDragStateChange,
   onAvatarInteraction,
   onAvatarToolStateChange,
   onJukeboxClick,
@@ -3915,6 +3918,7 @@ export default function App({
       onDownloadExport={handleCompactInlineDownloadExport}
       isDropTargetAt={isCompactHistoryDropTargetAt}
       onDropToTarget={handleCompactHistoryDropToAvatar}
+      onDragStateChange={onCompactHistoryDragStateChange}
     />
   ) : null;
   const compactExportHistoryNode = compactExportHistoryElement;

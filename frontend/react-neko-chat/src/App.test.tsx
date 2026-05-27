@@ -692,6 +692,108 @@ describe('App', () => {
     expect(message).not.toHaveClass('is-selected');
   });
 
+  it('emits compact history drag geometry state for the desktop bridge', async () => {
+    const onCompactHistoryDragStateChange = vi.fn();
+    const imageMessage = parseChatMessage({
+      id: 'assistant-history-drag-geometry',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'image', url: 'data:image/png;base64,aW1hZ2U=', alt: 'Memory image' }],
+      status: 'sent',
+    });
+
+    const { container } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        messages={[imageMessage]}
+        onCompactHistoryDragStateChange={onCompactHistoryDragStateChange}
+      />,
+    );
+
+    await clickCompactExportTool();
+    const message = container.querySelector<HTMLElement>('.compact-export-history-message')!;
+    const bubble = container.querySelector<HTMLElement>('.compact-export-history-bubble')!;
+    const imageBlock = container.querySelector<HTMLElement>('.message-block-image')!;
+    vi.spyOn(message, 'getBoundingClientRect').mockReturnValue({
+      left: 8,
+      top: 12,
+      right: 348,
+      bottom: 156,
+      width: 340,
+      height: 144,
+      x: 8,
+      y: 12,
+      toJSON: () => ({}),
+    } as DOMRect);
+    vi.spyOn(imageBlock, 'getBoundingClientRect').mockReturnValue({
+      left: 40,
+      top: 52,
+      right: 120,
+      bottom: 100,
+      width: 80,
+      height: 48,
+      x: 40,
+      y: 52,
+      toJSON: () => ({}),
+    } as DOMRect);
+
+    fireEvent.pointerDown(imageBlock, {
+      pointerId: 42,
+      clientX: 50,
+      clientY: 62,
+      button: 0,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    fireEvent.pointerMove(bubble, {
+      pointerId: 42,
+      clientX: 78,
+      clientY: 74,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+
+    const activeState = onCompactHistoryDragStateChange.mock.calls
+      .map(([payload]) => payload)
+      .find(payload => payload.active === true);
+    expect(activeState).toEqual(expect.objectContaining({
+      active: true,
+      phase: 'dragging',
+      dragType: 'image',
+      messageId: 'assistant-history-drag-geometry',
+      blockIndex: 0,
+      needsDesktopBounds: false,
+    }));
+    expect(activeState).toEqual(expect.objectContaining({
+      sessionId: expect.stringMatching(/^compact-history-drag-/),
+      seq: expect.any(Number),
+      pointerClient: { clientX: 78, clientY: 74 },
+      sourceFrameRect: expect.objectContaining({ left: 8, top: 12, width: 340, height: 144 }),
+      connectionVisualRect: expect.objectContaining({ width: expect.any(Number), height: expect.any(Number) }),
+      dragHitRect: expect.objectContaining({ left: 58, top: 54, width: 100, height: 68 }),
+    }));
+    expect(activeState?.dragVisualRect).toEqual(expect.objectContaining({ left: 68, top: 64 }));
+    expect(activeState?.dragVisualRect.width).toBeGreaterThanOrEqual(80);
+    expect(activeState?.dragVisualRect.height).toBeGreaterThanOrEqual(47);
+
+    fireEvent.pointerUp(window, {
+      pointerId: 42,
+      clientX: 78,
+      clientY: 74,
+      buttons: 0,
+      pointerType: 'mouse',
+    });
+
+    await waitFor(() => {
+      expect(onCompactHistoryDragStateChange.mock.calls.some(([payload]) => (
+        payload.active === false && payload.sessionId === activeState?.sessionId
+      ))).toBe(true);
+    });
+  });
+
   it('starts compact history bubble drag without changing selection', async () => {
     const textMessage = parseChatMessage({
       id: 'assistant-history-bubble-drag',
@@ -1089,14 +1191,14 @@ describe('App', () => {
     expect(message).not.toHaveClass('is-selected');
   });
 
-  it('cancels compact history pointer movement between click and drag thresholds', async () => {
+  it('keeps compact history pointer movement between click and drag thresholds selectable', async () => {
     const textMessage = parseChatMessage({
       id: 'assistant-history-threshold-cancel',
       role: 'assistant',
       author: 'Neko',
       time: '10:00',
       createdAt: 1,
-      blocks: [{ type: 'text', text: 'Move just enough to cancel selection.' }],
+      blocks: [{ type: 'text', text: 'Move below the drag threshold and still select.' }],
       status: 'sent',
     });
 
@@ -1132,7 +1234,7 @@ describe('App', () => {
     });
 
     expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toBeNull();
-    expect(message).not.toHaveClass('is-selected');
+    expect(message).toHaveClass('is-selected');
   });
 
   it('keeps compact history interactive blocks out of bubble drag', async () => {

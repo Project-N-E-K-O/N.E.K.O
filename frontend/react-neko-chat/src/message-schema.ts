@@ -64,6 +64,51 @@ const compactHistoryDropPayloadSchema = z.object({
   compactHistoryDragSessionId: z.string().min(1).optional(),
 }).strict();
 
+const compactHistoryDragRectSchema = z.object({
+  left: z.number().finite(),
+  top: z.number().finite(),
+  right: z.number().finite(),
+  bottom: z.number().finite(),
+  width: z.number().finite(),
+  height: z.number().finite(),
+}).strict();
+
+const compactHistoryDragPointSchema = z.object({
+  clientX: z.number().finite(),
+  clientY: z.number().finite(),
+}).strict();
+
+const compactHistoryDragInactiveStateSchema = z.object({
+  active: z.literal(false),
+  sessionId: z.string().min(1).optional(),
+  phase: z.enum(['idle', 'cancelled']).optional(),
+  timestamp: z.number().finite(),
+}).strict();
+
+const compactHistoryDragActiveStateSchema = z.object({
+  active: z.literal(true),
+  sessionId: z.string().min(1),
+  seq: z.number().int().nonnegative(),
+  phase: z.enum(['dragging', 'returning', 'sending']),
+  dragType: z.enum(['image', 'bubble']),
+  messageId: z.string().min(1),
+  blockIndex: z.number().int().nonnegative().optional(),
+  pointerClient: compactHistoryDragPointSchema,
+  sourceFrameRect: compactHistoryDragRectSchema,
+  dragVisualRect: compactHistoryDragRectSchema,
+  connectionVisualRect: compactHistoryDragRectSchema.nullable(),
+  dragHitRect: compactHistoryDragRectSchema,
+  overTarget: z.boolean(),
+  needsDesktopBounds: z.boolean(),
+  reducedMotion: z.boolean().optional(),
+  timestamp: z.number().finite(),
+}).strict();
+
+export const compactHistoryDragStatePayloadSchema = z.discriminatedUnion('active', [
+  compactHistoryDragInactiveStateSchema,
+  compactHistoryDragActiveStateSchema,
+]);
+
 const chatSurfaceModeSchema = z.enum(['full', 'compact', 'minimized']);
 const compactChatStateSchema = z.enum(['default', 'options', 'input']);
 
@@ -258,6 +303,10 @@ export const chatWindowPropsSchema = z.object({
     .args(compactHistoryDropPayloadSchema)
     .returns(z.unknown())
     .optional(),
+  onCompactHistoryDragStateChange: z.function()
+    .args(compactHistoryDragStatePayloadSchema)
+    .returns(z.void())
+    .optional(),
   onAvatarInteraction: z.function()
     .args(avatarInteractionPayloadSchema)
     .returns(z.void())
@@ -309,6 +358,7 @@ export type StatusBlock = z.infer<typeof statusBlockSchema>;
 export type ButtonGroupBlock = z.infer<typeof buttonGroupBlockSchema>;
 export type ComposerAttachment = z.infer<typeof composerAttachmentSchema>;
 export type CompactHistoryDropPayload = z.infer<typeof compactHistoryDropPayloadSchema>;
+export type CompactHistoryDragStatePayload = z.infer<typeof compactHistoryDragStatePayloadSchema>;
 export type ChatSurfaceMode = z.infer<typeof chatSurfaceModeSchema>;
 export type CompactChatState = z.infer<typeof compactChatStateSchema>;
 export type GalgameOption = z.infer<typeof galgameOptionSchema>;
