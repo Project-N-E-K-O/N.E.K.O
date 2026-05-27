@@ -27,6 +27,26 @@ OCR_TRUNCATION = {
 }
 
 _SCIENCE_SUBJECTS = {"math", "physics", "chemistry"}
+_QUESTION_INTENT_RE = re.compile(
+    r"\b("
+    r"can you|could you|does this|explain|give me|help me|"
+    r"how should i|is this|make a|should i|turn this|"
+    r"what should i|where did my|why does this|why is it|why is this"
+    r")\b",
+    re.IGNORECASE,
+)
+_QUESTION_INTENT_MARKERS = (
+    "为什么",
+    "怎么",
+    "如何",
+    "什么",
+    "哪",
+    "帮我",
+    "讲一下",
+    "解释",
+    "提示",
+    "看看",
+)
 _CHINESE_DIGITS = {
     "零": "0",
     "〇": "0",
@@ -117,6 +137,15 @@ class VoiceFilter:
             return {"should_relay": False, "method": "too_short"}
 
         normalized_subject = _normalize_subject(subject) or _derive_subject(screen_text)
+        if _has_question_intent(text):
+            return {
+                "should_relay": True,
+                "method": "question_intent",
+                "question": text,
+                "screen_type": screen_type,
+                "subject": normalized_subject,
+            }
+
         threshold = OCR_OVERLAP_THRESHOLD.get(
             normalized_subject,
             OCR_OVERLAP_THRESHOLD["default"],
@@ -248,6 +277,18 @@ def _number_tokens(value: str) -> list[str]:
     if "十" in normalized:
         chinese_tokens.append("10")
     return tokens + chinese_tokens
+
+
+def _has_question_intent(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return False
+    return (
+        "?" in value
+        or "？" in value
+        or bool(_QUESTION_INTENT_RE.search(value))
+        or any(marker in value for marker in _QUESTION_INTENT_MARKERS)
+    )
 
 
 def _derive_subject(ocr_text: str) -> str:
@@ -406,6 +447,7 @@ __all__ = [
     "VoiceFilter",
     "_derive_subject",
     "_find_earliest_name",
+    "_has_question_intent",
     "_number_sequence_match",
     "_text_overlap_ratio",
     "build_context_for_catgirl",

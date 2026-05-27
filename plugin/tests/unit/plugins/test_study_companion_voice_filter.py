@@ -11,6 +11,7 @@ from plugin.plugins.study_companion.voice_filter import (
     VoiceFilter,
     _derive_subject,
     _find_earliest_name,
+    _has_question_intent,
     _number_sequence_match,
     _text_overlap_ratio,
     build_context_for_catgirl,
@@ -126,12 +127,37 @@ def test_name_window_expires_and_short_audio_drops() -> None:
 
 def test_unknown_non_overlapping_transcript_relays_by_returning_none() -> None:
     result = VoiceFilter(names=["猫娘"]).filter(
-        "这题怎么做啊",
+        "整理例题结构",
         screen_text="已知函数 f(x)=x³+3x²-9x+1",
         subject="math",
     )
 
     assert result is None
+
+
+def test_question_intent_relays_before_ocr_overlap() -> None:
+    result = VoiceFilter(names=["猫娘"]).filter(
+        "how should I start solving this equation",
+        screen_text="Start solving this equation by isolating x.",
+        subject="math",
+    )
+
+    assert result is not None
+    assert result["should_relay"] is True
+    assert result["method"] == "question_intent"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("why does this step work", True),
+        ("帮我看看这一步", True),
+        ("the passage compares two views", False),
+        ("the prompt asks what caused the change", False),
+    ],
+)
+def test_has_question_intent(text: str, expected: bool) -> None:
+    assert _has_question_intent(text) is expected
 
 
 def test_empty_transcript_is_ignored() -> None:
