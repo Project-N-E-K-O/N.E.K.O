@@ -6419,9 +6419,14 @@ class LLMSessionManager:
                 except RuntimeError:
                     self._fire_task(self.trigger_agent_callbacks())
 
-    # Playback older than this with no voice_play_end is treated as stale —
-    # longer than any single utterance, short enough to self-heal a wedged gate.
-    _VOICE_PLAYBACK_STALE_S = 30.0
+    # Ceiling for a missing voice_play_end before the playback gate self-heals.
+    # Deliberately LARGE (>= any plausible single TTS reply): disconnect/refresh
+    # (the common cause) is already handled by session teardown reset, so this
+    # only backstops the rare "connection alive but end signal lost" case —
+    # keeping it well above real reply length avoids re-opening the gate mid a
+    # legitimately long answer and interrupting her (Codex P2). Mirror of
+    # ProactiveDeliveryManager.max_play_s.
+    _VOICE_PLAYBACK_STALE_S = 180.0
 
     def _is_voice_playing(self) -> bool:
         """Time-bounded read of the playback gate. Auto-clears a stuck
