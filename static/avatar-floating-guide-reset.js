@@ -293,6 +293,30 @@
         localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     }
 
+    function recordAvatarFloatingGuideEndState(day, outcome, rawReason, source) {
+        const normalizedDay = normalizeOptionalRound(day);
+        const normalizedOutcome = outcome === 'complete'
+            ? 'complete'
+            : (outcome === 'skip' ? 'skip' : 'destroy');
+        const normalizedRawReason = typeof rawReason === 'string' && rawReason.trim()
+            ? rawReason.trim().toLowerCase()
+            : normalizedOutcome;
+        const endState = {
+            day: normalizedDay,
+            ended: true,
+            outcome: normalizedOutcome,
+            rawReason: normalizedRawReason,
+            isAngryExit: normalizedRawReason === 'angry_exit',
+            completed: normalizedOutcome === 'complete',
+            skipped: normalizedOutcome === 'skip',
+            source: typeof source === 'string' ? source : '',
+            endedAt: Date.now(),
+        };
+        window.avatarFloatingGuideEndState = endState;
+        console.log('[AvatarFloatingGuideEndState]', endState);
+        return endState;
+    }
+
     function markGuideRoundOutcome(day, outcome) {
         const round = normalizeRound(day);
         const state = loadGuideState();
@@ -962,7 +986,7 @@
                 setTutorialTakingOver: (active) => {
                     if (interactionTakeover) interactionTakeover.setActive(active === true);
                 },
-                requestTermination: () => destroy('skip'),
+                requestTermination: (reason, tutorialReason) => destroy(tutorialReason || reason || 'skip'),
             };
         }
 
@@ -1132,6 +1156,12 @@
 
         async function destroy(reason = 'complete') {
             if (destroyed) return;
+            const rawReason = typeof reason === 'string' && reason.trim()
+                ? reason.trim().toLowerCase()
+                : 'complete';
+            const outcome = rawReason === 'complete'
+                ? 'complete'
+                : (rawReason === 'skip' || rawReason === 'escape' || rawReason === 'angry_exit' ? 'skip' : 'destroy');
             destroyed = true;
             stopping = true;
             stepRunToken += 1;
@@ -1180,9 +1210,10 @@
                     console.warn('[AvatarFloatingGuideReset] fallback 模型恢复失败:', error);
                 }
             }
-            if (reason === 'skip' || reason === 'complete') {
-                markGuideRoundOutcome(day, reason);
+            if (outcome === 'skip' || outcome === 'complete') {
+                markGuideRoundOutcome(day, outcome);
             }
+            recordAvatarFloatingGuideEndState(day, outcome, rawReason, options.source || 'home_reset_button');
             if (activeRoundPlayer && activeRoundPlayer.destroy === destroy) {
                 activeRoundPlayer = null;
             }

@@ -115,6 +115,30 @@ function saveAvatarFloatingGuideState(state) {
     localStorage.setItem(AVATAR_FLOATING_GUIDE_STORAGE_KEY, JSON.stringify(state));
 }
 
+function recordAvatarFloatingGuideEndState(day, outcome, rawReason, source) {
+    const normalizedDay = normalizeOptionalAvatarFloatingGuideRound(day);
+    const normalizedOutcome = outcome === 'complete'
+        ? 'complete'
+        : (outcome === 'skip' ? 'skip' : 'destroy');
+    const normalizedRawReason = typeof rawReason === 'string' && rawReason.trim()
+        ? rawReason.trim().toLowerCase()
+        : normalizedOutcome;
+    const endState = {
+        day: normalizedDay,
+        ended: true,
+        outcome: normalizedOutcome,
+        rawReason: normalizedRawReason,
+        isAngryExit: normalizedRawReason === 'angry_exit',
+        completed: normalizedOutcome === 'complete',
+        skipped: normalizedOutcome === 'skip',
+        source: typeof source === 'string' ? source : '',
+        endedAt: Date.now(),
+    };
+    window.avatarFloatingGuideEndState = endState;
+    console.log('[AvatarFloatingGuideEndState]', endState);
+    return endState;
+}
+
 function parseAvatarFloatingGuideDate(value) {
     const text = typeof value === 'string' ? value.trim() : '';
     const match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -5133,6 +5157,14 @@ class UniversalTutorialManager {
             this.activeAvatarFloatingGuideRound = null;
         } else if (this.currentPage === 'home' && (endMeta.reason === 'complete' || endMeta.reason === 'skip')) {
             this.markAvatarFloatingGuideRoundOutcome(1, endMeta.reason);
+        }
+        if (avatarFloatingRound || this.currentPage === 'home') {
+            recordAvatarFloatingGuideEndState(
+                avatarFloatingRound || 1,
+                endMeta.reason,
+                endMeta.rawReason,
+                completedSource
+            );
         }
 
         if (endMeta.reason === 'destroy') {
