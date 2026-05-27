@@ -1502,6 +1502,10 @@
                     await window.showCurrentModel();
                     window.showStatusToast(window.t ? window.t('app.initializingMic') : '\u6B63\u5728\u521D\u59CB\u5316\u9EA6\u514B\u98CE...', 3000);
 
+                    // 每次开麦尝试自增 token；失败后挂的补充 teardown 用它判断期间是否
+                    // 已有更新的开麦尝试（token 变了说明用户已重试，不能动新状态）。
+                    S._voiceMicStartToken = (S._voiceMicStartToken || 0) + 1;
+                    var _micStartToken = S._voiceMicStartToken;
                     micCapturePromise = window.startMicCapture();
                     await Promise.all([
                         sessionStartPromise,
@@ -1517,22 +1521,38 @@
                         clearTimeout(window.sessionTimeoutId);
                         window.sessionTimeoutId = null;
                     }
-                    // session_failed \u4F1A\u7ACB\u523B reject Promise.all\uFF0C\u4F46\u6B64\u65F6 startMicCapture
-                    // \u5F80\u5F80\u8FD8\u5728 await getUserMedia/AudioWorklet\u3002\u82E5\u76F4\u63A5 throw \u8FDB\u5916\u5C42 catch
-                    // \u505A teardown\uFF0CstartMicCapture \u968F\u540E\u624D settle\uFF0C\u4F1A\u628A S.isRecording \u548C
-                    // \u6D6E\u52A8\u9EA6\u6309\u94AE\u91CD\u65B0\u5199\u6210"\u5F55\u97F3\u4E2D"\u2014\u2014\u7ED3\u679C\u6CA1\u6709 session \u5374\u663E\u793A\u5728\u5F55\u97F3\uFF0C\u4E0B\u4E00\u6B21
-                    // \u70B9\u9EA6\u88AB\u5F53\u4F5C toggle-off\uFF08\u5173\u9EA6\uFF09\u9759\u9ED8\u541E\u6389\uFF0C\u770B\u4E0D\u5230\u4EFB\u4F55 banner\u3002\u5148\u7B49\u9EA6\u514B\u98CE
-                    // \u521D\u59CB\u5316\u5F7B\u5E95 settle\uFF0C\u518D\u8BA9\u5916\u5C42 catch \u7684 teardown \u6536\u5C3E\u3002
-                    // 但这个 await 必须有界：若 startMicCapture 卡在 getUserMedia 权限
-                    // 弹窗（用户忽略不点），它的 promise 会永久 pending，无界 await 会让
-                    // 下面的 teardown 永远到不了——mic 按钮卡 disabled、isMicStarting 不复位，
-                    // 用幽灵录音态换成了永久卡死态。超时后照常 teardown：此时 startMicCapture
-                    // 还没走到置 S.isRecording 那步（卡在 getUserMedia 之前），没有录音态可复活。
+                    // session_failed/\u8D85\u65F6\u4F1A\u7ACB\u523B reject Promise.all\uFF0C\u4F46\u6B64\u65F6 startMicCapture
+                    // \u5F80\u5F80\u8FD8\u5728 await getUserMedia/AudioWorklet\uFF0C\u5B83\u5728\u5916\u5C42 catch teardown \u4E4B\u540E
+                    // \u624D settle\uFF0C\u4F1A\u628A S.isRecording \u548C\u6D6E\u52A8\u9EA6\u6309\u94AE\u91CD\u65B0\u5199\u6210"\u5F55\u97F3\u4E2D"\u2014\u2014\u6CA1\u6709 session
+                    // \u5374\u663E\u793A\u5728\u5F55\u97F3\uFF0C\u4E0B\u4E00\u6B21\u70B9\u9EA6\u88AB\u5F53\u4F5C toggle-off\uFF08\u5173\u9EA6\uFF09\u9759\u9ED8\u541E\u6389\uFF0C\u770B\u4E0D\u5230 banner\u3002
+                    //
+                    // \u8FD9\u91CC\u4E0D\u80FD\u7B49\u5B83 settle\uFF1A\u65E0\u754C await \u4F1A\u5728 getUserMedia \u6743\u9650\u5F39\u7A97\u88AB\u5FFD\u7565\u65F6\u6C38\u4E45
+                    // \u5361\u6B7B teardown\uFF1B\u6709\u754C\u8D85\u65F6\u53C8\u4F1A\u5728 mic \u521D\u59CB\u5316\u8D85\u8FC7\u9608\u503C\u65F6\u6F0F\u6389\u3001\u8BA9\u5F55\u97F3\u6001\u590D\u6D3B\u3002
+                    // \u6539\u4E3A\u7ACB\u523B rethrow\uFF08\u5916\u5C42 catch \u5373\u65F6 teardown\uFF0C\u65E0\u5361\u6B7B\uFF09\uFF0C\u540C\u65F6\u6302\u4E00\u4E2A\u8865\u5145
+                    // teardown\uFF1AstartMicCapture \u65E0\u8BBA\u591A\u665A settle\uFF0C\u53EA\u8981\u5B83\u786E\u5B9E\u5199\u4E0B\u4E86\u5E7D\u7075\u5F55\u97F3\u6001
+                    // \uFF08isRecording \u4E3A\u771F\u4E14\u6CA1\u6709\u5728\u7EBF session\uFF09\uFF0C\u4E14\u671F\u95F4\u6CA1\u6709\u66F4\u65B0\u7684\u5F00\u9EA6\u5C1D\u8BD5
+                    // \uFF08token \u672A\u53D8\uFF09\uFF0C\u5C31\u518D\u6E05\u4E00\u6B21\u3002token \u53D8\u4E86\u6216\u5DF2\u6709\u5728\u7EBF session\uFF08\u5982\u81EA\u52A8\u91CD\u542F
+                    // \u6210\u529F voiceChatActive \u4E3A\u771F\uFF09\u8BF4\u660E\u72B6\u6001\u5F52\u5C5E\u522B\u7684\u5C1D\u8BD5\uFF0C\u4E0D\u80FD\u52A8\u3002
                     if (micCapturePromise) {
-                        await Promise.race([
-                            micCapturePromise.catch(function () { }),
-                            new Promise(function (resolve) { setTimeout(resolve, 3000); })
-                        ]);
+                        micCapturePromise.catch(function () { }).then(function () {
+                            if (S._voiceMicStartToken !== _micStartToken) return;
+                            if (!S.isRecording || S.voiceChatActive) return;
+                            if (typeof window.stopRecording === 'function') window.stopRecording();
+                            S.isRecording = false;
+                            window.isRecording = false;
+                            S.voiceChatActive = false;
+                            window.isMicStarting = false;
+                            if (micButton) {
+                                micButton.classList.remove('active');
+                                micButton.classList.remove('recording');
+                                micButton.disabled = false;
+                            }
+                            if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(false);
+                            if (typeof window.syncFloatingScreenButtonState === 'function') window.syncFloatingScreenButtonState(false);
+                            var _tia = document.getElementById('text-input-area');
+                            if (_tia) _tia.classList.remove('hidden');
+                            if (typeof window.syncVoiceChatComposerHidden === 'function') window.syncVoiceChatComposerHidden(false);
+                        });
                     }
                     throw error;
                 }
