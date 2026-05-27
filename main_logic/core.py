@@ -6370,7 +6370,6 @@ class LLMSessionManager:
             # Parity with the manager's own post-playback pump, which also
             # waits min_gap (Codex P2). trigger_agent_callbacks re-gates itself,
             # so a fire that lands while she's speaking again just defers.
-            delay = 0.0
             try:
                 delay = max(0.0, float(self.proactive_manager.min_gap_s))
             except Exception:
