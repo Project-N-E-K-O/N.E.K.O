@@ -6307,21 +6307,27 @@ class LLMSessionManager:
             images = cb.get("media_images")
             if not images:
                 continue
-            all_ok = True
+            streamed = 0
+            failed = False
             for b64 in images:
                 try:
                     await si(b64)
+                    streamed += 1
                 except Exception as e:
-                    # Keep the media on the cb so a later delivery attempt
-                    # (reconnect / retry, fresh session) can re-stream it,
-                    # instead of losing the visual context on a transient
-                    # session-closing / provider-reject failure.
-                    logger.warning("[%s] proactive media stream_image failed; keeping for retry: %s", self.lanlan_name, e)
-                    all_ok = False
+                    # Transient failure (session closing / provider reject).
+                    # Keep ONLY the not-yet-streamed tail so a later delivery
+                    # attempt (reconnect / retry, fresh session) re-streams the
+                    # rest WITHOUT re-injecting images that already landed.
+                    logger.warning(
+                        "[%s] proactive media stream_image failed; keeping %d remaining for retry: %s",
+                        self.lanlan_name, len(images) - streamed, e,
+                    )
+                    failed = True
                     break
-            if all_ok:
-                # Only drop after every image streamed cleanly, so a
-                # deferred-then-retried cb doesn't re-stream what already landed.
+            if failed:
+                cb["media_images"] = list(images[streamed:])
+            else:
+                # Every image streamed cleanly — drop so a retry doesn't re-stream.
                 cb.pop("media_images", None)
 
     def on_voice_playback_signal(self, *, playing: bool, **meta) -> None:
