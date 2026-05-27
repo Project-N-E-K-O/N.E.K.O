@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -8,6 +9,7 @@ import pytest
 
 from plugin.plugins.study_companion.voice_filter import (
     CATGIRL_NAMES,
+    OCR_TRUNCATION,
     VoiceFilter,
     _derive_subject,
     _find_earliest_name,
@@ -150,6 +152,38 @@ def test_name_window_is_scoped_by_session_key() -> None:
     assert same_session["method"] == "name_window"
 
 
+@pytest.mark.asyncio
+async def test_name_window_scoping_survives_concurrent_voice_events() -> None:
+    now = 100.0
+
+    def clock() -> float:
+        return now
+
+    voice_filter = VoiceFilter(names=["Yui"], clock=clock)
+
+    first_a, first_b = await asyncio.gather(
+        asyncio.to_thread(
+            voice_filter.filter, "Yui help here", "", session_key="session-a"
+        ),
+        asyncio.to_thread(
+            voice_filter.filter, "Yui check this", "", session_key="session-b"
+        ),
+    )
+    assert first_a is not None and first_a["method"] == "name_call"
+    assert first_b is not None and first_b["method"] == "name_call"
+
+    now = 102.0
+    follow_a, follow_b, unrelated = await asyncio.gather(
+        asyncio.to_thread(voice_filter.filter, "嗯", "", session_key="session-a"),
+        asyncio.to_thread(voice_filter.filter, "嗯", "", session_key="session-b"),
+        asyncio.to_thread(voice_filter.filter, "嗯", "", session_key="session-c"),
+    )
+
+    assert follow_a is not None and follow_a["method"] == "name_window"
+    assert follow_b is not None and follow_b["method"] == "name_window"
+    assert unrelated == {"should_relay": False, "method": "too_short"}
+
+
 def test_name_window_expires_and_short_audio_drops() -> None:
     now = 100.0
 
@@ -276,6 +310,39 @@ def test_build_context_for_catgirl_omits_empty_state_separator() -> None:
 
     assert "[状态] teaching" in context
     assert "[状态]  | teaching" not in context
+
+
+@pytest.mark.parametrize(
+    ("screen_type", "ocr_len", "expected_len"),
+    [
+        ("question", OCR_TRUNCATION["question"], OCR_TRUNCATION["question"]),
+        ("question", OCR_TRUNCATION["question"] + 5, OCR_TRUNCATION["question"]),
+        ("answering", OCR_TRUNCATION["answering"] + 5, OCR_TRUNCATION["answering"]),
+        ("idle", OCR_TRUNCATION["idle"] + 5, OCR_TRUNCATION["idle"]),
+        ("unknown", 505, 500),
+    ],
+)
+def test_build_context_for_catgirl_truncates_screen_text_by_screen_type(
+    screen_type: str, ocr_len: int, expected_len: int
+) -> None:
+    ocr_text = "x" * ocr_len
+    state = SimpleNamespace(
+        last_ocr_text=ocr_text,
+        last_screen_classification={"screen_type": screen_type},
+        active_mode="teaching",
+    )
+
+    context = build_context_for_catgirl(
+        "Yui explain this",
+        state,
+        {"topic": "algebra", "subject": "default"},
+        {"question": "explain this"},
+    )
+
+    screen_line = next(line for line in context.splitlines() if line.startswith("[屏幕] "))
+    screen_payload = screen_line.removeprefix("[屏幕] ")
+    assert screen_payload == ocr_text[:expected_len]
+    assert len(screen_payload) == expected_len
 
 
 class ResourceNotFound(Exception):

@@ -10,6 +10,38 @@ pytestmark = pytest.mark.unit
 
 
 @pytest.mark.asyncio
+async def test_voice_bridge_notify_keeps_waiter_until_loop_resolves() -> None:
+    event_id = "voice-race-regression"
+    loop = asyncio.get_running_loop()
+    waiter: asyncio.Future = loop.create_future()
+    with agent_event_bus._voice_bridge_waiters_lock:
+        agent_event_bus._voice_bridge_waiters[event_id] = waiter
+        agent_event_bus._voice_bridge_waiters_resolving.discard(event_id)
+
+    try:
+        agent_event_bus.notify_voice_bridge_result(event_id, {"action": "noop"})
+
+        with agent_event_bus._voice_bridge_waiters_lock:
+            assert agent_event_bus._voice_bridge_waiters.get(event_id) is waiter
+            assert event_id in agent_event_bus._voice_bridge_waiters_resolving
+        assert not waiter.done()
+
+        await asyncio.sleep(0)
+
+        assert waiter.done()
+        assert waiter.result() == {"action": "noop"}
+        with agent_event_bus._voice_bridge_waiters_lock:
+            assert event_id not in agent_event_bus._voice_bridge_waiters
+            assert event_id not in agent_event_bus._voice_bridge_waiters_resolving
+    finally:
+        with agent_event_bus._voice_bridge_waiters_lock:
+            agent_event_bus._voice_bridge_waiters.pop(event_id, None)
+            agent_event_bus._voice_bridge_waiters_resolving.discard(event_id)
+        if not waiter.done():
+            waiter.cancel()
+
+
+@pytest.mark.asyncio
 async def test_voice_transcript_request_returns_agent_result(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 

@@ -1672,10 +1672,8 @@ async def _handle_voice_transcript_request(event: Dict[str, Any]) -> None:
                 )
 
                 dispatch_service = PluginDispatchService()
-                plugin_result = await dispatch_service.trigger_custom_event(
-                    to_plugin="study_companion",
+                result = await dispatch_service.trigger_arbitrated_custom_event(
                     event_type="voice_transcript",
-                    event_id="handle_transcript",
                     args={
                         "transcript": transcript,
                         "lanlan_name": lanlan_name or "",
@@ -1683,16 +1681,11 @@ async def _handle_voice_transcript_request(event: Dict[str, Any]) -> None:
                         if isinstance((event or {}).get("metadata"), dict)
                         else {},
                     },
-                    timeout=0.5,
-                )
-                result = (
-                    dict(plugin_result)
-                    if isinstance(plugin_result, dict)
-                    else {"action": "noop", "reason": "invalid_plugin_result"}
+                    timeout=1.0,
                 )
     except Exception as exc:
         logger.debug(
-            "[VoiceBridge] study_companion dispatch failed: event_id=%s lanlan=%s err=%s",
+            "[VoiceBridge] plugin dispatch failed: event_id=%s lanlan=%s err=%s",
             event_id,
             lanlan_name,
             exc,
