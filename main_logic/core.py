@@ -6294,24 +6294,25 @@ class LLMSessionManager:
 
         Bound to the delivery point (not the manager-release point) so it
         covers every path that actually delivers a cb — manager release,
-        reconnect redelivery, turn-end retry — and only once a session is
-        guaranteed. If there is no session / no vision input yet, media is LEFT
-        on the cb so the next delivery attempt streams it (no loss). Streamed
-        images are popped so a deferred-then-retried cb doesn't re-stream."""
-        # Only VOICE sessions have same-turn semantics: OmniRealtimeClient.
-        # stream_image() persists the image as a conversation.item that the
-        # immediately-following proactive response.create sees. The TEXT
-        # session's stream_image() merely stages into _pending_images, which
-        # binds to the NEXT stream_text (user turn) — so injecting a respond
-        # cue's image there would attach it to an unrelated later user message
-        # (wrong visual context). For text mode we therefore DON'T inject
-        # proactive images at all (text-mode proactive is text-only); drop them
-        # so they can't leak into _pending_images.
-        if not isinstance(session, OmniRealtimeClient):
-            for cb in callbacks:
-                if isinstance(cb, dict):
-                    cb.pop("media_images", None)
-            return
+        reconnect redelivery, turn-end retry.
+
+        Both session types are fed:
+          * VOICE (OmniRealtimeClient): stream_image() persists the image as a
+            conversation.item the immediately-following proactive
+            response.create sees (same-turn).
+          * TEXT (OmniOfflineClient): stream_image() stages into
+            _pending_images, which prompt_ephemeral() consumes for THIS
+            proactive turn (and switches to the vision model, same as
+            stream_text's image handling — the text session then stays on the
+            vision model). So the image is part of the proactive turn, not a
+            later unrelated user message.
+
+        Media is LEFT on the cb (NOT popped) until the cb is delivered &
+        pruned, so a deferred / failed-and-retried cb re-streams it instead of
+        losing the visual context (text re-stages _pending_images; voice may
+        re-add a conversation.item — acceptable: never lose the image). On a
+        PARTIAL stream failure only the not-yet-streamed tail is kept so we
+        don't re-stream images that already landed."""
         si = getattr(session, "stream_image", None)
         if si is None:
             return
@@ -6322,7 +6323,6 @@ class LLMSessionManager:
             if not images:
                 continue
             streamed = 0
-            failed = False
             for b64 in images:
                 try:
                     await si(b64)
@@ -6330,19 +6330,17 @@ class LLMSessionManager:
                 except Exception as e:
                     # Transient failure (session closing / provider reject).
                     # Keep ONLY the not-yet-streamed tail so a later delivery
-                    # attempt (reconnect / retry, fresh session) re-streams the
-                    # rest WITHOUT re-injecting images that already landed.
+                    # attempt re-streams the rest WITHOUT re-injecting images
+                    # that already landed.
                     logger.warning(
                         "[%s] proactive media stream_image failed; keeping %d remaining for retry: %s",
                         self.lanlan_name, len(images) - streamed, e,
                     )
-                    failed = True
+                    cb["media_images"] = list(images[streamed:])
                     break
-            if failed:
-                cb["media_images"] = list(images[streamed:])
-            else:
-                # Every image streamed cleanly — drop so a retry doesn't re-stream.
-                cb.pop("media_images", None)
+            # All streamed: keep media_images on the cb until it's delivered+
+            # pruned (preserve-until-success) so an inject/prompt failure retry
+            # re-streams it. Successful delivery removes the cb (and its media).
 
     def on_voice_playback_signal(self, *, playing: bool, **meta) -> None:
         """Handle a FRONTEND-reported audio playback boundary.
