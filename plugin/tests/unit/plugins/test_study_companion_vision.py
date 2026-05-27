@@ -223,6 +223,12 @@ async def test_call_model_strips_vision_for_text_model(
     class _ConfigManager:
         def get_model_api_config(self, group: str) -> dict[str, str]:
             config_groups.append(group)
+            if group == "vision":
+                return {
+                    "base_url": "",
+                    "model": "",
+                    "api_key": "",
+                }
             return {
                 "base_url": "https://llm.example.test/v1",
                 "model": "gpt-4",
@@ -252,11 +258,74 @@ async def test_call_model_strips_vision_for_text_model(
     )
 
     assert result == "reply"
-    assert config_groups == ["agent"]
+    assert config_groups == ["vision", "agent"]
     assert call_types == ["agent"]
     assert seen == [{"role": "user", "content": "one"}]
     assert logger.warnings
     assert "vision stripped" in str(logger.warnings[0][0][0])
+
+
+@pytest.mark.asyncio
+async def test_call_model_uses_vision_config_for_image_messages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from utils import config_manager, llm_client, token_tracker
+
+    seen_messages: list[dict[str, Any]] = []
+    seen_client_kwargs: list[dict[str, Any]] = []
+    config_groups: list[str] = []
+    call_types: list[str] = []
+
+    class _ConfigManager:
+        def get_model_api_config(self, group: str) -> dict[str, str]:
+            config_groups.append(group)
+            if group == "vision":
+                return {
+                    "base_url": "https://vision.example.test/v1",
+                    "model": "step-1o-turbo-vision",
+                    "api_key": "vision-key",
+                }
+            return {
+                "base_url": "https://agent.example.test/v1",
+                "model": "step-3",
+                "api_key": "agent-key",
+            }
+
+    class _FakeLLM:
+        async def ainvoke(self, messages: list[dict[str, Any]]):
+            seen_messages.extend(messages)
+            return SimpleNamespace(content="vision reply")
+
+    def _create_chat_llm(**kwargs: Any) -> _FakeLLM:
+        seen_client_kwargs.append(kwargs)
+        return _FakeLLM()
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: _ConfigManager())
+    monkeypatch.setattr(llm_client, "create_chat_llm", _create_chat_llm)
+    monkeypatch.setattr(token_tracker, "set_call_type", call_types.append)
+    agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="en"))
+
+    result = await agent._call_model(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what is shown?"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,x"}},
+                ],
+            }
+        ]
+    )
+
+    assert result == "vision reply"
+    assert config_groups == ["vision"]
+    assert call_types == ["vision"]
+    assert seen_client_kwargs[0]["base_url"] == "https://vision.example.test/v1"
+    assert seen_client_kwargs[0]["model"] == "step-1o-turbo-vision"
+    assert seen_client_kwargs[0]["api_key"] == "vision-key"
+    content = seen_messages[0]["content"]
+    assert isinstance(content, list)
+    assert content[1]["type"] == "image_url"
 
 
 def test_study_state_to_dict_excludes_transient_vision_image() -> None:

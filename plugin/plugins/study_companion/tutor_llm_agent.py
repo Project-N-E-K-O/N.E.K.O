@@ -914,20 +914,33 @@ class TutorLLMAgent:
             details = ", ".join(missing_runtime_deps)
             raise SdkError(f"missing runtime dependency: {details}")
 
-        api_config = get_config_manager().get_model_api_config("agent")
+        config_manager = get_config_manager()
+        has_image = any(self._message_has_image_content(message) for message in messages)
+        if has_image:
+            vision_config = config_manager.get_model_api_config("vision")
+            vision_base_url = str(vision_config.get("base_url") or "").strip()
+            vision_model = str(vision_config.get("model") or "").strip()
+            if vision_base_url and vision_model:
+                api_config = vision_config
+                model_group = "vision"
+            else:
+                api_config = config_manager.get_model_api_config("agent")
+                model_group = "agent"
+        else:
+            api_config = config_manager.get_model_api_config("agent")
+            model_group = "agent"
         base_url = str(api_config.get("base_url") or "").strip()
         model = str(api_config.get("model") or "").strip()
         api_key = str(api_config.get("api_key") or "").strip()
         if not base_url or not model:
-            raise SdkError("missing configured agent model")
-        has_image = any(self._message_has_image_content(message) for message in messages)
-        if has_image and not self._model_supports_vision(model):
+            raise SdkError(f"missing configured {model_group} model")
+        if has_image and model_group != "vision" and not self._model_supports_vision(model):
             self._logger.warning(
                 "vision stripped: model {} not in vision allowlist", model
             )
             messages = self._strip_image_content(messages)
         key = (
-            "agent",
+            model_group,
             operation,
             base_url,
             model,
@@ -945,7 +958,7 @@ class TutorLLMAgent:
         )
         if llm is None:
             raise SdkError("failed to initialize agent model")
-        set_call_type("agent")
+        set_call_type(model_group)
         ainvoke = getattr(llm, "ainvoke", None)
         if callable(ainvoke):
             response = await asyncio.wait_for(ainvoke(messages), timeout=timeout_seconds)
