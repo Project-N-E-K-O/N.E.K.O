@@ -716,18 +716,22 @@ class StudyCompanionPlugin(NekoPluginBase):
         with self._lock:
             if self._state.status != STATUS_READY:
                 return Ok({"action": "noop", "reason": "not_ready"})
-            state_payload = self._state.to_dict()
+            state_snapshot_payload = self._state.to_dict()
 
-        screen_text = str(state_payload.get("last_ocr_text") or "")
+        # Voice filtering only needs a point-in-time view; avoid holding the
+        # plugin lock while building OCR context or applying filter rules.
+        screen_text = str(state_snapshot_payload.get("last_ocr_text") or "")
         screen_classification = (
-            state_payload.get("last_screen_classification")
-            if isinstance(state_payload.get("last_screen_classification"), dict)
+            state_snapshot_payload.get("last_screen_classification")
+            if isinstance(
+                state_snapshot_payload.get("last_screen_classification"), dict
+            )
             else {}
         )
         screen_type = str(screen_classification.get("screen_type") or "")
         session_seed = (
-            state_payload.get("session_summary_seed")
-            if isinstance(state_payload.get("session_summary_seed"), dict)
+            state_snapshot_payload.get("session_summary_seed")
+            if isinstance(state_snapshot_payload.get("session_summary_seed"), dict)
             else {}
         )
         screen_context = {
@@ -747,7 +751,7 @@ class StudyCompanionPlugin(NekoPluginBase):
         if not bool(filter_result.get("should_relay")):
             return Ok({"action": "cancel_response", "filter": dict(filter_result)})
 
-        state_snapshot = SimpleNamespace(**state_payload)
+        state_snapshot = SimpleNamespace(**state_snapshot_payload)
         context_text = build_context_for_catgirl(
             text,
             state_snapshot,
