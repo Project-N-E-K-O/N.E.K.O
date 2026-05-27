@@ -256,6 +256,24 @@
             background-image: url('/static/assets/tutorial/highlight/cat-paw.png?v={{ static_asset_version }}');
             filter: drop-shadow(0 0 8px rgba(119, 211, 255, 0.58));
         }
+        #yui-guide-chat-spotlight.is-plain-circle .yui-guide-chat-spotlight-ear-left,
+        #yui-guide-chat-spotlight.is-plain-circle .yui-guide-chat-spotlight-ear-right,
+        #yui-guide-chat-spotlight.is-plain-circle .yui-guide-chat-spotlight-paw,
+        #yui-guide-chat-spotlight.is-plain-circle .yui-guide-chat-spotlight-sweep {
+            display: none !important;
+        }
+        #yui-guide-chat-spotlight.is-plain-circle .yui-guide-chat-spotlight-chrome {
+            inset: 0;
+            border: 2px solid rgba(64, 156, 255, 0.98);
+            background: rgba(255, 255, 255, 0.02);
+            box-shadow:
+                0 0 0 4px rgba(64, 156, 255, 0.18),
+                0 0 18px rgba(64, 156, 255, 0.34);
+        }
+        #yui-guide-chat-spotlight.is-plain-circle .yui-guide-chat-spotlight-chrome::before,
+        #yui-guide-chat-spotlight.is-plain-circle .yui-guide-chat-spotlight-chrome::after {
+            display: none !important;
+        }
         #yui-guide-chat-spotlight.is-window .yui-guide-chat-spotlight-chrome {
             box-shadow:
                 0 0 0 1px rgba(214, 243, 255, 0.72),
@@ -269,6 +287,11 @@
                 0 0 16px rgba(104, 194, 255, 0.52),
                 0 0 28px rgba(87, 136, 255, 0.22),
                 inset 0 0 12px rgba(131, 214, 255, 0.14);
+        }
+        #yui-guide-chat-spotlight.is-plain-circle .yui-guide-chat-spotlight-chrome {
+            box-shadow:
+                0 0 0 4px rgba(64, 156, 255, 0.18),
+                0 0 18px rgba(64, 156, 255, 0.34);
         }
         /* Chat 字体优化（覆盖 6 语：中简/繁/英/日/韩/俄） */
         #react-chat-window-root {

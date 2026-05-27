@@ -358,11 +358,19 @@ body.yui-guide-return-petal-fade #mmd-canvas {
   box-shadow: none !important;
 }
 
+.yui-guide-spotlight-frame.is-plain-circle {
+  background: rgba(255, 255, 255, 0.02);
+  border: 2px solid rgba(64, 156, 255, 0.98);
+  box-shadow:
+    0 0 0 4px rgba(64, 156, 255, 0.18),
+    0 0 18px rgba(64, 156, 255, 0.34) !important;
+}
+
 .yui-guide-spotlight-frame.is-circular-mask.is-visible,
-.yui-guide-spotlight-frame.is-circle-image.is-visible {
+.yui-guide-spotlight-frame.is-circle-image.is-visible,
+.yui-guide-spotlight-frame.is-plain-circle.is-visible {
   animation: none !important;
   animation-name: none !important;
-  box-shadow: none !important;
 }
 
 .yui-guide-spotlight-frame.is-circular-mask .yui-guide-spotlight-chrome,
@@ -372,7 +380,13 @@ body.yui-guide-return-petal-fade #mmd-canvas {
 .yui-guide-spotlight-frame.is-circle-image .yui-guide-spotlight-chrome,
 .yui-guide-spotlight-frame.is-circle-image .yui-guide-spotlight-ear-left,
 .yui-guide-spotlight-frame.is-circle-image .yui-guide-spotlight-ear-right,
-.yui-guide-spotlight-frame.is-circle-image .yui-guide-spotlight-paw {
+.yui-guide-spotlight-frame.is-circle-image .yui-guide-spotlight-paw,
+.yui-guide-spotlight-frame.is-plain-circle .yui-guide-spotlight-chrome,
+.yui-guide-spotlight-frame.is-plain-circle .yui-guide-spotlight-ear-left,
+.yui-guide-spotlight-frame.is-plain-circle .yui-guide-spotlight-ear-right,
+.yui-guide-spotlight-frame.is-plain-circle .yui-guide-spotlight-paw,
+.yui-guide-spotlight-frame.is-plain-circle .yui-guide-spotlight-circle-skin,
+.yui-guide-spotlight-frame.is-plain-circle .yui-guide-spotlight-sweep {
   display: none;
 }
 

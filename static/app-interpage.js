@@ -2151,6 +2151,58 @@
             };
         }
 
+        if (kind === 'mini-game-choices') {
+            var choiceSlot = document.querySelector(
+                '#react-chat-window-root .composer-choice-slot[data-choice-source="mini_game_invite"]'
+            );
+            if (!choiceSlot) {
+                return null;
+            }
+            var choiceItems = Array.prototype.slice.call(
+                choiceSlot.querySelectorAll('.composer-choice-option, .composer-galgame-option')
+            ).filter(function (element, index) {
+                if (!element || index >= 3) return false;
+                var rect = typeof element.getBoundingClientRect === 'function'
+                    ? element.getBoundingClientRect()
+                    : null;
+                return !!(rect && rect.width > 0 && rect.height > 0);
+            });
+            if (!choiceItems.length) {
+                return null;
+            }
+            var choiceBounds = choiceItems.reduce(function (acc, element) {
+                var rect = element.getBoundingClientRect();
+                if (!acc) {
+                    return {
+                        left: rect.left,
+                        top: rect.top,
+                        right: rect.right,
+                        bottom: rect.bottom
+                    };
+                }
+                acc.left = Math.min(acc.left, rect.left);
+                acc.top = Math.min(acc.top, rect.top);
+                acc.right = Math.max(acc.right, rect.right);
+                acc.bottom = Math.max(acc.bottom, rect.bottom);
+                return acc;
+            }, null);
+            if (!choiceBounds) {
+                return null;
+            }
+            return {
+                getBoundingClientRect: function () {
+                    return {
+                        left: choiceBounds.left,
+                        top: choiceBounds.top,
+                        right: choiceBounds.right,
+                        bottom: choiceBounds.bottom,
+                        width: choiceBounds.right - choiceBounds.left,
+                        height: choiceBounds.bottom - choiceBounds.top
+                    };
+                }
+            };
+        }
+
         if (kind === 'input') {
             return document.querySelector('#react-chat-window-root .composer-panel')
                 || document.querySelector('#react-chat-window-root .composer-input-shell')
@@ -2292,11 +2344,12 @@
         if (!rect || rect.width <= 0 || rect.height <= 0) {
             spotlight.hidden = true;
             spotlight.style.opacity = '0';
-            spotlight.classList.remove('is-visible', 'is-window', 'is-input');
+            spotlight.classList.remove('is-visible', 'is-window', 'is-input', 'is-plain-circle');
             return;
         }
 
-        var isToolbarButton = kind === 'avatar-tools' || kind === 'galgame';
+        var isPlainCircle = kind === 'avatar-tool-items' || kind === 'mini-game-choices';
+        var isToolbarButton = kind === 'avatar-tools' || kind === 'galgame' || isPlainCircle;
         var padding = kind === 'window' ? 10 : 8;
         var radius = kind === 'window' ? 26 : 18;
         var left = rect.left - padding;
@@ -2313,8 +2366,9 @@
         }
         spotlight.hidden = false;
         spotlight.style.opacity = '1';
-        spotlight.classList.remove('is-window', 'is-input');
+        spotlight.classList.remove('is-window', 'is-input', 'is-plain-circle');
         spotlight.classList.add(kind === 'window' ? 'is-window' : 'is-input');
+        spotlight.classList.toggle('is-plain-circle', isPlainCircle);
         spotlight.classList.add('is-visible');
         spotlight.style.left = Math.round(left) + 'px';
         spotlight.style.top = Math.round(top) + 'px';

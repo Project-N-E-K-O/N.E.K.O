@@ -5830,6 +5830,19 @@
                 .slice(0, maxItems);
         }
 
+        getMiniGameChoiceTargets(limit) {
+            const maxItems = Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : 3;
+            const choiceSlot = this.resolveElement(
+                '#react-chat-window-root .composer-choice-slot[data-choice-source="mini_game_invite"]'
+            );
+            if (!choiceSlot || !this.isElementVisible(choiceSlot)) {
+                return [];
+            }
+            return Array.from(choiceSlot.querySelectorAll('.composer-choice-option, .composer-galgame-option'))
+                .filter((element) => this.isElementVisible(element))
+                .slice(0, maxItems);
+        }
+
         getVisibleChatComposerElement(selector) {
             if (typeof selector !== 'string' || !selector.trim()) {
                 return null;
@@ -5860,6 +5873,47 @@
                 return this.getVisibleChatComposerElement(selector);
             }
             return null;
+        }
+
+        applyPlainCircularSpotlightHints(targets, padding) {
+            const items = Array.isArray(targets) ? targets.filter(Boolean) : [];
+            items.forEach((target) => {
+                this.setSpotlightGeometryHint(target, {
+                    padding: Number.isFinite(padding) ? padding : 6,
+                    geometry: 'circle'
+                });
+            });
+            this.setSpotlightVariantHints(items.map((element) => ({
+                element,
+                variant: 'plain-circle'
+            })));
+            return items;
+        }
+
+        async tourMiniGameChoiceButtons() {
+            if (this.isHomeChatExternalized()) {
+                this.setExternalizedChatGuideTarget('mini-game-choices', {
+                    effect: 'wobble'
+                });
+                await this.waitForSceneDelay(520);
+                return true;
+            }
+            const choiceTargets = this.applyPlainCircularSpotlightHints(this.getMiniGameChoiceTargets(3), 6);
+            if (choiceTargets.length === 0) {
+                return false;
+            }
+            this.setSceneExtraSpotlights(choiceTargets);
+            for (let index = 0; index < choiceTargets.length; index += 1) {
+                if (this.isStopping()) {
+                    return true;
+                }
+                const moved = await this.moveCursorToElement(choiceTargets[index], index === 0 ? 480 : 360);
+                if (moved) {
+                    this.cursor.wobble();
+                    await this.waitForSceneDelay(170);
+                }
+            }
+            return true;
         }
 
         applyChatAvatarToolButtonSpotlightHint(element) {
@@ -6154,6 +6208,7 @@
                         effect: 'wobble'
                     });
                     await this.waitForSceneDelay(760);
+                    await this.tourMiniGameChoiceButtons();
                     return true;
                 }
                 this.setChatAvatarToolMenuOpen(true, 'avatar-floating-guide-open-avatar-tool-menu');
@@ -6161,24 +6216,26 @@
                     const popover = this.resolveElement('#composer-tool-popover');
                     return popover && this.isElementVisible(popover) ? popover : null;
                 }, 1200);
-                const toolTargets = this.getChatAvatarToolMenuTargets();
-                toolTargets.forEach((target) => {
-                    this.setSpotlightGeometryHint(target, {
-                        padding: 6,
-                        geometry: 'circle'
-                    });
-                });
-                this.setSceneExtraSpotlights(toolTargets.filter(Boolean));
-                for (let index = 0; index < toolTargets.length; index += 1) {
-                    if (this.isStopping()) {
-                        return true;
-                    }
-                    const moved = await this.moveCursorToElement(toolTargets[index], index === 0 ? 480 : 360);
+                const toolTargets = this.applyPlainCircularSpotlightHints(this.getChatAvatarToolMenuTargets(3), 6);
+                this.setSceneExtraSpotlights(toolTargets);
+                if (toolTargets.length > 0 && !this.isStopping()) {
+                    const moved = await this.moveCursorToElement(toolTargets[0], 480);
                     if (moved) {
-                        this.cursor.wobble();
-                        await this.waitForSceneDelay(160);
+                        await this.clickCursorAndWait(DEFAULT_CURSOR_CLICK_VISIBLE_MS);
+                        if (
+                            toolTargets[0]
+                            && typeof toolTargets[0].click === 'function'
+                            && !this.isStopping()
+                        ) {
+                            toolTargets[0].click();
+                        }
+                        await this.waitForSceneDelay(220);
+                        this.clearSceneExtraSpotlights();
+                        this.clearSpotlightVariantHints();
+                        this.clearSpotlightGeometryHints();
                     }
                 }
+                await this.tourMiniGameChoiceButtons();
                 return true;
             }
             if (operation === 'settings-peek-panic') {

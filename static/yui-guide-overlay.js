@@ -172,6 +172,25 @@
         }
     }
 
+    function applySpotlightPlainCircleMode(frame) {
+        if (!frame) {
+            return;
+        }
+
+        const chrome = frame.querySelector('.yui-guide-spotlight-chrome');
+        const circleSkin = frame.querySelector('.yui-guide-spotlight-circle-skin');
+
+        removeSpotlightImageDecorations(frame);
+
+        if (chrome && chrome.style) {
+            chrome.style.display = 'none';
+        }
+
+        if (circleSkin && circleSkin.style) {
+            circleSkin.style.display = 'none';
+        }
+    }
+
     class YuiGuideOverlay {
         constructor(doc) {
             this.document = doc || document;
@@ -752,12 +771,14 @@
             const allowMask = normalizedOptions.allowMask !== false;
             const variant = normalizedOptions.variant || '';
             const forceCircleImage = variant === 'circle-image';
+            const forcePlainCircle = variant === 'plain-circle';
 
             if (!spotlightRect) {
                 frame.hidden = true;
                 frame.classList.remove('is-visible');
                 frame.classList.remove('is-circular-mask');
                 frame.classList.remove('is-circle-image');
+                frame.classList.remove('is-plain-circle');
                 frame.classList.remove('is-thin-variant');
                 applySpotlightFrameDecorationMode(frame, false);
                 return;
@@ -767,8 +788,13 @@
             frame.classList.add('is-visible');
             frame.classList.toggle('is-circular-mask', !!spotlightRect.isCircular && allowMask);
             frame.classList.toggle('is-circle-image', forceCircleImage);
+            frame.classList.toggle('is-plain-circle', forcePlainCircle);
             frame.classList.toggle('is-thin-variant', variant === 'thin');
-            applySpotlightFrameDecorationMode(frame, !!spotlightRect.isCircular || forceCircleImage);
+            if (forcePlainCircle) {
+                applySpotlightPlainCircleMode(frame);
+            } else {
+                applySpotlightFrameDecorationMode(frame, !!spotlightRect.isCircular || forceCircleImage);
+            }
             frame.style.left = spotlightRect.left + 'px';
             frame.style.top = spotlightRect.top + 'px';
             frame.style.width = spotlightRect.width + 'px';
@@ -820,11 +846,15 @@
                 if (!element || typeof element.getAttribute !== 'function') {
                     return '';
                 }
+                const variant = (element.getAttribute('data-yui-guide-spotlight-variant') || '').trim().toLowerCase();
+                if (variant) {
+                    return variant;
+                }
                 const geometry = (element.getAttribute('data-yui-guide-spotlight-geometry') || '').trim().toLowerCase();
                 if (geometry === 'circle' || isCircularFloatingButtonElement(element)) {
                     return 'circle-image';
                 }
-                return element.getAttribute('data-yui-guide-spotlight-variant') || '';
+                return '';
             };
 
             this.updateSpotlightFrame(this.persistentSpotlightFrame, persistentRect, {
