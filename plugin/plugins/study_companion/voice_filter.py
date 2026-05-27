@@ -82,7 +82,7 @@ class VoiceFilter:
         clock: Callable[[], float] | None = None,
     ) -> None:
         self._clock = clock or time.monotonic
-        self._last_name_call_time = 0.0
+        self._last_name_call_times: dict[str, float] = {}
         self._names = self._load_names(
             names,
             config_manager=config_manager,
@@ -99,15 +99,17 @@ class VoiceFilter:
         screen_text: str = "",
         screen_type: str = "",
         subject: str = "",
+        session_key: str = "",
     ) -> dict[str, Any] | None:
         text = str(transcript or "").strip()
         if not text:
             return None
 
         now = self._clock()
+        window_key = _name_window_key(session_key)
         name, pos = _find_earliest_name(text, self._names)
         if name:
-            self._last_name_call_time = now
+            self._last_name_call_times[window_key] = now
             pre_context = text[:pos].strip()
             question = text[pos + len(name) :].strip()
             return {
@@ -120,9 +122,10 @@ class VoiceFilter:
                 "subject": _normalize_subject(subject) or _derive_subject(screen_text),
             }
 
+        last_name_call_time = self._last_name_call_times.get(window_key, 0.0)
         in_name_window = (
-            self._last_name_call_time > 0
-            and now - self._last_name_call_time < NAME_WINDOW_SECONDS
+            last_name_call_time > 0
+            and now - last_name_call_time < NAME_WINDOW_SECONDS
         )
         if in_name_window:
             return {
@@ -249,6 +252,11 @@ def _find_earliest_name(text: str, names: Iterable[str]) -> tuple[str | None, in
             best_name = name
             best_pos = pos
     return best_name, best_pos
+
+
+def _name_window_key(value: str) -> str:
+    key = str(value or "").strip()
+    return key or "__default__"
 
 
 def _text_overlap_ratio(a: str, b: str) -> float:

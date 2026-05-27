@@ -110,6 +110,30 @@ def test_name_window_protects_short_or_high_overlap_followup() -> None:
     assert result["method"] == "name_window"
 
 
+def test_name_window_is_scoped_by_session_key() -> None:
+    now = 100.0
+
+    def clock() -> float:
+        return now
+
+    voice_filter = VoiceFilter(names=["Yui"], clock=clock)
+    assert (
+        voice_filter.filter("Yui help here", "help here", session_key="session-a")[
+            "should_relay"
+        ]
+        is True
+    )
+
+    now = 102.0
+    other_session = voice_filter.filter("嗯", "嗯", session_key="session-b")
+    same_session = voice_filter.filter("嗯", "嗯", session_key="session-a")
+
+    assert other_session == {"should_relay": False, "method": "too_short"}
+    assert same_session is not None
+    assert same_session["should_relay"] is True
+    assert same_session["method"] == "name_window"
+
+
 def test_name_window_expires_and_short_audio_drops() -> None:
     now = 100.0
 
