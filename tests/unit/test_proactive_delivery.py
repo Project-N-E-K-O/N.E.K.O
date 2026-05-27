@@ -117,6 +117,34 @@ async def test_min_gap_delays_release():
     assert [c["id"] for c in delivered] == ["x"]
 
 
+async def test_playing_watchdog_recovers_missing_play_end():
+    # voice_play_start with no matching voice_play_end (frontend disconnect)
+    # must not wedge the queue forever — the max_play watchdog re-opens it.
+    delivered = []
+    mgr = _make(delivered, max_play_s=0.1)
+    mgr.on_playback_start()          # ...and voice_play_end never arrives
+    mgr.submit({"id": "x"}, priority=1)
+    await asyncio.sleep(0.05)
+    assert delivered == []           # still within max_play window
+    await asyncio.sleep(0.2)         # exceed watchdog
+    assert [c["id"] for c in delivered] == ["x"]
+
+
+async def test_reset_clears_gate_and_queue():
+    delivered = []
+    mgr = _make(delivered)
+    mgr.on_playback_start()
+    mgr.submit({"id": "a"}, priority=1)
+    mgr.submit({"id": "b"}, priority=2, coalesce_key="k")
+    mgr.reset()                      # session teardown
+    await _settle()
+    assert delivered == []           # queue dropped
+    # Gate state cleared: a fresh submit delivers immediately (not playing).
+    mgr.submit({"id": "c"}, priority=1)
+    await _settle()
+    assert [c["id"] for c in delivered] == ["c"]
+
+
 async def test_stale_cue_dropped_by_ttl():
     delivered = []
     mgr = _make(delivered, ttl_s=0.05)

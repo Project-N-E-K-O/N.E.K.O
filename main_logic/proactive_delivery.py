@@ -88,6 +88,7 @@ class ProactiveDeliveryManager:
         min_gap_s: float = 2.0,
         inflight_timeout_s: float = 12.0,
         ttl_s: float = 90.0,
+        max_play_s: float = 30.0,
     ) -> None:
         # ``deliver`` does the actual hand-off into the existing pipeline
         # (enqueue_agent_callback + trigger_agent_callbacks). Awaited inside
@@ -97,6 +98,11 @@ class ProactiveDeliveryManager:
         self._min_gap_s = float(min_gap_s)
         self._inflight_timeout_s = float(inflight_timeout_s)
         self._ttl_s = float(ttl_s)
+        # Watchdog: if voice_play_start arrives but voice_play_end never does
+        # (frontend disconnect/refresh mid-playback), ``_playing`` would stay
+        # True forever and wedge the queue. Treat playback older than this as
+        # stale and re-open the gate. Longer than any single utterance.
+        self._max_play_s = float(max_play_s)
 
         self._queue: list[_QueuedCue] = []
         self._seq = itertools.count()
@@ -107,6 +113,7 @@ class ProactiveDeliveryManager:
         # us recover if a released cue never produces playback (deferred by
         # the inner gate, text with no audio, frontend disconnect).
         self._playing = False
+        self._play_start_ts = 0.0
         self._inflight = False
         self._inflight_deadline = 0.0
         self._last_play_end_ts = 0.0
@@ -158,6 +165,7 @@ class ProactiveDeliveryManager:
     # ── lifecycle signals (from LifecycleEventBus) ───────────────────────
     def on_playback_start(self, **_: Any) -> None:
         self._playing = True
+        self._play_start_ts = self._now()
 
     def on_playback_end(self, **_: Any) -> None:
         self._playing = False
@@ -169,6 +177,22 @@ class ProactiveDeliveryManager:
     # text-mode boundaries reuse the same gating semantics
     on_text_start = on_playback_start
     on_text_end = on_playback_end
+
+    def reset(self) -> None:
+        """Clear gate + queue state. Call on session lifecycle boundaries
+        (session start / end / character switch) so a dropped voice_play_end
+        — frontend disconnect/refresh or teardown mid-playback — cannot leave
+        the gate stuck closed and wedge all future delivery. Queued cues are
+        dropped because they belonged to the now-gone session."""
+        self._playing = False
+        self._play_start_ts = 0.0
+        self._inflight = False
+        self._inflight_deadline = 0.0
+        self._last_play_end_ts = 0.0
+        self._queue.clear()
+        if self._pump_handle is not None:
+            self._pump_handle.cancel()
+            self._pump_handle = None
 
     # ── pump ─────────────────────────────────────────────────────────────
     def _suffix(self) -> str:
@@ -206,9 +230,24 @@ class ProactiveDeliveryManager:
         self._drop_stale()
         if not self._queue:
             return
-        if self._playing:
-            return  # she's audibly speaking — do not inject
         now = self._now()
+        if self._playing:
+            # Watchdog: voice_play_end may never arrive (frontend disconnect /
+            # refresh mid-playback). If playback has "run" longer than any
+            # plausible utterance, treat the flag as stale and re-open the
+            # gate rather than wedge the queue forever.
+            if self._max_play_s > 0 and now - self._play_start_ts > self._max_play_s:
+                logger.warning(
+                    "[proactive%s] playback watchdog: no voice_play_end after %.0fs; clearing stuck playing flag",
+                    self._suffix(), now - self._play_start_ts,
+                )
+                self._playing = False
+            else:
+                # Still audibly speaking — don't inject; re-check at the
+                # watchdog deadline in case no end signal arrives.
+                if self._max_play_s > 0:
+                    self._schedule_pump(self._play_start_ts + self._max_play_s - now)
+                return
         if self._inflight:
             if now < self._inflight_deadline:
                 # Released cue still awaiting playback confirmation.
@@ -232,6 +271,12 @@ class ProactiveDeliveryManager:
             self._suffix(), cue.coalesce_key, cue.eff_priority, len(self._queue),
         )
         asyncio.create_task(self._run_deliver(cue.callback))
+        # Arm the inflight-timeout: if no playback signal arrives (deliver
+        # swallowed/deferred by the inner gate, text with no audio, frontend
+        # disconnect) the deadline pump frees the slot so later cues aren't
+        # wedged. Normal completion (playback_end / next submit) reschedules
+        # a sooner pump anyway.
+        self._schedule_pump(self._inflight_timeout_s)
 
     async def _run_deliver(self, callback: dict) -> None:
         try:

@@ -219,8 +219,11 @@ class ProactiveBridge:
         # order/coalesce. Lower priority = more urgent; unspecified (0) is
         # normalised to a neutral band downstream.
         try:
+            # OverflowError: plugin payload is boundary input; JSON
+            # Infinity/-Infinity → non-finite float → int() raises. Must not
+            # let a malformed priority drop the whole message at the bridge.
             priority = int(payload.get("priority", 0) or 0)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             priority = 0
         coalesce_key = payload.get("coalesce_key")
         if not isinstance(coalesce_key, str):

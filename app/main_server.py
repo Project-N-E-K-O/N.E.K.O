@@ -847,8 +847,10 @@ async def _handle_agent_event(event: dict):
                 # coalesce_key). Lower priority = more urgent; unspecified
                 # (0) is normalised to a neutral band by the manager.
                 try:
+                    # OverflowError: JSON Infinity/-Infinity → float → int() raises;
+                    # must not let a malformed priority drop the whole callback.
                     cb_priority = int(event.get("priority", 0) or 0)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     cb_priority = 0
                 cb_coalesce_key = event.get("coalesce_key")
                 if not isinstance(cb_coalesce_key, str):

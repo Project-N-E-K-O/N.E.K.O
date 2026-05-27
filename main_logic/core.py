@@ -805,6 +805,10 @@ class LLMSessionManager:
         # the realtime API's response.done (generation, not playback).
         self.lifecycle_bus = LifecycleEventBus(name=self.lanlan_name)
         self._voice_playback_active = False
+        # When playback started (monotonic). Used to time-bound the gate so a
+        # missing voice_play_end (frontend disconnect/refresh mid-playback)
+        # can't wedge proactive delivery forever — see _is_voice_playing().
+        self._voice_playback_started_ts = 0.0
         self.proactive_manager = ProactiveDeliveryManager(
             deliver=self._deliver_proactive_callback,
             name=self.lanlan_name,
@@ -3995,6 +3999,9 @@ class LLMSessionManager:
         # 路径独立处理（见 main_routers/config_router.py:steam_language 端点）。
         if not getattr(self, 'user_language', None):
             self.user_language = normalize_language_code(get_global_language(), format='short')
+        # 新 session = 干净的播放门控：清掉上一会话可能残留的 playback flag /
+        # manager 队列（前端中途断线/刷新导致 voice_play_end 丢失时尤为重要）。
+        self._reset_proactive_gate()
         # 重置防刷屏标志
         self.session_closed_by_server = False
         self.last_audio_send_error_time = 0.0
@@ -5624,7 +5631,7 @@ class LLMSessionManager:
                 if (
                     self.state.phase is not ProactivePhase.IDLE
                     or voice_sess.is_active_response()
-                    or self._voice_playback_active
+                    or self._is_voice_playing()
                 ):
                     logger.debug(
                         "[%s] trigger_agent_callbacks: voice session busy (phase=%s, active_response=%s, playback=%s); deferring proactive (n=%d)",
@@ -6267,6 +6274,8 @@ class LLMSessionManager:
         delivered promptly rather than waiting for the next response.done.
         """
         self._voice_playback_active = bool(playing)
+        if playing:
+            self._voice_playback_started_ts = time.monotonic()
         try:
             self.lifecycle_bus.emit(
                 "voice_play_start" if playing else "voice_play_end", **meta
@@ -6276,6 +6285,38 @@ class LLMSessionManager:
         if not playing and self.pending_agent_callbacks:
             # A cue deferred while she was speaking can now go out.
             self._fire_task(self.trigger_agent_callbacks())
+
+    # Playback older than this with no voice_play_end is treated as stale —
+    # longer than any single utterance, short enough to self-heal a wedged gate.
+    _VOICE_PLAYBACK_STALE_S = 30.0
+
+    def _is_voice_playing(self) -> bool:
+        """Time-bounded read of the playback gate. Auto-clears a stuck
+        ``_voice_playback_active`` when no voice_play_end has arrived within
+        ``_VOICE_PLAYBACK_STALE_S`` (frontend disconnect/refresh mid-playback),
+        so the voice inject gate can never wedge proactive delivery forever."""
+        if not self._voice_playback_active:
+            return False
+        if time.monotonic() - self._voice_playback_started_ts > self._VOICE_PLAYBACK_STALE_S:
+            logger.warning(
+                "[%s] voice playback gate watchdog: no voice_play_end after %.0fs; clearing stuck flag",
+                self.lanlan_name, self._VOICE_PLAYBACK_STALE_S,
+            )
+            self._voice_playback_active = False
+            return False
+        return True
+
+    def _reset_proactive_gate(self) -> None:
+        """Reset the playback gate + delivery manager on session lifecycle
+        boundaries (session start / end / character switch) so a dropped
+        voice_play_end can't carry stale playback state into the next session
+        and wedge proactive delivery."""
+        self._voice_playback_active = False
+        self._voice_playback_started_ts = 0.0
+        try:
+            self.proactive_manager.reset()
+        except Exception:
+            logger.exception("[%s] proactive_manager.reset failed", self.lanlan_name)
 
     def enqueue_agent_callback(self, callback: dict) -> None:
         """Enqueue a structured agent task callback for LLM injection.
@@ -7081,6 +7122,10 @@ class LLMSessionManager:
             await self.send_status(json.dumps({"code": "API_UNKNOWN_ERROR", "details": {"msg": error_message}}))
 
     async def end_session(self, by_server=False, *, expected_session=None, reset_starting_count=True):  # 与Core API断开连接
+        # Session teardown: clear the playback gate + manager so a voice_play_end
+        # that never arrived (e.g. end_session fired mid-playback) doesn't leave
+        # the gate stuck closed for the next session.
+        self._reset_proactive_gate()
         # Pre-check: no-side-effect guard before _init_renew_status which mutates
         # pending/prewarm state.  A stale callback must not nuke preparation state.
         _inactive_early = False
