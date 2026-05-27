@@ -226,6 +226,7 @@ export default function CompactExportHistoryPanel({
   useEffect(() => {
     if (!previewOpen) {
       revokeCompactPreviewObjectUrl();
+      setExportActionError(null);
       setPreviewState({ status: 'idle' });
       return;
     }

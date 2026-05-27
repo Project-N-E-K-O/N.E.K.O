@@ -12,33 +12,35 @@ const message = parseChatMessage({
   status: 'sent',
 });
 
+function createPanelProps(overrides: Partial<Parameters<typeof CompactExportHistoryPanel>[0]> = {}) {
+  return {
+    messages: [message],
+    selectedIds: new Set([message.id]),
+    selectedCount: 1,
+    selectableCount: 1,
+    autoScrollToBottom: false,
+    previewOpen: true,
+    choiceLayerAbove: false,
+    failedStatusLabel: 'Failed',
+    onAutoScrollToBottomChange: vi.fn(),
+    onToggleMessage: vi.fn(),
+    onSelectAll: vi.fn(),
+    onClearSelection: vi.fn(),
+    onInvertSelection: vi.fn(),
+    onRequestPreview: vi.fn(),
+    onClosePreview: vi.fn(),
+    onBuildPreview: vi.fn().mockResolvedValue({
+      previewKind: 'document',
+      previewDocument: '<!doctype html><html><body>Preview</body></html>',
+    }),
+    onCopyExport: vi.fn(),
+    onDownloadExport: vi.fn(),
+    ...overrides,
+  };
+}
+
 function renderPanel(overrides: Partial<Parameters<typeof CompactExportHistoryPanel>[0]> = {}) {
-  return render(
-    <CompactExportHistoryPanel
-      messages={[message]}
-      selectedIds={new Set([message.id])}
-      selectedCount={1}
-      selectableCount={1}
-      autoScrollToBottom={false}
-      previewOpen
-      choiceLayerAbove={false}
-      failedStatusLabel="Failed"
-      onAutoScrollToBottomChange={vi.fn()}
-      onToggleMessage={vi.fn()}
-      onSelectAll={vi.fn()}
-      onClearSelection={vi.fn()}
-      onInvertSelection={vi.fn()}
-      onRequestPreview={vi.fn()}
-      onClosePreview={vi.fn()}
-      onBuildPreview={vi.fn().mockResolvedValue({
-        previewKind: 'document',
-        previewDocument: '<!doctype html><html><body>Preview</body></html>',
-      })}
-      onCopyExport={vi.fn()}
-      onDownloadExport={vi.fn()}
-      {...overrides}
-    />,
-  );
+  return render(<CompactExportHistoryPanel {...createPanelProps(overrides)} />);
 }
 
 describe('CompactExportHistoryPanel', () => {
@@ -79,6 +81,36 @@ describe('CompactExportHistoryPanel', () => {
       });
       expect(consoleError).toHaveBeenCalled();
       expect(copyButton).not.toBeDisabled();
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it('clears rejected export action errors when the preview closes', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const onCopyExport = vi.fn().mockRejectedValue(new Error('copy failed'));
+    const props = createPanelProps({ onCopyExport });
+
+    try {
+      const { rerender } = render(<CompactExportHistoryPanel {...props} />);
+
+      await waitFor(() => {
+        expect(screen.getByTitle('Export Preview')).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: 'Copy to Clipboard' }));
+
+      await waitFor(() => {
+        expect(screen.getByText('Export failed. Please try again.')).toBeInTheDocument();
+      });
+
+      rerender(<CompactExportHistoryPanel {...props} previewOpen={false} />);
+      rerender(<CompactExportHistoryPanel {...props} previewOpen />);
+
+      await waitFor(() => {
+        expect(screen.getByTitle('Export Preview')).toBeInTheDocument();
+      });
+      expect(screen.queryByText('Export failed. Please try again.')).not.toBeInTheDocument();
     } finally {
       consoleError.mockRestore();
     }
