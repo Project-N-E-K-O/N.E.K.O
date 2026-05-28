@@ -211,13 +211,17 @@ async def _sync_one_lanlan(
     if not facts_path.exists():
         return
 
-    facts_data = _read_json(facts_path, [])
+    # CodeRabbit Major: facts/state JSON read 是同步磁盘 IO，包到 asyncio.to_thread
+    # 防止卡事件循环（同时也是 NEKO repo async-blocking lint 红线）。
+    facts_data = await asyncio.to_thread(_read_json, facts_path, [])
     if not isinstance(facts_data, list):
         logger.warning("facts_sync: %s is not a list, skipping", facts_path)
         return
 
     state_path = lanlan_dir / "facts_sync_state.json"
-    state = _read_json(state_path, {"synced": [], "failed_counts": {}})
+    state = await asyncio.to_thread(
+        _read_json, state_path, {"synced": [], "failed_counts": {}},
+    )
     if not isinstance(state, dict):
         state = {"synced": [], "failed_counts": {}}
     synced_set: set[str] = set(state.get("synced") or [])
@@ -249,11 +253,15 @@ async def _sync_one_lanlan(
                 h = f["fact_hash"]
                 failed_counts[h] = failed_counts.get(h, 0) + 1
                 if failed_counts[h] >= MAX_FAILED_ATTEMPTS:
-                    _append_jsonl(pending_path, {
-                        "fact_hash": h,
-                        "text_preview": f["text"][:80],
-                        "failed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                    })
+                    await asyncio.to_thread(
+                        _append_jsonl,
+                        pending_path,
+                        {
+                            "fact_hash": h,
+                            "text_preview": f["text"][:80],
+                            "failed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        },
+                    )
                     failed_counts.pop(h, None)
                     synced_set.add(h)  # 标记为"放弃同步"避免无限重试
 
@@ -261,7 +269,7 @@ async def _sync_one_lanlan(
     state["failed_counts"] = failed_counts
     state["last_sweep_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     try:
-        _write_json_atomic(state_path, state)
+        await asyncio.to_thread(_write_json_atomic, state_path, state)
     except Exception as exc:  # noqa: BLE001
         logger.warning("facts_sync: write state %s failed: %s", state_path, exc)
 
