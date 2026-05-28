@@ -130,6 +130,7 @@ export default {
     noVersionAvailable: 'Нет доступных релизов',
     upgradeRollback: 'Не удалось обновить; выполнен откат к предыдущей версии',
     upgradeAlreadyAtTarget: 'Уже установлена целевая версия',
+    upgradeTargetNotGreater: 'Целевая версия не выше установленной',
     pluginNotInstalled: 'Плагин не установлен; обновление невозможно',
     lockWriteFailed: 'Не удалось записать запись установки'
   },

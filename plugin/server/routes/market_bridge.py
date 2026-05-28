@@ -967,6 +967,56 @@ def _market_token_is_expired(token_data: dict[str, Any]) -> bool:
         return True
 
 
+def _split_version(value: str) -> tuple[list[int], list[str]]:
+    cleaned = (value or "").lstrip("vV").split("+", 1)[0]
+    core_part, _, pre_part = cleaned.partition("-")
+    core = [int(seg) if seg.isdigit() else 0 for seg in core_part.split(".") if seg != ""]
+    pre = pre_part.split(".") if pre_part else []
+    return core, pre
+
+
+def _compare_version(a: str, b: str) -> int:
+    """Return -1/0/1 if ``a`` < / == / > ``b`` (mirrors frontend ``compareVersion``).
+
+    Implements semver §11.4 rules: numeric core compared segment-wise,
+    no-prerelease > with-prerelease, shorter prerelease prefix wins on
+    equal prefixes, numeric prerelease segments sort before alphabetic.
+    """
+
+    core_a, pre_a = _split_version(a)
+    core_b, pre_b = _split_version(b)
+    for index in range(max(len(core_a), len(core_b))):
+        left = core_a[index] if index < len(core_a) else 0
+        right = core_b[index] if index < len(core_b) else 0
+        if left != right:
+            return -1 if left < right else 1
+    if not pre_a and not pre_b:
+        return 0
+    if not pre_a:
+        return 1
+    if not pre_b:
+        return -1
+    for index in range(max(len(pre_a), len(pre_b))):
+        if index >= len(pre_a):
+            return -1
+        if index >= len(pre_b):
+            return 1
+        seg_a, seg_b = pre_a[index], pre_b[index]
+        a_num = seg_a.isdigit()
+        b_num = seg_b.isdigit()
+        if a_num and b_num:
+            na, nb = int(seg_a), int(seg_b)
+            if na != nb:
+                return -1 if na < nb else 1
+        elif a_num:
+            return -1
+        elif b_num:
+            return 1
+        elif seg_a != seg_b:
+            return -1 if seg_a < seg_b else 1
+    return 0
+
+
 def _unlink_if_exists(path: Path) -> None:
     try:
         path.unlink()
@@ -1377,17 +1427,34 @@ async def _do_upgrade(
         )
     installed_plugin_id = entry.plugin_id
 
-    # Step 2: version-equality short-circuit (skipped for reinstall).
+    # Step 2: version-ordering guard (skipped for reinstall).
+    #
+    # Upgrade requests must advance the version. Without comparing values the
+    # old equality check let a stable target downgrade an installed beta
+    # (e.g. installed=2.0.0-beta, target=1.9.0) through the backup/unpack
+    # path and recorded it as an upgrade. ``_compare_version`` follows the
+    # same semver §11.4 rules as the frontend ``compareVersion`` helper so
+    # the gate is consistent across both sides.
     current_version = ""
     if isinstance(entry.source_detail, SourceDetailMarket):
         current_version = entry.source_detail.version
-    if not allow_same_version and current_version == target_version:
-        raise _TaskError(
-            code="version_already_at_target",
-            message=(
-                f"plugin {installed_plugin_id!r} is already at version {target_version!r}"
-            ),
-        )
+    if not allow_same_version and current_version:
+        order = _compare_version(target_version, current_version)
+        if order == 0:
+            raise _TaskError(
+                code="version_already_at_target",
+                message=(
+                    f"plugin {installed_plugin_id!r} is already at version {target_version!r}"
+                ),
+            )
+        if order < 0:
+            raise _TaskError(
+                code="upgrade_target_not_greater",
+                message=(
+                    f"upgrade target {target_version!r} is not greater than "
+                    f"installed {current_version!r}"
+                ),
+            )
 
     plugin_dir = (USER_PLUGIN_CONFIG_ROOT / entry.directory_name).resolve()
     backup_dir = plugin_dir.with_name(

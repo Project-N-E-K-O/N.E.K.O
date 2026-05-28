@@ -130,6 +130,7 @@ export default {
     noVersionAvailable: '利用可能なリリースがありません',
     upgradeRollback: 'アップグレードに失敗。前のバージョンへロールバックしました',
     upgradeAlreadyAtTarget: '既に対象バージョンです',
+    upgradeTargetNotGreater: 'アップグレード対象バージョンがインストール済みバージョン以下です',
     pluginNotInstalled: 'プラグインがインストールされていないため、アップグレードできません',
     lockWriteFailed: 'インストール記録の書き込みに失敗しました'
   },

@@ -130,6 +130,7 @@ export default {
     noVersionAvailable: 'No hay versión disponible',
     upgradeRollback: 'Error al actualizar; se restauró la versión anterior',
     upgradeAlreadyAtTarget: 'Ya está en la versión objetivo',
+    upgradeTargetNotGreater: 'La versión objetivo no es superior a la instalada',
     pluginNotInstalled: 'El plugin no está instalado; no se puede actualizar',
     lockWriteFailed: 'Error al escribir el registro de instalación'
   },

@@ -384,6 +384,7 @@ function markInstallTaskFailed(
 function resolveInstallTaskErrorMessage(task: MarketInstallTask): string {
   const code = task.error_code || ''
   if (code === 'version_already_at_target') return t('market.upgradeAlreadyAtTarget')
+  if (code === 'upgrade_target_not_greater') return t('market.upgradeTargetNotGreater')
   if (code === 'plugin_not_installed_for_upgrade') return t('market.pluginNotInstalled')
   if (code === 'upgrade_rollback_completed') return t('market.upgradeRollback')
   if (code === 'lock_write_failed') return t('market.lockWriteFailed')

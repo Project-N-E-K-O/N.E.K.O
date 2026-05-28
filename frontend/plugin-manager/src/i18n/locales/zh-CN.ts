@@ -130,6 +130,7 @@ export default {
     noVersionAvailable: '暂无可用版本',
     upgradeRollback: '升级失败，已回滚到旧版本',
     upgradeAlreadyAtTarget: '当前已是目标版本',
+    upgradeTargetNotGreater: '升级目标版本不高于已装版本',
     pluginNotInstalled: '该插件未安装，无法升级',
     lockWriteFailed: '安装记录写入失败'
   },

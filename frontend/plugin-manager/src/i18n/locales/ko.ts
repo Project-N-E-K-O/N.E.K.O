@@ -130,6 +130,7 @@ export default {
     noVersionAvailable: '사용 가능한 릴리스가 없습니다',
     upgradeRollback: '업그레이드 실패; 이전 버전으로 롤백되었습니다',
     upgradeAlreadyAtTarget: '이미 대상 버전입니다',
+    upgradeTargetNotGreater: '업그레이드 대상 버전이 설치된 버전보다 높지 않습니다',
     pluginNotInstalled: '플러그인이 설치되지 않아 업그레이드할 수 없습니다',
     lockWriteFailed: '설치 기록 쓰기에 실패했습니다'
   },
