@@ -16,12 +16,12 @@ VOICE_CLONE_API_PROVIDERS_RESPONSE = {
 }
 
 
-def route_voice_clone_region_dependencies(page: Page, steam_language_payload: dict) -> None:
+def route_voice_clone_region_dependencies(page: Page, steam_language_payload: dict, steam_language_status: int = 200) -> None:
     page.add_init_script("localStorage.setItem('neko_tutorial_voice_clone', 'true');")
     page.route(
         "**/api/config/steam_language",
         lambda route: route.fulfill(
-            status=200,
+            status=steam_language_status,
             content_type="application/json",
             body=json.dumps(steam_language_payload),
         ),
@@ -136,3 +136,26 @@ def test_voice_clone_provider_dropdown_defaults_to_mainland_when_region_indeterm
         "(nodes) => nodes.map(node => node.dataset.value)"
     )
     assert values == ["cosyvoice", "minimax"]
+
+
+@pytest.mark.frontend
+def test_voice_clone_provider_dropdown_defaults_to_mainland_when_region_request_fails(mock_page: Page, running_server: str):
+    """区域请求失败时，克隆页默认隐藏受限服务商。"""
+    route_voice_clone_region_dependencies(
+        mock_page,
+        {"success": False, "error": "region unavailable"},
+        steam_language_status=503,
+    )
+
+    mock_page.goto(f"{running_server}/voice_clone")
+    mock_page.wait_for_load_state("domcontentloaded")
+    mock_page.wait_for_function(
+        """() => {
+            const select = document.querySelector('#voiceProvider');
+            if (!select) return false;
+            const visibleValues = Array.from(select.options)
+                .filter(option => !option.hidden && option.style.display !== 'none')
+                .map(option => option.value);
+            return visibleValues.join(',') === 'cosyvoice,minimax';
+        }"""
+    )

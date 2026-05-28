@@ -497,8 +497,8 @@ async function checkVoiceCloneMainlandChinaUser() {
             headers: { 'Content-Type': 'application/json' }
         });
     } catch (error) {
-        console.warn('声音克隆地区检测失败，允许国际服务商:', error);
-        return false;
+        console.warn('声音克隆地区检测失败，使用受限服务商策略:', error);
+        return true;
     }
 
     if (data && data.is_mainland_china === true) {
