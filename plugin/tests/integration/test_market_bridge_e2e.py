@@ -1211,6 +1211,103 @@ async def test_upgrade_lifecycle_uses_installed_plugin_id_not_market_id(
 
 
 @pytest.mark.asyncio
+async def test_upgrade_honors_recorded_directory_for_renamed_install(
+    bridge_e2e_env: dict[str, Any],
+) -> None:
+    plugin_id = "e2e_upgrade_renamed"
+    v1_zip, v1_payload_hash = _build_neko_plugin_zip(
+        plugin_id=plugin_id, version="1.0.0",
+    )
+    v2_zip, v2_payload_hash = _build_neko_plugin_zip(
+        plugin_id=plugin_id, version="2.0.0",
+    )
+
+    client: AsyncClient = bridge_e2e_env["client"]
+    token: str = bridge_e2e_env["token"]
+    user_root: Path = bridge_e2e_env["user_root"]
+    mgr: InstallSourceManager = bridge_e2e_env["manager"]
+
+    existing = user_root / plugin_id
+    existing.mkdir(parents=True)
+    (existing / "plugin.toml").write_text(
+        f'[plugin]\nid = "{plugin_id}"\nversion = "0.9.0"\n',
+        encoding="utf-8",
+    )
+
+    async def _wait_task(task_id: str) -> dict[str, Any]:
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            poll = await client.get(f"/market/tasks/{task_id}?token={token}")
+            body = poll.json()
+            if body["status"] in ("completed", "failed"):
+                return body
+            await asyncio.sleep(0.05)
+        raise AssertionError(f"task {task_id} did not finish")
+
+    with _serve_bytes(
+        filename=f"{plugin_id}-1.0.0.neko-plugin", content=v1_zip,
+    ) as package_url:
+        resp = await client.post(
+            f"/market/install?token={token}",
+            json={
+                "package_url": package_url,
+                "package_sha256": hashlib.sha256(v1_zip).hexdigest(),
+                "payload_hash": v1_payload_hash,
+                "plugin_id": plugin_id,
+                "version": "1.0.0",
+                "channel": "stable",
+                "mode": "install",
+                "on_conflict": "rename",
+                "expected_plugin_toml_id": plugin_id,
+            },
+        )
+        install_status = await _wait_task(resp.json()["task_id"])
+
+    assert install_status["status"] == "completed", install_status
+    renamed_dir = user_root / f"{plugin_id}_1"
+    assert renamed_dir.is_dir()
+
+    [v1_entry] = [
+        e for e in mgr.snapshot().entries
+        if e.directory_name == f"{plugin_id}_1" and not e.removed
+    ]
+    assert v1_entry.plugin_id == plugin_id
+
+    with _serve_bytes(
+        filename=f"{plugin_id}-2.0.0.neko-plugin", content=v2_zip,
+    ) as package_url:
+        resp = await client.post(
+            f"/market/install?token={token}",
+            json={
+                "package_url": package_url,
+                "package_sha256": hashlib.sha256(v2_zip).hexdigest(),
+                "payload_hash": v2_payload_hash,
+                "plugin_id": plugin_id,
+                "version": "2.0.0",
+                "channel": "stable",
+                "mode": "upgrade",
+                "on_conflict": "fail",
+                "expected_plugin_toml_id": plugin_id,
+            },
+        )
+        upgrade_status = await _wait_task(resp.json()["task_id"])
+
+    assert upgrade_status["status"] == "completed", upgrade_status
+    assert "0.9.0" in (existing / "plugin.toml").read_text(encoding="utf-8")
+    assert "2.0.0" in (renamed_dir / "plugin.toml").read_text(encoding="utf-8")
+
+    [v2_entry] = [
+        e for e in mgr.snapshot().entries
+        if e.plugin_id == plugin_id and not e.removed
+    ]
+    from plugin.server.application.install_source.models import SourceDetailMarket
+
+    assert v2_entry.directory_name == f"{plugin_id}_1"
+    assert isinstance(v2_entry.source_detail, SourceDetailMarket)
+    assert v2_entry.source_detail.version == "2.0.0"
+
+
+@pytest.mark.asyncio
 async def test_upgrade_rejects_plugin_identity_mismatch_and_rolls_back(
     bridge_e2e_env: dict[str, Any],
 ) -> None:

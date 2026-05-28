@@ -108,6 +108,7 @@ class PluginCliService:
         profiles_root: str | None = None,
         on_conflict: str = "rename",
         use_staging: bool = False,
+        forced_directory_name: str | None = None,
     ) -> dict[str, object]:
         return await asyncio.to_thread(
             self._install_sync,
@@ -116,6 +117,7 @@ class PluginCliService:
             profiles_root=profiles_root,
             on_conflict=on_conflict,
             use_staging=use_staging,
+            forced_directory_name=forced_directory_name,
         )
 
     async def analyze(
@@ -268,13 +270,22 @@ class PluginCliService:
             # Step 2 — install/unpack into the user plugin root.
             saved_path = str(saved["path"])
             install_mode = install_source_override.get("mode") or "install"
-            use_staging = install_mode == "install"
+            forced_directory_name = install_source_override.get("directory_name")
+            use_staging = install_mode == "install" or isinstance(
+                forced_directory_name,
+                str,
+            )
             unpack_result = await self.install(
                 package=saved_path,
                 plugins_root=None,
                 profiles_root=None,
                 on_conflict=on_conflict,
                 use_staging=use_staging,
+                forced_directory_name=(
+                    forced_directory_name
+                    if isinstance(forced_directory_name, str)
+                    else None
+                ),
             )
             unpacked_target_dirs = self._extract_unpack_target_dirs(unpack_result)
             unpacked_profile_dirs = self._extract_unpack_profile_dirs(unpack_result)
@@ -797,6 +808,7 @@ class PluginCliService:
         profiles_root: str | None,
         on_conflict: str,
         use_staging: bool = False,
+        forced_directory_name: str | None = None,
     ) -> dict[str, object]:
         try:
             plugins_root_path = (
@@ -816,7 +828,10 @@ class PluginCliService:
                     plugins_root=plugins_root_path,
                     profiles_root=profiles_root_path,
                     on_conflict=on_conflict,
+                    forced_directory_name=forced_directory_name,
                 )
+            elif forced_directory_name is not None:
+                raise ValueError("forced_directory_name requires use_staging=True")
             else:
                 result = install_package(
                     package_path,
@@ -835,6 +850,7 @@ class PluginCliService:
         plugins_root: Path,
         profiles_root: Path,
         on_conflict: str,
+        forced_directory_name: str | None = None,
     ) -> InstallResult:
         """Extract into a staging tree, then rename into place atomically."""
 
@@ -857,7 +873,8 @@ class PluginCliService:
 
             for item in staged.installed_plugins:
                 source_dir = Path(item.target_dir)
-                desired = plugins_root / item.target_plugin_id
+                desired_name = forced_directory_name or item.target_plugin_id
+                desired = plugins_root / desired_name
                 final_dir = installer.resolve_target_dir(
                     desired,
                     on_conflict=on_conflict,

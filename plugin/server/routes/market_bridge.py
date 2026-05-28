@@ -1468,6 +1468,7 @@ async def _do_upgrade(
             market_override = _build_market_override(
                 payload,
                 mode="reinstall" if allow_same_version else "upgrade",
+                directory_name=entry.directory_name,
             )
 
             try:
@@ -1541,6 +1542,7 @@ def _build_market_override(
     payload: MarketInstallRequest,
     *,
     mode: str,
+    directory_name: str | None = None,
 ) -> dict[str, Any]:
     """Construct the ``install_source_override`` dict for upload_and_install.
 
@@ -1550,7 +1552,7 @@ def _build_market_override(
     caller-provided value to win when present.
     """
 
-    return {
+    override = {
         "channel": "market",
         "mode": mode,
         "market_detail": {
@@ -1566,6 +1568,9 @@ def _build_market_override(
             "expected_plugin_toml_id": payload.expected_plugin_toml_id,
         },
     }
+    if directory_name:
+        override["directory_name"] = directory_name
+    return override
 
 
 def _verify_sha256_file(
