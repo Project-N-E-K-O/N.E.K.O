@@ -50,6 +50,229 @@ const MODE_ORDER: Array<{ id: StudyMode; labelKey: string; fallback: string }> =
   { id: 'interactive', labelKey: 'status.mode.interactive', fallback: 'Interactive' },
   { id: 'teaching', labelKey: 'status.mode.teaching', fallback: 'Teaching' },
 ];
+const KATEX_CSS_URL = '/plugin/study_companion/ui/katex.min.css';
+const KATEX_SCRIPT_URL = '/plugin/study_companion/ui/katex.min.js';
+const CURRENCY_START_PATTERN = /^\$(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?(?:[A-Z]{2,4}|%)?(?=$|[\s)\],.;!?-])/;
+let katexLoadPromise: Promise<void> | null = null;
+
+type MathTextPart = {
+  type: 'text' | 'math';
+  value: string;
+  display?: boolean;
+};
+
+function hasEscapedDelimiter(source: string, index: number) {
+  let slashes = 0;
+  for (let i = index - 1; i >= 0 && source[i] === '\\'; i -= 1) {
+    slashes += 1;
+  }
+  return slashes % 2 === 1;
+}
+
+function isLikelyCurrencyStart(source: string, index: number) {
+  return CURRENCY_START_PATTERN.test(source.slice(index));
+}
+
+function findMathDelimiter(source: string, start: number, delimiter: '$' | '$$') {
+  let index = start;
+  while (index < source.length) {
+    const next = source.indexOf(delimiter, index);
+    if (next === -1) {
+      return -1;
+    }
+    if (hasEscapedDelimiter(source, next)) {
+      index = next + delimiter.length;
+      continue;
+    }
+    if (delimiter === '$' && source[next + 1] === '$') {
+      index = next + 2;
+      continue;
+    }
+    return next;
+  }
+  return -1;
+}
+
+function splitMathText(value: string): MathTextPart[] {
+  const source = String(value || '');
+  const parts: MathTextPart[] = [];
+  let last = 0;
+  let index = 0;
+  while (index < source.length) {
+    if (source[index] !== '$' || hasEscapedDelimiter(source, index)) {
+      index += 1;
+      continue;
+    }
+
+    if (source[index + 1] === '$') {
+      const displayCloser = findMathDelimiter(source, index + 2, '$$');
+      if (displayCloser === -1) {
+        index += 2;
+        continue;
+      }
+      if (index > last) {
+        parts.push({ type: 'text', value: source.slice(last, index) });
+      }
+      parts.push({
+        type: 'math',
+        value: source.slice(index + 2, displayCloser).trim(),
+        display: true,
+      });
+      index = displayCloser + 2;
+      last = index;
+      continue;
+    }
+
+    if (isLikelyCurrencyStart(source, index)) {
+      index += 1;
+      continue;
+    }
+    const inlineCloser = findMathDelimiter(source, index + 1, '$');
+    if (inlineCloser === -1) {
+      index += 1;
+      continue;
+    }
+    if (index > last) {
+      parts.push({ type: 'text', value: source.slice(last, index) });
+    }
+    const mathValue = source.slice(index + 1, inlineCloser).trim();
+    if (mathValue) {
+      parts.push({ type: 'math', value: mathValue, display: false });
+    } else {
+      parts.push({ type: 'text', value: source.slice(index, inlineCloser + 1) });
+    }
+    index = inlineCloser + 1;
+    last = index;
+  }
+  if (last < source.length) {
+    parts.push({ type: 'text', value: source.slice(last) });
+  }
+  return parts.length ? parts : [{ type: 'text', value: source }];
+}
+
+function normalizeLatexForKatex(value: string) {
+  return String(value || '').replace(/</g, '\\lt ').replace(/>/g, '\\gt ');
+}
+
+function ensureHostedKatex() {
+  if ((window as any).katex && typeof (window as any).katex.render === 'function') {
+    return Promise.resolve();
+  }
+  if (katexLoadPromise) {
+    return katexLoadPromise;
+  }
+  katexLoadPromise = new Promise((resolve) => {
+    const resolveLoad = (script: HTMLScriptElement) => {
+      script.dataset.studyKatexLoaded = 'true';
+      resolve();
+    };
+    const resolveError = (script: HTMLScriptElement) => {
+      script.dataset.studyKatexFailed = 'true';
+      katexLoadPromise = null;
+      script.remove();
+      resolve();
+    };
+    if (!document.getElementById('study-companion-katex-css')) {
+      const link = document.createElement('link');
+      link.id = 'study-companion-katex-css';
+      link.rel = 'stylesheet';
+      link.href = KATEX_CSS_URL;
+      document.head.appendChild(link);
+    }
+    const existing = document.getElementById('study-companion-katex-script') as HTMLScriptElement | null;
+    if (existing) {
+      if (existing.dataset.studyKatexFailed === 'true') {
+        existing.remove();
+      } else {
+        existing.addEventListener('load', () => resolveLoad(existing), { once: true });
+        existing.addEventListener('error', () => resolveError(existing), { once: true });
+        return;
+      }
+    }
+    const script = document.createElement('script');
+    script.id = 'study-companion-katex-script';
+    script.src = KATEX_SCRIPT_URL;
+    script.async = true;
+    script.addEventListener('load', () => resolveLoad(script), { once: true });
+    script.addEventListener('error', () => resolveError(script), { once: true });
+    document.head.appendChild(script);
+  });
+  return katexLoadPromise;
+}
+
+function renderMathSpans(root: HTMLElement | null) {
+  const katex = (window as any).katex;
+  if (!root || !katex || typeof katex.render !== 'function') {
+    return;
+  }
+  root.querySelectorAll<HTMLElement>('[data-study-math]').forEach((node) => {
+    const tex = normalizeLatexForKatex(node.getAttribute('data-math') || '');
+    if (!tex) {
+      return;
+    }
+    try {
+      katex.render(tex, node, {
+        displayMode: node.getAttribute('data-display') === 'true',
+        throwOnError: false,
+        trust: false,
+      });
+    } catch (_error) {
+      // Keep the source text fallback already rendered in the span.
+    }
+  });
+}
+
+function MathReply({ text, label }: { text: string; label: string }) {
+  const containerRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    let active = true;
+    ensureHostedKatex().then(() => {
+      if (active) {
+        renderMathSpans(containerRef.current);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [text]);
+  const parts = splitMathText(text);
+  return (
+    <div
+      ref={containerRef}
+      className="study-panel__math-reply"
+      role="status"
+      aria-live="polite"
+      aria-label={label}
+      style={{
+        minHeight: '180px',
+        whiteSpace: 'pre-wrap',
+        overflowWrap: 'break-word',
+        border: '1px solid rgba(148, 163, 184, 0.36)',
+        borderRadius: '8px',
+        background: 'rgba(255, 255, 255, 0.84)',
+        padding: '12px',
+        lineHeight: '1.5',
+      }}
+    >
+      {parts.map((part, index) => {
+        if (part.type === 'math') {
+          const wrapper = part.display ? '$$' : '$';
+          return (
+            <span
+              key={`math-${index}`}
+              data-study-math="true"
+              data-display={part.display ? 'true' : 'false'}
+              data-math={part.value}
+            >
+              {wrapper}{part.value}{wrapper}
+            </span>
+          );
+        }
+        return <span key={`text-${index}`}>{part.value}</span>;
+      })}
+    </div>
+  );
+}
 
 function delay(ms: number, signal?: AbortSignal) {
   return new Promise<void>((resolve, reject) => {
@@ -146,6 +369,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const [reply, setReply] = useState('');
   const [busy, setBusy] = useState(false);
   const explainControllerRef = useRef<AbortController | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
   const currentMode = String(status.active_mode || status.mode || 'companion');
 
   function beginStudyRequest() {
@@ -436,6 +660,33 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     };
   }, []);
 
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel) {
+      return undefined;
+    }
+    const closeOrCancelOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') {
+        return;
+      }
+      const hasInFlightRequest = !!explainControllerRef.current;
+      if (!hasInFlightRequest) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      explainControllerRef.current?.abort();
+      explainControllerRef.current = null;
+      setBusy(false);
+      const activeElement = document.activeElement as HTMLElement | null;
+      activeElement?.blur?.();
+    };
+    panel.addEventListener('keydown', closeOrCancelOnEscape, true);
+    return () => {
+      panel.removeEventListener('keydown', closeOrCancelOnEscape, true);
+    };
+  }, []);
+
   const stateValue = status.status || 'unknown';
   const stateLabel = t(`status.state.${stateValue}`, stateValue);
   const explainLabel = busy ? t('ui.button.loading', 'Loading...') : t('ui.button.explain', 'Explain');
@@ -443,7 +694,12 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const evaluation = status.last_answer_evaluation;
 
   return (
-    <div className="study-panel">
+    <div
+      ref={panelRef}
+      className="study-panel"
+      role="region"
+      aria-label={t('ui.surface.study_panel', 'Study Panel')}
+    >
       <header className="study-panel__header">
         <div>
           <h1>{t('ui.title', 'Study Companion')}</h1>
@@ -522,7 +778,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         </button>
       </div>
       <div className="study-panel__reply-label">{t('ui.label.reply', 'Reply')}</div>
-      <pre>{reply}</pre>
+      <MathReply text={reply} label={t('ui.label.reply', 'Reply')} />
     </div>
   );
 }
