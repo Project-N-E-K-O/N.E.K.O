@@ -29,6 +29,13 @@ class _EmitDecision:
     screen_context_type: str = ""
 
 
+@dataclass(frozen=True)
+class _PreparedEmit:
+    decision: _EmitDecision
+    mark_respond: bool
+    message: dict[str, Any]
+
+
 VISIBILITY_MAP: dict[str, list[str]] = {
     "screen_context_changed": [],
     "answer_evaluated": ["chat"],
@@ -70,6 +77,9 @@ class StudyEventBus:
         self._transport = transport
         self._lock = asyncio.Lock()
         self._throttle: dict[str, float] = {}
+        self._pending_throttle: set[str] = set()
+        self._pending_screen_context_types: set[str] = set()
+        self._pending_respond_count = 0
         self._last_respond_at = -self._RESPOND_COOLDOWN
         self._last_screen_context_type = ""
         self._screen_buf: list[tuple[str, float]] = []
@@ -117,18 +127,59 @@ class StudyEventBus:
             text = self._format(event)
             visibility = VISIBILITY_MAP.get(event.name, [])
             priority = PRIORITY_MAP.get(event.name, 2)
-            result = self._ctx.push_message(
-                visibility=visibility,
-                ai_behavior=behavior,
-                priority=priority,
-                parts=[{"type": "text", "text": text}],
-                source="study_companion",
+            prepared = _PreparedEmit(
+                decision=decision,
+                mark_respond=mark_respond,
+                message={
+                    "visibility": visibility,
+                    "ai_behavior": behavior,
+                    "priority": priority,
+                    "parts": [{"type": "text", "text": text}],
+                    "source": "study_companion",
+                },
             )
+            self._reserve_emit(decision, mark_respond=mark_respond)
+
+        try:
+            result = self._ctx.push_message(**prepared.message)
             if inspect.isawaitable(result):
                 result = await result
             if isinstance(result, dict) and result.get("ok") is False:
                 raise RuntimeError("study event push_message returned ok=false")
+        except Exception:
+            async with self._lock:
+                self._release_emit_reservation(
+                    prepared.decision,
+                    mark_respond=prepared.mark_respond,
+                )
+            raise
+
+        async with self._lock:
+            self._release_emit_reservation(
+                prepared.decision,
+                mark_respond=prepared.mark_respond,
+            )
             self._commit_emit(decision, mark_respond=mark_respond)
+
+    def _reserve_emit(
+        self, decision: _EmitDecision, *, mark_respond: bool = False
+    ) -> None:
+        if decision.throttle_key:
+            self._pending_throttle.add(decision.throttle_key)
+        if decision.screen_context_type:
+            self._pending_screen_context_types.add(decision.screen_context_type)
+        if mark_respond:
+            self._pending_respond_count += 1
+
+    def _release_emit_reservation(
+        self, decision: _EmitDecision, *, mark_respond: bool = False
+    ) -> None:
+        if decision.throttle_key:
+            self._pending_throttle.discard(decision.throttle_key)
+        if decision.screen_context_type:
+            self._pending_screen_context_types.discard(decision.screen_context_type)
+        if mark_respond:
+            self._pending_respond_count = max(0, self._pending_respond_count - 1)
 
     def _emit_decision(self, event: StudyEvent, now: float) -> _EmitDecision:
         if event.name == "screen_context_changed":
@@ -186,6 +237,10 @@ class StudyEventBus:
             and previous_type == screen_type
         ):
             return _EmitDecision(allowed=False)
+        if screen_type in self._pending_screen_context_types:
+            return _EmitDecision(allowed=False)
+        if key in self._pending_throttle:
+            return _EmitDecision(allowed=False)
         last = self._throttle.get(key)
         if last is not None and now - last < 300.0:
             return _EmitDecision(allowed=False)
@@ -211,6 +266,8 @@ class StudyEventBus:
             return _EmitDecision(allowed=False)
 
         key = f"mastery:{topic}"
+        if key in self._pending_throttle:
+            return _EmitDecision(allowed=False)
         last = self._throttle.get(key)
         if last is not None and now - last < 600.0:
             return _EmitDecision(allowed=False)
@@ -218,6 +275,8 @@ class StudyEventBus:
 
     def _throttle_review_due(self, event: StudyEvent, now: float) -> _EmitDecision:
         key = "review_due"
+        if key in self._pending_throttle:
+            return _EmitDecision(allowed=False)
         last = self._throttle.get(key)
         if last is not None and now - last < 1800.0:
             return _EmitDecision(allowed=False)
@@ -231,6 +290,8 @@ class StudyEventBus:
             return behavior, False
         verdict = str(event.payload.get("verdict") or "").strip().lower()
         if verdict not in {"incorrect", "partial", "wrong", "dont_know"}:
+            return behavior, False
+        if self._pending_respond_count > 0:
             return behavior, False
         if now - self._last_respond_at < self._RESPOND_COOLDOWN:
             return behavior, False

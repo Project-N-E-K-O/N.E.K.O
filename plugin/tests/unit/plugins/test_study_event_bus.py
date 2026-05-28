@@ -150,6 +150,38 @@ async def test_emit_answer_respond_cooldown_starts_after_async_push(
 
 
 @pytest.mark.asyncio
+async def test_emit_releases_state_lock_before_async_push() -> None:
+    class _AsyncCtx(_Ctx):
+        def __init__(self) -> None:
+            super().__init__()
+            self.locked_during_push: bool | None = None
+
+        async def push_message(self, **kwargs):
+            self.locked_during_push = bus._lock.locked()
+            await asyncio.sleep(0)
+            self.messages.append(dict(kwargs))
+            return {"ok": True}
+
+    ctx = _AsyncCtx()
+    bus = StudyEventBus(plugin_ctx=ctx)
+
+    await bus.emit(
+        StudyEvent(
+            name="answer_evaluated",
+            payload={
+                "verdict": "incorrect",
+                "score": 0.1,
+                "question_summary": "Q",
+                "user_answer_summary": "A",
+            },
+        )
+    )
+
+    assert ctx.locked_during_push is False
+    assert bus.emit_count == 1
+
+
+@pytest.mark.asyncio
 async def test_emit_mastery_updated_ignores_small_changes() -> None:
     ctx = _Ctx()
     bus = StudyEventBus(plugin_ctx=ctx)
