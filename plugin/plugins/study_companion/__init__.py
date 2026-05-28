@@ -136,7 +136,12 @@ from .entry_tutor_question_entries import _TutorQuestionEntriesMixin
 from .entry_tutor_answer_entries import _TutorAnswerEntriesMixin
 from .entry_tutor_summary_entries import _TutorSummaryEntriesMixin
 from .entry_ocr_entries import _OcrEntriesMixin
-from .entry_neko_commands import _NekoCommandsMixin
+from .entry_neko_commands import (
+    _INTERRUPT_COMMANDS,
+    _NEKO_COMMAND_HANDLERS,
+    _NekoCommandsMixin,
+    _QUEUE_COMMANDS,
+)
 
 
 @neko_plugin
@@ -208,6 +213,8 @@ class StudyCompanionPlugin(
         self._command_queue: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue()
         self._command_worker_task: asyncio.Task[None] | None = None
         self._interruptible_task: asyncio.Task[None] | None = None
+        self._worker_crash_count = 0
+        self._worker_last_crash_time = 0.0
 
     @lifecycle(id="startup")
     async def startup(self, **_):
@@ -294,6 +301,7 @@ class StudyCompanionPlugin(
             self._start_review_due_task()
             if self._event_bus is not None:
                 await self._subscribe_neko_commands()
+                self._start_command_worker()
             status_payload = await asyncio.to_thread(self._status_payload)
             return Ok({"status": STATUS_READY, "result": status_payload})
         except asyncio.CancelledError:
@@ -307,6 +315,7 @@ class StudyCompanionPlugin(
             return Err(SdkError("failed to start study_companion"))
 
     async def _cleanup_after_failed_startup(self) -> None:
+        await self._cancel_command_worker()
         await self._cancel_review_due_task()
         agent = self._agent
         self._agent = None
@@ -345,6 +354,7 @@ class StudyCompanionPlugin(
 
     @lifecycle(id="shutdown")
     async def shutdown(self, **_):
+        await self._cancel_command_worker()
         await self._cancel_review_due_task()
         try:
             self.unregister_dynamic_entry("study_export_notes")
@@ -365,6 +375,146 @@ class StudyCompanionPlugin(
             return
         self._review_due_task = asyncio.create_task(self._run_review_due_loop())
         self._review_due_task.add_done_callback(self._on_review_due_task_done)
+
+    def _start_command_worker(self) -> None:
+        if self._event_bus is None:
+            return
+        if self._command_worker_task is not None and not self._command_worker_task.done():
+            return
+        if self._worker_crash_count >= 3:
+            now = time.monotonic()
+            if now - self._worker_last_crash_time < 10.0:
+                self.logger.error(
+                    "_command_worker auto-restart disabled after {} crashes",
+                    self._worker_crash_count,
+                )
+                return
+            self._worker_crash_count = 0
+        self._command_worker_task = asyncio.create_task(self._run_command_worker())
+        self._command_worker_task.add_done_callback(self._on_command_worker_done)
+
+    async def _cancel_command_worker(self) -> None:
+        worker = self._command_worker_task
+        self._command_worker_task = None
+        if worker is not None and not worker.done():
+            worker.cancel()
+            try:
+                await worker
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                self.logger.warning("study command worker cleanup failed: {}", exc)
+
+        while True:
+            try:
+                self._command_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+        task = self._interruptible_task
+        self._interruptible_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                self.logger.warning("study command task cleanup failed: {}", exc)
+
+    def _on_command_worker_done(self, task: asyncio.Task[None]) -> None:
+        if self._command_worker_task is task:
+            self._command_worker_task = None
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            self.logger.exception("_command_worker exited with error")
+            now = time.monotonic()
+            if now - self._worker_last_crash_time < 10.0:
+                self._worker_crash_count += 1
+            else:
+                self._worker_crash_count = 1
+            self._worker_last_crash_time = now
+            if self._worker_crash_count >= 3:
+                self.logger.error(
+                    "_command_worker crashed {} times in 10s; disabling auto-restart",
+                    self._worker_crash_count,
+                )
+
+    def _on_command_task_done(self, task: asyncio.Task[None]) -> None:
+        if self._interruptible_task is task:
+            self._interruptible_task = None
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            self.logger.exception("command task failed")
+
+    async def _run_command_worker(self) -> None:
+        while True:
+            try:
+                cmd, payload = await self._command_queue.get()
+            except asyncio.CancelledError:
+                while True:
+                    try:
+                        self._command_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                raise
+
+            try:
+                await self._execute_command(cmd, payload)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self.logger.exception("_command_worker failed to execute: {}", cmd)
+
+    async def _execute_command(self, cmd: str, payload: dict[str, Any]) -> None:
+        if cmd not in _QUEUE_COMMANDS or cmd in _INTERRUPT_COMMANDS:
+            return
+        handler_name = _NEKO_COMMAND_HANDLERS.get(cmd)
+        handler = getattr(self, handler_name or "", None)
+        if handler is None:
+            return
+
+        worker_task = asyncio.current_task()
+        while True:
+            current = self._interruptible_task
+            if current is None or current.done():
+                break
+            try:
+                await current
+                if worker_task is not None and worker_task.cancelling():
+                    raise asyncio.CancelledError
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
+
+        async def _run() -> None:
+            try:
+                await handler(payload)
+            except asyncio.CancelledError:
+                pass
+
+        task = asyncio.create_task(_run())
+        self._interruptible_task = task
+        task.add_done_callback(self._on_command_task_done)
+        try:
+            await task
+            if worker_task is not None and worker_task.cancelling():
+                raise asyncio.CancelledError
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
 
     async def _cancel_review_due_task(self) -> None:
         task = self._review_due_task

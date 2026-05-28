@@ -20,6 +20,21 @@ _NEKO_COMMAND_HANDLERS: dict[str, str] = {
     "change_mode": "_handle_neko_change_mode",
 }
 
+_INTERRUPT_COMMANDS: frozenset[str] = frozenset(
+    {
+        "explain_current",
+        "start_review",
+        "change_mode",
+    }
+)
+
+_QUEUE_COMMANDS: frozenset[str] = frozenset(
+    {
+        "quiz_me",
+        "show_progress",
+    }
+)
+
 
 def _fmt_explain_current_for_neko(*, text: str, explanation: str) -> str:
     return f"[伴学·概念解释]\n原文: {text}\n\n{explanation}"
@@ -124,13 +139,30 @@ class _NekoCommandsMixin:
             self.logger.error("_on_neko_command handler not found: {}", handler_name)
             return Err(SdkError(f"handler not found: {handler_name}"))
 
-        try:
-            await handler(payload)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            self.logger.exception("_on_neko_command handler failed: {}", cmd)
-            return Err(SdkError(f"handler failed: {cmd}: {exc}"))
+        if cmd in _INTERRUPT_COMMANDS:
+            current = self._interruptible_task
+            self._interruptible_task = None
+            if current is not None and not current.done():
+                current.cancel()
+
+            async def _run_interruptible() -> None:
+                try:
+                    await handler(payload)
+                except asyncio.CancelledError:
+                    pass
+
+            self._interruptible_task = asyncio.create_task(_run_interruptible())
+            self._interruptible_task.add_done_callback(self._on_command_task_done)
+            return Ok(None)
+
+        if cmd not in _QUEUE_COMMANDS:
+            self.logger.warning("_on_neko_command unclassified command: {}", cmd)
+            return Err(SdkError(f"unclassified command: {cmd}"))
+
+        if self._command_worker_task is None or self._command_worker_task.done():
+            self.logger.warning("_on_neko_command: worker not running, restarting")
+            self._start_command_worker()
+        await self._command_queue.put((cmd, payload))
         return Ok(None)
 
     async def _handle_neko_explain_current(self, payload: dict[str, Any]) -> None:
@@ -441,4 +473,9 @@ class _NekoCommandsMixin:
             )
 
 
-__all__ = ["_NekoCommandsMixin"]
+__all__ = [
+    "_INTERRUPT_COMMANDS",
+    "_NEKO_COMMAND_HANDLERS",
+    "_NekoCommandsMixin",
+    "_QUEUE_COMMANDS",
+]
