@@ -62,6 +62,8 @@ export default {
     notConfigured: '插件市场未配置',
     configHint: '请在环境变量中设置 NEKO_MARKET_URL',
     noResults: '没有找到插件',
+    loadFailed: '插件市场加载失败，请稍后重试',
+    retry: '重试',
     install: '安装',
     installed: '已安装',
     installing: '安装中...',

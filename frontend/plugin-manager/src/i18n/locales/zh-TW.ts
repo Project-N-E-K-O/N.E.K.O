@@ -62,6 +62,8 @@ export default {
     notConfigured: '外掛市集未設定',
     configHint: '請在環境變數中設定 NEKO_MARKET_URL',
     noResults: '找不到外掛',
+    loadFailed: '外掛市集載入失敗，請稍後再試',
+    retry: '重試',
     install: '安裝',
     installed: '已安裝',
     installing: '安裝中...',

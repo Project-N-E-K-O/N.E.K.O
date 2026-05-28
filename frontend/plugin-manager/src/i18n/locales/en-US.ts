@@ -62,6 +62,8 @@ export default {
     notConfigured: 'Plugin market not configured',
     configHint: 'Set NEKO_MARKET_URL environment variable',
     noResults: 'No plugins found',
+    loadFailed: 'Failed to load the plugin market. Please try again.',
+    retry: 'Retry',
     install: 'Install',
     installed: 'Installed',
     installing: 'Installing...',

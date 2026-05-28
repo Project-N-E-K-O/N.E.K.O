@@ -62,6 +62,8 @@ export default {
     notConfigured: 'Маркет не настроен',
     configHint: 'Установите переменную окружения NEKO_MARKET_URL',
     noResults: 'Плагины не найдены',
+    loadFailed: 'Не удалось загрузить маркет плагинов. Повторите попытку.',
+    retry: 'Повторить',
     install: 'Установить',
     installed: 'Установлено',
     installing: 'Установка...',

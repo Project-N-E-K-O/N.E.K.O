@@ -124,6 +124,15 @@
       />
 
       <EmptyState
+        v-else-if="lastLoadFailed && plugins.length === 0"
+        :description="t('market.loadFailed')"
+      >
+        <el-button type="primary" :loading="loading" @click="loadPlugins">
+          {{ t('market.retry') }}
+        </el-button>
+      </EmptyState>
+
+      <EmptyState
         v-else-if="filteredItems.length === 0"
         :description="t('market.noResults')"
       />
