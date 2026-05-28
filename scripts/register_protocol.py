@@ -49,6 +49,19 @@ def _desktop_entry_value_escape(value: str) -> str:
     )
 
 
+def _windows_cmd_quote(value: str) -> str:
+    """Quote a value for a Windows cmd.exe command line."""
+
+    escaped = str(value).replace('"', r'\"')
+    return f'"{escaped}"'
+
+
+def _posix_shell_quote(value: str) -> str:
+    """Quote a value for the small macOS shell launcher."""
+
+    return "'" + str(value).replace("'", "'\"'\"'") + "'"
+
+
 def register() -> bool:
     """注册 neko:// 协议。"""
     system = platform.system()
@@ -96,7 +109,11 @@ def _register_windows() -> bool:
             winreg.SetValueEx(key, "", 0, winreg.REG_SZ, icon_path)
 
         # 创建 shell\open\command
-        cmd = f'"{PYTHON_EXE}" -m {HANDLER_MODULE} "%1"'
+        cmd = (
+            f"cmd.exe /d /c cd /d {_windows_cmd_quote(str(PROJECT_ROOT))} "
+            f"&& set PYTHONPATH={_windows_cmd_quote(str(PROJECT_ROOT))};%PYTHONPATH% "
+            f"&& {_windows_cmd_quote(PYTHON_EXE)} -m {HANDLER_MODULE} \"%1\""
+        )
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, f"{key_path}\\shell\\open\\command") as key:
             winreg.SetValueEx(key, "", 0, winreg.REG_SZ, cmd)
 
@@ -176,8 +193,12 @@ def _register_macos() -> bool:
     (contents / "Info.plist").write_text(plist_content)
 
     # 可执行脚本
+    quoted_project_root = _posix_shell_quote(str(PROJECT_ROOT))
+    quoted_python_exe = _posix_shell_quote(PYTHON_EXE)
     handler_script = f"""#!/bin/bash
-"{PYTHON_EXE}" -m {HANDLER_MODULE} "$@"
+cd {quoted_project_root} || exit 1
+export PYTHONPATH={quoted_project_root}${{PYTHONPATH:+:$PYTHONPATH}}
+exec {quoted_python_exe} -m {HANDLER_MODULE} "$@"
 """
     handler_path = macos_dir / "handler"
     handler_path.write_text(handler_script)
