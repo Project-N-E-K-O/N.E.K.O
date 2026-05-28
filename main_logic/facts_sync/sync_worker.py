@@ -30,9 +30,18 @@ logger = logging.getLogger("neko.facts_sync")
 # ---- tunables ----
 SYNC_INTERVAL_SEC = 5 * 60  # 5 min
 BATCH_SIZE = 50
-MIN_IMPORTANCE = 0.5  # 客户端先过一遍；服务端再过 0.3
+# NEKO 端 importance 用 0-10 int 评分（memory/facts.py safe_importance default=5）；
+# Servers schema 限 [0,1] float。这里阈值按 NEKO scale 走 5（中等以上），
+# 推送前在 _select_unsynced_facts 里归一化到 [0,1]。
+MIN_IMPORTANCE = 5.0  # NEKO 0-10 scale；服务端再过 importance >= 0.3（归一化后）
 MAX_FAILED_ATTEMPTS = 5
 HTTP_TIMEOUT_SEC = 15.0
+
+# ---- M2-i fix: bootstrap register with Servers before pushing facts ----
+# Servers 端 X-Client-Id 鉴权要求 client 已 register 过；否则 401。
+# 这里在 sweep 开头幂等地注册一次，缓存成功状态避免每轮重复。
+_client_registered: dict[str, bool] = {}
+_register_lock = asyncio.Lock()
 
 
 def _enabled() -> bool:
@@ -106,9 +115,15 @@ def _select_unsynced_facts(
             continue
         if fact.get("private") is True:
             continue
-        importance = float(fact.get("importance") or 0.0)
-        if importance < MIN_IMPORTANCE:
+        importance_raw = float(fact.get("importance") or 0.0)
+        if importance_raw < MIN_IMPORTANCE:
             continue
+        # NEKO 0-10 → Servers 0-1 归一化；对已经在 [0,1] 范围的值无影响。
+        # 单调，不破坏排序；clamp 到 [0,1] 应对偶发越界值。
+        if importance_raw > 1.0:
+            importance = min(importance_raw / 10.0, 1.0)
+        else:
+            importance = max(0.0, importance_raw)
         fact_hash = fact.get("hash") or fact.get("fact_hash")
         if not isinstance(fact_hash, str) or len(fact_hash) < 8:
             continue
@@ -124,6 +139,36 @@ def _select_unsynced_facts(
             "redacted": bool(fact.get("redacted", False)),
         })
     return out
+
+
+async def _ensure_client_registered(base_url: str, client_id: str) -> bool:
+    """幂等地把当前 client_id 注册到 Servers。成功后缓存避免重复 register。
+
+    M2-i 漏点修复：worker 第一次 sweep 前必须 POST /api/clients/register，
+    否则 X-Client-Id 在 Servers clients 表查不到，所有 facts 推送都 401。
+    """
+    cache_key = f"{base_url}|{client_id}"
+    if _client_registered.get(cache_key):
+        return True
+    async with _register_lock:
+        if _client_registered.get(cache_key):  # double-check inside lock
+            return True
+        url = f"{base_url}/api/clients/register"
+        try:
+            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_SEC) as client:
+                r = await client.post(url, json={"client_id": client_id})
+        except (httpx.HTTPError, OSError) as exc:
+            logger.warning("facts_sync: client register HTTP failed: %s", exc)
+            return False
+        if r.status_code == 200:
+            _client_registered[cache_key] = True
+            logger.info("facts_sync: client %s… registered with Servers", client_id[:8])
+            return True
+        logger.warning(
+            "facts_sync: client register %s returned %s: %s",
+            url, r.status_code, r.text[:200],
+        )
+        return False
 
 
 async def _post_facts_batch(
@@ -228,6 +273,11 @@ async def _sweep_once() -> None:
     client_id = _get_client_id()
     if not client_id:
         logger.warning("facts_sync: no client_id available, skipping sweep")
+        return
+
+    # M2-i fix: bootstrap register before pushing；失败则跳过本轮，下次再试。
+    if not await _ensure_client_registered(base_url, client_id):
+        logger.warning("facts_sync: client not registered with Servers; skipping sweep")
         return
 
     try:
