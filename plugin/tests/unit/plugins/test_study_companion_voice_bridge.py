@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import threading
+import asyncio
 
 import pytest
 
@@ -15,7 +15,7 @@ pytestmark = pytest.mark.unit
 
 def _plugin_with_voice_state(*, screen_text: str) -> StudyCompanionPlugin:
     plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
-    plugin._lock = threading.RLock()
+    plugin._lock = asyncio.Lock()
     plugin._voice_filter = VoiceFilter(names=["Yui"])
     state = build_initial_state()
     state.status = STATUS_READY

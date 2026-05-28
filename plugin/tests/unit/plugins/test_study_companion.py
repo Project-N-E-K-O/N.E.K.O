@@ -1883,7 +1883,7 @@ async def test_study_ocr_snapshot_preserves_last_text_when_capture_fails(
     plugin._agent = _FakeTutorAgent()
 
     try:
-        with plugin._lock:
+        async with plugin._lock:
             plugin._state.last_ocr_text = "photosynthesis"
             plugin._state.last_ocr_at = "2026-05-10T00:00:00Z"
         plugin._ocr_pipeline = _FakeStudyOcrPipeline(
@@ -1900,7 +1900,7 @@ async def test_study_ocr_snapshot_preserves_last_text_when_capture_fails(
         assert snapshot_result.value["status"] == "capture_failed"
         assert snapshot_result.value["text"] == ""
 
-        with plugin._lock:
+        async with plugin._lock:
             assert plugin._state.last_ocr_text == "photosynthesis"
             assert plugin._state.last_ocr_at == "2026-05-10T00:00:00Z"
 
@@ -1952,7 +1952,7 @@ async def test_study_ocr_snapshot_feeds_supervision_activity() -> None:
         )
     )
     plugin._supervision = supervision
-    plugin._lock = threading.RLock()
+    plugin._lock = asyncio.Lock()
     plugin._state = build_initial_state()
     plugin._persist_state = _persist_state
     plugin._update_screen_classification = lambda text, update_empty=False: {
@@ -2006,7 +2006,7 @@ async def test_study_explain_text_detects_mode_intent_and_continues_when_content
         assert "mode_switch" not in explain_only.value
         assert explain_only.value["reply"] == "explained[teaching]: 光合作用"
 
-        with plugin._lock:
+        async with plugin._lock:
             plugin._state.last_ocr_text = "细胞呼吸"
             plugin._state.last_ocr_at = "2026-05-12T00:00:00Z"
         explain_latest_ocr = await plugin.study_explain_text("解释一下")
@@ -2021,7 +2021,7 @@ async def test_study_explain_text_detects_mode_intent_and_continues_when_content
         assert plugin._agent.inputs[-1][1]["mode_switch"] is False
         assert "screen_classification" in plugin._agent.inputs[-1][1]
 
-        with plugin._lock:
+        async with plugin._lock:
             plugin._state.active_mode = MODE_COMPANION
             plugin._state.mode_started_at = 0.0
             plugin._state.mode_lock_until = 0.0
@@ -2092,7 +2092,7 @@ async def test_study_explain_text_explain_intent_without_content_keeps_empty_inp
     assert isinstance(result, Ok)
 
     try:
-        with plugin._lock:
+        async with plugin._lock:
             plugin._state.last_ocr_text = ""
         explain_empty = await plugin.study_explain_text("explain")
         assert isinstance(explain_empty, Ok)
@@ -2124,7 +2124,7 @@ async def test_study_explain_text_continues_when_mode_switch_is_locked(
 
     try:
         lock_until = time.time() + 300.0
-        with plugin._lock:
+        async with plugin._lock:
             plugin._state.active_mode = MODE_COMPANION
             plugin._state.mode_started_at = 0.0
             plugin._state.mode_lock_until = lock_until
@@ -2226,7 +2226,7 @@ async def test_study_evaluate_answer_does_not_reuse_old_expected_answer_for_cust
     plugin._agent = fake_agent
 
     try:
-        with plugin._lock:
+        async with plugin._lock:
             plugin._state.current_question = {
                 "question": "What process converts light to chemical energy?",
                 "answer": "Photosynthesis",
@@ -2318,7 +2318,7 @@ async def test_study_evaluate_answer_custom_question_does_not_reuse_old_topic(
             topic_id="photosynthesis_topic", name="Photosynthesis"
         )
         plugin._store.ensure_topic(topic_id="cell_nucleus", name="Cell nucleus")
-        with plugin._lock:
+        async with plugin._lock:
             plugin._state.current_question = {
                 "question": "What process converts light to chemical energy?",
                 "answer": "Photosynthesis",
@@ -2414,7 +2414,7 @@ async def test_study_evaluate_answer_persists_knowledge_tracking(
     plugin._agent = _TrackingTutorAgent()
 
     try:
-        with plugin._lock:
+        async with plugin._lock:
             plugin._state.current_question = {
                 "question": "二次函数 y=a(x-h)^2+k 的顶点是什么？",
                 "answer": "(h,k)",
@@ -3783,7 +3783,7 @@ async def test_session_summarized_falls_back_to_answer_count(
     result = await plugin.startup()
     try:
         assert isinstance(result, Ok)
-        with plugin._lock:
+        async with plugin._lock:
             plugin._state.session_summary_seed = {
                 "answer_count": 3,
                 "question_count": 5,
