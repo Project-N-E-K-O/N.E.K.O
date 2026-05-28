@@ -57,8 +57,7 @@ class MemoryHabitBridge:
         self.ensure_tables()
 
     def ensure_tables(self) -> None:
-        with self._store._lock:  # noqa: SLF001 - plugin-local schema extension.
-            conn = self._store._require_conn()
+        with self._store.transaction() as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS memory_habit_progress (
@@ -78,7 +77,6 @@ class MemoryHabitBridge:
                 ON memory_habit_progress(deck_id, applied_at)
                 """
             )
-            conn.commit()
 
     def status(self) -> dict[str, Any]:
         return {
@@ -271,8 +269,7 @@ class MemoryHabitBridge:
         target_date = _date_key(date)
         now = _now_iso()
         applied_ids: list[str] = []
-        with self._store._lock:  # noqa: SLF001 - single DB transaction.
-            conn = self._store._require_conn()
+        with self._store.transaction() as conn:
             rows = conn.execute(
                 """
                 SELECT *
@@ -285,51 +282,54 @@ class MemoryHabitBridge:
                 """,
                 (target_date, str(deck_id)),
             ).fetchall()
-            with conn:
-                for row in rows:
-                    unit = str(row["unit"] or "").strip().lower()
-                    delta = float(unit_deltas.get(unit, 0.0))
-                    if delta <= 0:
-                        continue
-                    goal_id = str(row["id"])
-                    cursor = conn.execute(
-                        """
-                        INSERT OR IGNORE INTO memory_habit_progress (
-                            source_type, source_id, goal_id, deck_id, applied_at
-                        )
-                        VALUES (?, ?, ?, ?, ?)
-                        """,
-                        (source_type, source_id, goal_id, str(deck_id), now),
+            for row in rows:
+                unit = str(row["unit"] or "").strip().lower()
+                delta = float(unit_deltas.get(unit, 0.0))
+                if delta <= 0:
+                    continue
+                goal_id = str(row["id"])
+                cursor = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO memory_habit_progress (
+                        source_type, source_id, goal_id, deck_id, applied_at
                     )
-                    if cursor.rowcount <= 0:
-                        continue
-                    target_amount = safe_float(row["target_amount"], 0.0)
-                    progress = safe_float(row["progress_amount"], 0.0) + delta
-                    status = str(row["status"] or "active")
-                    if status == "active" and target_amount > 0 and progress >= target_amount:
-                        status = "completed"
-                    conn.execute(
-                        """
-                        UPDATE daily_goals
-                        SET progress_amount = ?, status = ?, updated_at = ?
-                        WHERE id = ?
-                        """,
-                        (progress, status, now, goal_id),
-                    )
-                    applied_ids.append(goal_id)
-                if applied_ids:
-                    conn.execute(
-                        """
-                        INSERT INTO checkins (id, date, status, source, note, created_at)
-                        VALUES (?, ?, 'checked_in', 'session_derived', ?, ?)
-                        """,
-                        (
-                            str(uuid.uuid4()),
-                            target_date,
-                            f"memory:{source_type}:{source_id}",
-                            now,
-                        ),
-                    )
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (source_type, source_id, goal_id, str(deck_id), now),
+                )
+                if cursor.rowcount <= 0:
+                    continue
+                target_amount = safe_float(row["target_amount"], 0.0)
+                progress = safe_float(row["progress_amount"], 0.0) + delta
+                status = str(row["status"] or "active")
+                if (
+                    status == "active"
+                    and target_amount > 0
+                    and progress >= target_amount
+                ):
+                    status = "completed"
+                conn.execute(
+                    """
+                    UPDATE daily_goals
+                    SET progress_amount = ?, status = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (progress, status, now, goal_id),
+                )
+                applied_ids.append(goal_id)
+            if applied_ids:
+                conn.execute(
+                    """
+                    INSERT INTO checkins (id, date, status, source, note, created_at)
+                    VALUES (?, ?, 'checked_in', 'session_derived', ?, ?)
+                    """,
+                    (
+                        str(uuid.uuid4()),
+                        target_date,
+                        f"memory:{source_type}:{source_id}",
+                        now,
+                    ),
+                )
         return {
             "applied": len(applied_ids),
             "goal_ids": applied_ids,
@@ -342,11 +342,9 @@ class MemoryHabitBridge:
 
     def _review_rows(self, date: str) -> list[Any]:
         start_utc, end_utc = _date_utc_bounds(date, self._checkin_timezone)
-        with self._store._lock:  # noqa: SLF001
-            return (
-                self._store._require_conn()
-                .execute(
-                    """
+        with self._store.transaction() as conn:
+            return conn.execute(
+                """
                     SELECT mi.deck_id,
                            d.name AS deck_name,
                            COUNT(rr.id) AS reviewed_items,
@@ -358,18 +356,14 @@ class MemoryHabitBridge:
                       AND datetime(rr.reviewed_at) < ?
                     GROUP BY mi.deck_id, d.name
                     """,
-                    (start_utc, end_utc),
-                )
-                .fetchall()
-            )
+                (start_utc, end_utc),
+            ).fetchall()
 
     def _recitation_rows(self, date: str) -> list[Any]:
         start_utc, end_utc = _date_utc_bounds(date, self._checkin_timezone)
-        with self._store._lock:  # noqa: SLF001
-            return (
-                self._store._require_conn()
-                .execute(
-                    """
+        with self._store.transaction() as conn:
+            return conn.execute(
+                """
                     SELECT mi.deck_id,
                            d.name AS deck_name,
                            COUNT(ra.id) AS recitation_attempts
@@ -380,17 +374,13 @@ class MemoryHabitBridge:
                       AND datetime(ra.reviewed_at) < ?
                     GROUP BY mi.deck_id, d.name
                     """,
-                    (start_utc, end_utc),
-                )
-                .fetchall()
-            )
+                (start_utc, end_utc),
+            ).fetchall()
 
     def _focus_rows(self, date: str) -> list[Any]:
-        with self._store._lock:  # noqa: SLF001
-            return (
-                self._store._require_conn()
-                .execute(
-                    """
+        with self._store.transaction() as conn:
+            return conn.execute(
+                """
                     SELECT dg.target_id AS deck_id,
                            COALESCE(d.name, dg.subject, dg.target_id) AS deck_name,
                            COALESCE(SUM(fs.actual_minutes), 0) AS focus_minutes
@@ -403,17 +393,13 @@ class MemoryHabitBridge:
                       AND dg.target_type = 'deck'
                     GROUP BY dg.target_id, d.name, dg.subject
                     """,
-                    (date,),
-                )
-                .fetchall()
-            )
+                (date,),
+            ).fetchall()
 
     def _goal_rows(self, date: str) -> list[Any]:
-        with self._store._lock:  # noqa: SLF001
-            return (
-                self._store._require_conn()
-                .execute(
-                    """
+        with self._store.transaction() as conn:
+            return conn.execute(
+                """
                     SELECT dg.target_id AS deck_id,
                            COALESCE(d.name, dg.subject, dg.target_id) AS deck_name
                     FROM daily_goals dg
@@ -423,18 +409,16 @@ class MemoryHabitBridge:
                       AND dg.status != 'cancelled'
                     GROUP BY dg.target_id, d.name, dg.subject
                     """,
-                    (date,),
-                )
-                .fetchall()
-            )
+                (date,),
+            ).fetchall()
 
     def _due_review_counts(self, *, date: str) -> dict[str, dict[str, Any]]:
         _, end_utc = _date_utc_bounds(date, self._checkin_timezone)
         target_now = datetime.strptime(end_utc, "%Y-%m-%d %H:%M:%S").replace(
             tzinfo=timezone.utc
         )
-        with self._store._lock:  # noqa: SLF001
-            rows = active_item_card_rows(self._store._require_conn())
+        with self._store.transaction() as conn:
+            rows = active_item_card_rows(conn)
             deck_cards: dict[str, list[dict[str, Any]]] = {}
             deck_names: dict[str, str] = {}
             for row in rows:
@@ -442,7 +426,7 @@ class MemoryHabitBridge:
                 if not deck_id:
                     continue
                 deck_cards.setdefault(deck_id, []).append(
-                    self._store._json_loads(row["card_data"], {})  # noqa: SLF001
+                    self._store.json_loads(row["card_data"], {})
                 )
                 deck_names[deck_id] = str(row["deck_name"] or deck_id)
         counts: dict[str, dict[str, Any]] = {}

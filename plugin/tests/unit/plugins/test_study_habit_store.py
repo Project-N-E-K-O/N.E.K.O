@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
 from pathlib import Path
+
+import pytest
 
 from plugin.plugins.study_companion.checkin_manager import CheckinManager
 from plugin.plugins.study_companion.memory_deck_store import MemoryDeckStore
@@ -19,6 +22,98 @@ def _study_store(tmp_path: Path) -> StudyStore:
     store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
     store.open()
     return store
+
+
+def test_store_transaction_rolls_back_and_json_loads_is_public(
+    tmp_path: Path,
+) -> None:
+    store = _study_store(tmp_path)
+    try:
+        with pytest.raises(RuntimeError):
+            with store.transaction() as conn:
+                conn.execute(
+                    "INSERT INTO kv (key, value, updated_at) VALUES (?, ?, ?)",
+                    ("rollback-key", '{"private": true}', 0.0),
+                )
+                raise RuntimeError("rollback")
+
+        with store.transaction() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM kv WHERE key = ?", ("rollback-key",)
+            ).fetchone()
+
+        assert row is None
+        assert store.json_loads("{bad json", {"fallback": True}) == {"fallback": True}
+    finally:
+        store.close()
+
+
+def test_store_purge_all_clears_user_data_tables(tmp_path: Path) -> None:
+    store = _study_store(tmp_path)
+    try:
+        habits = StudyHabitStore(store)
+        memory = MemoryDeckStore(store)
+        bridge = MemoryHabitBridge(store=store, memory=memory, habits=habits)
+
+        with store.transaction() as conn:
+            conn.execute(
+                "INSERT INTO kv (key, value, updated_at) VALUES (?, ?, ?)",
+                ("custom-private", '{"value": 1}', 0.0),
+            )
+        goal = habits.create_goal(
+            date="2026-05-24",
+            target_type="custom",
+            subject="private",
+            target_amount=1,
+            unit="task",
+        )
+        focus = habits.create_focus_session(
+            goal_id=goal["id"],
+            mode="focus",
+            planned_minutes=25,
+            started_at="2026-05-24T09:00:00Z",
+        )
+        habits.finish_focus_session(
+            focus["id"],
+            ended_at="2026-05-24T09:25:00Z",
+            actual_minutes=25,
+            status="completed",
+        )
+        habits.record_checkin(date="2026-05-24")
+        deck = memory.create_deck(name="Private Deck", deck_type="word")
+        word = memory.add_word(deck_id=deck["id"], word="secret", meaning="private")[
+            "item"
+        ]
+        bridge.create_deck_goal(
+            date="2026-05-24",
+            deck_id=deck["id"],
+            target_amount=1,
+            unit="cards",
+        )
+        reviewed = memory.review_item(item_id=word["id"], rating="good")
+        bridge.apply_review_progress(reviewed, date="2026-05-24")
+
+        deleted = store.purge_all()
+
+        assert deleted["kv"] >= 1
+        assert deleted["daily_goals"] >= 1
+        assert deleted["memory_habit_progress"] >= 1
+        with store.transaction() as conn:
+            for table in (
+                "kv",
+                "daily_goals",
+                "checkins",
+                "focus_sessions",
+                "decks",
+                "memory_items",
+                "memory_fsrs_cards",
+                "review_records",
+                "memory_habit_progress",
+            ):
+                count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                assert count == 0, table
+    finally:
+        store.close()
 
 
 def test_habit_store_creates_goals_and_cascades_focus_sessions(tmp_path: Path) -> None:
@@ -229,6 +324,15 @@ def test_memory_habit_bridge_summarizes_recitation_and_deck_focus(
             item_id=imported["items"][0]["id"],
             user_input_text="First sentence.",
         )
+        with store.transaction() as conn:
+            conn.execute(
+                "UPDATE review_records SET reviewed_at = ? WHERE id = ?",
+                ("2026-05-24 01:00:00", recited["review"]["review_record"]["id"]),
+            )
+            conn.execute(
+                "UPDATE recitation_attempts SET reviewed_at = ? WHERE id = ?",
+                ("2026-05-24 01:00:00", recited["attempt"]["id"]),
+            )
         progress = bridge.apply_recitation_progress(recited, date="2026-05-24")
         summary = bridge.memory_summary(date="2026-05-24")
         attempt_goal_updated = habits.get_goal(attempt_goal["goal"]["id"])
@@ -309,13 +413,12 @@ def test_memory_habit_bridge_summary_uses_configured_local_day(
         )
         reviewed = memory.review_item(item_id=word["id"], rating="good")
         review_id = int(reviewed["review_record"]["id"])
-        with store._lock:  # noqa: SLF001 - test fixture controls row timestamp.
-            conn = store._require_conn()
+        with store.transaction() as conn:
             card_row = conn.execute(
                 "SELECT card_data FROM memory_fsrs_cards WHERE item_id = ?",
                 (word["id"],),
             ).fetchone()
-            card = store._json_loads(card_row["card_data"], {})  # noqa: SLF001
+            card = store.json_loads(card_row["card_data"], {})
             card["due"] = "2026-05-24T08:00:00Z"
             card["created_at"] = "2026-05-24T08:00:00Z"
             conn.execute(
@@ -329,12 +432,11 @@ def test_memory_habit_bridge_summary_uses_configured_local_day(
                 WHERE item_id = ?
                 """,
                 (
-                    store._json_dumps(card),  # noqa: SLF001
+                    json.dumps(card, ensure_ascii=False, sort_keys=True),
                     "2026-05-24T08:00:00Z",
                     word["id"],
                 ),
             )
-            conn.commit()
 
         summary = bridge.memory_summary(date="2026-05-24")
         previous = bridge.memory_summary(date="2026-05-23")
@@ -372,8 +474,7 @@ def test_memory_habit_bridge_summary_includes_due_only_decks(tmp_path: Path) -> 
             meaning="not ready",
         )["item"]
 
-        with store._lock:  # noqa: SLF001 - test fixture controls FSRS due dates.
-            conn = store._require_conn()
+        with store.transaction() as conn:
             for item_id, due_at in (
                 (due_word["id"], "2026-05-24T08:00:00Z"),
                 (future_word["id"], "2026-05-25T08:00:00Z"),
@@ -382,7 +483,7 @@ def test_memory_habit_bridge_summary_includes_due_only_decks(tmp_path: Path) -> 
                     "SELECT card_data FROM memory_fsrs_cards WHERE item_id = ?",
                     (item_id,),
                 ).fetchone()
-                card = store._json_loads(card_row["card_data"], {})  # noqa: SLF001
+                card = store.json_loads(card_row["card_data"], {})
                 card["due"] = due_at
                 card["created_at"] = due_at
                 conn.execute(
@@ -391,9 +492,12 @@ def test_memory_habit_bridge_summary_includes_due_only_decks(tmp_path: Path) -> 
                     SET card_data = ?, next_due = ?
                     WHERE item_id = ?
                     """,
-                    (store._json_dumps(card), due_at, item_id),  # noqa: SLF001
+                    (
+                        json.dumps(card, ensure_ascii=False, sort_keys=True),
+                        due_at,
+                        item_id,
+                    ),
                 )
-            conn.commit()
 
         summary = bridge.memory_summary(date="2026-05-24")
 
