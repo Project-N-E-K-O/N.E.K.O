@@ -3181,6 +3181,32 @@ async def test_study_supervision_toggle_respects_disable_guard() -> None:
 
 
 @pytest.mark.asyncio
+async def test_study_supervision_toggle_parses_string_false() -> None:
+    class _Supervision:
+        def __init__(self) -> None:
+            self.calls: list[bool] = []
+
+        def set_enabled(self, enabled: bool) -> dict[str, object]:
+            self.calls.append(enabled)
+            return {"enabled": enabled}
+
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    supervision = _Supervision()
+    plugin._cfg = StudyConfig()
+    plugin._cfg.supervision.allow_disable_by_chat = True
+    plugin._habit_store = object()
+    plugin._checkin_manager = object()
+    plugin._pomodoro_timer = object()
+    plugin._supervision = supervision
+
+    result = await plugin.study_supervision_toggle(enabled="false")
+
+    assert isinstance(result, Ok)
+    assert result.value["enabled"] is False
+    assert supervision.calls == [False]
+
+
+@pytest.mark.asyncio
 async def test_study_plugin_starts_and_collects_entries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

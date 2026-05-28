@@ -139,25 +139,29 @@ def list_qa_records_for_topic(
     self, topic_id: str, limit: int = 10
 ) -> list[dict[str, Any]]:
     topic_key = str(topic_id or "").strip()
-    topic_predicate = "topic_id = ?"
-    params: list[Any] = [topic_key]
-    if not topic_key:
-        topic_predicate = "topic_id IS NULL"
-        params = []
-    params.append(max(1, int(limit)))
+    safe_limit = max(1, int(limit))
+    if topic_key:
+        query = """
+            SELECT *
+            FROM qa_records
+            WHERE topic_id = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """
+        params: tuple[Any, ...] = (topic_key, safe_limit)
+    else:
+        query = """
+            SELECT *
+            FROM qa_records
+            WHERE topic_id IS NULL
+            ORDER BY id DESC
+            LIMIT ?
+            """
+        params = (safe_limit,)
     with self._lock:
         rows = (
             self._require_conn()
-            .execute(
-                f"""
-            SELECT *
-            FROM qa_records
-            WHERE {topic_predicate}
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-                tuple(params),
-            )
+            .execute(query, params)
             .fetchall()
         )
     return [
@@ -219,30 +223,40 @@ def list_wrong_questions(
     status_values = tuple(str(item) for item in statuses if str(item))
     if not status_values:
         status_values = ("active", "retrying", "resolved")
-    placeholders = ",".join("?" for _ in status_values)
-    params: list[Any] = list(status_values)
-    where = f"status IN ({placeholders})"
-    if topic_id:
-        where += " AND topic_id = ?"
-        params.append(str(topic_id))
-    params.append(max(1, int(limit)))
-    with self._lock:
-        rows = (
-            self._require_conn()
-            .execute(
-                f"""
+    status_json = self._json_dumps(list(status_values))
+    safe_limit = max(1, int(limit))
+    topic_key = str(topic_id or "").strip()
+    if topic_key:
+        query = """
             SELECT *
             FROM wrong_questions
-            WHERE {where}
+            WHERE status IN (SELECT value FROM json_each(?))
+                AND topic_id = ?
             ORDER BY
                 CASE WHEN status = 'retrying' THEN 1 ELSE 0 END DESC,
                 last_retry_at DESC,
                 created_at DESC,
                 id DESC
             LIMIT ?
-            """,
-                tuple(params),
-            )
+            """
+        params: tuple[Any, ...] = (status_json, topic_key, safe_limit)
+    else:
+        query = """
+            SELECT *
+            FROM wrong_questions
+            WHERE status IN (SELECT value FROM json_each(?))
+            ORDER BY
+                CASE WHEN status = 'retrying' THEN 1 ELSE 0 END DESC,
+                last_retry_at DESC,
+                created_at DESC,
+                id DESC
+            LIMIT ?
+            """
+        params = (status_json, safe_limit)
+    with self._lock:
+        rows = (
+            self._require_conn()
+            .execute(query, params)
             .fetchall()
         )
     return [self._wrong_question_from_row(row) for row in rows]

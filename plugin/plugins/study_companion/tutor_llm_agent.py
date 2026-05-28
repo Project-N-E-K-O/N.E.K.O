@@ -74,10 +74,12 @@ class _LLMClientCache:
             await self._close_cached_llm_async(llm)
 
     def _close_cached_llm(self, llm: Any) -> None:
+        found_close = False
         for method_name in ("shutdown", "aclose"):
             close = getattr(llm, method_name, None)
             if not callable(close):
                 continue
+            found_close = True
             try:
                 result = close()
             except Exception as exc:
@@ -88,15 +90,19 @@ class _LLMClientCache:
             if inspect.isawaitable(result):
                 self._finalize_async_close(result, method_name=method_name)
             return
-        self._logger.warning(
-            "study tutor llm has no shutdown or aclose method: {}", type(llm).__name__
-        )
+        if not found_close:
+            self._logger.warning(
+                "study tutor llm has no shutdown or aclose method: {}",
+                type(llm).__name__,
+            )
 
     async def _close_cached_llm_async(self, llm: Any) -> None:
+        found_close = False
         for method_name in ("shutdown", "aclose"):
             close = getattr(llm, method_name, None)
             if not callable(close):
                 continue
+            found_close = True
             try:
                 result = close()
                 if inspect.isawaitable(result):
@@ -109,9 +115,11 @@ class _LLMClientCache:
                 )
                 continue
             return
-        self._logger.warning(
-            "study tutor llm has no shutdown or aclose method: {}", type(llm).__name__
-        )
+        if not found_close:
+            self._logger.warning(
+                "study tutor llm has no shutdown or aclose method: {}",
+                type(llm).__name__,
+            )
 
     def _finalize_async_close(self, close_result: Any, *, method_name: str) -> None:
         try:

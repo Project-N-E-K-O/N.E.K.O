@@ -123,7 +123,8 @@ def upsert_fsrs_card(
     self, *, topic_id: str, card: dict[str, Any], last_rating: int
 ) -> None:
     with self._lock:
-        self._require_conn().execute(
+        conn = self._require_conn()
+        conn.execute(
             """
             INSERT INTO fsrs_cards (topic_id, card_data, fsrs_state, last_rating, updated_at)
             VALUES (?, ?, ?, ?, datetime('now'))
@@ -140,7 +141,7 @@ def upsert_fsrs_card(
                 int(last_rating or 0),
             ),
         )
-        self._require_conn().commit()
+        conn.commit()
 
 
 def list_fsrs_cards(self, limit: int | None = 100) -> list[dict[str, Any]]:
