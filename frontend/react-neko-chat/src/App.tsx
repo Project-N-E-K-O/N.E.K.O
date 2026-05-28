@@ -329,7 +329,7 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
   if (latestStreamingAssistantIndex >= 0) {
     const turnTexts: string[] = [];
     let turnAuthor = '';
-    let turnMessageId = '';
+    const turnMessageId = String(messages[latestStreamingAssistantIndex]?.id || 'assistant-streaming');
     for (let index = latestStreamingAssistantIndex; index >= 0; index -= 1) {
       const message = messages[index];
       if (!message) continue;
@@ -340,7 +340,6 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
       if (!text) continue;
       turnTexts.unshift(text);
       turnAuthor = message.author || turnAuthor;
-      turnMessageId = String(message.id);
     }
     if (turnTexts.length > 0) {
       const turnText = normalizeCompactPreviewText(turnTexts.join(' '));
@@ -1074,6 +1073,7 @@ export default function App({
   const compactSpeechRevealCarryRef = useRef(0);
   const compactSpeechLastFrameTimeRef = useRef(0);
   const compactSpeechPreviewIdRef = useRef('');
+  const compactSpeechPreviewTextRef = useRef('');
   const compactSpeechFallbackRevealRef = useRef(false);
   const isCompactSurfaceRef = useRef(false);
   const speechPlaybackStateRef = useRef<SpeechPlaybackState | null>(null);
@@ -1444,8 +1444,15 @@ export default function App({
       compactMessagePreview.isStreaming
       || compactSpeechPreviewIdRef.current === compactMessagePreview.messageId
     );
+  const compactSpeechPreservedText = compactSpeechModeActive && !compactMessagePreview?.isStreaming
+    ? compactSpeechPreviewTextRef.current
+    : '';
   const compactPreviewText = compactSpeechModeActive
-    ? compactMessagePreview?.fullText || ''
+    ? (
+      compactMessagePreview?.isStreaming
+        ? compactMessagePreview?.fullText || ''
+        : compactSpeechPreservedText || compactMessagePreview?.fullText || ''
+    )
     : compactMessagePreview?.text
     || i18n('chat.emptyState', 'Chat content will appear here.');
   const compactPreviewIsStreaming = compactSpeechModeActive;
@@ -1567,14 +1574,21 @@ export default function App({
   useEffect(() => {
     if (compactMessagePreview?.isStreaming && compactMessagePreview.isAssistant) {
       compactSpeechPreviewIdRef.current = compactMessagePreview.messageId;
-    } else if (
-      compactMessagePreview?.messageId
-      && compactSpeechPreviewIdRef.current
-      && compactSpeechPreviewIdRef.current !== compactMessagePreview.messageId
-    ) {
+      compactSpeechPreviewTextRef.current = compactMessagePreview.fullText || compactMessagePreview.text || '';
+    } else if (compactSpeechPreviewIdRef.current && (
+      !compactMessagePreview?.messageId
+      || compactSpeechPreviewIdRef.current !== compactMessagePreview.messageId
+    )) {
       compactSpeechPreviewIdRef.current = '';
+      compactSpeechPreviewTextRef.current = '';
     }
-  }, [compactMessagePreview?.isAssistant, compactMessagePreview?.isStreaming, compactMessagePreview?.messageId]);
+  }, [
+    compactMessagePreview?.fullText,
+    compactMessagePreview?.isAssistant,
+    compactMessagePreview?.isStreaming,
+    compactMessagePreview?.messageId,
+    compactMessagePreview?.text,
+  ]);
 
   useEffect(() => {
     compactSpeechVisibleLengthRef.current = 0;

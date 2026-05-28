@@ -2768,6 +2768,65 @@ describe('App', () => {
     }
   });
 
+  it('keeps compact speech mode when the latest streaming tail settles in a multi-message turn', async () => {
+    vi.useFakeTimers();
+    const firstSettledMessage = parseChatMessage({
+      id: 'assistant-compact-streaming-tail-settle-1',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:01',
+      createdAt: 2,
+      blocks: [{ type: 'text', text: '第一句话已经稳定。' }],
+      status: 'sent',
+    });
+    const secondStreamingMessage = parseChatMessage({
+      id: 'assistant-compact-streaming-tail-settle-2',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:01',
+      createdAt: 3,
+      blocks: [{ type: 'text', text: '第二句话仍在播报，所以不能提前切回普通截断预览。'.repeat(3) }],
+      status: 'streaming',
+    });
+    const secondSentMessage = parseChatMessage({
+      ...secondStreamingMessage,
+      status: 'sent',
+    });
+
+    try {
+      const { container, rerender } = render(
+        <App chatSurfaceMode="compact" messages={[firstSettledMessage, secondStreamingMessage]} />,
+      );
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-speech-playback-state', {
+          detail: {
+            active: true,
+            audioContextTime: 0,
+            playbackStartAudioTime: 0,
+            playbackEndAudioTime: 10,
+            updatedAt: Date.now(),
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+
+      const visibleBeforeSettle = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      expect(visibleBeforeSettle.length).toBeGreaterThan(0);
+
+      rerender(<App chatSurfaceMode="compact" messages={[firstSettledMessage, secondSentMessage]} />);
+
+      const preview = container.querySelector('.compact-chat-capsule-text');
+      expect(preview).toHaveAttribute('data-compact-preview-streaming', 'true');
+      expect(preview?.textContent).toBe(visibleBeforeSettle);
+      expect(preview?.textContent?.endsWith('...')).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps settled compact preview text bounded after streaming ends', () => {
     const settledText = '这是猫娘已经说完的一整段内容，用来确认紧凑态在非流式状态下仍然保持有限预览，不重新变成长聊天框。'.repeat(3);
     const message = parseChatMessage({
