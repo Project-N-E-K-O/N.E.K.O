@@ -92,32 +92,37 @@ def _strip_json_markdown_fence(text: str) -> str:
 
 
 def _extract_balanced_json_object(text: str) -> str:
-    """从混杂文本中提取第一个括号平衡的 JSON 对象。"""
+    """从混杂文本中提取第一个可解析的括号平衡 JSON 对象。"""
     start = text.find("{")
-    if start < 0:
-        return ""
-
-    depth = 0
-    in_string = False
-    escape = False
-    for i in range(start, len(text)):
-        char = text[i]
-        if in_string:
-            if escape:
-                escape = False
-            elif char == "\\":
-                escape = True
-            elif char == '"':
-                in_string = False
-            continue
-        if char == '"':
-            in_string = True
-        elif char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                return text[start:i + 1]
+    while start >= 0:
+        depth = 0
+        in_string = False
+        escape = False
+        for i in range(start, len(text)):
+            char = text[i]
+            if in_string:
+                if escape:
+                    escape = False
+                elif char == "\\":
+                    escape = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = text[start:i + 1]
+                    try:
+                        if isinstance(robust_json_loads(candidate), dict):
+                            return candidate
+                    except Exception:
+                        pass
+                    break
+        start = text.find("{", start + 1)
     return ""
 
 
