@@ -89,6 +89,18 @@ from utils.ssl_env_diagnostics import probe_ssl_environment, write_ssl_diagnosti
 _main_log_level = getattr(logging, (os.environ.get("NEKO_LOG_LEVEL") or "INFO").upper(), logging.INFO)
 logger, log_config = setup_logging(service_name="Main", log_level=_main_log_level, silent=not _IS_MAIN_PROCESS)
 
+
+def _resolve_user_plugin_base() -> str:
+    raw_port = os.getenv("NEKO_USER_PLUGIN_SERVER_PORT", "").strip()
+    if raw_port:
+        try:
+            port = int(raw_port)
+            if 0 < port <= 65535:
+                return f"http://127.0.0.1:{port}"
+        except ValueError:
+            logger.warning("Invalid NEKO_USER_PLUGIN_SERVER_PORT value {!r}; using configured plugin base", raw_port)
+    return USER_PLUGIN_BASE.rstrip("/")
+
 if _IS_MAIN_PROCESS:
     _ssl_precheck = probe_ssl_environment()
     if not _ssl_precheck.get("ok", True):
@@ -1643,7 +1655,7 @@ async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
     served by the main server, so it needs the same same-origin bridge here.
     """
 
-    target = f"{USER_PLUGIN_BASE}/market"
+    target = f"{_resolve_user_plugin_base()}/market"
     if path:
         target = f"{target}/{path}"
     if request.url.query:

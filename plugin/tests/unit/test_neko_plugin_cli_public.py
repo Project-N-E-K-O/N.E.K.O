@@ -155,8 +155,22 @@ def test_build_rules_apply_include_and_exclude() -> None:
     assert should_skip_path(Path("cache_dir"), is_dir=False, rules=dir_rules) is False
 
 
+def test_build_rules_keep_vendored_packages_named_build_or_dist() -> None:
+    rules = BuildRuleSet()
+
+    assert should_skip_path(Path("build"), is_dir=True, rules=rules) is True
+    assert should_skip_path(Path("dist/artifact.zip"), is_dir=False, rules=rules) is True
+    assert should_skip_path(Path("vendor/build"), is_dir=True, rules=rules) is False
+    assert should_skip_path(Path("vendor/build/__init__.py"), is_dir=False, rules=rules) is False
+    assert should_skip_path(Path("vendor/dist"), is_dir=True, rules=rules) is False
+    assert should_skip_path(Path("vendor/dist/__init__.py"), is_dir=False, rules=rules) is False
+
+
 def test_build_plugin_writes_expected_profile_and_skips_runtime_artifacts(tmp_path: Path) -> None:
     plugin_dir = _make_plugin_dir(tmp_path)
+    vendored_build = plugin_dir / "vendor" / "build"
+    vendored_build.mkdir(parents=True)
+    (vendored_build / "__init__.py").write_text("VALUE = 'vendored build package'\n", encoding="utf-8")
     package_path = tmp_path / "demo_plugin.neko-plugin"
 
     result = build_plugin(plugin_dir, package_path)
@@ -171,6 +185,7 @@ def test_build_plugin_writes_expected_profile_and_skips_runtime_artifacts(tmp_pa
         names = set(archive.namelist())
         assert "payload/plugins/demo_plugin/plugin.toml" in names
         assert "payload/plugins/demo_plugin/runtime.txt" in names
+        assert "payload/plugins/demo_plugin/vendor/build/__init__.py" in names
         assert "payload/plugins/demo_plugin/vendor/httpx-0.27.0.dist-info/METADATA" in names
         assert "payload/dependencies.toml" in names
         assert "payload/plugins/demo_plugin/debug.tmp" not in names

@@ -194,6 +194,39 @@ async def _run_one(body: bytes) -> None:
     )
 
 
+@pytest.mark.asyncio
+async def test_proxy_uses_runtime_user_plugin_server_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app import main_server
+    from app.main_server import app
+
+    seen_urls: list[str] = []
+    original_async_client = httpx.AsyncClient
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        seen_urls.append(str(request.url))
+        return httpx.Response(200, json={"ok": True})
+
+    class _MockUpstreamAsyncClient(original_async_client):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            kwargs["transport"] = httpx.MockTransport(_handler)
+            super().__init__(*args, **kwargs)
+
+    saved_async_client = main_server.httpx.AsyncClient
+    monkeypatch.setenv("NEKO_USER_PLUGIN_SERVER_PORT", "49123")
+    main_server.httpx.AsyncClient = _MockUpstreamAsyncClient
+    try:
+        async with original_async_client(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://testserver",
+        ) as client:
+            response = await client.get("/market/status?x=1")
+    finally:
+        main_server.httpx.AsyncClient = saved_async_client
+
+    assert response.status_code == 200
+    assert seen_urls == ["http://127.0.0.1:49123/market/status?x=1"]
+
+
 # ---------------------------------------------------------------------------
 # Documented counterexample (also runnable as a standalone unit test so the
 # specific failing input from bugfix.md §1.1 is checked into the regression
