@@ -694,12 +694,17 @@ async function yankSweep() {
     }
   }
   installedByPid.value = newIndex
-  // 每轮 sweep 重置：旧 yanked=true 的插件如果已被卸载或市场撤回 yank 标记，
-  // 不重置就会让旧标志一直挂在 UI 上。代价是扫描期间徽章可能短暂消失，可
-  // 接受（sweep 通常 < 1s 且仅在 channel 切换 / 安装/升级完成后触发）。
-  yankedMap.value = {}
+  // Build the next yank map into a local, then atomic-swap below — so a
+  // transient `fetchMarketPluginVersions` failure preserves the previous
+  // warning (R8.5 "失败静默") instead of clearing every entry's flag until
+  // the next successful sweep. Uninstalled plugins drop out naturally
+  // because only keys we visit get carried over.
+  const previousYanked = yankedMap.value
+  const nextYanked: Record<string, boolean> = {}
 
   for (const entry of uniqueEntries.values()) {
+    const pidKey = entry.plugin_id.toLowerCase()
+    const marketKey = entry.market_id ? String(entry.market_id).toLowerCase() : ''
     // Query the channel the plugin was actually installed from; otherwise a
     // user who installed a stable version and later switched the global
     // preference to beta would lose the yanked flag on the stable install.
@@ -715,7 +720,17 @@ async function yankSweep() {
         channel: entryChannel,
         include_yanked: true,
       })
-      if (!versions) continue // R8.5: 失败静默
+      if (!versions) {
+        // Fetch failed — carry the previous flag forward so a known-yanked
+        // package doesn't lose its warning on a flaky network.
+        const carryPid = previousYanked[pidKey]
+        if (carryPid !== undefined) nextYanked[pidKey] = carryPid
+        if (marketKey) {
+          const carryMarket = previousYanked[marketKey]
+          if (carryMarket !== undefined) nextYanked[marketKey] = carryMarket
+        }
+        continue
+      }
       yankedVersions = new Set(
         versions
           .filter((v) => v.yanked_at !== null && v.yanked_at !== undefined)
@@ -725,11 +740,11 @@ async function yankSweep() {
     }
 
     const yanked = yankedVersions.has(entry.installed_version)
-    yankedMap.value[entry.plugin_id.toLowerCase()] = yanked
-    if (entry.market_id) {
-      yankedMap.value[String(entry.market_id).toLowerCase()] = yanked
-    }
+    nextYanked[pidKey] = yanked
+    if (marketKey) nextYanked[marketKey] = yanked
   }
+
+  yankedMap.value = nextYanked
 }
 
 // ─── 交互：分页、搜索 debounce、排序、分组切换 ────────────────────
