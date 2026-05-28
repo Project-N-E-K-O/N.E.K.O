@@ -4,6 +4,8 @@ import json
 
 import pytest
 
+from config import CHARACTER_RESERVED_FIELDS
+
 characters_router_module = importlib.import_module('main_routers.characters_router')
 from main_routers.config_router import _get_live3d_sub_type
 from utils.config_manager import delete_reserved, flatten_reserved, get_reserved, migrate_catgirl_reserved, set_reserved
@@ -34,6 +36,24 @@ class DummyConfigManager:
 
     async def asave_characters(self, characters, character_json_path=None):
         self.save_characters(characters, character_json_path)
+
+
+def test_live2d_idle_animation_is_reserved_and_hidden_from_editable_fields():
+    assert 'live2d_idle_animation' in CHARACTER_RESERVED_FIELDS
+
+    catgirl = {
+        '性格': '开朗',
+        'live2d_idle_animation': 'surprised1.motion3.json',
+    }
+
+    assert migrate_catgirl_reserved(catgirl) is True
+    assert 'live2d_idle_animation' not in catgirl
+    assert get_reserved(catgirl, 'avatar', 'live2d', 'idle_animation') == 'surprised1.motion3.json'
+
+    flattened = flatten_reserved(catgirl)
+    assert flattened['live2d_idle_animation'] == 'surprised1.motion3.json'
+    editable_keys = [k for k in flattened if k not in CHARACTER_RESERVED_FIELDS]
+    assert 'live2d_idle_animation' not in editable_keys
 
 
 def _build_characters_fixture():

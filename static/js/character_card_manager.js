@@ -5,6 +5,16 @@ let _reservedFieldsReady = null;
 
 const SYSTEM_RESERVED_FIELDS_FALLBACK = ReservedFieldsUtils.SYSTEM_RESERVED_FIELDS_FALLBACK;
 const WORKSHOP_RESERVED_FIELDS_FALLBACK = ReservedFieldsUtils.WORKSHOP_RESERVED_FIELDS_FALLBACK;
+const FRONTEND_FORCE_HIDDEN_FIELDS = [
+    'live2d_item_id',
+    'live2d_idle_animation',
+    '_reserved',
+    'item_id',
+    'idleAnimation',
+    'idleAnimations',
+    'mmd_idle_animation',
+    'mmd_idle_animations',
+];
 
 function _safeArray(value) {
     return ReservedFieldsUtils._safeArray(value);
@@ -34,15 +44,13 @@ function _getReservedConfigOrFallback() {
 
 function getWorkshopReservedFields() {
     const cfg = _getReservedConfigOrFallback();
-    const extraSystemFields = ['live2d_item_id', '_reserved', 'item_id', 'idleAnimation', 'idleAnimations', 'mmd_idle_animation', 'mmd_idle_animations']
-        .filter(f => cfg.all_reserved_fields.includes(f));
-    return _uniqueFields([...cfg.workshop_reserved_fields, ...extraSystemFields]);
+    return _uniqueFields([...cfg.workshop_reserved_fields, ...FRONTEND_FORCE_HIDDEN_FIELDS]);
 }
 
 function getWorkshopHiddenFields() {
     const cfg = _getReservedConfigOrFallback();
-    // 完全遵照角色管理：隐藏所有 system + workshop 保留字段
-    return _uniqueFields([...cfg.all_reserved_fields]);
+    // 即使运行中的后端还没重启、返回了旧保留字段列表，也不要把这些兼容字段渲染成普通设定。
+    return _uniqueFields([...cfg.all_reserved_fields, ...FRONTEND_FORCE_HIDDEN_FIELDS]);
 }
 
 function loadCharacterReservedFieldsConfig() {
@@ -5009,10 +5017,6 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
         const wrapper = document.createElement('div');
         wrapper.className = 'field-row-wrapper custom-row setting-field-row';
 
-        const deleteFieldText = (window.t && typeof window.t === 'function')
-            ? '<img src="/static/icons/delete.png" alt="" class="delete-icon"> <span data-i18n="character.deleteField">' + window.t('character.deleteField') + '</span>'
-            : '<img src="/static/icons/delete.png" alt="" class="delete-icon"> 删除设定';
-
         const labelEl = document.createElement('label');
         _panelSetFieldLabel(labelEl, k);
         wrapper.appendChild(labelEl);
@@ -5031,8 +5035,8 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
 
         const delBtn = document.createElement('button');
         delBtn.type = 'button';
-        delBtn.className = 'btn sm delete row-action-btn delete-action';
-        delBtn.innerHTML = deleteFieldText;
+        delBtn.className = 'btn sm delete row-action-btn delete-action setting-field-delete';
+        _panelConfigureFieldDeleteButton(delBtn);
         delBtn.addEventListener('click', function () {
             wrapper.remove();
             const sb = form.querySelector('#save-button');
@@ -5124,10 +5128,6 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
         const wrapper = document.createElement('div');
         wrapper.className = 'field-row-wrapper custom-row setting-field-row';
 
-        const deleteFieldText = (window.t && typeof window.t === 'function')
-            ? '<img src="/static/icons/delete.png" alt="" class="delete-icon"> <span data-i18n="character.deleteField">' + window.t('character.deleteField') + '</span>'
-            : '<img src="/static/icons/delete.png" alt="" class="delete-icon"> 删除设定';
-
         const labelEl = document.createElement('label');
         _panelSetFieldLabel(labelEl, key);
         wrapper.appendChild(labelEl);
@@ -5145,8 +5145,8 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
 
         const delBtn = document.createElement('button');
         delBtn.type = 'button';
-        delBtn.className = 'btn sm delete row-action-btn delete-action';
-        delBtn.innerHTML = deleteFieldText;
+        delBtn.className = 'btn sm delete row-action-btn delete-action setting-field-delete';
+        _panelConfigureFieldDeleteButton(delBtn);
         delBtn.addEventListener('click', function () {
             wrapper.remove();
             if (saveButton) saveButton.style.display = '';
@@ -5571,6 +5571,15 @@ function _panelSetFieldLabel(labelEl, key) {
     if (displayText.length > MAX_LABEL_LEN) {
         labelEl.title = displayText;
     }
+}
+
+function _panelConfigureFieldDeleteButton(button) {
+    const deleteText = (window.t && typeof window.t === 'function')
+        ? window.t('character.deleteField')
+        : '删除设定';
+    button.removeAttribute('title');
+    button.setAttribute('aria-label', deleteText);
+    button.innerHTML = '<img src="/static/icons/delete.png" alt="" class="delete-icon" aria-hidden="true">';
 }
 
 // textarea自动调整高度（匹配原版逻辑：三行最大高度 + scrollbar类切换）
@@ -10181,7 +10190,7 @@ function panelAttachAutoSaveListener(input, catgirlName) {
 //     system 气泡告诉助手 + 用户，保持双方对当前状态的共识
 // 助手不主动调 LLM 评论（成本考虑）；用户随时可以用 quick chip 让她审一审。
 
-const CARD_ASSIST_RESERVED_KEYS = ['档案名', 'voice_id', '_reserved', 'live2d', 'live3d', 'vrm', 'mmd', 'system_prompt', 'model_type'];
+const CARD_ASSIST_RESERVED_KEYS = ['档案名', 'voice_id', '_reserved', 'live2d', 'live3d', 'vrm', 'mmd', 'system_prompt', 'model_type', 'live2d_idle_animation'];
 
 // 当前用作"开发猫"占位的猫娘 profile name。/api/characters/catgirl/{name}/card-face
 // 命中就用真实卡面，不命中走 fallback 圆圈。未来替换开发猫只需要改这里。
@@ -10260,7 +10269,7 @@ function openCardAssistCompanion(form, originalName, isNew) {
         const existing = window._cardCompanion;
         if (existing.form === form) {
             // 同一只猫娘 → 把已有面板拉回前台
-            existing.overlay.classList.remove('card-companion-minimized');
+            _companionSetMinimized(existing, false);
             if (existing.inputEl) {
                 try { existing.inputEl.focus(); } catch (_) {}
             }
@@ -10306,6 +10315,13 @@ function _companionCreate(form, originalName, isNew) {
         inputEl: null,
         sendBtnEl: null,
         quickRowEl: null,
+        avatarToggleEl: null,
+        dragCleanup: null,
+        expandedPanelRect: null,
+        minimizeTransitionTimer: null,
+        minimizedClickSuppressTimer: null,
+        suppressNextMinimizedClick: false,
+        minimized: false,
         busy: false,
     };
     state.overlay = _companionBuildPanel(state);
@@ -10318,11 +10334,103 @@ function _companionDestroy(state) {
     }
 }
 
+function _companionSetMinimized(state, minimized) {
+    if (!state || !state.overlay) return;
+    const overlay = state.overlay;
+    if (state.minimizeTransitionTimer) {
+        clearTimeout(state.minimizeTransitionTimer);
+        state.minimizeTransitionTimer = null;
+    }
+    if (state.minimizedClickSuppressTimer) {
+        clearTimeout(state.minimizedClickSuppressTimer);
+        state.minimizedClickSuppressTimer = null;
+    }
+    overlay.classList.remove('card-companion-collapsing', 'card-companion-expanding');
+    const shouldMinimize = !!minimized;
+    const currentlyMinimized = !!state.minimized;
+    if (shouldMinimize === currentlyMinimized) return;
+    state.minimized = shouldMinimize;
+
+    if (shouldMinimize) {
+        const panelRect = overlay.getBoundingClientRect();
+        const avatarRect = state.avatarToggleEl
+            ? state.avatarToggleEl.getBoundingClientRect()
+            : panelRect;
+        state.expandedPanelRect = {
+            left: panelRect.left,
+            top: panelRect.top,
+            width: panelRect.width,
+            height: panelRect.height,
+        };
+        overlay.style.left = panelRect.left + 'px';
+        overlay.style.top = panelRect.top + 'px';
+        overlay.style.width = panelRect.width + 'px';
+        overlay.style.height = panelRect.height + 'px';
+        overlay.style.right = 'auto';
+        overlay.style.bottom = 'auto';
+        overlay.style.minWidth = '0px';
+        overlay.style.maxWidth = 'none';
+        overlay.style.minHeight = '0px';
+        overlay.style.maxHeight = 'none';
+        overlay.getBoundingClientRect();
+        overlay.classList.add('card-companion-collapsing');
+        overlay.style.left = avatarRect.left + 'px';
+        overlay.style.top = avatarRect.top + 'px';
+        overlay.style.width = avatarRect.width + 'px';
+        overlay.style.height = avatarRect.height + 'px';
+        state.minimizeTransitionTimer = setTimeout(function () {
+            overlay.classList.remove('card-companion-collapsing');
+            overlay.classList.add('card-companion-minimized');
+            state.minimizeTransitionTimer = null;
+        }, 260);
+    } else {
+        const currentRect = overlay.getBoundingClientRect();
+        const targetRect = state.expandedPanelRect || currentRect;
+        overlay.style.left = currentRect.left + 'px';
+        overlay.style.top = currentRect.top + 'px';
+        overlay.style.width = currentRect.width + 'px';
+        overlay.style.height = currentRect.height + 'px';
+        overlay.style.right = 'auto';
+        overlay.style.bottom = 'auto';
+        overlay.classList.add('card-companion-expanding');
+        overlay.classList.remove('card-companion-minimized');
+        overlay.getBoundingClientRect();
+        overlay.style.left = targetRect.left + 'px';
+        overlay.style.top = targetRect.top + 'px';
+        overlay.style.width = targetRect.width + 'px';
+        overlay.style.height = targetRect.height + 'px';
+        state.minimizeTransitionTimer = setTimeout(function () {
+            overlay.classList.remove('card-companion-expanding');
+            state.minimizeTransitionTimer = null;
+        }, 260);
+    }
+    if (state.avatarToggleEl) {
+        const title = shouldMinimize
+            ? _cardAssistT('character.aiCompanionExpand', '展开')
+            : _cardAssistT('character.aiCompanionMinimize', '收起');
+        state.avatarToggleEl.title = title;
+        state.avatarToggleEl.setAttribute('aria-label', title);
+        state.avatarToggleEl.setAttribute('aria-expanded', shouldMinimize ? 'false' : 'true');
+    }
+}
+
 function _companionTeardown(state) {
     if (!state) return;
     // closed flag：所有 in-flight 的 await 拿到 response 后会 check 这个，
     // 避免 companion 已经关掉/切到别只猫娘了，迟到的 LLM 结果还在静默改表单。
     state.closed = true;
+    if (state.minimizeTransitionTimer) {
+        clearTimeout(state.minimizeTransitionTimer);
+        state.minimizeTransitionTimer = null;
+    }
+    if (state.minimizedClickSuppressTimer) {
+        clearTimeout(state.minimizedClickSuppressTimer);
+        state.minimizedClickSuppressTimer = null;
+    }
+    if (typeof state.dragCleanup === 'function') {
+        try { state.dragCleanup(); } catch (_) {}
+        state.dragCleanup = null;
+    }
     if (state.form && state.formWatchHandlers) {
         state.formWatchHandlers.forEach(function (pair) {
             try { state.form.removeEventListener(pair[0], pair[1]); } catch (_) {}
@@ -10338,13 +10446,45 @@ function _companionBuildPanel(state) {
     // 阻止面板上的点击冒泡到外层的"点击外部关闭"之类的逻辑（虽然没有，但
     // 防御一下）
     overlay.addEventListener('click', function (e) { e.stopPropagation(); });
+    overlay.addEventListener('click', function (e) {
+        if (!state.minimized) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (state.suppressNextMinimizedClick) {
+            state.suppressNextMinimizedClick = false;
+            if (state.minimizedClickSuppressTimer) {
+                clearTimeout(state.minimizedClickSuppressTimer);
+                state.minimizedClickSuppressTimer = null;
+            }
+            return;
+        }
+        _companionSetMinimized(state, false);
+    }, true);
 
     // --- header ---
     const header = document.createElement('div');
     header.className = 'card-companion-header';
+    header.title = _cardAssistT('character.aiCompanionDragHint', '拖动窗口');
 
     const avatar = document.createElement('div');
     avatar.className = 'card-companion-avatar';
+    avatar.title = _cardAssistT('character.aiCompanionMinimize', '收起');
+    avatar.setAttribute('role', 'button');
+    avatar.setAttribute('tabindex', '0');
+    avatar.setAttribute('aria-label', avatar.title);
+    avatar.setAttribute('aria-expanded', 'true');
+    avatar.addEventListener('click', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        _companionSetMinimized(state, !state.minimized);
+    });
+    avatar.addEventListener('keydown', function (e) {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        e.stopPropagation();
+        _companionSetMinimized(state, !state.minimized);
+    });
+    state.avatarToggleEl = avatar;
     const avatarImg = document.createElement('img');
     avatarImg.alt = state.devCatName;
     // 不加 ?t=Date.now() cache-bust：companion avatar 是个稳定的静态图，让
@@ -10372,14 +10512,11 @@ function _companionBuildPanel(state) {
     titleWrap.appendChild(nameEl);
     titleWrap.appendChild(subEl);
 
-    const minimizeBtn = document.createElement('button');
-    minimizeBtn.type = 'button';
-    minimizeBtn.className = 'card-companion-minimize';
-    minimizeBtn.title = _cardAssistT('character.aiCompanionMinimize', '收起');
-    minimizeBtn.innerHTML = '—';
-    minimizeBtn.addEventListener('click', function () {
-        overlay.classList.toggle('card-companion-minimized');
-    });
+    const headerPaw = document.createElement('img');
+    headerPaw.className = 'card-companion-header-paw';
+    headerPaw.src = '/static/icons/paw_ui.png';
+    headerPaw.alt = '';
+    headerPaw.draggable = false;
 
     const closeBtn = document.createElement('button');
     closeBtn.type = 'button';
@@ -10394,9 +10531,10 @@ function _companionBuildPanel(state) {
 
     header.appendChild(avatar);
     header.appendChild(titleWrap);
-    header.appendChild(minimizeBtn);
+    header.appendChild(headerPaw);
     header.appendChild(closeBtn);
     overlay.appendChild(header);
+    _companionAttachWindowDrag(state, overlay, header);
 
     // --- thread ---
     const thread = document.createElement('div');
@@ -10478,6 +10616,133 @@ function _companionBuildPanel(state) {
     overlay.appendChild(inputBar);
 
     return overlay;
+}
+
+function _companionAttachWindowDrag(state, overlay, handle) {
+    if (!overlay || !handle) return;
+    let dragging = false;
+    let startClientX = 0;
+    let startClientY = 0;
+    let startLeft = 0;
+    let startTop = 0;
+    let dragLeft = 0;
+    let dragTop = 0;
+    let activePointerId = null;
+    let movedEnoughToDrag = false;
+
+    function suppressMinimizedClickOnce() {
+        state.suppressNextMinimizedClick = true;
+        if (state.minimizedClickSuppressTimer) {
+            clearTimeout(state.minimizedClickSuppressTimer);
+        }
+        state.minimizedClickSuppressTimer = setTimeout(function () {
+            state.suppressNextMinimizedClick = false;
+            state.minimizedClickSuppressTimer = null;
+        }, 600);
+    }
+
+    function clampWindow(left, top) {
+        const rect = overlay.getBoundingClientRect();
+        const margin = 8;
+        const maxLeft = Math.max(margin, window.innerWidth - rect.width - margin);
+        const maxTop = Math.max(margin, window.innerHeight - rect.height - margin);
+        return {
+            left: Math.min(Math.max(left, margin), maxLeft),
+            top: Math.min(Math.max(top, margin), maxTop),
+        };
+    }
+
+    function placeWindow(left, top) {
+        const next = clampWindow(left, top);
+        overlay.style.left = next.left + 'px';
+        overlay.style.top = next.top + 'px';
+        overlay.style.right = 'auto';
+        overlay.style.bottom = 'auto';
+    }
+
+    function onPointerMove(e) {
+        if (!dragging) return;
+        if (activePointerId !== null && e.pointerId !== undefined && e.pointerId !== activePointerId) return;
+        const deltaX = e.clientX - startClientX;
+        const deltaY = e.clientY - startClientY;
+        if (state.minimized && !movedEnoughToDrag && Math.hypot(deltaX, deltaY) > 5) {
+            movedEnoughToDrag = true;
+        }
+        e.preventDefault();
+        const next = clampWindow(startLeft + deltaX, startTop + deltaY);
+        dragLeft = next.left;
+        dragTop = next.top;
+        overlay.style.left = dragLeft + 'px';
+        overlay.style.top = dragTop + 'px';
+        overlay.style.right = 'auto';
+        overlay.style.bottom = 'auto';
+    }
+
+    function stopDrag() {
+        if (!dragging) return;
+        const wasMinimizedDrag = state.minimized && movedEnoughToDrag;
+        dragging = false;
+        activePointerId = null;
+        overlay.style.left = dragLeft + 'px';
+        overlay.style.top = dragTop + 'px';
+        overlay.style.right = 'auto';
+        overlay.style.bottom = 'auto';
+        overlay.style.transform = '';
+        movedEnoughToDrag = false;
+        overlay.classList.remove('card-companion-dragging');
+        window.requestAnimationFrame(function () {
+            if (!dragging) overlay.style.transition = '';
+        });
+        if (wasMinimizedDrag) {
+            suppressMinimizedClickOnce();
+        }
+        window.removeEventListener('pointermove', onPointerMove);
+        window.removeEventListener('pointerup', stopDrag);
+        window.removeEventListener('pointercancel', stopDrag);
+    }
+
+    function onPointerDown(e) {
+        if (e.button !== undefined && e.button !== 0) return;
+        const interactive = e.target && e.target.closest && e.target.closest('button, a, input, textarea, select, [role="button"]');
+        if (interactive && !state.minimized) return;
+        const rect = overlay.getBoundingClientRect();
+        dragging = true;
+        activePointerId = e.pointerId;
+        movedEnoughToDrag = false;
+        startClientX = e.clientX;
+        startClientY = e.clientY;
+        startLeft = rect.left;
+        startTop = rect.top;
+        dragLeft = startLeft;
+        dragTop = startTop;
+        overlay.style.transition = 'none';
+        overlay.style.left = startLeft + 'px';
+        overlay.style.top = startTop + 'px';
+        overlay.style.right = 'auto';
+        overlay.style.bottom = 'auto';
+        overlay.style.transform = '';
+        overlay.classList.add('card-companion-dragging');
+        if (handle.setPointerCapture && activePointerId !== null) {
+            try { handle.setPointerCapture(activePointerId); } catch (_) {}
+        }
+        window.addEventListener('pointermove', onPointerMove);
+        window.addEventListener('pointerup', stopDrag);
+        window.addEventListener('pointercancel', stopDrag);
+        e.preventDefault();
+    }
+
+    function onResize() {
+        const rect = overlay.getBoundingClientRect();
+        placeWindow(rect.left, rect.top);
+    }
+
+    handle.addEventListener('pointerdown', onPointerDown);
+    window.addEventListener('resize', onResize);
+    state.dragCleanup = function () {
+        stopDrag();
+        handle.removeEventListener('pointerdown', onPointerDown);
+        window.removeEventListener('resize', onResize);
+    };
 }
 
 function _companionGreet(state) {
