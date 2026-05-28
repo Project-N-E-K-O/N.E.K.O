@@ -97,7 +97,7 @@ const latestVersion = computed<string | null>(() => {
   if (!src || src.source !== 'market') return null
   const detail = src.source_detail as PluginInstallSourceDetailMarket | null
   if (!detail?.plugin_market_id) return null
-  return marketVersions.latest(detail.plugin_market_id)
+  return marketVersions.latest(detail.plugin_market_id, detail.channel)
 })
 
 const hasUpdate = computed<boolean>(() => {

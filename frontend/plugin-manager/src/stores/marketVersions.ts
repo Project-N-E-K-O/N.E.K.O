@@ -1,5 +1,5 @@
 /**
- * Lightweight cache of "what's the latest version of market plugin X".
+ * Lightweight cache of "what's the latest version of market plugin X on channel C".
  *
  * Loaded lazily when the plugin list view first asks about any installed
  * market plugin. We hit the same ``/plugins`` Market Bridge endpoint that
@@ -8,10 +8,11 @@
  * store is purely for the install-source "update available" badge on
  * the main plugin list.
  *
- * Cache key = market-side plugin slug (the ``plugin_market_id`` the
- * backend writes into ``source_detail.plugin_market_id``). Values are
- * refreshed at most every ``_REFRESH_INTERVAL_MS``; early callers
- * trigger a single in-flight request.
+ * Cache is keyed by ``${channel}::${slugOrId}``. ``_fetchAll`` fetches
+ * the stable and beta channels separately so a plugin installed from
+ * beta compares against the beta latest (and stable against stable);
+ * otherwise the badge would compare apples to oranges and either hide
+ * a real beta update or invent one against the wrong channel.
  */
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
@@ -19,9 +20,20 @@ import { fetchMarketPlugins, type MarketPlugin } from '@/api/market'
 
 const _REFRESH_INTERVAL_MS = 5 * 60 * 1000  // 5 minutes
 
+export type MarketChannelKey = 'stable' | 'beta'
+const _CHANNELS: MarketChannelKey[] = ['stable', 'beta']
+
+function _cacheKey(channel: MarketChannelKey, slugOrId: string): string {
+  return `${channel}::${slugOrId}`
+}
+
+function _normalizeChannel(channel: string | null | undefined): MarketChannelKey {
+  return channel === 'beta' ? 'beta' : 'stable'
+}
+
 export const useMarketVersionsStore = defineStore('marketVersions', () => {
-  /** slug → latest version string. Populated from fetchMarketPlugins pages. */
-  const latestBySlug = ref<Record<string, string>>({})
+  /** ``${channel}::${slugOrId}`` → latest version string for that channel. */
+  const latestByKey = ref<Record<string, string>>({})
   const lastFetchedAt = ref<number>(0)
   const loading = ref(false)
   const loadError = ref<string | null>(null)
@@ -31,33 +43,58 @@ export const useMarketVersionsStore = defineStore('marketVersions', () => {
    *
    * Used by external callers that want to seed the cache from an
    * already-fetched page (e.g. ``MarketPanel`` after its own list
-   * load). ``_fetchAll`` does NOT use this anymore — it accumulates
-   * into a local map and swaps atomically on success — because merging
-   * incrementally during a paginated fetch leaves stale keys for
-   * plugins that disappeared from the market between fetches. See
-   * ``_fetchAll`` for the swap-on-success pattern.
+   * load). The page was requested with a specific channel filter, so
+   * the caller passes that channel here; items that report a
+   * conflicting ``latest_channel`` (defensive against backend drift)
+   * are still indexed under the requested channel since that's the
+   * filter the user pages saw.
    */
-  function ingestPage(items: MarketPlugin[]): void {
-    const next = { ...latestBySlug.value }
+  function ingestPage(items: MarketPlugin[], channel: MarketChannelKey = 'stable'): void {
+    const next = { ...latestByKey.value }
     for (const p of items) {
       // Index by BOTH slug AND numeric id so lookups from the install-source
       // lock (which records ``plugin_market_id`` = ``plugin.rawId``, the
       // numeric/string Market id) hit the cache even when the Market API
       // returned a slug.
-      if (p.slug) next[p.slug] = p.version
+      if (p.slug) next[_cacheKey(channel, p.slug)] = p.version
       const idKey = p.id != null ? String(p.id) : ''
-      if (idKey) next[idKey] = p.version
+      if (idKey) next[_cacheKey(channel, idKey)] = p.version
     }
-    latestBySlug.value = next
+    latestByKey.value = next
   }
 
-  /** Fetch all pages of the market's plugin list. Paginates until we've
-   *  seen every item or hit a safety cap.
+  /** Fetch all pages of the market's plugin list for one channel.
    *
-   *  Swap-on-success semantics: pages accumulate into a local map and
-   *  ``latestBySlug`` is replaced atomically only after every page
-   *  arrives. Any thrown exception (network drop mid-fetch, malformed
-   *  response, ...) leaves the previous successful snapshot intact —
+   *  Pages accumulate into the shared accumulator; the caller does the
+   *  atomic swap into ``latestByKey`` once every channel has finished
+   *  so a partial fetch never overwrites a previous good snapshot. */
+  async function _fetchChannel(
+    channel: MarketChannelKey,
+    accumulator: Record<string, string>,
+  ): Promise<void> {
+    let page = 1
+    const pageSize = 100
+    // Defensive cap — no market we care about has >10k plugins per channel.
+    const maxPages = 100
+    while (page <= maxPages) {
+      const result = await fetchMarketPlugins({ page, page_size: pageSize, channel })
+      if (!result?.items?.length) break
+      for (const p of result.items) {
+        if (p.slug) accumulator[_cacheKey(channel, p.slug)] = p.version
+        const idKey = p.id != null ? String(p.id) : ''
+        if (idKey) accumulator[_cacheKey(channel, idKey)] = p.version
+      }
+      const total = result.total ?? 0
+      if (total && page * pageSize >= total) break
+      if (result.items.length < pageSize) break
+      page += 1
+    }
+  }
+
+  /** Fetch every supported channel's plugin list. Swap-on-success
+   *  semantics: pages accumulate into a local map and ``latestByKey``
+   *  is replaced atomically only after every channel finishes. Any
+   *  thrown exception leaves the previous successful snapshot intact —
    *  partial coverage that could mark a plugin as "no longer in market"
    *  just because we failed before reaching its page would be worse
    *  than serving a slightly stale snapshot. */
@@ -66,34 +103,14 @@ export const useMarketVersionsStore = defineStore('marketVersions', () => {
     loadError.value = null
     const accumulator: Record<string, string> = {}
     try {
-      let page = 1
-      const pageSize = 100
-      // Defensive cap — no market we care about has >10k plugins.
-      const maxPages = 100
-      while (page <= maxPages) {
-        const result = await fetchMarketPlugins({ page, page_size: pageSize })
-        if (!result?.items?.length) break
-        for (const p of result.items) {
-          // Same dual-key indexing as ingestPage — see comment there.
-          if (p.slug) accumulator[p.slug] = p.version
-          const idKey = p.id != null ? String(p.id) : ''
-          if (idKey) accumulator[idKey] = p.version
-        }
-        // Use reported total when available to short-circuit; otherwise
-        // stop once we get back a partial page.
-        const total = result.total ?? 0
-        if (total && page * pageSize >= total) break
-        if (result.items.length < pageSize) break
-        page += 1
+      for (const channel of _CHANNELS) {
+        await _fetchChannel(channel, accumulator)
       }
-      // Atomic swap. After this point any plugin whose slug isn't in
-      // ``accumulator`` (because it was unpublished / yanked from the
-      // market) will correctly disappear from ``latest()`` lookups.
-      latestBySlug.value = accumulator
+      latestByKey.value = accumulator
       lastFetchedAt.value = Date.now()
     } catch (err: any) {
       loadError.value = err?.message ?? String(err)
-      // Intentionally do NOT touch ``latestBySlug.value`` — the previous
+      // Intentionally do NOT touch ``latestByKey.value`` — the previous
       // successful snapshot stays live so ``latest()`` callers still get
       // an answer for plugins they care about. ``isReady`` likewise
       // stays based on ``lastFetchedAt`` so the UI doesn't flip into a
@@ -119,16 +136,25 @@ export const useMarketVersionsStore = defineStore('marketVersions', () => {
     return inflight
   }
 
-  /** Synchronous lookup against the current cache. */
-  function latest(slugOrId: string | undefined | null): string | null {
+  /** Synchronous lookup against the current cache.
+   *
+   * ``channel`` is the channel the plugin was installed from — pass
+   * ``source_detail.channel`` so a beta install compares against the
+   * beta latest. Anything other than ``'beta'`` collapses to
+   * ``'stable'`` (so ``undefined`` / ``'unknown'`` keep the historic
+   * stable-only behavior). */
+  function latest(
+    slugOrId: string | undefined | null,
+    channel?: string | null,
+  ): string | null {
     if (!slugOrId) return null
-    return latestBySlug.value[slugOrId] ?? null
+    return latestByKey.value[_cacheKey(_normalizeChannel(channel), slugOrId)] ?? null
   }
 
   const isReady = computed(() => lastFetchedAt.value > 0)
 
   return {
-    latestBySlug,
+    latestByKey,
     loading,
     loadError,
     isReady,
