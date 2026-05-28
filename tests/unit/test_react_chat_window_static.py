@@ -298,17 +298,13 @@ def test_compact_choice_hit_contract_uses_real_options_only():
     choice_selector = 'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {'
     slot_selector = (
         'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-slot,\n'
-        'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-options {'
+        'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-options,\n'
+        'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option {'
     )
     choice_block = css_block(styles, choice_selector, 'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"]::-webkit-scrollbar')
     host_choice_block = css_block(host_styles, choice_selector, 'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"]::-webkit-scrollbar')
-    slot_block = css_block(styles, slot_selector, 'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option')
-    host_slot_block = css_block(host_styles, slot_selector, 'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option')
-    option_block = css_block(
-        styles,
-        'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option {',
-        'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-choice-layer-open="false"]',
-    )
+    slot_block = css_block(styles, slot_selector, 'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-choice-layer-open="false"]')
+    host_slot_block = css_block(host_styles, slot_selector, 'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-choice-layer-open="false"]')
     geometry_block = script.split("function getCompactGeometryElementRect(element)", 1)[1].split(
         "function getCompactHistoryScrollbarRect(element, parentRect)",
         1,
@@ -318,7 +314,8 @@ def test_compact_choice_hit_contract_uses_real_options_only():
     assert "pointer-events: none;" not in host_choice_block
     assert "pointer-events: auto;" in slot_block
     assert "pointer-events: auto;" in host_slot_block
-    assert "pointer-events: auto;" in option_block
+    assert "The compact choice portal itself is transparent" in styles
+    assert "The compact choice portal itself is transparent" in host_styles
     assert "if (item === 'choice')" in geometry_block
     assert "querySelectorAll('.composer-galgame-option')" in geometry_block
     assert "var ownRect = normalizeCompactDomRect(element.getBoundingClientRect());" in geometry_block
