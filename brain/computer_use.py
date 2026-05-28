@@ -1186,8 +1186,10 @@ class ComputerUseAdapter:
                     "[CUA] No code (attempt %d): %.300s", attempt + 1, content
                 )
             except Exception as e:
-                logger.error("[CUA] LLM error (attempt %d): %s", attempt + 1, e)
                 if attempt < 2:
+                    logger.warning("[CUA] LLM error (attempt %d/3): %s", attempt + 1, e)
                     self._interruptible_sleep(1)
+                else:
+                    logger.error("[CUA] LLM error after 3 attempts: %s", e)
 
         return {"thought": "", "action": "", "code": "", "raw": ""}

@@ -81,6 +81,74 @@ def _normalize_timeout_value(value: Any) -> float | None | object:
     return timeout_value if timeout_value > 0 else None
 
 
+def _strip_json_markdown_fence(text: str) -> str:
+    """移除 LLM 常见的 JSON 代码块外壳。"""
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return stripped
+    stripped = re.sub(r"^```(?:json|JSON)?\s*", "", stripped)
+    stripped = re.sub(r"\s*```$", "", stripped)
+    return stripped.strip()
+
+
+def _extract_balanced_json_object(text: str) -> str:
+    """从混杂文本中提取第一个括号平衡的 JSON 对象。"""
+    start = text.find("{")
+    if start < 0:
+        return ""
+
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        char = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return ""
+
+
+def _parse_llm_json_object(raw_text: Any) -> Dict[str, Any]:
+    """解析 LLM 返回的 JSON 对象，兼容代码块和前后夹杂文本。"""
+    text = raw_text.strip() if isinstance(raw_text, str) else ""
+    if not text:
+        raise ValueError("Empty LLM response")
+
+    text = _strip_json_markdown_fence(text)
+    candidates = [text]
+    extracted = _extract_balanced_json_object(text)
+    if extracted and extracted != text:
+        candidates.append(extracted)
+
+    last_error: Exception | None = None
+    for candidate in candidates:
+        try:
+            parsed = robust_json_loads(candidate)
+        except Exception as exc:
+            last_error = exc
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+        last_error = ValueError(f"Expected JSON object, got {type(parsed).__name__}")
+
+    if last_error:
+        raise last_error
+    raise ValueError("No JSON object found")
+
+
 def _resolve_plugin_entry_timeout(meta: Optional[Dict[str, Any]], entry: Optional[str]) -> float | None:
     default_timeout = PLUGIN_EXECUTION_TIMEOUT
     if not isinstance(meta, dict):
@@ -1327,6 +1395,7 @@ class DirectTaskExecutor:
         max_retries = 3
         retry_delays = [1, 2]
         up_retry_done = False
+        parse_error_hint = ""
         
         for attempt in range(max_retries):
             try:
@@ -1336,6 +1405,8 @@ class DirectTaskExecutor:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ]
+                if parse_error_hint:
+                    messages.append({"role": "user", "content": parse_error_hint})
 
                 quota_error = await self._check_agent_quota("task_executor.assess_user_plugin")
                 if quota_error:
@@ -1361,59 +1432,35 @@ class DirectTaskExecutor:
                 logger.debug(f"[UserPlugin Assessment] raw LLM response (len={len(_raw_repr)})")
                 print(f"[UserPlugin Assessment] raw LLM response: {_raw_repr[:2000]}")
                 
-                text = raw_text.strip() if isinstance(raw_text, str) else ""
-                
-                if text.startswith("```"):
-                    text = text.replace("```json", "").replace("```", "").strip()
-                
-                # If the response is empty or not valid JSON, log and return a safe decision
-                if not text:
-                    logger.warning("[UserPlugin Assessment] Empty LLM response; cannot parse JSON")
-                    return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason="Empty LLM response")
-                
-                # Try to fix common JSON issues before parsing
-                # Remove trailing commas before closing braces/brackets
-                # Fix trailing commas in objects and arrays
-                text = re.sub(r',(\s*[}\]])', r'\1', text)
-                # NOTE: 避免"去注释"误伤字符串内容；只做最小化 JSON 修复
-                # 不删除注释，因为正则表达式会误伤 JSON 字符串中的内容（如 http://、/*...*/）
-                
+                text = _strip_json_markdown_fence(raw_text) if isinstance(raw_text, str) else ""
                 try:
-                    decision = json.loads(text)
+                    decision = _parse_llm_json_object(raw_text)
                 except Exception as e:
-                    # raw_text 含 LLM 原文，不写 logger
-                    _raw_dump = repr(raw_text) if raw_text is not None else "None"
-                    logger.debug(
-                        "[UserPlugin Assessment] JSON parse error; raw_text len=%d",
-                        len(_raw_dump),
+                    raw_len = len(raw_text) if isinstance(raw_text, str) else 0
+                    logger.warning(
+                        "[UserPlugin Assessment] JSON parse failed (attempt %d/%d, raw_len=%d): %s",
+                        attempt + 1,
+                        max_retries,
+                        raw_len,
+                        e,
                     )
-                    print(f"[UserPlugin Assessment] JSON parse error; raw_text (truncated): {_raw_dump[:2000]}")
-                    # ERROR 级别只记录错误信息，不包含敏感内容
-                    logger.exception("[UserPlugin Assessment] JSON parse error")
-                    # Try to extract JSON from the text if it's embedded in other text
-                    try:
-                        # Try to find JSON object in the text (improved regex to handle nested objects)
-                        json_match = re.search(r'\{[^{}]*(?:\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}[^{}]*)*\}', text)
-                        if json_match:
-                            cleaned_text = json_match.group(0)
-                            # Fix trailing commas again
-                            cleaned_text = re.sub(r',(\s*[}\]])', r'\1', cleaned_text)
-                            decision = json.loads(cleaned_text)
-                            logger.info("[UserPlugin Assessment] Successfully extracted JSON from text")
-                        else:
-                            # JSON extraction failed - return safe default instead of trying to reconstruct
-                            logger.warning("[UserPlugin Assessment] Failed to extract valid JSON from response")
-                            return UserPluginDecision(
-                                has_task=False, 
-                                can_execute=False, 
-                                task_description="", 
-                                plugin_id=None, 
-                                plugin_args=None, 
-                                reason=f"JSON parse error: {e}"
-                            )
-                    except Exception as e2:
-                        logger.warning(f"[UserPlugin Assessment] Failed to extract JSON: {e2}")
-                        return UserPluginDecision(has_task=False, can_execute=False, task_description="", plugin_id=None, plugin_args=None, reason=f"JSON parse error: {e}")
+                    if attempt < max_retries - 1:
+                        parse_error_hint = (
+                            "Previous response was invalid or truncated JSON. "
+                            "Return only one compact valid JSON object with keys: "
+                            "has_task, can_execute, task_description, plugin_id, entry_id, plugin_args, reason. "
+                            "Keep task_description and reason short."
+                        )
+                        await asyncio.sleep(retry_delays[min(attempt, len(retry_delays) - 1)])
+                        continue
+                    return UserPluginDecision(
+                        has_task=False,
+                        can_execute=False,
+                        task_description="",
+                        plugin_id=None,
+                        plugin_args=None,
+                        reason=f"JSON parse error: {e}",
+                    )
                 
                 # Validate plugin_id and entry_id against known plugins before returning.
                 # If invalid, retry once with a corrective hint.
@@ -1481,11 +1528,7 @@ class DirectTaskExecutor:
                         try:
                             response2 = await llm.ainvoke(messages)
                             raw2 = response2.content
-                            t2 = raw2.strip() if isinstance(raw2, str) else ""
-                            if t2.startswith("```"):
-                                t2 = t2.replace("```json", "").replace("```", "").strip()
-                            t2 = re.sub(r',(\s*[}\]])', r'\1', t2)
-                            decision2 = json.loads(t2)
+                            decision2 = _parse_llm_json_object(raw2)
                             logger.info("[UserPlugin Assessment] Retry response parsed: %s", {k: decision2.get(k) for k in ("has_task", "can_execute", "plugin_id", "entry_id")})
                             decision = decision2
                             d_pid = decision.get("plugin_id")

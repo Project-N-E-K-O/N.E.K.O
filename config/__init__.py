@@ -1489,7 +1489,7 @@ AGENT_UNIFIED_ASSESS_MAX_TOKENS = 600
 - 用途：判断走哪条执行通道（QwenPaw / OpenFang / BrowserUse / ComputerUse）。
 - 上游：LLM 输出。"""
 
-AGENT_PLUGIN_FULL_MAX_TOKENS = 500
+AGENT_PLUGIN_FULL_MAX_TOKENS = 1000
 """插件完整评估 stage2 LLM 的 max_completion_tokens。
 - 用途：返回 plugin_id + plugin_args + reason。
 - 上游：LLM 输出。"""

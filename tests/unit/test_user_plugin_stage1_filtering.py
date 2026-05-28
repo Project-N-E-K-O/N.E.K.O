@@ -16,6 +16,18 @@ class _FakeLLM:
         return _FakeResponse(self.content)
 
 
+class _FakeLLMSequence:
+    def __init__(self, contents):
+        self.contents = list(contents)
+        self.calls = []
+
+    async def ainvoke(self, messages):
+        self.calls.append(messages)
+        if not self.contents:
+            raise AssertionError("unexpected extra LLM call")
+        return _FakeResponse(self.contents.pop(0))
+
+
 def _make_plugins():
     return [
         {
@@ -98,3 +110,63 @@ async def test_stage1_empty_union_rejects_hallucinated_existing_plugin(monkeypat
     assert result.can_execute is False
     assert result.plugin_id == "alpha"
     assert result.reason == "plugin_id 'alpha' not available in current candidates"
+
+
+@pytest.mark.asyncio
+async def test_user_plugin_assessment_retries_truncated_json(monkeypatch):
+    from brain.task_executor import DirectTaskExecutor
+
+    executor = object.__new__(DirectTaskExecutor)
+    executor._STAGE1_TRIGGER_TOKENS = 999999
+    executor._check_agent_quota = _no_quota
+
+    fake_llm = _FakeLLMSequence([
+        '{"has_task": true, "can_execute": true, "task_description": "run alpha',
+        (
+            '{"has_task": true, "can_execute": true, "task_description": "run alpha", '
+            '"plugin_id": "alpha", "entry_id": "run", "plugin_args": {}, "reason": ""}'
+        ),
+    ])
+    executor._get_llm = lambda **_kwargs: fake_llm
+
+    result = await executor._assess_user_plugin(
+        "LATEST_USER_REQUEST: run alpha",
+        _make_plugins(),
+        lang="en",
+    )
+
+    assert result.can_execute is True
+    assert result.plugin_id == "alpha"
+    assert result.entry_id == "run"
+    assert len(fake_llm.calls) == 2
+    assert "invalid or truncated JSON" in fake_llm.calls[1][-1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_user_plugin_assessment_extracts_json_from_wrapped_response(monkeypatch):
+    from brain.task_executor import DirectTaskExecutor
+
+    executor = object.__new__(DirectTaskExecutor)
+    executor._STAGE1_TRIGGER_TOKENS = 999999
+    executor._check_agent_quota = _no_quota
+
+    fake_llm = _FakeLLM(
+        (
+            "Here is the decision:\n```json\n"
+            '{"has_task": true, "can_execute": true, "task_description": "run alpha", '
+            '"plugin_id": "alpha", "entry_id": "run", "plugin_args": {}, "reason": ""}'
+            "\n```"
+        )
+    )
+    executor._get_llm = lambda **_kwargs: fake_llm
+
+    result = await executor._assess_user_plugin(
+        "LATEST_USER_REQUEST: run alpha",
+        _make_plugins(),
+        lang="en",
+    )
+
+    assert result.can_execute is True
+    assert result.plugin_id == "alpha"
+    assert result.entry_id == "run"
+    assert len(fake_llm.calls) == 1
