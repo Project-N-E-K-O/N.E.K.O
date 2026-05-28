@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 from ..paths import CliDefaults
+from ..core.toml_utils import render_toml_value
 from ._completers import PLUGIN_NAME_COMPLETER
 from ._resolve import resolve_plugin_dir_candidate
 
@@ -373,11 +374,7 @@ def _update_pyproject_dependencies(pyproject_path: Path, deps: list[str]) -> Non
 
     content = pyproject_path.read_text(encoding="utf-8")
     sorted_deps = sorted(deps, key=str.lower)
-    deps_body = (
-        "[]"
-        if not sorted_deps
-        else "[\n" + ",\n".join(f'  "{d}"' for d in sorted_deps) + ",\n]"
-    )
+    deps_body = _render_dependency_array(sorted_deps)
 
     import re
 
@@ -451,6 +448,12 @@ def _update_pyproject_dependencies(pyproject_path: Path, deps: list[str]) -> Non
         )
 
     pyproject_path.write_text(new_content, encoding="utf-8", newline="\n")
+
+
+def _render_dependency_array(deps: list[str]) -> str:
+    if not deps:
+        return "[]"
+    return "[\n" + ",\n".join(f"  {render_toml_value(dep)}" for dep in deps) + ",\n]"
 
 
 def _clean_vendor(vendor_dir: Path) -> None:

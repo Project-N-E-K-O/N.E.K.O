@@ -106,6 +106,23 @@ class TestHelpers:
         assert '"pydantic>=2.0"' in content
         assert '[tool.demo]\nvalue = "keep"' in content
 
+    def test_update_pyproject_dependencies_escapes_marker_quotes(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        pyproject = tmp_path / "pyproject.toml"
+        pyproject.write_text(
+            '[project]\nname = "test"\ndependencies = []\n',
+            encoding="utf-8",
+        )
+        dep = 'importlib-metadata; python_version < "3.10"'
+
+        _update_pyproject_dependencies(pyproject, [dep])
+
+        content = pyproject.read_text(encoding="utf-8")
+        assert 'python_version < \\"3.10\\"' in content
+        assert _read_dependencies(pyproject) == [dep]
+
     def test_clean_vendor(self, tmp_path: Path) -> None:
         vendor = tmp_path / "vendor"
         vendor.mkdir()
