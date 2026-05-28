@@ -55,7 +55,12 @@ FIXTURE_PLUGINS_ROOT = (
 # ─── Fixture: build a minimal valid .neko-plugin package ──────────────
 
 
-def _build_neko_plugin_zip(*, plugin_id: str, version: str) -> tuple[bytes, str]:
+def _build_neko_plugin_zip(
+    *,
+    plugin_id: str,
+    version: str,
+    include_profile: bool = False,
+) -> tuple[bytes, str]:
     """Build a minimal ``.neko-plugin`` archive in memory.
 
     Layout matches what :mod:`plugin.neko_plugin_cli.public.archive_utils`
@@ -84,6 +89,13 @@ def _build_neko_plugin_zip(*, plugin_id: str, version: str) -> tuple[bytes, str]
     payload_files = [
         (f"plugins/{plugin_id}/plugin.toml", plugin_toml_content),
     ]
+    if include_profile:
+        payload_files.append(
+            (
+                "profiles/default.toml",
+                f'[{plugin_id}]\nvalue = "from-profile"\n'.encode("utf-8"),
+            )
+        )
     digest = hashlib.sha256()
     for rel, content in sorted(payload_files, key=lambda x: x[0]):
         digest.update(rel.encode("utf-8"))
@@ -231,6 +243,7 @@ def bridge_e2e_env(
             "packages_root": packages_root,
             "lock_path": lock_path,
             "oauth_token_file": tmp_path / "market_auth.json",
+            "profiles_root": profiles_root,
             "manager": mgr,
             "service": plugin_cli_pkg,
         }
@@ -1264,6 +1277,91 @@ async def test_upgrade_rejects_plugin_identity_mismatch_and_rolls_back(
         encoding="utf-8",
     )
     assert not (user_root / intruder_id).exists()
+
+
+@pytest.mark.asyncio
+async def test_failed_market_install_cleans_promoted_profile_dir(
+    bridge_e2e_env: dict[str, Any],
+) -> None:
+    plugin_id = "e2e_profile_cleanup"
+    intruder_id = "e2e_profile_intruder"
+    v1_zip, v1_payload_hash = _build_neko_plugin_zip(
+        plugin_id=plugin_id,
+        version="1.0.0",
+    )
+    zip_bytes, payload_hash = _build_neko_plugin_zip(
+        plugin_id=intruder_id,
+        version="2.0.0",
+        include_profile=True,
+    )
+
+    client: AsyncClient = bridge_e2e_env["client"]
+    token: str = bridge_e2e_env["token"]
+    user_root: Path = bridge_e2e_env["user_root"]
+    profiles_root: Path = bridge_e2e_env["profiles_root"]
+
+    with _serve_bytes(
+        filename=f"{plugin_id}-1.0.0.neko-plugin", content=v1_zip,
+    ) as package_url:
+        resp = await client.post(
+            f"/market/install?token={token}",
+            json={
+                "package_url": package_url,
+                "package_sha256": hashlib.sha256(v1_zip).hexdigest(),
+                "payload_hash": v1_payload_hash,
+                "plugin_id": plugin_id,
+                "version": "1.0.0",
+                "channel": "stable",
+                "mode": "install",
+                "expected_plugin_toml_id": plugin_id,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        task_id = resp.json()["task_id"]
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            poll = await client.get(f"/market/tasks/{task_id}?token={token}")
+            if poll.json()["status"] in ("completed", "failed"):
+                assert poll.json()["status"] == "completed", poll.json()
+                break
+            await asyncio.sleep(0.05)
+
+    with _serve_bytes(
+        filename=f"{intruder_id}-2.0.0.neko-plugin", content=zip_bytes,
+    ) as package_url:
+        resp = await client.post(
+            f"/market/install?token={token}",
+            json={
+                "package_url": package_url,
+                "package_sha256": hashlib.sha256(zip_bytes).hexdigest(),
+                "payload_hash": payload_hash,
+                "plugin_id": plugin_id,
+                "version": "2.0.0",
+                "channel": "stable",
+                "mode": "upgrade",
+                "on_conflict": "fail",
+                "expected_plugin_toml_id": plugin_id,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        task_id = resp.json()["task_id"]
+
+        deadline = time.monotonic() + 30
+        final_status: dict[str, Any] | None = None
+        while time.monotonic() < deadline:
+            poll = await client.get(f"/market/tasks/{task_id}?token={token}")
+            body = poll.json()
+            if body["status"] in ("completed", "failed"):
+                final_status = body
+                break
+            await asyncio.sleep(0.05)
+
+    assert final_status is not None
+    assert final_status["status"] == "failed", final_status
+    assert "plugin identity mismatch" in final_status["error"]
+    assert (user_root / plugin_id / "plugin.toml").is_file()
+    assert not (user_root / intruder_id).exists()
+    assert not (profiles_root / intruder_id).exists()
 
 
 @pytest.mark.asyncio

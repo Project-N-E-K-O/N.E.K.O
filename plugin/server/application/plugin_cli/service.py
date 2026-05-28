@@ -242,6 +242,7 @@ class PluginCliService:
         saved: dict[str, object] | None = None
         unpack_result: dict[str, object] | None = None
         unpacked_target_dirs: list[Path] = []
+        unpacked_profile_dirs: list[Path] = []
         owns_saved_package = False
 
         try:
@@ -276,6 +277,7 @@ class PluginCliService:
                 use_staging=use_staging,
             )
             unpacked_target_dirs = self._extract_unpack_target_dirs(unpack_result)
+            unpacked_profile_dirs = self._extract_unpack_profile_dirs(unpack_result)
             target_dir, _target_directory_plugin_id = self._extract_unpack_target(
                 unpack_result
             )
@@ -423,6 +425,7 @@ class PluginCliService:
             self._cleanup_after_failure(
                 saved=saved,
                 unpacked_target_dirs=unpacked_target_dirs,
+                unpacked_profile_dirs=unpacked_profile_dirs,
                 delete_saved_package=owns_saved_package,
             )
             raise
@@ -430,6 +433,7 @@ class PluginCliService:
             self._cleanup_after_failure(
                 saved=saved,
                 unpacked_target_dirs=unpacked_target_dirs,
+                unpacked_profile_dirs=unpacked_profile_dirs,
                 delete_saved_package=owns_saved_package,
             )
             raise
@@ -458,6 +462,15 @@ class PluginCliService:
             if isinstance(target_dir_raw, str) and target_dir_raw:
                 target_dirs.append(Path(target_dir_raw))
         return target_dirs
+
+    @staticmethod
+    def _extract_unpack_profile_dirs(unpack_result: dict[str, object]) -> list[Path]:
+        """Return promoted profile dirs created by the unpack operation."""
+
+        profile_dir_raw = unpack_result.get("profile_dir")
+        if isinstance(profile_dir_raw, str) and profile_dir_raw:
+            return [Path(profile_dir_raw)]
+        return []
 
     @classmethod
     def _extract_unpack_target(
@@ -559,6 +572,7 @@ class PluginCliService:
         *,
         saved: dict[str, object] | None,
         unpacked_target_dirs: list[Path] | None = None,
+        unpacked_profile_dirs: list[Path] | None = None,
         delete_saved_package: bool = True,
     ) -> None:
         """Best-effort fs cleanup on upload_and_install failure (R3.6).
@@ -572,6 +586,8 @@ class PluginCliService:
 
         for unpacked_target_dir in unpacked_target_dirs or []:
             self._cleanup_failed_unpack(unpacked_target_dir)
+        for unpacked_profile_dir in unpacked_profile_dirs or []:
+            self._cleanup_failed_unpack(unpacked_profile_dir)
         if delete_saved_package and saved is not None:
             saved_path_raw = saved.get("path")
             if isinstance(saved_path_raw, str) and saved_path_raw:
