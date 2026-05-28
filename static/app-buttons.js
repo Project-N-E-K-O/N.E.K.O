@@ -41,6 +41,19 @@
         }
     }
 
+    function shouldSuppressCompactHistoryDropSendForVoiceMode() {
+        try {
+            if (typeof window.shouldKeepVoiceComposerHidden === 'function'
+                    && window.shouldKeepVoiceComposerHidden()) {
+                return true;
+            }
+        } catch (_) {}
+        return !!(
+            (S && (S.isRecording || S.voiceChatActive || S.voiceStartPending))
+            || window.isMicStarting
+        );
+    }
+
     function getImageNaturalSize(image) {
         return {
             width: image.naturalWidth || image.width || 0,
@@ -624,6 +637,9 @@
         if (isHomeTutorialInteractionLocked()) {
             showHomeTutorialLockedToast();
             return false;
+        }
+        if (shouldSuppressCompactHistoryDropSendForVoiceMode()) {
+            return true;
         }
 
         var normalizedImages = [];

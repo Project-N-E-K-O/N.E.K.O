@@ -2391,6 +2391,80 @@ describe('App', () => {
     expect(preview).toHaveTextContent('');
   });
 
+  it('falls back to revealing compact streaming text when playback state never arrives', async () => {
+    vi.useFakeTimers();
+    const streamingText = '主动搭话进入紧凑态时，即使语音播放状态没有及时到达，也应该显示这段文本。';
+    const message = parseChatMessage({
+      id: 'assistant-compact-streaming-proactive-fallback',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:01',
+      createdAt: 2,
+      blocks: [{ type: 'text', text: streamingText }],
+      status: 'streaming',
+    });
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" messages={[message]} />);
+
+      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent('');
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1400);
+      });
+
+      const visibleLength = container.querySelector('.compact-chat-capsule-text')?.textContent?.length ?? 0;
+      expect(visibleLength).toBeGreaterThan(0);
+      expect(visibleLength).toBeLessThan(streamingText.length);
+      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent(
+        streamingText.slice(0, visibleLength),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps proactive compact speech focused on the current turn instead of an old assistant reply', async () => {
+    vi.useFakeTimers();
+    const previousAssistantText = '上一轮猫娘已经说完的话，不应该混进这次主动搭话。';
+    const currentProactiveText = '现在主动搭话正在说的新内容，紧凑框应该从这里开始显示。';
+    const previousAssistantMessage = parseChatMessage({
+      id: 'assistant-compact-previous-turn',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: previousAssistantText }],
+      status: 'sent',
+    });
+    const currentProactiveMessage = parseChatMessage({
+      id: 'assistant-compact-current-proactive',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:02',
+      createdAt: 60000,
+      blocks: [{ type: 'text', text: currentProactiveText }],
+      status: 'streaming',
+    });
+
+    try {
+      const { container } = render(
+        <App chatSurfaceMode="compact" messages={[previousAssistantMessage, currentProactiveMessage]} />,
+      );
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1400);
+      });
+
+      const previewText = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      expect(previewText.length).toBeGreaterThan(0);
+      expect(previewText).toBe(currentProactiveText.slice(0, previewText.length));
+      expect(previewText).not.toContain(previousAssistantText.slice(0, 4));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('reveals compact streaming text when assistant speech is unavailable', async () => {
     vi.useFakeTimers();
     const streamingText = '语音不可用时，紧凑态仍然应该用文本速度显示猫娘正在说的内容。';
@@ -2968,6 +3042,68 @@ describe('App', () => {
     expect(actionButton).toBeInTheDocument();
     expect(actionButton.querySelector('img')).toHaveAttribute('src', '/static/icons/dropdown_arrow.png');
     expect(actionButton.querySelector('img')).toHaveClass('compact-input-tool-toggle-icon');
+  });
+
+  it('keeps the compact chat surface visible while voice mode hides the composer input', () => {
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" composerHidden />,
+    );
+
+    expect(container.querySelector('.composer-panel')).not.toHaveStyle({ display: 'none' });
+    expect(container.querySelector('.compact-chat-surface-shell')).not.toBeNull();
+    expect(container.querySelector('.compact-chat-surface-frame')).toHaveAttribute('data-compact-geometry-item', 'capsule');
+    expect(container.querySelector('.composer-input')).toBeNull();
+  });
+
+  it('does not expose compact galgame choices while voice mode hides the composer', () => {
+    const onGalgameOptionSelect = vi.fn();
+    const { container } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="options"
+        composerHidden
+        galgameModeEnabled
+        galgameOptions={[
+          { label: 'A', text: '语音模式下不应该点到这个选项' },
+          { label: 'B', text: '这个也不应该出现' },
+        ]}
+        onGalgameOptionSelect={onGalgameOptionSelect}
+      />,
+    );
+
+    expect(container.querySelector('.compact-chat-surface-shell')).not.toBeNull();
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'default');
+    expect(container.querySelector('.composer-galgame-slot')).toBeNull();
+    expect(container.querySelector('.composer-galgame-option')).toBeNull();
+    expect(onGalgameOptionSelect).not.toHaveBeenCalled();
+  });
+
+  it('does not request compact input when the compact capsule is clicked in voice mode', () => {
+    const onCompactChatStateChange = vi.fn();
+    const message = parseChatMessage({
+      id: 'assistant-compact-voice-no-input-entry',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: '语音模式下不能进入输入态。' }],
+      status: 'sent',
+    });
+    const { container } = render(
+      <App
+        chatSurfaceMode="compact"
+        composerHidden
+        messages={[message]}
+        onCompactChatStateChange={onCompactChatStateChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '语音模式下不能进入输入态。' }));
+
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'default');
+    expect(container.querySelector('.composer-input')).toBeNull();
+    expect(container.querySelector('.compact-input-tool-fan')).toBeNull();
+    expect(onCompactChatStateChange).not.toHaveBeenCalled();
   });
 
   it('opens compact input tools from the same right-side button without submitting', () => {

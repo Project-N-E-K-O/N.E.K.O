@@ -942,12 +942,20 @@
     function getCompactGeometryElementRect(element) {
         if (!element || typeof element.getBoundingClientRect !== 'function') return null;
         var item = element.getAttribute('data-compact-geometry-item') || '';
+        if (item === 'choice') {
+            var choiceRects = Array.prototype.slice.call(element.querySelectorAll('.composer-galgame-option'))
+                .map(function (child) {
+                    var style = window.getComputedStyle ? window.getComputedStyle(child) : null;
+                    if (style && (style.display === 'none' || style.visibility === 'hidden')) return null;
+                    return normalizeCompactDomRect(child.getBoundingClientRect());
+                })
+                .filter(Boolean);
+            return unionCompactRects(choiceRects);
+        }
         var ownRect = normalizeCompactDomRect(element.getBoundingClientRect());
         if (ownRect) return ownRect;
 
-        if (item !== 'choice') return null;
-
-        var childRects = Array.prototype.slice.call(element.querySelectorAll('.composer-galgame-slot, button'))
+        var childRects = Array.prototype.slice.call(element.querySelectorAll('button'))
             .map(function (child) {
                 var style = window.getComputedStyle ? window.getComputedStyle(child) : null;
                 if (style && (style.display === 'none' || style.visibility === 'hidden')) return null;
@@ -955,6 +963,26 @@
             })
             .filter(Boolean);
         return unionCompactRects(childRects);
+    }
+
+    function getCompactHistoryScrollbarRect(element, parentRect) {
+        if (!element || !parentRect) return null;
+        var scrollNode = element.querySelector('.compact-export-history-scroll');
+        if (!scrollNode || typeof scrollNode.getBoundingClientRect !== 'function') return null;
+        if (scrollNode.scrollHeight <= scrollNode.clientHeight + 1) return null;
+        var style = window.getComputedStyle ? window.getComputedStyle(scrollNode) : null;
+        if (style && (style.display === 'none' || style.visibility === 'hidden' || style.pointerEvents === 'none')) return null;
+        var scrollRect = intersectCompactRects(scrollNode.getBoundingClientRect(), parentRect);
+        if (!scrollRect) return null;
+        var gutterWidth = Math.min(Math.max(Number(scrollNode.offsetWidth - scrollNode.clientWidth) || 0, 8), 14);
+        return {
+            left: scrollRect.right - gutterWidth,
+            top: scrollRect.top,
+            width: gutterWidth,
+            height: scrollRect.height,
+            right: scrollRect.right,
+            bottom: scrollRect.bottom
+        };
     }
 
     function expandCompactToolFanNativeRect(rect, element) {
@@ -998,8 +1026,6 @@
                 if (!slot || slot === 'hidden') return null;
                 var rect = normalizeCompactDomRect(child.getBoundingClientRect());
                 if (!rect) return null;
-                var interactive = style ? style.pointerEvents !== 'none' : true;
-                if (!interactive) return null;
                 return {
                     id: 'toolFan:' + slot + ':' + index,
                     owner: 'surface',
@@ -1026,6 +1052,21 @@
                 nativeRect: parentRect,
                 interactive: false
             });
+            if (kind === 'history') {
+                var scrollbarRect = getCompactHistoryScrollbarRect(element, parentRect);
+                if (scrollbarRect) {
+                    items.push({
+                        id: 'history:scrollbar',
+                        owner: 'surface',
+                        kind: kind || 'unknown',
+                        visualRect: scrollbarRect,
+                        hitRect: scrollbarRect,
+                        nativeRect: scrollbarRect,
+                        interactive: true,
+                        hitRegionKind: 'scrollbar'
+                    });
+                }
+            }
         }
         return items.concat(Array.prototype.slice.call(element.querySelectorAll('[data-compact-hit-region="true"]'))
             .map(function (child, index) {

@@ -963,11 +963,20 @@ body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {
     overscroll-behavior: contain;
     scrollbar-width: none;
     z-index: 100002;
-    pointer-events: auto;
+    pointer-events: none;
 }
 
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"]::-webkit-scrollbar {
     display: none;
+}
+
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-slot,
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-options {
+    pointer-events: none;
+}
+
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option {
+    pointer-events: auto;
 }
 
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-choice-layer-open="false"] {

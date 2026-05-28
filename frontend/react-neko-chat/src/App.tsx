@@ -75,11 +75,16 @@ function getEffectiveCompactChatState(
   if (hasVisibleChoices) {
     return 'options';
   }
+  if (requestedState === 'options') {
+    return 'default';
+  }
   return requestedState;
 }
 
 const COMPACT_PREVIEW_MAX_LENGTH = 84;
 const COMPACT_SPEECH_REVEAL_MAX_CHARS_PER_SECOND = 8;
+const COMPACT_SPEECH_TURN_MERGE_WINDOW_MS = 12000;
+const COMPACT_SPEECH_FALLBACK_REVEAL_DELAY_MS = 700;
 const SPEECH_PLAYBACK_STATE_STORAGE_KEY = 'neko_speech_playback_state';
 const SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';
 const COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY = 'neko.reactChatWindow.compactExportHistoryOpen';
@@ -329,12 +334,30 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
   if (latestStreamingAssistantIndex >= 0) {
     const turnTexts: string[] = [];
     let turnAuthor = '';
-    const turnMessageId = String(messages[latestStreamingAssistantIndex]?.id || 'assistant-streaming');
+    const latestStreamingMessage = messages[latestStreamingAssistantIndex];
+    const turnMessageId = String(latestStreamingMessage?.id || 'assistant-streaming');
+    let previousIncludedCreatedAt = typeof latestStreamingMessage?.createdAt === 'number'
+      && Number.isFinite(latestStreamingMessage.createdAt)
+      ? latestStreamingMessage.createdAt
+      : null;
     for (let index = latestStreamingAssistantIndex; index >= 0; index -= 1) {
       const message = messages[index];
       if (!message) continue;
       if (message.role !== 'assistant') {
         break;
+      }
+      if (index !== latestStreamingAssistantIndex && message.status !== 'streaming') {
+        const createdAt = typeof message.createdAt === 'number' && Number.isFinite(message.createdAt)
+          ? message.createdAt
+          : null;
+        if (
+          previousIncludedCreatedAt === null
+          || createdAt === null
+          || Math.abs(previousIncludedCreatedAt - createdAt) > COMPACT_SPEECH_TURN_MERGE_WINDOW_MS
+        ) {
+          break;
+        }
+        previousIncludedCreatedAt = createdAt;
       }
       const text = getMessageBlockPreviewText(message);
       if (!text) continue;
@@ -1075,6 +1098,7 @@ export default function App({
   const compactSpeechPreviewIdRef = useRef('');
   const compactSpeechPreviewTextRef = useRef('');
   const compactSpeechFallbackRevealRef = useRef(false);
+  const compactSpeechFallbackTimerRef = useRef<number | null>(null);
   const isCompactSurfaceRef = useRef(false);
   const speechPlaybackStateRef = useRef<SpeechPlaybackState | null>(null);
   const avatarInteractionCallbackRef = useRef(onAvatarInteraction);
@@ -1231,15 +1255,20 @@ export default function App({
   // ChoicePrompt and galgame options share the same composer-anchored slot.
   // The transient invite should win when both are present so we do not stack
   // two button groups in the same compact surface.
-  const choicePromptHasOptions = !!(choicePrompt && choicePrompt.options.length > 0);
+  const compactChoiceInteractionsAllowed = !composerHidden;
+  const choicePromptHasOptions = compactChoiceInteractionsAllowed
+    && !!(choicePrompt && choicePrompt.options.length > 0);
   const galgameOptionsVisible =
-    galgameModeEnabled && !choicePromptHasOptions
+    compactChoiceInteractionsAllowed && galgameModeEnabled && !choicePromptHasOptions
     && (galgameOptionsLoading || galgameOptions.length > 0);
   const compactSurfaceChoicesVisible = choicePromptHasOptions || galgameOptionsVisible;
   const isCompactSurface = chatSurfaceMode === 'compact';
-  const effectiveCompactChatState = isCompactSurface
-    ? getEffectiveCompactChatState(compactChatState, compactSurfaceChoicesVisible)
+  const requestedCompactChatState = isCompactSurface && composerHidden && compactChatState === 'input'
+    ? 'default'
     : compactChatState;
+  const effectiveCompactChatState = isCompactSurface
+    ? getEffectiveCompactChatState(requestedCompactChatState, compactSurfaceChoicesVisible)
+    : requestedCompactChatState;
   const getCompactSurfaceResizeMaxAvailableWidth = useCallback(() => {
     const desktopWindow = window as typeof window & {
       __nekoDesktopCompactLayout?: DesktopCompactChoicePlacementLayout | null;
@@ -1591,6 +1620,10 @@ export default function App({
   ]);
 
   useEffect(() => {
+    if (compactSpeechFallbackTimerRef.current !== null) {
+      window.clearTimeout(compactSpeechFallbackTimerRef.current);
+      compactSpeechFallbackTimerRef.current = null;
+    }
     compactSpeechVisibleLengthRef.current = 0;
     compactSpeechPlaybackStartedRef.current = false;
     compactSpeechFallbackRevealRef.current = false;
@@ -1602,6 +1635,10 @@ export default function App({
 
   useEffect(() => {
     if (!compactPreviewIsStreaming) {
+      if (compactSpeechFallbackTimerRef.current !== null) {
+        window.clearTimeout(compactSpeechFallbackTimerRef.current);
+        compactSpeechFallbackTimerRef.current = null;
+      }
       compactSpeechVisibleLengthRef.current = 0;
       compactSpeechPlaybackStartedRef.current = false;
       compactSpeechFallbackRevealRef.current = false;
@@ -1618,12 +1655,54 @@ export default function App({
     const estimatedAudioTime = getEstimatedSpeechAudioTime(speechPlaybackState);
     if (estimatedAudioTime >= speechPlaybackState.playbackStartAudioTime) {
       compactSpeechPlaybackStartedRef.current = true;
+      if (compactSpeechFallbackTimerRef.current !== null) {
+        window.clearTimeout(compactSpeechFallbackTimerRef.current);
+        compactSpeechFallbackTimerRef.current = null;
+      }
       if (compactSpeechFallbackRevealRef.current) {
         compactSpeechFallbackRevealRef.current = false;
         setCompactSpeechFallbackRevealActive(false);
       }
     }
   }, [compactPreviewIsStreaming, speechPlaybackState]);
+
+  useEffect(() => {
+    if (compactSpeechFallbackTimerRef.current !== null) {
+      window.clearTimeout(compactSpeechFallbackTimerRef.current);
+      compactSpeechFallbackTimerRef.current = null;
+    }
+    if (!compactPreviewIsStreaming || compactPreviewText.length <= 0) {
+      return undefined;
+    }
+
+    compactSpeechFallbackTimerRef.current = window.setTimeout(() => {
+      compactSpeechFallbackTimerRef.current = null;
+      const playbackState = speechPlaybackStateRef.current;
+      const playbackHasStarted = !!playbackState?.active
+        && getEstimatedSpeechAudioTime(playbackState) >= playbackState.playbackStartAudioTime;
+      if (
+        !isCompactSurfaceRef.current
+        || compactSpeechPlaybackStartedRef.current
+        || playbackHasStarted
+        || compactSpeechVisibleLengthRef.current > 0
+      ) {
+        return;
+      }
+      compactSpeechFallbackRevealRef.current = true;
+      compactSpeechRevealCarryRef.current = 0;
+      compactSpeechLastFrameTimeRef.current = 0;
+      compactSpeechVisibleLengthRef.current = Math.min(1, compactPreviewText.length);
+      setCompactSpeechVisibleLength(compactSpeechVisibleLengthRef.current);
+      setCompactSpeechFallbackRevealActive(true);
+    }, COMPACT_SPEECH_FALLBACK_REVEAL_DELAY_MS);
+
+    return () => {
+      if (compactSpeechFallbackTimerRef.current !== null) {
+        window.clearTimeout(compactSpeechFallbackTimerRef.current);
+        compactSpeechFallbackTimerRef.current = null;
+      }
+    };
+  }, [compactPreviewIsStreaming, compactPreviewText.length, compactMessagePreview?.messageId]);
 
   useEffect(() => {
     function handleAssistantSpeechUnavailable() {
@@ -3909,7 +3988,7 @@ export default function App({
       data-chat-surface-mode={chatSurfaceMode}
       data-compact-choice-placement={isCompactSurface ? compactChoiceLayerPlacement : undefined}
     >
-      {galgameModeEnabled && !choicePromptHasOptions ? (
+      {galgameOptionsVisible ? (
         <div
           className={`composer-galgame-slot${compactChoiceLayerOpen && galgameOptionsVisible ? ' is-open' : ''}`}
           aria-hidden={!(compactChoiceLayerOpen && galgameOptionsVisible)}
@@ -3961,7 +4040,7 @@ export default function App({
           </div>
         </div>
       ) : null}
-      {choicePrompt && choicePrompt.options.length > 0 ? (
+      {choicePromptHasOptions ? (
         <div
           className={`composer-galgame-slot composer-choice-slot${compactChoiceLayerOpen ? ' is-open' : ''} is-${choicePrompt.source}`}
           aria-hidden={compactChoiceLayerOpen ? 'false' : 'true'}
@@ -4205,7 +4284,7 @@ export default function App({
 
         <footer
           className={`composer-panel ${surfaceModeClassName}${galgameModeEnabled ? ' is-galgame-mode' : ''}`}
-          style={composerHidden ? { display: 'none' } : undefined}
+          style={composerHidden && !isCompactSurface ? { display: 'none' } : undefined}
           data-chat-surface-mode={chatSurfaceMode}
           data-compact-chat-state={effectiveCompactChatState}
         >
@@ -4355,7 +4434,10 @@ export default function App({
                       className="compact-chat-capsule-button"
                       type="button"
                       disabled={composerDisabled}
-                      onClick={() => requestCompactChatState('input')}
+                      onClick={() => {
+                        if (composerHidden) return;
+                        requestCompactChatState('input');
+                      }}
                     >
                       <span
                         ref={compactPreviewTextRef}

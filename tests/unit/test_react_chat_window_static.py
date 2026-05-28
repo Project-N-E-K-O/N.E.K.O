@@ -2,6 +2,7 @@ from pathlib import Path
 
 
 APP_REACT_CHAT_WINDOW_PATH = Path(__file__).resolve().parents[2] / "static" / "app-react-chat-window.js"
+APP_BUTTONS_PATH = Path(__file__).resolve().parents[2] / "static" / "app-buttons.js"
 APP_CHAT_EXPORT_PATH = Path(__file__).resolve().parents[2] / "static" / "app-chat-export.js"
 REACT_CHAT_STYLES_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "styles.css"
 REACT_CHAT_APP_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "App.tsx"
@@ -251,8 +252,13 @@ def test_compact_surface_resize_handles_keep_width_in_dom_geometry_contract():
 
 def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
     fan_block = css_block(styles, ".compact-input-tool-fan {", ".compact-chat-surface-shell *")
+    collector_block = script.split("function collectCompactToolFanGeometryItems(element)", 1)[1].split(
+        "function collectCompactCompositeGeometryItems(element, kind)",
+        1,
+    )[0]
 
     assert "position: absolute;" in fan_block
     assert "--compact-tool-fan-focus-x: 42px;" in fan_block
@@ -277,6 +283,42 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     assert "transform: none;" in styles
     assert '.compact-input-tool-item[data-compact-tool-wheel-slot="hidden"]' in styles
     assert "pointer-events: none;" in styles
+    assert "slot === 'hidden'" in collector_block
+    assert "style.pointerEvents !== 'none'" not in collector_block
+
+
+def test_compact_choice_hit_contract_uses_real_options_only():
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    choice_block = css_block(
+        styles,
+        'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {',
+        'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"]::-webkit-scrollbar',
+    )
+    slot_block = css_block(
+        styles,
+        'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-slot,\n'
+        'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-options {',
+        'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option',
+    )
+    option_block = css_block(
+        styles,
+        'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option {',
+        'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-choice-layer-open="false"]',
+    )
+    geometry_block = script.split("function getCompactGeometryElementRect(element)", 1)[1].split(
+        "function getCompactHistoryScrollbarRect(element, parentRect)",
+        1,
+    )[0]
+
+    assert "pointer-events: none;" in choice_block
+    assert "pointer-events: none;" in slot_block
+    assert "pointer-events: auto;" in option_block
+    assert "if (item === 'choice')" in geometry_block
+    assert "querySelectorAll('.composer-galgame-option')" in geometry_block
+    assert "var ownRect = normalizeCompactDomRect(element.getBoundingClientRect());" in geometry_block
+    assert geometry_block.index("if (item === 'choice')") < geometry_block.index("var ownRect = normalizeCompactDomRect")
 
 
 def test_desktop_compact_history_hit_regions_are_clipped_to_visible_parent():
@@ -413,6 +455,7 @@ def test_compact_history_layout_contract_avoids_jitter_feedback():
 def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regions():
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
     panel_source = COMPACT_EXPORT_HISTORY_PANEL_PATH.read_text(encoding="utf-8")
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
     anchor_block = css_block(
         styles,
@@ -447,6 +490,8 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
     assert "pointer-events: auto;" in bubble_block
     assert ".compact-export-history-controls,\n.compact-export-preview-region {" in styles
     assert "pointer-events: auto;" in shared_hit_block
+    assert "function getCompactHistoryScrollbarRect(element, parentRect)" in script
+    assert "id: 'history:scrollbar'" in script
     assert "data-compact-hit-region" not in scroll_jsx_block
     assert 'data-compact-hit-region-id={`history:message:${message.id}`}' in panel_source
     assert 'data-compact-hit-region-id="history:controls"' in panel_source
@@ -497,3 +542,20 @@ def test_compact_inline_export_uses_windowless_app_chat_export_api():
     assert "handleDownloadClick" not in compact_api_block
     assert "openExportPreviewWindow" not in compact_api_block
     assert "window.open" not in compact_api_block
+
+
+def test_compact_history_drop_payload_suppresses_real_send_in_voice_mode_only_at_host_send_boundary():
+    script = APP_BUTTONS_PATH.read_text(encoding="utf-8")
+
+    assert "function shouldSuppressCompactHistoryDropSendForVoiceMode()" in script
+    assert "window.shouldKeepVoiceComposerHidden()" in script
+    assert "S.isRecording || S.voiceChatActive || S.voiceStartPending" in script
+
+    drop_block = script.split("mod.sendCompactHistoryDropPayload = async function sendCompactHistoryDropPayload(payload)", 1)[1].split(
+        "window.sendCompactHistoryDropPayload = mod.sendCompactHistoryDropPayload",
+        1,
+    )[0]
+    guard = "if (shouldSuppressCompactHistoryDropSendForVoiceMode()) {\n            return true;\n        }"
+    assert guard in drop_block
+    assert drop_block.index(guard) < drop_block.index("var normalizedImages = [];")
+    assert drop_block.index(guard) < drop_block.index("mod.sendTextPayload(text,")

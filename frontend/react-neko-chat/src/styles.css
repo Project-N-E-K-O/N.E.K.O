@@ -1817,11 +1817,20 @@ body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {
   overscroll-behavior: contain;
   scrollbar-width: none;
   z-index: 100002;
-  pointer-events: auto;
+  pointer-events: none;
 }
 
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"]::-webkit-scrollbar {
   display: none;
+}
+
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-slot,
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-options {
+  pointer-events: none;
+}
+
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option {
+  pointer-events: auto;
 }
 
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-choice-layer-open="false"] {
@@ -2205,7 +2214,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   padding: 4px 6px;
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
-  pointer-events: none;
+  pointer-events: auto;
   -webkit-app-region: no-drag;
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, rgba(0, 0, 0, 0.78) 12px, #000 28px);
   mask-image: linear-gradient(to bottom, transparent 0, rgba(0, 0, 0, 0.78) 12px, #000 28px);
@@ -2291,7 +2300,8 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   opacity: 0.85;
 }
 
-.compact-export-history-message[data-compact-history-drag-source] .compact-export-history-bubble {
+.compact-export-history-message[data-compact-history-drag-source][data-compact-history-drag-phase="dragging"] .compact-export-history-bubble,
+.compact-export-history-message[data-compact-history-drag-source][data-compact-history-drag-phase="sending"] .compact-export-history-bubble {
   border-color: transparent;
   background: transparent;
   box-shadow: none;
@@ -2301,7 +2311,8 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   opacity: 0;
 }
 
-.compact-export-history-message[data-compact-history-drag-source] .compact-export-history-bubble > * {
+.compact-export-history-message[data-compact-history-drag-source][data-compact-history-drag-phase="dragging"] .compact-export-history-bubble > *,
+.compact-export-history-message[data-compact-history-drag-source][data-compact-history-drag-phase="sending"] .compact-export-history-bubble > * {
   opacity: var(--compact-history-drag-source-content-opacity, 0);
   transition: opacity 0.08s linear;
 }
@@ -3257,14 +3268,18 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 .compact-input-tool-fan {
   --compact-tool-button-size: 38px;
   --compact-tool-fan-hit-outset: 52px;
+  --compact-tool-fan-focus-x: 42px;
+  --compact-tool-fan-focus-y: 42px;
+  --compact-tool-toggle-center-x: calc(100% - 31px);
+  --compact-tool-toggle-center-y: 31px;
   --compact-tool-button-fill: rgba(255, 255, 255, 0.9);
   --compact-tool-button-hover-fill: rgba(232, 246, 255, 0.96);
   --compact-tool-button-shadow: 0 8px 18px rgba(20, 36, 64, 0.13);
   --compact-tool-preview-fade-left: linear-gradient(99deg, rgba(0, 0, 0, 0.04) 0%, rgba(0, 0, 0, 0.52) 46%, #000 100%);
   --compact-tool-preview-fade-right: linear-gradient(172deg, rgba(0, 0, 0, 0.04) 0%, rgba(0, 0, 0, 0.52) 46%, #000 100%);
   position: absolute;
-  left: calc(100% - 30px - var(--compact-tool-fan-hit-outset));
-  top: calc(31px - var(--compact-tool-fan-hit-outset));
+  left: calc(var(--compact-tool-toggle-center-x) - var(--compact-tool-fan-focus-x));
+  top: calc(var(--compact-tool-toggle-center-y) - var(--compact-tool-fan-focus-y));
   width: calc(126px + var(--compact-tool-fan-hit-outset));
   height: calc(126px + var(--compact-tool-fan-hit-outset));
   pointer-events: none;
@@ -3281,10 +3296,6 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="false"] .compact-input-tool-item {
-  pointer-events: none !important;
-}
-
-.compact-input-tool-fan[data-compact-input-tool-fan-interactive="false"] .compact-input-tool-item {
   pointer-events: none !important;
 }
 
