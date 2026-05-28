@@ -22,4 +22,10 @@ def test_linux_desktop_entry_sets_repo_working_directory(
     desktop_file = apps_dir / "neko-protocol-handler.desktop"
     content = desktop_file.read_text(encoding="utf-8")
     assert 'Exec="/opt/N E K O/bin/python" -m plugin.server.market_protocol_handler %u' in content
-    assert f'Path="{tmp_path}/N E K O"' in content
+    assert f"Path={tmp_path}/N E K O" in content
+
+
+def test_linux_desktop_path_uses_entry_value_escaping_without_quotes() -> None:
+    escaped = register_protocol._desktop_entry_value_escape("/tmp/N E K O\\repo")
+
+    assert escaped == "/tmp/N E K O\\\\repo"

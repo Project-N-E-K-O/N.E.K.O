@@ -38,6 +38,17 @@ def _desktop_exec_quote(value: str) -> str:
     return f'"{escaped}"'
 
 
+def _desktop_entry_value_escape(value: str) -> str:
+    """Escape a desktop-entry string value without Exec-style quoting."""
+
+    return (
+        value.replace("\\", "\\\\")
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    )
+
+
 def register() -> bool:
     """注册 neko:// 协议。"""
     system = platform.system()
@@ -201,7 +212,7 @@ def _register_linux() -> bool:
 
     desktop_file = desktop_dir / "neko-protocol-handler.desktop"
     python_exe = _desktop_exec_quote(PYTHON_EXE)
-    project_root = _desktop_exec_quote(str(PROJECT_ROOT))
+    project_root = _desktop_entry_value_escape(str(PROJECT_ROOT))
     desktop_content = f"""[Desktop Entry]
 Name=N.E.K.O Protocol Handler
 Exec={python_exe} -m {HANDLER_MODULE} %u
