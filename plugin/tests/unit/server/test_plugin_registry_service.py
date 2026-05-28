@@ -294,9 +294,7 @@ async def test_list_autostart_plugin_ids_uses_dependency_order(
         "consumer",
         dependencies_block=[
             "",
-            "[[plugin.dependency]]",
-            "id = 'provider'",
-            "untested = '>=0.1.0'",
+            "dependencies = ['provider']",
         ],
     )
 
@@ -327,6 +325,65 @@ async def test_list_autostart_plugin_ids_uses_dependency_order(
         ordered = await service.list_autostart_plugin_ids()
 
         assert ordered == ["provider", "consumer"]
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.asyncio
+async def test_refresh_plugin_marks_missing_simple_plugin_dependency_failed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = _write_plugin_fixture(tmp_path, "consumer")
+    config_path = root / "consumer" / "plugin.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "[plugin]",
+                "id = 'consumer'",
+                "name = 'consumer'",
+                "type = 'plugin'",
+                "entry = 'consumer_entry:DemoPlugin'",
+                "version = '0.1.0'",
+                "dependencies = ['missing_provider']",
+                "",
+                "[plugin_runtime]",
+                "enabled = true",
+                "auto_start = false",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins["consumer"] = {
+                "id": "consumer",
+                "name": "consumer",
+                "config_path": str(config_path.resolve()),
+                "runtime_enabled": True,
+                "runtime_auto_start": False,
+            }
+
+        monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (root,))
+
+        payload = await module.PluginRegistryService().refresh_plugin("consumer")
+
+        assert payload["success"] is True
+        with module.state.acquire_plugins_read_lock():
+            refreshed = dict(module.state.plugins["consumer"])
+        assert refreshed["runtime_load_state"] == "failed"
+        assert refreshed["runtime_load_error_type"] == "DependencyCheckFailed"
+        assert refreshed["runtime_load_error_phase"] == "dependency_check"
+        assert "missing_provider" in refreshed["runtime_load_error_message"]
     finally:
         with module.state.acquire_plugins_write_lock():
             module.state.plugins.clear()
