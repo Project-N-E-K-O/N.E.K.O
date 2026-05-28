@@ -175,15 +175,27 @@ class StudyEventBus:
                 result = await result
             if isinstance(result, dict) and result.get("ok") is False:
                 raise RuntimeError("study event push_message returned ok=false")
-        finally:
+        except asyncio.CancelledError:
             async with self._lock:
                 self._release_emit_reservation(
                     prepared.decision,
                     mark_respond=prepared.mark_respond,
                 )
-
-        async with self._lock:
-            self._commit_emit(decision, mark_respond=mark_respond)
+            raise
+        except Exception:
+            async with self._lock:
+                self._release_emit_reservation(
+                    prepared.decision,
+                    mark_respond=prepared.mark_respond,
+                )
+            raise
+        else:
+            async with self._lock:
+                self._commit_emit(decision, mark_respond=mark_respond)
+                self._release_emit_reservation(
+                    prepared.decision,
+                    mark_respond=prepared.mark_respond,
+                )
 
     def _reserve_emit(
         self, decision: _EmitDecision, *, mark_respond: bool = False

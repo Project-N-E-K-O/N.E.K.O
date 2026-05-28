@@ -321,6 +321,39 @@ async def test_emit_cancellation_releases_review_due_reservation() -> None:
 
 
 @pytest.mark.asyncio
+async def test_emit_commits_before_releasing_review_due_reservation() -> None:
+    event = StudyEvent(
+        name="review_due",
+        payload={"due_count": 2, "urgent_count": 0, "topics": ["math"]},
+    )
+
+    class _RaceBus(StudyEventBus):
+        def __init__(self, *, plugin_ctx):
+            super().__init__(plugin_ctx=plugin_ctx)
+            self.race_task: asyncio.Task[None] | None = None
+
+        def _release_emit_reservation(
+            self, decision, *, mark_respond: bool = False
+        ) -> None:
+            super()._release_emit_reservation(
+                decision, mark_respond=mark_respond
+            )
+            if self.race_task is None:
+                self.race_task = asyncio.create_task(self.emit(event))
+
+    ctx = _Ctx()
+    bus = _RaceBus(plugin_ctx=ctx)
+
+    await bus.emit(event)
+    assert bus.race_task is not None
+    await asyncio.wait_for(bus.race_task, timeout=1.0)
+
+    assert len(ctx.messages) == 1
+    assert bus.emit_count == 1
+    assert bus.block_count == 1
+
+
+@pytest.mark.asyncio
 async def test_emit_failure_does_not_consume_answer_respond_cooldown() -> None:
     ctx = _Ctx(fail=True)
     bus = StudyEventBus(plugin_ctx=ctx)
