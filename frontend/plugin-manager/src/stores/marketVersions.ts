@@ -78,7 +78,13 @@ export const useMarketVersionsStore = defineStore('marketVersions', () => {
     const maxPages = 100
     while (page <= maxPages) {
       const result = await fetchMarketPlugins({ page, page_size: pageSize, channel })
-      if (!result?.items?.length) break
+      // ``fetchMarketPlugins`` returns ``null`` on network / API error.
+      // Throwing here lets ``_fetchAll`` keep the previous snapshot instead
+      // of swapping in a partial/empty accumulator and marking it fresh.
+      if (result === null) {
+        throw new Error(`marketVersions: ${channel} channel fetch failed at page ${page}`)
+      }
+      if (!result.items?.length) break
       for (const p of result.items) {
         if (p.slug) accumulator[_cacheKey(channel, p.slug)] = p.version
         const idKey = p.id != null ? String(p.id) : ''
