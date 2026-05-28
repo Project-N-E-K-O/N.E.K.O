@@ -122,6 +122,74 @@
         }
     }
 
+    function isExportPreviewShellReady(previewWindow, targetUrl) {
+        if (!previewWindow || previewWindow.closed) return false;
+        try {
+            var href = previewWindow.location && previewWindow.location.href;
+            if (!href || href === 'about:blank') return false;
+            var current = new URL(href, window.location.href);
+            var target = new URL(targetUrl, window.location.href);
+            if (current.origin !== target.origin || current.pathname !== target.pathname) {
+                return false;
+            }
+            var doc = previewWindow.document;
+            return !!(doc && (doc.readyState === 'interactive' || doc.readyState === 'complete'));
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function waitForExportPreviewShell(previewWindow, targetUrl) {
+        return new Promise(function (resolve) {
+            if (!previewWindow || previewWindow.closed) {
+                resolve(false);
+                return;
+            }
+
+            var settled = false;
+            var pollTimer = null;
+            var timeoutTimer = null;
+
+            function cleanup() {
+                if (pollTimer) {
+                    window.clearInterval(pollTimer);
+                    pollTimer = null;
+                }
+                if (timeoutTimer) {
+                    window.clearTimeout(timeoutTimer);
+                    timeoutTimer = null;
+                }
+                try {
+                    previewWindow.removeEventListener('load', checkReady);
+                } catch (_) {}
+            }
+
+            function finish(ok) {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                resolve(!!ok);
+            }
+
+            function checkReady() {
+                if (!previewWindow || previewWindow.closed) {
+                    finish(false);
+                    return;
+                }
+                if (isExportPreviewShellReady(previewWindow, targetUrl)) {
+                    finish(true);
+                }
+            }
+
+            try {
+                previewWindow.addEventListener('load', checkReady);
+            } catch (_) {}
+            pollTimer = window.setInterval(checkReady, 40);
+            timeoutTimer = window.setTimeout(function () { finish(false); }, 1500);
+            checkReady();
+        });
+    }
+
     function showToast(key, fallback, duration) {
         if (typeof window.showStatusToast !== 'function') return;
         window.showStatusToast(translateLabel(key, fallback), duration || 3000);
@@ -2465,10 +2533,14 @@
         if (isExistingWindow) {
             disposePreviewModal(false);
         }
+        state.previewWindow = previewWindow;
+        if (!isExistingWindow) {
+            await waitForExportPreviewShell(previewWindow, getExportPreviewShellUrl());
+            if (!previewWindow || previewWindow.closed) return null;
+        }
         try {
             if (typeof previewWindow.stop === 'function') previewWindow.stop();
         } catch (_) {}
-        state.previewWindow = previewWindow;
         var doc = previewWindow.document;
         doc.open();
         doc.write('<!DOCTYPE html><html lang="' + escapeHtml(document.documentElement.lang || 'en') + '"' + getPreviewThemeAttributesHtml() + '><head><meta charset="utf-8">'
