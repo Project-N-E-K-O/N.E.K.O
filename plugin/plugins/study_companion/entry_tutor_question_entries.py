@@ -44,6 +44,14 @@ class _TutorQuestionEntriesMixin:
             async with self._lock:
                 source_text = self._state.last_ocr_text
             used_ocr_fallback = bool(source_text.strip())
+        source_text = source_text.strip()
+        if not source_text:
+            return Err(
+                SdkError(
+                    "study tutor requires text or a non-empty OCR snapshot",
+                    code="MISSING_TEXT",
+                )
+            )
         async with self._lock:
             active_mode = self._state.active_mode
         tutor_context = await self._build_learning_context(
