@@ -22,6 +22,7 @@ from plugin.core.registry import (
     _collect_plugin_python_requirements,
     _collect_plugin_python_requirement_paths,
     _check_plugin_dependency,
+    _ensure_python_requirement_paths,
     _extract_entries_preview,
     _find_missing_python_requirements,
     _parse_plugin_dependencies,
@@ -658,6 +659,16 @@ class PluginLifecycleService:
                         error_type="ProcessDiedImmediately",
                     )
 
+            # Mirror the startup loader: ensure the plugin's vendor/ entries
+            # are on sys.path before we import its entry module here, so a
+            # plugin whose top-level imports use vendored packages doesn't
+            # fail this parent-process metadata scan even though the child
+            # process would import it just fine.
+            _ensure_python_requirement_paths(
+                python_requirement_paths,
+                logger,
+                current_plugin_id,
+            )
             module_path, class_name = entry.split(":", 1)
             module_obj = await asyncio.to_thread(importlib.import_module, module_path)
             cls_obj = getattr(module_obj, class_name)

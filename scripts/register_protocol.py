@@ -109,10 +109,18 @@ def _register_windows() -> bool:
             winreg.SetValueEx(key, "", 0, winreg.REG_SZ, icon_path)
 
         # 创建 shell\open\command
+        #
+        # ``set "PYTHONPATH=...;%PYTHONPATH%"`` quotes the assignment so spaces
+        # in the repo path are tolerated, and cmd.exe strips those outer
+        # quotes when storing the variable. The old ``set PYTHONPATH="...";%PYTHONPATH%``
+        # form persisted the literal quote characters as the first entry of
+        # PYTHONPATH, which broke ``python -m plugin.server.market_protocol_handler``
+        # on installs whose checkout sat under a path with spaces.
+        project_root_value = str(PROJECT_ROOT)
         cmd = (
-            f"cmd.exe /d /c cd /d {_windows_cmd_quote(str(PROJECT_ROOT))} "
-            f"&& set PYTHONPATH={_windows_cmd_quote(str(PROJECT_ROOT))};%PYTHONPATH% "
-            f"&& {_windows_cmd_quote(PYTHON_EXE)} -m {HANDLER_MODULE} \"%1\""
+            f"cmd.exe /d /c cd /d {_windows_cmd_quote(project_root_value)} "
+            f'&& set "PYTHONPATH={project_root_value};%PYTHONPATH%" '
+            f'&& {_windows_cmd_quote(PYTHON_EXE)} -m {HANDLER_MODULE} "%1"'
         )
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, f"{key_path}\\shell\\open\\command") as key:
             winreg.SetValueEx(key, "", 0, winreg.REG_SZ, cmd)
