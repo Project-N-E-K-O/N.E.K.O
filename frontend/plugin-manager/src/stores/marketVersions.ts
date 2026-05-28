@@ -40,12 +40,13 @@ export const useMarketVersionsStore = defineStore('marketVersions', () => {
   function ingestPage(items: MarketPlugin[]): void {
     const next = { ...latestBySlug.value }
     for (const p of items) {
-      // Prefer the explicit slug when present; fall back to the numeric id
-      // stringified so callers that only have a market_id number still
-      // resolve (not expected in the v1 backend, but defensive).
-      const key = p.slug ?? String(p.id)
-      if (!key) continue
-      next[key] = p.version
+      // Index by BOTH slug AND numeric id so lookups from the install-source
+      // lock (which records ``plugin_market_id`` = ``plugin.rawId``, the
+      // numeric/string Market id) hit the cache even when the Market API
+      // returned a slug.
+      if (p.slug) next[p.slug] = p.version
+      const idKey = p.id != null ? String(p.id) : ''
+      if (idKey) next[idKey] = p.version
     }
     latestBySlug.value = next
   }
@@ -73,9 +74,10 @@ export const useMarketVersionsStore = defineStore('marketVersions', () => {
         const result = await fetchMarketPlugins({ page, page_size: pageSize })
         if (!result?.items?.length) break
         for (const p of result.items) {
-          const key = p.slug ?? String(p.id)
-          if (!key) continue
-          accumulator[key] = p.version
+          // Same dual-key indexing as ingestPage — see comment there.
+          if (p.slug) accumulator[p.slug] = p.version
+          const idKey = p.id != null ? String(p.id) : ''
+          if (idKey) accumulator[idKey] = p.version
         }
         // Use reported total when available to short-circuit; otherwise
         // stop once we get back a partial page.
