@@ -75,6 +75,23 @@ describe('App', () => {
     };
   };
 
+  const setupDesktopAvatarDropBounds = () => {
+    const hostWindow = window as Window & {
+      __nekoDesktopAvatarBounds?: unknown;
+    };
+    hostWindow.__nekoDesktopAvatarBounds = {
+      left: 100,
+      right: 200,
+      top: 100,
+      bottom: 200,
+      width: 100,
+      height: 100,
+    };
+    return () => {
+      delete hostWindow.__nekoDesktopAvatarBounds;
+    };
+  };
+
   it('renders the empty state when there are no messages', () => {
     render(<App />);
 
@@ -782,6 +799,24 @@ describe('App', () => {
     act(() => {
       window.dispatchEvent(new CustomEvent('neko:compact-history-drag-rebase', {
         detail: {
+          deltaX: 30,
+          deltaY: 20,
+        },
+      }));
+      window.dispatchEvent(new CustomEvent('neko:compact-history-drag-rebase', {
+        detail: {
+          sessionId: 'compact-history-drag-other',
+          deltaX: 30,
+          deltaY: 20,
+        },
+      }));
+    });
+    expect(document.body.querySelector<HTMLElement>('[data-compact-drag-layer="true"]')?.style.getPropertyValue('--compact-history-drag-left')).toBe('68px');
+    expect(document.body.querySelector<HTMLElement>('[data-compact-drag-layer="true"]')?.style.getPropertyValue('--compact-history-drag-top')).toBe('64px');
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('neko:compact-history-drag-rebase', {
+        detail: {
           sessionId: activeState?.sessionId,
           deltaX: 30,
           deltaY: 20,
@@ -1006,6 +1041,170 @@ describe('App', () => {
     } finally {
       cleanupAvatar();
     }
+  });
+
+  it('uses desktop avatar bounds for compact history drops in the Electron host', async () => {
+    const cleanupAvatar = setupDesktopAvatarDropBounds();
+    const onCompactHistoryDrop = vi.fn();
+    const textMessage = parseChatMessage({
+      id: 'assistant-history-desktop-drop-text',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: 'Send this desktop memory.' }],
+      status: 'sent',
+    });
+
+    try {
+      const { container } = render(
+        <App
+          chatSurfaceMode="compact"
+          compactChatState="input"
+          messages={[textMessage]}
+          onCompactHistoryDrop={onCompactHistoryDrop}
+        />,
+      );
+
+      await clickCompactExportTool();
+      const bubble = container.querySelector<HTMLElement>('.compact-export-history-bubble')!;
+
+      fireEvent.pointerDown(bubble, {
+        pointerId: 381,
+        clientX: 36,
+        clientY: 36,
+        button: 0,
+        buttons: 1,
+        pointerType: 'mouse',
+      });
+      fireEvent.pointerMove(bubble, {
+        pointerId: 381,
+        clientX: 150,
+        clientY: 150,
+        buttons: 1,
+        pointerType: 'mouse',
+      });
+
+      expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toHaveAttribute('data-compact-drag-over-target', 'true');
+
+      fireEvent.pointerUp(window, {
+        pointerId: 381,
+        clientX: 150,
+        clientY: 150,
+        buttons: 0,
+        pointerType: 'mouse',
+      });
+
+      await waitFor(() => {
+        expect(onCompactHistoryDrop).toHaveBeenCalledTimes(1);
+      });
+      expect(onCompactHistoryDrop).toHaveBeenCalledWith(expect.objectContaining({
+        text: 'Send this desktop memory.',
+        sourceMessageId: 'assistant-history-desktop-drop-text',
+      }));
+      await waitForCompactHistoryDragLayerToClear();
+    } finally {
+      cleanupAvatar();
+    }
+  });
+
+  it('accepts desktop compact history drag target feedback from NEKO-PC', async () => {
+    const onCompactHistoryDrop = vi.fn();
+    const onCompactHistoryDragStateChange = vi.fn();
+    const textMessage = parseChatMessage({
+      id: 'assistant-history-desktop-feedback-drop',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: 'Send through desktop feedback.' }],
+      status: 'sent',
+    });
+
+    const { container } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        messages={[textMessage]}
+        onCompactHistoryDrop={onCompactHistoryDrop}
+        onCompactHistoryDragStateChange={onCompactHistoryDragStateChange}
+      />,
+    );
+
+    await clickCompactExportTool();
+    const bubble = container.querySelector<HTMLElement>('.compact-export-history-bubble')!;
+
+    fireEvent.pointerDown(bubble, {
+      pointerId: 382,
+      clientX: 36,
+      clientY: 36,
+      button: 0,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+    fireEvent.pointerMove(bubble, {
+      pointerId: 382,
+      clientX: 78,
+      clientY: 39,
+      buttons: 1,
+      pointerType: 'mouse',
+    });
+
+    const activeState = onCompactHistoryDragStateChange.mock.calls
+      .map(([payload]) => payload)
+      .find(payload => payload.active === true);
+    expect(activeState?.sessionId).toEqual(expect.stringMatching(/^compact-history-drag-/));
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('neko:compact-history-drag-desktop-target-change', {
+        detail: {
+          active: true,
+          desktopOverAvatar: true,
+          timestamp: Date.now(),
+        },
+      }));
+      window.dispatchEvent(new CustomEvent('neko:compact-history-drag-desktop-target-change', {
+        detail: {
+          active: true,
+          sessionId: 'compact-history-drag-other',
+          desktopOverAvatar: true,
+          timestamp: Date.now(),
+        },
+      }));
+    });
+
+    expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toHaveAttribute('data-compact-drag-over-target', 'false');
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('neko:compact-history-drag-desktop-target-change', {
+        detail: {
+          active: true,
+          sessionId: activeState?.sessionId,
+          seq: activeState?.seq,
+          desktopOverAvatar: true,
+          timestamp: Date.now(),
+        },
+      }));
+    });
+
+    expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toHaveAttribute('data-compact-drag-over-target', 'true');
+
+    fireEvent.pointerUp(window, {
+      pointerId: 382,
+      clientX: 78,
+      clientY: 39,
+      buttons: 0,
+      pointerType: 'mouse',
+    });
+
+    await waitFor(() => {
+      expect(onCompactHistoryDrop).toHaveBeenCalledTimes(1);
+    });
+    expect(onCompactHistoryDrop).toHaveBeenCalledWith(expect.objectContaining({
+      text: 'Send through desktop feedback.',
+      sourceMessageId: 'assistant-history-desktop-feedback-drop',
+    }));
+    await waitForCompactHistoryDragLayerToClear();
   });
 
   it('does not send a compact history drag released outside the avatar range', async () => {
@@ -2190,6 +2389,47 @@ describe('App', () => {
     const preview = container.querySelector('.compact-chat-capsule-text');
     expect(preview).toHaveAttribute('data-compact-preview-streaming', 'true');
     expect(preview).toHaveTextContent('');
+  });
+
+  it('reveals compact streaming text when assistant speech is unavailable', async () => {
+    vi.useFakeTimers();
+    const streamingText = '语音不可用时，紧凑态仍然应该用文本速度显示猫娘正在说的内容。';
+    const message = parseChatMessage({
+      id: 'assistant-compact-streaming-speech-unavailable',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:01',
+      createdAt: 2,
+      blocks: [{ type: 'text', text: streamingText }],
+      status: 'streaming',
+    });
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" messages={[message]} />);
+
+      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent('');
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-assistant-speech-unavailable', {
+          detail: {
+            code: 'TTS_CONNECTION_FAILED',
+            source: 'tts_status',
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+
+      const visibleLength = container.querySelector('.compact-chat-capsule-text')?.textContent?.length ?? 0;
+      expect(visibleLength).toBeGreaterThan(0);
+      expect(visibleLength).toBeLessThan(streamingText.length);
+      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent(
+        streamingText.slice(0, visibleLength),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('reveals streaming compact text from actual speech playback at a readable clock', async () => {

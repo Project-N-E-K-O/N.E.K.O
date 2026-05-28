@@ -101,10 +101,12 @@ export type CompactHistoryDragPayload = CompactHistoryImageDragPayload | Compact
 export type CompactHistoryDropPoint = {
   clientX: number;
   clientY: number;
+  sessionId?: string;
 };
 
 export type CompactHistoryDropRequest = {
   type: CompactHistoryDragType;
+  sessionId: string;
   messageId: string;
   blockIndex?: number;
   payload: CompactHistoryDragPayload;
@@ -142,6 +144,14 @@ type CompactHistoryDragRebaseDetail = {
   sessionId?: string;
   deltaX?: number;
   deltaY?: number;
+};
+
+type CompactHistoryDesktopDropTargetDetail = {
+  active?: boolean;
+  sessionId?: string;
+  seq?: number;
+  desktopOverAvatar?: boolean | null;
+  timestamp?: number;
 };
 
 type CompactHistoryElasticGeometry = {
@@ -837,30 +847,14 @@ function getCompactHistoryRoundedRectJoin(
 }
 
 function getCompactHistorySourceStyle(activeDrag: ActiveCompactHistoryDrag) {
-  const originCenter = getCompactHistoryOriginCenter(activeDrag);
-  const dragCenter = getCompactHistoryDragCenter(activeDrag);
-  const dx = dragCenter.x - originCenter.x;
-  const dy = dragCenter.y - originCenter.y;
-  const distance = Math.hypot(dx, dy);
-  const pullRatio = distance > 0 ? clampCompactHistoryValue(distance / 220, 0, 1) : 0;
-  const sizeRatio = clampCompactHistoryValue(Math.min(activeDrag.originRect.width, activeDrag.originRect.height) / 160, 0.45, 1.35);
-  const nub = getCompactHistorySourceNub(activeDrag);
   return {
     ...getCompactHistoryDragPalette(activeDrag),
-    '--compact-history-source-nub-left': `${nub.center.x - nub.width / 2}px`,
-    '--compact-history-source-nub-top': `${nub.center.y - nub.height / 2}px`,
-    '--compact-history-source-nub-width': `${nub.width}px`,
-    '--compact-history-source-nub-height': `${nub.height}px`,
-    '--compact-history-source-nub-scale-x': `${1 + Math.min(Math.abs(dx) / 520, 0.28) * sizeRatio}`,
-    '--compact-history-source-nub-scale-y': `${1 - pullRatio * 0.12}`,
     '--compact-history-drag-pull-x': '0px',
     '--compact-history-drag-pull-y': '0px',
     '--compact-history-drag-stretch-x': '1',
     '--compact-history-drag-stretch-y': '1',
     '--compact-history-drag-skew': '0deg',
-    '--compact-history-drag-glow': `${0.18 + pullRatio * 0.28}`,
     '--compact-history-drag-source-content-opacity': '0',
-    '--compact-history-drag-source-shell-opacity': '1',
   } as CSSProperties & Record<string, string>;
 }
 
@@ -874,15 +868,7 @@ const COMPACT_HISTORY_SOURCE_DRAG_STYLE_KEYS = [
   '--compact-history-drag-stretch-x',
   '--compact-history-drag-stretch-y',
   '--compact-history-drag-skew',
-  '--compact-history-drag-glow',
   '--compact-history-drag-source-content-opacity',
-  '--compact-history-drag-source-shell-opacity',
-  '--compact-history-source-nub-left',
-  '--compact-history-source-nub-top',
-  '--compact-history-source-nub-width',
-  '--compact-history-source-nub-height',
-  '--compact-history-source-nub-scale-x',
-  '--compact-history-source-nub-scale-y',
 ];
 
 function applyCompactHistoryStyleVars(element: HTMLElement | SVGElement | null, vars: CSSProperties & Record<string, string>) {
@@ -1192,6 +1178,7 @@ export default function CompactExportHistoryPanel({
   const pointerIntentRef = useRef<PointerIntentState | null>(null);
   const activeDragRef = useRef<ActiveCompactHistoryDrag | null>(null);
   const currentOverDropTargetRef = useRef(false);
+  const desktopDropTargetRef = useRef<{ sessionId: string; overTarget: boolean; timestamp: number } | null>(null);
   const dragLayerRef = useRef<HTMLDivElement | null>(null);
   const dragElasticLayerRef = useRef<SVGSVGElement | null>(null);
   const dragElasticPathRef = useRef<SVGPathElement | null>(null);
@@ -1319,6 +1306,7 @@ export default function CompactExportHistoryPanel({
     currentOverDropTargetRef.current = activeDrag?.overDropTarget ?? false;
     if (!activeDrag) {
       dragRebasePendingRef.current = null;
+      desktopDropTargetRef.current = null;
       clearCompactHistoryStyleVars(dragSourceElementRef.current, COMPACT_HISTORY_SOURCE_DRAG_STYLE_KEYS);
       dragSourceElementRef.current = null;
       return;
@@ -1367,7 +1355,7 @@ export default function CompactExportHistoryPanel({
       const dy = Number(detail?.deltaY);
       if (!Number.isFinite(dx) || !Number.isFinite(dy) || (dx === 0 && dy === 0)) return;
       const current = activeDragRef.current;
-      if (!current || (detail?.sessionId && detail.sessionId !== current.sessionId)) return;
+      if (!current || !detail?.sessionId || detail.sessionId !== current.sessionId) return;
       const next = translateCompactHistoryActiveDrag(current, dx, dy);
       activeDragRef.current = next;
       if (dragElasticCurveRef.current) {
@@ -1393,6 +1381,42 @@ export default function CompactExportHistoryPanel({
     window.addEventListener('neko:compact-history-drag-rebase', handleDesktopDragRebase);
     return () => {
       window.removeEventListener('neko:compact-history-drag-rebase', handleDesktopDragRebase);
+    };
+  }, []);
+
+  useEffect(() => {
+    function handleDesktopDropTargetChange(event: Event) {
+      const detail = (event as CustomEvent<CompactHistoryDesktopDropTargetDetail>).detail;
+      const current = activeDragRef.current;
+      if (!current) {
+        desktopDropTargetRef.current = null;
+        return;
+      }
+      if (detail?.active === false) {
+        desktopDropTargetRef.current = null;
+        return;
+      }
+      if (!detail?.sessionId || detail.sessionId !== current.sessionId || typeof detail.desktopOverAvatar !== 'boolean') return;
+      desktopDropTargetRef.current = {
+        sessionId: current.sessionId,
+        overTarget: detail.desktopOverAvatar,
+        timestamp: Number.isFinite(Number(detail.timestamp)) ? Number(detail.timestamp) : Date.now(),
+      };
+      if (current.overDropTarget === detail.desktopOverAvatar) return;
+      const next = {
+        ...current,
+        overDropTarget: detail.desktopOverAvatar,
+      };
+      activeDragRef.current = next;
+      currentOverDropTargetRef.current = next.overDropTarget;
+      setActiveDrag((activeDragState) => (
+        activeDragState && activeDragState.sessionId === next.sessionId ? next : activeDragState
+      ));
+    }
+
+    window.addEventListener('neko:compact-history-drag-desktop-target-change', handleDesktopDropTargetChange);
+    return () => {
+      window.removeEventListener('neko:compact-history-drag-desktop-target-change', handleDesktopDropTargetChange);
     };
   }, []);
 
@@ -1556,7 +1580,17 @@ export default function CompactExportHistoryPanel({
   }
 
   function isCompactHistoryDropTargetAt(clientX: number, clientY: number) {
-    return isDropTargetAt?.({ clientX, clientY }) ?? false;
+    const desktopDropTarget = desktopDropTargetRef.current;
+    const current = activeDragRef.current;
+    if (
+      desktopDropTarget
+      && current
+      && desktopDropTarget.sessionId === current.sessionId
+      && Date.now() - desktopDropTarget.timestamp < 800
+    ) {
+      return desktopDropTarget.overTarget;
+    }
+    return isDropTargetAt?.({ clientX, clientY, sessionId: current?.sessionId }) ?? false;
   }
 
   function buildCompactHistoryDropRequest(
@@ -1566,6 +1600,7 @@ export default function CompactExportHistoryPanel({
   ): CompactHistoryDropRequest {
     return {
       type: getDragTypeForSource(intent.source),
+      sessionId: intent.sessionId,
       messageId: intent.messageId,
       blockIndex: intent.source.type === 'image' ? intent.source.blockIndex : undefined,
       payload: intent.source.payload,

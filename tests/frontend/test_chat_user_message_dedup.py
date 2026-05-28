@@ -604,6 +604,77 @@ def test_compact_history_drop_sends_only_dropped_image_and_restores_pending_atta
 
 
 @pytest.mark.frontend
+def test_compact_history_drop_is_not_deferred_into_existing_pending_attachments(
+    mock_page: Page,
+    running_server: str,
+):
+    _open_react_chat_page(mock_page, running_server)
+    _install_chat_send_harness(mock_page, resolve_delay_ms=0)
+
+    result = mock_page.evaluate(
+        """async () => {
+            const makeDataUrl = () => {
+                const canvas = document.createElement('canvas');
+                canvas.width = 2;
+                canvas.height = 2;
+                const context = canvas.getContext('2d');
+                context.fillStyle = '#336699';
+                context.fillRect(0, 0, 2, 2);
+                return canvas.toDataURL('image/png');
+            };
+            window.appButtons.addScreenshotToList(makeDataUrl(), null, {
+                alt: 'Existing pending',
+                source: 'user'
+            });
+            const before = window.appButtons.getPendingComposerAttachments();
+            const calls = [];
+            const originalSendTextPayload = window.appButtons.sendTextPayload;
+            window.appButtons.sendTextPayload = async (text, options) => {
+                calls.push({
+                    text,
+                    options,
+                    pendingAtSend: window.appButtons.getPendingComposerAttachments()
+                });
+                return true;
+            };
+
+            try {
+                const ok = await window.appButtons.sendCompactHistoryDropPayload({
+                    text: 'history text only',
+                    requestId: 'req-compact-history-text-drop',
+                    compactHistoryDragSessionId: 'drag-compact-history-text-drop',
+                    images: []
+                });
+                return {
+                    ok,
+                    before,
+                    after: window.appButtons.getPendingComposerAttachments(),
+                    calls
+                };
+            } finally {
+                window.appButtons.sendTextPayload = originalSendTextPayload;
+            }
+        }"""
+    )
+
+    assert result["ok"] is True
+    assert len(result["before"]) == 1
+    assert len(result["after"]) == 1
+    assert result["after"][0]["alt"] == "Existing pending"
+    assert result["after"][0]["url"] == result["before"][0]["url"]
+    assert result["calls"] == [{
+        "text": "history text only",
+        "options": {
+            "source": "react-chat-window",
+            "requestId": "req-compact-history-text-drop",
+            "compactHistoryDragSessionId": "drag-compact-history-text-drop",
+            "skipAvatarInteractionDeferral": True,
+        },
+        "pendingAtSend": [],
+    }]
+
+
+@pytest.mark.frontend
 def test_react_composer_send_failure_marks_same_message_failed(
     mock_page: Page,
     running_server: str,

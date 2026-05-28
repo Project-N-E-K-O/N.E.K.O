@@ -683,7 +683,8 @@
                 requestId: typeof payload.requestId === 'string' ? payload.requestId : undefined,
                 compactHistoryDragSessionId: typeof payload.compactHistoryDragSessionId === 'string'
                     ? payload.compactHistoryDragSessionId
-                    : undefined
+                    : undefined,
+                skipAvatarInteractionDeferral: true
             });
             restoreExistingItems();
             return result === false ? false : true;

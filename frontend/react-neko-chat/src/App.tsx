@@ -170,7 +170,7 @@ function buildCompactHistoryDropPayload(request: CompactHistoryDropRequest): Com
     requestId: createCompactHistoryDropRequestId(),
     sourceMessageId: request.messageId,
     dragType: request.type,
-    compactHistoryDragSessionId: createCompactHistoryDropRequestId(),
+    compactHistoryDragSessionId: request.sessionId,
   };
 }
 
@@ -548,6 +548,44 @@ type AvatarRangeHit = {
   touchZone: AvatarTouchZone;
 };
 
+type CompactHistoryDesktopDropTargetDetail = {
+  active?: boolean;
+  sessionId?: string;
+  desktopOverAvatar?: boolean | null;
+  timestamp?: number;
+};
+
+function normalizeHostAvatarBounds(bounds: unknown): HostAvatarBounds | null {
+  if (!bounds || typeof bounds !== 'object') return null;
+  const raw = bounds as Partial<HostAvatarBounds>;
+  const left = Number(raw.left);
+  const top = Number(raw.top);
+  const width = Number(raw.width);
+  const height = Number(raw.height);
+  if (
+    !Number.isFinite(left)
+    || !Number.isFinite(top)
+    || !Number.isFinite(width)
+    || !Number.isFinite(height)
+    || width <= 0
+    || height <= 0
+  ) {
+    return null;
+  }
+  const right = Number.isFinite(Number(raw.right)) ? Number(raw.right) : left + width;
+  const bottom = Number.isFinite(Number(raw.bottom)) ? Number(raw.bottom) : top + height;
+  return {
+    left,
+    top,
+    right,
+    bottom,
+    width,
+    height,
+    centerX: Number.isFinite(Number(raw.centerX)) ? Number(raw.centerX) : left + width / 2,
+    centerY: Number.isFinite(Number(raw.centerY)) ? Number(raw.centerY) : top + height / 2,
+  };
+}
+
 type FloatingHeart = {
   id: number;
   x: number;
@@ -779,7 +817,9 @@ function getAvatarBoundsEntries(cacheState: AvatarToolCacheState): AvatarBoundsC
       mmdManager?: HostAvatarManager;
       vrmManager?: HostAvatarManager;
       live2dManager?: HostAvatarManager;
+      __nekoDesktopAvatarBounds?: HostAvatarBounds | null;
     };
+    const desktopAvatarBounds = normalizeHostAvatarBounds(hostWindow.__nekoDesktopAvatarBounds);
 
     const candidates: Array<{ containerId: string; manager: HostAvatarManager | undefined }> = [
       { containerId: 'mmd-container', manager: hostWindow.mmdManager },
@@ -789,19 +829,22 @@ function getAvatarBoundsEntries(cacheState: AvatarToolCacheState): AvatarBoundsC
 
     cacheState.avatarBoundsCache = {
       expiresAt: now + cacheState.avatarBoundsCacheTtlMs,
-      entries: candidates.flatMap(({ containerId, manager }) => {
-        if (!manager?.currentModel || typeof manager.getModelScreenBounds !== 'function') {
-          return [];
-        }
-        if (!isElementVisible(containerId)) return [];
+      entries: [
+        ...(desktopAvatarBounds ? [{ bounds: desktopAvatarBounds }] : []),
+        ...candidates.flatMap(({ containerId, manager }) => {
+          if (!manager?.currentModel || typeof manager.getModelScreenBounds !== 'function') {
+            return [];
+          }
+          if (!isElementVisible(containerId)) return [];
 
-        try {
-          const bounds = manager.getModelScreenBounds();
-          return bounds ? [{ bounds }] : [];
-        } catch {
-          return [];
-        }
-      }),
+          try {
+            const bounds = manager.getModelScreenBounds();
+            return bounds ? [{ bounds }] : [];
+          } catch {
+            return [];
+          }
+        }),
+      ],
     };
   }
 
@@ -1018,6 +1061,7 @@ export default function App({
   const interactionBurstHistoryRef = useRef<Record<string, number[]>>({});
   const latestPointerPositionRef = useRef({ x: 0, y: 0 });
   const latestPointerTargetRef = useRef<EventTarget | null>(null);
+  const compactHistoryDesktopDropTargetRef = useRef<{ sessionId?: string; overTarget: boolean; timestamp: number } | null>(null);
   const avatarRangeHoldUntilRef = useRef(0);
   const avatarRangeHoldTimerRef = useRef<number | null>(null);
   const draftRef = useRef(draft);
@@ -1030,6 +1074,7 @@ export default function App({
   const compactSpeechRevealCarryRef = useRef(0);
   const compactSpeechLastFrameTimeRef = useRef(0);
   const compactSpeechPreviewIdRef = useRef('');
+  const compactSpeechFallbackRevealRef = useRef(false);
   const isCompactSurfaceRef = useRef(false);
   const speechPlaybackStateRef = useRef<SpeechPlaybackState | null>(null);
   const avatarInteractionCallbackRef = useRef(onAvatarInteraction);
@@ -1046,6 +1091,7 @@ export default function App({
   const [floatingFistDrops, setFloatingFistDrops] = useState<FloatingFistDrop[]>([]);
   const [compactPreviewTextVisible, setCompactPreviewTextVisible] = useState('');
   const [compactSpeechVisibleLength, setCompactSpeechVisibleLength] = useState(0);
+  const [compactSpeechFallbackRevealActive, setCompactSpeechFallbackRevealActive] = useState(false);
   const [speechPlaybackState, setSpeechPlaybackState] = useState<SpeechPlaybackState | null>(null);
   const [compactChoiceLayerPlacement, setCompactChoiceLayerPlacement] = useState<'above' | 'below'>('above');
   const [compactInputToolFanOpen, setCompactInputToolFanOpen] = useState(false);
@@ -1533,18 +1579,22 @@ export default function App({
   useEffect(() => {
     compactSpeechVisibleLengthRef.current = 0;
     compactSpeechPlaybackStartedRef.current = false;
+    compactSpeechFallbackRevealRef.current = false;
     compactSpeechRevealCarryRef.current = 0;
     compactSpeechLastFrameTimeRef.current = 0;
     setCompactSpeechVisibleLength(0);
+    setCompactSpeechFallbackRevealActive(false);
   }, [compactMessagePreview?.messageId]);
 
   useEffect(() => {
     if (!compactPreviewIsStreaming) {
       compactSpeechVisibleLengthRef.current = 0;
       compactSpeechPlaybackStartedRef.current = false;
+      compactSpeechFallbackRevealRef.current = false;
       compactSpeechRevealCarryRef.current = 0;
       compactSpeechLastFrameTimeRef.current = 0;
       setCompactSpeechVisibleLength(0);
+      setCompactSpeechFallbackRevealActive(false);
       return;
     }
 
@@ -1554,8 +1604,29 @@ export default function App({
     const estimatedAudioTime = getEstimatedSpeechAudioTime(speechPlaybackState);
     if (estimatedAudioTime >= speechPlaybackState.playbackStartAudioTime) {
       compactSpeechPlaybackStartedRef.current = true;
+      if (compactSpeechFallbackRevealRef.current) {
+        compactSpeechFallbackRevealRef.current = false;
+        setCompactSpeechFallbackRevealActive(false);
+      }
     }
   }, [compactPreviewIsStreaming, speechPlaybackState]);
+
+  useEffect(() => {
+    function handleAssistantSpeechUnavailable() {
+      if (!isCompactSurfaceRef.current || !compactPreviewIsStreaming || !compactMessagePreview?.isAssistant) {
+        return;
+      }
+      compactSpeechFallbackRevealRef.current = true;
+      compactSpeechRevealCarryRef.current = 0;
+      compactSpeechLastFrameTimeRef.current = 0;
+      setCompactSpeechFallbackRevealActive(true);
+    }
+
+    window.addEventListener('neko-assistant-speech-unavailable', handleAssistantSpeechUnavailable);
+    return () => {
+      window.removeEventListener('neko-assistant-speech-unavailable', handleAssistantSpeechUnavailable);
+    };
+  }, [compactMessagePreview?.isAssistant, compactPreviewIsStreaming]);
 
   useEffect(() => {
     if (compactSpeechAnimationFrameRef.current !== null) {
@@ -1571,9 +1642,10 @@ export default function App({
 
     const tick = (frameTime: number) => {
       const playbackState = speechPlaybackStateRef.current;
-      const shouldContinueAfterSpeech = compactSpeechPlaybackStartedRef.current
+      const fallbackReveal = compactSpeechFallbackRevealRef.current;
+      const shouldContinueAfterSpeech = (compactSpeechPlaybackStartedRef.current || fallbackReveal)
         && compactSpeechVisibleLengthRef.current < compactPreviewText.length;
-      if (!playbackState?.active && compactSpeechPlaybackStartedRef.current) {
+      if (!playbackState?.active && compactSpeechPlaybackStartedRef.current && !fallbackReveal) {
         if (compactSpeechVisibleLengthRef.current < compactPreviewText.length) {
           compactSpeechVisibleLengthRef.current = compactPreviewText.length;
           setCompactSpeechVisibleLength(compactPreviewText.length);
@@ -1633,7 +1705,7 @@ export default function App({
         compactSpeechAnimationFrameRef.current = null;
       }
     };
-  }, [compactPreviewIsStreaming, compactPreviewText.length, compactPreviewSpeechDuration]);
+  }, [compactPreviewIsStreaming, compactPreviewText.length, compactPreviewSpeechDuration, compactSpeechFallbackRevealActive]);
 
   useEffect(() => {
     const readState = (value: unknown): SpeechPlaybackState | null => {
@@ -3212,12 +3284,45 @@ export default function App({
     }
   }
 
-  const isCompactHistoryDropTargetAt = useCallback((point: { clientX: number; clientY: number }) => (
-    isPointerWithinAvatarRange(point.clientX, point.clientY, avatarToolCacheState)
-  ), [avatarToolCacheState]);
+  useEffect(() => {
+    function handleDesktopDropTargetChange(event: Event) {
+      const detail = (event as CustomEvent<CompactHistoryDesktopDropTargetDetail>).detail;
+      if (detail?.active === false) {
+        compactHistoryDesktopDropTargetRef.current = null;
+        return;
+      }
+      if (!detail?.sessionId || typeof detail.desktopOverAvatar !== 'boolean') return;
+      compactHistoryDesktopDropTargetRef.current = {
+        sessionId: detail.sessionId,
+        overTarget: detail.desktopOverAvatar,
+        timestamp: Number.isFinite(Number(detail.timestamp)) ? Number(detail.timestamp) : Date.now(),
+      };
+    }
+
+    window.addEventListener('neko:compact-history-drag-desktop-target-change', handleDesktopDropTargetChange);
+    return () => {
+      window.removeEventListener('neko:compact-history-drag-desktop-target-change', handleDesktopDropTargetChange);
+    };
+  }, []);
+
+  const getCompactHistoryDesktopDropTarget = useCallback((sessionId?: string) => {
+    const desktopDropTarget = compactHistoryDesktopDropTargetRef.current;
+    if (!desktopDropTarget) return null;
+    if (sessionId && desktopDropTarget.sessionId && desktopDropTarget.sessionId !== sessionId) return null;
+    if (Date.now() - desktopDropTarget.timestamp >= 800) return null;
+    return desktopDropTarget.overTarget;
+  }, []);
+
+  const isCompactHistoryDropTargetAt = useCallback((point: { clientX: number; clientY: number; sessionId?: string }) => (
+    getCompactHistoryDesktopDropTarget(point.sessionId) ?? isPointerWithinAvatarRange(point.clientX, point.clientY, avatarToolCacheState)
+  ), [avatarToolCacheState, getCompactHistoryDesktopDropTarget]);
 
   const handleCompactHistoryDropToAvatar = useCallback((request: CompactHistoryDropRequest) => {
-    if (!isPointerWithinAvatarRange(request.point.clientX, request.point.clientY, avatarToolCacheState)) {
+    const desktopDropTarget = getCompactHistoryDesktopDropTarget(request.sessionId);
+    if (
+      desktopDropTarget !== true
+      && (desktopDropTarget !== null || !isPointerWithinAvatarRange(request.point.clientX, request.point.clientY, avatarToolCacheState))
+    ) {
       return false;
     }
 
@@ -3240,7 +3345,7 @@ export default function App({
       requestId: payload.requestId,
     });
     return true;
-  }, [avatarToolCacheState, compactExportHistoryOpen, onCompactHistoryDrop, onComposerSubmit]);
+  }, [avatarToolCacheState, compactExportHistoryOpen, getCompactHistoryDesktopDropTarget, onCompactHistoryDrop, onComposerSubmit]);
 
   const translateButtonNode = (
     <button

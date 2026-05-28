@@ -68,7 +68,7 @@
 
 ### NEKO-PC
 
-NEKO-PC 修改必须在 `/Users/tonnodoubt/N.E.K.O.-PC` 当前分支单独完成，和 NEKO 修改分开提交。
+NEKO-PC 修改必须在 `<NEKO_PC_REPO_ROOT>` 当前分支单独完成，和 NEKO 修改分开提交。`<NEKO_PC_REPO_ROOT>` 是本地 NEKO-PC 仓库根目录占位符，实施前按自己的环境替换，例如与 NEKO 同级的 `../N.E.K.O.-PC`。
 
 需要优先基于这些当前真实入口实施：
 
@@ -257,13 +257,19 @@ NEKO-PC 修改必须在 `/Users/tonnodoubt/N.E.K.O.-PC` 当前分支单独完成
 5. 小圆 / 源头锚点已经改为基于 `.compact-export-history-message` 的 `sourceFrameRect`，不再按长文本气泡宽度决定左右位置。刷新不到 live rect 时保留上一帧 `sourceFrameRect`，不应退回用 `originRect` 宽度猜。
 6. 当前左右侧映射来自实际显示反馈：user 气泡源头在右侧窄范围，assistant / tool / system 气泡源头在左侧窄范围。后续不要用“角色语义”直接推导左右，CSS 对齐或主题变化后必须用截图复核。
 
-仍需收口：
+当前收口状态：
 
-1. 阶段三视觉仍是 NEKO 页面内部实现；还没有向 NEKO-PC 输出稳定的 `visualRect`、`hitRect`、`sourceFrameRect`、`phase`、`rebaseDelta` 等桌面桥接字段。
-2. `CompactExportHistoryPanel.tsx` 已明显变重，视觉稳定后应拆出 drag geometry helper、drag layer 组件或 hook，避免选择、预览、导出、拖拽、发送和动画全部堆在一个组件里。
-3. 当前 active drag 是 React 本地状态；桌面端需要稳定 `sessionId` / phase / timeout 合同，防止页面结束后 PC 壳仍保持临时 bounds。
-4. 几何单测只能证明 path / rect 计算不崩，不能证明“好看”。阶段三必须保留真实运行截图或录屏级验证，尤其验证长文本、短文本、图片、上下左右 360 度拖动、滚动中新消息进入时的表现。
-5. 小圆水平锚点必须继续基于消息行侧边的窄范围，而不是气泡内容宽度。这个约束是为了解决长对话导致源点乱跑的问题，不能因为 fallback 或重构被抹掉。
+1. NEKO 页面已经向桌面桥输出稳定 drag state：`sessionId`、`seq`、`phase`、`sourceFrameRect`、`dragVisualRect`、`connectionVisualRect`、`dragHitRect`、`overTarget`、`needsDesktopBounds` 和 reduced-motion 状态。
+2. NEKO 页面已经消费 `neko:compact-history-drag-rebase`，在桌面窗口 bounds 改变左上角时统一平移 pointer、origin、source frame 和弹性曲线控制点。
+3. NEKO 页面已经消费 `neko:compact-history-drag-desktop-target-change`，允许 NEKO-PC 用 `desktopOverAvatar` 覆盖页面内 avatar hit，避免桌面模型与 ReactChat 页面坐标不一致。
+4. 当前 active drag 使用稳定 `sessionId`，drop payload 复用同一 session id，避免 drop / bridge / host 之间用不同 id 造成收口困难。
+5. 发送链路已经要求 compact history drop 跳过头像交互文本延迟队列，防止纯文本历史投递被延迟后混入用户原本 pending 附件。
+
+仍需后续维护：
+
+1. `CompactExportHistoryPanel.tsx` 已明显变重，视觉稳定后应拆出 drag geometry helper、drag layer 组件或 hook，避免选择、预览、导出、拖拽、发送和动画全部堆在一个组件里。
+2. 几何单测只能证明 path / rect 计算不崩，不能证明“好看”。阶段三必须保留真实运行截图或录屏级验证，尤其验证长文本、短文本、图片、上下左右 360 度拖动、滚动中新消息进入时的表现。
+3. 小圆水平锚点必须继续基于消息行侧边的窄范围，而不是气泡内容宽度。这个约束是为了解决长对话导致源点乱跑的问题，不能因为 fallback 或重构被抹掉。
 
 ## 阶段 0：证据补齐
 
@@ -841,15 +847,15 @@ NEKO-PC 只负责桌面壳必须知道的窗口与 hit 信息。
 
 本轮已验证：
 
-1. NEKO：`npm.cmd --prefix frontend/react-neko-chat run typecheck`
-2. NEKO：`npm.cmd --prefix frontend/react-neko-chat test -- --run App.test.tsx -t "compact history drag"`
-3. NEKO：`npm.cmd --prefix frontend/react-neko-chat run build`
+1. NEKO：`npm --prefix frontend/react-neko-chat run typecheck`（Windows 用户可使用 `npm.cmd`）
+2. NEKO：`npm --prefix frontend/react-neko-chat test -- --run App.test.tsx -t "compact history drag"`（Windows 用户可使用 `npm.cmd`）
+3. NEKO：`npm --prefix frontend/react-neko-chat run build`（Windows 用户可使用 `npm.cmd`）
 4. NEKO：`git diff --check`
 5. NEKO-PC：`node --check src/preload-chat-react.js`
 6. NEKO-PC：`node --check src/preload-pet.js`
 7. NEKO-PC：`node --check src/main/window-host-ipc.js`
 8. NEKO-PC：`node --check src/desktop-compact-layout.js`
-9. NEKO-PC：`npm.cmd run lint`，当前脚本为占位输出 `No linting configured`
+9. NEKO-PC：`npm run lint`（Windows 用户可使用 `npm.cmd`），当前脚本为占位输出 `No linting configured`
 10. NEKO-PC：`git diff --check`
 
 尚未由本轮自动化完全证明：
@@ -873,6 +879,12 @@ NEKO-PC 拖拽基础稳定后，再接桌面端发送投递桥接。
 ## 阶段 6：NEKO-PC 拖拽效果与 bounds 恢复
 
 桌面端拖拽和发送都跑通后，最后补 NEKO-PC 拖拽效果、临时 bounds 和恢复。
+
+### 阶段 6 当前收口
+
+当前 NEKO 侧已完成阶段 6 所需的页面合同收口：页面输出 visual / hit / connection / source frame rect，消费桌面 rebase，消费桌面 `desktopOverAvatar`，并保持消息 payload 转换和发送业务留在 NEKO / host 侧。NEKO-PC 侧实现时只应消费这些合同字段，不重算橡皮泥 path、不解析消息内容、不复制附件投递业务。
+
+本阶段后续审查重点转为 NEKO-PC 当前分支：确认临时 bounds、shape / passthrough、drop target 回传、超时恢复和 debug 日志降噪是否都按本节规则闭环。NEKO 页面侧若继续修改，优先限定为合同字段兼容、视觉修正或测试补强，不再新增桌面端业务分支。
 
 规则：
 
@@ -1002,7 +1014,7 @@ NEKO-PC 拖拽基础稳定后，再接桌面端发送投递桥接。
 
 ### NEKO-PC 验证
 
-修改 NEKO-PC 后，在 `/Users/tonnodoubt/N.E.K.O.-PC` 当前分支单独验证：
+修改 NEKO-PC 后，在 `<NEKO_PC_REPO_ROOT>` 当前分支单独验证：
 
 1. 检查项目当前 `package.json` 或脚本后运行对应 lint / test / typecheck。
 2. 至少做语法检查或等价构建检查：
@@ -1028,7 +1040,7 @@ NEKO-PC 拖拽基础稳定后，再接桌面端发送投递桥接。
 ## 分支与提交边界
 
 1. NEKO 修改只在 `/Users/tonnodoubt/N.E.K.O` 当前分支进行。
-2. NEKO-PC 修改只在 `/Users/tonnodoubt/N.E.K.O.-PC` 当前分支进行。
+2. NEKO-PC 修改只在 `<NEKO_PC_REPO_ROOT>` 当前分支进行。
 3. 两个项目分别检查、分别提交，不把一个项目的修改混到另一个项目提交里。
 4. `.agent/notes` 文档用于任务交接和实施参考，默认不进入普通功能提交，除非用户明确要求。
 5. 每次实施前先看对应项目 `git status --short`，保留用户已有修改。
