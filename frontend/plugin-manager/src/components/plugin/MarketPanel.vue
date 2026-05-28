@@ -699,9 +699,12 @@ async function yankSweep() {
   // 接受（sweep 通常 < 1s 且仅在 channel 切换 / 安装/升级完成后触发）。
   yankedMap.value = {}
 
-  const channel = userPref.channel
   for (const entry of uniqueEntries.values()) {
-    const cacheKey = `${entry.market_id || entry.plugin_id}::${channel}`
+    // Query the channel the plugin was actually installed from; otherwise a
+    // user who installed a stable version and later switched the global
+    // preference to beta would lose the yanked flag on the stable install.
+    const entryChannel = entry.channel || userPref.channel
+    const cacheKey = `${entry.market_id || entry.plugin_id}::${entryChannel}`
     const cached = yankCache.get(cacheKey)
     let yankedVersions: Set<string>
 
@@ -709,7 +712,7 @@ async function yankSweep() {
       yankedVersions = cached.yankedVersions
     } else {
       const versions = await fetchMarketPluginVersions(entry.market_id || entry.plugin_id, {
-        channel,
+        channel: entryChannel,
         include_yanked: true,
       })
       if (!versions) continue // R8.5: 失败静默
