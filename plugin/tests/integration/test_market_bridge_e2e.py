@@ -1079,6 +1079,94 @@ async def test_upgrade_happy_path_replaces_lock_entry(
 
 
 @pytest.mark.asyncio
+async def test_upgrade_lifecycle_uses_installed_plugin_id_not_market_id(
+    bridge_e2e_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plugin_id = "e2e_lifecycle_target"
+    market_id = "42"
+    v1_zip, v1_payload_hash = _build_neko_plugin_zip(
+        plugin_id=plugin_id, version="1.0.0",
+    )
+    v2_zip, v2_payload_hash = _build_neko_plugin_zip(
+        plugin_id=plugin_id, version="2.0.0",
+    )
+
+    client: AsyncClient = bridge_e2e_env["client"]
+    token: str = bridge_e2e_env["token"]
+    calls: list[tuple[str, str]] = []
+
+    async def _wait_task(task_id: str) -> dict[str, Any]:
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            poll = await client.get(f"/market/tasks/{task_id}?token={token}")
+            body = poll.json()
+            if body["status"] in ("completed", "failed"):
+                return body
+            await asyncio.sleep(0.05)
+        raise AssertionError(f"task {task_id} did not finish")
+
+    with _serve_bytes(
+        filename=f"{plugin_id}-1.0.0.neko-plugin", content=v1_zip,
+    ) as package_url:
+        resp = await client.post(
+            f"/market/install?token={token}",
+            json={
+                "package_url": package_url,
+                "package_sha256": hashlib.sha256(v1_zip).hexdigest(),
+                "payload_hash": v1_payload_hash,
+                "plugin_id": plugin_id,
+                "version": "1.0.0",
+                "channel": "stable",
+                "mode": "install",
+                "expected_plugin_toml_id": plugin_id,
+            },
+        )
+        assert (await _wait_task(resp.json()["task_id"]))["status"] == "completed"
+
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    async def fake_is_running(target: str) -> bool:
+        calls.append(("is_running", target))
+        return True
+
+    async def fake_stop(target: str) -> None:
+        calls.append(("stop", target))
+
+    async def fake_start(target: str) -> None:
+        calls.append(("start", target))
+
+    monkeypatch.setattr(market_bridge_module, "_safely_is_running", fake_is_running)
+    monkeypatch.setattr(market_bridge_module, "_safely_stop", fake_stop)
+    monkeypatch.setattr(market_bridge_module, "_safely_start", fake_start)
+
+    with _serve_bytes(
+        filename=f"{plugin_id}-2.0.0.neko-plugin", content=v2_zip,
+    ) as package_url:
+        resp = await client.post(
+            f"/market/install?token={token}",
+            json={
+                "package_url": package_url,
+                "package_sha256": hashlib.sha256(v2_zip).hexdigest(),
+                "payload_hash": v2_payload_hash,
+                "plugin_id": market_id,
+                "version": "2.0.0",
+                "channel": "stable",
+                "mode": "upgrade",
+                "on_conflict": "fail",
+                "expected_plugin_toml_id": plugin_id,
+            },
+        )
+        upgrade_status = await _wait_task(resp.json()["task_id"])
+
+    assert upgrade_status["status"] == "completed", upgrade_status
+    assert ("is_running", plugin_id) in calls
+    assert ("stop", plugin_id) in calls
+    assert ("start", plugin_id) in calls
+    assert all(target != market_id for _op, target in calls)
+
+
+@pytest.mark.asyncio
 async def test_upgrade_rejects_plugin_identity_mismatch_and_rolls_back(
     bridge_e2e_env: dict[str, Any],
 ) -> None:

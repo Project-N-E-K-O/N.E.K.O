@@ -439,13 +439,14 @@ async def market_install(
     # 已装才能"重装"，install 不要求。
     if payload.mode in ("upgrade", "reinstall"):
         mgr = get_install_source_manager()
-        if mgr is None or mgr.find_active_market_entry(payload.plugin_id or "") is None:
+        expected_plugin_id = payload.expected_plugin_toml_id or payload.plugin_id or ""
+        if mgr is None or mgr.find_active_market_entry(expected_plugin_id) is None:
             raise HTTPException(
                 status_code=400,
                 detail={
                     "code": "plugin_not_installed_for_upgrade",
                     "message": (
-                        f"plugin {payload.plugin_id!r} has no active market lock "
+                        f"plugin {expected_plugin_id!r} has no active market lock "
                         "entry; cannot upgrade / reinstall"
                     ),
                 },
@@ -1335,8 +1336,9 @@ async def _do_upgrade(
       8. async cleanup of backup dir
     """
 
-    plugin_id = payload.plugin_id or ""
+    requested_plugin_id = payload.plugin_id or ""
     target_version = payload.version or ""
+    expected_plugin_id = payload.expected_plugin_toml_id or requested_plugin_id
 
     # Step 1: probe active lock entry.
     mgr = get_install_source_manager()
@@ -1346,13 +1348,14 @@ async def _do_upgrade(
             message="install source manager not initialised",
         )
 
-    entry = mgr.find_active_market_entry(plugin_id)
+    entry = mgr.find_active_market_entry(expected_plugin_id)
     if entry is None:
         raise _TaskError(
             code="plugin_not_installed_for_upgrade",
-            message=f"plugin {plugin_id!r} has no active market lock entry",
+            message=f"plugin {expected_plugin_id!r} has no active market lock entry",
             http_status=400,
         )
+    installed_plugin_id = entry.plugin_id
 
     # Step 2: version-equality short-circuit (skipped for reinstall).
     current_version = ""
@@ -1362,7 +1365,7 @@ async def _do_upgrade(
         raise _TaskError(
             code="version_already_at_target",
             message=(
-                f"plugin {plugin_id!r} is already at version {target_version!r}"
+                f"plugin {installed_plugin_id!r} is already at version {target_version!r}"
             ),
         )
 
@@ -1371,7 +1374,7 @@ async def _do_upgrade(
         f"{entry.directory_name}.bak.{_utc_micro_ts()}"
     )
     rollback_steps: list[Callable[[], Awaitable[None]]] = []
-    was_running = await _safely_is_running(plugin_id)
+    was_running = await _safely_is_running(installed_plugin_id)
 
     # Step 3: lifecycle stop.
     if was_running:
@@ -1382,7 +1385,7 @@ async def _do_upgrade(
             progress=0.05,
             message="正在停止旧版本插件...",
         )
-        await _safely_stop(plugin_id)
+        await _safely_stop(installed_plugin_id)
 
     # Step 4: rename old dir → backup.
     try:
@@ -1396,7 +1399,7 @@ async def _do_upgrade(
         await asyncio.to_thread(os.rename, plugin_dir, backup_dir)
     except OSError as exc:
         if was_running:
-            await _safely_start(plugin_id)
+            await _safely_start(installed_plugin_id)
         raise _TaskError(
             code="upgrade_rollback_completed",
             message=f"无法备份旧目录: {exc}",
@@ -1481,12 +1484,12 @@ async def _do_upgrade(
                 progress=0.92,
                 message="正在启动新版本...",
             )
-            await _safely_start(plugin_id)
+            await _safely_start(installed_plugin_id)
 
         # Step 8: async cleanup of backup.
         asyncio.create_task(
             _async_remove_dir(backup_dir),
-            name=f"market-upgrade-cleanup-{plugin_id}",
+            name=f"market-upgrade-cleanup-{installed_plugin_id}",
         )
 
         task["progress"] = 1.0
@@ -1498,7 +1501,7 @@ async def _do_upgrade(
             task["install_source_warning"] = result["install_source_warning"]
 
     except _TaskError as exc:
-        await _run_rollback(task, rollback_steps, was_running, plugin_id)
+        await _run_rollback(task, rollback_steps, was_running, installed_plugin_id)
         if rollback_steps and exc.code not in (
             "version_already_at_target",
             "plugin_not_installed_for_upgrade",
@@ -1510,7 +1513,7 @@ async def _do_upgrade(
         raise
     except Exception as exc:
         # Other (network / sha256 / unpack) failures collapse into one code.
-        await _run_rollback(task, rollback_steps, was_running, plugin_id)
+        await _run_rollback(task, rollback_steps, was_running, installed_plugin_id)
         raise _TaskError(
             code="upgrade_rollback_completed",
             message=f"升级失败已回滚: {exc}",

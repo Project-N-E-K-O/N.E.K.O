@@ -31,6 +31,8 @@ logger = get_logger("server.market_protocol_handler")
 # 端口落到这个文件，供独立运行的 URI handler 进程读取。两边共享文件，避免
 # handler 重新 import market_bridge 时生成另一份内存 token。
 _BRIDGE_FILE = Path.home() / ".neko" / "bridge.json"
+_INSTALL_POLL_INTERVAL_SECONDS = 1.0
+_INSTALL_POLL_TIMEOUT_SECONDS = 180.0
 
 
 def _load_bridge_info() -> dict[str, Any] | None:
@@ -187,9 +189,11 @@ async def _call_local_install(
                 return 1
             logger.info("Install task created: {}", task_id)
 
-            # 轮询等待完成
-            for _ in range(60):  # 最多等 1 分钟，单次失败继续轮询
-                await asyncio.sleep(1)
+            # 轮询等待完成。Bridge download timeout is 120s before unpack
+            # work starts, so the protocol handler must wait longer than that.
+            deadline = asyncio.get_running_loop().time() + _INSTALL_POLL_TIMEOUT_SECONDS
+            while asyncio.get_running_loop().time() < deadline:
+                await asyncio.sleep(_INSTALL_POLL_INTERVAL_SECONDS)
                 try:
                     status_res = await client.get(
                         f"{base_url}/market/tasks/{task_id}",
