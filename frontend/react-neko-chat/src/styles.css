@@ -1892,6 +1892,10 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 }
 
 .compact-chat-surface-frame {
+  --compact-chat-surface-bg:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.7), rgba(247, 251, 255, 0.6) 58%, rgba(232, 243, 255, 0.54));
+  --compact-chat-surface-edge: rgba(255, 255, 255, 0.5);
+  --compact-chat-surface-glow: rgba(255, 255, 255, 0.22);
   position: relative;
   overflow: hidden;
   isolation: isolate;
@@ -1904,14 +1908,14 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   max-height: 54px;
   box-sizing: border-box;
   padding: 0 20px;
-  border: 1px solid rgba(255, 255, 255, 0.6);
+  border: 1px solid var(--compact-chat-surface-edge);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.08);
   box-shadow:
-    0 0 0 1px rgba(208, 233, 255, 0.22),
-    0 8px 16px rgba(8, 22, 40, 0.03);
-  backdrop-filter: blur(8px) saturate(1.1) brightness(1.08);
-  -webkit-backdrop-filter: blur(8px) saturate(1.1) brightness(1.08);
+    0 0 0 1px rgba(208, 233, 255, 0.14),
+    0 6px 18px rgba(42, 89, 132, 0.05);
+  backdrop-filter: blur(18px) saturate(1.22) brightness(1.08);
+  -webkit-backdrop-filter: blur(18px) saturate(1.22) brightness(1.08);
 }
 
 .compact-chat-surface-frame[data-compact-chat-state="input"] {
@@ -1920,11 +1924,26 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 }
 
 .compact-chat-surface-frame::before {
-  content: none;
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  background: var(--compact-chat-surface-bg);
+  pointer-events: none;
 }
 
 .compact-chat-surface-frame::after {
-  content: none;
+  content: "";
+  position: absolute;
+  inset: 1px;
+  z-index: 1;
+  border-radius: inherit;
+  background:
+    linear-gradient(180deg, var(--compact-chat-surface-glow), transparent 42%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  pointer-events: none;
 }
 
 .compact-chat-surface-frame > * {
@@ -1968,7 +1987,8 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   font-size: 1.04rem;
   font-weight: 500;
   line-height: 1.35;
-  color: #7c91ad;
+  color: #34536c;
+  text-shadow: 0 1px 1px rgba(255, 255, 255, 0.64);
 }
 
 .compact-chat-capsule-text[data-compact-preview-streaming="true"] {
@@ -3144,7 +3164,8 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   padding: 10px 0;
   border: 0;
   background: transparent;
-  color: #5f7794;
+  color: #2f526b;
+  font-weight: 500;
   line-height: 22px;
   overflow-y: auto;
 }
@@ -3152,6 +3173,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 .compact-chat-surface-frame[data-compact-chat-state="input"] .composer-input::placeholder {
   font-size: 1em;
   line-height: 22px;
+  color: rgba(70, 96, 122, 0.66);
 }
 
 .compact-chat-surface-shell[data-compact-chat-state="input"] .composer-bottom-bar {
@@ -3904,11 +3926,15 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 [data-theme="dark"] .compact-chat-surface-frame {
-  background: rgba(255, 255, 255, 0.06);
+  --compact-chat-surface-bg:
+    linear-gradient(180deg, rgba(31, 48, 66, 0.72), rgba(15, 29, 46, 0.68) 58%, rgba(8, 17, 30, 0.62));
+  --compact-chat-surface-edge: rgba(177, 216, 255, 0.28);
+  --compact-chat-surface-glow: rgba(176, 219, 255, 0.08);
+  background: rgba(12, 22, 35, 0.1);
   box-shadow:
-    0 0 0 1px rgba(208, 233, 255, 0.22),
-    0 8px 16px rgba(8, 22, 40, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.6);
+    0 0 0 1px rgba(132, 184, 236, 0.14),
+    0 6px 18px rgba(0, 0, 0, 0.16);
+  border-color: var(--compact-chat-surface-edge);
 }
 
 [data-theme="dark"] .compact-chat-surface-shell[data-compact-chat-state="input"],
@@ -3919,15 +3945,16 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 [data-theme="dark"] .compact-chat-capsule-text {
-  color: #d6e7fb;
+  color: #e5f2ff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.34);
 }
 
 [data-theme="dark"] .compact-chat-surface-frame[data-compact-chat-state="input"] .composer-input {
-  color: #dceafc;
+  color: #e9f4ff;
 }
 
 [data-theme="dark"] .compact-chat-surface-frame[data-compact-chat-state="input"] .composer-input::placeholder {
-  color: rgba(196, 216, 240, 0.72);
+  color: rgba(202, 222, 244, 0.66);
 }
 
 [data-theme="dark"] .compact-chat-surface-frame[data-compact-chat-state="input"] .send-button-circle {
