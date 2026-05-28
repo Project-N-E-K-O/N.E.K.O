@@ -284,6 +284,43 @@ async def test_emit_failure_does_not_consume_review_due_cooldown() -> None:
 
 
 @pytest.mark.asyncio
+async def test_emit_cancellation_releases_review_due_reservation() -> None:
+    entered_push = asyncio.Event()
+    release_push = asyncio.Event()
+
+    class _BlockingCtx(_Ctx):
+        async def push_message(self, **kwargs):
+            entered_push.set()
+            await release_push.wait()
+            self.messages.append(dict(kwargs))
+            return {"ok": True}
+
+    ctx = _BlockingCtx()
+    bus = StudyEventBus(plugin_ctx=ctx)
+    event = StudyEvent(
+        name="review_due",
+        payload={"due_count": 2, "urgent_count": 0, "topics": ["math"]},
+    )
+
+    task = asyncio.create_task(bus.emit(event))
+    await asyncio.wait_for(entered_push.wait(), timeout=1.0)
+    assert "review_due" in bus._pending_throttle
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert "review_due" not in bus._pending_throttle
+    assert bus.emit_count == 0
+
+    release_push.set()
+    await bus.emit(event)
+
+    assert len(ctx.messages) == 1
+    assert bus.emit_count == 1
+
+
+@pytest.mark.asyncio
 async def test_emit_failure_does_not_consume_answer_respond_cooldown() -> None:
     ctx = _Ctx(fail=True)
     bus = StudyEventBus(plugin_ctx=ctx)

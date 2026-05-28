@@ -175,19 +175,14 @@ class StudyEventBus:
                 result = await result
             if isinstance(result, dict) and result.get("ok") is False:
                 raise RuntimeError("study event push_message returned ok=false")
-        except Exception:
+        finally:
             async with self._lock:
                 self._release_emit_reservation(
                     prepared.decision,
                     mark_respond=prepared.mark_respond,
                 )
-            raise
 
         async with self._lock:
-            self._release_emit_reservation(
-                prepared.decision,
-                mark_respond=prepared.mark_respond,
-            )
             self._commit_emit(decision, mark_respond=mark_respond)
 
     def _reserve_emit(
