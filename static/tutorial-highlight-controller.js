@@ -12,7 +12,8 @@
         '#live2d-btn-return, #vrm-btn-return, #mmd-btn-return, ' +
         '#live2d-lock-icon, #vrm-lock-icon, #mmd-lock-icon, ' +
         '[id$="-btn-mic"], [id$="-btn-screen"], [id$="-btn-agent"], ' +
-        '[id$="-btn-settings"], [id$="-btn-goodbye"], [id$="-btn-return"], [id$="-lock-icon"]'
+        '[id$="-btn-settings"], [id$="-btn-goodbye"], [id$="-btn-return"], [id$="-lock-icon"], ' +
+        '.composer-tool-btn, .composer-icon-button[data-avatar-tool-id]'
     );
 
     function unionRects(rects) {
@@ -69,7 +70,6 @@
                 : (selector) => this.document.querySelector(selector);
             this.floatingButtonSelector = normalizedOptions.floatingButtonSelector || FLOATING_BUTTON_SELECTOR;
             this.virtualSpotlights = new Map();
-            this.preciseHighlightElements = new Set();
             this.spotlightVariantElements = new Set();
             this.spotlightGeometryHintElements = new Set();
             this.retainedExtraSpotlightElements = [];
@@ -172,34 +172,6 @@
             this.virtualSpotlights.clear();
         }
 
-        clearPreciseHighlights() {
-            this.preciseHighlightElements.forEach((element) => {
-                if (!element || !element.classList) {
-                    return;
-                }
-
-                element.classList.remove('yui-guide-precise-highlight');
-                element.removeAttribute('data-yui-guide-precise-highlight');
-            });
-            this.preciseHighlightElements.clear();
-        }
-
-        setPreciseHighlightTargets(elements) {
-            if (this.destroyed) {
-                return;
-            }
-
-            const targets = (Array.isArray(elements) ? elements : [])
-                .filter((element) => !!element && !!element.classList);
-
-            this.clearPreciseHighlights();
-            targets.forEach((element) => {
-                element.classList.add('yui-guide-precise-highlight');
-                element.setAttribute('data-yui-guide-precise-highlight', 'true');
-                this.preciseHighlightElements.add(element);
-            });
-        }
-
         clearSpotlightVariantHints() {
             this.spotlightVariantElements.forEach((element) => {
                 if (!element || typeof element.removeAttribute !== 'function') {
@@ -292,7 +264,18 @@
 
         isCircularFloatingButtonSpotlight(element) {
             const target = this.getFloatingButtonShell(element) || element;
-            if (!target || typeof target.id !== 'string') {
+            if (!target) {
+                return false;
+            }
+
+            if (
+                typeof target.matches === 'function'
+                && target.matches('.composer-tool-btn, .composer-icon-button[data-avatar-tool-id]')
+            ) {
+                return true;
+            }
+
+            if (typeof target.id !== 'string') {
                 return false;
             }
 
@@ -476,17 +459,30 @@
 
             const normalized = config || {};
             const keyBase = normalized.key || 'guide-highlight';
-            const persistentTarget = Object.prototype.hasOwnProperty.call(normalized, 'persistent')
+            const hasPersistent = Object.prototype.hasOwnProperty.call(normalized, 'persistent');
+            const hasPrimary = Object.prototype.hasOwnProperty.call(normalized, 'primary');
+            const hasSecondary = Object.prototype.hasOwnProperty.call(normalized, 'secondary');
+            const persistentTarget = hasPersistent
                 ? this.normalizeHighlightTarget(normalized.persistent, keyBase + '-persistent')
                 : null;
-            const primaryTarget = Object.prototype.hasOwnProperty.call(normalized, 'primary')
+            let primaryTarget = hasPrimary
                 ? this.normalizeHighlightTarget(normalized.primary, keyBase + '-primary')
                 : null;
-            const secondaryTarget = Object.prototype.hasOwnProperty.call(normalized, 'secondary')
+            let secondaryTarget = hasSecondary
                 ? this.normalizeHighlightTarget(normalized.secondary, keyBase + '-secondary')
                 : null;
 
-            if (Object.prototype.hasOwnProperty.call(normalized, 'persistent') && this.overlay) {
+            if (primaryTarget && primaryTarget === persistentTarget) {
+                primaryTarget = null;
+            }
+            if (
+                secondaryTarget
+                && (secondaryTarget === persistentTarget || secondaryTarget === primaryTarget)
+            ) {
+                secondaryTarget = null;
+            }
+
+            if (hasPersistent && this.overlay) {
                 if (persistentTarget) {
                     this.applyCircularFloatingButtonSpotlightHint(persistentTarget);
                     this.overlay.setPersistentSpotlight(persistentTarget);
@@ -495,7 +491,7 @@
                 }
             }
 
-            if (Object.prototype.hasOwnProperty.call(normalized, 'primary') && this.overlay) {
+            if (hasPrimary && this.overlay) {
                 if (primaryTarget) {
                     this.applyCircularFloatingButtonSpotlightHint(primaryTarget);
                     this.overlay.activateSpotlight(primaryTarget);
@@ -504,11 +500,11 @@
                 }
             }
 
-            if (Object.prototype.hasOwnProperty.call(normalized, 'secondary') && this.overlay) {
+            if (hasSecondary && this.overlay) {
                 if (secondaryTarget) {
                     this.applyCircularFloatingButtonSpotlightHint(secondaryTarget);
                     this.overlay.activateSecondarySpotlight(secondaryTarget);
-                } else if (!Object.prototype.hasOwnProperty.call(normalized, 'primary')) {
+                } else if (!hasPrimary) {
                     this.overlay.clearActionSpotlight();
                 }
             }
@@ -527,7 +523,6 @@
 
             this.destroyed = true;
             this.clearAllVirtualSpotlights();
-            this.clearPreciseHighlights();
             this.clearSpotlightVariantHints();
             this.clearSpotlightGeometryHints();
             this.clearAllExtraSpotlights();

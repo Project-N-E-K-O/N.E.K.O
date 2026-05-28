@@ -275,6 +275,9 @@
                     action: 'yui_guide_set_chat_cursor',
                     kind: typeof kind === 'string' ? kind : '',
                     effect: options && typeof options.effect === 'string' ? options.effect : '',
+                    targetIndex: options && Number.isFinite(options.targetIndex)
+                        ? Math.max(0, Math.floor(options.targetIndex))
+                        : 0,
                     timestamp: Date.now()
                 });
             } catch (error) {

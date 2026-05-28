@@ -1898,7 +1898,10 @@
                     case 'yui_guide_set_chat_cursor': {
                         if (!isStandaloneChatPage() || !document.body) break;
                         applyYuiGuideChatCursor(event.data.kind || '', {
-                            effect: event.data.effect || ''
+                            effect: event.data.effect || '',
+                            targetIndex: Number.isFinite(event.data.targetIndex)
+                                ? event.data.targetIndex
+                                : 0
                         });
                         break;
                     }
@@ -2064,14 +2067,29 @@
     var yuiGuideChatSpotlightKind = '';
     var yuiGuideChatSpotlightTimer = 0;
 
-    function getYuiGuideChatSpotlightElement() {
-        var existing = document.getElementById('yui-guide-chat-spotlight');
+    function cancelYuiGuideChatCursorElementAnimations(cursor) {
+        if (!cursor || typeof cursor.getAnimations !== 'function') {
+            return;
+        }
+        cursor.getAnimations().forEach(function (animation) {
+            if (animation && typeof animation.cancel === 'function') {
+                animation.cancel();
+            }
+        });
+    }
+
+    function getYuiGuideChatSpotlightElement(index) {
+        var normalizedIndex = Number.isFinite(index) && index > 0 ? Math.floor(index) : 0;
+        var spotlightId = normalizedIndex > 0
+            ? 'yui-guide-chat-spotlight-' + normalizedIndex
+            : 'yui-guide-chat-spotlight';
+        var existing = document.getElementById(spotlightId);
         if (existing || typeof document === 'undefined' || !document.body) {
             return existing;
         }
 
         var spotlight = document.createElement('div');
-        spotlight.id = 'yui-guide-chat-spotlight';
+        spotlight.id = spotlightId;
         spotlight.hidden = true;
         spotlight.setAttribute('aria-hidden', 'true');
         spotlight.style.position = 'fixed';
@@ -2087,125 +2105,62 @@
         return spotlight;
     }
 
+    function hideYuiGuideChatSpotlightElement(spotlight) {
+        if (!spotlight) {
+            return;
+        }
+        spotlight.hidden = true;
+        spotlight.style.opacity = '0';
+        spotlight.classList.remove('is-visible', 'is-window', 'is-input', 'is-circle-image');
+    }
+
+    function hideYuiGuideChatSpotlightElements(startIndex) {
+        var firstIndex = Number.isFinite(startIndex) && startIndex > 0 ? Math.floor(startIndex) : 0;
+        for (var index = firstIndex; index < 6; index += 1) {
+            var id = index > 0 ? 'yui-guide-chat-spotlight-' + index : 'yui-guide-chat-spotlight';
+            var spotlight = document.getElementById(id);
+            if (spotlight) {
+                hideYuiGuideChatSpotlightElement(spotlight);
+            }
+        }
+    }
+
+    function isYuiGuideChatElementVisible(element) {
+        if (!element || typeof element.getBoundingClientRect !== 'function') {
+            return false;
+        }
+        var rect = element.getBoundingClientRect();
+        return !!(rect && rect.width > 0 && rect.height > 0);
+    }
+
+    function getYuiGuideChatVisibleElement(selector) {
+        if (!selector || typeof document === 'undefined') {
+            return null;
+        }
+        return Array.prototype.slice.call(document.querySelectorAll(selector))
+            .find(function (element) {
+                return isYuiGuideChatElementVisible(element);
+            }) || null;
+    }
+
     function getYuiGuideChatSpotlightTarget(kind) {
         if (!kind || typeof document === 'undefined') {
             return null;
         }
 
         if (kind === 'avatar-tools') {
-            return document.querySelector('#react-chat-window-root .composer-emoji-btn')
-                || document.querySelector('#react-chat-window-root .composer-tool-menu');
+            return getYuiGuideChatVisibleElement('#react-chat-window-root .composer-emoji-btn')
+                || getYuiGuideChatVisibleElement('#react-chat-window-root .composer-tool-menu')
+                || getYuiGuideChatVisibleElement('#react-chat-window-root .composer-overflow-btn');
         }
 
         if (kind === 'galgame') {
-            return document.querySelector('#react-chat-window-root .composer-galgame-btn');
-        }
-
-        if (kind === 'avatar-tool-items') {
-            var popover = document.getElementById('composer-tool-popover');
-            if (!popover) {
-                return null;
-            }
-            var items = Array.prototype.slice.call(
-                popover.querySelectorAll('.composer-icon-button[data-avatar-tool-id], .composer-icon-button')
-            ).filter(function (element, index) {
-                if (!element || index >= 3) return false;
-                var rect = typeof element.getBoundingClientRect === 'function'
-                    ? element.getBoundingClientRect()
-                    : null;
-                return !!(rect && rect.width > 0 && rect.height > 0);
-            });
-            if (!items.length) {
-                return null;
-            }
-            var bounds = items.reduce(function (acc, element) {
-                var rect = element.getBoundingClientRect();
-                if (!acc) {
-                    return {
-                        left: rect.left,
-                        top: rect.top,
-                        right: rect.right,
-                        bottom: rect.bottom
-                    };
-                }
-                acc.left = Math.min(acc.left, rect.left);
-                acc.top = Math.min(acc.top, rect.top);
-                acc.right = Math.max(acc.right, rect.right);
-                acc.bottom = Math.max(acc.bottom, rect.bottom);
-                return acc;
-            }, null);
-            if (!bounds) {
-                return null;
-            }
-            return {
-                getBoundingClientRect: function () {
-                    return {
-                        left: bounds.left,
-                        top: bounds.top,
-                        right: bounds.right,
-                        bottom: bounds.bottom,
-                        width: bounds.right - bounds.left,
-                        height: bounds.bottom - bounds.top
-                    };
-                }
-            };
-        }
-
-        if (kind === 'mini-game-choices') {
-            var choiceSlot = document.querySelector(
-                '#react-chat-window-root .composer-choice-slot[data-choice-source="mini_game_invite"]'
-            );
-            if (!choiceSlot) {
-                return null;
-            }
-            var choiceItems = Array.prototype.slice.call(
-                choiceSlot.querySelectorAll('.composer-choice-option, .composer-galgame-option')
-            ).filter(function (element, index) {
-                if (!element || index >= 3) return false;
-                var rect = typeof element.getBoundingClientRect === 'function'
-                    ? element.getBoundingClientRect()
-                    : null;
-                return !!(rect && rect.width > 0 && rect.height > 0);
-            });
-            if (!choiceItems.length) {
-                return null;
-            }
-            var choiceBounds = choiceItems.reduce(function (acc, element) {
-                var rect = element.getBoundingClientRect();
-                if (!acc) {
-                    return {
-                        left: rect.left,
-                        top: rect.top,
-                        right: rect.right,
-                        bottom: rect.bottom
-                    };
-                }
-                acc.left = Math.min(acc.left, rect.left);
-                acc.top = Math.min(acc.top, rect.top);
-                acc.right = Math.max(acc.right, rect.right);
-                acc.bottom = Math.max(acc.bottom, rect.bottom);
-                return acc;
-            }, null);
-            if (!choiceBounds) {
-                return null;
-            }
-            return {
-                getBoundingClientRect: function () {
-                    return {
-                        left: choiceBounds.left,
-                        top: choiceBounds.top,
-                        right: choiceBounds.right,
-                        bottom: choiceBounds.bottom,
-                        width: choiceBounds.right - choiceBounds.left,
-                        height: choiceBounds.bottom - choiceBounds.top
-                    };
-                }
-            };
+            return getYuiGuideChatVisibleElement('#react-chat-window-root .composer-galgame-btn');
         }
 
         if (kind === 'input') {
-            return document.querySelector('#react-chat-window-root .composer-panel')
-                || document.querySelector('#react-chat-window-root .composer-input-shell')
+            return getYuiGuideChatVisibleElement('#react-chat-window-root .composer-panel')
+                || getYuiGuideChatVisibleElement('#react-chat-window-root .composer-input-shell')
                 || document.getElementById('text-input-area');
         }
 
@@ -2216,15 +2171,104 @@
         return null;
     }
 
+    function getYuiGuideChatSpotlightItemTargets(kind) {
+        if (!kind || typeof document === 'undefined') {
+            return [];
+        }
+
+        var candidates = [];
+        if (kind === 'avatar-tool-items') {
+            var popover = document.getElementById('composer-tool-popover');
+            candidates = popover
+                ? Array.prototype.slice.call(
+                    popover.querySelectorAll('.composer-icon-button[data-avatar-tool-id], .composer-icon-button')
+                )
+                : [];
+        } else if (kind === 'avatar-tools-and-items') {
+            var avatarToolButton = getYuiGuideChatSpotlightTarget('avatar-tools');
+            var avatarToolPopover = document.getElementById('composer-tool-popover');
+            candidates = avatarToolPopover
+                ? Array.prototype.slice.call(
+                    avatarToolPopover.querySelectorAll('.composer-icon-button[data-avatar-tool-id], .composer-icon-button')
+                )
+                : [];
+            if (avatarToolButton) {
+                candidates.unshift(avatarToolButton);
+            }
+        } else {
+            return [];
+        }
+
+        var maxTargets = kind === 'avatar-tools-and-items' ? 4 : 3;
+        return candidates.filter(function (element, index) {
+            if (!element || index >= maxTargets) return false;
+            var rect = typeof element.getBoundingClientRect === 'function'
+                ? element.getBoundingClientRect()
+                : null;
+            return !!(rect && rect.width > 0 && rect.height > 0);
+        });
+    }
+
+    function getYuiGuideChatCursorTarget(kind) {
+        var itemTargets = getYuiGuideChatSpotlightItemTargets(kind);
+        if (itemTargets.length > 0) {
+            return itemTargets[0];
+        }
+        return getYuiGuideChatSpotlightTarget(kind);
+    }
+
+    function getYuiGuideChatCursorTargetAt(kind, index) {
+        var itemTargets = getYuiGuideChatSpotlightItemTargets(kind);
+        if (itemTargets.length > 0) {
+            var normalizedIndex = Number.isFinite(index) ? Math.max(0, Math.floor(index)) : 0;
+            return itemTargets[Math.min(normalizedIndex, itemTargets.length - 1)];
+        }
+        return getYuiGuideChatSpotlightTarget(kind);
+    }
+
+    function ensureYuiGuideAvatarToolButtonReachable() {
+        var emojiButton = document.querySelector('#react-chat-window-root .composer-emoji-btn');
+        if (isYuiGuideChatElementVisible(emojiButton)) {
+            return true;
+        }
+
+        var expandedToolMenu = document.querySelector('#react-chat-window-root .composer-tool-menu');
+        if (isYuiGuideChatElementVisible(expandedToolMenu)) {
+            return true;
+        }
+
+        var overflowButton = document.querySelector('#react-chat-window-root .composer-overflow-btn');
+        if (
+            isYuiGuideChatElementVisible(overflowButton)
+            && overflowButton.getAttribute('aria-expanded') !== 'true'
+            && typeof overflowButton.click === 'function'
+        ) {
+            overflowButton.click();
+        }
+        return false;
+    }
+
     function setYuiGuideAvatarToolMenuOpen(open, reason) {
+        if (open === true) {
+            ensureYuiGuideAvatarToolButtonReachable();
+        }
         var host = window.reactChatWindowHost;
         if (host && typeof host.setAvatarToolMenuOpen === 'function') {
             host.setAvatarToolMenuOpen(open === true, reason || 'yui-guide-external');
+            if (open === true) {
+                window.setTimeout(function () {
+                    ensureYuiGuideAvatarToolButtonReachable();
+                    host.setAvatarToolMenuOpen(true, reason || 'yui-guide-external-retry');
+                }, 180);
+            }
             return true;
         }
         window.setTimeout(function () {
             var delayedHost = window.reactChatWindowHost;
             if (delayedHost && typeof delayedHost.setAvatarToolMenuOpen === 'function') {
+                if (open === true) {
+                    ensureYuiGuideAvatarToolButtonReachable();
+                }
                 delayedHost.setAvatarToolMenuOpen(open === true, reason || 'yui-guide-external-delayed');
             }
         }, 120);
@@ -2269,12 +2313,20 @@
         }
 
         if (!kind) {
+            cancelYuiGuideChatCursorElementAnimations(cursor);
+            cursor.style.transitionDuration = '';
             cursor.hidden = true;
             cursor.style.opacity = '0';
             return;
         }
 
-        var target = getYuiGuideChatSpotlightTarget(kind);
+        var normalizedOptions = options || {};
+        cancelYuiGuideChatCursorElementAnimations(cursor);
+        cursor.style.transitionDuration = normalizedOptions.effect === 'move' ? '1200ms' : '';
+
+        var target = getYuiGuideChatCursorTargetAt(kind, normalizedOptions && Number.isFinite(normalizedOptions.targetIndex)
+            ? normalizedOptions.targetIndex
+            : 0);
         var rect = target && typeof target.getBoundingClientRect === 'function'
             ? target.getBoundingClientRect()
             : null;
@@ -2288,12 +2340,12 @@
         var cy = rect.top + rect.height / 2;
         cursor.hidden = false;
         cursor.style.opacity = '1';
-        cursor.style.backgroundImage = options && options.effect === 'click'
+        cursor.style.backgroundImage = normalizedOptions && normalizedOptions.effect === 'click'
             ? "url('/static/assets/tutorial/ghost-cursor/click-ghost-cursor.png')"
             : "url('/static/assets/tutorial/ghost-cursor/default-ghost-cursor.png')";
         cursor.style.transform = 'translate3d(' + Math.round(cx) + 'px, ' + Math.round(cy) + 'px, 0)';
 
-        if (options && options.effect === 'click' && typeof cursor.animate === 'function') {
+        if (normalizedOptions && normalizedOptions.effect === 'click' && typeof cursor.animate === 'function') {
             cursor.animate([
                 { transform: 'translate3d(' + Math.round(cx) + 'px, ' + Math.round(cy) + 'px, 0) scale(1)' },
                 { transform: 'translate3d(' + Math.round(cx) + 'px, ' + Math.round(cy) + 'px, 0) scale(0.9)' },
@@ -2310,7 +2362,7 @@
             return;
         }
 
-        if (options && options.effect === 'wobble' && typeof cursor.animate === 'function') {
+        if (normalizedOptions && normalizedOptions.effect === 'wobble' && typeof cursor.animate === 'function') {
             cursor.animate([
                 { transform: 'translate3d(' + Math.round(cx) + 'px, ' + Math.round(cy) + 'px, 0) rotate(0deg)' },
                 { transform: 'translate3d(' + Math.round(cx + 3) + 'px, ' + Math.round(cy - 2) + 'px, 0) rotate(-4deg)' },
@@ -2330,33 +2382,29 @@
         }
     }
 
-    function updateYuiGuideChatSpotlight(kind) {
-        var spotlight = getYuiGuideChatSpotlightElement();
+    function renderYuiGuideChatSpotlight(spotlight, kind, rect) {
         if (!spotlight) {
             return;
         }
 
-        var target = getYuiGuideChatSpotlightTarget(kind);
-        var rect = target && typeof target.getBoundingClientRect === 'function'
-            ? target.getBoundingClientRect()
-            : null;
-
         if (!rect || rect.width <= 0 || rect.height <= 0) {
-            spotlight.hidden = true;
-            spotlight.style.opacity = '0';
-            spotlight.classList.remove('is-visible', 'is-window', 'is-input', 'is-plain-circle');
+            hideYuiGuideChatSpotlightElement(spotlight);
             return;
         }
 
-        var isPlainCircle = kind === 'avatar-tool-items' || kind === 'mini-game-choices';
-        var isToolbarButton = kind === 'avatar-tools' || kind === 'galgame' || isPlainCircle;
-        var padding = kind === 'window' ? 10 : 8;
+        var isCircleImage = (
+            kind === 'avatar-tools'
+            || kind === 'galgame'
+            || kind === 'avatar-tool-items'
+            || kind === 'avatar-tools-and-items'
+        );
+        var padding = isCircleImage ? 22 : (kind === 'window' ? 10 : 8);
         var radius = kind === 'window' ? 26 : 18;
         var left = rect.left - padding;
         var top = rect.top - padding;
         var width = rect.width + padding * 2;
         var height = rect.height + padding * 2;
-        if (isToolbarButton) {
+        if (isCircleImage) {
             var size = Math.max(rect.width, rect.height) + padding * 2;
             left = rect.left + rect.width / 2 - size / 2;
             top = rect.top + rect.height / 2 - size / 2;
@@ -2366,15 +2414,63 @@
         }
         spotlight.hidden = false;
         spotlight.style.opacity = '1';
-        spotlight.classList.remove('is-window', 'is-input', 'is-plain-circle');
-        spotlight.classList.add(kind === 'window' ? 'is-window' : 'is-input');
-        spotlight.classList.toggle('is-plain-circle', isPlainCircle);
+        spotlight.classList.remove('is-window', 'is-input', 'is-circle-image');
+        if (!isCircleImage) {
+            spotlight.classList.add(kind === 'window' ? 'is-window' : 'is-input');
+        }
+        spotlight.classList.toggle('is-circle-image', isCircleImage);
         spotlight.classList.add('is-visible');
         spotlight.style.left = Math.round(left) + 'px';
         spotlight.style.top = Math.round(top) + 'px';
         spotlight.style.width = Math.round(width) + 'px';
         spotlight.style.height = Math.round(height) + 'px';
         spotlight.style.borderRadius = radius + 'px';
+        var hasChromeFrame = !!spotlight.querySelector('.yui-guide-chat-spotlight-chrome');
+        spotlight.style.border = (!isCircleImage && !hasChromeFrame)
+            ? '2px solid rgba(39, 89, 228, 0.98)'
+            : '0';
+        spotlight.style.boxShadow = (!isCircleImage && !hasChromeFrame)
+            ? '0 0 0 4px rgba(39, 89, 228, 0.14), 0 0 24px rgba(39, 89, 228, 0.32)'
+            : 'none';
+        spotlight.style.background = (!isCircleImage && !hasChromeFrame)
+            ? 'rgba(255, 255, 255, 0.02)'
+            : 'transparent';
+        spotlight.style.backgroundImage = isCircleImage
+            ? "url('/static/assets/tutorial/highlight/circle-highlight.png')"
+            : '';
+        spotlight.style.backgroundRepeat = isCircleImage ? 'no-repeat' : '';
+        spotlight.style.backgroundPosition = isCircleImage ? 'center' : '';
+        spotlight.style.backgroundSize = isCircleImage ? 'contain' : '';
+    }
+
+    function updateYuiGuideChatSpotlight(kind) {
+        var itemTargets = getYuiGuideChatSpotlightItemTargets(kind);
+        if (itemTargets.length > 0) {
+            hideYuiGuideChatSpotlightElement(getYuiGuideChatSpotlightElement(0));
+            itemTargets.forEach(function (target, index) {
+                var rect = target && typeof target.getBoundingClientRect === 'function'
+                    ? target.getBoundingClientRect()
+                    : null;
+                renderYuiGuideChatSpotlight(getYuiGuideChatSpotlightElement(index + 1), kind, rect);
+            });
+            hideYuiGuideChatSpotlightElements(itemTargets.length + 1);
+            return;
+        }
+        if (kind === 'avatar-tool-items') {
+            hideYuiGuideChatSpotlightElements(0);
+            return;
+        }
+        if (kind === 'avatar-tools-and-items') {
+            hideYuiGuideChatSpotlightElements(0);
+            return;
+        }
+
+        hideYuiGuideChatSpotlightElements(1);
+        var target = getYuiGuideChatSpotlightTarget(kind);
+        var rect = target && typeof target.getBoundingClientRect === 'function'
+            ? target.getBoundingClientRect()
+            : null;
+        renderYuiGuideChatSpotlight(getYuiGuideChatSpotlightElement(0), kind, rect);
     }
 
     function applyYuiGuideChatSpotlight(kind) {
@@ -2382,12 +2478,7 @@
         clearYuiGuideChatSpotlightTracking();
 
         if (!yuiGuideChatSpotlightKind) {
-            var spotlight = getYuiGuideChatSpotlightElement();
-            if (spotlight) {
-                spotlight.hidden = true;
-                spotlight.style.opacity = '0';
-                spotlight.classList.remove('is-visible', 'is-window', 'is-input');
-            }
+            hideYuiGuideChatSpotlightElements(0);
             return;
         }
 

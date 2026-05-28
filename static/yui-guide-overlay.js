@@ -96,7 +96,8 @@
                 '#live2d-btn-return, #vrm-btn-return, #mmd-btn-return, ' +
                 '#live2d-lock-icon, #vrm-lock-icon, #mmd-lock-icon, ' +
                 '[id$="-btn-mic"], [id$="-btn-screen"], [id$="-btn-agent"], ' +
-                '[id$="-btn-settings"], [id$="-btn-goodbye"], [id$="-btn-return"], [id$="-lock-icon"]'
+                '[id$="-btn-settings"], [id$="-btn-goodbye"], [id$="-btn-return"], [id$="-lock-icon"], ' +
+                '.composer-tool-btn, .composer-icon-button[data-avatar-tool-id]'
             );
         }
 
@@ -169,25 +170,6 @@
 
         if (circleSkin && circleSkin.style) {
             circleSkin.style.display = useCircleImage ? 'block' : '';
-        }
-    }
-
-    function applySpotlightPlainCircleMode(frame) {
-        if (!frame) {
-            return;
-        }
-
-        const chrome = frame.querySelector('.yui-guide-spotlight-chrome');
-        const circleSkin = frame.querySelector('.yui-guide-spotlight-circle-skin');
-
-        removeSpotlightImageDecorations(frame);
-
-        if (chrome && chrome.style) {
-            chrome.style.display = 'none';
-        }
-
-        if (circleSkin && circleSkin.style) {
-            circleSkin.style.display = 'none';
         }
     }
 
@@ -771,16 +753,14 @@
             const allowMask = normalizedOptions.allowMask !== false;
             const variant = normalizedOptions.variant || '';
             const forceCircleImage = variant === 'circle-image';
-            const forcePlainCircle = variant === 'plain-circle';
 
             if (!spotlightRect) {
                 frame.hidden = true;
                 frame.classList.remove('is-visible');
                 frame.classList.remove('is-circular-mask');
                 frame.classList.remove('is-circle-image');
-                frame.classList.remove('is-plain-circle');
                 frame.classList.remove('is-thin-variant');
-                applySpotlightFrameDecorationMode(frame, false);
+                removeSpotlightImageDecorations(frame);
                 return;
             }
 
@@ -788,12 +768,11 @@
             frame.classList.add('is-visible');
             frame.classList.toggle('is-circular-mask', !!spotlightRect.isCircular && allowMask);
             frame.classList.toggle('is-circle-image', forceCircleImage);
-            frame.classList.toggle('is-plain-circle', forcePlainCircle);
             frame.classList.toggle('is-thin-variant', variant === 'thin');
-            if (forcePlainCircle) {
-                applySpotlightPlainCircleMode(frame);
+            if (forceCircleImage) {
+                applySpotlightFrameDecorationMode(frame, true);
             } else {
-                applySpotlightFrameDecorationMode(frame, !!spotlightRect.isCircular || forceCircleImage);
+                applySpotlightFrameDecorationMode(frame, !!spotlightRect.isCircular);
             }
             frame.style.left = spotlightRect.left + 'px';
             frame.style.top = spotlightRect.top + 'px';

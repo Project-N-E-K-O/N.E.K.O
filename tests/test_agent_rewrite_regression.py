@@ -339,10 +339,15 @@ def test_agent_router_has_internal_analyze_request_endpoint():
 
 
 def test_yui_guide_steps_registry_keeps_m1_to_m4_home_flow_contract():
-    source = Path("static/yui-guide-steps.js").read_text(encoding="utf-8")
+    steps_source = Path("static/yui-guide-steps.js").read_text(encoding="utf-8")
+    day1_source = Path("static/yui-guide-day1-home-guide.js").read_text(encoding="utf-8")
+    source = steps_source + "\n" + day1_source
 
     for expected in (
         "const CONTRACT_VERSION = 2;",
+        "const registry = window.YuiGuideDailyGuides || {};",
+        "const day1Guide = getDailyGuide(1) || {};",
+        "createStepFromPatch(id, day1Steps[id])",
         "'intro_basic'",
         "'takeover_capture_cursor'",
         "'takeover_plugin_preview'",
@@ -351,12 +356,12 @@ def test_yui_guide_steps_registry_keeps_m1_to_m4_home_flow_contract():
         "'handoff_api_key'",
         "'handoff_memory_browser'",
         "'handoff_plugin_dashboard'",
-        "steps.handoff_api_key.navigation.resumeScene = 'api_key_intro';",
-        "steps.handoff_memory_browser.navigation.resumeScene = 'memory_browser_intro';",
-        "steps.handoff_plugin_dashboard.navigation.resumeScene = 'plugin_dashboard_landing';",
-        "steps.plugin_dashboard_landing = createBaseStep('plugin_dashboard_landing', 'plugin_dashboard', '#plugin-list');",
-        "steps.api_key_intro = createBaseStep('api_key_intro', 'api_key', '#coreApiSelect-dropdown-trigger');",
-        "steps.memory_browser_intro = createBaseStep('memory_browser_intro', 'memory_browser', '#memory-file-list');",
+        "resumeScene: 'api_key_intro'",
+        "resumeScene: 'memory_browser_intro'",
+        "resumeScene: 'plugin_dashboard_landing'",
+        "plugin_dashboard_landing: {",
+        "anchor: '#coreApiSelect-dropdown-trigger'",
+        "anchor: '#memory-file-list'",
         "api_key: ['api_key_intro']",
         "memory_browser: ['memory_browser_intro']",
         "plugin_dashboard: ['plugin_dashboard_landing']",
@@ -1206,7 +1211,19 @@ def test_home_avatar_floating_guide_day_reset_buttons_are_wired():
 
 
 def test_avatar_floating_round_director_flow_matches_day2_to_day7_contracts():
-    source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    guide_source = "\n".join(
+        Path(path).read_text(encoding="utf-8")
+        for path in (
+            "static/yui-guide-day2-screen-voice-guide.js",
+            "static/yui-guide-day3-interaction-guide.js",
+            "static/yui-guide-day4-companion-guide.js",
+            "static/yui-guide-day5-personalization-guide.js",
+            "static/yui-guide-day6-agent-guide.js",
+            "static/yui-guide-day7-graduation-guide.js",
+        )
+    )
+    source = director_source + "\n" + guide_source
 
     for expected in (
         "resolveAvatarFloatingSceneEmotion(scene)",
@@ -1486,12 +1503,13 @@ def test_home_yui_guide_uses_platform_capability_matrix_for_cross_window_skip():
 
 def test_home_yui_guide_scenes_declare_timelines_and_director_consumes_normalized_cues():
     steps_source = Path("static/yui-guide-steps.js").read_text(encoding="utf-8")
+    day1_source = Path("static/yui-guide-day1-home-guide.js").read_text(encoding="utf-8")
     director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
 
     assert "timeline: []" in steps_source
-    assert "{ at: 0.16, action: 'highlightVoiceControl' }" in steps_source
-    assert "{ at: 0.54, action: 'openSettingsPanel' }" in steps_source
-    assert "{ voiceKey: 'takeover_settings_peek_detail', at: Math.max(7450 / 13923, 0.55), action: 'showSecondLine' }" in steps_source
+    assert "{ at: 0.16, action: 'highlightVoiceControl' }" in day1_source
+    assert "{ at: 0.54, action: 'openSettingsPanel' }" in day1_source
+    assert "{ voiceKey: 'takeover_settings_peek_detail', at: Math.max(7450 / 13923, 0.55), action: 'showSecondLine' }" in day1_source
     assert "getGuideTimelineCueConfig(voiceKey, cueName)" in director_source
     assert "const timeline = Array.isArray(performance.timeline) ? performance.timeline : []" in director_source
     assert "cue.action !== normalizedCueName" in director_source
