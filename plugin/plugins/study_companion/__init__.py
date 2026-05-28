@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import base64
@@ -118,29 +118,29 @@ except Exception:  # noqa: BLE001 - route registration should not block package 
 _REVIEW_DUE_INTERVAL_SECONDS = 1800.0
 
 
-from .plugin_entries.voice_bridge import _VoiceBridgeMixin
-from .plugin_entries.tutor_context_support import _TutorContextSupportMixin
-from .plugin_entries.tutor_learning_support import _TutorLearningSupportMixin
-from .plugin_entries.communication_review_events import _CommunicationReviewEventsMixin
-from .plugin_entries.communication_tutor_events import _CommunicationTutorEventsMixin
-from .plugin_entries.export_support import _ExportSupportMixin
-from .plugin_entries.status_entries import _StatusEntriesMixin
-from .plugin_entries.memory_card_entries import _MemoryCardEntriesMixin
-from .plugin_entries.memory_deck_entries import _MemoryDeckEntriesMixin
-from .plugin_entries.memory_import_entries import _MemoryImportEntriesMixin
-from .plugin_entries.memory_review_entries import _MemoryReviewEntriesMixin
-from .plugin_entries.pomodoro_entries import _PomodoroEntriesMixin
-from .plugin_entries.goal_entries import _GoalEntriesMixin
-from .plugin_entries.checkin_entries import _CheckinEntriesMixin
-from .plugin_entries.supervision_entries import _SupervisionEntriesMixin
-from .plugin_entries.knowledge_entries import _KnowledgeEntriesMixin
-from .plugin_entries.mode_entries import _ModeEntriesMixin
-from .plugin_entries.tutor_explain_entries import _TutorExplainEntriesMixin
-from .plugin_entries.tutor_question_entries import _TutorQuestionEntriesMixin
-from .plugin_entries.tutor_answer_entries import _TutorAnswerEntriesMixin
-from .plugin_entries.tutor_summary_entries import _TutorSummaryEntriesMixin
-from .plugin_entries.ocr_entries import _OcrEntriesMixin
-from .plugin_entries.vision_entries import _VisionEntriesMixin
+from .entry_voice_bridge import _VoiceBridgeMixin
+from .entry_tutor_context_support import _TutorContextSupportMixin
+from .entry_tutor_learning_support import _TutorLearningSupportMixin
+from .entry_communication_review_events import _CommunicationReviewEventsMixin
+from .entry_communication_tutor_events import _CommunicationTutorEventsMixin
+from .entry_export_support import _ExportSupportMixin
+from .entry_status_entries import _StatusEntriesMixin
+from .entry_memory_card_entries import _MemoryCardEntriesMixin
+from .entry_memory_deck_entries import _MemoryDeckEntriesMixin
+from .entry_memory_import_entries import _MemoryImportEntriesMixin
+from .entry_memory_review_entries import _MemoryReviewEntriesMixin
+from .entry_pomodoro_entries import _PomodoroEntriesMixin
+from .entry_goal_entries import _GoalEntriesMixin
+from .entry_checkin_entries import _CheckinEntriesMixin
+from .entry_supervision_entries import _SupervisionEntriesMixin
+from .entry_knowledge_entries import _KnowledgeEntriesMixin
+from .entry_mode_entries import _ModeEntriesMixin
+from .entry_tutor_explain_entries import _TutorExplainEntriesMixin
+from .entry_tutor_question_entries import _TutorQuestionEntriesMixin
+from .entry_tutor_answer_entries import _TutorAnswerEntriesMixin
+from .entry_tutor_summary_entries import _TutorSummaryEntriesMixin
+from .entry_ocr_entries import _OcrEntriesMixin
+from .entry_vision_entries import _VisionEntriesMixin
 
 
 @neko_plugin

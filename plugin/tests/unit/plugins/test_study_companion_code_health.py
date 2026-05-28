@@ -1,11 +1,32 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from plugin.tests.unit.plugins import test_pomodoro_timer as _pomodoro_tests
 from plugin.tests.unit.plugins import test_study_habit_store as _habit_tests
 
 pytestmark = pytest.mark.unit
+
+_STUDY_COMPANION_ROOT = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+
+
+def test_code_health_modules_are_flat_for_dependency_direction() -> None:
+    for child_dir in ("plugin_entries", "store", "tutor_llm_agent"):
+        assert not (_STUDY_COMPANION_ROOT / child_dir).exists()
+
+    flat_split_modules = ("entry_", "store_", "tutor_llm_agent_")
+    flat_main_modules = {"store.py", "tutor_llm_agent.py"}
+    for path in _STUDY_COMPANION_ROOT.glob("*.py"):
+        if not (
+            path.name.startswith(flat_split_modules) or path.name in flat_main_modules
+        ):
+            continue
+        source = path.read_text(encoding="utf-8")
+        assert "from .." not in source
+        assert "import .." not in source
+
 
 test_store_transaction_rolls_back_and_json_loads_is_public = (
     _habit_tests.test_store_transaction_rolls_back_and_json_loads_is_public
