@@ -12,6 +12,7 @@ from ..core import (
 )
 
 # Legacy aliases for backward compatibility
+from .models import PackResult, UnpackResult, UnpackedPlugin
 from .pack import pack_plugin, pack_bundle
 from .unpack import unpack_package
 
@@ -23,6 +24,9 @@ __all__ = [
     "build_plugin",
     "install_package",
     # Legacy aliases
+    "PackResult",
+    "UnpackResult",
+    "UnpackedPlugin",
     "pack_plugin",
     "pack_bundle",
     "unpack_package",

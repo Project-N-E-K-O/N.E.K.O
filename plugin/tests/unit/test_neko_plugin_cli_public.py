@@ -134,6 +134,15 @@ def _rewrite_package_member(package_path: Path, member_name: str, content: str) 
             dst.writestr(info, data)
 
 
+def test_public_root_exports_legacy_result_aliases() -> None:
+    from plugin.neko_plugin_cli import public
+    from plugin.neko_plugin_cli.public.models import PackResult, UnpackResult, UnpackedPlugin
+
+    assert public.PackResult is PackResult
+    assert public.UnpackResult is UnpackResult
+    assert public.UnpackedPlugin is UnpackedPlugin
+
+
 def test_build_rules_apply_include_and_exclude() -> None:
     rules = BuildRuleSet(
         include=["src/*.py", "plugin.toml"],
