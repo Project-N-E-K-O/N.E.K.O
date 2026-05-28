@@ -403,7 +403,10 @@ def _build_discovery_payload(
                 pdata=ctx.pdata,
             )
         else:
-            missing_requirements = _find_missing_python_requirements(ctx.python_requirements)
+            missing_requirements = _find_missing_python_requirements(
+                ctx.python_requirements,
+                search_paths=ctx.python_requirement_paths,
+            )
             if missing_requirements:
                 error_type = "MissingPythonDependencies"
                 error_message = f"Unsatisfied Python dependencies: {missing_requirements}"

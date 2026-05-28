@@ -188,6 +188,53 @@ async def test_refresh_plugin_returns_updated_status_for_existing_plugin(
 
 
 @pytest.mark.asyncio
+async def test_refresh_plugin_checks_python_requirements_against_vendor_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = _write_plugin_fixture(tmp_path, "vendor_refresh")
+    plugin_dir = root / "vendor_refresh"
+    vendor_dir = plugin_dir / "vendor"
+    vendor_dir.mkdir()
+    (plugin_dir / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["demo-lib>=2"]\n',
+        encoding="utf-8",
+    )
+    seen: dict[str, object] = {}
+
+    def _fake_find_missing(requirements, *, search_paths=None):
+        seen["requirements"] = list(requirements)
+        seen["search_paths"] = list(search_paths or [])
+        return []
+
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    cache_backup = copy.deepcopy(module.state._snapshot_cache)
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins["vendor_refresh"] = {
+                "id": "vendor_refresh",
+                "name": "Vendor Refresh",
+                "config_path": str((plugin_dir / "plugin.toml").resolve()),
+            }
+
+        monkeypatch.setattr(module, "PLUGIN_CONFIG_ROOTS", (root,))
+        monkeypatch.setattr(module, "_find_missing_python_requirements", _fake_find_missing)
+
+        payload = await module.PluginRegistryService().refresh_plugin("vendor_refresh")
+
+        assert payload["success"] is True
+        assert seen["requirements"] == ["demo-lib>=2"]
+        assert seen["search_paths"] == [vendor_dir]
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state._snapshot_cache_lock:
+            module.state._snapshot_cache = cache_backup
+
+
+@pytest.mark.asyncio
 async def test_refresh_registry_keeps_existing_metadata_when_config_parse_fails(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -20,6 +20,7 @@ from plugin._types.exceptions import PluginError
 from plugin.core.host import PluginProcessHost
 from plugin.core.registry import (
     _collect_plugin_python_requirements,
+    _collect_plugin_python_requirement_paths,
     _check_plugin_dependency,
     _extract_entries_preview,
     _find_missing_python_requirements,
@@ -591,13 +592,17 @@ class PluginLifecycleService:
                 logger,
                 current_plugin_id,
             )
-            unsatisfied_python_requirements = _find_missing_python_requirements(python_requirements)
+            python_requirement_paths = _collect_plugin_python_requirement_paths(config_path)
+            unsatisfied_python_requirements = _find_missing_python_requirements(
+                python_requirements,
+                search_paths=python_requirement_paths,
+            )
             if unsatisfied_python_requirements:
                 raise _to_domain_error(
                     code="PLUGIN_PYTHON_DEPENDENCIES_MISSING",
                     message=(
                         f"Plugin '{current_plugin_id}' has unsatisfied Python dependencies: "
-                        f"{unsatisfied_python_requirements}. Install compatible packages in the current runtime environment."
+                        f"{unsatisfied_python_requirements}. Install compatible packages into the plugin vendor/ directory."
                     ),
                     status_code=400,
                     plugin_id=current_plugin_id,
