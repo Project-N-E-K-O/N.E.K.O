@@ -347,6 +347,20 @@ def _prepare_child_plugin_import_roots(logger: Any) -> None:
         sys.path.insert(0, str(repo_root))
 
 
+def _prepare_child_plugin_vendor_path(config_path: Path, logger: Any) -> None:
+    """Add the current plugin's vendor/ directory before importing its entry."""
+
+    vendor_dir = config_path.parent / "vendor"
+    if not vendor_dir.is_dir():
+        return
+
+    value = str(vendor_dir)
+    if value in sys.path:
+        return
+    sys.path.insert(0, value)
+    logger.info("[Plugin Process] Added plugin vendor path to sys.path: {}", vendor_dir)
+
+
 def _check_extension_type_guard(config_path: Path, plugin_id: str, logger: Any) -> bool:
     """
     检查插件是否是 Extension 类型（不应作为独立进程运行）。
@@ -532,6 +546,7 @@ def _plugin_process_runner(
 
     try:
         _prepare_child_plugin_import_roots(logger)
+        _prepare_child_plugin_vendor_path(config_path, logger)
         try:
             from plugin.settings import BUILTIN_PLUGIN_CONFIG_ROOT
             entry_point = normalize_plugin_entry_point(
