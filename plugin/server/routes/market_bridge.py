@@ -1036,8 +1036,11 @@ async def _report_market_install_best_effort(
     if token_data.get("market_url") and token_data.get("market_url") != MARKET_URL:
         logger.debug("Skip Market install report: token belongs to a different Market URL")
         return
-    if time.time() > float(token_data.get("expires_at") or 0):
-        logger.info("Skip Market install report: saved Market token is expired")
+    # A malformed ``expires_at`` (e.g. corrupted market_auth.json) must skip
+    # the report, not bubble out — the caller treats any exception here as a
+    # failed install and would mark a successful install as internal_error.
+    if _market_token_is_expired(token_data):
+        logger.info("Skip Market install report: saved Market token is expired or unparseable")
         return
 
     try:
