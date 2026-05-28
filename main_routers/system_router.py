@@ -1726,6 +1726,27 @@ def _parse_unified_phase1_result(text: str) -> dict:
     return result
 
 
+_PROACTIVE_LEGAL_SOURCE_TAGS = frozenset({"CHAT", "WEB", "PASS", "MUSIC", "MEME"})
+_PROACTIVE_SCREEN_TAG_LEAKS = frozenset({"SCREEN", "SCREENSHOT", "VISION", "WINDOW"})
+_PROACTIVE_BRACKET_TAG_RE = re.compile(r"^\[([A-Za-z][A-Za-z0-9_-]{0,31})\]\s*")
+
+
+def _strip_proactive_screen_tag_leak(text: str) -> str:
+    """Remove accidental screen-source tags such as ``[Screen]`` from Phase 2 text."""
+    if not text:
+        return ""
+    leading_len = len(text) - len(text.lstrip())
+    leading = text[:leading_len]
+    body = text[leading_len:]
+    match = _PROACTIVE_BRACKET_TAG_RE.match(body)
+    if not match:
+        return text
+    tag = match.group(1).upper()
+    if tag in _PROACTIVE_LEGAL_SOURCE_TAGS or tag not in _PROACTIVE_SCREEN_TAG_LEAKS:
+        return text
+    return leading + body[match.end():].lstrip()
+
+
 def _lookup_link_by_title(title: str, all_links: list[dict]) -> dict | None:
     """
     根据 Phase 1 输出的标题在 all_web_links 中查找对应链接
@@ -6319,6 +6340,8 @@ async def proactive_chat(request: Request):
                             if tag_match:
                                 source_tag = tag_match.group(1).upper()
                                 cleaned = cleaned[tag_match.end():]
+                            else:
+                                cleaned = _strip_proactive_screen_tag_leak(cleaned)
                             tag_parsed = True
                             
                             if source_tag == 'PASS' or '[PASS]' in cleaned.upper():
@@ -6375,6 +6398,8 @@ async def proactive_chat(request: Request):
             if tag_match:
                 source_tag = tag_match.group(1).upper()
                 cleaned = cleaned[tag_match.end():]
+            else:
+                cleaned = _strip_proactive_screen_tag_leak(cleaned)
             if source_tag == 'PASS' or '[PASS]' in cleaned.upper():
                 aborted = True
             elif cleaned.strip():
@@ -6431,6 +6456,8 @@ async def proactive_chat(request: Request):
                 if _ftm:
                     _fix_tag = _ftm.group(1).upper()
                     _fc = _fc[_ftm.end():]
+                else:
+                    _fc = _strip_proactive_screen_tag_leak(_fc)
                 if _fix_tag and _fix_tag != "PASS" and _fc.strip() and "[PASS]" not in _fc.upper():
                     source_tag = _fix_tag
                     full_text = _fc.strip()
@@ -6460,6 +6487,7 @@ async def proactive_chat(request: Request):
                 "message": "Phase 2 流式输出被拦截或为空"
             }))
         
+        full_text = _strip_proactive_screen_tag_leak(full_text)
         response_text = full_text.strip()
         # 不要把 proactive 原文写进 logger（会进日志文件 / 遥测）；只记元数据。
         # 完整原文通过 print 给开发者本地查看。
@@ -6601,6 +6629,8 @@ async def proactive_chat(request: Request):
             if _tag_m:
                 regen_source_tag = _tag_m.group(1).upper()
                 _cleaned = _cleaned[_tag_m.end():]
+            else:
+                _cleaned = _strip_proactive_screen_tag_leak(_cleaned)
             # regen 输出 [PASS] / 空 → 等价于"模型放弃了"，drop 而不是退回原文。
             # 显式把 ``regen_source_tag == 'PASS'`` 也算 drop（前面剥过 [TAG] 前缀，
             # _cleaned 已不含字面 "[PASS]"，但 regen_source_tag 记下了是 PASS）。

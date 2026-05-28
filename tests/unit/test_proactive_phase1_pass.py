@@ -66,6 +66,20 @@ keyword: pass the dutchie
     assert parsed["music_pass"] is False
 
 
+def test_strip_proactive_screen_tag_leak_removes_screen_source_label():
+    cleaned = sr._strip_proactive_screen_tag_leak(
+        "[Screen]\n看这满屏的符咒，是在给那画中仙重塑筋骨？"
+    )
+
+    assert cleaned == "看这满屏的符咒，是在给那画中仙重塑筋骨？"
+
+
+def test_strip_proactive_screen_tag_leak_preserves_legal_source_tags():
+    cleaned = sr._strip_proactive_screen_tag_leak("[CHAT]\n你好呀")
+
+    assert cleaned == "[CHAT]\n你好呀"
+
+
 def test_recent_proactive_prompt_has_strong_paired_boundaries():
     lanlan = "测试娘"
     snapshot = sr._proactive_chat_history.get(lanlan)
