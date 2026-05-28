@@ -19,6 +19,7 @@ import secrets
 import shutil
 import tempfile
 import time
+import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal
@@ -35,6 +36,7 @@ from plugin.server.application.install_source import (
     InstallSourceManager,
     LockEntry,
     SourceDetailMarket,
+    classify_plugin_path,
     get_install_source_manager,
 )
 from plugin.server.application.plugin_cli import service as plugin_cli_service_module
@@ -234,6 +236,22 @@ def _plugin_config_roots() -> tuple[Path, ...]:
         if root not in roots:
             roots.append(root)
     return tuple(roots)
+
+
+def _read_plugin_toml_id(manifest: Path) -> str | None:
+    try:
+        data = tomllib.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        logger.warning("Failed to read plugin manifest {}: {}", manifest, exc)
+        return None
+
+    plugin_table = data.get("plugin")
+    if not isinstance(plugin_table, dict):
+        return None
+    plugin_id = plugin_table.get("id")
+    if not isinstance(plugin_id, str) or not plugin_id.strip():
+        return None
+    return plugin_id.strip()
 
 
 # ─── 请求/响应模型 ─────────────────────────────────────────────────
@@ -497,15 +515,20 @@ async def market_installed(
         mgr = get_install_source_manager()
         snapshot = mgr.snapshot() if mgr is not None else None
         entries_by_pid: dict[str, LockEntry] = {}
+        entries_by_dir: dict[tuple[str, str], LockEntry] = {}
         if snapshot is not None:
             entries_by_pid = {
                 e.plugin_id: e
                 for e in snapshot.entries
                 if not e.removed and e.plugin_id
             }
+            entries_by_dir = {
+                (e.root_id, e.directory_name): e
+                for e in snapshot.entries
+                if not e.removed and e.root_id and e.directory_name
+            }
 
-        installed: list[MarketInstalledPlugin] = []
-        seen: set[str] = set()
+        installed_by_pid: dict[str, MarketInstalledPlugin] = {}
         for root in _plugin_config_roots():
             if not root.is_dir():
                 continue
@@ -513,17 +536,39 @@ async def market_installed(
                 if not manifest.is_file():
                     continue
                 plugin_dir = manifest.parent
-                plugin_id = plugin_dir.name
-                if plugin_id in seen:
-                    continue
-                seen.add(plugin_id)
-                installed.append(MarketInstalledPlugin(
+                plugin_id = _read_plugin_toml_id(manifest) or plugin_dir.name
+                entry: LockEntry | None = None
+                if mgr is not None:
+                    try:
+                        root_id, directory_name = classify_plugin_path(
+                            plugin_dir,
+                            builtin_root=mgr.builtin_root,
+                            user_root=mgr.user_root,
+                        )
+                        entry = entries_by_dir.get((root_id, directory_name))
+                    except (InstallSourceError, ValueError):
+                        entry = None
+                if entry is None:
+                    pid_entry = entries_by_pid.get(plugin_id)
+                    if (
+                        pid_entry is not None
+                        and pid_entry.directory_name == plugin_dir.name
+                    ):
+                        entry = pid_entry
+
+                projected_source = _project_market_source_detail(entry)
+                candidate = MarketInstalledPlugin(
                     plugin_id=plugin_id,
                     path=str(plugin_dir),
-                    latest_install_source=_project_market_source_detail(
-                        entries_by_pid.get(plugin_id)
-                    ),
-                ))
+                    latest_install_source=projected_source,
+                )
+                existing = installed_by_pid.get(plugin_id)
+                if existing is None or (
+                    existing.latest_install_source is None
+                    and candidate.latest_install_source is not None
+                ):
+                    installed_by_pid[plugin_id] = candidate
+        installed = list(installed_by_pid.values())
         return MarketInstalledResponse(installed=installed, count=len(installed))
     except Exception as exc:
         logger.warning("Failed to list installed plugins: {}", exc)

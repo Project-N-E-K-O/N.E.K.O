@@ -963,6 +963,17 @@ async def test_install_identity_check_uses_plugin_toml_id_when_directory_renamed
     [entry] = renamed_entries
     assert entry["plugin_id"] == plugin_id
 
+    installed_resp = await client.get(f"/market/installed?token={token}")
+    assert installed_resp.status_code == 200
+    installed_body = installed_resp.json()
+    [projected] = [
+        item for item in installed_body["installed"]
+        if item["plugin_id"] == plugin_id
+    ]
+    assert projected["path"].endswith(f"/{plugin_id}_1")
+    assert projected["latest_install_source"] is not None
+    assert projected["latest_install_source"]["version"] == version
+
 
 @pytest.mark.asyncio
 async def test_upgrade_happy_path_replaces_lock_entry(
