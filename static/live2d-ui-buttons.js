@@ -295,6 +295,14 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
                         return;
                     }
                 }
+
+                if (config.hasPopup && config.separatePopupTrigger) {
+                    const buttonData = this._floatingButtons && this._floatingButtons[config.id];
+                    if (buttonData && buttonData.triggerButton && typeof buttonData.triggerButton.click === 'function') {
+                        buttonData.triggerButton.click();
+                        return;
+                    }
+                }
             }
 
             if (config.id === 'screen') {
@@ -463,7 +471,7 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
                     }
 
                     if (config.id === 'mic' && window.renderFloatingMicList) {
-                        await window.renderFloatingMicList();
+                        await window.renderFloatingMicList(popup);
                         repositionPopup();
                     }
 

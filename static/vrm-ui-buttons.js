@@ -147,6 +147,14 @@ VRMManager.prototype.setupFloatingButtons = function() {
                     }
                     return;
                 }
+
+                if (config.hasPopup && config.separatePopupTrigger) {
+                    const buttonData = this._floatingButtons && this._floatingButtons[config.id];
+                    if (buttonData && buttonData.triggerButton && typeof buttonData.triggerButton.click === 'function') {
+                        buttonData.triggerButton.click();
+                        return;
+                    }
+                }
             }
 
             if (config.id === 'screen') {
