@@ -139,13 +139,25 @@
         }
     }
 
-    function waitForExportPreviewShell(previewWindow, targetUrl) {
+    function hasExportPreviewWindowControlApi(previewWindow) {
+        if (!previewWindow || previewWindow.closed) return false;
+        try {
+            var api = previewWindow.nekoWindowControl;
+            return !!(api && typeof api.minimize === 'function' && typeof api.maximize === 'function');
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function waitForExportPreviewShell(previewWindow, targetUrl, timeoutMs) {
         return new Promise(function (resolve) {
             if (!previewWindow || previewWindow.closed) {
                 resolve(false);
                 return;
             }
 
+            var waitMs = Number(timeoutMs);
+            if (!Number.isFinite(waitMs) || waitMs <= 0) waitMs = 1500;
             var settled = false;
             var pollTimer = null;
             var timeoutTimer = null;
@@ -185,9 +197,16 @@
                 previewWindow.addEventListener('load', checkReady);
             } catch (_) {}
             pollTimer = window.setInterval(checkReady, 40);
-            timeoutTimer = window.setTimeout(function () { finish(false); }, 1500);
+            timeoutTimer = window.setTimeout(function () { finish(false); }, waitMs);
             checkReady();
         });
+    }
+
+    async function waitForExportPreviewRewriteGate(previewWindow, targetUrl) {
+        var shellReady = await waitForExportPreviewShell(previewWindow, targetUrl, 1500);
+        if (shellReady || hasExportPreviewWindowControlApi(previewWindow)) return true;
+        shellReady = await waitForExportPreviewShell(previewWindow, targetUrl, 6500);
+        return !!(shellReady || hasExportPreviewWindowControlApi(previewWindow));
     }
 
     function showToast(key, fallback, duration) {
@@ -2535,8 +2554,15 @@
         }
         state.previewWindow = previewWindow;
         if (!isExistingWindow) {
-            await waitForExportPreviewShell(previewWindow, getExportPreviewShellUrl());
+            var canRewritePreview = await waitForExportPreviewRewriteGate(previewWindow, getExportPreviewShellUrl());
             if (!previewWindow || previewWindow.closed) return null;
+            if (!canRewritePreview) {
+                if (state.previewWindow === previewWindow) state.previewWindow = null;
+                try {
+                    previewWindow.close();
+                } catch (_) {}
+                return null;
+            }
         }
         try {
             if (typeof previewWindow.stop === 'function') previewWindow.stop();
