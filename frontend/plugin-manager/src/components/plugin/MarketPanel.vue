@@ -269,7 +269,12 @@ const pluginStore = usePluginStore()
 const userPref = useUserPreferenceStore()
 
 const loading = ref(false)
+// ``marketAvailable`` is the Market *configuration* flag set once by
+// ``isMarketAvailable()`` during initialize. ``lastLoadFailed`` tracks the
+// most recent ``loadPlugins`` outcome separately so a transient API error
+// does not lock the user out of the panel.
 const marketAvailable = ref(false)
+const lastLoadFailed = ref(false)
 const marketBaseUrl = ref<string | null>(null)
 const plugins = ref<MarketPlugin[]>([])
 const currentPage = ref(1)
@@ -627,12 +632,16 @@ async function loadPlugins() {
     if (result) {
       plugins.value = result.items
       totalCount.value = result.total
-      marketAvailable.value = true
+      lastLoadFailed.value = false
     } else {
-      marketAvailable.value = false
+      // ``fetchMarketPlugins`` returns null on transient API/network error.
+      // Keep ``marketAvailable`` driven by ``isMarketAvailable()`` only so a
+      // hiccup here does not freeze the early-return guard below and lock
+      // the user into the "not configured" empty state until remount.
+      lastLoadFailed.value = true
     }
   } catch {
-    if (mySeq === loadSeq) marketAvailable.value = false
+    if (mySeq === loadSeq) lastLoadFailed.value = true
   } finally {
     if (mySeq === loadSeq) loading.value = false
   }
