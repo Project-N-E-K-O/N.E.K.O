@@ -70,7 +70,7 @@ class _ExportSupportMixin:
         preview_only: bool = False,
         time_range: str | None = "recent",
         recent_limit: int | None = 30,
-        topic_ids: list[str] | None = [],
+        topic_ids: list[str] | None = None,
         **_,
     ):
         try:
@@ -79,6 +79,7 @@ class _ExportSupportMixin:
                     SdkError("study note export is disabled by doc_export.enabled")
                 )
             normalize_format(fmt)
+            normalized_topic_ids = topic_ids if isinstance(topic_ids, list) else []
             exporter = DocExporter(self._store, config=self._cfg.doc_export)
             exported = await asyncio.to_thread(
                 exporter.export,
@@ -88,7 +89,7 @@ class _ExportSupportMixin:
                 preview_only=bool(preview_only),
                 time_range=time_range,
                 recent_limit=recent_limit,
-                topic_ids=topic_ids if isinstance(topic_ids, list) else [],
+                topic_ids=normalized_topic_ids,
             )
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="_study_export_notes_entry")

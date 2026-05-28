@@ -127,57 +127,59 @@ class _TutorExplainEntriesMixin:
                 source_text = self._state.last_ocr_text
             used_ocr_fallback = bool(source_text.strip())
         # Phase 3: explain with the active mode selected above.
-        extra_context: dict[str, Any] = {
-            "source": "ocr_snapshot" if used_ocr_fallback or not raw_text else "manual",
-            "mode": active_mode,
-            "mode_switch": bool(mode_switch.get("changed")),
-            "source_text": source_text,
-        }
-        vision_image_payload = str(vision_image_base64 or "").strip()
-        if vision_image_payload:
-            if not bool(self._cfg.llm_vision_enabled):
-                return Err(SdkError("llm_vision_enabled is not enabled"))
-            try:
+        try:
+            extra_context: dict[str, Any] = {
+                "source": "ocr_snapshot"
+                if used_ocr_fallback or not raw_text
+                else "manual",
+                "mode": active_mode,
+                "mode_switch": bool(mode_switch.get("changed")),
+                "source_text": source_text,
+            }
+            vision_image_payload = str(vision_image_base64 or "").strip()
+            if vision_image_payload:
+                if not bool(self._cfg.llm_vision_enabled):
+                    return Err(SdkError("llm_vision_enabled is not enabled"))
                 vision_image_payload = _normalize_submitted_image_payload(
                     vision_image_payload,
                 )
-            except ValueError as exc:
-                return _entry_exception_error(self, exc, operation="study_explain_text")
-            extra_context["vision_enabled"] = True
-            extra_context["vision_image_base64"] = vision_image_payload
-        tutor_context = await self._build_learning_context(
-            LLM_OPERATION_CONCEPT_EXPLAIN,
-            input_text=source_text,
-            extra=extra_context,
-        )
-        reply = await self._agent.concept_explain(
-            source_text,
-            mode=active_mode,
-            context=tutor_context,
-        )
-        payload = await self._finalize_tutor_call(
-            LLM_OPERATION_CONCEPT_EXPLAIN,
-            reply,
-            history_kind=MODE_CONCEPT_EXPLAIN,
-            metadata={
-                "degraded": reply.degraded,
-                "diagnostic": reply.diagnostic,
-                "mode": active_mode,
-                "mode_switch": mode_switch,
-                "intent": intent,
-                "screen_classification": tutor_context.get("screen_classification")
-                or {},
-            },
-            extra_context=tutor_context,
-        )
-        if mode_switch:
-            payload["mode_switch"] = mode_switch
-        if intent.get("matched"):
-            payload["intent"] = intent
-            if intent.get("pure_switch"):
-                payload["transition_phrase"] = str(
-                    mode_switch.get("transition_phrase")
-                    or intent.get("transition_phrase")
-                    or ""
-                )
-        return Ok(payload)
+                extra_context["vision_enabled"] = True
+                extra_context["vision_image_base64"] = vision_image_payload
+            tutor_context = await self._build_learning_context(
+                LLM_OPERATION_CONCEPT_EXPLAIN,
+                input_text=source_text,
+                extra=extra_context,
+            )
+            reply = await self._agent.concept_explain(
+                source_text,
+                mode=active_mode,
+                context=tutor_context,
+            )
+            payload = await self._finalize_tutor_call(
+                LLM_OPERATION_CONCEPT_EXPLAIN,
+                reply,
+                history_kind=MODE_CONCEPT_EXPLAIN,
+                metadata={
+                    "degraded": reply.degraded,
+                    "diagnostic": reply.diagnostic,
+                    "mode": active_mode,
+                    "mode_switch": mode_switch,
+                    "intent": intent,
+                    "screen_classification": tutor_context.get("screen_classification")
+                    or {},
+                },
+                extra_context=tutor_context,
+            )
+            if mode_switch:
+                payload["mode_switch"] = mode_switch
+            if intent.get("matched"):
+                payload["intent"] = intent
+                if intent.get("pure_switch"):
+                    payload["transition_phrase"] = str(
+                        mode_switch.get("transition_phrase")
+                        or intent.get("transition_phrase")
+                        or ""
+                    )
+            return Ok(payload)
+        except Exception as exc:
+            return _entry_exception_error(self, exc, operation="study_explain_text")

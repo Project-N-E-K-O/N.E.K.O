@@ -3,6 +3,7 @@ from __future__ import annotations
 from .entry_common import (
     asyncio,
     Ok,
+    _entry_exception_error,
     plugin_entry,
     tr,
     build_open_ui_payload,
@@ -45,8 +46,11 @@ class _StatusEntriesMixin:
         ],
     )
     async def study_status(self, **_):
-        payload = await asyncio.to_thread(self._status_payload)
-        return Ok(payload)
+        try:
+            payload = await asyncio.to_thread(self._status_payload)
+            return Ok(payload)
+        except Exception as exc:
+            return _entry_exception_error(self, exc, operation="study_status")
 
     @plugin_entry(
         id="study_neko_communication_status",

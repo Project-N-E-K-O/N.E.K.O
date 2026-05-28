@@ -29,7 +29,12 @@ class _ModeEntriesMixin:
         llm_result_fields=["mode", "pure_switch", "transition_phrase"],
     )
     async def study_detect_mode_intent(self, text: str = "", **_):
-        return Ok(handle_user_intent(text, language=self._cfg.language))
+        try:
+            return Ok(handle_user_intent(text, language=self._cfg.language))
+        except Exception as exc:
+            return _entry_exception_error(
+                self, exc, operation="study_detect_mode_intent"
+            )
 
     @plugin_entry(
         id="study_set_mode",
@@ -56,6 +61,6 @@ class _ModeEntriesMixin:
             result = await self._apply_mode_switch(
                 mode, reason, language=self._cfg.language
             )
-        except ValueError as exc:
+        except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_set_mode")
         return Ok(result)

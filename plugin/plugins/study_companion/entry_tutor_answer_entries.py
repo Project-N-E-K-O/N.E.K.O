@@ -5,6 +5,7 @@ from .entry_common import (
     Err,
     Ok,
     SdkError,
+    _entry_exception_error,
     plugin_entry,
     tr,
     LLM_OPERATION_ANSWER_EVALUATE,
@@ -70,76 +71,85 @@ class _TutorAnswerEntriesMixin:
         )
         run_id = self._resolve_current_run_id(kwargs)
         session_id = str(kwargs.get("session_id") or "").strip()
-        tutor_context = await self._build_learning_context(
-            LLM_OPERATION_ANSWER_EVALUATE,
-            input_text=answer_text,
-            extra={
-                "question": resolved_question,
-                "expected_answer": resolved_expected,
-                "answer": answer_text,
-                "current_question": current_question if using_current_question else {},
-                "question_payload": question_payload,
-                "question_source": "current_question"
-                if using_current_question
-                else "supplied",
-                "run_id": run_id,
-                "session_id": session_id,
-                "mode": active_mode,
-            },
-        )
-        reply = await self._agent.answer_evaluate(
-            question=resolved_question,
-            answer=answer_text,
-            expected_answer=resolved_expected,
-            mode=active_mode,
-            context=tutor_context,
-        )
-        payload = await self._finalize_tutor_call(
-            LLM_OPERATION_ANSWER_EVALUATE,
-            reply,
-            history_kind=LLM_OPERATION_ANSWER_EVALUATE,
-            metadata={
-                "question": resolved_question,
-                "expected_answer": resolved_expected,
-                "degraded": reply.degraded,
-                "diagnostic": reply.diagnostic,
-                "payload": reply.payload,
-                "screen_classification": tutor_context.get("screen_classification")
-                or {},
-            },
-            extra_context=tutor_context,
-        )
-        payload["question"] = resolved_question
-        payload["screen_classification"] = (
-            tutor_context.get("screen_classification") or {}
-        )
-        topic = str(
-            payload.get("topic")
-            or question_payload.get("topic")
-            or tutor_context.get("topic")
-            or ""
-        ).strip()
         try:
-            mastery_after = (
-                await asyncio.to_thread(self._knowledge_tracker.get_mastery, topic)
-                if topic
-                else -1.0
+            tutor_context = await self._build_learning_context(
+                LLM_OPERATION_ANSWER_EVALUATE,
+                input_text=answer_text,
+                extra={
+                    "question": resolved_question,
+                    "expected_answer": resolved_expected,
+                    "answer": answer_text,
+                    "current_question": current_question
+                    if using_current_question
+                    else {},
+                    "question_payload": question_payload,
+                    "question_source": "current_question"
+                    if using_current_question
+                    else "supplied",
+                    "run_id": run_id,
+                    "session_id": session_id,
+                    "mode": active_mode,
+                },
             )
-        except Exception as exc:
-            self.logger.warning("study answer mastery enrichment failed: {}", exc)
-            mastery_after = -1.0
-        await self._emit_answer_evaluated_event(
-            verdict=str(payload.get("verdict") or ""),
-            score=payload.get("score", 0.0),
-            question_summary=resolved_question,
-            user_answer_summary=answer_text,
-            correction_hint=str(
-                payload.get("correction_hint")
-                or payload.get("feedback")
-                or payload.get("next_action")
+            reply = await self._agent.answer_evaluate(
+                question=resolved_question,
+                answer=answer_text,
+                expected_answer=resolved_expected,
+                mode=active_mode,
+                context=tutor_context,
+            )
+            payload = await self._finalize_tutor_call(
+                LLM_OPERATION_ANSWER_EVALUATE,
+                reply,
+                history_kind=LLM_OPERATION_ANSWER_EVALUATE,
+                metadata={
+                    "question": resolved_question,
+                    "expected_answer": resolved_expected,
+                    "degraded": reply.degraded,
+                    "diagnostic": reply.diagnostic,
+                    "payload": reply.payload,
+                    "screen_classification": tutor_context.get(
+                        "screen_classification"
+                    )
+                    or {},
+                },
+                extra_context=tutor_context,
+            )
+            payload["question"] = resolved_question
+            payload["screen_classification"] = (
+                tutor_context.get("screen_classification") or {}
+            )
+            topic = str(
+                payload.get("topic")
+                or question_payload.get("topic")
+                or tutor_context.get("topic")
                 or ""
-            ),
-            topic=topic,
-            mastery_after=mastery_after,
-        )
-        return Ok(payload)
+            ).strip()
+            try:
+                mastery_after = (
+                    await asyncio.to_thread(self._knowledge_tracker.get_mastery, topic)
+                    if topic
+                    else -1.0
+                )
+            except Exception as exc:
+                self.logger.warning("study answer mastery enrichment failed: {}", exc)
+                mastery_after = -1.0
+            await self._emit_answer_evaluated_event(
+                verdict=str(payload.get("verdict") or ""),
+                score=payload.get("score", 0.0),
+                question_summary=resolved_question,
+                user_answer_summary=answer_text,
+                correction_hint=str(
+                    payload.get("correction_hint")
+                    or payload.get("feedback")
+                    or payload.get("next_action")
+                    or ""
+                ),
+                topic=topic,
+                mastery_after=mastery_after,
+            )
+            return Ok(payload)
+        except Exception as exc:
+            return _entry_exception_error(
+                self, exc, operation="study_evaluate_answer"
+            )

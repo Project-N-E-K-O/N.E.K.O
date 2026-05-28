@@ -185,7 +185,7 @@ def list_candidate_items(
             SELECT *
             FROM candidate_knowledge_items
             {where}
-            ORDER BY updated_at DESC, created_at DESC
+            ORDER BY updated_at DESC, created_at DESC, id DESC
             LIMIT ?
             """,
                 tuple(params),

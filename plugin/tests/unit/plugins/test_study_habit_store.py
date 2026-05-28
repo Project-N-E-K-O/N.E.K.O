@@ -99,18 +99,19 @@ def test_store_purge_all_clears_user_data_tables(tmp_path: Path) -> None:
         assert deleted["daily_goals"] >= 1
         assert deleted["memory_habit_progress"] >= 1
         with store.transaction() as conn:
-            for table in (
-                "kv",
-                "daily_goals",
-                "checkins",
-                "focus_sessions",
-                "decks",
-                "memory_items",
-                "memory_fsrs_cards",
-                "review_records",
-                "memory_habit_progress",
-            ):
-                count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            table_queries = {
+                "kv": "SELECT COUNT(*) FROM kv",
+                "daily_goals": "SELECT COUNT(*) FROM daily_goals",
+                "checkins": "SELECT COUNT(*) FROM checkins",
+                "focus_sessions": "SELECT COUNT(*) FROM focus_sessions",
+                "decks": "SELECT COUNT(*) FROM decks",
+                "memory_items": "SELECT COUNT(*) FROM memory_items",
+                "memory_fsrs_cards": "SELECT COUNT(*) FROM memory_fsrs_cards",
+                "review_records": "SELECT COUNT(*) FROM review_records",
+                "memory_habit_progress": "SELECT COUNT(*) FROM memory_habit_progress",
+            }
+            for table, query in table_queries.items():
+                count = conn.execute(query).fetchone()[0]
                 assert count == 0, table
     finally:
         store.close()

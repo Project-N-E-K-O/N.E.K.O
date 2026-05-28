@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from .entry_common import (
     asyncio,
-    Err,
     Ok,
-    SdkError,
     _entry_exception_error,
     plugin_entry,
     tr,
@@ -33,11 +31,17 @@ class _KnowledgeEntriesMixin:
         llm_result_fields=["total", "by_status", "recent_evidence"],
     )
     async def study_knowledge_quality_status(self, limit: int = 20, **_):
-        payload = await asyncio.to_thread(
-            self._knowledge_tracker.quality.status_summary,
-            limit=max(1, int(limit or 20)),
-        )
-        return Ok(payload)
+        try:
+            safe_limit = max(1, int(limit or 20))
+            payload = await asyncio.to_thread(
+                self._knowledge_tracker.quality.status_summary,
+                limit=safe_limit,
+            )
+            return Ok(payload)
+        except Exception as exc:
+            return _entry_exception_error(
+                self, exc, operation="study_knowledge_quality_status"
+            )
 
     @plugin_entry(
         id="study_anonymous_knowledge_preview",

@@ -67,5 +67,8 @@ class _TutorSummaryEntriesMixin:
         payload["screen_classification"] = (
             tutor_context.get("screen_classification") or {}
         )
-        await self._emit_session_summarized_event(payload)
+        try:
+            await self._emit_session_summarized_event(payload)
+        except Exception as exc:
+            self.logger.warning("study session summarized event degraded: {}", exc)
         return Ok(payload)

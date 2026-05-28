@@ -90,8 +90,8 @@ class _OcrEntriesMixin:
             if self._install_in_progress:
                 return Err(SdkError("Tesseract install is already running"))
             self._install_in_progress = True
-        run_id = self._resolve_current_run_id(kwargs)
         try:
+            run_id = self._resolve_current_run_id(kwargs)
             result = await tesseract_support.install_tesseract(
                 logger=self.logger,
                 configured_path=self._cfg.ocr_tesseract_path,
@@ -145,8 +145,8 @@ class _OcrEntriesMixin:
             if self._rapidocr_models_in_progress:
                 return Err(SdkError("RapidOCR model download is already running"))
             self._rapidocr_models_in_progress = True
-        run_id = self._resolve_current_run_id(kwargs)
         try:
+            run_id = self._resolve_current_run_id(kwargs)
             result = await rapidocr_support.download_rapidocr_models(
                 logger=self.logger,
                 install_target_dir_raw=self._cfg.rapidocr_install_target_dir,

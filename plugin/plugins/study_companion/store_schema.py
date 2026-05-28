@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from .store_common import (
     json,
     sqlite3,
@@ -7,6 +9,42 @@ from .store_common import (
     STORE_CONFIG,
     STORE_STATE,
 )
+
+_SQL_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_COLUMN_DEFINITION_ALLOWLIST = {"TEXT"}
+
+
+def _validate_sql_identifier(value: str, field: str) -> str:
+    text = str(value or "").strip()
+    if not _SQL_IDENT_RE.fullmatch(text):
+        raise ValueError(f"invalid SQL identifier for {field}: {value!r}")
+    return text
+
+
+def _validate_sql_order_by(value: str) -> str:
+    terms: list[str] = []
+    for raw_term in str(value or "").split(","):
+        parts = raw_term.strip().split()
+        if len(parts) not in {1, 2}:
+            raise ValueError(f"invalid SQL order_by term: {raw_term!r}")
+        column = _validate_sql_identifier(parts[0], "order_by")
+        if len(parts) == 1:
+            terms.append(column)
+            continue
+        direction = parts[1].upper()
+        if direction not in {"ASC", "DESC"}:
+            raise ValueError(f"invalid SQL order_by direction: {parts[1]!r}")
+        terms.append(f"{column} {direction}")
+    if not terms:
+        raise ValueError("invalid SQL order_by: empty expression")
+    return ", ".join(terms)
+
+
+def _validate_column_definition(value: str) -> str:
+    text = str(value or "").strip().upper()
+    if text not in _COLUMN_DEFINITION_ALLOWLIST:
+        raise ValueError(f"invalid SQL column definition: {value!r}")
+    return text
 
 
 def _init_db(self) -> None:
@@ -237,10 +275,13 @@ def _init_db(self) -> None:
 def _ensure_column(
     conn: sqlite3.Connection, table: str, column: str, definition: str
 ) -> None:
-    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    table = _validate_sql_identifier(table, "table")
+    column = _validate_sql_identifier(column, "column")
+    definition = _validate_column_definition(definition)
+    rows = conn.execute("PRAGMA table_info(" + table + ")").fetchall()
     if column in {str(row["name"]) for row in rows}:
         return
-    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    conn.execute("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition)
 
 
 @staticmethod
@@ -253,17 +294,30 @@ def _trim_append_only_rows(
     history_limit: int,
     order_by: str = "id DESC",
 ) -> None:
+    table = _validate_sql_identifier(table, "table")
+    group_column = _validate_sql_identifier(group_column, "group_column")
+    order_by = _validate_sql_order_by(order_by)
     limit = max(1, int(history_limit))
     if group_value is None:
         conn.execute(
-            f"""
-            DELETE FROM {table}
-            WHERE {group_column} IS NULL
+            """
+            DELETE FROM """
+            + table
+            + """
+            WHERE """
+            + group_column
+            + """ IS NULL
               AND id NOT IN (
                   SELECT id
-                  FROM {table}
-                  WHERE {group_column} IS NULL
-                  ORDER BY {order_by}
+                  FROM """
+            + table
+            + """
+                  WHERE """
+            + group_column
+            + """ IS NULL
+                  ORDER BY """
+            + order_by
+            + """
                   LIMIT ?
               )
             """,
@@ -271,14 +325,24 @@ def _trim_append_only_rows(
         )
         return
     conn.execute(
-        f"""
-        DELETE FROM {table}
-        WHERE {group_column} = ?
+        """
+        DELETE FROM """
+        + table
+        + """
+        WHERE """
+        + group_column
+        + """ = ?
           AND id NOT IN (
               SELECT id
-              FROM {table}
-              WHERE {group_column} = ?
-              ORDER BY {order_by}
+              FROM """
+        + table
+        + """
+              WHERE """
+        + group_column
+        + """ = ?
+              ORDER BY """
+        + order_by
+        + """
               LIMIT ?
           )
         """,
