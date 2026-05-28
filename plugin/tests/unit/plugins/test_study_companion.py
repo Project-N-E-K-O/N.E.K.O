@@ -2125,7 +2125,7 @@ async def test_study_explain_text_detects_mode_intent_and_continues_when_content
 
 
 @pytest.mark.asyncio
-async def test_study_explain_text_explain_intent_without_content_keeps_empty_input_guidance(
+async def test_study_explain_text_explain_intent_without_content_returns_err(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runtime_root = tmp_path / "runtime"
@@ -2146,10 +2146,38 @@ async def test_study_explain_text_explain_intent_without_content_keeps_empty_inp
         async with plugin._lock:
             plugin._state.last_ocr_text = ""
         explain_empty = await plugin.study_explain_text("explain")
-        assert isinstance(explain_empty, Ok)
-        assert explain_empty.value["input_text"] == ""
-        assert explain_empty.value["diagnostic"] == "empty_input"
-        assert explain_empty.value["intent"]["kind"] == "concept_explain"
+        assert isinstance(explain_empty, Err)
+        assert "requires text" in str(explain_empty.error)
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_generate_question_without_content_returns_err(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "default_mode": MODE_COMPANION},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    plugin._agent = _FakeTutorAgent()
+
+    try:
+        with plugin._lock:
+            plugin._state.last_ocr_text = ""
+        question_empty = await plugin.study_generate_question()
+
+        assert isinstance(question_empty, Err)
+        assert "requires text" in str(question_empty.error)
     finally:
         await plugin.shutdown()
 
@@ -3051,6 +3079,48 @@ async def test_study_pomodoro_start_offloads_blocking_operations(
     assert to_thread_calls == ["status", "start", "get_goal"]
     assert supervision.goal == {"id": "goal-1", "title": "read"}
     assert supervision.planned_minutes == 30.0
+
+
+@pytest.mark.asyncio
+async def test_study_pomodoro_start_uses_validated_focus_minutes_as_supervision_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Habits:
+        def get_goal(self, goal_id: str) -> dict[str, object]:
+            return {"id": goal_id}
+
+    class _Timer:
+        def status(self) -> dict[str, object]:
+            return {"state": "idle", "current_focus_session": {}}
+
+        def start(self, **_kwargs) -> dict[str, object]:
+            return {"state": "focusing", "current_focus_session": {"id": "focus-4"}}
+
+    class _Supervision:
+        def __init__(self) -> None:
+            self.planned_minutes = -1.0
+
+        def on_focus_start(
+            self, *, goal: dict[str, object], planned_minutes: float
+        ) -> None:
+            self.planned_minutes = planned_minutes
+
+    async def _to_thread(func, /, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(study_companion_module.asyncio, "to_thread", _to_thread)
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    supervision = _Supervision()
+    plugin._cfg = StudyConfig()
+    plugin._habit_store = _Habits()
+    plugin._checkin_manager = object()
+    plugin._pomodoro_timer = _Timer()
+    plugin._supervision = supervision
+
+    status = await plugin.study_pomodoro_start(goal_id="goal-1")
+
+    assert isinstance(status, Ok)
+    assert supervision.planned_minutes == 25.0
 
 
 @pytest.mark.asyncio
