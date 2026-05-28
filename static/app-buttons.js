@@ -1376,7 +1376,7 @@
 
             // Immediately activate
             micButton.classList.add('active');
-            window.syncFloatingMicButtonState(true);
+            if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(true);
             window.isMicStarting = true;
             S.voiceStartPending = true;
             micButton.disabled = true;
@@ -1496,20 +1496,24 @@
                     }
                 }, 15000);
 
-                // Parallel: wait for session + init mic
+                // Init mic only after the session is confirmed started
                 try {
                     await window.showCurrentModel();
                     window.showStatusToast(window.t ? window.t('app.initializingMic') : '\u6B63\u5728\u521D\u59CB\u5316\u9EA6\u514B\u98CE...', 3000);
 
-                    await Promise.all([
-                        sessionStartPromise,
-                        window.startMicCapture()
-                    ]);
+                    // 先确认 session 启动成功，再开麦。与 CHARACTER_DISCONNECTED 自动
+                    // 重启路径（app-websocket.js）一致的串行写法：session 启动失败时
+                    // startMicCapture 根本不会被调用，不存在"mic 在外层 catch teardown
+                    // 之后才 settle、把 UI 写回录音中"的竞态，也就不需要 token / 补充
+                    // teardown 去追平它。
+                    await sessionStartPromise;
 
                     if (window.sessionTimeoutId) {
                         clearTimeout(window.sessionTimeoutId);
                         window.sessionTimeoutId = null;
                     }
+
+                    await window.startMicCapture();
                 } catch (error) {
                     if (window.sessionTimeoutId) {
                         clearTimeout(window.sessionTimeoutId);

@@ -108,6 +108,15 @@ class GameAgentService:
         self._skip_when_busy: bool = True
         self._stream_screenshots: bool = True
         self._screenshot_cache_size: int = 3
+        # Bound each pushed frame so it fits the message_plane payload cap
+        # (default 256KB). mc-agent sends full-res frames; left untouched they
+        # blow past the cap and get silently dropped at ingest.
+        self._screenshot_max_edge_px: int = 1024
+        self._screenshot_jpeg_quality: int = 80
+        # Hard budget on the raw JPEG bytes. The wire payload base64-encodes the
+        # frame (+~33%) AND carries a raw copy, so packed payload ≈ 2.3x raw +
+        # envelope; 100KB raw → ~238KB < the 256KB message_plane cap.
+        self._screenshot_max_bytes: int = 100 * 1024
 
         # WebSocket lifecycle
         self._client: Optional[GameAgentClient] = None
@@ -317,6 +326,12 @@ class GameAgentService:
             self._screenshot_cache = collections.deque(
                 self._screenshot_cache, maxlen=size
             )
+        # Frame size bounds. ``screenshot_max_edge_px=0`` disables resizing
+        # (re-encode to JPEG only). Quality is clamped to a sane 1..95.
+        self._screenshot_max_edge_px = max(0, _i("screenshot_max_edge_px", 1024))
+        self._screenshot_jpeg_quality = max(1, min(95, _i("screenshot_jpeg_quality", 80)))
+        # 0 disables the byte budget (resolution/quality caps still apply).
+        self._screenshot_max_bytes = max(0, _i("screenshot_max_bytes", 100 * 1024))
 
     async def reload_config_live(self, cfg: Dict[str, Any]) -> bool:
         """Apply a config update at runtime.
@@ -984,6 +999,74 @@ class GameAgentService:
                     # a new dispatch.
                     self._last_task_finished_at = time.time()
 
+    def _normalize_screenshot_bytes(self, img_bytes: bytes, src_mime: str) -> tuple[bytes, str]:
+        """Downscale + re-encode to JPEG under a *raw-bytes budget* so the pushed
+        frame survives the message_plane payload cap.
+
+        Capping resolution + quality alone is not enough: the wire payload encodes
+        the frame as a base64 string (``binary_base64``, +~33%) **and** carries a
+        raw ``binary_data`` copy, so the packed payload is ~2.3x the raw JPEG plus
+        envelope. A high-detail 1024px/q80 frame can land at 150-250KB raw and
+        still trip ``payload_too_big`` after expansion. So we treat
+        ``_screenshot_max_bytes`` as a hard budget on the raw JPEG and step
+        quality (then edge) down until the encode fits.
+
+        Returns ``(bytes, mime)``. Falls back to the original bytes + their source
+        mime if Pillow is missing or decoding fails — downstream tolerates either
+        mime, and shipping an oversized original is still better than crashing the
+        screenshot path. Pillow is already a transitive project dep (avatar / MMD
+        pipelines)."""
+        try:
+            from PIL import Image
+            import io
+
+            budget = int(self._screenshot_max_bytes)
+            base_edge = int(self._screenshot_max_edge_px)
+            base_quality = int(self._screenshot_jpeg_quality)
+
+            with Image.open(io.BytesIO(img_bytes)) as im:
+                im = im.convert("RGB")
+                # Edge ladder: start at the configured max, then halve twice as a
+                # fallback for frames too dense to fit at full size/quality.
+                edges: list[int] = []
+                for e in (base_edge, base_edge // 2, base_edge // 4):
+                    if e and e > 0 and e not in edges:
+                        edges.append(e)
+                if not edges:  # max_edge=0 → resizing disabled; encode at native size
+                    edges = [max(im.size) or 1]
+                # Quality ladder: never go above the configured quality.
+                qualities = [q for q in (base_quality, 65, 50, 40, 30) if q <= base_quality]
+                if not qualities:
+                    qualities = [base_quality]
+
+                smallest: bytes | None = None
+                for edge in edges:
+                    frame = im.copy()
+                    if max(frame.size) > edge:
+                        frame.thumbnail((edge, edge))  # aspect-preserving, shrink-only
+                    for ql in qualities:
+                        buf = io.BytesIO()
+                        frame.save(buf, format="JPEG", quality=ql, optimize=True)
+                        data = buf.getvalue()
+                        if budget <= 0 or len(data) <= budget:
+                            return data, "image/jpeg"
+                        if smallest is None or len(data) < len(smallest):
+                            smallest = data
+                # Nothing fit the budget — ship the smallest attempt (best effort).
+                # Still far better than the original full-res frame, and the ingest
+                # drop diagnostic will surface it if it's somehow still over cap.
+                self._log_warning(
+                    "screenshot still over budget after downscale (smallest={} > budget={}); shipping smallest",
+                    len(smallest) if smallest else -1, budget,
+                )
+                return (smallest if smallest is not None else img_bytes), "image/jpeg"
+        except Exception as exc:
+            self._log_warning(
+                "screenshot downscale failed, shipping original bytes as-is: {}: {}",
+                type(exc).__name__, exc,
+            )
+            return img_bytes, src_mime
+
     async def _on_screenshot(self, payload: str, encoding: str) -> None:
         """Decode a base64 screenshot, convert JPEG→PNG when needed, and
         either stream it into the realtime LLM session immediately or
@@ -1019,31 +1102,21 @@ class GameAgentService:
         # ``encoding`` field and the mime extracted from a data: URI.
         # The explicit field wins when both are present (more
         # authoritative); the URI scheme is a fallback when the
-        # encoding is empty.
-        mime = "image/png"
+        # encoding is empty. ``src_mime`` is only the fallback tag used when
+        # Pillow is unavailable and we ship the original bytes untouched.
         enc_lower = (encoding or "").lower()
         is_jpeg_explicit = "jpeg" in enc_lower or "jpg" in enc_lower
         is_jpeg_embedded = embedded_mime in ("image/jpeg", "image/jpg")
-        if is_jpeg_explicit or (not enc_lower and is_jpeg_embedded):
-            # Gemini's realtime media input prefers PNG; convert here so
-            # downstream code can be format-agnostic. Pillow is already
-            # a transitive project dep (used by avatar/MMD pipelines).
-            try:
-                from PIL import Image
-                import io
+        src_mime = "image/jpeg" if (is_jpeg_explicit or (not enc_lower and is_jpeg_embedded)) else "image/png"
 
-                with Image.open(io.BytesIO(img_bytes)) as im:
-                    buf = io.BytesIO()
-                    im.save(buf, format="PNG")
-                    img_bytes = buf.getvalue()
-            except Exception as exc:
-                # Fall through with the original JPEG bytes — main_server
-                # won't choke if the mime type matches.
-                self._log_warning(
-                    "JPEG→PNG convert failed, sending as-is: {}: {}",
-                    type(exc).__name__, exc,
-                )
-                mime = "image/jpeg"
+        # Downscale + recompress so the pushed frame fits the message_plane
+        # payload cap. The previous JPEG→lossless-PNG conversion (done here to
+        # please Gemini's realtime input) inflated ~100KB frames into 1.5-4MB,
+        # which blew past NEKO_MESSAGE_PLANE_PAYLOAD_MAX_BYTES (default 256KB)
+        # and got silently dropped at ingest — so the dialog LLM never saw a
+        # fresh frame. A vision model needs neither 4MP nor lossless; bounding
+        # the long edge + JPEG keeps every frame comfortably under the cap.
+        img_bytes, mime = self._normalize_screenshot_bytes(img_bytes, src_mime)
 
         self._screenshot_cache.append((img_bytes, mime))
 
@@ -1609,9 +1682,17 @@ class GameAgentService:
         parts: list[Dict[str, Any]] = []
         screenshots = list(self._screenshot_cache)
         self._screenshot_cache.clear()
-        for img_bytes, img_mime in screenshots:
-            # Preserve the per-frame mime — see ``_screenshot_cache``
-            # field comment for why this isn't always image/png.
+        # Bundle ONLY the most recent frame. Each cached frame is already capped
+        # at ``_screenshot_max_bytes`` individually, but stacking several into one
+        # push blows the message_plane payload cap: every frame is base64'd
+        # (~+37%) AND the legacy ``binary_data`` field carries a raw copy, so even
+        # two frames exceed 256KB and the whole burst is silently dropped at
+        # ingest. The latest frame is the most relevant; older cached frames are
+        # dropped rather than risk losing the entire visual+text cue.
+        if screenshots:
+            img_bytes, img_mime = screenshots[-1]
+            # Preserve the per-frame mime — see ``_screenshot_cache`` field
+            # comment for why this isn't always image/png.
             parts.append({"type": "image", "data": img_bytes, "mime": img_mime})
         parts.append({"type": "text", "text": prompt_text})
 

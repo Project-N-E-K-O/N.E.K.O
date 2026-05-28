@@ -69,6 +69,27 @@ stream_screenshots_to_llm = true
 # visual summary alongside the textual nudge.
 screenshot_cache_size = 3
 
+# Each frame is downscaled (longest edge clamped to this many pixels) and
+# re-encoded as JPEG before being pushed, so it stays under the message_plane
+# payload cap (NEKO_MESSAGE_PLANE_PAYLOAD_MAX_BYTES, default 256KB). mc-agent
+# broadcasts full-resolution frames; left untouched a single frame can be
+# 1.5-4MB and gets silently dropped at ingest (the dialog LLM then never sees
+# a fresh frame). A vision model needs neither 4MP nor lossless. Set to 0 to
+# disable resizing (still re-encodes to JPEG).
+screenshot_max_edge_px = 1024
+
+# JPEG quality (1-95) for the re-encoded frame. 80 is a good size/clarity
+# tradeoff for a vision model; raise toward 90 for crisper text in-frame.
+screenshot_jpeg_quality = 80
+
+# Hard budget (bytes) on the raw re-encoded JPEG. Resolution + quality caps
+# alone don't guarantee a fit: the wire payload base64-encodes the frame
+# (+~33%) AND carries a raw copy, so the packed payload is ~2.3x the raw JPEG
+# plus envelope. If the first encode exceeds this, quality (then edge) steps
+# down until it fits. 100KB raw → ~238KB < the 256KB message_plane cap. Set 0
+# to disable the byte budget (resolution/quality caps still apply).
+screenshot_max_bytes = 102400
+
 [plugin.ui]
 enabled = true
 

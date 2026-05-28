@@ -549,8 +549,52 @@ async def test_screenshot_callback_pushes_image_part():
     assert len(pc["parts"]) == 1
     part = pc["parts"][0]
     assert part["type"] == "image"
-    assert part["mime"] == "image/png"
-    assert part["data"] == png_bytes
+    # Frames are now downscaled + re-encoded to JPEG so the pushed payload
+    # stays under the message_plane cap (the old JPEG→lossless-PNG path
+    # ballooned frames to multi-MB and got silently dropped at ingest).
+    assert part["mime"] == "image/jpeg"
+    assert isinstance(part["data"], bytes) and len(part["data"]) > 0
+    # The bytes must be a valid JPEG that round-trips through Pillow.
+    from PIL import Image
+    import io
+    with Image.open(io.BytesIO(part["data"])) as _im:
+        assert _im.format == "JPEG"
+
+
+@pytest.mark.asyncio
+async def test_screenshot_high_entropy_frame_fits_byte_budget():
+    """A high-detail frame that exceeds the byte budget at the default
+    edge/quality must be stepped down until it fits. Capping resolution +
+    quality alone is insufficient because the wire payload base64-encodes the
+    frame AND carries a raw copy (~2.3x raw + envelope vs the 256KB cap)."""
+    import base64
+    import io
+    from PIL import Image
+
+    service, push_calls = _make_service()
+    budget = 100 * 1024
+    service.configure({
+        "stream_screenshots_to_llm": True,
+        "screenshot_max_bytes": budget,
+    })
+
+    # Random noise compresses terribly — a 1500x1500 noise frame is multi-100KB
+    # at q80, well over the budget, forcing the quality/edge step-down loop.
+    import os
+    noise = Image.frombytes("RGB", (1500, 1500), os.urandom(1500 * 1500 * 3))
+    raw = io.BytesIO()
+    noise.save(raw, format="PNG")
+    payload = base64.b64encode(raw.getvalue()).decode("ascii")
+
+    await service._on_screenshot(payload, "png")
+
+    assert len(push_calls) == 1
+    part = push_calls[0]["parts"][0]
+    assert part["type"] == "image" and part["mime"] == "image/jpeg"
+    # The whole point: the pushed frame respects the raw-bytes budget.
+    assert len(part["data"]) <= budget, f"frame {len(part['data'])} > budget {budget}"
+    with Image.open(io.BytesIO(part["data"])) as _im:
+        assert _im.format == "JPEG"
 
 
 @pytest.mark.asyncio
@@ -567,12 +611,12 @@ async def test_screenshot_streaming_disabled_caches_only():
 
 
 @pytest.mark.asyncio
-async def test_system_prompt_replay_preserves_per_frame_mime():
-    """Cached screenshots may have heterogeneous mimes (PNG-converted
-    PNG vs. JPEG-passed-through if Pillow conversion failed). The
-    autonomous-loop replay must use each frame's actual mime, not a
-    hardcoded image/png — otherwise downstream ``stream_image`` would
-    receive mis-tagged JPEG bytes."""
+async def test_system_prompt_bundles_only_latest_frame_with_mime():
+    """The autonomous burst bundles ONLY the most recent cached frame (stacking
+    several into one push blows the message_plane payload cap — each frame is
+    base64'd and the legacy binary_data carries a raw copy). It must also use
+    that frame's actual mime, not a hardcoded image/png, or downstream
+    ``stream_image`` would receive mis-tagged bytes."""
     service, push_calls = _make_service()
     service.configure({"stream_screenshots_to_llm": False})  # cache only
 
@@ -588,12 +632,12 @@ async def test_system_prompt_replay_preserves_per_frame_mime():
     assert len(push_calls) == 1
     parts = push_calls[0]["parts"]
     image_parts = [p for p in parts if p["type"] == "image"]
-    assert len(image_parts) == 2
-    mimes = [p["mime"] for p in image_parts]
-    assert mimes == ["image/png", "image/jpeg"]
-    # And the bytes survived round-trip too.
-    datas = [p["data"] for p in image_parts]
-    assert datas == [b"<png-bytes>", b"<jpeg-bytes>"]
+    # Only the latest frame is sent, with its own mime preserved.
+    assert len(image_parts) == 1
+    assert image_parts[0]["mime"] == "image/jpeg"
+    assert image_parts[0]["data"] == b"<jpeg-bytes>"
+    # The cache is fully drained so stale frames aren't re-sent next burst.
+    assert service.get_status()["screenshot_cache_size"] == 0
 
 
 @pytest.mark.asyncio
