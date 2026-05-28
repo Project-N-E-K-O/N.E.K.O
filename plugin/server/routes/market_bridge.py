@@ -768,6 +768,13 @@ async def market_oauth_status(
             authenticated=False,
             market_web_url=MARKET_WEB_URL,
         )
+    if _market_token_is_expired(token_data):
+        _unlink_if_exists(_OAUTH_TOKEN_FILE)
+        return MarketOAuthStatusResponse(
+            authenticated=False,
+            expires_at=token_data.get("expires_at"),
+            market_web_url=MARKET_WEB_URL,
+        )
 
     return MarketOAuthStatusResponse(
         authenticated=bool(token_data.get("access_token")),
@@ -948,6 +955,16 @@ def _read_json_file(path: Path) -> dict[str, Any] | None:
         logger.warning("Failed to read JSON file {}: {}", path, exc)
         return None
     return data if isinstance(data, dict) else None
+
+
+def _market_token_is_expired(token_data: dict[str, Any]) -> bool:
+    expires_at = token_data.get("expires_at")
+    if expires_at is None:
+        return False
+    try:
+        return float(expires_at) <= time.time()
+    except (TypeError, ValueError):
+        return True
 
 
 def _unlink_if_exists(path: Path) -> None:

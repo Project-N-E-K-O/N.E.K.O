@@ -680,6 +680,37 @@ async def test_authenticated_market_install_reports_usage(
 
 
 @pytest.mark.asyncio
+async def test_oauth_status_clears_expired_market_token(
+    bridge_e2e_env: dict[str, Any],
+) -> None:
+    token_file: Path = bridge_e2e_env["oauth_token_file"]
+    expired_at = time.time() - 10
+    token_file.write_text(
+        json.dumps(
+            {
+                "access_token": "expired-token",
+                "expires_at": expired_at,
+                "user": {"username": "expired-user"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    client: AsyncClient = bridge_e2e_env["client"]
+    token: str = bridge_e2e_env["token"]
+    resp = await client.get(
+        "/market/oauth/status",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["authenticated"] is False
+    assert body["expires_at"] == expired_at
+    assert not token_file.exists()
+
+
+@pytest.mark.asyncio
 async def test_install_rejects_sha256_mismatch(
     bridge_e2e_env: dict[str, Any],
 ) -> None:

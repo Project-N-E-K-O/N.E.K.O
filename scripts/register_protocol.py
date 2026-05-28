@@ -201,9 +201,11 @@ def _register_linux() -> bool:
 
     desktop_file = desktop_dir / "neko-protocol-handler.desktop"
     python_exe = _desktop_exec_quote(PYTHON_EXE)
+    project_root = _desktop_exec_quote(str(PROJECT_ROOT))
     desktop_content = f"""[Desktop Entry]
 Name=N.E.K.O Protocol Handler
 Exec={python_exe} -m {HANDLER_MODULE} %u
+Path={project_root}
 Type=Application
 NoDisplay=true
 MimeType=x-scheme-handler/neko;
