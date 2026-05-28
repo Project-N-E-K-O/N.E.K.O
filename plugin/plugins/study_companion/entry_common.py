@@ -1,8 +1,9 @@
-﻿"""Shared imports for study_companion entry mixin files.
+"""Shared imports for study_companion entry mixin files.
 
-Each mixin file does `from .entry_common import *` so entry methods keep the
-same globals they had before the mechanical split.
+Entry mixin files import their required shared names from here explicitly so the
+mechanical split keeps a stable dependency boundary.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -91,7 +92,12 @@ _MASTERY_THRESHOLDS = (0.3, 0.5, 0.7, 0.85)
 
 
 def _voice_session_key(lanlan_name: str, metadata: Mapping[str, Any] | None) -> str:
-    for key in ("voice_session_id", "session_id", "conversation_id", "request_session_id"):
+    for key in (
+        "voice_session_id",
+        "session_id",
+        "conversation_id",
+        "request_session_id",
+    ):
         value = metadata.get(key) if isinstance(metadata, Mapping) else None
         text = str(value or "").strip()
         if text:
@@ -142,4 +148,107 @@ def _event_nonnegative_float(value: Any, default: float = 0.0) -> float:
     return max(0.0, number)
 
 
-__all__ = [name for name in globals() if not name.startswith("__") and name != "name"]
+def _entry_exception_error(
+    owner: Any,
+    exc: BaseException,
+    *,
+    operation: str = "entry",
+    message: str | None = None,
+):
+    logger = getattr(owner, "logger", None)
+    if logger is not None and hasattr(logger, "warning"):
+        try:
+            logger.warning(
+                "study entry failed: {}",
+                operation,
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+        except Exception:
+            pass
+    return Err(SdkError(str(exc) if message is None else message))
+
+
+__all__ = [
+    "Any",
+    "Mapping",
+    "Path",
+    "SimpleNamespace",
+    "ZoneInfo",
+    "ZoneInfoNotFoundError",
+    "asyncio",
+    "base64",
+    "datetime",
+    "math",
+    "time",
+    "Err",
+    "NekoPluginBase",
+    "Ok",
+    "SdkError",
+    "custom_event",
+    "lifecycle",
+    "neko_plugin",
+    "plugin_entry",
+    "tr",
+    "LLM_OPERATION_ANSWER_EVALUATE",
+    "LLM_OPERATION_CONCEPT_EXPLAIN",
+    "LLM_OPERATION_KNOWLEDGE_TRACK",
+    "LLM_OPERATION_QUESTION_GENERATE",
+    "LLM_OPERATION_SUMMARIZE_SESSION",
+    "MODE_COMPANION",
+    "MODE_INTERACTIVE",
+    "MODE_TEACHING",
+    "DocExporter",
+    "normalize_format",
+    "CheckinManager",
+    "StudyEvent",
+    "StudyEventBus",
+    "PomodoroTimer",
+    "classify_screen_from_ocr",
+    "MODE_CONCEPT_EXPLAIN",
+    "STATUS_ERROR",
+    "STATUS_READY",
+    "STATUS_STOPPED",
+    "StudyConfig",
+    "StudyState",
+    "TutorReply",
+    "build_config",
+    "utc_now_iso",
+    "build_dependency_status",
+    "build_explain_payload",
+    "build_ocr_payload",
+    "build_status_payload",
+    "build_tutor_payload",
+    "ModeManager",
+    "build_transition_phrase",
+    "handle_user_intent",
+    "normalize_mode",
+    "PublicGraphContributionBuilder",
+    "KnowledgeTracker",
+    "MemoryDeckStore",
+    "MemoryItemNotFoundError",
+    "MemoryHabitBridge",
+    "build_initial_state",
+    "StudyStore",
+    "StudyHabitStore",
+    "StudyOcrPipeline",
+    "SupervisionController",
+    "TutorLLMAgent",
+    "diagnostic_code_for_exception",
+    "build_open_ui_payload",
+    "build_contribution_settings_payload",
+    "build_knowledge_map_payload",
+    "build_habit_dashboard_payload",
+    "build_pomodoro_status_payload",
+    "VoiceFilter",
+    "_derive_subject",
+    "build_context_for_catgirl",
+    "tesseract_support",
+    "rapidocr_support",
+    "update_install_task_state",
+    "_voice_session_key",
+    "_validated_pomodoro_focus_minutes",
+    "_detect_mastery_threshold_crossed",
+    "_entry_exception_error",
+    "_event_ratio",
+    "_event_nonnegative_float",
+]

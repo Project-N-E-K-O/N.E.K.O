@@ -1,15 +1,21 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from .entry_common import *  # noqa: F401, F403
-
-
-
+from .entry_common import (
+    asyncio,
+    Err,
+    Ok,
+    SdkError,
+    plugin_entry,
+    tr,
+    build_ocr_payload,
+    tesseract_support,
+    rapidocr_support,
+    update_install_task_state,
+    _entry_exception_error,
+)
 
 
 class _OcrEntriesMixin:
-
-
-
     @plugin_entry(
         id="study_dependency_status",
         name=tr(
@@ -53,11 +59,11 @@ class _OcrEntriesMixin:
             async with self._lock:
                 self._state.last_ocr_text = snapshot.text
                 self._state.last_ocr_at = snapshot.captured_at
-            payload["screen_classification"] = self._update_screen_classification(
+            payload["screen_classification"] = await self._update_screen_classification(
                 snapshot.text, update_empty=False
             )
         elif snapshot.status == "empty":
-            payload["screen_classification"] = self._update_screen_classification(
+            payload["screen_classification"] = await self._update_screen_classification(
                 "", update_empty=True
             )
         await self._persist_state()
@@ -107,7 +113,12 @@ class _OcrEntriesMixin:
                 }
             )
         except Exception as exc:
-            return Err(SdkError(f"Tesseract install failed: {exc}"))
+            return _entry_exception_error(
+                self,
+                exc,
+                operation="study_install_tesseract",
+                message=f"Tesseract install failed: {exc}",
+            )
         finally:
             async with self._lock:
                 self._install_in_progress = False
@@ -163,7 +174,12 @@ class _OcrEntriesMixin:
                 }
             )
         except Exception as exc:
-            return Err(SdkError(f"RapidOCR model download failed: {exc}"))
+            return _entry_exception_error(
+                self,
+                exc,
+                operation="study_download_rapidocr_models",
+                message=f"RapidOCR model download failed: {exc}",
+            )
         finally:
             async with self._lock:
                 self._rapidocr_models_in_progress = False

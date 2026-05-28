@@ -1,7 +1,38 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from .tutor_llm_agent_common import *  # noqa: F401, F403
+from .tutor_llm_agent_common import (
+    Any,
+    Callable,
+    asyncio,
+    hashlib,
+    inspect,
+    re,
+    STUDY_EMPTY_INPUT_DEFAULT,
+    STUDY_FALLBACK_EXPLANATION_DEFAULT,
+    STUDY_FALLBACK_FEEDBACK,
+    STUDY_FALLBACK_NEXT_ACTION,
+    STUDY_MARKDOWN_SECTION_EMPTY_ITEM,
+    SdkError,
+    LLM_OPERATION_ANSWER_EVALUATE,
+    LLM_OPERATION_CONCEPT_EXPLAIN,
+    LLM_OPERATION_KNOWLEDGE_TRACK,
+    LLM_OPERATION_QUESTION_GENERATE,
+    LLM_OPERATION_SUMMARIZE_SESSION,
+    build_operation_messages,
+    study_i18n_t,
+    StudyConfig,
+    TutorReply,
+    utc_now_iso,
+    _config_manager_module,
+    _llm_client_module,
+    _token_tracker_module,
+    _LLM_CALL_TIMEOUT_GRACE_SECONDS,
+    _as_str,
+    _as_dict,
+    diagnostic_code_for_exception,
+)
 from .tutor_llm_agent_json_corrector import _JSONCorrector
+
 
 class _LLMClientCache:
     def __init__(self, *, logger: Any) -> None:
@@ -50,12 +81,16 @@ class _LLMClientCache:
             try:
                 result = close()
             except Exception as exc:
-                self._logger.warning("study tutor llm close via {} failed: {}", method_name, exc)
+                self._logger.warning(
+                    "study tutor llm close via {} failed: {}", method_name, exc
+                )
                 continue
             if inspect.isawaitable(result):
                 self._finalize_async_close(result, method_name=method_name)
             return
-        self._logger.warning("study tutor llm has no shutdown or aclose method: {}", type(llm).__name__)
+        self._logger.warning(
+            "study tutor llm has no shutdown or aclose method: {}", type(llm).__name__
+        )
 
     async def _close_cached_llm_async(self, llm: Any) -> None:
         for method_name in ("shutdown", "aclose"):
@@ -69,10 +104,14 @@ class _LLMClientCache:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self._logger.warning("study tutor llm async close via {} failed: {}", method_name, exc)
+                self._logger.warning(
+                    "study tutor llm async close via {} failed: {}", method_name, exc
+                )
                 continue
             return
-        self._logger.warning("study tutor llm has no shutdown or aclose method: {}", type(llm).__name__)
+        self._logger.warning(
+            "study tutor llm has no shutdown or aclose method: {}", type(llm).__name__
+        )
 
     def _finalize_async_close(self, close_result: Any, *, method_name: str) -> None:
         try:
@@ -81,12 +120,20 @@ class _LLMClientCache:
             try:
                 asyncio.run(close_result)
             except Exception as exc:
-                self._logger.warning("study tutor llm async close via {} failed without running loop: {}", method_name, exc)
+                self._logger.warning(
+                    "study tutor llm async close via {} failed without running loop: {}",
+                    method_name,
+                    exc,
+                )
             return
         try:
             task = loop.create_task(close_result)
         except Exception as exc:
-            self._logger.warning("study tutor llm async close via {} could not be scheduled: {}", method_name, exc)
+            self._logger.warning(
+                "study tutor llm async close via {} could not be scheduled: {}",
+                method_name,
+                exc,
+            )
             return
         task.add_done_callback(self._consume_close_exception)
 
@@ -97,6 +144,7 @@ class _LLMClientCache:
             return
         if exc is not None:
             self._logger.warning("study tutor llm close task failed: {}", exc)
+
 
 class TutorLLMAgent:
     def __init__(self, *, logger: Any, config: StudyConfig) -> None:
@@ -124,17 +172,16 @@ class TutorLLMAgent:
             return study_i18n_t(
                 language,
                 "reply.fallback_explanation",
-                default=str(values.get("default") or STUDY_FALLBACK_EXPLANATION_DEFAULT),
+                default=str(
+                    values.get("default") or STUDY_FALLBACK_EXPLANATION_DEFAULT
+                ),
                 first_line=first_line,
             )
         return str(values.get("default") or "")
 
-
-
-
-
-
-    async def _invoke_structured_operation(self, operation: str, context: dict[str, Any]) -> TutorReply:
+    async def _invoke_structured_operation(
+        self, operation: str, context: dict[str, Any]
+    ) -> TutorReply:
         try:
             messages = build_operation_messages(operation, context)
             raw_text = await self._json_corrector.invoke_with_correction(
@@ -156,9 +203,13 @@ class TutorLLMAgent:
             raise
         except Exception as exc:
             self._logger.warning("study {} degraded: {}", operation, exc)
-            return self._fallback_structured_reply(operation, context, diagnostic=diagnostic_code_for_exception(exc))
+            return self._fallback_structured_reply(
+                operation, context, diagnostic=diagnostic_code_for_exception(exc)
+            )
 
-    def _normalize_result(self, operation: str, raw: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    def _normalize_result(
+        self, operation: str, raw: dict[str, Any], context: dict[str, Any]
+    ) -> dict[str, Any]:
         if operation == LLM_OPERATION_QUESTION_GENERATE:
             return self._normalize_question(raw, context)
         if operation == LLM_OPERATION_ANSWER_EVALUATE:
@@ -172,11 +223,9 @@ class TutorLLMAgent:
             raise SdkError("missing reply")
         return {"reply": reply}
 
-
-
-
-
-    def _fallback_structured_reply(self, operation: str, context: dict[str, Any], *, diagnostic: str) -> TutorReply:
+    def _fallback_structured_reply(
+        self, operation: str, context: dict[str, Any], *, diagnostic: str
+    ) -> TutorReply:
         if operation == LLM_OPERATION_QUESTION_GENERATE:
             payload = self._fallback_question(context)
         elif operation == LLM_OPERATION_ANSWER_EVALUATE:
@@ -186,7 +235,9 @@ class TutorLLMAgent:
         elif operation == LLM_OPERATION_SUMMARIZE_SESSION:
             payload = self._fallback_summary(context)
         else:
-            payload = {"reply": self._localize_reply(self._config.language, "empty_input")}
+            payload = {
+                "reply": self._localize_reply(self._config.language, "empty_input")
+            }
         return TutorReply(
             operation=operation,
             input_text=self._input_text_for_operation(operation, context),
@@ -197,10 +248,6 @@ class TutorLLMAgent:
             created_at=utc_now_iso(),
         )
 
-
-
-
-
     @staticmethod
     def _heuristic_verdict(answer: str, expected: str) -> tuple[str, int, str]:
         normalized_answer = re.sub(r"\s+", " ", answer.strip().lower())
@@ -209,10 +256,16 @@ class TutorLLMAgent:
             return ("partial", 50, "needs_reference")
         if normalized_expected and normalized_expected in normalized_answer:
             return ("correct", 90, "none")
-        expected_tokens = {token for token in re.split(r"\W+", normalized_expected) if len(token) > 2}
-        answer_tokens = {token for token in re.split(r"\W+", normalized_answer) if len(token) > 2}
+        expected_tokens = {
+            token for token in re.split(r"\W+", normalized_expected) if len(token) > 2
+        }
+        answer_tokens = {
+            token for token in re.split(r"\W+", normalized_answer) if len(token) > 2
+        }
         if expected_tokens:
-            overlap = len(expected_tokens & answer_tokens) / max(1, len(expected_tokens))
+            overlap = len(expected_tokens & answer_tokens) / max(
+                1, len(expected_tokens)
+            )
             if overlap >= 0.65:
                 return ("correct", 82, "none")
             if overlap >= 0.3:
@@ -235,10 +288,17 @@ class TutorLLMAgent:
 
     @staticmethod
     def _fallback_next_action(verdict: str) -> str:
-        return STUDY_FALLBACK_NEXT_ACTION.get(verdict, STUDY_FALLBACK_NEXT_ACTION["wrong"])
+        return STUDY_FALLBACK_NEXT_ACTION.get(
+            verdict, STUDY_FALLBACK_NEXT_ACTION["wrong"]
+        )
 
     @staticmethod
-    def _markdown_from_summary(summary: str, highlights: list[str], weak_points: list[str], next_actions: list[str]) -> str:
+    def _markdown_from_summary(
+        summary: str,
+        highlights: list[str],
+        weak_points: list[str],
+        next_actions: list[str],
+    ) -> str:
         def _section(title: str, items: list[str]) -> str:
             if not items:
                 return f"## {title}\n\n- {STUDY_MARKDOWN_SECTION_EMPTY_ITEM}"
@@ -262,7 +322,10 @@ class TutorLLMAgent:
         if operation == LLM_OPERATION_KNOWLEDGE_TRACK:
             return _as_str(payload.get("topic")).strip() or "knowledge updated"
         if operation == LLM_OPERATION_SUMMARIZE_SESSION:
-            return _as_str(payload.get("markdown")).strip() or _as_str(payload.get("summary")).strip()
+            return (
+                _as_str(payload.get("markdown")).strip()
+                or _as_str(payload.get("summary")).strip()
+            )
         return _as_str(payload.get("reply")).strip()
 
     @staticmethod
@@ -271,21 +334,32 @@ class TutorLLMAgent:
             return _as_str(context.get("answer")).strip()
         if operation == LLM_OPERATION_SUMMARIZE_SESSION:
             return "session"
-        return _as_str(context.get("source_text") or context.get("text") or context.get("question")).strip()
+        return _as_str(
+            context.get("source_text") or context.get("text") or context.get("question")
+        ).strip()
 
     @staticmethod
     def _screen_type_from_context(context: dict[str, Any]) -> str:
         screen = _as_dict(context.get("screen_classification"))
-        return _as_str(screen.get("screen_type")).strip() or _as_str(context.get("screen_type")).strip()
+        return (
+            _as_str(screen.get("screen_type")).strip()
+            or _as_str(context.get("screen_type")).strip()
+        )
 
     @staticmethod
     def _guess_topic(context: dict[str, Any]) -> str:
-        question = _as_dict(context.get("current_question") or context.get("question_payload"))
+        question = _as_dict(
+            context.get("current_question") or context.get("question_payload")
+        )
         topic = _as_str(question.get("topic")).strip()
         if topic:
             return topic
-        text = _as_str(context.get("source_text") or context.get("text") or context.get("question")).strip()
-        first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+        text = _as_str(
+            context.get("source_text") or context.get("text") or context.get("question")
+        ).strip()
+        first_line = next(
+            (line.strip() for line in text.splitlines() if line.strip()), ""
+        )
         if not first_line:
             return "general"
         return first_line[:48]
@@ -325,7 +399,10 @@ class TutorLLMAgent:
             model,
             self._api_key_cache_fingerprint(api_key),
         )
-        timeout_seconds = float(self._config.llm_call_timeout_seconds) + _LLM_CALL_TIMEOUT_GRACE_SECONDS
+        timeout_seconds = (
+            float(self._config.llm_call_timeout_seconds)
+            + _LLM_CALL_TIMEOUT_GRACE_SECONDS
+        )
         llm = await self._client_cache.get_or_create(
             key,
             lambda: create_chat_llm(
@@ -340,9 +417,13 @@ class TutorLLMAgent:
         set_call_type("summary")
         ainvoke = getattr(llm, "ainvoke", None)
         if callable(ainvoke):
-            response = await asyncio.wait_for(ainvoke(messages), timeout=timeout_seconds)
+            response = await asyncio.wait_for(
+                ainvoke(messages), timeout=timeout_seconds
+            )
         else:
-            response = await asyncio.wait_for(asyncio.to_thread(llm.invoke, messages), timeout=timeout_seconds)
+            response = await asyncio.wait_for(
+                asyncio.to_thread(llm.invoke, messages), timeout=timeout_seconds
+            )
         return str(getattr(response, "content", "") or response)
 
     @staticmethod
@@ -351,6 +432,7 @@ class TutorLLMAgent:
             return ("empty", "")
         digest = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
         return ("sha256", digest)
+
 
 from .tutor_llm_agent_concept_explain import concept_explain
 from .tutor_llm_agent_question_generate import (

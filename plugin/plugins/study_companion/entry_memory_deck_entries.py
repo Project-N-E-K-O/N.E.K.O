@@ -1,15 +1,17 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from .entry_common import *  # noqa: F401, F403
-
-
-
+from .entry_common import (
+    asyncio,
+    Err,
+    Ok,
+    SdkError,
+    _entry_exception_error,
+    plugin_entry,
+    tr,
+)
 
 
 class _MemoryDeckEntriesMixin:
-
-
-
     @plugin_entry(
         id="study_memory_deck",
         name=tr("entries.memory_deck.name", default="Study Memory Deck"),
@@ -47,9 +49,13 @@ class _MemoryDeckEntriesMixin:
                     payload = await asyncio.to_thread(
                         self._memory_deck_store.status_summary, limit=safe_limit
                     )
-                    due_reviews = payload.get("due_reviews") if isinstance(payload, dict) else []
+                    due_reviews = (
+                        payload.get("due_reviews") if isinstance(payload, dict) else []
+                    )
                     due_cards = [
-                        self._memory_deck_store.compat_card_payload(item.get("item") or {})
+                        self._memory_deck_store.compat_card_payload(
+                            item.get("item") or {}
+                        )
                         for item in due_reviews
                         if isinstance(item, dict)
                     ]
@@ -57,11 +63,11 @@ class _MemoryDeckEntriesMixin:
                     topic_due_count = await asyncio.to_thread(
                         self._knowledge_tracker.count_due_reviews
                     )
-                    merged = {
-                        k: v
-                        for k, v in payload.items()
-                        if k != "due_reviews"
-                    } if isinstance(payload, dict) else {}
+                    merged = (
+                        {k: v for k, v in payload.items() if k != "due_reviews"}
+                        if isinstance(payload, dict)
+                        else {}
+                    )
                     return Ok(
                         {
                             **merged,
@@ -114,7 +120,7 @@ class _MemoryDeckEntriesMixin:
                 payload = {**payload, "cards": payload.get("due_cards") or []}
             return Ok(payload)
         except Exception as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="study_memory_deck")
 
     @plugin_entry(
         id="study_memory_create_deck",
@@ -160,7 +166,7 @@ class _MemoryDeckEntriesMixin:
             )
             return Ok(deck)
         except Exception as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="study_memory_create_deck")
 
     @plugin_entry(
         id="study_memory_list_decks",
@@ -183,7 +189,7 @@ class _MemoryDeckEntriesMixin:
             )
             return Ok({"decks": decks})
         except Exception as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="study_memory_list_decks")
 
     @plugin_entry(
         id="study_memory_delete_deck",
@@ -206,4 +212,4 @@ class _MemoryDeckEntriesMixin:
             )
             return Ok(payload)
         except Exception as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="study_memory_delete_deck")

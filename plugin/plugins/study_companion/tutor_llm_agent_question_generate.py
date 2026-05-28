@@ -1,7 +1,17 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from .tutor_llm_agent_common import *  # noqa: F401, F403
-
+from .tutor_llm_agent_common import (
+    Any,
+    STUDY_FALLBACK_QUESTION_EMPTY,
+    STUDY_FALLBACK_QUESTION_TEMPLATE,
+    SdkError,
+    LLM_OPERATION_QUESTION_GENERATE,
+    MODE_COMPANION,
+    normalize_mode,
+    TutorReply,
+    _as_str,
+    _clamp_int,
+)
 
 
 async def question_generate(
@@ -25,21 +35,30 @@ async def question_generate(
             operation_context,
             diagnostic="empty_input",
         )
-    return await self._invoke_structured_operation(LLM_OPERATION_QUESTION_GENERATE, operation_context)
+    return await self._invoke_structured_operation(
+        LLM_OPERATION_QUESTION_GENERATE, operation_context
+    )
 
-def _normalize_question(self, raw: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-    question = _as_str(raw.get("question")).strip() or _as_str(raw.get("prompt")).strip()
+
+def _normalize_question(
+    self, raw: dict[str, Any], context: dict[str, Any]
+) -> dict[str, Any]:
+    question = (
+        _as_str(raw.get("question")).strip() or _as_str(raw.get("prompt")).strip()
+    )
     if not question:
         raise SdkError("missing question")
     topic = _as_str(raw.get("topic")).strip() or self._guess_topic(context)
     return {
         "question": question,
-        "answer": _as_str(raw.get("answer")).strip() or _as_str(raw.get("reference_answer")).strip(),
+        "answer": _as_str(raw.get("answer")).strip()
+        or _as_str(raw.get("reference_answer")).strip(),
         "hint": _as_str(raw.get("hint")).strip(),
         "difficulty": _clamp_int(raw.get("difficulty"), 1, 5, 3),
         "topic": topic,
         "screen_type": self._screen_type_from_context(context),
     }
+
 
 def _fallback_question(self, context: dict[str, Any]) -> dict[str, Any]:
     text = _as_str(context.get("source_text") or context.get("text")).strip()
@@ -49,7 +68,9 @@ def _fallback_question(self, context: dict[str, Any]) -> dict[str, Any]:
             "hint": self._localize_reply(self._config.language, "empty_input"),
             "screen_type": self._screen_type_from_context(context),
         }
-    first_line = next((line.strip() for line in text.splitlines() if line.strip()), text[:120])
+    first_line = next(
+        (line.strip() for line in text.splitlines() if line.strip()), text[:120]
+    )
     return {
         "question": STUDY_FALLBACK_QUESTION_TEMPLATE["question"],
         "answer": first_line[:200],

@@ -1,15 +1,17 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from .entry_common import *  # noqa: F401, F403
-
-
-
+from .entry_common import (
+    asyncio,
+    Err,
+    Ok,
+    SdkError,
+    _entry_exception_error,
+    plugin_entry,
+    tr,
+)
 
 
 class _GoalEntriesMixin:
-
-
-
     @plugin_entry(
         id="study_goals",
         name="Study Daily Goals",
@@ -33,7 +35,7 @@ class _GoalEntriesMixin:
                 }
             )
         except Exception as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="study_goals")
 
     @plugin_entry(
         id="study_goal_create",
@@ -75,7 +77,7 @@ class _GoalEntriesMixin:
             )
             return Ok({"goal": goal})
         except Exception as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="study_goal_create")
 
     @plugin_entry(
         id="study_goal_update",
@@ -112,7 +114,7 @@ class _GoalEntriesMixin:
             )
             return Ok({"goal": goal})
         except Exception as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="study_goal_update")
 
     @plugin_entry(
         id="study_goal_delete",
@@ -131,7 +133,7 @@ class _GoalEntriesMixin:
             deleted = await asyncio.to_thread(manager.delete_goal, goal_id)
             return Ok({"deleted": bool(deleted), "goal_id": goal_id})
         except Exception as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="study_goal_delete")
 
     @plugin_entry(
         id="study_memory_set_deck_goal",
@@ -176,4 +178,4 @@ class _GoalEntriesMixin:
             )
             return Ok(payload)
         except Exception as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="study_memory_set_deck_goal")

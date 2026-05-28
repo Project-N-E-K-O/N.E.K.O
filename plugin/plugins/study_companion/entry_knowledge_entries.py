@@ -1,15 +1,21 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from .entry_common import *  # noqa: F401, F403
-
-
-
+from .entry_common import (
+    asyncio,
+    Err,
+    Ok,
+    SdkError,
+    _entry_exception_error,
+    plugin_entry,
+    tr,
+    StudyConfig,
+    PublicGraphContributionBuilder,
+    build_contribution_settings_payload,
+    build_knowledge_map_payload,
+)
 
 
 class _KnowledgeEntriesMixin:
-
-
-
     @plugin_entry(
         id="study_knowledge_quality_status",
         name=tr(
@@ -57,7 +63,7 @@ class _KnowledgeEntriesMixin:
             )
             return Ok(payload)
         except Exception as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="study_anonymous_knowledge_preview")
 
     @plugin_entry(
         id="study_knowledge_map",
@@ -94,7 +100,7 @@ class _KnowledgeEntriesMixin:
                 )
             )
         except Exception as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="study_knowledge_map")
 
     @plugin_entry(
         id="study_set_knowledge_contribution_opt_in",
@@ -128,7 +134,7 @@ class _KnowledgeEntriesMixin:
                 )
             )
         except Exception as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="study_set_knowledge_contribution_opt_in")
 
     @plugin_entry(
         id="study_clear_knowledge_contribution_queue",
@@ -149,4 +155,4 @@ class _KnowledgeEntriesMixin:
             cleared = await asyncio.to_thread(builder.clear_queue)
             return Ok({"cleared_count": cleared})
         except Exception as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="study_clear_knowledge_contribution_queue")

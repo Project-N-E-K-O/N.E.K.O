@@ -1,7 +1,12 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from .store_common import *  # noqa: F401, F403
-
+from .store_common import (
+    Any,
+    uuid,
+    _DEFAULT_APPEND_ONLY_HISTORY_LIMIT,
+    safe_float,
+    safe_int,
+)
 
 
 def ensure_session(self, *, session_id: str, mode: str) -> None:
@@ -16,6 +21,7 @@ def ensure_session(self, *, session_id: str, mode: str) -> None:
             (session_key, str(mode or "companion")),
         )
         self._require_conn().commit()
+
 
 def list_sessions(self, limit: int = 100) -> list[dict[str, Any]]:
     with self._lock:
@@ -46,6 +52,7 @@ def list_sessions(self, limit: int = 100) -> list[dict[str, Any]]:
         }
         for row in rows
     ]
+
 
 def add_qa_record(
     self,
@@ -85,9 +92,7 @@ def add_qa_record(
         row = conn.execute(
             "SELECT topics_touched FROM sessions WHERE id = ?", (session_key,)
         ).fetchone()
-        touched = (
-            self._json_loads(row["topics_touched"], []) if row is not None else []
-        )
+        touched = self._json_loads(row["topics_touched"], []) if row is not None else []
         if topic_key and topic_key not in touched:
             touched.append(topic_key)
         conn.execute(
@@ -106,6 +111,7 @@ def add_qa_record(
             history_limit=history_limit,
         )
         conn.commit()
+
 
 def list_qa_records(self, limit: int = 100) -> list[dict[str, Any]]:
     with self._lock:
@@ -127,6 +133,7 @@ def list_qa_records(self, limit: int = 100) -> list[dict[str, Any]]:
         for item in (self._qa_record_from_row(row) for row in reversed(rows))
         if item is not None
     ]
+
 
 def list_qa_records_for_topic(
     self, topic_id: str, limit: int = 10
@@ -158,6 +165,7 @@ def list_qa_records_for_topic(
         for item in (self._qa_record_from_row(row) for row in reversed(rows))
         if item is not None
     ]
+
 
 def add_wrong_question(
     self,
@@ -193,11 +201,13 @@ def add_wrong_question(
         self._require_conn().commit()
     return question_id
 
+
 def get_retry_wrong_question(self, topic_id: str) -> dict[str, Any] | None:
     rows = self.list_wrong_questions(
         limit=1, topic_id=topic_id, statuses=("active", "retrying")
     )
     return rows[0] if rows else None
+
 
 def list_wrong_questions(
     self,
@@ -237,6 +247,7 @@ def list_wrong_questions(
         )
     return [self._wrong_question_from_row(row) for row in rows]
 
+
 def mark_wrong_question_resolved(self, question_id: str) -> None:
     with self._lock:
         self._require_conn().execute(
@@ -248,6 +259,7 @@ def mark_wrong_question_resolved(self, question_id: str) -> None:
             (str(question_id or ""),),
         )
         self._require_conn().commit()
+
 
 def record_wrong_question_correct(
     self, *, topic_id: str, error_type: str, difficulty: int

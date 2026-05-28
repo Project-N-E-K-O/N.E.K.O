@@ -1,15 +1,18 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from .entry_common import *  # noqa: F401, F403
-
-
-
+from .entry_common import (
+    asyncio,
+    base64,
+    Err,
+    Ok,
+    SdkError,
+    _entry_exception_error,
+    DocExporter,
+    normalize_format,
+)
 
 
 class _ExportSupportMixin:
-
-
-
     def _sync_doc_export_entry(self) -> None:
         self.unregister_dynamic_entry("study_export_notes")
         if not bool(self._cfg.doc_export.enabled):
@@ -88,7 +91,7 @@ class _ExportSupportMixin:
                 topic_ids=topic_ids if isinstance(topic_ids, list) else [],
             )
         except Exception as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="_study_export_notes_entry")
         return Ok(
             {
                 "content_base64": base64.b64encode(exported.content).decode("ascii"),

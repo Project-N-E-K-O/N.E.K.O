@@ -1,7 +1,12 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from .store_common import *  # noqa: F401, F403
-
+from .store_common import (
+    json,
+    sqlite3,
+    ensure_memory_schema,
+    STORE_CONFIG,
+    STORE_STATE,
+)
 
 
 def _init_db(self) -> None:
@@ -227,6 +232,7 @@ def _init_db(self) -> None:
     )
     conn.commit()
 
+
 @staticmethod
 def _ensure_column(
     conn: sqlite3.Connection, table: str, column: str, definition: str
@@ -235,6 +241,7 @@ def _ensure_column(
     if column in {str(row["name"]) for row in rows}:
         return
     conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
 
 @staticmethod
 def _trim_append_only_rows(
@@ -278,13 +285,11 @@ def _trim_append_only_rows(
         (group_value, group_value, limit),
     )
 
+
 def _load_seed_if_empty(self) -> None:
     if not self.seed_json_path.is_file():
         return
-    if (
-        self.get_raw(STORE_CONFIG) is not None
-        or self.get_raw(STORE_STATE) is not None
-    ):
+    if self.get_raw(STORE_CONFIG) is not None or self.get_raw(STORE_STATE) is not None:
         return
     if self.get_raw("interactions") or self._has_interactions():
         return

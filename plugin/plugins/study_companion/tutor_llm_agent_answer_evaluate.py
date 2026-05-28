@@ -1,7 +1,15 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from .tutor_llm_agent_common import *  # noqa: F401, F403
-
+from .tutor_llm_agent_common import (
+    Any,
+    LLM_OPERATION_ANSWER_EVALUATE,
+    MODE_COMPANION,
+    normalize_mode,
+    TutorReply,
+    _ANSWER_VERDICTS,
+    _as_str,
+    _clamp_int,
+)
 
 
 async def answer_evaluate(
@@ -18,22 +26,35 @@ async def answer_evaluate(
         **current_context,
         "question": str(question or current_context.get("question") or "").strip(),
         "answer": str(answer or "").strip(),
-        "expected_answer": str(expected_answer or current_context.get("expected_answer") or "").strip(),
+        "expected_answer": str(
+            expected_answer or current_context.get("expected_answer") or ""
+        ).strip(),
         "language": self._config.language,
         "mode": normalize_mode(mode),
     }
-    return await self._invoke_structured_operation(LLM_OPERATION_ANSWER_EVALUATE, operation_context)
+    return await self._invoke_structured_operation(
+        LLM_OPERATION_ANSWER_EVALUATE, operation_context
+    )
 
-def _normalize_evaluation(self, raw: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+
+def _normalize_evaluation(
+    self, raw: dict[str, Any], context: dict[str, Any]
+) -> dict[str, Any]:
     score = _clamp_int(raw.get("score"), 0, 100, 0)
     verdict = _as_str(raw.get("verdict")).strip().lower()
     if verdict not in _ANSWER_VERDICTS:
-        verdict = self._verdict_from_score(score, answer=_as_str(context.get("answer")).strip())
+        verdict = self._verdict_from_score(
+            score, answer=_as_str(context.get("answer")).strip()
+        )
     feedback = _as_str(raw.get("feedback")).strip()
     if not feedback:
         feedback = self._fallback_feedback(verdict, context)
-    error_type = _as_str(raw.get("error_type")).strip() or ("none" if verdict == "correct" else "unsupported")
-    next_action = _as_str(raw.get("next_action")).strip() or self._fallback_next_action(verdict)
+    error_type = _as_str(raw.get("error_type")).strip() or (
+        "none" if verdict == "correct" else "unsupported"
+    )
+    next_action = _as_str(raw.get("next_action")).strip() or self._fallback_next_action(
+        verdict
+    )
     return {
         "verdict": verdict,
         "score": score,
@@ -42,6 +63,7 @@ def _normalize_evaluation(self, raw: dict[str, Any], context: dict[str, Any]) ->
         "next_action": next_action,
         "screen_type": self._screen_type_from_context(context),
     }
+
 
 def _fallback_evaluation(self, context: dict[str, Any]) -> dict[str, Any]:
     answer = _as_str(context.get("answer")).strip()

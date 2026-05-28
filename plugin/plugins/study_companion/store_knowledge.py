@@ -1,7 +1,10 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from .store_common import *  # noqa: F401, F403
-
+from .store_common import (
+    Any,
+    uuid,
+    _DEFAULT_APPEND_ONLY_HISTORY_LIMIT,
+)
 
 
 def upsert_candidate_item(
@@ -64,6 +67,7 @@ def upsert_candidate_item(
         raise RuntimeError("candidate upsert failed")
     return candidate
 
+
 def add_knowledge_evidence(
     self,
     *,
@@ -107,6 +111,7 @@ def add_knowledge_evidence(
         raise RuntimeError("knowledge evidence insert failed")
     return evidence
 
+
 def get_candidate_item(self, item_id: str) -> dict[str, Any] | None:
     with self._lock:
         row = (
@@ -118,6 +123,7 @@ def get_candidate_item(self, item_id: str) -> dict[str, Any] | None:
             .fetchone()
         )
     return self._candidate_from_row(row)
+
 
 def get_candidate_by_key(
     self, *, item_type: str, dedupe_key: str
@@ -132,6 +138,7 @@ def get_candidate_by_key(
             .fetchone()
         )
     return self._candidate_from_row(row)
+
 
 def list_candidate_items(
     self,
@@ -191,6 +198,7 @@ def list_candidate_items(
         if item is not None
     ]
 
+
 def list_knowledge_evidence(
     self, item_id: str | None = None, limit: int = 1000
 ) -> list[dict[str, Any]]:
@@ -236,6 +244,7 @@ def list_knowledge_evidence(
         if item is not None
     ]
 
+
 def list_recent_knowledge_evidence(self, limit: int = 20) -> list[dict[str, Any]]:
     with self._lock:
         rows = (
@@ -256,6 +265,7 @@ def list_recent_knowledge_evidence(self, limit: int = 20) -> list[dict[str, Any]
         for item in (self._evidence_from_row(row) for row in rows)
         if item is not None
     ]
+
 
 def update_candidate_score_status(
     self,
@@ -292,6 +302,7 @@ def update_candidate_score_status(
             ),
         )
         self._require_conn().commit()
+
 
 def candidate_status_counts(self) -> dict[str, Any]:
     with self._lock:

@@ -1,7 +1,10 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from .store_common import *  # noqa: F401, F403
-
+from .store_common import (
+    Any,
+    uuid,
+    _DEFAULT_APPEND_ONLY_HISTORY_LIMIT,
+)
 
 
 def upsert_anonymous_knowledge_stat(
@@ -54,6 +57,7 @@ def upsert_anonymous_knowledge_stat(
         raise RuntimeError("anonymous stat upsert failed")
     return stat
 
+
 def list_anonymous_knowledge_stats(self, limit: int = 100) -> list[dict[str, Any]]:
     with self._lock:
         rows = (
@@ -74,6 +78,7 @@ def list_anonymous_knowledge_stats(self, limit: int = 100) -> list[dict[str, Any
         for item in (self._anonymous_stat_from_row(row) for row in rows)
         if item is not None
     ]
+
 
 def anonymous_knowledge_stats_summary(self) -> dict[str, Any]:
     with self._lock:
@@ -113,6 +118,7 @@ def anonymous_knowledge_stats_summary(self) -> dict[str, Any]:
         "queue_count": int(queue_row["count"] if queue_row is not None else 0),
     }
 
+
 def enqueue_knowledge_contribution_snapshot(
     self,
     *,
@@ -151,9 +157,8 @@ def enqueue_knowledge_contribution_snapshot(
         "updated_at": str(row["updated_at"] or ""),
     }
 
-def list_knowledge_contribution_queue(
-    self, limit: int = 50
-) -> list[dict[str, Any]]:
+
+def list_knowledge_contribution_queue(self, limit: int = 50) -> list[dict[str, Any]]:
     with self._lock:
         rows = (
             self._require_conn()
@@ -178,6 +183,7 @@ def list_knowledge_contribution_queue(
         }
         for row in rows
     ]
+
 
 def clear_knowledge_contribution_queue(self) -> int:
     with self._lock:

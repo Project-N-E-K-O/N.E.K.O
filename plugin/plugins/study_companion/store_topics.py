@@ -1,7 +1,12 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from .store_common import *  # noqa: F401, F403
-
+from .store_common import (
+    Any,
+    Path,
+    json,
+    safe_float,
+    safe_int,
+)
 
 
 def load_knowledge_seed(self, path: Path | str | None = None) -> int:
@@ -51,6 +56,7 @@ def load_knowledge_seed(self, path: Path | str | None = None) -> int:
             count += 1
         self._require_conn().commit()
     return count
+
 
 def upsert_topic(self, topic: dict[str, Any], *, commit: bool = True) -> None:
     topic_id = str(topic.get("id") or "").strip()
@@ -105,6 +111,7 @@ def upsert_topic(self, topic: dict[str, Any], *, commit: bool = True) -> None:
         if commit:
             self._require_conn().commit()
 
+
 def ensure_topic(
     self,
     *,
@@ -131,6 +138,7 @@ def ensure_topic(
         }
     )
 
+
 def get_topic(self, topic_id: str) -> dict[str, Any] | None:
     with self._lock:
         row = (
@@ -139,6 +147,7 @@ def get_topic(self, topic_id: str) -> dict[str, Any] | None:
             .fetchone()
         )
     return self._topic_from_row(row)
+
 
 def find_topic_by_name(self, name: str) -> dict[str, Any] | None:
     text = str(name or "").strip()
@@ -154,6 +163,7 @@ def find_topic_by_name(self, name: str) -> dict[str, Any] | None:
             .fetchone()
         )
     return self._topic_from_row(row)
+
 
 def list_topics(
     self, limit: int = 100, subject: str | None = None
@@ -183,6 +193,7 @@ def list_topics(
         if topic is not None
     ]
 
+
 def count_topics(self) -> int:
     with self._lock:
         row = (
@@ -192,16 +203,16 @@ def count_topics(self) -> int:
         )
     return int(row["count"] if row is not None else 0)
 
+
 def count_tracked_mastery_topics(self) -> int:
     with self._lock:
         row = (
             self._require_conn()
-            .execute(
-                "SELECT COUNT(DISTINCT topic_id) AS count FROM mastery_snapshots"
-            )
+            .execute("SELECT COUNT(DISTINCT topic_id) AS count FROM mastery_snapshots")
             .fetchone()
         )
     return int(row["count"] if row is not None else 0)
+
 
 def average_latest_mastery(self) -> float:
     with self._lock:

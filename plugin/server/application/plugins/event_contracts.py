@@ -60,11 +60,17 @@ def _normalize_voice_transcript_candidate(
 
     if action == VOICE_TRANSCRIPT_ACTION_PRIME_CONTEXT:
         context_text = str(candidate.get("context") or "").strip()
-        if not context_text:
+        context_payload = candidate.get("context_payload")
+        has_context_payload = isinstance(context_payload, Mapping) and bool(
+            context_payload
+        )
+        if not context_text and not has_context_payload:
             action = VOICE_TRANSCRIPT_ACTION_NOOP
             reason = "empty_context"
-        else:
+        if context_text:
             candidate["context"] = context_text
+        if has_context_payload:
+            candidate["context_payload"] = dict(context_payload)
 
     candidate["action"] = action
     candidate["priority"] = priority
@@ -137,7 +143,7 @@ def arbitrate_custom_event_result(
     if event_type == VOICE_TRANSCRIPT_EVENT_TYPE:
         return arbitrate_voice_transcript_results(dispatch_results)
     return {
-        "action": "noop",
+        "action": VOICE_TRANSCRIPT_ACTION_NOOP,
         "reason": "no_event_contract",
         "event_type": event_type,
     }

@@ -56,7 +56,10 @@ from plugin.plugins.study_companion.models import (
 )
 from plugin.plugins.study_companion.state import build_initial_state
 from plugin.plugins.study_companion.store import StudyStore
-from plugin.plugins.study_companion import study_capture_backends as study_capture_backends_module
+from plugin.plugins.study_companion import (
+    study_capture_backends as study_capture_backends_module,
+)
+from plugin.plugins.study_companion.entry_common import _entry_exception_error
 from plugin.plugins.study_companion.study_capture_backends import (
     PrintWindowCaptureBackend,
     PyAutoGuiCaptureBackend,
@@ -178,6 +181,31 @@ class _Ctx:
         self.status_updates.append(dict(status))
 
 
+def test_entry_exception_error_logs_traceback_and_preserves_sdk_error() -> None:
+    plugin = SimpleNamespace(logger=_Logger())
+    exc = RuntimeError("boom")
+
+    result = _entry_exception_error(plugin, exc, operation="unit-test")
+
+    assert isinstance(result, Err)
+    assert "boom" in str(result.error)
+    assert len(plugin.logger.warnings) == 1
+    args, kwargs = plugin.logger.warnings[0]
+    assert args[0] == "study entry failed: {}"
+    assert args[1] == "unit-test"
+    assert kwargs["exc_info"] == (RuntimeError, exc, exc.__traceback__)
+
+    prefixed = _entry_exception_error(
+        plugin,
+        exc,
+        operation="unit-test-prefixed",
+        message="install failed: boom",
+    )
+
+    assert isinstance(prefixed, Err)
+    assert str(prefixed.error) == "install failed: boom"
+
+
 def _study_push_texts(ctx: _Ctx) -> list[str]:
     texts: list[str] = []
     for message in ctx.pushed_messages:
@@ -227,7 +255,9 @@ class _FakeTutorAgent:
     def __init__(self) -> None:
         self.inputs: list[tuple[str, dict[str, object], str]] = []
         self.evaluations: list[tuple[str, str, str, dict[str, object], str]] = []
-        self.summaries: list[tuple[list[dict[str, object]], dict[str, object], str]] = []
+        self.summaries: list[
+            tuple[list[dict[str, object]], dict[str, object], str]
+        ] = []
 
     def update_config(self, config: StudyConfig) -> None:
         self._config = config
@@ -1428,7 +1458,9 @@ def test_study_companion_does_not_import_galgame_namespace_directly() -> None:
         assert "plugin.plugins.galgame_plugin" not in source
 
 
-def test_printwindow_capture_uses_hwnd_capture_path(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_printwindow_capture_uses_hwnd_capture_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from PIL import Image
 
     calls: list[tuple[int, tuple[int, int, int, int]]] = []
@@ -1499,7 +1531,9 @@ def test_printwindow_capture_releases_window_dc_without_deleting_wrapped_hdc(
 
     class _MemDc:
         def SelectObject(self, obj):
-            calls.append("restore_bitmap" if obj is previous_bitmap else "select_bitmap")
+            calls.append(
+                "restore_bitmap" if obj is previous_bitmap else "select_bitmap"
+            )
             return previous_bitmap
 
         def GetSafeHdc(self) -> int:
@@ -1582,14 +1616,13 @@ def test_win32_target_window_rect_reads_under_dpi_aware_context(
         sys.modules,
         "win32gui",
         SimpleNamespace(
-            GetWindowRect=lambda _hwnd: calls.append("get_window_rect")
-            or (10, 20, 110, 100)
+            GetWindowRect=lambda _hwnd: (
+                calls.append("get_window_rect") or (10, 20, 110, 100)
+            )
         ),
     )
 
-    rect = study_capture_backends_module._target_window_rect(
-        SimpleNamespace(hwnd=1234)
-    )
+    rect = study_capture_backends_module._target_window_rect(SimpleNamespace(hwnd=1234))
 
     assert rect == (10, 20, 110, 100)
     per_monitor_v2 = study_capture_backends_module.ctypes.c_void_p(-4).value
@@ -1955,11 +1988,15 @@ async def test_study_ocr_snapshot_feeds_supervision_activity() -> None:
     plugin._lock = asyncio.Lock()
     plugin._state = build_initial_state()
     plugin._persist_state = _persist_state
-    plugin._update_screen_classification = lambda text, update_empty=False: {
-        "screen_type": "reading",
-        "text": text,
-        "update_empty": update_empty,
-    }
+
+    async def _update_screen_classification(text, update_empty=False):
+        return {
+            "screen_type": "reading",
+            "text": text,
+            "update_empty": update_empty,
+        }
+
+    plugin._update_screen_classification = _update_screen_classification
 
     result = await plugin.study_ocr_snapshot()
 
@@ -3186,9 +3223,7 @@ async def test_study_plugin_starts_and_collects_entries(
         updated_memory_card.value["card"]["item"]["metadata"]["topic_id"]
         == "phase7_plugin_memory"
     )
-    assert (
-        updated_memory_card.value["card"]["item"]["metadata"]["difficulty"] == 0.0
-    )
+    assert updated_memory_card.value["card"]["item"]["metadata"]["difficulty"] == 0.0
     fresh_memory_card = await plugin.study_memory_card_upsert(
         topic_id="phase7_plugin_recent",
         front="Recently updated prompt",
@@ -3223,14 +3258,14 @@ async def test_study_plugin_starts_and_collects_entries(
     assert all(
         item["item_id"] != fresh_item_id for item in topic_due_deck.value["cards"]
     )
-    assert topic_due_deck.value["due_count"] >= len(
-        topic_due_deck.value["due_cards"]
-    )
+    assert topic_due_deck.value["due_count"] >= len(topic_due_deck.value["due_cards"])
     topic_deck = await plugin.study_memory_deck(
         limit=5, due_only=True, include_topic_cards=True
     )
     assert isinstance(topic_deck, Ok)
-    assert any(item["topic_id"] == "phase7_topic_due" for item in topic_deck.value["cards"])
+    assert any(
+        item["topic_id"] == "phase7_topic_due" for item in topic_deck.value["cards"]
+    )
     assert topic_deck.value["card_count"] == len(topic_deck.value["cards"])
     merged_deck = await plugin.study_memory_deck(
         limit=1, due_only=False, include_topic_cards=True
@@ -3246,7 +3281,9 @@ async def test_study_plugin_starts_and_collects_entries(
     assert isinstance(loose_card_again, Ok)
     assert loose_card.value["created"] is True
     assert loose_card_again.value["created"] is True
-    assert loose_card.value["card"]["item_id"] != loose_card_again.value["card"]["item_id"]
+    assert (
+        loose_card.value["card"]["item_id"] != loose_card_again.value["card"]["item_id"]
+    )
     reviewed_again = await plugin.study_memory_review_item(
         item_id=card_item_id, rating="again"
     )
@@ -3374,7 +3411,7 @@ async def test_screen_classification_change_emits_event(
     try:
         assert isinstance(result, Ok)
         for _ in range(3):
-            plugin._update_screen_classification("Question: solve x + 1 = 2")
+            await plugin._update_screen_classification("Question: solve x + 1 = 2")
         await asyncio.sleep(0)
         await asyncio.sleep(0)
 
@@ -3408,7 +3445,7 @@ async def test_screen_classification_no_change_skips_duplicate_push(
     try:
         assert isinstance(result, Ok)
         for _ in range(4):
-            plugin._update_screen_classification("Question: solve x + 1 = 2")
+            await plugin._update_screen_classification("Question: solve x + 1 = 2")
         await _drain_scheduled_events()
 
         assert len(_study_push_texts(ctx)) == 1
@@ -3671,9 +3708,7 @@ async def test_review_due_event_includes_knowledge_tracker_cards(
         card = plugin._knowledge_tracker.fsrs.new_knowledge_card(
             "derivatives"
         ).to_dict()
-        plugin._store.upsert_fsrs_card(
-            topic_id="derivatives", card=card, last_rating=0
-        )
+        plugin._store.upsert_fsrs_card(topic_id="derivatives", card=card, last_rating=0)
 
         await plugin._emit_review_due_if_needed()
         await _drain_scheduled_events()

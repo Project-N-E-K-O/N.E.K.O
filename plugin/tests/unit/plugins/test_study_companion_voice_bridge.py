@@ -40,6 +40,13 @@ async def test_voice_transcript_name_call_returns_prime_context() -> None:
     assert payload["skipped"] is False
     assert "f(x)=x^3" in payload["context"]
     assert "why is it 3x^2" in payload["context"]
+    assert payload["context_payload"]["schema"] == "study_companion.voice_context.v1"
+    assert payload["context_payload"]["source"] == "study_companion"
+    assert payload["context_payload"]["user_transcript"] == "Yui why is it 3x^2"
+    assert payload["context_payload"]["question"] == "why is it 3x^2"
+    assert payload["context_payload"]["screen_ocr"].startswith("f(x)=x^3")
+    assert payload["context_payload"]["screen_type"] == "question"
+    assert payload["context_payload"]["topic"] == "derivative"
     assert payload["filter"]["method"] == "name_call"
 
 

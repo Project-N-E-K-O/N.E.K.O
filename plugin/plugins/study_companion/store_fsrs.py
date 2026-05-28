@@ -1,7 +1,9 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from .store_common import *  # noqa: F401, F403
-
+from .store_common import (
+    Any,
+    _DEFAULT_APPEND_ONLY_HISTORY_LIMIT,
+)
 
 
 def append_mastery_snapshot(
@@ -46,6 +48,7 @@ def append_mastery_snapshot(
         )
         conn.commit()
 
+
 def get_latest_mastery(self, topic_id: str) -> dict[str, Any] | None:
     with self._lock:
         row = (
@@ -64,6 +67,7 @@ def get_latest_mastery(self, topic_id: str) -> dict[str, Any] | None:
             .fetchone()
         )
     return self._mastery_from_row(row)
+
 
 def list_mastery_overview(self, limit: int = 20) -> list[dict[str, Any]]:
     with self._lock:
@@ -92,6 +96,7 @@ def list_mastery_overview(self, limit: int = 20) -> list[dict[str, Any]]:
         if item is not None
     ]
 
+
 def get_fsrs_card(self, topic_id: str) -> dict[str, Any] | None:
     with self._lock:
         row = (
@@ -112,6 +117,7 @@ def get_fsrs_card(self, topic_id: str) -> dict[str, Any] | None:
         "last_rating": int(row["last_rating"] or 0),
         "updated_at": str(row["updated_at"] or ""),
     }
+
 
 def upsert_fsrs_card(
     self, *, topic_id: str, card: dict[str, Any], last_rating: int
@@ -135,6 +141,7 @@ def upsert_fsrs_card(
             ),
         )
         self._require_conn().commit()
+
 
 def list_fsrs_cards(self, limit: int | None = 100) -> list[dict[str, Any]]:
     with self._lock:
@@ -166,6 +173,7 @@ def list_fsrs_cards(self, limit: int | None = 100) -> list[dict[str, Any]]:
         }
         for row in rows
     ]
+
 
 def append_review_log(
     self,
@@ -201,6 +209,7 @@ def append_review_log(
             history_limit=history_limit,
         )
         conn.commit()
+
 
 def list_review_log(self, limit: int = 100) -> list[dict[str, Any]]:
     with self._lock:

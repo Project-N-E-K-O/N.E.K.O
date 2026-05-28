@@ -1,15 +1,16 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from .entry_common import *  # noqa: F401, F403
-
-
-
+from .entry_common import (
+    asyncio,
+    Err,
+    Ok,
+    SdkError,
+    _entry_exception_error,
+    plugin_entry,
+)
 
 
 class _CheckinEntriesMixin:
-
-
-
     @plugin_entry(
         id="study_checkin_status",
         name="Study Check-In Status",
@@ -32,7 +33,7 @@ class _CheckinEntriesMixin:
                 )
             )
         except Exception as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="study_checkin_status")
 
     @plugin_entry(
         id="study_checkin_manual",
@@ -58,7 +59,7 @@ class _CheckinEntriesMixin:
             )
             return Ok({"checkin": checkin})
         except Exception as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="study_checkin_manual")
 
     @plugin_entry(
         id="study_session_summary",
@@ -89,4 +90,4 @@ class _CheckinEntriesMixin:
                 )
             return Ok(summary)
         except Exception as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="study_session_summary")

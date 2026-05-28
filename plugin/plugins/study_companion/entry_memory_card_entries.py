@@ -1,15 +1,18 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from .entry_common import *  # noqa: F401, F403
-
-
-
+from .entry_common import (
+    asyncio,
+    Err,
+    Ok,
+    SdkError,
+    _entry_exception_error,
+    plugin_entry,
+    tr,
+    MemoryItemNotFoundError,
+)
 
 
 class _MemoryCardEntriesMixin:
-
-
-
     @plugin_entry(
         id="study_memory_card_upsert",
         name=tr("entries.memory_card_upsert.name", default="Upsert Study Memory Card"),
@@ -57,7 +60,9 @@ class _MemoryCardEntriesMixin:
                 item_type="custom",
                 prompt=front,
                 answer=back,
-                dedupe_metadata_key=("topic_id", "legacy_topic_id") if topic_key else "",
+                dedupe_metadata_key=("topic_id", "legacy_topic_id")
+                if topic_key
+                else "",
                 dedupe_metadata_value=topic_key,
                 metadata={
                     "topic_id": topic_key,
@@ -79,7 +84,7 @@ class _MemoryCardEntriesMixin:
                 }
             )
         except Exception as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="study_memory_card_upsert")
 
     @plugin_entry(
         id="study_memory_card_review",
@@ -146,4 +151,4 @@ class _MemoryCardEntriesMixin:
                 }
             )
         except Exception as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="study_memory_card_review")

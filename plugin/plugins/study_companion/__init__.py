@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import base64
@@ -120,7 +120,6 @@ _REVIEW_DUE_INTERVAL_SECONDS = 1800.0
 
 from .entry_voice_bridge import _VoiceBridgeMixin
 from .entry_tutor_context_support import _TutorContextSupportMixin
-from .entry_tutor_learning_support import _TutorLearningSupportMixin
 from .entry_communication_review_events import _CommunicationReviewEventsMixin
 from .entry_communication_tutor_events import _CommunicationTutorEventsMixin
 from .entry_export_support import _ExportSupportMixin
@@ -140,14 +139,16 @@ from .entry_tutor_question_entries import _TutorQuestionEntriesMixin
 from .entry_tutor_answer_entries import _TutorAnswerEntriesMixin
 from .entry_tutor_summary_entries import _TutorSummaryEntriesMixin
 from .entry_ocr_entries import _OcrEntriesMixin
-from .entry_vision_entries import _VisionEntriesMixin
 
 
 @neko_plugin
+# MRO notes:
+# - _TutorContextSupportMixin owns tutor finalization and learning tracking.
+# - Tutor entry mixins call context/finalization helpers from that support mixin.
+# Keep the support mixin before tutor entry mixins unless those helpers move.
 class StudyCompanionPlugin(
     _VoiceBridgeMixin,
     _TutorContextSupportMixin,
-    _TutorLearningSupportMixin,
     _CommunicationReviewEventsMixin,
     _CommunicationTutorEventsMixin,
     _ExportSupportMixin,
@@ -167,12 +168,11 @@ class StudyCompanionPlugin(
     _TutorAnswerEntriesMixin,
     _TutorSummaryEntriesMixin,
     _OcrEntriesMixin,
-    _VisionEntriesMixin,
     NekoPluginBase,
 ):
     def __init__(self, ctx):
         super().__init__(ctx)
-        self.file_logger = self.enable_file_logging(log_level="WARNING")
+        self.file_logger = self.enable_file_logging(log_level="INFO")
         self.logger = self.file_logger
         self._lock = asyncio.Lock()
         self._install_in_progress = False
@@ -534,7 +534,10 @@ class StudyCompanionPlugin(
             try:
                 return datetime.now(ZoneInfo(timezone_name)).date().isoformat()
             except ZoneInfoNotFoundError:
-                self.logger.warning("invalid study checkin timezone configured")
+                self.logger.warning(
+                    "invalid study checkin timezone configured: {}",
+                    timezone_name[:64],
+                )
         return datetime.now().astimezone().date().isoformat()
 
     def _state_snapshot(self) -> dict[str, Any]:
@@ -543,45 +546,48 @@ class StudyCompanionPlugin(
     def _screen_classification_context(self) -> dict[str, Any]:
         return dict(self._state.last_screen_classification)
 
-    def _update_screen_classification(
+    async def _update_screen_classification(
         self, text: str, *, window_title: str = "", update_empty: bool = True
     ) -> dict[str, Any]:
         normalized = str(text or "").strip()
-        if not normalized and not update_empty:
-            return dict(self._state.last_screen_classification)
-        recent = list(self._state.recent_screen_classifications)
-        previous = dict(self._state.last_screen_classification)
-        classification = classify_screen_from_ocr(
-            normalized, window_title=window_title, recent_classifications=recent
-        )
-        payload = classification.to_payload()
-        if normalized or update_empty:
-            self._state.last_screen_classification = payload
-            recent_classifications = list(self._state.recent_screen_classifications)
-            recent_classifications.append(payload)
-            self._state.recent_screen_classifications = recent_classifications[-8:]
-            self._state.session_summary_seed = self._merge_session_summary_seed(
-                "screen_classification",
-                payload=payload,
-                seed=self._state.session_summary_seed,
+        async with self._lock:
+            if not normalized and not update_empty:
+                return dict(self._state.last_screen_classification)
+            recent = list(self._state.recent_screen_classifications)
+            previous = dict(self._state.last_screen_classification)
+            classification = classify_screen_from_ocr(
+                normalized, window_title=window_title, recent_classifications=recent
             )
-        previous_type = str(previous.get("screen_type") or "").strip()
-        new_type = str(payload.get("screen_type") or "").strip()
-        if (
-            self._event_bus is not None
-            and self._event_bus.should_schedule_screen_context(new_type, previous_type)
-        ):
-            self._event_bus.schedule_emit(
-                StudyEvent(
-                    name="screen_context_changed",
-                    payload={
-                        "screen_type": new_type,
-                        "confidence": payload.get("confidence", 0.0),
-                        "ocr_summary": normalized[:200],
-                        "previous_type": previous_type,
-                    },
+            payload = classification.to_payload()
+            if normalized or update_empty:
+                self._state.last_screen_classification = payload
+                recent_classifications = list(self._state.recent_screen_classifications)
+                recent_classifications.append(payload)
+                self._state.recent_screen_classifications = recent_classifications[-8:]
+                self._state.session_summary_seed = self._merge_session_summary_seed(
+                    "screen_classification",
+                    payload=payload,
+                    seed=self._state.session_summary_seed,
                 )
-            )
+            previous_type = str(previous.get("screen_type") or "").strip()
+            new_type = str(payload.get("screen_type") or "").strip()
+            if (
+                self._event_bus is not None
+                and self._event_bus.should_schedule_screen_context(
+                    new_type, previous_type
+                )
+            ):
+                self._event_bus.schedule_emit(
+                    StudyEvent(
+                        name="screen_context_changed",
+                        payload={
+                            "screen_type": new_type,
+                            "confidence": payload.get("confidence", 0.0),
+                            "ocr_summary": normalized[:200],
+                            "previous_type": previous_type,
+                        },
+                    )
+                )
         return payload
 
     def _resolve_current_run_id(self, extra_args: dict[str, Any] | None = None) -> str:

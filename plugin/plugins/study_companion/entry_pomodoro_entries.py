@@ -1,15 +1,19 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from .entry_common import *  # noqa: F401, F403
-
-
-
+from .entry_common import (
+    Any,
+    asyncio,
+    Err,
+    Ok,
+    SdkError,
+    _entry_exception_error,
+    plugin_entry,
+    build_pomodoro_status_payload,
+    _validated_pomodoro_focus_minutes,
+)
 
 
 class _PomodoroEntriesMixin:
-
-
-
     @plugin_entry(
         id="study_pomodoro_status",
         name="Study Pomodoro Status",
@@ -38,7 +42,7 @@ class _PomodoroEntriesMixin:
                 payload["supervision_reminder"] = reminder
             return Ok(payload)
         except Exception as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="study_pomodoro_status")
 
     @plugin_entry(
         id="study_pomodoro_start",
@@ -91,7 +95,8 @@ class _PomodoroEntriesMixin:
             if (
                 deck_id
                 and not goal_id
-                and before_state not in {"focusing", "paused", "short_break", "long_break"}
+                and before_state
+                not in {"focusing", "paused", "short_break", "long_break"}
             ):
                 bridge = self._require_memory_habit_bridge()
                 goal_payload = await asyncio.to_thread(
@@ -120,12 +125,14 @@ class _PomodoroEntriesMixin:
                 supervision.on_focus_start(
                     goal=goal or {},
                     planned_minutes=float(
-                        status.get("config", {}).get("focus_minutes") or focus_minutes or 0
+                        status.get("config", {}).get("focus_minutes")
+                        or focus_minutes
+                        or 0
                     ),
                 )
             return Ok(build_pomodoro_status_payload(status))
         except Exception as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="study_pomodoro_start")
 
     @plugin_entry(
         id="study_pomodoro_pause",
@@ -139,7 +146,7 @@ class _PomodoroEntriesMixin:
             _, _, timer, _ = self._require_habit_components()
             return Ok(build_pomodoro_status_payload(timer.pause()))
         except Exception as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="study_pomodoro_pause")
 
     @plugin_entry(
         id="study_pomodoro_resume",
@@ -153,7 +160,7 @@ class _PomodoroEntriesMixin:
             _, _, timer, _ = self._require_habit_components()
             return Ok(build_pomodoro_status_payload(timer.resume()))
         except Exception as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="study_pomodoro_resume")
 
     @plugin_entry(
         id="study_pomodoro_stop",
@@ -169,7 +176,7 @@ class _PomodoroEntriesMixin:
             supervision.on_focus_end()
             return Ok(build_pomodoro_status_payload(status))
         except Exception as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="study_pomodoro_stop")
 
     @plugin_entry(
         id="study_pomodoro_skip_break",
@@ -183,4 +190,4 @@ class _PomodoroEntriesMixin:
             _, _, timer, _ = self._require_habit_components()
             return Ok(build_pomodoro_status_payload(timer.skip_break()))
         except Exception as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="study_pomodoro_skip_break")

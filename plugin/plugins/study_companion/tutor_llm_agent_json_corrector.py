@@ -1,5 +1,19 @@
-﻿from __future__ import annotations
-from .tutor_llm_agent_common import *  # noqa: F401, F403
+from __future__ import annotations
+from .tutor_llm_agent_common import (
+    Any,
+    Awaitable,
+    Callable,
+    re,
+    STUDY_JSON_CORRECTION_USER_TEMPLATE,
+    SdkError,
+    robust_json_loads,
+    _JSON_CORRECTION_MAX_ATTEMPTS,
+    _JSON_CORRECTION_BAD_OUTPUT_MAX_CHARS,
+    _JSON_CORRECTION_ERROR_MAX_CHARS,
+    _strip_code_fences,
+    _bounded_prompt_text,
+)
+
 
 class _JSONCorrector:
     def __init__(self, *, logger: Any) -> None:
@@ -18,7 +32,11 @@ class _JSONCorrector:
             if not match:
                 raise SdkError("llm result is not valid json object")
             try:
-                parsed = robust_json_loads(match.group(0)) if callable(robust_json_loads) else None
+                parsed = (
+                    robust_json_loads(match.group(0))
+                    if callable(robust_json_loads)
+                    else None
+                )
                 if parsed is None:
                     import json
 
@@ -55,7 +73,9 @@ class _JSONCorrector:
                 max_attempts=_JSON_CORRECTION_MAX_ATTEMPTS,
             )
             raw_text = await call_model(correction_messages, operation=operation)
-        raise SdkError(f"llm result is not valid json object after correction: {last_error}")
+        raise SdkError(
+            f"llm result is not valid json object after correction: {last_error}"
+        )
 
     def _build_json_correction_messages(
         self,
@@ -71,7 +91,9 @@ class _JSONCorrector:
         correction_messages.append(
             {
                 "role": "assistant",
-                "content": _bounded_prompt_text(bad_output, max_chars=_JSON_CORRECTION_BAD_OUTPUT_MAX_CHARS),
+                "content": _bounded_prompt_text(
+                    bad_output, max_chars=_JSON_CORRECTION_BAD_OUTPUT_MAX_CHARS
+                ),
             }
         )
         correction_messages.append(
@@ -82,7 +104,9 @@ class _JSONCorrector:
                         attempt=attempt,
                         max_attempts=max_attempts,
                         operation=operation,
-                        parse_error=_bounded_prompt_text(parse_error, max_chars=_JSON_CORRECTION_ERROR_MAX_CHARS),
+                        parse_error=_bounded_prompt_text(
+                            parse_error, max_chars=_JSON_CORRECTION_ERROR_MAX_CHARS
+                        ),
                     )
                 ),
             }

@@ -1,15 +1,15 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from .entry_common import *  # noqa: F401, F403
-
-
-
+from .entry_common import (
+    asyncio,
+    Ok,
+    plugin_entry,
+    tr,
+    build_open_ui_payload,
+)
 
 
 class _StatusEntriesMixin:
-
-
-
     @plugin_entry(
         id="study_open_ui",
         name=tr("entries.open_ui.name", default="Open Study Companion UI"),
@@ -73,7 +73,9 @@ class _StatusEntriesMixin:
 
     @plugin_entry(
         id="study_memory_habit_status",
-        name=tr("entries.memory_habit_status.name", default="Memory Habit Bridge Status"),
+        name=tr(
+            "entries.memory_habit_status.name", default="Memory Habit Bridge Status"
+        ),
         description=tr(
             "entries.memory_habit_status.description",
             default="Return whether memory deck habit integration is available.",

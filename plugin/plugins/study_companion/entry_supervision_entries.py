@@ -1,15 +1,15 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from .entry_common import *  # noqa: F401, F403
-
-
-
+from .entry_common import (
+    Err,
+    Ok,
+    SdkError,
+    _entry_exception_error,
+    plugin_entry,
+)
 
 
 class _SupervisionEntriesMixin:
-
-
-
     @plugin_entry(
         id="study_supervision_status",
         name="Study Supervision Status",
@@ -22,7 +22,7 @@ class _SupervisionEntriesMixin:
             _, _, _, supervision = self._require_habit_components()
             return Ok(supervision.status())
         except Exception as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="study_supervision_status")
 
     @plugin_entry(
         id="study_supervision_toggle",
@@ -42,4 +42,4 @@ class _SupervisionEntriesMixin:
                 return Err(SdkError("study supervision disable is blocked by config"))
             return Ok(supervision.set_enabled(bool(enabled)))
         except Exception as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="study_supervision_toggle")

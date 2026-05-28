@@ -1,7 +1,20 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from .tutor_llm_agent_common import *  # noqa: F401, F403
-
+from .tutor_llm_agent_common import (
+    Any,
+    asyncio,
+    STUDY_FALLBACK_EXPLANATION_DEFAULT,
+    SdkError,
+    MODE_COMPANION,
+    MODE_TEACHING,
+    build_concept_explain_messages,
+    build_transition_phrase,
+    normalize_mode,
+    MODE_CONCEPT_EXPLAIN,
+    TutorReply,
+    utc_now_iso,
+    diagnostic_code_for_exception,
+)
 
 
 async def concept_explain(
@@ -23,7 +36,9 @@ async def concept_explain(
         )
     selected_mode = normalize_mode(mode)
     teaching_prefix = (
-        build_transition_phrase(MODE_TEACHING, language=self._config.language, outcome="changed")
+        build_transition_phrase(
+            MODE_TEACHING, language=self._config.language, outcome="changed"
+        )
         if selected_mode == MODE_TEACHING
         else ""
     )
@@ -55,7 +70,10 @@ async def concept_explain(
             self._config.language,
             "fallback_explanation",
             default=STUDY_FALLBACK_EXPLANATION_DEFAULT,
-            first_line=next((line.strip() for line in normalized.splitlines() if line.strip()), normalized[:120]),
+            first_line=next(
+                (line.strip() for line in normalized.splitlines() if line.strip()),
+                normalized[:120],
+            ),
         )
         if teaching_prefix and not fallback_reply.startswith(teaching_prefix):
             fallback_reply = f"{teaching_prefix}\n\n{fallback_reply}"

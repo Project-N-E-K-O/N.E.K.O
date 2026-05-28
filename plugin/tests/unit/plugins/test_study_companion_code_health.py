@@ -28,6 +28,22 @@ def test_code_health_modules_are_flat_for_dependency_direction() -> None:
         assert "import .." not in source
 
 
+def test_entry_exceptions_use_traceback_logging_helper() -> None:
+    for path in _STUDY_COMPANION_ROOT.glob("entry_*.py"):
+        if path.name == "entry_common.py":
+            continue
+        source = path.read_text(encoding="utf-8")
+        assert "return Err(SdkError(str(exc)))" not in source, path.name
+        assert "return Err(SdkError(f\"" not in source, path.name
+        assert "return Err(SdkError(f'" not in source, path.name
+
+
+def test_tutor_learning_support_is_not_split_by_mro_dependency() -> None:
+    assert not (_STUDY_COMPANION_ROOT / "entry_tutor_learning_support.py").exists()
+    plugin_source = (_STUDY_COMPANION_ROOT / "__init__.py").read_text(encoding="utf-8")
+    assert "_TutorLearningSupportMixin" not in plugin_source
+
+
 test_store_transaction_rolls_back_and_json_loads_is_public = (
     _habit_tests.test_store_transaction_rolls_back_and_json_loads_is_public
 )

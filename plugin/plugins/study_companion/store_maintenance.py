@@ -1,10 +1,8 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from contextlib import contextmanager
 import sqlite3
 from typing import Any, Iterator
-
-from .store_common import *  # noqa: F401, F403
 
 
 _PURGE_TABLES = (

@@ -78,6 +78,36 @@ def test_voice_transcript_arbitration_orders_prime_context_by_priority() -> None
     assert result["source_event_id"] == "high_handler"
 
 
+def test_voice_transcript_arbitration_accepts_structured_context_payload() -> None:
+    payload = {
+        "schema": "study_companion.voice_context.v1",
+        "source": "study_companion",
+        "user_transcript": "Yui explain this step",
+        "screen_ocr": "f(x)=x^3",
+    }
+
+    result = arbitrate_voice_transcript_results(
+        [
+            {
+                "plugin_id": "study_companion",
+                "event_id": "handle_transcript",
+                "success": True,
+                "result": {
+                    "action": "prime_context",
+                    "context_payload": payload,
+                    "priority": 2,
+                },
+            },
+        ]
+    )
+
+    assert result["action"] == "prime_context"
+    assert result["context_payload"] == payload
+    assert result["priority"] == 2.0
+    assert result["source_plugin"] == "study_companion"
+    assert result["source_event_id"] == "handle_transcript"
+
+
 def test_voice_transcript_arbitration_all_noop_continues_ordinary_flow() -> None:
     result = arbitrate_voice_transcript_results(
         [

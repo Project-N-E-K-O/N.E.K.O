@@ -1,17 +1,24 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from .entry_common import *  # noqa: F401, F403
+from plugin.server.application.plugins.event_contracts import (
+    VOICE_TRANSCRIPT_EVENT_TYPE,
+)
 
-
-
+from .entry_common import (
+    Any,
+    SimpleNamespace,
+    Ok,
+    custom_event,
+    STATUS_READY,
+    _derive_subject,
+    build_context_for_catgirl,
+    _voice_session_key,
+)
 
 
 class _VoiceBridgeMixin:
-
-
-
     @custom_event(
-        event_type="voice_transcript",
+        event_type=VOICE_TRANSCRIPT_EVENT_TYPE,
         id="handle_transcript",
         name="Handle study voice transcript",
         description="Filter realtime study voice transcripts and return a voice-session action.",
@@ -27,7 +34,11 @@ class _VoiceBridgeMixin:
         trigger_method="manual",
     )
     async def handle_voice_transcript(
-        self, transcript: str = "", lanlan_name: str = "", metadata: dict[str, Any] | None = None, **_
+        self,
+        transcript: str = "",
+        lanlan_name: str = "",
+        metadata: dict[str, Any] | None = None,
+        **_,
     ):
         text = str(transcript or "").strip()
         if not text:
@@ -81,11 +92,33 @@ class _VoiceBridgeMixin:
             filter_result,
         ).strip()
         if not context_text:
-            return Ok({"action": "noop", "reason": "empty_context", "filter": dict(filter_result)})
+            return Ok(
+                {
+                    "action": "noop",
+                    "reason": "empty_context",
+                    "filter": dict(filter_result),
+                }
+            )
+        context_payload: dict[str, Any] = {
+            "schema": "study_companion.voice_context.v1",
+            "source": "study_companion",
+            "user_transcript": text,
+            "question": str(filter_result.get("question") or text).strip(),
+            "pre_context": str(filter_result.get("pre_context") or "").strip(),
+            "screen_ocr": screen_text.strip(),
+            "screen_type": screen_type,
+            "subject": screen_context["subject"],
+            "topic": screen_context["topic"],
+            "filter_method": str(filter_result.get("method") or "").strip(),
+        }
+        context_payload = {
+            key: value for key, value in context_payload.items() if value != ""
+        }
         return Ok(
             {
                 "action": "prime_context",
                 "context": context_text,
+                "context_payload": context_payload,
                 "skipped": False,
                 "filter": dict(filter_result),
                 "lanlan_name": str(lanlan_name or ""),

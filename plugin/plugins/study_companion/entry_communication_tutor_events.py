@@ -1,15 +1,15 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from .entry_common import *  # noqa: F401, F403
-
-
-
+from .entry_common import (
+    Any,
+    asyncio,
+    StudyEvent,
+    _event_ratio,
+    _event_nonnegative_float,
+)
 
 
 class _CommunicationTutorEventsMixin:
-
-
-
     async def _emit_answer_evaluated_event(
         self,
         *,
@@ -32,9 +32,7 @@ class _CommunicationTutorEventsMixin:
                     "verdict": str(verdict or "").strip(),
                     "score": _event_ratio(score),
                     "question_summary": str(question_summary or "").strip()[:200],
-                    "user_answer_summary": str(user_answer_summary or "").strip()[
-                        :200
-                    ],
+                    "user_answer_summary": str(user_answer_summary or "").strip()[:200],
                     "correction_hint": str(correction_hint or "").strip()[:200],
                     "topic": str(topic or "").strip(),
                     "mastery_before": mastery_before,
@@ -43,14 +41,15 @@ class _CommunicationTutorEventsMixin:
             )
         )
 
-    async def _emit_memory_review_answer_event(
-        self, payload: dict[str, Any]
-    ) -> None:
+    async def _emit_memory_review_answer_event(self, payload: dict[str, Any]) -> None:
         item = payload.get("item") or {}
         review = payload.get("review_record") or {}
-        deck = await asyncio.to_thread(
-            self._memory_deck_store.get_deck, str(item.get("deck_id") or "")
-        ) or {}
+        deck = (
+            await asyncio.to_thread(
+                self._memory_deck_store.get_deck, str(item.get("deck_id") or "")
+            )
+            or {}
+        )
         correct = bool(review.get("correct"))
         rating = payload.get("rating") or review.get("rating") or ""
         await self._emit_answer_evaluated_event(
@@ -62,15 +61,16 @@ class _CommunicationTutorEventsMixin:
             topic=str(deck.get("subject") or deck.get("name") or ""),
         )
 
-    async def _emit_recitation_answer_event(
-        self, payload: dict[str, Any]
-    ) -> None:
+    async def _emit_recitation_answer_event(self, payload: dict[str, Any]) -> None:
         diff_data = payload.get("diff") or {}
         review = payload.get("review") or {}
         item = review.get("item") or {}
-        deck = await asyncio.to_thread(
-            self._memory_deck_store.get_deck, str(item.get("deck_id") or "")
-        ) or {}
+        deck = (
+            await asyncio.to_thread(
+                self._memory_deck_store.get_deck, str(item.get("deck_id") or "")
+            )
+            or {}
+        )
         score = _event_ratio(diff_data.get("score"))
         if score >= 0.8:
             verdict = "correct"
@@ -91,9 +91,7 @@ class _CommunicationTutorEventsMixin:
             topic=str(deck.get("subject") or deck.get("name") or ""),
         )
 
-    async def _emit_session_summarized_event(
-        self, payload: dict[str, Any]
-    ) -> None:
+    async def _emit_session_summarized_event(self, payload: dict[str, Any]) -> None:
         bus = self._event_bus
         if bus is None:
             return

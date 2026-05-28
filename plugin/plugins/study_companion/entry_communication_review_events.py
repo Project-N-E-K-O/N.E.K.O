@@ -1,15 +1,14 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from .entry_common import *  # noqa: F401, F403
-
-
-
+from .entry_common import (
+    Any,
+    asyncio,
+    StudyEvent,
+    StudyEventBus,
+)
 
 
 class _CommunicationReviewEventsMixin:
-
-
-
     def _require_event_bus(self) -> StudyEventBus:
         if self._event_bus is None:
             raise RuntimeError(
@@ -54,9 +53,7 @@ class _CommunicationReviewEventsMixin:
 
     @staticmethod
     def _count_urgent_due(reviews: list[dict[str, Any]]) -> int:
-        return sum(
-            1 for item in reviews if float(item.get("overdue_days") or 0.0) > 0
-        )
+        return sum(1 for item in reviews if float(item.get("overdue_days") or 0.0) > 0)
 
     def _get_due_topics(
         self,

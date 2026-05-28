@@ -1,15 +1,17 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from .entry_common import *  # noqa: F401, F403
-
-
-
+from .entry_common import (
+    asyncio,
+    Err,
+    Ok,
+    SdkError,
+    _entry_exception_error,
+    plugin_entry,
+    tr,
+)
 
 
 class _MemoryImportEntriesMixin:
-
-
-
     @plugin_entry(
         id="study_memory_import_words",
         name=tr(
@@ -47,7 +49,7 @@ class _MemoryImportEntriesMixin:
             )
             return Ok(payload)
         except Exception as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="study_memory_import_words")
 
     @plugin_entry(
         id="study_memory_import_passage",
@@ -81,7 +83,7 @@ class _MemoryImportEntriesMixin:
             )
             return Ok(payload)
         except Exception as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="study_memory_import_passage")
 
     @plugin_entry(
         id="study_memory_generate_draft",
@@ -140,4 +142,4 @@ class _MemoryImportEntriesMixin:
                 )
             return Ok(candidate)
         except Exception as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="study_memory_generate_draft")

@@ -1,15 +1,17 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from .entry_common import *  # noqa: F401, F403
-
-
-
+from .entry_common import (
+    asyncio,
+    Err,
+    Ok,
+    SdkError,
+    _entry_exception_error,
+    plugin_entry,
+    tr,
+)
 
 
 class _MemoryReviewEntriesMixin:
-
-
-
     @plugin_entry(
         id="study_memory_due_reviews",
         name=tr("entries.memory_due_reviews.name", default="Study Memory Due Reviews"),
@@ -39,7 +41,7 @@ class _MemoryReviewEntriesMixin:
             )
             return Ok({"due_reviews": reviews})
         except Exception as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="study_memory_due_reviews")
 
     @plugin_entry(
         id="study_memory_review_item",
@@ -108,7 +110,7 @@ class _MemoryReviewEntriesMixin:
                 )
             return Ok(payload)
         except Exception as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="study_memory_review_item")
 
     @plugin_entry(
         id="study_memory_recitation_attempt",
@@ -174,4 +176,4 @@ class _MemoryReviewEntriesMixin:
                 )
             return Ok(payload)
         except Exception as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="study_memory_recitation_attempt")

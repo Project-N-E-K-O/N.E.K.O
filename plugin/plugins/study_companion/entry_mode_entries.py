@@ -1,15 +1,20 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from .entry_common import *  # noqa: F401, F403
-
-
-
+from .entry_common import (
+    Err,
+    Ok,
+    SdkError,
+    _entry_exception_error,
+    plugin_entry,
+    tr,
+    MODE_COMPANION,
+    MODE_INTERACTIVE,
+    MODE_TEACHING,
+    handle_user_intent,
+)
 
 
 class _ModeEntriesMixin:
-
-
-
     @plugin_entry(
         id="study_detect_mode_intent",
         name=tr("entries.detect_mode_intent.name", default="Detect Study Mode Intent"),
@@ -52,5 +57,5 @@ class _ModeEntriesMixin:
                 mode, reason, language=self._cfg.language
             )
         except ValueError as exc:
-            return Err(SdkError(str(exc)))
+            return _entry_exception_error(self, exc, operation="study_set_mode")
         return Ok(result)

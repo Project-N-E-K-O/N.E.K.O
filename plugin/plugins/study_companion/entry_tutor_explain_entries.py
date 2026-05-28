@@ -1,15 +1,21 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from .entry_common import *  # noqa: F401, F403
-
-
-
+from .entry_common import (
+    Any,
+    Err,
+    Ok,
+    SdkError,
+    _entry_exception_error,
+    plugin_entry,
+    tr,
+    LLM_OPERATION_CONCEPT_EXPLAIN,
+    MODE_COMPANION,
+    MODE_CONCEPT_EXPLAIN,
+    handle_user_intent,
+)
 
 
 class _TutorExplainEntriesMixin:
-
-
-
     @plugin_entry(
         id="study_explain_text",
         name=tr("entries.explain_text.name", default="Explain Study Text"),
@@ -53,7 +59,7 @@ class _TutorExplainEntriesMixin:
                 )
                 active_mode = str(mode_switch.get("new_mode") or active_mode)
             except ValueError as exc:
-                return Err(SdkError(str(exc)))
+                return _entry_exception_error(self, exc, operation="study_explain_text")
             if intent.get("pure_switch"):
                 transition_phrase = str(
                     mode_switch.get("transition_phrase")

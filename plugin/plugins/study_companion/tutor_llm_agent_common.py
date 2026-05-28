@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import hashlib
@@ -97,7 +97,9 @@ def _string_list(value: object, *, limit: int = 6) -> list[str]:
     return result
 
 
-def _clamp_float(value: object, minimum: float, maximum: float, default: float) -> float:
+def _clamp_float(
+    value: object, minimum: float, maximum: float, default: float
+) -> float:
     try:
         number = float(value)
     except (TypeError, ValueError, OverflowError):
@@ -131,7 +133,11 @@ def _bounded_prompt_text(value: object, *, max_chars: int) -> str:
 def diagnostic_code_for_exception(exc: BaseException) -> str:
     name = exc.__class__.__name__.lower()
     message = str(exc).lower()
-    if isinstance(exc, asyncio.TimeoutError) or "timeout" in name or "timeout" in message:
+    if (
+        isinstance(exc, asyncio.TimeoutError)
+        or "timeout" in name
+        or "timeout" in message
+    ):
         return "timeout"
     if isinstance(exc, SdkError) and (
         "missing configured" in message
@@ -144,4 +150,64 @@ def diagnostic_code_for_exception(exc: BaseException) -> str:
     return "llm_call_failed"
 
 
-__all__ = [name for name in globals() if not name.startswith("__") and name != "name"]
+__all__ = [
+    "Any",
+    "Awaitable",
+    "Callable",
+    "asyncio",
+    "hashlib",
+    "inspect",
+    "re",
+    "STUDY_EMPTY_INPUT_DEFAULT",
+    "STUDY_FALLBACK_EXPLANATION_DEFAULT",
+    "STUDY_FALLBACK_FEEDBACK",
+    "STUDY_FALLBACK_NEXT_ACTION",
+    "STUDY_FALLBACK_QUESTION_EMPTY",
+    "STUDY_FALLBACK_QUESTION_TEMPLATE",
+    "STUDY_FALLBACK_SUMMARY_DEFAULT",
+    "STUDY_FALLBACK_SUMMARY_EMPTY",
+    "STUDY_FALLBACK_SUMMARY_NEXT_ACTIONS",
+    "STUDY_FALLBACK_TRACK_NEXT_STEPS_DEFAULT",
+    "STUDY_FALLBACK_TRACK_NEXT_STEPS_WITH_WEAK_POINTS",
+    "STUDY_JSON_CORRECTION_USER_TEMPLATE",
+    "STUDY_MARKDOWN_SECTION_EMPTY_ITEM",
+    "SdkError",
+    "LLM_OPERATION_ANSWER_EVALUATE",
+    "LLM_OPERATION_CONCEPT_EXPLAIN",
+    "LLM_OPERATION_KNOWLEDGE_TRACK",
+    "LLM_OPERATION_QUESTION_GENERATE",
+    "LLM_OPERATION_SUMMARIZE_SESSION",
+    "MODE_COMPANION",
+    "MODE_TEACHING",
+    "build_concept_explain_messages",
+    "build_operation_messages",
+    "build_transition_phrase",
+    "normalize_mode",
+    "study_i18n_t",
+    "MODE_CONCEPT_EXPLAIN",
+    "StudyConfig",
+    "TutorReply",
+    "utc_now_iso",
+    "robust_json_loads",
+    "_config_manager_module",
+    "_CONFIG_MANAGER_IMPORT_ERROR",
+    "_llm_client_module",
+    "_LLM_CLIENT_IMPORT_ERROR",
+    "_token_tracker_module",
+    "_TOKEN_TRACKER_IMPORT_ERROR",
+    "_CODE_FENCE_RE",
+    "_JSON_CORRECTION_MAX_ATTEMPTS",
+    "_JSON_CORRECTION_BAD_OUTPUT_MAX_CHARS",
+    "_JSON_CORRECTION_ERROR_MAX_CHARS",
+    "_LLM_CALL_TIMEOUT_GRACE_SECONDS",
+    "_ANSWER_VERDICTS",
+    "_as_str",
+    "_as_dict",
+    "_as_list",
+    "_string_list",
+    "_clamp_float",
+    "_clamp_int",
+    "_strip_code_fences",
+    "_bounded_prompt_text",
+    "diagnostic_code_for_exception",
+]

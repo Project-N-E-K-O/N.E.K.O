@@ -1,7 +1,18 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from .tutor_llm_agent_common import *  # noqa: F401, F403
-
+from .tutor_llm_agent_common import (
+    Any,
+    STUDY_FALLBACK_TRACK_NEXT_STEPS_DEFAULT,
+    STUDY_FALLBACK_TRACK_NEXT_STEPS_WITH_WEAK_POINTS,
+    LLM_OPERATION_KNOWLEDGE_TRACK,
+    MODE_COMPANION,
+    normalize_mode,
+    TutorReply,
+    _as_str,
+    _as_dict,
+    _string_list,
+    _clamp_float,
+)
 
 
 async def knowledge_track(
@@ -15,9 +26,14 @@ async def knowledge_track(
         "language": self._config.language,
         "mode": normalize_mode(mode),
     }
-    return await self._invoke_structured_operation(LLM_OPERATION_KNOWLEDGE_TRACK, operation_context)
+    return await self._invoke_structured_operation(
+        LLM_OPERATION_KNOWLEDGE_TRACK, operation_context
+    )
 
-def _normalize_track(self, raw: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+
+def _normalize_track(
+    self, raw: dict[str, Any], context: dict[str, Any]
+) -> dict[str, Any]:
     seed = _as_dict(raw.get("session_summary_seed"))
     if not seed:
         seed = _as_dict(context.get("session_summary_seed"))
@@ -31,10 +47,17 @@ def _normalize_track(self, raw: dict[str, Any], context: dict[str, Any]) -> dict
         "screen_type": self._screen_type_from_context(context),
     }
 
+
 def _fallback_track(self, context: dict[str, Any]) -> dict[str, Any]:
-    evaluation = _as_dict(context.get("evaluation") or context.get("last_answer_evaluation"))
+    evaluation = _as_dict(
+        context.get("evaluation") or context.get("last_answer_evaluation")
+    )
     verdict = _as_str(evaluation.get("verdict")).strip()
-    delta = 0.08 if verdict == "correct" else (-0.08 if verdict in {"wrong", "dont_know"} else 0.02)
+    delta = (
+        0.08
+        if verdict == "correct"
+        else (-0.08 if verdict in {"wrong", "dont_know"} else 0.02)
+    )
     weak_points = []
     error_type = _as_str(evaluation.get("error_type")).strip()
     if error_type and error_type != "none":
