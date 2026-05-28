@@ -173,6 +173,24 @@
         }
     }
 
+    function applySpotlightPlainCircleMode(frame) {
+        if (!frame) {
+            return;
+        }
+
+        removeSpotlightImageDecorations(frame);
+        const chrome = frame.querySelector('.yui-guide-spotlight-chrome');
+        const circleSkin = frame.querySelector('.yui-guide-spotlight-circle-skin');
+
+        if (chrome && chrome.style) {
+            chrome.style.display = '';
+        }
+
+        if (circleSkin && circleSkin.style) {
+            circleSkin.style.display = 'none';
+        }
+    }
+
     class YuiGuideOverlay {
         constructor(doc) {
             this.document = doc || document;
@@ -753,12 +771,14 @@
             const allowMask = normalizedOptions.allowMask !== false;
             const variant = normalizedOptions.variant || '';
             const forceCircleImage = variant === 'circle-image';
+            const forcePlainCircle = variant === 'plain-circle';
 
             if (!spotlightRect) {
                 frame.hidden = true;
                 frame.classList.remove('is-visible');
                 frame.classList.remove('is-circular-mask');
                 frame.classList.remove('is-circle-image');
+                frame.classList.remove('is-plain-circle');
                 frame.classList.remove('is-thin-variant');
                 removeSpotlightImageDecorations(frame);
                 return;
@@ -766,10 +786,13 @@
 
             frame.hidden = false;
             frame.classList.add('is-visible');
-            frame.classList.toggle('is-circular-mask', !!spotlightRect.isCircular && allowMask);
+            frame.classList.toggle('is-circular-mask', !!spotlightRect.isCircular && allowMask && !forcePlainCircle);
             frame.classList.toggle('is-circle-image', forceCircleImage);
+            frame.classList.toggle('is-plain-circle', forcePlainCircle);
             frame.classList.toggle('is-thin-variant', variant === 'thin');
-            if (forceCircleImage) {
+            if (forcePlainCircle) {
+                applySpotlightPlainCircleMode(frame);
+            } else if (forceCircleImage) {
                 applySpotlightFrameDecorationMode(frame, true);
             } else {
                 applySpotlightFrameDecorationMode(frame, !!spotlightRect.isCircular);

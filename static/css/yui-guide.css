@@ -354,25 +354,47 @@ body.yui-guide-return-petal-fade #mmd-canvas {
 }
 
 .yui-guide-spotlight-frame.is-circular-mask,
-.yui-guide-spotlight-frame.is-circle-image {
+.yui-guide-spotlight-frame.is-circle-image,
+.yui-guide-spotlight-frame.is-plain-circle {
   box-shadow: none !important;
 }
 
 .yui-guide-spotlight-frame.is-circular-mask.is-visible,
-.yui-guide-spotlight-frame.is-circle-image.is-visible {
+.yui-guide-spotlight-frame.is-circle-image.is-visible,
+.yui-guide-spotlight-frame.is-plain-circle.is-visible {
   animation: none !important;
   animation-name: none !important;
 }
 
 .yui-guide-spotlight-frame.is-circular-mask .yui-guide-spotlight-chrome,
 .yui-guide-spotlight-frame.is-circle-image .yui-guide-spotlight-chrome,
-.yui-guide-spotlight-frame.is-circle-image .yui-guide-spotlight-sweep {
+.yui-guide-spotlight-frame.is-circle-image .yui-guide-spotlight-sweep,
+.yui-guide-spotlight-frame.is-plain-circle .yui-guide-spotlight-sweep,
+.yui-guide-spotlight-frame.is-plain-circle .yui-guide-spotlight-ear-left,
+.yui-guide-spotlight-frame.is-plain-circle .yui-guide-spotlight-ear-right,
+.yui-guide-spotlight-frame.is-plain-circle .yui-guide-spotlight-paw,
+.yui-guide-spotlight-frame.is-plain-circle .yui-guide-spotlight-circle-skin {
   display: none;
 }
 
 .yui-guide-spotlight-frame.is-circular-mask .yui-guide-spotlight-circle-skin,
 .yui-guide-spotlight-frame.is-circle-image .yui-guide-spotlight-circle-skin {
   display: block;
+}
+
+.yui-guide-spotlight-frame.is-plain-circle .yui-guide-spotlight-chrome {
+  display: block;
+  inset: 0;
+  border-radius: inherit;
+  background: rgba(255, 255, 255, 0.02);
+  box-shadow:
+    0 0 0 2px rgba(39, 89, 228, 0.96),
+    0 0 0 6px rgba(39, 89, 228, 0.14),
+    0 0 26px rgba(39, 89, 228, 0.34);
+}
+
+.yui-guide-spotlight-frame.is-plain-circle .yui-guide-spotlight-chrome::before {
+  display: none;
 }
 
 .yui-guide-bubble {

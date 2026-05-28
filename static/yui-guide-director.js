@@ -2447,6 +2447,7 @@
             this.takeoverTopPeekHandle = null;
             this.returnPetalTransitionActive = false;
             this.returnPetalTransitionOpacityRestores = null;
+            this.avatarFloatingGuideSuppressionActive = false;
             this.keydownHandler = this.onKeyDown.bind(this);
             this.pointerMoveHandler = this.onPointerMove.bind(this);
             this.pointerDownHandler = this.onPointerDown.bind(this);
@@ -2592,11 +2593,37 @@
         }
 
         setTutorialTakingOver(active) {
+            const isActive = active === true;
+            const featureController = window.NekoHomeTutorialFeatureController;
+            if (
+                featureController
+                && typeof featureController.begin === 'function'
+                && typeof featureController.end === 'function'
+            ) {
+                if (isActive && !this.avatarFloatingGuideSuppressionActive) {
+                    featureController.begin('avatar-floating-guide');
+                    this.avatarFloatingGuideSuppressionActive = true;
+                } else if (!isActive && this.avatarFloatingGuideSuppressionActive) {
+                    featureController.end('avatar-floating-guide');
+                    this.avatarFloatingGuideSuppressionActive = false;
+                }
+            }
+            try {
+                window.dispatchEvent(new CustomEvent('neko:home-tutorial-features-suppressed', {
+                    detail: {
+                        active: isActive,
+                        source: 'yui-guide-director',
+                        sceneId: this.currentSceneId || ''
+                    }
+                }));
+            } catch (error) {
+                console.warn('[YuiGuide] 同步教程期功能暂停状态失败:', error);
+            }
             if (this.interactionTakeover && typeof this.interactionTakeover.setActive === 'function') {
-                this.interactionTakeover.setActive(active === true);
+                this.interactionTakeover.setActive(isActive);
                 return;
             }
-            this.overlay.setTakingOver(active === true);
+            this.overlay.setTakingOver(isActive);
         }
 
         isIntroActivationTarget(target) {
@@ -3536,15 +3563,24 @@
                 return;
             }
 
-            this.applyGuideHighlights({
-                key: 'day2-intro-speak-now',
-                persistent: this.getAvatarFloatingBaseTarget('chat-window'),
-                primary: micTarget
-            });
-            const moved = await this.moveCursorToElement(micTarget, 620);
-            if (moved && !this.isStopping()) {
-                this.cursor.wobble();
-                await this.waitForSceneDelay(220);
+            try {
+                this.applyGuideHighlights({
+                    key: 'day2-intro-speak-now',
+                    persistent: this.getAvatarFloatingBaseTarget('chat-window'),
+                    primary: micTarget
+                });
+                const moved = await this.moveCursorToElement(micTarget, 620);
+                if (moved && !this.isStopping()) {
+                    this.cursor.wobble();
+                    await this.waitForSceneDelay(220);
+                }
+            } finally {
+                this.overlay.clearActionSpotlight();
+                this.overlay.clearPersistentSpotlight();
+                this.clearSceneExtraSpotlights();
+                this.clearRetainedExtraSpotlights();
+                this.clearSpotlightGeometryHints();
+                this.clearSpotlightVariantHints();
             }
         }
 
@@ -5447,6 +5483,21 @@
             return items;
         }
 
+        applyPlainCircularSpotlightHints(targets, padding) {
+            const items = Array.isArray(targets) ? targets.filter(Boolean) : [];
+            items.forEach((target) => {
+                this.setSpotlightGeometryHint(target, {
+                    padding: Number.isFinite(padding) ? padding : 6,
+                    geometry: 'circle'
+                });
+            });
+            this.setSpotlightVariantHints(items.map((element) => ({
+                element,
+                variant: 'plain-circle'
+            })));
+            return items;
+        }
+
         applyChatAvatarToolButtonSpotlightHint(element) {
             if (!element) {
                 return false;
@@ -5530,7 +5581,10 @@
             }
             if (typeof this.interactionTakeover.setExternalizedChatCursor === 'function') {
                 this.interactionTakeover.setExternalizedChatCursor(normalizedKind, {
-                    effect: options && typeof options.effect === 'string' ? options.effect : 'wobble'
+                    effect: options && typeof options.effect === 'string' ? options.effect : 'wobble',
+                    targetIndex: options && Number.isFinite(options.targetIndex)
+                        ? Math.max(0, Math.floor(options.targetIndex))
+                        : 0
                 });
             }
             this.cursor.hide();
@@ -5644,6 +5698,114 @@
             return this.resolveElement(selector);
         }
 
+        getMiniGameChoiceTargets(limit) {
+            const maxTargets = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 3;
+            if (maxTargets <= 0) {
+                return [];
+            }
+            const choiceSlot = this.resolveElement(
+                '#react-chat-window-root .composer-choice-slot[data-choice-source="mini_game_invite"]'
+            );
+            if (!choiceSlot || !this.isElementVisible(choiceSlot)) {
+                return [];
+            }
+            return Array.from(choiceSlot.querySelectorAll('.composer-choice-option, .composer-galgame-option'))
+                .filter((element, index, array) => element && array.indexOf(element) === index)
+                .filter((element) => this.isElementVisible(element))
+                .slice(0, maxTargets);
+        }
+
+        async tourPlainCircularTargets(targets, options) {
+            const normalizedOptions = options || {};
+            const items = this.applyPlainCircularSpotlightHints(targets, normalizedOptions.padding);
+            if (items.length === 0) {
+                return false;
+            }
+            this.setSceneExtraSpotlights(items);
+            for (let index = 0; index < items.length; index += 1) {
+                if (this.isStopping()) {
+                    return false;
+                }
+                const moved = await this.moveCursorToElement(
+                    items[index],
+                    index === 0 ? (normalizedOptions.firstMoveMs || 560) : (normalizedOptions.moveMs || 420)
+                );
+                if (moved && !this.isStopping()) {
+                    this.cursor.wobble();
+                    await this.waitForSceneDelay(normalizedOptions.pauseMs || 180);
+                }
+            }
+            return true;
+        }
+
+        async tourExternalizedChatTargets(kind, count, options) {
+            const normalizedKind = typeof kind === 'string' ? kind : '';
+            if (
+                !this.isHomeChatExternalized()
+                || !normalizedKind
+                || !this.interactionTakeover
+                || typeof this.interactionTakeover.setExternalizedChatSpotlight !== 'function'
+                || typeof this.interactionTakeover.setExternalizedChatCursor !== 'function'
+            ) {
+                return false;
+            }
+            const normalizedOptions = options || {};
+            const total = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 3;
+            this.interactionTakeover.setExternalizedChatSpotlight(normalizedKind);
+            this.cursor.hide();
+            this.cursor.clearPosition();
+            for (let index = 0; index < total; index += 1) {
+                if (this.isStopping()) {
+                    return false;
+                }
+                this.interactionTakeover.setExternalizedChatCursor(normalizedKind, {
+                    effect: typeof normalizedOptions.effect === 'string' ? normalizedOptions.effect : 'move',
+                    targetIndex: index
+                });
+                await this.waitForSceneDelay(index === 0
+                    ? (normalizedOptions.firstPauseMs || 560)
+                    : (normalizedOptions.pauseMs || 420));
+            }
+            return true;
+        }
+
+        async tourAvatarToolMenuItems() {
+            if (this.isHomeChatExternalized()) {
+                return this.tourExternalizedChatTargets('avatar-tool-items', 3, {
+                    effect: 'move',
+                    firstPauseMs: 560,
+                    pauseMs: 420
+                });
+            }
+            return this.tourPlainCircularTargets(this.getChatAvatarToolMenuTargets(3), {
+                padding: 6,
+                firstMoveMs: 560,
+                moveMs: 420,
+                pauseMs: 180
+            });
+        }
+
+        async tourMiniGameChoiceButtons() {
+            if (this.isHomeChatExternalized()) {
+                return this.tourExternalizedChatTargets('mini-game-choices', 3, {
+                    effect: 'move',
+                    firstPauseMs: 560,
+                    pauseMs: 420
+                });
+            }
+            const targets = this.getMiniGameChoiceTargets(3);
+            if (targets.length > 0) {
+                this.overlay.clearActionSpotlight();
+                this.overlay.clearPersistentSpotlight();
+            }
+            return this.tourPlainCircularTargets(targets, {
+                padding: 6,
+                firstMoveMs: 560,
+                moveMs: 420,
+                pauseMs: 180
+            });
+        }
+
         async resolveAvatarFloatingTarget(scene, role) {
             const targetKey = role === 'secondary' ? scene.secondary : scene.target;
             if (!targetKey) {
@@ -5686,6 +5848,9 @@
 
         async resolveAvatarFloatingPersistent(scene, options) {
             const normalizedOptions = options || {};
+            if (scene && scene.id === 'day6_agent_status_master') {
+                return null;
+            }
             const persistent = typeof scene.persistent === 'string' ? scene.persistent : '';
             if (persistent) {
                 const target = this.resolveAvatarFloatingSelector(persistent);
@@ -5838,6 +6003,9 @@
                 || operation.indexOf('show-settings-sidepanel:') === 0
                 || operation.indexOf('show-settings-menu:') === 0
             ) {
+                if (!operation && scene && scene.id === 'day3_galgame_games') {
+                    await this.tourMiniGameChoiceButtons();
+                }
                 return true;
             }
             if (operation === 'cleanup') {
@@ -5852,10 +6020,8 @@
                     this.setExternalizedChatCursorEffect('avatar-tools', 'click');
                     await this.waitForSceneDelay(260);
                     this.setChatAvatarToolMenuOpen(true, 'avatar-floating-guide-open-avatar-tool-menu');
-                    await this.waitForSceneDelay(840);
-                    this.setExternalizedChatGuideTarget('avatar-tools', {
-                        effect: 'wobble'
-                    });
+                    await this.waitForSceneDelay(520);
+                    await this.tourAvatarToolMenuItems();
                     return true;
                 }
                 if (primaryTarget) {
@@ -5868,8 +6034,9 @@
                     const popover = this.resolveElement('#composer-tool-popover');
                     return popover && this.isElementVisible(popover) ? popover : null;
                 }, 1200);
-                this.clearSceneExtraSpotlights();
-                await this.waitForSceneDelay(360);
+                this.overlay.clearActionSpotlight();
+                this.overlay.clearPersistentSpotlight();
+                await this.tourAvatarToolMenuItems();
                 return true;
             }
             if (operation === 'settings-peek-panic') {
@@ -5990,10 +6157,13 @@
             this.clearSceneExtraSpotlights();
             this.clearRetainedExtraSpotlights();
             this.clearAllVirtualSpotlights();
+            this.clearSpotlightGeometryHints();
+            this.clearSpotlightVariantHints();
             this.disableInterrupts();
             const remainingMs = Math.max(0, durationMs - cueMs);
+            const minimumPetalDurationMs = this.shouldReduceTutorialMotion() ? 900 : 2600;
             await this.playReturnPetalTransition({
-                durationMs: remainingMs
+                durationMs: Math.max(remainingMs, minimumPetalDurationMs)
             });
         }
 
@@ -6051,6 +6221,7 @@
             this.clearSceneExtraSpotlights();
             this.clearRetainedExtraSpotlights();
             this.clearSpotlightGeometryHints();
+            this.clearSpotlightVariantHints();
             this.overlay.clearActionSpotlight();
             await this.closeManagedPanels().catch(() => {});
             ['agent-user-plugin', 'agent-openclaw'].forEach((toggleId) => this.collapseAgentSidePanel(toggleId));
@@ -6084,6 +6255,7 @@
             this.clearSceneExtraSpotlights();
             this.clearAllVirtualSpotlights();
             this.clearSpotlightGeometryHints();
+            this.clearSpotlightVariantHints();
             if (this.isHomeChatExternalized() && !preserveExternalizedChatGuideTarget) {
                 this.clearExternalizedChatGuideTarget();
             }
@@ -6183,12 +6355,13 @@
             this.enableInterrupts(this.currentStep);
 
             const narrationStartedAt = Date.now();
-            const narrationPromise = this.speakGuideLine(text, {
+            const shouldPlayNarration = !!(text || voiceKey);
+            const narrationPromise = shouldPlayNarration ? this.speakGuideLine(text, {
                 voiceKey: voiceKey,
                 minDurationMs: 1800
             }).catch((error) => {
                 console.warn('[YuiGuide] 悬浮窗教程旁白失败，继续流程:', scene.id, error);
-            });
+            }) : Promise.resolve();
             const petalTransitionPromise = scene.petalTransition === true
                 ? this.playAvatarFloatingPetalTransitionAtCue(
                     scene,
@@ -6352,6 +6525,8 @@
                 await this.closeAvatarFloatingGuidePanels();
                 this.clearAllVirtualSpotlights();
                 this.clearAllExtraSpotlights();
+                this.clearSpotlightGeometryHints();
+                this.clearSpotlightVariantHints();
                 this.overlay.clearPersistentSpotlight();
                 this.overlay.clearActionSpotlight();
                 this.cursor.hide();
