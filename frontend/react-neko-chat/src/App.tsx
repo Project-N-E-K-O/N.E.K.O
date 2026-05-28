@@ -2284,6 +2284,7 @@ export default function App({
   const updateCompactInputToolFanPosition = useCallback(() => {}, []);
 
   const scheduleCompactInputToolFanTransientClose = useCallback(() => {
+    if (compactInputToolFanOpenIntentRef.current !== 'hover') return;
     clearCompactInputToolFanCloseTimer();
     compactInputToolFanCloseTimerRef.current = window.setTimeout(() => {
       compactInputToolFanCloseTimerRef.current = null;
@@ -2616,7 +2617,7 @@ export default function App({
 
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target;
-      if (compactInputShellRef.current && target instanceof Node && compactInputShellRef.current.contains(target)) {
+      if (compactInputToolToggleRef.current && target instanceof Node && compactInputToolToggleRef.current.contains(target)) {
         return;
       }
       if (compactInputToolFanRef.current && target instanceof Node && compactInputToolFanRef.current.contains(target)) {
@@ -3872,6 +3873,8 @@ export default function App({
               closeCompactInputToolFan();
               return;
             }
+            compactInputToolFanOpenIntentRef.current = 'click';
+            clearCompactInputToolFanCloseTimer();
             setToolMenuOpen(open => !open);
           }}
         >

@@ -1017,17 +1017,20 @@
                 interactive: false
             });
         }
-        return items.concat(Array.prototype.slice.call(element.querySelectorAll('.compact-input-tool-item'))
+        return items.concat(Array.prototype.slice.call(element.querySelectorAll('.compact-input-tool-item, .composer-icon-popover .composer-icon-button'))
             .map(function (child, index) {
                 var style = window.getComputedStyle ? window.getComputedStyle(child) : null;
                 if (style && (style.display === 'none' || style.visibility === 'hidden')) return null;
                 if (style && Number(style.opacity) <= 0.01) return null;
                 var slot = child.getAttribute('data-compact-tool-wheel-slot') || '';
-                if (!slot || slot === 'hidden') return null;
+                var isAvatarToolChoice = child.classList && child.classList.contains('composer-icon-button');
+                if (!isAvatarToolChoice && (!slot || slot === 'hidden')) return null;
                 var rect = normalizeCompactDomRect(child.getBoundingClientRect());
                 if (!rect) return null;
                 return {
-                    id: 'toolFan:' + slot + ':' + index,
+                    id: isAvatarToolChoice
+                        ? 'toolFan:avatarToolChoice:' + index
+                        : 'toolFan:' + slot + ':' + index,
                     owner: 'surface',
                     kind: 'toolFan',
                     visualRect: rect,
@@ -2160,6 +2163,31 @@
         }
         console.warn('[ReactChatWindow] no compact history drop handler available');
         return false;
+    }
+
+    function prepareCompactHistoryDropSubmit(payload) {
+        var detail = payload || {};
+        var text = typeof detail.text === 'string' ? detail.text.trim() : '';
+        var images = Array.isArray(detail.images) ? detail.images : [];
+        if (!text && images.length === 0) return false;
+
+        if (invalidatePendingGalgameRequest()) {
+            renderWindow();
+        }
+
+        var requestId = typeof detail.requestId === 'string' ? detail.requestId : '';
+        if (requestId) {
+            if (text) {
+                state.pendingRollbackDrafts[requestId] = text;
+            } else {
+                delete state.pendingRollbackDrafts[requestId];
+            }
+        }
+        if (state.rollbackDraft) {
+            console.log('[ROLLBACK] prepareCompactHistoryDropSubmit: clearing rollbackDraft length=' + state.rollbackDraft.length + ' key=' + state._rollbackKey);
+        }
+        state.rollbackDraft = '';
+        return true;
     }
 
     function handleCompactHistoryDragStateChange(payload) {
@@ -4530,6 +4558,7 @@
         setOnCompactHistoryDrop: function (handler) {
             state.onCompactHistoryDrop = typeof handler === 'function' ? handler : null;
         },
+        prepareCompactHistoryDropSubmit: prepareCompactHistoryDropSubmit,
         setOnCompactHistoryDragStateChange: function (handler) {
             state.onCompactHistoryDragStateChange = typeof handler === 'function' ? handler : null;
         },

@@ -3162,6 +3162,44 @@ describe('App', () => {
     }
   });
 
+  it('keeps compact avatar tool choices open after the pointer leaves the tool toggle', async () => {
+    vi.useFakeTimers();
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+
+      const actionButton = container.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+      expect(actionButton).not.toBeNull();
+      fireEvent.click(actionButton);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(240);
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+
+      const fan = container.querySelector('.compact-input-tool-fan');
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+      expect(container.querySelector('#composer-tool-popover-compact')).not.toBeNull();
+
+      fireEvent.pointerLeave(actionButton, { clientX: 96, clientY: 96, pointerType: 'mouse' });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(180);
+      });
+
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+      expect(container.querySelector('#composer-tool-popover-compact')).not.toBeNull();
+
+      fireEvent.pointerDown(screen.getByPlaceholderText('Type a message...'), {
+        pointerId: 13,
+        button: 0,
+        buttons: 1,
+        pointerType: 'mouse',
+      });
+
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('opens compact input tools on hover-capable pointer enter', () => {
     const originalMatchMedia = window.matchMedia;
     mockHoverCapableMatchMedia();
@@ -3667,6 +3705,23 @@ describe('App', () => {
     expect(onCompactChatStateChange).not.toHaveBeenCalledWith('default');
   });
 
+  it('reopens compact input tools after closing them from the tool toggle pointer press', () => {
+    render(<App chatSurfaceMode="compact" compactChatState="input" />);
+
+    const actionButton = document.body.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    expect(actionButton).not.toBeNull();
+
+    fireEvent.pointerDown(actionButton, { pointerId: 21, button: 0, buttons: 1, pointerType: 'mouse' });
+    expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+
+    fireEvent.pointerDown(actionButton, { pointerId: 22, button: 0, buttons: 1, pointerType: 'mouse' });
+    expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+
+    fireEvent.pointerDown(actionButton, { pointerId: 23, button: 0, buttons: 1, pointerType: 'mouse' });
+    expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+  });
+
   it('uses hover for enter and leave while click only toggles compact input tools', async () => {
     vi.useFakeTimers();
     const originalMatchMedia = window.matchMedia;
@@ -3722,6 +3777,14 @@ describe('App', () => {
       fireEvent.pointerLeave(actionButton, { clientX: 96, clientY: 96, pointerType: 'mouse' });
       await act(async () => {
         await vi.advanceTimersByTimeAsync(180);
+      });
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+
+      fireEvent.pointerDown(document.body, {
+        pointerId: 13,
+        button: 0,
+        buttons: 1,
+        pointerType: 'mouse',
       });
       expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
 

@@ -23,6 +23,8 @@
     // 720p 下若仍超 1MB 再逐步降质兜底。
     const SCREENSHOT_JPEG_QUALITIES = [0.8, 0.72, 0.64, 0.56, 0.48];
 
+    let compactHistoryDropPayloadQueue = Promise.resolve();
+
     function isHomeTutorialInteractionLocked() {
         try {
             return typeof window.isNekoHomeTutorialInteractionLocked === 'function'
@@ -627,7 +629,7 @@
     };
     window.addHistoryImageAttachmentToPendingList = mod.addHistoryImageAttachmentToPendingList;
 
-    mod.sendCompactHistoryDropPayload = async function sendCompactHistoryDropPayload(payload) {
+    async function sendCompactHistoryDropPayloadNow(payload) {
         payload = payload || {};
         var text = typeof payload.text === 'string' ? payload.text.trim() : '';
         var images = Array.isArray(payload.images) ? payload.images.filter(function (image) {
@@ -663,6 +665,13 @@
 
         var screenshotsList = S.dom.screenshotsList;
         if (!screenshotsList) return false;
+        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.prepareCompactHistoryDropSubmit === 'function') {
+            window.reactChatWindowHost.prepareCompactHistoryDropSubmit({
+                text: text,
+                images: images,
+                requestId: typeof payload.requestId === 'string' ? payload.requestId : undefined
+            });
+        }
         var existingItems = Array.from(screenshotsList.children);
         var detachedExistingItems = [];
         existingItems.forEach(function (item) {
@@ -713,6 +722,14 @@
             );
             return false;
         }
+    }
+
+    mod.sendCompactHistoryDropPayload = function sendCompactHistoryDropPayload(payload) {
+        var run = compactHistoryDropPayloadQueue.then(function () {
+            return sendCompactHistoryDropPayloadNow(payload);
+        });
+        compactHistoryDropPayloadQueue = run.catch(function () {});
+        return run;
     };
     window.sendCompactHistoryDropPayload = mod.sendCompactHistoryDropPayload;
 

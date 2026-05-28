@@ -4,6 +4,7 @@ from pathlib import Path
 APP_REACT_CHAT_WINDOW_PATH = Path(__file__).resolve().parents[2] / "static" / "app-react-chat-window.js"
 APP_BUTTONS_PATH = Path(__file__).resolve().parents[2] / "static" / "app-buttons.js"
 APP_CHAT_EXPORT_PATH = Path(__file__).resolve().parents[2] / "static" / "app-chat-export.js"
+STATIC_INDEX_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "index.css"
 REACT_CHAT_STYLES_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "styles.css"
 REACT_CHAT_APP_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "App.tsx"
 CHAT_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "chat.html"
@@ -283,25 +284,26 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     assert "transform: none;" in styles
     assert '.compact-input-tool-item[data-compact-tool-wheel-slot="hidden"]' in styles
     assert "pointer-events: none;" in styles
+    assert ".composer-icon-popover .composer-icon-button" in collector_block
+    assert "toolFan:avatarToolChoice:" in collector_block
     assert "slot === 'hidden'" in collector_block
     assert "style.pointerEvents !== 'none'" not in collector_block
 
 
 def test_compact_choice_hit_contract_uses_real_options_only():
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+    host_styles = STATIC_INDEX_CSS_PATH.read_text(encoding="utf-8")
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
-    choice_block = css_block(
-        styles,
-        'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {',
-        'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"]::-webkit-scrollbar',
-    )
-    slot_block = css_block(
-        styles,
+    choice_selector = 'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {'
+    slot_selector = (
         'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-slot,\n'
-        'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-options {',
-        'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option',
+        'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-options {'
     )
+    choice_block = css_block(styles, choice_selector, 'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"]::-webkit-scrollbar')
+    host_choice_block = css_block(host_styles, choice_selector, 'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"]::-webkit-scrollbar')
+    slot_block = css_block(styles, slot_selector, 'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option')
+    host_slot_block = css_block(host_styles, slot_selector, 'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option')
     option_block = css_block(
         styles,
         'body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option {',
@@ -312,8 +314,10 @@ def test_compact_choice_hit_contract_uses_real_options_only():
         1,
     )[0]
 
-    assert "pointer-events: none;" in choice_block
-    assert "pointer-events: none;" in slot_block
+    assert "pointer-events: none;" not in choice_block
+    assert "pointer-events: none;" not in host_choice_block
+    assert "pointer-events: auto;" in slot_block
+    assert "pointer-events: auto;" in host_slot_block
     assert "pointer-events: auto;" in option_block
     assert "if (item === 'choice')" in geometry_block
     assert "querySelectorAll('.composer-galgame-option')" in geometry_block
@@ -484,7 +488,7 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
     assert "pointer-events: none;" in anchor_block
     assert "pointer-events: none;" in panel_block
     assert "overflow-y: auto;" in scroll_block
-    assert "pointer-events: none;" not in scroll_block
+    assert "pointer-events: none;" in scroll_block
     assert "pointer-events: none;" in content_block
     assert "pointer-events: none;" in message_block
     assert "pointer-events: auto;" in bubble_block
@@ -496,6 +500,46 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
     assert 'data-compact-hit-region-id={`history:message:${message.id}`}' in panel_source
     assert 'data-compact-hit-region-id="history:controls"' in panel_source
     assert 'data-compact-hit-region-id="history:preview"' in panel_source
+
+
+def test_subtitle_web_host_keeps_compact_history_transparent_wrappers_click_through():
+    styles = STATIC_INDEX_CSS_PATH.read_text(encoding="utf-8")
+
+    broad_surface_selector = (
+        'body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):'
+        'not(.is-collapsing):not(.is-expanding) [data-compact-geometry-owner="surface"] *'
+    )
+    history_anchor_selector = (
+        'body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):'
+        'not(.is-collapsing):not(.is-expanding) .compact-export-history-anchor'
+    )
+    history_bubble_selector = (
+        'body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):'
+        'not(.is-collapsing):not(.is-expanding) .compact-export-history-bubble'
+    )
+
+    assert broad_surface_selector in styles
+    assert history_anchor_selector in styles
+    assert history_bubble_selector in styles
+    assert styles.index(broad_surface_selector) < styles.index(history_anchor_selector)
+
+    passthrough_block = styles.split(history_anchor_selector, 1)[1].split(history_bubble_selector, 1)[0]
+    interactive_block = styles.split(history_bubble_selector, 1)[1].split(
+        'body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #reactChatWindowMinimizeButton',
+        1,
+    )[0]
+
+    for selector in (
+        ".compact-export-history-panel",
+        ".compact-export-history-scroll",
+        ".compact-export-history-scroll-content",
+        ".compact-export-history-message",
+    ):
+        assert selector in passthrough_block
+    assert "pointer-events: none;" in passthrough_block
+    assert ".compact-export-history-controls" in interactive_block
+    assert ".compact-export-preview-region" in interactive_block
+    assert "pointer-events: auto;" in interactive_block
 
 
 def test_compact_inline_export_uses_windowless_app_chat_export_api():
@@ -546,12 +590,14 @@ def test_compact_inline_export_uses_windowless_app_chat_export_api():
 
 def test_compact_history_drop_payload_suppresses_real_send_in_voice_mode_only_at_host_send_boundary():
     script = APP_BUTTONS_PATH.read_text(encoding="utf-8")
+    host_script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
     assert "function shouldSuppressCompactHistoryDropSendForVoiceMode()" in script
     assert "window.shouldKeepVoiceComposerHidden()" in script
     assert "S.isRecording || S.voiceChatActive || S.voiceStartPending" in script
+    assert "prepareCompactHistoryDropSubmit: prepareCompactHistoryDropSubmit" in host_script
 
-    drop_block = script.split("mod.sendCompactHistoryDropPayload = async function sendCompactHistoryDropPayload(payload)", 1)[1].split(
+    drop_block = script.split("async function sendCompactHistoryDropPayloadNow(payload)", 1)[1].split(
         "window.sendCompactHistoryDropPayload = mod.sendCompactHistoryDropPayload",
         1,
     )[0]
@@ -559,3 +605,6 @@ def test_compact_history_drop_payload_suppresses_real_send_in_voice_mode_only_at
     assert guard in drop_block
     assert drop_block.index(guard) < drop_block.index("var normalizedImages = [];")
     assert drop_block.index(guard) < drop_block.index("mod.sendTextPayload(text,")
+    assert "compactHistoryDropPayloadQueue = Promise.resolve();" in script
+    assert "sendCompactHistoryDropPayloadNow(payload)" in script
+    assert "prepareCompactHistoryDropSubmit" in drop_block

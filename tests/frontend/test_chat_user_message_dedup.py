@@ -604,6 +604,100 @@ def test_compact_history_drop_sends_only_dropped_image_and_restores_pending_atta
 
 
 @pytest.mark.frontend
+def test_compact_history_drop_serializes_overlapping_image_sends(
+    mock_page: Page,
+    running_server: str,
+):
+    _open_react_chat_page(mock_page, running_server)
+    _install_chat_send_harness(mock_page, resolve_delay_ms=0)
+
+    result = mock_page.evaluate(
+        """async () => {
+            const makeDataUrl = (color) => {
+                const canvas = document.createElement('canvas');
+                canvas.width = 2;
+                canvas.height = 2;
+                const context = canvas.getContext('2d');
+                context.fillStyle = color;
+                context.fillRect(0, 0, 2, 2);
+                return canvas.toDataURL('image/png');
+            };
+            const waitUntil = async (predicate) => {
+                for (let i = 0; i < 100; i += 1) {
+                    if (predicate()) return;
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                }
+                throw new Error('timed out waiting for compact history drop queue');
+            };
+
+            window.appButtons.addScreenshotToList(makeDataUrl('#336699'), null, {
+                alt: 'Existing pending',
+                source: 'user'
+            });
+            const before = window.appButtons.getPendingComposerAttachments();
+            const calls = [];
+            const resolvers = [];
+            const originalSendTextPayload = window.appButtons.sendTextPayload;
+            window.appButtons.sendTextPayload = async (text, options) => {
+                calls.push({
+                    text,
+                    options,
+                    pendingAtSend: window.appButtons.getPendingComposerAttachments()
+                });
+                await new Promise(resolve => resolvers.push(resolve));
+                return true;
+            };
+
+            try {
+                const first = window.appButtons.sendCompactHistoryDropPayload({
+                    text: 'first drop',
+                    requestId: 'req-compact-history-first-drop',
+                    compactHistoryDragSessionId: 'drag-compact-history-first-drop',
+                    images: [{ url: makeDataUrl('#cc3355'), alt: 'First dropped' }]
+                });
+                await waitUntil(() => calls.length === 1 && resolvers.length === 1);
+
+                const second = window.appButtons.sendCompactHistoryDropPayload({
+                    text: 'second drop',
+                    requestId: 'req-compact-history-second-drop',
+                    compactHistoryDragSessionId: 'drag-compact-history-second-drop',
+                    images: [{ url: makeDataUrl('#33aa77'), alt: 'Second dropped' }]
+                });
+                await new Promise(resolve => setTimeout(resolve, 20));
+                const callsWhileFirstPending = calls.length;
+                resolvers.shift()();
+                const firstOk = await first;
+
+                await waitUntil(() => calls.length === 2 && resolvers.length === 1);
+                resolvers.shift()();
+                const secondOk = await second;
+
+                return {
+                    firstOk,
+                    secondOk,
+                    callsWhileFirstPending,
+                    before,
+                    after: window.appButtons.getPendingComposerAttachments(),
+                    calls
+                };
+            } finally {
+                window.appButtons.sendTextPayload = originalSendTextPayload;
+            }
+        }"""
+    )
+
+    assert result["firstOk"] is True
+    assert result["secondOk"] is True
+    assert result["callsWhileFirstPending"] == 1
+    assert result["after"] == result["before"]
+    assert [call["text"] for call in result["calls"]] == ["first drop", "second drop"]
+    assert [call["pendingAtSend"][0]["alt"] for call in result["calls"]] == [
+        "First dropped",
+        "Second dropped",
+    ]
+
+
+@pytest.mark.frontend
 def test_compact_history_drop_is_not_deferred_into_existing_pending_attachments(
     mock_page: Page,
     running_server: str,

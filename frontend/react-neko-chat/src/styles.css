@@ -1817,7 +1817,6 @@ body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {
   overscroll-behavior: contain;
   scrollbar-width: none;
   z-index: 100002;
-  pointer-events: none;
 }
 
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"]::-webkit-scrollbar {
@@ -1826,7 +1825,7 @@ body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"]::-webkit-sc
 
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-slot,
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-options {
-  pointer-events: none;
+  pointer-events: auto;
 }
 
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option {
@@ -2214,7 +2213,8 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   padding: 4px 6px;
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
-  pointer-events: auto;
+  /* The fade mask is visual only; keep transparent history space pass-through. */
+  pointer-events: none;
   -webkit-app-region: no-drag;
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, rgba(0, 0, 0, 0.78) 12px, #000 28px);
   mask-image: linear-gradient(to bottom, transparent 0, rgba(0, 0, 0, 0.78) 12px, #000 28px);
