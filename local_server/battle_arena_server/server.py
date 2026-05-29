@@ -791,6 +791,30 @@ async def arena_forge_card_story(body: dict[str, Any]):
         )
 
 
+@app.post("/arena/adventure-ending")
+async def arena_adventure_ending(body: dict[str, Any]):
+    """按探险历程用 NEKO 核心 LLM 生成终点结算小故事。
+    失败返回 success:false，前端会回退到本地模板（buildAdventureEndingStory）。"""
+    request_id = f"ending-{uuid.uuid4().hex[:10]}"
+    safe_body = body if isinstance(body, dict) else {}
+    try:
+        from forge_story_generator import generate_adventure_ending_story
+
+        result = await generate_adventure_ending_story(safe_body)
+        return JSONResponse({
+            "success": True,
+            "requestId": request_id,
+            "story": result.story,
+            "provider": result.provider,
+            "model": result.model,
+        })
+    except Exception as exc:
+        error = str(exc) or type(exc).__name__
+        if exc.__class__.__name__ != "ForgeStoryGenerationError":
+            logger.warning("adventure-ending: generation failed: %s", error)
+        return JSONResponse({"success": False, "requestId": request_id, "error": error})
+
+
 @app.post("/arena/join")
 async def join_arena(body: JoinRequest):
     """玩家加入大乱斗，上传羁绊列表，返回 playerId 及对手信息（若已匹配）。"""

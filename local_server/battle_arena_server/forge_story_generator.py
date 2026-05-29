@@ -402,3 +402,108 @@ async def generate_forge_card_story(payload: dict[str, Any]) -> ForgeStoryResult
         elapsedMs=round((time.perf_counter() - started_at) * 1000, 1),
     )
     raise ForgeStoryGenerationError(last_error or "all_llm_targets_failed")
+
+
+# ── 探险终点结算故事 ────────────────────────────────────────────────────────
+# 复用与卡牌故事相同的 LLM 调用骨架（_configured_llm_targets + create_chat_llm +
+# wait_for + _clean_story），但 prompt 改成"按探险历程写一段总结小故事"。
+# 前端在后端不可用/失败时会回退到自己的模板（buildAdventureEndingStory），所以
+# 这里失败直接抛错即可，路由层转成 {success:false}。
+
+ADVENTURE_ENDING_MAX_TOKENS = 420
+ADVENTURE_ENDING_TIMEOUT_SECONDS = 30
+
+
+def _summarize_adventure_log(log: Any) -> dict[str, Any]:
+    items = log if isinstance(log, list) else []
+    events = [l for l in items if isinstance(l, dict) and l.get("type") == "event"]
+    successes = sum(1 for l in events if l.get("success"))
+    titles = [str(l.get("title")) for l in events if l.get("title")]
+    return {
+        "successes": successes,
+        "fails": len(events) - successes,
+        "sides": sum(1 for l in items if isinstance(l, dict) and l.get("type") == "encounter" and l.get("choice") == "enter"),
+        "rests": sum(1 for l in items if isinstance(l, dict) and l.get("type") == "rest"),
+        "titles": titles,
+    }
+
+
+def build_adventure_ending_prompt(payload: dict[str, Any], lanlan_name: str, master_name: str, lanlan_prompt: str) -> tuple[str, str]:
+    stats = _summarize_adventure_log(payload.get("log"))
+    system_prompt = (
+        "你是“猫娘大乱斗”探险模式的结算讲述者。"
+        f"当前猫娘是{lanlan_name or '猫娘'}，主人是{master_name or '主人'}。"
+        "请把一次卡牌探险的完整历程，写成一段温暖、轻盈的总结性小故事。"
+        "故事是这只猫娘和她的队友猫娘一起走完这趟探险后的回顾。"
+        "只写旅途见闻、情绪与两人之间的相处，不要出现卡牌、数值、Boss、战斗、回合、行动力、护盾等任何游戏术语。"
+        "结尾用猫娘第一人称台词收束，并用中文引号“”包住。"
+    )
+    if lanlan_prompt:
+        system_prompt += f"\n\n当前猫娘人格/背景摘要：\n{_clip(lanlan_prompt, 1200)}"
+    lines = [
+        "这趟探险的历程：",
+        f"- 沿途完成的事件：顺利 {stats['successes']} 次，不太顺利 {stats['fails']} 次",
+        f"- 一起拐进支线小路：{stats['sides']} 次",
+        f"- 停下休息：{stats['rests']} 次",
+    ]
+    if stats["titles"]:
+        lines.append(f"- 经历过的片段：{'、'.join(stats['titles'][:8])}")
+    lines += [
+        "",
+        "硬性要求：",
+        "1. 只输出故事正文，不要标题、不要解释、不要 JSON。",
+        "2. 中文，120-200 字左右。",
+        "3. 前面用第三人称叙事，最后一小句是猫娘第一人称台词，用中文引号“”包住。",
+        "4. 不要写任何游戏机制、数值或战斗内容。",
+    ]
+    return system_prompt, "\n".join(lines)
+
+
+async def generate_adventure_ending_story(payload: dict[str, Any]) -> ForgeStoryResult:
+    """按探险历程用 NEKO 核心 LLM 生成终点结算小故事。当前猫娘为叙事主体。"""
+    from active_neko_context import resolve_active_neko_context
+    from utils.config_manager import get_config_manager
+    from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm, reset_active_character, set_active_character
+    from utils.token_tracker import set_call_type
+
+    request_id = _forge_request_id(payload)
+    started_at = time.perf_counter()
+    config_manager = get_config_manager()
+    active = await resolve_active_neko_context()
+    master_name = active.master_name
+    lanlan_name = active.lanlan_name
+    system_prompt, user_prompt = build_adventure_ending_prompt(payload, lanlan_name, master_name, active.lanlan_prompt)
+    _forge_log(request_id, "ending.prompt.built", systemPromptChars=len(system_prompt), userPromptChars=len(user_prompt))
+
+    targets = _configured_llm_targets(config_manager)
+    if not targets:
+        raise ForgeStoryGenerationError("llm_model_not_configured")
+
+    last_error = ""
+    for tier_name, cfg in targets:
+        token = set_active_character(master_name, lanlan_name)
+        set_call_type("neko_brawl_adventure_ending")
+        llm = create_chat_llm(
+            cfg["model"], cfg["base_url"], cfg.get("api_key") or "",
+            max_completion_tokens=ADVENTURE_ENDING_MAX_TOKENS,
+            timeout=ADVENTURE_ENDING_TIMEOUT_SECONDS,
+        )
+        try:
+            async with llm:
+                result = await asyncio.wait_for(
+                    llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]),
+                    timeout=ADVENTURE_ENDING_TIMEOUT_SECONDS,
+                )
+            story = _clean_story(getattr(result, "content", "") or "")
+            _forge_log(request_id, "ending.success", provider=f"neko-core-{tier_name}", storyChars=len(story),
+                       elapsedMs=round((time.perf_counter() - started_at) * 1000, 1))
+            return ForgeStoryResult(story=story, provider=f"neko-core-{tier_name}", model=cfg["model"])
+        except asyncio.TimeoutError:
+            last_error = f"{tier_name}:timeout"
+        except Exception as exc:
+            last_error = f"{tier_name}:{str(exc) or type(exc).__name__}"
+        finally:
+            reset_active_character(token)
+
+    _forge_log(request_id, "ending.failed", error=last_error or "all_llm_targets_failed")
+    raise ForgeStoryGenerationError(last_error or "all_llm_targets_failed")

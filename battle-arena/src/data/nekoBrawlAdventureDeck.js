@@ -33,10 +33,27 @@ export const ADVENTURE_EVENT_KINDS = {
   RESOURCE: 'resource',
 }
 
+// 事件检定的推荐属性池（与 forgedBrawlCards.BRAWL_ATTRS 对齐）。
+// 第一层（属性检定）按事件 index 轮换分配一个推荐属性。
+const ADVENTURE_ATTR_POOL = [
+  { id: 'passion', name: '热情' },
+  { id: 'gentle', name: '温柔' },
+  { id: 'cool', name: '高冷' },
+  { id: 'natural', name: '天然' },
+]
+
+// 兼容手牌卡的两种属性写法：normalize 后是 attr.id，原始数据是 attrId。
+export function getCardAttrId(card) {
+  return card?.attr?.id ?? card?.attrId ?? (typeof card?.attr === 'string' ? card.attr : null)
+}
+
 const MAIN_DECK_DISTRIBUTION = {
   [ADVENTURE_CARD_TYPES.REST]: 6,
-  [ADVENTURE_CARD_TYPES.EVENT]: 28,
-  [ADVENTURE_CARD_TYPES.BATTLE]: 3,
+  // 战斗触发卡暂时完全移除（BATTLE: 0）。原本的 3 张并入 EVENT（28 → 31），
+  // 保持主牌组总量仍为 40（6 + 31 + 0 + 2 = 39 张非 END + 1 张 END）。
+  // 恢复战斗时把 EVENT 改回 28、BATTLE 改回 3 即可。
+  [ADVENTURE_CARD_TYPES.EVENT]: 31,
+  [ADVENTURE_CARD_TYPES.BATTLE]: 0,
   [ADVENTURE_CARD_TYPES.ENCOUNTER]: 2,
   [ADVENTURE_CARD_TYPES.END]: 1,
 }
@@ -207,6 +224,26 @@ function getEventBlueprint(index, entry = {}) {
   }
 }
 
+// 为一张事件卡生成 check（玩家需要"打出卡完成事件"的判定规则）。
+//
+// 第一层 —— 属性检定（attribute）：数据现成，当前全部事件都走这一档。
+//   推荐属性按 index 轮换四属性；玩家打出主属性匹配的牌即视为达成。
+//
+// 第二层 —— 数值累加检定（value）：接口已就位但暂未启用。需要卡牌带命名检定
+//   数值（如 checkValues.money = 40）才能填真实数据；当前卡池无此字段。
+//   启用方式：把某些事件的 check 改成
+//     { mode: 'value', valueKey: 'money', valueLabel: '金钱', threshold: 50 }
+//   并给相关卡补上 checkValues[valueKey]。resolveEventCheck 已支持多张累加。
+function buildEventCheck(blueprint, index) {
+  const attr = ADVENTURE_ATTR_POOL[index % ADVENTURE_ATTR_POOL.length]
+  return {
+    mode: 'attribute',
+    recommendedAttrId: attr.id,
+    recommendedAttrName: attr.name,
+    instruction: `打出一张【${attr.name}】属性的行动卡来回应这次事件。`,
+  }
+}
+
 function buildPayloadForType(type, theme, index, entry = {}) {
   switch (type) {
     case ADVENTURE_CARD_TYPES.REST:
@@ -214,8 +251,13 @@ function buildPayloadForType(type, theme, index, entry = {}) {
         healAll: true,
         refillHandTo: ADVENTURE_HAND_TARGET,
       }
-    case ADVENTURE_CARD_TYPES.EVENT:
-      return getEventBlueprint(index, entry)
+    case ADVENTURE_CARD_TYPES.EVENT: {
+      const blueprint = getEventBlueprint(index, entry)
+      return {
+        ...blueprint,
+        check: buildEventCheck(blueprint, index),
+      }
+    }
     case ADVENTURE_CARD_TYPES.BATTLE:
       return {
         battleTheme: theme.id,
@@ -282,15 +324,17 @@ export function createSideAdventureDeck({
   const sideSizeRange = SIDE_ADVENTURE_MAX_SIZE - SIDE_ADVENTURE_MIN_SIZE + 1
   const targetSize = clampInt(size ?? (SIDE_ADVENTURE_MIN_SIZE + Math.floor(rng() * sideSizeRange)), SIDE_ADVENTURE_MIN_SIZE, SIDE_ADVENTURE_MAX_SIZE)
   const pool = []
+  // 战斗暂时完全移除：原本的 2 张 BATTLE 也换成 EVENT，与主牌组保持一致。
+  // 恢复战斗时把第 5、8 项改回 ADVENTURE_CARD_TYPES.BATTLE 即可。
   const sideDistribution = [
     ADVENTURE_CARD_TYPES.EVENT,
     ADVENTURE_CARD_TYPES.EVENT,
     ADVENTURE_CARD_TYPES.REST,
     ADVENTURE_CARD_TYPES.EVENT,
-    ADVENTURE_CARD_TYPES.BATTLE,
+    ADVENTURE_CARD_TYPES.EVENT,
     ADVENTURE_CARD_TYPES.EVENT,
     ADVENTURE_CARD_TYPES.REST,
-    ADVENTURE_CARD_TYPES.BATTLE,
+    ADVENTURE_CARD_TYPES.EVENT,
     ADVENTURE_CARD_TYPES.EVENT,
   ]
 
@@ -400,6 +444,9 @@ export function triggerAdventureCard(card, context = {}) {
         decisionMode: card.payload?.decisionMode || 'choose-played-card',
         previewText: card.payload?.previewText || '',
         requirement: card.payload?.requirement || null,
+        // 玩家"打出卡完成事件"的判定规则 + 一句操作指引（属性检定/数值累加）
+        check: card.payload?.check || null,
+        eventInstruction: card.payload?.check?.instruction || '打出一张行动卡来完成这次事件。',
         successEffects: card.payload?.success || [],
         failureEffects: card.payload?.failure || [],
         tags: card.payload?.tags || [],
@@ -594,4 +641,104 @@ export function skipSideAdventure(run, encounterCard) {
       encounterCard.id,
     ],
   }
+}
+
+// 判定一名角色打出的牌是否"完成事件"。通用支持两种模式：
+//   attribute —— 任一张打出的牌主属性 == 推荐属性 即达成（第一层，已启用）
+//   value     —— 各牌 checkValues[valueKey] 累加 ≥ threshold 即达成（第二层，待卡牌补数值）
+// playedCards 接收数组，所以数值模式天然支持"多张补足"（金钱40 + 热心10 = 50）。
+export function resolveEventCheck(check, playedCards = []) {
+  const cards = (Array.isArray(playedCards) ? playedCards : [playedCards]).filter(Boolean)
+  if (!check || cards.length === 0) {
+    return { success: false, mode: check?.mode || 'attribute', total: 0, threshold: 0, detail: '没有打出卡牌。' }
+  }
+
+  if (check.mode === 'value') {
+    const key = check.valueKey
+    const total = cards.reduce((sum, c) => sum + (Number(c?.checkValues?.[key]) || 0), 0)
+    const threshold = Number(check.threshold) || 0
+    const success = total >= threshold
+    const label = check.valueLabel || key || '数值'
+    return {
+      success,
+      mode: 'value',
+      total,
+      threshold,
+      detail: success
+        ? `${label}累计 ${total}/${threshold}，达标，事件顺利完成。`
+        : `${label}累计 ${total}/${threshold}，未达标，事件草草收场。`,
+    }
+  }
+
+  // 默认：属性检定
+  const matched = cards.find(c => getCardAttrId(c) === check.recommendedAttrId)
+  return {
+    success: Boolean(matched),
+    mode: 'attribute',
+    matchedCard: matched || null,
+    total: matched ? 1 : 0,
+    threshold: 1,
+    detail: matched
+      ? `打出了【${check.recommendedAttrName}】属性卡，事件顺利推进。`
+      : `没有打出【${check.recommendedAttrName}】属性卡，事件没能往好的方向发展。`,
+  }
+}
+
+// 终点结算的"前端模板"总结故事（保底）：根据探险历程 log 统计成败/支线/休息，
+// 拼一段总结性叙事。后端 LLM 不可用时回退到这里，保证终点一定有故事可显示。
+// log 每项形如 { type:'event'|'rest'|'encounter'|..., title, success?, winner?, attr?, choice? }
+export function buildAdventureEndingStory(log = [], { themeId } = {}) {
+  const entries = Array.isArray(log) ? log : []
+  const events = entries.filter(l => l.type === ADVENTURE_CARD_TYPES.EVENT)
+  const successes = events.filter(l => l.success).length
+  const fails = events.length - successes
+  const sideEntered = entries.filter(l => l.type === ADVENTURE_CARD_TYPES.ENCOUNTER && l.choice === 'enter').length
+  const rests = entries.filter(l => l.type === ADVENTURE_CARD_TYPES.REST).length
+  const themeName = getAdventureTheme(themeId).name
+
+  const parts = [`关于「${themeName}」的这趟探险，走到了尽头。`]
+  if (events.length === 0) {
+    parts.push('一路风平浪静，没有遇到太多需要应对的事。')
+  } else if (successes >= fails) {
+    parts.push(`途中化解了 ${successes} 次考验${fails > 0 ? `、也有 ${fails} 次差强人意` : ''}，两只猫娘的默契越走越深。`)
+  } else {
+    parts.push(`途中有 ${fails} 次没能顺利应对，但即使跌跌撞撞，也始终没有松开彼此的手。`)
+  }
+  if (sideEntered > 0) parts.push(`其间还一起拐进了 ${sideEntered} 段支线小路，多看了些计划之外的风景。`)
+  if (rests > 0) parts.push(`累了就并肩歇上一会儿，一共停下来喘息了 ${rests} 次。`)
+  parts.push('「下次，还要一起去更远的地方喵。」')
+  return parts.join('')
+}
+
+// 把一次落点交互压成可记录的历程项（供终点结算统计/讲故事）。
+export function buildAdventureLogEntry(result, event) {
+  const card = result?.card
+  const base = { type: card?.type || null, title: card?.title || '' }
+  if (event?.kind === 'event') {
+    return { ...base, success: Boolean(event.outcome?.success), winner: event.outcome?.winner || 'none', attr: event.check?.recommendedAttrName || '' }
+  }
+  if (event?.kind === 'encounter') {
+    return { ...base, choice: event.playerChoice || 'skip' }
+  }
+  if (event?.kind === 'rest') {
+    return { ...base, rested: true }
+  }
+  return base
+}
+
+// 从两名角色（玩家 + 队友）的检定结果里取"对事情发展较好"的那个：
+//   - 任一方成功 → 事件成功（属性模式 A 优先；数值模式取 total 更高者）
+//   - 都失败    → 事件失败，winner='none'，仅记录
+export function pickBetterEventOutcome(check, resultA, resultB) {
+  const a = resultA || { success: false, total: 0 }
+  const b = resultB || { success: false, total: 0 }
+  if (a.success || b.success) {
+    if (check?.mode === 'value') {
+      return (a.total >= b.total)
+        ? { ...a, success: true, winner: 'player' }
+        : { ...b, success: true, winner: 'ally' }
+    }
+    return a.success ? { ...a, winner: 'player' } : { ...b, winner: 'ally' }
+  }
+  return { ...a, success: false, winner: 'none' }
 }

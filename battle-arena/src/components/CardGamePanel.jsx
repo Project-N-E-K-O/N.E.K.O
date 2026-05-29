@@ -899,14 +899,12 @@ export default function CardGamePanel({ onClose, nekoName, nekoAvatar, temporary
   }, [myHand, myMaxPlay, playerEnergy])
 
   const setPreviewCard = useCallback((cardId) => {
-    if (cardId) {
-      const card = myHand.find(c => c.id === cardId)
-      if (card && cardCost(card) > playerEnergy) {
-        return
-      }
-    }
+    // 探险模式下 cost 字段是「行动力」（用于计算探索步数），不是能量消耗，所以预选/拖入
+    // 行动区不做费用门控 —— 此前的 cardCost > playerEnergy 拦截会让高费卡（如 4 费 C013）
+    // 在飞入动画后被悄悄丢弃，表现为"放不进出牌区"。战斗模式真正的费用校验仍由 confirmPlay
+    // 负责，预选阶段放行不影响其结算。
     setMySelected(cardId ? [cardId] : [])
-  }, [myHand, playerEnergy])
+  }, [])
 
   // ── 出牌确认 ──
   const confirmPlay = useCallback(() => {
