@@ -183,6 +183,7 @@ const _NEKO_IDLE_TIER_CAT1 = 'cat1';
 const _NEKO_IDLE_TIER_CAT2 = 'cat2';
 const _NEKO_IDLE_TIER_CAT3 = 'cat3';
 const _NEKO_IDLE_RETURN_BUTTON_SELECTOR = '#live2d-btn-return, #vrm-btn-return, #mmd-btn-return';
+const _NEKO_IDLE_RETURN_TRANSITION_MS = 820;
 const _NEKO_IDLE_RETURN_ASSET_VERSION = (() => {
     try {
         const currentScript = document.currentScript;
@@ -240,6 +241,80 @@ function _getNekoIdleReturnClickAssetUrl(tier) {
     return `/static/assets/neko-idle/cat-idle-cat1-click.gif${versionSuffix}`;
 }
 
+function _shouldReduceNekoIdleMotion() {
+    try {
+        return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    } catch (_) {}
+    return false;
+}
+
+function _cleanupNekoIdleArtTransition(art) {
+    if (!art) return;
+    if (art.__nekoIdleTransitionTimer) {
+        clearTimeout(art.__nekoIdleTransitionTimer);
+        art.__nekoIdleTransitionTimer = 0;
+    }
+    if (art.__nekoIdleTransitionNext && art.__nekoIdleTransitionNext.parentNode) {
+        art.__nekoIdleTransitionNext.parentNode.removeChild(art.__nekoIdleTransitionNext);
+    }
+    art.__nekoIdleTransitionNext = null;
+    art.__nekoIdleTransitionTo = '';
+
+    const button = art.closest('.neko-idle-return-btn');
+    if (button) {
+        button.classList.remove('is-tier-transitioning');
+    }
+}
+
+function _setNekoIdleReturnArtSource(art, nextSrc, tier, options = {}) {
+    if (!art || !nextSrc) return;
+
+    art.setAttribute('data-neko-idle-tier', tier);
+
+    const currentSrc = art.getAttribute('src') || '';
+    const shouldAnimate = options.animate !== false
+        && currentSrc
+        && currentSrc !== nextSrc
+        && !_shouldReduceNekoIdleMotion();
+
+    if (!shouldAnimate) {
+        _cleanupNekoIdleArtTransition(art);
+        art.src = nextSrc;
+        return;
+    }
+
+    if (art.__nekoIdleTransitionTo === nextSrc) {
+        return;
+    }
+
+    _cleanupNekoIdleArtTransition(art);
+
+    const button = art.closest('.neko-idle-return-btn');
+    if (!button) {
+        art.src = nextSrc;
+        return;
+    }
+
+    const nextArt = document.createElement('img');
+    nextArt.className = 'neko-idle-return-art neko-idle-return-art-next';
+    nextArt.src = nextSrc;
+    nextArt.alt = art.alt || '';
+    nextArt.draggable = false;
+    nextArt.setAttribute('data-neko-idle-tier', tier);
+
+    const finish = () => {
+        art.src = nextSrc;
+        _cleanupNekoIdleArtTransition(art);
+    };
+
+    art.__nekoIdleTransitionNext = nextArt;
+    art.__nekoIdleTransitionTo = nextSrc;
+    button.appendChild(nextArt);
+    void nextArt.offsetWidth;
+    button.classList.add('is-tier-transitioning');
+    art.__nekoIdleTransitionTimer = setTimeout(finish, _NEKO_IDLE_RETURN_TRANSITION_MS);
+}
+
 function _applyNekoIdleReturnPresentation(button, tier) {
     if (!button) return;
     const normalizedTier = _normalizeNekoIdleReturnTier(tier);
@@ -252,8 +327,7 @@ function _applyNekoIdleReturnPresentation(button, tier) {
 
     const art = button.querySelector('.neko-idle-return-art');
     if (art) {
-        art.setAttribute('data-neko-idle-tier', normalizedTier);
-        art.src = _getNekoIdleReturnAssetUrl(normalizedTier);
+        _setNekoIdleReturnArtSource(art, _getNekoIdleReturnAssetUrl(normalizedTier), normalizedTier);
     }
 }
 
@@ -706,6 +780,7 @@ const AvatarButtonMixin = {
             returnBtn.addEventListener('mouseenter', () => {
                 const tier = returnBtn.getAttribute('data-neko-idle-tier');
                 if (tier && tier !== 'none') {
+                    _cleanupNekoIdleArtTransition(returnArt);
                     returnArt.src = _getNekoIdleReturnClickAssetUrl(tier);
                 }
             });
@@ -713,6 +788,7 @@ const AvatarButtonMixin = {
             returnBtn.addEventListener('mouseleave', () => {
                 const tier = returnBtn.getAttribute('data-neko-idle-tier');
                 if (tier && tier !== 'none') {
+                    _cleanupNekoIdleArtTransition(returnArt);
                     returnArt.src = _getNekoIdleReturnAssetUrl(tier);
                 }
             });

@@ -6,7 +6,7 @@ from main_routers import pages_router
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 AVATAR_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "avatar-ui-buttons.js"
 INDEX_CSS_PATH = PROJECT_ROOT / "static" / "css" / "index.css"
-CAT1_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat1.png"
+CAT1_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat1.gif"
 
 
 def test_cat1_return_button_visual_contract_is_present():
@@ -14,7 +14,7 @@ def test_cat1_return_button_visual_contract_is_present():
 
     assert "neko:auto-goodbye:state-change" in source
     assert "data-neko-idle-tier" in source
-    assert "/static/assets/neko-idle/cat-idle-cat1.png" in source
+    assert "/static/assets/neko-idle/cat-idle-cat1.gif" in source
 
     create_return_block = source.split("ManagerPrototype.createReturnButton = function()", 1)[1].split(
         "ManagerPrototype._setupReturnButtonDrag",

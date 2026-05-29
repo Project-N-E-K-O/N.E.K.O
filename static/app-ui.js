@@ -1422,6 +1422,10 @@
         container.style.visibility = 'hidden';
         container.style.pointerEvents = 'none';
         positionReturnBallContainer(container, anchorRect);
+        container.style.opacity = '0';
+        container.style.transform = 'translate3d(0, 8px, 0) scale(0.94)';
+        container.style.transition = 'opacity 420ms cubic-bezier(0.22, 1, 0.36, 1), transform 520ms cubic-bezier(0.22, 1, 0.36, 1)';
+        container.style.willChange = 'opacity, transform';
 
         void container.offsetWidth;
 
@@ -1431,6 +1435,8 @@
             if (container.style.display === 'none') return;
             container.style.visibility = 'visible';
             container.style.pointerEvents = 'auto';
+            container.style.opacity = '1';
+            container.style.transform = 'none';
         });
         container.__nekoReturnBallRevealFrame = revealFrameId;
         return container;
