@@ -49,6 +49,8 @@
     var electronChatMinimizedStateFrame = 0;
     var electronChatMinimizedStateTimer = 0;
     var electronChatMinimizedStateSignature = '';
+    var electronChatMinimizedStatePublishedAt = 0;
+    var ELECTRON_CHAT_MINIMIZED_STATE_HEARTBEAT_MS = 1000;
     var _sortKeySeq = 0; // monotonically increasing sortKey counter
 
     var state = {
@@ -2046,10 +2048,16 @@
         var bridge = window.nekoChatWindow;
         if (!bridge || typeof bridge.getBounds !== 'function') return;
 
+        var now = Date.now();
         var collapsed = isElectronChatWindowCollapsed(bridge);
         if (!collapsed) {
-            if (electronChatMinimizedStateSignature === '0' && reason === 'poll') return;
+            if (electronChatMinimizedStateSignature === '0' &&
+                reason === 'poll' &&
+                now - electronChatMinimizedStatePublishedAt < ELECTRON_CHAT_MINIMIZED_STATE_HEARTBEAT_MS) {
+                return;
+            }
             electronChatMinimizedStateSignature = '0';
+            electronChatMinimizedStatePublishedAt = now;
             window.dispatchEvent(new CustomEvent('neko:idle-chat-minimized-state', {
                 detail: {
                     action: 'idle_chat_minimized_state',
@@ -2057,7 +2065,7 @@
                     reason: reason || 'sync',
                     minimized: false,
                     screenRect: null,
-                    timestamp: Date.now()
+                    timestamp: now
                 }
             }));
             return;
@@ -2066,9 +2074,15 @@
         bridge.getBounds().then(function (bounds) {
             var rect = normalizeElectronWindowBoundsRect(bounds);
             if (!rect) return;
+            var now = Date.now();
             var signature = getElectronChatMinimizedStateSignature(true, rect);
-            if (signature === electronChatMinimizedStateSignature && reason === 'poll') return;
+            if (signature === electronChatMinimizedStateSignature &&
+                reason === 'poll' &&
+                now - electronChatMinimizedStatePublishedAt < ELECTRON_CHAT_MINIMIZED_STATE_HEARTBEAT_MS) {
+                return;
+            }
             electronChatMinimizedStateSignature = signature;
+            electronChatMinimizedStatePublishedAt = now;
             window.dispatchEvent(new CustomEvent('neko:idle-chat-minimized-state', {
                 detail: {
                     action: 'idle_chat_minimized_state',
@@ -2076,7 +2090,7 @@
                     reason: reason || 'sync',
                     minimized: true,
                     screenRect: rect,
-                    timestamp: Date.now()
+                    timestamp: now
                 }
             }));
         }).catch(function () {});

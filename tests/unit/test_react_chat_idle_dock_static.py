@@ -117,6 +117,8 @@ def test_react_chat_broadcasts_minimized_screen_rect_for_cat1_follow():
     assert "bridge.getBounds().then(function (bounds)" in source
     assert "isElectronChatWindowCollapsed(bridge)" in source
     assert "ensureElectronChatMinimizedStateBridge()" in source
+    assert "ELECTRON_CHAT_MINIMIZED_STATE_HEARTBEAT_MS = 1000" in source
+    assert "electronChatMinimizedStatePublishedAt" in source
 
 
 def test_idle_dock_uses_mutation_observer_to_detect_minimize_completion():
