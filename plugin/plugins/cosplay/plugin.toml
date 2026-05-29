@@ -1,0 +1,22 @@
+[plugin]
+id = "cosplay"
+name = "Cosplay 总导演 MVP"
+description = "NEKO 项目 Cosplay 总导演插件（MVP）。Web UI 访问地址：http://127.0.0.1:48916/plugin/cosplay/ui/"
+short_description = "1v1 Cosplay 剧情演绎：总导演调度、素材预生成、舞台全屏演出。"
+keywords = ["cosplay", "剧情", "director", "角色扮演", "stage", "love2d"]
+version = "0.1.0"
+entry = "plugin.plugins.cosplay:GalgamePlugin"
+
+[plugin.author]
+name = "N.E.K.O Team"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin_runtime]
+enabled = true
+auto_start = false
+
+[plugin.store]
+enabled = true

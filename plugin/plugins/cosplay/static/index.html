@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>N.E.K.O GALGAME 总导演插件</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Ma+Shan+Zheng&family=Noto+Serif+SC:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <section class="stage-shell" id="stageShell">
+    <div class="stage-bg-shapes" aria-hidden="true"></div>
+
+    <div class="stage-screen" id="stageScreen">
+      <div class="stage-float-panel collapsed" id="stageFloatPanel">
+        <button class="chip-btn stage-float-toggle" id="stageFloatToggleBtn">展开快捷菜单</button>
+        <div class="stage-quickbar" id="stageQuickbar">
+          <button class="chip-btn" id="quickShowTextBtn">显示舞台文字</button>
+          <button class="chip-btn" id="quickHideTextBtn">隐藏舞台文字</button>
+          <button class="chip-btn" id="quickEnterFullscreenBtn">全屏模式</button>
+          <button class="chip-btn" id="quickExitFullscreenBtn">退出全屏</button>
+        </div>
+      </div>
+      <img id="stageImage" class="stage-image" alt="GALGAME 舞台背景" />
+      <video id="stageVideo" class="stage-video" playsinline controls preload="metadata"></video>
+      <button class="stage-nav-btn prev" id="stagePrevBtn" title="上一张/上一个">◀</button>
+      <button class="stage-nav-btn next" id="stageNextBtn" title="下一张/下一个">▶</button>
+
+      <div class="stage-topbar">
+        <div class="chip">GALGAME 总导演 MVP</div>
+        <div class="chip" id="progressChip">剧情未开始</div>
+        <button class="chip-btn" id="textToggleBtn">隐藏舞台文字</button>
+        <button class="chip-btn" id="fullscreenToggleBtn">全屏模式</button>
+      </div>
+
+      <div class="stage-caption" id="stageCaption">等待剧情素材加载</div>
+      <div class="climax-fx" id="climaxFx" aria-hidden="true"></div>
+
+      <div class="confirm-box" id="confirmBox">
+        <div class="confirm-header-row">
+          <div class="confirm-drag-handle" id="confirmDragHandle" title="拖拽移动">剧情推进控制台</div>
+          <button id="confirmCollapseBtn" class="chip-btn confirm-collapse-btn">收起</button>
+        </div>
+        <div class="current-role-chip" id="currentRoleChip">当前角色：-</div>
+        <label for="currentUserLine">当前用户台词（自动填充）</label>
+        <textarea id="currentUserLine" readonly placeholder="请先在下方解析剧本"></textarea>
+        <div class="confirm-actions">
+          <button id="confirmBtn" class="btn btn-primary">确认台词并推进剧情</button>
+          <button id="refreshBtn" class="btn btn-ghost">刷新状态</button>
+        </div>
+        <div class="confirm-resize-handle" id="confirmResizeHandle" title="拖拽缩放"></div>
+      </div>
+
+      <div class="live-subtitle" id="liveSubtitle">
+        <div class="subtitle-role" id="liveSubtitleRole">角色</div>
+        <div class="subtitle-text" id="liveSubtitleText">台词</div>
+      </div>
+      <div class="live-subtitle-resize" id="liveSubtitleResize"></div>
+    </div>
+
+    <a class="jump-hint" href="#controls">下滑进入配置与控制区</a>
+  </section>
+
+  <section id="controls" class="controls-shell">
+    <div class="panel-grid">
+      <article class="panel panel-wide">
+        <h2>角色指定控制面板</h2>
+        <div class="role-grid">
+          <div>
+            <label>用户对应角色名</label>
+            <input id="userRoleName" placeholder="如：方知宥 / 男主 / 自定义" />
+          </div>
+          <div>
+            <label>AI 对应角色名</label>
+            <input id="aiRoleName" placeholder="如：林翩翩 / 女主 / 自定义" />
+          </div>
+          <div>
+            <label>用户角色别名（逗号分隔）</label>
+            <input id="userAliases" placeholder="用户,导演,男主,方知宥" />
+          </div>
+          <div>
+            <label>AI 角色别名（逗号分隔）</label>
+            <input id="aiAliases" placeholder="AI,assistant,女主,林翩翩" />
+          </div>
+          <div>
+            <label>用户人设标签</label>
+            <input id="userPersonaTags" placeholder="沉稳,克制,守护" />
+          </div>
+          <div>
+            <label>AI 人设标签</label>
+            <input id="aiPersonaTags" placeholder="敏感,坚韧,真诚" />
+          </div>
+        </div>
+        <div class="row-actions">
+          <button id="saveRoleBtn" class="btn btn-primary">保存角色配置</button>
+        </div>
+        <h3>角色音色与字幕样式（可视化）</h3>
+        <div id="roleProfilesList" class="role-profiles-list"></div>
+        <div class="row-actions">
+          <button id="addRoleProfileBtn" class="btn btn-ghost">新增角色配置</button>
+          <button id="applyRoleTemplateBtn" class="btn btn-ghost">套用默认模板</button>
+          <button id="saveRoleProfilesBtn" class="btn btn-primary">保存角色音色与字幕样式</button>
+        </div>
+        <details class="advanced-box">
+          <summary>高级 JSON 配置</summary>
+          <textarea id="roleProfilesInput" class="script-input" placeholder='{"女主":{"tts_voice":"longxiaochun_v2","subtitle_color":"#ffd8ef","subtitle_glow":"rgba(255,183,222,.52)","font_scale":1.08}}'></textarea>
+        </details>
+      </article>
+
+      <article class="panel">
+        <h2>舞台模式</h2>
+        <div class="upload-mode">
+          <label>背景运行模式</label>
+          <select id="backgroundMode">
+            <option value="manual">手动模式（仅用户素材）</option>
+            <option value="semi_auto" selected>半自动模式（补图片）</option>
+            <option value="auto">全自动模式（图视频全调度）</option>
+          </select>
+        </div>
+        <div class="row-actions">
+          <button id="saveBgModeBtn" class="btn btn-primary">保存背景模式</button>
+        </div>
+      </article>
+
+      <article class="panel">
+        <h2>模型配置（阿里云百炼）</h2>
+        <p class="hint">图片/视频/总导演/TTS 均为 API 对接，插件不加载本地模型。</p>
+
+        <div class="config-grid">
+          <fieldset>
+            <legend>图片生成模型</legend>
+            <label><input id="imageEnabled" type="checkbox" checked /> 启用图片 AI 生成</label>
+            <input id="imageApiUrl" placeholder="API URL" />
+            <input id="imageModelId" placeholder="模型 ID" />
+            <input id="imageApiKey" placeholder="API Key" type="password" />
+          </fieldset>
+
+          <fieldset>
+            <legend>视频生成模型</legend>
+            <label><input id="videoEnabled" type="checkbox" checked /> 启用视频 AI 生成</label>
+            <input id="videoApiUrl" placeholder="API URL" />
+            <input id="videoModelId" placeholder="模型 ID" />
+            <input id="videoApiKey" placeholder="API Key" type="password" />
+          </fieldset>
+
+          <fieldset>
+            <legend>总导演 AI Agent</legend>
+            <input id="directorApiUrl" placeholder="API URL" />
+            <input id="directorModelId" placeholder="模型 ID" />
+            <input id="directorApiKey" placeholder="API Key" type="password" />
+          </fieldset>
+
+          <fieldset>
+            <legend>多角色 TTS（Cosy Voice）</legend>
+            <label><input id="ttsEnabled" type="checkbox" checked /> 启用角色 TTS 调度</label>
+            <input id="ttsApiUrl" placeholder="API URL" />
+            <input id="ttsModelId" placeholder="模型 ID" />
+            <input id="ttsApiKey" placeholder="API Key" type="password" />
+          </fieldset>
+        </div>
+
+        <div class="row-actions">
+          <button id="saveConfigBtn" class="btn btn-primary">保存模型配置</button>
+          <select id="testTargetSelect">
+            <option value="image">测试图片模型连接</option>
+            <option value="video">测试视频模型连接</option>
+            <option value="director">测试导演模型连接</option>
+            <option value="tts">测试TTS模型连接</option>
+          </select>
+          <button id="testModelConnBtn" class="btn btn-ghost">测试连接</button>
+          <button id="loadStateBtn" class="btn btn-ghost">重新读取</button>
+        </div>
+      </article>
+
+      <article class="panel">
+        <h2>剧情剧本输入</h2>
+        <p class="hint">支持任意格式：角色名台词、无角色名对话、含括号的场景动作说明（括号仅内部调度参考）。</p>
+        <textarea id="scriptInput" class="script-input" placeholder="示例1（角色名）：\n男主：今晚风很大。\n女主：（轻轻拉住衣角）你会一直在吗？\n\n示例2（无角色名）：\n你好，好久不见。\n我也在等你。\n\n示例3（场景动作）：\n【雨夜天台】\n路人：前面危险，别过去！\n女主：（声音发抖）可是他还在里面。"></textarea>
+        <div class="upload-mode">
+          <label>分幕模式（台词永远按你剧本原文，AI 仅参与分幕与调度）</label>
+          <select id="sceneSplitMode">
+            <option value="strict_copy" selected>严格复刻（优先按用户轮次）</option>
+            <option value="smart_director">导演智能分幕（不改台词）</option>
+          </select>
+          <label>最多生成幕数（0=不限制）</label>
+          <input id="maxScenes" type="number" min="0" step="1" value="0" />
+          <label>强制等于幕数（0=关闭，填8则必须8幕）</label>
+          <input id="exactScenes" type="number" min="0" step="1" value="0" />
+        </div>
+        <div class="row-actions">
+          <button id="prepareBtn" class="btn btn-primary">解析并预生成整段剧情</button>
+        </div>
+        <div id="prepareProgress" class="progress-wrap">
+          <div id="prepareProgressBar" class="progress-bar"></div>
+        </div>
+        <div id="prepareSummary" class="status-box">等待解析剧本</div>
+      </article>
+
+      <article class="panel">
+        <h2>上传素材与时序播放</h2>
+        <p class="hint">支持按秒自动切换，或在每次“确认台词”后切下一张，避免中途闪回失败图。</p>
+
+        <div class="upload-row">
+          <label class="file-btn">
+            上传多张图片
+            <input id="imageUpload" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple />
+          </label>
+          <label class="file-btn">
+            上传视频
+            <input id="videoUpload" type="file" accept="video/mp4,video/webm,video/quicktime" multiple />
+          </label>
+        </div>
+
+        <div id="uploadList" class="upload-list"></div>
+
+        <div class="upload-mode">
+          <label>切图模式</label>
+          <select id="slideMode">
+            <option value="timer">按秒自动切换</option>
+            <option value="dialogue">每次发送对话切下一张</option>
+          </select>
+          <label>起始素材序号（1 开始，可随机）</label>
+          <input id="slideStartIndex" type="number" min="1" step="1" value="1" />
+          <label>自动切图秒数（按秒模式生效）</label>
+          <input id="slideSeconds" type="number" min="0.1" step="0.1" value="2" />
+          <label>视频切换间隔秒数（支持 0 秒无缝）</label>
+          <input id="videoGapSeconds" type="number" min="0" step="0.1" value="0" />
+        </div>
+
+        <div class="row-actions">
+          <button id="applySlideSecondsToAllBtn" class="btn btn-ghost">将上方秒数填入全部素材</button>
+        </div>
+
+        <div class="row-actions">
+          <button id="startSlideshowBtn" class="btn btn-primary">开始幻灯片</button>
+          <button id="stopSlideshowBtn" class="btn btn-ghost">停止幻灯片</button>
+          <button id="clearOverrideBtn" class="btn btn-ghost">恢复 AI 自动舞台</button>
+        </div>
+      </article>
+
+      <article class="panel panel-wide">
+        <h2>生成素材库（可查看 / 播放 / 下载 / 按幕替换）</h2>
+        <div id="storagePaths" class="hint-box">素材存储路径加载中...</div>
+        <div id="libraryList" class="library-grid"></div>
+      </article>
+
+      <article class="panel panel-wide">
+        <h2>剧情节点与总控核查</h2>
+        <div id="timelineList" class="timeline-list"></div>
+        <div id="auditList" class="audit-list"></div>
+      </article>
+
+      <article class="panel panel-wide">
+        <h2>剧情字幕历史</h2>
+        <div class="subtitle-header">
+          <span>按时间顺序滚动显示</span>
+          <span id="subtitleCount">0 条</span>
+        </div>
+        <div class="row-actions">
+          <label for="liveSubtitleDurationSec">实时字幕单次显示时长（秒）</label>
+          <input id="liveSubtitleDurationSec" type="number" min="0.5" max="20" step="0.1" value="2.8" style="max-width:180px" />
+          <button id="applySubtitleSettingsBtn" class="btn btn-ghost">应用字幕时长</button>
+        </div>
+        <div class="subtitle-list" id="subtitleList"></div>
+      </article>
+    </div>
+  </section>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="./main.js"></script>
+</body>
+</html>
