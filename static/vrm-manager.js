@@ -1209,11 +1209,11 @@ class VRMManager {
             this._loadState = 'ready';
             this._isModelReadyForInteraction = true;
 
-            // 首次加载围栏：检查模型是否在屏幕外，如果是则立即校正（不动画）
+            // 首次加载围栏：与拖拽结束共用默认可见像素阈值，避免重启时把允许的半出屏位置拉回屏内。
             if (this.interaction && this.currentModel?.vrm?.scene) {
                 try {
                     const currentPos = this.currentModel.vrm.scene.position.clone();
-                    const correctedPos = this.interaction.clampModelPosition(currentPos, { minVisiblePixels: 300 });
+                    const correctedPos = this.interaction.clampModelPosition(currentPos);
                     if (!currentPos.equals(correctedPos)) {
                         this.currentModel.vrm.scene.position.copy(correctedPos);
                         console.log('[VRM Manager] 首次加载围栏已校正模型位置');

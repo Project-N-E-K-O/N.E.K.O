@@ -1777,10 +1777,11 @@ Live2DManager.prototype._configureLoadedModel = async function(model, modelPath,
     if (!this._isLoadTokenActive(loadToken) || !model || model.destroyed) {
         return;
     }
-    // 在隐藏状态下先做一次边界校正，避免“先出现再瞬移”
+    // 在隐藏状态下先做一次边界校正，避免“先出现再瞬移”。
+    // 启动恢复必须与拖拽结束使用同一可见像素阈值，避免允许的半出屏位置被更严格地拉回屏内。
     if (typeof this._checkSnapRequired === 'function') {
         try {
-            const snapInfo = await this._checkSnapRequired(model, { threshold: 300 });
+            const snapInfo = await this._checkSnapRequired(model);
             if (snapInfo && Number.isFinite(snapInfo.targetX) && Number.isFinite(snapInfo.targetY)) {
                 model.x = snapInfo.targetX;
                 model.y = snapInfo.targetY;
