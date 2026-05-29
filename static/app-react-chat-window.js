@@ -54,9 +54,9 @@
         galgameTemporarilyDisabled: false,
         homeTutorialInteractionLocked: false,
         _galgameRequestSeq: 0,
-        // 通用 ChoicePrompt 框架（PR #1141 follow-up #2）。当前承载 mini_game_invite
-        // 三选项；galgame mode 仍走 galgameOptions 路径（BC，渐进迁移）。
-        // shape: { source: 'mini_game_invite', sessionId, gameType, options: [{choice,label}] } | null
+        // 通用 ChoicePrompt 框架。当前承载 mini_game_invite 与新手破冰；
+        // galgame mode 仍走 galgameOptions 路径（BC，渐进迁移）。
+        // shape: { source, sessionId, gameType, options: [{choice,label}] } | null
         choicePrompt: null,
         // dedupe set：已经 window.open 过的 mini-game session_id。键集，行为按 set 用。
         // 防止 endpoint 路径 + WS push 路径同一 session 双开窗口。
@@ -519,12 +519,38 @@
             time: time,
             createdAt: createdAt,
             avatarLabel: message.avatarLabel,
-            avatarUrl: message.avatarUrl,
+            avatarUrl: resolveCurrentAssistantAvatarUrl(message.role) || message.avatarUrl,
             blocks: Array.isArray(message.blocks) ? message.blocks : [],
             actions: Array.isArray(message.actions) ? message.actions : undefined,
             status: message.status,
             sortKey: typeof message.sortKey === 'number' ? message.sortKey : fallbackSortKey
         };
+    }
+
+    function resolveCurrentAssistantAvatarUrl(role) {
+        if (role !== 'assistant') return undefined;
+        try {
+            if (window.appChatAvatar && typeof window.appChatAvatar.getCurrentAvatarDataUrl === 'function') {
+                return window.appChatAvatar.getCurrentAvatarDataUrl() || undefined;
+            }
+        } catch (_) {}
+        return undefined;
+    }
+
+    function refreshAssistantAvatarUrls(event) {
+        var avatarUrl = resolveCurrentAssistantAvatarUrl('assistant');
+        var shouldClear = event && event.type === 'chat-avatar-preview-cleared';
+        if (!avatarUrl && !shouldClear) return;
+        var changed = false;
+        state.messages = state.messages.map(function (message) {
+            if (!message || message.role !== 'assistant') return message;
+            if (message.avatarUrl === avatarUrl) return message;
+            changed = true;
+            return Object.assign({}, message, {
+                avatarUrl: avatarUrl
+            });
+        });
+        if (changed) renderWindow();
     }
 
     function sortMessages(messages) {
@@ -842,6 +868,17 @@
             console.log('[ROLLBACK] handleComposerSubmit: clearing rollbackDraft length=' + state.rollbackDraft.length + ' key=' + state._rollbackKey);
         }
         state.rollbackDraft = '';
+
+        if (state.choicePrompt && state.choicePrompt.source === 'new_user_icebreaker') {
+            var icebreakerDetail = {
+                sessionId: state.choicePrompt.sessionId || '',
+                text: detail.text,
+                requestId: detail.requestId
+            };
+            window.dispatchEvent(new CustomEvent('neko:icebreaker-free-text-submitted', { detail: icebreakerDetail }));
+            dispatchHostEvent('icebreaker-free-text-submit', icebreakerDetail);
+            return;
+        }
 
         if (typeof state.onComposerSubmit === 'function') {
             try {
@@ -1404,10 +1441,10 @@
         dispatchHostEvent('galgame-option-select', detail);
     }
 
-    // ---- 通用 ChoicePrompt：mini-game invite 三选项 ----
+    // ---- 通用 ChoicePrompt：mini-game invite / new-user icebreaker ----
     // React 组件 onChoice 回调把 option + source 一起传上来。source==='galgame'
     // 走旧路径（dummy fallback，正常不会到这里——galgame 仍然走 onGalgameOptionSelect
-    // 直接 callback；这里只是 BC 兜底）；source==='mini_game_invite' 走新逻辑。
+    // 直接 callback；这里只是 BC 兜底）。
 
     function handleChoiceSelect(option, source) {
         if (isHomeTutorialInteractionLocked()) return;
@@ -1423,6 +1460,29 @@
             handleMiniGameInviteChoice(option);
             return;
         }
+        if (source === 'new_user_icebreaker') {
+            handleIcebreakerChoice(option);
+            return;
+        }
+    }
+
+    function handleIcebreakerChoice(option) {
+        if (isHomeTutorialInteractionLocked()) return;
+        var prompt = state.choicePrompt;
+        if (!prompt || prompt.source !== 'new_user_icebreaker') return;
+        var sessionId = prompt.sessionId || '';
+        var detail = {
+            sessionId: sessionId,
+            choice: String(option.choice || ''),
+            option: {
+                choice: String(option.choice || ''),
+                label: String(option.label || '')
+            }
+        };
+        state.choicePrompt = null;
+        renderWindow();
+        window.dispatchEvent(new CustomEvent('neko:icebreaker-choice-selected', { detail: detail }));
+        dispatchHostEvent('icebreaker-choice-select', detail);
     }
 
     function handleMiniGameInviteChoice(option) {
@@ -1610,6 +1670,42 @@
         }
     }
 
+    function setIcebreakerChoicePrompt(payload) {
+        if (!payload) return;
+        var sessionId = String(payload.sessionId || '');
+        if (!sessionId) return;
+        var rawOptions = Array.isArray(payload.options) ? payload.options : [];
+        if (!rawOptions.length) return;
+        var cleanedOptions = rawOptions.map(function (o) {
+            return {
+                choice: String((o && o.choice) || ''),
+                label: String((o && o.label) || '')
+            };
+        }).filter(function (o) { return o.choice && o.label; });
+        if (!cleanedOptions.length) {
+            console.warn('[NewUserIcebreaker] all options filtered out, skipping render', payload);
+            return;
+        }
+        state.choicePrompt = {
+            source: 'new_user_icebreaker',
+            sessionId: sessionId,
+            gameType: String(payload.gameType || ''),
+            options: cleanedOptions
+        };
+        invalidatePendingGalgameRequest();
+        renderWindow();
+    }
+
+    function clearIcebreakerChoicePrompt(sessionId) {
+        if (!sessionId) return;
+        if (state.choicePrompt
+                && state.choicePrompt.source === 'new_user_icebreaker'
+                && state.choicePrompt.sessionId === sessionId) {
+            state.choicePrompt = null;
+            renderWindow();
+        }
+    }
+
     function handleMiniGameInviteResolved(payload) {
         if (!payload) return;
         var sessionId = String(payload.sessionId || '');
@@ -1776,8 +1872,21 @@
 
     var MAX_MESSAGES = 50;
 
+    function getNextAppendSortKey() {
+        var maxExistingSortKey = Array.isArray(state.messages)
+            ? state.messages.reduce(function (max, message) {
+                var key = message && typeof message.sortKey === 'number' && Number.isFinite(message.sortKey)
+                    ? message.sortKey : null;
+                return (key !== null && key > max) ? key : max;
+            }, -1)
+            : -1;
+        var nextSortKey = Math.max(_sortKeySeq, maxExistingSortKey + 1, Date.now());
+        _sortKeySeq = nextSortKey + 1;
+        return nextSortKey;
+    }
+
     function appendMessage(message) {
-        var normalized = normalizeMessage(message, _sortKeySeq++);
+        var normalized = normalizeMessage(message, getNextAppendSortKey());
         if (!normalized) return null;
 
         state.messages = sortMessages(state.messages.concat([normalized]));
@@ -2610,6 +2719,10 @@
             clearMessages();
         });
 
+        window.addEventListener('chat-avatar-preview-updated', refreshAssistantAvatarUrls);
+        window.addEventListener('chat-avatar-preview-cleared', refreshAssistantAvatarUrls);
+        window.addEventListener('neko:tutorial-chat-identity-changed', refreshAssistantAvatarUrls);
+
         window.addEventListener(EVENT_PREFIX + 'set-view-props', function (event) {
             setViewProps(event.detail && event.detail.viewProps);
         });
@@ -2744,6 +2857,8 @@
         createResizeEdges();
         bindResizing();
         bindBridgeEvents();
+        setTimeout(refreshAssistantAvatarUrls, 0);
+        setTimeout(refreshAssistantAvatarUrls, 500);
 
         // 恢复手机端用户设置的高度
         try {
@@ -2909,6 +3024,8 @@
         refreshGalgameOptions: fetchGalgameOptionsForLatestTurn,
         // Mini-game invite ChoicePrompt：app-websocket.js 收到对应 WS message 时调
         setMiniGameInvitePrompt: setMiniGameInvitePrompt,
+        setIcebreakerChoicePrompt: setIcebreakerChoicePrompt,
+        clearIcebreakerChoicePrompt: clearIcebreakerChoicePrompt,
         // unified resolved handler：accept 兼 launch / decline / suppress 都通过
         // 这条入口分发——前端 dismiss prompt UI + accept 时 window.open。替代了
         // 旧 launchMiniGame（accept-only）路径，让 codex P2 的 cross-window
