@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hermes 伙伴陪伴 - Companion</title>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600;700&family=Nunito:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --sky-blue: #87CEEB;
+            --soft-pink: #FFB6C1;
+            --warm-white: #FFF8F0;
+            --gentle-orange: #FFA07A;
+            --honey-yellow: #FFE4B5;
+            --lavender: #E6E6FA;
+            --rose: #F8C8DC;
+            --peach: #FFDAB9;
+            --text-dark: #4A4A6A;
+            --text-light: #7A7A9A;
+            --coral: #FF6B9D;
+            --mint: #98D8C8;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Nunito', 'Noto Serif SC', serif;
+            background: linear-gradient(135deg, #FFF8F0 0%, #FFE4E1 15%, #E6F3FF 35%, #FFF0F5 55%, #FFF8DC 75%, #F0FFF0 90%, #FFF8F0 100%);
+            min-height: 100vh;
+            color: var(--text-dark);
+            overflow-x: hidden;
+            position: relative;
+        }
+
+        /* ── 浮动装饰 ── */
+        .sparkle {
+            position: fixed;
+            pointer-events: none;
+            animation: sparkle-float 8s infinite ease-in-out;
+            z-index: 0;
+            font-size: 18px;
+        }
+        @keyframes sparkle-float {
+            0%, 100% { transform: translateY(0) rotate(0deg) scale(1); opacity: 0.4; }
+            25% { transform: translateY(-20px) rotate(90deg) scale(1.1); opacity: 0.6; }
+            50% { transform: translateY(-10px) rotate(180deg) scale(0.9); opacity: 0.3; }
+            75% { transform: translateY(-30px) rotate(270deg) scale(1.05); opacity: 0.5; }
+        }
+
+        .container {
+            max-width: 880px;
+            margin: 0 auto;
+            padding: 20px;
+            position: relative;
+            z-index: 1;
+        }
+
+        /* ── 头部 ── */
+        .header {
+            text-align: center;
+            padding: 44px 20px 36px;
+            background: linear-gradient(135deg, rgba(255,182,193,0.35) 0%, rgba(135,206,235,0.35) 35%, rgba(255,160,122,0.3) 70%, rgba(152,216,200,0.3) 100%);
+            border-radius: 28px;
+            margin-bottom: 28px;
+            backdrop-filter: blur(14px);
+            border: 1px solid rgba(255,255,255,0.55);
+            box-shadow: 0 8px 40px rgba(255,182,193,0.18);
+        }
+        .header h1 {
+            font-size: 2.4em;
+            font-weight: 700;
+            background: linear-gradient(90deg, #FF6B9D, #87CEEB, #FFB347, #98D8C8, #FF6B9D);
+            background-size: 300% auto;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            animation: gradient-shift 5s ease infinite;
+        }
+        @keyframes gradient-shift {
+            0%, 100% { background-position: 0% center; }
+            50% { background-position: 100% center; }
+        }
+        .header .subtitle {
+            font-size: 1.05em;
+            color: var(--text-light);
+            font-style: italic;
+            margin-top: 8px;
+            line-height: 1.6;
+        }
+
+        /* ── 卡片 ── */
+        .card {
+            background: rgba(255,255,255,0.72);
+            border-radius: 22px;
+            padding: 28px;
+            margin-bottom: 24px;
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255,255,255,0.55);
+            box-shadow: 0 4px 28px rgba(135,206,235,0.1);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+        .card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 36px rgba(255,182,193,0.18);
+        }
+        .card-title {
+            font-size: 1.2em;
+            font-weight: 600;
+            margin-bottom: 18px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: var(--text-dark);
+        }
+        .card-title .icon { font-size: 1.3em; }
+
+        /* ── 统计网格 ── */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 14px;
+        }
+        .stat-item {
+            text-align: center;
+            padding: 20px 10px;
+            background: linear-gradient(135deg, rgba(255,182,193,0.2), rgba(135,206,235,0.2), rgba(255,160,122,0.2));
+            border-radius: 18px;
+            border: 1px solid rgba(255,255,255,0.5);
+            transition: transform 0.3s;
+        }
+        .stat-item:hover { transform: scale(1.03); }
+        .stat-value {
+            font-size: 2em;
+            font-weight: 700;
+            background: linear-gradient(135deg, #FF6B9D, #87CEEB, #FFB347);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .stat-label {
+            font-size: 0.82em;
+            color: var(--text-light);
+            margin-top: 4px;
+        }
+
+        /* ── 状态指示 ── */
+        .status-bar {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 14px 20px;
+            background: linear-gradient(135deg, rgba(152,216,200,0.25), rgba(135,206,235,0.25));
+            border-radius: 14px;
+            margin-bottom: 18px;
+            border: 1px solid rgba(255,255,255,0.4);
+        }
+        .status-dot {
+            width: 10px; height: 10px;
+            border-radius: 50%;
+            background: #98D8C8;
+            box-shadow: 0 0 8px rgba(152,216,200,0.6);
+            animation: pulse 2s infinite;
+        }
+        .status-dot.offline { background: #FFB6C1; box-shadow: 0 0 8px rgba(255,182,193,0.6); }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.6; transform: scale(0.85); }
+        }
+        .status-text { font-size: 0.92em; color: var(--text-dark); }
+        .status-text strong { color: var(--coral); }
+
+        /* ── 事件时间线 ── */
+        .timeline {
+            position: relative;
+            padding-left: 32px;
+        }
+        .timeline::before {
+            content: '';
+            position: absolute;
+            left: 10px;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: linear-gradient(180deg, #FFB6C1, #87CEEB, #FFA07A, #98D8C8);
+            border-radius: 1px;
+        }
+        .timeline-item {
+            position: relative;
+            margin-bottom: 20px;
+            padding: 16px 20px;
+            background: rgba(255,255,255,0.6);
+            border-radius: 16px;
+            border: 1px solid rgba(255,255,255,0.5);
+            transition: all 0.3s;
+        }
+        .timeline-item:hover {
+            background: rgba(255,255,255,0.85);
+            transform: translateX(4px);
+            box-shadow: 0 4px 20px rgba(135,206,235,0.15);
+        }
+        .timeline-item::before {
+            content: '';
+            position: absolute;
+            left: -28px;
+            top: 22px;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            border: 2px solid #FFB6C1;
+            background: white;
+        }
+        .timeline-item[data-type="edit"]::before { border-color: #FF6B9D; background: #FFE4E1; }
+        .timeline-item[data-type="create"]::before { border-color: #87CEEB; background: #E6F3FF; }
+        .timeline-item[data-type="debug"]::before { border-color: #FFA07A; background: #FFE4D6; }
+        .timeline-item[data-type="test"]::before { border-color: #98D8C8; background: #E8F8F0; }
+        .timeline-item[data-type="git"]::before { border-color: #FFB347; background: #FFF3E0; }
+        .timeline-item[data-type="scrape"]::before { border-color: #A29BFE; background: #F0EFFF; }
+        .timeline-item[data-type="skill"]::before { border-color: #1dd1a1; background: #E8FCF5; }
+        .timeline-item[data-type="task_complete"]::before { border-color: #1dd1a1; background: #E8FCF5; }
+        .timeline-item[data-type="command"]::before { border-color: #A29BFE; background: #F0EFFF; }
+
+        .timeline-time {
+            font-size: 0.78em;
+            color: var(--text-light);
+            margin-bottom: 6px;
+        }
+        .timeline-summary {
+            font-size: 0.95em;
+            line-height: 1.6;
+            color: var(--text-dark);
+        }
+        .timeline-meta {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+        }
+        .timeline-tag {
+            font-size: 0.72em;
+            padding: 3px 10px;
+            border-radius: 10px;
+            background: linear-gradient(135deg, rgba(255,182,193,0.3), rgba(135,206,235,0.3));
+            color: var(--text-light);
+            border: 1px solid rgba(255,255,255,0.4);
+        }
+
+        /* ── 空状态 ── */
+        .empty-state {
+            text-align: center;
+            padding: 50px 20px;
+            color: var(--text-light);
+        }
+        .empty-state-icon { font-size: 56px; margin-bottom: 12px; }
+        .empty-state-text { font-size: 15px; font-style: italic; line-height: 1.8; }
+
+        /* ── 按钮 ── */
+        .btn {
+            padding: 11px 26px;
+            border: none;
+            border-radius: 14px;
+            font-family: inherit;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #FF6B9D, #FFB347);
+            color: white;
+            box-shadow: 0 4px 16px rgba(255,107,157,0.3);
+        }
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 24px rgba(255,107,157,0.4);
+        }
+        .btn-secondary {
+            background: linear-gradient(135deg, #87CEEB, #98D8E8);
+            color: white;
+            box-shadow: 0 4px 16px rgba(135,206,235,0.3);
+        }
+        .btn-secondary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 24px rgba(135,206,235,0.4);
+        }
+        .btn-danger {
+            background: linear-gradient(135deg, #FF6B6B, #FFA07A);
+            color: white;
+        }
+        .btn-danger:hover { transform: translateY(-2px); }
+        .btn-group { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
+
+        /* ── 设置面板 ── */
+        .settings-row {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            margin-bottom: 14px;
+            flex-wrap: wrap;
+        }
+        .settings-row label {
+            font-size: 0.9em;
+            color: var(--text-light);
+            font-weight: 600;
+            min-width: 80px;
+        }
+        .settings-row input {
+            padding: 9px 14px;
+            border: 2px solid rgba(135,206,235,0.3);
+            border-radius: 12px;
+            background: rgba(255,255,255,0.7);
+            color: var(--text-dark);
+            font-size: 14px;
+            font-family: inherit;
+            transition: border-color 0.3s;
+            flex: 1;
+            max-width: 280px;
+        }
+        .settings-row input:focus {
+            outline: none;
+            border-color: #87CEEB;
+            box-shadow: 0 0 0 3px rgba(135,206,235,0.2);
+        }
+
+        /* ── 提示条 ── */
+        .toast {
+            position: fixed;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%) translateY(100px);
+            background: linear-gradient(135deg, #FF6B9D, #87CEEB);
+            color: white;
+            padding: 13px 26px;
+            border-radius: 14px;
+            font-weight: 600;
+            font-family: inherit;
+            box-shadow: 0 8px 28px rgba(255,107,157,0.35);
+            transition: transform 0.4s ease;
+            z-index: 200;
+            white-space: nowrap;
+        }
+        .toast.show { transform: translateX(-50%) translateY(0); }
+
+        /* ── 滚动条 ── */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: rgba(135,206,235,0.08); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb {
+            background: linear-gradient(180deg, #FFB6C1, #87CEEB);
+            border-radius: 4px;
+        }
+
+        /* ── 响应式 ── */
+        @media (max-width: 640px) {
+            .header h1 { font-size: 1.7em; }
+            .stats-grid { grid-template-columns: repeat(2, 1fr); }
+            .stat-value { font-size: 1.5em; }
+            .settings-row { flex-direction: column; align-items: stretch; }
+            .settings-row input { max-width: 100%; }
+        }
+
+        .loading { text-align: center; padding: 40px; color: var(--text-light); }
+        .spinner {
+            display: inline-block;
+            width: 28px; height: 28px;
+            border: 3px solid rgba(135,206,235,0.2);
+            border-top-color: #87CEEB;
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <!-- 浮动装饰 -->
+    <div class="sparkle" style="top:6%;left:3%;animation-delay:0s;">✨</div>
+    <div class="sparkle" style="top:12%;right:5%;animation-delay:1.5s;font-size:14px;">🌸</div>
+    <div class="sparkle" style="top:45%;left:2%;animation-delay:3s;font-size:16px;">🦋</div>
+    <div class="sparkle" style="top:70%;right:3%;animation-delay:4.5s;">💫</div>
+    <div class="sparkle" style="top:30%;right:94%;animation-delay:2s;font-size:20px;">🌺</div>
+    <div class="sparkle" style="top:55%;left:95%;animation-delay:5.5s;font-size:12px;">🌟</div>
+    <div class="sparkle" style="top:85%;left:6%;animation-delay:6s;font-size:15px;">🍃</div>
+    <div class="sparkle" style="top:20%;left:92%;animation-delay:3.5s;font-size:13px;">💝</div>
+
+    <div class="container">
+        <!-- 头部 -->
+        <div class="header">
+            <h1>🌟 Hermes 伙伴陪伴</h1>
+            <p class="subtitle">当你和 Hermes 一起奋斗时<br>你的 NEKO 伙伴会在这里默默关注你、温暖你</p>
+        </div>
+
+        <!-- 状态栏 -->
+        <div class="card">
+            <div class="status-bar">
+                <div class="status-dot" id="status-dot"></div>
+                <div class="status-text" id="status-text">正在连接...</div>
+            </div>
+
+            <div class="stats-grid">
+                <div class="stat-item">
+                    <div class="stat-value" id="event-count">0</div>
+                    <div class="stat-label">活动事件</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="user-name">-</div>
+                    <div class="stat-label">用户名</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="port-num">-</div>
+                    <div class="stat-label">监听端口</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="cooldown-val">-</div>
+                    <div class="stat-label">冷却(秒)</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 活动时间线 -->
+        <div class="card">
+            <div class="card-title"><span class="icon">📜</span> 活动时间线</div>
+            <div id="timeline-container">
+                <div class="loading"><div class="spinner"></div><div style="margin-top:10px;">加载中...</div></div>
+            </div>
+        </div>
+
+        <!-- 设置 -->
+        <div class="card">
+            <div class="card-title"><span class="icon">⚙️</span> 设置</div>
+            <div class="settings-row">
+                <label>用户名</label>
+                <input type="text" id="input-name" placeholder="输入你的名字">
+                <button class="btn btn-primary" onclick="saveUserName()">保存</button>
+            </div>
+            <div class="settings-row">
+                <label>冷却时间</label>
+                <input type="number" id="input-cooldown" placeholder="秒" min="10" max="3600">
+                <button class="btn btn-secondary" onclick="saveCooldown()">保存</button>
+            </div>
+            <div class="btn-group">
+                <button class="btn btn-primary" onclick="testPush()">💌 发送测试消息</button>
+                <button class="btn btn-danger" onclick="clearEvents()">🧹 清空事件日志</button>
+            </div>
+        </div>
+
+        <!-- 双向通信 -->
+        <div class="card">
+            <div class="card-title"><span class="icon">💬</span> 双向通信</div>
+            <div class="status-bar" id="tmux-status-bar">
+                <div class="status-dot" id="tmux-dot"></div>
+                <div class="status-text" id="tmux-status-text">tmux 状态：加载中...</div>
+            </div>
+            <div class="settings-row">
+                <label>注入消息</label>
+                <input type="text" id="input-inject" placeholder="输入要发送给 Hermes 的消息">
+                <button class="btn btn-primary" onclick="injectMessage()">发送</button>
+            </div>
+            <div class="settings-row">
+                <label>捕获回复</label>
+                <input type="number" id="input-capture-lines" placeholder="行数" value="50" min="10" max="200" style="max-width:100px;">
+                <button class="btn btn-secondary" onclick="captureReply()">捕获</button>
+            </div>
+            <div id="capture-output" style="margin-top:12px;padding:14px;background:rgba(255,255,255,0.6);border-radius:12px;font-size:0.88em;color:var(--text-dark);white-space:pre-wrap;max-height:300px;overflow-y:auto;display:none;"></div>
+            <div class="btn-group">
+                <button class="btn btn-primary" onclick="createSession()">🚀 启动 Hermes 会话</button>
+                <button class="btn btn-danger" onclick="killSession()">🛑 关闭会话</button>
+                <button class="btn btn-secondary" onclick="injectApi()">🔗 API 发送</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <script>
+        const pluginId = 'hermes_companion';
+        let refreshTimer = null;
+
+        function showToast(msg) {
+            var t = document.getElementById('toast');
+            t.textContent = msg;
+            t.classList.add('show');
+            setTimeout(function() { t.classList.remove('show'); }, 3000);
+        }
+
+        function getBaseUrl() {
+            var loc = window.location;
+            return loc.protocol + '//' + loc.host;
+        }
+
+        async function callPlugin(entryId, args) {
+            try {
+                var baseUrl = getBaseUrl();
+                var resp = await fetch(baseUrl + '/runs', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        plugin_id: pluginId,
+                        entry_id: entryId,
+                        args: args || {}
+                    })
+                });
+                if (!resp.ok) { showToast('服务器错误: ' + resp.status); return null; }
+                var data = await resp.json();
+                var runId = data.run_id;
+                if (!runId) return null;
+
+                for (var i = 0; i < 60; i++) {
+                    await new Promise(function(r) { setTimeout(r, 150); });
+                    var sr = await fetch(baseUrl + '/runs/' + runId);
+                    if (!sr.ok) return null;
+                    var sd = await sr.json();
+                    if (sd.status === 'succeeded') {
+                        await new Promise(function(r) { setTimeout(r, 200); });
+                        var er = await fetch(baseUrl + '/runs/' + runId + '/export');
+                        if (!er.ok) return null;
+                        var ed = await er.json();
+                        if (ed.items && ed.items.length > 0) {
+                            var ti = ed.items.find(function(x) { return x.label === 'trigger_response'; });
+                            if (ti && ti.json) {
+                                var jsonData = ti.json;
+                                if (jsonData.success && jsonData.data) {
+                                    return jsonData.data;
+                                }
+                                return jsonData.plugin_response || jsonData;
+                            }
+                        }
+                        return ed;
+                    }
+                    if (sd.status === 'failed' || sd.status === 'timeout') return null;
+                }
+                return null;
+            } catch (e) {
+                console.error(e);
+                return null;
+            }
+        }
+
+        async function loadStatus() {
+            var result = await callPlugin('get_status');
+            if (!result) {
+                document.getElementById('status-dot').classList.add('offline');
+                document.getElementById('status-text').innerHTML = '未连接 - 请确认 NEKO 服务已启动';
+                return;
+            }
+            document.getElementById('status-dot').classList.remove('offline');
+            document.getElementById('status-text').innerHTML = '已连接 — <strong>' + escapeHtml(result.user_name || '你') + '</strong>，你的伙伴正在关注你～';
+            document.getElementById('event-count').textContent = result.event_count || 0;
+            document.getElementById('user-name').textContent = result.user_name || '-';
+            document.getElementById('port-num').textContent = result.port || '-';
+            document.getElementById('cooldown-val').textContent = result.cooldown || '-';
+            document.getElementById('input-name').value = result.user_name || '';
+            document.getElementById('input-cooldown').value = result.cooldown || 30;
+        }
+
+        async function loadEvents() {
+            var container = document.getElementById('timeline-container');
+            var result = await callPlugin('get_events', { limit: 30 });
+
+            if (!result || !result.events || !result.events.length) {
+                container.innerHTML =
+                    '<div class="empty-state">' +
+                    '<div class="empty-state-icon">🌙</div>' +
+                    '<div class="empty-state-text">还没有活动记录呢～<br>当你和 Hermes 一起写代码时<br>你的伙伴会在这里记录你的每一步</div>' +
+                    '</div>';
+                return;
+            }
+
+            var html = '<div class="timeline">';
+            result.events.forEach(function(ev) {
+                var type = ev.type || 'general';
+                var icon = getTypeIcon(type);
+                html += '<div class="timeline-item" data-type="' + escapeHtml(type) + '">';
+                html += '<div class="timeline-time">' + escapeHtml(ev.time_str || '') + '</div>';
+                html += '<div class="timeline-summary">' + icon + ' ' + escapeHtml(ev.summary || '') + '</div>';
+                if (ev.tools && ev.tools.length) {
+                    html += '<div class="timeline-meta">';
+                    ev.tools.forEach(function(t) {
+                        html += '<span class="timeline-tag">🔧 ' + escapeHtml(t) + '</span>';
+                    });
+                    if (ev.files && ev.files.length) {
+                        ev.files.slice(0, 3).forEach(function(f) {
+                            var name = f.split(/[\\/]/).pop();
+                            html += '<span class="timeline-tag">📄 ' + escapeHtml(name) + '</span>';
+                        });
+                    }
+                    html += '</div>';
+                }
+                html += '</div>';
+            });
+            html += '</div>';
+            container.innerHTML = html;
+
+            document.getElementById('event-count').textContent = result.count || 0;
+        }
+
+        function getTypeIcon(type) {
+            var icons = {
+                edit: '✏️', create: '📝', debug: '🔍', test: '🧪',
+                git: '📦', search: '🔎', refactor: '🔄', build: '🏗️',
+                deploy: '🚀', scrape: '🕷️', skill: '🧩',
+                task_complete: '🎉', command: '💻', general: '💫'
+            };
+            return icons[type] || '💫';
+        }
+
+        function escapeHtml(t) {
+            var d = document.createElement('div');
+            d.textContent = t || '';
+            return d.innerHTML;
+        }
+
+        async function saveUserName() {
+            var name = document.getElementById('input-name').value.trim();
+            if (!name) { showToast('请输入用户名'); return; }
+            var r = await callPlugin('set_user_name', { name: name });
+            if (r && r.user_name) {
+                showToast('用户名已更新为: ' + r.user_name);
+                loadStatus();
+            } else {
+                showToast('更新失败');
+            }
+        }
+
+        async function saveCooldown() {
+            var sec = parseInt(document.getElementById('input-cooldown').value);
+            if (isNaN(sec) || sec < 10) { showToast('冷却时间至少 10 秒'); return; }
+            var r = await callPlugin('set_cooldown', { seconds: sec });
+            if (r && r.cooldown_seconds) {
+                showToast('冷却时间已设为 ' + r.cooldown_seconds + ' 秒');
+                loadStatus();
+            } else {
+                showToast('更新失败');
+            }
+        }
+
+        async function testPush() {
+            var r = await callPlugin('test_push');
+            if (r && r.sent) {
+                showToast('测试消息已发送！检查 NEKO 对话框～');
+            } else {
+                showToast('发送失败');
+            }
+        }
+
+        async function clearEvents() {
+            if (!confirm('确定要清空所有事件日志吗？')) return;
+            var r = await callPlugin('clear_events');
+            if (r && r.cleared !== undefined) {
+                showToast('已清空 ' + r.cleared + ' 条事件');
+                loadEvents();
+                loadStatus();
+            } else {
+                showToast('清空失败');
+            }
+        }
+
+        async function loadTmuxStatus() {
+            var result = await callPlugin('tmux_status');
+            if (!result) return;
+            var dot = document.getElementById('tmux-dot');
+            var text = document.getElementById('tmux-status-text');
+            if (result.session_alive) {
+                dot.classList.remove('offline');
+                text.innerHTML = 'tmux 会话 <strong>' + escapeHtml(result.session_name) + '</strong> 运行中';
+            } else {
+                dot.classList.add('offline');
+                text.innerHTML = 'tmux 会话 <strong>' + escapeHtml(result.session_name) + '</strong> 未运行';
+            }
+        }
+
+        async function injectMessage() {
+            var text = document.getElementById('input-inject').value.trim();
+            if (!text) { showToast('请输入消息内容'); return; }
+            var r = await callPlugin('inject_tmux', { text: text, capture_reply: true });
+            if (r && r.success) {
+                showToast('消息已注入！');
+                document.getElementById('input-inject').value = '';
+                if (r.captured_reply) {
+                    var el = document.getElementById('capture-output');
+                    el.textContent = r.captured_reply;
+                    el.style.display = 'block';
+                }
+            } else {
+                showToast('注入失败: ' + (r && r.error || '未知错误'));
+            }
+        }
+
+        async function captureReply() {
+            var lines = parseInt(document.getElementById('input-capture-lines').value) || 50;
+            var r = await callPlugin('capture_tmux', { lines: lines });
+            if (r && r.output !== undefined) {
+                var el = document.getElementById('capture-output');
+                el.textContent = r.output || '(无输出)';
+                el.style.display = 'block';
+                showToast('已捕获 ' + lines + ' 行输出');
+            } else {
+                showToast('捕获失败');
+            }
+        }
+
+        async function createSession() {
+            var r = await callPlugin('create_tmux_session');
+            if (r && r.success) {
+                showToast(r.message);
+                loadTmuxStatus();
+            } else {
+                showToast('创建失败: ' + (r && r.error || '未知错误'));
+            }
+        }
+
+        async function killSession() {
+            if (!confirm('确定要关闭 tmux 会话吗？')) return;
+            var r = await callPlugin('kill_tmux_session');
+            if (r && r.success) {
+                showToast(r.message);
+                loadTmuxStatus();
+            } else {
+                showToast('关闭失败: ' + (r && r.error || '未知错误'));
+            }
+        }
+
+        async function injectApi() {
+            var text = document.getElementById('input-inject').value.trim();
+            if (!text) { showToast('请输入消息内容'); return; }
+            var r = await callPlugin('inject_api', { text: text, use_responses: true });
+            if (r && r.success) {
+                showToast('API 发送成功！');
+                document.getElementById('input-inject').value = '';
+                var el = document.getElementById('capture-output');
+                el.textContent = r.reply || '(无回复)';
+                el.style.display = 'block';
+            } else {
+                showToast('API 发送失败: ' + (r && r.error || '未知错误'));
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            loadStatus();
+            loadEvents();
+            loadTmuxStatus();
+            refreshTimer = setInterval(function() {
+                loadStatus();
+                loadEvents();
+                loadTmuxStatus();
+            }, 15000);
+        });
+    </script>
+</body>
+</html>

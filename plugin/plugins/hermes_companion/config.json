@@ -1,0 +1,21 @@
+{
+  "hermes_companion": {
+    "port": 48922,
+    "cooldown_seconds": 30,
+    "tmux": {
+      "enabled": true,
+      "session_name": "neko-hermes",
+      "auto_create": true,
+      "command": "hermes",
+      "capture_reply": true,
+      "capture_lines": 50
+    },
+    "http_api": {
+      "enabled": true,
+      "url": "http://127.0.0.1:8642/v1/chat/completions",
+      "api_key": "change-me-local-dev",
+      "responses_url": "http://127.0.0.1:8642/v1/responses",
+      "model": "hermes-agent"
+    }
+  }
+}

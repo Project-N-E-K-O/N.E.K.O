@@ -1,0 +1,19 @@
+[plugin]
+name = "Hermes 伙伴陪伴"
+description = "监测 Hermes 的工作活动，让 NEKO 伙伴温暖陪伴你开发。支持双向通信：可启动 Hermes TUI 会话（create_tmux_session）、发送消息到 Hermes（inject_tmux）、通过 HTTP API 发送消息（inject_api）、捕获 TUI 回复（capture_tmux）。Web UI：http://127.0.0.1:48916/plugin/hermes_companion/ui/"
+short_description = "Monitors Hermes activity and lets your NEKO companion encourage you while coding. Supports bidirectional communication: start Hermes TUI, inject messages via tmux or API."
+keywords = ["hermes", "companion", "陪伴", "开发", "coding", "鼓励", "monitor", "activity", "bidirectional", "tmux", "inject", "api", "启动hermes", "启动Hermes"]
+version = "1.1.0"
+id = "hermes_companion"
+entry = "plugin.plugins.hermes_companion:HermesCompanionPlugin"
+
+[plugin.author]
+name = "NEKO Community · 基于 OpenClaw Companion 架构（感谢 OpenClaw 🙏）"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin_runtime]
+enabled = true
+auto_start = true
