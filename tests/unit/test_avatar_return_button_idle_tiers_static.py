@@ -105,6 +105,10 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert "attributeFilter: ['style', 'data-dragging']" in source
     assert '_scheduleNekoIdleCat1JourneySyncForContainer' in source
     assert '_dispatchNekoIdleReturnBallManualMove' in source
+    assert '_getNekoIdleDesktopChatMinimizedRect' in source
+    assert '_getNekoIdleChatMinimizedRect' in source
+    assert "'neko:idle-chat-minimized-state'" in source
+    assert '_NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS' in source
     assert '_pauseNekoIdleCat1Journey' in source
     assert '_resumeNekoIdleCat1Journey' in source
     assert '_getNekoIdleReturnCurrentArtUrl' in source

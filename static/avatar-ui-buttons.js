@@ -202,6 +202,7 @@ const _NEKO_IDLE_CAT1_WALK_SPEED_PX_PER_SEC = 101;
 const _NEKO_IDLE_CAT1_WALK_MIN_STEP_MS = 12;
 const _NEKO_IDLE_CAT1_WALK_MAX_STEP_MS = 48;
 const _NEKO_IDLE_CAT1_STRETCH_FINAL_HOLD_MS = 700;
+const _NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS = 2500;
 const _NEKO_IDLE_RETURN_ASSET_VERSION = (() => {
     try {
         const currentScript = document.currentScript;
@@ -312,6 +313,11 @@ const _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW = Object.freeze({
 const _NEKO_IDLE_RETURN_SUBACTION_PROFILES = Object.freeze({
     [_NEKO_IDLE_TIER_CAT1]: _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW
 });
+let _nekoIdleDesktopChatMinimizedState = {
+    minimized: false,
+    screenRect: null,
+    updatedAt: 0
+};
 
 function _shouldReduceNekoIdleMotion() {
     try {
@@ -639,6 +645,50 @@ function _getNekoIdleReactChatMinimizedRect() {
     return rect;
 }
 
+function _normalizeNekoIdleScreenRect(rect) {
+    if (!rect || typeof rect !== 'object') return null;
+    const left = Number.isFinite(Number(rect.left)) ? Number(rect.left) : Number(rect.x);
+    const top = Number.isFinite(Number(rect.top)) ? Number(rect.top) : Number(rect.y);
+    const width = Number(rect.width);
+    const height = Number(rect.height);
+    if (!Number.isFinite(left) || !Number.isFinite(top) ||
+        !Number.isFinite(width) || !Number.isFinite(height) ||
+        width <= 0 || height <= 0) {
+        return null;
+    }
+    return {
+        left: left,
+        top: top,
+        width: width,
+        height: height,
+        right: left + width,
+        bottom: top + height
+    };
+}
+
+function _getNekoIdleDesktopChatMinimizedRect() {
+    const state = _nekoIdleDesktopChatMinimizedState;
+    if (!state || !state.minimized || !state.screenRect) return null;
+    if (Date.now() - (state.updatedAt || 0) > _NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS) return null;
+    const screenRect = _normalizeNekoIdleScreenRect(state.screenRect);
+    if (!screenRect) return null;
+    const screenLeft = Number.isFinite(window.screenX) ? window.screenX : 0;
+    const screenTop = Number.isFinite(window.screenY) ? window.screenY : 0;
+    return {
+        left: screenRect.left - screenLeft,
+        top: screenRect.top - screenTop,
+        width: screenRect.width,
+        height: screenRect.height,
+        right: screenRect.right - screenLeft,
+        bottom: screenRect.bottom - screenTop
+    };
+}
+
+function _getNekoIdleChatMinimizedRect() {
+    return _getNekoIdleReactChatMinimizedRect()
+        || _getNekoIdleDesktopChatMinimizedRect();
+}
+
 function _clampNekoIdleCat1Position(left, top, width, height) {
     return {
         left: Math.round(Math.max(0, Math.min(left, Math.max(0, window.innerWidth - width)))),
@@ -795,7 +845,7 @@ function _stepNekoIdleCat1Walk(button, timestamp) {
         return;
     }
 
-    const chatRect = _getNekoIdleReactChatMinimizedRect();
+    const chatRect = _getNekoIdleChatMinimizedRect();
     const target = _getNekoIdleCat1Target(container, chatRect);
     if (!target) {
         _cancelNekoIdleCat1Journey(button, { resetArt: true, preserveObservers: true });
@@ -897,7 +947,7 @@ function _syncNekoIdleCat1Journey(button, tier) {
     _refreshNekoIdleCat1Observer(button);
     if (state.paused) return;
 
-    const chatRect = _getNekoIdleReactChatMinimizedRect();
+    const chatRect = _getNekoIdleChatMinimizedRect();
     const target = _getNekoIdleCat1Target(container, chatRect);
     if (!target) {
         if (state.substate !== profile.idleSubstate) {
@@ -1154,6 +1204,21 @@ function _ensureNekoIdleReturnPresentationBridge() {
             return;
         }
         _cancelNekoIdleCat1JourneyForContainer(detail.container);
+    });
+
+    window.addEventListener('neko:idle-chat-minimized-state', (event) => {
+        const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
+        const screenRect = detail && detail.minimized
+            ? _normalizeNekoIdleScreenRect(detail.screenRect)
+            : null;
+        _nekoIdleDesktopChatMinimizedState = {
+            minimized: !!(detail && detail.minimized && screenRect),
+            screenRect: screenRect,
+            updatedAt: Date.now()
+        };
+        document.querySelectorAll(_NEKO_IDLE_RETURN_BUTTON_SELECTOR).forEach((button) => {
+            _scheduleNekoIdleCat1JourneySync(button);
+        });
     });
 }
 

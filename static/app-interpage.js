@@ -1696,6 +1696,12 @@
                         dispatchIdleReturnBallState(event.data);
                         break;
                     }
+                    case 'idle_chat_minimized_state': {
+                        var idleChatCurrentName = getCurrentLanlanName();
+                        if (event.data.lanlan_name && (!idleChatCurrentName || event.data.lanlan_name !== idleChatCurrentName)) break;
+                        dispatchIdleChatMinimizedState(event.data);
+                        break;
+                    }
                     case 'voice_config_switching': {
                         handleVoiceConfigSwitchingMessage(event.data);
                         break;
@@ -1967,6 +1973,22 @@
         }));
     }
 
+    function dispatchIdleChatMinimizedState(detail) {
+        window.dispatchEvent(new CustomEvent('neko:idle-chat-minimized-state', {
+            detail: Object.assign({
+                action: 'idle_chat_minimized_state',
+                source: '',
+                reason: '',
+                minimized: false,
+                screenRect: null,
+                timestamp: Date.now(),
+                via: 'broadcast-channel'
+            }, detail || {}, {
+                via: 'broadcast-channel'
+            })
+        }));
+    }
+
     function broadcastCrossWindowIdleActivity(source, kind) {
         if (!isStandaloneChatPage()) return;
 
@@ -2134,6 +2156,18 @@
             modelType: (evt.detail && evt.detail.modelType) || '',
             timestamp: Date.now()
         });
+    });
+
+    window.addEventListener('neko:idle-chat-minimized-state', function (evt) {
+        var detail = evt && evt.detail && typeof evt.detail === 'object' ? evt.detail : null;
+        if (!detail || detail.via === 'broadcast-channel') return;
+        if (!nekoBroadcastChannel) return;
+        nekoBroadcastChannel.postMessage(Object.assign({
+            action: 'idle_chat_minimized_state',
+            source: 'chat-window',
+            lanlan_name: getCurrentLanlanName(),
+            timestamp: Date.now()
+        }, detail));
     });
 
     // Chat 窗口初始化时，向 Pet 窗口请求当前已缓存的头像

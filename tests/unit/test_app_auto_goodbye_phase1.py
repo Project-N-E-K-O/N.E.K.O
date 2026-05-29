@@ -572,6 +572,15 @@ def test_app_interpage_relays_idle_return_ball_state_to_chat_window():
     assert "new CustomEvent('neko:idle-return-ball-state'" in source
 
 
+def test_app_interpage_relays_idle_chat_minimized_state_to_pet_window():
+    source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+
+    assert "case 'idle_chat_minimized_state':" in source
+    assert "function dispatchIdleChatMinimizedState(detail)" in source
+    assert "new CustomEvent('neko:idle-chat-minimized-state'" in source
+    assert "nekoBroadcastChannel.postMessage(Object.assign({" in source
+
+
 def test_app_auto_goodbye_visual_tiers_progress_without_retriggering_goodbye():
     script = textwrap.dedent(
         f"""

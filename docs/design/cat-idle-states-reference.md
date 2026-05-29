@@ -191,7 +191,7 @@ cat1:idle
 
 1. 触发后不只是替换 GIF，还要让 return-ball 容器沿屏幕坐标实际移动到聊天框旁边。
 2. 目标点应位于聊天框最小化球旁边，并保留视觉间距，不要和聊天球重叠。
-3. 移动应基于屏幕坐标，跨网页端和桌面端时要注意 `screenRect` 与 viewport rect 的转换。
+3. 移动应基于屏幕坐标，跨网页端和桌面端时要注意 `screenRect` 与 viewport rect 的转换；桌面端由独立 `/chat` 窗口发布 minimized screen rect，pet 页消费后换算成当前窗口坐标。
 4. 移动速度使用稳定速度，当前为 `101px/s`，并限制单帧步进，避免短距离闪现或长距离过慢。
 5. 走路途中聊天框再次移动时，更新目标点即可，不要重复设置同一个 GIF `src`。
 6. 到达目标点后播放伸懒腰 GIF；伸懒腰按自身帧时长播完一轮后，额外保持收尾姿态约 `700ms`，再通过短暂过渡缓冲回到最初 `CAT1` 默认 GIF，并设置 settled 标记避免在原地反复重播伸懒腰。
@@ -231,8 +231,9 @@ hover / click 约束：
 7. 向右移动时的水平翻转样式，避免图片朝向与实际位移方向相反。
 8. GIF hover duration / token 逻辑，确保 profile 的 interactive GIF 播完一轮再恢复到当前子阶段。
 9. [static/app-ui.js](/Users/tonnodoubt/N.E.K.O/static/app-ui.js) 在桌面 return-ball drag start / drag end 时派发 `neko:return-ball-manual-move`；start 取消当前自动移动，end 重新评估距离。
-10. [main_routers/pages_router.py](/Users/tonnodoubt/N.E.K.O/main_routers/pages_router.py) 的 `static_asset_version` 跟踪列表。
-11. `tests/unit/test_avatar_return_button_idle_tiers_static.py` 锁住 profile 注册、cat4 资源、子状态顺序、右向翻转、hover 暂停移动和恢复语义。
+10. [static/app-react-chat-window.js](/Users/tonnodoubt/N.E.K.O/static/app-react-chat-window.js) 在 Electron `/chat` 折叠态发布 `idle_chat_minimized_state`；[static/app-interpage.js](/Users/tonnodoubt/N.E.K.O/static/app-interpage.js) 负责跨窗口转发为 `neko:idle-chat-minimized-state`。
+11. [main_routers/pages_router.py](/Users/tonnodoubt/N.E.K.O/main_routers/pages_router.py) 的 `static_asset_version` 跟踪列表。
+12. `tests/unit/test_avatar_return_button_idle_tiers_static.py` 锁住 profile 注册、cat4 资源、子状态顺序、右向翻转、hover 暂停移动和恢复语义。
 
 后续扩展规则：
 

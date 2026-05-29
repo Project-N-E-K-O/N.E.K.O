@@ -46,6 +46,9 @@
     var electronIdleDockGeneration = 0;
     var electronIdleDockPositionFrame = 0;
     var electronIdleDockPositionSeq = 0;
+    var electronChatMinimizedStateFrame = 0;
+    var electronChatMinimizedStateTimer = 0;
+    var electronChatMinimizedStateSignature = '';
     var _sortKeySeq = 0; // monotonically increasing sortKey counter
 
     var state = {
@@ -1993,6 +1996,117 @@
         return { left: left, top: top, width: width, height: height };
     }
 
+    function normalizeElectronWindowBoundsRect(bounds) {
+        if (!bounds || typeof bounds !== 'object') return null;
+        var left = Number.isFinite(Number(bounds.left)) ? Number(bounds.left) : Number(bounds.x);
+        var top = Number.isFinite(Number(bounds.top)) ? Number(bounds.top) : Number(bounds.y);
+        var width = Number(bounds.width);
+        var height = Number(bounds.height);
+        if (!Number.isFinite(left) || !Number.isFinite(top) ||
+            !Number.isFinite(width) || !Number.isFinite(height) ||
+            width <= 0 || height <= 0) {
+            return null;
+        }
+        left = Math.round(left);
+        top = Math.round(top);
+        width = Math.round(width);
+        height = Math.round(height);
+        return {
+            left: left,
+            top: top,
+            width: width,
+            height: height,
+            right: left + width,
+            bottom: top + height
+        };
+    }
+
+    function isElectronChatWindowCollapsed(bridge) {
+        if (!bridge || typeof bridge.isCollapsed !== 'function') return false;
+        try {
+            return !!bridge.isCollapsed();
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function getElectronChatMinimizedStateSignature(minimizedState, rect) {
+        if (!minimizedState || !rect) return '0';
+        return [
+            '1',
+            rect.left,
+            rect.top,
+            rect.width,
+            rect.height
+        ].join(':');
+    }
+
+    function dispatchElectronChatMinimizedState(reason) {
+        if (!isElectronChatWindow()) return;
+        var bridge = window.nekoChatWindow;
+        if (!bridge || typeof bridge.getBounds !== 'function') return;
+
+        var collapsed = isElectronChatWindowCollapsed(bridge);
+        if (!collapsed) {
+            if (electronChatMinimizedStateSignature === '0' && reason === 'poll') return;
+            electronChatMinimizedStateSignature = '0';
+            window.dispatchEvent(new CustomEvent('neko:idle-chat-minimized-state', {
+                detail: {
+                    action: 'idle_chat_minimized_state',
+                    source: 'chat-window',
+                    reason: reason || 'sync',
+                    minimized: false,
+                    screenRect: null,
+                    timestamp: Date.now()
+                }
+            }));
+            return;
+        }
+
+        bridge.getBounds().then(function (bounds) {
+            var rect = normalizeElectronWindowBoundsRect(bounds);
+            if (!rect) return;
+            var signature = getElectronChatMinimizedStateSignature(true, rect);
+            if (signature === electronChatMinimizedStateSignature && reason === 'poll') return;
+            electronChatMinimizedStateSignature = signature;
+            window.dispatchEvent(new CustomEvent('neko:idle-chat-minimized-state', {
+                detail: {
+                    action: 'idle_chat_minimized_state',
+                    source: 'chat-window',
+                    reason: reason || 'sync',
+                    minimized: true,
+                    screenRect: rect,
+                    timestamp: Date.now()
+                }
+            }));
+        }).catch(function () {});
+    }
+
+    function scheduleElectronChatMinimizedState(reason) {
+        if (!isElectronChatWindow() || electronChatMinimizedStateFrame) return;
+        electronChatMinimizedStateFrame = window.requestAnimationFrame(function () {
+            electronChatMinimizedStateFrame = 0;
+            dispatchElectronChatMinimizedState(reason || 'sync');
+        });
+    }
+
+    function ensureElectronChatMinimizedStateBridge() {
+        if (!isElectronChatWindow() || electronChatMinimizedStateTimer) return;
+        scheduleElectronChatMinimizedState('init');
+        electronChatMinimizedStateTimer = window.setInterval(function () {
+            scheduleElectronChatMinimizedState('poll');
+        }, 500);
+        window.addEventListener('resize', function () {
+            scheduleElectronChatMinimizedState('resize');
+        });
+        window.addEventListener('mousemove', function () {
+            scheduleElectronChatMinimizedState('pointer');
+        }, { passive: true });
+        window.addEventListener('mouseup', function () {
+            scheduleElectronChatMinimizedState('pointer');
+        }, { passive: true });
+    }
+
     function clampElectronDockBounds(bounds, workArea) {
         if (!bounds) return null;
         var area = workArea && Number.isFinite(Number(workArea.x)) && Number.isFinite(Number(workArea.y))
@@ -2175,6 +2289,7 @@
         electronIdleDockEntering = false;
         clearElectronIdleDockRetry();
         scheduleElectronIdleDockPosition();
+        scheduleElectronChatMinimizedState('idle-dock-enter');
     }
 
     async function exitElectronIdleDock() {
@@ -2199,10 +2314,12 @@
         if (triggeredCollapse && typeof bridge.idleDockExpand === 'function') {
             try {
                 await bridge.idleDockExpand(savedBounds);
+                scheduleElectronChatMinimizedState('idle-dock-exit');
                 return;
             } catch (_) {}
         }
         bridge.setBounds(savedBounds.x, savedBounds.y, savedBounds.width, savedBounds.height);
+        scheduleElectronChatMinimizedState('idle-dock-exit');
     }
 
     function handleElectronIdleReturnBallState(detail) {
@@ -3162,6 +3279,7 @@
         createResizeEdges();
         bindResizing();
         bindBridgeEvents();
+        ensureElectronChatMinimizedStateBridge();
 
         // 恢复手机端用户设置的高度
         try {

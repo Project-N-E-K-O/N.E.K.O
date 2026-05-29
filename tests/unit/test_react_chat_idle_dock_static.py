@@ -108,6 +108,17 @@ def test_app_ui_broadcasts_return_ball_screen_rect_for_desktop_idle_dock():
     assert "getReturnBallDragScreenRect(" in source
 
 
+def test_react_chat_broadcasts_minimized_screen_rect_for_cat1_follow():
+    source = _read(APP_REACT_CHAT_WINDOW_PATH)
+
+    assert "function dispatchElectronChatMinimizedState(reason)" in source
+    assert "action: 'idle_chat_minimized_state'" in source
+    assert "new CustomEvent('neko:idle-chat-minimized-state'" in source
+    assert "bridge.getBounds().then(function (bounds)" in source
+    assert "isElectronChatWindowCollapsed(bridge)" in source
+    assert "ensureElectronChatMinimizedStateBridge()" in source
+
+
 def test_idle_dock_uses_mutation_observer_to_detect_minimize_completion():
     source = _read(APP_REACT_CHAT_WINDOW_PATH)
 
