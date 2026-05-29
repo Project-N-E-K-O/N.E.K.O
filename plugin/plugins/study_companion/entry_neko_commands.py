@@ -92,6 +92,7 @@ def _fmt_mode_changed_for_neko(*, new_mode: str, transition_phrase: str) -> str:
 
 class _NekoCommandsMixin:
     async def _subscribe_neko_commands(self) -> None:
+        await self._unsubscribe_neko_commands()
         transport = None
         for ctx in (
             self.ctx,
@@ -108,12 +109,48 @@ class _NekoCommandsMixin:
                 _NEKO_COMMAND_TOPIC,
             )
             return
-        result = subscribe(_NEKO_COMMAND_TOPIC, self._on_neko_command)
+        handler = self._on_neko_command
+        result = subscribe(_NEKO_COMMAND_TOPIC, handler)
         if inspect.isawaitable(result):
             result = await result
         if isinstance(result, Err):
             self.logger.warning(
                 "startup: failed to subscribe {}: {}",
+                _NEKO_COMMAND_TOPIC,
+                result.error,
+            )
+            return
+        self._neko_command_transport = transport
+        self._neko_command_handler = handler
+
+    async def _unsubscribe_neko_commands(self) -> None:
+        transport = getattr(self, "_neko_command_transport", None)
+        handler = getattr(self, "_neko_command_handler", None)
+        self._neko_command_transport = None
+        self._neko_command_handler = None
+        if transport is None or handler is None:
+            return
+        unsubscribe = getattr(transport, "unsubscribe", None)
+        if not callable(unsubscribe):
+            self.logger.warning(
+                "shutdown: message-plane transport cannot unsubscribe {}",
+                _NEKO_COMMAND_TOPIC,
+            )
+            return
+        try:
+            result = unsubscribe(_NEKO_COMMAND_TOPIC, handler)
+            if inspect.isawaitable(result):
+                result = await result
+        except Exception as exc:
+            self.logger.warning(
+                "shutdown: failed to unsubscribe {}: {}",
+                _NEKO_COMMAND_TOPIC,
+                exc,
+            )
+            return
+        if isinstance(result, Err):
+            self.logger.warning(
+                "shutdown: failed to unsubscribe {}: {}",
                 _NEKO_COMMAND_TOPIC,
                 result.error,
             )

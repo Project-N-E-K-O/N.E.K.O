@@ -122,12 +122,22 @@ class _PomodoroEntriesMixin:
                     if goal_id
                     else {}
                 )
+                status_config = status.get("config")
+                status_focus_minutes = (
+                    status_config.get("focus_minutes")
+                    if isinstance(status_config, dict)
+                    else None
+                )
                 supervision.on_focus_start(
                     goal=goal or {},
                     planned_minutes=float(
-                        status.get("config", {}).get("focus_minutes")
-                        or focus_minutes
-                        or 0
+                        status_focus_minutes
+                        if status_focus_minutes is not None
+                        else (
+                            focus_minutes
+                            if focus_minutes is not None
+                            else planned_focus_minutes
+                        )
                     ),
                 )
             return Ok(build_pomodoro_status_payload(status))
@@ -144,7 +154,8 @@ class _PomodoroEntriesMixin:
     async def study_pomodoro_pause(self, **_):
         try:
             _, _, timer, _ = self._require_habit_components()
-            return Ok(build_pomodoro_status_payload(timer.pause()))
+            status = await asyncio.to_thread(timer.pause)
+            return Ok(build_pomodoro_status_payload(status))
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_pomodoro_pause")
 
@@ -158,7 +169,8 @@ class _PomodoroEntriesMixin:
     async def study_pomodoro_resume(self, **_):
         try:
             _, _, timer, _ = self._require_habit_components()
-            return Ok(build_pomodoro_status_payload(timer.resume()))
+            status = await asyncio.to_thread(timer.resume)
+            return Ok(build_pomodoro_status_payload(status))
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_pomodoro_resume")
 
@@ -188,6 +200,7 @@ class _PomodoroEntriesMixin:
     async def study_pomodoro_skip_break(self, **_):
         try:
             _, _, timer, _ = self._require_habit_components()
-            return Ok(build_pomodoro_status_payload(timer.skip_break()))
+            status = await asyncio.to_thread(timer.skip_break)
+            return Ok(build_pomodoro_status_payload(status))
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_pomodoro_skip_break")

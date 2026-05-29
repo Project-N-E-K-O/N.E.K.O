@@ -2147,7 +2147,7 @@ async def test_study_explain_text_explain_intent_without_content_returns_err(
             plugin._state.last_ocr_text = ""
         explain_empty = await plugin.study_explain_text("explain")
         assert isinstance(explain_empty, Err)
-        assert "requires text" in str(explain_empty.error)
+        assert explain_empty.error.code == "MISSING_TEXT"
     finally:
         await plugin.shutdown()
 
@@ -2172,12 +2172,12 @@ async def test_study_generate_question_without_content_returns_err(
     plugin._agent = _FakeTutorAgent()
 
     try:
-        with plugin._lock:
+        async with plugin._lock:
             plugin._state.last_ocr_text = ""
         question_empty = await plugin.study_generate_question()
 
         assert isinstance(question_empty, Err)
-        assert "requires text" in str(question_empty.error)
+        assert question_empty.error.code == "MISSING_TEXT"
     finally:
         await plugin.shutdown()
 

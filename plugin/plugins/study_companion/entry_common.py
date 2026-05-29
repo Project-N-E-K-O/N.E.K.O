@@ -170,10 +170,12 @@ def _validated_pomodoro_focus_minutes(
 
 
 def _detect_mastery_threshold_crossed(before: float, after: float) -> str | None:
-    for threshold in _MASTERY_THRESHOLDS:
-        if (before < threshold <= after) or (before >= threshold > after):
-            return str(threshold)
-    return None
+    crossed = [
+        threshold
+        for threshold in _MASTERY_THRESHOLDS
+        if (before < threshold <= after) or (before >= threshold > after)
+    ]
+    return str(max(crossed)) if crossed else None
 
 
 def _event_ratio(value: Any, default: float = 0.0) -> float:

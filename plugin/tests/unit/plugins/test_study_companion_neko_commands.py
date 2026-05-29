@@ -10,6 +10,7 @@ from plugin.plugins.study_companion.constants import (
     MODE_COMPANION,
     MODE_INTERACTIVE,
 )
+from plugin.plugins.study_companion.entry_common import _detect_mastery_threshold_crossed
 from plugin.plugins.study_companion.models import OcrSnapshot, StudyConfig, TutorReply
 from plugin.sdk.plugin import Err, Ok
 from plugin.sdk.shared.transport.message_plane import MessagePlaneTransport
@@ -262,6 +263,11 @@ def _seed_mastery(plugin: StudyCompanionPlugin) -> None:
         mode=MODE_COMPANION,
         session_id="unit-test",
     )
+
+
+def test_detect_mastery_threshold_crossed_returns_highest_crossed() -> None:
+    assert _detect_mastery_threshold_crossed(0.2, 0.9) == "0.85"
+    assert _detect_mastery_threshold_crossed(0.9, 0.2) == "0.85"
 
 
 @pytest.mark.asyncio
@@ -626,6 +632,27 @@ async def test_subscribe_neko_commands_handles_missing_host_ctx(
 
 
 @pytest.mark.asyncio
+async def test_shutdown_unsubscribes_neko_commands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin, ctx = await _started_plugin(tmp_path, monkeypatch)
+    closed = False
+    try:
+        handlers = ctx.transport._handlers.get("neko.study_command", [])
+        assert handlers == [plugin._neko_command_handler]
+
+        await plugin.shutdown()
+        closed = True
+
+        assert "neko.study_command" not in ctx.transport._handlers
+        assert plugin._neko_command_transport is None
+        assert plugin._neko_command_handler is None
+    finally:
+        if not closed:
+            await plugin.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_handler_exception_is_logged_not_raised(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -866,7 +893,7 @@ async def test_queue_command_does_not_cancel_previous(
 
         result = await plugin._on_neko_command({"command": "quiz_me"})
         assert isinstance(result, Ok)
-        await asyncio.sleep(0.05)
+        await _wait_until(plugin._command_queue.empty)
         assert not interrupt_cancelled.is_set()
         assert not queue_started.is_set()
 
@@ -1049,7 +1076,7 @@ async def test_worker_poison_protection_stops_after_3_crashes(
         result = await plugin._on_neko_command({"command": "show_progress"})
 
         assert isinstance(result, Ok)
-        await asyncio.sleep(0.05)
+        await _wait_until(lambda: plugin._command_queue.qsize() == 1)
         assert plugin._command_worker_task is None
         assert plugin._command_queue.qsize() == 1
     finally:
