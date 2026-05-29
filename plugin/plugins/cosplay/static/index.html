@@ -3,272 +3,451 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>N.E.K.O GALGAME 总导演插件</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Ma+Shan+Zheng&family=Noto+Serif+SC:wght@400;500;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./style.css" />
+  <title>N.E.K.O Cosplay 剧场</title>
+  <style>
+    :root {
+      --bg: #0a0a0f;
+      --surface: #14141f;
+      --surface2: #1e1e2e;
+      --border: #2a2a3a;
+      --text: #e0e0f0;
+      --text2: #8888aa;
+      --accent: #ff6b9d;
+      --accent2: #c084fc;
+      --success: #4ade80;
+      --warning: #fbbf24;
+      --radius: 12px;
+      --shadow: 0 4px 24px rgba(0,0,0,0.4);
+    }
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+
+    /* ── 导航 ── */
+    .nav { display:flex; gap:8px; padding:16px 24px; background:var(--surface); border-bottom:1px solid var(--border); }
+    .nav-brand { font-size:1.2em; font-weight:700; background:linear-gradient(135deg, var(--accent), var(--accent2)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; margin-right:auto; }
+    .nav-btn { background:transparent; border:1px solid var(--border); color:var(--text2); padding:8px 16px; border-radius:8px; cursor:pointer; transition:all .2s; }
+    .nav-btn:hover, .nav-btn.active { background:var(--surface2); color:var(--text); border-color:var(--accent); }
+
+    /* ── 页面容器 ── */
+    .page { display:none; padding:24px; max-width:1200px; margin:0 auto; }
+    .page.active { display:block; }
+
+    /* ── 仪表盘 ── */
+    .dash-hero { text-align:center; padding:48px 0 32px; }
+    .dash-hero h1 { font-size:2em; margin-bottom:8px; }
+    .dash-hero p { color:var(--text2); }
+    .quick-actions { display:flex; gap:16px; justify-content:center; margin:32px 0; }
+    .quick-btn { background:linear-gradient(135deg, var(--accent), var(--accent2)); border:none; color:#fff; padding:20px 32px; border-radius:var(--radius); font-size:1.1em; cursor:pointer; transition:transform .2s; }
+    .quick-btn:hover { transform:scale(1.05); }
+    .section-title { font-size:1.2em; margin:32px 0 16px; color:var(--text2); }
+
+    /* ── 卡片网格 ── */
+    .card-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:16px; }
+    .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; cursor:pointer; transition:all .2s; }
+    .card:hover { border-color:var(--accent); transform:translateY(-2px); }
+    .card-cover { height:160px; background:var(--surface2); display:flex; align-items:center; justify-content:center; color:var(--text2); font-size:3em; }
+    .card-body { padding:16px; }
+    .card-title { font-weight:600; margin-bottom:4px; }
+    .card-meta { color:var(--text2); font-size:0.85em; }
+    .card-tags { display:flex; gap:4px; margin-top:8px; flex-wrap:wrap; }
+    .tag { background:var(--surface2); color:var(--accent2); padding:2px 8px; border-radius:4px; font-size:0.75em; }
+
+    /* ── 剧场模式 ── */
+    .theater-layout { display:grid; grid-template-columns:1fr 320px; gap:24px; }
+    .stage-area { background:var(--surface); border-radius:var(--radius); min-height:400px; display:flex; flex-direction:column; align-items:center; justify-content:center; position:relative; overflow:hidden; }
+    .stage-image { max-width:100%; max-height:400px; object-fit:contain; }
+    .stage-text-overlay { position:absolute; bottom:0; left:0; right:0; background:rgba(0,0,0,0.7); padding:16px; }
+    .stage-char-name { color:var(--accent); font-weight:600; }
+    .stage-dialogue { margin-top:4px; }
+    .stage-narration { color:var(--text2); font-style:italic; }
+    .stage-controls { display:flex; gap:8px; padding:16px; justify-content:center; }
+    .ctrl-btn { background:var(--surface2); border:1px solid var(--border); color:var(--text); padding:8px 16px; border-radius:8px; cursor:pointer; }
+    .ctrl-btn:hover { border-color:var(--accent); }
+    .ctrl-btn.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+
+    .script-panel { background:var(--surface); border-radius:var(--radius); padding:16px; }
+    .script-input { width:100%; min-height:300px; background:var(--bg); border:1px solid var(--border); border-radius:8px; color:var(--text); padding:12px; font-family:monospace; font-size:0.9em; resize:vertical; }
+    .script-input:focus { outline:none; border-color:var(--accent); }
+    .panel-actions { display:flex; gap:8px; margin-top:12px; }
+
+    /* ── 互动模式 ── */
+    .chat-layout { display:grid; grid-template-columns:1fr 300px; gap:24px; height:calc(100vh - 120px); }
+    .chat-main { display:flex; flex-direction:column; background:var(--surface); border-radius:var(--radius); overflow:hidden; }
+    .chat-messages { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:12px; }
+    .msg { max-width:80%; padding:12px 16px; border-radius:12px; }
+    .msg.user { background:var(--accent); color:#fff; align-self:flex-end; border-bottom-right-radius:4px; }
+    .msg.assistant { background:var(--surface2); align-self:flex-start; border-bottom-left-radius:4px; }
+    .msg-image { max-width:300px; border-radius:8px; margin-top:8px; }
+    .msg-scene { color:var(--text2); font-size:0.8em; margin-top:4px; font-style:italic; }
+    .chat-input-area { display:flex; gap:8px; padding:16px; border-top:1px solid var(--border); }
+    .chat-input { flex:1; background:var(--bg); border:1px solid var(--border); border-radius:8px; color:var(--text); padding:12px; resize:none; }
+    .chat-input:focus { outline:none; border-color:var(--accent); }
+    .send-btn { background:var(--accent); border:none; color:#fff; padding:12px 20px; border-radius:8px; cursor:pointer; }
+
+    .chat-sidebar { background:var(--surface); border-radius:var(--radius); padding:16px; overflow-y:auto; }
+    .char-avatar { width:80px; height:80px; border-radius:50%; background:var(--surface2); display:flex; align-items:center; justify-content:center; font-size:2em; margin:0 auto 12px; }
+    .char-name { text-align:center; font-weight:600; margin-bottom:4px; }
+    .char-desc { color:var(--text2); font-size:0.85em; text-align:center; margin-bottom:16px; }
+    .goal-input { width:100%; background:var(--bg); border:1px solid var(--border); border-radius:8px; color:var(--text); padding:8px; font-size:0.85em; }
+    .goal-input:focus { outline:none; border-color:var(--accent); }
+
+    /* ── 角色库 ── */
+    .char-create-form { background:var(--surface); border-radius:var(--radius); padding:24px; margin-bottom:24px; }
+    .form-row { display:flex; gap:12px; margin-bottom:12px; }
+    .form-field { flex:1; }
+    .form-field label { display:block; color:var(--text2); font-size:0.85em; margin-bottom:4px; }
+    .form-field input, .form-field select, .form-field textarea { width:100%; background:var(--bg); border:1px solid var(--border); border-radius:6px; color:var(--text); padding:8px; }
+    .form-field input:focus, .form-field select:focus, .form-field textarea:focus { outline:none; border-color:var(--accent); }
+
+    /* ── 作品详情 ── */
+    .work-detail { background:var(--surface); border-radius:var(--radius); padding:24px; }
+    .work-gallery { display:grid; grid-template-columns:repeat(auto-fill, minmax(200px, 1fr)); gap:8px; margin-top:16px; }
+    .work-gallery img { width:100%; border-radius:8px; cursor:pointer; }
+
+    /* ── 通用 ── */
+    .empty-state { text-align:center; padding:48px; color:var(--text2); }
+    .loading { display:inline-block; width:20px; height:20px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .6s linear infinite; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    .badge { background:var(--accent); color:#fff; padding:2px 6px; border-radius:4px; font-size:0.7em; }
+  </style>
 </head>
 <body>
-  <section class="stage-shell" id="stageShell">
-    <div class="stage-bg-shapes" aria-hidden="true"></div>
+  <!-- 导航 -->
+  <nav class="nav">
+    <span class="nav-brand">🎭 N.E.K.O Cosplay</span>
+    <button class="nav-btn active" data-page="dashboard">仪表盘</button>
+    <button class="nav-btn" data-page="theater">剧场</button>
+    <button class="nav-btn" data-page="interactive">互动</button>
+    <button class="nav-btn" data-page="characters">角色库</button>
+    <button class="nav-btn" data-page="works">作品集</button>
+  </nav>
 
-    <div class="stage-screen" id="stageScreen">
-      <div class="stage-float-panel collapsed" id="stageFloatPanel">
-        <button class="chip-btn stage-float-toggle" id="stageFloatToggleBtn">展开快捷菜单</button>
-        <div class="stage-quickbar" id="stageQuickbar">
-          <button class="chip-btn" id="quickShowTextBtn">显示舞台文字</button>
-          <button class="chip-btn" id="quickHideTextBtn">隐藏舞台文字</button>
-          <button class="chip-btn" id="quickEnterFullscreenBtn">全屏模式</button>
-          <button class="chip-btn" id="quickExitFullscreenBtn">退出全屏</button>
-        </div>
-      </div>
-      <img id="stageImage" class="stage-image" alt="GALGAME 舞台背景" />
-      <video id="stageVideo" class="stage-video" playsinline controls preload="metadata"></video>
-      <button class="stage-nav-btn prev" id="stagePrevBtn" title="上一张/上一个">◀</button>
-      <button class="stage-nav-btn next" id="stageNextBtn" title="下一张/下一个">▶</button>
-
-      <div class="stage-topbar">
-        <div class="chip">GALGAME 总导演 MVP</div>
-        <div class="chip" id="progressChip">剧情未开始</div>
-        <button class="chip-btn" id="textToggleBtn">隐藏舞台文字</button>
-        <button class="chip-btn" id="fullscreenToggleBtn">全屏模式</button>
-      </div>
-
-      <div class="stage-caption" id="stageCaption">等待剧情素材加载</div>
-      <div class="climax-fx" id="climaxFx" aria-hidden="true"></div>
-
-      <div class="confirm-box" id="confirmBox">
-        <div class="confirm-header-row">
-          <div class="confirm-drag-handle" id="confirmDragHandle" title="拖拽移动">剧情推进控制台</div>
-          <button id="confirmCollapseBtn" class="chip-btn confirm-collapse-btn">收起</button>
-        </div>
-        <div class="current-role-chip" id="currentRoleChip">当前角色：-</div>
-        <label for="currentUserLine">当前用户台词（自动填充）</label>
-        <textarea id="currentUserLine" readonly placeholder="请先在下方解析剧本"></textarea>
-        <div class="confirm-actions">
-          <button id="confirmBtn" class="btn btn-primary">确认台词并推进剧情</button>
-          <button id="refreshBtn" class="btn btn-ghost">刷新状态</button>
-        </div>
-        <div class="confirm-resize-handle" id="confirmResizeHandle" title="拖拽缩放"></div>
-      </div>
-
-      <div class="live-subtitle" id="liveSubtitle">
-        <div class="subtitle-role" id="liveSubtitleRole">角色</div>
-        <div class="subtitle-text" id="liveSubtitleText">台词</div>
-      </div>
-      <div class="live-subtitle-resize" id="liveSubtitleResize"></div>
+  <!-- 仪表盘 -->
+  <section class="page active" id="page-dashboard">
+    <div class="dash-hero">
+      <h1>🎭 Cosplay 剧场</h1>
+      <p>创作你的角色，演绎你的故事</p>
     </div>
-
-    <a class="jump-hint" href="#controls">下滑进入配置与控制区</a>
-  </section>
-
-  <section id="controls" class="controls-shell">
-    <div class="panel-grid">
-      <article class="panel panel-wide">
-        <h2>角色指定控制面板</h2>
-        <div class="role-grid">
-          <div>
-            <label>用户对应角色名</label>
-            <input id="userRoleName" placeholder="如：方知宥 / 男主 / 自定义" />
-          </div>
-          <div>
-            <label>AI 对应角色名</label>
-            <input id="aiRoleName" placeholder="如：林翩翩 / 女主 / 自定义" />
-          </div>
-          <div>
-            <label>用户角色别名（逗号分隔）</label>
-            <input id="userAliases" placeholder="用户,导演,男主,方知宥" />
-          </div>
-          <div>
-            <label>AI 角色别名（逗号分隔）</label>
-            <input id="aiAliases" placeholder="AI,assistant,女主,林翩翩" />
-          </div>
-          <div>
-            <label>用户人设标签</label>
-            <input id="userPersonaTags" placeholder="沉稳,克制,守护" />
-          </div>
-          <div>
-            <label>AI 人设标签</label>
-            <input id="aiPersonaTags" placeholder="敏感,坚韧,真诚" />
-          </div>
-        </div>
-        <div class="row-actions">
-          <button id="saveRoleBtn" class="btn btn-primary">保存角色配置</button>
-        </div>
-        <h3>角色音色与字幕样式（可视化）</h3>
-        <div id="roleProfilesList" class="role-profiles-list"></div>
-        <div class="row-actions">
-          <button id="addRoleProfileBtn" class="btn btn-ghost">新增角色配置</button>
-          <button id="applyRoleTemplateBtn" class="btn btn-ghost">套用默认模板</button>
-          <button id="saveRoleProfilesBtn" class="btn btn-primary">保存角色音色与字幕样式</button>
-        </div>
-        <details class="advanced-box">
-          <summary>高级 JSON 配置</summary>
-          <textarea id="roleProfilesInput" class="script-input" placeholder='{"女主":{"tts_voice":"longxiaochun_v2","subtitle_color":"#ffd8ef","subtitle_glow":"rgba(255,183,222,.52)","font_scale":1.08}}'></textarea>
-        </details>
-      </article>
-
-      <article class="panel">
-        <h2>舞台模式</h2>
-        <div class="upload-mode">
-          <label>背景运行模式</label>
-          <select id="backgroundMode">
-            <option value="manual">手动模式（仅用户素材）</option>
-            <option value="semi_auto" selected>半自动模式（补图片）</option>
-            <option value="auto">全自动模式（图视频全调度）</option>
-          </select>
-        </div>
-        <div class="row-actions">
-          <button id="saveBgModeBtn" class="btn btn-primary">保存背景模式</button>
-        </div>
-      </article>
-
-      <article class="panel">
-        <h2>模型配置（阿里云百炼）</h2>
-        <p class="hint">图片/视频/总导演/TTS 均为 API 对接，插件不加载本地模型。</p>
-
-        <div class="config-grid">
-          <fieldset>
-            <legend>图片生成模型</legend>
-            <label><input id="imageEnabled" type="checkbox" checked /> 启用图片 AI 生成</label>
-            <input id="imageApiUrl" placeholder="API URL" />
-            <input id="imageModelId" placeholder="模型 ID" />
-            <input id="imageApiKey" placeholder="API Key" type="password" />
-          </fieldset>
-
-          <fieldset>
-            <legend>视频生成模型</legend>
-            <label><input id="videoEnabled" type="checkbox" checked /> 启用视频 AI 生成</label>
-            <input id="videoApiUrl" placeholder="API URL" />
-            <input id="videoModelId" placeholder="模型 ID" />
-            <input id="videoApiKey" placeholder="API Key" type="password" />
-          </fieldset>
-
-          <fieldset>
-            <legend>总导演 AI Agent</legend>
-            <input id="directorApiUrl" placeholder="API URL" />
-            <input id="directorModelId" placeholder="模型 ID" />
-            <input id="directorApiKey" placeholder="API Key" type="password" />
-          </fieldset>
-
-          <fieldset>
-            <legend>多角色 TTS（Cosy Voice）</legend>
-            <label><input id="ttsEnabled" type="checkbox" checked /> 启用角色 TTS 调度</label>
-            <input id="ttsApiUrl" placeholder="API URL" />
-            <input id="ttsModelId" placeholder="模型 ID" />
-            <input id="ttsApiKey" placeholder="API Key" type="password" />
-          </fieldset>
-        </div>
-
-        <div class="row-actions">
-          <button id="saveConfigBtn" class="btn btn-primary">保存模型配置</button>
-          <select id="testTargetSelect">
-            <option value="image">测试图片模型连接</option>
-            <option value="video">测试视频模型连接</option>
-            <option value="director">测试导演模型连接</option>
-            <option value="tts">测试TTS模型连接</option>
-          </select>
-          <button id="testModelConnBtn" class="btn btn-ghost">测试连接</button>
-          <button id="loadStateBtn" class="btn btn-ghost">重新读取</button>
-        </div>
-      </article>
-
-      <article class="panel">
-        <h2>剧情剧本输入</h2>
-        <p class="hint">支持任意格式：角色名台词、无角色名对话、含括号的场景动作说明（括号仅内部调度参考）。</p>
-        <textarea id="scriptInput" class="script-input" placeholder="示例1（角色名）：\n男主：今晚风很大。\n女主：（轻轻拉住衣角）你会一直在吗？\n\n示例2（无角色名）：\n你好，好久不见。\n我也在等你。\n\n示例3（场景动作）：\n【雨夜天台】\n路人：前面危险，别过去！\n女主：（声音发抖）可是他还在里面。"></textarea>
-        <div class="upload-mode">
-          <label>分幕模式（台词永远按你剧本原文，AI 仅参与分幕与调度）</label>
-          <select id="sceneSplitMode">
-            <option value="strict_copy" selected>严格复刻（优先按用户轮次）</option>
-            <option value="smart_director">导演智能分幕（不改台词）</option>
-          </select>
-          <label>最多生成幕数（0=不限制）</label>
-          <input id="maxScenes" type="number" min="0" step="1" value="0" />
-          <label>强制等于幕数（0=关闭，填8则必须8幕）</label>
-          <input id="exactScenes" type="number" min="0" step="1" value="0" />
-        </div>
-        <div class="row-actions">
-          <button id="prepareBtn" class="btn btn-primary">解析并预生成整段剧情</button>
-        </div>
-        <div id="prepareProgress" class="progress-wrap">
-          <div id="prepareProgressBar" class="progress-bar"></div>
-        </div>
-        <div id="prepareSummary" class="status-box">等待解析剧本</div>
-      </article>
-
-      <article class="panel">
-        <h2>上传素材与时序播放</h2>
-        <p class="hint">支持按秒自动切换，或在每次“确认台词”后切下一张，避免中途闪回失败图。</p>
-
-        <div class="upload-row">
-          <label class="file-btn">
-            上传多张图片
-            <input id="imageUpload" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple />
-          </label>
-          <label class="file-btn">
-            上传视频
-            <input id="videoUpload" type="file" accept="video/mp4,video/webm,video/quicktime" multiple />
-          </label>
-        </div>
-
-        <div id="uploadList" class="upload-list"></div>
-
-        <div class="upload-mode">
-          <label>切图模式</label>
-          <select id="slideMode">
-            <option value="timer">按秒自动切换</option>
-            <option value="dialogue">每次发送对话切下一张</option>
-          </select>
-          <label>起始素材序号（1 开始，可随机）</label>
-          <input id="slideStartIndex" type="number" min="1" step="1" value="1" />
-          <label>自动切图秒数（按秒模式生效）</label>
-          <input id="slideSeconds" type="number" min="0.1" step="0.1" value="2" />
-          <label>视频切换间隔秒数（支持 0 秒无缝）</label>
-          <input id="videoGapSeconds" type="number" min="0" step="0.1" value="0" />
-        </div>
-
-        <div class="row-actions">
-          <button id="applySlideSecondsToAllBtn" class="btn btn-ghost">将上方秒数填入全部素材</button>
-        </div>
-
-        <div class="row-actions">
-          <button id="startSlideshowBtn" class="btn btn-primary">开始幻灯片</button>
-          <button id="stopSlideshowBtn" class="btn btn-ghost">停止幻灯片</button>
-          <button id="clearOverrideBtn" class="btn btn-ghost">恢复 AI 自动舞台</button>
-        </div>
-      </article>
-
-      <article class="panel panel-wide">
-        <h2>生成素材库（可查看 / 播放 / 下载 / 按幕替换）</h2>
-        <div id="storagePaths" class="hint-box">素材存储路径加载中...</div>
-        <div id="libraryList" class="library-grid"></div>
-      </article>
-
-      <article class="panel panel-wide">
-        <h2>剧情节点与总控核查</h2>
-        <div id="timelineList" class="timeline-list"></div>
-        <div id="auditList" class="audit-list"></div>
-      </article>
-
-      <article class="panel panel-wide">
-        <h2>剧情字幕历史</h2>
-        <div class="subtitle-header">
-          <span>按时间顺序滚动显示</span>
-          <span id="subtitleCount">0 条</span>
-        </div>
-        <div class="row-actions">
-          <label for="liveSubtitleDurationSec">实时字幕单次显示时长（秒）</label>
-          <input id="liveSubtitleDurationSec" type="number" min="0.5" max="20" step="0.1" value="2.8" style="max-width:180px" />
-          <button id="applySubtitleSettingsBtn" class="btn btn-ghost">应用字幕时长</button>
-        </div>
-        <div class="subtitle-list" id="subtitleList"></div>
-      </article>
+    <div class="quick-actions">
+      <button class="quick-btn" onclick="switchPage('theater')">🎬 开始剧场</button>
+      <button class="quick-btn" onclick="switchPage('interactive')">💬 开始互动</button>
+    </div>
+    <h3 class="section-title">最近作品</h3>
+    <div class="card-grid" id="recentWorks">
+      <div class="empty-state">还没有作品，开始创作吧！</div>
+    </div>
+    <h3 class="section-title">我的角色</h3>
+    <div class="card-grid" id="recentChars">
+      <div class="empty-state">还没有角色，去角色库创建吧！</div>
     </div>
   </section>
 
-  <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script src="./main.js"></script>
+  <!-- 剧场模式 -->
+  <section class="page" id="page-theater">
+    <div class="theater-layout">
+      <div>
+        <div class="stage-area" id="stageArea">
+          <div class="empty-state">准备剧本后开始演出</div>
+        </div>
+        <div class="stage-controls">
+          <button class="ctrl-btn" onclick="theaterPrev()">◀ 上一幕</button>
+          <button class="ctrl-btn primary" onclick="theaterConfirm()">确认台词 ▶</button>
+          <button class="ctrl-btn" onclick="theaterNext()">下一幕 ▶</button>
+        </div>
+      </div>
+      <div class="script-panel">
+        <h3 style="margin-bottom:12px">剧本编辑</h3>
+        <textarea class="script-input" id="scriptInput" placeholder="在此粘贴或编写 cosplay 剧本...
+
+格式示例：
+【角色】
+  雪乃：黑长直少女，温柔内敛
+  服装：白色和服，蓝色腰带
+  场景：黄昏，樱花神社
+
+【第1幕：相遇】
+  [镜头：全景]
+  [场景：神社鸟居前，夕阳西下]
+  [动作：雪乃站在鸟居下]
+
+  雪乃：你又迟到了。
+  （内心）每次都这样..."></textarea>
+        <div class="panel-actions">
+          <button class="ctrl-btn primary" onclick="prepareScript()">🎬 解析剧本</button>
+          <button class="ctrl-btn" onclick="loadTemplate()">📋 加载模板</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 互动模式 -->
+  <section class="page" id="page-interactive">
+    <div class="chat-layout">
+      <div class="chat-main">
+        <div class="chat-messages" id="chatMessages">
+          <div class="empty-state">选择角色后开始对话</div>
+        </div>
+        <div class="chat-input-area">
+          <textarea class="chat-input" id="chatInput" rows="2" placeholder="输入消息..."></textarea>
+          <button class="send-btn" onclick="sendMessage()">发送</button>
+        </div>
+      </div>
+      <div class="chat-sidebar">
+        <div class="char-avatar" id="chatAvatar">🎭</div>
+        <div class="char-name" id="chatCharName">未选择角色</div>
+        <div class="char-desc" id="chatCharDesc">请先从角色库选择或创建角色</div>
+        <hr style="border-color:var(--border); margin:16px 0">
+        <label style="color:var(--text2); font-size:0.85em">情境目标（可选）</label>
+        <input class="goal-input" id="goalInput" placeholder="如：一起逛漫展、拍摄写真..." style="margin-top:4px">
+        <button class="ctrl-btn" style="width:100%; margin-top:8px" onclick="setGoal()">设置目标</button>
+        <hr style="border-color:var(--border); margin:16px 0">
+        <button class="ctrl-btn" style="width:100%" onclick="selectCharacter()">选择角色</button>
+        <button class="ctrl-btn" style="width:100%; margin-top:8px" onclick="endSession()">结束会话</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 角色库 -->
+  <section class="page" id="page-characters">
+    <h2 style="margin-bottom:16px">角色库</h2>
+    <div class="char-create-form" id="charForm">
+      <h3 style="margin-bottom:16px">创建新角色</h3>
+      <div class="form-row">
+        <div class="form-field">
+          <label>角色名</label>
+          <input id="charName" placeholder="如：雪乃">
+        </div>
+        <div class="form-field">
+          <label>模板</label>
+          <select id="charTemplate" onchange="applyTemplate()">
+            <option value="">自定义</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-field"><label>性别</label><input id="charGender" placeholder="男/女"></div>
+        <div class="form-field"><label>发型</label><input id="charHair" placeholder="如：黑长直"></div>
+        <div class="form-field"><label>性格</label><input id="charPersonality" placeholder="如：温柔"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-field"><label>服装名</label><input id="costumeName" placeholder="如：白色和服"></div>
+        <div class="form-field"><label>服装风格</label><input id="costumeStyle" placeholder="和风/现代/奇幻..."></div>
+      </div>
+      <div class="form-row">
+        <div class="form-field"><label>场景</label><input id="sceneName" placeholder="如：樱花神社"></div>
+        <div class="form-field"><label>氛围</label><input id="sceneMood" placeholder="如：浪漫"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-field">
+          <label>自由描述</label>
+          <textarea id="charDesc" rows="2" placeholder="补充描述..."></textarea>
+        </div>
+      </div>
+      <button class="ctrl-btn primary" onclick="createCharacter()">✨ 创建角色</button>
+    </div>
+    <h3 class="section-title">已有角色</h3>
+    <div class="card-grid" id="charList">
+      <div class="empty-state">还没有角色</div>
+    </div>
+  </section>
+
+  <!-- 作品集 -->
+  <section class="page" id="page-works">
+    <h2 style="margin-bottom:16px">作品集</h2>
+    <div class="card-grid" id="worksList">
+      <div class="empty-state">还没有作品</div>
+    </div>
+  </section>
+
+  <script>
+    // ── 页面导航 ──
+    function switchPage(page) {
+      document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+      document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+      document.getElementById('page-' + page)?.classList.add('active');
+      document.querySelector(`[data-page="${page}"]`)?.classList.add('active');
+    }
+    document.querySelectorAll('.nav-btn').forEach(btn => {
+      btn.addEventListener('click', () => switchPage(btn.dataset.page));
+    });
+
+    // ── API 调用 ──
+    const API_BASE = '/plugin/cosplay_plugin/api';
+    async function api(entryId, params = {}) {
+      try {
+        const resp = await fetch(`${API_BASE}/entry/${entryId}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(params),
+        });
+        return await resp.json();
+      } catch (e) {
+        console.error('API error:', e);
+        return { error: e.message };
+      }
+    }
+
+    // ── 剧场模式 ──
+    async function prepareScript() {
+      const text = document.getElementById('scriptInput').value;
+      if (!text.trim()) return alert('请先输入剧本');
+      const result = await api('prepare_script', { script_text: text });
+      if (result.error) return alert('解析失败: ' + result.error);
+      alert(`剧本解析完成！共 ${result.total_turns || 0} 幕`);
+    }
+
+    function theaterPrev() { api('confirm_current_line', { direction: 'prev' }); }
+    function theaterNext() { api('confirm_current_line', { direction: 'next' }); }
+    function theaterConfirm() { api('confirm_current_line'); }
+    function loadTemplate() {
+      const tmpl = `【角色】
+  雪乃：黑长直少女，温柔内敛
+  服装：白色和服，蓝色腰带，木屐
+  场景：黄昏，樱花神社，花瓣飘落
+
+  悠太：棕发少年，开朗活泼
+  服装：黑色校服，领带松散
+
+【第1幕：相遇】
+  [镜头：全景]
+  [场景：神社鸟居前，夕阳西下]
+  [动作：雪乃站在鸟居下，悠太从远处跑来]
+
+  雪乃：你又迟到了。
+  悠太：抱歉抱歉！路上遇到只猫...
+  [动作：悠太双手合十道歉]
+  [镜头：特写]
+  （内心）每次都这样，但看到他的笑脸就气不起来了。`;
+      document.getElementById('scriptInput').value = tmpl;
+    }
+
+    // ── 互动模式 ──
+    let currentChatChar = null;
+
+    function selectCharacter() {
+      const name = prompt('输入角色名（从角色库中选择）:');
+      if (name) {
+        currentChatChar = name;
+        document.getElementById('chatCharName').textContent = name;
+        document.getElementById('chatCharDesc').textContent = '角色已选择';
+        document.getElementById('chatMessages').innerHTML = `<div class="msg assistant">你好！我是${name}，很高兴见到你~</div>`;
+      }
+    }
+
+    async function sendMessage() {
+      const input = document.getElementById('chatInput');
+      const text = input.value.trim();
+      if (!text) return;
+      input.value = '';
+
+      const msgs = document.getElementById('chatMessages');
+      msgs.innerHTML += `<div class="msg user">${escapeHtml(text)}</div>`;
+
+      const result = await api('interactive_send', { text, character: currentChatChar });
+      if (result.text) {
+        let html = `<div class="msg assistant">${escapeHtml(result.text)}`;
+        if (result.image_url) html += `<br><img class="msg-image" src="${result.image_url}">`;
+        if (result.scene) html += `<div class="msg-scene">📷 ${escapeHtml(result.scene)}</div>`;
+        html += `</div>`;
+        msgs.innerHTML += html;
+        msgs.scrollTop = msgs.scrollHeight;
+      }
+    }
+
+    function setGoal() {
+      const goal = document.getElementById('goalInput').value.trim();
+      if (goal) api('set_interactive_goal', { goal });
+    }
+
+    function endSession() {
+      api('end_interactive_session');
+      currentChatChar = null;
+      document.getElementById('chatCharName').textContent = '未选择角色';
+      document.getElementById('chatMessages').innerHTML = '<div class="empty-state">会话已结束</div>';
+    }
+
+    // ── 角色库 ──
+    async function createCharacter() {
+      const data = {
+        name: document.getElementById('charName').value,
+        description: document.getElementById('charDesc').value,
+        structured: {
+          gender: document.getElementById('charGender').value,
+          hair_style: document.getElementById('charHair').value,
+          personality: document.getElementById('charPersonality').value,
+        },
+        costume: {
+          name: document.getElementById('costumeName').value,
+          style: document.getElementById('costumeStyle').value,
+        },
+        scene: {
+          name: document.getElementById('sceneName').value,
+          mood: document.getElementById('sceneMood').value,
+        },
+      };
+      const result = await api('create_character', data);
+      if (result.error) return alert('创建失败: ' + result.error);
+      alert('角色创建成功！');
+      loadCharacters();
+    }
+
+    async function loadCharacters() {
+      const result = await api('list_characters');
+      const grid = document.getElementById('charList');
+      if (!result.characters?.length) {
+        grid.innerHTML = '<div class="empty-state">还没有角色</div>';
+        return;
+      }
+      grid.innerHTML = result.characters.map(c => `
+        <div class="card" onclick="selectCharForChat('${c.id}', '${escapeHtml(c.name)}')">
+          <div class="card-cover">🎭</div>
+          <div class="card-body">
+            <div class="card-title">${escapeHtml(c.name)}</div>
+            <div class="card-meta">${escapeHtml(c.costume_name || '')} · ${escapeHtml(c.scene_name || '')}</div>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function selectCharForChat(id, name) {
+      currentChatChar = name;
+      document.getElementById('chatCharName').textContent = name;
+      switchPage('interactive');
+    }
+
+    async function applyTemplate() {
+      const tmplId = document.getElementById('charTemplate').value;
+      if (!tmplId) return;
+      const result = await api('get_template', { template_id: tmplId });
+      if (result.template) {
+        const t = result.template;
+        if (t.character?.structured) {
+          document.getElementById('charGender').value = t.character.structured.gender || '';
+          document.getElementById('charHair').value = t.character.structured.hair_style || '';
+          document.getElementById('charPersonality').value = t.character.structured.personality || '';
+        }
+        if (t.character?.costume) {
+          document.getElementById('costumeName').value = t.character.costume.name || '';
+          document.getElementById('costumeStyle').value = t.character.costume.style || '';
+        }
+        if (t.character?.scene) {
+          document.getElementById('sceneName').value = t.character.scene.name || '';
+          document.getElementById('sceneMood').value = t.character.scene.mood || '';
+        }
+      }
+    }
+
+    // ── 工具 ──
+    function escapeHtml(s) {
+      const d = document.createElement('div');
+      d.textContent = s;
+      return d.innerHTML;
+    }
+
+    // ── 初始化 ──
+    document.getElementById('chatInput')?.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+    });
+  </script>
 </body>
 </html>
