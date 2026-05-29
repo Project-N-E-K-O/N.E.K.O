@@ -1,189 +1,58 @@
-# 猫娘空闲态重构 — 代码现状参考文档
+# 猫娘空闲状态分层 - 代码参考
 
-> 参考入口：原始目标见 [cat-idle-states-feature.md](./cat-idle-states-feature.md)
-> 本文档以当前仓库实际代码为准，整合并替代旧的 `cat-idle-states-design.md` 与 `cat-idle-states-implementation-flow.md`。
-> 如果代码与本文档冲突，以当前代码和可复现行为为准。
+> 产品和行为口径见 [cat-idle-states-feature.md](./cat-idle-states-feature.md)。
+> 本文档以当前代码为准，给实现、排查和 review 使用。
 
----
+## 一、总实现结论
 
-## 一、用途与范围
+当前实现已经收敛为：
 
-这份文档只回答三件事：
+1. 不新增独立 idle 业务状态机。
+2. 空闲到点后自动复用现有 goodbye。
+3. `CAT1 / CAT2 / CAT3` 只表示 goodbye 后的 return 入口视觉 tier。
+4. return 仍走原有 `*-return-click` 和 `handleReturnClick`。
+5. 首页网页端和桌面 Electron 聊天窗都接入 `CAT2 / CAT3` 停靠。
 
-1. 当前代码里“猫娘空闲态重构”到底是怎样实现的。
-2. 哪些产品语义已经收敛，后续不能再按早期设想误改。
-3. 目前还剩哪些明确未收口项。
+当前仍是联调阈值：
 
-它不是新的设计提案，也不是历史讨论归档，而是给后续实现、排查和 review 使用的单一参考文档。
+```text
+AUTO_GOODBYE_MS = 5s
+CAT2_MS        = 10s
+CAT3_MS        = 15s
+```
 
----
+## 二、主要文件
 
-## 二、当前代码的总实现结论
+| 文件 | 职责 |
+|------|------|
+| [static/app-auto-goodbye.js](/Users/tonnodoubt/N.E.K.O/static/app-auto-goodbye.js) | idle 计时、阻断判断、goodbye 触发、visual tier 派发 |
+| [static/app-ui.js](/Users/tonnodoubt/N.E.K.O/static/app-ui.js) | return-ball 显示/隐藏/拖拽、桌面 return-ball 状态广播 |
+| [static/app-interpage.js](/Users/tonnodoubt/N.E.K.O/static/app-interpage.js) | `/chat` 交互回传、`idle_return_ball_state` 跨窗口转发 |
+| [static/app-react-chat-window.js](/Users/tonnodoubt/N.E.K.O/static/app-react-chat-window.js) | 首页 React chat idle-dock、桌面 Electron idle-dock 消费端 |
+| [static/avatar-ui-buttons.js](/Users/tonnodoubt/N.E.K.O/static/avatar-ui-buttons.js) | return DOM、tier 视觉同步、GIF hover 播放控制 |
+| [static/css/index.css](/Users/tonnodoubt/N.E.K.O/static/css/index.css) | return 猫形象、网页端 idle-docked 样式 |
+| [templates/index.html](/Users/tonnodoubt/N.E.K.O/templates/index.html) | 首页注入 auto-goodbye |
+| [main_routers/pages_router.py](/Users/tonnodoubt/N.E.K.O/main_routers/pages_router.py) | `static_asset_version` 跟踪 idle GIF 资源 |
+| `/Users/tonnodoubt/N.E.K.O.-PC/src/preload-chat-react.js` | 桌面聊天窗折叠/展开桥接 |
+| `/Users/tonnodoubt/N.E.K.O.-PC/src/main/window-control-ipc.js` | BrowserWindow collapse / expand IPC |
+| `static/assets/neko-idle/` | `CAT1 / CAT2 / CAT3` 默认态与点击态 GIF |
 
-### 2.1 这不是独立 idle 业务状态机
+## 三、auto-goodbye 控制器
 
-当前代码已经明确收敛为：
+主入口：[static/app-auto-goodbye.js](/Users/tonnodoubt/N.E.K.O/static/app-auto-goodbye.js)
 
-1. 空闲态不新建独立业务状态。
-2. 到点且无阻断时，系统自动复用现有 goodbye 底座。
-3. `CAT1 / CAT2 / CAT3` 只是 goodbye 之后的视觉表现层，不是新的会话语义。
+### 3.1 运行范围
 
-对应的实际代码入口是：
+控制器只在首页运行：
 
-1. `static/app-auto-goodbye.js`
-2. 自动路径只派发一次现有 `live2d-goodbye-click`
-3. goodbye 之后再由 `visualTier` 驱动 `CAT1 / CAT2 / CAT3`
+1. `templates/index.html` 注入。
+2. `/chat` 不注入控制器。
+3. 控制器内部也用 pathname 限定 `/` 或 `/index.html`。
+4. 启动前等待 storage startup barrier。
 
-### 2.2 回来仍走当前 return 链，不切到 `start_session`
+### 3.2 状态和公开接口
 
-当前实现保持的关键语义是：
-
-1. auto-goodbye 进入方式继续复用 `live2d-goodbye-click`
-2. 回来方式继续对应当前 `handleReturnClick` 链
-3. 也就是继续使用：
-   - `live2d-return-click`
-   - `vrm-return-click`
-   - `mmd-return-click`
-4. 没有把恢复主语义改成 `returnSessionButton -> start_session`
-
-这点在这些文件上可以直接对应：
-
-1. [static/app-auto-goodbye.js](/Users/tonnodoubt/N.E.K.O/static/app-auto-goodbye.js:474)
-2. [static/avatar-ui-buttons.js](/Users/tonnodoubt/N.E.K.O/static/avatar-ui-buttons.js:723)
-3. [static/app-ui.js](/Users/tonnodoubt/N.E.K.O/static/app-ui.js:2528)
-
-### 2.3 当前代码等价于“Phase 1-5 已全部落地”
-
-按旧实施流拆分，当前代码已经覆盖：
-
-1. Phase 1：首页 auto-goodbye 控制器
-2. Phase 2：CAT1 占位表现
-3. Phase 3：CAT2 / CAT3 表现退化
-4. Phase 4：React 聊天球在 CAT2 / CAT3 下的独立停靠
-5. Phase 5：对应的静态/契约测试文件已在仓库中
-
-但仍有 3 个明确未收口项：
-
-1. 阈值仍是联调值 `5s / 10s / 15s`，尚未切回正式 `20min / 30min / 40min`
-2. 视觉资源仍以占位资源为主，未替换成正式猫图
-3. 网页端与 `/Users/tonnodoubt/N.E.K.O.-PC` 桌面端仍需要最终肉眼 UI 验收
-
----
-
-## 三、当前产品语义与行为边界
-
-### 3.1 auto-goodbye 的真实语义
-
-当前代码里的 auto-goodbye 等价于：
-
-1. 用户长时间无有效交互
-2. 当前没有阻断条件
-3. 系统自动帮用户触发一次现有 goodbye
-
-这意味着它会主动复用 goodbye 已有副作用，而不是绕开它们重写一套轻量隐藏逻辑。
-
-### 3.2 `CAT1 / CAT2 / CAT3` 的真实语义
-
-当前代码里：
-
-1. `CAT1`：goodbye 后的基础回来入口表现
-2. `CAT2`：长时间 idle 后的第二档表现
-3. `CAT3`：更长时间 idle 后的第三档表现
-
-它们不会：
-
-1. 改会话逻辑
-2. 改 `_goodbyeClicked` 语义
-3. 改回来后的会话恢复协议
-
-### 3.3 手动 goodbye / return 语义未被改写
-
-当前代码保持：
-
-1. 用户手动点击“请她离开”仍走原有 goodbye 逻辑
-2. 用户点击 return-ball / 猫形象回来仍走原有 return 链
-3. auto-goodbye 只是自动触发条件，不是新业务分支
-
-### 3.4 当前不引入自动唤醒
-
-当前代码没有把以下行为定义成“自动回来”：
-
-1. 任意 focus
-2. 任意鼠标轻扫
-3. 任意滚轮
-4. 任意页面可见性切换
-
-回来仍然以显式点击现有回来入口为主。
-
-### 3.5 goodbye 后的交互不重置 tier
-
-当前代码里，已经进入 goodbye / `CAT1-CAT3` 后：
-
-1. 普通 `pointerdown` / `touchstart` / `keydown` / `wheel` 不刷新 idle 基线。
-2. 拖拽猫形象期间产生的 `dragging` suppression，不会在进入或清除时刷新 idle 基线。
-3. 因此 CAT2 / CAT3 下拖拽和松手都不会把视觉 tier 拉回 CAT1。
-4. 真正点击回来入口触发 `*-return-click` 时，才按恢复流程清除 tier 并重置交互基线。
-
----
-
-## 四、页面范围与启动方式
-
-### 4.1 控制器只运行在首页
-
-当前 `app-auto-goodbye.js` 只注入首页：
-
-1. [templates/index.html](/Users/tonnodoubt/N.E.K.O/templates/index.html:381)
-2. 不注入 `/chat`
-3. 静态资源版本跟踪在 [main_routers/pages_router.py](/Users/tonnodoubt/N.E.K.O/main_routers/pages_router.py:35)
-
-控制器自身也再次用 pathname 约束：
-
-1. 只接受 `/`
-2. 或 `/index.html`
-
-### 4.2 启动前会等待 storage startup barrier
-
-当前控制器会等待：
-
-1. `window.waitForStorageLocationStartupBarrier()`
-2. 或 `window.__nekoStorageLocationStartupBarrier`
-
-之后才正式开始 idle 计时与 UI 协作。
-
-### 4.3 `/chat` 不跑控制器，但会回传真实交互
-
-当前策略不是“完全忽略 `/chat`”，而是：
-
-1. `/chat` 不运行 auto-goodbye 控制器本体
-2. `/chat` 中真实用户交互会回传首页
-3. 首页收到后刷新闲置基线
-
-对应桥接在：
-
-1. [static/app-interpage.js](/Users/tonnodoubt/N.E.K.O/static/app-interpage.js:1)
-2. [static/app-auto-goodbye.js](/Users/tonnodoubt/N.E.K.O/static/app-auto-goodbye.js:556)
-
----
-
-## 五、当前 auto-goodbye 控制器
-
-主文件：
-
-1. [static/app-auto-goodbye.js](/Users/tonnodoubt/N.E.K.O/static/app-auto-goodbye.js:1)
-
-### 5.1 当前阈值
-
-当前代码里的实际阈值是：
-
-1. `CAT1`: `5s`
-2. `CAT2`: `10s`
-3. `CAT3`: `15s`
-
-这只是联调值，还没切回正式值。
-
-### 5.2 当前公开接口
-
-当前 `window.nekoAutoGoodbye` 实际暴露的是：
+当前 `window.nekoAutoGoodbye` 暴露：
 
 1. `noteUserInteraction(source)`
 2. `hasBlockingActiveWork()`
@@ -195,14 +64,7 @@
 8. `clearTimers(reason)`
 9. `getState()`
 
-说明：
-
-1. 这个公开面大于早期最小设计面
-2. 这是当前代码事实，不代表后续一定要继续扩大依赖
-
-### 5.3 当前状态字段
-
-当前控制器内部至少维护：
+关键状态包括：
 
 1. `lastInteractionAt`
 2. `autoGoodbyeTriggered`
@@ -211,93 +73,38 @@
 5. `idleSuppressionReasons`
 6. `conversationGraceUntil`
 
-### 5.4 进入 auto-goodbye 的真实条件
+### 3.3 tick 顺序
 
-当前代码要求同时满足：
+当前 tick 先判断是否已经 goodbye，再处理 idle suppression：
 
-1. 在首页
-2. 基础设施 ready
-3. WebSocket 已打开并完成 priming
-4. 当前还不在 goodbye
-5. 当前没有任何阻断条件
-6. 距离上次有效交互时间已达到 `AUTO_GOODBYE_MS`
+```text
+ensureInfrastructurePrimed()
+goodbyeActive = isGoodbyeActive()
+idleSuppressed = syncIdleSuppressionState('tick')
 
-满足后只做一件事：
+if goodbyeActive:
+  syncVisualTierFromCurrentState('tick-goodbye')
+  return
 
-1. 派发一次 `live2d-goodbye-click`
+if idleSuppressed:
+  return
 
-不会：
+if elapsed >= AUTO_GOODBYE_MS:
+  tryAutoGoodbye('idle-threshold')
+```
 
-1. 复制 goodbye 业务逻辑
-2. 自己直接调用 `end_session`
-3. 自己拼一套 return / hide / disable 逻辑
+这样可以保证：桌面端仍有录音、播放等 blocker 时，已经进入 goodbye 的猫不会卡在 `CAT1`，仍会推进到 `CAT2 / CAT3`。
 
----
+### 3.4 阻断条件
 
-## 六、当前阻断条件与抑制逻辑
+会阻止“进入 auto-goodbye”的条件包括：
 
-### 6.1 当前真正会阻止进入闲置的条件
+1. `window._agentTaskMap` 中存在 queued / running 任务。
+2. 真实对话状态：录音、语音启动 pending、播放中、assistant turn 未结束、conversation grace。
+3. 真实执行状态：模式切换、角色切换、游戏 route、游戏语音 STT、手动屏幕共享、拖拽。
+4. 教程或接管态：home tutorial active、interaction locked、`body.yui-taking-over`。
 
-当前已经收紧为三大类：
-
-1. 持续任务
-2. 真实对话
-3. 真实执行或真实操作
-
-外加教程守卫与拖拽态。
-
-### 6.2 持续任务
-
-来源：
-
-1. `window._agentTaskMap`
-
-阻断口径：
-
-1. 只要存在 `queued`
-2. 或 `running`
-
-就视为 blocker。
-
-### 6.3 真实对话
-
-当前代码会阻断：
-
-1. `isRecording`
-2. `voiceStartPending`
-3. `isPlaying`
-4. assistant turn 尚未结束
-5. `conversation grace`
-
-其中 `conversation grace` 当前保留，是为了覆盖：
-
-1. 用户刚发完请求
-2. 还在等第一段回复
-3. 开发阈值很短时的误触发空窗
-
-### 6.4 真实执行 / 真实操作
-
-当前代码会阻断：
-
-1. `isSwitchingMode`
-2. `isSwitchingCatgirl`
-3. `gameRouteActive`
-4. `gameVoiceSttGateActive`
-5. `gameVoiceSttListening`
-6. 手动屏幕共享
-7. 拖拽中
-
-### 6.5 教程守卫
-
-当前代码还会阻断：
-
-1. `window.NekoHomeTutorialFeatureController.isActive()`
-2. `window.isNekoHomeTutorialInteractionLocked()`
-3. `body.yui-taking-over`
-
-### 6.6 当前明确不再作为 blocker 的内容
-
-当前代码已经明确不再把这些内容当成闲置阻断：
+当前不再作为 blocker：
 
 1. `voiceChatActive`
 2. `isTextSessionActive`
@@ -306,114 +113,123 @@
 5. 只是主页失焦
 6. 只是静态前台 UI 可见
 
----
+### 3.5 goodbye 后的交互
 
-## 七、当前视觉层实现
+`noteUserInteraction()` 在 `isGoodbyeActive()` 且 source 不是 `return-click` 时直接返回。
 
-### 7.1 return 入口仍复用原 DOM 协议
+因此：
 
-return 相关 DOM 仍由 [static/avatar-ui-buttons.js](/Users/tonnodoubt/N.E.K.O/static/avatar-ui-buttons.js:638) 创建。
+1. goodbye 后 pointer / key / touch / wheel 不刷新 idle 基线。
+2. 拖拽 suppression 进入和解除不刷新 idle 基线。
+3. return-click 才清 tier 并刷新基线。
 
-必须继续保留的协议包括：
+## 四、视觉 tier 和 return 入口
 
-1. 容器 ID
-   - `live2d-return-button-container`
-   - `vrm-return-button-container`
-   - `mmd-return-button-container`
-2. 按钮 ID
-   - `live2d-btn-return`
-   - `vrm-btn-return`
-   - `mmd-btn-return`
-3. 返回事件
-   - `live2d-return-click`
-   - `vrm-return-click`
-   - `mmd-return-click`
+### 4.1 return DOM 协议
 
-### 7.2 当前视觉 tier 是如何同步到 return 按钮的
+继续复用原 return DOM：
 
-当前 `avatar-ui-buttons.js` 会：
+| 类型 | Live2D | VRM | MMD |
+|------|--------|-----|-----|
+| 容器 | `live2d-return-button-container` | `vrm-return-button-container` | `mmd-return-button-container` |
+| 按钮 | `live2d-btn-return` | `vrm-btn-return` | `mmd-btn-return` |
+| 事件 | `live2d-return-click` | `vrm-return-click` | `mmd-return-click` |
 
-1. 读取 `window.nekoAutoGoodbye.getState().visualTier`
-2. 给 return button / container / art 写入 `data-neko-idle-tier`
-3. 监听 `neko:auto-goodbye:state-change`
-4. 在 `visual-tier` 变化时同步所有 return 按钮
+这些 ID 和事件是兼容协议，后续不要随意重命名。
 
-### 7.2.1 当前 tier 切换与 hover 播放
+### 4.2 tier 同步
 
-当前视觉层还负责两类纯表现逻辑：
+`avatar-ui-buttons.js` 负责：
 
-1. `CAT1 / CAT2 / CAT3` 之间切换时，不直接替换图片，而是创建临时 overlay，旧图淡出、新图淡入；完成后清理 overlay。
-2. 鼠标 hover 到猫形象上时切到当前 tier 的 `*-click.gif`。
-3. 鼠标离开时，代码会 fetch 并解析该 GIF 的 Graphic Control Extension 帧延迟，按一轮动画总时长决定何时恢复默认 GIF。
-4. GIF 时长按 URL 缓存；解析失败或环境不支持 fetch 时使用 fallback。
-5. 同一个 click GIF 正在播放时反复进入，不会重复设置同一 `src`，避免 GIF 一直从第一帧重新播放。
-6. hover 恢复使用 token / timer 防护，旧 timer 不会覆盖新一轮 hover 或新的 tier。
+1. 读取 `window.nekoAutoGoodbye.getState().visualTier`。
+2. 给 return container / button / art 写入 `data-neko-idle-tier`。
+3. 监听 `neko:auto-goodbye:state-change`。
+4. 在 tier 变化时同步资源和过渡效果。
 
-### 7.3 当前资源路径
+### 4.3 GIF 播放
 
-当前代码实际使用的是：
+当前资源路径：
 
-1. `CAT1`
-   - `/static/assets/neko-idle/cat-idle-cat1.gif`
-   - `/static/assets/neko-idle/cat-idle-cat1-click.gif`
-2. `CAT2`
-   - `/static/assets/neko-idle/cat-idle-cat2.gif`
-   - `/static/assets/neko-idle/cat-idle-cat2-click.gif`
-3. `CAT3`
-   - `/static/assets/neko-idle/cat-idle-cat3.gif`
-   - `/static/assets/neko-idle/cat-idle-cat3-click.gif`
+| tier | 默认态 | 点击态 |
+|------|--------|--------|
+| `cat1` | `/static/assets/neko-idle/cat-idle-cat1.gif` | `/static/assets/neko-idle/cat-idle-cat1-click.gif` |
+| `cat2` | `/static/assets/neko-idle/cat-idle-cat2.gif` | `/static/assets/neko-idle/cat-idle-cat2-click.gif` |
+| `cat3` | `/static/assets/neko-idle/cat-idle-cat3.gif` | `/static/assets/neko-idle/cat-idle-cat3-click.gif` |
 
-注意：旧文档和旧测试里出现过 `.png` 口径；当前代码、资源目录、版本跟踪和测试应统一按 GIF。
+资源维护口径：
 
-### 7.4 当前视觉层与业务层的分工
+1. 只有 `CAT1 / CAT2 / CAT3` 是当前代码契约。
+2. 新增或替换这些 GIF 时，要确保 [main_routers/pages_router.py](/Users/tonnodoubt/N.E.K.O/main_routers/pages_router.py) 的 `static_asset_version` 跟踪列表仍覆盖对应文件。
+3. 如果目录中出现未接入的实验资源，例如 `cat-idle-cat4-*`，在代码、版本跟踪和测试更新前不属于当前功能合同。
 
-当前分工仍然是：
+实现规则：
 
-1. `avatar-ui-buttons.js`
-   - 创建 return DOM
-   - 绑定拖拽
-   - 绑定点击并派发 `*-return-click`
-   - 同步猫形象资源
-2. `app-ui.js`
-   - 控制 show / hide
-   - 控制位置
-   - 执行 `handleReturnClick`
+1. tier 切换使用 overlay 做旧图淡出、新图淡入。
+2. hover 使用 click GIF。
+3. mouseleave 后按 GIF 帧延迟总和等待一轮播放完成再恢复默认 GIF。
+4. GIF duration 按 URL 缓存。
+5. 同一 click GIF 播放中不重复设置 `src`。
+6. token / timer 防止旧恢复逻辑覆盖新 hover 或新 tier。
 
-这意味着后续如果再改视觉层，仍应优先改显示层，不要重写 return 业务协议。
+## 五、return-ball 状态广播
 
----
+主文件：[static/app-ui.js](/Users/tonnodoubt/N.E.K.O/static/app-ui.js)
 
-## 八、当前 React 聊天气泡停靠实现
+当前 `app-ui.js` 在 return-ball 显示、隐藏、tier 切换、viewport resize、拖拽时发布：
 
-主文件：
+```text
+action: idle_return_ball_state
+source: pet-window
+reason: return-ball-show / return-ball-revealed / return-ball-hide / visual-tier / viewport-resize / return-ball-dragging / return-ball-drag-end
+visible: boolean
+tier: none | cat1 | cat2 | cat3
+screenRect: { left, top, width, height, right, bottom } | null
+lanlan_name
+timestamp
+```
 
-1. [static/app-react-chat-window.js](/Users/tonnodoubt/N.E.K.O/static/app-react-chat-window.js:1)
+重要约束：
 
-### 8.1 作用范围
+1. 只有非 `electron-chat-window` 页面允许发布。
+2. Electron 聊天窗只消费，不发布，避免它自己的 resize 反向广播“不可见”。
+3. 拖拽时使用 pointer 的 `screenX/screenY` 生成临时 `screenRect`，让桌面聊天窗跟随拖动过程，而不是等松手后跳到最终位置。
 
-当前 idle-dock 只作用于：
+跨窗口转发在 [static/app-interpage.js](/Users/tonnodoubt/N.E.K.O/static/app-interpage.js)：
 
-1. 首页 React chat host
-2. `CAT2 / CAT3`
-3. 已显示聊天窗口时的最小化球停靠
+1. BroadcastChannel 收到 `idle_return_ball_state`。
+2. 按 `lanlan_name` 过滤。
+3. 派发本地 `neko:idle-return-ball-state`。
 
-它不作用于：
+## 六、首页 React chat idle-dock
 
-1. `/chat` 独立窗口
-2. `CAT1`
-3. 手动 goodbye 业务语义本身
+主文件：[static/app-react-chat-window.js](/Users/tonnodoubt/N.E.K.O/static/app-react-chat-window.js)
 
-### 8.2 设计原则
+### 6.1 作用范围
 
-当前代码已经按“独立编排”落地：
+网页端首页 idle-dock 作用于：
 
-1. idle-dock 逻辑与 `setMinimized()` 分离
-2. `setMinimized(nextMinimized)` 保持原有职责
-3. idle-dock 只在外部读取最小化状态，并在必要时调用原始 `setMinimized(true/false)`
+1. 非 Electron 首页 React chat host。
+2. `CAT2 / CAT3`。
+3. 最小化球停靠到 return-ball 左侧。
 
-### 8.3 当前 idle-dock 状态
+不作用于：
 
-当前独立编排变量包括：
+1. `CAT1`。
+2. `/chat` Electron 窗口。
+3. goodbye / return 业务语义。
+
+### 6.2 实现原则
+
+当前仍保持独立编排：
+
+1. `setMinimized(nextMinimized)` 不塞 idle-dock 分支。
+2. idle-dock 外部调用原始 `setMinimized(true/false)`。
+3. 用 `MutationObserver` 等最小化完成后再停靠。
+4. 用 `requestAnimationFrame` 合并 return-ball 位置同步。
+
+### 6.3 关键状态
+
+网页端首页使用：
 
 1. `idleDockTier`
 2. `idleDockActive`
@@ -423,110 +239,155 @@ return 相关 DOM 仍由 [static/avatar-ui-buttons.js](/Users/tonnodoubt/N.E.K.O
 6. `idleDockContainerObserver`
 7. `idleDockSyncFrame`
 
-### 8.4 进入停靠的真实时序
+### 6.4 进入与退出
 
-当前代码时序是：
+进入：
 
-1. 监听 `neko:auto-goodbye:state-change`
-2. 只有 tier 进入 `cat2` / `cat3` 才处理
-3. 如果聊天框已最小化：
-   - 保存当前球位置
-   - 立即停靠到 return-ball 左侧
-4. 如果聊天框未最小化：
-   - 先调用原始 `setMinimized(true)`
-   - 用 `MutationObserver` 观察最小化完成
-   - 完成后再保存位置并停靠
+```text
+neko:auto-goodbye:state-change
+  -> tier 是 cat2 / cat3
+  -> 如果已最小化：保存原球位置并停靠
+  -> 如果未最小化：调用 setMinimized(true)，等待 class 变更后停靠
+```
 
-### 8.5 退出停靠的真实时序
+退出：
 
-当前退出逻辑是：
+```text
+tier 离开 cat2 / cat3
+或收到 live2d/vrm/mmd-return-click
+  -> 恢复停靠前球位置
+  -> 如果是 idle-dock 主动最小化，则 setMinimized(false)
+```
 
-1. tier 离开 `cat2` / `cat3` 时退出
-2. 或收到任一 `*-return-click` 时退出
-3. 先恢复停靠前保存的位置
-4. 如果这次停靠是 idle-dock 主动触发最小化的，则再调用原始 `setMinimized(false)`
+## 七、桌面 Electron chat idle-dock
 
-### 8.6 当前实现的边界约束
+主文件：
 
-当前实现刻意保证：
+1. [static/app-react-chat-window.js](/Users/tonnodoubt/N.E.K.O/static/app-react-chat-window.js)
+2. `/Users/tonnodoubt/N.E.K.O.-PC/src/preload-chat-react.js`
+3. `/Users/tonnodoubt/N.E.K.O.-PC/src/main/window-control-ipc.js`
 
-1. 不在 `setMinimized` 内部塞 idle-dock 分支
-2. 不新增 `window.reactChatWindowHost.setMinimized`
-3. 不新增 `setIdlePresentation / clearIdlePresentation` 之类对外桥接
-4. 不接管正常最小化 / 展开流程
+### 7.1 桥接接口
 
----
+PC preload 在 `window.nekoChatWindow` 上提供：
 
-## 九、文件与职责映射
+1. `isCollapsed()`
+2. `idleDockCollapse()`
+3. `idleDockExpand(savedBounds)`
 
-当前主要文件分工如下：
+`idleDockCollapse()` 会：
 
-1. [static/app-auto-goodbye.js](/Users/tonnodoubt/N.E.K.O/static/app-auto-goodbye.js:1)
-   - auto-goodbye 控制器
-   - 阻断判断
-   - 计时、tier、事件派发
-2. [static/app-interpage.js](/Users/tonnodoubt/N.E.K.O/static/app-interpage.js:1)
-   - `/chat` 交互回传首页
-3. [templates/index.html](/Users/tonnodoubt/N.E.K.O/templates/index.html:381)
-   - 首页注入 auto-goodbye
-4. [main_routers/pages_router.py](/Users/tonnodoubt/N.E.K.O/main_routers/pages_router.py:35)
-   - auto-goodbye 与 idle 资源的版本跟踪
-5. [static/avatar-ui-buttons.js](/Users/tonnodoubt/N.E.K.O/static/avatar-ui-buttons.js:182)
-   - return DOM、拖拽、tier 视觉桥接
-6. [static/app-ui.js](/Users/tonnodoubt/N.E.K.O/static/app-ui.js:1756)
-   - goodbye / return UI 切换与 `handleReturnClick`
-7. [static/app-react-chat-window.js](/Users/tonnodoubt/N.E.K.O/static/app-react-chat-window.js:1824)
-   - React chat host 的 idle-dock 独立编排
-8. [static/css/index.css](/Users/tonnodoubt/N.E.K.O/static/css/index.css:353)
-   - CAT return 视觉样式与 idle-docked 样式
-9. `static/assets/neko-idle/`
-   - 当前占位资源
+1. 如果忙或已经折叠，返回当前状态。
+2. 保存展开 bounds。
+3. 给 shell 加 `neko-e-collapsed`。
+4. 调 `W.collapse()` 把 BrowserWindow 缩到折叠球尺寸。
+5. 设置 `eMinimized = true`。
 
----
+`W.collapse()` 对应 PC 主进程 `WINDOW_CONTROL_CHANNELS.COLLAPSE`，当前会把 BrowserWindow 收到 `COLLAPSED_ICON_SIZE = 84`。
 
-## 十、当前测试参考
+`idleDockExpand(savedBounds)` 会：
 
-这组功能当前对应的主要测试文件有：
+1. 用传入 bounds 或本地保存 bounds 作为目标。
+2. 移除 `neko-e-collapsed`。
+3. 调 `W.expand(target)`。
+4. 清掉保存的展开 bounds。
 
-1. `tests/unit/test_app_auto_goodbye_phase1.py`
-2. `tests/unit/test_avatar_return_button_cat1_static.py`
-3. `tests/unit/test_avatar_return_button_idle_tiers_static.py`
-4. `tests/unit/test_react_chat_idle_dock_static.py`
-5. `tests/unit/test_auto_goodbye_goodbye_return_contract.py`
-6. `tests/unit/test_phase5_regression_boundary.py`
+### 7.2 消费 `idle_return_ball_state`
 
-这些测试主要锁住：
+Electron chat 窗口监听 `neko:idle-return-ball-state`：
 
-1. auto-goodbye 只派发 `live2d-goodbye-click`
-2. return 协议仍走现有 `*-return-click`
-3. CAT1 / CAT2 / CAT3 资源与 tier 同步
-4. CAT2 / CAT3 下拖拽和松手不重置 tier
-5. hover click GIF 按自身时长播放，反复进入不重播开头
-6. idle-dock 只限 CAT2 / CAT3
-7. `setMinimized` 不被 idle-dock 污染
-8. `/chat` 不运行首页控制器
+1. `visible=true` 且 `tier=cat2/cat3` 且有 `screenRect`：进入或更新停靠。
+2. 否则退出停靠。
 
----
+进入时：
 
-## 十一、后续修改时必须继续遵守的约束
+1. 保存当前 BrowserWindow bounds。
+2. 如果还没折叠，先 `idleDockCollapse()`。
+3. 折叠成功后设置 active。
+4. 根据 return-ball `screenRect` 把折叠球放到猫左侧。
 
-后续如果继续改这块，至少要继续守住：
+退出时：
 
-1. auto-goodbye 仍复用现有 goodbye 业务底座
-2. `CAT1 / CAT2 / CAT3` 仍只代表表现层，不引入新业务态
-3. return 仍保留现有 ID、事件和 `handleReturnClick` 语义
-4. idle-dock 仍保持独立编排，不污染正常最小化方法体
-5. `/chat` 独立窗口不运行首页控制器
-6. 网页端和 `/Users/tonnodoubt/N.E.K.O.-PC` 桌面端都要一起验
+1. 取消 retry。
+2. 取消 rAF 定位。
+3. 递增 generation，使 pending enter 失效。
+4. 如果本次是 idle-dock 触发的折叠，调用 `idleDockExpand(savedBounds)`。
+5. 否则恢复 saved bounds。
 
----
+### 7.3 竞态保护
 
-## 十二、明确剩余待办
+当前桌面端收口了三类竞态：
 
-当前还没最终收口的事项只有这些：
+1. `electronIdleDockDesired + electronIdleDockGeneration`
+   - 退出会递增 generation。
+   - 旧的 pending enter / retry / collapse 完成后不会再设置 active。
+2. `electronIdleDockPositionFrame + electronIdleDockPositionSeq`
+   - 拖拽中定位按 rAF 合并。
+   - 旧的异步 `getBounds/getWorkArea` 结果不能覆盖新坐标。
+3. `entrySavedBounds`
+   - 如果退出发生在 `idleDockCollapse()` 进行中，旧链路完成后仍能用本次保存的 bounds 尽力展开回滚。
 
-1. 把阈值从 `5s / 10s / 15s` 切回正式 `20min / 30min / 40min`
-2. 替换当前占位猫图 / click 图 / gif 为正式资源
-3. 对网页端与 `/Users/tonnodoubt/N.E.K.O.-PC` 桌面端做最终肉眼 UI 验收
+这几项是为了保证：
 
-如果后续没有新的产品变更，这三项之外不应再重新发明第二套 idle 业务语义。
+1. 猫消失或点击回来时，不会再被过期 retry 折叠。
+2. 拖拽过程中桌面聊天窗不会因为旧坐标回跳。
+3. 聊天窗不会刚折叠就被自己的 resize 状态展开。
+
+## 八、测试参考
+
+当前相关测试：
+
+| 测试 | 覆盖重点 |
+|------|----------|
+| `tests/unit/test_app_auto_goodbye_phase1.py` | 控制器启动、阻断、tier 推进、goodbye 后拖拽不重置、interpage 转发 |
+| `tests/unit/test_avatar_return_button_cat1_static.py` | CAT1 return 入口静态契约 |
+| `tests/unit/test_avatar_return_button_idle_tiers_static.py` | CAT2/CAT3、GIF hover、拖拽不重置 |
+| `tests/unit/test_react_chat_idle_dock_static.py` | 网页 idle-dock、Electron return-ball bridge、竞态保护字符串契约 |
+| `tests/unit/test_auto_goodbye_goodbye_return_contract.py` | goodbye / return 语义不被改写 |
+| `tests/unit/test_phase5_regression_boundary.py` | 边界回归 |
+| `/Users/tonnodoubt/N.E.K.O.-PC/test/react-chat-idle-dock-contract.test.js` | preload 桌面折叠桥接 |
+| `/Users/tonnodoubt/N.E.K.O.-PC/test/pet-hidden-return-ball-contract.test.js` | 桌面隐藏宠物命中区域契约 |
+
+常用验证命令：
+
+```bash
+node --check static/app-react-chat-window.js
+node --check static/app-ui.js
+node --check static/app-interpage.js
+node --check static/app-auto-goodbye.js
+uv run python -m pytest tests/unit/test_react_chat_idle_dock_static.py tests/unit/test_app_auto_goodbye_phase1.py tests/unit/test_avatar_return_button_cat1_static.py tests/unit/test_avatar_return_button_idle_tiers_static.py tests/unit/test_auto_goodbye_goodbye_return_contract.py tests/unit/test_phase5_regression_boundary.py -q
+```
+
+桌面仓库：
+
+```bash
+cd /Users/tonnodoubt/N.E.K.O.-PC
+node --check src/preload-chat-react.js
+node --test test/react-chat-idle-dock-contract.test.js test/pet-hidden-return-ball-contract.test.js
+```
+
+## 九、后续修改约束
+
+后续继续改这块时必须保持：
+
+1. auto-goodbye 仍复用现有 goodbye 底座。
+2. `CAT1 / CAT2 / CAT3` 仍只是视觉层。
+3. return DOM ID 和 `*-return-click` 事件继续兼容。
+4. `/chat` 不运行首页 auto-goodbye 控制器。
+5. Electron 聊天窗只消费 return-ball 状态，不发布。
+6. 网页端和桌面端 idle-dock 都要考虑 CAT2/CAT3、拖拽、退出、return-click。
+7. 不把 idle-dock 分支塞回 `setMinimized()` 正常逻辑。
+
+## 十、剩余待办
+
+当前剩余待办：
+
+1. 阈值从 `5s / 10s / 15s` 切回 `20min / 30min / 40min`。
+2. 替换正式 GIF 资源。
+3. 做网页端和桌面端肉眼验收，重点看：
+   - CAT1 -> CAT2 -> CAT3 过渡
+   - hover click GIF 播放完整
+   - CAT2/CAT3 聊天窗停靠
+   - 桌面端折叠后停靠
+   - 拖拽猫时桌面聊天窗跟随
+   - 点击回来后聊天窗恢复

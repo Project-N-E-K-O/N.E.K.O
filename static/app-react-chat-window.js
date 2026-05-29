@@ -36,6 +36,16 @@
     var idleDockMinimizeObserver = null;
     var idleDockContainerObserver = null;
     var idleDockSyncFrame = 0;
+    var electronIdleDockActive = false;
+    var electronIdleDockTriggeredCollapse = false;
+    var electronIdleDockSavedBounds = null;
+    var electronIdleDockLastScreenRect = null;
+    var electronIdleDockEntering = false;
+    var electronIdleDockRetryTimer = 0;
+    var electronIdleDockDesired = false;
+    var electronIdleDockGeneration = 0;
+    var electronIdleDockPositionFrame = 0;
+    var electronIdleDockPositionSeq = 0;
     var _sortKeySeq = 0; // monotonically increasing sortKey counter
 
     var state = {
@@ -1960,6 +1970,254 @@
         idleDockSyncFrame = window.requestAnimationFrame(syncIdleDockPosition);
     }
 
+    function getElectronIdleDockBridge() {
+        if (!isElectronChatWindow()) return null;
+        var bridge = window.nekoChatWindow;
+        if (!bridge || typeof bridge.getBounds !== 'function' || typeof bridge.setBounds !== 'function') {
+            return null;
+        }
+        return bridge;
+    }
+
+    function normalizeElectronRect(rect) {
+        if (!rect || typeof rect !== 'object') return null;
+        var left = Number(rect.left);
+        var top = Number(rect.top);
+        var width = Number(rect.width);
+        var height = Number(rect.height);
+        if (!Number.isFinite(left) || !Number.isFinite(top) ||
+            !Number.isFinite(width) || !Number.isFinite(height) ||
+            width <= 0 || height <= 0) {
+            return null;
+        }
+        return { left: left, top: top, width: width, height: height };
+    }
+
+    function clampElectronDockBounds(bounds, workArea) {
+        if (!bounds) return null;
+        var area = workArea && Number.isFinite(Number(workArea.x)) && Number.isFinite(Number(workArea.y))
+            ? workArea
+            : { x: 0, y: 0, width: window.screen && window.screen.availWidth || 0, height: window.screen && window.screen.availHeight || 0 };
+        var maxX = Number(area.x) + Math.max(0, Number(area.width) - bounds.width);
+        var maxY = Number(area.y) + Math.max(0, Number(area.height) - bounds.height);
+        return {
+            x: Math.round(Math.max(Number(area.x), Math.min(bounds.x, maxX))),
+            y: Math.round(Math.max(Number(area.y), Math.min(bounds.y, maxY))),
+            width: Math.round(bounds.width),
+            height: Math.round(bounds.height)
+        };
+    }
+
+    function isElectronIdleDockCurrent(generation) {
+        return electronIdleDockDesired && generation === electronIdleDockGeneration;
+    }
+
+    function clearElectronIdleDockPositionFrame() {
+        if (electronIdleDockPositionFrame) {
+            window.cancelAnimationFrame(electronIdleDockPositionFrame);
+            electronIdleDockPositionFrame = 0;
+        }
+    }
+
+    function setElectronIdleDockTargetRect(targetRect) {
+        electronIdleDockLastScreenRect = targetRect;
+        electronIdleDockPositionSeq += 1;
+    }
+
+    function scheduleElectronIdleDockPosition() {
+        if (!electronIdleDockActive || !electronIdleDockDesired || electronIdleDockPositionFrame) return;
+        electronIdleDockPositionFrame = window.requestAnimationFrame(function () {
+            electronIdleDockPositionFrame = 0;
+            applyElectronIdleDockPosition();
+        });
+    }
+
+    async function applyElectronIdleDockPosition() {
+        var bridge = getElectronIdleDockBridge();
+        var targetRect = normalizeElectronRect(electronIdleDockLastScreenRect);
+        var positionSeq = electronIdleDockPositionSeq;
+        if (!bridge || !targetRect || !electronIdleDockActive || !electronIdleDockDesired) return;
+
+        var bounds = null;
+        try {
+            bounds = await bridge.getBounds();
+        } catch (_) {
+            bounds = null;
+        }
+        if (positionSeq !== electronIdleDockPositionSeq || !electronIdleDockActive || !electronIdleDockDesired) return;
+        if (!bounds || !Number.isFinite(Number(bounds.width)) || !Number.isFinite(Number(bounds.height))) {
+            return;
+        }
+
+        var width = Math.max(1, Math.round(Number(bounds.width)));
+        var height = Math.max(1, Math.round(Number(bounds.height)));
+        var nextBounds = {
+            x: Math.round(targetRect.left - width - HOME_IDLE_DOCK_GAP),
+            y: Math.round(targetRect.top + (targetRect.height - height) / 2),
+            width: width,
+            height: height
+        };
+
+        try {
+            if (typeof bridge.getWorkArea === 'function') {
+                nextBounds = clampElectronDockBounds(nextBounds, await bridge.getWorkArea());
+            }
+        } catch (_) {
+            nextBounds = clampElectronDockBounds(nextBounds, null);
+        }
+        if (positionSeq !== electronIdleDockPositionSeq || !electronIdleDockActive || !electronIdleDockDesired) return;
+
+        bridge.setBounds(nextBounds.x, nextBounds.y, nextBounds.width, nextBounds.height);
+    }
+
+    function clearElectronIdleDockRetry() {
+        if (electronIdleDockRetryTimer) {
+            window.clearTimeout(electronIdleDockRetryTimer);
+            electronIdleDockRetryTimer = 0;
+        }
+    }
+
+    function scheduleElectronIdleDockRetry(generation) {
+        if (electronIdleDockRetryTimer || !electronIdleDockLastScreenRect || !isElectronIdleDockCurrent(generation)) return;
+        electronIdleDockRetryTimer = window.setTimeout(function () {
+            electronIdleDockRetryTimer = 0;
+            if (electronIdleDockLastScreenRect && !electronIdleDockActive && isElectronIdleDockCurrent(generation)) {
+                enterElectronIdleDock(electronIdleDockLastScreenRect);
+            }
+        }, 120);
+    }
+
+    function hasElectronIdleDockPendingOrActive() {
+        return electronIdleDockActive || electronIdleDockEntering || electronIdleDockDesired || electronIdleDockRetryTimer;
+    }
+
+    async function enterElectronIdleDock(screenRect) {
+        var bridge = getElectronIdleDockBridge();
+        var targetRect = normalizeElectronRect(screenRect);
+        if (!bridge || !targetRect) return;
+        if (!electronIdleDockDesired) {
+            electronIdleDockDesired = true;
+            electronIdleDockGeneration += 1;
+        }
+        var generation = electronIdleDockGeneration;
+        setElectronIdleDockTargetRect(targetRect);
+
+        if (electronIdleDockActive) {
+            scheduleElectronIdleDockPosition();
+            return;
+        }
+
+        if (electronIdleDockEntering) {
+            return;
+        }
+
+        electronIdleDockEntering = true;
+        try {
+            electronIdleDockSavedBounds = await bridge.getBounds();
+        } catch (_) {
+            electronIdleDockSavedBounds = null;
+        }
+        var entrySavedBounds = electronIdleDockSavedBounds;
+        if (!isElectronIdleDockCurrent(generation)) {
+            electronIdleDockEntering = false;
+            return;
+        }
+
+        var alreadyCollapsed = false;
+        try {
+            alreadyCollapsed = typeof bridge.isCollapsed === 'function' && bridge.isCollapsed();
+        } catch (_) {
+            alreadyCollapsed = false;
+        }
+        var shouldCollapseForIdleDock = !alreadyCollapsed;
+        if (!alreadyCollapsed && typeof bridge.idleDockCollapse !== 'function') {
+            electronIdleDockEntering = false;
+            scheduleElectronIdleDockRetry(generation);
+            return;
+        }
+
+        if (shouldCollapseForIdleDock) {
+            var collapsedResult = null;
+            try {
+                collapsedResult = await bridge.idleDockCollapse();
+            } catch (_) {
+                collapsedResult = null;
+            }
+            try {
+                alreadyCollapsed = typeof bridge.isCollapsed === 'function' && bridge.isCollapsed();
+            } catch (_) {
+                alreadyCollapsed = false;
+            }
+            if (!isElectronIdleDockCurrent(generation)) {
+                try {
+                    if (collapsedResult && alreadyCollapsed && entrySavedBounds && typeof bridge.idleDockExpand === 'function') {
+                        await bridge.idleDockExpand(entrySavedBounds);
+                    }
+                } catch (_) {
+                    // Best effort rollback; the newer generation owns the next visible state.
+                }
+                electronIdleDockEntering = false;
+                return;
+            }
+            if (!collapsedResult || !alreadyCollapsed) {
+                electronIdleDockEntering = false;
+                scheduleElectronIdleDockRetry(generation);
+                return;
+            }
+        }
+
+        if (!isElectronIdleDockCurrent(generation)) {
+            electronIdleDockEntering = false;
+            return;
+        }
+        electronIdleDockTriggeredCollapse = shouldCollapseForIdleDock;
+        electronIdleDockActive = true;
+        electronIdleDockEntering = false;
+        clearElectronIdleDockRetry();
+        scheduleElectronIdleDockPosition();
+    }
+
+    async function exitElectronIdleDock() {
+        var bridge = getElectronIdleDockBridge();
+        var wasActive = electronIdleDockActive;
+        var triggeredCollapse = electronIdleDockTriggeredCollapse;
+        var savedBounds = electronIdleDockSavedBounds;
+
+        electronIdleDockDesired = false;
+        electronIdleDockGeneration += 1;
+        electronIdleDockActive = false;
+        electronIdleDockTriggeredCollapse = false;
+        electronIdleDockSavedBounds = null;
+        electronIdleDockLastScreenRect = null;
+        electronIdleDockEntering = false;
+        clearElectronIdleDockRetry();
+        clearElectronIdleDockPositionFrame();
+        electronIdleDockPositionSeq += 1;
+
+        if (!bridge || !wasActive || !savedBounds) return;
+
+        if (triggeredCollapse && typeof bridge.idleDockExpand === 'function') {
+            try {
+                await bridge.idleDockExpand(savedBounds);
+                return;
+            } catch (_) {}
+        }
+        bridge.setBounds(savedBounds.x, savedBounds.y, savedBounds.width, savedBounds.height);
+    }
+
+    function handleElectronIdleReturnBallState(detail) {
+        if (!isElectronChatWindow()) return;
+        var tier = detail && detail.tier;
+        var activeTier = tier === IDLE_DOCK_TIER_CAT2 || tier === IDLE_DOCK_TIER_CAT3;
+        if (detail && detail.visible && activeTier && detail.screenRect) {
+            enterElectronIdleDock(detail.screenRect);
+            return;
+        }
+        if (hasElectronIdleDockPendingOrActive()) {
+            exitElectronIdleDock();
+        }
+    }
+
     // Enter idle-dock: minimize if needed, then position next to return-ball.
     // Calls setMinimized(true) externally — setMinimized itself is untouched.
     function enterIdleDock() {
@@ -3016,15 +3274,23 @@
 
             clearIdleDockState();
         });
+        window.addEventListener('neko:idle-return-ball-state', function (event) {
+            var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
+            if (!detail) return;
+            handleElectronIdleReturnBallState(detail);
+        });
         window.addEventListener('live2d-return-click', function () {
+            if (hasElectronIdleDockPendingOrActive()) { exitElectronIdleDock(); }
             if (idleDockActive) { exitIdleDock(); return; }
             clearIdleDockState();
         });
         window.addEventListener('vrm-return-click', function () {
+            if (hasElectronIdleDockPendingOrActive()) { exitElectronIdleDock(); }
             if (idleDockActive) { exitIdleDock(); return; }
             clearIdleDockState();
         });
         window.addEventListener('mmd-return-click', function () {
+            if (hasElectronIdleDockPendingOrActive()) { exitElectronIdleDock(); }
             if (idleDockActive) { exitIdleDock(); return; }
             clearIdleDockState();
         });

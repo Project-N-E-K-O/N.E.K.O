@@ -73,6 +73,41 @@ def test_idle_dock_calls_setMinimized_externally_without_options():
     assert "setMinimized(false, {" not in source
 
 
+def test_electron_idle_dock_uses_desktop_return_ball_bridge():
+    source = _read(APP_REACT_CHAT_WINDOW_PATH)
+
+    assert "neko:idle-return-ball-state" in source
+    assert "function handleElectronIdleReturnBallState(detail)" in source
+    assert "bridge.idleDockCollapse" in source
+    assert "bridge.idleDockExpand" in source
+    assert "electronIdleDockEntering" in source
+    assert "electronIdleDockDesired" in source
+    assert "electronIdleDockGeneration" in source
+    assert "isElectronIdleDockCurrent(generation)" in source
+    assert "hasElectronIdleDockPendingOrActive()" in source
+    assert "entrySavedBounds" in source
+    assert "clearElectronIdleDockPositionFrame()" in source
+    assert "electronIdleDockPositionSeq" in source
+    assert "scheduleElectronIdleDockPosition()" in source
+    assert "scheduleElectronIdleDockRetry(generation)" in source
+    assert "detail.screenRect" in source
+    assert "HOME_IDLE_DOCK_GAP" in source
+
+
+def test_app_ui_broadcasts_return_ball_screen_rect_for_desktop_idle_dock():
+    source = _read(APP_UI_PATH)
+
+    assert "action: 'idle_return_ball_state'" in source
+    assert "function canPostIdleReturnBallDesktopState()" in source
+    assert "electron-chat-window" in source
+    assert "function getIdleReturnBallScreenRect(container)" in source
+    assert "window.screenX" in source
+    assert "window.appInterpage && window.appInterpage.nekoBroadcastChannel" in source
+    assert "scheduleIdleReturnBallDesktopBridge('visual-tier')" in source
+    assert "'return-ball-dragging'" in source
+    assert "getReturnBallDragScreenRect(" in source
+
+
 def test_idle_dock_uses_mutation_observer_to_detect_minimize_completion():
     source = _read(APP_REACT_CHAT_WINDOW_PATH)
 

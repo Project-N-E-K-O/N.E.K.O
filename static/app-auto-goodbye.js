@@ -536,12 +536,15 @@
 
         ensureInfrastructurePrimed();
 
-        if (syncIdleSuppressionState('tick')) {
+        const goodbyeActive = isGoodbyeActive();
+        const idleSuppressed = syncIdleSuppressionState('tick');
+
+        if (goodbyeActive) {
+            syncVisualTierFromCurrentState('tick-goodbye');
             return;
         }
 
-        if (isGoodbyeActive()) {
-            syncVisualTierFromCurrentState('tick-goodbye');
+        if (idleSuppressed) {
             return;
         }
 

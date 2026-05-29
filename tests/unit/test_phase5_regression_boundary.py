@@ -25,16 +25,29 @@ def _read(path: Path) -> str:
 # ── 5.1 手动 goodbye 链路未被改写 ──────────────────────────
 
 
-def test_app_ui_and_app_buttons_not_modified_by_feature():
-    """app-ui.js 和 app-buttons.js 不在本功能的改动范围内。"""
+def test_app_buttons_not_modified_by_feature():
+    """app-buttons.js 不在本功能的改动范围内。"""
     result = subprocess.run(
-        ["git", "diff", "HEAD", "--",
-         "static/app-ui.js", "static/app-buttons.js"],
+        ["git", "diff", "HEAD", "--", "static/app-buttons.js"],
         capture_output=True, text=True, cwd=str(PROJECT_ROOT),
     )
     assert result.stdout.strip() == "", (
-        "app-ui.js or app-buttons.js has unexpected changes"
+        "app-buttons.js has unexpected changes"
     )
+
+
+def test_app_ui_changes_are_limited_to_return_ball_desktop_bridge_contract():
+    """app-ui.js 允许承载 return-ball 桌面桥接，但不能改写 return 主语义。"""
+    source = _read(APP_UI_PATH)
+
+    assert "action: 'idle_return_ball_state'" in source
+    assert "function canPostIdleReturnBallDesktopState()" in source
+    assert "electron-chat-window" in source
+    assert "function getReturnBallDragScreenRect(" in source
+    assert "'return-ball-dragging'" in source
+    assert "window.dispatchEvent(new CustomEvent(`${match[1]}-return-click`" in source
+    assert "returnSessionButton.click()" not in source
+    assert "start_session" not in source
 
 
 # ── 5.2 auto-goodbye 只派发 live2d-goodbye-click ──────────

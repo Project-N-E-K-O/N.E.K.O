@@ -1690,6 +1690,12 @@
                         });
                         break;
                     }
+                    case 'idle_return_ball_state': {
+                        var idleReturnCurrentName = getCurrentLanlanName();
+                        if (event.data.lanlan_name && (!idleReturnCurrentName || event.data.lanlan_name !== idleReturnCurrentName)) break;
+                        dispatchIdleReturnBallState(event.data);
+                        break;
+                    }
                     case 'voice_config_switching': {
                         handleVoiceConfigSwitchingMessage(event.data);
                         break;
@@ -1942,6 +1948,20 @@
                 source: '',
                 kind: 'interaction',
                 via: 'broadcast-channel',
+                timestamp: Date.now()
+            }, detail || {})
+        }));
+    }
+
+    function dispatchIdleReturnBallState(detail) {
+        window.dispatchEvent(new CustomEvent('neko:idle-return-ball-state', {
+            detail: Object.assign({
+                action: 'idle_return_ball_state',
+                source: '',
+                reason: '',
+                visible: false,
+                tier: 'none',
+                screenRect: null,
                 timestamp: Date.now()
             }, detail || {})
         }));

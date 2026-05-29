@@ -341,6 +341,17 @@ def test_app_auto_goodbye_phase1_harness():
           assert(home.goodbyeEvents[0].autoGoodbye === true, 'auto-goodbye detail should be preserved');
           assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat1', 'auto-goodbye should move to cat1');
 
+          // Desktop can keep conversation/system blockers alive after the model is hidden;
+          // those blockers must not freeze the goodbye cat in CAT1.
+          home.setAppState({{ isRecording: true }});
+          home.advance(5000);
+          home.tickAll();
+          assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat2', 'goodbye idle should progress to cat2 even while suppressed');
+          home.advance(5000);
+          home.tickAll();
+          assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat3', 'goodbye idle should progress to cat3 even while suppressed');
+          home.setAppState({{ isRecording: false }});
+
           // Dragging / touching the goodbye cat should not reset CAT2/CAT3 back to CAT1.
           home.advance(10000);
           home.tickAll();
@@ -545,6 +556,14 @@ def test_app_interpage_relays_chat_idle_activity_to_homepage():
     assert "action: 'idle_activity'" in source
     assert "window.dispatchEvent(new CustomEvent('neko:cross-window-user-activity'" in source
     assert "function bindStandaloneChatIdleActivityRelay()" in source
+
+
+def test_app_interpage_relays_idle_return_ball_state_to_chat_window():
+    source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+
+    assert "case 'idle_return_ball_state':" in source
+    assert "function dispatchIdleReturnBallState(detail)" in source
+    assert "new CustomEvent('neko:idle-return-ball-state'" in source
 
 
 def test_app_auto_goodbye_visual_tiers_progress_without_retriggering_goodbye():
