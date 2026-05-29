@@ -163,8 +163,9 @@ hover 与打断：
 2. 松手也不会刷新 idle 基线。
 3. 点击和拖拽通过位移阈值区分。
 4. 桌面端拖拽时，会把当前屏幕坐标同步给桌面聊天窗，使聊天窗跟随猫移动。
-5. 拖拽期间保持当前 tier / 当前 CAT1 子状态视觉。
-6. CAT1 走路或伸懒腰期间拖拽 return-ball，会取消当前自动移动；松手后由 return-ball 位置变化重新评估是否需要再次走向聊天框。
+5. 越过拖拽阈值后切到当前 tier 对应的拖拽 GIF，占位资源是 `cat-idle-cat-move-1.gif` / `cat-idle-cat-move-2.gif` / `cat-idle-cat-move-3.gif`。
+6. 拖拽临时态不改变当前 tier；拖拽中如果 tier 推进，以最新 tier 的拖拽 GIF 为准。
+7. CAT1 走路或伸懒腰期间拖拽 return-ball，会取消当前自动移动；松手后先恢复当前真实 tier，再由 return-ball 位置变化重新评估是否需要再次走向聊天框。
 
 ## 五、聊天窗联动
 
@@ -206,6 +207,14 @@ hover 与打断：
 | `CAT2` | `cat-idle-cat2.gif` | `cat-idle-cat2-click.gif` |
 | `CAT3` | `cat-idle-cat3.gif` | `cat-idle-cat3-click.gif` |
 
+拖拽动作使用独立占位 GIF，不新增 visual tier：
+
+| 状态 | 拖拽态资源 |
+|------|------------|
+| `CAT1` | `cat-idle-cat-move-1.gif` |
+| `CAT2` | `cat-idle-cat-move-2.gif` |
+| `CAT3` | `cat-idle-cat-move-3.gif` |
+
 第一阶段新增的 `cat4` 资源：
 
 | 用途 | 资源 |
@@ -222,6 +231,7 @@ hover 与打断：
 4. 默认态是低频短循环，点击态是轻反馈，不做夸张变身或完全换构图。
 5. 不把“请她回来”等文字画进资源。
 6. `CAT2 / CAT3` 左侧会停靠聊天球，猫左侧轮廓不要过度外扩。
+7. 拖拽态资源只是当前 tier 的临时动作，不画成新的睡眠阶段，也不改变点击回来语义。
 
 ## 七、边界场景
 

@@ -48,6 +48,9 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat4-1.gif",
     _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat4-2.gif",
     _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat4-3.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat-move-1.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat-move-2.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat-move-3.gif",
 )
 _STATIC_ASSET_CACHE_TTL = 30.0
 _static_asset_version_cache: tuple[float, str] = (0.0, "0")

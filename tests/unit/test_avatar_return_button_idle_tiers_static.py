@@ -15,6 +15,9 @@ CAT3_CLICK_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-
 CAT1_WALK_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat4-1.gif"
 CAT1_STRETCH_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat4-2.gif"
 CAT1_INTERACTIVE_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat4-3.gif"
+CAT1_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-move-1.gif"
+CAT2_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-move-2.gif"
+CAT3_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-move-3.gif"
 
 
 def test_return_button_idle_tier_assets_are_mapped_in_source():
@@ -35,7 +38,11 @@ def test_return_button_idle_tier_assets_are_mapped_in_source():
     assert "/static/assets/neko-idle/cat-idle-cat2-click.gif" in source
     assert "/static/assets/neko-idle/cat-idle-cat3-click.gif" in source
     assert "/static/assets/neko-idle/cat-idle-cat4-3.gif" in source
+    assert "/static/assets/neko-idle/cat-idle-cat-move-1.gif" in source
+    assert "/static/assets/neko-idle/cat-idle-cat-move-2.gif" in source
+    assert "/static/assets/neko-idle/cat-idle-cat-move-3.gif" in source
     assert '_getNekoIdleReturnClickAssetUrl' in source
+    assert '_getNekoIdleReturnDragAssetUrl' in source
 
 
 def test_return_button_idle_tier_styles_are_present():
@@ -112,6 +119,8 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert '_pauseNekoIdleCat1Journey' in source
     assert '_resumeNekoIdleCat1Journey' in source
     assert '_getNekoIdleReturnCurrentArtUrl' in source
+    assert '_startNekoIdleReturnDragActionForContainer' in source
+    assert '_finishNekoIdleReturnDragActionForContainer' in source
     assert 'state.actionSettled = true' in source
     assert '{ animate: true }' in source
     assert 'is-cat1-facing-right' in source
@@ -123,8 +132,12 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert "detail.reason === 'return-ball-drag-start'" in source
     assert "resetArt: false" in source
     assert "'return-ball-drag-start'" in app_ui_source
+    assert "'return-ball-drag-active'" in source
+    assert "'return-ball-drag-active'" in app_ui_source
     assert "'return-ball-drag-end'" in source
     assert "'return-ball-drag-end'" in app_ui_source
+    assert "this._setupReturnButtonDrag(returnButtonContainer)" in source
+    assert "if (!window.__NEKO_MULTI_WINDOW__)" in source
 
 
 def test_return_button_idle_tier_assets_are_version_tracked():
@@ -132,7 +145,8 @@ def test_return_button_idle_tier_assets_are_version_tracked():
                  CAT2_ASSET_PATH, CAT2_CLICK_ASSET_PATH,
                  CAT3_ASSET_PATH, CAT3_CLICK_ASSET_PATH,
                  CAT1_WALK_ASSET_PATH, CAT1_STRETCH_ASSET_PATH,
-                 CAT1_INTERACTIVE_ASSET_PATH):
+                 CAT1_INTERACTIVE_ASSET_PATH,
+                 CAT1_DRAG_ASSET_PATH, CAT2_DRAG_ASSET_PATH, CAT3_DRAG_ASSET_PATH):
         assert path in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
         assert path.is_file()
 

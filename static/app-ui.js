@@ -1858,6 +1858,12 @@
             if (!state.hasMoved && movedPastClickThreshold) {
                 state.hasMoved = true;
                 container.setAttribute('data-dragging', 'true');
+                window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
+                    detail: {
+                        reason: 'return-ball-drag-active',
+                        container: container
+                    }
+                }));
             }
             if (state.hasMoved) {
                 postIdleReturnBallDesktopState(

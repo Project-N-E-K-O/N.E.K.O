@@ -63,6 +63,7 @@ function _removeFloatingButtonsElement(el) {
     if (el.matches && el.matches('[id$="-return-button-container"]')) {
         const returnButton = el.querySelector('.neko-idle-return-btn');
         if (returnButton) {
+            _finishNekoIdleReturnDragAction(returnButton, { restoreArt: false });
             _cancelNekoIdleCat1Journey(returnButton);
         }
     }
@@ -203,6 +204,7 @@ const _NEKO_IDLE_CAT1_WALK_MIN_STEP_MS = 12;
 const _NEKO_IDLE_CAT1_WALK_MAX_STEP_MS = 48;
 const _NEKO_IDLE_CAT1_STRETCH_FINAL_HOLD_MS = 700;
 const _NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS = 2500;
+const _NEKO_IDLE_RETURN_DRAG_ACTION_CLASS = 'is-drag-action';
 const _NEKO_IDLE_RETURN_ASSET_VERSION = (() => {
     try {
         const currentScript = document.currentScript;
@@ -222,6 +224,15 @@ const _NEKO_IDLE_RETURN_ASSET_VERSION = (() => {
 
     return String(Date.now());
 })();
+
+function _logNekoIdleReturnDragDebug(stage, detail) {
+    try {
+        const enabled = window.__NEKO_IDLE_RETURN_DRAG_DEBUG === true ||
+            (window.localStorage && window.localStorage.getItem('nekoIdleReturnDragDebug') === '1');
+        if (!enabled || !window.console || typeof window.console.debug !== 'function') return;
+        window.console.debug('[NekoIdleReturnDrag]', stage, detail || {});
+    } catch (_) {}
+}
 
 function _getNekoIdleReturnAssetVersionSuffix() {
     return _NEKO_IDLE_RETURN_ASSET_VERSION
@@ -272,6 +283,22 @@ function _getNekoIdleCat1StretchAssetUrl() {
 
 function _getNekoIdleCat1InteractiveAssetUrl() {
     return `/static/assets/neko-idle/cat-idle-cat4-3.gif${_getNekoIdleReturnAssetVersionSuffix()}`;
+}
+
+function _getNekoIdleReturnDragAssetUrl(tier) {
+    const normalizedTier = _normalizeNekoIdleReturnTier(tier);
+    const versionSuffix = _getNekoIdleReturnAssetVersionSuffix();
+
+    if (normalizedTier === _NEKO_IDLE_TIER_CAT2) {
+        return `/static/assets/neko-idle/cat-idle-cat-move-2.gif${versionSuffix}`;
+    }
+    if (normalizedTier === _NEKO_IDLE_TIER_CAT3) {
+        return `/static/assets/neko-idle/cat-idle-cat-move-3.gif${versionSuffix}`;
+    }
+    if (normalizedTier === _NEKO_IDLE_TIER_CAT1) {
+        return `/static/assets/neko-idle/cat-idle-cat-move-1.gif${versionSuffix}`;
+    }
+    return '';
 }
 
 const _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW = Object.freeze({
@@ -469,6 +496,110 @@ function _getNekoIdleReturnButtonFromContainer(container) {
         : null;
 }
 
+function _getNekoIdleReturnDragActionState(button) {
+    if (!button) return null;
+    if (!button.__nekoIdleReturnDragActionState) {
+        button.__nekoIdleReturnDragActionState = {
+            active: false,
+            token: 0,
+            tier: _NEKO_IDLE_TIER_NONE
+        };
+    }
+    return button.__nekoIdleReturnDragActionState;
+}
+
+function _isNekoIdleReturnDragActionActive(button) {
+    const state = button && button.__nekoIdleReturnDragActionState;
+    return !!(state && state.active);
+}
+
+function _setNekoIdleReturnDragActionClasses(button, active) {
+    if (!button) return;
+    const container = _getNekoIdleReturnContainerFromButton(button);
+    button.classList.toggle(_NEKO_IDLE_RETURN_DRAG_ACTION_CLASS, !!active);
+    if (container) {
+        container.classList.toggle(_NEKO_IDLE_RETURN_DRAG_ACTION_CLASS, !!active);
+    }
+}
+
+function _setNekoIdleReturnDragActionArt(button, tier) {
+    const art = button && button.querySelector('.neko-idle-return-art');
+    const dragSrc = _getNekoIdleReturnDragAssetUrl(tier);
+    if (!art || !dragSrc) return;
+    _setNekoIdleReturnArtSource(
+        art,
+        dragSrc,
+        _normalizeNekoIdleReturnTier(tier),
+        { animate: false }
+    );
+}
+
+function _prepareNekoIdleReturnDragActionForContainer(container) {
+    const button = _getNekoIdleReturnButtonFromContainer(container);
+    if (!button) return;
+    _logNekoIdleReturnDragDebug('prepare', {
+        containerId: container && container.id,
+        tier: button.getAttribute('data-neko-idle-tier')
+    });
+    _cancelNekoIdleCat1Journey(button, {
+        resetArt: false,
+        preserveObservers: true
+    });
+}
+
+function _startNekoIdleReturnDragActionForContainer(container) {
+    const button = _getNekoIdleReturnButtonFromContainer(container);
+    if (!button) return;
+    const tier = _normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier'));
+    if (tier === _NEKO_IDLE_TIER_NONE) return;
+    const state = _getNekoIdleReturnDragActionState(button);
+    state.active = true;
+    state.token += 1;
+    state.tier = tier;
+    _cancelNekoIdleCat1Journey(button, {
+        resetArt: false,
+        preserveObservers: true
+    });
+    _setNekoIdleReturnDragActionClasses(button, true);
+    _setNekoIdleReturnDragActionArt(button, tier);
+    _logNekoIdleReturnDragDebug('active', {
+        containerId: container && container.id,
+        tier: tier,
+        src: _getNekoIdleReturnDragAssetUrl(tier)
+    });
+}
+
+function _finishNekoIdleReturnDragAction(button, options = {}) {
+    const state = button && button.__nekoIdleReturnDragActionState;
+    if (!button || !state) return;
+    _logNekoIdleReturnDragDebug('finish', {
+        buttonId: button.id,
+        restoreArt: options.restoreArt !== false,
+        tier: button.getAttribute('data-neko-idle-tier')
+    });
+    state.active = false;
+    state.token += 1;
+    state.tier = _NEKO_IDLE_TIER_NONE;
+    _setNekoIdleReturnDragActionClasses(button, false);
+
+    if (options.restoreArt === false) return;
+    const tier = _normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier'));
+    if (tier === _NEKO_IDLE_TIER_NONE) return;
+    const art = button.querySelector('.neko-idle-return-art');
+    if (art) {
+        _setNekoIdleReturnArtSource(
+            art,
+            _getNekoIdleReturnCurrentArtUrl(button, tier),
+            tier,
+            { animate: false }
+        );
+    }
+}
+
+function _finishNekoIdleReturnDragActionForContainer(container, options = {}) {
+    _finishNekoIdleReturnDragAction(_getNekoIdleReturnButtonFromContainer(container), options);
+}
+
 function _getNekoIdleReturnSubactionProfile(tier) {
     return _NEKO_IDLE_RETURN_SUBACTION_PROFILES[_normalizeNekoIdleReturnTier(tier)] || null;
 }
@@ -628,6 +759,11 @@ function _scheduleNekoIdleCat1JourneySyncForContainer(container) {
 }
 
 function _dispatchNekoIdleReturnBallManualMove(container, reason) {
+    _logNekoIdleReturnDragDebug('dispatch', {
+        reason: reason,
+        containerId: container && container.id,
+        dragging: container && container.getAttribute && container.getAttribute('data-dragging')
+    });
     window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
         detail: {
             reason: reason,
@@ -1075,6 +1211,7 @@ function _playNekoIdleHoverArt(art, tier) {
 
     const normalizedTier = _normalizeNekoIdleReturnTier(tier);
     const button = _getNekoIdleReturnButtonFromArt(art);
+    if (_isNekoIdleReturnDragActionActive(button)) return;
     const profile = _getNekoIdleReturnSubactionProfile(normalizedTier);
     const subactionState = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
     const useSubactionInteractive = !!(profile
@@ -1109,6 +1246,7 @@ function _finishNekoIdleHoverArtAfterPlayback(art, tier) {
     if (!art || !tier || tier === _NEKO_IDLE_TIER_NONE) return;
 
     const normalizedTier = _normalizeNekoIdleReturnTier(tier);
+    if (_isNekoIdleReturnDragActionActive(_getNekoIdleReturnButtonFromArt(art))) return;
     const token = art.__nekoIdleHoverToken || 0;
     const startedAt = art.__nekoIdleHoverStartedAt || 0;
     const hoverSrc = art.__nekoIdleHoverSrc || _getNekoIdleReturnClickAssetUrl(normalizedTier);
@@ -1146,6 +1284,7 @@ function _finishNekoIdleHoverArtAfterPlayback(art, tier) {
 function _applyNekoIdleReturnPresentation(button, tier) {
     if (!button) return;
     const normalizedTier = _normalizeNekoIdleReturnTier(tier);
+    const dragActive = _isNekoIdleReturnDragActionActive(button);
     if (normalizedTier !== _NEKO_IDLE_TIER_CAT1) {
         _cancelNekoIdleCat1Journey(button);
     }
@@ -1158,9 +1297,16 @@ function _applyNekoIdleReturnPresentation(button, tier) {
 
     const art = button.querySelector('.neko-idle-return-art');
     if (art) {
-        _setNekoIdleReturnArtSource(art, _getNekoIdleReturnAssetUrl(normalizedTier), normalizedTier);
+        if (dragActive && normalizedTier !== _NEKO_IDLE_TIER_NONE) {
+            _setNekoIdleReturnDragActionArt(button, normalizedTier);
+        } else {
+            if (normalizedTier === _NEKO_IDLE_TIER_NONE) {
+                _finishNekoIdleReturnDragAction(button, { restoreArt: false });
+            }
+            _setNekoIdleReturnArtSource(art, _getNekoIdleReturnAssetUrl(normalizedTier), normalizedTier);
+        }
     }
-    if (normalizedTier === _NEKO_IDLE_TIER_CAT1) {
+    if (normalizedTier === _NEKO_IDLE_TIER_CAT1 && !dragActive) {
         _scheduleNekoIdleCat1JourneySync(button);
     }
 }
@@ -1203,14 +1349,16 @@ function _ensureNekoIdleReturnPresentationBridge() {
         const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
         if (!detail || !detail.container) return;
         if (detail.reason === 'return-ball-drag-end') {
+            _finishNekoIdleReturnDragActionForContainer(detail.container);
             _scheduleNekoIdleCat1JourneySyncForContainer(detail.container);
             return;
         }
         if (detail.reason === 'return-ball-drag-start') {
-            _cancelNekoIdleCat1JourneyForContainer(detail.container, {
-                resetArt: false,
-                preserveObservers: true
-            });
+            _prepareNekoIdleReturnDragActionForContainer(detail.container);
+            return;
+        }
+        if (detail.reason === 'return-ball-drag-active') {
+            _startNekoIdleReturnDragActionForContainer(detail.container);
             return;
         }
         _cancelNekoIdleCat1JourneyForContainer(detail.container);
@@ -1670,6 +1818,7 @@ const AvatarButtonMixin = {
                     return;
                 }
                 e.stopPropagation();
+                _finishNekoIdleReturnDragAction(returnBtn, { restoreArt: false });
                 _cancelNekoIdleCat1Journey(returnBtn);
                 const rect = returnButtonContainer.getBoundingClientRect();
                 const event = new CustomEvent(`${prefix}-return-click`, {
@@ -1690,6 +1839,9 @@ const AvatarButtonMixin = {
             document.body.appendChild(returnButtonContainer);
             this._returnButtonContainer = returnButtonContainer;
             _applyNekoIdleReturnPresentation(returnBtn, currentTier);
+            if (!window.__NEKO_MULTI_WINDOW__) {
+                this._setupReturnButtonDrag(returnButtonContainer);
+            }
 
             return returnButtonContainer;
         };
@@ -1699,11 +1851,13 @@ const AvatarButtonMixin = {
          */
         ManagerPrototype._setupReturnButtonDrag = function(container) {
             let isDragging = false;
+            let dragActiveDispatched = false;
             let dragStartX = 0, dragStartY = 0, containerStartX = 0, containerStartY = 0;
 
             const handleStart = (clientX, clientY) => {
-                _cancelNekoIdleCat1JourneyForContainer(container);
+                _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-start');
                 isDragging = true;
+                dragActiveDispatched = false;
                 dragStartX = clientX;
                 dragStartY = clientY;
                 const rect = container.getBoundingClientRect();
@@ -1724,6 +1878,10 @@ const AvatarButtonMixin = {
                 const deltaY = clientY - dragStartY;
                 if (Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5) {
                     container.setAttribute('data-dragging', 'true');
+                    if (!dragActiveDispatched) {
+                        dragActiveDispatched = true;
+                        _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-active');
+                    }
                 }
                 const w = container.offsetWidth || 64;
                 const h = container.offsetHeight || 64;
@@ -1735,6 +1893,7 @@ const AvatarButtonMixin = {
                 if (isDragging) {
                     const moved = container.getAttribute('data-dragging') === 'true';
                     isDragging = false;
+                    dragActiveDispatched = false;
                     container.style.cursor = 'grab';
                     setTimeout(() => {
                         container.setAttribute('data-dragging', 'false');

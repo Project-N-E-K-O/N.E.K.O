@@ -156,11 +156,20 @@ if elapsed >= AUTO_GOODBYE_MS:
 | `cat2` | `/static/assets/neko-idle/cat-idle-cat2.gif` | `/static/assets/neko-idle/cat-idle-cat2-click.gif` |
 | `cat3` | `/static/assets/neko-idle/cat-idle-cat3.gif` | `/static/assets/neko-idle/cat-idle-cat3-click.gif` |
 
+拖拽态资源：
+
+| tier | 拖拽态 |
+|------|--------|
+| `cat1` | `/static/assets/neko-idle/cat-idle-cat-move-1.gif` |
+| `cat2` | `/static/assets/neko-idle/cat-idle-cat-move-2.gif` |
+| `cat3` | `/static/assets/neko-idle/cat-idle-cat-move-3.gif` |
+
 资源维护口径：
 
 1. 只有 `CAT1 / CAT2 / CAT3` 是当前代码契约。
 2. 新增或替换这些 GIF 时，要确保 [main_routers/pages_router.py](/Users/tonnodoubt/N.E.K.O/main_routers/pages_router.py) 的 `static_asset_version` 跟踪列表仍覆盖对应文件。
 3. `cat-idle-cat4-*` 已作为 CAT1 第一阶段扩展进入运行时合同，但仍不是新的 visual tier。
+4. `cat-idle-cat-move-*` 是拖拽临时动作资源，按当前 tier 选择，也不是新的 visual tier。
 
 ### 4.4 CAT1 第一阶段走路 / 伸懒腰资源
 
@@ -215,10 +224,12 @@ hover / click 约束：
 
 拖拽约束：
 
-1. 拖拽保持当前 tier / 当前 CAT1 子状态视觉。
-2. 通用 return-ball 拖拽 start 会取消 CAT1 自动移动；drag end 派发 `neko:return-ball-manual-move` 并重新同步距离。
-3. 桌面多窗口 return-ball 拖拽 start / end 由 [static/app-ui.js](/Users/tonnodoubt/N.E.K.O/static/app-ui.js) 派发 `neko:return-ball-manual-move`，拖拽过程中还会广播临时 `screenRect` 给桌面聊天窗跟随。
-4. VRM 自定义 return-ball 的 CAT1 重新判距依赖 return-ball 容器的 style / `data-dragging` observer。
+1. 拖拽不改变当前 tier，不把 CAT2 / CAT3 退回 CAT1，也不刷新 idle 基线。
+2. 通用 return-ball 拖拽 start 只准备拖拽并取消 CAT1 自动移动；越过位移阈值后派发 `return-ball-drag-active`，此时才切到当前 tier 对应的 `cat-idle-cat-move-*`。
+3. drag action 使用独立临时态，优先级高于 hover click GIF、CAT1 settle timer 和 tier 同步；拖拽期间如果 tier 变化，以最新 tier 的拖拽图为准。
+4. drag end 退出拖拽临时态，恢复当前真实 tier。若仍是 CAT1，则再触发现有距离判定，必要时继续走向聊天框；若已 return 或 tier cleared，则不再恢复猫图。
+5. 桌面多窗口 return-ball 拖拽 start / active / end 由 [static/app-ui.js](/Users/tonnodoubt/N.E.K.O/static/app-ui.js) 派发 `neko:return-ball-manual-move`，拖拽过程中还会广播临时 `screenRect` 给桌面聊天窗跟随。
+6. VRM 自定义 return-ball 的 CAT1 重新判距依赖 return-ball 容器的 style / `data-dragging` observer。
 
 这组资源当前已经接入，维护时至少需要同步关注：
 
@@ -230,10 +241,10 @@ hover / click 约束：
 6. 走路中目标点更新逻辑，避免反复从第一帧重播。
 7. 向右移动时的水平翻转样式，避免图片朝向与实际位移方向相反。
 8. GIF hover duration / token 逻辑，确保 profile 的 interactive GIF 播完一轮再恢复到当前子阶段。
-9. [static/app-ui.js](/Users/tonnodoubt/N.E.K.O/static/app-ui.js) 在桌面 return-ball drag start / drag end 时派发 `neko:return-ball-manual-move`；start 取消当前自动移动，end 重新评估距离。
+9. [static/app-ui.js](/Users/tonnodoubt/N.E.K.O/static/app-ui.js) 在桌面 return-ball drag start / active / end 时派发 `neko:return-ball-manual-move`；start 取消当前自动移动，active 切拖拽态，end 重新评估距离。
 10. [static/app-react-chat-window.js](/Users/tonnodoubt/N.E.K.O/static/app-react-chat-window.js) 在 Electron `/chat` 折叠态发布 `idle_chat_minimized_state`；[static/app-interpage.js](/Users/tonnodoubt/N.E.K.O/static/app-interpage.js) 负责跨窗口转发为 `neko:idle-chat-minimized-state`。
 11. [main_routers/pages_router.py](/Users/tonnodoubt/N.E.K.O/main_routers/pages_router.py) 的 `static_asset_version` 跟踪列表。
-12. `tests/unit/test_avatar_return_button_idle_tiers_static.py` 锁住 profile 注册、cat4 资源、子状态顺序、右向翻转、hover 暂停移动和恢复语义。
+12. `tests/unit/test_avatar_return_button_idle_tiers_static.py` 锁住 profile 注册、cat4 资源、拖拽资源、子状态顺序、右向翻转、hover 暂停移动和恢复语义。
 
 后续扩展规则：
 
