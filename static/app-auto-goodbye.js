@@ -1,9 +1,9 @@
 (function () {
     'use strict';
 
-    const AUTO_GOODBYE_MS = 5 * 1000;
-    const CAT2_MS = 10 * 1000;
-    const CAT3_MS = 15 * 1000;
+    const AUTO_GOODBYE_MS = 20 * 1000;
+    const CAT2_MS = 25 * 1000;
+    const CAT3_MS = 30 * 1000;
     const CONVERSATION_GRACE_MS = 15 * 1000;
     const TICK_INTERVAL_MS = 500;
 

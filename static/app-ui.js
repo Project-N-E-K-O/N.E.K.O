@@ -1766,6 +1766,12 @@
 
         function beginDrag(screenX, screenY, event) {
             clearMultiWindowReturnBallDeferredWork(state);
+            window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
+                detail: {
+                    reason: 'return-ball-drag-start',
+                    container: container
+                }
+            }));
             state.dragSessionToken += 1;
             const dragToken = state.dragSessionToken;
 
@@ -1929,6 +1935,12 @@
                     container.setAttribute('data-dragging', 'false');
                     delete document.body.dataset.nekoBallDrag;
                     scheduleIdleReturnBallDesktopBridge('return-ball-drag-end', container);
+                    window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
+                        detail: {
+                            reason: 'return-ball-drag-end',
+                            container: container
+                        }
+                    }));
                     return;
                 }
                 // 先同步恢复球 opacity，再删除 nekoBallDrag 显示页面内容，
@@ -1938,6 +1950,12 @@
                 container.setAttribute('data-dragging', 'false');
                 delete document.body.dataset.nekoBallDrag;
                 scheduleIdleReturnBallDesktopBridge('return-ball-drag-end', container);
+                window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
+                    detail: {
+                        reason: 'return-ball-drag-end',
+                        container: container
+                    }
+                }));
                 // 延迟恢复 transition，避免恢复瞬间触发动画
                 state.transitionCleanupTimer = setTimeout(() => {
                     state.transitionCleanupTimer = null;

@@ -12,6 +12,9 @@ CAT2_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-c
 CAT2_CLICK_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat2-click.gif"
 CAT3_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat3.gif"
 CAT3_CLICK_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat3-click.gif"
+CAT1_WALK_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat4-1.gif"
+CAT1_STRETCH_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat4-2.gif"
+CAT1_INTERACTIVE_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat4-3.gif"
 
 
 def test_return_button_idle_tier_assets_are_mapped_in_source():
@@ -21,6 +24,8 @@ def test_return_button_idle_tier_assets_are_mapped_in_source():
     assert "/static/assets/neko-idle/cat-idle-cat1.gif" in source
     assert "/static/assets/neko-idle/cat-idle-cat2.gif" in source
     assert "/static/assets/neko-idle/cat-idle-cat3.gif" in source
+    assert "/static/assets/neko-idle/cat-idle-cat4-1.gif" in source
+    assert "/static/assets/neko-idle/cat-idle-cat4-2.gif" in source
     assert '_NEKO_IDLE_TIER_CAT1' in source
     assert '_NEKO_IDLE_TIER_CAT2' in source
     assert '_NEKO_IDLE_TIER_CAT3' in source
@@ -29,6 +34,7 @@ def test_return_button_idle_tier_assets_are_mapped_in_source():
     assert "/static/assets/neko-idle/cat-idle-cat1-click.gif" in source
     assert "/static/assets/neko-idle/cat-idle-cat2-click.gif" in source
     assert "/static/assets/neko-idle/cat-idle-cat3-click.gif" in source
+    assert "/static/assets/neko-idle/cat-idle-cat4-3.gif" in source
     assert '_getNekoIdleReturnClickAssetUrl' in source
 
 
@@ -37,6 +43,7 @@ def test_return_button_idle_tier_styles_are_present():
 
     assert '.neko-idle-return-btn[data-neko-idle-tier="cat2"]' in source
     assert '.neko-idle-return-btn[data-neko-idle-tier="cat3"]' in source
+    assert '.neko-idle-return-btn.is-cat1-facing-right' in source
 
 
 def test_return_button_idle_tier_switch_uses_crossfade_motion():
@@ -71,10 +78,55 @@ def test_return_button_hover_click_gif_finishes_before_restore():
     assert 'keepHoverPlayback' in source
 
 
+def test_cat1_walk_to_minimized_chat_contract_is_present():
+    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    app_ui_source = (PROJECT_ROOT / "static" / "app-ui.js").read_text(encoding="utf-8")
+
+    assert "_NEKO_IDLE_CAT1_SUBSTATE_WALKING = 'walking-to-chat'" in source
+    assert "_NEKO_IDLE_CAT1_SUBSTATE_STRETCH = 'stretch-near-chat'" in source
+    assert '_NEKO_IDLE_CAT1_WALK_SPEED_PX_PER_SEC = 101' in source
+    assert '_NEKO_IDLE_CAT1_STRETCH_FINAL_HOLD_MS = 700' in source
+    assert '_NEKO_IDLE_CAT1_WALK_ENTER_DISTANCE_PX' in source
+    assert '_NEKO_IDLE_CAT1_WALK_EXIT_DISTANCE_PX' in source
+    assert '_NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW' in source
+    assert '_NEKO_IDLE_RETURN_SUBACTION_PROFILES' in source
+    assert '_getNekoIdleReturnSubactionProfile' in source
+    assert '_getNekoIdleReturnSubactionState' in source
+    assert 'preserveObservers' in source
+    assert "{ resetArt: true, preserveObservers: true }" in source
+    assert source.count("{ resetArt: true, preserveObservers: true }") >= 2
+    assert '_getNekoIdleCat1Target' in source
+    assert '_startNekoIdleCat1Walk' in source
+    assert '_stepNekoIdleCat1Walk' in source
+    assert '_scheduleNekoIdleReturnSubactionSettle' in source
+    assert '_settleNekoIdleReturnSubactionToIdle' in source
+    assert 'durationMs - elapsedMs) + profile.settle.finalHoldMs' in source
+    assert 'containerObserver' in source
+    assert "attributeFilter: ['style', 'data-dragging']" in source
+    assert '_scheduleNekoIdleCat1JourneySyncForContainer' in source
+    assert '_dispatchNekoIdleReturnBallManualMove' in source
+    assert '_pauseNekoIdleCat1Journey' in source
+    assert '_resumeNekoIdleCat1Journey' in source
+    assert '_getNekoIdleReturnCurrentArtUrl' in source
+    assert 'state.actionSettled = true' in source
+    assert '{ animate: true }' in source
+    assert 'is-cat1-facing-right' in source
+    assert 'state.paused = true' in source
+    assert 'state.paused = false' in source
+    assert 'state.substate !== profile.walkingSubstate' in source
+    assert "'neko:return-ball-manual-move'" in source
+    assert "'neko:return-ball-manual-move'" in app_ui_source
+    assert "'return-ball-drag-start'" in app_ui_source
+    assert "'return-ball-drag-end'" in source
+    assert "'return-ball-drag-end'" in app_ui_source
+
+
 def test_return_button_idle_tier_assets_are_version_tracked():
     for path in (CAT1_ASSET_PATH, CAT1_CLICK_ASSET_PATH,
                  CAT2_ASSET_PATH, CAT2_CLICK_ASSET_PATH,
-                 CAT3_ASSET_PATH, CAT3_CLICK_ASSET_PATH):
+                 CAT3_ASSET_PATH, CAT3_CLICK_ASSET_PATH,
+                 CAT1_WALK_ASSET_PATH, CAT1_STRETCH_ASSET_PATH,
+                 CAT1_INTERACTIVE_ASSET_PATH):
         assert path in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
         assert path.is_file()
 

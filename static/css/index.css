@@ -366,6 +366,7 @@ body.neko-game-active [id$="-lock-icon"] {
 }
 
 .neko-idle-return-art {
+    --neko-idle-return-facing-transform: scaleX(1);
     width: 100%;
     height: 100%;
     display: block;
@@ -374,11 +375,16 @@ body.neko-game-active [id$="-lock-icon"] {
     position: relative;
     z-index: 1;
     will-change: opacity, transform, filter;
+    transform: var(--neko-idle-return-facing-transform);
 }
 
 .neko-idle-return-btn[data-neko-idle-tier="cat2"] .neko-idle-return-art,
 .neko-idle-return-btn[data-neko-idle-tier="cat3"] .neko-idle-return-art {
     transform-origin: center bottom;
+}
+
+.neko-idle-return-btn.is-cat1-facing-right > .neko-idle-return-art {
+    --neko-idle-return-facing-transform: scaleX(-1);
 }
 
 .neko-idle-return-art-next {
@@ -402,17 +408,17 @@ body.neko-game-active [id$="-lock-icon"] {
     0% {
         opacity: 1;
         filter: blur(0);
-        transform: translate3d(0, 0, 0) scale(1);
+        transform: translate3d(0, 0, 0) scale(1) var(--neko-idle-return-facing-transform);
     }
     52% {
         opacity: 0;
         filter: blur(1px);
-        transform: translate3d(0, -4px, 0) scale(0.96);
+        transform: translate3d(0, -4px, 0) scale(0.96) var(--neko-idle-return-facing-transform);
     }
     100% {
         opacity: 0;
         filter: blur(1px);
-        transform: translate3d(0, -4px, 0) scale(0.96);
+        transform: translate3d(0, -4px, 0) scale(0.96) var(--neko-idle-return-facing-transform);
     }
 }
 
@@ -420,7 +426,7 @@ body.neko-game-active [id$="-lock-icon"] {
     0% {
         opacity: 0;
         filter: blur(1px);
-        transform: translate3d(0, 7px, 0) scale(0.94);
+        transform: translate3d(0, 7px, 0) scale(0.94) var(--neko-idle-return-facing-transform);
     }
     28% {
         opacity: 0;
@@ -428,7 +434,7 @@ body.neko-game-active [id$="-lock-icon"] {
     100% {
         opacity: 1;
         filter: blur(0);
-        transform: translate3d(0, 0, 0) scale(1);
+        transform: translate3d(0, 0, 0) scale(1) var(--neko-idle-return-facing-transform);
     }
 }
 

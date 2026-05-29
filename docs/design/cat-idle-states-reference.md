@@ -13,12 +13,12 @@
 4. return 仍走原有 `*-return-click` 和 `handleReturnClick`。
 5. 首页网页端和桌面 Electron 聊天窗都接入 `CAT2 / CAT3` 停靠。
 
-当前仍是联调阈值：
+当前为临时联调阈值：
 
 ```text
-AUTO_GOODBYE_MS = 5s
-CAT2_MS        = 10s
-CAT3_MS        = 15s
+AUTO_GOODBYE_MS = 20s
+CAT2_MS        = 25s
+CAT3_MS        = 30s
 ```
 
 ## 二、主要文件
@@ -29,13 +29,13 @@ CAT3_MS        = 15s
 | [static/app-ui.js](/Users/tonnodoubt/N.E.K.O/static/app-ui.js) | return-ball 显示/隐藏/拖拽、桌面 return-ball 状态广播 |
 | [static/app-interpage.js](/Users/tonnodoubt/N.E.K.O/static/app-interpage.js) | `/chat` 交互回传、`idle_return_ball_state` 跨窗口转发 |
 | [static/app-react-chat-window.js](/Users/tonnodoubt/N.E.K.O/static/app-react-chat-window.js) | 首页 React chat idle-dock、桌面 Electron idle-dock 消费端 |
-| [static/avatar-ui-buttons.js](/Users/tonnodoubt/N.E.K.O/static/avatar-ui-buttons.js) | return DOM、tier 视觉同步、GIF hover 播放控制 |
+| [static/avatar-ui-buttons.js](/Users/tonnodoubt/N.E.K.O/static/avatar-ui-buttons.js) | return DOM、tier 视觉同步、GIF hover 播放控制、CAT1 子动作 |
 | [static/css/index.css](/Users/tonnodoubt/N.E.K.O/static/css/index.css) | return 猫形象、网页端 idle-docked 样式 |
 | [templates/index.html](/Users/tonnodoubt/N.E.K.O/templates/index.html) | 首页注入 auto-goodbye |
 | [main_routers/pages_router.py](/Users/tonnodoubt/N.E.K.O/main_routers/pages_router.py) | `static_asset_version` 跟踪 idle GIF 资源 |
 | `/Users/tonnodoubt/N.E.K.O.-PC/src/preload-chat-react.js` | 桌面聊天窗折叠/展开桥接 |
 | `/Users/tonnodoubt/N.E.K.O.-PC/src/main/window-control-ipc.js` | BrowserWindow collapse / expand IPC |
-| `static/assets/neko-idle/` | `CAT1 / CAT2 / CAT3` 默认态与点击态 GIF |
+| `static/assets/neko-idle/` | `CAT1 / CAT2 / CAT3` 默认态与点击态 GIF；CAT1 走路/伸懒腰扩展 GIF |
 
 ## 三、auto-goodbye 控制器
 
@@ -160,7 +160,85 @@ if elapsed >= AUTO_GOODBYE_MS:
 
 1. 只有 `CAT1 / CAT2 / CAT3` 是当前代码契约。
 2. 新增或替换这些 GIF 时，要确保 [main_routers/pages_router.py](/Users/tonnodoubt/N.E.K.O/main_routers/pages_router.py) 的 `static_asset_version` 跟踪列表仍覆盖对应文件。
-3. 如果目录中出现未接入的实验资源，例如 `cat-idle-cat4-*`，在代码、版本跟踪和测试更新前不属于当前功能合同。
+3. `cat-idle-cat4-*` 已作为 CAT1 第一阶段扩展进入运行时合同，但仍不是新的 visual tier。
+
+### 4.4 CAT1 第一阶段走路 / 伸懒腰资源
+
+`CAT1` 现在包含一组两段式表现。注意：这不是新增 `cat4` tier，`cat-idle-cat4-*` 只是资源文件名，运行时仍对外表现为 `visualTier = cat1`。
+
+| 用途 | 资源 | 运行时语义 |
+|------|------|----------|
+| 走路 | `/static/assets/neko-idle/cat-idle-cat4-1.gif` | CAT1 朝聊天框最小化球方向移动时播放 |
+| 停下伸懒腰 | `/static/assets/neko-idle/cat-idle-cat4-2.gif` | 走到聊天框最小化球旁边后的停驻动作 |
+| hover 交互态 | `/static/assets/neko-idle/cat-idle-cat4-3.gif` | 鼠标移上走路或伸懒腰阶段时共用 |
+
+运行时状态：
+
+```text
+cat1:idle
+  -> cat1:walking-to-chat
+  -> cat1:stretch-near-chat
+```
+
+触发约束：
+
+1. 触发条件是 `CAT1` 阶段中聊天框处于最小化状态，并且聊天框与猫的距离超过阈值。
+2. 触发点应该来自聊天框最小化球位置变化、CAT1 初次进入、窗口 resize 或 return-ball 位置变化。
+3. 必须设置 enter / exit 两个距离阈值，避免目标点附近反复触发。
+4. CAT2 / CAT3、return-click、用户拖拽猫时必须取消 CAT1 子状态。
+
+移动与定位约束：
+
+1. 触发后不只是替换 GIF，还要让 return-ball 容器沿屏幕坐标实际移动到聊天框旁边。
+2. 目标点应位于聊天框最小化球旁边，并保留视觉间距，不要和聊天球重叠。
+3. 移动应基于屏幕坐标，跨网页端和桌面端时要注意 `screenRect` 与 viewport rect 的转换。
+4. 移动速度使用稳定速度，当前为 `101px/s`，并限制单帧步进，避免短距离闪现或长距离过慢。
+5. 走路途中聊天框再次移动时，更新目标点即可，不要重复设置同一个 GIF `src`。
+6. 到达目标点后播放伸懒腰 GIF；伸懒腰按自身帧时长播完一轮后，额外保持收尾姿态约 `700ms`，再通过短暂过渡缓冲回到最初 `CAT1` 默认 GIF，并设置 settled 标记避免在原地反复重播伸懒腰。
+7. 聊天框位置变化由 minimized shell 的 class/style observer 触发；猫被用户拖动时，drag start 取消当前自动移动，drag end 重新同步 CAT1 距离，若超过 enter 阈值则再次走向聊天框。已经回到 `CAT1` 默认 GIF 的猫也会通过 return-ball container 的 style / dragging observer 重新判距。
+8. 聊天框从最小化切到展开时，目标点会暂时不可用；这类情况只重置子动作表现并保留 shell / container observer，避免再次最小化时失去触发源。
+
+方向与资源约束：
+
+1. 走路 GIF 默认按朝左素材处理；目标在猫左侧时直接使用。
+2. 当目标在猫右侧时，需要对图片水平翻转，并保证容器位移方向同步向右。
+3. 翻转只作用于 art，不应影响 return-ball 容器本身的 hit area 和坐标计算。
+
+hover / click 约束：
+
+1. hover 走路或伸懒腰时使用 `cat-idle-cat4-3.gif`。
+2. 进入 hover 交互态时，必须暂停 CAT1 自动移动，保留当前屏幕坐标。
+3. mouseleave 后仍按 GIF 自身时长播放完，再恢复到当前 CAT1 子状态。
+4. 恢复后如果仍处于 `walking-to-chat` 且距离条件仍成立，从暂停位置继续向当前目标点移动。
+5. hover 期间聊天框目标点可以更新，但不能移动猫，也不能重置 `cat-idle-cat4-3.gif` 到第一帧。
+6. 点击猫时不进入 hover 恢复流程，直接走现有 return 链并取消 CAT1 子状态。
+
+拖拽约束：
+
+1. 拖拽保持当前 tier / 当前 CAT1 子状态视觉。
+2. 通用 return-ball 拖拽 start 会取消 CAT1 自动移动；drag end 派发 `neko:return-ball-manual-move` 并重新同步距离。
+3. 桌面多窗口 return-ball 拖拽 start / end 由 [static/app-ui.js](/Users/tonnodoubt/N.E.K.O/static/app-ui.js) 派发 `neko:return-ball-manual-move`，拖拽过程中还会广播临时 `screenRect` 给桌面聊天窗跟随。
+4. VRM 自定义 return-ball 的 CAT1 重新判距依赖 return-ball 容器的 style / `data-dragging` observer。
+
+这组资源当前已经接入，维护时至少需要同步关注：
+
+1. [static/avatar-ui-buttons.js](/Users/tonnodoubt/N.E.K.O/static/avatar-ui-buttons.js) 的 return subaction profile 注册表。
+2. `CAT1` 当前由 `cat1-chat-follow` profile 描述；它只绑定到 `visualTier = cat1`，不创建新的 visual tier。
+3. profile 描述资源、子状态名、CSS class、目标距离阈值、移动速度、完成动作停留时间、目标监听器和 hover 交互资源。
+4. 子动作状态统一放在 return-ball button 的 `__nekoIdleReturnSubactionState`；历史兼容的 `__nekoIdleCat1Journey` 只作为别名，不应成为后续新功能入口。
+5. CAT1 到最小化聊天框的目标点计算、距离阈值、移动动画、伸懒腰完成回调和 action-settled 标记。
+6. 走路中目标点更新逻辑，避免反复从第一帧重播。
+7. 向右移动时的水平翻转样式，避免图片朝向与实际位移方向相反。
+8. GIF hover duration / token 逻辑，确保 profile 的 interactive GIF 播完一轮再恢复到当前子阶段。
+9. [static/app-ui.js](/Users/tonnodoubt/N.E.K.O/static/app-ui.js) 在桌面 return-ball drag start / drag end 时派发 `neko:return-ball-manual-move`；start 取消当前自动移动，end 重新评估距离。
+10. [main_routers/pages_router.py](/Users/tonnodoubt/N.E.K.O/main_routers/pages_router.py) 的 `static_asset_version` 跟踪列表。
+11. `tests/unit/test_avatar_return_button_idle_tiers_static.py` 锁住 profile 注册、cat4 资源、子状态顺序、右向翻转、hover 暂停移动和恢复语义。
+
+后续扩展规则：
+
+1. 三大 visual tier 只负责“当前是哪一档猫形态”；子动作负责“这一档内部怎么移动、互动和恢复”。
+2. 新增子动作时优先新增或复用 profile，不要在 `CAT1 / CAT2 / CAT3` 判断里继续追加散落的动作分支。
+3. profile 不应直接改 return-click、goodbye、聊天窗最小化或桌面桥接主语义；只通过已有 return-ball DOM、art source、目标点和 observer 能力工作。
 
 实现规则：
 
@@ -382,10 +460,10 @@ node --test test/react-chat-idle-dock-contract.test.js test/pet-hidden-return-ba
 
 当前剩余待办：
 
-1. 阈值从 `5s / 10s / 15s` 切回 `20min / 30min / 40min`。
-2. 替换正式 GIF 资源。
-3. 做网页端和桌面端肉眼验收，重点看：
+1. 替换正式 GIF 资源。
+2. 做网页端和桌面端肉眼验收，重点看：
    - CAT1 -> CAT2 -> CAT3 过渡
+   - CAT1 走路 -> 停下伸懒腰
    - hover click GIF 播放完整
    - CAT2/CAT3 聊天窗停靠
    - 桌面端折叠后停靠

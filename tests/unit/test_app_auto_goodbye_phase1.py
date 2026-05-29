@@ -308,6 +308,12 @@ def test_app_auto_goodbye_phase1_harness():
         }}
 
         (async () => {{
+          const AUTO_GOODBYE_MS = 20 * 1000;
+          const CAT2_MS = 25 * 1000;
+          const CAT3_MS = 30 * 1000;
+          const CAT2_DELTA_MS = CAT2_MS - AUTO_GOODBYE_MS;
+          const CAT3_DELTA_MS = CAT3_MS - CAT2_MS;
+
           // Only the homepage should start, and only after the storage barrier resolves.
           const delayed = createHarness('/', {{ barrierResolved: false }});
           await delayed.flush();
@@ -335,7 +341,7 @@ def test_app_auto_goodbye_phase1_harness():
           assert(primed.lastInteractionAt === 6000, 'priming should reset timer baseline');
 
           // Normal auto-goodbye path.
-          home.advance(5000);
+          home.advance(AUTO_GOODBYE_MS);
           home.tickAll();
           assert(home.goodbyeEvents.length === 1, 'should trigger exactly one auto-goodbye event');
           assert(home.goodbyeEvents[0].autoGoodbye === true, 'auto-goodbye detail should be preserved');
@@ -344,10 +350,10 @@ def test_app_auto_goodbye_phase1_harness():
           // Desktop can keep conversation/system blockers alive after the model is hidden;
           // those blockers must not freeze the goodbye cat in CAT1.
           home.setAppState({{ isRecording: true }});
-          home.advance(5000);
+          home.advance(CAT2_DELTA_MS);
           home.tickAll();
           assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat2', 'goodbye idle should progress to cat2 even while suppressed');
-          home.advance(5000);
+          home.advance(CAT3_DELTA_MS);
           home.tickAll();
           assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat3', 'goodbye idle should progress to cat3 even while suppressed');
           home.setAppState({{ isRecording: false }});
@@ -381,7 +387,7 @@ def test_app_auto_goodbye_phase1_harness():
           blocked.setSocketOpen(true);
           blocked.tickAll();
           blocked.win._agentTaskMap.set('task-1', {{ id: 'task-1', status: 'running' }});
-          blocked.advance(5000);
+          blocked.advance(AUTO_GOODBYE_MS);
           blocked.tickAll();
           assert(blocked.goodbyeEvents.length === 0, 'running task should block auto-goodbye');
           blocked.win._agentTaskMap.set('task-2', {{ id: 'task-2', status: 'queued' }});
@@ -391,7 +397,7 @@ def test_app_auto_goodbye_phase1_harness():
           blocked.win._agentTaskMap.set('task-3', {{ id: 'task-3', status: 'completed' }});
           blocked.tickAll();
           assert(blocked.goodbyeEvents.length === 0, 'clearing task blockers should not immediately auto-goodbye');
-          blocked.advance(5000);
+          blocked.advance(AUTO_GOODBYE_MS);
           blocked.tickAll();
           assert(blocked.goodbyeEvents.length === 1, 'terminal task should allow auto-goodbye after a fresh idle window');
 
@@ -401,7 +407,7 @@ def test_app_auto_goodbye_phase1_harness():
           guarded.setSocketOpen(true);
           guarded.tickAll();
           guarded.setTutorialLocked(true);
-          guarded.advance(5000);
+          guarded.advance(AUTO_GOODBYE_MS);
           guarded.tickAll();
           assert(guarded.goodbyeEvents.length === 0, 'tutorial lock should suppress auto-goodbye');
           guarded.setTutorialLocked(false);
@@ -411,7 +417,7 @@ def test_app_auto_goodbye_phase1_harness():
           guarded.setYuiTakingOver(false);
           guarded.tickAll();
           assert(guarded.goodbyeEvents.length === 0, 'guards clearing should not immediately trigger auto-goodbye');
-          guarded.advance(5000);
+          guarded.advance(AUTO_GOODBYE_MS);
           guarded.tickAll();
           assert(guarded.goodbyeEvents.length === 1, 'auto-goodbye should resume only after a fresh idle window');
 
@@ -432,7 +438,7 @@ def test_app_auto_goodbye_phase1_harness():
           interaction.advance(9000);
           interaction.tickAll();
           assert(interaction.goodbyeEvents.length === 0, 'conversation grace clearing should not immediately auto-goodbye');
-          interaction.advance(5000);
+          interaction.advance(AUTO_GOODBYE_MS);
           interaction.tickAll();
           assert(interaction.goodbyeEvents.length === 1, 'conversation grace should restart the idle countdown after it clears');
 
@@ -488,7 +494,7 @@ def test_app_auto_goodbye_phase1_harness():
           crossWindow.advance(2000);
           crossWindow.tickAll();
           assert(crossWindow.goodbyeEvents.length === 0, 'cross-window interaction should refresh the idle timer');
-          crossWindow.advance(4000);
+          crossWindow.advance(AUTO_GOODBYE_MS - 2000);
           crossWindow.tickAll();
           assert(crossWindow.goodbyeEvents.length === 1, 'cross-window interaction should not block idle forever');
 
@@ -505,7 +511,7 @@ def test_app_auto_goodbye_phase1_harness():
           runtimePaused.setAppState({{ isRecording: false }});
           runtimePaused.tickAll();
           assert(runtimePaused.goodbyeEvents.length === 0, 'recording ending should not immediately auto-goodbye');
-          runtimePaused.advance(5000);
+          runtimePaused.advance(AUTO_GOODBYE_MS);
           runtimePaused.tickAll();
           assert(runtimePaused.goodbyeEvents.length === 1, 'recording suppression should restart the idle countdown');
 
@@ -693,26 +699,30 @@ def test_app_auto_goodbye_visual_tiers_progress_without_retriggering_goodbye():
         }}
 
         (async () => {{
+          const AUTO_GOODBYE_MS = 20 * 1000;
+          const CAT2_MS = 25 * 1000;
+          const CAT3_MS = 30 * 1000;
+
           await flush();
           assert(win.nekoAutoGoodbye.getState().started === true, 'controller should start after barrier resolves');
 
           tickAll();
           assert(win.nekoAutoGoodbye.getState().visualTier === 'none', 'initial tier should be none');
 
-          now += 5000;
+          now += AUTO_GOODBYE_MS;
           tickAll();
           assert(goodbyeEvents.length === 1, 'cat1 entry should dispatch goodbye once');
-          assert(win.nekoAutoGoodbye.getState().visualTier === 'cat1', '5s should enter cat1');
+          assert(win.nekoAutoGoodbye.getState().visualTier === 'cat1', '20s should enter cat1');
 
-          now += 5000;
+          now += CAT2_MS - AUTO_GOODBYE_MS;
           tickAll();
           assert(goodbyeEvents.length === 1, 'cat2 transition should not dispatch goodbye again');
-          assert(win.nekoAutoGoodbye.getState().visualTier === 'cat2', '10s should transition to cat2');
+          assert(win.nekoAutoGoodbye.getState().visualTier === 'cat2', '25s should transition to cat2');
 
-          now += 5000;
+          now += CAT3_MS - CAT2_MS;
           tickAll();
           assert(goodbyeEvents.length === 1, 'cat3 transition should not dispatch goodbye again');
-          assert(win.nekoAutoGoodbye.getState().visualTier === 'cat3', '15s should transition to cat3');
+          assert(win.nekoAutoGoodbye.getState().visualTier === 'cat3', '30s should transition to cat3');
 
           console.log('app-auto-goodbye phase3 visual tiers passed');
         }})().catch((error) => {{
