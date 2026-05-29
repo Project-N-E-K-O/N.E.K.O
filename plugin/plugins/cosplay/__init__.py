@@ -1760,3 +1760,172 @@ class CosplayPlugin(NekoPluginBase):
                 }
             )
         return audit
+
+    # ══════════════════════════════════════════════════════════
+    #  Phase 7: 作品管理 / 角色库 / 模板 / 导出 / 互动
+    # ══════════════════════════════════════════════════════════
+
+    def _get_work_manager(self):
+        from plugin.plugins.cosplay_plugin.work_manager import WorkManager
+        return WorkManager(self._data_root, self.store)
+
+    def _get_character_library(self):
+        from plugin.plugins.cosplay_plugin.character_library import CharacterLibrary
+        return CharacterLibrary(self._data_root, self.store)
+
+    def _get_template_manager(self):
+        from plugin.plugins.cosplay_plugin.template_manager import TemplateManager
+        return TemplateManager()
+
+    def _get_exporter(self):
+        from plugin.plugins.cosplay_plugin.exporter import WorkExporter
+        return WorkExporter(self._data_root / "works")
+
+    # ── 作品管理 ────────────────────────────────────────────
+
+    @plugin_entry(
+        id="create_work",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "mode": {"type": "string", "enum": ["theater", "interactive"]},
+                "tags": {"type": "array", "items": {"type": "string"}},
+                "description": {"type": "string"},
+            },
+        },
+        llm_result_fields=["work_id", "title"],
+    )
+    async def create_work(self, title: str = "", mode: str = "theater", tags: list[str] | None = None, description: str = "", **_):
+        wm = self._get_work_manager()
+        work = wm.create_work(title=title, mode=mode, tags=tags or [], description=description)
+        return Ok({"work_id": work.id, "title": work.title})
+
+    @plugin_entry(id="list_works", llm_result_fields=["works"])
+    async def list_works(self, tag: str = "", favorited: bool | None = None, mode: str = "", limit: int = 50, **_):
+        wm = self._get_work_manager()
+        works = wm.list_works(tag=tag or None, favorited=favorited, mode=mode or None, limit=limit)
+        return Ok({"works": works, "count": len(works)})
+
+    @plugin_entry(id="get_work", llm_result_fields=["work"])
+    async def get_work(self, work_id: str = "", **_):
+        wm = self._get_work_manager()
+        work = wm.get_work(work_id)
+        if not work:
+            return Err(SdkError(f"作品不存在：{work_id}"))
+        return Ok({"work": work.to_dict()})
+
+    @plugin_entry(id="delete_work", llm_result_fields=["deleted"])
+    async def delete_work(self, work_id: str = "", **_):
+        wm = self._get_work_manager()
+        ok = wm.delete_work(work_id)
+        return Ok({"deleted": ok})
+
+    @plugin_entry(id="favorite_work", llm_result_fields=["favorited"])
+    async def favorite_work(self, work_id: str = "", favorited: bool = True, **_):
+        wm = self._get_work_manager()
+        ok = wm.favorite_work(work_id, favorited)
+        return Ok({"favorited": ok})
+
+    @plugin_entry(id="pin_work", llm_result_fields=["pinned"])
+    async def pin_work(self, work_id: str = "", pinned: bool = True, **_):
+        wm = self._get_work_manager()
+        ok = wm.pin_work(work_id, pinned)
+        return Ok({"pinned": ok})
+
+    @plugin_entry(id="export_work_html", llm_result_fields=["path"])
+    async def export_work_html(self, work_id: str = "", **_):
+        exporter = self._get_exporter()
+        path = exporter.export_html(work_id)
+        return Ok({"path": str(path) if path else ""})
+
+    @plugin_entry(id="export_work_zip", llm_result_fields=["path"])
+    async def export_work_zip(self, work_id: str = "", **_):
+        exporter = self._get_exporter()
+        path = exporter.export_zip(work_id)
+        return Ok({"path": str(path) if path else ""})
+
+    # ── 角色库 ──────────────────────────────────────────────
+
+    @plugin_entry(id="create_character", llm_result_fields=["character_id", "name"])
+    async def create_character(self, **kwargs):
+        lib = self._get_character_library()
+        from plugin.plugins.cosplay_plugin.cosplay_types import CosplayCharacter
+        char = CosplayCharacter.from_dict(kwargs)
+        char = lib.create_character(char)
+        return Ok({"character_id": char.id, "name": char.name})
+
+    @plugin_entry(id="list_characters", llm_result_fields=["characters"])
+    async def list_characters(self, tag: str = "", limit: int = 100, **_):
+        lib = self._get_character_library()
+        chars = lib.list_characters(tag=tag or None, limit=limit)
+        return Ok({"characters": chars, "count": len(chars)})
+
+    @plugin_entry(id="get_character", llm_result_fields=["character"])
+    async def get_character(self, character_id: str = "", **_):
+        lib = self._get_character_library()
+        char = lib.get_character(character_id)
+        if not char:
+            return Err(SdkError(f"角色不存在：{character_id}"))
+        return Ok({"character": char.to_dict()})
+
+    @plugin_entry(id="update_character", llm_result_fields=["updated"])
+    async def update_character(self, character_id: str = "", **kwargs):
+        lib = self._get_character_library()
+        char = lib.update_from_dict(character_id, kwargs)
+        return Ok({"updated": char is not None})
+
+    @plugin_entry(id="delete_character", llm_result_fields=["deleted"])
+    async def delete_character(self, character_id: str = "", **_):
+        lib = self._get_character_library()
+        ok = lib.delete_character(character_id)
+        return Ok({"deleted": ok})
+
+    # ── 模板 ────────────────────────────────────────────────
+
+    @plugin_entry(id="list_templates", llm_result_fields=["templates"])
+    async def list_templates(self, category: str = "", **_):
+        tm = self._get_template_manager()
+        templates = tm.list_templates(category=category or None)
+        categories = tm.get_categories()
+        return Ok({"templates": templates, "categories": categories})
+
+    @plugin_entry(id="get_template", llm_result_fields=["template"])
+    async def get_template(self, template_id: str = "", **_):
+        tm = self._get_template_manager()
+        tmpl = tm.get_template(template_id)
+        if not tmpl:
+            return Err(SdkError(f"模板不存在：{template_id}"))
+        return Ok({"template": tmpl})
+
+    @plugin_entry(id="apply_template", llm_result_fields=["character"])
+    async def apply_template(self, template_id: str = "", overrides: dict | None = None, **_):
+        tm = self._get_template_manager()
+        char = tm.apply_template(template_id, overrides)
+        if not char:
+            return Err(SdkError(f"模板不存在：{template_id}"))
+        return Ok({"character": char.to_dict()})
+
+    # ── 标签 ────────────────────────────────────────────────
+
+    @plugin_entry(id="add_work_tag", llm_result_fields=["added"])
+    async def add_work_tag(self, work_id: str = "", tag: str = "", **_):
+        wm = self._get_work_manager()
+        work = wm.get_work(work_id)
+        if not work:
+            return Err(SdkError(f"作品不存在：{work_id}"))
+        if tag and tag not in work.tags:
+            work.tags.append(tag)
+            wm.update_work_meta(work_id, tags=work.tags)
+        return Ok({"added": True})
+
+    @plugin_entry(id="remove_work_tag", llm_result_fields=["removed"])
+    async def remove_work_tag(self, work_id: str = "", tag: str = "", **_):
+        wm = self._get_work_manager()
+        work = wm.get_work(work_id)
+        if not work:
+            return Err(SdkError(f"作品不存在：{work_id}"))
+        if tag in work.tags:
+            work.tags.remove(tag)
+            wm.update_work_meta(work_id, tags=work.tags)
+        return Ok({"removed": True})
