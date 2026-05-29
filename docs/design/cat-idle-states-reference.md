@@ -194,18 +194,24 @@ cat1:idle
 1. 触发条件是 `CAT1` 阶段中聊天框处于最小化状态，并且聊天框与猫的距离超过阈值。
 2. 触发点应该来自聊天框最小化球位置变化、CAT1 初次进入、窗口 resize 或 return-ball 位置变化。
 3. 必须设置 enter / exit 两个距离阈值，避免目标点附近反复触发。
-4. CAT2 / CAT3、return-click、用户拖拽猫时必须取消 CAT1 子状态。
+4. 从非 walking 状态开始新一轮走路前，会按 profile 的 `startDelay.choices` 抽一次等待时间；权重大多数落在 `0ms` 或短等待，少量落在几十秒或几分钟。
+5. 等待期间不切走路 GIF，只保留当前 CAT1 表现；同一次 pending walk 不因 observer 重复同步而重新抽随机数。
+6. CAT2 / CAT3、return-click、用户拖拽猫、目标消失或距离回到 enter 阈值内时必须取消 pending walk 和 CAT1 子状态。
 
 移动与定位约束：
 
 1. 触发后不只是替换 GIF，还要让 return-ball 容器沿屏幕坐标实际移动到聊天框旁边。
 2. 目标点应位于聊天框最小化球旁边，并保留视觉间距，不要和聊天球重叠。
 3. 移动应基于屏幕坐标，跨网页端和桌面端时要注意 `screenRect` 与 viewport rect 的转换；桌面端由独立 `/chat` 窗口发布 minimized screen rect，pet 页消费后换算成当前窗口坐标。
-4. 移动速度使用稳定速度，当前为 `101px/s`，并限制单帧步进，避免短距离闪现或长距离过慢。
-5. 走路途中聊天框再次移动时，更新目标点即可，不要重复设置同一个 GIF `src`。
-6. 到达目标点后播放伸懒腰 GIF；伸懒腰按自身帧时长播完一轮后，额外保持收尾姿态约 `700ms`，再通过短暂过渡缓冲回到最初 `CAT1` 默认 GIF，并设置 settled 标记避免在原地反复重播伸懒腰。
-7. 聊天框位置变化由 minimized shell 的 class/style observer 触发；猫被用户拖动时，drag start 取消当前自动移动，drag end 重新同步 CAT1 距离，若超过 enter 阈值则再次走向聊天框。已经回到 `CAT1` 默认 GIF 的猫也会通过 return-ball container 的 style / dragging observer 重新判距。
-8. 聊天框从最小化切到展开时，目标点会暂时不可用；这类情况只重置子动作表现并保留 shell / container observer，避免再次最小化时失去触发源。
+4. 基础移动速度为 `101px/s`，并限制单帧步进，避免短距离闪现或长距离过慢。
+5. walking 中如果当前目标距离比上一帧明显变大，累计距离增长并提升 `walkSpeedRate`，最高 `1.5x`；距离重新变小时本轮不降速，直到走路结束或子状态取消。
+6. 速度倍率同步写到 button/container 的 `data-neko-cat1-walk-speed-rate` 和 art 的 `data-neko-gif-playback-rate` / `--neko-idle-gif-playback-rate`。
+7. 走路 GIF 使用通用运行时 delay patch：按倍率缩短 GIF Graphic Control Extension 的帧 delay，生成并缓存 Blob URL；非 walking 或倍率回到 `1x` 时清掉临时播放源。
+8. pending walk 计时结束后要重新读取当前聊天框 / return-ball 位置；如果仍超过 enter 阈值才开始走。
+9. 走路途中聊天框再次移动时，更新目标点即可，不要重复设置同一个 GIF `src`，也不要插入新的 start delay。
+10. 到达目标点后播放伸懒腰 GIF；伸懒腰按自身帧时长播完一轮后，额外保持收尾姿态约 `700ms`，再通过短暂过渡缓冲回到最初 `CAT1` 默认 GIF，并设置 settled 标记避免在原地反复重播伸懒腰。
+11. 聊天框位置变化由 minimized shell 的 class/style observer 触发；猫被用户拖动时，drag start 取消当前自动移动，drag end 重新同步 CAT1 距离，若超过 enter 阈值则再次走向聊天框。已经回到 `CAT1` 默认 GIF 的猫也会通过 return-ball container 的 style / dragging observer 重新判距。
+12. 聊天框从最小化切到展开时，目标点会暂时不可用；这类情况只重置子动作表现并保留 shell / container observer，避免再次最小化时失去触发源。
 
 方向与资源约束：
 

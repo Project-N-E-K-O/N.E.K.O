@@ -73,7 +73,10 @@ def test_return_button_hover_click_gif_finishes_before_restore():
     source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
 
     assert '_NEKO_IDLE_RETURN_GIF_DURATION_CACHE = new Map()' in source
+    assert '_NEKO_IDLE_RETURN_GIF_PLAYBACK_SOURCE_CACHE = new Map()' in source
     assert '_parseGifDurationMs' in source
+    assert '_patchGifDelayRate' in source
+    assert '_getNekoIdleGifPlaybackSource' in source
     assert '_getNekoIdleGifDurationMs' in source
     assert '_playNekoIdleHoverArt' in source
     assert '_finishNekoIdleHoverArtAfterPlayback' in source
@@ -92,6 +95,9 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert "_NEKO_IDLE_CAT1_SUBSTATE_WALKING = 'walking-to-chat'" in source
     assert "_NEKO_IDLE_CAT1_SUBSTATE_STRETCH = 'stretch-near-chat'" in source
     assert '_NEKO_IDLE_CAT1_WALK_SPEED_PX_PER_SEC = 101' in source
+    assert '_NEKO_IDLE_CAT1_WALK_MAX_SPEED_RATE = 1.5' in source
+    assert '_NEKO_IDLE_CAT1_WALK_DISTANCE_INCREASE_THRESHOLD_PX' in source
+    assert '_NEKO_IDLE_CAT1_WALK_DISTANCE_GROWTH_FOR_MAX_RATE_PX' in source
     assert '_NEKO_IDLE_CAT1_STRETCH_FINAL_HOLD_MS = 700' in source
     assert '_NEKO_IDLE_CAT1_WALK_ENTER_DISTANCE_PX' in source
     assert '_NEKO_IDLE_CAT1_WALK_EXIT_DISTANCE_PX' in source
@@ -105,6 +111,22 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert '_getNekoIdleCat1Target' in source
     assert '_startNekoIdleCat1Walk' in source
     assert '_stepNekoIdleCat1Walk' in source
+    assert '_scheduleNekoIdleCat1WalkStart' in source
+    assert '_updateNekoIdleCat1WalkSpeedRate' in source
+    assert '_resetNekoIdleCat1WalkSpeed' in source
+    assert 'profile.target.speedPxPerSec * speedRate * elapsedMs' in source
+    assert 'data-neko-gif-playback-rate' in source
+    assert '--neko-idle-gif-playback-rate' in source
+    assert '_applyNekoIdleGifPlaybackRate' in source
+    assert '_clearNekoIdleGifPlaybackSource' in source
+    assert 'Math.round(originalDelayCs / playbackRate)' in source
+    assert '_pickNekoIdleReturnSubactionStartDelayMs' in source
+    assert 'startDelay' in source
+    assert 'pendingWalkTimer' in source
+    assert 'pendingWalkReady' in source
+    assert '_cancelNekoIdleReturnPendingWalk' in source
+    assert '_NEKO_IDLE_CAT1_WALK_LONG_DELAY_MAX_MS = 5 * 60 * 1000' in source
+    assert 'state.substate === profile.walkingSubstate && target.distance > profile.target.exitDistancePx' in source
     assert '_scheduleNekoIdleReturnSubactionSettle' in source
     assert '_settleNekoIdleReturnSubactionToIdle' in source
     assert 'durationMs - elapsedMs) + profile.settle.finalHoldMs' in source

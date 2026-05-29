@@ -193,6 +193,7 @@ const _NEKO_IDLE_RETURN_BUTTON_SELECTOR = '#live2d-btn-return, #vrm-btn-return, 
 const _NEKO_IDLE_RETURN_TRANSITION_MS = 820;
 const _NEKO_IDLE_RETURN_GIF_DURATION_FALLBACK_MS = 900;
 const _NEKO_IDLE_RETURN_GIF_DURATION_CACHE = new Map();
+const _NEKO_IDLE_RETURN_GIF_PLAYBACK_SOURCE_CACHE = new Map();
 const _NEKO_IDLE_CAT1_SUBSTATE_IDLE = 'idle';
 const _NEKO_IDLE_CAT1_SUBSTATE_WALKING = 'walking-to-chat';
 const _NEKO_IDLE_CAT1_SUBSTATE_STRETCH = 'stretch-near-chat';
@@ -200,9 +201,18 @@ const _NEKO_IDLE_CAT1_CHAT_GAP_PX = 12;
 const _NEKO_IDLE_CAT1_WALK_ENTER_DISTANCE_PX = 120;
 const _NEKO_IDLE_CAT1_WALK_EXIT_DISTANCE_PX = 42;
 const _NEKO_IDLE_CAT1_WALK_SPEED_PX_PER_SEC = 101;
+const _NEKO_IDLE_CAT1_WALK_MAX_SPEED_RATE = 1.5;
+const _NEKO_IDLE_CAT1_WALK_DISTANCE_INCREASE_THRESHOLD_PX = 6;
+const _NEKO_IDLE_CAT1_WALK_DISTANCE_GROWTH_FOR_MAX_RATE_PX = 220;
 const _NEKO_IDLE_CAT1_WALK_MIN_STEP_MS = 12;
 const _NEKO_IDLE_CAT1_WALK_MAX_STEP_MS = 48;
 const _NEKO_IDLE_CAT1_STRETCH_FINAL_HOLD_MS = 700;
+const _NEKO_IDLE_CAT1_WALK_SHORT_DELAY_MIN_MS = 3 * 1000;
+const _NEKO_IDLE_CAT1_WALK_SHORT_DELAY_MAX_MS = 18 * 1000;
+const _NEKO_IDLE_CAT1_WALK_MEDIUM_DELAY_MIN_MS = 30 * 1000;
+const _NEKO_IDLE_CAT1_WALK_MEDIUM_DELAY_MAX_MS = 90 * 1000;
+const _NEKO_IDLE_CAT1_WALK_LONG_DELAY_MIN_MS = 2 * 60 * 1000;
+const _NEKO_IDLE_CAT1_WALK_LONG_DELAY_MAX_MS = 5 * 60 * 1000;
 const _NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS = 2500;
 const _NEKO_IDLE_RETURN_DRAG_ACTION_CLASS = 'is-drag-action';
 const _NEKO_IDLE_RETURN_ASSET_VERSION = (() => {
@@ -328,12 +338,23 @@ const _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW = Object.freeze({
         enterDistancePx: _NEKO_IDLE_CAT1_WALK_ENTER_DISTANCE_PX,
         exitDistancePx: _NEKO_IDLE_CAT1_WALK_EXIT_DISTANCE_PX,
         speedPxPerSec: _NEKO_IDLE_CAT1_WALK_SPEED_PX_PER_SEC,
+        maxSpeedRate: _NEKO_IDLE_CAT1_WALK_MAX_SPEED_RATE,
+        distanceIncreaseThresholdPx: _NEKO_IDLE_CAT1_WALK_DISTANCE_INCREASE_THRESHOLD_PX,
+        distanceGrowthForMaxRatePx: _NEKO_IDLE_CAT1_WALK_DISTANCE_GROWTH_FOR_MAX_RATE_PX,
         minStepMs: _NEKO_IDLE_CAT1_WALK_MIN_STEP_MS,
         maxStepMs: _NEKO_IDLE_CAT1_WALK_MAX_STEP_MS
     }),
     settle: Object.freeze({
         finalHoldMs: _NEKO_IDLE_CAT1_STRETCH_FINAL_HOLD_MS,
         resetFacingAfterMs: _NEKO_IDLE_RETURN_TRANSITION_MS
+    }),
+    startDelay: Object.freeze({
+        choices: Object.freeze([
+            Object.freeze({ weight: 68, minMs: 0, maxMs: 0 }),
+            Object.freeze({ weight: 22, minMs: _NEKO_IDLE_CAT1_WALK_SHORT_DELAY_MIN_MS, maxMs: _NEKO_IDLE_CAT1_WALK_SHORT_DELAY_MAX_MS }),
+            Object.freeze({ weight: 8, minMs: _NEKO_IDLE_CAT1_WALK_MEDIUM_DELAY_MIN_MS, maxMs: _NEKO_IDLE_CAT1_WALK_MEDIUM_DELAY_MAX_MS }),
+            Object.freeze({ weight: 2, minMs: _NEKO_IDLE_CAT1_WALK_LONG_DELAY_MIN_MS, maxMs: _NEKO_IDLE_CAT1_WALK_LONG_DELAY_MAX_MS })
+        ])
     })
 });
 
@@ -356,6 +377,13 @@ function _shouldReduceNekoIdleMotion() {
 function _readUint16LittleEndian(bytes, offset) {
     if (!bytes || offset < 0 || offset + 1 >= bytes.length) return 0;
     return bytes[offset] | (bytes[offset + 1] << 8);
+}
+
+function _writeUint16LittleEndian(bytes, offset, value) {
+    if (!bytes || offset < 0 || offset + 1 >= bytes.length) return;
+    const normalized = Math.max(0, Math.min(0xffff, Math.round(Number(value) || 0)));
+    bytes[offset] = normalized & 0xff;
+    bytes[offset + 1] = (normalized >> 8) & 0xff;
 }
 
 function _parseGifDurationMs(bytes) {
@@ -418,6 +446,103 @@ function _parseGifDurationMs(bytes) {
     return frameCount > 0 ? totalMs : 0;
 }
 
+function _patchGifDelayRate(bytes, rate) {
+    if (!bytes || bytes.length < 14) return null;
+    const isGif = bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46;
+    if (!isGif) return null;
+
+    const playbackRate = Math.max(1, Number(rate) || 1);
+    const patched = new Uint8Array(bytes);
+    let offset = 13;
+    const packed = patched[10];
+    if (packed & 0x80) {
+        offset += 3 * (1 << ((packed & 0x07) + 1));
+    }
+
+    let changed = false;
+    while (offset < patched.length) {
+        const blockId = patched[offset++];
+        if (blockId === 0x3b) break;
+
+        if (blockId === 0x21) {
+            const label = patched[offset++];
+            if (label === 0xf9 && patched[offset] === 0x04) {
+                const delayOffset = offset + 2;
+                const originalDelayCs = _readUint16LittleEndian(patched, delayOffset);
+                if (originalDelayCs > 0) {
+                    const nextDelayCs = Math.max(2, Math.round(originalDelayCs / playbackRate));
+                    if (nextDelayCs !== originalDelayCs) {
+                        _writeUint16LittleEndian(patched, delayOffset, nextDelayCs);
+                        changed = true;
+                    }
+                }
+                offset += 6;
+                continue;
+            }
+
+            while (offset < patched.length) {
+                const size = patched[offset++];
+                if (size === 0) break;
+                offset += size;
+            }
+            continue;
+        }
+
+        if (blockId === 0x2c) {
+            if (offset + 8 >= patched.length) break;
+            const imagePacked = patched[offset + 8];
+            offset += 9;
+            if (imagePacked & 0x80) {
+                offset += 3 * (1 << ((imagePacked & 0x07) + 1));
+            }
+            offset += 1;
+            while (offset < patched.length) {
+                const size = patched[offset++];
+                if (size === 0) break;
+                offset += size;
+            }
+            continue;
+        }
+
+        break;
+    }
+    return changed ? patched : null;
+}
+
+function _normalizeNekoIdleGifPlaybackRate(rate) {
+    const value = Number(rate);
+    if (!Number.isFinite(value) || value <= 1.02) return 1;
+    return Math.max(1, Math.min(1.5, Math.round(value * 10) / 10));
+}
+
+function _getNekoIdleGifPlaybackSource(src, rate) {
+    const playbackRate = _normalizeNekoIdleGifPlaybackRate(rate);
+    if (!src || playbackRate <= 1) return Promise.resolve(src || '');
+    const cacheKey = `${src}@@${playbackRate}`;
+    if (_NEKO_IDLE_RETURN_GIF_PLAYBACK_SOURCE_CACHE.has(cacheKey)) {
+        return _NEKO_IDLE_RETURN_GIF_PLAYBACK_SOURCE_CACHE.get(cacheKey);
+    }
+
+    const sourcePromise = (async () => {
+        try {
+            if (typeof fetch !== 'function' || typeof Blob === 'undefined' || typeof URL === 'undefined') {
+                return src;
+            }
+            const response = await fetch(src, { cache: 'force-cache' });
+            if (!response || !response.ok) return src;
+            const buffer = await response.arrayBuffer();
+            const patched = _patchGifDelayRate(new Uint8Array(buffer), playbackRate);
+            if (!patched) return src;
+            return URL.createObjectURL(new Blob([patched], { type: 'image/gif' }));
+        } catch (_) {
+            return src;
+        }
+    })();
+
+    _NEKO_IDLE_RETURN_GIF_PLAYBACK_SOURCE_CACHE.set(cacheKey, sourcePromise);
+    return sourcePromise;
+}
+
 function _getNekoIdleGifDurationMs(src) {
     if (!src) return Promise.resolve(_NEKO_IDLE_RETURN_GIF_DURATION_FALLBACK_MS);
     if (_NEKO_IDLE_RETURN_GIF_DURATION_CACHE.has(src)) {
@@ -459,6 +584,13 @@ function _cleanupNekoIdleArtTransition(art) {
     }
 }
 
+function _clearNekoIdleGifPlaybackSource(art) {
+    if (!art) return;
+    art.__nekoIdleGifPlaybackToken = (art.__nekoIdleGifPlaybackToken || 0) + 1;
+    art.__nekoIdleGifPlaybackBaseSrc = '';
+    art.__nekoIdleGifPlaybackRate = 1;
+}
+
 function _clearNekoIdleHoverPlayback(art) {
     if (!art) return;
     if (art.__nekoIdleHoverTimer) {
@@ -469,6 +601,35 @@ function _clearNekoIdleHoverPlayback(art) {
     art.__nekoIdleHoverSrc = '';
     art.__nekoIdleHoverTier = '';
     art.__nekoIdleHoverStartedAt = 0;
+}
+
+function _applyNekoIdleGifPlaybackRate(art, baseSrc, rate) {
+    if (!art || !baseSrc) return;
+    const playbackRate = _normalizeNekoIdleGifPlaybackRate(rate);
+    if (playbackRate <= 1) {
+        _clearNekoIdleGifPlaybackSource(art);
+        if ((art.getAttribute('src') || '') !== baseSrc) {
+            art.src = baseSrc;
+        }
+        return;
+    }
+
+    if (art.__nekoIdleGifPlaybackBaseSrc === baseSrc &&
+        art.__nekoIdleGifPlaybackRate === playbackRate) {
+        return;
+    }
+
+    const token = (art.__nekoIdleGifPlaybackToken || 0) + 1;
+    art.__nekoIdleGifPlaybackToken = token;
+    art.__nekoIdleGifPlaybackBaseSrc = baseSrc;
+    art.__nekoIdleGifPlaybackRate = playbackRate;
+    _getNekoIdleGifPlaybackSource(baseSrc, playbackRate).then((nextSrc) => {
+        if ((art.__nekoIdleGifPlaybackToken || 0) !== token) return;
+        if (art.__nekoIdleGifPlaybackBaseSrc !== baseSrc) return;
+        if (art.__nekoIdleGifPlaybackRate !== playbackRate) return;
+        if (!nextSrc || (art.getAttribute('src') || '') === nextSrc) return;
+        art.src = nextSrc;
+    });
 }
 
 function _getNekoIdleReturnCurrentArtUrl(button, tier) {
@@ -630,6 +791,13 @@ function _getNekoIdleReturnSubactionState(button, profile) {
         facingRight: false,
         settleTimer: 0,
         settleToken: 0,
+        pendingWalkTimer: 0,
+        pendingWalkToken: 0,
+        pendingWalkDelayMs: 0,
+        pendingWalkReady: false,
+        walkSpeedRate: 1,
+        walkPreviousDistance: 0,
+        walkDistanceGrowthPx: 0,
         actionSettled: false
     };
     button.__nekoIdleCat1Journey = button.__nekoIdleReturnSubactionState;
@@ -653,6 +821,12 @@ function _getNekoIdleCat1ArtSource(button) {
     return profile.assets.idle();
 }
 
+function _formatNekoIdleCat1WalkSpeedRate(rate) {
+    const value = Number(rate);
+    if (!Number.isFinite(value) || value <= 0) return '1';
+    return Math.round(value * 1000) / 1000 + '';
+}
+
 function _setNekoIdleCat1Classes(button, state) {
     if (!button) return;
     const profile = state && state.profile ? state.profile : _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;
@@ -665,12 +839,43 @@ function _setNekoIdleCat1Classes(button, state) {
     button.classList.toggle(profile.classNames.facingRight, facingRight);
     button.classList.toggle(profile.classNames.paused, paused);
     button.setAttribute(profile.dataAttributes.substate, substate);
+    const speedRate = substate === profile.walkingSubstate
+        ? _formatNekoIdleCat1WalkSpeedRate(state && state.walkSpeedRate)
+        : '';
+    if (speedRate) {
+        button.setAttribute('data-neko-cat1-walk-speed-rate', speedRate);
+        button.style.setProperty('--neko-idle-cat1-walk-speed-rate', speedRate);
+    } else {
+        button.removeAttribute('data-neko-cat1-walk-speed-rate');
+        button.style.removeProperty('--neko-idle-cat1-walk-speed-rate');
+    }
+    const art = button.querySelector('.neko-idle-return-art');
+    if (art) {
+        if (speedRate) {
+            art.setAttribute('data-neko-gif-playback-rate', speedRate);
+            art.style.setProperty('--neko-idle-gif-playback-rate', speedRate);
+            if (substate === profile.walkingSubstate) {
+                _applyNekoIdleGifPlaybackRate(art, profile.assets.walking(), state && state.walkSpeedRate);
+            }
+        } else {
+            art.removeAttribute('data-neko-gif-playback-rate');
+            art.style.removeProperty('--neko-idle-gif-playback-rate');
+            _clearNekoIdleGifPlaybackSource(art);
+        }
+    }
     if (container) {
         container.setAttribute(profile.dataAttributes.substate, substate);
         container.setAttribute(profile.dataAttributes.facing, facingRight ? 'right' : 'left');
         container.classList.toggle(profile.classNames.walking, substate === profile.walkingSubstate);
         container.classList.toggle(profile.classNames.finishing, substate === profile.finishingSubstate);
         container.classList.toggle(profile.classNames.paused, paused);
+        if (speedRate) {
+            container.setAttribute('data-neko-cat1-walk-speed-rate', speedRate);
+            container.style.setProperty('--neko-idle-cat1-walk-speed-rate', speedRate);
+        } else {
+            container.removeAttribute('data-neko-cat1-walk-speed-rate');
+            container.style.removeProperty('--neko-idle-cat1-walk-speed-rate');
+        }
     }
 }
 
@@ -708,10 +913,30 @@ function _cancelNekoIdleReturnSubactionSettleTimer(state) {
     state.settleToken = (state.settleToken || 0) + 1;
 }
 
+function _cancelNekoIdleReturnPendingWalk(state) {
+    if (!state) return;
+    if (state.pendingWalkTimer) {
+        clearTimeout(state.pendingWalkTimer);
+        state.pendingWalkTimer = 0;
+    }
+    state.pendingWalkToken = (state.pendingWalkToken || 0) + 1;
+    state.pendingWalkDelayMs = 0;
+    state.pendingWalkReady = false;
+}
+
+function _resetNekoIdleCat1WalkSpeed(state) {
+    if (!state) return;
+    state.walkSpeedRate = 1;
+    state.walkPreviousDistance = 0;
+    state.walkDistanceGrowthPx = 0;
+}
+
 function _cancelNekoIdleReturnSubactionState(state, options = {}) {
     _cancelNekoIdleCat1Frame(state);
     _cancelNekoIdleCat1SyncFrame(state);
     _cancelNekoIdleReturnSubactionSettleTimer(state);
+    _cancelNekoIdleReturnPendingWalk(state);
+    _resetNekoIdleCat1WalkSpeed(state);
     if (!options.preserveObservers) {
         _disconnectNekoIdleCat1Observer(state);
     }
@@ -730,6 +955,7 @@ function _cancelNekoIdleCat1Journey(button, options = {}) {
     state.lastStepAt = 0;
     state.facingRight = false;
     state.actionSettled = false;
+    _resetNekoIdleCat1WalkSpeed(state);
     _setNekoIdleCat1Classes(button, state);
     if (options.resetArt) {
         const art = button.querySelector('.neko-idle-return-art');
@@ -877,6 +1103,9 @@ function _setNekoIdleCat1Substate(button, substate, options = {}) {
     if (!state) return;
     const profile = state.profile || _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;
     const previousSubstate = state.substate;
+    if (substate === profile.walkingSubstate) {
+        _cancelNekoIdleReturnPendingWalk(state);
+    }
     if (substate !== profile.finishingSubstate) {
         _cancelNekoIdleReturnSubactionSettleTimer(state);
     }
@@ -914,6 +1143,7 @@ function _finishNekoIdleCat1Walk(button) {
     state.target = null;
     state.lastStepAt = 0;
     state.actionSettled = false;
+    _resetNekoIdleCat1WalkSpeed(state);
     _setNekoIdleCat1Substate(button, state.profile.finishingSubstate, { animate: true });
 }
 
@@ -926,6 +1156,7 @@ function _settleNekoIdleReturnSubactionToIdle(button) {
     state.target = null;
     state.lastStepAt = 0;
     state.actionSettled = true;
+    _resetNekoIdleCat1WalkSpeed(state);
     _setNekoIdleCat1Classes(button, state);
 
     const art = button.querySelector('.neko-idle-return-art');
@@ -975,6 +1206,57 @@ function _scheduleNekoIdleReturnSubactionSettle(button) {
     });
 }
 
+function _pickNekoIdleReturnSubactionStartDelayMs(profile) {
+    const choices = profile && profile.startDelay && Array.isArray(profile.startDelay.choices)
+        ? profile.startDelay.choices
+        : null;
+    if (!choices || choices.length === 0) return 0;
+
+    const totalWeight = choices.reduce((sum, choice) => {
+        const weight = Number(choice && choice.weight);
+        return sum + (Number.isFinite(weight) && weight > 0 ? weight : 0);
+    }, 0);
+    if (totalWeight <= 0) return 0;
+
+    let cursor = Math.random() * totalWeight;
+    for (const choice of choices) {
+        const weight = Number(choice && choice.weight);
+        if (!Number.isFinite(weight) || weight <= 0) continue;
+        cursor -= weight;
+        if (cursor > 0) continue;
+
+        const minMs = Math.max(0, Math.round(Number(choice.minMs) || 0));
+        const maxMs = Math.max(minMs, Math.round(Number(choice.maxMs) || minMs));
+        if (maxMs <= minMs) return minMs;
+        return minMs + Math.round(Math.random() * (maxMs - minMs));
+    }
+    return 0;
+}
+
+function _updateNekoIdleCat1WalkSpeedRate(button, state, distance) {
+    if (!state) return 1;
+    const profile = state.profile || _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;
+    const targetConfig = profile.target || {};
+    const maxRate = Math.max(1, Number(targetConfig.maxSpeedRate) || 1);
+    const previousDistance = Number(state.walkPreviousDistance) || 0;
+    const currentDistance = Math.max(0, Number(distance) || 0);
+    const threshold = Math.max(0, Number(targetConfig.distanceIncreaseThresholdPx) || 0);
+    const growthForMaxRate = Math.max(1, Number(targetConfig.distanceGrowthForMaxRatePx) || 1);
+
+    if (previousDistance > 0 && currentDistance > previousDistance + threshold) {
+        state.walkDistanceGrowthPx = Math.max(
+            0,
+            (Number(state.walkDistanceGrowthPx) || 0) + (currentDistance - previousDistance)
+        );
+        const progress = Math.min(1, state.walkDistanceGrowthPx / growthForMaxRate);
+        state.walkSpeedRate = Math.min(maxRate, 1 + (maxRate - 1) * progress);
+        _setNekoIdleCat1Classes(button, state);
+    }
+
+    state.walkPreviousDistance = currentDistance;
+    return Math.max(1, Number(state.walkSpeedRate) || 1);
+}
+
 function _stepNekoIdleCat1Walk(button, timestamp) {
     const state = _getNekoIdleCat1Journey(button);
     const profile = state && state.profile ? state.profile : _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;
@@ -994,6 +1276,7 @@ function _stepNekoIdleCat1Walk(button, timestamp) {
     state.target = target;
     state.facingRight = target.facingRight;
     _setNekoIdleCat1Classes(button, state);
+    const speedRate = _updateNekoIdleCat1WalkSpeedRate(button, state, target.distance);
     if (target.distance <= profile.target.exitDistancePx) {
         _setNekoIdleCat1ContainerPosition(container, target.left, target.top);
         _finishNekoIdleCat1Walk(button);
@@ -1007,7 +1290,7 @@ function _stepNekoIdleCat1Walk(button, timestamp) {
         Math.min(timestamp - lastStepAt, profile.target.maxStepMs)
     );
     state.lastStepAt = timestamp;
-    const stepDistance = (profile.target.speedPxPerSec * elapsedMs) / 1000;
+    const stepDistance = (profile.target.speedPxPerSec * speedRate * elapsedMs) / 1000;
     const ratio = target.distance > 0 ? Math.min(1, stepDistance / target.distance) : 1;
     const nextLeft = rect.left + (target.left - rect.left) * ratio;
     const nextTop = rect.top + (target.top - rect.top) * ratio;
@@ -1026,6 +1309,8 @@ function _startNekoIdleCat1Walk(button, target) {
     state.facingRight = !!(target && target.facingRight);
     if (state.substate !== profile.walkingSubstate) {
         state.lastStepAt = 0;
+        _resetNekoIdleCat1WalkSpeed(state);
+        state.walkPreviousDistance = Math.max(0, Number(target && target.distance) || 0);
         _setNekoIdleCat1Substate(button, profile.walkingSubstate, { animate: false, facingRight: state.facingRight });
     } else {
         _setNekoIdleCat1Classes(button, state);
@@ -1035,6 +1320,44 @@ function _startNekoIdleCat1Walk(button, target) {
             _stepNekoIdleCat1Walk(button, timestamp);
         });
     }
+}
+
+function _scheduleNekoIdleCat1WalkStart(button, target) {
+    const state = _getNekoIdleCat1Journey(button);
+    if (!state || state.paused) return;
+    const profile = state.profile || _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;
+    if (state.substate === profile.walkingSubstate) {
+        _startNekoIdleCat1Walk(button, target);
+        return;
+    }
+
+    state.target = target;
+    state.facingRight = !!(target && target.facingRight);
+    _setNekoIdleCat1Classes(button, state);
+    if (state.pendingWalkReady) {
+        state.pendingWalkReady = false;
+        _startNekoIdleCat1Walk(button, target);
+        return;
+    }
+    if (state.pendingWalkTimer) return;
+
+    const delayMs = _pickNekoIdleReturnSubactionStartDelayMs(profile);
+    state.pendingWalkDelayMs = delayMs;
+    if (delayMs <= 0) {
+        _startNekoIdleCat1Walk(button, target);
+        return;
+    }
+
+    const token = (state.pendingWalkToken || 0) + 1;
+    state.pendingWalkToken = token;
+    state.pendingWalkTimer = setTimeout(() => {
+        const latestState = button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey;
+        if (!latestState || latestState.pendingWalkToken !== token) return;
+        latestState.pendingWalkTimer = 0;
+        latestState.pendingWalkDelayMs = 0;
+        latestState.pendingWalkReady = true;
+        _syncNekoIdleCat1Journey(button);
+    }, delayMs);
 }
 
 function _refreshNekoIdleCat1Observer(button) {
@@ -1089,16 +1412,15 @@ function _syncNekoIdleCat1Journey(button, tier) {
     const chatRect = _getNekoIdleChatMinimizedRect();
     const target = _getNekoIdleCat1Target(container, chatRect);
     if (!target) {
+        _cancelNekoIdleReturnPendingWalk(state);
         if (state.substate !== profile.idleSubstate) {
             _cancelNekoIdleCat1Journey(button, { resetArt: true, preserveObservers: true });
         }
         return;
     }
 
-    if (target.distance >= profile.target.enterDistancePx) {
-        state.actionSettled = false;
-        _startNekoIdleCat1Walk(button, target);
-        return;
+    if (target.distance < profile.target.enterDistancePx && state.substate !== profile.walkingSubstate) {
+        _cancelNekoIdleReturnPendingWalk(state);
     }
 
     if (state.substate === profile.walkingSubstate && target.distance > profile.target.exitDistancePx) {
@@ -1106,7 +1428,14 @@ function _syncNekoIdleCat1Journey(button, tier) {
         return;
     }
 
+    if (target.distance >= profile.target.enterDistancePx) {
+        state.actionSettled = false;
+        _scheduleNekoIdleCat1WalkStart(button, target);
+        return;
+    }
+
     if (state.substate === profile.walkingSubstate) {
+        _cancelNekoIdleReturnPendingWalk(state);
         _finishNekoIdleCat1Walk(button);
         return;
     }
@@ -1169,6 +1498,7 @@ function _setNekoIdleReturnArtSource(art, nextSrc, tier, options = {}) {
 
     if (!shouldAnimate) {
         _cleanupNekoIdleArtTransition(art);
+        _clearNekoIdleGifPlaybackSource(art);
         art.src = nextSrc;
         return;
     }
@@ -1193,6 +1523,7 @@ function _setNekoIdleReturnArtSource(art, nextSrc, tier, options = {}) {
     nextArt.setAttribute('data-neko-idle-tier', tier);
 
     const finish = () => {
+        _clearNekoIdleGifPlaybackSource(art);
         art.src = nextSrc;
         _cleanupNekoIdleArtTransition(art);
     };
