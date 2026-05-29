@@ -82,7 +82,7 @@ ghost cursor 流程：
 文本输出：
 
 1. `tutorial.yuiGuide.lines.introBasic`
-   - 中文：“这里有一个神奇的小按钮！只要点击它，就可以直接和我聊天啦！……”
+   - 中文：“这里有一个神奇的按钮！只要点击它，就可以直接和我聊天啦！……”
 2. 文本进入聊天窗口，语音 key 为 `intro_basic`。
 
 高亮流程：

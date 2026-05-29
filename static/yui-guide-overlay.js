@@ -96,7 +96,8 @@
                 '#live2d-btn-return, #vrm-btn-return, #mmd-btn-return, ' +
                 '#live2d-lock-icon, #vrm-lock-icon, #mmd-lock-icon, ' +
                 '[id$="-btn-mic"], [id$="-btn-screen"], [id$="-btn-agent"], ' +
-                '[id$="-btn-settings"], [id$="-btn-goodbye"], [id$="-btn-return"], [id$="-lock-icon"]'
+                '[id$="-btn-settings"], [id$="-btn-goodbye"], [id$="-btn-return"], [id$="-lock-icon"], ' +
+                '.composer-tool-btn, .composer-icon-button[data-avatar-tool-id]'
             );
         }
 
@@ -169,6 +170,24 @@
 
         if (circleSkin && circleSkin.style) {
             circleSkin.style.display = useCircleImage ? 'block' : '';
+        }
+    }
+
+    function applySpotlightPlainCircleMode(frame) {
+        if (!frame) {
+            return;
+        }
+
+        removeSpotlightImageDecorations(frame);
+        const chrome = frame.querySelector('.yui-guide-spotlight-chrome');
+        const circleSkin = frame.querySelector('.yui-guide-spotlight-circle-skin');
+
+        if (chrome && chrome.style) {
+            chrome.style.display = '';
+        }
+
+        if (circleSkin && circleSkin.style) {
+            circleSkin.style.display = 'none';
         }
     }
 
@@ -752,23 +771,32 @@
             const allowMask = normalizedOptions.allowMask !== false;
             const variant = normalizedOptions.variant || '';
             const forceCircleImage = variant === 'circle-image';
+            const forcePlainCircle = variant === 'plain-circle';
 
             if (!spotlightRect) {
                 frame.hidden = true;
                 frame.classList.remove('is-visible');
                 frame.classList.remove('is-circular-mask');
                 frame.classList.remove('is-circle-image');
+                frame.classList.remove('is-plain-circle');
                 frame.classList.remove('is-thin-variant');
-                applySpotlightFrameDecorationMode(frame, false);
+                removeSpotlightImageDecorations(frame);
                 return;
             }
 
             frame.hidden = false;
             frame.classList.add('is-visible');
-            frame.classList.toggle('is-circular-mask', !!spotlightRect.isCircular && allowMask);
+            frame.classList.toggle('is-circular-mask', !!spotlightRect.isCircular && allowMask && !forcePlainCircle);
             frame.classList.toggle('is-circle-image', forceCircleImage);
+            frame.classList.toggle('is-plain-circle', forcePlainCircle);
             frame.classList.toggle('is-thin-variant', variant === 'thin');
-            applySpotlightFrameDecorationMode(frame, !!spotlightRect.isCircular || forceCircleImage);
+            if (forcePlainCircle) {
+                applySpotlightPlainCircleMode(frame);
+            } else if (forceCircleImage) {
+                applySpotlightFrameDecorationMode(frame, true);
+            } else {
+                applySpotlightFrameDecorationMode(frame, !!spotlightRect.isCircular);
+            }
             frame.style.left = spotlightRect.left + 'px';
             frame.style.top = spotlightRect.top + 'px';
             frame.style.width = spotlightRect.width + 'px';
@@ -820,11 +848,15 @@
                 if (!element || typeof element.getAttribute !== 'function') {
                     return '';
                 }
+                const variant = (element.getAttribute('data-yui-guide-spotlight-variant') || '').trim().toLowerCase();
+                if (variant) {
+                    return variant;
+                }
                 const geometry = (element.getAttribute('data-yui-guide-spotlight-geometry') || '').trim().toLowerCase();
                 if (geometry === 'circle' || isCircularFloatingButtonElement(element)) {
                     return 'circle-image';
                 }
-                return element.getAttribute('data-yui-guide-spotlight-variant') || '';
+                return '';
             };
 
             this.updateSpotlightFrame(this.persistentSpotlightFrame, persistentRect, {
@@ -1211,6 +1243,12 @@
             };
         }
 
+        clearCursorPosition() {
+            this.cursorPosition = null;
+            this.cursorTrailLastPoint = null;
+            this.cursorTrailLastAt = 0;
+        }
+
         showCursorAt(x, y) {
             this.ensureRoot();
             const previous = this.cursorPosition;
@@ -1221,9 +1259,9 @@
                 && this.cursorShell.classList.contains('is-visible')
             );
             this.document.body.classList.add('yui-guide-ghost-cursor-active');
-            this.cursorShell.hidden = false;
-            this.cursorShell.classList.add('is-visible');
             if (shouldGlide) {
+                this.cursorShell.hidden = false;
+                this.cursorShell.classList.add('is-visible');
                 this.cursorTrailLastPoint = { x: previous.x, y: previous.y };
                 this.cursorTrailLastAt = 0;
                 return this.moveCursorTo(x, y, { durationMs: 360 });
@@ -1233,6 +1271,8 @@
             this.cursorPosition = { x: x, y: y };
             this.cursorTrailLastPoint = null;
             this.cursorTrailLastAt = 0;
+            this.cursorShell.hidden = false;
+            this.cursorShell.classList.add('is-visible');
             return Promise.resolve(true);
         }
 
