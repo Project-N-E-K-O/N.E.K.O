@@ -613,8 +613,11 @@ function _cancelNekoIdleCat1Journey(button, options = {}) {
     }
 }
 
-function _cancelNekoIdleCat1JourneyForContainer(container) {
-    _cancelNekoIdleCat1Journey(_getNekoIdleReturnButtonFromContainer(container), { resetArt: true });
+function _cancelNekoIdleCat1JourneyForContainer(container, options = {}) {
+    _cancelNekoIdleCat1Journey(_getNekoIdleReturnButtonFromContainer(container), {
+        resetArt: options.resetArt !== false,
+        preserveObservers: options.preserveObservers === true
+    });
 }
 
 function _scheduleNekoIdleCat1JourneySyncForContainer(container) {
@@ -1201,6 +1204,13 @@ function _ensureNekoIdleReturnPresentationBridge() {
         if (!detail || !detail.container) return;
         if (detail.reason === 'return-ball-drag-end') {
             _scheduleNekoIdleCat1JourneySyncForContainer(detail.container);
+            return;
+        }
+        if (detail.reason === 'return-ball-drag-start') {
+            _cancelNekoIdleCat1JourneyForContainer(detail.container, {
+                resetArt: false,
+                preserveObservers: true
+            });
             return;
         }
         _cancelNekoIdleCat1JourneyForContainer(detail.container);

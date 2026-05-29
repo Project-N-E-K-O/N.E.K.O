@@ -120,6 +120,8 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert 'state.substate !== profile.walkingSubstate' in source
     assert "'neko:return-ball-manual-move'" in source
     assert "'neko:return-ball-manual-move'" in app_ui_source
+    assert "detail.reason === 'return-ball-drag-start'" in source
+    assert "resetArt: false" in source
     assert "'return-ball-drag-start'" in app_ui_source
     assert "'return-ball-drag-end'" in source
     assert "'return-ball-drag-end'" in app_ui_source
