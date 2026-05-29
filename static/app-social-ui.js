@@ -18,8 +18,9 @@
  *   渲染端 listener 注册了但不会被调，无副作用
  *
  * 加载位置：index.html 在 avatar-ui-buttons.js 之后（social 按钮 ID 生成器
- * 已就绪），但模块自带 500ms × 30 次轮询，按钮没渲染时缓存 unread 值，
- * 渲染好以后回画一次 badge，所以前后顺序差别不大。
+ * 已就绪）。模块用 MutationObserver 监听 social 按钮的挂载/重挂（切换 vrm/mmd
+ * manager 会销毁重建按钮），按钮没就绪时先缓存 unread 值，挂载后用缓存值补画
+ * badge，所以前后顺序差别不大。
  */
 
 (function () {
@@ -83,29 +84,31 @@
   }
 
   // 首次 onUnreadCount 触发时按钮可能还没渲染（avatar-ui-buttons 在 vrm/mmd-init
-  // 之后才挂 social 按钮），缓存值 + 短时间轮询直到画上。
+  // 之后才挂 social 按钮），且切换 vrm/mmd manager 时按钮会被销毁重挂。缓存未读数：
+  // 按钮已在场就立即画，没在场则等 MutationObserver 在挂载时补画。
   let cachedUnread = 0;
-  let retryHandle = null;
-
-  function scheduleRetry() {
-    if (retryHandle != null) return;
-    let retries = 0;
-    retryHandle = setInterval(() => {
-      retries += 1;
-      const painted = paintBadge(cachedUnread);
-      if (painted || retries >= 30) {
-        clearInterval(retryHandle);
-        retryHandle = null;
-      }
-    }, 500);
-  }
 
   window.nekoSocial.onUnreadCount((data) => {
     cachedUnread = (data && typeof data.value === 'number') ? data.value : 0;
-    if (!paintBadge(cachedUnread)) {
-      scheduleRetry();
+    paintBadge(cachedUnread);
+  });
+
+  // social 按钮的 id 在插入 DOM 前就已设好（avatar-ui-buttons.js:419），所以新挂载
+  // 的 btnWrapper 一进 DOM 就能被 querySelector 命中。监听挂载/重挂，用缓存的未读数
+  // 补画——修复"先挂的按钮画了、后挂的按钮（视图切换/延迟渲染）漏画"的问题。
+  const buttonObserver = new MutationObserver((mutations) => {
+    for (const m of mutations) {
+      for (const node of m.addedNodes) {
+        if (node.nodeType !== 1) continue; // 只看元素节点
+        if ((node.matches && node.matches('[id$="-btn-social"]')) ||
+            (node.querySelector && node.querySelector('[id$="-btn-social"]'))) {
+          paintBadge(cachedUnread);
+          return;
+        }
+      }
     }
   });
+  buttonObserver.observe(document.body, { childList: true, subtree: true });
 
   // ===== 2) 新通知 toast =====
 
