@@ -15,7 +15,7 @@
                 {
                     id: 'day2_intro_context',
                     selector: '#home-avatar-floating-guide-player',
-                    text: '第二天先根据昨天是否用过声音聊天切换开场台词，并显示“现在说一句 / 继续打字”两个选择。',
+                    text: '第二天先根据昨天是否用过声音聊天切换开场台词，只高亮聊天窗并播放承接语音，不显示“现在说一句 / 继续打字”两个选择。',
                     voiceKey: 'avatar_floating_day2_intro',
                     cursorAction: 'input-origin',
                     operation: 'none',
@@ -24,8 +24,8 @@
                 {
                     id: 'day2_screen_entry',
                     selector: '#${prefix}-btn-screen',
-                    text: '高亮屏幕分享按钮，Ghost Cursor 停留后点击一次真实按钮，触发“屏幕分享仅用于音视频通话”的真实提示。',
-                    voiceKey: 'avatar_floating_day2_screen_entry',
+                    text: '高亮屏幕分享按钮，Ghost Cursor 停留后点击一次真实按钮，触发“屏幕分享仅用于音视频通话”的真实提示；下一句继续高亮该按钮但不重复点击。',
+                    voiceKey: 'avatar_floating_day2_screen_entry_intro',
                     cursorAction: 'click',
                     operation: 'safe-click',
                     performanceCue: null,
@@ -33,7 +33,7 @@
                 {
                     id: 'day2_wrap',
                     selector: '#home-avatar-floating-guide-player',
-                    text: '这一轮结束前会关掉临时弹窗，约 70% 处触发每日花瓣转场；屏幕分享按钮本身不会被强行启动。',
+                    text: '这一轮收尾拆成两句，第一句重新高亮聊天窗，第二句约 70% 处触发每日花瓣转场；屏幕分享按钮本身不会被强行启动。',
                     voiceKey: 'avatar_floating_day2_wrap',
                     cursorAction: 'wobble',
                     operation: 'cleanup',
@@ -648,6 +648,9 @@
     }
 
     function isHomeChatExternalized() {
+        if (window.__NEKO_MULTI_WINDOW__ === true) {
+            return true;
+        }
         const overlay = document.getElementById('react-chat-window-overlay');
         return !!(overlay && overlay.style.display === 'none');
     }
@@ -681,6 +684,7 @@
         const message = buildGuideChatMessage(step, day);
 
         if (isHomeChatExternalized()) {
+            let posted = false;
             const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
             if (channel && typeof channel.postMessage === 'function') {
                 try {
@@ -689,10 +693,30 @@
                         message,
                         timestamp: message.createdAt,
                     });
-                    return message;
+                    posted = true;
                 } catch (error) {
                     console.warn('[AvatarFloatingGuideReset] 转发教程文本到外置聊天窗失败:', error);
                 }
+            }
+            if (window.nekoTutorialOverlay && typeof window.nekoTutorialOverlay.relayToChat === 'function') {
+                try {
+                    let tutorialRunId = '';
+                    try {
+                        tutorialRunId = window.localStorage.getItem('yuiGuidePcOverlayRunId') || '';
+                    } catch (_) {}
+                    window.nekoTutorialOverlay.relayToChat({
+                        action: 'yui_guide_append_chat_message',
+                        message,
+                        tutorialRunId,
+                        timestamp: message.createdAt,
+                    });
+                    posted = true;
+                } catch (error) {
+                    console.warn('[AvatarFloatingGuideReset] 原生转发教程文本到外置聊天窗失败:', error);
+                }
+            }
+            if (posted) {
+                return message;
             }
         }
 

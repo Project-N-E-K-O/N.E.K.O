@@ -199,6 +199,7 @@
     }
 
     const AVATAR_FLOATING_GUIDE_USAGE_STORAGE_KEY = 'neko_avatar_floating_guide_usage_v1';
+    const YUI_GUIDE_EXTERNAL_CHAT_CURSOR_SCREEN_POINT_KEY = 'neko_yui_guide_external_chat_cursor_screen_point_v1';
 
     function readAvatarFloatingGuideUsageState() {
         try {
@@ -271,6 +272,7 @@
     const DEFAULT_INTERRUPT_ACCELERATION_THRESHOLD = 0.09;
     const DEFAULT_INTERRUPT_ACCELERATION_STREAK = 3;
     const DEFAULT_PASSIVE_RESISTANCE_DISTANCE = 10;
+    const DEFAULT_PASSIVE_RESISTANCE_ACCELERATION_THRESHOLD = 0.025;
     const DEFAULT_PASSIVE_RESISTANCE_INTERVAL_MS = 140;
     const DEFAULT_USER_CURSOR_REVEAL_DISTANCE = 14;
     const DEFAULT_USER_CURSOR_REVEAL_INTERVAL_MS = 160;
@@ -278,6 +280,8 @@
     const DEFAULT_STEP_DELAY_MS = 120;
     const DEFAULT_SCENE_SETTLE_MS = 260;
     const DEFAULT_CURSOR_DURATION_MS = 520;
+    const DEFAULT_CURSOR_MOVE_SLOWDOWN_MS = 900;
+    const SHORT_CURSOR_MOVE_EXTRA_MS = 2400;
     const DEFAULT_CURSOR_CLICK_VISIBLE_MS = 420;
     const INTRO_GREETING_REPLY_TEXT = '微风、阳光，还有刚刚好出现的你。初次见面，我是林悠怡，未来的日子请多关照喵！我把关于这里的一切都写进新手指南里啦！就当作是我们相遇的第一份小礼物，请查收吧！';
     const INTRO_GREETING_REPLY_TEXT_KEY = 'tutorial.yuiGuide.lines.introGreetingReply';
@@ -2255,14 +2259,31 @@
             this.overlay.showCursorAt(x, y);
         }
 
+        setPositionSilently(x, y) {
+            if (this.overlay && typeof this.overlay.setCursorPositionSilently === 'function') {
+                this.overlay.setCursorPositionSilently(x, y);
+            }
+        }
+
         clearPosition() {
             if (this.overlay && typeof this.overlay.clearCursorPosition === 'function') {
                 this.overlay.clearCursorPosition();
             }
         }
 
+        normalizeMoveOptions(options) {
+            const normalizedOptions = Object.assign({}, options || {});
+            const rawDurationMs = Number.isFinite(normalizedOptions.durationMs)
+                ? normalizedOptions.durationMs
+                : 480;
+            normalizedOptions.durationMs = rawDurationMs
+                + DEFAULT_CURSOR_MOVE_SLOWDOWN_MS
+                + (rawDurationMs < 1000 ? SHORT_CURSOR_MOVE_EXTRA_MS : 0);
+            return normalizedOptions;
+        }
+
         moveToPoint(x, y, options) {
-            const normalizedOptions = options || {};
+            const normalizedOptions = this.normalizeMoveOptions(options);
             const token = ++this.motionToken;
             this.lastTarget = { x: x, y: y };
             return this.overlay.moveCursorTo(x, y, Object.assign({}, normalizedOptions, {
@@ -2291,16 +2312,22 @@
             return this.moveToPoint(point.x, point.y, options);
         }
 
-        async resistTo(userX, userY) {
+        async resistTo(userX, userY, options) {
             const current = this.overlay.getCursorPosition();
             if (!current) {
                 return;
             }
 
-            const dx = userX - current.x;
-            const dy = userY - current.y;
+            const normalizedOptions = options || {};
+            const motionDx = Number.isFinite(normalizedOptions.motionDx) ? normalizedOptions.motionDx : 0;
+            const motionDy = Number.isFinite(normalizedOptions.motionDy) ? normalizedOptions.motionDy : 0;
+            const hasMotionVector = Math.hypot(motionDx, motionDy) > 0;
+            const pullDx = hasMotionVector ? -motionDx : userX - current.x;
+            const pullDy = hasMotionVector ? -motionDy : userY - current.y;
+            const dx = pullDx;
+            const dy = pullDy;
             const distance = Math.max(1, Math.hypot(dx, dy));
-            const pullDistance = clamp(distance * 0.22, 12, 36);
+            const pullDistance = clamp(distance * 0.34, 18, 56);
             const pullX = current.x + ((dx / distance) * pullDistance);
             const pullY = current.y + ((dy / distance) * pullDistance);
             const returnTarget = this.lastTarget || current;
@@ -2317,13 +2344,18 @@
             }
 
             const normalizedOptions = options || {};
-            const dx = userX - current.x;
-            const dy = userY - current.y;
+            const motionDx = Number.isFinite(normalizedOptions.motionDx) ? normalizedOptions.motionDx : 0;
+            const motionDy = Number.isFinite(normalizedOptions.motionDy) ? normalizedOptions.motionDy : 0;
+            const hasMotionVector = Math.hypot(motionDx, motionDy) > 0;
+            const reactionDx = hasMotionVector ? -motionDx : userX - current.x;
+            const reactionDy = hasMotionVector ? -motionDy : userY - current.y;
+            const dx = reactionDx;
+            const dy = reactionDy;
             const distance = Math.max(1, Math.hypot(dx, dy));
             const reactionDistance = clamp(
                 distance * (Number.isFinite(normalizedOptions.scale) ? normalizedOptions.scale : 0.12),
-                6,
-                18
+                10,
+                30
             );
             const targetX = current.x + ((dx / distance) * reactionDistance);
             const targetY = current.y + ((dy / distance) * reactionDistance);
@@ -2448,6 +2480,7 @@
             this.returnPetalTransitionActive = false;
             this.returnPetalTransitionOpacityRestores = null;
             this.avatarFloatingGuideSuppressionActive = false;
+            this.avatarFloatingCursorSeedPoint = null;
             this.keydownHandler = this.onKeyDown.bind(this);
             this.pointerMoveHandler = this.onPointerMove.bind(this);
             this.pointerDownHandler = this.onPointerDown.bind(this);
@@ -2464,7 +2497,6 @@
             this.desktopPluginDashboardInterruptHandler = this.onDesktopPluginDashboardInterruptRequest.bind(this);
             this.messageHandler = this.onWindowMessage.bind(this);
             this.guideMessageActionHandler = this.handleGuideMessageAction.bind(this);
-            this.externalGuideMessageActionHandler = this.onExternalGuideMessageAction.bind(this);
             this.guideMessageActionHandlerInstalled = false;
             this.pendingGuideMessageAction = null;
             const capabilityApi = window.homeTutorialPlatformCapabilities;
@@ -2522,7 +2554,6 @@
             window.addEventListener(DESKTOP_PLUGIN_DASHBOARD_SKIP_REQUEST_EVENT, this.desktopPluginDashboardSkipHandler, true);
             window.addEventListener('neko:yui-guide:desktop-interrupt-request', this.desktopPluginDashboardInterruptHandler, true);
             window.addEventListener('neko:yui-guide:tutorial-end', this.tutorialEndHandler, true);
-            window.addEventListener('neko:yui-guide:message-action', this.externalGuideMessageActionHandler, true);
             window.addEventListener('message', this.messageHandler, true);
         }
 
@@ -3185,6 +3216,32 @@
         }
 
         createReturnPetalTransition(origin, options) {
+            if (
+                this.overlay
+                && typeof this.overlay.playPetalTransition === 'function'
+                && this.overlay.playPetalTransition(origin, {
+                    durationMs: options && options.durationMs,
+                    finalOpacity: RETURN_PETAL_FINAL_OPACITY
+                })
+            ) {
+                const transitionMs = this.shouldReduceTutorialMotion()
+                    ? clamp(Math.round(Number(options && options.durationMs) || 420), 240, 720)
+                    : clamp(Math.round(Number(options && options.durationMs) || 1600), 900, 8600);
+                if (options && typeof options.onStart === 'function') {
+                    window.requestAnimationFrame(() => {
+                        try {
+                            options.onStart();
+                        } catch (error) {
+                            console.warn('[YuiGuide] PC 全局花瓣转场启动回调失败:', error);
+                        }
+                    });
+                }
+                return {
+                    done: () => new Promise((resolve) => window.setTimeout(resolve, transitionMs)),
+                    finish: () => Promise.resolve()
+                };
+            }
+
             const root = this.overlay && typeof this.overlay.ensureRoot === 'function'
                 ? this.overlay.ensureRoot()
                 : null;
@@ -3287,6 +3344,13 @@
             stage.appendChild(layer);
             window.requestAnimationFrame(() => {
                 layer.classList.add('is-active');
+                if (typeof normalizedOptions.onStart === 'function') {
+                    try {
+                        normalizedOptions.onStart();
+                    } catch (error) {
+                        console.warn('[YuiGuide] 花瓣转场启动回调失败:', error);
+                    }
+                }
             });
 
             return {
@@ -3347,6 +3411,20 @@
                     baseTransitionDurationMs + RETURN_PETAL_ANIMATION_EXTRA_MS,
                     RETURN_PETAL_SEQUENCE_DURATION_MS
                 );
+            let transitionStartNotified = false;
+            const notifyTransitionStart = () => {
+                if (transitionStartNotified) {
+                    return;
+                }
+                transitionStartNotified = true;
+                if (typeof normalizedOptions.onTransitionStart === 'function') {
+                    try {
+                        normalizedOptions.onTransitionStart();
+                    } catch (error) {
+                        console.warn('[YuiGuide] 花瓣转场开始回调失败:', error);
+                    }
+                }
+            };
             const waitForNarrationEnd = () => new Promise((resolve) => {
                 window.setTimeout(resolve, Math.max(0, baseTransitionDurationMs));
             });
@@ -3355,10 +3433,12 @@
                 {
                     durationMs: transitionDurationMs,
                     finalOpacity: RETURN_PETAL_FINAL_OPACITY,
-                    sequence: loadedPetalSequence
+                    sequence: loadedPetalSequence,
+                    onStart: notifyTransitionStart
                 }
             );
             if (!transition) {
+                notifyTransitionStart();
                 await Promise.all([
                     waitForNarrationEnd(),
                     this.fadeReturnPetalTransitionModelOut(baseTransitionDurationMs)
@@ -3368,7 +3448,6 @@
                 this.returnPetalTransitionActive = false;
                 return;
             }
-
             try {
                 await Promise.all([
                     waitForNarrationEnd(),
@@ -3413,24 +3492,7 @@
         }
 
         getAvatarFloatingSceneButtons(scene) {
-            if (!scene || scene.id !== 'day2_intro_context') {
-                return [];
-            }
-
-            return [
-                {
-                    id: 'day2_speak_now',
-                    label: '现在说一句',
-                    action: 'avatar-floating-day2-speak-now',
-                    variant: 'primary'
-                },
-                {
-                    id: 'day2_keep_typing',
-                    label: '继续打字',
-                    action: 'avatar-floating-day2-keep-typing',
-                    variant: 'secondary'
-                }
-            ];
+            return [];
         }
 
         installGuideMessageActionHandler() {
@@ -3493,7 +3555,7 @@
                 }
                 this.pendingGuideMessageAction = null;
                 pending.resolve({
-                    action: 'avatar-floating-day2-keep-typing',
+                    action: 'avatar-floating-guide-timeout',
                     timedOut: true
                 });
             }, delay);
@@ -3557,61 +3619,13 @@
             });
         }
 
-        async highlightDay2VoiceButtonOnly() {
-            const micTarget = this.resolveAvatarFloatingSelector('#${p}-btn-mic');
-            if (!micTarget) {
-                return;
-            }
-
-            try {
-                this.applyGuideHighlights({
-                    key: 'day2-intro-speak-now',
-                    persistent: this.getAvatarFloatingBaseTarget('chat-window'),
-                    primary: micTarget
-                });
-                const moved = await this.moveCursorToElement(micTarget, 620);
-                if (moved && !this.isStopping()) {
-                    this.cursor.wobble();
-                    await this.waitForSceneDelay(220);
-                }
-            } finally {
-                this.overlay.clearActionSpotlight();
-                this.overlay.clearPersistentSpotlight();
-                this.clearSceneExtraSpotlights();
-                this.clearRetainedExtraSpotlights();
-                this.clearSpotlightGeometryHints();
-                this.clearSpotlightVariantHints();
-            }
-        }
-
         handleGuideMessageAction(message, action) {
-            const actionName = String((action && (action.action || action.id)) || '');
-            if (actionName !== 'avatar-floating-day2-speak-now' && actionName !== 'avatar-floating-day2-keep-typing') {
-                return;
-            }
-            if (this.currentSceneId !== 'day2_intro_context' || !this.pendingGuideMessageAction) {
+            if (!this.pendingGuideMessageAction) {
                 return;
             }
 
             this.disableGuideMessageButtons(message);
-            if (actionName === 'avatar-floating-day2-speak-now') {
-                this.highlightDay2VoiceButtonOnly().finally(() => {
-                    this.resolveGuideMessageAction(action);
-                });
-                return;
-            }
-
             this.resolveGuideMessageAction(action);
-        }
-
-        onExternalGuideMessageAction(event) {
-            const detail = event && event.detail && typeof event.detail === 'object'
-                ? event.detail
-                : null;
-            if (!detail) {
-                return;
-            }
-            this.handleGuideMessageAction(detail.message, detail.action);
         }
 
         applyGuideEmotion(emotion, options) {
@@ -4400,6 +4414,9 @@
             if (typeof document === 'undefined') {
                 return false;
             }
+            if (window.__NEKO_MULTI_WINDOW__ === true) {
+                return true;
+            }
             const overlay = document.getElementById('react-chat-window-overlay');
             if (!overlay) {
                 return false;
@@ -4410,6 +4427,68 @@
             return overlay.style.display === 'none';
         }
 
+        getRecentExternalizedChatCursorScreenPoint(maxAgeMs) {
+            try {
+                const raw = window.localStorage && window.localStorage.getItem(YUI_GUIDE_EXTERNAL_CHAT_CURSOR_SCREEN_POINT_KEY);
+                const parsed = raw ? JSON.parse(raw) : null;
+                if (!parsed || !Number.isFinite(parsed.x) || !Number.isFinite(parsed.y)) {
+                    return null;
+                }
+                const at = Number(parsed.at);
+                const ageLimit = Number.isFinite(maxAgeMs) ? maxAgeMs : 30000;
+                if (Number.isFinite(at) && Date.now() - at > ageLimit) {
+                    return null;
+                }
+                return { x: parsed.x, y: parsed.y };
+            } catch (_) {
+                return null;
+            }
+        }
+
+        screenPointToLocalPoint(point) {
+            if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+                return null;
+            }
+
+            let bounds = null;
+            try {
+                const host = window.nekoTutorialOverlay;
+                const metrics = host && typeof host.getWindowMetricsSync === 'function'
+                    ? host.getWindowMetricsSync()
+                    : null;
+                bounds = metrics && (metrics.bounds || metrics.contentBounds);
+            } catch (_) {
+                bounds = null;
+            }
+            if (!bounds) {
+                bounds = {
+                    x: Number.isFinite(window.screenX) ? window.screenX : 0,
+                    y: Number.isFinite(window.screenY) ? window.screenY : 0
+                };
+            }
+
+            const viewport = window.visualViewport || null;
+            const offsetLeft = viewport && Number.isFinite(Number(viewport.offsetLeft)) ? Number(viewport.offsetLeft) : 0;
+            const offsetTop = viewport && Number.isFinite(Number(viewport.offsetTop)) ? Number(viewport.offsetTop) : 0;
+            return {
+                x: point.x - Number(bounds.x || 0) - offsetLeft,
+                y: point.y - Number(bounds.y || 0) - offsetTop
+            };
+        }
+
+        seedCursorFromExternalizedChat(maxAgeMs) {
+            if (!this.isHomeChatExternalized() || this.cursor.hasPosition()) {
+                return false;
+            }
+            const screenPoint = this.getRecentExternalizedChatCursorScreenPoint(maxAgeMs);
+            const localPoint = this.screenPointToLocalPoint(screenPoint);
+            if (!localPoint || !Number.isFinite(localPoint.x) || !Number.isFinite(localPoint.y)) {
+                return false;
+            }
+            this.cursor.showAt(localPoint.x, localPoint.y);
+            return true;
+        }
+
         onExternalChatReady() {
             if (this.destroyed) {
                 return;
@@ -4418,6 +4497,43 @@
             if (this.interactionTakeover && typeof this.interactionTakeover.onExternalChatReady === 'function') {
                 this.interactionTakeover.onExternalChatReady();
             }
+        }
+
+        postExternalChatGuideMessage(message) {
+            if (!message || typeof message !== 'object') {
+                return false;
+            }
+
+            const outgoingMessage = Object.assign({}, message);
+            try {
+                const tutorialRunId = window.localStorage.getItem('yuiGuidePcOverlayRunId') || '';
+                if (tutorialRunId && !outgoingMessage.tutorialRunId) {
+                    outgoingMessage.tutorialRunId = tutorialRunId;
+                }
+            } catch (_) {}
+
+            let posted = false;
+            const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
+            if (channel && typeof channel.postMessage === 'function') {
+                try {
+                    channel.postMessage(outgoingMessage);
+                    posted = true;
+                } catch (error) {
+                    console.warn('[YuiGuide] BroadcastChannel 转发独立聊天窗消息失败:', error);
+                }
+            }
+
+            const nativeRelay = window.nekoTutorialOverlay;
+            if (nativeRelay && typeof nativeRelay.relayToChat === 'function') {
+                try {
+                    nativeRelay.relayToChat(outgoingMessage);
+                    posted = true;
+                } catch (error) {
+                    console.warn('[YuiGuide] PC 原生转发独立聊天窗消息失败:', error);
+                }
+            }
+
+            return posted;
         }
 
         getSceneSpotlightTarget(stepId, performance) {
@@ -5440,7 +5556,10 @@
             if (typeof selector !== 'string' || !selector.trim()) {
                 return null;
             }
-            return Array.from(document.querySelectorAll('#react-chat-window-root ' + selector))
+            const scopedCandidates = Array.from(document.querySelectorAll('#react-chat-window-root ' + selector));
+            const globalCandidates = Array.from(document.querySelectorAll(selector));
+            return scopedCandidates.concat(globalCandidates)
+                .filter((element, index, array) => element && array.indexOf(element) === index)
                 .find((element) => this.isElementVisible(element)) || null;
         }
 
@@ -5510,6 +5629,18 @@
                 element,
                 variant: 'circle-image'
             }]);
+            return true;
+        }
+
+        keepAvatarToolButtonHighlightedAfterMenuOpen(element, scene) {
+            if (!element) {
+                return false;
+            }
+            this.applyChatAvatarToolButtonSpotlightHint(element);
+            this.applyGuideHighlights({
+                key: ((scene && scene.id) || 'avatar-tool-menu') + '-button-open',
+                primary: element
+            });
             return true;
         }
 
@@ -5592,17 +5723,58 @@
             return true;
         }
 
+        isDay3AvatarToolsSceneId(sceneId) {
+            return !!(
+                typeof sceneId === 'string'
+                && (
+                    sceneId === 'day3_avatar_tools'
+                    || sceneId.indexOf('day3_avatar_tools_') === 0
+                )
+            );
+        }
+
+        isDay3GalgameSceneId(sceneId) {
+            return !!(
+                typeof sceneId === 'string'
+                && (
+                    sceneId === 'day3_galgame_games'
+                    || sceneId.indexOf('day3_galgame_') === 0
+                )
+            );
+        }
+
+        isDay3WrapSceneId(sceneId) {
+            return !!(
+                typeof sceneId === 'string'
+                && (
+                    sceneId === 'day3_wrap'
+                    || sceneId.indexOf('day3_wrap_') === 0
+                )
+            );
+        }
+
         shouldPreserveExternalizedChatCursor(previousSceneId, scene) {
+            const nextSceneId = scene && typeof scene.id === 'string' ? scene.id : '';
             return !!(
                 (
                     previousSceneId === 'day3_chat_tools'
-                    && scene
-                    && scene.id === 'day3_avatar_tools'
+                    && this.isDay3AvatarToolsSceneId(nextSceneId)
                 )
                 || (
-                    previousSceneId === 'day3_avatar_tools'
-                    && scene
-                    && scene.id === 'day3_galgame_games'
+                    this.isDay3AvatarToolsSceneId(previousSceneId)
+                    && this.isDay3AvatarToolsSceneId(nextSceneId)
+                )
+                || (
+                    this.isDay3AvatarToolsSceneId(previousSceneId)
+                    && this.isDay3GalgameSceneId(nextSceneId)
+                )
+                || (
+                    this.isDay3GalgameSceneId(previousSceneId)
+                    && this.isDay3GalgameSceneId(nextSceneId)
+                )
+                || (
+                    this.isDay3WrapSceneId(previousSceneId)
+                    && this.isDay3WrapSceneId(nextSceneId)
                 )
             );
         }
@@ -5787,11 +5959,7 @@
 
         async tourMiniGameChoiceButtons() {
             if (this.isHomeChatExternalized()) {
-                return this.tourExternalizedChatTargets('mini-game-choices', 3, {
-                    effect: 'move',
-                    firstPauseMs: 560,
-                    pauseMs: 420
-                });
+                return false;
             }
             const targets = this.getMiniGameChoiceTargets(3);
             if (targets.length > 0) {
@@ -6020,13 +6188,18 @@
                     this.setExternalizedChatCursorEffect('avatar-tools', 'click');
                     await this.waitForSceneDelay(260);
                     this.setChatAvatarToolMenuOpen(true, 'avatar-floating-guide-open-avatar-tool-menu');
+                    if (
+                        this.interactionTakeover
+                        && typeof this.interactionTakeover.setExternalizedChatSpotlight === 'function'
+                    ) {
+                        this.interactionTakeover.setExternalizedChatSpotlight('avatar-tools');
+                    }
+                    this.setExternalizedChatCursorEffect('avatar-tools', 'wobble');
                     await this.waitForSceneDelay(520);
-                    await this.tourAvatarToolMenuItems();
                     return true;
                 }
                 if (primaryTarget) {
-                    this.applyChatAvatarToolButtonSpotlightHint(primaryTarget);
-                    this.overlay.activateSpotlight(primaryTarget);
+                    this.keepAvatarToolButtonHighlightedAfterMenuOpen(primaryTarget, scene);
                 }
                 await this.waitForSceneDelay(620);
                 this.setChatAvatarToolMenuOpen(true, 'avatar-floating-guide-open-avatar-tool-menu');
@@ -6034,9 +6207,8 @@
                     const popover = this.resolveElement('#composer-tool-popover');
                     return popover && this.isElementVisible(popover) ? popover : null;
                 }, 1200);
-                this.overlay.clearActionSpotlight();
-                this.overlay.clearPersistentSpotlight();
-                await this.tourAvatarToolMenuItems();
+                this.keepAvatarToolButtonHighlightedAfterMenuOpen(primaryTarget, scene);
+                this.cursor.wobble();
                 return true;
             }
             if (operation === 'settings-peek-panic') {
@@ -6136,6 +6308,7 @@
         }
 
         async playAvatarFloatingPetalTransitionAtCue(scene, sceneRunId, voiceKey, text, narrationStartedAt) {
+            const petalSequenceReadyPromise = this.loadReturnPetalSequence().catch(() => null);
             const durationMs = this.getAvatarFloatingNarrationDurationMs(voiceKey, text);
             const cueMs = clamp(Math.round(durationMs * 0.7), 900, Math.max(900, durationMs));
             const elapsedMs = Math.max(0, Date.now() - narrationStartedAt);
@@ -6147,24 +6320,136 @@
                 return;
             }
 
+            await petalSequenceReadyPromise;
+            if (sceneRunId !== this.sceneRunId || this.destroyed || this.isStopping()) {
+                return;
+            }
+
+            let clearedForPetalTransition = false;
+            const clearForPetalTransition = () => {
+                if (clearedForPetalTransition) {
+                    return;
+                }
+                clearedForPetalTransition = true;
+                this.cursor.hide();
+                this.clearExternalizedChatGuideTarget();
+                this.overlay.clearPersistentSpotlight();
+                this.overlay.clearActionSpotlight();
+                this.clearSceneExtraSpotlights();
+                this.clearRetainedExtraSpotlights();
+                this.clearAllVirtualSpotlights();
+                this.clearSpotlightGeometryHints();
+                this.clearSpotlightVariantHints();
+                this.disableInterrupts();
+            };
+
             this.runReturnControlCueWavePerformance().catch((error) => {
                 console.warn('[YuiGuide] 悬浮窗教程收尾挥手动作播放失败:', error);
             });
-            this.cursor.hide();
-            this.clearExternalizedChatGuideTarget();
-            this.overlay.clearPersistentSpotlight();
-            this.overlay.clearActionSpotlight();
-            this.clearSceneExtraSpotlights();
-            this.clearRetainedExtraSpotlights();
-            this.clearAllVirtualSpotlights();
-            this.clearSpotlightGeometryHints();
-            this.clearSpotlightVariantHints();
-            this.disableInterrupts();
             const remainingMs = Math.max(0, durationMs - cueMs);
             const minimumPetalDurationMs = this.shouldReduceTutorialMotion() ? 900 : 2600;
-            await this.playReturnPetalTransition({
-                durationMs: Math.max(remainingMs, minimumPetalDurationMs)
-            });
+            try {
+                await this.playReturnPetalTransition({
+                    durationMs: Math.max(remainingMs, minimumPetalDurationMs),
+                    onTransitionStart: clearForPetalTransition
+                });
+            } finally {
+                clearForPetalTransition();
+            }
+        }
+
+        rememberAvatarFloatingCursorSeedFromRect(rect) {
+            if (!rect || rect.width <= 0 || rect.height <= 0) {
+                return;
+            }
+            this.avatarFloatingCursorSeedPoint = {
+                x: rect.left + rect.width / 2,
+                y: rect.top + rect.height / 2
+            };
+        }
+
+        rememberAvatarFloatingCursorSeedTarget(element) {
+            this.rememberAvatarFloatingCursorSeedFromRect(this.getElementRect(element));
+        }
+
+        setAvatarFloatingCursorSilentSeedPoint(point) {
+            if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+                return;
+            }
+            this.avatarFloatingCursorSeedPoint = {
+                x: point.x,
+                y: point.y
+            };
+            this.cursor.setPositionSilently(point.x, point.y);
+        }
+
+        resolveAvatarFloatingCursorSeedPoint(scene, targets) {
+            const sceneId = scene && typeof scene.id === 'string' ? scene.id : '';
+            const explicitSeedTargets = [];
+            if (sceneId === 'day2_screen_entry') {
+                explicitSeedTargets.push(this.getAvatarFloatingIntroSpotlightTarget({ id: 'day2_intro_context' }));
+            } else if (sceneId === 'day2_wrap_intro') {
+                explicitSeedTargets.push(this.resolveAvatarFloatingSelector('#${p}-btn-screen'));
+            } else if (sceneId === 'day3_avatar_tools') {
+                explicitSeedTargets.push(this.getAvatarFloatingIntroSpotlightTarget({ id: 'day3_chat_tools' }));
+            }
+
+            for (let index = 0; index < explicitSeedTargets.length; index += 1) {
+                const rect = this.getElementRect(explicitSeedTargets[index]);
+                if (rect) {
+                    return {
+                        x: rect.left + rect.width / 2,
+                        y: rect.top + rect.height / 2
+                    };
+                }
+            }
+
+            if (sceneId === 'day2_screen_entry') {
+                return this.getAvatarFloatingChatProxySeedPoint();
+            }
+
+            if (
+                this.avatarFloatingCursorSeedPoint
+                && Number.isFinite(this.avatarFloatingCursorSeedPoint.x)
+                && Number.isFinite(this.avatarFloatingCursorSeedPoint.y)
+            ) {
+                return {
+                    x: this.avatarFloatingCursorSeedPoint.x,
+                    y: this.avatarFloatingCursorSeedPoint.y
+                };
+            }
+
+            const targetList = Array.isArray(targets) ? targets : [];
+            for (let index = 0; index < targetList.length; index += 1) {
+                const rect = this.getElementRect(targetList[index]);
+                if (rect) {
+                    return {
+                        x: rect.left + rect.width / 2,
+                        y: rect.top + rect.height / 2
+                    };
+                }
+            }
+            return null;
+        }
+
+        getAvatarFloatingChatProxySeedPoint() {
+            const chatTarget = this.getChatIntroActivationTarget()
+                || this.getChatWindowTarget()
+                || this.getChatInputTarget();
+            const chatRect = this.getElementRect(chatTarget);
+            if (chatRect) {
+                return {
+                    x: chatRect.left + chatRect.width / 2,
+                    y: chatRect.top + chatRect.height / 2
+                };
+            }
+
+            const viewportWidth = Math.max(1, window.innerWidth || 1);
+            const viewportHeight = Math.max(1, window.innerHeight || 1);
+            return {
+                x: clamp(viewportWidth * 0.72, 120, Math.max(120, viewportWidth - 80)),
+                y: clamp(viewportHeight * 0.78, 120, Math.max(120, viewportHeight - 80))
+            };
         }
 
         async moveAvatarFloatingCursor(scene, primaryTarget, secondaryTarget) {
@@ -6181,16 +6466,8 @@
                 ? Math.max(160, Math.floor(scene.cursorMoveDurationMs))
                 : 0;
             if (!this.cursor.hasPosition()) {
-                const seedTarget = scene && scene.id === 'day3_avatar_tools'
-                    ? this.getAvatarFloatingIntroSpotlightTarget({ id: 'day3_chat_tools' })
-                    : null;
-                const seedRect = this.getElementRect(seedTarget);
-                const origin = seedRect
-                    ? {
-                        x: seedRect.left + seedRect.width / 2,
-                        y: seedRect.top + seedRect.height / 2
-                    }
-                    : this.getDefaultCursorOrigin();
+                const origin = this.resolveAvatarFloatingCursorSeedPoint(scene, uniqueTargets)
+                    || this.getDefaultCursorOrigin();
                 this.cursor.showAt(origin.x, origin.y);
                 await this.waitForSceneDelay(120);
             }
@@ -6249,6 +6526,7 @@
                 this.cursor.cancel();
                 this.cursor.hide();
                 this.cursor.clearPosition();
+                this.avatarFloatingCursorSeedPoint = null;
             }
             this.clearSceneTimers();
             this.overlay.setAngry(false);
@@ -6318,7 +6596,7 @@
                     });
                 }
                 this.cursor.hide();
-                this.cursor.clearPosition();
+                this.setAvatarFloatingCursorSilentSeedPoint(this.getAvatarFloatingChatProxySeedPoint());
             } else if (introChatSpotlightTarget) {
                 this.applyGuideHighlights({
                     key: scene.id + '-intro-chat',
@@ -6326,6 +6604,7 @@
                 });
                 const introRect = this.getElementRect(introChatSpotlightTarget);
                 if (introRect) {
+                    this.rememberAvatarFloatingCursorSeedFromRect(introRect);
                     this.cursor.showAt(
                         introRect.left + introRect.width / 2,
                         introRect.top + introRect.height / 2
@@ -6496,9 +6775,16 @@
             } else {
                 this.highlightChatWindow();
             }
-            await this.ensureGuideIdleSwayPerformance();
-            const lookAtHandle = await this.ensurePersistentGhostCursorLookAtPerformance({
+            this.ensureGuideIdleSwayPerformance().catch((error) => {
+                console.warn('[YuiGuide] 悬浮窗教程常驻动作后台启动失败:', error);
+            });
+            let lookAtHandle = null;
+            this.ensurePersistentGhostCursorLookAtPerformance({
                 isCancelled: () => this.isStopping()
+            }).then((handle) => {
+                lookAtHandle = handle;
+            }).catch((error) => {
+                console.warn('[YuiGuide] 悬浮窗教程目光跟随后台启动失败:', error);
             });
             try {
                 for (let index = 0; index < config.scenes.length; index += 1) {
@@ -6553,7 +6839,6 @@
             this.interruptsEnabled = false;
             this.lastPointerPoint = null;
             this.interruptAccelerationStreak = 0;
-            this.lastPassiveResistanceAt = 0;
         }
 
         enableInterrupts(step) {
@@ -6577,7 +6862,7 @@
             this.interruptsEnabled = true;
         }
 
-        maybePlayPassiveResistance(x, y, distance, speed, now) {
+        maybePlayPassiveResistance(x, y, distance, acceleration, now, motionDx, motionDy) {
             if (!this.cursor.hasPosition()) {
                 return;
             }
@@ -6586,7 +6871,7 @@
                 return;
             }
 
-            if (speed < 0.2) {
+            if (acceleration < DEFAULT_PASSIVE_RESISTANCE_ACCELERATION_THRESHOLD) {
                 return;
             }
 
@@ -6596,7 +6881,9 @@
 
             this.lastPassiveResistanceAt = now;
             this.cursor.reactToUserMotion(x, y, {
-                scale: 0.16,
+                motionDx: motionDx,
+                motionDy: motionDy,
+                scale: 0.28,
                 outDurationMs: 90,
                 backDurationMs: 180
             });
@@ -7597,6 +7884,7 @@
                     cancelCheck: () => this.isStopping()
                 });
                 if (moved) {
+                    this.rememberAvatarFloatingCursorSeedTarget(element);
                     return true;
                 }
                 if (!this.scenePausedForResistance) {
@@ -7927,7 +8215,7 @@
             });
             this.overlay.activateSpotlight(voiceControlButton);
 
-            if (!this.cursor.hasPosition()) {
+            if (!this.cursor.hasPosition() && !this.seedCursorFromExternalizedChat(30000)) {
                 const introTarget = this.getChatInputTarget() || this.getChatWindowTarget();
                 const introRect = this.getElementRect(introTarget);
                 if (introRect) {
@@ -9696,19 +9984,12 @@
             }
 
             if (this.isHomeChatExternalized()) {
-                const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
-                if (channel && typeof channel.postMessage === 'function') {
-                    try {
-                        channel.postMessage({
-                            action: 'yui_guide_update_chat_message',
-                            messageId: messageId,
-                            patch: patch,
-                            timestamp: Date.now()
-                        });
-                    } catch (error) {
-                        console.warn('[YuiGuide] 更新独立聊天窗教程消息失败:', error);
-                    }
-                }
+                this.postExternalChatGuideMessage({
+                    action: 'yui_guide_update_chat_message',
+                    messageId: messageId,
+                    patch: patch,
+                    timestamp: Date.now()
+                });
                 return null;
             }
 
@@ -9907,19 +10188,13 @@
             // Electron Pet 模式下首页聊天被拆到独立 /chat 窗口，这里优先通过
             // BroadcastChannel 把教程消息转发过去；只有转发失败时才回落到 overlay。
             if (this.isHomeChatExternalized()) {
-                const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
-                if (channel && typeof channel.postMessage === 'function') {
-                    try {
-                        channel.postMessage({
-                            action: 'yui_guide_append_chat_message',
-                            message: streamingMessage,
-                            timestamp: createdAt
-                        });
+                if (this.postExternalChatGuideMessage({
+                    action: 'yui_guide_append_chat_message',
+                    message: streamingMessage,
+                    timestamp: createdAt
+                })) {
                         this.streamGuideChatMessage(message, content, normalizedOptions);
                         return message;
-                    } catch (error) {
-                        console.warn('[YuiGuide] 转发教程消息到独立聊天窗失败:', error);
-                    }
                 }
 
                 try {
@@ -10273,9 +10548,16 @@
             }
         }
 
+        applyAngryExitEmotionFallback() {
+            this.applyGuideEmotion('angry', {
+                allowDuringInterrupt: true
+            });
+        }
+
         async runAngryExitPerformance(options) {
             const api = window.YuiGuideAvatarStage;
             if (!api || typeof api.playAngryExit !== 'function') {
+                this.applyAngryExitEmotionFallback();
                 return null;
             }
             const normalizedOptions = options || {};
@@ -10286,15 +10568,20 @@
                 ? Math.max(0, Math.round(normalizedOptions.totalDurationMs))
                 : (voiceDurationMs > 0 ? clamp(Math.round(voiceDurationMs), 1200, 16000) : undefined);
             try {
-                return await api.playAngryExit({
+                const result = await api.playAngryExit({
                     pointerX: normalizedOptions.x,
                     pointerY: normalizedOptions.y,
                     totalDurationMs: totalDurationMs,
                     reducedMotion: this.shouldReduceTutorialMotion(),
                     isCancelled: () => this.isStopping()
                 });
+                if (result && result.result !== 'played') {
+                    this.applyAngryExitEmotionFallback();
+                }
+                return result;
             } catch (error) {
                 console.warn('[YuiGuide] 生气退出动作启动失败:', error);
+                this.applyAngryExitEmotionFallback();
                 return null;
             }
         }
@@ -10800,8 +11087,10 @@
 
             const shouldIntroduceCursor = stepId === 'takeover_capture_cursor' && !this.cursor.hasPosition();
             if (shouldIntroduceCursor) {
-                const origin = this.getDefaultCursorOrigin();
-                this.cursor.showAt(origin.x, origin.y);
+                if (!this.seedCursorFromExternalizedChat(30000)) {
+                    const origin = this.getDefaultCursorOrigin();
+                    this.cursor.showAt(origin.x, origin.y);
+                }
                 await this.waitForSceneDelay(260);
                 if (runId !== this.sceneRunId || this.destroyed) {
                     return;
@@ -10819,8 +11108,10 @@
             }
 
             if (cursorTargetRect && !this.cursor.hasPosition()) {
-                const origin = this.getDefaultCursorOrigin();
-                this.cursor.showAt(origin.x, origin.y);
+                if (!this.seedCursorFromExternalizedChat(30000)) {
+                    const origin = this.getDefaultCursorOrigin();
+                    this.cursor.showAt(origin.x, origin.y);
+                }
             }
 
             if (delayMs > 0) {
@@ -11118,11 +11409,18 @@
                 return;
             }
 
+            let sampleDx = null;
+            let sampleDy = null;
             if (event.type === 'mousemove') {
                 const movementX = Number.isFinite(event.movementX) ? event.movementX : null;
                 const movementY = Number.isFinite(event.movementY) ? event.movementY : null;
-                if (movementX !== null && movementY !== null && Math.hypot(movementX, movementY) <= 0) {
-                    return;
+                if (movementX !== null && movementY !== null) {
+                    const movementDistance = Math.hypot(movementX, movementY);
+                    if (movementDistance <= 0) {
+                        return;
+                    }
+                    sampleDx = movementX;
+                    sampleDy = movementY;
                 }
             }
 
@@ -11139,8 +11437,8 @@
                 return;
             }
 
-            const dx = x - previousPoint.x;
-            const dy = y - previousPoint.y;
+            const dx = sampleDx === null ? x - previousPoint.x : sampleDx;
+            const dy = sampleDy === null ? y - previousPoint.y : sampleDy;
             const distance = Math.hypot(dx, dy);
             const dt = Math.max(1, now - previousPoint.t);
             const speed = distance / dt;
@@ -11155,7 +11453,7 @@
             };
 
             this.noteUserCursorRevealAttempt(distance, now);
-            this.maybePlayPassiveResistance(x, y, distance, speed, now);
+            this.maybePlayPassiveResistance(x, y, distance, acceleration, now, dx, dy);
 
             if (distance < DEFAULT_INTERRUPT_DISTANCE) {
                 this.interruptAccelerationStreak = 0;
@@ -11188,11 +11486,16 @@
             const threshold = Number.isFinite(interrupts.threshold) ? interrupts.threshold : 3;
 
             if (this.interruptCount >= threshold) {
+                this.lastPointerPoint = null;
                 this.abortAsAngryExit('pointer_interrupt');
                 return;
             }
 
-            this.playLightResistance(x, y);
+            this.lastPointerPoint = null;
+            this.playLightResistance(x, y, {
+                motionDx: dx,
+                motionDy: dy
+            });
         }
 
         noteUserCursorRevealAttempt(distance, now) {
@@ -11421,7 +11724,6 @@
             window.removeEventListener(DESKTOP_PLUGIN_DASHBOARD_SKIP_REQUEST_EVENT, this.desktopPluginDashboardSkipHandler, true);
             window.removeEventListener('neko:yui-guide:desktop-interrupt-request', this.desktopPluginDashboardInterruptHandler, true);
             window.removeEventListener('neko:yui-guide:tutorial-end', this.tutorialEndHandler, true);
-            window.removeEventListener('neko:yui-guide:message-action', this.externalGuideMessageActionHandler, true);
             window.removeEventListener('message', this.messageHandler, true);
         }
 

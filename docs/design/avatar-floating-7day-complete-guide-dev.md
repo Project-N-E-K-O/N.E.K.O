@@ -12,6 +12,7 @@
 - `docs/design/avatar-floating-day5-personalization-guide-dev.md`
 - `docs/design/avatar-floating-day6-agent-guide-dev.md`
 - `docs/design/avatar-floating-day7-graduation-guide-dev.md`
+- `docs/design/avatar-floating-pc-global-overlay-migration-plan.md`
 - `docs/design/home-yui-guide-lifecycle-modularization.md`
 
 ## 代码入口
@@ -28,8 +29,24 @@
 | 跳过按钮 | `static/tutorial-skip-controller.js`、`static/universal-tutorial-manager.js` |
 | 临时切换教程模型并恢复 | `static/tutorial-avatar-reload-controller.js`、`static/universal-tutorial-manager.js` |
 | React 聊天窗真实工具按钮 | `frontend/react-neko-chat/src/App.tsx`、`static/app-react-chat-window.js` |
+| PC 全局透明教程 overlay（迁移目标） | `docs/design/avatar-floating-pc-global-overlay-migration-plan.md`、`/Users/mac/Code/N.E.K.O.-PC/src/avatar-tool-cursor-service.js` |
 
 所有选择器里的 `${p}` 都由 `YuiGuideDirector.resolveElement()` 按当前悬浮 UI 前缀展开。
+
+## PC 全局透明 Overlay 迁移要求
+
+七日主线在网页端继续使用当前 DOM overlay；在 N.E.K.O.-PC 中，Ghost Cursor、高光框、圆形高光和每日收尾花瓣转场需要迁移到 PC 全局透明 overlay。每日 scene、台词、emotion、operation、真实 UI 点击和完成态写入不改，只把视觉演出层替换为 `YuiGuidePcOverlayBridge` 到 PC 主进程全局 overlay 的链路。
+
+迁移后的导演约束：
+
+1. PC 端全局 overlay 是唯一视觉来源；Pet 页面、聊天窗、Agent HUD 和插件页不再各自叠加教程 cursor 或高光。
+2. 所有目标矩形统一转换为 screen 坐标后发送给 PC overlay；overlay 再按 display bounds 渲染到对应透明窗口。
+3. overlay 始终点击穿透，skip、真实按钮点击和教程接管白名单仍由原页面和 Manager 处理。
+4. 如果 PC bridge 不可用、IPC 超时或运行在网页端，必须自动回退到当前 `YuiGuideOverlay`，不阻塞教程。
+5. Day 1-7 每日收尾都复用同一套收尾 cue：收尾台词期间重新高亮聊天窗，约 70% 同步隐藏 Ghost Cursor、清理高光并播放花瓣。
+6. 所有可见 Ghost Cursor 位置变化都必须走平滑移动动画；`showAt` 或静默坐标写入只允许用于首次出现前、隐藏状态下的种子坐标，不能让可见 cursor 瞬移。
+
+迁移前必须先完成 [PC 全局透明教程 Overlay 迁移开发计划](avatar-floating-pc-global-overlay-migration-plan.md) 中的 Phase 0 可行性 demo：至少验证聊天窗输入区到模型旁按钮的跨窗口平滑移动、圆形按钮高光、聊天窗圆角矩形高光、每日收尾花瓣 cue 和 skip 清理。
 
 ## 通用生命周期硬要求
 
@@ -39,7 +56,7 @@
 | --- | --- |
 | `TutorialInteractionTakeover` | 教程接管期调用 `setTutorialTakingOver(true)`；只放行 skip、当前演示目标、系统弹窗和必要的真实 UI；外置聊天窗同步禁用/恢复按钮、同步 spotlight/cursor。 |
 | `TutorialHighlightController` | 所有圆形、矩形、union、extra、virtual、precise 高光都经由 Director 包装方法调用；scene 切换、skip、destroy、angry exit 时统一清理。 |
-| `TutorialInterruptController` | 接管期轻微打断走 `interrupt_resist_light`；达到阈值走 `interrupt_angry_exit`；angry exit 触发瞬间清理高光和 cursor，台词/演出结束后走 skip 语义，不写完成态。 |
+| `TutorialInterruptController` | 接管期轻微打断走 `interrupt_resist_light`；有效打断由真实鼠标位移和加速度共同判断；达到阈值走 `interrupt_angry_exit`；angry exit 触发瞬间清理高光和 cursor，台词/演出结束后走 skip 语义，不写完成态。 |
 | `TutorialSkipController` | `#neko-tutorial-skip-btn` 在教程全程可见且可点；点击后立刻进入 `handleTutorialSkipRequest()`，再由 Manager 调用 Director skip 和统一 destroy。 |
 | `TutorialAvatarReloadController` | 教程开始临时切到 `yui-origin`；正常完成、skip、angry exit、destroy、pagehide、handoff 失败都必须恢复用户原模型和聊天头像身份。 |
 
@@ -57,7 +74,7 @@
 2. 同一目标不能同时出现 action spotlight、extra spotlight、virtual spotlight 或 CSS precise highlight。
 3. 大区域和小按钮不能同时框住同一层级。例如聊天窗 composer 区和 composer 内的 Avatar 工具按钮不能同时高亮；必须先清理 composer 区，再切到按钮。
 4. 设置弹窗内不允许同时高亮整个弹窗和侧边栏按钮；需要说明弹窗时只高亮侧边栏容器，需要说明开关时只高亮开关本体。
-5. Day 3 工具菜单前三个 `.composer-icon-button[data-avatar-tool-id]` 和小游戏三个选项只允许圆形高光；不能使用猫耳、猫爪或第二层外框。
+5. Day 3 Avatar 工具阶段只高亮 Avatar 工具按钮，不高亮工具菜单前三个 `.composer-icon-button[data-avatar-tool-id]`；小游戏三个选项如真实出现，只允许圆形高光，不能使用猫耳、猫爪或第二层外框。
 6. 收尾 scene 是唯一允许重新回到聊天窗大区域的阶段；进入收尾前必须先清掉当天临时菜单、按钮和侧边栏高光。
 
 ## 情绪与动作有效性
@@ -70,7 +87,7 @@
 | `neutral` | 规则说明、安全边界、隐私、存储 | 从 neutral motion 池随机；动作幅度应小，不抢设置或 HUD 巡游注意力。 |
 | `surprised` | 发现入口、冒险感、慌乱前奏 | 从 surprised motion 池随机；Day 5 慌乱 scene 由 `settings-peek-panic` 自定义动作优先。 |
 | `sad` | 轻微委屈、未听过声音的承接 | 从 sad motion 池随机；不能升级成 angry exit。 |
-| `angry` | 傲娇、强打断、生气退出 | 普通台词可用 angry 池；`interrupt_angry_exit` 必须使用自定义 angry exit 演出。 |
+| `angry` | 傲娇、强打断、生气退出 | 普通台词可用 angry 池；`interrupt_angry_exit` 必须使用自定义 angry exit 演出，并覆盖正在播放的教程动作 session。 |
 | `Idle` | 等待用户选择、低强度停顿 | 只用于无强演出的等待态。 |
 
 如果 motion 资源不存在或当前模型动作锁被自定义演出占用，运行时必须降级为表情或 Idle；不能因为动作缺失阻塞台词、高光、cursor 或 skip。
@@ -85,7 +102,8 @@
 4. T+220ms：Ghost Cursor 按 `cursorAction` 移到 primary；`wobble` 停留，`move` 指认，`click` 播放点击动画并按 operation 决定是否调用真实 API/DOM click。
 5. 真实操作后：只在 operation 需要时打开/关闭真实 UI，不做无意义的二次 settled 高光。`cleanup` scene 例外，收尾期间可重新高亮聊天窗。
 6. narration 结束后：若有按钮选项则等待选择或超时；否则等待 260-420ms 进入下一 scene。
-7. `petalTransition: true`：约 70% 台词处触发收尾 cue，立即隐藏 Ghost Cursor、清理所有内置/外置高光，再播放花瓣。
+7. `petalTransition: true`：约 70% 台词处触发收尾 cue，同步启动花瓣层、隐藏 Ghost Cursor、清理所有内置/外置高光，不出现高光先消失后花瓣才出现的空档。
+8. 跨 scene、跨窗口、外置聊天窗和 PC 全局 overlay 之间的 Ghost Cursor 坐标必须延续上一个可见位置；如果需要预置下一个起点，必须先隐藏 cursor，再写入静默种子坐标。
 
 ## 目标选择器字典
 
@@ -162,26 +180,29 @@ Day 1 registry 还注册了 API Key、记忆浏览和插件面板的 handoff sce
 
 | 分支 | emotion/动作 | 高光与 Ghost Cursor 时序 | 结束语义 |
 | --- | --- | --- | --- |
-| `interrupt_resist_light`：“不要拽我啦...” | `angry` 或 `surprised`，轻微抵抗自定义动作优先 | 触发瞬间暂停当前 scene presentation；保留或短暂淡出当前高光；Ghost Cursor 播放抵抗/摆脱动作；抵抗台词结束后恢复原 scene 的高光、cursor 和旁白进度。 | 不写完成态，不触发 skip。 |
-| `interrupt_angry_exit`：“人类！你真的很没礼貌...” | `angry`，生气退出自定义动作优先 | 触发瞬间停止当前 scene，立即清理所有高光、外置聊天窗高光和 Ghost Cursor；播放 angry 台词和模型演出。 | 台词/演出结束后调用统一 skip/destroy，不能走正常完成或花瓣收尾。 |
+| `interrupt_resist_light`：“不要拽我啦...” | `angry` 或 `surprised`，轻微抵抗自定义动作优先 | 触发瞬间暂停当前 scene presentation；保留或短暂淡出当前高光；Ghost Cursor 朝真实鼠标移动方向的反方向播放抵抗/摆脱动作；抵抗台词结束后恢复原 scene 的高光、cursor 和旁白进度。 | 不写完成态，不触发 skip。 |
+| `interrupt_angry_exit`：“人类！你真的很没礼貌...” | `angry`，生气退出自定义动作优先 | 触发瞬间停止当前 scene，立即清理所有高光、外置聊天窗高光和 Ghost Cursor；先停止语音/LookAt/慌乱/抵抗/挥手/idle sway 等仍在播放的教程动作，再播放 angry 台词和模型演出。 | 台词/演出结束后调用统一 skip/destroy，不能走正常完成或花瓣收尾。 |
 
 ## Day 2：屏幕分享、声音与小窗约定
 
 | scene/台词 | emotion/动作 | 高光与 Ghost Cursor 时序 | 不重叠要求 |
 | --- | --- | --- | --- |
-| `day2_intro_context` 分支 A：“昨天听见你的声音以后...” | `happy`，亲近动作 | T+0 primary 高亮聊天窗；外置聊天窗用 kind `window`；Ghost Cursor 在聊天窗中心 wobble；台词结束后显示“现在说一句/继续打字”选项并等待选择或超时。用户点“现在说一句”后，临时 persistent 保持聊天窗，primary 切到 `#${p}-btn-mic`，Ghost Cursor 移到语音按钮 wobble；不开始录音。 | 选项出现时不叠加屏幕按钮高光；语音按钮补高亮结束后清理，再进入屏幕分享 scene。 |
-| `day2_intro_context` 分支 B：“昨天你一直在噼里啪啦打字...” | `sad`，轻委屈动作 | 同分支 A；用户点“继续打字”或 12s 超时后直接进入下一 scene；用户点“现在说一句”仍只补高亮语音按钮。 | 不把 sad 当 angry，不触发退出。 |
-| `day2_screen_entry`：“在跟我通语音电话的时候...” | `happy`，撒娇邀请动作 | T+0 primary 切到 `#${p}-btn-screen` 圆形高光；T+220ms Ghost Cursor 移到按钮；operation `click` 调用真实 `primaryTarget.click()`，触发真实限制提示；360ms 后继续。 | 不打开来源列表，不同时高亮语音按钮。 |
-| `day2_wrap`：“今天的教程到这里...” | `happy`，温柔收尾动作 | 收尾开始前关闭临时提示/弹窗；T+0 primary 回到聊天窗；T+220ms cursor wobble；T+70% 花瓣 cue 清理所有高光和 cursor；完成 Day 2。 | 不保留屏幕按钮高光。 |
+| `day2_intro_context` 分支 A：“昨天听见你的声音以后...” | `happy`，亲近动作 | T+0 primary 高亮聊天窗；外置聊天窗用 kind `window`；Ghost Cursor 在聊天窗中心 wobble；台词结束后清理聊天窗高亮，保留或补种聊天窗 cursor 起点并进入屏幕分享 scene。 | 不显示“现在说一句/继续打字”选项，不补高亮语音按钮。 |
+| `day2_intro_context` 分支 B：“昨天你一直在噼里啪啦打字...” | `sad`，轻委屈动作 | 同分支 A；台词结束后直接进入下一 scene，不等待选择或超时。 | 不把 sad 当 angry，不触发退出。 |
+| `day2_screen_entry`：“在跟我通语音电话的时候...” | `happy`，撒娇邀请动作 | T+0 primary 切到 `#${p}-btn-screen` 圆形高光；T+220ms Ghost Cursor 从聊天窗起点平滑移动到按钮，不能闪现到页面中心；operation `click` 调用真实 `primaryTarget.click()`，触发真实限制提示；360ms 后继续。 | 不打开来源列表，不同时高亮语音按钮。 |
+| `day2_screen_entry_invite`：“快让我也看看你眼前的世界...” | `happy`，撒娇邀请动作 | 继续高亮 `#${p}-btn-screen`；Ghost Cursor 在按钮附近 wobble；不再 click。 | 不重复触发屏幕分享限制提示。 |
+| `day2_wrap_intro`：“今天的教程到这里就结束了呢。” | `happy`，温柔收尾动作 | 收尾开始前关闭临时提示/弹窗；T+0 primary 回到聊天窗；T+220ms cursor 从屏幕分享按钮位置平滑移动回聊天窗中间并 wobble，不能闪现到页面中心。 | 不触发花瓣，给下一句收尾留出完整转场。 |
+| `day2_wrap_companion`：“其实只要能这样陪着你...” | `happy`，温柔收尾动作 | 继续高亮聊天窗；Ghost Cursor 在聊天窗附近 wobble。 | 不触发花瓣，给最终句留出完整转场。 |
+| `day2_wrap`：“我们不需要着急...” | `happy`，温柔收尾动作 | 继续高亮聊天窗；T+70% 花瓣 cue 同步启动花瓣层、清理所有高光和 cursor；完成 Day 2。 | 不保留屏幕按钮高光，不出现高亮先消失后花瓣才启动的空档。 |
 
 ## Day 3：互动、娱乐与摸得到的陪伴
 
 | scene/台词 | emotion/动作 | 高光与 Ghost Cursor 时序 | 不重叠要求 |
 | --- | --- | --- | --- |
 | `day3_chat_tools`：“来啦来啦...” | `happy`，兴奋邀请动作 | 首个 scene T+0 primary 高亮 composer 区：`.composer-panel` 优先，其次 `.composer-input-shell`；外置聊天窗 kind `input`；Ghost Cursor 在工具区中心 wobble；台词结束后清理该区域。 | 不高亮整聊天窗，不同时高亮具体工具按钮。 |
-| `day3_avatar_tools`：“在这个小按钮里...” | `happy`，互动玩耍动作 | 准备阶段关闭旧工具菜单；T+0 primary 圆形高亮 `.composer-emoji-btn`；若折叠，先打开 `.composer-overflow-btn` 找到真实按钮；T+220ms cursor 以 1480ms 移到按钮，播放 click 效果；operation 调用 `reactChatWindowHost.setAvatarToolMenuOpen(true, 'avatar-floating-guide-open-avatar-tool-menu')`；菜单出现后圆形高亮前三个 `.composer-icon-button[data-avatar-tool-id]`，cursor 依次划过。 | 按钮和菜单项都只用圆形高光；工具前三项不能出现猫耳/爪印；不触发真实道具消耗。 |
-| `day3_galgame_games`：“快点开这个【Galgame模式】...” | `surprised`，冒险期待动作 | `cleanupBefore` 先收起 Avatar 道具菜单；T+0 primary 圆形高亮 `.composer-galgame-btn`；若折叠先打开更多菜单；T+220ms cursor move/wobble，不强制点击；若真实存在 `choicePrompt.source === 'mini_game_invite'`，只能圆形高亮前三个真实选项并让 cursor 依次划过。 | Galgame 按钮和小游戏选项不能同时与 composer 大区域重叠；不得伪造小游戏局。 |
-| `day3_wrap`：“今天带你认识的这些功能...” | `happy`，鼓励尝试动作 | 收尾前关闭工具菜单/更多菜单并清理按钮高光；T+0 primary 回聊天窗；T+220ms cursor wobble；T+70% 花瓣 cue 清理内置/外置高光、工具区 spotlight 和 cursor；完成 Day 3。 | 不保留 Galgame 或道具菜单高光。 |
+| `day3_avatar_tools` / `day3_avatar_tools_props` / `day3_avatar_tools_more`：“在这个小按钮里...”三句 | `happy`，互动玩耍动作 | 准备阶段关闭旧工具菜单；第一句 T+0 primary 圆形高亮 `.composer-emoji-btn`；若折叠，先打开 `.composer-overflow-btn` 找到真实按钮；T+220ms cursor 以 1480ms 移到按钮，播放 click 效果；operation 调用 `reactChatWindowHost.setAvatarToolMenuOpen(true, 'avatar-floating-guide-open-avatar-tool-menu')`；菜单出现后三个短气泡都继续保持 Avatar 工具按钮主高亮，不再高亮前三个 `.composer-icon-button[data-avatar-tool-id]`，cursor 不再依次划过道具。 | Avatar 工具按钮只用圆形高光；道具入口只展示，不出现高亮或 cursor tour；不触发真实道具消耗。 |
+| `day3_galgame_games` / `day3_galgame_choices`：“快点开这个【Galgame模式】...”两句 | `surprised`，冒险期待动作 | `cleanupBefore` 先收起 Avatar 道具菜单；第一句 T+0 primary 圆形高亮 `.composer-galgame-btn`；若折叠先打开更多菜单；T+220ms cursor move/wobble，不强制点击；第二句继续保持 Galgame 按钮高亮。若真实存在 `choicePrompt.source === 'mini_game_invite'`，只能在内置聊天窗圆形高亮前三个真实选项并让 cursor 依次划过。 | Galgame 按钮和小游戏选项不能同时与 composer 大区域重叠；不得伪造小游戏局。 |
+| `day3_wrap` / `day3_wrap_ready`：“今天带你认识的这些功能...”两句 | `happy`，鼓励尝试动作 | 收尾第一句关闭工具菜单/更多菜单并清理按钮高光；T+0 primary 回聊天窗；第二句继续保持聊天窗高亮与 cursor wobble；第二句 T+70% 花瓣 cue 清理内置/外置高光、工具区 spotlight 和 cursor；完成 Day 3。 | 不保留 Galgame 或道具菜单高光。 |
 
 ## Day 4：相处距离、主动陪伴与模型行为
 
@@ -230,8 +251,8 @@ Day 1 registry 还注册了 API Key、记忆浏览和插件面板的 handoff sce
 | 聊天窗整体 | `window` | 高光整个独立聊天窗，cursor 在窗口中心 wobble。 |
 | 输入/工具区 | `input` | 只高光 composer 区，不高光整窗。 |
 | Avatar 工具按钮 | `avatar-tools` | 只高光真实 Avatar 工具按钮。 |
-| Avatar 道具项 | `avatar-tool-items` | 只高光前三个真实道具按钮，不加外层第二圈。 |
-| Avatar 工具按钮加道具项 | `avatar-tools-and-items` | 仅外置聊天窗需要时使用，最多包含工具按钮加前三个道具；不能再叠加第二个外框。 |
+| Avatar 道具项 | `avatar-tool-items` | 当前 Day 3 主线不使用；如后续单独演示道具项，只高光真实道具按钮，不加外层第二圈。 |
+| Avatar 工具按钮加道具项 | `avatar-tools-and-items` | 当前 Day 3 主线不使用；如后续需要同时展示工具按钮和道具项，最多包含工具按钮加真实道具，不能再叠加第二个外框。 |
 | Galgame | `galgame` | 只高光 Galgame 按钮，不自动改设置。 |
 | 小游戏选项 | 现有外置实现暂无独立 kind | 若要在外置聊天窗中演示小游戏三选项，必须新增等价 kind，并只高亮真实 `mini_game_invite` 选项。 |
 
@@ -242,7 +263,7 @@ Day 1 registry 还注册了 API Key、记忆浏览和插件面板的 handoff sce
 1. 每句台词都能在本文表格中找到 emotion、动作规则、高光目标和 Ghost Cursor 时序。
 2. 所有高光目标都能映射到真实 DOM 或外置 kind；不可见时只允许降级到同组容器，不允许伪造元素。
 3. 同一时刻没有重叠 spotlight；尤其是设置弹窗/侧边栏、聊天 composer/工具按钮、Agent 面板/开关、HUD/Agent 面板不能重叠。
-4. Day 3 工具前三项和小游戏三选项只出现纯圆形高光，不出现猫耳、猫爪或第二层边框。
+4. Day 3 Avatar 工具阶段只持续高亮 Avatar 工具按钮，不高亮三个道具项，也不让 cursor 移动到三个道具项；小游戏三选项如真实出现，只出现纯圆形高光，不出现猫耳、猫爪或第二层边框。
 5. 所有真实点击只发生在文档明确允许的位置：Day 2 屏幕分享限制提示、Day 3 Avatar 工具菜单 API 打开、Day 6 Agent/插件入口等；其余只 move/wobble。
 6. 每句台词 emotion 都在 `yui-origin` 有效动作池内；自定义演出优先，motion 缺失能降级。
 7. `#neko-tutorial-skip-btn` 在教程期间可见、可点、白名单放行；点击后立刻进入统一 skip。

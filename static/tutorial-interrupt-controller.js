@@ -104,7 +104,10 @@
                 ? Promise.resolve()
                 : Promise.resolve(
                     this.cursor && typeof this.cursor.resistTo === 'function'
-                        ? this.cursor.resistTo(x, y)
+                        ? this.cursor.resistTo(x, y, {
+                            motionDx: normalizedOptions.motionDx,
+                            motionDy: normalizedOptions.motionDy
+                        })
                         : null
                 );
             const interruptPerformancePromise = Promise.resolve(call(

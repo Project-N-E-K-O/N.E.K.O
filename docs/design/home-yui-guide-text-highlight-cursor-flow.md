@@ -318,8 +318,9 @@ ghost cursor 流程：
 
 触发条件：
 
-1. 用户在 takeover 或 interruptible 场景中移动真实鼠标、试图抢回控制，且达到当前阻力判断条件。
+1. 用户在 takeover 或 interruptible 场景中移动真实鼠标、试图抢回控制，且同时达到位移与加速度判断条件。
 2. 未达到 angry exit 阈值时进入轻微抵抗。
+3. 未达到有效打断阈值、但位移和加速度足够明显时，只播放 Ghost Cursor 被动回弹，不暂停当前 scene 旁白。
 
 文本输出：
 
@@ -338,7 +339,7 @@ ghost cursor 流程：
 
 1. 当前 cursor 动画取消或暂停。
 2. cursor 根据用户真实鼠标位置执行 `resistTo(x, y)`：
-   - 先被真实鼠标方向拉近一小段；
+   - 先朝真实鼠标移动方向的反方向拉扯一段；
    - wobble；
    - 再回到上一个目标点。
 3. 抵抗语音结束后恢复原 scene。
@@ -373,6 +374,13 @@ ghost cursor 流程：
 3. 如果插件 dashboard 已打开，插件页 runtime 调用 `stopGhostCursorAnimation()` 移除 cursor 的可见状态、点击星星和轨迹粒子。
 4. 生气退出语音播放期间不恢复主线 cursor；语音结束后执行 skip 清理。
 
+模型动作流程：
+
+1. `interrupt_angry_exit.performance.emotion` 必须为 `angry`，触发时允许在打断期间立即应用。
+2. `YuiGuideAvatarStage.playAngryExit()` 启动前必须停止仍在播放的首页教程专属动作 session，包括苏醒/问候、语音或接管 LookAt、设置慌乱、轻微抵抗、插件角落预览、归还控制权挥手和常驻 idle sway。
+3. 停止旧 session 时不得播放长释放动画；angry exit 动作需要成为当前唯一写入模型 frame/params 的教程动作，避免旧动作继续覆盖眉眼、手臂、身体或位置参数。
+4. 如果 Live2D angry exit 演出不可用或启动失败，Director 仍必须把教程表情兜底切到 `angry`，不能退回普通情绪或 Idle。
+
 ## 高亮类型速查
 
 1. persistent spotlight：持续高亮当前讲解上下文，例如聊天窗口、输入区。
@@ -388,9 +396,10 @@ ghost cursor 流程：
 1. 新增教程台词时，先确认文本输出位置：聊天窗口、overlay 气泡，还是外部页面 handoff。
 2. 每段台词最多有一个主 persistent spotlight；多个 UI 目标应使用 action/secondary/extra，而不是反复重设 persistent。
 3. ghost cursor 的移动必须跟真实 UI 操作一致：先高亮，再移动，再 click，再调用真实打开/开关 API。
-4. 不能只移动 cursor 而不执行真实状态变更，也不能只改状态而没有可见 click 反馈。
-5. dashboard、settings 等跨面板流程结束时必须清理 retained、virtual、scene extra 和 action spotlight。
-6. 打断分支要暂停并恢复当前 scene，不能把抵抗文本当成新的主线 step。
-7. 生气退出分支语义等同“语音后跳过”：触发时立即清视觉，语音结束后走 skip，不能走 done。
-8. 如果某个目标找不到，当前流程应安全跳过或走 fallback，不能卡死教程。
-9. 外置聊天窗模式没有首页输入框激活，但后续台词、高亮和 takeover 主线仍继续。
+4. 所有可见 ghost cursor 位置变化都必须平滑过渡；`showAt`、`setCursorPositionSilently` 或外置聊天窗 cursor patch 只能在首次出现前、隐藏状态下作为种子坐标使用。
+5. 不能只移动 cursor 而不执行真实状态变更，也不能只改状态而没有可见 click 反馈。
+6. dashboard、settings 等跨面板流程结束时必须清理 retained、virtual、scene extra 和 action spotlight。
+7. 打断分支要暂停并恢复当前 scene，不能把抵抗文本当成新的主线 step。
+8. 生气退出分支语义等同“语音后跳过”：触发时立即清视觉，语音结束后走 skip，不能走 done。
+9. 如果某个目标找不到，当前流程应安全跳过或走 fallback，不能卡死教程。
+10. 外置聊天窗模式没有首页输入框激活，但后续台词、高亮和 takeover 主线仍继续。

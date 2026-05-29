@@ -4743,6 +4743,44 @@
         });
     }
 
+    async function stopActiveAvatarPerformanceSessionsForAngryExit(reason) {
+        const stopReason = reason || 'angry_exit';
+        const sessions = [
+            activeIntroGreetingHugSession,
+            activeIntroGiftHeartSession,
+            activeSettingsPeekPanicSession,
+            activeInterruptResistSession,
+            activeIntroVoiceLookAtSession,
+            activePluginDashboardCornerSession,
+            activeReturnControlCueWaveSession,
+            activeGuideIdleSwaySession
+        ].filter((session) => session && session.active);
+
+        await Promise.all(sessions.map((session) => {
+            try {
+                if ('reducedMotion' in session) {
+                    session.reducedMotion = true;
+                }
+                if ('releaseMs' in session) {
+                    session.releaseMs = 0;
+                }
+                if (typeof session.stop === 'function') {
+                    return Promise.resolve(session.stop(stopReason)).catch((error) => {
+                        console.warn('[YuiGuideAvatarStage] 生气退出覆盖当前动作失败:', error);
+                    });
+                }
+                if (typeof session.cancel === 'function') {
+                    return Promise.resolve(session.cancel(stopReason)).catch((error) => {
+                        console.warn('[YuiGuideAvatarStage] 生气退出覆盖当前动作失败:', error);
+                    });
+                }
+            } catch (error) {
+                console.warn('[YuiGuideAvatarStage] 生气退出覆盖当前动作失败:', error);
+            }
+            return Promise.resolve();
+        }));
+    }
+
     async function playIntroGreetingHug(options) {
         const normalizedOptions = options || {};
         const waitMs = normalizeDuration(normalizedOptions.readyWaitMs, INTRO_GREETING_HUG_READY_WAIT_MS);
@@ -5291,6 +5329,7 @@
         if (!context) {
             return { result: 'fallback', reason: 'live2d_unavailable' };
         }
+        await stopActiveAvatarPerformanceSessionsForAngryExit('angry_exit');
         if (activeAngryExitSession && activeAngryExitSession.active) {
             activeAngryExitSession.cancel('replaced');
         }
