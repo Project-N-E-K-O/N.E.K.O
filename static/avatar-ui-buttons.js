@@ -184,6 +184,8 @@ const _NEKO_IDLE_TIER_CAT2 = 'cat2';
 const _NEKO_IDLE_TIER_CAT3 = 'cat3';
 const _NEKO_IDLE_RETURN_BUTTON_SELECTOR = '#live2d-btn-return, #vrm-btn-return, #mmd-btn-return';
 const _NEKO_IDLE_RETURN_TRANSITION_MS = 820;
+const _NEKO_IDLE_RETURN_GIF_DURATION_FALLBACK_MS = 900;
+const _NEKO_IDLE_RETURN_GIF_DURATION_CACHE = new Map();
 const _NEKO_IDLE_RETURN_ASSET_VERSION = (() => {
     try {
         const currentScript = document.currentScript;
@@ -248,6 +250,94 @@ function _shouldReduceNekoIdleMotion() {
     return false;
 }
 
+function _readUint16LittleEndian(bytes, offset) {
+    if (!bytes || offset < 0 || offset + 1 >= bytes.length) return 0;
+    return bytes[offset] | (bytes[offset + 1] << 8);
+}
+
+function _parseGifDurationMs(bytes) {
+    if (!bytes || bytes.length < 14) return 0;
+    const isGif = bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46;
+    if (!isGif) return 0;
+
+    let offset = 13;
+    const packed = bytes[10];
+    if (packed & 0x80) {
+        offset += 3 * (1 << ((packed & 0x07) + 1));
+    }
+
+    let totalMs = 0;
+    let frameCount = 0;
+    let pendingDelayCs = 0;
+
+    while (offset < bytes.length) {
+        const blockId = bytes[offset++];
+        if (blockId === 0x3b) break;
+
+        if (blockId === 0x21) {
+            const label = bytes[offset++];
+            if (label === 0xf9 && bytes[offset] === 0x04) {
+                pendingDelayCs = _readUint16LittleEndian(bytes, offset + 2);
+                offset += 6;
+                continue;
+            }
+
+            while (offset < bytes.length) {
+                const size = bytes[offset++];
+                if (size === 0) break;
+                offset += size;
+            }
+            continue;
+        }
+
+        if (blockId === 0x2c) {
+            if (offset + 8 >= bytes.length) break;
+            const imagePacked = bytes[offset + 8];
+            offset += 9;
+            if (imagePacked & 0x80) {
+                offset += 3 * (1 << ((imagePacked & 0x07) + 1));
+            }
+            offset += 1; // LZW minimum code size
+            while (offset < bytes.length) {
+                const size = bytes[offset++];
+                if (size === 0) break;
+                offset += size;
+            }
+            frameCount += 1;
+            totalMs += Math.max(20, pendingDelayCs * 10);
+            pendingDelayCs = 0;
+            continue;
+        }
+
+        break;
+    }
+
+    return frameCount > 0 ? totalMs : 0;
+}
+
+function _getNekoIdleGifDurationMs(src) {
+    if (!src) return Promise.resolve(_NEKO_IDLE_RETURN_GIF_DURATION_FALLBACK_MS);
+    if (_NEKO_IDLE_RETURN_GIF_DURATION_CACHE.has(src)) {
+        return _NEKO_IDLE_RETURN_GIF_DURATION_CACHE.get(src);
+    }
+
+    const durationPromise = (async () => {
+        try {
+            if (typeof fetch !== 'function') return _NEKO_IDLE_RETURN_GIF_DURATION_FALLBACK_MS;
+            const response = await fetch(src, { cache: 'force-cache' });
+            if (!response || !response.ok) return _NEKO_IDLE_RETURN_GIF_DURATION_FALLBACK_MS;
+            const buffer = await response.arrayBuffer();
+            const durationMs = _parseGifDurationMs(new Uint8Array(buffer));
+            return durationMs > 0 ? durationMs : _NEKO_IDLE_RETURN_GIF_DURATION_FALLBACK_MS;
+        } catch (_) {
+            return _NEKO_IDLE_RETURN_GIF_DURATION_FALLBACK_MS;
+        }
+    })();
+
+    _NEKO_IDLE_RETURN_GIF_DURATION_CACHE.set(src, durationPromise);
+    return durationPromise;
+}
+
 function _cleanupNekoIdleArtTransition(art) {
     if (!art) return;
     if (art.__nekoIdleTransitionTimer) {
@@ -266,9 +356,24 @@ function _cleanupNekoIdleArtTransition(art) {
     }
 }
 
+function _clearNekoIdleHoverPlayback(art) {
+    if (!art) return;
+    if (art.__nekoIdleHoverTimer) {
+        clearTimeout(art.__nekoIdleHoverTimer);
+        art.__nekoIdleHoverTimer = 0;
+    }
+    art.__nekoIdleHoverToken = (art.__nekoIdleHoverToken || 0) + 1;
+    art.__nekoIdleHoverSrc = '';
+    art.__nekoIdleHoverTier = '';
+    art.__nekoIdleHoverStartedAt = 0;
+}
+
 function _setNekoIdleReturnArtSource(art, nextSrc, tier, options = {}) {
     if (!art || !nextSrc) return;
 
+    if (!options.keepHoverPlayback) {
+        _clearNekoIdleHoverPlayback(art);
+    }
     art.setAttribute('data-neko-idle-tier', tier);
 
     const currentSrc = art.getAttribute('src') || '';
@@ -313,6 +418,66 @@ function _setNekoIdleReturnArtSource(art, nextSrc, tier, options = {}) {
     void nextArt.offsetWidth;
     button.classList.add('is-tier-transitioning');
     art.__nekoIdleTransitionTimer = setTimeout(finish, _NEKO_IDLE_RETURN_TRANSITION_MS);
+}
+
+function _playNekoIdleHoverArt(art, tier) {
+    if (!art || !tier || tier === _NEKO_IDLE_TIER_NONE) return;
+    _cleanupNekoIdleArtTransition(art);
+
+    const normalizedTier = _normalizeNekoIdleReturnTier(tier);
+    const clickSrc = _getNekoIdleReturnClickAssetUrl(normalizedTier);
+    if (art.__nekoIdleHoverSrc === clickSrc) {
+        if (art.__nekoIdleHoverTimer) {
+            clearTimeout(art.__nekoIdleHoverTimer);
+            art.__nekoIdleHoverTimer = 0;
+        }
+        art.__nekoIdleHoverToken = (art.__nekoIdleHoverToken || 0) + 1;
+        return;
+    }
+
+    _clearNekoIdleHoverPlayback(art);
+    art.__nekoIdleHoverToken = (art.__nekoIdleHoverToken || 0) + 1;
+    art.__nekoIdleHoverSrc = clickSrc;
+    art.__nekoIdleHoverTier = normalizedTier;
+    art.__nekoIdleHoverStartedAt = Date.now();
+    art.src = clickSrc;
+}
+
+function _finishNekoIdleHoverArtAfterPlayback(art, tier) {
+    if (!art || !tier || tier === _NEKO_IDLE_TIER_NONE) return;
+
+    const normalizedTier = _normalizeNekoIdleReturnTier(tier);
+    const token = art.__nekoIdleHoverToken || 0;
+    const startedAt = art.__nekoIdleHoverStartedAt || 0;
+    const hoverSrc = art.__nekoIdleHoverSrc || _getNekoIdleReturnClickAssetUrl(normalizedTier);
+
+    if (art.__nekoIdleHoverTimer) {
+        clearTimeout(art.__nekoIdleHoverTimer);
+        art.__nekoIdleHoverTimer = 0;
+    }
+
+    _getNekoIdleGifDurationMs(hoverSrc).then((durationMs) => {
+        if ((art.__nekoIdleHoverToken || 0) !== token) return;
+        if (art.__nekoIdleHoverTier !== normalizedTier) return;
+
+        const elapsedMs = startedAt ? Math.max(0, Date.now() - startedAt) : durationMs;
+        const delayMs = Math.max(0, durationMs - elapsedMs);
+        art.__nekoIdleHoverTimer = setTimeout(() => {
+            if ((art.__nekoIdleHoverToken || 0) !== token) return;
+            if (art.__nekoIdleHoverTier !== normalizedTier) return;
+            art.__nekoIdleHoverTimer = 0;
+            art.__nekoIdleHoverSrc = '';
+            art.__nekoIdleHoverTier = '';
+            art.__nekoIdleHoverStartedAt = 0;
+            _setNekoIdleReturnArtSource(
+                art,
+                _getNekoIdleReturnAssetUrl(normalizedTier),
+                normalizedTier,
+                { animate: false, keepHoverPlayback: true }
+            );
+            _clearNekoIdleHoverPlayback(art);
+        }, delayMs);
+    });
 }
 
 function _applyNekoIdleReturnPresentation(button, tier) {
@@ -780,16 +945,14 @@ const AvatarButtonMixin = {
             returnBtn.addEventListener('mouseenter', () => {
                 const tier = returnBtn.getAttribute('data-neko-idle-tier');
                 if (tier && tier !== 'none') {
-                    _cleanupNekoIdleArtTransition(returnArt);
-                    returnArt.src = _getNekoIdleReturnClickAssetUrl(tier);
+                    _playNekoIdleHoverArt(returnArt, tier);
                 }
             });
 
             returnBtn.addEventListener('mouseleave', () => {
                 const tier = returnBtn.getAttribute('data-neko-idle-tier');
                 if (tier && tier !== 'none') {
-                    _cleanupNekoIdleArtTransition(returnArt);
-                    returnArt.src = _getNekoIdleReturnAssetUrl(tier);
+                    _finishNekoIdleHoverArtAfterPlayback(returnArt, tier);
                 }
             });
 

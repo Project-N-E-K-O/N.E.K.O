@@ -305,7 +305,9 @@
                 state.idleSuppressed = false;
                 state.idleSuppressionReasons = [];
                 state.lastSuppressionChangedAt = nowMs();
-                markIdleBaseline('idle-suppression-cleared');
+                if (!isGoodbyeActive()) {
+                    markIdleBaseline('idle-suppression-cleared');
+                }
                 emitStateChange('idle-suppression', {
                     active: false,
                     source: source || 'tick',
@@ -319,7 +321,9 @@
             state.idleSuppressed = true;
             state.idleSuppressionReasons = reasons.slice();
             state.lastSuppressionChangedAt = nowMs();
-            markIdleBaseline('idle-suppression-entered');
+            if (!isGoodbyeActive()) {
+                markIdleBaseline('idle-suppression-entered');
+            }
             emitStateChange('idle-suppression', {
                 active: true,
                 source: source || 'tick',
@@ -431,7 +435,14 @@
     }
 
     function noteUserInteraction(source) {
-        markIdleBaseline(typeof source === 'string' ? source : 'interaction');
+        const normalizedSource = typeof source === 'string' ? source : 'interaction';
+
+        if (isGoodbyeActive() && normalizedSource !== 'return-click') {
+            state.lastInteractionSource = normalizedSource;
+            return;
+        }
+
+        markIdleBaseline(normalizedSource);
 
         if (!isGoodbyeActive()) {
             if (state.visualTier !== TIER_NONE) {

@@ -55,6 +55,22 @@ def test_return_button_idle_tier_switch_uses_crossfade_motion():
     assert '@media (prefers-reduced-motion: reduce)' in css_source
 
 
+def test_return_button_hover_click_gif_finishes_before_restore():
+    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+
+    assert '_NEKO_IDLE_RETURN_GIF_DURATION_CACHE = new Map()' in source
+    assert '_parseGifDurationMs' in source
+    assert '_getNekoIdleGifDurationMs' in source
+    assert '_playNekoIdleHoverArt' in source
+    assert '_finishNekoIdleHoverArtAfterPlayback' in source
+    assert '_clearNekoIdleHoverPlayback' in source
+    assert '__nekoIdleHoverToken' in source
+    assert '__nekoIdleHoverTimer' in source
+    assert 'art.__nekoIdleHoverSrc === clickSrc' in source
+    assert 'Math.max(0, durationMs - elapsedMs)' in source
+    assert 'keepHoverPlayback' in source
+
+
 def test_return_button_idle_tier_assets_are_version_tracked():
     for path in (CAT1_ASSET_PATH, CAT1_CLICK_ASSET_PATH,
                  CAT2_ASSET_PATH, CAT2_CLICK_ASSET_PATH,

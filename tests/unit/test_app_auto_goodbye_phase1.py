@@ -341,6 +341,23 @@ def test_app_auto_goodbye_phase1_harness():
           assert(home.goodbyeEvents[0].autoGoodbye === true, 'auto-goodbye detail should be preserved');
           assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat1', 'auto-goodbye should move to cat1');
 
+          // Dragging / touching the goodbye cat should not reset CAT2/CAT3 back to CAT1.
+          home.advance(10000);
+          home.tickAll();
+          assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat3', 'goodbye idle should progress to cat3');
+          const cat3Baseline = home.win.nekoAutoGoodbye.getState().lastInteractionAt;
+          home.doc.dispatchEvent(new CustomEventLike('pointerdown'));
+          home.tickAll();
+          assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat3', 'pointerdown during goodbye should keep the current tier');
+          assert(home.win.nekoAutoGoodbye.getState().lastInteractionAt === cat3Baseline, 'pointerdown during goodbye should not refresh idle baseline');
+          home.setBodyClass('neko-model-dragging', true);
+          home.tickAll();
+          assert(home.win.nekoAutoGoodbye.getState().lastInteractionAt === cat3Baseline, 'drag suppression during goodbye should not refresh idle baseline');
+          home.setBodyClass('neko-model-dragging', false);
+          home.tickAll();
+          assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat3', 'drag release during goodbye should keep the current tier');
+          assert(home.win.nekoAutoGoodbye.getState().lastInteractionAt === cat3Baseline, 'drag release during goodbye should not refresh idle baseline');
+
           // Return should clear auto state and tier.
           home.win.dispatchEvent(new CustomEventLike('live2d-return-click'));
           const returned = home.win.nekoAutoGoodbye.getState();
