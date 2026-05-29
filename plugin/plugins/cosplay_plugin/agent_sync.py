@@ -388,7 +388,7 @@ class AgentSyncMixin:
             self._plugin.push_message(
                 source=str(getattr(self._plugin, "plugin_id", "") or "cosplay_plugin"),
                 message_type="proactive_notification",
-                description=f"Galgame Agent | {kind}",
+                description=f"Cosplay Agent | {kind}",
                 priority=priority,
                 content=content,
                 metadata=outbound_metadata,
@@ -403,7 +403,7 @@ class AgentSyncMixin:
                 self._plugin.push_message(
                     source=str(getattr(self._plugin, "plugin_id", "") or "cosplay_plugin"),
                     message_type="proactive_notification",
-                    description=f"Galgame Agent | {kind}",
+                    description=f"Cosplay Agent | {kind}",
                     priority=priority,
                     content=content,
                     metadata=outbound_metadata,

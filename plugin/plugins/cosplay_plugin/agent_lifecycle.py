@@ -13,7 +13,7 @@ class AgentLifecycleMixin:
         logger,
         llm_gateway,
         host_adapter: HostAgentAdapter,
-        config: GalgameLLMConfig | None = None,
+        config: CosplayLLMConfig | None = None,
         local_input_actuator: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]
         | None = None,
     ) -> None:

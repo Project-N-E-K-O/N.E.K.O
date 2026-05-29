@@ -49,7 +49,7 @@ _DASHSCOPE_TERMINAL_BAD = {"FAILED", "CANCELED", "UNKNOWN"}
 
 
 @neko_plugin
-class GalgamePlugin(NekoPluginBase):
+class CosplayPlugin(NekoPluginBase):
     """NEKO GALGAME 总导演插件 MVP。"""
 
     def __init__(self, ctx: Any):

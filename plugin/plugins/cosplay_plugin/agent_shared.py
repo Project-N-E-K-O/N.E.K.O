@@ -60,7 +60,7 @@ from .models import (
     OCR_CAPTURE_PROFILE_STAGE_TRANSITION,
     OCR_TRIGGER_MODE_AFTER_ADVANCE,
     OCR_TRIGGER_MODE_INTERVAL,
-    GalgameLLMConfig,
+    CosplayLLMConfig,
     STORE_CROSS_SCENE_MEMORY,
     SharedStatePayload,
     json_copy,

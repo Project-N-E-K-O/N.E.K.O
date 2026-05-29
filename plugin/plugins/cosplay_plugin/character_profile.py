@@ -1,6 +1,6 @@
 """Character profile manager: preset + user JSON load, scene lookup, layered
 rendering, initial runtime overlay. Stateless service; canonical state lives
-in :class:`GalgameSharedState` and the plugin store.
+in :class:`CosplaySharedState` and the plugin store.
 """
 
 from __future__ import annotations

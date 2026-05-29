@@ -1,4 +1,4 @@
-# Galgame 游玩助手快速开始
+# Cosplay 游玩助手快速开始
 
 这份 Markdown 是备用说明；插件管理器里实际显示的是 `surfaces/quickstart.tsx`，会跟随界面语言切换。
 

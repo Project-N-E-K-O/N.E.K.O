@@ -26,7 +26,7 @@ from .models import (
     DATA_SOURCE_BRIDGE_SDK,
     DATA_SOURCE_MEMORY_READER,
     DATA_SOURCE_OCR_READER,
-    GalgameConfig,
+    CosplayConfig,
     MODE_CHOICE_ADVISOR,
     MODE_COMPANION,
     MODES,
@@ -567,7 +567,7 @@ def _default_ocr_reader_enabled() -> bool:
     return sys.platform.startswith("win")
 
 
-def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
+def build_config(raw_config: dict[str, Any]) -> CosplayConfig:
     cosplay = raw_config.get("cosplay")
     llm = raw_config.get("llm")
     memory_reader = raw_config.get("memory_reader")
@@ -597,7 +597,7 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
     if not bridge_root_raw:
         bridge_root_raw = _default_bridge_root_raw()
 
-    return GalgameConfig(
+    return CosplayConfig(
         bridge_root=expand_bridge_root(bridge_root_raw),
         active_poll_interval_seconds=_coerce_float(
             cosplay_obj.get("active_poll_interval_seconds"), 1.0, minimum=0.1
@@ -1112,7 +1112,7 @@ def derive_connection_state(
     return STATE_ACTIVE
 
 
-def next_poll_interval_for_state(connection_state: str, *, stream_reset_pending: bool, config: GalgameConfig) -> float:
+def next_poll_interval_for_state(connection_state: str, *, stream_reset_pending: bool, config: CosplayConfig) -> float:
     if stream_reset_pending or connection_state == STATE_ACTIVE:
         return config.active_poll_interval_seconds
     return config.idle_poll_interval_seconds
@@ -2067,7 +2067,7 @@ def apply_event_to_histories(
     history_choices: list[dict[str, Any]],
     dedupe_window: list[dict[str, str]],
     event: dict[str, Any],
-    config: GalgameConfig,
+    config: CosplayConfig,
     game_id: str,
 ) -> None:
     payload = event.get("payload")
@@ -2162,7 +2162,7 @@ def rebuild_histories_from_events(
     events: Iterable[dict[str, Any]],
     snapshot: dict[str, Any],
     dedupe_window: list[dict[str, str]],
-    config: GalgameConfig,
+    config: CosplayConfig,
     game_id: str,
 ) -> tuple[
     list[dict[str, Any]],
@@ -2205,7 +2205,7 @@ def rebuild_histories_from_events(
 def build_status_payload(
     state,
     *,
-    config: GalgameConfig,
+    config: CosplayConfig,
     state_is_snapshot: bool = False,
 ) -> dict[str, Any]:
     try:
@@ -2229,7 +2229,7 @@ def build_status_payload(
 def _build_status_payload_unchecked(
     state,
     *,
-    config: GalgameConfig,
+    config: CosplayConfig,
     state_is_snapshot: bool = False,
 ) -> dict[str, Any]:
     def copy_for_payload(value: Any) -> Any:

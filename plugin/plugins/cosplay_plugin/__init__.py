@@ -1,8 +1,8 @@
-"""Galgame plugin package entry point.
+"""Cosplay plugin package entry point.
 
 The plugin runtime resolves ``plugin.toml``'s
-``entry = "plugin.plugins.cosplay_plugin:GalgamePlugin"`` against this module,
-so re-exporting ``GalgamePlugin`` (and its ``GalgameBridgePlugin`` alias) from
+``entry = "plugin.plugins.cosplay_plugin:CosplayPlugin"`` against this module,
+so re-exporting ``CosplayPlugin`` (and its ``CosplayBridgePlugin`` alias) from
 ``plugin_core`` keeps the public import surface unchanged after the PR2 split.
 
 Before the split, ``__init__.py`` was a 7,500-line monolith whose top-level
@@ -10,7 +10,7 @@ imports (``time``, ``json_copy``, ``build_summarize_context``,
 ``MemoryReaderManager``, ...) became attributes of the package object.
 Several tests and external callers reach into that surface
 (``monkeypatch.setattr(cosplay_plugin_module, "build_summarize_context", ...)``,
-``from plugin.plugins.cosplay_plugin import GalgamePluginConfigService``),
+``from plugin.plugins.cosplay_plugin import CosplayPluginConfigService``),
 so we star-import from ``plugin_core`` here to keep the original public
 attribute surface intact. The explicit private re-exports below cover the
 two underscore-prefixed helpers tests monkeypatch - star-import skips them.
@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .plugin_config_service import GalgamePluginConfigService
+from .plugin_config_service import CosplayPluginConfigService
 from .plugin_core import *  # noqa: F401, F403 - preserve original package surface
 from .plugin_core import (  # explicit: star-import skips underscore names
     _after_advance_screen_refresh_needed,
@@ -86,4 +86,4 @@ except Exception:  # noqa: BLE001 - migration hook registration should not block
         exc_info=True,
     )
 
-__all__ = ["GalgameBridgePlugin", "GalgamePlugin", "GalgamePluginConfigService"]
+__all__ = ["CosplayBridgePlugin", "CosplayPlugin", "CosplayPluginConfigService"]

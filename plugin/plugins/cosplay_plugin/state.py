@@ -7,7 +7,7 @@ from .models import ADVANCE_SPEED_MEDIUM, DATA_SOURCE_NONE, MODE_COMPANION, STAT
 
 
 @dataclass(slots=True)
-class GalgameSharedState:
+class CosplaySharedState:
     bound_game_id: str = ""
     available_game_ids: list[str] = field(default_factory=list)
     mode: str = MODE_COMPANION
@@ -67,8 +67,8 @@ def build_initial_state(
     mode: str,
     push_notifications: bool,
     advance_speed: str = ADVANCE_SPEED_MEDIUM,
-) -> GalgameSharedState:
-    return GalgameSharedState(
+) -> CosplaySharedState:
+    return CosplaySharedState(
         mode=mode,
         push_notifications=push_notifications,
         advance_speed=advance_speed,

@@ -23,7 +23,7 @@ from plugin.plugins.cosplay_plugin.models import (
     DEFAULT_OCR_CAPTURE_LEFT_INSET_RATIO,
     DEFAULT_OCR_CAPTURE_RIGHT_INSET_RATIO,
     DEFAULT_OCR_CAPTURE_TOP_RATIO,
-    GalgameConfig,
+    CosplayConfig,
 )
 from plugin.plugins.cosplay_plugin.ocr_reader import (
     OcrCaptureProfile,
@@ -116,7 +116,7 @@ async def main() -> None:
 
     # Optional: dry-run through manager tick logic
     print("\nDry-run manager tick...")
-    config = GalgameConfig(
+    config = CosplayConfig(
         bridge_root=Path.home() / "cosplay-bridge-test",
         active_poll_interval_seconds=1.0,
         idle_poll_interval_seconds=3.0,

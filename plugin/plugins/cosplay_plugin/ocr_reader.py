@@ -32,7 +32,7 @@ from .models import (
     DEFAULT_OCR_CAPTURE_RIGHT_INSET_RATIO,
     DEFAULT_OCR_CAPTURE_TOP_RATIO,
     DEFAULT_VISION_CLASSIFIER_MODEL_DIR,
-    GalgameConfig,
+    CosplayConfig,
     MENU_PREFIX_RE as _MENU_PREFIX_RE,
     OCR_CAPTURE_PROFILE_STAGE_CONFIG,
     OCR_CAPTURE_PROFILE_STAGE_GALLERY,
@@ -151,7 +151,7 @@ class OcrReaderManager(
         self,
         *,
         logger,
-        config: GalgameConfig,
+        config: CosplayConfig,
         time_fn: Callable[[], float] | None = None,
         platform_fn: Callable[[], bool] | None = None,
         window_scanner: Callable[[], list[DetectedGameWindow]] | None = None,
@@ -360,7 +360,7 @@ class OcrReaderManager(
             self._log_warning("cosplay vision classifier failed to load: {}", exc)
 
     @staticmethod
-    def _vision_classifier_config_key(config: GalgameConfig) -> tuple[bool, str, str, tuple[int, int], float]:
+    def _vision_classifier_config_key(config: CosplayConfig) -> tuple[bool, str, str, tuple[int, int], float]:
         return (
             bool(getattr(config, "vision_classifier_enabled", False)),
             str(getattr(config, "vision_classifier_model_dir", "") or ""),
@@ -444,7 +444,7 @@ class OcrReaderManager(
         self._runtime.foreground_advance_last_seq = self._wheel_monitor.last_seq()
         return started
 
-    def update_config(self, config: GalgameConfig) -> None:
+    def update_config(self, config: CosplayConfig) -> None:
         old_backend_plan_key = self._backend_plan_config_key(self._config)
         old_auto_detect_lang = bool(getattr(self._config, "rapidocr_auto_detect_lang", False))
         old_vision_key = self._vision_classifier_config_key(self._config)

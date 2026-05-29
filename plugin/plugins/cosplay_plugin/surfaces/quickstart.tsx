@@ -33,7 +33,7 @@ type GuideCopy = {
 
 const COPY: Record<LocaleKey, GuideCopy> = {
   "zh-CN": {
-    title: "Galgame 游玩助手快速开始",
+    title: "Cosplay 游玩助手快速开始",
     subtitle: "按现在的插件面板完成依赖检查、窗口绑定、OCR / Memory Reader 读取和 Agent 辅助。",
     cards: [
       { title: "先看依赖", badge: "Install", body: "RapidOCR 与 DXcam 默认随程序提供；日文、韩文或其他 OCR 模型缺失时，面板会显示下载入口。" },
@@ -74,7 +74,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     warning: "本教程只说明路径，不会自动安装依赖、切换模式或推进游戏。",
   },
   en: {
-    title: "Galgame Play Assistant Quickstart",
+    title: "Cosplay Play Assistant Quickstart",
     subtitle: "Set up dependency checks, target binding, OCR / Memory Reader input, and Agent assistance from the current panel.",
     cards: [
       { title: "Check dependencies", badge: "Install", body: "RapidOCR and DXcam are bundled by default. The panel offers downloads when extra OCR language models are missing." },
@@ -115,7 +115,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     warning: "This guide only explains the path. It will not install dependencies, switch modes, or advance the game automatically.",
   },
   ja: {
-    title: "Galgame プレイアシスタント クイックスタート",
+    title: "Cosplay プレイアシスタント クイックスタート",
     subtitle: "現在のパネルで依存関係、対象ウィンドウ、OCR / Memory Reader、Agent 補助を設定します。",
     cards: [
       { title: "依存関係を確認", badge: "Install", body: "RapidOCR と DXcam は標準同梱です。追加 OCR 言語モデルが必要な場合はパネルにダウンロード入口が出ます。" },
@@ -156,7 +156,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     warning: "このガイドは操作説明のみです。依存関係のインストール、モード変更、ゲーム進行は自動実行しません。",
   },
   ko: {
-    title: "Galgame 플레이 어시스턴트 빠른 시작",
+    title: "Cosplay 플레이 어시스턴트 빠른 시작",
     subtitle: "현재 패널에서 의존성, 대상 창, OCR / Memory Reader, Agent 보조 기능을 설정합니다.",
     cards: [
       { title: "의존성 확인", badge: "Install", body: "RapidOCR와 DXcam은 기본 포함입니다. 추가 OCR 언어 모델이 없으면 패널에 다운로드 안내가 표시됩니다." },
@@ -197,7 +197,7 @@ const COPY: Record<LocaleKey, GuideCopy> = {
     warning: "이 가이드는 경로만 설명합니다. 의존성 설치, 모드 변경, 게임 진행을 자동 실행하지 않습니다.",
   },
   ru: {
-    title: "Быстрый старт Galgame Play Assistant",
+    title: "Быстрый старт Cosplay Play Assistant",
     subtitle: "Настройте зависимости, привязку окна, OCR / Memory Reader и помощь Agent в текущей панели.",
     cards: [
       { title: "Проверьте зависимости", badge: "Install", body: "RapidOCR и DXcam поставляются по умолчанию. Если не хватает OCR-модели языка, панель покажет загрузку." },
@@ -248,7 +248,7 @@ function resolveLocale(locale: string | undefined): LocaleKey {
   return "en"
 }
 
-export default function GalgameQuickstartGuide(props: PluginSurfaceProps) {
+export default function CosplayQuickstartGuide(props: PluginSurfaceProps) {
   const copy = COPY[resolveLocale(props.locale)]
 
   return (

@@ -162,7 +162,7 @@ def _attach_vision_image_if_requested(
     return result
 
 
-class GalgameLLMBackend:
+class CosplayLLMBackend:
     def __init__(self, logger: LoggerLike, config: Any = None) -> None:
         self._logger = logger
         self._config = config

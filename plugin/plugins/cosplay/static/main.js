@@ -2,7 +2,7 @@ const API_BASE = "";
 
 function getPluginId() {
   const m = window.location.pathname.match(/\/plugin\/([^/]+)\/ui/);
-  return m ? m[1] : "galgame";
+  return m ? m[1] : "cosplay";
 }
 
 const state = {

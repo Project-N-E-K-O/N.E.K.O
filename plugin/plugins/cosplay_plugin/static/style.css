@@ -14,7 +14,7 @@
   --shadow: 0 8px 24px rgba(23, 37, 43, 0.08);
   --radius: 16px;
   --radius-sm: 10px;
-  --galgame-line-font-size: 18px;
+  --cosplay-line-font-size: 18px;
   --ocr-pipeline-font-size: 13px;
   --advanced-hub-padding: 12px;
   --advanced-hub-gap: 16px;
@@ -710,7 +710,7 @@ h1 {
   overflow-wrap: anywhere;
   word-break: break-word;
   white-space: pre-wrap;
-  font-size: var(--galgame-line-font-size);
+  font-size: var(--cosplay-line-font-size);
 }
 
 .ocr-pipeline-panel {
@@ -3807,7 +3807,7 @@ body:not(.onboarding-active) #onboardingView {
   border: 1px solid rgba(64, 197, 241, 0.18);
   border-radius: var(--radius-sm);
   background: rgba(255, 255, 255, 0.92);
-  font-size: var(--galgame-line-font-size);
+  font-size: var(--cosplay-line-font-size);
   line-height: 1.65;
   white-space: pre-wrap;
   word-break: break-word;

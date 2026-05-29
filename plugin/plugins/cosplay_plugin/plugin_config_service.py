@@ -21,7 +21,7 @@ from .models import (
 from .plugin_util_helpers import _migrate_legacy_capture_backend
 
 
-class GalgamePluginConfigService:
+class CosplayPluginConfigService:
     def __init__(self, plugin: Any) -> None:
         self._plugin = plugin
 

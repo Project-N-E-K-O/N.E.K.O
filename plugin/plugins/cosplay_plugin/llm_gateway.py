@@ -13,7 +13,7 @@ from plugin.sdk.shared.models import Err
 
 from .context_metrics import ContextMetric, ContextMetricsCollector
 from .context_tokens import count_tokens_heuristic
-from .llm_backend import GalgameLLMBackend
+from .llm_backend import CosplayLLMBackend
 from .models import json_copy
 from .service import (
     build_explain_degraded_result,
@@ -55,11 +55,11 @@ from ._repeat_guard import PluginErrorCategory, ResponseRepeatGuard
 
 
 class LLMGateway:
-    def __init__(self, plugin, logger, config, *, backend: GalgameLLMBackend | None = None) -> None:
+    def __init__(self, plugin, logger, config, *, backend: CosplayLLMBackend | None = None) -> None:
         self._plugin = plugin
         self._logger = logger
         self._config = config
-        self._backend = backend or GalgameLLMBackend(logger, config)
+        self._backend = backend or CosplayLLMBackend(logger, config)
         self._runtime_loop: asyncio.AbstractEventLoop | None = None
         self._lock: asyncio.Lock | None = None
         self._semaphore: asyncio.Semaphore | None = None

@@ -7,7 +7,7 @@ from typing import Any
 from plugin.logging_config import get_logger
 from plugin.sdk.shared.core.base_runtime import resolve_runtime_data_root
 
-from .store import GalgameStore
+from .store import CosplayStore
 
 logger = get_logger("cosplay.tutorial_migration")
 
@@ -55,7 +55,7 @@ def copy_legacy_tutorial_progress_if_missing(store_path: Path) -> None:
         if not legacy_store_path.is_file():
             continue
         try:
-            legacy_progress = GalgameStore(legacy_store_path, logger).load_tutorial_progress()
+            legacy_progress = CosplayStore(legacy_store_path, logger).load_tutorial_progress()
         except Exception:  # noqa: BLE001 - corrupted legacy stores should not abort migration.
             logger.warning(
                 "failed to load legacy tutorial progress from {}, skipping",

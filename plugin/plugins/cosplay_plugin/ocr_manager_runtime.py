@@ -34,7 +34,7 @@ from .models import (
     DEFAULT_OCR_CAPTURE_LEFT_INSET_RATIO,
     DEFAULT_OCR_CAPTURE_RIGHT_INSET_RATIO,
     DEFAULT_OCR_CAPTURE_TOP_RATIO,
-    GalgameConfig,
+    CosplayConfig,
     MENU_PREFIX_RE as _MENU_PREFIX_RE,
     OCR_CAPTURE_PROFILE_STAGE_CONFIG,
     OCR_CAPTURE_PROFILE_STAGE_GALLERY,
@@ -219,7 +219,7 @@ class RuntimeMixin:
 
 
     @staticmethod
-    def _backend_plan_config_key(config: GalgameConfig) -> tuple[str, ...]:
+    def _backend_plan_config_key(config: CosplayConfig) -> tuple[str, ...]:
         return (
             str(config.ocr_reader_backend_selection or "").strip().lower(),
             str(config.ocr_reader_install_target_dir or "").strip(),

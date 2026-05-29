@@ -1,10 +1,10 @@
-const PLUGIN_ID = 'galgame_plugin';
+const PLUGIN_ID = 'cosplay_plugin';
 const RUNS_URL = '/runs';
 const UI_API_BASE = `/plugin/${PLUGIN_ID}/ui-api`;
 const TUTORIAL_STATUS_URL = `${UI_API_BASE}/tutorial/status`;
 const TUTORIAL_PROGRESS_URL = `${UI_API_BASE}/tutorial/progress`;
 // rapidocr / dxcam install URLs gone - both are bundled main-program deps
-// (see pyproject.toml [dependency-groups] galgame). Textractor still uses
+// (see pyproject.toml [dependency-groups] cosplay). Textractor still uses
 // runtime install. RapidOCR adds a model-download UI for non-bundled language
 // packs using the same task lifecycle pattern as install tasks.
 const RAPIDOCR_MODELS_DOWNLOAD_URL = `${UI_API_BASE}/rapidocr-models`;
@@ -18,22 +18,22 @@ const PLUGIN_RUN_LIGHT_TIMEOUT_MS = 30000;
 const TUTORIAL_PROGRESS_TIMEOUT_MS = 5000;
 const PLUGIN_RUN_INITIAL_POLL_MS = 250;
 const PLUGIN_RUN_MAX_POLL_MS = 2000;
-const CL_ZOOM_KEY = 'galgame_current_line_zoom';
-const CL_COLLAPSED_KEY = 'galgame_current_line_collapsed';
+const CL_ZOOM_KEY = 'cosplay_current_line_zoom';
+const CL_COLLAPSED_KEY = 'cosplay_current_line_collapsed';
 const CL_ZOOM_MIN = 12;
 const CL_ZOOM_MAX = 36;
 const CL_ZOOM_STEP = 2;
 const CL_ZOOM_DEFAULT = 18;
 const CL_COLLAPSED_DEFAULT = false;
-const PIPELINE_ZOOM_KEY = 'galgame_pipeline_zoom';
+const PIPELINE_ZOOM_KEY = 'cosplay_pipeline_zoom';
 const PIPELINE_ZOOM_MIN = 10;
 const PIPELINE_ZOOM_MAX = 20;
 const PIPELINE_ZOOM_STEP = 1;
 const PIPELINE_ZOOM_DEFAULT = 13;
-const PIPELINE_COLLAPSED_KEY = 'galgame_pipeline_collapsed';
-const OCR_WINDOW_COLLAPSED_KEY = 'galgame_ocr_window_collapsed';
-const PLUGIN_WINDOW_COLLAPSED_KEY = 'galgame_plugin_window_collapsed';
-const PLUGIN_SETTINGS_COLLAPSED_KEY = 'galgame_plugin_settings_collapsed';
+const PIPELINE_COLLAPSED_KEY = 'cosplay_pipeline_collapsed';
+const OCR_WINDOW_COLLAPSED_KEY = 'cosplay_ocr_window_collapsed';
+const PLUGIN_WINDOW_COLLAPSED_KEY = 'cosplay_plugin_window_collapsed';
+const PLUGIN_SETTINGS_COLLAPSED_KEY = 'cosplay_plugin_settings_collapsed';
 
 function uiT(key, fallback) {
   return window.I18n && typeof window.I18n.t === 'function'
@@ -60,7 +60,7 @@ function storageGet(key, fallback = '') {
   try {
     return localStorage.getItem(key) ?? fallback;
   } catch (error) {
-    console.warn('[galgame_plugin ui] localStorage read failed', error);
+    console.warn('[cosplay_plugin ui] localStorage read failed', error);
     return fallback;
   }
 }
@@ -70,7 +70,7 @@ function storageSet(key, value) {
     localStorage.setItem(key, value);
     return true;
   } catch (error) {
-    console.warn('[galgame_plugin ui] localStorage write failed', error);
+    console.warn('[cosplay_plugin ui] localStorage write failed', error);
     return false;
   }
 }
@@ -80,21 +80,21 @@ function storageRemove(key) {
     localStorage.removeItem(key);
     return true;
   } catch (error) {
-    console.warn('[galgame_plugin ui] localStorage remove failed', error);
+    console.warn('[cosplay_plugin ui] localStorage remove failed', error);
     return false;
   }
 }
 
 function readSkipOnboarding() {
-  return storageGet('galgame_skip_onboarding') === '1';
+  return storageGet('cosplay_skip_onboarding') === '1';
 }
 
 function persistSkipOnboarding() {
-  storageSet('galgame_skip_onboarding', '1');
+  storageSet('cosplay_skip_onboarding', '1');
 }
 
 function clearSkipOnboarding() {
-  storageRemove('galgame_skip_onboarding');
+  storageRemove('cosplay_skip_onboarding');
 }
 
 function getInstallUIConfig() {
@@ -173,7 +173,7 @@ function readCurrentLineCollapsed() {
 
 function applyCurrentLineZoom(px) {
   const clamped = Math.max(CL_ZOOM_MIN, Math.min(CL_ZOOM_MAX, px));
-  document.documentElement.style.setProperty('--galgame-line-font-size', `${clamped}px`);
+  document.documentElement.style.setProperty('--cosplay-line-font-size', `${clamped}px`);
   storageSet(CL_ZOOM_KEY, String(clamped));
   return clamped;
 }
@@ -933,7 +933,7 @@ function setActionButtonDisabled(button, disabled) {
   if (button.disabled !== nextDisabled) {
     button.disabled = nextDisabled;
   }
-  button.__galgameActionDesiredDisabled = nextDisabled;
+  button.__cosplayActionDesiredDisabled = nextDisabled;
 }
 
 function syncActionButtonElement(current, next) {
@@ -1000,23 +1000,23 @@ function rebindCardButton(id, handler) {
   if (!button) {
     return;
   }
-  button.__galgameCardClickHandler = handler;
-  if (button.__galgameCardClickBound) {
+  button.__cosplayCardClickHandler = handler;
+  if (button.__cosplayCardClickBound) {
     return;
   }
-  button.__galgameCardClickBound = true;
+  button.__cosplayCardClickBound = true;
   button.addEventListener('click', async () => {
     if (button.disabled) {
       return;
     }
     button.disabled = true;
     try {
-      const currentHandler = button.__galgameCardClickHandler;
+      const currentHandler = button.__cosplayCardClickHandler;
       if (typeof currentHandler === 'function') {
         await currentHandler();
       }
     } finally {
-      button.disabled = Boolean(button.__galgameActionDesiredDisabled);
+      button.disabled = Boolean(button.__cosplayActionDesiredDisabled);
     }
   });
 }
@@ -1069,7 +1069,7 @@ async function callPlugin(entryId, args = {}, { timeoutMs } = {}) {
     const pollResp = await fetch(`${RUNS_URL}/${runId}`);
     if (!pollResp.ok) {
       if ([404, 405, 501].includes(pollResp.status)) {
-        console.error('[galgame] callPlugin permanent error', pollResp.status, entryId);
+        console.error('[cosplay] callPlugin permanent error', pollResp.status, entryId);
         throw new Error(`Plugin call failed with ${pollResp.status}`);
       }
       continue;
@@ -1134,7 +1134,7 @@ function setFlash(message, type = 'info') {
 
 function isPluginNotStartedError(error) {
   const message = error instanceof Error ? error.message : String(error || '');
-  return message.includes("Plugin 'galgame_plugin' is registered but not running");
+  return message.includes("Plugin 'cosplay_plugin' is registered but not running");
 }
 
 function updateSettingsDirtyHint(message = '') {
@@ -2892,7 +2892,7 @@ function isLikelyGameDialogueLine(item = {}) {
     'capture_failed',
     'context_state=',
     'dxcam:',
-    'galgame_',
+    'cosplay_',
     'gateway_unavailable',
     'http://',
     'https://',
@@ -3748,7 +3748,7 @@ function renderPluginUnavailable(error) {
     const actions = document.getElementById(`${kind}CardActions`);
     card.className = 'install-card neutral';
     if (chip) chip.textContent = pluginNotStarted;
-    if (desc) desc.textContent = uiT('ui.install.plugin_unavailable_body', '当前无法读取插件运行状态。请先启动或重载 galgame_plugin，启动完成后这里会显示安装和运行时状态。');
+    if (desc) desc.textContent = uiT('ui.install.plugin_unavailable_body', '当前无法读取插件运行状态。请先启动或重载 cosplay_plugin，启动完成后这里会显示安装和运行时状态。');
     if (meta) meta.textContent = `${PROMPT_LABELS[kind]} · ${message}`;
     if (actions) syncActionButtons(actions, '');
     if (kind === 'rapidocr') {
@@ -4403,7 +4403,7 @@ function renderGameBinding(status) {
   listNode.querySelectorAll('[data-game-id]').forEach((button) => {
     button.addEventListener('click', () => {
       const gameId = button.getAttribute('data-game-id') || '';
-      withButtonPending(button, uiT('ui.pending.binding', '绑定中...'), () => bindGame(gameId)).catch((error) => { console.error('[galgame] async action failed', error); });
+      withButtonPending(button, uiT('ui.pending.binding', '绑定中...'), () => bindGame(gameId)).catch((error) => { console.error('[cosplay] async action failed', error); });
     });
   });
 }
@@ -4616,7 +4616,7 @@ function refreshCharacterProfiles({ force = false, silent = true } = {}) {
     return Promise.resolve(false);
   }
 
-  characterProfileRefreshInFlight = callPlugin('galgame_get_character_list', {}, {
+  characterProfileRefreshInFlight = callPlugin('cosplay_get_character_list', {}, {
     timeoutMs: PLUGIN_RUN_LIGHT_TIMEOUT_MS,
   }).then((payload) => {
     latestCharacterProfileSnapshot = normalizeCharacterProfileSnapshot(payload, latestStatus);
@@ -4658,7 +4658,7 @@ async function setCharacterProfileMode(mode) {
     ? { mode: 'fixed', character_name: characterName }
     : { mode: 'off' };
   setFlash(uiT('ui.flash.saving_character_mode', '正在保存角色档案设置...'), 'info');
-  const payload = await callPlugin('galgame_set_character_mode', args);
+  const payload = await callPlugin('cosplay_set_character_mode', args);
   setFlash(payload.summary || uiT('ui.flash.character_mode_saved', '角色档案设置已保存'), 'success');
   await refreshAll({ preserveFlash: true, forceInsights: true, forceRefresh: true });
   await refreshCharacterProfiles({ force: true, silent: true });
@@ -5177,7 +5177,7 @@ function renderMemoryProcessListToNode(node, processes) {
   node.querySelectorAll('[data-memory-process-key]').forEach((button) => {
     button.addEventListener('click', () => {
       const key = button.getAttribute('data-memory-process-key') || '';
-      withButtonPending(button, uiT('ui.pending.locking', '锁定中...'), () => setMemoryProcessTarget(key)).catch((error) => { console.error('[galgame] async action failed', error); });
+      withButtonPending(button, uiT('ui.pending.locking', '锁定中...'), () => setMemoryProcessTarget(key)).catch((error) => { console.error('[cosplay] async action failed', error); });
     });
   });
 }
@@ -5347,7 +5347,7 @@ function renderOcrWindowListToNode(node, windows) {
   node.querySelectorAll('[data-window-key]').forEach((button) => {
     button.addEventListener('click', () => {
       const key = button.getAttribute('data-window-key') || '';
-      withButtonPending(button, uiT('ui.pending.locking', '锁定中...'), () => setOcrWindowTarget(key)).catch((error) => { console.error('[galgame] async action failed', error); });
+      withButtonPending(button, uiT('ui.pending.locking', '锁定中...'), () => setOcrWindowTarget(key)).catch((error) => { console.error('[cosplay] async action failed', error); });
     });
   });
 }
@@ -5507,12 +5507,12 @@ function renderRapidOcr(status) {
   } else if (rapidocr.detail === 'broken_runtime') {
     cardStatus = 'error';
     chipText = uiT('ui.install.status.broken', '异常');
-    descText = uiT('ui.install.rapidocr.broken_body', 'bundled rapidocr 包导入失败。请重建插件 venv（`uv sync --group galgame`）或重装打包版本。');
+    descText = uiT('ui.install.rapidocr.broken_body', 'bundled rapidocr 包导入失败。请重建插件 venv（`uv sync --group cosplay`）或重装打包版本。');
     metaText = rapidocr.detected_path ? `${uiT('ui.install.detected_path', '检测路径')}: ${rapidocr.detected_path}` : '';
   } else {
     cardStatus = 'warning';
     chipText = uiT('ui.install.status.not_found', '未检测到');
-    descText = uiT('ui.install.rapidocr.bundled_hint', 'RapidOCR 运行时随主程序或源码依赖提供；语言模型由 galgame 插件按需从 ModelScope 自动下载。打包版本缺运行时时请重新下载安装包，源码运行请执行 `uv sync --group galgame` 后重启。');
+    descText = uiT('ui.install.rapidocr.bundled_hint', 'RapidOCR 运行时随主程序或源码依赖提供；语言模型由 cosplay 插件按需从 ModelScope 自动下载。打包版本缺运行时时请重新下载安装包，源码运行请执行 `uv sync --group cosplay` 后重启。');
   }
 
   if (modelState && !isInstallTaskTerminal(modelState)) {
@@ -5632,8 +5632,8 @@ function bindRapidOcrLangButtons() {
   });
 
   const group = document.querySelector('.rapidocr-lang-buttons');
-  if (group && !group.__galgameRapidOcrKeysBound) {
-    group.__galgameRapidOcrKeysBound = true;
+  if (group && !group.__cosplayRapidOcrKeysBound) {
+    group.__cosplayRapidOcrKeysBound = true;
     group.addEventListener('keydown', (event) => {
       const buttons = Array.from(group.querySelectorAll('.rapidocr-lang-btn'));
       const enabledButtons = buttons.filter((button) => !button.disabled);
@@ -5673,8 +5673,8 @@ function bindRapidOcrLangButtons() {
   }
 
   const checkbox = document.getElementById('rapidocrAutoDetectCheck');
-  if (checkbox && !checkbox.__galgameRapidOcrAutoBound) {
-    checkbox.__galgameRapidOcrAutoBound = true;
+  if (checkbox && !checkbox.__cosplayRapidOcrAutoBound) {
+    checkbox.__cosplayRapidOcrAutoBound = true;
     checkbox.addEventListener('change', () => {
       setRapidOcrLang({ auto_detect_lang: checkbox.checked });
     });
@@ -6244,7 +6244,7 @@ async function refreshInsights(snapshot, { force = false, history = {}, status =
   const suggestPromise = hasChoices
     ? (force || latestInsights.suggestKey !== suggestKey || !latestInsights.suggestPayload)
       ? safeCall(
-        'galgame_suggest_choice',
+        'cosplay_suggest_choice',
         {},
         buildSuggestFallback(currentSceneId),
       )
@@ -6274,7 +6274,7 @@ function runBackgroundTask(label, task) {
   Promise.resolve()
     .then(task)
     .catch((error) => {
-      console.warn(`[galgame_plugin ui] ${label} failed`, error);
+      console.warn(`[cosplay_plugin ui] ${label} failed`, error);
     });
 }
 
@@ -6329,7 +6329,7 @@ function startAutoRefresh(intervalMs = AUTO_REFRESH_INTERVAL_MS) {
     if (document.hidden) {
       return;
     }
-    refreshAll({ preserveFlash: true, silent: true }).catch((error) => { console.error('[galgame] async action failed', error); });
+    refreshAll({ preserveFlash: true, silent: true }).catch((error) => { console.error('[cosplay] async action failed', error); });
   }, intervalMs);
 }
 
@@ -6399,7 +6399,7 @@ function refreshMemoryProcessTargetsIfNeeded({
     }
     return Boolean(refreshed);
   }).catch((error) => {
-    console.warn(`[galgame_plugin ui] refresh Memory Reader processes for ${reason || 'unknown'} failed`, error);
+    console.warn(`[cosplay_plugin ui] refresh Memory Reader processes for ${reason || 'unknown'} failed`, error);
     if (!silent) {
       setFlash(error instanceof Error ? error.message : String(error), 'error');
     }
@@ -6434,7 +6434,7 @@ function refreshOcrWindowTargetsIfNeeded({
     }
     return Boolean(refreshed);
   }).catch((error) => {
-    console.warn(`[galgame_plugin ui] refresh OCR window targets for ${reason || 'unknown'} failed`, error);
+    console.warn(`[cosplay_plugin ui] refresh OCR window targets for ${reason || 'unknown'} failed`, error);
     if (!silent) {
       setFlash(error instanceof Error ? error.message : String(error), 'error');
     }
@@ -6452,7 +6452,7 @@ function refreshOcrWindowsOnPageFocus() {
   refreshOcrWindowTargetsIfNeeded({
     reason: 'page_focus',
     silent: true,
-  }).catch((error) => { console.error('[galgame] async action failed', error); });
+  }).catch((error) => { console.error('[cosplay] async action failed', error); });
 }
 
 async function refreshAll(options = {}) {
@@ -6471,7 +6471,7 @@ async function refreshAll(options = {}) {
     try {
       await refreshInFlight;
     } catch (error) {
-      console.warn('[galgame_plugin ui] ignored stale refresh before forced refresh', error);
+      console.warn('[cosplay_plugin ui] ignored stale refresh before forced refresh', error);
     }
   }
 
@@ -6481,9 +6481,9 @@ async function refreshAll(options = {}) {
     }
     try {
       const [status, snapshot, history] = await Promise.all([
-        callPlugin('galgame_get_status', {}, { timeoutMs: PLUGIN_RUN_LIGHT_TIMEOUT_MS }),
-        callPlugin('galgame_get_snapshot', {}, { timeoutMs: PLUGIN_RUN_LIGHT_TIMEOUT_MS }),
-        callPlugin('galgame_get_history', { limit: 20, include_events: true }, { timeoutMs: PLUGIN_RUN_LIGHT_TIMEOUT_MS }),
+        callPlugin('cosplay_get_status', {}, { timeoutMs: PLUGIN_RUN_LIGHT_TIMEOUT_MS }),
+        callPlugin('cosplay_get_snapshot', {}, { timeoutMs: PLUGIN_RUN_LIGHT_TIMEOUT_MS }),
+        callPlugin('cosplay_get_history', { limit: 20, include_events: true }, { timeoutMs: PLUGIN_RUN_LIGHT_TIMEOUT_MS }),
       ]);
       const scrollState = captureRefreshScrollState();
       const agentStatus = status.agent || buildAgentStatusFromStatus(status);
@@ -6539,7 +6539,7 @@ async function refreshAll(options = {}) {
           await insightRefresh;
         } else {
           insightRefresh.catch((error) => {
-            console.warn('[galgame_plugin ui] background insight refresh failed', error);
+            console.warn('[cosplay_plugin ui] background insight refresh failed', error);
           });
         }
       }
@@ -6547,7 +6547,7 @@ async function refreshAll(options = {}) {
     } catch (error) {
       renderPluginUnavailable(error);
       if (silent) {
-        console.warn('[galgame_plugin ui] refresh failed', error);
+        console.warn('[cosplay_plugin ui] refresh failed', error);
         return false;
       }
       if (isPluginNotStartedError(error)) {
@@ -6715,7 +6715,7 @@ async function setOcrBackendSelection({ backendSelection = null, captureBackend 
     : uiTf('ui.ocr.capture_backend_selection_label', '截图后端切换为 {backend}', { backend: captureBackend });
   try {
     setFlash(uiTf('ui.flash.saving_named_setting', '正在{label}...', { label }), 'info');
-    await callPlugin('galgame_set_ocr_backend', args);
+    await callPlugin('cosplay_set_ocr_backend', args);
     setFlash(uiTf('ui.flash.named_setting_saved', '{label} 已保存', { label }), 'success');
     await refreshAll({ preserveFlash: true, forceInsights: true });
   } catch (error) {
@@ -6734,7 +6734,7 @@ async function setRapidOcrLang(payload = {}) {
   let saved = false;
   try {
     setFlash(uiT('ui.flash.saving_rapidocr_lang', '正在保存 RapidOCR 识别语言...'), 'info');
-    const result = await callPlugin('galgame_set_rapidocr_lang', payload);
+    const result = await callPlugin('cosplay_set_rapidocr_lang', payload);
     saved = true;
     if (!rapidOcrLangQueuedPayload) {
       setFlash(result.summary || uiT('ui.flash.rapidocr_lang_saved', 'RapidOCR 识别语言已保存'), 'success');
@@ -6829,19 +6829,19 @@ async function saveMode({ auto = false } = {}) {
     settingsSaveInFlight = true;
     updateSettingsDirtyHint(auto ? uiT('ui.pending.auto_saving', '正在自动保存...') : uiT('ui.pending.saving', '保存中...'));
     setFlash(auto ? uiT('ui.flash.auto_saving_settings', '正在自动保存设置...') : uiT('ui.flash.saving_settings', '正在保存设置...'), 'info');
-    await callPlugin('galgame_set_mode', {
+    await callPlugin('cosplay_set_mode', {
       mode,
       push_notifications: pushNotifications,
       advance_speed: advanceSpeed,
       reader_mode: readerMode,
     });
     modeCommitted = true;
-    await callPlugin('galgame_set_ocr_timing', {
+    await callPlugin('cosplay_set_ocr_timing', {
       poll_interval_seconds: ocrPollInterval,
       trigger_mode: ocrTriggerMode,
       fast_loop_enabled: fastLoopEnabled,
     });
-    await callPlugin('galgame_set_llm_vision', {
+    await callPlugin('cosplay_set_llm_vision', {
       vision_enabled: visionEnabled,
       vision_max_image_px: Math.round(visionMaxImagePx),
     });
@@ -6855,14 +6855,14 @@ async function saveMode({ auto = false } = {}) {
     await refreshAll({ preserveFlash: true, forceInsights: true, forceRefresh: true });
   } catch (error) {
     if (requestId !== modeSaveRequestId) {
-      console.error('[galgame] stale saveMode error suppressed', error);
+      console.error('[cosplay] stale saveMode error suppressed', error);
       return;
     }
     if (modeCommitted) {
       try {
         await refreshAll({ preserveFlash: true, forceRefresh: true });
       } catch (refreshError) {
-        console.error('[galgame] mode save reconcile refresh failed', refreshError);
+        console.error('[cosplay] mode save reconcile refresh failed', refreshError);
       }
     } else {
       clearPendingModeSelection(mode);
@@ -6882,7 +6882,7 @@ async function bindGame(gameId = '') {
     setFlash(normalized
       ? uiTf('ui.flash.binding_game', '正在绑定 {gameId}...', { gameId: normalized })
       : uiT('ui.flash.restoring_auto_select', '正在恢复自动选择...'), 'info');
-    await callPlugin('galgame_bind_game', { game_id: normalized });
+    await callPlugin('cosplay_bind_game', { game_id: normalized });
     setFlash(normalized
       ? uiTf('ui.flash.game_bound', '已绑定 {gameId}', { gameId: normalized })
       : uiT('ui.flash.auto_select_restored', '已恢复自动选择'), 'success');
@@ -6898,14 +6898,14 @@ async function bindGame(gameId = '') {
 async function setStandby(standby) {
   try {
     setFlash(standby ? uiT('ui.flash.entering_standby', '正在进入待机...') : uiT('ui.flash.resuming_active', '正在恢复活跃...'), 'info');
-    const payload = await callPlugin('galgame_agent_command', {
+    const payload = await callPlugin('cosplay_agent_command', {
       action: 'set_standby',
       standby,
     });
     latestAgentReply = payload.result || latestAgentReply;
     setFlash(standby ? uiT('ui.flash.standby_enabled', '已切换到待机') : uiT('ui.flash.active_resumed', '已恢复活跃'), 'success');
     refreshAll({ preserveFlash: true, forceInsights: true }).catch((error) => {
-      console.warn('[galgame_plugin ui] refresh after standby change failed', error);
+      console.warn('[cosplay_plugin ui] refresh after standby change failed', error);
     });
   } catch (error) {
     setFlash(error instanceof Error ? error.message : String(error), 'error');
@@ -6916,7 +6916,7 @@ async function resumeAgentFromButton() {
   const action = document.getElementById('standbyOffBtn').dataset.resumeAction || 'noop';
   if (action === 'focus') {
     setFlash(uiT('ui.flash.resume_focus_pause', '当前是窗口失焦暂停。请切回游戏窗口，Agent 会自动继续；恢复活跃只解除手动待机。'), 'info');
-    refreshAll({ preserveFlash: true, silent: true }).catch((error) => { console.error('[galgame] async action failed', error); });
+    refreshAll({ preserveFlash: true, silent: true }).catch((error) => { console.error('[cosplay] async action failed', error); });
     return;
   }
   if (action === 'read_only') {
@@ -6940,7 +6940,7 @@ async function askAgent(action) {
   try {
     setFlash(action === 'query_context' ? uiT('ui.flash.querying_context', '正在查询上下文...') : uiT('ui.flash.sending_agent', '正在发送给 Agent...'), 'info');
     const payload = await callPlugin(
-      'galgame_agent_command',
+      'cosplay_agent_command',
       action === 'query_context'
         ? { action, context_query: prompt }
         : { action, message: prompt },
@@ -6979,7 +6979,7 @@ async function saveOcrCaptureProfile() {
     const rightInsetRatio = readProfileNumber('ocrProfileRightInput', 'right_inset_ratio');
     const topRatio = readProfileNumber('ocrProfileTopInput', 'top_ratio');
     const bottomInsetRatio = readProfileNumber('ocrProfileBottomInput', 'bottom_inset_ratio');
-    const payload = await callPlugin('galgame_set_ocr_capture_profile', {
+    const payload = await callPlugin('cosplay_set_ocr_capture_profile', {
       process_name: processName,
       stage,
       save_scope: saveScope,
@@ -7003,7 +7003,7 @@ async function clearOcrCaptureProfile() {
     const saveScope = normalizeCaptureProfileSaveScope(
       document.getElementById('ocrProfileSaveScopeSelect').value,
     );
-    const payload = await callPlugin('galgame_set_ocr_capture_profile', {
+    const payload = await callPlugin('cosplay_set_ocr_capture_profile', {
       process_name: processName,
       stage,
       save_scope: saveScope,
@@ -7018,7 +7018,7 @@ async function clearOcrCaptureProfile() {
 
 async function autoRecalibrateOcrDialogueProfile() {
   try {
-    const payload = await callPlugin('galgame_auto_recalibrate_ocr_dialogue_profile', {});
+    const payload = await callPlugin('cosplay_auto_recalibrate_ocr_dialogue_profile', {});
     const sampleText = String(payload.sample_text || '').trim();
     const summary = payload.summary || uiT('ui.flash.ocr_dialogue_auto_recalibrated', 'OCR 对白区已自动重校准');
     setFlash(sampleText ? `${summary} | ${sampleText}` : summary, 'success');
@@ -7033,7 +7033,7 @@ async function autoRecalibrateOcrDialogueProfile() {
 async function applyRecommendedOcrCaptureProfile() {
   try {
     const autoApplyInput = document.getElementById('ocrProfileAutoApplyRecommendedInput');
-    const payload = await callPlugin('galgame_apply_recommended_ocr_capture_profile', {
+    const payload = await callPlugin('cosplay_apply_recommended_ocr_capture_profile', {
       confirm: true,
       enable_auto_apply: Boolean(autoApplyInput?.checked),
       allow_manual_override: false,
@@ -7047,7 +7047,7 @@ async function applyRecommendedOcrCaptureProfile() {
 
 async function rollbackOcrCaptureProfileRecommendation() {
   try {
-    const payload = await callPlugin('galgame_rollback_ocr_capture_profile', {
+    const payload = await callPlugin('cosplay_rollback_ocr_capture_profile', {
       confirm: true,
     });
     setFlash(payload.summary || uiT('ui.flash.ocr_recommended_profile_rolled_back', 'OCR 推荐截图校准已回滚'), 'success');
@@ -7059,14 +7059,14 @@ async function rollbackOcrCaptureProfileRecommendation() {
 
 async function refreshMemoryProcesses({ includeUnknown = true, silent = false } = {}) {
   try {
-    const payload = await callPlugin('galgame_list_memory_reader_processes', {
+    const payload = await callPlugin('cosplay_list_memory_reader_processes', {
       include_unknown: Boolean(includeUnknown),
     });
     renderMemoryProcessTargetSnapshot(payload, latestStatus);
     return true;
   } catch (error) {
     if (silent) {
-      console.warn('[galgame_plugin ui] refresh Memory Reader processes failed', error);
+      console.warn('[cosplay_plugin ui] refresh Memory Reader processes failed', error);
       return false;
     }
     setFlash(error instanceof Error ? error.message : String(error), 'error');
@@ -7102,7 +7102,7 @@ function closeMemoryProcessModal() {
 async function setMemoryProcessTarget(processKey) {
   try {
     setFlash(uiT('ui.flash.locking_memory_process', '正在锁定 Memory Reader 进程...'), 'info');
-    const payload = await callPlugin('galgame_set_memory_reader_target', {
+    const payload = await callPlugin('cosplay_set_memory_reader_target', {
       process_key: processKey,
       clear: false,
     });
@@ -7112,13 +7112,13 @@ async function setMemoryProcessTarget(processKey) {
     }), 'success');
     closeMemoryProcessModal();
     refreshAll({ preserveFlash: true, forceInsights: true }).catch((error) => {
-      console.warn('[galgame_plugin ui] refresh after Memory Reader process lock failed', error);
+      console.warn('[cosplay_plugin ui] refresh after Memory Reader process lock failed', error);
     });
     refreshMemoryProcessTargetsIfNeeded({
       reason: 'lock_memory_process',
       force: true,
       silent: true,
-    }).catch((error) => { console.error('[galgame] async action failed', error); });
+    }).catch((error) => { console.error('[cosplay] async action failed', error); });
   } catch (error) {
     setFlash(error instanceof Error ? error.message : String(error), 'error');
   }
@@ -7127,14 +7127,14 @@ async function setMemoryProcessTarget(processKey) {
 async function clearMemoryProcessTarget() {
   try {
     setFlash(uiT('ui.flash.clearing_memory_process_lock', '正在清除 Memory Reader 手动进程锁定...'), 'info');
-    await callPlugin('galgame_set_memory_reader_target', { clear: true });
+    await callPlugin('cosplay_set_memory_reader_target', { clear: true });
     setFlash(uiT('ui.flash.memory_process_auto_restored', 'Memory Reader 已恢复自动进程检测'), 'success');
     await refreshAll({ preserveFlash: true, forceInsights: true });
     refreshMemoryProcessTargetsIfNeeded({
       reason: 'clear_memory_process',
       force: true,
       silent: true,
-    }).catch((error) => { console.error('[galgame] async action failed', error); });
+    }).catch((error) => { console.error('[cosplay] async action failed', error); });
   } catch (error) {
     setFlash(error instanceof Error ? error.message : String(error), 'error');
   }
@@ -7142,7 +7142,7 @@ async function clearMemoryProcessTarget() {
 
 async function refreshOcrWindowTargets({ includeExcluded = true, silent = false, force = false } = {}) {
   try {
-    const payload = await callPlugin('galgame_list_ocr_windows', {
+    const payload = await callPlugin('cosplay_list_ocr_windows', {
       include_excluded: Boolean(includeExcluded),
       force: Boolean(force),
     });
@@ -7150,7 +7150,7 @@ async function refreshOcrWindowTargets({ includeExcluded = true, silent = false,
     return true;
   } catch (error) {
     if (silent) {
-      console.warn('[galgame_plugin ui] refresh OCR window targets failed', error);
+      console.warn('[cosplay_plugin ui] refresh OCR window targets failed', error);
       return false;
     }
     setFlash(error instanceof Error ? error.message : String(error), 'error');
@@ -7186,7 +7186,7 @@ function closeOcrWindowModal() {
 async function setOcrWindowTarget(windowKey) {
   try {
     setFlash(uiT('ui.flash.locking_ocr_window', '正在锁定 OCR 识别窗口...'), 'info');
-    const payload = await callPlugin('galgame_set_ocr_window_target', {
+    const payload = await callPlugin('cosplay_set_ocr_window_target', {
       window_key: windowKey,
       clear: false,
     });
@@ -7197,13 +7197,13 @@ async function setOcrWindowTarget(windowKey) {
     }), 'success');
     closeOcrWindowModal();
     refreshAll({ preserveFlash: true, forceInsights: true }).catch((error) => {
-      console.warn('[galgame_plugin ui] refresh after OCR window lock failed', error);
+      console.warn('[cosplay_plugin ui] refresh after OCR window lock failed', error);
     });
     refreshOcrWindowTargetsIfNeeded({
       reason: 'lock_window_target',
       force: true,
       silent: true,
-    }).catch((error) => { console.error('[galgame] async action failed', error); });
+    }).catch((error) => { console.error('[cosplay] async action failed', error); });
   } catch (error) {
     setFlash(error instanceof Error ? error.message : String(error), 'error');
   }
@@ -7212,18 +7212,18 @@ async function setOcrWindowTarget(windowKey) {
 async function clearOcrWindowTarget() {
   try {
     setFlash(uiT('ui.flash.clearing_ocr_window', '正在清除 OCR 目标窗口...'), 'info');
-    const payload = await callPlugin('galgame_set_ocr_window_target', {
+    const payload = await callPlugin('cosplay_set_ocr_window_target', {
       clear: true,
     });
     setFlash(payload.summary || uiT('ui.flash.ocr_window_cleared', '已清除 OCR 目标窗口。插件会重新尝试自动检测；识别不到时再手动选择。'), 'success');
     refreshAll({ preserveFlash: true, forceInsights: true }).catch((error) => {
-      console.warn('[galgame_plugin ui] refresh after OCR target clear failed', error);
+      console.warn('[cosplay_plugin ui] refresh after OCR target clear failed', error);
     });
     refreshOcrWindowTargetsIfNeeded({
       reason: 'clear_window_target',
       force: true,
       silent: true,
-    }).catch((error) => { console.error('[galgame] async action failed', error); });
+    }).catch((error) => { console.error('[cosplay] async action failed', error); });
   } catch (error) {
     setFlash(error instanceof Error ? error.message : String(error), 'error');
   }
@@ -7346,7 +7346,7 @@ async function resetTutorialGuide() {
       ...(latestTutorialProgress || {}),
     };
   } catch (error) {
-    console.warn('[galgame_plugin ui] tutorial reset progress save failed', error);
+    console.warn('[cosplay_plugin ui] tutorial reset progress save failed', error);
   }
   const onboardingView = document.getElementById('onboardingView');
   if (onboardingView) {
@@ -7394,7 +7394,7 @@ async function handleDiagnosisAction(action) {
       } else {
         navigateToInstallPanel('dxcam', { scrollToSection: false });
         expandAndScrollTo('dxcamCard');
-        setFlash(uiT('ui.flash.dxcam_hint_revealed', '已定位到 DXcam 状态卡片。请按卡片说明操作（重装打包版 / uv sync --group galgame）。'), 'info');
+        setFlash(uiT('ui.flash.dxcam_hint_revealed', '已定位到 DXcam 状态卡片。请按卡片说明操作（重装打包版 / uv sync --group cosplay）。'), 'info');
       }
       break;
     case 'capture_backend':
@@ -7549,7 +7549,7 @@ async function initialize() {
         started_at: Number(progress?.started_at || 0) || Date.now() / 1000,
       });
     } catch (error) {
-      console.warn('[galgame_plugin ui] tutorial initial progress save failed', error);
+      console.warn('[cosplay_plugin ui] tutorial initial progress save failed', error);
     }
   } else {
     onboardingDismissed = true;
@@ -7603,11 +7603,11 @@ document.getElementById('refreshBtn').addEventListener('click', async () => {
         reason: 'manual_refresh',
         force: true,
         silent: true,
-      }).catch((error) => { console.error('[galgame] async action failed', error); });
+      }).catch((error) => { console.error('[cosplay] async action failed', error); });
       refreshCharacterProfiles({
         force: true,
         silent: true,
-      }).catch((error) => { console.error('[galgame] async action failed', error); });
+      }).catch((error) => { console.error('[cosplay] async action failed', error); });
     }
     const windowsLoaded = loaded
       ? await refreshOcrWindowTargetsIfNeeded({
@@ -7658,7 +7658,7 @@ document.getElementById('resetTutorialBtn')?.addEventListener('click', (event) =
   });
 });
 document.getElementById('saveModeBtn').addEventListener('click', () => {
-  withButtonPending('saveModeBtn', uiT('ui.pending.saving', '保存中...'), saveMode).catch((error) => { console.error('[galgame] async action failed', error); });
+  withButtonPending('saveModeBtn', uiT('ui.pending.saving', '保存中...'), saveMode).catch((error) => { console.error('[cosplay] async action failed', error); });
 });
 SETTINGS_CONTROL_IDS.forEach((id) => {
   const node = document.getElementById(id);
@@ -7681,10 +7681,10 @@ document.getElementById('clearBindBtn').addEventListener('click', async () => {
   await withButtonPending('clearBindBtn', uiT('ui.pending.restoring', '恢复中...'), () => bindGame(''));
 });
 document.getElementById('standbyOnBtn').addEventListener('click', () => {
-  withButtonPending('standbyOnBtn', uiT('ui.pending.switching', '切换中...'), () => setStandby(true)).catch((error) => { console.error('[galgame] async action failed', error); });
+  withButtonPending('standbyOnBtn', uiT('ui.pending.switching', '切换中...'), () => setStandby(true)).catch((error) => { console.error('[cosplay] async action failed', error); });
 });
 document.getElementById('standbyOffBtn').addEventListener('click', () => {
-  withButtonPending('standbyOffBtn', uiT('ui.pending.processing', '处理中...'), resumeAgentFromButton).catch((error) => { console.error('[galgame] async action failed', error); });
+  withButtonPending('standbyOffBtn', uiT('ui.pending.processing', '处理中...'), resumeAgentFromButton).catch((error) => { console.error('[cosplay] async action failed', error); });
 });
 document.querySelector('.agent-panel-tabs')?.addEventListener('click', (event) => {
   const target = eventElement(event.target);
@@ -7713,10 +7713,10 @@ document.querySelector('.plugin-settings-tabs')?.addEventListener('click', (even
   setPluginSettingsTab(tab.getAttribute('data-settings-tab') || 'recognition');
 });
 document.getElementById('queryContextBtn')?.addEventListener('click', () => {
-  withButtonPending('queryContextBtn', uiT('ui.pending.querying', '查询中...'), () => askAgent('query_context')).catch((error) => { console.error('[galgame] async action failed', error); });
+  withButtonPending('queryContextBtn', uiT('ui.pending.querying', '查询中...'), () => askAgent('query_context')).catch((error) => { console.error('[cosplay] async action failed', error); });
 });
 document.getElementById('sendMessageBtn')?.addEventListener('click', () => {
-  withButtonPending('sendMessageBtn', uiT('ui.pending.sending', '发送中...'), () => askAgent('send_message')).catch((error) => { console.error('[galgame] async action failed', error); });
+  withButtonPending('sendMessageBtn', uiT('ui.pending.sending', '发送中...'), () => askAgent('send_message')).catch((error) => { console.error('[cosplay] async action failed', error); });
 });
 document.getElementById('characterProfileFixedBtn')?.addEventListener('click', () => {
   withButtonPending('characterProfileFixedBtn', uiT('ui.pending.saving', '保存中...'), () => (
@@ -7750,7 +7750,7 @@ document.getElementById('characterProfileSelect')?.addEventListener('change', ()
 document.getElementById('characterProfileSelect')?.addEventListener('focus', () => {
   if (shouldRefreshCharacterProfilesForStatus(latestStatus)) {
     refreshCharacterProfiles({ force: true, silent: true }).catch((error) => {
-      console.warn('[galgame_plugin ui] character profile focus refresh failed', error);
+      console.warn('[cosplay_plugin ui] character profile focus refresh failed', error);
     });
   }
 });
@@ -7768,7 +7768,7 @@ document.getElementById('memoryProcessRefreshBtn').addEventListener('click', () 
   });
 });
 document.getElementById('memoryProcessAutoBtn').addEventListener('click', () => {
-  clearMemoryProcessTarget().catch((error) => { console.error('[galgame] async action failed', error); });
+  clearMemoryProcessTarget().catch((error) => { console.error('[cosplay] async action failed', error); });
 });
 document.getElementById('memoryProcessSelectBtn').addEventListener('click', () => {
   openMemoryProcessModal().catch((error) => {
@@ -7791,7 +7791,7 @@ document.getElementById('ocrWindowRefreshBtn').addEventListener('click', () => {
   });
 });
 document.getElementById('ocrWindowAutoBtn').addEventListener('click', () => {
-  clearOcrWindowTargetWithFeedback().catch((error) => { console.error('[galgame] async action failed', error); });
+  clearOcrWindowTargetWithFeedback().catch((error) => { console.error('[cosplay] async action failed', error); });
 });
 document.getElementById('ocrWindowSelectBtn').addEventListener('click', () => {
   openOcrWindowModal().catch((error) => {
@@ -7863,7 +7863,7 @@ document.querySelectorAll('#modeSwitch .mode-btn').forEach((btn) => {
       pendingModeSelection = mode;
       updateModeSwitchControl(mode);
       updateSummaryMode(mode);
-      saveMode().catch((error) => { console.error('[galgame] async action failed', error); });
+      saveMode().catch((error) => { console.error('[cosplay] async action failed', error); });
     }
   });
 });
@@ -7875,7 +7875,7 @@ document.querySelectorAll('#speedSwitch .speed-btn').forEach((btn) => {
     if (select && speed) {
       select.value = speed;
       select.dispatchEvent(new Event('change'));
-      saveMode().catch((error) => { console.error('[galgame] async action failed', error); });
+      saveMode().catch((error) => { console.error('[cosplay] async action failed', error); });
     }
   });
 });
@@ -7927,15 +7927,15 @@ if (advancedToggleBtn) {
 
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) {
-    refreshAll({ preserveFlash: true, silent: true }).catch((error) => { console.error('[galgame] async action failed', error); });
-    refreshMemoryProcessTargetsIfNeeded({ reason: 'page_focus', silent: true }).catch((error) => { console.error('[galgame] async action failed', error); });
+    refreshAll({ preserveFlash: true, silent: true }).catch((error) => { console.error('[cosplay] async action failed', error); });
+    refreshMemoryProcessTargetsIfNeeded({ reason: 'page_focus', silent: true }).catch((error) => { console.error('[cosplay] async action failed', error); });
     refreshOcrWindowsOnPageFocus();
   }
 });
 
 window.addEventListener('focus', () => {
-  refreshAll({ preserveFlash: true, silent: true }).catch((error) => { console.error('[galgame] async action failed', error); });
-  refreshMemoryProcessTargetsIfNeeded({ reason: 'page_focus', silent: true }).catch((error) => { console.error('[galgame] async action failed', error); });
+  refreshAll({ preserveFlash: true, silent: true }).catch((error) => { console.error('[cosplay] async action failed', error); });
+  refreshMemoryProcessTargetsIfNeeded({ reason: 'page_focus', silent: true }).catch((error) => { console.error('[cosplay] async action failed', error); });
   refreshOcrWindowsOnPageFocus();
 });
 
@@ -7943,7 +7943,7 @@ window.addEventListener('i18n-ready', () => {
   syncPluginStatusSectionLabels();
   syncPluginStatusHubSummaryLabels();
   if (window.I18n && typeof window.I18n.lang === 'function' && window.I18n.lang() !== 'zh-CN') {
-    refreshAll({ preserveFlash: true, silent: true }).catch((error) => { console.error('[galgame] async action failed', error); });
+    refreshAll({ preserveFlash: true, silent: true }).catch((error) => { console.error('[cosplay] async action failed', error); });
   }
 });
 

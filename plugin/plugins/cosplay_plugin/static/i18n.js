@@ -81,7 +81,7 @@ const I18n = {
   },
 
   async init(pluginId) {
-    const encodedPluginId = encodeURIComponent(pluginId || 'galgame_plugin');
+    const encodedPluginId = encodeURIComponent(pluginId || 'cosplay_plugin');
     const queryLocale = this._queryLocale();
     const storageLocale = this._storageLocale();
     if (queryLocale) {
@@ -155,7 +155,7 @@ window.I18n = I18n;
 
 (function bootstrapI18n() {
   const match = location.pathname.match(/\/plugin\/([^/]+)\/ui\//);
-  const pluginId = match ? match[1] : 'galgame_plugin';
+  const pluginId = match ? match[1] : 'cosplay_plugin';
   I18n.init(pluginId).then(() => {
     I18n.scanDOM();
     I18n._syncDocumentLang();

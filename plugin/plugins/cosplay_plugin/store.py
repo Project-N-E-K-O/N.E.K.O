@@ -50,7 +50,7 @@ from .models import (
 )
 
 
-class GalgameStore:
+class CosplayStore:
     _thread_lock = threading.RLock()
 
     def __init__(self, store_path: Path, logger) -> None:
@@ -64,10 +64,10 @@ class GalgameStore:
         if value is None or isinstance(value, (str, int, float, bool)):
             return True
         if isinstance(value, list):
-            return all(GalgameStore._is_json_value(item) for item in value)
+            return all(CosplayStore._is_json_value(item) for item in value)
         if isinstance(value, dict):
             return all(
-                isinstance(key, str) and GalgameStore._is_json_value(item)
+                isinstance(key, str) and CosplayStore._is_json_value(item)
                 for key, item in value.items()
             )
         return False

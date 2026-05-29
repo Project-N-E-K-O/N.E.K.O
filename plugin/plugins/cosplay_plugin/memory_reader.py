@@ -28,7 +28,7 @@ except ImportError:  # pragma: no cover - psutil is available in the project run
 
 from .models import (
     DATA_SOURCE_MEMORY_READER,
-    GalgameConfig,
+    CosplayConfig,
     MENU_PREFIX_RE as _MENU_PREFIX_RE,
     sanitize_choice,
     sanitize_save_context,
@@ -520,7 +520,7 @@ class MemoryReaderManager:
         self,
         *,
         logger,
-        config: GalgameConfig,
+        config: CosplayConfig,
         process_factory: Callable[[str], Awaitable[TextractorProcessHandle]] | None = None,
         process_scanner: Callable[[], list[DetectedGameProcess]] | None = None,
         process_inventory_scanner: Callable[[], list[DetectedGameProcess]] | None = None,
@@ -566,7 +566,7 @@ class MemoryReaderManager:
         self._consecutive_attach_timeouts = 0
         self._max_attach_timeouts = 3
 
-    def update_config(self, config: GalgameConfig) -> None:
+    def update_config(self, config: CosplayConfig) -> None:
         with self._config_update_lock:
             bridge_root_changed = self._writer.bridge_root != config.bridge_root
             self._config = config

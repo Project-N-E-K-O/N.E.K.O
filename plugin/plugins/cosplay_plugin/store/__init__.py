@@ -1,5 +1,5 @@
 from __future__ import annotations
 
-from .core import GalgameStore
+from .core import CosplayStore
 
-__all__ = ["GalgameStore"]
+__all__ = ["CosplayStore"]

@@ -9,7 +9,7 @@ import sys
 import threading
 from typing import Any
 
-from .models import GalgameConfig
+from .models import CosplayConfig
 from ._types import MEMORY_READER_DEFAULT_ENGINE, TextractorProcessHandle
 from ._win32_job_objects import _track_textractor_process, _untrack_textractor_process
 
@@ -53,7 +53,7 @@ def _textractor_hook_command(code: str, pid: int) -> str:
 
 
 def _select_hook_codes_for_engine(
-    config: GalgameConfig,
+    config: CosplayConfig,
     engine: str,
 ) -> tuple[list[str], str]:
     normalized_engine = str(engine or "").strip().lower() or MEMORY_READER_DEFAULT_ENGINE

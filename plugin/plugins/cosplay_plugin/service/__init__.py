@@ -26,8 +26,8 @@ from ..models import (
     DATA_SOURCE_BRIDGE_SDK,
     DATA_SOURCE_MEMORY_READER,
     DATA_SOURCE_OCR_READER,
-    GalgameConfig,
-    GalgameLLMConfig,
+    CosplayConfig,
+    CosplayLLMConfig,
     MODE_CHOICE_ADVISOR,
     MODE_COMPANION,
     MODES,
@@ -118,7 +118,7 @@ def clear_install_inspection_cache() -> None:
 
 def _build_download_guide_payload(
     *,
-    config: GalgameConfig,
+    config: CosplayConfig,
     textractor: dict[str, Any],
     rapidocr: dict[str, Any],
 ) -> dict[str, Any]:
@@ -587,7 +587,7 @@ def _default_rapidocr_enabled() -> bool:
     return is_windows()
 
 
-def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
+def build_config(raw_config: dict[str, Any]) -> CosplayConfig:
     cosplay = raw_config.get("cosplay")
     llm = raw_config.get("llm")
     memory_reader = raw_config.get("memory_reader")
@@ -632,7 +632,7 @@ def build_config(raw_config: dict[str, Any]) -> GalgameConfig:
             context_explain_min_lines,
         )
 
-    return GalgameConfig(
+    return CosplayConfig(
         bridge_root=expand_bridge_root(bridge_root_raw),
         active_poll_interval_seconds=_coerce_float(
             cosplay_obj.get("active_poll_interval_seconds"), 1.0, minimum=0.1
@@ -1222,7 +1222,7 @@ def derive_connection_state(
     return STATE_ACTIVE
 
 
-def next_poll_interval_for_state(connection_state: str, *, stream_reset_pending: bool, config: GalgameConfig) -> float:
+def next_poll_interval_for_state(connection_state: str, *, stream_reset_pending: bool, config: CosplayConfig) -> float:
     if stream_reset_pending or connection_state == STATE_ACTIVE:
         return config.active_poll_interval_seconds
     return config.idle_poll_interval_seconds
@@ -2217,7 +2217,7 @@ def apply_event_to_histories(
     history_choices: list[dict[str, Any]],
     dedupe_window: list[dict[str, str]],
     event: dict[str, Any],
-    config: GalgameConfig,
+    config: CosplayConfig,
     game_id: str,
 ) -> None:
     payload = event.get("payload")
@@ -2312,7 +2312,7 @@ def rebuild_histories_from_events(
     events: Iterable[dict[str, Any]],
     snapshot: dict[str, Any],
     dedupe_window: list[dict[str, str]],
-    config: GalgameConfig,
+    config: CosplayConfig,
     game_id: str,
 ) -> tuple[
     list[dict[str, Any]],
@@ -2355,7 +2355,7 @@ def rebuild_histories_from_events(
 def build_status_payload(
     state,
     *,
-    config: GalgameConfig,
+    config: CosplayConfig,
     state_is_snapshot: bool = False,
 ) -> dict[str, Any]:
     try:
@@ -2379,7 +2379,7 @@ def build_status_payload(
 def _build_status_payload_unchecked(
     state,
     *,
-    config: GalgameConfig,
+    config: CosplayConfig,
     state_is_snapshot: bool = False,
 ) -> dict[str, Any]:
     def copy_for_payload(value: Any) -> Any:
@@ -3085,7 +3085,7 @@ def build_explain_context(
     local_state: dict[str, Any],
     *,
     line_id: str,
-    config: GalgameLLMConfig | None = None,
+    config: CosplayLLMConfig | None = None,
 ) -> dict[str, Any]:
     from ..context_builder import build_explain_context as _build_explain_context
 
@@ -3099,7 +3099,7 @@ def build_summarize_context(
     *,
     scene_id: str,
     merge_from_scene_ids: list[str] | None = None,
-    config: GalgameLLMConfig | None = None,
+    config: CosplayLLMConfig | None = None,
 ) -> dict[str, Any]:
     from ..context_builder import build_summarize_context as _build_summarize_context
 
@@ -3120,7 +3120,7 @@ def build_summarize_context(
 def build_suggest_context(
     local_state: dict[str, Any],
     *,
-    config: GalgameLLMConfig | None = None,
+    config: CosplayLLMConfig | None = None,
 ) -> dict[str, Any]:
     from ..context_builder import build_suggest_context as _build_suggest_context
 

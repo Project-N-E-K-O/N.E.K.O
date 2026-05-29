@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from plugin._types.models import RunCreateRequest
 from plugin.logging_config import get_logger
-from plugin.plugins.cosplay_plugin.store import GalgameStore
+from plugin.plugins.cosplay_plugin.store import CosplayStore
 from plugin.plugins.cosplay_plugin.install_tasks import (
     INSTALL_TERMINAL_STATUSES,
     build_install_task_state,
@@ -581,15 +581,15 @@ _TUTORIAL_DEFAULTS = {
     "started_at": 0.0,
     "completed_at": 0.0,
 }
-_tutorial_store_instance: GalgameStore | None = None
+_tutorial_store_instance: CosplayStore | None = None
 
 
-def _tutorial_store() -> GalgameStore:
+def _tutorial_store() -> CosplayStore:
     global _tutorial_store_instance
     if _tutorial_store_instance is not None:
         return _tutorial_store_instance
     plugin_dir = Path(__file__).resolve().parent
-    _tutorial_store_instance = GalgameStore(
+    _tutorial_store_instance = CosplayStore(
         plugin_dir / "data" / "cosplay_store.json",
         logger,
     )

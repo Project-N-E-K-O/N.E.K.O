@@ -483,7 +483,7 @@ class _ConfigFieldProxy:
 
 
 @dataclass(slots=True)
-class GalgameBridgeConfig:
+class CosplayBridgeConfig:
     bridge_root: Path = Path()
     active_poll_interval_seconds: float = 1.0
     idle_poll_interval_seconds: float = 3.0
@@ -498,7 +498,7 @@ class GalgameBridgeConfig:
 
 
 @dataclass(slots=True)
-class GalgameHistoryConfig:
+class CosplayHistoryConfig:
     history_events_limit: int = 500
     history_lines_limit: int = 200
     history_choices_limit: int = 50
@@ -508,7 +508,7 @@ class GalgameHistoryConfig:
 
 
 @dataclass(slots=True)
-class GalgameLLMConfig:
+class CosplayLLMConfig:
     llm_call_timeout_seconds: float = 15.0
     llm_max_in_flight: int = 2
     llm_request_cache_ttl_seconds: float = 2.0
@@ -526,12 +526,12 @@ class GalgameLLMConfig:
 
 
 @dataclass(slots=True)
-class GalgameReaderConfig:
+class CosplayReaderConfig:
     reader_mode: str = READER_MODE_AUTO
 
 
 @dataclass(slots=True)
-class GalgameMemoryReaderConfig:
+class CosplayMemoryReaderConfig:
     memory_reader_enabled: bool = False
     memory_reader_textractor_path: str = ""
     memory_reader_textractor_proxy: str = ""
@@ -545,7 +545,7 @@ class GalgameMemoryReaderConfig:
 
 
 @dataclass(slots=True)
-class GalgameOcrReaderConfig:
+class CosplayOcrReaderConfig:
     ocr_reader_enabled: bool = False
     ocr_reader_enabled_explicit: bool = False
     ocr_reader_backend_selection: str = "auto"
@@ -584,7 +584,7 @@ class GalgameOcrReaderConfig:
 
 
 @dataclass(slots=True)
-class GalgameRapidOcrConfig:
+class CosplayRapidOcrConfig:
     rapidocr_enabled: bool = False
     rapidocr_enabled_explicit: bool = False
     # `rapidocr_install_target_dir` survived the install-removal because
@@ -607,14 +607,14 @@ class GalgameRapidOcrConfig:
 
 
 @dataclass(slots=True, init=False)
-class GalgameConfig:
-    bridge: GalgameBridgeConfig
-    history: GalgameHistoryConfig
-    llm: GalgameLLMConfig
-    reader: GalgameReaderConfig
-    memory_reader: GalgameMemoryReaderConfig
-    ocr_reader: GalgameOcrReaderConfig
-    rapidocr: GalgameRapidOcrConfig
+class CosplayConfig:
+    bridge: CosplayBridgeConfig
+    history: CosplayHistoryConfig
+    llm: CosplayLLMConfig
+    reader: CosplayReaderConfig
+    memory_reader: CosplayMemoryReaderConfig
+    ocr_reader: CosplayOcrReaderConfig
+    rapidocr: CosplayRapidOcrConfig
 
     _FIELD_MAP: ClassVar[dict[str, tuple[str, str]]] = {
         "bridge_root": ("bridge", "bridge_root"),
@@ -780,35 +780,35 @@ class GalgameConfig:
     def __init__(
         self,
         *,
-        bridge: GalgameBridgeConfig | None = None,
-        history: GalgameHistoryConfig | None = None,
-        llm: GalgameLLMConfig | None = None,
-        reader: GalgameReaderConfig | None = None,
-        memory_reader: GalgameMemoryReaderConfig | None = None,
-        ocr_reader: GalgameOcrReaderConfig | None = None,
-        rapidocr: GalgameRapidOcrConfig | None = None,
+        bridge: CosplayBridgeConfig | None = None,
+        history: CosplayHistoryConfig | None = None,
+        llm: CosplayLLMConfig | None = None,
+        reader: CosplayReaderConfig | None = None,
+        memory_reader: CosplayMemoryReaderConfig | None = None,
+        ocr_reader: CosplayOcrReaderConfig | None = None,
+        rapidocr: CosplayRapidOcrConfig | None = None,
         **legacy_fields: Any,
     ) -> None:
-        self.bridge = bridge if bridge is not None else GalgameBridgeConfig()
-        self.history = history if history is not None else GalgameHistoryConfig()
-        self.llm = llm if llm is not None else GalgameLLMConfig()
-        self.reader = reader if reader is not None else GalgameReaderConfig()
+        self.bridge = bridge if bridge is not None else CosplayBridgeConfig()
+        self.history = history if history is not None else CosplayHistoryConfig()
+        self.llm = llm if llm is not None else CosplayLLMConfig()
+        self.reader = reader if reader is not None else CosplayReaderConfig()
         self.memory_reader = (
-            memory_reader if memory_reader is not None else GalgameMemoryReaderConfig()
+            memory_reader if memory_reader is not None else CosplayMemoryReaderConfig()
         )
-        self.ocr_reader = ocr_reader if ocr_reader is not None else GalgameOcrReaderConfig()
-        self.rapidocr = rapidocr if rapidocr is not None else GalgameRapidOcrConfig()
+        self.ocr_reader = ocr_reader if ocr_reader is not None else CosplayOcrReaderConfig()
+        self.rapidocr = rapidocr if rapidocr is not None else CosplayRapidOcrConfig()
 
         for field_name in self._FIELD_MAP:
             if field_name in legacy_fields:
                 setattr(self, field_name, legacy_fields.pop(field_name))
         if legacy_fields:
             unexpected = ", ".join(sorted(legacy_fields))
-            raise TypeError(f"unexpected GalgameConfig field(s): {unexpected}")
+            raise TypeError(f"unexpected CosplayConfig field(s): {unexpected}")
 
 
-for _field_name, (_group_name, _field_group_attr) in GalgameConfig._FIELD_MAP.items():
-    setattr(GalgameConfig, _field_name, _ConfigFieldProxy(_group_name, _field_group_attr))
+for _field_name, (_group_name, _field_group_attr) in CosplayConfig._FIELD_MAP.items():
+    setattr(CosplayConfig, _field_name, _ConfigFieldProxy(_group_name, _field_group_attr))
 del _field_name, _group_name, _field_group_attr
 
 

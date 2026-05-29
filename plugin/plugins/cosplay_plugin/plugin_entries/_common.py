@@ -148,8 +148,8 @@ from ..service import (
     rebuild_histories_from_events,
     scan_session_candidates,
 )
-from ..state import GalgameSharedState, build_initial_state
-from ..store import GalgameStore
+from ..state import CosplaySharedState, build_initial_state
+from ..store import CosplayStore
 from ..textractor_support import install_textractor
 from ..ui_api import build_open_ui_payload
 from ..screen_classifier import classify_screen_from_ocr, normalize_screen_type

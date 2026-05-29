@@ -139,8 +139,8 @@ from .service import (
     rebuild_histories_from_events,
     scan_session_candidates,
 )
-from .state import GalgameSharedState, build_initial_state
-from .store import GalgameStore
+from .state import CosplaySharedState, build_initial_state
+from .store import CosplayStore
 from .textractor_support import install_textractor
 from .ui_api import build_open_ui_payload
 from .screen_classifier import classify_screen_from_ocr, normalize_screen_type
@@ -210,53 +210,53 @@ from .plugin_capture_profile_helpers import (
 )
 
 
-from .plugin_config_service import GalgamePluginConfigService
+from .plugin_config_service import CosplayPluginConfigService
 
 
-# Mixin imports for GalgamePlugin entries — sorted alphabetically by mixin
+# Mixin imports for CosplayPlugin entries — sorted alphabetically by mixin
 # class name so the order here matches the class bases list below. Adding a
 # new entry means: (1) drop a file under plugin_entries/, (2) add its import
-# here, and (3) insert the mixin into the GalgamePlugin bases list — both in
+# here, and (3) insert the mixin into the CosplayPlugin bases list — both in
 # alphabetical position.
-from .plugin_entries.cosplay_agent_command import _GalgameAgentCommandMixin
-from .plugin_entries.cosplay_apply_recommended_ocr_capture_profile import _GalgameApplyRecommendedOcrCaptureProfileMixin
-from .plugin_entries.cosplay_auto_recalibrate_ocr_dialogue_profile import _GalgameAutoRecalibrateOcrDialogueProfileMixin
-from .plugin_entries.cosplay_bind_game import _GalgameBindGameMixin
-from .plugin_entries.cosplay_build_ocr_screen_template_draft import _GalgameBuildOcrScreenTemplateDraftMixin
-from .plugin_entries.cosplay_continue_auto_advance import _GalgameContinueAutoAdvanceMixin
-from .plugin_entries.cosplay_download_rapidocr_models import _GalgameDownloadRapidocrModelsMixin
-from .plugin_entries.cosplay_evaluate_ocr_screen_awareness_model import _GalgameEvaluateOcrScreenAwarenessModelMixin
-from .plugin_entries.cosplay_explain_line import _GalgameExplainLineMixin
-from .plugin_entries.cosplay_get_character_list import _GalgameGetCharacterListMixin
-from .plugin_entries.cosplay_get_character_profile import _GalgameGetCharacterProfileMixin
-from .plugin_entries.cosplay_get_history import _GalgameGetHistoryMixin
-from .plugin_entries.cosplay_get_ocr_screen_awareness_snapshot import _GalgameGetOcrScreenAwarenessSnapshotMixin
-from .plugin_entries.cosplay_get_push_history import _GalgameGetPushHistoryMixin
-from .plugin_entries.cosplay_get_recent_lines import _GalgameGetRecentLinesMixin
-from .plugin_entries.cosplay_get_scene_context import _GalgameGetSceneContextMixin
-from .plugin_entries.cosplay_get_snapshot import _GalgameGetSnapshotMixin
-from .plugin_entries.cosplay_get_status import _GalgameGetStatusMixin
-from .plugin_entries.cosplay_get_story_so_far import _GalgameGetStorySoFarMixin
-from .plugin_entries.cosplay_import_character_data import _GalgameImportCharacterDataMixin
-from .plugin_entries.cosplay_install_textractor import _GalgameInstallTextractorMixin
-from .plugin_entries.cosplay_list_memory_reader_processes import _GalgameListMemoryReaderProcessesMixin
-from .plugin_entries.cosplay_list_ocr_windows import _GalgameListOcrWindowsMixin
-from .plugin_entries.cosplay_open_ui import _GalgameOpenUiMixin
-from .plugin_entries.cosplay_rollback_ocr_capture_profile import _GalgameRollbackOcrCaptureProfileMixin
-from .plugin_entries.cosplay_set_character_mode import _GalgameSetCharacterModeMixin
-from .plugin_entries.cosplay_set_llm_vision import _GalgameSetLlmVisionMixin
-from .plugin_entries.cosplay_set_memory_reader_target import _GalgameSetMemoryReaderTargetMixin
-from .plugin_entries.cosplay_set_mode import _GalgameSetModeMixin
-from .plugin_entries.cosplay_set_ocr_backend import _GalgameSetOcrBackendMixin
-from .plugin_entries.cosplay_set_ocr_capture_profile import _GalgameSetOcrCaptureProfileMixin
-from .plugin_entries.cosplay_set_ocr_screen_templates import _GalgameSetOcrScreenTemplatesMixin
-from .plugin_entries.cosplay_set_ocr_timing import _GalgameSetOcrTimingMixin
-from .plugin_entries.cosplay_set_ocr_window_target import _GalgameSetOcrWindowTargetMixin
-from .plugin_entries.cosplay_set_rapidocr_lang import _GalgameSetRapidocrLangMixin
-from .plugin_entries.cosplay_suggest_choice import _GalgameSuggestChoiceMixin
-from .plugin_entries.cosplay_summarize_scene import _GalgameSummarizeSceneMixin
-from .plugin_entries.cosplay_train_ocr_screen_awareness_model import _GalgameTrainOcrScreenAwarenessModelMixin
-from .plugin_entries.cosplay_validate_ocr_screen_templates import _GalgameValidateOcrScreenTemplatesMixin
+from .plugin_entries.cosplay_agent_command import _CosplayAgentCommandMixin
+from .plugin_entries.cosplay_apply_recommended_ocr_capture_profile import _CosplayApplyRecommendedOcrCaptureProfileMixin
+from .plugin_entries.cosplay_auto_recalibrate_ocr_dialogue_profile import _CosplayAutoRecalibrateOcrDialogueProfileMixin
+from .plugin_entries.cosplay_bind_game import _CosplayBindGameMixin
+from .plugin_entries.cosplay_build_ocr_screen_template_draft import _CosplayBuildOcrScreenTemplateDraftMixin
+from .plugin_entries.cosplay_continue_auto_advance import _CosplayContinueAutoAdvanceMixin
+from .plugin_entries.cosplay_download_rapidocr_models import _CosplayDownloadRapidocrModelsMixin
+from .plugin_entries.cosplay_evaluate_ocr_screen_awareness_model import _CosplayEvaluateOcrScreenAwarenessModelMixin
+from .plugin_entries.cosplay_explain_line import _CosplayExplainLineMixin
+from .plugin_entries.cosplay_get_character_list import _CosplayGetCharacterListMixin
+from .plugin_entries.cosplay_get_character_profile import _CosplayGetCharacterProfileMixin
+from .plugin_entries.cosplay_get_history import _CosplayGetHistoryMixin
+from .plugin_entries.cosplay_get_ocr_screen_awareness_snapshot import _CosplayGetOcrScreenAwarenessSnapshotMixin
+from .plugin_entries.cosplay_get_push_history import _CosplayGetPushHistoryMixin
+from .plugin_entries.cosplay_get_recent_lines import _CosplayGetRecentLinesMixin
+from .plugin_entries.cosplay_get_scene_context import _CosplayGetSceneContextMixin
+from .plugin_entries.cosplay_get_snapshot import _CosplayGetSnapshotMixin
+from .plugin_entries.cosplay_get_status import _CosplayGetStatusMixin
+from .plugin_entries.cosplay_get_story_so_far import _CosplayGetStorySoFarMixin
+from .plugin_entries.cosplay_import_character_data import _CosplayImportCharacterDataMixin
+from .plugin_entries.cosplay_install_textractor import _CosplayInstallTextractorMixin
+from .plugin_entries.cosplay_list_memory_reader_processes import _CosplayListMemoryReaderProcessesMixin
+from .plugin_entries.cosplay_list_ocr_windows import _CosplayListOcrWindowsMixin
+from .plugin_entries.cosplay_open_ui import _CosplayOpenUiMixin
+from .plugin_entries.cosplay_rollback_ocr_capture_profile import _CosplayRollbackOcrCaptureProfileMixin
+from .plugin_entries.cosplay_set_character_mode import _CosplaySetCharacterModeMixin
+from .plugin_entries.cosplay_set_llm_vision import _CosplaySetLlmVisionMixin
+from .plugin_entries.cosplay_set_memory_reader_target import _CosplaySetMemoryReaderTargetMixin
+from .plugin_entries.cosplay_set_mode import _CosplaySetModeMixin
+from .plugin_entries.cosplay_set_ocr_backend import _CosplaySetOcrBackendMixin
+from .plugin_entries.cosplay_set_ocr_capture_profile import _CosplaySetOcrCaptureProfileMixin
+from .plugin_entries.cosplay_set_ocr_screen_templates import _CosplaySetOcrScreenTemplatesMixin
+from .plugin_entries.cosplay_set_ocr_timing import _CosplaySetOcrTimingMixin
+from .plugin_entries.cosplay_set_ocr_window_target import _CosplaySetOcrWindowTargetMixin
+from .plugin_entries.cosplay_set_rapidocr_lang import _CosplaySetRapidocrLangMixin
+from .plugin_entries.cosplay_suggest_choice import _CosplaySuggestChoiceMixin
+from .plugin_entries.cosplay_summarize_scene import _CosplaySummarizeSceneMixin
+from .plugin_entries.cosplay_train_ocr_screen_awareness_model import _CosplayTrainOcrScreenAwarenessModelMixin
+from .plugin_entries.cosplay_validate_ocr_screen_templates import _CosplayValidateOcrScreenTemplatesMixin
 
 
 def _package_json_copy(value: Any) -> Any:
@@ -266,46 +266,46 @@ def _package_json_copy(value: Any) -> Any:
 
 
 @neko_plugin
-class GalgamePlugin(
-    _GalgameAgentCommandMixin,
-    _GalgameApplyRecommendedOcrCaptureProfileMixin,
-    _GalgameAutoRecalibrateOcrDialogueProfileMixin,
-    _GalgameBindGameMixin,
-    _GalgameBuildOcrScreenTemplateDraftMixin,
-    _GalgameContinueAutoAdvanceMixin,
-    _GalgameDownloadRapidocrModelsMixin,
-    _GalgameEvaluateOcrScreenAwarenessModelMixin,
-    _GalgameExplainLineMixin,
-    _GalgameGetCharacterListMixin,
-    _GalgameGetCharacterProfileMixin,
-    _GalgameGetHistoryMixin,
-    _GalgameGetOcrScreenAwarenessSnapshotMixin,
-    _GalgameGetPushHistoryMixin,
-    _GalgameGetRecentLinesMixin,
-    _GalgameGetSceneContextMixin,
-    _GalgameGetSnapshotMixin,
-    _GalgameGetStatusMixin,
-    _GalgameGetStorySoFarMixin,
-    _GalgameImportCharacterDataMixin,
-    _GalgameInstallTextractorMixin,
-    _GalgameListMemoryReaderProcessesMixin,
-    _GalgameListOcrWindowsMixin,
-    _GalgameOpenUiMixin,
-    _GalgameRollbackOcrCaptureProfileMixin,
-    _GalgameSetCharacterModeMixin,
-    _GalgameSetLlmVisionMixin,
-    _GalgameSetMemoryReaderTargetMixin,
-    _GalgameSetModeMixin,
-    _GalgameSetOcrBackendMixin,
-    _GalgameSetOcrCaptureProfileMixin,
-    _GalgameSetOcrScreenTemplatesMixin,
-    _GalgameSetOcrTimingMixin,
-    _GalgameSetOcrWindowTargetMixin,
-    _GalgameSetRapidocrLangMixin,
-    _GalgameSuggestChoiceMixin,
-    _GalgameSummarizeSceneMixin,
-    _GalgameTrainOcrScreenAwarenessModelMixin,
-    _GalgameValidateOcrScreenTemplatesMixin,
+class CosplayPlugin(
+    _CosplayAgentCommandMixin,
+    _CosplayApplyRecommendedOcrCaptureProfileMixin,
+    _CosplayAutoRecalibrateOcrDialogueProfileMixin,
+    _CosplayBindGameMixin,
+    _CosplayBuildOcrScreenTemplateDraftMixin,
+    _CosplayContinueAutoAdvanceMixin,
+    _CosplayDownloadRapidocrModelsMixin,
+    _CosplayEvaluateOcrScreenAwarenessModelMixin,
+    _CosplayExplainLineMixin,
+    _CosplayGetCharacterListMixin,
+    _CosplayGetCharacterProfileMixin,
+    _CosplayGetHistoryMixin,
+    _CosplayGetOcrScreenAwarenessSnapshotMixin,
+    _CosplayGetPushHistoryMixin,
+    _CosplayGetRecentLinesMixin,
+    _CosplayGetSceneContextMixin,
+    _CosplayGetSnapshotMixin,
+    _CosplayGetStatusMixin,
+    _CosplayGetStorySoFarMixin,
+    _CosplayImportCharacterDataMixin,
+    _CosplayInstallTextractorMixin,
+    _CosplayListMemoryReaderProcessesMixin,
+    _CosplayListOcrWindowsMixin,
+    _CosplayOpenUiMixin,
+    _CosplayRollbackOcrCaptureProfileMixin,
+    _CosplaySetCharacterModeMixin,
+    _CosplaySetLlmVisionMixin,
+    _CosplaySetMemoryReaderTargetMixin,
+    _CosplaySetModeMixin,
+    _CosplaySetOcrBackendMixin,
+    _CosplaySetOcrCaptureProfileMixin,
+    _CosplaySetOcrScreenTemplatesMixin,
+    _CosplaySetOcrTimingMixin,
+    _CosplaySetOcrWindowTargetMixin,
+    _CosplaySetRapidocrLangMixin,
+    _CosplaySuggestChoiceMixin,
+    _CosplaySummarizeSceneMixin,
+    _CosplayTrainOcrScreenAwarenessModelMixin,
+    _CosplayValidateOcrScreenTemplatesMixin,
     NekoPluginBase,
 ):
     def __init__(self, ctx):
@@ -329,11 +329,11 @@ class GalgamePlugin(
             push_notifications=True,
             advance_speed=ADVANCE_SPEED_MEDIUM,
         )
-        self._persist = GalgameStore(
+        self._persist = CosplayStore(
             self.data_path("cosplay_store.json"),
             self.logger,
         )
-        self._config_service = GalgamePluginConfigService(self)
+        self._config_service = CosplayPluginConfigService(self)
         self._host_agent_adapter: HostAgentAdapter | None = None
         self._llm_gateway: LLMGateway | None = None
         self._game_agent: GameLLMAgent | None = None
@@ -3050,12 +3050,12 @@ class GalgamePlugin(
             self._cached_snapshot = None
         if missing_dependencies:
             self.logger.warning(
-                "GalgamePlugin dependency check: optional dependencies missing {}; degraded mode enabled",
+                "CosplayPlugin dependency check: optional dependencies missing {}; degraded mode enabled",
                 missing_dependencies,
             )
         if inspection_failed_dependencies:
             self.logger.warning(
-                "GalgamePlugin dependency check: dependency inspections failed {}; degraded mode enabled",
+                "CosplayPlugin dependency check: dependency inspections failed {}; degraded mode enabled",
                 inspection_failed_dependencies,
             )
 
@@ -4800,4 +4800,4 @@ class GalgamePlugin(
             )
 
 
-GalgameBridgePlugin = GalgamePlugin
+CosplayBridgePlugin = CosplayPlugin

@@ -15,7 +15,7 @@ keywords = [
 ]
 version = "1.0.0"
 type = "plugin"
-entry = "plugin.plugins.cosplay_plugin:GalgamePlugin"
+entry = "plugin.plugins.cosplay_plugin:CosplayPlugin"
 
 [plugin.author]
 name = "N.E.K.O Team"
