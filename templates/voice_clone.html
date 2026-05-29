@@ -37,8 +37,8 @@
         <div class="container-content">
             <div class="voice-register-main">
                 <div class="field-row">
-                    <label data-i18n="voice.providerLabel">语音克隆服务商</label>
-                    <select id="voiceProvider">
+                    <label for="voiceProvider" data-i18n="voice.providerLabel">语音克隆服务商</label>
+                    <select id="voiceProvider" class="api-provider-select">
                         <option value="cosyvoice" data-i18n="voice.provider.cosyvoice">阿里百炼 CosyVoice</option>
                         <option value="cosyvoice_intl" data-i18n="voice.provider.cosyvoice_intl">阿里国际版 CosyVoice</option>
                         <option value="minimax" data-i18n="voice.provider.minimax">MiniMax（国服）</option>
@@ -106,9 +106,9 @@
                 </div>
 
                 <div class="field-row">
-                    <label data-i18n="voice.refLanguage">参考音频语言（注意：不是目标音频，是您上传的参考音频的语言）</label>
+                    <label for="refLanguage" data-i18n="voice.refLanguage">参考音频语言（注意：不是目标音频，是您上传的参考音频的语言）</label>
                     <label class="hint" data-i18n="voice.refLanguageNote">选择您上传的参考音频的语言，中文以外的语言需要指定</label>
-                    <select id="refLanguage">
+                    <select id="refLanguage" class="api-provider-select">
                         <option value="ch" data-i18n="voice.lang.ch">中文</option>
                         <option value="en" data-i18n="voice.lang.en">英语</option>
                         <option value="fr" data-i18n="voice.lang.fr">法语</option>

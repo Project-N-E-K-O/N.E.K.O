@@ -122,6 +122,93 @@
         }
     }
 
+    function isExportPreviewShellReady(previewWindow, targetUrl) {
+        if (!previewWindow || previewWindow.closed) return false;
+        try {
+            var href = previewWindow.location && previewWindow.location.href;
+            if (!href || href === 'about:blank') return false;
+            var current = new URL(href, window.location.href);
+            var target = new URL(targetUrl, window.location.href);
+            if (current.origin !== target.origin || current.pathname !== target.pathname) {
+                return false;
+            }
+            var doc = previewWindow.document;
+            return !!(doc && (doc.readyState === 'interactive' || doc.readyState === 'complete'));
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function hasExportPreviewWindowControlApi(previewWindow) {
+        if (!previewWindow || previewWindow.closed) return false;
+        try {
+            var api = previewWindow.nekoWindowControl;
+            return !!(api && typeof api.minimize === 'function' && typeof api.maximize === 'function');
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function waitForExportPreviewShell(previewWindow, targetUrl, timeoutMs) {
+        return new Promise(function (resolve) {
+            if (!previewWindow || previewWindow.closed) {
+                resolve(false);
+                return;
+            }
+
+            var waitMs = Number(timeoutMs);
+            if (!Number.isFinite(waitMs) || waitMs <= 0) waitMs = 1500;
+            var settled = false;
+            var pollTimer = null;
+            var timeoutTimer = null;
+
+            function cleanup() {
+                if (pollTimer) {
+                    window.clearInterval(pollTimer);
+                    pollTimer = null;
+                }
+                if (timeoutTimer) {
+                    window.clearTimeout(timeoutTimer);
+                    timeoutTimer = null;
+                }
+                try {
+                    previewWindow.removeEventListener('load', checkReady);
+                } catch (_) {}
+            }
+
+            function finish(ok) {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                resolve(!!ok);
+            }
+
+            function checkReady() {
+                if (!previewWindow || previewWindow.closed) {
+                    finish(false);
+                    return;
+                }
+                if (isExportPreviewShellReady(previewWindow, targetUrl)) {
+                    finish(true);
+                }
+            }
+
+            try {
+                previewWindow.addEventListener('load', checkReady);
+            } catch (_) {}
+            pollTimer = window.setInterval(checkReady, 40);
+            timeoutTimer = window.setTimeout(function () { finish(false); }, waitMs);
+            checkReady();
+        });
+    }
+
+    async function waitForExportPreviewRewriteGate(previewWindow, targetUrl) {
+        var shellReady = await waitForExportPreviewShell(previewWindow, targetUrl, 1500);
+        if (shellReady || hasExportPreviewWindowControlApi(previewWindow)) return true;
+        shellReady = await waitForExportPreviewShell(previewWindow, targetUrl, 6500);
+        return !!(shellReady || hasExportPreviewWindowControlApi(previewWindow));
+    }
+
     function showToast(key, fallback, duration) {
         if (typeof window.showStatusToast !== 'function') return;
         window.showStatusToast(translateLabel(key, fallback), duration || 3000);
@@ -2465,10 +2552,21 @@
         if (isExistingWindow) {
             disposePreviewModal(false);
         }
+        state.previewWindow = previewWindow;
+        if (!isExistingWindow) {
+            var canRewritePreview = await waitForExportPreviewRewriteGate(previewWindow, getExportPreviewShellUrl());
+            if (!previewWindow || previewWindow.closed) return null;
+            if (!canRewritePreview) {
+                if (state.previewWindow === previewWindow) state.previewWindow = null;
+                try {
+                    previewWindow.close();
+                } catch (_) {}
+                return null;
+            }
+        }
         try {
             if (typeof previewWindow.stop === 'function') previewWindow.stop();
         } catch (_) {}
-        state.previewWindow = previewWindow;
         var doc = previewWindow.document;
         doc.open();
         doc.write('<!DOCTYPE html><html lang="' + escapeHtml(document.documentElement.lang || 'en') + '"' + getPreviewThemeAttributesHtml() + '><head><meta charset="utf-8">'

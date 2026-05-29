@@ -96,6 +96,10 @@ const WORKSHOP_VOICE_PROVIDER_REGISTRY_KEYS = Object.freeze({
     minimax: 'minimax',
     minimax_intl: 'minimax_intl',
 });
+const WORKSHOP_VOICE_RESTRICTED_REGISTRY_KEYS = new Set([
+    'qwen_intl',
+    'minimax_intl',
+]);
 const workshopVoiceProviderRestrictionState = {
     loaded: false,
     loadingPromise: null,
@@ -141,11 +145,26 @@ function getWorkshopVoiceProviderRegistryKey(provider) {
 }
 
 async function checkWorkshopVoiceMainlandChinaUser() {
-    const data = await fetchWorkshopVoiceProviderJson('/api/config/steam_language', {
-        method: 'GET',
-        headers: { 'Content-Type': 'application/json' }
-    });
-    return data && data.is_mainland_china === true;
+    let data = null;
+    try {
+        data = await fetchWorkshopVoiceProviderJson('/api/config/steam_language', {
+            method: 'GET',
+            headers: { 'Content-Type': 'application/json' }
+        });
+    } catch (_) {
+        return true;
+    }
+
+    if (data && data.is_mainland_china === true) {
+        return true;
+    }
+
+    const ipCountry = String((data && data.ip_country) || '').trim().toUpperCase();
+    if (data && data.success === true && ipCountry && ipCountry !== 'CN') {
+        return false;
+    }
+
+    return true;
 }
 
 async function loadWorkshopVoiceProviderRestrictionState() {
@@ -159,19 +178,17 @@ async function loadWorkshopVoiceProviderRestrictionState() {
     workshopVoiceProviderRestrictionState.loadingPromise = (async () => {
         const [isMainlandChinaUser, providersResponse] = await Promise.all([
             checkWorkshopVoiceMainlandChinaUser(),
-            fetchWorkshopVoiceProviderJson('/api/config/api_providers')
+            fetchWorkshopVoiceProviderJson('/api/config/api_providers').catch(() => null)
         ]);
         let apiKeyRegistry = {};
         if (providersResponse && providersResponse.success) {
             apiKeyRegistry = providersResponse.api_key_registry || {};
-        } else {
-            throw new Error('api_providers config unavailable');
         }
         workshopVoiceProviderRestrictionState.isMainlandChinaUser = !!isMainlandChinaUser;
         workshopVoiceProviderRestrictionState.apiKeyRegistry = apiKeyRegistry;
         workshopVoiceProviderRestrictionState.loaded = true;
         return workshopVoiceProviderRestrictionState;
-    }).finally(() => {
+    })().finally(() => {
         workshopVoiceProviderRestrictionState.loadingPromise = null;
     });
 
@@ -191,7 +208,10 @@ function isWorkshopVoiceProviderRestricted(provider) {
     if (!workshopVoiceProviderRestrictionState.isMainlandChinaUser) return false;
     const registryKey = getWorkshopVoiceProviderRegistryKey(provider);
     const entry = workshopVoiceProviderRestrictionState.apiKeyRegistry[registryKey];
-    return !!(entry && entry.restricted === true);
+    if (entry && Object.prototype.hasOwnProperty.call(entry, 'restricted')) {
+        return entry.restricted === true;
+    }
+    return WORKSHOP_VOICE_RESTRICTED_REGISTRY_KEYS.has(registryKey);
 }
 
 function getFirstAvailableWorkshopVoiceProviderValue(providerSelect) {
