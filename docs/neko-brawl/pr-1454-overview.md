@@ -2,7 +2,7 @@
 
 > 编写时间：2026-05-28（2026-05-29 更新：探险五类落点交互已实装，见末尾「十二、探险交互实装进展」）
 > 适用分支：`pr/1454`（相对 `main` 的新增内容）
-> 本 PR 的**主旨**就是引入「猫娘大乱斗（Neko Brawl Arena）」这套独立卡牌战斗 + 卡牌探险原型；其余如主动投递框架属于伴随合入，详见 [docs/branch-pr1454-changes.md](../branch-pr1454-changes.md)。
+> 本 PR 的**主旨**就是引入「猫娘大乱斗（Neko Brawl Arena）」这套独立卡牌战斗 + 卡牌探险原型；其余如主动投递框架属于伴随合入，详见 `branch-pr1454-changes.md`。
 
 本文档是大乱斗模块的入口说明：把分散在 `battle-arena/`、`local_server/battle_arena_server/`、`app/main_server.py`、`static/`、根目录启动脚本、`docs/neko-brawl/` 的全部相关改动串成一张图，方便后续接入「真实羁绊」「真实自身故事系统」「联机匹配」等真实数据源。
 
@@ -121,7 +121,7 @@
 
 ### 4.1 工程骨架
 
-[battle-arena/package.json](../../battle-arena/package.json) — 完全独立的 npm 工程：
+`battle-arena/package.json` — 完全独立的 npm 工程：
 
 | | 版本 / 作用 |
 |---|---|
@@ -133,11 +133,11 @@
 
 构建/配置文件：
 
-- [index.html](../../battle-arena/index.html)（13 行）
-- [src/main.jsx](../../battle-arena/src/main.jsx)（10 行，挂载 root）
-- [src/App.jsx](../../battle-arena/src/App.jsx)（5 行，仅渲染 `<BattleArena />`）
-- [src/index.css](../../battle-arena/src/index.css)（88 行，Tailwind 基础 + 全局样式）
-- [vite.config.js](../../battle-arena/vite.config.js) / [tailwind.config.js](../../battle-arena/tailwind.config.js) / [postcss.config.js](../../battle-arena/postcss.config.js)
+- `battle-arena/index.html`（13 行）
+- `battle-arena/src/main.jsx`（10 行，挂载 root）
+- `battle-arena/src/App.jsx`（5 行，仅渲染 `<BattleArena />`）
+- `battle-arena/src/index.css`（88 行，Tailwind 基础 + 全局样式）
+- `battle-arena/vite.config.js` / `battle-arena/tailwind.config.js` / `battle-arena/postcss.config.js`
 
 scripts：
 
@@ -149,7 +149,7 @@ preview: vite preview
 
 ### 4.2 顶层壳 `BattleArena.jsx`
 
-[src/components/BattleArena.jsx](../../battle-arena/src/components/BattleArena.jsx)（~2393 行）— 全游戏入口，承担：
+`battle-arena/src/components/BattleArena.jsx`（~2393 行）— 全游戏入口，承担：
 
 - **场景状态机**：在 Home（待匹配）/ DeckBuilder（组卡）/ DeckLibrary（牌库）/ 旧版直接 Boss 战（`CardGamePanel`）/ 新版双方对战（`NewBattleDuelUI`）之间切换
 - **匹配流程**：调用后端 `/arena/join`，开始轮询 `/arena/status/{playerId}`，匹配成功后注入对手快照到右侧 `NEKO_RIGHT`
@@ -167,29 +167,29 @@ preview: vite preview
 
 | 文件 | 行数 | 作用 |
 |------|------|------|
-| [NewBattleDuelUI.jsx](../../battle-arena/src/components/neko-brawl/NewBattleDuelUI.jsx) | ~1704 | 新版双方对战 UI 主体。导入 `nekoBrawlAdventureDeck.js` 的 `advanceAdventureRun` / `calculateAdventureSteps` 等纯函数推进探险；正则驱动战斗日志高亮（造成 N 点 / 回复 / 护盾 / Combo / 抽 N / 封锁 / 弱化）；战斗背景图 `/neko-brawl/Background_forest.png` |
-| [DeckBuilderPanel.jsx](../../battle-arena/src/components/neko-brawl/DeckBuilderPanel.jsx) | ~706 | 组卡器。常量 `DECK_SIZE=18` / `MAX_CARD_COPIES=3` / `FORGED_CARD_COPIES=1`；卡池可滚动（fix `e9d359c7`）；Forged 卡单副限 1 张（fix `718f0b8f`）；属性筛选/类型筛选/费用筛选；导出 `localStorage` keys：`neko-brawl-deck` / `neko-brawl-deck-library` / `neko-brawl-favorite-cards` |
-| [DeckLibraryPanel.jsx](../../battle-arena/src/components/neko-brawl/DeckLibraryPanel.jsx) | ~509 | 卡组库。多套卡组保存/读取/导入导出，与 DeckBuilder 共享存储 key |
-| [BattleResultOverlay.jsx](../../battle-arena/src/components/neko-brawl/BattleResultOverlay.jsx) | ~214 | 战斗结算覆盖层（胜/负/平 + 重启） |
-| [CardInspectModal.jsx](../../battle-arena/src/components/neko-brawl/CardInspectModal.jsx) | ~162 | 单卡放大检视弹窗（含 Forged 卡完整故事正文） |
-| [BattleTutorialPanel.jsx](../../battle-arena/src/components/neko-brawl/BattleTutorialPanel.jsx) | ~104 | 战斗教程 |
-| [DeckBuilderTutorialPanel.jsx](../../battle-arena/src/components/neko-brawl/DeckBuilderTutorialPanel.jsx) | ~71 | 组卡教程 |
-| [NekoCardBack.jsx](../../battle-arena/src/components/neko-brawl/NekoCardBack.jsx) | ~41 | 卡背图形 |
-| [nekoBrawlAudio.js](../../battle-arena/src/components/neko-brawl/nekoBrawlAudio.js) | ~224 | 见 [4.5](#45-音效系统) |
-| [README.md](../../battle-arena/src/components/neko-brawl/README.md) | 13 | 子目录用途说明 |
+| `battle-arena/src/components/neko-brawl/NewBattleDuelUI.jsx` | ~1704 | 新版双方对战 UI 主体。导入 `nekoBrawlAdventureDeck.js` 的 `advanceAdventureRun` / `calculateAdventureSteps` 等纯函数推进探险；正则驱动战斗日志高亮（造成 N 点 / 回复 / 护盾 / Combo / 抽 N / 封锁 / 弱化）；战斗背景图 `/neko-brawl/Background_forest.png` |
+| `battle-arena/src/components/neko-brawl/DeckBuilderPanel.jsx` | ~706 | 组卡器。常量 `DECK_SIZE=18` / `MAX_CARD_COPIES=3` / `FORGED_CARD_COPIES=1`；卡池可滚动（fix `e9d359c7`）；Forged 卡单副限 1 张（fix `718f0b8f`）；属性筛选/类型筛选/费用筛选；导出 `localStorage` keys：`neko-brawl-deck` / `neko-brawl-deck-library` / `neko-brawl-favorite-cards` |
+| `battle-arena/src/components/neko-brawl/DeckLibraryPanel.jsx` | ~509 | 卡组库。多套卡组保存/读取/导入导出，与 DeckBuilder 共享存储 key |
+| `battle-arena/src/components/neko-brawl/BattleResultOverlay.jsx` | ~214 | 战斗结算覆盖层（胜/负/平 + 重启） |
+| `battle-arena/src/components/neko-brawl/CardInspectModal.jsx` | ~162 | 单卡放大检视弹窗（含 Forged 卡完整故事正文） |
+| `battle-arena/src/components/neko-brawl/BattleTutorialPanel.jsx` | ~104 | 战斗教程 |
+| `battle-arena/src/components/neko-brawl/DeckBuilderTutorialPanel.jsx` | ~71 | 组卡教程 |
+| `battle-arena/src/components/neko-brawl/NekoCardBack.jsx` | ~41 | 卡背图形 |
+| `battle-arena/src/components/neko-brawl/nekoBrawlAudio.js` | ~224 | 见 [4.5](#45-音效系统) |
+| `battle-arena/src/components/neko-brawl/README.md` | 13 | 子目录用途说明 |
 
 外层（顶层 `components/`）老组件，仍被部分场景沿用：
 
-- [BattleArena.jsx](../../battle-arena/src/components/BattleArena.jsx) — 顶层壳（永久）
-- [CardGamePanel.jsx](../../battle-arena/src/components/CardGamePanel.jsx)（~1896 行）— 旧版「直接 Boss 战」面板，新探索模式默认不进战斗，只有探索事件需要时才激活
-- [NekoCard.jsx](../../battle-arena/src/components/NekoCard.jsx)（166 行） / [NekoAvatar.jsx](../../battle-arena/src/components/NekoAvatar.jsx)（47 行）— 卡牌与头像基础组件
-- [BattleLog.jsx](../../battle-arena/src/components/BattleLog.jsx)（46 行） / [BottomTicker.jsx](../../battle-arena/src/components/BottomTicker.jsx)（41 行） / [ScoreBar.jsx](../../battle-arena/src/components/ScoreBar.jsx)（26 行）— 战斗 UI 子件
+- `battle-arena/src/components/BattleArena.jsx` — 顶层壳（永久）
+- `battle-arena/src/components/CardGamePanel.jsx`（~1896 行）— 旧版「直接 Boss 战」面板，新探索模式默认不进战斗，只有探索事件需要时才激活
+- `battle-arena/src/components/NekoCard.jsx`（166 行） / `battle-arena/src/components/NekoAvatar.jsx`（47 行）— 卡牌与头像基础组件
+- `battle-arena/src/components/BattleLog.jsx`（46 行） / `battle-arena/src/components/BottomTicker.jsx`（41 行） / `battle-arena/src/components/ScoreBar.jsx`（26 行）— 战斗 UI 子件
 
 ### 4.4 数据层
 
 #### 4.4.1 基础卡池（C001–C013）
 
-[src/data/forgedBrawlCards.js](../../battle-arena/src/data/forgedBrawlCards.js) — 13 张基础卡。
+`battle-arena/src/data/forgedBrawlCards.js` — 13 张基础卡。
 
 **四大属性**：
 
@@ -241,7 +241,7 @@ preview: vite preview
 
 #### 4.4.3 探索牌组（Adventure Deck）
 
-[src/data/nekoBrawlAdventureDeck.js](../../battle-arena/src/data/nekoBrawlAdventureDeck.js)（597 行）— **40 张探索牌组的纯前端规则**，**不接 UI**。
+`battle-arena/src/data/nekoBrawlAdventureDeck.js`（597 行）— **40 张探索牌组的纯前端规则**，**不接 UI**。
 
 | 常量 | 值 |
 |------|---|
@@ -254,8 +254,8 @@ preview: vite preview
 | 类型 | 数量 |
 |------|------|
 | `REST`（休息） | 6 |
-| `EVENT`（事件） | 28 |
-| `BATTLE`（战斗触发） | 3 |
+| `EVENT`（事件） | 31（2026-05-29 起；原 28，并入被移除的 3 张战斗） |
+| `BATTLE`（战斗触发） | 0（2026-05-29 移除，见 §12.1） |
 | `ENCOUNTER`（奇遇 offer） | 2 |
 | `END`（终点） | 1 |
 | 合计 | **40** |
@@ -268,15 +268,15 @@ preview: vite preview
 
 导出的纯函数（被 `NewBattleDuelUI` 调用）：
 
-- `createAdventureRun()` — 按分布抽样 + 钉重要节点位（10/20/30/40）
+- `createAdventureRun()` — 按分布抽样生成 40 张牌组（注：规则文档里"第 10/20/30/40 张为重要节点、经过即揭示"**尚未在数据层实现**，当前只揭示落点）
 - `calculateAdventureSteps(playedCards)` — 双方本回合打出牌的行动力**平均值**（不是总和！见规则文档 §4）
-- `advanceAdventureRun(run, steps)` — 推进位置 + 收集**经过**的重要节点 + 落点
+- `advanceAdventureRun(run, steps)` — 推进位置 + 收集本回合**经过**的牌 + 揭示**落点**（重要节点强制揭示未实现）
 - `describeAdventureReveal(card)` — 生成揭示文案
 - `getCardActionPoint(card)` — 取 `cost` 字段作为行动力
 
 ### 4.5 音效系统
 
-[src/components/neko-brawl/nekoBrawlAudio.js](../../battle-arena/src/components/neko-brawl/nekoBrawlAudio.js)（224 行）— 文件顶部明确：
+`battle-arena/src/components/neko-brawl/nekoBrawlAudio.js`（224 行）— 文件顶部明确：
 
 > 当前 BGM / SFX 均为暂时占位实装用声音，**不是最终结果**。后续替换为正式版音效或正式版 BGM 时，请在对应常量或场景旁明确注明「正式版音效」或「正式版 BGM」。
 
@@ -290,7 +290,7 @@ preview: vite preview
 
 ### 4.6 静态资源
 
-全部新增到 [battle-arena/public/](../../battle-arena/public/)：
+全部新增到 `battle-arena/public/`：
 
 **通用 GIF / JPG**：
 - `Simple_design_judging.gif`（2.1 MB） — 判定动画
@@ -325,17 +325,17 @@ preview: vite preview
 
 ### 5.1 设计原则
 
-[local_server/battle_arena_server/README.md](../../local_server/battle_arena_server/README.md) 明确写出（节选）：
+`local_server/battle_arena_server/README.md` 明确写出（节选）：
 
 > 本目录为 **Battle Arena 副产物**：可单独迭代；**不修改** N.E.K.O 的 `main_server`、`memory_server`、`memory/` 等核心模块。奇遇铸造机用 facts 时仅 **只读** 本机 JSON 或可选 HTTP，与 FactStore 落盘的 `facts.json` schema 一致。
 
 工程文件：
 
-- [server.py](../../local_server/battle_arena_server/server.py)（843 行） — FastAPI 应用 + CORS + 路由 + 匹配 + facts 读盘 + 故事接口
-- [forge_story_generator.py](../../local_server/battle_arena_server/forge_story_generator.py)（404 行） — 卡牌故事提示词 + LLM 调度
-- [active_neko_context.py](../../local_server/battle_arena_server/active_neko_context.py)（102 行） — 当前猫娘解析
-- [__init__.py](../../local_server/battle_arena_server/__init__.py)（空）
-- [requirements.txt](../../local_server/battle_arena_server/requirements.txt) — `fastapi` / `uvicorn[standard]` / `pydantic` / `httpx>=0.27.0`
+- `local_server/battle_arena_server/server.py`（843 行） — FastAPI 应用 + CORS + 路由 + 匹配 + facts 读盘 + 故事接口
+- `local_server/battle_arena_server/forge_story_generator.py`（404 行） — 卡牌故事提示词 + LLM 调度
+- `local_server/battle_arena_server/active_neko_context.py`（102 行） — 当前猫娘解析
+- `local_server/battle_arena_server/__init__.py`（空）
+- `local_server/battle_arena_server/requirements.txt` — `fastapi` / `uvicorn[standard]` / `pydantic` / `httpx>=0.27.0`
 
 > README 「方案变体」段落给出**无 httpx 的回退方案 B**：删 `_fetch_facts_from_url` + `requirements.txt` 删 `httpx`，路由只走本机文件。
 
@@ -348,6 +348,7 @@ preview: vite preview
 | `POST` | `/arena/leave/{player_id}` | `arena_leave` | 离开房间（同时清 `waiting_room` / `matched`） |
 | `GET`  | `/arena/forge-facts` | `arena_forge_facts` | 奇遇铸造机：从当前猫娘的 active facts 抽 5 条候选 |
 | `POST` | `/arena/forge-card-story` | `arena_forge_card_story` | 用 NEKO 核心 LLM 把 `storyLead` 生成卡牌专属小故事 |
+| `POST` | `/arena/adventure-ending` | `arena_adventure_ending` | 终点结算：按探险历程用 NEKO 核心 LLM 生成总结小故事（2026-05-29 新增；失败前端回退本地模板） |
 | `GET`  | `/health` | `health` | 健康检查 |
 
 CORS：`allow_origins=["*"]`，`allow_methods=["*"]`，`allow_headers=["*"]`。
@@ -500,7 +501,7 @@ matched: dict[str, dict] = {}       # player_id -> opponent snapshot
 
 ## 六、主进程桥接（头像同步）
 
-NEKO 主服务 [app/main_server.py](../../app/main_server.py) 新增内容里**仅一处**与大乱斗相关（其余是主动投递框架）：
+NEKO 主服务 `app/main_server.py` 新增内容里**仅一处**与大乱斗相关（其余是主动投递框架）：
 
 ```python
 # 顶部 import
@@ -520,7 +521,7 @@ async def set_battle_avatar(payload: dict): ...
 async def get_battle_avatar(side: str): ...
 ```
 
-配套前端：[static/app-chat-avatar.js](../../static/app-chat-avatar.js) 新增 `syncAvatarToBattleArena(dataUrl)`，在 4 个时机调用：
+配套前端：`static/app-chat-avatar.js` 新增 `syncAvatarToBattleArena(dataUrl)`，在 4 个时机调用：
 
 1. `applyPreviewResult()`（主流程：从画布提取头像后）
 2. 初始化时从 `localStorage` 取到 stored 头像（`source: 'storage'`）
@@ -537,10 +538,10 @@ async def get_battle_avatar(side: str): ...
 
 | 文件 | 用途 |
 |------|------|
-| [start-battle-arena.bat](../../start-battle-arena.bat)（61 行） | Windows 一键启动：先 `server.py`，再 `vite dev`；附带等待健康检查 |
-| [start_battle_arena.py](../../start_battle_arena.py)（95 行） | Python 跨平台启动器：开 3 个 PowerShell 窗口分别跑 NEKO 主服务（48911）、匹配服务（3001）、Vite 前端（5173） |
-| [stop-battle-arena.bat](../../stop-battle-arena.bat)（16 行） | 关停占用 3001 / 5173 端口的进程 |
-| [stop-battle-arena.ps1](../../stop-battle-arena.ps1)（50 行） | PowerShell 版关停（含端口检测 + 进程 kill 错误隔离） |
+| `start-battle-arena.bat`（61 行） | Windows 一键启动：先 `server.py`，再 `vite dev`；附带等待健康检查 |
+| `start_battle_arena.py`（95 行） | Python 跨平台启动器：开 3 个 PowerShell 窗口分别跑 NEKO 主服务（48911）、匹配服务（3001）、Vite 前端（5173） |
+| `stop-battle-arena.bat`（16 行） | 关停占用 3001 / 5173 端口的进程 |
+| `stop-battle-arena.ps1`（50 行） | PowerShell 版关停（含端口检测 + 进程 kill 错误隔离） |
 
 `start_battle_arena.py` 的工作流程（节选）：
 
@@ -742,7 +743,7 @@ docs/neko-brawl/
 
 ### 12.1 战斗触发卡移除
 
-- [nekoBrawlAdventureDeck.js](../../battle-arena/src/data/nekoBrawlAdventureDeck.js) `MAIN_DECK_DISTRIBUTION`：`BATTLE 3 → 0`，并入 `EVENT 28 → 31`，保持主牌组 40 张
+- `battle-arena/src/data/nekoBrawlAdventureDeck.js` `MAIN_DECK_DISTRIBUTION`：`BATTLE 3 → 0`，并入 `EVENT 28 → 31`，保持主牌组 40 张
 - `sideDistribution`：2 张战斗换成事件
 - 两处都留「恢复战斗改回这里」注释
 
@@ -773,12 +774,12 @@ docs/neko-brawl/
 ### 12.6 终点卡结算（`kind: 'ending'`）
 
 - 探险历程记录 `adventureLog`（`buildAdventureLogEntry`）累积每个落点结果
-- 主线终点 → 结算页：**前端模板**保底（`buildAdventureEndingStory`）+ **后端 LLM** 生成（`forge_story_generator.generate_adventure_ending_story` + `server.py` 路由 [`/arena/adventure-ending`](../../local_server/battle_arena_server/server.py)），LLM 失败回退模板
+- 主线终点 → 结算页：**前端模板**保底（`buildAdventureEndingStory`）+ **后端 LLM** 生成（`forge_story_generator.generate_adventure_ending_story` + `server.py` 路由 `local_server/battle_arena_server/server.py`），LLM 失败回退模板
 - 故事按历程统计（成败/支线/休息）+ 当前猫娘人格生成
 
 ### 12.7 Bug 修复
 
-- 4 费行动卡无法放入行动区：移除 [CardGamePanel.jsx](../../battle-arena/src/components/CardGamePanel.jsx) `setPreviewCard` 里误用的 `cardCost > playerEnergy` 拦截（探险模式 cost 是行动力、非能量消耗）
+- 4 费行动卡无法放入行动区：移除 `battle-arena/src/components/CardGamePanel.jsx` `setPreviewCard` 里误用的 `cardCost > playerEnergy` 拦截（探险模式 cost 是行动力、非能量消耗）
 
 ### 12.8 仍未实现（接力点）
 
@@ -789,4 +790,4 @@ docs/neko-brawl/
 
 ---
 
-> 如需了解本分支**非大乱斗**部分的改动（主动投递框架 PR #1545、Minecraft Agent Prompt 微调等），见 [../branch-pr1454-changes.md](../branch-pr1454-changes.md)。
+> 如需了解本分支**非大乱斗**部分的改动（主动投递框架 PR #1545、Minecraft Agent Prompt 微调等），见 `branch-pr1454-changes.md`。

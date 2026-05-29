@@ -235,6 +235,10 @@ function getEventBlueprint(index, entry = {}) {
 //     { mode: 'value', valueKey: 'money', valueLabel: '金钱', threshold: 50 }
 //   并给相关卡补上 checkValues[valueKey]。resolveEventCheck 已支持多张累加。
 function buildEventCheck(blueprint, index) {
+  // 若蓝图/条目已显式配置 check（例如第二层的 value 累加检定），原样沿用，绝不覆盖 ——
+  // 否则注释承诺的"给事件塞一个 { mode:'value', ... } 即可启用"会被这里每次重生成的
+  // attribute check 静默冲掉，接 value 模式时会无声退回属性判定。
+  if (blueprint?.check) return blueprint.check
   const attr = ADVENTURE_ATTR_POOL[index % ADVENTURE_ATTR_POOL.length]
   return {
     mode: 'attribute',

@@ -469,7 +469,8 @@ async def generate_adventure_ending_story(payload: dict[str, Any]) -> ForgeStory
     request_id = _forge_request_id(payload)
     started_at = time.perf_counter()
     config_manager = get_config_manager()
-    active = await resolve_active_neko_context()
+    runtime_hint = str(payload.get("runtimeCharacterHint") or payload.get("runtime_character_hint") or "").strip()
+    active = await resolve_active_neko_context(runtime_character_hint=runtime_hint or None)
     master_name = active.master_name
     lanlan_name = active.lanlan_name
     system_prompt, user_prompt = build_adventure_ending_prompt(payload, lanlan_name, master_name, active.lanlan_prompt)

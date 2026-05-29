@@ -81,17 +81,17 @@
 
 ### 3.2 新增模块
 
-- [main_logic/proactive_delivery.py](../main_logic/proactive_delivery.py)（348 行）— `ProactiveDeliveryManager` 主类、`_QueuedCue` 队列单元、`effective_priority()` 标准化。
+- `main_logic/proactive_delivery.py`（348 行）— `ProactiveDeliveryManager` 主类、`_QueuedCue` 队列单元、`effective_priority()` 标准化。
   - 全在 asyncio 事件循环内运行，所有公共方法同步、内部用 `create_task` 异步派发；单线程循环保证 await 间隔间的原子性，所以**没有锁**。
   - `submit()` → `_pump()` → `_run_deliver()` 的三段释放链。
   - 暴露：`submit()` / `on_playback_start` / `on_playback_end` / `on_text_start` / `on_text_end` / `reset_gate()` / `drain_pending()`。
-- [main_logic/lifecycle_bus.py](../main_logic/lifecycle_bus.py)（66 行）— `LifecycleEventBus`：进程内命名事件 pub/sub。
+- `main_logic/lifecycle_bus.py`（66 行）— `LifecycleEventBus`：进程内命名事件 pub/sub。
   - 信号：`voice_play_start` / `voice_play_end`（前端）、`text_start` / `text_end`（离线 client 文本边界）
   - Handler 错误隔离（一个订阅者抛错不影响其他）
 
 ### 3.3 `core.py` 接入点
 
-[main_logic/core.py](../main_logic/core.py) +294 行，要点：
+`main_logic/core.py` +294 行，要点：
 
 - `LLMSessionManager.__init__`：构造 `LifecycleEventBus(name=lanlan_name)` + `ProactiveDeliveryManager`，并把 `voice_play_*` / `text_*` 订阅到 manager。
 - 新增 `submit_proactive_callback(callback, *, priority, coalesce_key)`：被动 cue 仍走老的 `enqueue_agent_callback`，**只有 `delivery_mode != "passive"`** 的主动 cue 进 manager。
@@ -103,7 +103,7 @@
 
 ### 3.4 `app/main_server.py` 事件路由改造
 
-[app/main_server.py](../app/main_server.py) 中 `_handle_agent_event` 的改造（除了 §2.3 头像端点外）：
+`app/main_server.py` 中 `_handle_agent_event` 的改造（除了 §2.3 头像端点外）：
 
 - 主动 cue（`ai_behavior in {"respond", "read"}`）携带的 image media_parts：
   - `respond` + 有文本 → 推入 `deferred_proactive_images`（跟 callback 走 manager）
@@ -118,7 +118,7 @@
 
 ### 3.5 前端播放门控信号
 
-[static/app-audio-playback.js](../static/app-audio-playback.js) 新增 `sendVoicePlaybackSignal(action, turnId)`：
+`static/app-audio-playback.js` 新增 `sendVoicePlaybackSignal(action, turnId)`：
 
 - 在 `dispatchAssistantSpeechStart` → 发 `voice_play_start`
 - 在 `dispatchAssistantSpeechEnd` → 发 `voice_play_end`
@@ -126,7 +126,7 @@
 
 兼容 Electron WSProxy/IPC 桥接 socket：当 `readyState === undefined` 也尝试发送（用 try/catch 兜底）。
 
-后端 WebSocket 路由 [main_routers/websocket_router.py](../main_routers/websocket_router.py) 接 16 行：把上述 action 派到对应 `mgr.lifecycle_bus.emit(...)`。
+后端 WebSocket 路由 `main_routers/websocket_router.py` 接 16 行：把上述 action 派到对应 `mgr.lifecycle_bus.emit(...)`。
 
 ### 3.6 Plugin SDK 字段扩展
 
@@ -134,24 +134,24 @@
 
 | 文件 | 变更 |
 |------|------|
-| [plugin/sdk/shared/core/push_message_schema.py](../plugin/sdk/shared/core/push_message_schema.py) | `push_message` 接受 `priority` / `coalesce_key` |
-| [plugin/sdk/shared/core/context.py](../plugin/sdk/shared/core/context.py) | 透传 |
-| [plugin/sdk/shared/core/types.py](../plugin/sdk/shared/core/types.py) | 类型签名 |
-| [plugin/core/context.py](../plugin/core/context.py) | 服务端 ctx 透传 |
-| [plugin/_types/protocols.py](../plugin/_types/protocols.py) | Protocol 签名 |
-| [plugin/server/messaging/proactive_bridge.py](../plugin/server/messaging/proactive_bridge.py) | 把字段写进 agent event payload |
+| `plugin/sdk/shared/core/push_message_schema.py` | `push_message` 接受 `priority` / `coalesce_key` |
+| `plugin/sdk/shared/core/context.py` | 透传 |
+| `plugin/sdk/shared/core/types.py` | 类型签名 |
+| `plugin/core/context.py` | 服务端 ctx 透传 |
+| `plugin/_types/protocols.py` | Protocol 签名 |
+| `plugin/server/messaging/proactive_bridge.py` | 把字段写进 agent event payload |
 
 ### 3.7 测试覆盖
 
-- [tests/unit/test_proactive_delivery.py](../tests/unit/test_proactive_delivery.py)（**189 行新增**）— 覆盖优先级、coalesce、min-gap、ttl、看门狗、`drain_pending` 顺序、`reset_gate` 不丢队列
-- [tests/unit/test_passthrough_to_chat_bubble.py](../tests/unit/test_passthrough_to_chat_bubble.py) +9 行 — 验证 `priority` / `coalesce_key` 跟随 ai_behavior
-- [tests/unit/test_proactive_sm_integration.py](../tests/unit/test_proactive_sm_integration.py) +9 行 — 状态机集成
+- `tests/unit/test_proactive_delivery.py`（**189 行新增**）— 覆盖优先级、coalesce、min-gap、ttl、看门狗、`drain_pending` 顺序、`reset_gate` 不丢队列
+- `tests/unit/test_passthrough_to_chat_bubble.py` +9 行 — 验证 `priority` / `coalesce_key` 跟随 ai_behavior
+- `tests/unit/test_proactive_sm_integration.py` +9 行 — 状态机集成
 
 ---
 
 ## 四、Minecraft Agent Prompt 调整
 
-[plugin/plugins/game_agent_minecraft/prompts.py](../plugin/plugins/game_agent_minecraft/prompts.py) 改了两个核心提示模板（七语言全量同步：zh / en / ja / ko / ru / es / pt）：
+`plugin/plugins/game_agent_minecraft/prompts.py` 改了两个核心提示模板（七语言全量同步：zh / en / ja / ko / ru / es / pt）：
 
 1. **`IN_PROGRESS_FOLLOWUP`**（动作进行中的播报指引）
    - 增加约束：**当前动作还在进行时，不要派新任务、不要调用 `minecraft_task`**（这会打断正在做的事）。
@@ -161,13 +161,13 @@
    - 「派动作」从默认建议改为「只有真的有明显该做的事时才派」，优先用聊天确认。
    - 添加「**调用 `minecraft_task` 时不要把工具名说出来**」（防止把内部状态当对话播报）。
 
-配套：[service.py](../plugin/plugins/game_agent_minecraft/service.py) +23 / [__init__.py](../plugin/plugins/game_agent_minecraft/__init__.py) +11 / [test_game_agent_minecraft_plugin.py](../tests/unit/test_game_agent_minecraft_plugin.py) +5。
+配套：`plugin/plugins/game_agent_minecraft/service.py` +23 / `plugin/plugins/game_agent_minecraft/__init__.py` +11 / `tests/unit/test_game_agent_minecraft_plugin.py` +5。
 
 ---
 
 ## 五、其它零星改动
 
-- [main_logic/omni_offline_client.py](../main_logic/omni_offline_client.py) +38 / [omni_realtime_client.py](../main_logic/omni_realtime_client.py) +33 — 适配 lifecycle 信号 + 主动投递入口（接 `lifecycle_bus.emit`）。
+- `main_logic/omni_offline_client.py` +38 / `main_logic/omni_realtime_client.py` +33 — 适配 lifecycle 信号 + 主动投递入口（接 `lifecycle_bus.emit`）。
 - `.gitignore` +1 — 忽略大乱斗运行产物。
 
 ---
@@ -211,4 +211,4 @@
   tests/unit/test_proactive_delivery.py        ~190 行
 ```
 
-Git 上 `main` 没有任何 HEAD 不包含的提交（`git log HEAD..main` 为空），所以本分支可以直接 fast-forward 合并到 `main`。
+Git 上 `main` 没有任何 HEAD 不包含的提交（`git log HEAD..main` 为空）—— 这只说明本分支**未落后** `main`，并不代表可以直接合并：本 PR 仍是标记「(Don't Merge)」的协作草稿分支，是否合并、何时合并由维护者决定。

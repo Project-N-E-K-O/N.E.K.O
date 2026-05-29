@@ -800,7 +800,10 @@ async def arena_adventure_ending(body: dict[str, Any]):
     try:
         from forge_story_generator import generate_adventure_ending_story
 
-        result = await generate_adventure_ending_story(safe_body)
+        # 透传 _requestId 让 generator 的日志与本路由的 request_id 关联（对齐 forge-card-story）。
+        # 不强制校验 runtimeCharacterHint：结算故事以"当前猫娘"为叙事主体即可，前端也未传 hint；
+        # 若前端将来传了（联机指定猫娘），generate_adventure_ending_story 会软性采用。
+        result = await generate_adventure_ending_story({**safe_body, "_requestId": request_id})
         return JSONResponse({
             "success": True,
             "requestId": request_id,
