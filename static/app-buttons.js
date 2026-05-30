@@ -1250,7 +1250,12 @@
         // 必须靠 assistantTurnCompletedId 区分"已收尾"和"还在跑"。
         // 否则"回复跑完，用户停顿一会儿再点麦克风"会被误判成在路上，
         // 干等到 15s timeout 才进语音。
-        if (S.assistantTurnId && S.assistantTurnId !== S.assistantTurnCompletedId) return true;
+        // settledId：语音轮干净收尾后 completedId 会被清成 null（见 app-audio-playback
+        // 的 maybeFinalizeAssistantSpeech），仅凭 turnId !== completedId 会把"已说完的轮"
+        // 误判成在路上。settledId 标记该轮已收尾，turnId === settledId 即视为不在路上。
+        if (S.assistantTurnId
+                && S.assistantTurnId !== S.assistantTurnCompletedId
+                && S.assistantTurnId !== S.assistantTurnSettledId) return true;
         if (S.assistantTurnAwaitingBubble) return true;
         if (typeof window._lastSubmittedRequestId === 'string' && window._lastSubmittedRequestId) return true;
         // 纯截图 / 纯图片这类没有 typed text 的提交，sendTextPayloadInternal
@@ -1259,6 +1264,24 @@
         // pendingTextTurnSubmitAt 专门补这段，15s freshness 兜底防漏清。
         if (S.pendingTextTurnSubmitAt && (Date.now() - S.pendingTextTurnSubmitAt) < 15000) return true;
         return false;
+    }
+
+    // 常驻诊断：切语音卡 15s 时，靠这个快照看清是哪个 in-flight 标志没被清。
+    // 只含布尔/时间戳，无对话内容。
+    function snapshotInFlightFlags() {
+        return {
+            turnMismatch: !!(S.assistantTurnId && S.assistantTurnId !== S.assistantTurnCompletedId),
+            awaitingBubble: !!S.assistantTurnAwaitingBubble,
+            lastReqId: !!(typeof window._lastSubmittedRequestId === 'string' && window._lastSubmittedRequestId),
+            pendingSubmitMs: S.pendingTextTurnSubmitAt ? (Date.now() - S.pendingTextTurnSubmitAt) : null,
+            // 原始 id：用来区分 turnMismatch 是"completedId 标了旧 turn"还是
+            // "assistantTurnId 被重分配给没收尾的新 turn"。
+            turnId: S.assistantTurnId,
+            completedId: S.assistantTurnCompletedId,
+            settledId: S.assistantTurnSettledId,
+            pendingServerId: S.assistantPendingTurnServerId,
+            speechActiveId: S.assistantSpeechActiveTurnId
+        };
     }
 
     function waitForAssistantTurnEnd(timeoutMs) {
@@ -1273,6 +1296,8 @@
                 resolve('not_in_flight');
                 return;
             }
+            var startedAt = Date.now();
+            console.log('[VoiceSwitch] wait start — in-flight flags:', JSON.stringify(snapshotInFlightFlags()));
             var settled = false;
             function done(reason) {
                 if (settled) return;
@@ -1280,6 +1305,9 @@
                 window.removeEventListener('neko-assistant-turn-end', onEnd);
                 clearInterval(pollTimer);
                 clearTimeout(timeoutTimer);
+                console.log('[VoiceSwitch] wait done reason=' + reason
+                    + ' elapsed=' + (Date.now() - startedAt) + 'ms — flags now:',
+                    JSON.stringify(snapshotInFlightFlags()));
                 resolve(reason);
             }
             function onEnd() { done('turn_end'); }

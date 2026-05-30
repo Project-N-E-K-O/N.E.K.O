@@ -120,6 +120,12 @@
         pendingTextTurnSubmitAt: 0,
         assistantTurnSeq: 0,
         assistantTurnCompletedId: null,
+        // 一轮干净收尾后（maybeFinalizeAssistantSpeech 成功），completedId 会被
+        // clearAssistantTurnCompletion 清成 null，但 assistantTurnId 要等下条用户
+        // 消息才清。没有这个 settled 标记的话，isAssistantTextResponseInFlight 的
+        // turnMismatch（turnId !== completedId）在每条语音回复收尾后都恒为 true，
+        // 切语音会干等满 15s。settledId 记下"这轮已收尾"，turn-start/cancel 时清。
+        assistantTurnSettledId: null,
         assistantTurnCompletionSource: null,
         assistantSpeechActiveTurnId: null,
         assistantSpeechStartedTurnId: null,

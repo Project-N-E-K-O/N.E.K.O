@@ -1042,6 +1042,7 @@
         S.assistantSpeechActiveTurnId = null;
         S.assistantTurnId = null;
         S.assistantTurnCompletedId = null;
+        S.assistantTurnSettledId = null;
         S.assistantTurnCompletionSource = null;
         clearPendingAssistantTurnStart();
         S.currentPlayingSpeechId = null;
