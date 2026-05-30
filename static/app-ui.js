@@ -1931,8 +1931,7 @@
             container.style.transition = 'none';
             container.style.opacity = '0';
             container.style.visibility = 'hidden';
-            await waitForAnimationFrames(2);
-            if (!isActiveDragToken(dragToken)) return;
+            void container.offsetWidth;
 
             if (!state.hasMoved) {
                 container.setAttribute('data-dragging', 'true');

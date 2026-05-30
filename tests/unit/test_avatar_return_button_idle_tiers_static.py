@@ -63,17 +63,19 @@ def test_desktop_return_ball_drag_viewport_preserves_measured_cat_size():
     assert "container.style.removeProperty('--neko-ball-drag-size')" in source
 
 
-def test_desktop_return_ball_drag_flushes_hidden_frame_before_window_restore():
+def test_desktop_return_ball_drag_stops_native_drag_without_waiting_for_frame():
     source = (PROJECT_ROOT / "static" / "app-ui.js").read_text(encoding="utf-8")
 
     finish_index = source.index("async function finishDrag(screenX, screenY)")
     hide_index = source.index("container.style.visibility = 'hidden';", finish_index)
-    flush_index = source.index("await waitForAnimationFrames(2);", hide_index)
+    flush_index = source.index("void container.offsetWidth;", hide_index)
     stop_index = source.index("await window.nekoPetDrag.stop(screenX, screenY)", flush_index)
     resolve_index = source.index("const finalBounds = await resolveFinalWindowBounds", flush_index)
+    finish_body = source[finish_index:resolve_index]
 
     assert finish_index < hide_index < flush_index < stop_index
     assert finish_index < hide_index < flush_index < resolve_index
+    assert "await waitForAnimationFrames(2);" not in finish_body
     assert "visibility: container.style.visibility" in source
     assert "container.style.visibility = savedStyle.visibility" in source
     assert "container.style.visibility = getSavedBallStyleValue('visibility')" in source
