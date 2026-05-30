@@ -4842,12 +4842,18 @@ async function closeCatgirlPanel() {
     if (overlay.dataset.closing === 'true') return;
     overlay.dataset.closing = 'true';
 
-    // 详情面板被显式关闭：companion 侧栏仍然存活（活得比 form 长），但它绑定的旧
-    // form 即将 detach。打个标记，禁止 _companionEnsureLiveForm 的选择器回退把聊天
-    // 误绑到「下一张被打开的不同卡」（Codex #3328901017）。同卡重新打开时 path-1 会
-    // 按确切档案名命中并清掉这个标记；in-place rebuild（重命名 / 新卡首存）不走这里。
+    // 详情面板被显式关闭：companion 是绑在「这一次卡片编辑会话」上的助手，会话结束就
+    // 跟着收掉。关键安全点（Codex #3328901017）：打开/切换到「别的卡」必须先走到这里把
+    // 当前面板关掉（openCatgirlPanel 顶部有 _catgirlPanelOpen 互斥 guard，开新面板前
+    // 一定先 closeCatgirlPanel）。所以在这里直接 teardown+destroy companion，就从根上
+    // 杜绝了「A 的聊天被 _companionEnsureLiveForm 的选择器回退误绑到下一张打开的卡 B、
+    // 后续 action/autosave 改错卡」。合法的 in-place rebuild（改档案名字段后
+    // saveCatgirlFromPanel 重建、新卡首存 popup 被拦走 rebuildSavedCatgirlPanel）都不经过
+    // closeCatgirlPanel，companion 不受影响、照常跟随。
     if (window._cardCompanion) {
-        window._cardCompanion._detailPanelClosed = true;
+        _companionTeardown(window._cardCompanion);
+        _companionDestroy(window._cardCompanion);
+        window._cardCompanion = null;
     }
 
     const currentForm = overlay.querySelector('form');
@@ -11210,17 +11216,26 @@ async function _companionTryAutoSave(state) {
         const WAIT_TIMEOUT_MS = 8000;
         const POLL_MS = 100;
         let waited = 0;
-        while (waited < WAIT_TIMEOUT_MS) {
-            if (!_companionEnsureLiveForm(state)) return;
-            if (state.form.dataset.submitting !== 'true') break;
+        // ⚠ 必须盯 **formBeforeWait 自己** 的 dataset.submitting 清掉，而不是 state.form：
+        // 那次手动保存的 PUT 一旦成功就会触发 buildCatgirlDetailForm 重建，旧 form 随之
+        // detach、_companionEnsureLiveForm 会把 state.form 重绑到**新** form，新 form 的
+        // submitting 从没被置位 → 若拿 state.form 当条件，循环会在重建一发生就**提前 break**。
+        // 但此时手动保存还没收尾（saveCatgirlFromPanel 的 finally 清 submitting 之前，已保存卡
+        // 分支还要 await loadCharacterData + 再跑一次 buildCatgirlDetailForm）。companion 抢在
+        // 它收尾前 replay + 自存，就会被那次后续重建覆盖 → 退回这条 wait/replay 本来要消灭的
+        // 静默丢失（Codex #3328951294 P1）。saveCatgirlFromPanel 的 finally 清的是原始 form
+        // 引用（== formBeforeWait）的 submitting，detach 之后该 dataset 仍可读，所以这里安全。
+        while (waited < WAIT_TIMEOUT_MS && formBeforeWait.dataset.submitting === 'true') {
             await new Promise(function (r) { setTimeout(r, POLL_MS); });
             waited += POLL_MS;
         }
-        // 二次 sanity check：超时还在 submitting 就放弃，避免 hang 死
-        if (state.form && state.form.dataset.submitting === 'true') {
+        // 超时仍在 submitting 就放弃，避免 hang 死
+        if (formBeforeWait.dataset.submitting === 'true') {
             console.warn('[card-companion] auto-save waited 8s for in-flight save, giving up');
             return;
         }
+        // 手动保存确认收尾后，再接上它可能 rebuild 出来的新 form（接不上 = 面板没了 → 放弃）
+        if (!_companionEnsureLiveForm(state)) return;
         // form 实例换过 → 用 BEFORE-WAIT 那份 snapshot + removed 名单把 companion
         // 期望的状态重新灌进新 form。两条独立通道：
         //   1) 字段值 replay：跳过那些「companion 故意删除」的 key，避免把刚删
@@ -11365,18 +11380,14 @@ function _companionEnsureLiveForm(state) {
     if (state.originalName) {
         liveForm = document.getElementById('catgirl-form-' + state.originalName);
     }
-    // path-1（按确切档案名命中）= 确定是同一张卡，安全 → 清掉「详情面板被显式关过」
-    // 标记，让同卡关掉再开后续的 in-place rebuild 仍能正常走 path-2 回退。
-    if (liveForm) state._detailPanelClosed = false;
-    // ⚠ path-2 选择器回退只能在「详情面板没被 closeCatgirlPanel 显式关过」时才允许。
-    // 否则会误绑到「另一张卡」：用户给 A 开着 companion → 关掉 A 的详情面板
-    //（closeCatgirlPanel 并不销毁 companion 侧栏）→ 打开另一张卡 B 的面板 → 在仍然
-    // 可见的 companion 里输入，这一支会抓到 B 的 form，把 A 的聊天/历史绑到 B、后续
-    // action/autosave 改错卡（Codex #3328901017）。
-    // 合法的 in-place rebuild —— 新卡首存 popup 被拦走 rebuildSavedCatgirlPanel、
-    // 改「档案名」字段后 saveCatgirlFromPanel 重建表单 —— 都不经过 closeCatgirlPanel，
-    // 标记保持 false，回退照常生效；同卡「关掉再开」则由上面的 path-1 命中兜住。
-    if (!liveForm && !state._detailPanelClosed) {
+    if (!liveForm) {
+        // path-2 选择器回退：在当前 catgirl panel 里找那个唯一 form。
+        // 安全性（Codex #3328901017）：打开/切换到「别的卡」必须先 closeCatgirlPanel
+        //（openCatgirlPanel 顶部 _catgirlPanelOpen 互斥），而 closeCatgirlPanel 会直接
+        // teardown+destroy 掉 companion。所以能走到这一支时 companion 必然还活着 = 详情
+        // 面板从未被关过 = 当前可见的唯一 form 一定是「同一张卡」的 in-place rebuild
+        //（改档案名字段后 saveCatgirlFromPanel 重建、新卡首存 popup 被拦走
+        // rebuildSavedCatgirlPanel），绝不会抓到另一张卡 → 不会误绑。
         liveForm = document.querySelector('.catgirl-panel-right form[id^="catgirl-form-"]');
     }
     if (!liveForm) return false;
