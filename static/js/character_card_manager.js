@@ -11229,9 +11229,20 @@ async function _companionTryAutoSave(state) {
             await new Promise(function (r) { setTimeout(r, POLL_MS); });
             waited += POLL_MS;
         }
-        // 超时仍在 submitting 就放弃，避免 hang 死
+        // 超时仍在 submitting 就放弃，避免 hang 死 —— 但**不能静默退出**：那次慢保存收尾时
+        // 会用较旧的请求快照重建表单，把 companion 刚写进去的改动/删除覆盖掉，而用户只看到
+        // 之前那条「已应用」气泡、误以为存好了（Codex #3328963563）。所以补一条失败气泡讲清楚，
+        // 并尽量把 Save/Cancel 亮出来给一个手动兜底入口（若那次保存最终失败、没重建表单，这俩
+        // 按钮就是真正的重试路径）。
         if (formBeforeWait.dataset.submitting === 'true') {
             console.warn('[card-companion] auto-save waited 8s for in-flight save, giving up');
+            const tsb = formBeforeWait.querySelector('#save-button');
+            const tcb = formBeforeWait.querySelector('#cancel-button');
+            if (tsb) tsb.style.display = '';
+            if (tcb) tcb.style.display = '';
+            _companionAppendSystem(state,
+                _cardAssistT('character.aiCompanionAutoSaveFailed',
+                    '⚠ 自动保存失败了喵——表单里的字段已经写好，请看下弹出的错误提示再手动点 Save 重试。'));
             return;
         }
         // 手动保存确认收尾后，再接上它可能 rebuild 出来的新 form（接不上 = 面板没了 → 放弃）
