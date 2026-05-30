@@ -2533,13 +2533,13 @@ body.react-chat-window-dragging {
 
 @media only screen and (max-width: 768px) {
 
-    /* 手机端背景设为黑色 */
-    html,
-    body {
+    /* 手机端背景设为黑色（Electron Pet 窗口除外：html/body 都带 lanlan-pet-mode） */
+    html:not(.lanlan-pet-mode),
+    body:not(.lanlan-pet-mode) {
         background: #000 !important;
     }
 
-    #live2d-container {
+    :where(body:not(.lanlan-pet-mode)) #live2d-container {
         position: fixed;
         right: 0;
         bottom: 0;
@@ -2548,7 +2548,7 @@ body.react-chat-window-dragging {
         z-index: 5;
     }
 
-    #chat-container {
+    :where(body:not(.lanlan-pet-mode)) #chat-container {
         width: 90vw;
         left: 5vw;
         bottom: 10px;
@@ -2561,12 +2561,12 @@ body.react-chat-window-dragging {
         box-shadow: none;
     }
 
-    #chat-header {
+    :where(body:not(.lanlan-pet-mode)) #chat-header {
         height: 40px;
         font-size: 0.9rem;
     }
 
-    #chat-content-wrapper {
+    :where(body:not(.lanlan-pet-mode)) #chat-content-wrapper {
         padding: 12px;
         padding-top: 44px;
         /* 禁用内容区过渡，避免折叠时对子元素产生影响 */
@@ -2575,7 +2575,7 @@ body.react-chat-window-dragging {
         /* Fluent 背景层 */
     }
 
-    #text-input-area {
+    :where(body:not(.lanlan-pet-mode)) #text-input-area {
         padding: 8px;
         /* 输入区不参与任何过渡动画 */
         transition: none !important;
@@ -2586,73 +2586,73 @@ body.react-chat-window-dragging {
     }
 
     /* 输入区内部元素也不参与过渡，避免细微跳动 */
-    #text-input-row,
-    #textInputBox,
-    #button-group {
+    :where(body:not(.lanlan-pet-mode)) #text-input-row,
+    :where(body:not(.lanlan-pet-mode)) #textInputBox,
+    :where(body:not(.lanlan-pet-mode)) #button-group {
         transition: none !important;
     }
 
-    #textInputBox {
+    :where(body:not(.lanlan-pet-mode)) #textInputBox {
         font-size: 0.9rem;
         /* 移动端：按钮纵向排列，高度匹配按钮组总高度 */
         height: 92px;
     }
 
-    #button-group {
+    :where(body:not(.lanlan-pet-mode)) #button-group {
         gap: 4px;
     }
 
-    #textSendButton,
-    #screenshotButton {
+    :where(body:not(.lanlan-pet-mode)) #textSendButton,
+    :where(body:not(.lanlan-pet-mode)) #screenshotButton {
         padding: 6px 12px;
         font-size: 0.8rem;
         min-width: 70px;
     }
 
-    .screenshot-item {
+    :where(body:not(.lanlan-pet-mode)) .screenshot-item {
         width: 80px;
     }
 
-    .screenshot-thumbnail {
+    :where(body:not(.lanlan-pet-mode)) .screenshot-thumbnail {
         width: 80px;
         height: 60px;
     }
 
-    .chat-avatar-preview-card-body {
+    :where(body:not(.lanlan-pet-mode)) .chat-avatar-preview-card-body {
         flex-direction: column;
         align-items: stretch;
     }
 
-    .chat-avatar-preview-image-shell {
+    :where(body:not(.lanlan-pet-mode)) .chat-avatar-preview-image-shell {
         width: 78px;
         height: 78px;
         border-radius: 22px;
     }
 
-    #screenshots-title {
+    :where(body:not(.lanlan-pet-mode)) #screenshots-title {
         font-size: 0.8rem;
     }
 
-    #clear-all-screenshots {
+    :where(body:not(.lanlan-pet-mode)) #clear-all-screenshots {
         font-size: 0.7rem;
         padding: 2px 6px;
     }
 
-    .screenshot-index {
+    :where(body:not(.lanlan-pet-mode)) .screenshot-index {
         font-size: 0.65rem;
     }
 
-    .message {
+    :where(body:not(.lanlan-pet-mode)) .message {
         font-size: 0.9rem;
         max-width: 85%;
     }
 
     /* 移动端显示拍照，隐藏截图 */
-    .desktop-text {
+    :where(body:not(.lanlan-pet-mode)) .desktop-text {
         display: none;
     }
 
-    .mobile-text {
+    :where(body:not(.lanlan-pet-mode)) .mobile-text {
         display: inline;
     }
 }
@@ -2660,7 +2660,7 @@ body.react-chat-window-dragging {
 @media only screen and (max-width: 768px) {
 
     /* 移动端：折叠时容器完全透明且不拦截触摸事件 */
-    #chat-container.mobile-collapsed {
+    :where(body:not(.lanlan-pet-mode)) #chat-container.mobile-collapsed {
         width: 48px !important;
         min-width: 48px !important;
         max-width: 48px !important;
@@ -2676,14 +2676,14 @@ body.react-chat-window-dragging {
         border: none !important;
     }
 
-    #chat-container.mobile-collapsed::before {
+    :where(body:not(.lanlan-pet-mode)) #chat-container.mobile-collapsed::before {
         backdrop-filter: none !important;
         -webkit-backdrop-filter: none !important;
         background: transparent !important;
     }
 
     /* 移动端：折叠时仅切换按钮可交互 */
-    #chat-container.mobile-collapsed #toggle-chat-btn {
+    :where(body:not(.lanlan-pet-mode)) #chat-container.mobile-collapsed #toggle-chat-btn {
         pointer-events: auto !important;
         left: 8px;
         right: auto;
@@ -2693,8 +2693,8 @@ body.react-chat-window-dragging {
     }
 
     /* 移动端：折叠时隐藏输入区和音乐调节条 */
-    #chat-container.mobile-collapsed #text-input-area,
-    #chat-container.mobile-collapsed .music-player-bar {
+    :where(body:not(.lanlan-pet-mode)) #chat-container.mobile-collapsed #text-input-area,
+    :where(body:not(.lanlan-pet-mode)) #chat-container.mobile-collapsed .music-player-bar {
         display: none !important;
     }
 }
@@ -2702,12 +2702,12 @@ body.react-chat-window-dragging {
 @media only screen and (max-width: 768px) {
 
     /* 移动端：最小化仅折叠内容区，输入区常驻显示 */
-    #chat-container.minimized #text-input-area {
+    :where(body:not(.lanlan-pet-mode)) #chat-container.minimized #text-input-area {
         display: block;
     }
 
     /* 移动端：最小化时保持容器尺寸，让输入区可见可用 */
-    #chat-container.minimized {
+    :where(body:not(.lanlan-pet-mode)) #chat-container.minimized {
         width: 90vw;
         left: 5vw;
         bottom: 5px;
@@ -2725,7 +2725,7 @@ body.react-chat-window-dragging {
     /* React chat window 移动端规则仅作用于 index.html 等真正的浏览器手机端。
        chat.html 是 Electron 独立窗口（无论拖得多窄都应走 PC 逻辑），
        在 <body> 加 .electron-chat-window 从此媒体查询中排除。 */
-    body:not(.electron-chat-window) #react-chat-window-shell:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode))#react-chat-window-shell:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
         width: calc(100vw - 12px);
         height: auto;
         max-height: 85vh;
@@ -2739,7 +2739,7 @@ body.react-chat-window-dragging {
         overflow: hidden;
     }
 
-    body:not(.electron-chat-window) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode))#react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
         width: calc(100vw - 16px) !important;
         left: 8px !important;
         right: 8px;
@@ -2748,14 +2748,14 @@ body.react-chat-window-dragging {
         transform: none !important;
     }
 
-    body:not(.electron-chat-window) #react-chat-window-shell #react-chat-window-root {
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode))#react-chat-window-shell #react-chat-window-root {
         height: 100%;
         flex: 1 1 auto;
         overflow: hidden;
         min-height: 0;
     }
 
-    body:not(.electron-chat-window) #react-chat-window-shell .app-shell {
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode))#react-chat-window-shell .app-shell {
         height: 100%;
         display: flex;
         flex-direction: column;
@@ -2766,7 +2766,7 @@ body.react-chat-window-dragging {
        overflow:hidden 保证输入区不会被消息挤出。shell 尺寸仍由
        syncMobileContentLayout() 写成显式像素（根据内容，最高 85vh；
        用户拖过顶部手柄后走 mobileUserHeight 持久化值）。 */
-    body:not(.electron-chat-window) #react-chat-window-shell .chat-window {
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode))#react-chat-window-shell .chat-window {
         height: 100%;
         display: grid;
         grid-template-rows: auto 1fr auto;
@@ -2774,12 +2774,12 @@ body.react-chat-window-dragging {
         overflow: hidden;
     }
 
-    body:not(.electron-chat-window) #react-chat-window-shell .chat-body {
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode))#react-chat-window-shell .chat-body {
         min-height: 0;
         overflow: hidden;
     }
 
-    body:not(.electron-chat-window) #react-chat-window-shell .message-list {
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode))#react-chat-window-shell .message-list {
         height: 100%;
         min-height: 0;
         overflow-y: auto;
@@ -2788,35 +2788,35 @@ body.react-chat-window-dragging {
 
     /* .is-mobile-content-capped 现在不再影响布局（message-list 始终可滚），
        保留空规则以免其他位置若有依赖时出现样式回退。 */
-    body:not(.electron-chat-window) #react-chat-window-shell.is-mobile-content-capped .message-list {
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode))#react-chat-window-shell.is-mobile-content-capped .message-list {
         overflow-y: auto;
     }
 
     /* Mobile: hide the divider between translate and jukebox plus the last tool button (jukebox)
        to reduce clutter on small screens. If the tool order changes, replace these positional
        selectors with a dedicated class or data attribute on the affected controls. */
-    body:not(.electron-chat-window) #react-chat-window-shell .composer-bottom-tools > .composer-tool-divider:nth-last-child(2),
-    body:not(.electron-chat-window) #react-chat-window-shell .composer-bottom-tools > .composer-tool-btn:last-child {
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode))#react-chat-window-shell .composer-bottom-tools > .composer-tool-divider:nth-last-child(2),
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode))#react-chat-window-shell .composer-bottom-tools > .composer-tool-btn:last-child {
         display: none;
     }
 
-    body:not(.electron-chat-window) #react-chat-window-shell.is-mobile-expand-guarding .composer-tool-btn,
-    body:not(.electron-chat-window) #react-chat-window-shell.is-mobile-expand-guarding .composer-tool-btn:hover,
-    body:not(.electron-chat-window) #react-chat-window-shell.is-mobile-expand-guarding .composer-tool-btn:active,
-    body:not(.electron-chat-window) #react-chat-window-shell.is-mobile-expand-guarding .composer-tool-btn:focus {
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode))#react-chat-window-shell.is-mobile-expand-guarding .composer-tool-btn,
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode))#react-chat-window-shell.is-mobile-expand-guarding .composer-tool-btn:hover,
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode))#react-chat-window-shell.is-mobile-expand-guarding .composer-tool-btn:active,
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode))#react-chat-window-shell.is-mobile-expand-guarding .composer-tool-btn:focus {
         background: transparent !important;
         pointer-events: none;
     }
 
-    body:not(.electron-chat-window) #react-chat-window-drag-handle {
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode))#react-chat-window-drag-handle {
         cursor: grab;
     }
 
     /* 手机端：仅显示顶部拖拽边缘用于调整高度，隐藏其余方向 */
-    body:not(.electron-chat-window) #react-chat-window-shell:not(.is-minimized) .react-chat-resize-edge {
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode))#react-chat-window-shell:not(.is-minimized) .react-chat-resize-edge {
         display: none;
     }
-    body:not(.electron-chat-window) #react-chat-window-shell:not(.is-minimized) .react-chat-resize-n {
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode))#react-chat-window-shell:not(.is-minimized) .react-chat-resize-n {
         display: block;
         height: 14px;
         top: -4px;
@@ -2826,7 +2826,7 @@ body.react-chat-window-dragging {
         /* 可视拖拽指示条 */
         background: transparent;
     }
-    body:not(.electron-chat-window) #react-chat-window-shell:not(.is-minimized) .react-chat-resize-n::after {
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode))#react-chat-window-shell:not(.is-minimized) .react-chat-resize-n::after {
         content: '';
         position: absolute;
         left: 50%;
@@ -2840,27 +2840,27 @@ body.react-chat-window-dragging {
 
     /* ---- 手机端最小化：50px 圆形悬浮球（与桌面端一致）----
        替代原先的全宽底部胶囊，使用圆形小球，可自由拖动 */
-    body:not(.electron-chat-window) #react-chat-window-shell.is-minimized {
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode))#react-chat-window-shell.is-minimized {
         width: 50px !important;
         height: 50px !important;
         border-radius: 50%;
     }
 
-    body:not(.electron-chat-window) #react-chat-window-shell.is-minimized #react-chat-window-drag-handle {
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode))#react-chat-window-shell.is-minimized #react-chat-window-drag-handle {
         display: flex;
         align-items: center;
         justify-content: center;
         cursor: pointer;
     }
 
-    body:not(.electron-chat-window) #react-chat-window-shell.is-minimized .react-chat-minimized-icon {
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode))#react-chat-window-shell.is-minimized .react-chat-minimized-icon {
         width: 100%;
         height: 100%;
         object-fit: contain;
         pointer-events: none;
     }
 
-    #chat-container.minimized::before {
+    :where(body:not(.lanlan-pet-mode)) #chat-container.minimized::before {
         backdrop-filter: none !important;
         -webkit-backdrop-filter: none !important;
         background: transparent !important;

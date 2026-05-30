@@ -877,7 +877,7 @@ class VRMManager {
 
                 const screenHeight = window.innerHeight;
                 const screenWidth = window.innerWidth;
-                const isMobile = screenWidth <= 768;
+                const isMobile = typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (screenWidth <= 768);
 
                 if (isMobile) {
                     targetScale = Math.max(0.4, Math.min(0.8, screenHeight / 1800));
@@ -912,7 +912,7 @@ class VRMManager {
 
                 const screenHeight = window.innerHeight;
                 const screenWidth = window.innerWidth;
-                const isMobileDevice = screenWidth <= 768;
+                const isMobileDevice = typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (screenWidth <= 768);
 
                 const scaledModelHeight = size.y > 0 ? size.y : 1.5;
                 const targetScreenHeight = screenHeight * 0.45;

@@ -320,6 +320,11 @@
         if (isElectronChatWindow()) {
             return false;
         }
+        // index.html 的 Electron Pet 窗口同理：永不进入手机模式（黑背景 + 窄布局）。
+        // 标记 __LANLAN_IS_ELECTRON_PET__ 由 index.html 头部脚本同步注入。
+        if (window.__LANLAN_IS_ELECTRON_PET__) {
+            return false;
+        }
         return window.innerWidth <= 768;
     }
 

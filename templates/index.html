@@ -13,6 +13,24 @@
     <title data-i18n="app.title">Project N.E.K.O.</title>
     <!-- VRM 光照默认值：从后端注入，保证在所有 JS 之前同步可用 -->
     <script>window.VRM_DEFAULT_LIGHTING=Object.freeze({{ vrm_defaults | tojson }});</script>
+    <!-- Electron Pet 窗口标记：必须在任何样式表之前同步执行，给 <html> 打上
+         lanlan-pet-mode，让 index.css 的 (max-width:768px) 手机端规则（黑背景、
+         窄布局）整段排除掉。Electron preload 在页面脚本之前注入这些全局，所以这里
+         能同步读到；同时兜底匹配 userAgent，避免首帧黑屏闪烁。dev 浏览器（无这些
+         信号）不打标记，窄宽手机版行为保持不变。 -->
+    <script>(function () {
+        try {
+            var w = window;
+            var isElectronPet = !!(w.electronDesktopCapturer || w.electronSpatialAudio || w.electronShell)
+                || w.__NEKO_MULTI_WINDOW__ === true
+                || /Electron/i.test(navigator.userAgent || '')
+                || !!(w.process && w.process.versions && w.process.versions.electron);
+            w.__LANLAN_IS_ELECTRON_PET__ = isElectronPet;
+            if (isElectronPet) {
+                document.documentElement.classList.add('lanlan-pet-mode');
+            }
+        } catch (e) { /* 检测失败按非 Electron 处理，退回浏览器行为 */ }
+    })();</script>
     <!-- 诊断观测：必须最早加载——内部 monkey-patch setInterval/setTimeout 计数活跃
          timer，业务代码之后加载就抓不到早期注册的那些。默认关，靠
          localStorage.NEKO_DEBUG_HEALTH=1 + 刷新启用。详见 static/debug-health.js。 -->
@@ -44,6 +62,13 @@
 </head>
 
 <body class="subtitle-web-host">
+    <!-- 同步把 Electron Pet 标记补到 body（head 脚本执行时 body 尚不存在）；
+         在 chat-container 等内容解析之前执行，避免窄窗口下手机布局闪一帧。 -->
+    <script>(function () {
+        if (window.__LANLAN_IS_ELECTRON_PET__) {
+            document.body.classList.add('lanlan-pet-mode');
+        }
+    })();</script>
 
     <!-- 旧的按钮面板已迁移到浮动按钮系统（live2d.js），保留隐藏的旧按钮元素供功能触发使用 -->
     <div id="sidebar" style="display: none;">

@@ -458,7 +458,7 @@ async function initLive2DModel() {
             // 加载模型（使用事件驱动方式，在常驻表情应用完成后应用参数）
             await window.live2dManager.loadModel(targetModelPath, {
                 preferences: modelPreferences,
-                isMobile: window.innerWidth <= 768,
+                isMobile: typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (window.innerWidth <= 768),
                 // 在常驻表情应用完成后应用参数（事件驱动，替代不可靠的 setTimeout）
                 onResidentExpressionApplied: (model) => {
                     if (modelPreferences && modelPreferences.parameters &&

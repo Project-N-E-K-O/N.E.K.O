@@ -651,16 +651,18 @@ html #chat-container {
 /* ===== 移动端暗色模式适配 ===== */
 @media only screen and (max-width: 768px) {
 
-  html[data-theme="dark"],
-  html[data-theme="dark"] body {
+  /* Electron Pet 窗口（html/body 带 lanlan-pet-mode）排除：它需要透明背景
+     透出桌面，绝不能在暗色下被刷成黑色。 */
+  html[data-theme="dark"]:not(.lanlan-pet-mode),
+  html[data-theme="dark"]:not(.lanlan-pet-mode) body {
     background: #000 !important;
   }
 
-  [data-theme="dark"] #chat-content-wrapper {
+  html[data-theme="dark"]:not(.lanlan-pet-mode) #chat-content-wrapper {
     background: rgba(25, 25, 25, 0.6);
   }
 
-  [data-theme="dark"] #text-input-area {
+  html[data-theme="dark"]:not(.lanlan-pet-mode) #text-input-area {
     background: rgba(40, 40, 40, 0.55);
     border-top: 1px solid rgba(255, 255, 255, 0.06);
   }
