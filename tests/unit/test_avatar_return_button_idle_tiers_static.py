@@ -56,7 +56,7 @@ def test_return_button_idle_tier_styles_are_present():
 def test_desktop_return_ball_drag_viewport_preserves_measured_cat_size():
     source = (PROJECT_ROOT / "static" / "app-ui.js").read_text(encoding="utf-8")
 
-    assert "MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE = 128" in source
+    assert "MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE = 160" in source
     assert "container.style.setProperty('--neko-ball-drag-size', `${state.savedBallWidth}px`)" in source
     assert "--neko-idle-return-size:var(--neko-ball-drag-size)!important" in source
     assert "body[data-neko-ball-drag] .neko-idle-return-art" in source
@@ -177,11 +177,16 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert 'state.paused = true' in source
     assert 'state.paused = false' in source
     assert 'state.substate !== profile.walkingSubstate' in source
-    assert 'resumeWalkAfterDrag' in source
-    assert 'preserveResumeAfterDrag: true' in source
-    assert '_prepareNekoIdleCat1ResumeAfterDragForContainer' in source
-    assert 'state.pendingWalkReady = true' in source
-    assert 'restoreArt: !resumeCat1Walking' in source
+    walk_start = source[
+        source.index('function _startNekoIdleCat1Walk'):
+        source.index('function _scheduleNekoIdleCat1WalkStart')
+    ]
+    assert '_stepNekoIdleCat1Walk(button, timestamp)' in walk_start
+    assert 'window.requestAnimationFrame((timestamp)' not in walk_start
+    assert 'resumeWalkAfterDrag' not in source
+    assert 'preserveResumeAfterDrag' not in source
+    assert '_prepareNekoIdleCat1ResumeAfterDragForContainer' not in source
+    assert 'restoreArt: !resumeCat1Walking' not in source
     assert "'neko:return-ball-manual-move'" in source
     assert "'neko:return-ball-manual-move'" in app_ui_source
     assert "detail.reason === 'return-ball-drag-start'" in source

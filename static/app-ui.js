@@ -1231,7 +1231,7 @@
     //     (app.js lines 6078-6785)
     // ================================================================
 
-    const MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE = 128;
+    const MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE = 160;
     let multiWindowReturnBallDragState = null;
     let idleReturnBallDesktopDragStateFrame = 0;
     let idleReturnBallDesktopDragStatePending = null;
