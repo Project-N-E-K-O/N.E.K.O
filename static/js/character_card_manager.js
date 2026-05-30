@@ -11114,6 +11114,18 @@ function _companionApplyActions(state, actions) {
         removed: removedTags.slice(),
         skipped: skippedTags.slice(),
     };
+    // remove_field 这条分支直接删 DOM 行，不像 _cardAssistApplyToForm 末尾那样会把
+    // Save / Cancel 亮出来。已保存卡这两个按钮默认 display:none（见 buildCatgirlDetailForm
+    // 里 `if (!isNew) ...style.display = 'none'`），一旦后面 _companionTryAutoSave 失败、
+    // 系统气泡提示「请手动点 Save 重试」时，按钮却还藏着 → 用户无从重试，被删字段在
+    // reload 后复活。所以只要真发生了删除（纯 remove、没有 update/create 顺带亮按钮的场景）
+    // 就把 Save / Cancel 显式亮出来，让那条 fallback 提示是可操作的。
+    if (removedTags.length && state.form) {
+        const sb = state.form.querySelector('#save-button');
+        const cb = state.form.querySelector('#cancel-button');
+        if (sb) sb.style.display = '';
+        if (cb) cb.style.display = '';
+    }
     const parts = [];
     if (updatedTags.length) parts.push('✎ ' + updatedTags.join(', '));
     if (createdTags.length) parts.push('+ ' + createdTags.join(', '));

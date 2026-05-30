@@ -8036,6 +8036,30 @@ margin-top: 10px;
     100% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0);    background-color: transparent; }
 }
 
+/* ===== prefers-reduced-motion：Companion 面板的全部入场 / 循环 / 收展 / 闪烁动画 ===== */
+/* 系统层「减少动态效果」时，把陪伴面板新增的所有动画与几何过渡静音：
+   窗口入场 cardCompanionWindowIn、最小化呼吸光 cardCompanionBallGlow、最小化↔展开的
+   收/展几何过渡（collapsing / expanding 的 left/top/width/height/...）、气泡入场
+   cardCompanionBubbleIn、typing dots cardCompanionDot、字段闪烁 cardAssistRowFlash*。
+   注：收/展的最终态切换由 JS 的 setTimeout(260) 收尾（见 toggle 最小化逻辑 ~10381/10402），
+   不依赖 transitionend，所以这里把 transition 干掉后面板会直接「瞬移就位」而非卡住。
+   各元素基础态 opacity 默认 1、无 transform，animation:none 后即回到可见终态，无需额外复位。
+   与本文件其它 prefers-reduced-motion 兜底（@1744 / @6415）保持同一套无动画语义。 */
+@media (prefers-reduced-motion: reduce) {
+    .card-companion-panel,
+    .card-companion-panel.card-companion-minimized,
+    .card-companion-panel.card-companion-dragging,
+    .card-companion-panel.card-companion-collapsing,
+    .card-companion-panel.card-companion-expanding,
+    .card-companion-bubble,
+    .card-companion-typing-dot,
+    .field-row-wrapper.card-assist-row-flash,
+    .field-row-wrapper.card-assist-row-flash::after {
+        animation: none !important;
+        transition: none !important;
+    }
+}
+
 [data-theme="dark"] .catgirl-panel-wrapper.card-only.phase-expand .catgirl-panel-left::after {
     background: linear-gradient(90deg, rgba(3, 7, 18, 0.34), rgba(31, 42, 54, 0));
 }
