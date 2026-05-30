@@ -149,6 +149,11 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert 'state.paused = true' in source
     assert 'state.paused = false' in source
     assert 'state.substate !== profile.walkingSubstate' in source
+    assert 'resumeWalkAfterDrag' in source
+    assert 'preserveResumeAfterDrag: true' in source
+    assert '_prepareNekoIdleCat1ResumeAfterDragForContainer' in source
+    assert 'state.pendingWalkReady = true' in source
+    assert 'restoreArt: !resumeCat1Walking' in source
     assert "'neko:return-ball-manual-move'" in source
     assert "'neko:return-ball-manual-move'" in app_ui_source
     assert "detail.reason === 'return-ball-drag-start'" in source

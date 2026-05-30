@@ -698,14 +698,23 @@ function _setNekoIdleReturnDragActionArt(button, tier) {
 function _prepareNekoIdleReturnDragActionForContainer(container) {
     const button = _getNekoIdleReturnButtonFromContainer(container);
     if (!button) return;
+    const subactionState = button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey;
+    const shouldResumeWalk = !!(subactionState &&
+        subactionState.profile &&
+        subactionState.substate === subactionState.profile.walkingSubstate);
     _logNekoIdleReturnDragDebug('prepare', {
         containerId: container && container.id,
         tier: button.getAttribute('data-neko-idle-tier')
     });
     _cancelNekoIdleCat1Journey(button, {
         resetArt: false,
-        preserveObservers: true
+        preserveObservers: true,
+        preserveResumeAfterDrag: true
     });
+    const nextState = button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey;
+    if (nextState && shouldResumeWalk) {
+        nextState.resumeWalkAfterDrag = true;
+    }
 }
 
 function _startNekoIdleReturnDragActionForContainer(container) {
@@ -714,13 +723,22 @@ function _startNekoIdleReturnDragActionForContainer(container) {
     const tier = _normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier'));
     if (tier === _NEKO_IDLE_TIER_NONE) return;
     const state = _getNekoIdleReturnDragActionState(button);
+    const subactionState = button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey;
+    const shouldResumeWalk = !!(subactionState &&
+        (subactionState.resumeWalkAfterDrag ||
+            (subactionState.profile && subactionState.substate === subactionState.profile.walkingSubstate)));
     state.active = true;
     state.token += 1;
     state.tier = tier;
     _cancelNekoIdleCat1Journey(button, {
         resetArt: false,
-        preserveObservers: true
+        preserveObservers: true,
+        preserveResumeAfterDrag: true
     });
+    const nextState = button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey;
+    if (nextState && shouldResumeWalk) {
+        nextState.resumeWalkAfterDrag = true;
+    }
     _setNekoIdleReturnDragActionClasses(button, true);
     _setNekoIdleReturnDragActionArt(button, tier);
     _logNekoIdleReturnDragDebug('active', {
@@ -798,7 +816,8 @@ function _getNekoIdleReturnSubactionState(button, profile) {
         walkSpeedRate: 1,
         walkPreviousDistance: 0,
         walkDistanceGrowthPx: 0,
-        actionSettled: false
+        actionSettled: false,
+        resumeWalkAfterDrag: false
     };
     button.__nekoIdleCat1Journey = button.__nekoIdleReturnSubactionState;
     return button.__nekoIdleReturnSubactionState;
@@ -955,6 +974,9 @@ function _cancelNekoIdleCat1Journey(button, options = {}) {
     state.lastStepAt = 0;
     state.facingRight = false;
     state.actionSettled = false;
+    if (options.preserveResumeAfterDrag !== true) {
+        state.resumeWalkAfterDrag = false;
+    }
     _resetNekoIdleCat1WalkSpeed(state);
     _setNekoIdleCat1Classes(button, state);
     if (options.resetArt) {
@@ -996,6 +1018,28 @@ function _dispatchNekoIdleReturnBallManualMove(container, reason) {
             container: container
         }
     }));
+}
+
+function _prepareNekoIdleCat1ResumeAfterDragForContainer(container) {
+    const button = _getNekoIdleReturnButtonFromContainer(container);
+    const state = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
+    if (!button || !state || !state.resumeWalkAfterDrag) return false;
+
+    state.resumeWalkAfterDrag = false;
+    const tier = _normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier'));
+    const profile = state.profile || _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;
+    if (tier !== profile.tier) return false;
+
+    const target = _getNekoIdleCat1Target(container, _getNekoIdleChatMinimizedRect());
+    if (!target || target.distance < profile.target.enterDistancePx) return false;
+
+    state.pendingWalkReady = true;
+    state.pendingWalkDelayMs = 0;
+    state.target = target;
+    state.facingRight = !!target.facingRight;
+    state.actionSettled = false;
+    _setNekoIdleCat1Classes(button, state);
+    return true;
 }
 
 function _getNekoIdleReactChatMinimizedRect() {
@@ -1680,7 +1724,10 @@ function _ensureNekoIdleReturnPresentationBridge() {
         const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
         if (!detail || !detail.container) return;
         if (detail.reason === 'return-ball-drag-end') {
-            _finishNekoIdleReturnDragActionForContainer(detail.container);
+            const resumeCat1Walking = _prepareNekoIdleCat1ResumeAfterDragForContainer(detail.container);
+            _finishNekoIdleReturnDragActionForContainer(detail.container, {
+                restoreArt: !resumeCat1Walking
+            });
             _scheduleNekoIdleCat1JourneySyncForContainer(detail.container);
             return;
         }
