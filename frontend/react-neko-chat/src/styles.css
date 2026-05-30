@@ -1486,6 +1486,7 @@ svg {
 .composer-icon-button {
   --composer-icon-bubble-scale: 1;
   position: relative;
+  isolation: isolate;
   width: 46px;
   height: 46px;
   border: 0;
@@ -1513,6 +1514,7 @@ svg {
 .composer-icon-button::after {
   content: '';
   position: absolute;
+  z-index: 1;
   pointer-events: none;
 }
 
@@ -1538,6 +1540,8 @@ svg {
 }
 
 .composer-icon-button-image {
+  position: relative;
+  z-index: 2;
   width: 30px;
   height: 30px;
   object-fit: contain;
@@ -3835,10 +3839,14 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 [data-theme="dark"] .composer-icon-popover {
   background: transparent;
+  opacity: 1 !important;
+  filter: none !important;
 }
 
 [data-theme="dark"] .composer-icon-button {
   border: 0;
+  opacity: 1 !important;
+  filter: none !important;
   background:
     radial-gradient(circle at 30% 28%, rgba(104, 127, 179, 0.56) 0%, rgba(79, 100, 146, 0.46) 22%, rgba(50, 61, 93, 0.52) 72%, rgba(35, 43, 66, 0.44) 100%);
   color: #d8eaff;
@@ -3868,6 +3876,13 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
     0 12px 26px rgba(11, 24, 47, 0.42),
     0 2px 8px rgba(37, 86, 160, 0.28),
     inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+[data-theme="dark"] .composer-icon-button-image {
+  opacity: 1 !important;
+  mix-blend-mode: normal !important;
+  image-rendering: auto;
+  filter: none !important;
 }
 
 [data-theme="dark"] .composer-translate-btn.is-active::after {
