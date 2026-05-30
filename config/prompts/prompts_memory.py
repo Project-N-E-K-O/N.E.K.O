@@ -1104,28 +1104,29 @@ PROFILE_RENAME_EVENT_TEXT = {
 }
 
 # 主人档案的改名记录走在猫娘（AI）的 persona/master section 里——读这段的是猫娘，
-# 改名的是对面的用户，所以这里**禁止用第一人称**（否则猫娘会以为是自己改了名）。
-# 统一用第二人称「你」直接称呼用户，既消除人称歧义，也避开「主人/master」这类物化称呼。
+# 改名的是对面的用户。第一人称「我」会让猫娘以为是自己改了名，第二人称「你」又读着
+# 别扭，所以这里**去掉人称**，用中性陈述，和 master section 里其它无人称字段（昵称/
+# 性别…）的语气对齐。
 PROFILE_RENAME_EVENT_FIELD_MASTER = {
-    "zh": "你的改名记录",
-    "zh-TW": "你的改名紀錄",
-    "en": "Your Profile Rename Record",
-    "ja": "あなたの改名記録",
-    "ko": "당신의 프로필 이름 변경 기록",
-    "ru": "Запись о смене имени твоего профиля",
-    "es": "Tu registro de cambio de nombre de perfil",
-    "pt": "Seu registro de mudança de nome do perfil",
+    "zh": "改名记录",
+    "zh-TW": "改名紀錄",
+    "en": "Profile Rename Record",
+    "ja": "改名記録",
+    "ko": "프로필 이름 변경 기록",
+    "ru": "Запись о смене имени профиля",
+    "es": "Registro de cambio de nombre de perfil",
+    "pt": "Registro de mudança de nome do perfil",
 }
 
 PROFILE_RENAME_EVENT_TEXT_MASTER = {
-    "zh": "你以前的档案名是「{old_name}」，现在已经改名为「{new_name}」。以后请把「{new_name}」当作你的当前名字。",
-    "zh-TW": "你以前的檔案名是「{old_name}」，現在已經改名為「{new_name}」。以後請把「{new_name}」當作你的目前名字。",
-    "en": "Your previous profile name was \"{old_name}\"; it has now been changed to \"{new_name}\". Treat \"{new_name}\" as your current name from now on.",
-    "ja": "以前のあなたのプロフィール名は「{old_name}」で、今は「{new_name}」に改名されました。これからは「{new_name}」をあなたの現在の名前として扱ってください。",
-    "ko": "당신의 이전 프로필 이름은 \"{old_name}\"였고, 지금은 \"{new_name}\"으로 바뀌었습니다. 앞으로는 \"{new_name}\"을 당신의 현재 이름으로 여기세요.",
-    "ru": "Раньше твоё имя профиля было «{old_name}», теперь оно изменено на «{new_name}». С этого момента считай «{new_name}» твоим текущим именем.",
-    "es": "Tu nombre de perfil anterior era \"{old_name}\"; ahora se ha cambiado a \"{new_name}\". A partir de ahora, trata \"{new_name}\" como tu nombre actual.",
-    "pt": "Seu nome de perfil anterior era \"{old_name}\"; agora foi alterado para \"{new_name}\". A partir de agora, trate \"{new_name}\" como seu nome atual.",
+    "zh": "档案名已从「{old_name}」改为「{new_name}」，当前名字是「{new_name}」。",
+    "zh-TW": "檔案名已從「{old_name}」改為「{new_name}」，目前名字是「{new_name}」。",
+    "en": "The profile name was changed from \"{old_name}\" to \"{new_name}\"; the current name is \"{new_name}\".",
+    "ja": "プロフィール名は「{old_name}」から「{new_name}」に変更されました。現在の名前は「{new_name}」です。",
+    "ko": "프로필 이름이 \"{old_name}\"에서 \"{new_name}\"(으)로 변경되었습니다. 현재 이름은 \"{new_name}\"입니다.",
+    "ru": "Имя профиля изменено с «{old_name}» на «{new_name}»; текущее имя — «{new_name}».",
+    "es": "El nombre de perfil cambió de \"{old_name}\" a \"{new_name}\"; el nombre actual es \"{new_name}\".",
+    "pt": "O nome de perfil foi alterado de \"{old_name}\" para \"{new_name}\"; o nome atual é \"{new_name}\".",
 }
 
 
@@ -1159,7 +1160,7 @@ def render_profile_rename_event_context(
 
     entity="neko"：写进猫娘自己的 section，用第一人称「我」。
     entity="master"：写进猫娘 persona 的 master section，读者是猫娘、改名的是用户，
-    因此用第二人称「你」直接称呼用户，避免第一人称把用户的改名误当成猫娘自己的。
+    因此去掉人称用中性陈述，避免第一人称把用户的改名误当成猫娘自己的。
     """
     lang_key = _normalize_memory_prompt_lang(lang)
     if str(entity or "").strip().lower() == "master":
