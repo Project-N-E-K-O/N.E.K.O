@@ -3191,8 +3191,10 @@ class ConfigManager:
         if core_cfg.get('coreApiKey'):
             config['CORE_API_KEY'] = core_cfg['coreApiKey']
 
-        _core_api_provider = core_cfg.get('coreApi') or 'qwen'
-        _assist_api_provider = core_cfg.get('assistApi') or 'qwen'
+        _core_api_provider = core_cfg.get('coreApi') or config['CORE_API_TYPE']
+        _assist_api_provider = core_cfg.get('assistApi')
+        if not _assist_api_provider:
+            _assist_api_provider = 'free' if _core_api_provider == 'free' else 'qwen'
         _fallback_providers = {_core_api_provider, _assist_api_provider}
         _core_key_fallback = config['CORE_API_KEY'] if config['CORE_API_KEY'] != 'free-access' else ''
 

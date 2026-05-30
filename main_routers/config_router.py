@@ -603,14 +603,21 @@ async def get_core_config_api():
             api_key = core_config.get('CORE_API_KEY','')
             # 创建空的配置对象用于返回默认值
             core_cfg = {}
+            runtime_core_api_provider = core_config.get('CORE_API_TYPE') or ''
+            runtime_assist_api_provider = core_config.get('assistApi') or ''
+        else:
+            runtime_core_api_provider = ''
+            runtime_assist_api_provider = ''
         
         # 旧版本 core_config.json 可能只有 coreApiKey 而没有各 assistApiKey* 字段，
         # 需要与 ConfigManager.get_core_config() 保持一致的回退逻辑，
         # 但只能回退到与 coreApi / assistApi 匹配的服务商，
         # 以免将不兼容的 API Key 填充到其他服务商。
         fallback_key = api_key if api_key != 'free-access' else ''
-        _core_api_provider = core_cfg.get('coreApi') or 'qwen'
-        _assist_api_provider = core_cfg.get('assistApi') or 'qwen'
+        _core_api_provider = core_cfg.get('coreApi') or runtime_core_api_provider or 'qwen'
+        _assist_api_provider = core_cfg.get('assistApi') or runtime_assist_api_provider
+        if not _assist_api_provider:
+            _assist_api_provider = 'free' if _core_api_provider == 'free' else 'qwen'
         _fallback_providers = {_core_api_provider, _assist_api_provider}
 
         def _fb(provider: str) -> str:

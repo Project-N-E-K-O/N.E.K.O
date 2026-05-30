@@ -315,6 +315,33 @@ class TestAssistFollowsCore:
         assert cfg.get('IS_FREE_VERSION') is True
 
     @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_get_core_config_api_defaults_empty_assist_to_free_for_free_core(self, monkeypatch):
+        """API 管理页读取旧配置时，core=free + assistApi='' 应回填 assist=free。"""
+        from main_routers import config_router
+
+        async def fake_read_json_async(_path):
+            return {
+                'coreApiKey': 'free-access',
+                'coreApi': 'free',
+                'assistApi': '',
+            }
+
+        class FakeConfigManager:
+            def get_runtime_config_path(self, _filename):
+                return 'core_config.json'
+
+        monkeypatch.setattr(config_router, 'read_json_async', fake_read_json_async)
+        monkeypatch.setattr(config_router, 'get_config_manager', lambda: FakeConfigManager())
+
+        response = await config_router.get_core_config_api()
+
+        assert response['success'] is True
+        assert response['coreApi'] == 'free'
+        assert response['assistApi'] == 'free'
+        assert response['assistApiKeyQwen'] == ''
+
+    @pytest.mark.unit
     def test_free_core_honors_explicit_assist(self, config_manager):
         """coreApi=free + assistApi=silicon → 显式选择被保留，agent/text 走 silicon。"""
         _write_core_config(config_manager, {
