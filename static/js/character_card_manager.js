@@ -11255,6 +11255,17 @@ async function _companionTryAutoSave(state) {
                 const wrapper = ta.closest('.field-row-wrapper');
                 if (wrapper) wrapper.remove();
             });
+            // replay 里若含「删除」：rebuilt 的已保存卡表单 Save/Cancel 默认是藏着的
+            //（手动 save 成功后又被隐藏）。若只 replay 了删除、没 replay 任何字段值，
+            // 上面的 _cardAssistApplyToForm 不会被调到、不会顺带亮按钮；紧接着的
+            // autosave 一旦失败、提示用户「手动点 Save 重试」时按钮却不可见 → 删除丢失
+            //（Codex #3328942158）。跟直连 remove_field 路径一样，这里把 Save/Cancel 亮出。
+            if (expectedRemovals.length) {
+                const rsb = state.form.querySelector('#save-button');
+                const rcb = state.form.querySelector('#cancel-button');
+                if (rsb) rsb.style.display = '';
+                if (rcb) rcb.style.display = '';
+            }
             // 重新刷一遍 watch snapshot 把 "我们刚 replay 完的状态" 当成新的
             // baseline，避免后面 form-watch listener 把 replay 误判成"用户手改"
             // 弹一堆系统气泡。
@@ -11264,7 +11275,15 @@ async function _companionTryAutoSave(state) {
         state._lastApplyResult = null;
         let ok = true;
         try {
-            const ret = await saveCatgirlFromPanel(state.form, state.originalName, state.isNew);
+            // _autoCreated 的卡其实已经 POST 到后端了 → 对它来说这次只是 PUT 更新。但若仍
+            // 把 isNew=true 传进去，saveCatgirlFromPanel 的**保存成功后 UI 分支**会按原始
+            // isNew 去 closeCatgirlPanel / 开卡面制作弹窗，把正在进行的 companion 聊天打断
+            //（Codex #3328942156）。它的请求方法本就按内部 effectiveIsNew(=isNew && !_autoCreated)
+            // 走 PUT、不受这里影响；这里按"是否已落库"把 _autoCreated 当作已保存卡传进去，
+            // 让 post-save 走原地刷新而不是甩走面板。走到这一步时新卡未落库的情况已被上面的
+            // guard(11161) return 掉，所以只剩「已保存卡」或「_autoCreated」两种，都应视作非新卡。
+            const effectiveIsNew = state.isNew && !state.form._autoCreated;
+            const ret = await saveCatgirlFromPanel(state.form, state.originalName, effectiveIsNew);
             if (ret === false) ok = false;
         } catch (e) {
             console.warn('[card-companion] auto-save after action failed:', e);
