@@ -574,9 +574,13 @@ _CHAT_MAX_HISTORY_MESSAGES = 20
 # 单独的对话消息也限一下，给 system + card 的预算让位。
 _CHAT_MAX_MESSAGE_CHARS = 2000
 
-# 一次最多接受多少个 action。LLM 偶尔会爽到一次性产出十几个 refine_field，
-# 全应用上去会把用户的设定全冲掉，需要兜底。
-_CHAT_MAX_ACTIONS = 8
+# 一次最多接受多少个 action。这是防 LLM「爽到一次性产出几十个 action 把用户设定冲掉」
+# 的兜底，但不能低于一次合理的「全量重写」所需的动作数：默认模板就有 9 个可见字段
+#（昵称/性别/年龄/种族/自称/核心特点/行为特点/厌恶/一句话台词），加上用户自建的自定义
+# 字段，「重写全部」这类 quick action 会一字段一个 refine_field 地返回。原来卡在 8 会把第
+# 9 个及之后**静默丢掉**、autosave 只落库半张卡（Codex #3328971304）。抬到 32：足够覆盖
+# 默认 9 字段 + 充裕的自定义字段，又仍能拦住真正失控的超长 action 列表。
+_CHAT_MAX_ACTIONS = 32
 
 # 字段长度上限（refine_field / add_field 的 value）。和模板里手写的设定字
 # 段长度大致对齐。
