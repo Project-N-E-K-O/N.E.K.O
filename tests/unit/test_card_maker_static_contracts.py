@@ -61,7 +61,7 @@ def test_model_manager_parameter_save_restores_unsaved_and_offers_card_face():
     assert "window.localStorage" in script
     assert "parameterEditorSavedNeedsModelSave" in script
     assert "restorePendingParameterEditorSaveState(savePositionBtn, {" in script
-    assert "|| restorePendingParameterEditorSaveState(savePositionBtn);" in script
+    assert "|| await restorePendingParameterEditorSaveState(savePositionBtn, { currentModelInfo })" in script
     assert "parameterEditedSinceSave ||" in script
     assert "offerCardFaceAfterModelSave" in script
 
