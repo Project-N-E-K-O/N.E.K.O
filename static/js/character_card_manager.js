@@ -4842,6 +4842,14 @@ async function closeCatgirlPanel() {
     if (overlay.dataset.closing === 'true') return;
     overlay.dataset.closing = 'true';
 
+    // 详情面板被显式关闭：companion 侧栏仍然存活（活得比 form 长），但它绑定的旧
+    // form 即将 detach。打个标记，禁止 _companionEnsureLiveForm 的选择器回退把聊天
+    // 误绑到「下一张被打开的不同卡」（Codex #3328901017）。同卡重新打开时 path-1 会
+    // 按确切档案名命中并清掉这个标记；in-place rebuild（重命名 / 新卡首存）不走这里。
+    if (window._cardCompanion) {
+        window._cardCompanion._detailPanelClosed = true;
+    }
+
     const currentForm = overlay.querySelector('form');
     if (currentForm && currentForm._voiceSelectCleanup) {
         currentForm._voiceSelectCleanup();
@@ -11338,7 +11346,18 @@ function _companionEnsureLiveForm(state) {
     if (state.originalName) {
         liveForm = document.getElementById('catgirl-form-' + state.originalName);
     }
-    if (!liveForm) {
+    // path-1（按确切档案名命中）= 确定是同一张卡，安全 → 清掉「详情面板被显式关过」
+    // 标记，让同卡关掉再开后续的 in-place rebuild 仍能正常走 path-2 回退。
+    if (liveForm) state._detailPanelClosed = false;
+    // ⚠ path-2 选择器回退只能在「详情面板没被 closeCatgirlPanel 显式关过」时才允许。
+    // 否则会误绑到「另一张卡」：用户给 A 开着 companion → 关掉 A 的详情面板
+    //（closeCatgirlPanel 并不销毁 companion 侧栏）→ 打开另一张卡 B 的面板 → 在仍然
+    // 可见的 companion 里输入，这一支会抓到 B 的 form，把 A 的聊天/历史绑到 B、后续
+    // action/autosave 改错卡（Codex #3328901017）。
+    // 合法的 in-place rebuild —— 新卡首存 popup 被拦走 rebuildSavedCatgirlPanel、
+    // 改「档案名」字段后 saveCatgirlFromPanel 重建表单 —— 都不经过 closeCatgirlPanel，
+    // 标记保持 false，回退照常生效；同卡「关掉再开」则由上面的 path-1 命中兜住。
+    if (!liveForm && !state._detailPanelClosed) {
         liveForm = document.querySelector('.catgirl-panel-right form[id^="catgirl-form-"]');
     }
     if (!liveForm) return false;
@@ -11641,7 +11660,16 @@ function _cardAssistApplyToForm(form, generated, selectedKeys, originalName, isN
             ? window.t('character.deleteField')
             : '删除设定';
         delBtn.innerHTML = '<img src="/static/icons/delete.png" alt="" class="delete-icon"> <span data-i18n="character.deleteField">' + delLabel + '</span>';
-        delBtn.addEventListener('click', function () { wrapper.remove(); });
+        delBtn.addEventListener('click', function () {
+            wrapper.remove();
+            // 镜像普通自定义字段删除路径（见 buildCatgirlDetailForm 里 ~5041）：删掉 AI
+            // 新建的字段后也要把 Save / Cancel 亮出来。否则已保存卡上这次删除既不触发
+            // autosave、也没有可见的手动保存入口，reload 后字段复活（Codex #3328901018）。
+            const sBtn = form.querySelector('#save-button');
+            const cBtn = form.querySelector('#cancel-button');
+            if (sBtn) sBtn.style.display = '';
+            if (cBtn) cBtn.style.display = '';
+        });
         wrapper.appendChild(delBtn);
 
         if (addFieldArea && addFieldArea.parentNode === form) {
