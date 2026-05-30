@@ -399,10 +399,7 @@ def _build_ai_context_fields(
     except Exception:
         lang = None
 
-    try:
-        from config.prompts.prompts_memory import render_profile_rename_event_context
-    except Exception:
-        render_profile_rename_event_context = None
+    from config.prompts.prompts_memory import render_profile_rename_event_context
 
     field_name = _unique_ai_context_field_name(existing_fields)
     old_names: list[str] = []
@@ -431,15 +428,8 @@ def _build_ai_context_fields(
     lines: list[str] = []
     if old_names and current_name:
         old_names_text = _join_profile_rename_old_names(lang, old_names)
-        if render_profile_rename_event_context is not None:
-            label, text = render_profile_rename_event_context(lang, old_names_text, current_name)
-            text = f"{label}: {text}"
-        else:
-            text = (
-                f"我以前的档案名是「{old_names_text}」，现在已经改名为「{current_name}」。"
-                f"以后请把「{current_name}」当作我的当前名字。"
-            )
-        lines.append(text)
+        label, text = render_profile_rename_event_context(lang, old_names_text, current_name)
+        lines.append(f"{label}: {text}")
 
     lines.extend(legacy_lines)
 
