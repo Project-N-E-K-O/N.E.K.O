@@ -2396,9 +2396,14 @@ async def _maybe_deliver_mini_game_invite(
 
     try:
         from utils.instrument import counter as _instr_counter
+        # channel 维度区分两条邀请投递通道：proactive（本函数）与 work_break
+        # （水分提醒组合路径，见 _deliver_break_reminder_via_llm 下游）。两条都
+        # 共享同一 invite state/cooldown，邀请总数需把两通道相加。force_first 仅
+        # proactive 通道有意义。
         _instr_counter(
             "mini_game_invited",
             game_type=str(game_type)[:24],
+            channel="proactive",
             force_first=bool(force_first),
         )
     except Exception:
@@ -5003,6 +5008,18 @@ async def proactive_chat(request: Request):
                             "[%s] record_invite_delivery_persistent failed: %s",
                             lanlan_name, _persist_err,
                         )
+                    try:
+                        from utils.instrument import counter as _instr_counter
+                        # 与 proactive 通道共用 mini_game_invited，channel 维度区分；
+                        # 不计 persist 成败——邀请 UI 已投递给用户即算一次邀请。
+                        _instr_counter(
+                            "mini_game_invited",
+                            game_type=str(chosen_game_type)[:24],
+                            channel="work_break",
+                            force_first=False,
+                        )
+                    except Exception:
+                        pass
                     options_payload = _build_mini_game_invite_options_payload(
                         invite_lang=_break_lang,
                         game_type=chosen_game_type,
