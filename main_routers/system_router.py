@@ -5019,6 +5019,7 @@ async def proactive_chat(request: Request):
                             force_first=False,
                         )
                     except Exception:
+                        # 埋点 best-effort，失败不影响邀请投递
                         pass
                     options_payload = _build_mini_game_invite_options_payload(
                         invite_lang=_break_lang,
