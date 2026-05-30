@@ -1265,6 +1265,9 @@
         sel = null;
         mode = MODE_NONE;
         clearAnnotations();   // 选区即标注画布；清选区连带清标注
+        // 复位到选择工具：否则清选区后工具栏已隐藏，绘图工具仍激活，
+        // 用户再拖拽会被绘图分支拦截画成隐形标注，无法重新框选。
+        resetToolUI();
         hideActionBtns();
         requestRender();
     }
@@ -1362,10 +1365,22 @@
     function onResize() {
         if (!overlay || overlay.style.display === 'none') return;
         commitTextEdit();      // 文字编辑框按旧布局定位，resize 前先收掉
+        // 先用旧 metrics 把选区换算成图片坐标——computeImgMetrics 会改 imgDisplay*，
+        // 直接 clampSel 旧的 canvas 坐标 sel 不等于同一片图片像素，会让选区相对截图漂移。
+        var selImg = null;
+        if (sel) {
+            var p1 = canvasToImage(sel.x, sel.y);
+            var p2 = canvasToImage(sel.x + sel.w, sel.y + sel.h);
+            selImg = { x0: p1.x, y0: p1.y, x1: p2.x, y1: p2.y };
+        }
         sizeCanvas();
         computeImgMetrics();
-        // 不再清空选区：重夹到新的图片显示范围，标注按图片坐标自然存活
-        if (sel) sel = clampSel(sel);
+        // 再用新 metrics 映射回 canvas 坐标。标注本就是图片坐标，天然存活。
+        if (selImg) {
+            var q1 = imageToCanvas(selImg.x0, selImg.y0);
+            var q2 = imageToCanvas(selImg.x1, selImg.y1);
+            sel = clampSel({ x: q1.x, y: q1.y, w: q2.x - q1.x, h: q2.y - q1.y });
+        }
         requestRender();
     }
 
