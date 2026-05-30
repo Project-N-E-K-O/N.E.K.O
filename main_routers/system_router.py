@@ -2394,6 +2394,17 @@ async def _maybe_deliver_mini_game_invite(
     # 会让重启后 force-first 重复触发——CodeRabbit Major review 指出。
     await _record_invite_delivery_persistent(lanlan_name)
 
+    try:
+        from utils.instrument import counter as _instr_counter
+        _instr_counter(
+            "mini_game_invited",
+            game_type=str(game_type)[:24],
+            force_first=bool(force_first),
+        )
+    except Exception:
+        # 埋点失败不能影响邀请投递
+        pass
+
     # 推 WS message 给前端展示三选项按钮。前端复用 ChoicePrompt 抽象（与 galgame
     # options 共用渲染），但 source='mini_game_invite' 走独立 endpoint，不翻
     # galgame mode 开关。Pet 主窗收到后通过现有 RAW_MESSAGE IPC forwarding 自动

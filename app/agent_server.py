@@ -2245,7 +2245,15 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 async def _run_user_plugin_dispatch():
                     try:
                         from utils.instrument import counter as _ic
-                        _ic("agent_invoked", agent_type="plugin")
+                        # plugin_id 维度让 dashboard 既能出"plugin 总计"（按
+                        # agent_type=plugin 聚合、不分 plugin_id），又能出具体某个
+                        # plugin 的调用量。plugin_id 基数由已安装插件数限定（个位
+                        # 数级），截断兜底防异常长 id 撑爆 counter key 空间。
+                        _ic(
+                            "agent_invoked",
+                            agent_type="plugin",
+                            plugin_id=str(plugin_id or "unknown")[:48],
+                        )
                     except Exception:
                         pass  # 埋点 best-effort，不阻塞 plugin 分派
                     # Default delivery mode; overridden after the plugin result

@@ -4413,6 +4413,19 @@ async def game_route_start(game_type: str, request: Request):
             state["nekoInitiated"] = neko_initiated
             state["nekoInviteText"] = neko_invite_text
             _update_route_start_state_from_payload(state, data)
+            try:
+                from utils.instrument import counter as _instr_counter
+                # route/start 是任何小游戏开局的唯一后端入口（AI 邀请被接受、
+                # 用户直接点开都经此），故在此统计游玩次数。neko_initiated 维度
+                # 区分"AI 邀请引导的游玩"与"用户自发游玩"，game_type 出游戏种类。
+                _instr_counter(
+                    "mini_game_played",
+                    game_type=str(game_type)[:24],
+                    neko_initiated=bool(neko_initiated),
+                )
+            except Exception:
+                # 埋点失败不能影响游戏路由启动
+                pass
     # 推 WS 让多窗口前端联动收缩 chat.html（触发其内部 collapse 按钮态 + 移
     # 至工作区左下角）+ 隐藏 pet (live2d/vrm/mmd) 容器。这只是 UX 联动事件，
     # 不参与 game-route 状态判定；前端在 game_window_state_change=closed 时
