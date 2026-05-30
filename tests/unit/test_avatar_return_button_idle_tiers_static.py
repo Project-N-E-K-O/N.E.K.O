@@ -5,6 +5,10 @@ from main_routers import pages_router
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 AVATAR_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "avatar-ui-buttons.js"
+APP_UI_PATH = PROJECT_ROOT / "static" / "app-ui.js"
+LIVE2D_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "live2d-ui-buttons.js"
+VRM_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "vrm-ui-buttons.js"
+MMD_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "mmd-ui-buttons.js"
 INDEX_CSS_PATH = PROJECT_ROOT / "static" / "css" / "index.css"
 CAT1_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat1.gif"
 CAT1_CLICK_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat1-click.gif"
@@ -54,7 +58,7 @@ def test_return_button_idle_tier_styles_are_present():
 
 
 def test_desktop_return_ball_drag_viewport_preserves_measured_cat_size():
-    source = (PROJECT_ROOT / "static" / "app-ui.js").read_text(encoding="utf-8")
+    source = APP_UI_PATH.read_text(encoding="utf-8")
 
     assert "MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE = 160" in source
     assert "container.style.setProperty('--neko-ball-drag-size', `${state.savedBallWidth}px`)" in source
@@ -64,7 +68,7 @@ def test_desktop_return_ball_drag_viewport_preserves_measured_cat_size():
 
 
 def test_desktop_return_ball_drag_stops_native_drag_without_waiting_for_frame():
-    source = (PROJECT_ROOT / "static" / "app-ui.js").read_text(encoding="utf-8")
+    source = APP_UI_PATH.read_text(encoding="utf-8")
 
     finish_index = source.index("async function finishDrag(screenX, screenY)")
     hide_index = source.index("container.style.visibility = 'hidden';", finish_index)
@@ -79,6 +83,40 @@ def test_desktop_return_ball_drag_stops_native_drag_without_waiting_for_frame():
     assert "visibility: container.style.visibility" in source
     assert "container.style.visibility = savedStyle.visibility" in source
     assert "container.style.visibility = getSavedBallStyleValue('visibility')" in source
+
+
+def test_desktop_return_ball_drag_lifecycle_waits_for_restored_viewport_before_reveal():
+    source = APP_UI_PATH.read_text(encoding="utf-8")
+
+    assert ": 600" in source
+    assert "keeping return-ball hidden until viewport is restored" in source
+    assert "state.viewportWaitFallbackTimer = setTimeout(pollViewportRestore, 50)" in source
+    assert "runWhenStable({ timedOut: true })" not in source
+    assert "function revealReturnBallDragWindow()" in source
+    assert "window.nekoPetDrag.reveal" in source
+    assert "const dragStarted = window.nekoPetDrag.start(screenX, screenY)" in source
+    assert "if (dragStarted === false)" in source
+
+    begin_index = source.index("function beginDrag(screenX, screenY, event)")
+    native_start_index = source.index("const dragStarted = window.nekoPetDrag.start(screenX, screenY)", begin_index)
+    dispatch_start_index = source.index("reason: 'return-ball-drag-start'", begin_index)
+    drag_style_index = source.index("document.body.dataset.nekoBallDrag = '1'", begin_index)
+
+    assert begin_index < native_start_index < dispatch_start_index < drag_style_index
+
+
+def test_return_button_drag_has_single_owner_per_runtime_path():
+    avatar_source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    live2d_source = LIVE2D_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    vrm_source = VRM_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    mmd_source = MMD_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+
+    assert "if (!window.__NEKO_MULTI_WINDOW__)" in avatar_source
+    assert "this._setupReturnButtonDrag(returnButtonContainer)" in avatar_source
+    assert "Live2DManager.prototype.setupReturnButtonContainerDrag = function(container)" in live2d_source
+    assert "this._setupReturnButtonDrag(container)" not in live2d_source
+    assert "this._setupReturnButtonDrag(returnButtonContainer)" not in vrm_source
+    assert "this._setupReturnButtonDrag(returnButtonContainer)" not in mmd_source
 
 
 def test_return_button_idle_tier_switch_uses_crossfade_motion():
@@ -129,6 +167,7 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert '_NEKO_IDLE_CAT1_STRETCH_FINAL_HOLD_MS = 700' in source
     assert '_NEKO_IDLE_CAT1_WALK_ENTER_DISTANCE_PX' in source
     assert '_NEKO_IDLE_CAT1_WALK_EXIT_DISTANCE_PX' in source
+    assert '_NEKO_IDLE_CAT1_RECHECK_MOVE_DISTANCE_PX' in source
     assert '_NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW' in source
     assert '_NEKO_IDLE_RETURN_SUBACTION_PROFILES' in source
     assert '_getNekoIdleReturnSubactionProfile' in source
@@ -161,6 +200,12 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert 'containerObserver' in source
     assert "attributeFilter: ['style', 'data-dragging']" in source
     assert '_scheduleNekoIdleCat1JourneySyncForContainer' in source
+    assert '_shouldRecheckNekoIdleCat1AfterManualMove' in source
+    assert '_getNekoIdleRectCenterMoveDistance' in source
+    assert '_isNekoIdleCat1Walking' in source
+    assert 'movedDistancePx' in source
+    assert 'isSmallDesktopChatMove' in source
+    assert 'if (isSmallDesktopChatMove && !_isNekoIdleCat1Walking(button)) return;' in source
     assert '_dispatchNekoIdleReturnBallManualMove' in source
     assert '_getNekoIdleDesktopChatMinimizedRect' in source
     assert '_getNekoIdleChatMinimizedRect' in source
@@ -196,6 +241,7 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert "'return-ball-drag-active'" in app_ui_source
     assert "'return-ball-drag-end'" in source
     assert "'return-ball-drag-end'" in app_ui_source
+    assert "movedDistancePx: movedDistancePx" in app_ui_source
     assert "this._setupReturnButtonDrag(returnButtonContainer)" in source
     assert "if (!window.__NEKO_MULTI_WINDOW__)" in source
 

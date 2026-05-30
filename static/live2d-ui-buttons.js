@@ -654,6 +654,5 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
  * 设置返回按钮拖拽（Live2D 特定）
  */
 Live2DManager.prototype.setupReturnButtonContainerDrag = function(container) {
-    this._setupReturnButtonDrag(container);
     this._addReturnButtonBreathingAnimation();
 };

@@ -204,6 +204,7 @@ const _NEKO_IDLE_CAT1_WALK_SPEED_PX_PER_SEC = 101;
 const _NEKO_IDLE_CAT1_WALK_MAX_SPEED_RATE = 1.5;
 const _NEKO_IDLE_CAT1_WALK_DISTANCE_INCREASE_THRESHOLD_PX = 6;
 const _NEKO_IDLE_CAT1_WALK_DISTANCE_GROWTH_FOR_MAX_RATE_PX = 220;
+const _NEKO_IDLE_CAT1_RECHECK_MOVE_DISTANCE_PX = 24;
 const _NEKO_IDLE_CAT1_WALK_MIN_STEP_MS = 12;
 const _NEKO_IDLE_CAT1_WALK_MAX_STEP_MS = 48;
 const _NEKO_IDLE_CAT1_STRETCH_FINAL_HOLD_MS = 700;
@@ -984,17 +985,39 @@ function _scheduleNekoIdleCat1JourneySyncForContainer(container) {
     }
 }
 
-function _dispatchNekoIdleReturnBallManualMove(container, reason) {
+function _shouldRecheckNekoIdleCat1AfterManualMove(detail) {
+    if (!detail || !Number.isFinite(Number(detail.movedDistancePx))) return true;
+    return Number(detail.movedDistancePx) >= _NEKO_IDLE_CAT1_RECHECK_MOVE_DISTANCE_PX;
+}
+
+function _getNekoIdleRectCenterMoveDistance(previousRect, nextRect) {
+    const previous = _normalizeNekoIdleScreenRect(previousRect);
+    const next = _normalizeNekoIdleScreenRect(nextRect);
+    if (!previous || !next) return Infinity;
+    const previousX = previous.left + previous.width / 2;
+    const previousY = previous.top + previous.height / 2;
+    const nextX = next.left + next.width / 2;
+    const nextY = next.top + next.height / 2;
+    return Math.hypot(nextX - previousX, nextY - previousY);
+}
+
+function _isNekoIdleCat1Walking(button) {
+    const state = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
+    return !!(state && state.profile && state.substate === state.profile.walkingSubstate);
+}
+
+function _dispatchNekoIdleReturnBallManualMove(container, reason, extraDetail = {}) {
     _logNekoIdleReturnDragDebug('dispatch', {
         reason: reason,
         containerId: container && container.id,
-        dragging: container && container.getAttribute && container.getAttribute('data-dragging')
+        dragging: container && container.getAttribute && container.getAttribute('data-dragging'),
+        movedDistancePx: extraDetail.movedDistancePx
     });
     window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
-        detail: {
+        detail: Object.assign({
             reason: reason,
             container: container
-        }
+        }, extraDetail)
     }));
 }
 
@@ -1682,7 +1705,9 @@ function _ensureNekoIdleReturnPresentationBridge() {
         if (!detail || !detail.container) return;
         if (detail.reason === 'return-ball-drag-end') {
             _finishNekoIdleReturnDragActionForContainer(detail.container);
-            _scheduleNekoIdleCat1JourneySyncForContainer(detail.container);
+            if (_shouldRecheckNekoIdleCat1AfterManualMove(detail)) {
+                _scheduleNekoIdleCat1JourneySyncForContainer(detail.container);
+            }
             return;
         }
         if (detail.reason === 'return-ball-drag-start') {
@@ -1701,12 +1726,20 @@ function _ensureNekoIdleReturnPresentationBridge() {
         const screenRect = detail && detail.minimized
             ? _normalizeNekoIdleScreenRect(detail.screenRect)
             : null;
+        const previousState = _nekoIdleDesktopChatMinimizedState;
+        const previousScreenRect = previousState && previousState.minimized
+            ? previousState.screenRect
+            : null;
+        const desktopChatMoveDistance = _getNekoIdleRectCenterMoveDistance(previousScreenRect, screenRect);
+        const isSmallDesktopChatMove = !!(previousScreenRect && screenRect) &&
+            desktopChatMoveDistance < _NEKO_IDLE_CAT1_RECHECK_MOVE_DISTANCE_PX;
         _nekoIdleDesktopChatMinimizedState = {
             minimized: !!(detail && detail.minimized && screenRect),
             screenRect: screenRect,
             updatedAt: Date.now()
         };
         document.querySelectorAll(_NEKO_IDLE_RETURN_BUTTON_SELECTOR).forEach((button) => {
+            if (isSmallDesktopChatMove && !_isNekoIdleCat1Walking(button)) return;
             _scheduleNekoIdleCat1JourneySync(button);
         });
     });
@@ -2230,7 +2263,12 @@ const AvatarButtonMixin = {
                     setTimeout(() => {
                         container.setAttribute('data-dragging', 'false');
                         if (moved) {
-                            _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-end');
+                            _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-end', {
+                                movedDistancePx: Math.hypot(
+                                    (parseFloat(container.style.left) || containerStartX) - containerStartX,
+                                    (parseFloat(container.style.top) || containerStartY) - containerStartY
+                                )
+                            });
                         }
                     }, 10);
                 }

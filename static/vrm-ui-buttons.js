@@ -409,7 +409,6 @@ VRMManager.prototype.setupFloatingButtons = function() {
 
     // 创建"请她回来"按钮
     const returnButtonContainer = this.createReturnButton();
-    this._setupReturnButtonDrag(returnButtonContainer);
     this._addReturnButtonBreathingAnimation();
 
     // 创建锁图标
@@ -743,9 +742,17 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
     let dragRAFId = null;
     let pendingClientX = 0;
     let pendingClientY = 0;
+    let dragActiveDispatched = false;
 
     const handleStart = (clientX, clientY) => {
+        window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
+            detail: {
+                reason: 'return-ball-drag-start',
+                container: returnButtonContainer
+            }
+        }));
         isDragging = true;
+        dragActiveDispatched = false;
         dragStartX = clientX;
         dragStartY = clientY;
         // 同步初始化 pending 坐标，防止 click-without-move 时
@@ -787,6 +794,15 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
         const deltaY = pendingClientY - dragStartY;
         if (Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5) {
             returnButtonContainer.setAttribute('data-dragging', 'true');
+            if (!dragActiveDispatched) {
+                dragActiveDispatched = true;
+                window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
+                    detail: {
+                        reason: 'return-ball-drag-active',
+                        container: returnButtonContainer
+                    }
+                }));
+            }
         }
         const newX = Math.max(0, Math.min(containerStartX + deltaX, window.innerWidth - cachedContainerWidth));
         const newY = Math.max(0, Math.min(containerStartY + deltaY, window.innerHeight - cachedContainerHeight));
@@ -803,6 +819,15 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
         const deltaY = pendingClientY - dragStartY;
         if (Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5) {
             returnButtonContainer.setAttribute('data-dragging', 'true');
+            if (!dragActiveDispatched) {
+                dragActiveDispatched = true;
+                window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
+                    detail: {
+                        reason: 'return-ball-drag-active',
+                        container: returnButtonContainer
+                    }
+                }));
+            }
         }
         const newX = Math.max(0, Math.min(containerStartX + deltaX, window.innerWidth - cachedContainerWidth));
         const newY = Math.max(0, Math.min(containerStartY + deltaY, window.innerHeight - cachedContainerHeight));
@@ -823,6 +848,8 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
 
     const handleEnd = () => {
         if (isDragging) {
+            const moved = returnButtonContainer.getAttribute('data-dragging') === 'true';
+            const movedDistancePx = Math.hypot(pendingClientX - dragStartX, pendingClientY - dragStartY);
             // 取消待执行的 RAF，将 transform 落实到 left/top
             if (dragRAFId) {
                 cancelAnimationFrame(dragRAFId);
@@ -832,7 +859,17 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
 
             setTimeout(() => returnButtonContainer.setAttribute('data-dragging', 'false'), 10);
             isDragging = false;
+            dragActiveDispatched = false;
             returnButtonContainer.style.cursor = 'grab';
+            if (moved) {
+                window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
+                    detail: {
+                        reason: 'return-ball-drag-end',
+                        container: returnButtonContainer,
+                        movedDistancePx: movedDistancePx
+                    }
+                }));
+            }
 
             // 恢复拖拽期间禁用的视觉效果
             const returnBtn = returnButtonContainer.querySelector('#vrm-btn-return');
