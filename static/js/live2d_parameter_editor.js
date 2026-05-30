@@ -437,6 +437,41 @@ function truncateText(text, maxVisualWidth) {
 const CHANNEL_NAME = 'neko_page_channel';
 const MESSAGE_TIMEOUT = 2000; // 最大等待时间（毫秒）
 let broadcastChannel = null;
+const MODEL_MANAGER_PARAMETER_SAVE_MARK_PREFIX = 'neko_model_manager_parameter_save_pending:';
+
+function getParameterEditorLanlanName() {
+    try {
+        const urlParams = new URLSearchParams(window.location.search);
+        return (urlParams.get('lanlan_name') || '').trim();
+    } catch (_) {
+        return '';
+    }
+}
+
+function getModelManagerParameterSaveMarkKey(lanlanName) {
+    const normalizedName = String(lanlanName || '').trim();
+    if (!normalizedName) return '';
+    try {
+        return MODEL_MANAGER_PARAMETER_SAVE_MARK_PREFIX + encodeURIComponent(normalizedName);
+    } catch (_) {
+        return '';
+    }
+}
+
+function markModelManagerNeedsSaveAfterParameterEdit(modelInfo) {
+    const lanlanName = getParameterEditorLanlanName();
+    const markKey = getModelManagerParameterSaveMarkKey(lanlanName);
+    if (!markKey) return;
+
+    try {
+        sessionStorage.setItem(markKey, JSON.stringify({
+            lanlanName,
+            modelName: modelInfo?.name || '',
+            modelPath: modelInfo?.path || '',
+            timestamp: Date.now()
+        }));
+    } catch (_) {}
+}
 
 // 初始化 BroadcastChannel（如果支持）
 try {
@@ -1404,6 +1439,10 @@ if (saveBtn) {
                 scale,
                 paramsToSave
             );
+
+            if (fileResult.success || prefSuccess) {
+                markModelManagerNeedsSaveAfterParameterEdit(currentModelInfo);
+            }
 
             if (fileResult.success && prefSuccess) {
                 showStatus(t('live2d.parameterEditor.parametersSaved', '参数保存成功！'), 2000);

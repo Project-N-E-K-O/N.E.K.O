@@ -543,6 +543,61 @@ function sendMessageToMainPage(action, payload = {}) {
 
 // 全局变量：跟踪未保存的更改
 window.hasUnsavedChanges = false;
+window._modelManagerParameterEditedSinceSave = false;
+const MODEL_MANAGER_PARAMETER_SAVE_MARK_PREFIX = 'neko_model_manager_parameter_save_pending:';
+
+function getModelManagerLanlanNameFromUrl() {
+    try {
+        const urlParams = new URLSearchParams(window.location.search);
+        return (urlParams.get('lanlan_name') || '').trim();
+    } catch (_) {
+        return '';
+    }
+}
+
+function getModelManagerParameterSaveMarkKey(lanlanName) {
+    const normalizedName = String(lanlanName || '').trim();
+    if (!normalizedName) return '';
+    try {
+        return MODEL_MANAGER_PARAMETER_SAVE_MARK_PREFIX + encodeURIComponent(normalizedName);
+    } catch (_) {
+        return '';
+    }
+}
+
+function readPendingParameterEditorSave() {
+    const markKey = getModelManagerParameterSaveMarkKey(getModelManagerLanlanNameFromUrl());
+    if (!markKey) return null;
+    try {
+        const raw = sessionStorage.getItem(markKey);
+        if (!raw) return null;
+        return JSON.parse(raw);
+    } catch (_) {
+        return null;
+    }
+}
+
+function clearPendingParameterEditorSaveState() {
+    const markKey = getModelManagerParameterSaveMarkKey(getModelManagerLanlanNameFromUrl());
+    if (markKey) {
+        try {
+            sessionStorage.removeItem(markKey);
+        } catch (_) {}
+    }
+    window._modelManagerParameterEditedSinceSave = false;
+}
+
+function restorePendingParameterEditorSaveState(saveButton) {
+    const pendingSave = readPendingParameterEditorSave();
+    if (!pendingSave) return false;
+
+    window._modelManagerParameterEditedSinceSave = true;
+    window.hasUnsavedChanges = true;
+    if (saveButton) {
+        saveButton.disabled = false;
+    }
+    return true;
+}
 
 // 全局辅助：从待机动作多选容器获取已勾选 URL 列表（供快照使用）
 function _getSelectedIdleAnimationsGlobal(containerId) {
@@ -7637,6 +7692,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const beforeSaveSnapshot = window._savedModelSnapshot
             ? { ...window._savedModelSnapshot }
             : captureSettingsSnapshot();
+        const parameterEditedSinceSave = window._modelManagerParameterEditedSinceSave === true;
 
         try {
             // Live3D模式下，即使模型未加载，只要有选择的模型就可以保存
@@ -7782,9 +7838,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             const shouldOfferCardFace = modelFullySaved
                 && (
                     savedFallbackModelAsExplicitBinding ||
+                    parameterEditedSinceSave ||
                     window._modelManagerModelChangedSinceSave
                     || modelSelectionChanged(beforeSaveSnapshot, captureSettingsSnapshot())
             );
+            if (modelFullySaved) {
+                clearPendingParameterEditorSaveState();
+            }
             if (shouldOfferCardFace) {
                 const savedLive3dSubType = modelSaveResult?.details?.effectiveLive3dSubType || currentLive3dSubType;
                 offerCardFaceAfterModelSave({
@@ -7859,7 +7919,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     backToMainBtn.addEventListener('click', async () => {
         // 退出前：比对当前设置和已保存快照，完全一致则视为无更改
-        if (window.hasUnsavedChanges && window._savedModelSnapshot) {
+        if (window.hasUnsavedChanges && window._savedModelSnapshot && !window._modelManagerParameterEditedSinceSave) {
             if (snapshotsEqual(window._savedModelSnapshot, captureSettingsSnapshot())) {
                 window.hasUnsavedChanges = false;
             }
@@ -7873,6 +7933,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             // 用户确认离开，重置未保存状态，避免被 beforeunload 拦截
             window.hasUnsavedChanges = false;
+            clearPendingParameterEditorSaveState();
         }
 
         // 如果处于全屏状态，先退出全屏
@@ -9544,9 +9605,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
+    restorePendingParameterEditorSaveState(savePositionBtn);
+
     // 等待异步设置（打光、待机动作等）加载完成后记录快照
     setTimeout(() => {
         window._savedModelSnapshot = captureSettingsSnapshot();
+        restorePendingParameterEditorSaveState(savePositionBtn);
     }, 500);
   } catch (_fatalError) {
     console.error('[模型管理] DOMContentLoaded 致命错误:', _fatalError);
