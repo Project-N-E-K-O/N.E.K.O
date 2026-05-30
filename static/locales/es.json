@@ -2714,6 +2714,7 @@
         "cannotConnectToServer": "No se puede conectar al servidor, asegúrese de que main_server.py se esté ejecutando",
         "checkVoiceModeFailed": "Error al comprobar el estado del modo de voz:",
         "markedUnsavedModel": "Marcados como cambios no guardados (cambio de modelo), haga clic en Guardar configuración para conservar la configuración de caracteres.",
+        "parameterEditorSavedNeedsModelSave": "Parámetros de rostro guardados. Haz clic en Guardar ajustes para sincronizarlos con la configuración del personaje.",
         "stopAnimationFailed": "No se pudo detener la animación:",
         "playAnimationFailed": "No se pudo reproducir la animación:",
         "expressionPreviewLive2DOnly": "La función de vista previa de expresiones solo admite modelos Live2D",

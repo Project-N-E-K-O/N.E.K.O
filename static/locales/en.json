@@ -2714,6 +2714,7 @@
         "cannotConnectToServer": "Cannot connect to server, please ensure main_server.py is running",
         "checkVoiceModeFailed": "Check voice mode status failed:",
         "markedUnsavedModel": "Marked as unsaved changes (model switch), please click Save Settings to persist to character config.",
+        "parameterEditorSavedNeedsModelSave": "Face parameters saved. Click Save Settings to sync them to the character config.",
         "stopAnimationFailed": "Failed to stop animation:",
         "playAnimationFailed": "Failed to play animation:",
         "expressionPreviewLive2DOnly": "Expression preview feature only supports Live2D models",

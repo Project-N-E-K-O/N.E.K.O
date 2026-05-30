@@ -2714,6 +2714,7 @@
         "cannotConnectToServer": "無法連接到服務器，請確保 main_server.py 正在運行",
         "checkVoiceModeFailed": "檢查語音模式狀態失敗:",
         "markedUnsavedModel": "已標記為未保存更改（模型切換），請點擊 保存設置 持久化到角色配置。",
+        "parameterEditorSavedNeedsModelSave": "捏臉參數已保存，請點擊「保存設置」同步到角色配置。",
         "stopAnimationFailed": "停止動作失敗:",
         "playAnimationFailed": "播放動作失敗:",
         "expressionPreviewLive2DOnly": "錶情預覽功能僅支持 Live2D 模型",

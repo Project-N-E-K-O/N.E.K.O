@@ -544,19 +544,65 @@ function sendMessageToMainPage(action, payload = {}) {
 // 全局变量：跟踪未保存的更改
 window.hasUnsavedChanges = false;
 window._modelManagerParameterEditedSinceSave = false;
+window._modelManagerParameterSaveNoticeShown = false;
 const MODEL_MANAGER_PARAMETER_SAVE_MARK_PREFIX = 'neko_model_manager_parameter_save_pending:';
+const MODEL_MANAGER_PARAMETER_SAVE_MARK_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const MODEL_MANAGER_LANLAN_NAME_SESSION_KEY = 'neko_model_manager_lanlan_name';
+
+function normalizeModelManagerLanlanName(value) {
+    return String(value || '').trim();
+}
 
 function getModelManagerLanlanNameFromUrl() {
     try {
         const urlParams = new URLSearchParams(window.location.search);
-        return (urlParams.get('lanlan_name') || '').trim();
+        return normalizeModelManagerLanlanName(urlParams.get('lanlan_name'));
     } catch (_) {
         return '';
     }
 }
 
-function getModelManagerParameterSaveMarkKey(lanlanName) {
-    const normalizedName = String(lanlanName || '').trim();
+function rememberModelManagerLanlanNameFallback(lanlanName) {
+    const normalizedName = normalizeModelManagerLanlanName(lanlanName);
+    if (!normalizedName) return;
+    try {
+        sessionStorage.setItem(MODEL_MANAGER_LANLAN_NAME_SESSION_KEY, normalizedName);
+    } catch (_) {}
+}
+
+function getModelManagerLanlanNameFromSession() {
+    try {
+        return normalizeModelManagerLanlanName(sessionStorage.getItem(MODEL_MANAGER_LANLAN_NAME_SESSION_KEY));
+    } catch (_) {
+        return '';
+    }
+}
+
+async function resolveModelManagerParameterSaveLanlanName() {
+    let lanlanName = getModelManagerLanlanNameFromUrl();
+    if (lanlanName) {
+        rememberModelManagerLanlanNameFallback(lanlanName);
+        return lanlanName;
+    }
+
+    lanlanName = getModelManagerLanlanNameFromSession();
+    if (lanlanName) return lanlanName;
+
+    if (typeof resolveModelManagerLanlanName === 'function') {
+        try {
+            lanlanName = normalizeModelManagerLanlanName(await resolveModelManagerLanlanName());
+        } catch (_) {
+            lanlanName = '';
+        }
+    }
+    if (lanlanName) {
+        rememberModelManagerLanlanNameFallback(lanlanName);
+    }
+    return lanlanName;
+}
+
+async function getModelManagerParameterSaveMarkKey(lanlanName) {
+    const normalizedName = normalizeModelManagerLanlanName(lanlanName || await resolveModelManagerParameterSaveLanlanName());
     if (!normalizedName) return '';
     try {
         return MODEL_MANAGER_PARAMETER_SAVE_MARK_PREFIX + encodeURIComponent(normalizedName);
@@ -565,36 +611,99 @@ function getModelManagerParameterSaveMarkKey(lanlanName) {
     }
 }
 
-function readPendingParameterEditorSave() {
-    const markKey = getModelManagerParameterSaveMarkKey(getModelManagerLanlanNameFromUrl());
-    if (!markKey) return null;
+function getModelManagerParameterSaveStorages() {
+    const storages = [];
     try {
-        const raw = sessionStorage.getItem(markKey);
-        if (!raw) return null;
-        return JSON.parse(raw);
-    } catch (_) {
-        return null;
-    }
+        if (window.sessionStorage) storages.push(window.sessionStorage);
+    } catch (_) {}
+    try {
+        if (window.localStorage) storages.push(window.localStorage);
+    } catch (_) {}
+    return storages;
 }
 
-function clearPendingParameterEditorSaveState() {
-    const markKey = getModelManagerParameterSaveMarkKey(getModelManagerLanlanNameFromUrl());
-    if (markKey) {
+function isPendingParameterEditorSaveValid(pendingSave) {
+    if (!pendingSave || typeof pendingSave !== 'object') return false;
+    const timestamp = Number(pendingSave.timestamp || 0);
+    if (!timestamp) return true;
+    return Date.now() - timestamp <= MODEL_MANAGER_PARAMETER_SAVE_MARK_TTL_MS;
+}
+
+function normalizeModelManagerModelMarkValue(value) {
+    return String(value || '').trim();
+}
+
+function pendingParameterEditorSaveMatchesCurrentModel(pendingSave, modelInfo) {
+    if (!pendingSave || !modelInfo) return false;
+    const pendingValues = [
+        normalizeModelManagerModelMarkValue(pendingSave.modelName),
+        normalizeModelManagerModelMarkValue(pendingSave.modelPath)
+    ].filter(Boolean);
+    if (pendingValues.length === 0) return true;
+
+    const currentValues = [
+        normalizeModelManagerModelMarkValue(modelInfo.name),
+        normalizeModelManagerModelMarkValue(modelInfo.path)
+    ].filter(Boolean);
+    return pendingValues.some(value => currentValues.includes(value));
+}
+
+async function readPendingParameterEditorSave() {
+    const markKey = await getModelManagerParameterSaveMarkKey();
+    if (!markKey) return null;
+    for (const storage of getModelManagerParameterSaveStorages()) {
         try {
-            sessionStorage.removeItem(markKey);
+            const raw = storage.getItem(markKey);
+            if (!raw) continue;
+            const pendingSave = JSON.parse(raw);
+            if (!isPendingParameterEditorSaveValid(pendingSave)) {
+                storage.removeItem(markKey);
+                continue;
+            }
+            return pendingSave;
         } catch (_) {}
     }
-    window._modelManagerParameterEditedSinceSave = false;
+    return null;
 }
 
-function restorePendingParameterEditorSaveState(saveButton) {
-    const pendingSave = readPendingParameterEditorSave();
+async function clearPendingParameterEditorSaveState() {
+    const markKey = await getModelManagerParameterSaveMarkKey();
+    if (markKey) {
+        for (const storage of getModelManagerParameterSaveStorages()) {
+            try {
+                storage.removeItem(markKey);
+            } catch (_) {}
+        }
+    }
+    window._modelManagerParameterEditedSinceSave = false;
+    window._modelManagerParameterSaveNoticeShown = false;
+}
+
+async function restorePendingParameterEditorSaveState(saveButton, options = {}) {
+    const pendingSave = await readPendingParameterEditorSave();
     if (!pendingSave) return false;
+    if (!pendingParameterEditorSaveMatchesCurrentModel(pendingSave, options.currentModelInfo)) {
+        await clearPendingParameterEditorSaveState();
+        return false;
+    }
 
     window._modelManagerParameterEditedSinceSave = true;
     window.hasUnsavedChanges = true;
     if (saveButton) {
         saveButton.disabled = false;
+    }
+    if (options.showNotice && !window._modelManagerParameterSaveNoticeShown) {
+        const message = modelManagerText(
+            'modelManager.parameterEditorSavedNeedsModelSave',
+            '捏脸参数已保存，请点击「保存设置」同步到角色配置。'
+        );
+        if (typeof options.showStatus === 'function') {
+            options.showStatus(message, options.statusDuration || 4000);
+        }
+        if (typeof options.showToast === 'function') {
+            options.showToast(message, options.toastDuration || 4200, 'warning');
+        }
+        window._modelManagerParameterSaveNoticeShown = true;
     }
     return true;
 }
@@ -707,12 +816,14 @@ function setModelManagerStatusText(message) {
 
 async function resolveModelManagerLanlanName() {
     if (window._modelManagerLanlanName && window._modelManagerLanlanName.trim() !== '') {
+        rememberModelManagerLanlanNameFallback(window._modelManagerLanlanName);
         return window._modelManagerLanlanName;
     }
     try {
         const data = await RequestHelper.fetchJson('/api/config/page_config');
         if (data && data.success && data.lanlan_name) {
             window._modelManagerLanlanName = data.lanlan_name;
+            rememberModelManagerLanlanNameFallback(window._modelManagerLanlanName);
         }
     } catch (e) {
         console.warn('[模型管理] 获取 lanlan_name 失败，跳过缓存:', e);
@@ -2803,6 +2914,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (paramEditorBtn) {
                 const lanlanName = await getLanlanName();
                 if (lanlanName) {
+                    rememberModelManagerLanlanNameFallback(lanlanName);
                     paramEditorBtn.href = `/live2d_parameter_editor?lanlan_name=${encodeURIComponent(lanlanName)}`;
                 }
             }
@@ -7692,7 +7804,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         const beforeSaveSnapshot = window._savedModelSnapshot
             ? { ...window._savedModelSnapshot }
             : captureSettingsSnapshot();
-        const parameterEditedSinceSave = window._modelManagerParameterEditedSinceSave === true;
+        const parameterEditedSinceSave = window._modelManagerParameterEditedSinceSave === true
+            || await restorePendingParameterEditorSaveState(savePositionBtn, { currentModelInfo });
 
         try {
             // Live3D模式下，即使模型未加载，只要有选择的模型就可以保存
@@ -7843,7 +7956,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     || modelSelectionChanged(beforeSaveSnapshot, captureSettingsSnapshot())
             );
             if (modelFullySaved) {
-                clearPendingParameterEditorSaveState();
+                await clearPendingParameterEditorSaveState();
             }
             if (shouldOfferCardFace) {
                 const savedLive3dSubType = modelSaveResult?.details?.effectiveLive3dSubType || currentLive3dSubType;
@@ -7933,7 +8046,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             // 用户确认离开，重置未保存状态，避免被 beforeunload 拦截
             window.hasUnsavedChanges = false;
-            clearPendingParameterEditorSaveState();
+            await clearPendingParameterEditorSaveState();
         }
 
         // 如果处于全屏状态，先退出全屏
@@ -9605,12 +9718,22 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    restorePendingParameterEditorSaveState(savePositionBtn);
+    await restorePendingParameterEditorSaveState(savePositionBtn, {
+        currentModelInfo,
+        showNotice: true,
+        showStatus,
+        showToast: showModelManagerToast
+    });
 
     // 等待异步设置（打光、待机动作等）加载完成后记录快照
-    setTimeout(() => {
+    setTimeout(async () => {
         window._savedModelSnapshot = captureSettingsSnapshot();
-        restorePendingParameterEditorSaveState(savePositionBtn);
+        await restorePendingParameterEditorSaveState(savePositionBtn, {
+            currentModelInfo,
+            showNotice: true,
+            showStatus,
+            showToast: showModelManagerToast
+        });
     }, 500);
   } catch (_fatalError) {
     console.error('[模型管理] DOMContentLoaded 致命错误:', _fatalError);
