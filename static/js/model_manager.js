@@ -635,17 +635,15 @@ function normalizeModelManagerModelMarkValue(value) {
 
 function pendingParameterEditorSaveMatchesCurrentModel(pendingSave, modelInfo) {
     if (!pendingSave || !modelInfo) return false;
-    const pendingValues = [
-        normalizeModelManagerModelMarkValue(pendingSave.modelName),
-        normalizeModelManagerModelMarkValue(pendingSave.modelPath)
-    ].filter(Boolean);
-    if (pendingValues.length === 0) return true;
+    const pendingPath = normalizeModelManagerModelMarkValue(pendingSave.modelPath);
+    const currentPath = normalizeModelManagerModelMarkValue(modelInfo.path);
+    if (pendingPath) {
+        return pendingPath === currentPath;
+    }
 
-    const currentValues = [
-        normalizeModelManagerModelMarkValue(modelInfo.name),
-        normalizeModelManagerModelMarkValue(modelInfo.path)
-    ].filter(Boolean);
-    return pendingValues.some(value => currentValues.includes(value));
+    const pendingName = normalizeModelManagerModelMarkValue(pendingSave.modelName);
+    if (!pendingName) return true;
+    return pendingName === normalizeModelManagerModelMarkValue(modelInfo.name);
 }
 
 async function readPendingParameterEditorSave() {
