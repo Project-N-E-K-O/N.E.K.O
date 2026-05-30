@@ -88,6 +88,15 @@
     var undoBtn = null, redoBtn = null;
 
     var PALETTE = ['#ff3b30', '#ffcc00', '#34c759', '#0a84ff', '#ffffff', '#1c1c1e'];
+    // 与 PALETTE 同序：调色板按钮的无障碍可读名（纯色按钮无文字，读屏靠这个）
+    var COLOR_LABELS = [
+        ['chat.cropColorRed', '红色'],
+        ['chat.cropColorYellow', '黄色'],
+        ['chat.cropColorGreen', '绿色'],
+        ['chat.cropColorBlue', '蓝色'],
+        ['chat.cropColorWhite', '白色'],
+        ['chat.cropColorBlack', '黑色']
+    ];
     var WIDTH_PRESETS = [2, 4, 8];     // 图片坐标线宽：S / M / L
     var MOSAIC_BLOCK = 12;             // 马赛克块大小（图片自然坐标 px）
     var HIGHLIGHT_ALPHA = 0.38;
@@ -391,6 +400,15 @@
         return {
             x: Math.max(imgDisplayLeft, Math.min(right, x)),
             y: Math.max(imgDisplayTop, Math.min(bottom, y))
+        };
+    }
+
+    // 把指针 clamp 到当前选区范围内（绘图草稿用，超出选区即贴边）
+    function clampPointToSel(x, y) {
+        if (!sel) return clampPointToImage(x, y);
+        return {
+            x: Math.max(sel.x, Math.min(sel.x + sel.w, x)),
+            y: Math.max(sel.y, Math.min(sel.y + sel.h, y))
         };
     }
 
@@ -769,16 +787,21 @@
         b.innerHTML = html;
         b.title = tr(titleKey, fb);
         b.setAttribute('aria-label', b.title);
+        b.setAttribute('aria-pressed', 'false');
         b.addEventListener('click', onClick);
         return b;
     }
 
     function syncColorWidthActive() {
         for (var i = 0; i < colorSwatches.length; i++) {
-            colorSwatches[i].classList.toggle('is-active', colorSwatches[i]._color === currentColor);
+            var cOn = colorSwatches[i]._color === currentColor;
+            colorSwatches[i].classList.toggle('is-active', cOn);
+            colorSwatches[i].setAttribute('aria-pressed', cOn ? 'true' : 'false');
         }
         for (var j = 0; j < widthBtns.length; j++) {
-            widthBtns[j].classList.toggle('is-active', widthBtns[j]._width === currentStrokeWidth);
+            var wOn = widthBtns[j]._width === currentStrokeWidth;
+            widthBtns[j].classList.toggle('is-active', wOn);
+            widthBtns[j].setAttribute('aria-pressed', wOn ? 'true' : 'false');
         }
     }
 
@@ -814,13 +837,16 @@
         // 调色板
         var colGrp = document.createElement('div');
         colGrp.className = 'crop-tool-group crop-color-group';
-        PALETTE.forEach(function (col) {
+        PALETTE.forEach(function (col, idx) {
             var sw = document.createElement('button');
             sw.type = 'button';
             sw.className = 'crop-color-swatch';
             sw.style.background = col;
             sw._color = col;
-            sw.title = col;
+            var lbl = COLOR_LABELS[idx] ? tr(COLOR_LABELS[idx][0], COLOR_LABELS[idx][1]) : col;
+            sw.title = lbl;
+            sw.setAttribute('aria-label', lbl);
+            sw.setAttribute('aria-pressed', 'false');
             sw.addEventListener('click', function () { setColor(col); });
             colorSwatches.push(sw);
             colGrp.appendChild(sw);
@@ -837,6 +863,7 @@
             b.className = 'crop-width-btn';
             b.textContent = WLABEL[i];
             b._width = w;
+            b.setAttribute('aria-pressed', 'false');
             b.addEventListener('click', function () { setWidth(w); });
             widthBtns.push(b);
             wGrp.appendChild(b);
@@ -875,7 +902,11 @@
         if (name !== 'text') commitTextEdit(); // 切走文字工具先提交
         currentTool = name;
         for (var k in toolBtns) {
-            if (toolBtns.hasOwnProperty(k)) toolBtns[k].classList.toggle('is-active', k === name);
+            if (toolBtns.hasOwnProperty(k)) {
+                var on = (k === name);
+                toolBtns[k].classList.toggle('is-active', on);
+                toolBtns[k].setAttribute('aria-pressed', on ? 'true' : 'false');
+            }
         }
         // 绘图工具下隐藏选区手柄/网格，避免误拖
         if (selectionBox) selectionBox.classList.toggle('crop-selection-box--drawing', !!DRAW_TOOLS[name]);
@@ -1050,12 +1081,14 @@
         var pos = getPointerPos(e);
         pointerPos = pos;
 
-        // 0. 绘图工具优先：在图内按下即开始画标注，完全跳过选区手柄/移动逻辑
+        // 0. 绘图工具优先：必须在选区内起笔，完全跳过选区手柄/移动逻辑。
+        //    选区外起笔只会画出被 clip 掉的隐形标注、污染撤销栈，故直接忽略。
         if (DRAW_TOOLS[currentTool]) {
-            if (!isPointWithinImage(pos.x, pos.y)) return;
-            var ip0 = canvasToImage(pos.x, pos.y);
+            if (!sel || !hitTestInside(pos.x, pos.y)) return;
+            var cp0 = clampPointToSel(pos.x, pos.y);
+            var ip0 = canvasToImage(cp0.x, cp0.y);
             if (currentTool === 'text') {
-                beginTextEdit(pos, ip0);
+                beginTextEdit(cp0, ip0);
                 return;
             }
             annoDraft = makeDraft(ip0);
@@ -1098,10 +1131,10 @@
         var pos = getPointerPos(e);
         pointerPos = pos;
 
-        // 绘图草稿进行中：累积点 / 更新终点
+        // 绘图草稿进行中：累积点 / 更新终点（clamp 到选区，画到边缘即止）
         if (annoDraft) {
             e.preventDefault();
-            var cp = clampPointToImage(pos.x, pos.y);
+            var cp = clampPointToSel(pos.x, pos.y);
             var ip = canvasToImage(cp.x, cp.y);
             if (annoDraft.points) {
                 annoDraft.points.push({ x: ip.x, y: ip.y });
