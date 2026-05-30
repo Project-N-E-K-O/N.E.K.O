@@ -11461,7 +11461,14 @@ async function _companionTryAutoSave(state) {
     // 翻成 false（或者 form._autoCreated 标记起来），auto-save 就可以接管走 PUT。
     // 手动 Save 后老的 saveCatgirlFromPanel 流程会 buildCatgirlDetailForm
     // 重新渲染表单，companion 会在下一次 _companionEnsureLiveForm 时自动跟过去。
-    if (state.isNew && !state.form._autoCreated) {
+    // ⚠ 例外：若此刻**已有一次手动 Save 在飞行中**（dataset.submitting === 'true'），说明用户
+    // 正在把这张新卡建出来。这时绝不能直接 return —— 否则在「用户点 Save 时 /generate 还在飞」
+    // 的竞态里，那次 Save 已经用「AI 写字段**之前**」的旧快照序列化好了，保存成功后会用旧快照
+    // rebuild / 关面板，把 AI 刚写进去、用户已看到「已应用」的字段静默丢掉（Codex #3329022313）。
+    // 所以这种情况要落到下面的 wait/replay：等那次 Save 收尾、把 AI 字段 replay 到 rebuild 出来
+    // 的已保存卡表单上再存一遍。等待之后会再确认卡是否真落库（见 saveCatgirlFromPanel 前的二次 guard）。
+    if (state.isNew && !state.form._autoCreated
+            && state.form.dataset.submitting !== 'true') {
         // 一只新卡里只提示一次，避免 AI 改几次就刷几条 toast。
         if (!state._warnedNewCardSaveHint) {
             state._warnedNewCardSaveHint = true;
@@ -11596,6 +11603,20 @@ async function _companionTryAutoSave(state) {
         }
         // 一次性消耗掉 lastApplyResult，避免下次 tryAutoSave 误用过期数据
         state._lastApplyResult = null;
+        // 二次 guard（配合上面「新卡 + in-flight save 时不 return」的放行）：等那次手动 Save
+        // 收尾后，若卡**仍未落库**（state 还是 isNew 且非 _autoCreated，说明那次 Save 失败 /
+        // 没建成），绝不能调 saveCatgirlFromPanel —— 它会 POST 建卡 + closeCatgirlPanel 甩走
+        // 面板，正是新卡 guard 要避免的。这种情况 AI 字段已 replay 在表单里，提示用户手动 Save 即可。
+        if (state.isNew && !state.form._autoCreated) {
+            if (!state._warnedNewCardSaveHint) {
+                state._warnedNewCardSaveHint = true;
+                _companionAppendSystem(state,
+                    _cardAssistT('character.aiCompanionNewCardSaveHint',
+                        '💡 新卡片要先点一下下面的 Save 才能让我自动保存，' +
+                        '现在字段都已经写进表单了喵～'));
+            }
+            return;
+        }
         let ok = true;
         try {
             // _autoCreated 的卡其实已经 POST 到后端了 → 对它来说这次只是 PUT 更新。但若仍
@@ -11603,8 +11624,8 @@ async function _companionTryAutoSave(state) {
             // isNew 去 closeCatgirlPanel / 开卡面制作弹窗，把正在进行的 companion 聊天打断
             //（Codex #3328942156）。它的请求方法本就按内部 effectiveIsNew(=isNew && !_autoCreated)
             // 走 PUT、不受这里影响；这里按"是否已落库"把 _autoCreated 当作已保存卡传进去，
-            // 让 post-save 走原地刷新而不是甩走面板。走到这一步时新卡未落库的情况已被上面的
-            // guard(11161) return 掉，所以只剩「已保存卡」或「_autoCreated」两种，都应视作非新卡。
+            // 让 post-save 走原地刷新而不是甩走面板。走到这一步：要么本就是已保存卡 / _autoCreated，
+            // 要么是「新卡 + in-flight save」竞态等完后卡已落库（未落库的已被上面的二次 guard 拦掉）。
             const effectiveIsNew = state.isNew && !state.form._autoCreated;
             const ret = await saveCatgirlFromPanel(state.form, state.originalName, effectiveIsNew);
             if (ret === false) ok = false;
