@@ -1270,7 +1270,12 @@
     // 只含布尔/时间戳，无对话内容。
     function snapshotInFlightFlags() {
         return {
-            turnMismatch: !!(S.assistantTurnId && S.assistantTurnId !== S.assistantTurnCompletedId),
+            // 与 isAssistantTextResponseInFlight 同口径：已 settle 的轮（completedId
+            // 被清成 null 但 settledId 标了该轮）不算 mismatch，否则日志会在每条已说完
+            // 的语音轮误报 turnMismatch:true，反而误导排查。原始 id 仍单列在下方备查。
+            turnMismatch: !!(S.assistantTurnId
+                && S.assistantTurnId !== S.assistantTurnCompletedId
+                && S.assistantTurnId !== S.assistantTurnSettledId),
             awaitingBubble: !!S.assistantTurnAwaitingBubble,
             lastReqId: !!(typeof window._lastSubmittedRequestId === 'string' && window._lastSubmittedRequestId),
             pendingSubmitMs: S.pendingTextTurnSubmitAt ? (Date.now() - S.pendingTextTurnSubmitAt) : null,
