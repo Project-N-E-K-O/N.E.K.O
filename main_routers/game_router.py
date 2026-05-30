@@ -1890,7 +1890,23 @@ def _update_route_start_state_from_payload(state: dict, data: dict, *, exiting: 
     if accidental is True:
         state["accidental_game_entry_exit"] = True
 
-    return not was_started and state.get("game_started") is True
+    started_now = not was_started and state.get("game_started") is True
+    if started_now:
+        # 在 game_started 首次 false→true 的边沿统计游玩次数——不在 /route/start
+        # 计数：前端 _prepareGameForStartScreen 会先打开开始屏并调 route/start，
+        # 此时 game_started 仍为 false，用户若从开始屏关闭会被记 accidental_page_entry，
+        # 那种"开了没玩"不应计入。本函数是所有上报 gameStarted 路径的唯一汇聚点，
+        # was_started 守卫保证每局只记一次。维度从 state 取（route/start 已写入）。
+        try:
+            from utils.instrument import counter as _instr_counter
+            _instr_counter(
+                "mini_game_played",
+                game_type=str(state.get("game_type") or "")[:24],
+                neko_initiated=bool(state.get("nekoInitiated")),
+            )
+        except Exception:
+            pass
+    return started_now
 
 
 def _route_game_started_elapsed_ms(state: dict, *, prefer_exit_elapsed: bool = False) -> float | None:
@@ -4413,19 +4429,6 @@ async def game_route_start(game_type: str, request: Request):
             state["nekoInitiated"] = neko_initiated
             state["nekoInviteText"] = neko_invite_text
             _update_route_start_state_from_payload(state, data)
-            try:
-                from utils.instrument import counter as _instr_counter
-                # route/start 是任何小游戏开局的唯一后端入口（AI 邀请被接受、
-                # 用户直接点开都经此），故在此统计游玩次数。neko_initiated 维度
-                # 区分"AI 邀请引导的游玩"与"用户自发游玩"，game_type 出游戏种类。
-                _instr_counter(
-                    "mini_game_played",
-                    game_type=str(game_type)[:24],
-                    neko_initiated=bool(neko_initiated),
-                )
-            except Exception:
-                # 埋点失败不能影响游戏路由启动
-                pass
     # 推 WS 让多窗口前端联动收缩 chat.html（触发其内部 collapse 按钮态 + 移
     # 至工作区左下角）+ 隐藏 pet (live2d/vrm/mmd) 容器。这只是 UX 联动事件，
     # 不参与 game-route 状态判定；前端在 game_window_state_change=closed 时
