@@ -93,7 +93,7 @@ PROACTIVE_PRESETS: dict[str, dict[str, Any]] = {
         "proactiveMusicEnabled": True,
         "proactiveMemeEnabled": True,
         "proactiveMiniGameInviteEnabled": True,
-        "proactiveChatInterval": 15,
+        "proactiveChatInterval": 20,
         "proactiveVisionInterval": 10,
     },
     # 低打扰：保留搭话与个人动态，关掉新闻/视频/音乐等噪声源，间隔放长。
