@@ -3194,9 +3194,10 @@ class ConfigManager:
         _core_api_provider = core_cfg.get('coreApi') or 'qwen'
         _assist_api_provider = core_cfg.get('assistApi') or 'qwen'
         _fallback_providers = {_core_api_provider, _assist_api_provider}
+        _core_key_fallback = config['CORE_API_KEY'] if config['CORE_API_KEY'] != 'free-access' else ''
 
         def _fb(provider: str) -> str:
-            return config['CORE_API_KEY'] if provider in _fallback_providers else ''
+            return _core_key_fallback if provider in _fallback_providers else ''
 
         config['ASSIST_API_KEY_QWEN'] = core_cfg.get('assistApiKeyQwen', '') or _fb('qwen')
         config['ASSIST_API_KEY_QWEN_INTL'] = core_cfg.get('assistApiKeyQwenIntl', '') or _fb('qwen_intl')
@@ -3322,13 +3323,13 @@ class ConfigManager:
                 config['OPENROUTER_API_KEY'] = derived_key
 
         if not config['AUDIO_API_KEY']:
-            config['AUDIO_API_KEY'] = config['CORE_API_KEY']
+            config['AUDIO_API_KEY'] = _core_key_fallback
         if not config['OPENROUTER_API_KEY']:
-            config['OPENROUTER_API_KEY'] = config['CORE_API_KEY']
+            config['OPENROUTER_API_KEY'] = _core_key_fallback
 
         # Agent API Key 回退：未显式配置时跟随辅助 API Key
         if not config.get('AGENT_MODEL_API_KEY'):
-            config['AGENT_MODEL_API_KEY'] = derived_key if derived_key else config.get('CORE_API_KEY', '')
+            config['AGENT_MODEL_API_KEY'] = config.get('OPENROUTER_API_KEY', '')
 
         # 自定义API配置映射（使用大写下划线形式的内部键，且在未提供时保留已有默认值）
         enable_custom_api = core_cfg.get('enableCustomApi', False)

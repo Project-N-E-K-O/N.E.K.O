@@ -116,6 +116,43 @@ class TestKeybookSaveLoad:
         assert cfg['ASSIST_API_KEY_QWEN_INTL'] == 'sk-core-master'
 
     @pytest.mark.unit
+    def test_free_core_does_not_fill_paid_assist_when_key_empty(self, config_manager):
+        """core=free 时，空的非免费 assist Key 不应回退成 free-access。"""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'free-access',
+            'coreApi': 'free',
+            'assistApi': 'qwen',
+            'assistApiKeyQwen': '',
+        })
+        cfg = config_manager.get_core_config()
+
+        assert cfg['CORE_API_KEY'] == 'free-access'
+        assert cfg['CORE_API_TYPE'] == 'free'
+        assert cfg['assistApi'] == 'qwen'
+        assert cfg['ASSIST_API_KEY_QWEN'] == ''
+        assert cfg['AUDIO_API_KEY'] == ''
+        assert cfg['OPENROUTER_API_KEY'] == ''
+        assert cfg['AGENT_MODEL_API_KEY'] == ''
+        conversation_cfg = config_manager.get_model_api_config('conversation')
+        assert conversation_cfg['api_key'] == ''
+
+    @pytest.mark.unit
+    def test_free_core_preserves_paid_assist_explicit_key(self, config_manager):
+        """core=free 时，显式填写的非免费 assist Key 仍应生效。"""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'free-access',
+            'coreApi': 'free',
+            'assistApi': 'qwen',
+            'assistApiKeyQwen': 'sk-assist-qwen',
+        })
+        cfg = config_manager.get_core_config()
+
+        assert cfg['ASSIST_API_KEY_QWEN'] == 'sk-assist-qwen'
+        assert cfg['AUDIO_API_KEY'] == 'sk-assist-qwen'
+        assert cfg['OPENROUTER_API_KEY'] == 'sk-assist-qwen'
+        assert cfg['AGENT_MODEL_API_KEY'] == 'sk-assist-qwen'
+
+    @pytest.mark.unit
     def test_qwen_intl_uses_saved_successful_us_url(self, config_manager):
         """qwen_intl 连通性测试命中美国 URL 后，运行配置应使用该 URL。"""
         us_url = 'https://dashscope-us.aliyuncs.com/compatible-mode/v1'

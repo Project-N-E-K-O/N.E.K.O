@@ -608,7 +608,7 @@ async def get_core_config_api():
         # 需要与 ConfigManager.get_core_config() 保持一致的回退逻辑，
         # 但只能回退到与 coreApi / assistApi 匹配的服务商，
         # 以免将不兼容的 API Key 填充到其他服务商。
-        fallback_key = api_key or ''
+        fallback_key = api_key if api_key != 'free-access' else ''
         _core_api_provider = core_cfg.get('coreApi') or 'qwen'
         _assist_api_provider = core_cfg.get('assistApi') or 'qwen'
         _fallback_providers = {_core_api_provider, _assist_api_provider}
