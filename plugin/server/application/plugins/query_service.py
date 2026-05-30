@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from collections.abc import Mapping
 
 from plugin.core.state import state
 from plugin.core.status import status_manager
 from plugin.logging_config import get_logger
 from plugin.sdk.shared.i18n import load_plugin_i18n_from_meta, resolve_i18n_refs
+from plugin.server.application.install_source import (
+    LockEntry,
+    SourceDetailImported,
+    SourceDetailMarket,
+    _DEFAULT_INSTALL_SOURCE,
+    get_install_source_manager,
+)
 from plugin.server.application.plugins.ui_query_service import _build_plugin_list_actions_from_meta
 from plugin.server.domain import IO_RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
@@ -47,6 +55,54 @@ def _normalize_plugin_entries(raw_items: list[object]) -> list[dict[str, object]
             )
         normalized_items.append(_normalize_mapping(item, context=f"plugin_list[{index}]"))
     return normalized_items
+
+
+def _serialize_install_source_detail(entry: LockEntry) -> dict[str, object] | None:
+    detail = entry.source_detail
+    if isinstance(detail, (SourceDetailImported, SourceDetailMarket)):
+        return dataclasses.asdict(detail)
+    return None
+
+
+def _install_source_api_view(entry: LockEntry | None) -> dict[str, object | None]:
+    if entry is None or entry.removed:
+        return dict(_DEFAULT_INSTALL_SOURCE)
+    return {
+        "source": entry.channel,
+        "reason": entry.reason,
+        "installed_at": entry.installed_at,
+        "source_detail": _serialize_install_source_detail(entry),
+    }
+
+
+def _install_source_index() -> tuple[
+    dict[str, LockEntry],
+    dict[str, LockEntry],
+]:
+    mgr = get_install_source_manager()
+    if mgr is None:
+        return {}, {}
+    snapshot = mgr.snapshot()
+    by_plugin_id: dict[str, LockEntry] = {}
+    by_directory_name: dict[str, LockEntry] = {}
+    for entry in snapshot.entries:
+        if entry.removed:
+            continue
+        by_directory_name[entry.directory_name] = entry
+        if entry.plugin_id:
+            by_plugin_id[entry.plugin_id] = entry
+    return by_plugin_id, by_directory_name
+
+
+def _attach_install_source(
+    plugin_info: dict[str, object],
+    *,
+    plugin_id: str,
+    by_plugin_id: Mapping[str, LockEntry],
+    by_directory_name: Mapping[str, LockEntry],
+) -> None:
+    entry = by_plugin_id.get(plugin_id) or by_directory_name.get(plugin_id)
+    plugin_info["install_source"] = _install_source_api_view(entry)
 
 
 def _normalize_string_list(raw_value: object) -> list[str]:
@@ -425,6 +481,8 @@ def _build_plugin_list_sync(locale: str | None = None) -> list[dict[str, object]
         except Exception:
             pass
 
+    install_source_by_plugin_id, install_source_by_directory_name = _install_source_index()
+
     for plugin_id_obj, plugin_meta_obj in plugins_snapshot.items():
         if not isinstance(plugin_id_obj, str):
             continue
@@ -469,6 +527,12 @@ def _build_plugin_list_sync(locale: str | None = None) -> list[dict[str, object]
                 _build_plugin_list_actions_from_meta(plugin_id, plugin_meta),
                 plugin_i18n,
                 locale=effective_locale,
+            )
+            _attach_install_source(
+                plugin_info,
+                plugin_id=plugin_id,
+                by_plugin_id=install_source_by_plugin_id,
+                by_directory_name=install_source_by_directory_name,
             )
             result.append(plugin_info)
         except ServerDomainError as exc:

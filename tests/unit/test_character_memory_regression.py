@@ -656,6 +656,618 @@ async def test_deleted_workshop_character_is_not_restored_by_startup_sync():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_manual_workshop_character_sync_restores_deleted_character_and_clears_tombstone():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            workshop_router_module = reload_module("main_routers.workshop_router")
+
+            deleted_name = "手动恢复工坊角色"
+            cm.save_character_tombstones_state({
+                "version": cm.CHARACTER_TOMBSTONES_STATE_VERSION,
+                "tombstones": [
+                    {
+                        "character_name": deleted_name,
+                        "deleted_at": "2026-05-25T00:00:00Z",
+                        "sequence_number": 1,
+                    }
+                ],
+            })
+
+            installed_folder = Path(td) / "mock_workshop_manual_restore_item"
+            installed_folder.mkdir(parents=True, exist_ok=True)
+            (installed_folder / "角色卡.chara.json").write_text(
+                json.dumps({"档案名": deleted_name, "昵称": "来自手动恢复"}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            subscribed_items_mock = AsyncMock(
+                return_value={
+                    "success": True,
+                    "items": [
+                        {
+                            "publishedFileId": "123456",
+                            "installedFolder": str(installed_folder),
+                        }
+                    ],
+                }
+            )
+            with patch.object(
+                workshop_router_module,
+                "get_subscribed_workshop_items",
+                subscribed_items_mock,
+            ):
+                sync_result = await workshop_router_module.sync_workshop_character_cards(
+                    target_item_id="123456",
+                    restore_deleted=True,
+                )
+                second_result = await workshop_router_module.sync_workshop_character_cards(
+                    target_item_id="123456",
+                    restore_deleted=True,
+                )
+
+            assert sync_result["added"] == 1
+            assert sync_result["added_character_names"] == [deleted_name]
+            assert sync_result["restored_deleted_names"] == [deleted_name]
+            current_characters = cm.load_characters()
+            assert deleted_name in current_characters.get("猫娘", {})
+            tombstones = cm.load_character_tombstones_state().get("tombstones") or []
+            assert not any(entry.get("character_name") == deleted_name for entry in tombstones)
+
+            assert second_result["added"] == 0
+            assert second_result["existing_character_names"] == [deleted_name]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_manual_workshop_character_sync_clears_tombstone_for_existing_character():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            workshop_router_module = reload_module("main_routers.workshop_router")
+
+            restored_name = "已存在但有墓碑角色"
+            characters = cm.load_characters()
+            characters.setdefault("猫娘", {})[restored_name] = {
+                "昵称": "已存在",
+                "_reserved": {
+                    "character_origin": {
+                        "source": "steam_workshop",
+                        "source_id": "123456",
+                    }
+                },
+            }
+            cm.save_characters(characters, bypass_write_fence=True)
+            cm.save_character_tombstones_state({
+                "version": cm.CHARACTER_TOMBSTONES_STATE_VERSION,
+                "tombstones": [
+                    {
+                        "character_name": restored_name,
+                        "deleted_at": "2026-05-25T00:00:00Z",
+                        "sequence_number": 1,
+                    }
+                ],
+            })
+
+            installed_folder = Path(td) / "mock_workshop_existing_restore_item"
+            installed_folder.mkdir(parents=True, exist_ok=True)
+            (installed_folder / "角色卡.chara.json").write_text(
+                json.dumps({"档案名": restored_name, "昵称": "来自工坊"}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            with patch.object(
+                workshop_router_module,
+                "get_subscribed_workshop_items",
+                AsyncMock(
+                    return_value={
+                        "success": True,
+                        "items": [
+                            {
+                                "publishedFileId": "123456",
+                                "installedFolder": str(installed_folder),
+                            }
+                        ],
+                    }
+                ),
+            ):
+                sync_result = await workshop_router_module.sync_workshop_character_cards(
+                    target_item_id="123456",
+                    restore_deleted=True,
+                )
+
+            assert sync_result["added"] == 0
+            assert sync_result["existing_character_names"] == [restored_name]
+            assert sync_result["restored_deleted_names"] == [restored_name]
+            tombstones = cm.load_character_tombstones_state().get("tombstones") or []
+            assert not any(entry.get("character_name") == restored_name for entry in tombstones)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_manual_workshop_character_sync_clears_tombstone_for_avatar_only_bound_character():
+    # 回归：旧数据 / 半迁移数据可能只有 avatar.asset_source 绑定（例如 live2d_item_id
+    # 迁移只写 avatar.asset_source_id，或用户在模型设置里手动绑定 Workshop 模型），
+    # 没有 character_origin。退订路径已按 avatar 命中删除它并打 tombstone，恢复路径
+    # 也必须按 avatar 命中并清理 tombstone，否则该角色会永远卡在 409。
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            workshop_router_module = reload_module("main_routers.workshop_router")
+
+            restored_name = "仅头像绑定角色"
+            characters = cm.load_characters()
+            characters.setdefault("猫娘", {})[restored_name] = {
+                "昵称": "已存在",
+                "_reserved": {
+                    "avatar": {
+                        "asset_source": "steam_workshop",
+                        "asset_source_id": "123456",
+                    }
+                },
+            }
+            cm.save_characters(characters, bypass_write_fence=True)
+            cm.save_character_tombstones_state({
+                "version": cm.CHARACTER_TOMBSTONES_STATE_VERSION,
+                "tombstones": [
+                    {
+                        "character_name": restored_name,
+                        "deleted_at": "2026-05-25T00:00:00Z",
+                        "sequence_number": 1,
+                    }
+                ],
+            })
+
+            installed_folder = Path(td) / "mock_workshop_avatar_only_restore_item"
+            installed_folder.mkdir(parents=True, exist_ok=True)
+            (installed_folder / "角色卡.chara.json").write_text(
+                json.dumps({"档案名": restored_name, "昵称": "来自工坊"}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            with patch.object(
+                workshop_router_module,
+                "get_subscribed_workshop_items",
+                AsyncMock(
+                    return_value={
+                        "success": True,
+                        "items": [
+                            {
+                                "publishedFileId": "123456",
+                                "installedFolder": str(installed_folder),
+                            }
+                        ],
+                    }
+                ),
+            ):
+                sync_result = await workshop_router_module.sync_workshop_character_cards(
+                    target_item_id="123456",
+                    restore_deleted=True,
+                )
+
+            assert sync_result["added"] == 0
+            assert sync_result["existing_character_names"] == [restored_name]
+            assert sync_result["restored_deleted_names"] == [restored_name]
+            tombstones = cm.load_character_tombstones_state().get("tombstones") or []
+            assert not any(entry.get("character_name") == restored_name for entry in tombstones)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_manual_workshop_character_sync_keeps_tombstone_for_nonmatching_existing_character():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            workshop_router_module = reload_module("main_routers.workshop_router")
+
+            restored_name = "同名本地角色"
+            characters = cm.load_characters()
+            characters.setdefault("猫娘", {})[restored_name] = {"昵称": "本地角色"}
+            cm.save_characters(characters, bypass_write_fence=True)
+            cm.save_character_tombstones_state({
+                "version": cm.CHARACTER_TOMBSTONES_STATE_VERSION,
+                "tombstones": [
+                    {
+                        "character_name": restored_name,
+                        "deleted_at": "2026-05-25T00:00:00Z",
+                        "sequence_number": 1,
+                    }
+                ],
+            })
+
+            installed_folder = Path(td) / "mock_workshop_nonmatching_restore_item"
+            installed_folder.mkdir(parents=True, exist_ok=True)
+            (installed_folder / "角色卡.chara.json").write_text(
+                json.dumps({"档案名": restored_name, "昵称": "来自工坊"}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            with patch.object(
+                workshop_router_module,
+                "get_subscribed_workshop_items",
+                AsyncMock(
+                    return_value={
+                        "success": True,
+                        "items": [
+                            {
+                                "publishedFileId": "123456",
+                                "installedFolder": str(installed_folder),
+                            }
+                        ],
+                    }
+                ),
+            ):
+                sync_result = await workshop_router_module.sync_workshop_character_cards(
+                    target_item_id="123456",
+                    restore_deleted=True,
+                )
+
+            assert sync_result["added"] == 0
+            assert sync_result["existing_character_names"] == [restored_name]
+            assert sync_result["restored_deleted_names"] == []
+            tombstones = cm.load_character_tombstones_state().get("tombstones") or []
+            assert any(entry.get("character_name") == restored_name for entry in tombstones)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_manual_workshop_character_sync_defers_tombstone_cleanup_after_successful_save():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            workshop_router_module = reload_module("main_routers.workshop_router")
+
+            restored_name = "延后清理墓碑角色"
+            characters = cm.load_characters()
+            characters.setdefault("猫娘", {})[restored_name] = {
+                "昵称": "已存在",
+                "_reserved": {
+                    "character_origin": {
+                        "source": "steam_workshop",
+                        "source_id": "123456",
+                    }
+                },
+            }
+            cm.save_characters(characters, bypass_write_fence=True)
+            cm.save_character_tombstones_state({
+                "version": cm.CHARACTER_TOMBSTONES_STATE_VERSION,
+                "tombstones": [
+                    {
+                        "character_name": restored_name,
+                        "deleted_at": "2026-05-25T00:00:00Z",
+                        "sequence_number": 1,
+                    }
+                ],
+            })
+
+            installed_folder = Path(td) / "mock_workshop_deferred_restore_item"
+            installed_folder.mkdir(parents=True, exist_ok=True)
+            (installed_folder / "existing.chara.json").write_text(
+                json.dumps({"档案名": restored_name, "昵称": "来自工坊"}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            (installed_folder / "new.chara.json").write_text(
+                json.dumps({"档案名": "新工坊角色", "昵称": "新角色"}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            with (
+                patch.object(
+                    workshop_router_module,
+                    "get_subscribed_workshop_items",
+                    AsyncMock(
+                        return_value={
+                            "success": True,
+                            "items": [
+                                {
+                                    "publishedFileId": "123456",
+                                    "installedFolder": str(installed_folder),
+                                }
+                            ],
+                        }
+                    ),
+                ),
+                patch.object(workshop_router_module, "_ensure_workshop_card_face_from_preview", return_value=False),
+                patch.object(workshop_router_module, "_ensure_workshop_card_face_meta", return_value=False),
+                patch.object(
+                    workshop_router_module,
+                    "is_write_fence_active",
+                    side_effect=[False, False, False, False, False, False, True],
+                ),
+            ):
+                sync_result = await workshop_router_module.sync_workshop_character_cards(
+                    target_item_id="123456",
+                    restore_deleted=True,
+                )
+
+            assert sync_result["added"] == 1
+            assert sync_result["tombstone_cleanup_deferred"] is True
+            assert "新工坊角色" in cm.load_characters().get("猫娘", {})
+            tombstones = cm.load_character_tombstones_state().get("tombstones") or []
+            assert any(entry.get("character_name") == restored_name for entry in tombstones)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_sync_single_workshop_character_card_treats_restored_existing_as_success():
+    workshop_router_module = reload_module("main_routers.workshop_router")
+    sync_result = {
+        "added": 0,
+        "backfilled_faces": 0,
+        "skipped": 1,
+        "errors": 0,
+        "target_found": True,
+        "found_character_names": ["恢复角色"],
+        "existing_character_names": ["恢复角色"],
+        "restored_deleted_names": ["恢复角色"],
+    }
+
+    with patch.object(
+        workshop_router_module,
+        "sync_workshop_character_cards",
+        AsyncMock(return_value=sync_result),
+    ):
+        response = await workshop_router_module.api_sync_single_workshop_character_card("123456")
+
+    assert response["success"] is True
+    assert response["restored_deleted_names"] == ["恢复角色"]
+    assert response["message"] == "已加入角色卡：恢复角色"
+    # 前端成功提示只读 added_character_names，仅恢复场景也必须带上恢复角色名，
+    # 否则会被 formatWorkshopCharacterNameList 回退成“未知角色卡”。
+    assert response["added_character_names"] == ["恢复角色"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("sync_result", "expected_status", "expected_code"),
+    [
+        (
+            {
+                "added": 0,
+                "backfilled_faces": 0,
+                "skipped": 0,
+                "errors": 0,
+                "target_found": False,
+                "code": "WORKSHOP_ITEM_NOT_FOUND",
+            },
+            404,
+            "WORKSHOP_ITEM_NOT_FOUND",
+        ),
+        (
+            {
+                "added": 0,
+                "backfilled_faces": 0,
+                "skipped": 1,
+                "errors": 0,
+                "target_found": True,
+                "found_character_names": ["已存在角色"],
+                "existing_character_names": ["已存在角色"],
+            },
+            409,
+            "WORKSHOP_CHARACTER_ALREADY_EXISTS",
+        ),
+        (
+            {
+                "added": 0,
+                "backfilled_faces": 0,
+                "skipped": 0,
+                "errors": 0,
+                "target_found": True,
+                "found_character_names": [],
+                "existing_character_names": [],
+            },
+            404,
+            "WORKSHOP_CHARACTER_NOT_FOUND",
+        ),
+        (
+            {
+                "added": 0,
+                "backfilled_faces": 0,
+                "skipped": 0,
+                "errors": 0,
+                "target_found": True,
+                "found_character_names": ["未加入角色"],
+                "existing_character_names": [],
+            },
+            422,
+            "WORKSHOP_CHARACTER_NOT_ADDED",
+        ),
+        (
+            # 真实后端异常被显式标记为 WORKSHOP_SYNC_FAILED 时，必须回 500，
+            # 不能因 target_found / found_character_names 的残留值被误判成业务态。
+            {
+                "added": 0,
+                "backfilled_faces": 0,
+                "skipped": 0,
+                "errors": 1,
+                "target_found": True,
+                "found_character_names": [],
+                "existing_character_names": [],
+                "code": "WORKSHOP_SYNC_FAILED",
+            },
+            500,
+            "WORKSHOP_SYNC_FAILED",
+        ),
+    ],
+)
+async def test_sync_single_workshop_character_card_uses_error_status_codes(
+    sync_result,
+    expected_status,
+    expected_code,
+):
+    workshop_router_module = reload_module("main_routers.workshop_router")
+
+    with patch.object(
+        workshop_router_module,
+        "sync_workshop_character_cards",
+        AsyncMock(return_value=sync_result),
+    ):
+        response = await workshop_router_module.api_sync_single_workshop_character_card("123456")
+
+    payload = json.loads(response.body.decode("utf-8"))
+    assert response.status_code == expected_status
+    assert payload["success"] is False
+    assert payload["code"] == expected_code
+    assert "error" in payload
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_batch_workshop_character_sync_reports_subscription_unavailable():
+    workshop_router_module = reload_module("main_routers.workshop_router")
+    sync_result = {
+        "added": 0,
+        "backfilled_faces": 0,
+        "skipped": 0,
+        "errors": 1,
+        "code": "WORKSHOP_SUBSCRIPTIONS_UNAVAILABLE",
+    }
+
+    with patch.object(
+        workshop_router_module,
+        "sync_workshop_character_cards",
+        AsyncMock(return_value=sync_result),
+    ):
+        response = await workshop_router_module.api_sync_workshop_character_cards()
+
+    payload = json.loads(response.body.decode("utf-8"))
+    assert response.status_code == 503
+    assert payload["success"] is False
+    assert payload["code"] == "WORKSHOP_SUBSCRIPTIONS_UNAVAILABLE"
+    assert payload["errors"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_batch_workshop_character_sync_reports_internal_failure_as_500():
+    # 后端异常被标记为 WORKSHOP_SYNC_FAILED 时，批量入口也要回 500，
+    # 不能伪装成 success 的“同步完成”。
+    workshop_router_module = reload_module("main_routers.workshop_router")
+    sync_result = {
+        "added": 0,
+        "backfilled_faces": 0,
+        "skipped": 0,
+        "errors": 1,
+        "code": "WORKSHOP_SYNC_FAILED",
+    }
+
+    with patch.object(
+        workshop_router_module,
+        "sync_workshop_character_cards",
+        AsyncMock(return_value=sync_result),
+    ):
+        response = await workshop_router_module.api_sync_workshop_character_cards()
+
+    payload = json.loads(response.body.decode("utf-8"))
+    assert response.status_code == 500
+    assert payload["success"] is False
+    assert payload["code"] == "WORKSHOP_SYNC_FAILED"
+    assert payload["errors"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_sync_workshop_character_cards_skips_save_when_maintenance_fence_turns_on():
     with TemporaryDirectory() as td:
         cm = _make_config_manager(Path(td))

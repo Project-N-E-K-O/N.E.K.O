@@ -7,6 +7,8 @@
   "entries.galgame_install_textractor.description": "檢測並下載安裝 TextractorCLI.exe，隨後重新整理 galgame_plugin 的橋接與讀記憶體狀態。",
   "entries.galgame_download_rapidocr_models.name": "下載 RapidOCR 模型",
   "entries.galgame_download_rapidocr_models.description": "為目前 RapidOCR 語言和 OCR 版本下載缺失的模型檔案到外掛模型快取目錄。",
+  "entries.galgame_set_rapidocr_lang.name": "切換 RapidOCR 語言",
+  "entries.galgame_set_rapidocr_lang.description": "切換 RapidOCR 文字識別語言模型和 OCR 版本；手動切換語言會關閉自動偵測。",
   "entries.galgame_install_dxcam.name": "安裝 DXcam",
   "entries.galgame_install_dxcam.description": "檢測並安裝 DXcam 截圖依賴，隨後重新整理 galgame_plugin 的 OCR 截圖後端狀態。",
   "entries.galgame_get_snapshot.name": "取得 galgame 快照",

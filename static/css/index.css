@@ -2801,9 +2801,9 @@ body.chat-export-modal-open {
 }
 
 .chat-export-selection-tool:hover {
-    background: #eef2ff;
-    border-color: #818cf8;
-    color: #4338ca;
+    background: #e0f7ff;
+    border-color: #7dd3fc;
+    color: #0369a1;
 }
 
 .chat-export-selection-list {
@@ -2842,7 +2842,7 @@ body.chat-export-modal-open {
     margin-top: 3px;
     width: 16px;
     height: 16px;
-    accent-color: #6366f1;
+    accent-color: #38bdf8;
     cursor: pointer;
 }
 
@@ -2922,18 +2922,18 @@ body.chat-export-modal-open {
 .chat-export-format-chip:hover,
 .chat-export-style-chip:hover,
 .chat-export-image-format-chip:hover {
-    background: #eef2ff;
-    border-color: #818cf8;
-    color: #4338ca;
+    background: #e0f7ff;
+    border-color: #7dd3fc;
+    color: #0369a1;
 }
 
 .chat-export-format-chip.is-active,
 .chat-export-style-chip.is-active,
 .chat-export-image-format-chip.is-active {
-    background: #6366f1;
-    border-color: #6366f1;
-    color: #ffffff;
-    box-shadow: 0 4px 10px rgba(99, 102, 241, 0.35);
+    background: #dff6ff;
+    border-color: #38bdf8;
+    color: #0369a1;
+    box-shadow: 0 4px 10px rgba(56, 189, 248, 0.28);
 }
 
 /* ---------- Preview body ---------- */
@@ -3024,9 +3024,9 @@ body.chat-export-modal-open {
 }
 
 .chat-export-preview-action:hover:not(:disabled) {
-    background: #eef2ff;
-    border-color: #818cf8;
-    color: #4338ca;
+    background: #e0f7ff;
+    border-color: #7dd3fc;
+    color: #0369a1;
 }
 
 .chat-export-preview-action:disabled {
@@ -3035,17 +3035,17 @@ body.chat-export-modal-open {
 }
 
 .chat-export-preview-action-primary {
-    background: #6366f1;
-    border-color: #6366f1;
+    background: #0ea5e9;
+    border-color: #0ea5e9;
     color: #ffffff;
-    box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+    box-shadow: 0 4px 12px rgba(14, 165, 233, 0.3);
 }
 
 .chat-export-preview-action-primary:hover:not(:disabled) {
-    background: #4f46e5;
-    border-color: #4f46e5;
+    background: #0284c7;
+    border-color: #0284c7;
     color: #ffffff;
-    box-shadow: 0 6px 16px rgba(79, 70, 229, 0.4);
+    box-shadow: 0 6px 16px rgba(2, 132, 199, 0.35);
 }
 
 /* ---------- Small screens ---------- */

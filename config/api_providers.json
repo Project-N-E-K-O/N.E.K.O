@@ -300,7 +300,7 @@
     },
     "qwen_intl": {
       "config_field": "assistApiKeyQwenIntl",
-      "restricted": false
+      "restricted": true
     },
     "openai": {
       "config_field": "assistApiKeyOpenai",
@@ -340,7 +340,7 @@
     },
     "minimax_intl": {
       "config_field": "assistApiKeyMinimaxIntl",
-      "restricted": false
+      "restricted": true
     },
     "elevenlabs": {
       "config_field": "assistApiKeyElevenlabs",

@@ -209,6 +209,41 @@ async def test_imported_user_profiles_survive_empty_preset_placeholder(
 
 
 @pytest.mark.asyncio
+async def test_import_character_data_returns_err_when_import_raises(tmp_path) -> None:
+    plugin = _plugin_with_character_profiles()
+    plugin._state.bound_game_id = "custom_game"
+    source = tmp_path / "import.json"
+    source.write_text("{}", encoding="utf-8")
+
+    class _Manager:
+        def import_user_profiles(self, *_args):
+            raise OSError("disk failed")
+
+    plugin._character_profile_manager = _Manager()
+
+    result = await plugin.galgame_import_character_data(file_path=str(source))
+
+    assert result.is_err()
+    assert "disk failed" in str(result.error)
+
+
+@pytest.mark.asyncio
+async def test_fixed_character_mode_rejects_stale_cached_profiles(tmp_path) -> None:
+    plugin = _plugin_with_character_profiles()
+    plugin._character_profile_manager = CharacterProfileManager(data_dir=tmp_path)
+    plugin._state.character_profiles = {"旧角色": {"identity": "stale"}}
+
+    result = await plugin.galgame_set_character_mode(
+        mode="fixed",
+        character_name="旧角色",
+    )
+
+    assert result.is_err()
+    assert plugin._state.character_mode == "off"
+    assert plugin._state.character_fixed_name == ""
+
+
+@pytest.mark.asyncio
 async def test_available_game_ids_do_not_fallback_match_profiles() -> None:
     plugin = _plugin_with_character_profiles()
     plugin._state.available_game_ids = ["missing_game"]
@@ -314,6 +349,45 @@ def test_scene_change_cross_scene_memory_update_persists_immediately() -> None:
         "Yukino protects the secret route."
     )
     assert plugin._cached_snapshot is None
+    assert agent._cross_scene_memory_dirty is True
+
+
+def test_scene_change_cross_scene_memory_persist_failure_is_best_effort() -> None:
+    plugin = _plugin_with_character_profiles()
+    plugin._state.character_runtime_state = {
+        "Yukino": {
+            "arc_stage": "route guard",
+            "current_emotion": "focused",
+        }
+    }
+
+    def _raise_persist(*_args, **_kwargs):
+        raise RuntimeError("persist failed")
+
+    warnings: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    plugin._persist = SimpleNamespace(persist_config_override=_raise_persist)
+    agent = SimpleNamespace(
+        _plugin=plugin,
+        _scene_memory=[{"summary": "Yukino protects the secret route."}],
+        _push_seq_counter=17,
+        _cross_scene_memory_dirty=False,
+        _logger=SimpleNamespace(
+            warning=lambda *args, **kwargs: warnings.append((args, kwargs))
+        ),
+    )
+
+    GameLLMAgent._maybe_update_cross_scene_memory(
+        agent,
+        {},
+        scene_id="scene-b",
+        route_id="route-a",
+    )
+
+    assert plugin._state.cross_scene_memory["characters"]["Yukino"][
+        "last_key_event"
+    ] == "Yukino protects the secret route."
+    assert warnings
+    assert warnings[-1][1]["exc_info"] is True
     assert agent._cross_scene_memory_dirty is True
 
 

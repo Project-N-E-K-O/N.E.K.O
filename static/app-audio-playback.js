@@ -158,6 +158,26 @@
         }));
     }
 
+    // Report REAL audio playback boundaries to the backend so the proactive
+    // inject gate keys off actual playback (queue drained) rather than the
+    // realtime API's response.done (generation finished while audio is still
+    // buffered/playing). Rides the same ws as every other action, including
+    // the Electron chat.html WSProxy/IPC bridge → Pet real ws. readyState
+    // may be undefined on a proxy socket — send anyway (try/catch guards).
+    function sendVoicePlaybackSignal(action, turnId) {
+        try {
+            var sock = S.socket;
+            if (sock && typeof sock.send === 'function' &&
+                (sock.readyState === 1 || typeof sock.readyState === 'undefined')) {
+                sock.send(JSON.stringify({
+                    action: action,
+                    turnId: turnId || null,
+                    source: 'audio_playback'
+                }));
+            }
+        } catch (_) { /* noop — best-effort signal */ }
+    }
+
     function getActiveAvatarModelType() {
         // 优先按当前可见容器判断，避免 Live2D 全局引用残留时抢走 VRM/MMD 的口型同步。
         var vrmContainer = document.getElementById('vrm-container');
@@ -307,6 +327,7 @@
             turnId: normalizedTurnId,
             source: 'audio_playback'
         });
+        sendVoicePlaybackSignal('voice_play_start', normalizedTurnId);
     }
 
     function dispatchAssistantSpeechEnd(turnId) {
@@ -326,6 +347,7 @@
             turnId: normalizedTurnId,
             source: 'audio_playback'
         });
+        sendVoicePlaybackSignal('voice_play_end', normalizedTurnId);
     }
 
     function resolveAssistantSpeechCancelTurnId() {
@@ -395,6 +417,9 @@
             turnId: normalizedTurnId,
             source: source || 'audio_playback'
         });
+        // Cancel/interruption also means audio playback has stopped → open
+        // the proactive gate (same as a natural end).
+        sendVoicePlaybackSignal('voice_play_end', normalizedTurnId);
     }
 
     function clearAssistantTurnCompletionFallback() {
@@ -499,6 +524,11 @@
         S.assistantTurnCompletedId = null;
         S.assistantTurnCompletionSource = null;
         S.assistantSpeechStartedTurnId = null;
+        // settled 标记随完成状态一起清：turn-start / speech-cancel / clearAudioQueue
+        // 都经由本函数，等于把 settledId 接进完整的 turn 生命周期收尾。
+        // maybeFinalizeAssistantSpeech 在调用本函数之后再设 settledId（见那里），
+        // 所以"干净收尾"路径的 settledId 不会被这里误清。
+        S.assistantTurnSettledId = null;
     }
 
     function scheduleAssistantTurnCompletionFallback(turnId, source) {
@@ -648,6 +678,11 @@
         dispatchAssistantSpeechEnd(normalizedTurnId);
         var completionSource = S.assistantTurnCompletionSource;
         clearAssistantTurnCompletion();
+        // 这一轮已干净收尾。clearAssistantTurnCompletion 刚把 completedId 清成 null，
+        // 但 assistantTurnId 仍指向本轮（要等下条用户消息才清），若不标记 settled，
+        // isAssistantTextResponseInFlight 会一直把"已说完的轮"误判成在路上 → 切语音
+        // 干等 15s。这里在清空之后再标 settled，记下"turnId 这轮已收尾"。
+        S.assistantTurnSettledId = normalizedTurnId;
         logAudioLifecycle('maybeFinalizeAssistantSpeech:completed', {
             requestedTurnId: normalizedTurnId,
             completionSource: completionSource

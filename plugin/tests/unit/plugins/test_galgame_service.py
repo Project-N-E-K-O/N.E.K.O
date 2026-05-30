@@ -160,6 +160,43 @@ def test_build_config_defaults_rapidocr_lang_type_to_bundled_ch() -> None:
     assert cfg.rapidocr_lang_type == galgame_service.DEFAULT_RAPIDOCR_LANG_TYPE
 
 
+def test_build_config_reads_vision_classifier_fields() -> None:
+    cfg = galgame_service.build_config(
+        {
+            "vision": {
+                "enabled": True,
+                "model_dir": "models/vision/custom",
+                "cnn_skip_ocr_threshold": 0.82,
+                "classifier_tick_interval": 3,
+                "inference_timeout_ms": 120,
+                "classifier": {
+                    "model_name": "custom_galgame",
+                    "input_size": [192, 192],
+                    "input_size_low": [160, 160],
+                },
+            }
+        }
+    )
+
+    assert cfg.vision_classifier_enabled is True
+    assert cfg.vision_classifier_model_dir == "models/vision/custom"
+    assert cfg.vision_classifier_model_name == "custom_galgame"
+    assert cfg.vision_classifier_threshold == 0.82
+    assert cfg.vision_classifier_tick_interval == 3
+    assert cfg.vision_classifier_inference_timeout_ms == 120.0
+    assert cfg.vision_classifier_input_size == [192, 192]
+    assert cfg.vision_classifier_input_size_low == [160, 160]
+
+
+def test_build_config_defaults_vision_classifier_model_dir_inside_plugin() -> None:
+    cfg = galgame_service.build_config({})
+
+    assert (
+        cfg.vision_classifier_model_dir
+        == "plugin/plugins/galgame_plugin/models/vision/screen_classifier"
+    )
+
+
 def test_build_config_reads_context_optimization_fields() -> None:
     cfg = galgame_service.build_config(
         {
@@ -798,6 +835,47 @@ def test_status_payload_snapshot_fast_path_skips_json_copy(monkeypatch: pytest.M
     assert payload["effective_current_line"]["text"] == "今天先回去吧。"
     assert payload["ocr_reader_runtime"] == {"status": "running"}
     assert payload["primary_diagnosis"]["title"]
+
+
+def test_status_payload_exposes_vision_classifier_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = galgame_service.build_config(
+        {
+            "vision": {
+                "enabled": True,
+                "model_dir": "plugin/plugins/galgame_plugin/models/vision/screen_classifier",
+                "cnn_skip_ocr_threshold": 0.8,
+                "classifier": {"model_name": "v1_galgame"},
+            },
+        }
+    )
+    state = _status_state(
+        ocr_reader_runtime={
+            "status": "running",
+            "vision_classifier_available": True,
+            "vision_classifier_detail": "loaded",
+            "vision_classifier_last_label": "dialogue",
+            "vision_classifier_last_confidence": 0.93,
+            "vision_classifier_last_latency_ms": 1.5,
+        }
+    )
+    _patch_status_dependencies(monkeypatch)
+
+    payload = galgame_service.build_status_payload(
+        state,
+        config=config,
+        state_is_snapshot=True,
+    )
+
+    assert payload["vision_classifier_enabled"] is True
+    assert payload["vision_classifier_model_name"] == "v1_galgame"
+    assert payload["vision_classifier_threshold"] == 0.8
+    assert payload["vision_classifier_available"] is True
+    assert payload["vision_classifier_detail"] == "loaded"
+    assert payload["vision_classifier_last_label"] == "dialogue"
+    assert payload["vision_classifier_last_confidence"] == 0.93
+    assert payload["vision_classifier_last_latency_ms"] == 1.5
 
 
 def test_status_payload_exposes_lightweight_character_profile_state(

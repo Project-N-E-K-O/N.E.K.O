@@ -245,6 +245,68 @@
         return fallback;
     }
 
+    function _escapeProminentNoticeHtml(value) {
+        return String(value || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function _stripProminentMarkdown(value) {
+        return String(value || '')
+            .replace(/^#{1,6}\s+/, '')
+            .replace(/\*\*(.*?)\*\*/g, '$1')
+            .replace(/(?<!\*)\*(?!\*)(.*?)(?<!\*)\*(?!\*)/g, '$1')
+            .trim();
+    }
+
+    function _renderChangelogNoticeContent(container, notice, displayText) {
+        const lines = String(displayText || '')
+            .split(/\r?\n/)
+            .map(line => line.trim())
+            .filter(Boolean);
+        const firstLine = lines[0] || '';
+        const firstLineIsItem = /^[-•]\s+/.test(firstLine);
+        const headingText = firstLineIsItem ? '' : _stripProminentMarkdown(firstLine);
+        const versionMatch = headingText.match(/^v?([0-9]+(?:\.[0-9]+)*)(?:\s+(.+))?$/i);
+        const version = notice.version || (versionMatch ? versionMatch[1] : '');
+        const title = notice.title || (versionMatch ? versionMatch[2] : '') || headingText || _prominentNoticeText('notice.changelog.title', '更新内容');
+        const firstLineIsHeading = !!firstLine
+            && !firstLineIsItem
+            && (!!versionMatch || (!notice.title && !!headingText));
+        const itemLines = lines
+            .slice(firstLineIsHeading ? 1 : 0)
+            .filter(line => /^[-•]\s+/.test(line));
+
+        const itemsHtml = itemLines.map(line => {
+            const content = line.replace(/^[-•]\s+/, '').trim();
+            const match = content.match(/^\*\*(.+?)\*\*\s*[:：]\s*(.+)$/);
+            const itemTitle = match ? match[1] : '';
+            const itemBody = match ? match[2] : _stripProminentMarkdown(content);
+            return [
+                '<li class="prominent-notice-changelog-item">',
+                '<span class="prominent-notice-changelog-dot" aria-hidden="true"></span>',
+                '<span class="prominent-notice-changelog-copy">',
+                itemTitle ? '<strong>' + _escapeProminentNoticeHtml(itemTitle) + '</strong>' : '',
+                '<span>', _escapeProminentNoticeHtml(itemBody), '</span>',
+                '</span>',
+                '</li>',
+            ].join('');
+        }).join('');
+
+        container.innerHTML = [
+            '<div class="prominent-notice-changelog-head">',
+            version ? '<span class="prominent-notice-changelog-version">v' + _escapeProminentNoticeHtml(version) + '</span>' : '',
+            '<h2>', _escapeProminentNoticeHtml(title), '</h2>',
+            '</div>',
+            '<ul class="prominent-notice-changelog-list">',
+            itemsHtml || '<li class="prominent-notice-changelog-item"><span class="prominent-notice-changelog-copy"><span>' + _escapeProminentNoticeHtml(_stripProminentMarkdown(displayText)) + '</span></span></li>',
+            '</ul>',
+        ].join('');
+    }
+
     function _drainProminentNoticeQueue() {
         if (_prominentNoticeActive || _prominentNoticeQueue.length === 0) return;
         const { notice, resolve } = _prominentNoticeQueue.shift();
@@ -266,6 +328,7 @@
         const displayText = (notice.code && typeof safeT === 'function')
             ? safeT(notice.code, localeFallback)
             : localeFallback;
+        const isChangelogNotice = notice && notice.kind === 'changelog';
 
         // Electron 桌面宠物模式下 body 为 pointer-events:none，
         // 导致 preload 轮询器的 elementFromPoint 无法检测到 overlay，
@@ -292,56 +355,99 @@
         box.setAttribute('aria-modal', 'true');
         box.setAttribute('aria-label', displayText || 'Notice');
         box.tabIndex = -1;
-        box.style.cssText = `
-            position: relative;
-            background: #1e293b;
-            color: #f1f5f9;
-            border: 1px solid rgba(255,255,255,0.12);
-            border-radius: 16px;
-            padding: 32px 28px 24px;
-            width: 370px; max-width: 88vw;
-            max-height: min(82vh, 720px);
-            box-sizing: border-box;
-            box-shadow: 0 12px 40px rgba(0,0,0,0.5);
-            text-align: center;
-            pointer-events: auto;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            animation: pnBoxIn 0.3s ease;
-        `;
+        box.className = isChangelogNotice
+            ? 'prominent-notice-box prominent-notice-box-changelog'
+            : 'prominent-notice-box';
+        box.style.cssText = isChangelogNotice
+            ? `
+                position: relative;
+                background: linear-gradient(180deg, #fffafd 0%, #f1f8ff 100%);
+                color: #334155;
+                border: 1px solid rgba(255,255,255,0.92);
+                border-radius: 26px;
+                padding: 28px 30px 24px;
+                width: min(640px, calc(100vw - 44px));
+                max-height: min(82vh, 720px);
+                box-sizing: border-box;
+                box-shadow: 0 24px 70px rgba(92,132,184,0.28), inset 0 1px 0 rgba(255,255,255,0.95);
+                text-align: left;
+                pointer-events: auto;
+                display: flex;
+                flex-direction: column;
+                align-items: stretch;
+                animation: pnBoxIn 0.3s ease;
+            `
+            : `
+                position: relative;
+                background: #1e293b;
+                color: #f1f5f9;
+                border: 1px solid rgba(255,255,255,0.12);
+                border-radius: 16px;
+                padding: 32px 28px 24px;
+                width: 370px; max-width: 88vw;
+                max-height: min(82vh, 720px);
+                box-sizing: border-box;
+                box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+                text-align: center;
+                pointer-events: auto;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                animation: pnBoxIn 0.3s ease;
+            `;
 
         const btn = document.createElement('button');
         const _hasMore = _prominentNoticeQueue.length > 0;
         btn.textContent = _hasMore
             ? _prominentNoticeText('common.next', '下一个')
             : _prominentNoticeText('common.confirm', '确认');
-        btn.style.cssText = `
-            background: #3b82f6; color: #fff; border: none;
-            border-radius: 10px; padding: 10px 48px;
-            font-size: 15px; font-weight: 600; cursor: pointer;
-            pointer-events: auto;
-            transition: background 0.15s;
-            flex-shrink: 0;
-        `;
+        btn.style.cssText = isChangelogNotice
+            ? `
+                align-self: center;
+                min-width: 150px;
+                background: linear-gradient(180deg, #8dccff 0%, #65aef4 100%);
+                color: #fff;
+                border: none;
+                border-radius: 999px;
+                padding: 12px 42px;
+                font-size: 15px;
+                font-weight: 700;
+                cursor: pointer;
+                pointer-events: auto;
+                transition: transform 0.15s ease, filter 0.15s ease;
+                box-shadow: 0 14px 30px rgba(101,174,244,0.34), inset 0 3px 6px rgba(255,255,255,0.36);
+                flex-shrink: 0;
+            `
+            : `
+                background: #3b82f6; color: #fff; border: none;
+                border-radius: 10px; padding: 10px 48px;
+                font-size: 15px; font-weight: 600; cursor: pointer;
+                pointer-events: auto;
+                transition: background 0.15s;
+                flex-shrink: 0;
+            `;
 
         const icon = document.createElement('img');
-        icon.src = '/static/icons/exclamation.png';
-        icon.alt = '';
-        icon.style.cssText = 'width:36px;height:36px;margin-bottom:14px;flex-shrink:0;';
+        if (!isChangelogNotice) {
+            icon.src = '/static/icons/exclamation.png';
+            icon.alt = '';
+            icon.style.cssText = 'width:36px;height:36px;margin-bottom:14px;flex-shrink:0;';
+        }
 
         const textDiv = document.createElement('div');
-        textDiv.className = 'prominent-notice-body';
+        textDiv.className = isChangelogNotice
+            ? 'prominent-notice-body prominent-notice-body-changelog'
+            : 'prominent-notice-body';
         textDiv.style.cssText = [
-            'font-size:16px',
-            'font-weight:600',
-            'line-height:1.7',
-            'margin-bottom:22px',
+            isChangelogNotice ? 'font-size:14px' : 'font-size:16px',
+            isChangelogNotice ? 'font-weight:500' : 'font-weight:600',
+            isChangelogNotice ? 'line-height:1.55' : 'line-height:1.7',
+            isChangelogNotice ? 'margin-bottom:20px' : 'margin-bottom:22px',
             'text-align:left',
             'width:100%',
             'min-height:0',
             'flex:1 1 auto',
-            'max-height:min(54vh,420px)',
+            isChangelogNotice ? 'max-height:min(56vh,460px)' : 'max-height:min(54vh,420px)',
             'overflow-y:auto',
             'overflow-x:hidden',
             'overflow-wrap:anywhere',
@@ -352,13 +458,17 @@
             'overscroll-behavior:contain',
             'box-sizing:border-box',
         ].join(';');
-        if (typeof window.renderMiniMarkdown === 'function') {
+        if (isChangelogNotice) {
+            _renderChangelogNoticeContent(textDiv, notice, displayText);
+        } else if (typeof window.renderMiniMarkdown === 'function') {
             textDiv.innerHTML = window.renderMiniMarkdown(displayText);
         } else {
             textDiv.textContent = displayText;
         }
 
-        box.appendChild(icon);
+        if (!isChangelogNotice) {
+            box.appendChild(icon);
+        }
         box.appendChild(textDiv);
         box.appendChild(btn);
         overlay.appendChild(box);
@@ -392,6 +502,110 @@
                     background: rgba(148, 163, 184, 0.62);
                     border: 2px solid transparent;
                     background-clip: padding-box;
+                }
+                .prominent-notice-box-changelog .prominent-notice-body::-webkit-scrollbar-thumb {
+                    background: rgba(126, 166, 211, 0.36);
+                }
+                .prominent-notice-box-changelog .prominent-notice-body::-webkit-scrollbar-thumb:hover {
+                    background: rgba(126, 166, 211, 0.58);
+                }
+                .prominent-notice-changelog-head {
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 12px;
+                    margin: 0 0 18px;
+                    text-align: center;
+                }
+                .prominent-notice-changelog-version {
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    min-width: 64px;
+                    height: 32px;
+                    padding: 0 12px;
+                    border-radius: 999px;
+                    background: rgba(107, 176, 242, 0.14);
+                    color: #4f91d6;
+                    font-size: 14px;
+                    font-weight: 800;
+                    box-shadow: inset 0 0 0 1px rgba(107,176,242,0.18);
+                }
+                .prominent-notice-changelog-head h2 {
+                    margin: 0;
+                    color: #334155;
+                    font-size: 24px;
+                    line-height: 1.25;
+                    font-weight: 800;
+                    letter-spacing: 0;
+                }
+                .prominent-notice-changelog-list {
+                    display: grid;
+                    grid-template-columns: 1fr;
+                    gap: 10px;
+                    margin: 0;
+                    padding: 0;
+                    list-style: none;
+                }
+                .prominent-notice-changelog-item {
+                    display: grid;
+                    grid-template-columns: 10px 1fr;
+                    gap: 12px;
+                    align-items: start;
+                    margin: 0 !important;
+                    padding: 12px 14px;
+                    list-style: none !important;
+                    border-radius: 14px;
+                    background: rgba(255,255,255,0.62);
+                    box-shadow: inset 0 0 0 1px rgba(148,163,184,0.13);
+                    text-align: left !important;
+                }
+                .prominent-notice-changelog-dot {
+                    width: 8px;
+                    height: 8px;
+                    margin-top: 7px;
+                    border-radius: 999px;
+                    background: #8dccff;
+                    box-shadow: 0 0 0 4px rgba(141,204,255,0.18);
+                }
+                .prominent-notice-changelog-copy {
+                    display: flex;
+                    flex-direction: column;
+                    gap: 3px;
+                    min-width: 0;
+                }
+                .prominent-notice-changelog-copy strong {
+                    color: #475569;
+                    font-size: 15px;
+                    line-height: 1.35;
+                    font-weight: 800;
+                }
+                .prominent-notice-changelog-copy span {
+                    color: #64748b;
+                    font-size: 13px;
+                    line-height: 1.55;
+                    font-weight: 600;
+                }
+                .prominent-notice-box-changelog button:hover,
+                .prominent-notice-box-changelog button:focus-visible {
+                    transform: translateY(-2px);
+                    filter: brightness(1.03);
+                    outline: none;
+                }
+                .prominent-notice-box-changelog button:active {
+                    transform: translateY(0) scale(0.98);
+                }
+                @media (max-width: 560px) {
+                    .prominent-notice-changelog-head {
+                        flex-direction: column;
+                        gap: 8px;
+                    }
+                    .prominent-notice-changelog-head h2 {
+                        font-size: 20px;
+                    }
+                    .prominent-notice-changelog-item {
+                        padding: 11px 12px;
+                    }
                 }
             `;
             document.head.appendChild(s);

@@ -114,3 +114,31 @@ def test_tts_voice_id_not_rewritten_when_gptsovits_disabled(mock_page: Page, run
     assert payload["ttsModelId"] == "tts-1"
     assert payload["ttsVoiceId"] == "alloy"
     assert not payload["ttsVoiceId"].startswith("__gptsovits_disabled__|")
+
+
+@pytest.mark.frontend
+def test_assist_free_disables_assist_api_key_input(mock_page: Page, running_server: str):
+    """辅助 API 选择免费版时应禁用辅助 API Key 输入框。"""
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    url = f"{running_server}/api_key"
+    mock_page.goto(url)
+
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=10000)
+    mock_page.wait_for_selector("#coreApiSelect option[value='free']", state="attached", timeout=10000)
+    mock_page.wait_for_selector("#assistApiSelect option[value='free']", state="attached", timeout=10000)
+    mock_page.wait_for_selector("#assistApiSelect option[value='qwen']", state="attached", timeout=10000)
+
+    mock_page.select_option("#coreApiSelect", "free")
+    mock_page.select_option("#assistApiSelect", "free")
+
+    expect(mock_page.locator("#assistApiKeyInput")).to_be_disabled(timeout=5000)
+    assert mock_page.evaluate(
+        "isFreeVersionText(getRealKey(document.getElementById('assistApiKeyInput')))"
+    ) is True
+
+    mock_page.select_option("#assistApiSelect", "qwen")
+
+    expect(mock_page.locator("#assistApiKeyInput")).to_be_enabled(timeout=5000)
+    assert mock_page.evaluate(
+        "isFreeVersionText(getRealKey(document.getElementById('assistApiKeyInput')))"
+    ) is False

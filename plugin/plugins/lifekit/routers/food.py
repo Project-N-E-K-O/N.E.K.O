@@ -10,6 +10,8 @@ from plugin.sdk.shared.core.router import PluginRouter
 from .._poi import POIService
 from .._api import RAIN_CODES
 from .._chat import push_lifekit_content
+from .._coerce import clamp_int, clean_text
+from .._contracts import FoodRecommendParams, FoodRecommendResult
 from .._routing import format_distance
 
 # 天气 → 推荐关键词映射
@@ -44,38 +46,20 @@ class FoodRecommendRouter(PluginRouter):
             "支持指定口味偏好、用餐场景和预算。"
             "如果用户想自己做，可用 search_recipe 查菜谱。"
         ),
-        llm_result_fields=["summary", "recommendations", "next_actions"],
-        input_schema={
-            "type": "object",
-            "properties": {
-                "cuisine": {
-                    "type": "string",
-                    "description": "口味/菜系偏好（如：火锅、日料、川菜、意大利菜），留空则根据天气推荐",
-                    "default": "",
-                },
-                "scene": {
-                    "type": "string",
-                    "description": "用餐场景：聚餐/约会/一人食/家庭/宵夜，留空不限",
-                    "default": "",
-                },
-                "location": {
-                    "type": "string",
-                    "description": "位置（地点标签或城市名，留空用默认位置）",
-                    "default": "",
-                },
-                "radius": {
-                    "type": "integer",
-                    "description": "搜索半径（米，默认 3000）",
-                    "default": 3000,
-                },
-            },
-        },
+        params=FoodRecommendParams,
+        llm_result_model=FoodRecommendResult,
     )
     @quick_action(icon="🍜", priority=7)
     async def food_recommend(
-        self, cuisine: str = "", scene: str = "",
+        self, params: FoodRecommendParams | None = None, cuisine: str = "", scene: str = "",
         location: str = "", radius: int = 3000, **_,
     ):
+        if params is not None:
+            cuisine = params.cuisine
+            scene = params.scene
+            location = params.location
+            radius = params.radius
+
         plugin = self.main_plugin
         plugin._resolve_locale()
         i18n = plugin._i18n
@@ -84,16 +68,16 @@ class FoodRecommendRouter(PluginRouter):
         if not loc:
             return Err(SdkError(i18n.t(loc_err or "error.no_location")))
 
-        radius = max(500, min(int(radius), 50000))
+        radius = clamp_int(radius, 3000, 500, 50000)
 
         # 确定搜索关键词
-        query = cuisine.strip() if cuisine.strip() else None
+        query = clean_text(cuisine) or None
         weather_reason = ""
 
         if not query:
             # 根据天气 + 场景推荐
             weather_data, _ = await plugin._get_weather_data(loc)
-            query, weather_reason = self._pick_query(weather_data, scene)
+            query, weather_reason = self._pick_query(weather_data, clean_text(scene))
 
         # POI 搜索
         svc = POIService(plugin._cfg)
@@ -154,7 +138,7 @@ class FoodRecommendRouter(PluginRouter):
         import random
 
         # 场景优先
-        scene_key = scene.strip()
+        scene_key = clean_text(scene)
         if scene_key and scene_key in _SCENE_KEYWORDS:
             kw = random.choice(_SCENE_KEYWORDS[scene_key])
             return kw, f"🎯 {scene_key}场景"

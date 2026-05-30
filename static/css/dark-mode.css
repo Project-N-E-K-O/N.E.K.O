@@ -1655,14 +1655,98 @@ html #chat-container {
   filter: brightness(0.85);
 }
 
-/* ===== 模型管理器：指定按钮暗色模式保持与白天一致 ===== */
-/* 三个小动作按钮（删除模型、播放动作、播放表情）的图标不降亮度 */
+/* ===== 模型管理器：图片按钮暗色遮罩 ===== */
+/* 图片背景按钮无法直接随主题换色，暗色下用伪元素加一层低透明遮罩。 */
+[data-theme="dark"] #backToMainBtn,
+[data-theme="dark"] #upload-btn,
+[data-theme="dark"] #model-type-select-btn,
+[data-theme="dark"] #model-select-btn,
+[data-theme="dark"] #live2d-model-select-btn,
+[data-theme="dark"] #motion-select-btn,
+[data-theme="dark"] #expression-select-btn,
+[data-theme="dark"] #persistent-expression-select-btn,
+[data-theme="dark"] #vrm-model-select-btn,
+[data-theme="dark"] #vrm-animation-select-btn,
+[data-theme="dark"] #vrm-expression-select-btn,
+[data-theme="dark"] #mmd-model-select-btn,
+[data-theme="dark"] #mmd-animation-select-btn,
+[data-theme="dark"] #upload-mmd-animation-btn,
+[data-theme="dark"] #parameter-editor-btn,
+[data-theme="dark"] #touch-anim-btn,
+[data-theme="dark"] #save-position-btn,
+[data-theme="dark"] #emotion-config-btn,
+[data-theme="dark"] #live3d-emotion-config-btn {
+  position: relative;
+  isolation: isolate;
+}
+
+[data-theme="dark"] #backToMainBtn::before,
+[data-theme="dark"] #upload-btn::before,
+[data-theme="dark"] #model-type-select-btn::before,
+[data-theme="dark"] #model-select-btn::before,
+[data-theme="dark"] #live2d-model-select-btn::before,
+[data-theme="dark"] #motion-select-btn::before,
+[data-theme="dark"] #expression-select-btn::before,
+[data-theme="dark"] #persistent-expression-select-btn::before,
+[data-theme="dark"] #vrm-model-select-btn::before,
+[data-theme="dark"] #vrm-animation-select-btn::before,
+[data-theme="dark"] #vrm-expression-select-btn::before,
+[data-theme="dark"] #mmd-model-select-btn::before,
+[data-theme="dark"] #mmd-animation-select-btn::before,
+[data-theme="dark"] #upload-mmd-animation-btn::before,
+[data-theme="dark"] #parameter-editor-btn::before,
+[data-theme="dark"] #touch-anim-btn::before,
+[data-theme="dark"] #save-position-btn::before,
+[data-theme="dark"] #emotion-config-btn::before,
+[data-theme="dark"] #live3d-emotion-config-btn::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  pointer-events: none;
+  border-radius: inherit;
+  background:
+    linear-gradient(180deg, rgba(6, 16, 30, 0.34), rgba(4, 12, 24, 0.5)),
+    linear-gradient(135deg, rgba(74, 163, 223, 0.14), rgba(0, 0, 0, 0));
+  box-shadow:
+    inset 0 0 0 1px rgba(141, 209, 255, 0.18),
+    inset 0 -12px 18px rgba(0, 0, 0, 0.22);
+}
+
+[data-theme="dark"] #backToMainBtn:hover:not(:disabled)::before,
+[data-theme="dark"] #upload-btn:hover:not(:disabled)::before,
+[data-theme="dark"] #model-type-select-btn:hover:not(:disabled)::before,
+[data-theme="dark"] #model-select-btn:hover:not(:disabled)::before,
+[data-theme="dark"] #live2d-model-select-btn:hover:not(:disabled)::before,
+[data-theme="dark"] #motion-select-btn:hover:not(:disabled)::before,
+[data-theme="dark"] #expression-select-btn:hover:not(:disabled)::before,
+[data-theme="dark"] #persistent-expression-select-btn:hover:not(:disabled)::before,
+[data-theme="dark"] #vrm-model-select-btn:hover:not(:disabled)::before,
+[data-theme="dark"] #vrm-animation-select-btn:hover:not(:disabled)::before,
+[data-theme="dark"] #vrm-expression-select-btn:hover:not(:disabled)::before,
+[data-theme="dark"] #mmd-model-select-btn:hover:not(:disabled)::before,
+[data-theme="dark"] #mmd-animation-select-btn:hover:not(:disabled)::before,
+[data-theme="dark"] #upload-mmd-animation-btn:hover:not(:disabled)::before,
+[data-theme="dark"] #parameter-editor-btn:hover:not(:disabled)::before,
+[data-theme="dark"] #touch-anim-btn:hover:not(:disabled)::before,
+[data-theme="dark"] #save-position-btn:hover:not(:disabled)::before,
+[data-theme="dark"] #emotion-config-btn:hover:not(:disabled)::before,
+[data-theme="dark"] #live3d-emotion-config-btn:hover:not(:disabled)::before {
+  background:
+    linear-gradient(180deg, rgba(9, 22, 40, 0.28), rgba(4, 12, 24, 0.42)),
+    linear-gradient(135deg, rgba(93, 184, 240, 0.2), rgba(0, 0, 0, 0));
+}
+
+/* 纯图片小按钮不套矩形遮罩，避免盖住透明 PNG 外沿。 */
 [data-theme="dark"] #delete-model-btn img,
+[data-theme="dark"] #delete-mmd-model-btn img,
+[data-theme="dark"] #delete-mmd-animation-btn img,
 [data-theme="dark"] #play-motion-btn img,
 [data-theme="dark"] #play-expression-btn img,
 [data-theme="dark"] #play-vrm-animation-btn img,
+[data-theme="dark"] #play-mmd-animation-btn img,
 [data-theme="dark"] #trigger-vrm-expression-btn img {
-  filter: none !important;
+  filter: brightness(0.72) saturate(0.9) contrast(1.06) !important;
 }
 
 /* 保存设置、情感配置按钮 — 背景图和样式不被暗色模式覆盖 */
@@ -1825,6 +1909,11 @@ html #chat-container {
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
 }
 
+[data-theme="dark"] .touch-config-header {
+  background: linear-gradient(to right, #1880aa, #0a3585);
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.08);
+}
+
 [data-theme="dark"] .touch-config-content {
   scrollbar-color: rgba(74, 163, 223, 0.55) #1e1e1e;
   color: #cfdce6;
@@ -1902,6 +1991,83 @@ html #chat-container {
 
 [data-theme="dark"] .hitarea-btn-secondary:hover {
   background: rgba(74, 163, 223, 0.18);
+}
+
+[data-theme="dark"] .hitarea-btn-danger {
+  background: #d9534f;
+  color: #ffffff;
+}
+
+[data-theme="dark"] .hitarea-btn-danger:hover {
+  background: #c9433f;
+}
+
+[data-theme="dark"] .touch-confirm-message {
+  color: #e0e0e0;
+}
+
+[data-theme="dark"] .hitarea-icon-btn,
+[data-theme="dark"] .touch-custom-name-input {
+  background: #252525;
+  border-color: #3a5a6e;
+  color: #8dd1ff;
+}
+
+[data-theme="dark"] .hitarea-icon-btn:hover {
+  background: rgba(74, 163, 223, 0.18);
+  border-color: #4aa3df;
+}
+
+[data-theme="dark"] .hitarea-icon-btn-danger {
+  color: #ff8a8a;
+}
+
+[data-theme="dark"] .touch-custom-name-input:focus {
+  border-color: #4aa3df;
+  box-shadow: 0 0 0 3px rgba(74, 163, 223, 0.22);
+}
+
+[data-theme="dark"] .touch-custom-preview-wrap {
+  border-color: #3a5a6e;
+  background-color: #111b24;
+  background-image:
+    linear-gradient(rgba(141, 209, 255, 0.22) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(141, 209, 255, 0.22) 1px, transparent 1px),
+    linear-gradient(rgba(141, 209, 255, 0.09) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(141, 209, 255, 0.09) 1px, transparent 1px);
+  background-size: 100px 100px, 100px 100px, 20px 20px, 20px 20px;
+  background-position: 0 0;
+}
+
+[data-theme="dark"] .touch-custom-model-bounds {
+  border-color: rgba(141, 209, 255, 0.7);
+}
+
+[data-theme="dark"] .touch-custom-selection {
+  border-color: #5cb8f0;
+  background: rgba(74, 163, 223, 0.10);
+  box-shadow: 0 0 0 1px rgba(10, 20, 28, 0.8) inset;
+}
+
+[data-theme="dark"] .touch-custom-selection.is-editing {
+  background: rgba(74, 163, 223, 0.16);
+}
+
+[data-theme="dark"] .touch-custom-hover-label {
+  background: rgba(30, 38, 45, 0.94);
+  border-color: rgba(141, 209, 255, 0.58);
+  color: #e0e0e0;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.42);
+}
+
+[data-theme="dark"] .touch-custom-resize-handle {
+  background: #1e1e1e;
+  border-color: #8dd1ff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+
+[data-theme="dark"] .touch-custom-status {
+  color: #ff8a8a;
 }
 
 /* ===== Live2D 参数编辑器（Face Editor / Parameters） =====
@@ -2097,18 +2263,18 @@ html #chat-container {
 [data-theme="dark"] .chat-export-format-chip:hover,
 [data-theme="dark"] .chat-export-style-chip:hover,
 [data-theme="dark"] .chat-export-image-format-chip:hover {
-  background: rgba(99, 102, 241, 0.22);
-  border-color: #818cf8;
-  color: #e0e7ff;
+  background: rgba(56, 189, 248, 0.18);
+  border-color: #7dd3fc;
+  color: #bae6fd;
 }
 
 [data-theme="dark"] .chat-export-format-chip.is-active,
 [data-theme="dark"] .chat-export-style-chip.is-active,
 [data-theme="dark"] .chat-export-image-format-chip.is-active {
-  background: #6366f1;
-  border-color: #6366f1;
-  color: #ffffff;
-  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.45);
+  background: rgba(56, 189, 248, 0.28);
+  border-color: #38bdf8;
+  color: #e0f7ff;
+  box-shadow: 0 4px 14px rgba(56, 189, 248, 0.35);
 }
 
 [data-theme="dark"] .chat-export-selection-row:hover {
@@ -2147,23 +2313,23 @@ html #chat-container {
 }
 
 [data-theme="dark"] .chat-export-preview-action:hover:not(:disabled) {
-  background: rgba(99, 102, 241, 0.22);
-  border-color: #818cf8;
-  color: #e0e7ff;
+  background: rgba(56, 189, 248, 0.18);
+  border-color: #7dd3fc;
+  color: #bae6fd;
 }
 
 [data-theme="dark"] .chat-export-preview-action-primary {
-  background: #6366f1;
-  border-color: #6366f1;
+  background: #0ea5e9;
+  border-color: #0ea5e9;
   color: #ffffff;
-  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.45);
+  box-shadow: 0 4px 14px rgba(14, 165, 233, 0.45);
 }
 
 [data-theme="dark"] .chat-export-preview-action-primary:hover:not(:disabled) {
-  background: #4f46e5;
-  border-color: #4f46e5;
+  background: #0284c7;
+  border-color: #0284c7;
   color: #ffffff;
-  box-shadow: 0 6px 18px rgba(79, 70, 229, 0.55);
+  box-shadow: 0 6px 18px rgba(2, 132, 199, 0.5);
 }
 
 /* Steam Workshop 图标保持原样（黑夜模式与白天一致） */
@@ -2173,6 +2339,12 @@ html #chat-container {
 /* live2d_emotion_manager.html 的样式直接写在 <style> 标签内，    */
 /* 这里通过更高特异性的 [data-theme="dark"] 选择器覆盖。           */
 /* ============================================================ */
+
+/* 标题栏：与通用设置页暗色标题保持同一深度 */
+[data-theme="dark"] body > .container > .header {
+  background: linear-gradient(to right, #1880aa, #0a3585);
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.08);
+}
 
 /* 情感分组卡片：原 #e3f4ff（color-n-light）→ 深蓝灰 */
 [data-theme="dark"] .emotion-section {

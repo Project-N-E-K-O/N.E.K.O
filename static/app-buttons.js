@@ -12,9 +12,16 @@
     const S = window.appState;
     const C = window.appConst;
     const U = window.appUtils;
-    const PENDING_IMAGE_MAX_ENCODED_BYTES = 10 * 1024 * 1024;
+    // 待发送图片编码后的字节上限：1MB。720p 截图通常 150~400KB，普通上传图压到
+    // 长边 1920 后也基本在此之下；超标才逐步降采样/降质。
+    const PENDING_IMAGE_MAX_ENCODED_BYTES = 1 * 1024 * 1024;
     const PENDING_IMAGE_MIN_LONG_SIDE = 320;
+    // 手动上传图首次超出字节上限时，一步到位把长边压到 ≤1920px，再走后续逐步降采样。
+    const PENDING_IMAGE_FIRST_STEP_LONG_SIDE = 1920;
     const PENDING_IMAGE_JPEG_QUALITIES = [0.92, 0.86, 0.78, 0.7, 0.62, 0.52, 0.42, 0.32];
+    // 手动截图入列前压缩用的质量阶梯：主质量 0.8（与屏幕分享、后端 vision 分析一致），
+    // 720p 下若仍超 1MB 再逐步降质兜底。
+    const SCREENSHOT_JPEG_QUALITIES = [0.8, 0.72, 0.64, 0.56, 0.48];
 
     function isHomeTutorialInteractionLocked() {
         try {
@@ -138,6 +145,7 @@
         var width = natural.width;
         var height = natural.height;
         var bestDataUrl = '';
+        var firstStepApplied = false;
 
         for (var pass = 0; pass < 6; pass += 1) {
             for (var i = 0; i < PENDING_IMAGE_JPEG_QUALITIES.length; i += 1) {
@@ -145,6 +153,18 @@
                 bestDataUrl = dataUrl;
                 if (getDataUrlEncodedBytes(dataUrl) <= PENDING_IMAGE_MAX_ENCODED_BYTES) {
                     return dataUrl;
+                }
+            }
+
+            // 首次超标：先一步到位把长边压到 ≤1920px，再继续后续的逐步降采样。
+            if (!firstStepApplied) {
+                firstStepApplied = true;
+                var curLongSide = Math.max(width, height);
+                if (curLongSide > PENDING_IMAGE_FIRST_STEP_LONG_SIDE) {
+                    var firstScale = PENDING_IMAGE_FIRST_STEP_LONG_SIDE / curLongSide;
+                    width = Math.max(1, Math.floor(width * firstScale));
+                    height = Math.max(1, Math.floor(height * firstScale));
+                    continue;
                 }
             }
 
@@ -210,6 +230,43 @@
         return compressLoadedImageToPendingDataUrl(image);
     };
 
+    // 手动截图入列前的压缩：捕获/裁剪叠层保留全分辨率（清晰），裁剪结束后调用这里统一
+    // 压成 720p / 0.8 JPEG，并保证编码字节 ≤ 1MB（与屏幕分享、后端 vision 分析口径一致）。
+    mod.compressScreenshotDataUrlTo720p = async function compressScreenshotDataUrlTo720p(dataUrl) {
+        var src = String(dataUrl || '');
+        if (!/^data:image\//i.test(src)) {
+            throw new Error('INVALID_IMAGE_DATA_URL');
+        }
+
+        var image = await loadImageFromSource(src);
+        var natural = getImageNaturalSize(image);
+        if (!natural.width || !natural.height) {
+            throw new Error('INVALID_IMAGE_SIZE');
+        }
+
+        var maxW = (C && C.MAX_SCREENSHOT_WIDTH) || 1280;
+        var maxH = (C && C.MAX_SCREENSHOT_HEIGHT) || 720;
+        var scale = Math.min(1, maxW / natural.width, maxH / natural.height);
+        var width = Math.max(1, Math.round(natural.width * scale));
+        var height = Math.max(1, Math.round(natural.height * scale));
+
+        var bestDataUrl = '';
+        for (var i = 0; i < SCREENSHOT_JPEG_QUALITIES.length; i += 1) {
+            var encoded = drawImageToJpegDataUrl(image, width, height, SCREENSHOT_JPEG_QUALITIES[i]);
+            bestDataUrl = encoded;
+            if (getDataUrlEncodedBytes(encoded) <= PENDING_IMAGE_MAX_ENCODED_BYTES) {
+                return encoded;
+            }
+        }
+        // 720p 下极少触达这里；兜底返回最低质量结果，不再硬抛错以免阻塞发送。
+        // 真触达说明这张图异常难压，加条 warn 记录尺寸，方便事后发现"列表混入超 1MB"的个例。
+        console.warn(
+            '[截图] 720p 最低质量仍超出 1MB 上限（' +
+            Math.round(getDataUrlEncodedBytes(bestDataUrl) / 1024) + 'KB），仍按兜底入列'
+        );
+        return bestDataUrl;
+    };
+
     mod.normalizePendingAttachmentItem = async function normalizePendingAttachmentItem(item) {
         if (!item || !item.querySelector) {
             throw new Error('INVALID_ATTACHMENT_ITEM');
@@ -220,6 +277,7 @@
             throw new Error('INVALID_ATTACHMENT_IMAGE');
         }
 
+        // 截图入列前已压到 720p JPEG（≤1MB），这里会原样透传；上传图按字节上限压缩。
         var normalized = await mod.normalizeImageDataUrlForPendingList(img.src);
         if (normalized && normalized !== img.src) {
             img.src = normalized;
@@ -484,9 +542,14 @@
     mod.analyzeEmotion = async function analyzeEmotion(text) {
         console.log(window.t('console.analyzeEmotionCalled'), text);
         try {
+            var emotionHeaders = { 'Content-Type': 'application/json' };
+            var sec = window.nekoLocalMutationSecurity;
+            if (sec && typeof sec.getMutationHeaders === 'function') {
+                try { Object.assign(emotionHeaders, await sec.getMutationHeaders()); } catch (_) { }
+            }
             var response = await fetch('/api/emotion/analysis', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: emotionHeaders,
                 body: JSON.stringify({
                     text: text,
                     lanlan_name: window.lanlan_config.lanlan_name
@@ -1181,6 +1244,91 @@
         }, 250);
     }
 
+    // 切语音前若 assistant 文本回复还在路上，等它跑完再 end_session。
+    // 否则 end_session 会把 message_handler_task / LLM 流强行掐断，
+    // omni_offline_client 收到 httpx ReadError → 给前端发 TEXT_GEN_ERROR_AFTER_PARTIAL
+    // → 用户在切语音的瞬间看到一条"Text generation interrupted (ReadError)"。
+    // gal 模式点选项后紧跟着点麦克风时最容易踩。15s 兜底，防止卡死的流永远不结束。
+    function isAssistantTextResponseInFlight() {
+        // 与 _isGreetingCheckBlocked (app-websocket.js:2889) 对齐：turn-end 后
+        // assistantTurnId 不会被清空（要等下一条用户消息或角色切换才清），
+        // 必须靠 assistantTurnCompletedId 区分"已收尾"和"还在跑"。
+        // 否则"回复跑完，用户停顿一会儿再点麦克风"会被误判成在路上，
+        // 干等到 15s timeout 才进语音。
+        // settledId：语音轮干净收尾后 completedId 会被清成 null（见 app-audio-playback
+        // 的 maybeFinalizeAssistantSpeech），仅凭 turnId !== completedId 会把"已说完的轮"
+        // 误判成在路上。settledId 标记该轮已收尾，turnId === settledId 即视为不在路上。
+        if (S.assistantTurnId
+                && S.assistantTurnId !== S.assistantTurnCompletedId
+                && S.assistantTurnId !== S.assistantTurnSettledId) return true;
+        if (S.assistantTurnAwaitingBubble) return true;
+        if (typeof window._lastSubmittedRequestId === 'string' && window._lastSubmittedRequestId) return true;
+        // 纯截图 / 纯图片这类没有 typed text 的提交，sendTextPayloadInternal
+        // 会把 _lastSubmittedRequestId 故意清成 ''（rollback 对它没意义），
+        // 上面三条都挡不住"已发 WS、还没收到首 chunk"这段空窗。
+        // pendingTextTurnSubmitAt 专门补这段，15s freshness 兜底防漏清。
+        if (S.pendingTextTurnSubmitAt && (Date.now() - S.pendingTextTurnSubmitAt) < 15000) return true;
+        return false;
+    }
+
+    // 常驻诊断：切语音卡 15s 时，靠这个快照看清是哪个 in-flight 标志没被清。
+    // 只含布尔/时间戳，无对话内容。
+    function snapshotInFlightFlags() {
+        return {
+            // 与 isAssistantTextResponseInFlight 同口径：已 settle 的轮（completedId
+            // 被清成 null 但 settledId 标了该轮）不算 mismatch，否则日志会在每条已说完
+            // 的语音轮误报 turnMismatch:true，反而误导排查。原始 id 仍单列在下方备查。
+            turnMismatch: !!(S.assistantTurnId
+                && S.assistantTurnId !== S.assistantTurnCompletedId
+                && S.assistantTurnId !== S.assistantTurnSettledId),
+            awaitingBubble: !!S.assistantTurnAwaitingBubble,
+            lastReqId: !!(typeof window._lastSubmittedRequestId === 'string' && window._lastSubmittedRequestId),
+            pendingSubmitMs: S.pendingTextTurnSubmitAt ? (Date.now() - S.pendingTextTurnSubmitAt) : null,
+            // 原始 id：用来区分 turnMismatch 是"completedId 标了旧 turn"还是
+            // "assistantTurnId 被重分配给没收尾的新 turn"。
+            turnId: S.assistantTurnId,
+            completedId: S.assistantTurnCompletedId,
+            settledId: S.assistantTurnSettledId,
+            pendingServerId: S.assistantPendingTurnServerId,
+            speechActiveId: S.assistantSpeechActiveTurnId
+        };
+    }
+
+    function waitForAssistantTurnEnd(timeoutMs) {
+        // 不监听 neko-assistant-speech-cancel：response_discarded 即使 will_retry=true
+        // 也会 emit speech-cancel，过早 resolve 会让 end_session 掐掉 retry 那次的
+        // LLM 流，复发 ReadError。改成轮询 isAssistantTextResponseInFlight()——
+        // turn-end 事件做主信号、200ms 轮询兜 "无 event 的真完成"（如 final
+        // discard），15s timeout 防卡死。retry 期间由 response_discarded 里
+        // will_retry 分支刷新 pendingTextTurnSubmitAt 保持 in-flight 为真。
+        return new Promise(function (resolve) {
+            if (!isAssistantTextResponseInFlight()) {
+                resolve('not_in_flight');
+                return;
+            }
+            var startedAt = Date.now();
+            console.log('[VoiceSwitch] wait start — in-flight flags:', JSON.stringify(snapshotInFlightFlags()));
+            var settled = false;
+            function done(reason) {
+                if (settled) return;
+                settled = true;
+                window.removeEventListener('neko-assistant-turn-end', onEnd);
+                clearInterval(pollTimer);
+                clearTimeout(timeoutTimer);
+                console.log('[VoiceSwitch] wait done reason=' + reason
+                    + ' elapsed=' + (Date.now() - startedAt) + 'ms — flags now:',
+                    JSON.stringify(snapshotInFlightFlags()));
+                resolve(reason);
+            }
+            function onEnd() { done('turn_end'); }
+            window.addEventListener('neko-assistant-turn-end', onEnd, { once: true });
+            var pollTimer = setInterval(function () {
+                if (!isAssistantTextResponseInFlight()) done('not_in_flight_polled');
+            }, 200);
+            var timeoutTimer = setTimeout(function () { done('timeout'); }, timeoutMs);
+        });
+    }
+
     // ======================== init — wire up all event listeners ========================
 
     mod.init = function init() {
@@ -1266,7 +1414,7 @@
 
             // Immediately activate
             micButton.classList.add('active');
-            window.syncFloatingMicButtonState(true);
+            if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(true);
             window.isMicStarting = true;
             S.voiceStartPending = true;
             micButton.disabled = true;
@@ -1276,6 +1424,13 @@
 
             // If there is an active text session, end it first
             if (S.isTextSessionActive) {
+                // \u89C1\u9876\u90E8 waitForAssistantTurnEnd \u6CE8\u91CA\uFF1Aassistant \u6587\u672C\u8FD8\u5728\u6D41\u5F0F\u8F93\u51FA\u65F6
+                // \u7ACB\u523B end_session \u4F1A\u89E6\u53D1 ReadError \u2192 \u524D\u7AEF\u5F39\u51FA"Text generation interrupted"\u3002
+                // \u7B49\u672C\u8F6E turn-end / speech-cancel \u540E\u518D end_session\uFF0C15s \u515C\u5E95\u9632\u5361\u6B7B\u3002
+                if (isAssistantTextResponseInFlight()) {
+                    window.showVoicePreparingToast(window.t ? window.t('app.waitForReplyBeforeVoice') : '\u7B49\u56DE\u590D\u7ED3\u675F\u540E\u5207\u6362\u5230\u8BED\u97F3\u2026');
+                    await waitForAssistantTurnEnd(15000);
+                }
                 S.isSwitchingMode = true;
                 if (S.socket && S.socket.readyState === WebSocket.OPEN) {
                     S.socket.send(JSON.stringify({ action: 'end_session' }));
@@ -1379,20 +1534,24 @@
                     }
                 }, 15000);
 
-                // Parallel: wait for session + init mic
+                // Init mic only after the session is confirmed started
                 try {
                     await window.showCurrentModel();
                     window.showStatusToast(window.t ? window.t('app.initializingMic') : '\u6B63\u5728\u521D\u59CB\u5316\u9EA6\u514B\u98CE...', 3000);
 
-                    await Promise.all([
-                        sessionStartPromise,
-                        window.startMicCapture()
-                    ]);
+                    // 先确认 session 启动成功，再开麦。与 CHARACTER_DISCONNECTED 自动
+                    // 重启路径（app-websocket.js）一致的串行写法：session 启动失败时
+                    // startMicCapture 根本不会被调用，不存在"mic 在外层 catch teardown
+                    // 之后才 settle、把 UI 写回录音中"的竞态，也就不需要 token / 补充
+                    // teardown 去追平它。
+                    await sessionStartPromise;
 
                     if (window.sessionTimeoutId) {
                         clearTimeout(window.sessionTimeoutId);
                         window.sessionTimeoutId = null;
                     }
+
+                    await window.startMicCapture();
                 } catch (error) {
                     if (window.sessionTimeoutId) {
                         clearTimeout(window.sessionTimeoutId);
@@ -2035,6 +2194,10 @@
                         // 覆盖纯截图/图片首轮输入：没有 text 分支时也要标记用户已交互
                         markFirstUserInputForAchievement();
                         window.dispatchEvent(new CustomEvent('neko:user-content-sent'));
+                        // 标记"WS 已发、还没收到首 chunk"窗口，给 isAssistantTextResponseInFlight 用。
+                        // 首 chunk 进来后会被 clearPendingAssistantTurnStart 在 turn-end 路径清零；
+                        // 同时有 15s freshness ceiling 防止漏清永远卡 true。
+                        S.pendingTextTurnSubmitAt = Date.now();
                     }
 
                     // Reset proactive chat timer
@@ -2127,41 +2290,9 @@
             }
         });
 
-        // 工具：将 dataUrl 图片降采样到 720p 上限并重新编码为 JPEG 0.8，保持与既有流水线一致。
-        // 如果图片本身已经在 720p 以内，直接返回原 dataUrl，避免无谓的解码/再编码。
-        // 返回 { dataUrl, width, height }：width/height 始终是"返回的这张图"的实际尺寸，
-        // 避免调用方把源尺寸误当成最终尺寸写进日志/UI。
-        async function downscaleDataUrlTo720p(srcDataUrl) {
-            if (!srcDataUrl) return { dataUrl: null, width: 0, height: 0 };
-            var maxW = (window.appConst && window.appConst.MAX_SCREENSHOT_WIDTH) || 1280;
-            var maxH = (window.appConst && window.appConst.MAX_SCREENSHOT_HEIGHT) || 720;
-            return await new Promise(function (resolve) {
-                var img = new Image();
-                img.onload = function () {
-                    var w = img.naturalWidth, h = img.naturalHeight;
-                    if (!w || !h) { resolve({ dataUrl: srcDataUrl, width: 0, height: 0 }); return; }
-                    if (w <= maxW && h <= maxH) { resolve({ dataUrl: srcDataUrl, width: w, height: h }); return; }
-                    var scale = Math.min(maxW / w, maxH / h);
-                    var tw = Math.max(1, Math.round(w * scale));
-                    var th = Math.max(1, Math.round(h * scale));
-                    try {
-                        var cv = document.createElement('canvas');
-                        cv.width = tw; cv.height = th;
-                        var cx = cv.getContext('2d');
-                        cx.drawImage(img, 0, 0, tw, th);
-                        resolve({ dataUrl: cv.toDataURL('image/jpeg', 0.8), width: tw, height: th });
-                    } catch (e) {
-                        console.warn('[截图] 降采样失败，使用原图:', e);
-                        resolve({ dataUrl: srcDataUrl, width: w, height: h });
-                    }
-                };
-                img.onerror = function (e) {
-                    console.warn('[截图] 图片加载失败，使用原图:', e);
-                    resolve({ dataUrl: srcDataUrl, width: 0, height: 0 });
-                };
-                img.src = srcDataUrl;
-            });
-        }
+        // 手动截图链路在捕获/裁剪阶段一律保留原始分辨率，不再实时压缩，让裁剪在全分辨率上
+        // 进行、保住细节；720p / 0.8 JPEG 的压缩在裁剪结束、入待发送列表前统一做
+        // （captureScreenshotToPendingList → compressScreenshotDataUrlTo720p）。
 
         // ----------------------------------------------------------------
         // Hide NEKO UI, recapture screen, then restore
@@ -2296,15 +2427,14 @@
                 throw new Error(normalized.error || 'DESKTOP_REGION_CAPTURE_FAILED');
             }
 
-            var scaled = await downscaleDataUrlTo720p(normalized.dataUrl);
-            console.log('[截图] 桌面框选捕获成功:', regionMethod.name, (scaled.width || normalized.width || 0) + 'x' + (scaled.height || normalized.height || 0));
+            console.log('[截图] 桌面框选捕获成功:', regionMethod.name, (normalized.width || 0) + 'x' + (normalized.height || 0));
             return {
-                dataUrl: scaled.dataUrl,
+                dataUrl: normalized.dataUrl,
                 originalDataUrl: normalized.originalDataUrl || normalized.dataUrl,
                 avatarPos: normalized.avatarPos || null,
                 captureType: normalized.captureType || 'desktop-region',
-                width: scaled.width || normalized.width || 0,
-                height: scaled.height || normalized.height || 0
+                width: normalized.width || 0,
+                height: normalized.height || 0
             };
         }
 
@@ -2319,8 +2449,7 @@
                 try {
                     var atomic = await window.electronDesktopCapturer.captureSourceWithoutNeko(selectedSourceId);
                     if (atomic && atomic.success && atomic.dataUrl) {
-                        var atomicScaled = await downscaleDataUrlTo720p(atomic.dataUrl);
-                        if (atomicScaled && atomicScaled.dataUrl) return atomicScaled.dataUrl;
+                        return atomic.dataUrl;
                     } else if (atomic && atomic.error) {
                         console.warn('[隐藏NEKO] 主进程原子化路径失败:', atomic.error);
                         if (typeof window.maybeClearSourceOnNotFound === 'function') {
@@ -2362,8 +2491,7 @@
                     try {
                         var direct = await window.electronDesktopCapturer.captureSourceAsDataUrl(currentSourceId);
                         if (direct && direct.success && direct.dataUrl) {
-                            var scaled = await downscaleDataUrlTo720p(direct.dataUrl);
-                            if (scaled && scaled.dataUrl) return scaled.dataUrl;
+                            return direct.dataUrl;
                         } else if (typeof window.maybeClearSourceOnNotFound === 'function') {
                             window.maybeClearSourceOnNotFound(direct, 'recaptureWithoutNeko Priority 1 Source not found');
                         }
@@ -2377,7 +2505,12 @@
                         if (acqStream) {
                             var isCached = (acqStream === S.screenCaptureStream);
                             try {
-                                var frame = await window.captureFrameFromStream(acqStream, 0.8);
+                                var frame = await window.captureFrameFromStream(acqStream, 0.8, true);
+                                if (!frame) {
+                                    // 全分辨率编码可能在超大/虚拟显示器上失败；用同一条流退回 720p 再试，
+                                    // 保住正确的窗口内容（优于后端 pyautogui 抓整屏）。
+                                    frame = await window.captureFrameFromStream(acqStream, 0.8, false);
+                                }
                                 if (frame && frame.dataUrl) return frame.dataUrl;
                             } finally {
                                 if (!isCached && acqStream instanceof MediaStream) {
@@ -2391,7 +2524,11 @@
                         if (S.screenCaptureStream && S.screenCaptureStream.active) {
                             var tracks = S.screenCaptureStream.getVideoTracks();
                             if (tracks.length > 0 && tracks.some(function (t) { return t.readyState === 'live'; })) {
-                                var cachedFrame = await window.captureFrameFromStream(S.screenCaptureStream, 0.8);
+                                var cachedFrame = await window.captureFrameFromStream(S.screenCaptureStream, 0.8, true);
+                                if (!cachedFrame) {
+                                    // 同上：全分辨率失败时用同一条流退回 720p，保住正确窗口内容
+                                    cachedFrame = await window.captureFrameFromStream(S.screenCaptureStream, 0.8, false);
+                                }
                                 if (cachedFrame && cachedFrame.dataUrl) return cachedFrame.dataUrl;
                             }
                         }
@@ -2401,8 +2538,7 @@
                 // Priority 3: backend pyautogui
                 var result = await window.fetchBackendScreenshot();
                 if (result && result.dataUrl) {
-                    var beScaled = await downscaleDataUrlTo720p(result.dataUrl);
-                    return (beScaled && beScaled.dataUrl) || null;
+                    return result.dataUrl || null;
                 }
                 return null;
             } finally {
@@ -2449,7 +2585,11 @@
                         throw mobileErr;
                     }
                     if (acquiredStream) {
-                        var mframe = await window.captureFrameFromStream(acquiredStream, 0.8);
+                        var mframe = await window.captureFrameFromStream(acquiredStream, 0.8, true);
+                        if (!mframe) {
+                            // 全分辨率编码失败（超大画面等）时，用同一条流退回 720p 再试
+                            mframe = await window.captureFrameFromStream(acquiredStream, 0.8, false);
+                        }
                         if (mframe) {
                             dataUrl = mframe.dataUrl;
                             width = mframe.width;
@@ -2464,9 +2604,8 @@
                             return null;
                         }
                         if (interactiveBackendResult && interactiveBackendResult.dataUrl) {
-                            var interactiveScaled = await downscaleDataUrlTo720p(interactiveBackendResult.dataUrl);
                             return {
-                                dataUrl: (interactiveScaled && interactiveScaled.dataUrl) || interactiveBackendResult.dataUrl,
+                                dataUrl: interactiveBackendResult.dataUrl,
                                 originalDataUrl: interactiveBackendResult.dataUrl,
                                 avatarPos: null
                             };
@@ -2491,10 +2630,9 @@
                         try {
                             var direct = await window.electronDesktopCapturer.captureSourceAsDataUrl(selectedSourceId);
                             if (direct && direct.success && direct.dataUrl) {
-                                var scaled = await downscaleDataUrlTo720p(direct.dataUrl);
-                                dataUrl = scaled.dataUrl;
-                                width = scaled.width || direct.width || 0;
-                                height = scaled.height || direct.height || 0;
+                                dataUrl = direct.dataUrl;
+                                width = direct.width || 0;
+                                height = direct.height || 0;
                                 captureType = window.detectScreenshotCaptureType
                                     ? window.detectScreenshotCaptureType(null, selectedSourceId)
                                     : null;
@@ -2521,7 +2659,12 @@
 
                         if (acquiredStream) {
                             isCachedStream = (acquiredStream === S.screenCaptureStream);
-                            var frame = await window.captureFrameFromStream(acquiredStream, 0.8);
+                            var frame = await window.captureFrameFromStream(acquiredStream, 0.8, true);
+                            if (!frame) {
+                                // 全分辨率编码可能在超大/虚拟显示器上失败；用同一条流退回 720p 再试，
+                                // 保住正确的窗口内容（优于后端 pyautogui 抓整屏的兜底）。
+                                frame = await window.captureFrameFromStream(acquiredStream, 0.8, false);
+                            }
                             if (frame) {
                                 dataUrl = frame.dataUrl;
                                 width = frame.width;
@@ -2541,10 +2684,9 @@
                         try {
                             var backendResult = await window.fetchBackendScreenshot();
                             if (backendResult && backendResult.dataUrl) {
-                                var beScaled = await downscaleDataUrlTo720p(backendResult.dataUrl);
-                                dataUrl = beScaled.dataUrl;
-                                width = beScaled.width || 0;
-                                height = beScaled.height || 0;
+                                dataUrl = backendResult.dataUrl;
+                                width = 0;
+                                height = 0;
                             }
                         } catch (beErr) {
                             console.warn('[截图] 后端兜底失败:', beErr);
@@ -2636,7 +2778,26 @@
                     return;
                 }
 
-                mod.addScreenshotToList(result.dataUrl, result.dataUrl === result.originalDataUrl ? result.avatarPos : null);
+                // Capture/crop overlay keeps full resolution (crisp); cropping is done here,
+                // so compress to 720p / 0.8 right before queueing. This keeps the pending list
+                // holding only the compressed copy (low memory) and lets send pass it through
+                // without re-encoding.
+                var avatarPos = result.dataUrl === result.originalDataUrl ? result.avatarPos : null;
+                var compactDataUrl;
+                try {
+                    compactDataUrl = await mod.compressScreenshotDataUrlTo720p(result.dataUrl);
+                } catch (compressErr) {
+                    // Compression only throws when the image can't be decoded/encoded (the 720p
+                    // canvas is small enough that size limits never apply). Don't fall back to the
+                    // full-res original -- that would break the "list holds only compressed <=1MB"
+                    // invariant and pin a huge dataUrl in memory, and a broken image would fail at
+                    // send anyway. Abort queueing and surface an error toast instead.
+                    console.warn('[\u622A\u56FE] 720p \u538B\u7F29\u5931\u8D25\uFF0C\u53D6\u6D88\u5165\u5217:', compressErr);
+                    window.showStatusToast(window.t ? window.t('app.screenshotFailed') : '\u622A\u56FE\u5931\u8D25', 4000);
+                    return false;
+                }
+
+                mod.addScreenshotToList(compactDataUrl, avatarPos);
                 window.showStatusToast(window.t ? window.t('app.screenshotAdded') : '\u622A\u56FE\u5DF2\u6DFB\u52A0\uFF0C\u70B9\u51FB\u53D1\u9001\u4E00\u8D77\u53D1\u9001', 3000);
             } catch (err) {
                 console.error(window.t('console.screenshotFailed'), err);

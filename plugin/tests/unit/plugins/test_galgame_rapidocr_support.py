@@ -7,7 +7,8 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from plugin.plugins.galgame_plugin import rapidocr_support
+from plugin.plugins._shared.rapidocr import rapidocr_support
+from plugin.plugins._shared.rapidocr.ocr_runtime_types import _rapidocr_runtime_cache_key
 
 
 pytestmark = pytest.mark.plugin_unit
@@ -50,6 +51,50 @@ def test_rapidocr_kwargs_resolve_configured_model_paths(tmp_path: Path) -> None:
         "rec_model_path": str(rec_path),
         "engine_type": "onnxruntime",
     }
+
+
+def test_shared_rapidocr_runtime_cache_key_includes_plugin_id() -> None:
+    study_key = _rapidocr_runtime_cache_key(
+        install_target_dir_raw=" C:/RapidOCR ",
+        engine_type="ONNXRUNTIME",
+        lang_type="CH",
+        model_type="Mobile",
+        ocr_version=" PP-OCRv5 ",
+        plugin_id="study_companion",
+    )
+    other_key = _rapidocr_runtime_cache_key(
+        install_target_dir_raw=" C:/RapidOCR ",
+        engine_type="ONNXRUNTIME",
+        lang_type="CH",
+        model_type="Mobile",
+        ocr_version=" PP-OCRv5 ",
+        plugin_id="other_plugin",
+    )
+
+    assert study_key == (
+        "study_companion",
+        "C:/RapidOCR",
+        "onnxruntime",
+        "ch",
+        "mobile",
+        "PP-OCRv5",
+    )
+    assert other_key != study_key
+
+
+def test_default_rapidocr_install_target_rejects_path_traversal_plugin_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(rapidocr_support, "is_windows_platform", lambda: True)
+    monkeypatch.setattr(
+        rapidocr_support,
+        "get_config_manager",
+        lambda: SimpleNamespace(app_docs_dir=tmp_path),
+    )
+
+    with pytest.raises(ValueError):
+        rapidocr_support.default_rapidocr_install_target_raw("../study_companion")
 
 
 def test_rapidocr_kwargs_prefers_user_model_cache(tmp_path: Path) -> None:
@@ -104,12 +149,12 @@ def test_rapidocr_kwargs_resolves_server_variant_filenames(tmp_path: Path) -> No
     }
 
 
-def test_rapidocr_kwargs_omits_model_paths_when_configured_model_is_missing(tmp_path: Path) -> None:
+def test_rapidocr_kwargs_sets_ppocrv5_cls_image_shape(tmp_path: Path) -> None:
     model_cache_dir = tmp_path / "RapidOCR" / "models"
     package_models_dir = tmp_path / "package" / "models"
-    _touch(package_models_dir / "ch_PP-OCRv4_det_infer.onnx")
-    _touch(package_models_dir / "ch_ppocr_mobile_v2.0_cls_infer.onnx")
-    _touch(package_models_dir / "ch_PP-OCRv4_rec_infer.onnx")
+    det_path = _touch(model_cache_dir / "ch_PP-OCRv5_det_mobile.onnx")
+    rec_path = _touch(model_cache_dir / "ch_PP-OCRv5_rec_mobile.onnx")
+    cls_path = _touch(model_cache_dir / "ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx")
 
     kwargs = rapidocr_support._build_runtime_constructor_kwargs(
         _RapidOcrWithKwargs,
@@ -121,7 +166,32 @@ def test_rapidocr_kwargs_omits_model_paths_when_configured_model_is_missing(tmp_
         package_models_dir=package_models_dir,
     )
 
-    assert kwargs == {"engine_type": "onnxruntime"}
+    assert kwargs == {
+        "det_model_path": str(det_path),
+        "rec_model_path": str(rec_path),
+        "cls_model_path": str(cls_path),
+        "cls_image_shape": [3, 80, 160],
+        "engine_type": "onnxruntime",
+    }
+
+
+def test_rapidocr_kwargs_fails_when_registered_model_is_missing(tmp_path: Path) -> None:
+    model_cache_dir = tmp_path / "RapidOCR" / "models"
+    package_models_dir = tmp_path / "package" / "models"
+    _touch(package_models_dir / "ch_PP-OCRv4_det_infer.onnx")
+    _touch(package_models_dir / "ch_ppocr_mobile_v2.0_cls_infer.onnx")
+    _touch(package_models_dir / "ch_PP-OCRv4_rec_infer.onnx")
+
+    with pytest.raises(RuntimeError, match="PP-OCRv5/ch/mobile"):
+        rapidocr_support._build_runtime_constructor_kwargs(
+            _RapidOcrWithKwargs,
+            engine_type="onnxruntime",
+            lang_type="ch",
+            model_type="mobile",
+            ocr_version="PP-OCRv5",
+            model_cache_dir=model_cache_dir,
+            package_models_dir=package_models_dir,
+        )
 
 
 def test_required_rapidocr_model_files_defaults_to_bundled_ch(tmp_path: Path) -> None:
@@ -129,9 +199,34 @@ def test_required_rapidocr_model_files_defaults_to_bundled_ch(tmp_path: Path) ->
         install_target_dir_raw=str(tmp_path / "RapidOCR"),
         lang_type="",
         ocr_version="",
+        plugin_id="galgame_plugin",
     )
 
     assert files == []
+
+
+def test_inspect_rapidocr_installation_reports_modelscope_download_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        rapidocr_support.importlib.util,
+        "find_spec",
+        lambda _name: SimpleNamespace(origin=str(tmp_path / "rapidocr_onnxruntime" / "__init__.py")),
+    )
+
+    status = rapidocr_support.inspect_rapidocr_installation(
+        install_target_dir_raw=str(tmp_path / "RapidOCR"),
+        lang_type="en",
+        ocr_version="PP-OCRv4",
+        plugin_id="galgame_plugin",
+        platform_fn=lambda: True,
+    )
+
+    assert status["detail"] == "missing_model_files"
+    assert status["can_download_models"] is True
+    assert "modelscope.cn" in status["model_download_source"]
+    assert "baidu" not in status["model_download_source"].lower()
 
 
 def test_load_rapidocr_runtime_uses_imported_package_models_dir(
@@ -162,6 +257,7 @@ def test_load_rapidocr_runtime_uses_imported_package_models_dir(
         lang_type="ch",
         model_type="mobile",
         ocr_version="PP-OCRv4",
+        plugin_id="galgame_plugin",
     )
 
     assert isinstance(runtime, _RapidOcrWithKwargs)
@@ -176,7 +272,7 @@ def test_load_rapidocr_runtime_uses_imported_package_models_dir(
 
 
 @pytest.mark.asyncio
-async def test_download_rapidocr_models_uses_baidu_cloud_dlinks(
+async def test_download_rapidocr_models_uses_modelscope_urls(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -185,9 +281,9 @@ async def test_download_rapidocr_models_uses_baidu_cloud_dlinks(
         install_target_dir_raw=str(install_target),
         lang_type="en",
         ocr_version="PP-OCRv4",
+        plugin_id="galgame_plugin",
     )
     file_bytes = {spec["name"]: spec["name"].encode("utf-8") for spec in expected_files}
-    dlink_by_name = {name: f"https://d.pcs.baidu.com/file/{name}" for name in file_bytes}
     for spec in expected_files:
         spec["sha256"] = ""
     monkeypatch.setattr(
@@ -196,72 +292,12 @@ async def test_download_rapidocr_models_uses_baidu_cloud_dlinks(
         lambda **_kwargs: [dict(spec) for spec in expected_files],
     )
     monkeypatch.setattr(rapidocr_support, "_verify_model_sha256", lambda *_args, **_kwargs: None)
-
-    async def _fake_dlinks(_client, pending):
-        assert {spec["name"] for spec in pending} == set(file_bytes)
-        return {spec["name"]: dlink_by_name[spec["name"]] for spec in pending}
-
-    monkeypatch.setattr(rapidocr_support, "_baidu_rapidocr_model_dlinks", _fake_dlinks)
-
-    def _handler(request: httpx.Request) -> httpx.Response:
-        name = Path(request.url.path).name
-        return httpx.Response(200, content=file_bytes[name])
-
-    class _PatchedAsyncClient(httpx.AsyncClient):
-        def __init__(self, *args, **kwargs):
-            kwargs["transport"] = httpx.MockTransport(_handler)
-            super().__init__(*args, **kwargs)
-
-    monkeypatch.setattr(rapidocr_support.httpx, "AsyncClient", _PatchedAsyncClient)
-
-    result = await rapidocr_support.download_rapidocr_models(
-        logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
-        install_target_dir_raw=str(install_target),
-        lang_type="en",
-        ocr_version="PP-OCRv4",
-    )
-
-    assert sorted(result["downloaded"]) == sorted(file_bytes)
-    assert result["source"] == "baidu_cloud"
-    assert set(result["sources"].values()) == {"baidu_cloud"}
-    assert result.get("fallback_used") is not True
-    assert result.get("baidu_error") in (None, "")
-    for name, content in file_bytes.items():
-        assert (install_target / "models" / name).read_bytes() == content
-
-
-@pytest.mark.asyncio
-async def test_download_rapidocr_models_falls_back_to_modelscope_when_baidu_fails(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    install_target = tmp_path / "RapidOCR"
-    expected_files = rapidocr_support.required_rapidocr_model_files(
-        install_target_dir_raw=str(install_target),
-        lang_type="en",
-        ocr_version="PP-OCRv4",
-    )
-    file_bytes = {spec["name"]: f"modelscope:{spec['name']}".encode("utf-8") for spec in expected_files}
-    for spec in expected_files:
-        spec["sha256"] = ""
-    monkeypatch.setattr(
-        rapidocr_support,
-        "required_rapidocr_model_files",
-        lambda **_kwargs: [dict(spec) for spec in expected_files],
-    )
-    monkeypatch.setattr(rapidocr_support, "_verify_model_sha256", lambda *_args, **_kwargs: None)
-
-    async def _failing_dlinks(_client, _pending):
-        raise RuntimeError("baidu share unavailable")
-
-    monkeypatch.setattr(rapidocr_support, "_baidu_rapidocr_model_dlinks", _failing_dlinks)
 
     requested_urls: list[str] = []
 
     def _handler(request: httpx.Request) -> httpx.Response:
         requested_urls.append(str(request.url))
         name = Path(request.url.path).name
-        assert name in file_bytes
         assert "modelscope.cn" in request.url.host
         return httpx.Response(200, content=file_bytes[name])
 
@@ -277,12 +313,122 @@ async def test_download_rapidocr_models_falls_back_to_modelscope_when_baidu_fail
         install_target_dir_raw=str(install_target),
         lang_type="en",
         ocr_version="PP-OCRv4",
+        plugin_id="galgame_plugin",
     )
 
     assert sorted(result["downloaded"]) == sorted(file_bytes)
     assert result["source"] == "modelscope"
-    assert result["fallback_used"] is True
-    assert "baidu share unavailable" in result["baidu_error"]
+    assert set(result["sources"].values()) == {"modelscope"}
+    assert "fallback_used" not in result
+    assert "baidu_error" not in result
     assert requested_urls == [spec["url"] for spec in expected_files]
     for name, content in file_bytes.items():
         assert (install_target / "models" / name).read_bytes() == content
+
+
+@pytest.mark.asyncio
+async def test_download_rapidocr_models_warns_when_task_id_has_no_state_updater(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_target = tmp_path / "RapidOCR"
+    monkeypatch.setattr(
+        rapidocr_support,
+        "required_rapidocr_model_files",
+        lambda **_kwargs: [],
+    )
+    warnings: list[str] = []
+
+    result = await rapidocr_support.download_rapidocr_models(
+        logger=SimpleNamespace(warning=lambda message, *args, **kwargs: warnings.append(str(message))),
+        install_target_dir_raw=str(install_target),
+        lang_type="ch",
+        ocr_version="PP-OCRv4",
+        plugin_id="galgame_plugin",
+        task_id="run-without-state-updater",
+    )
+
+    assert result["skipped_bundled"] is True
+    assert any("no install state updater" in message for message in warnings)
+
+
+@pytest.mark.asyncio
+async def test_download_rapidocr_models_keeps_going_when_state_updater_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_target = tmp_path / "RapidOCR"
+    monkeypatch.setattr(
+        rapidocr_support,
+        "required_rapidocr_model_files",
+        lambda **_kwargs: [],
+    )
+    warnings: list[str] = []
+
+    def _failing_state_updater(*_args, **_kwargs):
+        raise RuntimeError("state store unavailable")
+
+    result = await rapidocr_support.download_rapidocr_models(
+        logger=SimpleNamespace(warning=lambda message, *args, **kwargs: warnings.append(str(message))),
+        install_target_dir_raw=str(install_target),
+        lang_type="ch",
+        ocr_version="PP-OCRv4",
+        plugin_id="galgame_plugin",
+        task_id="run-with-failing-state-updater",
+        install_state_updater=_failing_state_updater,
+    )
+
+    assert result["skipped_bundled"] is True
+    assert any("install state update failed" in message for message in warnings)
+
+
+@pytest.mark.asyncio
+async def test_download_rapidocr_models_reports_modelscope_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_target = tmp_path / "RapidOCR"
+    expected_files = rapidocr_support.required_rapidocr_model_files(
+        install_target_dir_raw=str(install_target),
+        lang_type="en",
+        ocr_version="PP-OCRv4",
+        plugin_id="galgame_plugin",
+    )
+    file_bytes = {spec["name"]: f"modelscope:{spec['name']}".encode("utf-8") for spec in expected_files}
+    for spec in expected_files:
+        spec["sha256"] = ""
+    monkeypatch.setattr(
+        rapidocr_support,
+        "required_rapidocr_model_files",
+        lambda **_kwargs: [dict(spec) for spec in expected_files],
+    )
+    monkeypatch.setattr(rapidocr_support, "_verify_model_sha256", lambda *_args, **_kwargs: None)
+
+    requested_urls: list[str] = []
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        requested_urls.append(str(request.url))
+        name = Path(request.url.path).name
+        assert name in file_bytes
+        assert "modelscope.cn" in request.url.host
+        return httpx.Response(503, content=b"unavailable")
+
+    class _PatchedAsyncClient(httpx.AsyncClient):
+        def __init__(self, *args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(_handler)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(rapidocr_support.httpx, "AsyncClient", _PatchedAsyncClient)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await rapidocr_support.download_rapidocr_models(
+            logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
+            install_target_dir_raw=str(install_target),
+            lang_type="en",
+            ocr_version="PP-OCRv4",
+            plugin_id="galgame_plugin",
+        )
+
+    assert "ModelScope" in str(exc_info.value)
+    assert "Baidu" not in str(exc_info.value)
+    assert requested_urls == [expected_files[0]["url"]]

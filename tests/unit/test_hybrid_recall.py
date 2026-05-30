@@ -381,6 +381,144 @@ class TestHybridRecallE2E(unittest.IsolatedAsyncioTestCase):
         self.assertIn("r1", ids_to_tier)
         self.assertEqual(ids_to_tier["r1"], "reflection")
 
+    async def _run_windowed(self, query, active_facts, active_reflections, time_window):
+        fact_store, reflection_engine = self._make_stores(active_facts, active_reflections)
+        config_manager = MagicMock()
+        with patch("memory.hybrid_recall._cosine_rank", new=AsyncMock(return_value=[])), \
+             patch("memory.hybrid_recall.HYBRID_RECALL_BM25_THRESHOLD", 0.0):
+            return await hybrid_recall(
+                lanlan_name="testcat",
+                query=query,
+                fact_store=fact_store,
+                reflection_engine=reflection_engine,
+                config_manager=config_manager,
+                time_window=time_window,
+            )
+
+    async def test_time_window_filters_out_of_window_semantic_match(self):
+        """"语义 + 时间"联合检索：两条都语义命中 query，但只有事件落在
+        time_window 内的那条应被返回，窗口外的被硬过滤掉。"""
+        from datetime import datetime
+        facts = [
+            {"id": "in_win", "text": "博士五月一号聊的旅行计划", "score": 1.0,
+             "event_start_at": "2026-05-01T10:00:00"},
+            {"id": "out_win", "text": "博士三月聊的旅行计划", "score": 1.0,
+             "event_start_at": "2026-03-15T10:00:00"},
+        ]
+        window = (datetime(2026, 5, 1), datetime(2026, 6, 1))  # 五月整月
+        res = await self._run_windowed("旅行 计划", facts, [], window)
+        ids = [r["id"] for r in res["results"]]
+        self.assertIn("in_win", ids)
+        self.assertNotIn("out_win", ids)
+
+    async def test_time_window_falls_back_to_created_at(self):
+        """窗口过滤的锚点：缺 event_start_at 时退回 created_at。"""
+        from datetime import datetime
+        facts = [
+            {"id": "by_created", "text": "博士的旅行计划", "score": 1.0,
+             "created_at": "2026-05-10T10:00:00"},
+        ]
+        window = (datetime(2026, 5, 1), datetime(2026, 6, 1))
+        res = await self._run_windowed("旅行 计划", facts, [], window)
+        self.assertIn("by_created", [r["id"] for r in res["results"]])
+
+    async def test_time_window_anchor_prefers_event_end_over_created_at(self):
+        """锚点优先级 event_end_at → event_start_at → created_at：只有
+        event_end_at（无 start）的条目应按 end 入窗，不能拿写盘时间 created_at
+        误判。这里 event_end_at 在窗口内、created_at 在窗口外，必须命中。"""
+        from datetime import datetime
+        facts = [
+            {"id": "end_only", "text": "博士的旅行计划", "score": 1.0,
+             "event_end_at": "2026-05-20T10:00:00",   # 在五月窗口内
+             "created_at": "2026-07-01T10:00:00"},      # 写盘时间在窗口外
+        ]
+        window = (datetime(2026, 5, 1), datetime(2026, 6, 1))
+        res = await self._run_windowed("旅行 计划", facts, [], window)
+        self.assertIn("end_only", [r["id"] for r in res["results"]])
+
+    async def test_time_window_drops_entry_without_parseable_time(self):
+        """无可解析时间戳的条目在时间检索下判为不在窗口内（宁漏不错挂）。"""
+        from datetime import datetime
+        facts = [
+            {"id": "no_time", "text": "博士的旅行计划", "score": 1.0},
+        ]
+        window = (datetime(2026, 5, 1), datetime(2026, 6, 1))
+        res = await self._run_windowed("旅行 计划", facts, [], window)
+        self.assertEqual(res["results"], [])
+
+
+class TestRecallByTime(unittest.IsolatedAsyncioTestCase):
+    """``recall_by_time`` —— 只给 time、按事件时间邻近返回最接近的若干条
+    fact + reflection。"""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.archive_path = os.path.join(self.tmpdir, "facts_archive.json")
+        with open(self.archive_path, "w", encoding="utf-8") as f:
+            json.dump([], f)
+
+    def _make_stores(self, active_facts, active_reflections):
+        fact_store = MagicMock()
+        fact_store.aload_facts = AsyncMock(return_value=active_facts)
+        fact_store._facts_archive_path = MagicMock(return_value=self.archive_path)
+        reflection_engine = MagicMock()
+        reflection_engine.aload_reflections = AsyncMock(return_value=active_reflections)
+        return fact_store, reflection_engine
+
+    async def _run(self, time_spec, active_facts, active_reflections):
+        from memory.hybrid_recall import recall_by_time
+        fact_store, reflection_engine = self._make_stores(active_facts, active_reflections)
+        return await recall_by_time(
+            lanlan_name="testcat",
+            time_spec=time_spec,
+            fact_store=fact_store,
+            reflection_engine=reflection_engine,
+        )
+
+    async def test_mixes_facts_and_reflections_sorted_by_proximity(self):
+        facts = [
+            {"id": "f_far", "text": "六月的事实", "score": 1.0,
+             "event_start_at": "2026-06-10T10:00:00"},
+            {"id": "f_near", "text": "五月三号买咖啡", "score": 1.0,
+             "event_start_at": "2026-05-03T10:00:00"},
+        ]
+        refl = [
+            {"id": "r_in", "text": "五月一号通宵", "score": 1.0, "status": "confirmed",
+             "event_start_at": "2026-05-01T22:00:00", "event_end_at": "2026-05-02T03:00:00"},
+            {"id": "r_denied", "text": "denied", "score": 1.0, "status": "denied",
+             "event_start_at": "2026-05-01T12:00:00"},
+        ]
+        res = await self._run("2026-05-01", facts, refl)
+        ids = [r["id"] for r in res["results"]]
+        # 窗口内 r_in 最先；f_near（2 天后）次之；f_far（六月）最后。
+        self.assertEqual(ids[0], "r_in")
+        self.assertIn("f_near", ids)
+        # denied 被 _hard_filter 丢掉。
+        self.assertNotIn("r_denied", ids)
+        # fact 和 reflection 都进了结果。
+        tiers = {r["tier"] for r in res["results"]}
+        self.assertEqual(tiers, {"fact", "reflection"})
+
+    async def test_right_boundary_event_ranks_behind_in_window(self):
+        """半开窗口右界：事件正好起于 win_end（如 time='2026-05-01' 时的
+        2026-05-02T00:00:00）虽 dist=0 也算窗口外，必须排在真窗口内条目之后
+        （Codex）。"""
+        facts = [
+            {"id": "boundary", "text": "正好五月二号零点", "score": 1.0,
+             "event_start_at": "2026-05-02T00:00:00"},
+            {"id": "in_may1", "text": "五月一号上午", "score": 1.0,
+             "event_start_at": "2026-05-01T09:00:00"},
+        ]
+        res = await self._run("2026-05-01", facts, [])
+        ids = [r["id"] for r in res["results"]]
+        # 窗口内的 in_may1 必须在右界 boundary 之前
+        self.assertLess(ids.index("in_may1"), ids.index("boundary"))
+
+    async def test_unparseable_time_returns_empty(self):
+        res = await self._run("上周", [{"id": "x", "text": "y", "score": 1.0,
+                                        "created_at": "2026-05-01T10:00:00"}], [])
+        self.assertEqual(res["results"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

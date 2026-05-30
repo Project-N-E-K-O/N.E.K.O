@@ -41,8 +41,8 @@ from fastapi import APIRouter, Request, File, UploadFile, Form
 from fastapi.responses import JSONResponse, Response
 import aiohttp
 import httpx
-import dashscope
-from dashscope.audio.tts_v2 import SpeechSynthesizer
+# dashscope 仅用于声音克隆 TTS 预览（_do_preview_synthesize），import 偏重
+# （~0.1s）且不在 greeting/启动链上，改成用到时再 import；由 module_warmup 预热。
 
 from config.prompts.prompts_sys import _loc
 from config.prompts.prompts_voice import VOICE_PREVIEW_TEXTS
@@ -1762,6 +1762,17 @@ async def get_current_live2d_model(catgirl_name: str = "", item_id: str = ""):
         if model_info and isinstance(model_info.get('path'), str):
             model_info['path'] = encode_url_path(model_info['path'])
 
+        if not model_info or not model_info.get('path'):
+            error_message = f"默认Live2D模型 {DEFAULT_LIVE2D_MODEL_NAME} 不可用"
+            logger.error(error_message)
+            return JSONResponse(content={
+                'success': False,
+                'catgirl_name': catgirl_name,
+                'model_name': live2d_model_name or DEFAULT_LIVE2D_MODEL_NAME,
+                'model_info': None,
+                'error': error_message,
+            })
+
         return JSONResponse(content={
             'success': True,
             'catgirl_name': catgirl_name,
@@ -2018,9 +2029,9 @@ async def update_catgirl_l2d(name: str, request: Request):
 
         # 保存配置
         await _config_manager.asave_characters(characters)
-        # 自动重新加载配置
-        initialize_character_data = get_initialize_character_data()
-        await initialize_character_data()
+        # Fast path：只刷新被编辑角色的 session_manager（avatar 配置），不遍历其它 N-1 个。
+        init_one_catgirl = get_init_one_catgirl()
+        await init_one_catgirl(name, is_new=False)
 
 
         if model_type_str == 'live3d':
@@ -2102,9 +2113,10 @@ async def update_catgirl_touch_set(name: str, request: Request):
         set_reserved(characters['猫娘'][name], 'touch_set', existing_touch_set)
         await _config_manager.asave_characters(characters)
 
-        initialize_character_data = get_initialize_character_data()
-        if initialize_character_data:
-            await initialize_character_data()
+        # Fast path：只刷新被编辑角色的 session_manager（touch_set），不遍历其它 N-1 个。
+        init_one_catgirl = get_init_one_catgirl()
+        if init_one_catgirl:
+            await init_one_catgirl(name, is_new=False)
 
         logger.debug(f"已更新角色 {name} 模型 {model_name} 的触摸配置")
 
@@ -2220,12 +2232,13 @@ async def update_catgirl_lighting(name: str, request: Request):
         await _config_manager.asave_characters(characters)
 
         if apply_runtime:
-            initialize_character_data = get_initialize_character_data()
-            if initialize_character_data:
-                await initialize_character_data()
-                logger.info(f"已执行完整配置重载（角色 {name} 的打光配置）")
+            # Fast path：只刷新被编辑角色的 session_manager（lighting），不遍历其它 N-1 个。
+            init_one_catgirl = get_init_one_catgirl()
+            if init_one_catgirl:
+                await init_one_catgirl(name, is_new=False)
+                logger.info(f"已应用到运行时（角色 {name} 的打光配置）")
         else:
-            logger.debug("跳过完整配置重载（apply_runtime=False），配置已保存到磁盘，需要刷新页面或调用重载才能生效")
+            logger.debug("跳过运行时刷新（apply_runtime=False），配置已保存到磁盘，需要刷新页面或调用重载才能生效")
 
         if apply_runtime:
             message = f'已保存角色 {name} 的打光配置并已应用到运行时'
@@ -2449,15 +2462,17 @@ async def update_catgirl_voice_id(name: str, request: Request):
             # 这条 SessionManager 实例还会被旧失败计数 / 熔断继续静默拦截。
             session_manager[name].reset_session_start_circuit()
 
-    # 方案3：条件性重新加载 - 只有当前猫娘才重新加载配置
+    # Fast path：只刷新被编辑角色的 session_manager（voice_id），不遍历其它 N-1 个。
+    # 非当前角色分支也要显式刷 session_manager[name]：以前靠下次 switch 的全量 init 顺带
+    # rescue，但 set_current_catgirl 已切到 switch_current_catgirl_fast，rescue 不再发生，
+    # 必须在这里就把 voice_id 写进 session_manager[name]（init_one_catgirl 只写该 key，
+    # 不会影响当前 session）。
+    init_one_catgirl = get_init_one_catgirl()
+    await init_one_catgirl(name, is_new=False)
     if is_current_catgirl:
-        # 3. 重新加载配置，让新的voice_id生效
-        initialize_character_data = get_initialize_character_data()
-        await initialize_character_data()
         logger.info("配置已重新加载，新的voice_id已生效")
     else:
-        # 不是当前猫娘，跳过重新加载，避免影响当前猫娘的session
-        logger.info(f"切换的是其他猫娘 {name} 的音色，跳过重新加载以避免影响当前猫娘的session")
+        logger.info(f"非当前猫娘 {name} 的音色已更新并同步到 session_manager")
 
     return {"success": True, "session_restarted": session_ended, "voice_id_changed": True}
 
@@ -2603,9 +2618,12 @@ async def rename_catgirl(old_name: str, request: Request):
                 characters['当前猫娘'] = new_name
             await _config_manager.asave_characters(characters)
 
-            # 自动重新加载配置
-            initialize_character_data = get_initialize_character_data()
-            await initialize_character_data()
+            # Fast path：移除旧名 + 以新名启动一个 catgirl slot。
+            # 等价于"删除旧 + 新增新"，不遍历其它 N-1 个。
+            remove_one_catgirl = get_remove_one_catgirl()
+            init_one_catgirl = get_init_one_catgirl()
+            await remove_one_catgirl(old_name)
+            await init_one_catgirl(new_name, is_new=True)
 
             # 迁移卡面 PNG 与 sidecar JSON（纳入同一事务）
             from datetime import datetime as _dt
@@ -2744,10 +2762,11 @@ async def unregister_voice(name: str):
                 # 否则 reload 后新 start_session 会被旧熔断静默拦截。
                 session_manager[name].reset_session_start_circuit()
 
-        # 自动重新加载配置
-        if is_current_catgirl:
-            initialize_character_data = get_initialize_character_data()
-            await initialize_character_data()
+        # Fast path：只刷新被编辑角色的 session_manager（voice_id），不遍历其它 N-1 个。
+        # 非当前角色分支也要走 init_one_catgirl：以前靠下次 switch 的全量 init 顺带 rescue，
+        # 但 set_current_catgirl 已切到 switch_current_catgirl_fast，rescue 不再发生。
+        init_one_catgirl = get_init_one_catgirl()
+        await init_one_catgirl(name, is_new=False)
 
         logger.info(f"已解除猫娘 '{name}' 的声音注册")
         return {"success": True, "message": "声音注册已解除", "session_restarted": session_ended, "voice_id_changed": True}
@@ -2789,11 +2808,27 @@ async def set_persona_onboarding_state(request: Request):
     if error_response is not None:
         return error_response
     config_manager = get_config_manager()
+    status_in = str((payload or {}).get("status") or "").strip()
     state = await asyncio.to_thread(
         mark_initial_personality_state,
-        str((payload or {}).get("status") or "").strip(),
+        status_in,
         config_manager=config_manager,
     )
+    # Telemetry：onboarding 漏斗的关键节点。**用归一化后的 state["status"]**
+    # 而非请求体原值 status_in：mark_initial_personality_state 会把状态收敛成
+    # 小枚举（pending / completed / skipped 等），客户端可以传任意 status 字符串
+    # 但存储 fallback 成 pending。直接用 raw 会让任意输入变成不同的
+    # onboarding_step dim，污染 funnel 切片 + 吃 instrument key 预算（同
+    # lanlan_name 教训：raw 客户端输入不进 dim）（Codex）。
+    _norm_status = (state.get("status") if isinstance(state, dict) else None) or "unknown"
+    try:
+        from utils.instrument import event as _instr_event, counter as _instr_counter
+        _instr_event("onboarding_step", status=str(_norm_status)[:32])
+        _instr_counter("onboarding_step", status=str(_norm_status)[:32])
+    except Exception:
+        # 埋点失败绝不影响 onboarding endpoint —— 一条 telemetry 走丢比让
+        # 用户卡在角色选择失败重要多了。日志也省，防 import 故障刷屏。
+        pass
     return {
         "success": True,
         "state": state,
@@ -3610,9 +3645,8 @@ async def set_microphone(request: Request):
 
         # 保存配置
         await _config_manager.asave_characters(characters_data)
-        # 自动重新加载配置
-        initialize_character_data = get_initialize_character_data()
-        await initialize_character_data()
+        # 麦克风 ID 是纯前端读取的字段（仅 get_microphone 读），不影响任何 catgirl
+        # 的 prompt / voice_id / session_manager，无需触发任何 init。
 
         return {"success": True}
     except Exception as e:
@@ -3895,6 +3929,8 @@ async def get_voice_preview(
         clone_model = (voice_data or {}).get('clone_model') or get_cosyvoice_clone_model(provider)
 
         def _do_preview_synthesize():
+            import dashscope
+            from dashscope.audio.tts_v2 import SpeechSynthesizer
             # 写 module-global + 构造 SpeechSynthesizer + synthesizer.call 全程
             # 拿 DASHSCOPE_GLOBAL_LOCK：dashscope.api_key / base_*_api_url 是
             # 同进程多流程共享的写点，并发跑会互相覆盖、拿别人的 key/地域请求。
@@ -6175,10 +6211,30 @@ def _strip_legacy_card_face_header(image_data: bytes) -> bytes:
                 return image_data
 
             rgb = img.convert('RGB')
-            top_mean = rgb.crop((0, 0, width, header_height)).resize((1, 1), Image.Resampling.BOX).getpixel((0, 0))
+            header_region = rgb.crop((0, 0, width, header_height))
+            top_mean = header_region.resize((1, 1), Image.Resampling.BOX).getpixel((0, 0))
             header_color = (64, 197, 241)
             if max(abs(top_mean[i] - header_color[i]) for i in range(3)) > 24:
                 return image_data
+
+            # Avoid mistaking an ordinary blue illustration/background for the
+            # legacy solid-color name header.
+            sample = header_region.resize((16, 16), Image.Resampling.BOX)
+            pixels = list(sample.getdata())
+            channel_spread = max(
+                max(px[i] for px in pixels) - min(px[i] for px in pixels)
+                for i in range(3)
+            )
+            if channel_spread > 28:
+                return image_data
+
+            # The old header usually has a visible color break at the body.
+            # If the next band is effectively the same blue, keep the image.
+            body_band = rgb.crop((0, header_height, width, min(height, header_height * 2)))
+            if body_band.size[1] > 0:
+                body_mean = body_band.resize((1, 1), Image.Resampling.BOX).getpixel((0, 0))
+                if max(abs(body_mean[i] - header_color[i]) for i in range(3)) < 10:
+                    return image_data
 
             cropped = img.convert('RGBA').crop((0, header_height, width, height))
             normalized = cropped.resize((width, height), Image.Resampling.LANCZOS)

@@ -33,7 +33,9 @@ from typing import Dict
 # back-importing main_routers (would be a layering inversion + cycle).
 # We re-export get/set here unchanged for legacy callers.
 from utils.steam_state import (  # noqa: F401  (re-export)
+    ensure_steamworks,
     get_steamworks,
+    set_steamworks_initializer,
     set_steamworks,
 )
 

@@ -27,6 +27,8 @@ from plugin.plugins.galgame_plugin.models import (
     STORE_RAPIDOCR_AUTO_DETECT_LANG,
     STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG,
     STORE_RAPIDOCR_LANG_TYPE,
+    STORE_RAPIDOCR_OCR_VERSION,
+    normalize_rapidocr_ocr_version,
 )
 from plugin.plugins.galgame_plugin.service import build_config
 from plugin.plugins.galgame_plugin.store import GalgameStore
@@ -87,6 +89,25 @@ def test_galgame_store_config_overrides_normalize_rapidocr_lang_values(tmp_path:
     assert loaded[STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG] == "korean"
 
 
+def test_galgame_store_config_overrides_normalize_rapidocr_ocr_version(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+
+    assert store.load_config_overrides()[STORE_RAPIDOCR_OCR_VERSION] is None
+    assert normalize_rapidocr_ocr_version("v4") == "PP-OCRv4"
+    assert normalize_rapidocr_ocr_version("5") == "PP-OCRv5"
+    assert normalize_rapidocr_ocr_version("garbage") == ""
+
+    for raw in ("PP-OCRv5", "v5", " pp-ocrv5 "):
+        store.persist_config_override(STORE_RAPIDOCR_OCR_VERSION, raw)
+        loaded = store.load_config_overrides()
+        assert loaded[STORE_RAPIDOCR_OCR_VERSION] == "PP-OCRv5"
+
+    for raw in ("PP-OCRv6", "", None):
+        store.persist_config_override(STORE_RAPIDOCR_OCR_VERSION, raw)
+        loaded = store.load_config_overrides()
+        assert loaded[STORE_RAPIDOCR_OCR_VERSION] is None
+
+
 def test_galgame_config_overrides_apply_valid_values_and_ignore_invalid(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
     for key, value in {
@@ -100,6 +121,7 @@ def test_galgame_config_overrides_apply_valid_values_and_ignore_invalid(tmp_path
         STORE_LLM_VISION_MAX_IMAGE_PX: 1024,
         STORE_OCR_SCREEN_TEMPLATES: [{"id": "title", "stage": "title_stage"}],
         STORE_RAPIDOCR_LANG_TYPE: "korean",
+        STORE_RAPIDOCR_OCR_VERSION: "PP-OCRv5",
         STORE_RAPIDOCR_AUTO_DETECT_LANG: False,
         STORE_RAPIDOCR_AUTO_DETECT_LAST_LANG: "japan",
     }.items():
@@ -134,6 +156,7 @@ def test_galgame_config_overrides_apply_valid_values_and_ignore_invalid(tmp_path
     assert plugin._cfg.ocr_reader.ocr_reader_screen_templates == [
         {"id": "title", "stage": "title_stage"}
     ]
+    assert plugin._cfg.rapidocr.rapidocr_ocr_version == "PP-OCRv5"
     assert plugin._cfg.rapidocr.rapidocr_lang_type == "korean"
     assert plugin._cfg.rapidocr.rapidocr_auto_detect_lang is False
     assert plugin._cfg.rapidocr.rapidocr_auto_detect_last_lang == "japan"
@@ -295,6 +318,7 @@ def test_galgame_store_keys_include_host_play_mode_keys() -> None:
         STORE_CHARACTER_FIXED_NAME,
         STORE_CROSS_SCENE_MEMORY,
         STORE_CHARACTER_RUNTIME_STATE,
+        STORE_RAPIDOCR_OCR_VERSION,
     }.issubset(set(STORE_KEYS))
 
 

@@ -238,6 +238,11 @@ class ReflectionEngine:
         # threading.Lock guards the dict itself (reads/writes of _alocks are
         # pure Python, no await inside this critical section).
         self._alocks_guard = threading.Lock()
+        # synth 失败退避的进程内镜像 {name: {key: {"n", "at"}}}。它是 session 内
+        # 的权威工作副本，磁盘只是持久化 + 重启恢复。这样即使 synth_backoff.json
+        # 写盘失败（只读 FS / 权限），失败计数也不会丢、dead-letter 闸门照常生效
+        # （Codex P2）。对齐 review 的 _maint_state 进程内持久语义。
+        self._synth_backoff_mem: dict[str, dict] = {}
 
     def _get_alock(self, name: str) -> asyncio.Lock:
         """Get (or lazily create) the per-character asyncio.Lock.
@@ -294,6 +299,106 @@ class ReflectionEngine:
     def _surfaced_path(self, name: str) -> str:
         from memory import ensure_character_dir
         return os.path.join(ensure_character_dir(self._config_manager.memory_dir, name), 'surfaced.json')
+
+    def _synth_backoff_path(self, name: str) -> str:
+        """Per-character sidecar tracking per-rid synthesis 失败次数。
+
+        synthesize_reflections 在 LLM 失败时没有任何可挂 attempts 的实体
+        （reflection 还没建），所以失败计数落在这个 ``{rid: attempts}`` map
+        里。rid 由 source_fact_ids 决定（确定性）——facts 一变 rid 就变、
+        attempts 天然复位，所以持续失败的同批 facts 会被 dead-letter，新
+        输入立即重试。
+        """
+        from memory import ensure_character_dir
+        return os.path.join(
+            ensure_character_dir(self._config_manager.memory_dir, name),
+            'synth_backoff.json',
+        )
+
+    async def _aload_synth_backoff_from_disk(self, name: str) -> dict:
+        """从磁盘读 {key: {"n": attempts(int), "at": last_fail_iso|None}} map；
+        缺文件 / 损坏 → 空 dict。兼容旧格式 {key: int}（at 补 None）。"""
+        path = self._synth_backoff_path(name)
+        if not await asyncio.to_thread(os.path.exists, path):
+            return {}
+        try:
+            data = await read_json_async(path)
+        except Exception:
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        out: dict[str, dict] = {}
+        for k, v in data.items():
+            if isinstance(v, dict):
+                try:
+                    out[str(k)] = {"n": int(v.get("n", 0)), "at": v.get("at")}
+                except (TypeError, ValueError):
+                    continue
+            else:
+                # 旧格式 {key: int}
+                try:
+                    out[str(k)] = {"n": int(v), "at": None}
+                except (TypeError, ValueError):
+                    continue
+        return out
+
+    async def _aload_synth_backoff(self, name: str) -> dict:
+        """返回失败退避 map。优先用进程内镜像（最新工作副本，即使上次写盘
+        失败也不丢计数）；首次访问该角色时从磁盘加载并缓存。"""
+        cached = self._synth_backoff_mem.get(name)
+        if cached is not None:
+            return cached
+        loaded = await self._aload_synth_backoff_from_disk(name)
+        self._synth_backoff_mem[name] = loaded
+        return loaded
+
+    async def _asave_synth_backoff(self, name: str, backoff: dict) -> None:
+        """先更新进程内镜像（session 内权威，保证写盘失败也不丢 throttle），
+        再 best-effort 落盘。写盘失败 WARN 但不抛——镜像已生效，dead-letter
+        闸门照常工作；重启才会从磁盘读，那时已是另一种恢复语境（Codex P2）。"""
+        self._synth_backoff_mem[name] = backoff
+        try:
+            await atomic_write_json_async(
+                self._synth_backoff_path(name), backoff,
+                indent=2, ensure_ascii=False,
+            )
+        except Exception as e:
+            logger.warning(
+                f"[Reflection] {name}: synth_backoff 写盘失败（进程内镜像仍生效，"
+                f"throttle 不受影响）: {e}"
+            )
+
+    async def _abump_synth_backoff(self, name: str, key: str, reason: str) -> int:
+        """记 key 一次合成失败，返回累计次数并戳上失败时刻（供时间自愈）。
+        caller 不持锁（失败分支都在 post-LLM 锁之外），这里自取 _get_alock
+        做 read-modify-write。"""
+        async with self._get_alock(name):
+            # 拷贝一份再改：_aload_synth_backoff 返回的是进程内镜像引用，
+            # 由 _asave_synth_backoff 统一回写，避免半改状态被并发读看到。
+            backoff = dict(await self._aload_synth_backoff(name))
+            attempts = backoff.get(key, {}).get("n", 0) + 1
+            entry = {"n": attempts, "at": datetime.now().isoformat()}
+            backoff[key] = entry
+            # 防失败 key 长期累积：超阈值时只留 attempts 最高的若干条
+            # （dead-letter 候选优先保活，被丢的低分 key 下次失败重新计起）。
+            if len(backoff) > 64:
+                backoff = dict(
+                    sorted(backoff.items(), key=lambda kv: -kv[1].get("n", 0))[:64]
+                )
+                backoff[key] = entry  # 确保当前 key 不被裁掉
+            await self._asave_synth_backoff(name, backoff)
+        logger.debug(
+            f"[Reflection] {name}: key {key} 合成失败退避 → {attempts} ({reason})"
+        )
+        return attempts
+
+    async def _aclear_synth_backoff(self, name: str, key: str) -> None:
+        """key 成功落盘后清掉其失败记录。caller 不持锁。"""
+        async with self._get_alock(name):
+            backoff = dict(await self._aload_synth_backoff(name))
+            if key in backoff:
+                del backoff[key]
+                await self._asave_synth_backoff(name, backoff)
 
     # ── persistence ──────────────────────────────────────────────────
 
@@ -664,6 +769,14 @@ class ReflectionEngine:
         if len(unabsorbed) < MIN_FACTS_FOR_REFLECTION:
             return []
 
+        # 失败退避 key 必须覆盖**全部** unabsorbed facts，所以在 cap 之前先取。
+        # 不能用 rid（下面那个 capped top-N 子集的 hash）当退避 key：否则一个
+        # poison 的 top-N 批次 dead-letter 后，新到的低 importance facts 进不了
+        # top-N → rid 不变 → 合成被永久跳过，把整个 unabsorbed 池饿死（Codex P2）。
+        # 用全集 key 时任何新 fact 都会改 key → 预算复位 → 重试一次。
+        all_unabsorbed_ids = sorted(f['id'] for f in unabsorbed)
+        backoff_key = _reflection_id_from_facts(all_unabsorbed_ids)
+
         # Cap unabsorbed facts entering this synthesis call. 上游
         # aget_unabsorbed_facts 没有 limit 参数，长期不上线时可能堆几百
         # 条；按 importance(desc) → 创建时间(asc) 排序后取前 N 条，避免
@@ -695,6 +808,28 @@ class ReflectionEngine:
             logger.info(
                 f"[Reflection] {lanlan_name}: 检测到同批 facts 已合成过 reflection "
                 f"{rid}，跳过 LLM，补跑 mark_absorbed"
+            )
+            return []
+
+        # 失败退避（dead-letter）：同一批 unabsorbed facts(backoff_key) 合成已连续
+        # 失败 ≥ MEMORY_LIVENESS_MAX_ATTEMPTS 次 → 不再每 180s 原样重抽空跑 LLM。
+        # 任一 unabsorbed fact 增减 → backoff_key 变、计数天然复位（用户审计 #2）。
+        # 时间自愈：池子不变（挂机）时，每过 MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS
+        # 放行一次 probe，让一次性模型宕机恢复后自愈，poison 批仍被压到每 5h 一次。
+        from config import (
+            MEMORY_LIVENESS_MAX_ATTEMPTS,
+            MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
+        )
+        from memory.temporal import cooldown_elapsed
+        synth_entry = (await self._aload_synth_backoff(lanlan_name)).get(backoff_key, {})
+        synth_attempts = synth_entry.get("n", 0)
+        if synth_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS and not cooldown_elapsed(
+            synth_entry.get("at"), MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
+        ):
+            logger.debug(
+                f"[Reflection] {lanlan_name}: backoff_key {backoff_key} 合成连续失败 "
+                f"{synth_attempts} 次 ≥ {MEMORY_LIVENESS_MAX_ATTEMPTS}，dead-letter 跳过"
+                f"（未到 {MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS}s 自愈窗口）"
             )
             return []
 
@@ -737,10 +872,12 @@ class ReflectionEngine:
             result = robust_json_loads(raw)
             if not isinstance(result, dict):
                 logger.warning(f"[Reflection] LLM 返回非 dict: {type(result)}")
+                await self._abump_synth_backoff(lanlan_name, backoff_key, "non-dict response")
                 return []
             reflection_text = result.get('reflection', '')
             if not isinstance(reflection_text, str):
                 logger.warning(f"[Reflection] reflection 字段非 str: {type(reflection_text)}")
+                await self._abump_synth_backoff(lanlan_name, backoff_key, "reflection field non-str")
                 return []
             reflection_text = reflection_text.strip()
             reflection_entity = result.get('entity', 'relationship')
@@ -783,9 +920,11 @@ class ReflectionEngine:
                 subject = None
         except Exception as e:
             logger.warning(f"[Reflection] 合成失败: {e}")
+            await self._abump_synth_backoff(lanlan_name, backoff_key, f"LLM/parse exception: {e}")
             return []
 
         if not reflection_text:
+            await self._abump_synth_backoff(lanlan_name, backoff_key, "empty reflection text")
             return []
 
         # Create pending reflection — id 已在函数开头由 source_fact_ids 决定
@@ -857,6 +996,11 @@ class ReflectionEngine:
                 reflections.append(reflection)
                 await self.asave_reflections(lanlan_name, reflections)
                 created = True
+
+        # reflection 已落盘（本次 append 或并发对方先写），清掉本次 unabsorbed
+        # 全集的失败退避记录——锁外调用（_aclear_synth_backoff 自取锁，避免
+        # reentrant 死锁）。
+        await self._aclear_synth_backoff(lanlan_name, backoff_key)
 
         # 无条件 mark_absorbed：幂等，且覆盖 save 成功后但在此崩溃的补跑情况
         # （fact_store 自己有锁，不需要在 reflection 锁内）
@@ -1303,6 +1447,9 @@ class ReflectionEngine:
                     continue
                 new_attempts = safe_int_field(r, 'refine_attempts') + 1
                 r['refine_attempts'] = new_attempts
+                # 戳失败时刻供 dead-letter 时间自愈（cooldown_elapsed），对偶
+                # persona 侧——一次性宕机顶到 MAX 后过 5h 冷却重新 probe。
+                r['last_refine_attempt_at'] = datetime.now().isoformat()
                 modified = True
                 if new_attempts == MEMORY_LIVENESS_MAX_ATTEMPTS:
                     logger.warning(
@@ -2470,7 +2617,16 @@ class ReflectionEngine:
                 for r in current:
                     if r.get('id') == rid:
                         r['recheck_attempts'] = (r.get('recheck_attempts') or 0) + 1
-                        await self.asave_reflections(lanlan_name, current)
+                        # 戳失败时刻供 dead-letter 时间自愈（cooldown_elapsed）
+                        r['last_recheck_attempt_at'] = datetime.now().isoformat()
+                        # 传 active-only：对齐 _abump_refine_attempts / arecord_mentions
+                        # 的 save 约定，让 promoted/denied 等 terminal 条目正常归档，
+                        # 不被多留一个周期（CodeRabbit 一致性 nitpick）。
+                        active = [
+                            x for x in current
+                            if x.get('status') not in REFLECTION_TERMINAL_STATUSES
+                        ]
+                        await self.asave_reflections(lanlan_name, active)
                         logger.debug(
                             f"[Recheck-Reflection] {lanlan_name} {rid}: "
                             f"recheck_attempts → {r['recheck_attempts']} ({reason})"
@@ -2500,6 +2656,7 @@ class ReflectionEngine:
         from config import (
             MEMORY_SCHEMA_VERSION_CURRENT as _SCHEMA_V,
             MEMORY_RECHECK_MAX_ATTEMPTS as _MAX_ATTEMPTS,
+            MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS as _SELF_HEAL,
         )
         from config.prompts.prompts_memory import (
             MEMORY_RECHECK_REFLECTION_PROMPT,
@@ -2507,6 +2664,7 @@ class ReflectionEngine:
         from memory.temporal import (
             normalize_event_when as _norm_when,
             compute_event_timestamps as _compute_ts,
+            cooldown_elapsed,
             ACTIVE_TEMPORAL_SCOPES,
         )
 
@@ -2517,8 +2675,12 @@ class ReflectionEngine:
             if (r.get('schema_version') or 1) < _SCHEMA_V
             and r.get('status') not in REFLECTION_TERMINAL_STATUSES
             # 重试预算：LLM 持续给出无效 temporal_scope 或抛异常的 entry
-            # 累计达上限后不再阻塞队列（Codex review on PR #1316 P2 catch）
-            and (r.get('recheck_attempts') or 0) < _MAX_ATTEMPTS
+            # 累计达上限后不再阻塞队列（Codex review on PR #1316 P2 catch）。
+            # 时间自愈：达上限的 entry 过 _SELF_HEAL 后放行一次 probe。
+            and (
+                (r.get('recheck_attempts') or 0) < _MAX_ATTEMPTS
+                or cooldown_elapsed(r.get('last_recheck_attempt_at'), _SELF_HEAL)
+            )
         ]
         if not candidates:
             return False
@@ -2622,6 +2784,7 @@ class ReflectionEngine:
         )
 
         # ── 锁内：reload + 找同 id + 更新字段 + save ──────────────
+        save_failed_reason: str | None = None
         async with self._get_alock(lanlan_name):
             current = await self._aload_reflections_full(lanlan_name)
             found = None
@@ -2640,7 +2803,23 @@ class ReflectionEngine:
             found['event_start_at'] = event_start_at
             found['event_end_at'] = event_end_at
             found['schema_version'] = _SCHEMA_V
-            await self.asave_reflections(lanlan_name, current)
+            try:
+                await self.asave_reflections(lanlan_name, current)
+            except Exception as e:
+                # 落盘失败也要计入 recheck_attempts：否则 cloudsave 维护态 /
+                # 只读 FS / 权限导致的持续写盘失败会让同一条 reflection 每 30s
+                # 原样重判、熔断永不触发（对齐上面 LLM 失败路径的 bump）。
+                # bump helper 自取锁，asyncio.Lock 不可重入，必须退出本锁后再调。
+                save_failed_reason = f"save failed: {e}"
+
+        if save_failed_reason is not None:
+            logger.warning(
+                f"[Recheck-Reflection] {lanlan_name} {rid}: {save_failed_reason}"
+            )
+            await self._abump_reflection_recheck_attempts(
+                lanlan_name, rid, save_failed_reason,
+            )
+            return False
 
         logger.info(
             f"[Recheck-Reflection] {lanlan_name} {rid}: v1→v{_SCHEMA_V} "

@@ -1,4 +1,4 @@
-# Minecraft 游戏代理插件
+# Minecraft 游戏插件
 
 把本地 Minecraft Agent (WebSocket) 桥接到 N.E.K.O 的实时 LLM 会话上：模型可以
 通过 `minecraft_task` 工具下发指令，agent 执行过程中的截图实时推到模型的视觉

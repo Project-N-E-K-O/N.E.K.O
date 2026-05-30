@@ -11,7 +11,7 @@ entry = "plugin.plugins.lifekit:LifeKitPlugin"
 name = "N.E.K.O Team"
 
 [plugin.i18n]
-default_locale = "zh-CN"
+default_locale = "en"
 locales_dir = "locales"
 
 [plugin.sdk]

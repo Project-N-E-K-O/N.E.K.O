@@ -68,14 +68,14 @@ Sua pasta de usuário\AppData\Local\N.E.K.O\logs
 
 ## Visão geral dos recursos
 
-- Conecta ao serviço HTTP local `STS2 AI Agent` e lê o estado do jogo.
-- Suporta execução manual de um passo, jogo semiautomático em segundo plano, pausa, retomada e parada.
-- Suporta três modos de decisão: `full-program`, `half-program` e `full-model`.
-- Suporta carregar documentos de estratégia por personagem; os arquivos de estratégia ficam em `strategies/`.
-- Suporta escolha de uma única carta pela gatinha: seleciona apenas uma carta dentre as ações `play_card` jogáveis no momento, envia o motivo primeiro e depois executa.
-- Suporta orientação suave da gatinha: o usuário ou a própria gatinha podem enviar instruções em linguagem natural, que serão consideradas na próxima rodada de decisão do LLM.
-- Suporta relatórios de observação em segundo plano: envia ao frontend o andar atual, combate, mão, intenções dos inimigos, justificativas do LLM e mais.
-- Suporta proteções de segurança: pausa em HP baixo, desaceleração em Boss/ataques perigosos, retomada automática após recuperação de HP, estratégia de sobrevivência no limite, maximização de valor e pontuação de sinergia.
+- Conecta-se ao serviço HTTP local `STS2 AI Agent` e lê o estado atual da run.
+- Permite consultar a situação atual de uma vez só: atualiza o estado uma vez e devolve juntos o snapshot, o resumo da situação e o pacote de sincronização da neko.
+- Permite controlar o autoplay em segundo plano: iniciar, pausar, retomar, parar e também executar diretamente o próximo passo sugerido.
+- Inclui modo de acompanhamento, que pode observar a partida com você e enviar comentários, lembretes e observações sem interromper o fluxo principal.
+- Permite ajustar a estratégia em linguagem natural: uma única frase do usuário pode virar um override de preferência ligado ao evento ou inimigo da cena atual.
+- Permite ver o próximo movimento sugerido antes de decidir se deseja realmente executá-lo.
+- Inclui proteções de segurança, como pausa com HP baixo, desaceleração diante de ataques perigosos, recuperação da velocidade quando o perigo passa e, quando for seguro, retomada do autoplay.
+- Também suporta envios passivos ao frontend: sincronização de estado, observações, pistas de acompanhamento e feedback de controle.
 
 ## Configuração deste plugin
 
@@ -86,406 +86,227 @@ Arquivo de configuração: `plugin.toml`
 | Item de configuração | Padrão | Descrição |
 | --- | --- | --- |
 | `base_url` | `http://127.0.0.1:8080` | Endereço do Agent local do Spire. |
-| `connect_timeout_seconds` | `5` | Tempo limite de conexão em segundos. |
-| `request_timeout_seconds` | `15` | Tempo limite da requisição em segundos. |
-| `poll_interval_idle_seconds` | `3` | Intervalo de polling em estado ocioso. |
-| `poll_interval_active_seconds` | `1` | Intervalo de polling enquanto o autojogo está em execução. |
-| `action_interval_seconds` | `1.5` | Intervalo extra entre ações. |
-| `post_action_delay_seconds` | `0.5` | Espera após executar uma ação para o estado estabilizar. |
-| `autoplay_on_start` | `false` | Se deve iniciar automaticamente o jogo ao iniciar o plugin. |
-| `semi_auto_autoplay` | `true` | Se deve criar o contexto de tarefa semiautomática ao iniciar o autojogo. |
-| `mode` | `half-program` | Modo atual de autojogo. |
-| `character_strategy` | `defect` | Nome da estratégia do personagem, correspondente a `strategies/<name>.md`. |
-| `max_consecutive_errors` | `3` | Número máximo de erros consecutivos; acima disso considera-se desconectado. |
-| `push_notifications` | `true` | Campo legado mantido por compatibilidade histórica. |
-| `event_stream_enabled` | `false` | Campo reservado; atualmente não é usado de fato. |
+| `connect_timeout_seconds` | `5` | Tempo limite de conexão, em segundos. |
+| `request_timeout_seconds` | `15` | Tempo limite da requisição, em segundos. |
+| `poll_interval_idle_seconds` | `3` | Intervalo de polling quando o plugin está ocioso. |
+| `poll_interval_active_seconds` | `1` | Intervalo de polling enquanto o autoplay está em execução. |
+| `action_interval_seconds` | `1.5` | Pausa extra entre ações. |
+| `post_action_delay_seconds` | `0.5` | Espera após cada ação para deixar a situação estabilizar. |
+| `autoplay_on_start` | `false` | Se o plugin deve começar a jogar automaticamente ao iniciar. |
+| `character_strategy` | `defect` | Estratégia padrão; em execução, ela é associada ao contexto de estratégia que melhor combina com a situação atual. |
+| `max_consecutive_errors` | `3` | Quantidade máxima de erros consecutivos antes de considerar a conexão em estado ruim. |
 
-### Modos de decisão
-
-`mode` suporta os seguintes valores, além dos aliases em chinês:
-
-| Modo | Alias chinês | Descrição |
-| --- | --- | --- |
-| `full-program` | `全程序` | Heurística puramente programática; não chama o modelo. |
-| `half-program` | `半程序` | Primeiro faz pré-verificações programáticas, depois uma única decisão do modelo, com validação de legalidade/fallback. |
-| `full-model` | `全模型` | Duas chamadas ao modelo: primeiro reasoning, depois final action; há checagens programáticas entre elas e validação final de legalidade ao fim. |
-
-### Estratégia de personagem
-
-`character_strategy` procura o documento de estratégia em `strategies/<name>.md`. Estratégias embutidas atualmente:
-
-- `defect`
-- `ironclad`
-- `silent_hunter`
-- `necrobinder`
-- `regent`
-
-Você pode adicionar novos arquivos Markdown em `strategies/` para expandir estratégias. Por exemplo:
-
-```text
-strategies/my_strategy.md
-```
-
-Depois, defina a configuração ou o parâmetro da entrada como:
-
-```text
-my_strategy
-```
-
-### Push para frontend e observação da gatinha
+### Envios ao frontend e observação de acompanhamento
 
 | Item de configuração | Padrão | Descrição |
 | --- | --- | --- |
-| `llm_frontend_output_enabled` | `true` | Se ações/erros do autojogo devem ser enviados ativamente ao frontend. |
-| `llm_frontend_output_probability` | `0.15` | Probabilidade de envio para ações comuns; converge para o intervalo `0.0 ~ 1.0`. Erros são sempre enviados. |
-| `neko_reporting_enabled` | `true` | Se relatórios de observação da gatinha devem ser enviados. |
-| `neko_report_interval_steps` | `1` | A cada quantos passos do autojogo um relatório de observação será enviado; no mínimo `1`. |
-| `neko_commentary_enabled` | `true` | Se deve gerar comentários em tempo real da gatinha dentro do relatório de observação. Se desativado, o relatório estruturado ainda será enviado, mas `live_commentary.text` permanecerá vazio. |
-| `neko_commentary_probability` | `0.65` | Probabilidade de ativação de comentários normais de baixa prioridade; converge para `0.0 ~ 1.0`. Cenários de alta prioridade como HP baixo, letal ou ataques muito altos podem ignorar essa probabilidade. |
-| `neko_commentary_min_interval_seconds` | `4` | Intervalo mínimo em segundos antes de repetir comentário para o mesmo cenário de baixa prioridade, usado para reduzir spam e falas repetidas. |
-| `neko_critical_commentary_always` | `true` | Se comentários de urgência `critical` / `high` devem sempre ser emitidos, por exemplo em HP crítico, letal ou ataques inimigos muito altos. |
-| `neko_guidance_max_queue` | `50` | Tamanho máximo da fila de orientação suave da gatinha. |
+| `llm_frontend_output_enabled` | `true` | Se ações e erros do autoplay podem ser enviados ao frontend. |
+| `llm_frontend_output_probability` | `1.0` | Probabilidade de envio das mensagens normais de ação. Erros e alguns feedbacks de controle importantes ainda podem ser forçados. |
+| `autoplay_push_probability` | `0.5` | Probabilidade de enviar sincronizações normais da partida quando o modo de acompanhamento não está ativo. |
+| `companion_push_probability` | `0.7` | Probabilidade de enviar sincronizações normais enquanto o modo de acompanhamento está ativo. |
+| `neko_reporting_enabled` | `true` | Se a capacidade de observação da neko fica habilitada. |
+| `neko_report_interval_steps` | `1` | A cada quantos passos do autoplay o conteúdo de observação é reorganizado. |
+| `neko_report_hud_enabled` | `true` | Se esse conteúdo de observação realmente é enviado ao HUD/canal de mensagens do frontend. |
+| `neko_commentary_enabled` | `true` | Se comentários e lembretes de acompanhamento podem ser gerados. |
+| `neko_commentary_probability` | `0.65` | Probabilidade de disparo de comentários normais de baixa prioridade. |
+| `neko_commentary_min_interval_seconds` | `4` | Intervalo mínimo antes de repetir comentários parecidos; serve para reduzir spam. |
+| `neko_critical_commentary_always` | `true` | Se alertas de prioridade alta devem sempre ser emitidos. |
+| `neko_guidance_max_queue` | `50` | Limite interno da fila para contexto relacionado a guias e preferências. |
 
-Os relatórios de observação da gatinha carregam metadados simplificados como `report`, `neko_context`, `live_commentary` e `task`, para que o frontend ou a lógica de diálogo reconheçam que isso é uma “observação de processo”, e não uma notificação de conclusão de tarefa. Para economizar tokens do usuário, o conteúdo enviado preserva apenas a ação atual, HP, mão, inimigos, resumo tático, orientações já consumidas e resumo da tarefa.
-
-`live_commentary` fornece ao frontend/TTS campos curtos de locução: `text`, `scene`, `mood`, `urgency`, `priority`, `tts`, `interrupt`, `tone` e `character_strategy`. Os comentários são escolhidos aleatoriamente a partir de um conjunto de templates por cena para reduzir repetição; também se ajustam pela estratégia do personagem, por exemplo `defect` tende a ser mais racional e `ironclad` mais estável. Atualmente cobre situação crítica, HP baixo, letal, ataque inimigo iminente, defesa, combate normal, recompensas, loja, ponto de descanso, eventos, mapa, além de comentários em nível de evento como fim de combate, relíquia-chave e conclusão da escolha de rota.
-
-### Proteções de segurança e ações autônomas
+### Proteção automática e controle de ritmo
 
 | Item de configuração | Padrão | Descrição |
 | --- | --- | --- |
-| `neko_auto_low_hp_threshold` | `0.3` | Quando a proporção atual de HP fica abaixo deste valor, o autojogo em segundo plano pausa autonomamente. |
-| `neko_auto_safe_hp_threshold` | `0.5` | Quando o HP se recupera até esta proporção, o autojogo pode retomar automaticamente. |
-| `neko_auto_dangerous_attack_threshold` | `20` | Desacelera automaticamente quando o dano recebido do inimigo atinge este valor e quebraria a defesa. |
-| `neko_auto_resume_after_low_hp` | `true` | Se deve permitir retomada automática após recuperar HP depois de uma pausa por vida baixa. |
-| `neko_desperate_enabled` | `true` | Se deve ativar a estratégia de sobrevivência desesperada. |
-| `neko_desperate_hp_threshold` | `0.2` | Proporção de HP que dispara a estratégia de sobrevivência desesperada. |
-| `neko_maximize_enabled` | `true` | Se ativa a seleção de cartas com maximização de benefício. |
-| `neko_synergy_enabled` | `true` | Se ativa a pontuação de sinergia/combinação. |
+| `neko_auto_low_hp_threshold` | `0.3` | Se a proporção de HP cair abaixo deste valor, o autoplay tenderá a pausar. |
+| `neko_auto_safe_hp_threshold` | `0.5` | Quando o HP volta a esta faixa, a situação pode voltar a ser tratada como segura. |
+| `neko_auto_dangerous_attack_threshold` | `20` | Se a intenção de dano inimiga atingir este limiar, a proteção de desaceleração pode entrar em ação. |
+| `neko_auto_resume_after_low_hp` | `true` | Se é permitido retomar automaticamente depois de uma pausa por HP baixo quando a situação volta a ser segura. |
+| `neko_desperate_enabled` | `true` | Se a postura de sobrevivência desesperada deve ser ativada. |
+| `neko_desperate_hp_threshold` | `0.2` | Proporção de HP que dispara essa postura de sobrevivência. |
+| `neko_maximize_enabled` | `true` | Se uma tendência mais forte a maximizar valor deve ser ativada. |
 
-As ações autônomas atuais incluem:
+## Formas recomendadas para usuários comuns
 
-- `pause`: pausa em vida baixa, aguardando comandos do usuário ou da gatinha.
-- `slow_down`: reduz temporariamente o intervalo de ações durante lutas de chefe ou ataques perigosos.
-- `resume`: retoma após cumprir a condição de vida segura.
+Usuários comuns não precisam decorar parâmetros de baixo nível. O mais confortável é passar a frase original para as entradas de nível mais alto que continuam ativas e deixar que o plugin decida se o pedido é para consultar a situação, ajustar a estratégia ou executar o próximo passo sugerido.
 
-## Frases recomendadas para usuários comuns
+Interpretação recomendada:
 
-Usuários comuns não precisam memorizar as entradas de baixo nível abaixo. Prefira passar as palavras originais do usuário para `sts2_neko_command`, e o plugin decide internamente se deve consultar status, dar conselhos, jogar uma carta de fato, executar um passo, iniciar o jogo automático, pausar, retomar, parar, revisar a jogada recente, responder dúvidas sobre o jogo automático, ou usar a frase como orientação suave durante o jogo automático.
-
-Regras de interação recomendadas:
-
-| Frase do usuário | Comportamento do plugin |
+| O que o usuário quer dizer | Capacidade mais adequada |
 | --- | --- |
-| `a spire conectou` / `qual a situação agora` | Apenas verificar conexão, status ou snapshot; não operar o jogo. |
-| `como jogar este turno` / `qual carta é melhor jogar` | Apenas recomendar uma carta jogável e explicar o motivo; não jogar automaticamente. |
-| `jogue uma carta para mim` / `escolha uma carta e jogue` | Após autorização explícita, escolher apenas uma das ações `play_card` e jogá-la. |
-| `dê um passo por mim` / `execute um passo` | Após autorização explícita, executar uma ação legal, podendo incluir terminar o turno, escolher recompensa ou se mover no mapa. |
-| `passe este andar para mim` / `jogue automaticamente um pouco` | Iniciar jogo semi-automático; condição de parada padrão: completar o andar atual. |
-| `defenda primeiro` / `não seja ganancioso com dano` | Enquanto o jogo automático está rodando, vira orientação suave para a próxima rodada de decisões; quando não está rodando, pedir esclarecimento de forma conservadora, sem agir. |
-| `como joguei agora` / `revise aquela carta` | Dar avaliação de jogada com base no snapshot leve mais recente; não operar o jogo. |
-| `por que joga assim` / `o que está fazendo` | Enquanto o jogo automático está rodando, responder sobre a estratégia atual e o raciocínio da situação; sem operações extras. |
-| `pause um pouco` / `continue` / `pare aí` | Pausar, retomar ou parar o jogo automático respectivamente. |
+| `o que está acontecendo agora` | `sts2_get_status` |
+| `me mostra a situação atual` | `sts2_read_state` |
+| `deixa ela continuar jogando` / `pausa o autoplay por agora` / `faz ela continuar` / `não precisa mais jogar sozinha` | entradas de controle de autoplay |
+| `ajusta a estratégia com base nisso: neste evento prefiro a rota de menor custo` | `sts2_apply_user_override` |
+| `me mostra o que ela quer fazer depois` | `sts2_get_planned_operation` |
+| `segue a sugestão` | `sts2_execute_planned_operation` |
+| `liga o modo de acompanhamento` / `desliga o modo de acompanhamento` | entradas de controle do modo de acompanhamento |
 
-Padrão seguro: consulta não opera, frases vagas não executam ações perigosas; somente quando o usuário diz explicitamente "jogue por mim", "execute", "jogue automaticamente" ou "assuma" é que ações reais são feitas.
+Fluxo recomendado:
+1. Primeiro veja a situação atual.
+2. Depois confira o que ela quer fazer em seguida.
+3. Se quiser mudar o critério, ajuste a estratégia com uma frase.
+4. Por fim, decida se executa esse passo ou se deixa o autoplay continuar.
 
 ## Entradas do plugin
 
-As entradas a seguir são expostas ao host e podem ser chamadas diretamente no N.E.K.O. Para cenários de usuários comuns, recomenda-se chamar primeiro `sts2_neko_command`; as outras entradas são principalmente interfaces de controle preciso para desenvolvedores.
-
-### `sts2_neko_command`
-
-Entrada-mestre de linguagem natural para Slay the Spire. Quando o usuário não especifica explicitamente uma ferramenta de baixo nível, prefira chamá-la.
-
-Parâmetros:
-
-- `command`: obrigatório, palavras originais do usuário. Exemplos: `como jogar este turno`, `jogue uma carta para mim`, `defenda primeiro`, `pause um pouco`.
-- `scope`: opcional, padrão `auto`. Valores possíveis: `auto`, `status`, `advice`, `one_card`, `one_action`, `autoplay`, `control`, `guidance`, `review`, `question`, `chat`.
-- `confirm`: opcional, padrão `false`. Usado para confirmar operações de alto risco como assumir o controle continuamente.
-
-O retorno inclui `intent`, `action`, `executed`, `needs_confirmation`, `summary` e o `result` subjacente.
+Estas são as capacidades públicas que realmente continuam expostas pelo script principal. Os nomes visíveis foram levados para um tom mais natural, mas os `entry id` internos seguem estáveis para não quebrar a integração do host.
 
 ### `sts2_health_check`
 
-Verifica se o serviço local de Spire Agent está disponível.
-
-### `sts2_refresh_state`
-
-Força uma atualização do estado atual de Spire.
+Verifica se o serviço local do Agent do Spire está realmente acessível. É uma boa primeira checagem ao iniciar, integrar ou investigar erros.
 
 ### `sts2_get_status`
 
-Obtém informações sobre estado de conexão, estado do jogo automático, modo atual, estratégia do personagem, tarefa semi-automática, erros recentes, ações recentes, etc.
+Mostra o estado geral do runtime: se a conexão está saudável, em que tela a run está, se o autoplay está rodando, se está em standby e como estão o modo atual e os erros recentes.
 
-### `sts2_get_snapshot`
+### `sts2_read_state`
 
-Obtém o snapshot do jogo mais recentemente cacheado e as ações atualmente executáveis.
+Atualiza a situação atual uma vez e devolve três camadas juntas:
+- o snapshot atual
+- o resumo atual da situação
+- o pacote atual de sincronização da neko
 
-### `sts2_step_once`
+Serve quando você quer ver tudo de uma vez antes de decidir o próximo movimento.
 
-Executa um passo conforme a estratégia atual.
+### `sts2_set_standby`
 
-### `sts2_play_one_card_by_neko`
-
-Permite que a gatinha escolha e jogue uma carta.
-
-Parâmetros:
-
-- `objective`: opcional, objetivo de autorização do usuário. Exemplo: `escolha uma carta e jogue por mim`.
-
-Comportamento:
-
-1. Lê o jogador atual, a mão, os inimigos e as ações legais.
-2. Mantém apenas as ações `play_card`.
-3. Permite que o modo/estratégia atual escolha uma carta.
-4. Primeiro envia ao frontend "qual carta está prestes a jogar e por quê".
-5. Revalida que a ação ainda é legal.
-6. Joga a carta e envia a observação de conclusão.
-
-Se atualmente não houver cartas jogáveis, retorna `idle` e envia o motivo da falha.
+Liga ou desliga o modo standby. Em standby, as ações deixam de ser executadas, mas a organização do estado e a preparação de sincronização continuam disponíveis.
 
 ### `sts2_start_autoplay`
 
-Inicia o loop de jogo semi-automático em segundo plano.
-
-Parâmetros:
-
-- `objective`: opcional, objetivo de autorização do usuário. Exemplo: `passe este andar para mim`.
-- `stop_condition`: condição de parada, padrão `current_floor`.
-
-`stop_condition` aceita:
-
-- `current_floor`: termina ao completar o andar atual ou entrar no próximo.
-- `current_combat` / `combat`: termina quando, durante a tarefa, tiver entrado em combate e depois saído.
-- `manual` / `none`: não termina automaticamente, requer parada manual.
-
-Após iniciar, o plugin cria um contexto de tarefa semi-automática e envia um evento de início de tarefa ao frontend. Ao concluir a tarefa, é enviado `semi_auto_task_completed`.
+Deixa ela continuar jogando. Inicia o autoplay em segundo plano e faz a situação atual seguir em frente por conta própria.
 
 ### `sts2_pause_autoplay`
 
-Pausa o jogo automático.
+Pausa o autoplay por enquanto. É útil quando você quer assumir o controle manualmente ou ajustar a estratégia antes do próximo movimento.
 
 ### `sts2_resume_autoplay`
 
-Retoma um jogo automático pausado cuja tarefa em segundo plano ainda existe. Se a tarefa em segundo plano não existe mais, retorna `idle` com segurança e não reinicia implicitamente o jogo automático.
+Faz ela voltar a jogar a partir do ponto em que estava pausada.
 
 ### `sts2_stop_autoplay`
 
-Para o jogo automático e limpa o contexto da tarefa semi-automática.
+Faz ela parar de jogar sozinha. Encerra completamente o autoplay em segundo plano e devolve o controle para você.
 
-### `sts2_get_history`
+### `sts2_enable_companion_mode`
 
-Obtém o histórico recente de ações e estados.
+Liga o modo de acompanhamento. Com ele ativo, o plugin passa a organizar a situação com mais frequência e a enviar observações, comentários e lembretes quando fizer sentido.
 
-Parâmetros:
+### `sts2_disable_companion_mode`
 
-- `limit`: número de entradas a retornar, padrão `20`, intervalo limitado a `1 ~ 100`.
+Desliga o modo de acompanhamento. Ele remove apenas a camada de comentários, mas mantém a leitura básica de estado e o controle do autoplay.
 
-### `sts2_send_neko_guidance`
+### `sts2_apply_user_override`
 
-Envia orientação suave da gatinha para o jogo automático em segundo plano. A orientação entra na fila e é injetada no contexto na próxima rodada de decisão do LLM.
+Ajusta a estratégia a partir de uma única nota do usuário. Ele interpreta sua frase no contexto da cena atual e a converte em um override ligado ao evento ou inimigo correspondente.
 
-Parâmetros:
+Esta entrada também aplica uma proteção extra:
+- se o autoplay estiver rodando, **ele o pausa primeiro**
+- depois de atualizar a estratégia, ele avisa que **se você quiser continuar, deve retomar o autoplay manualmente**
+- ele não continua a run por conta própria até que você decida isso explicitamente
 
-- `content`: obrigatório, conteúdo de orientação em linguagem natural. Exemplo: `defenda primeiro, sem pressa para causar dano`.
-- `step`: opcional, número do passo correspondente.
-- `type`: opcional, padrão `soft_guidance`.
+### `sts2_get_planned_operation`
 
-### `sts2_set_mode`
+Mostra o que ela quer fazer em seguida. É a opção certa se você quer inspecionar a próxima jogada antes de executá-la.
 
-Define o modo de jogo automático.
+### `sts2_execute_planned_operation`
 
-Parâmetros:
-
-- `mode`: aceita `full-program` / `全程序`, `half-program` / `半程序`, `full-model` / `全模型`.
-
-### `sts2_set_character_strategy`
-
-Define o nome da estratégia do personagem.
-
-Parâmetros:
-
-- `character_strategy`: após normalização do nome, é correspondido com `strategies/<name>.md`. Por exemplo, `defect` corresponde a `strategies/defect.md`.
-
-### `sts2_set_speed`
-
-Define parâmetros de velocidade e os escreve de volta no `plugin.toml` local.
-
-Parâmetros:
-
-- `action_interval_seconds`
-- `post_action_delay_seconds`
-- `poll_interval_active_seconds`
-
-## Modos de uso típicos
-
-### Verificar conexão
-
-1. Inicie *Slay the Spire 2*.
-2. Confirme que `http://127.0.0.1:8080/health` está acessível.
-3. No N.E.K.O, chame `sts2_health_check`.
-
-### Executar manualmente um passo
-
-Chame:
-
-```text
-sts2_step_once
-```
-
-O plugin escolherá e executará uma ação legal com base no `mode` e `character_strategy` atuais.
-
-### Deixar a gatinha jogar uma carta
-
-O usuário pode dizer à gatinha algo como:
-
-```text
-escolha uma carta e jogue por mim
-```
-
-O host deve chamar:
-
-```text
-sts2_play_one_card_by_neko
-```
-
-O plugin escolhe apenas dentre as cartas atualmente jogáveis, sem escolher fim de turno, mapa, recompensa ou outras ações.
-
-### Deixar a gatinha ajudar a passar de andar
-
-O usuário pode dizer:
-
-```text
-passe este andar para mim
-```
-
-O host deve chamar:
-
-```text
-sts2_start_autoplay
-```
-
-Parâmetros recomendados:
-
-```json
-{
-  "objective": "passe este andar para mim",
-  "stop_condition": "current_floor"
-}
-```
-
-Durante a execução da tarefa, eventos de observação são apenas relatórios de progresso e não representam conclusão. Somente ao receber o evento de conclusão da tarefa semi-automática é que se deve dizer ao usuário que este andar foi concluído.
-
-### Orientação durante o jogo
-
-Durante o jogo automático, o usuário ou a gatinha podem enviar orientação:
-
-```text
-defenda primeiro, não tome dano demais
-```
-
-Deve-se chamar:
-
-```text
-sts2_send_neko_guidance
-```
-
-Parâmetros recomendados:
-
-```json
-{
-  "content": "defenda primeiro, não tome dano demais",
-  "type": "soft_guidance"
-}
-```
-
-A orientação será considerada na próxima rodada de decisão do LLM. O modo `full-program` não depende do modelo, então o impacto da orientação suave é limitado.
+Executa diretamente o próximo passo sugerido.
 
 ## Eventos enviados ao frontend
 
-O plugin envia as seguintes categorias de eventos pelo canal de mensagens do host. Exceto início/conclusão de tarefa, erros e prévias de carta única, observações comuns tentam usar texto curto e metadata simplificada para reduzir consumo de tokens do usuário.
+O plugin envia vários tipos de informação passiva pelo canal de mensagens do host, organizados principalmente em três blocos:
 
-| Tipo de evento | Descrição |
-| --- | --- |
-| `action` | Observação comum de ação do jogo automático, controlada por probabilidade. |
-| `error` | Erro do jogo automático, envio forçado. |
-| `neko_report` | Relatório completo de observação da gatinha, incluindo situação atual, mão, inimigos, resumo tático e raciocínio do modelo. |
-| `neko_card_task_planned` | A tarefa de carta única da gatinha planeja jogar uma carta específica. |
-| `neko_card_task_completed` | Tarefa de carta única da gatinha executada. |
-| `neko_card_task_failed` | A tarefa de carta única da gatinha não pôde ser executada. |
-| `semi_auto_task_started` | Tarefa semi-automática iniciada. |
-| `semi_auto_task_completed` | Tarefa semi-automática concluída. |
-| `neko_autonomous_action` | O sistema pausou, reduziu velocidade ou retomou autonomamente. |
+1. **Sincronização de estado e situação**
+   - resumo da situação atual
+   - resumo da recomendação atual
+   - informações de sincronização enquanto o modo de acompanhamento está ativo
 
-Observação: `neko_report` é uma observação de processo, não uma notificação de conclusão de tarefa. O frontend ou a lógica de diálogo não devem descrever uma ação de passo único, jogar carta, fim de turno ou atualização de estado como "tarefa concluída", "chefe derrotado", "combate encerrado" ou "run completada". Se a gatinha quiser influenciar a próxima rodada de decisões, deve-se chamar `sts2_send_neko_guidance`; se quiser controlar o fluxo de forma rígida, deve-se chamar as entradas de pausa, retomada ou parada.
+2. **Feedback de controle do autoplay**
+   - autoplay iniciado
+   - pausado / retomado / parado
+   - aviso de que você precisa retomar manualmente após atualizar a estratégia
 
-## Problemas comuns
+3. **Avisos de acompanhamento e proteção**
+   - comentários de acompanhamento
+   - lembretes de risco
+   - pausa por vida baixa
+   - desaceleração por ataque perigoso
+   - recuperação da velocidade ou retomada do autoplay quando o perigo já passou
 
-### Falha de conexão ao chamar entradas do plugin
+Esses envios usam semântica passiva por padrão e não devem interromper à força a conversa principal. A frequência deles também depende de ajustes como:
+- `autoplay_push_probability`
+- `companion_push_probability`
+- `neko_commentary_probability`
+- `neko_report_hud_enabled`
 
-Verifique primeiro:
+## Solução de problemas mais comuns
 
-- Se o jogo já foi iniciado.
-- Se o Mod `STS2 AI Agent` foi colocado corretamente em `mods/` do jogo.
-- Se `http://127.0.0.1:8080/health` está acessível.
-- Se o `base_url` em `plugin.toml` está correto.
+### Falha de conexão ao chamar uma entrada do plugin
 
-### `http://127.0.0.1:8080/health` não abre
+Primeiro confira:
 
-Verifique em prioridade:
+- se o jogo já foi iniciado
+- se o mod `STS2 AI Agent` foi colocado corretamente em `mods/`
+- se `http://127.0.0.1:8080/health` está acessível
+- se `base_url` em `plugin.toml` está correto
 
-1. Se o jogo realmente já foi iniciado.
-2. Se `STS2AIAgent.dll`, `STS2AIAgent.pck` e `mod_id.json` foram todos copiados para a pasta `mods/` do diretório do jogo.
-3. Se os nomes dos arquivos foram alterados pelo sistema, duplicados ou colocados na pasta errada.
-4. Se você está operando no diretório do jogo do Steam, e não no diretório do repositório original.
-5. Se firewall ou software de segurança está bloqueando a porta local.
+### Não é possível abrir `http://127.0.0.1:8080/health`
 
-### O autojogo funciona, mas o frontend não recebe mensagens
+Verifique nesta ordem:
 
-Verifique:
+1. se o jogo realmente está em execução
+2. se `STS2AIAgent.dll`, `STS2AIAgent.pck` e `mod_id.json` foram todos copiados para `mods/`
+3. se os nomes dos arquivos foram alterados, duplicados ou colocados em pasta errada
+4. se você está operando na pasta do jogo da Steam, e não no repositório upstream
+5. se algum firewall ou software de segurança está bloqueando a porta local
 
-- Se `llm_frontend_output_enabled` está em `true`.
-- Se `llm_frontend_output_probability` está muito baixo.
-- Se `neko_reporting_enabled` está em `true`.
-- Durante testes de integração, você pode definir primeiro `llm_frontend_output_probability` como `1`.
-- Se o frontend do host está realmente recebendo as mensagens enviadas pelo plugin.
+### O autoplay roda, mas o frontend não recebe mensagens
 
-### A orientação no meio da tarefa não tem efeito visível
+Confira:
 
-Verifique:
+- se `llm_frontend_output_enabled` está em `true`
+- se `llm_frontend_output_probability` não está baixo demais
+- se `neko_reporting_enabled` está em `true`
+- durante a integração, você pode subir temporariamente `llm_frontend_output_probability` para `1`
+- se o frontend do host está realmente recebendo as mensagens do plugin
 
-- Se o modo atual é `half-program` ou `full-model`.
-- Se `sts2_send_neko_guidance` retornou `ok`.
-- Se o conteúdo da orientação é específico o suficiente, por exemplo “priorize defesa”, “ataque primeiro o inimigo com menos HP” ou “guarde a poção”.
-- Se as ações legais atuais realmente conseguem satisfazer a orientação.
+### A orientação no meio da partida não parece surtir efeito
 
-### A tarefa semi-automática demora demais para terminar
+Confira:
 
-Verifique `stop_condition`:
+- se o plugin não está em standby no momento
+- se `sts2_send_neko_guidance` devolveu `ok`
+- se a orientação é específica o suficiente, por exemplo `priorize defesa`, `ataque primeiro o inimigo com menos vida`, `guarde a poção`
+- se as ações legais atuais realmente permitem cumprir essa orientação
 
-- Se for `manual` / `none`, a tarefa não terminará automaticamente; é preciso chamar `sts2_stop_autoplay`.
-- Se for `current_combat`, a tarefa termina após entrar em combate durante a tarefa e depois sair dele.
-- Se for `current_floor`, normalmente termina ao concluir o andar atual ou ao entrar no próximo.
+### A tarefa semiautomática não termina
 
-Você pode chamar `sts2_get_status` para verificar `autoplay.task`.
+Confira `stop_condition`:
 
-### Travou em evento, popup ou estado de transição
+- se for `manual` / `none`, a tarefa não termina sozinha e você precisa chamar `sts2_stop_autoplay`
+- se for `current_combat`, ela termina depois que durante a tarefa entrou em combate e depois saiu dele
+- se for `current_floor`, normalmente termina ao limpar o andar atual ou ao entrar no próximo
 
-A versão atual já trata eventos, popups e estados de transição. As ações prioritárias incluem:
+Você pode usar `sts2_get_status` para inspecionar `autoplay.task`.
+
+### Fica preso em eventos, pop-ups ou estados de transição
+
+A versão atual já lida com eventos, pop-ups e estados de transição. As ações prioritárias incluem:
 
 - `confirm_modal`
 - `dismiss_modal`
 - `choose_event_option`
 - `proceed`
 
-Se ainda travar, use primeiro `sts2_get_snapshot` para verificar o `screen` atual e `available_actions`.
+Se ainda assim travar, primeiro use `sts2_read_state` para revisar o `screen` e `available_actions` atuais.
 
-### O autojogo parou ou ficou lento de repente
+### O autoplay para ou fica lento de repente
 
-Pode ter ativado uma proteção de segurança:
+Pode ser que alguma proteção de segurança tenha sido ativada:
 
-- Pausa quando a proporção de HP cai abaixo de `neko_auto_low_hp_threshold`.
-- Desacelera em lutas de Boss ou ataques perigosos.
-- Se `neko_auto_resume_after_low_hp` estiver em `true`, pode retomar automaticamente depois que o HP se recuperar até `neko_auto_safe_hp_threshold`.
+- ele pausa se a proporção de HP cair abaixo de `neko_auto_low_hp_threshold`
+- ele desacelera em Boss ou diante de ataques perigosos
+- se `neko_auto_resume_after_low_hp` estiver em `true`, ele pode retomar quando o HP voltar a `neko_auto_safe_hp_threshold`
 
-Você pode chamar `sts2_get_status` para verificar o estado, ou usar `sts2_resume_autoplay` / `sts2_stop_autoplay` para lidar com isso.
+Você pode usar `sts2_get_status` para verificar o estado, ou chamar `sts2_resume_autoplay` / `sts2_stop_autoplay` para intervir.

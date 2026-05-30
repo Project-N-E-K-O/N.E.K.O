@@ -384,9 +384,14 @@ async function processIncrementalTranslationQueue(requestSnapId) {
         if (requestSnapId !== incrementalRequestId) return;
 
         var targetLanguage = userLanguage !== null ? userLanguage : 'zh';
+        var translateHeaders = { 'Content-Type': 'application/json' };
+        var translateSec = window.nekoLocalMutationSecurity;
+        if (translateSec && typeof translateSec.getMutationHeaders === 'function') {
+            try { Object.assign(translateHeaders, await translateSec.getMutationHeaders()); } catch (_) { }
+        }
         var response = await fetch('/api/translate', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: translateHeaders,
             body: JSON.stringify({
                 text: textToTranslate,
                 target_lang: targetLanguage,

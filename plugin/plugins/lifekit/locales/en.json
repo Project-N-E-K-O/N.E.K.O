@@ -1,4 +1,6 @@
 {
+  "plugin.name": "LifeKit",
+  "plugin.description": "Location-based life services: weather lookups, hourly forecasts, travel advice, route planning, saved-location management, and nearby POI search.",
   "wmo": {
     "0": "Clear sky",
     "1": "Mainly clear",

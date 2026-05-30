@@ -136,14 +136,69 @@ export interface PluginMeta {
   dependencies?: PluginDependency[]
   input_schema?: JSONSchema
   host_plugin_id?: string
-  i18n?: {
-    default_locale?: string
-    locales_dir?: string
-    messages?: Record<string, Record<string, string>>
-    [key: string]: any
-  }
+  i18n?: Record<string, any>
   status?: string
   list_actions?: PluginListAction[]
+  install_source?: PluginInstallSource
+}
+
+/**
+ * Install-source metadata attached by the backend's `_attach_install_source`
+ * injector. Matches the shape of `plugins.lock.json` entries (see
+ * `plugin.server.application.install_source.models`).
+ *
+ * `source` is always present and is one of:
+ *   - "builtin"  — shipped with the app
+ *   - "manual"   — user dropped the directory in by hand (or legacy entry)
+ *   - "imported" — installed via /plugin-cli/upload-and-install
+ *   - "market"   — installed via the plugin market bridge
+ *   - "unknown"  — manager unavailable / plugin not matched; treat as absent
+ */
+export type PluginInstallSourceChannel =
+  | 'builtin'
+  | 'manual'
+  | 'imported'
+  | 'market'
+  | 'unknown'
+
+export interface PluginInstallSourceDetailMarket {
+  plugin_market_id: string
+  version: string
+  /** v2 (neko-market-version-sync §3.1.1):
+   *  Market 的发布渠道。后端按 Pydantic ``Literal["stable", "beta"]`` 返回；
+   *  lock 解析失败时会回退到 ``"stable"``。前端代码把任何非 stable / beta
+   *  的字符串（含 ``undefined`` 转出来的容错值）统一映射为 ``"unknown"``，
+   *  这样 channel 的取值集合在 TypeScript 层面是封闭的，加新值时编译器
+   *  会强制检查所有消费点。具体收窄走 ``frontend/plugin-manager/src/utils/
+   *  narrowChannel.ts::narrowMarketChannel``。 */
+  channel?: 'stable' | 'beta' | 'unknown'
+  package_url: string
+  /** v2: Market 上分发的 .neko-plugin 包 sha256（64 hex）。v1 entry
+   *  parser 升上来时为空字符串。 */
+  package_sha256?: string
+  /** v2: 包内 metadata.toml [payload].hash；可能为 null。 */
+  payload_hash?: string | null
+  /** v2: Market 上 latest_version.created_at；v1 entry 升上来时回退到
+   *  entry.installed_at。 */
+  published_at?: string
+  previous_version: string | null
+}
+
+export interface PluginInstallSourceDetailImported {
+  package_filename: string
+  package_sha256: string
+}
+
+export type PluginInstallSourceDetail =
+  | PluginInstallSourceDetailMarket
+  | PluginInstallSourceDetailImported
+  | null
+
+export interface PluginInstallSource {
+  source: PluginInstallSourceChannel
+  reason: string | null
+  installed_at: string | null
+  source_detail: PluginInstallSourceDetail
 }
 
 // JSON Schema（简化版），用于描述插件入口参数

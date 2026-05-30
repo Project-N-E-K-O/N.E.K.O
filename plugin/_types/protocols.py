@@ -438,6 +438,7 @@ class PluginContextProtocol(Protocol):
         target_lanlan: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         priority: int = 0,
+        coalesce_key: Optional[str] = None,
         # v1 legacy (deprecated, removed in v0.9)：
         message_type: Optional[str] = None,
         description: Optional[str] = None,

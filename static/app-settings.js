@@ -17,8 +17,21 @@
     let _syncTimerId = null;
     // 同步间隔（毫秒）：60秒
     const SYNC_INTERVAL_MS = 60000;
-    // 隐私模式 A/B 实验组分支名（与 utils/token_tracker.py 的 _TELEMETRY_BRANCHES 对齐）
-    const _PRIVACY_OFF_BRANCH = 'privacy_default_off_v1';
+    // A/B 实验组分支名（与 utils/token_tracker.py 的 _TELEMETRY_BRANCHES 对齐）。
+    // 实验组把主动搭话里的「屏幕分享来源」（proactiveVisionChatEnabled）首启默认翻成
+    // 关；隐私模式默认值不动（仍按地区分流）。屏幕分享来源只在隐私关（vision 开）时才
+    // 有意义，海外默认隐私开 → 对该实验天然 no-op，A/B 差异主要体现在国内。
+    const _VISION_CHAT_AB_BRANCH = 'vision_chat_default_off';
+    // 海外专属 A/B 实验组分支名（与 utils/token_tracker.py 的 _TELEMETRY_BRANCHES 对齐）。
+    // 把主动搭话间隔（proactiveChatInterval）首启默认从控制组的 15s 拉长到 20s，看更慢的
+    // 搭话节奏对海外用户的影响；不动隐私 / 屏幕分享来源默认值，也没有弹窗。方向与
+    // vision_chat_default_off 相反——只在海外（_isUserRegionChina() 为 false）才覆写，
+    // 国内落到本组天然 no-op。两组抽签互斥（同设备只落一个 branch），但目标地区不重叠
+    // （vision 差异在国内、本组只影响海外），可同时在线。
+    const _PROACTIVE_INTERVAL_AB_BRANCH = 'proactive_interval_20s';
+    // 实验组的主动搭话间隔默认值（秒）。控制组默认见 app-state.js 的
+    // DEFAULT_PROACTIVE_CHAT_INTERVAL（15s）。
+    const _PROACTIVE_INTERVAL_AB_VALUE = 20;
     // 「首启等 branch 决议」专属 marker：只有 localStorage 走过本 PR 的首启分支才会写
     // 「1」，branch 决议后清掉。用 marker 在不在判断「应不应该套 A/B 覆写」，避免拿
     // 「没见过 branch 」当首启代名——升级用户也都没见过 branch，那个口径会误伤他们的
@@ -452,7 +465,7 @@
                 });
             } else {
                 // 首次启动：默认按 A/B 控制组行为——隐私模式按用户地区分流（仅中国
-                // 地区默认关闭）。实验组（privacy_default_off_v1）的「一律默认关闭」
+                // 地区默认关闭）。实验组（privacy_default_off_v2）的「国内默认打开隐私」
                 // 由 loadSettingsFromServer 拿到 telemetryBranch 后追加覆写，见下方
                 // 异步合并块。
                 if (_isUserRegionChina()) {
@@ -507,9 +520,10 @@
         S.userLanguage = subtitleState ? subtitleState.userLanguage : (localStorage.getItem('userLanguage') || null);
 
         // 异步：从服务器加载对话设置并合并（不阻塞 UI）
-        // 捕获 fetch 发起时的 vision 值：若用户在 fetch 返回前手动切了 toggle，
+        // 捕获 fetch 发起时的屏幕分享来源值：若用户在 fetch 返回前手动切了 toggle，
         // 后续 A/B 覆写就跳过，避免把用户的显式选择刷掉
-        const _visionAtFetchStart = S.proactiveVisionEnabled;
+        const _visionChatAtFetchStart = S.proactiveVisionChatEnabled;
+        const _proactiveIntervalAtFetchStart = S.proactiveChatInterval;
         const _firstLaunchPending = (() => {
             try { return localStorage.getItem(_FIRST_LAUNCH_PENDING_KEY) === '1'; } catch (_) { return false; }
         })();
@@ -521,27 +535,54 @@
                 let hasUpdate = false;
 
                 // A/B test 覆写：必须是本 PR 之后真·首启（_FIRST_LAUNCH_PENDING_KEY 存在）+
-                // 分支 = 实验组 + 服务器没有云端 vision 偏好 + 用户没在 fetch 间隙
-                // 手动切 toggle + 本地 vision 值仍等于控制组默认（即用户也没在之前的
-                // offline session 里改过），才把隐私模式默认关掉。升级用户没有 pending
-                // marker 不会被误覆写；offline 首启把 marker 留在 localStorage，下次
-                // 在线启动再补；offline 期间用户改过 toggle 时本地值跟控制组默认会拉
-                // 开差距，保留用户选择
-                const noServerVisionPref = !serverSettings ||
-                    serverSettings.proactiveVisionEnabled === undefined;
-                const userToggledDuringFetch = S.proactiveVisionEnabled !== _visionAtFetchStart;
-                const controlGroupDefaultVision = _isUserRegionChina();
-                const localVisionMatchesControlDefault =
-                    S.proactiveVisionEnabled === controlGroupDefaultVision;
+                // 分支 = 实验组 + 服务器没有云端屏幕分享来源偏好 + 用户没在 fetch 间隙手动
+                // 切 toggle + 本地值仍等于控制组默认（即用户也没在之前的 offline session
+                // 里改过），才套实验组默认。实验组把屏幕分享来源默认翻成「关」
+                // （proactiveVisionChatEnabled=false）。控制组默认是「开」（true，见
+                // app-state.js:145 / loadSettings 的 ?? true），与地区无关；屏幕分享来源
+                // 只在隐私关时才有意义，海外默认隐私开 → 翻不翻都 no-op，A/B 差异在国内
+                // 体现。升级用户没有 pending marker 不会被误覆写；offline 首启把 marker
+                // 留在 localStorage，下次在线启动再补；offline 期间用户改过 toggle 时本地
+                // 值会跟控制组默认拉开差距，保留用户选择
+                const noServerVisionChatPref = !serverSettings ||
+                    serverSettings.proactiveVisionChatEnabled === undefined;
+                const userToggledDuringFetch = S.proactiveVisionChatEnabled !== _visionChatAtFetchStart;
+                const localVisionChatMatchesControlDefault =
+                    S.proactiveVisionChatEnabled === true;
                 if (_firstLaunchPending
-                        && telemetryBranch === _PRIVACY_OFF_BRANCH
-                        && noServerVisionPref
+                        && telemetryBranch === _VISION_CHAT_AB_BRANCH
+                        && noServerVisionChatPref
                         && !userToggledDuringFetch
-                        && localVisionMatchesControlDefault) {
-                    if (S.proactiveVisionEnabled !== true) {
-                        S.proactiveVisionEnabled = true;
+                        && localVisionChatMatchesControlDefault) {
+                    if (S.proactiveVisionChatEnabled !== false) {
+                        S.proactiveVisionChatEnabled = false;
                         hasUpdate = true;
-                        console.log('[app-settings] A/B 实验组', telemetryBranch, '：隐私模式默认关闭');
+                        console.log('[app-settings] A/B 实验组', telemetryBranch, '：屏幕分享来源默认关闭');
+                    }
+                }
+                // A/B test 覆写（海外专属）：与上方 vision 实验对称，但目标地区相反——只在
+                // 海外（!_isUserRegionChina()）真·首启时，把主动搭话间隔默认值从控制组的
+                // DEFAULT_PROACTIVE_CHAT_INTERVAL（15s）拉长到 _PROACTIVE_INTERVAL_AB_VALUE
+                // （20s）。守卫与 vision 同款：服务器无云端间隔偏好 + 用户没在 fetch 间隙手
+                // 动改 + 本地值仍等于控制组默认（即也没在之前 offline session 里改过）。国内
+                // 落到本组天然 no-op；与 vision_chat_default_off（差异在国内）目标地区不重
+                // 叠，可同时在线。本组只改默认值、无弹窗。
+                const noServerIntervalPref = !serverSettings ||
+                    serverSettings.proactiveChatInterval === undefined;
+                const userChangedIntervalDuringFetch =
+                    S.proactiveChatInterval !== _proactiveIntervalAtFetchStart;
+                const localIntervalMatchesControlDefault =
+                    S.proactiveChatInterval === C.DEFAULT_PROACTIVE_CHAT_INTERVAL;
+                if (_firstLaunchPending
+                        && telemetryBranch === _PROACTIVE_INTERVAL_AB_BRANCH
+                        && !_isUserRegionChina()
+                        && noServerIntervalPref
+                        && !userChangedIntervalDuringFetch
+                        && localIntervalMatchesControlDefault) {
+                    if (S.proactiveChatInterval !== _PROACTIVE_INTERVAL_AB_VALUE) {
+                        S.proactiveChatInterval = _PROACTIVE_INTERVAL_AB_VALUE;
+                        hasUpdate = true;
+                        console.log('[app-settings] A/B 实验组', telemetryBranch, '：主动搭话间隔默认', _PROACTIVE_INTERVAL_AB_VALUE, '秒（海外）');
                     }
                 }
                 // 只要 server 给了 branch，本次决议就算完成（不管控制组还是实验组、
@@ -600,6 +641,19 @@
                     } else if (typeof window.scheduleProactiveChat === 'function') {
                         window.scheduleProactiveChat();
                     }
+                }
+
+                // 把 branch 暴露给情境弹窗模块（app-context-prompt.js）并广播——必须放在
+                // 所有设置合并（A/B 覆写 + server merge + saveSettings）之后。否则被缓存的
+                // context 在 branch-resolved 重放时，_isActionable 会读到覆写前的旧
+                // proactiveVisionChatEnabled，误判该不该弹（Codex P2）。GET 失败
+                // telemetryBranch 为 null 时不挂，弹窗模块拿不到实验组标识默认不弹
+                // （fail-closed，宁可漏弹也不要弹给控制组）。
+                if (telemetryBranch) {
+                    window.nekoTelemetryBranch = telemetryBranch;
+                    window.dispatchEvent(new CustomEvent('neko:telemetry-branch-resolved', {
+                        detail: { branch: telemetryBranch },
+                    }));
                 }
             }).finally(() => {
                 // 必须等 GET 解析后再起 periodic sync：否则 60s 间隔的 POST 可能

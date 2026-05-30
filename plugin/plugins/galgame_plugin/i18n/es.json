@@ -7,6 +7,8 @@
   "entries.galgame_install_textractor.description": "Detecta, descarga e instala TextractorCLI.exe, y luego actualiza el estado del puente de galgame_plugin y del lector de memoria.",
   "entries.galgame_download_rapidocr_models.name": "Descargar modelos de RapidOCR",
   "entries.galgame_download_rapidocr_models.description": "Descarga los archivos de modelo que faltan para el idioma actual de RapidOCR y la version de OCR en la cache de modelos del plugin.",
+  "entries.galgame_set_rapidocr_lang.name": "Cambiar idioma de RapidOCR",
+  "entries.galgame_set_rapidocr_lang.description": "Cambia el modelo de idioma de reconocimiento de texto de RapidOCR y la version de OCR; al cambiar el idioma manualmente se desactiva la deteccion automatica.",
   "entries.galgame_install_dxcam.name": "Instalar DXcam",
   "entries.galgame_install_dxcam.description": "Detecta e instala la dependencia de capturas DXcam, y luego actualiza el estado del backend de captura OCR de galgame_plugin.",
   "entries.galgame_get_snapshot.name": "Obtener instantanea de galgame",

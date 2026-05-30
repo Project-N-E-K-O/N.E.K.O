@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import ipaddress
 import io
+import logging
 import os
 import re
 from typing import TYPE_CHECKING, Any
@@ -31,6 +32,7 @@ _DEFAULT_HEALTH_PATH = "/api/capture/health"
 _DEFAULT_SCREENSHOT_PATH = "/api/capture/screenshot"
 _TARGET_TITLE_MAX_CHARS = 512
 _SAFE_TITLE_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+_LOGGER = logging.getLogger(__name__)
 
 
 def _resolve_default_base_url() -> str:
@@ -115,6 +117,7 @@ class ElectronCaptureBackend:
             )
             return resp.status_code == 200
         except Exception:
+            _LOGGER.debug("electron capture health probe failed", exc_info=True)
             return False
 
     def describe_target(self, target: "DetectedGameWindow") -> str:
