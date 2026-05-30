@@ -10248,13 +10248,33 @@ async function renameMaster() {
     } else {
         newName = prompt(promptText, oldName);
     }
-    if (!newName || newName.trim() === '' || newName.trim() === oldName) return;
+    const normalizedNewName = normalizeCharacterFieldName(newName);
+    if (!normalizedNewName || normalizedNewName === oldName) return;
     try {
-        const resp = await fetch('/api/characters/master/' + encodeURIComponent(oldName) + '/rename', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ new_name: newName.trim() })
-        });
+        const useBodyFallback = /[\\/]/.test(oldName);
+        let resp;
+        if (useBodyFallback) {
+            // 旧配置可能含路径分隔符，无法可靠放进 path 参数，改用普通保存接口修复档案名。
+            const { data, duplicateKey } = collectCharacterFields(form, {
+                baseData: { '档案名': normalizedNewName },
+                excludeFieldNames: ['档案名'],
+            });
+            if (duplicateKey) {
+                showMessage(window.t ? window.t('character.fieldExists') : '该设定已存在', 'error');
+                return;
+            }
+            resp = await fetch('/api/characters/master', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+        } else {
+            resp = await fetch('/api/characters/master/' + encodeURIComponent(oldName) + '/rename', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ new_name: normalizedNewName })
+            });
+        }
         const result = await resp.json();
         if (result.success) {
             showMessage(window.t ? window.t('character.renameSuccess') : '重命名成功', 'success');

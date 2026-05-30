@@ -587,6 +587,61 @@ async def test_rename_master_adds_hidden_ai_context_and_master_save_preserves_it
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_update_master_body_rename_fallback_repairs_legacy_path_name(monkeypatch):
+    monkeypatch.setattr("utils.language_utils.get_global_language_full", lambda: "zh-CN")
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            characters_router_module = reload_module("main_routers.characters_router")
+            legacy_characters = cm.load_characters()
+            legacy_characters["主人"]["档案名"] = "旧/主人"
+            legacy_characters["主人"]["昵称"] = "旧昵称"
+            cm.save_characters(legacy_characters)
+
+            repair_result = await characters_router_module.update_master(
+                _DummyRequest({"档案名": "修复主人", "昵称": "柚希"})
+            )
+            assert repair_result["success"] is True
+            saved_after_repair = cm.load_characters()["主人"]
+            assert saved_after_repair["档案名"] == "修复主人"
+            assert saved_after_repair["昵称"] == "柚希"
+            rename_events = saved_after_repair["_reserved"]["ai_context"]["rename_events"]
+            assert rename_events[-1]["old_name"] == "旧/主人"
+            assert rename_events[-1]["new_name"] == "修复主人"
+            initial_count = len(rename_events)
+
+            bypass_result = await characters_router_module.update_master(
+                _DummyRequest({"档案名": "再次绕过", "昵称": "柚希2"})
+            )
+            assert bypass_result["success"] is True
+            saved_after_bypass = cm.load_characters()["主人"]
+            assert saved_after_bypass["档案名"] == "修复主人"
+            assert saved_after_bypass["昵称"] == "柚希2"
+            assert len(saved_after_bypass["_reserved"]["ai_context"]["rename_events"]) == initial_count
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_rename_catgirl_rolls_back_memory_and_suppresses_switch_notice_on_persist_failure():
     with TemporaryDirectory() as td:
         cm = _make_config_manager(Path(td))

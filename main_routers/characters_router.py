@@ -1096,6 +1096,13 @@ def _validate_profile_name(name: str) -> str | None:
     return None
 
 
+def _profile_name_contains_path_separator(name: str) -> bool:
+    return validate_character_name(
+        str(name or "").strip(),
+        max_units=PROFILE_NAME_MAX_UNITS,
+    ).code == 'contains_path_separator'
+
+
 def _filter_mutable_catgirl_fields(data: dict) -> dict:
     """过滤掉角色通用编辑接口不允许写入的保留字段。"""
     if not isinstance(data, dict):
@@ -3174,6 +3181,15 @@ async def update_master(request: Request):
         previous_profile_name = str(previous_master.get('档案名') or '').strip()
     requested_profile_name = str(data.get('档案名') or '').strip()
     profile_name = previous_profile_name or requested_profile_name
+    renamed_via_body_fallback = False
+    if (
+        previous_profile_name
+        and requested_profile_name
+        and requested_profile_name != previous_profile_name
+        and _profile_name_contains_path_separator(previous_profile_name)
+    ):
+        profile_name = requested_profile_name
+        renamed_via_body_fallback = True
     err = _validate_profile_name(profile_name)
     if err:
         return JSONResponse({'success': False, 'error': err}, status_code=400)
@@ -3185,6 +3201,8 @@ async def update_master(request: Request):
     next_master['档案名'] = profile_name
     if isinstance(previous_master, dict) and isinstance(previous_master.get('_reserved'), dict):
         next_master['_reserved'] = copy.deepcopy(previous_master['_reserved'])
+    if renamed_via_body_fallback:
+        _append_profile_rename_event(next_master, previous_profile_name, profile_name)
     characters['主人'] = next_master
     await _config_manager.asave_characters(characters)
     # 自动重新加载配置
