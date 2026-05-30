@@ -21,6 +21,7 @@ from config import (
     APP_NAME,
     CONFIG_FILES,
     DEFAULT_CONFIG_DATA,
+    GEOIP_FORCE_NON_MAINLAND,
     RESERVED_FIELD_SCHEMA,
 )
 from config.prompts.prompts_chara import get_lanlan_prompt, is_default_prompt
@@ -2920,6 +2921,16 @@ class ConfigManager:
 
     def _check_non_mainland(self) -> bool:
         """Dual validation: both HTTP IP geo AND Steam geo must indicate non-mainland."""
+        # 调试开关：config.GEOIP_FORCE_NON_MAINLAND 非 None 时直接返回它，绕过真实检测。
+        # 生产保持 None（走下方双判）。改 config/__init__.py 那个常量即可，不动这里。
+        if GEOIP_FORCE_NON_MAINLAND is not None:
+            print(
+                f"[GeoIP] override active: forcing non-mainland={GEOIP_FORCE_NON_MAINLAND} "
+                "(config.GEOIP_FORCE_NON_MAINLAND)",
+                file=sys.stderr,
+            )
+            return GEOIP_FORCE_NON_MAINLAND
+
         if ConfigManager._region_cache is not None:
             return ConfigManager._region_cache
 

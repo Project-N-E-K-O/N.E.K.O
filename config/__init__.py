@@ -19,6 +19,13 @@ logger = logging.getLogger(f"{APP_NAME}.{__name__}")
 # GPT-SoVITS voice_id 前缀(角色管理中使用 "gsv:<voice_id>" 格式标识 GPT-SoVITS 声音)
 GSV_VOICE_PREFIX = "gsv:"
 
+# GeoIP 区域判定的调试开关（ConfigManager._check_non_mainland 读取）：
+#   None  → 正常走真实检测（HTTP IP geo + Steam geo 双判），生产默认值
+#   True  → 强制判定为非中国大陆（走 lanlan.app 免费路径）
+#   False → 强制判定为中国大陆
+# 调试时改这里即可，不用动 config_manager 的检测逻辑；上线保持 None。
+GEOIP_FORCE_NON_MAINLAND = None
+
 # 角色档案保留字段（统一管理）
 # - system: 由系统指定功能维护，不允许通用角色编辑接口直接修改
 # - workshop: 创意工坊导入/发布流程专用，不应从外部角色卡直接透传
