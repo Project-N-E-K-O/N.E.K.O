@@ -61,13 +61,37 @@
 
     // DOM refs
     var topBar = null;
-    var actionBtns = null; // the ✓ / × floating div
+    // (旧的独立 ✓/× actionBtns 已并入标注工具栏 toolbarEl)
     var tabScreenshot = null;
     var tabHideNeko = null;
     var activeTab = 'screenshot'; // 'screenshot' | 'hideNeko'
 
     var HANDLE_SIZE = 8;
     var MIN_SEL = 10;
+
+    // ======================== Annotation state ========================
+    // 标注全部以"图片自然坐标"存储，渲染时经 mapFn 映射到目标画布。
+    // 这样窗口 resize、选区 resize 都不破坏标注，烤制时只是坐标平移。
+    var currentTool = 'select'; // 'select'|'rect'|'ellipse'|'arrow'|'pen'|'highlighter'|'text'|'mosaic'
+    var DRAW_TOOLS = { rect: 1, ellipse: 1, arrow: 1, pen: 1, highlighter: 1, text: 1, mosaic: 1 };
+    var currentColor = '#ff3b30';
+    var currentStrokeWidth = 4; // 图片自然坐标下的线宽基准
+    var annotations = [];       // 已提交标注
+    var redoStack = [];         // 重做栈
+    var annoDraft = null;       // 正在绘制的草稿（独立于 mode 选区状态机）
+    var textEditor = null;      // 文字工具的 <textarea> DOM
+    var workspaceEl = null;     // .crop-workspace 容器（textarea 挂这里）
+    var toolbarEl = null;       // 标注工具栏 DOM
+    var toolBtns = {};          // name -> button，用于切换 active 态
+    var colorSwatches = [];     // 调色板按钮
+    var widthBtns = [];         // 线宽按钮
+    var undoBtn = null, redoBtn = null;
+
+    var PALETTE = ['#ff3b30', '#ffcc00', '#34c759', '#0a84ff', '#ffffff', '#1c1c1e'];
+    var WIDTH_PRESETS = [2, 4, 8];     // 图片坐标线宽：S / M / L
+    var MOSAIC_BLOCK = 12;             // 马赛克块大小（图片自然坐标 px）
+    var HIGHLIGHT_ALPHA = 0.38;
+    var HIGHLIGHT_WIDTH_MULT = 4;
 
     // ======================== i18n helpers ========================
     function tr(key, fallback) {
@@ -122,6 +146,7 @@
         var workspace = document.createElement('div');
         workspace.className = 'crop-workspace';
         overlay.appendChild(workspace);
+        workspaceEl = workspace;
 
         // Background image
         imgEl = document.createElement('img');
@@ -172,28 +197,9 @@
         pointerBadge.style.display = 'none';
         workspace.appendChild(pointerBadge);
 
-        // ---- Floating action buttons (✓ / ×) ----
-        actionBtns = document.createElement('div');
-        actionBtns.className = 'crop-action-btns';
-        actionBtns.style.display = 'none';
-
-        var btnConfirm = document.createElement('button');
-        btnConfirm.className = 'crop-action-btn crop-action-confirm';
-        btnConfirm.type = 'button';
-        btnConfirm.innerHTML = '&#x2713;';
-        btnConfirm.title = tr('chat.cropConfirmTitle', '\u786E\u8BA4\u622A\u56FE');
-        btnConfirm.addEventListener('click', confirmCrop);
-
-        var btnCancel = document.createElement('button');
-        btnCancel.className = 'crop-action-btn crop-action-cancel';
-        btnCancel.type = 'button';
-        btnCancel.innerHTML = '&#x2717;';
-        btnCancel.title = tr('chat.cropClearSelectionTitle', '\u53D6\u6D88\u9009\u533A');
-        btnCancel.addEventListener('click', clearSelection);
-
-        actionBtns.appendChild(btnCancel);
-        actionBtns.appendChild(btnConfirm);
-        overlay.appendChild(actionBtns);
+        // ---- Annotation toolbar (tools + style + actions, includes ✓ / ×) ----
+        ensureToolbar();
+        overlay.appendChild(toolbarEl);
 
         // ---- Events ----
         canvas.addEventListener('mousedown', onPointerDown);
@@ -205,9 +211,21 @@
         document.addEventListener('touchmove', onTouchMove, { passive: false });
         document.addEventListener('touchend', onTouchEnd);
 
-        // Right-click to cancel entirely
+        // Right-click behaviour depends on the active tool
         canvas.addEventListener('contextmenu', function (e) {
             e.preventDefault();
+            // 绘图进行中：丢弃当前草稿，不关遮罩
+            if (annoDraft) {
+                annoDraft = null;
+                requestRender();
+                return;
+            }
+            // 绘图工具但无草稿：退回选择工具（Snipaste 式）
+            if (DRAW_TOOLS[currentTool]) {
+                setTool('select');
+                return;
+            }
+            // 选择工具下右键 = 整体取消
             cancelAll();
         });
 
@@ -230,9 +248,22 @@
             ) {
                 return;
             }
+            // Ctrl/Cmd+Z 撤销，Ctrl+Y / Ctrl+Shift+Z 重做
+            if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
+                e.preventDefault();
+                if (e.shiftKey) redo(); else undo();
+                return;
+            }
+            if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || e.key === 'Y')) {
+                e.preventDefault();
+                redo();
+                return;
+            }
             if ((e.key === 'Delete' || e.key === 'Backspace') && sel) {
                 e.preventDefault();
-                clearSelection();
+                // 有标注先撤最后一笔，没标注才清整个选区，避免误删全部标注
+                if (annotations.length) undo();
+                else clearSelection();
                 return;
             }
             if ((e.key === 'Enter' || e.key === 'NumpadEnter') && sel) {
@@ -335,6 +366,20 @@
         return { x: ix, y: iy };
     }
 
+    // 逆映射：图片自然坐标 -> 遮罩 canvas 显示坐标
+    function imageToCanvas(ix, iy) {
+        return {
+            x: imgDisplayLeft + ix / imgNaturalWidth * imgDisplayWidth,
+            y: imgDisplayTop + iy / imgNaturalHeight * imgDisplayHeight
+        };
+    }
+
+    // live 渲染时图片->显示的缩放系数（线宽/字号按此缩放）；烤制时为 1
+    function displayScale() {
+        if (!imgNaturalWidth) return 1;
+        return imgDisplayWidth / imgNaturalWidth;
+    }
+
     function getPointerPos(e) {
         var rect = canvas.getBoundingClientRect();
         return { x: e.clientX - rect.left, y: e.clientY - rect.top };
@@ -403,6 +448,484 @@
         return map[h] || 'crosshair';
     }
 
+    // ======================== Annotation rendering ========================
+    // 规范化 rect 型标注（x0,y0,x1,y1 -> x,y,w,h，自然坐标）
+    function normAnno(a) {
+        return {
+            x: Math.min(a.x0, a.x1),
+            y: Math.min(a.y0, a.y1),
+            w: Math.abs(a.x1 - a.x0),
+            h: Math.abs(a.y1 - a.y0)
+        };
+    }
+
+    // 把图片区域 (ix,iy,iw,ih 自然坐标) 像素化进一张自然分辨率缓存 canvas。
+    // 用于马赛克：源永远取 imgEl（自然分辨率），不取被遮罩压暗的显示 canvas。
+    function buildMosaicCache(ix, iy, iw, ih) {
+        iw = Math.round(iw); ih = Math.round(ih);
+        if (iw < 1 || ih < 1) return null;
+        try {
+            var smallW = Math.max(1, Math.round(iw / MOSAIC_BLOCK));
+            var smallH = Math.max(1, Math.round(ih / MOSAIC_BLOCK));
+            var small = document.createElement('canvas');
+            small.width = smallW; small.height = smallH;
+            var sctx = small.getContext('2d');
+            sctx.imageSmoothingEnabled = true;
+            sctx.drawImage(imgEl, Math.round(ix), Math.round(iy), iw, ih, 0, 0, smallW, smallH);
+
+            var cache = document.createElement('canvas');
+            cache.width = iw; cache.height = ih;
+            var cctx = cache.getContext('2d');
+            cctx.imageSmoothingEnabled = false;
+            cctx.drawImage(small, 0, 0, smallW, smallH, 0, 0, iw, ih);
+            return cache;
+        } catch (err) {
+            // imgEl 万一被 taint（理论上 dataURL 不会），降级为半透明灰块
+            console.warn('[crop] mosaic sample failed:', err);
+            return null;
+        }
+    }
+
+    function renderOneAnnotation(c, a, map, scale) {
+        var col = a.color || currentColor;
+        var lw = (a.width || currentStrokeWidth) * scale;
+        if (a.type === 'pen' || a.type === 'highlighter') {
+            var pts = a.points;
+            if (!pts || pts.length === 0) return;
+            c.save();
+            c.strokeStyle = col;
+            c.lineJoin = 'round';
+            c.lineCap = 'round';
+            if (a.type === 'highlighter') {
+                c.globalAlpha = HIGHLIGHT_ALPHA;
+                c.lineWidth = lw * HIGHLIGHT_WIDTH_MULT;
+                c.lineCap = 'butt';
+            } else {
+                c.lineWidth = lw;
+            }
+            c.beginPath();
+            var p0 = map(pts[0].x, pts[0].y);
+            c.moveTo(p0.x, p0.y);
+            if (pts.length === 1) {
+                c.lineTo(p0.x + 0.1, p0.y + 0.1); // 单点也留个点
+            } else {
+                for (var i = 1; i < pts.length; i++) {
+                    var p = map(pts[i].x, pts[i].y);
+                    c.lineTo(p.x, p.y);
+                }
+            }
+            c.stroke();
+            c.restore();
+            return;
+        }
+        if (a.type === 'rect' || a.type === 'ellipse' || a.type === 'mosaic') {
+            var n = normAnno(a);
+            var tl = map(n.x, n.y);
+            var br = map(n.x + n.w, n.y + n.h);
+            var rx = tl.x, ry = tl.y, rw = br.x - tl.x, rh = br.y - tl.y;
+            if (a.type === 'mosaic') {
+                var cache = a._cache || buildMosaicCache(n.x, n.y, n.w, n.h);
+                c.save();
+                if (cache) {
+                    c.imageSmoothingEnabled = false;
+                    c.drawImage(cache, rx, ry, rw, rh);
+                } else {
+                    c.fillStyle = 'rgba(40,40,40,0.85)';
+                    c.fillRect(rx, ry, rw, rh);
+                }
+                c.restore();
+                return;
+            }
+            c.save();
+            c.strokeStyle = col;
+            c.lineWidth = lw;
+            if (a.type === 'rect') {
+                c.strokeRect(rx, ry, rw, rh);
+            } else {
+                c.beginPath();
+                c.ellipse(rx + rw / 2, ry + rh / 2, Math.abs(rw / 2), Math.abs(rh / 2), 0, 0, Math.PI * 2);
+                c.stroke();
+            }
+            c.restore();
+            return;
+        }
+        if (a.type === 'arrow') {
+            var s = map(a.x0, a.y0);
+            var e = map(a.x1, a.y1);
+            var ang = Math.atan2(e.y - s.y, e.x - s.x);
+            var head = Math.max(8 * scale, lw * 3.2);
+            c.save();
+            c.strokeStyle = col;
+            c.fillStyle = col;
+            c.lineWidth = lw;
+            c.lineCap = 'round';
+            c.beginPath();
+            c.moveTo(s.x, s.y);
+            c.lineTo(e.x, e.y);
+            c.stroke();
+            // 箭头三角
+            c.beginPath();
+            c.moveTo(e.x, e.y);
+            c.lineTo(e.x - head * Math.cos(ang - Math.PI / 7), e.y - head * Math.sin(ang - Math.PI / 7));
+            c.lineTo(e.x - head * Math.cos(ang + Math.PI / 7), e.y - head * Math.sin(ang + Math.PI / 7));
+            c.closePath();
+            c.fill();
+            c.restore();
+            return;
+        }
+        if (a.type === 'text') {
+            if (!a.text) return;
+            var tp = map(a.x, a.y);
+            var fs = (a.fontSize || 20) * scale;
+            c.save();
+            c.font = '600 ' + fs + 'px -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif';
+            c.textBaseline = 'top';
+            c.fillStyle = col;
+            c.lineWidth = Math.max(2, fs / 8);
+            c.strokeStyle = 'rgba(0,0,0,0.55)';
+            c.lineJoin = 'round';
+            var lines = a.text.split('\n');
+            for (var li = 0; li < lines.length; li++) {
+                var ly = tp.y + li * fs * 1.28;
+                c.strokeText(lines[li], tp.x, ly);
+                c.fillText(lines[li], tp.x, ly);
+            }
+            c.restore();
+            return;
+        }
+    }
+
+    function renderAnnotations(c, map, scale) {
+        for (var i = 0; i < annotations.length; i++) {
+            renderOneAnnotation(c, annotations[i], map, scale);
+        }
+        if (annoDraft) {
+            renderOneAnnotation(c, annoDraft, map, scale);
+        }
+    }
+
+    // ======================== Annotation commit / undo / redo ========================
+    function commitAnnotation(a) {
+        if (a.type === 'mosaic') {
+            var n = normAnno(a);
+            a._cache = buildMosaicCache(n.x, n.y, n.w, n.h);
+        }
+        annotations.push(a);
+        redoStack.length = 0;
+        updateUndoRedoButtons();
+    }
+
+    function undo() {
+        if (textEditor) { commitTextEdit(); return; }
+        if (!annotations.length) return;
+        redoStack.push(annotations.pop());
+        updateUndoRedoButtons();
+        requestRender();
+    }
+
+    function redo() {
+        if (!redoStack.length) return;
+        annotations.push(redoStack.pop());
+        updateUndoRedoButtons();
+        requestRender();
+    }
+
+    function clearAnnotations() {
+        annotations.length = 0;
+        redoStack.length = 0;
+        annoDraft = null;
+        cancelTextEdit();
+        updateUndoRedoButtons();
+    }
+
+    function updateUndoRedoButtons() {
+        if (undoBtn) undoBtn.disabled = annotations.length === 0;
+        if (redoBtn) redoBtn.disabled = redoStack.length === 0;
+    }
+
+    // 把工具栏恢复到初始态（选择工具 + active 同步）
+    function resetToolUI() {
+        currentTool = 'select';
+        if (selectionBox) selectionBox.classList.remove('crop-selection-box--drawing');
+        if (toolBtns && toolBtns.select) {
+            for (var k in toolBtns) {
+                if (toolBtns.hasOwnProperty(k)) toolBtns[k].classList.toggle('is-active', k === 'select');
+            }
+        }
+        syncColorWidthActive();
+        updateUndoRedoButtons();
+    }
+
+    function makeDraft(ip) {
+        var base = { type: currentTool, color: currentColor, width: currentStrokeWidth };
+        if (currentTool === 'pen' || currentTool === 'highlighter') {
+            base.points = [{ x: ip.x, y: ip.y }];
+        } else {
+            base.x0 = ip.x; base.y0 = ip.y; base.x1 = ip.x; base.y1 = ip.y;
+        }
+        return base;
+    }
+
+    function isDraftValid(d) {
+        if (d.type === 'pen' || d.type === 'highlighter') return d.points && d.points.length >= 2;
+        if (d.type === 'arrow') return Math.hypot(d.x1 - d.x0, d.y1 - d.y0) >= 5;
+        var n = normAnno(d);
+        return n.w >= 3 && n.h >= 3;
+    }
+
+    // ======================== Text tool ========================
+    function beginTextEdit(pos, ip) {
+        commitTextEdit(); // 收掉上一个未提交的
+        var scale = displayScale() || 1;
+        var fontSizeImage = Math.max(8, Math.round(22 / scale)); // 屏幕上约 22px
+        var ta = document.createElement('textarea');
+        ta.className = 'crop-text-editor';
+        ta.rows = 1;
+        ta.wrap = 'off';
+        ta.style.left = pos.x + 'px';
+        ta.style.top = pos.y + 'px';
+        ta.style.color = currentColor;
+        ta.style.fontSize = Math.round(fontSizeImage * scale) + 'px';
+        ta._imgX = ip.x; ta._imgY = ip.y; ta._fontSizeImage = fontSizeImage; ta._color = currentColor;
+        ta.addEventListener('keydown', function (e) {
+            e.stopPropagation(); // 别让遮罩 keydown 抢走 Esc/Enter/Delete/方向键
+            if (e.key === 'Escape') { e.preventDefault(); cancelTextEdit(); }
+            else if ((e.key === 'Enter' || e.key === 'NumpadEnter') && !e.shiftKey) { e.preventDefault(); commitTextEdit(); }
+        });
+        ta.addEventListener('blur', function () { commitTextEdit(); });
+        ta.addEventListener('input', function () {
+            ta.style.height = 'auto';
+            ta.style.height = ta.scrollHeight + 'px';
+            ta.style.width = 'auto';
+            ta.style.width = Math.min(workspaceEl.clientWidth - pos.x - 12, Math.max(40, ta.scrollWidth + 4)) + 'px';
+        });
+        workspaceEl.appendChild(ta);
+        textEditor = ta;
+        // 异步聚焦，避免 mousedown 同帧抢焦点失败
+        setTimeout(function () { try { ta.focus(); } catch (e) {} }, 0);
+    }
+
+    function commitTextEdit() {
+        if (!textEditor) return;
+        var ta = textEditor;
+        textEditor = null; // 先置空，规避 removeChild 触发 blur 的重入
+        var text = ta.value.replace(/[\s]+$/, '');
+        if (ta.parentNode) ta.parentNode.removeChild(ta);
+        if (text) {
+            commitAnnotation({
+                type: 'text', text: text,
+                x: ta._imgX, y: ta._imgY,
+                fontSize: ta._fontSizeImage, color: ta._color
+            });
+        }
+        requestRender();
+    }
+
+    function cancelTextEdit() {
+        if (!textEditor) return;
+        var ta = textEditor;
+        textEditor = null;
+        if (ta.parentNode) ta.parentNode.removeChild(ta);
+        requestRender();
+    }
+
+    // ======================== Toolbar ========================
+    var ICONS = {
+        select: '<path d="M5 3l13 6.4-5.4 1.6L9.6 18z"/>',
+        rect: '<rect x="4" y="6" width="16" height="12" rx="1.5"/>',
+        ellipse: '<ellipse cx="12" cy="12" rx="8" ry="6"/>',
+        arrow: '<path d="M5 19L18 6"/><path d="M11.5 6H18v6.5"/>',
+        pen: '<path d="M4 20l1.2-4L16 5.2l2.8 2.8L8 18.8z"/><path d="M14 7.2l2.8 2.8"/>',
+        highlighter: '<path d="M3 20h6"/><path d="M10.5 15.5l-3 3 1.5 1.5 3-1 7.5-7.5-2.5-2.5z"/><path d="M14.5 6.5l3 3"/>',
+        text: '<path d="M6 19l6-14 6 14"/><path d="M8.8 13.5h6.4"/>',
+        mosaic: '<rect x="5" y="5" width="4" height="4"/><rect x="13" y="5" width="4" height="4"/><rect x="9" y="9" width="4" height="4"/><rect x="5" y="13" width="4" height="4"/><rect x="13" y="13" width="4" height="4"/>',
+        undo: '<path d="M9 8L4 13l5 5"/><path d="M4 13h9.5a5.5 5.5 0 0 1 0 11H11"/>',
+        redo: '<path d="M15 8l5 5-5 5"/><path d="M20 13h-9.5a5.5 5.5 0 0 0 0 11H13"/>',
+        save: '<path d="M12 4v11"/><path d="M7 10l5 5 5-5"/><path d="M5 20h14"/>',
+        confirm: '<path d="M5 13l4.5 4.5L19 7"/>',
+        cancel: '<path d="M6 6l12 12M18 6L6 18"/>'
+    };
+
+    function svgIcon(name) {
+        var filled = (name === 'select' || name === 'mosaic');
+        var fill = filled ? 'currentColor' : 'none';
+        var stroke = filled ? 'none' : 'currentColor';
+        return '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false" fill="' +
+            fill + '" stroke="' + stroke + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+            (ICONS[name] || '') + '</svg>';
+    }
+
+    function divider() {
+        var d = document.createElement('span');
+        d.className = 'crop-tool-divider';
+        d.setAttribute('aria-hidden', 'true');
+        return d;
+    }
+
+    function makeToolButton(cls, html, titleKey, fb, onClick) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = cls;
+        b.innerHTML = html;
+        b.title = tr(titleKey, fb);
+        b.setAttribute('aria-label', b.title);
+        b.addEventListener('click', onClick);
+        return b;
+    }
+
+    function syncColorWidthActive() {
+        for (var i = 0; i < colorSwatches.length; i++) {
+            colorSwatches[i].classList.toggle('is-active', colorSwatches[i]._color === currentColor);
+        }
+        for (var j = 0; j < widthBtns.length; j++) {
+            widthBtns[j].classList.toggle('is-active', widthBtns[j]._width === currentStrokeWidth);
+        }
+    }
+
+    function ensureToolbar() {
+        if (toolbarEl) return;
+        var bar = document.createElement('div');
+        bar.className = 'crop-toolbar';
+        bar.style.display = 'none';
+        // 工具栏上的 mousedown 不冒泡到 document，免得被当成绘制/选区操作
+        bar.addEventListener('mousedown', function (e) { e.stopPropagation(); });
+        bar.addEventListener('touchstart', function (e) { e.stopPropagation(); }, { passive: true });
+
+        var TOOLS = [
+            ['select', 'chat.cropToolSelect', '选择/移动'],
+            ['rect', 'chat.cropToolRect', '矩形'],
+            ['ellipse', 'chat.cropToolEllipse', '椭圆'],
+            ['arrow', 'chat.cropToolArrow', '箭头'],
+            ['pen', 'chat.cropToolPen', '画笔'],
+            ['highlighter', 'chat.cropToolHighlight', '荧光笔'],
+            ['text', 'chat.cropToolText', '文字'],
+            ['mosaic', 'chat.cropToolMosaic', '马赛克']
+        ];
+        var toolGrp = document.createElement('div');
+        toolGrp.className = 'crop-tool-group';
+        TOOLS.forEach(function (t) {
+            var b = makeToolButton('crop-tool-btn', svgIcon(t[0]), t[1], t[2], function () { setTool(t[0]); });
+            toolBtns[t[0]] = b;
+            toolGrp.appendChild(b);
+        });
+        bar.appendChild(toolGrp);
+        bar.appendChild(divider());
+
+        // 调色板
+        var colGrp = document.createElement('div');
+        colGrp.className = 'crop-tool-group crop-color-group';
+        PALETTE.forEach(function (col) {
+            var sw = document.createElement('button');
+            sw.type = 'button';
+            sw.className = 'crop-color-swatch';
+            sw.style.background = col;
+            sw._color = col;
+            sw.title = col;
+            sw.addEventListener('click', function () { setColor(col); });
+            colorSwatches.push(sw);
+            colGrp.appendChild(sw);
+        });
+        bar.appendChild(colGrp);
+
+        // 线宽 S/M/L
+        var wGrp = document.createElement('div');
+        wGrp.className = 'crop-tool-group crop-width-group';
+        var WLABEL = ['S', 'M', 'L'];
+        WIDTH_PRESETS.forEach(function (w, i) {
+            var b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'crop-width-btn';
+            b.textContent = WLABEL[i];
+            b._width = w;
+            b.addEventListener('click', function () { setWidth(w); });
+            widthBtns.push(b);
+            wGrp.appendChild(b);
+        });
+        bar.appendChild(wGrp);
+        bar.appendChild(divider());
+
+        // 撤销 / 重做 / 保存
+        var actGrp = document.createElement('div');
+        actGrp.className = 'crop-tool-group';
+        undoBtn = makeToolButton('crop-tool-btn', svgIcon('undo'), 'chat.cropUndo', '撤销', undo);
+        redoBtn = makeToolButton('crop-tool-btn', svgIcon('redo'), 'chat.cropRedo', '重做', redo);
+        var saveBtn = makeToolButton('crop-tool-btn', svgIcon('save'), 'chat.cropSave', '保存到文件', saveToFile);
+        actGrp.appendChild(undoBtn);
+        actGrp.appendChild(redoBtn);
+        actGrp.appendChild(saveBtn);
+        bar.appendChild(actGrp);
+        bar.appendChild(divider());
+
+        // 取消选区 / 确认
+        var endGrp = document.createElement('div');
+        endGrp.className = 'crop-tool-group';
+        var cancelBtn = makeToolButton('crop-tool-btn crop-tool-cancel', svgIcon('cancel'), 'chat.cropClearSelectionTitle', '取消选区', clearSelection);
+        var confirmBtn = makeToolButton('crop-tool-btn crop-tool-confirm', svgIcon('confirm'), 'chat.cropConfirmTitle', '确认截图', confirmCrop);
+        endGrp.appendChild(cancelBtn);
+        endGrp.appendChild(confirmBtn);
+        bar.appendChild(endGrp);
+
+        toolbarEl = bar;
+        toolBtns.select.classList.add('is-active');
+        syncColorWidthActive();
+        updateUndoRedoButtons();
+    }
+
+    function setTool(name) {
+        if (name !== 'text') commitTextEdit(); // 切走文字工具先提交
+        currentTool = name;
+        for (var k in toolBtns) {
+            if (toolBtns.hasOwnProperty(k)) toolBtns[k].classList.toggle('is-active', k === name);
+        }
+        // 绘图工具下隐藏选区手柄/网格，避免误拖
+        if (selectionBox) selectionBox.classList.toggle('crop-selection-box--drawing', !!DRAW_TOOLS[name]);
+        if (canvas) canvas.style.cursor = (name === 'text') ? 'text' : 'crosshair';
+        requestRender();
+    }
+
+    function setColor(col) {
+        currentColor = col;
+        syncColorWidthActive();
+        if (textEditor) textEditor.style.color = col;
+    }
+
+    function setWidth(w) {
+        currentStrokeWidth = w;
+        syncColorWidthActive();
+    }
+
+    function positionToolbar(cs) {
+        if (!toolbarEl) return;
+        toolbarEl.style.display = 'flex';
+        var tw = toolbarEl.offsetWidth || 360;
+        var th = toolbarEl.offsetHeight || 44;
+        var left = cs.x;
+        var top = cs.y + cs.h + 12;
+        if (top + th > overlay.clientHeight - 12) {
+            top = cs.y - th - 12; // 选区贴底时翻到上方
+        }
+        if (top < 12) top = 12;
+        if (left + tw > overlay.clientWidth - 12) left = overlay.clientWidth - tw - 12;
+        if (left < 12) left = 12;
+        toolbarEl.style.left = left + 'px';
+        toolbarEl.style.top = top + 'px';
+    }
+
+    function saveToFile() {
+        var url = cropToDataUrl(); // 原清晰度 PNG（含标注）
+        if (!url) return;
+        try {
+            var a = document.createElement('a');
+            a.href = url;
+            a.download = 'neko-screenshot-' + Date.now() + '.png';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        } catch (err) {
+            console.warn('[crop] save to file failed:', err);
+        }
+    }
+
     // ======================== Drawing ========================
     function drawOverlay() {
         if (!ctx || !canvas) return;
@@ -427,6 +950,16 @@
         // Clear selected region
         ctx.clearRect(cs.x, cs.y, cs.w, cs.h);
 
+        // Annotations — clipped to the selection so nothing bleeds into the mask
+        if (annotations.length || annoDraft) {
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(cs.x, cs.y, cs.w, cs.h);
+            ctx.clip();
+            renderAnnotations(ctx, imageToCanvas, displayScale());
+            ctx.restore();
+        }
+
         // Border
         ctx.strokeStyle = '#44b7fe';
         ctx.lineWidth = 2;
@@ -437,18 +970,18 @@
 
     // ======================== Action buttons position ========================
     function updateSelectionUI() {
-        if (!selectionBox || !selectionBadge || !actionBtns) return;
+        if (!selectionBox || !selectionBadge || !toolbarEl) return;
         if (!sel) {
             selectionBox.style.display = 'none';
             selectionBadge.style.display = 'none';
-            actionBtns.style.display = 'none';
+            toolbarEl.style.display = 'none';
             return;
         }
         var cs = clampSel(sel);
         if (!cs) {
             selectionBox.style.display = 'none';
             selectionBadge.style.display = 'none';
-            actionBtns.style.display = 'none';
+            toolbarEl.style.display = 'none';
             return;
         }
 
@@ -467,23 +1000,7 @@
         selectionBadge.style.left = cs.x + 'px';
         selectionBadge.style.top = Math.max(12, cs.y - 36) + 'px';
 
-        actionBtns.style.display = 'flex';
-        var btnW = actionBtns.offsetWidth || 92;
-        var btnH = actionBtns.offsetHeight || 40;
-        var left = cs.x + cs.w - btnW;
-        var top = cs.y + cs.h + 12;
-
-        // If overflows bottom, put above selection
-        if (top + btnH > overlay.clientHeight - 12) {
-            top = cs.y - btnH - 12;
-        }
-        // Clamp to viewport
-        if (left < 12) left = 12;
-        if (left + btnW > overlay.clientWidth - 12) left = overlay.clientWidth - btnW - 12;
-        if (top < 12) top = 12;
-
-        actionBtns.style.left = left + 'px';
-        actionBtns.style.top = top + 'px';
+        positionToolbar(cs);
     }
 
     function updatePointerUI() {
@@ -533,6 +1050,19 @@
         var pos = getPointerPos(e);
         pointerPos = pos;
 
+        // 0. 绘图工具优先：在图内按下即开始画标注，完全跳过选区手柄/移动逻辑
+        if (DRAW_TOOLS[currentTool]) {
+            if (!isPointWithinImage(pos.x, pos.y)) return;
+            var ip0 = canvasToImage(pos.x, pos.y);
+            if (currentTool === 'text') {
+                beginTextEdit(pos, ip0);
+                return;
+            }
+            annoDraft = makeDraft(ip0);
+            requestRender();
+            return;
+        }
+
         // 1. Check handle hit
         var handle = hitTestHandle(pos.x, pos.y);
         if (handle) {
@@ -567,7 +1097,28 @@
         if (!canvas || !overlay || overlay.style.display === 'none') return;
         var pos = getPointerPos(e);
         pointerPos = pos;
+
+        // 绘图草稿进行中：累积点 / 更新终点
+        if (annoDraft) {
+            e.preventDefault();
+            var cp = clampPointToImage(pos.x, pos.y);
+            var ip = canvasToImage(cp.x, cp.y);
+            if (annoDraft.points) {
+                annoDraft.points.push({ x: ip.x, y: ip.y });
+            } else {
+                annoDraft.x1 = ip.x; annoDraft.y1 = ip.y;
+            }
+            requestRender();
+            return;
+        }
+
         if (mode === MODE_NONE) {
+            // 绘图工具：光标固定为十字 / 文字
+            if (DRAW_TOOLS[currentTool]) {
+                canvas.style.cursor = currentTool === 'text' ? 'text' : 'crosshair';
+                requestRender();
+                return;
+            }
             // Update cursor based on hover
             var h = hitTestHandle(pos.x, pos.y);
             if (h) {
@@ -607,6 +1158,14 @@
     }
 
     function onPointerUp(e) {
+        // 绘图草稿收尾（独立于选区状态机）
+        if (annoDraft) {
+            var d = annoDraft;
+            annoDraft = null;
+            if (isDraftValid(d)) commitAnnotation(d);
+            requestRender();
+            return;
+        }
         if (mode === MODE_NONE) return;
         var prevMode = mode;
         mode = MODE_NONE;
@@ -636,6 +1195,7 @@
 
     function onDoubleClick(e) {
         if (!sel) return;
+        if (currentTool !== 'select') return; // 绘图工具下双击不触发确认
         var pos = getPointerPos(e);
         if (hitTestInside(pos.x, pos.y)) {
             e.preventDefault();
@@ -698,12 +1258,13 @@
 
     // ======================== Actions ========================
     function hideActionBtns() {
-        if (actionBtns) actionBtns.style.display = 'none';
+        if (toolbarEl) toolbarEl.style.display = 'none';
     }
 
     function clearSelection() {
         sel = null;
         mode = MODE_NONE;
+        clearAnnotations();   // 选区即标注画布；清选区连带清标注
         hideActionBtns();
         requestRender();
     }
@@ -724,7 +1285,21 @@
         tmpCanvas.height = ch;
         var tmpCtx = tmpCanvas.getContext('2d');
         tmpCtx.drawImage(imgEl, cx, cy, cw, ch, 0, 0, cw, ch);
-        return tmpCanvas.toDataURL('image/jpeg', 0.9);
+
+        // 烤进标注：与实时预览共用 renderAnnotations，映射为"减去裁剪原点"，
+        // scale=1（tmp canvas 已是自然分辨率）。clip 到裁剪框保持与预览一致。
+        if (annotations.length) {
+            tmpCtx.save();
+            tmpCtx.beginPath();
+            tmpCtx.rect(0, 0, cw, ch);
+            tmpCtx.clip();
+            renderAnnotations(tmpCtx, function (ix, iy) {
+                return { x: ix - cx, y: iy - cy };
+            }, 1);
+            tmpCtx.restore();
+        }
+        // 原清晰度 PNG（不压缩）。剪贴板/保存都用它；发猫娘的 720p 压缩在 app-buttons 里做。
+        return tmpCanvas.toDataURL('image/png');
     }
 
     function copyToClipboard(dataUrl) {
@@ -762,6 +1337,8 @@
         if (overlay) overlay.style.display = 'none';
         sel = null;
         mode = MODE_NONE;
+        clearAnnotations();   // 清标注 + 关文字编辑框 + 重置撤销栈
+        resetToolUI();
         sourceDataUrl = null;
         originalDataUrl = null;
         recaptureFn = null;
@@ -784,10 +1361,11 @@
     // ======================== Resize handling ========================
     function onResize() {
         if (!overlay || overlay.style.display === 'none') return;
+        commitTextEdit();      // 文字编辑框按旧布局定位，resize 前先收掉
         sizeCanvas();
         computeImgMetrics();
-        sel = null;
-        hideActionBtns();
+        // 不再清空选区：重夹到新的图片显示范围，标注按图片坐标自然存活
+        if (sel) sel = clampSel(sel);
         requestRender();
     }
 
@@ -802,6 +1380,7 @@
             sizeCanvas();
             computeImgMetrics();
             sel = null;
+            clearAnnotations();   // 换了底图，旧标注无意义
             hideActionBtns();
             requestRender();
             overlay.focus();
@@ -827,6 +1406,8 @@
             // Reset state
             sel = null;
             mode = MODE_NONE;
+            clearAnnotations();
+            resetToolUI();
             activeTab = 'screenshot';
             // 新会话开始 —— 失效任何尚未结算的旧 recapture promise，并把按钮恢复初始态。
             // close() 已经 ++ 过一次，这里再 ++ 一次保证 cropImage 直接被重复调用
