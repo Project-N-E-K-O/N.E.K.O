@@ -10521,10 +10521,43 @@ function _cardAssistCollectCurrentFormData(form) {
     return data;
 }
 
+// card-assist 的 4 个端点会真去打 LLM、花用户配额，后端按统一守卫（issue #1479）
+// 要求带本地 Origin/CSRF 头，挡掉恶意网页用 no-cors 伪造 JSON 偷跑配额（Codex
+// #3328998416）。本页（character_card_manager.html，独立页）不加载 app-prompt-shared.js
+// → 没有 window.nekoLocalMutationSecurity，所以这里自包含地拿 X-CSRF-Token：
+//   1) 主 app 上下文里若已有统一安全助手就直接用（带刷新逻辑）；
+//   2) 独立页兜底：从 /api/config/page_config 取 autostart_csrf_token（与本页已加载的
+//      universal-tutorial-manager.js 同一套来源），缓存一次即可（per-instance 常量）。
+// 取不到就返回空头——后端会 403，_cardAssistFetch 下面的错误通路照常当失败处理，不会
+// 静默成功。Origin 头由浏览器对同源 POST 自动带上，与本页 tutorial 上报走的是同一条路。
+let _cardAssistCsrfToken = null;
+async function _cardAssistCsrfHeaders() {
+    try {
+        const sec = window.nekoLocalMutationSecurity;
+        if (sec && typeof sec.getMutationHeaders === 'function') {
+            const h = await sec.getMutationHeaders();
+            if (h && typeof h === 'object') return h;
+        }
+    } catch (_) { /* fall through to page_config */ }
+    if (_cardAssistCsrfToken) return { 'X-CSRF-Token': _cardAssistCsrfToken };
+    try {
+        const r = await fetch('/api/config/page_config', { cache: 'no-store' });
+        if (r.ok) {
+            const d = await r.json();
+            if (d && typeof d.autostart_csrf_token === 'string' && d.autostart_csrf_token) {
+                _cardAssistCsrfToken = d.autostart_csrf_token;
+                return { 'X-CSRF-Token': _cardAssistCsrfToken };
+            }
+        }
+    } catch (_) { /* 取不到 → 空头，后端 403 由错误通路兜住 */ }
+    return {};
+}
+
 async function _cardAssistFetch(path, payload) {
+    const csrfHeaders = await _cardAssistCsrfHeaders();
     const resp = await fetch(path, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: Object.assign({ 'Content-Type': 'application/json' }, csrfHeaders),
         body: JSON.stringify(payload || {}),
     });
     let body = null;

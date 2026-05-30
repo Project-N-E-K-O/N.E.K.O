@@ -34,8 +34,25 @@ from utils.language_utils import get_global_language
 from utils.logger_config import get_module_logger
 
 from .shared_state import get_config_manager
+# 统一本地请求守卫（issue #1479）。system_router 不反向依赖 card_assist，无循环导入风险。
+from .system_router import _validate_local_mutation_request
 
 logger = get_module_logger(__name__, "CardAssist")
+
+
+def _reject_untrusted_card_assist(request: Request, payload: Any) -> JSONResponse | None:
+    """本地 Origin/CSRF 守卫：card-assist 这四个 POST 都会真去打用户配置的对话/辅助
+    LLM、消耗其 API / 免费额度，属于「有副作用的浏览器侧请求」，必须和仓库里其它此类
+    端点一样先过统一守卫，挡掉恶意网页用 ``no-cors`` + ``text/plain`` body 伪造合法 JSON
+    偷跑配额——攻击者读不到响应，但不拦就能白嫖配额（Codex #3328998416）。
+
+    复用 ``_validate_local_mutation_request``：返回 ``None`` 放行；返回 403
+    JSONResponse(``error_code=csrf_validation_failed``) 表示拒绝，调用方原样 return 即可。
+    payload 仅用于 body 内 ``_csrf_token`` 兜底，非 dict 传 None 避免 ``.get`` 抛错。"""
+    return _validate_local_mutation_request(
+        request,
+        payload=payload if isinstance(payload, dict) else None,
+    )
 
 # Repo root for resolving `config/characters/<locale>.json` template paths.
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -351,6 +368,10 @@ async def clarify(request: Request):
         return JSONResponse({"success": False, "error": "invalid_json",
                              "message": "JSON body must be an object"}, status_code=400)
 
+    rejected = _reject_untrusted_card_assist(request, body)
+    if rejected is not None:
+        return rejected
+
     description = str(body.get("description") or "").strip()
     if not description:
         return JSONResponse({"success": False, "error": "description_required"},
@@ -424,6 +445,10 @@ async def generate(request: Request):
     if not isinstance(body, dict):
         return JSONResponse({"success": False, "error": "invalid_json",
                              "message": "JSON body must be an object"}, status_code=400)
+
+    rejected = _reject_untrusted_card_assist(request, body)
+    if rejected is not None:
+        return rejected
 
     description = str(body.get("description") or "").strip()
     if not description:
@@ -508,6 +533,10 @@ async def refine(request: Request):
     if not isinstance(body, dict):
         return JSONResponse({"success": False, "error": "invalid_json",
                              "message": "JSON body must be an object"}, status_code=400)
+
+    rejected = _reject_untrusted_card_assist(request, body)
+    if rejected is not None:
+        return rejected
 
     field_key = str(body.get("field_key") or "").strip()
     if not field_key:
@@ -686,6 +715,10 @@ async def chat(request: Request):
         return JSONResponse({"success": False, "error": "invalid_json",
                              "message": "JSON body must be an object"},
                             status_code=400)
+
+    rejected = _reject_untrusted_card_assist(request, body)
+    if rejected is not None:
+        return rejected
 
     history = _normalize_chat_history(body.get("messages"))
     if not history:
