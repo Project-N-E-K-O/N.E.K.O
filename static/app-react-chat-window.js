@@ -46,6 +46,8 @@
     var electronIdleDockGeneration = 0;
     var electronIdleDockPositionFrame = 0;
     var electronIdleDockPositionSeq = 0;
+    var electronIdleDockCurrentBounds = null;
+    var electronIdleDockWorkArea = null;
     var electronChatMinimizedStateFrame = 0;
     var electronChatMinimizedStateTimer = 0;
     var electronChatMinimizedStateSignature = '';
@@ -2023,6 +2025,18 @@
         };
     }
 
+    function rememberElectronIdleDockBounds(bounds) {
+        var rect = normalizeElectronWindowBoundsRect(bounds);
+        if (!rect) return null;
+        electronIdleDockCurrentBounds = {
+            x: rect.left,
+            y: rect.top,
+            width: rect.width,
+            height: rect.height
+        };
+        return electronIdleDockCurrentBounds;
+    }
+
     function isElectronChatWindowCollapsed(bridge) {
         if (!bridge || typeof bridge.isCollapsed !== 'function') return false;
         try {
@@ -2166,13 +2180,15 @@
         var positionSeq = electronIdleDockPositionSeq;
         if (!bridge || !targetRect || !electronIdleDockActive || !electronIdleDockDesired) return;
 
-        var bounds = null;
-        try {
-            bounds = await bridge.getBounds();
-        } catch (_) {
-            bounds = null;
+        var bounds = electronIdleDockCurrentBounds;
+        if (!bounds) {
+            try {
+                bounds = rememberElectronIdleDockBounds(await bridge.getBounds());
+            } catch (_) {
+                bounds = null;
+            }
+            if (positionSeq !== electronIdleDockPositionSeq || !electronIdleDockActive || !electronIdleDockDesired) return;
         }
-        if (positionSeq !== electronIdleDockPositionSeq || !electronIdleDockActive || !electronIdleDockDesired) return;
         if (!bounds || !Number.isFinite(Number(bounds.width)) || !Number.isFinite(Number(bounds.height))) {
             return;
         }
@@ -2186,16 +2202,19 @@
             height: height
         };
 
-        try {
-            if (typeof bridge.getWorkArea === 'function') {
-                nextBounds = clampElectronDockBounds(nextBounds, await bridge.getWorkArea());
+        if (!electronIdleDockWorkArea && typeof bridge.getWorkArea === 'function') {
+            try {
+                electronIdleDockWorkArea = await bridge.getWorkArea();
+            } catch (_) {
+                electronIdleDockWorkArea = null;
             }
-        } catch (_) {
-            nextBounds = clampElectronDockBounds(nextBounds, null);
+            if (positionSeq !== electronIdleDockPositionSeq || !electronIdleDockActive || !electronIdleDockDesired) return;
         }
+        nextBounds = clampElectronDockBounds(nextBounds, electronIdleDockWorkArea);
         if (positionSeq !== electronIdleDockPositionSeq || !electronIdleDockActive || !electronIdleDockDesired) return;
 
         bridge.setBounds(nextBounds.x, nextBounds.y, nextBounds.width, nextBounds.height);
+        rememberElectronIdleDockBounds(nextBounds);
     }
 
     function clearElectronIdleDockRetry() {
@@ -2258,6 +2277,9 @@
             alreadyCollapsed = false;
         }
         var shouldCollapseForIdleDock = !alreadyCollapsed;
+        if (alreadyCollapsed) {
+            rememberElectronIdleDockBounds(entrySavedBounds);
+        }
         if (!alreadyCollapsed && typeof bridge.idleDockCollapse !== 'function') {
             electronIdleDockEntering = false;
             scheduleElectronIdleDockRetry(generation);
@@ -2292,8 +2314,20 @@
                 scheduleElectronIdleDockRetry(generation);
                 return;
             }
+            rememberElectronIdleDockBounds(collapsedResult);
         }
 
+        if (!isElectronIdleDockCurrent(generation)) {
+            electronIdleDockEntering = false;
+            return;
+        }
+        if (!electronIdleDockWorkArea && typeof bridge.getWorkArea === 'function') {
+            try {
+                electronIdleDockWorkArea = await bridge.getWorkArea();
+            } catch (_) {
+                electronIdleDockWorkArea = null;
+            }
+        }
         if (!isElectronIdleDockCurrent(generation)) {
             electronIdleDockEntering = false;
             return;
@@ -2319,6 +2353,8 @@
         electronIdleDockSavedBounds = null;
         electronIdleDockLastScreenRect = null;
         electronIdleDockEntering = false;
+        electronIdleDockCurrentBounds = null;
+        electronIdleDockWorkArea = null;
         clearElectronIdleDockRetry();
         clearElectronIdleDockPositionFrame();
         electronIdleDockPositionSeq += 1;

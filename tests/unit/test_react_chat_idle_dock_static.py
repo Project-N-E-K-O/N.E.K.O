@@ -88,6 +88,9 @@ def test_electron_idle_dock_uses_desktop_return_ball_bridge():
     assert "entrySavedBounds" in source
     assert "clearElectronIdleDockPositionFrame()" in source
     assert "electronIdleDockPositionSeq" in source
+    assert "electronIdleDockCurrentBounds" in source
+    assert "electronIdleDockWorkArea" in source
+    assert "rememberElectronIdleDockBounds" in source
     assert "scheduleElectronIdleDockPosition()" in source
     assert "scheduleElectronIdleDockRetry(generation)" in source
     assert "detail.screenRect" in source
@@ -105,6 +108,8 @@ def test_app_ui_broadcasts_return_ball_screen_rect_for_desktop_idle_dock():
     assert "window.appInterpage && window.appInterpage.nekoBroadcastChannel" in source
     assert "scheduleIdleReturnBallDesktopBridge('visual-tier')" in source
     assert "'return-ball-dragging'" in source
+    assert "scheduleIdleReturnBallDesktopDragState" in source
+    assert "clearIdleReturnBallDesktopDragStateFrame" in source
     assert "getReturnBallDragScreenRect(" in source
 
 

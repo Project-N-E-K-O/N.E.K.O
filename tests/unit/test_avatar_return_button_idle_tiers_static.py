@@ -53,6 +53,32 @@ def test_return_button_idle_tier_styles_are_present():
     assert '.neko-idle-return-btn.is-cat1-facing-right' in source
 
 
+def test_desktop_return_ball_drag_viewport_preserves_measured_cat_size():
+    source = (PROJECT_ROOT / "static" / "app-ui.js").read_text(encoding="utf-8")
+
+    assert "MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE = 128" in source
+    assert "container.style.setProperty('--neko-ball-drag-size', `${state.savedBallWidth}px`)" in source
+    assert "--neko-idle-return-size:var(--neko-ball-drag-size)!important" in source
+    assert "body[data-neko-ball-drag] .neko-idle-return-art" in source
+    assert "container.style.removeProperty('--neko-ball-drag-size')" in source
+
+
+def test_desktop_return_ball_drag_flushes_hidden_frame_before_window_restore():
+    source = (PROJECT_ROOT / "static" / "app-ui.js").read_text(encoding="utf-8")
+
+    finish_index = source.index("async function finishDrag(screenX, screenY)")
+    hide_index = source.index("container.style.visibility = 'hidden';", finish_index)
+    flush_index = source.index("await waitForAnimationFrames(2);", hide_index)
+    stop_index = source.index("await window.nekoPetDrag.stop(screenX, screenY)", flush_index)
+    resolve_index = source.index("const finalBounds = await resolveFinalWindowBounds", flush_index)
+
+    assert finish_index < hide_index < flush_index < stop_index
+    assert finish_index < hide_index < flush_index < resolve_index
+    assert "visibility: container.style.visibility" in source
+    assert "container.style.visibility = savedStyle.visibility" in source
+    assert "container.style.visibility = getSavedBallStyleValue('visibility')" in source
+
+
 def test_return_button_idle_tier_switch_uses_crossfade_motion():
     button_source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
     css_source = INDEX_CSS_PATH.read_text(encoding="utf-8")
