@@ -1103,6 +1103,31 @@ PROFILE_RENAME_EVENT_TEXT = {
     "pt": "Meu nome de perfil anterior era \"{old_name}\"; agora mudei para \"{new_name}\". A partir de agora, trate \"{new_name}\" como meu nome atual.",
 }
 
+# 主人档案的改名记录走在猫娘（AI）的 persona/master section 里——读这段的是猫娘，
+# 改名的是对面的用户，所以这里**禁止用第一人称**（否则猫娘会以为是自己改了名）。
+# 统一用第二人称「你」直接称呼用户，既消除人称歧义，也避开「主人/master」这类物化称呼。
+PROFILE_RENAME_EVENT_FIELD_MASTER = {
+    "zh": "你的改名记录",
+    "zh-TW": "你的改名紀錄",
+    "en": "Your Profile Rename Record",
+    "ja": "あなたの改名記録",
+    "ko": "당신의 프로필 이름 변경 기록",
+    "ru": "Запись о смене имени твоего профиля",
+    "es": "Tu registro de cambio de nombre de perfil",
+    "pt": "Seu registro de mudança de nome do perfil",
+}
+
+PROFILE_RENAME_EVENT_TEXT_MASTER = {
+    "zh": "你以前的档案名是「{old_name}」，现在已经改名为「{new_name}」。以后请把「{new_name}」当作你的当前名字。",
+    "zh-TW": "你以前的檔案名是「{old_name}」，現在已經改名為「{new_name}」。以後請把「{new_name}」當作你的目前名字。",
+    "en": "Your previous profile name was \"{old_name}\"; it has now been changed to \"{new_name}\". Treat \"{new_name}\" as your current name from now on.",
+    "ja": "以前のあなたのプロフィール名は「{old_name}」で、今は「{new_name}」に改名されました。これからは「{new_name}」をあなたの現在の名前として扱ってください。",
+    "ko": "당신의 이전 프로필 이름은 \"{old_name}\"였고, 지금은 \"{new_name}\"으로 바뀌었습니다. 앞으로는 \"{new_name}\"을 당신의 현재 이름으로 여기세요.",
+    "ru": "Раньше твоё имя профиля было «{old_name}», теперь оно изменено на «{new_name}». С этого момента считай «{new_name}» твоим текущим именем.",
+    "es": "Tu nombre de perfil anterior era \"{old_name}\"; ahora se ha cambiado a \"{new_name}\". A partir de ahora, trata \"{new_name}\" como tu nombre actual.",
+    "pt": "Seu nome de perfil anterior era \"{old_name}\"; agora foi alterado para \"{new_name}\". A partir de agora, trate \"{new_name}\" como seu nome atual.",
+}
+
 
 def _normalize_memory_prompt_lang(lang: str | None) -> str:
     """归一化记忆 prompt 本地化 key，保留繁中分支。"""
@@ -1128,12 +1153,22 @@ def render_profile_rename_event_context(
     lang: str | None,
     old_name: str,
     new_name: str,
+    entity: str = "neko",
 ) -> tuple[str, str]:
-    """渲染给 AI 的一人称改名记录，返回 (字段名, 内容)。"""
+    """渲染改名记录，返回 (字段名, 内容)。
+
+    entity="neko"：写进猫娘自己的 section，用第一人称「我」。
+    entity="master"：写进猫娘 persona 的 master section，读者是猫娘、改名的是用户，
+    因此用第二人称「你」直接称呼用户，避免第一人称把用户的改名误当成猫娘自己的。
+    """
     lang_key = _normalize_memory_prompt_lang(lang)
+    if str(entity or "").strip().lower() == "master":
+        field_dict, text_dict = PROFILE_RENAME_EVENT_FIELD_MASTER, PROFILE_RENAME_EVENT_TEXT_MASTER
+    else:
+        field_dict, text_dict = PROFILE_RENAME_EVENT_FIELD, PROFILE_RENAME_EVENT_TEXT
     return (
-        _loc(PROFILE_RENAME_EVENT_FIELD, lang_key),
-        _loc(PROFILE_RENAME_EVENT_TEXT, lang_key).format(
+        _loc(field_dict, lang_key),
+        _loc(text_dict, lang_key).format(
             old_name=str(old_name or "").strip(),
             new_name=str(new_name or "").strip(),
         ),

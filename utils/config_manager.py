@@ -296,7 +296,7 @@ def _get_persona_override(character_payload: dict) -> dict | None:
     return override
 
 
-def _build_effective_character_payload(character_payload: dict) -> dict:
+def _build_effective_character_payload(character_payload: dict, entity: str = "neko") -> dict:
     if not isinstance(character_payload, dict):
         return {}
 
@@ -306,6 +306,7 @@ def _build_effective_character_payload(character_payload: dict) -> dict:
         for field, value in _build_ai_context_fields(
             character_payload,
             existing_fields=set(effective_payload.keys()),
+            entity=entity,
         ).items():
             effective_payload[field] = value
         return effective_payload
@@ -316,6 +317,7 @@ def _build_effective_character_payload(character_payload: dict) -> dict:
     for field, value in _build_ai_context_fields(
         character_payload,
         existing_fields=set(effective_payload.keys()),
+        entity=entity,
     ).items():
         effective_payload[field] = value
     return effective_payload
@@ -380,8 +382,13 @@ def _join_profile_rename_old_names(lang: str | None, names: list[str]) -> str:
 def _build_ai_context_fields(
     character_payload: dict,
     existing_fields: set[str] | None = None,
+    entity: str = "neko",
 ) -> dict[str, str]:
-    """把隐藏运行时事件展开成只给 prompt/记忆同步使用的合成字段。"""
+    """把隐藏运行时事件展开成只给 prompt/记忆同步使用的合成字段。
+
+    entity 区分这份 payload 是猫娘（neko）还是主人（master），决定改名记录的人称：
+    主人的记录进的是猫娘 persona 的 master section，必须第二人称，不能第一人称。
+    """
     if not isinstance(character_payload, dict):
         return {}
 
@@ -429,7 +436,7 @@ def _build_ai_context_fields(
     lines: list[str] = []
     if old_names and current_name:
         old_names_text = _join_profile_rename_old_names(lang, old_names)
-        label, text = render_profile_rename_event_context(lang, old_names_text, current_name)
+        label, text = render_profile_rename_event_context(lang, old_names_text, current_name, entity=entity)
         lines.append(f"{label}: {text}")
 
     lines.extend(legacy_lines)
@@ -2872,7 +2879,7 @@ class ConfigManager:
         character_data.setdefault('主人', deepcopy(defaults['主人']))
         character_data.setdefault('猫娘', deepcopy(defaults['猫娘']))
 
-        master_basic_config = _build_effective_character_payload(character_data.get('主人', {}))
+        master_basic_config = _build_effective_character_payload(character_data.get('主人', {}), entity="master")
         master_name = master_basic_config.get('档案名', defaults['主人']['档案名'])
 
         raw_character_data = character_data.get('猫娘') or deepcopy(defaults['猫娘'])
