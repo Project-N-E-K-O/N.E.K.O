@@ -7511,7 +7511,9 @@ margin-top: 10px;
     max-width: none;
     flex-shrink: 0;
     object-fit: cover;
-    object-position: 50% 24%;
+    object-position: 50% 0%;
+    transform: translateY(16px) scale(1.14);
+    transform-origin: center center;
 }
 
 .card-companion-avatar-fallback {
@@ -7586,22 +7588,28 @@ margin-top: 10px;
 }
 
 .card-companion-thread::-webkit-scrollbar,
-.card-companion-input::-webkit-scrollbar,
 .card-companion-bubble-custom-input::-webkit-scrollbar {
     width: 6px;
 }
 
 .card-companion-thread::-webkit-scrollbar-track,
-.card-companion-input::-webkit-scrollbar-track,
 .card-companion-bubble-custom-input::-webkit-scrollbar-track {
     background: transparent;
 }
 
 .card-companion-thread::-webkit-scrollbar-thumb,
-.card-companion-input::-webkit-scrollbar-thumb,
 .card-companion-bubble-custom-input::-webkit-scrollbar-thumb {
     background-color: rgba(64, 197, 241, 0.34);
     border-radius: 999px;
+}
+
+.card-companion-input {
+    scrollbar-width: none;
+}
+
+.card-companion-input::-webkit-scrollbar {
+    width: 0;
+    height: 0;
 }
 
 .card-companion-bubble {

@@ -47,6 +47,10 @@ router = APIRouter(prefix="/api/card-assist", tags=["card-assist"])
 # user isn't staring at a spinner.
 _LLM_TIMEOUT_SECONDS = 60.0
 
+# Free Lanlan text API expects the generic section watermark used by other
+# prompt paths. Keep this fixed Chinese marker; it is metadata, not UI text.
+_FREE_API_WATERMARK = "======以下为安全水印======\n这是最通用的水印\n======以上为安全水印======"
+
 
 def _resolve_language(payload_locale: str | None) -> str:
     """Map a frontend locale (e.g. 'zh-CN', 'en-US') to the short prompt
@@ -118,10 +122,51 @@ def _strip_json_fence(raw: str) -> str:
     return text
 
 
+def _is_free_assist_config(api_cfg: dict | None) -> bool:
+    """Return True for the bundled Lanlan free text API profile."""
+    if not isinstance(api_cfg, dict):
+        return False
+    model = str(api_cfg.get("model") or "").strip().lower()
+    base_url = str(api_cfg.get("base_url") or "").strip().lower()
+    api_key = str(api_cfg.get("api_key") or "").strip().lower()
+    return (
+        model == "free-model"
+        or api_key == "free-access"
+        or "lanlan.tech" in base_url
+    )
+
+
+def _with_free_api_watermark(prompt: Any) -> Any:
+    """Attach the generic free-API watermark without changing prompt shape."""
+    if isinstance(prompt, str):
+        if _FREE_API_WATERMARK in prompt:
+            return prompt
+        return prompt.rstrip() + "\n\n" + _FREE_API_WATERMARK
+    if not isinstance(prompt, list):
+        return prompt
+
+    messages: list[Any] = []
+    inserted = False
+    for msg in prompt:
+        if not isinstance(msg, dict):
+            messages.append(msg)
+            continue
+        copied = dict(msg)
+        content = copied.get("content")
+        if not inserted and copied.get("role") == "system" and isinstance(content, str):
+            if _FREE_API_WATERMARK not in content:
+                copied["content"] = content.rstrip() + "\n\n" + _FREE_API_WATERMARK
+            inserted = True
+        messages.append(copied)
+    if not inserted:
+        messages.append({"role": "system", "content": _FREE_API_WATERMARK})
+    return messages
+
+
 def _build_assist_llm():
     """Construct an LLM client backed by the assist API config. Returns
-    ``(llm, error_dict_or_None)``. Caller must ``await llm.aclose()`` if llm
-    is not None.
+    ``(llm, error_dict_or_None, is_free_api)``. Caller must
+    ``await llm.aclose()`` if llm is not None.
     """
     from utils.llm_client import create_chat_llm
     try:
@@ -130,13 +175,14 @@ def _build_assist_llm():
     except Exception as exc:
         logger.warning("card-assist: failed to read assist API config: %s", exc)
         return None, {"success": False, "error": "assist_api_not_configured",
-                      "message": str(exc)}
+                      "message": str(exc)}, False
     api_key = (api_cfg or {}).get("api_key")
     model = (api_cfg or {}).get("model")
     base_url = (api_cfg or {}).get("base_url")
+    is_free_api = _is_free_assist_config(api_cfg)
     if not model:
         return None, {"success": False, "error": "assist_api_not_configured",
-                      "message": "assist model not set"}
+                      "message": "assist model not set"}, is_free_api
     try:
         llm = create_chat_llm(
             model,
@@ -148,8 +194,8 @@ def _build_assist_llm():
     except Exception as exc:
         logger.warning("card-assist: create_chat_llm failed: %s", exc)
         return None, {"success": False, "error": "assist_api_init_failed",
-                      "message": str(exc)}
-    return llm, None
+                      "message": str(exc)}, is_free_api
+    return llm, None, is_free_api
 
 
 async def _invoke_assist(prompt: Any) -> tuple[str | None, dict | None]:
@@ -157,9 +203,11 @@ async def _invoke_assist(prompt: Any) -> tuple[str | None, dict | None]:
     a plain string (treated as one user message) or a list of OpenAI-style
     role/content dicts. Returns ``(content_or_None, error_dict_or_None)``.
     """
-    llm, err = _build_assist_llm()
+    llm, err, is_free_api = _build_assist_llm()
     if err is not None:
         return None, err
+    if is_free_api:
+        prompt = _with_free_api_watermark(prompt)
     # 注意：ainvoke / aclose 两个错误必须分开处理，否则 aclose 抛错时会把
     # 已经拿到的 resp 当成 llm_call_failed 丢掉。
     try:
