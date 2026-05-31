@@ -166,3 +166,55 @@ def test_empty_input_returns_empty(service_with_fake_session):
     out = _run_with_lengths(svc, sess, emb, [])
     assert out == []
     assert sess.calls == []
+
+
+# ── Codex PR #1585 P2:max_length 进 model_id 防止跨截断长度复用 cache ──
+
+def test_build_model_id_includes_max_length_when_provided():
+    """新调用必须把 max_length 编进 id 末尾,这样降 max_length 时旧 cache
+    会因 id 字符串不等被 ``is_cached_embedding_valid`` 判为 stale。"""
+    embeddings = pytest.importorskip("memory.embeddings")
+    mid = embeddings.build_model_id("local-text-retrieval-v1", 256, "int8", 1024)
+    assert mid == "local-text-retrieval-v1-256d-int8-mlen1024"
+
+
+def test_build_model_id_omits_max_length_when_none():
+    """legacy 调用(没传 max_length)保留旧格式 —— 不破坏老测试 fixture。"""
+    embeddings = pytest.importorskip("memory.embeddings")
+    mid = embeddings.build_model_id("local-text-retrieval-v1", 128, "fp32")
+    assert mid == "local-text-retrieval-v1-128d-fp32"
+
+
+def test_parse_dim_handles_both_id_formats():
+    """parse_dim_from_model_id 必须同时解析老格式(磁盘上已有 cache)和
+    新格式(新写入)。否则升级时老 cache 全部解析失败 → 全部判 stale →
+    一次大规模重 embed,虽不致命但浪费 CPU。"""
+    embeddings = pytest.importorskip("memory.embeddings")
+    # 老格式
+    assert embeddings.parse_dim_from_model_id("local-text-retrieval-v1-256d-int8") == 256
+    # 新格式
+    assert embeddings.parse_dim_from_model_id("local-text-retrieval-v1-256d-int8-mlen1024") == 256
+    assert embeddings.parse_dim_from_model_id("foo-bar-128d-fp32-mlen8192") == 128
+
+
+def test_old_cache_id_invalidated_after_max_length_change():
+    """端到端:max_length 从 8192 降到 1024 时,老 cache row(id 含 mlen8192)
+    应被 ``is_cached_embedding_valid`` 判为 stale,触发 worker 重新 embed。
+    这是 Codex P2 的核心防御点 —— 否则新 query(1024 截前缀)会跟老
+    embedding(8192 截全量)做 cosine,得到偏移的相似度。"""
+    embeddings = pytest.importorskip("memory.embeddings")
+    old_id = "local-text-retrieval-v1-256d-int8-mlen8192"
+    new_id = "local-text-retrieval-v1-256d-int8-mlen1024"
+    # 构造一个看似有效的 cache row(填上 256-d 的假 base64 vector)
+    import base64, struct
+    fake_vec = base64.b64encode(struct.pack(f"<{256}e", *([0.1] * 256))).decode()
+    entry = {
+        "embedding": fake_vec,
+        "embedding_text_sha256": embeddings._embedding_text_sha256("hello"),
+        "embedding_model_id": old_id,
+    }
+    # 同样的 text,但运行时 model_id 已经升级 → 应该 stale
+    assert not embeddings.is_cached_embedding_valid(entry, "hello", new_id)
+    # sanity:同 id 仍然有效(不是把所有 cache 都误杀)
+    entry_match = dict(entry, embedding_model_id=new_id)
+    assert embeddings.is_cached_embedding_valid(entry_match, "hello", new_id)

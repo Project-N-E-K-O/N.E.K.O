@@ -245,7 +245,16 @@ def decode_embedding(emb: Any):
 # would reject every freshly stamped vector forever (size mismatch),
 # pinning the worker into an infinite re-embed loop. Codex review
 # PR #1147.
-_MODEL_ID_DIM_RE = re.compile(r"-(\d+)d-(?:int8|fp32)$")
+#
+# ``-mlen<N>`` 后缀(PR #1585):tokenizer 截断长度是 embedding 输入空间的
+# 一部分 —— 同一段 2K-token 文本在 max_length=8192 下喂全量、在
+# max_length=1024 下只喂前缀,得到的向量在同一模型下也不可比。把 mlen
+# 编进 model_id,降 max_length 时旧 cache 自动失效,worker 重新 embed,
+# 避免不同 token 输入空间的向量混用做 cosine。后缀可选(``mlen<N>?``)是
+# 为了向后兼容已经在用户磁盘上的老 cache id —— 它们解析 dim 仍然成功,
+# 在 is_cached_embedding_valid 里会因为 model_id 字符串比较失败被识别
+# 为 stale,然后被 worker 重新 stamp 上带 mlen 的新 id。
+_MODEL_ID_DIM_RE = re.compile(r"-(\d+)d-(?:int8|fp32)(?:-mlen\d+)?$")
 
 
 def parse_dim_from_model_id(model_id: str | None) -> int | None:
@@ -855,15 +864,27 @@ def _resolve_quantization(
     return "int8"
 
 
-def build_model_id(profile: str, dim: int, quantization: str) -> str:
+def build_model_id(
+    profile: str, dim: int, quantization: str, max_length: int | None = None,
+) -> str:
     """Return the canonical id used in ``embedding_model_id`` cache fields.
 
-    Format: ``<profile>-<dim>d-<quant>`` (e.g.
-    ``local-text-retrieval-v1-128d-int8``).
+    Format: ``<profile>-<dim>d-<quant>`` 或 ``<profile>-<dim>d-<quant>-mlen<N>``
+    (e.g. ``local-text-retrieval-v1-128d-int8-mlen1024``).
     A change to any axis flips the id, which invalidates cached
     embeddings on the next read — same idea as ``tokenizer_identity``.
+
+    ``max_length`` 是 tokenizer 截断长度 —— Codex 在 PR #1585 指出:同段
+    长文本在 max_length=8192 / max_length=1024 下喂进 ONNX 的 token 序列
+    根本不一样,得到的向量空间也不同;不编进 id 就会让升级后旧 cache
+    "看起来还有效",跟新 query 做 cosine 比较时静默偏移召回质量。
+    None 时回退到不带 mlen 的旧格式 — 仅给老调用点(如未传 max_length
+    的 legacy 测试 fixture)做兼容,真正的 service 路径总会传。
     """
-    return f"{profile}-{dim}d-{quantization}"
+    base = f"{profile}-{dim}d-{quantization}"
+    if max_length is None:
+        return base
+    return f"{base}-mlen{max_length}"
 
 
 def _profile_exists(model_dir: str, profile_id: str) -> bool:
@@ -1100,7 +1121,12 @@ class EmbeddingService:
             or self._quantization not in ("int8", "fp32")
         ):
             return None
-        return build_model_id(self._profile_id, self._dim, self._quantization)
+        return build_model_id(
+            self._profile_id,
+            self._dim,
+            self._quantization,
+            DEFAULT_VECTORS_MAX_LENGTH,
+        )
 
     def dim(self) -> int | None:
         return self._dim
