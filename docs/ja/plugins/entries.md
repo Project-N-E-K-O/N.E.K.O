@@ -39,7 +39,7 @@ SDK は自動的に次を行います。
 - `name: str` と `times: int = 1` から入力フォームを生成します。フォームはパネルに表示されます。
 - `name` はデフォルト値がないので必須です。
 - `times` はデフォルト値 `1` があるので任意です。
-- 型チェックも行います。たとえば `times` に文字列を渡すとエラーになります。
+- 型注釈はフォーム/schema のヒントとして使われます。直接呼び出された通常パラメーターはそのまま渡されます。実行時の検証が必要な場合は Pydantic モデルを使ってください。
 
 JSON Schema を自分で書く必要はありません。
 
@@ -157,14 +157,13 @@ async def search(self, query: str):
     name="Process Data",       # 表示名
     description="Process and transform data",  # 人間と AI 向けの説明
     timeout=60.0,              # タイムアウト秒数。超えると自動キャンセル
-    auto_start=True,           # プラグイン読み込み時に一度自動実行
     kind="service",            # 種別タグ（デフォルトは "action"）
 )
 async def process(self, data: str):
     ...
 ```
 
-ほとんどの場合、必要なのは `id`、`name`、`description` だけです。その他は必要に応じて使います。
+ほとんどの場合、必要なのは `id`、`name`、`description` だけです。その他は必要に応じて使います。起動時の初期化には、エントリーの自動実行を期待せず、`startup` ライフサイクルフックを定義してください。
 
 ---
 

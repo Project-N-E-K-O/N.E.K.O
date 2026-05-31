@@ -38,7 +38,7 @@ The SDK automatically:
 - Generates an input form from `name: str` and `times: int = 1` (shown in the panel)
 - `name` has no default → required
 - `times` has default `1` → optional
-- Type checking: passing a string for `times` will error
+- Uses type annotations as form/schema hints. Direct calls pass plain values through; use a Pydantic model when you need runtime validation.
 
 You don't need to write any JSON Schema.
 
@@ -155,14 +155,13 @@ Only fields listed in `llm_result_fields` are sent to the AI. Other fields are s
     name="Process Data",       # Display name
     description="Process and transform data",  # Description (for humans and AI)
     timeout=60.0,              # Timeout in seconds — auto-cancel if exceeded
-    auto_start=True,           # Execute once automatically when plugin loads
     kind="service",            # Type tag (default "action")
 )
 async def process(self, data: str):
     ...
 ```
 
-Most of the time you only need `id`, `name`, `description`. Use the others as needed.
+Most of the time you only need `id`, `name`, `description`. Use the others as needed. For startup initialization, define a `startup` lifecycle hook instead of expecting an entry to run automatically.
 
 ---
 

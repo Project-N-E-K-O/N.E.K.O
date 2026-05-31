@@ -38,7 +38,7 @@ SDK 会自动做这些事：
 - 从 `name: str` 和 `times: int = 1` 生成输入表单（在面板中显示）
 - `name` 没有默认值 → 必填
 - `times` 有默认值 `1` → 选填
-- 类型自动校验：传了字符串给 `times` 会报错
+- 类型注解会作为表单/schema 提示。直接调用入口时普通参数会原样传入；需要运行时校验时请使用 Pydantic 模型。
 
 你不需要手写任何 JSON Schema。
 
@@ -155,14 +155,13 @@ async def search(self, query: str):
     name="处理数据",            # 显示名称
     description="处理并转换数据", # 描述（给人和 AI 看）
     timeout=60.0,              # 超时时间（秒），超过就自动取消
-    auto_start=True,           # 插件加载时自动执行一次
     kind="service",            # 类型标记（默认 "action"）
 )
 async def process(self, data: str):
     ...
 ```
 
-大多数情况下你只需要 `id`、`name`、`description`。其他选项按需使用。
+大多数情况下你只需要 `id`、`name`、`description`。其他选项按需使用。需要启动时初始化逻辑时，请定义 `startup` 生命周期钩子，不要期待入口会自动执行。
 
 ---
 
