@@ -308,9 +308,9 @@ def test_app_auto_goodbye_phase1_harness():
         }}
 
         (async () => {{
-          const AUTO_GOODBYE_MS = 20 * 1000;
-          const CAT2_MS = 25 * 1000;
-          const CAT3_MS = 30 * 1000;
+          const AUTO_GOODBYE_MS = 10 * 60 * 1000;
+          const CAT2_MS = 15 * 60 * 1000;
+          const CAT3_MS = 18 * 60 * 1000;
           const CAT2_DELTA_MS = CAT2_MS - AUTO_GOODBYE_MS;
           const CAT3_DELTA_MS = CAT3_MS - CAT2_MS;
 
@@ -738,9 +738,9 @@ def test_app_auto_goodbye_visual_tiers_progress_without_retriggering_goodbye():
         }}
 
         (async () => {{
-          const AUTO_GOODBYE_MS = 20 * 1000;
-          const CAT2_MS = 25 * 1000;
-          const CAT3_MS = 30 * 1000;
+          const AUTO_GOODBYE_MS = 10 * 60 * 1000;
+          const CAT2_MS = 15 * 60 * 1000;
+          const CAT3_MS = 18 * 60 * 1000;
 
           await flush();
           assert(win.nekoAutoGoodbye.getState().started === true, 'controller should start after barrier resolves');
@@ -751,17 +751,17 @@ def test_app_auto_goodbye_visual_tiers_progress_without_retriggering_goodbye():
           now += AUTO_GOODBYE_MS;
           tickAll();
           assert(goodbyeEvents.length === 1, 'cat1 entry should dispatch goodbye once');
-          assert(win.nekoAutoGoodbye.getState().visualTier === 'cat1', '20s should enter cat1');
+          assert(win.nekoAutoGoodbye.getState().visualTier === 'cat1', '10min should enter cat1');
 
           now += CAT2_MS - AUTO_GOODBYE_MS;
           tickAll();
           assert(goodbyeEvents.length === 1, 'cat2 transition should not dispatch goodbye again');
-          assert(win.nekoAutoGoodbye.getState().visualTier === 'cat2', '25s should transition to cat2');
+          assert(win.nekoAutoGoodbye.getState().visualTier === 'cat2', '15min should transition to cat2');
 
           now += CAT3_MS - CAT2_MS;
           tickAll();
           assert(goodbyeEvents.length === 1, 'cat3 transition should not dispatch goodbye again');
-          assert(win.nekoAutoGoodbye.getState().visualTier === 'cat3', '30s should transition to cat3');
+          assert(win.nekoAutoGoodbye.getState().visualTier === 'cat3', '18min should transition to cat3');
 
           console.log('app-auto-goodbye phase3 visual tiers passed');
         }})().catch((error) => {{

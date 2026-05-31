@@ -193,6 +193,27 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert 'pendingWalkReady' in source
     assert '_cancelNekoIdleReturnPendingWalk' in source
     assert '_NEKO_IDLE_CAT1_WALK_LONG_DELAY_MAX_MS = 5 * 60 * 1000' in source
+    assert '_NEKO_IDLE_CAT1_PAIR_MOVE_SHORT_DELAY_MIN_MS = 5 * 1000' in source
+    assert '_NEKO_IDLE_CAT1_PAIR_MOVE_LONG_DELAY_MAX_MS = 5 * 60 * 1000' in source
+    assert 'pairMove: Object.freeze' in source
+    assert 'intervalChoices' in source
+    assert 'pairMoveTimer' in source
+    assert 'pairMoveFrame' in source
+    assert 'pairMovePlan' in source
+    assert '_scheduleNekoIdleCat1PairMove' in source
+    assert '_startNekoIdleCat1PairMove' in source
+    assert '_stepNekoIdleCat1PairMove' in source
+    assert '_finishNekoIdleCat1PairMove' in source
+    assert '_cancelNekoIdleCat1PairMove' in source
+    assert '_getNekoIdleReactChatMinimizedShell' in source
+    assert '_setNekoIdleCat1PairMoveChatPosition' in source
+    assert '_applyNekoIdleCat1PairMovePlan(plan, progress)' in source
+    assert 'if (!_startNekoIdleCat1PairMove(button))' in source
+    assert '_finishNekoIdleHoverArtAfterPlayback(art, profile.tier)' in source
+    assert '_setNekoIdleReturnArtSource(art, state.profile.assets.walking()' in source
+    assert 'state.substate === profile.idleSubstate && state.actionSettled' in source
+    assert 'state.substate === profile.idleSubstate && !state.actionSettled' in source
+    assert 'state.actionSettled = true' in source
     assert 'state.substate === profile.walkingSubstate && target.distance > profile.target.exitDistancePx' in source
     assert '_scheduleNekoIdleReturnSubactionSettle' in source
     assert '_settleNekoIdleReturnSubactionToIdle' in source

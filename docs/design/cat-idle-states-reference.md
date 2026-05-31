@@ -13,12 +13,12 @@
 4. return 仍走原有 `*-return-click` 和 `handleReturnClick`。
 5. 首页网页端和桌面 Electron 聊天窗都接入 `CAT2 / CAT3` 停靠。
 
-当前为临时联调阈值：
+当前为发布阈值：
 
 ```text
-AUTO_GOODBYE_MS = 20s
-CAT2_MS        = 25s
-CAT3_MS        = 30s
+AUTO_GOODBYE_MS = 10min
+CAT2_MS        = 15min
+CAT3_MS        = 18min
 ```
 
 ## 二、主要文件
@@ -212,6 +212,7 @@ cat1:idle
 10. 到达目标点后播放伸懒腰 GIF；伸懒腰按自身帧时长播完一轮后，额外保持收尾姿态约 `700ms`，再通过短暂过渡缓冲回到最初 `CAT1` 默认 GIF，并设置 settled 标记避免在原地反复重播伸懒腰。
 11. 聊天框位置变化由 minimized shell 的 class/style observer 触发；猫被用户拖动时，drag start 取消当前自动移动，drag end 重新同步 CAT1 距离，若超过 enter 阈值则再次走向聊天框。已经回到 `CAT1` 默认 GIF 的猫也会通过 return-ball container 的 style / dragging observer 重新判距。
 12. 聊天框从最小化切到展开时，目标点会暂时不可用；这类情况只重置子动作表现并保留 shell / container observer，避免再次最小化时失去触发源。
+13. CAT1 settled 后存在独立 pair-move 编排：仅当网页端 React chat shell 已最小化、CAT1 子状态为 idle、没有 hover/drag/pending walk/walking/stretch 时，按 `5s` 到 `5min` 的加权随机间隔让 return-ball 容器和最小化聊天球保持相对距离一起水平小移动。当前权重为短间隔 `5s-90s`、中间隔 `90s-3min`、长间隔 `3min-5min`。移动期间复用 CAT1 walking GIF；结束后回到 CAT1 默认图并以新位置作为稳定位置，不派发拖拽事件，不触发额外寻路。
 
 方向与资源约束：
 
@@ -227,6 +228,7 @@ hover / click 约束：
 4. 恢复后如果仍处于 `walking-to-chat` 且距离条件仍成立，从暂停位置继续向当前目标点移动。
 5. hover 期间聊天框目标点可以更新，但不能移动猫，也不能重置 `cat-idle-cat4-3.gif` 到第一帧。
 6. 点击猫时不进入 hover 恢复流程，直接走现有 return 链并取消 CAT1 子状态。
+7. 如果 pair-move 调度时遇到遗留 hover / click GIF，调度层会调用 hover 播放收尾流程，让 GIF 播完、清理 token 后重新 sync；这只解除悬挂 hover，不绕过正常 hover 播放完整度。
 
 拖拽约束：
 
@@ -245,13 +247,14 @@ hover / click 约束：
 3. profile 描述资源、子状态名、CSS class、目标距离阈值、移动速度、完成动作停留时间、目标监听器和 hover 交互资源。
 4. 子动作状态统一放在 return-ball button 的 `__nekoIdleReturnSubactionState`；历史兼容的 `__nekoIdleCat1Journey` 只作为别名，不应成为后续新功能入口。
 5. CAT1 到最小化聊天框的目标点计算、距离阈值、移动动画、伸懒腰完成回调和 action-settled 标记。
-6. 走路中目标点更新逻辑，避免反复从第一帧重播。
-7. 向右移动时的水平翻转样式，避免图片朝向与实际位移方向相反。
-8. GIF hover duration / token 逻辑，确保 profile 的 interactive GIF 播完一轮再恢复到当前子阶段。
-9. [static/app-ui.js](/Users/tonnodoubt/N.E.K.O/static/app-ui.js) 在桌面 return-ball drag start / active / end 时派发 `neko:return-ball-manual-move`；start 取消当前自动移动，active 切拖拽态，end 重新评估距离。
-10. [static/app-react-chat-window.js](/Users/tonnodoubt/N.E.K.O/static/app-react-chat-window.js) 在 Electron `/chat` 折叠态发布 `idle_chat_minimized_state`；[static/app-interpage.js](/Users/tonnodoubt/N.E.K.O/static/app-interpage.js) 负责跨窗口转发为 `neko:idle-chat-minimized-state`。
-11. [main_routers/pages_router.py](/Users/tonnodoubt/N.E.K.O/main_routers/pages_router.py) 的 `static_asset_version` 跟踪列表。
-12. `tests/unit/test_avatar_return_button_idle_tiers_static.py` 锁住 profile 注册、cat4 资源、拖拽资源、子状态顺序、右向翻转、hover 暂停移动和恢复语义。
+6. CAT1 settled 后的 pair-move 定时器、token、frame 和计划数据；它只移动网页端最小化聊天球和 return-ball 容器，不写入普通拖拽生命周期。
+7. 走路中目标点更新逻辑，避免反复从第一帧重播。
+8. 向右移动时的水平翻转样式，避免图片朝向与实际位移方向相反。
+9. GIF hover duration / token 逻辑，确保 profile 的 interactive GIF 播完一轮再恢复到当前子阶段。
+10. [static/app-ui.js](/Users/tonnodoubt/N.E.K.O/static/app-ui.js) 在桌面 return-ball drag start / active / end 时派发 `neko:return-ball-manual-move`；start 取消当前自动移动，active 切拖拽态，end 重新评估距离。
+11. [static/app-react-chat-window.js](/Users/tonnodoubt/N.E.K.O/static/app-react-chat-window.js) 在 Electron `/chat` 折叠态发布 `idle_chat_minimized_state`；[static/app-interpage.js](/Users/tonnodoubt/N.E.K.O/static/app-interpage.js) 负责跨窗口转发为 `neko:idle-chat-minimized-state`。
+12. [main_routers/pages_router.py](/Users/tonnodoubt/N.E.K.O/main_routers/pages_router.py) 的 `static_asset_version` 跟踪列表。
+13. `tests/unit/test_avatar_return_button_idle_tiers_static.py` 锁住 profile 注册、cat4 资源、拖拽资源、子状态顺序、右向翻转、hover 暂停移动和恢复语义。
 
 后续扩展规则：
 
