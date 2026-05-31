@@ -102,6 +102,9 @@
     var currentMosaicBlock = 12;      // 马赛克块大小（图片自然坐标 px，= MOSAIC_BLOCK 默认）
     var currentWatermarkText = '';    // 水印文字（空则用默认占位）
     var currentWatermarkSizePx = 30;  // 水印屏幕字号
+    // 水印有独立的"粘性"颜色（仿 QQ），与全局绘图色 currentColor 解耦：调色板在水印工具下
+    // 改的是它，undo/redo 同步的也是它，绝不污染 pen/箭头等用的 currentColor。
+    var currentWatermarkColor = '#ff3b30';
 
     var PALETTE = ['#ff3b30', '#ffcc00', '#34c759', '#0a84ff', '#ffffff', '#1c1c1e'];
     // 与 PALETTE 同序：调色板按钮的无障碍可读名（纯色按钮无文字，读屏靠这个）
@@ -810,11 +813,15 @@
             else if ((e.key === 'Enter' || e.key === 'NumpadEnter') && !e.shiftKey) { e.preventDefault(); commitTextEdit(); }
         });
         ta.addEventListener('blur', function (e) {
-            // 焦点移到选项条（字号滑块等）时不要提交——否则刚点滑块 textarea 就 blur 提交、
-            // 编辑器被移除，滑块的 input 回调拿到的 textEditor 已是 null，字号只影响后续文字
-            // 而非当前正在编辑的标注（Codex P2）。
+            // 焦点移到"样式控件"（选项条字号滑块、调色板、线宽）时不要提交——否则刚点一下
+            // textarea 就 blur 提交、编辑器被移除，setColor/字号回调拿到的 textEditor 已是 null，
+            // 改动只作用于后续文字而非当前正在编辑的标注（Codex P2）。切工具/确认等会另行提交。
             var next = e.relatedTarget || document.activeElement;
-            if (next && optionsBarEl && optionsBarEl.contains(next)) return;
+            if (next && (
+                (optionsBarEl && optionsBarEl.contains(next)) ||
+                (next.classList && (next.classList.contains('crop-color-swatch')
+                    || next.classList.contains('crop-width-btn')))
+            )) return;
             commitTextEdit();
         });
         ta.addEventListener('input', autosize);
@@ -966,8 +973,10 @@
     }
 
     function syncColorWidthActive() {
+        // 水印工具下调色板反映/控制水印自己的颜色，其它工具用全局绘图色
+        var activeColor = (currentTool === 'watermark') ? currentWatermarkColor : currentColor;
         for (var i = 0; i < colorSwatches.length; i++) {
-            var cOn = colorSwatches[i]._color === currentColor;
+            var cOn = colorSwatches[i]._color === activeColor;
             colorSwatches[i].classList.toggle('is-active', cOn);
             colorSwatches[i].setAttribute('aria-pressed', cOn ? 'true' : 'false');
         }
@@ -1087,16 +1096,22 @@
         if (canvas) canvas.style.cursor = (name === 'text') ? 'text' : 'crosshair';
         // 选水印工具时，若选区已存在且尚无水印，自动铺一层（点击/改选项可再刷新）
         if (name === 'watermark' && sel) ensureWatermark();
+        syncColorWidthActive(); // 调色板高亮跟随工具（水印有独立颜色）
         updateOptionsBar();
         requestRender();
     }
 
     function setColor(col) {
+        // 水印工具：改的是水印独立颜色，不碰全局绘图色 currentColor
+        if (currentTool === 'watermark') {
+            currentWatermarkColor = col;
+            syncColorWidthActive();
+            updateActiveWatermark();
+            return;
+        }
         currentColor = col;
         syncColorWidthActive();
         if (textEditor) { textEditor.style.color = col; textEditor._color = col; }
-        // 水印工具下改色实时作用到已铺的水印
-        if (currentTool === 'watermark') updateActiveWatermark();
     }
 
     function setWidth(w) {
@@ -1252,7 +1267,7 @@
         var anno = {
             type: 'watermark', x: rect.x, y: rect.y, w: rect.w, h: rect.h,
             text: currentWatermarkText || tr('chat.cropWatermarkDefault', '水印'),
-            color: currentColor, fontSize: fontImg, alpha: 0.26
+            color: currentWatermarkColor, fontSize: fontImg, alpha: 0.26
         };
         var idx = findWatermarkIndex();
         if (idx >= 0) {
@@ -1281,10 +1296,10 @@
             currentWatermarkText = wm.text || '';
             var scale = displayScale() || 1;
             currentWatermarkSizePx = Math.max(16, Math.min(96, Math.round((wm.fontSize || 30) * scale)));
-            // 颜色也要同步：水印按 currentColor 重建，否则 undo 颜色改动后只调字号会贴回旧色（Codex P2）。
-            if (wm.color) { currentColor = wm.color; syncColorWidthActive(); }
+            // 同步水印自己的颜色（不碰全局绘图色 currentColor，免得 undo 把 pen/箭头的颜色改掉）。
+            if (wm.color) currentWatermarkColor = wm.color;
         }
-        if (currentTool === 'watermark') updateOptionsBar(); // 重建输入框/滑块，反映对齐后的值
+        if (currentTool === 'watermark') { syncColorWidthActive(); updateOptionsBar(); }
     }
 
     // 选项/调色板变动时刷新已铺的水印（替换对象）。逐字输入经 'watermark' tag 合并成一步 undo。
@@ -1297,7 +1312,7 @@
         annotations[idx] = {
             type: 'watermark', x: old.x, y: old.y, w: old.w, h: old.h,
             text: currentWatermarkText || tr('chat.cropWatermarkDefault', '水印'),
-            color: currentColor,
+            color: currentWatermarkColor,
             fontSize: Math.max(12, Math.round(currentWatermarkSizePx / scale)),
             alpha: old.alpha
         };
