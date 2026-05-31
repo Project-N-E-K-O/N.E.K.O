@@ -436,6 +436,26 @@ async def test_neko_show_progress_empty_when_no_data(
 
 
 @pytest.mark.asyncio
+async def test_neko_show_progress_empty_mastery_includes_due_reviews(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _MemoryDeckStore:
+        def count_due_reviews(self) -> int:
+            return 7
+
+    plugin, ctx = await _started_plugin(tmp_path, monkeypatch)
+    plugin._memory_deck_store = _MemoryDeckStore()  # type: ignore[assignment]
+    try:
+        result = await plugin._on_neko_command({"command": "show_progress"})
+
+        assert isinstance(result, Ok)
+        text = await _wait_for_text(ctx, "待复习卡片: 7 张")
+        assert "暂无掌握度数据" in text
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_neko_start_review_returns_due_items(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -49,7 +49,10 @@ def _fmt_progress_for_neko(
     *, items: list[dict[str, Any]], due_count: int, session_questions: int
 ) -> str:
     if not items:
-        return "[伴学·学习进度] 暂无掌握度数据。"
+        lines = ["[伴学·学习进度] 暂无掌握度数据。"]
+        if due_count > 0:
+            lines.append(f"待复习卡片: {due_count} 张")
+        return "\n".join(lines)
     lines = [f"[伴学·学习进度] 本次已答 {session_questions} 题"]
     for item in items:
         lines.append(f"  {item['topic']}: {float(item['mastery']):.0%}")
