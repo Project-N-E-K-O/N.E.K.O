@@ -772,7 +772,7 @@
         }
         ta.addEventListener('keydown', function (e) {
             e.stopPropagation(); // 别让遮罩 keydown 抢走 Esc/Enter/Delete/方向键
-            if (e.key === 'Escape') { e.preventDefault(); cancelTextEdit(); }
+            if (e.key === 'Escape') { e.preventDefault(); cancelTextEdit(true); }
             else if ((e.key === 'Enter' || e.key === 'NumpadEnter') && !e.shiftKey) { e.preventDefault(); commitTextEdit(); }
         });
         ta.addEventListener('blur', function () { commitTextEdit(); });
@@ -842,13 +842,15 @@
         requestRender();
     }
 
-    function cancelTextEdit() {
+    // restoreOriginal=true 仅用于"按 Esc 取消二次编辑"：把摘掉的原标注原样放回。
+    // clearAnnotations / close 等全局清空路径必须传 false，否则刚清空又被还原，
+    // 导致取消选区/切页签后老文字残留、再次框选时复现（Codex P2）。
+    function cancelTextEdit(restoreOriginal) {
         if (!textEditor) return;
         var ta = textEditor;
         textEditor = null;
         if (ta.parentNode) ta.parentNode.removeChild(ta);
-        // 二次编辑时按 Esc 取消：原样还原被摘掉的标注，避免编辑一半丢内容
-        if (ta._original) commitAnnotation(ta._original);
+        if (restoreOriginal && ta._original) commitAnnotation(ta._original);
         requestRender();
     }
 
