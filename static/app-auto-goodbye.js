@@ -353,11 +353,18 @@
         if (!hasCoreInfrastructure()) {
             return false;
         }
+        if (!hasOpenSocket()) {
+            if (state.infrastructurePrimed) {
+                state.infrastructurePrimed = false;
+                state.lastReason = 'websocket-closed';
+                emitStateChange('infrastructure-unprimed', {
+                    reason: 'websocket-closed',
+                });
+            }
+            return false;
+        }
         if (state.infrastructurePrimed) {
             return true;
-        }
-        if (!hasOpenSocket()) {
-            return false;
         }
 
         state.infrastructurePrimed = true;
@@ -371,13 +378,6 @@
 
     function isInfrastructureReady() {
         if (!hasCoreInfrastructure()) {
-            return false;
-        }
-        if (state.infrastructurePrimed) {
-            return true;
-        }
-        const socket = window.appState.socket;
-        if (!socket || socket.readyState !== WebSocket.OPEN) {
             return false;
         }
         return ensureInfrastructurePrimed();

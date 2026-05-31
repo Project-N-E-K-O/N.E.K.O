@@ -4,6 +4,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_REACT_CHAT_WINDOW_PATH = PROJECT_ROOT / "static" / "app-react-chat-window.js"
 APP_UI_PATH = PROJECT_ROOT / "static" / "app-ui.js"
+AVATAR_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "avatar-ui-buttons.js"
+CHAT_TEMPLATE_PATH = PROJECT_ROOT / "templates" / "chat.html"
 
 
 def _read(path: Path) -> str:
@@ -121,6 +123,7 @@ def test_app_ui_broadcasts_return_ball_screen_rect_for_desktop_idle_dock():
 
 def test_react_chat_broadcasts_minimized_screen_rect_for_cat1_follow():
     source = _read(APP_REACT_CHAT_WINDOW_PATH)
+    avatar_source = _read(AVATAR_UI_BUTTONS_PATH)
 
     assert "function dispatchElectronChatMinimizedState(reason)" in source
     assert "action: 'idle_chat_minimized_state'" in source
@@ -129,7 +132,31 @@ def test_react_chat_broadcasts_minimized_screen_rect_for_cat1_follow():
     assert "isElectronChatWindowCollapsed(bridge)" in source
     assert "ensureElectronChatMinimizedStateBridge()" in source
     assert "ELECTRON_CHAT_MINIMIZED_STATE_HEARTBEAT_MS = 1000" in source
+    assert "setInterval(function ()" in source
+    assert "}, 500);" in source
     assert "electronChatMinimizedStatePublishedAt" in source
+    assert "_NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS = 2500" in avatar_source
+
+
+def test_electron_chat_loads_interpage_before_react_chat_for_desktop_cat1_sync():
+    source = _read(CHAT_TEMPLATE_PATH)
+
+    assert 'class="electron-chat-window subtitle-web-host"' in source
+    assert source.index('/static/app-interpage.js') < source.index('/static/app-react-chat-window.js')
+
+
+def test_react_chat_applies_desktop_cat1_pair_move_bounds_when_collapsed():
+    source = _read(APP_REACT_CHAT_WINDOW_PATH)
+
+    assert "electronCat1PairMoveBoundsFrame" in source
+    assert "function scheduleElectronCat1PairMoveBounds(bounds)" in source
+    assert "async function applyElectronCat1PairMoveBounds(bounds)" in source
+    assert "window.addEventListener('neko:idle-chat-pair-move-bounds'" in source
+    assert "scheduleElectronCat1PairMoveBounds(detail.screenRect || detail.bounds)" in source
+    assert "if (!bridge || !isElectronChatWindowCollapsed(bridge)) return;" in source
+    assert "if (hasElectronIdleDockPendingOrActive()) return;" in source
+    assert "bridge.idleDockCommitCollapsedBounds(targetBounds)" in source
+    assert "scheduleElectronChatMinimizedState('cat1-pair-move')" in source
 
 
 def test_idle_dock_uses_mutation_observer_to_detect_minimize_completion():
@@ -140,6 +167,11 @@ def test_idle_dock_uses_mutation_observer_to_detect_minimize_completion():
     assert "idleDockMinimizeObserver" in source
     assert "is-minimized" in source
     assert "stopIdleDockMinimizeObserver" in source
+    assert "function hasIdleDockPendingOrActive()" in source
+    assert "idleDockActive || idleDockTriggeredMinimize || idleDockMinimizeObserver" in source
+    assert "triggered && !wasActive && wasTransitioning" in source
+    assert "cancelActiveAnimation()" in source
+    assert "shell.classList.remove('is-minimized', 'is-collapsing', 'is-idle-docked')" in source
 
 
 def test_toggle_minimized_restores_position_before_expand_when_idle_docked():

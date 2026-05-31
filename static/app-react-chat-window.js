@@ -52,6 +52,8 @@
     var electronChatMinimizedStateTimer = 0;
     var electronChatMinimizedStateSignature = '';
     var electronChatMinimizedStatePublishedAt = 0;
+    var electronCat1PairMoveBoundsFrame = 0;
+    var electronCat1PairMovePendingBounds = null;
     var ELECTRON_CHAT_MINIMIZED_STATE_HEARTBEAT_MS = 1000;
     var _sortKeySeq = 0; // monotonically increasing sortKey counter
 
@@ -1936,6 +1938,10 @@
         idleDockTriggeredMinimize = false;
     }
 
+    function hasIdleDockPendingOrActive() {
+        return !!(idleDockActive || idleDockTriggeredMinimize || idleDockMinimizeObserver);
+    }
+
     function applyIdleDockPosition() {
         if (!minimized || isElectronChatWindow()) return;
         var shell = getShell();
@@ -2148,6 +2154,53 @@
             width: Math.round(bounds.width),
             height: Math.round(bounds.height)
         };
+    }
+
+    function electronRectToBounds(rect) {
+        if (!rect || typeof rect !== 'object') return null;
+        var normalized = normalizeElectronRect({
+            left: Number.isFinite(Number(rect.left)) ? rect.left : rect.x,
+            top: Number.isFinite(Number(rect.top)) ? rect.top : rect.y,
+            width: rect.width,
+            height: rect.height
+        });
+        if (!normalized) return null;
+        return {
+            x: Math.round(normalized.left),
+            y: Math.round(normalized.top),
+            width: Math.round(normalized.width),
+            height: Math.round(normalized.height)
+        };
+    }
+
+    async function applyElectronCat1PairMoveBounds(bounds) {
+        var targetBounds = electronRectToBounds(bounds);
+        if (!targetBounds) return;
+        var bridge = getElectronIdleDockBridge();
+        if (!bridge || !isElectronChatWindowCollapsed(bridge)) return;
+        if (hasElectronIdleDockPendingOrActive()) return;
+        try {
+            if (typeof bridge.idleDockCommitCollapsedBounds === 'function') {
+                await bridge.idleDockCommitCollapsedBounds(targetBounds);
+            } else {
+                bridge.setBounds(targetBounds.x, targetBounds.y, targetBounds.width, targetBounds.height);
+            }
+            scheduleElectronChatMinimizedState('cat1-pair-move');
+        } catch (_) {
+            // A transient desktop move failure should not break the CAT1 animation loop.
+        }
+    }
+
+    function scheduleElectronCat1PairMoveBounds(bounds) {
+        if (!isElectronChatWindow()) return;
+        electronCat1PairMovePendingBounds = electronRectToBounds(bounds);
+        if (!electronCat1PairMovePendingBounds || electronCat1PairMoveBoundsFrame) return;
+        electronCat1PairMoveBoundsFrame = window.requestAnimationFrame(function () {
+            var pendingBounds = electronCat1PairMovePendingBounds;
+            electronCat1PairMovePendingBounds = null;
+            electronCat1PairMoveBoundsFrame = 0;
+            applyElectronCat1PairMoveBounds(pendingBounds);
+        });
     }
 
     function isElectronIdleDockCurrent(generation) {
@@ -2524,6 +2577,7 @@
         var preserveCurrentPosition = !!(options && options.preserveCurrentPosition);
         var wasActive = idleDockActive;
         var triggered = idleDockTriggeredMinimize;
+        var wasTransitioning = isMinimizeTransitioning;
         var saved = idleDockSavedPosition;
         var shell = getShell();
 
@@ -2535,6 +2589,27 @@
                 shell.style.left = saved.left + 'px';
                 shell.style.top = saved.top + 'px';
             }
+        }
+
+        if (triggered && !wasActive && wasTransitioning) {
+            cancelActiveAnimation();
+            minimized = false;
+            if (shell) {
+                shell.classList.remove('is-minimized', 'is-collapsing', 'is-idle-docked');
+                shell.style.transform = 'none';
+                if (savedShellSize) {
+                    if (savedShellSize.width) shell.style.width = savedShellSize.width;
+                    if (savedShellSize.height) shell.style.height = savedShellSize.height;
+                }
+                if (savedShellPosition) {
+                    shell.style.left = savedShellPosition.left + 'px';
+                    shell.style.top = savedShellPosition.top + 'px';
+                }
+            }
+            savedShellSize = null;
+            savedShellPosition = null;
+            syncMinimizeUI();
+            return;
         }
 
         if (wasActive && triggered && minimized) {
@@ -3529,7 +3604,7 @@
                 return;
             }
 
-            if (idleDockActive) {
+            if (hasIdleDockPendingOrActive()) {
                 exitIdleDock({
                     preserveCurrentPosition: detail.source === 'return-ball-drag-demotion',
                 });
@@ -3543,19 +3618,24 @@
             if (!detail) return;
             handleElectronIdleReturnBallState(detail);
         });
+        window.addEventListener('neko:idle-chat-pair-move-bounds', function (event) {
+            var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
+            if (!detail) return;
+            scheduleElectronCat1PairMoveBounds(detail.screenRect || detail.bounds);
+        });
         window.addEventListener('live2d-return-click', function () {
             if (hasElectronIdleDockPendingOrActive()) { exitElectronIdleDock(); }
-            if (idleDockActive) { exitIdleDock(); return; }
+            if (hasIdleDockPendingOrActive()) { exitIdleDock(); return; }
             clearIdleDockState();
         });
         window.addEventListener('vrm-return-click', function () {
             if (hasElectronIdleDockPendingOrActive()) { exitElectronIdleDock(); }
-            if (idleDockActive) { exitIdleDock(); return; }
+            if (hasIdleDockPendingOrActive()) { exitIdleDock(); return; }
             clearIdleDockState();
         });
         window.addEventListener('mmd-return-click', function () {
             if (hasElectronIdleDockPendingOrActive()) { exitElectronIdleDock(); }
-            if (idleDockActive) { exitIdleDock(); return; }
+            if (hasIdleDockPendingOrActive()) { exitIdleDock(); return; }
             clearIdleDockState();
         });
 

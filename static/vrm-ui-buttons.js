@@ -848,14 +848,14 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
 
     const handleEnd = () => {
         if (isDragging) {
-            const moved = returnButtonContainer.getAttribute('data-dragging') === 'true';
-            const movedDistancePx = Math.hypot(pendingClientX - dragStartX, pendingClientY - dragStartY);
             // 取消待执行的 RAF，将 transform 落实到 left/top
             if (dragRAFId) {
                 cancelAnimationFrame(dragRAFId);
                 dragRAFId = null;
             }
             commitDragPosition();
+            const moved = returnButtonContainer.getAttribute('data-dragging') === 'true';
+            const movedDistancePx = Math.hypot(pendingClientX - dragStartX, pendingClientY - dragStartY);
 
             setTimeout(() => returnButtonContainer.setAttribute('data-dragging', 'false'), 10);
             isDragging = false;

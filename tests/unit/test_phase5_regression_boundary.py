@@ -122,10 +122,17 @@ def test_try_auto_goodbye_has_autoGoodbyeTriggered_guard():
 
 def test_deferred_reminder_running_state_is_blocked_without_exemption():
     source = _read(APP_AUTO_GOODBYE_PATH)
+    compact_source = "".join(source.split()).lower()
 
     # No special exemption for reminder / deferred task types
     assert "deferred" not in source
     assert "reminder" not in source.lower() or "deferred reminder" not in source.lower()
+    assert "if(task.type==='reminder')" not in compact_source
+    assert 'if(task.type==="reminder")' not in compact_source
+    assert "if(task.type=='reminder')" not in compact_source
+    assert 'if(task.type=="reminder")' not in compact_source
+    assert "case'reminder'" not in compact_source
+    assert 'case"reminder"' not in compact_source
 
 
 # ── design.md 6.2: 不应改坏 ───────────────────────────────

@@ -359,6 +359,7 @@ body.neko-game-active [id$="-lock-icon"] {
 
 .neko-idle-return-btn {
     --neko-idle-return-size: clamp(96px, 14vw, 122px);
+    position: relative;
     width: var(--neko-idle-return-size);
     height: var(--neko-idle-return-size);
     overflow: visible;

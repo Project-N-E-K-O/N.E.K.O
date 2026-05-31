@@ -1702,6 +1702,12 @@
                         dispatchIdleChatMinimizedState(event.data);
                         break;
                     }
+                    case 'idle_chat_pair_move_bounds': {
+                        var pairMoveChatCurrentName = getCurrentLanlanName();
+                        if (event.data.lanlan_name && (!pairMoveChatCurrentName || event.data.lanlan_name !== pairMoveChatCurrentName)) break;
+                        dispatchIdleChatPairMoveBounds(event.data);
+                        break;
+                    }
                     case 'voice_config_switching': {
                         handleVoiceConfigSwitchingMessage(event.data);
                         break;
@@ -1980,6 +1986,20 @@
                 source: '',
                 reason: '',
                 minimized: false,
+                screenRect: null,
+                timestamp: Date.now(),
+                via: 'broadcast-channel'
+            }, detail || {}, {
+                via: 'broadcast-channel'
+            })
+        }));
+    }
+
+    function dispatchIdleChatPairMoveBounds(detail) {
+        window.dispatchEvent(new CustomEvent('neko:idle-chat-pair-move-bounds', {
+            detail: Object.assign({
+                action: 'idle_chat_pair_move_bounds',
+                source: '',
                 screenRect: null,
                 timestamp: Date.now(),
                 via: 'broadcast-channel'

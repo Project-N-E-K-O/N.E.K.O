@@ -1734,6 +1734,7 @@
                 ? options.fallbackMs
                 : 600;
             const fallbackDeadline = Date.now() + Math.max(0, fallbackMs);
+            const hardFallbackDeadline = fallbackDeadline + Math.max(1000, Math.max(0, fallbackMs) * 2);
 
             const runWhenStable = () => {
                 requestAnimationFrame(() => {
@@ -1767,6 +1768,17 @@
 
                 const remainingMs = fallbackDeadline - Date.now();
                 if (remainingMs <= 0) {
+                    if (Date.now() >= hardFallbackDeadline) {
+                        console.warn(
+                            '[pollViewportRestore] waitForViewportSize hard timeout; continuing best-effort cleanup.',
+                            'dragToken:', state.dragSessionToken,
+                            'fallbackMs:', fallbackMs,
+                            'fallbackDeadline:', fallbackDeadline
+                        );
+                        clearMultiWindowReturnBallDeferredWork(state);
+                        runWhenStable();
+                        return;
+                    }
                     if (!timeoutWarned) {
                         timeoutWarned = true;
                         console.warn(

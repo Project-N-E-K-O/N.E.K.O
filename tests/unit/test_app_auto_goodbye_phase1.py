@@ -340,6 +340,16 @@ def test_app_auto_goodbye_phase1_harness():
           assert(primed.infrastructurePrimed === true, 'controller should prime after websocket open');
           assert(primed.lastInteractionAt === 6000, 'priming should reset timer baseline');
 
+          home.setSocketOpen(false);
+          home.advance(AUTO_GOODBYE_MS);
+          home.tickAll();
+          assert(home.goodbyeEvents.length === 0, 'closed websocket should block auto-goodbye after priming');
+          assert(home.win.nekoAutoGoodbye.getState().infrastructurePrimed === false, 'closed websocket should clear infrastructure priming');
+          home.setSocketOpen(true);
+          home.tickAll();
+          assert(home.win.nekoAutoGoodbye.getState().infrastructurePrimed === true, 'reopened websocket should re-prime infrastructure');
+          assert(home.win.nekoAutoGoodbye.getState().lastInteractionAt === 6000 + AUTO_GOODBYE_MS, 're-prime should reset timer baseline after reconnect');
+
           // Normal auto-goodbye path.
           home.advance(AUTO_GOODBYE_MS);
           home.tickAll();
@@ -609,6 +619,14 @@ def test_app_interpage_relays_idle_chat_minimized_state_to_pet_window():
     assert "function dispatchIdleChatMinimizedState(detail)" in source
     assert "new CustomEvent('neko:idle-chat-minimized-state'" in source
     assert "nekoBroadcastChannel.postMessage(Object.assign({" in source
+
+
+def test_app_interpage_relays_idle_chat_pair_move_bounds_to_chat_window():
+    source = APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+
+    assert "case 'idle_chat_pair_move_bounds':" in source
+    assert "function dispatchIdleChatPairMoveBounds(detail)" in source
+    assert "new CustomEvent('neko:idle-chat-pair-move-bounds'" in source
 
 
 def test_app_auto_goodbye_visual_tiers_progress_without_retriggering_goodbye():

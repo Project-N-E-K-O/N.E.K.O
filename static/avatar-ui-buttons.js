@@ -1054,6 +1054,10 @@ function _isNekoIdleCat1Walking(button) {
         !state.pairMoveFrame);
 }
 
+function _getNekoIdleCurrentLanlanName() {
+    return (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
+}
+
 function _dispatchNekoIdleReturnBallManualMove(container, reason, extraDetail = {}) {
     _logNekoIdleReturnDragDebug('dispatch', {
         reason: reason,
@@ -1133,7 +1137,11 @@ function _getNekoIdleDesktopChatMinimizedRect() {
         width: screenRect.width,
         height: screenRect.height,
         right: screenRect.right - screenLeft,
-        bottom: screenRect.bottom - screenTop
+        bottom: screenRect.bottom - screenTop,
+        screenLeft: screenRect.left,
+        screenTop: screenRect.top,
+        screenRight: screenRect.right,
+        screenBottom: screenRect.bottom
     };
 }
 
@@ -1190,7 +1198,69 @@ function _setNekoIdleCat1PairMoveChatPosition(shell, left, top) {
     if (!shell) return;
     shell.style.left = `${Math.round(left)}px`;
     shell.style.top = `${Math.round(top)}px`;
+    shell.style.right = '';
+    shell.style.bottom = '';
     shell.style.transform = 'none';
+}
+
+function _rememberNekoIdleDesktopChatPairMoveRect(screenRect) {
+    const normalized = _normalizeNekoIdleScreenRect(screenRect);
+    if (!normalized) return null;
+    _nekoIdleDesktopChatMinimizedState = {
+        minimized: true,
+        screenRect: normalized,
+        updatedAt: Date.now()
+    };
+    return normalized;
+}
+
+function _dispatchNekoIdleDesktopChatPairMoveBounds(screenRect) {
+    const normalized = _rememberNekoIdleDesktopChatPairMoveRect(screenRect);
+    if (!normalized) return false;
+    const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
+    if (!channel || typeof channel.postMessage !== 'function') return false;
+    channel.postMessage({
+        action: 'idle_chat_pair_move_bounds',
+        source: 'cat1-pair-move',
+        lanlan_name: _getNekoIdleCurrentLanlanName(),
+        screenRect: {
+            left: normalized.left,
+            top: normalized.top,
+            width: normalized.width,
+            height: normalized.height
+        },
+        timestamp: Date.now()
+    });
+    return true;
+}
+
+function _getNekoIdleCat1PairMoveChatTarget() {
+    const shell = _getNekoIdleReactChatMinimizedShell();
+    if (shell) {
+        const rect = shell.getBoundingClientRect();
+        if (rect && rect.width > 0 && rect.height > 0) {
+            return {
+                mode: 'dom',
+                shell: shell,
+                rect: rect
+            };
+        }
+    }
+    const desktopRect = _getNekoIdleDesktopChatMinimizedRect();
+    if (desktopRect && desktopRect.width > 0 && desktopRect.height > 0) {
+        return {
+            mode: 'desktop',
+            shell: null,
+            rect: desktopRect,
+            screenRect: {
+                left: desktopRect.screenLeft,
+                top: desktopRect.screenTop,
+                width: desktopRect.width,
+                height: desktopRect.height
+            }
+        };
+    }
+    return null;
 }
 
 function _clampNekoIdleCat1PairMoveDelta(catRect, chatRect, desiredDx) {
@@ -1207,12 +1277,12 @@ function _getNekoIdleCat1PairMovePlan(button) {
     const profile = state && state.profile ? state.profile : _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;
     const config = profile.pairMove || {};
     const container = _getNekoIdleReturnContainerFromButton(button);
-    const shell = _getNekoIdleReactChatMinimizedShell();
-    if (!container || !shell) return null;
+    const chatTarget = _getNekoIdleCat1PairMoveChatTarget();
+    if (!container || !chatTarget) return null;
     if (container.getAttribute('data-dragging') === 'true') return null;
     if (_isNekoIdleReturnDragActionActive(button)) return null;
     const catRect = container.getBoundingClientRect();
-    const chatRect = shell.getBoundingClientRect();
+    const chatRect = chatTarget.rect;
     if (!catRect || !chatRect || catRect.width <= 0 || catRect.height <= 0 || chatRect.width <= 0 || chatRect.height <= 0) {
         return null;
     }
@@ -1238,12 +1308,17 @@ function _getNekoIdleCat1PairMovePlan(button) {
     const maxDuration = Math.max(minDuration, Number(config.maxDurationMs) || _NEKO_IDLE_CAT1_PAIR_MOVE_MAX_DURATION_MS);
     const durationMs = Math.max(minDuration, Math.min(maxDuration, Math.round(Math.abs(dx) / speed * 1000)));
     return {
-        shell: shell,
+        chatMode: chatTarget.mode,
+        shell: chatTarget.shell,
         container: container,
         catStartLeft: catRect.left,
         catStartTop: catRect.top,
         chatStartLeft: chatRect.left,
         chatStartTop: chatRect.top,
+        chatStartScreenLeft: chatTarget.screenRect ? chatTarget.screenRect.left : null,
+        chatStartScreenTop: chatTarget.screenRect ? chatTarget.screenRect.top : null,
+        chatWidth: chatRect.width,
+        chatHeight: chatRect.height,
         dx: dx,
         durationMs: durationMs
     };
@@ -1257,11 +1332,20 @@ function _easeNekoIdleCat1PairMove(progress) {
 }
 
 function _applyNekoIdleCat1PairMovePlan(plan, progress) {
-    if (!plan || !plan.container || !plan.shell) return;
+    if (!plan || !plan.container) return;
     const eased = _easeNekoIdleCat1PairMove(progress);
     const offsetX = plan.dx * eased;
     _setNekoIdleCat1ContainerPosition(plan.container, plan.catStartLeft + offsetX, plan.catStartTop);
-    _setNekoIdleCat1PairMoveChatPosition(plan.shell, plan.chatStartLeft + offsetX, plan.chatStartTop);
+    if (plan.chatMode === 'desktop') {
+        _dispatchNekoIdleDesktopChatPairMoveBounds({
+            left: plan.chatStartScreenLeft + offsetX,
+            top: plan.chatStartScreenTop,
+            width: plan.chatWidth,
+            height: plan.chatHeight
+        });
+    } else {
+        _setNekoIdleCat1PairMoveChatPosition(plan.shell, plan.chatStartLeft + offsetX, plan.chatStartTop);
+    }
 }
 
 function _setNekoIdleCat1Substate(button, substate, options = {}) {
@@ -1556,12 +1640,12 @@ function _canScheduleNekoIdleCat1PairMove(button, state) {
     }
 
     const container = _getNekoIdleReturnContainerFromButton(button);
-    const shell = _getNekoIdleReactChatMinimizedShell();
-    if (!container || !shell) return false;
+    const chatTarget = _getNekoIdleCat1PairMoveChatTarget();
+    if (!container || !chatTarget) return false;
     if (container.style.display === 'none' || container.getAttribute('data-dragging') === 'true') return false;
 
     const catRect = container.getBoundingClientRect();
-    const chatRect = shell.getBoundingClientRect();
+    const chatRect = chatTarget.rect;
     if (!catRect || !chatRect || catRect.width <= 0 || catRect.height <= 0 || chatRect.width <= 0 || chatRect.height <= 0) {
         return false;
     }
@@ -1604,7 +1688,10 @@ function _stepNekoIdleCat1PairMove(button, startedAt, timestamp) {
         return;
     }
     const plan = state.pairMovePlan;
-    if (!_getNekoIdleReactChatMinimizedShell() || plan.container.getAttribute('data-dragging') === 'true') {
+    const chatAvailable = plan.chatMode === 'desktop'
+        ? _getNekoIdleDesktopChatMinimizedRect()
+        : _getNekoIdleReactChatMinimizedShell();
+    if (!chatAvailable || plan.container.getAttribute('data-dragging') === 'true') {
         _cancelNekoIdleCat1Journey(button, { resetArt: true, preserveObservers: true });
         return;
     }
@@ -2044,6 +2131,8 @@ function _ensureNekoIdleReturnPresentationBridge() {
             updatedAt: Date.now()
         };
         document.querySelectorAll(_NEKO_IDLE_RETURN_BUTTON_SELECTOR).forEach((button) => {
+            const currentState = button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey;
+            if (currentState && (currentState.pairMovePlan || currentState.pairMoveFrame)) return;
             if (isSmallDesktopChatMove && !_isNekoIdleCat1Walking(button)) return;
             _scheduleNekoIdleCat1JourneySync(button);
         });

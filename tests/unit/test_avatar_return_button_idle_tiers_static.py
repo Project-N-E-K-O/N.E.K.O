@@ -6,6 +6,9 @@ from main_routers import pages_router
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 AVATAR_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "avatar-ui-buttons.js"
 APP_UI_PATH = PROJECT_ROOT / "static" / "app-ui.js"
+APP_INTERPAGE_PATH = PROJECT_ROOT / "static" / "app-interpage.js"
+APP_REACT_CHAT_WINDOW_PATH = PROJECT_ROOT / "static" / "app-react-chat-window.js"
+COMMON_UI_HUD_PATH = PROJECT_ROOT / "static" / "common-ui-hud.js"
 LIVE2D_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "live2d-ui-buttons.js"
 VRM_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "vrm-ui-buttons.js"
 MMD_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "mmd-ui-buttons.js"
@@ -90,6 +93,8 @@ def test_desktop_return_ball_drag_lifecycle_waits_for_restored_viewport_before_r
 
     assert ": 600" in source
     assert "keeping return-ball hidden until viewport is restored" in source
+    assert "waitForViewportSize hard timeout; continuing best-effort cleanup" in source
+    assert "clearMultiWindowReturnBallDeferredWork(state)" in source
     assert "state.viewportWaitFallbackTimer = setTimeout(pollViewportRestore, 50)" in source
     assert "runWhenStable({ timedOut: true })" not in source
     assert "function revealReturnBallDragWindow()" in source
@@ -118,6 +123,12 @@ def test_return_button_drag_has_single_owner_per_runtime_path():
     assert "this._setupReturnButtonDrag(returnButtonContainer)" not in vrm_source
     assert "this._setupReturnButtonDrag(returnButtonContainer)" not in mmd_source
 
+    vrm_handle_end = vrm_source[
+        vrm_source.index("const handleEnd = () => {"):
+        vrm_source.index("returnButtonContainer.addEventListener('mousedown'", vrm_source.index("const handleEnd = () => {"))
+    ]
+    assert vrm_handle_end.index("commitDragPosition();") < vrm_handle_end.index("const moved =")
+
 
 def test_return_button_idle_tier_switch_uses_crossfade_motion():
     button_source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
@@ -132,6 +143,7 @@ def test_return_button_idle_tier_switch_uses_crossfade_motion():
     assert '@keyframes nekoIdleTierOut' in css_source
     assert '@keyframes nekoIdleTierIn' in css_source
     assert '.neko-idle-return-btn.is-tier-transitioning' in css_source
+    assert 'position: relative;' in _extract_neko_return_btn_block(css_source)
     assert '@media (prefers-reduced-motion: reduce)' in css_source
 
 
@@ -206,7 +218,13 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert '_finishNekoIdleCat1PairMove' in source
     assert '_cancelNekoIdleCat1PairMove' in source
     assert '_getNekoIdleReactChatMinimizedShell' in source
+    assert '_getNekoIdleCat1PairMoveChatTarget' in source
+    assert '_dispatchNekoIdleDesktopChatPairMoveBounds' in source
+    assert "action: 'idle_chat_pair_move_bounds'" in source
+    assert "chatMode: chatTarget.mode" in source
     assert '_setNekoIdleCat1PairMoveChatPosition' in source
+    assert "shell.style.right = ''" in source
+    assert "shell.style.bottom = ''" in source
     assert '_applyNekoIdleCat1PairMovePlan(plan, progress)' in source
     assert 'if (!_startNekoIdleCat1PairMove(button))' in source
     assert '_finishNekoIdleHoverArtAfterPlayback(art, profile.tier)' in source
@@ -231,6 +249,7 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert '_getNekoIdleDesktopChatMinimizedRect' in source
     assert '_getNekoIdleChatMinimizedRect' in source
     assert "'neko:idle-chat-minimized-state'" in source
+    assert "currentState && (currentState.pairMovePlan || currentState.pairMoveFrame)" in source
     assert '_NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS' in source
     assert '_pauseNekoIdleCat1Journey' in source
     assert '_resumeNekoIdleCat1Journey' in source
@@ -268,7 +287,9 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
 
 
 def test_return_button_idle_tier_assets_are_version_tracked():
-    for path in (CAT1_ASSET_PATH, CAT1_CLICK_ASSET_PATH,
+    for path in (APP_UI_PATH, APP_INTERPAGE_PATH, COMMON_UI_HUD_PATH,
+                 APP_REACT_CHAT_WINDOW_PATH,
+                 CAT1_ASSET_PATH, CAT1_CLICK_ASSET_PATH,
                  CAT2_ASSET_PATH, CAT2_CLICK_ASSET_PATH,
                  CAT3_ASSET_PATH, CAT3_CLICK_ASSET_PATH,
                  CAT1_WALK_ASSET_PATH, CAT1_STRETCH_ASSET_PATH,
@@ -281,22 +302,35 @@ def test_return_button_idle_tier_assets_are_version_tracked():
 def test_no_box_shadow_or_border_in_base_return_btn_css():
     source = INDEX_CSS_PATH.read_text(encoding="utf-8")
 
-    assert 'box-shadow' not in source or 'neko-idle-return-btn' not in _extract_neko_block(source, 'box-shadow')
-    assert 'border' not in source or 'neko-idle-return-btn' not in _extract_neko_block(source, 'border')
-    assert 'backdrop-filter' not in source or 'neko-idle-return-btn' not in _extract_neko_block(source, 'backdrop-filter')
+    base_block = _extract_neko_return_btn_block(source)
+    assert 'box-shadow' not in base_block
+    assert 'border' not in base_block
+    assert 'backdrop-filter' not in base_block
 
 
-def _extract_neko_block(source, keyword):
-    lines = source.splitlines()
-    in_neko = False
-    result = []
-    for line in lines:
-        if '.neko-idle-return' in line:
-            in_neko = True
-        elif in_neko and line.strip() == '}':
-            in_neko = False
-            if any(keyword in l for l in result):
-                return '.neko-idle-return-btn'
-        if in_neko:
-            result.append(line)
+def _extract_neko_return_btn_block(source):
+    selector = '.neko-idle-return-btn'
+    start = source.find(selector)
+    while start != -1:
+        prefix = source[max(0, start - 1):start]
+        suffix_start = start + len(selector)
+        suffix = source[suffix_start:suffix_start + 1]
+        if prefix not in ('', '\n', '\r', '}', ' ') or suffix not in ('', ' ', '\n', '\r', '\t', '{'):
+            start = source.find(selector, suffix_start)
+            continue
+        open_brace = source.find('{', suffix_start)
+        next_selector = source.find(selector, suffix_start)
+        if open_brace == -1 or (next_selector != -1 and next_selector < open_brace):
+            start = next_selector
+            continue
+        depth = 0
+        for index in range(open_brace, len(source)):
+            char = source[index]
+            if char == '{':
+                depth += 1
+            elif char == '}':
+                depth -= 1
+                if depth == 0:
+                    return source[open_brace + 1:index]
+        return ''
     return ''
