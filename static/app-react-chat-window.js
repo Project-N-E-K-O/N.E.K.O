@@ -136,11 +136,15 @@
         }
         try {
             var raw = localStorage.getItem(CHAT_SURFACE_MODE_STORAGE_KEY);
-            if (raw === 'full') {
+            // The storage key only ever holds the restorable surface ('compact').
+            // Migrate any legacy value persisted by the old three-state build
+            // ('full') or a stray 'minimized' back to 'compact' so stale values
+            // don't linger in storage. Any other value (or first run) just
+            // resolves to 'compact' without an extra write.
+            if (raw === 'full' || raw === 'minimized') {
                 localStorage.setItem(CHAT_SURFACE_MODE_STORAGE_KEY, 'compact');
-                return 'compact';
             }
-            return raw === 'compact' ? 'compact' : 'compact';
+            return 'compact';
         } catch (_) {
             return 'compact';
         }

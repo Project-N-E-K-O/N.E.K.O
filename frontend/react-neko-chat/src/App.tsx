@@ -1010,6 +1010,9 @@ export default function App({
   galgameToggleButtonLabel = i18n('chat.galgameToggle', 'GalGame Mode'),
   galgameToggleButtonAriaLabel,
   galgameLoadingLabel = i18n('chat.galgameLoading', 'Generating options...'),
+  // Retained for host API compatibility; the compact-only surface no longer
+  // renders the per-message action menu, so this handler is currently unused
+  // (the `_` prefix opts it out of unused-var lint).
   onMessageAction: _onMessageAction,
   onComposerImportImage,
   onComposerScreenshot,
@@ -1020,6 +1023,9 @@ export default function App({
   onAvatarInteraction,
   onAvatarToolStateChange,
   onJukeboxClick,
+  // Retained for host API compatibility; export lives outside the compact
+  // surface now, so this handler is currently unused (the `_` prefix opts it
+  // out of unused-var lint).
   onExportConversationClick: _onExportConversationClick,
   onTranslateToggle,
   onGalgameModeToggle,
