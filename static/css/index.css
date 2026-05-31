@@ -2320,7 +2320,9 @@ body.react-chat-window-dragging {
 
 .crop-tool-btn:focus-visible,
 .crop-color-swatch:focus-visible,
-.crop-width-btn:focus-visible {
+.crop-width-btn:focus-visible,
+.crop-opt-slider:focus-visible,
+.crop-opt-text:focus-visible {
     outline: 2px solid rgba(68, 183, 254, 0.85);
     outline-offset: 1px;
 }
@@ -2389,6 +2391,72 @@ body.react-chat-window-dragging {
     resize: none;
     pointer-events: auto;
     caret-color: currentColor;
+}
+
+/* 上下文选项条：随当前工具浮在主工具栏旁，展示该工具的可调属性 */
+.crop-options-bar {
+    position: absolute;
+    z-index: 6;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 14px;
+    max-width: calc(100vw - 24px);
+    padding: 8px 14px;
+    border-radius: 12px;
+    background: rgba(8, 11, 18, 0.85);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.4);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+    pointer-events: auto;
+    user-select: none;
+    animation: crop-fade-in 0.15s ease;
+}
+
+.crop-opt-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.crop-opt-label {
+    color: rgba(255, 255, 255, 0.8);
+    font-size: 0.82rem;
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.crop-opt-slider {
+    width: 120px;
+    height: 4px;
+    cursor: pointer;
+    accent-color: #44b7fe;
+}
+
+.crop-opt-value {
+    min-width: 26px;
+    color: #8bd8ff;
+    font-size: 0.8rem;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+}
+
+.crop-opt-text {
+    width: 140px;
+    height: 28px;
+    padding: 0 8px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.06);
+    color: #fff;
+    font-size: 0.85rem;
+    outline: none;
+}
+
+.crop-opt-text:focus {
+    border-color: rgba(68, 183, 254, 0.8);
+    background: rgba(68, 183, 254, 0.08);
 }
 
 /* 绘图工具激活时隐藏选区手柄与网格线，避免误触 */

@@ -72,20 +72,39 @@
     // ======================== Annotation state ========================
     // 标注全部以"图片自然坐标"存储，渲染时经 mapFn 映射到目标画布。
     // 这样窗口 resize、选区 resize 都不破坏标注，烤制时只是坐标平移。
-    var currentTool = 'select'; // 'select'|'rect'|'ellipse'|'arrow'|'pen'|'highlighter'|'text'|'mosaic'
-    var DRAW_TOOLS = { rect: 1, ellipse: 1, arrow: 1, pen: 1, highlighter: 1, text: 1, mosaic: 1 };
+    var currentTool = 'select'; // 'select'|'rect'|'ellipse'|'arrow'|'pen'|'highlighter'|'text'|'mosaic'|'watermark'
+    var DRAW_TOOLS = { rect: 1, ellipse: 1, arrow: 1, pen: 1, highlighter: 1, text: 1, mosaic: 1, watermark: 1 };
+    // 选中后会浮出上下文选项条的工具（每个工具有各自可调属性）
+    var OPTION_TOOLS = { text: 1, highlighter: 1, mosaic: 1, watermark: 1 };
     var currentColor = '#ff3b30';
     var currentStrokeWidth = 4; // 图片自然坐标下的线宽基准
-    var annotations = [];       // 已提交标注
-    var redoStack = [];         // 重做栈
+    var annotations = [];       // 当前工作数组（渲染/命中测试都读它，始终等于 history[historyIndex] 的内容）
+    // 快照式撤销历史：每次提交存一份 annotations 浅拷贝；undo/redo 切快照。
+    // 标注对象提交后视为不可变（改水印=替换为新对象，不原地改），所以浅拷贝即安全。
+    // 相比 pop 式，能正确表达"撤销栈中间某个标注的编辑/删除"。
+    var history = [[]];         // 快照栈，初始一份空快照
+    var historyIndex = 0;       // 当前快照下标
+    var lastHistoryTag = null;  // 上一步的类型标签，用于合并连续同类编辑（如水印逐字输入）
     var annoDraft = null;       // 正在绘制的草稿（独立于 mode 选区状态机）
     var textEditor = null;      // 文字工具的 <textarea> DOM
     var workspaceEl = null;     // .crop-workspace 容器（textarea 挂这里）
     var toolbarEl = null;       // 标注工具栏 DOM
+    var optionsBarEl = null;    // 上下文选项条 DOM（随当前工具刷新内容）
     var toolBtns = {};          // name -> button，用于切换 active 态
     var colorSwatches = [];     // 调色板按钮
     var widthBtns = [];         // 线宽按钮
     var undoBtn = null, redoBtn = null;
+
+    // 各工具的可调属性（默认值见下方常量）。文字/水印字号以"屏幕显示 px"为基准，
+    // 提交时按 displayScale 换算成图片自然坐标 px 存进标注，保证抗 resize。
+    var currentFontSizePx = 22;       // 文字工具屏幕字号
+    var currentHighlightAlpha = 0.38; // 荧光笔透明度（= HIGHLIGHT_ALPHA 默认）
+    var currentMosaicBlock = 12;      // 马赛克块大小（图片自然坐标 px，= MOSAIC_BLOCK 默认）
+    var currentWatermarkText = '';    // 水印文字（空则用默认占位）
+    var currentWatermarkSizePx = 30;  // 水印屏幕字号
+    // 水印有独立的"粘性"颜色（仿 QQ），与全局绘图色 currentColor 解耦：调色板在水印工具下
+    // 改的是它，undo/redo 同步的也是它，绝不污染 pen/箭头等用的 currentColor。
+    var currentWatermarkColor = '#ff3b30';
 
     var PALETTE = ['#ff3b30', '#ffcc00', '#34c759', '#0a84ff', '#ffffff', '#1c1c1e'];
     // 与 PALETTE 同序：调色板按钮的无障碍可读名（纯色按钮无文字，读屏靠这个）
@@ -209,6 +228,10 @@
         // ---- Annotation toolbar (tools + style + actions, includes ✓ / ×) ----
         ensureToolbar();
         overlay.appendChild(toolbarEl);
+
+        // ---- Contextual options bar (per-tool extras: font size / opacity / mosaic / watermark) ----
+        ensureOptionsBar();
+        overlay.appendChild(optionsBarEl);
 
         // ---- Events ----
         canvas.addEventListener('mousedown', onPointerDown);
@@ -479,12 +502,13 @@
 
     // 把图片区域 (ix,iy,iw,ih 自然坐标) 像素化进一张自然分辨率缓存 canvas。
     // 用于马赛克：源永远取 imgEl（自然分辨率），不取被遮罩压暗的显示 canvas。
-    function buildMosaicCache(ix, iy, iw, ih) {
+    function buildMosaicCache(ix, iy, iw, ih, block) {
         iw = Math.round(iw); ih = Math.round(ih);
         if (iw < 1 || ih < 1) return null;
+        var blk = block || MOSAIC_BLOCK;
         try {
-            var smallW = Math.max(1, Math.round(iw / MOSAIC_BLOCK));
-            var smallH = Math.max(1, Math.round(ih / MOSAIC_BLOCK));
+            var smallW = Math.max(1, Math.round(iw / blk));
+            var smallH = Math.max(1, Math.round(ih / blk));
             var small = document.createElement('canvas');
             small.width = smallW; small.height = smallH;
             var sctx = small.getContext('2d');
@@ -515,7 +539,7 @@
             c.lineJoin = 'round';
             c.lineCap = 'round';
             if (a.type === 'highlighter') {
-                c.globalAlpha = HIGHLIGHT_ALPHA;
+                c.globalAlpha = (a.alpha != null) ? a.alpha : HIGHLIGHT_ALPHA;
                 c.lineWidth = lw * HIGHLIGHT_WIDTH_MULT;
                 c.lineCap = 'butt';
             } else {
@@ -542,7 +566,7 @@
             var br = map(n.x + n.w, n.y + n.h);
             var rx = tl.x, ry = tl.y, rw = br.x - tl.x, rh = br.y - tl.y;
             if (a.type === 'mosaic') {
-                var cache = a._cache || buildMosaicCache(n.x, n.y, n.w, n.h);
+                var cache = a._cache || buildMosaicCache(n.x, n.y, n.w, n.h, a.block);
                 c.save();
                 if (cache) {
                     c.imageSmoothingEnabled = false;
@@ -611,6 +635,41 @@
             c.restore();
             return;
         }
+        if (a.type === 'watermark') {
+            var wtl = map(a.x, a.y);
+            var wbr = map(a.x + a.w, a.y + a.h);
+            var wx = wtl.x, wy = wtl.y, ww = wbr.x - wtl.x, wh = wbr.y - wtl.y;
+            if (ww < 1 || wh < 1) return;
+            var wtxt = a.text || tr('chat.cropWatermarkDefault', '水印');
+            var wfs = (a.fontSize || 30) * scale;
+            c.save();
+            c.beginPath();
+            c.rect(wx, wy, ww, wh);
+            c.clip();
+            c.translate(wx + ww / 2, wy + wh / 2);
+            c.rotate(-Math.PI / 6); // 斜铺 -30°
+            c.font = '600 ' + wfs + 'px -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif';
+            c.textAlign = 'center';
+            c.textBaseline = 'middle';
+            c.fillStyle = a.color || currentColor;
+            c.globalAlpha = (a.alpha != null) ? a.alpha : 0.26;
+            var tw = Math.max(1, c.measureText(wtxt).width);
+            var stepX = tw + wfs * 2.0;
+            var stepY = wfs * 2.6;
+            var diag = Math.sqrt(ww * ww + wh * wh);
+            var half = diag / 2 + stepY;
+            var row = 0;
+            for (var yy = -half; yy <= half; yy += stepY) {
+                // 行间错位半格，平铺更自然
+                var offset = (row % 2) ? stepX / 2 : 0;
+                for (var xx = -half - offset; xx <= half; xx += stepX) {
+                    c.fillText(wtxt, xx, yy);
+                }
+                row++;
+            }
+            c.restore();
+            return;
+        }
     }
 
     function renderAnnotations(c, map, scale) {
@@ -622,43 +681,72 @@
         }
     }
 
-    // ======================== Annotation commit / undo / redo ========================
+    // ======================== Snapshot history (undo / redo) ========================
+    // 提交一步历史：存当前 annotations 的浅拷贝。tag 用于合并连续同类编辑——传入相同 tag
+    // 且仍在栈顶时，原地替换栈顶快照而非新增（水印逐字输入合成一步，不刷爆 undo）。
+    function pushHistory(tag) {
+        if (tag && tag === lastHistoryTag && historyIndex > 0 && historyIndex === history.length - 1) {
+            history[historyIndex] = annotations.slice();
+        } else {
+            history.length = historyIndex + 1;     // 丢弃 redo 分支
+            history.push(annotations.slice());
+            historyIndex = history.length - 1;
+        }
+        lastHistoryTag = tag || null;
+        updateUndoRedoButtons();
+    }
+
+    // 工作数组对齐到当前快照（undo/redo 与"取消编辑/无改动"都用它复原）
+    function restoreFromHistory() {
+        annotations = history[historyIndex].slice();
+        lastHistoryTag = null; // 切快照后断开合并链，下次编辑另起一步
+        syncWatermarkOptionsFromAnnotations(); // 选项条状态跟随快照，别用 undo 前的旧文字/字号
+        updateUndoRedoButtons();
+        requestRender();
+    }
+
+    function resetHistory() {
+        annotations = [];
+        history = [[]];
+        historyIndex = 0;
+        lastHistoryTag = null;
+        updateUndoRedoButtons();
+    }
+
     function commitAnnotation(a) {
         if (a.type === 'mosaic') {
             var n = normAnno(a);
-            a._cache = buildMosaicCache(n.x, n.y, n.w, n.h);
+            a._cache = buildMosaicCache(n.x, n.y, n.w, n.h, a.block);
         }
         annotations.push(a);
-        redoStack.length = 0;
-        updateUndoRedoButtons();
+        pushHistory();
     }
 
     function undo() {
         if (textEditor) { commitTextEdit(); return; }
-        if (!annotations.length) return;
-        redoStack.push(annotations.pop());
-        updateUndoRedoButtons();
-        requestRender();
+        if (historyIndex === 0) return;
+        historyIndex--;
+        restoreFromHistory();
     }
 
     function redo() {
-        if (!redoStack.length) return;
-        annotations.push(redoStack.pop());
-        updateUndoRedoButtons();
-        requestRender();
+        // 与 undo 一致：编辑框还开着就先收掉，别在它底下换掉 annotations ——
+        // 否则提交时会把编辑后的文字插到已被快照恢复的原文字旁边，烤出重复文字。
+        if (textEditor) { commitTextEdit(); return; }
+        if (historyIndex >= history.length - 1) return;
+        historyIndex++;
+        restoreFromHistory();
     }
 
     function clearAnnotations() {
-        annotations.length = 0;
-        redoStack.length = 0;
         annoDraft = null;
         cancelTextEdit();
-        updateUndoRedoButtons();
+        resetHistory();
     }
 
     function updateUndoRedoButtons() {
-        if (undoBtn) undoBtn.disabled = annotations.length === 0;
-        if (redoBtn) redoBtn.disabled = redoStack.length === 0;
+        if (undoBtn) undoBtn.disabled = historyIndex === 0;
+        if (redoBtn) redoBtn.disabled = historyIndex >= history.length - 1;
     }
 
     // 把工具栏恢复到初始态（选择工具 + active 同步）
@@ -672,6 +760,7 @@
         }
         syncColorWidthActive();
         updateUndoRedoButtons();
+        updateOptionsBar();
     }
 
     function makeDraft(ip) {
@@ -681,6 +770,8 @@
         } else {
             base.x0 = ip.x; base.y0 = ip.y; base.x1 = ip.x; base.y1 = ip.y;
         }
+        if (currentTool === 'highlighter') base.alpha = currentHighlightAlpha;
+        if (currentTool === 'mosaic') base.block = currentMosaicBlock;
         return base;
     }
 
@@ -692,35 +783,102 @@
     }
 
     // ======================== Text tool ========================
-    function beginTextEdit(pos, ip) {
+    // existing：再次编辑已提交文字标注时传入（沿用其字号/颜色/文本），见 issue 文字可二次编辑。
+    function beginTextEdit(pos, ip, existing) {
         commitTextEdit(); // 收掉上一个未提交的
         var scale = displayScale() || 1;
-        var fontSizeImage = Math.max(8, Math.round(22 / scale)); // 屏幕上约 22px
+        var fontSizeImage = existing
+            ? (existing.fontSize || Math.max(8, Math.round(currentFontSizePx / scale)))
+            : Math.max(8, Math.round(currentFontSizePx / scale));
+        var col = existing ? (existing.color || currentColor) : currentColor;
         var ta = document.createElement('textarea');
         ta.className = 'crop-text-editor';
         ta.rows = 1;
         ta.wrap = 'off';
         ta.style.left = pos.x + 'px';
         ta.style.top = pos.y + 'px';
-        ta.style.color = currentColor;
+        ta.style.color = col;
         ta.style.fontSize = Math.round(fontSizeImage * scale) + 'px';
-        ta._imgX = ip.x; ta._imgY = ip.y; ta._fontSizeImage = fontSizeImage; ta._color = currentColor;
-        ta.addEventListener('keydown', function (e) {
-            e.stopPropagation(); // 别让遮罩 keydown 抢走 Esc/Enter/Delete/方向键
-            if (e.key === 'Escape') { e.preventDefault(); cancelTextEdit(); }
-            else if ((e.key === 'Enter' || e.key === 'NumpadEnter') && !e.shiftKey) { e.preventDefault(); commitTextEdit(); }
-        });
-        ta.addEventListener('blur', function () { commitTextEdit(); });
-        ta.addEventListener('input', function () {
+        ta._imgX = ip.x; ta._imgY = ip.y; ta._fontSizeImage = fontSizeImage; ta._color = col;
+        ta._original = existing || null; // 二次编辑时记下原标注，Esc 取消可原样还原
+        function autosize() {
             ta.style.height = 'auto';
             ta.style.height = ta.scrollHeight + 'px';
             ta.style.width = 'auto';
             ta.style.width = Math.min(workspaceEl.clientWidth - pos.x - 12, Math.max(40, ta.scrollWidth + 4)) + 'px';
+        }
+        ta.addEventListener('keydown', function (e) {
+            e.stopPropagation(); // 别让遮罩 keydown 抢走 Esc/Enter/Delete/方向键
+            if (e.key === 'Escape') { e.preventDefault(); cancelTextEdit(true); }
+            else if ((e.key === 'Enter' || e.key === 'NumpadEnter') && !e.shiftKey) { e.preventDefault(); commitTextEdit(); }
         });
+        ta.addEventListener('blur', function (e) {
+            // 焦点移到"样式控件"（选项条字号滑块、调色板、线宽）时不要提交——否则刚点一下
+            // textarea 就 blur 提交、编辑器被移除，setColor/字号回调拿到的 textEditor 已是 null，
+            // 改动只作用于后续文字而非当前正在编辑的标注（Codex P2）。切工具/确认等会另行提交。
+            var next = e.relatedTarget || document.activeElement;
+            if (next && (
+                (optionsBarEl && optionsBarEl.contains(next)) ||
+                (next.classList && (next.classList.contains('crop-color-swatch')
+                    || next.classList.contains('crop-width-btn')))
+            )) return;
+            commitTextEdit();
+        });
+        ta.addEventListener('input', autosize);
         workspaceEl.appendChild(ta);
         textEditor = ta;
+        if (existing && existing.text) {
+            ta.value = existing.text;
+            autosize();
+        }
         // 异步聚焦，避免 mousedown 同帧抢焦点失败
-        setTimeout(function () { try { ta.focus(); } catch (e) {} }, 0);
+        setTimeout(function () { try { ta.focus(); ta.select(); } catch (e) {} }, 0);
+    }
+
+    // 估算文字标注在图片自然坐标下的包围盒（用于"点中已有文字 → 二次编辑"命中测试）
+    function measureTextAnno(a) {
+        var fs = a.fontSize || 20;
+        var lines = (a.text || '').split('\n');
+        var maxw = 0;
+        ctx.save();
+        ctx.font = '600 ' + fs + 'px -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif';
+        for (var i = 0; i < lines.length; i++) {
+            maxw = Math.max(maxw, ctx.measureText(lines[i]).width);
+        }
+        ctx.restore();
+        return { x: a.x, y: a.y, w: maxw, h: Math.max(1, lines.length) * fs * 1.28 };
+    }
+
+    // 返回命中的文字标注下标（从最上层往下找），无命中返回 -1。ix/iy 为图片自然坐标。
+    function hitTestText(ix, iy) {
+        for (var i = annotations.length - 1; i >= 0; i--) {
+            var a = annotations[i];
+            if (a.type !== 'text') continue;
+            var b = measureTextAnno(a);
+            var pad = Math.max(4, (a.fontSize || 20) * 0.35);
+            if (ix >= b.x - pad && ix <= b.x + b.w + pad &&
+                iy >= b.y - pad && iy <= b.y + b.h + pad) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    // 把已提交的文字标注重新拉回编辑框：从工作数组摘掉（编辑期间不重复绘制），
+    // 但不动历史快照——当前快照仍持有它，取消/无改动时 restoreFromHistory 即可原样复原。
+    function reopenTextAnnotation(idx) {
+        var a = annotations[idx];
+        annotations.splice(idx, 1); // 仅改工作数组；快照是独立副本，不受影响
+        requestRender();
+        // 同步字号滑块到被编辑文字的真实字号（存的是图片坐标，换算回屏幕 px 并夹到滑块范围），
+        // 否则滑块还显示默认值，轻碰一下就把这段文字跳到默认字号。
+        var scale = displayScale() || 1;
+        currentFontSizePx = Math.max(12, Math.min(80, Math.round((a.fontSize || 20) * scale)));
+        updateOptionsBar();
+        var posC = imageToCanvas(a.x, a.y);
+        beginTextEdit(posC, { x: a.x, y: a.y }, a);
+        // 记下原层级：真改动提交时插回原位，保住层级。
+        if (textEditor) textEditor._originalIndex = idx;
     }
 
     function commitTextEdit() {
@@ -730,21 +888,42 @@
         var text = ta.value.replace(/[\s]+$/, '');
         if (ta.parentNode) ta.parentNode.removeChild(ta);
         if (text) {
-            commitAnnotation({
+            var anno = {
                 type: 'text', text: text,
                 x: ta._imgX, y: ta._imgY,
                 fontSize: ta._fontSizeImage, color: ta._color
-            });
+            };
+            // 二次编辑若文字/字号/颜色都没变（位置二次编辑不动）= no-op：丢弃新对象，
+            // 工作数组回到当前快照（含原对象、原层级），不新增历史步。
+            var unchanged = ta._original
+                && ta._original.text === anno.text
+                && ta._original.fontSize === anno.fontSize
+                && ta._original.color === anno.color;
+            if (unchanged) {
+                restoreFromHistory();
+                return;
+            }
+            var idx = (ta._originalIndex != null)
+                ? Math.max(0, Math.min(annotations.length, ta._originalIndex))
+                : annotations.length;
+            annotations.splice(idx, 0, anno);
+            pushHistory(); // 新建 / 真改动 → 独立历史步
+        } else if (ta._original) {
+            // 二次编辑删空 = 删除该标注（工作数组已无它），记一步删除历史。
+            pushHistory();
         }
         requestRender();
     }
 
-    function cancelTextEdit() {
+    // restoreOriginal=true 仅用于"按 Esc 取消二次编辑"：工作数组回到当前快照（原对象、原层级、redo 分支都保留）。
+    // clearAnnotations / close 等全局清空路径传 false（不复原，随后 resetHistory 整体清空）。
+    function cancelTextEdit(restoreOriginal) {
         if (!textEditor) return;
         var ta = textEditor;
         textEditor = null;
         if (ta.parentNode) ta.parentNode.removeChild(ta);
-        requestRender();
+        if (restoreOriginal && ta._original) restoreFromHistory();
+        else requestRender();
     }
 
     // ======================== Toolbar ========================
@@ -757,6 +936,7 @@
         highlighter: '<path d="M3 20h6"/><path d="M10.5 15.5l-3 3 1.5 1.5 3-1 7.5-7.5-2.5-2.5z"/><path d="M14.5 6.5l3 3"/>',
         text: '<path d="M6 19l6-14 6 14"/><path d="M8.8 13.5h6.4"/>',
         mosaic: '<rect x="5" y="5" width="4" height="4"/><rect x="13" y="5" width="4" height="4"/><rect x="9" y="9" width="4" height="4"/><rect x="5" y="13" width="4" height="4"/><rect x="13" y="13" width="4" height="4"/>',
+        watermark: '<path d="M4 18l4-12 4 12"/><path d="M14 18l4-12 4 12"/>',
         undo: '<path d="M9 8L4 13l5 5"/><path d="M4 13h9.5a5.5 5.5 0 0 1 0 11H11"/>',
         redo: '<path d="M15 8l5 5-5 5"/><path d="M20 13h-9.5a5.5 5.5 0 0 0 0 11H13"/>',
         save: '<path d="M12 4v11"/><path d="M7 10l5 5 5-5"/><path d="M5 20h14"/>',
@@ -793,8 +973,10 @@
     }
 
     function syncColorWidthActive() {
+        // 水印工具下调色板反映/控制水印自己的颜色，其它工具用全局绘图色
+        var activeColor = (currentTool === 'watermark') ? currentWatermarkColor : currentColor;
         for (var i = 0; i < colorSwatches.length; i++) {
-            var cOn = colorSwatches[i]._color === currentColor;
+            var cOn = colorSwatches[i]._color === activeColor;
             colorSwatches[i].classList.toggle('is-active', cOn);
             colorSwatches[i].setAttribute('aria-pressed', cOn ? 'true' : 'false');
         }
@@ -822,7 +1004,8 @@
             ['pen', 'chat.cropToolPen', '画笔'],
             ['highlighter', 'chat.cropToolHighlight', '荧光笔'],
             ['text', 'chat.cropToolText', '文字'],
-            ['mosaic', 'chat.cropToolMosaic', '马赛克']
+            ['mosaic', 'chat.cropToolMosaic', '马赛克'],
+            ['watermark', 'chat.cropToolWatermark', '水印']
         ];
         var toolGrp = document.createElement('div');
         toolGrp.className = 'crop-tool-group';
@@ -911,13 +1094,24 @@
         // 绘图工具下隐藏选区手柄/网格，避免误拖
         if (selectionBox) selectionBox.classList.toggle('crop-selection-box--drawing', !!DRAW_TOOLS[name]);
         if (canvas) canvas.style.cursor = (name === 'text') ? 'text' : 'crosshair';
+        // 选水印工具时，若选区已存在且尚无水印，自动铺一层（点击/改选项可再刷新）
+        if (name === 'watermark' && sel) ensureWatermark();
+        syncColorWidthActive(); // 调色板高亮跟随工具（水印有独立颜色）
+        updateOptionsBar();
         requestRender();
     }
 
     function setColor(col) {
+        // 水印工具：改的是水印独立颜色，不碰全局绘图色 currentColor
+        if (currentTool === 'watermark') {
+            currentWatermarkColor = col;
+            syncColorWidthActive();
+            updateActiveWatermark();
+            return;
+        }
         currentColor = col;
         syncColorWidthActive();
-        if (textEditor) textEditor.style.color = col;
+        if (textEditor) { textEditor.style.color = col; textEditor._color = col; }
     }
 
     function setWidth(w) {
@@ -940,6 +1134,190 @@
         if (left < 12) left = 12;
         toolbarEl.style.left = left + 'px';
         toolbarEl.style.top = top + 'px';
+        positionOptionsBar(left, top, th);
+    }
+
+    // 选项条贴着主工具栏：默认浮在工具栏下方（仿 QQ），下方放不下则翻到上方（随屏幕边缘自适应）。
+    function positionOptionsBar(toolbarLeft, toolbarTop, toolbarH) {
+        if (!optionsBarEl || optionsBarEl.style.display === 'none') return;
+        var ow = optionsBarEl.offsetWidth || 240;
+        var oh = optionsBarEl.offsetHeight || 40;
+        var left = toolbarLeft;
+        var top = toolbarTop + toolbarH + 8;
+        if (top + oh > overlay.clientHeight - 12) {
+            top = toolbarTop - oh - 8; // 下方贴边则翻到工具栏上方
+        }
+        if (top < 12) top = 12;
+        if (left + ow > overlay.clientWidth - 12) left = overlay.clientWidth - ow - 12;
+        if (left < 12) left = 12;
+        optionsBarEl.style.left = left + 'px';
+        optionsBarEl.style.top = top + 'px';
+    }
+
+    // ======================== Contextual options bar ========================
+    function ensureOptionsBar() {
+        if (optionsBarEl) return;
+        var bar = document.createElement('div');
+        bar.className = 'crop-options-bar';
+        bar.style.display = 'none';
+        bar.addEventListener('mousedown', function (e) { e.stopPropagation(); });
+        bar.addEventListener('touchstart', function (e) { e.stopPropagation(); }, { passive: true });
+        optionsBarEl = bar;
+    }
+
+    // 标签 + 滑块 + 数值的一行
+    function makeSlider(labelKey, fb, min, max, value, onInput) {
+        var row = document.createElement('label');
+        row.className = 'crop-opt-row';
+        var label = document.createElement('span');
+        label.className = 'crop-opt-label';
+        label.textContent = tr(labelKey, fb);
+        var input = document.createElement('input');
+        input.type = 'range';
+        input.className = 'crop-opt-slider';
+        input.min = min; input.max = max; input.value = value;
+        var val = document.createElement('span');
+        val.className = 'crop-opt-value';
+        val.textContent = value;
+        input.addEventListener('input', function () {
+            val.textContent = input.value;
+            onInput(Number(input.value));
+        });
+        row.appendChild(label);
+        row.appendChild(input);
+        row.appendChild(val);
+        return row;
+    }
+
+    // 按当前工具重建选项条内容；select / 形状 / 箭头 / 画笔 无独立选项则隐藏。
+    function updateOptionsBar() {
+        if (!optionsBarEl) return;
+        if (!sel || !OPTION_TOOLS[currentTool]) {
+            optionsBarEl.style.display = 'none';
+            return;
+        }
+        optionsBarEl.innerHTML = '';
+        if (currentTool === 'text') {
+            optionsBarEl.appendChild(makeSlider('chat.cropFontSize', '字号', 12, 80, currentFontSizePx, function (v) {
+                currentFontSizePx = v;
+                if (textEditor) {
+                    var scale = displayScale() || 1;
+                    var fsi = Math.max(8, Math.round(v / scale));
+                    textEditor._fontSizeImage = fsi;
+                    textEditor.style.fontSize = Math.round(fsi * scale) + 'px';
+                }
+            }));
+        } else if (currentTool === 'highlighter') {
+            optionsBarEl.appendChild(makeSlider('chat.cropOpacity', '透明度', 10, 90, Math.round(currentHighlightAlpha * 100), function (v) {
+                currentHighlightAlpha = v / 100;
+            }));
+        } else if (currentTool === 'mosaic') {
+            optionsBarEl.appendChild(makeSlider('chat.cropMosaicSize', '颗粒', 4, 40, currentMosaicBlock, function (v) {
+                currentMosaicBlock = v;
+            }));
+        } else if (currentTool === 'watermark') {
+            var row = document.createElement('label');
+            row.className = 'crop-opt-row';
+            var label = document.createElement('span');
+            label.className = 'crop-opt-label';
+            label.textContent = tr('chat.cropWatermarkText', '文字');
+            var input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'crop-opt-text';
+            input.value = currentWatermarkText;
+            input.placeholder = tr('chat.cropWatermarkDefault', '水印');
+            input.addEventListener('input', function () {
+                currentWatermarkText = input.value;
+                updateActiveWatermark();
+            });
+            // 输入框内的按键不冒泡到遮罩，避免被当成快捷键
+            input.addEventListener('keydown', function (e) { e.stopPropagation(); });
+            row.appendChild(label);
+            row.appendChild(input);
+            optionsBarEl.appendChild(row);
+            optionsBarEl.appendChild(makeSlider('chat.cropFontSize', '字号', 16, 96, currentWatermarkSizePx, function (v) {
+                currentWatermarkSizePx = v;
+                updateActiveWatermark();
+            }));
+        }
+        optionsBarEl.style.display = 'flex';
+    }
+
+    // ======================== Watermark helpers ========================
+    function findWatermarkIndex() {
+        for (var i = annotations.length - 1; i >= 0; i--) {
+            if (annotations[i].type === 'watermark') return i;
+        }
+        return -1;
+    }
+
+    // 按当前选区铺/刷新一层斜铺文字水印。水印对象始终"替换不原地改"，保住快照不可变。
+    // 历史用 'watermark' tag 合并：连续的水印改动（覆盖/逐字输入）合成一步 undo。
+    function ensureWatermark() {
+        var cs = clampSel(sel);
+        if (!cs) return;
+        var p1 = canvasToImage(cs.x, cs.y);
+        var p2 = canvasToImage(cs.x + cs.w, cs.y + cs.h);
+        var rect = {
+            x: Math.min(p1.x, p2.x), y: Math.min(p1.y, p2.y),
+            w: Math.abs(p2.x - p1.x), h: Math.abs(p2.y - p1.y)
+        };
+        var scale = displayScale() || 1;
+        var fontImg = Math.max(12, Math.round(currentWatermarkSizePx / scale));
+        var anno = {
+            type: 'watermark', x: rect.x, y: rect.y, w: rect.w, h: rect.h,
+            text: currentWatermarkText || tr('chat.cropWatermarkDefault', '水印'),
+            color: currentWatermarkColor, fontSize: fontImg, alpha: 0.26
+        };
+        var idx = findWatermarkIndex();
+        if (idx >= 0) {
+            var old = annotations[idx];
+            if (old.text === anno.text && old.color === anno.color && old.fontSize === anno.fontSize
+                && old.x === anno.x && old.y === anno.y && old.w === anno.w && old.h === anno.h) {
+                return; // 无变化（如重复点工具），不记历史
+            }
+            annotations = annotations.slice();
+            annotations[idx] = anno; // 替换而非原地改
+        } else {
+            annotations = annotations.concat([anno]);
+        }
+        pushHistory('watermark');
+        requestRender();
+    }
+
+    // undo/redo 切快照后，把选项条状态（水印文字/字号）对齐到恢复出来的水印标注。
+    // 必须无条件同步 current* 变量（即使当前不是水印工具）—— 否则"改水印→切到别的工具→undo"
+    // 时 current* 仍是旧值，等切回水印工具时 setTool 自动 ensureWatermark 会用旧文字重建、
+    // 把撤销掉的文字又贴回来（Codex P2）。选项条 DOM 只在水印工具激活时才需要重建。
+    function syncWatermarkOptionsFromAnnotations() {
+        var idx = findWatermarkIndex();
+        if (idx >= 0) {
+            var wm = annotations[idx];
+            currentWatermarkText = wm.text || '';
+            var scale = displayScale() || 1;
+            currentWatermarkSizePx = Math.max(16, Math.min(96, Math.round((wm.fontSize || 30) * scale)));
+            // 同步水印自己的颜色（不碰全局绘图色 currentColor，免得 undo 把 pen/箭头的颜色改掉）。
+            if (wm.color) currentWatermarkColor = wm.color;
+        }
+        if (currentTool === 'watermark') { syncColorWidthActive(); updateOptionsBar(); }
+    }
+
+    // 选项/调色板变动时刷新已铺的水印（替换对象）。逐字输入经 'watermark' tag 合并成一步 undo。
+    function updateActiveWatermark() {
+        var idx = findWatermarkIndex();
+        if (idx < 0) return;
+        var scale = displayScale() || 1;
+        var old = annotations[idx];
+        annotations = annotations.slice();
+        annotations[idx] = {
+            type: 'watermark', x: old.x, y: old.y, w: old.w, h: old.h,
+            text: currentWatermarkText || tr('chat.cropWatermarkDefault', '水印'),
+            color: currentWatermarkColor,
+            fontSize: Math.max(12, Math.round(currentWatermarkSizePx / scale)),
+            alpha: old.alpha
+        };
+        pushHistory('watermark');
+        requestRender();
     }
 
     function saveToFile() {
@@ -1006,6 +1384,7 @@
             selectionBox.style.display = 'none';
             selectionBadge.style.display = 'none';
             toolbarEl.style.display = 'none';
+            if (optionsBarEl) optionsBarEl.style.display = 'none';
             return;
         }
         var cs = clampSel(sel);
@@ -1013,6 +1392,7 @@
             selectionBox.style.display = 'none';
             selectionBadge.style.display = 'none';
             toolbarEl.style.display = 'none';
+            if (optionsBarEl) optionsBarEl.style.display = 'none';
             return;
         }
 
@@ -1088,7 +1468,19 @@
             var cp0 = clampPointToSel(pos.x, pos.y);
             var ip0 = canvasToImage(cp0.x, cp0.y);
             if (currentTool === 'text') {
-                beginTextEdit(cp0, ip0);
+                // 先把仍开着的编辑框收掉，让 annotations 落定再做命中测试 —— 否则连续点第二段
+                // 文字时，beginTextEdit 内部的延迟提交会在 splice 之后改变数组，_originalIndex
+                // 失配、两段文字层级互换。
+                commitTextEdit();
+                // 命中已有文字则拉回二次编辑，否则新建（issue 3）
+                var hitIdx = hitTestText(ip0.x, ip0.y);
+                if (hitIdx >= 0) reopenTextAnnotation(hitIdx);
+                else beginTextEdit(cp0, ip0);
+                return;
+            }
+            if (currentTool === 'watermark') {
+                // 水印覆盖整个选区，点击即按当前选区刷新一次（不走拖拽草稿）
+                ensureWatermark();
                 return;
             }
             annoDraft = makeDraft(ip0);
@@ -1292,6 +1684,7 @@
     // ======================== Actions ========================
     function hideActionBtns() {
         if (toolbarEl) toolbarEl.style.display = 'none';
+        if (optionsBarEl) optionsBarEl.style.display = 'none';
     }
 
     function clearSelection() {
@@ -1306,6 +1699,10 @@
     }
 
     function cropToDataUrl() {
+        // 先收掉仍开着的文字编辑框：用户改完字号（焦点停在选项条滑块上、textarea 已 blur
+        // 但未提交）后直接点确认/保存时，工具栏不会再触发 textarea blur，不先提交就烤制
+        // 会丢掉这段可见文字（Codex P2）。commitTextEdit 无开启的编辑框时是 no-op。
+        commitTextEdit();
         var cs = clampSel(sel);
         if (!cs) return null;
         var c1 = canvasToImage(cs.x, cs.y);

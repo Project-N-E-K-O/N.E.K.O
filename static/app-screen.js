@@ -277,7 +277,12 @@
                 if (allBlack) return null;
             }
 
-            dataUrl = canvas.toDataURL('image/jpeg', jpegQuality);
+            // 手动截图（fullResolution）走无损 PNG —— 这帧会被前端置顶预览并在其上裁剪/标注，
+            // JPEG 0.8 会肉眼可见地发糊（尤其文字边缘）。发后端的 720p/JPEG 压缩在裁剪后下游单独做。
+            // 实时取流（720p 节流）仍用 JPEG，控带宽。
+            dataUrl = fullResolution
+                ? canvas.toDataURL('image/png')
+                : canvas.toDataURL('image/jpeg', jpegQuality);
         } catch (e) {
             console.warn('[截图] canvas 绘制/编码失败（可能分辨率超出上限），返回 null 交由调用方兜底:', e);
             return null;
