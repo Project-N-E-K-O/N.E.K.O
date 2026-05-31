@@ -1560,7 +1560,9 @@
     window.addEventListener('neko:auto-goodbye:state-change', (event) => {
         const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
         if (!detail || detail.type !== 'visual-tier') return;
-        scheduleIdleReturnBallDesktopBridge('visual-tier');
+        scheduleIdleReturnBallDesktopBridge(
+            detail.source === 'return-ball-drag-demotion' ? 'return-ball-drag-demotion' : 'visual-tier'
+        );
     });
     window.addEventListener('resize', () => {
         scheduleIdleReturnBallDesktopBridge('viewport-resize');

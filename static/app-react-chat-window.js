@@ -2238,6 +2238,44 @@
         return electronIdleDockActive || electronIdleDockEntering || electronIdleDockDesired || electronIdleDockRetryTimer;
     }
 
+    function shouldIgnoreElectronIdleDockInactiveViewportResize(detail, activeTier) {
+        return !!(detail && detail.reason === 'viewport-resize' && !activeTier);
+    }
+
+    function waitElectronIdleDockCommitRetry(delayMs) {
+        return new Promise(function (resolve) {
+            setTimeout(resolve, Math.max(0, delayMs || 0));
+        });
+    }
+
+    async function commitElectronIdleDockCollapsedBounds(bridge, bounds, generation) {
+        if (!bridge || !bounds) return false;
+        if (typeof bridge.idleDockCommitCollapsedBounds === 'function') {
+            for (var attempt = 0; attempt < 4; attempt += 1) {
+                var result = null;
+                try {
+                    result = await bridge.idleDockCommitCollapsedBounds(bounds);
+                } catch (_) {
+                    result = null;
+                }
+                if (generation !== electronIdleDockGeneration || electronIdleDockDesired) return false;
+                if (result !== false && result !== null && result !== undefined) {
+                    rememberElectronIdleDockBounds(result);
+                    return true;
+                }
+                if (attempt >= 3) break;
+                await waitElectronIdleDockCommitRetry(80);
+                if (generation !== electronIdleDockGeneration || electronIdleDockDesired) return false;
+            }
+        }
+        if (typeof bridge.setBounds === 'function') {
+            bridge.setBounds(bounds.x, bounds.y, bounds.width, bounds.height);
+            rememberElectronIdleDockBounds(bounds);
+            return true;
+        }
+        return false;
+    }
+
     async function enterElectronIdleDock(screenRect) {
         var bridge = getElectronIdleDockBridge();
         var targetRect = normalizeElectronRect(screenRect);
@@ -2340,14 +2378,19 @@
         scheduleElectronChatMinimizedState('idle-dock-enter');
     }
 
-    async function exitElectronIdleDock() {
+    async function exitElectronIdleDock(options) {
+        var preserveCurrentPosition = !!(options && options.preserveCurrentPosition);
+        var preserveScreenRect = normalizeElectronRect(options && options.preserveScreenRect);
         var bridge = getElectronIdleDockBridge();
         var wasActive = electronIdleDockActive;
         var triggeredCollapse = electronIdleDockTriggeredCollapse;
         var savedBounds = electronIdleDockSavedBounds;
+        var currentBounds = electronIdleDockCurrentBounds;
+        var workArea = electronIdleDockWorkArea;
 
         electronIdleDockDesired = false;
         electronIdleDockGeneration += 1;
+        var exitGeneration = electronIdleDockGeneration;
         electronIdleDockActive = false;
         electronIdleDockTriggeredCollapse = false;
         electronIdleDockSavedBounds = null;
@@ -2359,7 +2402,47 @@
         clearElectronIdleDockPositionFrame();
         electronIdleDockPositionSeq += 1;
 
-        if (!bridge || !wasActive || !savedBounds) return;
+        if (!bridge || !wasActive) return;
+
+        if (preserveCurrentPosition) {
+            var preserveBounds = null;
+            if (preserveScreenRect) {
+                var basisBounds = currentBounds || savedBounds;
+                if (!basisBounds && typeof bridge.getBounds === 'function') {
+                    try {
+                        basisBounds = await bridge.getBounds();
+                    } catch (_) {
+                        basisBounds = null;
+                    }
+                }
+                if (exitGeneration !== electronIdleDockGeneration || electronIdleDockDesired) return;
+                if (basisBounds &&
+                    Number.isFinite(Number(basisBounds.width)) &&
+                    Number.isFinite(Number(basisBounds.height))) {
+                    preserveBounds = {
+                        x: Math.round(preserveScreenRect.left - Math.max(1, Math.round(Number(basisBounds.width))) - HOME_IDLE_DOCK_GAP),
+                        y: Math.round(preserveScreenRect.top + (preserveScreenRect.height - Math.max(1, Math.round(Number(basisBounds.height)))) / 2),
+                        width: Math.max(1, Math.round(Number(basisBounds.width))),
+                        height: Math.max(1, Math.round(Number(basisBounds.height)))
+                    };
+                    if (!workArea && typeof bridge.getWorkArea === 'function') {
+                        try {
+                            workArea = await bridge.getWorkArea();
+                        } catch (_) {
+                            workArea = null;
+                        }
+                    }
+                    if (exitGeneration !== electronIdleDockGeneration || electronIdleDockDesired) return;
+                    preserveBounds = clampElectronDockBounds(preserveBounds, workArea);
+                }
+            }
+            await commitElectronIdleDockCollapsedBounds(bridge, preserveBounds, exitGeneration);
+            if (exitGeneration !== electronIdleDockGeneration || electronIdleDockDesired) return;
+            scheduleElectronChatMinimizedState('idle-dock-exit-preserve');
+            return;
+        }
+
+        if (!savedBounds) return;
 
         if (triggeredCollapse && typeof bridge.idleDockExpand === 'function') {
             try {
@@ -2381,7 +2464,17 @@
             return;
         }
         if (hasElectronIdleDockPendingOrActive()) {
-            exitElectronIdleDock();
+            if (shouldIgnoreElectronIdleDockInactiveViewportResize(detail, activeTier)) {
+                return;
+            }
+            var shouldPreserveCurrentPosition = detail && (
+                detail.reason === 'return-ball-drag-demotion'
+                || detail.reason === 'return-ball-drag-end'
+            );
+            exitElectronIdleDock({
+                preserveCurrentPosition: shouldPreserveCurrentPosition,
+                preserveScreenRect: shouldPreserveCurrentPosition ? detail.screenRect : null,
+            });
         }
     }
 
@@ -2427,7 +2520,8 @@
     }
 
     // Exit idle-dock: restore position and un-minimize if idle-dock triggered it.
-    function exitIdleDock() {
+    function exitIdleDock(options) {
+        var preserveCurrentPosition = !!(options && options.preserveCurrentPosition);
         var wasActive = idleDockActive;
         var triggered = idleDockTriggeredMinimize;
         var saved = idleDockSavedPosition;
@@ -2437,7 +2531,7 @@
 
         if (shell) {
             shell.classList.remove('is-idle-docked');
-            if (wasActive && saved) {
+            if (wasActive && saved && !preserveCurrentPosition) {
                 shell.style.left = saved.left + 'px';
                 shell.style.top = saved.top + 'px';
             }
@@ -3436,7 +3530,9 @@
             }
 
             if (idleDockActive) {
-                exitIdleDock();
+                exitIdleDock({
+                    preserveCurrentPosition: detail.source === 'return-ball-drag-demotion',
+                });
                 return;
             }
 

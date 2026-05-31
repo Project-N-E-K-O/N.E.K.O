@@ -94,6 +94,12 @@ def test_electron_idle_dock_uses_desktop_return_ball_bridge():
     assert "scheduleElectronIdleDockPosition()" in source
     assert "scheduleElectronIdleDockRetry(generation)" in source
     assert "detail.screenRect" in source
+    assert "detail.reason === 'return-ball-drag-demotion'" in source
+    assert "detail.reason === 'return-ball-drag-end'" in source
+    assert "idle-dock-exit-preserve" in source
+    assert "preserveScreenRect" in source
+    assert "idleDockCommitCollapsedBounds" in source
+    assert "clampElectronDockBounds(preserveBounds, workArea)" in source
     assert "HOME_IDLE_DOCK_GAP" in source
 
 
@@ -106,7 +112,7 @@ def test_app_ui_broadcasts_return_ball_screen_rect_for_desktop_idle_dock():
     assert "function getIdleReturnBallScreenRect(container)" in source
     assert "window.screenX" in source
     assert "window.appInterpage && window.appInterpage.nekoBroadcastChannel" in source
-    assert "scheduleIdleReturnBallDesktopBridge('visual-tier')" in source
+    assert "detail.source === 'return-ball-drag-demotion' ? 'return-ball-drag-demotion' : 'visual-tier'" in source
     assert "'return-ball-dragging'" in source
     assert "scheduleIdleReturnBallDesktopDragState" in source
     assert "clearIdleReturnBallDesktopDragStateFrame" in source
@@ -148,3 +154,23 @@ def test_toggle_minimized_restores_position_before_expand_when_idle_docked():
     assert "idleDockSavedPosition.left" in toggle_block
     assert "idleDockSavedPosition.top" in toggle_block
     assert "is-idle-docked" in toggle_block
+
+
+def test_idle_dock_exit_preserves_drag_demotion_position():
+    source = _read(APP_REACT_CHAT_WINDOW_PATH)
+
+    assert "function exitIdleDock(options)" in source
+    assert "function exitElectronIdleDock(options)" in source
+    assert "preserveCurrentPosition" in source
+    assert "detail.source === 'return-ball-drag-demotion'" in source
+    assert "detail.reason === 'return-ball-drag-demotion'" in source
+    assert "detail.reason === 'return-ball-drag-end'" in source
+    assert "detail.reason === 'viewport-resize'" in source
+    assert "function shouldIgnoreElectronIdleDockInactiveViewportResize(detail, activeTier)" in source
+    assert "if (shouldIgnoreElectronIdleDockInactiveViewportResize(detail, activeTier))" in source
+    assert "async function commitElectronIdleDockCollapsedBounds(bridge, bounds, generation)" in source
+    assert "result !== false && result !== null && result !== undefined" in source
+    assert "await waitElectronIdleDockCommitRetry(80)" in source
+    assert "preserveScreenRect: shouldPreserveCurrentPosition ? detail.screenRect : null" in source
+    assert "await commitElectronIdleDockCollapsedBounds(bridge, preserveBounds, exitGeneration)" in source
+    assert "wasActive && saved && !preserveCurrentPosition" in source

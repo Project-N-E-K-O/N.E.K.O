@@ -358,7 +358,7 @@ def test_app_auto_goodbye_phase1_harness():
           assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat3', 'goodbye idle should progress to cat3 even while suppressed');
           home.setAppState({{ isRecording: false }});
 
-          // Dragging / touching the goodbye cat should not reset CAT2/CAT3 back to CAT1.
+          // Generic pointer/touch suppression must not refresh the idle baseline.
           home.advance(10000);
           home.tickAll();
           assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat3', 'goodbye idle should progress to cat3');
@@ -372,8 +372,38 @@ def test_app_auto_goodbye_phase1_harness():
           assert(home.win.nekoAutoGoodbye.getState().lastInteractionAt === cat3Baseline, 'drag suppression during goodbye should not refresh idle baseline');
           home.setBodyClass('neko-model-dragging', false);
           home.tickAll();
-          assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat3', 'drag release during goodbye should keep the current tier');
-          assert(home.win.nekoAutoGoodbye.getState().lastInteractionAt === cat3Baseline, 'drag release during goodbye should not refresh idle baseline');
+          assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat3', 'generic drag suppression release should keep the current tier');
+          assert(home.win.nekoAutoGoodbye.getState().lastInteractionAt === cat3Baseline, 'generic drag suppression release should not refresh idle baseline');
+
+          // Return-ball drag releases step the visual tier back without refreshing idle baseline.
+          const dragEnd = () => home.win.dispatchEvent(new CustomEventLike('neko:return-ball-manual-move', {{
+            detail: {{ reason: 'return-ball-drag-end', movedDistancePx: 24 }}
+          }}));
+          dragEnd();
+          home.tickAll();
+          assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat3', 'first CAT3 drag should keep CAT3');
+          dragEnd();
+          home.tickAll();
+          assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat3', 'second CAT3 drag should keep CAT3');
+          dragEnd();
+          home.tickAll();
+          assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat2', 'third CAT3 drag should step back to CAT2');
+          assert(home.win.nekoAutoGoodbye.getState().lastInteractionAt === cat3Baseline, 'CAT3 drag demotion should not refresh idle baseline');
+
+          dragEnd();
+          home.tickAll();
+          assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat1', 'one CAT2 drag should step back to CAT1');
+          assert(home.win.nekoAutoGoodbye.getState().lastInteractionAt === cat3Baseline, 'CAT2 drag demotion should not refresh idle baseline');
+
+          home.advance(CAT2_DELTA_MS);
+          home.tickAll();
+          assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat1', 'demoted CAT1 should not jump back to CAT2 after only the normal auto-goodbye delta');
+          home.advance(CAT2_MS - CAT2_DELTA_MS);
+          home.tickAll();
+          assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat2', 'demoted CAT1 should still progress to CAT2 after the full CAT1 interval');
+          home.advance(CAT3_DELTA_MS);
+          home.tickAll();
+          assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat3', 'demoted CAT2 should still progress to CAT3 after the normal CAT2 interval');
 
           // Return should clear auto state and tier.
           home.win.dispatchEvent(new CustomEventLike('live2d-return-click'));

@@ -230,12 +230,13 @@ hover / click 约束：
 
 拖拽约束：
 
-1. 拖拽不改变当前 tier，不把 CAT2 / CAT3 退回 CAT1，也不刷新 idle 基线。
-2. 通用 return-ball 拖拽 start 只准备拖拽并取消 CAT1 自动移动；越过位移阈值后派发 `return-ball-drag-active`，此时才切到当前 tier 对应的 `cat-idle-cat-move-*`。
-3. drag action 使用独立临时态，优先级高于 hover click GIF、CAT1 settle timer 和 tier 同步；拖拽期间如果 tier 变化，以最新 tier 的拖拽图为准。
-4. drag end 退出拖拽临时态，恢复当前真实 tier。若仍是 CAT1，则再触发现有距离判定，必要时继续走向聊天框；若已 return 或 tier cleared，则不再恢复猫图。
-5. 桌面多窗口 return-ball 拖拽 start / active / end 由 [static/app-ui.js](/Users/tonnodoubt/N.E.K.O/static/app-ui.js) 派发 `neko:return-ball-manual-move`，拖拽过程中还会广播临时 `screenRect` 给桌面聊天窗跟随。
-6. VRM 自定义 return-ball 的 CAT1 重新判距依赖 return-ball 容器的 style / `data-dragging` observer。
+1. 拖拽结束会按当前 tier 做视觉回退：CAT3 前两次拖拽保持，第三次及以后回退到 CAT2；CAT2 一次拖拽回退到 CAT1；CAT1 不因拖拽改变 tier。
+2. 回退不刷新用户 idle 基线，而是设置视觉 tier 推进偏移：CAT2 回退后按 CAT2 -> CAT3 的原间隔继续推进；CAT1 回退后从 CAT1 阶段起点重新推进，必须等待完整 CAT1 阶段时间后才进入 CAT2。
+3. 通用 return-ball 拖拽 start 只准备拖拽并取消 CAT1 自动移动；越过位移阈值后派发 `return-ball-drag-active`，此时才切到当前 tier 对应的 `cat-idle-cat-move-*`。
+4. drag action 使用独立临时态，优先级高于 hover click GIF、CAT1 settle timer 和 tier 同步；拖拽期间如果 tier 推进，以最新 tier 的拖拽图为准。
+5. drag end 退出拖拽临时态，恢复当前真实 tier 后由 [static/app-auto-goodbye.js](/Users/tonnodoubt/N.E.K.O/static/app-auto-goodbye.js) 消费 `return-ball-drag-end` 做 tier 回退判断。若 CAT2 因拖拽回退到 CAT1，网页端和桌面端 idle-dock 退出时都保留当前最小化聊天球位置，不恢复到 dock 前保存位置；桌面端需要同时把 `return-ball-drag-end` 和后续 `return-ball-drag-demotion` 都视为保留当前位置的退出原因，避免普通 drag-end 状态先到而抢先恢复旧 bounds。若仍是 CAT1，则再触发现有距离判定，必要时继续走向聊天框；若已 return 或 tier cleared，则不再恢复猫图。
+6. 桌面多窗口 return-ball 拖拽 start / active / end 由 [static/app-ui.js](/Users/tonnodoubt/N.E.K.O/static/app-ui.js) 派发 `neko:return-ball-manual-move`，拖拽过程中还会广播临时 `screenRect` 给桌面聊天窗跟随。
+7. VRM 自定义 return-ball 的 CAT1 重新判距依赖 return-ball 容器的 style / `data-dragging` observer。
 
 这组资源当前已经接入，维护时至少需要同步关注：
 

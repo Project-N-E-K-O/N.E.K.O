@@ -6,6 +6,7 @@
     const CAT3_MS = 30 * 1000;
     const CONVERSATION_GRACE_MS = 15 * 1000;
     const TICK_INTERVAL_MS = 500;
+    const CAT3_DRAG_RELEASES_BEFORE_CAT2 = 3;
 
     const TIER_NONE = 'none';
     const TIER_CAT1 = 'cat1';
@@ -33,6 +34,9 @@
         lastSuppressionChangedAt: 0,
         conversationGraceUntil: 0,
         lastConversationSource: '',
+        cat3DragReleaseCount: 0,
+        dragDemotionTier: TIER_NONE,
+        dragDemotionStartedAt: 0,
     };
 
     function nowMs() {
@@ -390,6 +394,30 @@
         return TIER_NONE;
     }
 
+    function getDragDemotionElapsedStartMs(tier) {
+        if (tier === TIER_CAT2) return CAT2_MS;
+        if (tier === TIER_CAT1) return 0;
+        return 0;
+    }
+
+    function clearDragTierDemotion() {
+        state.dragDemotionTier = TIER_NONE;
+        state.dragDemotionStartedAt = 0;
+    }
+
+    function clearDragTierMemory() {
+        state.cat3DragReleaseCount = 0;
+        clearDragTierDemotion();
+    }
+
+    function getVisualTierElapsedForCurrentState() {
+        if (state.dragDemotionTier !== TIER_NONE && state.dragDemotionStartedAt > 0) {
+            return getDragDemotionElapsedStartMs(state.dragDemotionTier)
+                + Math.max(0, nowMs() - state.dragDemotionStartedAt);
+        }
+        return getElapsedSinceLastInteraction();
+    }
+
     function emitStateChange(type, detail) {
         try {
             window.dispatchEvent(new CustomEvent('neko:auto-goodbye:state-change', {
@@ -411,6 +439,9 @@
         state.visualTier = normalizedTier;
         state.lastTierChangedAt = nowMs();
         state.lastTierSource = meta && typeof meta.source === 'string' ? meta.source : '';
+        if (normalizedTier !== TIER_CAT3) {
+            state.cat3DragReleaseCount = 0;
+        }
         emitStateChange('visual-tier', {
             tier: normalizedTier,
             source: state.lastTierSource,
@@ -425,13 +456,48 @@
                 source: source || 'goodbye-cleared',
             });
             state.autoGoodbyeTriggered = false;
+            clearDragTierMemory();
             return;
         }
 
-        const nextTier = getTargetTierForElapsed(getElapsedSinceLastInteraction());
+        const nextTier = getTargetTierForElapsed(getVisualTierElapsedForCurrentState());
         setVisualTier(nextTier === TIER_NONE ? TIER_CAT1 : nextTier, {
             source: source || 'goodbye-active',
         });
+        if (state.dragDemotionTier !== TIER_NONE && nextTier === TIER_CAT3) {
+            clearDragTierDemotion();
+        }
+    }
+
+    function demoteVisualTierAfterReturnBallDrag(targetTier) {
+        state.dragDemotionTier = targetTier;
+        state.dragDemotionStartedAt = nowMs();
+        setVisualTier(targetTier, {
+            source: 'return-ball-drag-demotion',
+            reason: 'return-ball-drag-end',
+        });
+    }
+
+    function handleReturnBallDragEnd() {
+        if (!isGoodbyeActive()) {
+            clearDragTierMemory();
+            return;
+        }
+
+        const currentTier = state.visualTier;
+        if (currentTier === TIER_CAT3) {
+            state.cat3DragReleaseCount += 1;
+            if (state.cat3DragReleaseCount >= CAT3_DRAG_RELEASES_BEFORE_CAT2) {
+                state.cat3DragReleaseCount = 0;
+                demoteVisualTierAfterReturnBallDrag(TIER_CAT2);
+            }
+            return;
+        }
+
+        state.cat3DragReleaseCount = 0;
+        if (currentTier === TIER_CAT2) {
+            demoteVisualTierAfterReturnBallDrag(TIER_CAT1);
+        }
     }
 
     function noteUserInteraction(source) {
@@ -591,6 +657,7 @@
             } else {
                 state.autoGoodbyeTriggered = false;
                 state.lastReason = 'manual-goodbye';
+                clearDragTierMemory();
                 setVisualTier(TIER_CAT1, {
                     source: 'manual-goodbye',
                     reason: state.lastReason,
@@ -601,6 +668,7 @@
         const handleReturn = () => {
             clearConversationGrace();
             state.autoGoodbyeTriggered = false;
+            clearDragTierMemory();
             setVisualTier(TIER_NONE, {
                 source: 'return-event',
             });
@@ -609,6 +677,12 @@
         window.addEventListener('live2d-return-click', handleReturn);
         window.addEventListener('vrm-return-click', handleReturn);
         window.addEventListener('mmd-return-click', handleReturn);
+        window.addEventListener('neko:return-ball-manual-move', (event) => {
+            const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
+            if (detail.reason === 'return-ball-drag-end') {
+                handleReturnBallDragEnd();
+            }
+        });
     }
 
     function start() {
