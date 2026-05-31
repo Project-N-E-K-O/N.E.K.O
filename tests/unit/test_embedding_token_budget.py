@@ -222,6 +222,71 @@ def test_parse_dim_handles_both_id_formats():
     assert embeddings.parse_dim_from_model_id("foo-bar-128d-fp32-mlen8192") == 128
 
 
+def test_truncation_failure_aborts_load_with_distinct_reason():
+    """`enable_truncation` 失败时 _load_session_blocking 必须 raise
+    _DisabledError(TRUNCATION_SETUP_FAILED),而不是 ready 后继续 stamp
+    错配的 mlen cache id(Codex + CodeRabbit 在 PR #1585 联合指出的 P2)。
+
+    跑法:monkeypatch Tokenizer.from_file 返回一个 enable_truncation 抛错
+    的假 tokenizer,然后调 _load_session_blocking,断言它 raises 正确的
+    DisabledError + reason。session 创建那段也 monkeypatch 掉避免依赖
+    真模型文件。
+    """
+    embeddings = pytest.importorskip("memory.embeddings")
+    # 准备假 service 实例(同前)
+    svc = object.__new__(embeddings.EmbeddingService)
+    svc._profile_id = "test-profile"
+    svc._model_dir = "/nonexistent"  # 路径检查会过(monkeypatch 掉)
+    svc._quantization = "int8"
+    svc._dim = 256
+
+    # monkeypatch 文件检查 + onnxruntime + tokenizers,只让 enable_truncation
+    # 失败那一步成为决定性 failure。
+    import sys as _sys
+    monkey = {}
+
+    def fake_nonempty(_path):
+        return True
+    monkey["_is_nonempty_file"] = embeddings._is_nonempty_file
+    embeddings._is_nonempty_file = fake_nonempty
+
+    # 伪 ort 模块
+    fake_ort = types.SimpleNamespace(
+        SessionOptions=lambda: types.SimpleNamespace(
+            intra_op_num_threads=0,
+            graph_optimization_level=0,
+            enable_cpu_mem_arena=True,
+        ),
+        InferenceSession=lambda *a, **kw: object(),
+        GraphOptimizationLevel=types.SimpleNamespace(ORT_ENABLE_ALL=0),
+    )
+    monkey["onnxruntime"] = _sys.modules.get("onnxruntime")
+    _sys.modules["onnxruntime"] = fake_ort
+
+    # 伪 tokenizers:from_file 返回一个 enable_truncation 必抛的对象
+    class _BadTokenizer:
+        def enable_truncation(self, **_):
+            raise RuntimeError("simulated truncation failure")
+    fake_tk_mod = types.SimpleNamespace(
+        Tokenizer=types.SimpleNamespace(from_file=lambda _: _BadTokenizer()),
+    )
+    monkey["tokenizers"] = _sys.modules.get("tokenizers")
+    _sys.modules["tokenizers"] = fake_tk_mod
+
+    try:
+        with pytest.raises(embeddings._DisabledError) as exc_info:
+            svc._load_session_blocking()
+        assert exc_info.value.reason == embeddings._DisableReason.TRUNCATION_SETUP_FAILED
+    finally:
+        # 还原 monkeypatch
+        embeddings._is_nonempty_file = monkey["_is_nonempty_file"]
+        for k in ("onnxruntime", "tokenizers"):
+            if monkey[k] is None:
+                _sys.modules.pop(k, None)
+            else:
+                _sys.modules[k] = monkey[k]
+
+
 def test_old_cache_id_invalidated_after_max_length_change():
     """端到端:max_length 从 8192 降到 1024 时,老 cache row(id 含 mlen8192)
     应被 ``is_cached_embedding_valid`` 判为 stale,触发 worker 重新 embed。

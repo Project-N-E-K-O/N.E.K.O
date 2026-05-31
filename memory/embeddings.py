@@ -144,6 +144,13 @@ class _DisableReason(enum.Enum):
     # the install commands diverge.
     NO_TOKENIZERS = "tokenizers_not_importable"
     NO_MODEL_FILE = "model_file_missing"
+    # ``enable_truncation`` 失败 = tokenizer 实例存在但截断契约没能建立。
+    # 必须当成 load 失败(Codex / CodeRabbit 在 PR #1585 联合指出 P2):
+    # ``model_id`` 现在把 max_length 编进 cache id,如果继续 ready,长文本
+    # 会被「未截断」地编码、却 stamp 成 ``-mlen1024``,跟未来真的 1024 截
+    # 断的 vector 在同一 id 下混存,is_cached_embedding_valid 会判它们「同
+    # 一空间」做 cosine,召回质量静默漂移。宁可 disable 也不能错配 cache。
+    TRUNCATION_SETUP_FAILED = "tokenizer_truncation_setup_failed"
     # Default bundle is INT8. ``auto`` picks INT8 when *any* usable SIMD int8
     # path exists: AVX-VNNI (fast) OR plain AVX2 (slower but fine for our nano
     # model + small corpus). Only when BOTH are confirmed absent (SSE-only
@@ -1301,8 +1308,16 @@ class EmbeddingService:
         self._tokenizer = Tokenizer.from_file(tokenizer_path)
         try:
             self._tokenizer.enable_truncation(max_length=DEFAULT_VECTORS_MAX_LENGTH)
-        except Exception as e:  # noqa: BLE001 — old tokenizers can still run without it
-            logger.warning("EmbeddingService: tokenizer truncation setup failed: %s", e)
+        except Exception as e:  # noqa: BLE001
+            # 不能继续 ready —— 见 _DisableReason.TRUNCATION_SETUP_FAILED 注释:
+            # model_id 把 max_length 编进 cache id,truncation 没生效时长文本
+            # 会被未截断地编码、却 stamp 成 mlen1024,污染 cache 语义。让 load
+            # 失败走 disable 路径,fallback service 接管,比错配 cache 安全得多。
+            logger.warning(
+                "EmbeddingService: tokenizer truncation setup failed (max_length=%d): %s",
+                DEFAULT_VECTORS_MAX_LENGTH, e,
+            )
+            raise _DisabledError(_DisableReason.TRUNCATION_SETUP_FAILED) from e
 
     def _infer_blocking(self, texts: list[str]) -> list[list[float]]:
         """Tokenize + run ONNX session + L2-normalize + Matryoshka-trunc.
