@@ -826,7 +826,9 @@
     // 把已提交的文字标注重新拉回编辑框：先从栈里摘掉它，再以其属性打开 textarea。
     function reopenTextAnnotation(idx) {
         var a = annotations.splice(idx, 1)[0];
-        redoStack.length = 0;
+        // 注意：reopen 只是把标注暂时摘进编辑框，是可逆的中间态，不在此清重做栈 ——
+        // 否则"打开看一眼再 Esc 取消"这种 no-op 也会把可用的 redo 干掉。重做栈只在
+        // 真正提交了改动时清（见 commitTextEdit），取消/未改动则保留（Codex P2）。
         updateUndoRedoButtons();
         // 同步字号滑块到被编辑文字的真实字号（存的是图片坐标，换算回屏幕 px 并夹到滑块范围），
         // 否则滑块还显示默认值，轻碰一下就把这段文字跳到默认字号（Codex P2）。
@@ -841,10 +843,11 @@
     }
 
     // 把标注插回指定层级；idx 缺省（新建文字）则追加到末尾，与 commitAnnotation 的 push 等价。
-    function insertAnnotationAt(anno, idx) {
+    // clearRedo!==false 时清重做栈（一次新改动作废历史分支）；取消还原/未改动的提交传 false 保留。
+    function insertAnnotationAt(anno, idx, clearRedo) {
         var i = (idx != null) ? Math.max(0, Math.min(annotations.length, idx)) : annotations.length;
         annotations.splice(i, 0, anno);
-        redoStack.length = 0;
+        if (clearRedo !== false) redoStack.length = 0;
         updateUndoRedoButtons();
     }
 
@@ -855,11 +858,22 @@
         var text = ta.value.replace(/[\s]+$/, '');
         if (ta.parentNode) ta.parentNode.removeChild(ta);
         if (text) {
-            insertAnnotationAt({
+            var anno = {
                 type: 'text', text: text,
                 x: ta._imgX, y: ta._imgY,
                 fontSize: ta._fontSizeImage, color: ta._color
-            }, ta._originalIndex);
+            };
+            // 二次编辑若文字/字号/颜色都没变（位置二次编辑不动），视作 no-op，保留重做栈；
+            // 真有改动或新建文字才清栈（Codex P2）。
+            var unchanged = ta._original
+                && ta._original.text === anno.text
+                && ta._original.fontSize === anno.fontSize
+                && ta._original.color === anno.color;
+            insertAnnotationAt(anno, ta._originalIndex, !unchanged);
+        } else if (ta._original) {
+            // 二次编辑时把内容删空 = 删除这段文字，是一次真改动，作废重做栈。
+            redoStack.length = 0;
+            updateUndoRedoButtons();
         }
         requestRender();
     }
@@ -872,7 +886,8 @@
         var ta = textEditor;
         textEditor = null;
         if (ta.parentNode) ta.parentNode.removeChild(ta);
-        if (restoreOriginal && ta._original) insertAnnotationAt(ta._original, ta._originalIndex);
+        // Esc 取消二次编辑 = 原样放回、净效果为 no-op，所以保留重做栈（clearRedo=false）（Codex P2）。
+        if (restoreOriginal && ta._original) insertAnnotationAt(ta._original, ta._originalIndex, false);
         requestRender();
     }
 
