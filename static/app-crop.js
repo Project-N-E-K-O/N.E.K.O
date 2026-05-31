@@ -1591,6 +1591,10 @@
     }
 
     function cropToDataUrl() {
+        // 先收掉仍开着的文字编辑框：用户改完字号（焦点停在选项条滑块上、textarea 已 blur
+        // 但未提交）后直接点确认/保存时，工具栏不会再触发 textarea blur，不先提交就烤制
+        // 会丢掉这段可见文字（Codex P2）。commitTextEdit 无开启的编辑框时是 no-op。
+        commitTextEdit();
         var cs = clampSel(sel);
         if (!cs) return null;
         var c1 = canvasToImage(cs.x, cs.y);
