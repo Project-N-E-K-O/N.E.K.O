@@ -66,6 +66,47 @@ keyword: pass the dutchie
     assert parsed["music_pass"] is False
 
 
+def test_strip_proactive_screen_tag_leak_removes_screen_source_label():
+    cleaned, tag = sr._strip_proactive_screen_tag_leak(
+        "[Screen]\n看这满屏的符咒，是在给那画中仙重塑筋骨？"
+    )
+
+    assert cleaned == "看这满屏的符咒，是在给那画中仙重塑筋骨？"
+    # 已知泄漏标签统一归一成 CHAT，下游按普通搭话投递（不再误判无 tag 走 regen/drop）
+    assert tag == "CHAT"
+
+
+def test_strip_proactive_screen_tag_leak_is_case_insensitive():
+    for raw in ("[SCREEN]", "[screen]", "[ScReEn]", "[Vision]", "[window]"):
+        cleaned, tag = sr._strip_proactive_screen_tag_leak(f"{raw} 你好呀")
+        assert cleaned == "你好呀"
+        assert tag == "CHAT"
+
+
+def test_strip_proactive_screen_tag_leak_recovers_combined_legal_tag():
+    # [Screen][CHAT] 组合：剥掉泄漏标签后采用紧随其后的真实来源标签，
+    # 避免 [CHAT] 字面作为正文漏给 TTS。
+    cleaned, tag = sr._strip_proactive_screen_tag_leak("[Screen][WEB]\n看这个链接")
+
+    assert cleaned == "看这个链接"
+    assert tag == "WEB"
+
+
+def test_strip_proactive_screen_tag_leak_preserves_legal_source_tags():
+    cleaned, tag = sr._strip_proactive_screen_tag_leak("[CHAT]\n你好呀")
+
+    assert cleaned == "[CHAT]\n你好呀"
+    assert tag == ""
+
+
+def test_strip_proactive_screen_tag_leak_ignores_unknown_bracket_tags():
+    # 未知 / 非屏幕泄漏标签保守放行，留给调用方既有的无 tag 处理逻辑。
+    cleaned, tag = sr._strip_proactive_screen_tag_leak("[Foo] 这不是来源标签")
+
+    assert cleaned == "[Foo] 这不是来源标签"
+    assert tag == ""
+
+
 def test_recent_proactive_prompt_has_strong_paired_boundaries():
     lanlan = "测试娘"
     snapshot = sr._proactive_chat_history.get(lanlan)

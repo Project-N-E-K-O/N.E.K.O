@@ -1,4 +1,4 @@
 {
-  "plugin.name": "Agente de Minecraft",
-  "plugin.description": "Se conecta a un Minecraft Agent local (WebSocket) para que la IA envíe comandos mediante la herramienta minecraft_task y comente la partida en tiempo real"
+  "plugin.name": "Complemento de Minecraft",
+  "plugin.description": "Se conecta a un mc-agent local (WebSocket) para que neko-chan charle contigo mientras juega a tu lado en Minecraft y narra la partida en tiempo real"
 }

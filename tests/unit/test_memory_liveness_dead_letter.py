@@ -427,13 +427,14 @@ async def test_refine_pass_failure_fn_invoked_on_resolve_false():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_refine_pass_exception_does_not_invoke_failure_fn():
-    """Codex P1 regression：``_resolve_cluster`` 抛异常时**不**调 failure_fn。
+async def test_refine_pass_exception_invokes_failure_fn():
+    """``_resolve_cluster`` 抛异常时**也**调 failure_fn（计入 refine_attempts）。
 
-    抛异常的可能源是 apply_fn 持久化 transient（cloudsave 维护态 / atomic
-    write IO / 锁竞争）或 LLM 网络 transient。把这类错算到 cluster 成员的
-    ``refine_attempts`` 上会冤枉具体 entry 触发非必要 dead-letter。只在
-    ``_resolve_cluster`` 明确返 False（LLM/parse 持续性问题）时 bump。
+    先前设计（Codex P1 on PR #1412）把异常按"瞬态、不计数"处理，怕单次抖动
+    冤枉 entry。但持续性故障（correction 模型快照下线一直超时、cloudsave 卡
+    维护态、FS 只读）会让同一个毒 cluster 每 30min 原样重打 LLM 永不放弃。
+    现在异常也计入预算：N=MEMORY_LIVENESS_MAX_ATTEMPTS 跨过偶发抖动，cluster
+    内容一变 hash 即变、attempts 随新成员复位，所以持续故障收敛、偶发无损。
     """
     from memory.refine import (
         MemoryRefineEngine,
@@ -472,10 +473,13 @@ async def test_refine_pass_exception_does_not_invoke_failure_fn():
         )
 
     assert result['clusters_failed'] == 1, "exception 仍记 clusters_failed"
-    assert captured_failures == [], (
-        f"exception 不该触发 failure_fn（apply_fn / LLM transient 不算 cluster "
-        f"liveness failure）, 实际触发 {len(captured_failures)} 次"
+    assert len(captured_failures) == 1, (
+        f"exception 应触发 failure_fn 一次（持续性故障必须计入 refine_attempts "
+        f"才能 dead-letter）, 实际触发 {len(captured_failures)} 次"
     )
+    cluster_arg, hash_arg = captured_failures[0]
+    assert cluster_arg == candidates['master']
+    assert isinstance(hash_arg, str) and len(hash_arg) > 0
 
 
 @pytest.mark.unit
@@ -519,6 +523,10 @@ async def test_persona_abump_refine_attempts_at_threshold_warns():
 
     # 最终 refine_attempts == MEMORY_LIVENESS_MAX_ATTEMPTS
     assert persona['master']['facts'][0]['refine_attempts'] == MEMORY_LIVENESS_MAX_ATTEMPTS
+    # 每次 bump 都戳失败时刻，供 dead-letter 时间自愈（cooldown_elapsed）
+    assert persona['master']['facts'][0].get('last_refine_attempt_at'), (
+        "bump 必须戳 last_refine_attempt_at，否则 dead-letter 无法时间自愈"
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────

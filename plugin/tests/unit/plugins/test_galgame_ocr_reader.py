@@ -24,8 +24,8 @@ from plugin.plugins.galgame_plugin.ocr_capture_backends import pyautogui as galg
 from plugin.plugins.galgame_plugin.ocr_capture_backends import _helpers as galgame_ocr_capture_helpers
 from plugin.plugins.galgame_plugin import ocr_rapidocr_backend as galgame_ocr_rapidocr_backend
 from plugin.plugins.galgame_plugin import ocr_reader as galgame_ocr_reader
-from plugin.plugins.galgame_plugin import rapidocr_support as galgame_rapidocr_support
-from plugin.plugins.galgame_plugin import install_tasks as galgame_install_tasks
+from plugin.plugins._shared.rapidocr import rapidocr_support as galgame_rapidocr_support
+from plugin.server.routes import _install_task_store as galgame_install_tasks
 from plugin.plugins.galgame_plugin.models import (
     DEFAULT_OCR_CAPTURE_BOTTOM_INSET_RATIO,
     DEFAULT_OCR_CAPTURE_TOP_RATIO,
@@ -101,7 +101,12 @@ class _Logger:
 
 class _CapturingLogger(_Logger):
     def __init__(self) -> None:
+        self.infos: list[tuple[object, ...]] = []
         self.warnings: list[tuple[object, ...]] = []
+
+    def info(self, *args, **kwargs):
+        del kwargs
+        self.infos.append(args)
 
     def warning(self, *args, **kwargs):
         del kwargs
@@ -2315,6 +2320,8 @@ def test_background_hash_excludes_bottom_dialogue_region() -> None:
         cropped_first.info["galgame_source_background_hash"]
         == cropped_second.info["galgame_source_background_hash"]
     )
+    assert cropped_first.info["galgame_full_frame_image"] is first
+    assert cropped_second.info["galgame_full_frame_image"] is second
 
 
 def test_screen_capture_rect_uses_client_area_and_clips_taskbar(
@@ -2546,6 +2553,93 @@ def test_printwindow_capture_crops_content_rect_after_full_window_capture(
     assert image.getpixel((0, 0)) == (0, 255, 0)
 
 
+def test_galgame_printwindow_releases_window_dc_without_deleting_wrapped_hdc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    previous_bitmap = object()
+
+    class _Bitmap:
+        def CreateCompatibleBitmap(self, _source_dc, width: int, height: int) -> None:
+            calls.append(f"create_bitmap:{width}x{height}")
+
+        def GetInfo(self) -> dict[str, int]:
+            return {"bmWidth": 2, "bmHeight": 2}
+
+        def GetBitmapBits(self, _as_bytes: bool) -> bytes:
+            return b"\x00" * 16
+
+        def GetHandle(self) -> int:
+            return 123
+
+    bitmap = _Bitmap()
+
+    class _MemDc:
+        def SelectObject(self, obj):
+            calls.append("restore_bitmap" if obj is previous_bitmap else "select_bitmap")
+            return previous_bitmap
+
+        def GetSafeHdc(self) -> int:
+            return 456
+
+        def BitBlt(self, *_args) -> None:
+            calls.append("bitblt")
+
+        def DeleteDC(self) -> None:
+            calls.append("mem_delete")
+
+    mem_dc = _MemDc()
+
+    class _SourceDc:
+        def CreateCompatibleDC(self):
+            return mem_dc
+
+        def DeleteDC(self) -> None:
+            calls.append("source_delete")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "win32gui",
+        SimpleNamespace(
+            GetWindowDC=lambda _hwnd: 789,
+            DeleteObject=lambda _handle: calls.append("delete_object"),
+            ReleaseDC=lambda _hwnd, _hdc: calls.append("release_dc"),
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "win32ui",
+        SimpleNamespace(
+            CreateDCFromHandle=lambda _hdc: _SourceDc(),
+            CreateBitmap=lambda: bitmap,
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "win32con", SimpleNamespace(SRCCOPY=1))
+    monkeypatch.setattr(
+        galgame_printwindow_backend.sys,
+        "getwindowsversion",
+        lambda: SimpleNamespace(major=6, minor=2),
+        raising=False,
+    )
+
+    image = galgame_printwindow_backend.PrintWindowCaptureBackend._capture_full_window(
+        1234,
+        (0, 0, 2, 2),
+    )
+
+    assert image.size == (2, 2)
+    assert calls == [
+        "create_bitmap:2x2",
+        "select_bitmap",
+        "bitblt",
+        "restore_bitmap",
+        "mem_delete",
+        "delete_object",
+        "release_dc",
+    ]
+    assert "source_delete" not in calls
+
+
 def test_ocr_capture_samples_dialogue_background_hash_at_low_frequency(tmp_path: Path) -> None:
     now = {"value": 1000.0}
     capture_backend = _FakeCaptureBackend()
@@ -2594,6 +2688,39 @@ def test_ocr_capture_samples_dialogue_background_hash_at_low_frequency(tmp_path:
     assert second.timing["background_hash_skipped"] is True
     assert third.timing["background_hash_skipped"] is False
     assert len(capture_backend.capture_calls) == 4
+
+
+def test_ocr_capture_keeps_full_frame_for_vision_classifier(tmp_path: Path) -> None:
+    from PIL import Image
+
+    full_frame = Image.new("RGB", (200, 120), "navy")
+    cropped_frame = Image.new("RGB", (200, 48), "black")
+    cropped_frame.info["galgame_full_frame_image"] = full_frame
+
+    class _ImageCaptureBackend(_FakeCaptureBackend):
+        def capture_frame(self, target: DetectedGameWindow, profile) -> object:
+            self.capture_calls.append((target.hwnd, profile.to_dict()))
+            return cropped_frame
+
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(tmp_path / "bridge"),
+        platform_fn=lambda: True,
+        window_scanner=_window,
+        capture_backend=_ImageCaptureBackend(),
+        ocr_backend=_FakeOcrBackend(["我和她相识在十三年前。"]),
+    )
+
+    extraction = manager._capture_and_extract_text(
+        _window()[0],
+        OcrCaptureProfile(top_ratio=0.6),
+        SelectedOcrBackendPlan(),
+        collect_background_hash=False,
+        allow_separate_background_capture=False,
+    )
+
+    assert extraction.captured_image is full_frame
+    assert extraction.text == "我和她相识在十三年前。"
 
 
 def test_mouse_monitor_drains_pending_events_outside_hook_callback(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -4459,6 +4586,12 @@ def test_ocr_reader_runtime_groups_fields_and_keeps_flat_compatibility() -> None
         foreground_advance_matched_count=3,
         foreground_advance_coalesced_count=2,
         foreground_advance_last_event_age_seconds=0.25,
+        vision_classifier_enabled=True,
+        vision_classifier_available=True,
+        vision_classifier_detail="loaded",
+        vision_classifier_last_label="dialogue",
+        vision_classifier_last_confidence=0.91,
+        vision_classifier_last_latency_ms=1.25,
     )
 
     assert len(fields(OcrReaderRuntime)) == 9
@@ -4472,12 +4605,19 @@ def test_ocr_reader_runtime_groups_fields_and_keeps_flat_compatibility() -> None
     assert runtime.to_dict()["foreground_advance_matched_count"] == 3
     assert runtime.to_dict()["foreground_advance_coalesced_count"] == 2
     assert runtime.to_dict()["foreground_advance_last_event_age_seconds"] == 0.25
+    assert runtime.capture.vision_classifier_detail == "loaded"
+    assert runtime.to_dict()["vision_classifier_available"] is True
+    assert runtime.to_dict()["vision_classifier_last_label"] == "dialogue"
+    assert runtime.to_dict()["vision_classifier_last_confidence"] == 0.91
+    assert runtime.to_dict()["vision_classifier_last_latency_ms"] == 1.25
 
     restored = OcrReaderRuntime(**runtime.to_dict())
 
     assert restored.foreground_advance_consumed_count == 4
     assert restored.foreground_advance_matched_count == 3
     assert restored.foreground_advance_coalesced_count == 2
+    assert restored.vision_classifier_available is True
+    assert restored.vision_classifier_detail == "loaded"
 
     runtime.status = "idle"
 
@@ -4535,6 +4675,145 @@ def test_ocr_reader_build_runtime_uses_config_enabled_state(tmp_path: Path) -> N
     )
 
     assert rebuilt.enabled is False
+
+
+def test_ocr_reader_build_runtime_exposes_vision_classifier_status(tmp_path: Path) -> None:
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root, enabled=True),
+        platform_fn=lambda: False,
+        window_scanner=_window,
+    )
+    manager._config.vision_classifier_enabled = True
+    manager.vision_classifier = object()
+    manager._vision_classifier_detail = "loaded"
+    manager._vision_classifier_last_label = "dialogue"
+    manager._vision_classifier_last_confidence = 0.97
+    manager._vision_classifier_last_latency_ms = 1.4
+
+    rebuilt = manager._build_runtime(
+        status="active",
+        detail="",
+        plan=SelectedOcrBackendPlan(),
+    )
+
+    assert rebuilt.vision_classifier_enabled is True
+    assert rebuilt.vision_classifier_available is True
+    assert rebuilt.vision_classifier_detail == "loaded"
+    assert rebuilt.vision_classifier_last_label == "dialogue"
+    assert rebuilt.vision_classifier_last_confidence == 0.97
+    assert rebuilt.vision_classifier_last_latency_ms == 1.4
+
+
+def test_ocr_reader_logs_when_vision_classifier_loads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins.galgame_plugin.core import vision as vision_module
+
+    class _FakeVisionModelLoader:
+        def __init__(self, model_dir: Path) -> None:
+            self.model_dir = model_dir
+
+    class _FakeVisionScreenClassifier:
+        def __init__(self, loader, *, input_size, latency_check_ms) -> None:
+            self.loader = loader
+            self.input_size = input_size
+            self.latency_check_ms = latency_check_ms
+
+        def load(self, model_name: str) -> bool:
+            self.model_name = model_name
+            return True
+
+    monkeypatch.setattr(vision_module, "VisionModelLoader", _FakeVisionModelLoader)
+    monkeypatch.setattr(vision_module, "VisionScreenClassifier", _FakeVisionScreenClassifier)
+
+    logger = _CapturingLogger()
+    manager = object.__new__(OcrReaderManager)
+    manager._logger = logger
+    manager.vision_classifier = None
+    manager._vision_classifier_detail = ""
+    manager._config = SimpleNamespace(
+        vision_classifier_enabled=True,
+        vision_classifier_model_dir=str(
+            Path("plugin")
+            / "plugins"
+            / "galgame_plugin"
+            / "models"
+            / "vision"
+            / "screen_classifier"
+        ),
+        vision_classifier_input_size=[224, 224],
+        vision_classifier_inference_timeout_ms=200.0,
+        vision_classifier_model_name="v1_galgame",
+    )
+
+    manager._initialize_vision_classifier()
+
+    assert manager._vision_classifier_detail == "loaded"
+    assert manager.vision_classifier is not None
+    assert logger.infos
+    assert logger.infos[0][0] == "galgame vision classifier loaded: model_dir={} model_name={}"
+
+
+def test_ocr_reader_update_config_reloads_vision_classifier(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from plugin.plugins.galgame_plugin.core import vision as vision_module
+
+    class _FakeVisionModelLoader:
+        def __init__(self, model_dir: Path) -> None:
+            self.model_dir = model_dir
+
+    class _FakeVisionScreenClassifier:
+        def __init__(self, loader, *, input_size, latency_check_ms) -> None:
+            self.loader = loader
+            self.input_size = input_size
+            self.latency_check_ms = latency_check_ms
+            self.model_name = ""
+
+        def load(self, model_name: str) -> bool:
+            self.model_name = model_name
+            return True
+
+    monkeypatch.setattr(vision_module, "VisionModelLoader", _FakeVisionModelLoader)
+    monkeypatch.setattr(vision_module, "VisionScreenClassifier", _FakeVisionScreenClassifier)
+
+    bridge_root = tmp_path / "bridge"
+    bridge_root.mkdir()
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=_make_config(bridge_root, enabled=True, rapidocr_enabled=False),
+        platform_fn=lambda: False,
+        window_scanner=_window,
+    )
+    assert manager.vision_classifier is None
+
+    enabled_config = _make_config(bridge_root, enabled=True, rapidocr_enabled=False)
+    enabled_config.vision_classifier_enabled = True
+    enabled_config.vision_classifier_model_dir = str(tmp_path / "models")
+    enabled_config.vision_classifier_model_name = "v2_galgame"
+    enabled_config.vision_classifier_input_size = [192, 192]
+    enabled_config.vision_classifier_inference_timeout_ms = 123.0
+
+    manager.update_config(enabled_config)
+
+    assert isinstance(manager.vision_classifier, _FakeVisionScreenClassifier)
+    assert manager.vision_classifier.input_size == (192, 192)
+    assert manager.vision_classifier.latency_check_ms == 123.0
+    assert manager.vision_classifier.model_name == "v2_galgame"
+    assert manager._vision_classifier_detail == "loaded"
+
+    manager._vision_classifier_last_label = "dialogue"
+    disabled_config = _make_config(bridge_root, enabled=True, rapidocr_enabled=False)
+
+    manager.update_config(disabled_config)
+
+    assert manager.vision_classifier is None
+    assert manager._vision_classifier_detail == "disabled"
+    assert manager._vision_classifier_last_label == ""
 
 
 @pytest.mark.asyncio
@@ -5364,8 +5643,8 @@ def test_rapidocr_default_install_target_uses_app_docs_runtime_root(
         lambda: SimpleNamespace(app_docs_dir=app_docs_dir),
     )
 
-    raw_target = galgame_rapidocr_support.default_rapidocr_install_target_raw()
-    resolved = galgame_rapidocr_support.resolve_rapidocr_install_target("")
+    raw_target = galgame_rapidocr_support.default_rapidocr_install_target_raw(plugin_id="galgame_plugin")
+    resolved = galgame_rapidocr_support.resolve_rapidocr_install_target("", plugin_id="galgame_plugin")
 
     assert raw_target == str(app_docs_dir / "runtimes" / "galgame_plugin" / "RapidOCR")
     assert resolved == app_docs_dir / "runtimes" / "galgame_plugin" / "RapidOCR"
@@ -5384,7 +5663,13 @@ def test_rapidocr_explicit_install_target_overrides_new_and_legacy_defaults(
         lambda: SimpleNamespace(app_docs_dir=app_docs_dir),
     )
 
-    assert galgame_rapidocr_support.resolve_rapidocr_install_target(str(explicit_target)) == explicit_target
+    assert (
+        galgame_rapidocr_support.resolve_rapidocr_install_target(
+            str(explicit_target),
+            plugin_id="galgame_plugin",
+        )
+        == explicit_target
+    )
 
 
 def test_rapidocr_resolve_uses_legacy_install_when_new_target_missing(
@@ -5402,7 +5687,10 @@ def test_rapidocr_resolve_uses_legacy_install_when_new_target_missing(
         lambda: SimpleNamespace(app_docs_dir=app_docs_dir),
     )
 
-    assert galgame_rapidocr_support.resolve_rapidocr_install_target("") == legacy_target
+    assert (
+        galgame_rapidocr_support.resolve_rapidocr_install_target("", plugin_id="galgame_plugin")
+        == legacy_target
+    )
 
 
 def test_rapidocr_resolve_prefers_existing_new_target_over_legacy_install(
@@ -5422,7 +5710,10 @@ def test_rapidocr_resolve_prefers_existing_new_target_over_legacy_install(
         lambda: SimpleNamespace(app_docs_dir=app_docs_dir),
     )
 
-    assert galgame_rapidocr_support.resolve_rapidocr_install_target("") == new_target
+    assert (
+        galgame_rapidocr_support.resolve_rapidocr_install_target("", plugin_id="galgame_plugin")
+        == new_target
+    )
 
 
 def test_inspect_rapidocr_installation_reports_legacy_target_when_used(
@@ -5473,6 +5764,7 @@ def test_inspect_rapidocr_installation_reports_legacy_target_when_used(
         install_target_dir_raw="",
         lang_type="ch",
         ocr_version="PP-OCRv4",
+        plugin_id="galgame_plugin",
         platform_fn=lambda: True,
     )
 
@@ -5523,6 +5815,7 @@ def test_inspect_rapidocr_installation_uses_current_model_selection_over_legacy_
         lang_type="japan",
         model_type="mobile",
         ocr_version="PP-OCRv5",
+        plugin_id="galgame_plugin",
         platform_fn=lambda: True,
     )
 
@@ -5543,10 +5836,19 @@ def test_install_task_runtime_root_uses_app_docs_dir(
         lambda: SimpleNamespace(app_docs_dir=app_docs_dir),
     )
 
-    state_path = galgame_install_tasks.install_task_state_path("run-1", kind="rapidocr_models")
+    state_path = galgame_install_tasks.install_task_state_path(
+        "run-1",
+        kind="rapidocr_models",
+        plugin_id="galgame_plugin",
+    )
 
     assert state_path == (
-        app_docs_dir / "plugin-runtime" / "galgame_plugin" / "rapidocr_models-installs" / "run-1.json"
+        app_docs_dir
+        / "plugin-runtime"
+        / "plugin-installs"
+        / "galgame_plugin"
+        / "rapidocr_models-installs"
+        / "run-1.json"
     )
 
 

@@ -68,7 +68,7 @@ import httpx # noqa
 import time # noqa
 import signal # noqa
 from datetime import datetime, timezone # noqa
-from config import MAIN_SERVER_PORT, MONITOR_SERVER_PORT, USER_NOTIFICATION_ERROR_MAX_CHARS # noqa
+from config import MAIN_SERVER_PORT, MONITOR_SERVER_PORT, USER_NOTIFICATION_ERROR_MAX_CHARS, USER_PLUGIN_BASE # noqa
 from utils.cloudsave_autocloud import get_cloudsave_manager # noqa
 from utils.cloudsave_runtime import (
     CloudsaveDeadlineExceeded,
@@ -89,6 +89,18 @@ from utils.ssl_env_diagnostics import probe_ssl_environment, write_ssl_diagnosti
 _main_log_level = getattr(logging, (os.environ.get("NEKO_LOG_LEVEL") or "INFO").upper(), logging.INFO)
 logger, log_config = setup_logging(service_name="Main", log_level=_main_log_level, silent=not _IS_MAIN_PROCESS)
 
+
+def _resolve_user_plugin_base() -> str:
+    raw_port = os.getenv("NEKO_USER_PLUGIN_SERVER_PORT", "").strip()
+    if raw_port:
+        try:
+            port = int(raw_port)
+            if 0 < port <= 65535:
+                return f"http://127.0.0.1:{port}"
+        except ValueError:
+            logger.warning("Invalid NEKO_USER_PLUGIN_SERVER_PORT value {!r}; using configured plugin base", raw_port)
+    return USER_PLUGIN_BASE.rstrip("/")
+
 if _IS_MAIN_PROCESS:
     _ssl_precheck = probe_ssl_environment()
     if not _ssl_precheck.get("ok", True):
@@ -106,7 +118,7 @@ if _IS_MAIN_PROCESS:
 
 try:
     from fastapi import FastAPI, Request # noqa
-    from fastapi.responses import JSONResponse # noqa
+    from fastapi.responses import JSONResponse, Response # noqa
     from fastapi.staticfiles import StaticFiles # noqa
     from main_logic import core as core, cross_server as cross_server # noqa
     from main_logic.agent_event_bus import MainServerAgentBridge, notify_analyze_ack, set_main_bridge # noqa
@@ -710,6 +722,14 @@ async def _handle_agent_event(event: dict):
             # ai_behavior=blind suppresses injection entirely.
             media_parts = event.get("media_parts") if isinstance(event.get("media_parts"), list) else []
             ai_behavior_v2 = event.get("ai_behavior")
+            # Images that must travel WITH a proactive (respond) callback so they
+            # can be streamed at the moment the pacing manager releases the cue
+            # (see LLMSessionManager._deliver_proactive_batch). Streaming them
+            # here immediately would land the image in the previous/current turn
+            # (or drop it when no session exists yet) while the text is held back
+            # by the manager — the eventual proactive response would then lack
+            # its matching visual context.
+            deferred_proactive_images: list[str] = []
             if media_parts and ai_behavior_v2 in ("respond", "read"):
                 sess = getattr(mgr, "session", None)
                 stream_image = getattr(sess, "stream_image", None) if sess else None
@@ -730,13 +750,24 @@ async def _handle_agent_event(event: dict):
                             part_type, mime,
                         )
                         continue
-                    if stream_image is None:
-                        logger.debug(
-                            "[EventBus] image media_part dropped: session=%s has no stream_image",
-                            type(sess).__name__ if sess else "None",
-                        )
-                        continue
                     if isinstance(b64, str) and b64:
+                        if ai_behavior_v2 == "respond" and text:
+                            # Defer: stream when the manager releases this cue so
+                            # the image shares the proactive response's context.
+                            # (Only when there's text — the callback that carries
+                            # these images is built in the ``if text:`` block.)
+                            deferred_proactive_images.append(b64)
+                            continue
+                        # read (passive), OR image-only respond with no text to
+                        # carry it through the pacing manager: inject now so it
+                        # isn't lost (image-only respond has no text cue to drive
+                        # a proactive turn anyway).
+                        if stream_image is None:
+                            logger.debug(
+                                "[EventBus] image media_part dropped: session=%s has no stream_image",
+                                type(sess).__name__ if sess else "None",
+                            )
+                            continue
                         # ``stream_image`` takes a base64 STRING (not bytes); pass through
                         try:
                             await stream_image(b64)
@@ -843,6 +874,18 @@ async def _handle_agent_event(event: dict):
                     # producer that lands on this branch); see the (event_type in
                     # {"task_result", "proactive_message"}) gate above.
                     origin = "event"
+                # Proactive-delivery hints from push_message (priority +
+                # coalesce_key). Lower priority = more urgent; unspecified
+                # (0) is normalised to a neutral band by the manager.
+                try:
+                    # OverflowError: JSON Infinity/-Infinity → float → int() raises;
+                    # must not let a malformed priority drop the whole callback.
+                    cb_priority = int(event.get("priority", 0) or 0)
+                except (TypeError, ValueError, OverflowError):
+                    cb_priority = 0
+                cb_coalesce_key = event.get("coalesce_key")
+                if not isinstance(cb_coalesce_key, str):
+                    cb_coalesce_key = ""
                 callback = {
                     "event": "agent_task_callback",
                     "origin": origin,
@@ -856,30 +899,38 @@ async def _handle_agent_event(event: dict):
                     "source_kind": source_kind,
                     "source_name": source_name,
                     "delivery_mode": delivery_mode,
+                    "priority": cb_priority,
+                    "coalesce_key": cb_coalesce_key,
+                    # Images to stream at manager-release time (respond only;
+                    # empty for read, which already streamed above).
+                    "media_images": deferred_proactive_images,
                     "timestamp": event.get("timestamp") or "",
                     "metadata": event_metadata,
                     "context_type": event_metadata.get("context_type") or "",
                 }
                 if delivery_mode != "silent":
-                    mgr.enqueue_agent_callback(callback)
                     if delivery_mode == "passive":
+                        # Passive cues keep the direct enqueue-only path:
+                        # they must NOT interrupt; the next user turn drains
+                        # them. The pacing manager only governs proactive.
+                        mgr.enqueue_agent_callback(callback)
                         logger.info(
                             "[EventBus] %s enqueued callback (passive); next user turn will carry it",
                             event_type,
                         )
                     else:
+                        # Proactive: hand to the delivery manager, which
+                        # orders by priority, coalesces by key, and paces
+                        # release on the frontend playback gate + min-gap.
                         logger.info(
-                            "[EventBus] %s enqueued callback, scheduling trigger_agent_callbacks",
-                            event_type,
+                            "[EventBus] %s submitting proactive callback to delivery manager (priority=%s key=%r)",
+                            event_type, cb_priority, cb_coalesce_key or "(source)",
                         )
-
-                        # Create task with exception logging
-                        async def _run_trigger_with_logging():
-                            try:
-                                await mgr.trigger_agent_callbacks()
-                            except Exception as e:
-                                logger.error("[EventBus] trigger_agent_callbacks task failed: %s", e)
-                        mgr._pending_agent_callback_task = asyncio.create_task(_run_trigger_with_logging())
+                        mgr.submit_proactive_callback(
+                            callback,
+                            priority=cb_priority,
+                            coalesce_key=cb_coalesce_key or None,
+                        )
                 else:
                     logger.info(
                         "[EventBus] %s delivery=silent: skipping LLM channel (frontend HUD still fires)",
@@ -1594,6 +1645,87 @@ async def beacon_shutdown():
         logger.error(f"Beacon处理错误: {e}")
         return {"success": False, "error": str(e)}
 
+
+@app.api_route("/market/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+@app.api_route("/market", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
+    """Proxy plugin-manager Market bridge calls to the user plugin server.
+
+    Vite dev proxies /market to USER_PLUGIN_SERVER_PORT. The packaged UI is
+    served by the main server, so it needs the same same-origin bridge here.
+    """
+
+    target = f"{_resolve_user_plugin_base()}/market"
+    if path:
+        target = f"{target}/{path}"
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+
+    hop_by_hop = {
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailers",
+        "transfer-encoding",
+        "upgrade",
+        "host",
+        "content-length",
+    }
+    # Request-side filter additionally drops Accept-Encoding so the upstream
+    # is asked for an *uncompressed* response. We can't safely forward the
+    # client's Accept-Encoding because httpx auto-decompresses on
+    # ``upstream.content`` access — which would leave the response body
+    # decompressed but the upstream's ``Content-Encoding: gzip`` header
+    # intact, and the browser would double-decompress
+    # (ERR_CONTENT_DECODING_FAILED). See bugfix.md §1.1 / §2.1.
+    #
+    # CC-1 LOCK (PR #1480 review-fix Phase 3): do **NOT** add ``authorization``
+    # to ``hop_by_hop_request``. The /market/oauth/* endpoints will (post
+    # 2.3.1 / 2.3.2) accept the bridge token via ``Authorization: Bearer``,
+    # and that header MUST survive this proxy. Stripping it would silently
+    # break Market login.
+    hop_by_hop_request = hop_by_hop | {"accept-encoding"}
+    headers = {
+        key: value
+        for key, value in request.headers.items()
+        if key.lower() not in hop_by_hop_request
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=3.0), proxy=None, trust_env=False) as client:
+            upstream = await client.request(
+                request.method,
+                target,
+                content=await request.body(),
+                headers=headers,
+            )
+    except httpx.HTTPError as exc:
+        logger.warning("Market bridge proxy failed: target=%s error=%s", target, exc)
+        return JSONResponse(
+            status_code=502,
+            content={"detail": "Market bridge unavailable", "error": str(exc)},
+        )
+
+    # Response-side filter additionally drops Content-Encoding so the body
+    # bytes (already decompressed by httpx when we read ``upstream.content``)
+    # and the response headers stay consistent. ``Content-Length`` is also
+    # dropped because httpx may have changed the byte count during
+    # decompression; FastAPI / Starlette will recompute it from the body.
+    hop_by_hop_response = hop_by_hop | {"content-encoding", "content-length"}
+    response_headers = {
+        key: value
+        for key, value in upstream.headers.items()
+        if key.lower() not in hop_by_hop_response
+    }
+    return Response(
+        content=upstream.content,
+        status_code=upstream.status_code,
+        headers=response_headers,
+        media_type=upstream.headers.get("content-type"),
+    )
+
 # 挂载全部路由
 app.include_router(config_router)
 app.include_router(proactive_router)
@@ -1624,7 +1756,6 @@ _preload_task: asyncio.Task = None
 _game_cleanup_task: asyncio.Task = None
 _runtime_startup_init_lock = asyncio.Lock()
 _runtime_startup_init_completed = False
-_heavy_import_prewarm_started = False
 
 
 async def _background_preload():
@@ -1776,25 +1907,6 @@ async def _sync_memory_server_after_startup_import(import_result):
         logger.warning(f"Steam Auto-Cloud startup import could not sync memory_server: {e}")
 
 
-async def _prewarm_heavy_imports():
-    import importlib
-
-    for mod in ("dashscope", "dashscope.audio.tts_v2"):
-        try:
-            await asyncio.to_thread(importlib.import_module, mod)
-            logger.debug(f"[prewarm] imported {mod}")
-        except Exception as e:
-            logger.debug(f"[prewarm] import {mod} failed (ignored): {e}")
-
-
-def _maybe_schedule_heavy_import_prewarm() -> None:
-    global _heavy_import_prewarm_started
-    if _heavy_import_prewarm_started:
-        return
-    _heavy_import_prewarm_started = True
-    asyncio.create_task(_prewarm_heavy_imports())
-
-
 async def _cancel_task_if_running(task: asyncio.Task | None, *, name: str, timeout: float = 1.0) -> None:
     if task is None:
         return
@@ -1891,8 +2003,6 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
             return False
 
         try:
-            _maybe_schedule_heavy_import_prewarm()
-
             bootstrap_local_cloudsave_environment(_config_manager)
             import_result = None
             try:
@@ -1932,66 +2042,19 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
             except Exception as e:
                 logger.warning(f"Agent event bridge startup failed: {e}")
 
+            # 创意工坊：目录挂载保持同步（开销小，且必须在 ready 前完成，
+            # 否则 /workshop 静态资源在挂载窗口内会 404 —— 见 PR #1496 review）。
+            # 真正慢的 UGC 缓存预热 + 角色卡网络同步仍后台化（与原始行为一致）。
             await _init_and_mount_workshop()
-
-            if steamworks:
-                _wr = importlib.import_module("main_routers.workshop_router")
-
-                async def _warmup_only():
-                    try:
-                        await warmup_ugc_cache()
-                    except Exception as e:
-                        logger.warning(f"UGC 缓存预热失败: {e}")
-
-                async def _sync_characters_only():
-                    max_fence_retries = 15
-                    retry_interval_seconds = 2
-                    for attempt in range(1, max_fence_retries + 1):
-                        if not is_write_fence_active(_config_manager):
-                            break
-                        logger.info(
-                            "创意工坊角色卡同步检测到维护态写围栏，等待解除后重试 (%s/%s)",
-                            attempt,
-                            max_fence_retries,
-                        )
-                        await asyncio.sleep(retry_interval_seconds)
-                    else:
-                        logger.info("创意工坊角色卡同步等待维护态解除超时，30s 后重新排队重试")
-
-                        async def _retry_sync_after_delay():
-                            try:
-                                await asyncio.sleep(30)
-                                await _sync_characters_only()
-                            except Exception as retry_exc:
-                                logger.warning(f"创意工坊角色卡同步重试任务失败: {retry_exc}")
-
-                        _wr._ugc_sync_task = asyncio.create_task(_retry_sync_after_delay())
-                        return
-                    if _wr._ugc_warmup_task is not None:
-                        try:
-                            await asyncio.wait_for(asyncio.shield(_wr._ugc_warmup_task), timeout=20)
-                        except asyncio.TimeoutError:
-                            logger.warning("等待 UGC 预热任务超时（20s），继续角色卡同步")
-                        except Exception as e:
-                            logger.debug(f"等待 UGC 预热任务时异常（不影响角色卡同步）: {e}")
-                    try:
-                        sync_result = await sync_workshop_character_cards()
-                        if sync_result["added"] > 0:
-                            logger.info(f"✅ 创意工坊角色卡同步完成：新增 {sync_result['added']} 个，跳过 {sync_result['skipped']} 个")
-                        else:
-                            logger.info("创意工坊角色卡同步完成：无新增角色卡")
-                    except Exception as e:
-                        logger.warning(f"创意工坊角色卡同步失败（不影响启动）: {e}")
-
-                _wr._ugc_warmup_task = asyncio.create_task(_warmup_only())
-                _wr._ugc_sync_task = asyncio.create_task(_sync_characters_only())
+            _schedule_workshop_sync(steamworks)
 
             try:
                 from utils.token_tracker import TokenTracker, install_hooks
 
                 install_hooks()
                 TokenTracker.get_instance().start_periodic_save()
-                TokenTracker.get_instance().record_app_start()
+                # process 字段进 session_start / session_end 维度，跨进程诊断必须区分
+                TokenTracker.get_instance().record_app_start(process="main_server")
                 logger.info("Token usage tracker initialized")
             except Exception as e:
                 logger.warning(f"Token tracker initialization failed (non-critical): {e}")
@@ -2027,6 +2090,16 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
 
             _runtime_startup_init_completed = True
             _disable_main_storage_limited_mode()
+
+            # runtime init 完成后再起后台预热：把已改 lazy 的重模块（genai+mcp /
+            # translatepy / 功能路由依赖）提前 import 好，用户首次用到时不等。放在
+            # 这里而非 on_startup 开头，是为了不在关键启动路径上和 runtime init 抢 GIL。
+            try:
+                from utils.module_warmup import MAIN_SERVER_WARMUP, start_background_warmup
+                start_background_warmup(MAIN_SERVER_WARMUP, label="main")
+            except Exception as _warmup_exc:
+                logger.debug(f"[warmup] main_server warmup not started: {_warmup_exc}")
+
             return True
         except Exception:
             _runtime_startup_init_completed = False
@@ -2065,6 +2138,7 @@ async def on_startup():
     if _IS_MAIN_PROCESS:
         global _server_loop
         _server_loop = asyncio.get_running_loop()
+
         init_shared_state(
             role_state=role_state,
             steamworks=steamworks,
@@ -2371,6 +2445,71 @@ async def request_application_shutdown_async():
             return
 
     await shutdown_server_async()
+
+
+def _schedule_workshop_sync(steamworks) -> None:
+    """把创意工坊里真正慢的部分（UGC 缓存预热 + 角色卡网络同步）丢到后台 task。
+
+    目录挂载已由调用方在 ready 前同步完成（``_init_and_mount_workshop``），这里
+    只调度网络密集的预热/同步——与本次重构前的原始行为一致（原本它们就是
+    ``create_task``）。greeting 不依赖这两步。
+    """
+    try:
+        if not steamworks:
+            return
+
+        _wr = importlib.import_module("main_routers.workshop_router")
+
+        async def _warmup_only():
+            try:
+                await warmup_ugc_cache()
+            except Exception as e:
+                logger.warning(f"UGC 缓存预热失败: {e}")
+
+        async def _sync_characters_only():
+            max_fence_retries = 15
+            retry_interval_seconds = 2
+            for attempt in range(1, max_fence_retries + 1):
+                if not is_write_fence_active(_config_manager):
+                    break
+                logger.info(
+                    "创意工坊角色卡同步检测到维护态写围栏，等待解除后重试 (%s/%s)",
+                    attempt,
+                    max_fence_retries,
+                )
+                await asyncio.sleep(retry_interval_seconds)
+            else:
+                logger.info("创意工坊角色卡同步等待维护态解除超时，30s 后重新排队重试")
+
+                async def _retry_sync_after_delay():
+                    try:
+                        await asyncio.sleep(30)
+                        await _sync_characters_only()
+                    except Exception as retry_exc:
+                        logger.warning(f"创意工坊角色卡同步重试任务失败: {retry_exc}")
+
+                _wr._ugc_sync_task = asyncio.create_task(_retry_sync_after_delay())
+                return
+            if _wr._ugc_warmup_task is not None:
+                try:
+                    await asyncio.wait_for(asyncio.shield(_wr._ugc_warmup_task), timeout=20)
+                except asyncio.TimeoutError:
+                    logger.warning("等待 UGC 预热任务超时（20s），继续角色卡同步")
+                except Exception as e:
+                    logger.debug(f"等待 UGC 预热任务时异常（不影响角色卡同步）: {e}")
+            try:
+                sync_result = await sync_workshop_character_cards()
+                if sync_result["added"] > 0:
+                    logger.info(f"✅ 创意工坊角色卡同步完成：新增 {sync_result['added']} 个，跳过 {sync_result['skipped']} 个")
+                else:
+                    logger.info("创意工坊角色卡同步完成：无新增角色卡")
+            except Exception as e:
+                logger.warning(f"创意工坊角色卡同步失败（不影响启动）: {e}")
+
+        _wr._ugc_warmup_task = asyncio.create_task(_warmup_only())
+        _wr._ugc_sync_task = asyncio.create_task(_sync_characters_only())
+    except Exception as e:
+        logger.warning(f"创意工坊 UGC 预热/同步调度失败（不影响启动）: {e}")
 
 
 async def _init_and_mount_workshop():

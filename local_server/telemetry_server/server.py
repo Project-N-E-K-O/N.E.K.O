@@ -19,21 +19,21 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import html
+import gzip
+import io
 import json
 import logging
 import os
 import time
 from pathlib import Path
-from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import PlainTextResponse
 
 from models import TelemetrySubmission, SubmitResponse, model_to_dict, model_to_json, model_from_json
 from security import verify_signature, verify_timestamp, RateLimiter, DEFAULT_HMAC_SECRET
-from storage import TelemetryStorage
+from storage import TelemetryStorage, normalize_steam_id, normalize_device_hw
 
 # ---------------------------------------------------------------------------
 # 配置
@@ -42,7 +42,10 @@ from storage import TelemetryStorage
 HMAC_SECRET = os.getenv("TELEMETRY_HMAC_SECRET", DEFAULT_HMAC_SECRET)
 DB_PATH = os.getenv("TELEMETRY_DB_PATH", "./data/telemetry.db")
 ADMIN_TOKEN = os.getenv("TELEMETRY_ADMIN_TOKEN", "")
-MAX_BODY_SIZE = 512 * 1024  # 512 KB
+MAX_BODY_SIZE = 512 * 1024  # 512 KB（线路上的字节上限，gzip 后通常 ≤50KB）
+# 解压后的字节上限。客户端典型 payload 5-50KB raw，未来加埋点也压得住 1MB；
+# 设 2MB 给余量，同时挡 zip bomb（gzip 比 1:1000 也只能撑到 2MB）。
+MAX_DECOMPRESSED_SIZE = 2 * 1024 * 1024
 
 # ---------------------------------------------------------------------------
 # 初始化
@@ -55,6 +58,12 @@ Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
 storage = TelemetryStorage(DB_PATH)
 rate_limiter = RateLimiter(max_requests=120, window=3600.0)
 
+# 串行化 canonical 边构建 + 重算：部署是单 worker（Dockerfile --workers 1 /
+# systemd 单进程），但手动 /admin/canonical/rebuild 仍可能与后台
+# _periodic_canonical_rebuild 在同一进程并发跑，两个 build_edges 抢同一游标会
+# 重复处理、把 observe_count 翻倍。进程内 asyncio.Lock 即可消除这条真实路径。
+_canonical_lock = asyncio.Lock()
+
 app = FastAPI(
     title="N.E.K.O Telemetry",
     version="1.0.0",
@@ -62,6 +71,34 @@ app = FastAPI(
     redoc_url=None,
 )
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["POST", "GET"], allow_headers=["*"])
+
+
+def _decompress_if_gzip(body_bytes: bytes, content_encoding: str) -> bytes:
+    """按 ``Content-Encoding`` header 解压请求体。
+
+    向下兼容：header 缺失或为 'identity' 时透传原始 bytes，让老客户端
+    （v1 一直发的是裸 JSON）继续工作。
+
+    防 zip bomb：流式 read，看到超过 MAX_DECOMPRESSED_SIZE 立刻拒绝，
+    不让 gzip.decompress 在内存里展开任意大小的数据。
+    """
+    enc = (content_encoding or "").strip().lower()
+    if enc in ("", "identity"):
+        return body_bytes
+    if enc != "gzip":
+        raise HTTPException(415, f"Unsupported Content-Encoding: {enc}")
+    try:
+        with gzip.GzipFile(fileobj=io.BytesIO(body_bytes), mode="rb") as gz:
+            # 多读 1 字节用来判定是否超过 cap —— 超了直接 413，省得把整个
+            # bomb 解到内存里。
+            decompressed = gz.read(MAX_DECOMPRESSED_SIZE + 1)
+        if len(decompressed) > MAX_DECOMPRESSED_SIZE:
+            raise HTTPException(413, "Decompressed payload too large")
+        return decompressed
+    except HTTPException:
+        raise
+    except (OSError, EOFError, gzip.BadGzipFile) as e:
+        raise HTTPException(400, f"Invalid gzip body: {e}")
 
 
 def _extract_token(request: Request) -> str:
@@ -89,11 +126,14 @@ def require_admin(request: Request):
 
 @app.post("/api/v1/telemetry", response_model=SubmitResponse)
 async def submit_telemetry(request: Request):
-    """接收遥测数据。验证流程：body 大小 → 时间戳 → HMAC 签名 → 速率限制 → 存储。"""
-    # Body 大小
+    """接收遥测数据。验证流程：body 大小 → 解压 → 时间戳 → HMAC 签名 → 速率限制 → 存储。"""
+    # Body 大小（wire size，gzip 后通常 ≤50KB，给 512KB 余量）
     body_bytes = await request.body()
     if len(body_bytes) > MAX_BODY_SIZE:
         raise HTTPException(413, "Payload too large")
+
+    # 解压（如 Content-Encoding: gzip）；老客户端不带 header 直接透传
+    body_bytes = _decompress_if_gzip(body_bytes, request.headers.get("Content-Encoding", ""))
 
     try:
         body_json = body_bytes.decode("utf-8")
@@ -125,29 +165,25 @@ async def submit_telemetry(request: Request):
     if storage.is_duplicate_batch(batch_id):
         return SubmitResponse(ok=True, message="duplicate, skipped")
 
-    # steam_user_id 边界校验 + 归一化：
-    # - Steam64 是 u64，合法范围 1..2^64-1。HMAC secret 在开源客户端里可读，
-    #   被泄露后伪造请求是有概率事件。
-    # - 空值 / 非纯数字 / 超长串 / 数值零（"0" / "00" 等 Steamworks "无用户"
-    #   sentinel）/ 超 u64 上限（"99999999999999999999" 等）都视作无效，归零。
-    # - 通过校验后用 ``str(int(...))`` 归一化为 canonical 十进制，否则伪造
-    #   请求可送 "00076561198000000000" 把同账号 string-based join 拆成两个
-    #   不同的 device↔account 维度。
-    # len<=20 是 cheap pre-check 避免对超长 isdigit 串做大整数转换（DoS guard）。
-    steam_user_id = submission.payload.steam_user_id
-    if steam_user_id:
-        if (
-            steam_user_id.isdigit()
-            and len(steam_user_id) <= 20
-            and 0 < int(steam_user_id) < (1 << 64)
-        ):
-            steam_user_id = str(int(steam_user_id))
-        else:
-            steam_user_id = ""
+    # steam_user_id 边界校验 + 归一化：复用 storage.normalize_steam_id，与 canonical
+    # 边构建（扫 events.payload）共用同一份规则——否则两条写路径漂移会把同账号
+    # 拆成两个 device↔account 维度。规则细节见该函数 docstring（u64 范围 / 去前导零 /
+    # 排哨兵 / 类型守卫）。HMAC secret 在开源客户端可读，伪造请求是有概率事件，故必校验。
+    steam_user_id = normalize_steam_id(submission.payload.steam_user_id)
+    # device_hw 同样在 ingest 边界白名单化：客户端串不可信，非法/伪造一律归 ''，
+    # 守"设备画像"低基数 + 零 PII 契约（见 normalize_device_hw）。
+    device_hw = normalize_device_hw(submission.payload.device_hw)
 
     # 存储
     try:
         daily_stats_dict = {k: model_to_dict(v) for k, v in submission.payload.daily_stats.items()}
+        # instruments 是 Optional —— 老客户端不带这个字段时 submission.payload.instruments
+        # 为 None。Pydantic v1/v2 兼容：用 model_to_dict 拆掉嵌套 model。
+        instruments_dict = (
+            model_to_dict(submission.payload.instruments)
+            if submission.payload.instruments is not None
+            else None
+        )
         storage.store_event(
             device_id=device_id,
             app_version=submission.payload.app_version,
@@ -159,6 +195,8 @@ async def submit_telemetry(request: Request):
             timezone=submission.payload.timezone,
             distribution=submission.payload.distribution,
             steam_user_id=steam_user_id,
+            device_hw=device_hw,
+            instruments=instruments_dict,
         )
     except Exception as e:
         logger.error(f"Store failed for {device_id[:8]}...: {e}")
@@ -195,9 +233,11 @@ async def admin_devices(days: int = 7):
 
 @app.post("/api/v1/admin/prune", dependencies=[Depends(require_admin)])
 async def admin_prune(max_days: int = 180):
-    """清理旧事件日志（聚合数据保留）。"""
-    deleted = storage.prune_old_events(max_days=max(max_days, 30))
-    return {"deleted_events": deleted}
+    """清理旧事件日志 + instrument 聚合（daily_aggregates 永久保留）。"""
+    days = max(max_days, 30)
+    deleted_events = storage.prune_old_events(max_days=days)
+    deleted_instruments = storage.prune_old_instruments(max_days=days)
+    return {"deleted_events": deleted_events, "deleted_instruments": deleted_instruments}
 
 
 # ---------------------------------------------------------------------------
@@ -220,197 +260,55 @@ async def export_model_csv(days: int = 90):
                              headers={"Content-Disposition": "attachment; filename=model_stats.csv"})
 
 
-# ---------------------------------------------------------------------------
-# 仪表盘（需 admin token）
-# ---------------------------------------------------------------------------
+@app.get("/api/v1/admin/instruments", dependencies=[Depends(require_admin)])
+async def admin_instruments(days: int = 7):
+    """instrument 埋点数据 JSON：top counters + histogram p50/p95 摘要。
 
-@app.get("/api/v1/admin/dashboard", dependencies=[Depends(require_admin)])
-async def admin_dashboard(request: Request, days: int = 30):
-    """HTML 仪表盘 — 浏览器直接访问 ?token=YOUR_TOKEN。"""
+    公开 repo 不再内置 HTML 看板（见 README）；这是给内部看板的数据接口，
+    运维据此自建可视化。counter/histogram 的口径见 storage.get_top_counters /
+    get_histogram_summary。
+    """
     days = min(days, 365)
-    stats = storage.get_global_stats(days=days)
-    devices = storage.get_active_devices(days=7, limit=20)
-    user_metrics = storage.get_user_metrics(days=days)
+    return {
+        "counters": storage.get_top_counters(days=days, limit=50),
+        "histograms": storage.get_histogram_summary(days=days, limit=50),
+    }
 
-    # 传递 token 到导出链接（URL-encode 防止特殊字符截断查询串）
-    tk = quote(_extract_token(request), safe="")
 
-    # 按日期排序
-    sorted_days = sorted(stats.get("daily_totals", {}).items(), reverse=True)
+# ---------------------------------------------------------------------------
+# canonical identity（需 admin token）
+# ---------------------------------------------------------------------------
 
-    # --- DAU 趋势（最近的放右边） ---
-    dau_trend = user_metrics.get("dau_trend", {})
-    dau_sorted = sorted(dau_trend.items())  # 日期升序
-    dau_labels = [d[5:] for d, _ in dau_sorted]  # MM-DD
-    dau_values = [v for _, v in dau_sorted]
-    dau_max = max(dau_values) if dau_values else 1
+@app.get("/api/v1/admin/canonical/metrics", dependencies=[Depends(require_admin)])
+async def admin_canonical_metrics(days: int = 30):
+    """用户指标 JSON：device 口径（装机量）与 canonical 口径（按真人去重）并列。"""
+    days = min(days, 365)
+    return {
+        "device": storage.get_user_metrics(days=days),
+        "canonical": storage.get_canonical_metrics(days=days),
+    }
 
-    # DAU 柱状图（纯 CSS，无 JS 依赖）
-    dau_bars = ""
-    for i, (label, val) in enumerate(zip(dau_labels, dau_values)):
-        pct = val / dau_max * 100 if dau_max > 0 else 0
-        dau_bars += (
-            f'<div class="bar-col" title="{label}: {val}">'
-            f'<div class="bar-val">{val}</div>'
-            f'<div class="bar" style="height:{pct}%"></div>'
-            f'<div class="bar-label">{label}</div>'
-            f'</div>'
-        )
 
-    # --- 新增设备趋势 ---
-    new_trend = user_metrics.get("new_device_trend", {})
-    new_sorted = sorted(new_trend.items())
-    new_labels = [d[5:] for d, _ in new_sorted]
-    new_values = [v for _, v in new_sorted]
-    new_max = max(new_values) if new_values else 1
+@app.post("/api/v1/admin/canonical/rebuild", dependencies=[Depends(require_admin)])
+async def admin_canonical_rebuild():
+    """手动触发：扫 events 产边（drain 到追平）+ 重算 canonical 连通分量。"""
+    # 同步 SQLite/union-find 丢线程池，别卡住事件循环（拖慢公开上报接口）。
+    # _canonical_lock 串行化，避免与后台周期任务并发抢游标重复处理。
+    async with _canonical_lock:
+        processed = await asyncio.to_thread(storage.build_all_pending_edges)
+        canonicals = await asyncio.to_thread(storage.recompute_canonical)
+    return {"events_processed": processed, "canonical_count": canonicals}
 
-    new_bars = ""
-    for label, val in zip(new_labels, new_values):
-        pct = val / new_max * 100 if new_max > 0 else 0
-        new_bars += (
-            f'<div class="bar-col" title="{label}: {val}">'
-            f'<div class="bar-val">{val}</div>'
-            f'<div class="bar" style="height:{pct}%"></div>'
-            f'<div class="bar-label">{label}</div>'
-            f'</div>'
-        )
 
-    # 构建表格
-    daily_rows = ""
-    for d, s in sorted_days:
-        day_dau = dau_trend.get(d, 0)
-        daily_rows += f"""<tr>
-            <td>{d}</td>
-            <td>{day_dau}</td>
-            <td>{s['call_count']:,}</td>
-            <td>{s['prompt_tokens']:,}</td>
-            <td>{s['cached_tokens']:,}</td>
-            <td>{s['completion_tokens']:,}</td>
-            <td>{s['total_tokens']:,}</td>
-            <td>{s['error_count']:,}</td>
-        </tr>"""
-
-    esc = html.escape
-
-    model_rows = ""
-    for m, s in sorted(stats.get("by_model", {}).items(), key=lambda x: -x[1]["total_tokens"]):
-        model_rows += f"""<tr>
-            <td>{esc(m)}</td>
-            <td>{s['call_count']:,}</td>
-            <td>{s['prompt_tokens']:,}</td>
-            <td>{s['cached_tokens']:,}</td>
-            <td>{s['completion_tokens']:,}</td>
-            <td>{s['total_tokens']:,}</td>
-        </tr>"""
-
-    type_rows = ""
-    for t, s in sorted(stats.get("by_call_type", {}).items(), key=lambda x: -x[1]["total_tokens"]):
-        type_rows += f"""<tr>
-            <td>{esc(t)}</td>
-            <td>{s['call_count']:,}</td>
-            <td>{s['prompt_tokens']:,}</td>
-            <td>{s['cached_tokens']:,}</td>
-            <td>{s['completion_tokens']:,}</td>
-            <td>{s['total_tokens']:,}</td>
-        </tr>"""
-
-    device_rows = ""
-    for d in devices:
-        did = esc(d['device_id'])
-        device_rows += f"""<tr>
-            <td title="{did}">{did[:12]}...</td>
-            <td>{esc(d['app_version'])}</td>
-            <td>{esc(d['last_seen'][:19])}</td>
-            <td>{d['recent_calls']:,}</td>
-            <td>{d['recent_tokens']:,}</td>
-        </tr>"""
-
-    page_html = f"""<!DOCTYPE html>
-<html><head>
-<meta charset="utf-8"><title>N.E.K.O Telemetry Dashboard</title>
-<style>
-  body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-         max-width: 1200px; margin: 0 auto; padding: 20px; background: #0d1117; color: #c9d1d9; }}
-  h1 {{ color: #58a6ff; }} h2 {{ color: #8b949e; margin-top: 2em; }}
-  .cards {{ display: flex; gap: 16px; flex-wrap: wrap; margin: 16px 0; }}
-  .card {{ background: #161b22; border: 1px solid #30363d; border-radius: 8px;
-           padding: 16px 24px; min-width: 140px; }}
-  .card .value {{ font-size: 2em; font-weight: bold; color: #58a6ff; }}
-  .card .label {{ color: #8b949e; font-size: 0.9em; }}
-  .card.green .value {{ color: #3fb950; }}
-  .card.orange .value {{ color: #d29922; }}
-  table {{ width: 100%; border-collapse: collapse; margin: 8px 0; }}
-  th, td {{ padding: 8px 12px; text-align: right; border-bottom: 1px solid #21262d; }}
-  th {{ color: #8b949e; font-weight: 600; }} td:first-child, th:first-child {{ text-align: left; }}
-  tr:hover {{ background: #161b22; }}
-  .export {{ margin: 16px 0; }}
-  .export a {{ color: #58a6ff; margin-right: 16px; }}
-  .chart {{ background: #161b22; border: 1px solid #30363d; border-radius: 8px;
-            padding: 16px; margin: 16px 0; overflow-x: auto; }}
-  .chart-title {{ color: #8b949e; font-size: 0.9em; margin-bottom: 8px; }}
-  .bar-chart {{ display: flex; align-items: flex-end; gap: 2px; height: 120px; min-width: max-content; }}
-  .bar-col {{ display: flex; flex-direction: column; align-items: center; min-width: 28px; height: 100%; justify-content: flex-end; }}
-  .bar {{ background: #58a6ff; width: 20px; border-radius: 2px 2px 0 0; min-height: 2px; transition: height 0.3s; }}
-  .bar-val {{ font-size: 0.7em; color: #8b949e; margin-bottom: 2px; }}
-  .bar-label {{ font-size: 0.65em; color: #484f58; margin-top: 4px; writing-mode: vertical-rl; text-orientation: mixed; height: 40px; }}
-  .chart.new-devices .bar {{ background: #3fb950; }}
-</style>
-</head><body>
-<h1>N.E.K.O Telemetry Dashboard</h1>
-
-<div class="cards">
-  <div class="card"><div class="value">{user_metrics['dau_today']:,}</div><div class="label">DAU (Today)</div></div>
-  <div class="card"><div class="value">{user_metrics['wau']:,}</div><div class="label">WAU (7d)</div></div>
-  <div class="card"><div class="value">{user_metrics['mau']:,}</div><div class="label">MAU (30d)</div></div>
-  <div class="card"><div class="value">{stats['total_devices']:,}</div><div class="label">Total Devices</div></div>
-  <div class="card green"><div class="value">{user_metrics['d1_retention']}%</div><div class="label">D1 Retention</div></div>
-  <div class="card orange"><div class="value">{user_metrics['d7_retention']}%</div><div class="label">D7 Retention</div></div>
-  <div class="card"><div class="value">{stats['total_events']:,}</div><div class="label">Total Events</div></div>
-</div>
-
-<div class="chart">
-  <div class="chart-title">DAU Trend (last {days} days)</div>
-  <div class="bar-chart">{dau_bars}</div>
-</div>
-
-<div class="chart new-devices">
-  <div class="chart-title">New Devices (last {days} days)</div>
-  <div class="bar-chart">{new_bars}</div>
-</div>
-
-<div class="export">
-  Export:
-  <a href="/api/v1/admin/export/daily.csv?days={days}&token={tk}">Daily CSV</a>
-  <a href="/api/v1/admin/export/model.csv?days={days}&token={tk}">Model CSV</a>
-</div>
-
-<h2>Daily Totals (last {days} days)</h2>
-<table>
-  <tr><th>Date</th><th>DAU</th><th>Calls</th><th>Prompt</th><th>Cached</th><th>Completion</th><th>Total</th><th>Errors</th></tr>
-  {daily_rows}
-</table>
-
-<h2>By Model</h2>
-<table>
-  <tr><th>Model</th><th>Calls</th><th>Prompt</th><th>Cached</th><th>Completion</th><th>Total</th></tr>
-  {model_rows}
-</table>
-
-<h2>By Call Type</h2>
-<table>
-  <tr><th>Type</th><th>Calls</th><th>Prompt</th><th>Cached</th><th>Completion</th><th>Total</th></tr>
-  {type_rows}
-</table>
-
-<h2>Active Devices (7d, top 20)</h2>
-<table>
-  <tr><th>Device</th><th>Version</th><th>Last Seen</th><th>Calls</th><th>Tokens</th></tr>
-  {device_rows}
-</table>
-
-</body></html>"""
-
-    return HTMLResponse(page_html)
+@app.post("/api/v1/admin/canonical/denylist", dependencies=[Depends(require_admin)])
+async def admin_canonical_denylist(steam_user_id: str):
+    """删号：Steam64 入 denylist（防复活）+ 脱敏源数据 + 删边 + 重算。"""
+    async with _canonical_lock:
+        sid = await asyncio.to_thread(storage.add_steam_id_to_denylist, steam_user_id)
+        if not sid:
+            raise HTTPException(400, "invalid steam_user_id")
+        await asyncio.to_thread(storage.recompute_canonical)
+    return {"denylisted": sid}
 
 
 # ---------------------------------------------------------------------------
@@ -427,10 +325,47 @@ async def _periodic_rate_limiter_cleanup():
             pass
 
 
+async def _periodic_canonical_rebuild():
+    """每 5 分钟增量扫 events 产边 + 重算 canonical 落表。
+
+    阻塞 SQLite 调用丢线程池跑，避免占着事件循环。用 need_recompute 脏标记保证
+    "边产出后必须落到一次成功的 recompute"：build_all_pending_edges 已推进游标，
+    若紧接着 recompute 抛异常（如瞬时 SQLite 锁），脏标记保持 True，下个 tick
+    即便没有新事件也会重试——不会让 canonical_map 永久停在 build 已推进、recompute
+    没跟上的不一致态。
+    """
+    # 不用内存脏标记：recompute 在本量级（几千边、全量 union-find）是毫秒级，每 tick
+    # 无条件重算最简单也最稳，一次性覆盖所有"标记没设/丢失"的坑——
+    #   启动即跑（sleep 放末尾），不必等 5 分钟；
+    #   进程崩溃重启后无条件对齐 canonical_map 与现有边；
+    #   admin /rebuild|/denylist 自身 recompute 失败时，下个 tick 必重算兜底，不依赖
+    #   "恰好有新事件"或任何跨协程标记。
+    # 代价仅是无变更时也跑一次重算，毫秒级，可忽略。
+    while True:
+        try:
+            async with _canonical_lock:  # 与手动 /rebuild、/denylist 互斥，串行化重算
+                await asyncio.to_thread(storage.build_all_pending_edges)
+                await asyncio.to_thread(storage.recompute_canonical)
+        except Exception:
+            logger.exception("canonical rebuild failed")
+        await asyncio.sleep(300)
+
+
 @app.on_event("startup")
 async def on_startup():
     rate_limiter.cleanup_stale()
+    # 启动先同步对齐一次 canonical_map（只跑 recompute，毫秒级、只对现有边做
+    # union-find，不扫事件）——重启后首个 /canonical/metrics 即读到与现有边一致的
+    # 结果。故意**不**在这里同步跑 build_all_pending_edges：那是全量事件 drain，
+    # 首次部署/长停机后可能耗时数分钟，会阻塞启动、拖垮 healthcheck 与 ingest。
+    # 昂贵的事件建边留给下面的后台任务；建边完成前 metrics 由 COALESCE 回退到
+    # device 口径（合理降级，非错误数据）。
+    try:
+        await asyncio.to_thread(storage.recompute_canonical)
+    except Exception:
+        logger.exception("startup canonical recompute failed")
     asyncio.create_task(_periodic_rate_limiter_cleanup())
+    asyncio.create_task(_periodic_canonical_rebuild())
     logger.info(f"Telemetry server started. DB={DB_PATH}")
     if not ADMIN_TOKEN:
         logger.warning("⚠ TELEMETRY_ADMIN_TOKEN not set — admin API disabled")

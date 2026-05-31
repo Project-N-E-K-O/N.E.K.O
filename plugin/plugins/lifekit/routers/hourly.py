@@ -9,6 +9,8 @@ from plugin.sdk.shared.core.router import PluginRouter
 
 from .._api import fetch_forecast, ForecastError, RAIN_CODES, SNOW_CODES
 from .._chat import push_lifekit_content
+from .._coerce import clamp_int
+from .._contracts import HourlyForecastParams, HourlyForecastResult
 
 _HOURLY_VARS = (
     "temperature_2m,apparent_temperature,precipitation_probability,"
@@ -26,25 +28,21 @@ class HourlyForecastRouter(PluginRouter):
         id="hourly_forecast",
         name="逐小时预报",
         description="查询未来 48 小时的逐小时天气预报，包含温度变化、降水概率、风力等。适合回答「明天下午会不会下雨」这类问题。",
-        llm_result_fields=["summary", "hours"],
-        input_schema={
-            "type": "object",
-            "properties": {
-                "city": {
-                    "type": "string",
-                    "description": "城市名，留空则自动定位",
-                    "default": "",
-                },
-                "hours": {
-                    "type": "integer",
-                    "description": "预报小时数（1-168，默认 48）",
-                    "default": 48,
-                },
-            },
-        },
+        params=HourlyForecastParams,
+        llm_result_model=HourlyForecastResult,
     )
     @quick_action(icon="📊", priority=8)
-    async def hourly_forecast(self, city: str = "", hours: int = 48, **_):
+    async def hourly_forecast(
+        self,
+        params: HourlyForecastParams | None = None,
+        city: str = "",
+        hours: int = 48,
+        **_,
+    ):
+        if params is not None:
+            city = params.city
+            hours = params.hours
+
         plugin = self.main_plugin
         plugin._resolve_locale()
         i18n = plugin._i18n
@@ -53,7 +51,7 @@ class HourlyForecastRouter(PluginRouter):
         if not loc:
             return Err(SdkError(i18n.t(loc_err or "error.no_location")))
 
-        hours = max(1, min(int(hours), 168))
+        hours = clamp_int(hours, 48, 1, 168)
         tz = str(plugin._cfg.get("timezone", "Asia/Shanghai"))
 
         try:

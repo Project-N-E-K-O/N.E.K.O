@@ -72,25 +72,38 @@ class MessagePlaneIngestServer:
     def _resolve_store(self, name: Any) -> Optional[TopicStore]:
         return self._stores.get(None if name is None else str(name))
 
+    def _record_drop(self, reason: str, **fields: Any) -> None:
+        """Increment the drop counter and, when verbose ingest logging is on,
+        emit the precise drop reason so a silently-dropped high-frequency
+        "read" cue (e.g. a game screenshot exceeding the payload cap) can be
+        diagnosed instead of vanishing into the aggregate ``dropped`` count."""
+        self._stats_dropped += 1
+        if bool(MESSAGE_PLANE_INGEST_STATS_LOG_VERBOSE):
+            try:
+                extra = " ".join(f"{k}={v}" for k, v in fields.items() if v is not None)
+                logger.info("ingest DROP reason={} {}", reason, extra)
+            except Exception:
+                pass
+
     def _ingest_delta_batch(self, msg: Dict[str, Any]) -> None:
         items = msg.get("items")
         if not isinstance(items, list):
-            self._stats_dropped += 1
+            self._record_drop("delta_items_not_list")
             return
         for it in items:
             if not isinstance(it, dict):
-                self._stats_dropped += 1
+                self._record_drop("delta_item_not_dict")
                 continue
             st = self._resolve_store(it.get("store") or it.get("bus"))
             if st is None:
-                self._stats_dropped += 1
+                self._record_drop("store_unresolved", store=it.get("store") or it.get("bus"))
                 continue
             topic = it.get("topic")
             if not isinstance(topic, str) or not topic:
-                self._stats_dropped += 1
+                self._record_drop("topic_invalid", store=getattr(st, "name", None))
                 continue
             if len(topic) > MESSAGE_PLANE_TOPIC_NAME_MAX_LEN:
-                self._stats_dropped += 1
+                self._record_drop("topic_too_long", topic_len=len(topic))
                 continue
             try:
                 is_new_topic = topic not in st.meta
@@ -99,26 +112,32 @@ class MessagePlaneIngestServer:
             if is_new_topic:
                 try:
                     if len(st.meta) >= MESSAGE_PLANE_TOPIC_MAX:
-                        self._stats_dropped += 1
+                        self._record_drop("topic_max", store=st.name, topic=topic)
                         continue
                 except Exception:
-                    self._stats_dropped += 1
+                    self._record_drop("topic_meta_error", store=st.name, topic=topic)
                     continue
             payload = it.get("payload")
             if not isinstance(payload, dict):
                 payload = {"value": payload}
             if bool(MESSAGE_PLANE_VALIDATE_PAYLOAD_BYTES):
                 try:
-                    if len(ormsgpack.packb(payload)) > MESSAGE_PLANE_PAYLOAD_MAX_BYTES:
-                        self._stats_dropped += 1
+                    _size = len(ormsgpack.packb(payload))
+                    if _size > MESSAGE_PLANE_PAYLOAD_MAX_BYTES:
+                        self._record_drop(
+                            "payload_too_big", store=st.name, topic=topic,
+                            size=_size, limit=MESSAGE_PLANE_PAYLOAD_MAX_BYTES,
+                            type=payload.get("type") or payload.get("message_type"),
+                            source=payload.get("source"),
+                        )
                         continue
-                except Exception:
-                    self._stats_dropped += 1
+                except Exception as _exc:
+                    self._record_drop("payload_pack_error", store=st.name, topic=topic, err=type(_exc).__name__)
                     continue
             try:
                 event = st.publish(topic, payload)
-            except Exception:
-                self._stats_dropped += 1
+            except Exception as _exc:
+                self._record_drop("publish_error", store=st.name, topic=topic, err=type(_exc).__name__)
                 continue
             self._stats_accepted += 1
             self._stats_last_store = str(st.name)

@@ -348,7 +348,7 @@ function createSettingsPopupContent(manager, prefix, popup) {
 
     // 4. 主动搭话和自主视觉（角色设置已移至分隔线下方的导航菜单区域）
     const settingsToggles = [
-        { id: 'proactive-chat', label: window.t ? window.t('settings.toggles.proactiveChat') : '主动搭话', labelKey: 'settings.toggles.proactiveChat', storageKey: 'proactiveChatEnabled', hasInterval: true, intervalKey: 'proactiveChatInterval', defaultInterval: 15 },
+        { id: 'proactive-chat', label: window.t ? window.t('settings.toggles.proactiveChat') : '主动搭话', labelKey: 'settings.toggles.proactiveChat', storageKey: 'proactiveChatEnabled', hasInterval: true, intervalKey: 'proactiveChatInterval', defaultInterval: 20 },
         { id: 'proactive-vision', label: window.t ? window.t('settings.toggles.proactiveVision') : '隐私模式', labelKey: 'settings.toggles.proactiveVision', tooltipKey: 'settings.toggles.proactiveVisionTooltip', storageKey: 'proactiveVisionEnabled', hasInterval: true, intervalKey: 'proactiveVisionInterval', defaultInterval: 15, inverted: true }
     ];
 
@@ -1177,10 +1177,12 @@ function createAnimationSettingsSidePanel(manager, prefix) {
         updateRowStyle();
         updateTrackingModeToggleState();
         trackingClickArea.setAttribute('aria-checked', String(enabled));
-        if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
+        // 必须先跑回调写 window.mouseTrackingEnabled，再 save——saveSettings 是从该
+        // 全局变量读值落盘的，顺序反了会把切换前的旧值持久化（刷新后看着像被重置）
         if (typeof manager._onMouseTrackingToggle === 'function') {
             manager._onMouseTrackingToggle(enabled);
         }
+        if (typeof window.saveNEKOSettings === 'function') window.saveNEKOSettings();
     };
 
     trackingClickArea.addEventListener('click', (e) => {

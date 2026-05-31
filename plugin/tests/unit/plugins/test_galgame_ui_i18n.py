@@ -6,8 +6,9 @@ import importlib
 import json
 import re
 import sys
-from contextlib import contextmanager
 from pathlib import Path
+
+import pytest
 
 
 UI_I18N_DIR = (
@@ -35,12 +36,24 @@ STATIC_INDEX_HTML = (
 EXPECTED_BUNDLE_LOCALES = ["zh-CN", "zh-TW", "en", "ja", "ru", "ko"]
 
 
-def _disable_galgame_store_file_locks(monkeypatch, store_cls) -> None:
-    @contextmanager
-    def unlocked_store(self):
-        yield
-
-    monkeypatch.setattr(store_cls, "_locked_store", unlocked_store)
+def _register_galgame_install_plugin(module, *, i18n_dir: Path = UI_I18N_DIR) -> None:
+    module.register_install_plugin(
+        "galgame_plugin",
+        install_kinds={
+            "textractor": module.InstallKindRegistration(
+                entry_id="galgame_install_textractor",
+                label="Textractor",
+                queued_message="Textractor install queued",
+            ),
+            "rapidocr_models": module.InstallKindRegistration(
+                entry_id="galgame_download_rapidocr_models",
+                label="RapidOCR Models",
+                queued_message="RapidOCR model download queued",
+            ),
+        },
+        ui_i18n_dir=i18n_dir,
+        tutorial_enabled=True,
+    )
 
 
 def test_galgame_ui_i18n_locale_bundles_have_same_keys() -> None:
@@ -76,17 +89,19 @@ def test_rapidocr_language_buttons_use_full_i18n_keys() -> None:
 
 
 def test_galgame_ui_i18n_zh_tw_route_locale_normalization() -> None:
-    from plugin.plugins.galgame_plugin.install_routes import _normalize_ui_locale
+    from plugin.server.routes.plugin_install import _normalize_ui_locale
 
     assert _normalize_ui_locale("zh-TW") == "zh-TW"
     assert _normalize_ui_locale("zh-Hant") == "zh-TW"
     assert _normalize_ui_locale("zh-HK") == "zh-TW"
     assert _normalize_ui_locale("zh-MO") == "zh-TW"
     assert _normalize_ui_locale("zh") == "zh-CN"
+    assert _normalize_ui_locale("es-ES") == "es"
+    assert _normalize_ui_locale("pt-BR") == "pt"
 
 
 def test_galgame_ui_locale_route_falls_back_when_language_utils_unavailable(monkeypatch) -> None:
-    module_name = "plugin.plugins.galgame_plugin.install_routes"
+    module_name = "plugin.server.routes.plugin_install"
     sys.modules.pop(module_name, None)
     original_import = builtins.__import__
 
@@ -97,181 +112,210 @@ def test_galgame_ui_locale_route_falls_back_when_language_utils_unavailable(monk
 
     monkeypatch.setattr(builtins, "__import__", guarded_import)
 
-    module = importlib.import_module(module_name)
-    response = asyncio.run(module.get_galgame_ui_locale("galgame_plugin"))
+    try:
+        module = importlib.import_module(module_name)
+        _register_galgame_install_plugin(module)
+        response = asyncio.run(module.get_plugin_ui_locale("galgame_plugin"))
 
-    assert json.loads(response.body.decode("utf-8")) == {"locale": "en"}
+        assert json.loads(response.body.decode("utf-8")) == {"locale": "en"}
+    finally:
+        sys.modules.pop(module_name, None)
+
+
+def test_plugin_ui_i18n_route_uses_registered_i18n_dir(monkeypatch, tmp_path: Path) -> None:
+    from plugin.server import install_registry
+    from plugin.server.routes import plugin_install
+
+    i18n_dir = tmp_path / "custom_i18n"
+    i18n_dir.mkdir()
+    expected_file = i18n_dir / "en.json"
+    expected_file.write_text('{"custom":"ok"}', encoding="utf-8")
+    monkeypatch.setattr(install_registry, "_install_plugin_registry", {})
+    plugin_install.register_install_plugin(
+        "custom_plugin",
+        install_kinds={},
+        ui_i18n_dir=i18n_dir,
+    )
+
+    response = asyncio.run(plugin_install.get_plugin_ui_i18n("custom_plugin", "en"))
+
+    assert Path(response.path) == expected_file
+
+
+def test_plugin_ui_i18n_route_bootstraps_builtin_registration(monkeypatch) -> None:
+    from plugin.server import install_registry
+    from plugin.server.routes import plugin_install
+
+    expected_file = (
+        Path(plugin_install.__file__).resolve().parents[2]
+        / "plugins"
+        / "study_companion"
+        / "i18n"
+        / "en.json"
+    )
+    monkeypatch.setattr(install_registry, "_install_plugin_registry", {})
+    monkeypatch.setattr(install_registry, "_tutorial_migration_hooks", {})
+
+    response = asyncio.run(plugin_install.get_plugin_ui_i18n("study_companion", "en"))
+
+    assert Path(response.path) == expected_file
 
 
 def test_tutorial_store_uses_runtime_data_root(monkeypatch, tmp_path: Path) -> None:
-    from plugin.plugins.galgame_plugin import install_routes
+    from plugin.server.routes import plugin_install
 
     runtime_root = tmp_path / "runtime"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
-    monkeypatch.setattr(install_routes, "_tutorial_store_instance", None)
+    monkeypatch.setattr(plugin_install, "_tutorial_store_instance", None)
 
-    store = install_routes._tutorial_store()
+    store = plugin_install._tutorial_store()
 
-    assert store._store_path == (
-        runtime_root / "plugins" / "galgame_plugin" / "data" / "galgame_store.json"
+    assert store == (
+        runtime_root / "server" / "plugin_install" / "tutorial_progress.json"
     )
 
 
-def test_tutorial_store_migrates_legacy_source_store(monkeypatch, tmp_path: Path) -> None:
-    from plugin.plugins.galgame_plugin import install_routes
+def test_tutorial_store_runs_registered_migration_hook(monkeypatch, tmp_path: Path) -> None:
+    from plugin.server import install_registry
+    from plugin.server.routes import plugin_install
 
     runtime_root = tmp_path / "runtime"
-    fake_plugin_dir = tmp_path / "source" / "galgame_plugin"
-    legacy_path = (
-        fake_plugin_dir
-        / "data"
-        / "galgame_store.json"
-    )
-    runtime_path = runtime_root / "plugins" / "galgame_plugin" / "data" / "galgame_store.json"
+    expected_store = runtime_root / "server" / "plugin_install" / "tutorial_progress.json"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
-    monkeypatch.setattr(install_routes, "_tutorial_store_instance", None)
-    monkeypatch.setattr(install_routes, "__file__", str(fake_plugin_dir / "install_routes.py"))
-    legacy_path.parent.mkdir(parents=True, exist_ok=True)
-    legacy_path.write_text('{"tutorial_progress": {"completed": true}}', encoding="utf-8")
+    monkeypatch.setattr(plugin_install, "_tutorial_store_instance", None)
+    monkeypatch.setattr(install_registry, "_tutorial_migration_hooks", [])
+    monkeypatch.setattr(plugin_install, "_tutorial_migrated_paths", set())
 
-    store = install_routes._tutorial_store()
+    def migrate(store_path: Path) -> None:
+        store_path.parent.mkdir(parents=True, exist_ok=True)
+        store_path.write_text('{"completed": true}', encoding="utf-8")
 
-    assert store._store_path == runtime_path
-    assert store._store_path != legacy_path
-    assert runtime_path.read_text(encoding="utf-8") == legacy_path.read_text(encoding="utf-8")
+    plugin_install.register_tutorial_migration_hook(migrate)
+
+    assert plugin_install._tutorial_store() == expected_store
+    assert json.loads(expected_store.read_text(encoding="utf-8")) == {"completed": True}
 
 
-def test_tutorial_store_merges_legacy_progress_into_existing_runtime_store(
+def test_tutorial_store_raises_when_migration_hook_fails(monkeypatch, tmp_path: Path) -> None:
+    from plugin.server import install_registry
+    from plugin.server.routes import plugin_install
+
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    monkeypatch.setattr(plugin_install, "_tutorial_store_instance", None)
+    monkeypatch.setattr(install_registry, "_tutorial_migration_hooks", [])
+    monkeypatch.setattr(plugin_install, "_tutorial_migrated_paths", set())
+
+    def migrate(_store_path: Path) -> None:
+        raise OSError("blocked")
+
+    plugin_install.register_tutorial_migration_hook(migrate)
+
+    with pytest.raises(OSError):
+        plugin_install._tutorial_store()
+
+
+def test_tutorial_progress_routes_use_blocking_runner(monkeypatch, tmp_path: Path) -> None:
+    from plugin.server import install_registry
+    from plugin.server.routes import plugin_install
+
+    runtime_root = tmp_path / "runtime"
+    calls: list[str] = []
+
+    async def _fake_run_blocking(func, *args, **kwargs):
+        calls.append(getattr(func, "__name__", ""))
+        return func(*args, **kwargs)
+
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    monkeypatch.setattr(plugin_install, "_tutorial_store_instance", None)
+    monkeypatch.setattr(plugin_install, "_tutorial_store_instances", {})
+    monkeypatch.setattr(install_registry, "_install_plugin_registry", {})
+    monkeypatch.setattr(plugin_install, "_run_blocking", _fake_run_blocking)
+    _register_galgame_install_plugin(plugin_install)
+
+    status_response = asyncio.run(plugin_install.get_tutorial_status("galgame_plugin"))
+    save_response = asyncio.run(
+        plugin_install.save_tutorial_progress(
+            "galgame_plugin",
+            plugin_install.TutorialProgressPayload(completed=True),
+        )
+    )
+
+    assert json.loads(status_response.body.decode("utf-8"))["ok"] is True
+    assert json.loads(save_response.body.decode("utf-8"))["ok"] is True
+    assert "_read_tutorial_progress" in calls
+    assert "_write_tutorial_progress" in calls
+
+
+def test_galgame_tutorial_migration_copies_runtime_store_progress(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    from plugin.plugins.galgame_plugin import install_routes
+    from plugin.plugins.galgame_plugin import _tutorial_migration
 
     runtime_root = tmp_path / "runtime"
-    fake_plugin_dir = tmp_path / "source" / "galgame_plugin"
-    legacy_path = fake_plugin_dir / "data" / "galgame_store.json"
-    runtime_path = runtime_root / "plugins" / "galgame_plugin" / "data" / "galgame_store.json"
+    runtime_store = runtime_root / "plugins" / "galgame_plugin" / "data" / "galgame_store.json"
+    new_store = runtime_root / "server" / "plugin_install" / "tutorial_progress.json"
     monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
-    monkeypatch.setattr(install_routes, "_tutorial_store_instance", None)
-    monkeypatch.setattr(install_routes, "__file__", str(fake_plugin_dir / "install_routes.py"))
-    _disable_galgame_store_file_locks(monkeypatch, install_routes.GalgameStore)
-    legacy_path.parent.mkdir(parents=True, exist_ok=True)
-    runtime_path.parent.mkdir(parents=True, exist_ok=True)
-    legacy_path.write_text(
+    runtime_store.parent.mkdir(parents=True, exist_ok=True)
+    runtime_store.write_text(
         '{"tutorial_progress": {"completed": true, "last_step_index": 4}}',
         encoding="utf-8",
     )
-    runtime_path.write_text(
-        '{"ocr_backend_selection": "rapidocr"}',
-        encoding="utf-8",
-    )
 
-    install_routes._tutorial_store()
+    class _Store:
+        def __init__(self, store_path: Path, _logger) -> None:
+            self.store_path = store_path
 
-    runtime_payload = json.loads(runtime_path.read_text(encoding="utf-8"))
-    assert runtime_payload["ocr_backend_selection"] == "rapidocr"
-    assert runtime_payload["tutorial_progress"] == {
+        def load_tutorial_progress(self) -> dict[str, object] | None:
+            raw = json.loads(self.store_path.read_text(encoding="utf-8"))
+            return raw.get("tutorial_progress")
+
+    monkeypatch.setattr(_tutorial_migration, "GalgameStore", _Store)
+
+    _tutorial_migration.copy_legacy_tutorial_progress_if_missing(new_store)
+
+    assert json.loads(new_store.read_text(encoding="utf-8")) == {
         "completed": True,
         "last_step_index": 4,
     }
 
 
-def test_tutorial_store_keeps_runtime_store_when_legacy_merge_is_invalid(
+def test_galgame_tutorial_migration_skips_unreadable_legacy_store(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    from plugin.plugins.galgame_plugin import install_routes
+    from plugin.plugins.galgame_plugin import _tutorial_migration
 
-    runtime_root = tmp_path / "runtime"
-    fake_plugin_dir = tmp_path / "source" / "galgame_plugin"
-    legacy_path = fake_plugin_dir / "data" / "galgame_store.json"
-    runtime_path = runtime_root / "plugins" / "galgame_plugin" / "data" / "galgame_store.json"
-    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
-    monkeypatch.setattr(install_routes, "_tutorial_store_instance", None)
-    monkeypatch.setattr(install_routes, "__file__", str(fake_plugin_dir / "install_routes.py"))
-    _disable_galgame_store_file_locks(monkeypatch, install_routes.GalgameStore)
-    legacy_path.parent.mkdir(parents=True, exist_ok=True)
-    runtime_path.parent.mkdir(parents=True, exist_ok=True)
-    legacy_path.write_text("{invalid json", encoding="utf-8")
-    runtime_path.write_text('{"tutorial_progress": {"completed": false}}', encoding="utf-8")
-
-    store = install_routes._tutorial_store()
-
-    assert store._store_path == runtime_path
-    assert store._store_path != legacy_path
-    assert json.loads(runtime_path.read_text(encoding="utf-8")) == {
-        "tutorial_progress": {"completed": False},
-    }
-
-
-def test_tutorial_store_keeps_runtime_store_when_legacy_merge_read_fails(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    from plugin.plugins.galgame_plugin import install_routes
-
-    runtime_root = tmp_path / "runtime"
-    fake_plugin_dir = tmp_path / "source" / "galgame_plugin"
-    legacy_path = fake_plugin_dir / "data" / "galgame_store.json"
-    runtime_path = runtime_root / "plugins" / "galgame_plugin" / "data" / "galgame_store.json"
-    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
-    monkeypatch.setattr(install_routes, "_tutorial_store_instance", None)
-    monkeypatch.setattr(install_routes, "__file__", str(fake_plugin_dir / "install_routes.py"))
-    _disable_galgame_store_file_locks(monkeypatch, install_routes.GalgameStore)
-    legacy_path.parent.mkdir(parents=True, exist_ok=True)
-    runtime_path.parent.mkdir(parents=True, exist_ok=True)
-    legacy_path.write_text('{"tutorial_progress": {"completed": true}}', encoding="utf-8")
-    runtime_path.write_text('{"tutorial_progress": {"completed": false}}', encoding="utf-8")
-
-    original_load_tutorial_progress = install_routes.GalgameStore.load_tutorial_progress
-
-    def load_tutorial_progress(self):
-        if self._store_path == legacy_path:
-            raise OSError("legacy store unavailable")
-        return original_load_tutorial_progress(self)
+    corrupt_store = tmp_path / "corrupt_galgame_store.json"
+    valid_store = tmp_path / "valid_galgame_store.json"
+    new_store = tmp_path / "tutorial_progress.json"
+    corrupt_store.write_text("not json", encoding="utf-8")
+    valid_store.write_text("{}", encoding="utf-8")
 
     monkeypatch.setattr(
-        install_routes.GalgameStore,
-        "load_tutorial_progress",
-        load_tutorial_progress,
+        _tutorial_migration,
+        "_legacy_store_paths",
+        lambda: (corrupt_store, valid_store),
     )
 
-    store = install_routes._tutorial_store()
+    class _Store:
+        def __init__(self, store_path: Path, _logger) -> None:
+            self.store_path = store_path
 
-    assert store._store_path == runtime_path
-    assert store._store_path != legacy_path
-    assert json.loads(runtime_path.read_text(encoding="utf-8")) == {
-        "tutorial_progress": {"completed": False},
+        def load_tutorial_progress(self) -> dict[str, object] | None:
+            if self.store_path == corrupt_store:
+                raise ValueError("legacy store is corrupt")
+            return {"completed": True, "last_step_index": 2}
+
+    monkeypatch.setattr(_tutorial_migration, "GalgameStore", _Store)
+
+    _tutorial_migration.copy_legacy_tutorial_progress_if_missing(new_store)
+
+    assert json.loads(new_store.read_text(encoding="utf-8")) == {
+        "completed": True,
+        "last_step_index": 2,
     }
-
-
-def test_tutorial_store_uses_legacy_store_when_migration_fails(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    from plugin.plugins.galgame_plugin import install_routes
-
-    runtime_root = tmp_path / "runtime"
-    fake_plugin_dir = tmp_path / "source" / "galgame_plugin"
-    legacy_path = fake_plugin_dir / "data" / "galgame_store.json"
-    legacy_path.parent.mkdir(parents=True, exist_ok=True)
-    legacy_path.write_text('{"tutorial_progress": {"completed": true}}', encoding="utf-8")
-    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
-    monkeypatch.setattr(install_routes, "_tutorial_store_instance", None)
-    monkeypatch.setattr(install_routes, "__file__", str(fake_plugin_dir / "install_routes.py"))
-
-    original_mkdir = Path.mkdir
-
-    def fail_runtime_mkdir(self, *args, **kwargs):
-        if self == runtime_root / "plugins" / "galgame_plugin" / "data":
-            raise OSError("blocked")
-        return original_mkdir(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "mkdir", fail_runtime_mkdir)
-
-    store = install_routes._tutorial_store()
-
-    assert store._store_path == legacy_path
 
 
 def test_galgame_ui_i18n_zh_tw_is_traditional_chinese_not_zh_cn_copy() -> None:

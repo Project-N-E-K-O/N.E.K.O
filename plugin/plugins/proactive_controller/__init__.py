@@ -125,7 +125,7 @@ class ProactiveControllerPlugin(NekoPluginBase):
         name="切换主动搭话模式",
         description=(
             "套用一组主动搭话预设。可选模式：'off'（全关，默认首次启动值）、"
-            "'normal'（推荐配置，所有源开启，间隔 15s/10s）、'focus'（低打扰，"
+            "'normal'（推荐配置，所有源开启，间隔 20s/10s）、'focus'（低打扰，"
             "仅留搭话和个人动态，间隔 60s）、'frequent'（高频，全开，间隔 5s）。"
             " 注意：预设不会改变 proactiveVisionEnabled（隐私模式）—— 那是用户绝对控制权。"
         ),

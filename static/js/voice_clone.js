@@ -14,6 +14,11 @@ const VOICE_CLONE_PROVIDER_REGISTRY_KEYS = Object.freeze({
     minimax_intl: 'minimax_intl',
     elevenlabs: 'elevenlabs',
 });
+const VOICE_CLONE_RESTRICTED_REGISTRY_KEYS = new Set([
+    'qwen_intl',
+    'minimax_intl',
+    'elevenlabs',
+]);
 const VOICE_CLONE_PROVIDER_KEY_FIELDS = Object.freeze([
     ['cosyvoice', 'assistApiKeyQwen'],
     ['cosyvoice_intl', 'assistApiKeyQwenIntl'],
@@ -458,7 +463,7 @@ async function loadVoiceCloneApiConfigState(options = {}) {
         voiceCloneApiConfigState.isLocalTts = isLocalVoiceCloneServerConfigured(cfg);
         voiceCloneApiConfigState.loaded = true;
         return voiceCloneApiConfigState;
-    }).finally(() => {
+    })().finally(() => {
         voiceCloneApiConfigState.loadingPromise = null;
     });
 
@@ -485,11 +490,27 @@ function hasVoiceCloneProviderApi(provider) {
 }
 
 async function checkVoiceCloneMainlandChinaUser() {
-    const data = await fetchVoiceCloneLoaderJson('/api/config/steam_language', {
-        method: 'GET',
-        headers: { 'Content-Type': 'application/json' }
-    });
-    return data && data.is_mainland_china === true;
+    let data = null;
+    try {
+        data = await fetchVoiceCloneLoaderJson('/api/config/steam_language', {
+            method: 'GET',
+            headers: { 'Content-Type': 'application/json' }
+        });
+    } catch (error) {
+        console.warn('声音克隆地区检测失败，使用受限服务商策略:', error);
+        return true;
+    }
+
+    if (data && data.is_mainland_china === true) {
+        return true;
+    }
+
+    const ipCountry = String((data && data.ip_country) || '').trim().toUpperCase();
+    if (data && data.success === true && ipCountry && ipCountry !== 'CN') {
+        return false;
+    }
+
+    return true;
 }
 
 async function loadVoiceCloneProviderRestrictionState() {
@@ -503,19 +524,17 @@ async function loadVoiceCloneProviderRestrictionState() {
     voiceCloneProviderRestrictionState.loadingPromise = (async () => {
         const [isMainlandChinaUser, providersData] = await Promise.all([
             checkVoiceCloneMainlandChinaUser(),
-            fetchVoiceCloneLoaderJson('/api/config/api_providers')
+            fetchVoiceCloneLoaderJson('/api/config/api_providers').catch(() => null)
         ]);
         let apiKeyRegistry = {};
         if (providersData && providersData.success) {
             apiKeyRegistry = providersData.api_key_registry || {};
-        } else {
-            throw new Error('api_providers config unavailable');
         }
         voiceCloneProviderRestrictionState.isMainlandChinaUser = !!isMainlandChinaUser;
         voiceCloneProviderRestrictionState.apiKeyRegistry = apiKeyRegistry;
         voiceCloneProviderRestrictionState.loaded = true;
         return voiceCloneProviderRestrictionState;
-    }).finally(() => {
+    })().finally(() => {
         voiceCloneProviderRestrictionState.loadingPromise = null;
     });
 
@@ -535,7 +554,10 @@ function isVoiceCloneProviderRestricted(provider) {
     if (!voiceCloneProviderRestrictionState.isMainlandChinaUser) return false;
     const registryKey = getVoiceCloneProviderRegistryKey(provider);
     const entry = voiceCloneProviderRestrictionState.apiKeyRegistry[registryKey];
-    return !!(entry && entry.restricted === true);
+    if (entry && Object.prototype.hasOwnProperty.call(entry, 'restricted')) {
+        return entry.restricted === true;
+    }
+    return VOICE_CLONE_RESTRICTED_REGISTRY_KEYS.has(registryKey);
 }
 
 function getFirstAvailableVoiceCloneProviderValue(providerSelect) {
@@ -557,6 +579,7 @@ function applyVoiceCloneProviderRestrictions(providerSelect) {
 
     const selectedOption = providerSelect.options[providerSelect.selectedIndex];
     if (selectedOption && !selectedOption.disabled && !selectedOption.hidden && selectedOption.style.display !== 'none') {
+        syncVoiceCloneSelectDropdowns(providerSelect, { rebuild: true });
         return false;
     }
 
@@ -564,7 +587,236 @@ function applyVoiceCloneProviderRestrictions(providerSelect) {
     if (fallbackValue) {
         providerSelect.value = fallbackValue;
     }
+    syncVoiceCloneSelectDropdowns(providerSelect, { rebuild: true });
     return providerSelect.value !== previousValue;
+}
+
+let voiceCloneDropdownHandlersBound = false;
+
+function getVoiceCloneDropdownPlaceholder(select) {
+    const fallbackText = window.t ? window.t('api.providerSelectPlaceholder') : '请选择服务商';
+    if (!select) return fallbackText;
+
+    const label = select.id ? document.querySelector(`label[for="${select.id}"]`) : null;
+    const labelText = label ? label.textContent?.trim() : '';
+    return labelText || fallbackText;
+}
+
+function closeVoiceCloneSelectDropdown(wrapper) {
+    if (!wrapper) return;
+
+    wrapper.classList.remove('open');
+
+    const trigger = wrapper.querySelector('.api-provider-dropdown-trigger');
+    if (trigger) {
+        trigger.setAttribute('aria-expanded', 'false');
+    }
+}
+
+function closeAllVoiceCloneSelectDropdowns(exceptWrapper = null) {
+    document.querySelectorAll('.api-provider-dropdown.open').forEach(wrapper => {
+        if (wrapper !== exceptWrapper) {
+            closeVoiceCloneSelectDropdown(wrapper);
+        }
+    });
+}
+
+function openVoiceCloneSelectDropdown(wrapper) {
+    if (!wrapper || wrapper.classList.contains('disabled')) return;
+
+    closeAllVoiceCloneSelectDropdowns(wrapper);
+    wrapper.classList.add('open');
+
+    const trigger = wrapper.querySelector('.api-provider-dropdown-trigger');
+    if (trigger) {
+        trigger.setAttribute('aria-expanded', 'true');
+    }
+}
+
+function isVoiceCloneDropdownOptionVisible(option) {
+    return !!option && !option.hidden && option.style.display !== 'none';
+}
+
+function buildVoiceCloneSelectDropdownMenu(select) {
+    if (!select) return;
+
+    const wrapper = select.closest('.api-provider-dropdown');
+    const menu = wrapper ? wrapper.querySelector('.api-provider-dropdown-menu') : null;
+    const menuScroll = menu ? menu.querySelector('.api-provider-dropdown-menu-scroll') : null;
+    if (!wrapper || !menu || !menuScroll) return;
+
+    menuScroll.innerHTML = '';
+
+    const options = Array.from(select.options).filter(isVoiceCloneDropdownOptionVisible);
+    if (options.length === 0) {
+        const emptyState = document.createElement('div');
+        emptyState.className = 'api-provider-dropdown-empty';
+        emptyState.textContent = window.t ? window.t('api.noOptionsAvailable') : '暂无可选项';
+        menuScroll.appendChild(emptyState);
+        return;
+    }
+
+    options.forEach(option => {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'api-provider-dropdown-option';
+        item.setAttribute('role', 'option');
+        item.dataset.value = option.value;
+        item.textContent = option.textContent;
+
+        if (option.disabled) {
+            item.disabled = true;
+            item.setAttribute('aria-disabled', 'true');
+        }
+
+        item.addEventListener('click', event => {
+            event.preventDefault();
+
+            if (option.disabled || select.disabled || !isVoiceCloneDropdownOptionVisible(option)) {
+                return;
+            }
+
+            select.value = option.value;
+            syncVoiceCloneSelectDropdowns(select);
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+            closeVoiceCloneSelectDropdown(wrapper);
+        });
+
+        menuScroll.appendChild(item);
+    });
+}
+
+function syncVoiceCloneSelectDropdowns(targetSelect = null, { rebuild = false } = {}) {
+    const selects = targetSelect
+        ? [targetSelect]
+        : Array.from(document.querySelectorAll('.api-provider-select[data-dropdown-enhanced="true"]'));
+
+    selects.forEach(select => {
+        if (!select) return;
+
+        const wrapper = select.closest('.api-provider-dropdown');
+        const trigger = wrapper ? wrapper.querySelector('.api-provider-dropdown-trigger') : null;
+        const current = wrapper ? wrapper.querySelector('.api-provider-dropdown-current') : null;
+        const menu = wrapper ? wrapper.querySelector('.api-provider-dropdown-menu') : null;
+
+        if (!wrapper || !trigger || !current || !menu) return;
+
+        if (rebuild) {
+            buildVoiceCloneSelectDropdownMenu(select);
+        }
+
+        const selectedOption = select.options[select.selectedIndex] || null;
+        const placeholder = getVoiceCloneDropdownPlaceholder(select);
+
+        current.textContent = selectedOption && isVoiceCloneDropdownOptionVisible(selectedOption)
+            ? selectedOption.textContent
+            : placeholder;
+        current.classList.toggle('placeholder', !selectedOption || !isVoiceCloneDropdownOptionVisible(selectedOption));
+
+        trigger.disabled = !!select.disabled;
+        wrapper.classList.toggle('disabled', !!select.disabled);
+
+        menu.querySelectorAll('.api-provider-dropdown-option').forEach(item => {
+            const isSelected = item.dataset.value === select.value;
+            item.classList.toggle('selected', isSelected);
+            item.setAttribute('aria-selected', isSelected ? 'true' : 'false');
+        });
+
+        if (select.disabled) {
+            closeVoiceCloneSelectDropdown(wrapper);
+        }
+    });
+}
+
+function bindVoiceCloneDropdownGlobalHandlers() {
+    if (voiceCloneDropdownHandlersBound) return;
+
+    document.addEventListener('click', event => {
+        if (!event.target.closest('.api-provider-dropdown')) {
+            closeAllVoiceCloneSelectDropdowns();
+        }
+    });
+
+    document.addEventListener('keydown', event => {
+        if (event.key === 'Escape') {
+            closeAllVoiceCloneSelectDropdowns();
+        }
+    });
+
+    window.addEventListener('resize', () => closeAllVoiceCloneSelectDropdowns());
+
+    voiceCloneDropdownHandlersBound = true;
+}
+
+function initVoiceCloneSelectDropdown(select) {
+    if (!select || select.dataset.dropdownEnhanced === 'true' || !select.parentNode) return;
+
+    bindVoiceCloneDropdownGlobalHandlers();
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'api-provider-dropdown';
+
+    select.parentNode.insertBefore(wrapper, select);
+    wrapper.appendChild(select);
+
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.className = 'api-provider-dropdown-trigger';
+    trigger.setAttribute('aria-haspopup', 'listbox');
+    trigger.setAttribute('aria-expanded', 'false');
+    trigger.setAttribute('aria-label', getVoiceCloneDropdownPlaceholder(select));
+    trigger.innerHTML = '<span class="api-provider-dropdown-current"></span><span class="api-provider-dropdown-arrow" aria-hidden="true"></span>';
+
+    const menu = document.createElement('div');
+    menu.className = 'api-provider-dropdown-menu';
+    menu.setAttribute('role', 'listbox');
+
+    const menuScroll = document.createElement('div');
+    menuScroll.className = 'api-provider-dropdown-menu-scroll';
+
+    if (select.id) {
+        menu.id = `${select.id}-menu`;
+        trigger.id = `${select.id}-dropdown-trigger`;
+        trigger.setAttribute('aria-controls', menu.id);
+    }
+
+    menu.appendChild(menuScroll);
+    wrapper.appendChild(trigger);
+    wrapper.appendChild(menu);
+
+    select.classList.add('is-enhanced');
+    select.dataset.dropdownEnhanced = 'true';
+
+    trigger.addEventListener('click', event => {
+        event.preventDefault();
+
+        if (wrapper.classList.contains('open')) {
+            closeVoiceCloneSelectDropdown(wrapper);
+        } else {
+            openVoiceCloneSelectDropdown(wrapper);
+        }
+    });
+
+    select.addEventListener('change', () => syncVoiceCloneSelectDropdowns(select));
+
+    const observer = new MutationObserver(() => {
+        syncVoiceCloneSelectDropdowns(select, { rebuild: true });
+    });
+
+    observer.observe(select, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+        attributes: true,
+        attributeFilter: ['disabled', 'hidden', 'style', 'label', 'value', 'selected']
+    });
+
+    syncVoiceCloneSelectDropdowns(select, { rebuild: true });
+}
+
+function initVoiceCloneSelectDropdowns() {
+    document.querySelectorAll('.api-provider-select').forEach(initVoiceCloneSelectDropdown);
+    syncVoiceCloneSelectDropdowns(null, { rebuild: true });
 }
 
 async function initVoiceCloneProviderRestrictions() {
@@ -749,6 +1001,7 @@ function updateFileDisplay() {
 
 // 监听文件选择变化
 document.addEventListener('DOMContentLoaded', () => {
+    initVoiceCloneSelectDropdowns();
     initVoiceCloneProviderRestrictions().catch(error => {
         console.warn('初始化声音克隆服务商地区过滤失败:', error);
     });
@@ -1074,7 +1327,10 @@ async function initWorkshopVoiceReference() {
         const prefixInput = document.getElementById('prefix');
         const refLanguageSelect = document.getElementById('refLanguage');
         if (prefixInput) prefixInput.value = manifest.prefix || '';
-        if (refLanguageSelect) refLanguageSelect.value = manifest.ref_language || 'ch';
+        if (refLanguageSelect) {
+            refLanguageSelect.value = manifest.ref_language || 'ch';
+            refLanguageSelect.dispatchEvent(new Event('change'));
+        }
         applyWorkshopProviderHint(manifest.provider_hint);
         updateFileDisplay();
     } catch (error) {

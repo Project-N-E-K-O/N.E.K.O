@@ -10,6 +10,7 @@ from httpx import ASGITransport, AsyncClient
 from plugin.neko_plugin_cli.public import pack_plugin
 from plugin.server.infrastructure.exceptions import register_exception_handlers
 from plugin.server.routes.plugin_cli import router
+from plugin.server.routes import plugin_cli as plugin_cli_routes
 
 pytestmark = pytest.mark.plugin_unit
 FIXTURE_PLUGINS_ROOT = Path(__file__).resolve().parents[2] / "fixtures" / "neko_plugin_cli" / "plugins"
@@ -43,7 +44,30 @@ def _copy_fixture_plugin(tmp_path: Path, fixture_name: str) -> Path:
     source = FIXTURE_PLUGINS_ROOT / fixture_name
     target = tmp_path / fixture_name
     shutil.copytree(source, target)
+    if fixture_name == "bundle_alpha":
+        _write_vendor_dist(target, "shared-lib", "2.0.0")
+        _write_vendor_dist(target, "alpha-only", "0.1.0")
+    elif fixture_name == "bundle_beta":
+        _write_vendor_dist(target, "shared-lib", "2.0.0")
+        _write_vendor_dist(target, "beta-only", "0.5.0")
     return target
+
+
+def _write_vendor_dist(plugin_dir: Path, name: str, version: str) -> None:
+    dist_dir = plugin_dir / "vendor" / f"{name.replace('-', '_')}-{version}.dist-info"
+    dist_dir.mkdir(parents=True, exist_ok=True)
+    (dist_dir / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n",
+        encoding="utf-8",
+    )
+
+
+class _MemoryUploadFile:
+    def __init__(self) -> None:
+        self.filename = "demo.neko-plugin"
+
+    async def read(self) -> bytes:
+        return b"demo"
 
 
 @pytest.fixture
@@ -52,6 +76,40 @@ def plugin_cli_test_app() -> FastAPI:
     register_exception_handlers(app)
     app.include_router(router)
     return app
+
+
+def test_upload_and_unpack_legacy_returns_unpack_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_upload_and_install(*_args, **_kwargs) -> dict[str, object]:
+        return {
+            "upload": {"filename": "demo.neko-plugin"},
+            "install": {
+                "installed_plugins": ["demo"],
+                "installed_plugin_count": 1,
+            },
+        }
+
+    monkeypatch.setattr(
+        plugin_cli_routes,
+        "plugin_cli_upload_and_install",
+        fake_upload_and_install,
+    )
+
+    import asyncio
+
+    body = asyncio.run(
+        plugin_cli_routes.plugin_cli_upload_and_unpack_legacy(
+            _MemoryUploadFile(),  # type: ignore[arg-type]
+            on_conflict="rename",
+            _="",
+        )
+    )
+
+    assert "install" not in body
+    assert body["upload"] == {"filename": "demo.neko-plugin"}
+    assert body["unpack"] == {
+        "unpacked_plugins": ["demo"],
+        "unpacked_plugin_count": 1,
+    }
 
 
 @pytest.mark.asyncio
@@ -179,8 +237,8 @@ async def test_plugin_cli_route_workflow_pack_analyze_inspect_verify_and_unpack(
 
     monkeypatch.setattr(plugin_cli_service_module, "_RUNTIME_PLUGINS_ROOT", tmp_path)
     monkeypatch.setattr(plugin_cli_service_module, "_TARGET_ROOT", target_dir)
-    monkeypatch.setattr(plugin_cli_service_module, "_UNPACK_PLUGINS_ROOT", tmp_path)
-    monkeypatch.setattr(plugin_cli_service_module, "_UNPACK_PROFILES_ROOT", profiles_root)
+    monkeypatch.setattr(plugin_cli_service_module, "_INSTALL_PLUGINS_ROOT", tmp_path)
+    monkeypatch.setattr(plugin_cli_service_module, "_INSTALL_PROFILES_ROOT", profiles_root)
 
     transport = ASGITransport(app=plugin_cli_test_app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -262,7 +320,7 @@ async def test_plugin_cli_unpack_route_uses_default_roots_when_fields_omitted(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """省略 plugins_root/profiles_root 时，默认落盘到 _UNPACK_*_ROOT 下。"""
+    """省略 plugins_root/profiles_root 时，默认落盘到 _INSTALL_*_ROOT 下。"""
     plugin_dir = _copy_fixture_plugin(tmp_path, "simple_plugin")
     package_path = tmp_path / "simple_plugin.neko-plugin"
     pack_plugin(plugin_dir, package_path)
@@ -273,8 +331,8 @@ async def test_plugin_cli_unpack_route_uses_default_roots_when_fields_omitted(
     import plugin.server.application.plugin_cli.service as plugin_cli_service_module
 
     monkeypatch.setattr(plugin_cli_service_module, "_TARGET_ROOT", tmp_path)
-    monkeypatch.setattr(plugin_cli_service_module, "_UNPACK_PLUGINS_ROOT", default_plugins_root)
-    monkeypatch.setattr(plugin_cli_service_module, "_UNPACK_PROFILES_ROOT", default_profiles_root)
+    monkeypatch.setattr(plugin_cli_service_module, "_INSTALL_PLUGINS_ROOT", default_plugins_root)
+    monkeypatch.setattr(plugin_cli_service_module, "_INSTALL_PROFILES_ROOT", default_profiles_root)
 
     transport = ASGITransport(app=plugin_cli_test_app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:

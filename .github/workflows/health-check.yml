@@ -15,39 +15,17 @@ jobs:
       - name: Check lanlan.app (old)
         id: check_app
         run: |
+          CURL_EXIT=0
           HTTP_CODE=$(curl -s -o /tmp/resp_app.json -w "%{http_code}" \
             --max-time 30 --connect-timeout 10 \
             -X POST "https://lanlan.app/text/v1/chat/completions" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer free-access" \
             -d '{"model":"free-mini-model","messages":[{"role":"user","content":"sends some useful information"}],"max_completion_tokens":5}' \
-            2>/dev/null || echo "000")
+            2>/dev/null) || CURL_EXIT=$?
           BODY=$(cat /tmp/resp_app.json 2>/dev/null || echo "{}")
           echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
-
-          if [ "$HTTP_CODE" = "200" ]; then
-            if echo "$BODY" | jq -e '(.choices | type) == "array" and (.choices | length) > 0 and (.choices[0].message | type) == "object" and .choices[0].message.role == "assistant" and (.choices[0].message | has("content"))' >/dev/null 2>&1; then
-              echo "healthy=true" >> "$GITHUB_OUTPUT"
-            else
-              echo "healthy=false" >> "$GITHUB_OUTPUT"
-            fi
-          else
-            echo "healthy=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      # ── 检查 lanlan.tech (China, old) ──
-      - name: Check lanlan.tech (old)
-        id: check_tech
-        run: |
-          HTTP_CODE=$(curl -s -o /tmp/resp_tech.json -w "%{http_code}" \
-            --max-time 30 --connect-timeout 10 \
-            -X POST "https://lanlan.tech/text/v1/chat/completions" \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer free-access" \
-            -d '{"model":"free-mini-model","messages":[{"role":"user","content":"sends some useful information"}],"max_completion_tokens":5}' \
-            2>/dev/null || echo "000")
-          BODY=$(cat /tmp/resp_tech.json 2>/dev/null || echo "{}")
-          echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
+          echo "curl_exit=$CURL_EXIT" >> "$GITHUB_OUTPUT"
 
           if [ "$HTTP_CODE" = "200" ]; then
             if echo "$BODY" | jq -e '(.choices | type) == "array" and (.choices | length) > 0 and (.choices[0].message | type) == "object" and .choices[0].message.role == "assistant" and (.choices[0].message | has("content"))' >/dev/null 2>&1; then
@@ -63,15 +41,17 @@ jobs:
       - name: Check www.lanlan.app (new)
         id: check_api_app
         run: |
+          CURL_EXIT=0
           HTTP_CODE=$(curl -s -o /tmp/resp_api_app.json -w "%{http_code}" \
             --max-time 30 --connect-timeout 10 \
             -X POST "https://www.lanlan.app/text/v1/chat/completions" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer free-access" \
             -d '{"model":"free-mini-model","messages":[{"role":"user","content":"sends some useful information"}],"max_completion_tokens":5}' \
-            2>/dev/null || echo "000")
+            2>/dev/null) || CURL_EXIT=$?
           BODY=$(cat /tmp/resp_api_app.json 2>/dev/null || echo "{}")
           echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
+          echo "curl_exit=$CURL_EXIT" >> "$GITHUB_OUTPUT"
 
           if [ "$HTTP_CODE" = "200" ]; then
             if echo "$BODY" | jq -e '(.choices | type) == "array" and (.choices | length) > 0 and (.choices[0].message | type) == "object" and .choices[0].message.role == "assistant" and (.choices[0].message | has("content"))' >/dev/null 2>&1; then
@@ -87,15 +67,17 @@ jobs:
       - name: Check www.lanlan.tech (new)
         id: check_api_tech
         run: |
+          CURL_EXIT=0
           HTTP_CODE=$(curl -s -o /tmp/resp_api_tech.json -w "%{http_code}" \
             --max-time 30 --connect-timeout 10 \
             -X POST "https://www.lanlan.tech/text/v1/chat/completions" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer free-access" \
             -d '{"model":"free-mini-model","messages":[{"role":"user","content":"sends some useful information"}],"max_completion_tokens":5}' \
-            2>/dev/null || echo "000")
+            2>/dev/null) || CURL_EXIT=$?
           BODY=$(cat /tmp/resp_api_tech.json 2>/dev/null || echo "{}")
           echo "http_code=$HTTP_CODE" >> "$GITHUB_OUTPUT"
+          echo "curl_exit=$CURL_EXIT" >> "$GITHUB_OUTPUT"
 
           if [ "$HTTP_CODE" = "200" ]; then
             if echo "$BODY" | jq -e '(.choices | type) == "array" and (.choices | length) > 0 and (.choices[0].message | type) == "object" and .choices[0].message.role == "assistant" and (.choices[0].message | has("content"))' >/dev/null 2>&1; then
@@ -116,18 +98,32 @@ jobs:
           TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
           APP_HEALTHY="${{ steps.check_app.outputs.healthy }}"
-          TECH_HEALTHY="${{ steps.check_tech.outputs.healthy }}"
           APP_CODE="${{ steps.check_app.outputs.http_code }}"
-          TECH_CODE="${{ steps.check_tech.outputs.http_code }}"
 
           API_APP_HEALTHY="${{ steps.check_api_app.outputs.healthy }}"
           API_TECH_HEALTHY="${{ steps.check_api_tech.outputs.healthy }}"
           API_APP_CODE="${{ steps.check_api_app.outputs.http_code }}"
           API_TECH_CODE="${{ steps.check_api_tech.outputs.http_code }}"
 
+          APP_EXIT="${{ steps.check_app.outputs.curl_exit }}"
+          API_APP_EXIT="${{ steps.check_api_app.outputs.curl_exit }}"
+          API_TECH_EXIT="${{ steps.check_api_tech.outputs.curl_exit }}"
+
+          # curl 退出码非零（拿不到响应、即 http_code=000）时附带退出码（28=超时, 7=拒连, 6=DNS, 35=TLS）以区分故障类型
+          fmt_code() {
+            if [ -n "$2" ] && [ "$2" != "0" ]; then
+              echo "$1, curl exit $2"
+            else
+              echo "$1"
+            fi
+          }
+          APP_CODE_DISP=$(fmt_code "$APP_CODE" "$APP_EXIT")
+          API_APP_CODE_DISP=$(fmt_code "$API_APP_CODE" "$API_APP_EXIT")
+          API_TECH_CODE_DISP=$(fmt_code "$API_TECH_CODE" "$API_TECH_EXIT")
+
           ALL_HEALTHY="true"
           ANY_DOWN="false"
-          for h in "$APP_HEALTHY" "$TECH_HEALTHY" "$API_APP_HEALTHY" "$API_TECH_HEALTHY"; do
+          for h in "$APP_HEALTHY" "$API_APP_HEALTHY" "$API_TECH_HEALTHY"; do
             if [ "$h" = "false" ]; then
               ALL_HEALTHY="false"
               ANY_DOWN="true"
@@ -137,7 +133,7 @@ jobs:
           if [ "$ALL_HEALTHY" = "true" ]; then
             COLOR=3066993  # green
             TITLE="All Servers Healthy"
-          elif [ "$APP_HEALTHY" = "false" ] && [ "$TECH_HEALTHY" = "false" ] && [ "$API_APP_HEALTHY" = "false" ] && [ "$API_TECH_HEALTHY" = "false" ]; then
+          elif [ "$APP_HEALTHY" = "false" ] && [ "$API_APP_HEALTHY" = "false" ] && [ "$API_TECH_HEALTHY" = "false" ]; then
             COLOR=15158332 # red
             TITLE="All Servers Down"
           else
@@ -146,27 +142,21 @@ jobs:
           fi
 
           if [ "$APP_HEALTHY" = "true" ]; then
-            APP_STATUS=":white_check_mark: OK (HTTP $APP_CODE)"
+            APP_STATUS=":white_check_mark: OK (HTTP $APP_CODE_DISP)"
           else
-            APP_STATUS=":x: DOWN (HTTP $APP_CODE)"
-          fi
-
-          if [ "$TECH_HEALTHY" = "true" ]; then
-            TECH_STATUS=":white_check_mark: OK (HTTP $TECH_CODE)"
-          else
-            TECH_STATUS=":x: DOWN (HTTP $TECH_CODE)"
+            APP_STATUS=":x: DOWN (HTTP $APP_CODE_DISP)"
           fi
 
           if [ "$API_APP_HEALTHY" = "true" ]; then
-            API_APP_STATUS=":white_check_mark: OK (HTTP $API_APP_CODE)"
+            API_APP_STATUS=":white_check_mark: OK (HTTP $API_APP_CODE_DISP)"
           else
-            API_APP_STATUS=":x: DOWN (HTTP $API_APP_CODE)"
+            API_APP_STATUS=":x: DOWN (HTTP $API_APP_CODE_DISP)"
           fi
 
           if [ "$API_TECH_HEALTHY" = "true" ]; then
-            API_TECH_STATUS=":white_check_mark: OK (HTTP $API_TECH_CODE)"
+            API_TECH_STATUS=":white_check_mark: OK (HTTP $API_TECH_CODE_DISP)"
           else
-            API_TECH_STATUS=":x: DOWN (HTTP $API_TECH_CODE)"
+            API_TECH_STATUS=":x: DOWN (HTTP $API_TECH_CODE_DISP)"
           fi
 
           # 只在有故障时 @everyone
@@ -180,7 +170,6 @@ jobs:
             --arg title "$TITLE" \
             --argjson color "$COLOR" \
             --arg app_status "$APP_STATUS" \
-            --arg tech_status "$TECH_STATUS" \
             --arg api_app_status "$API_APP_STATUS" \
             --arg api_tech_status "$API_TECH_STATUS" \
             --arg timestamp "$TIMESTAMP" \
@@ -191,7 +180,6 @@ jobs:
                 color: $color,
                 fields: [
                   {name: "lanlan.app (US, old)", value: $app_status, inline: true},
-                  {name: "lanlan.tech (China, old)", value: $tech_status, inline: true},
                   {name: "\u200b", value: "\u200b", inline: false},
                   {name: "www.lanlan.app (US, new)", value: $api_app_status, inline: true},
                   {name: "www.lanlan.tech (China, new)", value: $api_tech_status, inline: true}

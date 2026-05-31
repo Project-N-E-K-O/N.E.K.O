@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -105,11 +105,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           # i18n-sync needs full history to diff against the merge-base of
           # origin/main. Other steps don't care, but fetch-depth: 0 has
           # negligible cost on this repo.
+          #
+          # The checkout@v5 bump is the actual fix here: the old @v4 tripped a
+          # credential-handling regression against the runner's git 2.54 on the
+          # full-history fetch ("could not read Username", git exit 128), which
+          # broke this job on every PR. (fetch-tags has no effect under
+          # fetch-depth: 0 — checkout fetches tags regardless — so we don't set
+          # it; the fix is purely the version bump.)
           fetch-depth: 0
 
       - name: Set up Python 3.11

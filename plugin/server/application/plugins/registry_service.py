@@ -16,6 +16,7 @@ from plugin.core.registry import (
     PluginContext,
     _build_plugin_meta,
     _check_plugin_dependency,
+    _ensure_python_requirement_paths,
     _extract_entries_preview,
     _extract_plugin_ui_config,
     _find_missing_python_requirements,
@@ -403,7 +404,10 @@ def _build_discovery_payload(
                 pdata=ctx.pdata,
             )
         else:
-            missing_requirements = _find_missing_python_requirements(ctx.python_requirements)
+            missing_requirements = _find_missing_python_requirements(
+                ctx.python_requirements,
+                search_paths=ctx.python_requirement_paths,
+            )
             if missing_requirements:
                 error_type = "MissingPythonDependencies"
                 error_message = f"Unsatisfied Python dependencies: {missing_requirements}"
@@ -415,6 +419,16 @@ def _build_discovery_payload(
                     pdata=ctx.pdata,
                 )
             else:
+                # The startup loader installs vendor paths on sys.path before
+                # importing each plugin's entry module; do the same here so a
+                # plugin whose [project].dependencies live only under its own
+                # vendor/ directory does not get falsely recorded as
+                # ImportError/ModuleNotFoundError during a registry refresh.
+                _ensure_python_requirement_paths(
+                    ctx.python_requirement_paths,
+                    logger,
+                    plugin_id,
+                )
                 try:
                     module_path, class_name = ctx.entry.split(":", 1)
                     module_obj = importlib.import_module(module_path)

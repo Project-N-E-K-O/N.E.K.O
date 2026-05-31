@@ -8,6 +8,8 @@ from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError
 from plugin.sdk.shared.core.router import PluginRouter
 
 from .._chat import push_lifekit_content
+from .._coerce import finite_float
+from .._contracts import UnitConvertParams, UnitConvertResult
 
 # 换算表: (from_unit, to_unit) → (multiplier, from_label, to_label)
 # value_to = value_from * multiplier
@@ -112,28 +114,23 @@ class UnitConvertRouter(PluginRouter):
             "适合回答「180cm多少英尺」「30度是多少华氏度」「500g几盎司」。"
             "菜谱中的外国单位也可以用这个换算。"
         ),
-        llm_result_fields=["summary", "conversion"],
-        input_schema={
-            "type": "object",
-            "properties": {
-                "value": {
-                    "type": "number",
-                    "description": "要换算的数值",
-                },
-                "from_unit": {
-                    "type": "string",
-                    "description": "源单位（如 cm, kg, °C, cup, ml）",
-                },
-                "to_unit": {
-                    "type": "string",
-                    "description": "目标单位（如 inch, lb, °F, ml, g）",
-                },
-            },
-            "required": ["value", "from_unit", "to_unit"],
-        },
+        params=UnitConvertParams,
+        llm_result_model=UnitConvertResult,
     )
     @quick_action(icon="📐", priority=3)
-    async def unit_convert(self, value: float = 0, from_unit: str = "", to_unit: str = "", **_):
+    async def unit_convert(
+        self,
+        params: UnitConvertParams | None = None,
+        value: float = 0,
+        from_unit: str = "",
+        to_unit: str = "",
+        **_,
+    ):
+        if params is not None:
+            value = params.value
+            from_unit = params.from_unit
+            to_unit = params.to_unit
+
         fk = _resolve_unit(from_unit)
         tk = _resolve_unit(to_unit)
 
@@ -141,26 +138,30 @@ class UnitConvertRouter(PluginRouter):
             return Err(SdkError(f"不支持的单位「{from_unit}」"))
         if tk is None:
             return Err(SdkError(f"不支持的单位「{to_unit}」"))
-        if fk == tk:
-            return Ok({"summary": f"{value} {from_unit} = {value} {to_unit}（相同单位）", "conversion": {"value": value, "result": value}})
 
-        result = _convert(float(value), fk, tk)
+        numeric_value = finite_float(value)
+        if numeric_value is None:
+            return Err(SdkError("Invalid value"))
+        if fk == tk:
+            return Ok({"summary": f"{numeric_value} {from_unit} = {numeric_value} {to_unit}（相同单位）", "conversion": {"value": numeric_value, "result": numeric_value}})
+
+        result = _convert(numeric_value, fk, tk)
         if result is None:
             return Err(SdkError(f"不支持 {from_unit} → {to_unit} 的换算"))
 
         converted, fl, tl = result
         converted = round(converted, 4)
 
-        summary = f"{value} {fl} = {converted} {tl}"
+        summary = f"{numeric_value} {fl} = {converted} {tl}"
 
         push_lifekit_content(self.main_plugin, [
-            {"type": "text", "text": f"📐 {value} {fl} → {converted} {tl}"},
+            {"type": "text", "text": f"📐 {numeric_value} {fl} → {converted} {tl}"},
         ])
 
         return Ok({
             "summary": summary,
             "conversion": {
-                "value": value,
+                "value": numeric_value,
                 "from_unit": fl,
                 "result": converted,
                 "to_unit": tl,

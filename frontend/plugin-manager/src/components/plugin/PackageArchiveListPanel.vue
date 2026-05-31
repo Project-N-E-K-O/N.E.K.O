@@ -56,7 +56,7 @@
         <div class="package-list-item__actions">
           <el-button text @click.stop="$emit('inspect', pkg)">检查</el-button>
           <el-button text @click.stop="$emit('verify', pkg)">校验</el-button>
-          <el-button text @click.stop="$emit('prepareUnpack', pkg)">解包</el-button>
+          <el-button text @click.stop="$emit('prepareInstall', pkg)">安装</el-button>
         </div>
       </div>
       </TransitionGroup>
@@ -81,7 +81,7 @@ defineEmits<{
   select: [pkg: PluginCliLocalPackageItem]
   inspect: [pkg: PluginCliLocalPackageItem]
   verify: [pkg: PluginCliLocalPackageItem]
-  prepareUnpack: [pkg: PluginCliLocalPackageItem]
+  prepareInstall: [pkg: PluginCliLocalPackageItem]
   'update:packageFilterType': [value: 'all' | 'plugin' | 'bundle']
 }>()
 

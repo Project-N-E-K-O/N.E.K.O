@@ -20,13 +20,16 @@ from plugin._types.exceptions import PluginError
 from plugin.core.host import PluginProcessHost
 from plugin.core.registry import (
     _collect_plugin_python_requirements,
+    _collect_plugin_python_requirement_paths,
     _check_plugin_dependency,
+    _ensure_python_requirement_paths,
     _extract_entries_preview,
     _find_missing_python_requirements,
     _parse_plugin_dependencies,
     _resolve_plugin_id_conflict,
     scan_static_metadata,
 )
+from plugin.core.entry_points import normalize_plugin_entry_point
 from plugin.core.state import state
 from plugin.logging_config import get_logger
 from plugin.server.domain import IO_RUNTIME_ERRORS, RUNTIME_ERRORS
@@ -41,7 +44,7 @@ from plugin.server.messaging.lifecycle_events import emit_lifecycle_event
 from plugin.server.messaging.llm_tool_registry import (
     clear_plugin_tools as clear_plugin_llm_tools,
 )
-from plugin.settings import PLUGIN_CONFIG_ROOTS, PLUGIN_SHUTDOWN_TIMEOUT
+from plugin.settings import BUILTIN_PLUGIN_CONFIG_ROOT, PLUGIN_CONFIG_ROOTS, PLUGIN_SHUTDOWN_TIMEOUT
 from plugin.utils import parse_bool_config
 
 logger = get_logger("server.application.plugins.lifecycle")
@@ -561,7 +564,11 @@ class PluginLifecycleService:
                     plugin_id=current_plugin_id,
                     error_type="InvalidEntryPoint",
                 )
-            entry = entry_obj
+            entry = normalize_plugin_entry_point(
+                entry_obj,
+                config_path=config_path,
+                builtin_plugin_root=BUILTIN_PLUGIN_CONFIG_ROOT,
+            )
 
             resolved_id = _resolve_plugin_id_conflict(
                 current_plugin_id,
@@ -586,13 +593,17 @@ class PluginLifecycleService:
                 logger,
                 current_plugin_id,
             )
-            unsatisfied_python_requirements = _find_missing_python_requirements(python_requirements)
+            python_requirement_paths = _collect_plugin_python_requirement_paths(config_path)
+            unsatisfied_python_requirements = _find_missing_python_requirements(
+                python_requirements,
+                search_paths=python_requirement_paths,
+            )
             if unsatisfied_python_requirements:
                 raise _to_domain_error(
                     code="PLUGIN_PYTHON_DEPENDENCIES_MISSING",
                     message=(
                         f"Plugin '{current_plugin_id}' has unsatisfied Python dependencies: "
-                        f"{unsatisfied_python_requirements}. Install compatible packages in the current runtime environment."
+                        f"{unsatisfied_python_requirements}. Install compatible packages into the plugin vendor/ directory."
                     ),
                     status_code=400,
                     plugin_id=current_plugin_id,
@@ -648,6 +659,16 @@ class PluginLifecycleService:
                         error_type="ProcessDiedImmediately",
                     )
 
+            # Mirror the startup loader: ensure the plugin's vendor/ entries
+            # are on sys.path before we import its entry module here, so a
+            # plugin whose top-level imports use vendored packages doesn't
+            # fail this parent-process metadata scan even though the child
+            # process would import it just fine.
+            _ensure_python_requirement_paths(
+                python_requirement_paths,
+                logger,
+                current_plugin_id,
+            )
             module_path, class_name = entry.split(":", 1)
             module_obj = await asyncio.to_thread(importlib.import_module, module_path)
             cls_obj = getattr(module_obj, class_name)

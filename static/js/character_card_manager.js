@@ -45,6 +45,66 @@ function getWorkshopHiddenFields() {
     return _uniqueFields([...cfg.all_reserved_fields]);
 }
 
+function normalizeCharacterFieldName(fieldName) {
+    return String(fieldName ?? '').trim();
+}
+
+function isCharacterReservedFieldName(fieldName) {
+    const normalizedFieldName = normalizeCharacterFieldName(fieldName);
+    if (!normalizedFieldName) return false;
+    return getWorkshopHiddenFields().includes(normalizedFieldName);
+}
+
+function normalizeCharacterFieldValue(value, fieldName) {
+    const normalizedFieldName = normalizeCharacterFieldName(fieldName);
+    if (normalizedFieldName === '档案名') {
+        return typeof value === 'string' ? value.trim() : value;
+    }
+    return value;
+}
+
+function collectCharacterFields(form, options = {}) {
+    const {
+        baseData = {},
+        excludeFieldNames = [],
+        includeProfileName = false,
+    } = options;
+    const data = {};
+    const seen = new Set();
+
+    Object.entries(baseData || {}).forEach(([key, value]) => {
+        const normalizedKey = normalizeCharacterFieldName(key);
+        if (!normalizedKey) return;
+        data[normalizedKey] = value;
+        seen.add(normalizedKey);
+    });
+
+    const excluded = new Set(
+        (excludeFieldNames || []).map(normalizeCharacterFieldName).filter(Boolean)
+    );
+    if (!includeProfileName) {
+        excluded.add('档案名');
+    }
+
+    for (const [rawKey, rawValue] of new FormData(form).entries()) {
+        const key = normalizeCharacterFieldName(rawKey);
+        if (!key || excluded.has(key) || isCharacterReservedFieldName(key)) {
+            continue;
+        }
+        const value = normalizeCharacterFieldValue(rawValue, key);
+        if (!value) {
+            continue;
+        }
+        if (seen.has(key)) {
+            return { data, duplicateKey: key };
+        }
+        data[key] = value;
+        seen.add(key);
+    }
+
+    return { data, duplicateKey: '' };
+}
+
 function loadCharacterReservedFieldsConfig() {
     _reservedFieldsReady = ReservedFieldsUtils.load().then(cfg => {
         characterReservedFieldsConfig = cfg;
@@ -96,6 +156,10 @@ const WORKSHOP_VOICE_PROVIDER_REGISTRY_KEYS = Object.freeze({
     minimax: 'minimax',
     minimax_intl: 'minimax_intl',
 });
+const WORKSHOP_VOICE_RESTRICTED_REGISTRY_KEYS = new Set([
+    'qwen_intl',
+    'minimax_intl',
+]);
 const workshopVoiceProviderRestrictionState = {
     loaded: false,
     loadingPromise: null,
@@ -141,11 +205,26 @@ function getWorkshopVoiceProviderRegistryKey(provider) {
 }
 
 async function checkWorkshopVoiceMainlandChinaUser() {
-    const data = await fetchWorkshopVoiceProviderJson('/api/config/steam_language', {
-        method: 'GET',
-        headers: { 'Content-Type': 'application/json' }
-    });
-    return data && data.is_mainland_china === true;
+    let data = null;
+    try {
+        data = await fetchWorkshopVoiceProviderJson('/api/config/steam_language', {
+            method: 'GET',
+            headers: { 'Content-Type': 'application/json' }
+        });
+    } catch (_) {
+        return true;
+    }
+
+    if (data && data.is_mainland_china === true) {
+        return true;
+    }
+
+    const ipCountry = String((data && data.ip_country) || '').trim().toUpperCase();
+    if (data && data.success === true && ipCountry && ipCountry !== 'CN') {
+        return false;
+    }
+
+    return true;
 }
 
 async function loadWorkshopVoiceProviderRestrictionState() {
@@ -159,19 +238,17 @@ async function loadWorkshopVoiceProviderRestrictionState() {
     workshopVoiceProviderRestrictionState.loadingPromise = (async () => {
         const [isMainlandChinaUser, providersResponse] = await Promise.all([
             checkWorkshopVoiceMainlandChinaUser(),
-            fetchWorkshopVoiceProviderJson('/api/config/api_providers')
+            fetchWorkshopVoiceProviderJson('/api/config/api_providers').catch(() => null)
         ]);
         let apiKeyRegistry = {};
         if (providersResponse && providersResponse.success) {
             apiKeyRegistry = providersResponse.api_key_registry || {};
-        } else {
-            throw new Error('api_providers config unavailable');
         }
         workshopVoiceProviderRestrictionState.isMainlandChinaUser = !!isMainlandChinaUser;
         workshopVoiceProviderRestrictionState.apiKeyRegistry = apiKeyRegistry;
         workshopVoiceProviderRestrictionState.loaded = true;
         return workshopVoiceProviderRestrictionState;
-    }).finally(() => {
+    })().finally(() => {
         workshopVoiceProviderRestrictionState.loadingPromise = null;
     });
 
@@ -191,7 +268,10 @@ function isWorkshopVoiceProviderRestricted(provider) {
     if (!workshopVoiceProviderRestrictionState.isMainlandChinaUser) return false;
     const registryKey = getWorkshopVoiceProviderRegistryKey(provider);
     const entry = workshopVoiceProviderRestrictionState.apiKeyRegistry[registryKey];
-    return !!(entry && entry.restricted === true);
+    if (entry && Object.prototype.hasOwnProperty.call(entry, 'restricted')) {
+        return entry.restricted === true;
+    }
+    return WORKSHOP_VOICE_RESTRICTED_REGISTRY_KEYS.has(registryKey);
 }
 
 function getFirstAvailableWorkshopVoiceProviderValue(providerSelect) {
@@ -2064,12 +2144,101 @@ function renderSubscriptionsPage() {
                         <button class="button button-primary" onclick="openWorkshopVoiceClone('${formattedItem.id}')" title="${formattedItem.voiceReferenceDisplayName || ''}" style="margin-bottom: 8px;">
                             ${window.t ? window.t('steam.openVoiceClone') : '在语音克隆页打开'}
                         </button>` : ''}
+                        <button class="button button-primary" data-item-id="${formattedItem.id}" data-item-name="${formattedItem.name}" onclick="addWorkshopCharacterCardFromSubscription(this)" style="margin-bottom: 8px;">${window.t ? window.t('steam.workshopAddCharacterCard') : '加入角色卡'}</button>
                         <button class="button button-danger" data-item-id="${formattedItem.id}" data-item-name="${formattedItem.name}" onclick="unsubscribeItem(this.dataset.itemId, this.dataset.itemName)">${window.t ? window.t('steam.unsubscribe') : '取消订阅'}</button>
                     </div>
                 </div>
             </div>
         `;
     }).join('');
+}
+
+function formatWorkshopCharacterNameList(names) {
+    const list = Array.isArray(names)
+        ? names.map(name => String(name || '').trim()).filter(Boolean)
+        : [];
+    return list.length > 0 ? list.join('、') : (window.t ? window.t('steam.unknownCharacterCard') : '未知角色卡');
+}
+
+async function showWorkshopCharacterAddAlert(message, type = 'info') {
+    if (typeof showAlertDialog === 'function') {
+        const title = type === 'info'
+            ? (window.t ? window.t('steam.characterCardAlreadyExistsTitle') : '角色卡已存在')
+            : (window.t ? window.t('common.warning') : '提示');
+        await showAlertDialog(message, {
+            type,
+            title,
+        });
+        return;
+    }
+    window.alert(message);
+}
+
+async function addWorkshopCharacterCardFromSubscription(button) {
+    const itemId = button?.dataset?.itemId || '';
+    if (!itemId) return;
+
+    const originalText = button.textContent;
+    button.disabled = true;
+    button.textContent = window.t ? window.t('steam.workshopAddingCharacterCard') : '正在加入...';
+
+    try {
+        const response = await fetch(`/api/steam/workshop/sync-character/${encodeURIComponent(itemId)}`, {
+            method: 'POST',
+        });
+        let data = {};
+        try {
+            data = await response.json();
+        } catch (_) {
+            data = {};
+        }
+
+        if (data.code === 'WORKSHOP_CHARACTER_ALREADY_EXISTS') {
+            const namesText = formatWorkshopCharacterNameList(data.existing_character_names);
+            const message = window.t
+                ? window.t('steam.characterCardAlreadyExistsMessage', { names: namesText })
+                : `角色卡已存在：${namesText}`;
+            await showWorkshopCharacterAddAlert(message, 'info');
+            return;
+        }
+
+        if (!response.ok || !data.success) {
+            const fallbackError = data.error || data.message || (window.t ? window.t('common.unknownError') : 'Unknown error');
+            const key = data.code === 'WORKSHOP_CHARACTER_NOT_FOUND'
+                ? 'steam.workshopCharacterNotFound'
+                : 'steam.workshopCharacterAddFailed';
+            const message = window.t
+                ? window.t(key, { error: fallbackError })
+                : (data.code === 'WORKSHOP_CHARACTER_NOT_FOUND'
+                    ? '此订阅内容中未找到可加入的角色卡，请确认内容已下载完成。'
+                    : `加入角色卡失败: ${fallbackError}`);
+            await showWorkshopCharacterAddAlert(message, 'warning');
+            return;
+        }
+
+        const namesText = formatWorkshopCharacterNameList(data.added_character_names);
+        const successMessage = window.t
+            ? window.t('steam.workshopCharacterAdded', { names: namesText })
+            : `已加入角色卡：${namesText}`;
+        showMessage(successMessage, 'success');
+        try {
+            await loadCharacterCards();
+        } catch (refreshError) {
+            console.warn('刷新角色卡列表失败:', refreshError);
+            const refreshMessage = window.t
+                ? window.t('steam.characterCardsRefreshFailed', { error: refreshError.message })
+                : `刷新列表失败: ${refreshError.message}`;
+            showMessage(refreshMessage, 'warning');
+        }
+    } catch (error) {
+        const message = window.t
+            ? window.t('steam.workshopCharacterAddFailed', { error: error.message })
+            : `加入角色卡失败: ${error.message}`;
+        showMessage(message, 'error');
+    } finally {
+        button.disabled = false;
+        button.textContent = originalText;
+    }
 }
 
 // 更新分页控件
@@ -4175,7 +4344,10 @@ function renderCharaCardsGrid(container, cards, currentCatgirl, hiddenKeys) {
         avatar.className = 'card-avatar';
         const placeholderSpan = document.createElement('span');
         placeholderSpan.className = 'card-avatar-placeholder';
-        placeholderSpan.textContent = window.t ? window.t('steam.noCardImage') : '点击此处\n设置卡面';
+        const translatedNoCardImage = window.t && window.t('steam.noCardImage');
+        placeholderSpan.textContent = translatedNoCardImage && translatedNoCardImage !== 'steam.noCardImage'
+            ? translatedNoCardImage
+            : '暂未设置卡面';
         avatar.appendChild(placeholderSpan);
 
         // 加载已有的卡面图片（仅在服务器侧确实存在时才请求，避免 404 噪声）
@@ -4446,7 +4618,10 @@ function openCatgirlPanel(card, originEl) {
     cardImage.className = 'catgirl-panel-card-image';
     const imgPlaceholder = document.createElement('span');
     imgPlaceholder.className = 'card-avatar-placeholder';
-    imgPlaceholder.textContent = window.t ? window.t('steam.noCardImage') : '点击此处\n设置卡面';
+    const translatedNoCardImage = window.t && window.t('steam.noCardImage');
+    imgPlaceholder.textContent = translatedNoCardImage && translatedNoCardImage !== 'steam.noCardImage'
+        ? translatedNoCardImage
+        : '暂未设置卡面';
     cardImage.appendChild(imgPlaceholder);
 
     const cardActionOverlay = document.createElement('div');
@@ -5149,10 +5324,13 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
 
     // 自定义字段
     const ALL_RESERVED = typeof getWorkshopHiddenFields === 'function' ? ['档案名', ...getWorkshopHiddenFields()] : ['档案名'];
+    const renderedCustomFields = new Set();
     Object.keys(cat).forEach(k => {
-        if (ALL_RESERVED.includes(k)) return;
+        const normalizedKey = normalizeCharacterFieldName(k);
+        if (!normalizedKey || ALL_RESERVED.includes(normalizedKey) || renderedCustomFields.has(normalizedKey)) return;
         const val = cat[k];
         if (val === null || val === undefined) return;
+        renderedCustomFields.add(normalizedKey);
 
         const wrapper = document.createElement('div');
         wrapper.className = 'field-row-wrapper custom-row setting-field-row';
@@ -5162,13 +5340,13 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
             : '<img src="/static/icons/delete.png" alt="" class="delete-icon"> 删除设定';
 
         const labelEl = document.createElement('label');
-        _panelSetFieldLabel(labelEl, k);
+        _panelSetFieldLabel(labelEl, normalizedKey);
         wrapper.appendChild(labelEl);
 
         const fr = document.createElement('div');
         fr.className = 'field-row';
         const textareaEl = document.createElement('textarea');
-        textareaEl.name = k;
+        textareaEl.name = normalizedKey;
         textareaEl.rows = 1;
         textareaEl.placeholder = (window.t && typeof window.t === 'function')
             ? window.t('character.detailDescriptionPlaceholder')
@@ -5233,9 +5411,10 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
         } else {
             key = prompt(window.t ? window.t('character.addCatgirlFieldPrompt') : '请输入新设定的名称（键名）');
         }
+        key = normalizeCharacterFieldName(key);
         const FORBIDDEN = ALL_RESERVED;
         if (!key || FORBIDDEN.includes(key)) return;
-        if (form.querySelector('[name="' + CSS.escape(key) + '"]')) {
+        if (Array.from(form.querySelectorAll('input, textarea, select')).some(el => normalizeCharacterFieldName(el.name) === key)) {
             if (typeof showAlert === 'function') {
                 await showAlert(window.t ? window.t('character.fieldExists') : '该设定已存在');
             } else {
@@ -6280,27 +6459,22 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             await form._voicesLoadPromise;
         }
 
-        const data = {};
-
         // 收集表单数据
         const nameInput = form.querySelector('input[name="档案名"]');
         if (!nameInput || !nameInput.value.trim()) {
             await showAlertDialog(window.t ? window.t('character.profileNameRequired') : '请输入档案名', { type: 'warning' });
             return;
         }
-        data['档案名'] = nameInput.value.trim();
 
-        // 收集已有字段（通过 FormData 统一收集，跳过voice_id）
-        const fd = new FormData(form);
         const selectedVoiceId = (form.querySelector('select[name="voice_id"]')?.value ?? '').trim();
         const previousVoiceId = form._previousVoiceId || '';
-
-        for (const [k, v] of fd.entries()) {
-            if (k === 'voice_id') continue;
-            const normalizedValue = typeof v === 'string' ? v.trim() : v;
-            if (k && normalizedValue) {
-                data[k] = normalizedValue;
-            }
+        const { data, duplicateKey } = collectCharacterFields(form, {
+            baseData: { '档案名': nameInput.value.trim() },
+            excludeFieldNames: ['档案名', 'voice_id'],
+        });
+        if (duplicateKey) {
+            showMessage(window.t ? window.t('character.fieldExists') : '该设定已存在', 'error');
+            return;
         }
 
         // 如果新建猫娘已被临时保存（自动创建），则改用 PUT 更新
@@ -9779,6 +9953,8 @@ function renderMasterForm(master) {
     const form = document.getElementById('master-form');
     if (!form) return;
     form.innerHTML = '';
+    const masterProfileName = normalizeCharacterFieldName(master['档案名']);
+    const hasMasterProfileName = !!masterProfileName;
 
     // 档案名
     const baseWrapper = document.createElement('div');
@@ -9795,8 +9971,15 @@ function renderMasterForm(master) {
     nameInput.type = 'text';
     nameInput.name = '档案名';
     nameInput.required = true;
-    nameInput.value = master['档案名'] || '';
+    nameInput.value = masterProfileName;
     nameInput.autocomplete = 'off';
+    nameInput.readOnly = hasMasterProfileName;
+    nameInput.setAttribute('aria-readonly', hasMasterProfileName ? 'true' : 'false');
+    if (hasMasterProfileName) {
+        nameInput.title = window.t
+            ? window.t('character.profileNameRenameOnlyHint')
+            : '请通过“修改名称”按钮修改档案名';
+    }
     fieldRow.appendChild(nameInput);
     baseWrapper.appendChild(fieldRow);
 
@@ -9806,26 +9989,38 @@ function renderMasterForm(master) {
     renameBtn.className = 'btn sm';
     renameBtn.style.minWidth = '70px';
     const renameText = window.t ? window.t('character.rename') : '修改名称';
+    const renameTitle = window.t ? window.t('character.renameMasterTitle') : '重命名主人';
     renameBtn.textContent = renameText;
+    renameBtn.title = renameTitle;
+    renameBtn.setAttribute('aria-label', renameTitle);
+    renameBtn.disabled = !hasMasterProfileName;
     renameBtn.onclick = renameMaster;
     baseWrapper.appendChild(renameBtn);
 
     form.appendChild(baseWrapper);
 
     // 自定义字段
+    const renderedCustomFields = new Set();
     Object.keys(master).forEach(k => {
-        if (k === '档案名') return;
+        const normalizedKey = normalizeCharacterFieldName(k);
+        if (
+            !normalizedKey
+            || normalizedKey === '档案名'
+            || isCharacterReservedFieldName(normalizedKey)
+            || renderedCustomFields.has(normalizedKey)
+        ) return;
+        renderedCustomFields.add(normalizedKey);
         const wrapper = document.createElement('div');
         wrapper.className = 'field-row-wrapper custom-row';
 
         const label = document.createElement('label');
-        label.textContent = k;
+        label.textContent = normalizedKey;
         wrapper.appendChild(label);
 
         const row = document.createElement('div');
         row.className = 'field-row';
         const textarea = document.createElement('textarea');
-        textarea.name = k;
+        textarea.name = normalizedKey;
         textarea.rows = 1;
         textarea.value = master[k];
         row.appendChild(textarea);
@@ -9844,7 +10039,9 @@ function renderMasterForm(master) {
         // textarea自动调整
         _panelAttachTextareaAutoResize(textarea);
         // 自动保存和变化监听
-        attachAutoSaveListener(textarea, 'master');
+        if (hasMasterProfileName) {
+            attachAutoSaveListener(textarea, 'master');
+        }
         textarea.addEventListener('input', showMasterActionButtons);
         textarea.addEventListener('change', showMasterActionButtons);
     });
@@ -9869,7 +10066,7 @@ function renderMasterForm(master) {
     saveBtn.type = 'button';
     saveBtn.id = 'save-master-btn';
     saveBtn.className = 'btn sm';
-    saveBtn.style.display = 'none';
+    saveBtn.style.display = hasMasterProfileName ? 'none' : '';
     const saveText = window.t ? window.t('character.saveMaster') : '保存主人设定';
     saveBtn.textContent = saveText;
     saveBtn.onclick = saveMasterForm;
@@ -9889,10 +10086,11 @@ function renderMasterForm(master) {
 
     form.appendChild(btnArea);
 
-    // 为档案名输入框添加自动保存和变化监听
-    attachAutoSaveListener(nameInput, 'master');
-    nameInput.addEventListener('input', showMasterActionButtons);
-    nameInput.addEventListener('change', showMasterActionButtons);
+    // 档案名只允许通过重命名接口修改，避免绕过改名事件记录。
+    if (!hasMasterProfileName) {
+        nameInput.addEventListener('input', showMasterActionButtons);
+        nameInput.addEventListener('change', showMasterActionButtons);
+    }
 }
 
 function showMasterActionButtons() {
@@ -9904,6 +10102,11 @@ function showMasterActionButtons() {
     if (cancelBtn) cancelBtn.style.display = '';
 }
 
+function hasMasterFormProfileName(form) {
+    const nameInput = form?.querySelector('input[name="档案名"]');
+    return !!normalizeCharacterFieldName(nameInput?.value || '');
+}
+
 async function saveMasterForm() {
     const form = document.getElementById('master-form');
     if (!form) return;
@@ -9912,9 +10115,16 @@ async function saveMasterForm() {
         showMessage(window.t ? window.t('character.profileNameRequired') : '档案名为必填项', 'error');
         return;
     }
-    const data = {};
-    for (const [k, v] of new FormData(form).entries()) {
-        if (k && v) data[k] = v;
+    const baseData = nameInput.readOnly
+        ? {}
+        : { '档案名': normalizeCharacterFieldName(nameInput.value) };
+    const { data, duplicateKey } = collectCharacterFields(form, {
+        baseData,
+        excludeFieldNames: ['档案名'],
+    });
+    if (duplicateKey) {
+        showMessage(window.t ? window.t('character.fieldExists') : '该设定已存在', 'error');
+        return;
     }
     try {
         const resp = await fetch('/api/characters/master', {
@@ -9968,14 +10178,18 @@ function attachAutoSaveListener(input, type, catgirlName) {
 async function autoSaveMasterField(input) {
     const form = input.closest('form');
     if (!form || form.id !== 'master-form') return;
-    const fieldName = input.name;
+    if (!hasMasterFormProfileName(form)) return;
+    const fieldName = normalizeCharacterFieldName(input.name);
     if (!fieldName) return;
-    if (fieldName === '档案名' && !input.value.trim()) return;
-    const allData = {};
-    for (const [k, v] of new FormData(form).entries()) {
-        if (k && v) allData[k] = v;
+    if (fieldName === '档案名') return;
+    const { data: allData, duplicateKey } = collectCharacterFields(form, {
+        excludeFieldNames: ['档案名'],
+    });
+    if (duplicateKey) {
+        showMessage(window.t ? window.t('character.fieldExists') : '该设定已存在', 'error');
+        return;
     }
-    if (!allData['档案名']) return;
+    // 空对象用于持久化“清空最后一个自定义字段”的自动保存。
     try {
         const resp = await fetch('/api/characters/master', {
             method: 'POST',
@@ -10004,16 +10218,16 @@ async function panelAutoSaveCatgirlField(input, catgirlName) {
     if (!catgirlName) return;
     const form = input.closest('form');
     if (!form) return;
-    const fieldName = input.name;
+    const fieldName = normalizeCharacterFieldName(input.name);
     if (!fieldName || fieldName === '档案名' || fieldName === 'voice_id') return;
-    const data = { '档案名': catgirlName };
-    const ALL_RESERVED_FIELDS = ['档案名', ...getWorkshopHiddenFields()];
-    const inputs = form.querySelectorAll('input, textarea');
-    inputs.forEach(inp => {
-        if (inp.name && !ALL_RESERVED_FIELDS.includes(inp.name) && inp.value) {
-            data[inp.name] = inp.value;
-        }
+    const { data, duplicateKey } = collectCharacterFields(form, {
+        baseData: { '档案名': catgirlName },
+        excludeFieldNames: ['档案名', 'voice_id'],
     });
+    if (duplicateKey) {
+        showMessage(window.t ? window.t('character.fieldExists') : '该设定已存在', 'error');
+        return;
+    }
     try {
         const resp = await fetch('/api/characters/catgirl/' + encodeURIComponent(catgirlName), {
             method: 'PUT',
@@ -10073,8 +10287,11 @@ async function addMasterField() {
     } else {
         key = prompt(window.t ? window.t('character.addMasterFieldPrompt') : '请输入新设定的名称（键名）');
     }
-    if (!key || key === '档案名') return;
-    const exists = Array.from(form.querySelectorAll('textarea, input')).some(el => el.name === key);
+    key = normalizeCharacterFieldName(key);
+    if (!key || key === '档案名' || isCharacterReservedFieldName(key)) return;
+    const exists = Array.from(form.querySelectorAll('textarea, input')).some(
+        el => normalizeCharacterFieldName(el.name) === key
+    );
     if (exists) {
         showMessage(window.t ? window.t('character.fieldExists') : '该设定已存在', 'error');
         return;
@@ -10102,7 +10319,9 @@ async function addMasterField() {
 
     form.insertBefore(wrapper, form.querySelector('.btn-area'));
     _panelAttachTextareaAutoResize(textarea);
-    attachAutoSaveListener(textarea, 'master');
+    if (hasMasterFormProfileName(form)) {
+        attachAutoSaveListener(textarea, 'master');
+    }
     textarea.addEventListener('input', showMasterActionButtons);
     textarea.addEventListener('change', showMasterActionButtons);
     textarea.focus();
@@ -10121,24 +10340,50 @@ async function renameMaster() {
     const form = document.getElementById('master-form');
     if (!form) return;
     const nameInput = form.querySelector('input[name="档案名"]');
-    const oldName = nameInput?.value || '';
+    const oldName = normalizeCharacterFieldName(nameInput?.value || '');
+    if (!oldName) {
+        showMessage(window.t ? window.t('character.profileNameRequired') : '档案名为必填项', 'error');
+        return;
+    }
+    const promptText = window.t ? window.t('character.renameMasterPrompt') : '请输入新的主人档案名';
+    const titleText = window.t ? window.t('character.renameMasterTitle') : '重命名主人';
     let newName;
     if (typeof showPrompt === 'function') {
         newName = await showPrompt(
-            window.t ? window.t('character.renamePrompt') : '请输入新的档案名',
+            promptText,
             oldName,
-            window.t ? window.t('character.renameTitle') : '修改名称'
+            titleText
         );
     } else {
-        newName = prompt(window.t ? window.t('character.renamePrompt') : '请输入新的档案名', oldName);
+        newName = prompt(promptText, oldName);
     }
-    if (!newName || newName.trim() === '' || newName.trim() === oldName) return;
+    const normalizedNewName = normalizeCharacterFieldName(newName);
+    if (!normalizedNewName || normalizedNewName === oldName) return;
     try {
-        const resp = await fetch('/api/characters/master/' + encodeURIComponent(oldName) + '/rename', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ new_name: newName.trim() })
-        });
+        const useBodyFallback = /[\\/]/.test(oldName);
+        let resp;
+        if (useBodyFallback) {
+            // 旧配置可能含路径分隔符，无法可靠放进 path 参数，改用普通保存接口修复档案名。
+            const { data, duplicateKey } = collectCharacterFields(form, {
+                baseData: { '档案名': normalizedNewName },
+                excludeFieldNames: ['档案名'],
+            });
+            if (duplicateKey) {
+                showMessage(window.t ? window.t('character.fieldExists') : '该设定已存在', 'error');
+                return;
+            }
+            resp = await fetch('/api/characters/master', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+        } else {
+            resp = await fetch('/api/characters/master/' + encodeURIComponent(oldName) + '/rename', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ new_name: normalizedNewName })
+            });
+        }
         const result = await resp.json();
         if (result.success) {
             showMessage(window.t ? window.t('character.renameSuccess') : '重命名成功', 'success');

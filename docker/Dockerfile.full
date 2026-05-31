@@ -43,7 +43,10 @@ ARG HTTPS_PROXY
 # 设置环境变量
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
-ENV UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+# Per-request HTTP timeout for uv downloads (default 30s). Bumped because the
+# build runs on US Azure runners while the package mirror is in China, so large
+# wheels are slow to transfer; 30s caused spurious "operation timed out" failures.
+ENV UV_HTTP_TIMEOUT=120
 
 # 设置工作目录
 WORKDIR /app
@@ -173,11 +176,19 @@ COPY --from=ghcr.io/astral-sh/uv:0.6.17 /uv /usr/local/bin/uv
 RUN chmod +x /usr/local/bin/uv && \
     echo 'export PATH="/usr/local/bin:$PATH"' >> /root/.bashrc
 
-# 5. 配置 uv 使用阿里云镜像
+# 5. 配置 uv 镜像 + fallback。
+# 两个国内镜像按顺序优先（aliyun → tsinghua），均未标 default，所以官方
+# pypi.org 作为隐式 default 留作最后兜底——US runner 上反而最快。任一镜像缺包/
+# 抽风时 uv 会顺着列表往下走，不再单点依赖 aliyun。
 RUN mkdir -p /root/.config/uv && \
-    echo '[[index]]' > /root/.config/uv/uv.toml && \
-    echo 'url = "https://mirrors.aliyun.com/pypi/simple/"' >> /root/.config/uv/uv.toml && \
-    echo 'default = true' >> /root/.config/uv/uv.toml
+    printf '%s\n' \
+      '[[index]]' \
+      'name = "aliyun"' \
+      'url = "https://mirrors.aliyun.com/pypi/simple/"' \
+      '[[index]]' \
+      'name = "tsinghua"' \
+      'url = "https://pypi.tuna.tsinghua.edu.cn/simple/"' \
+      > /root/.config/uv/uv.toml
 
 # 6. Copy N.E.K.O. project from local build context (with correct ownership)
 COPY --chown=neko:neko . /app
@@ -202,14 +213,36 @@ RUN cd /app && \
     unset http_proxy && \
     unset https_proxy
 
-# 8b. Fix ownership after root operations (uv sync creates files as root)
+# 8b. Bundle the local embedding model so vectors work out-of-the-box (offline).
+# Without this the image ships no weights and EmbeddingService sticky-disables
+# at first load (NO_MODEL_FILE) — vector recall / fact dedup silently degrade.
+# repo+revision are pinned identically to .github/workflows/build-desktop.yml so
+# every build path resolves the same on-disk profile. `--variant both` ships the
+# int8 (default) AND fp32 weights so a VECTORS_QUANTIZATION=fp32 override also
+# works. Pure-stdlib downloader; needs network (honors the proxy ARGs).
+ARG EMBEDDING_MODEL_REPO=jinaai/jina-embeddings-v5-text-nano-retrieval
+ARG EMBEDDING_MODEL_REVISION=ac5d898c8d382b17167c33e5c8af644a3519b47d
+ARG EMBEDDING_MODEL_PROFILE_ID=local-text-retrieval-v1
+RUN cd /app && \
+    if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
+    if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
+    uv run --no-sync python scripts/prepare_embedding_model.py \
+        --repo "$EMBEDDING_MODEL_REPO" \
+        --revision "$EMBEDDING_MODEL_REVISION" \
+        --profile-id "$EMBEDDING_MODEL_PROFILE_ID" \
+        --output-root data/embedding_models \
+        --variant both && \
+    unset http_proxy && \
+    unset https_proxy
+
+# 8c. Fix ownership after root operations (uv sync + model download create files as root)
 RUN chown -R neko:neko /app
 
 # 9. Set Playwright environment variable BEFORE installing browsers
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 
 # 10. Install Playwright Chromium browser during build (FULL version includes this)
-RUN uv run python -m playwright install chromium --with-deps && \
+RUN uv run --no-sync python -m playwright install chromium --with-deps && \
     chown -R neko:neko /opt/ms-playwright && \
     chmod -R 755 /opt/ms-playwright
 

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 from io import BytesIO
 import json
 import logging
+import os
 import re
 import textwrap
 from pathlib import Path
@@ -18,6 +20,7 @@ _LOGGER = logging.getLogger(__name__)
 _MARKDOWN_ESCAPE_RE = re.compile(r"([\\`*_{}\[\]()#+\-.!|])")
 _MAX_TEXT_CHARS = 2000
 _MAX_MARKDOWN_CHARS = 120_000
+_PDF_CJK_SAMPLE = "中文日本語한국어"
 _CONTENT_TYPES = {
     "markdown": "text/markdown; charset=utf-8",
     "pdf": "application/pdf",
@@ -38,7 +41,9 @@ class ExportDocument:
 
 class StudyExportStore(Protocol):
     def list_interactions(self, limit: int = 20) -> list[dict[str, Any]]: ...
-    def list_topics(self, limit: int = 100, subject: str | None = None) -> list[dict[str, Any]]: ...
+    def list_topics(
+        self, limit: int = 100, subject: str | None = None
+    ) -> list[dict[str, Any]]: ...
     def list_mastery_overview(self, limit: int = 20) -> list[dict[str, Any]]: ...
     def list_wrong_questions(
         self,
@@ -50,6 +55,8 @@ class StudyExportStore(Protocol):
 
 
 class DocExporter:
+    _registered_pdf_fonts: set[str] = set()
+
     def __init__(
         self,
         store: StudyExportStore,
@@ -60,17 +67,26 @@ class DocExporter:
         self._validate_store(store)
         self._store = store
         self._config = config or DocExportConfig()
-        self._styles_dir = styles_dir or Path(__file__).resolve().parent / "data" / "export_styles"
+        self._styles_dir = (
+            styles_dir or Path(__file__).resolve().parent / "data" / "export_styles"
+        )
 
     @staticmethod
     def _validate_store(store: object) -> None:
         missing = [
             name
-            for name in ("list_interactions", "list_topics", "list_mastery_overview", "list_wrong_questions")
+            for name in (
+                "list_interactions",
+                "list_topics",
+                "list_mastery_overview",
+                "list_wrong_questions",
+            )
             if not callable(getattr(store, name, None))
         ]
         if missing:
-            raise TypeError(f"DocExporter store is missing required methods: {', '.join(missing)}")
+            raise TypeError(
+                f"DocExporter store is missing required methods: {', '.join(missing)}"
+            )
 
     def export(
         self,
@@ -96,7 +112,11 @@ class DocExporter:
             recent_limit=recent_limit,
             topic_ids=topic_ids,
         )
-        content = markdown.encode("utf-8") if effective_format == "markdown" else self._render(effective_format, markdown)
+        content = (
+            markdown.encode("utf-8")
+            if effective_format == "markdown"
+            else self._render(effective_format, markdown)
+        )
         return ExportDocument(
             content=content,
             filename=f"{slugify(title or 'study-notes')}.{extension_for_format(effective_format)}",
@@ -126,12 +146,16 @@ class DocExporter:
         requested_topic_ids = _normalized_topic_ids(topic_ids)
 
         interactions = self._store.list_interactions(limit=limit)
-        topics = self._resolve_topics(topics_limit=topics_limit, topic_ids=requested_topic_ids)
+        topics = self._resolve_topics(
+            topics_limit=topics_limit, topic_ids=requested_topic_ids
+        )
         mastery = self._store.list_mastery_overview(limit=topics_limit)
         wrong_questions = self._store.list_wrong_questions(limit=limit)
 
         now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        heading = escape_markdown(title or style_payload.get("title") or "Study Notes", limit=120)
+        heading = escape_markdown(
+            title or style_payload.get("title") or "Study Notes", limit=120
+        )
         lines = [
             f"# {heading}",
             "",
@@ -152,9 +176,21 @@ class DocExporter:
         if interactions:
             for item in interactions:
                 kind = escape_markdown(item.get("kind"), limit=80)
-                input_text = escape_markdown(item.get("input_text"), limit=_MAX_TEXT_CHARS)
-                output_text = escape_markdown(item.get("output_text"), limit=_MAX_TEXT_CHARS)
-                lines.extend([f"### {kind or 'interaction'}", "", f"- Input: {input_text or '-'}", f"- Output: {output_text or '-'}", ""])
+                input_text = escape_markdown(
+                    item.get("input_text"), limit=_MAX_TEXT_CHARS
+                )
+                output_text = escape_markdown(
+                    item.get("output_text"), limit=_MAX_TEXT_CHARS
+                )
+                lines.extend(
+                    [
+                        f"### {kind or 'interaction'}",
+                        "",
+                        f"- Input: {input_text or '-'}",
+                        f"- Output: {output_text or '-'}",
+                        "",
+                    ]
+                )
         else:
             lines.append("_No recent interactions._")
 
@@ -165,37 +201,58 @@ class DocExporter:
                 topic_id = escape_markdown(topic.get("id"), limit=120)
                 subject = escape_markdown(topic.get("subject"), limit=80)
                 chapter = escape_markdown(topic.get("chapter"), limit=120)
-                lines.append(f"- **{name}** (`{topic_id}`) - {subject or 'general'}{f' / {chapter}' if chapter else ''}")
+                lines.append(
+                    f"- **{name}** (`{topic_id}`) - {subject or 'general'}{f' / {chapter}' if chapter else ''}"
+                )
         else:
             lines.append("_No topics found._")
 
         lines.extend(["", "## Mastery", ""])
         if mastery:
             for item in mastery[:topics_limit]:
-                topic_name = escape_markdown(item.get("topic_name") or item.get("topic_id"), limit=120)
+                topic_name = escape_markdown(
+                    item.get("topic_name") or item.get("topic_id"), limit=120
+                )
                 level = escape_markdown(item.get("level"), limit=80)
                 mastery_value = _safe_float(item.get("mastery"))
-                lines.append(f"- {topic_name}: {mastery_value:.0%} mastery{f' ({level})' if level else ''}")
+                lines.append(
+                    f"- {topic_name}: {mastery_value:.0%} mastery{f' ({level})' if level else ''}"
+                )
         else:
             lines.append("_No mastery data yet._")
 
         lines.extend(["", "## Wrong Questions", ""])
         if wrong_questions:
             for item in wrong_questions:
-                question = item.get("question") if isinstance(item.get("question"), dict) else {}
-                text = escape_markdown(question.get("question") or item.get("expected_answer") or item.get("id"), limit=_MAX_TEXT_CHARS)
+                question = (
+                    item.get("question")
+                    if isinstance(item.get("question"), dict)
+                    else {}
+                )
+                text = escape_markdown(
+                    question.get("question")
+                    or item.get("expected_answer")
+                    or item.get("id"),
+                    limit=_MAX_TEXT_CHARS,
+                )
                 error_type = escape_markdown(item.get("error_type"), limit=80)
                 status = escape_markdown(item.get("status"), limit=80)
-                lines.append(f"- {text or '-'} ({error_type or 'unknown'}, {status or 'active'})")
+                lines.append(
+                    f"- {text or '-'} ({error_type or 'unknown'}, {status or 'active'})"
+                )
         else:
             lines.append("_No wrong-question records yet._")
 
         markdown = "\n".join(lines).strip() + "\n"
         if len(markdown) > _MAX_MARKDOWN_CHARS:
-            markdown = markdown[:_MAX_MARKDOWN_CHARS].rstrip() + "\n\n...[export truncated]\n"
+            markdown = (
+                markdown[:_MAX_MARKDOWN_CHARS].rstrip() + "\n\n...[export truncated]\n"
+            )
         return markdown
 
-    def _resolve_topics(self, *, topics_limit: int, topic_ids: list[str]) -> list[dict[str, Any]]:
+    def _resolve_topics(
+        self, *, topics_limit: int, topic_ids: list[str]
+    ) -> list[dict[str, Any]]:
         if not topic_ids:
             return self._store.list_topics(limit=topics_limit)
 
@@ -251,6 +308,80 @@ class DocExporter:
             return self._render_xmind(markdown)
         raise ValueError(f"unsupported export format: {fmt}")
 
+    def _register_pdf_font(self) -> str:
+        try:
+            from reportlab.pdfbase import pdfmetrics
+        except Exception as exc:
+            _LOGGER.warning(
+                "PDF font registry unavailable; falling back to Helvetica: %s", exc
+            )
+            return "Helvetica"
+
+        cjk_font_path = os.environ.get("STUDY_PDF_CJK_FONT_PATH", "")
+        if cjk_font_path:
+            font_path = Path(cjk_font_path)
+            if font_path.is_file():
+                font_name = _pdf_user_font_name(font_path)
+                if self._pdf_font_registered(pdfmetrics, font_name):
+                    return font_name
+                try:
+                    from reportlab.pdfbase.ttfonts import TTFont
+
+                    font = TTFont(font_name, str(font_path))
+                    if not _ttfont_has_cjk_glyphs(font):
+                        _LOGGER.warning(
+                            "PDF CJK font from %s does not expose common CJK glyphs; "
+                            "falling back to built-in CJK font",
+                            cjk_font_path,
+                        )
+                    else:
+                        missing_sample = _ttfont_missing_cjk_sample_glyphs(font)
+                        if missing_sample:
+                            _LOGGER.warning(
+                                "STUDY_PDF_CJK_FONT_PATH font from %s is missing "
+                                "_PDF_CJK_SAMPLE glyphs %s; using configured font anyway",
+                                cjk_font_path,
+                                "".join(missing_sample),
+                            )
+                        pdfmetrics.registerFont(font)
+                        self._registered_pdf_fonts.add(font_name)
+                        _LOGGER.info("PDF CJK font registered from %s", cjk_font_path)
+                        return font_name
+                except Exception as exc:
+                    _LOGGER.warning(
+                        "User CJK font registration failed (%s): %s", cjk_font_path, exc
+                    )
+            else:
+                _LOGGER.warning(
+                    "STUDY_PDF_CJK_FONT_PATH set but file not found: %s", cjk_font_path
+                )
+
+        if self._pdf_font_registered(pdfmetrics, "STSong-Light"):
+            return "STSong-Light"
+        try:
+            from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+
+            pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+            self._registered_pdf_fonts.add("STSong-Light")
+            return "STSong-Light"
+        except Exception as exc:
+            _LOGGER.warning(
+                "PDF Unicode font registration failed; Chinese text may render incorrectly: %s",
+                exc,
+            )
+            return "Helvetica"
+
+    @classmethod
+    def _pdf_font_registered(cls, pdfmetrics: Any, font_name: str) -> bool:
+        if font_name in cls._registered_pdf_fonts:
+            return True
+        try:
+            pdfmetrics.getFont(font_name)
+        except Exception:
+            return False
+        cls._registered_pdf_fonts.add(font_name)
+        return True
+
     def _render_pdf(self, markdown: str) -> bytes:
         if self._config.pdf_backend != "reportlab":
             raise ValueError(f"unsupported PDF backend: {self._config.pdf_backend}")
@@ -261,24 +392,17 @@ class DocExporter:
             raise RuntimeError("PDF export requires reportlab to be installed") from exc
 
         output = BytesIO()
-        font_name = "Helvetica"
         pdf = canvas.Canvas(output, pagesize=A4)
-        try:
-            from reportlab.pdfbase import pdfmetrics
-            from reportlab.pdfbase.cidfonts import UnicodeCIDFont
-
-            pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
-            font_name = "STSong-Light"
-        except Exception as exc:
-            _LOGGER.warning("PDF Unicode font registration failed; Chinese text may render incorrectly: %s", exc)
-            font_name = "Helvetica"
+        font_name = self._register_pdf_font()
         width, height = A4
         x = 48
         y = height - 48
         pdf.setFont(font_name, 10)
         for raw_line in markdown.splitlines() or [""]:
             line = _pdf_safe_text(raw_line)
-            wrapped = textwrap.wrap(line, width=92, replace_whitespace=False, drop_whitespace=False) or [""]
+            wrapped = textwrap.wrap(
+                line, width=92, replace_whitespace=False, drop_whitespace=False
+            ) or [""]
             for part in wrapped:
                 if y < 48:
                     pdf.showPage()
@@ -293,7 +417,9 @@ class DocExporter:
         try:
             from docx import Document
         except ImportError as exc:
-            raise RuntimeError("DOCX export requires python-docx to be installed") from exc
+            raise RuntimeError(
+                "DOCX export requires python-docx to be installed"
+            ) from exc
 
         document = Document()
         for line in markdown.splitlines():
@@ -312,11 +438,17 @@ class DocExporter:
         return output.getvalue()
 
     def _render_xmind(self, markdown: str) -> bytes:
-        root_topic = markdown.splitlines()[0].lstrip("# ").strip() if markdown.strip() else "Study Notes"
+        root_topic = (
+            markdown.splitlines()[0].lstrip("# ").strip()
+            if markdown.strip()
+            else "Study Notes"
+        )
         children = []
         for line in markdown.splitlines():
             if line.startswith("## "):
-                children.append({"id": slugify(line[3:]) or "section", "title": line[3:].strip()})
+                children.append(
+                    {"id": slugify(line[3:]) or "section", "title": line[3:].strip()}
+                )
         content = [
             {
                 "id": "study-companion-sheet",
@@ -331,8 +463,14 @@ class DocExporter:
         output = BytesIO()
         with ZipFile(output, "w", ZIP_DEFLATED) as archive:
             archive.writestr("content.json", json.dumps(content, ensure_ascii=False))
-            archive.writestr("metadata.json", json.dumps({"creator": "study_companion"}, ensure_ascii=False))
-            archive.writestr("manifest.json", json.dumps({"file-entries": {"content.json": {}, "metadata.json": {}}}))
+            archive.writestr(
+                "metadata.json",
+                json.dumps({"creator": "study_companion"}, ensure_ascii=False),
+            )
+            archive.writestr(
+                "manifest.json",
+                json.dumps({"file-entries": {"content.json": {}, "metadata.json": {}}}),
+            )
         return output.getvalue()
 
 
@@ -386,13 +524,51 @@ def _pdf_safe_text(value: object) -> str:
     return str(value or "").replace("\t", "    ")
 
 
+def _pdf_user_font_name(font_path: Path) -> str:
+    digest = hashlib.blake2s(str(font_path).encode("utf-8"), digest_size=6).hexdigest()
+    return f"CJK-User-{digest}"
+
+
+# ReportLab exposes the TTFont cmap through the non-public font.face.charToGlyph
+# mapping. Guard that access with getattr so missing internals return no sample
+# glyphs, which safely falls back to the built-in PDF fonts. Partial
+# _PDF_CJK_SAMPLE coverage is still allowed for explicit user fonts, with a
+# warning at registration time.
+def _ttfont_supported_cjk_sample_glyphs(font: object) -> tuple[str, ...]:
+    cmap = getattr(getattr(font, "face", None), "charToGlyph", None)
+    if not isinstance(cmap, dict):
+        return ()
+    supported: list[str] = []
+    for char in _PDF_CJK_SAMPLE:
+        glyph = cmap.get(ord(char))
+        if glyph is None or glyph == 0 or glyph == "0" or glyph == ".notdef":
+            continue
+        supported.append(char)
+    return tuple(supported)
+
+
+def _ttfont_has_cjk_glyphs(font: object) -> bool:
+    return bool(_ttfont_supported_cjk_sample_glyphs(font))
+
+
+def _ttfont_missing_cjk_sample_glyphs(font: object) -> tuple[str, ...]:
+    supported = set(_ttfont_supported_cjk_sample_glyphs(font))
+    return tuple(char for char in _PDF_CJK_SAMPLE if char not in supported)
+
+
 def safe_utf8_truncate(text: str, max_bytes: int) -> str:
     if max_bytes <= 0:
         return ""
     payload = str(text or "").encode("utf-8")
     if len(payload) <= max_bytes:
         return str(text or "")
-    return payload[:max_bytes].decode("utf-8", errors="ignore")
+    truncated = payload[:max_bytes]
+    while truncated:
+        try:
+            return truncated.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            truncated = truncated[: exc.start]
+    return ""
 
 
 __all__ = [
