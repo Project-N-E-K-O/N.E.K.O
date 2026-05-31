@@ -116,6 +116,13 @@ def test_notebook_store_crud_search_and_topic_counts(tmp_path) -> None:
             for args, _kwargs in logger.warnings
         )
 
+        partial = notebooks.upsert_note(note_id=note.id, title="Closure final")
+        assert partial.title == "Closure final"
+        assert partial.notebook_id == notebook.id
+        assert partial.content == "closure update"
+        assert partial.topic_ids == ["closure"]
+        assert partial.tags == ["updated"]
+
         deleted = notebooks.delete_notebook(notebook.id)
         assert deleted == {"deleted": 1, "notes_unlinked": 1}
         assert notebooks.get_note(note.id).notebook_id is None
@@ -239,6 +246,38 @@ def test_notebook_store_serializes_concurrent_upserts(tmp_path) -> None:
         store.close()
 
 
+def test_session_note_source_filters_records_before_limit(tmp_path) -> None:
+    store, notebooks, _logger = _make_store(tmp_path)
+    try:
+        store.ensure_topic(topic_id="algebra", name="Algebra", subject="math")
+        store.ensure_session(session_id="older", mode="companion")
+        store.ensure_session(session_id="recent", mode="companion")
+        store.add_qa_record(
+            session_id="older",
+            topic_id="algebra",
+            question={"question": "older session question"},
+            user_answer="older answer",
+            eval_result={},
+            mode="companion",
+        )
+        for index in range(3):
+            store.add_qa_record(
+                session_id="recent",
+                topic_id="algebra",
+                question={"question": f"recent question {index}"},
+                user_answer="recent answer",
+                eval_result={},
+                mode="companion",
+            )
+
+        source = notebooks.source_text_for_session("older", limit=1)
+
+        assert "older session question" in source
+        assert "recent question" not in source
+    finally:
+        store.close()
+
+
 @pytest.mark.asyncio
 async def test_notebook_llm_operations_use_expected_model_tiers() -> None:
     agent = _FakeNotebookAgent()
@@ -253,6 +292,17 @@ async def test_notebook_llm_operations_use_expected_model_tiers() -> None:
         {"operation": "expand_note", "model_group": "tutor"},
         {"operation": "summarize_to_note", "model_group": "summary"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_notebook_summary_headings_follow_language() -> None:
+    agent = _FakeNotebookAgent()
+    agent._config.language = "en"
+
+    summarized = await summarize_to_note(agent, "source text", source_type="manual")
+
+    assert "## Key Points" in summarized.reply
+    assert "### Details" in summarized.reply
 
 
 @pytest.mark.asyncio

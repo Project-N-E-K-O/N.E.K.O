@@ -52,8 +52,9 @@ const MODE_ORDER: Array<{ id: StudyMode; labelKey: string; fallback: string }> =
 ];
 const KATEX_CSS_URL = '/plugin/study_companion/ui/katex.min.css';
 const KATEX_SCRIPT_URL = '/plugin/study_companion/ui/katex.min.js';
-const CURRENCY_START_PATTERN = /^\$(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?(?:[A-Z]{2,4}|%)?(?=$|[\s)\],.;!?-])/;
+const MATH_PARSER_SCRIPT_URL = '/plugin/study_companion/ui/math-parser.js';
 let katexLoadPromise: Promise<void> | null = null;
+let mathParserLoadPromise: Promise<void> | null = null;
 
 type MathTextPart = {
   type: 'text' | 'math';
@@ -61,97 +62,70 @@ type MathTextPart = {
   display?: boolean;
 };
 
-function hasEscapedDelimiter(source: string, index: number) {
-  let slashes = 0;
-  for (let i = index - 1; i >= 0 && source[i] === '\\'; i -= 1) {
-    slashes += 1;
-  }
-  return slashes % 2 === 1;
-}
+type StudyMathParser = {
+  splitByMath?: (value: string) => MathTextPart[];
+  normalizeLatexForKatex?: (value: string) => string;
+};
 
-function isLikelyCurrencyStart(source: string, index: number) {
-  return CURRENCY_START_PATTERN.test(source.slice(index));
-}
-
-function findMathDelimiter(source: string, start: number, delimiter: '$' | '$$') {
-  let index = start;
-  while (index < source.length) {
-    const next = source.indexOf(delimiter, index);
-    if (next === -1) {
-      return -1;
-    }
-    if (hasEscapedDelimiter(source, next)) {
-      index = next + delimiter.length;
-      continue;
-    }
-    if (delimiter === '$' && source[next + 1] === '$') {
-      index = next + 2;
-      continue;
-    }
-    return next;
-  }
-  return -1;
+function getMathParser(): StudyMathParser | null {
+  return ((window as any).__studyCompanionMathParser || null) as StudyMathParser | null;
 }
 
 function splitMathText(value: string): MathTextPart[] {
   const source = String(value || '');
-  const parts: MathTextPart[] = [];
-  let last = 0;
-  let index = 0;
-  while (index < source.length) {
-    if (source[index] !== '$' || hasEscapedDelimiter(source, index)) {
-      index += 1;
-      continue;
-    }
-
-    if (source[index + 1] === '$') {
-      const displayCloser = findMathDelimiter(source, index + 2, '$$');
-      if (displayCloser === -1) {
-        index += 2;
-        continue;
-      }
-      if (index > last) {
-        parts.push({ type: 'text', value: source.slice(last, index) });
-      }
-      parts.push({
-        type: 'math',
-        value: source.slice(index + 2, displayCloser).trim(),
-        display: true,
-      });
-      index = displayCloser + 2;
-      last = index;
-      continue;
-    }
-
-    if (isLikelyCurrencyStart(source, index)) {
-      index += 1;
-      continue;
-    }
-    const inlineCloser = findMathDelimiter(source, index + 1, '$');
-    if (inlineCloser === -1) {
-      index += 1;
-      continue;
-    }
-    if (index > last) {
-      parts.push({ type: 'text', value: source.slice(last, index) });
-    }
-    const mathValue = source.slice(index + 1, inlineCloser).trim();
-    if (mathValue) {
-      parts.push({ type: 'math', value: mathValue, display: false });
-    } else {
-      parts.push({ type: 'text', value: source.slice(index, inlineCloser + 1) });
-    }
-    index = inlineCloser + 1;
-    last = index;
+  const parser = getMathParser();
+  if (parser && typeof parser.splitByMath === 'function') {
+    const parts = parser.splitByMath(source);
+    return parts.length ? parts : [{ type: 'text', value: source }];
   }
-  if (last < source.length) {
-    parts.push({ type: 'text', value: source.slice(last) });
-  }
-  return parts.length ? parts : [{ type: 'text', value: source }];
+  return [{ type: 'text', value: source }];
 }
 
 function normalizeLatexForKatex(value: string) {
-  return String(value || '').replace(/</g, '\\lt ').replace(/>/g, '\\gt ');
+  const parser = getMathParser();
+  if (parser && typeof parser.normalizeLatexForKatex === 'function') {
+    return parser.normalizeLatexForKatex(value);
+  }
+  return String(value || '');
+}
+
+function ensureMathParser() {
+  if (getMathParser()?.splitByMath) {
+    return Promise.resolve();
+  }
+  if (mathParserLoadPromise) {
+    return mathParserLoadPromise;
+  }
+  mathParserLoadPromise = new Promise((resolve) => {
+    const resolveLoad = (script: HTMLScriptElement) => {
+      script.dataset.studyMathParserLoaded = 'true';
+      resolve();
+    };
+    const resolveError = (script: HTMLScriptElement) => {
+      script.dataset.studyMathParserFailed = 'true';
+      mathParserLoadPromise = null;
+      script.remove();
+      resolve();
+    };
+    const existing = document.getElementById('study-companion-math-parser-script') as HTMLScriptElement | null;
+    if (existing) {
+      if (existing.dataset.studyMathParserFailed === 'true') {
+        existing.remove();
+      } else {
+        existing.addEventListener('load', () => resolveLoad(existing), { once: true });
+        existing.addEventListener('error', () => resolveError(existing), { once: true });
+        return;
+      }
+    }
+    const script = document.createElement('script');
+    script.id = 'study-companion-math-parser-script';
+    script.src = MATH_PARSER_SCRIPT_URL;
+    script.async = true;
+    script.addEventListener('load', () => resolveLoad(script), { once: true });
+    script.addEventListener('error', () => resolveError(script), { once: true });
+    document.head.appendChild(script);
+  });
+  return mathParserLoadPromise;
 }
 
 function ensureHostedKatex() {
@@ -224,6 +198,18 @@ function renderMathSpans(root: HTMLElement | null) {
 
 function MathReply({ text, label }: { text: string; label: string }) {
   const containerRef = useRef<HTMLElement | null>(null);
+  const [mathParserReady, setMathParserReady] = useState(() => Boolean(getMathParser()?.splitByMath));
+  useEffect(() => {
+    let active = true;
+    ensureMathParser().then(() => {
+      if (active) {
+        setMathParserReady(Boolean(getMathParser()?.splitByMath));
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [text]);
   useEffect(() => {
     let active = true;
     ensureHostedKatex().then(() => {
@@ -234,8 +220,8 @@ function MathReply({ text, label }: { text: string; label: string }) {
     return () => {
       active = false;
     };
-  }, [text]);
-  const parts = splitMathText(text);
+  }, [text, mathParserReady]);
+  const parts: MathTextPart[] = mathParserReady ? splitMathText(text) : [{ type: 'text', value: String(text || '') }];
   return (
     <div
       ref={containerRef}

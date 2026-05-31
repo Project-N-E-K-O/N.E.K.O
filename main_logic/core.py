@@ -2000,15 +2000,16 @@ class LLMSessionManager:
                 return ""
             cancel_response = getattr(session_snapshot, "cancel_response", None)
             if not callable(cancel_response):
-                return action
+                return ""
             try:
                 if _session_changed():
                     return ""
                 await cancel_response()
                 logger.debug("[%s] voice bridge cancelled current response", self.lanlan_name)
+                return action
             except Exception as exc:
                 logger.debug("[%s] voice bridge cancel skipped/failed: %s", self.lanlan_name, exc)
-            return action
+                return ""
 
         if action == "prime_context":
             context_text = str(result.get("context") or "").strip()

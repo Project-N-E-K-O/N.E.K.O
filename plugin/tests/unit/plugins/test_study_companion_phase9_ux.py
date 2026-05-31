@@ -14,22 +14,26 @@ I18N_DIR = PLUGIN_DIR / "i18n"
 
 def test_phase9_static_math_assets_are_local_and_registered() -> None:
     index = (PLUGIN_DIR / "static" / "index.html").read_text(encoding="utf-8")
+    parser = (PLUGIN_DIR / "static" / "math-parser.js").read_text(encoding="utf-8")
     renderer = (PLUGIN_DIR / "static" / "katex-render.js").read_text(encoding="utf-8")
 
     assert (PLUGIN_DIR / "static" / "katex.min.js").is_file()
     assert (PLUGIN_DIR / "static" / "katex.min.css").is_file()
+    assert (PLUGIN_DIR / "static" / "math-parser.js").is_file()
     assert len(list((PLUGIN_DIR / "static" / "fonts").glob("KaTeX_*"))) >= 20
     assert '<link rel="stylesheet" href="./katex.min.css" />' in index
     assert '<script src="./katex.min.js"></script>' in index
+    assert '<script src="./math-parser.js"></script>' in index
     assert '<script src="./katex-render.js"></script>' in index
+    assert "window.__studyCompanionMathParser" in parser
     assert "window.renderMathInText" in renderer
-    assert "normalizeLatexForKatex" in renderer
-    assert "\\\\lt " in renderer
+    assert "normalizeLatexForKatex" in parser
+    assert "\\\\lt " in parser
     assert "/[<>]/.test" not in renderer
     assert "escapeHTML" in renderer
-    assert "function hasEscapedDelimiter" in renderer
-    assert "function isLikelyCurrencyStart" in renderer
-    assert "function findMathDelimiter" in renderer
+    assert "function hasEscapedDelimiter" in parser
+    assert "function isLikelyCurrencyStart" in parser
+    assert "function findMathDelimiter" in parser
     assert "trust: false" in renderer
 
 
@@ -39,13 +43,16 @@ def test_phase9_hosted_study_panel_uses_span_based_katex_rendering() -> None:
     assert "function MathReply" in source
     assert "dangerouslySetInnerHTML" not in source
     assert "/plugin/study_companion/ui/katex.min.js" in source
+    assert "/plugin/study_companion/ui/math-parser.js" in source
     assert "function normalizeLatexForKatex" in source
+    assert "function ensureMathParser" in source
+    assert "function getMathParser" in source
     assert "katexLoadPromise = null" in source
     assert "dataset.studyKatexFailed" in source
     assert "data-study-math" in source
-    assert "function hasEscapedDelimiter" in source
-    assert "function isLikelyCurrencyStart" in source
-    assert "findMathDelimiter(source, index + 1, '$')" in source
+    assert "function hasEscapedDelimiter" not in source
+    assert "function isLikelyCurrencyStart" not in source
+    assert "findMathDelimiter(source, index + 1, '$')" not in source
     assert "isLikelyCurrencyStart(source, inlineCloser)" not in source
     assert "/[<>]/.test" not in source
     assert "const hasInFlightRequest = !!explainControllerRef.current" in source

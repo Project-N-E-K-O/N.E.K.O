@@ -372,6 +372,35 @@ async def test_voice_bridge_result_is_ignored_after_session_change(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_voice_bridge_cancel_failure_does_not_report_cancel_action(monkeypatch):
+    mgr = _make_manager()
+    session = _FakeVoiceBridgeSession()
+    mgr.session = session
+
+    async def fail_cancel():
+        raise RuntimeError("session already finished")
+
+    async def fake_publish(*_args, **_kwargs):
+        return {"action": "cancel_response"}
+
+    session.cancel_response = fail_cancel
+    monkeypatch.setattr(
+        core_module,
+        "publish_voice_transcript_request_reliably",
+        fake_publish,
+    )
+
+    action = await core_module.LLMSessionManager._dispatch_voice_transcript_bridge(
+        mgr,
+        "Yui stop",
+    )
+
+    assert action == ""
+    assert session.cancelled == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_no_takeover_voice_transcript_uses_ordinary_flow():
     mgr = _make_transcript_manager()
 

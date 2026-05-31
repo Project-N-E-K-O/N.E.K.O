@@ -170,33 +170,43 @@ class _NotebookEntriesMixin:
     async def study_note_upsert(
         self,
         note_id: str = "",
-        notebook_id: str = "",
-        title: str = "",
-        content: str = "",
+        notebook_id: str | None = None,
+        title: str | None = None,
+        content: str | None = None,
         topic_ids: list[str] | None = None,
         tags: list[str] | None = None,
-        is_ai_generated: bool = False,
-        source_type: str = "manual",
-        source_ref: str = "",
+        is_ai_generated: bool | None = None,
+        source_type: str | None = None,
+        source_ref: str | None = None,
         **_,
     ):
         try:
-            create_source_type = source_type if not note_id else None
-            create_source_ref = source_ref if not note_id else None
-            if note_id and (str(source_type or "").strip() not in {"", "manual"} or str(source_ref or "").strip()):
-                create_source_type = source_type
-                create_source_ref = source_ref
+            note_key = str(note_id or "").strip()
+            update_kwargs = {"note_id": note_key or None}
+            if notebook_id is not None:
+                update_kwargs["notebook_id"] = notebook_id or None
+            if title is not None:
+                update_kwargs["title"] = title
+            if content is not None:
+                update_kwargs["content"] = content
+            if topic_ids is not None:
+                update_kwargs["topic_ids"] = topic_ids
+            if tags is not None:
+                update_kwargs["tags"] = tags
+            if is_ai_generated is not None:
+                update_kwargs["is_ai_generated"] = is_ai_generated
+            if not note_key:
+                update_kwargs["source_type"] = source_type or "manual"
+                update_kwargs["source_ref"] = source_ref or ""
+            elif (
+                source_type is not None
+                and str(source_type or "").strip() not in {"", "manual"}
+            ) or (source_ref is not None and str(source_ref or "").strip()):
+                update_kwargs["source_type"] = source_type
+                update_kwargs["source_ref"] = source_ref
             note = await asyncio.to_thread(
                 self._notebook_store.upsert_note,
-                note_id=note_id or None,
-                notebook_id=notebook_id or None,
-                title=title,
-                content=content,
-                topic_ids=topic_ids or [],
-                tags=tags or [],
-                is_ai_generated=is_ai_generated,
-                source_type=create_source_type,
-                source_ref=create_source_ref,
+                **update_kwargs,
             )
             return Ok({"note": _note_dict(note)})
         except Exception as exc:

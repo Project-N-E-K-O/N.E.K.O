@@ -11,6 +11,15 @@ type NoteSavePayload = {
   note?: NoteItem;
 };
 
+type NoteDraftSnapshot = {
+  noteId: string;
+  notebookId: string;
+  title: string;
+  content: string;
+  topics: string;
+  tags: string;
+};
+
 function csvToList(value: string): string[] {
   return value
     .split(/[,，\s]+/)
@@ -69,6 +78,14 @@ export default function NoteEditor(props: PluginSurfaceProps) {
   const [status, setStatus] = useState('');
   const [busy, setBusy] = useState(false);
   const latestDraft = useRef({ noteId: '', notebookId: '', title: '', content: '', topics: '', tags: '' });
+  const savedSnapshot = useRef<NoteDraftSnapshot>({
+    noteId: '',
+    notebookId: '',
+    title: '',
+    content: '',
+    topics: '',
+    tags: '',
+  });
 
   async function loadNote(id: string, signal?: AbortSignal) {
     if (!id.trim()) {
@@ -79,12 +96,22 @@ export default function NoteEditor(props: PluginSurfaceProps) {
     if (!note) {
       return;
     }
-    setNoteId(note.id);
-    setNotebookId(note.notebook_id || '');
-    setTitle(note.title || '');
-    setContent(note.content || '');
-    setTopics(listToCsv(note.topic_ids));
-    setTags(listToCsv(note.tags));
+    const loaded: NoteDraftSnapshot = {
+      noteId: note.id,
+      notebookId: note.notebook_id || '',
+      title: note.title || '',
+      content: note.content || '',
+      topics: listToCsv(note.topic_ids),
+      tags: listToCsv(note.tags),
+    };
+    latestDraft.current = loaded;
+    savedSnapshot.current = loaded;
+    setNoteId(loaded.noteId);
+    setNotebookId(loaded.notebookId);
+    setTitle(loaded.title);
+    setContent(loaded.content);
+    setTopics(loaded.topics);
+    setTags(loaded.tags);
   }
 
   async function saveNote() {
@@ -102,6 +129,14 @@ export default function NoteEditor(props: PluginSurfaceProps) {
       if (payload.note?.id) {
         setNoteId(payload.note.id);
       }
+      savedSnapshot.current = {
+        ...draft,
+        noteId: payload.note?.id || draft.noteId,
+      };
+      latestDraft.current = {
+        ...latestDraft.current,
+        noteId: payload.note?.id || latestDraft.current.noteId,
+      };
       setStatus(text(props, 'ui.notebook.saved', 'Saved'));
     } catch (error) {
       setStatus(errorMessage(error));
@@ -168,7 +203,14 @@ export default function NoteEditor(props: PluginSurfaceProps) {
     return () => {
       controller.abort();
       const draft = latestDraft.current;
-      if (draft.title.trim() || draft.content.trim()) {
+      const snap = savedSnapshot.current;
+      const dirty =
+        draft.notebookId !== snap.notebookId ||
+        draft.title !== snap.title ||
+        draft.content !== snap.content ||
+        draft.topics !== snap.topics ||
+        draft.tags !== snap.tags;
+      if (dirty && (draft.title.trim() || draft.content.trim())) {
         void callPlugin('study_note_upsert', {
           note_id: draft.noteId,
           notebook_id: draft.notebookId,

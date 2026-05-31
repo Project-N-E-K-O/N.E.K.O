@@ -21,6 +21,7 @@ _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 _MARKDOWN_MARKUP_RE = re.compile(r"(^|\s)[>#*+\-]{1,3}\s+|[*_~]{1,3}|^#{1,6}\s*", re.MULTILINE)
 _SEARCH_TOKEN_RE = re.compile(r"[\w\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]+", re.UNICODE)
 _SNIPPET_CHARS = 200
+_UNSET = object()
 
 
 def _strip_markdown(content: str) -> str:
@@ -329,12 +330,12 @@ class NotebookStore:
         self,
         *,
         note_id: str | None = None,
-        notebook_id: str | None = None,
-        title: str = "",
-        content: str = "",
-        topic_ids: object = None,
-        tags: object = None,
-        is_ai_generated: bool = False,
+        notebook_id: object = _UNSET,
+        title: str | None = None,
+        content: str | None = None,
+        topic_ids: object = _UNSET,
+        tags: object = _UNSET,
+        is_ai_generated: bool | None = None,
         source_type: str | None = None,
         source_ref: str | None = None,
     ) -> NoteItem:
@@ -342,14 +343,14 @@ class NotebookStore:
         existing = self.get_note(note_key) if note_key else None
         if existing is None:
             return self.create_note(
-                notebook_id=notebook_id,
-                title=title,
-                content=content,
-                is_ai_generated=is_ai_generated,
+                notebook_id=None if notebook_id is _UNSET else _nullable_text(notebook_id),
+                title=title or "",
+                content=content or "",
+                is_ai_generated=bool(is_ai_generated),
                 source_type=source_type or "manual",
                 source_ref=source_ref or "",
-                topic_ids=topic_ids,
-                tags=tags,
+                topic_ids=None if topic_ids is _UNSET else topic_ids,
+                tags=None if tags is _UNSET else tags,
                 note_id=note_key or None,
             )
         if source_type is not None and str(source_type or "").strip():
@@ -368,9 +369,17 @@ class NotebookStore:
                     existing.source_ref,
                     requested_source_ref,
                 )
+        next_notebook_id = (
+            existing.notebook_id if notebook_id is _UNSET else _nullable_text(notebook_id)
+        )
         content_text = str(content if content is not None else existing.content)
         content_plain = _strip_markdown(content_text)
-        title_text = _normalize_note_title(title or existing.title, content_plain)
+        title_text = _normalize_note_title(
+            existing.title if title is None else title,
+            content_plain,
+        )
+        topic_values = existing.topic_ids if topic_ids is _UNSET else topic_ids
+        tag_values = existing.tags if tags is _UNSET else tags
         with self.store._lock:
             conn = self.store._require_conn()
             conn.execute(
@@ -389,13 +398,13 @@ class NotebookStore:
                 WHERE id = ?
                 """,
                 (
-                    _nullable_text(notebook_id),
+                    next_notebook_id,
                     title_text,
                     content_text,
                     content_plain,
                     _snippet(content_plain),
-                    self.store._json_dumps(_normalize_string_list(topic_ids)),
-                    self.store._json_dumps(_normalize_string_list(tags)),
+                    self.store._json_dumps(_normalize_string_list(topic_values)),
+                    self.store._json_dumps(_normalize_string_list(tag_values)),
                     _word_count(content_plain),
                     note_key,
                 ),
@@ -595,10 +604,28 @@ class NotebookStore:
             f"Mode: {row['mode']}",
             str(row["summary_markdown"] or "").strip(),
         ]
-        records = self.store.list_qa_records(limit=max(1, int(limit or 20)))
+        safe_limit = max(1, int(limit or 20))
+        with self.store._lock:
+            rows = (
+                self.store._require_conn()
+                .execute(
+                    """
+                    SELECT *
+                    FROM qa_records
+                    WHERE session_id = ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (session_key, safe_limit),
+                )
+                .fetchall()
+            )
+        records = [
+            item
+            for item in (self.store._qa_record_from_row(row) for row in reversed(rows))
+            if item is not None
+        ]
         for item in records:
-            if str(item.get("session_id") or "") != session_key:
-                continue
             question = item.get("question")
             question_text = (
                 question.get("question") if isinstance(question, dict) else str(question or "")

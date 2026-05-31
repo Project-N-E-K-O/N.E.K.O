@@ -12,6 +12,25 @@ from .tutor_llm_agent_common import (
 
 _MAX_EXPAND_NOTE_CHARS = 8000
 _MAX_SUMMARIZE_TO_NOTE_CHARS = 12000
+_NOTE_SUMMARY_HEADINGS = {
+    "zh": ("标题", "要点", "细节"),
+    "zh-cn": ("标题", "要点", "细节"),
+    "zh-tw": ("標題", "重點", "細節"),
+    "en": ("Title", "Key Points", "Details"),
+    "ja": ("タイトル", "要点", "詳細"),
+    "ko": ("제목", "핵심 요점", "세부 내용"),
+    "es": ("Título", "Puntos clave", "Detalles"),
+    "pt": ("Título", "Pontos principais", "Detalhes"),
+    "ru": ("Заголовок", "Ключевые моменты", "Подробности"),
+}
+
+
+def _localized_note_headings(language: str) -> tuple[str, str, str]:
+    normalized = str(language or "").strip().lower().replace("_", "-")
+    if normalized in _NOTE_SUMMARY_HEADINGS:
+        return _NOTE_SUMMARY_HEADINGS[normalized]
+    primary = normalized.split("-", 1)[0]
+    return _NOTE_SUMMARY_HEADINGS.get(primary, _NOTE_SUMMARY_HEADINGS["en"])
 
 
 async def expand_note(
@@ -85,12 +104,14 @@ async def summarize_to_note(
     if not text:
         raise SdkError("note source text is required")
     bounded = _bounded_prompt_text(text, max_chars=_MAX_SUMMARIZE_TO_NOTE_CHARS)
+    headings = _localized_note_headings(self._config.language)
     messages = [
         {
             "role": "system",
             "content": (
                 "You turn study material into a Markdown note. The output must be "
-                "Markdown only and use this structure: '# 标题', '## 要点', '### 细节'. "
+                "Markdown only and use this structure: "
+                f"'# {headings[0]}', '## {headings[1]}', '### {headings[2]}'. "
                 "Keep it faithful to the source and do not mention saving."
             ),
         },
@@ -111,7 +132,7 @@ async def summarize_to_note(
             operation=LLM_OPERATION_SUMMARIZE_TO_NOTE,
             model_group_override="summary",
         )
-        markdown = _ensure_note_summary_structure(str(raw or ""), text)
+        markdown = _ensure_note_summary_structure(str(raw or ""), text, headings=headings)
         title = _extract_markdown_title(markdown) or "Study Note"
         return TutorReply(
             operation=LLM_OPERATION_SUMMARIZE_TO_NOTE,
@@ -121,7 +142,7 @@ async def summarize_to_note(
             created_at=utc_now_iso(),
         )
     except Exception as exc:
-        markdown = _fallback_summary_note(text)
+        markdown = _fallback_summary_note(text, headings=headings)
         title = _extract_markdown_title(markdown) or "Study Note"
         return TutorReply(
             operation=LLM_OPERATION_SUMMARIZE_TO_NOTE,
@@ -151,18 +172,26 @@ def _ensure_expanded_note_preserves_original(original: str, raw: str) -> str:
     return f"{original}\n\n{addition}".strip()
 
 
-def _ensure_note_summary_structure(raw: str, source_text: str) -> str:
+def _ensure_note_summary_structure(
+    raw: str,
+    source_text: str,
+    *,
+    headings: tuple[str, str, str] | None = None,
+) -> str:
+    _title_heading, summary_heading, details_heading = (
+        headings or _localized_note_headings("")
+    )
     markdown = str(raw or "").strip()
     if not markdown:
-        return _fallback_summary_note(source_text)
+        return _fallback_summary_note(source_text, headings=headings)
     lines = markdown.splitlines()
     if not any(line.startswith("# ") for line in lines):
         title = _derive_title(source_text)
         markdown = f"# {title}\n\n{markdown}"
-    if "## 要点" not in markdown:
-        markdown += "\n\n## 要点\n\n- " + _first_sentence(source_text)
-    if "### 细节" not in markdown:
-        markdown += "\n\n### 细节\n\n" + source_text[:1000].strip()
+    if f"## {summary_heading}" not in markdown:
+        markdown += f"\n\n## {summary_heading}\n\n- " + _first_sentence(source_text)
+    if f"### {details_heading}" not in markdown:
+        markdown += f"\n\n### {details_heading}\n\n" + source_text[:1000].strip()
     return markdown.strip()
 
 
@@ -174,13 +203,20 @@ def _fallback_expand_note(original: str) -> str:
     ).strip()
 
 
-def _fallback_summary_note(source_text: str) -> str:
+def _fallback_summary_note(
+    source_text: str,
+    *,
+    headings: tuple[str, str, str] | None = None,
+) -> str:
+    _title_heading, summary_heading, details_heading = (
+        headings or _localized_note_headings("")
+    )
     title = _derive_title(source_text)
     return (
         f"# {title}\n\n"
-        "## 要点\n\n"
+        f"## {summary_heading}\n\n"
         f"- {_first_sentence(source_text)}\n\n"
-        "### 细节\n\n"
+        f"### {details_heading}\n\n"
         f"{source_text[:2000].strip()}"
     ).strip()
 
