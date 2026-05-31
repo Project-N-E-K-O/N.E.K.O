@@ -59,4 +59,32 @@ describe('resolvePluginDisplayText', () => {
       shortDescription: '默认短描述',
     })
   })
+
+  it('preserves zh-CN fallback for Chinese locales before default_locale', () => {
+    const plugin = pluginFixture()
+    plugin.name = '后端已解析中文名称'
+    plugin.description = '后端已解析中文描述'
+    plugin.short_description = '后端已解析中文短描述'
+    plugin.i18n = {
+      default_locale: 'en',
+      messages: {
+        'zh-CN': {
+          'plugin.name': '简体中文名称',
+          'plugin.description': '简体中文描述',
+          'plugin.short_description': '简体中文短描述',
+        },
+        en: {
+          'plugin.name': 'English Name',
+          'plugin.description': 'English description',
+          'plugin.short_description': 'English short description',
+        },
+      },
+    }
+
+    expect(resolvePluginDisplayText(plugin, 'zh-TW')).toEqual({
+      name: '简体中文名称',
+      description: '简体中文描述',
+      shortDescription: '简体中文短描述',
+    })
+  })
 })

@@ -365,6 +365,11 @@ watch(pluginId, async () => {
     loading.value = false
   }
 })
+
+watch(locale, () => {
+  if (!plugin.value) return
+  void fetchSurfaces()
+})
 </script>
 
 <style scoped>

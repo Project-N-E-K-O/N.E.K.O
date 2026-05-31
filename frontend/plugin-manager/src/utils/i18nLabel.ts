@@ -32,11 +32,19 @@ export function resolvePluginI18nMessage(
   const messages = i18n?.messages
   if (!messages || !key) return fallback
 
-  const primary = String(locale).split(/[-_]/)[0]
+  const normalizedLocale = String(locale || '').trim()
+  const primary = normalizedLocale.split(/[-_]/)[0]
+  const localeLower = normalizedLocale.toLowerCase()
+  const zhCnFallback =
+    localeLower === 'zh' || localeLower.startsWith('zh-') || localeLower.startsWith('zh_')
+      ? 'zh-CN'
+      : undefined
   const candidates = [
-    locale,
-    primary && primary !== locale ? primary : undefined,
+    normalizedLocale,
+    primary && primary !== normalizedLocale ? primary : undefined,
+    zhCnFallback,
     i18n?.default_locale,
+    i18n?.default_locale?.split(/[-_]/)[0],
     'en-US',
     'en',
   ].filter((item): item is string => typeof item === 'string' && item.length > 0)
