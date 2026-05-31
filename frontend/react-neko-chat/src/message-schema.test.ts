@@ -41,6 +41,16 @@ describe('message-schema', () => {
     expect(props.compactChatState).toBe('input');
   });
 
+  it('migrates the legacy "full" surface mode to compact instead of throwing', () => {
+    const props = parseChatWindowProps({
+      // Cast: 'full' is no longer part of the public type but mixed-version
+      // hosts can still send it; the schema must migrate rather than reject.
+      chatSurfaceMode: 'full' as unknown as 'compact',
+    });
+
+    expect(props.chatSurfaceMode).toBe('compact');
+  });
+
   it('accepts an avatar interaction callback in window props', () => {
     const onAvatarInteraction = vi.fn();
     const props = parseChatWindowProps({ onAvatarInteraction });

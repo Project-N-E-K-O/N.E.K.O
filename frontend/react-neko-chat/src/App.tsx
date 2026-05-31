@@ -10,7 +10,6 @@
   type WheelEvent as ReactWheelEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
-import MessageList from './MessageList';
 import CompactExportHistoryPanel, {
   COMPACT_EXPORT_SELECTION_LIMIT,
   isCompactExportMessageSelectable,
@@ -1039,11 +1038,11 @@ export default function App({
   inputPlaceholder = i18n('chat.textInputPlaceholder', 'Type a message...'),
   sendButtonLabel = i18n('chat.send', 'Send'),
   chatWindowAriaLabel = i18n('chat.reactWindowAriaLabel', 'Neko chat window'),
-  messageListAriaLabel = i18n('chat.messageListAriaLabel', 'Chat messages'),
-  composerToolsAriaLabel = i18n('chat.composerToolsAriaLabel', 'Composer tools'),
+  messageListAriaLabel: _messageListAriaLabel,
+  composerToolsAriaLabel: _composerToolsAriaLabel,
   composerHidden = false,
   composerDisabled = false,
-  chatSurfaceMode = 'full',
+  chatSurfaceMode = 'compact',
   compactChatState = 'input',
   composerAttachments = [],
   composerAttachmentsAriaLabel = i18n('chat.pendingImagesAriaLabel', 'Pending attachments'),
@@ -1064,7 +1063,10 @@ export default function App({
   galgameToggleButtonLabel = i18n('chat.galgameToggle', 'GalGame Mode'),
   galgameToggleButtonAriaLabel,
   galgameLoadingLabel = i18n('chat.galgameLoading', 'Generating options...'),
-  onMessageAction,
+  // Retained for host API compatibility; the compact-only surface no longer
+  // renders the per-message action menu, so this handler is currently unused
+  // (the `_` prefix opts it out of unused-var lint).
+  onMessageAction: _onMessageAction,
   onComposerImportImage,
   onComposerScreenshot,
   onComposerRemoveAttachment,
@@ -1074,7 +1076,10 @@ export default function App({
   onAvatarInteraction,
   onAvatarToolStateChange,
   onJukeboxClick,
-  onExportConversationClick,
+  // Retained for host API compatibility; export lives outside the compact
+  // surface now, so this handler is currently unused (the `_` prefix opts it
+  // out of unused-var lint).
+  onExportConversationClick: _onExportConversationClick,
   onTranslateToggle,
   onGalgameModeToggle,
   onGalgameOptionSelect,
@@ -1087,14 +1092,6 @@ export default function App({
 }: ChatWindowProps) {
   const [draft, setDraft] = useState('');
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
-  // Collapse the right-side tools into an overflow menu when the composer gets
-  // narrow, while preserving the exit and re-entry animations for the tool row.
-  type ComposerLayout = 'expanded' | 'collapsing' | 'compact' | 'expanding';
-  const [composerLayout, setComposerLayout] = useState<ComposerLayout>('expanded');
-  const showRightTools = composerLayout === 'expanded' || composerLayout === 'collapsing';
-  const [collapseFromWidth, setCollapseFromWidth] = useState<number | null>(null);
-  const [overflowMenuOpen, setOverflowMenuOpen] = useState(false);
-  const [composerBottomBarNode, setComposerBottomBarNode] = useState<HTMLDivElement | null>(null);
   const [activeCursorToolId, setActiveCursorToolId] = useState<string | null>(null);
   const [avatarRangeCursorVariants, setAvatarRangeCursorVariants] = useState<ToolCursorVariantState>(() => createDefaultToolCursorVariantState());
   const [outsideRangeCursorVariants, setOutsideRangeCursorVariants] = useState<ToolCursorVariantState>(() => createDefaultToolCursorVariantState());
@@ -1105,8 +1102,6 @@ export default function App({
   const [isInnerHammerEasterEggActive, setIsInnerHammerEasterEggActive] = useState(false);
   const appShellRef = useRef<HTMLElement | null>(null);
   const toolMenuRef = useRef<HTMLDivElement | null>(null);
-  const composerBottomBarRef = useRef<HTMLDivElement | null>(null);
-  const composerToolsRightRef = useRef<HTMLDivElement | null>(null);
   const compactInputShellRef = useRef<HTMLDivElement | null>(null);
   const compactInputToolToggleRef = useRef<HTMLButtonElement | null>(null);
   const compactInputToolFanRef = useRef<HTMLDivElement | null>(null);
@@ -1131,8 +1126,6 @@ export default function App({
   const compactInputToolFanInteractiveRef = useRef(false);
   const compactInputRef = useRef<HTMLTextAreaElement | null>(null);
   const compactChoiceLayerRef = useRef<HTMLDivElement | null>(null);
-  const composerLayoutRef = useRef<ComposerLayout>('expanded');
-  const overflowMenuRef = useRef<HTMLDivElement | null>(null);
   const avatarCursorOverlayRef = useRef<HTMLDivElement | null>(null);
   const hammerCursorOverlayRef = useRef<HTMLDivElement | null>(null);
   const hammerSwingTimeoutIdsRef = useRef<number[]>([]);
@@ -1327,7 +1320,7 @@ export default function App({
     compactChoiceInteractionsAllowed && galgameModeEnabled && !choicePromptHasOptions
     && (galgameOptionsLoading || galgameOptions.length > 0);
   const compactSurfaceChoicesVisible = choicePromptHasOptions || galgameOptionsVisible;
-  const isCompactSurface = chatSurfaceMode === 'compact';
+  const isCompactSurface = chatSurfaceMode !== 'minimized';
   const requestedCompactChatState = compactChatState;
   const effectiveCompactChatState = isCompactSurface
     ? getEffectiveCompactChatState(requestedCompactChatState, compactSurfaceChoicesVisible, composerHidden)
@@ -1404,10 +1397,6 @@ export default function App({
   );
   const compactExportSelectableCount = compactExportSelectableMessages.length;
   const handleCompactExportConversationClick = useCallback(() => {
-    if (!isCompactSurface) {
-      onExportConversationClick?.();
-      return;
-    }
     setCompactExportHistoryOpen((open) => {
       const nextOpen = !open;
       persistCompactExportHistoryOpen(nextOpen);
@@ -1418,7 +1407,7 @@ export default function App({
       }
       return nextOpen;
     });
-  }, [isCompactSurface, onExportConversationClick]);
+  }, []);
   const handleCompactExportToggleMessage = useCallback((messageId: string) => {
     if (!compactExportSelectableIds.has(messageId)) return;
     setCompactExportSelectedIds((prev) => {
@@ -3032,11 +3021,6 @@ export default function App({
     clearCompactInputToolFanCloseTimer();
   }, [clearCompactInputToolFanCloseTimer]);
 
-  const handleComposerBottomBarRef = useCallback((node: HTMLDivElement | null) => {
-    composerBottomBarRef.current = node;
-    setComposerBottomBarNode(prev => (prev === node ? prev : node));
-  }, []);
-
   const collapseCompactInputIfEmpty = useCallback((options?: { ignoreFocusedShell?: boolean }) => {
     if (!isCompactSurface) return;
     if (effectiveCompactChatState !== 'input') return;
@@ -3470,100 +3454,6 @@ export default function App({
       document.removeEventListener('keydown', closeMenuOnEscape);
     };
   }, [toolMenuOpen]);
-
-  useEffect(() => {
-    composerLayoutRef.current = composerLayout;
-  }, [composerLayout]);
-
-  useEffect(() => {
-    const target = composerBottomBarNode;
-    if (!target || typeof ResizeObserver === 'undefined') return;
-    const COMPACT_THRESHOLD = 300;
-    const observer = new ResizeObserver(entries => {
-      for (const entry of entries) {
-        const wantCompact = entry.contentRect.width < COMPACT_THRESHOLD;
-        // 鍦?expanded 鈫?collapsing 杩欎竴鍒绘姄涓€涓嬪彸 4 鎸夐挳缁勭殑褰撳墠鍍忕礌瀹藉害锛?        // 鍚屼竴鎵?setState 浼氬拰 layout 鍒囨崲涓€璧?commit锛宺ender 鍑烘潵鏃?        // .is-leaving 绫诲拰 --collapse-from-width 鍙橀噺鍚屾椂鐢熸晥锛?        // CSS keyframe 灏辫兘浠庤繖涓浐瀹氬搴︽彃鍊煎埌 0銆?        // 鐢?offsetWidth 鑰岄潪 getBoundingClientRect().width锛氬墠鑰呭熀浜庡竷灞€鐩掞紝
-        // 涓嶅彈鍏ュ満 scaleX 鍔ㄧ敾褰卞搷锛涘鏋?expand 鍔ㄧ敾杩樻病璺戝畬灏卞張琚帇绐勶紝
-        if (wantCompact && composerLayoutRef.current === 'expanded' && composerToolsRightRef.current) {
-          const node = composerToolsRightRef.current;
-          const w = Math.max(node.offsetWidth, node.scrollWidth);
-          if (w > 0) setCollapseFromWidth(w);
-        }
-        setComposerLayout(prev => {
-          if (wantCompact) {
-            if (prev === 'expanded') return 'collapsing';
-            if (prev === 'expanding') return 'compact';
-            return prev;
-          } else {
-            if (prev === 'compact') return 'expanding';
-            if (prev === 'collapsing') return 'expanded';
-            return prev;
-          }
-        });
-      }
-    });
-    observer.observe(target);
-    return () => observer.disconnect();
-  }, [composerBottomBarNode]);
-
-  useEffect(() => {
-    if (isCompactSurface) {
-      setOverflowMenuOpen(false);
-      return;
-    }
-    if (!composerBottomBarNode) return;
-    if (composerBottomBarNode.getBoundingClientRect().width >= 300) {
-      setComposerLayout(prev => (
-        prev === 'compact' || prev === 'collapsing' ? 'expanded' : prev
-      ));
-    }
-  }, [composerBottomBarNode, isCompactSurface]);
-
-  // 鏀惰捣/灞曞紑鍔ㄧ敾璺戝畬鍚庡垏鍒扮ǔ鎬併€傛椂闀块渶涓?styles.css 涓殑 keyframes 瀵归綈銆?  // prefers-reduced-motion 涓?styles.css 鎶婂姩鐢昏鎴?none锛岃繖鏃惰繕绛?270/220ms
-  // 浼氳宸ュ叿鍖烘粸鐣欏湪杩囨浮鎬侊紙鎺т欢瑙嗚涓婃彁鍓嶅埌浣嶄絾 layout state 娌″垏锛夛紝
-  useEffect(() => {
-    const prefersReducedMotion =
-      typeof window !== 'undefined'
-      && typeof window.matchMedia === 'function'
-      && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (composerLayout === 'collapsing') {
-      const timerId = window.setTimeout(() => {
-        setComposerLayout(prev => (prev === 'collapsing' ? 'compact' : prev));
-      }, prefersReducedMotion ? 0 : 270);
-      return () => window.clearTimeout(timerId);
-    }
-    if (composerLayout === 'expanding') {
-      const timerId = window.setTimeout(() => {
-        setComposerLayout(prev => (prev === 'expanding' ? 'expanded' : prev));
-      }, prefersReducedMotion ? 0 : 220);
-      return () => window.clearTimeout(timerId);
-    }
-    return undefined;
-  }, [composerLayout]);
-
-  useEffect(() => {
-    if (composerLayout !== 'compact') setOverflowMenuOpen(false);
-  }, [composerLayout]);
-
-  // 路路路 鑿滃崟鐨勫閮ㄧ偣鍑?/ Esc 鍏抽棴
-  useEffect(() => {
-    if (!overflowMenuOpen) return;
-    const closeOnOutsideClick = (event: MouseEvent) => {
-      const node = overflowMenuRef.current;
-      if (!node) return;
-      if (node.contains(event.target as Node)) return;
-      setOverflowMenuOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOverflowMenuOpen(false);
-    };
-    document.addEventListener('mousedown', closeOnOutsideClick);
-    document.addEventListener('keydown', closeOnEscape);
-    return () => {
-      document.removeEventListener('mousedown', closeOnOutsideClick);
-      document.removeEventListener('keydown', closeOnEscape);
-    };
-  }, [overflowMenuOpen]);
 
   useEffect(() => {
     if (!activeCursorToolId) return;
@@ -4003,153 +3893,6 @@ export default function App({
     });
     return true;
   }, [avatarToolCacheState, compactExportHistoryOpen, getCompactHistoryDesktopDropTarget, onCompactHistoryDrop, onComposerSubmit]);
-
-  const translateButtonNode = (
-    <button
-      className={`composer-tool-btn composer-translate-btn${translateEnabled ? ' is-active' : ''}`}
-      type="button"
-      aria-label={resolvedTranslateAriaLabel}
-      aria-pressed={translateEnabled}
-      title={translateButtonLabel}
-      disabled={composerDisabled}
-      onClick={() => onTranslateToggle?.()}
-    >
-      <img src="/static/icons/translate_icon.png" alt="" aria-hidden="true" />
-    </button>
-  );
-
-  const jukeboxButtonNode = (
-    <button
-      className="composer-tool-btn"
-      type="button"
-      aria-label={jukeboxButtonAriaLabel}
-      title={jukeboxButtonLabel}
-      disabled={composerDisabled}
-      onClick={() => onJukeboxClick?.()}
-    >
-      <img src="/static/icons/jukebox_icon.png" alt="" aria-hidden="true" />
-    </button>
-  );
-
-  const galgameToggleButtonNode = (
-    <button
-      className={`composer-tool-btn composer-galgame-btn${galgameModeEnabled ? ' is-active' : ''}`}
-      type="button"
-      aria-label={resolvedGalgameAriaLabel}
-      aria-pressed={galgameModeEnabled}
-      title={galgameToggleButtonLabel}
-      disabled={composerDisabled}
-      onClick={() => onGalgameModeToggle?.()}
-    >
-      <span className="composer-galgame-btn-glyph" aria-hidden="true">G</span>
-    </button>
-  );
-
-  const emojiToolMenuNode = (
-    <div className="composer-tool-menu" ref={toolMenuRef}>
-      <button
-        className={`composer-tool-btn composer-emoji-btn${toolMenuOpen || activeToolItem ? ' is-active' : ''}`}
-        type="button"
-        aria-label={selectedEmojiButtonAriaLabel}
-        title={selectedEmojiButtonAriaLabel}
-        aria-controls={toolMenuOpen ? 'composer-tool-popover' : undefined}
-        aria-expanded={toolMenuOpen}
-        disabled={composerDisabled}
-        onClick={() => {
-          if (activeToolItem) {
-            clearActiveCursorToolSelection();
-            return;
-          }
-          setToolMenuOpen(open => !open);
-        }}
-      >
-        <img
-          src={activeToolMenuVisual?.imagePath || '/static/icons/emoji_icon.png'}
-          style={activeToolItem ? {
-            transform: `translate(${activeToolMenuVisual?.offsetX ?? 0}px, ${activeToolMenuVisual?.offsetY ?? 0}px) scale(${activeToolItem.menuIconScale ?? 1})`,
-          } : undefined}
-          alt=""
-          aria-hidden="true"
-        />
-      </button>
-      {activeToolItem ? (
-        <button
-          className="composer-tool-clear-btn"
-          type="button"
-          aria-label={clearCursorToolAriaLabel}
-          title={clearCursorToolAriaLabel}
-          disabled={composerDisabled}
-          onClick={(event) => {
-            event.stopPropagation();
-            setIsCursorInsideHostWindow(true);
-            setActiveCursorToolId(null);
-            setToolMenuOpen(false);
-          }}
-        >
-          <span aria-hidden="true">脳</span>
-        </button>
-      ) : null}
-      {toolMenuOpen ? (
-        <div
-          id="composer-tool-popover"
-          className="composer-icon-popover"
-          role="group"
-          aria-label={toolIconsAriaLabel}
-        >
-          {toolIconItems.map(item => {
-            const itemLabel = getToolItemLabel(item);
-            const menuVariant = activeCursorToolId === item.id
-              ? effectiveCursorVariant
-              : 'primary';
-            const menuVisual = resolveMenuIconVisual(item, menuVariant);
-            return (
-            <button
-              key={item.id}
-              className={`composer-icon-button${activeCursorToolId === item.id ? ' is-active' : ''}`}
-              type="button"
-              aria-pressed={activeCursorToolId === item.id}
-              aria-label={itemLabel}
-              title={itemLabel}
-              disabled={composerDisabled}
-              onClick={(event) => {
-                latestPointerPositionRef.current = {
-                  x: event.clientX,
-                  y: event.clientY,
-                };
-                latestPointerTargetRef.current = event.currentTarget;
-                setIsCursorInsideHostWindow(true);
-                setIsCursorOverCompactCursorZone(true);
-                setCursorOverAvatarRange(
-                  isPointerWithinAvatarRange(event.clientX, event.clientY, avatarToolCacheState),
-                  { allowHold: true },
-                );
-                if (activeCursorToolId === item.id) {
-                  setActiveCursorToolId(null);
-                  setToolMenuOpen(false);
-                  return;
-                }
-                setAvatarRangeCursorVariants(prev => ({ ...prev, [item.id]: 'primary' }));
-                setOutsideRangeCursorVariants(prev => ({ ...prev, [item.id]: 'primary' }));
-                setActiveCursorToolId(item.id);
-                setToolMenuOpen(false);
-              }}
-            >
-              <img
-                className="composer-icon-button-image"
-                src={menuVisual.imagePath}
-                style={{
-                  transform: `translate(${menuVisual.offsetX}px, ${menuVisual.offsetY}px) scale(${item.menuIconScale ?? 1})`,
-                }}
-                alt=""
-                aria-hidden="true"
-              />
-            </button>
-            );
-          })}
-        </div>
-      ) : null}
-    </div>
-  );
 
   const compactFanRunAction = (action: (() => void) | undefined) => (event: ReactMouseEvent) => {
     if (shouldSuppressCompactToolClick(event)) {
@@ -4670,14 +4413,6 @@ export default function App({
     ? (typeof document !== 'undefined' ? createPortal(choiceLayerNode, document.body) : choiceLayerNode)
     : null;
 
-  const messageListNode = (
-    <MessageList
-      messages={messages}
-      ariaLabel={messageListAriaLabel}
-      failedStatusLabel={failedStatusLabel}
-      onAction={onMessageAction}
-    />
-  );
   const compactExportHistoryElement = isCompactSurface && compactExportHistoryOpen ? (
     <CompactExportHistoryPanel
       messages={messages}
@@ -4729,11 +4464,7 @@ export default function App({
         />
       </div>
     </section>
-  ) : (
-    <section className="chat-body">
-      {messageListNode}
-    </section>
-  );
+  ) : null;
 
   return (
     <main
@@ -5031,130 +4762,11 @@ export default function App({
                         {compactPreviewDisplayText}
                       </span>
                     </button>
-	                  )}
-		                </div>
-		                {compactInputToolFanNode}
-		              </div>
-            ) : (
-              <div
-                className="composer-input-shell"
-                data-compact-chat-state={effectiveCompactChatState}
-              >
-              <textarea
-                className="composer-input"
-                placeholder={inputPlaceholder}
-                aria-label={inputPlaceholder}
-                rows={1}
-                value={draft}
-                readOnly={composerDisabled}
-                disabled={composerDisabled}
-                onChange={(event) => { setDraft(event.target.value); }}
-                onKeyDown={(event) => {
-                  if (event.nativeEvent.isComposing) return;
-                  if (event.key === 'Enter' && !event.shiftKey) {
-                    event.preventDefault();
-                    submitDraft();
-                  }
-                }}
-              />
-              {!isCompactSurface ? choiceLayerNode : null}
-              <div
-                className="composer-bottom-bar"
-                ref={handleComposerBottomBarRef}
-              >
-                <div className="composer-bottom-tools" aria-label={composerToolsAriaLabel}>
-                  <button
-                    className="composer-tool-btn"
-                    type="button"
-                    aria-label={resolvedImportImageAriaLabel}
-                    title={importImageButtonLabel}
-                    disabled={composerDisabled}
-                    onClick={() => onComposerImportImage?.()}
-                  >
-                    <img src="/static/icons/import_image_icon.png" alt="" aria-hidden="true" />
-                  </button>
-                  <span className="composer-tool-divider" aria-hidden="true">|</span>
-                  <button
-                    className="composer-tool-btn"
-                    type="button"
-                    aria-label={resolvedScreenshotAriaLabel}
-                    title={screenshotButtonLabel}
-                    disabled={composerDisabled}
-                    onClick={() => onComposerScreenshot?.()}
-                  >
-                    <img src="/static/icons/screenshot_new_icon.png" alt="" aria-hidden="true" />
-                  </button>
-                  {/* 杩欐潯鍒嗛殧绗﹀湪 expanded / compact 涓ゆ€佷笅閮藉父椹诲悓涓€浣嶇疆锛?                      閬垮厤鍒囨崲鏃跺垎闅旂闂儊锛岃鍔ㄧ敾杩囨浮鏇撮『婊?*/}
-                  <span className="composer-tool-divider" aria-hidden="true">|</span>
-                  {showRightTools ? (
-                    <div
-                      ref={composerToolsRightRef}
-                      className={`composer-tools-right${composerLayout === 'collapsing' ? ' is-leaving' : ''}`}
-                      key="composer-tools-expanded"
-                      style={
-                        composerLayout === 'collapsing' && collapseFromWidth != null
-                          ? ({ '--collapse-from-width': `${collapseFromWidth}px` } as CSSProperties)
-                          : undefined
-                      }
-                    >
-                      {galgameToggleButtonNode}
-                      <span className="composer-tool-divider" aria-hidden="true">|</span>
-                      {translateButtonNode}
-                      <span className="composer-tool-divider" aria-hidden="true">|</span>
-                      {jukeboxButtonNode}
-                      <span className="composer-tool-divider" aria-hidden="true">|</span>
-                      {emojiToolMenuNode}
-                    </div>
-                  ) : (
-                    <div
-                      className={`composer-overflow-menu${composerLayout === 'expanding' ? ' is-leaving' : ''}`}
-                      key="composer-tools-collapsed"
-                      ref={overflowMenuRef}
-                    >
-                      <button
-                        className={`composer-tool-btn composer-overflow-btn${overflowMenuOpen ? ' is-active' : ''}`}
-                        type="button"
-                        aria-label={overflowMenuAriaLabel}
-                        title={overflowMenuAriaLabel}
-                        aria-haspopup="true"
-                        aria-expanded={overflowMenuOpen}
-                        disabled={composerDisabled}
-                        onClick={() => setOverflowMenuOpen(open => !open)}
-                      >
-                        <svg
-                          width="20"
-                          height="20"
-                          viewBox="0 0 24 24"
-                          fill="currentColor"
-                          aria-hidden="true"
-                          focusable="false"
-                        >
-                          <circle cx="6" cy="12" r="2" />
-                          <circle cx="12" cy="12" r="2" />
-                          <circle cx="18" cy="12" r="2" />
-                        </svg>
-                      </button>
-                      {overflowMenuOpen ? (
-                        <div
-                          className="composer-overflow-popover"
-                          role="group"
-                          aria-label={overflowMenuAriaLabel}
-                        >
-                          {galgameToggleButtonNode}
-                          {translateButtonNode}
-                          {jukeboxButtonNode}
-                          {emojiToolMenuNode}
-                        </div>
-                      ) : null}
-                    </div>
                   )}
                 </div>
-                <button className="send-button-circle" type="submit" aria-label={sendButtonLabel} disabled={!canSubmit}>
-                  <img src="/static/icons/send_new_icon.png" alt="" aria-hidden="true" />
-                </button>
+                {compactInputToolFanNode}
               </div>
-            </div>
-            )}
+            ) : null}
           </form>
         </footer>
       </section>
