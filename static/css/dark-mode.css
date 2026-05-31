@@ -652,9 +652,11 @@ html #chat-container {
 @media only screen and (max-width: 768px) {
 
   /* Electron Pet 窗口（html/body 带 lanlan-pet-mode）排除：它需要透明背景
-     透出桌面，绝不能在暗色下被刷成黑色。 */
+     透出桌面，绝不能在暗色下被刷成黑色。
+     Electron 紧凑聊天窗口（body.electron-chat-window）同理排除：它是透明
+     BrowserWindow，圆角胶囊外围要透出桌面/Live2D，不能被刷黑。 */
   html[data-theme="dark"]:not(.lanlan-pet-mode),
-  html[data-theme="dark"]:not(.lanlan-pet-mode) body {
+  html[data-theme="dark"]:not(.lanlan-pet-mode) body:not(.electron-chat-window) {
     background: #000 !important;
   }
 

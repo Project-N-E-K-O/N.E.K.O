@@ -2682,9 +2682,10 @@ body.react-chat-window-dragging {
 
 @media only screen and (max-width: 768px) {
 
-    /* 手机端背景设为黑色（Electron Pet 窗口除外：html/body 都带 lanlan-pet-mode） */
+    /* 手机端背景设为黑色（Electron Pet 窗口除外：html/body 都带 lanlan-pet-mode；
+       Electron 紧凑聊天窗口 body.electron-chat-window 也排除，它要透明透出桌面） */
     html:not(.lanlan-pet-mode),
-    body:not(.lanlan-pet-mode) {
+    body:not(.lanlan-pet-mode):not(.electron-chat-window) {
         background: #000 !important;
     }
 
