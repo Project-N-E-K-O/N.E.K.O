@@ -36,6 +36,16 @@ class _FakeSession:
     """模拟 ort.InferenceSession.run:返回固定 hidden_dim 的 token embeddings。
 
     记录每次 run 的 (batch_size, seq_len),让测试断言桶分行为。
+
+    关键设计:每行根据 ids[i, 0] 选一个**唯一的非零维度**打成 1.0,其余
+    维度为 0。这样:
+
+    - L2 归一化后向量保持「在该维度上是单位向量」(方向可区分,不会被
+      normalize 塌成同一个方向)— CodeRabbit 在 PR #1585 指出原来用
+      「单维度上的不同幅值」做区分,过 norm 后全变成 [1, 0, ..., 0],
+      错位也能通过断言。
+    - 测试可以用 ``argmax`` 直接读回 marker 维度,反推 sample → output
+      的映射,验证桶装-还原没把 idx 搞错位。
     """
     HIDDEN = 32  # 测试用小 hidden,跟生产 256/768 无关
 
@@ -52,11 +62,12 @@ class _FakeSession:
         ids = feeds["input_ids"]
         batch, seq = ids.shape
         self.calls.append((batch, seq))
-        # 返回 (batch, seq, hidden) — 每个 token embedding 用 row idx 当
-        # 特征值,这样输出能区分行,后续断言可以验证顺序对齐。
         out = np.zeros((batch, seq, self.HIDDEN), dtype=np.float32)
         for i in range(batch):
-            out[i, :, 0] = float(ids[i, 0])  # 每行首 token id 编码进 hidden[0]
+            # marker ∈ [1, HIDDEN-1],避开 0 让 argmax 唯一;ids 从 1 起、
+            # mod (HIDDEN-1) + 1 保证落进合法区间。
+            marker = ((int(ids[i, 0]) - 1) % (self.HIDDEN - 1)) + 1
+            out[i, :, marker] = 1.0
         return [out]
 
 
@@ -67,12 +78,10 @@ def service_with_fake_session(monkeypatch):
     用 ``object.__new__`` 跳过 ``__init__``,避免被 config_manager / 文件
     路径 / RAM 检测等副作用拖累——我们只想测 _infer_blocking 的桶分。
     """
-    # 必须在这里 import,而不是文件顶层:onnxruntime 不一定装,顶层
-    # import memory.embeddings 会触发 _build_default_service 的 import
-    # 链(虽然 service 是 lazy 的,但模块顶层 import 还是会跑)。所以
-    # importorskip 一下,让没装 ort 的环境干净 skip。
-    pytest.importorskip("tokenizers")  # _build_default_service 需要,但
-    # 我们不真走那条路;importorskip 只是兜底。
+    # ``object.__new__`` 绕过 __init__,fixture 既不走 _build_default_service
+    # 也不走 _load_session_blocking — tokenizers / onnxruntime 都不需要。
+    # 顶层 ``import memory.embeddings`` 本身是纯 Python 模块加载(没有
+    # 副作用 import 重依赖),importorskip 一下兜底罕见的打包剥离场景。
     embeddings = pytest.importorskip("memory.embeddings")
     svc = object.__new__(embeddings.EmbeddingService)
     fake_sess = _FakeSession()
@@ -85,8 +94,15 @@ def service_with_fake_session(monkeypatch):
 def _run_with_lengths(svc, fake_sess, embeddings_mod, lengths):
     """直接喂预 tokenized 的 encoded 列表给 _run_bucket / _infer_blocking
     走桶分。绕过 tokenizer.encode_batch,直接 monkeypatch tokenizer。
+
+    给每个 encoded 注入唯一首 token id(1, 2, 3, ...),跟 _FakeSession
+    的 marker 维度方案配合 — argmax(output[i]) 直接还原"第 i 个槽对应
+    哪个原始样本",顺序回归用例才有真断言力。
     """
     encoded = [_FakeEncoded(n) for n in lengths]
+    for i, enc in enumerate(encoded, start=1):
+        if enc.ids:
+            enc.ids[0] = i  # 注入稳定 marker;后续 token 仍是 dummy
     svc._tokenizer = types.SimpleNamespace(encode_batch=lambda texts: encoded)
     # texts 列表只起占位作用,长度跟 encoded 对齐就行
     texts = ["x"] * len(lengths)
@@ -130,17 +146,27 @@ def test_single_overlong_entry_still_runs(service_with_fake_session):
 
 def test_mixed_length_preserves_original_order(service_with_fake_session):
     """桶内按长度排序,但 _infer_blocking 必须按 original idx 还原输出顺序,
-    否则 zip(texts, vectors) 错位会让缓存键全错。"""
+    否则 zip(texts, vectors) 错位会让缓存键全错。
+
+    断言机制:_FakeSession.run 给每行在 marker=ids[i,0] 维度上打 1.0(L2
+    归一化后该维度仍是单位向量、其余维度 0),所以 argmax(out[i]) ==
+    marker 维度,而 _run_with_lengths 给样本 i 注入 ids[0]=i+1 — 因此
+    output 顺序正确时,argmax 序列必须是 [1, 2, 3, 4, 5](mod HIDDEN-1
+    后)。错位 / 漏填都会被这个断言抓到。
+    """
     svc, sess, emb = service_with_fake_session
-    # 5 条混合长度:用首 token id(=1)区分每行,验证顺序
     lengths = [50, 5, 100, 8, 200]
     out = _run_with_lengths(svc, sess, emb, lengths)
     assert len(out) == 5
-    # 每行 hidden[0] 应当 = ids[0] = 1(_FakeEncoded 的 ids 起 1),
-    # L2-norm 后 = 1/||v||。我们只验证输出对应输入是非 None 的有限值,
-    # 顺序对齐由 out[orig_i] 赋值机制保证(单测断言的是「不漏不错位」)。
     assert all(v is not None for v in out)
     assert all(len(v) == _FakeSession.HIDDEN for v in out)
+    # 输入样本 i(0-indexed)注入的 first-token-id 是 i+1,marker 维度 =
+    # ((i+1 - 1) % (HIDDEN-1)) + 1 = (i % 31) + 1。
+    expected_markers = [(i % (_FakeSession.HIDDEN - 1)) + 1 for i in range(5)]
+    actual_markers = [max(range(len(v)), key=v.__getitem__) for v in out]
+    assert actual_markers == expected_markers, (
+        f"输出顺序跟输入错位了: expected {expected_markers}, got {actual_markers}"
+    )
 
 
 def test_one_long_entry_does_not_pollute_short_batch(service_with_fake_session):
