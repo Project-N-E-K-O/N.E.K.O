@@ -1270,10 +1270,11 @@
         requestRender();
     }
 
-    // undo/redo 切快照后，把选项条状态（水印文字/字号）对齐到恢复出来的水印标注，
-    // 否则后续只调字号也会用 undo 前的旧 currentWatermarkText 重建、把撤销掉的文字又贴回来（Codex P2）。
+    // undo/redo 切快照后，把选项条状态（水印文字/字号）对齐到恢复出来的水印标注。
+    // 必须无条件同步 current* 变量（即使当前不是水印工具）—— 否则"改水印→切到别的工具→undo"
+    // 时 current* 仍是旧值，等切回水印工具时 setTool 自动 ensureWatermark 会用旧文字重建、
+    // 把撤销掉的文字又贴回来（Codex P2）。选项条 DOM 只在水印工具激活时才需要重建。
     function syncWatermarkOptionsFromAnnotations() {
-        if (currentTool !== 'watermark') return;
         var idx = findWatermarkIndex();
         if (idx >= 0) {
             var wm = annotations[idx];
@@ -1281,7 +1282,7 @@
             var scale = displayScale() || 1;
             currentWatermarkSizePx = Math.max(16, Math.min(96, Math.round((wm.fontSize || 30) * scale)));
         }
-        updateOptionsBar(); // 重建输入框/滑块，反映对齐后的值
+        if (currentTool === 'watermark') updateOptionsBar(); // 重建输入框/滑块，反映对齐后的值
     }
 
     // 选项/调色板变动时刷新已铺的水印（替换对象）。逐字输入经 'watermark' tag 合并成一步 undo。
