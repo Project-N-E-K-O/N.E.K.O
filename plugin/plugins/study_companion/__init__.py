@@ -78,6 +78,13 @@ from .tutor_llm_agent import diagnostic_code_for_exception
 from .ui_api import build_open_ui_payload
 from .ui_api import build_contribution_settings_payload, build_knowledge_map_payload
 from .ui_api import build_habit_dashboard_payload, build_pomodoro_status_payload
+from .voice_contracts import (
+    VOICE_TRANSCRIPT_EVENT_ID,
+    VOICE_TRANSCRIPT_EVENT_TYPE,
+    voice_transcript_cancel_response,
+    voice_transcript_noop,
+    voice_transcript_prime_context,
+)
 from .voice_filter import VoiceFilter, _derive_subject, build_context_for_catgirl
 
 
@@ -744,8 +751,8 @@ class StudyCompanionPlugin(
         return dict(self._state.last_screen_classification)
 
     @custom_event(
-        event_type="voice_transcript",
-        id="handle_transcript",
+        event_type=VOICE_TRANSCRIPT_EVENT_TYPE,
+        id=VOICE_TRANSCRIPT_EVENT_ID,
         name="Handle study voice transcript",
         description="Filter realtime study voice transcripts and return a voice-session action.",
         input_schema={
@@ -768,13 +775,13 @@ class StudyCompanionPlugin(
     ):
         text = str(transcript or "").strip()
         if not text:
-            return Ok({"action": "noop", "reason": "empty_transcript"})
+            return Ok(voice_transcript_noop("empty_transcript"))
         metadata_payload = metadata if isinstance(metadata, dict) else {}
         session_key = _voice_session_key(lanlan_name, metadata_payload)
 
         async with self._lock:
             if self._state.status != STATUS_READY:
-                return Ok({"action": "noop", "reason": "not_ready"})
+                return Ok(voice_transcript_noop("not_ready"))
             state_snapshot_payload = self._state.to_dict()
 
         # Voice filtering only needs a point-in-time view; avoid holding the
@@ -806,9 +813,9 @@ class StudyCompanionPlugin(
             extra_names=[lanlan_name],
         )
         if filter_result is None:
-            return Ok({"action": "noop", "reason": "not_matched"})
+            return Ok(voice_transcript_noop("not_matched"))
         if not bool(filter_result.get("should_relay")):
-            return Ok({"action": "cancel_response", "filter": dict(filter_result)})
+            return Ok(voice_transcript_cancel_response(filter_payload=filter_result))
 
         state_snapshot = SimpleNamespace(**state_snapshot_payload)
         context_text = build_context_for_catgirl(
@@ -819,20 +826,18 @@ class StudyCompanionPlugin(
         ).strip()
         if not context_text:
             return Ok(
-                {
-                    "action": "noop",
-                    "reason": "empty_context",
-                    "filter": dict(filter_result),
-                }
+                voice_transcript_noop(
+                    "empty_context",
+                    filter=dict(filter_result),
+                )
             )
         return Ok(
-            {
-                "action": "prime_context",
-                "context": context_text,
-                "skipped": False,
-                "filter": dict(filter_result),
-                "lanlan_name": str(lanlan_name or ""),
-            }
+            voice_transcript_prime_context(
+                context_text,
+                skipped=False,
+                filter_payload=filter_result,
+                lanlan_name=str(lanlan_name or ""),
+            )
         )
 
     async def _update_screen_classification(

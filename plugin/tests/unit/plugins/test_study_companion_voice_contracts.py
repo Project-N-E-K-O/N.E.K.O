@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from plugin.server.application.plugins.event_contracts import (
+from plugin.plugins.study_companion.voice_contracts import (
     arbitrate_voice_transcript_results,
 )
 

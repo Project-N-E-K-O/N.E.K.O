@@ -13,6 +13,7 @@ _install_runtime_bindings()
 
 import mimetypes
 import json
+from collections.abc import Mapping
 mimetypes.add_type("application/javascript", ".js")
 import asyncio
 import uuid
@@ -1648,36 +1649,97 @@ async def _emit_agent_status_update(lanlan_name: Optional[str] = None) -> None:
         pass
 
 
+VOICE_TRANSCRIPT_CUSTOM_EVENT_TYPE = "voice_transcript"
+VOICE_TRANSCRIPT_CUSTOM_EVENT_TIMEOUT_SECONDS = 1.0
+
+
+def _voice_bridge_noop(reason: str, **extra: object) -> Dict[str, Any]:
+    return {
+        "action": "noop",
+        "reason": str(reason or "noop"),
+        **extra,
+    }
+
+
+def _voice_transcript_request_has_text(event: Mapping[str, object] | None) -> bool:
+    if not isinstance(event, Mapping):
+        return False
+    return bool(str(event.get("transcript") or "").strip())
+
+
+def _voice_transcript_custom_event_args(event: Mapping[str, object]) -> Dict[str, object]:
+    metadata = event.get("metadata")
+    return {
+        "transcript": str(event.get("transcript") or "").strip(),
+        "lanlan_name": str(event.get("lanlan_name") or ""),
+        "metadata": dict(metadata) if isinstance(metadata, Mapping) else {},
+    }
+
+
+def _voice_bridge_action_from_dispatch_results(dispatch_results: object) -> Dict[str, Any]:
+    if not isinstance(dispatch_results, list) or not dispatch_results:
+        return _voice_bridge_noop("no_subscribers")
+
+    failure_count = 0
+    for item in dispatch_results:
+        if not isinstance(item, Mapping):
+            continue
+        if not bool(item.get("success")):
+            failure_count += 1
+            continue
+        result = item.get("result")
+        if not isinstance(result, Mapping):
+            continue
+        action = str(result.get("action") or "").strip()
+        if not action:
+            continue
+        payload: Dict[str, Any] = dict(result)
+        payload["action"] = action
+        plugin_id = str(item.get("plugin_id") or "").strip()
+        if plugin_id:
+            payload.setdefault("source_plugin", plugin_id)
+        source_event_id = str(item.get("event_id") or "").strip()
+        if source_event_id:
+            payload.setdefault("source_event_id", source_event_id)
+        return payload
+
+    return _voice_bridge_noop("no_handler_result", failures=failure_count)
+
+
+async def _dispatch_voice_transcript_custom_event(
+    event: Mapping[str, object],
+) -> Dict[str, Any]:
+    from plugin.server.application.plugins.dispatch_service import PluginDispatchService
+
+    dispatch_results = await PluginDispatchService().trigger_custom_event_subscribers(
+        event_type=VOICE_TRANSCRIPT_CUSTOM_EVENT_TYPE,
+        args=_voice_transcript_custom_event_args(event),
+        timeout=VOICE_TRANSCRIPT_CUSTOM_EVENT_TIMEOUT_SECONDS,
+    )
+    return _voice_bridge_action_from_dispatch_results(dispatch_results)
+
+
 async def _handle_voice_transcript_request(event: Dict[str, Any]) -> None:
     event_id = str((event or {}).get("event_id") or "")
     lanlan_name = (event or {}).get("lanlan_name")
-    result: Dict[str, Any] = {"action": "noop", "reason": "unavailable"}
+    result: Dict[str, Any] = _voice_bridge_noop("unavailable")
 
     try:
-        from plugin.server.application.plugins import voice_transcript_bridge
-
-        if not voice_transcript_bridge.voice_transcript_request_has_text(event):
-            result = voice_transcript_bridge.voice_transcript_noop("empty_transcript")
+        if not _voice_transcript_request_has_text(event):
+            result = _voice_bridge_noop("empty_transcript")
         elif not Modules.analyzer_enabled:
-            result = voice_transcript_bridge.voice_transcript_noop("agent_disabled")
+            result = _voice_bridge_noop("agent_disabled")
         elif not Modules.agent_flags.get("user_plugin_enabled", False):
-            result = voice_transcript_bridge.voice_transcript_noop(
-                "user_plugin_disabled"
-            )
+            result = _voice_bridge_noop("user_plugin_disabled")
         else:
             lifecycle_ready = bool(Modules.plugin_lifecycle_started)
             if not lifecycle_ready:
                 lifecycle_ready = await _ensure_plugin_lifecycle_started()
 
             if not lifecycle_ready:
-                result = voice_transcript_bridge.voice_transcript_noop(
-                    "plugin_lifecycle_start_failed"
-                )
+                result = _voice_bridge_noop("plugin_lifecycle_start_failed")
             else:
-                result = await voice_transcript_bridge.resolve_voice_transcript_request(
-                    event,
-                    timeout=voice_transcript_bridge.VOICE_TRANSCRIPT_DISPATCH_TIMEOUT_SECONDS,
-                )
+                result = await _dispatch_voice_transcript_custom_event(event)
     except Exception as exc:
         logger.debug(
             "[VoiceBridge] plugin dispatch failed: event_id=%s lanlan=%s err=%s",

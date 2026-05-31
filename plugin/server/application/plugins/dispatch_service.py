@@ -8,9 +8,6 @@ from typing import Protocol, runtime_checkable
 
 from plugin.core.state import state
 from plugin.logging_config import get_logger
-from plugin.server.application.plugins.event_contracts import (
-    arbitrate_custom_event_result,
-)
 from plugin.server.domain import RUNTIME_ERRORS
 from plugin.server.domain.errors import ServerDomainError
 
@@ -294,23 +291,4 @@ class PluginDispatchService:
             await asyncio.gather(
                 *(_dispatch_handler(plugin_id, event_id) for plugin_id, event_id in handlers)
             )
-        )
-
-    async def trigger_arbitrated_custom_event(
-        self,
-        *,
-        event_type: str,
-        event_id: str = "",
-        args: object,
-        timeout: float,
-    ) -> dict[str, object]:
-        dispatch_results = await self.trigger_custom_event_subscribers(
-            event_type=event_type,
-            event_id=event_id,
-            args=args,
-            timeout=timeout,
-        )
-        return arbitrate_custom_event_result(
-            event_type=event_type,
-            dispatch_results=dispatch_results,
         )

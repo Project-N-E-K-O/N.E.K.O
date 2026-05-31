@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from typing import Any
 
 VOICE_TRANSCRIPT_EVENT_TYPE = "voice_transcript"
+VOICE_TRANSCRIPT_EVENT_ID = "handle_transcript"
 
 VOICE_TRANSCRIPT_ACTION_NOOP = "noop"
 VOICE_TRANSCRIPT_ACTION_CANCEL_RESPONSE = "cancel_response"
@@ -19,6 +20,49 @@ VOICE_TRANSCRIPT_ACTION_RANK = {
     VOICE_TRANSCRIPT_ACTION_PRIME_CONTEXT: 1,
     VOICE_TRANSCRIPT_ACTION_CANCEL_RESPONSE: 2,
 }
+
+
+def voice_transcript_noop(reason: str, **extra: object) -> dict[str, object]:
+    payload = dict(extra)
+    payload.update(
+        {
+            "action": VOICE_TRANSCRIPT_ACTION_NOOP,
+            "reason": str(reason or "noop"),
+        }
+    )
+    return payload
+
+
+def voice_transcript_cancel_response(
+    *,
+    filter_payload: Mapping[str, object] | None = None,
+    **extra: object,
+) -> dict[str, object]:
+    payload: dict[str, object] = dict(extra)
+    payload["action"] = VOICE_TRANSCRIPT_ACTION_CANCEL_RESPONSE
+    if filter_payload is not None:
+        payload["filter"] = dict(filter_payload)
+    return payload
+
+
+def voice_transcript_prime_context(
+    context: str,
+    *,
+    skipped: bool = False,
+    filter_payload: Mapping[str, object] | None = None,
+    **extra: object,
+) -> dict[str, object]:
+    payload: dict[str, object] = dict(extra)
+    payload.update(
+        {
+            "action": VOICE_TRANSCRIPT_ACTION_PRIME_CONTEXT,
+            "context": str(context or "").strip(),
+            "skipped": bool(skipped),
+        }
+    )
+    if filter_payload is not None:
+        payload["filter"] = dict(filter_payload)
+    return payload
 
 
 def _coerce_priority(value: object) -> float:
@@ -80,12 +124,11 @@ def _normalize_voice_transcript_candidate(
 
 def arbitrate_voice_transcript_results(dispatch_results: object) -> dict[str, Any]:
     if not isinstance(dispatch_results, list) or not dispatch_results:
-        return {
-            "action": VOICE_TRANSCRIPT_ACTION_NOOP,
-            "reason": "no_subscribers",
-            "priority": 0.0,
-            "skipped": False,
-        }
+        return voice_transcript_noop(
+            "no_subscribers",
+            priority=0.0,
+            skipped=False,
+        )
 
     selected: tuple[int, float, int, dict[str, Any]] | None = None
     noop_count = 0
@@ -112,42 +155,29 @@ def arbitrate_voice_transcript_results(dispatch_results: object) -> dict[str, An
     if selected is not None:
         return selected[3]
     if noop_count:
-        return {
-            "action": VOICE_TRANSCRIPT_ACTION_NOOP,
-            "reason": "all_noop",
-            "priority": 0.0,
-            "skipped": False,
-            "handlers": noop_count,
-            "failures": failure_count,
-        }
-    return {
-        "action": VOICE_TRANSCRIPT_ACTION_NOOP,
-        "reason": "no_handler_result",
-        "priority": 0.0,
-        "skipped": False,
-        "failures": failure_count,
-    }
-
-
-def arbitrate_custom_event_result(
-    *,
-    event_type: str,
-    dispatch_results: object,
-) -> dict[str, Any]:
-    if event_type == VOICE_TRANSCRIPT_EVENT_TYPE:
-        return arbitrate_voice_transcript_results(dispatch_results)
-    return {
-        "action": "noop",
-        "reason": "no_event_contract",
-        "event_type": event_type,
-    }
+        return voice_transcript_noop(
+            "all_noop",
+            priority=0.0,
+            skipped=False,
+            handlers=noop_count,
+            failures=failure_count,
+        )
+    return voice_transcript_noop(
+        "no_handler_result",
+        priority=0.0,
+        skipped=False,
+        failures=failure_count,
+    )
 
 
 __all__ = [
     "VOICE_TRANSCRIPT_ACTION_CANCEL_RESPONSE",
     "VOICE_TRANSCRIPT_ACTION_NOOP",
     "VOICE_TRANSCRIPT_ACTION_PRIME_CONTEXT",
+    "VOICE_TRANSCRIPT_EVENT_ID",
     "VOICE_TRANSCRIPT_EVENT_TYPE",
-    "arbitrate_custom_event_result",
     "arbitrate_voice_transcript_results",
+    "voice_transcript_cancel_response",
+    "voice_transcript_noop",
+    "voice_transcript_prime_context",
 ]
