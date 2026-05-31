@@ -2320,7 +2320,9 @@ body.react-chat-window-dragging {
 
 .crop-tool-btn:focus-visible,
 .crop-color-swatch:focus-visible,
-.crop-width-btn:focus-visible {
+.crop-width-btn:focus-visible,
+.crop-opt-slider:focus-visible,
+.crop-opt-text:focus-visible {
     outline: 2px solid rgba(68, 183, 254, 0.85);
     outline-offset: 1px;
 }
