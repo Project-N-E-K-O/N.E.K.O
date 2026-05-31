@@ -97,11 +97,13 @@ else:
 Other common operations:
 
 ```python
+from plugin.sdk.plugin import unwrap
+
 # Check if a plugin is available
-exists = await self.plugins.exists("web_search")
+exists = unwrap(await self.plugins.exists("web_search"))
 
 # List all running plugins
-running = await self.plugins.list(enabled=True)
+running = unwrap(await self.plugins.list(enabled=True))
 ```
 
 ---

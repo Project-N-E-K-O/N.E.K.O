@@ -97,11 +97,13 @@ else:
 よく使う操作:
 
 ```python
+from plugin.sdk.plugin import unwrap
+
 # プラグインが利用可能か確認
-exists = await self.plugins.exists("web_search")
+exists = unwrap(await self.plugins.exists("web_search"))
 
 # 実行中のプラグイン一覧
-running = await self.plugins.list(enabled=True)
+running = unwrap(await self.plugins.list(enabled=True))
 ```
 
 ---
