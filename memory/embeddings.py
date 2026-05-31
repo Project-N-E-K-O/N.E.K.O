@@ -104,7 +104,19 @@ DEFAULT_VECTORS_MODEL_PROFILE_ID = "local-text-retrieval-v1"
 DEFAULT_VECTORS_QUANTIZATION = "auto"             # "auto" | "int8" | "fp32"
 DEFAULT_VECTORS_MIN_RAM_GB = 4.0
 DEFAULT_VECTORS_MODEL_DIR_NAME = "embedding_models"
-DEFAULT_VECTORS_MAX_LENGTH = 8192
+DEFAULT_VECTORS_MAX_LENGTH = 1024
+
+# 推理峰值上限。激活内存近似 ``batch × seq × hidden × layers``;固定
+# batch + pad-to-longest 让一条长文本就能把激活顶到上百 GB(实测:
+# 用户粘贴一段长 recent 进记忆,凛天上线那个 sweep 把 RSS 从 1.1 GB
+# 顶到 12.4 GB)。改成 token 预算 ``batch × max_len ≤ _INFER_TOKEN_BUDGET``,
+# 长文本时 batch 自动缩到 1~2 条,峰值有硬上界。
+#
+# 选 16384:在新 max_length=1024 下,一桶能放下 16 条满长(等同
+# worker BATCH_SIZE=16 的原行为),正常路径吞吐零损失;当历史数据 /
+# 测试 / 自定义 profile 把 max_length 顶到旧 8192 时也只允许 2 条
+# 一桶,峰值仍可控。"""
+_INFER_TOKEN_BUDGET = 16384
 
 # Matryoshka discrete steps supported by the default local profile.
 _DIM_STEPS = (32, 64, 128, 256, 512, 768)
@@ -1251,6 +1263,12 @@ class EmbeddingService:
         sess_opts = ort.SessionOptions()
         sess_opts.intra_op_num_threads = max(1, (os.cpu_count() or 2) // 2)
         sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        # Arena 默认 True(BFCArena 只涨不还):一次性大分配后 RSS 永久
+        # 钉在高水位,把瞬时尖峰变成永久占用。我们的输入有 _INFER_TOKEN_BUDGET
+        # 兜底,峰值已可控;关掉 arena 让分配器跟实际需求走,RSS 能跌回,
+        # 也避免冷路径偶发长批次永久污染基线。代价:每次 run 重新 malloc,
+        # CPU 推理本来就 100ms+ 级,malloc 几 μs 可忽略。
+        sess_opts.enable_cpu_mem_arena = False
         self._session = ort.InferenceSession(
             model_path, sess_options=sess_opts, providers=["CPUExecutionProvider"],
         )
@@ -1267,22 +1285,72 @@ class EmbeddingService:
         encodes the dim: a 64-d cached vector and a 256-d freshly
         computed vector are NOT comparable, even though they come from
         the same checkpoint, so the cache key MUST contain the dim.
+
+        Sub-batching: ``texts`` arrives already capped by the worker's
+        ``BATCH_SIZE`` (currently 16), but pad-to-longest means a single
+        long entry can blow up activation memory for the whole batch
+        (a long blob pasted into recent → entire 16-batch padded to
+        thousands of tokens → multi-GB activations). We re-bucket here
+        by token budget ``batch × max_len ≤ _INFER_TOKEN_BUDGET``: short
+        rows still pack densely (same throughput as before for the
+        normal case), and long rows fall into smaller buckets — capping
+        the per-run activation footprint regardless of input shape.
         """
         if self._session is None or self._tokenizer is None:
             raise RuntimeError("session not loaded")
         encoded = self._tokenizer.encode_batch(texts)
-        ids = [e.ids for e in encoded]
-        mask = [e.attention_mask for e in encoded]
-        # Pad to longest. Only allocate as much as we need — model accepts
-        # variable length within its 32K context.
-        max_len = max(len(x) for x in ids)
         import numpy as np
-        ids_arr = np.zeros((len(texts), max_len), dtype=np.int64)
-        mask_arr = np.zeros((len(texts), max_len), dtype=np.int64)
+
+        input_names = {i.name for i in self._session.get_inputs()}
+        # 按长度升序桶装。排序的目的是让相近长度凑一起,避免「一条短一条长」
+        # 浪费 padding 预算。每条出桶时记录 original index,run 完按原顺序填回。
+        order = sorted(range(len(encoded)), key=lambda i: len(encoded[i].ids))
+        out: list[list[float] | None] = [None] * len(texts)
+
+        bucket_idx: list[int] = []
+        bucket_max_len = 0
+        for orig_i in order:
+            n = len(encoded[orig_i].ids)
+            new_max = max(bucket_max_len, n)
+            # 空桶必接受(哪怕单条 > budget),否则极端 max_length 配置会死锁;
+            # 非空桶按预算 flush。
+            if bucket_idx and new_max * (len(bucket_idx) + 1) > _INFER_TOKEN_BUDGET:
+                self._run_bucket(bucket_idx, encoded, input_names, out, np)
+                bucket_idx = [orig_i]
+                bucket_max_len = n
+            else:
+                bucket_idx.append(orig_i)
+                bucket_max_len = new_max
+        if bucket_idx:
+            self._run_bucket(bucket_idx, encoded, input_names, out, np)
+
+        # 桶分配按 range(len(encoded)) 全覆盖 — 任何 None 残留都是 bug
+        # 而不是「正常但失败」,所以这里 assert 而不是静默过滤(过滤会改长度,
+        # 把 zip(texts, vectors) 错位)。
+        assert all(v is not None for v in out), "bucket coverage gap"
+        return out  # type: ignore[return-value]
+
+    def _run_bucket(
+        self,
+        bucket_idx: list[int],
+        encoded: list,
+        input_names: set,
+        out: list,
+        np,
+    ) -> None:
+        """单桶的 pad → ONNX run → pool → L2-norm → 写回 ``out``。
+
+        拆出来纯粹是为了让 ``_infer_blocking`` 的桶装循环短一些;状态全
+        通过参数传,无副作用(``out`` 是按 original index 原地写)。
+        """
+        ids = [encoded[i].ids for i in bucket_idx]
+        mask = [encoded[i].attention_mask for i in bucket_idx]
+        max_len = max(len(x) for x in ids)
+        ids_arr = np.zeros((len(bucket_idx), max_len), dtype=np.int64)
+        mask_arr = np.zeros((len(bucket_idx), max_len), dtype=np.int64)
         for i, (id_row, mask_row) in enumerate(zip(ids, mask)):
             ids_arr[i, : len(id_row)] = id_row
             mask_arr[i, : len(mask_row)] = mask_row
-        input_names = {i.name for i in self._session.get_inputs()}
         feeds = {"input_ids": ids_arr}
         if "attention_mask" in input_names:
             feeds["attention_mask"] = mask_arr
@@ -1293,13 +1361,14 @@ class EmbeddingService:
         # and Matryoshka-truncate to the active dim.
         token_embeddings = outputs[0]
         last_indices = np.maximum(mask_arr.sum(axis=1) - 1, 0)
-        pooled = token_embeddings[np.arange(len(texts)), last_indices]
+        pooled = token_embeddings[np.arange(len(bucket_idx)), last_indices]
         if self._dim is not None and self._dim < pooled.shape[1]:
             pooled = pooled[:, : self._dim]
         norms = np.linalg.norm(pooled, axis=1, keepdims=True)
         norms = np.where(norms == 0, 1.0, norms)
         normalized = pooled / norms
-        return [row.tolist() for row in normalized]
+        for i, orig_i in enumerate(bucket_idx):
+            out[orig_i] = normalized[i].tolist()
 
     # ── disable bookkeeping ──────────────────────────────────────────
 
