@@ -42,8 +42,13 @@ jobs:
       # 会连带处理子镜像、不会对级联删除的 digest 二次删。
       - name: Delete old container versions
         # 第三方社区 action + GHCR 删除权限/token，固定到 commit SHA 防 tag 被改写。
-        # 下方 SHA 对应 v1.2.0；升级时一并更新 SHA 和行尾版本注释。
-        uses: dataaxiom/ghcr-cleanup-action@374e2028c8fb93b7219f3771cd405fab95d3dec4 # v1.2.0
+        # 下方 SHA 对应 v1.2.1；升级时一并更新 SHA 和行尾版本注释。
+        #
+        # 为什么不是 v1.2.0：v1.2.0 对级联回收只吞掉「第一个」404，删父 manifest
+        # 触发 GHCR 连带删子 digest 后，第二个已消失 digest 的 404 不被 catch，
+        # 直接 ##[error]Package not found 把 job 挂掉（每周稳定复现）。v1.2.1 的
+        # "tolerate every 404 on package version delete" 修掉这条路径。
+        uses: dataaxiom/ghcr-cleanup-action@f092b48ba3b604b2a83690dc4b2bbb3392e1045f # v1.2.1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           owner: project-n-e-k-o
