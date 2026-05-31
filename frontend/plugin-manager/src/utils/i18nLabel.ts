@@ -39,12 +39,15 @@ export function resolvePluginI18nMessage(
     localeLower === 'zh' || localeLower.startsWith('zh-') || localeLower.startsWith('zh_')
       ? 'zh-CN'
       : undefined
+  const defaultLocale =
+    typeof i18n?.default_locale === 'string' ? i18n.default_locale.trim() : ''
+  const defaultPrimary = defaultLocale.split(/[-_]/)[0]
   const candidates = [
     normalizedLocale,
     primary && primary !== normalizedLocale ? primary : undefined,
     zhCnFallback,
-    i18n?.default_locale,
-    i18n?.default_locale?.split(/[-_]/)[0],
+    defaultLocale,
+    defaultPrimary && defaultPrimary !== defaultLocale ? defaultPrimary : undefined,
     'en-US',
     'en',
   ].filter((item): item is string => typeof item === 'string' && item.length > 0)

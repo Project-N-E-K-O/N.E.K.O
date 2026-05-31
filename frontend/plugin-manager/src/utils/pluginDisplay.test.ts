@@ -87,4 +87,23 @@ describe('resolvePluginDisplayText', () => {
       shortDescription: '简体中文短描述',
     })
   })
+
+  it('ignores malformed default_locale values instead of throwing', () => {
+    const plugin = pluginFixture()
+    plugin.i18n = {
+      default_locale: 42,
+      messages: {
+        en: {
+          'plugin.name': 'English Name',
+          'plugin.description': 'English description',
+        },
+      },
+    } as any
+
+    expect(resolvePluginDisplayText(plugin, 'ko')).toEqual({
+      name: 'English Name',
+      description: 'English description',
+      shortDescription: '默认短描述',
+    })
+  })
 })
