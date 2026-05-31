@@ -4359,7 +4359,7 @@ describe('App', () => {
     expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Test compact send' });
   });
 
-  it('collapses compact input back to display state when it loses focus with no content', async () => {
+  it('keeps compact input open when it loses focus with no content', async () => {
     const onCompactChatStateChange = vi.fn();
     const outsideButton = document.createElement('button');
     document.body.appendChild(outsideButton);
@@ -4388,7 +4388,7 @@ describe('App', () => {
     }
   });
 
-  it('collapses compact input on window blur even when focus remains in the compact shell', async () => {
+  it('keeps compact input open on window blur even when focus remains in the compact shell', async () => {
     const onCompactChatStateChange = vi.fn();
     render(
       <App
@@ -4409,7 +4409,7 @@ describe('App', () => {
     expect(onCompactChatStateChange).not.toHaveBeenCalledWith('default');
   });
 
-  it('collapses compact input when a document-level outside pointer starts with no content', async () => {
+  it('keeps compact input open when a document-level outside pointer starts with no content', async () => {
     const onCompactChatStateChange = vi.fn();
     const outsideButton = document.createElement('button');
     document.body.appendChild(outsideButton);
