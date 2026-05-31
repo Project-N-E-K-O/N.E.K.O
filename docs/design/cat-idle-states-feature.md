@@ -1,6 +1,5 @@
 # 猫娘空闲状态分层 - 功能说明
 
-> 代码级参考见 [cat-idle-states-reference.md](./cat-idle-states-reference.md)。
 > 本文档描述当前已收敛的目标功能和行为边界，不再保留早期未采用的方案分支。
 
 ## 一、目标
@@ -151,7 +150,7 @@ hover 与打断：
 7. 如果用户点击猫回来，优先走 return 链，取消所有 CAT1 子状态。
 8. 如果 tier 进入 `CAT2 / CAT3`，取消 CAT1 走路/伸懒腰子状态，由 CAT2/CAT3 自己的表现和聊天窗停靠接管。
 
-当前这组资源已经接入 [static/avatar-ui-buttons.js](/Users/tonnodoubt/N.E.K.O/static/avatar-ui-buttons.js)、[static/css/index.css](/Users/tonnodoubt/N.E.K.O/static/css/index.css)、[static/app-ui.js](/Users/tonnodoubt/N.E.K.O/static/app-ui.js) 和 [main_routers/pages_router.py](/Users/tonnodoubt/N.E.K.O/main_routers/pages_router.py)，并由静态测试锁住资源、子状态、右向翻转、hover 暂停/恢复和拖拽取消语义。
+当前这组资源已经接入 `static/avatar-ui-buttons.js`、`static/css/index.css`、`static/app-ui.js` 和 `main_routers/pages_router.py`，并由静态测试锁住资源、子状态、右向翻转、hover 暂停/恢复和拖拽取消语义。
 
 实现结构：
 
