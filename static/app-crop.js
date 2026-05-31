@@ -1379,7 +1379,11 @@
             var cp0 = clampPointToSel(pos.x, pos.y);
             var ip0 = canvasToImage(cp0.x, cp0.y);
             if (currentTool === 'text') {
-                // 先看是否点中已有文字 —— 命中则拉回二次编辑，否则新建（issue 3）
+                // 先把仍开着的编辑框收掉，让 annotations 落定再做命中测试 —— 否则连续点第二段
+                // 文字时，beginTextEdit 内部的延迟提交会在 splice 之后改变数组，_originalIndex
+                // 失配、两段文字层级互换。
+                commitTextEdit();
+                // 命中已有文字则拉回二次编辑，否则新建（issue 3）
                 var hitIdx = hitTestText(ip0.x, ip0.y);
                 if (hitIdx >= 0) reopenTextAnnotation(hitIdx);
                 else beginTextEdit(cp0, ip0);
