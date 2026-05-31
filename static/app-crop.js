@@ -78,8 +78,13 @@
     var OPTION_TOOLS = { text: 1, highlighter: 1, mosaic: 1, watermark: 1 };
     var currentColor = '#ff3b30';
     var currentStrokeWidth = 4; // 图片自然坐标下的线宽基准
-    var annotations = [];       // 已提交标注
-    var redoStack = [];         // 重做栈
+    var annotations = [];       // 当前工作数组（渲染/命中测试都读它，始终等于 history[historyIndex] 的内容）
+    // 快照式撤销历史：每次提交存一份 annotations 浅拷贝；undo/redo 切快照。
+    // 标注对象提交后视为不可变（改水印=替换为新对象，不原地改），所以浅拷贝即安全。
+    // 相比 pop 式，能正确表达"撤销栈中间某个标注的编辑/删除"。
+    var history = [[]];         // 快照栈，初始一份空快照
+    var historyIndex = 0;       // 当前快照下标
+    var lastHistoryTag = null;  // 上一步的类型标签，用于合并连续同类编辑（如水印逐字输入）
     var annoDraft = null;       // 正在绘制的草稿（独立于 mode 选区状态机）
     var textEditor = null;      // 文字工具的 <textarea> DOM
     var workspaceEl = null;     // .crop-workspace 容器（textarea 挂这里）
@@ -673,43 +678,68 @@
         }
     }
 
-    // ======================== Annotation commit / undo / redo ========================
+    // ======================== Snapshot history (undo / redo) ========================
+    // 提交一步历史：存当前 annotations 的浅拷贝。tag 用于合并连续同类编辑——传入相同 tag
+    // 且仍在栈顶时，原地替换栈顶快照而非新增（水印逐字输入合成一步，不刷爆 undo）。
+    function pushHistory(tag) {
+        if (tag && tag === lastHistoryTag && historyIndex > 0 && historyIndex === history.length - 1) {
+            history[historyIndex] = annotations.slice();
+        } else {
+            history.length = historyIndex + 1;     // 丢弃 redo 分支
+            history.push(annotations.slice());
+            historyIndex = history.length - 1;
+        }
+        lastHistoryTag = tag || null;
+        updateUndoRedoButtons();
+    }
+
+    // 工作数组对齐到当前快照（undo/redo 与"取消编辑/无改动"都用它复原）
+    function restoreFromHistory() {
+        annotations = history[historyIndex].slice();
+        lastHistoryTag = null; // 切快照后断开合并链，下次编辑另起一步
+        updateUndoRedoButtons();
+        requestRender();
+    }
+
+    function resetHistory() {
+        annotations = [];
+        history = [[]];
+        historyIndex = 0;
+        lastHistoryTag = null;
+        updateUndoRedoButtons();
+    }
+
     function commitAnnotation(a) {
         if (a.type === 'mosaic') {
             var n = normAnno(a);
             a._cache = buildMosaicCache(n.x, n.y, n.w, n.h, a.block);
         }
         annotations.push(a);
-        redoStack.length = 0;
-        updateUndoRedoButtons();
+        pushHistory();
     }
 
     function undo() {
         if (textEditor) { commitTextEdit(); return; }
-        if (!annotations.length) return;
-        redoStack.push(annotations.pop());
-        updateUndoRedoButtons();
-        requestRender();
+        if (historyIndex === 0) return;
+        historyIndex--;
+        restoreFromHistory();
     }
 
     function redo() {
-        if (!redoStack.length) return;
-        annotations.push(redoStack.pop());
-        updateUndoRedoButtons();
-        requestRender();
+        if (historyIndex >= history.length - 1) return;
+        historyIndex++;
+        restoreFromHistory();
     }
 
     function clearAnnotations() {
-        annotations.length = 0;
-        redoStack.length = 0;
         annoDraft = null;
         cancelTextEdit();
-        updateUndoRedoButtons();
+        resetHistory();
     }
 
     function updateUndoRedoButtons() {
-        if (undoBtn) undoBtn.disabled = annotations.length === 0;
-        if (redoBtn) redoBtn.disabled = redoStack.length === 0;
+        if (undoBtn) undoBtn.disabled = historyIndex === 0;
+        if (redoBtn) redoBtn.disabled = historyIndex >= history.length - 1;
     }
 
     // 把工具栏恢复到初始态（选择工具 + active 同步）
@@ -823,32 +853,21 @@
         return -1;
     }
 
-    // 把已提交的文字标注重新拉回编辑框：先从栈里摘掉它，再以其属性打开 textarea。
+    // 把已提交的文字标注重新拉回编辑框：从工作数组摘掉（编辑期间不重复绘制），
+    // 但不动历史快照——当前快照仍持有它，取消/无改动时 restoreFromHistory 即可原样复原。
     function reopenTextAnnotation(idx) {
-        var a = annotations.splice(idx, 1)[0];
-        // 注意：reopen 只是把标注暂时摘进编辑框，是可逆的中间态，不在此清重做栈 ——
-        // 否则"打开看一眼再 Esc 取消"这种 no-op 也会把可用的 redo 干掉。重做栈只在
-        // 真正提交了改动时清（见 commitTextEdit），取消/未改动则保留（Codex P2）。
-        updateUndoRedoButtons();
+        var a = annotations[idx];
+        annotations.splice(idx, 1); // 仅改工作数组；快照是独立副本，不受影响
+        requestRender();
         // 同步字号滑块到被编辑文字的真实字号（存的是图片坐标，换算回屏幕 px 并夹到滑块范围），
-        // 否则滑块还显示默认值，轻碰一下就把这段文字跳到默认字号（Codex P2）。
+        // 否则滑块还显示默认值，轻碰一下就把这段文字跳到默认字号。
         var scale = displayScale() || 1;
         currentFontSizePx = Math.max(12, Math.min(80, Math.round((a.fontSize || 20) * scale)));
         updateOptionsBar();
         var posC = imageToCanvas(a.x, a.y);
         beginTextEdit(posC, { x: a.x, y: a.y }, a);
-        // 记下原层级：提交/取消还原时插回原位，别让二次编辑把文字重排到最上层（Codex P2）
+        // 记下原层级：真改动提交时插回原位，保住层级。
         if (textEditor) textEditor._originalIndex = idx;
-        requestRender();
-    }
-
-    // 把标注插回指定层级；idx 缺省（新建文字）则追加到末尾，与 commitAnnotation 的 push 等价。
-    // clearRedo!==false 时清重做栈（一次新改动作废历史分支）；取消还原/未改动的提交传 false 保留。
-    function insertAnnotationAt(anno, idx, clearRedo) {
-        var i = (idx != null) ? Math.max(0, Math.min(annotations.length, idx)) : annotations.length;
-        annotations.splice(i, 0, anno);
-        if (clearRedo !== false) redoStack.length = 0;
-        updateUndoRedoButtons();
     }
 
     function commitTextEdit() {
@@ -863,32 +882,37 @@
                 x: ta._imgX, y: ta._imgY,
                 fontSize: ta._fontSizeImage, color: ta._color
             };
-            // 二次编辑若文字/字号/颜色都没变（位置二次编辑不动），视作 no-op，保留重做栈；
-            // 真有改动或新建文字才清栈（Codex P2）。
+            // 二次编辑若文字/字号/颜色都没变（位置二次编辑不动）= no-op：丢弃新对象，
+            // 工作数组回到当前快照（含原对象、原层级），不新增历史步。
             var unchanged = ta._original
                 && ta._original.text === anno.text
                 && ta._original.fontSize === anno.fontSize
                 && ta._original.color === anno.color;
-            insertAnnotationAt(anno, ta._originalIndex, !unchanged);
+            if (unchanged) {
+                restoreFromHistory();
+                return;
+            }
+            var idx = (ta._originalIndex != null)
+                ? Math.max(0, Math.min(annotations.length, ta._originalIndex))
+                : annotations.length;
+            annotations.splice(idx, 0, anno);
+            pushHistory(); // 新建 / 真改动 → 独立历史步
         } else if (ta._original) {
-            // 二次编辑时把内容删空 = 删除这段文字，是一次真改动，作废重做栈。
-            redoStack.length = 0;
-            updateUndoRedoButtons();
+            // 二次编辑删空 = 删除该标注（工作数组已无它），记一步删除历史。
+            pushHistory();
         }
         requestRender();
     }
 
-    // restoreOriginal=true 仅用于"按 Esc 取消二次编辑"：把摘掉的原标注原样放回。
-    // clearAnnotations / close 等全局清空路径必须传 false，否则刚清空又被还原，
-    // 导致取消选区/切页签后老文字残留、再次框选时复现（Codex P2）。
+    // restoreOriginal=true 仅用于"按 Esc 取消二次编辑"：工作数组回到当前快照（原对象、原层级、redo 分支都保留）。
+    // clearAnnotations / close 等全局清空路径传 false（不复原，随后 resetHistory 整体清空）。
     function cancelTextEdit(restoreOriginal) {
         if (!textEditor) return;
         var ta = textEditor;
         textEditor = null;
         if (ta.parentNode) ta.parentNode.removeChild(ta);
-        // Esc 取消二次编辑 = 原样放回、净效果为 no-op，所以保留重做栈（clearRedo=false）（Codex P2）。
-        if (restoreOriginal && ta._original) insertAnnotationAt(ta._original, ta._originalIndex, false);
-        requestRender();
+        if (restoreOriginal && ta._original) restoreFromHistory();
+        else requestRender();
     }
 
     // ======================== Toolbar ========================
@@ -1201,14 +1225,15 @@
     }
 
     // ======================== Watermark helpers ========================
-    function findWatermark() {
+    function findWatermarkIndex() {
         for (var i = annotations.length - 1; i >= 0; i--) {
-            if (annotations[i].type === 'watermark') return annotations[i];
+            if (annotations[i].type === 'watermark') return i;
         }
-        return null;
+        return -1;
     }
 
-    // 按当前选区铺/刷新一层斜铺文字水印。已有则原地更新，没有则提交一个新标注。
+    // 按当前选区铺/刷新一层斜铺文字水印。水印对象始终"替换不原地改"，保住快照不可变。
+    // 历史用 'watermark' tag 合并：连续的水印改动（覆盖/逐字输入）合成一步 undo。
     function ensureWatermark() {
         var cs = clampSel(sel);
         if (!cs) return;
@@ -1220,36 +1245,42 @@
         };
         var scale = displayScale() || 1;
         var fontImg = Math.max(12, Math.round(currentWatermarkSizePx / scale));
-        var wm = findWatermark();
-        if (wm) {
-            wm.x = rect.x; wm.y = rect.y; wm.w = rect.w; wm.h = rect.h;
-            wm.text = currentWatermarkText || tr('chat.cropWatermarkDefault', '水印');
-            wm.color = currentColor; wm.fontSize = fontImg;
-            // 原地改水印也是一次新改动，作废重做栈，与 commitAnnotation/insertAnnotationAt
-            // 的历史分支语义保持一致（Codex P2）
-            redoStack.length = 0;
-            updateUndoRedoButtons();
+        var anno = {
+            type: 'watermark', x: rect.x, y: rect.y, w: rect.w, h: rect.h,
+            text: currentWatermarkText || tr('chat.cropWatermarkDefault', '水印'),
+            color: currentColor, fontSize: fontImg, alpha: 0.26
+        };
+        var idx = findWatermarkIndex();
+        if (idx >= 0) {
+            var old = annotations[idx];
+            if (old.text === anno.text && old.color === anno.color && old.fontSize === anno.fontSize
+                && old.x === anno.x && old.y === anno.y && old.w === anno.w && old.h === anno.h) {
+                return; // 无变化（如重复点工具），不记历史
+            }
+            annotations = annotations.slice();
+            annotations[idx] = anno; // 替换而非原地改
         } else {
-            commitAnnotation({
-                type: 'watermark', x: rect.x, y: rect.y, w: rect.w, h: rect.h,
-                text: currentWatermarkText || tr('chat.cropWatermarkDefault', '水印'),
-                color: currentColor, fontSize: fontImg, alpha: 0.26
-            });
+            annotations = annotations.concat([anno]);
         }
+        pushHistory('watermark');
         requestRender();
     }
 
-    // 选项/调色板变动时，实时刷新已铺的水印（不新建）
+    // 选项/调色板变动时刷新已铺的水印（替换对象）。逐字输入经 'watermark' tag 合并成一步 undo。
     function updateActiveWatermark() {
-        var wm = findWatermark();
-        if (!wm) return;
+        var idx = findWatermarkIndex();
+        if (idx < 0) return;
         var scale = displayScale() || 1;
-        wm.text = currentWatermarkText || tr('chat.cropWatermarkDefault', '水印');
-        wm.color = currentColor;
-        wm.fontSize = Math.max(12, Math.round(currentWatermarkSizePx / scale));
-        // 改水印属性同样作废重做栈，避免 undo 别的标注后改水印、再 redo 把旧标注贴回来（Codex P2）
-        redoStack.length = 0;
-        updateUndoRedoButtons();
+        var old = annotations[idx];
+        annotations = annotations.slice();
+        annotations[idx] = {
+            type: 'watermark', x: old.x, y: old.y, w: old.w, h: old.h,
+            text: currentWatermarkText || tr('chat.cropWatermarkDefault', '水印'),
+            color: currentColor,
+            fontSize: Math.max(12, Math.round(currentWatermarkSizePx / scale)),
+            alpha: old.alpha
+        };
+        pushHistory('watermark');
         requestRender();
     }
 
