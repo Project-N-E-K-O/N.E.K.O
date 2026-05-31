@@ -208,6 +208,9 @@ class StudyCompanionPlugin(
         self._command_queue: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue()
         self._command_worker_task: asyncio.Task[None] | None = None
         self._interruptible_task: asyncio.Task[None] | None = None
+        self._neko_command_transport: Any | None = None
+        self._neko_command_handler: Any | None = None
+        self._neko_command_watcher: Any | None = None
 
     @lifecycle(id="startup")
     async def startup(self, **_):
@@ -307,6 +310,7 @@ class StudyCompanionPlugin(
             return Err(SdkError("failed to start study_companion"))
 
     async def _cleanup_after_failed_startup(self) -> None:
+        await self._unsubscribe_neko_commands()
         await self._cancel_review_due_task()
         agent = self._agent
         self._agent = None
@@ -345,6 +349,7 @@ class StudyCompanionPlugin(
 
     @lifecycle(id="shutdown")
     async def shutdown(self, **_):
+        await self._unsubscribe_neko_commands()
         await self._cancel_review_due_task()
         try:
             self.unregister_dynamic_entry("study_export_notes")

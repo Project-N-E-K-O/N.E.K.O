@@ -77,6 +77,17 @@ def _fmt_mode_changed_for_neko(*, new_mode: str, transition_phrase: str) -> str:
 
 class _NekoCommandsMixin:
     async def _subscribe_neko_commands(self) -> None:
+        await self._unsubscribe_neko_commands()
+        if await self._subscribe_neko_command_transport():
+            return
+        if await self._subscribe_neko_command_bus():
+            return
+        self.logger.warning(
+            "startup: message-plane transport unavailable for {}",
+            _NEKO_COMMAND_TOPIC,
+        )
+
+    async def _subscribe_neko_command_transport(self) -> bool:
         transport = None
         for ctx in (
             self.ctx,
@@ -88,17 +99,149 @@ class _NekoCommandsMixin:
                 break
         subscribe = getattr(transport, "subscribe", None)
         if not callable(subscribe):
-            self.logger.warning(
-                "startup: message-plane transport unavailable for {}",
-                _NEKO_COMMAND_TOPIC,
-            )
-            return
-        result = subscribe(_NEKO_COMMAND_TOPIC, self._on_neko_command)
+            return False
+        handler = self._on_neko_command
+        result = subscribe(_NEKO_COMMAND_TOPIC, handler)
         if inspect.isawaitable(result):
             result = await result
         if isinstance(result, Err):
             self.logger.warning(
                 "startup: failed to subscribe {}: {}",
+                _NEKO_COMMAND_TOPIC,
+                result.error,
+            )
+            return False
+        self._neko_command_transport = transport
+        self._neko_command_handler = handler
+        return True
+
+    async def _subscribe_neko_command_bus(self) -> bool:
+        bus = getattr(getattr(self.ctx, "bus", None), "messages", None)
+        get_messages = getattr(bus, "get", None)
+        if not callable(get_messages):
+            return False
+        try:
+            messages = get_messages(max_count=100)
+            if inspect.isawaitable(messages):
+                messages = await messages
+            watch = getattr(messages, "watch", None)
+            if not callable(watch):
+                return False
+            watcher = watch(self.ctx, bus="messages", debounce_ms=0)
+            loop = asyncio.get_running_loop()
+
+            def _on_messages_added(delta: Any) -> None:
+                self._dispatch_neko_command_messages(delta, loop)
+
+            watcher.subscribe(on="add")(_on_messages_added)
+            watcher.start()
+        except Exception as exc:
+            self.logger.warning(
+                "startup: failed to subscribe {} via messages bus: {}",
+                _NEKO_COMMAND_TOPIC,
+                exc,
+            )
+            return False
+        self._neko_command_watcher = watcher
+        return True
+
+    def _dispatch_neko_command_messages(
+        self, delta: Any, loop: asyncio.AbstractEventLoop
+    ) -> None:
+        for record in getattr(delta, "added", ()) or ():
+            payload = self._extract_neko_command_payload(record)
+            if payload is None:
+                continue
+
+            def _create_task(command_payload: dict[str, Any] = payload) -> None:
+                asyncio.create_task(self._on_neko_command(command_payload))
+
+            try:
+                loop.call_soon_threadsafe(_create_task)
+            except RuntimeError:
+                self.logger.warning(
+                    "neko command bus callback ignored after event loop closed"
+                )
+
+    @staticmethod
+    def _extract_neko_command_payload(record: Any) -> dict[str, Any] | None:
+        metadata = getattr(record, "metadata", None)
+        description = getattr(record, "description", "")
+        raw = getattr(record, "raw", None)
+        candidates: list[tuple[Any, Any]] = []
+        if isinstance(metadata, dict):
+            candidates.append(
+                (metadata.get("topic") or description, metadata.get("payload"))
+            )
+        if isinstance(raw, dict):
+            raw_metadata = raw.get("metadata")
+            if isinstance(raw_metadata, dict):
+                candidates.append(
+                    (
+                        raw_metadata.get("topic") or raw.get("description"),
+                        raw_metadata.get("payload"),
+                    )
+                )
+            raw_payload = raw.get("payload")
+            if isinstance(raw_payload, dict):
+                payload_metadata = raw_payload.get("metadata")
+                if isinstance(payload_metadata, dict):
+                    candidates.append(
+                        (
+                            payload_metadata.get("topic")
+                            or raw_payload.get("description"),
+                            payload_metadata.get("payload"),
+                        )
+                    )
+        for topic, payload in candidates:
+            if str(topic or "").strip() == _NEKO_COMMAND_TOPIC and isinstance(
+                payload, dict
+            ):
+                return dict(payload)
+        return None
+
+    async def _unsubscribe_neko_commands(self) -> None:
+        watcher = getattr(self, "_neko_command_watcher", None)
+        self._neko_command_watcher = None
+        if watcher is not None:
+            stop = getattr(watcher, "stop", None)
+            if callable(stop):
+                try:
+                    stop()
+                except Exception as exc:
+                    self.logger.warning(
+                        "shutdown: failed to stop {} messages bus watcher: {}",
+                        _NEKO_COMMAND_TOPIC,
+                        exc,
+                    )
+
+        transport = getattr(self, "_neko_command_transport", None)
+        handler = getattr(self, "_neko_command_handler", None)
+        self._neko_command_transport = None
+        self._neko_command_handler = None
+        if transport is None or handler is None:
+            return
+        unsubscribe = getattr(transport, "unsubscribe", None)
+        if not callable(unsubscribe):
+            self.logger.warning(
+                "shutdown: message-plane transport cannot unsubscribe {}",
+                _NEKO_COMMAND_TOPIC,
+            )
+            return
+        try:
+            result = unsubscribe(_NEKO_COMMAND_TOPIC, handler)
+            if inspect.isawaitable(result):
+                result = await result
+        except Exception as exc:
+            self.logger.warning(
+                "shutdown: failed to unsubscribe {}: {}",
+                _NEKO_COMMAND_TOPIC,
+                exc,
+            )
+            return
+        if isinstance(result, Err):
+            self.logger.warning(
+                "shutdown: failed to unsubscribe {}: {}",
                 _NEKO_COMMAND_TOPIC,
                 result.error,
             )
