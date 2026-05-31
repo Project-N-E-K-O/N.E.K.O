@@ -726,6 +726,9 @@
     }
 
     function redo() {
+        // 与 undo 一致：编辑框还开着就先收掉，别在它底下换掉 annotations ——
+        // 否则提交时会把编辑后的文字插到已被快照恢复的原文字旁边，烤出重复文字。
+        if (textEditor) { commitTextEdit(); return; }
         if (historyIndex >= history.length - 1) return;
         historyIndex++;
         restoreFromHistory();
