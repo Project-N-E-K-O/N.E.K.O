@@ -1210,6 +1210,10 @@
             wm.x = rect.x; wm.y = rect.y; wm.w = rect.w; wm.h = rect.h;
             wm.text = currentWatermarkText || tr('chat.cropWatermarkDefault', '水印');
             wm.color = currentColor; wm.fontSize = fontImg;
+            // 原地改水印也是一次新改动，作废重做栈，与 commitAnnotation/insertAnnotationAt
+            // 的历史分支语义保持一致（Codex P2）
+            redoStack.length = 0;
+            updateUndoRedoButtons();
         } else {
             commitAnnotation({
                 type: 'watermark', x: rect.x, y: rect.y, w: rect.w, h: rect.h,
@@ -1228,6 +1232,9 @@
         wm.text = currentWatermarkText || tr('chat.cropWatermarkDefault', '水印');
         wm.color = currentColor;
         wm.fontSize = Math.max(12, Math.round(currentWatermarkSizePx / scale));
+        // 改水印属性同样作废重做栈，避免 undo 别的标注后改水印、再 redo 把旧标注贴回来（Codex P2）
+        redoStack.length = 0;
+        updateUndoRedoButtons();
         requestRender();
     }
 
