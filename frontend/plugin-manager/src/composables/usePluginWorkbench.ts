@@ -9,6 +9,7 @@
  * 对外 API 与改造前保持一致，现有调用点（PluginList.vue、usePackageManager）零改动。
  */
 import { computed, toValue, type MaybeRefOrGetter, type WritableComputedRef } from 'vue'
+import { useI18n } from 'vue-i18n'
 import type { PluginMeta } from '@/types/api'
 import {
   useGridWorkbench,
@@ -18,6 +19,7 @@ import {
   type LayoutMode,
   type QualifierMatcher,
 } from '@/composables/useGridWorkbench'
+import { resolvePluginDisplayText } from '@/utils/pluginDisplay'
 
 export type PluginWorkbenchLayoutMode = LayoutMode
 export type PluginWorkbenchFilterMode = FilterMode
@@ -28,6 +30,9 @@ export type PluginWorkbenchItem = PluginMeta & {
   enabled?: boolean
   autoStart?: boolean
   searchIndex?: string
+  displayName?: string
+  displayDescription?: string
+  displayShortDescription?: string
 }
 
 const PLUGIN_GROUPS: readonly PluginWorkbenchGroupType[] = ['plugin', 'adapter', 'extension']
@@ -43,16 +48,20 @@ function hasUi(plugin: PluginWorkbenchItem): boolean {
 }
 
 function buildPluginSearchIndex(plugin: PluginWorkbenchItem): string {
+  const name = plugin.displayName || plugin.name
+  const description = plugin.displayDescription || plugin.description
+  const shortDescription = plugin.displayShortDescription || plugin.short_description
   const textParts = [
     plugin.id,
-    plugin.name,
-    plugin.description,
+    name,
+    description,
+    shortDescription,
     plugin.type,
     plugin.version,
     plugin.host_plugin_id,
   ]
 
-  const pinyinParts = [plugin.name, plugin.description].flatMap((value) => {
+  const pinyinParts = [name, description, shortDescription].flatMap((value) => {
     const source = value || ''
     const full = safePinyin(source, 'pinyin').replace(/\s+/g, ' ').trim()
     const initials = safePinyin(source, 'first').replace(/\s+/g, '').trim()
@@ -114,13 +123,13 @@ const pluginQualifiers: Record<string, QualifierMatcher<PluginWorkbenchItem>> = 
     return normalizeSearchPart(plugin.id).includes(value)
   },
   name(plugin, value) {
-    return normalizeSearchPart(plugin.name).includes(value)
+    return normalizeSearchPart(plugin.displayName || plugin.name).includes(value)
   },
   desc(plugin, value) {
-    return normalizeSearchPart(plugin.description).includes(value)
+    return normalizeSearchPart(plugin.displayDescription || plugin.description).includes(value)
   },
   description(plugin, value) {
-    return normalizeSearchPart(plugin.description).includes(value)
+    return normalizeSearchPart(plugin.displayDescription || plugin.description).includes(value)
   },
   host(plugin, value) {
     return normalizeSearchPart(plugin.host_plugin_id).includes(value)
@@ -160,7 +169,7 @@ const pluginQualifiers: Record<string, QualifierMatcher<PluginWorkbenchItem>> = 
   has(plugin, value) {
     switch (value) {
       case 'description':
-        return !!plugin.description?.trim()
+        return !!(plugin.displayDescription || plugin.description)?.trim()
       case 'entries':
       case 'entry':
         return (plugin.entries?.length || 0) > 0
@@ -206,11 +215,18 @@ function pluginAuthorText(plugin: PluginWorkbenchItem): string {
 export function usePluginWorkbench<
   T extends PluginMeta & { type?: string; enabled?: boolean; autoStart?: boolean; searchIndex?: string },
 >(pluginsSource: MaybeRefOrGetter<T[]>) {
+  const { locale } = useI18n()
   const normalized = computed<PluginWorkbenchItem[]>(() =>
-    toValue(pluginsSource).map((plugin) => ({
-      ...plugin,
-      type: normalizePluginType(plugin.type),
-    })),
+    toValue(pluginsSource).map((plugin) => {
+      const displayText = resolvePluginDisplayText(plugin, locale.value)
+      return {
+        ...plugin,
+        type: normalizePluginType(plugin.type),
+        displayName: displayText.name,
+        displayDescription: displayText.description,
+        displayShortDescription: displayText.shortDescription,
+      }
+    }),
   )
 
   const workbench = useGridWorkbench<PluginWorkbenchItem>(normalized, {

@@ -123,6 +123,7 @@ export interface PluginMeta {
   name: string
   type?: PluginType
   description: string
+  short_description?: string
   version: string
   sdk_version?: string
   sdk_recommended?: string

@@ -24,6 +24,7 @@ import {
   type PluginWorkbenchItem,
   type PluginWorkbenchLayoutMode,
 } from '@/composables/usePluginWorkbench'
+import { resolvePluginDisplayText } from '@/utils/pluginDisplay'
 
 export type LayoutMode = PluginWorkbenchLayoutMode
 export type BuildMode = PluginCliBuildMode
@@ -104,23 +105,31 @@ export function usePackageManager() {
 
   const selectablePlugins = computed<SelectablePlugin[]>(() => {
     const metaById = new Map(
-      pluginStore.pluginsWithStatus.map((plugin) => [
-        plugin.id,
-        {
+      pluginStore.pluginsWithStatus.map((plugin) => {
+        const displayText = resolvePluginDisplayText(plugin, locale.value)
+        return [
+          plugin.id,
+          {
           id: plugin.id,
           name: plugin.name || plugin.id,
           description: plugin.description || '',
+          short_description: plugin.short_description,
+          displayName: displayText.name,
+          displayDescription: displayText.description,
+          displayShortDescription: displayText.shortDescription,
           version: plugin.version || '0.0.0',
           type: normalizePluginType(plugin.type),
           status: plugin.status,
           host_plugin_id: plugin.host_plugin_id,
           entries: plugin.entries || [],
+          i18n: plugin.i18n,
           runtime_enabled: plugin.runtime_enabled,
           runtime_auto_start: plugin.runtime_auto_start,
           enabled: plugin.enabled,
           autoStart: plugin.autoStart,
-        } satisfies SelectablePlugin,
-      ])
+          } satisfies SelectablePlugin,
+        ] as const
+      })
     )
 
     return localPluginIds.value.map((pluginId) => {

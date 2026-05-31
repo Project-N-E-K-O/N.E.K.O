@@ -11,7 +11,7 @@
         <div class="card-header" data-yui-guide-id="plugin-detail-header">
           <div class="header-left" data-yui-guide-id="plugin-detail-title">
             <el-button :icon="ArrowLeft" data-yui-guide-id="plugin-detail-back" @click="goBack">{{ $t('common.back') }}</el-button>
-            <h2>{{ plugin.name }}</h2>
+            <h2>{{ pluginDisplayText.name }}</h2>
           </div>
           <div data-yui-guide-id="plugin-detail-actions">
             <PluginActions :plugin-id="pluginId" />
@@ -91,7 +91,7 @@
             <el-descriptions :column="2" border>
               <el-descriptions-item :label="$t('plugins.id')">{{ plugin.id }}</el-descriptions-item>
               <el-descriptions-item :label="$t('plugins.version')">{{ plugin.version }}</el-descriptions-item>
-              <el-descriptions-item :label="$t('plugins.description')" :span="2">{{ plugin.description || $t('common.noData') }}</el-descriptions-item>
+              <el-descriptions-item :label="$t('plugins.description')" :span="2">{{ pluginDisplayText.description || $t('common.noData') }}</el-descriptions-item>
               <el-descriptions-item :label="$t('plugins.pluginType')">
                 <el-tag size="small" :type="pluginTypeTagType">
                   {{ $t(pluginTypeText) }}
@@ -125,10 +125,10 @@
                   @click="goToPlugin(ext.id)"
                 >
                   <div class="bound-ext-info">
-                    <span class="bound-ext-name">{{ ext.name }}</span>
+                    <span class="bound-ext-name">{{ resolveDisplayText(ext).name }}</span>
                     <StatusIndicator :status="ext.status || 'pending'" />
                   </div>
-                  <p class="bound-ext-desc">{{ ext.description || $t('common.noData') }}</p>
+                  <p class="bound-ext-desc">{{ resolveDisplayText(ext).description || $t('common.noData') }}</p>
                 </el-card>
               </div>
             </div>
@@ -182,11 +182,14 @@ import HostedSurfaceFrame from '@/components/plugin/HostedSurfaceFrame.vue'
 import PluginUIFrame from '@/components/plugin/PluginUIFrame.vue'
 import { getPluginUiSurfaceInfo } from '@/api/plugins'
 import { get } from '@/api'
-import type { PluginUiSurface, PluginUiWarning } from '@/types/api'
+import { resolvePluginDisplayText, type PluginDisplayText } from '@/utils/pluginDisplay'
+import { useI18n } from 'vue-i18n'
+import type { PluginMeta, PluginUiSurface, PluginUiWarning } from '@/types/api'
 
 const route = useRoute()
 const router = useRouter()
 const pluginStore = usePluginStore()
+const { locale } = useI18n()
 
 const pluginId = computed(() => route.params.id as string)
 const activeTab = ref('info')
@@ -206,6 +209,20 @@ const hasStaticUI = ref(false)
 const plugin = computed(() => {
   return pluginStore.pluginsWithStatus.find(p => p.id === pluginId.value)
 })
+
+const emptyPluginDisplayText: PluginDisplayText = {
+  name: '',
+  description: '',
+  shortDescription: '',
+}
+
+const pluginDisplayText = computed(() => {
+  return plugin.value ? resolvePluginDisplayText(plugin.value, locale.value) : emptyPluginDisplayText
+})
+
+function resolveDisplayText(target: PluginMeta): PluginDisplayText {
+  return resolvePluginDisplayText(target, locale.value)
+}
 
 const panelSurfaces = computed(() => surfaces.value.filter((surface) => surface.kind === 'panel'))
 const guideSurfaces = computed(() => surfaces.value.filter((surface) => surface.kind === 'guide' || surface.kind === 'docs'))
@@ -285,7 +302,7 @@ async function fetchSurfaces() {
   const loadId = ++currentSurfaceLoadId
   const currentPluginId = pluginId.value
   try {
-    const info = await getPluginUiSurfaceInfo(currentPluginId)
+    const info = await getPluginUiSurfaceInfo(currentPluginId, locale.value)
     if (loadId !== currentSurfaceLoadId || currentPluginId !== pluginId.value) return
     surfaces.value = info.surfaces
     surfaceWarnings.value = info.warnings

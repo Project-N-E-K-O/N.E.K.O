@@ -87,7 +87,7 @@
                     <el-option
                       v-for="plugin in selectablePlugins"
                       :key="plugin.id"
-                      :label="plugin.name"
+                      :label="plugin.displayName || plugin.name"
                       :value="plugin.id"
                     />
                   </el-select>
@@ -197,7 +197,7 @@
                     <el-option
                       v-for="plugin in selectablePlugins"
                       :key="plugin.id"
-                      :label="plugin.name"
+                      :label="plugin.displayName || plugin.name"
                       :value="plugin.id"
                     />
                   </el-select>

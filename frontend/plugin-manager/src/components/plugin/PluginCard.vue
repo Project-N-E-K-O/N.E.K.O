@@ -11,7 +11,7 @@
           <el-tag v-if="plugin.type === 'extension'" size="small" type="primary" effect="plain" class="type-tag">
             {{ t('plugins.extension') }}
           </el-tag>
-          <h3 class="plugin-name">{{ plugin.name }}</h3>
+          <h3 class="plugin-name">{{ displayText.name }}</h3>
           <StatusIndicator :status="plugin.status || 'stopped'" />
           <el-tag v-if="plugin.autoStart === false && plugin.type !== 'extension'" size="small" type="warning">
             {{ t('plugins.manualStart') }}
@@ -21,7 +21,7 @@
     </template>
 
     <div class="plugin-card-body">
-      <p class="plugin-description">{{ plugin.description || t('common.noData') }}</p>
+      <p class="plugin-description">{{ displayText.description || t('common.noData') }}</p>
 
       <PluginMetricsInline
         v-if="showMetrics"
@@ -59,6 +59,7 @@ import SourceTag from '@/components/plugin/SourceTag.vue'
 import SourceDetailRow from '@/components/plugin/SourceDetailRow.vue'
 import { useMarketVersionsStore } from '@/stores/marketVersions'
 import { hasNewerVersion } from '@/utils/version'
+import { resolvePluginDisplayText } from '@/utils/pluginDisplay'
 import type { PluginMeta, PluginInstallSourceDetailMarket } from '@/types/api'
 
 interface Props {
@@ -74,7 +75,7 @@ const props = withDefaults(defineProps<Props>(), {
   showSourceDetail: false,
 })
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const marketVersions = useMarketVersionsStore()
 
 defineEmits<{
@@ -85,6 +86,8 @@ defineEmits<{
 const entryCount = computed(() => {
   return props.plugin.entries?.length || 0
 })
+
+const displayText = computed(() => resolvePluginDisplayText(props.plugin, locale.value))
 
 /** Look up the market's latest version for this plugin, IF it was installed
  *  from the market. Returns null for non-market / unknown plugins. Callers
