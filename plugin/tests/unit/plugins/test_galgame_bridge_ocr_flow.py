@@ -327,6 +327,46 @@ async def test_set_ocr_backend_resets_capture_runtime_diagnostics_on_change(
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_set_ocr_backend_rejects_public_pyautogui_selection(tmp_path: Path) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    cfg = _make_effective_config(
+        bridge_root,
+        ocr_reader={"enabled": True, "backend_selection": "rapidocr"},
+    )
+    plugin = GalgameBridgePlugin(_Ctx(plugin_dir, cfg))
+    plugin._cfg = build_config(cfg)
+
+    result = await plugin.galgame_set_ocr_backend(capture_backend="pyautogui")
+
+    assert isinstance(result, Err)
+    assert "invalid OCR capture backend" in str(result.error)
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
+async def test_apply_recommended_capture_profile_restores_auto_apply_on_failure() -> None:
+    plugin = GalgameBridgePlugin.__new__(GalgameBridgePlugin)
+    plugin._cfg = SimpleNamespace()
+    plugin._state_lock = threading.Lock()
+    plugin._state = SimpleNamespace(ocr_reader_runtime={})
+    plugin._ocr_capture_profile_auto_apply_enabled = False
+
+    async def _fail_apply(*_args, **_kwargs):
+        raise ValueError("no recommendation")
+
+    plugin._apply_recommended_ocr_capture_profile_payload = _fail_apply  # type: ignore[method-assign]
+
+    result = await plugin.galgame_apply_recommended_ocr_capture_profile(
+        confirm=True,
+        enable_auto_apply=True,
+    )
+
+    assert isinstance(result, Err)
+    assert plugin._ocr_capture_profile_auto_apply_enabled is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_bridge_tick_skips_manual_foreground_advance_when_monitor_active(
     tmp_path: Path,
 ) -> None:
@@ -1575,6 +1615,7 @@ async def test_ocr_reader_runtime_exposes_window_bucket_match_metadata(tmp_path:
 @pytest.mark.plugin_unit
 def test_auto_recalibrate_ocr_dialogue_profile_selects_best_candidate_and_returns_bucket(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     manager = OcrReaderManager(
@@ -1596,7 +1637,9 @@ def test_auto_recalibrate_ocr_dialogue_profile_selects_best_candidate_and_return
         pid=7101,
         width=1000,
         height=500,
+        is_foreground=True,
     )
+    monkeypatch.setattr(galgame_ocr_reader, "_foreground_window_handle", lambda: 501)
 
     payload = manager.auto_recalibrate_dialogue_profile()
 
@@ -1605,6 +1648,35 @@ def test_auto_recalibrate_ocr_dialogue_profile_selects_best_candidate_and_return
     assert payload["capture_profile"]["top_ratio"] == pytest.approx(0.50)
     assert payload["capture_profile"]["bottom_inset_ratio"] == pytest.approx(0.12)
     assert payload["sample_text"] == "这是自动校准命中的对白文本。"
+
+
+@pytest.mark.plugin_unit
+def test_auto_recalibrate_ocr_dialogue_profile_rejects_background_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    manager = OcrReaderManager(
+        logger=_Logger(),
+        config=build_config(_make_effective_config(bridge_root, ocr_reader={"enabled": True})),
+        platform_fn=lambda: True,
+        window_scanner=lambda: [],
+        capture_backend=_FakeImageCaptureBackend(size=(1000, 500)),
+        ocr_backend=_CropAwareOcrBackend(lambda _image: "dialogue"),
+    )
+    manager._attached_window = DetectedGameWindow(
+        hwnd=501,
+        title="Demo Window",
+        process_name="DemoGame.exe",
+        pid=7101,
+        width=1000,
+        height=500,
+        is_foreground=True,
+    )
+    monkeypatch.setattr(galgame_ocr_reader, "_foreground_window_handle", lambda: 9999)
+
+    with pytest.raises(ValueError, match="前台"):
+        manager.auto_recalibrate_dialogue_profile()
 
 
 @pytest.mark.plugin_unit
@@ -1646,7 +1718,9 @@ def test_auto_recalibrate_ocr_dialogue_profile_excludes_title_bar(
         pid=7103,
         width=1000,
         height=500,
+        is_foreground=True,
     )
+    monkeypatch.setattr(galgame_ocr_reader, "_foreground_window_handle", lambda: 503)
 
     payload = manager.auto_recalibrate_dialogue_profile()
 
@@ -1657,6 +1731,7 @@ def test_auto_recalibrate_ocr_dialogue_profile_excludes_title_bar(
 @pytest.mark.plugin_unit
 def test_auto_recalibrate_aihong_dialogue_profile_can_escape_stale_narrow_bucket(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     target = DetectedGameWindow(
@@ -1666,6 +1741,7 @@ def test_auto_recalibrate_aihong_dialogue_profile_can_escape_stale_narrow_bucket
         pid=7102,
         width=1040,
         height=807,
+        is_foreground=True,
     )
     expected_box = (0, 484, 1040, 766)
     manager = OcrReaderManager(
@@ -1702,6 +1778,7 @@ def test_auto_recalibrate_aihong_dialogue_profile_can_escape_stale_narrow_bucket
         }
     )
     manager._attached_window = target
+    monkeypatch.setattr(galgame_ocr_reader, "_foreground_window_handle", lambda: target.hwnd)
     payload = manager.auto_recalibrate_dialogue_profile()
 
     assert payload["bucket_key"] == "1040x807"
@@ -1869,7 +1946,7 @@ def test_ocr_reader_foreground_refresh_rebounds_manual_target_by_signature(
             "window_key": "stale-window-key",
             "process_name": rebound.process_name,
             "normalized_title": rebound.normalized_title,
-            "pid": 9999,
+            "pid": rebound.pid,
             "last_known_hwnd": 9999,
         }
     )
@@ -2675,6 +2752,7 @@ async def test_auto_recalibrate_ocr_dialogue_profile_persists_bucket_and_survive
         pid=7202,
         width=1000,
         height=500,
+        is_foreground=True,
     )
     manager = OcrReaderManager(
         logger=plugin.logger,
@@ -2746,6 +2824,7 @@ async def test_auto_recalibrate_ocr_dialogue_profile_persists_bucket_and_survive
                 pid=7202,
                 width=1000,
                 height=500,
+                is_foreground=True,
             )
         ],
         capture_backend=_FakeCaptureBackend(),
@@ -2794,6 +2873,7 @@ async def test_auto_recalibrate_ocr_dialogue_profile_failure_does_not_write_stor
         pid=7201,
         width=1000,
         height=500,
+        is_foreground=True,
     )
 
     result = await plugin.galgame_auto_recalibrate_ocr_dialogue_profile()
@@ -2877,6 +2957,62 @@ async def test_list_and_set_ocr_window_target_updates_state_and_store(tmp_path: 
 
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
+async def test_set_ocr_window_target_rolls_back_when_runtime_update_fails(
+    tmp_path: Path,
+) -> None:
+    plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
+    plugin = GalgameBridgePlugin(
+        _Ctx(
+            plugin_dir,
+            _make_effective_config(bridge_root, ocr_reader={"enabled": False}),
+        )
+    )
+    await plugin.startup()
+    old_target = {
+        "mode": "manual",
+        "window_key": "old",
+        "process_name": "Old.exe",
+        "normalized_title": "old",
+        "pid": 1,
+        "last_known_hwnd": 11,
+        "selected_at": "old-time",
+    }
+    new_target = {
+        "mode": "manual",
+        "window_key": "new",
+        "process_name": "New.exe",
+        "normalized_title": "new",
+        "pid": 2,
+        "last_known_hwnd": 22,
+        "selected_at": "new-time",
+    }
+    plugin._persist.persist_ocr_window_target(old_target)
+    with plugin._state_lock:
+        plugin._state.ocr_window_target = dict(old_target)
+        plugin._state_dirty = False
+        plugin._cached_snapshot = {"cached": True}
+    plugin._ocr_reader_manager = SimpleNamespace(
+        resolve_manual_window_target=lambda _window_key: dict(new_target),
+        update_window_target=lambda _target: (_ for _ in ()).throw(
+            RuntimeError("runtime failed")
+        ),
+    )
+
+    result = await plugin.galgame_set_ocr_window_target(window_key="new")
+
+    assert isinstance(result, Err)
+    assert "runtime failed" in str(result.error)
+    with plugin._state_lock:
+        assert plugin._state.ocr_window_target == old_target
+        assert plugin._state_dirty is False
+        assert plugin._cached_snapshot == {"cached": True}
+    restored, _warnings = plugin._persist.load()
+    assert restored[STORE_OCR_WINDOW_TARGET] == old_target
+    await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.plugin_unit
 async def test_poll_bridge_persists_rebound_ocr_window_target(tmp_path: Path) -> None:
     plugin_dir, bridge_root = _make_plugin_dirs(tmp_path)
     install_root = tmp_path / "Tesseract"
@@ -2905,7 +3041,7 @@ async def test_poll_bridge_persists_rebound_ocr_window_target(tmp_path: Path) ->
         "window_key": "ocrwin:legacy-window",
         "process_name": rebound_window.process_name,
         "normalized_title": rebound_window.normalized_title,
-        "pid": 4455,
+        "pid": rebound_window.pid,
         "last_known_hwnd": 777,
         "selected_at": "2026-04-24T10:00:00Z",
     }
@@ -3974,6 +4110,30 @@ def test_after_advance_screen_refresh_needed_is_limited_to_non_dialogue_screens(
         is False
     )
     assert needed(OCR_CAPTURE_PROFILE_STAGE_TITLE, confidence=0.44) is False
+
+
+@pytest.mark.plugin_unit
+def test_after_advance_screen_refresh_uses_snapshot_falsy_values() -> None:
+    assert (
+        galgame_plugin_module._after_advance_screen_refresh_needed(
+            local={
+                "active_data_source": DATA_SOURCE_OCR_READER,
+                "screen_type": OCR_CAPTURE_PROFILE_STAGE_TITLE,
+                "screen_confidence": 0.9,
+                "latest_snapshot": {
+                    "screen_type": OCR_CAPTURE_PROFILE_STAGE_GALLERY,
+                    "screen_confidence": 0.0,
+                },
+            },
+            ocr_reader_runtime={
+                "status": "active",
+                "ocr_context_state": "screen_classified",
+            },
+            ocr_reader_allowed=True,
+            ocr_trigger_mode="after_advance",
+        )
+        is False
+    )
 
 
 @pytest.mark.asyncio

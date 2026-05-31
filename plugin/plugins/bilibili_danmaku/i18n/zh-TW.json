@@ -1,4 +1,6 @@
 {
+  "plugin.name": "B站彈幕監聽",
+  "plugin.description": "即時監聽B站直播間彈幕，過濾後推送給AI分析和回覆",
   "account.already_logged_in": "已经登入",
   "account.check_cred": "检查凭据",
   "account.check_cred_failed": "检查凭据失败：",

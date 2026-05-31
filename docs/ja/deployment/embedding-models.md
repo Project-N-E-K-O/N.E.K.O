@@ -10,7 +10,7 @@ local-text-retrieval-v1
 
 ## 開発環境の準備
 
-プロジェクト依存関係をインストールします（`onnxruntime` / `tokenizers` / `py-cpuinfo` を含む）：
+プロジェクト依存関係をインストールします（`onnxruntime` / `tokenizers` を含む。CPU SIMD 機能は numpy の `__cpu_features__` から読み取るため `py-cpuinfo` は不要）：
 
 ```bash
 uv sync

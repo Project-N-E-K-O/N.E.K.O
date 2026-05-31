@@ -5,37 +5,17 @@
         <img src="@/assets/paw.png" alt="" class="titlebar-paw" draggable="false" />
         <span class="titlebar-text">{{ t('app.titleSuffix') }}</span>
       </div>
-      <div class="titlebar-controls">
-        <button
-          type="button"
-          class="titlebar-control"
-          :title="t('common.minimize')"
-          :aria-label="t('common.minimize')"
-          @click="minimizeWindow"
-        >
-          <span class="titlebar-minimize-icon"></span>
-        </button>
-        <button
-          type="button"
-          class="titlebar-control"
-          :title="isMaximized ? t('common.restore') : t('common.maximize')"
-          :aria-label="isMaximized ? t('common.restore') : t('common.maximize')"
-          @click="toggleMaximizeWindow"
-        >
-          <span class="titlebar-maximize-icon" :class="{ 'is-restore': isMaximized }"></span>
-        </button>
-        <button
-          type="button"
-          class="titlebar-control titlebar-control--close"
-          :title="t('common.close')"
-          :aria-label="t('common.close')"
-          @click="closeWindow"
-        >
-          <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-            <path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-          </svg>
-        </button>
-      </div>
+      <button
+        class="titlebar-close"
+        type="button"
+        :title="t('common.close')"
+        :aria-label="t('common.close')"
+        @click="closeWindow"
+      >
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+          <path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+      </button>
     </div>
 
     <div class="app-shell">
@@ -69,99 +49,15 @@
 <script setup lang="ts">
 import Sidebar from './Sidebar.vue'
 import Header from './Header.vue'
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useConnectionStore } from '@/stores/connection'
-import { restartActivePluginDashboardTutorial } from '@/yui-guide-runtime'
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 const connectionStore = useConnectionStore()
-const isMaximized = ref(false)
-
-type MaybePromise<T> = T | Promise<T>
-type NekoWindowControlApi = {
-  minimize?: () => MaybePromise<void>
-  maximize?: () => MaybePromise<{ ok?: boolean; isMaximized?: boolean } | void>
-  isMaximized?: () => MaybePromise<boolean>
-}
-
-function getWindowControlApi() {
-  return (window as Window & { nekoWindowControl?: NekoWindowControlApi }).nekoWindowControl
-}
-
-function logWindowControlError(context: string, error: unknown) {
-  if (!import.meta.env.PROD) {
-    console.debug(`[PluginManager] ${context} failed after getWindowControlApi()`, error)
-  }
-}
-
-function setMaximizeState(value: boolean) {
-  isMaximized.value = value
-  document.documentElement.classList.toggle('neko-window-maximized', value)
-  document.body?.classList.toggle('neko-window-maximized', value)
-}
-
-async function refreshMaximizeState() {
-  const api = getWindowControlApi()
-  if (!api?.isMaximized) return
-
-  try {
-    setMaximizeState(Boolean(await api.isMaximized()))
-  } catch (error) {
-    logWindowControlError('refreshMaximizeState', error)
-    // 非 Electron 环境下忽略窗口状态同步失败
-  }
-}
-
-async function minimizeWindow() {
-  const api = getWindowControlApi()
-  if (!api?.minimize) return
-
-  try {
-    await api.minimize()
-  } catch (error) {
-    logWindowControlError('minimizeWindow', error)
-    // 非 Electron 环境下忽略窗口最小化失败
-  }
-}
-
-async function toggleMaximizeWindow() {
-  const api = getWindowControlApi()
-  if (!api?.maximize) return
-
-  try {
-    const result = await api.maximize()
-    if (result && typeof result.isMaximized === 'boolean') {
-      setMaximizeState(result.isMaximized)
-      return
-    }
-    await refreshMaximizeState()
-  } catch (error) {
-    logWindowControlError('toggleMaximizeWindow', error)
-    // 非 Electron 环境下忽略窗口最大化失败
-  }
-}
 
 function closeWindow() {
   window.close()
 }
-
-function handleWindowResize() {
-  void refreshMaximizeState()
-}
-
-onMounted(() => {
-  void refreshMaximizeState()
-  window.addEventListener('resize', handleWindowResize)
-})
-
-onBeforeUnmount(() => {
-  window.removeEventListener('resize', handleWindowResize)
-})
-
-watch(locale, () => {
-  restartActivePluginDashboardTutorial()
-})
 </script>
 
 <style scoped>
@@ -221,14 +117,7 @@ watch(locale, () => {
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
 }
 
-.titlebar-controls {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  -webkit-app-region: no-drag;
-}
-
-.titlebar-control {
+.titlebar-close {
   -webkit-app-region: no-drag;
   background: transparent;
   border: none;
@@ -243,55 +132,13 @@ watch(locale, () => {
   transition: background 0.18s, color 0.18s;
 }
 
-.titlebar-control:hover {
+.titlebar-close:hover {
   background: rgba(255, 255, 255, 0.18);
   color: #fff;
 }
 
-.titlebar-control:active {
+.titlebar-close:active {
   background: rgba(0, 0, 0, 0.08);
-}
-
-.titlebar-control--close:hover {
-  background: rgba(255, 96, 96, 0.28);
-}
-
-.titlebar-minimize-icon {
-  width: 12px;
-  height: 1.6px;
-  border-radius: 2px;
-  background: currentColor;
-  transform: translateY(4px);
-}
-
-.titlebar-maximize-icon {
-  width: 12px;
-  height: 12px;
-  border: 1.6px solid currentColor;
-  border-radius: 2px;
-  box-sizing: border-box;
-}
-
-.titlebar-maximize-icon.is-restore {
-  position: relative;
-  transform: translate(2px, 2px);
-}
-
-.titlebar-maximize-icon.is-restore::after {
-  content: '';
-  position: absolute;
-  top: -5px;
-  left: 3px;
-  width: 12px;
-  height: 12px;
-  border: 1.6px solid currentColor;
-  border-radius: 2px;
-  background: rgba(75, 212, 253, 0.82);
-  box-sizing: border-box;
-}
-
-html.dark .titlebar-maximize-icon.is-restore::after {
-  background: rgba(50, 50, 72, 0.75);
 }
 
 /* ── Shell layout ── */

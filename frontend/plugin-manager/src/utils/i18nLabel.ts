@@ -12,41 +12,54 @@
  * 选合适的字符串。匹配优先级：
  *   1) 当前 locale 完整匹配（e.g. "zh-CN"）
  *   2) 当前 locale 主语言（e.g. "zh-CN" → "zh"）
- *   3) Chinese UI locales additionally try "zh-CN"
- *   4) 调用方提供的 fallback locale
- *   5) "en-US" / "en" 兜底
- *   6) 字典里第一个字符串值
- *   7) 调用方提供的 fallback（默认空字符串）
+ *   3) "en-US" / "en" 兜底
+ *   4) 字典里第一个字符串值
+ *   5) 调用方提供的 fallback（默认空字符串）
  */
 export type LocalizedText = string | Record<string, string>
 
-function localeCandidates(locale: string, fallbackLocale = 'en'): string[] {
-  const candidates: string[] = []
+export interface PluginI18nMessages {
+  default_locale?: string
+  messages?: Record<string, Record<string, string>>
+}
 
-  const add = (value?: string | null) => {
-    const normalized = String(value || '').trim()
-    if (normalized && !candidates.includes(normalized)) {
-      candidates.push(normalized)
+export function resolvePluginI18nMessage(
+  i18n: PluginI18nMessages | null | undefined,
+  key: string,
+  locale: string,
+  fallback: string = '',
+): string {
+  const messages = i18n?.messages
+  if (!messages || !key) return fallback
+
+  const normalizedLocale = String(locale || '').trim()
+  const primary = normalizedLocale.split(/[-_]/)[0]
+  const localeLower = normalizedLocale.toLowerCase()
+  const zhCnFallback =
+    localeLower === 'zh' || localeLower.startsWith('zh-') || localeLower.startsWith('zh_')
+      ? 'zh-CN'
+      : undefined
+  const defaultLocale =
+    typeof i18n?.default_locale === 'string' ? i18n.default_locale.trim() : ''
+  const defaultPrimary = defaultLocale.split(/[-_]/)[0]
+  const candidates = [
+    normalizedLocale,
+    primary && primary !== normalizedLocale ? primary : undefined,
+    zhCnFallback,
+    defaultLocale,
+    defaultPrimary && defaultPrimary !== defaultLocale ? defaultPrimary : undefined,
+    'en-US',
+    'en',
+  ].filter((item): item is string => typeof item === 'string' && item.length > 0)
+
+  for (const candidate of candidates) {
+    const message = messages[candidate]?.[key]
+    if (typeof message === 'string' && message.length > 0) {
+      return message
     }
   }
 
-  add(locale)
-  const primary = String(locale || '').split(/[-_]/)[0]
-  if (primary && primary !== locale) {
-    add(primary)
-  }
-  const localeLower = String(locale || '').trim().toLowerCase()
-  if (localeLower === 'zh' || localeLower.startsWith('zh-') || localeLower.startsWith('zh_')) {
-    add('zh-CN')
-  }
-  add(fallbackLocale)
-  const fallbackPrimary = String(fallbackLocale || '').split(/[-_]/)[0]
-  if (fallbackPrimary && fallbackPrimary !== fallbackLocale) {
-    add(fallbackPrimary)
-  }
-  add('en-US')
-  add('en')
-  return candidates
+  return fallback
 }
 
 export function resolveLocalizedText(
@@ -54,42 +67,31 @@ export function resolveLocalizedText(
   locale: string,
   fallback: string = '',
 ): string {
-  if (value == null || value === '') return fallback
-  if (typeof value === 'string') return value
+  if (value == null) return fallback
+  if (typeof value === 'string') return value.length > 0 ? value : fallback
   if (typeof value !== 'object') return fallback
 
   const dict = value as Record<string, string>
-  return (
-    localeCandidates(locale)
-      .map((candidate) => dict[candidate])
-      .find((candidate): candidate is string => typeof candidate === 'string' && candidate.length > 0)
-    ?? Object.values(dict).find((v): v is string => typeof v === 'string' && v.length > 0)
-    ?? fallback
-  )
-}
-
-export function resolvePluginI18nMessage(
-  i18n: unknown,
-  key: string,
-  locale: string,
-  fallback: string = '',
-): string {
-  if (!i18n || typeof i18n !== 'object') return fallback
-  const payload = i18n as {
-    default_locale?: unknown
-    messages?: Record<string, Record<string, unknown>>
+  const primary = String(locale).split(/[-_]/)[0]
+  const candidates = [
+    locale,
+    primary && primary !== locale ? primary : undefined,
+    'en-US',
+    'en',
+  ]
+  // Treat empty strings as missing — historically the ?? chain below
+  // short-circuited on `''` (because `'' ?? x === ''`), which silently
+  // returned an empty label whenever the current locale was registered
+  // with a blank value. Aligning with `resolvePluginI18nMessage`, we
+  // require ``length > 0`` for every locale candidate before accepting
+  // it, then fall through to the first non-empty value in the dict.
+  for (const c of candidates) {
+    if (typeof c !== 'string' || c.length === 0) continue
+    const v = dict[c]
+    if (typeof v === 'string' && v.length > 0) return v
   }
-  const messages = payload.messages
-  if (!messages || typeof messages !== 'object') return fallback
-  const defaultLocale = typeof payload.default_locale === 'string' ? payload.default_locale : 'en'
-
-  for (const candidate of localeCandidates(locale, defaultLocale)) {
-    const bundle = messages[candidate]
-    if (!bundle || typeof bundle !== 'object') continue
-    const value = bundle[key]
-    if (typeof value === 'string' && value.length > 0) {
-      return value
-    }
+  for (const v of Object.values(dict)) {
+    if (typeof v === 'string' && v.length > 0) return v
   }
   return fallback
 }

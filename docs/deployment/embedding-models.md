@@ -10,7 +10,7 @@ Do not store the concrete upstream model name in config or memory cache fields. 
 
 ## Development Setup
 
-Install project dependencies (includes `onnxruntime`, `tokenizers`, and `py-cpuinfo`):
+Install project dependencies (includes `onnxruntime` and `tokenizers`; CPU SIMD capability is read from numpy's `__cpu_features__`, so no `py-cpuinfo` is needed):
 
 ```bash
 uv sync

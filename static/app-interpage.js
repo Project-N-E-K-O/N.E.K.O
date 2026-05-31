@@ -24,6 +24,7 @@
     const mod = {};
     const S = window.appState;
     // const C = window.appConst;  // not used in this module currently
+    const MAIN_UI_HIDDEN_BY_MODEL_MANAGER_KEY = '__NEKO_MAIN_UI_HIDDEN_BY_MODEL_MANAGER';
 
     // =====================================================================
     // Message deduplication (BC + postMessage deliver the same message twice)
@@ -43,6 +44,53 @@
         _processedMsgKeys[key] = true;
         setTimeout(function () { delete _processedMsgKeys[key]; }, 5000);
         return false;
+    }
+
+    function isMainUIHiddenByModelManager() {
+        return window[MAIN_UI_HIDDEN_BY_MODEL_MANAGER_KEY] === true;
+    }
+
+    function ensureMainUIHiddenStyle() {
+        if (document.getElementById('neko-main-ui-hidden-by-model-manager-style')) return;
+        var style = document.createElement('style');
+        style.id = 'neko-main-ui-hidden-by-model-manager-style';
+        style.textContent = [
+            'body.neko-main-ui-hidden-by-model-manager #live2d-container,',
+            'body.neko-main-ui-hidden-by-model-manager #vrm-container,',
+            'body.neko-main-ui-hidden-by-model-manager #mmd-container,',
+            'body.neko-main-ui-hidden-by-model-manager #live2d-canvas,',
+            'body.neko-main-ui-hidden-by-model-manager #vrm-canvas,',
+            'body.neko-main-ui-hidden-by-model-manager #mmd-canvas,',
+            'body.neko-main-ui-hidden-by-model-manager #chat-container,',
+            'body.neko-main-ui-hidden-by-model-manager #react-chat-window-overlay,',
+            'body.neko-main-ui-hidden-by-model-manager #live2d-floating-buttons,',
+            'body.neko-main-ui-hidden-by-model-manager #vrm-floating-buttons,',
+            'body.neko-main-ui-hidden-by-model-manager #mmd-floating-buttons,',
+            'body.neko-main-ui-hidden-by-model-manager #live2d-lock-icon,',
+            'body.neko-main-ui-hidden-by-model-manager #vrm-lock-icon,',
+            'body.neko-main-ui-hidden-by-model-manager #mmd-lock-icon,',
+            'body.neko-main-ui-hidden-by-model-manager #live2d-return-button-container,',
+            'body.neko-main-ui-hidden-by-model-manager #vrm-return-button-container,',
+            'body.neko-main-ui-hidden-by-model-manager #mmd-return-button-container {',
+            '  display: none !important;',
+            '  visibility: hidden !important;',
+            '  pointer-events: none !important;',
+            '}'
+        ].join('\n');
+        (document.head || document.documentElement).appendChild(style);
+    }
+
+    function setMainUIHiddenByModelManager(hidden) {
+        window[MAIN_UI_HIDDEN_BY_MODEL_MANAGER_KEY] = !!hidden;
+        ensureMainUIHiddenStyle();
+        if (document.body) {
+            document.body.classList.toggle('neko-main-ui-hidden-by-model-manager', !!hidden);
+        }
+        try {
+            window.dispatchEvent(new CustomEvent('neko:main-ui-hidden-by-model-manager-changed', {
+                detail: { hidden: !!hidden }
+            }));
+        } catch (_) {}
     }
 
     function applyTutorialChatIdentityOverride(payload) {
@@ -814,7 +862,7 @@
 
                             await window.live2dManager.loadModel(newModelPath, {
                                 preferences: modelPreferences,
-                                isMobile: window.innerWidth <= 768,
+                                isMobile: typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (window.innerWidth <= 768),
                                 suppressInitialIdle: skipIdleRestore
                             });
 
@@ -894,6 +942,13 @@
             window._modelReloadInFlight = false;
             resolveReload();
 
+            // If the model manager is still open, keep the Pet UI hidden even
+            // though the reload path briefly re-created containers/buttons.
+            if (isMainUIHiddenByModelManager()) {
+                console.log('[Model] 主界面处于模型管理隐藏状态，模型重载完成后重新隐藏 UI');
+                handleHideMainUI({ preserveHiddenState: true });
+            }
+
             // Process any queued reload request
             if (window._pendingModelReload) {
                 console.log('[Model] 执行待处理的模型重载请求');
@@ -960,12 +1015,29 @@
     // 原因：SDK 会检查 motionGroups 是否已有内容来判断动作是否已加载。
     // 如果放入 JSON 配置对象，SDK 会误认为动作已加载，跳过网络请求和解析。
     // =====================================================================
-    async function restoreLive2DIdleAnimationOnMainPage() {
+    async function restoreLive2DIdleAnimationOnMainPage(options = {}) {
         try {
+            const shouldContinue = options && typeof options.shouldContinue === 'function'
+                ? options.shouldContinue
+                : null;
+            const canContinue = () => {
+                if (!shouldContinue) return true;
+                try {
+                    return shouldContinue() !== false;
+                } catch (guardError) {
+                    console.warn('[Live2D Main] 待机动作恢复 guard 失败，跳过恢复:', guardError);
+                    return false;
+                }
+            };
+
             // 1. 获取当前角色名称，并作为当前任务的标识（防竞态）
             const initialLanlanName = window.lanlan_config?.lanlan_name;
             if (!initialLanlanName) {
                 console.log('[Live2D Main] 没有 lanlan_name，跳过恢复待机动作');
+                return;
+            }
+            if (!canContinue()) {
+                console.log('[Live2D Main] 待机动作恢复已被新的交互取消');
                 return;
             }
 
@@ -975,25 +1047,34 @@
 
             // 【竞态防护】如果中途角色被切换了，立刻中止
             if (window.lanlan_config?.lanlan_name !== initialLanlanName) return;
+            if (!canContinue()) {
+                console.log('[Live2D Main] 待机动作恢复已被新的交互取消');
+                return;
+            }
 
             const charData = data['猫娘']?.[initialLanlanName];
             // 【修复】兼容新旧版字段，穿透 _reserved 读取 Live2D 待机动作
-            const live2dIdleAnimation = charData?._reserved?.avatar?.live2d?.idle_animation
-                                     || charData?.live2d_idle_animation
-                                     || charData?.avatar?.live2d?.idle_animation;
-            const live2dModelName = charData?.live2d;
-
-            if (!live2dIdleAnimation) {
-                console.log('[Live2D Main] 没有保存的待机动作');
-                return;
+            const hasOwn = (obj, key) => !!obj && Object.prototype.hasOwnProperty.call(obj, key);
+            const reservedLive2D = charData?._reserved?.avatar?.live2d;
+            const avatarLive2D = charData?.avatar?.live2d;
+            let live2dIdleAnimation;
+            let hasExplicitIdleAnimation = false;
+            if (hasOwn(reservedLive2D, 'idle_animation')) {
+                live2dIdleAnimation = reservedLive2D.idle_animation;
+                hasExplicitIdleAnimation = true;
+            } else if (hasOwn(charData, 'live2d_idle_animation')) {
+                live2dIdleAnimation = charData.live2d_idle_animation;
+                hasExplicitIdleAnimation = true;
+            } else if (hasOwn(avatarLive2D, 'idle_animation')) {
+                live2dIdleAnimation = avatarLive2D.idle_animation;
+                hasExplicitIdleAnimation = true;
             }
+            const live2dModelName = charData?.live2d;
 
             if (!live2dModelName) {
                 console.log('[Live2D Main] 没有模型名称');
                 return;
             }
-
-            console.log('[Live2D Main] 开始恢复待机动作:', live2dIdleAnimation);
 
             // 3. 从 API 获取模型的动作文件列表（主页没有初始化 PreviewAll 组）
             let modelFilesData;
@@ -1007,8 +1088,33 @@
 
             // 【竞态防护】如果中途角色被切换了，立刻中止
             if (window.lanlan_config?.lanlan_name !== initialLanlanName) return;
+            if (!canContinue()) {
+                console.log('[Live2D Main] 待机动作恢复已被新的交互取消');
+                return;
+            }
 
             const motionFiles = modelFilesData?.motion_files || [];
+            if (!live2dIdleAnimation) {
+                if (hasExplicitIdleAnimation) {
+                    console.log('[Live2D Main] 待机动作已明确清空');
+                    return;
+                }
+                if (motionFiles.length === 1) {
+                    const singleMotion = typeof motionFiles[0] === 'string' ? motionFiles[0].trim() : '';
+                    if (!singleMotion) {
+                        console.log('[Live2D Main] 唯一的 motion 文件名为空，跳过恢复');
+                        return;
+                    }
+                    live2dIdleAnimation = singleMotion;
+                    console.log('[Live2D Main] 没有保存的待机动作，使用唯一 motion 作为默认待机动作:', live2dIdleAnimation);
+                } else {
+                    console.log('[Live2D Main] 没有保存的待机动作');
+                    return;
+                }
+            }
+
+            console.log('[Live2D Main] 开始恢复待机动作:', live2dIdleAnimation);
+
             const motionIndex = motionFiles.indexOf(live2dIdleAnimation);
             if (motionIndex < 0) {
                 console.log('[Live2D Main] 待机动作不在当前模型的动作列表中:', live2dIdleAnimation);
@@ -1047,6 +1153,10 @@
                 console.log('[Live2D Main] 模型或角色已切换，中止待机动作播放');
                 return;
             }
+            if (!canContinue()) {
+                console.log('[Live2D Main] 待机动作恢复已被新的交互取消');
+                return;
+            }
 
             // 7. 设置循环播放
             const motionInstance = motionManager.motionGroups?.[groupName]?.[motionIndex];
@@ -1078,8 +1188,13 @@
     /**
      * Hide main-page model rendering (entering model manager).
      */
-    function handleHideMainUI() {
+    function handleHideMainUI(options) {
         if (!_isModelHostPage()) return;
+        options = options || {};
+        var skipHiddenStateUpdate = options.skipHiddenStateUpdate || options.preserveHiddenState;
+        if (!skipHiddenStateUpdate) {
+            setMainUIHiddenByModelManager(true);
+        }
         console.log('[UI] 隐藏主界面并暂停渲染');
 
         try {
@@ -1153,13 +1268,15 @@
                 '#live2d-lock-icon, #vrm-lock-icon, #mmd-lock-icon, ' +
                 '#live2d-return-button-container, #vrm-return-button-container, #mmd-return-button-container'
             ).forEach(function (el) {
-                var computedDisplay = '';
-                try {
-                    computedDisplay = window.getComputedStyle(el).display || '';
-                } catch (_) {}
-                el.dataset.nekoPreHideDisplay = computedDisplay && computedDisplay !== 'none'
-                    ? computedDisplay
-                    : (el.style.display || 'none');
+                if (!el.dataset.nekoPreHideDisplay) {
+                    var computedDisplay = '';
+                    try {
+                        computedDisplay = window.getComputedStyle(el).display || '';
+                    } catch (_) {}
+                    el.dataset.nekoPreHideDisplay = computedDisplay && computedDisplay !== 'none'
+                        ? computedDisplay
+                        : (el.style.display || 'none');
+                }
                 el.style.display = 'none';
             });
         } catch (error) {
@@ -1172,6 +1289,7 @@
      */
     function handleShowMainUI() {
         if (!_isModelHostPage()) return;
+        setMainUIHiddenByModelManager(false);
         // 模型重载进行中时跳过：handleModelReload 自己会正确切换容器，
         // 此时 lanlan_config.model_type 尚未更新，handleShowMainUI 会
         // 错误地恢复旧模型类型的容器，导致需要切换两次才能成功。
@@ -2398,6 +2516,7 @@
     mod.resetToDefaultModel = resetToDefaultModel;
     mod.handleHideMainUI = handleHideMainUI;
     mod.handleShowMainUI = handleShowMainUI;
+    mod.isMainUIHiddenByModelManager = isMainUIHiddenByModelManager;
     mod.handleMemoryEdited = handleMemoryEdited;
     mod.cleanupLive2DOverlayUI = cleanupLive2DOverlayUI;
     mod.cleanupVRMOverlayUI = cleanupVRMOverlayUI;
@@ -2413,6 +2532,7 @@
     window.resetToDefaultModel = resetToDefaultModel;
     window.handleHideMainUI = handleHideMainUI;
     window.handleShowMainUI = handleShowMainUI;
+    window.isMainUIHiddenByModelManager = isMainUIHiddenByModelManager;
     window.cleanupLive2DOverlayUI = cleanupLive2DOverlayUI;
     window.cleanupVRMOverlayUI = cleanupVRMOverlayUI;
     window.cleanupMMDOverlayUI = cleanupMMDOverlayUI;

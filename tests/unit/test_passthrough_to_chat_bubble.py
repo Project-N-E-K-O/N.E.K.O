@@ -344,6 +344,7 @@ async def test_main_server_proactive_chat_respond_does_not_invoke_passthrough(mo
     fake_mgr = MagicMock()
     fake_mgr.passthrough_to_chat_bubble = AsyncMock()
     fake_mgr.enqueue_agent_callback = MagicMock()
+    fake_mgr.submit_proactive_callback = MagicMock()
     fake_mgr.trigger_agent_callbacks = AsyncMock()
     fake_mgr.websocket = None
     fake_mgr._pending_agent_callback_task = None
@@ -368,8 +369,12 @@ async def test_main_server_proactive_chat_respond_does_not_invoke_passthrough(mo
     await main_server._handle_agent_event(event)
 
     fake_mgr.passthrough_to_chat_bubble.assert_not_called()
-    # respond → LLM callback enqueued
-    fake_mgr.enqueue_agent_callback.assert_called_once()
+    # respond → handed to the proactive delivery manager (which enqueues +
+    # triggers at release time, gated on the playback/min-gap pacing).
+    fake_mgr.submit_proactive_callback.assert_called_once()
+    # And NOT the old direct path — guards against a future double-dispatch
+    # regression (manager + direct enqueue both firing).
+    fake_mgr.enqueue_agent_callback.assert_not_called()
 
 
 @pytest.mark.unit

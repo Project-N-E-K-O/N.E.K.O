@@ -8,6 +8,8 @@
 
     <!-- VRM 光照默认值：从后端注入，保证在所有 JS 之前同步可用 -->
     <script>window.VRM_DEFAULT_LIGHTING=Object.freeze({{ vrm_defaults | tojson }});</script>
+    <!-- 诊断观测：必须最早加载（与 index.html 同序）。详见 static/debug-health.js。 -->
+    <script src="/static/debug-health.js?v={{ static_asset_version }}"></script>
     <!-- 与 index.html 相同的基础 CSS/JS -->
     <script src="/static/i18n-i18next.js?v={{ static_asset_version }}"></script>
     <script src="/static/common_dialogs.js?v={{ static_asset_version }}"></script>
@@ -20,7 +22,12 @@
     <script src="/static/libs/APlayer.min.js?v={{ static_asset_version }}"></script>
 
     <style>
-        html, body {
+        /* 选择器加 :not(.lanlan-pet-mode) 把特异性抬到 (0,1,1)：兜浅色主题——
+           index.css 的手机端黑底 html:not(.lanlan-pet-mode) 同为 (0,1,1) 且不分
+           主题，浅色下也命中 chat 的 <html>（暗色反制是 dark-gated 不生效）；持平后
+           凭源序（本 <style> 晚于 index.css）取胜，使 <html> 浅色下也保持透明。
+           chat 窗口 html/body 从不带 lanlan-pet-mode，:not() 恒命中、不改适用范围。 */
+        html:not(.lanlan-pet-mode), body:not(.lanlan-pet-mode) {
             margin: 0; padding: 0;
             width: 100%; height: 100%;
             background: transparent !important;
@@ -285,6 +292,12 @@
                 linear-gradient(to right, rgba(0,0,0,0.4) 0px, black 8px, black calc(100% - 8px), rgba(0,0,0,0.4) 100%) !important;
             -webkit-mask-composite: source-in !important;
         }
+        body.electron-chat-window.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"] #react-chat-window-root {
+            -webkit-mask-image: none !important;
+            mask-image: none !important;
+            -webkit-mask-composite: initial !important;
+            mask-composite: initial !important;
+        }
         @keyframes liquidFlow {
             0%    { background-position:   0%   0%,  80%  10%,  40%  30%,  90%  50%,  20%  70%,  60%  85%,  95%  90%; }
             12%   { background-position:  50%  15%,  20%  60%,  80%  10%,  40%  80%,  70%   5%,  10%  50%,  55%  35%; }
@@ -478,11 +491,15 @@
         }
         #neko-resize-handle:hover { opacity: 1; }
 
-        /* 暗色模式透明背景覆盖 —— dark-mode.css 的 max-width:768px 媒体查询
-           会将 html/body 背景设为 #000，但 chat 窗口宽度 400px 始终命中该查询，
-           导致透明窗口背景变黑，在圆角外围显示黑色矩形 */
-        html[data-theme="dark"],
-        html[data-theme="dark"] body {
+        /* 暗色模式透明背景覆盖 —— dark-mode.css / index.css 的 max-width:768px
+           媒体查询会将 html/body 背景设为 #000，但 chat 窗口宽度 400px 始终命中。
+           #1573 给那两条黑底加了 :not(.lanlan-pet-mode)（特异性 0,2,x），压过了
+           原本 0,1,x 的反制，导致透明窗口背景变黑、圆角外围显示黑色矩形。
+           这里同步加 :not(.lanlan-pet-mode) 把反制抬到 0,2,x：与黑底特异性持平，
+           再凭源序（本 <style> 晚于两张表）取胜，使 html 行与 body 行都赢过黑底。
+           chat 窗口 html/body 从不带 lanlan-pet-mode，:not() 恒命中、不改适用范围。 */
+        html[data-theme="dark"]:not(.lanlan-pet-mode),
+        html[data-theme="dark"]:not(.lanlan-pet-mode) body {
             background: transparent !important;
         }
 
@@ -759,6 +776,7 @@
     <script src="/static/app-agent.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-character.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-websocket.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-telemetry.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-buttons.js?v={{ static_asset_version }}"></script>
     <script src="/static/app.js?v={{ static_asset_version }}"></script>
     <script src="/static/subtitle.js?v={{ static_asset_version }}"></script>

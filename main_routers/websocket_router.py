@@ -15,6 +15,7 @@ enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
 import json
+import math
 import uuid
 import asyncio
 import time
@@ -85,11 +86,116 @@ def _is_home_tutorial_blocking_greeting(lanlan_name: str) -> bool:
     return bool(blocking)
 
 
+# ---- Telemetry helpers ----
+
+# Dim 字段安全限制 —— 前端是 untrusted 输入，必须挡掉：
+# - 高基数维度（如把消息内容塞进 dim）会污染 instrument counter map
+# - 超长 key / value 浪费上报带宽
+# 32B key / 64B value 对所有合理的 enum 标签都够用；超的截断而不是丢，
+# 保留 prefix 至少能切片诊断（如果某个错误 dim 反复触发，前缀也能看出来源）。
+_TELEM_MAX_DIMS = 8
+_TELEM_KEY_MAX = 32
+_TELEM_VAL_MAX = 64
+_TELEM_NAME_MAX = 64
+# event fields 的 value 比 counter dims 宽松（128B vs 64B），允许 hash / 短
+# stack signature 之类略长的标识进 event 但不进 counter map。fields **数量**
+# 仍受 _TELEM_MAX_DIMS=8 限制 —— event 也不该塞高基数 payload。
+_TELEM_EVENT_VAL_MAX = 128
+
+
+def _sanitize_dims(d, value_max: int) -> dict:
+    """把前端传入的 dims dict 过滤成 instrument 能吃的安全形式。
+
+    丢弃：非 dict / 非字符串 key / 非 (str/int/float/bool) value / 超量 key。
+    截断：超长 string value。
+    """
+    out: dict = {}
+    if not isinstance(d, dict):
+        return out
+    for k, v in d.items():
+        if len(out) >= _TELEM_MAX_DIMS:
+            break
+        if not isinstance(k, str) or len(k) == 0 or len(k) > _TELEM_KEY_MAX:
+            continue
+        if isinstance(v, bool):
+            out[k] = v
+        elif isinstance(v, (int, float)):
+            out[k] = v
+        elif isinstance(v, str):
+            out[k] = v[:value_max]
+        # 其它类型（list / dict / None）丢弃
+    return out
+
+
+def _handle_ws_telemetry(message: dict, *, lanlan_name: str) -> None:
+    """把前端 WS telemetry message 转交 utils.instrument。
+
+    ``lanlan_name`` 参数保留只为日志 / 上下文，**不**作为 dim 写入埋点 ——
+    那是用户自定义的 character 名，进 dim 会把 raw 用户字符串泄到 telemetry
+    DB 且让 metric_key 基数爆炸。需要 character 维度时业务侧应自己定义一个
+    bounded enum（如 is_default / character_class）显式传 dim。
+    """
+    try:
+        kind = message.get("kind")
+        name = message.get("name")
+        if not isinstance(name, str) or not name:
+            return
+        name = name[:_TELEM_NAME_MAX]
+
+        from utils.instrument import counter as _c, histogram as _h, event as _e
+
+        # 前端是 untrusted 输入：Python JSON 解析接受 NaN/Infinity token，
+        # 必须在这里挡掉非有限值。否则 NaN 会毒化 client 端 in-memory counter
+        # （nan + n = nan），上传时被 storage 的 isfinite 守卫整条丢弃 → 静默
+        # 丢掉该 counter 的整个窗口（Codex）。与 storage 端守卫对称。
+        if kind == "counter":
+            dims = _sanitize_dims(message.get("dims"), _TELEM_VAL_MAX)
+            val = message.get("value", 1)
+            if isinstance(val, bool) or not isinstance(val, (int, float)):
+                val = 1  # 缺失 / 非数字 → 默认 +1（事件发生了）
+            elif not math.isfinite(val):
+                return  # NaN / Inf：reject 整条，不污染 counter
+            elif isinstance(val, float):
+                # counter 是整数计数：storage 只收整数（4.0 可、1.5 不可），
+                # 非整数 float 这里不挡的话会先聚合进内存、上传时被静默丢
+                # 整窗（CodeRabbit）。整数值 float 归一化成 int。
+                if not val.is_integer():
+                    return
+                val = int(val)
+            _c(name, val, **dims)
+        elif kind == "histogram":
+            val = message.get("value")
+            if (not isinstance(val, (int, float)) or isinstance(val, bool)
+                    or not math.isfinite(val)):
+                return
+            dims = _sanitize_dims(message.get("dims"), _TELEM_VAL_MAX)
+            _h(name, val, **dims)
+        elif kind == "event":
+            fields = _sanitize_dims(message.get("fields"), _TELEM_EVENT_VAL_MAX)
+            _e(name, **fields)
+        # 其它 kind 静默丢弃
+    except Exception as e:
+        logger.debug(f"WS telemetry handler error (non-critical): {e}")
+
+
 @router.websocket("/ws/{lanlan_name}")
 async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
     _config_manager = get_config_manager()
     session_manager = get_session_manager()
     await websocket.accept()
+    # Telemetry：WS 连接计数。**不带** lanlan_name dim —— 那是用户自定义的
+    # character 名（characters_router 接受 user-controlled new_name），直接进
+    # dim 会把 raw 用户字符串泄到远程 telemetry DB，同时让 metric_key 基数
+    # 按 (用户数 × 角色数) 爆炸。诊断"哪个角色被打开"对 D2-D7 流失意义有限，
+    # 不值得这两个风险。需要时由业务侧显式埋一个 bounded enum 维度。
+    try:
+        from utils.instrument import counter as _instr_counter
+        _instr_counter("ws_connect")
+    except Exception:
+        # 埋点失败绝不阻塞 WS 业务路径 —— 计数丢一条比让用户连不上服务严重程度
+        # 差几个数量级。imports 失败的可能性主要在打包环境下 utils 不齐时。
+        pass
+    _ws_connect_ts = time.time()
 
     # 检查角色是否存在，如果不存在则通知前端并关闭连接
     if lanlan_name not in session_manager:
@@ -134,6 +240,9 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         logger.info(f"[{lanlan_name}] websocket reconnect: {len(mgr.pending_agent_callbacks)} pending callbacks, scheduling delivery")
         _fire_task(mgr.trigger_agent_callbacks())
 
+    # finally 块要在所有路径上能读到这个变量，包括 BaseException 抢断
+    # try-else 链的情形（SystemExit / KeyboardInterrupt 都不走 else）。
+    _ws_disconnect_reason = "unknown"
     try:
         while True:
             data = await websocket.receive_text()
@@ -148,14 +257,22 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 break
             message = json.loads(data)
             action = message.get("action")
-            
+
             # 处理语言设置（可以在任何消息中携带）
             if "language" in message:
                 user_language = message.get("language")
                 session_manager[lanlan_name].set_user_language(user_language)
                 logger.info(f"收到用户语言设置: {user_language}")
-            
+
             # logger.debug(f"WebSocket received action: {action}") # Optional debug log
+
+            # ── Telemetry dispatch（前端 counter / histogram / event 通道）──
+            # 前端 static/app-telemetry.js 通过 action="telemetry" 投递数据；
+            # 这里转交 utils.instrument，跟 Python 端发出去的走同一上报通道。
+            # 早返回避免污染下面的业务 dispatch；不需要 session_manager 状态。
+            if action == "telemetry":
+                _handle_ws_telemetry(message, lanlan_name=lanlan_name)
+                continue
 
             if action == "start_session":
                 session_manager[lanlan_name].active_session_is_idle = False
@@ -230,6 +347,14 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 session_manager[lanlan_name].active_session_is_idle = True
                 _fire_task(session_manager[lanlan_name].end_session())
 
+            elif action == "capture_bridge_status":
+                from utils.capture_bridge import mark_capture_client
+                mark_capture_client(lanlan_name, websocket, message)
+
+            elif action == "capture_bridge_response":
+                from utils.capture_bridge import resolve_capture_response
+                resolve_capture_response(lanlan_name, message)
+
             elif action == "screenshot_response":
                 raw = message.get("data", "")
                 b64 = raw.split(",", 1)[1] if "," in raw else raw
@@ -290,24 +415,66 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 # 这里 no-op 以避免落到 default 分支推 UNKNOWN_ACTION 状态给前端。
                 pass
 
+            elif action in ("voice_play_start", "voice_play_end"):
+                # FRONTEND-reported real audio playback boundaries. start =
+                # buffered audio actually began playing; end = the audio queue
+                # fully drained (she truly stopped talking). This is strictly
+                # later than the realtime API's response.done (generation),
+                # so the proactive inject gate keys off THIS rather than
+                # response.done to avoid self-interruption. Rides the same ws
+                # path as every other frontend→backend action (incl. the
+                # Electron chat.html WSProxy/IPC bridge → Pet real ws), so no
+                # special proxy handling is needed.
+                session_manager[lanlan_name].on_voice_playback_signal(
+                    playing=(action == "voice_play_start"),
+                    turn_id=message.get("turnId") or message.get("turn_id") or "",
+                    source=message.get("source") or "audio_playback",
+                )
+
             else:
                 logger.warning(f"Unknown action received: {action}")
                 await session_manager[lanlan_name].send_status(json.dumps({"code": "UNKNOWN_ACTION", "details": {"action": action}}))
 
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected: {websocket.client}")
+        _ws_disconnect_reason = "client_disconnect"
     except Exception as e:
         error_message = f"WebSocket handler error: {e}"
         logger.error(f"💥 {error_message}")
+        _ws_disconnect_reason = "handler_error"
         try:
             if lanlan_name in session_manager:
                 await session_manager[lanlan_name].send_status(json.dumps({"code": "SERVER_ERROR"}))
         except: # noqa
             pass
+    else:
+        # 进 finally 时既不是 disconnect 也不是异常 —— 实际上 while True 循环
+        # 内只有 break 才到这；break 路径上面都设过 reason；这里兜底防 NameError。
+        _ws_disconnect_reason = "normal_break"
     finally:
+        # Telemetry：连接生命周期。reason 是低基数 enum，duration 进 histogram
+        # 看用户实际停留时长（D2-D7 流失诊断的关键指标之一）。
+        # lanlan_name 不进 dim —— 见 accept 处 ws_connect 同样原因（PII + 高基数）。
+        try:
+            from utils.instrument import counter as _instr_counter, histogram as _instr_histogram
+            _ws_dur = time.time() - _ws_connect_ts
+            _instr_counter("ws_disconnect", reason=_ws_disconnect_reason)
+            if _ws_dur > 0:
+                _instr_histogram("ws_session_sec", _ws_dur)
+        except Exception:
+            # finally 阶段 telemetry 失败不能再 raise —— 已经在 cleanup 路径上，
+            # 抛异常会污染调用栈让真正的 WS error 看不到。
+            pass
         logger.info(f"Cleaning up WebSocket resources: {websocket.client}")
         # 记录 WS 断开时间，供下次连接时判断是否为"刷新/重连"
         _ws_disconnect_time[lanlan_name] = time.time()
+        # 释放 capture_bridge 注册并 resolve 其所有 pending futures 为错误，
+        # 让 /api/capture/health 立即返回 503。
+        try:
+            from utils.capture_bridge import unmark_capture_client
+            unmark_capture_client(lanlan_name, expected_websocket=websocket)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[capture_bridge] unmark on disconnect failed: %s", exc)
         # 安全检查：如果角色已被重命名或删除，lanlan_name 可能不再存在
         async with _lock:
             session_id = get_session_id()

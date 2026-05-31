@@ -1784,6 +1784,13 @@ async def _run_computer_use_task(
     instruction: str,
 ) -> None:
     """Run a computer-use task in a thread pool; emit results directly via ZeroMQ."""
+    # Telemetry：按 agent 类型计使用量（cua/browser/plugin/openclaw/openfang），
+    # 看哪类 agent 真被用、用多少。best-effort 不阻塞 agent 执行。
+    try:
+        from utils.instrument import counter as _ic
+        _ic("agent_invoked", agent_type="cua")
+    except Exception:
+        pass  # 埋点 best-effort，不阻塞 cua 任务执行
     info = Modules.task_registry.get(task_id, {})
     lanlan_name = info.get("lanlan_name")
 
@@ -2236,6 +2243,19 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     await _emit_main_event("task_update", lanlan_name, task=task_payload)
 
                 async def _run_user_plugin_dispatch():
+                    try:
+                        from utils.instrument import counter as _ic
+                        # agent_invoked 只按 agent_type 分，保持单 key 即"plugin
+                        # 总计"——本地 admin 视图 get_top_counters 按完整 metric_key
+                        # GROUP BY、不做 dim 聚合，若把 plugin_id 塞进这里会把该
+                        # 总计行打散成 per-plugin 行、丢掉聚合。per-plugin 细分另发
+                        # 独立指标 plugin_invoked，其全量之和恒等于本行，互不重复
+                        # 计数。plugin_id 基数由已安装插件数限定，截断兜底防异常长
+                        # id 撑爆 counter key 空间。
+                        _ic("agent_invoked", agent_type="plugin")
+                        _ic("plugin_invoked", plugin_id=str(plugin_id or "unknown")[:48])
+                    except Exception:
+                        pass  # 埋点 best-effort，不阻塞 plugin 分派
                     # Default delivery mode; overridden after the plugin result
                     # is parsed below. Cancel / exception branches read this so
                     # they honor whatever the plugin already declared, not a
@@ -2591,6 +2611,11 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     logger.debug("[OpenClaw] emit proactive_message(ack) failed: task_id=%s error=%s", result.task_id, emit_err)
                 async def _run_openclaw_dispatch():
                     try:
+                        from utils.instrument import counter as _ic
+                        _ic("agent_invoked", agent_type="openclaw")
+                    except Exception:
+                        pass  # 埋点 best-effort
+                    try:
                         nk_result = await Modules.openclaw.run_instruction(
                             instruction,
                             attachments=attachments,
@@ -2779,6 +2804,11 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     logger.debug("[BrowserUse] emit task_update(running) failed: task_id=%s error=%s", bu_task_id, e)
                 async def _run_browser_use_dispatch():
                     try:
+                        from utils.instrument import counter as _ic
+                        _ic("agent_invoked", agent_type="browser")
+                    except Exception:
+                        pass  # 埋点 best-effort
+                    try:
                         bres = await Modules.browser_use.run_instruction(
                             result.task_description,
                             session_id=bu_session.session_id,
@@ -2947,6 +2977,11 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         logger.debug("[OpenFang] emit task_update(running) failed: task_id=%s error=%s", of_task_id, e)
 
                     async def _run_openfang_dispatch():
+                        try:
+                            from utils.instrument import counter as _ic
+                            _ic("agent_invoked", agent_type="openfang")
+                        except Exception:
+                            pass  # 埋点 best-effort
                         try:
                             of_res = await Modules.openfang.run_instruction(
                                 result.task_description,
@@ -3148,9 +3183,14 @@ async def startup():
         from utils.token_tracker import TokenTracker, install_hooks
         install_hooks()
         TokenTracker.get_instance().start_periodic_save()
-        TokenTracker.get_instance().record_app_start()
+        # process 字段进 session_start / session_end 维度，跨进程诊断必须区分
+        TokenTracker.get_instance().record_app_start(process="agent_server")
     except Exception as e:
         logger.warning(f"[Agent] Token tracker init failed: {e}")
+
+    # 注：模块预热统一由 main_server 在其 runtime init 完成后触发（见
+    # _ensure_main_server_runtime_initialized 末尾）。合并模式下三个 app 同进程，
+    # 那一处覆盖本进程全部 lazy 模块；不在这里另起，避免与启动期抢 GIL。
 
     os.environ["NEKO_PLUGIN_HOSTED_BY_AGENT"] = "true"
     Modules.computer_use = ComputerUseAdapter()

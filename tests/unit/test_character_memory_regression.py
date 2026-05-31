@@ -83,6 +83,144 @@ class _DummyGetRequest:
         self.headers = headers or {}
 
 
+class _FakeTranslationService:
+    async def translate_dict(self, data, target_lang, fields_to_translate=None):
+        result = dict(data)
+        for field in fields_to_translate or []:
+            value = result.get(field)
+            if isinstance(value, str) and value:
+                result[field] = f"{target_lang}:{value}"
+        return result
+
+
+@pytest.mark.unit
+def test_profile_rename_event_prompt_i18n_is_complete_and_first_person():
+    from config.prompts.prompts_memory import (
+        PROFILE_RENAME_EVENT_FIELD,
+        PROFILE_RENAME_EVENT_TEXT,
+        render_profile_rename_event_context,
+    )
+
+    expected_langs = {"zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"}
+    assert set(PROFILE_RENAME_EVENT_FIELD) == expected_langs
+    assert set(PROFILE_RENAME_EVENT_TEXT) == expected_langs
+
+    zh_label, zh_text = render_profile_rename_event_context("zh-CN", "旧角色", "新角色")
+    assert zh_label == "我的改名记录"
+    assert "我曾用名" in zh_text
+    assert "旧角色" in zh_text
+    assert "新角色" in zh_text
+    assert "只代表改名前的历史称呼" not in zh_text
+
+    en_label, en_text = render_profile_rename_event_context("en", "Old", "New")
+    assert en_label == "My Profile Rename Record"
+    assert "formerly known as" in en_text
+    assert "Old" in en_text
+    assert "New" in en_text
+    assert "historical name before the rename" not in en_text
+
+
+@pytest.mark.unit
+def test_profile_rename_event_master_is_person_neutral():
+    """主人改名记录进的是猫娘 persona 的 master section，读者是猫娘、
+    改名的是用户。第一人称会让猫娘误以为是自己改名，所以这里去掉人称、
+    用中性陈述，既不能出现「我」也不带「你」。"""
+    from config.prompts.prompts_memory import (
+        PROFILE_RENAME_EVENT_FIELD_MASTER,
+        PROFILE_RENAME_EVENT_TEXT_MASTER,
+        render_profile_rename_event_context,
+    )
+
+    expected_langs = {"zh", "zh-TW", "en", "ja", "ko", "ru", "es", "pt"}
+    assert set(PROFILE_RENAME_EVENT_FIELD_MASTER) == expected_langs
+    assert set(PROFILE_RENAME_EVENT_TEXT_MASTER) == expected_langs
+
+    zh_label, zh_text = render_profile_rename_event_context("zh-CN", "旧名", "新名", entity="master")
+    assert zh_label == "改名记录"
+    assert "旧名" in zh_text and "新名" in zh_text
+    # 去人称：既无第一人称「我」也无第二人称「你」。
+    assert "我" not in zh_text
+    assert "你" not in zh_text
+
+    en_label, en_text = render_profile_rename_event_context("en", "Old", "New", entity="master")
+    assert en_label == "Profile Rename Record"
+    assert "Old" in en_text and "New" in en_text
+    assert "My " not in en_text and "Your " not in en_text
+
+    # 缺省（neko）仍是第一人称，主人变体不影响默认行为。
+    _, neko_text = render_profile_rename_event_context("zh-CN", "旧名", "新名")
+    assert "我曾用名" in neko_text
+
+
+@pytest.mark.unit
+def test_master_effective_payload_rename_context_is_person_neutral(monkeypatch):
+    monkeypatch.setattr("utils.language_utils.get_global_language_full", lambda: "zh-CN")
+    from utils.config_manager import _build_effective_character_payload
+
+    payload = {
+        "档案名": "新主人名",
+        "_reserved": {
+            "ai_context": {
+                "rename_events": [
+                    {"type": "profile_rename", "old_name": "旧主人名", "new_name": "新主人名"},
+                ]
+            }
+        },
+    }
+    effective = _build_effective_character_payload(payload, entity="master")
+    context = effective["__ai_context.profile_rename_events"]
+    assert "旧主人名" in context and "新主人名" in context
+    assert "我" not in context
+    assert "你" not in context
+
+
+@pytest.mark.unit
+def test_profile_rename_event_uses_collision_safe_synthetic_key(monkeypatch):
+    monkeypatch.setattr("utils.language_utils.get_global_language_full", lambda: "zh-CN")
+    from utils.config_manager import _build_effective_character_payload
+
+    payload = {
+        "档案名": "新角色",
+        "我的改名记录": "用户自己写的字段",
+        "_reserved": {
+            "ai_context": {
+                "rename_events": [
+                    {
+                        "type": "profile_rename",
+                        "old_name": "旧角色",
+                        "new_name": "临时角色",
+                    },
+                    {
+                        "type": "profile_rename",
+                        "old_name": "临时角色",
+                        "new_name": "新角色",
+                    }
+                ]
+            }
+        },
+    }
+    effective = _build_effective_character_payload(payload)
+
+    assert effective["我的改名记录"] == "用户自己写的字段"
+    hidden_context = effective["__ai_context.profile_rename_events"]
+    assert "我的改名记录" in hidden_context
+    assert "我曾用名" in hidden_context
+    assert "旧角色" in hidden_context
+    assert "临时角色" in hidden_context
+    assert "新角色" in hidden_context
+    assert hidden_context.count("我的改名记录") == 1
+
+    payload["__ai_context.profile_rename_events"] = "用户内部命名字段"
+    effective_with_internal_collision = _build_effective_character_payload(payload)
+    assert effective_with_internal_collision["__ai_context.profile_rename_events"] == "用户内部命名字段"
+    collision_values = [
+        value
+        for key, value in effective_with_internal_collision.items()
+        if key.startswith("__ai_context.profile_rename_events.")
+    ]
+    assert any("我曾用名" in str(value) for value in collision_values)
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_character_management_and_recent_save_regression():
@@ -210,7 +348,62 @@ async def test_character_read_endpoints_disable_caching():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage():
+async def test_get_characters_preserves_profile_names_when_translating_display_fields():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+        characters = cm.load_characters()
+        characters["主人"] = {"档案名": "主人原名", "昵称": "主人昵称"}
+        characters["猫娘"] = {
+            "猫娘原名": {
+                "档案名": "猫娘原名",
+                "昵称": "猫娘昵称",
+                "性别": "女",
+            }
+        }
+        characters["当前猫娘"] = "猫娘原名"
+        cm.save_characters(characters)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm), patch(
+            "utils.language_utils.get_translation_service",
+            return_value=_FakeTranslationService(),
+        ):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            characters_router_module = reload_module("main_routers.characters_router")
+            response = await characters_router_module.get_characters(
+                _DummyGetRequest(headers={"Accept-Language": "en-US"})
+            )
+            payload = json.loads(response.body.decode("utf-8"))
+
+            assert payload["主人"]["档案名"] == "主人原名"
+            assert payload["主人"]["昵称"] == "en:主人昵称"
+            assert "猫娘原名" in payload["猫娘"]
+            assert payload["猫娘"]["猫娘原名"]["档案名"] == "猫娘原名"
+            assert payload["猫娘"]["猫娘原名"]["昵称"] == "en:猫娘昵称"
+            assert payload["猫娘"]["猫娘原名"]["性别"] == "en:女"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage(monkeypatch):
+    monkeypatch.setattr("utils.language_utils.get_global_language_full", lambda: "zh-CN")
     with TemporaryDirectory() as td:
         cm = _make_config_manager(Path(td))
         bootstrap_local_cloudsave_environment(cm)
@@ -284,8 +477,30 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage():
 
             assert rename_result["success"] is True
             assert rename_result["memory_renamed"] is True
-            assert "新角色" in cm.load_characters().get("猫娘", {})
-            assert "旧角色" not in cm.load_characters().get("猫娘", {})
+            saved_characters = cm.load_characters()
+            assert "新角色" in saved_characters.get("猫娘", {})
+            assert "旧角色" not in saved_characters.get("猫娘", {})
+            saved_profile = saved_characters["猫娘"]["新角色"]
+            assert "我的改名记录" not in saved_profile
+            rename_events = saved_profile["_reserved"]["ai_context"]["rename_events"]
+            assert rename_events[-1]["old_name"] == "旧角色"
+            assert rename_events[-1]["new_name"] == "新角色"
+            assert "text" not in rename_events[-1]
+
+            _, _, _, effective_character_data, _, _, _, _, _ = cm.get_character_data()
+            hidden_context = effective_character_data["新角色"]["__ai_context.profile_rename_events"]
+            assert "我的改名记录" in hidden_context
+            assert "我曾用名" in hidden_context
+            assert "旧角色" in hidden_context
+            assert "新角色" in hidden_context
+            from memory.persona import PersonaManager
+            persona_md = PersonaManager().render_persona_markdown("新角色")
+            # 合成字段的内部裸键不能泄漏进渲染给模型的 persona 文本，只保留本地化标签。
+            assert "__ai_context.profile_rename_events" not in persona_md
+            assert "我的改名记录" in persona_md
+            assert "我曾用名" in persona_md
+            assert "旧角色" in persona_md
+            assert "新角色" in persona_md
             assert not (Path(cm.memory_dir) / "旧角色").exists()
             assert (Path(cm.memory_dir) / "新角色" / "persona.json").is_file()
             assert (Path(cm.memory_dir) / "新角色" / "facts.json").is_file()
@@ -301,6 +516,187 @@ async def test_rename_catgirl_moves_runtime_and_legacy_memory_storage():
             )
             assert memory_rename_result["success"] is True
             assert (Path(cm.memory_dir) / "新角色" / "recent.json").is_file()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_rename_master_adds_hidden_ai_context_and_master_save_preserves_it(monkeypatch):
+    monkeypatch.setattr("utils.language_utils.get_global_language_full", lambda: "zh-CN")
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            characters_router_module = reload_module("main_routers.characters_router")
+            old_master_name = cm.load_characters()["主人"]["档案名"]
+            current_catgirl = cm.load_characters()["当前猫娘"]
+
+            rename_result = await characters_router_module.rename_master(
+                old_master_name,
+                _DummyRequest({"new_name": "新主人"}),
+            )
+
+            assert rename_result["success"] is True
+            saved_master = cm.load_characters()["主人"]
+            assert "我的改名记录" not in saved_master
+            rename_events = saved_master["_reserved"]["ai_context"]["rename_events"]
+            assert rename_events[-1]["old_name"] == old_master_name
+            assert rename_events[-1]["new_name"] == "新主人"
+            assert "text" not in rename_events[-1]
+
+            _, _, master_basic_config, _, _, _, _, _, _ = cm.get_character_data()
+            hidden_context = master_basic_config["__ai_context.profile_rename_events"]
+            # 主人改名记录进的是猫娘 persona 的 master section，去掉人称用中性陈述，
+            # 既不能第一人称「我」（否则猫娘会以为是自己改了名），也不带第二人称「你」。
+            assert "改名记录" in hidden_context
+            assert "我" not in hidden_context
+            assert "你" not in hidden_context
+            assert old_master_name in hidden_context
+            assert "新主人" in hidden_context
+
+            from memory.persona import PersonaManager
+            persona_md = PersonaManager().render_persona_markdown(current_catgirl)
+            # 同上：裸键不泄漏，且主人段无人称。
+            assert "__ai_context.profile_rename_events" not in persona_md
+            assert "改名记录" in persona_md
+            assert old_master_name in persona_md
+            assert "新主人" in persona_md
+
+            update_result = await characters_router_module.update_master(
+                _DummyRequest({"档案名": "新主人", "昵称": "柚希"})
+            )
+            assert update_result["success"] is True
+            saved_after_update = cm.load_characters()["主人"]
+            assert saved_after_update["档案名"] == "新主人"
+            assert saved_after_update["_reserved"]["ai_context"]["rename_events"][-1]["new_name"] == "新主人"
+            initial_count = len(saved_after_update["_reserved"]["ai_context"]["rename_events"])
+
+            bypass_result = await characters_router_module.update_master(
+                _DummyRequest({"档案名": "绕过改名", "昵称": "柚希"})
+            )
+            assert bypass_result["success"] is True
+            saved_after_bypass = cm.load_characters()["主人"]
+            assert saved_after_bypass["档案名"] == "新主人"
+            assert saved_after_bypass["_reserved"]["ai_context"]["rename_events"][-1]["new_name"] == "新主人"
+            assert len(saved_after_bypass["_reserved"]["ai_context"]["rename_events"]) == initial_count
+
+            same_name_result = await characters_router_module.rename_master(
+                "新主人",
+                _DummyRequest({"new_name": "新主人"}),
+            )
+            assert same_name_result["success"] is True
+            saved_after_same_name = cm.load_characters()["主人"]
+            assert len(saved_after_same_name["_reserved"]["ai_context"]["rename_events"]) == initial_count
+
+            legacy_conflict_characters = cm.load_characters()
+            legacy_conflict_characters.setdefault("猫娘", {})["新主人"] = {"档案名": "新主人"}
+            cm.save_characters(legacy_conflict_characters)
+            legacy_conflict_update = await characters_router_module.update_master(
+                _DummyRequest({"昵称": "柚希2"})
+            )
+            assert legacy_conflict_update["success"] is True
+            assert cm.load_characters()["主人"]["档案名"] == "新主人"
+            empty_update = await characters_router_module.update_master(_DummyRequest({}))
+            assert empty_update["success"] is True
+            saved_after_empty_update = cm.load_characters()["主人"]
+            assert saved_after_empty_update["档案名"] == "新主人"
+            assert "昵称" not in saved_after_empty_update
+            assert len(saved_after_empty_update["_reserved"]["ai_context"]["rename_events"]) == initial_count
+
+            rename_conflict_characters = cm.load_characters()
+            rename_conflict_characters.setdefault("猫娘", {})["主人同名猫娘"] = {"档案名": "主人同名猫娘"}
+            cm.save_characters(rename_conflict_characters)
+            cross_namespace_rename = await characters_router_module.rename_master(
+                "新主人",
+                _DummyRequest({"new_name": "主人同名猫娘"}),
+            )
+            assert cross_namespace_rename["success"] is True
+            saved_after_cross_namespace_rename = cm.load_characters()["主人"]
+            assert saved_after_cross_namespace_rename["档案名"] == "主人同名猫娘"
+            assert saved_after_cross_namespace_rename["_reserved"]["ai_context"]["rename_events"][-1]["new_name"] == "主人同名猫娘"
+
+            conflict_characters = cm.load_characters()
+            conflict_characters["主人"] = {}
+            conflict_characters.setdefault("猫娘", {})["占用名"] = {"档案名": "占用名"}
+            cm.save_characters(conflict_characters)
+            conflict_result = await characters_router_module.update_master(
+                _DummyRequest({"档案名": "占用名", "昵称": "柚希"})
+            )
+            assert conflict_result["success"] is True
+            assert cm.load_characters()["主人"]["档案名"] == "占用名"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_update_master_body_rename_fallback_repairs_legacy_path_name(monkeypatch):
+    monkeypatch.setattr("utils.language_utils.get_global_language_full", lambda: "zh-CN")
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            characters_router_module = reload_module("main_routers.characters_router")
+            legacy_characters = cm.load_characters()
+            legacy_characters["主人"]["档案名"] = "旧/主人"
+            legacy_characters["主人"]["昵称"] = "旧昵称"
+            cm.save_characters(legacy_characters)
+
+            repair_result = await characters_router_module.update_master(
+                _DummyRequest({"档案名": "修复主人", "昵称": "柚希"})
+            )
+            assert repair_result["success"] is True
+            saved_after_repair = cm.load_characters()["主人"]
+            assert saved_after_repair["档案名"] == "修复主人"
+            assert saved_after_repair["昵称"] == "柚希"
+            rename_events = saved_after_repair["_reserved"]["ai_context"]["rename_events"]
+            assert rename_events[-1]["old_name"] == "旧/主人"
+            assert rename_events[-1]["new_name"] == "修复主人"
+            initial_count = len(rename_events)
+
+            bypass_result = await characters_router_module.update_master(
+                _DummyRequest({"档案名": "再次绕过", "昵称": "柚希2"})
+            )
+            assert bypass_result["success"] is True
+            saved_after_bypass = cm.load_characters()["主人"]
+            assert saved_after_bypass["档案名"] == "修复主人"
+            assert saved_after_bypass["昵称"] == "柚希2"
+            assert len(saved_after_bypass["_reserved"]["ai_context"]["rename_events"]) == initial_count
 
 
 @pytest.mark.unit
@@ -652,6 +1048,618 @@ async def test_deleted_workshop_character_is_not_restored_by_startup_sync():
             current_characters = cm.load_characters()
             assert "工坊角色" not in current_characters.get("猫娘", {})
             assert current_characters["当前猫娘"] == initial_name
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_manual_workshop_character_sync_restores_deleted_character_and_clears_tombstone():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            workshop_router_module = reload_module("main_routers.workshop_router")
+
+            deleted_name = "手动恢复工坊角色"
+            cm.save_character_tombstones_state({
+                "version": cm.CHARACTER_TOMBSTONES_STATE_VERSION,
+                "tombstones": [
+                    {
+                        "character_name": deleted_name,
+                        "deleted_at": "2026-05-25T00:00:00Z",
+                        "sequence_number": 1,
+                    }
+                ],
+            })
+
+            installed_folder = Path(td) / "mock_workshop_manual_restore_item"
+            installed_folder.mkdir(parents=True, exist_ok=True)
+            (installed_folder / "角色卡.chara.json").write_text(
+                json.dumps({"档案名": deleted_name, "昵称": "来自手动恢复"}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            subscribed_items_mock = AsyncMock(
+                return_value={
+                    "success": True,
+                    "items": [
+                        {
+                            "publishedFileId": "123456",
+                            "installedFolder": str(installed_folder),
+                        }
+                    ],
+                }
+            )
+            with patch.object(
+                workshop_router_module,
+                "get_subscribed_workshop_items",
+                subscribed_items_mock,
+            ):
+                sync_result = await workshop_router_module.sync_workshop_character_cards(
+                    target_item_id="123456",
+                    restore_deleted=True,
+                )
+                second_result = await workshop_router_module.sync_workshop_character_cards(
+                    target_item_id="123456",
+                    restore_deleted=True,
+                )
+
+            assert sync_result["added"] == 1
+            assert sync_result["added_character_names"] == [deleted_name]
+            assert sync_result["restored_deleted_names"] == [deleted_name]
+            current_characters = cm.load_characters()
+            assert deleted_name in current_characters.get("猫娘", {})
+            tombstones = cm.load_character_tombstones_state().get("tombstones") or []
+            assert not any(entry.get("character_name") == deleted_name for entry in tombstones)
+
+            assert second_result["added"] == 0
+            assert second_result["existing_character_names"] == [deleted_name]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_manual_workshop_character_sync_clears_tombstone_for_existing_character():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            workshop_router_module = reload_module("main_routers.workshop_router")
+
+            restored_name = "已存在但有墓碑角色"
+            characters = cm.load_characters()
+            characters.setdefault("猫娘", {})[restored_name] = {
+                "昵称": "已存在",
+                "_reserved": {
+                    "character_origin": {
+                        "source": "steam_workshop",
+                        "source_id": "123456",
+                    }
+                },
+            }
+            cm.save_characters(characters, bypass_write_fence=True)
+            cm.save_character_tombstones_state({
+                "version": cm.CHARACTER_TOMBSTONES_STATE_VERSION,
+                "tombstones": [
+                    {
+                        "character_name": restored_name,
+                        "deleted_at": "2026-05-25T00:00:00Z",
+                        "sequence_number": 1,
+                    }
+                ],
+            })
+
+            installed_folder = Path(td) / "mock_workshop_existing_restore_item"
+            installed_folder.mkdir(parents=True, exist_ok=True)
+            (installed_folder / "角色卡.chara.json").write_text(
+                json.dumps({"档案名": restored_name, "昵称": "来自工坊"}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            with patch.object(
+                workshop_router_module,
+                "get_subscribed_workshop_items",
+                AsyncMock(
+                    return_value={
+                        "success": True,
+                        "items": [
+                            {
+                                "publishedFileId": "123456",
+                                "installedFolder": str(installed_folder),
+                            }
+                        ],
+                    }
+                ),
+            ):
+                sync_result = await workshop_router_module.sync_workshop_character_cards(
+                    target_item_id="123456",
+                    restore_deleted=True,
+                )
+
+            assert sync_result["added"] == 0
+            assert sync_result["existing_character_names"] == [restored_name]
+            assert sync_result["restored_deleted_names"] == [restored_name]
+            tombstones = cm.load_character_tombstones_state().get("tombstones") or []
+            assert not any(entry.get("character_name") == restored_name for entry in tombstones)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_manual_workshop_character_sync_clears_tombstone_for_avatar_only_bound_character():
+    # 回归：旧数据 / 半迁移数据可能只有 avatar.asset_source 绑定（例如 live2d_item_id
+    # 迁移只写 avatar.asset_source_id，或用户在模型设置里手动绑定 Workshop 模型），
+    # 没有 character_origin。退订路径已按 avatar 命中删除它并打 tombstone，恢复路径
+    # 也必须按 avatar 命中并清理 tombstone，否则该角色会永远卡在 409。
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            workshop_router_module = reload_module("main_routers.workshop_router")
+
+            restored_name = "仅头像绑定角色"
+            characters = cm.load_characters()
+            characters.setdefault("猫娘", {})[restored_name] = {
+                "昵称": "已存在",
+                "_reserved": {
+                    "avatar": {
+                        "asset_source": "steam_workshop",
+                        "asset_source_id": "123456",
+                    }
+                },
+            }
+            cm.save_characters(characters, bypass_write_fence=True)
+            cm.save_character_tombstones_state({
+                "version": cm.CHARACTER_TOMBSTONES_STATE_VERSION,
+                "tombstones": [
+                    {
+                        "character_name": restored_name,
+                        "deleted_at": "2026-05-25T00:00:00Z",
+                        "sequence_number": 1,
+                    }
+                ],
+            })
+
+            installed_folder = Path(td) / "mock_workshop_avatar_only_restore_item"
+            installed_folder.mkdir(parents=True, exist_ok=True)
+            (installed_folder / "角色卡.chara.json").write_text(
+                json.dumps({"档案名": restored_name, "昵称": "来自工坊"}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            with patch.object(
+                workshop_router_module,
+                "get_subscribed_workshop_items",
+                AsyncMock(
+                    return_value={
+                        "success": True,
+                        "items": [
+                            {
+                                "publishedFileId": "123456",
+                                "installedFolder": str(installed_folder),
+                            }
+                        ],
+                    }
+                ),
+            ):
+                sync_result = await workshop_router_module.sync_workshop_character_cards(
+                    target_item_id="123456",
+                    restore_deleted=True,
+                )
+
+            assert sync_result["added"] == 0
+            assert sync_result["existing_character_names"] == [restored_name]
+            assert sync_result["restored_deleted_names"] == [restored_name]
+            tombstones = cm.load_character_tombstones_state().get("tombstones") or []
+            assert not any(entry.get("character_name") == restored_name for entry in tombstones)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_manual_workshop_character_sync_keeps_tombstone_for_nonmatching_existing_character():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            workshop_router_module = reload_module("main_routers.workshop_router")
+
+            restored_name = "同名本地角色"
+            characters = cm.load_characters()
+            characters.setdefault("猫娘", {})[restored_name] = {"昵称": "本地角色"}
+            cm.save_characters(characters, bypass_write_fence=True)
+            cm.save_character_tombstones_state({
+                "version": cm.CHARACTER_TOMBSTONES_STATE_VERSION,
+                "tombstones": [
+                    {
+                        "character_name": restored_name,
+                        "deleted_at": "2026-05-25T00:00:00Z",
+                        "sequence_number": 1,
+                    }
+                ],
+            })
+
+            installed_folder = Path(td) / "mock_workshop_nonmatching_restore_item"
+            installed_folder.mkdir(parents=True, exist_ok=True)
+            (installed_folder / "角色卡.chara.json").write_text(
+                json.dumps({"档案名": restored_name, "昵称": "来自工坊"}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            with patch.object(
+                workshop_router_module,
+                "get_subscribed_workshop_items",
+                AsyncMock(
+                    return_value={
+                        "success": True,
+                        "items": [
+                            {
+                                "publishedFileId": "123456",
+                                "installedFolder": str(installed_folder),
+                            }
+                        ],
+                    }
+                ),
+            ):
+                sync_result = await workshop_router_module.sync_workshop_character_cards(
+                    target_item_id="123456",
+                    restore_deleted=True,
+                )
+
+            assert sync_result["added"] == 0
+            assert sync_result["existing_character_names"] == [restored_name]
+            assert sync_result["restored_deleted_names"] == []
+            tombstones = cm.load_character_tombstones_state().get("tombstones") or []
+            assert any(entry.get("character_name") == restored_name for entry in tombstones)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_manual_workshop_character_sync_defers_tombstone_cleanup_after_successful_save():
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        bootstrap_local_cloudsave_environment(cm)
+
+        async def _noop_init():
+            return None
+
+        async def _noop_any(*args, **kwargs):
+            return None
+
+        with patch("utils.config_manager._config_manager", cm):
+            init_shared_state(
+                role_state={},
+                steamworks=None,
+                templates=None,
+                config_manager=cm,
+                logger=None,
+                initialize_character_data=_noop_init,
+                switch_current_catgirl_fast=_noop_any,
+                init_one_catgirl=_noop_any,
+                remove_one_catgirl=_noop_any,
+            )
+
+            workshop_router_module = reload_module("main_routers.workshop_router")
+
+            restored_name = "延后清理墓碑角色"
+            characters = cm.load_characters()
+            characters.setdefault("猫娘", {})[restored_name] = {
+                "昵称": "已存在",
+                "_reserved": {
+                    "character_origin": {
+                        "source": "steam_workshop",
+                        "source_id": "123456",
+                    }
+                },
+            }
+            cm.save_characters(characters, bypass_write_fence=True)
+            cm.save_character_tombstones_state({
+                "version": cm.CHARACTER_TOMBSTONES_STATE_VERSION,
+                "tombstones": [
+                    {
+                        "character_name": restored_name,
+                        "deleted_at": "2026-05-25T00:00:00Z",
+                        "sequence_number": 1,
+                    }
+                ],
+            })
+
+            installed_folder = Path(td) / "mock_workshop_deferred_restore_item"
+            installed_folder.mkdir(parents=True, exist_ok=True)
+            (installed_folder / "existing.chara.json").write_text(
+                json.dumps({"档案名": restored_name, "昵称": "来自工坊"}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            (installed_folder / "new.chara.json").write_text(
+                json.dumps({"档案名": "新工坊角色", "昵称": "新角色"}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            with (
+                patch.object(
+                    workshop_router_module,
+                    "get_subscribed_workshop_items",
+                    AsyncMock(
+                        return_value={
+                            "success": True,
+                            "items": [
+                                {
+                                    "publishedFileId": "123456",
+                                    "installedFolder": str(installed_folder),
+                                }
+                            ],
+                        }
+                    ),
+                ),
+                patch.object(workshop_router_module, "_ensure_workshop_card_face_from_preview", return_value=False),
+                patch.object(workshop_router_module, "_ensure_workshop_card_face_meta", return_value=False),
+                patch.object(
+                    workshop_router_module,
+                    "is_write_fence_active",
+                    side_effect=[False, False, False, False, False, False, True],
+                ),
+            ):
+                sync_result = await workshop_router_module.sync_workshop_character_cards(
+                    target_item_id="123456",
+                    restore_deleted=True,
+                )
+
+            assert sync_result["added"] == 1
+            assert sync_result["tombstone_cleanup_deferred"] is True
+            assert "新工坊角色" in cm.load_characters().get("猫娘", {})
+            tombstones = cm.load_character_tombstones_state().get("tombstones") or []
+            assert any(entry.get("character_name") == restored_name for entry in tombstones)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_sync_single_workshop_character_card_treats_restored_existing_as_success():
+    workshop_router_module = reload_module("main_routers.workshop_router")
+    sync_result = {
+        "added": 0,
+        "backfilled_faces": 0,
+        "skipped": 1,
+        "errors": 0,
+        "target_found": True,
+        "found_character_names": ["恢复角色"],
+        "existing_character_names": ["恢复角色"],
+        "restored_deleted_names": ["恢复角色"],
+    }
+
+    with patch.object(
+        workshop_router_module,
+        "sync_workshop_character_cards",
+        AsyncMock(return_value=sync_result),
+    ):
+        response = await workshop_router_module.api_sync_single_workshop_character_card("123456")
+
+    assert response["success"] is True
+    assert response["restored_deleted_names"] == ["恢复角色"]
+    assert response["message"] == "已加入角色卡：恢复角色"
+    # 前端成功提示只读 added_character_names，仅恢复场景也必须带上恢复角色名，
+    # 否则会被 formatWorkshopCharacterNameList 回退成“未知角色卡”。
+    assert response["added_character_names"] == ["恢复角色"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("sync_result", "expected_status", "expected_code"),
+    [
+        (
+            {
+                "added": 0,
+                "backfilled_faces": 0,
+                "skipped": 0,
+                "errors": 0,
+                "target_found": False,
+                "code": "WORKSHOP_ITEM_NOT_FOUND",
+            },
+            404,
+            "WORKSHOP_ITEM_NOT_FOUND",
+        ),
+        (
+            {
+                "added": 0,
+                "backfilled_faces": 0,
+                "skipped": 1,
+                "errors": 0,
+                "target_found": True,
+                "found_character_names": ["已存在角色"],
+                "existing_character_names": ["已存在角色"],
+            },
+            409,
+            "WORKSHOP_CHARACTER_ALREADY_EXISTS",
+        ),
+        (
+            {
+                "added": 0,
+                "backfilled_faces": 0,
+                "skipped": 0,
+                "errors": 0,
+                "target_found": True,
+                "found_character_names": [],
+                "existing_character_names": [],
+            },
+            404,
+            "WORKSHOP_CHARACTER_NOT_FOUND",
+        ),
+        (
+            {
+                "added": 0,
+                "backfilled_faces": 0,
+                "skipped": 0,
+                "errors": 0,
+                "target_found": True,
+                "found_character_names": ["未加入角色"],
+                "existing_character_names": [],
+            },
+            422,
+            "WORKSHOP_CHARACTER_NOT_ADDED",
+        ),
+        (
+            # 真实后端异常被显式标记为 WORKSHOP_SYNC_FAILED 时，必须回 500，
+            # 不能因 target_found / found_character_names 的残留值被误判成业务态。
+            {
+                "added": 0,
+                "backfilled_faces": 0,
+                "skipped": 0,
+                "errors": 1,
+                "target_found": True,
+                "found_character_names": [],
+                "existing_character_names": [],
+                "code": "WORKSHOP_SYNC_FAILED",
+            },
+            500,
+            "WORKSHOP_SYNC_FAILED",
+        ),
+    ],
+)
+async def test_sync_single_workshop_character_card_uses_error_status_codes(
+    sync_result,
+    expected_status,
+    expected_code,
+):
+    workshop_router_module = reload_module("main_routers.workshop_router")
+
+    with patch.object(
+        workshop_router_module,
+        "sync_workshop_character_cards",
+        AsyncMock(return_value=sync_result),
+    ):
+        response = await workshop_router_module.api_sync_single_workshop_character_card("123456")
+
+    payload = json.loads(response.body.decode("utf-8"))
+    assert response.status_code == expected_status
+    assert payload["success"] is False
+    assert payload["code"] == expected_code
+    assert "error" in payload
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_batch_workshop_character_sync_reports_subscription_unavailable():
+    workshop_router_module = reload_module("main_routers.workshop_router")
+    sync_result = {
+        "added": 0,
+        "backfilled_faces": 0,
+        "skipped": 0,
+        "errors": 1,
+        "code": "WORKSHOP_SUBSCRIPTIONS_UNAVAILABLE",
+    }
+
+    with patch.object(
+        workshop_router_module,
+        "sync_workshop_character_cards",
+        AsyncMock(return_value=sync_result),
+    ):
+        response = await workshop_router_module.api_sync_workshop_character_cards()
+
+    payload = json.loads(response.body.decode("utf-8"))
+    assert response.status_code == 503
+    assert payload["success"] is False
+    assert payload["code"] == "WORKSHOP_SUBSCRIPTIONS_UNAVAILABLE"
+    assert payload["errors"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_batch_workshop_character_sync_reports_internal_failure_as_500():
+    # 后端异常被标记为 WORKSHOP_SYNC_FAILED 时，批量入口也要回 500，
+    # 不能伪装成 success 的“同步完成”。
+    workshop_router_module = reload_module("main_routers.workshop_router")
+    sync_result = {
+        "added": 0,
+        "backfilled_faces": 0,
+        "skipped": 0,
+        "errors": 1,
+        "code": "WORKSHOP_SYNC_FAILED",
+    }
+
+    with patch.object(
+        workshop_router_module,
+        "sync_workshop_character_cards",
+        AsyncMock(return_value=sync_result),
+    ):
+        response = await workshop_router_module.api_sync_workshop_character_cards()
+
+    payload = json.loads(response.body.decode("utf-8"))
+    assert response.status_code == 500
+    assert payload["success"] is False
+    assert payload["code"] == "WORKSHOP_SYNC_FAILED"
+    assert payload["errors"] == 1
 
 
 @pytest.mark.unit

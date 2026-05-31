@@ -399,7 +399,19 @@ async def test_galgame_unparseable_output_returns_fallback(monkeypatch, caplog):
     monkeypatch.setattr(galgame_router, "get_config_manager", lambda: config_manager)
     monkeypatch.setattr(galgame_router, "create_chat_llm", lambda *a, **kw: GarbageLLM())
 
-    with caplog.at_level(logging.INFO, logger=galgame_router.logger.name):
+    # galgame_router.logger is a get_module_logger child whose N.E.K.O ancestor
+    # gets configured with propagate=False once any service initializes logging
+    # (e.g. the Memory logger during a full-suite import). caplog installs its
+    # handler on root, so the INFO record never reaches it. Attach caplog's
+    # handler directly to the emitting logger and silence propagation during the
+    # call so the record is captured exactly once regardless of global state.
+    galgame_logger = galgame_router.logger
+    prev_propagate = galgame_logger.propagate
+    prev_level = galgame_logger.level
+    galgame_logger.addHandler(caplog.handler)
+    galgame_logger.propagate = False
+    galgame_logger.setLevel(logging.INFO)
+    try:
         response = await galgame_router.generate_galgame_options(
             FakeRequest(
                 {
@@ -408,6 +420,10 @@ async def test_galgame_unparseable_output_returns_fallback(monkeypatch, caplog):
                 }
             )
         )
+    finally:
+        galgame_logger.removeHandler(caplog.handler)
+        galgame_logger.propagate = prev_propagate
+        galgame_logger.setLevel(prev_level)
 
     data = _decode_response(response)
     assert data["success"] is True

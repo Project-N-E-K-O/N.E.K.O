@@ -107,7 +107,9 @@ colorama==0.4.6
     #   qrcode
     #   tqdm
 comtypes==1.4.11 ; sys_platform == 'win32'
-    # via pywinauto
+    # via
+    #   dxcam
+    #   pywinauto
 contourpy==1.3.3
     # via matplotlib
 cryptography==45.0.6
@@ -131,6 +133,8 @@ distro==1.9.0
     #   posthog
 docstring-parser==0.17.0
     # via anthropic
+dxcam==0.3.0 ; sys_platform == 'win32'
+    # via n-e-k-o
 editor==1.6.6
     # via inquirer
 fastapi==0.115.14
@@ -262,6 +266,8 @@ mdurl==0.1.2
     # via markdown-it-py
 mouseinfo==0.1.3
     # via pyautogui
+mss==10.2.0
+    # via n-e-k-o
 multidict==6.6.4
     # via
     #   aiohttp
@@ -269,6 +275,7 @@ multidict==6.6.4
 numpy==1.26.4
     # via
     #   contourpy
+    #   dxcam
     #   matplotlib
     #   n-e-k-o
     #   onnxruntime
@@ -311,6 +318,7 @@ portalocker==2.10.1
     # via
     #   browser-use
     #   bubus
+    #   n-e-k-o
 posthog==7.8.6
     # via browser-use
 prompt-toolkit==3.0.52
@@ -331,8 +339,6 @@ psutil==7.2.2
     # via
     #   browser-use
     #   n-e-k-o
-py-cpuinfo==9.0.0
-    # via n-e-k-o
 pyasn1==0.6.1
     # via
     #   pyasn1-modules
@@ -1121,7 +1127,11 @@ python-multipart==0.0.20
     # via
     #   mcp
     #   n-e-k-o
-python3-xlib==0.15 ; sys_platform == 'linux'
+python-xlib==0.33 ; sys_platform == 'linux'
+    # via
+    #   n-e-k-o
+    #   pywinauto
+python3-xlib==0.15 ; sys_platform == 'never'
     # via
     #   mouseinfo
     #   pyautogui
@@ -1141,6 +1151,7 @@ pyyaml==6.0.2
     # via
     #   bilibili-api-python
     #   huggingface-hub
+    #   n-e-k-o
 pyzmq==27.1.0
     # via n-e-k-o
 qrcode==8.2
@@ -1201,6 +1212,7 @@ six==1.17.0
     #   markdownify
     #   posthog
     #   python-dateutil
+    #   python-xlib
     #   pywinauto
 smart-open==7.5.0
     # via audiolab
@@ -1211,6 +1223,8 @@ sniffio==1.3.1
     #   google-genai
     #   groq
     #   openai
+socksio==1.0.0
+    # via httpx
 soundfile==0.13.1
     # via audiolab
 soupsieve==2.8

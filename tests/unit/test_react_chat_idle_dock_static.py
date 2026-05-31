@@ -63,15 +63,17 @@ def test_setMinimized_has_no_options_parameter_and_no_idle_dock_branches():
     assert "opts.idleDock" not in set_minimized_block
 
 
-def test_idle_dock_calls_setMinimized_externally_without_options():
+def test_idle_dock_enters_minimized_surface_mode_without_setminimized_options():
     source = _read(APP_REACT_CHAT_WINDOW_PATH)
 
-    # enterIdleDock calls setMinimized(true) with no second argument
-    assert "setMinimized(true);" in source
+    # enterIdleDock goes through chatSurfaceMode so compact/full/minimized state
+    # stays aligned with the minimized visual class after the upstream compact merge.
+    assert "setChatSurfaceMode('minimized');" in source
     assert "setMinimized(true, {" not in source
 
-    # exitIdleDock calls setMinimized(false) with no second argument
-    assert "setMinimized(false);" in source
+    # exitIdleDock restores the previous real surface mode without adding
+    # idle-dock options or branches to setMinimized itself.
+    assert "setChatSurfaceMode(getRestorableChatSurfaceMode());" in source
     assert "setMinimized(false, {" not in source
 
 

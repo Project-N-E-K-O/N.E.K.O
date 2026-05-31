@@ -3827,6 +3827,8 @@ window.Jukebox = {
     document.addEventListener('touchmove', onMouseMove, { passive: false });
     document.addEventListener('mouseup', onMouseUp);
     document.addEventListener('touchend', onMouseUp);
+    document.addEventListener('touchcancel', onMouseUp);
+    window.addEventListener('blur', onMouseUp);
 
     // 保存引用，方便 destroy 时清理
     Jukebox.State._dragCleanup = () => {
@@ -3834,6 +3836,8 @@ window.Jukebox = {
       document.removeEventListener('touchmove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
       document.removeEventListener('touchend', onMouseUp);
+      document.removeEventListener('touchcancel', onMouseUp);
+      window.removeEventListener('blur', onMouseUp);
       Jukebox.State.isDragging = false;
       document.body.classList.remove('jukebox-dragging');
     };
@@ -3932,6 +3936,7 @@ window.Jukebox = {
         document.removeEventListener('touchmove', onPointerMove);
         document.removeEventListener('mouseup', cleanup);
         document.removeEventListener('touchend', cleanup);
+        document.removeEventListener('touchcancel', cleanup);
         window.removeEventListener('blur', cleanup);
         Jukebox.State._resizeCleanup = null;
       };
@@ -3943,6 +3948,7 @@ window.Jukebox = {
       document.addEventListener('touchmove', onPointerMove, { passive: false });
       document.addEventListener('mouseup', cleanup);
       document.addEventListener('touchend', cleanup);
+      document.addEventListener('touchcancel', cleanup);
       // 窗口失焦时清理，防止监听泄漏
       window.addEventListener('blur', cleanup);
     };
@@ -4015,12 +4021,16 @@ window.Jukebox = {
     document.addEventListener('touchmove', onMouseMove, { passive: false });
     document.addEventListener('mouseup', onMouseUp);
     document.addEventListener('touchend', onMouseUp);
+    document.addEventListener('touchcancel', onMouseUp);
+    window.addEventListener('blur', onMouseUp);
     
     Jukebox.SongActionManager._panelDragCleanup = () => {
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('touchmove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
       document.removeEventListener('touchend', onMouseUp);
+      document.removeEventListener('touchcancel', onMouseUp);
+      window.removeEventListener('blur', onMouseUp);
       isDragging = false;
       document.body.classList.remove('sam-panel-dragging');
     };

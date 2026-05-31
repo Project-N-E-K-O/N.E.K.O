@@ -40,6 +40,30 @@
         </div>
       </section>
 
+      <section class="memory-panel" aria-live="polite">
+        <div class="section-heading">
+          <h2 data-i18n="ui.memory.title">Memory Deck</h2>
+          <span id="memoryDeckStatus">-</span>
+        </div>
+        <div class="memory-inputs">
+          <label class="input-label" for="memoryFrontInput" data-i18n="ui.memory.front">Front</label>
+          <textarea id="memoryFrontInput" spellcheck="true" data-i18n-placeholder="ui.memory.front_placeholder" placeholder="Question or prompt"></textarea>
+          <label class="input-label" for="memoryBackInput" data-i18n="ui.memory.back">Back</label>
+          <textarea id="memoryBackInput" spellcheck="true" data-i18n-placeholder="ui.memory.back_placeholder" placeholder="Answer or recall target"></textarea>
+        </div>
+        <div class="action-row">
+          <button id="memoryRefreshBtn" type="button" data-i18n="ui.button.refresh_deck">Refresh Deck</button>
+          <button id="memoryAddBtn" type="button" data-i18n="ui.button.save_card">Save Card</button>
+        </div>
+        <div id="memoryDueCard" class="memory-card">-</div>
+        <div class="memory-review-actions" data-i18n-aria-label="ui.memory.ratings_aria">
+          <button type="button" data-memory-rating="again" data-i18n="ui.button.rating.again">Again</button>
+          <button type="button" data-memory-rating="hard" data-i18n="ui.button.rating.hard">Hard</button>
+          <button type="button" data-memory-rating="good" data-i18n="ui.button.rating.good">Good</button>
+          <button type="button" data-memory-rating="easy" data-i18n="ui.button.rating.easy">Easy</button>
+        </div>
+      </section>
+
       <section class="study-workspace">
         <label class="input-label" for="studyInput" data-i18n="ui.label.text">Text</label>
         <textarea id="studyInput" spellcheck="true" placeholder="Paste a concept, problem statement, or OCR text here." data-i18n-placeholder="ui.placeholder.input"></textarea>

@@ -1110,6 +1110,7 @@
         window._realisticGeminiQueue = [];
         window._realisticGeminiBuffer = '';
         window._geminiTurnFullText = '';
+        window._geminiTurnEndSealed = false;
         window._pendingMusicCommand = '';
         window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
         window.currentTurnGeminiBubbles = [];

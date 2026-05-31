@@ -64,6 +64,18 @@ Recomenda-se configurar tudo pela interface do plugin em **Configuração do ser
 | `normal_relay_probability` | float | Probabilidade de encaminhar mensagens privadas/de grupo normais ao dono |
 | `truth_reply_probability` | float | Probabilidade de resposta direta em grupos `open` sem `@` |
 
+### Campos de probabilidade dentro dos grupos confiáveis
+
+Cada item em `trusted_groups` pode incluir dois campos opcionais de probabilidade além de `group_id` e `level`:
+
+- `normal_relay_probability`: só se aplica quando `level = normal`. Quando uma mensagem do grupo entra na rota de “encaminhar ao mestre”, esse valor substitui a probabilidade global padrão de encaminhamento para aquele grupo.
+- `open_reply_probability`: só se aplica quando `level = open`. Em grupos abertos, quando ninguém menciona o bot com `@`, esse valor substitui a probabilidade global padrão de resposta proativa para aquele grupo.
+
+Observações:
+- Ambos os valores devem ser decimais entre `0` e `1`.
+- Se ficarem em branco, o plugin usa a configuração global padrão.
+- Grupos `trusted` não usam nenhum desses dois campos, porque só entram no fluxo normal de resposta quando o bot recebe um `@` explícito.
+
 ## Níveis de permissão
 
 ### Permissões de usuário

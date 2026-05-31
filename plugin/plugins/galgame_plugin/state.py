@@ -43,6 +43,17 @@ class GalgameSharedState:
     ocr_capture_profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
     ocr_window_target: dict[str, Any] = field(default_factory=dict)
     context_snapshot: dict[str, Any] = field(default_factory=dict)
+    character_profiles: dict[str, dict[str, Any]] = field(default_factory=dict)
+    active_scene_characters: list[str] = field(default_factory=list)
+    character_profile_version: str = ""
+    character_profile_game_id: str = ""
+    character_profile_match_reason: str = ""
+    character_mode: str = "off"
+    character_fixed_name: str = ""
+    character_mode_stale: bool = False
+    cross_scene_memory: dict[str, Any] = field(default_factory=dict)
+    character_runtime_state: dict[str, dict[str, Any]] = field(default_factory=dict)
+    last_push_seq: int = 0
     plugin_error: str = ""
     dependency_status: dict[str, Any] = field(default_factory=lambda: {
         "checked_at": 0.0,

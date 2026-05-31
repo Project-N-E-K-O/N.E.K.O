@@ -32,7 +32,7 @@ from plugin.plugins.galgame_plugin.ocr_reader import (
     Win32CaptureBackend,
     _default_window_scanner,
 )
-from plugin.plugins.galgame_plugin.rapidocr_support import DEFAULT_RAPIDOCR_OCR_VERSION
+from plugin.plugins._shared.rapidocr.rapidocr_support import DEFAULT_RAPIDOCR_OCR_VERSION
 
 
 def _noop_logger():

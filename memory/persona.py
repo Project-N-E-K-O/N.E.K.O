@@ -521,7 +521,14 @@ class PersonaManager:
                 if isinstance(v, list):
                     v = '、'.join(str(item) for item in v)
                 entry_id = self._card_entry_id(entity, k)
-                text = f"{k}: {v}"
+                if str(k).startswith("__ai_context."):
+                    # 合成运行时上下文字段（如 __ai_context.profile_rename_events）：
+                    # value 已是自带本地化标签的完整句子，不能再前缀内部键名，
+                    # 否则裸键 "__ai_context.xxx: ..." 会原样泄漏进模型读到的 fact。
+                    # 用带点的前缀精确匹配约定命名，避免误伤 __ai_contextual_* 这类普通键。
+                    text = str(v)
+                else:
+                    text = f"{k}: {v}"
                 expected.append((entry_id, text))
             return expected
 
@@ -2239,6 +2246,10 @@ class PersonaManager:
                         continue
                     new_attempts = safe_int_field(e, 'refine_attempts') + 1
                     e['refine_attempts'] = new_attempts
+                    # 戳失败时刻供 dead-letter 时间自愈（cooldown_elapsed）：
+                    # 一次性 correction 模型宕机把 entry 顶到 MAX 后，过 5h 冷却
+                    # 重新进候选 probe，避免宕机恢复后仍永久冻结。
+                    e['last_refine_attempt_at'] = datetime.now().isoformat()
                     modified = True
                     if new_attempts == MEMORY_LIVENESS_MAX_ATTEMPTS:
                         logger.warning(

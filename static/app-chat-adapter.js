@@ -537,24 +537,53 @@
         var bubbleCountBefore = window.currentTurnGeminiBubbles ? window.currentTurnGeminiBubbles.length : 0;
         var createdVisibleBubble = false;
 
-        // 维护"本轮 AI 回复"的完整文本（emotion analysis / subtitle 需要）
+        // 维护"本段 AI 回复"的完整文本（emotion analysis / subtitle 需要）
         if (sender === 'gemini') {
-            if (isNewMessage) {
-                // 修复：新一轮开始前，同步渲染旧队列中所有待处理句子，
-                // 防止 processRealisticQueue 的 async 循环因 version 变更而
-                // 静默丢弃队列中剩余的句子（语音打断时的高频触发场景）。
+            // ── Segment boundary detection ──────────────────────────────────
+            // 一个 dialog turn 内可能出现多段独立的 AI 回复，每段都是一个
+            // 完整的 utterance（独立音频、独立 turn_end、独立 emotion）：
+            //
+            //   Path A (multi-response-item)：realtime LLM 同一对话轮里连发
+            //     N 次 response.created，服务端 omni_realtime_client 每次都
+            //     把 _is_first_text_chunk 复位为 True，所以 seg2 首 chunk
+            //     也以 isNewMessage=true 抵达。turn_end_1 一定在 seg2 chunks
+            //     之前发出（handle_response_complete 同步 await）。
+            //
+            //   Path B (late continuation)：Gemini Live 在 response.done 之后
+            //     的 _ai_recent_activity_window 内还能来 chunk（典型 case：
+            //     tool 调用前后两段台词）。服务端不重置 _is_first_text_chunk，
+            //     前端拿到的是 isNewMessage=false。但 turn_end 已经发过且
+            //     adapter 已把上一段气泡置 'sent' —— React StreamingText
+            //     会在 status sent→streaming 切换时 re-mount + settledLen
+            //     复位，导致 seg2 文字视觉上闪没。
+            //
+            // turn_end handler (app-websocket.js) 在两条路径之间都设
+            // window._geminiTurnEndSealed = true。本段第一个 chunk 看到
+            // sealed && !isNewMessage 即为 Path B 的虚拟"段起点"，与
+            // Path A 的 isNewMessage=true 统一走同一套 per-segment reset。
+            var startNewSegment = isNewMessage || !!window._geminiTurnEndSealed;
+            if (startNewSegment) {
+                // 同步渲染旧队列中所有待处理句子，防止 processRealisticQueue
+                // 的 async 循环因 version 变更而静默丢弃队列中剩余的句子。
                 _flushPendingRealisticQueue();
                 window._realisticGeminiVersion = (window._realisticGeminiVersion || 0) + 1;
                 window._geminiTurnFullText = '';
                 window._pendingMusicCommand = '';
                 window._structuredGeminiStreaming = false;
                 window._turnIsStructured = false;
+                window._geminiTurnEndSealed = false;
+                // Per-segment scoping for cleanup. response_discarded /
+                // user-activity-cancel 都只针对当前 in-flight response item，
+                // 不应跨段抹掉已经完成的上一段气泡 —— per-segment 才对。
+                // currentGeminiMessage 也显式置 null，防止
+                // renderStructuredGeminiMessage 把上一段气泡误当成"当前段
+                // 已建气泡"走 collapse + upgrade 把它覆盖掉。
                 window.currentTurnGeminiBubbles = [];
                 window.currentTurnGeminiAttachments = [];
-                // 提前复位字幕 turn 状态：neko-assistant-turn-start 事件要等
-                // 首个可见气泡创建后才发，而 updateSubtitleStreamingText 在
-                // 首个 chunk 就会被调用，必须在此解锁 isCurrentTurnFinalized
-                // 闸门，否则上一轮结束留下的 true 会把本轮首个 chunk 吞掉。
+                window.currentGeminiMessage = null;
+                // 字幕闸门 reset：上一段 turn_end 触发的 translateAndShowSubtitle
+                // 会把 isCurrentTurnFinalized 置 true；不重置就会把本段首个
+                // chunk 的 updateSubtitleStreamingText 静默丢弃。
                 if (typeof window.beginSubtitleTurn === 'function') {
                     window.beginSubtitleTurn();
                 }
@@ -580,7 +609,7 @@
 
         // ---------- gemini + realistic 模式 ----------
         if (sender === 'gemini' && !isMergeMessagesEnabled()) {
-            if (isNewMessage) {
+            if (startNewSegment) {
                 window._realisticGeminiBuffer = '';
                 window._realisticGeminiQueue = [];
                 window._lastBubbleTime = 0;
@@ -632,8 +661,8 @@
                 createdVisibleBubble = (window.currentTurnGeminiBubbles ? window.currentTurnGeminiBubbles.length : 0) > bubbleCountBefore;
             }
 
-        // ---------- gemini + merge 模式 + 新轮 ----------
-        } else if (sender === 'gemini' && isMergeMessagesEnabled() && isNewMessage) {
+        // ---------- gemini + merge 模式 + 新段（含 isNewMessage 与 post-seal） ----------
+        } else if (sender === 'gemini' && isMergeMessagesEnabled() && startNewSegment) {
             window._realisticGeminiBuffer = '';
             window._realisticGeminiQueue = [];
             window._lastBubbleTime = 0;
@@ -657,11 +686,13 @@
                 window.currentGeminiMessage = null;
             }
 
-        // ---------- gemini + merge 模式 + 续写 ----------
+        // ---------- gemini + merge 模式 + 段内续写 ----------
         } else if (sender === 'gemini' && isMergeMessagesEnabled()) {
             var cleanText = cleanMusicFromChunk(text);
 
-            // 场景 A: 本轮尚无气泡
+            // 场景 A: 本段尚无气泡（每个 startNewSegment 都已把
+            // currentTurnGeminiBubbles 清空 + currentGeminiMessage 置 null，
+            // 所以两个判断等价；保留 length===0 作为主条件与历史代码对齐）。
             if (!window.currentTurnGeminiBubbles || window.currentTurnGeminiBubbles.length === 0) {
                 if (cleanText.trim() && host) {
                     var newId = nextReactMessageId('assistant');
@@ -681,7 +712,8 @@
                     window.currentGeminiMessage = null;
                 }
             }
-            // 场景 B: 气泡已存在，追加更新
+            // 场景 B: 气泡已存在，追加更新（_geminiTurnFullText 是 per-segment
+            // 累积，已在 startNewSegment 处重置过，不需要再 slice）。
             else if (window.currentGeminiMessage && host) {
                 var fullMergeText = (window._geminiTurnFullText || '').replace(/\[play_music:[^\]]*(\]|$)/g, '');
                 var existingId = window.currentGeminiMessage.dataset.reactChatMessageId;
@@ -853,6 +885,9 @@
     async function autoOpenReactChat() {
         await waitForStartupBarrier();
         hideOldChat();
+        if (window.__NEKO_MULTI_WINDOW__ && !/^\/chat(?:\/|$)/.test(window.location.pathname || '')) {
+            return;
+        }
         var host = getHost();
         if (host && typeof host.openWindow === 'function') {
             host.openWindow();

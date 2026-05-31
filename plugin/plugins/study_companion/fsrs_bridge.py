@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import IntEnum
 import math
@@ -58,6 +58,11 @@ class StudyFsrsCard:
     state: str = "new"
     last_review: str = ""
     created_at: str = ""
+    card_type: str = "topic"
+    front: str = ""
+    back: str = ""
+    source: str = ""
+    tags: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -76,6 +81,13 @@ class StudyFsrsCard:
             state=str(payload.get("state") or "new"),
             last_review=str(payload.get("last_review") or ""),
             created_at=str(payload.get("created_at") or ""),
+            card_type=str(payload.get("card_type") or "topic"),
+            front=str(payload.get("front") or ""),
+            back=str(payload.get("back") or ""),
+            source=str(payload.get("source") or ""),
+            tags=[str(item) for item in payload.get("tags") or [] if str(item).strip()]
+            if isinstance(payload.get("tags"), list)
+            else [],
         )
 
 
@@ -93,10 +105,13 @@ def create_card(topic_id: str, now: datetime | None = None) -> StudyFsrsCard:
         lapses=0,
         state="new",
         created_at=stamped,
+        card_type="topic",
     )
 
 
-def retrievability(card: StudyFsrsCard | dict[str, Any], now: datetime | None = None) -> float:
+def retrievability(
+    card: StudyFsrsCard | dict[str, Any], now: datetime | None = None
+) -> float:
     current = now or _utc_now()
     parsed = StudyFsrsCard.from_dict(card) if isinstance(card, dict) else card
     anchor = _parse_dt(parsed.last_review or parsed.created_at or parsed.due, current)
@@ -120,7 +135,9 @@ def rate_answer(
     current = now or _utc_now()
     previous = StudyFsrsCard.from_dict(card) if isinstance(card, dict) else card
     selected = _rating(rating)
-    anchor = _parse_dt(previous.last_review or previous.created_at or previous.due, current)
+    anchor = _parse_dt(
+        previous.last_review or previous.created_at or previous.due, current
+    )
     elapsed_days = max(0.0, (current - anchor).total_seconds() / 86400.0)
     stability = max(0.1, float(previous.stability or 1.0))
     difficulty = _clamp(float(previous.difficulty or 5.0), 1.0, 10.0)
@@ -132,7 +149,9 @@ def rate_answer(
         state = "relearning" if previous.reps else "learning"
         lapses = int(previous.lapses) + 1
     elif selected == StudyFsrsRating.Hard:
-        new_stability = max(0.75, stability * (1.18 + min(elapsed_days, stability * 2.0) * 0.03))
+        new_stability = max(
+            0.75, stability * (1.18 + min(elapsed_days, stability * 2.0) * 0.03)
+        )
         new_difficulty = _clamp(difficulty + 0.35, 1.0, 10.0)
         scheduled_days = max(1.0, new_stability * 0.9)
         state = "review"
@@ -163,6 +182,11 @@ def rate_answer(
         state=state,
         last_review=_iso(current),
         created_at=previous.created_at or _iso(current),
+        card_type=previous.card_type,
+        front=previous.front,
+        back=previous.back,
+        source=previous.source,
+        tags=list(previous.tags),
     )
     schedule = {
         "topic_id": updated.topic_id,
@@ -207,14 +231,19 @@ def get_due_reviews(
                 "card": card.to_dict(),
             }
         )
-    return sorted(due_reviews, key=lambda item: (-float(item["priority"]), float(item["retrievability"])))
+    return sorted(
+        due_reviews,
+        key=lambda item: (-float(item["priority"]), float(item["retrievability"])),
+    )
 
 
 class FSRSBridge:
     def __init__(self, retention_target: float = 0.90) -> None:
         self.retention_target = _clamp(retention_target, 0.1, 0.99)
 
-    def new_knowledge_card(self, topic_id: str, now: datetime | None = None) -> StudyFsrsCard:
+    def new_knowledge_card(
+        self, topic_id: str, now: datetime | None = None
+    ) -> StudyFsrsCard:
         return create_card(topic_id, now)
 
     def rate_answer(

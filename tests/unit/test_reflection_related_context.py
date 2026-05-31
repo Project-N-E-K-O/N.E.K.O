@@ -91,7 +91,7 @@ async def test_happy_path_renders_watermarked_block():
         {"id": "f1", "text": "absorbed fact text", "absorbed": True, "importance": 7},
     ])
     mock_reranker = MagicMock()
-    mock_reranker.aretrieve_candidates = AsyncMock(return_value=[
+    mock_reranker.aretrieve_per_query_topk = AsyncMock(return_value=[
         {"id": "f1", "text": "absorbed fact text", "importance": 7},
     ])
     with patch("memory.embeddings.get_embedding_service", return_value=_enabled_service()), \
