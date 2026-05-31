@@ -150,26 +150,30 @@ enabled = true
 コードでは次のように使います。
 
 ```python
-# テーブル作成
-await self.db.execute("""
-    CREATE TABLE IF NOT EXISTS notes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT NOT NULL,
-        content TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+from plugin.sdk.plugin import unwrap
+
+async with unwrap(await self.db.session()) as session:
+    # テーブル作成
+    await session.execute("""
+        CREATE TABLE IF NOT EXISTS notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            content TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # 挿入
+    await session.execute(
+        "INSERT INTO notes (title, content) VALUES (?, ?)",
+        ("Groceries", "Tomatoes, eggs, milk")
     )
-""")
+    await session.commit()
 
-# 挿入
-await self.db.execute(
-    "INSERT INTO notes (title, content) VALUES (?, ?)",
-    ("Groceries", "Tomatoes, eggs, milk")
-)
-
-# クエリ
-rows = await self.db.fetch_all("SELECT * FROM notes ORDER BY created_at DESC")
-for row in rows:
-    self.logger.info("Note: {} - {}", row["title"], row["content"])
+    # クエリ
+    cursor = await session.execute("SELECT * FROM notes ORDER BY created_at DESC")
+    for row in cursor.fetchall():
+        self.logger.info("Note: {} - {}", row["title"], row["content"])
 ```
 
 データベースファイルはプラグインの `data/` ディレクトリに保存されます。

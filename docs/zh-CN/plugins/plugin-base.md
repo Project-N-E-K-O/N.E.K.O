@@ -150,26 +150,30 @@ enabled = true
 然后在代码中：
 
 ```python
-# 建表
-await self.db.execute("""
-    CREATE TABLE IF NOT EXISTS notes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT NOT NULL,
-        content TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+from plugin.sdk.plugin import unwrap
+
+async with unwrap(await self.db.session()) as session:
+    # 建表
+    await session.execute("""
+        CREATE TABLE IF NOT EXISTS notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            content TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # 插入
+    await session.execute(
+        "INSERT INTO notes (title, content) VALUES (?, ?)",
+        ("买菜", "西红柿、鸡蛋、牛奶")
     )
-""")
+    await session.commit()
 
-# 插入
-await self.db.execute(
-    "INSERT INTO notes (title, content) VALUES (?, ?)",
-    ("买菜", "西红柿、鸡蛋、牛奶")
-)
-
-# 查询
-rows = await self.db.fetch_all("SELECT * FROM notes ORDER BY created_at DESC")
-for row in rows:
-    self.logger.info("笔记: {} - {}", row["title"], row["content"])
+    # 查询
+    cursor = await session.execute("SELECT * FROM notes ORDER BY created_at DESC")
+    for row in cursor.fetchall():
+        self.logger.info("笔记: {} - {}", row["title"], row["content"])
 ```
 
 数据库文件保存在插件的 `data/` 目录中。
