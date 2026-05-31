@@ -1385,7 +1385,7 @@ export default function App({
     && compactSurfaceResizeWidth !== null
     ? getClampedCompactSurfaceResizeWidth(compactSurfaceResizeWidth)
     : null;
-  const compactChoiceLayerOpen = compactSurfaceChoicesVisible;
+  const compactChoiceLayerOpen = isCompactSurface && compactSurfaceChoicesVisible;
   const compactExportSelectedCount = compactExportSelectedIds.size;
   const compactExportSelectableMessages = useMemo(
     () => messages.filter(isCompactExportMessageSelectable),
