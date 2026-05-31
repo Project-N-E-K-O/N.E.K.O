@@ -48,6 +48,70 @@ const composerAttachmentSchema = z.object({
   alt: z.string().optional(),
 });
 
+const compactHistoryDropImageSchema = z.object({
+  url: z.string().min(1),
+  alt: z.string().optional(),
+  width: z.number().finite().positive().optional(),
+  height: z.number().finite().positive().optional(),
+});
+
+const compactHistoryDropPayloadSchema = z.object({
+  text: z.string().optional(),
+  images: z.array(compactHistoryDropImageSchema).optional(),
+  requestId: z.string().min(1).optional(),
+  sourceMessageId: z.string().min(1).optional(),
+  dragType: z.enum(['image', 'bubble']).optional(),
+  compactHistoryDragSessionId: z.string().min(1).optional(),
+}).strict();
+
+const compactHistoryDragRectSchema = z.object({
+  left: z.number().finite(),
+  top: z.number().finite(),
+  right: z.number().finite(),
+  bottom: z.number().finite(),
+  width: z.number().finite(),
+  height: z.number().finite(),
+}).strict();
+
+const compactHistoryDragPointSchema = z.object({
+  clientX: z.number().finite(),
+  clientY: z.number().finite(),
+}).strict();
+
+const compactHistoryDragInactiveStateSchema = z.object({
+  active: z.literal(false),
+  sessionId: z.string().min(1).optional(),
+  phase: z.enum(['idle', 'cancelled']).optional(),
+  timestamp: z.number().finite(),
+}).strict();
+
+const compactHistoryDragActiveStateSchema = z.object({
+  active: z.literal(true),
+  sessionId: z.string().min(1),
+  seq: z.number().int().nonnegative(),
+  phase: z.enum(['dragging', 'returning', 'sending']),
+  dragType: z.enum(['image', 'bubble']),
+  messageId: z.string().min(1),
+  blockIndex: z.number().int().nonnegative().optional(),
+  pointerClient: compactHistoryDragPointSchema,
+  sourceFrameRect: compactHistoryDragRectSchema,
+  dragVisualRect: compactHistoryDragRectSchema,
+  connectionVisualRect: compactHistoryDragRectSchema.nullable(),
+  dragHitRect: compactHistoryDragRectSchema,
+  overTarget: z.boolean(),
+  needsDesktopBounds: z.boolean(),
+  reducedMotion: z.boolean().optional(),
+  timestamp: z.number().finite(),
+}).strict();
+
+export const compactHistoryDragStatePayloadSchema = z.discriminatedUnion('active', [
+  compactHistoryDragInactiveStateSchema,
+  compactHistoryDragActiveStateSchema,
+]);
+
+const chatSurfaceModeSchema = z.enum(['full', 'compact', 'minimized']);
+const compactChatStateSchema = z.enum(['default', 'options', 'input']);
+
 const galgameOptionSchema = z.object({
   label: z.string().min(1),
   text: z.string().min(1),
@@ -196,8 +260,16 @@ export const chatWindowPropsSchema = z.object({
   jukeboxButtonAriaLabel: z.string().optional(),
   avatarGeneratorButtonLabel: z.string().optional(),
   avatarGeneratorButtonAriaLabel: z.string().optional(),
+  exportConversationButtonLabel: z.string().optional(),
+  exportConversationButtonAriaLabel: z.string().optional(),
   composerHidden: z.boolean().optional(),
   composerDisabled: z.boolean().optional(),
+  chatSurfaceMode: chatSurfaceModeSchema.optional(),
+  compactChatState: compactChatStateSchema.optional(),
+  onCompactChatStateChange: z.function()
+    .args(compactChatStateSchema)
+    .returns(z.void())
+    .optional(),
   translateEnabled: z.boolean().optional(),
   translateButtonLabel: z.string().optional(),
   translateButtonAriaLabel: z.string().optional(),
@@ -227,6 +299,14 @@ export const chatWindowPropsSchema = z.object({
     .args(composerSubmitSchema)
     .returns(z.void())
     .optional(),
+  onCompactHistoryDrop: z.function()
+    .args(compactHistoryDropPayloadSchema)
+    .returns(z.unknown())
+    .optional(),
+  onCompactHistoryDragStateChange: z.function()
+    .args(compactHistoryDragStatePayloadSchema)
+    .returns(z.void())
+    .optional(),
   onAvatarInteraction: z.function()
     .args(avatarInteractionPayloadSchema)
     .returns(z.void())
@@ -240,6 +320,10 @@ export const chatWindowPropsSchema = z.object({
     .returns(z.void())
     .optional(),
   onAvatarGeneratorClick: z.function()
+    .args()
+    .returns(z.void())
+    .optional(),
+  onExportConversationClick: z.function()
     .args()
     .returns(z.void())
     .optional(),
@@ -273,6 +357,10 @@ export type LinkBlock = z.infer<typeof linkBlockSchema>;
 export type StatusBlock = z.infer<typeof statusBlockSchema>;
 export type ButtonGroupBlock = z.infer<typeof buttonGroupBlockSchema>;
 export type ComposerAttachment = z.infer<typeof composerAttachmentSchema>;
+export type CompactHistoryDropPayload = z.infer<typeof compactHistoryDropPayloadSchema>;
+export type CompactHistoryDragStatePayload = z.infer<typeof compactHistoryDragStatePayloadSchema>;
+export type ChatSurfaceMode = z.infer<typeof chatSurfaceModeSchema>;
+export type CompactChatState = z.infer<typeof compactChatStateSchema>;
 export type GalgameOption = z.infer<typeof galgameOptionSchema>;
 export type ChoiceOption = z.infer<typeof choiceOptionSchema>;
 export type ChoicePrompt = NonNullable<z.infer<typeof choicePromptSchema>>;

@@ -86,6 +86,9 @@ RESERVED_FIELD_SCHEMA = {
         "prompt_guidance": str,
         "profile": dict,
     },
+    "ai_context": {
+        "rename_events": list,
+    },
     "character_origin": {
         "source": str,
         "source_id": str,

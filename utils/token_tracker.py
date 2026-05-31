@@ -385,7 +385,9 @@ _TELEMETRY_BRANCH_FILE = ".telemetry_branch"
 # A/B 池（只决定「首启默认值」实验分组；首启后用户行为已落盘、不再响应覆写，其分组
 # 归因对默认值实验无意义，分析端按真·首启样本过滤即可）：
 #   - "main"：控制组，沿用历史默认——主动搭话里的「屏幕分享来源」
-#     （proactiveVisionChatEnabled）首启默认开；隐私模式仍按地区分流。
+#     （proactiveVisionChatEnabled）首启默认开；隐私模式仍按地区分流。主动搭话间隔
+#     （proactiveChatInterval）首启默认 20s（见前端 DEFAULT_PROACTIVE_CHAT_INTERVAL；
+#     原 15s 已随 proactive_interval_20s 实验结论上移成新基线）。
 #   - "vision_chat_default_off"：实验组，把「屏幕分享来源」首启默认翻成关，并在前端
 #     检测到用户进游戏/娱乐（弹「要不要开屏幕分享搭话」）或进专注工作（弹「要不要关
 #     屏幕分享避嫌」）时一次性弹窗。注意这一组只改屏幕分享来源默认值，**不动**隐私
@@ -394,21 +396,25 @@ _TELEMETRY_BRANCH_FILE = ".telemetry_branch"
 #       地区分流（仅中国地区默认隐私关），海外默认隐私开 → 对本实验天然 no-op。抽签
 #       全地区随机，海外也会落实验组但首启覆写 / 弹窗都不生效；分析时按 locale 过滤，
 #       A/B 差异主要体现在国内。
-#   - "proactive_interval_20s"：海外专属实验组，把「主动搭话间隔」
-#     （proactiveChatInterval）首启默认从控制组 15s 拉长到 20s，看更慢的搭话节奏对
+#   - "proactive_interval_25s"：海外专属实验组，把「主动搭话间隔」
+#     （proactiveChatInterval）首启默认从新控制组 20s 再拉长到 25s，看更慢的搭话节奏对
 #     海外用户的影响。**不动**隐私模式 / 屏幕分享来源默认值，也没有弹窗。
 #       地区交互：与 vision_chat_default_off 方向相反——只在海外（前端
 #       _isUserRegionChina() 为 false）才覆写间隔默认值；国内落到本组天然 no-op。抽签
 #       全地区随机、三组互斥（同设备只落一个 branch），但 vision 实验差异在国内、本组
 #       只影响海外，目标地区不重叠，可同时在线观测。注意 _bucket_proactive_interval
-#       把 15s / 20s 都归进「10-30s」桶，所以 cohort 命中靠 branch 维度区分，不靠间隔桶。
+#       把 20s（main 新基线）/ 25s 都归进「10-30s」桶，所以 cohort 命中靠 branch 维度
+#       区分，不靠间隔桶。
 #
-# 已退役实验（老落盘值被 _read 严格校验判非法 → 下次启动按当前池随机重抽，落 main 或
-# vision_chat_default_off。都是已过首启的用户，重抽只改 telemetry 标签、不动已落盘的
-# 用户偏好，对「默认值」实验无影响，故不为其单独做确定性迁移）：
+# 已退役实验（老落盘值被 _read 严格校验判非法 → 下次启动按当前池随机重抽，落 main、
+# vision_chat_default_off 或 proactive_interval_25s。都是已过首启的用户，重抽只改
+# telemetry 标签、不动已落盘的用户偏好，对「默认值」实验无影响，故不为其单独做确定性
+# 迁移）：
 #   - "privacy_default_off_v1"（试国外隐私默认关）：前期数据效果差，已下线。
 #   - "privacy_default_off_v2"（试国内隐私默认开）：改方向去测屏幕分享来源，已下线。
-_TELEMETRY_BRANCHES: tuple = ("main", "vision_chat_default_off", "proactive_interval_20s")
+#   - "proactive_interval_20s"（试海外搭话间隔 15s→20s）：结论是 20s 更优，已把 20s
+#     扶正为 main 新基线，实验下线，改测 25s（proactive_interval_25s）。
+_TELEMETRY_BRANCHES: tuple = ("main", "vision_chat_default_off", "proactive_interval_25s")
 
 # 进程级缓存：keyed by str(config_dir)。写盘失败的环境下（只读 FS / 权限拒绝），
 # 不缓存就每次 secrets.choice 重抽，导致同一 install 的 TokenTracker 上报和

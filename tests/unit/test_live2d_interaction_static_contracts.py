@@ -31,14 +31,14 @@ def test_live2d_only_display_switch_uses_edge_margin():
     assert "needsSnapBottom = overflowBottom > margin;" in source
 
 
-def test_live2d_snap_keeps_explicit_threshold_override_for_initial_placement():
+def test_live2d_initial_snap_uses_runtime_threshold():
     source = _live2d_source()
+    model_source = (PROJECT_ROOT / "static/live2d-model.js").read_text(encoding="utf-8")
 
     assert "threshold: customThreshold" in source
     assert "const margin = SNAP_CONFIG.margin;" in source
-    assert "_checkSnapRequired(model, { threshold: 300 })" in (
-        PROJECT_ROOT / "static/live2d-model.js"
-    ).read_text(encoding="utf-8")
+    assert "_checkSnapRequired(model, { threshold: 300 })" not in model_source
+    assert "const snapInfo = await this._checkSnapRequired(model);" in model_source
 
 
 def test_live2d_display_switch_still_snaps_after_window_move():

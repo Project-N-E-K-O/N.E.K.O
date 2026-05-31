@@ -24,7 +24,7 @@
         SPATIAL_AUDIO_FALLOFF_RATE: 0.35,    // 超出主屏后每个 refDist 衰减比例
         SPATIAL_AUDIO_RAMP_SECONDS: 0.12,    // pan/gain 平滑过渡时长，避免突变 click
         SPATIAL_AUDIO_POLL_MS: 500,          // 位置轮询周期（兜底，事件驱动为主）
-        DEFAULT_PROACTIVE_CHAT_INTERVAL: 15, // 默认搭话间隔 (秒)
+        DEFAULT_PROACTIVE_CHAT_INTERVAL: 20, // 默认搭话间隔 (秒)；原 15s 经 proactive_interval_20s 实验扶正为新基线 20s
         DEFAULT_PROACTIVE_VISION_INTERVAL: 10, // 默认视觉间隔 (秒)
         MAX_SCREENSHOT_WIDTH: 1280,
         MAX_SCREENSHOT_HEIGHT: 720,
@@ -129,6 +129,9 @@
         assistantTurnCompletionSource: null,
         assistantSpeechActiveTurnId: null,
         assistantSpeechStartedTurnId: null,
+        assistantSpeechPlaybackTurnId: null,
+        assistantSpeechPlaybackStartAudioTime: 0,
+        assistantSpeechPlaybackEndAudioTime: 0,
         // 最近一次本地麦克风 RMS 超过语音阈值的时间戳（ms epoch）。
         // 由 app-audio-capture.js 里的 monitorInputVolume 持续写入；
         // app-proactive.js 在 voice 模式 tick 时用它判断"用户最近是否在发声"，
@@ -169,7 +172,7 @@
         isProactiveChatRunning: false,
         _proactiveSchedulerInitialized: false,
         _proactiveStartupDelayApplied: false,
-        proactiveChatInterval: 15,
+        proactiveChatInterval: 20,
         proactiveVisionFrameTimer: null,
         proactiveVisionInterval: 10,
         _lastProactiveChatScreenTime: 0,

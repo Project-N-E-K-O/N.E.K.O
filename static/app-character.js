@@ -1470,7 +1470,7 @@
 
                         await window.live2dManager.loadModel(modelConfig, {
                             preferences: modelPreferences,
-                            isMobile: window.innerWidth <= 768
+                            isMobile: typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (window.innerWidth <= 768)
                         });
                         throwIfStale();
 
@@ -1511,7 +1511,7 @@
                                 throwIfStale();
                                 defaultConfig.url = defaultPath;
                                 await window.live2dManager.loadModel(defaultConfig, {
-                                    isMobile: window.innerWidth <= 768
+                                    isMobile: typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (window.innerWidth <= 768)
                                 });
                                 throwIfStale();
                                 if (window.LanLan1) {

@@ -1081,6 +1081,100 @@ PERSONA_HEADER = {
     "pt": "\n======Memória de longo prazo de {name}======\n",
 }
 
+PROFILE_RENAME_EVENT_FIELD = {
+    "zh": "我的改名记录",
+    "zh-TW": "我的改名紀錄",
+    "en": "My Profile Rename Record",
+    "ja": "私の改名記録",
+    "ko": "내 프로필 이름 변경 기록",
+    "ru": "Моя запись о смене имени профиля",
+    "es": "Mi registro de cambio de nombre de perfil",
+    "pt": "Meu registro de mudança de nome do perfil",
+}
+
+PROFILE_RENAME_EVENT_TEXT = {
+    "zh": "我曾用名「{old_name}」，现在已经改名为「{new_name}」。以后请把「{new_name}」当作我的当前名字。",
+    "zh-TW": "我曾用名「{old_name}」，現在已經改名為「{new_name}」。以後請把「{new_name}」當作我的目前名字。",
+    "en": "I was formerly known as \"{old_name}\"; I am now called \"{new_name}\". Treat \"{new_name}\" as my current name from now on.",
+    "ja": "私はかつて「{old_name}」と呼ばれていましたが、今は「{new_name}」に改名しました。これからは「{new_name}」を私の現在の名前として扱ってください。",
+    "ko": "나는 예전에 \"{old_name}\"(으)로 불렸지만, 지금은 \"{new_name}\"(으)로 이름을 바꿨습니다. 앞으로는 \"{new_name}\"을 내 현재 이름으로 여기세요.",
+    "ru": "Раньше меня звали «{old_name}», теперь я сменила имя на «{new_name}». С этого момента считай «{new_name}» моим текущим именем.",
+    "es": "Antes me llamaba \"{old_name}\"; ahora me llamo \"{new_name}\". Trata \"{new_name}\" como mi nombre actual de ahora en adelante.",
+    "pt": "Antes eu me chamava \"{old_name}\"; agora me chamo \"{new_name}\". Trate \"{new_name}\" como meu nome atual de agora em diante.",
+}
+
+# 主人档案的改名记录走在猫娘（AI）的 persona/master section 里——读这段的是猫娘，
+# 改名的是对面的用户。第一人称「我」会让猫娘以为是自己改了名，第二人称「你」又读着
+# 别扭，所以这里**去掉人称**，用中性陈述，和 master section 里其它无人称字段（昵称/
+# 性别…）的语气对齐。
+PROFILE_RENAME_EVENT_FIELD_MASTER = {
+    "zh": "改名记录",
+    "zh-TW": "改名紀錄",
+    "en": "Profile Rename Record",
+    "ja": "改名記録",
+    "ko": "프로필 이름 변경 기록",
+    "ru": "Запись о смене имени профиля",
+    "es": "Registro de cambio de nombre de perfil",
+    "pt": "Registro de mudança de nome do perfil",
+}
+
+PROFILE_RENAME_EVENT_TEXT_MASTER = {
+    "zh": "曾用名「{old_name}」，现在的名字是「{new_name}」。",
+    "zh-TW": "曾用名「{old_name}」，現在的名字是「{new_name}」。",
+    "en": "Formerly known as \"{old_name}\"; the current name is \"{new_name}\".",
+    "ja": "かつての名前は「{old_name}」で、現在の名前は「{new_name}」です。",
+    "ko": "예전 이름은 \"{old_name}\"였고, 현재 이름은 \"{new_name}\"입니다.",
+    "ru": "Прежнее имя — «{old_name}», текущее имя — «{new_name}».",
+    "es": "Nombre anterior: \"{old_name}\"; nombre actual: \"{new_name}\".",
+    "pt": "Nome anterior: \"{old_name}\"; nome atual: \"{new_name}\".",
+}
+
+
+def _normalize_memory_prompt_lang(lang: str | None) -> str:
+    """归一化记忆 prompt 本地化 key，保留繁中分支。"""
+    raw = str(lang or "").strip().lower()
+    if raw.startswith("zh"):
+        if "tw" in raw or "hant" in raw or "hk" in raw:
+            return "zh-TW"
+        return "zh"
+    if raw.startswith("ja"):
+        return "ja"
+    if raw.startswith("ko"):
+        return "ko"
+    if raw.startswith("ru"):
+        return "ru"
+    if raw.startswith("es"):
+        return "es"
+    if raw.startswith("pt"):
+        return "pt"
+    return "en"
+
+
+def render_profile_rename_event_context(
+    lang: str | None,
+    old_name: str,
+    new_name: str,
+    entity: str = "neko",
+) -> tuple[str, str]:
+    """渲染改名记录，返回 (字段名, 内容)。
+
+    entity="neko"：写进猫娘自己的 section，用第一人称「我」。
+    entity="master"：写进猫娘 persona 的 master section，读者是猫娘、改名的是用户，
+    因此去掉人称用中性陈述，避免第一人称把用户的改名误当成猫娘自己的。
+    """
+    lang_key = _normalize_memory_prompt_lang(lang)
+    if str(entity or "").strip().lower() == "master":
+        field_dict, text_dict = PROFILE_RENAME_EVENT_FIELD_MASTER, PROFILE_RENAME_EVENT_TEXT_MASTER
+    else:
+        field_dict, text_dict = PROFILE_RENAME_EVENT_FIELD, PROFILE_RENAME_EVENT_TEXT
+    return (
+        _loc(field_dict, lang_key),
+        _loc(text_dict, lang_key).format(
+            old_name=str(old_name or "").strip(),
+            new_name=str(new_name or "").strip(),
+        ),
+    )
+
 # ---------- Proactive chat followup header ----------
 # 文案故意"鼓励性"而非"可选性"——之前的"可以选择性地回顾"语气太弱，配合
 # Phase 2 prompt 的反复读警告，会让模型把回忆当成"高重复风险"绕开。新表述

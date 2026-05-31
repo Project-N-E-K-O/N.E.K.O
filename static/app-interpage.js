@@ -860,7 +860,7 @@
 
                             await window.live2dManager.loadModel(newModelPath, {
                                 preferences: modelPreferences,
-                                isMobile: window.innerWidth <= 768,
+                                isMobile: typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (window.innerWidth <= 768),
                                 suppressInitialIdle: skipIdleRestore
                             });
 

@@ -408,6 +408,50 @@ async def _mark_new_character_greeting_pending_safe(config_manager, character_na
         return False, str(exc)
 
 
+def _build_profile_rename_event(old_name: str, new_name: str) -> dict:
+    old_name = str(old_name or "").strip()
+    new_name = str(new_name or "").strip()
+    return {
+        "type": "profile_rename",
+        "old_name": old_name,
+        "new_name": new_name,
+        "renamed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+
+
+def _append_profile_rename_event(character_payload: dict, old_name: str, new_name: str) -> None:
+    """把改名事件写入隐藏 AI 上下文；角色管理页不会把 `_reserved` 渲染成普通字段。"""
+    if not isinstance(character_payload, dict):
+        return
+
+    old_name = str(old_name or "").strip()
+    new_name = str(new_name or "").strip()
+    if old_name == new_name:
+        return
+
+    existing = get_reserved(
+        character_payload,
+        "ai_context",
+        "rename_events",
+        default=[],
+    )
+    events = [event for event in existing if isinstance(event, dict)] if isinstance(existing, list) else []
+    new_event = _build_profile_rename_event(old_name, new_name)
+
+    # 防止同一次请求重放时连续写入完全相同的改名事件。
+    if events:
+        last = events[-1]
+        if (
+            last.get("type") == new_event["type"]
+            and str(last.get("old_name") or "") == new_event["old_name"]
+            and str(last.get("new_name") or "") == new_event["new_name"]
+        ):
+            return
+
+    events.append(new_event)
+    set_reserved(character_payload, "ai_context", "rename_events", events[-20:])
+
+
 def _json_no_store_response(content, *, status_code: int = 200):
     return JSONResponse(
         content=content,
@@ -1052,6 +1096,13 @@ def _validate_profile_name(name: str) -> str | None:
     return None
 
 
+def _profile_name_contains_path_separator(name: str) -> bool:
+    return validate_character_name(
+        str(name or "").strip(),
+        max_units=PROFILE_NAME_MAX_UNITS,
+    ).code == 'contains_path_separator'
+
+
 def _filter_mutable_catgirl_fields(data: dict) -> dict:
     """过滤掉角色通用编辑接口不允许写入的保留字段。"""
     if not isinstance(data, dict):
@@ -1491,7 +1542,7 @@ async def get_characters(request: Request):
             characters_data['主人'] = await translation_service.translate_dict(
                 characters_data['主人'],
                 user_language,
-                fields_to_translate=['档案名', '昵称']
+                fields_to_translate=['昵称']
             )
 
         # 翻译猫娘数据（并行翻译以提升性能）
@@ -1500,7 +1551,7 @@ async def get_characters(request: Request):
                 if isinstance(data, dict):
                     return name, await translation_service.translate_dict(
                         data, user_language,
-                        fields_to_translate=['档案名', '昵称', '性别']  # 注意：不翻译 system_prompt
+                        fields_to_translate=['昵称', '性别']  # 注意：不翻译档案名和 system_prompt
                     )
                 return name, data
 
@@ -2613,6 +2664,7 @@ async def rename_catgirl(old_name: str, request: Request):
 
             # 重命名角色真源
             characters['猫娘'][new_name] = characters['猫娘'].pop(old_name)
+            _append_profile_rename_event(characters['猫娘'][new_name], old_name, new_name)
             # 如果当前猫娘是被重命名的猫娘，也需要更新
             if is_current_catgirl:
                 characters['当前猫娘'] = new_name
@@ -3118,17 +3170,40 @@ async def update_master(request: Request):
     except Exception as e:
         logger.warning(f"解析主人更新请求体失败: {e}")
         return JSONResponse({'success': False, 'error': '请求体必须是合法的JSON格式'}, status_code=400)
-    if not data:
-        return JSONResponse({'success': False, 'error': '档案名为必填项'}, status_code=400)
-    profile_name = data.get('档案名')
-    err = _validate_profile_name(profile_name)
-    if err:
-        return JSONResponse({'success': False, 'error': err}, status_code=400)
-    data['档案名'] = str(profile_name).strip()
+    if not isinstance(data, dict):
+        return JSONResponse({'success': False, 'error': '请求体必须是JSON对象'}, status_code=400)
     _config_manager = get_config_manager()
     initialize_character_data = get_initialize_character_data()
     characters = await _config_manager.aload_characters()
-    characters['主人'] = {k: v for k, v in data.items() if v}
+    previous_master = characters.get('主人') if isinstance(characters.get('主人'), dict) else {}
+    previous_profile_name = ""
+    if isinstance(previous_master, dict):
+        previous_profile_name = str(previous_master.get('档案名') or '').strip()
+    requested_profile_name = str(data.get('档案名') or '').strip()
+    profile_name = previous_profile_name or requested_profile_name
+    renamed_via_body_fallback = False
+    if (
+        previous_profile_name
+        and requested_profile_name
+        and requested_profile_name != previous_profile_name
+        and _profile_name_contains_path_separator(previous_profile_name)
+    ):
+        profile_name = requested_profile_name
+        renamed_via_body_fallback = True
+    err = _validate_profile_name(profile_name)
+    if err:
+        return JSONResponse({'success': False, 'error': err}, status_code=400)
+    next_master = {
+        k: v
+        for k, v in data.items()
+        if v and k not in CHARACTER_RESERVED_FIELD_SET and k != '档案名'
+    }
+    next_master['档案名'] = profile_name
+    if isinstance(previous_master, dict) and isinstance(previous_master.get('_reserved'), dict):
+        next_master['_reserved'] = copy.deepcopy(previous_master['_reserved'])
+    if renamed_via_body_fallback:
+        _append_profile_rename_event(next_master, previous_profile_name, profile_name)
+    characters['主人'] = next_master
     await _config_manager.asave_characters(characters)
     # 自动重新加载配置
     await initialize_character_data()
@@ -3162,10 +3237,8 @@ async def rename_master(old_name: str, request: Request):
         if current_master != old_name:
             return JSONResponse({'success': False, 'error': '原主人档案名不匹配'}, status_code=400)
 
-        if new_name in characters.get('猫娘', {}):
-            return JSONResponse({'success': False, 'error': '新档案名与已有猫娘名称冲突'}, status_code=400)
-
         characters['主人']['档案名'] = new_name
+        _append_profile_rename_event(characters['主人'], old_name, new_name)
         await _config_manager.asave_characters(characters)
 
     try:

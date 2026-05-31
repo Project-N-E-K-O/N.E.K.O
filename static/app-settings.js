@@ -23,15 +23,16 @@
     // 有意义，海外默认隐私开 → 对该实验天然 no-op，A/B 差异主要体现在国内。
     const _VISION_CHAT_AB_BRANCH = 'vision_chat_default_off';
     // 海外专属 A/B 实验组分支名（与 utils/token_tracker.py 的 _TELEMETRY_BRANCHES 对齐）。
-    // 把主动搭话间隔（proactiveChatInterval）首启默认从控制组的 15s 拉长到 20s，看更慢的
-    // 搭话节奏对海外用户的影响；不动隐私 / 屏幕分享来源默认值，也没有弹窗。方向与
+    // 把主动搭话间隔（proactiveChatInterval）首启默认从新控制组的 20s 再拉长到 25s，看更慢
+    // 的搭话节奏对海外用户的影响；不动隐私 / 屏幕分享来源默认值，也没有弹窗。方向与
     // vision_chat_default_off 相反——只在海外（_isUserRegionChina() 为 false）才覆写，
     // 国内落到本组天然 no-op。两组抽签互斥（同设备只落一个 branch），但目标地区不重叠
-    // （vision 差异在国内、本组只影响海外），可同时在线。
-    const _PROACTIVE_INTERVAL_AB_BRANCH = 'proactive_interval_20s';
+    // （vision 差异在国内、本组只影响海外），可同时在线。前身 proactive_interval_20s
+    // （测 15s→20s）已下线，20s 扶正为 main 新基线。
+    const _PROACTIVE_INTERVAL_AB_BRANCH = 'proactive_interval_25s';
     // 实验组的主动搭话间隔默认值（秒）。控制组默认见 app-state.js 的
-    // DEFAULT_PROACTIVE_CHAT_INTERVAL（15s）。
-    const _PROACTIVE_INTERVAL_AB_VALUE = 20;
+    // DEFAULT_PROACTIVE_CHAT_INTERVAL（20s）。
+    const _PROACTIVE_INTERVAL_AB_VALUE = 25;
     // 「首启等 branch 决议」专属 marker：只有 localStorage 走过本 PR 的首启分支才会写
     // 「1」，branch 决议后清掉。用 marker 在不在判断「应不应该套 A/B 覆写」，避免拿
     // 「没见过 branch 」当首启代名——升级用户也都没见过 branch，那个口径会误伤他们的
@@ -562,8 +563,8 @@
                 }
                 // A/B test 覆写（海外专属）：与上方 vision 实验对称，但目标地区相反——只在
                 // 海外（!_isUserRegionChina()）真·首启时，把主动搭话间隔默认值从控制组的
-                // DEFAULT_PROACTIVE_CHAT_INTERVAL（15s）拉长到 _PROACTIVE_INTERVAL_AB_VALUE
-                // （20s）。守卫与 vision 同款：服务器无云端间隔偏好 + 用户没在 fetch 间隙手
+                // DEFAULT_PROACTIVE_CHAT_INTERVAL（20s）拉长到 _PROACTIVE_INTERVAL_AB_VALUE
+                // （25s）。守卫与 vision 同款：服务器无云端间隔偏好 + 用户没在 fetch 间隙手
                 // 动改 + 本地值仍等于控制组默认（即也没在之前 offline session 里改过）。国内
                 // 落到本组天然 no-op；与 vision_chat_default_off（差异在国内）目标地区不重
                 // 叠，可同时在线。本组只改默认值、无弹窗。

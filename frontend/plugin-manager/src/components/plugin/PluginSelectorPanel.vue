@@ -98,7 +98,7 @@
                     @click.stop
                     @change="$emit('togglePlugin', plugin.id)"
                   />
-                  <span class="plugin-list-row__name">{{ plugin.name }}</span>
+                  <span class="plugin-list-row__name">{{ plugin.displayName || plugin.name }}</span>
                 </div>
               </template>
               <template v-else>
@@ -133,6 +133,7 @@ type SelectablePlugin = PluginMeta & {
   type: PluginGroupType
   enabled?: boolean
   autoStart?: boolean
+  displayName?: string
 }
 
 const props = defineProps<{

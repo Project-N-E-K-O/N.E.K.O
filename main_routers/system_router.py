@@ -2394,6 +2394,22 @@ async def _maybe_deliver_mini_game_invite(
     # 会让重启后 force-first 重复触发——CodeRabbit Major review 指出。
     await _record_invite_delivery_persistent(lanlan_name)
 
+    try:
+        from utils.instrument import counter as _instr_counter
+        # channel 维度区分两条邀请投递通道：proactive（本函数）与 work_break
+        # （水分提醒组合路径，见 _deliver_break_reminder_via_llm 下游）。两条都
+        # 共享同一 invite state/cooldown，邀请总数需把两通道相加。force_first 仅
+        # proactive 通道有意义。
+        _instr_counter(
+            "mini_game_invited",
+            game_type=str(game_type)[:24],
+            channel="proactive",
+            force_first=bool(force_first),
+        )
+    except Exception:
+        # 埋点失败不能影响邀请投递
+        pass
+
     # 推 WS message 给前端展示三选项按钮。前端复用 ChoicePrompt 抽象（与 galgame
     # options 共用渲染），但 source='mini_game_invite' 走独立 endpoint，不翻
     # galgame mode 开关。Pet 主窗收到后通过现有 RAW_MESSAGE IPC forwarding 自动
@@ -4992,6 +5008,19 @@ async def proactive_chat(request: Request):
                             "[%s] record_invite_delivery_persistent failed: %s",
                             lanlan_name, _persist_err,
                         )
+                    try:
+                        from utils.instrument import counter as _instr_counter
+                        # 与 proactive 通道共用 mini_game_invited，channel 维度区分；
+                        # 不计 persist 成败——邀请 UI 已投递给用户即算一次邀请。
+                        _instr_counter(
+                            "mini_game_invited",
+                            game_type=str(chosen_game_type)[:24],
+                            channel="work_break",
+                            force_first=False,
+                        )
+                    except Exception:
+                        # 埋点 best-effort，失败不影响邀请投递
+                        pass
                     options_payload = _build_mini_game_invite_options_payload(
                         invite_lang=_break_lang,
                         game_type=chosen_game_type,

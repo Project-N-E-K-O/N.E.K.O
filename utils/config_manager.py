@@ -296,17 +296,29 @@ def _get_persona_override(character_payload: dict) -> dict | None:
     return override
 
 
-def _build_effective_character_payload(character_payload: dict) -> dict:
+def _build_effective_character_payload(character_payload: dict, entity: str = "neko") -> dict:
     if not isinstance(character_payload, dict):
         return {}
 
     effective_payload = deepcopy(character_payload)
     override = _get_persona_override(character_payload)
     if not isinstance(override, dict):
+        for field, value in _build_ai_context_fields(
+            character_payload,
+            existing_fields=set(effective_payload.keys()),
+            entity=entity,
+        ).items():
+            effective_payload[field] = value
         return effective_payload
 
     profile = _normalize_persona_override_profile(override.get("profile"))
     for field, value in profile.items():
+        effective_payload[field] = value
+    for field, value in _build_ai_context_fields(
+        character_payload,
+        existing_fields=set(effective_payload.keys()),
+        entity=entity,
+    ).items():
         effective_payload[field] = value
     return effective_payload
 
@@ -345,6 +357,93 @@ def _append_persona_guidance_to_prompt(prompt_text: str, character_payload: dict
         return guidance
 
     return f"{prompt_text}\n\nAdditional role guidance: {guidance}"
+
+
+_AI_CONTEXT_RENAME_EVENT_FIELD = "__ai_context.profile_rename_events"
+
+
+def _unique_ai_context_field_name(existing_fields: set[str] | None) -> str:
+    existing = {str(field) for field in (existing_fields or set())}
+    if _AI_CONTEXT_RENAME_EVENT_FIELD not in existing:
+        return _AI_CONTEXT_RENAME_EVENT_FIELD
+
+    index = 2
+    while f"{_AI_CONTEXT_RENAME_EVENT_FIELD}.{index}" in existing:
+        index += 1
+    return f"{_AI_CONTEXT_RENAME_EVENT_FIELD}.{index}"
+
+
+def _join_profile_rename_old_names(lang: str | None, names: list[str]) -> str:
+    normalized_lang = str(lang or "").strip().lower()
+    separator = "、" if normalized_lang.startswith(("zh", "ja")) else ", "
+    return separator.join(names)
+
+
+def _build_ai_context_fields(
+    character_payload: dict,
+    existing_fields: set[str] | None = None,
+    entity: str = "neko",
+) -> dict[str, str]:
+    """把隐藏运行时事件展开成只给 prompt/记忆同步使用的合成字段。
+
+    entity 区分这份 payload 是猫娘（neko）还是主人（master），决定改名记录的人称：
+    主人的记录进的是猫娘 persona 的 master section，必须第二人称，不能第一人称。
+    """
+    if not isinstance(character_payload, dict):
+        return {}
+
+    rename_events = get_reserved(
+        character_payload,
+        "ai_context",
+        "rename_events",
+        default=[],
+    )
+    if not isinstance(rename_events, list):
+        return {}
+
+    try:
+        from utils.language_utils import get_global_language_full
+        lang = get_global_language_full()
+    except Exception:
+        lang = None
+
+    from config.prompts.prompts_memory import render_profile_rename_event_context
+
+    field_name = _unique_ai_context_field_name(existing_fields)
+    old_names: list[str] = []
+    current_name = ""
+    legacy_lines: list[str] = []
+    for event in rename_events:
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("type") or "").strip() != "profile_rename":
+            continue
+        old_name = str(event.get("old_name") or "").strip()
+        new_name = str(event.get("new_name") or "").strip()
+        if old_name and new_name:
+            if old_name not in old_names:
+                old_names.append(old_name)
+            current_name = new_name
+        else:
+            text = str(event.get("text") or "").strip()
+            if not text:
+                continue
+            legacy_lines.append(text)
+
+    if current_name:
+        old_names = [name for name in old_names if name != current_name]
+
+    lines: list[str] = []
+    if old_names and current_name:
+        old_names_text = _join_profile_rename_old_names(lang, old_names)
+        label, text = render_profile_rename_event_context(lang, old_names_text, current_name, entity=entity)
+        lines.append(f"{label}: {text}")
+
+    lines.extend(legacy_lines)
+
+    if not lines:
+        return {}
+    return {field_name: "\n".join(lines)}
 
 
 def _has_generated_persona_selection_prompt(prompt_text: object) -> bool:
@@ -2780,7 +2879,7 @@ class ConfigManager:
         character_data.setdefault('主人', deepcopy(defaults['主人']))
         character_data.setdefault('猫娘', deepcopy(defaults['猫娘']))
 
-        master_basic_config = character_data.get('主人', {})
+        master_basic_config = _build_effective_character_payload(character_data.get('主人', {}), entity="master")
         master_name = master_basic_config.get('档案名', defaults['主人']['档案名'])
 
         raw_character_data = character_data.get('猫娘') or deepcopy(defaults['猫娘'])
@@ -3202,12 +3301,15 @@ class ConfigManager:
         if core_cfg.get('coreApiKey'):
             config['CORE_API_KEY'] = core_cfg['coreApiKey']
 
-        _core_api_provider = core_cfg.get('coreApi') or 'qwen'
-        _assist_api_provider = core_cfg.get('assistApi') or 'qwen'
+        _core_api_provider = core_cfg.get('coreApi') or config['CORE_API_TYPE']
+        _assist_api_provider = core_cfg.get('assistApi')
+        if not _assist_api_provider:
+            _assist_api_provider = 'free' if _core_api_provider == 'free' else 'qwen'
         _fallback_providers = {_core_api_provider, _assist_api_provider}
+        _core_key_fallback = config['CORE_API_KEY'] if config['CORE_API_KEY'] != 'free-access' else ''
 
         def _fb(provider: str) -> str:
-            return config['CORE_API_KEY'] if provider in _fallback_providers else ''
+            return _core_key_fallback if provider in _fallback_providers else ''
 
         config['ASSIST_API_KEY_QWEN'] = core_cfg.get('assistApiKeyQwen', '') or _fb('qwen')
         config['ASSIST_API_KEY_QWEN_INTL'] = core_cfg.get('assistApiKeyQwenIntl', '') or _fb('qwen_intl')
@@ -3333,13 +3435,13 @@ class ConfigManager:
                 config['OPENROUTER_API_KEY'] = derived_key
 
         if not config['AUDIO_API_KEY']:
-            config['AUDIO_API_KEY'] = config['CORE_API_KEY']
+            config['AUDIO_API_KEY'] = _core_key_fallback
         if not config['OPENROUTER_API_KEY']:
-            config['OPENROUTER_API_KEY'] = config['CORE_API_KEY']
+            config['OPENROUTER_API_KEY'] = _core_key_fallback
 
         # Agent API Key 回退：未显式配置时跟随辅助 API Key
         if not config.get('AGENT_MODEL_API_KEY'):
-            config['AGENT_MODEL_API_KEY'] = derived_key if derived_key else config.get('CORE_API_KEY', '')
+            config['AGENT_MODEL_API_KEY'] = config.get('OPENROUTER_API_KEY', '')
 
         # 自定义API配置映射（使用大写下划线形式的内部键，且在未提供时保留已有默认值）
         enable_custom_api = core_cfg.get('enableCustomApi', False)
