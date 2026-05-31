@@ -3208,6 +3208,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 .compact-chat-surface-frame[data-compact-chat-state="input"] .compact-input-tool-toggle {
+  --compact-tool-toggle-hover-outset: 14px;
   position: absolute;
   top: 5px;
   right: 9px;
@@ -3224,7 +3225,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 .compact-chat-surface-frame[data-compact-chat-state="input"] .compact-input-tool-toggle::before {
   content: "";
   position: absolute;
-  inset: -5px;
+  inset: calc(var(--compact-tool-toggle-hover-outset) * -1);
   z-index: -1;
   border-radius: 999px;
   pointer-events: none;
@@ -3270,24 +3271,31 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 .compact-input-tool-fan {
   --compact-tool-button-size: 38px;
   --compact-tool-fan-hit-outset: 52px;
-  --compact-tool-fan-focus-x: 42px;
-  --compact-tool-fan-focus-y: 42px;
+  --compact-tool-wheel-hover-radius: 116px;
+  --compact-tool-fan-focus-x: var(--compact-tool-wheel-hover-radius);
+  --compact-tool-fan-focus-y: var(--compact-tool-wheel-hover-radius);
+  --compact-tool-wheel-center-x: var(--compact-tool-wheel-hover-radius);
+  --compact-tool-wheel-center-y: var(--compact-tool-wheel-hover-radius);
   --compact-tool-toggle-center-x: calc(100% - 31px);
   --compact-tool-toggle-center-y: 31px;
   --compact-tool-button-fill: rgba(255, 255, 255, 0.9);
   --compact-tool-button-hover-fill: rgba(232, 246, 255, 0.96);
   --compact-tool-button-shadow: 0 8px 18px rgba(20, 36, 64, 0.13);
+  --compact-tool-wheel-transform-duration: 0.22s;
+  --compact-tool-wheel-transform-easing: cubic-bezier(0.2, 0.9, 0.22, 1.12);
+  --compact-tool-wheel-charge-first-angle: 0deg;
+  --compact-tool-wheel-charge-second-angle: 0deg;
   --compact-tool-preview-fade-left: linear-gradient(99deg, rgba(0, 0, 0, 0.04) 0%, rgba(0, 0, 0, 0.52) 46%, #000 100%);
   --compact-tool-preview-fade-right: linear-gradient(172deg, rgba(0, 0, 0, 0.04) 0%, rgba(0, 0, 0, 0.52) 46%, #000 100%);
   position: absolute;
   left: calc(var(--compact-tool-toggle-center-x) - var(--compact-tool-fan-focus-x));
   top: calc(var(--compact-tool-toggle-center-y) - var(--compact-tool-fan-focus-y));
-  width: calc(126px + var(--compact-tool-fan-hit-outset));
-  height: calc(126px + var(--compact-tool-fan-hit-outset));
+  width: calc(var(--compact-tool-wheel-hover-radius) * 2);
+  height: calc(var(--compact-tool-wheel-hover-radius) * 2);
   pointer-events: none;
   z-index: 100003;
   overflow: visible;
-  touch-action: pan-y;
+  touch-action: none;
   cursor: grab;
   -webkit-app-region: no-drag;
 }
@@ -3306,6 +3314,76 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   -webkit-app-region: no-drag;
 }
 
+.compact-input-tool-fan-hit-region {
+  position: absolute;
+  left: calc(var(--compact-tool-wheel-center-x) - var(--compact-tool-wheel-hover-radius));
+  top: calc(var(--compact-tool-wheel-center-y) - var(--compact-tool-wheel-hover-radius));
+  width: calc(var(--compact-tool-wheel-hover-radius) * 2);
+  height: calc(var(--compact-tool-wheel-hover-radius) * 2);
+  border-radius: 999px;
+  background: transparent;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.compact-input-tool-wheel-charge {
+  position: absolute;
+  left: calc(var(--compact-tool-wheel-center-x) - 27px);
+  top: calc(var(--compact-tool-wheel-center-y) - 27px);
+  width: 54px;
+  height: 54px;
+  border-radius: 999px;
+  background:
+    conic-gradient(
+      rgba(79, 184, 255, 0.9) 0deg,
+      rgba(79, 184, 255, 0.9) var(--compact-tool-wheel-charge-first-angle),
+      rgba(36, 151, 217, 0.12) var(--compact-tool-wheel-charge-first-angle),
+      rgba(36, 151, 217, 0.14) 360deg
+    );
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(0.88);
+  transition: opacity 0.14s ease, transform 0.14s ease;
+  -webkit-mask-image: radial-gradient(farthest-side, transparent calc(100% - 4px), #000 calc(100% - 3px));
+  mask-image: radial-gradient(farthest-side, transparent calc(100% - 4px), #000 calc(100% - 3px));
+  z-index: 2;
+}
+
+.compact-input-tool-wheel-charge::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background:
+    conic-gradient(
+      rgba(0, 92, 196, 0.96) 0deg,
+      rgba(0, 92, 196, 0.96) var(--compact-tool-wheel-charge-second-angle),
+      transparent var(--compact-tool-wheel-charge-second-angle),
+      transparent 360deg
+    );
+  pointer-events: none;
+}
+
+.compact-input-tool-fan[data-compact-tool-wheel-charge-direction="backward"] .compact-input-tool-wheel-charge {
+  background:
+    conic-gradient(
+      rgba(36, 151, 217, 0.12) 0deg,
+      rgba(36, 151, 217, 0.14) calc(360deg - var(--compact-tool-wheel-charge-first-angle)),
+      rgba(79, 184, 255, 0.9) calc(360deg - var(--compact-tool-wheel-charge-first-angle)),
+      rgba(79, 184, 255, 0.9) 360deg
+    );
+}
+
+.compact-input-tool-fan[data-compact-tool-wheel-charge-direction="backward"] .compact-input-tool-wheel-charge::after {
+  background:
+    conic-gradient(
+      transparent 0deg,
+      transparent calc(360deg - var(--compact-tool-wheel-charge-second-angle)),
+      rgba(0, 92, 196, 0.96) calc(360deg - var(--compact-tool-wheel-charge-second-angle)),
+      rgba(0, 92, 196, 0.96) 360deg
+    );
+}
+
 .compact-chat-drag-handle {
   -webkit-app-region: no-drag;
 }
@@ -3322,13 +3400,14 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   background: transparent;
   box-shadow: none;
   opacity: 0;
-  transform: translate(0, 0) scale(0.72);
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(45deg) translateX(0px) rotate(-45deg) scale(0.72);
   transition:
     opacity 0.18s ease,
-    transform 0.22s cubic-bezier(0.2, 0.9, 0.22, 1.12),
+    transform var(--compact-tool-wheel-transform-duration) var(--compact-tool-wheel-transform-easing),
     background 0.15s ease;
   pointer-events: none;
   isolation: isolate;
+  z-index: 1;
 }
 
 .compact-input-tool-fan .compact-input-tool-item::after {
@@ -3367,6 +3446,20 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   pointer-events: auto;
 }
 
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-fan-hit-region {
+  pointer-events: auto;
+}
+
+.compact-input-tool-fan[data-compact-tool-wheel-charge-active="true"] .compact-input-tool-wheel-charge {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.compact-input-tool-fan[data-compact-tool-wheel-fast-animation="true"] {
+  --compact-tool-wheel-transform-duration: 0.07s;
+  --compact-tool-wheel-transform-easing: cubic-bezier(0.18, 0.72, 0.24, 1);
+}
+
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"]:active {
   cursor: grabbing;
 }
@@ -3400,7 +3493,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] {
   opacity: 1;
-  transform: translate(17px, 122px) scale(0.86);
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(107.35deg) translateX(91.92px) rotate(-107.35deg) scale(0.86);
   pointer-events: auto;
 }
 
@@ -3420,25 +3513,25 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-1"] {
   opacity: 1;
-  transform: translate(64px, 129px) scale(0.98);
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(75.82deg) translateX(91.92px) rotate(-75.82deg) scale(0.98);
   pointer-events: auto;
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="0"] {
   opacity: 1;
-  transform: translate(107px, 107px) scale(1.04);
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(45deg) translateX(91.92px) rotate(-45deg) scale(1.04);
   pointer-events: auto;
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="1"] {
   opacity: 1;
-  transform: translate(129px, 64px) scale(0.98);
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(14.18deg) translateX(91.92px) rotate(-14.18deg) scale(0.98);
   pointer-events: auto;
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] {
   opacity: 1;
-  transform: translate(122px, 17px) scale(0.86);
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(-17.35deg) translateX(91.92px) rotate(17.35deg) scale(0.86);
   pointer-events: auto;
 }
 
@@ -3456,10 +3549,23 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   filter: drop-shadow(0 4px 10px rgba(20, 36, 64, 0.08));
 }
 
-.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden"] {
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden"],
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden-forward"],
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden-backward"] {
   opacity: 0;
-  transform: translate(55px, 55px) scale(0.56);
   pointer-events: none;
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden"] {
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(45deg) translateX(18.38px) rotate(-45deg) scale(0.56);
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden-forward"] {
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(-48.51deg) translateX(91.92px) rotate(48.51deg) scale(0.56);
+}
+
+.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden-backward"] {
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(138.51deg) translateX(91.92px) rotate(-138.51deg) scale(0.56);
 }
 
 .compact-input-tool-fan .composer-tool-btn img {

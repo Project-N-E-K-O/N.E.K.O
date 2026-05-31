@@ -7,6 +7,7 @@
   type CSSProperties,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
+  type WheelEvent as ReactWheelEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
 import MessageList from './MessageList';
@@ -66,19 +67,10 @@ const defaultMessages: ChatMessage[] = [];
 type AvatarToolId = AvatarInteractionPayload['toolId'];
 
 function getEffectiveCompactChatState(
-  requestedState: CompactChatState,
-  hasVisibleChoices: boolean,
+  _requestedState: CompactChatState,
+  _hasVisibleChoices: boolean,
 ): CompactChatState {
-  if (requestedState === 'input') {
-    return 'input';
-  }
-  if (hasVisibleChoices) {
-    return 'options';
-  }
-  if (requestedState === 'options') {
-    return 'default';
-  }
-  return requestedState;
+  return 'input';
 }
 
 const COMPACT_PREVIEW_MAX_LENGTH = 84;
@@ -89,9 +81,25 @@ const SPEECH_PLAYBACK_STATE_STORAGE_KEY = 'neko_speech_playback_state';
 const SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';
 const COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY = 'neko.reactChatWindow.compactExportHistoryOpen';
 const COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT = 7;
-const COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD = 28;
+const COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD = 22;
+const COMPACT_INPUT_TOOL_WHEEL_SCROLL_THRESHOLD = 64;
+const COMPACT_INPUT_TOOL_WHEEL_DRAG_GUARD_MS = 4000;
+const COMPACT_INPUT_TOOL_WHEEL_FAST_GESTURE_MS = 140;
+const COMPACT_INPUT_TOOL_WHEEL_FAST_ANIMATION_MS = 180;
+const COMPACT_INPUT_TOOL_WHEEL_CHARGE_START_STEPS = COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT * 4;
+const COMPACT_INPUT_TOOL_WHEEL_CHARGE_LAP_STEPS = COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT * 2;
+const COMPACT_INPUT_TOOL_WHEEL_CHARGE_MAX_STEPS = COMPACT_INPUT_TOOL_WHEEL_CHARGE_LAP_STEPS * 2;
+const COMPACT_INPUT_TOOL_WHEEL_CHARGE_RELEASE_STEP_MS = 36;
+const COMPACT_INPUT_TOOL_WHEEL_CENTER_X = 116;
+const COMPACT_INPUT_TOOL_WHEEL_CENTER_Y = 116;
+const COMPACT_INPUT_TOOL_WHEEL_ORBIT_RADIUS = 91.92;
+const COMPACT_INPUT_TOOL_WHEEL_HOVER_RADIUS = 116;
+const COMPACT_INPUT_TOOL_WHEEL_ANGLE_MIN_RADIUS = 16;
+const COMPACT_INPUT_TOOL_TOGGLE_HOVER_OUTSET = 14;
 const COMPACT_INPUT_TOOL_FAN_ORIGIN_CLOSE_SIZE = 48;
 const COMPACT_INPUT_TOOL_FAN_INTERACTIVE_DELAY_MS = 220;
+const COMPACT_INPUT_TOOL_FAN_TRANSIENT_CLOSE_DELAY_MS = 360;
+const COMPACT_INPUT_TOOL_FAN_OUTSIDE_CLOSE_DELAY_MS = 650;
 const COMPACT_SURFACE_RESIZE_MIN_WIDTH = 430;
 const COMPACT_SURFACE_RESIZE_MAX_WIDTH = 720;
 const COMPACT_SURFACE_RESIZE_VIEWPORT_GUTTER = 32;
@@ -189,9 +197,50 @@ function normalizeCompactHistoryDropResult(result: unknown): Promise<boolean | v
 type CompactToolWheelPointerState = {
   id: number;
   x: number;
+  y: number;
+  angle: number | null;
+  angleRemainder: number;
   didRotate: boolean;
   captureTarget: Element | null;
 };
+
+type CompactToolWheelChargeState = {
+  direction: 1 | -1 | null;
+  sameDirectionSteps: number;
+  chargeSteps: number;
+};
+
+type CompactToolWheelDragPoint = {
+  x: number;
+  y: number;
+  angle: number | null;
+};
+
+type CompactToolWheelDragInput = {
+  pointerId: number;
+  clientX: number;
+  clientY: number;
+  buttons?: number;
+  pointerType?: string;
+  preventDefault?: () => void;
+};
+
+function normalizeCompactToolWheelAngleDelta(delta: number): number {
+  const fullTurn = Math.PI * 2;
+  return ((((delta + Math.PI) % fullTurn) + fullTurn) % fullTurn) - Math.PI;
+}
+
+function getCompactToolWheelTimestamp(): number {
+  return window.performance?.now?.() ?? Date.now();
+}
+
+function createCompactToolWheelChargeState(): CompactToolWheelChargeState {
+  return {
+    direction: null,
+    sameDirectionSteps: 0,
+    chargeSteps: 0,
+  };
+}
 
 type CompactMessagePreview = {
   messageId: string;
@@ -991,7 +1040,7 @@ export default function App({
   composerHidden = false,
   composerDisabled = false,
   chatSurfaceMode = 'full',
-  compactChatState = 'default',
+  compactChatState = 'input',
   composerAttachments = [],
   composerAttachmentsAriaLabel = i18n('chat.pendingImagesAriaLabel', 'Pending attachments'),
   importImageButtonLabel = i18n('chat.importImage', 'Import Image'),
@@ -1058,7 +1107,15 @@ export default function App({
   const compactInputToolToggleRef = useRef<HTMLButtonElement | null>(null);
   const compactInputToolFanRef = useRef<HTMLDivElement | null>(null);
   const compactInputToolWheelPointerRef = useRef<CompactToolWheelPointerState | null>(null);
+  const compactInputToolWheelDragActiveRef = useRef(false);
+  const compactInputToolWheelDragGuardTimerRef = useRef<number | null>(null);
+  const compactInputToolWheelFastAnimationTimerRef = useRef<number | null>(null);
+  const compactInputToolWheelChargeReleaseTimerRef = useRef<number | null>(null);
+  const compactInputToolWheelLastRotationAtRef = useRef(0);
+  const compactInputToolWheelChargeRef = useRef<CompactToolWheelChargeState>(createCompactToolWheelChargeState());
+  const compactInputToolWheelChargeReleaseActiveRef = useRef(false);
   const compactInputToolWheelSuppressClickRef = useRef(false);
+  const compactInputToolWheelScrollDeltaRef = useRef(0);
   const compactInputToolTogglePointerHandledRef = useRef(false);
   const compactInputToolFanPositionSyncRef = useRef<(() => void) | null>(null);
   const compactInputToolFanCloseTimerRef = useRef<number | null>(null);
@@ -1121,6 +1178,10 @@ export default function App({
   const [compactInputToolFanOpen, setCompactInputToolFanOpen] = useState(false);
   const [compactInputToolFanInteractive, setCompactInputToolFanInteractive] = useState(false);
   const [compactInputToolWheelIndex, setCompactInputToolWheelIndex] = useState(0);
+  const [compactInputToolWheelFastAnimation, setCompactInputToolWheelFastAnimation] = useState(false);
+  const [compactInputToolWheelChargeRatio, setCompactInputToolWheelChargeRatio] = useState(0);
+  const [compactInputToolWheelChargeDirection, setCompactInputToolWheelChargeDirection] = useState<1 | -1 | null>(null);
+  const [compactInputToolWheelChargeReleaseActive, setCompactInputToolWheelChargeReleaseActive] = useState(false);
   const [compactSurfaceResizeWidth, setCompactSurfaceResizeWidth] = useState<number | null>(null);
   const [compactExportHistoryOpen, setCompactExportHistoryOpen] = useState(readPersistedCompactExportHistoryOpen);
   const [compactExportPreviewOpen, setCompactExportPreviewOpen] = useState(false);
@@ -1263,9 +1324,7 @@ export default function App({
     && (galgameOptionsLoading || galgameOptions.length > 0);
   const compactSurfaceChoicesVisible = choicePromptHasOptions || galgameOptionsVisible;
   const isCompactSurface = chatSurfaceMode === 'compact';
-  const requestedCompactChatState = isCompactSurface && composerHidden && compactChatState === 'input'
-    ? 'default'
-    : compactChatState;
+  const requestedCompactChatState = compactChatState;
   const effectiveCompactChatState = isCompactSurface
     ? getEffectiveCompactChatState(requestedCompactChatState, compactSurfaceChoicesVisible)
     : requestedCompactChatState;
@@ -1329,9 +1388,7 @@ export default function App({
     && compactSurfaceResizeWidth !== null
     ? getClampedCompactSurfaceResizeWidth(compactSurfaceResizeWidth)
     : null;
-  const compactChoiceLayerOpen = !isCompactSurface
-    ? compactSurfaceChoicesVisible
-    : effectiveCompactChatState === 'options';
+  const compactChoiceLayerOpen = compactSurfaceChoicesVisible;
   const compactExportSelectedCount = compactExportSelectedIds.size;
   const compactExportSelectableMessages = useMemo(
     () => messages.filter(isCompactExportMessageSelectable),
@@ -2247,6 +2304,53 @@ export default function App({
     compactInputToolFanInteractiveTimerRef.current = null;
   }, []);
 
+  const clearCompactInputToolWheelDragGuardTimer = useCallback(() => {
+    if (compactInputToolWheelDragGuardTimerRef.current === null) return;
+    window.clearTimeout(compactInputToolWheelDragGuardTimerRef.current);
+    compactInputToolWheelDragGuardTimerRef.current = null;
+  }, []);
+
+  const clearCompactInputToolWheelFastAnimationTimer = useCallback(() => {
+    if (compactInputToolWheelFastAnimationTimerRef.current === null) return;
+    window.clearTimeout(compactInputToolWheelFastAnimationTimerRef.current);
+    compactInputToolWheelFastAnimationTimerRef.current = null;
+  }, []);
+
+  const clearCompactInputToolWheelChargeReleaseTimer = useCallback(() => {
+    if (compactInputToolWheelChargeReleaseTimerRef.current !== null) {
+      window.clearTimeout(compactInputToolWheelChargeReleaseTimerRef.current);
+      compactInputToolWheelChargeReleaseTimerRef.current = null;
+    }
+    compactInputToolWheelChargeReleaseActiveRef.current = false;
+    setCompactInputToolWheelChargeReleaseActive(false);
+  }, []);
+
+  const resetCompactInputToolWheelCharge = useCallback(() => {
+    compactInputToolWheelChargeRef.current = createCompactToolWheelChargeState();
+    setCompactInputToolWheelChargeRatio(0);
+    setCompactInputToolWheelChargeDirection(null);
+  }, []);
+
+  const dispatchCompactToolWheelDragState = useCallback((active: boolean, pointerId?: number) => {
+    window.dispatchEvent(new CustomEvent('neko:compact-tool-wheel-drag-state-change', {
+      detail: {
+        active,
+        pointerId,
+        timestamp: Date.now(),
+      },
+    }));
+  }, []);
+
+  const scheduleCompactInputToolWheelDragGuardRelease = useCallback(() => {
+    clearCompactInputToolWheelDragGuardTimer();
+    compactInputToolWheelDragGuardTimerRef.current = window.setTimeout(() => {
+      compactInputToolWheelDragGuardTimerRef.current = null;
+      compactInputToolWheelDragActiveRef.current = false;
+      compactInputToolWheelPointerRef.current = null;
+      dispatchCompactToolWheelDragState(false);
+    }, COMPACT_INPUT_TOOL_WHEEL_DRAG_GUARD_MS);
+  }, [clearCompactInputToolWheelDragGuardTimer, dispatchCompactToolWheelDragState]);
+
   const setCompactInputToolFanInteractiveState = useCallback((interactive: boolean) => {
     compactInputToolFanInteractiveRef.current = interactive;
     setCompactInputToolFanInteractive(interactive);
@@ -2263,7 +2367,16 @@ export default function App({
   }) => {
     clearCompactInputToolFanCloseTimer();
     clearCompactInputToolFanInteractiveTimer();
+    clearCompactInputToolWheelDragGuardTimer();
+    clearCompactInputToolWheelFastAnimationTimer();
+    clearCompactInputToolWheelChargeReleaseTimer();
     compactInputToolFanOpenIntentRef.current = null;
+    compactInputToolWheelDragActiveRef.current = false;
+    compactInputToolWheelPointerRef.current = null;
+    dispatchCompactToolWheelDragState(false);
+    compactInputToolWheelLastRotationAtRef.current = 0;
+    resetCompactInputToolWheelCharge();
+    setCompactInputToolWheelFastAnimation(false);
     setCompactInputToolFanInteractiveState(false);
     compactInputToolFanPositionSyncRef.current?.();
     compactInputToolFanOpenRef.current = false;
@@ -2279,18 +2392,57 @@ export default function App({
       return;
     }
     options.afterClose();
-  }, [clearCompactInputToolFanCloseTimer, clearCompactInputToolFanInteractiveTimer, setCompactInputToolFanInteractiveState]);
+  }, [
+    clearCompactInputToolFanCloseTimer,
+    clearCompactInputToolFanInteractiveTimer,
+    clearCompactInputToolWheelDragGuardTimer,
+    clearCompactInputToolWheelFastAnimationTimer,
+    clearCompactInputToolWheelChargeReleaseTimer,
+    dispatchCompactToolWheelDragState,
+    resetCompactInputToolWheelCharge,
+    setCompactInputToolFanInteractiveState,
+  ]);
 
   const updateCompactInputToolFanPosition = useCallback(() => {}, []);
 
-  const scheduleCompactInputToolFanTransientClose = useCallback(() => {
-    if (compactInputToolFanOpenIntentRef.current !== 'hover') return;
+  const scheduleCompactInputToolFanTransientClose = useCallback((options?: {
+    delayMs?: number;
+    force?: boolean;
+    keepExistingTimer?: boolean;
+  }) => {
+    if (!compactInputToolFanOpenRef.current) return;
+    if (!options?.force && compactInputToolFanOpenIntentRef.current !== 'hover') return;
+    if (
+      compactInputToolWheelDragActiveRef.current
+      || compactInputToolWheelPointerRef.current
+      || compactInputToolWheelChargeReleaseActiveRef.current
+    ) return;
+    if (options?.keepExistingTimer && compactInputToolFanCloseTimerRef.current !== null) return;
     clearCompactInputToolFanCloseTimer();
     compactInputToolFanCloseTimerRef.current = window.setTimeout(() => {
       compactInputToolFanCloseTimerRef.current = null;
+      if (
+        compactInputToolWheelDragActiveRef.current
+        || compactInputToolWheelPointerRef.current
+        || compactInputToolWheelChargeReleaseActiveRef.current
+      ) return;
       closeCompactInputToolFan();
-    }, 160);
+    }, options?.delayMs ?? COMPACT_INPUT_TOOL_FAN_TRANSIENT_CLOSE_DELAY_MS);
   }, [clearCompactInputToolFanCloseTimer, closeCompactInputToolFan]);
+
+  useEffect(() => {
+    if (!isCompactSurface) return;
+    const frameId = window.requestAnimationFrame(() => {
+      window.dispatchEvent(new CustomEvent('neko:compact-interaction-geometry-change'));
+    });
+    return () => window.cancelAnimationFrame(frameId);
+  }, [
+    compactInputToolFanInteractive,
+    compactInputToolFanOpen,
+    compactInputToolWheelIndex,
+    effectiveCompactChatState,
+    isCompactSurface,
+  ]);
 
   const openCompactInputToolFan = useCallback((intent: 'click' | 'hover') => {
     if (composerDisabled || compactInputHasPayload) return;
@@ -2315,8 +2467,36 @@ export default function App({
     updateCompactInputToolFanPosition,
   ]);
 
-  const shouldOpenCompactToolFanOnHover = useCallback((event: ReactPointerEvent) => {
-    return event.pointerType === 'mouse';
+  const shouldOpenCompactToolFanOnHover = useCallback((pointerType: string) => {
+    return pointerType === 'mouse';
+  }, []);
+
+  const isCompactInputToolPointerInToggleHoverRegion = useCallback((clientX: number, clientY: number, relatedTarget?: EventTarget | null) => {
+    if (relatedTarget instanceof Node && compactInputToolToggleRef.current?.contains(relatedTarget)) return true;
+    if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return false;
+    const toggleRect = compactInputToolToggleRef.current?.getBoundingClientRect();
+    if (!toggleRect || toggleRect.width <= 0 || toggleRect.height <= 0) return false;
+    const centerX = toggleRect.left + (toggleRect.width / 2);
+    const centerY = toggleRect.top + (toggleRect.height / 2);
+    const radius = (Math.max(toggleRect.width, toggleRect.height) / 2) + COMPACT_INPUT_TOOL_TOGGLE_HOVER_OUTSET;
+    return Math.hypot(clientX - centerX, clientY - centerY) <= radius;
+  }, []);
+
+  const getCompactInputToolFanCircularHoverRegion = useCallback(() => {
+    const fanElement = compactInputToolFanRef.current;
+    const fanRect = fanElement?.getBoundingClientRect();
+    if (!fanRect || fanRect.width <= 0 || fanRect.height <= 0) return null;
+    const fanStyle = fanElement && window.getComputedStyle ? window.getComputedStyle(fanElement) : null;
+    const readFanPixelVar = (name: string, fallback: number) => {
+      const rawValue = fanStyle?.getPropertyValue(name).trim() || '';
+      const parsedValue = Number.parseFloat(rawValue);
+      return Number.isFinite(parsedValue) ? parsedValue : fallback;
+    };
+    const centerX = fanRect.left + readFanPixelVar('--compact-tool-wheel-center-x', COMPACT_INPUT_TOOL_WHEEL_CENTER_X);
+    const centerY = fanRect.top + readFanPixelVar('--compact-tool-wheel-center-y', COMPACT_INPUT_TOOL_WHEEL_CENTER_Y);
+    const radius = readFanPixelVar('--compact-tool-wheel-hover-radius', COMPACT_INPUT_TOOL_WHEEL_HOVER_RADIUS);
+    if (!Number.isFinite(radius) || radius <= 0) return null;
+    return { centerX, centerY, radius };
   }, []);
 
   const isCompactInputToolPointerInHoverRegion = useCallback((clientX: number, clientY: number, relatedTarget?: EventTarget | null) => {
@@ -2324,31 +2504,25 @@ export default function App({
       if (compactInputToolToggleRef.current?.contains(relatedTarget)) return true;
       if (compactInputToolFanRef.current?.contains(relatedTarget)) return true;
     }
-    if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return false;
-    const rects = [
-      compactInputToolToggleRef.current?.getBoundingClientRect(),
-      compactInputToolFanRef.current?.getBoundingClientRect(),
-    ];
-    return rects.some(rect => (
-      !!rect
-      && rect.width > 0
-      && rect.height > 0
-      && clientX >= rect.left
-      && clientX <= rect.right
-      && clientY >= rect.top
-      && clientY <= rect.bottom
-    ));
-  }, []);
+    if (isCompactInputToolPointerInToggleHoverRegion(clientX, clientY, relatedTarget)) return true;
+    const fanRegion = getCompactInputToolFanCircularHoverRegion();
+    if (!fanRegion) return false;
+    return Math.hypot(clientX - fanRegion.centerX, clientY - fanRegion.centerY) <= fanRegion.radius;
+  }, [
+    getCompactInputToolFanCircularHoverRegion,
+    isCompactInputToolPointerInToggleHoverRegion,
+  ]);
 
   const handleCompactInputToolHoverEnter = useCallback((event: ReactPointerEvent) => {
-    if (!shouldOpenCompactToolFanOnHover(event)) return;
+    if (!shouldOpenCompactToolFanOnHover(event.pointerType)) return;
     if (compactInputToolFanSuppressHoverUntilLeaveRef.current) return;
-    if (compactInputToolFanHoverInsideRef.current) return;
+    if (compactInputToolFanHoverInsideRef.current && compactInputToolFanOpenRef.current) return;
     compactInputToolFanHoverInsideRef.current = true;
     openCompactInputToolFan('hover');
   }, [openCompactInputToolFan, shouldOpenCompactToolFanOnHover]);
 
   const handleCompactInputToolHoverLeave = useCallback((event: ReactPointerEvent) => {
+    if (compactInputToolWheelDragActiveRef.current || compactInputToolWheelPointerRef.current) return;
     if (isCompactInputToolPointerInHoverRegion(event.clientX, event.clientY, event.relatedTarget)) return;
     resetCompactInputToolFanHoverBlock();
     scheduleCompactInputToolFanTransientClose();
@@ -2358,6 +2532,18 @@ export default function App({
     compactInputToolFanSuppressHoverUntilLeaveRef.current = true;
     closeCompactInputToolFan();
   }, [closeCompactInputToolFan]);
+
+  const closeCompactInputToolFanFromDesktopOutside = useCallback(() => {
+    resetCompactInputToolFanHoverBlock();
+    scheduleCompactInputToolFanTransientClose({
+      delayMs: COMPACT_INPUT_TOOL_FAN_OUTSIDE_CLOSE_DELAY_MS,
+      force: true,
+      keepExistingTimer: true,
+    });
+  }, [
+    resetCompactInputToolFanHoverBlock,
+    scheduleCompactInputToolFanTransientClose,
+  ]);
 
   const toggleCompactInputToolFanByClick = useCallback(() => {
     if (compactInputToolFanOpenRef.current) {
@@ -2372,6 +2558,194 @@ export default function App({
     setCompactInputToolWheelIndex(current => (
       (current + direction + COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT) % COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT
     ));
+  }, []);
+
+  const markCompactInputToolWheelMotion = useCallback((stepCount: number, options?: { forceFast?: boolean }) => {
+    const now = getCompactToolWheelTimestamp();
+    const elapsed = compactInputToolWheelLastRotationAtRef.current > 0
+      ? now - compactInputToolWheelLastRotationAtRef.current
+      : Number.POSITIVE_INFINITY;
+    compactInputToolWheelLastRotationAtRef.current = now;
+    if (!options?.forceFast && stepCount <= 1 && elapsed > COMPACT_INPUT_TOOL_WHEEL_FAST_GESTURE_MS) return;
+
+    clearCompactInputToolWheelFastAnimationTimer();
+    setCompactInputToolWheelFastAnimation(true);
+    compactInputToolWheelFastAnimationTimerRef.current = window.setTimeout(() => {
+      compactInputToolWheelFastAnimationTimerRef.current = null;
+      setCompactInputToolWheelFastAnimation(false);
+    }, COMPACT_INPUT_TOOL_WHEEL_FAST_ANIMATION_MS);
+  }, [clearCompactInputToolWheelFastAnimationTimer]);
+
+  const rotateCompactInputToolWheelSteps = useCallback((direction: 1 | -1, stepCount: number, options?: { forceFast?: boolean }) => {
+    if (stepCount <= 0) return;
+    markCompactInputToolWheelMotion(stepCount, options);
+    for (let step = 0; step < stepCount; step += 1) {
+      rotateCompactInputToolWheel(direction);
+    }
+  }, [markCompactInputToolWheelMotion, rotateCompactInputToolWheel]);
+
+  const recordCompactInputToolWheelCharge = useCallback((direction: 1 | -1, stepCount: number) => {
+    if (stepCount <= 0) return;
+    const previous = compactInputToolWheelChargeRef.current;
+    let nextDirection: 1 | -1 | null = direction;
+    let sameDirectionSteps = previous.direction === direction ? previous.sameDirectionSteps + stepCount : stepCount;
+    let chargeSteps = 0;
+
+    if (previous.chargeSteps > 0) {
+      if (previous.direction === direction) {
+        chargeSteps = Math.min(COMPACT_INPUT_TOOL_WHEEL_CHARGE_MAX_STEPS, previous.chargeSteps + stepCount);
+        sameDirectionSteps = COMPACT_INPUT_TOOL_WHEEL_CHARGE_START_STEPS + chargeSteps;
+      } else {
+        const remainingChargeSteps = previous.chargeSteps - stepCount;
+        if (remainingChargeSteps > 0) {
+          nextDirection = previous.direction;
+          chargeSteps = remainingChargeSteps;
+          sameDirectionSteps = COMPACT_INPUT_TOOL_WHEEL_CHARGE_START_STEPS + remainingChargeSteps;
+        } else {
+          const leftoverSteps = Math.abs(remainingChargeSteps);
+          if (leftoverSteps <= 0) {
+            nextDirection = null;
+            sameDirectionSteps = 0;
+            chargeSteps = 0;
+          } else {
+            nextDirection = direction;
+            sameDirectionSteps = leftoverSteps;
+            chargeSteps = Math.min(
+              COMPACT_INPUT_TOOL_WHEEL_CHARGE_MAX_STEPS,
+              Math.max(0, leftoverSteps - COMPACT_INPUT_TOOL_WHEEL_CHARGE_START_STEPS),
+            );
+          }
+        }
+      }
+    } else {
+      chargeSteps = Math.min(
+        COMPACT_INPUT_TOOL_WHEEL_CHARGE_MAX_STEPS,
+        Math.max(0, sameDirectionSteps - COMPACT_INPUT_TOOL_WHEEL_CHARGE_START_STEPS),
+      );
+    }
+
+    compactInputToolWheelChargeRef.current = {
+      direction: nextDirection,
+      sameDirectionSteps,
+      chargeSteps,
+    };
+    setCompactInputToolWheelChargeRatio(chargeSteps / COMPACT_INPUT_TOOL_WHEEL_CHARGE_MAX_STEPS);
+    setCompactInputToolWheelChargeDirection(chargeSteps > 0 ? nextDirection : null);
+  }, []);
+
+  const startCompactInputToolWheelChargeRelease = useCallback((direction: 1 | -1, stepCount: number) => {
+    const releaseSteps = Math.max(0, Math.round(stepCount));
+    clearCompactInputToolWheelChargeReleaseTimer();
+    if (releaseSteps <= 0) return;
+
+    let remainingSteps = releaseSteps;
+    compactInputToolWheelChargeReleaseActiveRef.current = true;
+    setCompactInputToolWheelChargeReleaseActive(true);
+
+    const runReleaseStep = () => {
+      if (!compactInputToolFanOpenRef.current || remainingSteps <= 0) {
+        compactInputToolWheelChargeReleaseTimerRef.current = null;
+        compactInputToolWheelChargeReleaseActiveRef.current = false;
+        setCompactInputToolWheelChargeReleaseActive(false);
+        return;
+      }
+
+      rotateCompactInputToolWheelSteps(direction, 1, { forceFast: true });
+      remainingSteps -= 1;
+      if (remainingSteps <= 0) {
+        compactInputToolWheelChargeReleaseTimerRef.current = null;
+        compactInputToolWheelChargeReleaseActiveRef.current = false;
+        setCompactInputToolWheelChargeReleaseActive(false);
+        return;
+      }
+      compactInputToolWheelChargeReleaseTimerRef.current = window.setTimeout(
+        runReleaseStep,
+        COMPACT_INPUT_TOOL_WHEEL_CHARGE_RELEASE_STEP_MS,
+      );
+    };
+
+    compactInputToolWheelChargeReleaseTimerRef.current = window.setTimeout(runReleaseStep, 0);
+  }, [clearCompactInputToolWheelChargeReleaseTimer, rotateCompactInputToolWheelSteps]);
+
+  const getCompactInputToolWheelNormalizedDelta = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
+    const rawDelta = Math.abs(event.deltaY) >= Math.abs(event.deltaX)
+      ? event.deltaY
+      : event.deltaX;
+    if (!Number.isFinite(rawDelta) || rawDelta === 0) return 0;
+    if (event.deltaMode === 1) {
+      return rawDelta * 16;
+    }
+    if (event.deltaMode === 2) {
+      return rawDelta * Math.max(window.innerHeight || 0, COMPACT_INPUT_TOOL_WHEEL_SCROLL_THRESHOLD);
+    }
+    return rawDelta;
+  }, []);
+
+  const rotateCompactInputToolWheelByScroll = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
+    const normalizedDelta = getCompactInputToolWheelNormalizedDelta(event);
+    if (normalizedDelta === 0) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const nextDelta = compactInputToolWheelScrollDeltaRef.current + normalizedDelta;
+    const stepCount = Math.floor(Math.abs(nextDelta) / COMPACT_INPUT_TOOL_WHEEL_SCROLL_THRESHOLD);
+    if (stepCount <= 0) {
+      compactInputToolWheelScrollDeltaRef.current = nextDelta;
+      return;
+    }
+
+    const direction: 1 | -1 = nextDelta > 0 ? 1 : -1;
+    rotateCompactInputToolWheelSteps(direction, stepCount);
+    compactInputToolWheelScrollDeltaRef.current = nextDelta - (
+      direction * stepCount * COMPACT_INPUT_TOOL_WHEEL_SCROLL_THRESHOLD
+    );
+  }, [getCompactInputToolWheelNormalizedDelta, rotateCompactInputToolWheelSteps]);
+
+  const getCompactToolWheelBoundedDragPoint = useCallback((clientX: number, clientY: number): CompactToolWheelDragPoint => {
+    if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) {
+      return { x: clientX, y: clientY, angle: null };
+    }
+    const fanElement = compactInputToolFanRef.current;
+    const fanRect = fanElement?.getBoundingClientRect();
+    if (!fanRect || fanRect.width <= 0 || fanRect.height <= 0) {
+      return { x: clientX, y: clientY, angle: null };
+    }
+    const fanStyle = fanElement && window.getComputedStyle ? window.getComputedStyle(fanElement) : null;
+    const readFanPixelVar = (name: string, fallback: number) => {
+      const rawValue = fanStyle?.getPropertyValue(name).trim() || '';
+      const parsedValue = Number.parseFloat(rawValue);
+      return Number.isFinite(parsedValue) ? parsedValue : fallback;
+    };
+    const centerX = fanRect.left + readFanPixelVar('--compact-tool-wheel-center-x', COMPACT_INPUT_TOOL_WHEEL_CENTER_X);
+    const centerY = fanRect.top + readFanPixelVar('--compact-tool-wheel-center-y', COMPACT_INPUT_TOOL_WHEEL_CENTER_Y);
+    const radius = Math.max(
+      centerX - fanRect.left,
+      fanRect.right - centerX,
+      centerY - fanRect.top,
+      fanRect.bottom - centerY,
+    );
+    if (!Number.isFinite(radius) || radius <= 0) {
+      return { x: clientX, y: clientY, angle: null };
+    }
+    const deltaX = clientX - centerX;
+    const deltaY = clientY - centerY;
+    const distance = Math.hypot(deltaX, deltaY);
+    if (distance <= 0) {
+      return { x: clientX, y: clientY, angle: null };
+    }
+    const angle = distance >= COMPACT_INPUT_TOOL_WHEEL_ANGLE_MIN_RADIUS
+      ? Math.atan2(deltaY, deltaX)
+      : null;
+    if (distance <= radius) {
+      return { x: clientX, y: clientY, angle };
+    }
+    const scale = radius / distance;
+    return {
+      x: centerX + deltaX * scale,
+      y: centerY + deltaY * scale,
+      angle,
+    };
   }, []);
 
   const isCompactToolFanOriginPoint = useCallback((clientX: number, clientY: number) => {
@@ -2420,7 +2794,16 @@ export default function App({
   useEffect(() => () => {
     clearCompactInputToolFanCloseTimer();
     clearCompactInputToolFanInteractiveTimer();
-  }, [clearCompactInputToolFanCloseTimer, clearCompactInputToolFanInteractiveTimer]);
+    clearCompactInputToolWheelDragGuardTimer();
+    clearCompactInputToolWheelFastAnimationTimer();
+    clearCompactInputToolWheelChargeReleaseTimer();
+  }, [
+    clearCompactInputToolFanCloseTimer,
+    clearCompactInputToolFanInteractiveTimer,
+    clearCompactInputToolWheelDragGuardTimer,
+    clearCompactInputToolWheelFastAnimationTimer,
+    clearCompactInputToolWheelChargeReleaseTimer,
+  ]);
 
   useEffect(() => {
     if (!isCompactSurface || effectiveCompactChatState !== 'input') {
@@ -2429,9 +2812,37 @@ export default function App({
     }
 
     const handlePointerMove = (event: PointerEvent) => {
-      if (!compactInputToolFanSuppressHoverUntilLeaveRef.current) return;
-      if (isCompactInputToolPointerInHoverRegion(event.clientX, event.clientY, event.target)) return;
-      resetCompactInputToolFanHoverBlock();
+      const pointerInHoverRegion = isCompactInputToolPointerInHoverRegion(event.clientX, event.clientY, event.target);
+      if (compactInputToolFanSuppressHoverUntilLeaveRef.current) {
+        if (!pointerInHoverRegion) {
+          resetCompactInputToolFanHoverBlock();
+        }
+        return;
+      }
+      if (pointerInHoverRegion) {
+        compactInputToolFanHoverInsideRef.current = true;
+        clearCompactInputToolFanCloseTimer();
+      }
+      if (
+        !compactInputHasPayload
+        && !composerDisabled
+        && shouldOpenCompactToolFanOnHover(event.pointerType)
+        && isCompactInputToolPointerInToggleHoverRegion(event.clientX, event.clientY, event.target)
+      ) {
+        if (!compactInputToolFanOpenRef.current) {
+          openCompactInputToolFan('hover');
+        }
+        return;
+      }
+      if (
+        compactInputToolFanOpenRef.current
+        && !pointerInHoverRegion
+        && !compactInputToolWheelDragActiveRef.current
+        && !compactInputToolWheelPointerRef.current
+      ) {
+        resetCompactInputToolFanHoverBlock();
+        scheduleCompactInputToolFanTransientClose();
+      }
     };
 
     window.addEventListener('pointermove', handlePointerMove, true);
@@ -2439,13 +2850,20 @@ export default function App({
       window.removeEventListener('pointermove', handlePointerMove, true);
     };
   }, [
+    clearCompactInputToolFanCloseTimer,
+    compactInputHasPayload,
+    composerDisabled,
     effectiveCompactChatState,
     isCompactInputToolPointerInHoverRegion,
+    isCompactInputToolPointerInToggleHoverRegion,
     isCompactSurface,
+    openCompactInputToolFan,
     resetCompactInputToolFanHoverBlock,
+    scheduleCompactInputToolFanTransientClose,
+    shouldOpenCompactToolFanOnHover,
   ]);
 
-  const finishCompactToolWheelPointer = useCallback((event?: ReactPointerEvent<HTMLDivElement>) => {
+  const finishCompactToolWheelPointer = useCallback((event?: { pointerId: number }) => {
     const pointerState = compactInputToolWheelPointerRef.current;
     if (!pointerState) return;
     if (event && pointerState.id !== event.pointerId) return;
@@ -2465,8 +2883,139 @@ export default function App({
         compactInputToolWheelSuppressClickRef.current = false;
       }, 0);
     }
+    const chargeState = compactInputToolWheelChargeRef.current;
+    const releaseDirection = chargeState.direction === null
+      ? null
+      : (chargeState.direction === 1 ? -1 : 1);
+    const releaseSteps = chargeState.chargeSteps;
+    resetCompactInputToolWheelCharge();
+    clearCompactInputToolWheelDragGuardTimer();
     compactInputToolWheelPointerRef.current = null;
-  }, []);
+    compactInputToolWheelDragActiveRef.current = false;
+    dispatchCompactToolWheelDragState(false, pointerState.id);
+    if (releaseDirection !== null && releaseSteps > 0) {
+      startCompactInputToolWheelChargeRelease(releaseDirection, releaseSteps);
+    }
+  }, [
+    clearCompactInputToolWheelDragGuardTimer,
+    dispatchCompactToolWheelDragState,
+    resetCompactInputToolWheelCharge,
+    startCompactInputToolWheelChargeRelease,
+  ]);
+
+  const updateCompactInputToolWheelDrag = useCallback((input: CompactToolWheelDragInput) => {
+    const pointerState = compactInputToolWheelPointerRef.current;
+    if (!pointerState || pointerState.id !== input.pointerId) return false;
+    dispatchCompactToolWheelDragState(true, input.pointerId);
+    scheduleCompactInputToolWheelDragGuardRelease();
+    if (input.pointerType === 'mouse' && input.buttons === 0) {
+      finishCompactToolWheelPointer({ pointerId: input.pointerId });
+      return true;
+    }
+
+    const dragPoint = getCompactToolWheelBoundedDragPoint(input.clientX, input.clientY);
+    if (pointerState.angle !== null && dragPoint.angle !== null) {
+      const angleDelta = normalizeCompactToolWheelAngleDelta(dragPoint.angle - pointerState.angle);
+      const arcDelta = angleDelta * COMPACT_INPUT_TOOL_WHEEL_ORBIT_RADIUS;
+      const totalDelta = pointerState.angleRemainder + arcDelta;
+      const stepCount = Math.floor(Math.abs(totalDelta) / COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD);
+      pointerState.x = dragPoint.x;
+      pointerState.y = dragPoint.y;
+      pointerState.angle = dragPoint.angle;
+      if (stepCount <= 0) {
+        pointerState.angleRemainder = totalDelta;
+        return true;
+      }
+
+      input.preventDefault?.();
+      const direction: 1 | -1 = totalDelta > 0 ? 1 : -1;
+      rotateCompactInputToolWheelSteps(direction, stepCount);
+      recordCompactInputToolWheelCharge(direction, stepCount);
+      pointerState.angleRemainder = totalDelta - (
+        direction * stepCount * COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD
+      );
+      pointerState.didRotate = true;
+      return true;
+    }
+
+    const deltaX = dragPoint.x - pointerState.x;
+    const deltaY = dragPoint.y - pointerState.y;
+    const useVerticalDelta = Math.abs(deltaY) >= Math.abs(deltaX);
+    const primaryDelta = useVerticalDelta ? deltaY : deltaX;
+    const stepCount = Math.floor(Math.abs(primaryDelta) / COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD);
+    if (stepCount <= 0) return true;
+
+    input.preventDefault?.();
+    const direction: 1 | -1 = useVerticalDelta
+      ? (primaryDelta > 0 ? 1 : -1)
+      : (primaryDelta < 0 ? 1 : -1);
+    rotateCompactInputToolWheelSteps(direction, stepCount);
+    recordCompactInputToolWheelCharge(direction, stepCount);
+    if (useVerticalDelta) {
+      pointerState.x = dragPoint.x;
+      pointerState.y += direction === 1
+        ? stepCount * COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD
+        : -(stepCount * COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD);
+    } else {
+      pointerState.x += direction === 1
+        ? -(stepCount * COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD)
+        : stepCount * COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD;
+      pointerState.y = dragPoint.y;
+    }
+    pointerState.angle = dragPoint.angle;
+    pointerState.angleRemainder = 0;
+    pointerState.didRotate = true;
+    return true;
+  }, [
+    dispatchCompactToolWheelDragState,
+    finishCompactToolWheelPointer,
+    getCompactToolWheelBoundedDragPoint,
+    recordCompactInputToolWheelCharge,
+    rotateCompactInputToolWheelSteps,
+    scheduleCompactInputToolWheelDragGuardRelease,
+  ]);
+
+  useEffect(() => {
+    const handleGlobalPointerMove = (event: PointerEvent) => {
+      updateCompactInputToolWheelDrag({
+        pointerId: event.pointerId,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        buttons: event.buttons,
+        pointerType: event.pointerType,
+        preventDefault: () => event.preventDefault(),
+      });
+    };
+
+    const handleGlobalPointerEnd = (event: PointerEvent) => {
+      const pointerState = compactInputToolWheelPointerRef.current;
+      if (!pointerState || pointerState.id !== event.pointerId) return;
+      finishCompactToolWheelPointer({ pointerId: event.pointerId });
+    };
+
+    const handleGlobalMouseUp = () => {
+      if (!compactInputToolWheelDragActiveRef.current) return;
+      finishCompactToolWheelPointer();
+    };
+
+    const handleWindowBlur = () => {
+      if (!compactInputToolWheelDragActiveRef.current && !compactInputToolWheelPointerRef.current) return;
+      scheduleCompactInputToolWheelDragGuardRelease();
+    };
+
+    window.addEventListener('pointermove', handleGlobalPointerMove, true);
+    window.addEventListener('pointerup', handleGlobalPointerEnd, true);
+    window.addEventListener('pointercancel', handleGlobalPointerEnd, true);
+    window.addEventListener('mouseup', handleGlobalMouseUp, true);
+    window.addEventListener('blur', handleWindowBlur);
+    return () => {
+      window.removeEventListener('pointermove', handleGlobalPointerMove, true);
+      window.removeEventListener('pointerup', handleGlobalPointerEnd, true);
+      window.removeEventListener('pointercancel', handleGlobalPointerEnd, true);
+      window.removeEventListener('mouseup', handleGlobalMouseUp, true);
+      window.removeEventListener('blur', handleWindowBlur);
+    };
+  }, [finishCompactToolWheelPointer, scheduleCompactInputToolWheelDragGuardRelease, updateCompactInputToolWheelDrag]);
 
   useEffect(() => {
     compactInputToolFanPositionSyncRef.current = () => updateCompactInputToolFanPosition();
@@ -2505,14 +3054,12 @@ export default function App({
     ) {
       return;
     }
-    requestCompactChatState('default');
   }, [
     compactInputToolFanOpen,
     compactExportHistoryOpen,
     composerAttachments.length,
     effectiveCompactChatState,
     isCompactSurface,
-    requestCompactChatState,
   ]);
 
   const scheduleCompactInputCollapse = useCallback(() => {
@@ -2582,21 +3129,38 @@ export default function App({
   useEffect(() => {
     if (compactInputToolFanOpen) return;
     clearCompactInputToolFanCloseTimer();
+    clearCompactInputToolWheelDragGuardTimer();
+    clearCompactInputToolWheelFastAnimationTimer();
+    clearCompactInputToolWheelChargeReleaseTimer();
     compactInputToolFanOpenIntentRef.current = null;
     compactInputToolWheelPointerRef.current = null;
+    compactInputToolWheelDragActiveRef.current = false;
     compactInputToolWheelSuppressClickRef.current = false;
-  }, [clearCompactInputToolFanCloseTimer, compactInputToolFanOpen]);
+    compactInputToolWheelScrollDeltaRef.current = 0;
+    compactInputToolWheelLastRotationAtRef.current = 0;
+    resetCompactInputToolWheelCharge();
+    setCompactInputToolWheelFastAnimation(false);
+    dispatchCompactToolWheelDragState(false);
+  }, [
+    clearCompactInputToolFanCloseTimer,
+    clearCompactInputToolWheelDragGuardTimer,
+    clearCompactInputToolWheelFastAnimationTimer,
+    clearCompactInputToolWheelChargeReleaseTimer,
+    compactInputToolFanOpen,
+    dispatchCompactToolWheelDragState,
+    resetCompactInputToolWheelCharge,
+  ]);
 
   useEffect(() => {
     if (!isCompactSurface) return;
 
     const handleDesktopCompactPointerOutside = () => {
-      resetCompactInputToolFanHoverBlock();
-      closeCompactInputToolFan();
-      if (effectiveCompactChatState !== 'input') return;
-      if (draftRef.current.trim().length > 0) return;
-      if (composerAttachments.length > 0) return;
-      requestCompactChatState('default');
+      if (
+        compactInputToolWheelDragActiveRef.current
+        || compactInputToolWheelPointerRef.current
+        || compactInputToolWheelChargeReleaseActiveRef.current
+      ) return;
+      closeCompactInputToolFanFromDesktopOutside();
     };
 
     window.addEventListener('neko:desktop-compact-pointer-outside', handleDesktopCompactPointerOutside);
@@ -2604,12 +3168,8 @@ export default function App({
       window.removeEventListener('neko:desktop-compact-pointer-outside', handleDesktopCompactPointerOutside);
     };
   }, [
-    closeCompactInputToolFan,
-    composerAttachments.length,
-    effectiveCompactChatState,
+    closeCompactInputToolFanFromDesktopOutside,
     isCompactSurface,
-    requestCompactChatState,
-    resetCompactInputToolFanHoverBlock,
   ]);
 
   useEffect(() => {
@@ -3372,7 +3932,6 @@ export default function App({
       onComposerSubmit?.({ text });
       setDraft('');
       restoreCompactExportHistoryToBottomForOutgoingMessage();
-      requestCompactChatState('default');
     } finally {
       requestAnimationFrame(() => { submittingRef.current = false; });
     }
@@ -3635,12 +4194,28 @@ export default function App({
 
   const getCompactToolWheelSlotValue = (toolIndex: number): string => {
     const slot = getCompactToolWheelSlot(toolIndex);
-    return slot === null ? 'hidden' : String(slot);
+    if (slot !== null) return String(slot);
+
+    const forwardDistance = (toolIndex - compactInputToolWheelIndex + COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT) % COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT;
+    if (forwardDistance === 3) return 'hidden-forward';
+    if (forwardDistance === COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT - 3) return 'hidden-backward';
+    return 'hidden';
   };
 
   const compactInputToolFanActionsDisabled = composerDisabled
     || !compactInputToolFanOpen
     || !compactInputToolFanInteractive;
+  const compactInputToolWheelChargeLapRatio = compactInputToolWheelChargeRatio * 2;
+  const compactInputToolWheelChargeFirstLapAngle = Math.round(
+    Math.min(1, compactInputToolWheelChargeLapRatio) * 360,
+  );
+  const compactInputToolWheelChargeSecondLapAngle = Math.round(
+    Math.min(1, Math.max(0, compactInputToolWheelChargeLapRatio - 1)) * 360,
+  );
+  const compactInputToolWheelChargeStyle = {
+    '--compact-tool-wheel-charge-first-angle': `${compactInputToolWheelChargeFirstLapAngle}deg`,
+    '--compact-tool-wheel-charge-second-angle': `${compactInputToolWheelChargeSecondLapAngle}deg`,
+  } as CSSProperties;
 
   const compactInputToolFanNode = isCompactSurface && effectiveCompactChatState === 'input' ? (
     <div
@@ -3652,6 +4227,10 @@ export default function App({
       data-compact-geometry-owner="surface"
       data-compact-input-tool-fan-open={compactInputToolFanOpen ? 'true' : 'false'}
       data-compact-input-tool-fan-interactive={compactInputToolFanInteractive ? 'true' : 'false'}
+      data-compact-tool-wheel-fast-animation={compactInputToolWheelFastAnimation ? 'true' : 'false'}
+      data-compact-tool-wheel-charge-active={compactInputToolWheelChargeRatio > 0 ? 'true' : 'false'}
+      data-compact-tool-wheel-charge-direction={compactInputToolWheelChargeDirection === 1 ? 'forward' : compactInputToolWheelChargeDirection === -1 ? 'backward' : 'none'}
+      data-compact-tool-wheel-charge-release-active={compactInputToolWheelChargeReleaseActive ? 'true' : 'false'}
       aria-hidden={compactInputToolFanOpen ? 'false' : 'true'}
       onPointerEnter={handleCompactInputToolHoverEnter}
       onPointerLeave={handleCompactInputToolHoverLeave}
@@ -3720,10 +4299,21 @@ export default function App({
           return;
         }
         const captureTarget = event.target instanceof Element ? event.target : event.currentTarget;
+        const dragPoint = getCompactToolWheelBoundedDragPoint(event.clientX, event.clientY);
+        clearCompactInputToolWheelChargeReleaseTimer();
+        resetCompactInputToolWheelCharge();
         compactInputToolWheelSuppressClickRef.current = false;
+        compactInputToolWheelScrollDeltaRef.current = 0;
+        compactInputToolWheelDragActiveRef.current = true;
+        dispatchCompactToolWheelDragState(true, event.pointerId);
+        clearCompactInputToolFanCloseTimer();
+        scheduleCompactInputToolWheelDragGuardRelease();
         compactInputToolWheelPointerRef.current = {
           id: event.pointerId,
-          x: event.clientX,
+          x: dragPoint.x,
+          y: dragPoint.y,
+          angle: dragPoint.angle,
+          angleRemainder: 0,
           didRotate: false,
           captureTarget,
         };
@@ -3732,35 +4322,29 @@ export default function App({
         } catch (_) {}
       }}
       onPointerMove={(event) => {
-        const pointerState = compactInputToolWheelPointerRef.current;
-        if (!pointerState || pointerState.id !== event.pointerId) return;
-        if (event.pointerType === 'mouse' && event.buttons === 0) {
-          finishCompactToolWheelPointer(event);
-          return;
-        }
-        const deltaX = event.clientX - pointerState.x;
-        const stepCount = Math.floor(Math.abs(deltaX) / COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD);
-        if (stepCount <= 0) return;
-        event.preventDefault();
-        const direction = deltaX < 0 ? 1 : -1;
-        for (let step = 0; step < stepCount; step += 1) {
-          rotateCompactInputToolWheel(direction);
-        }
-        pointerState.x += direction === 1
-          ? -(stepCount * COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD)
-          : stepCount * COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD;
-        pointerState.didRotate = true;
+        updateCompactInputToolWheelDrag({
+          pointerId: event.pointerId,
+          clientX: event.clientX,
+          clientY: event.clientY,
+          buttons: event.buttons,
+          pointerType: event.pointerType,
+          preventDefault: () => event.preventDefault(),
+        });
       }}
+      onWheel={rotateCompactInputToolWheelByScroll}
       onPointerUp={(event) => {
         finishCompactToolWheelPointer(event);
       }}
       onPointerCancel={(event) => {
         finishCompactToolWheelPointer(event);
       }}
-      onLostPointerCapture={(event) => {
-        finishCompactToolWheelPointer(event);
-      }}
     >
+      <div className="compact-input-tool-fan-hit-region" aria-hidden="true" />
+      <div
+        className="compact-input-tool-wheel-charge"
+        style={compactInputToolWheelChargeStyle}
+        aria-hidden="true"
+      />
       <button
         className="composer-tool-btn compact-input-tool-item compact-input-tool-item-import"
         type="button"
@@ -4016,7 +4600,6 @@ export default function App({
                       try {
                         restoreCompactExportHistoryToBottomForOutgoingMessage();
                         onGalgameOptionSelect?.(option);
-                        requestCompactChatState('default');
                       } finally {
                         requestAnimationFrame(() => { submittingRef.current = false; });
                       }
@@ -4069,7 +4652,6 @@ export default function App({
                   try {
                     restoreCompactExportHistoryToBottomForOutgoingMessage();
                     onChoiceSelect?.(option, choicePrompt.source);
-                    requestCompactChatState('default');
                   } finally {
                     requestAnimationFrame(() => { submittingRef.current = false; });
                   }

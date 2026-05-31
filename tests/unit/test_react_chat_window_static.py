@@ -81,6 +81,10 @@ def test_minimized_restore_uses_previous_real_surface_mode():
     source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
     assert "var lastRestorableChatSurfaceMode = 'full';" in source
+    assert "var COMPACT_CHAT_STATES = ['input'];" in source
+    assert "compactChatState: 'input'," in source
+    assert "return COMPACT_CHAT_STATES.indexOf(mode) >= 0 ? mode : 'input';" in source
+    assert "state.compactChatState = 'input';" in source
 
     next_mode_block = source.split("function getNextChatSurfaceMode(mode)", 1)[1].split(
         "function resetCompactChatState()",
@@ -256,20 +260,47 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
     fan_block = css_block(styles, ".compact-input-tool-fan {", ".compact-chat-surface-shell *")
+    wheel_block = styles.split(".compact-input-tool-fan .compact-input-tool-item {", 1)[1].split(
+        ".compact-input-tool-fan .composer-tool-btn img",
+        1,
+    )[0]
     collector_block = script.split("function collectCompactToolFanGeometryItems(element)", 1)[1].split(
         "function collectCompactCompositeGeometryItems(element, kind)",
         1,
     )[0]
+    native_hit_block = collector_block.split("nativeRects.forEach", 1)[1].split("return items.concat", 1)[0]
 
     assert "position: absolute;" in fan_block
-    assert "--compact-tool-fan-focus-x: 42px;" in fan_block
-    assert "--compact-tool-fan-focus-y: 42px;" in fan_block
+    assert "--compact-tool-wheel-hover-radius: 116px;" in fan_block
+    assert "--compact-tool-fan-focus-x: var(--compact-tool-wheel-hover-radius);" in fan_block
+    assert "--compact-tool-fan-focus-y: var(--compact-tool-wheel-hover-radius);" in fan_block
+    assert "--compact-tool-wheel-center-x: var(--compact-tool-wheel-hover-radius);" in fan_block
+    assert "--compact-tool-wheel-center-y: var(--compact-tool-wheel-hover-radius);" in fan_block
+    assert "--compact-tool-wheel-transform-duration: 0.22s;" in fan_block
+    assert "--compact-tool-wheel-transform-easing: cubic-bezier(0.2, 0.9, 0.22, 1.12);" in fan_block
+    assert "--compact-tool-wheel-charge-first-angle: 0deg;" in fan_block
+    assert "--compact-tool-wheel-charge-second-angle: 0deg;" in fan_block
     assert "--compact-tool-toggle-center-x: calc(100% - 31px);" in fan_block
     assert "--compact-tool-toggle-center-y: 31px;" in fan_block
     assert "left: calc(var(--compact-tool-toggle-center-x) - var(--compact-tool-fan-focus-x));" in fan_block
     assert "top: calc(var(--compact-tool-toggle-center-y) - var(--compact-tool-fan-focus-y));" in fan_block
+    assert "width: calc(var(--compact-tool-wheel-hover-radius) * 2);" in fan_block
+    assert "height: calc(var(--compact-tool-wheel-hover-radius) * 2);" in fan_block
+    assert "touch-action: none;" in fan_block
     assert "position: fixed;" not in fan_block
     assert "--compact-input-tool-fan-origin-left" not in fan_block
+    assert ".compact-input-tool-fan-hit-region" in styles
+    assert ".compact-input-tool-wheel-charge" in styles
+    assert "width: calc(var(--compact-tool-wheel-hover-radius) * 2);" in styles
+    assert '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-fan-hit-region' in styles
+    assert '.compact-input-tool-fan[data-compact-tool-wheel-charge-active="true"] .compact-input-tool-wheel-charge' in styles
+    assert "conic-gradient(" in styles
+    assert "--compact-tool-wheel-charge-first-angle" in styles
+    assert "--compact-tool-wheel-charge-second-angle" in styles
+    assert ".compact-input-tool-wheel-charge::after" in styles
+    assert '.compact-input-tool-fan[data-compact-tool-wheel-charge-direction="backward"] .compact-input-tool-wheel-charge' in styles
+    assert "calc(360deg - var(--compact-tool-wheel-charge-first-angle))" in styles
+    assert "calc(360deg - var(--compact-tool-wheel-charge-second-angle))" in styles
     assert '.compact-input-tool-fan[data-compact-input-tool-fan-open="false"]' in styles
     assert "visibility: hidden;" in styles
     assert "pointer-events: none !important;" in styles
@@ -283,11 +314,35 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     assert 'right: 9px;' in styles
     assert "transform: none;" in styles
     assert '.compact-input-tool-item[data-compact-tool-wheel-slot="hidden"]' in styles
+    assert '.compact-input-tool-item[data-compact-tool-wheel-slot="hidden-forward"]' in styles
+    assert '.compact-input-tool-item[data-compact-tool-wheel-slot="hidden-backward"]' in styles
+    assert "rotate(107.35deg) translateX(91.92px) rotate(-107.35deg)" in styles
+    assert "rotate(-17.35deg) translateX(91.92px) rotate(17.35deg)" in styles
+    assert "rotate(-48.51deg) translateX(91.92px) rotate(48.51deg)" in styles
+    assert "rotate(138.51deg) translateX(91.92px) rotate(-138.51deg)" in styles
+    assert "translateX(83.82px)" not in wheel_block
+    assert "translateX(89.74px)" not in wheel_block
+    assert "translateX(92.06px)" not in wheel_block
+    assert "scale(0.56)" in wheel_block
+    assert "scale(0.86)" in wheel_block
+    assert "scale(0.98)" in wheel_block
+    assert "scale(1.04)" in wheel_block
+    assert '.compact-input-tool-fan[data-compact-tool-wheel-fast-animation="true"]' in styles
+    assert "--compact-tool-wheel-transform-duration: 0.07s;" in styles
     assert "pointer-events: none;" in styles
     assert ".composer-icon-popover .composer-icon-button" in collector_block
     assert "toolFan:avatarToolChoice:" in collector_block
-    assert "slot === 'hidden'" in collector_block
+    assert "slot.indexOf('hidden') === 0" in collector_block
     assert "style.pointerEvents !== 'none'" not in collector_block
+    assert "hitRect: nativeRect" in native_hit_block
+    assert "interactive: true" in native_hit_block
+    assert "hitRect: null" not in native_hit_block
+    assert "var COMPACT_TOOL_FAN_CIRCLE_SLICE_COUNT = 18;" in script
+    assert "function buildCompactToolFanCircleSliceRects(rect, element)" in script
+    assert "readCompactToolFanPixelVar(style, '--compact-tool-wheel-center-x', 116)" in script
+    assert "readCompactToolFanPixelVar(style, '--compact-tool-wheel-hover-radius', 116)" in script
+    assert "Math.sqrt(Math.max(0" in script
+    assert "id: index === 0 ? 'toolFan:native' : 'toolFan:native:' + index" in script
 
 
 def test_compact_choice_hit_contract_uses_real_options_only():
