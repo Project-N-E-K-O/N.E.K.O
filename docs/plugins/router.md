@@ -118,6 +118,8 @@ class LifeKitPlugin(NekoPluginBase):
 Once registered, a router is bound to the main plugin. You can access the main plugin's capabilities through these properties:
 
 ```python
+from plugin.sdk.plugin import unwrap
+
 class MyRouter(PluginRouter):
 
     @plugin_entry(id="example", name="Example", description="Demo router capabilities")
@@ -129,13 +131,15 @@ class MyRouter(PluginRouter):
         cfg = await self.config.dump()
 
         # Use storage
-        await self.store.set("key", "value")
+        unwrap(await self.store.set("key", "value"))
 
         # Call other plugins
         result = await self.plugins.call_entry("other:entry")
 
         # Access database
-        rows = await self.db.fetch_all("SELECT * FROM notes")
+        async with unwrap(await self.db.session()) as session:
+            cursor = await session.execute("SELECT * FROM notes")
+            rows = cursor.fetchall()
 
         # Access main plugin's custom attributes/methods
         plugin = self.main_plugin

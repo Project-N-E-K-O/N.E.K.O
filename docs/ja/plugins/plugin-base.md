@@ -120,16 +120,18 @@ enabled = true
 コードでは次のように使います。
 
 ```python
+from plugin.sdk.plugin import unwrap
+
 # 保存（文字列、数値、dict、list に対応）
-await self.store.set("last_query", "what's the weather today")
-await self.store.set("stats", {"total_calls": 42, "last_used": "2025-01-01"})
+unwrap(await self.store.set("last_query", "what's the weather today"))
+unwrap(await self.store.set("stats", {"total_calls": 42, "last_used": "2025-01-01"}))
 
 # 読み込み（見つからない場合は None）
-query = await self.store.get("last_query")
-stats = await self.store.get("stats")
+query = unwrap(await self.store.get("last_query"))
+stats = unwrap(await self.store.get("stats"))
 
 # 削除
-await self.store.delete("last_query")
+deleted = unwrap(await self.store.delete("last_query"))
 ```
 
 データはプラグインの `data/` ディレクトリに保存され、再起動後も残ります。

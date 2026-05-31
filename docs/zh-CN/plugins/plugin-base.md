@@ -120,16 +120,18 @@ enabled = true
 然后在代码中：
 
 ```python
+from plugin.sdk.plugin import unwrap
+
 # 保存（支持字符串、数字、字典、列表）
-await self.store.set("last_query", "今天天气怎么样")
-await self.store.set("stats", {"total_calls": 42, "last_used": "2025-01-01"})
+unwrap(await self.store.set("last_query", "今天天气怎么样"))
+unwrap(await self.store.set("stats", {"total_calls": 42, "last_used": "2025-01-01"}))
 
 # 读取（不存在时返回 None）
-query = await self.store.get("last_query")
-stats = await self.store.get("stats")
+query = unwrap(await self.store.get("last_query"))
+stats = unwrap(await self.store.get("stats"))
 
 # 删除
-await self.store.delete("last_query")
+deleted = unwrap(await self.store.delete("last_query"))
 ```
 
 数据以文件形式保存在插件的 `data/` 目录中，重启不丢失。

@@ -118,6 +118,8 @@ class LifeKitPlugin(NekoPluginBase):
 Router 被注册后，会自动绑定到主插件。你可以通过以下属性访问主插件的能力：
 
 ```python
+from plugin.sdk.plugin import unwrap
+
 class MyRouter(PluginRouter):
 
     @plugin_entry(id="example", name="示例", description="演示 router 能力")
@@ -129,13 +131,15 @@ class MyRouter(PluginRouter):
         cfg = await self.config.dump()
 
         # 使用存储
-        await self.store.set("key", "value")
+        unwrap(await self.store.set("key", "value"))
 
         # 调用其他插件
         result = await self.plugins.call_entry("other:entry")
 
         # 访问数据库
-        rows = await self.db.fetch_all("SELECT * FROM notes")
+        async with unwrap(await self.db.session()) as session:
+            cursor = await session.execute("SELECT * FROM notes")
+            rows = cursor.fetchall()
 
         # 访问主插件的自定义属性/方法
         plugin = self.main_plugin

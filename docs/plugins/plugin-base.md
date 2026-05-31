@@ -120,16 +120,18 @@ enabled = true
 Then in code:
 
 ```python
+from plugin.sdk.plugin import unwrap
+
 # Save (supports strings, numbers, dicts, lists)
-await self.store.set("last_query", "what's the weather today")
-await self.store.set("stats", {"total_calls": 42, "last_used": "2025-01-01"})
+unwrap(await self.store.set("last_query", "what's the weather today"))
+unwrap(await self.store.set("stats", {"total_calls": 42, "last_used": "2025-01-01"}))
 
 # Load (returns None if not found)
-query = await self.store.get("last_query")
-stats = await self.store.get("stats")
+query = unwrap(await self.store.get("last_query"))
+stats = unwrap(await self.store.get("stats"))
 
 # Delete
-await self.store.delete("last_query")
+deleted = unwrap(await self.store.delete("last_query"))
 ```
 
 Data is saved as files in the plugin's `data/` directory and persists across restarts.

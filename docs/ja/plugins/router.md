@@ -119,6 +119,8 @@ class LifeKitPlugin(NekoPluginBase):
 登録された router はメインプラグインに束縛されます。以下のプロパティ経由で、メインプラグインの機能にアクセスできます。
 
 ```python
+from plugin.sdk.plugin import unwrap
+
 class MyRouter(PluginRouter):
 
     @plugin_entry(id="example", name="Example", description="Demo router capabilities")
@@ -130,13 +132,15 @@ class MyRouter(PluginRouter):
         cfg = await self.config.dump()
 
         # ストレージを使う
-        await self.store.set("key", "value")
+        unwrap(await self.store.set("key", "value"))
 
         # 他のプラグインを呼ぶ
         result = await self.plugins.call_entry("other:entry")
 
         # データベースへアクセス
-        rows = await self.db.fetch_all("SELECT * FROM notes")
+        async with unwrap(await self.db.session()) as session:
+            cursor = await session.execute("SELECT * FROM notes")
+            rows = cursor.fetchall()
 
         # メインプラグイン独自の属性やメソッドへアクセス
         plugin = self.main_plugin
