@@ -697,6 +697,7 @@
     function restoreFromHistory() {
         annotations = history[historyIndex].slice();
         lastHistoryTag = null; // 切快照后断开合并链，下次编辑另起一步
+        syncWatermarkOptionsFromAnnotations(); // 选项条状态跟随快照，别用 undo 前的旧文字/字号
         updateUndoRedoButtons();
         requestRender();
     }
@@ -1267,6 +1268,20 @@
         }
         pushHistory('watermark');
         requestRender();
+    }
+
+    // undo/redo 切快照后，把选项条状态（水印文字/字号）对齐到恢复出来的水印标注，
+    // 否则后续只调字号也会用 undo 前的旧 currentWatermarkText 重建、把撤销掉的文字又贴回来（Codex P2）。
+    function syncWatermarkOptionsFromAnnotations() {
+        if (currentTool !== 'watermark') return;
+        var idx = findWatermarkIndex();
+        if (idx >= 0) {
+            var wm = annotations[idx];
+            currentWatermarkText = wm.text || '';
+            var scale = displayScale() || 1;
+            currentWatermarkSizePx = Math.max(16, Math.min(96, Math.round((wm.fontSize || 30) * scale)));
+        }
+        updateOptionsBar(); // 重建输入框/滑块，反映对齐后的值
     }
 
     // 选项/调色板变动时刷新已铺的水印（替换对象）。逐字输入经 'watermark' tag 合并成一步 undo。
