@@ -1281,6 +1281,8 @@
             currentWatermarkText = wm.text || '';
             var scale = displayScale() || 1;
             currentWatermarkSizePx = Math.max(16, Math.min(96, Math.round((wm.fontSize || 30) * scale)));
+            // 颜色也要同步：水印按 currentColor 重建，否则 undo 颜色改动后只调字号会贴回旧色（Codex P2）。
+            if (wm.color) { currentColor = wm.color; syncColorWidthActive(); }
         }
         if (currentTool === 'watermark') updateOptionsBar(); // 重建输入框/滑块，反映对齐后的值
     }
