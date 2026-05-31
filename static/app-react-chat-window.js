@@ -27,9 +27,9 @@
     var savedShellSize = null;
     var savedShellPosition = null; // {left, top} before minimize – used to fly back on expand
     var savedExpandedShellPosition = null; // last known full-surface desktop position
-    var lastRestorableChatSurfaceMode = 'full';
+    var lastRestorableChatSurfaceMode = 'compact';
     var _sortKeySeq = 0; // monotonically increasing sortKey counter
-    var CHAT_SURFACE_MODE_SEQUENCE = ['full', 'compact', 'minimized'];
+    var CHAT_SURFACE_MODE_SEQUENCE = ['compact', 'minimized'];
     var COMPACT_CHAT_STATES = ['default', 'options', 'input'];
 
     var state = {
@@ -49,7 +49,7 @@
         pendingRollbackDrafts: Object.create(null),
         rollbackDraft: '',
         _toolCursorResetKey: '',
-        chatSurfaceMode: 'full',
+        chatSurfaceMode: 'compact',
         compactChatState: 'default',
         // Off until init() reads the persisted preference post-barrier and
         // calls setGalgameModeEnabled(true) — that path fires the
@@ -73,7 +73,8 @@
     };
 
     function normalizeChatSurfaceMode(mode) {
-        return CHAT_SURFACE_MODE_SEQUENCE.indexOf(mode) >= 0 ? mode : 'full';
+        if (mode === 'full') return 'compact';
+        return CHAT_SURFACE_MODE_SEQUENCE.indexOf(mode) >= 0 ? mode : 'compact';
     }
 
     function normalizeCompactChatState(mode) {
@@ -110,7 +111,7 @@
     function getNextChatSurfaceMode(mode) {
         var normalized = normalizeChatSurfaceMode(mode);
         if (normalized === 'minimized') {
-            return normalizeChatSurfaceMode(lastRestorableChatSurfaceMode) === 'compact' ? 'compact' : 'full';
+            return normalizeChatSurfaceMode(lastRestorableChatSurfaceMode);
         }
         var currentIndex = CHAT_SURFACE_MODE_SEQUENCE.indexOf(normalized);
         var nextIndex = currentIndex >= 0
@@ -125,24 +126,28 @@
 
     function shouldPersistChatSurfaceModePreference() {
         // Desktop and web share the same page state contract. The caller only
-        // persists full/compact, so minimized still restores to the last real surface.
+        // persists compact only; minimized still restores to the last real surface.
         return true;
     }
 
     function readChatSurfaceModePreference() {
         if (!shouldPersistChatSurfaceModePreference()) {
-            return 'full';
+            return 'compact';
         }
         try {
             var raw = localStorage.getItem(CHAT_SURFACE_MODE_STORAGE_KEY);
-            return raw === 'compact' ? 'compact' : 'full';
+            if (raw === 'full') {
+                localStorage.setItem(CHAT_SURFACE_MODE_STORAGE_KEY, 'compact');
+                return 'compact';
+            }
+            return raw === 'compact' ? 'compact' : 'compact';
         } catch (_) {
-            return 'full';
+            return 'compact';
         }
     }
 
     function persistChatSurfaceModePreference(mode) {
-        if (mode !== 'full' && mode !== 'compact') return;
+        if (mode !== 'compact') return;
         if (!shouldPersistChatSurfaceModePreference()) return;
         try {
             localStorage.setItem(CHAT_SURFACE_MODE_STORAGE_KEY, mode);
@@ -3361,10 +3366,6 @@
             lastRestorableChatSurfaceMode = previousMode;
         }
 
-        if (!previousMinimized && previousMode === 'full') {
-            snapshotExpandedShellPositionFromShell();
-        }
-
         resetCompactChatState();
         state.chatSurfaceMode = normalized;
         persistChatSurfaceModePreference(normalized);
@@ -3374,13 +3375,6 @@
             setMinimized(nextMinimized);
         } else {
             syncChatSurfaceModeUI();
-        }
-
-        if (normalized === 'full' && previousMode === 'compact') {
-            clearCompactSurfaceAnchor();
-            clearCompactMinimizeBallAnchor();
-            restorePosition();
-            scheduleMobileContentLayout();
         }
 
         dispatchHostEvent('chat-surface-mode-change', {
@@ -3628,18 +3622,10 @@
                         restorePosition();
                         return;
                     }
-                    if (surfaceModeAfterExpand !== 'full') {
-                        syncCompactSurfaceAnchor();
+                    if (surfaceModeAfterExpand === 'minimized') {
                         return;
                     }
-                    var r = shell.getBoundingClientRect();
-                    var targetPosition = savedExpandedShellPosition || getStoredPosition();
-                    var clamped = clampPosition(targetPosition ? targetPosition.left : r.left, targetPosition ? targetPosition.top : r.top);
-                    applyPosition(clamped.left, clamped.top);
-                    rememberExpandedShellPosition(clamped.left, clamped.top);
-                    if (!window._chatAdapterActive) {
-                        persistPosition(clamped.left, clamped.top);
-                    }
+                    syncCompactSurfaceAnchor();
                 });
             };
             var onExpandEnd = function (e) {
@@ -3781,8 +3767,6 @@
                     if (getCurrentChatSurfaceMode() === 'compact') {
                         syncCompactSurfaceAnchor();
                         scheduleCompactMinimizeBallTracking();
-                    } else {
-                        restorePosition();
                     }
                     scheduleMobileContentLayout();
                 }
@@ -3939,10 +3923,6 @@
             // 最小化态下不持久化悬浮球坐标到展开态存储，
             // 否则 restorePosition 会把完整窗口放到悬浮球位置
             // 移动端坐标也不持久化，避免污染桌面端保存的位置
-            if (!minimized && !isMobileWidth() && getCurrentChatSurfaceMode() === 'full') {
-                rememberExpandedShellPosition(rect.left, rect.top);
-                persistPosition(rect.left, rect.top);
-            }
         }
 
         dragState = null;
@@ -4170,10 +4150,6 @@
                 try {
                     localStorage.setItem(MOBILE_HEIGHT_STORAGE_KEY, String(mobileUserHeight));
                 } catch (_) {}
-            } else if (getCurrentChatSurfaceMode() === 'full') {
-                persistPosition(rect.left, rect.top);
-                persistSize(rect.width, rect.height);
-                rememberExpandedShellPosition(rect.left, rect.top);
             }
         }
 

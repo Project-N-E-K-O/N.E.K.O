@@ -57,7 +57,7 @@ def test_chat_surface_mode_preference_is_shared_with_electron():
     assert "electron-chat-window" not in gate_block
     assert "return true;" in gate_block
     assert "localStorage.getItem(CHAT_SURFACE_MODE_STORAGE_KEY)" in read_block
-    assert "if (mode !== 'full' && mode !== 'compact') return;" in persist_block
+    assert "if (mode !== 'compact') return;" in persist_block
     assert "localStorage.setItem(CHAT_SURFACE_MODE_STORAGE_KEY, mode)" in persist_block
 
 
@@ -80,7 +80,7 @@ def test_close_from_minimized_preserves_compact_surface_mode():
 def test_minimized_restore_uses_previous_real_surface_mode():
     source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
-    assert "var lastRestorableChatSurfaceMode = 'full';" in source
+    assert "var lastRestorableChatSurfaceMode = 'compact';" in source
 
     next_mode_block = source.split("function getNextChatSurfaceMode(mode)", 1)[1].split(
         "function resetCompactChatState()",
@@ -101,7 +101,7 @@ def test_minimized_restore_uses_previous_real_surface_mode():
 
     assert "if (normalized === 'minimized')" in next_mode_block
     assert "lastRestorableChatSurfaceMode" in next_mode_block
-    assert "return normalizeChatSurfaceMode(lastRestorableChatSurfaceMode) === 'compact' ? 'compact' : 'full';" in next_mode_block
+    assert "return normalizeChatSurfaceMode(lastRestorableChatSurfaceMode);" in next_mode_block
     assert "lastRestorableChatSurfaceMode = normalized;" in set_mode_block
     assert "lastRestorableChatSurfaceMode = previousMode;" in set_mode_block
     assert "lastRestorableChatSurfaceMode = normalizedChatSurfaceMode;" in set_view_props_block

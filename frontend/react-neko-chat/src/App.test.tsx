@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import App from './App';
+import MessageList from './MessageList';
 import { parseChatMessage, type CompactChatState } from './message-schema';
 
 describe('App', () => {
@@ -92,10 +93,26 @@ describe('App', () => {
     };
   };
 
-  it('renders the empty state when there are no messages', () => {
-    render(<App />);
+  const openCompactInputTools = async () => {
+    try {
+      vi.useFakeTimers();
+      fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(240);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  };
 
-    expect(screen.getByPlaceholderText('Type a message...')).toBeInTheDocument();
+  const renderInputApp = (
+    props: React.ComponentProps<typeof App> = {},
+  ) => render(<App compactChatState="input" {...props} />);
+
+  it('renders the empty state when there are no messages', () => {
+    render(<App compactChatState="default" />);
+
+    expect(screen.getByText('Chat content will appear here.')).toBeInTheDocument();
   });
 
   it('exposes explicit surface mode state on the rendered shell', () => {
@@ -134,7 +151,7 @@ describe('App', () => {
     expect(container.querySelector('.compact-chat-surface-shell')).toBe(stableSurfaceShell);
     expect(container.querySelector('.compact-chat-surface-frame')).toBe(stableSurfaceFrame);
 
-    rerender(<App chatSurfaceMode="full" />);
+    rerender(<App chatSurfaceMode="minimized" />);
     expect(container.querySelector('.compact-chat-drag-handle')).toBeNull();
     expect(container.querySelector('.compact-chat-resize-handle')).toBeNull();
     expect(container.querySelector('[data-compact-geometry-owner="surface"]')).toBeNull();
@@ -1720,7 +1737,7 @@ describe('App', () => {
     await clickCompactExportTool();
     expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
 
-    rerender(<App chatSurfaceMode="full" messages={[message]} />);
+    rerender(<App chatSurfaceMode="minimized" messages={[message]} />);
 
     expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
     expect(container.querySelector('[data-compact-hit-region-id^="history:"]')).toBeNull();
@@ -2194,25 +2211,6 @@ describe('App', () => {
     }
   });
 
-  it('keeps compact-only state derivation out of the full surface', () => {
-    const { container } = render(
-      <App
-        chatSurfaceMode="full"
-        compactChatState="default"
-        choicePrompt={{
-          source: 'mini_game_invite',
-          options: [
-            { choice: 'accept', label: 'Accept' },
-            { choice: 'later', label: 'Later' },
-          ],
-        }}
-      />,
-    );
-
-    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'default');
-    expect(container.querySelector('.composer-choice-layer')).not.toHaveClass('compact-chat-choice-anchor');
-  });
-
   it('renders compact default as a single search-like entry without history or extra controls', () => {
     const message = parseChatMessage({
       id: 'assistant-compact-1',
@@ -2544,44 +2542,6 @@ describe('App', () => {
       expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent(
         streamingText.slice(0, visibleLength),
       );
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('does not route speech playback state into the full surface preview', async () => {
-    vi.useFakeTimers();
-    const streamingText = '完整聊天框不应该被紧凑态语音显字状态接管。';
-    const message = parseChatMessage({
-      id: 'assistant-full-speech-event-isolated',
-      role: 'assistant',
-      author: 'Neko',
-      time: '10:01',
-      createdAt: 2,
-      blocks: [{ type: 'text', text: streamingText }],
-      status: 'streaming',
-    });
-
-    try {
-      const { container } = render(<App chatSurfaceMode="full" messages={[message]} />);
-
-      act(() => {
-        window.dispatchEvent(new CustomEvent('neko-speech-playback-state', {
-          detail: {
-            active: true,
-            audioContextTime: 0,
-            playbackStartAudioTime: 0,
-            playbackEndAudioTime: 1,
-            updatedAt: Date.now(),
-          },
-        }));
-      });
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(1000);
-      });
-
-      expect(container.querySelector('.compact-chat-capsule-text')).toBeNull();
-      expect(container.querySelector('.message-list')).toHaveTextContent(streamingText);
     } finally {
       vi.useRealTimers();
     }
@@ -3656,34 +3616,6 @@ describe('App', () => {
     }
   });
 
-  it('restores the full chat body and composer after leaving compact input mode', () => {
-    const { container, rerender } = render(
-      <App
-        chatSurfaceMode="compact"
-        compactChatState="input"
-        galgameModeEnabled
-        translateEnabled
-      />,
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
-    expect(document.body.querySelector('.compact-input-tool-fan')).not.toBeNull();
-
-    rerender(
-      <App
-        chatSurfaceMode="full"
-        galgameModeEnabled
-        translateEnabled
-      />,
-    );
-
-    expect(container.querySelector('.chat-window')).toHaveClass('chat-surface-mode-full');
-    expect(container.querySelector('.window-topbar')).not.toBeNull();
-    expect(container.querySelector('.message-list')).not.toBeNull();
-    expect(container.querySelector('.composer-bottom-bar')).not.toBeNull();
-    expect(document.body.querySelector('.compact-input-tool-fan')).toBeNull();
-  });
-
   it('closes compact input tools on the second button click without leaving input state', () => {
     const onCompactChatStateChange = vi.fn();
     render(
@@ -3992,144 +3924,6 @@ describe('App', () => {
     expect(onCompactChatStateChange).not.toHaveBeenCalledWith('default');
   });
 
-  it('re-attaches the composer width observer after returning from compact mode', async () => {
-    vi.useFakeTimers();
-    const originalResizeObserver = globalThis.ResizeObserver;
-    const observerInstances: ResizeObserverMock[] = [];
-
-    const emitResize = (observer: ResizeObserverMock, width: number) => {
-      if (!observer.target) {
-        throw new Error('ResizeObserver target missing in test');
-      }
-      observer.callback([
-        {
-          target: observer.target,
-          contentRect: {
-            width,
-            height: 40,
-            x: 0,
-            y: 0,
-            top: 0,
-            left: 0,
-            bottom: 40,
-            right: width,
-            toJSON: () => ({}),
-          },
-        } as ResizeObserverEntry,
-      ], observer as unknown as ResizeObserver);
-    };
-
-    class ResizeObserverMock {
-      readonly callback: ResizeObserverCallback;
-      target: Element | null = null;
-
-      constructor(callback: ResizeObserverCallback) {
-        this.callback = callback;
-        observerInstances.push(this);
-      }
-
-      observe(target: Element) {
-        this.target = target;
-      }
-
-      disconnect() {}
-      unobserve() {}
-      takeRecords() { return []; }
-    }
-
-    globalThis.ResizeObserver = ResizeObserverMock as unknown as typeof ResizeObserver;
-
-    try {
-      const { container, rerender } = render(<App />);
-      expect(observerInstances.length).toBeGreaterThanOrEqual(1);
-      const initialObserverCount = observerInstances.length;
-
-      rerender(<App chatSurfaceMode="compact" compactChatState="input" />);
-      rerender(<App chatSurfaceMode="full" />);
-      expect(observerInstances.length).toBeGreaterThan(initialObserverCount);
-
-      await act(async () => {
-        emitResize(observerInstances[observerInstances.length - 1], 420);
-        vi.advanceTimersByTime(300);
-      });
-
-      expect(container.querySelector('.composer-overflow-btn')).toBeNull();
-      expect(container.querySelector('.composer-galgame-btn')).not.toBeNull();
-    } finally {
-      globalThis.ResizeObserver = originalResizeObserver;
-      vi.useRealTimers();
-    }
-  });
-
-  it('re-attaches the composer width observer after returning from compact mode', async () => {
-    vi.useFakeTimers();
-    const originalResizeObserver = globalThis.ResizeObserver;
-    const observerInstances: ResizeObserverMock[] = [];
-
-    const emitResize = (observer: ResizeObserverMock, width: number) => {
-      if (!observer.target) {
-        throw new Error('ResizeObserver target missing in test');
-      }
-      observer.callback([
-        {
-          target: observer.target,
-          contentRect: {
-            width,
-            height: 40,
-            x: 0,
-            y: 0,
-            top: 0,
-            left: 0,
-            bottom: 40,
-            right: width,
-            toJSON: () => ({}),
-          },
-        } as ResizeObserverEntry,
-      ], observer as unknown as ResizeObserver);
-    };
-
-    class ResizeObserverMock {
-      readonly callback: ResizeObserverCallback;
-      target: Element | null = null;
-
-      constructor(callback: ResizeObserverCallback) {
-        this.callback = callback;
-        observerInstances.push(this);
-      }
-
-      observe(target: Element) {
-        this.target = target;
-      }
-
-      disconnect() {}
-      unobserve() {}
-      takeRecords() { return []; }
-    }
-
-    globalThis.ResizeObserver = ResizeObserverMock as unknown as typeof ResizeObserver;
-
-    try {
-      const { container, rerender } = render(<App />);
-      expect(observerInstances.length).toBeGreaterThanOrEqual(1);
-      const initialObserverCount = observerInstances.length;
-
-      rerender(<App chatSurfaceMode="compact" compactChatState="input" />);
-      rerender(<App chatSurfaceMode="full" />);
-      expect(observerInstances.length).toBeGreaterThan(initialObserverCount);
-
-      await act(async () => {
-        emitResize(observerInstances[observerInstances.length - 1], 420);
-        vi.advanceTimersByTime(300);
-      });
-
-      expect(container.querySelector('.composer-overflow-btn')).toBeNull();
-      expect(container.querySelector('.composer-galgame-btn')).not.toBeNull();
-    } finally {
-      globalThis.ResizeObserver = originalResizeObserver;
-      vi.useRealTimers();
-    }
-  });
-
   it('renders grouped assistant messages with a single visible avatar', () => {
     const firstMessage = parseChatMessage({
       id: 'assistant-1',
@@ -4148,7 +3942,13 @@ describe('App', () => {
       blocks: [{ type: 'text', text: 'Second message' }],
     });
 
-    const { container } = render(<App messages={[firstMessage, secondMessage]} />);
+    const { container } = render(
+      <MessageList
+        messages={[firstMessage, secondMessage]}
+        ariaLabel="Chat messages"
+        failedStatusLabel="Failed"
+      />,
+    );
 
     expect(screen.getByText('First message')).toBeInTheDocument();
     expect(screen.getByText('Second message')).toBeInTheDocument();
@@ -4174,14 +3974,20 @@ describe('App', () => {
       status: 'failed',
     });
 
-    render(<App messages={[streamingMessage, failedMessage]} />);
+    render(
+      <MessageList
+        messages={[streamingMessage, failedMessage]}
+        ariaLabel="Chat messages"
+        failedStatusLabel="Failed"
+      />,
+    );
 
     expect(screen.getByText('Failed')).toBeInTheDocument();
   });
 
   it('submits composer text through the new submit callback', () => {
     const onComposerSubmit = vi.fn();
-    render(<App onComposerSubmit={onComposerSubmit} />);
+    renderInputApp({ onComposerSubmit });
 
     const input = screen.getByPlaceholderText('Type a message...');
     fireEvent.change(input, { target: { value: 'Test send' } });
@@ -4192,7 +3998,7 @@ describe('App', () => {
 
   it('disables composer submission while the home tutorial owns interaction', () => {
     const onComposerSubmit = vi.fn();
-    render(<App composerDisabled onComposerSubmit={onComposerSubmit} />);
+    renderInputApp({ composerDisabled: true, onComposerSubmit });
 
     const input = screen.getByPlaceholderText('Type a message...');
     expect(input).toBeDisabled();
@@ -4205,7 +4011,7 @@ describe('App', () => {
 
   it('does not render a local optimistic user bubble before the host echoes messages', () => {
     const onComposerSubmit = vi.fn();
-    render(<App onComposerSubmit={onComposerSubmit} />);
+    renderInputApp({ onComposerSubmit });
 
     const input = screen.getByPlaceholderText('Type a message...');
     fireEvent.change(input, { target: { value: 'No local optimistic bubble' } });
@@ -4216,21 +4022,22 @@ describe('App', () => {
     expect(screen.queryByText('You')).not.toBeInTheDocument();
   });
 
-  it('renders composer tool buttons and calls the React callbacks', () => {
+  it('renders composer tool buttons and calls the React callbacks', async () => {
     const onComposerImportImage = vi.fn();
     const onComposerScreenshot = vi.fn();
 
-    render(
-      <App
-        onComposerImportImage={onComposerImportImage}
-        onComposerScreenshot={onComposerScreenshot}
-      />,
-    );
+    renderInputApp({
+      onComposerImportImage,
+      onComposerScreenshot,
+    });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Import Image' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Screenshot' }));
+    await openCompactInputTools();
 
+    fireEvent.click(document.body.querySelector('.compact-input-tool-item-import')!);
     expect(onComposerImportImage).toHaveBeenCalledTimes(1);
+
+    await openCompactInputTools();
+    fireEvent.click(document.body.querySelector('.compact-input-tool-item-screenshot')!);
     expect(onComposerScreenshot).toHaveBeenCalledTimes(1);
   });
 
@@ -4272,7 +4079,7 @@ describe('App', () => {
     expect(onComposerRemoveAttachment).not.toHaveBeenCalled();
   });
 
-  it('only emits avatar interactions when the pointer hits the avatar range', () => {
+  it('only emits avatar interactions when the pointer hits the avatar range', async () => {
     const onAvatarInteraction = vi.fn();
     const live2dContainer = document.createElement('div');
     live2dContainer.id = 'live2d-container';
@@ -4297,8 +4104,9 @@ describe('App', () => {
     });
 
     try {
-      render(<App onAvatarInteraction={onAvatarInteraction} />);
+      renderInputApp({ onAvatarInteraction });
 
+      await openCompactInputTools();
       fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
       fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
 
@@ -4323,7 +4131,7 @@ describe('App', () => {
     }
   });
 
-  it('derives different touch zones for different avatar hit areas', () => {
+  it('derives different touch zones for different avatar hit areas', async () => {
     const onAvatarInteraction = vi.fn();
     const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.9);
     const live2dContainer = document.createElement('div');
@@ -4349,8 +4157,9 @@ describe('App', () => {
     });
 
     try {
-      render(<App onAvatarInteraction={onAvatarInteraction} />);
+      renderInputApp({ onAvatarInteraction });
 
+      await openCompactInputTools();
       fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
       fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
 
@@ -4380,7 +4189,7 @@ describe('App', () => {
     }
   });
 
-  it('escalates lollipop interactions from normal to burst on repeated in-range taps', () => {
+  it('escalates lollipop interactions from normal to burst on repeated in-range taps', async () => {
     const onAvatarInteraction = vi.fn();
     const live2dContainer = document.createElement('div');
     live2dContainer.id = 'live2d-container';
@@ -4405,8 +4214,9 @@ describe('App', () => {
     });
 
     try {
-      render(<App onAvatarInteraction={onAvatarInteraction} />);
+      renderInputApp({ onAvatarInteraction });
 
+      await openCompactInputTools();
       fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
       fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
 
@@ -4469,8 +4279,12 @@ describe('App', () => {
     });
 
     try {
-      const { container } = render(<App />);
+      const { container } = renderInputApp();
 
+      fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(240);
+      });
       fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
       fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
       fireEvent.pointerMove(window, { clientX: 150, clientY: 150 });
@@ -4508,7 +4322,7 @@ describe('App', () => {
     }
   });
 
-  it('escalates fist interactions to rapid on repeated in-range taps', () => {
+  it('escalates fist interactions to rapid on repeated in-range taps', async () => {
     const onAvatarInteraction = vi.fn();
     const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.9);
     const live2dContainer = document.createElement('div');
@@ -4534,8 +4348,9 @@ describe('App', () => {
     });
 
     try {
-      render(<App onAvatarInteraction={onAvatarInteraction} />);
+      renderInputApp({ onAvatarInteraction });
 
+      await openCompactInputTools();
       fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
       fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
 
@@ -4556,7 +4371,7 @@ describe('App', () => {
     }
   });
 
-  it('does not emit avatar interactions when compact UI overlaps the avatar hit range', () => {
+  it('does not emit avatar interactions when compact UI overlaps the avatar hit range', async () => {
     const onAvatarInteraction = vi.fn();
     const live2dContainer = document.createElement('div');
     live2dContainer.id = 'live2d-container';
@@ -4591,8 +4406,9 @@ describe('App', () => {
     });
 
     try {
-      render(<App onAvatarInteraction={onAvatarInteraction} />);
+      renderInputApp({ onAvatarInteraction });
 
+      await openCompactInputTools();
       fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
       fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
       fireEvent.pointerDown(window, { button: 0, clientX: 150, clientY: 150 });
@@ -4609,9 +4425,10 @@ describe('App', () => {
     }
   });
 
-  it('selects an avatar tool from the group and clears it from the active badge', () => {
-    render(<App />);
+  it('selects an avatar tool from the group and clears it from the active badge', async () => {
+    renderInputApp();
 
+    await openCompactInputTools();
     fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
 
     expect(screen.getByRole('group', { name: 'Tool icons' })).toBeInTheDocument();
@@ -4621,35 +4438,41 @@ describe('App', () => {
 
     fireEvent.click(lollipopButton);
 
+    await openCompactInputTools();
+
     const activeBadgeButton = screen.getByRole('button', { name: 'Emoji: 棒棒糖' });
     expect(activeBadgeButton).toHaveClass('is-active');
     expect(screen.queryByRole('group', { name: 'Tool icons' })).not.toBeInTheDocument();
 
     fireEvent.click(activeBadgeButton);
 
+    await openCompactInputTools();
     expect(screen.getByRole('button', { name: 'Emoji' })).toBeInTheDocument();
     expect(screen.queryByRole('group', { name: 'Tool icons' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Emoji: 棒棒糖' })).not.toBeInTheDocument();
   });
 
-  it('clears the selected avatar tool from the icon badge', () => {
-    render(<App />);
+  it('clears the selected avatar tool from the icon badge', async () => {
+    renderInputApp();
 
+    await openCompactInputTools();
     fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
     fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
 
+    await openCompactInputTools();
     expect(screen.getByRole('button', { name: 'Emoji: 猫爪' })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: '恢复鼠标' }));
 
+    await openCompactInputTools();
     expect(screen.getByRole('button', { name: 'Emoji' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Emoji: 猫爪' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '恢复鼠标' })).not.toBeInTheDocument();
   });
 
-  it('emits avatar tool state changes for desktop hosts', () => {
+  it('emits avatar tool state changes for desktop hosts', async () => {
     const onAvatarToolStateChange = vi.fn();
-    render(<App onAvatarToolStateChange={onAvatarToolStateChange} />);
+    renderInputApp({ onAvatarToolStateChange });
 
     expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
       active: false,
@@ -4658,6 +4481,7 @@ describe('App', () => {
     }));
 
     onAvatarToolStateChange.mockClear();
+    await openCompactInputTools();
     fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
     fireEvent.click(screen.getByRole('button', { name: '锤子' }));
 
@@ -4674,9 +4498,10 @@ describe('App', () => {
     }));
   });
 
-  it('anchors the desktop cursor overlay to the current pointer when a tool is activated', () => {
-    const { container } = render(<App />);
+  it('anchors the desktop cursor overlay to the current pointer when a tool is activated', async () => {
+    const { container } = renderInputApp();
 
+    await openCompactInputTools();
     fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
     fireEvent.click(screen.getByRole('button', { name: '猫爪' }), {
       clientX: 240,
@@ -4688,16 +4513,17 @@ describe('App', () => {
     expect((overlay as HTMLDivElement).style.transform).toBe('translate3d(201px, 274px, 0)');
   });
 
-  it('clears the tool cursor when the composer is hidden for voice mode', () => {
-    const { container, rerender } = render(<App />);
+  it('clears the tool cursor when the composer is hidden for voice mode', async () => {
+    const { container, rerender } = renderInputApp();
 
+    await openCompactInputTools();
     fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
     fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
 
     expect(container.querySelector('.avatar-cursor-overlay')).not.toBeNull();
     expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
 
-    rerender(<App composerHidden />);
+    rerender(<App compactChatState="input" composerHidden />);
 
     expect(container.querySelector('.avatar-cursor-overlay')).toBeNull();
     expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
@@ -4705,16 +4531,17 @@ describe('App', () => {
     expect(document.documentElement.style.getPropertyValue('cursor')).toBe('auto');
   });
 
-  it('clears the tool cursor when the host issues a reset key', () => {
-    const { container, rerender } = render(<App />);
+  it('clears the tool cursor when the host issues a reset key', async () => {
+    const { container, rerender } = renderInputApp();
 
+    await openCompactInputTools();
     fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
     fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
 
     expect(container.querySelector('.avatar-cursor-overlay')).not.toBeNull();
     expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
 
-    rerender(<App _toolCursorResetKey="voice-mode-reset-1" />);
+    rerender(<App compactChatState="input" _toolCursorResetKey="voice-mode-reset-1" />);
 
     expect(container.querySelector('.avatar-cursor-overlay')).toBeNull();
     expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
@@ -4722,10 +4549,11 @@ describe('App', () => {
     expect(document.documentElement.style.getPropertyValue('cursor')).toBe('auto');
   });
 
-  it('preserves the outside-window cursor state when the host resets a tool cursor', () => {
+  it('preserves the outside-window cursor state when the host resets a tool cursor', async () => {
     const onAvatarToolStateChange = vi.fn();
-    const { rerender } = render(<App onAvatarToolStateChange={onAvatarToolStateChange} />);
+    const { rerender } = renderInputApp({ onAvatarToolStateChange });
 
+    await openCompactInputTools();
     fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
     fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
 
@@ -4738,7 +4566,7 @@ describe('App', () => {
     }));
 
     onAvatarToolStateChange.mockClear();
-    rerender(<App onAvatarToolStateChange={onAvatarToolStateChange} _toolCursorResetKey="voice-mode-reset-2" />);
+    rerender(<App compactChatState="input" onAvatarToolStateChange={onAvatarToolStateChange} _toolCursorResetKey="voice-mode-reset-2" />);
 
     expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
       active: false,
@@ -4747,15 +4575,17 @@ describe('App', () => {
     }));
   });
 
-  it('marks the cursor back inside the host when clearing a tool from the composer', () => {
+  it('marks the cursor back inside the host when clearing a tool from the composer', async () => {
     const onAvatarToolStateChange = vi.fn();
-    render(<App onAvatarToolStateChange={onAvatarToolStateChange} />);
+    renderInputApp({ onAvatarToolStateChange });
 
+    await openCompactInputTools();
     fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
     fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
     fireEvent.blur(window);
 
     onAvatarToolStateChange.mockClear();
+    await openCompactInputTools();
     fireEvent.click(screen.getByRole('button', { name: '恢复鼠标' }));
 
     expect(onAvatarToolStateChange).toHaveBeenCalledWith(expect.objectContaining({
@@ -4765,9 +4595,10 @@ describe('App', () => {
     }));
   });
 
-  it('restores the native cursor while desktop system UI owns focus', () => {
-    const { container } = render(<App />);
+  it('restores the native cursor while desktop system UI owns focus', async () => {
+    const { container } = renderInputApp();
 
+    await openCompactInputTools();
     fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
     fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
 
@@ -4787,12 +4618,13 @@ describe('App', () => {
     expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
   });
 
-  it('uses the native cursor and clears it when leaving the Electron chat window', () => {
+  it('uses the native cursor and clears it when leaving the Electron chat window', async () => {
     (window as Window & { __NEKO_MULTI_WINDOW__?: boolean }).__NEKO_MULTI_WINDOW__ = true;
 
     try {
-      const { container } = render(<App />);
+      const { container } = renderInputApp();
 
+      await openCompactInputTools();
       fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
       fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
 
@@ -4812,7 +4644,7 @@ describe('App', () => {
     }
   });
 
-  it('shows the hammer secondary cursor asset on outside-range desktop clicks', () => {
+  it('shows the hammer secondary cursor asset on outside-range desktop clicks', async () => {
     const live2dContainer = document.createElement('div');
     live2dContainer.id = 'live2d-container';
     Object.defineProperty(live2dContainer, 'getClientRects', {
@@ -4836,8 +4668,9 @@ describe('App', () => {
     });
 
     try {
-      const { container } = render(<App />);
+      const { container } = renderInputApp();
 
+      await openCompactInputTools();
       fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
       fireEvent.click(screen.getByRole('button', { name: '锤子' }));
 

@@ -109,7 +109,7 @@ export const compactHistoryDragStatePayloadSchema = z.discriminatedUnion('active
   compactHistoryDragActiveStateSchema,
 ]);
 
-const chatSurfaceModeSchema = z.enum(['full', 'compact', 'minimized']);
+const chatSurfaceModeSchema = z.enum(['compact', 'minimized']);
 const compactChatStateSchema = z.enum(['default', 'options', 'input']);
 
 const galgameOptionSchema = z.object({
