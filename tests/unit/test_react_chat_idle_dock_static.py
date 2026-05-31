@@ -13,7 +13,12 @@ def _read(path: Path) -> str:
 
 
 def _between(source: str, start: str, end: str) -> str:
-    return source.split(start, 1)[1].split(end, 1)[0]
+    if start not in source:
+        raise ValueError(f"missing start delimiter: {start!r}")
+    remainder = source.split(start, 1)[1]
+    if end not in remainder:
+        raise ValueError(f"missing end delimiter after {start!r}: {end!r}")
+    return remainder.split(end, 1)[0]
 
 
 def test_idle_dock_is_limited_to_cat2_and_cat3_tiers():
@@ -75,6 +80,8 @@ def test_idle_dock_enters_minimized_surface_mode_without_setminimized_options():
     # stays aligned with the minimized visual class after the upstream compact merge.
     assert "setChatSurfaceMode('minimized');" in source
     assert "var enteringMinimized = nextMinimized && !previousMinimized;" not in set_surface_block
+    assert "renderWindow();" in set_surface_block
+    assert "setMinimized(nextMinimized);" in set_surface_block
     assert set_surface_block.index("renderWindow();") < set_surface_block.index("setMinimized(nextMinimized);")
     assert "setMinimized(true, {" not in source
 
