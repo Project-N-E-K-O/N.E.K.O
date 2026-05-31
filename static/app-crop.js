@@ -835,7 +835,17 @@
         updateOptionsBar();
         var posC = imageToCanvas(a.x, a.y);
         beginTextEdit(posC, { x: a.x, y: a.y }, a);
+        // 记下原层级：提交/取消还原时插回原位，别让二次编辑把文字重排到最上层（Codex P2）
+        if (textEditor) textEditor._originalIndex = idx;
         requestRender();
+    }
+
+    // 把标注插回指定层级；idx 缺省（新建文字）则追加到末尾，与 commitAnnotation 的 push 等价。
+    function insertAnnotationAt(anno, idx) {
+        var i = (idx != null) ? Math.max(0, Math.min(annotations.length, idx)) : annotations.length;
+        annotations.splice(i, 0, anno);
+        redoStack.length = 0;
+        updateUndoRedoButtons();
     }
 
     function commitTextEdit() {
@@ -845,11 +855,11 @@
         var text = ta.value.replace(/[\s]+$/, '');
         if (ta.parentNode) ta.parentNode.removeChild(ta);
         if (text) {
-            commitAnnotation({
+            insertAnnotationAt({
                 type: 'text', text: text,
                 x: ta._imgX, y: ta._imgY,
                 fontSize: ta._fontSizeImage, color: ta._color
-            });
+            }, ta._originalIndex);
         }
         requestRender();
     }
@@ -862,7 +872,7 @@
         var ta = textEditor;
         textEditor = null;
         if (ta.parentNode) ta.parentNode.removeChild(ta);
-        if (restoreOriginal && ta._original) commitAnnotation(ta._original);
+        if (restoreOriginal && ta._original) insertAnnotationAt(ta._original, ta._originalIndex);
         requestRender();
     }
 
