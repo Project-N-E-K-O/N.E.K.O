@@ -303,6 +303,7 @@ def test_no_box_shadow_or_border_in_base_return_btn_css():
     source = INDEX_CSS_PATH.read_text(encoding="utf-8")
 
     base_block = _extract_neko_return_btn_block(source)
+    assert base_block
     assert 'box-shadow' not in base_block
     assert 'border' not in base_block
     assert 'backdrop-filter' not in base_block
@@ -312,16 +313,20 @@ def _extract_neko_return_btn_block(source):
     selector = '.neko-idle-return-btn'
     start = source.find(selector)
     while start != -1:
-        prefix = source[max(0, start - 1):start]
         suffix_start = start + len(selector)
-        suffix = source[suffix_start:suffix_start + 1]
-        if prefix not in ('', '\n', '\r', '}', ' ') or suffix not in ('', ' ', '\n', '\r', '\t', '{'):
+        prev_index = start - 1
+        while prev_index >= 0 and source[prev_index].isspace():
+            prev_index -= 1
+        if prev_index >= 0 and source[prev_index] != '}':
             start = source.find(selector, suffix_start)
             continue
         open_brace = source.find('{', suffix_start)
         next_selector = source.find(selector, suffix_start)
         if open_brace == -1 or (next_selector != -1 and next_selector < open_brace):
             start = next_selector
+            continue
+        if source[suffix_start:open_brace].strip():
+            start = source.find(selector, suffix_start)
             continue
         depth = 0
         for index in range(open_brace, len(source)):

@@ -396,7 +396,7 @@
 
     function getDragDemotionElapsedStartMs(tier) {
         if (tier === TIER_CAT2) return CAT2_MS;
-        if (tier === TIER_CAT1) return 0;
+        if (tier === TIER_CAT1) return AUTO_GOODBYE_MS;
         return 0;
     }
 

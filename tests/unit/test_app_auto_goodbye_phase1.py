@@ -405,12 +405,12 @@ def test_app_auto_goodbye_phase1_harness():
           assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat1', 'one CAT2 drag should step back to CAT1');
           assert(home.win.nekoAutoGoodbye.getState().lastInteractionAt === cat3Baseline, 'CAT2 drag demotion should not refresh idle baseline');
 
-          home.advance(CAT2_DELTA_MS);
+          home.advance(CAT2_DELTA_MS - 1);
           home.tickAll();
-          assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat1', 'demoted CAT1 should not jump back to CAT2 after only the normal auto-goodbye delta');
-          home.advance(CAT2_MS - CAT2_DELTA_MS);
+          assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat1', 'demoted CAT1 should not jump back to CAT2 before the full CAT1 phase length');
+          home.advance(1);
           home.tickAll();
-          assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat2', 'demoted CAT1 should still progress to CAT2 after the full CAT1 interval');
+          assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat2', 'demoted CAT1 should progress to CAT2 after the full CAT1 phase length');
           home.advance(CAT3_DELTA_MS);
           home.tickAll();
           assert(home.win.nekoAutoGoodbye.getState().visualTier === 'cat3', 'demoted CAT2 should still progress to CAT3 after the normal CAT2 interval');
