@@ -3345,6 +3345,35 @@
         shell.classList.add('is-idle-docked');
     }
 
+    function finishIdleDockMinimize(shell) {
+        if (!shell || !isIdleDockTierActive() || idleDockActive) return;
+        stopIdleDockMinimizeObserver();
+        var rect = shell.getBoundingClientRect();
+        idleDockSavedPosition = { left: rect.left, top: rect.top };
+        idleDockActive = true;
+        applyIdleDockPosition();
+        refreshIdleDockContainerObserver();
+    }
+
+    function scheduleIdleDockMinimizeFallback(shell) {
+        if (!shell) return;
+        window.setTimeout(function () {
+            if (!idleDockTriggeredMinimize || idleDockActive || !isIdleDockTierActive()) return;
+            var latestShell = getShell();
+            if (!latestShell) return;
+            minimized = true;
+            latestShell.classList.remove('is-collapsing', 'is-expanding');
+            latestShell.style.transform = 'none';
+            latestShell.style.removeProperty('width');
+            latestShell.style.removeProperty('height');
+            latestShell.style.removeProperty('right');
+            latestShell.style.removeProperty('bottom');
+            latestShell.classList.add('is-minimized');
+            syncChatSurfaceModeUI();
+            finishIdleDockMinimize(latestShell);
+        }, 460);
+    }
+
     function refreshIdleDockContainerObserver() {
         if (isElectronChatWindow() || !idleDockActive || !isIdleDockTierActive()) {
             stopIdleDockContainerObserver();
@@ -3949,18 +3978,13 @@
 
             idleDockMinimizeObserver = new MutationObserver(function () {
                 if (shell.classList.contains('is-minimized') && !shell.classList.contains('is-collapsing')) {
-                    stopIdleDockMinimizeObserver();
-                    // Minimize animation completed — save position and dock.
-                    var r = shell.getBoundingClientRect();
-                    idleDockSavedPosition = { left: r.left, top: r.top };
-                    idleDockActive = true;
-                    applyIdleDockPosition();
-                    refreshIdleDockContainerObserver();
+                    finishIdleDockMinimize(shell);
                 }
             });
             idleDockMinimizeObserver.observe(shell, { attributes: true, attributeFilter: ['class'] });
 
             setChatSurfaceMode('minimized');
+            scheduleIdleDockMinimizeFallback(shell);
         }
     }
 
@@ -4003,6 +4027,11 @@
             state.chatSurfaceMode = getRestorableChatSurfaceMode();
             renderWindow();
             syncMinimizeUI();
+            syncChatSurfaceModeUI();
+            return;
+        }
+
+        if (wasActive && triggered && minimized && preserveCurrentPosition) {
             syncChatSurfaceModeUI();
             return;
         }

@@ -1102,6 +1102,23 @@ function _getNekoIdleReactChatMinimizedShell() {
     return shell;
 }
 
+function _getNekoIdleReactChatExpandedShell() {
+    const overlay = document.getElementById('react-chat-window-overlay');
+    if (overlay && overlay.hidden) return null;
+    const shell = document.getElementById('react-chat-window-shell');
+    if (!shell || !shell.classList || shell.classList.contains('is-minimized')) return null;
+    if (shell.classList.contains('is-collapsing') ||
+        shell.classList.contains('is-expanding') ||
+        shell.classList.contains('is-dragging') ||
+        shell.classList.contains('is-idle-docked')) {
+        return null;
+    }
+    if (typeof shell.getBoundingClientRect !== 'function') return null;
+    const rect = shell.getBoundingClientRect();
+    if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+    return shell;
+}
+
 function _normalizeNekoIdleScreenRect(rect) {
     if (!rect || typeof rect !== 'object') return null;
     const left = Number.isFinite(Number(rect.left)) ? Number(rect.left) : Number(rect.x);
@@ -1143,6 +1160,16 @@ function _getNekoIdleDesktopChatMinimizedRect() {
         screenRight: screenRect.right,
         screenBottom: screenRect.bottom
     };
+}
+
+function _isNekoIdleDesktopChatExpandedRecent() {
+    const state = _nekoIdleDesktopChatMinimizedState;
+    if (!state || state.minimized) return false;
+    return Date.now() - (state.updatedAt || 0) <= _NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS;
+}
+
+function _canNekoIdleCat1MoveSoloWithExpandedChat() {
+    return !!(_getNekoIdleReactChatExpandedShell() || _isNekoIdleDesktopChatExpandedRecent());
 }
 
 function _getNekoIdleChatMinimizedRect() {
@@ -1263,13 +1290,53 @@ function _getNekoIdleCat1PairMoveChatTarget() {
     return null;
 }
 
-function _clampNekoIdleCat1PairMoveDelta(catRect, chatRect, desiredDx) {
-    const minDx = Math.max(-catRect.left, -chatRect.left);
-    const maxDx = Math.min(
-        window.innerWidth - catRect.right,
-        window.innerWidth - chatRect.right
-    );
-    return Math.max(minDx, Math.min(desiredDx, maxDx));
+function _clampNekoIdleCat1MoveVector(catRect, chatRect, desiredDx, desiredDy) {
+    const minDx = chatRect ? Math.max(-catRect.left, -chatRect.left) : -catRect.left;
+    const maxDx = chatRect
+        ? Math.min(window.innerWidth - catRect.right, window.innerWidth - chatRect.right)
+        : window.innerWidth - catRect.right;
+    const minDy = chatRect ? Math.max(-catRect.top, -chatRect.top) : -catRect.top;
+    const maxDy = chatRect
+        ? Math.min(window.innerHeight - catRect.bottom, window.innerHeight - chatRect.bottom)
+        : window.innerHeight - catRect.bottom;
+    const dx = Math.max(minDx, Math.min(desiredDx, maxDx));
+    const dy = Math.max(minDy, Math.min(desiredDy, maxDy));
+    return {
+        dx: dx,
+        dy: dy,
+        distance: Math.hypot(dx, dy)
+    };
+}
+
+function _pickNekoIdleCat1MoveVector(catRect, chatRect, distance, minUsableDistance) {
+    const attempts = 10;
+    const fallbackAngles = [0, Math.PI, Math.PI / 2, -Math.PI / 2, Math.PI / 4, -Math.PI / 4, Math.PI * 3 / 4, -Math.PI * 3 / 4];
+    for (let i = 0; i < attempts + fallbackAngles.length; i += 1) {
+        const angle = i < attempts ? Math.random() * Math.PI * 2 : fallbackAngles[i - attempts];
+        const vector = _clampNekoIdleCat1MoveVector(
+            catRect,
+            chatRect,
+            Math.cos(angle) * distance,
+            Math.sin(angle) * distance
+        );
+        if (vector.distance >= minUsableDistance) return vector;
+    }
+    return null;
+}
+
+function _hasNekoIdleCat1MoveVectorSpace(catRect, chatRect, distance, minUsableDistance) {
+    const angles = [0, Math.PI, Math.PI / 2, -Math.PI / 2, Math.PI / 4, -Math.PI / 4, Math.PI * 3 / 4, -Math.PI * 3 / 4];
+    for (let i = 0; i < angles.length; i += 1) {
+        const angle = angles[i];
+        const vector = _clampNekoIdleCat1MoveVector(
+            catRect,
+            chatRect,
+            Math.cos(angle) * distance,
+            Math.sin(angle) * distance
+        );
+        if (vector.distance >= minUsableDistance) return true;
+    }
+    return false;
 }
 
 function _getNekoIdleCat1PairMovePlan(button) {
@@ -1278,48 +1345,45 @@ function _getNekoIdleCat1PairMovePlan(button) {
     const config = profile.pairMove || {};
     const container = _getNekoIdleReturnContainerFromButton(button);
     const chatTarget = _getNekoIdleCat1PairMoveChatTarget();
-    if (!container || !chatTarget) return null;
+    const canMoveSolo = chatTarget ? false : _canNekoIdleCat1MoveSoloWithExpandedChat();
+    if (!container || (!chatTarget && !canMoveSolo)) return null;
     if (container.getAttribute('data-dragging') === 'true') return null;
     if (_isNekoIdleReturnDragActionActive(button)) return null;
     const catRect = container.getBoundingClientRect();
-    const chatRect = chatTarget.rect;
-    if (!catRect || !chatRect || catRect.width <= 0 || catRect.height <= 0 || chatRect.width <= 0 || chatRect.height <= 0) {
+    const chatRect = chatTarget ? chatTarget.rect : null;
+    if (!catRect || catRect.width <= 0 || catRect.height <= 0) {
         return null;
     }
-    const target = _getNekoIdleCat1Target(container, chatRect);
-    if (!target || target.distance > profile.target.exitDistancePx) return null;
+    if (chatTarget) {
+        if (!chatRect || chatRect.width <= 0 || chatRect.height <= 0) return null;
+        const target = _getNekoIdleCat1Target(container, chatRect);
+        if (!target || target.distance > profile.target.exitDistancePx) return null;
+    }
 
     const minDistance = Math.max(1, Number(config.minDistancePx) || _NEKO_IDLE_CAT1_PAIR_MOVE_MIN_DISTANCE_PX);
     const maxDistance = Math.max(minDistance, Number(config.maxDistancePx) || _NEKO_IDLE_CAT1_PAIR_MOVE_MAX_DISTANCE_PX);
     const minUsableDistance = Math.max(1, Number(config.minUsableDistancePx) || _NEKO_IDLE_CAT1_PAIR_MOVE_MIN_USABLE_DISTANCE_PX);
     const desiredDistance = minDistance + Math.random() * (maxDistance - minDistance);
-    const availableLeft = Math.abs(_clampNekoIdleCat1PairMoveDelta(catRect, chatRect, -desiredDistance));
-    const availableRight = Math.abs(_clampNekoIdleCat1PairMoveDelta(catRect, chatRect, desiredDistance));
-    let direction = Math.random() < 0.5 ? -1 : 1;
-    if (direction < 0 && availableLeft < minUsableDistance && availableRight >= minUsableDistance) {
-        direction = 1;
-    } else if (direction > 0 && availableRight < minUsableDistance && availableLeft >= minUsableDistance) {
-        direction = -1;
-    }
-    let dx = _clampNekoIdleCat1PairMoveDelta(catRect, chatRect, desiredDistance * direction);
-    if (Math.abs(dx) < minUsableDistance) return null;
+    const moveVector = _pickNekoIdleCat1MoveVector(catRect, chatTarget ? chatRect : null, desiredDistance, minUsableDistance);
+    if (!moveVector) return null;
     const speed = Math.max(1, Number(config.speedPxPerSec) || _NEKO_IDLE_CAT1_PAIR_MOVE_SPEED_PX_PER_SEC);
     const minDuration = Math.max(1, Number(config.minDurationMs) || _NEKO_IDLE_CAT1_PAIR_MOVE_MIN_DURATION_MS);
     const maxDuration = Math.max(minDuration, Number(config.maxDurationMs) || _NEKO_IDLE_CAT1_PAIR_MOVE_MAX_DURATION_MS);
-    const durationMs = Math.max(minDuration, Math.min(maxDuration, Math.round(Math.abs(dx) / speed * 1000)));
+    const durationMs = Math.max(minDuration, Math.min(maxDuration, Math.round(moveVector.distance / speed * 1000)));
     return {
-        chatMode: chatTarget.mode,
-        shell: chatTarget.shell,
+        chatMode: chatTarget ? chatTarget.mode : 'solo',
+        shell: chatTarget ? chatTarget.shell : null,
         container: container,
         catStartLeft: catRect.left,
         catStartTop: catRect.top,
-        chatStartLeft: chatRect.left,
-        chatStartTop: chatRect.top,
-        chatStartScreenLeft: chatTarget.screenRect ? chatTarget.screenRect.left : null,
-        chatStartScreenTop: chatTarget.screenRect ? chatTarget.screenRect.top : null,
-        chatWidth: chatRect.width,
-        chatHeight: chatRect.height,
-        dx: dx,
+        chatStartLeft: chatRect ? chatRect.left : null,
+        chatStartTop: chatRect ? chatRect.top : null,
+        chatStartScreenLeft: chatTarget && chatTarget.screenRect ? chatTarget.screenRect.left : null,
+        chatStartScreenTop: chatTarget && chatTarget.screenRect ? chatTarget.screenRect.top : null,
+        chatWidth: chatRect ? chatRect.width : null,
+        chatHeight: chatRect ? chatRect.height : null,
+        dx: moveVector.dx,
+        dy: moveVector.dy,
         durationMs: durationMs
     };
 }
@@ -1335,16 +1399,17 @@ function _applyNekoIdleCat1PairMovePlan(plan, progress) {
     if (!plan || !plan.container) return;
     const eased = _easeNekoIdleCat1PairMove(progress);
     const offsetX = plan.dx * eased;
-    _setNekoIdleCat1ContainerPosition(plan.container, plan.catStartLeft + offsetX, plan.catStartTop);
+    const offsetY = plan.dy * eased;
+    _setNekoIdleCat1ContainerPosition(plan.container, plan.catStartLeft + offsetX, plan.catStartTop + offsetY);
     if (plan.chatMode === 'desktop') {
         _dispatchNekoIdleDesktopChatPairMoveBounds({
             left: plan.chatStartScreenLeft + offsetX,
-            top: plan.chatStartScreenTop,
+            top: plan.chatStartScreenTop + offsetY,
             width: plan.chatWidth,
             height: plan.chatHeight
         });
-    } else {
-        _setNekoIdleCat1PairMoveChatPosition(plan.shell, plan.chatStartLeft + offsetX, plan.chatStartTop);
+    } else if (plan.chatMode === 'dom') {
+        _setNekoIdleCat1PairMoveChatPosition(plan.shell, plan.chatStartLeft + offsetX, plan.chatStartTop + offsetY);
     }
 }
 
@@ -1641,24 +1706,31 @@ function _canScheduleNekoIdleCat1PairMove(button, state) {
 
     const container = _getNekoIdleReturnContainerFromButton(button);
     const chatTarget = _getNekoIdleCat1PairMoveChatTarget();
-    if (!container || !chatTarget) return false;
+    const canMoveSolo = chatTarget ? false : _canNekoIdleCat1MoveSoloWithExpandedChat();
+    if (!container || (!chatTarget && !canMoveSolo)) return false;
     if (container.style.display === 'none' || container.getAttribute('data-dragging') === 'true') return false;
 
     const catRect = container.getBoundingClientRect();
-    const chatRect = chatTarget.rect;
-    if (!catRect || !chatRect || catRect.width <= 0 || catRect.height <= 0 || chatRect.width <= 0 || chatRect.height <= 0) {
+    const chatRect = chatTarget ? chatTarget.rect : null;
+    if (!catRect || catRect.width <= 0 || catRect.height <= 0) {
         return false;
     }
 
-    const target = _getNekoIdleCat1Target(container, chatRect);
-    if (!target || target.distance > profile.target.exitDistancePx) return false;
+    if (chatTarget) {
+        if (!chatRect || chatRect.width <= 0 || chatRect.height <= 0) return false;
+        const target = _getNekoIdleCat1Target(container, chatRect);
+        if (!target || target.distance > profile.target.exitDistancePx) return false;
+    }
 
     const config = profile.pairMove || {};
     const minUsableDistance = Math.max(1, Number(config.minUsableDistancePx) || _NEKO_IDLE_CAT1_PAIR_MOVE_MIN_USABLE_DISTANCE_PX);
     const maxDistance = Math.max(1, Number(config.maxDistancePx) || _NEKO_IDLE_CAT1_PAIR_MOVE_MAX_DISTANCE_PX);
-    const availableLeft = Math.abs(_clampNekoIdleCat1PairMoveDelta(catRect, chatRect, -maxDistance));
-    const availableRight = Math.abs(_clampNekoIdleCat1PairMoveDelta(catRect, chatRect, maxDistance));
-    return availableLeft >= minUsableDistance || availableRight >= minUsableDistance;
+    return _hasNekoIdleCat1MoveVectorSpace(
+        catRect,
+        chatTarget ? chatRect : null,
+        maxDistance,
+        minUsableDistance
+    );
 }
 
 function _finishNekoIdleCat1PairMove(button) {
@@ -1690,7 +1762,9 @@ function _stepNekoIdleCat1PairMove(button, startedAt, timestamp) {
     const plan = state.pairMovePlan;
     const chatAvailable = plan.chatMode === 'desktop'
         ? _getNekoIdleDesktopChatMinimizedRect()
-        : _getNekoIdleReactChatMinimizedShell();
+        : (plan.chatMode === 'dom'
+            ? _getNekoIdleReactChatMinimizedShell()
+            : _canNekoIdleCat1MoveSoloWithExpandedChat());
     if (!chatAvailable || plan.container.getAttribute('data-dragging') === 'true') {
         _cancelNekoIdleCat1Journey(button, { resetArt: true, preserveObservers: true });
         return;
@@ -1810,6 +1884,15 @@ function _syncNekoIdleCat1Journey(button, tier) {
     const target = _getNekoIdleCat1Target(container, chatRect);
     if (!target) {
         _cancelNekoIdleReturnPendingWalk(state);
+        if (state.substate === profile.idleSubstate) {
+            state.target = null;
+            state.facingRight = false;
+            state.actionSettled = true;
+            _resetNekoIdleCat1WalkSpeed(state);
+            _setNekoIdleCat1Classes(button, state);
+            _scheduleNekoIdleCat1PairMove(button);
+            return;
+        }
         _cancelNekoIdleCat1PairMove(state);
         if (state.substate !== profile.idleSubstate) {
             _cancelNekoIdleCat1Journey(button, { resetArt: true, preserveObservers: true });

@@ -65,10 +65,17 @@ def test_setMinimized_has_no_options_parameter_and_no_idle_dock_branches():
 
 def test_idle_dock_enters_minimized_surface_mode_without_setminimized_options():
     source = _read(APP_REACT_CHAT_WINDOW_PATH)
+    set_surface_block = _between(
+        source,
+        "function setChatSurfaceMode(nextMode) {",
+        "\n    function cycleChatSurfaceMode()",
+    )
 
     # enterIdleDock goes through chatSurfaceMode so compact/full/minimized state
     # stays aligned with the minimized visual class after the upstream compact merge.
     assert "setChatSurfaceMode('minimized');" in source
+    assert "var enteringMinimized = nextMinimized && !previousMinimized;" not in set_surface_block
+    assert set_surface_block.index("renderWindow();") < set_surface_block.index("setMinimized(nextMinimized);")
     assert "setMinimized(true, {" not in source
 
     # exitIdleDock restores the previous real surface mode without adding
@@ -169,6 +176,9 @@ def test_idle_dock_uses_mutation_observer_to_detect_minimize_completion():
     assert "idleDockMinimizeObserver" in source
     assert "is-minimized" in source
     assert "stopIdleDockMinimizeObserver" in source
+    assert "function finishIdleDockMinimize(shell)" in source
+    assert "function scheduleIdleDockMinimizeFallback(shell)" in source
+    assert "scheduleIdleDockMinimizeFallback(shell)" in source
     assert "function hasIdleDockPendingOrActive()" in source
     assert "idleDockActive || idleDockTriggeredMinimize || idleDockMinimizeObserver" in source
     assert "triggered && !wasActive && wasTransitioning" in source
@@ -208,3 +218,5 @@ def test_idle_dock_exit_preserves_drag_demotion_position():
     assert "preserveScreenRect: shouldPreserveCurrentPosition ? detail.screenRect : null" in source
     assert "await commitElectronIdleDockCollapsedBounds(bridge, preserveBounds, exitGeneration)" in source
     assert "wasActive && saved && !preserveCurrentPosition" in source
+    assert "wasActive && triggered && minimized && preserveCurrentPosition" in source
+    assert "setChatSurfaceMode(getRestorableChatSurfaceMode());" in source

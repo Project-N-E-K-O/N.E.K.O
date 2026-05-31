@@ -206,6 +206,7 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert '_cancelNekoIdleReturnPendingWalk' in source
     assert '_NEKO_IDLE_CAT1_WALK_LONG_DELAY_MAX_MS = 5 * 60 * 1000' in source
     assert '_NEKO_IDLE_CAT1_PAIR_MOVE_SHORT_DELAY_MIN_MS = 5 * 1000' in source
+    assert '_NEKO_IDLE_CAT1_PAIR_MOVE_SHORT_DELAY_MAX_MS = 90 * 1000' in source
     assert '_NEKO_IDLE_CAT1_PAIR_MOVE_LONG_DELAY_MAX_MS = 5 * 60 * 1000' in source
     assert 'pairMove: Object.freeze' in source
     assert 'intervalChoices' in source
@@ -218,14 +219,26 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert '_finishNekoIdleCat1PairMove' in source
     assert '_cancelNekoIdleCat1PairMove' in source
     assert '_getNekoIdleReactChatMinimizedShell' in source
+    assert '_getNekoIdleReactChatExpandedShell' in source
+    assert '_isNekoIdleDesktopChatExpandedRecent' in source
+    assert '_canNekoIdleCat1MoveSoloWithExpandedChat' in source
     assert '_getNekoIdleCat1PairMoveChatTarget' in source
+    assert '_pickNekoIdleCat1MoveVector' in source
+    assert '_hasNekoIdleCat1MoveVectorSpace' in source
+    assert '_clampNekoIdleCat1MoveVector' in source
     assert '_dispatchNekoIdleDesktopChatPairMoveBounds' in source
     assert "action: 'idle_chat_pair_move_bounds'" in source
-    assert "chatMode: chatTarget.mode" in source
+    assert "chatMode: chatTarget ? chatTarget.mode : 'solo'" in source
+    assert "dy: moveVector.dy" in source
     assert '_setNekoIdleCat1PairMoveChatPosition' in source
     assert "shell.style.right = ''" in source
     assert "shell.style.bottom = ''" in source
+    assert "plan.chatMode === 'dom'" in source
+    assert "plan.chatMode === 'desktop'" in source
+    assert '_canNekoIdleCat1MoveSoloWithExpandedChat()' in source
     assert '_applyNekoIdleCat1PairMovePlan(plan, progress)' in source
+    assert 'plan.catStartTop + offsetY' in source
+    assert 'plan.chatStartScreenTop + offsetY' in source
     assert 'if (!_startNekoIdleCat1PairMove(button))' in source
     assert '_finishNekoIdleHoverArtAfterPlayback(art, profile.tier)' in source
     assert '_setNekoIdleReturnArtSource(art, state.profile.assets.walking()' in source

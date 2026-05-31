@@ -126,7 +126,7 @@ CAT1 idle
 8. 同一倍率会同步写到走路 art 的 `data-neko-gif-playback-rate` / `--neko-idle-gif-playback-rate`，并通过运行时 GIF delay patch 生成加速后的 Blob URL，让走路 GIF 本身随倍率加速。
 9. 到达目标点后，切到停下伸懒腰 GIF；伸懒腰 GIF 按自身帧时长播完一轮后，额外保持收尾姿态约 `700ms`，再通过短暂过渡缓冲回到最初 `CAT1` 默认猫 GIF，并保持在聊天球旁边。
 10. 桌面独立聊天窗会在折叠为小球时发布自己的屏幕矩形；pet 页把这个 screen rect 转成当前窗口坐标后复用同一套 CAT1 寻路逻辑。
-11. CAT1 已走到网页端最小化聊天球旁并回到默认猫后，会按 `5s` 到 `5min` 的加权随机间隔触发一次“猫带着最小化物件小移动”；移动时猫和聊天球保持相对距离一起水平挪动，猫使用走路 GIF，结束后停在新位置，不回原位。
+11. CAT1 已 settled 后，会按 `5s` 到 `5min` 的加权随机间隔触发一次“猫随机小移动”；移动时猫使用走路 GIF，按屏幕内可用空间随机选择一个短距离方向移动，结束后停在新位置，不回原位。若聊天框是最小化球，则猫和聊天球保持相对距离一起移动；若同页聊天框或桌面独立聊天窗已展开，则只移动猫，不带动聊天框。
 
 重触发规则：
 
@@ -136,7 +136,7 @@ CAT1 idle
 4. 如果还在等待首次开走，聊天框或猫位置变化只更新后续判定，不重新抽随机等待。
 5. 一次走路尚未完成时，只更新目标点，不重复从第一帧重启 GIF，也不插入新的随机等待。
 6. 如果聊天框从最小化切到展开，目标点会暂时不可用；此时只回到当前 tier 的默认表现，不拆聊天框 observer。后续聊天框再次最小化时，仍应重新触发距离判断。
-7. “猫带着最小化物件小移动”只在 CAT1 settled、无 pending walk / walking / stretch / hover / drag / return / tier change 时启动；它是一次性自动编排，不复用普通拖拽生命周期，编排中抑制自身导致的距离重判。
+7. “猫随机小移动”只在 CAT1 settled、无 pending walk / walking / stretch / hover / drag / return / tier change 时启动；它是一次性自动编排，不复用普通拖拽生命周期，编排中抑制自身导致的距离重判。聊天框最小化时带最小化球一起移动；聊天框展开时只移动猫。
 8. 如果小移动调度时发现 hover / click GIF 仍挂在当前猫图上，会先让该 GIF 按自身生命周期播完并清理 hover token，再重新同步 CAT1 子动作，避免真实点击返回后重新进入 CAT1 时调度链卡死。
 
 hover 与打断：
@@ -195,6 +195,9 @@ hover 与打断：
 3. 进入 `CAT2 / CAT3` 时，桌面聊天窗先折叠为 `neko-e-collapsed` 小球，再移动到猫左侧。
 4. 拖拽猫时，桌面聊天窗按最新屏幕坐标跟随。
 5. 退出或点击回来时，取消 pending 折叠 / retry，并恢复原 bounds。
+6. 如果桌面聊天窗进入 `CAT2 / CAT3` 前处于 `full` 或 `compact`，预加载层会先临时切到现有 React `minimized` surface，复用原本的最小化小球 DOM；同时用 busy guard 阻止这次 surface 切换触发第二套原生折叠，再由桌面端套用 `neko-e-collapsed` 和原生窗口折叠。
+7. 如果进入前是桌面 `compact`，折叠时必须保留 compact 之前的展开 bounds，不能把 compact 载体窗口尺寸保存为后续恢复尺寸。
+8. 正常退出 `CAT2 / CAT3` idle-dock 时恢复进入前的 `full / compact` surface；拖拽降级或拖拽结束要求保留当前小球位置时，只提交折叠后的 bounds 并清掉待恢复 surface，聊天球继续停在拖拽结束位置。
 
 `CAT1` 的方向相反：桌面聊天窗发布自己的 minimized screen rect，pet 页消费它，让猫走向聊天小球；这条链路不复用 `CAT2 / CAT3` 的 return-ball dock 事件，避免两边互相驱动。
 
@@ -202,8 +205,9 @@ hover 与打断：
 
 1. 聊天窗自己 resize 后广播“return-ball 不可见”，导致刚折叠又展开。
 2. 拖拽中旧的异步定位结果覆盖新坐标，导致抖动或回跳。
+3. compact idle-dock 折叠时，旧的 compact relayout、独立 compact 球或错误保存的 compact 载体尺寸覆盖 `neko-e-collapsed` 小球。
 
-当前实现已通过“聊天窗只消费不发布”、generation token、rAF 合并和 position sequence 收口这两类竞态。
+当前实现已通过“聊天窗只消费不发布”、generation token、rAF 合并、position sequence、compact 折叠前冻结 relayout 和恢复模式一次性消费来收口这些竞态。
 
 ## 六、资源规范
 
@@ -253,11 +257,15 @@ hover 与打断：
 | CAT1 走路途中聊天框继续移动 | 更新目标点，不重播走路 GIF 第一帧 |
 | CAT1 走路途中用户拖拽猫 | 取消自动走路，保留用户拖拽后的新位置；如果松手后仍离聊天框较远，会再次触发走路 |
 | CAT1 默认猫或伸懒腰 settled 后，用户移动默认猫或聊天框造成距离变远 | 重新触发走路到聊天框旁边 |
+| CAT1 settled 且聊天框已展开 | 随机小移动仍可触发，但只移动猫，不带动展开聊天框 |
+| CAT1 settled 且聊天框是最小化球 | 随机小移动会保持猫和最小化球的相对距离一起移动 |
 | hover 猫后马上移出 | click GIF 播完一轮再恢复默认态 |
 | 反复 hover 同一 tier | 不反复重置 GIF 第一帧 |
 | CAT1 走路或伸懒腰阶段 hover | 使用 `cat-idle-cat4-3.gif`，暂停自动移动；移出后等交互态播完再从当前位置恢复当前阶段 |
 | tier 切换时仍在 hover | 清理旧 hover 状态，按新 tier 显示 |
 | 点击 CAT1 / CAT2 / CAT3 | 走现有 return 链回来 |
+| 桌面聊天窗从 compact/full 进入 CAT2 / CAT3 | 先复用最小化 surface 形成 `neko-e-collapsed` 小球，并保存进入前真实展开模式用于恢复 |
+| 桌面 idle-dock 拖拽降级并要求保留当前位置 | 保留拖拽结束的小球 bounds，不恢复到进入前 bounds，也不误恢复展开 surface |
 | 桌面聊天窗 bridge 繁忙 | 短暂 retry；退出事件可取消 retry |
 | 退出时折叠还在进行 | 旧进入链路失效，并尽力展开回滚 |
 | 关闭重开 | 不持久化 idle tier，回到活跃态 |
