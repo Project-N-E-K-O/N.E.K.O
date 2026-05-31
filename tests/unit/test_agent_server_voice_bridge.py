@@ -175,9 +175,49 @@ async def test_voice_transcript_request_dispatches_custom_event(
     }
     assert emitted["event_type"] == "voice_bridge_result"
     assert emitted["payload"]["event_id"] == "voice-2"
-    assert emitted["payload"]["result"] == {
-        "action": "prime_context",
-        "context": "screen context",
-        "source_plugin": "study_companion",
-        "source_event_id": "handle_transcript",
-    }
+    result = emitted["payload"]["result"]
+    assert result["action"] == "prime_context"
+    assert result["context"] == "screen context"
+    assert result["source_plugin"] == "study_companion"
+    assert result["source_event_id"] == "handle_transcript"
+
+
+def test_voice_bridge_dispatch_results_are_arbitrated() -> None:
+    from app import agent_server as srv
+
+    result = srv._voice_bridge_action_from_dispatch_results(
+        [
+            {
+                "plugin_id": "context_plugin",
+                "event_id": "prime",
+                "success": True,
+                "result": {
+                    "action": "prime_context",
+                    "context": "screen context",
+                    "priority": 100,
+                },
+            },
+            {
+                "plugin_id": "study_companion",
+                "event_id": "handle_transcript",
+                "success": True,
+                "result": {
+                    "action": "cancel_response",
+                    "reason": "ocr_overlap",
+                    "priority": -10,
+                },
+            },
+            {
+                "plugin_id": "broken",
+                "event_id": "voice",
+                "success": False,
+                "error": "timeout",
+            },
+        ]
+    )
+
+    assert result["action"] == "cancel_response"
+    assert result["reason"] == "ocr_overlap"
+    assert result["source_plugin"] == "study_companion"
+    assert result["source_event_id"] == "handle_transcript"
+    assert result["failures"] == 1

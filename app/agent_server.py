@@ -1680,6 +1680,11 @@ def _voice_bridge_action_from_dispatch_results(dispatch_results: object) -> Dict
     if not isinstance(dispatch_results, list) or not dispatch_results:
         return _voice_bridge_noop("no_subscribers")
 
+    from plugin.plugins.study_companion.voice_contracts import (
+        arbitrate_voice_transcript_results,
+    )
+
+    arbitration_items: list[dict[str, object]] = []
     failure_count = 0
     for item in dispatch_results:
         if not isinstance(item, Mapping):
@@ -1701,9 +1706,25 @@ def _voice_bridge_action_from_dispatch_results(dispatch_results: object) -> Dict
         source_event_id = str(item.get("event_id") or "").strip()
         if source_event_id:
             payload.setdefault("source_event_id", source_event_id)
-        return payload
+        arbitration_items.append(
+            {
+                "plugin_id": payload.get("source_plugin") or plugin_id,
+                "event_id": payload.get("source_event_id") or source_event_id,
+                "success": True,
+                "result": payload,
+            }
+        )
 
-    return _voice_bridge_noop("no_handler_result", failures=failure_count)
+    if not arbitration_items:
+        return _voice_bridge_noop("no_handler_result", failures=failure_count)
+    payload = arbitrate_voice_transcript_results(arbitration_items)
+    if failure_count:
+        try:
+            existing_failures = int(payload.get("failures") or 0)
+        except (TypeError, ValueError):
+            existing_failures = 0
+        payload["failures"] = existing_failures + failure_count
+    return payload
 
 
 async def _dispatch_voice_transcript_custom_event(
