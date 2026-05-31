@@ -828,6 +828,11 @@
         var a = annotations.splice(idx, 1)[0];
         redoStack.length = 0;
         updateUndoRedoButtons();
+        // 同步字号滑块到被编辑文字的真实字号（存的是图片坐标，换算回屏幕 px 并夹到滑块范围），
+        // 否则滑块还显示默认值，轻碰一下就把这段文字跳到默认字号（Codex P2）。
+        var scale = displayScale() || 1;
+        currentFontSizePx = Math.max(12, Math.min(80, Math.round((a.fontSize || 20) * scale)));
+        updateOptionsBar();
         var posC = imageToCanvas(a.x, a.y);
         beginTextEdit(posC, { x: a.x, y: a.y }, a);
         requestRender();
