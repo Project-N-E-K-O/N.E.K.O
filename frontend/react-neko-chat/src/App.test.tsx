@@ -3435,7 +3435,7 @@ describe('App', () => {
     }
   });
 
-  it('keeps compact tool buttons clickable after pointer down starts on a button', async () => {
+  it('keeps compact tool buttons clickable and leaves the fan open after actions', async () => {
     vi.useFakeTimers();
     const onComposerImportImage = vi.fn();
     try {
@@ -3482,7 +3482,7 @@ describe('App', () => {
       fireEvent.click(importButton, { clientX: 140, clientY: 140 });
 
       expect(onComposerImportImage).toHaveBeenCalledTimes(1);
-      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
     } finally {
       vi.useRealTimers();
     }
@@ -3583,6 +3583,40 @@ describe('App', () => {
     expect(onComposerImportImage).not.toHaveBeenCalled();
     expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
     expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+  });
+
+  it('anchors compact emoji choices above the compact wheel toggle', async () => {
+    vi.useFakeTimers();
+    try {
+      render(
+        <App
+          chatSurfaceMode="compact"
+          compactChatState="input"
+        />,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(240);
+      });
+
+      const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+      const avatarTool = fan.querySelector('.compact-input-tool-item-avatar') as HTMLDivElement;
+      const emojiButton = avatarTool.querySelector('.composer-emoji-btn') as HTMLButtonElement;
+      fireEvent.click(emojiButton);
+
+      expect(avatarTool.querySelector('#composer-tool-popover-compact')).toBeNull();
+      expect(fan.querySelector(':scope > #composer-tool-popover-compact')).not.toBeNull();
+
+      fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
+
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+      expect(avatarTool).toHaveAttribute('data-compact-tool-active', 'true');
+      expect(avatarTool.querySelector('.composer-emoji-btn')).toHaveClass('is-active');
+      expect(fan.querySelector('#composer-tool-popover-compact')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('keeps compact input tools open while an active wheel drag leaves the fan range', async () => {

@@ -3583,11 +3583,37 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 .compact-input-tool-fan .composer-icon-popover {
-  left: auto;
-  right: 0;
-  bottom: calc(100% + 6px);
+  left: 0;
+  top: calc(var(--compact-tool-wheel-center-y) - 118px);
+  width: calc(var(--compact-tool-wheel-hover-radius) * 2);
+  height: 62px;
+  box-sizing: border-box;
+  bottom: auto;
+  display: block;
+  padding: 0;
+  animation: none;
   transform: none;
   z-index: 13;
+}
+
+.compact-input-tool-fan .composer-icon-popover .composer-icon-button {
+  position: absolute;
+  margin: 0;
+}
+
+.compact-input-tool-fan .composer-icon-popover .composer-icon-button:nth-child(1) {
+  left: calc(var(--compact-tool-wheel-center-x) - 77px);
+  top: 8px;
+}
+
+.compact-input-tool-fan .composer-icon-popover .composer-icon-button:nth-child(2) {
+  left: calc(var(--compact-tool-wheel-center-x) - 23px);
+  top: -2px;
+}
+
+.compact-input-tool-fan .composer-icon-popover .composer-icon-button:nth-child(3) {
+  left: calc(var(--compact-tool-wheel-center-x) + 31px);
+  top: 8px;
 }
 
 .compact-input-tool-fan .composer-tool-menu {

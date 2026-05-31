@@ -69,7 +69,11 @@ type AvatarToolId = AvatarInteractionPayload['toolId'];
 function getEffectiveCompactChatState(
   _requestedState: CompactChatState,
   _hasVisibleChoices: boolean,
+  composerHidden: boolean,
 ): CompactChatState {
+  if (composerHidden) {
+    return 'default';
+  }
   return 'input';
 }
 
@@ -1326,7 +1330,7 @@ export default function App({
   const isCompactSurface = chatSurfaceMode === 'compact';
   const requestedCompactChatState = compactChatState;
   const effectiveCompactChatState = isCompactSurface
-    ? getEffectiveCompactChatState(requestedCompactChatState, compactSurfaceChoicesVisible)
+    ? getEffectiveCompactChatState(requestedCompactChatState, compactSurfaceChoicesVisible, composerHidden)
     : requestedCompactChatState;
   const getCompactSurfaceResizeMaxAvailableWidth = useCallback(() => {
     const desktopWindow = window as typeof window & {
@@ -4147,19 +4151,15 @@ export default function App({
     </div>
   );
 
-  const compactFanCloseOnAction = (
-    action: (() => void) | undefined,
-    options?: { deferDesktopAction?: boolean },
-  ) => (event: ReactMouseEvent) => {
+  const compactFanRunAction = (action: (() => void) | undefined) => (event: ReactMouseEvent) => {
     if (shouldSuppressCompactToolClick(event)) {
       event.preventDefault();
       event.stopPropagation();
       return;
     }
-    closeCompactInputToolFan({
-      afterClose: action,
-      deferDesktopAction: options?.deferDesktopAction,
-    });
+    compactInputToolFanOpenIntentRef.current = 'click';
+    clearCompactInputToolFanCloseTimer();
+    action?.();
   };
 
   const compactFanToggleOnAction = (action: (() => void) | undefined) => (event: ReactMouseEvent) => {
@@ -4168,6 +4168,8 @@ export default function App({
       event.stopPropagation();
       return;
     }
+    compactInputToolFanOpenIntentRef.current = 'click';
+    clearCompactInputToolFanCloseTimer();
     action?.();
   };
 
@@ -4354,7 +4356,7 @@ export default function App({
         tabIndex={getCompactToolWheelTabIndex(0)}
         aria-hidden={getCompactToolWheelAriaHidden(0)}
         data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(0)}
-        onClick={compactFanCloseOnAction(onComposerImportImage)}
+        onClick={compactFanRunAction(onComposerImportImage)}
       >
         <img src="/static/icons/import_image_icon.png" alt="" aria-hidden="true" />
       </button>
@@ -4367,7 +4369,7 @@ export default function App({
         tabIndex={getCompactToolWheelTabIndex(1)}
         aria-hidden={getCompactToolWheelAriaHidden(1)}
         data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(1)}
-        onClick={compactFanCloseOnAction(onComposerScreenshot)}
+        onClick={compactFanRunAction(onComposerScreenshot)}
       >
         <img src="/static/icons/screenshot_new_icon.png" alt="" aria-hidden="true" />
       </button>
@@ -4410,7 +4412,7 @@ export default function App({
         tabIndex={getCompactToolWheelTabIndex(4)}
         aria-hidden={getCompactToolWheelAriaHidden(4)}
         data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(4)}
-        onClick={compactFanCloseOnAction(onJukeboxClick)}
+        onClick={compactFanRunAction(onJukeboxClick)}
       >
         <img src="/static/icons/jukebox_icon.png" alt="" aria-hidden="true" />
       </button>
@@ -4425,7 +4427,7 @@ export default function App({
         aria-hidden={getCompactToolWheelAriaHidden(5)}
         data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(5)}
         data-compact-tool-active={compactExportHistoryOpen ? 'true' : 'false'}
-        onClick={compactFanCloseOnAction(handleCompactExportConversationClick, { deferDesktopAction: true })}
+        onClick={compactFanRunAction(handleCompactExportConversationClick)}
       >
         <svg viewBox="0 0 1024 1024" width="24" height="24" fill="currentColor" aria-hidden="true">
           <path d="M855.467 501.333c-17.067 0-32 14.934-32 32v198.4c0 70.4-59.734 130.134-130.134 130.134H356.267c-83.2 0-151.467-66.134-151.467-149.334V358.4c0-64 53.333-117.333 117.333-117.333h168.534c17.066 0 32-14.934 32-32s-14.934-32-32-32H322.133c-100.266 0-181.333 81.066-181.333 181.333v352c0 117.333 96 213.333 215.467 213.333h337.066c106.667 0 194.134-87.466 194.134-194.133V533.333c0-17.066-14.934-32-32-32zM680.533 256H761.6L458.667 569.6A30.933 30.933 0 0 0 480 622.933c8.533 0 17.067-4.266 23.467-10.666l305.066-313.6v89.6c0 17.066 14.934 32 32 32s32-14.934 32-32v-147.2c0-27.734-23.466-51.2-51.2-51.2h-140.8c-17.066 0-32 14.933-32 32s14.934 34.133 32 34.133z" />
@@ -4436,6 +4438,7 @@ export default function App({
         ref={toolMenuRef}
         aria-hidden={getCompactToolWheelAriaHidden(6)}
         data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(6)}
+        data-compact-tool-active={activeToolItem ? 'true' : 'false'}
       >
         <button
           className={`composer-tool-btn composer-emoji-btn${toolMenuOpen || activeToolItem ? ' is-active' : ''}`}
@@ -4454,7 +4457,6 @@ export default function App({
             }
             if (activeToolItem) {
               clearActiveCursorToolSelection();
-              closeCompactInputToolFan();
               return;
             }
             compactInputToolFanOpenIntentRef.current = 'click';
@@ -4489,7 +4491,6 @@ export default function App({
               setIsCursorInsideHostWindow(true);
               setActiveCursorToolId(null);
               setToolMenuOpen(false);
-              closeCompactInputToolFan();
             }}
           >
             <span aria-hidden="true">脳</span>
@@ -4538,14 +4539,12 @@ export default function App({
                 if (activeCursorToolId === item.id) {
                   setActiveCursorToolId(null);
                   setToolMenuOpen(false);
-                  closeCompactInputToolFan();
                   return;
                 }
                 setAvatarRangeCursorVariants(prev => ({ ...prev, [item.id]: 'primary' }));
                 setOutsideRangeCursorVariants(prev => ({ ...prev, [item.id]: 'primary' }));
                 setActiveCursorToolId(item.id);
                 setToolMenuOpen(false);
-                closeCompactInputToolFan();
               }}
             >
               <img
