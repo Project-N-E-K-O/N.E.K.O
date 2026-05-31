@@ -103,6 +103,7 @@ def test_notebook_store_crud_search_and_topic_counts(tmp_path) -> None:
             notebook_id=notebook.id,
             title="Closure updated",
             content="closure update",
+            is_ai_generated=True,
             source_type="topic",
             source_ref="closure",
             topic_ids=["closure"],
@@ -115,6 +116,7 @@ def test_notebook_store_crud_search_and_topic_counts(tmp_path) -> None:
             "source_type update ignored" in str(args[0])
             for args, _kwargs in logger.warnings
         )
+        assert updated.is_ai_generated is True
 
         partial = notebooks.upsert_note(note_id=note.id, title="Closure final")
         assert partial.title == "Closure final"
@@ -122,6 +124,10 @@ def test_notebook_store_crud_search_and_topic_counts(tmp_path) -> None:
         assert partial.content == "closure update"
         assert partial.topic_ids == ["closure"]
         assert partial.tags == ["updated"]
+        assert partial.is_ai_generated is True
+
+        manual = notebooks.upsert_note(note_id=note.id, is_ai_generated=False)
+        assert manual.is_ai_generated is False
 
         deleted = notebooks.delete_notebook(notebook.id)
         assert deleted == {"deleted": 1, "notes_unlinked": 1}

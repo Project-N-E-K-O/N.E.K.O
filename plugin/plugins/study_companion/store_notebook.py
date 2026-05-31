@@ -378,6 +378,11 @@ class NotebookStore:
             existing.title if title is None else title,
             content_plain,
         )
+        next_is_ai_generated = (
+            existing.is_ai_generated
+            if is_ai_generated is None
+            else bool(is_ai_generated)
+        )
         topic_values = existing.topic_ids if topic_ids is _UNSET else topic_ids
         tag_values = existing.tags if tags is _UNSET else tags
         with self.store._lock:
@@ -392,6 +397,7 @@ class NotebookStore:
                     snippet = ?,
                     topic_ids = ?,
                     tags = ?,
+                    is_ai_generated = ?,
                     word_count = ?,
                     updated_at = datetime('now'),
                     edited_at = datetime('now')
@@ -405,6 +411,7 @@ class NotebookStore:
                     _snippet(content_plain),
                     self.store._json_dumps(_normalize_string_list(topic_values)),
                     self.store._json_dumps(_normalize_string_list(tag_values)),
+                    1 if next_is_ai_generated else 0,
                     _word_count(content_plain),
                     note_key,
                 ),
