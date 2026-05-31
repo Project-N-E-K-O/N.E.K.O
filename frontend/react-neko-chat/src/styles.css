@@ -3594,11 +3594,13 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   animation: none;
   transform: none;
   z-index: 13;
+  pointer-events: none;
 }
 
 .compact-input-tool-fan .composer-icon-popover .composer-icon-button {
   position: absolute;
   margin: 0;
+  pointer-events: auto;
 }
 
 .compact-input-tool-fan .composer-icon-popover .composer-icon-button:nth-child(1) {
