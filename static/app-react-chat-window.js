@@ -3746,13 +3746,22 @@
                     pendingOpenAfterModelManagerHidden = true;
                     return;
                 }
+                // closeWindow 已经会重置 minimized，所以到这里通常 minimized=false
+                // 但如果外部直接调用 openWindow（未经 closeWindow），仍需处理
+                var wasMinimized = minimized;
+                if (wasMinimized) {
+                    // Opening a minimized window restores the last real surface.
+                    // Reset the logical surface BEFORE mountWindow() so React
+                    // rebuilds the compact body instead of the (blank) minimized
+                    // surface; closeWindow performs the same reset when it clears
+                    // the minimized shell.
+                    state.chatSurfaceMode = normalizeChatSurfaceMode(lastRestorableChatSurfaceMode);
+                    resetCompactChatState();
+                }
                 if (!mountWindow()) {
                     showToast(getI18nText('chat.reactWindowMountFailed', '聊天框挂载失败'), 3000);
                     return;
                 }
-                // closeWindow 已经会重置 minimized，所以到这里通常 minimized=false
-                // 但如果外部直接调用 openWindow（未经 closeWindow），仍需处理
-                var wasMinimized = minimized;
                 if (wasMinimized) {
                     // overlay 可能还隐藏，先显示再做展开动画
                     overlay.hidden = false;
@@ -3831,6 +3840,13 @@
                 shell.style.transform = 'none';
             }
             minimized = false;
+            // closeWindow clears the minimized shell directly without routing
+            // through setChatSurfaceMode, so the logical surface must be reset
+            // too. Otherwise state.chatSurfaceMode stays 'minimized' and the next
+            // openWindow() rebuilds the React props with chatSurfaceMode:
+            // 'minimized', rendering a blank body over a no-longer-minimized
+            // shell.
+            state.chatSurfaceMode = normalizeChatSurfaceMode(lastRestorableChatSurfaceMode);
             resetCompactChatState();
             savedShellSize = null;
             savedShellPosition = null;

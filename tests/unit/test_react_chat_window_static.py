@@ -72,9 +72,34 @@ def test_close_from_minimized_preserves_compact_surface_mode():
 
     assert "state.chatSurfaceMode = 'full'" not in minimized_block
     assert "minimized = false;" in minimized_block
+    # closeWindow clears the minimized shell without routing through
+    # setChatSurfaceMode, so it must restore the logical surface to the last
+    # restorable mode. Otherwise the next openWindow() rebuilds the React props
+    # with chatSurfaceMode:'minimized' and renders a blank body.
+    assert (
+        "state.chatSurfaceMode = normalizeChatSurfaceMode(lastRestorableChatSurfaceMode);"
+        in minimized_block
+    )
     assert "syncChatSurfaceModeUI();" in minimized_block
     assert "overlay.hidden = true;" in close_block
     assert "resetCompactChatState();" in close_block
+
+
+def test_open_from_minimized_restores_surface_mode_before_mounting():
+    source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    open_block = source.split("function openWindow()", 1)[1].split(
+        "function closeWindow()",
+        1,
+    )[0]
+    # The minimized restore branch must reset the logical surface BEFORE
+    # mountWindow() so React rebuilds the compact body instead of the blank
+    # minimized surface — symmetric with closeWindow's reset.
+    restore_assignment = (
+        "state.chatSurfaceMode = normalizeChatSurfaceMode(lastRestorableChatSurfaceMode);"
+    )
+    assert restore_assignment in open_block
+    assert open_block.index(restore_assignment) < open_block.index("if (!mountWindow())")
 
 
 def test_minimized_restore_uses_previous_real_surface_mode():
