@@ -72,8 +72,10 @@
     // ======================== Annotation state ========================
     // 标注全部以"图片自然坐标"存储，渲染时经 mapFn 映射到目标画布。
     // 这样窗口 resize、选区 resize 都不破坏标注，烤制时只是坐标平移。
-    var currentTool = 'select'; // 'select'|'rect'|'ellipse'|'arrow'|'pen'|'highlighter'|'text'|'mosaic'
-    var DRAW_TOOLS = { rect: 1, ellipse: 1, arrow: 1, pen: 1, highlighter: 1, text: 1, mosaic: 1 };
+    var currentTool = 'select'; // 'select'|'rect'|'ellipse'|'arrow'|'pen'|'highlighter'|'text'|'mosaic'|'watermark'
+    var DRAW_TOOLS = { rect: 1, ellipse: 1, arrow: 1, pen: 1, highlighter: 1, text: 1, mosaic: 1, watermark: 1 };
+    // 选中后会浮出上下文选项条的工具（每个工具有各自可调属性）
+    var OPTION_TOOLS = { text: 1, highlighter: 1, mosaic: 1, watermark: 1 };
     var currentColor = '#ff3b30';
     var currentStrokeWidth = 4; // 图片自然坐标下的线宽基准
     var annotations = [];       // 已提交标注
@@ -82,10 +84,19 @@
     var textEditor = null;      // 文字工具的 <textarea> DOM
     var workspaceEl = null;     // .crop-workspace 容器（textarea 挂这里）
     var toolbarEl = null;       // 标注工具栏 DOM
+    var optionsBarEl = null;    // 上下文选项条 DOM（随当前工具刷新内容）
     var toolBtns = {};          // name -> button，用于切换 active 态
     var colorSwatches = [];     // 调色板按钮
     var widthBtns = [];         // 线宽按钮
     var undoBtn = null, redoBtn = null;
+
+    // 各工具的可调属性（默认值见下方常量）。文字/水印字号以"屏幕显示 px"为基准，
+    // 提交时按 displayScale 换算成图片自然坐标 px 存进标注，保证抗 resize。
+    var currentFontSizePx = 22;       // 文字工具屏幕字号
+    var currentHighlightAlpha = 0.38; // 荧光笔透明度（= HIGHLIGHT_ALPHA 默认）
+    var currentMosaicBlock = 12;      // 马赛克块大小（图片自然坐标 px，= MOSAIC_BLOCK 默认）
+    var currentWatermarkText = '';    // 水印文字（空则用默认占位）
+    var currentWatermarkSizePx = 30;  // 水印屏幕字号
 
     var PALETTE = ['#ff3b30', '#ffcc00', '#34c759', '#0a84ff', '#ffffff', '#1c1c1e'];
     // 与 PALETTE 同序：调色板按钮的无障碍可读名（纯色按钮无文字，读屏靠这个）
@@ -209,6 +220,10 @@
         // ---- Annotation toolbar (tools + style + actions, includes ✓ / ×) ----
         ensureToolbar();
         overlay.appendChild(toolbarEl);
+
+        // ---- Contextual options bar (per-tool extras: font size / opacity / mosaic / watermark) ----
+        ensureOptionsBar();
+        overlay.appendChild(optionsBarEl);
 
         // ---- Events ----
         canvas.addEventListener('mousedown', onPointerDown);
@@ -479,12 +494,13 @@
 
     // 把图片区域 (ix,iy,iw,ih 自然坐标) 像素化进一张自然分辨率缓存 canvas。
     // 用于马赛克：源永远取 imgEl（自然分辨率），不取被遮罩压暗的显示 canvas。
-    function buildMosaicCache(ix, iy, iw, ih) {
+    function buildMosaicCache(ix, iy, iw, ih, block) {
         iw = Math.round(iw); ih = Math.round(ih);
         if (iw < 1 || ih < 1) return null;
+        var blk = block || MOSAIC_BLOCK;
         try {
-            var smallW = Math.max(1, Math.round(iw / MOSAIC_BLOCK));
-            var smallH = Math.max(1, Math.round(ih / MOSAIC_BLOCK));
+            var smallW = Math.max(1, Math.round(iw / blk));
+            var smallH = Math.max(1, Math.round(ih / blk));
             var small = document.createElement('canvas');
             small.width = smallW; small.height = smallH;
             var sctx = small.getContext('2d');
@@ -515,7 +531,7 @@
             c.lineJoin = 'round';
             c.lineCap = 'round';
             if (a.type === 'highlighter') {
-                c.globalAlpha = HIGHLIGHT_ALPHA;
+                c.globalAlpha = (a.alpha != null) ? a.alpha : HIGHLIGHT_ALPHA;
                 c.lineWidth = lw * HIGHLIGHT_WIDTH_MULT;
                 c.lineCap = 'butt';
             } else {
@@ -542,7 +558,7 @@
             var br = map(n.x + n.w, n.y + n.h);
             var rx = tl.x, ry = tl.y, rw = br.x - tl.x, rh = br.y - tl.y;
             if (a.type === 'mosaic') {
-                var cache = a._cache || buildMosaicCache(n.x, n.y, n.w, n.h);
+                var cache = a._cache || buildMosaicCache(n.x, n.y, n.w, n.h, a.block);
                 c.save();
                 if (cache) {
                     c.imageSmoothingEnabled = false;
@@ -611,6 +627,41 @@
             c.restore();
             return;
         }
+        if (a.type === 'watermark') {
+            var wtl = map(a.x, a.y);
+            var wbr = map(a.x + a.w, a.y + a.h);
+            var wx = wtl.x, wy = wtl.y, ww = wbr.x - wtl.x, wh = wbr.y - wtl.y;
+            if (ww < 1 || wh < 1) return;
+            var wtxt = a.text || tr('chat.cropWatermarkDefault', '水印');
+            var wfs = (a.fontSize || 30) * scale;
+            c.save();
+            c.beginPath();
+            c.rect(wx, wy, ww, wh);
+            c.clip();
+            c.translate(wx + ww / 2, wy + wh / 2);
+            c.rotate(-Math.PI / 6); // 斜铺 -30°
+            c.font = '600 ' + wfs + 'px -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif';
+            c.textAlign = 'center';
+            c.textBaseline = 'middle';
+            c.fillStyle = a.color || currentColor;
+            c.globalAlpha = (a.alpha != null) ? a.alpha : 0.26;
+            var tw = Math.max(1, c.measureText(wtxt).width);
+            var stepX = tw + wfs * 2.0;
+            var stepY = wfs * 2.6;
+            var diag = Math.sqrt(ww * ww + wh * wh);
+            var half = diag / 2 + stepY;
+            var row = 0;
+            for (var yy = -half; yy <= half; yy += stepY) {
+                // 行间错位半格，平铺更自然
+                var offset = (row % 2) ? stepX / 2 : 0;
+                for (var xx = -half - offset; xx <= half; xx += stepX) {
+                    c.fillText(wtxt, xx, yy);
+                }
+                row++;
+            }
+            c.restore();
+            return;
+        }
     }
 
     function renderAnnotations(c, map, scale) {
@@ -626,7 +677,7 @@
     function commitAnnotation(a) {
         if (a.type === 'mosaic') {
             var n = normAnno(a);
-            a._cache = buildMosaicCache(n.x, n.y, n.w, n.h);
+            a._cache = buildMosaicCache(n.x, n.y, n.w, n.h, a.block);
         }
         annotations.push(a);
         redoStack.length = 0;
@@ -672,6 +723,7 @@
         }
         syncColorWidthActive();
         updateUndoRedoButtons();
+        updateOptionsBar();
     }
 
     function makeDraft(ip) {
@@ -681,6 +733,8 @@
         } else {
             base.x0 = ip.x; base.y0 = ip.y; base.x1 = ip.x; base.y1 = ip.y;
         }
+        if (currentTool === 'highlighter') base.alpha = currentHighlightAlpha;
+        if (currentTool === 'mosaic') base.block = currentMosaicBlock;
         return base;
     }
 
@@ -692,35 +746,84 @@
     }
 
     // ======================== Text tool ========================
-    function beginTextEdit(pos, ip) {
+    // existing：再次编辑已提交文字标注时传入（沿用其字号/颜色/文本），见 issue 文字可二次编辑。
+    function beginTextEdit(pos, ip, existing) {
         commitTextEdit(); // 收掉上一个未提交的
         var scale = displayScale() || 1;
-        var fontSizeImage = Math.max(8, Math.round(22 / scale)); // 屏幕上约 22px
+        var fontSizeImage = existing
+            ? (existing.fontSize || Math.max(8, Math.round(currentFontSizePx / scale)))
+            : Math.max(8, Math.round(currentFontSizePx / scale));
+        var col = existing ? (existing.color || currentColor) : currentColor;
         var ta = document.createElement('textarea');
         ta.className = 'crop-text-editor';
         ta.rows = 1;
         ta.wrap = 'off';
         ta.style.left = pos.x + 'px';
         ta.style.top = pos.y + 'px';
-        ta.style.color = currentColor;
+        ta.style.color = col;
         ta.style.fontSize = Math.round(fontSizeImage * scale) + 'px';
-        ta._imgX = ip.x; ta._imgY = ip.y; ta._fontSizeImage = fontSizeImage; ta._color = currentColor;
+        ta._imgX = ip.x; ta._imgY = ip.y; ta._fontSizeImage = fontSizeImage; ta._color = col;
+        ta._original = existing || null; // 二次编辑时记下原标注，Esc 取消可原样还原
+        function autosize() {
+            ta.style.height = 'auto';
+            ta.style.height = ta.scrollHeight + 'px';
+            ta.style.width = 'auto';
+            ta.style.width = Math.min(workspaceEl.clientWidth - pos.x - 12, Math.max(40, ta.scrollWidth + 4)) + 'px';
+        }
         ta.addEventListener('keydown', function (e) {
             e.stopPropagation(); // 别让遮罩 keydown 抢走 Esc/Enter/Delete/方向键
             if (e.key === 'Escape') { e.preventDefault(); cancelTextEdit(); }
             else if ((e.key === 'Enter' || e.key === 'NumpadEnter') && !e.shiftKey) { e.preventDefault(); commitTextEdit(); }
         });
         ta.addEventListener('blur', function () { commitTextEdit(); });
-        ta.addEventListener('input', function () {
-            ta.style.height = 'auto';
-            ta.style.height = ta.scrollHeight + 'px';
-            ta.style.width = 'auto';
-            ta.style.width = Math.min(workspaceEl.clientWidth - pos.x - 12, Math.max(40, ta.scrollWidth + 4)) + 'px';
-        });
+        ta.addEventListener('input', autosize);
         workspaceEl.appendChild(ta);
         textEditor = ta;
+        if (existing && existing.text) {
+            ta.value = existing.text;
+            autosize();
+        }
         // 异步聚焦，避免 mousedown 同帧抢焦点失败
-        setTimeout(function () { try { ta.focus(); } catch (e) {} }, 0);
+        setTimeout(function () { try { ta.focus(); ta.select(); } catch (e) {} }, 0);
+    }
+
+    // 估算文字标注在图片自然坐标下的包围盒（用于"点中已有文字 → 二次编辑"命中测试）
+    function measureTextAnno(a) {
+        var fs = a.fontSize || 20;
+        var lines = (a.text || '').split('\n');
+        var maxw = 0;
+        ctx.save();
+        ctx.font = '600 ' + fs + 'px -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif';
+        for (var i = 0; i < lines.length; i++) {
+            maxw = Math.max(maxw, ctx.measureText(lines[i]).width);
+        }
+        ctx.restore();
+        return { x: a.x, y: a.y, w: maxw, h: Math.max(1, lines.length) * fs * 1.28 };
+    }
+
+    // 返回命中的文字标注下标（从最上层往下找），无命中返回 -1。ix/iy 为图片自然坐标。
+    function hitTestText(ix, iy) {
+        for (var i = annotations.length - 1; i >= 0; i--) {
+            var a = annotations[i];
+            if (a.type !== 'text') continue;
+            var b = measureTextAnno(a);
+            var pad = Math.max(4, (a.fontSize || 20) * 0.35);
+            if (ix >= b.x - pad && ix <= b.x + b.w + pad &&
+                iy >= b.y - pad && iy <= b.y + b.h + pad) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    // 把已提交的文字标注重新拉回编辑框：先从栈里摘掉它，再以其属性打开 textarea。
+    function reopenTextAnnotation(idx) {
+        var a = annotations.splice(idx, 1)[0];
+        redoStack.length = 0;
+        updateUndoRedoButtons();
+        var posC = imageToCanvas(a.x, a.y);
+        beginTextEdit(posC, { x: a.x, y: a.y }, a);
+        requestRender();
     }
 
     function commitTextEdit() {
@@ -744,6 +847,8 @@
         var ta = textEditor;
         textEditor = null;
         if (ta.parentNode) ta.parentNode.removeChild(ta);
+        // 二次编辑时按 Esc 取消：原样还原被摘掉的标注，避免编辑一半丢内容
+        if (ta._original) commitAnnotation(ta._original);
         requestRender();
     }
 
@@ -757,6 +862,7 @@
         highlighter: '<path d="M3 20h6"/><path d="M10.5 15.5l-3 3 1.5 1.5 3-1 7.5-7.5-2.5-2.5z"/><path d="M14.5 6.5l3 3"/>',
         text: '<path d="M6 19l6-14 6 14"/><path d="M8.8 13.5h6.4"/>',
         mosaic: '<rect x="5" y="5" width="4" height="4"/><rect x="13" y="5" width="4" height="4"/><rect x="9" y="9" width="4" height="4"/><rect x="5" y="13" width="4" height="4"/><rect x="13" y="13" width="4" height="4"/>',
+        watermark: '<path d="M4 18l4-12 4 12"/><path d="M14 18l4-12 4 12"/>',
         undo: '<path d="M9 8L4 13l5 5"/><path d="M4 13h9.5a5.5 5.5 0 0 1 0 11H11"/>',
         redo: '<path d="M15 8l5 5-5 5"/><path d="M20 13h-9.5a5.5 5.5 0 0 0 0 11H13"/>',
         save: '<path d="M12 4v11"/><path d="M7 10l5 5 5-5"/><path d="M5 20h14"/>',
@@ -822,7 +928,8 @@
             ['pen', 'chat.cropToolPen', '画笔'],
             ['highlighter', 'chat.cropToolHighlight', '荧光笔'],
             ['text', 'chat.cropToolText', '文字'],
-            ['mosaic', 'chat.cropToolMosaic', '马赛克']
+            ['mosaic', 'chat.cropToolMosaic', '马赛克'],
+            ['watermark', 'chat.cropToolWatermark', '水印']
         ];
         var toolGrp = document.createElement('div');
         toolGrp.className = 'crop-tool-group';
@@ -911,13 +1018,18 @@
         // 绘图工具下隐藏选区手柄/网格，避免误拖
         if (selectionBox) selectionBox.classList.toggle('crop-selection-box--drawing', !!DRAW_TOOLS[name]);
         if (canvas) canvas.style.cursor = (name === 'text') ? 'text' : 'crosshair';
+        // 选水印工具时，若选区已存在且尚无水印，自动铺一层（点击/改选项可再刷新）
+        if (name === 'watermark' && sel) ensureWatermark();
+        updateOptionsBar();
         requestRender();
     }
 
     function setColor(col) {
         currentColor = col;
         syncColorWidthActive();
-        if (textEditor) textEditor.style.color = col;
+        if (textEditor) { textEditor.style.color = col; textEditor._color = col; }
+        // 水印工具下改色实时作用到已铺的水印
+        if (currentTool === 'watermark') updateActiveWatermark();
     }
 
     function setWidth(w) {
@@ -940,6 +1052,159 @@
         if (left < 12) left = 12;
         toolbarEl.style.left = left + 'px';
         toolbarEl.style.top = top + 'px';
+        positionOptionsBar(left, top, th);
+    }
+
+    // 选项条贴着主工具栏：默认浮在工具栏下方（仿 QQ），下方放不下则翻到上方（随屏幕边缘自适应）。
+    function positionOptionsBar(toolbarLeft, toolbarTop, toolbarH) {
+        if (!optionsBarEl || optionsBarEl.style.display === 'none') return;
+        var ow = optionsBarEl.offsetWidth || 240;
+        var oh = optionsBarEl.offsetHeight || 40;
+        var left = toolbarLeft;
+        var top = toolbarTop + toolbarH + 8;
+        if (top + oh > overlay.clientHeight - 12) {
+            top = toolbarTop - oh - 8; // 下方贴边则翻到工具栏上方
+        }
+        if (top < 12) top = 12;
+        if (left + ow > overlay.clientWidth - 12) left = overlay.clientWidth - ow - 12;
+        if (left < 12) left = 12;
+        optionsBarEl.style.left = left + 'px';
+        optionsBarEl.style.top = top + 'px';
+    }
+
+    // ======================== Contextual options bar ========================
+    function ensureOptionsBar() {
+        if (optionsBarEl) return;
+        var bar = document.createElement('div');
+        bar.className = 'crop-options-bar';
+        bar.style.display = 'none';
+        bar.addEventListener('mousedown', function (e) { e.stopPropagation(); });
+        bar.addEventListener('touchstart', function (e) { e.stopPropagation(); }, { passive: true });
+        optionsBarEl = bar;
+    }
+
+    // 标签 + 滑块 + 数值的一行
+    function makeSlider(labelKey, fb, min, max, value, onInput) {
+        var row = document.createElement('label');
+        row.className = 'crop-opt-row';
+        var label = document.createElement('span');
+        label.className = 'crop-opt-label';
+        label.textContent = tr(labelKey, fb);
+        var input = document.createElement('input');
+        input.type = 'range';
+        input.className = 'crop-opt-slider';
+        input.min = min; input.max = max; input.value = value;
+        var val = document.createElement('span');
+        val.className = 'crop-opt-value';
+        val.textContent = value;
+        input.addEventListener('input', function () {
+            val.textContent = input.value;
+            onInput(Number(input.value));
+        });
+        row.appendChild(label);
+        row.appendChild(input);
+        row.appendChild(val);
+        return row;
+    }
+
+    // 按当前工具重建选项条内容；select / 形状 / 箭头 / 画笔 无独立选项则隐藏。
+    function updateOptionsBar() {
+        if (!optionsBarEl) return;
+        if (!sel || !OPTION_TOOLS[currentTool]) {
+            optionsBarEl.style.display = 'none';
+            return;
+        }
+        optionsBarEl.innerHTML = '';
+        if (currentTool === 'text') {
+            optionsBarEl.appendChild(makeSlider('chat.cropFontSize', '字号', 12, 80, currentFontSizePx, function (v) {
+                currentFontSizePx = v;
+                if (textEditor) {
+                    var scale = displayScale() || 1;
+                    var fsi = Math.max(8, Math.round(v / scale));
+                    textEditor._fontSizeImage = fsi;
+                    textEditor.style.fontSize = Math.round(fsi * scale) + 'px';
+                }
+            }));
+        } else if (currentTool === 'highlighter') {
+            optionsBarEl.appendChild(makeSlider('chat.cropOpacity', '透明度', 10, 90, Math.round(currentHighlightAlpha * 100), function (v) {
+                currentHighlightAlpha = v / 100;
+            }));
+        } else if (currentTool === 'mosaic') {
+            optionsBarEl.appendChild(makeSlider('chat.cropMosaicSize', '颗粒', 4, 40, currentMosaicBlock, function (v) {
+                currentMosaicBlock = v;
+            }));
+        } else if (currentTool === 'watermark') {
+            var row = document.createElement('label');
+            row.className = 'crop-opt-row';
+            var label = document.createElement('span');
+            label.className = 'crop-opt-label';
+            label.textContent = tr('chat.cropWatermarkText', '文字');
+            var input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'crop-opt-text';
+            input.value = currentWatermarkText;
+            input.placeholder = tr('chat.cropWatermarkDefault', '水印');
+            input.addEventListener('input', function () {
+                currentWatermarkText = input.value;
+                updateActiveWatermark();
+            });
+            // 输入框内的按键不冒泡到遮罩，避免被当成快捷键
+            input.addEventListener('keydown', function (e) { e.stopPropagation(); });
+            row.appendChild(label);
+            row.appendChild(input);
+            optionsBarEl.appendChild(row);
+            optionsBarEl.appendChild(makeSlider('chat.cropFontSize', '字号', 16, 96, currentWatermarkSizePx, function (v) {
+                currentWatermarkSizePx = v;
+                updateActiveWatermark();
+            }));
+        }
+        optionsBarEl.style.display = 'flex';
+    }
+
+    // ======================== Watermark helpers ========================
+    function findWatermark() {
+        for (var i = annotations.length - 1; i >= 0; i--) {
+            if (annotations[i].type === 'watermark') return annotations[i];
+        }
+        return null;
+    }
+
+    // 按当前选区铺/刷新一层斜铺文字水印。已有则原地更新，没有则提交一个新标注。
+    function ensureWatermark() {
+        var cs = clampSel(sel);
+        if (!cs) return;
+        var p1 = canvasToImage(cs.x, cs.y);
+        var p2 = canvasToImage(cs.x + cs.w, cs.y + cs.h);
+        var rect = {
+            x: Math.min(p1.x, p2.x), y: Math.min(p1.y, p2.y),
+            w: Math.abs(p2.x - p1.x), h: Math.abs(p2.y - p1.y)
+        };
+        var scale = displayScale() || 1;
+        var fontImg = Math.max(12, Math.round(currentWatermarkSizePx / scale));
+        var wm = findWatermark();
+        if (wm) {
+            wm.x = rect.x; wm.y = rect.y; wm.w = rect.w; wm.h = rect.h;
+            wm.text = currentWatermarkText || tr('chat.cropWatermarkDefault', '水印');
+            wm.color = currentColor; wm.fontSize = fontImg;
+        } else {
+            commitAnnotation({
+                type: 'watermark', x: rect.x, y: rect.y, w: rect.w, h: rect.h,
+                text: currentWatermarkText || tr('chat.cropWatermarkDefault', '水印'),
+                color: currentColor, fontSize: fontImg, alpha: 0.26
+            });
+        }
+        requestRender();
+    }
+
+    // 选项/调色板变动时，实时刷新已铺的水印（不新建）
+    function updateActiveWatermark() {
+        var wm = findWatermark();
+        if (!wm) return;
+        var scale = displayScale() || 1;
+        wm.text = currentWatermarkText || tr('chat.cropWatermarkDefault', '水印');
+        wm.color = currentColor;
+        wm.fontSize = Math.max(12, Math.round(currentWatermarkSizePx / scale));
+        requestRender();
     }
 
     function saveToFile() {
@@ -1006,6 +1271,7 @@
             selectionBox.style.display = 'none';
             selectionBadge.style.display = 'none';
             toolbarEl.style.display = 'none';
+            if (optionsBarEl) optionsBarEl.style.display = 'none';
             return;
         }
         var cs = clampSel(sel);
@@ -1013,6 +1279,7 @@
             selectionBox.style.display = 'none';
             selectionBadge.style.display = 'none';
             toolbarEl.style.display = 'none';
+            if (optionsBarEl) optionsBarEl.style.display = 'none';
             return;
         }
 
@@ -1088,7 +1355,15 @@
             var cp0 = clampPointToSel(pos.x, pos.y);
             var ip0 = canvasToImage(cp0.x, cp0.y);
             if (currentTool === 'text') {
-                beginTextEdit(cp0, ip0);
+                // 先看是否点中已有文字 —— 命中则拉回二次编辑，否则新建（issue 3）
+                var hitIdx = hitTestText(ip0.x, ip0.y);
+                if (hitIdx >= 0) reopenTextAnnotation(hitIdx);
+                else beginTextEdit(cp0, ip0);
+                return;
+            }
+            if (currentTool === 'watermark') {
+                // 水印覆盖整个选区，点击即按当前选区刷新一次（不走拖拽草稿）
+                ensureWatermark();
                 return;
             }
             annoDraft = makeDraft(ip0);
@@ -1292,6 +1567,7 @@
     // ======================== Actions ========================
     function hideActionBtns() {
         if (toolbarEl) toolbarEl.style.display = 'none';
+        if (optionsBarEl) optionsBarEl.style.display = 'none';
     }
 
     function clearSelection() {

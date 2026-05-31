@@ -2652,10 +2652,14 @@
             //   把 hide/等待/抓图/show 全放主进程是因为渲染器端 setTimeout 在 Pet 窗口
             //   hide 后会被 backgroundThrottling 拖慢到秒级，且多次 IPC 之间有时序风险。
             var selectedSourceId = S.selectedScreenSourceId;
-            if (selectedSourceId && window.electronDesktopCapturer
+            // 注意：即使没有预选源也要走原子化路径。原子化在主进程里把"含 Live2D 的 Pet 窗口"
+            // 一起 hide 掉再抓屏，是唯一能真正抹掉立绘的途径；下面的 renderer fallback 只能
+            // 对 Pet 的 DOM 做 visibility:hidden，盖不住 WebGL 合成层 —— 那正是"隐藏NEKO
+            // 画面刷新了但立绘还在"的根因。主进程在 sourceId 缺省时会自动取主屏。
+            if (window.electronDesktopCapturer
                 && typeof window.electronDesktopCapturer.captureSourceWithoutNeko === 'function') {
                 try {
-                    var atomic = await window.electronDesktopCapturer.captureSourceWithoutNeko(selectedSourceId);
+                    var atomic = await window.electronDesktopCapturer.captureSourceWithoutNeko(selectedSourceId || null);
                     if (atomic && atomic.success && atomic.dataUrl) {
                         return atomic.dataUrl;
                     } else if (atomic && atomic.error) {
