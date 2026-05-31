@@ -775,7 +775,14 @@
             if (e.key === 'Escape') { e.preventDefault(); cancelTextEdit(true); }
             else if ((e.key === 'Enter' || e.key === 'NumpadEnter') && !e.shiftKey) { e.preventDefault(); commitTextEdit(); }
         });
-        ta.addEventListener('blur', function () { commitTextEdit(); });
+        ta.addEventListener('blur', function (e) {
+            // 焦点移到选项条（字号滑块等）时不要提交——否则刚点滑块 textarea 就 blur 提交、
+            // 编辑器被移除，滑块的 input 回调拿到的 textEditor 已是 null，字号只影响后续文字
+            // 而非当前正在编辑的标注（Codex P2）。
+            var next = e.relatedTarget || document.activeElement;
+            if (next && optionsBarEl && optionsBarEl.contains(next)) return;
+            commitTextEdit();
+        });
         ta.addEventListener('input', autosize);
         workspaceEl.appendChild(ta);
         textEditor = ta;
