@@ -96,20 +96,18 @@
                 voiceKey: resistanceMessage.voiceKey,
                 streamPauseWithScene: false
             });
-            call(this.callbacks, 'applyGuideEmotion', null, performance.emotion || 'surprised', {
+            call(this.callbacks, 'applyGuideEmotion', null, 'angry', {
                 allowDuringInterrupt: true
             });
 
-            const cursorResistancePromise = normalizedOptions.suppressCursorReaction
-                ? Promise.resolve()
-                : Promise.resolve(
-                    this.cursor && typeof this.cursor.resistTo === 'function'
-                        ? this.cursor.resistTo(x, y, {
-                            motionDx: normalizedOptions.motionDx,
-                            motionDy: normalizedOptions.motionDy
-                        })
-                        : null
-                );
+            const cursorResistancePromise = Promise.resolve(
+                this.cursor && typeof this.cursor.resistTo === 'function'
+                    ? this.cursor.resistTo(x, y, {
+                        motionDx: normalizedOptions.motionDx,
+                        motionDy: normalizedOptions.motionDy
+                    })
+                    : null
+            );
             const interruptPerformancePromise = Promise.resolve(call(
                 this.callbacks,
                 'runInterruptResistPerformance',
@@ -208,7 +206,7 @@
                 streamPauseWithScene: false,
                 streamAllowDuringAngryExit: true
             });
-            call(this.callbacks, 'applyGuideEmotion', null, performance.emotion || 'angry', {
+            call(this.callbacks, 'applyGuideEmotion', null, 'angry', {
                 allowDuringInterrupt: true
             });
 

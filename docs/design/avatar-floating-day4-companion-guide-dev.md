@@ -1,15 +1,27 @@
 # Day 4 相处距离、主动陪伴与模型行为教程开发文档
 
-本文严格对齐 `avatar-floating-guide-feature-tree.md` 中 Day 4 的主线内容，并按当前代码实现校准导演时序。Day 4 的功能剧情仍是四段：对话节奏设置、动画/锁定/离开回来、隐私模式与主动视觉、收尾；代码层为了统一“每日第一句先高亮聊天窗”的规则，实际注册为 5 个 scene。
+本文严格对齐 `avatar-floating-guide-feature-tree.md` 中 Day 4 的主线内容，并以 `avatar-floating-7day-complete-guide-dev.md` 作为逐句导演、生命周期和验收基准。Day 4 的功能剧情仍是四段：对话节奏设置、动画/锁定/离开回来、隐私模式与主动视觉、收尾；代码层为了统一“每日第一句先高亮聊天窗”的规则，实际注册为 5 个 scene。
 
 剧场后“主动视觉邀请 / 小游戏邀请”不属于主线，统一放到独立支线文档。
 
 相关文档：
 
 - `docs/design/avatar-floating-guide-feature-tree.md`
+- `docs/design/avatar-floating-7day-complete-guide-dev.md`
 - `docs/design/avatar-floating-pc-global-overlay-migration-plan.md`
 - `docs/design/avatar-floating-post-theater-chat-branches.md`
 - `docs/design/home-yui-guide-lifecycle-modularization.md`
+
+## 完整指南对齐基线
+
+Day 4 的相处距离教学按本文 5 个 scene 落地；与完整指南对齐时重点遵守：
+
+1. 首句 `day4_intro_companion` 只高亮聊天窗，不提前打开设置。
+2. 设置类 scene 在 prepare 阶段打开最终侧边栏，台词开始时只高亮侧边栏容器或具体开关，不再高亮齿轮或整张设置弹窗。
+3. `day4_animation_tracking` 内部按阶段互斥切换动画侧边栏、锁定按钮、离开/回来按钮；切换前必须先清理上一段高光。
+4. `day4_privacy_mode` 只高亮 `#${p}-toggle-proactive-vision` 或其所在侧边栏，不点击、不改变开关状态，并保持隐私模式反向语义说明。
+5. 收尾 `day4_wrap` 先关闭设置弹窗和侧边栏，重新高亮聊天窗，并在约 70% cue 同步清理高光、Ghost Cursor 和外置聊天窗状态。
+6. round 开场由 `playAvatarFloatingRound(4)` 统一先执行 `ensureChatVisible()`，并在聊天窗打开后通过 `NekoHomeTutorialFeatureController.enforce()` 再次禁用 proactive/Galgame；首句聊天窗高光只能在这个前置完成后显示。
 
 ## 目标体验
 

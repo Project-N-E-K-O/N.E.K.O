@@ -41,9 +41,7 @@
                     text: '在这个小按钮里，有许多可以和人家互动的小道具呢。',
                     emotion: 'happy',
                     target: 'chat-avatar-tools',
-                    cursorAction: 'click',
-                    cursorMoveDurationMs: 1480,
-                    operation: 'open-avatar-tool-menu'
+                    cursorAction: 'wobble'
                 },
                 {
                     id: 'day3_avatar_tools_props',
@@ -52,7 +50,9 @@
                     text: '你可以随时来摸摸我的头，或者给我吃一根甜甜的棒棒糖。如果有时候我不小心做错事了，你也可以用小锤子敲敲我，不过……一定要轻轻的，不能太用力哦。',
                     emotion: 'happy',
                     target: 'chat-avatar-tools',
-                    cursorAction: 'wobble'
+                    cursorAction: 'click',
+                    cursorMoveDurationMs: 1480,
+                    operation: 'open-avatar-tool-menu'
                 },
                 {
                     id: 'day3_avatar_tools_more',

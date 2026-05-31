@@ -28,6 +28,7 @@
     const CURSOR_TRAIL_CORE_TAIL_WIDTH = 3.8;
     const CURSOR_TRAIL_HEAD_RADIUS = 15;
     const SMOOTH_CURSOR_SHOW_DURATION_MS = 560;
+    const PC_OVERLAY_CURSOR_EASE = Object.freeze([0.22, 1, 0.36, 1]);
     const CURSOR_TRAIL_ICON_URLS = Object.freeze([
         '/static/icons/send_icon.png',
         '/static/icons/paw_ui.png'
@@ -68,6 +69,39 @@
         } catch (_) {
             return false;
         }
+    }
+
+    function sampleCubicBezier(progress, x1, y1, x2, y2) {
+        const targetX = Math.max(0, Math.min(1, Number(progress) || 0));
+        const ax = 3 * x1 - 3 * x2 + 1;
+        const bx = -6 * x1 + 3 * x2;
+        const cx = 3 * x1;
+        const ay = 3 * y1 - 3 * y2 + 1;
+        const by = -6 * y1 + 3 * y2;
+        const cy = 3 * y1;
+        let low = 0;
+        let high = 1;
+        let t = targetX;
+        for (let index = 0; index < 12; index += 1) {
+            t = (low + high) / 2;
+            const x = ((ax * t + bx) * t + cx) * t;
+            if (x < targetX) {
+                low = t;
+            } else {
+                high = t;
+            }
+        }
+        return Math.max(0, Math.min(1, ((ay * t + by) * t + cy) * t));
+    }
+
+    function easePcOverlayCursorProgress(progress) {
+        return sampleCubicBezier(
+            progress,
+            PC_OVERLAY_CURSOR_EASE[0],
+            PC_OVERLAY_CURSOR_EASE[1],
+            PC_OVERLAY_CURSOR_EASE[2],
+            PC_OVERLAY_CURSOR_EASE[3]
+        );
     }
 
     function createPcOverlayBridge(doc) {
@@ -221,7 +255,7 @@
                 return true;
             },
             shouldSuppressDom() {
-                return remoteReady && !failed;
+                return active && !failed;
             },
             setSpotlights(rects) {
                 const spotlights = (Array.isArray(rects) ? rects : [])
@@ -233,12 +267,6 @@
                 const point = toScreenPoint(x, y);
                 send({
                     cursor: { visible: true, x: point.x, y: point.y, durationMs: 0 }
-                }, true);
-            },
-            setCursorPositionSilently(x, y) {
-                const point = toScreenPoint(x, y);
-                send({
-                    cursor: { visible: false, x: point.x, y: point.y, durationMs: 0 }
                 }, true);
             },
             moveCursorTo(x, y, durationMs, effect) {
@@ -448,6 +476,7 @@
             this.pcOverlayBridge = createPcOverlayBridge(this.document);
             this.cursorPosition = null;
             this.cursorVisible = false;
+            this.suppressedCursorMotion = null;
             this.cursorClickTimer = 0;
             this.activeClickStars = new Set();
             this.activeTrailParticles = new Set();
@@ -1518,6 +1547,7 @@
         }
 
         hasCursorPosition() {
+            this.updateSuppressedCursorMotion();
             return !!this.cursorPosition;
         }
 
@@ -1533,6 +1563,7 @@
         }
 
         getCursorPosition() {
+            this.updateSuppressedCursorMotion();
             if (!this.cursorPosition) {
                 return null;
             }
@@ -1544,10 +1575,129 @@
         }
 
         clearCursorPosition() {
+            this.finishSuppressedCursorMotion(false);
             this.cursorPosition = null;
             this.cursorVisible = false;
             this.cursorTrailLastPoint = null;
             this.cursorTrailLastAt = 0;
+        }
+
+        finishSuppressedCursorMotion(completed) {
+            const motion = this.suppressedCursorMotion;
+            if (!motion) {
+                return;
+            }
+            this.suppressedCursorMotion = null;
+            if (motion.timerId) {
+                window.clearTimeout(motion.timerId);
+                motion.timerId = 0;
+            }
+            if (completed) {
+                this.cursorPosition = { x: motion.endX, y: motion.endY };
+                this.cursorVisible = true;
+            }
+            if (typeof motion.resolve === 'function') {
+                motion.resolve(completed !== false);
+            }
+        }
+
+        updateSuppressedCursorMotion(now) {
+            const motion = this.suppressedCursorMotion;
+            if (!motion) {
+                return null;
+            }
+            const currentNow = Number.isFinite(Number(now)) ? Number(now) : performance.now();
+            if (motion.pauseCheck && motion.pauseCheck()) {
+                if (!motion.pausedAt) {
+                    motion.pausedAt = currentNow;
+                }
+                return this.cursorPosition;
+            }
+            if (motion.pausedAt) {
+                motion.pausedTotalMs += Math.max(0, currentNow - motion.pausedAt);
+                motion.pausedAt = 0;
+            }
+            const progress = motion.durationMs <= 0
+                ? 1
+                : Math.max(0, Math.min(1, (currentNow - motion.startedAt - motion.pausedTotalMs) / motion.durationMs));
+            const easedProgress = easePcOverlayCursorProgress(progress);
+            this.cursorPosition = {
+                x: motion.startX + ((motion.endX - motion.startX) * easedProgress),
+                y: motion.startY + ((motion.endY - motion.startY) * easedProgress)
+            };
+            this.cursorVisible = true;
+            if (progress >= 1) {
+                this.finishSuppressedCursorMotion(true);
+            }
+            return this.cursorPosition;
+        }
+
+        scheduleSuppressedCursorMotionTick() {
+            const motion = this.suppressedCursorMotion;
+            if (!motion) {
+                return;
+            }
+            if (motion.timerId) {
+                window.clearTimeout(motion.timerId);
+                motion.timerId = 0;
+            }
+            motion.timerId = window.setTimeout(() => {
+                const activeMotion = this.suppressedCursorMotion;
+                if (!activeMotion || activeMotion !== motion) {
+                    return;
+                }
+                if (activeMotion.cancelCheck && activeMotion.cancelCheck()) {
+                    this.finishSuppressedCursorMotion(false);
+                    return;
+                }
+                this.updateSuppressedCursorMotion(performance.now());
+                if (this.suppressedCursorMotion === activeMotion) {
+                    this.scheduleSuppressedCursorMotionTick();
+                }
+            }, 48);
+        }
+
+        animateSuppressedCursorPositionTo(x, y, durationMs, options) {
+            const normalizedOptions = options || {};
+            const pauseCheck = typeof normalizedOptions.pauseCheck === 'function'
+                ? normalizedOptions.pauseCheck
+                : null;
+            const cancelCheck = typeof normalizedOptions.cancelCheck === 'function'
+                ? normalizedOptions.cancelCheck
+                : null;
+            const startPoint = this.cursorPosition;
+            if (!startPoint) {
+                this.cursorPosition = { x: x, y: y };
+                this.cursorVisible = true;
+                return Promise.resolve(true);
+            }
+
+            const normalizedDurationMs = Math.max(0, Math.round(Number(durationMs) || 0));
+            if (normalizedDurationMs <= 0) {
+                this.finishSuppressedCursorMotion(false);
+                this.cursorPosition = { x: x, y: y };
+                this.cursorVisible = true;
+                return Promise.resolve(true);
+            }
+
+            this.finishSuppressedCursorMotion(false);
+            return new Promise((resolve) => {
+                this.suppressedCursorMotion = {
+                    startX: startPoint.x,
+                    startY: startPoint.y,
+                    endX: x,
+                    endY: y,
+                    durationMs: normalizedDurationMs,
+                    startedAt: performance.now(),
+                    pausedAt: 0,
+                    pausedTotalMs: 0,
+                    pauseCheck: pauseCheck,
+                    cancelCheck: cancelCheck,
+                    timerId: 0,
+                    resolve: resolve
+                };
+                this.scheduleSuppressedCursorMotionTick();
+            });
         }
 
         getSmoothCursorShowDurationMs(x, y) {
@@ -1561,33 +1711,9 @@
             return SMOOTH_CURSOR_SHOW_DURATION_MS;
         }
 
-        setCursorPositionSilently(x, y) {
-            if (!Number.isFinite(x) || !Number.isFinite(y)) {
-                return;
-            }
-            if (
-                this.isPcOverlayActive()
-                && this.pcOverlayBridge
-                && typeof this.pcOverlayBridge.setCursorPositionSilently === 'function'
-            ) {
-                this.pcOverlayBridge.setCursorPositionSilently(x, y);
-            }
-            this.ensureRoot();
-            this.cursorPosition = { x: x, y: y };
-            this.cursorVisible = false;
-            this.cursorTrailLastPoint = null;
-            this.cursorTrailLastAt = 0;
-            this.document.body.classList.remove('yui-guide-ghost-cursor-active');
-            if (this.cursorShell) {
-                this.cursorShell.style.transitionDuration = '0ms';
-                this.cursorShell.style.transform = 'translate(' + Math.round(x) + 'px, ' + Math.round(y) + 'px)';
-                this.cursorShell.hidden = true;
-                this.cursorShell.classList.remove('is-visible');
-            }
-        }
-
         showCursorAt(x, y) {
             this.ensureRoot();
+            this.updateSuppressedCursorMotion();
             const previous = this.cursorPosition;
             const glideDurationMs = this.getSmoothCursorShowDurationMs(x, y);
             if (this.isPcOverlayActive()) {
@@ -1597,13 +1723,16 @@
                     this.pcOverlayBridge.showCursorAt(x, y);
                 }
                 if (this.shouldSuppressDomForPcOverlay()) {
-                    this.cursorPosition = { x: x, y: y };
                     this.cursorVisible = true;
                     this.document.body.classList.remove('yui-guide-ghost-cursor-active');
                     if (this.cursorShell) {
                         this.cursorShell.hidden = true;
                         this.cursorShell.classList.remove('is-visible');
                     }
+                    if (previous && glideDurationMs > 0) {
+                        return this.animateSuppressedCursorPositionTo(x, y, glideDurationMs);
+                    }
+                    this.cursorPosition = { x: x, y: y };
                     return Promise.resolve(true);
                 }
             }
@@ -1634,6 +1763,7 @@
         }
 
         moveCursorTo(x, y, options) {
+            this.updateSuppressedCursorMotion();
             if (this.isPcOverlayActive()) {
                 const normalizedOptions = options || {};
                 const durationMs = Number.isFinite(normalizedOptions.durationMs) ? normalizedOptions.durationMs : 480;
@@ -1667,26 +1797,9 @@
                         this.cursorShell.hidden = true;
                         this.cursorShell.classList.remove('is-visible');
                     }
-                    return new Promise((resolve) => {
-                        const startedAt = Date.now();
-                        const tick = () => {
-                            if (cancelCheck && cancelCheck()) {
-                                resolve(false);
-                                return;
-                            }
-                            if (pauseCheck && pauseCheck()) {
-                                window.setTimeout(tick, 80);
-                                return;
-                            }
-                            if (Date.now() - startedAt >= durationMs) {
-                                this.cursorPosition = { x: x, y: y };
-                                this.cursorVisible = true;
-                                resolve(true);
-                                return;
-                            }
-                            window.setTimeout(tick, 80);
-                        };
-                        tick();
+                    return this.animateSuppressedCursorPositionTo(x, y, durationMs, {
+                        pauseCheck: pauseCheck,
+                        cancelCheck: cancelCheck
                     });
                 }
                 if (this.pcOverlayBridge && typeof this.pcOverlayBridge.moveCursorTo === 'function') {

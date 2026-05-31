@@ -25,13 +25,15 @@
 
 ## 迁移原则
 
-1. **PC 端全局 overlay 是视觉唯一来源**：教程进行中，PC 端 Ghost Cursor、高亮和花瓣由全局 overlay 渲染；Pet 页面和 Chat 页面只负责上报目标矩形、执行真实点击/打开面板等业务操作。
+1. **PC 端全局 overlay 是视觉唯一来源**：教程进行中，PC 端 Ghost Cursor、高亮和花瓣由全局 overlay 渲染；Pet 页面和 Chat 页面只负责上报目标矩形、回传 cursor screen 锚点、执行真实点击/打开面板等业务操作。外置聊天窗不得直接向 PC 全局 overlay 推送 cursor show/move/hide，避免和首页 Director 抢同一个 cursor 状态。
 2. **网页端不变**：非 Electron 环境继续用 `YuiGuideOverlay`，不加载 PC overlay bridge。
 3. **scene 语义不变**：`static/yui-guide-day1-home-guide.js` 至 `static/yui-guide-day7-graduation-guide.js` 的 scene id、台词拆分、operation 不因 overlay 迁移而改写。
 4. **坐标统一为 screen 坐标**：各窗口把目标 DOMRect 转成屏幕坐标后发给教程 overlay；overlay 内部再按当前 display bounds 转为本地坐标渲染。
 5. **点击穿透默认开启**：全局 overlay 始终 `setIgnoreMouseEvents(true)`；真正需要拦截的 skip 仍由原窗口里的 skip 按钮或主进程统一入口处理，不让 overlay 截获普通输入。
 6. **少量节点、少量 IPC**：每个 scene 只同步 primary、secondary、persistent、extra 中实际需要的矩形；动画在 overlay 窗口本地跑，不逐帧从业务窗口发位置。
-7. **可见 cursor 不瞬移**：所有可见 Ghost Cursor 的目标变化都必须带 `durationMs > 0`，由 overlay 本地平滑过渡；`durationMs: 0` 只允许用于首次显示前、隐藏状态下的坐标种子或同点 click/wobble 效果。
+7. **可见 cursor 不瞬移**：教程开始后 Ghost Cursor 保持可见直到收尾语音结束再消失；所有目标变化都必须带 `durationMs > 0` 并由 overlay 本地平滑过渡。`durationMs: 0` 只允许用于首次显示或同点 click/wobble 效果，后续跨段移动只复用可见锚点。
+8. **教程 overlay 必须压过 Pet/模型按钮**：PC 全局透明教程 overlay 在创建、复用、状态更新和 active run 期间必须保持 `setAlwaysOnTop(true, 'screen-saver') + moveTop()`；reassert 间隔不得高于 160ms，否则 Pet/模型按钮窗口后续 `moveTop()` 会在长距离 cursor 移动期间把 Ghost Cursor 和高亮整体压到下层。教程 clear、skip、angry exit 或 stop 后必须停止这条轻量 reassert。
+9. **教程期脸部跟踪 Ghost Cursor**：首页 `YuiGuideOverlay.getCursorPosition()` 是教程脸部跟踪的唯一 cursor 源。教程 look-at 性能会直接读取该点并驱动模型焦点；PC 全局 overlay 必须让这个 getter 在远端 Ghost Cursor 移动期间按 overlay 可见 cursor 的同一条 `cubic-bezier(.22,1,.36,1)` 曲线实时返回当前位置，避免模型脸部只跟踪起点/终点，或与屏幕上的 Ghost Cursor 产生缓动错位。
 
 ## 目标架构
 
@@ -106,7 +108,7 @@ type TutorialTargetRectReport = {
 3. Pet、Chat、Agent HUD、插件窗口、记忆页都走同一套 `requestTutorialTargetRect(selectorOrSemanticId)` 协议，避免每个窗口各写一套坐标换算。
 4. 多显示器时，主进程把 screen 坐标分发到对应 display overlay；跨屏移动时由 overlay service 在源/目标 display 间做连续隐藏/显示或分段移动。
 5. 所有坐标实现必须通过像素级校准：overlay 高亮中心与目标 DOMRect 中心误差在 2px 以内才算通过；超过误差时不能进入正式迁移。
-6. 跨窗口接力时，Chat/Pet/插件页都必须把上一个 Ghost Cursor screen 坐标作为下一段移动起点；如果某段必须隐藏 cursor，下一次可见前只能静默更新隐藏种子，不能在可见状态下用 0ms 改坐标。
+6. 跨窗口接力时，Chat/Pet/插件页都必须把上一个 Ghost Cursor screen 坐标作为下一段移动起点；若跨页过程中 cursor position 丢失，只能从最近一次可见锚点或真实目标中心恢复，并继续用平滑移动到新目标，不能用 0ms 改坐标。
 
 ## 七日教程迁移范围
 
@@ -174,6 +176,7 @@ type TutorialTargetRectReport = {
 | --- | --- | --- |
 | 透明 overlay window | 能创建全屏透明、置顶、点击穿透 BrowserWindow。 | 可行，`avatar-tool-cursor-service.js` 已具备基础。 |
 | 多显示器 | 每个 display 都有 overlay，窗口 bounds 跟随 display metrics。 | 可行，现有 cursor service 已有 display 管理。 |
+| Z-order 维持 | 教程 active run 存在时 overlay 以不高于 160ms 的间隔周期性轻量 `moveTop()`，防止同级 topmost 的 Pet/模型按钮窗口后续抢到最上层。 | 已纳入 PC tutorial overlay service；clear/stop 后停止。 |
 | 跨窗口坐标 | Pet 与 Chat 窗口 DOMRect 能转换为统一 screen 坐标。 | 可行，主进程已有 BrowserWindow bounds 查询和 `get-cursor-point` 思路。 |
 | 坐标精度 | Pet、Chat、设置、HUD 目标中心误差小于 2px。 | 需实测，必须在 Phase 0 完成。 |
 | 命令防串 | skip/destroy/新 run 后，旧 run 异步命令不会恢复高亮或 cursor。 | 需新增 `tutorialRunId` 与 `sequence` 校验。 |
@@ -196,7 +199,7 @@ type TutorialTargetRectReport = {
 ## 风险与降级
 
 1. **跨显示器移动断裂**：先分段处理，源 display 隐藏、目标 display 显示；后续再做跨 display 连续轨迹。
-2. **Wayland 置顶不稳定**：保留旧外置聊天窗 cursor 作为 Wayland fallback。
+2. **Wayland 置顶不稳定**：只在 PC 全局 overlay 不可用时回退旧外置聊天窗 cursor；一旦 PC 全局 overlay 可用，外置聊天窗只能回传锚点，不能同时渲染第二套 cursor。
 3. **截图误捕获 overlay**：截图/主动视觉前主进程隐藏教程 overlay，完成后恢复。
 4. **目标 rect 上报失败**：跳过该 spotlight 或使用语义 fallback，不使用屏幕中心。
 5. **旧命令复活高亮**：所有命令和 rect 回包必须携带 `tutorialRunId`/`sequence`，主进程丢弃旧 run 或过期序号。

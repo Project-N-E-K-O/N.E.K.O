@@ -31,6 +31,7 @@ takeover_return_control
 1. 网页端先显示激活提示：`tutorial.yuiGuide.lines.introActivationHint`
    - 中文：“点一下这里，我就能开始说话啦～”
 2. 桌面 Pet 外置聊天窗模式跳过首页输入框点击激活，不显示这一步输入框激活气泡。
+3. PC 全局 overlay 启用时，外置聊天窗只回传聊天输入区 screen 锚点；首页 Director 收到锚点后显示全局 Ghost Cursor，外置聊天窗不直接渲染或推送 PC cursor。
 
 高亮流程：
 
@@ -68,7 +69,7 @@ ghost cursor 流程：
 
 ghost cursor 流程：
 
-1. 激活后 cursor 保持在输入区附近。
+1. 激活后 cursor 保持在输入区附近；外置聊天窗模式下 cursor 由首页 Director 接住外置聊天窗锚点后显示在 PC 全局 overlay，不由聊天窗本地 cursor 持续驱动。
 2. 这一段主要由 YUI 模型演出承接，ghost cursor 不负责展示新 UI。
 
 时间 cue：
@@ -318,9 +319,9 @@ ghost cursor 流程：
 
 触发条件：
 
-1. 用户在 takeover 或 interruptible 场景中移动真实鼠标、试图抢回控制，且同时达到位移与加速度判断条件。
+1. 用户在 takeover 或 interruptible 场景中移动真实鼠标、试图抢回控制，且单次位移或加速度任一项达到有效打断判断条件。
 2. 未达到 angry exit 阈值时进入轻微抵抗。
-3. 未达到有效打断阈值、但位移和加速度足够明显时，只播放 Ghost Cursor 被动回弹，不暂停当前 scene 旁白。
+3. 未达到有效打断阈值时，只播放 Ghost Cursor 常驻轻微反方向回弹，不暂停当前 scene 旁白。
 
 文本输出：
 
@@ -339,9 +340,10 @@ ghost cursor 流程：
 
 1. 当前 cursor 动画取消或暂停。
 2. cursor 根据用户真实鼠标位置执行 `resistTo(x, y)`：
-   - 先朝真实鼠标移动方向的反方向拉扯一段；
-   - wobble；
-   - 再回到上一个目标点。
+   - 先记录 Ghost Cursor 当前可见停止位置；
+   - 朝真实鼠标移动方向的反方向拉扯一段；
+   - 再回到记录的停止位置；
+   - 连续触发时仍回到同一个停止位置，不能把动画中途坐标当成新原点导致 cursor 越来越偏。
 3. 抵抗语音结束后恢复原 scene。
 
 ## 8. 生气退出分支
@@ -395,8 +397,8 @@ ghost cursor 流程：
 
 1. 新增教程台词时，先确认文本输出位置：聊天窗口、overlay 气泡，还是外部页面 handoff。
 2. 每段台词最多有一个主 persistent spotlight；多个 UI 目标应使用 action/secondary/extra，而不是反复重设 persistent。
-3. ghost cursor 的移动必须跟真实 UI 操作一致：先高亮，再移动，再 click，再调用真实打开/开关 API。
-4. 所有可见 ghost cursor 位置变化都必须平滑过渡；`showAt`、`setCursorPositionSilently` 或外置聊天窗 cursor patch 只能在首次出现前、隐藏状态下作为种子坐标使用。
+3. ghost cursor 的移动必须跟真实 UI 操作一致：先高亮，再移动；需要模拟点击的场景到达目标后 click，真实打开/开关 API 必须在 click 动画开始的同一刻启动，不得等点击动画结束后才调用。Day 2 屏幕分享按钮是例外：Ghost Cursor 只移动并 wobble，不播放模拟点击动画，也不触发真实按钮 click。
+4. 所有可见 ghost cursor 位置变化都必须平滑过渡；每日主流程只记录可见锚点，首次出现后只使用当前可见位置、上一 scene 可见锚点或真实目标中心作为移动起点。
 5. 不能只移动 cursor 而不执行真实状态变更，也不能只改状态而没有可见 click 反馈。
 6. dashboard、settings 等跨面板流程结束时必须清理 retained、virtual、scene extra 和 action spotlight。
 7. 打断分支要暂停并恢复当前 scene，不能把抵抗文本当成新的主线 step。

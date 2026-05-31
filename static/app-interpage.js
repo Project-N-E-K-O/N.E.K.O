@@ -1803,6 +1803,35 @@
                 }
                 return true;
             }
+            case 'yui_guide_chat_cursor_anchor': {
+                if (isStandaloneChatPage()) return true;
+                var anchorX = Number(message.x);
+                var anchorY = Number(message.y);
+                if (!Number.isFinite(anchorX) || !Number.isFinite(anchorY)) {
+                    return true;
+                }
+                try {
+                    window.localStorage.setItem(YUI_GUIDE_EXTERNAL_CHAT_CURSOR_SCREEN_POINT_KEY, JSON.stringify({
+                        x: anchorX,
+                        y: anchorY,
+                        kind: typeof message.kind === 'string' ? message.kind : '',
+                        effect: typeof message.effect === 'string' ? message.effect : '',
+                        source: message.source || 'external-chat',
+                        at: message.timestamp || Date.now()
+                    }));
+                } catch (_) {}
+                window.dispatchEvent(new CustomEvent('neko:yui-guide:external-chat-cursor-anchor', {
+                    detail: {
+                        x: anchorX,
+                        y: anchorY,
+                        kind: typeof message.kind === 'string' ? message.kind : '',
+                        effect: typeof message.effect === 'string' ? message.effect : '',
+                        source: message.source || 'external-chat',
+                        timestamp: message.timestamp || Date.now()
+                    }
+                }));
+                return true;
+            }
             case 'yui_guide_set_avatar_tool_menu_open': {
                 if (!isStandaloneChatPage()) return true;
                 ensureYuiGuideExternalChatExpanded();
@@ -2029,6 +2058,35 @@
                                 applyYuiGuideChatCursor(cursorKind, cursorOptions);
                             }, 720);
                         }
+                        break;
+                    }
+                    case 'yui_guide_chat_cursor_anchor': {
+                        if (isStandaloneChatPage()) break;
+                        var channelAnchorX = Number(event.data.x);
+                        var channelAnchorY = Number(event.data.y);
+                        if (!Number.isFinite(channelAnchorX) || !Number.isFinite(channelAnchorY)) {
+                            break;
+                        }
+                        try {
+                            window.localStorage.setItem(YUI_GUIDE_EXTERNAL_CHAT_CURSOR_SCREEN_POINT_KEY, JSON.stringify({
+                                x: channelAnchorX,
+                                y: channelAnchorY,
+                                kind: typeof event.data.kind === 'string' ? event.data.kind : '',
+                                effect: typeof event.data.effect === 'string' ? event.data.effect : '',
+                                source: event.data.source || 'external-chat',
+                                at: event.data.timestamp || Date.now()
+                            }));
+                        } catch (_) {}
+                        window.dispatchEvent(new CustomEvent('neko:yui-guide:external-chat-cursor-anchor', {
+                            detail: {
+                                x: channelAnchorX,
+                                y: channelAnchorY,
+                                kind: typeof event.data.kind === 'string' ? event.data.kind : '',
+                                effect: typeof event.data.effect === 'string' ? event.data.effect : '',
+                                source: event.data.source || 'external-chat',
+                                timestamp: event.data.timestamp || Date.now()
+                            }
+                        }));
                         break;
                     }
                     case 'yui_guide_set_avatar_tool_menu_open': {
@@ -2625,8 +2683,46 @@
 
     var YUI_GUIDE_EXTERNAL_CHAT_CURSOR_SCREEN_POINT_KEY = 'neko_yui_guide_external_chat_cursor_screen_point_v1';
     var EXTERNAL_CHAT_CURSOR_EXPLICIT_MOVE_MS = 1500;
+    var EXTERNAL_CHAT_CURSOR_HANDOFF_MIN_MOVE_MS = 900;
+    var EXTERNAL_CHAT_CURSOR_HANDOFF_MAX_MOVE_MS = 1600;
     var yuiGuideChatCursorLastScreenPoint = null;
     var yuiGuideChatCursorVisible = false;
+
+    function getRecentYuiGuideChatCursorScreenPoint(maxAgeMs) {
+        try {
+            var raw = window.localStorage && window.localStorage.getItem(YUI_GUIDE_EXTERNAL_CHAT_CURSOR_SCREEN_POINT_KEY);
+            var parsed = raw ? JSON.parse(raw) : null;
+            if (!parsed || !Number.isFinite(parsed.x) || !Number.isFinite(parsed.y)) {
+                return null;
+            }
+            if (parsed.source !== 'home-director-handoff') {
+                return null;
+            }
+            var at = Number(parsed.at);
+            var ageLimit = Number.isFinite(maxAgeMs) ? maxAgeMs : 30000;
+            if (Number.isFinite(at) && Date.now() - at > ageLimit) {
+                return null;
+            }
+            return { x: parsed.x, y: parsed.y };
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function yuiGuideScreenPointToLocal(screenPoint) {
+        if (!screenPoint || !Number.isFinite(screenPoint.x) || !Number.isFinite(screenPoint.y)) {
+            return null;
+        }
+        var metrics = getYuiGuidePcOverlayMetrics();
+        var bounds = metrics.bounds || metrics.contentBounds || { x: 0, y: 0 };
+        var viewport = window.visualViewport || null;
+        var offsetLeft = viewport && Number.isFinite(Number(viewport.offsetLeft)) ? Number(viewport.offsetLeft) : 0;
+        var offsetTop = viewport && Number.isFinite(Number(viewport.offsetTop)) ? Number(viewport.offsetTop) : 0;
+        return {
+            x: screenPoint.x - Number(bounds.x || 0) - offsetLeft,
+            y: screenPoint.y - Number(bounds.y || 0) - offsetTop
+        };
+    }
 
     function resolveYuiGuideChatCursorMoveDurationMs(screenPoint, effect) {
         if (effect === 'move') {
@@ -2651,6 +2747,30 @@
         return Math.max(480, Math.min(1200, Math.round(distance * 0.62)));
     }
 
+    function resolveYuiGuideChatCursorHandoffMoveDurationMs(fromScreenPoint, toScreenPoint) {
+        if (
+            !fromScreenPoint
+            || !toScreenPoint
+            || !Number.isFinite(fromScreenPoint.x)
+            || !Number.isFinite(fromScreenPoint.y)
+            || !Number.isFinite(toScreenPoint.x)
+            || !Number.isFinite(toScreenPoint.y)
+        ) {
+            return EXTERNAL_CHAT_CURSOR_HANDOFF_MIN_MOVE_MS;
+        }
+        var distance = Math.hypot(
+            toScreenPoint.x - fromScreenPoint.x,
+            toScreenPoint.y - fromScreenPoint.y
+        );
+        if (distance < 2) {
+            return 0;
+        }
+        return Math.max(
+            EXTERNAL_CHAT_CURSOR_HANDOFF_MIN_MOVE_MS,
+            Math.min(EXTERNAL_CHAT_CURSOR_HANDOFF_MAX_MOVE_MS, Math.round(distance * 0.86))
+        );
+    }
+
     function rememberYuiGuideChatCursorScreenPoint(screenPoint, kind, effect) {
         if (!screenPoint || !Number.isFinite(screenPoint.x) || !Number.isFinite(screenPoint.y)) {
             return;
@@ -2661,8 +2781,38 @@
                 y: screenPoint.y,
                 kind: typeof kind === 'string' ? kind : '',
                 effect: typeof effect === 'string' ? effect : '',
+                source: 'external-chat',
                 at: Date.now()
             }));
+        } catch (_) {}
+    }
+
+    function reportYuiGuideChatCursorAnchor(screenPoint, kind, effect) {
+        if (!screenPoint || !Number.isFinite(screenPoint.x) || !Number.isFinite(screenPoint.y)) {
+            return;
+        }
+        var message = {
+            action: 'yui_guide_chat_cursor_anchor',
+            x: screenPoint.x,
+            y: screenPoint.y,
+            kind: typeof kind === 'string' ? kind : '',
+            effect: typeof effect === 'string' ? effect : '',
+            source: 'external-chat',
+            timestamp: Date.now()
+        };
+        try {
+            var tutorialRunId = getYuiGuidePcOverlayRunId();
+            if (tutorialRunId) {
+                message.tutorialRunId = tutorialRunId;
+            }
+        } catch (_) {}
+        try {
+            relayYuiGuideMessageToNative('pet', message);
+        } catch (_) {}
+        try {
+            if (nekoBroadcastChannel && typeof nekoBroadcastChannel.postMessage === 'function') {
+                nekoBroadcastChannel.postMessage(message);
+            }
         } catch (_) {}
     }
 
@@ -2673,12 +2823,12 @@
         }
 
         if (!kind) {
-            if (isYuiGuidePcOverlayAvailable()) {
-                sendYuiGuidePcOverlayPatch({ cursor: { visible: false } });
-            }
             yuiGuideChatCursorVisible = false;
             cancelYuiGuideChatCursorElementAnimations(cursor);
             cursor.style.transitionDuration = '';
+            cursor.hidden = true;
+            cursor.style.opacity = '0';
+            return;
         }
 
         var normalizedOptions = options || {};
@@ -2700,20 +2850,31 @@
         var cx = rect.left + rect.width / 2;
         var cy = rect.top + rect.height / 2;
         var localScreenPoint = yuiGuideLocalPointToScreen(cx, cy);
+        var handoffAnchorScreenPoint = null;
+        var handoffAnchorLocalPoint = null;
+        if (!yuiGuideChatCursorVisible || !yuiGuideChatCursorLastScreenPoint) {
+            handoffAnchorScreenPoint = getRecentYuiGuideChatCursorScreenPoint(30000);
+            handoffAnchorLocalPoint = yuiGuideScreenPointToLocal(handoffAnchorScreenPoint);
+            if (handoffAnchorScreenPoint && handoffAnchorLocalPoint) {
+                yuiGuideChatCursorLastScreenPoint = {
+                    x: handoffAnchorScreenPoint.x,
+                    y: handoffAnchorScreenPoint.y
+                };
+                yuiGuideChatCursorVisible = true;
+            }
+        }
         var pcMoveDurationMs = resolveYuiGuideChatCursorMoveDurationMs(localScreenPoint, normalizedOptions.effect || '');
+        if (handoffAnchorScreenPoint) {
+            pcMoveDurationMs = resolveYuiGuideChatCursorHandoffMoveDurationMs(
+                handoffAnchorScreenPoint,
+                localScreenPoint
+            );
+        }
         cursor.style.transitionDuration = pcMoveDurationMs > 0 ? pcMoveDurationMs + 'ms' : '';
         if (isYuiGuidePcOverlayAvailable()) {
             var screenPoint = localScreenPoint;
             rememberYuiGuideChatCursorScreenPoint(screenPoint, kind, normalizedOptions.effect || '');
-            sendYuiGuidePcOverlayPatch({
-                cursor: {
-                    visible: true,
-                    x: screenPoint.x,
-                    y: screenPoint.y,
-                    durationMs: pcMoveDurationMs,
-                    effect: normalizedOptions.effect || ''
-                }
-            });
+            reportYuiGuideChatCursorAnchor(screenPoint, kind, normalizedOptions.effect || '');
             yuiGuideChatCursorLastScreenPoint = { x: screenPoint.x, y: screenPoint.y };
             yuiGuideChatCursorVisible = true;
             cursor.hidden = true;
@@ -2726,9 +2887,17 @@
         cursor.style.backgroundImage = normalizedOptions && normalizedOptions.effect === 'click'
             ? "url('/static/assets/tutorial/ghost-cursor/click-ghost-cursor.png')"
             : "url('/static/assets/tutorial/ghost-cursor/default-ghost-cursor.png')";
+        if (handoffAnchorLocalPoint && pcMoveDurationMs > 0) {
+            cursor.style.transitionDuration = '0ms';
+            cursor.style.transform = 'translate3d(' + Math.round(handoffAnchorLocalPoint.x) + 'px, ' + Math.round(handoffAnchorLocalPoint.y) + 'px, 0)';
+            void cursor.offsetWidth;
+            cursor.style.transitionDuration = pcMoveDurationMs + 'ms';
+        }
         cursor.style.transform = 'translate3d(' + Math.round(cx) + 'px, ' + Math.round(cy) + 'px, 0)';
         yuiGuideChatCursorLastScreenPoint = { x: localScreenPoint.x, y: localScreenPoint.y };
         yuiGuideChatCursorVisible = true;
+        rememberYuiGuideChatCursorScreenPoint(localScreenPoint, kind, normalizedOptions.effect || '');
+        reportYuiGuideChatCursorAnchor(localScreenPoint, kind, normalizedOptions.effect || '');
 
         if (normalizedOptions && normalizedOptions.effect === 'click' && typeof cursor.animate === 'function') {
             cursor.animate([

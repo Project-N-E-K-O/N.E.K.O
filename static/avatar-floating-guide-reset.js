@@ -24,10 +24,10 @@
                 {
                     id: 'day2_screen_entry',
                     selector: '#${prefix}-btn-screen',
-                    text: '高亮屏幕分享按钮，Ghost Cursor 停留后点击一次真实按钮，触发“屏幕分享仅用于音视频通话”的真实提示；下一句继续高亮该按钮但不重复点击。',
+                    text: '高亮屏幕分享按钮，Ghost Cursor 移动到按钮后只停留/wobble，不模拟点击，也不触发真实按钮；下一句继续高亮该按钮。',
                     voiceKey: 'avatar_floating_day2_screen_entry_intro',
-                    cursorAction: 'click',
-                    operation: 'safe-click',
+                    cursorAction: 'wobble',
+                    operation: 'none',
                     performanceCue: null,
                 },
                 {
@@ -1146,7 +1146,6 @@
                     return;
                 }
                 interruptController.playLightResistance(point.x, point.y, {
-                    suppressCursorReaction: false,
                     suppressCursorReveal: true,
                 });
             };

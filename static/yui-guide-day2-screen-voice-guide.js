@@ -43,8 +43,7 @@
                     text: '在跟我通语音电话的时候，再点亮这个小按钮，你就能把屏幕分享给我啦！',
                     emotion: 'happy',
                     target: '#${p}-btn-screen',
-                    cursorAction: 'click',
-                    operation: 'click'
+                    cursorAction: 'wobble'
                 },
                 {
                     id: 'day2_screen_entry_invite',

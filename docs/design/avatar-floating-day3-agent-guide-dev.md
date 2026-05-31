@@ -1,15 +1,26 @@
 # Day 3 互动、娱乐与摸得到的陪伴教程开发文档
 
-本文严格对齐 `avatar-floating-guide-feature-tree.md` 中 Day 3 的主线内容。文件名仍保留 `avatar-floating-day3-agent-guide-dev.md`，但 Day 3 不再讲 Agent；Agent、任务 HUD 和插件管理主线属于 Day 6。
+本文严格对齐 `avatar-floating-guide-feature-tree.md` 中 Day 3 的主线内容，并以 `avatar-floating-7day-complete-guide-dev.md` 作为逐句导演、生命周期和验收基准。文件名仍保留 `avatar-floating-day3-agent-guide-dev.md`，但 Day 3 不再讲 Agent；Agent、任务 HUD 和插件管理主线属于 Day 6。
 
 Day 3 每日开场小剧场只包含四段：聊天窗工具区、Avatar 互动工具、Galgame 与小游戏、收尾。点歌台、字幕翻译、备忘/学习陪伴只属于剧场后聊天窗支线，不扩写进 Day 3 主线。
 
 相关文档：
 
 - `docs/design/avatar-floating-guide-feature-tree.md`
+- `docs/design/avatar-floating-7day-complete-guide-dev.md`
 - `docs/design/avatar-floating-pc-global-overlay-migration-plan.md`
 - `docs/design/avatar-floating-post-theater-chat-branches.md`
 - `docs/design/home-yui-guide-lifecycle-modularization.md`
+
+## 完整指南对齐基线
+
+Day 3 的聊天窗工具、Avatar 工具、Galgame 和收尾必须同时满足完整指南的通用约束：
+
+1. 首句只高亮 composer 区域，外置聊天窗使用 kind `input`；不高亮整个聊天窗，也不逐个扫左侧/右侧工具栏。
+2. Avatar 工具阶段只持续高亮真实 Avatar 工具按钮，菜单前三个道具只展示入口，不再高亮、不让 Ghost Cursor 依次划过，也不触发真实消耗。
+3. Galgame 阶段只高亮 Galgame 按钮；若真实出现 `mini_game_invite` 三个选项，只允许圆形高亮真实选项，不使用猫耳、猫爪或第二层外框。
+4. Avatar 工具按钮与 Galgame 按钮都使用圆形图片高亮，不能与 composer 大区域高光同时存在。
+5. 收尾前必须关闭工具菜单和“更多”菜单，最终句约 70% cue 同步清理内置/外置高光、工具区 spotlight 和 Ghost Cursor。
 
 ## 目标体验
 
@@ -58,6 +69,19 @@ PC 端必须由全局 overlay 绘制 composer 区域、Avatar 互动工具按钮
 
 ## 主线阶段
 
+当前 `static/yui-guide-day3-interaction-guide.js` 把四个产品阶段拆成 8 个 scene：
+
+| scene | target | cursor/operation | 说明 |
+| --- | --- | --- | --- |
+| `day3_chat_tools` | 首句由 Director 特判为 composer 区域 | intro wobble | 配置文件不写 target，Director 在首个 scene 用 `.composer-panel`/输入区作为高亮。 |
+| `day3_avatar_tools` | `chat-avatar-tools` | `wobble` | 先指认 Avatar 互动工具按钮，不打开菜单。 |
+| `day3_avatar_tools_props` | `chat-avatar-tools` | `click` + `open-avatar-tool-menu`，`cursorMoveDurationMs: 1480` | 在“摸摸我的头/棒棒糖/小锤子”这句播放时，Ghost Cursor 模拟点击并通过聊天窗 host API 打开 Avatar 工具菜单。 |
+| `day3_avatar_tools_more` | `chat-avatar-tools` | `wobble` | 继续保留工具按钮高亮。 |
+| `day3_galgame_games` | `chat-galgame` | `move`，`cleanupBefore: true` | 进入前清理 Avatar 工具菜单与高亮。 |
+| `day3_galgame_choices` | `chat-galgame` | `wobble` | 不强制开启 Galgame。 |
+| `day3_wrap` | `chat-window` | `wobble` + `cleanup` | 收尾第一句，清理临时菜单。 |
+| `day3_wrap_ready` | `chat-window` | `wobble` + `petalTransition` | 最终花瓣 cue 与完成态。 |
+
 ### 阶段 1：聊天窗工具区
 
 - 动作：台词进入聊天窗后，不高亮整个聊天窗；primary 高亮聊天输入区加工具栏所在的 composer 区域。外置聊天窗模式使用 `setExternalizedChatSpotlight('input')` 和 `setExternalizedChatCursor('input')`，让独立聊天窗的输入区/工具栏区域显示引导。Ghost Cursor 在该区域中心 wobble，不打开大型弹窗，不逐个解释点歌台、翻译或图片工具。
@@ -65,7 +89,7 @@ PC 端必须由全局 overlay 绘制 composer 区域、Avatar 互动工具按钮
 
 ### 阶段 2：Avatar 互动工具
 
-- 动作：上一句播放完后，action spotlight 平滑切到 Avatar 互动工具按钮，工具栏按钮统一使用 `static/assets/tutorial/highlight/circle-highlight.png` 圆形图片高亮。若聊天窗进入窄布局，只允许为了找到真实按钮而打开“更多”菜单。Ghost Cursor 用更慢的节奏移动到 Avatar 互动工具按钮并播放 click 效果；真实展开道具菜单时统一调用 `reactChatWindowHost.setAvatarToolMenuOpen(true, 'avatar-floating-guide-open-avatar-tool-menu')` 或外置聊天窗 BroadcastChannel API，不通过放开鼠标禁用来点击 DOM。菜单出现后，Avatar 互动工具按钮必须持续保持主高亮直到本阶段台词结束；不再高亮棒棒糖、猫爪、锤子三个现有道具，Ghost Cursor 不移动到三个道具上。外置聊天窗模式 spotlight 和 cursor 都保持在 `avatar-tools`。三个道具只展示入口，不自动消耗、不对模型触发真实互动；台词结束或进入下一阶段前收起临时菜单。
+- 动作：上一句播放完后，action spotlight 平滑切到 Avatar 互动工具按钮，工具栏按钮统一使用 `static/assets/tutorial/highlight/circle-highlight.png` 圆形图片高亮。第一句只指认按钮并 wobble，不打开菜单。第二句“你可以随时来摸摸我的头……”播放时，Ghost Cursor 用约 1480ms 的慢速移动到 Avatar 互动工具按钮并播放 click 效果；真实展开道具菜单时统一调用 `reactChatWindowHost.setAvatarToolMenuOpen(true, 'avatar-floating-guide-open-avatar-tool-menu')` 或外置聊天窗 BroadcastChannel API，不通过放开鼠标禁用来点击 DOM。菜单出现后，Avatar 互动工具按钮必须持续保持主高亮直到本阶段台词结束；不再高亮棒棒糖、猫爪、锤子三个现有道具，Ghost Cursor 不移动到三个道具上。外置聊天窗模式 spotlight 和 cursor 都保持在 `avatar-tools`。三个道具只展示入口，不自动消耗、不对模型触发真实互动；台词结束或进入下一阶段前收起临时菜单。
 - 台词拆分：
   1. “在这个小按钮里，有许多可以和人家互动的小道具呢。”
   2. “你可以随时来摸摸我的头，或者给我吃一根甜甜的棒棒糖。如果有时候我不小心做错事了，你也可以用小锤子敲敲我，不过……一定要轻轻的，不能太用力哦。”
@@ -73,7 +97,7 @@ PC 端必须由全局 overlay 绘制 composer 区域、Avatar 互动工具按钮
 
 ### 阶段 3：Galgame 与小游戏
 
-- 动作：进入本段前先收起道具菜单，并清理 Avatar 互动工具按钮高亮。高亮 Galgame 模式按钮时只保留一个圆形图片高亮，工具栏按钮继续使用 `static/assets/tutorial/highlight/circle-highlight.png`，不显示左右猫耳、不叠加第二个圆形框；若按钮被折进“更多”菜单，只允许为了找到真实按钮而打开“更多”菜单。Ghost Cursor 从上一个位置平滑移动到 Galgame 按钮并 wobble，不强制点击、不改变用户设置。小游戏邀请只说明会以真实 `choicePrompt.source === 'mini_game_invite'` 或有 handler 的聊天窗选项出现，不伪造一局。
+- 动作：进入本段前先收起道具菜单，并清理 Avatar 互动工具按钮高亮。高亮 Galgame 模式按钮时只保留一个圆形图片高亮，工具栏按钮继续使用 `static/assets/tutorial/highlight/circle-highlight.png`，不显示左右猫耳、不叠加第二个圆形框；若按钮被折进“更多”菜单，只允许为了找到真实按钮而打开“更多”菜单。Ghost Cursor 从上一个位置平滑移动到 Galgame 按钮并 wobble，不强制点击、不改变用户设置。小游戏邀请只说明会以真实 `choicePrompt.source === 'mini_game_invite'` 或有 handler 的聊天窗选项出现，不伪造一局；若真实出现三个选项，只能对真实选项做圆形高亮，不能再叠 composer 大区或第二层外框。
 - 台词拆分：
   1. “快点开这个【Galgame模式】！进去之后就像我们在进行一场专属的互动大冒险呢。”
   2. “你选的每一个对话，都会带我们走向完全未知的惊喜故事，我都等不及啦，快来选一个你最心动的回答吧！”
