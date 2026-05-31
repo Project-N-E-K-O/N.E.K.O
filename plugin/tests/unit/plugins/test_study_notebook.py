@@ -1,0 +1,266 @@
+from __future__ import annotations
+
+from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
+
+import pytest
+
+from plugin.plugins.study_companion.doc_exporter import DocExporter
+from plugin.plugins.study_companion.entry_notebook import _NotebookEntriesMixin
+from plugin.plugins.study_companion.models import DocExportConfig
+from plugin.plugins.study_companion.store import StudyStore
+from plugin.plugins.study_companion.store_notebook import NotebookStore
+from plugin.plugins.study_companion.tutor_llm_agent_notebook import (
+    expand_note,
+    summarize_to_note,
+)
+from plugin.sdk.plugin import Ok
+
+pytestmark = pytest.mark.unit
+
+
+class _Logger:
+    def __init__(self) -> None:
+        self.warnings: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def warning(self, *args, **kwargs):
+        self.warnings.append((args, kwargs))
+        return None
+
+    def info(self, *args, **kwargs):
+        return None
+
+    def debug(self, *args, **kwargs):
+        return None
+
+    def error(self, *args, **kwargs):
+        return None
+
+
+class _EntryHarness(_NotebookEntriesMixin):
+    def __init__(self, notebook_store: NotebookStore) -> None:
+        self._notebook_store = notebook_store
+        self._agent = None
+        self._state = SimpleNamespace(active_mode="companion", last_ocr_text="")
+        self._lock = _AsyncNoopLock()
+        self.logger = _Logger()
+
+
+class _AsyncNoopLock:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class _FakeNotebookAgent:
+    def __init__(self) -> None:
+        self._config = SimpleNamespace(language="zh-CN")
+        self.calls: list[dict[str, str]] = []
+        self.message_texts: list[str] = []
+
+    async def _call_model(self, messages, *, operation, model_group_override=None):
+        self.calls.append(
+            {"operation": operation, "model_group": str(model_group_override or "")}
+        )
+        self.message_texts.append(str(messages[-1]["content"]))
+        if operation == "expand_note":
+            return "> [!ai]\n> 补充一个例子。"
+        return "# 标题\n\n## 要点\n\n- A\n\n### 细节\n\nB"
+
+
+def _make_store(tmp_path) -> tuple[StudyStore, NotebookStore, _Logger]:
+    logger = _Logger()
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", logger)
+    store.open()
+    return store, NotebookStore(store), logger
+
+
+def test_notebook_store_crud_search_and_topic_counts(tmp_path) -> None:
+    store, notebooks, logger = _make_store(tmp_path)
+    try:
+        store.ensure_topic(topic_id="closure", name="Closure", subject="cs")
+        notebook = notebooks.create_notebook(name="JavaScript", sort_order=2)
+        note = notebooks.create_note(
+            notebook_id=notebook.id,
+            title="Closure",
+            content="# Closure\n\n**闭包** keeps outer variables.",
+            source_type="session",
+            source_ref="session-1",
+            topic_ids=["closure"],
+            tags=["js", "function"],
+        )
+
+        assert note.content_plain == "Closure 闭包 keeps outer variables."
+        assert note.snippet.startswith("Closure")
+        assert notebooks.list_notes(search_query="闭包")[0].id == note.id
+        assert notebooks.get_notes_by_topic("closure")[0].id == note.id
+        assert notebooks.count_notes_by_topic() == {"closure": 1}
+
+        updated = notebooks.upsert_note(
+            note_id=note.id,
+            notebook_id=notebook.id,
+            title="Closure updated",
+            content="closure update",
+            source_type="topic",
+            source_ref="closure",
+            topic_ids=["closure"],
+            tags=["updated"],
+        )
+        assert updated.source_type == "session"
+        assert updated.source_ref == "session-1"
+        assert updated.tags == ["updated"]
+        assert any(
+            "source_type update ignored" in str(args[0])
+            for args, _kwargs in logger.warnings
+        )
+
+        deleted = notebooks.delete_notebook(notebook.id)
+        assert deleted == {"deleted": 1, "notes_unlinked": 1}
+        assert notebooks.get_note(note.id).notebook_id is None
+    finally:
+        store.close()
+
+
+def test_notebook_search_all_and_note_id_export(tmp_path) -> None:
+    store, notebooks, _logger = _make_store(tmp_path)
+    try:
+        note = notebooks.create_note(
+            title="Derivative",
+            content="## 要点\n\n导数描述瞬时变化率。",
+            topic_ids=["calculus"],
+            tags=["math"],
+        )
+
+        result = notebooks.search_all("导数")
+        assert result["notes"][0]["id"] == note.id
+
+        exported = DocExporter(
+            store, config=DocExportConfig(enabled=True)
+        ).export(fmt="markdown", note_ids=[note.id], title="Selected Notes")
+        assert "# Selected Notes" in exported.markdown
+        assert "## Derivative" in exported.markdown
+        assert "导数描述瞬时变化率" in exported.markdown
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_notebook_entries_serialize_dataclasses(tmp_path) -> None:
+    store, notebooks, _logger = _make_store(tmp_path)
+    harness = _EntryHarness(notebooks)
+    try:
+        created = await harness.study_notebook_create(name="Physics")
+        assert isinstance(created, Ok)
+        notebook_id = created.value["notebook"]["id"]
+
+        saved = await harness.study_note_upsert(
+            notebook_id=notebook_id,
+            title="Force",
+            content="F = ma",
+            topic_ids=["mechanics"],
+            tags=["formula"],
+        )
+        assert isinstance(saved, Ok)
+        note_id = saved.value["note"]["id"]
+
+        listed = await harness.study_note_list(notebook_id=notebook_id)
+        assert isinstance(listed, Ok)
+        assert listed.value["notes"][0]["id"] == note_id
+
+        searched = await harness.study_note_search_all(query="Force")
+        assert isinstance(searched, Ok)
+        assert searched.value["notes"][0]["title"] == "Force"
+    finally:
+        store.close()
+
+
+def test_notebook_filter_semantics_are_explicit(tmp_path) -> None:
+    store, notebooks, _logger = _make_store(tmp_path)
+    try:
+        notebook = notebooks.create_notebook(name="Filed")
+        filed = notebooks.create_note(notebook_id=notebook.id, title="Filed", content="a")
+        unfiled = notebooks.create_note(title="Unfiled", content="b")
+
+        assert {note.id for note in notebooks.list_notes(notebook_id=None)} == {
+            filed.id,
+            unfiled.id,
+        }
+        assert [
+            note.id
+            for note in notebooks.list_notes(
+                notebook_filter="unfiled", notebook_id=None
+            )
+        ] == [unfiled.id]
+        assert [
+            note.id
+            for note in notebooks.list_notes(notebook_id=notebook.id)
+        ] == [filed.id]
+    finally:
+        store.close()
+
+
+def test_notebook_search_falls_back_to_like_when_fts_errors(tmp_path) -> None:
+    store, notebooks, logger = _make_store(tmp_path)
+    try:
+        note = notebooks.create_note(title="Fallback", content="LIKE fallback target")
+        with store._lock:
+            conn = store._require_conn()
+            conn.execute("DROP TABLE notes_fts")
+            conn.commit()
+
+        results = notebooks.list_notes(search_query="fallback")
+
+        assert [item.id for item in results] == [note.id]
+        assert any("FTS search failed" in str(args[0]) for args, _ in logger.warnings)
+    finally:
+        store.close()
+
+
+def test_notebook_store_serializes_concurrent_upserts(tmp_path) -> None:
+    store, notebooks, _logger = _make_store(tmp_path)
+    try:
+        notebook = notebooks.create_notebook(name="Concurrent")
+
+        def create(index: int) -> str:
+            return notebooks.create_note(
+                notebook_id=notebook.id,
+                title=f"Note {index}",
+                content=f"content {index}",
+            ).id
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            ids = list(executor.map(create, range(12)))
+
+        assert len(set(ids)) == 12
+        assert len(notebooks.list_notes(notebook_id=notebook.id, limit=20)) == 12
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_notebook_llm_operations_use_expected_model_tiers() -> None:
+    agent = _FakeNotebookAgent()
+
+    expanded = await expand_note(agent, "原始内容", topic_context="topic")
+    summarized = await summarize_to_note(agent, "source text", source_type="session")
+
+    assert expanded.reply.startswith("原始内容")
+    assert "> [!ai]" in expanded.reply
+    assert summarized.payload["title"] == "标题"
+    assert agent.calls == [
+        {"operation": "expand_note", "model_group": "tutor"},
+        {"operation": "summarize_to_note", "model_group": "summary"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_notebook_llm_operations_truncate_long_sources() -> None:
+    agent = _FakeNotebookAgent()
+
+    await expand_note(agent, "x" * 8500)
+    await summarize_to_note(agent, "y" * 12500)
+
+    assert "...[truncated 500 chars]" in agent.message_texts[0]
+    assert "...[truncated 500 chars]" in agent.message_texts[1]

@@ -154,6 +154,24 @@ entry = "surfaces/note_exporter.tsx"
 permissions = ["state:read", "action:call"]
 
 [[plugin.ui.guide]]
+id = "notebook-panel"
+title = "Study Notebook"
+entry = "surfaces/notebook_panel.tsx"
+permissions = ["state:read", "action:call"]
+
+[[plugin.ui.guide]]
+id = "note-editor"
+title = "Note Editor"
+entry = "surfaces/note_editor.tsx"
+permissions = ["state:read", "action:call"]
+
+[[plugin.ui.guide]]
+id = "note-search"
+title = "Study Search"
+entry = "surfaces/note_search.tsx"
+permissions = ["state:read", "action:call"]
+
+[[plugin.ui.guide]]
 id = "habit-dashboard"
 title = "Habit Dashboard"
 entry = "surfaces/habit_dashboard.tsx"
@@ -181,6 +199,12 @@ permissions = ["state:read", "action:call"]
 id = "quickstart"
 title = "Study Companion Quickstart"
 entry = "surfaces/quickstart.tsx"
+permissions = ["state:read"]
+
+[[plugin.ui.docs]]
+id = "onboarding"
+title = "Study Companion Onboarding"
+entry = "onboarding.md"
 permissions = ["state:read"]
 
 [plugin.i18n]

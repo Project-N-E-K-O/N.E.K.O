@@ -19,6 +19,7 @@ def build_status_payload(
     state: StudyState,
     history: list[dict[str, Any]] | None = None,
     knowledge: dict[str, Any] | None = None,
+    recent_notes: list[dict[str, Any]] | None = None,
     is_first_run: bool = False,
 ) -> dict[str, Any]:
     knowledge_payload = json_copy(knowledge or {})
@@ -61,6 +62,7 @@ def build_status_payload(
         "habit": knowledge_payload.get("habit") or {},
         "review_queue": knowledge_payload.get("review_queue") or [],
         "memory_deck": knowledge_payload.get("memory_deck") or {},
+        "recent_notes": json_copy(recent_notes or []),
         "weak_topics": knowledge_payload.get("weak_topics") or [],
         "mastery_overview": knowledge_payload.get("mastery_overview") or [],
         "config": config.to_dict(),

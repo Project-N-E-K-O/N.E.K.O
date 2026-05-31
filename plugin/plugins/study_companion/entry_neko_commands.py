@@ -274,12 +274,12 @@ class _NekoCommandsMixin:
         handler_name = _NEKO_COMMAND_HANDLERS.get(cmd)
         if handler_name is None:
             self.logger.warning("_on_neko_command unknown command: {}", cmd)
-            return Err(SdkError(f"unknown command: {cmd}"))
+            return Err(SdkError("unknown command: " + cmd))
 
         handler = getattr(self, handler_name, None)
         if handler is None:
             self.logger.error("_on_neko_command handler not found: {}", handler_name)
-            return Err(SdkError(f"handler not found: {handler_name}"))
+            return Err(SdkError("handler not found: " + handler_name))
 
         if cmd in _INTERRUPT_COMMANDS:
             current = self._interruptible_task

@@ -1,6 +1,6 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import process from 'node:process'
 import ts from 'typescript'
@@ -189,8 +189,12 @@ function createCheckFile(entryPath, tempDir, index, surface, tomlPath) {
   const stripped = source
     .replace(/^\s*import[\s\S]*?from\s+['"](?:@neko\/plugin-ui|neko:ui)['"]\s*;?\s*/gm, '')
     .replace(/^\s*import\s+['"](?:@neko\/plugin-ui|neko:ui)['"]\s*;?\s*/gm, '')
-  const checkPath = join(tempDir, `surface-${index}.tsx`)
+  const relativeEntryPath = relative(repoRoot, entryPath)
+  const checkPath = relativeEntryPath.startsWith('..') || isAbsolute(relativeEntryPath)
+    ? join(tempDir, `surface-${index}.tsx`)
+    : join(tempDir, relativeEntryPath)
   const prefixLines = 6
+  mkdirSync(dirname(checkPath), { recursive: true })
   writeFileSync(
     checkPath,
     `/// <reference path="${hostedUiGlobalsPath}" />\nimport * as NekoUi from "@neko/plugin-ui";\nimport type { PluginSurfaceProps, HostedAction, JsonSchema, HostedApi } from "@neko/plugin-ui";\nconst { ${[
@@ -276,6 +280,7 @@ function main() {
       target: ts.ScriptTarget.ES2020,
       moduleResolution: ts.ModuleResolutionKind.Bundler,
       baseUrl: repoRoot,
+      rootDirs: [tempDir, repoRoot],
       paths: {
         '@neko/plugin-ui': ['plugin/sdk/hosted-ui'],
       },
