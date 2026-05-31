@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -649,6 +650,77 @@ async def test_subscribe_neko_commands_handles_missing_host_ctx(
     finally:
         plugin._host_ctx = host_ctx
         await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_subscribe_neko_commands_uses_messages_bus_without_transport(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Record:
+        metadata = {
+            "topic": "neko.study_command",
+            "payload": {"command": "show_progress"},
+        }
+        description = "neko.study_command"
+        raw = {}
+
+    class _Delta:
+        added = (_Record(),)
+
+    class _Watcher:
+        def __init__(self) -> None:
+            self.callback = None
+            self.started = False
+            self.stopped = False
+
+        def subscribe(self, *, on: str = "add"):
+            def _decorator(callback):
+                self.callback = callback
+                return callback
+
+            return _decorator
+
+        def start(self):
+            self.started = True
+            return self
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    class _MessageList:
+        def __init__(self, watcher: _Watcher) -> None:
+            self.watcher = watcher
+
+        def watch(self, *_args, **_kwargs):
+            return self.watcher
+
+    class _Messages:
+        def __init__(self, watcher: _Watcher) -> None:
+            self.watcher = watcher
+
+        async def get(self, **_kwargs):
+            return _MessageList(self.watcher)
+
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    watcher = _Watcher()
+    ctx = _Ctx(tmp_path)
+    delattr(ctx, "transport")
+    ctx.bus = SimpleNamespace(messages=_Messages(watcher))
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    try:
+        assert isinstance(result, Ok)
+        assert watcher.started
+        assert plugin._neko_command_watcher is not None
+
+        assert watcher.callback is not None
+        watcher.callback(_Delta())
+
+        await _wait_for_text(ctx, "暂无掌握度数据")
+    finally:
+        await plugin.shutdown()
+    assert watcher.stopped
 
 
 @pytest.mark.asyncio

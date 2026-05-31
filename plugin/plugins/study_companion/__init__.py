@@ -215,6 +215,7 @@ class StudyCompanionPlugin(
         self._interruptible_task: asyncio.Task[None] | None = None
         self._neko_command_transport: Any | None = None
         self._neko_command_handler: Any | None = None
+        self._neko_command_watcher: Any | None = None
         self._worker_crash_count = 0
         self._worker_last_crash_time = 0.0
 
