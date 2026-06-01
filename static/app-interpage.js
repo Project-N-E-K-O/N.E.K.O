@@ -25,8 +25,6 @@
     const S = window.appState;
     // const C = window.appConst;  // not used in this module currently
     const MAIN_UI_HIDDEN_BY_MODEL_MANAGER_KEY = '__NEKO_MAIN_UI_HIDDEN_BY_MODEL_MANAGER';
-    const ICEBREAKER_BRIDGE_STORAGE_KEY = 'neko_new_user_icebreaker_bridge_event';
-    const YUI_GUIDE_CHAT_BRIDGE_QUEUE_KEY = 'neko_yui_guide_chat_bridge_queue_v1';
 
     // =====================================================================
     // Message deduplication (BC + postMessage deliver the same message twice)
@@ -1737,179 +1735,6 @@
         }
     }
 
-    function handleYuiGuideChatBridgeData(data) {
-        if (!data || !data.action) return false;
-        switch (data.action) {
-            case 'yui_guide_append_chat_message':
-                if (isDuplicateMessage(data.action, data.timestamp)) return true;
-                appendYuiGuideChatMessage(data.message);
-                return true;
-            case 'yui_guide_update_chat_message':
-                if (isDuplicateMessage(data.action, data.timestamp)) return true;
-                updateYuiGuideChatMessage(data.messageId, data.patch);
-                return true;
-            default:
-                return false;
-        }
-    }
-
-    function drainPendingYuiGuideChatBridgeQueue() {
-        if (!isStandaloneChatPage()) return;
-        var queue = [];
-        try {
-            var raw = localStorage.getItem(YUI_GUIDE_CHAT_BRIDGE_QUEUE_KEY);
-            var parsed = raw ? JSON.parse(raw) : [];
-            queue = Array.isArray(parsed) ? parsed.filter(Boolean) : [];
-            localStorage.removeItem(YUI_GUIDE_CHAT_BRIDGE_QUEUE_KEY);
-        } catch (error) {
-            console.warn('[YuiGuide] 读取教程聊天消息缓存失败:', error);
-            try {
-                localStorage.removeItem(YUI_GUIDE_CHAT_BRIDGE_QUEUE_KEY);
-            } catch (_) {}
-        }
-        queue.forEach(function (message) {
-            handleYuiGuideChatBridgeData(message);
-        });
-    }
-
-    function handleYuiGuideChatBridgeStorageEvent(event) {
-        if (!event || event.key !== YUI_GUIDE_CHAT_BRIDGE_QUEUE_KEY || !event.newValue) return;
-        drainPendingYuiGuideChatBridgeQueue();
-    }
-
-    var _pendingIcebreakerBridgeActions = [];
-    var _icebreakerBridgeFlushTimer = null;
-    var _icebreakerBridgeFlushAttempts = 0;
-    var ICEBREAKER_BRIDGE_FLUSH_MAX_ATTEMPTS = 50;
-
-    function scheduleIcebreakerBridgeFlush(delay) {
-        if (_icebreakerBridgeFlushTimer) return;
-        _icebreakerBridgeFlushTimer = setTimeout(flushPendingIcebreakerBridgeActions, typeof delay === 'number' ? delay : 0);
-    }
-
-    function queueIcebreakerBridgeAction(action) {
-        if (!action || !action.type) return;
-        _pendingIcebreakerBridgeActions.push(action);
-        scheduleIcebreakerBridgeFlush(0);
-    }
-
-    function flushPendingIcebreakerBridgeActions() {
-        _icebreakerBridgeFlushTimer = null;
-        if (!_pendingIcebreakerBridgeActions.length) {
-            _icebreakerBridgeFlushAttempts = 0;
-            return;
-        }
-
-        var host = window.reactChatWindowHost;
-        if (!host || typeof host.appendMessage !== 'function') {
-            if (_icebreakerBridgeFlushAttempts < ICEBREAKER_BRIDGE_FLUSH_MAX_ATTEMPTS) {
-                _icebreakerBridgeFlushAttempts += 1;
-                scheduleIcebreakerBridgeFlush(100);
-            } else {
-                console.warn('[NewUserIcebreaker] Chat host was not ready; dropped bridge actions:', _pendingIcebreakerBridgeActions.length);
-                _pendingIcebreakerBridgeActions = [];
-                _icebreakerBridgeFlushAttempts = 0;
-            }
-            return;
-        }
-
-        _icebreakerBridgeFlushAttempts = 0;
-        var batch = _pendingIcebreakerBridgeActions.splice(0);
-        batch.forEach(function (action) {
-            try {
-                if (action.type === 'append' && action.message) {
-                    host.appendMessage(action.message);
-                } else if (action.type === 'set_prompt' && action.prompt && typeof host.setIcebreakerChoicePrompt === 'function') {
-                    host.setIcebreakerChoicePrompt(action.prompt);
-                } else if (action.type === 'clear_prompt' && action.sessionId && typeof host.clearIcebreakerChoicePrompt === 'function') {
-                    host.clearIcebreakerChoicePrompt(action.sessionId);
-                }
-            } catch (error) {
-                console.warn('[NewUserIcebreaker] Failed to apply bridge action:', action.type, error);
-            }
-        });
-    }
-
-    function appendIcebreakerChatMessage(message) {
-        if (!isStandaloneChatPage()) return;
-        queueIcebreakerBridgeAction({ type: 'append', message: message });
-    }
-
-    function setIcebreakerChoicePromptFromBroadcast(prompt) {
-        if (!isStandaloneChatPage()) return;
-        queueIcebreakerBridgeAction({ type: 'set_prompt', prompt: prompt });
-    }
-
-    function clearIcebreakerChoicePromptFromBroadcast(sessionId) {
-        if (!isStandaloneChatPage()) return;
-        queueIcebreakerBridgeAction({ type: 'clear_prompt', sessionId: String(sessionId || '') });
-    }
-
-    function handleIcebreakerBridgeData(data) {
-        if (!data || !data.action) return false;
-        if (isDuplicateMessage(data.action, data.timestamp)) return true;
-        switch (data.action) {
-            case 'icebreaker_append_chat_message':
-                appendIcebreakerChatMessage(data.message);
-                return true;
-            case 'icebreaker_set_choice_prompt':
-                setIcebreakerChoicePromptFromBroadcast(data.prompt);
-                return true;
-            case 'icebreaker_clear_choice_prompt':
-                clearIcebreakerChoicePromptFromBroadcast(data.sessionId);
-                return true;
-            case 'icebreaker_choice_selected':
-                if (!isStandaloneChatPage()) {
-                    window.dispatchEvent(new CustomEvent('neko:icebreaker-choice-selected', {
-                        detail: data.detail || {}
-                    }));
-                }
-                return true;
-            case 'icebreaker_free_text_submitted':
-                if (!isStandaloneChatPage()) {
-                    window.dispatchEvent(new CustomEvent('neko:icebreaker-free-text-submitted', {
-                        detail: data.detail || {}
-                    }));
-                }
-                return true;
-            default:
-                return false;
-        }
-    }
-
-    function handleIcebreakerStorageBridgeEvent(event) {
-        if (!event || event.key !== ICEBREAKER_BRIDGE_STORAGE_KEY || !event.newValue) return;
-        try {
-            handleIcebreakerBridgeData(JSON.parse(event.newValue));
-        } catch (error) {
-            console.warn('[NewUserIcebreaker] storage bridge parse failed:', error);
-        }
-    }
-
-    function postIcebreakerBridgeEvent(action, payload) {
-        var message = Object.assign({
-            action: action,
-            timestamp: Date.now()
-        }, payload || {});
-        if (nekoBroadcastChannel) {
-            try {
-                nekoBroadcastChannel.postMessage(message);
-            } catch (error) {
-                console.warn('[NewUserIcebreaker] BroadcastChannel post failed:', action, error);
-            }
-        }
-        try {
-            localStorage.setItem(ICEBREAKER_BRIDGE_STORAGE_KEY, JSON.stringify(message));
-            setTimeout(function () {
-                try {
-                    localStorage.removeItem(ICEBREAKER_BRIDGE_STORAGE_KEY);
-                } catch (_) {}
-            }, 0);
-        } catch (error) {
-            console.warn('[NewUserIcebreaker] storage bridge post failed:', action, error);
-        }
-    }
-
     function relayYuiGuideMessageToNative(target, message) {
         var bridge = window.nekoTutorialOverlay;
         if (!bridge || !message || typeof message !== 'object') {
@@ -2059,9 +1884,6 @@
         handleYuiGuideRelayedMessage(message);
     });
 
-    window.addEventListener('storage', handleIcebreakerStorageBridgeEvent);
-    window.addEventListener('storage', handleYuiGuideChatBridgeStorageEvent);
-
     try {
         if (typeof BroadcastChannel !== 'undefined') {
             nekoBroadcastChannel = new BroadcastChannel('neko_page_channel');
@@ -2069,14 +1891,6 @@
 
             nekoBroadcastChannel.onmessage = async function (event) {
                 if (!event.data || !event.data.action) {
-                    return;
-                }
-
-                if (handleYuiGuideChatBridgeData(event.data)) {
-                    return;
-                }
-
-                if (handleIcebreakerBridgeData(event.data)) {
                     return;
                 }
 
@@ -2147,16 +1961,6 @@
                     }
                     case 'yui_guide_update_chat_message': {
                         updateYuiGuideChatMessage(event.data.messageId, event.data.patch);
-                        break;
-                    }
-                    case 'yui_guide_message_action': {
-                        if (isStandaloneChatPage()) break;
-                        window.dispatchEvent(new CustomEvent('neko:yui-guide:message-action', {
-                            detail: {
-                                message: event.data.message || null,
-                                action: event.data.guideAction || null
-                            }
-                        }));
                         break;
                     }
                     case 'avatar_updated': {
@@ -3349,28 +3153,11 @@
             action: 'yui_guide_chat_ready',
             timestamp: Date.now()
         });
-        setTimeout(drainPendingYuiGuideChatBridgeQueue, 0);
-        setTimeout(drainPendingYuiGuideChatBridgeQueue, 500);
-        setTimeout(drainPendingYuiGuideChatBridgeQueue, 1500);
         // 配置可能尚未注入（lanlan_name 为空），等 IPC 注入后补发一次
         if (!initialLanlanName) {
             window.addEventListener('neko:config-injected', postAvatarRequest, { once: true });
         }
     }
-
-    window.addEventListener('neko:icebreaker-choice-selected', function (event) {
-        if (!isStandaloneChatPage()) return;
-        postIcebreakerBridgeEvent('icebreaker_choice_selected', {
-            detail: event && event.detail ? event.detail : {},
-        });
-    });
-
-    window.addEventListener('neko:icebreaker-free-text-submitted', function (event) {
-        if (!isStandaloneChatPage()) return;
-        postIcebreakerBridgeEvent('icebreaker_free_text_submitted', {
-            detail: event && event.detail ? event.detail : {},
-        });
-    });
 
     // =====================================================================
     // postMessage listeners (fallback for memory_edited & model_saved)

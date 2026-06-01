@@ -2,8 +2,6 @@
     'use strict';
 
     const STORAGE_KEY = 'neko_avatar_floating_guide_v1';
-    const ICEBREAKER_STORAGE_KEY = 'neko.new_user_icebreaker.v1';
-    const ICEBREAKER_RESET_EVENT = 'neko:new-user-icebreaker-reset';
     const RESET_EVENT = 'neko:avatar-floating-guide-reset';
     const RESET_BROADCAST_KEY = 'neko_avatar_floating_guide_reset_event';
     const HOME_TUTORIAL_KEYS = ['neko_tutorial_home_yui_v1', 'neko_tutorial_home'];
@@ -364,35 +362,6 @@
         localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     }
 
-    function resetIcebreakerDay(day) {
-        const round = normalizeRound(day);
-        const key = String(round);
-        let store = { version: 1, days: {} };
-        try {
-            const raw = localStorage.getItem(ICEBREAKER_STORAGE_KEY);
-            store = raw ? JSON.parse(raw) : store;
-        } catch (error) {
-            console.warn('[AvatarFloatingGuideReset] 破冰状态读取失败，使用空状态:', error);
-        }
-
-        if (!store || typeof store !== 'object') {
-            store = { version: 1, days: {} };
-        }
-        if (!store.days || typeof store.days !== 'object') {
-            store.days = {};
-        }
-        delete store.days[key];
-
-        try {
-            localStorage.setItem(ICEBREAKER_STORAGE_KEY, JSON.stringify(store));
-            window.dispatchEvent(new CustomEvent(ICEBREAKER_RESET_EVENT, {
-                detail: { day: round },
-            }));
-        } catch (error) {
-            console.warn('[AvatarFloatingGuideReset] 破冰状态重置失败:', error);
-        }
-    }
-
     function recordAvatarFloatingGuideEndState(day, outcome, rawReason, source) {
         const normalizedDay = normalizeOptionalRound(day);
         const normalizedOutcome = outcome === 'complete'
@@ -458,7 +427,6 @@
         const source = options.source || 'home_reset_button';
         const state = loadGuideState();
 
-        resetIcebreakerDay(round);
         state.completedRounds = omitRound(state.completedRounds, round);
         state.skippedRounds = omitRound(state.skippedRounds, round);
         if (state.currentRound === round) {
@@ -495,7 +463,6 @@
         } else {
             state = resetGuideRoundState(round, options);
         }
-        resetIcebreakerDay(round);
 
         if (round === 1) {
             if (window.universalTutorialManager &&

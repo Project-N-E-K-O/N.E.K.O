@@ -44,34 +44,6 @@ def test_parse_control_instructions_extracts_json_line():
     }
 
 
-@pytest.mark.asyncio
-async def test_new_user_icebreaker_context_endpoint_appends_session_history(monkeypatch):
-    class FakeManager:
-        def __init__(self):
-            self.calls = []
-
-        def append_icebreaker_context(self, role, text):
-            self.calls.append((role, text))
-            return True
-
-    mgr = FakeManager()
-    monkeypatch.setattr(game_router, "get_session_manager", lambda: {"Lan": mgr})
-
-    result = await game_router.game_project_context(
-        "new_user_icebreaker",
-        _FakeRequest({
-            "lanlan_name": "Lan",
-            "role": "assistant",
-            "text": "教程看完啦？",
-            "session_id": "icebreaker-day1-test",
-        }),
-    )
-
-    assert result["ok"] is True
-    assert result["method"] == "project_session_history"
-    assert mgr.calls == [("assistant", "教程看完啦？")]
-
-
 @pytest.mark.unit
 def test_soccer_prompt_marks_game_event_text_as_not_user_speech():
     assert "textRaw 只是游戏事件原文或你这边的内建气泡，不是玩家说的话" in game_router._SOCCER_SYSTEM_PROMPT

@@ -1,45 +1,6 @@
 (function () {
     'use strict';
 
-    const YUI_GUIDE_CHAT_BRIDGE_QUEUE_KEY = 'neko_yui_guide_chat_bridge_queue_v1';
-    const YUI_GUIDE_CHAT_BRIDGE_QUEUE_LIMIT = 160;
-
-    function readYuiGuideChatBridgeQueue() {
-        try {
-            const raw = window.localStorage && window.localStorage.getItem(YUI_GUIDE_CHAT_BRIDGE_QUEUE_KEY);
-            const parsed = raw ? JSON.parse(raw) : [];
-            return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
-        } catch (_) {
-            return [];
-        }
-    }
-
-    function enqueueYuiGuideChatBridgeMessage(message) {
-        if (!message || typeof message !== 'object' || !message.action) {
-            return;
-        }
-        try {
-            const queue = readYuiGuideChatBridgeQueue();
-            queue.push(message);
-            const trimmed = queue.slice(-YUI_GUIDE_CHAT_BRIDGE_QUEUE_LIMIT);
-            window.localStorage.setItem(YUI_GUIDE_CHAT_BRIDGE_QUEUE_KEY, JSON.stringify(trimmed));
-        } catch (error) {
-            console.warn('[YuiGuide] 缓存教程聊天消息失败:', error);
-        }
-    }
-
-    function postYuiGuideChatBridgeMessage(channel, message) {
-        if (!message || typeof message !== 'object' || !message.action) {
-            return false;
-        }
-        enqueueYuiGuideChatBridgeMessage(message);
-        if (!channel || typeof channel.postMessage !== 'function') {
-            return false;
-        }
-        channel.postMessage(message);
-        return true;
-    }
-
     function translateGuideText(textKey, fallbackText) {
         const normalizedKey = typeof textKey === 'string' ? textKey.trim() : '';
         const normalizedFallback = typeof fallbackText === 'string' ? fallbackText : '';
@@ -5024,13 +4985,6 @@
                     outgoingMessage.tutorialRunId = tutorialRunId;
                 }
             } catch (_) {}
-
-            if (
-                outgoingMessage.action === 'yui_guide_append_chat_message'
-                || outgoingMessage.action === 'yui_guide_update_chat_message'
-            ) {
-                enqueueYuiGuideChatBridgeMessage(outgoingMessage);
-            }
 
             let posted = false;
             const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;

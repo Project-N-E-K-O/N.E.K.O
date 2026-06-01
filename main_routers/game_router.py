@@ -4736,47 +4736,6 @@ async def game_project_mirror_assistant(game_type: str, request: Request):
     return result
 
 
-@router.post("/{game_type}/context")
-async def game_project_context(game_type: str, request: Request):
-    """Append game-scoped UI dialogue into the active project session history."""
-    if str(game_type or "") != "new_user_icebreaker":
-        return {"ok": False, "reason": "unsupported_game_type", "game_type": game_type}
-
-    try:
-        data = await request.json()
-    except Exception:
-        return {"ok": False, "reason": "invalid_body"}
-
-    role = str(data.get("role") or "").strip()
-    text = str(data.get("text") or "").strip()
-    if role not in {"assistant", "user"}:
-        return {"ok": False, "reason": "invalid_role"}
-    if not text:
-        return {"ok": False, "reason": "missing_text"}
-
-    lanlan_name = _resolve_lanlan_name(data.get("lanlan_name"))
-    if not lanlan_name:
-        return {"ok": False, "reason": "missing_lanlan_name"}
-    _absorb_request_language(data, lanlan_name)
-
-    mgr = get_session_manager().get(lanlan_name)
-    if not mgr:
-        return {"ok": False, "reason": "no_session_manager", "lanlan_name": lanlan_name}
-
-    append_icebreaker_context = getattr(mgr, "append_icebreaker_context", None)
-    if not callable(append_icebreaker_context):
-        return {"ok": False, "reason": "context_method_unavailable", "lanlan_name": lanlan_name}
-
-    ok = append_icebreaker_context(role, text)
-    return {
-        "ok": bool(ok),
-        "method": "project_session_history",
-        "lanlan_name": lanlan_name,
-        "game_type": game_type,
-        "session_id": str(data.get("session_id") or ""),
-    }
-
-
 @router.post("/{game_type}/speak")
 async def game_project_speak(game_type: str, request: Request):
     """Formal B-layer output: speak A.line through the existing project TTS pipeline."""

@@ -59,7 +59,6 @@ const galgameOptionSchema = z.object({
 //   - 'galgame'           ：旧路径（galgameOptions / onGalgameOptionSelect 依然
 //                           保留 BC，本框架不替换它，作为渐进迁移目标）
 //   - 'mini_game_invite'  ：mini-game 邀请三选项（accept / decline / later）
-//   - 'new_user_icebreaker'：七日教程结束后的预置破冰二选项
 //
 // 未来扩展：
 //   - 'tutorial_step' / 'plugin_action' / ...
@@ -73,10 +72,8 @@ const choiceOptionSchema = z.object({
   label: z.string().min(1),   // 显示文本
 });
 
-const choicePromptSourceSchema = z.enum(['galgame', 'mini_game_invite', 'new_user_icebreaker']);
-
 const choicePromptSchema = z.object({
-  source: choicePromptSourceSchema,
+  source: z.enum(['galgame', 'mini_game_invite']),
   options: z.array(choiceOptionSchema).min(1),
   sessionId: z.string().optional(),
   gameType: z.string().optional(),
@@ -270,7 +267,7 @@ export const chatWindowPropsSchema = z.object({
   onChoiceSelect: z.function()
     // source 必须是固定枚举，与 ChoicePrompt['source'] 对齐——CodeRabbit 指出
     // 任意 z.string() 会让 zod 验证变松。
-    .args(choiceOptionSchema, choicePromptSourceSchema)
+    .args(choiceOptionSchema, z.enum(['galgame', 'mini_game_invite']))
     .returns(z.void())
     .optional(),
 });
