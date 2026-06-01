@@ -1924,6 +1924,7 @@
         "aiCompanionSkipped": "一致なし / 予約済み",
         "aiCompanionFormGone": "⚠ キャラクターフォームが画面にないから適用できないにゃ。この猫娘の詳細パネルをもう一度開いて再試行してね。",
         "aiCompanionNewCardSaveHint": "💡 新しいカードは下の Save を一度押して保存してね、そしたら今後は自動保存するよ。フィールドはもうフォームに入ってるにゃ〜",
+        "aiCompanionSaveInProgress": "⏳ この新しいカードを保存中だよ、終わったら直してあげるにゃ〜少し待ってもう一度送ってね。",
         "aiCompanionAutoSaveFailed": "⚠ 自動保存失敗にゃ——フィールドはフォームに入ってるから、エラー通知を確認して手動で Save を押し直してね。",
         "aiCompanionDraftUpdated": "✎ 更新",
         "aiCompanionDraftCreated": "+ 追加",

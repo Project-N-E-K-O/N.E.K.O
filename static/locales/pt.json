@@ -1924,6 +1924,7 @@
         "aiCompanionSkipped": "sem correspondência / reservado",
         "aiCompanionFormGone": "⚠ O formulário do personagem não está mais na tela, então não posso aplicar isso. Abra o painel de detalhes desta NEKO de novo e tente mais uma vez.",
         "aiCompanionNewCardSaveHint": "💡 Carta nova — clique em Salvar abaixo uma vez para persistir, depois salvo suas alterações automaticamente. Os campos já estão no formulário, miau~",
+        "aiCompanionSaveInProgress": "⏳ Salvando esta carta nova — quando terminar eu te ajudo a editar. Aguarde um instante e envie de novo, miau~",
         "aiCompanionAutoSaveFailed": "⚠ Falha no salvamento automático — os campos já estão no formulário, verifique a mensagem de erro e clique em Salvar manualmente para tentar de novo.",
         "aiCompanionDraftUpdated": "✎ atualizado",
         "aiCompanionDraftCreated": "+ adicionado",

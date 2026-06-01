@@ -11530,6 +11530,19 @@ async function _companionRunChat(state) {
                     '⚠ 角色表单不在屏幕上了，没法应用。请重新打开这只猫娘的详情面板再试。'));
             return;
         }
+        // 新卡首存正在飞行中（用户在 chat 模式点了 Save、又紧接着发消息）：别在它收尾前打
+        // LLM / 改表单。否则 saveCatgirlFromPanel 已用「编辑前的快照」序列化，这次应用的 chat
+        // 编辑会在「首存成功关面板 / 开卡面」分支里随面板一起没掉、_companionTryAutoSave 又
+        // rebind 不上（Codex #3333457418）。短路并提示等保存收尾——用户消息还在 chatHistory 里，
+        // 存好后再发一次即可（生成/问答流程下 Save 本就被禁，这里只兜 chat 模式这条路）。
+        if (state.isNew && !state.form._autoCreated
+                && state.form.dataset.submitting === 'true') {
+            typing.remove();
+            _companionAppendSystem(state,
+                _cardAssistT('character.aiCompanionSaveInProgress',
+                    '⏳ 正在保存这张新卡，存好了我再帮你改喵～稍等一下再发一次吧。'));
+            return;
+        }
         // full_rewrite 已在函数开头一次性读出并清掉（见上），这里直接透传（Codex #3333137718）。
         const resp = await _cardAssistFetch('/api/card-assist/chat', {
             messages: state.chatHistory,

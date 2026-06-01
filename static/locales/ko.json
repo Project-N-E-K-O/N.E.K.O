@@ -1924,6 +1924,7 @@
         "aiCompanionSkipped": "일치 없음 / 예약됨",
         "aiCompanionFormGone": "⚠ 캐릭터 폼이 화면에 없어서 적용 못 해. 이 캐릭터의 상세 패널을 다시 열고 시도해줘.",
         "aiCompanionNewCardSaveHint": "💡 새 카드는 아래 Save 를 한 번 눌러서 저장해줘, 그러면 앞으로는 자동 저장할게. 필드는 이미 폼에 들어 있어 냐~",
+        "aiCompanionSaveInProgress": "⏳ 이 새 카드를 저장하는 중이야, 끝나면 고쳐줄게 냐~ 잠깐 기다렸다가 다시 보내줘.",
         "aiCompanionAutoSaveFailed": "⚠ 자동 저장 실패 냐 — 필드는 폼에 들어 있으니까 오류 알림 확인하고 수동으로 Save 를 다시 눌러줘.",
         "aiCompanionDraftUpdated": "✎ 갱신",
         "aiCompanionDraftCreated": "+ 추가",

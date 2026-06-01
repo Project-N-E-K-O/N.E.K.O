@@ -1924,6 +1924,7 @@
         "aiCompanionSkipped": "未匹配/已保留",
         "aiCompanionFormGone": "⚠ 角色表單不在螢幕上了，沒法套用。請重新打開這隻貓娘的詳情面板再試。",
         "aiCompanionNewCardSaveHint": "💡 新卡片要先點一下下面的 Save 才能讓我自動儲存，現在欄位都已經寫進表單了喵～",
+        "aiCompanionSaveInProgress": "⏳ 正在儲存這張新卡，存好了我再幫你改喵～稍等一下再發一次吧。",
         "aiCompanionAutoSaveFailed": "⚠ 自動儲存失敗了喵——表單裡的欄位已經寫好，請看下彈出的錯誤提示再手動點 Save 重試。",
         "aiCompanionDraftUpdated": "✎ 改寫",
         "aiCompanionDraftCreated": "+ 新增",
