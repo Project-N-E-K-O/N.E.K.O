@@ -493,7 +493,8 @@ def test_desktop_compact_layout_change_resets_anchor_only_when_base_surface_chan
     assert "compactSurfaceAnchorLocked = false;" in handler_block
     assert "compactSurfaceAnchorSnapshot = '';" in handler_block
     assert "scheduleCompactMinimizeBallTracking();" in handler_block
-    assert "handleDesktopCompactLayoutChange(event ? event.detail : null);" in listener_block
+    assert "var layout = event && event.detail ? event.detail : window.__nekoDesktopCompactLayout;" in listener_block
+    assert "handleDesktopCompactLayoutChange(layout || null);" in listener_block
     assert "compactSurfaceAnchorSnapshot = '';" not in listener_block
 
 

@@ -5435,7 +5435,8 @@
         });
 
         window.addEventListener('neko:desktop-compact-layout-change', function (event) {
-            handleDesktopCompactLayoutChange(event ? event.detail : null);
+            var layout = event && event.detail ? event.detail : window.__nekoDesktopCompactLayout;
+            handleDesktopCompactLayoutChange(layout || null);
         });
         if (window.__nekoDesktopCompactLayout) {
             handleDesktopCompactLayoutChange(window.__nekoDesktopCompactLayout);
