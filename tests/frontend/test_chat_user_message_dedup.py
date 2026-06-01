@@ -522,6 +522,253 @@ def test_react_composer_text_and_screenshot_submit_keeps_single_combined_message
 
 
 @pytest.mark.frontend
+def test_compact_history_drop_sends_only_dropped_image_and_restores_pending_attachment(
+    mock_page: Page,
+    running_server: str,
+):
+    _open_react_chat_page(mock_page, running_server)
+    _install_chat_send_harness(mock_page, resolve_delay_ms=0)
+
+    result = mock_page.evaluate(
+        """async () => {
+            const makeDataUrl = (color) => {
+                const canvas = document.createElement('canvas');
+                canvas.width = 2;
+                canvas.height = 2;
+                const context = canvas.getContext('2d');
+                context.fillStyle = color;
+                context.fillRect(0, 0, 2, 2);
+                return canvas.toDataURL('image/png');
+            };
+            const existing = makeDataUrl('#336699');
+            const dropped = makeDataUrl('#cc3355');
+            window.appButtons.addScreenshotToList(existing, null, {
+                alt: 'Existing pending',
+                source: 'user'
+            });
+            const before = window.appButtons.getPendingComposerAttachments();
+
+            const ok = await window.appButtons.sendCompactHistoryDropPayload({
+                text: 'drop image text',
+                requestId: 'req-compact-history-drop-test',
+                compactHistoryDragSessionId: 'drag-compact-history-drop-test',
+                images: [{ url: dropped, alt: 'Dropped pending' }]
+            });
+
+            const after = window.appButtons.getPendingComposerAttachments();
+            const state = window.reactChatWindowHost.getState();
+            const message = state.messages[0];
+            return {
+                ok,
+                before,
+                after,
+                message: message ? {
+                    status: message.status,
+                    blocks: message.blocks
+                } : null,
+                sentPayloads: window.__chatTest.sentPayloads
+            };
+        }"""
+    )
+
+    assert result["ok"] is True
+    assert len(result["before"]) == 1
+    assert len(result["after"]) == 1
+    assert result["after"][0]["alt"] == "Existing pending"
+    assert result["after"][0]["url"] == result["before"][0]["url"]
+
+    sent_images = [
+        payload
+        for payload in result["sentPayloads"]
+        if payload.get("action") == "stream_data" and payload.get("input_type") == "screen"
+    ]
+    sent_texts = [
+        payload
+        for payload in result["sentPayloads"]
+        if payload.get("action") == "stream_data" and payload.get("input_type") == "text"
+    ]
+    assert len(sent_images) == 1
+    assert sent_images[0]["data"].startswith("data:image/jpeg;base64,")
+    assert sent_images[0]["data"] != result["before"][0]["url"]
+    assert sent_texts == [{
+        "action": "stream_data",
+        "data": "drop image text",
+        "input_type": "text",
+        "request_id": "req-compact-history-drop-test",
+    }]
+
+    assert result["message"]["status"] == "sent"
+    assert [block["type"] for block in result["message"]["blocks"]] == ["text", "image"]
+    assert result["message"]["blocks"][0]["text"] == "drop image text"
+    assert result["message"]["blocks"][1]["url"].startswith("data:image/jpeg;base64,")
+
+
+@pytest.mark.frontend
+def test_compact_history_drop_serializes_overlapping_image_sends(
+    mock_page: Page,
+    running_server: str,
+):
+    _open_react_chat_page(mock_page, running_server)
+    _install_chat_send_harness(mock_page, resolve_delay_ms=0)
+
+    result = mock_page.evaluate(
+        """async () => {
+            const makeDataUrl = (color) => {
+                const canvas = document.createElement('canvas');
+                canvas.width = 2;
+                canvas.height = 2;
+                const context = canvas.getContext('2d');
+                context.fillStyle = color;
+                context.fillRect(0, 0, 2, 2);
+                return canvas.toDataURL('image/png');
+            };
+            const waitUntil = async (predicate) => {
+                for (let i = 0; i < 100; i += 1) {
+                    if (predicate()) return;
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                }
+                throw new Error('timed out waiting for compact history drop queue');
+            };
+
+            window.appButtons.addScreenshotToList(makeDataUrl('#336699'), null, {
+                alt: 'Existing pending',
+                source: 'user'
+            });
+            const before = window.appButtons.getPendingComposerAttachments();
+            const calls = [];
+            const resolvers = [];
+            const originalSendTextPayload = window.appButtons.sendTextPayload;
+            window.appButtons.sendTextPayload = async (text, options) => {
+                calls.push({
+                    text,
+                    options,
+                    pendingAtSend: window.appButtons.getPendingComposerAttachments()
+                });
+                await new Promise(resolve => resolvers.push(resolve));
+                return true;
+            };
+
+            try {
+                const first = window.appButtons.sendCompactHistoryDropPayload({
+                    text: 'first drop',
+                    requestId: 'req-compact-history-first-drop',
+                    compactHistoryDragSessionId: 'drag-compact-history-first-drop',
+                    images: [{ url: makeDataUrl('#cc3355'), alt: 'First dropped' }]
+                });
+                await waitUntil(() => calls.length === 1 && resolvers.length === 1);
+
+                const second = window.appButtons.sendCompactHistoryDropPayload({
+                    text: 'second drop',
+                    requestId: 'req-compact-history-second-drop',
+                    compactHistoryDragSessionId: 'drag-compact-history-second-drop',
+                    images: [{ url: makeDataUrl('#33aa77'), alt: 'Second dropped' }]
+                });
+                await new Promise(resolve => setTimeout(resolve, 20));
+                const callsWhileFirstPending = calls.length;
+                resolvers.shift()();
+                const firstOk = await first;
+
+                await waitUntil(() => calls.length === 2 && resolvers.length === 1);
+                resolvers.shift()();
+                const secondOk = await second;
+
+                return {
+                    firstOk,
+                    secondOk,
+                    callsWhileFirstPending,
+                    before,
+                    after: window.appButtons.getPendingComposerAttachments(),
+                    calls
+                };
+            } finally {
+                window.appButtons.sendTextPayload = originalSendTextPayload;
+            }
+        }"""
+    )
+
+    assert result["firstOk"] is True
+    assert result["secondOk"] is True
+    assert result["callsWhileFirstPending"] == 1
+    assert result["after"] == result["before"]
+    assert [call["text"] for call in result["calls"]] == ["first drop", "second drop"]
+    assert [call["pendingAtSend"][0]["alt"] for call in result["calls"]] == [
+        "First dropped",
+        "Second dropped",
+    ]
+
+
+@pytest.mark.frontend
+def test_compact_history_drop_is_not_deferred_into_existing_pending_attachments(
+    mock_page: Page,
+    running_server: str,
+):
+    _open_react_chat_page(mock_page, running_server)
+    _install_chat_send_harness(mock_page, resolve_delay_ms=0)
+
+    result = mock_page.evaluate(
+        """async () => {
+            const makeDataUrl = () => {
+                const canvas = document.createElement('canvas');
+                canvas.width = 2;
+                canvas.height = 2;
+                const context = canvas.getContext('2d');
+                context.fillStyle = '#336699';
+                context.fillRect(0, 0, 2, 2);
+                return canvas.toDataURL('image/png');
+            };
+            window.appButtons.addScreenshotToList(makeDataUrl(), null, {
+                alt: 'Existing pending',
+                source: 'user'
+            });
+            const before = window.appButtons.getPendingComposerAttachments();
+            const calls = [];
+            const originalSendTextPayload = window.appButtons.sendTextPayload;
+            window.appButtons.sendTextPayload = async (text, options) => {
+                calls.push({
+                    text,
+                    options,
+                    pendingAtSend: window.appButtons.getPendingComposerAttachments()
+                });
+                return true;
+            };
+
+            try {
+                const ok = await window.appButtons.sendCompactHistoryDropPayload({
+                    text: 'history text only',
+                    requestId: 'req-compact-history-text-drop',
+                    compactHistoryDragSessionId: 'drag-compact-history-text-drop',
+                    images: []
+                });
+                return {
+                    ok,
+                    before,
+                    after: window.appButtons.getPendingComposerAttachments(),
+                    calls
+                };
+            } finally {
+                window.appButtons.sendTextPayload = originalSendTextPayload;
+            }
+        }"""
+    )
+
+    assert result["ok"] is True
+    assert len(result["before"]) == 1
+    assert len(result["after"]) == 1
+    assert result["after"][0]["alt"] == "Existing pending"
+    assert result["after"][0]["url"] == result["before"][0]["url"]
+    assert result["calls"] == [{
+        "text": "history text only",
+        "options": {
+            "source": "react-chat-window",
+            "requestId": "req-compact-history-text-drop",
+            "compactHistoryDragSessionId": "drag-compact-history-text-drop",
+            "skipAvatarInteractionDeferral": True,
+        },
+        "pendingAtSend": [],
+    }]
+
+
+@pytest.mark.frontend
 def test_react_composer_send_failure_marks_same_message_failed(
     mock_page: Page,
     running_server: str,

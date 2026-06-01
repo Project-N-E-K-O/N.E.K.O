@@ -95,6 +95,9 @@
             active: remaining > 0.05 || S.scheduledSources.length > 0 || S.audioBufferQueue.length > 0 || pendingAudioWork,
             speechId: S.currentPlayingSpeechId || null,
             turnId: S.assistantSpeechActiveTurnId || S.assistantTurnId || null,
+            playbackTurnId: S.assistantSpeechPlaybackTurnId || null,
+            playbackStartAudioTime: Number.isFinite(S.assistantSpeechPlaybackStartAudioTime) ? S.assistantSpeechPlaybackStartAudioTime : 0,
+            playbackEndAudioTime: Number.isFinite(S.assistantSpeechPlaybackEndAudioTime) ? S.assistantSpeechPlaybackEndAudioTime : 0,
             scheduledEndAudioTime: scheduledEnd,
             audioContextTime: audioTime,
             audioContextState: S.audioPlayerContext ? S.audioPlayerContext.state : '',
@@ -123,6 +126,11 @@
         } else {
             clearSpeechPlaybackStateHeartbeat();
         }
+        try {
+            window.dispatchEvent(new CustomEvent('neko-speech-playback-state', {
+                detail: state
+            }));
+        } catch (_) { /* noop */ }
         return state;
     }
 
@@ -339,6 +347,11 @@
             return;
         }
         S.assistantSpeechActiveTurnId = null;
+        if (S.assistantSpeechPlaybackTurnId === normalizedTurnId) {
+            S.assistantSpeechPlaybackTurnId = null;
+            S.assistantSpeechPlaybackStartAudioTime = 0;
+            S.assistantSpeechPlaybackEndAudioTime = 0;
+        }
         clearStuckSpeakingFallback();
         logAudioLifecycle('dispatchAssistantSpeechEnd', {
             turnId: normalizedTurnId
@@ -408,6 +421,9 @@
             return;
         }
         S.assistantSpeechActiveTurnId = null;
+        S.assistantSpeechPlaybackTurnId = null;
+        S.assistantSpeechPlaybackStartAudioTime = 0;
+        S.assistantSpeechPlaybackEndAudioTime = 0;
         clearStuckSpeakingFallback();
         logAudioLifecycle('dispatchAssistantSpeechCancel', {
             turnId: normalizedTurnId,
@@ -524,6 +540,11 @@
         S.assistantTurnCompletedId = null;
         S.assistantTurnCompletionSource = null;
         S.assistantSpeechStartedTurnId = null;
+        // settled 标记随完成状态一起清：turn-start / speech-cancel / clearAudioQueue
+        // 都经由本函数，等于把 settledId 接进完整的 turn 生命周期收尾。
+        // maybeFinalizeAssistantSpeech 在调用本函数之后再设 settledId（见那里），
+        // 所以"干净收尾"路径的 settledId 不会被这里误清。
+        S.assistantTurnSettledId = null;
     }
 
     function scheduleAssistantTurnCompletionFallback(turnId, source) {
@@ -673,6 +694,11 @@
         dispatchAssistantSpeechEnd(normalizedTurnId);
         var completionSource = S.assistantTurnCompletionSource;
         clearAssistantTurnCompletion();
+        // 这一轮已干净收尾。clearAssistantTurnCompletion 刚把 completedId 清成 null，
+        // 但 assistantTurnId 仍指向本轮（要等下条用户消息才清），若不标记 settled，
+        // isAssistantTextResponseInFlight 会一直把"已说完的轮"误判成在路上 → 切语音
+        // 干等 15s。这里在清空之后再标 settled，记下"turnId 这轮已收尾"。
+        S.assistantTurnSettledId = normalizedTurnId;
         logAudioLifecycle('maybeFinalizeAssistantSpeech:completed', {
             requestedTurnId: normalizedTurnId,
             completionSource: completionSource
@@ -1025,6 +1051,19 @@
 
                     var scheduledStartTime = S.nextChunkTime;
                     var scheduledEndTime = scheduledStartTime + nextBuffer.duration;
+                    if (source._nekoAssistantTurnId) {
+                        if (S.assistantSpeechPlaybackTurnId !== source._nekoAssistantTurnId ||
+                            !Number.isFinite(S.assistantSpeechPlaybackStartAudioTime) ||
+                            S.assistantSpeechPlaybackStartAudioTime <= 0 ||
+                            scheduledStartTime < S.assistantSpeechPlaybackStartAudioTime) {
+                            S.assistantSpeechPlaybackTurnId = source._nekoAssistantTurnId;
+                            S.assistantSpeechPlaybackStartAudioTime = scheduledStartTime;
+                        }
+                        S.assistantSpeechPlaybackEndAudioTime = Math.max(
+                            Number.isFinite(S.assistantSpeechPlaybackEndAudioTime) ? S.assistantSpeechPlaybackEndAudioTime : 0,
+                            scheduledEndTime
+                        );
+                    }
 
                     // Precise time scheduling
                     source.start(scheduledStartTime);
@@ -1059,6 +1098,9 @@
                         active: true,
                         speechId: normalizeAssistantTurnId(item.speechId) || S.currentPlayingSpeechId || null,
                         turnId: source._nekoAssistantTurnId || null,
+                        playbackTurnId: S.assistantSpeechPlaybackTurnId || null,
+                        playbackStartAudioTime: S.assistantSpeechPlaybackStartAudioTime || 0,
+                        playbackEndAudioTime: S.assistantSpeechPlaybackEndAudioTime || scheduledEndTime,
                         scheduledEndAudioTime: S.nextChunkTime
                     });
                 } else {

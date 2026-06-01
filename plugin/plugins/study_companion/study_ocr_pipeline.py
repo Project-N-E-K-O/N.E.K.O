@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
+import io
 import time
 from typing import Any
+
+from PIL import Image
 
 from .models import OcrSnapshot, StudyConfig, utc_now_iso
 
@@ -11,6 +15,13 @@ CAPTURE_BACKEND_DXCAM = "dxcam"
 CAPTURE_BACKEND_MSS = "mss"
 CAPTURE_BACKEND_PRINTWINDOW = "printwindow"
 CAPTURE_BACKEND_PYAUTOGUI = "pyautogui"
+_VISION_SNAPSHOT_JPEG_QUALITY = 72
+_VISION_SNAPSHOT_TTL_SECONDS = 8.0
+
+try:
+    _PIL_RESAMPLING = Image.Resampling
+except AttributeError:  # pragma: no cover - Pillow < 9.1 compatibility.
+    _PIL_RESAMPLING = Image
 
 
 @dataclass(slots=True)
@@ -34,24 +45,30 @@ class StudyOcrPipeline:
         self._config = config
         self._ocr_backend = ocr_backend
         self._capture_backend = capture_backend
+        self._latest_vision_snapshot: dict[str, Any] = {}
+        self._latest_vision_image_base64 = ""
 
     def update_config(self, config: StudyConfig) -> None:
         self._config = config
         self._ocr_backend = None
         self._capture_backend = None
+        self._clear_vision_snapshot()
 
     def snapshot_from_image(self, image: Any, *, backend_name: str = "") -> OcrSnapshot:
         if image is None:
+            self._clear_vision_snapshot()
             return OcrSnapshot(status="empty", captured_at=utc_now_iso(), diagnostic="no image supplied")
         return self._extract_image(image, backend_name=backend_name or self._config.ocr_backend_selection)
 
     def capture_snapshot(self, target: Any | None = None) -> OcrSnapshot:
         if not self._config.ocr_enabled:
+            self._clear_vision_snapshot()
             return OcrSnapshot(status="disabled", captured_at=utc_now_iso(), diagnostic="OCR is disabled")
         if target is None:
             try:
                 frame = self._capture_fullscreen()
             except Exception as exc:
+                self._clear_vision_snapshot()
                 return OcrSnapshot(
                     status="capture_failed",
                     captured_at=utc_now_iso(),
@@ -67,6 +84,7 @@ class StudyOcrPipeline:
             )
             frame = self._resolve_capture_backend().capture_frame(target, profile)
         except Exception as exc:
+            self._clear_vision_snapshot()
             return OcrSnapshot(
                 status="capture_failed",
                 captured_at=utc_now_iso(),
@@ -87,6 +105,7 @@ class StudyOcrPipeline:
 
     def _extract_image(self, image: Any, *, backend_name: str) -> OcrSnapshot:
         started = time.monotonic()
+        self._remember_vision_snapshot(image, now=started)
         try:
             backend = self._resolve_ocr_backend()
             raw = backend.extract_text(image)
@@ -107,6 +126,87 @@ class StudyOcrPipeline:
             captured_at=utc_now_iso(),
             diagnostic=f"ocr_duration_seconds={elapsed:.3f}",
         )
+
+    def _clear_vision_snapshot(self) -> None:
+        self._latest_vision_snapshot = {}
+        self._latest_vision_image_base64 = ""
+
+    def _remember_vision_snapshot(
+        self, image: Any, *, now: float | None = None
+    ) -> None:
+        self._clear_vision_snapshot()
+        if not bool(self._config.llm_vision_enabled):
+            return
+        if image is None or not hasattr(image, "save"):
+            return
+        if now is None:
+            now = time.monotonic()
+        try:
+            frame = image.convert("RGB") if hasattr(image, "convert") else image
+            width, height = frame.size
+            if width <= 0 or height <= 0:
+                self._logger.debug(
+                    "study vision snapshot skipped: invalid image dimensions {}x{}",
+                    width,
+                    height,
+                )
+                return
+            max_px = max(64, int(self._config.llm_vision_max_image_px or 768))
+            scale = min(1.0, float(max_px) / float(max(width, height)))
+            if scale < 1.0:
+                frame = frame.resize(
+                    (max(1, int(width * scale)), max(1, int(height * scale))),
+                    _PIL_RESAMPLING.LANCZOS,
+                )
+                width, height = frame.size
+            buffer = io.BytesIO()
+            frame.save(
+                buffer,
+                format="JPEG",
+                quality=_VISION_SNAPSHOT_JPEG_QUALITY,
+                optimize=True,
+            )
+            raw = buffer.getvalue()
+            if not raw:
+                self._logger.debug("study vision snapshot skipped: empty encoded buffer")
+                return
+            expires_at = now + _VISION_SNAPSHOT_TTL_SECONDS
+            self._latest_vision_image_base64 = (
+                "data:image/jpeg;base64," + base64.b64encode(raw).decode("ascii")
+            )
+            self._latest_vision_snapshot = {
+                "captured_at": utc_now_iso(),
+                "expires_at_monotonic": expires_at,
+                "source": "ocr_screenshot",
+                "width": int(width),
+                "height": int(height),
+                "byte_size": len(raw),
+                "ttl_seconds": _VISION_SNAPSHOT_TTL_SECONDS,
+            }
+        except MemoryError as exc:
+            self._logger.warning("study vision snapshot memory error: {}", exc)
+        except Exception as exc:
+            self._logger.debug("study vision snapshot encoding skipped: {}", exc)
+
+    def latest_vision_snapshot(self) -> dict[str, Any]:
+        if not bool(self._config.llm_vision_enabled):
+            return {}
+        snapshot = dict(self._latest_vision_snapshot or {})
+        image_base64 = str(self._latest_vision_image_base64 or "")
+        if not snapshot or not image_base64:
+            return {}
+        now = time.monotonic()
+        if now >= float(snapshot.get("expires_at_monotonic") or 0.0):
+            self._clear_vision_snapshot()
+            return {}
+        return {
+            **{
+                key: value
+                for key, value in snapshot.items()
+                if key != "expires_at_monotonic"
+            },
+            "vision_image_base64": image_base64,
+        }
 
     @staticmethod
     def _normalize_ocr_output(raw: Any) -> tuple[str, list[dict[str, Any]]]:

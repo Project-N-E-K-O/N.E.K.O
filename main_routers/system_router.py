@@ -1060,6 +1060,10 @@ async def get_pending_notices():
 @router.post("/pending-notices/ack")
 async def ack_pending_notices(request: Request):
     """前端展示完通知后调用，仅删除 cursor 以内的通知（游标确认，避免 TOCTOU）。"""
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
     from main_logic.core import drain_prominent_notices
     try:
         body = await _read_json_object(request)
@@ -2390,6 +2394,22 @@ async def _maybe_deliver_mini_game_invite(
     # 会让重启后 force-first 重复触发——CodeRabbit Major review 指出。
     await _record_invite_delivery_persistent(lanlan_name)
 
+    try:
+        from utils.instrument import counter as _instr_counter
+        # channel 维度区分两条邀请投递通道：proactive（本函数）与 work_break
+        # （水分提醒组合路径，见 _deliver_break_reminder_via_llm 下游）。两条都
+        # 共享同一 invite state/cooldown，邀请总数需把两通道相加。force_first 仅
+        # proactive 通道有意义。
+        _instr_counter(
+            "mini_game_invited",
+            game_type=str(game_type)[:24],
+            channel="proactive",
+            force_first=bool(force_first),
+        )
+    except Exception:
+        # 埋点失败不能影响邀请投递
+        pass
+
     # 推 WS message 给前端展示三选项按钮。前端复用 ChoicePrompt 抽象（与 galgame
     # options 共用渲染），但 source='mini_game_invite' 走独立 endpoint，不翻
     # galgame mode 开关。Pet 主窗收到后通过现有 RAW_MESSAGE IPC forwarding 自动
@@ -3133,6 +3153,10 @@ async def emotion_analysis(request: Request):
     - 根据置信度自动调整情绪类别，当置信度较低时将情绪设置为 neutral，提升结果可靠性
     - 将分析结果推送到监控系统（如果提供了 lanlan_name），实现与前端的实时交互和展示
     """
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
     try:
         _config_manager = get_config_manager()
         data = await request.json()
@@ -3278,7 +3302,7 @@ async def emotion_analysis(request: Request):
 
 
 @router.post('/steam/set-achievement-status/{name}')
-async def set_achievement_status(name: str):
+async def set_achievement_status(name: str, request: Request):
     """
     设置Steam成就状态接口
     func:
@@ -3288,6 +3312,10 @@ async def set_achievement_status(name: str):
     - 若未解锁，尝试设置成就，若成功则返回成功，否则等待1秒后重试一次
     - 最多重试10次，若仍失败则返回错误，提示可能的配置问题
     """
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
     steamworks = get_steamworks()
     if steamworks is not None:
         try:
@@ -3336,6 +3364,10 @@ async def update_playtime(request: Request):
     """
     更新游戏时长统计（PLAY_TIME_SECONDS）
     """
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
     steamworks = get_steamworks()
     if steamworks is not None:
         try:
@@ -4289,20 +4321,24 @@ async def push_activity_signal(request: Request):
 
     Auth:
 
-    * Origin-present same-origin gate (zero-frontend-cost defence,
-      suggested by CodeRabbit on PR #1477): when the request carries an
-      ``Origin`` / ``Referer`` header AND that origin isn't in
-      ``_get_allowed_local_origins`` (which always includes the current
-      ``request.base_url``), reject with 403. Browser-mediated requests
-      always carry ``Origin`` for POST, so this single check blocks
-      cross-site drive-by JS without breaking ``curl`` / Electron's
-      same-origin renderer / native scripts (no Origin → allowed).
+    * Unified ``_validate_local_mutation_request`` guard (issue #1479
+      Step 2): same Origin + ``X-CSRF-Token`` contract every other
+      browser-facing mutation endpoint uses (tutorial-prompt,
+      screenshot, autostart-prompt, …). Replaces PR #1477's interim
+      Origin-only gate. Same-origin Electron renderers and browser
+      tabs send ``X-CSRF-Token`` via
+      ``window.nekoLocalMutationSecurity`` (token is exposed by
+      ``GET /api/config/page_config``); curl / Electron main-process /
+      native scripts that don't run the token bootstrap are now
+      rejected because *CSRF ≠ authentication* — pushing activity
+      from outside the same browsing context isn't a supported path
+      (see ``docs/design/security/local-mutation-auth.md`` for the
+      threat model). The guard already rejects ``Origin: null`` /
+      opaque origins because ``_normalize_origin_value`` returns
+      ``""`` for them, which then fails the membership check.
     * Per-lanlan 5s rate limit below + the tracker's per-character
-      lookup raise spam cost and bound the impact even if Origin
-      validation passes.
-    * A stricter CSRF token mechanism (parity with screenshot endpoints)
-      is tracked for a follow-up security-hardening PR; the threat
-      model write-up lives in issue #1023.
+      lookup raise spam cost and bound the impact even if the guard
+      somehow passes.
 
     Body fields (all optional except ``lanlan_name``):
       * ``lanlan_name`` (required) — which character's tracker to update
@@ -4312,44 +4348,25 @@ async def push_activity_signal(request: Request):
       * ``cpu_avg_30s`` — float in ``[0, 100]``, rolling CPU average
       * ``gpu_utilization`` — float in ``[0, 100]``, primary GPU utilisation
 
-    Returns 200 on success, 400 on malformed payload, 404 if
-    ``lanlan_name`` isn't registered, 429 if pushed faster than
-    ``_EXTERNAL_SIGNAL_MIN_INTERVAL`` (5s), 503 if the character's
-    tracker hasn't initialised yet.
+    Returns 200 on success, 400 on malformed payload, 403 on
+    Origin/CSRF rejection, 404 if ``lanlan_name`` isn't registered,
+    429 if pushed faster than ``_EXTERNAL_SIGNAL_MIN_INTERVAL`` (5s),
+    503 if the character's tracker hasn't initialised yet.
     """
-    # ── Origin-present same-origin gate ────────────────────────────
-    # When the request carries an Origin (or Referer fallback) but it's
-    # not in our allowed-origins set, refuse — that's the drive-by CSRF
-    # signature. Missing Origin means a non-browser caller (curl, Node,
-    # native script) which we explicitly allow because there's no
-    # mandatory CSRF token yet. Same-origin browser requests pass
-    # naturally because their Origin matches ``request.base_url``,
-    # which ``_get_allowed_local_origins`` always includes.
-    #
-    # Opaque-origin guard (Codex F5 on PR #1477): browsers send the
-    # literal string ``"null"`` as Origin for sandboxed iframes,
-    # ``file://`` pages, and certain extension contexts. ``urlsplit``
-    # parses "null" into an empty scheme/netloc which
-    # ``_normalize_origin_value`` turns into ``""`` — without this
-    # check that bypasses to the no-Origin "allowed" branch. We
-    # explicitly reject the raw "null" string before normalisation, on
-    # both Origin and Referer (the latter is our fallback).
-    raw_origin = (request.headers.get("origin") or "").strip().lower()
-    raw_referer = (request.headers.get("referer") or "").strip().lower()
-    if raw_origin == "null" or raw_referer == "null":
-        return _json_no_store_response(
-            {"success": False, "error": "origin not allowed"},
-            status_code=403,
-        )
-
-    request_origin = _get_request_origin(request)
-    if request_origin:
-        allowed = _get_allowed_local_origins(request)
-        if request_origin not in allowed:
-            return _json_no_store_response(
-                {"success": False, "error": "origin not allowed"},
-                status_code=403,
-            )
+    # ``error_defaults`` so the 403 body includes ``success: false``
+    # alongside the unified guard's ``ok/error_code`` fields — keeps
+    # the contract consistent with this endpoint's other error
+    # branches (existing frontend / tests grep ``success``). Also
+    # apply ``_set_no_store_headers`` since the rest of this handler's
+    # responses use that and a cached 403 would mask post-bootstrap
+    # success on the next tick (CodeRabbit Minor on PR #1532).
+    validation_error = _validate_local_mutation_request(
+        request,
+        error_defaults={"success": False},
+    )
+    if validation_error is not None:
+        _set_no_store_headers(validation_error)
+        return validation_error
 
     try:
         data = await request.json()
@@ -4559,6 +4576,10 @@ async def proactive_chat(request: Request):
     """
     主动搭话：两阶段架构 — Phase 1 合并 LLM（web筛选+music/meme关键词，1次调用），Phase 2 结合人设生成搭话
     """
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
     try:
         _config_manager = get_config_manager()
         session_manager = get_session_manager()
@@ -4987,6 +5008,19 @@ async def proactive_chat(request: Request):
                             "[%s] record_invite_delivery_persistent failed: %s",
                             lanlan_name, _persist_err,
                         )
+                    try:
+                        from utils.instrument import counter as _instr_counter
+                        # 与 proactive 通道共用 mini_game_invited，channel 维度区分；
+                        # 不计 persist 成败——邀请 UI 已投递给用户即算一次邀请。
+                        _instr_counter(
+                            "mini_game_invited",
+                            game_type=str(chosen_game_type)[:24],
+                            channel="work_break",
+                            force_first=False,
+                        )
+                    except Exception:
+                        # 埋点 best-effort，失败不影响邀请投递
+                        pass
                     options_payload = _build_mini_game_invite_options_payload(
                         invite_lang=_break_lang,
                         game_type=chosen_game_type,
@@ -7326,6 +7360,10 @@ async def proactive_music_played_through(request: Request):
     通道字段清空，从而让 _compute_source_weights 不再把"刚刚共享过音乐"
     继续计入对 music 通道的衰减惩罚——完整播放是用户对该通道最强的正向反馈。
     """
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
     try:
         data = await request.json()
     except Exception:
@@ -7350,14 +7388,14 @@ async def proactive_music_played_through(request: Request):
 async def translate_text_api(request: Request):
     """
     翻译文本API（供前端字幕模块使用）
-    
+
     请求格式:
     {
         "text": "要翻译的文本",
         "target_lang": "目标语言代码 ('zh', 'en', 'ja', 'ko')",
         "source_lang": "源语言代码 (可选，为null时自动检测)"
     }
-    
+
     响应格式:
     {
         "success": true/false,
@@ -7366,6 +7404,10 @@ async def translate_text_api(request: Request):
         "target_lang": "目标语言代码"
     }
     """
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
     try:
         data = await request.json()
         text = data.get('text', '').strip()
@@ -7446,25 +7488,29 @@ async def get_personal_dynamics(request: Request):
     """
     获取个性化内容数据
     """
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
     from utils.web_scraper import fetch_personal_dynamics, format_personal_dynamics
     try:
-        
+
         data = await request.json()
         limit = data.get('limit', 10)
-        
+
         # 获取个性化内容
         personal_content = await fetch_personal_dynamics(limit=limit)
-        
+
         if not personal_content['success']:
             return JSONResponse({
                 "success": False,
                 "error": "无法获取个性化内容",
                 "detail": personal_content.get('error', '未知错误')
             }, status_code=500)
-        
+
         # 格式化内容用于前端显示
         formatted_content = format_personal_dynamics(personal_content)
-        
+
         return JSONResponse({
             "success": True,
             "data": {
@@ -7473,7 +7519,7 @@ async def get_personal_dynamics(request: Request):
                 "platforms": [k for k in personal_content.keys() if k not in ('success', 'error', 'region')]
             }
         })
-        
+
     except Exception as e:
         logger.error(f"获取个性化内容失败: {e}")
         return JSONResponse({

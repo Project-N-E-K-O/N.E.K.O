@@ -7,6 +7,9 @@ the tracker in remote / cross-platform deployments where the Python
 backend can't read foreground-window / idle / CPU / GPU directly.
 
 Coverage focus:
+  * Auth → ``_validate_local_mutation_request`` guard fires before any
+    business logic (issue #1479 Step 2: unified CSRF + Origin gate
+    replaces PR #1477's interim Origin-only check).
   * Happy path → tracker is called with the right kwargs.
   * Validation → 400 on bad shapes, 404 / 503 on missing tracker.
   * Rate limit → 429 with ``Retry-After`` when pushed too fast.
@@ -26,6 +29,14 @@ from main_routers import system_router as system_router_module
 
 
 ACTIVITY_SIGNAL_ENDPOINT = "/api/activity_signal"
+
+# TestClient's default base URL is ``http://testserver``; the unified
+# guard's allowed-origin set always includes ``request.base_url``, so
+# this Origin passes ``_get_allowed_local_origins`` automatically.
+_AUTH_HEADERS = {
+    "Origin": "http://testserver",
+    "X-CSRF-Token": "test-csrf-token",
+}
 
 
 def _build_mgr(*, has_tracker: bool = True):
@@ -49,19 +60,40 @@ def _isolate_throttle_state():
     system_router_module._ACTIVITY_SIGNAL_THROTTLE.clear()
 
 
-def _build_client(monkeypatch, mgr_map: dict):
+@pytest.fixture(autouse=True)
+def _fixed_csrf_token(monkeypatch):
+    """Pin AUTOSTART_CSRF_TOKEN so ``_AUTH_HEADERS`` is the matching token.
+
+    The real config uses a per-instance random token; tests need a fixed
+    value to predictably authenticate happy-path requests. Same trick
+    ``test_system_screenshot_router.py`` uses.
+    """
+    monkeypatch.setattr(
+        system_router_module, "AUTOSTART_CSRF_TOKEN", "test-csrf-token",
+    )
+    yield
+
+
+def _build_client(monkeypatch, mgr_map: dict, *, authenticated: bool = True):
     """TestClient with ``get_session_manager`` monkey-patched.
 
     ``mgr_map`` is the same dict shape returned in production
     (lanlan_name → mgr-like object). Pass an empty dict to simulate
     "no characters registered".
+
+    ``authenticated`` (default True): inject the matching Origin +
+    X-CSRF-Token on every request so happy-path tests don't have to
+    repeat them. Set to False when exercising the guard itself.
     """
     monkeypatch.setattr(
         system_router_module, "get_session_manager", lambda: mgr_map,
     )
     app = FastAPI()
     app.include_router(system_router_module.router)
-    return TestClient(app)
+    client = TestClient(app)
+    if authenticated:
+        client.headers.update(_AUTH_HEADERS)
+    return client
 
 
 # ── happy path ────────────────────────────────────────────────────────
@@ -305,43 +337,146 @@ def test_field_validation_400s(monkeypatch, payload, expected_error_fragment):
     tracker.push_external_system_signal.assert_not_called()
 
 
-# ── Origin-present same-origin gate ──────────────────────────────────
+# ── Unified CSRF + Origin guard (issue #1479 Step 2) ─────────────────
+# These tests exercise ``_validate_local_mutation_request`` as plumbed
+# into the activity_signal endpoint. They INTENTIONALLY use
+# ``authenticated=False`` so the guard's negative paths are observable.
 
 
 @pytest.mark.unit
-def test_no_origin_header_accepted(monkeypatch):
-    """``curl`` / Node / native scripts send no Origin → must be allowed.
+def test_no_origin_no_csrf_blocked_with_403(monkeypatch):
+    """No Origin AND no CSRF token → 403 ``csrf_validation_failed``.
 
-    The Origin gate is intentionally permissive in the no-Origin case
-    because:
-      - Browsers always send Origin on POST (since the 2024-ish spec
-        update), so missing Origin reliably means non-browser caller
-      - Mandatory CSRF tokens would block legitimate native callers
-        without a clean path forward; defer to follow-up PR
+    Differs from PR #1477's interim Origin-only gate, which let
+    no-Origin callers (curl / Electron main-process / native scripts)
+    push freely. The unified guard rejects those too — *CSRF is not
+    authentication*, but pushing activity signals from outside the
+    same browsing context isn't a supported deployment shape (see the
+    threat model in ``docs/design/security/local-mutation-auth.md``).
+    Same shape as every other browser-facing mutation endpoint now.
+
+    Body contract (CodeRabbit Minor on PR #1532): the 403 must carry
+    both ``ok: false`` + ``error_code`` (unified guard shape) AND
+    ``success: false`` (this endpoint's historical shape). Cache must
+    be ``no-store`` to match the rest of activity_signal's responses,
+    or a transient bootstrap-window 403 could get cached and mask a
+    later post-bootstrap success.
     """
     mgr, tracker = _build_mgr()
-    client = _build_client(monkeypatch, {"Aria": mgr})
-
-    resp = client.post(ACTIVITY_SIGNAL_ENDPOINT, json={"lanlan_name": "Aria", "idle_seconds": 0})
-
-    assert resp.status_code == 200, resp.text
-    tracker.push_external_system_signal.assert_called_once()
-
-
-@pytest.mark.unit
-def test_same_origin_browser_request_accepted(monkeypatch):
-    """Browser fetch with matching Origin (== ``request.base_url``) passes."""
-    mgr, tracker = _build_mgr()
-    client = _build_client(monkeypatch, {"Aria": mgr})
+    client = _build_client(monkeypatch, {"Aria": mgr}, authenticated=False)
 
     resp = client.post(
         ACTIVITY_SIGNAL_ENDPOINT,
         json={"lanlan_name": "Aria", "idle_seconds": 0},
-        headers={"Origin": "http://testserver"},  # TestClient's base_url
+    )
+
+    assert resp.status_code == 403, resp.text
+    body = resp.json()
+    assert body.get("error_code") == "csrf_validation_failed"
+    assert body.get("success") is False, (
+        "activity_signal 403 must keep success:false for backward "
+        f"compatibility with the rest of this endpoint's contract; got {body!r}"
+    )
+    assert "no-store" in resp.headers.get("Cache-Control", "").lower()
+    tracker.push_external_system_signal.assert_not_called()
+
+
+@pytest.mark.unit
+def test_no_origin_with_valid_csrf_still_blocked(monkeypatch):
+    """Valid CSRF token alone (no Origin) must not bypass the guard.
+
+    Distinguishes the *Origin AND CSRF* contract from a hypothetical
+    "token-only" relaxation: a non-browser caller that somehow obtained
+    the CSRF token (e.g., by reading the user's running browser's
+    DevTools) still can't push activity signals if it skips the Origin
+    header. Without this canary a future refactor could accidentally
+    weaken the guard to "token alone is enough" and the rest of the
+    suite would still pass (CodeRabbit Nitpick on PR #1532).
+    """
+    mgr, tracker = _build_mgr()
+    client = _build_client(monkeypatch, {"Aria": mgr}, authenticated=False)
+
+    resp = client.post(
+        ACTIVITY_SIGNAL_ENDPOINT,
+        json={"lanlan_name": "Aria", "idle_seconds": 0},
+        headers={"X-CSRF-Token": "test-csrf-token"},
+    )
+
+    assert resp.status_code == 403, resp.text
+    body = resp.json()
+    assert body.get("error_code") == "csrf_validation_failed"
+    assert body.get("success") is False
+    assert "no-store" in resp.headers.get("Cache-Control", "").lower()
+    tracker.push_external_system_signal.assert_not_called()
+
+
+@pytest.mark.unit
+def test_same_origin_with_valid_csrf_accepted(monkeypatch):
+    """Matching Origin + valid CSRF token → push goes through.
+
+    The TestClient's default base_url is ``http://testserver``, which
+    ``_get_allowed_local_origins`` always adds to the allowed set. With
+    the matching ``X-CSRF-Token``, the guard returns None and the
+    handler runs normally.
+    """
+    mgr, tracker = _build_mgr()
+    client = _build_client(monkeypatch, {"Aria": mgr}, authenticated=False)
+
+    resp = client.post(
+        ACTIVITY_SIGNAL_ENDPOINT,
+        json={"lanlan_name": "Aria", "idle_seconds": 0},
+        headers={
+            "Origin": "http://testserver",
+            "X-CSRF-Token": "test-csrf-token",
+        },
     )
 
     assert resp.status_code == 200, resp.text
     tracker.push_external_system_signal.assert_called_once()
+
+
+@pytest.mark.unit
+def test_same_origin_without_csrf_blocked(monkeypatch):
+    """Matching Origin but missing CSRF token → 403.
+
+    This is the threat the unified guard exists to cover (and PR
+    #1477's Origin-only gate did *not* cover): a malicious same-origin
+    context (e.g., a compromised browser extension injecting fetch
+    into the page) that has the right Origin but can't read the
+    per-instance CSRF token.
+    """
+    mgr, tracker = _build_mgr()
+    client = _build_client(monkeypatch, {"Aria": mgr}, authenticated=False)
+
+    resp = client.post(
+        ACTIVITY_SIGNAL_ENDPOINT,
+        json={"lanlan_name": "Aria", "idle_seconds": 0},
+        headers={"Origin": "http://testserver"},
+    )
+
+    assert resp.status_code == 403, resp.text
+    assert resp.json().get("error_code") == "csrf_validation_failed"
+    tracker.push_external_system_signal.assert_not_called()
+
+
+@pytest.mark.unit
+def test_same_origin_with_wrong_csrf_blocked(monkeypatch):
+    """Matching Origin but WRONG CSRF token → 403 (constant-time compare)."""
+    mgr, tracker = _build_mgr()
+    client = _build_client(monkeypatch, {"Aria": mgr}, authenticated=False)
+
+    resp = client.post(
+        ACTIVITY_SIGNAL_ENDPOINT,
+        json={"lanlan_name": "Aria", "idle_seconds": 0},
+        headers={
+            "Origin": "http://testserver",
+            "X-CSRF-Token": "wrong-token-not-the-real-one",
+        },
+    )
+
+    assert resp.status_code == 403, resp.text
+    assert resp.json().get("error_code") == "csrf_validation_failed"
+    tracker.push_external_system_signal.assert_not_called()
 
 
 @pytest.mark.unit
@@ -353,66 +488,49 @@ def test_same_origin_browser_request_accepted(monkeypatch):
 def test_cross_site_origin_blocked_with_403(monkeypatch, evil_origin):
     """Drive-by browser fetch from off-origin page → 403.
 
-    This is the threat that the Origin gate exists to block: a
-    malicious page on attacker.com calling our endpoint via fetch().
-    Browser always sends Origin = the page's origin; since that's not
-    our base_url, we reject before tracker dispatch.
+    The CSRF token wouldn't help an attacker because they can't read it
+    cross-origin, but Origin alone is enough to reject — make sure the
+    guard fires before any business code runs.
     """
     mgr, tracker = _build_mgr()
-    client = _build_client(monkeypatch, {"Aria": mgr})
+    client = _build_client(monkeypatch, {"Aria": mgr}, authenticated=False)
 
     resp = client.post(
         ACTIVITY_SIGNAL_ENDPOINT,
         json={"lanlan_name": "Aria", "idle_seconds": 0},
-        headers={"Origin": evil_origin},
+        headers={
+            "Origin": evil_origin,
+            # Even if the attacker guesses the token they're still
+            # off-origin → reject.
+            "X-CSRF-Token": "test-csrf-token",
+        },
     )
 
     assert resp.status_code == 403, resp.text
-    assert "origin" in resp.json()["error"].lower()
-    tracker.push_external_system_signal.assert_not_called()
-
-
-@pytest.mark.unit
-def test_referer_used_when_no_origin(monkeypatch):
-    """``_get_request_origin`` falls back to Referer when Origin absent.
-
-    Drive-by CSRF mitigation must work even when an attacker omits
-    Origin (some older clients / browser bugs do this) — Referer is
-    the practical fallback, and our helper already implements it.
-    """
-    mgr, tracker = _build_mgr()
-    client = _build_client(monkeypatch, {"Aria": mgr})
-
-    # Referer from off-origin page → should still block
-    resp = client.post(
-        ACTIVITY_SIGNAL_ENDPOINT,
-        json={"lanlan_name": "Aria", "idle_seconds": 0},
-        headers={"Referer": "https://evil.com/some/path"},
-    )
-
-    assert resp.status_code == 403
+    assert resp.json().get("error_code") == "csrf_validation_failed"
     tracker.push_external_system_signal.assert_not_called()
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("header_name,opaque_value", [
     ("Origin", "null"),
-    ("Origin", "NULL"),  # case-insensitive
-    ("Referer", "null"),  # Referer fallback also rejects "null"
+    ("Origin", "NULL"),
+    ("Referer", "null"),
 ])
 def test_opaque_origin_null_rejected(monkeypatch, header_name, opaque_value):
-    """``Origin: null`` (and Referer: null) from sandboxed iframes / file://
-    contexts must be 403, not fall through to the no-Origin allow path.
+    """``Origin: null`` / ``Referer: null`` from opaque-origin contexts → 403.
 
-    Codex P1 (F5 on PR #1477): browsers emit the literal string "null"
-    for opaque origins. ``urlsplit("null")`` parses into empty scheme +
-    netloc → ``_normalize_origin_value`` returns "" → the no-Origin
-    allow branch fires, bypassing the gate. Without an explicit raw
-    check, ``<iframe sandbox>`` on attacker.com could fetch our
-    endpoint and spoof signals.
+    Browsers emit literal ``"null"`` as Origin for sandboxed iframes,
+    ``file://`` pages, and certain extension contexts. The unified
+    guard handles this naturally: ``_normalize_origin_value("null")``
+    returns ``""`` (urlsplit yields empty scheme), so the membership
+    check fails. With no CSRF token in the request, the guard rejects
+    before anything else runs. The combined ``has_valid_csrf AND
+    has_valid_origin`` rule means even a malicious sandbox carrying
+    *some* string in X-CSRF-Token can't bypass it.
     """
     mgr, tracker = _build_mgr()
-    client = _build_client(monkeypatch, {"Aria": mgr})
+    client = _build_client(monkeypatch, {"Aria": mgr}, authenticated=False)
 
     resp = client.post(
         ACTIVITY_SIGNAL_ENDPOINT,
@@ -421,22 +539,23 @@ def test_opaque_origin_null_rejected(monkeypatch, header_name, opaque_value):
     )
 
     assert resp.status_code == 403, resp.text
-    assert "origin" in resp.json()["error"].lower()
+    assert resp.json().get("error_code") == "csrf_validation_failed"
     tracker.push_external_system_signal.assert_not_called()
 
 
 @pytest.mark.unit
-def test_unparseable_origin_treated_as_absent(monkeypatch):
-    """Garbage Origin (can't parse scheme/host) → treated as no-Origin.
+def test_unparseable_origin_blocked(monkeypatch):
+    """Garbage Origin (can't parse scheme/host) → 403, not allowed.
 
-    Mirrors screenshot-router test
-    ``test_interactive_screenshot_blocks_browser_requests_with_unparseable_origin``
-    inverted: unparseable means "we can't tell where this came from",
-    so we fall through to the no-Origin path (allow). The endpoint's
-    rate limit + lanlan_name lookup still bound impact.
+    Differs from PR #1477's interim behaviour which would have
+    fallen through to the no-Origin allow branch. Under the unified
+    guard ``_normalize_origin_value`` returns ``""`` for unparseable
+    input, the membership check fails, and without a valid CSRF token
+    we reject. This closes a fingerprinting / probing vector where an
+    attacker could send garbage Origins to detect endpoint existence.
     """
     mgr, tracker = _build_mgr()
-    client = _build_client(monkeypatch, {"Aria": mgr})
+    client = _build_client(monkeypatch, {"Aria": mgr}, authenticated=False)
 
     resp = client.post(
         ACTIVITY_SIGNAL_ENDPOINT,
@@ -444,9 +563,9 @@ def test_unparseable_origin_treated_as_absent(monkeypatch):
         headers={"Origin": "not a url"},
     )
 
-    # Origin couldn't be normalised → counts as no Origin → allowed
-    assert resp.status_code == 200, resp.text
-    tracker.push_external_system_signal.assert_called_once()
+    assert resp.status_code == 403, resp.text
+    assert resp.json().get("error_code") == "csrf_validation_failed"
+    tracker.push_external_system_signal.assert_not_called()
 
 
 @pytest.mark.unit
@@ -538,7 +657,8 @@ def test_nan_and_infinity_rejected(monkeypatch, field, bad_token):
     resp = client.post(
         ACTIVITY_SIGNAL_ENDPOINT,
         content=body,
-        headers={"Content-Type": "application/json"},
+        # TestClient defaults to no extra headers; merge our auth headers in.
+        headers={"Content-Type": "application/json", **_AUTH_HEADERS},
     )
 
     assert resp.status_code == 400, resp.text

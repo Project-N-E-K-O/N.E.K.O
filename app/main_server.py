@@ -68,7 +68,7 @@ import httpx # noqa
 import time # noqa
 import signal # noqa
 from datetime import datetime, timezone # noqa
-from config import MAIN_SERVER_PORT, MONITOR_SERVER_PORT, USER_NOTIFICATION_ERROR_MAX_CHARS # noqa
+from config import MAIN_SERVER_PORT, MONITOR_SERVER_PORT, USER_NOTIFICATION_ERROR_MAX_CHARS, USER_PLUGIN_BASE # noqa
 from utils.cloudsave_autocloud import get_cloudsave_manager # noqa
 from utils.cloudsave_runtime import (
     CloudsaveDeadlineExceeded,
@@ -89,6 +89,18 @@ from utils.ssl_env_diagnostics import probe_ssl_environment, write_ssl_diagnosti
 _main_log_level = getattr(logging, (os.environ.get("NEKO_LOG_LEVEL") or "INFO").upper(), logging.INFO)
 logger, log_config = setup_logging(service_name="Main", log_level=_main_log_level, silent=not _IS_MAIN_PROCESS)
 
+
+def _resolve_user_plugin_base() -> str:
+    raw_port = os.getenv("NEKO_USER_PLUGIN_SERVER_PORT", "").strip()
+    if raw_port:
+        try:
+            port = int(raw_port)
+            if 0 < port <= 65535:
+                return f"http://127.0.0.1:{port}"
+        except ValueError:
+            logger.warning("Invalid NEKO_USER_PLUGIN_SERVER_PORT value {!r}; using configured plugin base", raw_port)
+    return USER_PLUGIN_BASE.rstrip("/")
+
 if _IS_MAIN_PROCESS:
     _ssl_precheck = probe_ssl_environment()
     if not _ssl_precheck.get("ok", True):
@@ -106,7 +118,7 @@ if _IS_MAIN_PROCESS:
 
 try:
     from fastapi import FastAPI, Request # noqa
-    from fastapi.responses import JSONResponse # noqa
+    from fastapi.responses import JSONResponse, Response # noqa
     from fastapi.staticfiles import StaticFiles # noqa
     from fastapi.middleware.cors import CORSMiddleware # noqa
     from main_logic import core as core, cross_server as cross_server # noqa
@@ -1665,6 +1677,86 @@ async def get_battle_avatar(side: str):
     entry = _battle_arena_avatars.get(side, {})
     return JSONResponse({'dataUrl': entry.get('dataUrl', ''), 'name': entry.get('name', '')})
 
+
+@app.api_route("/market/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+@app.api_route("/market", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
+    """Proxy plugin-manager Market bridge calls to the user plugin server.
+
+    Vite dev proxies /market to USER_PLUGIN_SERVER_PORT. The packaged UI is
+    served by the main server, so it needs the same same-origin bridge here.
+    """
+
+    target = f"{_resolve_user_plugin_base()}/market"
+    if path:
+        target = f"{target}/{path}"
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+
+    hop_by_hop = {
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailers",
+        "transfer-encoding",
+        "upgrade",
+        "host",
+        "content-length",
+    }
+    # Request-side filter additionally drops Accept-Encoding so the upstream
+    # is asked for an *uncompressed* response. We can't safely forward the
+    # client's Accept-Encoding because httpx auto-decompresses on
+    # ``upstream.content`` access — which would leave the response body
+    # decompressed but the upstream's ``Content-Encoding: gzip`` header
+    # intact, and the browser would double-decompress
+    # (ERR_CONTENT_DECODING_FAILED). See bugfix.md §1.1 / §2.1.
+    #
+    # CC-1 LOCK (PR #1480 review-fix Phase 3): do **NOT** add ``authorization``
+    # to ``hop_by_hop_request``. The /market/oauth/* endpoints will (post
+    # 2.3.1 / 2.3.2) accept the bridge token via ``Authorization: Bearer``,
+    # and that header MUST survive this proxy. Stripping it would silently
+    # break Market login.
+    hop_by_hop_request = hop_by_hop | {"accept-encoding"}
+    headers = {
+        key: value
+        for key, value in request.headers.items()
+        if key.lower() not in hop_by_hop_request
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=3.0), proxy=None, trust_env=False) as client:
+            upstream = await client.request(
+                request.method,
+                target,
+                content=await request.body(),
+                headers=headers,
+            )
+    except httpx.HTTPError as exc:
+        logger.warning("Market bridge proxy failed: target=%s error=%s", target, exc)
+        return JSONResponse(
+            status_code=502,
+            content={"detail": "Market bridge unavailable", "error": str(exc)},
+        )
+
+    # Response-side filter additionally drops Content-Encoding so the body
+    # bytes (already decompressed by httpx when we read ``upstream.content``)
+    # and the response headers stay consistent. ``Content-Length`` is also
+    # dropped because httpx may have changed the byte count during
+    # decompression; FastAPI / Starlette will recompute it from the body.
+    hop_by_hop_response = hop_by_hop | {"content-encoding", "content-length"}
+    response_headers = {
+        key: value
+        for key, value in upstream.headers.items()
+        if key.lower() not in hop_by_hop_response
+    }
+    return Response(
+        content=upstream.content,
+        status_code=upstream.status_code,
+        headers=response_headers,
+        media_type=upstream.headers.get("content-type"),
+    )
 
 # 挂载全部路由
 app.include_router(config_router)

@@ -45,6 +45,66 @@ function getWorkshopHiddenFields() {
     return _uniqueFields([...cfg.all_reserved_fields]);
 }
 
+function normalizeCharacterFieldName(fieldName) {
+    return String(fieldName ?? '').trim();
+}
+
+function isCharacterReservedFieldName(fieldName) {
+    const normalizedFieldName = normalizeCharacterFieldName(fieldName);
+    if (!normalizedFieldName) return false;
+    return getWorkshopHiddenFields().includes(normalizedFieldName);
+}
+
+function normalizeCharacterFieldValue(value, fieldName) {
+    const normalizedFieldName = normalizeCharacterFieldName(fieldName);
+    if (normalizedFieldName === '档案名') {
+        return typeof value === 'string' ? value.trim() : value;
+    }
+    return value;
+}
+
+function collectCharacterFields(form, options = {}) {
+    const {
+        baseData = {},
+        excludeFieldNames = [],
+        includeProfileName = false,
+    } = options;
+    const data = {};
+    const seen = new Set();
+
+    Object.entries(baseData || {}).forEach(([key, value]) => {
+        const normalizedKey = normalizeCharacterFieldName(key);
+        if (!normalizedKey) return;
+        data[normalizedKey] = value;
+        seen.add(normalizedKey);
+    });
+
+    const excluded = new Set(
+        (excludeFieldNames || []).map(normalizeCharacterFieldName).filter(Boolean)
+    );
+    if (!includeProfileName) {
+        excluded.add('档案名');
+    }
+
+    for (const [rawKey, rawValue] of new FormData(form).entries()) {
+        const key = normalizeCharacterFieldName(rawKey);
+        if (!key || excluded.has(key) || isCharacterReservedFieldName(key)) {
+            continue;
+        }
+        const value = normalizeCharacterFieldValue(rawValue, key);
+        if (!value) {
+            continue;
+        }
+        if (seen.has(key)) {
+            return { data, duplicateKey: key };
+        }
+        data[key] = value;
+        seen.add(key);
+    }
+
+    return { data, duplicateKey: '' };
+}
+
 function loadCharacterReservedFieldsConfig() {
     _reservedFieldsReady = ReservedFieldsUtils.load().then(cfg => {
         characterReservedFieldsConfig = cfg;
@@ -5264,10 +5324,13 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
 
     // 自定义字段
     const ALL_RESERVED = typeof getWorkshopHiddenFields === 'function' ? ['档案名', ...getWorkshopHiddenFields()] : ['档案名'];
+    const renderedCustomFields = new Set();
     Object.keys(cat).forEach(k => {
-        if (ALL_RESERVED.includes(k)) return;
+        const normalizedKey = normalizeCharacterFieldName(k);
+        if (!normalizedKey || ALL_RESERVED.includes(normalizedKey) || renderedCustomFields.has(normalizedKey)) return;
         const val = cat[k];
         if (val === null || val === undefined) return;
+        renderedCustomFields.add(normalizedKey);
 
         const wrapper = document.createElement('div');
         wrapper.className = 'field-row-wrapper custom-row setting-field-row';
@@ -5277,13 +5340,13 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
             : '<img src="/static/icons/delete.png" alt="" class="delete-icon"> 删除设定';
 
         const labelEl = document.createElement('label');
-        _panelSetFieldLabel(labelEl, k);
+        _panelSetFieldLabel(labelEl, normalizedKey);
         wrapper.appendChild(labelEl);
 
         const fr = document.createElement('div');
         fr.className = 'field-row';
         const textareaEl = document.createElement('textarea');
-        textareaEl.name = k;
+        textareaEl.name = normalizedKey;
         textareaEl.rows = 1;
         textareaEl.placeholder = (window.t && typeof window.t === 'function')
             ? window.t('character.detailDescriptionPlaceholder')
@@ -5348,9 +5411,10 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
         } else {
             key = prompt(window.t ? window.t('character.addCatgirlFieldPrompt') : '请输入新设定的名称（键名）');
         }
+        key = normalizeCharacterFieldName(key);
         const FORBIDDEN = ALL_RESERVED;
         if (!key || FORBIDDEN.includes(key)) return;
-        if (form.querySelector('[name="' + CSS.escape(key) + '"]')) {
+        if (Array.from(form.querySelectorAll('input, textarea, select')).some(el => normalizeCharacterFieldName(el.name) === key)) {
             if (typeof showAlert === 'function') {
                 await showAlert(window.t ? window.t('character.fieldExists') : '该设定已存在');
             } else {
@@ -6395,27 +6459,22 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             await form._voicesLoadPromise;
         }
 
-        const data = {};
-
         // 收集表单数据
         const nameInput = form.querySelector('input[name="档案名"]');
         if (!nameInput || !nameInput.value.trim()) {
             await showAlertDialog(window.t ? window.t('character.profileNameRequired') : '请输入档案名', { type: 'warning' });
             return;
         }
-        data['档案名'] = nameInput.value.trim();
 
-        // 收集已有字段（通过 FormData 统一收集，跳过voice_id）
-        const fd = new FormData(form);
         const selectedVoiceId = (form.querySelector('select[name="voice_id"]')?.value ?? '').trim();
         const previousVoiceId = form._previousVoiceId || '';
-
-        for (const [k, v] of fd.entries()) {
-            if (k === 'voice_id') continue;
-            const normalizedValue = typeof v === 'string' ? v.trim() : v;
-            if (k && normalizedValue) {
-                data[k] = normalizedValue;
-            }
+        const { data, duplicateKey } = collectCharacterFields(form, {
+            baseData: { '档案名': nameInput.value.trim() },
+            excludeFieldNames: ['档案名', 'voice_id'],
+        });
+        if (duplicateKey) {
+            showMessage(window.t ? window.t('character.fieldExists') : '该设定已存在', 'error');
+            return;
         }
 
         // 如果新建猫娘已被临时保存（自动创建），则改用 PUT 更新
@@ -9894,6 +9953,8 @@ function renderMasterForm(master) {
     const form = document.getElementById('master-form');
     if (!form) return;
     form.innerHTML = '';
+    const masterProfileName = normalizeCharacterFieldName(master['档案名']);
+    const hasMasterProfileName = !!masterProfileName;
 
     // 档案名
     const baseWrapper = document.createElement('div');
@@ -9910,8 +9971,15 @@ function renderMasterForm(master) {
     nameInput.type = 'text';
     nameInput.name = '档案名';
     nameInput.required = true;
-    nameInput.value = master['档案名'] || '';
+    nameInput.value = masterProfileName;
     nameInput.autocomplete = 'off';
+    nameInput.readOnly = hasMasterProfileName;
+    nameInput.setAttribute('aria-readonly', hasMasterProfileName ? 'true' : 'false');
+    if (hasMasterProfileName) {
+        nameInput.title = window.t
+            ? window.t('character.profileNameRenameOnlyHint')
+            : '请通过“修改名称”按钮修改档案名';
+    }
     fieldRow.appendChild(nameInput);
     baseWrapper.appendChild(fieldRow);
 
@@ -9921,26 +9989,38 @@ function renderMasterForm(master) {
     renameBtn.className = 'btn sm';
     renameBtn.style.minWidth = '70px';
     const renameText = window.t ? window.t('character.rename') : '修改名称';
+    const renameTitle = window.t ? window.t('character.renameMasterTitle') : '重命名主人';
     renameBtn.textContent = renameText;
+    renameBtn.title = renameTitle;
+    renameBtn.setAttribute('aria-label', renameTitle);
+    renameBtn.disabled = !hasMasterProfileName;
     renameBtn.onclick = renameMaster;
     baseWrapper.appendChild(renameBtn);
 
     form.appendChild(baseWrapper);
 
     // 自定义字段
+    const renderedCustomFields = new Set();
     Object.keys(master).forEach(k => {
-        if (k === '档案名') return;
+        const normalizedKey = normalizeCharacterFieldName(k);
+        if (
+            !normalizedKey
+            || normalizedKey === '档案名'
+            || isCharacterReservedFieldName(normalizedKey)
+            || renderedCustomFields.has(normalizedKey)
+        ) return;
+        renderedCustomFields.add(normalizedKey);
         const wrapper = document.createElement('div');
         wrapper.className = 'field-row-wrapper custom-row';
 
         const label = document.createElement('label');
-        label.textContent = k;
+        label.textContent = normalizedKey;
         wrapper.appendChild(label);
 
         const row = document.createElement('div');
         row.className = 'field-row';
         const textarea = document.createElement('textarea');
-        textarea.name = k;
+        textarea.name = normalizedKey;
         textarea.rows = 1;
         textarea.value = master[k];
         row.appendChild(textarea);
@@ -9959,7 +10039,9 @@ function renderMasterForm(master) {
         // textarea自动调整
         _panelAttachTextareaAutoResize(textarea);
         // 自动保存和变化监听
-        attachAutoSaveListener(textarea, 'master');
+        if (hasMasterProfileName) {
+            attachAutoSaveListener(textarea, 'master');
+        }
         textarea.addEventListener('input', showMasterActionButtons);
         textarea.addEventListener('change', showMasterActionButtons);
     });
@@ -9984,7 +10066,7 @@ function renderMasterForm(master) {
     saveBtn.type = 'button';
     saveBtn.id = 'save-master-btn';
     saveBtn.className = 'btn sm';
-    saveBtn.style.display = 'none';
+    saveBtn.style.display = hasMasterProfileName ? 'none' : '';
     const saveText = window.t ? window.t('character.saveMaster') : '保存主人设定';
     saveBtn.textContent = saveText;
     saveBtn.onclick = saveMasterForm;
@@ -10004,10 +10086,11 @@ function renderMasterForm(master) {
 
     form.appendChild(btnArea);
 
-    // 为档案名输入框添加自动保存和变化监听
-    attachAutoSaveListener(nameInput, 'master');
-    nameInput.addEventListener('input', showMasterActionButtons);
-    nameInput.addEventListener('change', showMasterActionButtons);
+    // 档案名只允许通过重命名接口修改，避免绕过改名事件记录。
+    if (!hasMasterProfileName) {
+        nameInput.addEventListener('input', showMasterActionButtons);
+        nameInput.addEventListener('change', showMasterActionButtons);
+    }
 }
 
 function showMasterActionButtons() {
@@ -10019,6 +10102,11 @@ function showMasterActionButtons() {
     if (cancelBtn) cancelBtn.style.display = '';
 }
 
+function hasMasterFormProfileName(form) {
+    const nameInput = form?.querySelector('input[name="档案名"]');
+    return !!normalizeCharacterFieldName(nameInput?.value || '');
+}
+
 async function saveMasterForm() {
     const form = document.getElementById('master-form');
     if (!form) return;
@@ -10027,9 +10115,16 @@ async function saveMasterForm() {
         showMessage(window.t ? window.t('character.profileNameRequired') : '档案名为必填项', 'error');
         return;
     }
-    const data = {};
-    for (const [k, v] of new FormData(form).entries()) {
-        if (k && v) data[k] = v;
+    const baseData = nameInput.readOnly
+        ? {}
+        : { '档案名': normalizeCharacterFieldName(nameInput.value) };
+    const { data, duplicateKey } = collectCharacterFields(form, {
+        baseData,
+        excludeFieldNames: ['档案名'],
+    });
+    if (duplicateKey) {
+        showMessage(window.t ? window.t('character.fieldExists') : '该设定已存在', 'error');
+        return;
     }
     try {
         const resp = await fetch('/api/characters/master', {
@@ -10083,14 +10178,18 @@ function attachAutoSaveListener(input, type, catgirlName) {
 async function autoSaveMasterField(input) {
     const form = input.closest('form');
     if (!form || form.id !== 'master-form') return;
-    const fieldName = input.name;
+    if (!hasMasterFormProfileName(form)) return;
+    const fieldName = normalizeCharacterFieldName(input.name);
     if (!fieldName) return;
-    if (fieldName === '档案名' && !input.value.trim()) return;
-    const allData = {};
-    for (const [k, v] of new FormData(form).entries()) {
-        if (k && v) allData[k] = v;
+    if (fieldName === '档案名') return;
+    const { data: allData, duplicateKey } = collectCharacterFields(form, {
+        excludeFieldNames: ['档案名'],
+    });
+    if (duplicateKey) {
+        showMessage(window.t ? window.t('character.fieldExists') : '该设定已存在', 'error');
+        return;
     }
-    if (!allData['档案名']) return;
+    // 空对象用于持久化“清空最后一个自定义字段”的自动保存。
     try {
         const resp = await fetch('/api/characters/master', {
             method: 'POST',
@@ -10119,16 +10218,16 @@ async function panelAutoSaveCatgirlField(input, catgirlName) {
     if (!catgirlName) return;
     const form = input.closest('form');
     if (!form) return;
-    const fieldName = input.name;
+    const fieldName = normalizeCharacterFieldName(input.name);
     if (!fieldName || fieldName === '档案名' || fieldName === 'voice_id') return;
-    const data = { '档案名': catgirlName };
-    const ALL_RESERVED_FIELDS = ['档案名', ...getWorkshopHiddenFields()];
-    const inputs = form.querySelectorAll('input, textarea');
-    inputs.forEach(inp => {
-        if (inp.name && !ALL_RESERVED_FIELDS.includes(inp.name) && inp.value) {
-            data[inp.name] = inp.value;
-        }
+    const { data, duplicateKey } = collectCharacterFields(form, {
+        baseData: { '档案名': catgirlName },
+        excludeFieldNames: ['档案名', 'voice_id'],
     });
+    if (duplicateKey) {
+        showMessage(window.t ? window.t('character.fieldExists') : '该设定已存在', 'error');
+        return;
+    }
     try {
         const resp = await fetch('/api/characters/catgirl/' + encodeURIComponent(catgirlName), {
             method: 'PUT',
@@ -10188,8 +10287,11 @@ async function addMasterField() {
     } else {
         key = prompt(window.t ? window.t('character.addMasterFieldPrompt') : '请输入新设定的名称（键名）');
     }
-    if (!key || key === '档案名') return;
-    const exists = Array.from(form.querySelectorAll('textarea, input')).some(el => el.name === key);
+    key = normalizeCharacterFieldName(key);
+    if (!key || key === '档案名' || isCharacterReservedFieldName(key)) return;
+    const exists = Array.from(form.querySelectorAll('textarea, input')).some(
+        el => normalizeCharacterFieldName(el.name) === key
+    );
     if (exists) {
         showMessage(window.t ? window.t('character.fieldExists') : '该设定已存在', 'error');
         return;
@@ -10217,7 +10319,9 @@ async function addMasterField() {
 
     form.insertBefore(wrapper, form.querySelector('.btn-area'));
     _panelAttachTextareaAutoResize(textarea);
-    attachAutoSaveListener(textarea, 'master');
+    if (hasMasterFormProfileName(form)) {
+        attachAutoSaveListener(textarea, 'master');
+    }
     textarea.addEventListener('input', showMasterActionButtons);
     textarea.addEventListener('change', showMasterActionButtons);
     textarea.focus();
@@ -10236,24 +10340,50 @@ async function renameMaster() {
     const form = document.getElementById('master-form');
     if (!form) return;
     const nameInput = form.querySelector('input[name="档案名"]');
-    const oldName = nameInput?.value || '';
+    const oldName = normalizeCharacterFieldName(nameInput?.value || '');
+    if (!oldName) {
+        showMessage(window.t ? window.t('character.profileNameRequired') : '档案名为必填项', 'error');
+        return;
+    }
+    const promptText = window.t ? window.t('character.renameMasterPrompt') : '请输入新的主人档案名';
+    const titleText = window.t ? window.t('character.renameMasterTitle') : '重命名主人';
     let newName;
     if (typeof showPrompt === 'function') {
         newName = await showPrompt(
-            window.t ? window.t('character.renamePrompt') : '请输入新的档案名',
+            promptText,
             oldName,
-            window.t ? window.t('character.renameTitle') : '修改名称'
+            titleText
         );
     } else {
-        newName = prompt(window.t ? window.t('character.renamePrompt') : '请输入新的档案名', oldName);
+        newName = prompt(promptText, oldName);
     }
-    if (!newName || newName.trim() === '' || newName.trim() === oldName) return;
+    const normalizedNewName = normalizeCharacterFieldName(newName);
+    if (!normalizedNewName || normalizedNewName === oldName) return;
     try {
-        const resp = await fetch('/api/characters/master/' + encodeURIComponent(oldName) + '/rename', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ new_name: newName.trim() })
-        });
+        const useBodyFallback = /[\\/]/.test(oldName);
+        let resp;
+        if (useBodyFallback) {
+            // 旧配置可能含路径分隔符，无法可靠放进 path 参数，改用普通保存接口修复档案名。
+            const { data, duplicateKey } = collectCharacterFields(form, {
+                baseData: { '档案名': normalizedNewName },
+                excludeFieldNames: ['档案名'],
+            });
+            if (duplicateKey) {
+                showMessage(window.t ? window.t('character.fieldExists') : '该设定已存在', 'error');
+                return;
+            }
+            resp = await fetch('/api/characters/master', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+        } else {
+            resp = await fetch('/api/characters/master/' + encodeURIComponent(oldName) + '/rename', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ new_name: normalizedNewName })
+            });
+        }
         const result = await resp.json();
         if (result.success) {
             showMessage(window.t ? window.t('character.renameSuccess') : '重命名成功', 'success');

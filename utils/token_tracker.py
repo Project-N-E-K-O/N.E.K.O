@@ -403,11 +403,14 @@ _TELEMETRY_BRANCH_FILE = ".telemetry_branch"
 #       只影响海外，目标地区不重叠，可同时在线观测。注意 _bucket_proactive_interval
 #       把 15s / 20s 都归进「10-30s」桶，所以 cohort 命中靠 branch 维度区分，不靠间隔桶。
 #
-# 已退役实验（老落盘值被 _read 严格校验判非法 → 下次启动按当前池随机重抽，落 main 或
-# vision_chat_default_off。都是已过首启的用户，重抽只改 telemetry 标签、不动已落盘的
-# 用户偏好，对「默认值」实验无影响，故不为其单独做确定性迁移）：
+# 已退役实验（老落盘值被 _read 严格校验判非法 → 下次启动按当前池随机重抽，落 main、
+# vision_chat_default_off 或 proactive_interval_20s。都是已过首启的用户，重抽只改
+# telemetry 标签、不动已落盘的用户偏好，对「默认值」实验无影响，故不为其单独做确定性
+# 迁移）：
 #   - "privacy_default_off_v1"（试国外隐私默认关）：前期数据效果差，已下线。
 #   - "privacy_default_off_v2"（试国内隐私默认开）：改方向去测屏幕分享来源，已下线。
+#   - "proactive_interval_25s"（试海外搭话间隔 20s→25s）：数据点没能通过 A/A 测试，
+#     下线回退到 proactive_interval_20s（15s→20s）重测；A/A 管线修好前不重新上线。
 _TELEMETRY_BRANCHES: tuple = ("main", "vision_chat_default_off", "proactive_interval_20s")
 
 # 进程级缓存：keyed by str(config_dir)。写盘失败的环境下（只读 FS / 权限拒绝），

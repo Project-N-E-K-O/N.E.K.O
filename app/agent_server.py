@@ -2245,7 +2245,15 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                 async def _run_user_plugin_dispatch():
                     try:
                         from utils.instrument import counter as _ic
+                        # agent_invoked 只按 agent_type 分，保持单 key 即"plugin
+                        # 总计"——本地 admin 视图 get_top_counters 按完整 metric_key
+                        # GROUP BY、不做 dim 聚合，若把 plugin_id 塞进这里会把该
+                        # 总计行打散成 per-plugin 行、丢掉聚合。per-plugin 细分另发
+                        # 独立指标 plugin_invoked，其全量之和恒等于本行，互不重复
+                        # 计数。plugin_id 基数由已安装插件数限定，截断兜底防异常长
+                        # id 撑爆 counter key 空间。
                         _ic("agent_invoked", agent_type="plugin")
+                        _ic("plugin_invoked", plugin_id=str(plugin_id or "unknown")[:48])
                     except Exception:
                         pass  # 埋点 best-effort，不阻塞 plugin 分派
                     # Default delivery mode; overridden after the plugin result

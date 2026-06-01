@@ -409,9 +409,10 @@ def _parse_plugin_dependencies(
     """
     解析插件依赖配置
     
-    支持两种格式：
-    1. [[plugin.dependency]] - 完整格式
-    2. [[plugin.dependency]] with conflicts = true - 简化格式
+    支持三种格式：
+    1. [plugin].dependencies = ["plugin_id"] - 简单插件 ID 列表
+    2. [[plugin.dependency]] - 完整格式
+    3. [[plugin.dependency]] with conflicts = true - 简化格式
     
     Args:
         conf: TOML 配置字典
@@ -422,9 +423,47 @@ def _parse_plugin_dependencies(
         依赖列表
     """
     dependencies: List[PluginDependency] = []
+
+    plugin_table = conf.get("plugin", {})
+    if not isinstance(plugin_table, dict):
+        plugin_table = {}
+
+    simple_dependencies = plugin_table.get("dependencies")
+    if simple_dependencies is not None:
+        if not isinstance(simple_dependencies, list):
+            logger.warning("Plugin {}: [plugin].dependencies must be a list of plugin id strings, skipping", plugin_id)
+        else:
+            seen_simple_ids: set[str] = set()
+            for dep_id in simple_dependencies:
+                if not isinstance(dep_id, str) or not dep_id.strip():
+                    logger.warning("Plugin {}: [plugin].dependencies entries must be non-empty strings, skipping", plugin_id)
+                    continue
+                normalized_dep_id = dep_id.strip()
+                if normalized_dep_id in seen_simple_ids:
+                    continue
+                seen_simple_ids.add(normalized_dep_id)
+                if normalized_dep_id == plugin_id:
+                    logger.warning("Plugin {}: [plugin].dependencies must not include the plugin itself, skipping", plugin_id)
+                    continue
+                try:
+                    dependencies.append(
+                        PluginDependency(
+                            id=normalized_dep_id,
+                            untested=">=0",
+                        )
+                    )
+                except Exception:
+                    try:
+                        logger.exception(
+                            "Plugin {}: failed to parse simple dependency id '{}', skipping",
+                            plugin_id,
+                            normalized_dep_id,
+                        )
+                    except Exception:
+                        pass
     
     # TOML 数组表语法 [[plugin.dependency]] 会被解析为 conf["plugin"]["dependency"] 列表
-    dep_configs = conf.get("plugin", {}).get("dependency", [])
+    dep_configs = plugin_table.get("dependency", [])
     
     # 如果不是列表，转换为列表
     if not isinstance(dep_configs, list):

@@ -1042,6 +1042,7 @@
         S.assistantSpeechActiveTurnId = null;
         S.assistantTurnId = null;
         S.assistantTurnCompletedId = null;
+        S.assistantTurnSettledId = null;
         S.assistantTurnCompletionSource = null;
         clearPendingAssistantTurnStart();
         S.currentPlayingSpeechId = null;
@@ -1825,6 +1826,14 @@
                             statusDetails = statusPayload.details;
                         }
                     } catch (_) { }
+
+                    if (statusCode === 'TTS_CONNECTION_FAILED') {
+                        emitAssistantLifecycleEvent('neko-assistant-speech-unavailable', {
+                            code: statusCode,
+                            details: statusDetails || null,
+                            source: 'tts_status'
+                        });
+                    }
 
                     if (statusCode === 'GAME_ROUTE_ENDED') {
                         var shouldResumeAudio = !!(statusDetails && statusDetails.should_resume_external_on_exit);

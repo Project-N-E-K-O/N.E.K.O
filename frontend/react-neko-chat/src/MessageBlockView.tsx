@@ -1,0 +1,101 @@
+import SmartTextBlock from './SmartTextBlock';
+import { normalizeExternalUrlHref, openExternalUrl } from './openExternal';
+import {
+  type ChatMessage,
+  type MessageAction,
+  type MessageBlock,
+} from './message-schema';
+
+type MessageBlockViewProps = {
+  block: MessageBlock;
+  message: ChatMessage;
+  isStreaming?: boolean;
+  onAction?: (message: ChatMessage, action: MessageAction) => void;
+};
+
+export function isGuideMessage(message: ChatMessage) {
+  return typeof message.id === 'string' && message.id.startsWith('yui-guide-');
+}
+
+export default function MessageBlockView({
+  block,
+  message,
+  isStreaming,
+  onAction,
+}: MessageBlockViewProps) {
+  if (block.type === 'text') {
+    return (
+      <SmartTextBlock
+        text={block.text}
+        isStreaming={isStreaming}
+        disableStreamingReveal={isGuideMessage(message)}
+      />
+    );
+  }
+
+  if (block.type === 'image') {
+    return (
+      <figure
+        className="message-block message-block-image"
+        style={block.width && block.height ? { aspectRatio: `${block.width} / ${block.height}` } : undefined}
+      >
+        <img src={block.url} alt={block.alt || ''} loading="lazy" />
+      </figure>
+    );
+  }
+
+  if (block.type === 'link') {
+    const safeHref = normalizeExternalUrlHref(block.url);
+    return (
+      <a
+        className="message-block message-block-link"
+        href={safeHref || undefined}
+        target={safeHref ? '_blank' : undefined}
+        rel={safeHref ? 'noreferrer' : undefined}
+        onClick={(event) => {
+          event.preventDefault();
+          openExternalUrl(block.url);
+        }}
+      >
+        {block.thumbnailUrl ? (
+          <div className="message-link-thumb">
+            <img src={block.thumbnailUrl} alt="" loading="lazy" />
+          </div>
+        ) : null}
+        <div className="message-link-copy">
+          <div className="message-link-title">{block.title || block.url}</div>
+          {block.description ? <div className="message-link-description">{block.description}</div> : null}
+          <div className="message-link-url">{block.siteName || block.url}</div>
+        </div>
+      </a>
+    );
+  }
+
+  if (block.type === 'status') {
+    return (
+      <div className={`message-block message-block-status tone-${block.tone || 'info'}`}>
+        {block.text}
+      </div>
+    );
+  }
+
+  if (block.type === 'buttons') {
+    return (
+      <div className="message-block message-block-buttons">
+        {block.buttons.map((action) => (
+          <button
+            key={action.id}
+            className={`message-action-button variant-${action.variant || 'secondary'}`}
+            type="button"
+            disabled={action.disabled}
+            onClick={() => onAction?.(message, action)}
+          >
+            {action.label}
+          </button>
+        ))}
+      </div>
+    );
+  }
+
+  return null;
+}

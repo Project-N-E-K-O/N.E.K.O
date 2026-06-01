@@ -13,6 +13,7 @@ import {
   enableExtension,
   refreshPluginsRegistry,
 } from '@/api/plugins'
+import { getLocale } from '@/i18n'
 import type { PluginMeta, PluginStatusData } from '@/types/api'
 import { PluginStatus as StatusEnum } from '@/utils/constants'
 
@@ -110,7 +111,7 @@ export const usePluginStore = defineStore('plugin', () => {
     const seq = ++fetchPluginsSeq
     pendingFetchPlugins = (async () => {
       try {
-        const response = await getPlugins()
+        const response = await getPlugins(getLocale())
         // 忽略过期响应，防止旧数据覆盖新数据
         if (seq !== fetchPluginsSeq) return
         plugins.value = response.plugins || []
