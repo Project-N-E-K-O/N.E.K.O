@@ -11448,6 +11448,17 @@ async function _companionRunGenerate(state) {
             return;
         }
         // 直接应用到表单
+        // ⚠ /generate 的 await 期间 state.form 可能被 rebuild（用户改名/保存先完成、旧
+        // form detach）。这里 apply 前再 ensure 一次，把 draft 写进**当前活着**的 form；
+        // 接不上就报 form-gone，绝不写进 detached DOM——否则字段写了个寂寞，紧接着的
+        // _companionTryAutoSave rebind 到新 form 又没有 in-flight replay 通路，会把不带
+        // draft 的表单存下去、助手却报「已应用」（Codex #3332998069）。
+        if (!_companionEnsureLiveForm(state)) {
+            _companionAppendSystem(state,
+                _cardAssistT('character.aiCompanionFormGone',
+                    '⚠ 角色表单不在屏幕上了，没法应用。请重新打开这只猫娘的详情面板再试。'));
+            return;
+        }
         const applyRes = _cardAssistApplyToForm(state.form, fields, fieldKeys,
                                                  state.originalName, state.isNew);
         _companionRefreshFormSnapshot(state);
