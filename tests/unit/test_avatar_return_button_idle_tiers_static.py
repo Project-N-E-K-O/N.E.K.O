@@ -19,6 +19,12 @@ CAT2_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-c
 CAT2_CLICK_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat2-click.gif"
 CAT3_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat3.gif"
 CAT3_CLICK_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat3-click.gif"
+CAT1_VOICE_CLICK_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat1-voice-click.mp3"
+CAT1_VOICE1_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat1-voice1.mp3"
+CAT1_VOICE2_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat1-voice2.mp3"
+CAT1_VOICE3_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat1-voice3.mp3"
+CAT2_SLEEP_SOUND_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat2-sleep.mp3"
+CAT3_SLEEP_SOUND_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat3-sleep.mp3"
 CAT1_WALK_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat4-1.gif"
 CAT1_STRETCH_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat4-2.gif"
 CAT1_INTERACTIVE_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat4-3.gif"
@@ -44,6 +50,12 @@ def test_return_button_idle_tier_assets_are_mapped_in_source():
     assert "/static/assets/neko-idle/cat-idle-cat1-click.gif" in source
     assert "/static/assets/neko-idle/cat-idle-cat2-click.gif" in source
     assert "/static/assets/neko-idle/cat-idle-cat3-click.gif" in source
+    assert "/static/assets/neko-idle/cat1-voice-click.mp3" in source
+    assert "/static/assets/neko-idle/cat1-voice1.mp3" in source
+    assert "/static/assets/neko-idle/cat1-voice2.mp3" in source
+    assert "/static/assets/neko-idle/cat1-voice3.mp3" in source
+    assert "/static/assets/neko-idle/cat2-sleep.mp3" in source
+    assert "/static/assets/neko-idle/cat3-sleep.mp3" in source
     assert "/static/assets/neko-idle/cat-idle-cat4-3.gif" in source
     assert "/static/assets/neko-idle/cat-idle-cat-move-1.gif" in source
     assert "/static/assets/neko-idle/cat-idle-cat-move-2.gif" in source
@@ -164,6 +176,48 @@ def test_return_button_hover_click_gif_finishes_before_restore():
     assert 'art.__nekoIdleHoverSrc === clickSrc' in source
     assert 'Math.max(0, durationMs - elapsedMs)' in source
     assert 'keepHoverPlayback' in source
+
+
+def test_sleeping_cat_tiers_schedule_soft_random_sound_once_per_interval():
+    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+
+    assert "_NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS = 5 * 60 * 1000" in source
+    assert "_NEKO_IDLE_SLEEP_SOUND_VOLUME = 0.12" in source
+    assert "function _playNekoIdleSound(state, src, volume)" in source
+    assert "[_NEKO_IDLE_TIER_CAT2]" in source
+    assert "[_NEKO_IDLE_TIER_CAT3]" in source
+    assert "src: '/static/assets/neko-idle/cat2-sleep.mp3'" in source
+    assert "src: '/static/assets/neko-idle/cat3-sleep.mp3'" in source
+    assert "audio.volume = Math.max(0, Math.min(1, Number(volume) || 0.2))" in source
+    assert "Math.random() * _NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS" in source
+    assert "_scheduleNekoIdleSleepSoundInterval(tier, startedAt + _NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS)" in source
+    assert "_syncNekoIdleSleepSoundForTier(detail.tier)" in source
+    assert "_stopNekoIdleSleepSoundAudio()" in source
+    assert "_clearNekoIdleSleepSoundTimer()" in source
+
+
+def test_cat1_voice_sounds_are_limited_to_non_drag_and_drag_states():
+    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+
+    assert "_NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS = 3 * 60 * 1000" in source
+    assert "_NEKO_IDLE_CAT1_AMBIENT_SOUND_VOLUME = 0.14" in source
+    assert "_NEKO_IDLE_CAT1_DRAG_SOUND_VOLUME = 0.16" in source
+    assert "_NEKO_IDLE_CAT1_DRAG_SOUND_FADE_OUT_MS = 900" in source
+    assert "'/static/assets/neko-idle/cat1-voice1.mp3'" in source
+    assert "'/static/assets/neko-idle/cat1-voice2.mp3'" in source
+    assert "'/static/assets/neko-idle/cat1-voice3.mp3'" in source
+    assert "_NEKO_IDLE_CAT1_DRAG_SOUND_URL = '/static/assets/neko-idle/cat1-voice-click.mp3'" in source
+    assert "Math.random() * _NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS" in source
+    assert "urls[Math.floor(Math.random() * urls.length)]" in source
+    assert "_scheduleNekoIdleCat1AmbientSoundInterval(startedAt + _NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS)" in source
+    assert "normalizedTier !== _NEKO_IDLE_TIER_CAT1 || _isAnyNekoIdleReturnDragActionActive()" in source
+    assert "_playNekoIdleCat1DragSound(tier)" in source
+    assert "_fadeOutNekoIdleCat1DragSound()" in source
+    assert "_fadeOutNekoIdleSoundAudio(_nekoIdleCat1DragSoundState, _NEKO_IDLE_CAT1_DRAG_SOUND_FADE_OUT_MS)" in source
+    assert "audio.volume = Math.max(0, startVolume * (1 - progress))" in source
+    assert "_normalizeNekoIdleReturnTier(tier) !== _NEKO_IDLE_TIER_CAT1" in source
+    assert "_syncNekoIdleCat1AmbientSoundForTier(detail.tier)" in source
+    assert "_stopNekoIdleCat1AmbientSound()" in source
 
 
 def test_cat1_walk_to_minimized_chat_contract_is_present():
@@ -305,6 +359,9 @@ def test_return_button_idle_tier_assets_are_version_tracked():
                  CAT1_ASSET_PATH, CAT1_CLICK_ASSET_PATH,
                  CAT2_ASSET_PATH, CAT2_CLICK_ASSET_PATH,
                  CAT3_ASSET_PATH, CAT3_CLICK_ASSET_PATH,
+                 CAT1_VOICE_CLICK_PATH, CAT1_VOICE1_PATH,
+                 CAT1_VOICE2_PATH, CAT1_VOICE3_PATH,
+                 CAT2_SLEEP_SOUND_PATH, CAT3_SLEEP_SOUND_PATH,
                  CAT1_WALK_ASSET_PATH, CAT1_STRETCH_ASSET_PATH,
                  CAT1_INTERACTIVE_ASSET_PATH,
                  CAT1_DRAG_ASSET_PATH, CAT2_DRAG_ASSET_PATH, CAT3_DRAG_ASSET_PATH):

@@ -228,6 +228,47 @@ const _NEKO_IDLE_CAT1_PAIR_MOVE_MIN_DURATION_MS = 720;
 const _NEKO_IDLE_CAT1_PAIR_MOVE_MAX_DURATION_MS = 2200;
 const _NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS = 2500;
 const _NEKO_IDLE_RETURN_DRAG_ACTION_CLASS = 'is-drag-action';
+const _NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS = 3 * 60 * 1000;
+const _NEKO_IDLE_CAT1_AMBIENT_SOUND_VOLUME = 0.14;
+const _NEKO_IDLE_CAT1_DRAG_SOUND_VOLUME = 0.16;
+const _NEKO_IDLE_CAT1_DRAG_SOUND_FADE_OUT_MS = 900;
+const _NEKO_IDLE_CAT1_AMBIENT_SOUND_URLS = Object.freeze([
+    '/static/assets/neko-idle/cat1-voice1.mp3',
+    '/static/assets/neko-idle/cat1-voice2.mp3',
+    '/static/assets/neko-idle/cat1-voice3.mp3'
+]);
+const _NEKO_IDLE_CAT1_DRAG_SOUND_URL = '/static/assets/neko-idle/cat1-voice-click.mp3';
+const _NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS = 5 * 60 * 1000;
+const _NEKO_IDLE_SLEEP_SOUND_VOLUME = 0.12;
+const _NEKO_IDLE_SLEEP_SOUND_BY_TIER = Object.freeze({
+    [_NEKO_IDLE_TIER_CAT2]: Object.freeze({
+        src: '/static/assets/neko-idle/cat2-sleep.mp3',
+        volume: _NEKO_IDLE_SLEEP_SOUND_VOLUME
+    }),
+    [_NEKO_IDLE_TIER_CAT3]: Object.freeze({
+        src: '/static/assets/neko-idle/cat3-sleep.mp3',
+        volume: _NEKO_IDLE_SLEEP_SOUND_VOLUME
+    })
+});
+const _nekoIdleSleepSoundState = {
+    tier: _NEKO_IDLE_TIER_NONE,
+    timer: 0,
+    token: 0,
+    intervalStartedAt: 0,
+    audio: null
+};
+const _nekoIdleCat1AmbientSoundState = {
+    active: false,
+    timer: 0,
+    token: 0,
+    intervalStartedAt: 0,
+    audio: null
+};
+const _nekoIdleCat1DragSoundState = {
+    audio: null,
+    fadeFrame: 0,
+    fadeToken: 0
+};
 const _NEKO_IDLE_RETURN_ASSET_VERSION = (() => {
     try {
         const currentScript = document.currentScript;
@@ -322,6 +363,253 @@ function _getNekoIdleReturnDragAssetUrl(tier) {
         return `/static/assets/neko-idle/cat-idle-cat-move-1.gif${versionSuffix}`;
     }
     return '';
+}
+
+function _getNekoIdleSleepSoundConfig(tier) {
+    return _NEKO_IDLE_SLEEP_SOUND_BY_TIER[_normalizeNekoIdleReturnTier(tier)] || null;
+}
+
+function _buildNekoIdleSoundUrl(src) {
+    return src ? src + _getNekoIdleReturnAssetVersionSuffix() : '';
+}
+
+function _stopNekoIdleSoundAudio(state) {
+    if (state && state.fadeFrame) {
+        cancelAnimationFrame(state.fadeFrame);
+        state.fadeFrame = 0;
+    }
+    if (state) {
+        state.fadeToken = (state.fadeToken || 0) + 1;
+    }
+    const audio = state && state.audio;
+    if (state) state.audio = null;
+    if (!audio) return;
+    try {
+        audio.pause();
+        audio.currentTime = 0;
+    } catch (_) {}
+}
+
+function _fadeOutNekoIdleSoundAudio(state, durationMs) {
+    const audio = state && state.audio;
+    if (!state || !audio) return;
+
+    if (state.fadeFrame) {
+        cancelAnimationFrame(state.fadeFrame);
+        state.fadeFrame = 0;
+    }
+    const token = (state.fadeToken || 0) + 1;
+    state.fadeToken = token;
+    const startAt = typeof performance !== 'undefined' && typeof performance.now === 'function'
+        ? performance.now()
+        : Date.now();
+    const startVolume = Math.max(0, Math.min(1, Number(audio.volume) || 0));
+    const fadeMs = Math.max(0, Number(durationMs) || 0);
+
+    if (fadeMs <= 0 || startVolume <= 0) {
+        _stopNekoIdleSoundAudio(state);
+        return;
+    }
+
+    const step = (timestamp) => {
+        if (state.fadeToken !== token || state.audio !== audio) return;
+        const now = Number.isFinite(Number(timestamp)) ? Number(timestamp) : Date.now();
+        const progress = Math.min(1, Math.max(0, (now - startAt) / fadeMs));
+        try {
+            audio.volume = Math.max(0, startVolume * (1 - progress));
+        } catch (_) {}
+        if (progress >= 1 || audio.paused || audio.ended) {
+            _stopNekoIdleSoundAudio(state);
+            return;
+        }
+        state.fadeFrame = requestAnimationFrame(step);
+    };
+
+    state.fadeFrame = requestAnimationFrame(step);
+}
+
+function _playNekoIdleSound(state, src, volume) {
+    if (!state || !src) return null;
+
+    _stopNekoIdleSoundAudio(state);
+    try {
+        const audio = new window.Audio(_buildNekoIdleSoundUrl(src));
+        audio.preload = 'auto';
+        audio.volume = Math.max(0, Math.min(1, Number(volume) || 0.2));
+        state.audio = audio;
+        audio.addEventListener('ended', () => {
+            if (state.audio === audio) {
+                state.audio = null;
+            }
+        }, { once: true });
+        const playResult = audio.play();
+        if (playResult && typeof playResult.catch === 'function') {
+            playResult.catch(() => {
+                if (state.audio === audio) {
+                    state.audio = null;
+                }
+            });
+        }
+        return audio;
+    } catch (_) {
+        state.audio = null;
+        return null;
+    }
+}
+
+function _clearNekoIdleSleepSoundTimer() {
+    if (_nekoIdleSleepSoundState.timer) {
+        clearTimeout(_nekoIdleSleepSoundState.timer);
+        _nekoIdleSleepSoundState.timer = 0;
+    }
+}
+
+function _stopNekoIdleSleepSoundAudio() {
+    _stopNekoIdleSoundAudio(_nekoIdleSleepSoundState);
+}
+
+function _playNekoIdleSleepSound(tier, token) {
+    const config = _getNekoIdleSleepSoundConfig(tier);
+    if (!config || token !== _nekoIdleSleepSoundState.token || _nekoIdleSleepSoundState.tier !== tier) {
+        return;
+    }
+
+    _playNekoIdleSound(_nekoIdleSleepSoundState, config.src, config.volume);
+}
+
+function _scheduleNekoIdleSleepSoundInterval(tier, intervalStartedAt) {
+    const config = _getNekoIdleSleepSoundConfig(tier);
+    if (!config || _nekoIdleSleepSoundState.tier !== tier) return;
+
+    _clearNekoIdleSleepSoundTimer();
+    const token = _nekoIdleSleepSoundState.token;
+    const startedAt = Math.max(0, Number(intervalStartedAt) || Date.now());
+    _nekoIdleSleepSoundState.intervalStartedAt = startedAt;
+
+    const playAt = startedAt + Math.round(Math.random() * _NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS);
+    const delayMs = Math.max(0, playAt - Date.now());
+    _nekoIdleSleepSoundState.timer = setTimeout(() => {
+        _nekoIdleSleepSoundState.timer = 0;
+        if (token !== _nekoIdleSleepSoundState.token || _nekoIdleSleepSoundState.tier !== tier) {
+            return;
+        }
+        _playNekoIdleSleepSound(tier, token);
+        _scheduleNekoIdleSleepSoundInterval(tier, startedAt + _NEKO_IDLE_SLEEP_SOUND_INTERVAL_MS);
+    }, delayMs);
+}
+
+function _syncNekoIdleSleepSoundForTier(tier) {
+    const normalizedTier = _normalizeNekoIdleReturnTier(tier);
+    const config = _getNekoIdleSleepSoundConfig(normalizedTier);
+    if (!config) {
+        _nekoIdleSleepSoundState.tier = _NEKO_IDLE_TIER_NONE;
+        _nekoIdleSleepSoundState.token += 1;
+        _nekoIdleSleepSoundState.intervalStartedAt = 0;
+        _clearNekoIdleSleepSoundTimer();
+        _stopNekoIdleSleepSoundAudio();
+        return;
+    }
+
+    if (_nekoIdleSleepSoundState.tier === normalizedTier && _nekoIdleSleepSoundState.timer) {
+        return;
+    }
+
+    _nekoIdleSleepSoundState.tier = normalizedTier;
+    _nekoIdleSleepSoundState.token += 1;
+    _stopNekoIdleSleepSoundAudio();
+    _scheduleNekoIdleSleepSoundInterval(normalizedTier, Date.now());
+}
+
+function _clearNekoIdleCat1AmbientSoundTimer() {
+    if (_nekoIdleCat1AmbientSoundState.timer) {
+        clearTimeout(_nekoIdleCat1AmbientSoundState.timer);
+        _nekoIdleCat1AmbientSoundState.timer = 0;
+    }
+}
+
+function _stopNekoIdleCat1AmbientSoundAudio() {
+    _stopNekoIdleSoundAudio(_nekoIdleCat1AmbientSoundState);
+}
+
+function _pickNekoIdleCat1AmbientSoundUrl() {
+    const urls = _NEKO_IDLE_CAT1_AMBIENT_SOUND_URLS;
+    if (!urls || !urls.length) return '';
+    return urls[Math.floor(Math.random() * urls.length)] || urls[0] || '';
+}
+
+function _playNekoIdleCat1AmbientSound(token) {
+    if (!_nekoIdleCat1AmbientSoundState.active ||
+        token !== _nekoIdleCat1AmbientSoundState.token ||
+        _isAnyNekoIdleReturnDragActionActive()) {
+        return;
+    }
+
+    _playNekoIdleSound(
+        _nekoIdleCat1AmbientSoundState,
+        _pickNekoIdleCat1AmbientSoundUrl(),
+        _NEKO_IDLE_CAT1_AMBIENT_SOUND_VOLUME
+    );
+}
+
+function _scheduleNekoIdleCat1AmbientSoundInterval(intervalStartedAt) {
+    if (!_nekoIdleCat1AmbientSoundState.active || _isAnyNekoIdleReturnDragActionActive()) return;
+
+    _clearNekoIdleCat1AmbientSoundTimer();
+    const token = _nekoIdleCat1AmbientSoundState.token;
+    const startedAt = Math.max(0, Number(intervalStartedAt) || Date.now());
+    _nekoIdleCat1AmbientSoundState.intervalStartedAt = startedAt;
+
+    const playAt = startedAt + Math.round(Math.random() * _NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS);
+    const delayMs = Math.max(0, playAt - Date.now());
+    _nekoIdleCat1AmbientSoundState.timer = setTimeout(() => {
+        _nekoIdleCat1AmbientSoundState.timer = 0;
+        if (!_nekoIdleCat1AmbientSoundState.active ||
+            token !== _nekoIdleCat1AmbientSoundState.token ||
+            _isAnyNekoIdleReturnDragActionActive()) {
+            return;
+        }
+        _playNekoIdleCat1AmbientSound(token);
+        _scheduleNekoIdleCat1AmbientSoundInterval(startedAt + _NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS);
+    }, delayMs);
+}
+
+function _stopNekoIdleCat1AmbientSound() {
+    _nekoIdleCat1AmbientSoundState.active = false;
+    _nekoIdleCat1AmbientSoundState.token += 1;
+    _nekoIdleCat1AmbientSoundState.intervalStartedAt = 0;
+    _clearNekoIdleCat1AmbientSoundTimer();
+    _stopNekoIdleCat1AmbientSoundAudio();
+}
+
+function _syncNekoIdleCat1AmbientSoundForTier(tier) {
+    const normalizedTier = _normalizeNekoIdleReturnTier(tier);
+    if (normalizedTier !== _NEKO_IDLE_TIER_CAT1 || _isAnyNekoIdleReturnDragActionActive()) {
+        _stopNekoIdleCat1AmbientSound();
+        return;
+    }
+
+    if (_nekoIdleCat1AmbientSoundState.active && _nekoIdleCat1AmbientSoundState.timer) {
+        return;
+    }
+
+    _nekoIdleCat1AmbientSoundState.active = true;
+    _nekoIdleCat1AmbientSoundState.token += 1;
+    _stopNekoIdleCat1AmbientSoundAudio();
+    _scheduleNekoIdleCat1AmbientSoundInterval(Date.now());
+}
+
+function _playNekoIdleCat1DragSound(tier) {
+    if (_normalizeNekoIdleReturnTier(tier) !== _NEKO_IDLE_TIER_CAT1) return;
+    _stopNekoIdleCat1AmbientSound();
+    _playNekoIdleSound(
+        _nekoIdleCat1DragSoundState,
+        _NEKO_IDLE_CAT1_DRAG_SOUND_URL,
+        _NEKO_IDLE_CAT1_DRAG_SOUND_VOLUME
+    );
+}
+
+function _fadeOutNekoIdleCat1DragSound() {
+    _fadeOutNekoIdleSoundAudio(_nekoIdleCat1DragSoundState, _NEKO_IDLE_CAT1_DRAG_SOUND_FADE_OUT_MS);
 }
 
 const _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW = Object.freeze({
@@ -700,6 +988,15 @@ function _isNekoIdleReturnDragActionActive(button) {
     return !!(state && state.active);
 }
 
+function _isAnyNekoIdleReturnDragActionActive() {
+    let active = false;
+    document.querySelectorAll(_NEKO_IDLE_RETURN_BUTTON_SELECTOR).forEach((button) => {
+        if (active) return;
+        active = _isNekoIdleReturnDragActionActive(button);
+    });
+    return active;
+}
+
 function _setNekoIdleReturnDragActionClasses(button, active) {
     if (!button) return;
     const container = _getNekoIdleReturnContainerFromButton(button);
@@ -749,6 +1046,7 @@ function _startNekoIdleReturnDragActionForContainer(container) {
     });
     _setNekoIdleReturnDragActionClasses(button, true);
     _setNekoIdleReturnDragActionArt(button, tier);
+    _playNekoIdleCat1DragSound(tier);
     _logNekoIdleReturnDragDebug('active', {
         containerId: container && container.id,
         tier: tier,
@@ -768,8 +1066,10 @@ function _finishNekoIdleReturnDragAction(button, options = {}) {
     state.token += 1;
     state.tier = _NEKO_IDLE_TIER_NONE;
     _setNekoIdleReturnDragActionClasses(button, false);
+    _fadeOutNekoIdleCat1DragSound();
 
     if (options.restoreArt === false) return;
+    _syncNekoIdleCat1AmbientSoundForTier(button.getAttribute('data-neko-idle-tier'));
     const tier = _normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier'));
     if (tier === _NEKO_IDLE_TIER_NONE) return;
     const art = button.querySelector('.neko-idle-return-art');
@@ -2115,6 +2415,8 @@ function _applyNekoIdleReturnPresentation(button, tier) {
     if (!button) return;
     const normalizedTier = _normalizeNekoIdleReturnTier(tier);
     const dragActive = _isNekoIdleReturnDragActionActive(button);
+    _syncNekoIdleSleepSoundForTier(normalizedTier);
+    _syncNekoIdleCat1AmbientSoundForTier(normalizedTier);
     if (normalizedTier !== _NEKO_IDLE_TIER_CAT1) {
         _cancelNekoIdleCat1Journey(button);
     }
@@ -2166,6 +2468,8 @@ function _ensureNekoIdleReturnPresentationBridge() {
         if (!detail || detail.type !== 'visual-tier') {
             return;
         }
+        _syncNekoIdleSleepSoundForTier(detail.tier);
+        _syncNekoIdleCat1AmbientSoundForTier(detail.tier);
         _syncAllNekoIdleReturnButtons(detail.tier);
     });
 
@@ -2220,6 +2524,10 @@ function _ensureNekoIdleReturnPresentationBridge() {
             _scheduleNekoIdleCat1JourneySync(button);
         });
     });
+
+    const currentTier = _readNekoAutoGoodbyeVisualTier();
+    _syncNekoIdleSleepSoundForTier(currentTier);
+    _syncNekoIdleCat1AmbientSoundForTier(currentTier);
 }
 
 _ensureNekoIdleReturnPresentationBridge();
