@@ -7538,13 +7538,13 @@ margin-top: 10px;
 }
 
 .card-companion-avatar img {
-    width: 145%;
-    height: 145%;
+    width: 130%;
+    height: 130%;
     max-width: none;
     flex-shrink: 0;
     object-fit: cover;
-    object-position: 50% 0%;
-    transform: translateY(16px) scale(1.14);
+    object-position: 50% 8%;
+    transform: translateY(3px) scale(1.02);
     transform-origin: center center;
 }
 

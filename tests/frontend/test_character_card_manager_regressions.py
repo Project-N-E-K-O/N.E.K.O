@@ -1165,6 +1165,7 @@ def test_character_card_manager_card_assist_avatar_toggles_companion(
             const minimize = panel ? panel.querySelector('.card-companion-minimize') : null;
             const avatarImgStyle = avatarImg ? window.getComputedStyle(avatarImg) : null;
             const avatarImgObjectPosition = avatarImgStyle ? avatarImgStyle.objectPosition : null;
+            const avatarImgTransform = avatarImgStyle ? avatarImgStyle.transform : null;
             const panelTransitionBeforeCollapse = panel ? window.getComputedStyle(panel).transitionProperty : null;
             if (panel) panel.classList.add('card-companion-dragging');
             const draggingTransition = panel ? window.getComputedStyle(panel).transitionProperty : null;
@@ -1266,6 +1267,7 @@ def test_character_card_manager_card_assist_avatar_toggles_companion(
                 closeDisplayWhenMinimized,
                 avatarSrc: avatarImg ? avatarImg.getAttribute('src') : null,
                 avatarImgObjectPosition,
+                avatarImgTransform,
                 avatarRole: avatar ? avatar.getAttribute('role') : null,
                 avatarTabIndex: avatar ? avatar.getAttribute('tabindex') : null,
                 ariaAfterFirstClick,
@@ -1300,7 +1302,8 @@ def test_character_card_manager_card_assist_avatar_toggles_companion(
     assert state["titleDisplayWhenMinimized"] == "none"
     assert state["closeDisplayWhenMinimized"] == "none"
     assert state["avatarSrc"].endswith("/api/characters/catgirl/YUI/card-face")
-    assert state["avatarImgObjectPosition"] == "50% 24%"
+    assert state["avatarImgObjectPosition"] == "50% 8%"
+    assert state["avatarImgTransform"] == "matrix(1.02, 0, 0, 1.02, 0, 3)"
     assert state["avatarRole"] == "button"
     assert state["avatarTabIndex"] == "0"
     assert state["ariaAfterFirstClick"] == "false"
