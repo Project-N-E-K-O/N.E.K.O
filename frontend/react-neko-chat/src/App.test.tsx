@@ -117,6 +117,20 @@ describe('App', () => {
     expect(document.body.querySelector('.compact-input-tool-fan')).not.toBeNull();
   });
 
+  it('enters compact input from the subtitle capsule when used uncontrolled', () => {
+    const { container } = render(<App chatSurfaceMode="compact" />);
+
+    // 未受控：初始是字幕胶囊，没有输入框
+    expect(container.querySelector('.compact-chat-capsule-button')).not.toBeNull();
+    expect(container.querySelector('.composer-input')).toBeNull();
+
+    fireEvent.click(container.querySelector('.compact-chat-capsule-button') as HTMLButtonElement);
+
+    // 点击胶囊后内部 state 兜底切到输入态，输入框出现
+    expect(container.querySelector('.composer-input')).not.toBeNull();
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'input');
+  });
+
   it('exposes explicit surface mode state on the rendered shell', () => {
     const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
 

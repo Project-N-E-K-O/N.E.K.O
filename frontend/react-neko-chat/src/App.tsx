@@ -1052,7 +1052,7 @@ export default function App({
   composerHidden = false,
   composerDisabled = false,
   chatSurfaceMode = 'compact',
-  compactChatState = 'default',
+  compactChatState,
   composerAttachments = [],
   composerAttachmentsAriaLabel = i18n('chat.pendingImagesAriaLabel', 'Pending attachments'),
   importImageButtonLabel = i18n('chat.importImage', 'Import Image'),
@@ -1330,7 +1330,12 @@ export default function App({
     && (galgameOptionsLoading || galgameOptions.length > 0);
   const compactSurfaceChoicesVisible = choicePromptHasOptions || galgameOptionsVisible;
   const isCompactSurface = chatSurfaceMode !== 'minimized';
-  const requestedCompactChatState = compactChatState;
+  // compactChatState 受控时跟随外部 prop；未受控（独立挂载 / 开发预览 main.tsx）时用
+  // 内部 state 兜底，让字幕胶囊点击能真正切到输入态，而不是停在胶囊里出不来喵。
+  const isCompactChatStateControlled = compactChatState !== undefined;
+  const [uncontrolledCompactChatState, setUncontrolledCompactChatState] =
+    useState<CompactChatState>('default');
+  const requestedCompactChatState = compactChatState ?? uncontrolledCompactChatState;
   const effectiveCompactChatState = isCompactSurface
     ? getEffectiveCompactChatState(requestedCompactChatState, compactSurfaceChoicesVisible, composerHidden)
     : requestedCompactChatState;
@@ -2104,8 +2109,11 @@ export default function App({
 
   const requestCompactChatState = useCallback((nextState: CompactChatState) => {
     if (!isCompactSurface) return;
+    if (!isCompactChatStateControlled) {
+      setUncontrolledCompactChatState(nextState);
+    }
     onCompactChatStateChange?.(nextState);
-  }, [isCompactSurface, onCompactChatStateChange]);
+  }, [isCompactSurface, isCompactChatStateControlled, onCompactChatStateChange]);
 
   const applyCompactSurfaceResizeWidthVar = useCallback((width: number | null) => {
     const shell = compactInputShellRef.current;
