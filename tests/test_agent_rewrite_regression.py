@@ -2419,7 +2419,6 @@ def test_cross_server_analyze_request_no_http_fallback_endpoint():
 
 def test_is_agent_api_ready_allows_free_profile():
     manager = object.__new__(ConfigManager)
-    manager.get_core_config = lambda: {"IS_FREE_VERSION": True}
     manager.get_model_api_config = lambda _model_type: {
         "model": "free-agent-model",
         "base_url": "https://www.lanlan.tech/text/v1",
@@ -2441,7 +2440,6 @@ def test_is_agent_api_ready_allows_free_profile():
 )
 def test_is_agent_api_ready_reports_missing_fields(agent_api, expected_reason):
     manager = object.__new__(ConfigManager)
-    manager.get_core_config = lambda: {"IS_FREE_VERSION": False}
     manager.get_model_api_config = lambda _model_type: agent_api
 
     ready, reasons = manager.is_agent_api_ready()
@@ -2462,8 +2460,8 @@ def test_is_agent_api_ready_passes_free_access_key_when_agent_not_free():
 
 
 def test_is_agent_free_tracks_agent_model_not_version():
-    """is_agent_free() 只认 agent model 名(free-agent-model)，与 IS_FREE_VERSION(core/assist
-    版本免费)解耦：用免费语音但 agent 换自费/自定义 model 时应为 False。"""
+    """is_agent_free() 只认 agent model 名(free-agent-model)，与 core/assist 的版本免费解耦：
+    用免费语音(core=free)但 agent 换自费/自定义 model 时应为 False。"""
     manager = object.__new__(ConfigManager)
     manager.get_model_api_config = lambda _model_type: {"model": "free-agent-model"}
     assert manager.is_agent_free() is True

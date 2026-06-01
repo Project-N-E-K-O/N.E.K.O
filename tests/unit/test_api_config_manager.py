@@ -312,7 +312,7 @@ class TestAssistFollowsCore:
         cfg = config_manager.get_core_config()
 
         assert cfg['assistApi'] == 'free'
-        assert cfg.get('IS_FREE_VERSION') is True
+        assert cfg.get('CORE_API_TYPE') == 'free'
 
     @pytest.mark.unit
     @pytest.mark.asyncio
@@ -355,8 +355,8 @@ class TestAssistFollowsCore:
         assert cfg['assistApi'] == 'silicon', \
             'core=free 不应强制覆盖用户显式选择的 assist'
         assert cfg['OPENROUTER_URL'] == 'https://api.siliconflow.cn/v1'
-        # core profile 仍然给到 IS_FREE_VERSION=True（realtime 是免费的）
-        assert cfg.get('IS_FREE_VERSION') is True
+        # core=free 即语音免费（is_free_voice 维度，CORE_API_TYPE=='free'），与 assist 选择无关
+        assert cfg.get('CORE_API_TYPE') == 'free'
 
     @pytest.mark.unit
     def test_non_free_core_allows_independent_assist(self, config_manager):

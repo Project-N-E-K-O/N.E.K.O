@@ -710,7 +710,6 @@ DEFAULT_CORE_API_PROFILES = {
         'CORE_URL': "wss://www.lanlan.tech/core",
         'CORE_MODEL': "free-model",
         'CORE_API_KEY': "free-access",
-        'IS_FREE_VERSION': True,
     },
     'qwen': {
         'CORE_URL': "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
@@ -753,7 +752,6 @@ DEFAULT_ASSIST_API_PROFILES = {
         'AGENT_MODEL': "free-model",
         'AUDIO_API_KEY': "free-access",
         'OPENROUTER_API_KEY': "free-access",
-        'IS_FREE_VERSION': True,
     },
     'qwen': {
         'OPENROUTER_URL': "https://dashscope.aliyuncs.com/compatible-mode/v1",

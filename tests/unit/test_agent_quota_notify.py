@@ -91,8 +91,8 @@ def test_consume_agent_daily_quota_triggers_notifier_on_exhaustion(tmp_path, mon
 def test_consume_non_free_agent_model_never_notifies(tmp_path, monkeypatch):
     """实际 Agent 模型非 free-agent-model（自费/自定义）时不计配额、不通知（早退路径）。
 
-    锁住本次修复点：哪怕 core/assist 仍处于免费版（IS_FREE_VERSION=True），只要用户实际
-    用的 agent model 是自费/自定义的，就不该再被这条免费试用配额拦截。
+    锁住本次修复点：哪怕 core/assist 仍是免费 provider，只要用户实际用的 agent model
+    是自费/自定义的，就不该再被这条免费试用配额拦截。
     """
     calls = []
     ConfigManager.register_quota_exceeded_notifier(lambda used, limit: calls.append((used, limit)))
