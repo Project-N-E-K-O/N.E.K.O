@@ -2437,7 +2437,6 @@ def test_is_agent_api_ready_allows_free_profile():
         ({"model": "", "base_url": "https://u", "api_key": "k"}, "Agent 模型未配置"),
         ({"model": "m", "base_url": "", "api_key": "k"}, "Agent API URL 未配置"),
         ({"model": "m", "base_url": "https://u", "api_key": ""}, "Agent API Key 未配置或不可用"),
-        ({"model": "m", "base_url": "https://u", "api_key": "free-access"}, "Agent API Key 未配置或不可用"),
     ],
 )
 def test_is_agent_api_ready_reports_missing_fields(agent_api, expected_reason):
@@ -2448,6 +2447,52 @@ def test_is_agent_api_ready_reports_missing_fields(agent_api, expected_reason):
     ready, reasons = manager.is_agent_api_ready()
     assert ready is False
     assert expected_reason in reasons
+
+
+def test_is_agent_api_ready_passes_free_access_key_when_agent_not_free():
+    """free-access 是非空占位 token：readiness 只看三件套填没填，不再因占位 key + 非免费
+    语境而拦截（免费判定已收口到 is_agent_free，脏配置由下游 401 兜底）。"""
+    manager = object.__new__(ConfigManager)
+    manager.get_model_api_config = lambda _model_type: {
+        "model": "m", "base_url": "https://u", "api_key": "free-access",
+    }
+    ready, reasons = manager.is_agent_api_ready()
+    assert ready is True
+    assert reasons == []
+
+
+def test_is_agent_free_tracks_agent_model_not_version():
+    """is_agent_free() 只认 agent model 名(free-agent-model)，与 IS_FREE_VERSION(core/assist
+    版本免费)解耦：用免费语音但 agent 换自费/自定义 model 时应为 False。"""
+    manager = object.__new__(ConfigManager)
+    manager.get_model_api_config = lambda _model_type: {"model": "free-agent-model"}
+    assert manager.is_agent_free() is True
+    manager.get_model_api_config = lambda _model_type: {"model": "qwen3.6-plus-2026-04-02"}
+    assert manager.is_agent_free() is False
+    manager.get_model_api_config = lambda _model_type: {"model": ""}
+    assert manager.is_agent_free() is False
+
+
+def test_is_free_voice_tracks_core_not_assist():
+    """is_free_voice() 只认 core(CORE_API_TYPE=='free')，与 assist 无关：
+    core=qwen+assist=free（自费语音+免费文本）应为 False。"""
+    manager = object.__new__(ConfigManager)
+    manager.get_core_config = lambda: {"CORE_API_TYPE": "free"}
+    assert manager.is_free_voice() is True
+    manager.get_core_config = lambda: {"CORE_API_TYPE": "qwen"}
+    assert manager.is_free_voice() is False
+    manager.get_core_config = lambda: {"CORE_API_TYPE": ""}
+    assert manager.is_free_voice() is False
+
+
+def test_agent_gate_is_free_version_field_sources_agent_free():
+    """gate / agent 命令回包的 is_free_version 字段值取 is_agent_free()（agent model 维度），
+    而非 is_free_voice()（语音/core 维度）——锁住三处同源，防回退。"""
+    server = Path("app/agent_server.py").read_text(encoding="utf-8")
+    assert '"is_free_version": cm.is_agent_free()' in server
+    router = Path("main_routers/agent_router.py").read_text(encoding="utf-8")
+    assert "_config_manager.is_agent_free()" in router
+    assert "cfg.is_agent_free()" in router
 
 
 def test_agent_command_set_agent_enabled_reports_free_version_and_refreshes_capabilities():

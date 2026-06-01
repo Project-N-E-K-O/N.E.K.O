@@ -1342,7 +1342,9 @@ def _check_agent_api_gate() -> Dict[str, Any]:
     try:
         cm = get_config_manager()
         ok, reasons = cm.is_agent_api_ready()
-        return {"ready": ok, "reasons": reasons, "is_free_version": cm.is_free_version()}
+        # 字段名保留 is_free_version（前端/下游 gate 消费者沿用），值取 agent 维度的
+        # is_agent_free()：判 agent 是否走内置免费模型，而非 core/assist 的版本免费。
+        return {"ready": ok, "reasons": reasons, "is_free_version": cm.is_agent_free()}
     except Exception as e:
         return {"ready": False, "reasons": [f"Agent API check failed: {e}"], "is_free_version": False}
 
