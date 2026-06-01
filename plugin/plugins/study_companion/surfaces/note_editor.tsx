@@ -11,6 +11,8 @@ type NoteSavePayload = {
   note?: NoteItem;
 };
 
+const AI_EXPAND_POLL_TIMEOUT_MS = 90000;
+
 type NoteDraftSnapshot = {
   noteId: string;
   notebookId: string;
@@ -149,11 +151,16 @@ export default function NoteEditor(props: PluginSurfaceProps) {
     setBusy(true);
     setStatus(text(props, 'ui.notebook.ai_working', 'AI working...'));
     try {
-      const payload = await callPlugin<{ content?: string }>('study_note_ai_expand', {
-        note_id: noteId,
-        content,
-        topic_context: topics,
-      });
+      const payload = await callPlugin<{ content?: string }>(
+        'study_note_ai_expand',
+        {
+          note_id: noteId,
+          content,
+          topic_context: topics,
+        },
+        undefined,
+        AI_EXPAND_POLL_TIMEOUT_MS,
+      );
       if (payload.content) {
         setContent(payload.content);
       }
