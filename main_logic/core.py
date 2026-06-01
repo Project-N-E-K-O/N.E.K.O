@@ -2232,7 +2232,14 @@ class LLMSessionManager:
             self._activity_tracker.on_voice_rms()
 
         if is_voice_source and transcript_text:
+            session_snapshot = self.session
             voice_bridge_action = await self._dispatch_voice_transcript_bridge(transcript_text)
+            if session_snapshot is not self.session:
+                logger.debug(
+                    "[%s] stale voice transcript dropped after session change",
+                    self.lanlan_name,
+                )
+                return
             if voice_bridge_action == "cancel_response":
                 return
 
