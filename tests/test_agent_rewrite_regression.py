@@ -421,7 +421,7 @@ def test_yui_guide_overlay_supports_progress_meta_and_viewport_placement():
     for expected in (
         "window.TutorialHighlightController",
         "'[id$=\"-btn-mic\"], [id$=\"-btn-screen\"], [id$=\"-btn-agent\"],",
-        "'[id$=\"-btn-settings\"], [id$=\"-btn-goodbye\"], [id$=\"-btn-return\"], [id$=\"-lock-icon\"]'",
+        "'[id$=\"-btn-settings\"], [id$=\"-btn-goodbye\"], [id$=\"-btn-return\"], [id$=\"-lock-icon\"],",
         "applyCircularFloatingButtonSpotlightHint(element)",
         "data-yui-guide-spotlight-geometry",
         "data-yui-guide-virtual-spotlight",
