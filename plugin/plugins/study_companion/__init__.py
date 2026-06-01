@@ -804,7 +804,7 @@ class StudyCompanionPlugin(
             {
                 "action": "prime_context",
                 "context": context_text,
-                "skipped": False,
+                "skipped": True,
                 "filter": dict(filter_result),
                 "lanlan_name": str(lanlan_name or ""),
             }

@@ -37,7 +37,7 @@ async def test_voice_transcript_name_call_returns_prime_context() -> None:
     assert isinstance(result, Ok)
     payload = result.value
     assert payload["action"] == "prime_context"
-    assert payload["skipped"] is False
+    assert payload["skipped"] is True
     assert "f(x)=x^3" in payload["context"]
     assert "why is it 3x^2" in payload["context"]
     assert payload["filter"]["method"] == "name_call"
