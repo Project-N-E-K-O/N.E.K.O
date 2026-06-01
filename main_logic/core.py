@@ -38,7 +38,7 @@ from main_logic.tool_calling import (
     ToolRegistry,
     ToolResult,
 )
-from utils.llm_client import AIMessage
+from utils.llm_client import AIMessage, HumanMessage
 from main_logic.session_state import SessionStateMachine, SessionEvent
 from main_logic.agent_event_bus import (
     dispatch_text_user_message,
@@ -791,6 +791,9 @@ class LLMSessionManager:
         self.pending_extra_replies: list[dict] = []
         # 结构化 agent 任务回调队列（用于按会话类型注入）
         self.pending_agent_callbacks: list[dict] = []
+        # 新用户破冰是本地脚本，不走普通 LLM；这里暂存它的问答，
+        # 让下一轮普通聊天仍能读到刚刚发生过的上下文。
+        self.pending_icebreaker_context: list[tuple[str, str]] = []
         # 防止 trigger_agent_callbacks 和 finish_proactive_delivery 并发写 WS/sync_message_queue
         self._proactive_write_lock = asyncio.Lock()
         # ── Session takeover ──────────────────────────────────────────
@@ -2496,6 +2499,49 @@ class LLMSessionManager:
             )
             return False
         return True
+
+    def _append_icebreaker_context_to_session(self, role: str, text: str) -> bool:
+        history = getattr(getattr(self, "session", None), "_conversation_history", None)
+        if not isinstance(history, list):
+            return False
+        if role == "user":
+            history.append(HumanMessage(content=text))
+            return True
+        if role == "assistant":
+            history.append(AIMessage(content=text))
+            return True
+        return False
+
+    def append_icebreaker_context(self, role: str, text: str) -> bool:
+        clean_role = str(role or "").strip()
+        clean_text = str(text or "").strip()
+        if clean_role not in {"assistant", "user"} or not clean_text:
+            return False
+
+        if self._append_icebreaker_context_to_session(clean_role, clean_text):
+            return True
+
+        pending = getattr(self, "pending_icebreaker_context", None)
+        if not isinstance(pending, list):
+            pending = []
+            self.pending_icebreaker_context = pending
+        pending.append((clean_role, clean_text))
+        if len(pending) > 80:
+            del pending[:-80]
+        return True
+
+    def _flush_pending_icebreaker_context(self) -> None:
+        pending = getattr(self, "pending_icebreaker_context", None)
+        if not isinstance(pending, list) or not pending:
+            return
+        if not isinstance(getattr(getattr(self, "session", None), "_conversation_history", None), list):
+            return
+
+        remaining: list[tuple[str, str]] = []
+        for role, text in pending:
+            if not self._append_icebreaker_context_to_session(role, text):
+                remaining.append((role, text))
+        self.pending_icebreaker_context = remaining
 
     async def emit_mirror_turn_end(
         self,
@@ -4500,6 +4546,8 @@ class LLMSessionManager:
                 # 标记session为就绪状态并处理可能已缓存的输入数据
                 async with self.input_cache_lock:
                     self.session_ready = True
+
+                self._flush_pending_icebreaker_context()
 
                 # 处理在session启动期间可能已经缓存的输入数据
                 await self._flush_pending_input_data()
