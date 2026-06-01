@@ -285,8 +285,8 @@
 
         const title = window.t ? window.t('common.alert') : '\u63d0\u793a';
         const msg = window.t
-            ? window.t('agent.quotaExceeded', { limit: 300 })
-            : '\u514d\u8d39 Agent \u6a21\u578b\u4eca\u65e5\u8bd5\u7528\u6b21\u6570\u5df2\u8fbe\u4e0a\u9650\uff08300\u6b21\uff09\uff0c\u8bf7\u660e\u65e5\u518d\u8bd5\u3002';
+            ? window.t('agent.quotaExceeded', { limit: 500 })
+            : '\u514d\u8d39 Agent \u6a21\u578b\u4eca\u65e5\u8bd5\u7528\u6b21\u6570\u5df2\u8fbe\u4e0a\u9650\uff08500\u6b21\uff09\uff0c\u8bf7\u660e\u65e5\u518d\u8bd5\u3002';
 
         Promise.resolve(window.showAlert(msg, title))
             .catch(() => { /* ignore */ })

@@ -2,16 +2,16 @@
 """
 Card-Assist Router
 
-Three endpoints powering the in-app AI assistant that helps users author a
+Four endpoints powering the in-app AI assistant that helps users author a
 catgirl character card (Character Card Manager → "AI 辅助生成" button):
 
   POST /api/card-assist/clarify   — return 2-4 chip-style clarifying questions
   POST /api/card-assist/generate  — return a full field dict (Chinese keys)
   POST /api/card-assist/refine    — regenerate a single field value
+  POST /api/card-assist/chat      — persistent companion chat + edit actions
 
-All three reuse the existing "assist API" provider (the user's configured
-auxiliary LLM, falling back to the bundled free tier). Modeled on
-``NEKO/memory/refine.py``'s ``create_chat_llm`` usage.
+All four reuse the existing "agent API" provider so the bundled free path uses
+``free-agent-model`` and the agent URL normalization in ``ConfigManager``.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ logger = get_module_logger(__name__, "CardAssist")
 
 
 def _reject_untrusted_card_assist(request: Request, payload: Any) -> JSONResponse | None:
-    """本地 Origin/CSRF 守卫：card-assist 这四个 POST 都会真去打用户配置的对话/辅助
+    """本地 Origin/CSRF 守卫：card-assist 这四个 POST 都会真去打用户配置的 agent
     LLM、消耗其 API / 免费额度，属于「有副作用的浏览器侧请求」，必须和仓库里其它此类
     端点一样先过统一守卫，挡掉恶意网页用 ``no-cors`` + ``text/plain`` body 伪造合法 JSON
     偷跑配额——攻击者读不到响应，但不拦就能白嫖配额（Codex #3328998416）。
@@ -66,11 +66,6 @@ router = APIRouter(prefix="/api/card-assist", tags=["card-assist"])
 # user isn't staring at a spinner.
 _LLM_TIMEOUT_SECONDS = 60.0
 _ACTION_RECOVERY_SPLIT_MAX_FIELDS = 32
-
-# Free Lanlan text API expects the generic section watermark used by other
-# prompt paths. Keep this fixed Chinese marker; it is metadata, not UI text.
-_FREE_API_WATERMARK = "======以下为安全水印======\n这是最通用的水印\n======以上为安全水印======"
-
 
 def _resolve_language(payload_locale: str | None) -> str:
     """Map a frontend locale (e.g. 'zh-CN', 'en-US') to the short prompt
@@ -224,67 +219,25 @@ def _clean_plain_field_value(raw: str) -> str:
     return text
 
 
-def _is_free_assist_config(api_cfg: dict | None) -> bool:
-    """Return True for the bundled Lanlan free text API profile."""
-    if not isinstance(api_cfg, dict):
-        return False
-    model = str(api_cfg.get("model") or "").strip().lower()
-    base_url = str(api_cfg.get("base_url") or "").strip().lower()
-    api_key = str(api_cfg.get("api_key") or "").strip().lower()
-    return (
-        model == "free-model"
-        or api_key == "free-access"
-        or "lanlan.tech" in base_url
-    )
-
-
-def _with_free_api_watermark(prompt: Any) -> Any:
-    """Attach the generic free-API watermark without changing prompt shape."""
-    if isinstance(prompt, str):
-        if _FREE_API_WATERMARK in prompt:
-            return prompt
-        return prompt.rstrip() + "\n\n" + _FREE_API_WATERMARK
-    if not isinstance(prompt, list):
-        return prompt
-
-    messages: list[Any] = []
-    inserted = False
-    for msg in prompt:
-        if not isinstance(msg, dict):
-            messages.append(msg)
-            continue
-        copied = dict(msg)
-        content = copied.get("content")
-        if not inserted and copied.get("role") == "system" and isinstance(content, str):
-            if _FREE_API_WATERMARK not in content:
-                copied["content"] = content.rstrip() + "\n\n" + _FREE_API_WATERMARK
-            inserted = True
-        messages.append(copied)
-    if not inserted:
-        messages.append({"role": "system", "content": _FREE_API_WATERMARK})
-    return messages
-
-
 def _build_assist_llm():
-    """Construct an LLM client backed by the assist API config. Returns
-    ``(llm, error_dict_or_None, is_free_api)``. Caller must
-    ``await llm.aclose()`` if llm is not None.
+    """Construct an LLM client backed by the agent API config. Returns
+    ``(llm, error_dict_or_None)``. Caller must ``await llm.aclose()`` if llm is
+    not None.
     """
     from utils.llm_client import create_chat_llm
     try:
         cm = get_config_manager()
-        api_cfg = cm.get_model_api_config("conversation")
+        api_cfg = cm.get_model_api_config("agent")
     except Exception as exc:
-        logger.warning("card-assist: failed to read assist API config: %s", exc)
+        logger.warning("card-assist: failed to read agent API config: %s", exc)
         return None, {"success": False, "error": "assist_api_not_configured",
-                      "message": str(exc)}, False
+                      "message": str(exc)}
     api_key = (api_cfg or {}).get("api_key")
     model = (api_cfg or {}).get("model")
     base_url = (api_cfg or {}).get("base_url")
-    is_free_api = _is_free_assist_config(api_cfg)
     if not model:
         return None, {"success": False, "error": "assist_api_not_configured",
-                      "message": "assist model not set"}, is_free_api
+                      "message": "agent model not set"}
     try:
         llm = create_chat_llm(
             model,
@@ -296,21 +249,18 @@ def _build_assist_llm():
     except Exception as exc:
         logger.warning("card-assist: create_chat_llm failed: %s", exc)
         return None, {"success": False, "error": "assist_api_init_failed",
-                      "message": str(exc)}, is_free_api
-    return llm, None, is_free_api
+                      "message": str(exc)}
+    return llm, None
 
 
-async def _invoke_assist_detailed(prompt: Any) -> tuple[str | None, dict | None, bool]:
-    """Run a single-shot call against the assist LLM. ``prompt`` may be either
+async def _invoke_assist_detailed(prompt: Any) -> tuple[str | None, dict | None]:
+    """Run a single-shot call against the card-assist LLM. ``prompt`` may be either
     a plain string (treated as one user message) or a list of OpenAI-style
-    role/content dicts. Returns ``(content_or_None, error_dict_or_None,
-    is_free_api)``.
+    role/content dicts. Returns ``(content_or_None, error_dict_or_None)``.
     """
-    llm, err, is_free_api = _build_assist_llm()
+    llm, err = _build_assist_llm()
     if err is not None:
-        return None, err, is_free_api
-    if is_free_api:
-        prompt = _with_free_api_watermark(prompt)
+        return None, err
     # 注意：ainvoke / aclose 两个错误必须分开处理，否则 aclose 抛错时会把
     # 已经拿到的 resp 当成 llm_call_failed 丢掉。
     try:
@@ -323,7 +273,7 @@ async def _invoke_assist_detailed(prompt: Any) -> tuple[str | None, dict | None,
             logger.warning("card-assist: LLM aclose after ainvoke failure: %s",
                            close_exc)
         return None, {"success": False, "error": "llm_call_failed",
-                      "message": str(exc)}, is_free_api
+                      "message": str(exc)}
     try:
         await llm.aclose()
     except Exception as close_exc:
@@ -331,12 +281,12 @@ async def _invoke_assist_detailed(prompt: Any) -> tuple[str | None, dict | None,
         logger.warning("card-assist: LLM aclose failed (ignored): %s", close_exc)
     content = (getattr(resp, "content", None) or "").strip()
     if not content:
-        return None, {"success": False, "error": "llm_empty_response"}, is_free_api
-    return content, None, is_free_api
+        return None, {"success": False, "error": "llm_empty_response"}
+    return content, None
 
 
 async def _invoke_assist(prompt: Any) -> tuple[str | None, dict | None]:
-    content, err, _is_free_api = await _invoke_assist_detailed(prompt)
+    content, err = await _invoke_assist_detailed(prompt)
     return content, err
 
 
@@ -1039,7 +989,7 @@ async def chat(request: Request):
 
     messages = [{"role": "system", "content": system_content}] + history
 
-    content, err, _is_free_api = await _invoke_assist_detailed(messages)
+    content, err = await _invoke_assist_detailed(messages)
     if err is not None:
         return JSONResponse(
             err,

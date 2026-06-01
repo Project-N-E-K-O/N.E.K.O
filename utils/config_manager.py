@@ -859,7 +859,7 @@ class ConfigManager:
     """配置文件管理器"""
     _agent_quota_lock = threading.Lock()
     _selected_root_unavailable_recovery_override_roots: set[str] = set()
-    _free_agent_daily_limit = 300 # 免费配额并非只在本地实施，本地计算是为了减少无效请求、节约网络带宽。
+    _free_agent_daily_limit = 500 # 免费配额并非只在本地实施，本地计算是为了减少无效请求、节约网络带宽。
     ROOT_STATE_VERSION = 1
     CLOUDSAVE_LOCAL_STATE_VERSION = 1
     CHARACTER_TOMBSTONES_STATE_VERSION = 1
@@ -3093,23 +3093,11 @@ class ConfigManager:
         return url
 
     def _normalize_agent_url(self, url: str) -> str:
-        """Agent 模型始终走 lanlan.app（国际 API），统一 lanlan.tech → lanlan.app；
-        国际保留 www（www.lanlan.app），国内剥掉 www（lanlan.app）走就近节点。
+        """临时不改写 Agent URL。
 
-        lanlan.tech / lanlan.app 是项目自有域名，AGENT_MODEL_URL 要么是写死的
-        free 默认（https://www.lanlan.tech/text/v1），要么是用户自填的其它服务
-        URL（不含这两个域，replace 自然 no-op），所以直接字符串替换即可。
+        free-agent-model 需要走配置里的国内 ``lanlan.tech`` 文本入口；这里保持
+        AGENT_MODEL_URL 原样，避免把它归一化到 ``lanlan.app``。
         """
-        if not isinstance(url, str):
-            return url
-        url = url.replace('lanlan.tech', 'lanlan.app')
-        try:
-            if not self._check_non_mainland():
-                url = url.replace('www.lanlan.app', 'lanlan.app')
-        except Exception:
-            # 仅 _check_non_mainland 可能抛（GeoIP 探测）。探测失败时不剥 www，
-            # 保留国际形态作安全默认；线路探测不该阻断 URL 推导。
-            pass
         return url
 
     @staticmethod

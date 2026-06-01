@@ -32,6 +32,58 @@ def test_action_recovery_prompt_is_provider_agnostic():
 
 
 @pytest.mark.asyncio
+async def test_card_assist_uses_agent_model_config_without_watermark(monkeypatch):
+    captured = {}
+
+    class FakeConfigManager:
+        def __init__(self):
+            self.model_types = []
+
+        def get_model_api_config(self, model_type):
+            self.model_types.append(model_type)
+            return {
+                "model": "free-agent-model",
+                "base_url": "https://www.lanlan.tech/text/v1",
+                "api_key": "free-access",
+            }
+
+    class FakeResponse:
+        content = '{"reply":"ok","actions":[]}'
+
+    class FakeLLM:
+        async def ainvoke(self, prompt):
+            captured["prompt"] = prompt
+            return FakeResponse()
+
+        async def aclose(self):
+            captured["closed"] = True
+
+    fake_cm = FakeConfigManager()
+
+    def fake_create_chat_llm(model, base_url, api_key, **kwargs):
+        captured["model"] = model
+        captured["base_url"] = base_url
+        captured["api_key"] = api_key
+        captured["kwargs"] = kwargs
+        return FakeLLM()
+
+    monkeypatch.setattr(car, "get_config_manager", lambda: fake_cm)
+    monkeypatch.setattr("utils.llm_client.create_chat_llm", fake_create_chat_llm)
+
+    content, err = await car._invoke_assist_detailed("hello")
+
+    assert err is None
+    assert content == '{"reply":"ok","actions":[]}'
+    assert fake_cm.model_types == ["agent"]
+    assert captured["model"] == "free-agent-model"
+    assert captured["base_url"] == "https://www.lanlan.tech/text/v1"
+    assert captured["api_key"] == "free-access"
+    assert captured["prompt"] == "hello"
+    assert "安全水印" not in captured["prompt"]
+    assert captured["closed"] is True
+
+
+@pytest.mark.asyncio
 async def test_recover_actions_from_reply_uses_original_reply_as_context(monkeypatch):
     async def fake_invoke(prompt):
         assert "上一轮助手回复" in prompt
@@ -93,7 +145,7 @@ def test_chat_empty_actions_recovers_actions_without_replacing_reply(monkeypatch
         assert isinstance(prompt, list)
         assert "猫娘助手" in prompt[0]["content"]
         assert "动作恢复器" not in prompt[0]["content"]
-        return '{"reply":"好哒喵，我来改。","actions":[]}', None, False
+        return '{"reply":"好哒喵，我来改。","actions":[]}', None
 
     async def fake_invoke(prompt):
         assert "动作恢复器" in prompt
@@ -137,7 +189,6 @@ def test_chat_action_only_json_does_not_echo_raw_json(monkeypatch):
         return (
             '{"actions":[{"type":"refine_field","field_key":"招牌台词","value":"星光会替我说话喵~"}]}',
             None,
-            False,
         )
 
     monkeypatch.setattr(car, "_invoke_assist_detailed", fake_invoke_detailed)
