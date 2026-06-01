@@ -10598,7 +10598,24 @@ function panelAttachAutoSaveListener(input, catgirlName) {
 //     system 气泡告诉助手 + 用户，保持双方对当前状态的共识
 // 助手不主动调 LLM 评论（成本考虑）；用户随时可以用 quick chip 让她审一审。
 
-const CARD_ASSIST_RESERVED_KEYS = ['档案名', 'voice_id', '_reserved', 'live2d', 'live3d', 'vrm', 'mmd', 'system_prompt', 'model_type', 'live2d_idle_animation'];
+// 判断某字段名是否是「系统/工坊保留字段」——AI 不该把它当普通设定去写。
+// ⚠ 之前这里维护一份写死的部分列表，漏了 live3d_sub_type / vrm_animation / lighting /
+// live2d_item_id 等：那些 key 会被渲染成普通 AI 字段、autosave 报成功，但后端保存时被
+// collectCharacterFields / _filter_mutable_catgirl_fields 丢掉，刷新后字段消失、改动静默
+// 丢失（Codex #3331668038）。改成复用角色编辑器同一套 isCharacterReservedFieldName（走后端
+// 实时配置 + ReservedFieldsUtils 兜底，与后端 CHARACTER_RESERVED_FIELDS 同源），再叠加
+// card-assist 特有的 '档案名'（表单元数据 input 的固定 name，不在保留字段配置里）。
+function _cardAssistIsReservedKey(key) {
+    const k = String(key == null ? '' : key).trim();
+    if (!k) return false;
+    if (k === '档案名') return true;
+    try {
+        if (typeof isCharacterReservedFieldName === 'function') {
+            return isCharacterReservedFieldName(k);
+        }
+    } catch (_) { /* 极端兜底：helper 不可用就只挡 '档案名' */ }
+    return false;
+}
 
 // 当前用作"开发猫"占位的猫娘 profile name。/api/characters/catgirl/{name}/card-face
 // 命中就用真实卡面，不命中走 fallback 圆圈。未来替换开发猫只需要改这里。
@@ -10631,7 +10648,7 @@ function _cardAssistCollectFieldKeys(form) {
     const seen = new Set();
     form.querySelectorAll('textarea[name], input[name]').forEach(function (el) {
         const k = el.getAttribute('name');
-        if (!k || CARD_ASSIST_RESERVED_KEYS.includes(k)) return;
+        if (!k || _cardAssistIsReservedKey(k)) return;
         if (seen.has(k)) return;
         seen.add(k);
         keys.push(k);
@@ -10644,7 +10661,7 @@ function _cardAssistCollectCurrentFormData(form) {
     if (!form) return data;
     const fd = new FormData(form);
     for (const [k, v] of fd.entries()) {
-        if (!k || CARD_ASSIST_RESERVED_KEYS.includes(k)) continue;
+        if (!k || _cardAssistIsReservedKey(k)) continue;
         const val = typeof v === 'string' ? v.trim() : v;
         if (val) data[k] = val;
     }
@@ -11204,8 +11221,8 @@ function _companionGreet(state) {
     //     问候里列出现有字段做摘要，提示用 "💡/🔍" quick chip 让 AI 基于
     //     已有 tag 给建议；不预先消耗一次 LLM 调用。
     //
-    // _cardAssistCollectCurrentFormData 已经过滤掉 CARD_ASSIST_RESERVED_KEYS
-    // （包括档案名/voice_id 等），所以只剩"真·角色设定字段"。空对象 → 空白卡。
+    // _cardAssistCollectCurrentFormData 已经用 _cardAssistIsReservedKey 过滤掉保留字段
+    // （档案名/voice_id/lighting 等），所以只剩"真·角色设定字段"。空对象 → 空白卡。
     const existingData = _cardAssistCollectCurrentFormData(state.form);
     const filledKeys = Object.keys(existingData);
     if (!filledKeys.length) {
@@ -11534,7 +11551,7 @@ function _companionApplyActions(state, actions) {
     const skippedTags = [];
     actions.forEach(function (a) {
         if (!a || !a.type || !a.field_key) return;
-        if (CARD_ASSIST_RESERVED_KEYS.includes(a.field_key)) {
+        if (_cardAssistIsReservedKey(a.field_key)) {
             skippedTags.push(a.field_key);
             return;
         }
@@ -11811,7 +11828,7 @@ function _companionAttachFormWatchers(state) {
         const t = e.target;
         if (!t || !t.name) return;
         if (t.tagName !== 'TEXTAREA' && t.tagName !== 'INPUT') return;
-        if (CARD_ASSIST_RESERVED_KEYS.includes(t.name)) return;
+        if (_cardAssistIsReservedKey(t.name)) return;
         // 防抖：用户停手 600ms 才看是不是真的改了
         clearTimeout(t._companionWatchTimer);
         t._companionWatchTimer = setTimeout(function () {
@@ -12125,7 +12142,7 @@ function _cardAssistApplyToForm(form, generated, selectedKeys, originalName, isN
     // generate 写 9 个字段把视野往下连甩 9 次。
     let didScroll = false;
     selectedKeys.forEach(function (key) {
-        if (!key || CARD_ASSIST_RESERVED_KEYS.includes(key)) {
+        if (!key || _cardAssistIsReservedKey(key)) {
             result.skipped.push(key);
             return;
         }

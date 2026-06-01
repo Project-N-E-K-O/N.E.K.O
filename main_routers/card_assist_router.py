@@ -24,6 +24,7 @@ from typing import Any, Dict
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from config import CHARACTER_RESERVED_FIELDS
 from config.prompts.prompts_card_assist import (
     get_card_assist_chat_system_prompt,
     get_card_assist_clarify_prompt,
@@ -249,18 +250,19 @@ async def _invoke_assist(prompt: Any) -> tuple[str | None, dict | None]:
     return content, None
 
 
-# 系统保留字段，对 LLM 来说都是噪声 / 不属于「角色设定」的部分：
-#   - "档案名"：表单上的元数据 input 的固定 name（见 character_card_manager.js
-#     里 `form.querySelector('input[name="档案名"]')`），是写死的中文 literal 而
-#     非按 locale 翻译的字段，所以这里也用中文 literal。
-#   - live2d / live3d / vrm / mmd：模型文件配置
-#   - voice_id / model_type / system_prompt：运行时配置 / 系统提示词
+# 系统保留字段，对 LLM 来说都是噪声 / 不属于「角色设定」的部分。
+# ⚠ 必须复用共享的 CHARACTER_RESERVED_FIELDS（角色编辑器、后端保存过滤
+# `_filter_mutable_catgirl_fields` 都用它），不能再维护一份会漂移的部分拷贝——否则像
+# `lighting` / `live3d_sub_type` / `vrm_animation` / `live2d_idle_animation` 这些 key 在
+# chat/add_field 里被当普通字段渲染、autosave 报成功，但保存时又被过滤掉，刷新后行消失、
+# 用户的改动静默丢失（Codex #3331668038）。在共享列表之外再补两个 card-assist 特有项：
+#   - "档案名"：表单元数据 input 的固定 name（写死的中文 literal，非按 locale 翻译），
+#     不在角色保留字段配置里，但同样不该让 AI 当普通设定去写。
+#   - "live3d"：旧本地列表保留过的裸 key（共享配置只有 "live3d_sub_type"），保守起见留着。
 # `_*` 前缀（如 `_reserved`）也一并跳过。
-_RESERVED_CARD_FIELDS: frozenset[str] = frozenset({
-    "档案名",
-    "live2d", "live3d", "vrm", "mmd",
-    "voice_id", "model_type", "system_prompt",
-})
+_RESERVED_CARD_FIELDS: frozenset[str] = frozenset(CHARACTER_RESERVED_FIELDS) | {
+    "档案名", "live3d",
+}
 
 
 def _is_reserved_card_field(key: Any) -> bool:
