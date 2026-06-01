@@ -17,9 +17,10 @@ auxiliary LLM, falling back to the bundled free tier). Modeled on
 from __future__ import annotations
 
 import json
+import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Callable, Dict
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -64,6 +65,7 @@ router = APIRouter(prefix="/api/card-assist", tags=["card-assist"])
 # Per-request timeout. Card assist is interactive — bail out fast so the
 # user isn't staring at a spinner.
 _LLM_TIMEOUT_SECONDS = 60.0
+_FREE_FULL_REWRITE_SPLIT_MAX_FIELDS = 32
 
 # Free Lanlan text API expects the generic section watermark used by other
 # prompt paths. Keep this fixed Chinese marker; it is metadata, not UI text.
@@ -171,6 +173,57 @@ def _strip_json_fence(raw: str) -> str:
     return text
 
 
+def _extract_first_json_object(raw: str) -> str | None:
+    """Return the first decodable JSON object embedded in raw LLM text.
+
+    Weak/free models often wrap the required object in chatty prose. Use
+    JSONDecoder rather than brace counting so strings/escapes are handled by
+    the standard parser.
+    """
+    text = _strip_json_fence(raw)
+    decoder = json.JSONDecoder()
+    for idx, ch in enumerate(text):
+        if ch != "{":
+            continue
+        try:
+            parsed, end = decoder.raw_decode(text[idx:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return text[idx:idx + end].strip()
+    return None
+
+
+def _loads_json_lenient(raw: str) -> Any:
+    """Parse strict JSON first; if that fails, parse an embedded object."""
+    text = _strip_json_fence(raw)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        extracted = _extract_first_json_object(text)
+        if not extracted:
+            raise
+        return json.loads(extracted)
+
+
+_QUOTE_PAIRS = {
+    '"': '"',
+    "'": "'",
+    "“": "”",
+    "‘": "’",
+    "「": "」",
+    "『": "』",
+}
+
+
+def _clean_plain_field_value(raw: str) -> str:
+    """Normalize a single-field plain-string LLM response."""
+    text = _strip_json_fence(raw).strip()
+    if len(text) >= 2 and _QUOTE_PAIRS.get(text[0]) == text[-1]:
+        text = text[1:-1].strip()
+    return text
+
+
 def _is_free_assist_config(api_cfg: dict | None) -> bool:
     """Return True for the bundled Lanlan free text API profile."""
     if not isinstance(api_cfg, dict):
@@ -247,14 +300,24 @@ def _build_assist_llm():
     return llm, None, is_free_api
 
 
-async def _invoke_assist(prompt: Any) -> tuple[str | None, dict | None]:
+PromptTransform = Callable[[Any], Any]
+
+
+async def _invoke_assist_detailed(
+    prompt: Any,
+    *,
+    free_prompt_transform: PromptTransform | None = None,
+) -> tuple[str | None, dict | None, bool]:
     """Run a single-shot call against the assist LLM. ``prompt`` may be either
     a plain string (treated as one user message) or a list of OpenAI-style
-    role/content dicts. Returns ``(content_or_None, error_dict_or_None)``.
+    role/content dicts. Returns ``(content_or_None, error_dict_or_None,
+    is_free_api)``.
     """
     llm, err, is_free_api = _build_assist_llm()
     if err is not None:
-        return None, err
+        return None, err, is_free_api
+    if is_free_api and free_prompt_transform is not None:
+        prompt = free_prompt_transform(prompt)
     if is_free_api:
         prompt = _with_free_api_watermark(prompt)
     # 注意：ainvoke / aclose 两个错误必须分开处理，否则 aclose 抛错时会把
@@ -269,7 +332,7 @@ async def _invoke_assist(prompt: Any) -> tuple[str | None, dict | None]:
             logger.warning("card-assist: LLM aclose after ainvoke failure: %s",
                            close_exc)
         return None, {"success": False, "error": "llm_call_failed",
-                      "message": str(exc)}
+                      "message": str(exc)}, is_free_api
     try:
         await llm.aclose()
     except Exception as close_exc:
@@ -277,8 +340,24 @@ async def _invoke_assist(prompt: Any) -> tuple[str | None, dict | None]:
         logger.warning("card-assist: LLM aclose failed (ignored): %s", close_exc)
     content = (getattr(resp, "content", None) or "").strip()
     if not content:
-        return None, {"success": False, "error": "llm_empty_response"}
-    return content, None
+        return None, {"success": False, "error": "llm_empty_response"}, is_free_api
+    return content, None, is_free_api
+
+
+async def _invoke_assist(prompt: Any) -> tuple[str | None, dict | None]:
+    content, err, _is_free_api = await _invoke_assist_detailed(prompt)
+    return content, err
+
+
+def _is_current_free_assist_api() -> bool:
+    """Cheap preflight used to choose free-tier hardened prompt paths."""
+    try:
+        cm = get_config_manager()
+        api_cfg = cm.get_model_api_config("conversation")
+    except Exception as exc:
+        logger.warning("card-assist: failed to preflight assist API config: %s", exc)
+        return False
+    return _is_free_assist_config(api_cfg)
 
 
 # 系统保留字段，对 LLM 来说都是噪声 / 不属于「角色设定」的部分。
@@ -607,14 +686,8 @@ async def refine(request: Request):
         return JSONResponse(err, status_code=502 if err.get("error") == "llm_call_failed" else 400)
 
     # The refine prompt asks for a plain string. Strip code fences and surrounding
-    # quotes if the LLM wrapped it anyway. Unicode left/right quotes are *different*
-    # codepoints, so equality won't catch the common `“…”` / `‘…’` pairings — use
-    # an explicit open→close map.
-    text = _strip_json_fence(content).strip()
-    _QUOTE_PAIRS = {'"': '"', "'": "'", "“": "”", "‘": "’",
-                    "「": "」", "『": "』"}
-    if len(text) >= 2 and _QUOTE_PAIRS.get(text[0]) == text[-1]:
-        text = text[1:-1].strip()
+    # quotes if the LLM wrapped it anyway.
+    text = _clean_plain_field_value(content)
     if not text:
         return JSONResponse({"success": False, "error": "llm_empty_response"},
                             status_code=502)
@@ -659,6 +732,293 @@ _VALID_ACTION_TYPES = frozenset({"refine_field", "add_field", "remove_field"})
 # 「开发猫」的默认占位名，前端可在 payload.dev_cat_name 里覆盖。等真正的
 # 开发猫角色 ready 后，前端会传那个名字过来。
 _DEFAULT_DEV_CAT_NAME = "YUI"
+
+_CHAT_EDIT_INTENT_RE = re.compile(
+    r"(修改|改写|重写|重生|重做|重新写|调整|补充|新增|添加|删除|移除|换一|换成|"
+    r"优化|完善|梳理|设定|字段|rewrite|revise|regenerate|refine|update|change|"
+    r"edit|add|remove|delete|replace|make\s+her|make\s+him)",
+    re.IGNORECASE,
+)
+
+_CHAT_FULL_REWRITE_RE = re.compile(
+    r"(所有可见字段|全部可见字段|所有字段|全部字段|每个字段|整张卡|整個卡|全卡|"
+    r"整个角色卡|整個角色卡|full\s+card|whole\s+card|entire\s+card|all\s+fields|"
+    r"all\s+visible\s+fields)",
+    re.IGNORECASE,
+)
+
+_CHAT_REWRITE_VERB_RE = re.compile(
+    r"(重写|重新写|改写|重做|重生|梳理|完善|rewrite|revise|regenerate|redo|refresh)",
+    re.IGNORECASE,
+)
+
+
+def _latest_user_text(history: list[dict]) -> str:
+    for msg in reversed(history):
+        if msg.get("role") == "user":
+            return str(msg.get("content") or "").strip()
+    return ""
+
+
+def _chat_text_requests_edits(text: str) -> bool:
+    return bool(_CHAT_EDIT_INTENT_RE.search(text or ""))
+
+
+def _chat_text_requests_full_rewrite(text: str) -> bool:
+    if not text:
+        return False
+    return bool(
+        _CHAT_FULL_REWRITE_RE.search(text)
+        and _CHAT_REWRITE_VERB_RE.search(text)
+    )
+
+
+def _build_free_chat_system_prompt(
+    lang: str,
+    locale_code: str,
+    dev_cat_name: str,
+    current_card_text: str,
+    target_keys_text: str,
+) -> str:
+    """Compact, schema-first chat system prompt for the weaker free model."""
+    if lang == "zh":
+        prompt = f"""你是 {dev_cat_name}，设定捏人助手。
+
+当前角色卡：
+{current_card_text}
+
+可用字段 key（field_key 必须原样复制其中一个 key，除非 type 是 add_field）：
+{target_keys_text}
+
+只返回一个 JSON 对象，禁止 markdown，禁止 JSON 外任何文字。
+必须符合这个结构：
+{{"reply":"1-3句给用户的话","actions":[{{"type":"refine_field","field_key":"字段名","value":"新值","reason":"原因"}}]}}
+
+规则：
+- 用户明确要求修改、重写、补充或删除字段时，actions 必须包含实际字段操作，不能只口头说已经改。
+- 改已有字段用 refine_field，field_key 必须从可用字段 key 原样复制。
+- 新增字段用 add_field；删除字段用 remove_field 且不写 value。
+- 闲聊或没有明确修改意图时，actions 返回 []。
+- 不要触及保留字段：档案名 / voice_id / system_prompt / live2d / live3d / vrm / mmd / model_type。"""
+    else:
+        prompt = f"""You are {dev_cat_name}, a character-card assistant.
+
+Current character card:
+{current_card_text}
+
+Available field keys (copy field_key exactly from this list unless type is add_field):
+{target_keys_text}
+
+Return exactly one JSON object. No markdown. No text outside JSON.
+Required shape:
+{{"reply":"1-3 sentences to the user","actions":[{{"type":"refine_field","field_key":"Field Name","value":"new value","reason":"why"}}]}}
+
+Rules:
+- If the user clearly asks to edit, rewrite, add, or remove fields, actions MUST contain concrete field operations. Do not only say you changed it.
+- Use refine_field for existing fields; field_key must exactly match an available key.
+- Use add_field for new fields; use remove_field without value for removals.
+- For chat/no clear edit intent, return actions as [].
+- Never touch reserved fields: 档案名 / voice_id / system_prompt / live2d / live3d / vrm / mmd / model_type."""
+    return prompt + _output_language_directive(locale_code)
+
+
+def _build_json_repair_messages(raw: str, schema_hint: str, task_hint: str,
+                                lang: str) -> list[dict]:
+    raw_text = (raw or "")[:5000]
+    if lang == "zh":
+        system = "你是 JSON 修复器。只输出一个合法 JSON 对象，不要 markdown，不要解释。"
+        user = (
+            f"任务：{task_hint}\n\n"
+            f"目标 JSON 结构：\n{schema_hint}\n\n"
+            f"把下面这段模型输出修复/转换成目标 JSON。不要添加 JSON 外文字：\n{raw_text}"
+        )
+    else:
+        system = "You are a JSON repair tool. Output one valid JSON object only. No markdown or explanation."
+        user = (
+            f"Task: {task_hint}\n\n"
+            f"Target JSON shape:\n{schema_hint}\n\n"
+            f"Repair/convert this model output into the target JSON. No text outside JSON:\n{raw_text}"
+        )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+async def _repair_json_response(raw: str, schema_hint: str, task_hint: str,
+                                lang: str) -> tuple[Any | None, str | None]:
+    content, err, _is_free_api = await _invoke_assist_detailed(
+        _build_json_repair_messages(raw, schema_hint, task_hint, lang)
+    )
+    if err is not None or content is None:
+        return None, None
+    try:
+        return _loads_json_lenient(content), content
+    except json.JSONDecodeError:
+        return None, content
+
+
+def _coerce_field_value(v: Any) -> str:
+    if isinstance(v, (list, tuple)):
+        return ", ".join(str(x).strip() for x in v if str(x).strip())
+    if isinstance(v, dict):
+        try:
+            return json.dumps(v, ensure_ascii=False)
+        except Exception:
+            return str(v).strip()
+    if v is None:
+        return ""
+    return str(v).strip()
+
+
+def _clean_fields_payload(raw_fields: Any, allowed_keys: list[str] | None = None) -> Dict[str, str]:
+    if not isinstance(raw_fields, dict):
+        return {}
+    allowed = set(allowed_keys or [])
+    out: Dict[str, str] = {}
+    for k, v in raw_fields.items():
+        key = str(k).strip()
+        if not key or _is_reserved_card_field(key):
+            continue
+        if allowed and key not in allowed:
+            continue
+        value = _coerce_field_value(v)
+        if value:
+            out[key] = value
+    return out
+
+
+def _build_free_full_rewrite_fields_prompt(
+    lang: str,
+    locale_code: str,
+    user_instruction: str,
+    current_card_text: str,
+    target_keys_text: str,
+) -> str:
+    if lang == "zh":
+        prompt = f"""你是猫娘角色卡设计助手。用户要求按当前角色定位重写全部可见字段。
+
+用户要求：
+{user_instruction}
+
+当前角色卡：
+{current_card_text}
+
+目标字段名（必须全部输出，key 必须原样复制）：
+{target_keys_text}
+
+只返回 JSON，禁止 markdown 和前后缀文字：
+{{"fields":{{"<target_key_1>":"新值","<target_key_2>":"新值"}}}}
+
+要求：
+- fields 必须覆盖目标字段名里的每一个 key。
+- 不要输出保留字段。
+- 每个 value 必须是字符串，具体、生动，并保持原角色定位。"""
+    else:
+        prompt = f"""You are a catgirl character-card assistant. The user wants every visible field rewritten while preserving the current character concept.
+
+User instruction:
+{user_instruction}
+
+Current character card:
+{current_card_text}
+
+Target field keys (output every key exactly as written):
+{target_keys_text}
+
+Return JSON only. No markdown or surrounding text:
+{{"fields":{{"<target_key_1>":"new value","<target_key_2>":"new value"}}}}
+
+Requirements:
+- fields must cover every target key.
+- Do not output reserved fields.
+- Every value must be a string: concrete, vivid, and consistent with the original role."""
+    return prompt + _output_language_directive(locale_code)
+
+
+async def _complete_missing_fields_by_refine(
+    *,
+    lang: str,
+    locale_code: str,
+    card_text: str,
+    current_card: Any,
+    missing_keys: list[str],
+    instruction: str,
+) -> Dict[str, str]:
+    completed: Dict[str, str] = {}
+    template = get_card_assist_refine_field_prompt(lang)
+    for field_key in missing_keys[:_FREE_FULL_REWRITE_SPLIT_MAX_FIELDS]:
+        current_value = ""
+        if isinstance(current_card, dict):
+            current_value = str(current_card.get(field_key) or "")
+        prompt = template % (card_text, field_key, current_value, instruction)
+        prompt += _output_language_directive(locale_code)
+        content, err = await _invoke_assist(prompt)
+        if err is not None or not content:
+            continue
+        value = _clean_plain_field_value(content)
+        if value:
+            completed[field_key] = value
+    return completed
+
+
+async def _try_free_full_rewrite_response(
+    *,
+    lang: str,
+    locale_code: str,
+    user_instruction: str,
+    current_card: Any,
+    current_card_text: str,
+    target_keys: list[str],
+    target_keys_text: str,
+) -> tuple[dict | None, dict | None]:
+    prompt = _build_free_full_rewrite_fields_prompt(
+        lang, locale_code, user_instruction, current_card_text, target_keys_text
+    )
+    content, err, _is_free_api = await _invoke_assist_detailed(prompt)
+    if err is not None:
+        return None, err
+
+    parsed: Any | None = None
+    if content:
+        try:
+            parsed = _loads_json_lenient(content)
+        except json.JSONDecodeError:
+            parsed, _repair_raw = await _repair_json_response(
+                content,
+                '{"fields":{"<target_key>":"new value"}}',
+                "Convert the output into a full fields object for every target key.",
+                lang,
+            )
+
+    fields = _clean_fields_payload(
+        parsed.get("fields") if isinstance(parsed, dict) else None,
+        target_keys,
+    )
+
+    missing = [k for k in target_keys if k not in fields and not _is_reserved_card_field(k)]
+    if missing:
+        fields.update(await _complete_missing_fields_by_refine(
+            lang=lang,
+            locale_code=locale_code,
+            card_text=current_card_text,
+            current_card=current_card,
+            missing_keys=missing,
+            instruction=user_instruction,
+        ))
+
+    actions = [
+        {"type": "refine_field", "field_key": k, "value": fields[k], "reason": "full_field_rewrite"}
+        for k in target_keys
+        if k in fields and fields[k] and not _is_reserved_card_field(k)
+    ][: _CHAT_MAX_ACTIONS]
+
+    if not actions:
+        return None, None
+
+    reply = (
+        "好哒喵～我按原本的角色定位把可见字段重新梳理了一遍。"
+        if lang == "zh"
+        else "Done — I rewrote the visible fields while preserving the original character concept."
+    )
+    return {"success": True, "reply": reply, "actions": actions}, None
 
 
 def _normalize_chat_history(raw: Any) -> list[dict]:
@@ -770,10 +1130,32 @@ async def chat(request: Request):
     current_card_text = _format_card_for_prompt(current_card)
     target_keys = _resolve_target_keys(body, locale_code, current_card)
     target_keys_text = " / ".join(target_keys)
+    latest_user = _latest_user_text(history)
 
     dev_cat_name = str(body.get("dev_cat_name") or _DEFAULT_DEV_CAT_NAME).strip()
     if not dev_cat_name or len(dev_cat_name) > 40:
         dev_cat_name = _DEFAULT_DEV_CAT_NAME
+
+    # Free-tier models are much less reliable with long action arrays. For the
+    # common "rewrite all visible fields" intent, ask for a simple fields dict
+    # first, then convert that server-side into normal refine_field actions.
+    if _is_current_free_assist_api() and _chat_text_requests_full_rewrite(latest_user):
+        full_rewrite_payload, full_rewrite_err = await _try_free_full_rewrite_response(
+            lang=lang,
+            locale_code=locale_code,
+            user_instruction=latest_user,
+            current_card=current_card,
+            current_card_text=current_card_text,
+            target_keys=target_keys,
+            target_keys_text=target_keys_text,
+        )
+        if full_rewrite_err is not None:
+            return JSONResponse(
+                full_rewrite_err,
+                status_code=502 if full_rewrite_err.get("error") == "llm_call_failed" else 400,
+            )
+        if full_rewrite_payload is not None:
+            return JSONResponse(full_rewrite_payload)
 
     system_template = get_card_assist_chat_system_prompt(lang)
     system_content = system_template % (
@@ -783,8 +1165,16 @@ async def chat(request: Request):
     system_content += _output_language_directive(locale_code)
 
     messages = [{"role": "system", "content": system_content}] + history
+    free_system_content = _build_free_chat_system_prompt(
+        lang, locale_code, dev_cat_name, current_card_text, target_keys_text
+    )
 
-    content, err = await _invoke_assist(messages)
+    content, err, is_free_api = await _invoke_assist_detailed(
+        messages,
+        free_prompt_transform=lambda _prompt: (
+            [{"role": "system", "content": free_system_content}] + history
+        ),
+    )
     if err is not None:
         return JSONResponse(
             err,
@@ -792,23 +1182,47 @@ async def chat(request: Request):
         )
 
     try:
-        parsed = json.loads(_strip_json_fence(content))
+        parsed = _loads_json_lenient(content)
     except json.JSONDecodeError as exc:
-        # LLM 偶尔会忘记是 JSON 模式，吐回来一段裸的纯文本。这种情况下也别
-        # 整个请求挂掉 —— 把它原样当 reply 返回，actions 留空，用户至少能
-        # 看到一句回复。
-        logger.warning("card-assist/chat: bad JSON from LLM: %s; raw[:200]=%s",
-                       exc, content[:200])
-        return JSONResponse({
-            "success": True,
-            "reply": content[:_CHAT_MAX_MESSAGE_CHARS],
-            "actions": [],
-            "warning": "llm_bad_json",
-        })
+        if is_free_api:
+            repaired, _repair_raw = await _repair_json_response(
+                content or "",
+                '{"reply":"message to user","actions":[{"type":"refine_field","field_key":"exact key","value":"new value","reason":"why"}]}',
+                "Convert the assistant output into the required card-assist chat JSON.",
+                lang,
+            )
+            if isinstance(repaired, dict):
+                parsed = repaired
+            else:
+                parsed = None
+        else:
+            parsed = None
+        if parsed is None:
+            # LLM 偶尔会忘记是 JSON 模式，吐回来一段裸的纯文本。这种情况下也别
+            # 整个请求挂掉 —— 把它原样当 reply 返回，actions 留空，用户至少能
+            # 看到一句回复。
+            logger.warning("card-assist/chat: bad JSON from LLM: %s; raw[:200]=%s",
+                           exc, (content or "")[:200])
+            return JSONResponse({
+                "success": True,
+                "reply": (content or "")[:_CHAT_MAX_MESSAGE_CHARS],
+                "actions": [],
+                "warning": "llm_bad_json",
+            })
+
+    if is_free_api and not isinstance(parsed, dict):
+        repaired, _repair_raw = await _repair_json_response(
+            content or "",
+            '{"reply":"message to user","actions":[]}',
+            "Convert the assistant output into the required card-assist chat JSON object.",
+            lang,
+        )
+        if isinstance(repaired, dict):
+            parsed = repaired
 
     if not isinstance(parsed, dict):
         return JSONResponse({"success": False, "error": "llm_bad_shape",
-                             "raw": content[:500]}, status_code=502)
+                             "raw": (content or "")[:500]}, status_code=502)
 
     reply = parsed.get("reply")
     if not isinstance(reply, str):
@@ -818,6 +1232,44 @@ async def chat(request: Request):
         reply = reply[:_CHAT_MAX_MESSAGE_CHARS] + "…"
 
     actions = _sanitize_actions(parsed.get("actions"))
+
+    # Free-tier models may emit valid JSON but still dodge the action protocol
+    # after an explicit edit request. Give them one short corrective retry.
+    if is_free_api and _chat_text_requests_edits(latest_user) and not actions:
+        retry_messages = (
+            [{"role": "system", "content": free_system_content}]
+            + history
+            + [{
+                "role": "user",
+                "content": (
+                    "上一条用户消息是在要求修改角色卡字段。请重新输出严格 JSON；"
+                    "actions 不能为空，必须包含具体 refine_field/add_field/remove_field 操作。"
+                    if lang == "zh"
+                    else "The previous user message requested card-field edits. Return strict JSON again; actions must not be empty and must contain concrete refine_field/add_field/remove_field operations."
+                ),
+            }]
+        )
+        retry_content, retry_err, _retry_is_free = await _invoke_assist_detailed(retry_messages)
+        if retry_err is None and retry_content:
+            retry_parsed: Any | None = None
+            try:
+                retry_parsed = _loads_json_lenient(retry_content)
+            except json.JSONDecodeError:
+                retry_parsed, _retry_raw = await _repair_json_response(
+                    retry_content,
+                    '{"reply":"message to user","actions":[{"type":"refine_field","field_key":"exact key","value":"new value","reason":"why"}]}',
+                    "Convert the retry output into card-assist chat JSON with non-empty actions.",
+                    lang,
+                )
+            retry_actions = _sanitize_actions(
+                retry_parsed.get("actions") if isinstance(retry_parsed, dict) else None
+            )
+            if retry_actions:
+                retry_reply = retry_parsed.get("reply") if isinstance(retry_parsed, dict) else ""
+                if isinstance(retry_reply, str) and retry_reply.strip():
+                    reply = retry_reply.strip()[:_CHAT_MAX_MESSAGE_CHARS]
+                actions = retry_actions
+                parsed = retry_parsed
 
     if not reply and not actions:
         # LLM 既没回话也没动作 —— 给前端一个兜底文案，不然聊天框就僵住了。
