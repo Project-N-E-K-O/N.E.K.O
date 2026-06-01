@@ -49,6 +49,7 @@ from plugin.plugins.study_companion.knowledge_contribution import (
 )
 from plugin.plugins.study_companion.knowledge_tracker import KnowledgeTracker
 from plugin.plugins.study_companion.models import (
+    AwarenessConfig,
     OcrSnapshot,
     StudyConfig,
     TutorReply,
@@ -65,6 +66,7 @@ from plugin.plugins.study_companion.study_capture_backends import (
     PyAutoGuiCaptureBackend,
 )
 from plugin.plugins.study_companion.study_ocr_pipeline import (
+    LightweightSnapshot,
     StudyCaptureProfile,
     StudyOcrPipeline,
 )
@@ -221,6 +223,69 @@ def _study_push_texts(ctx: _Ctx) -> list[str]:
 async def _drain_scheduled_events() -> None:
     await asyncio.sleep(0)
     await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_awareness_disabled_does_not_start_loop_on_startup(
+    tmp_path: Path,
+) -> None:
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "awareness": {"enabled": False}},
+            "study_companion": {"communication": {"enabled": False}},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+
+    result = await plugin.startup()
+
+    assert isinstance(result, Ok)
+    assert plugin.is_awareness_active() is False
+    assert plugin._awareness_task is None
+    await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_start_awareness_loop_runs_async_tick_and_pushes_context(
+    tmp_path: Path,
+) -> None:
+    class _FakeAwarenessPipeline:
+        def capture_lightweight(self) -> LightweightSnapshot:
+            return LightweightSnapshot(
+                status="ok",
+                captured_at="2026-06-01T00:00:00Z",
+                window_title="Quiz - Google Chrome",
+                app_type="web_page",
+                activity_type="question",
+                ocr_text_snippet="Question: Why?",
+                has_content_change=True,
+                thumbnail_phash="0" * 16,
+            )
+
+    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    plugin = StudyCompanionPlugin(ctx)
+    plugin._cfg = StudyConfig(
+        awareness=AwarenessConfig(
+            enabled=True,
+            snapshot_interval_seconds=60,
+            push_to_llm_mode="read",
+        )
+    )
+    plugin._ocr_pipeline = _FakeAwarenessPipeline()
+
+    plugin.start_awareness_loop()
+    await asyncio.sleep(0.05)
+
+    assert plugin.is_awareness_active() is True
+    assert any(message.get("source") == "awareness" for message in ctx.pushed_messages)
+    pushed = [message for message in ctx.pushed_messages if message.get("source") == "awareness"][0]
+    assert pushed["ai_behavior"] == "read"
+    assert "app_distribution" not in pushed["parts"][0]["text"]
+    plugin.stop_awareness_loop()
+    await plugin._await_awareness_stop()
+    assert plugin.is_awareness_active() is False
+    assert plugin._awareness_task is None
 
 
 class _FakeOcrBackend:

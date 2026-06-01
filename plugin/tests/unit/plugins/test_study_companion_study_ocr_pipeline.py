@@ -4,8 +4,9 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from PIL import Image
 
-from plugin.plugins.study_companion.models import StudyConfig
+from plugin.plugins.study_companion.models import AwarenessConfig, StudyConfig
 from plugin.plugins.study_companion.study_ocr_pipeline import (
     CAPTURE_BACKEND_DXCAM,
     StudyCaptureProfile,
@@ -117,3 +118,87 @@ def test_ocr_pipeline_capture_target_failure_and_fullscreen_exception(monkeypatc
     fullscreen = fullscreen_pipeline.capture_snapshot()
     assert fullscreen.status == "capture_failed"
     assert "screen denied" in fullscreen.diagnostic
+
+
+def test_ocr_pipeline_capture_lightweight_title_first_skips_ocr_and_limits_jpeg() -> None:
+    image = Image.new("RGB", (1600, 900), "white")
+    capture = _Capture(image)
+    pipeline = StudyOcrPipeline(
+        logger=_Logger(),
+        config=StudyConfig(
+            awareness=AwarenessConfig(
+                classify_mode="title_first",
+                image_max_bytes=50_000,
+            )
+        ),
+        ocr_backend=_Backend(RuntimeError("ocr should not run")),
+        capture_backend=capture,
+    )
+
+    snapshot = pipeline.capture_lightweight(
+        target={"hwnd": 1, "title": "main.py - Visual Studio Code"}
+    )
+    activity = snapshot.to_activity_snapshot()
+
+    assert snapshot.status == "ok"
+    assert snapshot.jpeg_bytes is not None
+    assert len(snapshot.jpeg_bytes) <= 50_000
+    assert snapshot.jpeg_base64
+    assert snapshot.app_type == "code_editor"
+    assert snapshot.activity_type == ""
+    assert activity is not None
+    assert activity.classify_method == "title"
+    assert capture.calls
+
+
+def test_ocr_pipeline_capture_lightweight_ocr_mode_writes_activity_type() -> None:
+    image = Image.new("RGB", (800, 600), "white")
+    pipeline = StudyOcrPipeline(
+        logger=_Logger(),
+        config=StudyConfig(
+            awareness=AwarenessConfig(classify_mode="ocr_text", image_max_bytes=80_000)
+        ),
+        ocr_backend=_Backend("Question: Why does this happen?"),
+        capture_backend=_Capture(image),
+    )
+
+    snapshot = pipeline.capture_lightweight(
+        target={"hwnd": 1, "title": "Quiz - Google Chrome"}
+    )
+    activity = snapshot.to_activity_snapshot()
+
+    assert snapshot.status == "ok"
+    assert snapshot.app_type == "web_page"
+    assert snapshot.activity_type == "question"
+    assert snapshot.ocr_text_snippet == "Question: Why does this happen?"
+    assert activity is not None
+    assert activity.classify_method == "both"
+    assert activity.activity_type == "question"
+
+
+def test_ocr_pipeline_capture_lightweight_content_change_and_failure_paths() -> None:
+    image = Image.new("RGB", (640, 360), "white")
+    pipeline = StudyOcrPipeline(
+        logger=_Logger(),
+        config=StudyConfig(),
+        ocr_backend=_Backend(""),
+        capture_backend=_Capture(image),
+    )
+
+    first = pipeline.capture_lightweight(target={"hwnd": 1, "title": "Notes - Obsidian"})
+    second = pipeline.capture_lightweight(target={"hwnd": 1, "title": "Notes - Obsidian"})
+
+    assert first.status == "ok"
+    assert first.has_content_change is True
+    assert second.status == "ok"
+    assert second.has_content_change is False
+
+    failing = StudyOcrPipeline(
+        logger=_Logger(),
+        config=StudyConfig(),
+        ocr_backend=_Backend(""),
+        capture_backend=_Capture(RuntimeError("capture failed")),
+    )
+    failed = failing.capture_lightweight(target={"hwnd": 1, "title": "Broken"})
+    assert failed.status == "capture_failed"
+    assert "capture failed" in failed.diagnostic

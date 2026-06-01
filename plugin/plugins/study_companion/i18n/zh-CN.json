@@ -190,5 +190,13 @@
     "ui.button.rating.hard":  "困难",
     "ui.button.rating.good":  "良好",
     "ui.button.rating.easy":  "简单",
-    "ui.label.name":  "名称"
+    "ui.label.name":  "名称",
+    "ui.awareness.title":  "环境感知",
+    "ui.awareness.enabled":  "启用屏幕环境感知",
+    "ui.awareness.snapshot_interval":  "截屏间隔",
+    "ui.awareness.context_window":  "上下文窗口",
+    "ui.awareness.classify_mode":  "分类模式",
+    "ui.awareness.push_mode":  "LLM 上下文模式",
+    "ui.awareness.privacy_note":  "截图只在内存中处理，不会写入磁盘。",
+    "ui.awareness.translation_pending":  ""
 }
