@@ -94,7 +94,7 @@ class _MemoryReviewEntriesMixin:
                     )
                 except Exception as bridge_exc:
                     self.logger.warning(
-                        "memory habit review progress degraded: {}", bridge_exc
+                        f"memory habit review progress degraded: {bridge_exc}"
                     )
                     payload["habit_progress"] = {
                         "applied": 0,
@@ -160,7 +160,7 @@ class _MemoryReviewEntriesMixin:
                     )
                 except Exception as bridge_exc:
                     self.logger.warning(
-                        "memory habit recitation progress degraded: {}", bridge_exc
+                        f"memory habit recitation progress degraded: {bridge_exc}"
                     )
                     payload["habit_progress"] = {
                         "applied": 0,

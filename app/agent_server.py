@@ -3409,6 +3409,24 @@ async def startup():
         await Modules.agent_bridge.start()
     except Exception as e:
         logger.warning(f"[Agent] Event bridge startup failed: {e}")
+    # 免费版 Agent 每日配额耗尽 → 节流通知前端弹提示（最多每 10 秒一次）。
+    # consume_agent_daily_quota 跑在 worker 线程里调这个回调，用 run_coroutine_threadsafe
+    # 把异步 ZeroMQ emit 调度回 agent_server 的事件循环；不 .result()，保持非阻塞。
+    try:
+        _quota_notify_loop = asyncio.get_running_loop()
+
+        def _notify_agent_quota_exceeded(used: int, limit: int) -> None:
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    _emit_main_event("agent_quota_exceeded", None, used=used, limit=limit),
+                    _quota_notify_loop,
+                )
+            except Exception as e:
+                logger.debug("[Agent] schedule agent_quota_exceeded emit failed: %s", e)
+
+        get_config_manager().register_quota_exceeded_notifier(_notify_agent_quota_exceeded)
+    except Exception as e:
+        logger.warning(f"[Agent] register quota-exceeded notifier failed: {e}")
     # Push initial server status so frontend can render Agent popup without waiting.
     _bump_state_revision()
 

@@ -374,7 +374,6 @@ MMDManager.prototype.setupFloatingButtons = function() {
 
     // 创建"请她回来"按钮
     const returnButtonContainer = this.createReturnButton();
-    this._setupReturnButtonDrag(returnButtonContainer);
     this._addReturnButtonBreathingAnimation();
 
     // 创建锁图标

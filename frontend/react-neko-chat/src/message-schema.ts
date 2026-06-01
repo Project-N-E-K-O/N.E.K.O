@@ -109,7 +109,16 @@ export const compactHistoryDragStatePayloadSchema = z.discriminatedUnion('active
   compactHistoryDragActiveStateSchema,
 ]);
 
-const chatSurfaceModeSchema = z.enum(['full', 'compact', 'minimized']);
+const chatSurfaceModeSchema = z.enum(['compact', 'minimized']);
+// Mixed-version hosts (or any direct NekoChatWindow.mount consumer) may still
+// pass the legacy three-state value 'full' from before the home chat collapsed
+// to compact/minimized. Accept it at the parse boundary and migrate to
+// 'compact' — mirroring the localStorage migration — so the chat window keeps
+// mounting instead of throwing a ZodError. The public output stays two-state.
+const chatSurfaceModeInputSchema = z.preprocess(
+  (value) => (value === 'full' ? 'compact' : value),
+  chatSurfaceModeSchema,
+);
 const compactChatStateSchema = z.enum(['default', 'options', 'input']);
 
 const galgameOptionSchema = z.object({
@@ -264,7 +273,7 @@ export const chatWindowPropsSchema = z.object({
   exportConversationButtonAriaLabel: z.string().optional(),
   composerHidden: z.boolean().optional(),
   composerDisabled: z.boolean().optional(),
-  chatSurfaceMode: chatSurfaceModeSchema.optional(),
+  chatSurfaceMode: chatSurfaceModeInputSchema.optional(),
   compactChatState: compactChatStateSchema.optional(),
   onCompactChatStateChange: z.function()
     .args(compactChatStateSchema)

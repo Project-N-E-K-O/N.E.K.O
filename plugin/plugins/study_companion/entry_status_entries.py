@@ -85,7 +85,12 @@ class _StatusEntriesMixin:
             default="Return whether memory deck habit integration is available.",
         ),
         input_schema={"type": "object", "properties": {}},
-        llm_result_fields=["available", "supports_deck_goals", "supports_deck_focus"],
+        llm_result_fields=[
+            "available",
+            "supports_deck_goals",
+            "supports_deck_focus",
+            "error",
+        ],
     )
     async def study_memory_habit_status(self, **_):
         try:
