@@ -11272,6 +11272,11 @@ function _companionEnterDesignMode(state, existingData, filledKeys) {
 }
 
 function _companionUpdateQuickAvailability(state) {
+    // companion 已 teardown（state.closed）后绝不再碰表单控件：teardown 已无条件把未落库新卡
+    // 的 Save 恢复了，迟到的 in-flight finally（如 _companionRunClarify 的 _companionSetBusy(false)）
+    // 不能借这里按「未落库新卡 + 非 chat 模式」规则把它又禁回去——否则 companion 已销毁、详情
+    // 面板还开着，用户再也点不动 Save（Codex #3333702549）。
+    if (!state || state.closed) return;
     // 详情表单 Save 的禁用集中在这里（busy 变化 + 每次 mode 切换都会调到，是唯一同步点）。
     // 防竞态：**未落库新卡**只要还在「问答 / 生成」流程（state.mode !== 'chat'）或正在打 LLM
     // （busy），就禁掉 Save——堵住「用户在草稿还没生成完的窗口里手动 Save 把新卡建出来」与
