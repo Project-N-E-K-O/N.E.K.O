@@ -30,6 +30,8 @@
     // Message deduplication (BC + postMessage deliver the same message twice)
     // =====================================================================
     var _processedMsgKeys = {};
+    var CROSS_WINDOW_IDLE_ACTIVITY_MIN_INTERVAL_MS = 250;
+    var _lastCrossWindowIdleActivityAt = 0;
 
     /**
      * Returns true if this action+timestamp was already processed (duplicate).
@@ -1795,6 +1797,35 @@
                         applyVoiceChatComposerHidden(vcEffectiveHidden);
                         break;
                     }
+                    case 'idle_activity': {
+                        var idleCurrentName = getCurrentLanlanName();
+                        if (event.data.lanlan_name && (!idleCurrentName || event.data.lanlan_name !== idleCurrentName)) break;
+                        dispatchCrossWindowIdleActivity({
+                            source: event.data.source || 'interaction',
+                            kind: event.data.kind === 'conversation' ? 'conversation' : 'interaction',
+                            via: 'broadcast-channel',
+                            timestamp: event.data.timestamp || Date.now()
+                        });
+                        break;
+                    }
+                    case 'idle_return_ball_state': {
+                        var idleReturnCurrentName = getCurrentLanlanName();
+                        if (event.data.lanlan_name && (!idleReturnCurrentName || event.data.lanlan_name !== idleReturnCurrentName)) break;
+                        dispatchIdleReturnBallState(event.data);
+                        break;
+                    }
+                    case 'idle_chat_minimized_state': {
+                        var idleChatCurrentName = getCurrentLanlanName();
+                        if (event.data.lanlan_name && (!idleChatCurrentName || event.data.lanlan_name !== idleChatCurrentName)) break;
+                        dispatchIdleChatMinimizedState(event.data);
+                        break;
+                    }
+                    case 'idle_chat_pair_move_bounds': {
+                        var pairMoveChatCurrentName = getCurrentLanlanName();
+                        if (event.data.lanlan_name && (!pairMoveChatCurrentName || event.data.lanlan_name !== pairMoveChatCurrentName)) break;
+                        dispatchIdleChatPairMoveBounds(event.data);
+                        break;
+                    }
                     case 'voice_config_switching': {
                         handleVoiceConfigSwitchingMessage(event.data);
                         break;
@@ -1957,6 +1988,8 @@
         console.log('[BroadcastChannel] 初始化失败，将使用 postMessage 后备方案:', e);
     }
 
+    bindStandaloneChatIdleActivityRelay();
+
     function applyYuiGuideChatLockState(disabled) {
         if (!document.body) {
             return;
@@ -2037,6 +2070,113 @@
     function isStandaloneChatPage() {
         var pathname = (window.location && window.location.pathname) || '';
         return pathname === '/chat' || pathname === '/chat/';
+    }
+
+    function dispatchCrossWindowIdleActivity(detail) {
+        window.dispatchEvent(new CustomEvent('neko:cross-window-user-activity', {
+            detail: Object.assign({
+                source: '',
+                kind: 'interaction',
+                via: 'broadcast-channel',
+                timestamp: Date.now()
+            }, detail || {})
+        }));
+    }
+
+    function dispatchIdleReturnBallState(detail) {
+        window.dispatchEvent(new CustomEvent('neko:idle-return-ball-state', {
+            detail: Object.assign({
+                action: 'idle_return_ball_state',
+                source: '',
+                reason: '',
+                visible: false,
+                tier: 'none',
+                screenRect: null,
+                timestamp: Date.now()
+            }, detail || {})
+        }));
+    }
+
+    function dispatchIdleChatMinimizedState(detail) {
+        window.dispatchEvent(new CustomEvent('neko:idle-chat-minimized-state', {
+            detail: Object.assign({
+                action: 'idle_chat_minimized_state',
+                source: '',
+                reason: '',
+                minimized: false,
+                screenRect: null,
+                timestamp: Date.now(),
+                via: 'broadcast-channel'
+            }, detail || {}, {
+                via: 'broadcast-channel'
+            })
+        }));
+    }
+
+    function dispatchIdleChatPairMoveBounds(detail) {
+        window.dispatchEvent(new CustomEvent('neko:idle-chat-pair-move-bounds', {
+            detail: Object.assign({
+                action: 'idle_chat_pair_move_bounds',
+                source: '',
+                screenRect: null,
+                timestamp: Date.now(),
+                via: 'broadcast-channel'
+            }, detail || {}, {
+                via: 'broadcast-channel'
+            })
+        }));
+    }
+
+    function broadcastCrossWindowIdleActivity(source, kind) {
+        if (!isStandaloneChatPage()) return;
+
+        var now = Date.now();
+        if (now - _lastCrossWindowIdleActivityAt < CROSS_WINDOW_IDLE_ACTIVITY_MIN_INTERVAL_MS) {
+            return;
+        }
+        _lastCrossWindowIdleActivityAt = now;
+
+        var payload = {
+            action: 'idle_activity',
+            source: source || 'interaction',
+            kind: kind === 'conversation' ? 'conversation' : 'interaction',
+            lanlan_name: getCurrentLanlanName(),
+            timestamp: now
+        };
+
+        if (nekoBroadcastChannel) {
+            nekoBroadcastChannel.postMessage(payload);
+            return;
+        }
+
+        if (window.opener && !window.opener.closed) {
+            try {
+                window.opener.postMessage(payload, window.location.origin);
+            } catch (_) { /* noop */ }
+        }
+    }
+
+    function bindStandaloneChatIdleActivityRelay() {
+        if (!isStandaloneChatPage()) return;
+
+        document.addEventListener('pointerdown', function () {
+            broadcastCrossWindowIdleActivity('pointerdown');
+        }, true);
+        document.addEventListener('keydown', function () {
+            broadcastCrossWindowIdleActivity('keydown');
+        }, true);
+        document.addEventListener('touchstart', function () {
+            broadcastCrossWindowIdleActivity('touchstart');
+        }, { capture: true, passive: true });
+        document.addEventListener('wheel', function () {
+            broadcastCrossWindowIdleActivity('wheel');
+        }, { capture: true, passive: true });
+        window.addEventListener('neko:user-content-sent', function () {
+            broadcastCrossWindowIdleActivity('user-content-sent', 'conversation');
+        });
+        window.addEventListener('neko:voice-session-started', function () {
+            broadcastCrossWindowIdleActivity('voice-session-started', 'conversation');
+        });
     }
 
     var yuiGuideChatSpotlightKind = '';
@@ -2156,6 +2296,18 @@
         });
     });
 
+    window.addEventListener('neko:idle-chat-minimized-state', function (evt) {
+        var detail = evt && evt.detail && typeof evt.detail === 'object' ? evt.detail : null;
+        if (!detail || detail.via === 'broadcast-channel') return;
+        if (!nekoBroadcastChannel) return;
+        nekoBroadcastChannel.postMessage(Object.assign({
+            action: 'idle_chat_minimized_state',
+            source: 'chat-window',
+            lanlan_name: getCurrentLanlanName(),
+            timestamp: Date.now()
+        }, detail));
+    });
+
     // Chat 窗口初始化时，向 Pet 窗口请求当前已缓存的头像
     if (isStandaloneChatPage() && nekoBroadcastChannel) {
         var initialLanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
@@ -2234,6 +2386,30 @@
             return;
         }
         handleVoiceConfigSwitchingMessage(data);
+    });
+
+    window.addEventListener('message', function (event) {
+        if (event.origin !== window.location.origin) {
+            console.warn('[Security] 拒绝来自不同源的 idle_activity 消息:', event.origin);
+            return;
+        }
+        var data = event.data || {};
+        if (data.action !== 'idle_activity' && data.type !== 'idle_activity') {
+            return;
+        }
+        if (isDuplicateMessage('idle_activity', data.timestamp)) {
+            return;
+        }
+        var idleCurrentName = getCurrentLanlanName();
+        if (data.lanlan_name && (!idleCurrentName || data.lanlan_name !== idleCurrentName)) {
+            return;
+        }
+        dispatchCrossWindowIdleActivity({
+            source: data.source || 'interaction',
+            kind: data.kind === 'conversation' ? 'conversation' : 'interaction',
+            via: 'post-message',
+            timestamp: data.timestamp || Date.now()
+        });
     });
 
     // N.E.K.O.-PC 多窗口兜底：由 Electron 主进程广播音色切换准备态

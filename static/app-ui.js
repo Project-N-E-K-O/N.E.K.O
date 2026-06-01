@@ -1445,8 +1445,10 @@
     //     (app.js lines 6078-6785)
     // ================================================================
 
-    const MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE = 80;
+    const MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE = 160;
     let multiWindowReturnBallDragState = null;
+    let idleReturnBallDesktopDragStateFrame = 0;
+    let idleReturnBallDesktopDragStatePending = null;
 
     function waitForAnimationFrames(count) {
         const remaining = Math.max(1, Number(count) || 1);
@@ -1575,8 +1577,10 @@
         container.style.bottom = savedStyle.bottom;
         container.style.transform = savedStyle.transform;
         container.style.opacity = savedStyle.opacity;
+        container.style.visibility = savedStyle.visibility;
         container.style.transition = savedStyle.transition;
         container.style.willChange = savedStyle.willChange;
+        container.style.removeProperty('--neko-ball-drag-size');
         dragState.savedBallStyle = null;
         return true;
     }
@@ -1584,8 +1588,10 @@
     function resetReturnBallTemporaryStyle(container) {
         if (!container) return;
         container.style.removeProperty('opacity');
+        container.style.removeProperty('visibility');
         container.style.removeProperty('transition');
         container.style.removeProperty('will-change');
+        container.style.removeProperty('--neko-ball-drag-size');
         container.setAttribute('data-dragging', 'false');
     }
 
@@ -1598,6 +1604,7 @@
         container.style.display = 'none';
         container.style.pointerEvents = 'none';
         container.style.removeProperty('visibility');
+        scheduleIdleReturnBallDesktopBridge('return-ball-hide', container);
     }
 
     function positionReturnBallContainer(container, anchorRect) {
@@ -1636,6 +1643,10 @@
         container.style.visibility = 'hidden';
         container.style.pointerEvents = 'none';
         positionReturnBallContainer(container, anchorRect);
+        container.style.opacity = '0';
+        container.style.transform = 'translate3d(0, 8px, 0) scale(0.94)';
+        container.style.transition = 'opacity 420ms cubic-bezier(0.22, 1, 0.36, 1), transform 520ms cubic-bezier(0.22, 1, 0.36, 1)';
+        container.style.willChange = 'opacity, transform';
 
         void container.offsetWidth;
 
@@ -1645,12 +1656,134 @@
             if (container.style.display === 'none') return;
             container.style.visibility = 'visible';
             container.style.pointerEvents = 'auto';
+            container.style.opacity = '1';
+            container.style.transform = 'none';
+            scheduleIdleReturnBallDesktopBridge('return-ball-revealed', container);
         });
         container.__nekoReturnBallRevealFrame = revealFrameId;
+        scheduleIdleReturnBallDesktopBridge('return-ball-show', container);
         return container;
     }
 
+    function getVisibleIdleReturnBallContainer() {
+        return document.querySelector('[id$="-return-button-container"][data-neko-return-visible="true"]');
+    }
+
+    function getIdleReturnBallScreenRect(container) {
+        if (!container || typeof container.getBoundingClientRect !== 'function') return null;
+        const rect = container.getBoundingClientRect();
+        if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+        const screenLeft = Number.isFinite(window.screenX) ? window.screenX : 0;
+        const screenTop = Number.isFinite(window.screenY) ? window.screenY : 0;
+        return {
+            left: Math.round(screenLeft + rect.left),
+            top: Math.round(screenTop + rect.top),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+            right: Math.round(screenLeft + rect.left + rect.width),
+            bottom: Math.round(screenTop + rect.top + rect.height)
+        };
+    }
+
+    function canPostIdleReturnBallDesktopState() {
+        const body = document.body;
+        return !(body && body.classList && body.classList.contains('electron-chat-window'));
+    }
+
+    function postIdleReturnBallDesktopState(reason, container, overrideScreenRect) {
+        if (!canPostIdleReturnBallDesktopState()) return;
+        const target = container || getVisibleIdleReturnBallContainer();
+        const visible = !!(target && target.getAttribute('data-neko-return-visible') === 'true' && target.style.display !== 'none');
+        const tier = visible
+            ? (target.getAttribute('data-neko-idle-tier') || 'none')
+            : 'none';
+        const screenRect = overrideScreenRect || (visible ? getIdleReturnBallScreenRect(target) : null);
+        const payload = {
+            action: 'idle_return_ball_state',
+            source: 'pet-window',
+            reason: reason || 'sync',
+            visible: visible,
+            tier: tier,
+            screenRect: visible ? screenRect : null,
+            lanlan_name: (window.lanlan_config && window.lanlan_config.lanlan_name) || '',
+            timestamp: Date.now()
+        };
+
+        window.dispatchEvent(new CustomEvent('neko:idle-return-ball-state', { detail: payload }));
+
+        const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
+        if (channel && typeof channel.postMessage === 'function') {
+            try {
+                channel.postMessage(payload);
+            } catch (_) {}
+        }
+    }
+
+    function scheduleIdleReturnBallDesktopBridge(reason, container, overrideScreenRect) {
+        if (!canPostIdleReturnBallDesktopState()) return;
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                postIdleReturnBallDesktopState(reason, container, overrideScreenRect);
+            });
+        });
+    }
+
+    function clearIdleReturnBallDesktopDragStateFrame() {
+        if (idleReturnBallDesktopDragStateFrame) {
+            cancelAnimationFrame(idleReturnBallDesktopDragStateFrame);
+            idleReturnBallDesktopDragStateFrame = 0;
+        }
+        idleReturnBallDesktopDragStatePending = null;
+    }
+
+    function scheduleIdleReturnBallDesktopDragState(container, overrideScreenRect) {
+        if (!canPostIdleReturnBallDesktopState()) return;
+        idleReturnBallDesktopDragStatePending = {
+            container: container,
+            overrideScreenRect: overrideScreenRect
+        };
+        if (idleReturnBallDesktopDragStateFrame) return;
+        idleReturnBallDesktopDragStateFrame = requestAnimationFrame(() => {
+            idleReturnBallDesktopDragStateFrame = 0;
+            const pending = idleReturnBallDesktopDragStatePending;
+            idleReturnBallDesktopDragStatePending = null;
+            if (!pending) return;
+            postIdleReturnBallDesktopState(
+                'return-ball-dragging',
+                pending.container,
+                pending.overrideScreenRect
+            );
+        });
+    }
+
+    function getReturnBallDragScreenRect(screenX, screenY, width, height) {
+        const w = Math.max(1, Math.round(width || 64));
+        const h = Math.max(1, Math.round(height || 64));
+        const left = Math.round(screenX - w / 2);
+        const top = Math.round(screenY - h / 2);
+        return {
+            left: left,
+            top: top,
+            width: w,
+            height: h,
+            right: left + w,
+            bottom: top + h
+        };
+    }
+
+    window.addEventListener('neko:auto-goodbye:state-change', (event) => {
+        const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
+        if (!detail || detail.type !== 'visual-tier') return;
+        scheduleIdleReturnBallDesktopBridge(
+            detail.source === 'return-ball-drag-demotion' ? 'return-ball-drag-demotion' : 'visual-tier'
+        );
+    });
+    window.addEventListener('resize', () => {
+        scheduleIdleReturnBallDesktopBridge('viewport-resize');
+    });
+
     function clearMultiWindowReturnBallDeferredWork(state) {
+        clearIdleReturnBallDesktopDragStateFrame();
         if (!state) return;
         if (state.viewportWaitFallbackTimer) {
             clearTimeout(state.viewportWaitFallbackTimer);
@@ -1743,6 +1876,17 @@
             restoreSavedReturnBallStyle(container, state);
         }
 
+        function revealReturnBallDragWindow() {
+            if (!window.nekoPetDrag || typeof window.nekoPetDrag.reveal !== 'function') {
+                return;
+            }
+            try {
+                void window.nekoPetDrag.reveal();
+            } catch (error) {
+                console.warn('[App] 返回球拖拽渲染完成后恢复窗口显示失败:', error);
+            }
+        }
+
         function getSavedBallStyleValue(key) {
             return state.savedBallStyle ? state.savedBallStyle[key] : '';
         }
@@ -1802,8 +1946,9 @@
             clearMultiWindowReturnBallDeferredWork(state);
             const fallbackMs = options && Number.isFinite(options.fallbackMs)
                 ? options.fallbackMs
-                : 120;
+                : 600;
             const fallbackDeadline = Date.now() + Math.max(0, fallbackMs);
+            const hardFallbackDeadline = fallbackDeadline + Math.max(1000, Math.max(0, fallbackMs) * 2);
 
             const runWhenStable = () => {
                 requestAnimationFrame(() => {
@@ -1830,19 +1975,34 @@
                 void tryFinish();
             };
             window.addEventListener('resize', state.viewportWaitOnResize);
+            let timeoutWarned = false;
             const pollViewportRestore = () => {
                 if (!isActiveDragToken(dragToken)) return;
                 if (tryFinish()) return;
 
                 const remainingMs = fallbackDeadline - Date.now();
                 if (remainingMs <= 0) {
-                    console.warn(
-                        '[pollViewportRestore] waitForViewportSize timed out — dropping deferred work (click may be lost).',
-                        'dragToken:', state.dragSessionToken,
-                        'fallbackMs:', fallbackMs,
-                        'fallbackDeadline:', fallbackDeadline
-                    );
-                    clearMultiWindowReturnBallDeferredWork(state);
+                    if (Date.now() >= hardFallbackDeadline) {
+                        console.warn(
+                            '[pollViewportRestore] waitForViewportSize hard timeout; continuing best-effort cleanup.',
+                            'dragToken:', state.dragSessionToken,
+                            'fallbackMs:', fallbackMs,
+                            'fallbackDeadline:', fallbackDeadline
+                        );
+                        clearMultiWindowReturnBallDeferredWork(state);
+                        runWhenStable();
+                        return;
+                    }
+                    if (!timeoutWarned) {
+                        timeoutWarned = true;
+                        console.warn(
+                            '[pollViewportRestore] waitForViewportSize timed out; keeping return-ball hidden until viewport is restored.',
+                            'dragToken:', state.dragSessionToken,
+                            'fallbackMs:', fallbackMs,
+                            'fallbackDeadline:', fallbackDeadline
+                        );
+                    }
+                    state.viewportWaitFallbackTimer = setTimeout(pollViewportRestore, 50);
                     return;
                 }
 
@@ -1887,6 +2047,18 @@
             state.dragSessionToken += 1;
             const dragToken = state.dragSessionToken;
 
+            const dragStarted = window.nekoPetDrag.start(screenX, screenY);
+            if (dragStarted === false) {
+                return;
+            }
+
+            window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
+                detail: {
+                    reason: 'return-ball-drag-start',
+                    container: container
+                }
+            }));
+
             state.isDragging = true;
             state.hasMoved = false;
             state.startScreenX = screenX;
@@ -1906,6 +2078,7 @@
                 bottom: container.style.bottom,
                 transform: container.style.transform,
                 opacity: container.style.opacity,
+                visibility: container.style.visibility,
                 transition: container.style.transition,
                 willChange: container.style.willChange,
             };
@@ -1916,6 +2089,7 @@
             // 先隐藏球再移动到居中位置，防止闪烁
             container.style.transition = 'none';
             container.style.opacity = '0';
+            container.style.setProperty('--neko-ball-drag-size', `${state.savedBallWidth}px`);
 
             container.style.left = `${centeredLeft}px`;
             container.style.top = `${centeredTop}px`;
@@ -1933,14 +2107,15 @@
                     'body[data-neko-ball-drag], body[data-neko-ball-drag] * { background:transparent!important; background-color:transparent!important; box-shadow:none!important; }',
                     'body[data-neko-ball-drag] > *:not([id$="-return-button-container"]) { display:none!important; }',
                     'body[data-neko-ball-drag] * { transition:none!important; animation:none!important; }',
+                    'body[data-neko-ball-drag] .neko-idle-return-btn { --neko-idle-return-size:var(--neko-ball-drag-size)!important; width:var(--neko-ball-drag-size)!important; height:var(--neko-ball-drag-size)!important; min-width:var(--neko-ball-drag-size)!important; min-height:var(--neko-ball-drag-size)!important; max-width:var(--neko-ball-drag-size)!important; max-height:var(--neko-ball-drag-size)!important; }',
+                    'body[data-neko-ball-drag] .neko-idle-return-art, body[data-neko-ball-drag] .neko-idle-return-art-next { width:100%!important; height:100%!important; object-fit:contain!important; object-position:center!important; }',
                 ].join('\n');
                 document.head.appendChild(styleEl);
             }
             document.body.dataset.nekoBallDrag = '1';
-            window.nekoPetDrag.start(screenX, screenY);
 
             // dragStart 的 shrink 通过异步 IPC 落到主进程，不能再靠固定帧数猜测
-            // 80x80 视口已经生效；否则返回球会按临时 left/top 在原窗口左侧闪一帧。
+            // 拖拽视口已经生效；否则返回球会按临时 left/top 在原窗口左侧闪一帧。
             waitForViewportSize(
                 dragToken,
                 MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE,
@@ -1948,9 +2123,10 @@
                 () => {
                     if (!state.isDragging || !isActiveDragToken(dragToken)) return;
                     container.style.opacity = getSavedBallStyleValue('opacity');
+                    container.style.visibility = getSavedBallStyleValue('visibility');
                     container.style.willChange = 'opacity';
                 },
-                { fallbackMs: 160 }
+                { fallbackMs: 600 }
             );
 
             if (event) {
@@ -1963,13 +2139,30 @@
             if (!state.isDragging) return;
             state.releaseScreenX = screenX;
             state.releaseScreenY = screenY;
-            if (state.hasMoved) return;
 
             const dx = screenX - state.startScreenX;
             const dy = screenY - state.startScreenY;
-            if (Math.abs(dx) > CLICK_THRESHOLD || Math.abs(dy) > CLICK_THRESHOLD) {
+            const movedPastClickThreshold = Math.abs(dx) > CLICK_THRESHOLD || Math.abs(dy) > CLICK_THRESHOLD;
+            if (!state.hasMoved && movedPastClickThreshold) {
                 state.hasMoved = true;
                 container.setAttribute('data-dragging', 'true');
+                window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
+                    detail: {
+                        reason: 'return-ball-drag-active',
+                        container: container
+                    }
+                }));
+            }
+            if (state.hasMoved) {
+                scheduleIdleReturnBallDesktopDragState(
+                    container,
+                    getReturnBallDragScreenRect(
+                        screenX,
+                        screenY,
+                        state.savedBallWidth,
+                        state.savedBallHeight
+                    )
+                );
             }
         }
 
@@ -1985,6 +2178,8 @@
             // 先瞬间隐藏球，防止恢复 UI 时球在 (8,8) 闪烁
             container.style.transition = 'none';
             container.style.opacity = '0';
+            container.style.visibility = 'hidden';
+            void container.offsetWidth;
 
             if (!state.hasMoved) {
                 container.setAttribute('data-dragging', 'true');
@@ -2001,12 +2196,18 @@
                     restoreSavedBallStyle();
                     delete document.body.dataset.nekoBallDrag;
                     container.setAttribute('data-dragging', 'false');
+                    scheduleIdleReturnBallDesktopBridge('return-ball-drag-click', container);
+                    revealReturnBallDragWindow();
                     dispatchReturnBallClick();
                 });
                 return;
             }
             const finalBounds = await resolveFinalWindowBounds(screenX, screenY, dragToken);
             if (!isActiveDragToken(dragToken)) return;
+            const movedDistancePx = Math.hypot(
+                state.releaseScreenX - state.startScreenX,
+                state.releaseScreenY - state.startScreenY
+            );
 
             let shouldRestoreSavedBallStyle = false;
             if (finalBounds) {
@@ -2033,14 +2234,33 @@
                     restoreSavedBallStyle();
                     container.setAttribute('data-dragging', 'false');
                     delete document.body.dataset.nekoBallDrag;
+                    scheduleIdleReturnBallDesktopBridge('return-ball-drag-end', container);
+                    window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
+                        detail: {
+                            reason: 'return-ball-drag-end',
+                            container: container,
+                            movedDistancePx: movedDistancePx
+                        }
+                    }));
+                    revealReturnBallDragWindow();
                     return;
                 }
                 // 先同步恢复球 opacity，再删除 nekoBallDrag 显示页面内容，
                 // 避免 1 帧"页面可见但球不可见"的闪烁
                 container.style.opacity = getSavedBallStyleValue('opacity');
+                container.style.visibility = getSavedBallStyleValue('visibility');
                 container.style.willChange = getSavedBallStyleValue('willChange');
                 container.setAttribute('data-dragging', 'false');
                 delete document.body.dataset.nekoBallDrag;
+                scheduleIdleReturnBallDesktopBridge('return-ball-drag-end', container);
+                window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
+                    detail: {
+                        reason: 'return-ball-drag-end',
+                        container: container,
+                        movedDistancePx: movedDistancePx
+                    }
+                }));
+                revealReturnBallDragWindow();
                 // 延迟恢复 transition，避免恢复瞬间触发动画
                 state.transitionCleanupTimer = setTimeout(() => {
                     state.transitionCleanupTimer = null;

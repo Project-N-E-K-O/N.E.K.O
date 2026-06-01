@@ -41,6 +41,7 @@ CHARACTER_SYSTEM_RESERVED_FIELDS = (
     "lighting",
     "vrm_rotation",
     "live2d_item_id",
+    "live2d_idle_animation",
     "item_id",
     "idleAnimation",
     "idleAnimations",
