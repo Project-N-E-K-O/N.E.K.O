@@ -10857,6 +10857,16 @@ function _companionSetMinimized(state, minimized) {
 
 function _companionTeardown(state) {
     if (!state) return;
+    // ⚠ 先把 _companionSetBusy 给「未落库新卡」禁掉的 Save 无条件恢复：用户在 LLM 请求
+    // 还在飞时点 × 关掉 companion = 主动结束 AI 流程，但 teardown 只置 closed / 摘监听、
+    // 迟到响应的 guard 又会直接 return，于是 Save 会一直灰着直到那次请求超时（最多 60s）。
+    // 这里在关闭时强制放开，避免表单还在页面上却存不了（Codex #3331627614 / CR #3331629488）。
+    try {
+        if (state.form) {
+            const saveBtn = state.form.querySelector('#save-button');
+            if (saveBtn) saveBtn.disabled = false;
+        }
+    } catch (_) { /* form 可能已 detach，忽略 */ }
     // closed flag：所有 in-flight 的 await 拿到 response 后会 check 这个，
     // 避免 companion 已经关掉/切到别只猫娘了，迟到的 LLM 结果还在静默改表单。
     state.closed = true;
