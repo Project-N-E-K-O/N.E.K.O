@@ -512,6 +512,32 @@
         }));
     }
 
+    function enforceHomeTutorialFeatureSuppression(reason) {
+        if (!isHomePage()) {
+            return;
+        }
+        const suppression = state.featureSuppression;
+        if (!suppression.active) {
+            beginHomeTutorialFeatureSuppression(reason || 'tutorial-enforced');
+            return;
+        }
+
+        setGalgameState(false);
+        const proactiveOff = {};
+        HOME_TUTORIAL_PROACTIVE_KEYS.forEach(function (key) {
+            proactiveOff[key] = false;
+        });
+        applyProactiveState(proactiveOff);
+
+        window.dispatchEvent(new CustomEvent('neko:home-tutorial-features-suppressed', {
+            detail: {
+                active: true,
+                enforced: true,
+                reason: reason || (suppression.snapshot && suppression.snapshot.reason) || 'tutorial-enforced',
+            },
+        }));
+    }
+
     function endHomeTutorialFeatureSuppression(reason) {
         const suppression = state.featureSuppression;
         if (!suppression.active && !suppression.snapshot) {
@@ -577,12 +603,14 @@
     }
 
     mod.beginHomeTutorialFeatureSuppression = beginHomeTutorialFeatureSuppression;
+    mod.enforceHomeTutorialFeatureSuppression = enforceHomeTutorialFeatureSuppression;
     mod.endHomeTutorialFeatureSuppression = endHomeTutorialFeatureSuppression;
     mod.isHomeTutorialFeatureSuppressionActive = function () {
         return !!state.featureSuppression.active;
     };
     window.NekoHomeTutorialFeatureController = {
         begin: beginHomeTutorialFeatureSuppression,
+        enforce: enforceHomeTutorialFeatureSuppression,
         end: endHomeTutorialFeatureSuppression,
         isActive: mod.isHomeTutorialFeatureSuppressionActive,
     };

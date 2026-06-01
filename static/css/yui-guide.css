@@ -1,8 +1,9 @@
 .yui-guide-overlay {
   position: fixed;
   inset: 0;
-  z-index: 100006;
+  z-index: 2147483000;
   pointer-events: none;
+  isolation: isolate;
   --yui-guide-surface: rgba(255, 252, 248, 0.96);
   --yui-guide-surface-strong: rgba(255, 244, 235, 0.98);
   --yui-guide-text: #382b22;
@@ -724,7 +725,7 @@ html.dark .yui-guide-bubble[data-bubble-variant='plugin-manual-open'] .yui-guide
   position: fixed;
   top: 0;
   left: 0;
-  z-index: 1;
+  z-index: 40;
   opacity: 0;
   transition-property: transform;
   transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
@@ -753,7 +754,7 @@ html.dark .yui-guide-bubble[data-bubble-variant='plugin-manual-open'] .yui-guide
 .yui-guide-cursor-trail-layer {
   position: fixed;
   inset: 0;
-  z-index: 1;
+  z-index: 39;
   width: 100vw;
   height: 100vh;
   pointer-events: none;

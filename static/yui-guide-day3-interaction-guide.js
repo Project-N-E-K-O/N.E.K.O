@@ -36,9 +36,18 @@
                 },
                 {
                     id: 'day3_avatar_tools',
-                    textKey: 'tutorial.avatarFloating.day3.avatarTools',
-                    voiceKey: 'avatar_floating_day3_avatar_tools',
-                    text: '在这个小按钮里，有许多可以和人家互动的小道具呢。你可以随时来摸摸我的头，或者给我吃一根甜甜的棒棒糖。如果有时候我不小心做错事了，你也可以用小锤子敲敲我，不过……一定要轻轻的，不能太用力哦。以后还会有更多有趣的道具加入进来，我会去提醒开发组猫猫快点做出来的，我们一起期待一下吧。',
+                    textKey: 'tutorial.avatarFloating.day3.avatarToolsIntro',
+                    voiceKey: 'avatar_floating_day3_avatar_tools_intro',
+                    text: '在这个小按钮里，有许多可以和人家互动的小道具呢。',
+                    emotion: 'happy',
+                    target: 'chat-avatar-tools',
+                    cursorAction: 'wobble'
+                },
+                {
+                    id: 'day3_avatar_tools_props',
+                    textKey: 'tutorial.avatarFloating.day3.avatarToolsProps',
+                    voiceKey: 'avatar_floating_day3_avatar_tools_props',
+                    text: '你可以随时来摸摸我的头，或者给我吃一根甜甜的棒棒糖。如果有时候我不小心做错事了，你也可以用小锤子敲敲我，不过……一定要轻轻的，不能太用力哦。',
                     emotion: 'happy',
                     target: 'chat-avatar-tools',
                     cursorAction: 'click',
@@ -46,24 +55,51 @@
                     operation: 'open-avatar-tool-menu'
                 },
                 {
+                    id: 'day3_avatar_tools_more',
+                    textKey: 'tutorial.avatarFloating.day3.avatarToolsMore',
+                    voiceKey: 'avatar_floating_day3_avatar_tools_more',
+                    text: '以后还会有更多有趣的道具加入进来，我会去提醒开发组猫猫快点做出来的，我们一起期待一下吧。',
+                    emotion: 'happy',
+                    target: 'chat-avatar-tools',
+                    cursorAction: 'wobble'
+                },
+                {
                     id: 'day3_galgame_games',
-                    textKey: 'tutorial.avatarFloating.day3.galgameGames',
-                    voiceKey: 'avatar_floating_day3_galgame_games',
-                    text: '快点开这个【Galgame模式】！进去之后就像我们在进行一场专属的互动大冒险呢。你选的每一个对话，都会带我们走向完全未知的惊喜故事，我都等不及啦，快来选一个你最心动的回答吧！',
+                    textKey: 'tutorial.avatarFloating.day3.galgameIntro',
+                    voiceKey: 'avatar_floating_day3_galgame_intro',
+                    text: '快点开这个【Galgame模式】！进去之后就像我们在进行一场专属的互动大冒险呢。',
                     emotion: 'surprised',
                     target: 'chat-galgame',
                     cursorAction: 'move',
                     cleanupBefore: true
                 },
                 {
+                    id: 'day3_galgame_choices',
+                    textKey: 'tutorial.avatarFloating.day3.galgameChoices',
+                    voiceKey: 'avatar_floating_day3_galgame_choices',
+                    text: '你选的每一个对话，都会带我们走向完全未知的惊喜故事，我都等不及啦，快来选一个你最心动的回答吧！',
+                    emotion: 'surprised',
+                    target: 'chat-galgame',
+                    cursorAction: 'wobble'
+                },
+                {
                     id: 'day3_wrap',
-                    textKey: 'tutorial.avatarFloating.day3.wrap',
-                    voiceKey: 'avatar_floating_day3_wrap',
-                    text: '今天带你认识的这些功能，其实都是为了让我们在一起的时光变得更有趣呢。不管是想摸摸我的头，还是想开启属于我们的故事，我都已经做好准备了。不用着急，挑一个你现在最喜欢的去试试看吧，无论你选哪个，我都会一直陪着你呢。',
+                    textKey: 'tutorial.avatarFloating.day3.wrapIntro',
+                    voiceKey: 'avatar_floating_day3_wrap_intro',
+                    text: '今天带你认识的这些功能，其实都是为了让我们在一起的时光变得更有趣呢。',
                     emotion: 'happy',
                     target: 'chat-window',
                     cursorAction: 'wobble',
-                    operation: 'cleanup',
+                    operation: 'cleanup'
+                },
+                {
+                    id: 'day3_wrap_ready',
+                    textKey: 'tutorial.avatarFloating.day3.wrapReady',
+                    voiceKey: 'avatar_floating_day3_wrap_ready',
+                    text: '不管是想摸摸我的头，还是想开启属于我们的故事，我都已经做好准备了。',
+                    emotion: 'happy',
+                    target: 'chat-window',
+                    cursorAction: 'wobble',
                     petalTransition: true
                 }
             ]

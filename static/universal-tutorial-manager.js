@@ -1113,19 +1113,30 @@ class UniversalTutorialManager {
         const rawReason = this.normalizeTutorialEndRawReason(
             endMeta.rawReason || endMeta.reason || 'destroy'
         );
+        const message = {
+            action: 'yui_guide_request_termination',
+            sourcePage: yuiGuidePageKey,
+            targetPage: 'home',
+            reason: rawReason,
+            tutorialReason: rawReason,
+            timestamp: Date.now()
+        };
         const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
         if (channel && typeof channel.postMessage === 'function') {
             try {
-                channel.postMessage({
-                    action: 'yui_guide_request_termination',
-                    sourcePage: yuiGuidePageKey,
-                    targetPage: 'home',
-                    reason: rawReason,
-                    tutorialReason: rawReason,
-                    timestamp: Date.now()
-                });
+                channel.postMessage(message);
             } catch (error) {
                 console.warn('[Tutorial] 广播 Yui Guide 跨页终止请求失败:', error);
+            }
+        }
+        if (
+            window.nekoTutorialOverlay
+            && typeof window.nekoTutorialOverlay.relayToPet === 'function'
+        ) {
+            try {
+                window.nekoTutorialOverlay.relayToPet(message);
+            } catch (error) {
+                console.warn('[Tutorial] 原生转发 Yui Guide 跨页终止请求失败:', error);
             }
         }
     }

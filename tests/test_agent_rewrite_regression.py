@@ -421,7 +421,7 @@ def test_yui_guide_overlay_supports_progress_meta_and_viewport_placement():
     for expected in (
         "window.TutorialHighlightController",
         "'[id$=\"-btn-mic\"], [id$=\"-btn-screen\"], [id$=\"-btn-agent\"],",
-        "'[id$=\"-btn-settings\"], [id$=\"-btn-goodbye\"], [id$=\"-btn-return\"], [id$=\"-lock-icon\"],",
+        "'[id$=\"-btn-settings\"], [id$=\"-btn-goodbye\"], [id$=\"-btn-return\"], [id$=\"-lock-icon\"], '",
         "applyCircularFloatingButtonSpotlightHint(element)",
         "data-yui-guide-spotlight-geometry",
         "data-yui-guide-virtual-spotlight",
@@ -479,6 +479,15 @@ def test_yui_takeover_overlay_keeps_window_hittable_during_plugin_preview_cleanu
         "background: transparent;",
     ):
         assert expected in style_source
+
+
+def test_yui_guide_dom_fallback_cursor_layer_stays_above_page_controls():
+    style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
+
+    assert "z-index: 2147483000;" in style_source
+    assert "isolation: isolate;" in style_source
+    assert ".yui-guide-cursor-shell {\n  position: fixed;\n  top: 0;\n  left: 0;\n  z-index: 40;" in style_source
+    assert ".yui-guide-cursor-trail-layer {\n  position: fixed;\n  inset: 0;\n  z-index: 39;" in style_source
 
 
 def test_plugin_dashboard_skip_contract_uses_skip_request_without_bypass_event():
@@ -652,9 +661,10 @@ def test_yui_guide_cat_paw_click_state_is_visible_before_actions():
         assert expected in overlay_source
 
     for expected in (
-        "this.cursor.click(clickVisibleMs)",
-        "await this.waitForSceneDelay(clickVisibleMs)",
-        "await this.clickCursorAndWait(DEFAULT_CURSOR_CLICK_VISIBLE_MS)",
+        "this.cursor.click(visibleMs)",
+        "return await this.waitForSceneDelay(visibleMs)",
+        "async runActionWithCursorClick(holdMs, action)",
+        "const clickPromise = this.clickCursorAndWait(holdMs)",
     ):
         assert expected in director_source
 
@@ -1074,8 +1084,7 @@ def test_yui_interrupt_sessions_keep_scope_in_home_adapter_and_gate_runtime_reen
     assert "if (this.guideInterruptPresentationActive) {" in director_source
     assert "this.emotionBridge.clear();" in director_source
     assert "startGuideMouthMotion(voiceKey, options)" in director_source
-    assert "performance.emotion || 'surprised'" in interrupt_source
-    assert "performance.emotion || 'angry'" in interrupt_source
+    assert "call(this.callbacks, 'applyGuideEmotion', null, 'angry'" in interrupt_source
     assert "return null;" in director_source
     assert "restoreCurrentScenePresentation(options)" in director_source
     assert "this.platformCapabilities.windowBoundsSource === 'electron-window-bounds'" in director_source
@@ -1157,6 +1166,10 @@ def test_home_avatar_floating_guide_day_reset_buttons_are_wired():
     template_source = Path("templates/index.html").read_text(encoding="utf-8")
     reset_source = Path("static/avatar-floating-guide-reset.js").read_text(encoding="utf-8")
     style_source = Path("static/css/index.css").read_text(encoding="utf-8")
+    day2_screen_entry_block = reset_source[
+        reset_source.index("id: 'day2_screen_entry'")
+        :reset_source.index("id: 'day2_wrap'", reset_source.index("id: 'day2_screen_entry'"))
+    ]
 
     assert "/static/avatar-floating-guide-reset.js" in template_source
     assert "home-tutorial-reset-controls" in template_source
@@ -1195,9 +1208,9 @@ def test_home_avatar_floating_guide_day_reset_buttons_are_wired():
     assert "interruptController.playLightResistance" in reset_source
     assert "interruptController.abortAsAngryExit" in reset_source
     assert "interruptController.destroy()" in reset_source
-    assert "voiceKey: 'avatar_floating_day2_screen_entry'" in reset_source
-    assert "cursorAction: 'click'" in reset_source
-    assert "operation: 'safe-click'" in reset_source
+    assert "voiceKey: 'avatar_floating_day2_screen_entry_intro'" in day2_screen_entry_block
+    assert "cursorAction: 'wobble'" in day2_screen_entry_block
+    assert "operation: 'none'" in day2_screen_entry_block
     assert "runStepShowcase(step, token)" in reset_source
     assert "safeClickTarget(target)" in reset_source
     assert "closeFloatingPanels()" in reset_source
@@ -1210,8 +1223,34 @@ def test_home_avatar_floating_guide_day_reset_buttons_are_wired():
     assert 'data-home-avatar-floating-guide-highlight="true"' in style_source
 
 
+def test_avatar_floating_guide_runtime_has_no_obsolete_hidden_cursor_paths():
+    runtime_paths = [
+        Path("static/yui-guide-director.js"),
+        Path("static/yui-guide-overlay.js"),
+        Path("static/tutorial-interrupt-controller.js"),
+        Path("static/avatar-floating-guide-reset.js"),
+    ]
+    runtime_source = "\n".join(path.read_text(encoding="utf-8") for path in runtime_paths)
+
+    hidden_cursor_suffix = "Se" + "ed"
+    for obsolete_token in [
+        "suppressCursorReaction",
+        "setPositionSilently",
+        "setCursorPositionSilently",
+        "avatarFloatingCursor" + hidden_cursor_suffix + "Point",
+        "rememberAvatarFloatingCursor" + hidden_cursor_suffix,
+        "setAvatarFloatingCursorSilent" + hidden_cursor_suffix + "Point",
+        "resolveAvatarFloatingCursor" + hidden_cursor_suffix + "Point",
+        "resolveManagedSceneCursor" + hidden_cursor_suffix + "Point",
+        hidden_cursor_suffix[0].lower() + hidden_cursor_suffix[1:] + "CursorFromExternalizedChat",
+        "getAvatarFloatingChatProxy" + hidden_cursor_suffix + "Point",
+    ]:
+        assert obsolete_token not in runtime_source
+
+
 def test_avatar_floating_round_director_flow_matches_day2_to_day7_contracts():
     director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    day2_source = Path("static/yui-guide-day2-screen-voice-guide.js").read_text(encoding="utf-8")
     guide_source = "\n".join(
         Path(path).read_text(encoding="utf-8")
         for path in (
@@ -1224,6 +1263,10 @@ def test_avatar_floating_round_director_flow_matches_day2_to_day7_contracts():
         )
     )
     source = director_source + "\n" + guide_source
+    day2_screen_entry_block = day2_source[
+        day2_source.index("id: 'day2_screen_entry'")
+        :day2_source.index("id: 'day2_screen_entry_invite'")
+    ]
 
     for expected in (
         "resolveAvatarFloatingSceneEmotion(scene)",
@@ -1236,6 +1279,9 @@ def test_avatar_floating_round_director_flow_matches_day2_to_day7_contracts():
         "target: 'chat-window'",
     ):
         assert expected in source
+
+    assert "cursorAction: 'wobble'" in day2_screen_entry_block
+    assert "operation:" not in day2_screen_entry_block
 
     day7_block = source[source.index("id: 'day7_storage_entry'"):source.index("id: 'day7_graduation_wrap'")]
     assert "/cloudsave_manager" not in day7_block

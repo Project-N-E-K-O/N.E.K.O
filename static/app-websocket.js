@@ -3110,6 +3110,7 @@
             return;
         }
         if (_isGreetingCheckBlocked()) {
+            sendHomeTutorialState('greeting-check-blocked');
             _scheduleGreetingCheckRetry();
             return;
         }
@@ -3220,6 +3221,14 @@
                 && S._greetingCheckPending) {
                 S._greetingCheckReason = detail.reason;
             }
+            _sendGreetingCheckIfReady();
+        }
+    });
+
+    window.addEventListener('neko:home-tutorial-features-suppressed', function (event) {
+        var detail = event && event.detail ? event.detail : {};
+        sendHomeTutorialState(detail.active === false ? 'features-restored' : 'features-suppressed');
+        if (detail.active === false) {
             _sendGreetingCheckIfReady();
         }
     });

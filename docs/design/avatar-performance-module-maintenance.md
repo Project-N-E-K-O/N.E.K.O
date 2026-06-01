@@ -306,6 +306,8 @@ performance.emotion
 4. 适配器不得自己猜 emotion 分类。
 5. 除苏醒 pose 外，step 动作应优先使用已有程序判断出的 emotion 和 director 的目标元素。
 6. 苏醒是首页新手引导 prelude 的一部分，不是独立外置功能。
+7. `playAngryExit()` 是打断退出的最高优先级动作入口；启动前必须停止仍在播放的首页教程专属 session，并跳过旧 session 的长释放动画，确保 angry exit 独占 frame/params 写入。
+8. 如果 angry exit 的 Live2D 演出不可用，director 仍必须兜底应用 `angry` emotion；动作失败不能让生气退出退回普通表情或阻塞 skip 清理。
 
 ## Yui 苏醒 pose
 
