@@ -136,6 +136,7 @@ from .entry_tutor_question_entries import _TutorQuestionEntriesMixin
 from .entry_tutor_answer_entries import _TutorAnswerEntriesMixin
 from .entry_tutor_summary_entries import _TutorSummaryEntriesMixin
 from .entry_ocr_entries import _OcrEntriesMixin
+from .entry_neko_commands import _NekoCommandsMixin
 
 
 @neko_plugin
@@ -164,6 +165,7 @@ class StudyCompanionPlugin(
     _TutorAnswerEntriesMixin,
     _TutorSummaryEntriesMixin,
     _OcrEntriesMixin,
+    _NekoCommandsMixin,
     NekoPluginBase,
 ):
     def __init__(self, ctx):
@@ -203,6 +205,12 @@ class StudyCompanionPlugin(
         self._memory_habit_bridge: MemoryHabitBridge | None = None
         self._event_bus: StudyEventBus | None = None
         self._review_due_task: asyncio.Task[None] | None = None
+        self._command_queue: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue()
+        self._command_worker_task: asyncio.Task[None] | None = None
+        self._interruptible_task: asyncio.Task[None] | None = None
+        self._neko_command_transport: Any | None = None
+        self._neko_command_handler: Any | None = None
+        self._neko_command_watcher: Any | None = None
 
     @lifecycle(id="startup")
     async def startup(self, **_):
@@ -287,6 +295,8 @@ class StudyCompanionPlugin(
             self._sync_doc_export_entry()
             await self._persist_state()
             self._start_review_due_task()
+            if self._event_bus is not None:
+                await self._subscribe_neko_commands()
             status_payload = await asyncio.to_thread(self._status_payload)
             return Ok({"status": STATUS_READY, "result": status_payload})
         except asyncio.CancelledError:
@@ -300,6 +310,7 @@ class StudyCompanionPlugin(
             return Err(SdkError("failed to start study_companion"))
 
     async def _cleanup_after_failed_startup(self) -> None:
+        await self._unsubscribe_neko_commands()
         await self._cancel_review_due_task()
         agent = self._agent
         self._agent = None
@@ -338,6 +349,7 @@ class StudyCompanionPlugin(
 
     @lifecycle(id="shutdown")
     async def shutdown(self, **_):
+        await self._unsubscribe_neko_commands()
         await self._cancel_review_due_task()
         try:
             self.unregister_dynamic_entry("study_export_notes")

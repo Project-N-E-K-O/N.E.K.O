@@ -122,12 +122,22 @@ class _PomodoroEntriesMixin:
                     if goal_id
                     else {}
                 )
+                status_config = status.get("config")
+                status_focus_minutes = (
+                    status_config.get("focus_minutes")
+                    if isinstance(status_config, dict)
+                    else None
+                )
                 supervision.on_focus_start(
                     goal=goal or {},
                     planned_minutes=float(
-                        status.get("config", {}).get("focus_minutes")
-                        or focus_minutes
-                        or 0
+                        status_focus_minutes
+                        if status_focus_minutes is not None
+                        else (
+                            focus_minutes
+                            if focus_minutes is not None
+                            else planned_focus_minutes
+                        )
                     ),
                 )
             return Ok(build_pomodoro_status_payload(status))
