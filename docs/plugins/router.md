@@ -208,15 +208,17 @@ Most of the time you don't need prefixes — just make sure entry IDs don't coll
 
 ---
 
-## Removing a Router
+## Runtime removal
 
-You can dynamically remove routers at runtime:
+`exclude_router()` removes a router from the plugin's router list, but normal plugin code should not use it as a live feature toggle. Entries are collected when the host builds its dispatch table, so removing a router later does not automatically make its already-collected entries uncallable.
+
+If you need runtime enable/disable behavior, use the extension management path that rebuilds the dispatch table, or gate the entry logic with your own config check.
 
 ```python
-# Remove by instance
+# Removes from the router list only
 self.exclude_router(my_router_instance)
 
-# Remove by name
+# Same, by name
 self.exclude_router("countdown")
 ```
 

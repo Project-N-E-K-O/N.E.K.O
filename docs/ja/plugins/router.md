@@ -209,15 +209,17 @@ self.include_router(CountdownRouter(), prefix="time_")
 
 ---
 
-## Router を削除する
+## 実行中の削除
 
-実行時に router を動的に削除できます。
+`exclude_router()` はプラグインの router リストから router を外しますが、通常のプラグインコードではライブの機能トグルとして使わないでください。エントリーポイントは host が dispatch table を構築するときに収集されるため、その後で router を外しても、すでに収集されたエントリーが自動的に呼び出せなくなるわけではありません。
+
+実行中に機能を有効化/無効化したい場合は、dispatch table を再構築する extension 管理経路を使うか、エントリー側で独自の設定チェックを行ってください。
 
 ```python
-# インスタンスで削除
+# router リストから外すだけ
 self.exclude_router(my_router_instance)
 
-# 名前で削除
+# 名前でも同様
 self.exclude_router("countdown")
 ```
 
