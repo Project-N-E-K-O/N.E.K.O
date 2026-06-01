@@ -10,7 +10,7 @@
         <div class="plugin-list-row-card__headline">
           <div class="plugin-list-row-card__heading-main">
             <el-tag size="small" effect="plain" :type="typeTagType">{{ typeLabel }}</el-tag>
-            <h3 class="plugin-list-row-card__name">{{ plugin.name }}</h3>
+            <h3 class="plugin-list-row-card__name">{{ displayText.name }}</h3>
             <StatusIndicator :status="plugin.status || 'stopped'" />
             <el-tag v-if="plugin.autoStart === false && plugin.type !== 'extension'" size="small" type="warning">
               {{ t('plugins.manualStart') }}
@@ -23,7 +23,7 @@
         </div>
 
         <p class="plugin-list-row-card__description">
-          {{ plugin.description || t('common.noData') }}
+          {{ displayText.description || t('common.noData') }}
         </p>
 
         <PluginMetricsInline
@@ -72,6 +72,7 @@ import SourceTag from '@/components/plugin/SourceTag.vue'
 import SourceDetailRow from '@/components/plugin/SourceDetailRow.vue'
 import { useMarketVersionsStore } from '@/stores/marketVersions'
 import { hasNewerVersion } from '@/utils/version'
+import { resolvePluginDisplayText } from '@/utils/pluginDisplay'
 import type { PluginMeta, PluginInstallSourceDetailMarket } from '@/types/api'
 
 interface Props {
@@ -92,10 +93,11 @@ defineEmits<{
   contextmenu: [event: MouseEvent]
 }>()
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const marketVersions = useMarketVersionsStore()
 
 const entryCount = computed(() => props.plugin.entries?.length || 0)
+const displayText = computed(() => resolvePluginDisplayText(props.plugin, locale.value))
 
 const latestVersion = computed<string | null>(() => {
   const src = props.plugin.install_source

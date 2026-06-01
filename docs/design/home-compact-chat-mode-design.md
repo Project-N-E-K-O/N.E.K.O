@@ -8,7 +8,7 @@
 
 本文覆盖当前分支已经落地的紧凑聊天框长期事实和维护边界，包括：
 
-1. `full / compact / minimized` 三层聊天形态。
+1. `compact / minimized` 两态聊天形态。
 2. `default / options / input` 紧凑态内部三态。
 3. 紧凑 surface、最小化 ball、选项层、工具转轮、内联历史、历史气泡拖拽与发送链路。
 4. Web、独立 `/chat`、NEKO-PC 桌面壳三端的样式、geometry、命中、bounds 和拖拽边界。
@@ -75,7 +75,7 @@
 已确认事实：
 
 1. 当前聊天 UI 以 React chat 为准；旧 `#chat-container` 只作为兼容 DOM 存在。
-2. 宿主形态是 `chatSurfaceMode: 'full' | 'compact' | 'minimized'`。
+2. 宿主形态是 `chatSurfaceMode: 'compact' | 'minimized'`（localStorage 里遗留的 `'full'` 读入时迁移为 `'compact'`）。
 3. compact 内部状态是 `compactChatState: 'default' | 'options' | 'input'`。
 4. `effectiveCompactChatState` 会在存在 ChoicePrompt / GalGame options 时把 compact 推到 `options`，不需要业务层另造状态。
 5. compact 主体 DOM 已统一为：
@@ -108,7 +108,7 @@
 2. 因此 compact surface 的 React CSS 在首页、独立 `/chat` 和 NEKO-PC 承载页上是同一份构建产物。
 3. 改 `frontend/react-neko-chat/src/*` 后必须运行 `bash build_frontend.sh`，确保 `static/react/neko-chat/neko-chat-window.css` 已同步。
 4. `static/app-react-chat-window.js` 负责：
-   - `full -> compact -> minimized -> full` 形态循环。
+   - `compact ↔ minimized` 形态切换。
    - compact surface 位置和宽度持久化。
    - `--compact-surface-left/top/width/height` 和 `--desktop-compact-surface-*` CSS 变量同步。
    - surface geometry 收集、union、hit rect、native rect 输出。
@@ -148,27 +148,24 @@
 8. 历史空白区域需要 pointer passthrough；拖拽期间必须关闭 passthrough，避免拖拽链路丢事件。
 9. Electron 透明窗口里 CSS 透明不等于点击穿透；必须同时考虑 BrowserWindow bounds、setShape/input region、页面 `pointer-events` 和 history passthrough。
 
-## 三层聊天形态
+## 两态聊天形态
 
 首页聊天框只有一条连续形态链：
 
-1. `full`
-   - 完整聊天框。
-   - 承担完整历史、完整 composer、附件和工具区域。
-2. `compact`
-   - 紧凑聊天框。
+1. `compact`
+   - 紧凑聊天框（默认）。
    - 承担当前轮预览、选项、输入、工具、内联历史、历史选择和历史拖拽发送。
-3. `minimized`
+2. `minimized`
    - 最小化小球。
    - 承担最轻入口和恢复链路。
 
 规则：
 
-1. 三者共享同一套消息、发送、附件、选项、教程和恢复语义。
-2. 三者区别是视觉密度、承载面积和原生窗口 bounds，不是业务协议分叉。
+1. 两者共享同一套消息、发送、附件、选项、教程和恢复语义。
+2. 两者区别是视觉密度、承载面积和原生窗口 bounds，不是业务协议分叉。
 3. 切换形态不能清空会话、重置选项或破坏输入状态恢复。
 4. compact surface 的用户拖动位置只影响 surface，不影响 ball。
-5. 从 compact 切回 full/minimized 时，桌面端必须恢复 bounds、shape、ignore-mouse-events、external ball 和 resizable 状态。
+5. 从 compact 切到 minimized 时，桌面端必须同步 native ball 窗口；从 minimized 恢复 compact 时，必须走 compact carrier bounds 而非旧 full 面板尺寸。
 
 ## Compact 内部三态
 
@@ -194,7 +191,7 @@
 1. `.compact-chat-surface-frame` 内切换为 textarea + 右侧按钮。
 2. 空输入且无附件时，右侧按钮是工具入口。
 3. 有文本或附件时，右侧按钮是发送。
-4. 输入态高度受控，不允许被 composer 撑成 full 面板。
+4. 输入态高度受控，不允许被 composer 撑成独立大面板。
 5. blur、发送、工具关闭后必须能自然回到展示态。
 
 ## Compact Surface 视觉合同
@@ -434,8 +431,8 @@ Compact 当前文字是“当前轮轻提示”，不是完整历史记录、字
 2. 桌面端可以用独立 ball window、BrowserWindow bounds、setShape/input region 和 pointer passthrough 实现命中与裁切。
 3. 桌面端不能因为原生窗口实现限制而把 ball 重新绑回 surface。
 4. 桌面端拖拽保存的是 surface anchor，不是 ball anchor。
-5. 桌面端 compact resize / relayout 不能污染 full 模式窗口大小。
-6. 从 compact 切回 full 或 minimized 时，必须恢复原窗口状态、shape、ignore-mouse-events、external ball 和 resizable 状态。
+5. 桌面端 compact resize / relayout 只影响 compact carrier，不再维护 full 模式窗口快照。
+6. 从 minimized 恢复 compact 时，必须恢复 compact bounds、shape、ignore-mouse-events、external ball 和 resizable 状态。
 7. Windows 展开 fallback 需要真实 resizable style toggle，不能把 `setResizable(false)` 到 `setResizable(false)` 当成 cache busting。
 8. Native Wayland compact drag handle 应保留原生 drag 策略，不走不可用的全局 cursor/window polling。
 9. ReactChat 紧凑窗口必须保持在模型上方，并由 window manager / top coordinator 维护层级。
@@ -506,7 +503,7 @@ Compact 当前文字是“当前轮轻提示”，不是完整历史记录、字
 如果改了 NEKO-PC：
 
 1. 做桌面端真实启动检查。
-2. 检查 `compact/full/minimized` 三态。
+2. 检查 `compact ↔ minimized` 两态。
 3. 检查拖拽、resize、选项、输入、工具、历史、历史拖拽、层级和点击穿透。
 4. 对照网页端目标表现确认一致。
 
@@ -514,7 +511,7 @@ Compact 当前文字是“当前轮轻提示”，不是完整历史记录、字
 
 基础形态：
 
-1. `full -> compact -> minimized -> full` 循环稳定。
+1. `compact ↔ minimized` 切换稳定。
 2. compact 默认不展示完整历史。
 3. compact 当前文字在下方 surface 内，不出现上方独立说话框。
 4. minimized ball 位于模型左侧，且不随 surface 拖拽。
@@ -525,7 +522,7 @@ Surface：
 2. 未保存位置时，默认在模型可见区域偏下。
 3. surface 不被模型压住。
 4. 打开工具、选项、历史或右侧展开栏时，surface anchor 不抖动。
-5. 左右 resize 不突破 workArea，也不污染 full bounds。
+5. 左右 resize 不突破 workArea，也不污染 legacy full bounds 存储。
 6. 玻璃背景在浅色/暗色模式下都能读清文字，且不像凸起按钮。
 
 命中：
@@ -544,7 +541,7 @@ Surface：
 
 输入：
 
-1. 输入态不会被 composer 撑成 full 面板。
+1. 输入态不会被 composer 撑成独立大面板。
 2. 长文本内部滚动。
 3. 空输入右侧按钮打开工具转轮。
 4. 有文本或附件时右侧按钮发送。
@@ -576,7 +573,7 @@ Surface：
 2. 拖拽 surface 不牵动 ball。
 3. 模型移动不会强行覆盖用户保存的 surface 位置。
 4. compact window 在模型上方。
-5. 切回 full/minimized 后窗口 bounds、shape、resizable 和 ball 状态恢复正确。
+5. 从 minimized 恢复 compact 后窗口 bounds、shape、resizable 和 ball 状态恢复正确。
 6. Native Wayland 拖拽仍使用可工作的原生拖拽路径。
 
 ## 禁止方案
@@ -604,7 +601,7 @@ Surface：
 
 后续紧凑态相关改动按以下顺序判断优先级：
 
-1. 先保护三层形态和 compact 三态的状态语义。
+1. 先保护 compact ↔ minimized 两态和 compact 内部三态的状态语义。
 2. 再保护 surface / ball 独立、geometry、命中和桌面 bounds。
 3. 再保护选项、输入、工具这些当前核心交互。
 4. 再保护内联历史 / 导出历史 / 历史拖拽发送。
