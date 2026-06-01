@@ -57,10 +57,10 @@
     var electronCat1PairMovePendingBounds = null;
     var ELECTRON_CHAT_MINIMIZED_STATE_HEARTBEAT_MS = 1000;
     var savedExpandedShellPosition = null; // last known full-surface desktop position
-    var lastRestorableChatSurfaceMode = 'full';
+    var lastRestorableChatSurfaceMode = 'compact';
     var _sortKeySeq = 0; // monotonically increasing sortKey counter
-    var CHAT_SURFACE_MODE_SEQUENCE = ['full', 'compact', 'minimized'];
-    var COMPACT_CHAT_STATES = ['default', 'options', 'input'];
+    var COMPACT_CHAT_STATES = ['input'];
+    var CHAT_SURFACE_MODE_SEQUENCE = ['compact', 'minimized'];
 
     var state = {
         viewProps: null,
@@ -79,8 +79,8 @@
         pendingRollbackDrafts: Object.create(null),
         rollbackDraft: '',
         _toolCursorResetKey: '',
-        chatSurfaceMode: 'full',
-        compactChatState: 'default',
+        compactChatState: 'input',
+        chatSurfaceMode: 'compact',
         // Off until init() reads the persisted preference post-barrier and
         // calls setGalgameModeEnabled(true) — that path fires the
         // galgame-mode-change event, which is the only signal chat.html's
@@ -103,11 +103,12 @@
     };
 
     function normalizeChatSurfaceMode(mode) {
-        return CHAT_SURFACE_MODE_SEQUENCE.indexOf(mode) >= 0 ? mode : 'full';
+        if (mode === 'full') return 'compact';
+        return CHAT_SURFACE_MODE_SEQUENCE.indexOf(mode) >= 0 ? mode : 'compact';
     }
 
     function normalizeCompactChatState(mode) {
-        return COMPACT_CHAT_STATES.indexOf(mode) >= 0 ? mode : 'default';
+        return COMPACT_CHAT_STATES.indexOf(mode) >= 0 ? mode : 'input';
     }
 
     function getCurrentChatSurfaceMode() {
@@ -140,7 +141,7 @@
     function getNextChatSurfaceMode(mode) {
         var normalized = normalizeChatSurfaceMode(mode);
         if (normalized === 'minimized') {
-            return getRestorableChatSurfaceMode();
+            return normalizeChatSurfaceMode(lastRestorableChatSurfaceMode);
         }
         var currentIndex = CHAT_SURFACE_MODE_SEQUENCE.indexOf(normalized);
         var nextIndex = currentIndex >= 0
@@ -149,34 +150,38 @@
         return CHAT_SURFACE_MODE_SEQUENCE[nextIndex];
     }
 
-    function getRestorableChatSurfaceMode() {
-        return normalizeChatSurfaceMode(lastRestorableChatSurfaceMode) === 'compact' ? 'compact' : 'full';
-    }
-
     function resetCompactChatState() {
-        state.compactChatState = 'default';
+        state.compactChatState = 'input';
     }
 
     function shouldPersistChatSurfaceModePreference() {
         // Desktop and web share the same page state contract. The caller only
-        // persists full/compact, so minimized still restores to the last real surface.
+        // persists compact only; minimized still restores to the last real surface.
         return true;
     }
 
     function readChatSurfaceModePreference() {
         if (!shouldPersistChatSurfaceModePreference()) {
-            return 'full';
+            return 'compact';
         }
         try {
             var raw = localStorage.getItem(CHAT_SURFACE_MODE_STORAGE_KEY);
-            return raw === 'compact' ? 'compact' : 'full';
+            // The storage key only ever holds the restorable surface ('compact').
+            // Migrate any legacy value persisted by the old three-state build
+            // ('full') or a stray 'minimized' back to 'compact' so stale values
+            // don't linger in storage. Any other value (or first run) just
+            // resolves to 'compact' without an extra write.
+            if (raw === 'full' || raw === 'minimized') {
+                localStorage.setItem(CHAT_SURFACE_MODE_STORAGE_KEY, 'compact');
+            }
+            return 'compact';
         } catch (_) {
-            return 'full';
+            return 'compact';
         }
     }
 
     function persistChatSurfaceModePreference(mode) {
-        if (mode !== 'full' && mode !== 'compact') return;
+        if (mode !== 'compact') return;
         if (!shouldPersistChatSurfaceModePreference()) return;
         try {
             localStorage.setItem(CHAT_SURFACE_MODE_STORAGE_KEY, mode);
@@ -1024,20 +1029,42 @@
         };
     }
 
-    function expandCompactToolFanNativeRect(rect, element) {
+    var COMPACT_TOOL_FAN_CIRCLE_SLICE_COUNT = 18;
+
+    function readCompactToolFanPixelVar(style, name, fallback) {
+        var rawValue = style ? style.getPropertyValue(name) : '';
+        var parsedValue = parseFloat(rawValue);
+        return Number.isFinite(parsedValue) ? parsedValue : fallback;
+    }
+
+    function buildCompactToolFanCircleSliceRects(rect, element) {
         if (!rect) return null;
         var style = window.getComputedStyle ? window.getComputedStyle(element) : null;
-        var rawButtonSize = style ? parseFloat(style.getPropertyValue('--compact-tool-button-size')) : 0;
-        var buttonSize = Number.isFinite(rawButtonSize) && rawButtonSize > 0 ? rawButtonSize : 38;
-        var previewPad = Math.ceil(buttonSize * 1.7);
-        return {
-            left: rect.left - previewPad,
-            top: rect.top - previewPad,
-            width: rect.width + previewPad,
-            height: rect.height + previewPad,
-            right: rect.right,
-            bottom: rect.bottom
-        };
+        var centerX = rect.left + readCompactToolFanPixelVar(style, '--compact-tool-wheel-center-x', 116);
+        var centerY = rect.top + readCompactToolFanPixelVar(style, '--compact-tool-wheel-center-y', 116);
+        var radius = readCompactToolFanPixelVar(style, '--compact-tool-wheel-hover-radius', 116);
+        if (!Number.isFinite(radius) || radius <= 0) return null;
+        var sliceHeight = (radius * 2) / COMPACT_TOOL_FAN_CIRCLE_SLICE_COUNT;
+        var slices = [];
+        for (var index = 0; index < COMPACT_TOOL_FAN_CIRCLE_SLICE_COUNT; index += 1) {
+            var top = centerY - radius + (sliceHeight * index);
+            var bottom = index === COMPACT_TOOL_FAN_CIRCLE_SLICE_COUNT - 1
+                ? centerY + radius
+                : top + sliceHeight;
+            var middleY = (top + bottom) / 2;
+            var halfWidth = Math.sqrt(Math.max(0, (radius * radius) - ((middleY - centerY) * (middleY - centerY))));
+            var left = centerX - halfWidth;
+            var right = centerX + halfWidth;
+            slices.push({
+                left: left,
+                top: top,
+                width: right - left,
+                height: bottom - top,
+                right: right,
+                bottom: bottom
+            });
+        }
+        return slices;
     }
 
     function collectCompactToolFanGeometryItems(element) {
@@ -1045,15 +1072,17 @@
         var parentRect = getCompactGeometryElementRect(element);
         var items = [];
         if (parentRect) {
-            var nativeRect = expandCompactToolFanNativeRect(parentRect, element) || parentRect;
-            items.push({
-                id: 'toolFan:native',
-                owner: 'surface',
-                kind: 'toolFan',
-                visualRect: nativeRect,
-                hitRect: null,
-                nativeRect: nativeRect,
-                interactive: false
+            var nativeRects = buildCompactToolFanCircleSliceRects(parentRect, element) || [parentRect];
+            nativeRects.forEach(function (nativeRect, index) {
+                items.push({
+                    id: index === 0 ? 'toolFan:native' : 'toolFan:native:' + index,
+                    owner: 'surface',
+                    kind: 'toolFan',
+                    visualRect: nativeRect,
+                    hitRect: nativeRect,
+                    nativeRect: nativeRect,
+                    interactive: true
+                });
             });
         }
         return items.concat(Array.prototype.slice.call(element.querySelectorAll('.compact-input-tool-item, .composer-icon-popover .composer-icon-button'))
@@ -1063,7 +1092,7 @@
                 if (style && Number(style.opacity) <= 0.01) return null;
                 var slot = child.getAttribute('data-compact-tool-wheel-slot') || '';
                 var isAvatarToolChoice = child.classList && child.classList.contains('composer-icon-button');
-                if (!isAvatarToolChoice && (!slot || slot === 'hidden')) return null;
+                if (!isAvatarToolChoice && (!slot || slot.indexOf('hidden') === 0)) return null;
                 var rect = normalizeCompactDomRect(child.getBoundingClientRect());
                 if (!rect) return null;
                 return {
@@ -4024,7 +4053,7 @@
             }
             savedShellSize = null;
             savedShellPosition = null;
-            state.chatSurfaceMode = getRestorableChatSurfaceMode();
+            state.chatSurfaceMode = normalizeChatSurfaceMode(lastRestorableChatSurfaceMode);
             renderWindow();
             syncMinimizeUI();
             syncChatSurfaceModeUI();
@@ -4037,7 +4066,7 @@
         }
 
         if (wasActive && triggered && minimized) {
-            setChatSurfaceMode(getRestorableChatSurfaceMode());
+            setChatSurfaceMode(normalizeChatSurfaceMode(lastRestorableChatSurfaceMode));
         }
     }
 
@@ -4165,10 +4194,6 @@
             lastRestorableChatSurfaceMode = previousMode;
         }
 
-        if (!previousMinimized && previousMode === 'full') {
-            snapshotExpandedShellPositionFromShell();
-        }
-
         resetCompactChatState();
         state.chatSurfaceMode = normalized;
         persistChatSurfaceModePreference(normalized);
@@ -4178,13 +4203,6 @@
             setMinimized(nextMinimized);
         } else {
             syncChatSurfaceModeUI();
-        }
-
-        if (normalized === 'full' && previousMode === 'compact') {
-            clearCompactSurfaceAnchor();
-            clearCompactMinimizeBallAnchor();
-            restorePosition();
-            scheduleMobileContentLayout();
         }
 
         dispatchHostEvent('chat-surface-mode-change', {
@@ -4432,18 +4450,10 @@
                         restorePosition();
                         return;
                     }
-                    if (surfaceModeAfterExpand !== 'full') {
-                        syncCompactSurfaceAnchor();
+                    if (surfaceModeAfterExpand === 'minimized') {
                         return;
                     }
-                    var r = shell.getBoundingClientRect();
-                    var targetPosition = savedExpandedShellPosition || getStoredPosition();
-                    var clamped = clampPosition(targetPosition ? targetPosition.left : r.left, targetPosition ? targetPosition.top : r.top);
-                    applyPosition(clamped.left, clamped.top);
-                    rememberExpandedShellPosition(clamped.left, clamped.top);
-                    if (!window._chatAdapterActive) {
-                        persistPosition(clamped.left, clamped.top);
-                    }
+                    syncCompactSurfaceAnchor();
                 });
             };
             var onExpandEnd = function (e) {
@@ -4574,13 +4584,22 @@
                     pendingOpenAfterModelManagerHidden = true;
                     return;
                 }
+                // closeWindow 已经会重置 minimized，所以到这里通常 minimized=false
+                // 但如果外部直接调用 openWindow（未经 closeWindow），仍需处理
+                var wasMinimized = minimized;
+                if (wasMinimized) {
+                    // Opening a minimized window restores the last real surface.
+                    // Reset the logical surface BEFORE mountWindow() so React
+                    // rebuilds the compact body instead of the (blank) minimized
+                    // surface; closeWindow performs the same reset when it clears
+                    // the minimized shell.
+                    state.chatSurfaceMode = normalizeChatSurfaceMode(lastRestorableChatSurfaceMode);
+                    resetCompactChatState();
+                }
                 if (!mountWindow()) {
                     showToast(getI18nText('chat.reactWindowMountFailed', '聊天框挂载失败'), 3000);
                     return;
                 }
-                // closeWindow 已经会重置 minimized，所以到这里通常 minimized=false
-                // 但如果外部直接调用 openWindow（未经 closeWindow），仍需处理
-                var wasMinimized = minimized;
                 if (wasMinimized) {
                     // overlay 可能还隐藏，先显示再做展开动画
                     overlay.hidden = false;
@@ -4599,8 +4618,6 @@
                     if (getCurrentChatSurfaceMode() === 'compact') {
                         syncCompactSurfaceAnchor();
                         scheduleCompactMinimizeBallTracking();
-                    } else {
-                        restorePosition();
                     }
                     scheduleMobileContentLayout();
                 }
@@ -4662,6 +4679,13 @@
                 shell.style.transform = 'none';
             }
             minimized = false;
+            // closeWindow clears the minimized shell directly without routing
+            // through setChatSurfaceMode, so the logical surface must be reset
+            // too. Otherwise state.chatSurfaceMode stays 'minimized' and the next
+            // openWindow() rebuilds the React props with chatSurfaceMode:
+            // 'minimized', rendering a blank body over a no-longer-minimized
+            // shell.
+            state.chatSurfaceMode = normalizeChatSurfaceMode(lastRestorableChatSurfaceMode);
             resetCompactChatState();
             savedShellSize = null;
             savedShellPosition = null;
@@ -4758,10 +4782,6 @@
             // 最小化态下不持久化悬浮球坐标到展开态存储，
             // 否则 restorePosition 会把完整窗口放到悬浮球位置
             // 移动端坐标也不持久化，避免污染桌面端保存的位置
-            if (!minimized && !isMobileWidth() && getCurrentChatSurfaceMode() === 'full') {
-                rememberExpandedShellPosition(rect.left, rect.top);
-                persistPosition(rect.left, rect.top);
-            }
         }
 
         dragState = null;
@@ -4989,10 +5009,6 @@
                 try {
                     localStorage.setItem(MOBILE_HEIGHT_STORAGE_KEY, String(mobileUserHeight));
                 } catch (_) {}
-            } else if (getCurrentChatSurfaceMode() === 'full') {
-                persistPosition(rect.left, rect.top);
-                persistSize(rect.width, rect.height);
-                rememberExpandedShellPosition(rect.left, rect.top);
             }
         }
 
