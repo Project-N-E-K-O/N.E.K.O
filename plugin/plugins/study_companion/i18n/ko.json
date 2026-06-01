@@ -191,12 +191,12 @@
     "ui.button.rating.good":  "좋음",
     "ui.button.rating.easy":  "쉬움",
     "ui.label.name":  "이름",
-    "ui.awareness.title":  "Environment Awareness",
-    "ui.awareness.enabled":  "Enable screen awareness",
-    "ui.awareness.snapshot_interval":  "Snapshot interval",
-    "ui.awareness.context_window":  "Context window",
-    "ui.awareness.classify_mode":  "Classification mode",
-    "ui.awareness.push_mode":  "LLM context mode",
-    "ui.awareness.privacy_note":  "Screenshots are processed in memory only and are not written to disk.",
-    "ui.awareness.translation_pending":  "Translation pending"
+    "ui.awareness.title":  "환경 인식",
+    "ui.awareness.enabled":  "화면 환경 인식 활성화",
+    "ui.awareness.snapshot_interval":  "스냅샷 간격",
+    "ui.awareness.context_window":  "컨텍스트 창",
+    "ui.awareness.classify_mode":  "분류 모드",
+    "ui.awareness.push_mode":  "LLM 컨텍스트 모드",
+    "ui.awareness.privacy_note":  "스크린샷은 메모리에서만 처리되며 디스크에 저장되지 않습니다.",
+    "ui.awareness.translation_pending":  "번역 대기 중"
 }

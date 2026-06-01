@@ -191,12 +191,12 @@
     "ui.button.rating.good":  "Хорошо",
     "ui.button.rating.easy":  "Легко",
     "ui.label.name":  "Имя",
-    "ui.awareness.title":  "Environment Awareness",
-    "ui.awareness.enabled":  "Enable screen awareness",
-    "ui.awareness.snapshot_interval":  "Snapshot interval",
-    "ui.awareness.context_window":  "Context window",
-    "ui.awareness.classify_mode":  "Classification mode",
-    "ui.awareness.push_mode":  "LLM context mode",
-    "ui.awareness.privacy_note":  "Screenshots are processed in memory only and are not written to disk.",
-    "ui.awareness.translation_pending":  "Translation pending"
+    "ui.awareness.title":  "Контекст окружения",
+    "ui.awareness.enabled":  "Включить анализ экрана",
+    "ui.awareness.snapshot_interval":  "Интервал снимков",
+    "ui.awareness.context_window":  "Окно контекста",
+    "ui.awareness.classify_mode":  "Режим классификации",
+    "ui.awareness.push_mode":  "Режим контекста LLM",
+    "ui.awareness.privacy_note":  "Снимки экрана обрабатываются только в памяти и не записываются на диск.",
+    "ui.awareness.translation_pending":  "Перевод ожидается"
 }

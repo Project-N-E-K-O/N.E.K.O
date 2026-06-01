@@ -198,5 +198,5 @@
     "ui.awareness.classify_mode":  "分类模式",
     "ui.awareness.push_mode":  "LLM 上下文模式",
     "ui.awareness.privacy_note":  "截图只在内存中处理，不会写入磁盘。",
-    "ui.awareness.translation_pending":  ""
+    "ui.awareness.translation_pending":  "翻译待补充"
 }

@@ -264,8 +264,12 @@ class StudyOcrPipeline:
                 if len(raw) <= target_bytes or quality == _LIGHTWEIGHT_MIN_JPEG_QUALITY:
                     break
                 quality -= 5
-            if len(raw) <= target_bytes or max(frame.size) <= 320:
+            if len(raw) <= target_bytes:
                 return raw
+            if max(frame.size) <= 1:
+                raise RuntimeError(
+                    f"unable to encode lightweight JPEG within {target_bytes} bytes"
+                )
             width, height = frame.size
             frame = frame.resize(
                 (max(1, int(width * 0.85)), max(1, int(height * 0.85))),
@@ -313,21 +317,25 @@ class StudyOcrPipeline:
             except Exception:
                 return ""
         if sys.platform == "darwin":
-            try:
-                result = subprocess.run(
-                    [
-                        "osascript",
-                        "-e",
-                        'tell application "System Events" to get name of first application process whose frontmost is true',
-                    ],
-                    capture_output=True,
-                    check=False,
-                    text=True,
-                    timeout=1.0,
-                )
-                return str(result.stdout or "").strip()
-            except Exception:
-                return ""
+            scripts = (
+                'tell application "System Events" to get name of first window of (first application process whose frontmost is true)',
+                'tell application "System Events" to get name of first application process whose frontmost is true',
+            )
+            for script in scripts:
+                try:
+                    result = subprocess.run(
+                        ["osascript", "-e", script],
+                        capture_output=True,
+                        check=False,
+                        text=True,
+                        timeout=1.0,
+                    )
+                except Exception:
+                    continue
+                value = str(result.stdout or "").strip()
+                if result.returncode == 0 and value:
+                    return value
+            return ""
         try:
             result = subprocess.run(
                 ["xdotool", "getactivewindow", "getwindowname"],

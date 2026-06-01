@@ -191,12 +191,12 @@
     "ui.button.rating.good":  "良好",
     "ui.button.rating.easy":  "簡單",
     "ui.label.name":  "名稱",
-    "ui.awareness.title":  "Environment Awareness",
-    "ui.awareness.enabled":  "Enable screen awareness",
-    "ui.awareness.snapshot_interval":  "Snapshot interval",
-    "ui.awareness.context_window":  "Context window",
-    "ui.awareness.classify_mode":  "Classification mode",
-    "ui.awareness.push_mode":  "LLM context mode",
-    "ui.awareness.privacy_note":  "Screenshots are processed in memory only and are not written to disk.",
-    "ui.awareness.translation_pending":  "Translation pending"
+    "ui.awareness.title":  "環境感知",
+    "ui.awareness.enabled":  "啟用螢幕環境感知",
+    "ui.awareness.snapshot_interval":  "截圖間隔",
+    "ui.awareness.context_window":  "上下文視窗",
+    "ui.awareness.classify_mode":  "分類模式",
+    "ui.awareness.push_mode":  "LLM 上下文模式",
+    "ui.awareness.privacy_note":  "截圖只會在記憶體中處理，不會寫入磁碟。",
+    "ui.awareness.translation_pending":  "翻譯待補"
 }

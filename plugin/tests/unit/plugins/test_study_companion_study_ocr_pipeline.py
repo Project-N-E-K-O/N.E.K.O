@@ -7,6 +7,7 @@ import pytest
 from PIL import Image
 
 from plugin.plugins.study_companion.models import AwarenessConfig, StudyConfig
+from plugin.plugins.study_companion import study_ocr_pipeline as pipeline_module
 from plugin.plugins.study_companion.study_ocr_pipeline import (
     CAPTURE_BACKEND_DXCAM,
     StudyCaptureProfile,
@@ -151,6 +152,14 @@ def test_ocr_pipeline_capture_lightweight_title_first_skips_ocr_and_limits_jpeg(
     assert capture.calls
 
 
+def test_ocr_pipeline_lightweight_jpeg_keeps_shrinking_until_limit() -> None:
+    image = Image.effect_noise((1600, 900), 120).convert("RGB")
+
+    raw = StudyOcrPipeline._encode_lightweight_jpeg(image, max_bytes=10_240)
+
+    assert len(raw) <= 10_240
+
+
 def test_ocr_pipeline_capture_lightweight_ocr_mode_writes_activity_type() -> None:
     image = Image.new("RGB", (800, 600), "white")
     pipeline = StudyOcrPipeline(
@@ -202,3 +211,37 @@ def test_ocr_pipeline_capture_lightweight_content_change_and_failure_paths() -> 
     failed = failing.capture_lightweight(target={"hwnd": 1, "title": "Broken"})
     assert failed.status == "capture_failed"
     assert "capture failed" in failed.diagnostic
+
+
+def test_ocr_pipeline_macos_active_window_title_prefers_window_title(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_run(cmd, **_kwargs):
+        script = cmd[-1]
+        calls.append(script)
+        if "first window" in script:
+            return SimpleNamespace(returncode=0, stdout="Lesson - Safari\n")
+        return SimpleNamespace(returncode=0, stdout="Safari\n")
+
+    monkeypatch.setattr(pipeline_module.sys, "platform", "darwin")
+    monkeypatch.setattr(pipeline_module.subprocess, "run", fake_run)
+
+    assert StudyOcrPipeline._get_active_window_title() == "Lesson - Safari"
+    assert "first window" in calls[0]
+
+
+def test_ocr_pipeline_macos_active_window_title_falls_back_to_app_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(cmd, **_kwargs):
+        script = cmd[-1]
+        if "first window" in script:
+            return SimpleNamespace(returncode=1, stdout="")
+        return SimpleNamespace(returncode=0, stdout="Safari\n")
+
+    monkeypatch.setattr(pipeline_module.sys, "platform", "darwin")
+    monkeypatch.setattr(pipeline_module.subprocess, "run", fake_run)
+
+    assert StudyOcrPipeline._get_active_window_title() == "Safari"

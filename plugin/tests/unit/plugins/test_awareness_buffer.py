@@ -18,6 +18,7 @@ def _snapshot(
     activity_type: str = "question",
     has_content_change: bool = True,
     text: str = "",
+    thumbnail_hash: str | None = None,
 ) -> ActivitySnapshot:
     return ActivitySnapshot(
         timestamp=timestamp,
@@ -28,7 +29,7 @@ def _snapshot(
         ocr_text_snippet=text,
         window_title="main.py - Visual Studio Code",
         has_content_change=has_content_change,
-        _thumbnail_hash=f"{int(timestamp):016x}",
+        _thumbnail_hash=thumbnail_hash or f"{int(timestamp):016x}",
     )
 
 
@@ -40,15 +41,26 @@ async def test_activity_buffer_deduplicates_homogeneous_tail_frames() -> None:
     await buffer.add(_snapshot(5, text="new"))
     await buffer.add(_snapshot(10, activity_type="reading", text="reading"))
     await buffer.add(
-        _snapshot(15, activity_type="reading", has_content_change=False, text="stable")
+        _snapshot(
+            15,
+            activity_type="reading",
+            has_content_change=False,
+            text="stable",
+            thumbnail_hash="stable",
+        )
     )
     await buffer.add(
-        _snapshot(20, activity_type="reading", has_content_change=False, text="latest")
+        _snapshot(
+            20,
+            activity_type="reading",
+            has_content_change=False,
+            text="latest",
+            thumbnail_hash="stable",
+        )
     )
 
-    assert len(buffer.snapshots) == 3
-    assert buffer.snapshots[0].timestamp == 5
-    assert buffer.snapshots[0].first_seen_at == 0
+    assert len(buffer.snapshots) == 4
+    assert [snapshot.timestamp for snapshot in list(buffer.snapshots)[:2]] == [0, 5]
     assert buffer.snapshots[-1].timestamp == 20
     assert buffer.snapshots[-1].first_seen_at == 15
     assert buffer.snapshots[-1].ocr_text_snippet == "latest"
@@ -93,6 +105,45 @@ async def test_activity_buffer_summarize_shape_and_focus_metrics() -> None:
     assert summary["recent_apps"] == ["code_editor", "web_page"]
     assert summary["total_focus_minutes"] == 0.2
     assert summary["app_distribution"] == {"code_editor": 0.75, "web_page": 0.25}
+
+
+@pytest.mark.asyncio
+async def test_activity_buffer_focus_minutes_uses_deduplicated_duration() -> None:
+    buffer = ActivityBuffer(window_seconds=120, snapshot_interval=5)
+
+    await buffer.add(
+        _snapshot(
+            0,
+            activity_type="reading",
+            has_content_change=False,
+            text="page",
+            thumbnail_hash="page",
+        )
+    )
+    await buffer.add(
+        _snapshot(
+            5,
+            activity_type="reading",
+            has_content_change=False,
+            text="page",
+            thumbnail_hash="page",
+        )
+    )
+    await buffer.add(
+        _snapshot(
+            10,
+            activity_type="reading",
+            has_content_change=False,
+            text="page",
+            thumbnail_hash="page",
+        )
+    )
+
+    summary = await buffer.summarize()
+
+    assert len(buffer.snapshots) == 1
+    assert summary["app_duration_seconds"] == 10.0
+    assert summary["total_focus_minutes"] == 0.2
 
 
 @pytest.mark.asyncio
@@ -161,6 +212,7 @@ async def test_activity_buffer_concurrent_add_and_summarize_is_safe() -> None:
         ("Stack Overflow - Mozilla Firefox", "web_page"),
         ("Knowledge Base", "other"),
         ("Knowledge Base - Chrome", "web_page"),
+        ("Google Docs - Google Chrome", "text_editor"),
         ("Paper - Adobe Acrobat", "pdf_reader"),
         ("Research - Zotero", "pdf_reader"),
         ("Learning Notes - Obsidian", "note_app"),

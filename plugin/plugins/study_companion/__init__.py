@@ -655,6 +655,8 @@ class StudyCompanionPlugin(
                 self._awareness_idle_ticks += 1
             else:
                 self._awareness_idle_ticks = 0
+        else:
+            self._awareness_idle_ticks += 1
 
         if self._should_push_context():
             summary = await buffer.summarize()

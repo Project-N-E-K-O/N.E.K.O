@@ -191,12 +191,12 @@
     "ui.button.rating.good":  "良い",
     "ui.button.rating.easy":  "簡単",
     "ui.label.name":  "名前",
-    "ui.awareness.title":  "Environment Awareness",
-    "ui.awareness.enabled":  "Enable screen awareness",
-    "ui.awareness.snapshot_interval":  "Snapshot interval",
-    "ui.awareness.context_window":  "Context window",
-    "ui.awareness.classify_mode":  "Classification mode",
-    "ui.awareness.push_mode":  "LLM context mode",
-    "ui.awareness.privacy_note":  "Screenshots are processed in memory only and are not written to disk.",
-    "ui.awareness.translation_pending":  "Translation pending"
+    "ui.awareness.title":  "環境認識",
+    "ui.awareness.enabled":  "画面の環境認識を有効にする",
+    "ui.awareness.snapshot_interval":  "スナップショット間隔",
+    "ui.awareness.context_window":  "コンテキストウィンドウ",
+    "ui.awareness.classify_mode":  "分類モード",
+    "ui.awareness.push_mode":  "LLMコンテキストモード",
+    "ui.awareness.privacy_note":  "スクリーンショットはメモリ内でのみ処理され、ディスクには保存されません。",
+    "ui.awareness.translation_pending":  "翻訳保留中"
 }

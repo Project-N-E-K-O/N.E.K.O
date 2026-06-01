@@ -40,10 +40,14 @@ class ActivityBuffer:
                 last = self.snapshots[-1]
                 same_app = last.app_type == snapshot.app_type
                 same_activity = last.activity_type == snapshot.activity_type
-                same_content_change = (
-                    last.has_content_change == snapshot.has_content_change
+                last_hash = str(last._thumbnail_hash or "")
+                current_hash = str(snapshot._thumbnail_hash or "")
+                same_hash = not last_hash or not current_hash or last_hash == current_hash
+                stable_content = (
+                    not last.has_content_change and not snapshot.has_content_change
+                    and same_hash
                 )
-                if same_app and same_activity and same_content_change:
+                if same_app and same_activity and stable_content:
                     self.snapshots[-1] = replace(
                         snapshot,
                         first_seen_at=last.first_seen_at,
@@ -73,12 +77,17 @@ class ActivityBuffer:
             app_distribution = {
                 app_type: count / total for app_type, count in app_counts.items()
             }
-            active_ticks = sum(
-                1
-                for snapshot in self.snapshots
-                if snapshot.app_type not in ("other",)
-                and snapshot.activity_type not in ("idle", "")
-            )
+            window_start = current.timestamp - self.window_seconds
+            active_seconds = 0.0
+            for snapshot in self.snapshots:
+                if snapshot.app_type in ("other",) or snapshot.activity_type in (
+                    "idle",
+                    "",
+                ):
+                    continue
+                start = max(window_start, snapshot.first_seen_at)
+                end = max(snapshot.timestamp, start)
+                active_seconds += max(0.0, end - start) + self.interval
 
             return {
                 "current_app": current.app_type,
@@ -89,7 +98,7 @@ class ActivityBuffer:
                 "recent_apps": list(
                     dict.fromkeys(snapshot.app_type for snapshot in self.snapshots)
                 ),
-                "total_focus_minutes": round(active_ticks * self.interval / 60, 1),
+                "total_focus_minutes": round(active_seconds / 60, 1),
                 "ocr_text_snippet": current.ocr_text_snippet,
                 "app_distribution": app_distribution,
             }

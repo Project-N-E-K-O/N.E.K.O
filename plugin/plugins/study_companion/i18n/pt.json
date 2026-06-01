@@ -191,12 +191,12 @@
     "ui.button.rating.good":  "Bom",
     "ui.button.rating.easy":  "Fácil",
     "ui.label.name":  "Nome",
-    "ui.awareness.title":  "Environment Awareness",
-    "ui.awareness.enabled":  "Enable screen awareness",
-    "ui.awareness.snapshot_interval":  "Snapshot interval",
-    "ui.awareness.context_window":  "Context window",
-    "ui.awareness.classify_mode":  "Classification mode",
-    "ui.awareness.push_mode":  "LLM context mode",
-    "ui.awareness.privacy_note":  "Screenshots are processed in memory only and are not written to disk.",
-    "ui.awareness.translation_pending":  "Translation pending"
+    "ui.awareness.title":  "Consciência do ambiente",
+    "ui.awareness.enabled":  "Ativar percepção da tela",
+    "ui.awareness.snapshot_interval":  "Intervalo de captura",
+    "ui.awareness.context_window":  "Janela de contexto",
+    "ui.awareness.classify_mode":  "Modo de classificação",
+    "ui.awareness.push_mode":  "Modo de contexto do LLM",
+    "ui.awareness.privacy_note":  "As capturas de tela são processadas apenas na memória e não são gravadas no disco.",
+    "ui.awareness.translation_pending":  "Tradução pendente"
 }

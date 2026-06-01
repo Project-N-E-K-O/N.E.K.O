@@ -208,11 +208,14 @@ def classify_app_from_title(window_title: str, *, default: str = "other") -> str
     title_lower = str(window_title or "").strip().lower()
     if not title_lower:
         return default
+    best_match: tuple[int, str] | None = None
     for app_type, keywords in _APP_TITLE_RULES.items():
         for keyword in keywords:
             if _app_keyword_matches(title_lower, keyword):
-                return app_type
-    return default
+                score = len(str(keyword or "").strip())
+                if best_match is None or score > best_match[0]:
+                    best_match = (score, app_type)
+    return best_match[1] if best_match is not None else default
 
 
 def _clean_line(value: str) -> str:
