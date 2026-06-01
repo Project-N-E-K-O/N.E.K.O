@@ -11061,7 +11061,7 @@ function _companionBuildPanel(state) {
         { label: _cardAssistT('character.aiCompanionQuickRegen', '🎲 重写整张卡'),
           send: _cardAssistT('character.aiCompanionQuickRegenMsg',
                 '把所有可见字段都按原本的角色定位重新写一遍。'),
-          requireMode: 'chat' },
+          requireMode: 'chat', fullRewrite: true },
     ];
     quickActions.forEach(function (qa) {
         const chip = document.createElement('button');
@@ -11073,6 +11073,10 @@ function _companionBuildPanel(state) {
             e.preventDefault();
             e.stopPropagation();
             if (chip.disabled) return;
+            // 「重写整张卡」用 locale 无关的 flag 标明全量重写意图，别让后端去正则匹配本地化
+            // 文案——ja/ko/pt/ru/es/zh-TW 的「重写」措辞匹配不到，后端 _complete_full_rewrite_actions
+            // 补全通路就不会触发，部分 action 列表会被当部分重写存下去（Codex #3333137718）。
+            state._pendingFullRewrite = !!qa.fullRewrite;
             input.value = qa.send;
             _companionSubmit(state);
         });
@@ -11268,6 +11272,23 @@ function _companionEnterDesignMode(state, existingData, filledKeys) {
 }
 
 function _companionUpdateQuickAvailability(state) {
+    // 详情表单 Save 的禁用集中在这里（busy 变化 + 每次 mode 切换都会调到，是唯一同步点）。
+    // 防竞态：**未落库新卡**只要还在「问答 / 生成」流程（state.mode !== 'chat'）或正在打 LLM
+    // （busy），就禁掉 Save——堵住「用户在草稿还没生成完的窗口里手动 Save 把新卡建出来」与
+    // 生成竞态：那一下会用旧快照建卡，且若走 popup / 有卡面分支会 closeCatgirlPanel 把面板连同
+    // AI 字段一起带走、事后救不回（Codex #3329022313 / #3329817833 / #3333137733）。进入 chat
+    // 模式（草稿已生成、字段已落到表单）后放开，用户才好手动 Save 建卡；之后 chat/refine 的
+    // LLM 飞行窗口又被 busy 盖住。已落库卡完全不禁（其并发由 _companionTryAutoSave 的
+    // wait/replay 安全兜住）。关 companion 时 _companionTeardown 会无条件恢复，不会卡死。
+    try {
+        if (state.form) {
+            const sb = state.form.querySelector('#save-button');
+            if (sb) {
+                const unsavedNewCard = state.isNew === true && !state.form._autoCreated;
+                sb.disabled = unsavedNewCard && (!!state.busy || state.mode !== 'chat');
+            }
+        }
+    } catch (_) { /* form 可能已 detach，忽略 */ }
     if (!state.quickRowEl) return;
     state.quickRowEl.querySelectorAll('.card-companion-quick-chip').forEach(function (chip) {
         const req = chip.dataset.requireMode || '';
@@ -11281,20 +11302,7 @@ function _companionSetBusy(state, busy) {
     state.busy = !!busy;
     if (state.sendBtnEl) state.sendBtnEl.disabled = !!busy;
     if (state.inputEl) state.inputEl.disabled = !!busy;
-    // 防竞态：**未落库的新卡**在 companion 打 LLM（clarify/generate/chat 飞行中）期间，
-    // 禁掉详情表单的 Save，从源头堵住「用户在 /generate 还没把字段写进表单的窗口里点 Save」
-    // ——那一下会用「AI 写字段之前」的旧快照建卡，且若走 popup/有卡面分支会 closeCatgirlPanel
-    // 把面板连同 AI 字段一起带走、事后无法挽回（Codex #3329022313 / #3329817833）。
-    // 已落库卡不在此列：它的并发由 _companionTryAutoSave 的 wait/replay 安全兜住，禁 Save
-    // 反而打扰。disabled = busy && 未落库新卡：busy 退场或卡一旦落库都会自动放开，不会卡死；
-    // 用 disabled 属性，与 saveCatgirlFromPanel 自己的 dataset.submitting 去抖机制互不干扰。
-    try {
-        if (state.form) {
-            const sb = state.form.querySelector('#save-button');
-            if (sb) sb.disabled = !!busy && state.isNew === true && !state.form._autoCreated;
-        }
-    } catch (_) { /* form 可能已 detach，忽略 */ }
-    _companionUpdateQuickAvailability(state);
+    _companionUpdateQuickAvailability(state);  // 内含详情表单 Save 的禁用同步
 }
 
 async function _companionSubmit(state) {
@@ -11517,12 +11525,17 @@ async function _companionRunChat(state) {
                     '⚠ 角色表单不在屏幕上了，没法应用。请重新打开这只猫娘的详情面板再试。'));
             return;
         }
+        // 「重写整张卡」quick action 设的 locale 无关 flag，随这次 /chat 透传给后端做全量
+        // 重写补全；读出后立刻清掉，避免后续普通消息误带（Codex #3333137718）。
+        const fullRewrite = state._pendingFullRewrite === true;
+        state._pendingFullRewrite = false;
         const resp = await _cardAssistFetch('/api/card-assist/chat', {
             messages: state.chatHistory,
             current_card: _cardAssistCollectCurrentFormData(state.form),
             target_field_keys: _cardAssistCollectFieldKeys(state.form),
             dev_cat_name: state.devCatName,
             locale: _cardAssistCurrentLocale(),
+            full_rewrite: fullRewrite,
         });
         // closed-companion guard：同 clarify/generate，关掉 companion 之后
         // 迟到的 reply + actions 都丢弃，不再静默改 form。

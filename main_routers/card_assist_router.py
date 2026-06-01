@@ -1074,7 +1074,14 @@ async def chat(request: Request):
         reply = (content or "")[:_CHAT_MAX_MESSAGE_CHARS]
 
     edit_intent = _chat_text_requests_edits(latest_user)
-    full_rewrite_intent = _chat_text_requests_full_rewrite(latest_user)
+    # 前端「重写整张卡」quick action 透传的 locale 无关 flag 优先——本地化文案（es/ja/ko/pt/
+    # ru/zh-TW 的「重写」措辞）正则匹配不到，只靠 _chat_text_requests_full_rewrite 会漏判，
+    # _complete_full_rewrite_actions 补全通路不触发、部分 action 被当部分重写存下（Codex
+    # #3333137718）。同时保留文本启发式，兼容用户手敲的全量重写措辞。
+    full_rewrite_intent = (
+        body.get("full_rewrite") is True
+        or _chat_text_requests_full_rewrite(latest_user)
+    )
 
     if edit_intent and not actions:
         actions = await _recover_actions_from_reply(
