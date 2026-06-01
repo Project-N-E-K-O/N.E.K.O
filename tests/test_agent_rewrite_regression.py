@@ -2471,6 +2471,14 @@ def test_is_agent_free_tracks_agent_model_not_version():
     assert manager.is_agent_free() is False
 
 
+def test_default_free_profile_agent_model_matches_metered_name():
+    """回退 DEFAULT_ASSIST_API_PROFILES['free'] 的 agent model 必须等于配额计量名
+    (_free_agent_model_name)，否则 api_providers.json 缺失/不可读时免费 agent 不计
+    配额、is_agent_free 误判（codex #1593）。锁住 defaults 与计量名一致。"""
+    from config import DEFAULT_ASSIST_API_PROFILES
+    assert DEFAULT_ASSIST_API_PROFILES['free']['AGENT_MODEL'] == ConfigManager._free_agent_model_name
+
+
 def test_is_free_voice_tracks_core_not_assist():
     """is_free_voice() 只认 core(CORE_API_TYPE=='free')，与 assist 无关：
     core=qwen+assist=free（自费语音+免费文本）应为 False。"""
