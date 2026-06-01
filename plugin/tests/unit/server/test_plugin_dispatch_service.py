@@ -334,10 +334,10 @@ async def test_trigger_custom_event_subscribers_isolates_handler_crashes(
 
 
 @pytest.mark.asyncio
-async def test_trigger_custom_event_subscribers_times_out_one_handler_only(
+async def test_trigger_custom_event_subscribers_defers_timeout_to_host(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    slow_host = _Host({"action": "noop"}, delay=0.2)
+    slow_host = _Host({"action": "noop"}, delay=0.06)
     ready_host = _Host({"action": "cancel_response"})
     _patch_handlers_and_hosts(
         monkeypatch,
@@ -360,12 +360,15 @@ async def test_trigger_custom_event_subscribers_times_out_one_handler_only(
     results = await PluginDispatchService().trigger_custom_event_subscribers(
         event_type="voice_transcript",
         args={},
-        timeout=0.05,
+        timeout=0.01,
     )
 
-    assert results[0]["plugin_id"] == "alpha"
-    assert results[0]["success"] is False
-    assert results[0]["error_type"] == "TimeoutError"
+    assert results[0] == {
+        "plugin_id": "alpha",
+        "event_id": "handle_transcript",
+        "success": True,
+        "result": {"action": "noop"},
+    }
     assert results[1] == {
         "plugin_id": "beta",
         "event_id": "handle_transcript",

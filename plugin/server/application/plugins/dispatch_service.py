@@ -238,15 +238,12 @@ class PluginDispatchService:
         async def _dispatch_handler(plugin_id: str, handler_event_id: str) -> dict[str, object]:
             try:
                 handler_args = copy.deepcopy(normalized_args)
-                result = await asyncio.wait_for(
-                    self.trigger_custom_event(
-                        to_plugin=plugin_id,
-                        event_type=event_type,
-                        event_id=handler_event_id,
-                        args=handler_args,
-                        timeout=timeout,
-                    ),
-                    timeout=float(timeout),
+                result = await self.trigger_custom_event(
+                    to_plugin=plugin_id,
+                    event_type=event_type,
+                    event_id=handler_event_id,
+                    args=handler_args,
+                    timeout=timeout,
                 )
                 return {
                     "plugin_id": plugin_id,
