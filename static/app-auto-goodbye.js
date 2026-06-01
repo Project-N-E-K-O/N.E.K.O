@@ -17,6 +17,32 @@
         'neko-model-dragging',
         'react-chat-window-dragging',
     ]);
+    const NON_CHARACTER_PATH_SEGMENTS = new Set([
+        'agenthud',
+        'api',
+        'api_key',
+        'card_maker',
+        'character_card_manager',
+        'chara_manager',
+        'chat',
+        'cloudsave_manager',
+        'cookies_login',
+        'focus',
+        'jukebox',
+        'l2d',
+        'live2d_emotion_manager',
+        'live2d_parameter_editor',
+        'memory_browser',
+        'mmd_emotion_manager',
+        'model_manager',
+        'soccer_demo',
+        'static',
+        'subtitle',
+        'templates',
+        'toast',
+        'voice_clone',
+        'vrm_emotion_manager',
+    ]);
 
     const state = {
         started: false,
@@ -51,9 +77,29 @@
         }
     }
 
+    function isNamedCharacterPath(pathname) {
+        const pathParts = String(pathname || '').split('/').filter(Boolean);
+        if (pathParts.length !== 1) {
+            return false;
+        }
+
+        let pathName = '';
+        try {
+            pathName = decodeURIComponent(pathParts[0]).trim();
+        } catch (_) {
+            return false;
+        }
+
+        if (NON_CHARACTER_PATH_SEGMENTS.has(pathName.toLowerCase())) {
+            return false;
+        }
+
+        return !!(pathName && pathName.indexOf('/') < 0 && pathName.indexOf('.') < 0);
+    }
+
     function isEligiblePage() {
         const pathname = getPathname();
-        return pathname === '/' || pathname === '/index.html';
+        return pathname === '/' || pathname === '/index.html' || isNamedCharacterPath(pathname);
     }
 
     function waitForStorageLocationStartupBarrier() {

@@ -327,6 +327,18 @@ def test_app_auto_goodbye_phase1_harness():
           await chat.flush();
           assert(chat.win.nekoAutoGoodbye.getState().started === false, '/chat should not start controller');
 
+          const namedCharacter = createHarness('/Miao', {{ barrierResolved: true }});
+          await namedCharacter.flush();
+          assert(namedCharacter.win.nekoAutoGoodbye.getState().started === true, 'named character route should start controller');
+
+          const nestedPath = createHarness('/Miao/profile', {{ barrierResolved: true }});
+          await nestedPath.flush();
+          assert(nestedPath.win.nekoAutoGoodbye.getState().started === false, 'nested paths should not start controller');
+
+          const assetLikePath = createHarness('/Miao.json', {{ barrierResolved: true }});
+          await assetLikePath.flush();
+          assert(assetLikePath.win.nekoAutoGoodbye.getState().started === false, 'asset-like paths should not start controller');
+
           // Priming should wait for websocket OPEN, then reset the timer baseline.
           const home = createHarness('/', {{ barrierResolved: true }});
           await home.flush();
