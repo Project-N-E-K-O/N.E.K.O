@@ -21,7 +21,7 @@ StudyMode = Literal["companion", "interactive", "teaching"]
 STUDY_EXPORT_FORMATS = ("markdown", "pdf", "docx", "xmind")
 STUDY_EXPORT_STYLES = ("neko", "academic", "compact")
 _LOGGER = logging.getLogger(__name__)
-_OCR_SNIPPET_MAX_CHARS = 200
+OCR_SNIPPET_MAX_CHARS = 200
 
 
 class ModeIntentPayload(TypedDict, total=False):
@@ -87,17 +87,6 @@ class ActivitySummary(TypedDict):
     total_focus_minutes: float
     ocr_text_snippet: str
     app_distribution: dict[str, float]
-
-
-_EMPTY_SUMMARY: ActivitySummary = {
-    "current_app": "other",
-    "current_activity": "",
-    "app_duration_seconds": 0.0,
-    "recent_apps": [],
-    "total_focus_minutes": 0.0,
-    "ocr_text_snippet": "",
-    "app_distribution": {},
-}
 
 
 STATUS_READY = "ready"

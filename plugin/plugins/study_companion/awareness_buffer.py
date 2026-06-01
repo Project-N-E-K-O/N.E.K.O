@@ -5,7 +5,19 @@ from collections import deque
 from dataclasses import replace
 import time
 
-from .models import ActivitySnapshot, ActivitySummary, _EMPTY_SUMMARY
+from .models import ActivitySnapshot, ActivitySummary
+
+
+def _empty_summary() -> ActivitySummary:
+    return {
+        "current_app": "other",
+        "current_activity": "",
+        "app_duration_seconds": 0.0,
+        "recent_apps": [],
+        "total_focus_minutes": 0.0,
+        "ocr_text_snippet": "",
+        "app_distribution": {},
+    }
 
 
 class ActivityBuffer:
@@ -45,11 +57,7 @@ class ActivityBuffer:
     async def summarize(self) -> ActivitySummary:
         async with self._lock:
             if not self.snapshots:
-                return {
-                    **_EMPTY_SUMMARY,
-                    "recent_apps": [],
-                    "app_distribution": {},
-                }
+                return _empty_summary()
 
             current = self.snapshots[-1]
             app_first_seen_at = current.first_seen_at

@@ -198,7 +198,7 @@ def _app_keyword_matches(title_lower: str, keyword: str) -> bool:
     candidate = str(keyword or "").strip().lower()
     if not candidate:
         return False
-    if candidate.isalnum() and len(candidate) <= 3:
+    if candidate.isalnum():
         pattern = rf"(?<![a-z0-9]){re.escape(candidate)}(?![a-z0-9])"
         return re.search(pattern, title_lower) is not None
     return candidate in title_lower

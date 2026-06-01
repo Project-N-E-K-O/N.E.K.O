@@ -12,9 +12,9 @@ from PIL import Image
 
 from .models import (
     ActivitySnapshot,
+    OCR_SNIPPET_MAX_CHARS,
     OcrSnapshot,
     StudyConfig,
-    _OCR_SNIPPET_MAX_CHARS,
     utc_now_iso,
 )
 from .screen_classifier import classify_app_from_title, classify_screen_from_ocr
@@ -200,7 +200,7 @@ class StudyOcrPipeline:
             ocr_diagnostic = f"; ocr_status={ocr_snapshot.status}"
             if ocr_snapshot.status in {"ok", "empty"}:
                 normalized_text = str(ocr_snapshot.text or "").strip()
-                ocr_text_snippet = normalized_text[:_OCR_SNIPPET_MAX_CHARS]
+                ocr_text_snippet = normalized_text[:OCR_SNIPPET_MAX_CHARS]
                 classification = classify_screen_from_ocr(
                     normalized_text,
                     window_title=window_title,
