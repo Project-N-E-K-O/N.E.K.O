@@ -1083,7 +1083,12 @@ async def chat(request: Request):
         or _chat_text_requests_full_rewrite(latest_user)
     )
 
-    if edit_intent and not actions:
+    # recovery gate 也要带上 full_rewrite_intent：本地化「重写整张卡」quick chip（es/ja/ko/
+    # pt/ru/zh-TW）的文本 _CHAT_EDIT_INTENT_RE 匹配不到、edit_intent 为 False，若首轮 LLM 又
+    # 没吐出可用 actions（纯文本 / actions:[]），不走 _recover_actions_from_reply 就只回一句
+    # 话、卡一点没改，辜负了那个显式 flag；而 _complete_full_rewrite_actions 只补全已有 actions、
+    # actions 为空时也救不回来。所以 flag 在场时一并触发恢复（Codex #3333394174）。
+    if (edit_intent or full_rewrite_intent) and not actions:
         actions = await _recover_actions_from_reply(
             lang=lang,
             locale_code=locale_code,
