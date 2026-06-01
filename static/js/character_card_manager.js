@@ -11516,6 +11516,11 @@ async function _companionRunGenerate(state) {
 
 async function _companionRunChat(state) {
     _companionSetBusy(state, true);
+    // ⚠ full_rewrite 一次性消费：在任何 early-return（form-gone 等）**之前**就读出并清掉，
+    // 否则这次点「重写整张卡」若撞上 form rebuild、没接上 live form 而提前 return，标记会
+    // 残留、被下一条普通聊天消息误当成整卡重写（CodeRabbit #3333410664）。
+    const fullRewrite = state._pendingFullRewrite === true;
+    state._pendingFullRewrite = false;
     const typing = _companionAppendTyping(state);
     try {
         if (!_companionEnsureLiveForm(state)) {
@@ -11525,10 +11530,7 @@ async function _companionRunChat(state) {
                     '⚠ 角色表单不在屏幕上了，没法应用。请重新打开这只猫娘的详情面板再试。'));
             return;
         }
-        // 「重写整张卡」quick action 设的 locale 无关 flag，随这次 /chat 透传给后端做全量
-        // 重写补全；读出后立刻清掉，避免后续普通消息误带（Codex #3333137718）。
-        const fullRewrite = state._pendingFullRewrite === true;
-        state._pendingFullRewrite = false;
+        // full_rewrite 已在函数开头一次性读出并清掉（见上），这里直接透传（Codex #3333137718）。
         const resp = await _cardAssistFetch('/api/card-assist/chat', {
             messages: state.chatHistory,
             current_card: _cardAssistCollectCurrentFormData(state.form),
