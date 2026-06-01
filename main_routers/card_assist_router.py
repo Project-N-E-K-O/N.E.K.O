@@ -130,6 +130,37 @@ def _resolve_locale_code(payload_locale: str | None) -> str:
     return "en"
 
 
+# `_resolve_locale_code` 的输出（角色卡模板文件名）→ (英文名, 本地名)。prompt 目前只写了
+# zh / en 两版（见 _resolve_language），ja/ko/ru/pt/es 会落到 en、zh-TW 会落到简中。这些
+# locale 如果不显式要求输出语言，助手就会用英文 / 简中提问、并把字段值也填成英文 / 简中
+# （Codex #3331696257）。所以对这些 locale 追加一条输出语言指示。en / zh-CN 与基础 prompt
+# 语言一致，不在表里（返回空指示）。
+_LOCALE_OUTPUT_LANGUAGE: dict[str, tuple[str, str]] = {
+    "zh-TW": ("Traditional Chinese", "繁體中文"),
+    "ja": ("Japanese", "日本語"),
+    "ko": ("Korean", "한국어"),
+    "pt": ("Portuguese", "Português"),
+    "ru": ("Russian", "Русский"),
+    "es": ("Spanish", "Español"),
+}
+
+
+def _output_language_directive(locale_code: str) -> str:
+    """对「没有专门 prompt 版本」的 locale 生成一条显式输出语言指示，追加到 prompt 末尾。
+    字段 key 已由 _resolve_target_keys 按 locale 模板给定，这里只约束 values / 问题 / 说明
+    用目标语言。en / zh-CN 与基础 prompt 一致 → 返回空串、不加任何东西。"""
+    pair = _LOCALE_OUTPUT_LANGUAGE.get(locale_code)
+    if not pair:
+        return ""
+    name, native = pair
+    return (
+        f"\n\n[OUTPUT LANGUAGE] Respond entirely in {name}（{native}）. Every question, "
+        f"field value, and explanation you produce MUST be written in {name}; do NOT use "
+        f"English or Simplified Chinese for any user-facing text. Keep the JSON structure "
+        f"and the field keys exactly as specified."
+    )
+
+
 def _strip_json_fence(raw: str) -> str:
     """LLMs love to wrap JSON in ```json ... ``` fences even when told not to.
     Strip them defensively before json.loads. Same approach as memory/refine.py.
@@ -384,6 +415,8 @@ async def clarify(request: Request):
 
     template = get_card_assist_clarify_prompt(lang)
     prompt = template % (description, current_card_text)
+    # ja/ko/ru/pt/es/zh-TW 落到 en/简中 prompt 时，显式要求用目标语言提问（Codex #3331696257）
+    prompt += _output_language_directive(_resolve_locale_code(body.get("locale")))
 
     content, err = await _invoke_assist(prompt)
     if err is not None:
@@ -475,6 +508,8 @@ async def generate(request: Request):
     template = get_card_assist_generate_prompt(lang)
     prompt = template % (description, answers_text, current_card_text,
                          target_keys_text)
+    # 字段 key 已按 locale 模板给定，这里再要求字段 value 也用目标语言（Codex #3331696257）
+    prompt += _output_language_directive(locale_code)
 
     content, err = await _invoke_assist(prompt)
     if err is not None:
@@ -564,6 +599,8 @@ async def refine(request: Request):
 
     template = get_card_assist_refine_field_prompt(lang)
     prompt = template % (card_text, field_key, current_value, instruction)
+    # 重生成的字段值也用目标语言（Codex #3331696257）
+    prompt += _output_language_directive(_resolve_locale_code(body.get("locale")))
 
     content, err = await _invoke_assist(prompt)
     if err is not None:
@@ -742,6 +779,8 @@ async def chat(request: Request):
     system_content = system_template % (
         dev_cat_name, current_card_text, target_keys_text
     )
+    # 聊天回复 + actions 里的字段值也用目标语言（Codex #3331696257）
+    system_content += _output_language_directive(locale_code)
 
     messages = [{"role": "system", "content": system_content}] + history
 
