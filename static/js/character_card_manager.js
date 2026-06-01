@@ -11254,6 +11254,19 @@ function _companionSetBusy(state, busy) {
     state.busy = !!busy;
     if (state.sendBtnEl) state.sendBtnEl.disabled = !!busy;
     if (state.inputEl) state.inputEl.disabled = !!busy;
+    // 防竞态：**未落库的新卡**在 companion 打 LLM（clarify/generate/chat 飞行中）期间，
+    // 禁掉详情表单的 Save，从源头堵住「用户在 /generate 还没把字段写进表单的窗口里点 Save」
+    // ——那一下会用「AI 写字段之前」的旧快照建卡，且若走 popup/有卡面分支会 closeCatgirlPanel
+    // 把面板连同 AI 字段一起带走、事后无法挽回（Codex #3329022313 / #3329817833）。
+    // 已落库卡不在此列：它的并发由 _companionTryAutoSave 的 wait/replay 安全兜住，禁 Save
+    // 反而打扰。disabled = busy && 未落库新卡：busy 退场或卡一旦落库都会自动放开，不会卡死；
+    // 用 disabled 属性，与 saveCatgirlFromPanel 自己的 dataset.submitting 去抖机制互不干扰。
+    try {
+        if (state.form) {
+            const sb = state.form.querySelector('#save-button');
+            if (sb) sb.disabled = !!busy && state.isNew === true && !state.form._autoCreated;
+        }
+    } catch (_) { /* form 可能已 detach，忽略 */ }
     _companionUpdateQuickAvailability(state);
 }
 
