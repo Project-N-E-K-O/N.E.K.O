@@ -1947,14 +1947,12 @@ export default function App({
     if (!isCompactSurface) return;
     if (!compactChoiceLayerOpen) return;
 
-    const shellNode = appShellRef.current;
+    const shellNode = compactInputShellRef.current;
     const layerNode = compactChoiceLayerRef.current;
     if (!shellNode || !layerNode) return;
 
     const gap = 16;
     let frameId: number | null = null;
-    let trackingFrameId: number | null = null;
-    let disposed = false;
 
     const getDesktopPlacementSpace = (shellRect: DOMRect) => {
       const layout = (window as typeof window & {
@@ -1974,8 +1972,11 @@ export default function App({
         return null;
       }
 
-      const surfaceScreenTop = windowY + shellRect.top;
-      const surfaceScreenBottom = windowY + shellRect.bottom;
+      const surfaceTop = Number(layout?.surface?.top);
+      const surfaceHeight = Number(layout?.surface?.height);
+      const surfaceScreenTop = windowY + (Number.isFinite(surfaceTop) ? surfaceTop : shellRect.top);
+      const surfaceScreenBottom = surfaceScreenTop
+        + (Number.isFinite(surfaceHeight) && surfaceHeight > 0 ? surfaceHeight : shellRect.height);
       const workAreaBottom = workAreaY + workAreaHeight;
       return {
         availableAbove: Math.max(0, surfaceScreenTop - workAreaY),
@@ -1984,15 +1985,10 @@ export default function App({
     };
 
     const updatePlacement = () => {
-      const nextShellNode = appShellRef.current;
+      const nextShellNode = compactInputShellRef.current;
       const nextLayerNode = compactChoiceLayerRef.current;
       if (!nextShellNode || !nextLayerNode) return;
 
-      const shellRect = nextShellNode.getBoundingClientRect();
-      const layerRect = nextLayerNode.getBoundingClientRect();
-      const layerHeight = Math.max(layerRect.height, nextLayerNode.scrollHeight);
-      const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
-      const desktopSpace = getDesktopPlacementSpace(shellRect);
       const desktopForcedPlacement = ((window as typeof window & {
         __nekoDesktopCompactLayout?: DesktopCompactChoicePlacementLayout | null;
       }).__nekoDesktopCompactLayout?.compactChoicePlacement);
@@ -2000,6 +1996,11 @@ export default function App({
         setCompactChoiceLayerPlacement(current => (current === desktopForcedPlacement ? current : desktopForcedPlacement));
         return;
       }
+      const shellRect = nextShellNode.getBoundingClientRect();
+      const layerRect = nextLayerNode.getBoundingClientRect();
+      const layerHeight = Math.max(layerRect.height, nextLayerNode.scrollHeight);
+      const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+      const desktopSpace = getDesktopPlacementSpace(shellRect);
       const availableBelow = desktopSpace?.availableBelow ?? Math.max(0, viewportHeight - shellRect.bottom);
       const availableAbove = desktopSpace?.availableAbove ?? Math.max(0, shellRect.top);
       const requiredSpace = layerHeight + gap;
@@ -2040,17 +2041,11 @@ export default function App({
       });
     };
 
-    const trackPlacement = () => {
-      if (disposed) return;
-      updatePlacement();
-      trackingFrameId = window.requestAnimationFrame(trackPlacement);
-    };
-
     schedulePlacementUpdate();
-    trackingFrameId = window.requestAnimationFrame(trackPlacement);
 
     const visualViewport = window.visualViewport;
     window.addEventListener('resize', schedulePlacementUpdate);
+    window.addEventListener('neko:desktop-compact-layout-change', schedulePlacementUpdate);
     visualViewport?.addEventListener('resize', schedulePlacementUpdate);
     visualViewport?.addEventListener('scroll', schedulePlacementUpdate);
 
@@ -2064,14 +2059,11 @@ export default function App({
     }
 
     return () => {
-      disposed = true;
       if (frameId !== null) {
         window.cancelAnimationFrame(frameId);
       }
-      if (trackingFrameId !== null) {
-        window.cancelAnimationFrame(trackingFrameId);
-      }
       window.removeEventListener('resize', schedulePlacementUpdate);
+      window.removeEventListener('neko:desktop-compact-layout-change', schedulePlacementUpdate);
       visualViewport?.removeEventListener('resize', schedulePlacementUpdate);
       visualViewport?.removeEventListener('scroll', schedulePlacementUpdate);
       observer?.disconnect();
