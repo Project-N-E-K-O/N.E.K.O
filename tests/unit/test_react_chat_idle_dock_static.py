@@ -87,7 +87,7 @@ def test_idle_dock_enters_minimized_surface_mode_without_setminimized_options():
 
     # exitIdleDock restores the previous real surface mode without adding
     # idle-dock options or branches to setMinimized itself.
-    assert "setChatSurfaceMode(getRestorableChatSurfaceMode());" in source
+    assert "setChatSurfaceMode(normalizeChatSurfaceMode(lastRestorableChatSurfaceMode));" in source
     assert "setMinimized(false, {" not in source
 
 
@@ -226,4 +226,4 @@ def test_idle_dock_exit_preserves_drag_demotion_position():
     assert "await commitElectronIdleDockCollapsedBounds(bridge, preserveBounds, exitGeneration)" in source
     assert "wasActive && saved && !preserveCurrentPosition" in source
     assert "wasActive && triggered && minimized && preserveCurrentPosition" in source
-    assert "setChatSurfaceMode(getRestorableChatSurfaceMode());" in source
+    assert "setChatSurfaceMode(normalizeChatSurfaceMode(lastRestorableChatSurfaceMode));" in source
