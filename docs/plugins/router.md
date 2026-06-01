@@ -212,7 +212,7 @@ Most of the time you don't need prefixes — just make sure entry IDs don't coll
 
 `exclude_router()` removes a router from the plugin's router list, but normal plugin code should not use it as a live feature toggle. Entries are collected when the host builds its dispatch table, so removing a router later does not automatically make its already-collected entries uncallable.
 
-If you need runtime enable/disable behavior, use the extension management path that rebuilds the dispatch table, or gate the entry logic with your own config check.
+If you need runtime enable/disable behavior, use the host extension enable/disable controls (`DISABLE_EXTENSION` / `ENABLE_EXTENSION`) that rebuild the dispatch table, or gate the entry logic with your own config check.
 
 ```python
 # Removes from the router list only
