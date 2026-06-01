@@ -2215,7 +2215,7 @@ describe('App', () => {
     }
   });
 
-  it('renders compact input as the default entry without history or extra controls', () => {
+  it('renders compact input without history or extra controls', () => {
     const message = parseChatMessage({
       id: 'assistant-compact-1',
       role: 'assistant',
@@ -2224,7 +2224,7 @@ describe('App', () => {
       createdAt: 1,
       blocks: [{ type: 'text', text: '今天想让我陪你做什么呢？' }],
     });
-    const { container } = render(<App chatSurfaceMode="compact" messages={[message]} />);
+    const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />);
 
     expect(container.querySelector('.compact-chat-stage-body-slot')).toHaveAttribute('data-compact-stage-fallback', 'message-list');
     expect(container.querySelector('.message-list')).toBeNull();
@@ -2249,6 +2249,7 @@ describe('App', () => {
     render(
       <App
         chatSurfaceMode="compact"
+        compactChatState="input"
         messages={[message]}
         onCompactChatStateChange={onCompactChatStateChange}
       />,

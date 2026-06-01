@@ -3653,6 +3653,13 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
     padding: 0 18px;
   }
 
+  /* 工具轮盘按钮在字幕/选项态依旧绝对定位在右侧，需保留右侧内边距，
+     避免上面的 padding 简写把字幕文字挤到按钮下方喵 */
+  .compact-chat-surface-frame[data-compact-tool-toggle-visible="true"][data-compact-chat-state="default"],
+  .compact-chat-surface-frame[data-compact-tool-toggle-visible="true"][data-compact-chat-state="options"] {
+    padding-right: 62px;
+  }
+
   .compact-chat-surface-frame[data-compact-chat-state="input"] {
     padding: 5px 8px 5px 18px;
   }
