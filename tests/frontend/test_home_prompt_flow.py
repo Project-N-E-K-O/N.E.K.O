@@ -3019,6 +3019,875 @@ def test_avatar_floating_open_agent_clears_button_highlight_for_panel(
 
 
 @pytest.mark.frontend
+def test_day4_chat_settings_opens_settings_then_tours_sidebar(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <button id="live2d-btn-settings" style="position:absolute; left:20px; top:30px; width:44px; height:44px;"></button>
+                <button id="chat-settings-button" style="position:absolute; left:100px; top:80px; width:120px; height:44px;"></button>
+                <section id="chat-settings-panel" data-neko-sidepanel data-neko-sidepanel-type="chat-settings" style="position:absolute; left:260px; top:70px; width:240px; height:360px;"></section>
+            `;
+            document.getElementById('chat-settings-panel')._anchorElement = document.getElementById('chat-settings-button');
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const calls = [];
+            let releaseNarration;
+            director.appendGuideChatMessage = () => calls.push({ type: 'message' });
+            director.applyGuideEmotion = (emotion) => calls.push({ type: 'emotion', emotion });
+            director.enableInterrupts = () => calls.push({ type: 'interrupts' });
+            director.waitForSceneDelay = async () => true;
+            director.openSettingsPanel = async () => {
+                calls.push({ type: 'api:openSettingsPanel' });
+                return true;
+            };
+            director.ensureAvatarFloatingSettingsSidePanel = async (type) => {
+                calls.push({ type: 'api:ensureSidePanel', panelType: type });
+                return document.getElementById('chat-settings-panel');
+            };
+            director.applyGuideHighlights = (config) => {
+                calls.push({
+                    type: 'highlight',
+                    key: config.key,
+                    persistentId: config.persistent ? config.persistent.id : null,
+                    primaryId: config.primary ? config.primary.id : null,
+                });
+                return {
+                    persistent: config.persistent || null,
+                    primary: config.primary || null,
+                    secondary: config.secondary || null,
+                };
+            };
+            director.moveCursorToElement = async (element, durationMs) => {
+                calls.push({ type: 'move', id: element && element.id, durationMs });
+                return true;
+            };
+            director.cursor = {
+                hasPosition: () => true,
+                showAt: () => {},
+                click: () => calls.push({ type: 'click' }),
+                wobble: () => calls.push({ type: 'wobble' }),
+                runPauseAwareEllipse: async (x, y, radiusX, radiusY) => {
+                    calls.push({ type: 'ellipse', x, y, radiusX, radiusY });
+                    if (releaseNarration) {
+                        releaseNarration();
+                    }
+                    return true;
+                },
+            };
+            director.speakGuideLine = () => new Promise((resolve) => {
+                releaseNarration = () => {
+                    calls.push({ type: 'narration:done' });
+                    resolve();
+                };
+            });
+
+            const scenePromise = director.playAvatarFloatingScene({
+                id: 'day4_chat_settings',
+                text: '在这里可以决定我回复你的长短，还能决定要不要让我带上可爱的表情，或者在人家唠叨的时候打断我哦！都可以调到让你最舒服的节奏',
+                voiceKey: 'avatar_floating_day4_chat_settings',
+                target: 'settings-sidepanel:chat-settings',
+                cursorAction: 'tour',
+                operation: 'show-settings-sidepanel:chat-settings',
+            }, 4, 1, 8);
+            await scenePromise;
+            return calls;
+        }
+        """
+    )
+
+    event_keys = [
+        (call["type"], call.get("key"), call.get("primaryId"), call.get("persistentId"))
+        for call in result
+        if call["type"] == "highlight"
+    ]
+    assert event_keys[:3] == [
+        ("highlight", "day4_chat_settings-settings-button", "live2d-btn-settings", "live2d-btn-settings"),
+        ("highlight", "day4_chat_settings-chat-settings-button", "chat-settings-button", "live2d-btn-settings"),
+        ("highlight", "day4_chat_settings-chat-settings-panel", "chat-settings-panel", "live2d-btn-settings"),
+    ]
+    assert result.index({"type": "api:openSettingsPanel"}) < result.index({
+        "type": "highlight",
+        "key": "day4_chat_settings-chat-settings-button",
+        "persistentId": "live2d-btn-settings",
+        "primaryId": "chat-settings-button",
+    })
+    assert {"type": "click"} in result
+    assert any(call["type"] == "ellipse" and call["radiusX"] > 0 and call["radiusY"] > 0 for call in result)
+
+
+@pytest.mark.frontend
+def test_day4_model_behavior_moves_from_chat_sidebar_to_animation_sidebar(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <button id="live2d-btn-settings" style="position:absolute; left:20px; top:30px; width:44px; height:44px;"></button>
+                <button id="animation-settings-button" style="position:absolute; left:100px; top:140px; width:120px; height:44px;"></button>
+                <section id="chat-settings-panel" data-neko-sidepanel data-neko-sidepanel-type="chat-settings" style="display:flex; opacity:1; position:absolute; left:260px; top:70px; width:240px; height:360px;"></section>
+                <section id="animation-settings-panel" data-neko-sidepanel data-neko-sidepanel-type="animation-settings" style="position:absolute; left:260px; top:70px; width:260px; height:380px;"></section>
+            `;
+            const chatPanel = document.getElementById('chat-settings-panel');
+            chatPanel._collapse = () => {
+                window.__calls.push({ type: 'collapse', id: 'chat-settings-panel' });
+                chatPanel.style.display = 'none';
+                chatPanel.style.opacity = '0';
+            };
+            document.getElementById('animation-settings-panel')._anchorElement = document.getElementById('animation-settings-button');
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.__calls = [];
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            let releaseNarration;
+            director.appendGuideChatMessage = () => window.__calls.push({ type: 'message' });
+            director.applyGuideEmotion = (emotion) => window.__calls.push({ type: 'emotion', emotion });
+            director.enableInterrupts = () => window.__calls.push({ type: 'interrupts' });
+            director.waitForSceneDelay = async () => true;
+            director.openSettingsPanel = async () => {
+                window.__calls.push({ type: 'api:openSettingsPanel' });
+                return true;
+            };
+            director.ensureAvatarFloatingSettingsSidePanel = async (type) => {
+                window.__calls.push({ type: 'api:ensureSidePanel', panelType: type });
+                const panel = document.getElementById(type === 'animation-settings'
+                    ? 'animation-settings-panel'
+                    : 'chat-settings-panel');
+                panel.style.display = 'flex';
+                panel.style.opacity = '1';
+                return panel;
+            };
+            director.applyGuideHighlights = (config) => {
+                window.__calls.push({
+                    type: 'highlight',
+                    key: config.key,
+                    persistentId: config.persistent ? config.persistent.id : null,
+                    primaryId: config.primary ? config.primary.id : null,
+                });
+                return {
+                    persistent: config.persistent || null,
+                    primary: config.primary || null,
+                    secondary: config.secondary || null,
+                };
+            };
+            director.moveCursorToElement = async (element, durationMs) => {
+                window.__calls.push({ type: 'move', id: element && element.id, durationMs });
+                return true;
+            };
+            director.cursor = {
+                hasPosition: () => true,
+                showAt: () => {},
+                click: () => window.__calls.push({ type: 'click' }),
+                wobble: () => window.__calls.push({ type: 'wobble' }),
+                runPauseAwareEllipse: async (x, y, radiusX, radiusY) => {
+                    window.__calls.push({ type: 'ellipse', x, y, radiusX, radiusY });
+                    if (releaseNarration) {
+                        releaseNarration();
+                    }
+                    return true;
+                },
+                cancel: () => {},
+            };
+            director.speakGuideLine = () => new Promise((resolve) => {
+                releaseNarration = () => {
+                    window.__calls.push({ type: 'narration:done' });
+                    releaseNarration = null;
+                    resolve();
+                };
+                window.setTimeout(() => {
+                    if (releaseNarration) {
+                        releaseNarration();
+                    }
+                }, 20);
+            });
+
+            await director.playAvatarFloatingScene({
+                id: 'day4_model_behavior',
+                text: '如果你想要看到更精致、细节更满满的我，或者想要更丝滑、更流畅的动作体验，都可以在这里进行调整哦！不管哪一种，我都会展现出最可爱的一面哒~',
+                voiceKey: 'avatar_floating_day4_model_behavior',
+                target: 'settings-sidepanel:animation-settings',
+                cursorAction: 'tour',
+                operation: 'show-settings-sidepanel:animation-settings',
+            }, 4, 2, 8);
+            return window.__calls;
+        }
+        """
+    )
+
+    event_keys = [
+        (call["type"], call.get("key"), call.get("primaryId"), call.get("persistentId"))
+        for call in result
+        if call["type"] == "highlight"
+    ]
+    assert result.index({"type": "collapse", "id": "chat-settings-panel"}) < result.index({
+        "type": "highlight",
+        "key": "day4_model_behavior-animation-settings-button",
+        "persistentId": "live2d-btn-settings",
+        "primaryId": "animation-settings-button",
+    })
+    assert event_keys[:2] == [
+        ("highlight", "day4_model_behavior-animation-settings-button", "animation-settings-button", "live2d-btn-settings"),
+        ("highlight", "day4_model_behavior-animation-settings-panel", "animation-settings-panel", "live2d-btn-settings"),
+    ]
+    assert result.index({"type": "move", "id": "animation-settings-button", "durationMs": 620}) < result.index({
+        "type": "api:ensureSidePanel",
+        "panelType": "animation-settings",
+    })
+    assert any(call["type"] == "ellipse" and call["radiusX"] > 0 and call["radiusY"] > 0 for call in result)
+
+
+@pytest.mark.frontend
+def test_day5_character_settings_moves_from_chat_to_settings_and_sidebar(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <section id="react-chat-window-root" style="position:absolute; left:20px; top:320px; width:420px; height:160px;"></section>
+                <button id="live2d-btn-settings" style="position:absolute; left:20px; top:30px; width:44px; height:44px;"></button>
+                <button id="character-settings-button" style="position:absolute; left:100px; top:80px; width:130px; height:44px;"></button>
+                <section id="character-settings-panel" data-neko-sidepanel data-neko-sidepanel-type="character-settings" style="position:absolute; left:260px; top:70px; width:260px; height:380px;"></section>
+            `;
+            document.getElementById('character-settings-panel')._anchorElement = document.getElementById('character-settings-button');
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const calls = [];
+            let releaseNarration;
+            director.appendGuideChatMessage = (text) => calls.push({ type: 'message', text });
+            director.applyGuideEmotion = (emotion) => calls.push({ type: 'emotion', emotion });
+            director.enableInterrupts = () => calls.push({ type: 'interrupts' });
+            director.waitForSceneDelay = async (durationMs) => {
+                calls.push({ type: 'delay', durationMs });
+                return true;
+            };
+            director.openSettingsPanel = async () => {
+                calls.push({ type: 'api:openSettingsPanel' });
+                return true;
+            };
+            director.ensureAvatarFloatingSettingsSidePanel = async (type) => {
+                calls.push({ type: 'api:ensureSidePanel', panelType: type });
+                const panel = document.getElementById('character-settings-panel');
+                panel.style.display = 'flex';
+                panel.style.opacity = '1';
+                return panel;
+            };
+            director.applyGuideHighlights = (config) => {
+                calls.push({
+                    type: 'highlight',
+                    key: config.key,
+                    persistentId: config.persistent ? config.persistent.id : null,
+                    primaryId: config.primary ? config.primary.id : null,
+                });
+                return {
+                    persistent: config.persistent || null,
+                    primary: config.primary || null,
+                    secondary: config.secondary || null,
+                };
+            };
+            director.overlay.clearActionSpotlight = () => calls.push({ type: 'clearActionSpotlight' });
+            director.overlay.clearPersistentSpotlight = () => calls.push({ type: 'clearPersistentSpotlight' });
+            director.moveCursorToElement = async (element, durationMs) => {
+                calls.push({ type: 'move', id: element && element.id, durationMs });
+                return true;
+            };
+            director.cursor = {
+                hasPosition: () => true,
+                showAt: () => calls.push({ type: 'showAt' }),
+                click: () => calls.push({ type: 'click' }),
+                wobble: () => calls.push({ type: 'wobble' }),
+                runPauseAwareEllipse: async (x, y, radiusX, radiusY) => {
+                    calls.push({ type: 'ellipse', x, y, radiusX, radiusY });
+                    if (releaseNarration) {
+                        releaseNarration();
+                    }
+                    return true;
+                },
+                cancel: () => calls.push({ type: 'cancel' }),
+                hide: () => {},
+            };
+            director.speakGuideLine = () => new Promise((resolve) => {
+                releaseNarration = () => {
+                    calls.push({ type: 'narration:done' });
+                    releaseNarration = null;
+                    resolve();
+                };
+                window.setTimeout(() => {
+                    if (releaseNarration) {
+                        releaseNarration();
+                    }
+                }, 20);
+            });
+
+            await director.playAvatarFloatingScene({
+                id: 'day5_character_settings',
+                text: '从今天起，我就真正成为只属于你的专属猫娘啦。你看，在这里可以为我穿上漂亮的新衣服，也可以帮我换一个更好听的声音……',
+                voiceKey: 'avatar_floating_day5_character_settings',
+                target: 'settings-sidepanel:character-settings',
+                cursorAction: 'tour',
+                operation: 'show-settings-sidepanel:character-settings',
+            }, 5, 0, 4);
+            return calls;
+        }
+        """
+    )
+
+    assert [
+        (call["key"], call["primaryId"], call["persistentId"])
+        for call in result
+        if call["type"] == "highlight"
+    ][:4] == [
+        ("day5_character_settings-intro-chat", "react-chat-window-root", None),
+        ("day5_character_settings-settings-button", "live2d-btn-settings", "live2d-btn-settings"),
+        ("day5_character_settings-character-settings-button", "character-settings-button", "live2d-btn-settings"),
+        ("day5_character_settings-character-settings-panel", "character-settings-panel", "live2d-btn-settings"),
+    ]
+    assert {"type": "delay", "durationMs": 1000} in result
+    assert result.index({"type": "clearActionSpotlight"}) < result.index({
+        "type": "highlight",
+        "key": "day5_character_settings-settings-button",
+        "persistentId": "live2d-btn-settings",
+        "primaryId": "live2d-btn-settings",
+    })
+    assert result.index({"type": "move", "id": "live2d-btn-settings", "durationMs": 760}) < result.index({
+        "type": "api:openSettingsPanel",
+    })
+    assert result.index({"type": "move", "id": "character-settings-button", "durationMs": 620}) < result.index({
+        "type": "api:ensureSidePanel",
+        "panelType": "character-settings",
+    })
+    assert any(call["type"] == "ellipse" and call["radiusX"] > 0 and call["radiusY"] > 0 for call in result)
+    assert {"type": "click"} not in result
+
+
+@pytest.mark.frontend
+def test_day5_character_panic_keeps_character_sidebar_highlight_then_clears(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <section id="character-settings-panel" data-neko-sidepanel data-neko-sidepanel-type="character-settings" style="display:flex; opacity:1; position:absolute; left:260px; top:70px; width:260px; height:380px;"></section>
+                <button id="live2d-sidepanel-live2d-manage" style="position:absolute; left:290px; top:110px; width:120px; height:44px;"></button>
+                <button id="live2d-sidepanel-voice-clone" style="position:absolute; left:290px; top:170px; width:120px; height:44px;"></button>
+            `;
+            const panel = document.getElementById('character-settings-panel');
+            panel._collapse = () => {
+                window.__calls.push({ type: 'collapse', id: 'character-settings-panel' });
+                panel.style.display = 'none';
+                panel.style.opacity = '0';
+            };
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.__calls = [];
+            const calls = window.__calls;
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            director.appendGuideChatMessage = (text) => calls.push({ type: 'message', text });
+            director.applyGuideEmotion = (emotion) => calls.push({ type: 'emotion', emotion });
+            director.enableInterrupts = () => calls.push({ type: 'interrupts' });
+            director.waitForSceneDelay = async (durationMs) => {
+                calls.push({ type: 'delay', durationMs });
+                return true;
+            };
+            director.applyGuideHighlights = (config) => {
+                calls.push({
+                    type: 'highlight',
+                    key: config.key,
+                    primaryId: config.primary ? config.primary.id : null,
+                    secondaryId: config.secondary ? config.secondary.id : null,
+                    persistentId: config.persistent ? config.persistent.id : null,
+                });
+                return {
+                    persistent: config.persistent || null,
+                    primary: config.primary || null,
+                    secondary: config.secondary || null,
+                };
+            };
+            director.overlay.clearActionSpotlight = () => calls.push({ type: 'clearActionSpotlight' });
+            director.overlay.clearPersistentSpotlight = () => calls.push({ type: 'clearPersistentSpotlight' });
+            director.moveCursorToElement = async (element, durationMs) => {
+                calls.push({ type: 'move', id: element && element.id, durationMs });
+                return true;
+            };
+            director.cursor = {
+                hasPosition: () => true,
+                showAt: () => {},
+                click: () => calls.push({ type: 'click' }),
+                wobble: () => calls.push({ type: 'wobble' }),
+                cancel: () => {},
+                hide: () => {},
+            };
+            director.runSettingsPeekPanicPerformance = async (options) => {
+                calls.push({
+                    type: 'panic',
+                    hasTargetRect: !!options.targetRect,
+                    totalDurationMs: options.totalDurationMs,
+                });
+                return true;
+            };
+            director.speakGuideLine = async () => calls.push({ type: 'narration:done' });
+
+            await director.playAvatarFloatingScene({
+                id: 'day5_character_panic',
+                text: '咦，这里居然还能把我换掉吗？等一下呀！你现在的动作……该不会是想要把我换掉吧？啊啊啊不行！快关掉，快关掉！',
+                voiceKey: 'avatar_floating_day5_character_panic',
+                target: 'settings-sidepanel:character-settings',
+                cursorAction: 'tour',
+                operation: 'settings-peek-panic',
+            }, 5, 1, 4);
+            return calls;
+        }
+        """
+    )
+
+    assert {
+        "type": "highlight",
+        "key": "day5_character_panic-character-settings-panel",
+        "primaryId": "character-settings-panel",
+        "secondaryId": None,
+        "persistentId": None,
+    } in result
+    assert not any(call.get("primaryId") == "live2d-sidepanel-live2d-manage" for call in result)
+    assert not any(call.get("secondaryId") == "live2d-sidepanel-voice-clone" for call in result)
+    narration_index = result.index({"type": "narration:done"})
+    assert result.index({"type": "clearActionSpotlight"}) > narration_index
+    assert result.index({"type": "clearPersistentSpotlight"}) > narration_index
+    assert result.index({"type": "collapse", "id": "character-settings-panel"}) > narration_index
+
+
+@pytest.mark.frontend
+def test_day4_gaze_follow_highlights_mouse_tracking_toggle(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <button id="live2d-btn-settings" style="position:absolute; left:20px; top:30px; width:44px; height:44px;"></button>
+                <section id="animation-settings-panel" data-neko-sidepanel data-neko-sidepanel-type="animation-settings" style="display:flex; opacity:1; position:absolute; left:260px; top:70px; width:260px; height:380px;">
+                    <div id="mouse-tracking-row" role="switch" style="position:absolute; left:20px; top:120px; width:180px; height:42px;">
+                        <input id="live2d-mouse-tracking-toggle" type="checkbox" style="display:none;">
+                        <span>跟踪鼠标</span>
+                    </div>
+                </section>
+            `;
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const calls = [];
+            director.appendGuideChatMessage = (text) => calls.push({ type: 'message', text });
+            director.applyGuideEmotion = (emotion) => calls.push({ type: 'emotion', emotion });
+            director.enableInterrupts = () => calls.push({ type: 'interrupts' });
+            director.waitForSceneDelay = async () => true;
+            director.ensureAvatarFloatingSettingsSidePanel = async (type) => {
+                calls.push({ type: 'api:ensureSidePanel', panelType: type });
+                return document.getElementById('animation-settings-panel');
+            };
+            director.applyGuideHighlights = (config) => {
+                calls.push({
+                    type: 'highlight',
+                    key: config.key,
+                    persistentId: config.persistent ? config.persistent.id : null,
+                    primaryId: config.primary ? config.primary.id : null,
+                });
+                return {
+                    persistent: config.persistent || null,
+                    primary: config.primary || null,
+                    secondary: config.secondary || null,
+                };
+            };
+            director.moveCursorToElement = async (element, durationMs) => {
+                calls.push({ type: 'move', id: element && element.id, durationMs });
+                return true;
+            };
+            director.cursor = {
+                hasPosition: () => true,
+                showAt: () => {},
+                click: () => calls.push({ type: 'click' }),
+                wobble: () => calls.push({ type: 'wobble' }),
+                cancel: () => {},
+                hide: () => {},
+            };
+            director.speakGuideLine = async () => calls.push({ type: 'narration:done' });
+
+            await director.playAvatarFloatingScene({
+                id: 'day4_gaze_follow',
+                text: '开启这个功能后，无论你的鼠标移动到哪里，人家的目光都会紧紧跟随着你哟！是不是有种被时刻关注的幸福感呢？',
+                voiceKey: 'avatar_floating_day4_gaze_follow',
+                target: 'settings-sidepanel:animation-settings',
+                cursorAction: 'tour',
+                operation: 'show-settings-sidepanel:animation-settings',
+            }, 4, 3, 8);
+            return calls;
+        }
+        """
+    )
+
+    assert {
+        "type": "message",
+        "text": "开启这个功能后，无论你的鼠标移动到哪里，人家的目光都会紧紧跟随着你哟！是不是有种被时刻关注的幸福感呢？",
+    } in result
+    assert {
+        "type": "highlight",
+        "key": "day4_gaze_follow-mouse-tracking-toggle",
+        "persistentId": "live2d-btn-settings",
+        "primaryId": "mouse-tracking-row",
+    } in result
+    assert {
+        "type": "move",
+        "id": "mouse-tracking-row",
+        "durationMs": 620,
+    } in result
+    assert {"type": "click"} not in result
+
+
+@pytest.mark.frontend
+def test_day4_privacy_mode_highlights_privacy_without_privacy_sidepanel(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <button id="live2d-btn-settings" style="position:absolute; left:20px; top:30px; width:44px; height:44px;"></button>
+                <button id="live2d-lock-icon" style="position:absolute; left:80px; top:30px; width:44px; height:44px;"></button>
+                <button id="privacy-mode-button" style="position:absolute; left:100px; top:200px; width:120px; height:44px;"></button>
+                <section id="animation-settings-panel" data-neko-sidepanel data-neko-sidepanel-type="animation-settings" style="display:flex; opacity:1; position:absolute; left:260px; top:70px; width:260px; height:380px;"></section>
+                <section id="privacy-panel" data-neko-sidepanel data-neko-sidepanel-type="interval-proactive-vision" style="display:none; opacity:0; position:absolute; left:260px; top:70px; width:260px; height:240px;">
+                    <input id="live2d-toggle-proactive-vision" type="checkbox">
+                </section>
+            `;
+            const animationPanel = document.getElementById('animation-settings-panel');
+            animationPanel._collapse = () => {
+                window.__calls.push({ type: 'collapse', id: 'animation-settings-panel' });
+                animationPanel.style.display = 'none';
+                animationPanel.style.opacity = '0';
+            };
+            const privacyPanel = document.getElementById('privacy-panel');
+            privacyPanel._anchorElement = document.getElementById('privacy-mode-button');
+            privacyPanel._collapse = () => {
+                window.__calls.push({ type: 'collapse', id: 'privacy-panel' });
+                privacyPanel.style.display = 'none';
+                privacyPanel.style.opacity = '0';
+            };
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.__calls = [];
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const calls = window.__calls;
+            director.appendGuideChatMessage = (text) => calls.push({ type: 'message', text });
+            director.applyGuideEmotion = (emotion) => calls.push({ type: 'emotion', emotion });
+            director.enableInterrupts = () => calls.push({ type: 'interrupts' });
+            director.waitForSceneDelay = async () => true;
+            director.closeSettingsPanel = async () => calls.push({ type: 'api:closeSettingsPanel' });
+            director.ensureAvatarFloatingSettingsSidePanel = async (type) => {
+                calls.push({ type: 'api:ensureSidePanel', panelType: type });
+                return document.getElementById('privacy-panel');
+            };
+            director.applyGuideHighlights = (config) => {
+                calls.push({
+                    type: 'highlight',
+                    key: config.key,
+                    persistentId: config.persistent ? config.persistent.id : null,
+                    primaryId: config.primary ? config.primary.id : null,
+                });
+                return {
+                    persistent: config.persistent || null,
+                    primary: config.primary || null,
+                    secondary: config.secondary || null,
+                };
+            };
+            director.moveCursorToElement = async (element, durationMs) => {
+                calls.push({ type: 'move', id: element && element.id, durationMs });
+                return true;
+            };
+            director.cursor = {
+                hasPosition: () => true,
+                showAt: () => {},
+                click: () => calls.push({ type: 'click' }),
+                wobble: () => calls.push({ type: 'wobble' }),
+                cancel: () => {},
+                hide: () => {},
+            };
+            director.speakGuideLine = async () => calls.push({ type: 'narration:done' });
+
+            await director.playAvatarFloatingScene({
+                id: 'day4_privacy_mode',
+                text: '这个是控制人家能不能看屏幕的‘终极防护开关’喵！把它关闭人家就能看到你的屏幕啦，要是开启它，前两天介绍的【屏幕分享】就统统失效、人家就绝对不会偷看哟~',
+                voiceKey: 'avatar_floating_day4_privacy_mode',
+                target: '#${p}-toggle-proactive-vision',
+                cursorAction: 'move',
+                operation: 'show-settings-sidepanel:interval-proactive-vision',
+            }, 4, 4, 8);
+            return calls;
+        }
+        """
+    )
+
+    assert {"type": "api:ensureSidePanel", "panelType": "interval-proactive-vision"} not in result
+    assert [
+        (call["key"], call["primaryId"], call["persistentId"])
+        for call in result
+        if call["type"] == "highlight"
+    ] == [
+        ("day4_privacy_mode-privacy-mode-button", "privacy-mode-button", "live2d-btn-settings"),
+    ]
+    assert [
+        (call["id"], call["durationMs"])
+        for call in result
+        if call["type"] == "move"
+    ] == [
+        ("privacy-mode-button", 620),
+    ]
+    assert not any(call.get("primaryId") == "privacy-panel" for call in result)
+    assert not any(call.get("primaryId") == "live2d-toggle-proactive-vision" for call in result)
+    assert not any(call.get("primaryId") == "live2d-lock-icon" for call in result)
+    narration_index = result.index({"type": "narration:done"})
+    close_settings_indices = [
+        index for index, call in enumerate(result)
+        if call == {"type": "api:closeSettingsPanel"}
+    ]
+    assert any(index > narration_index for index in close_settings_indices)
+    assert {"type": "click"} not in result
+
+
+@pytest.mark.frontend
+def test_day4_model_lock_highlights_lock_during_model_lock_line(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <button id="live2d-lock-icon" style="display:none; position:absolute; left:80px; top:30px; width:44px; height:44px;"></button>
+                <section id="privacy-panel" data-neko-sidepanel data-neko-sidepanel-type="interval-proactive-vision" style="display:flex; opacity:1; position:absolute; left:260px; top:70px; width:260px; height:240px;"></section>
+            `;
+            const privacyPanel = document.getElementById('privacy-panel');
+            privacyPanel._collapse = () => {
+                window.__calls.push({ type: 'collapse', id: 'privacy-panel' });
+                privacyPanel.style.display = 'none';
+                privacyPanel.style.opacity = '0';
+            };
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.__calls = [];
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const calls = window.__calls;
+            director.appendGuideChatMessage = (text) => calls.push({ type: 'message', text });
+            director.applyGuideEmotion = (emotion) => calls.push({ type: 'emotion', emotion });
+            director.enableInterrupts = () => calls.push({ type: 'interrupts' });
+            director.waitForSceneDelay = async () => true;
+            director.closeSettingsPanel = async () => calls.push({ type: 'api:closeSettingsPanel' });
+            director.applyGuideHighlights = (config) => {
+                calls.push({
+                    type: 'highlight',
+                    key: config.key,
+                    primaryId: config.primary ? config.primary.id : null,
+                    persistentId: config.persistent ? config.persistent.id : null,
+                    primaryDisplay: config.primary ? getComputedStyle(config.primary).display : null,
+                });
+                return {
+                    persistent: config.persistent || null,
+                    primary: config.primary || null,
+                    secondary: config.secondary || null,
+                };
+            };
+            director.moveCursorToElement = async (element, durationMs) => {
+                calls.push({
+                    type: 'move',
+                    id: element && element.id,
+                    durationMs,
+                    display: element ? getComputedStyle(element).display : null,
+                });
+                return true;
+            };
+            director.cursor = {
+                hasPosition: () => true,
+                showAt: () => {},
+                click: () => calls.push({ type: 'click' }),
+                wobble: () => calls.push({ type: 'wobble' }),
+                cancel: () => {},
+                hide: () => {},
+            };
+            director.speakGuideLine = async () => calls.push({ type: 'narration:done' });
+
+            await director.playAvatarFloatingScene({
+                id: 'day4_model_lock',
+                text: '总是小心不触碰到、把我点歪吗？那就快把我牢牢固定在当前的位置吧！开启锁定后，我就哪儿也不去，乖乖在原地陪着你~',
+                voiceKey: 'avatar_floating_day4_model_lock',
+                target: '#${p}-lock-icon',
+                cursorAction: 'wobble',
+                cleanupBefore: true,
+            }, 4, 5, 8);
+            return calls;
+        }
+        """
+    )
+
+    assert {"type": "collapse", "id": "privacy-panel"} in result
+    assert {
+        "type": "message",
+        "text": "总是小心不触碰到、把我点歪吗？那就快把我牢牢固定在当前的位置吧！开启锁定后，我就哪儿也不去，乖乖在原地陪着你~",
+    } in result
+    assert {
+        "type": "highlight",
+        "key": "day4_model_lock",
+        "primaryId": "live2d-lock-icon",
+        "persistentId": None,
+        "primaryDisplay": "block",
+    } in result
+    assert {
+        "type": "move",
+        "id": "live2d-lock-icon",
+        "durationMs": 760,
+        "display": "block",
+    } in result
+    assert {"type": "wobble"} in result
+    assert {"type": "click"} not in result
+
+
+@pytest.mark.frontend
+def test_day4_model_lock_uses_active_model_lock_icon_when_prefix_fallback_is_live2d(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.getActiveModelType = () => 'vrm';
+            document.body.innerHTML = `
+                <button id="vrm-lock-icon" style="display:none; position:absolute; left:120px; top:60px; width:44px; height:44px;"></button>
+            `;
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const calls = [];
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            director.appendGuideChatMessage = () => {};
+            director.applyGuideEmotion = () => {};
+            director.enableInterrupts = () => {};
+            director.waitForSceneDelay = async () => true;
+            director.applyGuideHighlights = (config) => {
+                calls.push({
+                    type: 'highlight',
+                    key: config.key,
+                    primaryId: config.primary ? config.primary.id : null,
+                    primaryDisplay: config.primary ? getComputedStyle(config.primary).display : null,
+                });
+            };
+            director.moveCursorToElement = async (element, durationMs) => {
+                calls.push({
+                    type: 'move',
+                    id: element && element.id,
+                    durationMs,
+                    display: element ? getComputedStyle(element).display : null,
+                });
+                return true;
+            };
+            director.cursor = {
+                hasPosition: () => true,
+                showAt: () => {},
+                click: () => calls.push({ type: 'click' }),
+                wobble: () => calls.push({ type: 'wobble' }),
+                cancel: () => {},
+                hide: () => {},
+            };
+            director.speakGuideLine = async () => calls.push({ type: 'narration:done' });
+
+            await director.playAvatarFloatingScene({
+                id: 'day4_model_lock',
+                text: '总是小心不触碰到、把我点歪吗？那就快把我牢牢固定在当前的位置吧！开启锁定后，我就哪儿也不去，乖乖在原地陪着你~',
+                voiceKey: 'avatar_floating_day4_model_lock',
+                target: '#${p}-lock-icon',
+                cursorAction: 'wobble',
+                cleanupBefore: true,
+            }, 4, 5, 8);
+            return calls;
+        }
+        """
+    )
+
+    assert {
+        "type": "highlight",
+        "key": "day4_model_lock",
+        "primaryId": "vrm-lock-icon",
+        "primaryDisplay": "block",
+    } in result
+    assert {
+        "type": "move",
+        "id": "vrm-lock-icon",
+        "durationMs": 760,
+        "display": "block",
+    } in result
+    assert {"type": "wobble"} in result
+
+
+@pytest.mark.frontend
+def test_avatar_floating_tutorial_marks_global_tutorial_mode_while_active(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            window.isInTutorial = false;
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            director.setTutorialTakingOver(true);
+            const activeValue = window.isInTutorial;
+            director.setTutorialTakingOver(false);
+            return {
+                activeValue,
+                restoredValue: window.isInTutorial,
+            };
+        }
+        """
+    )
+
+    assert result == {
+        "activeValue": True,
+        "restoredValue": False,
+    }
+
+
+@pytest.mark.frontend
 def test_avatar_floating_director_fallback_enforcement_disables_proactive_and_galgame(
     mock_page: Page,
 ):
@@ -3876,6 +4745,135 @@ def test_pc_overlay_cursor_position_updates_during_suppressed_move_for_look_at(
     assert result["mid"]["x"] < 500
     assert result["mid"]["y"] == 100
     assert result["end"] == {"x": 500, "y": 100}
+
+
+@pytest.mark.frontend
+def test_pc_overlay_suppressed_ellipse_keeps_dom_cursor_hidden(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("yui-guide-overlay.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const overlay = new window.YuiGuideOverlay(document);
+            const pcMoves = [];
+            overlay.isPcOverlayActive = () => true;
+            overlay.shouldSuppressDomForPcOverlay = () => true;
+            overlay.pcOverlayBridge = {
+                showCursorAt: (x, y) => pcMoves.push({ type: 'show', x, y }),
+                moveCursorTo: (x, y, durationMs, effect) => {
+                    pcMoves.push({ type: 'move', x, y, durationMs, effect });
+                },
+            };
+            overlay.showCursorAt(100, 100);
+            const cursorShellBefore = document.querySelector('#yui-guide-overlay .yui-guide-cursor-shell');
+            const originalClassAdd = cursorShellBefore.classList.add.bind(cursorShellBefore.classList);
+            let domCursorRevealCount = 0;
+            cursorShellBefore.classList.add = (...tokens) => {
+                if (tokens.includes('is-visible')) {
+                    domCursorRevealCount += 1;
+                }
+                return originalClassAdd(...tokens);
+            };
+            let cancel = false;
+            const animation = overlay.runEllipseAnimation(
+                200,
+                120,
+                48,
+                28,
+                1200,
+                () => false,
+                null,
+                () => cancel
+            );
+            await new Promise((resolve) => setTimeout(resolve, 420));
+            const cursorShell = document.querySelector('#yui-guide-overlay .yui-guide-cursor-shell');
+            const duringAnimation = {
+                domHidden: cursorShell ? cursorShell.hidden : null,
+                bodyActive: document.body.classList.contains('yui-guide-ghost-cursor-active'),
+                pcMoveCount: pcMoves.filter((entry) => entry.type === 'move').length,
+                cursorVisible: overlay.isCursorVisible(),
+                domCursorRevealCount,
+            };
+            cancel = true;
+            await animation;
+            return {
+                duringAnimation,
+                finalDomHidden: cursorShell ? cursorShell.hidden : null,
+            };
+        }
+        """
+    )
+
+    assert result["duringAnimation"]["domHidden"] is True
+    assert result["duringAnimation"]["bodyActive"] is False
+    assert result["duringAnimation"]["pcMoveCount"] >= 6
+    assert result["duringAnimation"]["cursorVisible"] is True
+    assert result["duringAnimation"]["domCursorRevealCount"] == 0
+
+
+@pytest.mark.frontend
+def test_return_petal_transition_keeps_dom_fallback_without_pc_petal_capability(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.__pcOverlayUpdates = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 100, y: 50, width: 1200, height: 800 },
+                    contentBounds: { x: 100, y: 50, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                update: (payload) => {
+                    window.__pcOverlayUpdates.push(payload);
+                    return Promise.resolve({ ok: true });
+                },
+                begin: () => Promise.resolve({ ok: true }),
+                clear: () => Promise.resolve({ ok: true }),
+            };
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const transition = director.createReturnPetalTransition(
+                { x: 320, y: 240 },
+                {
+                    durationMs: 900,
+                    finalOpacity: 0.6,
+                    sequence: {
+                        url: '/static/assets/tutorial/petals/yui-guide-petal-transition.webp',
+                    },
+                }
+            );
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+            const layer = document.querySelector('.yui-guide-petal-transition');
+            if (transition && typeof transition.finish === 'function') {
+                await transition.finish();
+            }
+            return {
+                hasDomLayer: !!layer,
+                pcPetalUpdates: window.__pcOverlayUpdates.filter(
+                    (update) => update.payload && update.payload.petal
+                ).length,
+            };
+        }
+        """
+    )
+
+    assert result == {
+        "hasDomLayer": True,
+        "pcPetalUpdates": 1,
+    }
 
 
 @pytest.mark.frontend

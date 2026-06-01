@@ -632,6 +632,35 @@ def test_home_yui_return_petal_transition_decouples_petal_opacity_from_model_fad
     assert "模型快照恢复期间不暂停花瓣动画" in doc_source
 
 
+def test_day4_guide_copy_orders_privacy_before_lock_and_home():
+    source = Path("static/yui-guide-day4-companion-guide.js").read_text(encoding="utf-8")
+    scene_ids = re.findall(r"id: '(day4_[^']+)'", source)
+
+    assert scene_ids == [
+        "day4_intro_companion",
+        "day4_chat_settings",
+        "day4_model_behavior",
+        "day4_gaze_follow",
+        "day4_privacy_mode",
+        "day4_model_lock",
+        "day4_return_home",
+        "day4_wrap",
+    ]
+    for removed_title in (
+        "💬 聊天设置",
+        "⚙️ 模型行为设置",
+        "👀 视线跟随",
+        "🔒 模型锁定",
+        "🏠 回到小猫窝",
+        "👁️ 主动视觉 / 隐私模式",
+    ):
+        assert removed_title not in source
+    assert "我的眼里，满满的都是你哦" not in source
+    assert "开启这个功能后，无论你的鼠标移动到哪里" in source
+    assert source.index("这个是控制人家能不能看屏幕") < source.index("总是小心不触碰到")
+    assert source.index("总是小心不触碰到") < source.index("如果你现在需要专注")
+
+
 def test_yui_guide_cat_paw_click_state_is_visible_before_actions():
     overlay_source = Path("static/yui-guide-overlay.js").read_text(encoding="utf-8")
     director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")

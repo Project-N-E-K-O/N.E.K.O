@@ -43,8 +43,7 @@
                     voiceKey: 'avatar_floating_day5_character_panic',
                     text: '咦，这里居然还能把我换掉吗？等一下呀！你现在的动作……该不会是想要把我换掉吧？啊啊啊不行！快关掉，快关掉！',
                     emotion: 'surprised',
-                    target: '#${p}-sidepanel-live2d-manage',
-                    secondary: '#${p}-sidepanel-voice-clone',
+                    target: 'settings-sidepanel:character-settings',
                     cursorAction: 'tour',
                     operation: 'settings-peek-panic'
                 },

@@ -254,6 +254,17 @@
             isAvailable() {
                 return true;
             },
+            canRenderPetalTransition() {
+                try {
+                    if (host && typeof host.getCapabilities === 'function') {
+                        const capabilities = host.getCapabilities() || {};
+                        return capabilities.petalTransition === true;
+                    }
+                    return !!(host && host.capabilities && host.capabilities.petalTransition === true);
+                } catch (_) {
+                    return false;
+                }
+            },
             shouldSuppressDom() {
                 return active && !failed;
             },
@@ -1700,6 +1711,15 @@
             });
         }
 
+        keepDomCursorSuppressedForPcOverlay() {
+            this.cursorVisible = true;
+            this.document.body.classList.remove('yui-guide-ghost-cursor-active');
+            if (this.cursorShell) {
+                this.cursorShell.hidden = true;
+                this.cursorShell.classList.remove('is-visible');
+            }
+        }
+
         getSmoothCursorShowDurationMs(x, y) {
             if (!this.cursorPosition || !this.isCursorVisible()) {
                 return 0;
@@ -2436,6 +2456,18 @@
         }
 
         runEllipseAnimation(centerX, centerY, radiusX, radiusY, cycleMs, abortCheck, pauseCheck, cancelCheck) {
+            if (this.isPcOverlayActive() && this.shouldSuppressDomForPcOverlay()) {
+                return this.runSuppressedPcOverlayEllipseAnimation(
+                    centerX,
+                    centerY,
+                    radiusX,
+                    radiusY,
+                    cycleMs,
+                    abortCheck,
+                    pauseCheck,
+                    cancelCheck
+                );
+            }
             this.ensureRoot();
             if (!this.cursorShell) {
                 return Promise.resolve(false);
@@ -2543,6 +2575,103 @@
             });
         }
 
+        runSuppressedPcOverlayEllipseAnimation(centerX, centerY, radiusX, radiusY, cycleMs, abortCheck, pauseCheck, cancelCheck) {
+            this.finishSuppressedCursorMotion(false);
+            this.keepDomCursorSuppressedForPcOverlay();
+
+            var self = this;
+            var startX = centerX + radiusX;
+            var startY = centerY;
+            var normalizedCycleMs = Math.max(1, Number(cycleMs) || 1);
+            if (typeof cancelCheck === 'function' && cancelCheck()) {
+                return Promise.resolve(false);
+            }
+            if (typeof abortCheck === 'function' && abortCheck()) {
+                return Promise.resolve(false);
+            }
+
+            var startDistance = self.cursorPosition
+                ? Math.hypot(startX - self.cursorPosition.x, startY - self.cursorPosition.y)
+                : 0;
+            if (shouldReduceMotion()) {
+                return self.moveCursorTo(startX, startY, { durationMs: 0 });
+            }
+
+            var prepareMove = self.cursorPosition && startDistance > 2
+                ? self.moveCursorTo(startX, startY, {
+                    durationMs: Math.min(520, Math.max(220, Math.round(normalizedCycleMs * 0.08))),
+                    pauseCheck: pauseCheck,
+                    cancelCheck: cancelCheck
+                })
+                : self.moveCursorTo(startX, startY, { durationMs: 0 });
+
+            return prepareMove.then(function (prepared) {
+                if (!prepared) {
+                    return false;
+                }
+                self.keepDomCursorSuppressedForPcOverlay();
+
+                return new Promise(function (resolve) {
+                    var startedAt = performance.now();
+                    var pausedTotalMs = 0;
+                    var pausedAt = 0;
+                    var lastSentAt = 0;
+
+                    function tick(now) {
+                        if (typeof cancelCheck === 'function' && cancelCheck()) {
+                            resolve(false);
+                            return;
+                        }
+
+                        if (typeof abortCheck === 'function' && abortCheck()) {
+                            if (pausedAt) {
+                                pausedTotalMs += Math.max(0, now - pausedAt);
+                                pausedAt = 0;
+                            }
+                            resolve(false);
+                            return;
+                        }
+
+                        if (typeof pauseCheck === 'function' && pauseCheck()) {
+                            if (!pausedAt) {
+                                pausedAt = now;
+                            }
+                            window.requestAnimationFrame(tick);
+                            return;
+                        }
+
+                        if (pausedAt) {
+                            pausedTotalMs += Math.max(0, now - pausedAt);
+                            pausedAt = 0;
+                        }
+
+                        var progress = Math.max(0, Math.min(1, (now - startedAt - pausedTotalMs) / normalizedCycleMs));
+                        var angle = progress * Math.PI * 2;
+                        var x = centerX + Math.cos(angle) * radiusX;
+                        var y = centerY + Math.sin(angle) * radiusY;
+                        self.cursorPosition = { x: x, y: y };
+                        self.cursorVisible = true;
+                        self.keepDomCursorSuppressedForPcOverlay();
+
+                        if (!lastSentAt || now - lastSentAt >= 32 || progress >= 1) {
+                            lastSentAt = now;
+                            if (self.pcOverlayBridge && typeof self.pcOverlayBridge.moveCursorTo === 'function') {
+                                self.pcOverlayBridge.moveCursorTo(x, y, 40, '');
+                            }
+                        }
+
+                        if (progress >= 1) {
+                            resolve(true);
+                            return;
+                        }
+                        window.requestAnimationFrame(tick);
+                    }
+
+                    window.requestAnimationFrame(tick);
+                });
+            });
+        }
+
         hideCursor() {
             if (this.isPcOverlayActive()) {
                 if (this.pcOverlayBridge && typeof this.pcOverlayBridge.hideCursor === 'function') {
@@ -2574,7 +2703,11 @@
                 return null;
             }
             this.pcOverlayBridge.playPetalTransition(origin, options || {});
-            return this.shouldSuppressDomForPcOverlay() ? true : null;
+            return (
+                this.shouldSuppressDomForPcOverlay()
+                && typeof this.pcOverlayBridge.canRenderPetalTransition === 'function'
+                && this.pcOverlayBridge.canRenderPetalTransition()
+            ) ? true : null;
         }
 
         destroy() {

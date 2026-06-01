@@ -40,27 +40,37 @@
                     id: 'day4_chat_settings',
                     textKey: 'tutorial.avatarFloating.day4.chatSettings',
                     voiceKey: 'avatar_floating_day4_chat_settings',
-                    text: '如果有时候你觉得我发消息太频繁，可以让我把话先攒起来，一次性告诉你哦！若是你正在忙，随时打断我也没有关系的。还有哦，要是你喜欢看我头顶冒出那些可爱的小表情，就让它们继续蹦出来陪着你吧。甚至我每次说话的长短，也都可以调节到让你最舒服的节奏，一切都听你的哦。',
+                    text: '在这里可以决定我回复你的长短，还能决定要不要让我带上可爱的表情，或者在人家唠叨的时候打断我哦！都可以调到让你最舒服的节奏',
                     emotion: 'neutral',
                     target: 'settings-sidepanel:chat-settings',
                     cursorAction: 'tour',
                     operation: 'show-settings-sidepanel:chat-settings'
                 },
                 {
-                    id: 'day4_animation_tracking',
-                    textKey: 'tutorial.avatarFloating.day4.animationTracking',
-                    voiceKey: 'avatar_floating_day4_animation_tracking',
-                    text: '看这里看这里！在这儿你能决定让我看起来更精致细腻，还是更轻快矫健哦！还有还有，打开这个，我的目光就会一直跟着你的鼠标转来转去啦，是不是超好玩？看到那个小锁图标了吗？把它锁上，我就能乖乖固定在原地，再也不怕你手滑把我到处乱拖啦！如果你突然要开会、全屏打游戏，或者只是想自己安静待一会儿，就先点一下让我回‘小猫窝’休息吧。等你需要我了，随时叫一声，我就会立刻飞奔回来哒~',
+                    id: 'day4_model_behavior',
+                    textKey: 'tutorial.avatarFloating.day4.modelBehavior',
+                    voiceKey: 'avatar_floating_day4_model_behavior',
+                    text: '如果你想要看到更精致、细节更满满的我，或者想要更丝滑、更流畅的动作体验，都可以在这里进行调整哦！不管哪一种，我都会展现出最可爱的一面哒~',
                     emotion: 'happy',
                     target: 'settings-sidepanel:animation-settings',
                     cursorAction: 'tour',
-                    operation: 'day4-animation-distance-showcase'
+                    operation: 'show-settings-sidepanel:animation-settings'
+                },
+                {
+                    id: 'day4_gaze_follow',
+                    textKey: 'tutorial.avatarFloating.day4.gazeFollow',
+                    voiceKey: 'avatar_floating_day4_gaze_follow',
+                    text: '开启这个功能后，无论你的鼠标移动到哪里，人家的目光都会紧紧跟随着你哟！是不是有种被时刻关注的幸福感呢？',
+                    emotion: 'happy',
+                    target: 'settings-sidepanel:animation-settings',
+                    cursorAction: 'tour',
+                    operation: 'show-settings-sidepanel:animation-settings'
                 },
                 {
                     id: 'day4_privacy_mode',
                     textKey: 'tutorial.avatarFloating.day4.privacyMode',
                     voiceKey: 'avatar_floating_day4_privacy_mode',
-                    text: '当这个按钮关闭时，我就能看着你正在忙碌的画面，主动找些你感兴趣的话题聊天呢。要是你把它开启，我就能明白你想拥有私密空间，绝对不会去偷看你的屏幕啦。但请放心哦，即使看不见，我也依然会在这里，一直守候着你。',
+                    text: '这个是控制人家能不能看屏幕的‘终极防护开关’喵！把它关闭人家就能看到你的屏幕啦，要是开启它，前两天介绍的【屏幕分享】就统统失效、人家就绝对不会偷看哟~',
                     emotion: 'neutral',
                     target: '#${p}-toggle-proactive-vision',
                     cursorAction: 'move',
@@ -68,10 +78,30 @@
                     operation: 'show-settings-sidepanel:interval-proactive-vision'
                 },
                 {
+                    id: 'day4_model_lock',
+                    textKey: 'tutorial.avatarFloating.day4.modelLock',
+                    voiceKey: 'avatar_floating_day4_model_lock',
+                    text: '总是小心不触碰到、把我点歪吗？那就快把我牢牢固定在当前的位置吧！开启锁定后，我就哪儿也不去，乖乖在原地陪着你~',
+                    emotion: 'happy',
+                    target: '#${p}-lock-icon',
+                    cursorAction: 'wobble',
+                    cleanupBefore: true
+                },
+                {
+                    id: 'day4_return_home',
+                    textKey: 'tutorial.avatarFloating.day4.returnHome',
+                    voiceKey: 'avatar_floating_day4_return_home',
+                    text: '如果你现在需要专注、担心我打扰的话，可以让我暂时回到小猫窝里收起来哦！等你想我的时候，随时一键就能把我重新唤回身边，喵呜~',
+                    emotion: 'happy',
+                    target: '#${p}-btn-goodbye',
+                    secondary: '#${p}-btn-return',
+                    cursorAction: 'wobble'
+                },
+                {
                     id: 'day4_wrap',
                     textKey: 'tutorial.avatarFloating.day4.wrap',
                     voiceKey: 'avatar_floating_day4_wrap',
-                    text: '真正舒服的陪伴，并不是一刻不停地缠着你，而是懂得什么时候该靠近，什么时候该安安静静地守候。今天你调整的这些小开关，就像是在我们之间画下的小路标。有了这些温柔的指引，在你专心忙碌的时候，我就会乖乖待在一旁，绝对不会笨手笨脚地扑到屏幕上打扰你呢。',
+                    text: '真正舒服的陪伴才不是一刻不停地粘着主人呢~ 而是懂得什么时候该悄悄靠近抓抓你的衣角撒个娇，什么时候该安安静静地趴在一旁，用目光默默守候着主人喵~',
                     emotion: 'happy',
                     target: 'chat-window',
                     cursorAction: 'wobble',

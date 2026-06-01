@@ -2578,6 +2578,8 @@
             this.returnPetalTransitionActive = false;
             this.returnPetalTransitionOpacityRestores = null;
             this.avatarFloatingGuideSuppressionActive = false;
+            this.avatarFloatingGuideTutorialModeActive = false;
+            this.avatarFloatingGuidePreviousIsInTutorial = false;
             this.avatarFloatingSceneCursorAnchorPoints = Object.create(null);
             this.latestExternalizedChatCursorAnchorPoint = null;
             this.keydownHandler = this.onKeyDown.bind(this);
@@ -2726,6 +2728,7 @@
 
         setTutorialTakingOver(active) {
             const isActive = active === true;
+            this.setAvatarFloatingGuideTutorialMode(isActive);
             const featureController = window.NekoHomeTutorialFeatureController;
             if (
                 featureController
@@ -2756,6 +2759,27 @@
                 return;
             }
             this.overlay.setTakingOver(isActive);
+        }
+
+        setAvatarFloatingGuideTutorialMode(active) {
+            const isActive = active === true;
+            try {
+                if (isActive) {
+                    if (!this.avatarFloatingGuideTutorialModeActive) {
+                        this.avatarFloatingGuidePreviousIsInTutorial = window.isInTutorial === true;
+                        this.avatarFloatingGuideTutorialModeActive = true;
+                    }
+                    window.isInTutorial = true;
+                    return;
+                }
+                if (this.avatarFloatingGuideTutorialModeActive) {
+                    window.isInTutorial = this.avatarFloatingGuidePreviousIsInTutorial === true;
+                    this.avatarFloatingGuideTutorialModeActive = false;
+                    this.avatarFloatingGuidePreviousIsInTutorial = false;
+                }
+            } catch (error) {
+                console.warn('[YuiGuide] 同步全局教程状态失败:', error);
+            }
         }
 
         enforceAvatarFloatingGuideFeatureSuppression(reason) {
@@ -3036,6 +3060,32 @@
             }
 
             return 'live2d';
+        }
+
+        getAvatarFloatingActiveModelType() {
+            const normalize = (value) => {
+                const modelType = String(value || '').trim().toLowerCase();
+                return modelType === 'live2d' || modelType === 'vrm' || modelType === 'mmd'
+                    ? modelType
+                    : '';
+            };
+            const runtimeType = normalize(
+                typeof window.getActiveModelType === 'function' ? window.getActiveModelType() : ''
+            );
+            if (runtimeType) {
+                return runtimeType;
+            }
+
+            const cfg = window.lanlan_config;
+            if (cfg) {
+                const modelType = String(cfg.model_type || '').toLowerCase();
+                if (modelType === 'live3d') {
+                    const subType = normalize(cfg.live3d_sub_type);
+                    return subType || 'vrm';
+                }
+                return normalize(modelType) || 'live2d';
+            }
+            return '';
         }
 
         expandSelector(selector) {
@@ -4171,6 +4221,99 @@
                 appearanceItem: this.getCharacterMenuElement(appearanceMenuId),
                 voiceCloneItem: this.getCharacterMenuElement('voice-clone')
             };
+        }
+
+        getDay4SettingsButtonSpotlightTarget() {
+            return this.getFloatingButtonShell(
+                this.getFallbackFloatingButton('settings')
+                || this.resolveElement('#${p}-btn-settings')
+            );
+        }
+
+        getDay4SettingsButtonPersistenceTarget(sceneId) {
+            if ([
+                'day4_chat_settings',
+                'day4_model_behavior',
+                'day4_gaze_follow',
+                'day4_privacy_mode'
+            ].includes(sceneId)) {
+                return this.getDay4SettingsButtonSpotlightTarget();
+            }
+            if (sceneId === 'day4_model_lock' || sceneId === 'day4_return_home' || sceneId === 'day4_wrap') {
+                return null;
+            }
+            return undefined;
+        }
+
+        getDay4MouseTrackingTarget() {
+            const checkbox = this.resolveElement('#${p}-mouse-tracking-toggle');
+            if (!checkbox) {
+                return null;
+            }
+            const switchRow = typeof checkbox.closest === 'function'
+                ? checkbox.closest('[role="switch"]')
+                : null;
+            const target = switchRow || checkbox.parentElement || checkbox;
+            return target && this.isElementVisible(target) ? target : null;
+        }
+
+        getAvatarFloatingLockIconElement() {
+            const prefixes = [];
+            const addPrefix = (value) => {
+                const prefix = typeof value === 'string' ? value.trim().toLowerCase() : '';
+                if (prefix && !prefixes.includes(prefix)) {
+                    prefixes.push(prefix);
+                }
+            };
+            addPrefix(this.getAvatarFloatingActiveModelType());
+            addPrefix(this.resolveModelPrefix());
+            ['live2d', 'vrm', 'mmd'].forEach(addPrefix);
+
+            for (let index = 0; index < prefixes.length; index += 1) {
+                const lockIcon = document.getElementById(prefixes[index] + '-lock-icon');
+                if (lockIcon) {
+                    return lockIcon;
+                }
+            }
+            return null;
+        }
+
+        getDay4LockButtonSpotlightTarget() {
+            const lockIcon = this.getAvatarFloatingLockIconElement();
+            if (!lockIcon) {
+                return null;
+            }
+            lockIcon.style.display = 'block';
+            lockIcon.style.visibility = 'visible';
+            if (lockIcon.style.opacity === '0') {
+                lockIcon.style.opacity = '';
+            }
+            return this.getFloatingButtonShell(lockIcon) || lockIcon;
+        }
+
+        getDay4PrivacyModeButtonTarget() {
+            const privacyPanel = this.getAvatarFloatingSidePanel('interval-proactive-vision');
+            const anchor = privacyPanel && privacyPanel._anchorElement
+                ? privacyPanel._anchorElement
+                : null;
+            if (anchor && this.isElementVisible(anchor)) {
+                return anchor;
+            }
+
+            const toggle = this.resolveElement('#${p}-toggle-proactive-vision');
+            const switchRow = toggle && typeof toggle.closest === 'function'
+                ? toggle.closest('[role="switch"]')
+                : null;
+            const target = switchRow || (toggle ? toggle.parentElement : null) || toggle;
+            return target && this.isElementVisible(target) ? target : null;
+        }
+
+        getDay5CharacterSettingsButtonTarget() {
+            const characterPanel = this.getAvatarFloatingSidePanel('character-settings');
+            const anchor = characterPanel && characterPanel._anchorElement
+                ? characterPanel._anchorElement
+                : null;
+            return anchor && this.isElementVisible(anchor) ? anchor : null;
         }
 
         refreshSettingsPeekSpotlights(settingsButton) {
@@ -6432,6 +6575,9 @@
                 const type = targetKey.split(':')[1] || '';
                 return this.getAvatarFloatingSidePanel(type) || await this.ensureAvatarFloatingSettingsSidePanel(type);
             }
+            if (scene && scene.id === 'day4_model_lock' && targetKey === '#${p}-lock-icon') {
+                return this.getDay4LockButtonSpotlightTarget();
+            }
             if (targetKey === '.mic-option') {
                 return this.resolveElement('.mic-option') || this.resolveElement('#${p}-popup-mic');
             }
@@ -6559,6 +6705,630 @@
                 await this.waitForSceneDelay(720);
             }
             return true;
+        }
+
+        async playDay4ChatSettingsScene(scene, sceneRunId, previousSceneId, index, total) {
+            const text = this.resolveAvatarFloatingSceneText(scene);
+            const voiceKey = scene.voiceKey || '';
+            const sceneButtons = this.getAvatarFloatingSceneButtons(scene);
+            const canHandleSceneButtons = sceneButtons.length > 0
+                ? this.installGuideMessageActionHandler()
+                : false;
+            const actionWaitPromise = canHandleSceneButtons
+                ? this.beginGuideMessageActionWait(sceneButtons, 0)
+                : null;
+            if (text) {
+                this.appendGuideChatMessage(text, {
+                    textKey: scene.textKey || '',
+                    voiceKey: voiceKey,
+                    buttons: sceneButtons
+                });
+            }
+            const sceneEmotion = this.resolveAvatarFloatingSceneEmotion(scene);
+            if (sceneEmotion) {
+                this.applyGuideEmotion(sceneEmotion);
+            }
+
+            const settingsButton = this.getDay4SettingsButtonSpotlightTarget();
+            if (settingsButton) {
+                this.applyGuideHighlights({
+                    key: scene.id + '-settings-button',
+                    persistent: settingsButton,
+                    primary: settingsButton
+                });
+            }
+            this.enableInterrupts(this.currentStep);
+
+            const narrationPromise = (text || voiceKey)
+                ? this.speakGuideLine(text, {
+                    voiceKey: voiceKey,
+                    minDurationMs: 1800
+                }).catch((error) => {
+                    console.warn('[YuiGuide] 悬浮窗教程旁白失败，继续流程:', scene.id, error);
+                })
+                : Promise.resolve();
+
+            await this.waitForSceneDelay(220);
+            if (sceneRunId !== this.sceneRunId || this.isStopping()) {
+                return false;
+            }
+
+            if (settingsButton) {
+                await this.moveAvatarFloatingCursor({
+                    id: scene.id + '_settings_button',
+                    cursorAction: 'click',
+                    cursorMoveDurationMs: 760
+                }, settingsButton, null, previousSceneId, {
+                    onClickStart: () => this.openSettingsPanel().catch((error) => {
+                        console.warn('[YuiGuide] 第4天对话设置打开设置面板失败:', error);
+                    })
+                });
+            } else {
+                await this.openSettingsPanel();
+            }
+            if (sceneRunId !== this.sceneRunId || this.isStopping()) {
+                return false;
+            }
+
+            const chatSettingsPanel = await this.waitForElement(
+                () => this.getAvatarFloatingSidePanel('chat-settings'),
+                1200
+            );
+            const chatSettingsButton = chatSettingsPanel && chatSettingsPanel._anchorElement
+                ? chatSettingsPanel._anchorElement
+                : null;
+            if (chatSettingsButton) {
+                this.applyGuideHighlights({
+                    key: scene.id + '-chat-settings-button',
+                    persistent: settingsButton || null,
+                    primary: chatSettingsButton
+                });
+                await this.moveCursorToElement(chatSettingsButton, 620);
+            }
+            if (sceneRunId !== this.sceneRunId || this.isStopping()) {
+                return false;
+            }
+
+            const sidePanel = await this.ensureAvatarFloatingSettingsSidePanel('chat-settings')
+                || chatSettingsPanel;
+            if (sidePanel) {
+                this.applyGuideHighlights({
+                    key: scene.id + '-chat-settings-panel',
+                    persistent: settingsButton || null,
+                    primary: sidePanel
+                });
+                const motionRect = this.getElementRect(sidePanel);
+                if (motionRect) {
+                    const centerX = motionRect.left + motionRect.width / 2;
+                    const centerY = motionRect.top + motionRect.height / 2;
+                    const radiusX = Math.max(36, motionRect.width * 0.32);
+                    const radiusY = Math.max(60, motionRect.height * 0.36);
+                    let narrationDone = false;
+                    const guardedNarrationPromise = narrationPromise.finally(() => {
+                        narrationDone = true;
+                    });
+                    const ellipsePromise = (async () => {
+                        while (sceneRunId === this.sceneRunId && !narrationDone && !this.isStopping()) {
+                            const moved = await this.cursor.runPauseAwareEllipse(
+                                centerX,
+                                centerY,
+                                radiusX,
+                                radiusY,
+                                5600,
+                                () => narrationDone || this.destroyed || this.angryExitTriggered,
+                                () => this.scenePausedForResistance,
+                                () => this.isStopping()
+                            );
+                            if (!moved && !this.scenePausedForResistance) {
+                                return;
+                            }
+                            if (!moved) {
+                                await this.waitUntilSceneResumed();
+                            }
+                        }
+                    })();
+                    await Promise.all([guardedNarrationPromise, ellipsePromise]);
+                } else {
+                    await narrationPromise;
+                }
+            } else {
+                await narrationPromise;
+            }
+
+            if (canHandleSceneButtons && this.pendingGuideMessageAction) {
+                this.armPendingGuideMessageActionTimeout(12000);
+            }
+            if (actionWaitPromise && sceneRunId === this.sceneRunId && !this.isStopping()) {
+                await actionWaitPromise;
+            }
+            if (sceneRunId !== this.sceneRunId || this.isStopping()) {
+                return false;
+            }
+            await this.waitForSceneDelay(index >= total - 1 ? 260 : 420);
+            return sceneRunId === this.sceneRunId && !this.isStopping();
+        }
+
+        async playDay4ModelBehaviorScene(scene, sceneRunId, previousSceneId, index, total) {
+            const text = this.resolveAvatarFloatingSceneText(scene);
+            const voiceKey = scene.voiceKey || '';
+            const sceneButtons = this.getAvatarFloatingSceneButtons(scene);
+            const canHandleSceneButtons = sceneButtons.length > 0
+                ? this.installGuideMessageActionHandler()
+                : false;
+            const actionWaitPromise = canHandleSceneButtons
+                ? this.beginGuideMessageActionWait(sceneButtons, 0)
+                : null;
+            if (text) {
+                this.appendGuideChatMessage(text, {
+                    textKey: scene.textKey || '',
+                    voiceKey: voiceKey,
+                    buttons: sceneButtons
+                });
+            }
+            const sceneEmotion = this.resolveAvatarFloatingSceneEmotion(scene);
+            if (sceneEmotion) {
+                this.applyGuideEmotion(sceneEmotion);
+            }
+
+            const settingsButton = this.getDay4SettingsButtonSpotlightTarget();
+            let animationPanel = this.getAvatarFloatingSidePanel('animation-settings');
+            if (!animationPanel) {
+                await this.openSettingsPanel();
+                animationPanel = await this.waitForElement(
+                    () => this.getAvatarFloatingSidePanel('animation-settings'),
+                    1200
+                );
+            }
+            const animationButton = animationPanel && animationPanel._anchorElement
+                ? animationPanel._anchorElement
+                : null;
+
+            this.collapseAvatarFloatingSidePanelsExcept(null);
+            if (animationButton) {
+                this.applyGuideHighlights({
+                    key: scene.id + '-animation-settings-button',
+                    persistent: settingsButton || null,
+                    primary: animationButton
+                });
+            }
+            this.enableInterrupts(this.currentStep);
+
+            const narrationPromise = (text || voiceKey)
+                ? this.speakGuideLine(text, {
+                    voiceKey: voiceKey,
+                    minDurationMs: 1800
+                }).catch((error) => {
+                    console.warn('[YuiGuide] 悬浮窗教程旁白失败，继续流程:', scene.id, error);
+                })
+                : Promise.resolve();
+
+            await this.waitForSceneDelay(220);
+            if (sceneRunId !== this.sceneRunId || this.isStopping()) {
+                return false;
+            }
+
+            if (animationButton) {
+                await this.moveCursorToElement(animationButton, 620);
+            }
+            if (sceneRunId !== this.sceneRunId || this.isStopping()) {
+                return false;
+            }
+
+            const sidePanel = await this.ensureAvatarFloatingSettingsSidePanel('animation-settings')
+                || animationPanel;
+            if (sidePanel) {
+                this.applyGuideHighlights({
+                    key: scene.id + '-animation-settings-panel',
+                    persistent: settingsButton || null,
+                    primary: sidePanel
+                });
+                const motionRect = this.getElementRect(sidePanel);
+                if (motionRect) {
+                    const centerX = motionRect.left + motionRect.width / 2;
+                    const centerY = motionRect.top + motionRect.height / 2;
+                    const radiusX = Math.max(36, motionRect.width * 0.32);
+                    const radiusY = Math.max(60, motionRect.height * 0.36);
+                    let narrationDone = false;
+                    const guardedNarrationPromise = narrationPromise.finally(() => {
+                        narrationDone = true;
+                    });
+                    const ellipsePromise = (async () => {
+                        while (sceneRunId === this.sceneRunId && !narrationDone && !this.isStopping()) {
+                            const moved = await this.cursor.runPauseAwareEllipse(
+                                centerX,
+                                centerY,
+                                radiusX,
+                                radiusY,
+                                5600,
+                                () => narrationDone || this.destroyed || this.angryExitTriggered,
+                                () => this.scenePausedForResistance,
+                                () => this.isStopping()
+                            );
+                            if (!moved && !this.scenePausedForResistance) {
+                                return;
+                            }
+                            if (!moved) {
+                                await this.waitUntilSceneResumed();
+                            }
+                        }
+                    })();
+                    await Promise.all([guardedNarrationPromise, ellipsePromise]);
+                } else {
+                    await narrationPromise;
+                }
+            } else {
+                await narrationPromise;
+            }
+
+            if (canHandleSceneButtons && this.pendingGuideMessageAction) {
+                this.armPendingGuideMessageActionTimeout(12000);
+            }
+            if (actionWaitPromise && sceneRunId === this.sceneRunId && !this.isStopping()) {
+                await actionWaitPromise;
+            }
+            if (sceneRunId !== this.sceneRunId || this.isStopping()) {
+                return false;
+            }
+            await this.waitForSceneDelay(index >= total - 1 ? 260 : 420);
+            return sceneRunId === this.sceneRunId && !this.isStopping();
+        }
+
+        async playDay4GazeFollowScene(scene, sceneRunId, previousSceneId, index, total) {
+            const text = this.resolveAvatarFloatingSceneText(scene);
+            const voiceKey = scene.voiceKey || '';
+            const sceneButtons = this.getAvatarFloatingSceneButtons(scene);
+            const canHandleSceneButtons = sceneButtons.length > 0
+                ? this.installGuideMessageActionHandler()
+                : false;
+            const actionWaitPromise = canHandleSceneButtons
+                ? this.beginGuideMessageActionWait(sceneButtons, 0)
+                : null;
+            if (text) {
+                this.appendGuideChatMessage(text, {
+                    textKey: scene.textKey || '',
+                    voiceKey: voiceKey,
+                    buttons: sceneButtons
+                });
+            }
+            const sceneEmotion = this.resolveAvatarFloatingSceneEmotion(scene);
+            if (sceneEmotion) {
+                this.applyGuideEmotion(sceneEmotion);
+            }
+
+            const settingsButton = this.getDay4SettingsButtonSpotlightTarget();
+            let mouseTrackingTarget = this.getDay4MouseTrackingTarget();
+            if (!mouseTrackingTarget) {
+                await this.ensureAvatarFloatingSettingsSidePanel('animation-settings');
+                mouseTrackingTarget = this.getDay4MouseTrackingTarget();
+            }
+            if (mouseTrackingTarget) {
+                this.applyGuideHighlights({
+                    key: scene.id + '-mouse-tracking-toggle',
+                    persistent: settingsButton || null,
+                    primary: mouseTrackingTarget
+                });
+            }
+            this.enableInterrupts(this.currentStep);
+
+            const narrationPromise = (text || voiceKey)
+                ? this.speakGuideLine(text, {
+                    voiceKey: voiceKey,
+                    minDurationMs: 1800
+                }).catch((error) => {
+                    console.warn('[YuiGuide] 悬浮窗教程旁白失败，继续流程:', scene.id, error);
+                })
+                : Promise.resolve();
+
+            await this.waitForSceneDelay(220);
+            if (sceneRunId !== this.sceneRunId || this.isStopping()) {
+                return false;
+            }
+
+            if (mouseTrackingTarget) {
+                await this.moveCursorToElement(mouseTrackingTarget, 620);
+            }
+
+            await narrationPromise;
+            if (canHandleSceneButtons && this.pendingGuideMessageAction) {
+                this.armPendingGuideMessageActionTimeout(12000);
+            }
+            if (actionWaitPromise && sceneRunId === this.sceneRunId && !this.isStopping()) {
+                await actionWaitPromise;
+            }
+            if (sceneRunId !== this.sceneRunId || this.isStopping()) {
+                return false;
+            }
+            await this.waitForSceneDelay(index >= total - 1 ? 260 : 420);
+            return sceneRunId === this.sceneRunId && !this.isStopping();
+        }
+
+        async playDay4PrivacyModeScene(scene, sceneRunId, previousSceneId, index, total) {
+            const text = this.resolveAvatarFloatingSceneText(scene);
+            const voiceKey = scene.voiceKey || '';
+            const sceneButtons = this.getAvatarFloatingSceneButtons(scene);
+            const canHandleSceneButtons = sceneButtons.length > 0
+                ? this.installGuideMessageActionHandler()
+                : false;
+            const actionWaitPromise = canHandleSceneButtons
+                ? this.beginGuideMessageActionWait(sceneButtons, 0)
+                : null;
+            if (text) {
+                this.appendGuideChatMessage(text, {
+                    textKey: scene.textKey || '',
+                    voiceKey: voiceKey,
+                    buttons: sceneButtons
+                });
+            }
+            const sceneEmotion = this.resolveAvatarFloatingSceneEmotion(scene);
+            if (sceneEmotion) {
+                this.applyGuideEmotion(sceneEmotion);
+            }
+
+            this.collapseAvatarFloatingSidePanelsExcept(null);
+            const settingsButton = this.getDay4SettingsButtonSpotlightTarget();
+            const privacyButton = this.getDay4PrivacyModeButtonTarget();
+            if (privacyButton) {
+                this.applyGuideHighlights({
+                    key: scene.id + '-privacy-mode-button',
+                    persistent: settingsButton || null,
+                    primary: privacyButton
+                });
+            }
+            this.enableInterrupts(this.currentStep);
+
+            const narrationPromise = (text || voiceKey)
+                ? this.speakGuideLine(text, {
+                    voiceKey: voiceKey,
+                    minDurationMs: 1800
+                }).catch((error) => {
+                    console.warn('[YuiGuide] 悬浮窗教程旁白失败，继续流程:', scene.id, error);
+                })
+                : Promise.resolve();
+
+            await this.waitForSceneDelay(220);
+            if (sceneRunId !== this.sceneRunId || this.isStopping()) {
+                return false;
+            }
+
+            if (privacyButton) {
+                await this.moveCursorToElement(privacyButton, 620);
+            }
+
+            await narrationPromise;
+            if (sceneRunId === this.sceneRunId && !this.isStopping()) {
+                await this.closeSettingsPanel().catch((error) => {
+                    console.warn('[YuiGuide] 第4天隐私模式结束后收起设置面板失败，继续流程:', error);
+                });
+            }
+            if (canHandleSceneButtons && this.pendingGuideMessageAction) {
+                this.armPendingGuideMessageActionTimeout(12000);
+            }
+            if (actionWaitPromise && sceneRunId === this.sceneRunId && !this.isStopping()) {
+                await actionWaitPromise;
+            }
+            if (sceneRunId !== this.sceneRunId || this.isStopping()) {
+                return false;
+            }
+            await this.waitForSceneDelay(index >= total - 1 ? 260 : 420);
+            return sceneRunId === this.sceneRunId && !this.isStopping();
+        }
+
+        async playDay5CharacterSettingsScene(scene, sceneRunId, previousSceneId, index, total) {
+            const text = this.resolveAvatarFloatingSceneText(scene);
+            const voiceKey = scene.voiceKey || '';
+            const sceneButtons = this.getAvatarFloatingSceneButtons(scene);
+            const canHandleSceneButtons = sceneButtons.length > 0
+                ? this.installGuideMessageActionHandler()
+                : false;
+            const actionWaitPromise = canHandleSceneButtons
+                ? this.beginGuideMessageActionWait(sceneButtons, 0)
+                : null;
+            if (text) {
+                this.appendGuideChatMessage(text, {
+                    textKey: scene.textKey || '',
+                    voiceKey: voiceKey,
+                    buttons: sceneButtons
+                });
+            }
+            const sceneEmotion = this.resolveAvatarFloatingSceneEmotion(scene);
+            if (sceneEmotion) {
+                this.applyGuideEmotion(sceneEmotion);
+            }
+
+            const introChatTarget = this.getAvatarFloatingIntroSpotlightTarget(scene);
+            if (introChatTarget) {
+                this.applyGuideHighlights({
+                    key: scene.id + '-intro-chat',
+                    primary: introChatTarget
+                });
+                const introRect = this.getElementRect(introChatTarget);
+                if (introRect) {
+                    this.rememberAvatarFloatingSceneCursorAnchor(scene.id, introChatTarget);
+                    this.cursor.showAt(
+                        introRect.left + introRect.width / 2,
+                        introRect.top + introRect.height / 2
+                    );
+                    this.cursor.wobble();
+                }
+            }
+            this.enableInterrupts(this.currentStep);
+
+            const narrationPromise = (text || voiceKey)
+                ? this.speakGuideLine(text, {
+                    voiceKey: voiceKey,
+                    minDurationMs: 1800
+                }).catch((error) => {
+                    console.warn('[YuiGuide] 悬浮窗教程旁白失败，继续流程:', scene.id, error);
+                })
+                : Promise.resolve();
+
+            await this.waitForSceneDelay(1000);
+            if (sceneRunId !== this.sceneRunId || this.isStopping()) {
+                return false;
+            }
+            this.overlay.clearActionSpotlight();
+            this.overlay.clearPersistentSpotlight();
+
+            const settingsButton = this.getDay4SettingsButtonSpotlightTarget();
+            if (settingsButton) {
+                this.applyGuideHighlights({
+                    key: scene.id + '-settings-button',
+                    persistent: settingsButton,
+                    primary: settingsButton
+                });
+                await this.moveCursorToElement(settingsButton, 760);
+            }
+            if (sceneRunId !== this.sceneRunId || this.isStopping()) {
+                return false;
+            }
+            await this.openSettingsPanel();
+            if (sceneRunId !== this.sceneRunId || this.isStopping()) {
+                return false;
+            }
+
+            let characterSettingsPanel = await this.waitForElement(
+                () => this.getAvatarFloatingSidePanel('character-settings'),
+                1200
+            );
+            const characterSettingsButton = this.getDay5CharacterSettingsButtonTarget();
+            if (characterSettingsButton) {
+                this.applyGuideHighlights({
+                    key: scene.id + '-character-settings-button',
+                    persistent: settingsButton || null,
+                    primary: characterSettingsButton
+                });
+                await this.moveCursorToElement(characterSettingsButton, 620);
+            }
+            if (sceneRunId !== this.sceneRunId || this.isStopping()) {
+                return false;
+            }
+
+            characterSettingsPanel = await this.ensureAvatarFloatingSettingsSidePanel('character-settings')
+                || characterSettingsPanel;
+            if (characterSettingsPanel) {
+                this.applyGuideHighlights({
+                    key: scene.id + '-character-settings-panel',
+                    persistent: settingsButton || null,
+                    primary: characterSettingsPanel
+                });
+                const motionRect = this.getElementRect(characterSettingsPanel);
+                if (motionRect) {
+                    const centerX = motionRect.left + motionRect.width / 2;
+                    const centerY = motionRect.top + motionRect.height / 2;
+                    const radiusX = Math.max(36, motionRect.width * 0.32);
+                    const radiusY = Math.max(60, motionRect.height * 0.36);
+                    let narrationDone = false;
+                    const guardedNarrationPromise = narrationPromise.finally(() => {
+                        narrationDone = true;
+                    });
+                    const ellipsePromise = (async () => {
+                        while (sceneRunId === this.sceneRunId && !narrationDone && !this.isStopping()) {
+                            const moved = await this.cursor.runPauseAwareEllipse(
+                                centerX,
+                                centerY,
+                                radiusX,
+                                radiusY,
+                                5600,
+                                () => narrationDone || this.destroyed || this.angryExitTriggered,
+                                () => this.scenePausedForResistance,
+                                () => this.isStopping()
+                            );
+                            if (!moved && !this.scenePausedForResistance) {
+                                return;
+                            }
+                            if (!moved) {
+                                await this.waitUntilSceneResumed();
+                            }
+                        }
+                    })();
+                    await Promise.all([guardedNarrationPromise, ellipsePromise]);
+                } else {
+                    await narrationPromise;
+                }
+            } else {
+                await narrationPromise;
+            }
+
+            if (canHandleSceneButtons && this.pendingGuideMessageAction) {
+                this.armPendingGuideMessageActionTimeout(12000);
+            }
+            if (actionWaitPromise && sceneRunId === this.sceneRunId && !this.isStopping()) {
+                await actionWaitPromise;
+            }
+            if (sceneRunId !== this.sceneRunId || this.isStopping()) {
+                return false;
+            }
+            await this.waitForSceneDelay(index >= total - 1 ? 260 : 420);
+            return sceneRunId === this.sceneRunId && !this.isStopping();
+        }
+
+        async playDay5CharacterPanicScene(scene, sceneRunId, previousSceneId, index, total) {
+            const text = this.resolveAvatarFloatingSceneText(scene);
+            const voiceKey = scene.voiceKey || '';
+            const sceneButtons = this.getAvatarFloatingSceneButtons(scene);
+            const canHandleSceneButtons = sceneButtons.length > 0
+                ? this.installGuideMessageActionHandler()
+                : false;
+            const actionWaitPromise = canHandleSceneButtons
+                ? this.beginGuideMessageActionWait(sceneButtons, 0)
+                : null;
+            if (text) {
+                this.appendGuideChatMessage(text, {
+                    textKey: scene.textKey || '',
+                    voiceKey: voiceKey,
+                    buttons: sceneButtons
+                });
+            }
+            const sceneEmotion = this.resolveAvatarFloatingSceneEmotion(scene);
+            if (sceneEmotion) {
+                this.applyGuideEmotion(sceneEmotion);
+            }
+
+            const characterSettingsPanel = this.getCharacterSettingsSidePanel()
+                || await this.ensureAvatarFloatingSettingsSidePanel('character-settings');
+            if (characterSettingsPanel) {
+                this.applyGuideHighlights({
+                    key: scene.id + '-character-settings-panel',
+                    primary: characterSettingsPanel
+                });
+            }
+            this.enableInterrupts(this.currentStep);
+
+            const narrationPromise = (text || voiceKey)
+                ? this.speakGuideLine(text, {
+                    voiceKey: voiceKey,
+                    minDurationMs: 1800
+                }).catch((error) => {
+                    console.warn('[YuiGuide] 悬浮窗教程旁白失败，继续流程:', scene.id, error);
+                })
+                : Promise.resolve();
+            const fullDurationMs = this.getGuideVoiceDurationMs(voiceKey || '', resolveGuideLocale())
+                || estimateSpeechDurationMs(text || '');
+            const panicPromise = this.runSettingsPeekPanicPerformance({
+                targetRect: this.getElementRect(characterSettingsPanel),
+                totalDurationMs: Math.max(600, Math.round(fullDurationMs)),
+                runId: sceneRunId
+            }).catch(() => {});
+
+            await Promise.all([narrationPromise, panicPromise]);
+            if (sceneRunId !== this.sceneRunId || this.isStopping()) {
+                return false;
+            }
+            this.overlay.clearActionSpotlight();
+            this.overlay.clearPersistentSpotlight();
+            this.collapseCharacterSettingsSidePanel();
+
+            if (canHandleSceneButtons && this.pendingGuideMessageAction) {
+                this.armPendingGuideMessageActionTimeout(12000);
+            }
+            if (actionWaitPromise && sceneRunId === this.sceneRunId && !this.isStopping()) {
+                await actionWaitPromise;
+            }
+            if (sceneRunId !== this.sceneRunId || this.isStopping()) {
+                return false;
+            }
+            await this.waitForSceneDelay(index >= total - 1 ? 260 : 420);
+            return sceneRunId === this.sceneRunId && !this.isStopping();
         }
 
         async runAvatarFloatingSceneOperation(scene, primaryTarget, narrationStartedAt) {
@@ -7010,6 +7780,61 @@
                 this.clearExternalizedChatGuideTarget();
             }
 
+            if (scene && scene.id === 'day4_chat_settings') {
+                return await this.playDay4ChatSettingsScene(
+                    scene,
+                    sceneRunId,
+                    previousSceneId,
+                    index,
+                    total
+                );
+            }
+            if (scene && scene.id === 'day4_model_behavior') {
+                return await this.playDay4ModelBehaviorScene(
+                    scene,
+                    sceneRunId,
+                    previousSceneId,
+                    index,
+                    total
+                );
+            }
+            if (scene && scene.id === 'day4_gaze_follow') {
+                return await this.playDay4GazeFollowScene(
+                    scene,
+                    sceneRunId,
+                    previousSceneId,
+                    index,
+                    total
+                );
+            }
+            if (scene && scene.id === 'day4_privacy_mode') {
+                return await this.playDay4PrivacyModeScene(
+                    scene,
+                    sceneRunId,
+                    previousSceneId,
+                    index,
+                    total
+                );
+            }
+            if (scene && scene.id === 'day5_character_settings') {
+                return await this.playDay5CharacterSettingsScene(
+                    scene,
+                    sceneRunId,
+                    previousSceneId,
+                    index,
+                    total
+                );
+            }
+            if (scene && scene.id === 'day5_character_panic') {
+                return await this.playDay5CharacterPanicScene(
+                    scene,
+                    sceneRunId,
+                    previousSceneId,
+                    index,
+                    total
+                );
+            }
+
             if (!isFirstDailyScene) {
                 await this.prepareAvatarFloatingScene(scene, {
                     preserveExternalizedChatGuideTarget
@@ -7095,12 +7920,17 @@
                 });
                 primaryTarget = await this.resolveAvatarFloatingTarget(scene, 'primary');
                 secondaryTarget = await this.resolveAvatarFloatingTarget(scene, 'secondary');
-                this.applyGuideHighlights({
+                const day4SettingsPersistentTarget = this.getDay4SettingsButtonPersistenceTarget(scene.id);
+                const highlightConfig = {
                     key: scene.id,
                     persistent: persistentTarget,
                     primary: primaryTarget,
                     secondary: secondaryTarget
-                });
+                };
+                if (typeof day4SettingsPersistentTarget !== 'undefined') {
+                    highlightConfig.persistent = day4SettingsPersistentTarget;
+                }
+                this.applyGuideHighlights(highlightConfig);
             }
             this.enableInterrupts(this.currentStep);
 
@@ -7172,12 +8002,17 @@
                     await this.waitForSceneDelay(index >= total - 1 ? 260 : 420);
                     return sceneRunId === this.sceneRunId && !this.isStopping();
                 }
-                this.applyGuideHighlights({
+                const day4SettingsPersistentTarget = this.getDay4SettingsButtonPersistenceTarget(scene.id);
+                const highlightConfig = {
                     key: scene.id,
                     persistent: persistentTarget,
                     primary: primaryTarget,
                     secondary: secondaryTarget
-                });
+                };
+                if (typeof day4SettingsPersistentTarget !== 'undefined') {
+                    highlightConfig.persistent = day4SettingsPersistentTarget;
+                }
+                this.applyGuideHighlights(highlightConfig);
             }
 
             await this.waitForSceneDelay(220);
@@ -7210,14 +8045,19 @@
             }
             await startSceneOperation();
             if (!externalizedSceneTargetKind && scene.operation === 'cleanup') {
-                this.applyGuideHighlights({
+                const day4SettingsPersistentTarget = this.getDay4SettingsButtonPersistenceTarget(scene.id);
+                const highlightConfig = {
                     key: scene.id + '-settled',
                     persistent: await this.resolveAvatarFloatingPersistent(scene, {
                         fallbackToChatWindow: false
                     }),
                     primary: await this.resolveAvatarFloatingTarget(scene, 'primary'),
                     secondary: await this.resolveAvatarFloatingTarget(scene, 'secondary')
-                });
+                };
+                if (typeof day4SettingsPersistentTarget !== 'undefined') {
+                    highlightConfig.persistent = day4SettingsPersistentTarget;
+                }
+                this.applyGuideHighlights(highlightConfig);
             }
 
             await narrationPromise;

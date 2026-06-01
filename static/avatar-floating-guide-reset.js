@@ -172,12 +172,12 @@
                 },
                 {
                     id: 'day5_character_panic',
-                    selector: '#${prefix}-sidepanel-live2d-manage',
-                    text: '角色替换反应只作为吃醋演出，不阻止用户之后真实进入模型或角色管理。',
+                    selector: '[data-neko-sidepanel-type="character-settings"]',
+                    text: '角色替换反应继续高亮角色设置侧边栏，播放完后清除高光并收起侧边栏，不阻止用户之后真实进入模型或角色管理。',
                     voiceKey: 'avatar_floating_day5_character_panic',
                     cursorAction: 'wobble',
                     operation: 'none',
-                    keepPanelsOpen: true,
+                    keepPanelsOpen: false,
                     performanceCue: null,
                 },
                 {

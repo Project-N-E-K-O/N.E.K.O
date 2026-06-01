@@ -226,17 +226,20 @@ Day 1 registry 还注册了 API Key、记忆浏览和插件面板的 handoff sce
 | scene/台词 | emotion/动作 | 高光与 Ghost Cursor 时序 | 不重叠要求 |
 | --- | --- | --- | --- |
 | `day4_intro_companion`：“今天，就让我悄悄跟上...” | `happy`，温柔靠近动作 | T+0 primary 高亮聊天窗；外置聊天窗 kind `window`；cursor wobble；台词结束清理聊天窗高光。 | 不提前打开设置。 |
-| `day4_chat_settings`：“如果有时候你觉得我发消息太频繁...” | `neutral`，规则说明动作 | operation `show-settings-sidepanel:chat-settings` 在 `prepare` 先打开设置并展开 `[data-neko-sidepanel-type="chat-settings"]`；T+0 primary 只框该侧边面板；T+220ms cursor tour 面板前 4 个可见按钮/开关，只指认不改值。 | 不再高亮齿轮或整个设置弹窗。 |
-| `day4_animation_tracking`：“看这里看这里...” | `happy`，活泼说明动作 | operation `day4-animation-distance-showcase` 先展开 `animation-settings` 面板；T+0 primary 框面板；T+220ms cursor tour 画质/帧率/跟踪控件；约 48% cue 关闭设置，primary 先切 `#${p}-lock-icon`，cursor wobble，再切 `#${p}-btn-goodbye`，可 secondary 框 `#${p}-btn-return`。 | 动画面板、锁定按钮、离开按钮分阶段互斥。 |
-| `day4_privacy_mode`：“当这个按钮关闭时...” | `neutral`，安全边界动作 | `cleanupBefore` 清理前段；operation `show-settings-sidepanel:interval-proactive-vision` 打开该侧边面板；primary 框 `#${p}-toggle-proactive-vision` 或其所在侧边面板；T+220ms cursor move 到开关，不点击。 | 不同时高亮主动搭话或聊天设置。 |
-| `day4_wrap`：“真正舒服的陪伴...” | `happy`，温柔收束动作 | 收尾前关闭设置弹窗和侧边栏，恢复用户配置；T+0 primary 回聊天窗；T+70% 花瓣 cue 清理高光/cursor；完成 Day 4。 | 不保留隐私/动画面板高光。 |
+| `day4_chat_settings`：“在这里可以决定...” | `neutral`，规则说明动作 | T+0 圆形 primary 高亮设置按钮，T+220ms cursor 移到设置按钮并模拟点击，同时调用打开设置 API；设置按钮作为 persistent 保持到 `day4_privacy_mode` 播完。设置弹窗打开后，primary 切到“对话设置”按钮，cursor 移过去并调用 `show-settings-sidepanel:chat-settings`；侧边栏出现后取消按钮主高亮，primary 切到 `[data-neko-sidepanel-type="chat-settings"]`，cursor 在侧边栏内椭圆运动到本句结束。 | 不高亮整张设置弹窗，不创建入口加面板的 union 范围。 |
+| `day4_model_behavior`：“如果你想要看到...” | `happy`，活泼说明动作 | 先收起对话设置侧边栏；设置按钮 persistent 继续保留；T+0 primary 从对话设置侧边栏平滑过渡到“动画设置”按钮；T+220ms cursor 移到该按钮后调用 `show-settings-sidepanel:animation-settings`；侧边栏出现后 primary 切到 `[data-neko-sidepanel-type="animation-settings"]`，cursor 在侧边栏内椭圆运动到本句结束。 | 不在本段切锁定/离开按钮，不高亮整张设置弹窗。 |
+| `day4_gaze_follow`：“开启这个功能后...” | `happy`，活泼说明动作 | 继续使用动画设置面板；设置按钮 persistent 继续保留；T+0 primary 从动画设置侧边栏平滑移动到“跟踪鼠标”按钮外层开关行；T+220ms cursor 移到该按钮。 | 不点击、不改值。 |
+| `day4_privacy_mode`：“这个是控制人家能不能看屏幕...” | `neutral`，安全边界动作 | 清理前段动画设置侧边栏，不展开 `interval-proactive-vision`，不显示隐私模式旁边侧边框；设置按钮 persistent 保持到本句结束；primary 高亮隐私模式按钮 / `#${p}-toggle-proactive-vision` 外层开关行；T+220ms cursor move 到隐私模式按钮；本句播完后调用 `closeSettingsPanel()` 收起设置弹窗。 | 不同时高亮主动搭话或聊天设置，不改变锁定或隐私状态。 |
+| `day4_model_lock`：“总是小心不触碰到...” | `happy`，活泼说明动作 | `cleanupBefore` 确保前段与设置按钮 persistent 已清理；primary 圆形高亮 `#${p}-lock-icon`，cursor 平滑移动到锁定按钮并 wobble。 | 只展示按钮，不真的锁定。 |
+| `day4_return_home`：“如果你现在需要专注...” | `happy`，活泼说明动作 | primary `#${p}-btn-goodbye`，可 secondary 框 `#${p}-btn-return`，cursor wobble。 | 只展示按钮，不真的让 Yui 离开。 |
+| `day4_wrap`：“真正舒服的陪伴才不是...” | `happy`，温柔收束动作 | 收尾前关闭设置弹窗和侧边栏，恢复用户配置；T+0 primary 回聊天窗；T+70% 花瓣 cue 清理高光/cursor；完成 Day 4。 | 不保留隐私/动画面板高光。 |
 
 ## Day 5：个性化与长期配置
 
 | scene/台词 | emotion/动作 | 高光与 Ghost Cursor 时序 | 不重叠要求 |
 | --- | --- | --- | --- |
-| `day5_character_settings`：“从今天起...” | `happy`，专属感动作 | operation `show-settings-sidepanel:character-settings` 打开设置并展开 `[data-neko-sidepanel-type="character-settings"]`；T+0 primary 框角色设置侧边面板；T+220ms cursor tour 模型/声音/API 入口组，只认门。 | 不跳转子页面，不同时高亮整个设置弹窗。 |
-| `day5_character_panic`：“咦，这里居然还能把我换掉吗...” | `surprised`，`settings-peek-panic` 自定义慌乱优先 | primary `#${p}-sidepanel-live2d-manage`，secondary `#${p}-sidepanel-voice-clone`；T+220ms cursor tour；operation 按剩余台词时长运行慌乱演出。 | 只框模型管理和声音克隆入口，不框整个角色面板。 |
+| `day5_character_settings`：“从今天起...” | `happy`，专属感动作 | T+0 primary 高亮聊天窗；约 1 秒后聊天窗高光消失，cursor 从聊天窗平滑移动到设置按钮，同时圆形高亮设置按钮；设置弹窗打开后 primary 切到“角色设置”按钮，cursor 移到按钮并展开 `[data-neko-sidepanel-type="character-settings"]`；随后 primary 平滑过渡到角色设置侧边栏，cursor 在侧边栏内椭圆运动到本句结束。 | 不跳转子页面，不同时高亮整个设置弹窗。 |
+| `day5_character_panic`：“咦，这里居然还能把我换掉吗...” | `surprised`，`settings-peek-panic` 自定义慌乱优先 | 播放期间继续 primary 高亮 `[data-neko-sidepanel-type="character-settings"]`；operation 按本句时长运行慌乱演出；本句播完后清除高光并收起角色设置侧边栏。 | 不切到模型管理或声音克隆入口，不阻止后续真实操作。 |
 | `day5_memory_entry`：“如果你不小心忘记了...” | `angry`，傲娇动作，非 angry exit | operation `show-settings-menu:memory` 打开设置菜单 memory；T+0 primary `#${p}-menu-memory`；T+220ms cursor move/wobble；不打开 `/memory_browser`。 | 不把记忆入口和角色设置面板同时高亮。 |
 | `day5_wrap`：“好啦好啦...” | `happy`，期待定制动作 | 收尾前关闭设置和侧边栏；T+0 primary 回聊天窗；T+70% 花瓣 cue 清理所有高光/cursor；完成 Day 5。 | 不保留记忆入口高光。 |
 
