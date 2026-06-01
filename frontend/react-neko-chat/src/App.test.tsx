@@ -1860,12 +1860,12 @@ describe('App', () => {
         />,
       );
 
-      const appShell = container.querySelector('.app-shell');
+      const shell = container.querySelector('.compact-chat-surface-shell');
       const choiceLayer = document.body.querySelector('body > .compact-chat-choice-anchor');
-      expect(appShell).not.toBeNull();
+      expect(shell).not.toBeNull();
       expect(choiceLayer).not.toBeNull();
 
-      Object.defineProperty(appShell!, 'getBoundingClientRect', {
+      Object.defineProperty(shell!, 'getBoundingClientRect', {
         configurable: true,
         value: () => ({
           x: 0,
@@ -2143,6 +2143,38 @@ describe('App', () => {
     });
 
     let shellBottom = 360;
+    const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect;
+    const getBoundingClientRectSpy = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function mockCompactChoiceRects(this: HTMLElement) {
+        if (this.classList.contains('compact-chat-surface-shell')) {
+          return {
+            x: 0,
+            y: shellBottom - 260,
+            top: shellBottom - 260,
+            left: 0,
+            right: 420,
+            bottom: shellBottom,
+            width: 420,
+            height: 260,
+            toJSON: () => ({}),
+          } as DOMRect;
+        }
+        if (this.classList.contains('compact-chat-choice-anchor')) {
+          return {
+            x: 0,
+            y: 0,
+            top: 0,
+            left: 0,
+            right: 420,
+            bottom: 112,
+            width: 420,
+            height: 112,
+            toJSON: () => ({}),
+          } as DOMRect;
+        }
+        return originalGetBoundingClientRect.call(this);
+      });
 
     try {
       const { container } = render(
@@ -2156,39 +2188,11 @@ describe('App', () => {
         />,
       );
 
-      const appShell = container.querySelector('.app-shell');
+      const shell = container.querySelector('.compact-chat-surface-shell');
       const choiceLayer = document.body.querySelector('body > .compact-chat-choice-anchor');
-      expect(appShell).not.toBeNull();
+      expect(shell).not.toBeNull();
       expect(choiceLayer).not.toBeNull();
 
-      Object.defineProperty(appShell!, 'getBoundingClientRect', {
-        configurable: true,
-        value: () => ({
-          x: 0,
-          y: 0,
-          top: shellBottom - 260,
-          left: 0,
-          right: 420,
-          bottom: shellBottom,
-          width: 420,
-          height: 260,
-          toJSON: () => ({}),
-        }),
-      });
-      Object.defineProperty(choiceLayer!, 'getBoundingClientRect', {
-        configurable: true,
-        value: () => ({
-          x: 0,
-          y: 0,
-          top: 0,
-          left: 0,
-          right: 420,
-          bottom: 112,
-          width: 420,
-          height: 112,
-          toJSON: () => ({}),
-        }),
-      });
       Object.defineProperty(choiceLayer!, 'scrollHeight', {
         configurable: true,
         value: 112,
@@ -2199,6 +2203,14 @@ describe('App', () => {
       });
 
       shellBottom = 820;
+      await act(async () => {
+        window.dispatchEvent(new CustomEvent('neko:compact-surface-layout-change', {
+          detail: { left: 0, top: shellBottom - 260, width: 420, height: 260 },
+        }));
+        await new Promise<void>(resolve => {
+          window.requestAnimationFrame(() => resolve());
+        });
+      });
 
       await waitFor(() => {
         expect(choiceLayer).toHaveAttribute('data-compact-choice-placement', 'above');
@@ -2208,6 +2220,7 @@ describe('App', () => {
         configurable: true,
         value: originalInnerHeight,
       });
+      getBoundingClientRectSpy.mockRestore();
     }
   });
 

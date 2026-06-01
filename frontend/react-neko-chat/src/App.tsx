@@ -2045,6 +2045,7 @@ export default function App({
 
     const visualViewport = window.visualViewport;
     window.addEventListener('resize', schedulePlacementUpdate);
+    window.addEventListener('neko:compact-surface-layout-change', schedulePlacementUpdate);
     window.addEventListener('neko:desktop-compact-layout-change', schedulePlacementUpdate);
     visualViewport?.addEventListener('resize', schedulePlacementUpdate);
     visualViewport?.addEventListener('scroll', schedulePlacementUpdate);
@@ -2063,6 +2064,7 @@ export default function App({
         window.cancelAnimationFrame(frameId);
       }
       window.removeEventListener('resize', schedulePlacementUpdate);
+      window.removeEventListener('neko:compact-surface-layout-change', schedulePlacementUpdate);
       window.removeEventListener('neko:desktop-compact-layout-change', schedulePlacementUpdate);
       visualViewport?.removeEventListener('resize', schedulePlacementUpdate);
       visualViewport?.removeEventListener('scroll', schedulePlacementUpdate);

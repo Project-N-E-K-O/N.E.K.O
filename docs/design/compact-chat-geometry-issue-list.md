@@ -1260,6 +1260,7 @@ Choice above/below 由同一个锚点和同一个决策源决定，避免 React 
    - options count/loading 变化
    - base surface rect 变化
    - PC compact placement 变化
+   - `neko:compact-surface-layout-change` 触发非 PC compact surface move 后的 placement 重算
 
 后续步骤：
 
@@ -1388,6 +1389,15 @@ Tool fan 打开后，native carrier 使用稳定 reserve rect；按钮、popover
    - `./.venv/bin/python -m pytest -q tests/unit/test_react_chat_window_static.py`：20 passed。
    - `./build_frontend.sh` passed。
    - `git diff --check` in both repos passed。
+9. 2026-06-01 补充发现：
+   - 用户反馈 compact 聊天框 resize 只有在先拖拽过上方 history 气泡后才稳定，否则 resize 会闪烁。
+   - 根因指向 history drag passive carrier 的副作用：拖拽 history 后 carrier window 保持较大的被动 bounds，后续 resize 不再频繁缩放透明 BrowserWindow。
+   - `N.E.K.O.-PC/src/preload-chat-react.js` 已为 resize 建立独立 passive carrier，不再依赖 history drag 留下的 carrier。
+   - resize active 时以 `desktopCompactSurfaceResizeTarget` 计算 surface，同时用 `desktopCompactSurfaceResizeCarrierBounds` 保持 carrier bounds；resize end 后保留 passive carrier，由 hit/passthrough 保证透明区域穿透。
+   - `activateDesktopCompactWindow()` 已跳过 native bounds 未变化时的 no-op `W.setBounds()`，避免 final relayout 因 surface width snapshot 改变而重打同一个透明窗口 bounds。
+10. 本次补充验证：
+   - `node --check src/preload-chat-react.js` in `N.E.K.O.-PC` passed。
+   - `node --test test/desktop-compact-layout-contract.test.js` in `N.E.K.O.-PC`：36 passed。
 
 ### 实施 9：降低 geometry diff 敏感度
 
