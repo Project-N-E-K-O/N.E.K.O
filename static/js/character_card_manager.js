@@ -11278,19 +11278,22 @@ function _companionUpdateQuickAvailability(state) {
     // 面板还开着，用户再也点不动 Save（Codex #3333702549）。
     if (!state || state.closed) return;
     // 详情表单 Save 的禁用集中在这里（busy 变化 + 每次 mode 切换都会调到，是唯一同步点）。
-    // 防竞态：**未落库新卡**只要还在「问答 / 生成」流程（state.mode !== 'chat'）或正在打 LLM
-    // （busy），就禁掉 Save——堵住「用户在草稿还没生成完的窗口里手动 Save 把新卡建出来」与
+    // 防竞态：**未落库新卡**在「打 LLM（busy）」或「澄清问答流程（asking_questions，答最后一题
+    // 就触发生成）」时禁掉 Save——堵住「用户在草稿还没生成完的窗口里手动 Save 把新卡建出来」与
     // 生成竞态：那一下会用旧快照建卡，且若走 popup / 有卡面分支会 closeCatgirlPanel 把面板连同
-    // AI 字段一起带走、事后救不回（Codex #3329022313 / #3329817833 / #3333137733）。进入 chat
-    // 模式（草稿已生成、字段已落到表单）后放开，用户才好手动 Save 建卡；之后 chat/refine 的
-    // LLM 飞行窗口又被 busy 盖住。已落库卡完全不禁（其并发由 _companionTryAutoSave 的
-    // wait/replay 安全兜住）。关 companion 时 _companionTeardown 会无条件恢复，不会卡死。
+    // AI 字段一起带走、事后救不回（Codex #3329022313 / #3329817833 / #3333137733）。
+    // ⚠ awaiting_description（首启 + 澄清失败回退）**不禁**：此刻没有任何在途生成，禁 Save 是过宽
+    // 的——零竞态收益，只会把用户困住：澄清失败（如没配 API）后想放弃 AI、手动建卡却点不动，得先
+    // 关 companion 才行（Codex #3333683160）。手动 Save 真撞上后续生成的竞态，本就由 busy +
+    // _companionTryAutoSave 的 wait/replay 兜底，不靠在这里禁 awaiting_description 的 Save。进入
+    // chat 模式（草稿已落表单）同样放开，save-then-chat 由 _companionRunChat 的 dataset.submitting
+    // 短路守住。已落库卡完全不禁。关 companion 时 _companionTeardown 会无条件恢复，不会卡死。
     try {
         if (state.form) {
             const sb = state.form.querySelector('#save-button');
             if (sb) {
                 const unsavedNewCard = state.isNew === true && !state.form._autoCreated;
-                sb.disabled = unsavedNewCard && (!!state.busy || state.mode !== 'chat');
+                sb.disabled = unsavedNewCard && (!!state.busy || state.mode === 'asking_questions');
             }
         }
     } catch (_) { /* form 可能已 detach，忽略 */ }
