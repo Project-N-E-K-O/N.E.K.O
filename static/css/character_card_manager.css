@@ -1,21 +1,25 @@
 @import url('base.css');
 
 html {
+height: 100%;
 min-height: 100vh;
 margin: 0;
 padding: 0;
 overflow-x: hidden;
-overflow-y: auto;
+overflow-y: hidden;
 }
 
 body {
+height: 100%;
 min-height: 100vh;
 margin: 0;
 padding: 0;
 background: #e1f4ff;
 color: #222;
 font-family: 'Segoe UI', Arial, sans-serif;
-overflow: visible;
+overflow: hidden;
+display: flex;
+flex-direction: column;
 }
 
 /* 页面标题栏 - 支持窗口拖动 */
@@ -29,6 +33,7 @@ body .page-title-bar {
     position: sticky;
     top: 0;
     z-index: 100;
+    flex: 0 0 auto;
     -webkit-app-region: drag;
 }
 
@@ -184,6 +189,12 @@ background-position: top center;
 background-repeat: no-repeat;
 background-size: 100%;
 min-height: 100vh;
+flex: 1 1 auto;
+min-height: 0;
+overflow-x: hidden;
+overflow-y: auto;
+overscroll-behavior: contain;
+scrollbar-gutter: stable;
 }
 
 #sidebar {
