@@ -68,7 +68,7 @@ def test_quota_notifier_swallows_callback_error():
 
 
 def test_consume_agent_daily_quota_triggers_notifier_on_exhaustion(tmp_path, monkeypatch):
-    """卡点回归：免费版配额耗尽时 consume_agent_daily_quota 触发通知器一次。"""
+    """卡点回归：实际 Agent 模型为 free-agent-model 时配额耗尽，consume_agent_daily_quota 触发通知器一次。"""
     calls = []
     ConfigManager.register_quota_exceeded_notifier(lambda used, limit: calls.append((used, limit)))
 
@@ -77,7 +77,7 @@ def test_consume_agent_daily_quota_triggers_notifier_on_exhaustion(tmp_path, mon
     cm.project_config_dir = tmp_path
     cm.app_name = "N.E.K.O"
     cm._verbose = False
-    monkeypatch.setattr(cm, "is_free_version", lambda: True)
+    monkeypatch.setattr(cm, "get_model_api_config", lambda model_type: {"model": "free-agent-model"})
     monkeypatch.setattr(cm, "ensure_config_directory", lambda: None)
     monkeypatch.setattr(ConfigManager, "_free_agent_daily_limit", 0)
 
@@ -88,8 +88,12 @@ def test_consume_agent_daily_quota_triggers_notifier_on_exhaustion(tmp_path, mon
     assert calls == [(0, 0)], "耗尽应触发通知器一次，携带 (used, limit)"
 
 
-def test_consume_non_free_version_never_notifies(tmp_path, monkeypatch):
-    """非免费版不计配额、不通知（早退路径）。"""
+def test_consume_non_free_agent_model_never_notifies(tmp_path, monkeypatch):
+    """实际 Agent 模型非 free-agent-model（自费/自定义）时不计配额、不通知（早退路径）。
+
+    锁住本次修复点：哪怕 core/assist 仍处于免费版（IS_FREE_VERSION=True），只要用户实际
+    用的 agent model 是自费/自定义的，就不该再被这条免费试用配额拦截。
+    """
     calls = []
     ConfigManager.register_quota_exceeded_notifier(lambda used, limit: calls.append((used, limit)))
 
@@ -98,10 +102,10 @@ def test_consume_non_free_version_never_notifies(tmp_path, monkeypatch):
     cm.project_config_dir = tmp_path
     cm.app_name = "N.E.K.O"
     cm._verbose = False
-    monkeypatch.setattr(cm, "is_free_version", lambda: False)
+    monkeypatch.setattr(cm, "get_model_api_config", lambda model_type: {"model": "qwen3.6-plus-2026-04-02"})
     monkeypatch.setattr(ConfigManager, "_free_agent_daily_limit", 0)
 
     ok, info = cm.consume_agent_daily_quota(source="regression_test")
 
-    assert ok is True, "非免费版应放行"
-    assert calls == [], "非免费版不应触发通知器"
+    assert ok is True, "自费/自定义 agent model 应放行"
+    assert calls == [], "非 free-agent-model 不应触发通知器"

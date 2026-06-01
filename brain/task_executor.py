@@ -297,10 +297,6 @@ class DirectTaskExecutor:
         try:
             llm = self._get_llm(temperature=0, max_completion_tokens=AGENT_PLUGIN_SHORTDESC_MAX_TOKENS)
             for p in to_generate:
-                quota_error = await self._check_agent_quota("task_executor.ensure_short_desc")
-                if quota_error:
-                    logger.debug("[Agent] Stopping short_description generation: quota exceeded")
-                    break
                 pid = p.get("id", "unknown")
                 try:
                     from config import PLUGIN_INPUT_DESC_MAX_TOKENS
@@ -441,13 +437,6 @@ class DirectTaskExecutor:
         except RuntimeError:
             logger.debug("[Agent] No running event loop, skipping async LLM close")
 
-    async def _check_agent_quota(self, source: str) -> Optional[str]:
-        """免费版 Agent 模型每日 300 次本地限流（async，避免事件循环阻塞）。"""
-        ok, info = await self._config_manager.aconsume_agent_daily_quota(source=source, units=1)
-        if ok:
-            return None
-        return json.dumps({"code": "AGENT_QUOTA_EXCEEDED", "details": {"used": info.get('used', 0), "limit": info.get('limit', 300)}})
-    
     def _format_messages(self, messages: List[Dict[str, str]]) -> str:
         """格式化对话消息"""
         def _extract_text(m: dict) -> str:
@@ -973,10 +962,6 @@ class DirectTaskExecutor:
                     {"role": "user", "content": user_prompt},
                 ]
 
-                quota_error = await self._check_agent_quota("task_executor.assess_unified")
-                if quota_error:
-                    return UnifiedChannelDecision()
-
                 response = await llm.ainvoke(messages)
                 text = (response.content or "").strip()
 
@@ -1177,10 +1162,6 @@ class DirectTaskExecutor:
                 {"role": "user", "content": user_text},
             ]
 
-            quota_error = await self._check_agent_quota("task_executor.coarse_screen")
-            if quota_error:
-                return []
-
             response = await llm.ainvoke(messages)
             text = (response.content or "").strip()
             if text.startswith("```"):
@@ -1337,16 +1318,6 @@ class DirectTaskExecutor:
                     {"role": "user", "content": user_prompt},
                 ]
 
-                quota_error = await self._check_agent_quota("task_executor.assess_user_plugin")
-                if quota_error:
-                    return UserPluginDecision(
-                        has_task=False,
-                        can_execute=False,
-                        task_description="",
-                        plugin_id=None,
-                        plugin_args=None,
-                        reason=quota_error,
-                    )
                 response = await llm.ainvoke(messages)
                 raw_text = response.content
                 # Log the prompts we sent (truncated) and the raw response (truncated) at INFO level

@@ -861,6 +861,8 @@ class ConfigManager:
     _agent_quota_lock = threading.Lock()
     _selected_root_unavailable_recovery_override_roots: set[str] = set()
     _free_agent_daily_limit = 500 # 免费配额并非只在本地实施，本地计算是为了减少无效请求、节约网络带宽。
+    # 本地每日配额只对真正的免费 Agent 模型计数；模型名与 config/api_providers.json 的 assist free profile 保持一致。
+    _free_agent_model_name = "free-agent-model"
     # 配额耗尽时给前端弹提示的节流：与 _agent_quota_lock 不同的锁，避免在持有配额锁时重入。
     # notifier 由 agent_server 在启动时注册（进程级），收到耗尽信号最多每 _quota_notify_interval_s 秒触发一次。
     _quota_notify_lock = threading.Lock()
@@ -3868,7 +3870,7 @@ class ConfigManager:
             logger.debug("配额耗尽通知回调失败: %s", e)
 
     def consume_agent_daily_quota(self, source: str = "", units: int = 1) -> tuple[bool, dict]:
-        """消费 Agent 模型每日配额（仅免费版生效）。配额并非只在本地实施，本地计算是为了减少无效请求、节约网络带宽。
+        """消费 Agent 模型每日配额（仅当实际 Agent 模型为 free-agent-model 时生效）。配额并非只在本地实施，本地计算是为了减少无效请求、节约网络带宽。
 
         Returns:
             (ok, info)
@@ -3883,11 +3885,16 @@ class ConfigManager:
         if units <= 0:
             units = 1
 
-        is_free = self.is_free_version()
+        # 只对真正的免费 Agent 模型(free-agent-model)本地计数：用户换用自费/自定义 agent
+        # model 后不该再被这条免费试用配额挡。core/assist 已解耦，IS_FREE_VERSION 还承担
+        # 免填 key、藏云端模型等其它职责，不能拿它当 agent 配额开关。analyzer/deduper 这类
+        # 判定器走的是 summary/emotion 模型而非 agent model，已不再调用本函数。
+        agent_model = (self.get_model_api_config('agent').get('model') or '').strip()
+        is_metered = (agent_model == self._free_agent_model_name)
         today = date.today().isoformat()
         limit = int(self._free_agent_daily_limit)
 
-        if not is_free:
+        if not is_metered:
             return True, {
                 "limited": False,
                 "date": today,
