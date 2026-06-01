@@ -38,6 +38,7 @@ async def test_card_assist_uses_agent_model_config_without_watermark(monkeypatch
     class FakeConfigManager:
         def __init__(self):
             self.model_types = []
+            self.quota_sources = []
 
         def get_model_api_config(self, model_type):
             self.model_types.append(model_type)
@@ -46,6 +47,10 @@ async def test_card_assist_uses_agent_model_config_without_watermark(monkeypatch
                 "base_url": "https://www.lanlan.tech/text/v1",
                 "api_key": "free-access",
             }
+
+        async def aconsume_agent_daily_quota(self, source="", units=1):
+            self.quota_sources.append((source, units))
+            return True, {"used": 1, "limit": 500}
 
     class FakeResponse:
         content = '{"reply":"ok","actions":[]}'
@@ -75,12 +80,51 @@ async def test_card_assist_uses_agent_model_config_without_watermark(monkeypatch
     assert err is None
     assert content == '{"reply":"ok","actions":[]}'
     assert fake_cm.model_types == ["agent"]
+    assert fake_cm.quota_sources == [("card_assist.invoke", 1)]
     assert captured["model"] == "free-agent-model"
     assert captured["base_url"] == "https://www.lanlan.tech/text/v1"
     assert captured["api_key"] == "free-access"
     assert captured["prompt"] == "hello"
     assert "安全水印" not in captured["prompt"]
     assert captured["closed"] is True
+
+
+@pytest.mark.asyncio
+async def test_card_assist_quota_exceeded_skips_llm_call(monkeypatch):
+    captured = {"ainvoke": 0, "closed": 0}
+
+    class FakeConfigManager:
+        def get_model_api_config(self, model_type):
+            assert model_type == "agent"
+            return {
+                "model": "free-agent-model",
+                "base_url": "https://www.lanlan.tech/text/v1",
+                "api_key": "free-access",
+            }
+
+        async def aconsume_agent_daily_quota(self, source="", units=1):
+            assert source == "card_assist.invoke"
+            assert units == 1
+            return False, {"used": 500, "limit": 500}
+
+    class FakeLLM:
+        async def ainvoke(self, prompt):
+            captured["ainvoke"] += 1
+            raise AssertionError("quota failure should skip LLM call")
+
+        async def aclose(self):
+            captured["closed"] += 1
+
+    monkeypatch.setattr(car, "get_config_manager", lambda: FakeConfigManager())
+    monkeypatch.setattr("utils.llm_client.create_chat_llm", lambda *a, **kw: FakeLLM())
+
+    content, err = await car._invoke_assist_detailed("hello")
+
+    assert content is None
+    assert err["error"] == "AGENT_QUOTA_EXCEEDED"
+    assert err["code"] == "AGENT_QUOTA_EXCEEDED"
+    assert err["details"] == {"used": 500, "limit": 500}
+    assert captured == {"ainvoke": 0, "closed": 1}
 
 
 @pytest.mark.asyncio

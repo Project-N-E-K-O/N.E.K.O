@@ -253,6 +253,30 @@ def _build_assist_llm():
     return llm, None
 
 
+async def _reserve_agent_quota(source: str) -> dict | None:
+    """Reserve one local free-agent quota unit before an actual LLM call."""
+    try:
+        ok, info = await get_config_manager().aconsume_agent_daily_quota(
+            source=source,
+            units=1,
+        )
+    except Exception as exc:
+        logger.warning("card-assist: agent quota check failed: %s", exc)
+        return {"success": False, "error": "agent_quota_check_failed",
+                "message": str(exc)}
+    if ok:
+        return None
+    used = info.get("used", 0)
+    limit = info.get("limit", 500)
+    return {
+        "success": False,
+        "error": "AGENT_QUOTA_EXCEEDED",
+        "code": "AGENT_QUOTA_EXCEEDED",
+        "message": "agent quota exceeded",
+        "details": {"used": used, "limit": limit},
+    }
+
+
 async def _invoke_assist_detailed(prompt: Any) -> tuple[str | None, dict | None]:
     """Run a single-shot call against the card-assist LLM. ``prompt`` may be either
     a plain string (treated as one user message) or a list of OpenAI-style
@@ -261,6 +285,14 @@ async def _invoke_assist_detailed(prompt: Any) -> tuple[str | None, dict | None]
     llm, err = _build_assist_llm()
     if err is not None:
         return None, err
+    quota_err = await _reserve_agent_quota("card_assist.invoke")
+    if quota_err is not None:
+        try:
+            await llm.aclose()
+        except Exception as close_exc:
+            logger.warning("card-assist: LLM aclose after quota failure: %s",
+                           close_exc)
+        return None, quota_err
     # 注意：ainvoke / aclose 两个错误必须分开处理，否则 aclose 抛错时会把
     # 已经拿到的 resp 当成 llm_call_failed 丢掉。
     try:
