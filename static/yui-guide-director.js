@@ -6613,6 +6613,338 @@
             }
         }
 
+        async runDay6PluginOpenAgentPanelFlow(scene) {
+            const sceneId = scene && scene.id ? scene.id : 'day6_agent_status_master';
+            const guardFailed = () => this.isStopping();
+            const catPawButton = this.getFloatingButtonShell(this.getFallbackFloatingButton('agent'))
+                || this.getFallbackFloatingButton('agent')
+                || this.queryDocumentSelector(this.expandSelector(TAKEOVER_CAPTURE_SELECTORS.catPaw));
+            if (!catPawButton || guardFailed()) {
+                return false;
+            }
+
+            this.setSpotlightGeometryHint(catPawButton, {
+                padding: 4,
+                geometry: 'circle'
+            });
+            this.applyGuideHighlights({
+                key: sceneId + '-cat-paw',
+                primary: catPawButton
+            });
+            if (!(await this.moveCursorToElement(catPawButton, 760)) || guardFailed()) {
+                return false;
+            }
+            const opened = await this.runActionWithCursorClick(
+                DEFAULT_CURSOR_CLICK_VISIBLE_MS,
+                () => this.openAgentPanel()
+            );
+            if (!opened || guardFailed()) {
+                return false;
+            }
+            this.day6PluginDashboardPreview = Object.assign({}, this.day6PluginDashboardPreview || {}, {
+                catPawButton: catPawButton
+            });
+            return true;
+        }
+
+        async runDay6PluginOpenManagementPanelFlow(scene) {
+            const sceneId = scene && scene.id ? scene.id : 'day6_plugin_side_panel';
+            const guardFailed = () => this.isStopping();
+            const userPluginToggle = await this.waitForElement(() => {
+                const toggle = this.getAgentToggleElement('agent-user-plugin');
+                return this.getElementRect(toggle) ? toggle : null;
+            }, 1800);
+            if (!userPluginToggle || guardFailed()) {
+                return false;
+            }
+            this.applyGuideHighlights({
+                key: sceneId + '-user-plugin',
+                primary: userPluginToggle
+            });
+            if (!(await this.moveCursorToElement(userPluginToggle, 720)) || guardFailed()) {
+                return false;
+            }
+            const sidePanelShown = await this.runActionWithCursorClick(
+                DEFAULT_CURSOR_CLICK_VISIBLE_MS,
+                () => this.ensureAvatarFloatingAgentSidePanel('user-plugin')
+            );
+            if (!sidePanelShown || guardFailed()) {
+                return false;
+            }
+
+            const managementButton = await this.ensureAgentSidePanelActionVisible(
+                'agent-user-plugin',
+                'management-panel',
+                2600
+            );
+            if (!managementButton || guardFailed()) {
+                return false;
+            }
+            this.setSpotlightGeometryHint(managementButton, {
+                padding: 18
+            });
+            this.applyGuideHighlights({
+                key: sceneId + '-management-panel',
+                primary: managementButton
+            });
+            if (!(await this.moveCursorToElement(managementButton, 720)) || guardFailed()) {
+                return false;
+            }
+            const managementOpenResult = await this.runActionWithCursorClick(
+                DEFAULT_CURSOR_CLICK_VISIBLE_MS,
+                async () => {
+                    const existingPluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 120);
+                    const hadPluginDashboard = !!(existingPluginDashboardWindow && !existingPluginDashboardWindow.closed);
+                    const agentPanelActionOpened = await this.clickAgentSidePanelAction('agent-user-plugin', 'management-panel', {
+                        keepMainUIVisible: true,
+                        source: 'avatar-floating-guide',
+                        sceneId: sceneId
+                    });
+                    return {
+                        existingPluginDashboardWindow,
+                        hadPluginDashboard,
+                        agentPanelActionOpened
+                    };
+                }
+            );
+            const hadPluginDashboard = !!(managementOpenResult && managementOpenResult.hadPluginDashboard);
+            const existingPluginDashboardWindow = managementOpenResult && managementOpenResult.existingPluginDashboardWindow;
+            const agentPanelActionOpened = !!(managementOpenResult && managementOpenResult.agentPanelActionOpened);
+            if (!agentPanelActionOpened || guardFailed()) {
+                return false;
+            }
+
+            const pluginDashboardWindow = hadPluginDashboard
+                ? existingPluginDashboardWindow
+                : await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 1800);
+            if (!pluginDashboardWindow || pluginDashboardWindow.closed || guardFailed()) {
+                return true;
+            }
+            this.day6PluginDashboardPreview = Object.assign({}, this.day6PluginDashboardPreview || {}, {
+                pluginDashboardWindow: pluginDashboardWindow,
+                pluginDashboardWindowCreatedByGuide: !hadPluginDashboard,
+                userPluginToggle: userPluginToggle,
+                managementButton: managementButton
+            });
+            return true;
+        }
+
+        async runDay6PluginDashboardHandoffFlow(scene, narrationStartedAt) {
+            const guardFailed = () => this.isStopping();
+            const previewState = this.day6PluginDashboardPreview || {};
+            const pluginDashboardWindow = (
+                previewState.pluginDashboardWindow
+                && !previewState.pluginDashboardWindow.closed
+            )
+                ? previewState.pluginDashboardWindow
+                : await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 1800);
+            if (!pluginDashboardWindow || pluginDashboardWindow.closed || guardFailed()) {
+                return true;
+            }
+            this.pluginDashboardWindowCreatedByGuide = previewState.pluginDashboardWindowCreatedByGuide !== false;
+
+            const homeCursorPosition = this.overlay && typeof this.overlay.getCursorPosition === 'function'
+                ? this.overlay.getCursorPosition()
+                : null;
+            this.cursor.hide();
+
+            const voiceKey = scene && scene.voiceKey ? scene.voiceKey : '';
+            const text = scene && scene.text ? scene.text : '';
+            const audioUrl = this.voiceQueue && typeof this.voiceQueue.resolveGuideAudioSrc === 'function'
+                ? this.voiceQueue.resolveGuideAudioSrc(voiceKey)
+                : '';
+            const narrationDurationMs = this.getGuideVoiceDurationMs(voiceKey, resolveGuideLocale())
+                || estimateSpeechDurationMs(text);
+            const dashboardNarrationStartedAtMs = Number.isFinite(narrationStartedAt) ? narrationStartedAt : Date.now();
+            const elapsedNarrationMs = Math.max(0, Date.now() - dashboardNarrationStartedAtMs);
+            let narrationFinishedTimer = 0;
+            try {
+                narrationFinishedTimer = window.setTimeout(() => {
+                    if (!this.angryExitTriggered && !this.destroyed) {
+                        this.notifyPluginDashboardNarrationFinished();
+                    }
+                }, Math.max(0, narrationDurationMs - elapsedNarrationMs));
+                await this.waitForPluginDashboardPerformance(pluginDashboardWindow, {
+                    line: text,
+                    closeOnDone: false,
+                    narrationDurationMs: narrationDurationMs,
+                    voiceKey: voiceKey,
+                    audioUrl: audioUrl,
+                    narrationStartedAtMs: dashboardNarrationStartedAtMs
+                }).catch(() => false);
+            } finally {
+                if (narrationFinishedTimer) {
+                    window.clearTimeout(narrationFinishedTimer);
+                }
+            }
+
+            await this.closePluginDashboardWindowIfCreatedByGuide('Day 6 插件管理预览完成');
+            this.collapseAgentSidePanel('agent-user-plugin');
+            this.clearVirtualSpotlight('plugin-management-entry');
+            this.stopHoverElement(previewState.userPluginToggle || null);
+            await this.closeAgentPanel().catch(() => {});
+            const homeReady = await this.waitForHomeMainUIReady(3600);
+            if (!homeReady || guardFailed()) {
+                return false;
+            }
+            if (homeCursorPosition) {
+                this.cursor.showAt(homeCursorPosition.x, homeCursorPosition.y);
+            }
+            this.day6PluginDashboardPreview = null;
+            return true;
+        }
+
+        async runDay6PluginSidePanelFlow(scene, narrationStartedAt) {
+            const sceneId = scene && scene.id ? scene.id : 'day6_plugin_side_panel';
+            const guardFailed = () => this.isStopping();
+            const agentPanel = () => this.resolveAvatarFloatingSelector('#${p}-popup-agent');
+            const catPawButton = this.getFloatingButtonShell(this.getFallbackFloatingButton('agent'))
+                || this.getFallbackFloatingButton('agent')
+                || this.queryDocumentSelector(this.expandSelector(TAKEOVER_CAPTURE_SELECTORS.catPaw));
+            if (!catPawButton || guardFailed()) {
+                return false;
+            }
+
+            this.setSpotlightGeometryHint(catPawButton, {
+                padding: 4,
+                geometry: 'circle'
+            });
+            this.applyGuideHighlights({
+                key: sceneId + '-cat-paw',
+                primary: catPawButton
+            });
+            if (!(await this.moveCursorToElement(catPawButton, 760)) || guardFailed()) {
+                return false;
+            }
+            const opened = await this.runActionWithCursorClick(
+                DEFAULT_CURSOR_CLICK_VISIBLE_MS,
+                () => this.openAgentPanel()
+            );
+            if (!opened || guardFailed()) {
+                return false;
+            }
+
+            const userPluginToggle = await this.waitForElement(() => {
+                const toggle = this.getAgentToggleElement('agent-user-plugin');
+                return this.getElementRect(toggle) ? toggle : null;
+            }, 1800);
+            if (!userPluginToggle || guardFailed()) {
+                return false;
+            }
+            this.applyGuideHighlights({
+                key: sceneId + '-user-plugin',
+                persistent: agentPanel(),
+                primary: userPluginToggle
+            });
+            if (!(await this.moveCursorToElement(userPluginToggle, 720)) || guardFailed()) {
+                return false;
+            }
+            const sidePanelShown = await this.runActionWithCursorClick(
+                DEFAULT_CURSOR_CLICK_VISIBLE_MS,
+                () => this.ensureAvatarFloatingAgentSidePanel('user-plugin')
+            );
+            if (!sidePanelShown || guardFailed()) {
+                return false;
+            }
+
+            const managementButton = await this.ensureAgentSidePanelActionVisible(
+                'agent-user-plugin',
+                'management-panel',
+                2600
+            );
+            if (!managementButton || guardFailed()) {
+                return false;
+            }
+            this.applyGuideHighlights({
+                key: sceneId + '-management-panel',
+                persistent: agentPanel(),
+                primary: managementButton
+            });
+            if (!(await this.moveCursorToElement(managementButton, 720)) || guardFailed()) {
+                return false;
+            }
+            const managementOpenResult = await this.runActionWithCursorClick(
+                DEFAULT_CURSOR_CLICK_VISIBLE_MS,
+                async () => {
+                    const existingPluginDashboardWindow = await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 120);
+                    const hadPluginDashboard = !!(existingPluginDashboardWindow && !existingPluginDashboardWindow.closed);
+                    const agentPanelActionOpened = await this.clickAgentSidePanelAction('agent-user-plugin', 'management-panel', {
+                        keepMainUIVisible: true,
+                        source: 'avatar-floating-guide',
+                        sceneId: sceneId
+                    });
+                    return {
+                        existingPluginDashboardWindow,
+                        hadPluginDashboard,
+                        agentPanelActionOpened
+                    };
+                }
+            );
+            const hadPluginDashboard = !!(managementOpenResult && managementOpenResult.hadPluginDashboard);
+            const existingPluginDashboardWindow = managementOpenResult && managementOpenResult.existingPluginDashboardWindow;
+            const agentPanelActionOpened = !!(managementOpenResult && managementOpenResult.agentPanelActionOpened);
+            if (!agentPanelActionOpened || guardFailed()) {
+                return false;
+            }
+
+            const pluginDashboardWindow = hadPluginDashboard
+                ? existingPluginDashboardWindow
+                : await this.waitForOpenedWindow(PLUGIN_DASHBOARD_WINDOW_NAME, 1800);
+            if (!pluginDashboardWindow || pluginDashboardWindow.closed || guardFailed()) {
+                return true;
+            }
+            this.pluginDashboardWindowCreatedByGuide = !hadPluginDashboard;
+
+            const homeCursorPosition = this.overlay && typeof this.overlay.getCursorPosition === 'function'
+                ? this.overlay.getCursorPosition()
+                : null;
+            this.cursor.hide();
+
+            const voiceKey = scene && scene.voiceKey ? scene.voiceKey : '';
+            const text = scene && scene.text ? scene.text : '';
+            const audioUrl = this.voiceQueue && typeof this.voiceQueue.resolveGuideAudioSrc === 'function'
+                ? this.voiceQueue.resolveGuideAudioSrc(voiceKey)
+                : '';
+            const narrationDurationMs = this.getGuideVoiceDurationMs(voiceKey, resolveGuideLocale())
+                || estimateSpeechDurationMs(text);
+            const dashboardNarrationStartedAtMs = Number.isFinite(narrationStartedAt) ? narrationStartedAt : Date.now();
+            const elapsedNarrationMs = Math.max(0, Date.now() - dashboardNarrationStartedAtMs);
+            let narrationFinishedTimer = 0;
+            try {
+                narrationFinishedTimer = window.setTimeout(() => {
+                    if (!this.angryExitTriggered && !this.destroyed) {
+                        this.notifyPluginDashboardNarrationFinished();
+                    }
+                }, Math.max(0, narrationDurationMs - elapsedNarrationMs));
+                await this.waitForPluginDashboardPerformance(pluginDashboardWindow, {
+                    line: text,
+                    closeOnDone: false,
+                    narrationDurationMs: narrationDurationMs,
+                    voiceKey: voiceKey,
+                    audioUrl: audioUrl,
+                    narrationStartedAtMs: dashboardNarrationStartedAtMs
+                }).catch(() => false);
+            } finally {
+                if (narrationFinishedTimer) {
+                    window.clearTimeout(narrationFinishedTimer);
+                }
+            }
+
+            await this.closePluginDashboardWindowIfCreatedByGuide('Day 6 插件管理预览完成');
+            this.collapseAgentSidePanel('agent-user-plugin');
+            this.clearVirtualSpotlight('plugin-management-entry');
+            this.stopHoverElement(userPluginToggle);
+            await this.closeAgentPanel().catch(() => {});
+            const homeReady = await this.waitForHomeMainUIReady(3600);
+            if (!homeReady || guardFailed()) {
+                return false;
+            }
+            if (homeCursorPosition) {
+                this.cursor.showAt(homeCursorPosition.x, homeCursorPosition.y);
+            }
+            return true;
+        }
+
         async runDay4AnimationDistanceShowcase(scene, narrationStartedAt) {
             const durationMs = this.getAvatarFloatingNarrationDurationMs(scene.voiceKey || '', scene.text || '');
             const cueMs = clamp(Math.round(durationMs * 0.48), 2600, Math.max(2600, durationMs - 1800));
@@ -7053,6 +7385,8 @@
                 await this.closeSettingsPanel().catch((error) => {
                     console.warn('[YuiGuide] 第4天隐私模式结束后收起设置面板失败，继续流程:', error);
                 });
+                this.forceHideManagedPanel('settings');
+                this.collapseAvatarFloatingSidePanelsExcept(null);
             }
             if (canHandleSceneButtons && this.pendingGuideMessageAction) {
                 this.armPendingGuideMessageActionTimeout(12000);
@@ -7287,6 +7621,18 @@
 
         async runAvatarFloatingSceneOperation(scene, primaryTarget, narrationStartedAt) {
             const operation = typeof scene.operation === 'string' ? scene.operation : '';
+            if (operation === 'day6-plugin-open-agent-panel-flow') {
+                return this.runDay6PluginOpenAgentPanelFlow(scene);
+            }
+            if (operation === 'day6-plugin-open-management-panel-flow') {
+                return this.runDay6PluginOpenManagementPanelFlow(scene);
+            }
+            if (operation === 'day6-plugin-dashboard-handoff-flow') {
+                return this.runDay6PluginDashboardHandoffFlow(scene, narrationStartedAt);
+            }
+            if (operation === 'day6-plugin-sidepanel-flow') {
+                return this.runDay6PluginSidePanelFlow(scene, narrationStartedAt);
+            }
             if (operation.indexOf('show-agent-sidepanel:') === 0 && scene.activateSecondaryAction === true) {
                 const parts = operation.split(':');
                 const toggleId = parts[1] === 'openclaw' ? 'agent-openclaw' : 'agent-user-plugin';

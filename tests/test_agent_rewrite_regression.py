@@ -661,6 +661,73 @@ def test_day4_guide_copy_orders_privacy_before_lock_and_home():
     assert source.index("总是小心不触碰到") < source.index("如果你现在需要专注")
 
 
+def test_day6_guide_copy_is_split_into_requested_lines():
+    source = Path("static/yui-guide-day6-agent-guide.js").read_text(encoding="utf-8")
+    scene_ids = re.findall(r"id: '(day6_[^']+)'", source)
+    scene_texts = re.findall(r"text: '([^']*)'", source)
+
+    assert scene_ids == [
+        "day6_intro_agent",
+        "day6_agent_status_master",
+        "day6_plugin_side_panel",
+        "day6_plugin_dashboard",
+        "day6_agent_task_hud",
+        "day6_agent_task_hud_control",
+        "day6_wrap_cleanup",
+        "day6_wrap",
+    ]
+    assert scene_texts == [
+        "噔噔噔噔！今天必须要打起精神，好好跟你聊聊咱们的【猫爪】啦！前两天虽然简单提过一下，但它里面藏着的厉害功能可多着呢。",
+        "快跟我老实交代，这两天你有没有点开它试用一下呀？",
+        "除了之前介绍的功能，这里还有超多好玩的插件呢",
+        "有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼！",
+        "看这里看这里！当我决定使用【猫爪】帮你干活的时候，这里就会咕噜咕噜的显示我的工作进度哦。",
+        "你要是计划有变，随时都可以戳一下让我停下来。嘿嘿，今天也是打起精神努力打工挣小鱼干的一天呢，冲呀！",
+        "呼……把这些繁琐的界面都收起来，这样就不会打扰到你啦。",
+        "你可以放心地继续做你自己的事情，不管是需要我用小爪子帮你忙，还是只想让我安安静静地陪着你，我都一直在守候着你，今天也要开开心心的呀。",
+    ]
+
+
+def test_day6_status_and_plugin_lines_split_plugin_panel_flow_before_dashboard_handoff():
+    source = Path("static/yui-guide-day6-agent-guide.js").read_text(encoding="utf-8")
+
+    def scene_block(scene_id: str) -> str:
+        match = re.search(
+            rf"\{{\s*id: '{scene_id}',(?P<body>.*?)\n\s*\}}",
+            source,
+            re.DOTALL,
+        )
+        assert match, f"missing scene {scene_id}"
+        return match.group("body")
+
+    intro = scene_block("day6_intro_agent")
+    status_master = scene_block("day6_agent_status_master")
+    plugin_panel = scene_block("day6_plugin_side_panel")
+    plugin_dashboard = scene_block("day6_plugin_dashboard")
+
+    assert "target: 'chat-window'" in intro
+    assert "cursorAction: 'wobble'" in intro
+    assert "target: '#${p}-btn-agent'" not in intro
+    assert "operation: 'open-agent'" not in intro
+    assert "persistent: '#${p}-popup-agent'" not in intro
+
+    assert "operation: 'day6-plugin-open-agent-panel-flow'" in status_master
+    assert "target:" not in status_master
+    assert "cursorAction:" not in status_master
+    assert "target: 'agent-master'" not in status_master
+    assert "persistent: '#${p}-popup-agent'" not in status_master
+
+    assert "target:" not in plugin_panel
+    assert "persistent: '#${p}-popup-agent'" not in plugin_panel
+    assert "cursorAction:" not in plugin_panel
+    assert "operation: 'day6-plugin-open-management-panel-flow'" in plugin_panel
+    assert "activateSecondaryAction: true" not in plugin_panel
+
+    assert "operation: 'day6-plugin-dashboard-handoff-flow'" in plugin_dashboard
+    assert "target:" not in plugin_dashboard
+    assert "cursorAction:" not in plugin_dashboard
+
+
 def test_yui_guide_cat_paw_click_state_is_visible_before_actions():
     overlay_source = Path("static/yui-guide-overlay.js").read_text(encoding="utf-8")
     director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
