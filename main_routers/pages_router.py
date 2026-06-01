@@ -46,12 +46,16 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/js/model_manager.js",
     _PROJECT_ROOT / "static/universal-tutorial-manager.js",
     _PROJECT_ROOT / "static/avatar-floating-guide-reset.js",
+    _PROJECT_ROOT / "static/icebreaker/new-user-icebreaker.js",
+    _PROJECT_ROOT / "static/icebreaker/icebreaker_scripts.json",
+    _PROJECT_ROOT / "static/icebreaker/locales/zh-CN.json",
 )
 _STATIC_ASSET_CACHE_TTL = 30.0
 _static_asset_version_cache: tuple[float, str] = (0.0, "0")
 _REACT_CHAT_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/react/neko-chat/neko-chat-window.css",
     _PROJECT_ROOT / "static/react/neko-chat/neko-chat-window.iife.js",
+    _PROJECT_ROOT / "static/app-interpage.js",
     _PROJECT_ROOT / "static/app-react-chat-window.js",
     _PROJECT_ROOT / "static/app-chat-adapter.js",
     _PROJECT_ROOT / "static/app-buttons.js",

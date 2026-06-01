@@ -1173,6 +1173,8 @@ def test_home_avatar_floating_guide_day_reset_buttons_are_wired():
     assert "host.appendMessage(message)" in reset_source
     assert "waitForTutorialAvatarEnvironment()" in reset_source
     assert "forceShowTutorialAvatar(manager)" in reset_source
+    assert "top: max(16px, env(safe-area-inset-top))" in style_source
+    assert "bottom: auto" in style_source
     assert "window.showCurrentModel()" in reset_source
     assert "window.TutorialInteractionTakeover.createController" in reset_source
     assert "interactionTakeover.setActive(true)" in reset_source
