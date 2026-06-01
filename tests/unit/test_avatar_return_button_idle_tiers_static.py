@@ -131,6 +131,7 @@ def test_return_button_drag_has_single_owner_per_runtime_path():
     assert "if (!window.__NEKO_MULTI_WINDOW__)" in avatar_source
     assert "this._setupReturnButtonDrag(returnButtonContainer)" in avatar_source
     assert "Live2DManager.prototype.setupReturnButtonContainerDrag = function(container)" in live2d_source
+    assert "this.setupReturnButtonContainerDrag(returnButtonContainer)" not in live2d_source
     assert "this._setupReturnButtonDrag(container)" not in live2d_source
     assert "this._setupReturnButtonDrag(returnButtonContainer)" not in vrm_source
     assert "this._setupReturnButtonDrag(returnButtonContainer)" not in mmd_source

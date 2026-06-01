@@ -553,7 +553,6 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
 
     // 创建"请她回来"按钮
     const returnButtonContainer = this.createReturnButton();
-    this.setupReturnButtonContainerDrag(returnButtonContainer);
 
     container.style.pointerEvents = this.isLocked ? 'none' : 'auto';
 
