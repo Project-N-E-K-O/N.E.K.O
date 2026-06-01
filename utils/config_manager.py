@@ -10,6 +10,7 @@ import re
 import shutil
 import threading
 import asyncio
+import time
 import math
 import uuid
 from datetime import date
@@ -860,6 +861,12 @@ class ConfigManager:
     _agent_quota_lock = threading.Lock()
     _selected_root_unavailable_recovery_override_roots: set[str] = set()
     _free_agent_daily_limit = 300 # 免费配额并非只在本地实施，本地计算是为了减少无效请求、节约网络带宽。
+    # 配额耗尽时给前端弹提示的节流：与 _agent_quota_lock 不同的锁，避免在持有配额锁时重入。
+    # notifier 由 agent_server 在启动时注册（进程级），收到耗尽信号最多每 _quota_notify_interval_s 秒触发一次。
+    _quota_notify_lock = threading.Lock()
+    _quota_notify_interval_s = 10.0
+    _quota_notify_last_monotonic = 0.0
+    _quota_exceeded_notifier = None
     ROOT_STATE_VERSION = 1
     CLOUDSAVE_LOCAL_STATE_VERSION = 1
     CHARACTER_TOMBSTONES_STATE_VERSION = 1
@@ -3846,6 +3853,32 @@ class ConfigManager:
         """本地 Agent 试用配额计数文件路径。"""
         return self.config_dir / "agent_quota.json"
 
+    @classmethod
+    def register_quota_exceeded_notifier(cls, notifier) -> None:
+        """注册"免费版 Agent 配额耗尽"通知回调（进程级，由 agent_server 启动时注册）。
+
+        notifier(used:int, limit:int) 会在配额耗尽时被调用，**最多每 10 秒一次**（见
+        ``_maybe_notify_quota_exceeded`` 的节流）。回调本身必须非阻塞——它在持有
+        ``_agent_quota_lock`` 的临界区里被调用，通常只做一次跨线程 schedule。
+        """
+        cls._quota_exceeded_notifier = notifier
+
+    def _maybe_notify_quota_exceeded(self, used: int, limit: int) -> None:
+        """配额耗尽时节流触发已注册的前端提示回调（最多每 _quota_notify_interval_s 秒一次）。"""
+        notifier = ConfigManager._quota_exceeded_notifier
+        if notifier is None:
+            return
+        now = time.monotonic()
+        with ConfigManager._quota_notify_lock:
+            last = ConfigManager._quota_notify_last_monotonic
+            if last and (now - last) < ConfigManager._quota_notify_interval_s:
+                return
+            ConfigManager._quota_notify_last_monotonic = now
+        try:
+            notifier(used, limit)
+        except Exception as e:
+            logger.debug("配额耗尽通知回调失败: %s", e)
+
     def consume_agent_daily_quota(self, source: str = "", units: int = 1) -> tuple[bool, dict]:
         """消费 Agent 模型每日配额（仅免费版生效）。配额并非只在本地实施，本地计算是为了减少无效请求、节约网络带宽。
 
@@ -3895,6 +3928,9 @@ class ConfigManager:
 
             used = int(data.get("used", 0))
             if used + units > limit:
+                # 配额耗尽：节流通知前端弹提示（最多每 10 秒一次）。回调非阻塞，
+                # 在临界区里只做一次跨线程 schedule，不展开网络 IO。
+                self._maybe_notify_quota_exceeded(used, limit)
                 return False, {
                     "limited": True,
                     "date": today,
