@@ -3757,7 +3757,9 @@ async def get_voices():
     # 免费预设音色只在 core=free 运行时可用（与 assist 无关）；core_url 仍须指向
     # lanlan.tech 免费端点，海外 lanlan.app 路由由 should_block_free_voice_for_route 兜底。
     # 此处已持有 core_config，直接读 CORE_API_TYPE（等价 is_free_voice()），省一次读取。
-    if core_config.get('CORE_API_TYPE') == 'free' and 'lanlan.tech' in core_config.get('CORE_URL', ''):
+    # CORE_URL 用 `or ''` 归一化：key 存在但值为 None 时 `.get(k, '')` 仍返回 None，
+    # `in None` 会抛 TypeError 让 /voices 500。
+    if core_config.get('CORE_API_TYPE') == 'free' and 'lanlan.tech' in (core_config.get('CORE_URL') or ''):
         from utils.api_config_loader import get_free_voices
         free_voices = get_free_voices()
         if free_voices:
