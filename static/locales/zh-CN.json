@@ -2558,7 +2558,6 @@
             "AGENT_PLUGIN_SERVER_ERROR": "插件服务器连接失败",
             "AGENT_CONNECTIVITY_FAILED": "猫爪 LLM 连接失败"
         },
-        "quotaExceeded": "免费猫爪模型今日试用次数已达上限（{{limit}}次），请明日再试。",
         "contentFilterError": "猫爪浏览的网页内容触发了 AI 模型的安全审查过滤，任务已中止。这通常发生在页面包含敏感话题时，请尝试其他关键词或网站。",
         "taskHud": {
             "title": "猫爪任务",

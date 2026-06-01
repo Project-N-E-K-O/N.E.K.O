@@ -2558,7 +2558,6 @@
             "AGENT_PLUGIN_SERVER_ERROR": "Falha na conexão do servidor de plug-in",
             "AGENT_CONNECTIVITY_FAILED": "Falha na conexão do NekoClaw LLM"
         },
-        "quotaExceeded": "O limite de teste diário gratuito do modelo NekoClaw foi atingido (usos de {{limit}}). Por favor, tente novamente amanhã.",
         "contentFilterError": "O conteúdo da página web navegada pelo NekoClaw foi rejeitado pelo filtro de segurança do modelo de IA e a tarefa foi abortada. Isso geralmente acontece quando a página contém tópicos delicados. Tente palavras-chave ou sites diferentes.",
         "taskHud": {
             "title": "Tarefas NekoClaw",

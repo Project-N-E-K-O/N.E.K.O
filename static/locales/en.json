@@ -2558,7 +2558,6 @@
             "AGENT_PLUGIN_SERVER_ERROR": "Plugin server connection failed",
             "AGENT_CONNECTIVITY_FAILED": "NekoClaw LLM connection failed"
         },
-        "quotaExceeded": "The free NekoClaw model daily trial limit has been reached ({{limit}} uses). Please try again tomorrow.",
         "contentFilterError": "The web page content browsed by NekoClaw was rejected by the AI model's safety filter and the task has been aborted. This usually happens when the page contains sensitive topics. Please try different keywords or websites.",
         "taskHud": {
             "title": "NekoClaw Tasks",
