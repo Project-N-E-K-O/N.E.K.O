@@ -107,11 +107,14 @@ describe('App', () => {
     props: React.ComponentProps<typeof App> = {},
   ) => render(<App compactChatState="input" {...props} />);
 
-  it('renders compact input by default when there are no messages', () => {
+  it('renders compact subtitle capsule by default while keeping the tool button visible', () => {
     render(<App />);
 
-    expect(screen.getByPlaceholderText('Type a message...')).toBeInTheDocument();
-    expect(document.body.querySelector('.compact-chat-stage-input')).not.toBeNull();
+    expect(screen.queryByPlaceholderText('Type a message...')).toBeNull();
+    expect(document.body.querySelector('.compact-chat-stage-default')).not.toBeNull();
+    expect(document.body.querySelector('.compact-chat-capsule-button')).not.toBeNull();
+    expect(screen.getByRole('button', { name: '更多工具' })).toBeInTheDocument();
+    expect(document.body.querySelector('.compact-input-tool-fan')).not.toBeNull();
   });
 
   it('exposes explicit surface mode state on the rendered shell', () => {
@@ -1747,7 +1750,7 @@ describe('App', () => {
     expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
   });
 
-  it('keeps compact input state while choices render in the shared layer', () => {
+  it('uses compact options state while choices render over the subtitle capsule', () => {
     const { container } = render(
       <App
         chatSurfaceMode="compact"
@@ -1762,9 +1765,10 @@ describe('App', () => {
       />,
     );
 
-    expect(container.querySelector('.compact-chat-stage-input')).not.toBeNull();
-    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'input');
+    expect(container.querySelector('.compact-chat-stage-options')).not.toBeNull();
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'options');
     expect(document.body.querySelector('.compact-chat-choice-anchor')).not.toBeNull();
+    expect(container.querySelector('.compact-input-tool-toggle')).not.toBeNull();
   });
 
   it('places compact galgame options below the surface when there is enough viewport space', async () => {
@@ -2989,6 +2993,49 @@ describe('App', () => {
     }
   });
 
+  it('scrolls compact subtitle text with the mouse wheel', () => {
+    const onCompactChatStateChange = vi.fn();
+    const longText = '这是一条很长的紧凑字幕，需要通过滚轮横向查看被省略掉的后半段内容。';
+    const message = parseChatMessage({
+      id: 'assistant-compact-wheel-scroll',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:01',
+      createdAt: 2,
+      blocks: [{ type: 'text', text: longText }],
+      status: 'sent',
+    });
+
+    const { container } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="default"
+        messages={[message]}
+        onCompactChatStateChange={onCompactChatStateChange}
+      />,
+    );
+    const preview = container.querySelector('.compact-chat-capsule-text') as HTMLSpanElement;
+    expect(preview).not.toBeNull();
+    Object.defineProperty(preview, 'scrollWidth', {
+      configurable: true,
+      value: 320,
+    });
+    Object.defineProperty(preview, 'clientWidth', {
+      configurable: true,
+      value: 100,
+    });
+
+    fireEvent.wheel(preview, { deltaY: 80 });
+    expect(preview.scrollLeft).toBe(80);
+
+    fireEvent.wheel(preview, { deltaX: 240 });
+    expect(preview.scrollLeft).toBe(220);
+
+    fireEvent.wheel(preview, { deltaY: -50 });
+    expect(preview.scrollLeft).toBe(170);
+    expect(onCompactChatStateChange).not.toHaveBeenCalledWith('input');
+  });
+
   it('renders compact input as the same surface with one inline action button', () => {
     const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
 
@@ -3062,6 +3109,23 @@ describe('App', () => {
     expect(container.querySelector('.composer-input')).toBeNull();
     expect(container.querySelector('.compact-input-tool-fan')).toBeNull();
     expect(onCompactChatStateChange).not.toHaveBeenCalled();
+  });
+
+  it('opens compact input tools from the subtitle capsule without entering input state', () => {
+    const onCompactChatStateChange = vi.fn();
+    const { container } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="default"
+        onCompactChatStateChange={onCompactChatStateChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'default');
+    expect(document.body.querySelector('.compact-input-tool-fan')).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+    expect(onCompactChatStateChange).not.toHaveBeenCalledWith('input');
   });
 
   it('opens compact input tools from the same right-side button without submitting', () => {
@@ -4284,7 +4348,7 @@ describe('App', () => {
     }
   });
 
-  it('keeps compact input visible and delays tool fan close when desktop compact pointer leaves native hit regions', async () => {
+  it('delays tool fan close then returns empty compact input to subtitle state when desktop pointer leaves native hit regions', async () => {
     vi.useFakeTimers();
     const onCompactChatStateChange = vi.fn();
     try {
@@ -4313,7 +4377,7 @@ describe('App', () => {
       });
 
       expect(document.body.querySelector('.compact-input-tool-fan')).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
-      expect(onCompactChatStateChange).not.toHaveBeenCalledWith('default');
+      expect(onCompactChatStateChange).toHaveBeenCalledWith('default');
     } finally {
       vi.useRealTimers();
     }
@@ -4359,7 +4423,7 @@ describe('App', () => {
     expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Test compact send' });
   });
 
-  it('keeps compact input open when it loses focus with no content', async () => {
+  it('returns empty compact input to subtitle state when it loses focus', async () => {
     const onCompactChatStateChange = vi.fn();
     const outsideButton = document.createElement('button');
     document.body.appendChild(outsideButton);
@@ -4382,13 +4446,13 @@ describe('App', () => {
       await new Promise((resolve) => window.setTimeout(resolve, 0));
     });
 
-    expect(onCompactChatStateChange).not.toHaveBeenCalledWith('default');
+    expect(onCompactChatStateChange).toHaveBeenCalledWith('default');
     } finally {
       outsideButton.remove();
     }
   });
 
-  it('keeps compact input open on window blur even when focus remains in the compact shell', async () => {
+  it('returns empty compact input to subtitle state on window blur even when focus remains in the compact shell', async () => {
     const onCompactChatStateChange = vi.fn();
     render(
       <App
@@ -4406,10 +4470,10 @@ describe('App', () => {
       await new Promise((resolve) => window.setTimeout(resolve, 0));
     });
 
-    expect(onCompactChatStateChange).not.toHaveBeenCalledWith('default');
+    expect(onCompactChatStateChange).toHaveBeenCalledWith('default');
   });
 
-  it('keeps compact input open when a document-level outside pointer starts with no content', async () => {
+  it('returns empty compact input to subtitle state when a document-level outside pointer starts', async () => {
     const onCompactChatStateChange = vi.fn();
     const outsideButton = document.createElement('button');
     document.body.appendChild(outsideButton);
@@ -4431,7 +4495,7 @@ describe('App', () => {
         await new Promise((resolve) => window.setTimeout(resolve, 0));
       });
 
-      expect(onCompactChatStateChange).not.toHaveBeenCalledWith('default');
+      expect(onCompactChatStateChange).toHaveBeenCalledWith('default');
     } finally {
       outsideButton.remove();
     }

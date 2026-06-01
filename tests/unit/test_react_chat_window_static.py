@@ -107,10 +107,10 @@ def test_minimized_restore_uses_previous_real_surface_mode():
 
     assert "var lastRestorableChatSurfaceMode = 'compact';" in source
     assert "var CHAT_SURFACE_MODE_SEQUENCE = ['compact', 'minimized'];" in source
-    assert "var COMPACT_CHAT_STATES = ['input'];" in source
-    assert "compactChatState: 'input'," in source
-    assert "return COMPACT_CHAT_STATES.indexOf(mode) >= 0 ? mode : 'input';" in source
-    assert "state.compactChatState = 'input';" in source
+    assert "var COMPACT_CHAT_STATES = ['default', 'options', 'input'];" in source
+    assert "compactChatState: 'default'," in source
+    assert "return COMPACT_CHAT_STATES.indexOf(mode) >= 0 ? mode : 'default';" in source
+    assert "state.compactChatState = 'default';" in source
 
     next_mode_block = source.split("function getNextChatSurfaceMode(mode)", 1)[1].split(
         "function resetCompactChatState()",
@@ -333,10 +333,12 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     assert '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"]' in styles
     assert "visibility: visible;" in styles
     assert (
-        '.compact-chat-surface-frame[data-compact-chat-state="input"] '
+        '.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] '
         '.compact-input-tool-toggle:hover'
     ) in styles
     assert 'padding: 5px 62px 5px 20px;' in styles
+    assert '.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"]:not([data-compact-chat-state="input"])' in styles
+    assert 'padding-right: 62px;' in styles
     assert 'right: 9px;' in styles
     assert "transform: none;" in styles
     assert '.compact-input-tool-item[data-compact-tool-wheel-slot="hidden"]' in styles

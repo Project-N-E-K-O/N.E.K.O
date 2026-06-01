@@ -1933,6 +1933,10 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   padding: 5px 62px 5px 20px;
 }
 
+.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"]:not([data-compact-chat-state="input"]) {
+  padding-right: 62px;
+}
+
 .compact-chat-surface-frame::before {
   content: "";
   position: absolute;
@@ -1991,9 +1995,11 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   display: block;
   width: 100%;
   min-width: 0;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  scrollbar-width: none;
   font-size: 1.04rem;
   font-weight: 500;
   line-height: 1.35;
@@ -2003,11 +2009,9 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 
 .compact-chat-capsule-text[data-compact-preview-streaming="true"] {
   text-overflow: clip;
-  overflow-x: auto;
-  scrollbar-width: none;
 }
 
-.compact-chat-capsule-text[data-compact-preview-streaming="true"]::-webkit-scrollbar {
+.compact-chat-capsule-text::-webkit-scrollbar {
   display: none;
 }
 
@@ -3193,7 +3197,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   display: none;
 }
 
-.compact-chat-surface-frame[data-compact-chat-state="input"] .send-button-circle {
+.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] .send-button-circle {
   width: 42px;
   height: 42px;
   border-radius: 999px;
@@ -3202,12 +3206,12 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   overflow: visible;
 }
 
-.compact-chat-surface-frame[data-compact-chat-state="input"] .send-button-circle img {
+.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] .send-button-circle img {
   width: 46px;
   height: 46px;
 }
 
-.compact-chat-surface-frame[data-compact-chat-state="input"] .compact-input-tool-toggle {
+.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] .compact-input-tool-toggle {
   --compact-tool-toggle-hover-outset: 14px;
   position: absolute;
   top: 5px;
@@ -3218,11 +3222,11 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   transform: none;
 }
 
-.compact-chat-surface-frame[data-compact-chat-state="input"] .compact-input-tool-toggle:hover {
+.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] .compact-input-tool-toggle:hover {
   transform: none;
 }
 
-.compact-chat-surface-frame[data-compact-chat-state="input"] .compact-input-tool-toggle::before {
+.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] .compact-input-tool-toggle::before {
   content: "";
   position: absolute;
   inset: calc(var(--compact-tool-toggle-hover-outset) * -1);
@@ -3238,23 +3242,23 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   transition: opacity 0.15s ease, transform 0.15s ease;
 }
 
-.compact-chat-surface-frame[data-compact-chat-state="input"] .compact-input-tool-toggle[aria-haspopup="true"] {
+.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] .compact-input-tool-toggle[aria-haspopup="true"] {
   background: rgba(160, 220, 255, 0.26);
   box-shadow:
     0 0 0 1px rgba(193, 236, 255, 0.48),
     inset 0 1px 0 rgba(255, 255, 255, 0.7);
 }
 
-.compact-chat-surface-frame[data-compact-chat-state="input"] .compact-input-tool-toggle[aria-haspopup="true"]::before {
+.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] .compact-input-tool-toggle[aria-haspopup="true"]::before {
   opacity: 1;
 }
 
-.compact-chat-surface-frame[data-compact-chat-state="input"] .compact-input-tool-toggle[aria-haspopup="true"]:hover::before,
-.compact-chat-surface-frame[data-compact-chat-state="input"] .compact-input-tool-toggle[aria-haspopup="true"].is-open::before {
+.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] .compact-input-tool-toggle[aria-haspopup="true"]:hover::before,
+.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] .compact-input-tool-toggle[aria-haspopup="true"].is-open::before {
   transform: scale(1.08);
 }
 
-.compact-chat-surface-frame[data-compact-chat-state="input"] .compact-input-tool-toggle-icon {
+.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] .compact-input-tool-toggle-icon {
   position: relative;
   z-index: 1;
   width: 46px;
@@ -3264,7 +3268,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   transition: transform 0.18s ease;
 }
 
-.compact-chat-surface-frame[data-compact-chat-state="input"] .compact-input-tool-toggle.is-open .compact-input-tool-toggle-icon {
+.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] .compact-input-tool-toggle.is-open .compact-input-tool-toggle-icon {
   transform: rotate(-90deg);
 }
 
@@ -4115,7 +4119,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   color: rgba(202, 222, 244, 0.66);
 }
 
-[data-theme="dark"] .compact-chat-surface-frame[data-compact-chat-state="input"] .send-button-circle {
+[data-theme="dark"] .compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] .send-button-circle {
   background: transparent;
   box-shadow: none;
 }

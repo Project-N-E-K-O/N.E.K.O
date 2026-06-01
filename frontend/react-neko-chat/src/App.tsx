@@ -66,14 +66,23 @@ const defaultMessages: ChatMessage[] = [];
 type AvatarToolId = AvatarInteractionPayload['toolId'];
 
 function getEffectiveCompactChatState(
-  _requestedState: CompactChatState,
-  _hasVisibleChoices: boolean,
+  requestedState: CompactChatState,
+  hasVisibleChoices: boolean,
   composerHidden: boolean,
 ): CompactChatState {
   if (composerHidden) {
     return 'default';
   }
-  return 'input';
+  if (requestedState === 'input') {
+    return 'input';
+  }
+  if (hasVisibleChoices) {
+    return 'options';
+  }
+  if (requestedState === 'options') {
+    return 'default';
+  }
+  return requestedState;
 }
 
 const COMPACT_PREVIEW_MAX_LENGTH = 84;
@@ -1043,7 +1052,7 @@ export default function App({
   composerHidden = false,
   composerDisabled = false,
   chatSurfaceMode = 'compact',
-  compactChatState = 'input',
+  compactChatState = 'default',
   composerAttachments = [],
   composerAttachmentsAriaLabel = i18n('chat.pendingImagesAriaLabel', 'Pending attachments'),
   importImageButtonLabel = i18n('chat.importImage', 'Import Image'),
@@ -1930,6 +1939,21 @@ export default function App({
     }
     textNode.scrollLeft = textNode.scrollWidth;
   }, [compactPreviewDisplayText, compactPreviewIsStreaming, isCompactSurface]);
+
+  const handleCompactPreviewWheel = useCallback((event: ReactWheelEvent<HTMLSpanElement>) => {
+    const textNode = event.currentTarget;
+    const maxScrollLeft = Math.max(0, textNode.scrollWidth - textNode.clientWidth);
+    if (maxScrollLeft <= 0) return;
+
+    const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY)
+      ? event.deltaX
+      : event.deltaY;
+    if (delta === 0) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    textNode.scrollLeft = Math.max(0, Math.min(maxScrollLeft, textNode.scrollLeft + delta));
+  }, []);
 
   useEffect(() => {
     if (!isCompactSurface) return;
@@ -3021,10 +3045,10 @@ export default function App({
     clearCompactInputToolFanCloseTimer();
   }, [clearCompactInputToolFanCloseTimer]);
 
-  const collapseCompactInputIfEmpty = useCallback((options?: { ignoreFocusedShell?: boolean }) => {
+  const collapseCompactInputIfEmpty = useCallback((options?: { ignoreFocusedShell?: boolean; ignoreToolFan?: boolean }) => {
     if (!isCompactSurface) return;
     if (effectiveCompactChatState !== 'input') return;
-    if (compactInputToolFanOpen) return;
+    if (!options?.ignoreToolFan && compactInputToolFanOpen) return;
     if (draftRef.current.trim().length > 0) return;
     if (composerAttachments.length > 0) return;
     if (!options?.ignoreFocusedShell && compactExportHistoryOpen) return;
@@ -3042,12 +3066,14 @@ export default function App({
     ) {
       return;
     }
+    requestCompactChatState('default');
   }, [
     compactInputToolFanOpen,
     compactExportHistoryOpen,
     composerAttachments.length,
     effectiveCompactChatState,
     isCompactSurface,
+    requestCompactChatState,
   ]);
 
   const scheduleCompactInputCollapse = useCallback(() => {
@@ -3101,7 +3127,7 @@ export default function App({
 
   useEffect(() => {
     if (!compactInputToolFanOpen) return;
-    if (!isCompactSurface || effectiveCompactChatState !== 'input' || composerHidden || composerDisabled || compactInputHasPayload) {
+    if (!isCompactSurface || composerHidden || composerDisabled || compactInputHasPayload) {
       closeCompactInputToolFan();
     }
   }, [
@@ -3110,7 +3136,6 @@ export default function App({
     compactInputToolFanOpen,
     composerDisabled,
     composerHidden,
-    effectiveCompactChatState,
     isCompactSurface,
   ]);
 
@@ -3149,6 +3174,13 @@ export default function App({
         || compactInputToolWheelChargeReleaseActiveRef.current
       ) return;
       closeCompactInputToolFanFromDesktopOutside();
+      if (compactInputToolFanOpenRef.current) {
+        window.setTimeout(() => {
+          collapseCompactInputIfEmpty({ ignoreFocusedShell: true, ignoreToolFan: true });
+        }, COMPACT_INPUT_TOOL_FAN_OUTSIDE_CLOSE_DELAY_MS);
+        return;
+      }
+      collapseCompactInputIfEmpty({ ignoreFocusedShell: true, ignoreToolFan: true });
     };
 
     window.addEventListener('neko:desktop-compact-pointer-outside', handleDesktopCompactPointerOutside);
@@ -3156,6 +3188,7 @@ export default function App({
       window.removeEventListener('neko:desktop-compact-pointer-outside', handleDesktopCompactPointerOutside);
     };
   }, [
+    collapseCompactInputIfEmpty,
     closeCompactInputToolFanFromDesktopOutside,
     isCompactSurface,
   ]);
@@ -3826,6 +3859,7 @@ export default function App({
       onComposerSubmit?.({ text });
       setDraft('');
       restoreCompactExportHistoryToBottomForOutgoingMessage();
+      requestCompactChatState('default');
     } finally {
       requestAnimationFrame(() => { submittingRef.current = false; });
     }
@@ -3961,8 +3995,47 @@ export default function App({
     '--compact-tool-wheel-charge-first-angle': `${compactInputToolWheelChargeFirstLapAngle}deg`,
     '--compact-tool-wheel-charge-second-angle': `${compactInputToolWheelChargeSecondLapAngle}deg`,
   } as CSSProperties;
+  const compactToolToggleVisible = isCompactSurface && !composerHidden;
+  const compactToolToggleActsAsSubmit = effectiveCompactChatState === 'input' && compactInputHasPayload;
+  const compactInputToolToggleButton = compactToolToggleVisible ? (
+    <button
+      className={`send-button-circle compact-input-tool-toggle${compactInputToolFanOpen ? ' is-open' : ''}`}
+      ref={compactInputToolToggleRef}
+      type={compactToolToggleActsAsSubmit ? 'submit' : 'button'}
+      aria-label={compactToolToggleActsAsSubmit ? sendButtonLabel : overflowMenuAriaLabel}
+      aria-haspopup={compactToolToggleActsAsSubmit ? undefined : 'true'}
+      aria-expanded={compactToolToggleActsAsSubmit ? undefined : compactInputToolFanOpen}
+      disabled={compactToolToggleActsAsSubmit ? !canSubmit : composerDisabled}
+      onPointerDown={compactToolToggleActsAsSubmit ? undefined : (event) => {
+        event.preventDefault();
+        compactInputToolTogglePointerHandledRef.current = true;
+        toggleCompactInputToolFanByClick();
+      }}
+      onPointerEnter={compactToolToggleActsAsSubmit ? undefined : handleCompactInputToolHoverEnter}
+      onPointerLeave={compactToolToggleActsAsSubmit ? undefined : handleCompactInputToolHoverLeave}
+      onFocus={compactToolToggleActsAsSubmit ? undefined : clearCompactInputToolFanCloseTimer}
+      onBlur={compactToolToggleActsAsSubmit ? scheduleCompactInputCollapse : () => {
+        scheduleCompactInputToolFanTransientClose();
+        scheduleCompactInputCollapse();
+      }}
+      onClick={compactToolToggleActsAsSubmit ? undefined : () => {
+        if (compactInputToolTogglePointerHandledRef.current) {
+          compactInputToolTogglePointerHandledRef.current = false;
+          return;
+        }
+        toggleCompactInputToolFanByClick();
+      }}
+    >
+      <img
+        className={compactToolToggleActsAsSubmit ? undefined : 'compact-input-tool-toggle-icon'}
+        src={compactToolToggleActsAsSubmit ? '/static/icons/send_new_icon.png' : '/static/icons/dropdown_arrow.png'}
+        alt=""
+        aria-hidden="true"
+      />
+    </button>
+  ) : null;
 
-  const compactInputToolFanNode = isCompactSurface && effectiveCompactChatState === 'input' ? (
+  const compactInputToolFanNode = compactToolToggleVisible ? (
     <div
       ref={compactInputToolFanRef}
       className="compact-input-tool-fan"
@@ -4342,6 +4415,7 @@ export default function App({
                       try {
                         restoreCompactExportHistoryToBottomForOutgoingMessage();
                         onGalgameOptionSelect?.(option);
+                        requestCompactChatState('default');
                       } finally {
                         requestAnimationFrame(() => { submittingRef.current = false; });
                       }
@@ -4394,6 +4468,7 @@ export default function App({
                   try {
                     restoreCompactExportHistoryToBottomForOutgoingMessage();
                     onChoiceSelect?.(option, choicePrompt.source);
+                    requestCompactChatState('default');
                   } finally {
                     requestAnimationFrame(() => { submittingRef.current = false; });
                   }
@@ -4681,6 +4756,7 @@ export default function App({
                   data-compact-geometry-owner="surface"
                   data-compact-chat-state={effectiveCompactChatState}
                   data-compact-geometry-part={effectiveCompactChatState === 'input' ? 'inputBody' : 'capsuleBody'}
+                  data-compact-tool-toggle-visible={compactToolToggleVisible ? 'true' : 'false'}
                 >
                   {effectiveCompactChatState === 'input' ? (
                     <>
@@ -4708,60 +4784,30 @@ export default function App({
                           }
                         }}
                       />
-                      <button
-                        className={`send-button-circle compact-input-tool-toggle${compactInputToolFanOpen ? ' is-open' : ''}`}
-                        ref={compactInputToolToggleRef}
-                        type={compactInputHasPayload ? 'submit' : 'button'}
-                        aria-label={compactInputHasPayload ? sendButtonLabel : overflowMenuAriaLabel}
-                        aria-haspopup={compactInputHasPayload ? undefined : 'true'}
-                        aria-expanded={compactInputHasPayload ? undefined : compactInputToolFanOpen}
-                        disabled={compactInputHasPayload ? !canSubmit : composerDisabled}
-                        onPointerDown={compactInputHasPayload ? undefined : (event) => {
-                          event.preventDefault();
-                          compactInputToolTogglePointerHandledRef.current = true;
-                          toggleCompactInputToolFanByClick();
-                        }}
-                        onPointerEnter={compactInputHasPayload ? undefined : handleCompactInputToolHoverEnter}
-                        onPointerLeave={compactInputHasPayload ? undefined : handleCompactInputToolHoverLeave}
-                        onFocus={compactInputHasPayload ? undefined : clearCompactInputToolFanCloseTimer}
-                        onBlur={compactInputHasPayload ? scheduleCompactInputCollapse : () => {
-                          scheduleCompactInputToolFanTransientClose();
-                          scheduleCompactInputCollapse();
-                        }}
-                        onClick={compactInputHasPayload ? undefined : () => {
-                          if (compactInputToolTogglePointerHandledRef.current) {
-                            compactInputToolTogglePointerHandledRef.current = false;
-                            return;
-                          }
-                          toggleCompactInputToolFanByClick();
-                        }}
-                      >
-                        <img
-                          className={compactInputHasPayload ? undefined : 'compact-input-tool-toggle-icon'}
-                          src={compactInputHasPayload ? '/static/icons/send_new_icon.png' : '/static/icons/dropdown_arrow.png'}
-                          alt=""
-                          aria-hidden="true"
-                        />
-                      </button>
+                      {compactInputToolToggleButton}
                     </>
                   ) : (
-                    <button
-                      className="compact-chat-capsule-button"
-                      type="button"
-                      disabled={composerDisabled}
-                      onClick={() => {
-                        if (composerHidden) return;
-                        requestCompactChatState('input');
-                      }}
-                    >
-                      <span
-                        ref={compactPreviewTextRef}
-                        className="compact-chat-capsule-text"
-                        data-compact-preview-streaming={compactPreviewIsStreaming ? 'true' : 'false'}
+                    <>
+                      <button
+                        className="compact-chat-capsule-button"
+                        type="button"
+                        disabled={composerDisabled}
+                        onClick={() => {
+                          if (composerHidden) return;
+                          requestCompactChatState('input');
+                        }}
                       >
-                        {compactPreviewDisplayText}
-                      </span>
-                    </button>
+                        <span
+                          ref={compactPreviewTextRef}
+                          className="compact-chat-capsule-text"
+                          data-compact-preview-streaming={compactPreviewIsStreaming ? 'true' : 'false'}
+                          onWheel={handleCompactPreviewWheel}
+                        >
+                          {compactPreviewDisplayText}
+                        </span>
+                      </button>
+                      {compactInputToolToggleButton}
+                    </>
                   )}
                 </div>
                 {compactInputToolFanNode}

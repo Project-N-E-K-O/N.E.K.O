@@ -59,7 +59,7 @@
     var savedExpandedShellPosition = null; // last known full-surface desktop position
     var lastRestorableChatSurfaceMode = 'compact';
     var _sortKeySeq = 0; // monotonically increasing sortKey counter
-    var COMPACT_CHAT_STATES = ['input'];
+    var COMPACT_CHAT_STATES = ['default', 'options', 'input'];
     var CHAT_SURFACE_MODE_SEQUENCE = ['compact', 'minimized'];
 
     var state = {
@@ -79,7 +79,7 @@
         pendingRollbackDrafts: Object.create(null),
         rollbackDraft: '',
         _toolCursorResetKey: '',
-        compactChatState: 'input',
+        compactChatState: 'default',
         chatSurfaceMode: 'compact',
         // Off until init() reads the persisted preference post-barrier and
         // calls setGalgameModeEnabled(true) — that path fires the
@@ -108,7 +108,7 @@
     }
 
     function normalizeCompactChatState(mode) {
-        return COMPACT_CHAT_STATES.indexOf(mode) >= 0 ? mode : 'input';
+        return COMPACT_CHAT_STATES.indexOf(mode) >= 0 ? mode : 'default';
     }
 
     function getCurrentChatSurfaceMode() {
@@ -151,7 +151,7 @@
     }
 
     function resetCompactChatState() {
-        state.compactChatState = 'input';
+        state.compactChatState = 'default';
     }
 
     function shouldPersistChatSurfaceModePreference() {
