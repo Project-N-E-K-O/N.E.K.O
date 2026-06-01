@@ -1159,7 +1159,7 @@
                         kind: kind || 'unknown',
                         visualRect: scrollbarRect,
                         hitRect: scrollbarRect,
-                        nativeRect: scrollbarRect,
+                        nativeRect: null,
                         interactive: true,
                         hitRegionKind: 'scrollbar'
                     });
@@ -1184,7 +1184,7 @@
                     kind: kind || 'unknown',
                     visualRect: clippedRect,
                     hitRect: clippedRect,
-                    nativeRect: clippedRect,
+                    nativeRect: kind === 'history' ? null : clippedRect,
                     interactive: true,
                     hitRegionKind: hitRegionKind
                 };

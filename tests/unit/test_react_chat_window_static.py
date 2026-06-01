@@ -434,7 +434,9 @@ def test_desktop_compact_history_hit_regions_are_clipped_to_visible_parent():
     assert "if (!clippedRect) return null;" in composite_block
     assert "visualRect: clippedRect" in composite_block
     assert "hitRect: clippedRect" in composite_block
-    assert "nativeRect: clippedRect" in composite_block
+    assert "nativeRect: kind === 'history' ? null : clippedRect" in composite_block
+    assert "id: 'history:scrollbar'" in composite_block
+    assert "nativeRect: null" in composite_block
 
 
 def test_compact_geometry_snapshot_separates_base_surface_from_extra_islands():
