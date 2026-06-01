@@ -2211,7 +2211,7 @@ describe('App', () => {
     }
   });
 
-  it('renders compact input as the default entry without history or extra controls', () => {
+  it('renders compact default as a subtitle capsule with the wheel entry', () => {
     const message = parseChatMessage({
       id: 'assistant-compact-1',
       role: 'assistant',
@@ -2224,14 +2224,44 @@ describe('App', () => {
 
     expect(container.querySelector('.compact-chat-stage-body-slot')).toHaveAttribute('data-compact-stage-fallback', 'message-list');
     expect(container.querySelector('.message-list')).toBeNull();
-    expect(container.querySelector('.compact-chat-capsule-button')).toBeNull();
-    expect(container.querySelector('[data-compact-geometry-part="inputBody"]')).not.toBeNull();
-    expect(screen.getByPlaceholderText('Type a message...')).toBeInTheDocument();
+    expect(container.querySelector('.compact-chat-capsule-button')).not.toBeNull();
+    expect(container.querySelector('[data-compact-geometry-part="inputBody"]')).toBeNull();
+    expect(container.querySelector('.compact-chat-capsule-button')).toHaveTextContent('今天想让我陪你做什么呢？');
     expect(container.querySelector('.compact-chat-entry-button')).toBeNull();
     expect(container.querySelector('.compact-chat-tool-btn')).toBeNull();
+    const actionButton = screen.getByRole('button', { name: '更多工具' });
+    expect(actionButton).toBeInTheDocument();
+    expect(actionButton.querySelector('img')).toHaveAttribute('src', '/static/icons/dropdown_arrow.png');
+    expect(container.querySelector('.compact-input-tool-fan')).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
   });
 
-  it('does not request compact input for an already-input compact surface', () => {
+  it('opens compact tools from the subtitle capsule without entering input', () => {
+    const onCompactChatStateChange = vi.fn();
+    const message = parseChatMessage({
+      id: 'assistant-compact-tool-default',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: '保持字幕态，同时打开轮盘。' }],
+    });
+    const { container } = render(
+      <App
+        chatSurfaceMode="compact"
+        messages={[message]}
+        onCompactChatStateChange={onCompactChatStateChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+
+    expect(container.querySelector('[data-compact-geometry-part="inputBody"]')).toBeNull();
+    expect(container.querySelector('.compact-chat-capsule-button')).not.toBeNull();
+    expect(container.querySelector('.compact-input-tool-fan')).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+    expect(onCompactChatStateChange).not.toHaveBeenCalledWith('input');
+  });
+
+  it('requests compact input when the single compact entry is clicked', () => {
     const onCompactChatStateChange = vi.fn();
     const message = parseChatMessage({
       id: 'assistant-compact-2',
@@ -2250,9 +2280,9 @@ describe('App', () => {
       />,
     );
 
-    expect(screen.getByPlaceholderText('Type a message...')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '可以先说一句你今天想做什么' }));
 
-    expect(onCompactChatStateChange).not.toHaveBeenCalledWith('input');
+    expect(onCompactChatStateChange).toHaveBeenCalledWith('input');
   });
 
   it('keeps revealing the final assistant tail after the same streaming message settles', async () => {
@@ -3060,8 +3090,37 @@ describe('App', () => {
 
     expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'default');
     expect(container.querySelector('.composer-input')).toBeNull();
-    expect(container.querySelector('.compact-input-tool-fan')).toBeNull();
+    expect(screen.getByRole('button', { name: '更多工具' })).toBeInTheDocument();
+    expect(container.querySelector('.compact-input-tool-fan')).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
     expect(onCompactChatStateChange).not.toHaveBeenCalled();
+  });
+
+  it('keeps the compact wheel available while voice mode shows the subtitle capsule', () => {
+    const onCompactChatStateChange = vi.fn();
+    const message = parseChatMessage({
+      id: 'assistant-compact-voice-tool-entry',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: '语音字幕态也可以打开轮盘。' }],
+      status: 'sent',
+    });
+    const { container } = render(
+      <App
+        chatSurfaceMode="compact"
+        composerHidden
+        messages={[message]}
+        onCompactChatStateChange={onCompactChatStateChange}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
+
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'default');
+    expect(container.querySelector('.composer-input')).toBeNull();
+    expect(container.querySelector('.compact-input-tool-fan')).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+    expect(onCompactChatStateChange).not.toHaveBeenCalledWith('input');
   });
 
   it('opens compact input tools from the same right-side button without submitting', () => {

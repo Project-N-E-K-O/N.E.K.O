@@ -66,14 +66,19 @@ const defaultMessages: ChatMessage[] = [];
 type AvatarToolId = AvatarInteractionPayload['toolId'];
 
 function getEffectiveCompactChatState(
-  _requestedState: CompactChatState,
-  _hasVisibleChoices: boolean,
-  composerHidden: boolean,
+  requestedState: CompactChatState,
+  hasVisibleChoices: boolean,
 ): CompactChatState {
-  if (composerHidden) {
+  if (requestedState === 'input') {
+    return 'input';
+  }
+  if (hasVisibleChoices) {
+    return 'options';
+  }
+  if (requestedState === 'options') {
     return 'default';
   }
-  return 'input';
+  return requestedState;
 }
 
 const COMPACT_PREVIEW_MAX_LENGTH = 84;
@@ -1320,11 +1325,15 @@ export default function App({
     compactChoiceInteractionsAllowed && galgameModeEnabled && !choicePromptHasOptions
     && (galgameOptionsLoading || galgameOptions.length > 0);
   const compactSurfaceChoicesVisible = choicePromptHasOptions || galgameOptionsVisible;
-  const isCompactSurface = chatSurfaceMode !== 'minimized';
-  const requestedCompactChatState = compactChatState;
+  const isCompactSurface = chatSurfaceMode === 'compact';
+  const requestedCompactChatState = isCompactSurface && composerHidden && compactChatState === 'input'
+    ? 'default'
+    : compactChatState;
   const effectiveCompactChatState = isCompactSurface
-    ? getEffectiveCompactChatState(requestedCompactChatState, compactSurfaceChoicesVisible, composerHidden)
+    ? getEffectiveCompactChatState(requestedCompactChatState, compactSurfaceChoicesVisible)
     : requestedCompactChatState;
+  const compactToolFanSurfaceAvailable = isCompactSurface
+    && (effectiveCompactChatState === 'input' || effectiveCompactChatState === 'default');
   const getCompactSurfaceResizeMaxAvailableWidth = useCallback(() => {
     const desktopWindow = window as typeof window & {
       __nekoDesktopCompactLayout?: DesktopCompactChoicePlacementLayout | null;
@@ -2799,7 +2808,7 @@ export default function App({
   ]);
 
   useEffect(() => {
-    if (!isCompactSurface || effectiveCompactChatState !== 'input') {
+    if (!compactToolFanSurfaceAvailable) {
       resetCompactInputToolFanHoverBlock();
       return;
     }
@@ -2845,11 +2854,10 @@ export default function App({
   }, [
     clearCompactInputToolFanCloseTimer,
     compactInputHasPayload,
+    compactToolFanSurfaceAvailable,
     composerDisabled,
-    effectiveCompactChatState,
     isCompactInputToolPointerInHoverRegion,
     isCompactInputToolPointerInToggleHoverRegion,
-    isCompactSurface,
     openCompactInputToolFan,
     resetCompactInputToolFanHoverBlock,
     scheduleCompactInputToolFanTransientClose,
@@ -3101,17 +3109,15 @@ export default function App({
 
   useEffect(() => {
     if (!compactInputToolFanOpen) return;
-    if (!isCompactSurface || effectiveCompactChatState !== 'input' || composerHidden || composerDisabled || compactInputHasPayload) {
+    if (!compactToolFanSurfaceAvailable || composerDisabled || compactInputHasPayload) {
       closeCompactInputToolFan();
     }
   }, [
     closeCompactInputToolFan,
     compactInputHasPayload,
     compactInputToolFanOpen,
+    compactToolFanSurfaceAvailable,
     composerDisabled,
-    composerHidden,
-    effectiveCompactChatState,
-    isCompactSurface,
   ]);
 
   useEffect(() => {
@@ -3962,7 +3968,50 @@ export default function App({
     '--compact-tool-wheel-charge-second-angle': `${compactInputToolWheelChargeSecondLapAngle}deg`,
   } as CSSProperties;
 
-  const compactInputToolFanNode = isCompactSurface && effectiveCompactChatState === 'input' ? (
+  const renderCompactToolToggleButton = (allowSubmit: boolean) => {
+    const isSubmitButton = allowSubmit && compactInputHasPayload;
+    return (
+      <button
+        className={`send-button-circle compact-input-tool-toggle${compactInputToolFanOpen ? ' is-open' : ''}`}
+        ref={compactInputToolToggleRef}
+        type={isSubmitButton ? 'submit' : 'button'}
+        aria-label={isSubmitButton ? sendButtonLabel : overflowMenuAriaLabel}
+        aria-haspopup={isSubmitButton ? undefined : 'true'}
+        aria-expanded={isSubmitButton ? undefined : compactInputToolFanOpen}
+        disabled={isSubmitButton ? !canSubmit : composerDisabled}
+        onPointerDown={isSubmitButton ? undefined : (event) => {
+          event.preventDefault();
+          compactInputToolTogglePointerHandledRef.current = true;
+          toggleCompactInputToolFanByClick();
+        }}
+        onPointerEnter={isSubmitButton ? undefined : handleCompactInputToolHoverEnter}
+        onPointerLeave={isSubmitButton ? undefined : handleCompactInputToolHoverLeave}
+        onFocus={isSubmitButton ? undefined : clearCompactInputToolFanCloseTimer}
+        onBlur={isSubmitButton ? scheduleCompactInputCollapse : () => {
+          scheduleCompactInputToolFanTransientClose();
+          if (allowSubmit) {
+            scheduleCompactInputCollapse();
+          }
+        }}
+        onClick={isSubmitButton ? undefined : () => {
+          if (compactInputToolTogglePointerHandledRef.current) {
+            compactInputToolTogglePointerHandledRef.current = false;
+            return;
+          }
+          toggleCompactInputToolFanByClick();
+        }}
+      >
+        <img
+          className={isSubmitButton ? undefined : 'compact-input-tool-toggle-icon'}
+          src={isSubmitButton ? '/static/icons/send_new_icon.png' : '/static/icons/dropdown_arrow.png'}
+          alt=""
+          aria-hidden="true"
+        />
+      </button>
+    );
+  };
+
+  const compactInputToolFanNode = compactToolFanSurfaceAvailable ? (
     <div
       ref={compactInputToolFanRef}
       className="compact-input-tool-fan"
@@ -4708,64 +4757,33 @@ export default function App({
                           }
                         }}
                       />
-                      <button
-                        className={`send-button-circle compact-input-tool-toggle${compactInputToolFanOpen ? ' is-open' : ''}`}
-                        ref={compactInputToolToggleRef}
-                        type={compactInputHasPayload ? 'submit' : 'button'}
-                        aria-label={compactInputHasPayload ? sendButtonLabel : overflowMenuAriaLabel}
-                        aria-haspopup={compactInputHasPayload ? undefined : 'true'}
-                        aria-expanded={compactInputHasPayload ? undefined : compactInputToolFanOpen}
-                        disabled={compactInputHasPayload ? !canSubmit : composerDisabled}
-                        onPointerDown={compactInputHasPayload ? undefined : (event) => {
-                          event.preventDefault();
-                          compactInputToolTogglePointerHandledRef.current = true;
-                          toggleCompactInputToolFanByClick();
-                        }}
-                        onPointerEnter={compactInputHasPayload ? undefined : handleCompactInputToolHoverEnter}
-                        onPointerLeave={compactInputHasPayload ? undefined : handleCompactInputToolHoverLeave}
-                        onFocus={compactInputHasPayload ? undefined : clearCompactInputToolFanCloseTimer}
-                        onBlur={compactInputHasPayload ? scheduleCompactInputCollapse : () => {
-                          scheduleCompactInputToolFanTransientClose();
-                          scheduleCompactInputCollapse();
-                        }}
-                        onClick={compactInputHasPayload ? undefined : () => {
-                          if (compactInputToolTogglePointerHandledRef.current) {
-                            compactInputToolTogglePointerHandledRef.current = false;
-                            return;
-                          }
-                          toggleCompactInputToolFanByClick();
-                        }}
-                      >
-                        <img
-                          className={compactInputHasPayload ? undefined : 'compact-input-tool-toggle-icon'}
-                          src={compactInputHasPayload ? '/static/icons/send_new_icon.png' : '/static/icons/dropdown_arrow.png'}
-                          alt=""
-                          aria-hidden="true"
-                        />
-                      </button>
+                      {renderCompactToolToggleButton(true)}
                     </>
                   ) : (
-                    <button
-                      className="compact-chat-capsule-button"
-                      type="button"
-                      disabled={composerDisabled}
-                      onClick={() => {
-                        if (composerHidden) return;
-                        requestCompactChatState('input');
-                      }}
-                    >
-                      <span
-                        ref={compactPreviewTextRef}
-                        className="compact-chat-capsule-text"
-                        data-compact-preview-streaming={compactPreviewIsStreaming ? 'true' : 'false'}
+                    <>
+                      <button
+                        className="compact-chat-capsule-button"
+                        type="button"
+                        disabled={composerDisabled}
+                        onClick={() => {
+                          if (composerHidden) return;
+                          requestCompactChatState('input');
+                        }}
                       >
-                        {compactPreviewDisplayText}
-                      </span>
-                    </button>
+                        <span
+                          ref={compactPreviewTextRef}
+                          className="compact-chat-capsule-text"
+                          data-compact-preview-streaming={compactPreviewIsStreaming ? 'true' : 'false'}
+                        >
+                          {compactPreviewDisplayText}
+                        </span>
+                      </button>
+                      {effectiveCompactChatState === 'default' ? renderCompactToolToggleButton(false) : null}
+                    </>
                   )}
-                </div>
-                {compactInputToolFanNode}
-              </div>
+		                </div>
+		                {compactInputToolFanNode}
+		              </div>
             ) : null}
           </form>
         </footer>

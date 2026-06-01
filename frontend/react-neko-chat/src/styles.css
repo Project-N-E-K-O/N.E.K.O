@@ -1933,6 +1933,10 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   padding: 5px 62px 5px 20px;
 }
 
+.compact-chat-surface-frame[data-compact-chat-state="default"] {
+  padding-right: 78px;
+}
+
 .compact-chat-surface-frame::before {
   content: "";
   position: absolute;
@@ -1985,6 +1989,12 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 .compact-chat-capsule-button:disabled {
   cursor: not-allowed;
   opacity: 0.58;
+}
+
+.compact-chat-surface-frame[data-compact-chat-state="default"] .compact-chat-capsule-button {
+  flex: 0 1 calc(100% - 76px);
+  width: calc(100% - 76px);
+  max-width: calc(100% - 76px);
 }
 
 .compact-chat-capsule-text {
@@ -3193,6 +3203,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   display: none;
 }
 
+.compact-chat-surface-frame[data-compact-chat-state="default"] .send-button-circle,
 .compact-chat-surface-frame[data-compact-chat-state="input"] .send-button-circle {
   width: 42px;
   height: 42px;
@@ -3202,11 +3213,13 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   overflow: visible;
 }
 
+.compact-chat-surface-frame[data-compact-chat-state="default"] .send-button-circle img,
 .compact-chat-surface-frame[data-compact-chat-state="input"] .send-button-circle img {
   width: 46px;
   height: 46px;
 }
 
+.compact-chat-surface-frame[data-compact-chat-state="default"] .compact-input-tool-toggle,
 .compact-chat-surface-frame[data-compact-chat-state="input"] .compact-input-tool-toggle {
   --compact-tool-toggle-hover-outset: 14px;
   position: absolute;
@@ -3218,10 +3231,12 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   transform: none;
 }
 
+.compact-chat-surface-frame[data-compact-chat-state="default"] .compact-input-tool-toggle:hover,
 .compact-chat-surface-frame[data-compact-chat-state="input"] .compact-input-tool-toggle:hover {
   transform: none;
 }
 
+.compact-chat-surface-frame[data-compact-chat-state="default"] .compact-input-tool-toggle::before,
 .compact-chat-surface-frame[data-compact-chat-state="input"] .compact-input-tool-toggle::before {
   content: "";
   position: absolute;
@@ -3238,6 +3253,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   transition: opacity 0.15s ease, transform 0.15s ease;
 }
 
+.compact-chat-surface-frame[data-compact-chat-state="default"] .compact-input-tool-toggle[aria-haspopup="true"],
 .compact-chat-surface-frame[data-compact-chat-state="input"] .compact-input-tool-toggle[aria-haspopup="true"] {
   background: rgba(160, 220, 255, 0.26);
   box-shadow:
@@ -3245,15 +3261,19 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
     inset 0 1px 0 rgba(255, 255, 255, 0.7);
 }
 
+.compact-chat-surface-frame[data-compact-chat-state="default"] .compact-input-tool-toggle[aria-haspopup="true"]::before,
 .compact-chat-surface-frame[data-compact-chat-state="input"] .compact-input-tool-toggle[aria-haspopup="true"]::before {
   opacity: 1;
 }
 
+.compact-chat-surface-frame[data-compact-chat-state="default"] .compact-input-tool-toggle[aria-haspopup="true"]:hover::before,
+.compact-chat-surface-frame[data-compact-chat-state="default"] .compact-input-tool-toggle[aria-haspopup="true"].is-open::before,
 .compact-chat-surface-frame[data-compact-chat-state="input"] .compact-input-tool-toggle[aria-haspopup="true"]:hover::before,
 .compact-chat-surface-frame[data-compact-chat-state="input"] .compact-input-tool-toggle[aria-haspopup="true"].is-open::before {
   transform: scale(1.08);
 }
 
+.compact-chat-surface-frame[data-compact-chat-state="default"] .compact-input-tool-toggle-icon,
 .compact-chat-surface-frame[data-compact-chat-state="input"] .compact-input-tool-toggle-icon {
   position: relative;
   z-index: 1;
@@ -3264,6 +3284,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   transition: transform 0.18s ease;
 }
 
+.compact-chat-surface-frame[data-compact-chat-state="default"] .compact-input-tool-toggle.is-open .compact-input-tool-toggle-icon,
 .compact-chat-surface-frame[data-compact-chat-state="input"] .compact-input-tool-toggle.is-open .compact-input-tool-toggle-icon {
   transform: rotate(-90deg);
 }
@@ -4115,6 +4136,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   color: rgba(202, 222, 244, 0.66);
 }
 
+[data-theme="dark"] .compact-chat-surface-frame[data-compact-chat-state="default"] .send-button-circle,
 [data-theme="dark"] .compact-chat-surface-frame[data-compact-chat-state="input"] .send-button-circle {
   background: transparent;
   box-shadow: none;
