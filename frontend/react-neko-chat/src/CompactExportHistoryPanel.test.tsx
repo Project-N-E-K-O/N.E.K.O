@@ -20,6 +20,7 @@ function createPanelProps(overrides: Partial<Parameters<typeof CompactExportHist
     selectableCount: 1,
     autoScrollToBottom: false,
     previewOpen: true,
+    controlsOpen: true,
     choiceLayerAbove: false,
     failedStatusLabel: 'Failed',
     onAutoScrollToBottomChange: vi.fn(),

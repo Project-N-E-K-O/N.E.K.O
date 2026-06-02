@@ -52,6 +52,7 @@ type CompactExportHistoryPanelProps = {
   selectableCount: number;
   autoScrollToBottom: boolean;
   previewOpen: boolean;
+  controlsOpen: boolean;
   choiceLayerAbove: boolean;
   failedStatusLabel: string;
   onAutoScrollToBottomChange: (enabled: boolean) => void;
@@ -1157,6 +1158,7 @@ export default function CompactExportHistoryPanel({
   selectableCount,
   autoScrollToBottom,
   previewOpen,
+  controlsOpen,
   choiceLayerAbove,
   failedStatusLabel,
   onAutoScrollToBottomChange,
@@ -1193,7 +1195,6 @@ export default function CompactExportHistoryPanel({
   const pendingDragPointRef = useRef<{ intent: PointerIntentState; clientX: number; clientY: number } | null>(null);
   const suppressClickMessageIdRef = useRef<string | null>(null);
   const previewObjectUrlRef = useRef<string | null>(null);
-  const [controlsCollapsed, setControlsCollapsed] = useState(false);
   const [exportFormat, setExportFormat] = useState<CompactExportFormat>('markdown');
   const [imageStyle, setImageStyle] = useState<CompactExportImageStyle>('neko');
   const [imageFormat, setImageFormat] = useState<CompactExportImageFormat>('png');
@@ -1846,7 +1847,12 @@ export default function CompactExportHistoryPanel({
   function finishPointer(event: ReactPointerEvent<HTMLElement>, message: ChatMessage, selectable: boolean) {
     const intent = pointerIntentRef.current;
     if (!intent || intent.id !== event.pointerId || intent.messageId !== message.id) return;
-    if ((intent.phase === 'pending' || intent.phase === 'click') && selectable && !isSelectionIgnoredTarget(event.target, event.currentTarget)) {
+    if (
+      (intent.phase === 'pending' || intent.phase === 'click')
+      && selectable
+      && controlsOpen
+      && !isSelectionIgnoredTarget(event.target, event.currentTarget)
+    ) {
       clearPointerIntentAfterDrag(intent);
       event.preventDefault();
       suppressNextClickForMessage(message.id);
@@ -1871,11 +1877,13 @@ export default function CompactExportHistoryPanel({
       suppressClickMessageIdRef.current = null;
       return;
     }
+    if (!controlsOpen) return;
     onToggleMessage(message.id);
   }
 
   function handleKeyDown(event: ReactKeyboardEvent<HTMLElement>, message: ChatMessage, selectable: boolean) {
     if (!selectable) return;
+    if (!controlsOpen) return;
     if (event.key !== 'Enter' && event.key !== ' ') return;
     event.preventDefault();
     onToggleMessage(message.id);
@@ -2226,7 +2234,7 @@ export default function CompactExportHistoryPanel({
         className={clsx('compact-export-history-anchor', {
           'under-choice-prompt': choiceLayerAbove,
           'has-preview': previewOpen,
-          'controls-collapsed': !previewOpen && controlsCollapsed,
+          'controls-collapsed': !previewOpen && !controlsOpen,
         })}
         data-compact-geometry-owner="surface"
         data-compact-geometry-item="history"
@@ -2257,6 +2265,7 @@ export default function CompactExportHistoryPanel({
                   {messages.map((message, index) => {
                     const selectable = isCompactExportMessageSelectable(message);
                     const selected = selectedIds.has(message.id);
+                    const selectionEnabled = controlsOpen && selectable;
                     const failed = message.status === 'failed';
                     const streaming = message.status === 'streaming';
                     const tone = getCompactHistoryBubbleTone(message, index, messages[index - 1]);
@@ -2280,10 +2289,10 @@ export default function CompactExportHistoryPanel({
                       >
                         <div
                           className="compact-export-history-bubble"
-                          role="button"
-                          aria-pressed={selected}
-                          aria-disabled={!selectable}
-                          tabIndex={selectable ? 0 : -1}
+                          role={selectionEnabled ? 'button' : undefined}
+                          aria-pressed={selectionEnabled ? selected : undefined}
+                          aria-disabled={!selectionEnabled}
+                          tabIndex={selectionEnabled ? 0 : -1}
                           data-compact-hit-region="true"
                           data-compact-hit-region-id={`history:message:${message.id}`}
                           data-compact-hit-region-kind="message"
@@ -2319,53 +2328,39 @@ export default function CompactExportHistoryPanel({
                 </div>
               ) : null}
             </div>
-            <div
-              className={clsx('compact-export-history-controls', {
-                'is-collapsed': controlsCollapsed,
-              })}
-              role="group"
-              aria-label={i18n('chat.exportConversation', 'Export Conversation')}
-              data-compact-export-controls-collapsed={controlsCollapsed ? 'true' : 'false'}
-              data-compact-hit-region="true"
-              data-compact-hit-region-id="history:controls"
-              data-compact-hit-region-kind="controls"
-            >
-              <button
-                type="button"
-                className="compact-export-history-controls-toggle"
-                aria-expanded={!controlsCollapsed}
-                aria-label={controlsCollapsed
-                  ? i18n('chat.compactExportControlsExpand', 'Show selection controls')
-                  : i18n('chat.compactExportControlsCollapse', 'Hide selection controls')}
-                title={controlsCollapsed
-                  ? i18n('chat.compactExportControlsExpand', 'Show selection controls')
-                  : i18n('chat.compactExportControlsCollapse', 'Hide selection controls')}
-                onClick={() => setControlsCollapsed((collapsed) => !collapsed)}
+            {controlsOpen ? (
+              <div
+                className="compact-export-history-controls"
+                role="group"
+                aria-label={i18n('chat.exportConversation', 'Export Conversation')}
+                data-compact-export-controls-open="true"
+                data-compact-hit-region="true"
+                data-compact-hit-region-id="history:controls"
+                data-compact-hit-region-kind="controls"
               >
-                <span className="compact-export-history-controls-triangle" aria-hidden="true" />
-              </button>
-              <div className="compact-export-history-controls-content" hidden={controlsCollapsed}>
-                <div className="compact-export-history-count" aria-live="polite">
-                  {selectedCount}/{selectableCount}
+                <div className="compact-export-history-controls-content">
+                  <div className="compact-export-history-count" aria-live="polite">
+                    {selectedCount}/{selectableCount}
+                  </div>
+                  <button type="button" className="compact-export-history-control" disabled={selectableCount <= 0} onClick={onSelectAll}>
+                    {i18n('chat.exportSelectAll', 'Select All')}
+                  </button>
+                  <button type="button" className="compact-export-history-control" disabled={selectedCount <= 0} onClick={onClearSelection}>
+                    {i18n('chat.exportSelectNone', 'Clear')}
+                  </button>
+                  <button type="button" className="compact-export-history-control" disabled={selectableCount <= 0} onClick={onInvertSelection}>
+                    {i18n('chat.exportSelectInvert', 'Invert')}
+                  </button>
+                  <button
+                    type="button"
+                    className="compact-export-history-control compact-export-history-export"
+                    onClick={onRequestPreview}
+                  >
+                    {i18n('chat.exportAction', 'Export')}
+                  </button>
                 </div>
-                <button type="button" className="compact-export-history-control" disabled={selectableCount <= 0} onClick={onSelectAll}>
-                  {i18n('chat.exportSelectAll', 'Select All')}
-                </button>
-                <button type="button" className="compact-export-history-control" disabled={selectedCount <= 0} onClick={onClearSelection}>
-                  {i18n('chat.exportSelectNone', 'Clear')}
-                </button>
-                <button type="button" className="compact-export-history-control" disabled={selectableCount <= 0} onClick={onInvertSelection}>
-                  {i18n('chat.exportSelectInvert', 'Invert')}
-                </button>
-                <button
-                  type="button"
-                  className="compact-export-history-control compact-export-history-export"
-                  onClick={onRequestPreview}
-                >
-                  {i18n('chat.exportAction', 'Export')}
-                </button>
               </div>
-            </div>
+            ) : null}
           </>
         )}
         </div>
