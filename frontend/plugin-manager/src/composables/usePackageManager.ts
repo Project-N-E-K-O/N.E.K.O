@@ -1,4 +1,4 @@
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, toValue, watch, type MaybeRefOrGetter } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import {
@@ -35,6 +35,10 @@ export type PackageResultKind = '' | 'build' | 'inspect' | 'verify' | 'install' 
 
 export type SelectablePlugin = PluginWorkbenchItem
 
+export type UsePackageManagerOptions = {
+  externalSelectedPluginIds?: MaybeRefOrGetter<readonly string[] | undefined>
+}
+
 export type PackageResultRecord = {
   id: string
   createdAt: string
@@ -47,7 +51,7 @@ export type PackageResultRecord = {
   summaryWarnings: string[]
 }
 
-export function usePackageManager() {
+export function usePackageManager(options: UsePackageManagerOptions = {}) {
   const pluginStore = usePluginStore()
   // PR #1480 review-fix 1.31 (Phase 7): summary labels and the createdAt
   // timestamp must follow the active i18n locale. ``t`` reads from the
@@ -217,6 +221,35 @@ export function usePackageManager() {
 
   function pluginRefKey(ref: PluginCliPluginRef): string {
     return `${ref.root_id}:${ref.directory_name}`
+  }
+
+  function pluginRefAliases(ref: PluginCliPluginRef): string[] {
+    return [
+      pluginRefKey(ref),
+      ref.plugin_id,
+      ref.directory_name,
+    ].filter((value): value is string => !!value)
+  }
+
+  function externalPluginIdsToTargets(pluginIds: readonly string[]): string[] {
+    const availableIds = new Set(localPluginIds.value)
+    const targetByAlias = new Map<string, string>()
+    for (const ref of localPluginRefs.value) {
+      const key = pluginRefKey(ref)
+      for (const alias of pluginRefAliases(ref)) {
+        targetByAlias.set(alias, key)
+      }
+    }
+
+    return pluginIds
+      .map((pluginId) => targetByAlias.get(pluginId) || (availableIds.has(pluginId) ? pluginId : ''))
+      .filter((pluginId): pluginId is string => !!pluginId)
+  }
+
+  function syncExternalSelection() {
+    const externalSelected = toValue(options.externalSelectedPluginIds)
+    if (!externalSelected) return
+    setSelectedPluginIds(externalPluginIdsToTargets(externalSelected))
   }
 
   function targetRef(target: string): PluginCliPluginRef | undefined {
@@ -475,7 +508,11 @@ export function usePackageManager() {
       localPluginRefs.value = refs
       localPluginIds.value = refs.length > 0 ? refs.map((ref) => pluginRefKey(ref)) : response.plugins
       const availableIds = new Set(localPluginIds.value)
-      setSelectedPluginIds(selectedPluginIds.value.filter((pluginId) => availableIds.has(pluginId)))
+      if (options.externalSelectedPluginIds) {
+        syncExternalSelection()
+      } else {
+        setSelectedPluginIds(selectedPluginIds.value.filter((pluginId) => availableIds.has(pluginId)))
+      }
       if (syncResult.warningMessage) {
         ElMessage.warning(syncResult.warningMessage)
       }
@@ -758,6 +795,14 @@ export function usePackageManager() {
       analyzeForm.value.plugins = [...pluginIds]
     },
     { immediate: true }
+  )
+
+  watch(
+    () => toValue(options.externalSelectedPluginIds),
+    () => {
+      syncExternalSelection()
+    },
+    { immediate: true },
   )
 
   watch(buildMode, (mode) => {

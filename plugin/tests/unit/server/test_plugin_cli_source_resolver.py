@@ -79,7 +79,7 @@ def test_plugin_ref_rejects_symlinked_directory_even_when_target_has_plugin_toml
     link = policy.user_plugins_root / "linked_external"
     try:
         link.symlink_to(outside_plugin, target_is_directory=True)
-    except OSError as exc:
+    except (OSError, NotImplementedError) as exc:
         pytest.skip(f"symlinks unavailable on this platform: {exc}")
 
     with pytest.raises(ValueError, match="symlinks are not allowed"):

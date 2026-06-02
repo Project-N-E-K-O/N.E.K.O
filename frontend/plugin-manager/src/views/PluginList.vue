@@ -219,6 +219,7 @@
           v-if="packagePanelEverOpened"
           v-show="packagePanelVisible"
           embedded
+          :external-selected-plugin-ids="selectedPluginIds"
           @close="closePackagePanel"
         />
       </div>
