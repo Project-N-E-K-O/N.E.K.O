@@ -277,11 +277,16 @@ function applyLocalKokoroTtsConfig() {
     const voiceInput = document.getElementById('ttsVoiceId');
     const modelIdInput = document.getElementById('ttsModelId');
     const apiKeyInput = document.getElementById('ttsModelApiKey');
+    const enableCustomApi = document.getElementById('enableCustomApi');
 
     const wsUrl = normalizeLocalKokoroWsUrl(localUrlInput ? localUrlInput.value : '');
     const profile = normalizeLocalKokoroProfile(localProfileSelect ? localProfileSelect.value : '');
     const voiceId = localVoiceSelect ? normalizeLocalKokoroVoiceId(localVoiceSelect.value, profile) : localKokoroDefaultVoice(profile);
 
+    if (enableCustomApi && !enableCustomApi.checked) {
+        enableCustomApi.checked = true;
+        toggleCustomApi(true);
+    }
     if (providerSelect) {
         providerSelect.value = 'custom';
         onCustomModelProviderChange('tts');
