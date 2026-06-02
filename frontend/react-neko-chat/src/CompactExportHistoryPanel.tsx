@@ -2,6 +2,7 @@ import clsx from 'clsx';
 import {
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -1237,24 +1238,29 @@ export default function CompactExportHistoryPanel({
   const exportActionsDisabled = !previewHasSelection || exportBusy;
   const historyInteractive = visibilityState === 'open';
   const selectionControlsInteractive = historyInteractive && controlsOpen;
-  if (visibilityState === 'open' && previousVisibilityStateRef.current !== 'open') {
-    enterDelayByMessageIdRef.current = new Map(
-      messages.map((message, index) => [
+  const openingEnterDelayByMessageId = useMemo(() => (
+    visibilityState === 'open' && previousVisibilityStateRef.current !== 'open'
+      ? new Map(messages.map((message, index) => [
         message.id,
         computeCompactHistoryEnterDelay(index, messages.length),
-      ]),
-    );
-  }
-  previousVisibilityStateRef.current = visibilityState;
+      ]))
+      : null
+  ), [messages, visibilityState]);
+
+  useLayoutEffect(() => {
+    if (openingEnterDelayByMessageId) {
+      enterDelayByMessageIdRef.current = openingEnterDelayByMessageId;
+    }
+    previousVisibilityStateRef.current = visibilityState;
+  }, [openingEnterDelayByMessageId, visibilityState]);
 
   function resolveCompactHistoryEnterDelay(message: ChatMessage, index: number): string {
-    const existingDelay = enterDelayByMessageIdRef.current.get(message.id);
+    const existingDelay = openingEnterDelayByMessageId?.get(message.id)
+      ?? enterDelayByMessageIdRef.current.get(message.id);
     if (existingDelay !== undefined) return existingDelay;
-    const delay = visibilityState === 'open'
+    return visibilityState === 'open'
       ? '0ms'
       : computeCompactHistoryEnterDelay(index, messages.length);
-    enterDelayByMessageIdRef.current.set(message.id, delay);
-    return delay;
   }
 
   function emitCompactHistoryDragState(activeDragState: ActiveCompactHistoryDrag) {
@@ -1303,7 +1309,7 @@ export default function CompactExportHistoryPanel({
         window.cancelAnimationFrame(frameId);
       }
     };
-  }, [autoScrollToBottom, messages, visibilityState]);
+  }, [autoScrollToBottom, messages, previewOpen, visibilityState]);
 
   useEffect(() => {
     if (!previewOpen) {
