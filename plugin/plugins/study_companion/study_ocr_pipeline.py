@@ -278,10 +278,21 @@ class StudyOcrPipeline:
                         diagnostic=str(exc),
                     )
         if jpeg_bytes is None:
-            jpeg_bytes = self._encode_lightweight_jpeg(
-                thumbnail,
-                max_bytes=self._config.awareness.image_max_bytes,
-            )
+            try:
+                jpeg_bytes = self._encode_lightweight_jpeg(
+                    thumbnail,
+                    max_bytes=self._config.awareness.image_max_bytes,
+                )
+            except Exception as exc:
+                return LightweightSnapshot(
+                    status="capture_failed",
+                    captured_at=captured_at,
+                    diagnostic=f"jpeg encode failed: {exc}",
+                    window_title=window_title,
+                    app_type=app_type,
+                    thumbnail_phash=thumbnail_phash,
+                    has_content_change=has_content_change,
+                )
         if ocr_snapshot is not None:
             ocr_diagnostic = f"; ocr_status={ocr_snapshot.status}"
             if ocr_snapshot.diagnostic:

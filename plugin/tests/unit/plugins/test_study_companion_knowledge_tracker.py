@@ -409,7 +409,12 @@ def test_knowledge_graph_checks_store_when_topic_index_is_truncated() -> None:
 
     assert graph.discover_candidate("", {"topic": "Late Topic"}) == "late_topic"
     assert graph.discover_candidate("Late Topic") == "late_topic"
-    assert store.find_calls == ["Late Topic", "Late Topic"]
+    assert graph.discover_candidate("Before Late Topic after") is None
+    assert store.find_calls == [
+        "Late Topic",
+        "Late Topic",
+        "Before Late Topic after",
+    ]
 
 
 def test_knowledge_tracker_batch_gate_requires_full_batch_store_surface() -> None:

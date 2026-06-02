@@ -3975,6 +3975,7 @@ async def test_shutdown_clears_ocr_pipeline_when_close_fails(
         "study shutdown OCR pipeline cleanup failed" in str(item[0][0])
         for item in ctx.logger.warnings
     )
+    assert any("ocr close failed" in str(item) for item in ctx.logger.warnings)
 
 
 @pytest.mark.asyncio

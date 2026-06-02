@@ -397,6 +397,14 @@ class KnowledgeGraph:
             known_id = self._resolve_store_topic(normalized)
             if known_id:
                 return known_id
+            first = next(
+                (line.strip() for line in normalized.splitlines() if line.strip()), ""
+            )
+            if first and first != normalized:
+                known_id = self._resolve_store_topic(first)
+                if known_id:
+                    return known_id
+            return None
         for name, topic_id in self._topic_name_index.items():
             if name and name in normalized:
                 return topic_id

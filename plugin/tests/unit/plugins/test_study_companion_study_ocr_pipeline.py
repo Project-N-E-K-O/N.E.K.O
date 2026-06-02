@@ -282,6 +282,32 @@ def test_ocr_pipeline_capture_lightweight_reports_backend_resolve_failure() -> N
     assert "backend missing" in snapshot.diagnostic
 
 
+def test_ocr_pipeline_capture_lightweight_reports_sync_jpeg_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image = Image.new("RGB", (640, 360), "white")
+    pipeline = StudyOcrPipeline(
+        logger=_Logger(),
+        config=StudyConfig(awareness=AwarenessConfig(image_max_bytes=50_000)),
+        capture_backend=_Capture(image),
+    )
+
+    def fail_encode(_image: Image.Image, *, max_bytes: int) -> bytes:
+        del max_bytes
+        raise RuntimeError("jpeg encode failed hard")
+
+    monkeypatch.setattr(
+        StudyOcrPipeline,
+        "_encode_lightweight_jpeg",
+        staticmethod(fail_encode),
+    )
+
+    snapshot = pipeline.capture_lightweight(target={"hwnd": 1, "title": "Quiz"})
+
+    assert snapshot.status == "capture_failed"
+    assert "jpeg encode failed hard" in snapshot.diagnostic
+
+
 def test_ocr_pipeline_vision_snapshot_ttl_is_extended() -> None:
     assert pipeline_module._VISION_SNAPSHOT_TTL_SECONDS == 30.0
 
