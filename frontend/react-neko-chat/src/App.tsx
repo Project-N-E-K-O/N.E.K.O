@@ -412,7 +412,7 @@ function doesSpeechPlaybackMatchMessage(state: SpeechPlaybackState | null, messa
   }
   const identifiers = [state.playbackTurnId, state.turnId, state.speechId].filter(Boolean);
   if (identifiers.length === 0) {
-    return true;
+    return false;
   }
   return identifiers.some(identifier => identifier === messageId);
 }

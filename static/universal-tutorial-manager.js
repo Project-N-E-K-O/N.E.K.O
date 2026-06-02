@@ -3347,21 +3347,7 @@ class UniversalTutorialManager {
         if (!target || typeof target.closest !== 'function') return false;
 
         const selectors = [
-            '#live2d-container',
-            '#vrm-container',
-            '#mmd-container',
-            '#live2d-canvas',
-            '#vrm-canvas',
-            '#mmd-canvas',
-            '#live2d-floating-buttons',
-            '#vrm-floating-buttons',
-            '#mmd-floating-buttons',
-            '#live2d-lock-icon',
-            '#vrm-lock-icon',
-            '#mmd-lock-icon',
-            '#live2d-return-button-container',
-            '#vrm-return-button-container',
-            '#mmd-return-button-container',
+            ...this.getTutorialInteractiveSelectors(),
             '.neko-idle-return-button-container',
             '.neko-idle-return-btn',
             '.avatar-reaction-bubble',

@@ -3459,13 +3459,7 @@
             return true;
         }
 
-        async speakGuideLine(text, options) {
-            const content = typeof text === 'string' ? text.trim() : '';
-
-            if (!content) {
-                return;
-            }
-
+        normalizeVoiceQueueSpeakOptions(options) {
             const normalizedOptions = Object.assign({}, options || {});
             if (!normalizedOptions.playbackTurnId) {
                 const voiceKey = typeof normalizedOptions.voiceKey === 'string' ? normalizedOptions.voiceKey.trim() : '';
@@ -3477,6 +3471,17 @@
                 }
             }
 
+            return normalizedOptions;
+        }
+
+        async speakGuideLine(text, options) {
+            const content = typeof text === 'string' ? text.trim() : '';
+
+            if (!content) {
+                return;
+            }
+
+            const normalizedOptions = this.normalizeVoiceQueueSpeakOptions(options);
             await this.speakLineAndWait(content, normalizedOptions);
         }
 
@@ -5026,7 +5031,7 @@
             narration.running = true;
             narration.playbackStartIndex = playbackStartIndex;
             narration.playbackStartAt = Date.now();
-            await this.voiceQueue.speak(playbackText, {
+            await this.voiceQueue.speak(playbackText, this.normalizeVoiceQueueSpeakOptions({
                 voiceKey: narration.voiceKey,
                 playbackTurnId: narration.playbackTurnId,
                 startAtMs: Number.isFinite(narration.resumeAudioOffsetMs) ? narration.resumeAudioOffsetMs : 0,
@@ -5052,7 +5057,7 @@
                         }
                     }
                 }
-            });
+            }));
             narration.running = false;
 
             if (this.destroyed || narration.cancelled) {
@@ -10048,9 +10053,9 @@
                 voiceKey: resistanceVoiceKey
             }).catch(() => null);
             return Promise.all([
-                this.voiceQueue.speak(message, {
+                this.voiceQueue.speak(message, this.normalizeVoiceQueueSpeakOptions({
                     voiceKey: resistanceVoiceKey
-                }),
+                })),
                 cursorResistancePromise,
                 interruptPerformancePromise
             ]).finally(() => {

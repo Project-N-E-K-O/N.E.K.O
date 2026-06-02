@@ -2511,6 +2511,10 @@ describe('App', () => {
       configurable: true,
       value: 320,
     });
+    Object.defineProperty(preview, 'clientWidth', {
+      configurable: true,
+      value: 100,
+    });
     expect(preview).toHaveAttribute('data-compact-preview-streaming', 'false');
     expect(preview).toHaveAttribute('data-compact-preview-scrollable', 'true');
     expect(preview).toHaveTextContent(initialText);
@@ -2625,6 +2629,42 @@ describe('App', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('does not keep a completed tutorial guide line visible for speech playback without message identifiers', () => {
+    const fullText = '这句教程台词只有匹配到自己的语音播放时才应该继续显示。';
+    const streamingMessage = parseChatMessage({
+      id: 'yui-guide-unidentified-speech-line',
+      role: 'assistant',
+      author: 'YUI',
+      time: '10:01',
+      createdAt: 2,
+      blocks: [{ type: 'text', text: fullText }],
+      status: 'streaming',
+    });
+    const sentMessage = parseChatMessage({
+      ...streamingMessage,
+      status: 'sent',
+    });
+
+    const { container, rerender } = render(
+      <App chatSurfaceMode="compact" composerHidden messages={[streamingMessage]} />,
+    );
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('neko-speech-playback-state', {
+        detail: {
+          active: true,
+          audioContextTime: 0,
+          playbackStartAudioTime: 0,
+          playbackEndAudioTime: 10,
+          updatedAt: Date.now(),
+        },
+      }));
+    });
+    rerender(<App chatSurfaceMode="compact" composerHidden messages={[sentMessage]} />);
+
+    expect(container.querySelector('.compact-chat-capsule-text')).toBeEmptyDOMElement();
   });
 
   it('does not merge the previous tutorial guide line into the next compact capsule line', () => {
