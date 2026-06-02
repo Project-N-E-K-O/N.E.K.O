@@ -1,8 +1,14 @@
 from pathlib import Path
+import json
+import re
 
 
 YUI_GUIDE_DIRECTOR_PATH = Path(__file__).resolve().parents[2] / "static" / "yui-guide-director.js"
 APP_INTERPAGE_PATH = Path(__file__).resolve().parents[2] / "static" / "app-interpage.js"
+STATIC_ZH_CN_LOCALE_PATH = Path(__file__).resolve().parents[2] / "static" / "locales" / "zh-CN.json"
+PLUGIN_MANAGER_ZH_CN_LOCALE_PATH = (
+    Path(__file__).resolve().parents[2] / "frontend" / "plugin-manager" / "src" / "i18n" / "locales" / "zh-CN.ts"
+)
 
 
 def _read_director() -> str:
@@ -11,6 +17,17 @@ def _read_director() -> str:
 
 def _read_interpage() -> str:
     return APP_INTERPAGE_PATH.read_text(encoding="utf-8")
+
+
+def _read_static_zh_cn_locale() -> dict:
+    return json.loads(STATIC_ZH_CN_LOCALE_PATH.read_text(encoding="utf-8"))
+
+
+def _extract_plugin_manager_zh_cn_line(key: str) -> str:
+    source = PLUGIN_MANAGER_ZH_CN_LOCALE_PATH.read_text(encoding="utf-8")
+    match = re.search(rf"{re.escape(key)}:\s*'([^']*)'", source)
+    assert match is not None
+    return match.group(1)
 
 
 def _function_block(source: str, name: str, next_name: str) -> str:
@@ -204,3 +221,15 @@ def test_guide_audio_playback_state_uses_guide_message_id_for_compact_capsule_cl
     assert "this.normalizeVoiceQueueSpeakOptions(options)" in speak_block
     assert "normalizedOptions.playbackTurnId = guideMessageId;" in normalize_block
     assert "playbackTurnId: narration.playbackTurnId" in run_narration_block
+
+
+def test_zh_cn_settings_peek_copy_matches_existing_voice_audio_script():
+    static_lines = _read_static_zh_cn_locale()["tutorial"]["yuiGuide"]["lines"]
+
+    for key in (
+        "takeoverSettingsPeekIntro",
+        "takeoverSettingsPeekDetail",
+        "takeoverSettingsPeekDetailPart1",
+        "takeoverSettingsPeekDetailPart2",
+    ):
+        assert static_lines[key] == _extract_plugin_manager_zh_cn_line(key)
