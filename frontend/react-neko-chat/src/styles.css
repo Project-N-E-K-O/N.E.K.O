@@ -2438,7 +2438,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
 }
 
-.compact-export-history-anchor[data-compact-export-history-visibility="open"] .compact-export-history-bubble {
+.compact-export-history-anchor[data-compact-export-history-visibility="open"] .compact-export-history-message:not([data-compact-history-drag-phase]) .compact-export-history-bubble {
   animation: compact-history-message-enter 0.26s cubic-bezier(0.2, 0.78, 0.34, 1) both;
   animation-delay: var(--compact-history-enter-delay, 0ms);
 }

@@ -650,6 +650,21 @@ def test_compact_history_closing_bubbles_disable_pointer_events():
     assert "pointer-events: none;" in closing_bubble_block
 
 
+def test_compact_history_enter_animation_excludes_drag_sources():
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+    enter_selector = (
+        '.compact-export-history-anchor[data-compact-export-history-visibility="open"] '
+        ".compact-export-history-message:not([data-compact-history-drag-phase]) "
+        ".compact-export-history-bubble"
+    )
+
+    assert enter_selector in styles
+    assert (
+        '.compact-export-history-anchor[data-compact-export-history-visibility="open"] '
+        ".compact-export-history-bubble {"
+    ) not in styles
+
+
 def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regions():
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
     panel_source = COMPACT_EXPORT_HISTORY_PANEL_PATH.read_text(encoding="utf-8")
