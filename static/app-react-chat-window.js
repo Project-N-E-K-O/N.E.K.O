@@ -22,6 +22,7 @@
     var loadedPromise = null;
     var mounted = false;
     var dragState = null;
+    var suppressDragReleaseClick = false;
     var resizeState = null;
     var minimized = false;
     var savedShellSize = null;
@@ -1555,6 +1556,29 @@
     function blockMobileExpandSyntheticPointerEvent(event) {
         if (!shouldBlockMobileExpandClick(event)) return;
         // 手机端触摸展开后浏览器会补发同坐标鼠标事件；从 mousedown 起吞掉，避免按钮出现按压反馈。
+        event.preventDefault();
+        event.stopPropagation();
+        if (typeof event.stopImmediatePropagation === 'function') {
+            event.stopImmediatePropagation();
+        }
+    }
+
+    // Web 宿主下用鼠标拖拽 surface 本体后，浏览器仍会在 mouseup 落点补发一次
+    // click（mousedown 的 preventDefault 不取消 click）。落点若是胶囊按钮会被误判为
+    // 点击而展开输入框。拖拽真正移动过(moved)时 arm 此守卫，吞掉紧随其后的那一次
+    // click。click 与 mouseup 同任务同步派发，setTimeout(…,0) 必在其后清旗，既兜底
+    // 「落点无 click」也不会误吞之后无关的点击。touch 路径已在 touchstart
+    // preventDefault 阶段抑制了合成 click，不经此守卫。
+    function armDragReleaseClickGuard() {
+        suppressDragReleaseClick = true;
+        window.setTimeout(function () {
+            suppressDragReleaseClick = false;
+        }, 0);
+    }
+
+    function consumeDragReleaseClickGuard(event) {
+        if (!suppressDragReleaseClick) return;
+        suppressDragReleaseClick = false;
         event.preventDefault();
         event.stopPropagation();
         if (typeof event.stopImmediatePropagation === 'function') {
@@ -4847,6 +4871,11 @@
         dragState = null;
         document.body.classList.remove('react-chat-window-dragging');
 
+        // 移动过的拖拽不该再变成点击：吞掉 mouseup 落点补发的那一次 click。
+        if (wasMoved) {
+            armDragReleaseClickGuard();
+        }
+
         // 最小化状态下，未发生拖拽移动 → 视为点击，恢复窗口
         // 但 suppressClick=true（如教程接管强制中断）时不触发，避免误展开
         if (minimized && !wasMoved && !opts.suppressClick) {
@@ -5277,6 +5306,7 @@
         document.addEventListener('mousedown', blockMobileExpandSyntheticPointerEvent, true);
         document.addEventListener('mouseup', blockMobileExpandSyntheticPointerEvent, true);
         document.addEventListener('click', blockMobileExpandSyntheticPointerEvent, true);
+        document.addEventListener('click', consumeDragReleaseClickGuard, true);
         bindDragging();
         createResizeEdges();
         bindResizing();

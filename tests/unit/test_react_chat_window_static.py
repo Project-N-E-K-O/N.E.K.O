@@ -510,6 +510,48 @@ def test_compact_surface_drag_uses_declared_surface_and_no_drag_exclusions():
     assert "compactSurface: true" in touch_block
 
 
+def test_moved_drag_suppresses_trailing_release_click():
+    # 移动过的拖拽（含 compact surface 本体拖拽）松开后，浏览器会在 mouseup 落点
+    # 补发一次 click；落点若是胶囊按钮会被误判为点击而展开输入框。守卫在 moved
+    # 时 arm，并在 document capture 阶段吞掉紧随的那一次 click。
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    assert "var suppressDragReleaseClick = false;" in script
+
+    stop_block = script.split("function stopDrag(options)", 1)[1].split(
+        "function bindDragging()",
+        1,
+    )[0]
+    assert "if (wasMoved) {" in stop_block
+    assert "armDragReleaseClickGuard();" in stop_block
+
+    arm_block = script.split("function armDragReleaseClickGuard()", 1)[1].split(
+        "function consumeDragReleaseClickGuard",
+        1,
+    )[0]
+    assert "suppressDragReleaseClick = true;" in arm_block
+    # setTimeout(…, 0) 兜底清旗：click 同任务先消费，无 click 时也不残留误吞后续点击。
+    assert "window.setTimeout(function () {" in arm_block
+    assert "suppressDragReleaseClick = false;" in arm_block
+
+    consume_block = script.split("function consumeDragReleaseClickGuard(event)", 1)[1].split(
+        "function getOverlay()",
+        1,
+    )[0]
+    assert "if (!suppressDragReleaseClick) return;" in consume_block
+    assert "suppressDragReleaseClick = false;" in consume_block
+    assert "event.preventDefault();" in consume_block
+    assert "event.stopPropagation();" in consume_block
+
+    # capture 阶段挂载，且排在 mobile 展开守卫之后（保留既有行为优先级）。
+    assert "document.addEventListener('click', consumeDragReleaseClickGuard, true);" in script
+    listeners_block = script.split(
+        "document.addEventListener('click', blockMobileExpandSyntheticPointerEvent, true);",
+        1,
+    )[1]
+    assert "document.addEventListener('click', consumeDragReleaseClickGuard, true);" in listeners_block
+
+
 def test_desktop_compact_layout_change_resets_anchor_only_when_base_surface_changes():
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
