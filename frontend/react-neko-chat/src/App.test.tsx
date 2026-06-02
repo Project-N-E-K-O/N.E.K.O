@@ -384,10 +384,17 @@ describe('App', () => {
     expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'true');
     expect(container.querySelector('.compact-export-history-message')).toHaveAttribute('role', 'listitem');
     expect(container.querySelector('.compact-export-history-message')).not.toHaveAttribute('aria-pressed');
-    expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('role', 'button');
+    expect(container.querySelector('.compact-export-history-bubble')).not.toHaveAttribute('role');
+    expect(container.querySelector('.compact-export-history-bubble')).not.toHaveAttribute('aria-pressed');
+    expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('aria-disabled', 'true');
+    expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('tabindex', '-1');
     expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBeNull();
 
     const exportButton = await clickCompactExportTool();
+    expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('role', 'button');
+    expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('aria-pressed', 'false');
+    expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('aria-disabled', 'false');
+    expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('tabindex', '0');
     expect(container.querySelector('.compact-export-history-controls')).toHaveAttribute('data-compact-hit-region-id', 'history:controls');
     expect(exportButton).toHaveAttribute('aria-pressed', 'true');
 
