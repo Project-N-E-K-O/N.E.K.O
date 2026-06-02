@@ -577,6 +577,9 @@ def test_compact_history_controls_collapse_gives_height_back_to_history_scroll()
     assert ".compact-export-history-controls.is-collapsed" not in styles
     assert ".compact-export-history-controls-toggle" not in styles
     assert "position: fixed;" in history_handle_block
+    assert "top: calc(var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) - 2px);" in history_handle_block
+    assert "bottom: auto;" in history_handle_block
+    assert "bottom: calc(100vh - var(--desktop-compact-surface-top" not in history_handle_block
     assert "z-index: 100002;" in history_handle_block
     assert "pointer-events: auto;" in history_handle_block
     assert "-webkit-app-region: no-drag;" in history_handle_block
