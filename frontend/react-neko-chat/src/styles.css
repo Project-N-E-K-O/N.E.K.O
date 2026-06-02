@@ -3609,6 +3609,13 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   z-index: 2;
 }
 
+.compact-input-tool-fan .compact-input-tool-item-avatar > .composer-emoji-btn,
+.compact-input-tool-fan .compact-input-tool-item-avatar > .composer-emoji-btn:hover,
+.compact-input-tool-fan .compact-input-tool-item-avatar > .composer-emoji-btn.is-active {
+  background: transparent;
+  border-radius: 999px;
+}
+
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] {
   visibility: visible;
   pointer-events: auto;
@@ -4115,6 +4122,12 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 [data-theme="dark"] .composer-emoji-btn.is-active {
   background: rgba(68, 183, 254, 0.26);
+}
+
+[data-theme="dark"] .compact-input-tool-fan .compact-input-tool-item-avatar > .composer-emoji-btn,
+[data-theme="dark"] .compact-input-tool-fan .compact-input-tool-item-avatar > .composer-emoji-btn:hover,
+[data-theme="dark"] .compact-input-tool-fan .compact-input-tool-item-avatar > .composer-emoji-btn.is-active {
+  background: transparent;
 }
 
 [data-theme="dark"] .composer-tool-clear-btn {
