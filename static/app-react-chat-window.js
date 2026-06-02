@@ -648,6 +648,11 @@
                 resizeActive: !!compactSurfaceResizeSession
             });
         }
+        if (detail) {
+            detail = Object.assign({}, detail, {
+                dragging: !!(dragState && dragState.compactSurface)
+            });
+        }
         window.dispatchEvent(new CustomEvent('neko:compact-surface-layout-change', {
             detail: detail
         }));
@@ -4835,6 +4840,7 @@
         var changedTouch = opts.changedTouches && opts.changedTouches.length > 0 ? opts.changedTouches[0] : null;
 
         var wasMoved = dragState.moved;
+        var wasCompactSurface = !!dragState.compactSurface;
 
         var shell = getShell();
         if (shell) {
@@ -4847,6 +4853,12 @@
 
         dragState = null;
         document.body.classList.remove('react-chat-window-dragging');
+        if (wasCompactSurface && wasMoved) {
+            var compactRect = getCurrentCompactSurfaceRect();
+            if (compactRect) {
+                dispatchCompactSurfaceLayoutChange(compactRect);
+            }
+        }
 
         // 最小化状态下，未发生拖拽移动 → 视为点击，恢复窗口
         // 但 suppressClick=true（如教程接管强制中断）时不触发，避免误展开

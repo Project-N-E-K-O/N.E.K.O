@@ -1820,6 +1820,12 @@
                         dispatchIdleChatMinimizedState(event.data);
                         break;
                     }
+                    case 'idle_chat_compact_surface_state': {
+                        var compactSurfaceCurrentName = getCurrentLanlanName();
+                        if (event.data.lanlan_name && (!compactSurfaceCurrentName || event.data.lanlan_name !== compactSurfaceCurrentName)) break;
+                        dispatchIdleChatCompactSurfaceState(event.data);
+                        break;
+                    }
                     case 'idle_chat_pair_move_bounds': {
                         var pairMoveChatCurrentName = getCurrentLanlanName();
                         if (event.data.lanlan_name && (!pairMoveChatCurrentName || event.data.lanlan_name !== pairMoveChatCurrentName)) break;
@@ -2113,6 +2119,22 @@
         }));
     }
 
+    function dispatchIdleChatCompactSurfaceState(detail) {
+        window.dispatchEvent(new CustomEvent('neko:idle-chat-compact-surface-state', {
+            detail: Object.assign({
+                action: 'idle_chat_compact_surface_state',
+                source: '',
+                reason: '',
+                visible: false,
+                screenRect: null,
+                timestamp: Date.now(),
+                via: 'broadcast-channel'
+            }, detail || {}, {
+                via: 'broadcast-channel'
+            })
+        }));
+    }
+
     function dispatchIdleChatPairMoveBounds(detail) {
         window.dispatchEvent(new CustomEvent('neko:idle-chat-pair-move-bounds', {
             detail: Object.assign({
@@ -2306,6 +2328,22 @@
             lanlan_name: getCurrentLanlanName(),
             timestamp: Date.now()
         }, detail));
+    });
+
+    window.addEventListener('neko:compact-surface-layout-change', function (evt) {
+        var detail = evt && evt.detail && typeof evt.detail === 'object' ? evt.detail : null;
+        if (!nekoBroadcastChannel) return;
+        var screenRect = detail && detail.screenRect ? detail.screenRect : null;
+        nekoBroadcastChannel.postMessage({
+            action: 'idle_chat_compact_surface_state',
+            source: 'chat-window',
+            lanlan_name: getCurrentLanlanName(),
+            visible: !!screenRect,
+            screenRect: screenRect,
+            resizeActive: !!(detail && detail.resizeActive),
+            dragging: !!(detail && detail.dragging),
+            timestamp: Date.now()
+        });
     });
 
     // Chat 窗口初始化时，向 Pet 窗口请求当前已缓存的头像
