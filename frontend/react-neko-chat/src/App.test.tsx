@@ -451,14 +451,12 @@ describe('App', () => {
     expect(handle).not.toBeNull();
     expect(handle).toHaveAttribute('aria-expanded', 'false');
     expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
-    const shellPointerDown = vi.fn();
-    container.querySelector('.compact-chat-surface-shell')?.addEventListener('pointerdown', shellPointerDown);
 
     fireEvent.pointerDown(handle!, { pointerType: 'mouse', button: 0 });
     expect(handle).toHaveAttribute('aria-expanded', 'true');
     expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
     expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
-    expect(shellPointerDown).not.toHaveBeenCalled();
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'input');
 
     fireEvent.click(handle!);
     expect(handle).toHaveAttribute('aria-expanded', 'true');
