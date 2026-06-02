@@ -10295,12 +10295,17 @@
             }
 
             if (this.awaitingIntroActivation) {
-                const chatInput = target.closest('#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="capsule"]')
-                    || target.closest('#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="input"]')
-                    || target.closest('#react-chat-window-root .compact-chat-surface-frame')
-                    || target.closest('#react-chat-window-root .compact-chat-surface-shell')
-                    || target.closest('#react-chat-window-root .composer-input')
-                    || target.closest('#textInputBox');
+                const chatInput = target.closest([
+                    '#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="capsule"]',
+                    '#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="input"]',
+                    '#react-chat-window-root .compact-chat-surface-frame',
+                    '#react-chat-window-root .compact-chat-surface-shell',
+                    '#react-chat-window-root .composer-input',
+                    '#react-chat-window-root .composer-input-shell',
+                    '#react-chat-window-root .composer-panel',
+                    '#textInputBox',
+                    '#text-input-area'
+                ].join(', '));
                 if (chatInput) {
                     this.awaitingIntroActivation = false;
                     if (typeof this._introActivationResolve === 'function') {
