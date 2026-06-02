@@ -70,9 +70,13 @@
     let _proactiveLeaderHeartbeatTimer = null;
     let _wasLeaderLastTick = null; // 用于 leader 状态切换时主动 reschedule
     let _chatInputSlowdownUntil = 0;
+    let _homeTutorialFeatureSuppressedByEvent = false;
 
     function isHomeTutorialFeatureSuppressed() {
         try {
+            if (_homeTutorialFeatureSuppressedByEvent) {
+                return true;
+            }
             const controller = window.NekoHomeTutorialFeatureController;
             if (controller && typeof controller.isActive === 'function' && controller.isActive()) {
                 return true;
@@ -1837,10 +1841,14 @@
     window.addEventListener('neko:home-tutorial-features-suppressed', function (event) {
         var detail = event && event.detail ? event.detail : {};
         if (detail.active === true) {
+            _homeTutorialFeatureSuppressedByEvent = true;
             stopProactiveChatSchedule();
             stopProactiveVisionDuringSpeech();
         } else if (detail.active === false && S.proactiveChatEnabled && hasAnyChatModeEnabled()) {
+            _homeTutorialFeatureSuppressedByEvent = false;
             scheduleProactiveChat();
+        } else if (detail.active === false) {
+            _homeTutorialFeatureSuppressedByEvent = false;
         }
     });
 

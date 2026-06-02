@@ -209,12 +209,46 @@
         }
 
         getExternalChatChannel() {
+            const getTutorialRunId = () => {
+                try {
+                    return this.window.localStorage.getItem('yuiGuidePcOverlayRunId') || '';
+                } catch (_) {
+                    return '';
+                }
+            };
+            const broadcastChannel = this.window.appInterpage && this.window.appInterpage.nekoBroadcastChannel
+                ? this.window.appInterpage.nekoBroadcastChannel
+                : null;
+            const nativeRelay = this.window.nekoTutorialOverlay
+                && typeof this.window.nekoTutorialOverlay.relayToChat === 'function'
+                ? this.window.nekoTutorialOverlay
+                : null;
+            if (broadcastChannel || nativeRelay) {
+                return {
+                    postMessage(message) {
+                        const outgoingMessage = Object.assign({}, message || {});
+                        const tutorialRunId = getTutorialRunId();
+                        if (tutorialRunId && !outgoingMessage.tutorialRunId) {
+                            outgoingMessage.tutorialRunId = tutorialRunId;
+                        }
+                        if (broadcastChannel && typeof broadcastChannel.postMessage === 'function') {
+                            try {
+                                broadcastChannel.postMessage(outgoingMessage);
+                            } catch (_) {}
+                        }
+                        if (nativeRelay) {
+                            try {
+                                nativeRelay.relayToChat(outgoingMessage);
+                            } catch (_) {}
+                        }
+                    }
+                };
+            }
+
             if (typeof this.externalChatChannelProvider === 'function') {
                 return this.externalChatChannelProvider() || null;
             }
-            return this.window.appInterpage && this.window.appInterpage.nekoBroadcastChannel
-                ? this.window.appInterpage.nekoBroadcastChannel
-                : null;
+            return null;
         }
 
         setExternalizedChatButtonsDisabled(disabled) {
@@ -260,9 +294,58 @@
             }
         }
 
+        setExternalizedChatCursor(kind, options) {
+            if (!this.isHomeChatExternalized()) {
+                return;
+            }
+
+            const channel = this.getExternalChatChannel();
+            if (!channel || typeof channel.postMessage !== 'function') {
+                return;
+            }
+
+            try {
+                channel.postMessage({
+                    action: 'yui_guide_set_chat_cursor',
+                    kind: typeof kind === 'string' ? kind : '',
+                    effect: options && typeof options.effect === 'string' ? options.effect : '',
+                    targetIndex: options && Number.isFinite(options.targetIndex)
+                        ? Math.max(0, Math.floor(options.targetIndex))
+                        : 0,
+                    timestamp: Date.now()
+                });
+            } catch (error) {
+                console.warn('[TutorialInteractionTakeover] 同步独立聊天窗 Ghost Cursor 失败:', error);
+            }
+        }
+
+        setExternalizedChatAvatarToolMenuOpen(open, reason) {
+            if (!this.isHomeChatExternalized()) {
+                return;
+            }
+
+            const channel = this.getExternalChatChannel();
+            if (!channel || typeof channel.postMessage !== 'function') {
+                return;
+            }
+
+            try {
+                channel.postMessage({
+                    action: 'yui_guide_set_avatar_tool_menu_open',
+                    open: open === true,
+                    reason: typeof reason === 'string' ? reason : '',
+                    timestamp: Date.now()
+                });
+            } catch (error) {
+                console.warn('[TutorialInteractionTakeover] 同步独立聊天窗 Avatar 工具菜单失败:', error);
+            }
+        }
+
         clearExternalizedChatFx() {
             this.externalizedChatSpotlightKind = '';
             this.setExternalizedChatSpotlight('');
+            this.setExternalizedChatCursor('');
+            this.setExternalizedChatAvatarToolMenuOpen(false, 'clear-externalized-chat-fx');
         }
 
         onExternalChatReady() {

@@ -339,10 +339,15 @@ def test_agent_router_has_internal_analyze_request_endpoint():
 
 
 def test_yui_guide_steps_registry_keeps_m1_to_m4_home_flow_contract():
-    source = Path("static/yui-guide-steps.js").read_text(encoding="utf-8")
+    steps_source = Path("static/yui-guide-steps.js").read_text(encoding="utf-8")
+    day1_source = Path("static/yui-guide-day1-home-guide.js").read_text(encoding="utf-8")
+    source = steps_source + "\n" + day1_source
 
     for expected in (
         "const CONTRACT_VERSION = 2;",
+        "const registry = window.YuiGuideDailyGuides || {};",
+        "const day1Guide = getDailyGuide(1) || {};",
+        "createStepFromPatch(id, day1Steps[id])",
         "'intro_basic'",
         "'takeover_capture_cursor'",
         "'takeover_plugin_preview'",
@@ -351,12 +356,12 @@ def test_yui_guide_steps_registry_keeps_m1_to_m4_home_flow_contract():
         "'handoff_api_key'",
         "'handoff_memory_browser'",
         "'handoff_plugin_dashboard'",
-        "steps.handoff_api_key.navigation.resumeScene = 'api_key_intro';",
-        "steps.handoff_memory_browser.navigation.resumeScene = 'memory_browser_intro';",
-        "steps.handoff_plugin_dashboard.navigation.resumeScene = 'plugin_dashboard_landing';",
-        "steps.plugin_dashboard_landing = createBaseStep('plugin_dashboard_landing', 'plugin_dashboard', '#plugin-list');",
-        "steps.api_key_intro = createBaseStep('api_key_intro', 'api_key', '#coreApiSelect-dropdown-trigger');",
-        "steps.memory_browser_intro = createBaseStep('memory_browser_intro', 'memory_browser', '#memory-file-list');",
+        "resumeScene: 'api_key_intro'",
+        "resumeScene: 'memory_browser_intro'",
+        "resumeScene: 'plugin_dashboard_landing'",
+        "plugin_dashboard_landing: {",
+        "anchor: '#coreApiSelect-dropdown-trigger'",
+        "anchor: '#memory-file-list'",
         "api_key: ['api_key_intro']",
         "memory_browser: ['memory_browser_intro']",
         "plugin_dashboard: ['plugin_dashboard_landing']",
@@ -416,7 +421,7 @@ def test_yui_guide_overlay_supports_progress_meta_and_viewport_placement():
     for expected in (
         "window.TutorialHighlightController",
         "'[id$=\"-btn-mic\"], [id$=\"-btn-screen\"], [id$=\"-btn-agent\"],",
-        "'[id$=\"-btn-settings\"], [id$=\"-btn-goodbye\"], [id$=\"-btn-return\"], [id$=\"-lock-icon\"]'",
+        "'[id$=\"-btn-settings\"], [id$=\"-btn-goodbye\"], [id$=\"-btn-return\"], [id$=\"-lock-icon\"], '",
         "applyCircularFloatingButtonSpotlightHint(element)",
         "data-yui-guide-spotlight-geometry",
         "data-yui-guide-virtual-spotlight",
@@ -474,6 +479,15 @@ def test_yui_takeover_overlay_keeps_window_hittable_during_plugin_preview_cleanu
         "background: transparent;",
     ):
         assert expected in style_source
+
+
+def test_yui_guide_dom_fallback_cursor_layer_stays_above_page_controls():
+    style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
+
+    assert "z-index: 2147483000;" in style_source
+    assert "isolation: isolate;" in style_source
+    assert ".yui-guide-cursor-shell {\n  position: fixed;\n  top: 0;\n  left: 0;\n  z-index: 40;" in style_source
+    assert ".yui-guide-cursor-trail-layer {\n  position: fixed;\n  inset: 0;\n  z-index: 39;" in style_source
 
 
 def test_plugin_dashboard_skip_contract_uses_skip_request_without_bypass_event():
@@ -618,6 +632,35 @@ def test_home_yui_return_petal_transition_decouples_petal_opacity_from_model_fad
     assert "模型快照恢复期间不暂停花瓣动画" in doc_source
 
 
+def test_day4_guide_copy_orders_privacy_before_lock_and_home():
+    source = Path("static/yui-guide-day4-companion-guide.js").read_text(encoding="utf-8")
+    scene_ids = re.findall(r"id: '(day4_[^']+)'", source)
+
+    assert scene_ids == [
+        "day4_intro_companion",
+        "day4_chat_settings",
+        "day4_model_behavior",
+        "day4_gaze_follow",
+        "day4_privacy_mode",
+        "day4_model_lock",
+        "day4_return_home",
+        "day4_wrap",
+    ]
+    for removed_title in (
+        "💬 聊天设置",
+        "⚙️ 模型行为设置",
+        "👀 视线跟随",
+        "🔒 模型锁定",
+        "🏠 回到小猫窝",
+        "👁️ 主动视觉 / 隐私模式",
+    ):
+        assert removed_title not in source
+    assert "我的眼里，满满的都是你哦" not in source
+    assert "开启这个功能后，无论你的鼠标移动到哪里" in source
+    assert source.index("这个是控制人家能不能看屏幕") < source.index("总是小心不触碰到")
+    assert source.index("总是小心不触碰到") < source.index("如果你现在需要专注")
+
+
 def test_yui_guide_cat_paw_click_state_is_visible_before_actions():
     overlay_source = Path("static/yui-guide-overlay.js").read_text(encoding="utf-8")
     director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
@@ -647,9 +690,10 @@ def test_yui_guide_cat_paw_click_state_is_visible_before_actions():
         assert expected in overlay_source
 
     for expected in (
-        "this.cursor.click(clickVisibleMs)",
-        "await this.waitForSceneDelay(clickVisibleMs)",
-        "await this.clickCursorAndWait(DEFAULT_CURSOR_CLICK_VISIBLE_MS)",
+        "this.cursor.click(visibleMs)",
+        "return await this.waitForSceneDelay(visibleMs)",
+        "async runActionWithCursorClick(holdMs, action)",
+        "const clickPromise = this.clickCursorAndWait(holdMs)",
     ):
         assert expected in director_source
 
@@ -1069,8 +1113,7 @@ def test_yui_interrupt_sessions_keep_scope_in_home_adapter_and_gate_runtime_reen
     assert "if (this.guideInterruptPresentationActive) {" in director_source
     assert "this.emotionBridge.clear();" in director_source
     assert "startGuideMouthMotion(voiceKey, options)" in director_source
-    assert "performance.emotion || 'surprised'" in interrupt_source
-    assert "performance.emotion || 'angry'" in interrupt_source
+    assert "call(this.callbacks, 'applyGuideEmotion', null, 'angry'" in interrupt_source
     assert "return null;" in director_source
     assert "restoreCurrentScenePresentation(options)" in director_source
     assert "this.platformCapabilities.windowBoundsSource === 'electron-window-bounds'" in director_source
@@ -1152,6 +1195,10 @@ def test_home_avatar_floating_guide_day_reset_buttons_are_wired():
     template_source = Path("templates/index.html").read_text(encoding="utf-8")
     reset_source = Path("static/avatar-floating-guide-reset.js").read_text(encoding="utf-8")
     style_source = Path("static/css/index.css").read_text(encoding="utf-8")
+    day2_screen_entry_block = reset_source[
+        reset_source.index("id: 'day2_screen_entry'")
+        :reset_source.index("id: 'day2_wrap'", reset_source.index("id: 'day2_screen_entry'"))
+    ]
 
     assert "/static/avatar-floating-guide-reset.js" in template_source
     assert "home-tutorial-reset-controls" in template_source
@@ -1192,9 +1239,9 @@ def test_home_avatar_floating_guide_day_reset_buttons_are_wired():
     assert "interruptController.playLightResistance" in reset_source
     assert "interruptController.abortAsAngryExit" in reset_source
     assert "interruptController.destroy()" in reset_source
-    assert "voiceKey: 'avatar_floating_day2_screen_entry'" in reset_source
-    assert "cursorAction: 'click'" in reset_source
-    assert "operation: 'safe-click'" in reset_source
+    assert "voiceKey: 'avatar_floating_day2_screen_entry_intro'" in day2_screen_entry_block
+    assert "cursorAction: 'wobble'" in day2_screen_entry_block
+    assert "operation: 'none'" in day2_screen_entry_block
     assert "runStepShowcase(step, token)" in reset_source
     assert "safeClickTarget(target)" in reset_source
     assert "closeFloatingPanels()" in reset_source
@@ -1207,8 +1254,50 @@ def test_home_avatar_floating_guide_day_reset_buttons_are_wired():
     assert 'data-home-avatar-floating-guide-highlight="true"' in style_source
 
 
+def test_avatar_floating_guide_runtime_has_no_obsolete_hidden_cursor_paths():
+    runtime_paths = [
+        Path("static/yui-guide-director.js"),
+        Path("static/yui-guide-overlay.js"),
+        Path("static/tutorial-interrupt-controller.js"),
+        Path("static/avatar-floating-guide-reset.js"),
+    ]
+    runtime_source = "\n".join(path.read_text(encoding="utf-8") for path in runtime_paths)
+
+    hidden_cursor_suffix = "Se" + "ed"
+    for obsolete_token in [
+        "suppressCursorReaction",
+        "setPositionSilently",
+        "setCursorPositionSilently",
+        "avatarFloatingCursor" + hidden_cursor_suffix + "Point",
+        "rememberAvatarFloatingCursor" + hidden_cursor_suffix,
+        "setAvatarFloatingCursorSilent" + hidden_cursor_suffix + "Point",
+        "resolveAvatarFloatingCursor" + hidden_cursor_suffix + "Point",
+        "resolveManagedSceneCursor" + hidden_cursor_suffix + "Point",
+        hidden_cursor_suffix[0].lower() + hidden_cursor_suffix[1:] + "CursorFromExternalizedChat",
+        "getAvatarFloatingChatProxy" + hidden_cursor_suffix + "Point",
+    ]:
+        assert obsolete_token not in runtime_source
+
+
 def test_avatar_floating_round_director_flow_matches_day2_to_day7_contracts():
-    source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
+    day2_source = Path("static/yui-guide-day2-screen-voice-guide.js").read_text(encoding="utf-8")
+    guide_source = "\n".join(
+        Path(path).read_text(encoding="utf-8")
+        for path in (
+            "static/yui-guide-day2-screen-voice-guide.js",
+            "static/yui-guide-day3-interaction-guide.js",
+            "static/yui-guide-day4-companion-guide.js",
+            "static/yui-guide-day5-personalization-guide.js",
+            "static/yui-guide-day6-agent-guide.js",
+            "static/yui-guide-day7-graduation-guide.js",
+        )
+    )
+    source = director_source + "\n" + guide_source
+    day2_screen_entry_block = day2_source[
+        day2_source.index("id: 'day2_screen_entry'")
+        :day2_source.index("id: 'day2_screen_entry_invite'")
+    ]
 
     for expected in (
         "resolveAvatarFloatingSceneEmotion(scene)",
@@ -1221,6 +1310,9 @@ def test_avatar_floating_round_director_flow_matches_day2_to_day7_contracts():
         "target: 'chat-window'",
     ):
         assert expected in source
+
+    assert "cursorAction: 'wobble'" in day2_screen_entry_block
+    assert "operation:" not in day2_screen_entry_block
 
     day7_block = source[source.index("id: 'day7_storage_entry'"):source.index("id: 'day7_graduation_wrap'")]
     assert "/cloudsave_manager" not in day7_block
@@ -1488,12 +1580,13 @@ def test_home_yui_guide_uses_platform_capability_matrix_for_cross_window_skip():
 
 def test_home_yui_guide_scenes_declare_timelines_and_director_consumes_normalized_cues():
     steps_source = Path("static/yui-guide-steps.js").read_text(encoding="utf-8")
+    day1_source = Path("static/yui-guide-day1-home-guide.js").read_text(encoding="utf-8")
     director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
 
     assert "timeline: []" in steps_source
-    assert "{ at: 0.16, action: 'highlightVoiceControl' }" in steps_source
-    assert "{ at: 0.54, action: 'openSettingsPanel' }" in steps_source
-    assert "{ voiceKey: 'takeover_settings_peek_detail', at: Math.max(7450 / 13923, 0.55), action: 'showSecondLine' }" in steps_source
+    assert "{ at: 0.16, action: 'highlightVoiceControl' }" in day1_source
+    assert "{ at: 0.54, action: 'openSettingsPanel' }" in day1_source
+    assert "{ voiceKey: 'takeover_settings_peek_detail', at: Math.max(7450 / 13923, 0.55), action: 'showSecondLine' }" in day1_source
     assert "getGuideTimelineCueConfig(voiceKey, cueName)" in director_source
     assert "const timeline = Array.isArray(performance.timeline) ? performance.timeline : []" in director_source
     assert "cue.action !== normalizedCueName" in director_source

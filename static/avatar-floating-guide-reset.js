@@ -17,54 +17,25 @@
                 {
                     id: 'day2_intro_context',
                     selector: '#home-avatar-floating-guide-player',
-                    text: '第二天会先承接昨天是否用过声音聊天，再把你带到屏幕分享入口旁边。',
+                    text: '第二天先根据昨天是否用过声音聊天切换开场台词，只高亮聊天窗并播放承接语音，不显示“现在说一句 / 继续打字”两个选择。',
                     voiceKey: 'avatar_floating_day2_intro',
-                    cursorAction: 'wobble',
+                    cursorAction: 'input-origin',
                     operation: 'none',
                     performanceCue: null,
                 },
                 {
                     id: 'day2_screen_entry',
                     selector: '#${prefix}-btn-screen',
-                    text: '在跟悠怡通语音电话的时候，再点亮这个小按钮，就能把屏幕分享给她。',
-                    voiceKey: 'avatar_floating_day2_screen_entry',
-                    cursorAction: 'show',
+                    text: '高亮屏幕分享按钮，Ghost Cursor 移动到按钮后只停留/wobble，不模拟点击，也不触发真实按钮；下一句继续高亮该按钮。',
+                    voiceKey: 'avatar_floating_day2_screen_entry_intro',
+                    cursorAction: 'wobble',
                     operation: 'none',
-                    performanceCue: null,
-                },
-                {
-                    id: 'day2_screen_source_popup',
-                    selector: '.${prefix}-trigger-icon-screen',
-                    text: '小三角会打开来源列表，可以选整个屏幕，也可以只选某个窗口。',
-                    voiceKey: 'avatar_floating_day2_screen_source_popup',
-                    cursorAction: 'click',
-                    operation: 'safe-click',
-                    keepPanelsOpen: true,
-                    performanceCue: null,
-                },
-                {
-                    id: 'day2_mic_recap',
-                    selector: '#${prefix}-btn-mic',
-                    text: '声音入口和屏幕分享会一起出现，方便用户边说边看。',
-                    voiceKey: 'avatar_floating_day2_mic_recap',
-                    cursorAction: 'show',
-                    operation: 'none',
-                    performanceCue: null,
-                },
-                {
-                    id: 'day2_mic_popup',
-                    selector: '.${prefix}-trigger-icon-mic',
-                    text: '麦克风弹窗会展示音量、空间音频、降噪、增益、实时输入状态和设备列表。',
-                    voiceKey: 'avatar_floating_day2_mic_popup',
-                    cursorAction: 'click',
-                    operation: 'safe-click',
-                    keepPanelsOpen: true,
                     performanceCue: null,
                 },
                 {
                     id: 'day2_wrap',
                     selector: '#home-avatar-floating-guide-player',
-                    text: '这一轮结束后会关掉临时弹窗，把界面还给用户；屏幕分享按钮本身不会被强行启动。',
+                    text: '这一轮收尾拆成两句，第一句重新高亮聊天窗，第二句约 70% 处触发每日花瓣转场；屏幕分享按钮本身不会被强行启动。',
                     voiceKey: 'avatar_floating_day2_wrap',
                     cursorAction: 'wobble',
                     operation: 'cleanup',
@@ -78,10 +49,30 @@
                 {
                     id: 'day3_chat_tools',
                     selector: '#react-chat-window-root .composer-bottom-tools',
-                    text: '第三天会强接管聊天窗工具区，介绍 Avatar 互动工具、Galgame 模式和小游戏邀请入口。',
+                    text: '第三天会强接管聊天窗工具区，先让用户看见工具按钮所在的位置。',
                     voiceKey: 'avatar_floating_day3_intro',
                     cursorAction: 'show',
                     operation: 'none',
+                    performanceCue: null,
+                },
+                {
+                    id: 'day3_avatar_tools',
+                    selector: '#react-chat-window-root .composer-bottom-tools',
+                    text: 'Avatar 互动工具会展示棒棒糖、猫爪和小锤子等道具，但不会自动消耗道具。',
+                    voiceKey: 'avatar_floating_day3_avatar_tools',
+                    cursorAction: 'show',
+                    operation: 'none',
+                    keepPanelsOpen: true,
+                    performanceCue: null,
+                },
+                {
+                    id: 'day3_galgame_games',
+                    selector: '#react-chat-window-root .composer-bottom-tools',
+                    text: 'Galgame 和小游戏只介绍入口，小游戏邀请必须等待真实 choicePrompt 或有 handler 的按钮。',
+                    voiceKey: 'avatar_floating_day3_galgame_games',
+                    cursorAction: 'show',
+                    operation: 'none',
+                    keepPanelsOpen: true,
                     performanceCue: null,
                 },
                 {
@@ -99,20 +90,39 @@
             title: '第 4 天：相处距离、主动陪伴与模型行为',
             steps: [
                 {
-                    id: 'day4_settings_entry',
+                    id: 'day4_intro_companion',
+                    selector: '#home-avatar-floating-guide-player',
+                    text: '第四天先建立“相处距离”的主题，再进入设置类入口。',
+                    voiceKey: 'avatar_floating_day4_intro',
+                    cursorAction: 'wobble',
+                    operation: 'none',
+                    performanceCue: null,
+                },
+                {
+                    id: 'day4_chat_settings',
                     selector: '#${prefix}-btn-settings',
-                    text: '第四天讲相处方式：对话节奏、动画表现、锁定、离开/回来和主动陪伴距离。',
-                    voiceKey: 'avatar_floating_day4_settings_entry',
+                    text: '设置弹窗会在主线 Director 的准备阶段打开；兜底路径先点设置按钮，再尝试高亮对话节奏相关入口。',
+                    voiceKey: 'avatar_floating_day4_chat_settings',
                     cursorAction: 'click',
                     operation: 'safe-click',
                     keepPanelsOpen: true,
                     performanceCue: null,
                 },
                 {
+                    id: 'day4_animation_tracking',
+                    selector: '#${prefix}-popup-settings',
+                    text: '动画设置会说明画质、帧率、鼠标跟踪和悬停淡化等表现选项，不保存临时改动。',
+                    voiceKey: 'avatar_floating_day4_animation_tracking',
+                    cursorAction: 'show',
+                    operation: 'none',
+                    keepPanelsOpen: true,
+                    performanceCue: null,
+                },
+                {
                     id: 'day4_lock_interaction',
                     selector: '#${prefix}-lock-icon',
-                    text: '小锁会控制模型交互。需要避免误触或想固定她的位置时，可以用它。',
-                    voiceKey: 'avatar_floating_day4_lock_interaction',
+                    text: '',
+                    voiceKey: '',
                     cursorAction: 'show',
                     operation: 'none',
                     performanceCue: null,
@@ -120,16 +130,26 @@
                 {
                     id: 'day4_goodbye_return',
                     selector: '#${prefix}-btn-goodbye',
-                    text: '想安静一会儿时，可以请她先回小猫窝；需要她时，再点返回按钮。',
-                    voiceKey: 'avatar_floating_day4_goodbye_return',
+                    text: '',
+                    voiceKey: '',
                     cursorAction: 'show',
                     operation: 'none',
                     performanceCue: null,
                 },
                 {
+                    id: 'day4_privacy_mode',
+                    selector: '#${prefix}-toggle-proactive-vision',
+                    text: '隐私模式开启表示关闭主动视觉感知，关闭隐私模式才允许按间隔主动看屏幕。',
+                    voiceKey: 'avatar_floating_day4_privacy_mode',
+                    cursorAction: 'show',
+                    operation: 'none',
+                    keepPanelsOpen: true,
+                    performanceCue: null,
+                },
+                {
                     id: 'day4_wrap',
                     selector: '#home-avatar-floating-guide-player',
-                    text: '四天的教程到这里收尾。之后这些按钮都在模型旁边，想用的时候再叫她就好。',
+                    text: '第四天收尾前会恢复临时设置状态，播放花瓣转场后把界面还给用户。',
                     voiceKey: 'avatar_floating_day4_wrap',
                     cursorAction: 'wobble',
                     operation: 'cleanup',
@@ -143,11 +163,21 @@
                 {
                     id: 'day5_character_settings',
                     selector: '#${prefix}-btn-settings',
-                    text: '第五天会强接管设置入口，展示角色设置、模型管理、声音克隆与 API 等长期入口。',
+                    text: '第五天的主线 Director 会预打开角色设置；兜底路径先点设置按钮，再展示模型、声音与 API 等长期入口。',
                     voiceKey: 'avatar_floating_day5_character_settings',
                     cursorAction: 'click',
                     operation: 'safe-click',
                     keepPanelsOpen: true,
+                    performanceCue: null,
+                },
+                {
+                    id: 'day5_character_panic',
+                    selector: '[data-neko-sidepanel-type="character-settings"]',
+                    text: '角色替换反应继续高亮角色设置侧边栏，播放完后清除高光并收起侧边栏，不阻止用户之后真实进入模型或角色管理。',
+                    voiceKey: 'avatar_floating_day5_character_panic',
+                    cursorAction: 'wobble',
+                    operation: 'none',
+                    keepPanelsOpen: false,
                     performanceCue: null,
                 },
                 {
@@ -175,7 +205,7 @@
             title: '第 6 天：Agent、任务 HUD 与能力节奏',
             steps: [
                 {
-                    id: 'day6_agent_entry',
+                    id: 'day6_intro_agent',
                     selector: '#${prefix}-btn-agent',
                     text: '第六天会强接管猫爪入口，展示状态、权限、用户插件和任务 HUD。',
                     voiceKey: 'avatar_floating_day6_intro',
@@ -185,7 +215,27 @@
                     performanceCue: null,
                 },
                 {
-                    id: 'day6_task_hud',
+                    id: 'day6_agent_status_master',
+                    selector: '#${prefix}-toggle-agent-master',
+                    text: '',
+                    voiceKey: '',
+                    cursorAction: 'show',
+                    operation: 'none',
+                    keepPanelsOpen: true,
+                    performanceCue: null,
+                },
+                {
+                    id: 'day6_plugin_side_panel',
+                    selector: '#${prefix}-toggle-agent-user-plugin',
+                    text: '用户插件入口可以打开管理面板，但不自动启用具体插件。',
+                    voiceKey: 'avatar_floating_day6_plugin_side_panel',
+                    cursorAction: 'show',
+                    operation: 'none',
+                    keepPanelsOpen: true,
+                    performanceCue: null,
+                },
+                {
+                    id: 'day6_agent_task_hud',
                     selector: '#agent-task-hud',
                     text: '任务 HUD 会展示运行、排队、折叠和终止入口，不创建假的后台任务。',
                     voiceKey: 'avatar_floating_day6_task_hud',
@@ -209,12 +259,31 @@
             steps: [
                 {
                     id: 'day7_memory_review',
-                    selector: '#${prefix}-menu-memory',
-                    text: '第七天会强接管记忆与存储入口，回顾七日教程并强调用户可编辑、可清理。',
+                    selector: '#${prefix}-btn-settings',
+                    text: '第七天会从设置菜单高亮记忆入口；兜底路径先打开设置，不展示敏感记忆内容。',
                     voiceKey: 'avatar_floating_day7_memory_review',
-                    cursorAction: 'show',
+                    cursorAction: 'click',
+                    operation: 'safe-click',
+                    keepPanelsOpen: true,
+                    performanceCue: null,
+                },
+                {
+                    id: 'day7_memory_control',
+                    selector: '#${prefix}-menu-memory',
+                    text: '记忆整理、保存、强力记忆和清理只在台词层说明，不自动点击高风险操作。',
+                    voiceKey: 'avatar_floating_day7_memory_control',
+                    cursorAction: 'wobble',
                     operation: 'none',
                     keepPanelsOpen: true,
+                    performanceCue: null,
+                },
+                {
+                    id: 'day7_storage_entry',
+                    selector: '#home-avatar-floating-guide-player',
+                    text: '存储阶段只说明长期存放概念，不高亮存储位置或云存档入口。',
+                    voiceKey: 'avatar_floating_day7_storage_entry',
+                    cursorAction: 'wobble',
+                    operation: 'none',
                     performanceCue: null,
                 },
                 {
@@ -566,6 +635,27 @@
         };
     }
 
+    function getChatInputCenter() {
+        const selectors = [
+            '#react-chat-window-root .composer-input',
+            '#react-chat-window-root .composer-input-shell',
+            '#react-chat-window-root .composer-panel',
+            '#text-input-area',
+        ];
+        for (const selector of selectors) {
+            const element = document.querySelector(selector);
+            if (!element || typeof element.getBoundingClientRect !== 'function') continue;
+            const rect = element.getBoundingClientRect();
+            if (rect && rect.width > 0 && rect.height > 0) {
+                return {
+                    x: rect.left + rect.width / 2,
+                    y: rect.top + rect.height / 2,
+                };
+            }
+        }
+        return null;
+    }
+
     function safeClickTarget(target) {
         if (!target || typeof target.click !== 'function') return false;
         target.click();
@@ -591,6 +681,9 @@
     }
 
     function isHomeChatExternalized() {
+        if (window.__NEKO_MULTI_WINDOW__ === true) {
+            return true;
+        }
         const overlay = document.getElementById('react-chat-window-overlay');
         return !!(overlay && overlay.style.display === 'none');
     }
@@ -624,6 +717,7 @@
         const message = buildGuideChatMessage(step, day);
 
         if (isHomeChatExternalized()) {
+            let posted = false;
             const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
             if (channel && typeof channel.postMessage === 'function') {
                 try {
@@ -632,10 +726,30 @@
                         message,
                         timestamp: message.createdAt,
                     });
-                    return message;
+                    posted = true;
                 } catch (error) {
                     console.warn('[AvatarFloatingGuideReset] 转发教程文本到外置聊天窗失败:', error);
                 }
+            }
+            if (window.nekoTutorialOverlay && typeof window.nekoTutorialOverlay.relayToChat === 'function') {
+                try {
+                    let tutorialRunId = '';
+                    try {
+                        tutorialRunId = window.localStorage.getItem('yuiGuidePcOverlayRunId') || '';
+                    } catch (_) {}
+                    window.nekoTutorialOverlay.relayToChat({
+                        action: 'yui_guide_append_chat_message',
+                        message,
+                        tutorialRunId,
+                        timestamp: message.createdAt,
+                    });
+                    posted = true;
+                } catch (error) {
+                    console.warn('[AvatarFloatingGuideReset] 原生转发教程文本到外置聊天窗失败:', error);
+                }
+            }
+            if (posted) {
+                return message;
             }
         }
 
@@ -1065,7 +1179,6 @@
                     return;
                 }
                 interruptController.playLightResistance(point.x, point.y, {
-                    suppressCursorReaction: false,
                     suppressCursorReveal: true,
                 });
             };
@@ -1159,16 +1272,42 @@
 
         async function moveGhostCursorTo(target, action, token) {
             if (!cursorEl || !target) return;
+            if (action === 'none') {
+                hideGhostCursor();
+                return;
+            }
+            if (action === 'input-origin') {
+                const origin = getChatInputCenter();
+                if (origin) {
+                    cursorEl.classList.remove('is-clicking', 'is-wobbling');
+                    cursorEl.style.left = `${Math.round(origin.x)}px`;
+                    cursorEl.style.top = `${Math.round(origin.y)}px`;
+                    cursorEl.classList.add('is-visible');
+                } else {
+                    hideGhostCursor();
+                }
+                return;
+            }
+            if (!cursorEl.classList.contains('is-visible')) {
+                const origin = getChatInputCenter();
+                if (origin) {
+                    cursorEl.style.left = `${Math.round(origin.x)}px`;
+                    cursorEl.style.top = `${Math.round(origin.y)}px`;
+                    cursorEl.classList.add('is-visible');
+                    await sleep(120);
+                    if (destroyed || token !== stepRunToken) return;
+                }
+            }
             const center = getElementCenter(target);
             await moveGhostCursorToPoint(center.x, center.y, action, token);
         }
 
         async function moveGhostCursorToPoint(x, y, action = 'show', token = stepRunToken) {
             if (!cursorEl) return;
-            cursorEl.classList.add('is-visible');
             cursorEl.classList.remove('is-clicking', 'is-wobbling');
             cursorEl.style.left = `${Math.round(x)}px`;
             cursorEl.style.top = `${Math.round(y)}px`;
+            cursorEl.classList.add('is-visible');
             await sleep(520);
             if (destroyed || token !== stepRunToken) return;
             if (action === 'click') {

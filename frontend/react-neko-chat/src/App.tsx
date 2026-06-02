@@ -610,6 +610,7 @@ export default function App({
   onGalgameOptionSelect,
   choicePrompt = null,
   onChoiceSelect,
+  avatarToolMenuOpenRequest = null,
   rollbackDraft,
   _rollbackKey,
   _toolCursorResetKey,
@@ -671,6 +672,7 @@ export default function App({
   const submittingRef = useRef(false);
   const lastRollbackKeyRef = useRef('');
   const lastToolCursorResetKeyRef = useRef('');
+  const lastAvatarToolMenuOpenRequestIdRef = useRef('');
   const canSubmit = !composerDisabled && (draft.trim().length > 0 || composerAttachments.length > 0);
   const clearActiveCursorToolSelection = useCallback(() => {
     clearGlobalToolCursorState();
@@ -1082,6 +1084,19 @@ export default function App({
       document.removeEventListener('keydown', closeMenuOnEscape);
     };
   }, [toolMenuOpen]);
+
+  useEffect(() => {
+    const request = avatarToolMenuOpenRequest;
+    if (!request || !request.id || request.id === lastAvatarToolMenuOpenRequestIdRef.current) return;
+    const requestId = request.id;
+    lastAvatarToolMenuOpenRequestIdRef.current = requestId;
+    if (request.open) {
+      setActiveCursorToolId(null);
+      setToolMenuOpen(true);
+      return;
+    }
+    setToolMenuOpen(false);
+  }, [avatarToolMenuOpenRequest]);
 
   // 镜像 composerLayout 到 ref，给 ResizeObserver 闭包读
   useEffect(() => {

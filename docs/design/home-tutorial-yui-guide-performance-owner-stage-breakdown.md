@@ -221,8 +221,9 @@ window.createYuiGuideDirector = function createYuiGuideDirector(options) {}
 
 轻微移动只触发被动回弹，不计入次数。有效打断计数跨主线场景累计：
 
-- 第一次和第二次有效打断：暂停当前旁白，追加抵抗台词，短暂显示真实鼠标，Ghost Cursor 拉扯回弹，然后恢复旁白。
-- 第三次有效打断：进入 `abortAsAngryExit('pointer_interrupt')`，播放生气退出台词和 `z3` 表情，之后走统一终止。
+- 被动回弹：位移和加速度足够明显、但未达到完整有效打断条件时，只让 Ghost Cursor 朝真实鼠标移动方向的反方向回弹，不暂停当前旁白。
+- 第一次和第二次有效打断：暂停当前旁白，追加抵抗台词，短暂显示真实鼠标，Ghost Cursor 朝真实鼠标移动方向的反方向拉扯回弹，然后恢复旁白。
+- 第三次有效打断：进入 `abortAsAngryExit('pointer_interrupt')`，立即应用 `angry` emotion，停止仍在播放的教程动作 session，播放生气退出自定义动作和台词，之后走统一终止。
 
 插件 Dashboard 页也做本地 pointer/touch/wheel/click 拦截和打断采样。它通过 `interrupt-request` 通知首页，由首页播放抵抗或生气退出，再通过 `interrupt-ack` 回执。
 
@@ -246,8 +247,8 @@ window.createYuiGuideDirector = function createYuiGuideDirector(options) {}
 - `takeover_plugin_preview_dashboard`：`syhs`
 - `takeover_settings_peek_intro`：`xxy`
 - `takeover_settings_peek_detail`：`sbx`
-- `interrupt_resist_light_1` / `interrupt_resist_light_3`：随机 `z2` 或 `z3`
-- `interrupt_angry_exit`：`z3`
+- `interrupt_resist_light_1` / `interrupt_resist_light_3`：使用 `angry` 或 `surprised` 轻微抵抗情绪/动作。
+- `interrupt_angry_exit`：使用 `angry` emotion 和生气退出自定义动作；Live2D 动作不可用时仍保留 `angry` emotion 兜底。
 
 新增七日教程普通台词动作层：
 

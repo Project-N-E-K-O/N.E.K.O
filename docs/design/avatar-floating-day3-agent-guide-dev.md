@@ -1,212 +1,124 @@
 # Day 3 互动、娱乐与摸得到的陪伴教程开发文档
 
-本文把 `avatar-floating-guide-feature-tree.md` 中 Day 3 的“互动、娱乐与摸得到的陪伴”落到当前聊天窗与悬浮窗能力上。
+本文严格对齐 `avatar-floating-guide-feature-tree.md` 中 Day 3 的主线内容，并以 `avatar-floating-7day-complete-guide-dev.md` 作为逐句导演、生命周期和验收基准。文件名仍保留 `avatar-floating-day3-agent-guide-dev.md`，但 Day 3 不再讲 Agent；Agent、任务 HUD 和插件管理主线属于 Day 6。
 
-注意：文件名仍是 `avatar-floating-day3-agent-guide-dev.md`，但新版总稿已经把 Agent、猫爪与任务 HUD 后移到 Day 6。本文按新版 Day 3 更新；后续如整理文件名，可另行把旧 Agent 设计迁移到 Day 6 文档。
+Day 3 每日开场小剧场只包含四段：聊天窗工具区、Avatar 互动工具、Galgame 与小游戏、收尾。点歌台、字幕翻译、备忘/学习陪伴只属于剧场后聊天窗支线，不扩写进 Day 3 主线。
 
 相关文档：
 
 - `docs/design/avatar-floating-guide-feature-tree.md`
-- `docs/design/avatar-floating-panel-functions.md`
+- `docs/design/avatar-floating-7day-complete-guide-dev.md`
+- `docs/design/avatar-floating-pc-global-overlay-migration-plan.md`
+- `docs/design/avatar-floating-post-theater-chat-branches.md`
 - `docs/design/home-yui-guide-lifecycle-modularization.md`
-- `docs/design/home-yui-guide-text-highlight-cursor-flow.md`
+
+## 完整指南对齐基线
+
+Day 3 的聊天窗工具、Avatar 工具、Galgame 和收尾必须同时满足完整指南的通用约束：
+
+1. 首句只高亮 composer 区域，外置聊天窗使用 kind `input`；不高亮整个聊天窗，也不逐个扫左侧/右侧工具栏。
+2. Avatar 工具阶段只持续高亮真实 Avatar 工具按钮，菜单前三个道具只展示入口，不再高亮、不让 Ghost Cursor 依次划过，也不触发真实消耗。
+3. Galgame 阶段只高亮 Galgame 按钮；若真实出现 `mini_game_invite` 三个选项，只允许圆形高亮真实选项，不使用猫耳、猫爪或第二层外框。
+4. Avatar 工具按钮与 Galgame 按钮都使用圆形图片高亮，不能与 composer 大区域高光同时存在。
+5. 收尾前必须关闭工具菜单和“更多”菜单，最终句约 70% cue 同步清理内置/外置高光、工具区 spotlight 和 Ghost Cursor。
 
 ## 目标体验
 
-Day 3 使用具身感与玩耍回路，让用户感觉悠怡不是一个只会回复文本的窗口，而是能被互动、能一起娱乐、能在轻任务里陪伴的人格化存在。用户需要知道：
+Day 3 使用具身感与玩耍回路，让用户感觉悠怡不是只会回复文本的窗口，而是能被互动、能一起娱乐、能在轻任务里陪伴的人格化存在。
 
-1. 聊天窗工具区不只用于打字，里面有娱乐和辅助入口。
-2. Avatar 互动工具可以摸头、喂棒棒糖、使用猫爪或锤子等道具。
-3. Galgame 模式能把对话变成互动剧情，小游戏邀请会以聊天窗选项出现。
-4. 点歌台、字幕翻译、备忘/学习陪伴等能力适合作为剧场后支线，不进入 Day 3 主线强接管。
+用户当天只需要形成四个认知：
 
-## 当前实现边界
+1. 聊天窗工具区不只用于打字。
+2. Avatar 互动工具里有棒棒糖、猫爪、锤子等互动道具。
+3. Galgame 模式是专属互动剧情入口，小游戏邀请会以真实聊天窗选项出现。
+4. 今日教程结束后，用户可以自己挑一个玩法试试。
 
-总稿与当前代码已明确：Day 3 主线是正式强接管 round，接管范围聚焦在聊天窗工具区、Avatar 互动工具和 Galgame 入口；剧场后玩法选择、点歌台、字幕翻译、备忘/学习陪伴才走聊天窗低打扰支线。
+主线不要讲 Agent，不要打开插件管理，不要讲点歌台和字幕翻译的完整流程，不要伪造小游戏局。
 
-因此 Day 3 已不再复用旧 Agent round，`AVATAR_FLOATING_GUIDE_ROUNDS[3]` 现在应保持互动娱乐主题：
+## 代码锚点
 
-- 主线：强接管聊天窗工具区、Avatar 互动工具、Galgame 按钮，收尾播放花瓣转场。
-- 支线：用户未体验 Avatar 工具、点歌台或 Galgame 时，再用聊天窗 action buttons 低打扰邀请。
-- 禁止：不要让 Day 3 同时讲 Agent/HUD；Agent 相关内容只在 Day 6 出现。
-
-## 相关代码入口
-
-聊天窗与工具区：
-
+- `static/yui-guide-day3-interaction-guide.js`
+- `window.YuiGuideDailyGuides[3].round`
+- `YuiGuideDirector.playAvatarFloatingRound(3)`
 - React 聊天窗 `toolIconItems`
-- 左侧常驻工具：导入图片、截图。
-- 右侧工具：Galgame、字幕翻译、点歌、Emoji/Avatar 互动工具。
-- 窄宽度折叠入口：`.composer-overflow-btn` 与 `.composer-overflow-popover`。
-- `jukeboxButtonLabel`
-- `translateButtonLabel`
+- React 聊天窗 `setAvatarToolMenuOpen(open, reason)` host API
 - `galgameModeEnabled`
 - `choicePrompt.source === 'mini_game_invite'`
-- 插件管理 UI
+- 聊天窗工具区与 Avatar 互动工具按钮
+- 外置聊天窗 `yui_guide_set_chat_spotlight`、`yui_guide_set_chat_cursor`、`yui_guide_set_avatar_tool_menu_open`
+- 外置聊天窗高亮使用 `#yui-guide-chat-spotlight` 内部 chrome；如果已有 chrome，运行时不得再给外层容器叠加第二圈蓝色 border/box-shadow。
 
-Avatar 互动：
+点歌台、字幕翻译、备忘/学习陪伴只作为功能清单背景或剧场后支线，不作为 Day 3 主线 scene。
 
-- Avatar 互动工具入口。
-- 棒棒糖、猫爪、锤子等道具。
-- 现有工具音效与 happy/neutral/angry 反应气泡。
+## PC 全局透明 Overlay 迁移约束
 
-小游戏与剧情：
+Day 3 迁移到 N.E.K.O.-PC 全局透明 overlay 时，只替换视觉演出层；聊天窗工具区、Avatar 互动工具、Galgame 与小游戏、收尾四段主线不新增、不删减。网页端继续使用当前 DOM overlay。
 
-- Galgame 模式按钮。
-- 小游戏邀请 `choicePrompt`。
-- 聊天窗 `message.actions`。
+PC 端必须由全局 overlay 绘制 composer 区域、Avatar 互动工具按钮、Galgame 按钮和收尾聊天窗高光，避免独立聊天窗与 Pet 窗口各画一套造成双高亮。工具栏按钮统一使用圆形高光，不能显示左右猫耳或猫爪装饰；Ghost Cursor 从 composer 区域平滑移动到 Avatar 互动工具按钮，再以 1200ms 或当前文档要求的慢速节奏平滑移动到 Galgame 按钮。Avatar 互动工具菜单打开后只展示道具入口，不把 Ghost Cursor 移动到三个道具上。收尾台词期间重新高亮聊天窗，并在花瓣 cue 同步清理全局 overlay 的 cursor 与高光。
 
-## 通用生命周期复用
+## 情绪动作
 
-Day 3 主线是强接管 round，必须复用 `home-yui-guide-lifecycle-modularization.md` 的通用语义；剧场后聊天窗支线不启用 taking-over。
+| 段落 | 情绪分类 |
+| --- | --- |
+| 聊天窗工具区：“来啦来啦……” | `happy` |
+| Avatar 互动工具：“在这个小按钮里……” | `happy` |
+| Galgame 与小游戏：“快点开这个……” | `surprised` |
+| 收尾：“今天带你认识……” | `happy` |
 
-| 通用能力 | Day 3 使用方式 | 禁止事项 |
-| --- | --- | --- |
-| `TutorialInteractionTakeover` | 主线 round 启动后由 Director 调用 `setTutorialTakingOver(true/false)`；聊天窗支线默认不启用。 | 不为普通聊天窗支线注册全局鼠标禁用。 |
-| `TutorialHighlightController` | 聊天窗工具区、Avatar 互动工具、Galgame 按钮、action buttons 的 spotlight 都应走统一 controller 或等价页面 runtime。 | 不手写一次性高亮 DOM，不在支线关闭后残留 spotlight。 |
-| `TutorialInterruptController` | 主线接管期间启用轻微抵抗和 angry exit；聊天窗支线默认没有打断分支。 | 不把用户点击“以后再玩”当 angry exit。 |
-| `TutorialSkipController` | 主线由 Manager 提供 skip；普通聊天窗支线只提供“以后再玩”。 | 不在聊天消息里做第二套 skip teardown。 |
-| `TutorialAvatarReloadController` | 主线演出由 Manager 临时切换到 `yui-origin` 并在完成/skip/destroy 后恢复。 | 不在工具菜单展示里直接 reload 模型。 |
+随机动作只服务台词，不替代道具自身反馈，也不得触发真实道具互动。
 
-如果 Avatar 工具或 Galgame 后续拆到独立页面 runtime，该 runtime 必须遵守同等语义：skip/destroy/angry exit 触发瞬间清掉本地 highlighter 和 Ghost Cursor，结果回传 Manager 统一入口，不能伪造 done。
+## 主线阶段
 
-## 模型动作与情绪随机池
+当前 `static/yui-guide-day3-interaction-guide.js` 把四个产品阶段拆成 8 个 scene：
 
-Day 3 主线作为正式新手教程轮次演出，由 Manager 临时切换到 `yui-origin` Live2D。普通台词从内置动作池随机播放：`happy` 12 个、`sad` 6 个、`angry` 7 个、`neutral` 7 个、`surprised` 5 个、`Idle` 3 个。
-
-Avatar 互动工具自身的点击反馈、道具音效、happy/neutral/angry 反应气泡属于交互反馈，不被随机台词动作替代；随机动作只服务旁白台词。
-
-| 台词段落 | 情绪分类 | 随机动作规则 |
-| --- | --- | --- |
-| 聊天窗工具区：“来啦来啦……” | `happy` | 从 happy 池随机，表现兴奋邀请。 |
-| Avatar 互动工具：“在这个小按钮里……” | `happy` | 从 happy 池随机；不自动触发道具互动。 |
-| Galgame 与小游戏：“快点开这个……” | `surprised` | 从 surprised 池随机，表现互动冒险期待。 |
-| 收尾：“今天带你认识……” | `happy` | 从 happy 池随机。 |
-| 生活任务支线 | `neutral` | 从 neutral 或 Idle 池随机，保持低打扰。 |
-| 互动选择支线 | `happy` | 从 happy 池随机。 |
-
-## 剧本阶段与实现建议
-
-| 新剧本阶段 | 建议实现方式 | 处理建议 |
-| --- | --- | --- |
-| 聊天窗工具区 | 强接管 scene | 高亮整个 composer 工具区，镜头扫过左侧导入/截图和右侧玩法按钮，但不逐个解释。 |
-| Avatar 互动工具 | 工具按钮 spotlight + 可选展开 | 高亮 Avatar 互动工具按钮；窄布局下先打开“更多”菜单，再展示道具菜单；不强制用户对模型互动。 |
-| Galgame 与小游戏 | Galgame 按钮 spotlight | 高亮 Galgame 模式按钮；窄布局下先打开“更多”菜单；说明小游戏邀请会以聊天窗选项出现，不强行触发一局。 |
-| 收尾 | 强接管清理 scene | 鼓励用户挑一个玩法试试，播放每日花瓣转场后归还普通聊天状态。 |
-| 生活任务插件支线 | 条件化聊天窗支线 | 只在用户近期表达时间、待办、学习、复习或生活安排意图后触发。 |
-| 互动选择支线 | 条件化聊天窗支线 | 用户未使用过 Avatar 互动工具、点歌台或 Galgame 模式时触发。 |
-
-## 动作时序
-
-Day 3 新版总稿是聊天窗和工具区的强接管 round，不复用旧 Agent round。沿用悬浮窗 scene 的节奏：台词先进入聊天窗并设置 spotlight；约 220ms 后 Ghost Cursor 移动；只在需要展示菜单时执行真实展开；台词结束后保留不超过 420ms，再清理或切下一段。
-
-| 台词段落 | 高亮时序 | Ghost Cursor 时序 | 真实操作/清理 |
+| scene | target | cursor/operation | 说明 |
 | --- | --- | --- | --- |
-| 聊天窗工具区：“来啦来啦！今天我们要好好聊聊这个最显眼的【对话框】哦……” | persistent 放到聊天窗或外置聊天窗；primary 放到聊天窗工具区容器，不遮挡输入框。 | 台词开始约 220ms 后 cursor 从默认原点/上一目标移动到工具区中心并 wobble。 | 不打开大型弹窗；只建立“这里有工具”的空间感。导入图片、截图、翻译、点歌只作为背景能力，主线不展开。 |
-| Avatar 互动工具：“在这个小按钮里，有许多可以和人家互动的小道具呢……” | primary 切到 Avatar 互动工具按钮；如果按钮被折叠，先打开 `.composer-overflow-btn`，再定位 `.composer-emoji-btn`；展开道具菜单后，persistent 可落在菜单容器，secondary 可落在棒棒糖。 | Cursor 先移到“更多”按钮并 click（仅窄布局），再移到 Avatar 互动工具按钮并 click；随后移动到棒棒糖/猫爪/锤子区域做短 tour。 | 不自动消耗道具，不对模型执行真实互动；台词结束或收尾时收起道具菜单和更多菜单。 |
-| Galgame 与小游戏：“快点开这个【Galgame模式】……” | primary 切到 Galgame 模式按钮；若按钮被折叠，先打开更多菜单；secondary 可落在小游戏邀请区域占位或聊天窗选项区域。 | Cursor 移到 Galgame 按钮并 wobble；不强制 click，不切换用户设置。 | 小游戏只说明会用 `choicePrompt.source === 'mini_game_invite'` 出现；不伪造小游戏 session。 |
-| 收尾：“今天带你认识的这些功能……” | primary 回到聊天窗；可短暂保留工具区 secondary；台词约 70% 时触发每日花瓣转场并清掉所有 spotlight。 | Cursor 回到聊天窗输入区附近并 wobble；花瓣 cue 触发时隐藏 cursor。 | 清理 spotlight、道具菜单、更多菜单和 cursor；转场结束后恢复普通聊天状态并写入 Day 3 完成态。 |
-| 生活任务支线：“如果你愿意，我不只会陪你玩……” | 不启用 takeover；聊天消息进入普通消息流；可高亮聊天输入或低调显示 action buttons。 | 默认不显示 Ghost Cursor；若用户选择“现在就试试”，再移动到对应备忘/学习入口。 | 只在用户表达待办/学习意图后触发；不打开插件大面板。 |
-| 互动选择支线：“今天要不要选一个轻松一点的玩法……” | 聊天窗消息带 `message.actions`；按钮区高亮即可。 | 默认不显示 Ghost Cursor；用户点“喂点甜的/听首歌”后再分别移动到 Avatar 工具/点歌台入口。 | 用户点“以后再玩”后当天不重复提醒。 |
+| `day3_chat_tools` | 首句由 Director 特判为 composer 区域 | intro wobble | 配置文件不写 target，Director 在首个 scene 用 `.composer-panel`/输入区作为高亮。 |
+| `day3_avatar_tools` | `chat-avatar-tools` | `wobble` | 先指认 Avatar 互动工具按钮，不打开菜单。 |
+| `day3_avatar_tools_props` | `chat-avatar-tools` | `click` + `open-avatar-tool-menu`，`cursorMoveDurationMs: 1480` | 在“摸摸我的头/棒棒糖/小锤子”这句播放时，Ghost Cursor 模拟点击并通过聊天窗 host API 打开 Avatar 工具菜单。 |
+| `day3_avatar_tools_more` | `chat-avatar-tools` | `wobble` | 继续保留工具按钮高亮。 |
+| `day3_galgame_games` | `chat-galgame` | `move`，`cleanupBefore: true` | 进入前清理 Avatar 工具菜单与高亮。 |
+| `day3_galgame_choices` | `chat-galgame` | `wobble` | 不强制开启 Galgame。 |
+| `day3_wrap` | `chat-window` | `wobble` + `cleanup` | 收尾第一句，清理临时菜单。 |
+| `day3_wrap_ready` | `chat-window` | `wobble` + `petalTransition` | 最终花瓣 cue 与完成态。 |
 
-## 需要修改的内容
+### 阶段 1：聊天窗工具区
 
-### 1. Day 3 主题迁移
+- 动作：台词进入聊天窗后，不高亮整个聊天窗；primary 高亮聊天输入区加工具栏所在的 composer 区域。外置聊天窗模式使用 `setExternalizedChatSpotlight('input')` 和 `setExternalizedChatCursor('input')`，让独立聊天窗的输入区/工具栏区域显示引导。Ghost Cursor 在该区域中心 wobble，不打开大型弹窗，不逐个解释点歌台、翻译或图片工具。
+- 台词：“来啦来啦！今天我们要好好聊聊这个最显眼的【对话框】哦！你可别以为它只能用来敲字打字，里面其实还藏着超级多好玩的小惊喜呢！快点跟着我一起点开，看看今天能挖出什么好玩的宝贝吧，”
 
-当前代码已将 `AVATAR_FLOATING_GUIDE_ROUNDS[3]` 改造为互动娱乐 round，并把旧 Agent round 迁到 Day 6。后续维护要保持以下约束：
+### 阶段 2：Avatar 互动工具
 
-1. Day 3 不自动播放 Agent/HUD 主题。
-2. Day 3 完成态只代表互动娱乐主线完成。
-3. Day 6 才写入 Agent 主题完成态。
+- 动作：上一句播放完后，action spotlight 平滑切到 Avatar 互动工具按钮，工具栏按钮统一使用 `static/assets/tutorial/highlight/circle-highlight.png` 圆形图片高亮。第一句只指认按钮并 wobble，不打开菜单。第二句“你可以随时来摸摸我的头……”播放时，Ghost Cursor 用约 1480ms 的慢速移动到 Avatar 互动工具按钮并播放 click 效果；真实展开道具菜单时统一调用 `reactChatWindowHost.setAvatarToolMenuOpen(true, 'avatar-floating-guide-open-avatar-tool-menu')` 或外置聊天窗 BroadcastChannel API，不通过放开鼠标禁用来点击 DOM。菜单出现后，Avatar 互动工具按钮必须持续保持主高亮直到本阶段台词结束；不再高亮棒棒糖、猫爪、锤子三个现有道具，Ghost Cursor 不移动到三个道具上。外置聊天窗模式 spotlight 和 cursor 都保持在 `avatar-tools`。三个道具只展示入口，不自动消耗、不对模型触发真实互动；台词结束或进入下一阶段前收起临时菜单。
+- 台词拆分：
+  1. “在这个小按钮里，有许多可以和人家互动的小道具呢。”
+  2. “你可以随时来摸摸我的头，或者给我吃一根甜甜的棒棒糖。如果有时候我不小心做错事了，你也可以用小锤子敲敲我，不过……一定要轻轻的，不能太用力哦。”
+  3. “以后还会有更多有趣的道具加入进来，我会去提醒开发组猫猫快点做出来的，我们一起期待一下吧。”
 
-### 2. 文案
+### 阶段 3：Galgame 与小游戏
 
-总稿明确给出的主台词：
+- 动作：进入本段前先收起道具菜单，并清理 Avatar 互动工具按钮高亮。高亮 Galgame 模式按钮时只保留一个圆形图片高亮，工具栏按钮继续使用 `static/assets/tutorial/highlight/circle-highlight.png`，不显示左右猫耳、不叠加第二个圆形框；若按钮被折进“更多”菜单，只允许为了找到真实按钮而打开“更多”菜单。Ghost Cursor 从上一个位置平滑移动到 Galgame 按钮并 wobble，不强制点击、不改变用户设置。小游戏邀请只说明会以真实 `choicePrompt.source === 'mini_game_invite'` 或有 handler 的聊天窗选项出现，不伪造一局；若真实出现三个选项，只能对真实选项做圆形高亮，不能再叠 composer 大区或第二层外框。
+- 台词拆分：
+  1. “快点开这个【Galgame模式】！进去之后就像我们在进行一场专属的互动大冒险呢。”
+  2. “你选的每一个对话，都会带我们走向完全未知的惊喜故事，我都等不及啦，快来选一个你最心动的回答吧！”
 
-- 聊天窗工具区：“来啦来啦！今天我们要好好聊聊这个最显眼的【对话框】哦……”
-- Avatar 互动工具：“在这个小按钮里，有许多可以和人家互动的小道具呢……”
-- Galgame 与小游戏：“快点开这个【Galgame模式】……”
-- 收尾：“今天带你认识的这些功能，其实都是为了让我们在一起的时光变得更有趣呢……”
-- 生活任务支线：“如果你愿意，我不只会陪你玩，也可以陪你把小事记住……”
-- 互动选择支线：“今天要不要选一个轻松一点的玩法？不用学习新东西，就当陪我玩五分钟……”
+### 阶段 4：收尾
 
-如果新增 locale key，建议使用新命名，避免复用旧 Agent key：
+- 动作：收尾台词开始前先收起道具菜单和“更多”菜单并清理按钮/道具高亮；随后完全复用 Day 1 `takeover_return_control` 的收尾动作：收尾台词播放期间 primary 重新回到聊天窗，Ghost Cursor 移到聊天窗附近 wobble；外置聊天窗模式同步切回 `window` spotlight/cursor，不能保留按钮/道具高亮；台词约 70% 处触发与 Day 1 相同的花瓣转场 cue，触发瞬间同步隐藏 Ghost Cursor、清理内置/外置聊天窗高亮、工具区 spotlight、道具菜单和“更多”菜单；转场结束后恢复普通聊天状态并写入 Day 3 完成态。
+- 台词拆分：
+  1. “今天带你认识的这些功能，其实都是为了让我们在一起的时光变得更有趣呢。”
+  2. “不管是想摸摸我的头，还是想开启属于我们的故事，我都已经做好准备了。”
 
-- `tutorial.avatarFloating.day3.playToolsIntro`
-- `tutorial.avatarFloating.day3.avatarTools`
-- `tutorial.avatarFloating.day3.galgameMiniGame`
-- `tutorial.avatarFloating.day3.wrap`
-- `tutorial.avatarFloating.day3.lifeTaskBranch`
-- `tutorial.avatarFloating.day3.playChoiceBranch`
+## 剧场后聊天窗支线
 
-### 3. Avatar 互动工具
-
-实现目标：
-
-- 高亮平滑移动到 Avatar 互动工具按钮。
-- 如果聊天窗处于 compact 布局，先打开“更多”菜单，再高亮真实 Avatar 互动工具按钮；不要只高亮工具区容器。
-- 可以展示棒棒糖、猫爪、锤子等道具。
-- 不把锤子/猫爪描述成默认安抚手段，避免和冲突修复机制混淆。
-- 不强制消耗道具或触发实际互动，除非用户自己点击。
-
-### 4. Galgame 与小游戏
-
-实现目标：
-
-- 高亮 Galgame 模式按钮。
-- 如果 Galgame 按钮被折进“更多”菜单，先打开更多菜单再移动 Ghost Cursor。
-- 若当前已支持 `galgameModeEnabled`，只展示入口和状态，不强行切换用户设置。
-- 小游戏邀请必须使用真实 `choicePrompt.source === 'mini_game_invite'` 或聊天窗按钮支线。
-- 不伪造后端小游戏 session。
-
-### 5. 点歌台、字幕翻译和生活任务
-
-点歌台、字幕翻译、备忘/学习陪伴适合放在剧场后低打扰支线：
-
-- 点歌台可作为“听首歌”按钮 action。
-- 字幕翻译可在用户打开相关内容或表达看不懂时提示。
-- 生活任务支线只在用户近期表达明确时间、待办、学习、复习或生活安排意图后触发。
-
-### 6. 剧场后聊天窗支线
-
-互动选择支线：
-
-- 触发条件：用户未使用过 Avatar 互动工具、点歌台或 Galgame 模式。
-- 台词：“今天要不要选一个轻松一点的玩法？不用学习新东西，就当陪我玩五分钟。五分钟也算约会哦。”
-- 选项按钮：`喂点甜的 / 听首歌 / 以后再玩`。
-- 用户选择“以后再玩”后，当天不再重复提醒。
-
-生活任务插件支线：
-
-- 触发条件：用户近期表达过明确时间、待办、学习、复习或生活安排意图。
-- 台词：“如果你愿意，我不只会陪你玩，也可以陪你把小事记住。明天要做什么、今天要复习什么、等会儿别忘什么，都可以交给我轻轻拴一根小红绳。”
-- 不打开插件大面板；只发低打扰邀请。
-
-建议状态：
-
-- `avatarFloatingGuide.day3AvatarToolUsed`
-- `avatarFloatingGuide.day3JukeboxUsed`
-- `avatarFloatingGuide.day3GalgameUsed`
-- `avatarFloatingGuide.day3PlayBranchShownDate`
-- `avatarFloatingGuide.day3LifeTaskBranchShownDate`
-
-## 生命周期要求
-
-1. Day 3 主线必须启用强接管式 takeover，并由 Manager/Director 统一进入和退出。
-2. 所有 spotlight、按钮状态和临时展开菜单都必须通过通用 highlighter 或等价 runtime 在收尾、skip 或用户关闭时清理。
-3. 不应修改用户 Galgame、点歌台、翻译或互动工具配置，除非用户明确点击。
-4. 聊天窗支线必须尊重低打扰原则：用户忙碌、全屏、会议中、处于任务执行中或当天已拒绝时不触发。
-5. 所有支线按钮在接入前必须有 action handler；未完成 handler 时只能作为设计目标，不能在正式 UI 中发不可点击按钮。
-6. 主线正式 round 的 skip、临时切模、轻微打断和 angry exit 必须接入五个通用模块。
-7. Day 3 主线收尾必须播放每日花瓣转场；普通聊天窗支线不单独播放花瓣。
+Day 3 生活任务与互动选择支线已移入 [七日新手教程剧场后聊天窗支线设计](avatar-floating-post-theater-chat-branches.md)。Day 3 主线文档不再维护这些支线的触发条件、按钮或 handler。
 
 ## 验收清单
 
-1. Day 3 不再向用户讲旧 Agent/HUD 主题；Agent 相关内容留到 Day 6。
-2. 聊天窗工具区能被高亮，且不会遮挡输入。
-3. Avatar 互动工具按钮可被 spotlight 标出，道具菜单展示后能正确收起。
-4. Galgame 模式按钮可被高亮，不会强制切换用户设置。
-5. 小游戏邀请只使用真实 choicePrompt 或有 handler 的聊天按钮。
-6. 互动选择支线能按 Avatar 工具、点歌台、Galgame 使用状态分支，且当天只触发一次。
-7. 生活任务支线只在用户表达相关意图后触发，不打开插件大面板。
-8. Day 3 收尾花瓣转场正常播放，且工具菜单和高亮不会残留在转场层上。
+1. Day 3 主线不出现 Agent、HUD、插件管理教学。
+2. 主线只包含聊天窗工具区、Avatar 互动工具、Galgame 与小游戏、收尾。
+3. 第一句只高亮 composer 输入区/工具栏区域，不高亮整个聊天窗。
+4. Avatar 互动工具按钮和 Galgame 按钮都使用 `circle-highlight.png` 圆形图片高亮；圆形按钮不显示左右猫耳和猫爪装饰。同一按钮同一时刻只能出现一个圆形高亮，且必须从 scene 流程上避免创建第二套高亮，不采用创建后隐藏。
+5. Avatar 道具菜单通过聊天窗 host API 或外置聊天窗 BroadcastChannel 打开，展示棒棒糖、猫爪、锤子，但不高亮三个道具，也不让 Ghost Cursor 移动到三个道具上，不自动消耗或触发互动。
+6. Galgame 不被强制开启，小游戏不被伪造。
+7. 收尾动作与 Day 1 一致：收尾台词播放期间重新高亮聊天窗，约 70% 用同一套花瓣转场 cue 同步隐藏 Ghost Cursor 并清理内置/外置 spotlight、临时菜单和工具高亮。

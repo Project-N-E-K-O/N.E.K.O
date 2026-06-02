@@ -77,7 +77,8 @@
     const YUI_SETTINGS_PEEK_PANIC_WITH_CURSOR_LOOK_AT_CAPABILITIES = Object.freeze(['frame', 'params', 'expression']);
     const YUI_RETURN_CONTROL_CUE_WAVE_CAPABILITIES = Object.freeze(['params']);
     const YUI_PLUGIN_DASHBOARD_FRAME_CAPABILITIES = Object.freeze(['frame']);
-    const INTRO_VOICE_LOOK_AT_SMOOTHING = 0.2;
+    const INTRO_VOICE_LOOK_AT_POINT_SMOOTHING = 0.58;
+    const INTRO_VOICE_LOOK_AT_POSE_SMOOTHING = 0.72;
     const INTRO_VOICE_LOOK_AT_RELEASE_MS = 220;
     const INTRO_GREETING_HUG_BLEND_IN_MS = 460;
     const YUI_WAKEUP_PARAMS = Object.freeze({
@@ -4535,8 +4536,12 @@
             const currentNow = Number.isFinite(Number(now)) ? Number(now) : performance.now();
             const deltaMs = Math.max(0, currentNow - (this.lastTickAt || currentNow));
             this.lastTickAt = currentNow;
-            const blendWeight = 1 - Math.pow(
-                1 - INTRO_VOICE_LOOK_AT_SMOOTHING,
+            const pointBlendWeight = 1 - Math.pow(
+                1 - INTRO_VOICE_LOOK_AT_POINT_SMOOTHING,
+                Math.max(1, deltaMs / 16.67)
+            );
+            const poseBlendWeight = 1 - Math.pow(
+                1 - INTRO_VOICE_LOOK_AT_POSE_SMOOTHING,
                 Math.max(1, deltaMs / 16.67)
             );
             const point = this.normalizePoint(this.getPoint());
@@ -4554,23 +4559,24 @@
                     };
                 }
                 this.smoothedPoint = {
-                    x: lerp(this.smoothedPoint.x, point.x, blendWeight),
-                    y: lerp(this.smoothedPoint.y, point.y, blendWeight)
+                    x: lerp(this.smoothedPoint.x, point.x, pointBlendWeight),
+                    y: lerp(this.smoothedPoint.y, point.y, pointBlendWeight)
                 };
             } else if (this.smoothedPoint) {
                 this.smoothedPoint = {
-                    x: lerp(this.smoothedPoint.x, this.getLookAtOrigin().x, blendWeight * 0.42),
-                    y: lerp(this.smoothedPoint.y, this.getLookAtOrigin().y, blendWeight * 0.42)
+                    x: lerp(this.smoothedPoint.x, this.getLookAtOrigin().x, pointBlendWeight * 0.42),
+                    y: lerp(this.smoothedPoint.y, this.getLookAtOrigin().y, pointBlendWeight * 0.42)
                 };
             }
 
             const targetPose = this.smoothedPoint
                 ? this.computeLookAtPose(this.smoothedPoint)
                 : this.computeNeutralPose();
-            this.currentPose = this.blendPose(this.currentPose, targetPose, blendWeight);
+            this.currentPose = this.blendPose(this.currentPose, targetPose, poseBlendWeight);
 
-            if (this.model && this.smoothedPoint) {
-                this.invokeModelFocus(this.smoothedPoint.x, this.smoothedPoint.y);
+            const focusPoint = this.latestPoint || this.smoothedPoint;
+            if (this.model && focusPoint) {
+                this.invokeModelFocus(focusPoint.x, focusPoint.y);
             }
             if (!this.usesTemporaryPoseOverride) {
                 this.applyPose(this.currentPose, 1);
@@ -4741,6 +4747,44 @@
             };
             window.requestAnimationFrame(poll);
         });
+    }
+
+    async function stopActiveAvatarPerformanceSessionsForAngryExit(reason) {
+        const stopReason = reason || 'angry_exit';
+        const sessions = [
+            activeIntroGreetingHugSession,
+            activeIntroGiftHeartSession,
+            activeSettingsPeekPanicSession,
+            activeInterruptResistSession,
+            activeIntroVoiceLookAtSession,
+            activePluginDashboardCornerSession,
+            activeReturnControlCueWaveSession,
+            activeGuideIdleSwaySession
+        ].filter((session) => session && session.active);
+
+        await Promise.all(sessions.map((session) => {
+            try {
+                if ('reducedMotion' in session) {
+                    session.reducedMotion = true;
+                }
+                if ('releaseMs' in session) {
+                    session.releaseMs = 0;
+                }
+                if (typeof session.stop === 'function') {
+                    return Promise.resolve(session.stop(stopReason)).catch((error) => {
+                        console.warn('[YuiGuideAvatarStage] 生气退出覆盖当前动作失败:', error);
+                    });
+                }
+                if (typeof session.cancel === 'function') {
+                    return Promise.resolve(session.cancel(stopReason)).catch((error) => {
+                        console.warn('[YuiGuideAvatarStage] 生气退出覆盖当前动作失败:', error);
+                    });
+                }
+            } catch (error) {
+                console.warn('[YuiGuideAvatarStage] 生气退出覆盖当前动作失败:', error);
+            }
+            return Promise.resolve();
+        }));
     }
 
     async function playIntroGreetingHug(options) {
@@ -5291,6 +5335,7 @@
         if (!context) {
             return { result: 'fallback', reason: 'live2d_unavailable' };
         }
+        await stopActiveAvatarPerformanceSessionsForAngryExit('angry_exit');
         if (activeAngryExitSession && activeAngryExitSession.active) {
             activeAngryExitSession.cancel('replaced');
         }
