@@ -662,6 +662,39 @@ function applyWorkshopSyncData() {
 // 视图切换防抖锁，防止动画期间重复点击
 let _viewSwitching = false;
 
+function lockWorkshopTabLayoutForSwitch() {
+    const tabContents = document.querySelector('.tab-contents');
+    const scrollContainer = document.querySelector('.layout-container');
+    if (!tabContents) return () => {};
+
+    const previousMinHeight = tabContents.style.minHeight;
+    const currentHeight = Math.ceil(tabContents.getBoundingClientRect().height);
+    const scrollTop = scrollContainer ? scrollContainer.scrollTop : window.scrollY;
+
+    if (currentHeight > 0) {
+        tabContents.style.minHeight = currentHeight + 'px';
+    }
+
+    return () => {
+        const restoreScroll = () => {
+            if (scrollContainer) {
+                scrollContainer.scrollTop = scrollTop;
+            } else {
+                window.scrollTo(window.scrollX, scrollTop);
+            }
+        };
+
+        restoreScroll();
+        requestAnimationFrame(() => {
+            restoreScroll();
+            requestAnimationFrame(() => {
+                tabContents.style.minHeight = previousMinHeight;
+                restoreScroll();
+            });
+        });
+    };
+}
+
 function switchTab(tabId, event) {
     if (_viewSwitching) return;
 
@@ -679,6 +712,7 @@ function switchTab(tabId, event) {
     }
 
     _viewSwitching = true;
+    const unlockTabLayout = lockWorkshopTabLayoutForSwitch();
 
     // 同步按钮 active 状态（点击事件 / 编程调用都覆盖）
     tabButtons.forEach(btn => {
@@ -694,7 +728,7 @@ function switchTab(tabId, event) {
         btn.classList.toggle('active', onclick.includes(tabId));
     });
 
-    // 找到当前激活视图（要离场的）
+    // 找到当前激活视图。切换时不叠放、不位移，避免两个面板短暂覆盖或抖动。
     const tabContents = document.querySelectorAll('.tab-content');
     let leavingTab = null;
     tabContents.forEach(content => {
@@ -709,27 +743,17 @@ function switchTab(tabId, event) {
     });
 
     const finalize = () => {
+        unlockTabLayout();
         _viewSwitching = false;
     };
 
     if (leavingTab && leavingTab !== selectedTab) {
-        // 旧视图执行 leaving 动画，新视图同步入场（重叠以遮住底层蓝色背景）
-        leavingTab.classList.remove('active');
-        leavingTab.classList.add('tab-leaving');
-
-        selectedTab.classList.add('active', 'tab-entering');
+        leavingTab.classList.remove('active', 'tab-leaving', 'tab-entering');
+        leavingTab.style.display = '';
+        selectedTab.classList.remove('tab-leaving', 'tab-entering');
+        selectedTab.classList.add('active');
         if (window.updatePageTexts) window.updatePageTexts();
-
-        // 旧视图保持原状作为底层；新视图自上而下"拉下帘幕"完全覆盖（500ms 与 CSS @keyframes viewCurtainReveal 时长一致）
-        setTimeout(() => {
-            leavingTab.classList.remove('tab-leaving');
-            leavingTab.style.display = '';
-        }, 520);
-        // 新视图入场结束
-        setTimeout(() => {
-            selectedTab.classList.remove('tab-entering');
-            finalize();
-        }, 520);
+        finalize();
     } else {
         // 没有离场视图（首次或同 tab）：直接显示
         selectedTab.classList.add('active');
@@ -3894,41 +3918,36 @@ if (document.readyState === 'loading') {
     _setupImportCardButton();
 }
 
-// ===== API 设置弹窗 =====
-const _API_KEY_ALLOWED_ORIGINS = [window.location.origin];
+// ===== API 设置窗口 =====
+function buildApiKeySettingsWindowFeatures(width = 1240, height = 940) {
+    const availableWidth = Math.max(1, Number(window.screen && (window.screen.availWidth || window.screen.width)) || width);
+    const availableHeight = Math.max(1, Number(window.screen && (window.screen.availHeight || window.screen.height)) || height);
+    const windowWidth = Math.min(width, Math.max(720, availableWidth - 80));
+    const windowHeight = Math.min(height, Math.max(560, availableHeight - 80));
+    const left = Math.max(0, Math.floor((availableWidth - windowWidth) / 2));
+    const top = Math.max(0, Math.floor((availableHeight - windowHeight) / 2));
+    return `width=${windowWidth},height=${windowHeight},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+}
+
 function openApiKeySettings() {
-    const existingModal = document.getElementById('api-key-settings-modal');
-    if (existingModal) {
-        existingModal.style.display = 'block';
-        return;
+    const url = '/api_key';
+    const windowName = 'neko_api_key';
+    const features = buildApiKeySettingsWindowFeatures();
+    let childWin = null;
+
+    if (typeof window.openOrFocusWindow === 'function') {
+        childWin = window.openOrFocusWindow(url, windowName, features);
+    } else {
+        childWin = window.open(url, windowName, features);
     }
-    const modal = document.createElement('div');
-    modal.id = 'api-key-settings-modal';
-    modal.style.cssText = 'position:fixed;left:0;top:0;width:100vw;height:100vh;background:rgba(0,0,0,0.4);z-index:9999';
 
-    const apiKeyMessageHandler = function (e) {
-        if (!_API_KEY_ALLOWED_ORIGINS.includes(e.origin)) return;
-        if (e.data && e.data.type === 'close_api_key_settings') {
-            const m = document.getElementById('api-key-settings-modal');
-            if (m && m.parentNode) m.parentNode.removeChild(m);
-            window.removeEventListener('message', apiKeyMessageHandler);
+    if (childWin && typeof childWin.focus === 'function') {
+        try {
+            childWin.focus();
+        } catch (error) {
+            // 部分浏览器环境不允许主动聚焦，忽略即可。
         }
-    };
-
-    modal.onclick = function (e) {
-        if (e.target === modal) {
-            window.removeEventListener('message', apiKeyMessageHandler);
-            if (modal.parentNode) modal.parentNode.removeChild(modal);
-        }
-    };
-
-    const iframe = document.createElement('iframe');
-    iframe.src = '/api_key';
-    iframe.style.cssText = 'width:800px;height:720px;border:none;background:#fff;display:block;margin:50px auto;border-radius:8px';
-
-    window.addEventListener('message', apiKeyMessageHandler);
-    modal.appendChild(iframe);
-    document.body.appendChild(modal);
+    }
 }
 
 function _setupApiKeySettingsButton() {
@@ -4230,17 +4249,9 @@ function switchCharaCardsView(mode) {
 
     const container = document.getElementById('chara-cards-container');
     if (container) {
-        // 退出动画
-        container.style.opacity = '0';
-        container.style.transform = 'scale(0.97)';
-        setTimeout(function () {
-            renderCharaCardsView();
-            // 入场动画
-            requestAnimationFrame(function () {
-                container.style.opacity = '1';
-                container.style.transform = 'scale(1)';
-            });
-        }, 200);
+        container.style.opacity = '1';
+        container.style.transform = 'none';
+        renderCharaCardsView();
     } else {
         renderCharaCardsView();
     }

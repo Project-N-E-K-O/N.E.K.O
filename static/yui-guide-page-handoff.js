@@ -86,10 +86,11 @@
         var hadExistingWindow = !!(existingWindow && !existingWindow.closed);
         var childWin;
 
+        var resolvedFeatures = getDefaultPageWindowFeatures(openUrl, features);
         if (typeof window.openOrFocusWindow === 'function') {
-            childWin = window.openOrFocusWindow(targetUrl, fullName, features);
+            childWin = window.openOrFocusWindow(targetUrl, fullName, resolvedFeatures);
         } else {
-            childWin = window.open(targetUrl, fullName, features);
+            childWin = window.open(targetUrl, fullName, resolvedFeatures);
         }
 
         if (!childWin) {
@@ -811,6 +812,26 @@
         var left = Math.max(0, Math.floor((screen.width - w) / 2));
         var top = Math.max(0, Math.floor((screen.height - h) / 2));
         return 'width=' + w + ',height=' + h + ',left=' + left + ',top=' + top + ',menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes';
+    }
+
+    function isFramedSettingsPageUrl(openUrl) {
+        try {
+            var path = new URL(openUrl, window.location.origin).pathname;
+            return path === '/api_key'
+                || path === '/character_card_manager'
+                || path === '/chara_manager'
+                || path === '/memory_browser';
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function getDefaultPageWindowFeatures(openUrl, features) {
+        if (features) return features;
+        if (isFramedSettingsPageUrl(openUrl)) {
+            return buildCenteredWindowFeatures(1240, 940);
+        }
+        return features;
     }
 
     function getTutorialModelManagerLanlanName() {

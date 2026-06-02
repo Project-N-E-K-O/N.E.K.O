@@ -1414,6 +1414,7 @@
         // 检查窗口是否已打开且未关闭
         const existingWindow = window._openedWindows[windowName];
         if (existingWindow && !existingWindow.closed) {
+            applyOpenedWindowFeatures(existingWindow, features);
             requestOpenedWindowRestore(existingWindow);
             existingWindow.focus();
             return existingWindow;
@@ -1438,6 +1439,33 @@
         }
         return newWindow;
     };
+
+    function getOpenedWindowFeatureNumber(features, name) {
+        if (!features || !name) return null;
+        const pattern = new RegExp('(?:^|,)\\s*' + name + '\\s*=\\s*(-?\\d+)', 'i');
+        const match = String(features).match(pattern);
+        if (!match) return null;
+        const value = Number(match[1]);
+        return Number.isFinite(value) ? value : null;
+    }
+
+    function applyOpenedWindowFeatures(targetWindow, features) {
+        if (!targetWindow || targetWindow.closed || !features) return;
+        const width = getOpenedWindowFeatureNumber(features, 'width');
+        const height = getOpenedWindowFeatureNumber(features, 'height');
+        const left = getOpenedWindowFeatureNumber(features, 'left');
+        const top = getOpenedWindowFeatureNumber(features, 'top');
+        try {
+            if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+                targetWindow.resizeTo(width, height);
+            }
+        } catch (_) {}
+        try {
+            if (Number.isFinite(left) && Number.isFinite(top)) {
+                targetWindow.moveTo(left, top);
+            }
+        } catch (_) {}
+    }
 
     function requestOpenedWindowRestore(targetWindow) {
         if (!targetWindow || targetWindow.closed) return;
