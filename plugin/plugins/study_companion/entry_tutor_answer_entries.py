@@ -6,7 +6,7 @@ from .entry_common import (
     Ok,
     SdkError,
     _entry_exception_error,
-    _normalize_submitted_image_payload,
+    _validate_optional_vision_image_payload,
     plugin_entry,
     tr,
     LLM_OPERATION_ANSWER_EVALUATE,
@@ -56,17 +56,12 @@ class _TutorAnswerEntriesMixin:
         if not resolved_question:
             return Err(SdkError("study tutor requires a question to evaluate against"))
         vision_image_payload = str(kwargs.get("vision_image_base64") or "").strip()
-        if vision_image_payload:
-            if not bool(self._cfg.llm_vision_enabled):
-                return Err(SdkError("llm_vision_enabled is not enabled"))
-            try:
-                vision_image_payload = _normalize_submitted_image_payload(
-                    vision_image_payload
-                )
-            except ValueError as exc:
-                return _entry_exception_error(
-                    self, exc, operation="study_evaluate_answer"
-                )
+        validated_vision_image = _validate_optional_vision_image_payload(
+            self, vision_image_payload, operation="study_evaluate_answer"
+        )
+        if isinstance(validated_vision_image, Err):
+            return validated_vision_image
+        vision_image_payload = validated_vision_image
         resolved_expected = supplied_expected
         if not resolved_expected and (
             not supplied_question or supplied_question == state_question

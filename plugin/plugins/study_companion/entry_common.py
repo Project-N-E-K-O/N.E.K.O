@@ -220,6 +220,23 @@ def _entry_exception_error(
     return Err(SdkError(str(exc) if message is None else message))
 
 
+def _validate_optional_vision_image_payload(
+    owner: Any,
+    image_base64: str,
+    *,
+    operation: str,
+):
+    image_payload = str(image_base64 or "").strip()
+    if not image_payload:
+        return ""
+    if not bool(getattr(owner._cfg, "llm_vision_enabled", False)):
+        return Err(SdkError("llm_vision_enabled is not enabled"))
+    try:
+        return _normalize_submitted_image_payload(image_payload)
+    except ValueError as exc:
+        return _entry_exception_error(owner, exc, operation=operation)
+
+
 __all__ = [
     "Any",
     "Mapping",
@@ -297,6 +314,7 @@ __all__ = [
     "_validated_pomodoro_focus_minutes",
     "_detect_mastery_threshold_crossed",
     "_normalize_submitted_image_payload",
+    "_validate_optional_vision_image_payload",
     "_plugin_lock",
     "_entry_exception_error",
     "_event_ratio",

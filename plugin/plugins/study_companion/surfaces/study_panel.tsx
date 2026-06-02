@@ -69,61 +69,148 @@ function timeoutForEntry(entryId: string) {
   return ENTRY_TIMEOUT_MS[entryId] || 60000;
 }
 
-async function compressImageForStudy(blob: Blob): Promise<string> {
-  const MAX_LONG_SIDE = 1920;
-  const JPEG_QUALITIES = [0.8, 0.72, 0.64, 0.56, 0.48];
-  const TARGET_BYTES = 1_000_000;
+const MAX_PASTE_IMAGE_LONG_SIDE = 1920;
+const TARGET_DATA_URL_LENGTH = 1_000_000;
+const LOAD_IMAGE_TIMEOUT_MS = 30000;
+const SUPPORTED_PASTE_IMAGE_TYPES = new Set(['image/jpeg', 'image/png']);
 
-  const loadImage = (src: string): Promise<HTMLImageElement> => new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
+function warnInDev(...args: unknown[]) {
+  const meta = import.meta as unknown as { env?: { DEV?: boolean } };
+  if (meta.env?.DEV) {
+    console.warn(...args);
+  }
+}
+
+function assertNotAborted(signal?: AbortSignal) {
+  if (signal?.aborted) {
+    throw new DOMException('Aborted', 'AbortError');
+  }
+}
+
+function loadImage(
+  src: string,
+  signal?: AbortSignal,
+  timeoutMs = LOAD_IMAGE_TIMEOUT_MS,
+): Promise<HTMLImageElement> {
+  let img: HTMLImageElement | null = null;
+  let timeoutId = 0;
+  let abortHandler: (() => void) | null = null;
+  const imagePromise = new Promise<HTMLImageElement>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('Aborted', 'AbortError'));
+      return;
+    }
+    img = new Image();
+    img.onload = () => resolve(img as HTMLImageElement);
     img.onerror = () => reject(new Error('Failed to load image'));
     img.src = src;
   });
 
-  const readAsDataUrl = (targetBlob: Blob): Promise<string> => new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => resolve(String(reader.result || ''));
-    reader.onerror = () => reject(new Error('FileReader failed'));
-    reader.readAsDataURL(targetBlob);
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = window.setTimeout(() => reject(new Error('图片加载超时')), timeoutMs);
   });
 
+  const abortPromise = new Promise<never>((_, reject) => {
+    if (!signal) {
+      return;
+    }
+    abortHandler = () => reject(new DOMException('Aborted', 'AbortError'));
+    signal.addEventListener('abort', abortHandler, { once: true });
+  });
+
+  return Promise.race([imagePromise, timeoutPromise, abortPromise]).finally(() => {
+    if (timeoutId) {
+      window.clearTimeout(timeoutId);
+    }
+    if (signal && abortHandler) {
+      signal.removeEventListener('abort', abortHandler);
+    }
+    if (img) {
+      img.onload = null;
+      img.onerror = null;
+    }
+  });
+}
+
+function requireCanvasContext(canvas: HTMLCanvasElement) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    throw new Error('Canvas 2D context is unavailable');
+  }
+  return ctx;
+}
+
+function encodeJpegWithinTarget(canvas: HTMLCanvasElement) {
+  let low = 0.3;
+  let high = 0.82;
+  let best = '';
+  let fallback = '';
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const quality = Math.round(((low + high) / 2) * 100) / 100;
+    const dataUrl = canvas.toDataURL('image/jpeg', quality);
+    fallback = dataUrl;
+    if (dataUrl.length <= TARGET_DATA_URL_LENGTH) {
+      best = dataUrl;
+      low = quality;
+    } else {
+      high = quality;
+    }
+  }
+  return best || fallback;
+}
+
+async function compressImageForStudy(blob: Blob, signal?: AbortSignal): Promise<string | null> {
+  if (!SUPPORTED_PASTE_IMAGE_TYPES.has(blob.type)) {
+    return null;
+  }
   const url = URL.createObjectURL(blob);
   try {
-    const img = await loadImage(url);
+    const img = await loadImage(url, signal);
+    assertNotAborted(signal);
     let width = img.naturalWidth;
     let height = img.naturalHeight;
+    if (!width || !height) {
+      throw new Error('Image dimensions are unavailable');
+    }
     const longSide = Math.max(width, height);
-    if (longSide > MAX_LONG_SIDE) {
-      const scale = MAX_LONG_SIDE / longSide;
+    if (longSide > MAX_PASTE_IMAGE_LONG_SIDE) {
+      const scale = MAX_PASTE_IMAGE_LONG_SIDE / longSide;
       width = Math.round(width * scale);
       height = Math.round(height * scale);
     }
-    const canvas = document.createElement('canvas');
+    let canvas = document.createElement('canvas');
     canvas.width = width;
     canvas.height = height;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) {
-      return readAsDataUrl(blob);
-    }
+    let ctx = requireCanvasContext(canvas);
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, width, height);
     ctx.drawImage(img, 0, 0, width, height);
-    for (const quality of JPEG_QUALITIES) {
-      const dataUrl = canvas.toDataURL('image/jpeg', quality);
-      if (dataUrl.length <= TARGET_BYTES) {
-        return dataUrl;
-      }
+    let dataUrl = encodeJpegWithinTarget(canvas);
+    for (let attempt = 0; dataUrl.length > TARGET_DATA_URL_LENGTH && attempt < 3; attempt += 1) {
+      assertNotAborted(signal);
+      const scale = Math.max(
+        0.5,
+        Math.min(0.85, Math.sqrt(TARGET_DATA_URL_LENGTH / dataUrl.length) * 0.9),
+      );
+      width = Math.max(320, Math.round(width * scale));
+      height = Math.max(320, Math.round(height * scale));
+      const resized = document.createElement('canvas');
+      resized.width = width;
+      resized.height = height;
+      ctx = requireCanvasContext(resized);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, width, height);
+      ctx.drawImage(canvas, 0, 0, width, height);
+      canvas = resized;
+      dataUrl = canvas.toDataURL('image/jpeg', 0.3);
     }
-    return canvas.toDataURL('image/jpeg', 0.48);
+    return dataUrl;
   } catch (error) {
-    console.warn('compressImageForStudy failed, falling back to original image', blob.size, error);
-    try {
-      return await readAsDataUrl(blob);
-    } catch (fallbackError) {
-      console.warn('compressImageForStudy fallback read failed', fallbackError);
-      return '';
+    if (signal?.aborted) {
+      return null;
     }
+    warnInDev('compressImageForStudy failed', error);
+    return null;
   } finally {
     URL.revokeObjectURL(url);
   }
@@ -132,12 +219,16 @@ async function compressImageForStudy(blob: Blob): Promise<string> {
 type PasteSetters = {
   setImage: (value: string) => void;
   setTextValue: (value: string) => void;
+  setPasteError: (value: string) => void;
+  pasteErrorMessage: string;
+  unsupportedTypeMessage: string;
 };
 
 function createPasteHandler(
   setters: PasteSetters,
   getBusy: () => boolean,
   isMounted: () => boolean,
+  beginPasteSignal: () => AbortSignal,
 ) {
   return async function handlePaste(event: {
     clipboardData?: DataTransfer;
@@ -153,29 +244,51 @@ function createPasteHandler(
       return;
     }
     event.preventDefault();
+    const signal = beginPasteSignal();
+    setters.setPasteError('');
 
     for (const item of itemList) {
       if (item.type.startsWith('image/')) {
+        if (!SUPPORTED_PASTE_IMAGE_TYPES.has(item.type)) {
+          if (!signal.aborted && isMounted()) {
+            setters.setPasteError(setters.unsupportedTypeMessage);
+          }
+          continue;
+        }
         const blob = item.getAsFile();
-        if (!blob) continue;
+        if (!blob) {
+          if (!signal.aborted && isMounted()) {
+            setters.setPasteError(setters.pasteErrorMessage);
+          }
+          continue;
+        }
         try {
-          const image = await compressImageForStudy(blob);
-          if (image && isMounted()) {
+          const image = await compressImageForStudy(blob, signal);
+          if (signal.aborted || !isMounted()) {
+            return;
+          }
+          if (image === null) {
+            setters.setPasteError(setters.pasteErrorMessage);
+          } else {
             setters.setImage(image);
+            setters.setPasteError('');
           }
         } catch (error) {
-          console.warn('study image paste failed', error);
+          if (!signal.aborted && isMounted()) {
+            setters.setPasteError(setters.pasteErrorMessage);
+          }
+          warnInDev('study image paste failed', error);
         }
       } else if (item.type === 'text/plain') {
         item.getAsString((pastedText) => {
-          if (!target || !isMounted()) return;
+          if (!target || signal.aborted || !isMounted() || !target.isConnected) return;
           const start = target.selectionStart ?? target.value.length;
           const end = target.selectionEnd ?? start;
           setters.setTextValue(
             target.value.slice(0, start) + pastedText + target.value.slice(end),
           );
           requestAnimationFrame(() => {
-            if (isMounted()) {
+            if (!signal.aborted && isMounted() && target.isConnected) {
               target.setSelectionRange(start + pastedText.length, start + pastedText.length);
             }
           });
@@ -263,7 +376,10 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const [busy, setBusy] = useState(false);
   const [textImage, setTextImage] = useState('');
   const [answerImage, setAnswerImage] = useState('');
+  const [textPasteError, setTextPasteError] = useState('');
+  const [answerPasteError, setAnswerPasteError] = useState('');
   const explainControllerRef = useRef<AbortController | null>(null);
+  const pasteControllerRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(false);
   const currentMode = String(status.active_mode || status.mode || 'companion');
 
@@ -278,6 +394,13 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     if (explainControllerRef.current === controller) {
       explainControllerRef.current = null;
     }
+  }
+
+  function beginPasteSignal() {
+    pasteControllerRef.current?.abort();
+    const controller = new AbortController();
+    pasteControllerRef.current = controller;
+    return controller.signal;
   }
 
   function modeLabel(mode: string) {
@@ -422,6 +545,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     setBusy(true);
     const explainArgs: Record<string, unknown> = { text };
     if (textImage) explainArgs.vision_image_base64 = textImage;
+    let shouldClearTextImage = false;
     try {
       const data = await callPlugin('study_explain_text', explainArgs, controller.signal) as {
         reply?: string;
@@ -431,7 +555,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       if (controller.signal.aborted) {
         return;
       }
-      setTextImage('');
+      shouldClearTextImage = true;
       const nextReply = data.reply || data.summary || '';
       setReply(nextReply);
       await refresh(controller.signal, { updateReply: false });
@@ -439,10 +563,14 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       if (controller.signal.aborted) {
         return;
       }
-      setTextImage('');
+      shouldClearTextImage = true;
       setReply(formatPluginError(error));
     } finally {
       if (!controller.signal.aborted) {
+        if (shouldClearTextImage) {
+          setTextImage('');
+          setTextPasteError('');
+        }
         setBusy(false);
       }
       endStudyRequest(controller);
@@ -457,6 +585,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     setBusy(true);
     const genArgs: Record<string, unknown> = { text };
     if (textImage) genArgs.vision_image_base64 = textImage;
+    let shouldClearTextImage = false;
     try {
       const data = await callPlugin('study_generate_question', genArgs, controller.signal) as {
         question?: string;
@@ -467,17 +596,21 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       if (controller.signal.aborted) {
         return;
       }
-      setTextImage('');
+      shouldClearTextImage = true;
       setQuestion(data.question || '');
       setReply(data.hint || data.question || data.summary || data.reply || '');
       await refresh(controller.signal, { updateReply: false });
     } catch (error) {
       if (!controller.signal.aborted) {
-        setTextImage('');
+        shouldClearTextImage = true;
         setReply(formatPluginError(error));
       }
     } finally {
       if (!controller.signal.aborted) {
+        if (shouldClearTextImage) {
+          setTextImage('');
+          setTextPasteError('');
+        }
         setBusy(false);
       }
       endStudyRequest(controller);
@@ -496,6 +629,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     setBusy(true);
     const evalArgs: Record<string, unknown> = { answer, question };
     if (answerImage) evalArgs.vision_image_base64 = answerImage;
+    let shouldClearAnswerImage = false;
     try {
       const data = await callPlugin('study_evaluate_answer', evalArgs, controller.signal) as {
         feedback?: string;
@@ -506,17 +640,21 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       if (controller.signal.aborted) {
         return;
       }
-      setAnswerImage('');
+      shouldClearAnswerImage = true;
       const replyParts = [data.feedback || data.reply || '', data.next_action ? `Next: ${data.next_action}` : ''].filter(Boolean);
       setReply(replyParts.join('\n\n') || data.summary || '');
       await refresh(controller.signal, { updateReply: false });
     } catch (error) {
       if (!controller.signal.aborted) {
-        setAnswerImage('');
+        shouldClearAnswerImage = true;
         setReply(formatPluginError(error));
       }
     } finally {
       if (!controller.signal.aborted) {
+        if (shouldClearAnswerImage) {
+          setAnswerImage('');
+          setAnswerPasteError('');
+        }
         setBusy(false);
       }
       endStudyRequest(controller);
@@ -566,6 +704,8 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       controller.abort();
       explainControllerRef.current?.abort();
       explainControllerRef.current = null;
+      pasteControllerRef.current?.abort();
+      pasteControllerRef.current = null;
     };
   }, []);
 
@@ -575,14 +715,28 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const screenType = status.screen_classification?.screen_type || 'idle';
   const evaluation = status.last_answer_evaluation;
   const handleTextPaste = createPasteHandler(
-    { setImage: setTextImage, setTextValue: setText },
+    {
+      setImage: setTextImage,
+      setTextValue: setText,
+      setPasteError: setTextPasteError,
+      pasteErrorMessage: t('ui.error.image_paste_failed', 'Image paste failed. Please try a smaller JPEG or PNG image.'),
+      unsupportedTypeMessage: t('ui.error.image_paste_unsupported', 'Only JPEG and PNG images can be pasted here.'),
+    },
     () => busy,
     () => mountedRef.current,
+    beginPasteSignal,
   );
   const handleAnswerPaste = createPasteHandler(
-    { setImage: setAnswerImage, setTextValue: setAnswer },
+    {
+      setImage: setAnswerImage,
+      setTextValue: setAnswer,
+      setPasteError: setAnswerPasteError,
+      pasteErrorMessage: t('ui.error.image_paste_failed', 'Image paste failed. Please try a smaller JPEG or PNG image.'),
+      unsupportedTypeMessage: t('ui.error.image_paste_unsupported', 'Only JPEG and PNG images can be pasted here.'),
+    },
     () => busy,
     () => mountedRef.current,
+    beginPasteSignal,
   );
 
   return (
@@ -640,11 +794,17 @@ export default function StudyPanel(props: PluginSurfaceProps) {
             type="button"
             aria-label="Remove pasted image"
             disabled={busy}
-            onClick={() => setTextImage('')}
+            onClick={() => {
+              setTextImage('');
+              setTextPasteError('');
+            }}
           >
             x
           </button>
         </div>
+      ) : null}
+      {textPasteError ? (
+        <div className="study-panel__paste-error" role="alert">{textPasteError}</div>
       ) : null}
       <div className="study-panel__actions">
         <button
@@ -682,11 +842,17 @@ export default function StudyPanel(props: PluginSurfaceProps) {
             type="button"
             aria-label="Remove pasted answer image"
             disabled={busy}
-            onClick={() => setAnswerImage('')}
+            onClick={() => {
+              setAnswerImage('');
+              setAnswerPasteError('');
+            }}
           >
             x
           </button>
         </div>
+      ) : null}
+      {answerPasteError ? (
+        <div className="study-panel__paste-error" role="alert">{answerPasteError}</div>
       ) : null}
       <div className="study-panel__actions">
         <button type="button" disabled={busy} onClick={busy ? undefined : evaluateAnswer}>

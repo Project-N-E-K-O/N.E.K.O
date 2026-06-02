@@ -12,6 +12,9 @@ from PIL import Image
 
 from plugin.plugins.study_companion import StudyCompanionPlugin
 from plugin.plugins.study_companion.constants import LLM_OPERATION_CONCEPT_EXPLAIN
+from plugin.plugins.study_companion.entry_common import (
+    _validate_optional_vision_image_payload,
+)
 from plugin.plugins.study_companion.models import StudyConfig
 from plugin.plugins.study_companion.state import build_initial_state
 from plugin.plugins.study_companion.study_ocr_pipeline import StudyOcrPipeline
@@ -108,6 +111,39 @@ def test_structured_study_entries_schema_accepts_vision_image(entry: object) -> 
         "type": "string",
         "default": "",
     }
+
+
+def test_validate_optional_vision_image_payload_shared_helper() -> None:
+    owner = SimpleNamespace(_cfg=StudyConfig(llm_vision_enabled=True), logger=_Logger())
+
+    result = _validate_optional_vision_image_payload(
+        owner,
+        JPEG_IMAGE_BASE64,
+        operation="test_entry",
+    )
+
+    assert result == f"data:image/jpeg;base64,{JPEG_IMAGE_BASE64}"
+
+    disabled_owner = SimpleNamespace(
+        _cfg=StudyConfig(llm_vision_enabled=False),
+        logger=_Logger(),
+    )
+    disabled = _validate_optional_vision_image_payload(
+        disabled_owner,
+        JPEG_IMAGE_BASE64,
+        operation="test_entry",
+    )
+    assert isinstance(disabled, Err)
+    assert "llm_vision_enabled" in str(disabled.error)
+
+    invalid = _validate_optional_vision_image_payload(
+        owner,
+        "data:image/webp;base64,abc123",
+        operation="test_entry",
+    )
+    assert isinstance(invalid, Err)
+    assert "JPEG/PNG" in str(invalid.error)
+    assert owner.logger.warnings
 
 
 def test_attach_vision_image_adds_to_last_user_msg() -> None:
@@ -930,6 +966,28 @@ async def test_study_generate_question_rejects_invalid_vision_mime() -> None:
 
     assert isinstance(result, Err)
     assert "JPEG/PNG" in str(result.error)
+
+
+@pytest.mark.asyncio
+async def test_study_generate_question_wraps_context_failures() -> None:
+    plugin = _make_plugin_for_structured_vision(vision_enabled=True)
+
+    async def _build_learning_context(
+        self: StudyCompanionPlugin,
+        operation: str,
+        *,
+        input_text: str = "",
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        raise RuntimeError(f"context failed for {operation}:{input_text}:{extra}")
+
+    plugin._build_learning_context = MethodType(_build_learning_context, plugin)
+
+    result = await plugin.study_generate_question(text="make a question")
+
+    assert isinstance(result, Err)
+    assert "context failed" in str(result.error)
+    assert any("study_generate_question" in warning[0] for warning in plugin.logger.warnings)
 
 
 @pytest.mark.asyncio

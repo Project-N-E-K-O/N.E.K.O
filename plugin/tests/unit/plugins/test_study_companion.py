@@ -1234,11 +1234,22 @@ def test_study_companion_hosted_panel_supports_image_paste_contract() -> None:
     source = (plugin_dir / "surfaces" / "study_panel.tsx").read_text(encoding="utf-8")
     css_source = (plugin_dir / "static" / "style.css").read_text(encoding="utf-8")
 
-    assert "async function compressImageForStudy(blob: Blob)" in source
+    assert "async function compressImageForStudy(blob: Blob, signal?: AbortSignal): Promise<string | null>" in source
+    assert "const LOAD_IMAGE_TIMEOUT_MS = 30000;" in source
+    assert "const TARGET_DATA_URL_LENGTH = 1_000_000;" in source
+    assert "Promise.race" in source
+    assert "图片加载超时" in source
+    assert "Canvas 2D context is unavailable" in source
+    assert "readAsDataUrl" not in source
     assert "function createPasteHandler(" in source
     assert "if (getBusy()) return;" in source
     assert "item.type.startsWith('image/')" in source
+    assert "SUPPORTED_PASTE_IMAGE_TYPES.has(item.type)" in source
     assert "item.type === 'text/plain'" in source
+    assert "setPasteError" in source
+    assert "study-panel__paste-error" in source
+    assert "beginPasteSignal" in source
+    assert "signal.aborted" in source
     assert "onPaste={handleTextPaste}" in source
     assert "onPaste={handleAnswerPaste}" in source
     assert "readOnly={busy}" in source
@@ -1250,7 +1261,9 @@ def test_study_companion_hosted_panel_supports_image_paste_contract() -> None:
     assert 'data-busy={busy ? "true" : "false"}' in source
     assert "study-panel__image-preview" in source
     assert "study-panel__image-remove" in source
+    assert "warnInDev" in source
     assert '.study-panel[data-busy="true"] .study-panel__image-remove' in css_source
+    assert ".study-panel__paste-error" in css_source
 
 
 def test_study_companion_note_exporter_uses_backend_export_poll_budget() -> None:

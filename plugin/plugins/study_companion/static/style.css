@@ -274,6 +274,13 @@ textarea {
   outline-offset: 2px;
 }
 
+.study-panel__paste-error {
+  margin: 8px 0 0;
+  color: #b42318;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 .study-panel[data-busy="true"] .study-panel__image-preview {
   opacity: 0.55;
 }

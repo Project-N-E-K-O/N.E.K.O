@@ -5,7 +5,7 @@ from .entry_common import (
     Ok,
     SdkError,
     _entry_exception_error,
-    _normalize_submitted_image_payload,
+    _validate_optional_vision_image_payload,
     plugin_entry,
     tr,
     LLM_OPERATION_QUESTION_GENERATE,
@@ -62,56 +62,60 @@ class _TutorQuestionEntriesMixin:
                     code="MISSING_TEXT",
                 )
             )
-        if vision_image_payload:
-            if not bool(self._cfg.llm_vision_enabled):
-                return Err(SdkError("llm_vision_enabled is not enabled"))
-            try:
-                vision_image_payload = _normalize_submitted_image_payload(
-                    vision_image_payload
-                )
-            except ValueError as exc:
-                return _entry_exception_error(
-                    self, exc, operation="study_generate_question"
-                )
-        async with self._lock:
-            active_mode = self._state.active_mode
-        tutor_context = await self._build_learning_context(
-            LLM_OPERATION_QUESTION_GENERATE,
-            input_text=source_text,
-            extra={
-                "source": "ocr_snapshot"
-                if used_ocr_fallback
-                else ("vision_image" if vision_image_payload and not source_text else "manual"),
-                "source_text": source_text,
-                "topic_hint": str(topic or "").strip(),
-                "mode": active_mode,
-                **(
-                    {
-                        "vision_enabled": True,
-                        "vision_image_base64": vision_image_payload,
-                    }
-                    if vision_image_payload
-                    else {}
-                ),
-            },
+        validated_vision_image = _validate_optional_vision_image_payload(
+            self, vision_image_payload, operation="study_generate_question"
         )
-        reply = await self._agent.question_generate(
-            source_text, mode=active_mode, context=tutor_context
-        )
-        payload = await self._finalize_tutor_call(
-            LLM_OPERATION_QUESTION_GENERATE,
-            reply,
-            history_kind=LLM_OPERATION_QUESTION_GENERATE,
-            metadata={
-                "degraded": reply.degraded,
-                "diagnostic": reply.diagnostic,
-                "payload": reply.payload,
-                "screen_classification": tutor_context.get("screen_classification")
-                or {},
-            },
-            extra_context=tutor_context,
-        )
-        payload["screen_classification"] = (
-            tutor_context.get("screen_classification") or {}
-        )
-        return Ok(payload)
+        if isinstance(validated_vision_image, Err):
+            return validated_vision_image
+        vision_image_payload = validated_vision_image
+        try:
+            async with self._lock:
+                active_mode = self._state.active_mode
+            tutor_context = await self._build_learning_context(
+                LLM_OPERATION_QUESTION_GENERATE,
+                input_text=source_text,
+                extra={
+                    "source": "ocr_snapshot"
+                    if used_ocr_fallback
+                    else (
+                        "vision_image"
+                        if vision_image_payload and not source_text
+                        else "manual"
+                    ),
+                    "source_text": source_text,
+                    "topic_hint": str(topic or "").strip(),
+                    "mode": active_mode,
+                    **(
+                        {
+                            "vision_enabled": True,
+                            "vision_image_base64": vision_image_payload,
+                        }
+                        if vision_image_payload
+                        else {}
+                    ),
+                },
+            )
+            reply = await self._agent.question_generate(
+                source_text, mode=active_mode, context=tutor_context
+            )
+            payload = await self._finalize_tutor_call(
+                LLM_OPERATION_QUESTION_GENERATE,
+                reply,
+                history_kind=LLM_OPERATION_QUESTION_GENERATE,
+                metadata={
+                    "degraded": reply.degraded,
+                    "diagnostic": reply.diagnostic,
+                    "payload": reply.payload,
+                    "screen_classification": tutor_context.get("screen_classification")
+                    or {},
+                },
+                extra_context=tutor_context,
+            )
+            payload["screen_classification"] = (
+                tutor_context.get("screen_classification") or {}
+            )
+            return Ok(payload)
+        except Exception as exc:
+            return _entry_exception_error(
+                self, exc, operation="study_generate_question"
+            )
