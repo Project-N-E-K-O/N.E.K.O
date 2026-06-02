@@ -2667,6 +2667,68 @@ describe('App', () => {
     expect(container.querySelector('.compact-chat-capsule-text')).toBeEmptyDOMElement();
   });
 
+  it('keeps the latest split tutorial guide line visible while shared speech plays from the first line', () => {
+    const firstLine = '设置页第一段说明已经先显示出来。';
+    const secondLine = '设置页第二段说明应该跟随同一段语音保持显示。';
+    const firstMessage = parseChatMessage({
+      id: 'yui-guide-settings-detail-part-1',
+      role: 'assistant',
+      author: 'YUI',
+      time: '10:01',
+      createdAt: 2000,
+      blocks: [{ type: 'text', text: firstLine }],
+      status: 'sent',
+    });
+    const secondMessage = parseChatMessage({
+      id: 'yui-guide-settings-detail-part-2',
+      role: 'assistant',
+      author: 'YUI',
+      time: '10:01',
+      createdAt: 9000,
+      blocks: [{ type: 'text', text: secondLine }],
+      status: 'sent',
+    });
+
+    const { container } = render(
+      <App chatSurfaceMode="compact" composerHidden messages={[firstMessage, secondMessage]} />,
+    );
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('neko-speech-playback-state', {
+        detail: {
+          active: true,
+          speechId: 'speech-yui-guide-settings-detail',
+          turnId: firstMessage.id,
+          playbackTurnId: firstMessage.id,
+          audioContextTime: 8,
+          playbackStartAudioTime: 0,
+          playbackEndAudioTime: 14,
+          updatedAt: Date.now(),
+        },
+      }));
+    });
+
+    expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent(secondLine);
+    expect(container.querySelector('.compact-chat-capsule-text')).not.toHaveTextContent(firstLine);
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent('neko-speech-playback-state', {
+        detail: {
+          active: false,
+          speechId: 'speech-yui-guide-settings-detail',
+          turnId: firstMessage.id,
+          playbackTurnId: firstMessage.id,
+          audioContextTime: 14,
+          playbackStartAudioTime: 0,
+          playbackEndAudioTime: 14,
+          updatedAt: Date.now(),
+        },
+      }));
+    });
+
+    expect(container.querySelector('.compact-chat-capsule-text')).toBeEmptyDOMElement();
+  });
+
   it('does not merge the previous tutorial guide line into the next compact capsule line', () => {
     const previousLine = '上一句引导台词已经播放完成。';
     const currentLine = '下一句引导台词应该从这里重新开始。';

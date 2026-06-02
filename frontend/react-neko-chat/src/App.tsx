@@ -278,6 +278,7 @@ function createCompactToolWheelChargeState(): CompactToolWheelChargeState {
 
 type CompactMessagePreview = {
   messageId: string;
+  speechMatchMessageIds?: string[];
   author: string;
   text: string;
   fullText: string;
@@ -406,15 +407,19 @@ function isSpeechPlaybackStillActive(state: SpeechPlaybackState | null): boolean
   return getEstimatedSpeechAudioTime(state) < state.playbackEndAudioTime - 0.02;
 }
 
-function doesSpeechPlaybackMatchMessage(state: SpeechPlaybackState | null, messageId: string): boolean {
-  if (!state || !messageId) {
+function doesSpeechPlaybackMatchAnyMessage(state: SpeechPlaybackState | null, messageIds: string[]): boolean {
+  if (!state) {
+    return false;
+  }
+  const normalizedMessageIds = messageIds.filter(Boolean);
+  if (normalizedMessageIds.length === 0) {
     return false;
   }
   const identifiers = [state.playbackTurnId, state.turnId, state.speechId].filter(Boolean);
   if (identifiers.length === 0) {
     return false;
   }
-  return identifiers.some(identifier => identifier === messageId);
+  return identifiers.some(identifier => normalizedMessageIds.some(messageId => identifier === messageId));
 }
 
 function getMessageBlockPreviewText(message: ChatMessage): string {
@@ -439,6 +444,45 @@ function getMessageBlockPreviewText(message: ChatMessage): string {
 
 function isGuideMessageId(id: unknown): boolean {
   return typeof id === 'string' && id.startsWith('yui-guide-');
+}
+
+function getAdjacentGuideSpeechMatchMessageIds(messages: ChatMessage[], latestGuideIndex: number): string[] {
+  const ids: string[] = [];
+  const latestMessage = messages[latestGuideIndex];
+  let previousIncludedCreatedAt = typeof latestMessage?.createdAt === 'number'
+    && Number.isFinite(latestMessage.createdAt)
+    ? latestMessage.createdAt
+    : null;
+
+  for (let index = latestGuideIndex; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message || message.role !== 'assistant' || !isGuideMessageId(message.id)) {
+      break;
+    }
+    const text = getMessageBlockPreviewText(message);
+    if (!text) {
+      continue;
+    }
+    if (index !== latestGuideIndex) {
+      if (message.status !== 'sent') {
+        break;
+      }
+      const createdAt = typeof message.createdAt === 'number' && Number.isFinite(message.createdAt)
+        ? message.createdAt
+        : null;
+      if (
+        previousIncludedCreatedAt === null
+        || createdAt === null
+        || Math.abs(previousIncludedCreatedAt - createdAt) > COMPACT_SPEECH_TURN_MERGE_WINDOW_MS
+      ) {
+        break;
+      }
+      previousIncludedCreatedAt = createdAt;
+    }
+    ids.push(message.id);
+  }
+
+  return ids;
 }
 
 function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePreview | null {
@@ -517,6 +561,7 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
       }
       return {
         messageId: message.id,
+        speechMatchMessageIds: getAdjacentGuideSpeechMatchMessageIds(messages, index),
         author: message.author,
         text,
         fullText: text,
@@ -1681,7 +1726,10 @@ export default function App({
     && !compactMessagePreview.isStreaming
     && !!compactMessagePreview.text
     && isSpeechPlaybackStillActive(speechPlaybackState)
-    && doesSpeechPlaybackMatchMessage(speechPlaybackState, compactMessagePreview.messageId);
+    && doesSpeechPlaybackMatchAnyMessage(
+      speechPlaybackState,
+      compactMessagePreview.speechMatchMessageIds ?? [compactMessagePreview.messageId],
+    );
   const compactGuideFinalHidden = !!compactMessagePreview?.isGuide
     && !compactMessagePreview.isStreaming
     && !!compactMessagePreview.text
