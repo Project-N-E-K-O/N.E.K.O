@@ -1238,7 +1238,8 @@ def test_study_companion_hosted_panel_supports_image_paste_contract() -> None:
     assert "const LOAD_IMAGE_TIMEOUT_MS = 30000;" in source
     assert "const TARGET_DATA_URL_LENGTH = 1_000_000;" in source
     assert "Promise.race" in source
-    assert "图片加载超时" in source
+    assert "Image load timeout" in source
+    assert "图片加载超时" not in source
     assert "Canvas 2D context is unavailable" in source
     assert "readAsDataUrl" not in source
     assert "function createPasteHandler(" in source

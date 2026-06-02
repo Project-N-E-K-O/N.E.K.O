@@ -107,7 +107,7 @@ function loadImage(
   });
 
   const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutId = window.setTimeout(() => reject(new Error('图片加载超时')), timeoutMs);
+    timeoutId = window.setTimeout(() => reject(new Error('Image load timeout')), timeoutMs);
   });
 
   const abortPromise = new Promise<never>((_, reject) => {

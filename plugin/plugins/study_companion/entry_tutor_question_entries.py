@@ -12,6 +12,9 @@ from .entry_common import (
 )
 
 
+IMAGE_ONLY_QUESTION_PROMPT = "Generate a study question from the pasted image."
+
+
 class _TutorQuestionEntriesMixin:
     @plugin_entry(
         id="study_generate_question",
@@ -69,6 +72,10 @@ class _TutorQuestionEntriesMixin:
             return validated_vision_image
         vision_image_payload = validated_vision_image
         try:
+            image_only_source = False
+            if not source_text and vision_image_payload:
+                source_text = IMAGE_ONLY_QUESTION_PROMPT
+                image_only_source = True
             async with self._lock:
                 active_mode = self._state.active_mode
             tutor_context = await self._build_learning_context(
@@ -77,11 +84,7 @@ class _TutorQuestionEntriesMixin:
                 extra={
                     "source": "ocr_snapshot"
                     if used_ocr_fallback
-                    else (
-                        "vision_image"
-                        if vision_image_payload and not source_text
-                        else "manual"
-                    ),
+                    else ("vision_image" if image_only_source else "manual"),
                     "source_text": source_text,
                     "topic_hint": str(topic or "").strip(),
                     "mode": active_mode,

@@ -713,6 +713,7 @@ async def test_study_submit_image_requires_enabled_config() -> None:
 
 class _FakeVisionTutorAgent:
     def __init__(self) -> None:
+        self.explanations: list[tuple[str, dict[str, object], str]] = []
         self.generated_questions: list[tuple[str, dict[str, object], str]] = []
         self.evaluations: list[tuple[str, str, str, dict[str, object], str]] = []
 
@@ -723,6 +724,7 @@ class _FakeVisionTutorAgent:
         mode: str = "companion",
         context: dict[str, object] | None = None,
     ) -> TutorReply:
+        self.explanations.append((text, dict(context or {}), mode))
         return TutorReply(
             operation="concept_explain",
             input_text=text,
@@ -915,6 +917,20 @@ async def test_study_explain_text_accepts_valid_vision_image() -> None:
 
 
 @pytest.mark.asyncio
+async def test_study_explain_text_uses_prompt_for_image_only() -> None:
+    plugin = _make_plugin_for_explain(vision_enabled=True)
+
+    result = await plugin.study_explain_text(vision_image_base64=JPEG_IMAGE_BASE64)
+
+    assert isinstance(result, Ok)
+    text, context, _mode = plugin._agent.explanations[-1]
+    assert text
+    assert context["source"] == "vision_image"
+    assert context["source_text"] == text
+    assert context["vision_image_base64"] == f"data:image/jpeg;base64,{JPEG_IMAGE_BASE64}"
+
+
+@pytest.mark.asyncio
 async def test_study_generate_question_accepts_valid_vision_image() -> None:
     plugin = _make_plugin_for_structured_vision(vision_enabled=True)
 
@@ -936,7 +952,12 @@ async def test_study_generate_question_allows_image_only() -> None:
     result = await plugin.study_generate_question(vision_image_base64=JPEG_IMAGE_BASE64)
 
     assert isinstance(result, Ok)
-    assert plugin._agent.generated_questions[-1][0] == ""
+    assert plugin._agent.generated_questions[-1][0]
+    assert plugin._agent.generated_questions[-1][1]["source"] == "vision_image"
+    assert (
+        plugin._agent.generated_questions[-1][1]["source_text"]
+        == plugin._agent.generated_questions[-1][0]
+    )
     assert plugin._agent.generated_questions[-1][1][
         "vision_image_base64"
     ] == f"data:image/jpeg;base64,{JPEG_IMAGE_BASE64}"

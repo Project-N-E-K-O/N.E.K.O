@@ -18,6 +18,9 @@ from .entry_common import (
 )
 
 
+IMAGE_ONLY_EXPLAIN_PROMPT = "Please explain the pasted image."
+
+
 class _TutorExplainEntriesMixin:
     @plugin_entry(
         id="study_submit_image",
@@ -138,14 +141,7 @@ class _TutorExplainEntriesMixin:
             )
         # Phase 3: explain with the active mode selected above.
         try:
-            extra_context: dict[str, Any] = {
-                "source": "ocr_snapshot"
-                if used_ocr_fallback or not raw_text
-                else "manual",
-                "mode": active_mode,
-                "mode_switch": bool(mode_switch.get("changed")),
-                "source_text": source_text,
-            }
+            image_only_source = False
             if vision_image_payload:
                 validated_vision_image = _validate_optional_vision_image_payload(
                     self, vision_image_payload, operation="study_explain_text"
@@ -153,6 +149,18 @@ class _TutorExplainEntriesMixin:
                 if isinstance(validated_vision_image, Err):
                     return validated_vision_image
                 vision_image_payload = validated_vision_image
+                if not source_text:
+                    source_text = IMAGE_ONLY_EXPLAIN_PROMPT
+                    image_only_source = True
+            extra_context: dict[str, Any] = {
+                "source": "ocr_snapshot"
+                if used_ocr_fallback
+                else ("vision_image" if image_only_source else "manual"),
+                "mode": active_mode,
+                "mode_switch": bool(mode_switch.get("changed")),
+                "source_text": source_text,
+            }
+            if vision_image_payload:
                 extra_context["vision_enabled"] = True
                 extra_context["vision_image_base64"] = vision_image_payload
             tutor_context = await self._build_learning_context(
