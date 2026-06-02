@@ -3106,7 +3106,6 @@ export default function App({
     if (!options?.ignoreToolFan && compactInputToolFanOpen) return;
     if (draftRef.current.trim().length > 0) return;
     if (composerAttachments.length > 0) return;
-    if (!options?.ignoreFocusedShell && compactExportHistoryOpen) return;
     const activeElement = document.activeElement;
     if (
       !options?.ignoreFocusedShell
@@ -3124,7 +3123,6 @@ export default function App({
     requestCompactChatState('default');
   }, [
     compactInputToolFanOpen,
-    compactExportHistoryOpen,
     composerAttachments.length,
     effectiveCompactChatState,
     isCompactSurface,

@@ -4522,7 +4522,6 @@ describe('App', () => {
     const onCompactChatStateChange = vi.fn();
     const outsideButton = document.createElement('button');
     document.body.appendChild(outsideButton);
-    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
 
     try {
     render(
