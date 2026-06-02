@@ -3752,61 +3752,27 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   height: 46px;
   padding: 0;
   border: 0;
-  border-radius: 999px;
+  border-radius: 0;
   color: #12304f;
   cursor: pointer;
-  isolation: isolate;
-  overflow: hidden;
-  background:
-    radial-gradient(circle at 30% 26%, rgba(255, 255, 255, 0.82) 0%, rgba(226, 248, 255, 0.78) 24%, rgba(174, 229, 248, 0.76) 70%, rgba(129, 207, 238, 0.68) 100%);
-  box-shadow:
-    0 11px 22px rgba(51, 137, 190, 0.24),
-    0 2px 7px rgba(65, 154, 205, 0.2),
-    inset 0 1px 0 rgba(255, 255, 255, 0.92),
-    inset 0 0 0 1px rgba(53, 169, 221, 0.16);
+  isolation: auto;
+  overflow: visible;
+  background: transparent;
+  box-shadow: none;
   transform: scale(var(--avatar-tool-edit-scale));
-  transition: background 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
+  transition: opacity 0.16s ease, transform 0.16s ease, filter 0.16s ease;
 }
 
 .avatar-tool-quickbar-edit::before,
 .avatar-tool-quickbar-edit::after {
-  content: "";
-  position: absolute;
-  pointer-events: none;
-}
-
-.avatar-tool-quickbar-edit::before {
-  top: 7px;
-  left: 9px;
-  z-index: 1;
-  width: 20px;
-  height: 12px;
-  border-radius: 999px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.66) 0%, rgba(255, 255, 255, 0.04) 100%);
-  opacity: 0.58;
-  transform: rotate(-18deg);
-}
-
-.avatar-tool-quickbar-edit::after {
-  right: 8px;
-  bottom: 7px;
-  z-index: 1;
-  width: 18px;
-  height: 10px;
-  border-radius: 999px;
-  background: rgba(47, 155, 214, 0.22);
-  filter: blur(3px);
+  display: none;
 }
 
 .avatar-tool-quickbar-edit:hover {
   --avatar-tool-edit-scale: 1.1;
-  background:
-    radial-gradient(circle at 30% 26%, rgba(255, 255, 255, 0.88) 0%, rgba(232, 250, 255, 0.84) 24%, rgba(180, 234, 250, 0.82) 70%, rgba(116, 204, 239, 0.76) 100%);
-  box-shadow:
-    0 13px 25px rgba(51, 137, 190, 0.28),
-    0 3px 9px rgba(65, 154, 205, 0.24),
-    inset 0 1px 0 rgba(255, 255, 255, 0.96),
-    inset 0 0 0 1px rgba(53, 169, 221, 0.2);
+  background: transparent;
+  box-shadow: none;
+  filter: drop-shadow(0 5px 8px rgba(54, 151, 203, 0.22));
 }
 
 .avatar-tool-quickbar-edit:active {
@@ -3825,45 +3791,14 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   box-shadow: none;
 }
 
-.avatar-tool-quickbar-edit-stack {
+.avatar-tool-quickbar-edit-image {
   position: relative;
   z-index: 2;
   display: block;
-  width: 40px;
-  height: 40px;
-  pointer-events: none;
-}
-
-.avatar-tool-quickbar-edit-stack img {
-  position: absolute;
+  width: 52px;
+  height: 43px;
   object-fit: contain;
   pointer-events: none;
-}
-
-.avatar-tool-quickbar-edit-paw {
-  left: 1px;
-  top: 4px;
-  width: 38px;
-  height: 28px;
-  filter:
-    brightness(0.78)
-    saturate(1.85)
-    contrast(1.24)
-    drop-shadow(0 1px 1px rgba(7, 71, 108, 0.28))
-    drop-shadow(0 0 5px rgba(255, 255, 255, 0.38));
-}
-
-.avatar-tool-quickbar-edit-pen {
-  right: -1px;
-  bottom: 1px;
-  width: 22px;
-  height: 22px;
-  filter:
-    brightness(0.72)
-    saturate(1.9)
-    contrast(1.34)
-    drop-shadow(0 1px 1px rgba(8, 53, 83, 0.36))
-    drop-shadow(0 0 4px rgba(255, 255, 255, 0.32));
 }
 
 .avatar-tool-manager-overlay {
@@ -3886,10 +3821,11 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   position: relative;
   display: flex;
   flex-direction: column;
-  width: min(332px, calc(100vw - 28px));
-  max-height: min(82vh, 560px);
+  width: min(380px, calc(100vw - 28px));
+  height: min(600px, 85vh);
+  max-height: 85vh;
   box-sizing: border-box;
-  padding: 13px 12px 12px;
+  padding: 24px 28px;
   border: 1px solid rgba(115, 195, 229, 0.46);
   border-radius: 8px;
   background:
@@ -3994,7 +3930,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 .avatar-tool-manager-body {
   flex: 1 1 auto;
   min-height: 0;
-  padding: 11px 3px 0 0;
+  padding: 14px 0 0;
   overflow-x: hidden;
   overflow-y: auto;
   scrollbar-width: thin;
@@ -4018,7 +3954,8 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   grid-auto-flow: row;
-  gap: 9px;
+  gap: 16px;
+  padding: 7px 8px 0;
 }
 
 .avatar-tool-manager-slot {
@@ -4277,6 +4214,12 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   height: 44px;
 }
 
+.avatar-tool-manager-tool-image.avatar-tool-icon-hammer,
+.avatar-tool-manager-drag-ghost .avatar-tool-icon-hammer {
+  transform: scale(1.38) translate(-14%, 10%);
+  transform-origin: center center;
+}
+
 @media (max-width: 640px) {
   .compact-input-tool-fan .avatar-tool-quickbar {
     left: calc(var(--compact-tool-wheel-center-x) - 105px);
@@ -4302,23 +4245,9 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
     height: 29px;
   }
 
-  .avatar-tool-quickbar-edit-stack {
-    width: 38px;
-    height: 38px;
-  }
-
-  .avatar-tool-quickbar-edit-paw {
-    left: 1px;
-    top: 4px;
-    width: 36px;
-    height: 27px;
-  }
-
-  .avatar-tool-quickbar-edit-pen {
-    right: -1px;
-    bottom: 1px;
-    width: 21px;
-    height: 21px;
+  .avatar-tool-quickbar-edit-image {
+    width: 48px;
+    height: 40px;
   }
 
   .avatar-tool-quickbar::after {
@@ -4332,7 +4261,10 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
   .avatar-tool-manager-dialog {
     width: calc(100vw - 24px);
+    height: auto;
+    min-height: min(600px, calc(100vh - 24px));
     max-height: calc(100vh - 24px);
+    padding: 20px 22px;
   }
 
   .avatar-tool-manager-dialog.is-positioned {
@@ -4345,7 +4277,9 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 @media (max-width: 380px) {
   .avatar-tool-manager-slots,
   .avatar-tool-manager-library {
-    gap: 8px;
+    gap: 12px;
+    padding-right: 7px;
+    padding-left: 7px;
   }
 
   .avatar-tool-manager-action {
@@ -4909,41 +4843,6 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
     0 0 0 2px rgba(92, 196, 255, 0.22),
     0 8px 18px rgba(0, 0, 0, 0.24),
     inset 0 1px 0 rgba(255, 255, 255, 0.1);
-}
-
-[data-theme="dark"] .avatar-tool-quickbar-edit {
-  background:
-    radial-gradient(circle at 30% 28%, rgba(104, 127, 179, 0.58) 0%, rgba(79, 100, 146, 0.48) 22%, rgba(50, 61, 93, 0.54) 72%, rgba(35, 43, 66, 0.46) 100%);
-  box-shadow:
-    0 12px 26px rgba(0, 0, 0, 0.34),
-    0 2px 8px rgba(28, 59, 109, 0.3),
-    inset 0 1px 0 rgba(255, 255, 255, 0.08);
-}
-
-[data-theme="dark"] .avatar-tool-quickbar-edit::before {
-  background: linear-gradient(180deg, rgba(233, 244, 255, 0.34) 0%, rgba(233, 244, 255, 0.02) 100%);
-}
-
-[data-theme="dark"] .avatar-tool-quickbar-edit::after {
-  background: rgba(122, 184, 255, 0.16);
-}
-
-[data-theme="dark"] .avatar-tool-quickbar-edit-paw {
-  filter:
-    brightness(1.04)
-    saturate(1.2)
-    contrast(1.08)
-    drop-shadow(0 1px 1px rgba(2, 10, 20, 0.42))
-    drop-shadow(0 0 6px rgba(100, 213, 255, 0.22));
-}
-
-[data-theme="dark"] .avatar-tool-quickbar-edit-pen {
-  filter:
-    brightness(1.02)
-    saturate(1.24)
-    contrast(1.1)
-    drop-shadow(0 1px 1px rgba(2, 10, 20, 0.46))
-    drop-shadow(0 0 5px rgba(100, 213, 255, 0.2));
 }
 
 [data-theme="dark"] .avatar-tool-manager-overlay {

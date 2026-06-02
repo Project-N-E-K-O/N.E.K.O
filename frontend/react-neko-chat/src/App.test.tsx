@@ -3230,6 +3230,8 @@ describe('App', () => {
 
       const editButton = container.querySelector('.avatar-tool-quickbar-edit') as HTMLButtonElement;
       expect(editButton).not.toBeNull();
+      expect(editButton.querySelectorAll('img')).toHaveLength(1);
+      expect(editButton.querySelector('img')).toHaveAttribute('src', '/static/icons/edit_tool_unified.png');
       Object.defineProperty(editButton, 'getBoundingClientRect', {
         configurable: true,
         value: () => ({
@@ -3247,13 +3249,14 @@ describe('App', () => {
 
       fireEvent.click(editButton);
 
-      const dialog = screen.getByRole('dialog', { name: 'Manage avatar tools' });
+      const dialog = screen.getByRole('dialog', { name: 'Manage tools' });
       expect(dialog).toHaveClass('is-positioned');
       expect(dialog).toHaveStyle({
-        '--avatar-tool-manager-left': '414px',
-        '--avatar-tool-manager-top': '108px',
+        '--avatar-tool-manager-left': '366px',
+        '--avatar-tool-manager-top': '12px',
       });
       expect(dialog.querySelectorAll('.avatar-tool-manager-slot')).toHaveLength(3);
+      expect(dialog.querySelector('.avatar-tool-icon-hammer')).not.toBeNull();
 
       const header = dialog.querySelector('.avatar-tool-manager-header') as HTMLElement;
       expect(header).not.toBeNull();
@@ -3275,8 +3278,8 @@ describe('App', () => {
 
       await waitFor(() => {
         expect(dialog).toHaveStyle({
-          '--avatar-tool-manager-left': '444px',
-          '--avatar-tool-manager-top': '138px',
+          '--avatar-tool-manager-left': '396px',
+          '--avatar-tool-manager-top': '42px',
         });
       });
 

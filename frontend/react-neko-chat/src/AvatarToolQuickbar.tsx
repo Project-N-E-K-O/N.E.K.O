@@ -59,7 +59,7 @@ export default function AvatarToolQuickbar({
               onClick={(event) => onToolClick(tool, event)}
             >
               <img
-                className="composer-icon-button-image avatar-tool-quickbar-image"
+                className={`composer-icon-button-image avatar-tool-quickbar-image avatar-tool-icon avatar-tool-icon-${tool.id}`}
                 src={visual.imagePath}
                 style={{
                   transform: `translate(${visual.offsetX}px, ${visual.offsetY}px) scale(${tool.menuIconScale ?? 1})`,
@@ -83,10 +83,12 @@ export default function AvatarToolQuickbar({
         disabled={disabled}
         onClick={onEditClick}
       >
-        <span className="avatar-tool-quickbar-edit-stack" aria-hidden="true">
-          <img className="avatar-tool-quickbar-edit-paw" src="/static/icons/paw_ui.png" alt="" />
-          <img className="avatar-tool-quickbar-edit-pen" src="/static/icons/edit.png" alt="" />
-        </span>
+        <img
+          className="avatar-tool-quickbar-edit-image"
+          src="/static/icons/edit_tool_unified.png"
+          alt=""
+          aria-hidden="true"
+        />
       </button>
     </div>
   );

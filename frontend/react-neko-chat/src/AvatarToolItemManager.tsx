@@ -46,8 +46,8 @@ type AvatarToolItemManagerProps = {
 const AVATAR_TOOL_DRAG_THRESHOLD = 7;
 const AVATAR_TOOL_MANAGER_VIEWPORT_GUTTER = 12;
 const AVATAR_TOOL_MANAGER_ANCHOR_GAP = 12;
-const AVATAR_TOOL_MANAGER_FALLBACK_WIDTH = 332;
-const AVATAR_TOOL_MANAGER_FALLBACK_HEIGHT = 480;
+const AVATAR_TOOL_MANAGER_FALLBACK_WIDTH = 380;
+const AVATAR_TOOL_MANAGER_FALLBACK_HEIGHT = 600;
 
 export type AvatarToolManagerAnchorRect = {
   left: number;
@@ -446,7 +446,7 @@ export default function AvatarToolItemManager({
           onPointerCancel={cancelDialogDrag}
         >
           <div>
-            <h2 id={dialogTitleId}>{i18n('chat.avatarToolManagerTitle', 'Manage avatar tools')}</h2>
+            <h2 id={dialogTitleId}>{i18n('chat.avatarToolManagerTitle', 'Manage tools')}</h2>
             <p>{i18n('chat.avatarToolManagerSubtitle', 'Choose up to 3 quick tools.')}</p>
           </div>
           <button
@@ -485,7 +485,7 @@ export default function AvatarToolItemManager({
                         onPointerCancel={cancelDrag}
                       >
                         <img
-                          className="avatar-tool-manager-tool-image"
+                          className={`avatar-tool-manager-tool-image avatar-tool-icon avatar-tool-icon-${tool.id}`}
                           src={tool.iconImagePath}
                           alt=""
                           aria-hidden="true"
@@ -533,7 +533,7 @@ export default function AvatarToolItemManager({
                       onPointerCancel={cancelDrag}
                     >
                       <img
-                        className="avatar-tool-manager-tool-image"
+                        className={`avatar-tool-manager-tool-image avatar-tool-icon avatar-tool-icon-${tool.id}`}
                         src={tool.iconImagePath}
                         alt=""
                         aria-hidden="true"
@@ -579,7 +579,7 @@ export default function AvatarToolItemManager({
               transform: `translate3d(${dragSession.currentX}px, ${dragSession.currentY}px, 0)`,
             }}
           >
-            <img src={dragTool.iconImagePath} alt="" />
+            <img className={`avatar-tool-icon avatar-tool-icon-${dragTool.id}`} src={dragTool.iconImagePath} alt="" />
           </div>
         ) : null}
       </section>
