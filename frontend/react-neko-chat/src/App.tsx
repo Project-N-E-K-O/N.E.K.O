@@ -2456,6 +2456,7 @@ export default function App({
     });
     return () => window.cancelAnimationFrame(frameId);
   }, [
+    activeCursorToolId,
     compactInputToolFanInteractive,
     compactInputToolFanOpen,
     compactInputToolWheelIndex,

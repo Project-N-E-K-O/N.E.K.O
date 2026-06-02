@@ -368,6 +368,7 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     assert '.compact-input-tool-fan[data-compact-tool-wheel-fast-animation="true"]' in styles
     assert "--compact-tool-wheel-transform-duration: 0.07s;" in styles
     assert "pointer-events: none;" in styles
+    assert "activeCursorToolId" in geometry_sync_block
     assert "toolMenuOpen" in geometry_sync_block
     assert "var COMPACT_TOOL_AVATAR_CHOICE_FLOAT_PADDING_X = 6;" in script
     assert "var COMPACT_TOOL_AVATAR_CHOICE_FLOAT_PADDING_Y = 12;" in script
