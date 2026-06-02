@@ -1034,7 +1034,6 @@
             screenButton().disabled = false;
             stopButton().disabled = true;
             resetSessionButton().disabled = false;
-            window.showStatusToast(window.t ? window.t('app.speaking') : '正在语音...', 2000);
 
             // 移除active类
             screenButton().classList.remove('active');

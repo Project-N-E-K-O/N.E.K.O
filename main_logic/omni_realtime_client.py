@@ -1371,20 +1371,20 @@ class OmniRealtimeClient:
                 return description
             else:
                 logger.warning("VISION_MODEL not configured or analysis failed")
-                self._image_description = "[实时屏幕截图或相机画面]: 画面分析失败或暂时无法识别。"
-                self._image_recognized_this_turn = True
+                self._image_description = ""
+                self._image_recognized_this_turn = False
                 return ""
             
         except Exception as e:
             logger.error(f"Error analyzing image with vision model: {e}")
-            self._image_recognized_this_turn = True
-            self._image_description = f"[实时屏幕截图或相机画面]: 分析出错: {str(e)}"
+            self._image_recognized_this_turn = False
+            self._image_description = ""
             # 检测内容审查错误并发送中文提示到前端（不关闭session）
             error_str = str(e)
             if 'censorship' in error_str:
                 if self.on_status_message:
                     await self.on_status_message(json.dumps({"code": "IMAGE_BLOCKED"}))
-            return "图片识别发生严重错误！"
+            return ""
         finally:
             self._image_being_analyzed = False
     
@@ -2547,7 +2547,6 @@ class OmniRealtimeClient:
                     self._print_input_transcript = False
                     self._image_recognized_this_turn = False
                     self._image_sent_this_turn = False
-                    self._image_being_analyzed = False
                     if self.on_response_done:
                         await self.on_response_done()
                     # No-server-VAD providers (Gemini-proxy: lanlan.app+free /

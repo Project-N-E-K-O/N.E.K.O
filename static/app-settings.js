@@ -102,7 +102,10 @@
                 changed = true;
             }
         });
-        if (Object.prototype.hasOwnProperty.call(settings, 'userLanguage')) {
+        if (
+            Object.prototype.hasOwnProperty.call(settings, 'userLanguage') &&
+            S.userLanguage !== settings.userLanguage
+        ) {
             S.userLanguage = settings.userLanguage;
             changed = true;
         }

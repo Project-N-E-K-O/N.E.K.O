@@ -479,7 +479,7 @@
             !S.proactiveVideoChatEnabled && !S.proactivePersonalChatEnabled &&
             !S.proactiveMusicEnabled && !S.proactiveMemeEnabled &&
             !S.proactiveMiniGameInviteEnabled) {
-            return S.proactiveVisionEnabled;
+            return isProactiveVisionEnabledNow();
         }
 
         // 如果只选择了个人动态搭话，需要同时开启个人动态
@@ -818,7 +818,7 @@
             if (S.isRecording) {
                 var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                 var voiceModes = [];
-                if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && S.proactiveVisionEnabled) {
+                if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && isProactiveVisionEnabledNow()) {
                     voiceModes.push('vision');
                 }
                 console.log('[ProactiveChat] 语音模式快速路径，modes: [' + voiceModes.join(', ') + ']');
@@ -897,7 +897,7 @@
             // 收集所有启用的搭话方式
             // 视觉搭话：需要同时开启主动搭话和自主视觉
             // 同时触发 vision 和 window 模式
-            if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && S.proactiveVisionEnabled) {
+            if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && isProactiveVisionEnabledNow()) {
                 availableModes.push('vision');
                 availableModes.push('window');
             }
@@ -1034,7 +1034,7 @@
 
                 // await 期间用户可能切换模式，重新过滤可用模式
                 var latestModes = [];
-                if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && S.proactiveVisionEnabled) {
+                if (S.proactiveVisionChatEnabled && S.proactiveChatEnabled && isProactiveVisionEnabledNow()) {
                     latestModes.push('vision', 'window');
                 }
                 if (S.proactiveNewsChatEnabled && S.proactiveChatEnabled) {
