@@ -21,6 +21,7 @@
     const mod = {};
     const S = window.appState;
     const C = window.appConst;
+    const NEW_USER_ICEBREAKER_STORAGE_KEY = 'neko.new_user_icebreaker.v1';
 
     // ======================== proactive leader election ========================
     //
@@ -87,6 +88,45 @@
             return false;
         }
     }
+
+    function readNewUserIcebreakerStore() {
+        try {
+            if (typeof localStorage === 'undefined') return null;
+            const raw = localStorage.getItem(NEW_USER_ICEBREAKER_STORAGE_KEY);
+            if (!raw) return null;
+            const parsed = JSON.parse(raw);
+            return parsed && typeof parsed === 'object' ? parsed : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function isNewUserIcebreakerPeriodActive() {
+        try {
+            if (window.newUserIcebreaker && typeof window.newUserIcebreaker.getActiveSession === 'function') {
+                if (window.newUserIcebreaker.getActiveSession()) return true;
+            }
+        } catch (_) {}
+
+        const store = readNewUserIcebreakerStore();
+        const days = store && typeof store.days === 'object' ? store.days : null;
+        if (!days) return false;
+        const finalDay = days['7'];
+        if (finalDay && finalDay.completed === true) return false;
+        for (let day = 1; day <= 7; day += 1) {
+            const entry = days[String(day)];
+            if (entry && (
+                entry.started === true
+                || entry.completed === true
+                || entry.triggeredAt
+                || entry.updatedAt
+            )) {
+                return true;
+            }
+        }
+        return false;
+    }
+    mod.isNewUserIcebreakerPeriodActive = isNewUserIcebreakerPeriodActive;
 
     try {
         if (typeof BroadcastChannel !== 'undefined' && PROACTIVE_SELF_RANK !== 99) {
@@ -408,6 +448,9 @@
 
     function canTriggerProactively() {
         if (isHomeTutorialFeatureSuppressed()) {
+            return false;
+        }
+        if (isNewUserIcebreakerPeriodActive()) {
             return false;
         }
 
@@ -757,6 +800,10 @@
         try {
             if (isHomeTutorialFeatureSuppressed()) {
                 console.log('[ProactiveChat] 首页新手教程接管中，跳过主动搭话');
+                return false;
+            }
+            if (isNewUserIcebreakerPeriodActive()) {
+                console.log('[ProactiveChat] 新用户破冰期未结束，跳过主动搭话');
                 return false;
             }
 

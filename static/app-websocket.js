@@ -19,6 +19,7 @@
     const USER_ACTIVITY_CANCEL_GRACE_MS = 700;
     const GREETING_CHECK_RETRY_BASE_MS = 800;
     const GREETING_CHECK_RETRY_MAX_MS = 5000;
+    const NEW_USER_ICEBREAKER_STORAGE_KEY = 'neko.new_user_icebreaker.v1';
     const MUSIC_PLAY_URL_FOLLOWER_GRACE_MS = 500;
     const MUSIC_PLAY_URL_SECONDARY_CONFIRM_MS = 100;
     const MUSIC_PLAY_URL_CLAIM_TTL_MS = 5000;
@@ -573,12 +574,66 @@
         return false;
     }
 
+    function readNewUserIcebreakerStore() {
+        try {
+            if (typeof localStorage === 'undefined') return null;
+            var raw = localStorage.getItem(NEW_USER_ICEBREAKER_STORAGE_KEY);
+            if (!raw) return null;
+            var parsed = JSON.parse(raw);
+            return parsed && typeof parsed === 'object' ? parsed : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function hasCompletedNewUserIcebreaker() {
+        var store = readNewUserIcebreakerStore();
+        var days = store && typeof store.days === 'object' ? store.days : null;
+        var finalDay = days && days['7'];
+        return !!(finalDay && finalDay.completed === true);
+    }
+
+    function isNewUserIcebreakerPeriodActive() {
+        try {
+            if (window.newUserIcebreaker && typeof window.newUserIcebreaker.getActiveSession === 'function') {
+                if (window.newUserIcebreaker.getActiveSession()) return true;
+            }
+        } catch (_) {}
+
+        var store = readNewUserIcebreakerStore();
+        var days = store && typeof store.days === 'object' ? store.days : null;
+        if (!days) return false;
+        if (hasCompletedNewUserIcebreaker()) return false;
+        for (var day = 1; day <= 7; day += 1) {
+            var entry = days[String(day)];
+            if (entry && (
+                entry.started === true
+                || entry.completed === true
+                || entry.triggeredAt
+                || entry.updatedAt
+            )) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    function isNewUserIcebreakerBlockingGreeting(reason) {
+        if (isNewUserIcebreakerPeriodActive()) return true;
+        var normalizedReason = String(reason || S._greetingCheckReason || '').trim().toLowerCase();
+        if ((normalizedReason === 'tutorial-completed' || normalizedReason === 'tutorial-skipped')
+            && !hasCompletedNewUserIcebreaker()) {
+            return true;
+        }
+        return false;
+    }
+
     function sendHomeTutorialState(reason) {
         if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return;
         try {
             S.socket.send(JSON.stringify({
                 action: 'home_tutorial_state',
-                blocking_greeting: isHomeTutorialLockedForGreeting(),
+                blocking_greeting: isHomeTutorialLockedForGreeting() || isNewUserIcebreakerBlockingGreeting(reason),
                 reason: reason || 'state-sync',
                 timestamp: Date.now(),
             }));
@@ -3056,6 +3111,9 @@
     }
     function _isTutorialBlockingGreeting() {
         if (!_isHomeTutorialPage()) return false;
+        if (isNewUserIcebreakerBlockingGreeting()) {
+            return true;
+        }
         try {
             if (isHomeTutorialLockedForGreeting()) {
                 return true;

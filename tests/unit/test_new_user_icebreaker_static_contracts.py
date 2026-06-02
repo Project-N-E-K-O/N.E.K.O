@@ -12,6 +12,8 @@ LOCALE_PATH = ROOT / "static" / "icebreaker" / "locales" / "zh-CN.json"
 LOCALES_DIR = ROOT / "static" / "icebreaker" / "locales"
 CHAT_HOST_PATH = ROOT / "static" / "app-react-chat-window.js"
 APP_WEBSOCKET_PATH = ROOT / "static" / "app-websocket.js"
+APP_PROACTIVE_PATH = ROOT / "static" / "app-proactive.js"
+UNIVERSAL_TUTORIAL_MANAGER_PATH = ROOT / "static" / "universal-tutorial-manager.js"
 INDEX_TEMPLATE_PATH = ROOT / "templates" / "index.html"
 WEBSOCKET_ROUTER_PATH = ROOT / "main_routers" / "websocket_router.py"
 GAME_ROUTER_PATH = ROOT / "main_routers" / "game_router.py"
@@ -232,7 +234,8 @@ def test_icebreaker_runtime_wires_choice_prompt_and_project_tts():
     assert "synthesizeEndStateFromEvent(eventType, normalizedDetail)" in runtime
     assert "eventType === 'neko:tutorial-skipped'" in runtime
     assert "eventType === 'neko:tutorial-completed'" in runtime
-    assert "day = 1" in runtime
+    assert "normalizedDetail.day" in runtime
+    assert "day = 1" not in runtime
     assert "playExpression(normalizedEmotion, normalizedExpressionFile)" not in runtime
     assert "bootstrapFromRecentEndState" in runtime
     assert "neko_avatar_floating_guide_v1" in runtime
@@ -267,6 +270,103 @@ def test_icebreaker_waits_long_enough_for_react_chat_host():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
 
     assert "waitForChatHost(30000)" in runtime
+
+
+def test_icebreaker_defers_while_home_tutorial_is_active():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+
+    assert "function isIcebreakerBlockerVisible(el)" in runtime
+    assert "function hasVisibleTutorialBlocker(selectors)" in runtime
+    assert "function isTutorialBlockingIcebreaker()" in runtime
+    assert "window.isInTutorial" in runtime
+    assert "manager.isTutorialRunning" in runtime
+    assert "manager._teardownPromise" in runtime
+    assert "startFromEndStateWhenTutorialIdle" in runtime
+    assert "TUTORIAL_IDLE_RETRY_MS" in runtime
+    assert "if (isTutorialBlockingIcebreaker())" in runtime
+    assert "return false;" in runtime
+    assert "getEndStateTriggerDeadline(endState)" in runtime
+    assert "retryCount >= TUTORIAL_IDLE_MAX_RETRIES" not in runtime
+
+
+def test_icebreaker_ignores_hidden_tutorial_dom_after_teardown():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    assert "if (!el || el.hidden) return false" in runtime
+    assert "style.display === 'none'" in runtime
+    assert "style.visibility === 'hidden'" in runtime
+    assert "style.opacity === '0'" in runtime
+    assert "return !rect || rect.width > 0 || rect.height > 0" in runtime
+    assert "if (isIcebreakerBlockerVisible(nodes[j])) return true" in runtime
+    assert "return !!document.querySelector([" not in runtime
+
+
+def test_icebreaker_tutorial_end_events_start_from_explicit_event_state():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    match = re.search(
+        r"function handleGuideEndEvent\(event\) \{(?P<body>.*?)\n    \}",
+        runtime,
+        re.DOTALL,
+    )
+
+    assert match is not None
+    body = match.group("body")
+    assert "startFromEndState(resolveLatestEndState(detail, eventType))" in body
+    assert "startFromEndStateWhenTutorialIdle(resolveLatestEndState(detail, eventType))" not in body
+
+
+def test_icebreaker_does_not_bootstrap_from_persisted_end_state_on_cold_start():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    match = re.search(
+        r"function bootstrapFromRecentEndState\(\) \{(?P<body>.*?)\n    \}",
+        runtime,
+        re.DOTALL,
+    )
+
+    assert match is not None
+    body = match.group("body")
+    assert "resolveRecentPersistedEndState" not in body
+    assert "window.avatarFloatingGuideEndState" not in body
+    assert "startFromEndStateWhenTutorialIdle" not in body
+
+
+def test_icebreaker_avatar_guide_event_day_wins_over_stale_global_end_state():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    match = re.search(
+        r"function resolveLatestEndState\(detail, eventType\) \{(?P<body>.*?)\n    \}",
+        runtime,
+        re.DOTALL,
+    )
+
+    assert match is not None
+    body = match.group("body")
+    assert body.index("synthesizeEndStateFromEvent(eventType, normalizedDetail)") < body.index(
+        "window.avatarFloatingGuideEndState"
+    )
+
+
+def test_home_tutorial_release_events_carry_current_avatar_round_end_state():
+    tutorial_manager = UNIVERSAL_TUTORIAL_MANAGER_PATH.read_text(encoding="utf-8")
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    reset_runtime = (ROOT / "static" / "avatar-floating-guide-reset.js").read_text(encoding="utf-8")
+
+    assert "avatarFloatingEndState = recordAvatarFloatingGuideEndState(" in tutorial_manager
+    assert "day: avatarFloatingEndState ? avatarFloatingEndState.day : undefined" in tutorial_manager
+    assert "endState: avatarFloatingEndState" in tutorial_manager
+    assert "neko:avatar-floating-guide-skip" in tutorial_manager
+    assert "neko:avatar-floating-guide-complete" in tutorial_manager
+    assert "day: avatarFloatingEndState.day" in tutorial_manager
+    assert "lastEndState" in tutorial_manager
+    assert "lastEndState" in reset_runtime
+    assert "state.lastEndState" in reset_runtime
+    assert "state.lastEndState" in runtime
+
+    generic_tutorial_branch = re.search(
+        r"eventType === 'neko:tutorial-skipped'.*?outcome = 'skip';",
+        runtime,
+        re.DOTALL,
+    )
+    assert generic_tutorial_branch is not None
+    assert "day = 1" not in generic_tutorial_branch.group(0)
 
 
 def test_icebreaker_uses_broadcast_channel_for_desktop_chat_window():
@@ -374,6 +474,23 @@ def test_icebreaker_bridge_events_use_monotonic_timestamps_for_deduping():
     assert "nextIcebreakerBridgeTimestamp" in runtime
     assert "timestamp: nextIcebreakerBridgeTimestamp()" in runtime
     assert "timestamp: Date.now()" not in runtime
+
+
+def test_icebreaker_period_suppresses_greeting_and_proactive_chat():
+    app_websocket = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    app_proactive = APP_PROACTIVE_PATH.read_text(encoding="utf-8")
+
+    for source in (app_websocket, app_proactive):
+        assert "NEW_USER_ICEBREAKER_STORAGE_KEY = 'neko.new_user_icebreaker.v1'" in source
+        assert "function isNewUserIcebreakerPeriodActive()" in source
+        assert "days['7']" in source
+
+    assert "isNewUserIcebreakerPeriodActive()" in app_proactive
+    assert "[ProactiveChat] 新用户破冰期未结束，跳过主动搭话" in app_proactive
+
+    assert "isNewUserIcebreakerBlockingGreeting()" in app_websocket
+    assert "tutorial-completed" in app_websocket
+    assert "tutorial-skipped" in app_websocket
 
 
 def test_react_chat_assets_use_react_chat_cache_version():
