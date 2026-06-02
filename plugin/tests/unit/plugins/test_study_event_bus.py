@@ -150,6 +150,38 @@ async def test_emit_answer_respond_cooldown_starts_after_async_push(
 
 
 @pytest.mark.asyncio
+async def test_emit_releases_state_lock_before_async_push() -> None:
+    class _AsyncCtx(_Ctx):
+        def __init__(self) -> None:
+            super().__init__()
+            self.locked_during_push: bool | None = None
+
+        async def push_message(self, **kwargs):
+            self.locked_during_push = bus._lock.locked()
+            await asyncio.sleep(0)
+            self.messages.append(dict(kwargs))
+            return {"ok": True}
+
+    ctx = _AsyncCtx()
+    bus = StudyEventBus(plugin_ctx=ctx)
+
+    await bus.emit(
+        StudyEvent(
+            name="answer_evaluated",
+            payload={
+                "verdict": "incorrect",
+                "score": 0.1,
+                "question_summary": "Q",
+                "user_answer_summary": "A",
+            },
+        )
+    )
+
+    assert ctx.locked_during_push is False
+    assert bus.emit_count == 1
+
+
+@pytest.mark.asyncio
 async def test_emit_mastery_updated_ignores_small_changes() -> None:
     ctx = _Ctx()
     bus = StudyEventBus(plugin_ctx=ctx)
@@ -249,6 +281,76 @@ async def test_emit_failure_does_not_consume_review_due_cooldown() -> None:
 
     assert len(ctx.messages) == 1
     assert bus.emit_count == 1
+
+
+@pytest.mark.asyncio
+async def test_emit_cancellation_releases_review_due_reservation() -> None:
+    entered_push = asyncio.Event()
+    release_push = asyncio.Event()
+
+    class _BlockingCtx(_Ctx):
+        async def push_message(self, **kwargs):
+            entered_push.set()
+            await release_push.wait()
+            self.messages.append(dict(kwargs))
+            return {"ok": True}
+
+    ctx = _BlockingCtx()
+    bus = StudyEventBus(plugin_ctx=ctx)
+    event = StudyEvent(
+        name="review_due",
+        payload={"due_count": 2, "urgent_count": 0, "topics": ["math"]},
+    )
+
+    task = asyncio.create_task(bus.emit(event))
+    await asyncio.wait_for(entered_push.wait(), timeout=1.0)
+    assert "review_due" in bus._pending_throttle
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert "review_due" not in bus._pending_throttle
+    assert bus.emit_count == 0
+
+    release_push.set()
+    await bus.emit(event)
+
+    assert len(ctx.messages) == 1
+    assert bus.emit_count == 1
+
+
+@pytest.mark.asyncio
+async def test_emit_commits_before_releasing_review_due_reservation() -> None:
+    event = StudyEvent(
+        name="review_due",
+        payload={"due_count": 2, "urgent_count": 0, "topics": ["math"]},
+    )
+
+    class _RaceBus(StudyEventBus):
+        def __init__(self, *, plugin_ctx):
+            super().__init__(plugin_ctx=plugin_ctx)
+            self.race_task: asyncio.Task[None] | None = None
+
+        def _release_emit_reservation(
+            self, decision, *, mark_respond: bool = False
+        ) -> None:
+            super()._release_emit_reservation(
+                decision, mark_respond=mark_respond
+            )
+            if self.race_task is None:
+                self.race_task = asyncio.create_task(self.emit(event))
+
+    ctx = _Ctx()
+    bus = _RaceBus(plugin_ctx=ctx)
+
+    await bus.emit(event)
+    assert bus.race_task is not None
+    await asyncio.wait_for(bus.race_task, timeout=1.0)
+
+    assert len(ctx.messages) == 1
+    assert bus.emit_count == 1
+    assert bus.block_count == 1
 
 
 @pytest.mark.asyncio
@@ -370,7 +472,9 @@ async def test_format_session_summarized_includes_insight() -> None:
 
 
 @pytest.mark.asyncio
-async def test_schedule_emit_logs_on_exception(caplog: pytest.LogCaptureFixture) -> None:
+async def test_schedule_emit_logs_on_exception(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     caplog.set_level(logging.ERROR, logger=event_bus_module._logger.name)
     bus = StudyEventBus(plugin_ctx=_Ctx(fail=True))
 
@@ -387,6 +491,55 @@ async def test_schedule_emit_logs_on_exception(caplog: pytest.LogCaptureFixture)
     assert task.exception() is not None
 
     assert "StudyEventBus.schedule_emit() task failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_schedule_emit_drops_when_backlog_is_full(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger=event_bus_module._logger.name)
+    bus = StudyEventBus(plugin_ctx=_Ctx())
+    bus._scheduled_emit_count = bus._MAX_SCHEDULED_EMITS
+
+    task = bus.schedule_emit(
+        StudyEvent(
+            name="session_summarized",
+            payload={"duration_minutes": 1, "questions_attempted": 1},
+        )
+    )
+
+    assert task is None
+    assert bus.dropped_emit_count == 1
+    assert bus.scheduled_emit_count == bus._MAX_SCHEDULED_EMITS
+    assert "dropped event due to backlog" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_schedule_emit_exposes_backlog_until_task_finishes() -> None:
+    release = asyncio.Event()
+
+    class _SlowCtx(_Ctx):
+        async def push_message(self, **kwargs):
+            await release.wait()
+            self.messages.append(dict(kwargs))
+            return {"ok": True}
+
+    bus = StudyEventBus(plugin_ctx=_SlowCtx())
+    task = bus.schedule_emit(
+        StudyEvent(
+            name="session_summarized",
+            payload={"duration_minutes": 1, "questions_attempted": 1},
+        )
+    )
+    assert task is not None
+    await asyncio.sleep(0)
+    assert bus.scheduled_emit_count == 1
+    assert bus.dropped_emit_count == 0
+
+    release.set()
+    await task
+
+    assert bus.scheduled_emit_count == 0
 
 
 @pytest.mark.asyncio

@@ -190,5 +190,13 @@
     "ui.button.rating.hard":  "Difícil",
     "ui.button.rating.good":  "Bien",
     "ui.button.rating.easy":  "Fácil",
-    "ui.label.name":  "Nombre"
+    "ui.label.name":  "Nombre",
+    "ui.awareness.title":  "Conciencia del entorno",
+    "ui.awareness.enabled":  "Activar percepción de pantalla",
+    "ui.awareness.snapshot_interval":  "Intervalo de captura",
+    "ui.awareness.context_window":  "Ventana de contexto",
+    "ui.awareness.classify_mode":  "Modo de clasificación",
+    "ui.awareness.push_mode":  "Modo de contexto del LLM",
+    "ui.awareness.privacy_note":  "Las capturas de pantalla se procesan solo en memoria y no se escriben en disco.",
+    "ui.awareness.translation_pending":  "Traducción pendiente"
 }

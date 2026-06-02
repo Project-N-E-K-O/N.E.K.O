@@ -83,11 +83,15 @@ dependencies = [
   # below — it brings opencv (~109 MB on disk) which the main program does not
   # use. Build scripts (Nuitka/PyInstaller) install --group galgame explicitly
   # so the packaged dist still bundles it; plain `uv sync` skips it.
+  "imagehash>=4.3.2",
 ]
 
 [tool.hatch.version]
 path = "config/__init__.py"
 pattern = '''^APP_VERSION\s*=\s*["'](?P<version>[^"']+)["']'''
+
+[project.scripts]
+neko-plugin = "plugin.neko_plugin_cli.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = [

@@ -164,11 +164,14 @@
                 console.log(`尝试解锁成就: ${achievementName} - ${ACHIEVEMENTS[achievementName].description}`);
 
                 // 调用Steam API
+                const achHeaders = { 'Content-Type': 'application/json' };
+                const sec = window.nekoLocalMutationSecurity;
+                if (sec && typeof sec.getMutationHeaders === 'function') {
+                    try { Object.assign(achHeaders, await sec.getMutationHeaders()); } catch (_) { }
+                }
                 const response = await fetch(`/api/steam/set-achievement-status/${achievementName}`, {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    }
+                    headers: achHeaders
                 });
 
                 if (response.ok) {
@@ -256,11 +259,14 @@
 
                 try {
                     // 调用后端 API 更新 Steam 统计，发送实际经过的秒数
+                    const playtimeHeaders = { 'Content-Type': 'application/json' };
+                    const sec = window.nekoLocalMutationSecurity;
+                    if (sec && typeof sec.getMutationHeaders === 'function') {
+                        try { Object.assign(playtimeHeaders, await sec.getMutationHeaders()); } catch (_) { }
+                    }
                     const response = await fetch('/api/steam/update-playtime', {
                         method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
+                        headers: playtimeHeaders,
                         body: JSON.stringify({
                             seconds: elapsedSeconds
                         })

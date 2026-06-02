@@ -1,9 +1,28 @@
-import { computed, ref, toValue, type MaybeRefOrGetter } from 'vue'
-import { pinyin } from 'pinyin-pro'
+/**
+ * 插件专属的工作台 composable —— 薄包装，复用通用 `useGridWorkbench`。
+ *
+ * 这里注入插件语义：
+ * - groups = plugin / adapter / extension（predicate 定义）
+ * - 搜索索引包含 id / name / description / type / version / host / 拼音
+ * - qualifierMatchers 支持 is:running / type:adapter / has:entries / host:xxx 等
+ *
+ * 对外 API 与改造前保持一致，现有调用点（PluginList.vue、usePackageManager）零改动。
+ */
+import { computed, toValue, type MaybeRefOrGetter, type WritableComputedRef } from 'vue'
+import { useI18n } from 'vue-i18n'
 import type { PluginMeta } from '@/types/api'
+import {
+  useGridWorkbench,
+  normalizeSearchPart,
+  safePinyin,
+  type FilterMode,
+  type LayoutMode,
+  type QualifierMatcher,
+} from '@/composables/useGridWorkbench'
+import { resolvePluginDisplayText } from '@/utils/pluginDisplay'
 
-export type PluginWorkbenchLayoutMode = 'list' | 'single' | 'double' | 'compact'
-export type PluginWorkbenchFilterMode = 'whitelist' | 'blacklist'
+export type PluginWorkbenchLayoutMode = LayoutMode
+export type PluginWorkbenchFilterMode = FilterMode
 export type PluginWorkbenchGroupType = 'plugin' | 'adapter' | 'extension'
 
 export type PluginWorkbenchItem = PluginMeta & {
@@ -11,19 +30,12 @@ export type PluginWorkbenchItem = PluginMeta & {
   enabled?: boolean
   autoStart?: boolean
   searchIndex?: string
+  displayName?: string
+  displayDescription?: string
+  displayShortDescription?: string
 }
 
-type QueryToken =
-  | { kind: 'term'; value: string; negated: boolean }
-  | { kind: 'qualifier'; key: string; value: string; negated: boolean }
-
-const sharedFilterText = ref('')
-const sharedUseRegex = ref(false)
-const sharedFilterMode = ref<PluginWorkbenchFilterMode>('whitelist')
-const sharedSelectedTypes = ref<PluginWorkbenchGroupType[]>(['plugin', 'adapter', 'extension'])
-const sharedLayoutMode = ref<PluginWorkbenchLayoutMode>('compact')
-const sharedSelectedPluginIds = ref<string[]>([])
-const sharedMultiSelectEnabled = ref(false)
+const PLUGIN_GROUPS: readonly PluginWorkbenchGroupType[] = ['plugin', 'adapter', 'extension']
 
 function normalizePluginType(type?: string): PluginWorkbenchGroupType {
   if (type === 'adapter') return 'adapter'
@@ -31,212 +43,25 @@ function normalizePluginType(type?: string): PluginWorkbenchGroupType {
   return 'plugin'
 }
 
-function uniqueIds(ids: string[]): string[] {
-  return Array.from(new Set(ids.filter((id) => typeof id === 'string' && id)))
-}
-
-function isCjkText(value: string): boolean {
-  return /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/.test(value)
-}
-
-function safePinyin(value: string, pattern: 'pinyin' | 'first'): string {
-  if (!value.trim() || !isCjkText(value)) {
-    return ''
-  }
-
-  try {
-    return pinyin(value, {
-      toneType: 'none',
-      type: 'string',
-      pattern,
-      nonZh: 'consecutive',
-      v: true,
-      traditional: true,
-    }).trim()
-  } catch {
-    return ''
-  }
-}
-
-function normalizeSearchPart(value?: string): string {
-  return (value || '').trim().toLowerCase()
-}
-
-function tokenizeQuery(input: string): QueryToken[] {
-  const matches = input.match(/"[^"]+"|\S+/g) || []
-  return matches
-    .map((rawToken) => {
-      const negated = rawToken.startsWith('-')
-      const baseToken = negated ? rawToken.slice(1) : rawToken
-      const token = baseToken.replace(/^"(.*)"$/, '$1').trim()
-      if (!token) {
-        return null
-      }
-
-      const separatorIndex = token.indexOf(':')
-      if (separatorIndex > 0) {
-        const key = token.slice(0, separatorIndex).trim().toLowerCase()
-        const value = token.slice(separatorIndex + 1).trim().toLowerCase()
-        if (key && value) {
-          return {
-            kind: 'qualifier' as const,
-            key,
-            value,
-            negated,
-          }
-        }
-      }
-
-      return {
-        kind: 'term' as const,
-        value: token.toLowerCase(),
-        negated,
-      }
-    })
-    .filter((token): token is QueryToken => !!token)
-}
-
 function hasUi(plugin: PluginWorkbenchItem): boolean {
   return Array.isArray(plugin.list_actions) && plugin.list_actions.some((action) => action.kind === 'ui')
 }
 
-function qualifierMatches(plugin: PluginWorkbenchItem, key: string, value: string): boolean {
-  const normalizedValue = value.toLowerCase()
-  const entryText = (plugin.entries || [])
-    .flatMap((entry) => [entry.id, entry.name, entry.description])
-    .map(normalizeSearchPart)
-    .join('\n')
-  const dependencyText = (plugin.dependencies || [])
-    .flatMap((dependency) => [dependency.id, dependency.entry, dependency.custom_event])
-    .map(normalizeSearchPart)
-    .join('\n')
-  const authorText = [plugin.author?.name, plugin.author?.email].map(normalizeSearchPart).join('\n')
-
-  switch (key) {
-    case 'is': {
-      switch (normalizedValue) {
-        case 'running':
-        case 'stopped':
-        case 'crashed':
-        case 'pending':
-        case 'injected':
-        case 'disabled':
-        case 'load_failed':
-          return (plugin.status || '').toLowerCase() === normalizedValue
-        case 'enabled':
-          return plugin.enabled !== false
-        case 'selected':
-          return sharedSelectedPluginIds.value.includes(plugin.id)
-        case 'unselected':
-          return !sharedSelectedPluginIds.value.includes(plugin.id)
-        case 'manual':
-        case 'manual_start':
-          return plugin.autoStart === false
-        case 'auto':
-        case 'auto_start':
-          return plugin.autoStart !== false
-        case 'plugin':
-        case 'adapter':
-        case 'extension':
-          return plugin.type === normalizedValue
-        case 'ui':
-          return hasUi(plugin)
-        case 'hosted':
-          return !!plugin.host_plugin_id
-        case 'standalone':
-          return !plugin.host_plugin_id
-        default:
-          return false
-      }
-    }
-    case 'type':
-      return plugin.type === normalizedValue
-    case 'status':
-      return (plugin.status || '').toLowerCase().includes(normalizedValue)
-    case 'id':
-      return normalizeSearchPart(plugin.id).includes(normalizedValue)
-    case 'name':
-      return normalizeSearchPart(plugin.name).includes(normalizedValue)
-    case 'desc':
-    case 'description':
-      return normalizeSearchPart(plugin.description).includes(normalizedValue)
-    case 'host':
-      return normalizeSearchPart(plugin.host_plugin_id).includes(normalizedValue)
-    case 'version':
-      return normalizeSearchPart(plugin.version).includes(normalizedValue)
-    case 'entry':
-    case 'entries':
-      return entryText.includes(normalizedValue)
-    case 'dep':
-    case 'dependency':
-    case 'dependencies':
-      return dependencyText.includes(normalizedValue)
-    case 'author':
-      return authorText.includes(normalizedValue)
-    case 'sdk':
-      return [
-        plugin.sdk_version,
-        plugin.sdk_recommended,
-        plugin.sdk_supported,
-        plugin.sdk_untested,
-      ]
-        .map(normalizeSearchPart)
-        .join('\n')
-        .includes(normalizedValue)
-    case 'has': {
-      switch (normalizedValue) {
-        case 'description':
-          return !!plugin.description?.trim()
-        case 'entries':
-        case 'entry':
-          return (plugin.entries?.length || 0) > 0
-        case 'host':
-          return !!plugin.host_plugin_id
-        case 'dependencies':
-        case 'dependency':
-          return (plugin.dependencies?.length || 0) > 0
-        case 'schema':
-          return !!plugin.input_schema
-        case 'actions':
-          return (plugin.list_actions?.length || 0) > 0
-        case 'ui':
-          return hasUi(plugin)
-        case 'author':
-          return !!plugin.author?.name || !!plugin.author?.email
-        default:
-          return false
-      }
-    }
-    default:
-      return false
-  }
-}
-
-function matchesAdvancedQuery(plugin: PluginWorkbenchItem, input: string): boolean {
-  const tokens = tokenizeQuery(input)
-  if (tokens.length === 0) {
-    return true
-  }
-
-  return tokens.every((token) => {
-    const matches = token.kind === 'term'
-      ? (plugin.searchIndex || '').includes(token.value)
-      : qualifierMatches(plugin, token.key, token.value)
-    return token.negated ? !matches : matches
-  })
-}
-
-function buildSearchIndex(plugin: PluginMeta & { type?: string }): string {
+function buildPluginSearchIndex(plugin: PluginWorkbenchItem): string {
+  const name = plugin.displayName || plugin.name
+  const description = plugin.displayDescription || plugin.description
+  const shortDescription = plugin.displayShortDescription || plugin.short_description
   const textParts = [
     plugin.id,
-    plugin.name,
-    plugin.description,
+    name,
+    description,
+    shortDescription,
     plugin.type,
     plugin.version,
     plugin.host_plugin_id,
   ]
 
-  const pinyinParts = [plugin.name, plugin.description].flatMap((value) => {
+  const pinyinParts = [name, description, shortDescription].flatMap((value) => {
     const source = value || ''
     const full = safePinyin(source, 'pinyin').replace(/\s+/g, ' ').trim()
     const initials = safePinyin(source, 'first').replace(/\s+/g, '').trim()
@@ -249,146 +74,217 @@ function buildSearchIndex(plugin: PluginMeta & { type?: string }): string {
     .join('\n')
 }
 
+// ─── qualifier matchers ─────────────────────────────────────────────
+
+const pluginQualifiers: Record<string, QualifierMatcher<PluginWorkbenchItem>> = {
+  is(plugin, value, ctx) {
+    switch (value) {
+      case 'running':
+      case 'stopped':
+      case 'crashed':
+      case 'pending':
+      case 'injected':
+      case 'disabled':
+      case 'load_failed':
+        return (plugin.status || '').toLowerCase() === value
+      case 'enabled':
+        return plugin.enabled !== false
+      case 'selected':
+        return ctx.selectedIds.includes(plugin.id)
+      case 'unselected':
+        return !ctx.selectedIds.includes(plugin.id)
+      case 'manual':
+      case 'manual_start':
+        return plugin.autoStart === false
+      case 'auto':
+      case 'auto_start':
+        return plugin.autoStart !== false
+      case 'plugin':
+      case 'adapter':
+      case 'extension':
+        return plugin.type === value
+      case 'ui':
+        return hasUi(plugin)
+      case 'hosted':
+        return !!plugin.host_plugin_id
+      case 'standalone':
+        return !plugin.host_plugin_id
+      default:
+        return false
+    }
+  },
+  type(plugin, value) {
+    return plugin.type === value
+  },
+  status(plugin, value) {
+    return (plugin.status || '').toLowerCase().includes(value)
+  },
+  id(plugin, value) {
+    return normalizeSearchPart(plugin.id).includes(value)
+  },
+  name(plugin, value) {
+    return normalizeSearchPart(plugin.displayName || plugin.name).includes(value)
+  },
+  desc(plugin, value) {
+    return normalizeSearchPart(plugin.displayDescription || plugin.description).includes(value)
+  },
+  description(plugin, value) {
+    return normalizeSearchPart(plugin.displayDescription || plugin.description).includes(value)
+  },
+  host(plugin, value) {
+    return normalizeSearchPart(plugin.host_plugin_id).includes(value)
+  },
+  version(plugin, value) {
+    return normalizeSearchPart(plugin.version).includes(value)
+  },
+  entry(plugin, value) {
+    return pluginEntryText(plugin).includes(value)
+  },
+  entries(plugin, value) {
+    return pluginEntryText(plugin).includes(value)
+  },
+  dep(plugin, value) {
+    return pluginDependencyText(plugin).includes(value)
+  },
+  dependency(plugin, value) {
+    return pluginDependencyText(plugin).includes(value)
+  },
+  dependencies(plugin, value) {
+    return pluginDependencyText(plugin).includes(value)
+  },
+  author(plugin, value) {
+    return pluginAuthorText(plugin).includes(value)
+  },
+  sdk(plugin, value) {
+    return [
+      plugin.sdk_version,
+      plugin.sdk_recommended,
+      plugin.sdk_supported,
+      plugin.sdk_untested,
+    ]
+      .map(normalizeSearchPart)
+      .join('\n')
+      .includes(value)
+  },
+  has(plugin, value) {
+    switch (value) {
+      case 'description':
+        return !!(plugin.displayDescription || plugin.description)?.trim()
+      case 'entries':
+      case 'entry':
+        return (plugin.entries?.length || 0) > 0
+      case 'host':
+        return !!plugin.host_plugin_id
+      case 'dependencies':
+      case 'dependency':
+        return (plugin.dependencies?.length || 0) > 0
+      case 'schema':
+        return !!plugin.input_schema
+      case 'actions':
+        return (plugin.list_actions?.length || 0) > 0
+      case 'ui':
+        return hasUi(plugin)
+      case 'author':
+        return !!plugin.author?.name || !!plugin.author?.email
+      default:
+        return false
+    }
+  },
+}
+
+function pluginEntryText(plugin: PluginWorkbenchItem): string {
+  return (plugin.entries || [])
+    .flatMap((entry) => [entry.id, entry.name, entry.description])
+    .map(normalizeSearchPart)
+    .join('\n')
+}
+
+function pluginDependencyText(plugin: PluginWorkbenchItem): string {
+  return (plugin.dependencies || [])
+    .flatMap((dep) => [dep.id, dep.entry, dep.custom_event])
+    .map(normalizeSearchPart)
+    .join('\n')
+}
+
+function pluginAuthorText(plugin: PluginWorkbenchItem): string {
+  return [plugin.author?.name, plugin.author?.email].map(normalizeSearchPart).join('\n')
+}
+
+// ─── 对外导出 ──────────────────────────────────────────────────────
+
 export function usePluginWorkbench<
-  T extends PluginMeta & { type?: string; enabled?: boolean; autoStart?: boolean; searchIndex?: string }
->(
-  pluginsSource: MaybeRefOrGetter<T[]>,
-) {
-  const items = computed<PluginWorkbenchItem[]>(() =>
-    toValue(pluginsSource).map((plugin) => ({
-      ...plugin,
-      type: normalizePluginType(plugin.type),
-      searchIndex: plugin.searchIndex || buildSearchIndex(plugin),
-    })),
-  )
-
-  const availableIdSet = computed(() => new Set(items.value.map((plugin) => plugin.id)))
-  const regexError = computed(() => {
-    if (!sharedUseRegex.value || !sharedFilterText.value.trim()) {
-      return false
-    }
-    try {
-      new RegExp(sharedFilterText.value.trim(), 'i')
-      return false
-    } catch {
-      return true
-    }
-  })
-
-  const filteredItems = computed(() => {
-    const text = sharedFilterText.value.trim()
-    const visibleByType = items.value.filter((plugin) => sharedSelectedTypes.value.includes(plugin.type))
-    if (!text) {
-      return visibleByType
-    }
-
-    if (sharedUseRegex.value) {
-      try {
-        const re = new RegExp(text, 'i')
-        const matches = (plugin: PluginWorkbenchItem) =>
-          re.test(plugin.searchIndex || '')
-        return sharedFilterMode.value === 'blacklist'
-          ? visibleByType.filter((plugin) => !matches(plugin))
-          : visibleByType.filter(matches)
-      } catch {
-        return visibleByType
+  T extends PluginMeta & { type?: string; enabled?: boolean; autoStart?: boolean; searchIndex?: string },
+>(pluginsSource: MaybeRefOrGetter<T[]>) {
+  const { locale } = useI18n()
+  const normalized = computed<PluginWorkbenchItem[]>(() =>
+    toValue(pluginsSource).map((plugin) => {
+      const displayText = resolvePluginDisplayText(plugin, locale.value)
+      return {
+        ...plugin,
+        type: normalizePluginType(plugin.type),
+        displayName: displayText.name,
+        displayDescription: displayText.description,
+        displayShortDescription: displayText.shortDescription,
       }
-    }
+    }),
+  )
 
-    const lowered = text.toLowerCase()
-    const matches = (plugin: PluginWorkbenchItem) => matchesAdvancedQuery(plugin, lowered)
-
-    return sharedFilterMode.value === 'blacklist'
-      ? visibleByType.filter((plugin) => !matches(plugin))
-      : visibleByType.filter(matches)
+  const workbench = useGridWorkbench<PluginWorkbenchItem>(normalized, {
+    scope: 'plugin-workbench',
+    groups: PLUGIN_GROUPS.map((groupId) => ({
+      id: groupId,
+      predicate: (item) => item.type === groupId,
+    })),
+    buildSearchIndex: buildPluginSearchIndex,
+    qualifierMatchers: pluginQualifiers,
   })
 
-  const pluginCount = computed(() => items.value.filter((plugin) => plugin.type === 'plugin').length)
-  const adapterCount = computed(() => items.value.filter((plugin) => plugin.type === 'adapter').length)
-  const extensionCount = computed(() => items.value.filter((plugin) => plugin.type === 'extension').length)
+  const filteredPurePlugins = computed(() => workbench.filteredByGroup.value.get('plugin') || [])
+  const filteredAdapters = computed(() => workbench.filteredByGroup.value.get('adapter') || [])
+  const filteredExtensions = computed(() => workbench.filteredByGroup.value.get('extension') || [])
 
-  const filteredPurePlugins = computed(() => filteredItems.value.filter((plugin) => plugin.type === 'plugin'))
-  const filteredAdapters = computed(() => filteredItems.value.filter((plugin) => plugin.type === 'adapter'))
-  const filteredExtensions = computed(() => filteredItems.value.filter((plugin) => plugin.type === 'extension'))
-  const selectedPluginIds = computed(() =>
-    sharedSelectedPluginIds.value.filter((pluginId) => availableIdSet.value.has(pluginId)),
-  )
-  const selectedCount = computed(() => selectedPluginIds.value.length)
+  const pluginCount = computed(() => workbench.groupCounts.value.get('plugin') || 0)
+  const adapterCount = computed(() => workbench.groupCounts.value.get('adapter') || 0)
+  const extensionCount = computed(() => workbench.groupCounts.value.get('extension') || 0)
 
-  function isSelected(pluginId: string): boolean {
-    return sharedSelectedPluginIds.value.includes(pluginId)
-  }
-
-  function setSelectedPluginIds(ids: string[]) {
-    sharedSelectedPluginIds.value = uniqueIds(ids)
-  }
-
-  function togglePlugin(pluginId: string) {
-    if (isSelected(pluginId)) {
-      sharedSelectedPluginIds.value = sharedSelectedPluginIds.value.filter((item) => item !== pluginId)
-      return
-    }
-    sharedSelectedPluginIds.value = [...sharedSelectedPluginIds.value, pluginId]
-  }
-
-  function selectAllVisible() {
-    sharedSelectedPluginIds.value = uniqueIds([
-      ...sharedSelectedPluginIds.value,
-      ...filteredItems.value.map((plugin) => plugin.id),
-    ])
-  }
-
-  function invertVisibleSelection() {
-    const visibleIds = filteredItems.value.map((plugin) => plugin.id)
-    const visibleIdSet = new Set(visibleIds)
-    const preservedHiddenIds = sharedSelectedPluginIds.value.filter((pluginId) => !visibleIdSet.has(pluginId))
-    const invertedVisibleIds = visibleIds.filter((pluginId) => !sharedSelectedPluginIds.value.includes(pluginId))
-    sharedSelectedPluginIds.value = uniqueIds([...preservedHiddenIds, ...invertedVisibleIds])
-  }
-
-  function clearSelection() {
-    sharedSelectedPluginIds.value = []
-  }
-
-  function pruneSelection(validIds: string[]) {
-    const validIdSet = new Set(validIds)
-    sharedSelectedPluginIds.value = sharedSelectedPluginIds.value.filter((pluginId) => validIdSet.has(pluginId))
-  }
-
-  function setMultiSelectEnabled(value: boolean) {
-    sharedMultiSelectEnabled.value = value
-  }
-
-  function toggleMultiSelect() {
-    sharedMultiSelectEnabled.value = !sharedMultiSelectEnabled.value
-  }
+  // 暴露 plugin-typed selectedTypes，屏蔽来自共享 scope 的无效 id。
+  const selectedTypes: WritableComputedRef<PluginWorkbenchGroupType[]> = computed({
+    get: () =>
+      workbench.selectedGroupIds.value.filter((id): id is PluginWorkbenchGroupType =>
+        (PLUGIN_GROUPS as readonly string[]).includes(id),
+      ),
+    set: (value) => {
+      workbench.selectedGroupIds.value = [...value]
+    },
+  })
 
   return {
-    items,
-    filterText: sharedFilterText,
-    useRegex: sharedUseRegex,
-    filterMode: sharedFilterMode,
-    selectedTypes: sharedSelectedTypes,
-    layoutMode: sharedLayoutMode,
-    selectedPluginIds,
-    selectedCount,
-    multiSelectEnabled: sharedMultiSelectEnabled,
-    regexError,
+    items: workbench.items,
+    filterText: workbench.filterText,
+    useRegex: workbench.useRegex,
+    filterMode: workbench.filterMode,
+    selectedTypes,
+    layoutMode: workbench.layoutMode,
+    selectedPluginIds: workbench.selectedIds,
+    selectedCount: workbench.selectedCount,
+    multiSelectEnabled: workbench.multiSelectEnabled,
+    regexError: workbench.regexError,
+    groupCounts: workbench.groupCounts,
     pluginCount,
     adapterCount,
     extensionCount,
-    filteredItems,
+    filteredItems: workbench.filteredItems,
     filteredPurePlugins,
     filteredAdapters,
     filteredExtensions,
-    isSelected,
-    setSelectedPluginIds,
-    togglePlugin,
-    selectAllVisible,
-    invertVisibleSelection,
-    clearSelection,
-    pruneSelection,
-    setMultiSelectEnabled,
-    toggleMultiSelect,
+    isSelected: workbench.isSelected,
+    setSelectedPluginIds: workbench.setSelectedIds,
+    togglePlugin: workbench.toggleItem,
+    selectAllVisible: workbench.selectAllVisible,
+    invertVisibleSelection: workbench.invertVisibleSelection,
+    clearSelection: workbench.clearSelection,
+    pruneSelection: workbench.pruneSelection,
+    setMultiSelectEnabled: workbench.setMultiSelectEnabled,
+    toggleMultiSelect: workbench.toggleMultiSelect,
   }
 }

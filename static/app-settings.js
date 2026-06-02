@@ -27,7 +27,8 @@
     // 搭话节奏对海外用户的影响；不动隐私 / 屏幕分享来源默认值，也没有弹窗。方向与
     // vision_chat_default_off 相反——只在海外（_isUserRegionChina() 为 false）才覆写，
     // 国内落到本组天然 no-op。两组抽签互斥（同设备只落一个 branch），但目标地区不重叠
-    // （vision 差异在国内、本组只影响海外），可同时在线。
+    // （vision 差异在国内、本组只影响海外），可同时在线。曾改测 25s（proactive_interval_25s，
+    // 20s→25s），因数据没能通过 A/A 测试已下线、回退本组；详见 token_tracker.py 退役清单。
     const _PROACTIVE_INTERVAL_AB_BRANCH = 'proactive_interval_20s';
     // 实验组的主动搭话间隔默认值（秒）。控制组默认见 app-state.js 的
     // DEFAULT_PROACTIVE_CHAT_INTERVAL（15s）。

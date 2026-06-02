@@ -988,7 +988,8 @@ class VRMCore {
                     const screenWidth = window.innerWidth;
 
                     // 计算合适的初始缩放（参考Live2D的默认大小计算，参考 vrm.js）
-                    const isMobile = window.innerWidth <= 768;
+                    // Electron Pet 窗口永不进入手机模式，统一走 canonical 谓词。
+                    const isMobile = typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (window.innerWidth <= 768);
                     let targetScale;
 
                     if (isMobile) {
@@ -1078,7 +1079,7 @@ class VRMCore {
                     const fov = this.manager.camera.fov * (Math.PI / 180);
                     const distance = (scaledModelHeight / 2) / Math.tan(fov / 2) / targetScreenHeight * screenHeight;
 
-                    const isMobileDevice = screenWidth <= 768;
+                    const isMobileDevice = typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (screenWidth <= 768);
                     const cameraY = center.y + (isMobileDevice ? scaledModelHeight * 0.2 : scaledModelHeight * 0.1);
                     const cameraZ = Math.abs(distance);
                     this.manager.camera.position.set(0, cameraY, cameraZ);
