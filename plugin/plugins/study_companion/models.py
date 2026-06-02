@@ -56,6 +56,7 @@ class StudyStatusPayload(TypedDict, total=False):
     last_reply: str
     last_error: str
     history: list[dict[str, Any]]
+    recent_notes: list[dict[str, Any]]
 
 
 class TutorReplyPayload(TypedDict, total=False):
@@ -87,6 +88,44 @@ class ActivitySummary(TypedDict):
     total_focus_minutes: float
     ocr_text_snippet: str
     app_distribution: dict[str, float]
+
+
+@dataclass(frozen=True, slots=True)
+class NotebookMeta:
+    id: str
+    name: str
+    description: str = ""
+    sort_order: int = 0
+    created_at: str = ""
+    updated_at: str = ""
+    note_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class NoteItem:
+    id: str
+    notebook_id: str | None
+    title: str
+    content: str
+    content_plain: str
+    snippet: str
+    is_ai_generated: bool = False
+    source_type: str = "manual"
+    source_ref: str = ""
+    topic_ids: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
+    word_count: int = 0
+    created_at: str = ""
+    updated_at: str = ""
+    edited_at: str = ""
+
+
+class NoteSearchResult(TypedDict, total=False):
+    notes: list[dict[str, Any]]
+    topics: list[dict[str, Any]]
+    sessions: list[dict[str, Any]]
+    wrong_questions: list[dict[str, Any]]
+    query: str
 
 
 STATUS_READY = "ready"

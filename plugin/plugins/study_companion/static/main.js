@@ -63,9 +63,9 @@ function setReply(text) {
   const value = text || '';
   if (window.renderMathInText && typeof window.renderMathInText === 'function') {
     replyText.innerHTML = window.renderMathInText(value);
-  } else {
-    replyText.textContent = value;
+    return;
   }
+  replyText.textContent = value;
 }
 
 function modeLabel(mode) {

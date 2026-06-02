@@ -14,6 +14,7 @@ from typing import Any, Protocol
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from .models import DocExportConfig, STUDY_EXPORT_FORMATS, STUDY_EXPORT_STYLES
+from .store_notebook import NotebookStore
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -98,6 +99,7 @@ class DocExporter:
         time_range: str | None = None,
         recent_limit: int | None = None,
         topic_ids: list[str] | tuple[str, ...] | None = None,
+        note_ids: list[str] | tuple[str, ...] | None = None,
         **legacy_options: Any,
     ) -> ExportDocument:
         if time_range is None:
@@ -111,6 +113,7 @@ class DocExporter:
             time_range=time_range,
             recent_limit=recent_limit,
             topic_ids=topic_ids,
+            note_ids=note_ids,
         )
         content = (
             markdown.encode("utf-8")
@@ -134,11 +137,17 @@ class DocExporter:
         time_range: str | None = None,
         recent_limit: int | None = None,
         topic_ids: list[str] | tuple[str, ...] | None = None,
+        note_ids: list[str] | tuple[str, ...] | None = None,
         **legacy_options: Any,
     ) -> str:
         if time_range is None:
             time_range = str(legacy_options.get("range") or "") or None
         export_style = self.normalize_style(style or self._config.default_style)
+        requested_note_ids = _normalized_topic_ids(note_ids)
+        if requested_note_ids:
+            return NotebookStore(self._store).build_notes_markdown(
+                requested_note_ids, title=title
+            )
         style_payload = self.load_style(export_style)
         limit = max(1, min(200, int(recent_limit or 30)))
         topics_limit = max(1, min(5000, int(style_payload.get("topics_limit") or 500)))

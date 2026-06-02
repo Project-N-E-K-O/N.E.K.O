@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 from collections.abc import Mapping
+from dataclasses import asdict
 from datetime import datetime
 import json
 import math
@@ -71,6 +72,7 @@ from .memory_deck_store import MemoryDeckStore, MemoryItemNotFoundError
 from .memory_habit_bridge import MemoryHabitBridge
 from .state import build_initial_state
 from .store import StudyStore
+from .store_notebook import NotebookStore
 from .study_habit_store import StudyHabitStore
 from .study_ocr_pipeline import StudyOcrPipeline
 from .supervision import SupervisionController
@@ -79,6 +81,13 @@ from .tutor_llm_agent import diagnostic_code_for_exception
 from .ui_api import build_open_ui_payload
 from .ui_api import build_contribution_settings_payload, build_knowledge_map_payload
 from .ui_api import build_habit_dashboard_payload, build_pomodoro_status_payload
+from .voice_contracts import (
+    VOICE_TRANSCRIPT_EVENT_ID,
+    VOICE_TRANSCRIPT_EVENT_TYPE,
+    voice_transcript_cancel_response,
+    voice_transcript_noop,
+    voice_transcript_prime_context,
+)
 from .voice_filter import VoiceFilter, _derive_subject, build_context_for_catgirl
 
 
@@ -135,6 +144,7 @@ from .entry_tutor_context_support import _TutorContextSupportMixin
 from .entry_communication_review_events import _CommunicationReviewEventsMixin
 from .entry_communication_tutor_events import _CommunicationTutorEventsMixin
 from .entry_export_support import _ExportSupportMixin
+from .entry_notebook import _NotebookEntriesMixin
 from .entry_status_entries import _StatusEntriesMixin
 from .entry_memory_card_entries import _MemoryCardEntriesMixin
 from .entry_memory_deck_entries import _MemoryDeckEntriesMixin
@@ -169,6 +179,7 @@ class StudyCompanionPlugin(
     _CommunicationReviewEventsMixin,
     _CommunicationTutorEventsMixin,
     _ExportSupportMixin,
+    _NotebookEntriesMixin,
     _StatusEntriesMixin,
     _MemoryCardEntriesMixin,
     _MemoryDeckEntriesMixin,
@@ -215,6 +226,7 @@ class StudyCompanionPlugin(
             self._store,
             retention_target=self._cfg.fsrs_retention_target,
         )
+        self._notebook_store = NotebookStore(self._store)
         self._knowledge_tracker.set_memory_deck_summary_provider(
             self._memory_deck_store.status_summary
         )
@@ -258,6 +270,7 @@ class StudyCompanionPlugin(
                 self._store,
                 retention_target=self._cfg.fsrs_retention_target,
             )
+            self._notebook_store = NotebookStore(self._store)
             self._knowledge_tracker.set_memory_deck_summary_provider(
                 self._memory_deck_store.status_summary
             )
@@ -307,9 +320,10 @@ class StudyCompanionPlugin(
                         "session_suggestions": self._state.session_suggestions,
                         "mode_lock_until": self._state.mode_lock_until,
                     }
-                )
+            )
             self._ocr_pipeline = StudyOcrPipeline(logger=self.logger, config=self._cfg)
             self._agent = TutorLLMAgent(logger=self.logger, config=self._cfg)
+            self._assert_notebook_agent_methods(self._agent)
             await self._refresh_dependency_status()
             self.register_static_ui("static")
             self.set_list_actions(
@@ -801,13 +815,31 @@ class StudyCompanionPlugin(
             "weak_topics": self._knowledge_tracker.get_weak_topics(limit=8),
             "mastery_overview": self._store.list_mastery_overview(limit=8),
         }
+        recent_notes = [
+            asdict(note) for note in self._notebook_store.get_recent_notes(limit=8)
+        ]
         return build_status_payload(
             config=self._cfg,
             state=self._state,
             history=history,
             knowledge={**knowledge, "habit": habit_payload},
+            recent_notes=recent_notes,
             is_first_run=is_first_run,
         )
+
+    @staticmethod
+    def _assert_notebook_agent_methods(agent: TutorLLMAgent | None) -> None:
+        if agent is None:
+            raise RuntimeError("study tutor agent is not initialized")
+        missing = [
+            name
+            for name in ("expand_note", "summarize_to_note")
+            if not callable(getattr(agent, name, None))
+        ]
+        if missing:
+            raise RuntimeError(
+                f"study tutor agent missing notebook methods: {', '.join(missing)}"
+            )
 
     def _habit_status_payload(self, today: str) -> dict[str, Any]:
         if (
@@ -858,8 +890,8 @@ class StudyCompanionPlugin(
         return dict(self._state.last_screen_classification)
 
     @custom_event(
-        event_type="voice_transcript",
-        id="handle_transcript",
+        event_type=VOICE_TRANSCRIPT_EVENT_TYPE,
+        id=VOICE_TRANSCRIPT_EVENT_ID,
         name="Handle study voice transcript",
         description="Filter realtime study voice transcripts and return a voice-session action.",
         input_schema={
@@ -880,23 +912,15 @@ class StudyCompanionPlugin(
         metadata: dict[str, Any] | None = None,
         **_,
     ):
-        def voice_noop(reason: str, filter_result: Mapping[str, Any] | None = None):
-            filter_payload = dict(filter_result or {})
-            original_method = str(filter_payload.get("method") or "")
-            if original_method and original_method != reason:
-                filter_payload["source_method"] = original_method
-            filter_payload["method"] = reason
-            return Ok({"action": "noop", "reason": reason, "filter": filter_payload})
-
         text = str(transcript or "").strip()
         if not text:
-            return voice_noop("empty_transcript")
+            return Ok(voice_transcript_noop("empty_transcript"))
         metadata_payload = metadata if isinstance(metadata, dict) else {}
         session_key = _voice_session_key(lanlan_name, metadata_payload)
 
         async with self._lock:
             if self._state.status != STATUS_READY:
-                return voice_noop("not_ready")
+                return Ok(voice_transcript_noop("not_ready"))
             state_snapshot_payload = self._state.to_dict()
 
         # Voice filtering only needs a point-in-time view; avoid holding the
@@ -928,9 +952,9 @@ class StudyCompanionPlugin(
             extra_names=[lanlan_name],
         )
         if filter_result is None:
-            return voice_noop("not_matched")
+            return Ok(voice_transcript_noop("not_matched"))
         if not bool(filter_result.get("should_relay")):
-            return Ok({"action": "cancel_response", "filter": dict(filter_result)})
+            return Ok(voice_transcript_cancel_response(filter_payload=filter_result))
 
         state_snapshot = SimpleNamespace(**state_snapshot_payload)
         context_text = build_context_for_catgirl(
@@ -940,15 +964,19 @@ class StudyCompanionPlugin(
             filter_result,
         ).strip()
         if not context_text:
-            return voice_noop("empty_context", filter_result)
+            return Ok(
+                voice_transcript_noop(
+                    "empty_context",
+                    filter=dict(filter_result),
+                )
+            )
         return Ok(
-            {
-                "action": "prime_context",
-                "context": context_text,
-                "skipped": True,
-                "filter": dict(filter_result),
-                "lanlan_name": str(lanlan_name or ""),
-            }
+            voice_transcript_prime_context(
+                context_text,
+                skipped=False,
+                filter_payload=filter_result,
+                lanlan_name=str(lanlan_name or ""),
+            )
         )
 
     async def _update_screen_classification(

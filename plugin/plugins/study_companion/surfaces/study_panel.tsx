@@ -52,8 +52,9 @@ const MODE_ORDER: Array<{ id: StudyMode; labelKey: string; fallback: string }> =
 ];
 const KATEX_CSS_URL = '/plugin/study_companion/ui/katex.min.css';
 const KATEX_SCRIPT_URL = '/plugin/study_companion/ui/katex.min.js';
-const KATEX_RENDER_SCRIPT_URL = '/plugin/study_companion/ui/katex-render.js';
+const MATH_PARSER_SCRIPT_URL = '/plugin/study_companion/ui/math-parser.js';
 let katexLoadPromise: Promise<void> | null = null;
+let mathParserLoadPromise: Promise<void> | null = null;
 
 type MathTextPart = {
   type: 'text' | 'math';
@@ -61,34 +62,80 @@ type MathTextPart = {
   display?: boolean;
 };
 
-type StudyMathTools = {
-  splitByMath: (value: string) => MathTextPart[];
-  normalizeLatexForKatex: (value: string) => string;
+type StudyMathParser = {
+  splitByMath?: (value: string) => MathTextPart[];
+  normalizeLatexForKatex?: (value: string) => string;
 };
 
-function getStudyMathTools(): StudyMathTools | null {
-  const tools = (window as any).__studyCompanionMath;
-  if (
-    tools
-    && typeof tools.splitByMath === 'function'
-    && typeof tools.normalizeLatexForKatex === 'function'
-  ) {
-    return tools as StudyMathTools;
+function getMathParser(): StudyMathParser | null {
+  return ((window as any).__studyCompanionMathParser || null) as StudyMathParser | null;
+}
+
+function splitMathText(value: string): MathTextPart[] {
+  const source = String(value || '');
+  const parser = getMathParser();
+  if (parser && typeof parser.splitByMath === 'function') {
+    const parts = parser.splitByMath(source);
+    return parts.length ? parts : [{ type: 'text', value: source }];
   }
-  return null;
+  return [{ type: 'text', value: source }];
 }
 
-function hasHostedKatex() {
-  const katex = (window as any).katex;
-  return Boolean(
-    katex
-    && typeof katex.render === 'function'
-    && typeof katex.renderToString === 'function',
-  );
+function normalizeLatexForKatex(value: string) {
+  const parser = getMathParser();
+  if (parser && typeof parser.normalizeLatexForKatex === 'function') {
+    return parser.normalizeLatexForKatex(value);
+  }
+  return String(value || '');
 }
 
-function ensureHostedScript(id: string, src: string) {
-  return new Promise<void>((resolve) => {
+function ensureMathParser() {
+  if (getMathParser()?.splitByMath) {
+    return Promise.resolve();
+  }
+  if (mathParserLoadPromise) {
+    return mathParserLoadPromise;
+  }
+  mathParserLoadPromise = new Promise((resolve) => {
+    const resolveLoad = (script: HTMLScriptElement) => {
+      script.dataset.studyMathParserLoaded = 'true';
+      resolve();
+    };
+    const resolveError = (script: HTMLScriptElement) => {
+      script.dataset.studyMathParserFailed = 'true';
+      mathParserLoadPromise = null;
+      script.remove();
+      resolve();
+    };
+    const existing = document.getElementById('study-companion-math-parser-script') as HTMLScriptElement | null;
+    if (existing) {
+      if (existing.dataset.studyMathParserFailed === 'true') {
+        existing.remove();
+      } else {
+        existing.addEventListener('load', () => resolveLoad(existing), { once: true });
+        existing.addEventListener('error', () => resolveError(existing), { once: true });
+        return;
+      }
+    }
+    const script = document.createElement('script');
+    script.id = 'study-companion-math-parser-script';
+    script.src = MATH_PARSER_SCRIPT_URL;
+    script.async = true;
+    script.addEventListener('load', () => resolveLoad(script), { once: true });
+    script.addEventListener('error', () => resolveError(script), { once: true });
+    document.head.appendChild(script);
+  });
+  return mathParserLoadPromise;
+}
+
+function ensureHostedKatex() {
+  if ((window as any).katex && typeof (window as any).katex.render === 'function') {
+    return Promise.resolve();
+  }
+  if (katexLoadPromise) {
+    return katexLoadPromise;
+  }
+  katexLoadPromise = new Promise((resolve) => {
     const resolveLoad = (script: HTMLScriptElement) => {
       script.dataset.studyKatexLoaded = 'true';
       resolve();
@@ -99,12 +146,15 @@ function ensureHostedScript(id: string, src: string) {
       script.remove();
       resolve();
     };
-    const existing = document.getElementById(id) as HTMLScriptElement | null;
+    if (!document.getElementById('study-companion-katex-css')) {
+      const link = document.createElement('link');
+      link.id = 'study-companion-katex-css';
+      link.rel = 'stylesheet';
+      link.href = KATEX_CSS_URL;
+      document.head.appendChild(link);
+    }
+    const existing = document.getElementById('study-companion-katex-script') as HTMLScriptElement | null;
     if (existing) {
-      if (existing.dataset.studyKatexLoaded === 'true') {
-        resolve();
-        return;
-      }
       if (existing.dataset.studyKatexFailed === 'true') {
         existing.remove();
       } else {
@@ -114,45 +164,23 @@ function ensureHostedScript(id: string, src: string) {
       }
     }
     const script = document.createElement('script');
-    script.id = id;
-    script.src = src;
+    script.id = 'study-companion-katex-script';
+    script.src = KATEX_SCRIPT_URL;
     script.async = true;
     script.addEventListener('load', () => resolveLoad(script), { once: true });
     script.addEventListener('error', () => resolveError(script), { once: true });
     document.head.appendChild(script);
-  });
-}
-
-function ensureHostedKatex() {
-  if (hasHostedKatex() && getStudyMathTools()) {
-    return Promise.resolve();
-  }
-  if (katexLoadPromise) {
-    return katexLoadPromise;
-  }
-  katexLoadPromise = new Promise((resolve) => {
-    if (!document.getElementById('study-companion-katex-css')) {
-      const link = document.createElement('link');
-      link.id = 'study-companion-katex-css';
-      link.rel = 'stylesheet';
-      link.href = KATEX_CSS_URL;
-      document.head.appendChild(link);
-    }
-    ensureHostedScript('study-companion-katex-script', KATEX_SCRIPT_URL)
-      .then(() => ensureHostedScript('study-companion-katex-render-script', KATEX_RENDER_SCRIPT_URL))
-      .then(resolve);
   });
   return katexLoadPromise;
 }
 
 function renderMathSpans(root: HTMLElement | null) {
   const katex = (window as any).katex;
-  const mathTools = getStudyMathTools();
-  if (!root || !mathTools || !katex || typeof katex.render !== 'function') {
+  if (!root || !katex || typeof katex.render !== 'function') {
     return;
   }
   root.querySelectorAll<HTMLElement>('[data-study-math]').forEach((node) => {
-    const tex = mathTools.normalizeLatexForKatex(node.getAttribute('data-math') || '');
+    const tex = normalizeLatexForKatex(node.getAttribute('data-math') || '');
     if (!tex) {
       return;
     }
@@ -170,25 +198,30 @@ function renderMathSpans(root: HTMLElement | null) {
 
 function MathReply({ text, label }: { text: string; label: string }) {
   const containerRef = useRef<HTMLElement | null>(null);
-  const [mathReady, setMathReady] = useState(() => Boolean(getStudyMathTools()));
+  const [mathParserReady, setMathParserReady] = useState(() => Boolean(getMathParser()?.splitByMath));
   useEffect(() => {
     let active = true;
-    ensureHostedKatex().then(() => {
+    ensureMathParser().then(() => {
       if (active) {
-        setMathReady(Boolean(getStudyMathTools()));
+        setMathParserReady(Boolean(getMathParser()?.splitByMath));
       }
     });
     return () => {
       active = false;
     };
-  }, []);
+  }, [text]);
   useEffect(() => {
-    if (mathReady) {
-      renderMathSpans(containerRef.current);
-    }
-  }, [mathReady, text]);
-  const mathTools = mathReady ? getStudyMathTools() : null;
-  const parts = mathTools ? mathTools.splitByMath(text) : [{ type: 'text', value: text }];
+    let active = true;
+    ensureHostedKatex().then(() => {
+      if (active) {
+        renderMathSpans(containerRef.current);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [text, mathParserReady]);
+  const parts: MathTextPart[] = mathParserReady ? splitMathText(text) : [{ type: 'text', value: String(text || '') }];
   return (
     <div
       ref={containerRef}
