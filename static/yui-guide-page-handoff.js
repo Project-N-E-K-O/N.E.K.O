@@ -809,6 +809,10 @@
     function buildCenteredWindowFeatures(width, height) {
         var w = Number.isFinite(width) ? width : Math.min(1280, Math.round(screen.width * 0.8));
         var h = Number.isFinite(height) ? height : Math.min(900, Math.round(screen.height * 0.8));
+        // 居中走 core 公共 helper：多显示器下叠加当前屏幕偏移，避免副屏弹窗跳回主屏。
+        if (typeof window.buildCenteredPopupFeatures === 'function') {
+            return window.buildCenteredPopupFeatures(w, h);
+        }
         var left = Math.max(0, Math.floor((screen.width - w) / 2));
         var top = Math.max(0, Math.floor((screen.height - h) / 2));
         return 'width=' + w + ',height=' + h + ',left=' + left + ',top=' + top + ',menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes';

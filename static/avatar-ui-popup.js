@@ -29,6 +29,10 @@ function buildAvatarCenteredWindowFeatures(width, height) {
     const availableHeight = Math.max(1, Number(window.screen && (window.screen.availHeight || window.screen.height)) || height);
     const windowWidth = Math.min(width, Math.max(720, availableWidth - 80));
     const windowHeight = Math.min(height, Math.max(560, availableHeight - 80));
+    // 居中走 core 公共 helper：多显示器下叠加当前屏幕偏移，避免副屏弹窗跳回主屏。
+    if (typeof window.buildCenteredPopupFeatures === 'function') {
+        return window.buildCenteredPopupFeatures(windowWidth, windowHeight);
+    }
     const left = Math.max(0, Math.floor((availableWidth - windowWidth) / 2));
     const top = Math.max(0, Math.floor((availableHeight - windowHeight) / 2));
     return `width=${windowWidth},height=${windowHeight},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;

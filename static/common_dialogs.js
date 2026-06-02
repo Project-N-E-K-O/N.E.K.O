@@ -1478,6 +1478,31 @@
 
     window.requestOpenedWindowRestore = requestOpenedWindowRestore;
 
+    /**
+     * 计算「在当前所在显示器可用区域内居中」的 window.open features 字符串。
+     * 多显示器下 window.open 的 left/top 是相对整个虚拟桌面原点的坐标，必须叠加当前屏幕
+     * 偏移（screen.availLeft/availTop，回退 window.screenX/screenY），否则副屏打开会按主屏
+     * 原点居中、跳回主屏。调用方负责把尺寸 clamp 好后传入最终窗口尺寸。
+     *
+     * @param {number} windowWidth - 最终窗口宽度
+     * @param {number} windowHeight - 最终窗口高度
+     * @returns {string}
+     */
+    function buildCenteredPopupFeatures(windowWidth, windowHeight) {
+        const screenRef = window.screen || {};
+        const width = Math.max(1, Math.floor(Number(windowWidth)) || 1);
+        const height = Math.max(1, Math.floor(Number(windowHeight)) || 1);
+        const availableWidth = Math.max(width, Number(screenRef.availWidth || screenRef.width) || width);
+        const availableHeight = Math.max(height, Number(screenRef.availHeight || screenRef.height) || height);
+        const screenLeft = Number.isFinite(screenRef.availLeft) ? screenRef.availLeft : (Number(window.screenX) || 0);
+        const screenTop = Number.isFinite(screenRef.availTop) ? screenRef.availTop : (Number(window.screenY) || 0);
+        const left = Math.round(screenLeft + Math.max(0, (availableWidth - width) / 2));
+        const top = Math.round(screenTop + Math.max(0, (availableHeight - height) / 2));
+        return `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+    }
+
+    window.buildCenteredPopupFeatures = buildCenteredPopupFeatures;
+
     window.addEventListener('message', function(event) {
         if (event.origin !== window.location.origin) return;
         if (!event.data || event.data.type !== 'neko:restore-window') return;
