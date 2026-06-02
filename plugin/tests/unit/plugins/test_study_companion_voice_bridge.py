@@ -44,6 +44,56 @@ async def test_voice_transcript_name_call_returns_prime_context() -> None:
 
 
 @pytest.mark.asyncio
+async def test_voice_transcript_empty_text_returns_noop() -> None:
+    plugin = _plugin_with_voice_state(
+        screen_text="f(x)=x^3 derivative, explain where 3x^2 comes from"
+    )
+
+    result = await plugin.handle_voice_transcript("")
+
+    assert isinstance(result, Ok)
+    payload = result.value
+    assert payload["action"] == "noop"
+    assert payload["reason"] == "empty_transcript"
+    assert payload["filter"]["method"] == "empty_transcript"
+
+
+@pytest.mark.asyncio
+async def test_voice_transcript_not_ready_returns_noop() -> None:
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    plugin._lock = asyncio.Lock()
+    plugin._voice_filter = VoiceFilter(names=["Yui"])
+    plugin._state = build_initial_state()
+
+    result = await plugin.handle_voice_transcript("Yui why is it 3x^2")
+
+    assert isinstance(result, Ok)
+    payload = result.value
+    assert payload["action"] == "noop"
+    assert payload["reason"] == "not_ready"
+    assert payload["filter"]["method"] == "not_ready"
+
+
+@pytest.mark.asyncio
+async def test_voice_transcript_empty_context_returns_noop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.plugins import study_companion
+
+    plugin = _plugin_with_voice_state(screen_text="f(x)=x^3 derivative")
+    monkeypatch.setattr(study_companion, "build_context_for_catgirl", lambda *_args, **_kwargs: "")
+
+    result = await plugin.handle_voice_transcript("Yui why is it 3x^2")
+
+    assert isinstance(result, Ok)
+    payload = result.value
+    assert payload["action"] == "noop"
+    assert payload["reason"] == "empty_context"
+    assert payload["filter"]["method"] == "empty_context"
+    assert payload["filter"]["source_method"] == "name_call"
+
+
+@pytest.mark.asyncio
 async def test_voice_transcript_uses_active_lanlan_name_as_wake_word() -> None:
     plugin = _plugin_with_voice_state(
         screen_text="f(x)=x^3 derivative, explain where 3x^2 comes from"

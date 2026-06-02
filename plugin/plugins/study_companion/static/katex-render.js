@@ -39,12 +39,54 @@
     return -1;
   }
 
+  function findBackslashMathDelimiter(source, start, closeChar) {
+    let index = start;
+    while (index < source.length) {
+      const next = source.indexOf(`\\${closeChar}`, index);
+      if (next === -1) {
+        return -1;
+      }
+      if (hasEscapedDelimiter(source, next)) {
+        index = next + 2;
+        continue;
+      }
+      return next;
+    }
+    return -1;
+  }
+
   function splitByMath(text) {
     const parts = [];
     const source = String(text || '');
     let last = 0;
     let index = 0;
     while (index < source.length) {
+      if (source[index] === '\\' && !hasEscapedDelimiter(source, index)) {
+        const openChar = source[index + 1];
+        const isBackslashInline = openChar === '(';
+        const isBackslashDisplay = openChar === '[';
+        if (isBackslashInline || isBackslashDisplay) {
+          const closeChar = isBackslashInline ? ')' : ']';
+          const closer = findBackslashMathDelimiter(source, index + 2, closeChar);
+          if (closer === -1) {
+            index += 2;
+            continue;
+          }
+          if (index > last) {
+            parts.push({ type: 'text', value: source.slice(last, index) });
+          }
+          const mathValue = source.slice(index + 2, closer).trim();
+          if (mathValue) {
+            parts.push({ type: 'math', value: mathValue, display: isBackslashDisplay });
+          } else {
+            parts.push({ type: 'text', value: source.slice(index, closer + 2) });
+          }
+          index = closer + 2;
+          last = index;
+          continue;
+        }
+      }
+
       if (source[index] !== '$' || hasEscapedDelimiter(source, index)) {
         index += 1;
         continue;
@@ -119,7 +161,8 @@
 
   function renderMathInText(text) {
     const source = String(text || '');
-    if (!source || !source.includes('$') || !window.katex || typeof window.katex.renderToString !== 'function') {
+    const hasMathDelimiter = source.includes('$') || source.includes('\\(') || source.includes('\\[');
+    if (!source || !hasMathDelimiter || !window.katex || typeof window.katex.renderToString !== 'function') {
       return escapeHTML(source);
     }
     try {
@@ -137,6 +180,7 @@
     hasEscapedDelimiter,
     isLikelyCurrencyStart,
     findMathDelimiter,
+    findBackslashMathDelimiter,
     normalizeLatexForKatex,
     splitByMath,
     renderMathInText,

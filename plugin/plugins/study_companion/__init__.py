@@ -880,15 +880,23 @@ class StudyCompanionPlugin(
         metadata: dict[str, Any] | None = None,
         **_,
     ):
+        def voice_noop(reason: str, filter_result: Mapping[str, Any] | None = None):
+            filter_payload = dict(filter_result or {})
+            original_method = str(filter_payload.get("method") or "")
+            if original_method and original_method != reason:
+                filter_payload["source_method"] = original_method
+            filter_payload["method"] = reason
+            return Ok({"action": "noop", "reason": reason, "filter": filter_payload})
+
         text = str(transcript or "").strip()
         if not text:
-            return Ok({"action": "noop", "reason": "empty_transcript"})
+            return voice_noop("empty_transcript")
         metadata_payload = metadata if isinstance(metadata, dict) else {}
         session_key = _voice_session_key(lanlan_name, metadata_payload)
 
         async with self._lock:
             if self._state.status != STATUS_READY:
-                return Ok({"action": "noop", "reason": "not_ready"})
+                return voice_noop("not_ready")
             state_snapshot_payload = self._state.to_dict()
 
         # Voice filtering only needs a point-in-time view; avoid holding the
@@ -920,7 +928,7 @@ class StudyCompanionPlugin(
             extra_names=[lanlan_name],
         )
         if filter_result is None:
-            return Ok({"action": "noop", "reason": "not_matched"})
+            return voice_noop("not_matched")
         if not bool(filter_result.get("should_relay")):
             return Ok({"action": "cancel_response", "filter": dict(filter_result)})
 
@@ -932,13 +940,7 @@ class StudyCompanionPlugin(
             filter_result,
         ).strip()
         if not context_text:
-            return Ok(
-                {
-                    "action": "noop",
-                    "reason": "empty_context",
-                    "filter": dict(filter_result),
-                }
-            )
+            return voice_noop("empty_context", filter_result)
         return Ok(
             {
                 "action": "prime_context",

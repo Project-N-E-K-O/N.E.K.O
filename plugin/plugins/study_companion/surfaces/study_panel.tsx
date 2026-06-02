@@ -52,7 +52,7 @@ const MODE_ORDER: Array<{ id: StudyMode; labelKey: string; fallback: string }> =
 ];
 const KATEX_CSS_URL = '/plugin/study_companion/ui/katex.min.css';
 const KATEX_SCRIPT_URL = '/plugin/study_companion/ui/katex.min.js';
-const CURRENCY_START_PATTERN = /^\$(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?(?:[A-Z]{2,4}|%)?(?=$|[\s)\],.;!?-])/;
+const KATEX_RENDER_SCRIPT_URL = '/plugin/study_companion/ui/katex-render.js';
 let katexLoadPromise: Promise<void> | null = null;
 
 type MathTextPart = {
@@ -61,107 +61,34 @@ type MathTextPart = {
   display?: boolean;
 };
 
-function hasEscapedDelimiter(source: string, index: number) {
-  let slashes = 0;
-  for (let i = index - 1; i >= 0 && source[i] === '\\'; i -= 1) {
-    slashes += 1;
+type StudyMathTools = {
+  splitByMath: (value: string) => MathTextPart[];
+  normalizeLatexForKatex: (value: string) => string;
+};
+
+function getStudyMathTools(): StudyMathTools | null {
+  const tools = (window as any).__studyCompanionMath;
+  if (
+    tools
+    && typeof tools.splitByMath === 'function'
+    && typeof tools.normalizeLatexForKatex === 'function'
+  ) {
+    return tools as StudyMathTools;
   }
-  return slashes % 2 === 1;
+  return null;
 }
 
-function isLikelyCurrencyStart(source: string, index: number) {
-  return CURRENCY_START_PATTERN.test(source.slice(index));
+function hasHostedKatex() {
+  const katex = (window as any).katex;
+  return Boolean(
+    katex
+    && typeof katex.render === 'function'
+    && typeof katex.renderToString === 'function',
+  );
 }
 
-function findMathDelimiter(source: string, start: number, delimiter: '$' | '$$') {
-  let index = start;
-  while (index < source.length) {
-    const next = source.indexOf(delimiter, index);
-    if (next === -1) {
-      return -1;
-    }
-    if (hasEscapedDelimiter(source, next)) {
-      index = next + delimiter.length;
-      continue;
-    }
-    if (delimiter === '$' && source[next + 1] === '$') {
-      index = next + 2;
-      continue;
-    }
-    return next;
-  }
-  return -1;
-}
-
-function splitMathText(value: string): MathTextPart[] {
-  const source = String(value || '');
-  const parts: MathTextPart[] = [];
-  let last = 0;
-  let index = 0;
-  while (index < source.length) {
-    if (source[index] !== '$' || hasEscapedDelimiter(source, index)) {
-      index += 1;
-      continue;
-    }
-
-    if (source[index + 1] === '$') {
-      const displayCloser = findMathDelimiter(source, index + 2, '$$');
-      if (displayCloser === -1) {
-        index += 2;
-        continue;
-      }
-      if (index > last) {
-        parts.push({ type: 'text', value: source.slice(last, index) });
-      }
-      parts.push({
-        type: 'math',
-        value: source.slice(index + 2, displayCloser).trim(),
-        display: true,
-      });
-      index = displayCloser + 2;
-      last = index;
-      continue;
-    }
-
-    if (isLikelyCurrencyStart(source, index)) {
-      index += 1;
-      continue;
-    }
-    const inlineCloser = findMathDelimiter(source, index + 1, '$');
-    if (inlineCloser === -1) {
-      index += 1;
-      continue;
-    }
-    if (index > last) {
-      parts.push({ type: 'text', value: source.slice(last, index) });
-    }
-    const mathValue = source.slice(index + 1, inlineCloser).trim();
-    if (mathValue) {
-      parts.push({ type: 'math', value: mathValue, display: false });
-    } else {
-      parts.push({ type: 'text', value: source.slice(index, inlineCloser + 1) });
-    }
-    index = inlineCloser + 1;
-    last = index;
-  }
-  if (last < source.length) {
-    parts.push({ type: 'text', value: source.slice(last) });
-  }
-  return parts.length ? parts : [{ type: 'text', value: source }];
-}
-
-function normalizeLatexForKatex(value: string) {
-  return String(value || '').replace(/</g, '\\lt ').replace(/>/g, '\\gt ');
-}
-
-function ensureHostedKatex() {
-  if ((window as any).katex && typeof (window as any).katex.render === 'function') {
-    return Promise.resolve();
-  }
-  if (katexLoadPromise) {
-    return katexLoadPromise;
-  }
-  katexLoadPromise = new Promise((resolve) => {
+function ensureHostedScript(id: string, src: string) {
+  return new Promise<void>((resolve) => {
     const resolveLoad = (script: HTMLScriptElement) => {
       script.dataset.studyKatexLoaded = 'true';
       resolve();
@@ -172,15 +99,12 @@ function ensureHostedKatex() {
       script.remove();
       resolve();
     };
-    if (!document.getElementById('study-companion-katex-css')) {
-      const link = document.createElement('link');
-      link.id = 'study-companion-katex-css';
-      link.rel = 'stylesheet';
-      link.href = KATEX_CSS_URL;
-      document.head.appendChild(link);
-    }
-    const existing = document.getElementById('study-companion-katex-script') as HTMLScriptElement | null;
+    const existing = document.getElementById(id) as HTMLScriptElement | null;
     if (existing) {
+      if (existing.dataset.studyKatexLoaded === 'true') {
+        resolve();
+        return;
+      }
       if (existing.dataset.studyKatexFailed === 'true') {
         existing.remove();
       } else {
@@ -190,23 +114,45 @@ function ensureHostedKatex() {
       }
     }
     const script = document.createElement('script');
-    script.id = 'study-companion-katex-script';
-    script.src = KATEX_SCRIPT_URL;
+    script.id = id;
+    script.src = src;
     script.async = true;
     script.addEventListener('load', () => resolveLoad(script), { once: true });
     script.addEventListener('error', () => resolveError(script), { once: true });
     document.head.appendChild(script);
+  });
+}
+
+function ensureHostedKatex() {
+  if (hasHostedKatex() && getStudyMathTools()) {
+    return Promise.resolve();
+  }
+  if (katexLoadPromise) {
+    return katexLoadPromise;
+  }
+  katexLoadPromise = new Promise((resolve) => {
+    if (!document.getElementById('study-companion-katex-css')) {
+      const link = document.createElement('link');
+      link.id = 'study-companion-katex-css';
+      link.rel = 'stylesheet';
+      link.href = KATEX_CSS_URL;
+      document.head.appendChild(link);
+    }
+    ensureHostedScript('study-companion-katex-script', KATEX_SCRIPT_URL)
+      .then(() => ensureHostedScript('study-companion-katex-render-script', KATEX_RENDER_SCRIPT_URL))
+      .then(resolve);
   });
   return katexLoadPromise;
 }
 
 function renderMathSpans(root: HTMLElement | null) {
   const katex = (window as any).katex;
-  if (!root || !katex || typeof katex.render !== 'function') {
+  const mathTools = getStudyMathTools();
+  if (!root || !mathTools || !katex || typeof katex.render !== 'function') {
     return;
   }
   root.querySelectorAll<HTMLElement>('[data-study-math]').forEach((node) => {
-    const tex = normalizeLatexForKatex(node.getAttribute('data-math') || '');
+    const tex = mathTools.normalizeLatexForKatex(node.getAttribute('data-math') || '');
     if (!tex) {
       return;
     }
@@ -224,18 +170,25 @@ function renderMathSpans(root: HTMLElement | null) {
 
 function MathReply({ text, label }: { text: string; label: string }) {
   const containerRef = useRef<HTMLElement | null>(null);
+  const [mathReady, setMathReady] = useState(() => Boolean(getStudyMathTools()));
   useEffect(() => {
     let active = true;
     ensureHostedKatex().then(() => {
       if (active) {
-        renderMathSpans(containerRef.current);
+        setMathReady(Boolean(getStudyMathTools()));
       }
     });
     return () => {
       active = false;
     };
-  }, [text]);
-  const parts = splitMathText(text);
+  }, []);
+  useEffect(() => {
+    if (mathReady) {
+      renderMathSpans(containerRef.current);
+    }
+  }, [mathReady, text]);
+  const mathTools = mathReady ? getStudyMathTools() : null;
+  const parts = mathTools ? mathTools.splitByMath(text) : [{ type: 'text', value: text }];
   return (
     <div
       ref={containerRef}
