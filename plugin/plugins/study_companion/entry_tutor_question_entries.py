@@ -64,7 +64,7 @@ class _TutorQuestionEntriesMixin:
         source_text = str(text or "").strip()
         vision_image_payload = str(vision_image_base64 or "").strip()
         used_ocr_fallback = False
-        if not source_text:
+        if not source_text and not vision_image_payload:
             async with self._lock:
                 source_text = self._state.last_ocr_text
             used_ocr_fallback = bool(source_text.strip())

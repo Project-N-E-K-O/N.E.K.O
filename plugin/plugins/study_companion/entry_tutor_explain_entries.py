@@ -138,13 +138,13 @@ class _TutorExplainEntriesMixin:
         source_text = str(intent.get("remaining_text") or "").strip()
         if not source_text and intent_kind != "concept_explain":
             source_text = raw_text
+        vision_image_payload = str(vision_image_base64 or "").strip()
         used_ocr_fallback = False
-        if not source_text:
+        if not source_text and not vision_image_payload:
             async with _plugin_lock(self._lock):
                 source_text = self._state.last_ocr_text
             used_ocr_fallback = bool(source_text.strip())
         source_text = source_text.strip()
-        vision_image_payload = str(vision_image_base64 or "").strip()
         if not source_text and not vision_image_payload:
             return Err(
                 SdkError(

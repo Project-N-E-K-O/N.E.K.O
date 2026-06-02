@@ -953,6 +953,21 @@ async def test_study_explain_text_uses_prompt_for_image_only() -> None:
 
 
 @pytest.mark.asyncio
+async def test_study_explain_text_prefers_pasted_image_over_stale_ocr() -> None:
+    plugin = _make_plugin_for_explain(vision_enabled=True)
+    plugin._state.last_ocr_text = "stale OCR text"
+
+    result = await plugin.study_explain_text(vision_image_base64=JPEG_IMAGE_BASE64)
+
+    assert isinstance(result, Ok)
+    text, context, _mode = plugin._agent.explanations[-1]
+    assert text == "请查看这张图片的内容"
+    assert context["source"] == "vision_image"
+    assert context["source_text"] == text
+    assert "stale OCR text" not in text
+
+
+@pytest.mark.asyncio
 async def test_study_explain_text_uses_english_prompt_for_image_only() -> None:
     plugin = _make_plugin_for_explain(vision_enabled=True, language="en")
 
@@ -996,6 +1011,21 @@ async def test_study_generate_question_allows_image_only() -> None:
     assert plugin._agent.generated_questions[-1][1][
         "vision_image_base64"
     ] == f"data:image/jpeg;base64,{JPEG_IMAGE_BASE64}"
+
+
+@pytest.mark.asyncio
+async def test_study_generate_question_prefers_pasted_image_over_stale_ocr() -> None:
+    plugin = _make_plugin_for_structured_vision(vision_enabled=True)
+    plugin._state.last_ocr_text = "stale OCR text"
+
+    result = await plugin.study_generate_question(vision_image_base64=JPEG_IMAGE_BASE64)
+
+    assert isinstance(result, Ok)
+    assert plugin._agent.generated_questions[-1][0] == "请根据这张图片生成一道学习题。"
+    assert plugin._agent.generated_questions[-1][1]["source"] == "vision_image"
+    assert plugin._agent.generated_questions[-1][1]["source_text"] == (
+        plugin._agent.generated_questions[-1][0]
+    )
 
 
 @pytest.mark.asyncio
