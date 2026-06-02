@@ -1377,8 +1377,7 @@ class OmniRealtimeClient:
             
         except Exception as e:
             logger.error(f"Error analyzing image with vision model: {e}")
-            self.image_recognized_this_turn = True
-            self._image_being_analyzed = False
+            self._image_recognized_this_turn = True
             self._image_description = f"[实时屏幕截图或相机画面]: 分析出错: {str(e)}"
             # 检测内容审查错误并发送中文提示到前端（不关闭session）
             error_str = str(e)
@@ -1386,6 +1385,8 @@ class OmniRealtimeClient:
                 if self.on_status_message:
                     await self.on_status_message(json.dumps({"code": "IMAGE_BLOCKED"}))
             return "图片识别发生严重错误！"
+        finally:
+            self._image_being_analyzed = False
     
     async def stream_image(self, image_b64: str, *, bypass_rate_limit: bool = False) -> None:
         """Stream raw image data to the API.
@@ -1403,6 +1404,11 @@ class OmniRealtimeClient:
         try:
             # Models without native vision (step, free on lanlan.tech) — first frame triggers VISION_MODEL analysis
             if '实时屏幕截图或相机画面正在分析中' in self._image_description and not self._supports_native_image:
+                # 非原生视觉后端只需要本轮第一帧做分析；后续高频帧直接丢弃，避免并发刷爆 VISION_MODEL。
+                async with self._image_lock:
+                    if self._image_recognized_this_turn or self._image_being_analyzed:
+                        return
+                    self._image_being_analyzed = True
                 await self._analyze_image_with_vision_model(image_b64)
                 return
             
@@ -2541,6 +2547,7 @@ class OmniRealtimeClient:
                     self._print_input_transcript = False
                     self._image_recognized_this_turn = False
                     self._image_sent_this_turn = False
+                    self._image_being_analyzed = False
                     if self.on_response_done:
                         await self.on_response_done()
                     # No-server-VAD providers (Gemini-proxy: lanlan.app+free /

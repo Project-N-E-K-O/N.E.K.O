@@ -38,6 +38,25 @@
     // 「没见过 branch 」当首启代名——升级用户也都没见过 branch，那个口径会误伤他们的
     // 既有偏好。offline 首启错过 branch 时 marker 留着，下次在线再补
     const _FIRST_LAUNCH_PENDING_KEY = '_neko_first_launch_branch_pending';
+    const _SHARED_SETTINGS_KEYS = [
+        'proactiveChatEnabled',
+        'proactiveVisionEnabled',
+        'proactiveVisionChatEnabled',
+        'proactiveNewsChatEnabled',
+        'proactiveVideoChatEnabled',
+        'proactivePersonalChatEnabled',
+        'proactiveMusicEnabled',
+        'proactiveMemeEnabled',
+        'proactiveMiniGameInviteEnabled',
+        'mergeMessagesEnabled',
+        'focusModeEnabled',
+        'avatarReactionBubbleEnabled',
+        'proactiveChatInterval',
+        'proactiveVisionInterval',
+        'textGuardMaxLength',
+        'renderQuality',
+        'targetFrameRate'
+    ];
 
     function getDefaultRenderQuality() {
         return S.renderQuality || 'medium';
@@ -71,6 +90,74 @@
             settings.userLanguage = S.userLanguage;
         }
         return settings;
+    }
+
+    function applySharedRuntimeSettings(settings) {
+        if (!settings || typeof settings !== 'object') return false;
+        let changed = false;
+        _SHARED_SETTINGS_KEYS.forEach((key) => {
+            if (!Object.prototype.hasOwnProperty.call(settings, key)) return;
+            if (S[key] !== settings[key]) {
+                S[key] = settings[key];
+                changed = true;
+            }
+        });
+        if (Object.prototype.hasOwnProperty.call(settings, 'userLanguage')) {
+            S.userLanguage = settings.userLanguage;
+            changed = true;
+        }
+        if (changed && S.renderQuality) {
+            window.cursorFollowPerformanceLevel = U.mapRenderQualityToFollowPerf(S.renderQuality);
+        }
+        return changed;
+    }
+
+    function isManualScreenShareActive() {
+        try {
+            const button = document.getElementById('screenButton');
+            return !!(button && button.classList.contains('active'));
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function stopVisionAfterPrivacyEnabled() {
+        if (S.proactiveVisionEnabled !== false) return;
+
+        try {
+            if (typeof window.stopProactiveVisionDuringSpeech === 'function') {
+                window.stopProactiveVisionDuringSpeech();
+            }
+        } catch (error) {
+            console.warn('[app-settings] 停止语音主动视觉失败:', error);
+        }
+
+        if (isManualScreenShareActive()) return;
+
+        try {
+            if (typeof window.stopScreening === 'function') {
+                window.stopScreening();
+            }
+        } catch (error) {
+            console.warn('[app-settings] 停止屏幕发送循环失败:', error);
+        }
+
+        try {
+            if (S.screenCaptureStream && typeof S.screenCaptureStream.getTracks === 'function') {
+                S.screenCaptureStream.getTracks().forEach((track) => {
+                    try { track.stop(); } catch (_) { }
+                });
+            }
+        } catch (error) {
+            console.warn('[app-settings] 释放隐私模式屏幕流失败:', error);
+        } finally {
+            S.screenCaptureStream = null;
+            S.screenCaptureStreamLastUsed = null;
+            if (S.screenCaptureStreamIdleTimer) {
+                clearTimeout(S.screenCaptureStreamIdleTimer);
+                S.screenCaptureStreamIdleTimer = null;
+            }
+        }
     }
 
     /**
@@ -314,6 +401,7 @@
         S.textGuardMaxLength = currentTextGuardMaxLength;
         S.renderQuality = currentRenderQuality;
         S.targetFrameRate = currentTargetFrameRate;
+        stopVisionAfterPrivacyEnabled();
         // 同步字幕设置到共享状态
         S.subtitleEnabled = currentSubtitleEnabled;
         S.userLanguage = currentUserLanguage;
@@ -672,6 +760,20 @@
     }
 
     // ======================== 初始化调用 ========================
+
+    window.addEventListener('storage', function (event) {
+        if (event.key !== 'project_neko_settings' || !event.newValue) return;
+        try {
+            const settings = JSON.parse(event.newValue);
+            const changed = applySharedRuntimeSettings(settings);
+            stopVisionAfterPrivacyEnabled();
+            if (changed && typeof window.scheduleProactiveChat === 'function') {
+                window.scheduleProactiveChat();
+            }
+        } catch (error) {
+            console.warn('[app-settings] 跨窗口设置同步失败:', error);
+        }
+    });
 
     // 加载设置
     loadSettings();
