@@ -147,8 +147,9 @@ body {
 
 .home-tutorial-reset-controls {
     position: fixed;
-    left: 16px;
-    bottom: 16px;
+    left: max(16px, env(safe-area-inset-left));
+    top: max(16px, env(safe-area-inset-top));
+    bottom: auto;
     z-index: 100020;
     display: flex;
     align-items: center;
@@ -369,8 +370,9 @@ body {
     }
 
     .home-tutorial-reset-controls {
+        top: max(10px, env(safe-area-inset-top));
         right: 10px;
-        bottom: 10px;
+        bottom: auto;
         left: 10px;
         flex-wrap: wrap;
     }

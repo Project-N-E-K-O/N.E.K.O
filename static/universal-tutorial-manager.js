@@ -106,6 +106,7 @@ function loadAvatarFloatingGuideState() {
         manualResetRound: normalizeOptionalAvatarFloatingGuideRound(parsed.manualResetRound),
         lastAutoShownRound: normalizeOptionalAvatarFloatingGuideRound(parsed.lastAutoShownRound),
         lastAutoShownDate: parsed.lastAutoShownDate || '',
+        lastEndState: parsed.lastEndState && typeof parsed.lastEndState === 'object' ? parsed.lastEndState : null,
         updatedAt: parsed.updatedAt || null,
         resetHistory: Array.isArray(parsed.resetHistory) ? parsed.resetHistory.slice(-20) : [],
     };
@@ -358,6 +359,9 @@ class UniversalTutorialManager {
             state.lastAutoShownRound = null;
             state.lastAutoShownDate = '';
         }
+        if (state.lastEndState && Number(state.lastEndState.day) === round) {
+            state.lastEndState = null;
+        }
         state.pendingRound = round;
         state.manualResetRound = round;
         state.updatedAt = resetAt;
@@ -396,10 +400,22 @@ class UniversalTutorialManager {
                 ? normalizeAvatarFloatingGuideRoundList(state.completedRounds.concat(round))
                 : omitAvatarFloatingGuideRound(state.completedRounds, round);
         }
-        state.updatedAt = new Date().toISOString();
+        const endedAt = Date.now();
+        state.lastEndState = {
+            day: round,
+            ended: true,
+            outcome: normalizedOutcome,
+            rawReason: normalizedOutcome,
+            isAngryExit: false,
+            completed: normalizedOutcome === 'complete',
+            skipped: normalizedOutcome === 'skip',
+            source: 'avatar_floating_guide_state',
+            endedAt: endedAt
+        };
+        state.updatedAt = new Date(endedAt).toISOString();
         saveAvatarFloatingGuideState(state);
         window.dispatchEvent(new CustomEvent(`neko:avatar-floating-guide-${normalizedOutcome}`, {
-            detail: { day: round, state },
+            detail: { day: round, state, endState: state.lastEndState },
         }));
         return state;
     }
@@ -5169,13 +5185,28 @@ class UniversalTutorialManager {
         } else if (this.currentPage === 'home' && (endMeta.reason === 'complete' || endMeta.reason === 'skip')) {
             this.markAvatarFloatingGuideRoundOutcome(1, endMeta.reason);
         }
+        let avatarFloatingEndState = null;
         if (avatarFloatingRound || this.currentPage === 'home') {
-            recordAvatarFloatingGuideEndState(
+            avatarFloatingEndState = recordAvatarFloatingGuideEndState(
                 avatarFloatingRound || 1,
                 endMeta.reason,
                 endMeta.rawReason,
                 completedSource
             );
+        }
+        if (avatarFloatingEndState && (endMeta.reason === 'complete' || endMeta.reason === 'skip')) {
+            const avatarFloatingEndEventName = endMeta.reason === 'skip'
+                ? 'neko:avatar-floating-guide-skip'
+                : 'neko:avatar-floating-guide-complete';
+            window.dispatchEvent(new CustomEvent(avatarFloatingEndEventName, {
+                detail: {
+                    page: this.currentPage,
+                    source: completedSource,
+                    reason: endMeta.rawReason,
+                    day: avatarFloatingEndState.day,
+                    endState: avatarFloatingEndState
+                }
+            }));
         }
 
         if (endMeta.reason === 'destroy') {
@@ -5210,7 +5241,9 @@ class UniversalTutorialManager {
                 detail: {
                     page: this.currentPage,
                     source: completedSource,
-                    reason: endMeta.rawReason
+                    reason: endMeta.rawReason,
+                    day: avatarFloatingEndState ? avatarFloatingEndState.day : undefined,
+                    endState: avatarFloatingEndState
                 }
             }));
             this.logPromptFlow('tutorial-skipped', {
@@ -5226,7 +5259,9 @@ class UniversalTutorialManager {
         window.dispatchEvent(new CustomEvent('neko:tutorial-completed', {
             detail: {
                 page: this.currentPage,
-                source: completedSource
+                source: completedSource,
+                day: avatarFloatingEndState ? avatarFloatingEndState.day : undefined,
+                endState: avatarFloatingEndState
             }
         }));
         this.logPromptFlow('tutorial-completed', {

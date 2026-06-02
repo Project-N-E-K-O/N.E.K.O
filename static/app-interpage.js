@@ -2141,14 +2141,9 @@
                         handleVoiceConfigSwitchingMessage(event.data);
                         break;
                     }
-                    case 'yui_guide_append_chat_message': {
-                        appendYuiGuideChatMessage(event.data.message);
+                    case 'yui_guide_append_chat_message':
+                    case 'yui_guide_update_chat_message':
                         break;
-                    }
-                    case 'yui_guide_update_chat_message': {
-                        updateYuiGuideChatMessage(event.data.messageId, event.data.patch);
-                        break;
-                    }
                     case 'yui_guide_message_action': {
                         if (isStandaloneChatPage()) break;
                         window.dispatchEvent(new CustomEvent('neko:yui-guide:message-action', {

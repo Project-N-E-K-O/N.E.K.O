@@ -27,3 +27,9 @@ def test_home_tutorial_greeting_guard_false_state_does_not_block(monkeypatch):
 
     monkeypatch.setattr(websocket_router.time, "time", lambda: 120.0)
     assert websocket_router._is_home_tutorial_blocking_greeting(lanlan_name) is False
+
+
+def test_tutorial_release_reason_blocks_greeting():
+    assert websocket_router._is_tutorial_release_greeting_reason("tutorial-completed") is True
+    assert websocket_router._is_tutorial_release_greeting_reason("tutorial-skipped") is True
+    assert websocket_router._is_tutorial_release_greeting_reason("ws-open") is False

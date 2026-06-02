@@ -355,6 +355,7 @@
             manualResetRound: normalizeOptionalRound(parsed.manualResetRound),
             lastAutoShownRound: normalizeOptionalRound(parsed.lastAutoShownRound),
             lastAutoShownDate: parsed.lastAutoShownDate || '',
+            lastEndState: parsed.lastEndState && typeof parsed.lastEndState === 'object' ? parsed.lastEndState : null,
             updatedAt: parsed.updatedAt || null,
             resetHistory: Array.isArray(parsed.resetHistory) ? parsed.resetHistory.slice(-RESET_HISTORY_LIMIT) : [],
         };
@@ -430,10 +431,22 @@
             state.skippedRounds = normalizeRoundList(state.skippedRounds.concat(round));
             state.completedRounds = omitRound(state.completedRounds, round);
         }
-        state.updatedAt = new Date().toISOString();
+        const endedAt = Date.now();
+        state.lastEndState = {
+            day: round,
+            ended: true,
+            outcome: outcome,
+            rawReason: outcome,
+            isAngryExit: false,
+            completed: outcome === 'complete',
+            skipped: outcome === 'skip',
+            source: 'avatar_floating_guide_state',
+            endedAt: endedAt
+        };
+        state.updatedAt = new Date(endedAt).toISOString();
         saveGuideState(state);
         window.dispatchEvent(new CustomEvent(`neko:avatar-floating-guide-${outcome}`, {
-            detail: { day: round, state },
+            detail: { day: round, state, endState: state.lastEndState },
         }));
         return state;
     }

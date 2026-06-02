@@ -10,6 +10,7 @@
     var LOCALE_BASE_URL = '/static/icebreaker/locales/';
     var TRIGGER_WINDOW_MS = 2 * 60 * 1000;
     var PERSISTED_END_WINDOW_MS = 15 * 60 * 1000;
+    var TUTORIAL_IDLE_RETRY_MS = 500;
     var activeSession = null;
     var scriptPromise = null;
     var localePromises = Object.create(null);
@@ -392,6 +393,63 @@
         }).catch(function () {});
     }
 
+    function isIcebreakerBlockerVisible(el) {
+        if (!el || el.hidden) return false;
+        var style = null;
+        try {
+            style = window.getComputedStyle ? window.getComputedStyle(el) : null;
+        } catch (_) {}
+        if (style && (
+            style.display === 'none'
+            || style.visibility === 'hidden'
+            || style.opacity === '0'
+        )) {
+            return false;
+        }
+        var rect = null;
+        try {
+            rect = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+        } catch (_) {}
+        return !rect || rect.width > 0 || rect.height > 0;
+    }
+
+    function hasVisibleTutorialBlocker(selectors) {
+        try {
+            for (var i = 0; i < selectors.length; i += 1) {
+                var nodes = document.querySelectorAll(selectors[i]);
+                for (var j = 0; j < nodes.length; j += 1) {
+                    if (isIcebreakerBlockerVisible(nodes[j])) return true;
+                }
+            }
+        } catch (_) {}
+        return false;
+    }
+
+    function isTutorialBlockingIcebreaker() {
+        try {
+            if (window.isInTutorial) return true;
+        } catch (_) {}
+        try {
+            var manager = window.universalTutorialManager;
+            if (manager && (
+                manager.isTutorialRunning
+                || manager._teardownPromise
+                || manager.activeAvatarFloatingGuideRound
+            )) {
+                return true;
+            }
+        } catch (_) {}
+        return hasVisibleTutorialBlocker([
+            '#neko-tutorial-skip-btn',
+            '#home-avatar-floating-guide-player',
+            '.home-avatar-floating-guide-player',
+            '.driver-popover',
+            '.driver-overlay',
+            '.yui-guide-overlay',
+            '.yui-guide-stage'
+        ]);
+    }
+
     function deliverNode(nodeId) {
         if (!activeSession) return Promise.resolve();
         var dayConfig = activeSession.dayConfig;
@@ -542,6 +600,13 @@
     function resolveRecentPersistedEndState() {
         var state = readPersistedAvatarGuideState();
         if (!state || typeof state !== 'object') return null;
+        if (state.lastEndState && typeof state.lastEndState === 'object') {
+            var persistedLastEndState = Object.assign({}, state.lastEndState);
+            var lastEndedAt = Number(persistedLastEndState.endedAt || 0);
+            if (lastEndedAt && Date.now() - lastEndedAt <= PERSISTED_END_WINDOW_MS) {
+                return persistedLastEndState;
+            }
+        }
         var updatedAtMs = Date.parse(String(state.updatedAt || ''));
         if (!Number.isFinite(updatedAtMs) || Date.now() - updatedAtMs > PERSISTED_END_WINDOW_MS) {
             return null;
@@ -602,9 +667,29 @@
 
     function startFromEndState(endState) {
         return loadScripts().then(function (scripts) {
-            if (!canStartFromEndState(endState, scripts)) return false;
+            if (!canStartFromEndState(endState, scripts)) {
+                return false;
+            }
             return startForDay(String(endState.day || ''), { force: false });
         });
+    }
+
+    function getEndStateTriggerDeadline(endState) {
+        var endedAt = Number(endState && endState.endedAt || 0);
+        return (endedAt || Date.now()) + TRIGGER_WINDOW_MS;
+    }
+
+    function startFromEndStateWhenTutorialIdle(endState) {
+        if (!endState) return Promise.resolve(false);
+        if (isTutorialBlockingIcebreaker()) {
+            if (Date.now() >= getEndStateTriggerDeadline(endState)) return Promise.resolve(false);
+            return new Promise(function (resolve) {
+                window.setTimeout(resolve, TUTORIAL_IDLE_RETRY_MS);
+            }).then(function () {
+                return startFromEndStateWhenTutorialIdle(endState);
+            });
+        }
+        return Promise.resolve(startFromEndState(endState));
     }
 
     function synthesizeEndStateFromEvent(eventType, detail) {
@@ -616,10 +701,8 @@
         } else if (eventType === 'neko:avatar-floating-guide-complete') {
             outcome = 'complete';
         } else if (eventType === 'neko:tutorial-skipped' && normalizedDetail.page === 'home') {
-            day = 1;
             outcome = 'skip';
         } else if (eventType === 'neko:tutorial-completed' && normalizedDetail.page === 'home') {
-            day = 1;
             outcome = 'complete';
         }
         if (!day || !outcome) return null;
@@ -639,8 +722,8 @@
     function resolveLatestEndState(detail, eventType) {
         var normalizedDetail = detail && typeof detail === 'object' ? detail : {};
         return normalizedDetail.endState
-            || window.avatarFloatingGuideEndState
             || synthesizeEndStateFromEvent(eventType, normalizedDetail)
+            || window.avatarFloatingGuideEndState
             || normalizedDetail;
     }
 
@@ -653,12 +736,9 @@
     }
 
     function bootstrapFromRecentEndState() {
-        window.setTimeout(function () {
-            startFromEndState(window.avatarFloatingGuideEndState).then(function (started) {
-                if (started || activeSession) return;
-                return startFromEndState(resolveRecentPersistedEndState());
-            });
-        }, 900);
+        // Cold starts must wait for an explicit tutorial end event; persisted
+        // guide history can otherwise steal the first tutorial before it opens.
+        return false;
     }
 
     window.addEventListener('neko:avatar-floating-guide-complete', handleGuideEndEvent);
