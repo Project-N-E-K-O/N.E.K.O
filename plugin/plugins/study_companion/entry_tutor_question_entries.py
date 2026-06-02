@@ -12,7 +12,18 @@ from .entry_common import (
 )
 
 
-IMAGE_ONLY_QUESTION_PROMPT = "Generate a study question from the pasted image."
+IMAGE_ONLY_QUESTION_PROMPT_EN = "Generate a study question from the pasted image."
+IMAGE_ONLY_QUESTION_PROMPT_ZH_CN = "请根据这张图片生成一道学习题。"
+IMAGE_ONLY_QUESTION_PROMPT_ZH_TW = "請根據這張圖片生成一道學習題。"
+
+
+def _image_only_question_prompt(language: str) -> str:
+    normalized = str(language or "").strip().lower()
+    if normalized.startswith(("zh-tw", "zh-hk", "zh-hant")):
+        return IMAGE_ONLY_QUESTION_PROMPT_ZH_TW
+    if normalized.startswith("zh"):
+        return IMAGE_ONLY_QUESTION_PROMPT_ZH_CN
+    return IMAGE_ONLY_QUESTION_PROMPT_EN
 
 
 class _TutorQuestionEntriesMixin:
@@ -74,7 +85,7 @@ class _TutorQuestionEntriesMixin:
         try:
             image_only_source = False
             if not source_text and vision_image_payload:
-                source_text = IMAGE_ONLY_QUESTION_PROMPT
+                source_text = _image_only_question_prompt(self._cfg.language)
                 image_only_source = True
             async with self._lock:
                 active_mode = self._state.active_mode

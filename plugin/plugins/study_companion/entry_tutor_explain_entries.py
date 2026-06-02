@@ -18,7 +18,18 @@ from .entry_common import (
 )
 
 
-IMAGE_ONLY_EXPLAIN_PROMPT = "Please explain the pasted image."
+IMAGE_ONLY_EXPLAIN_PROMPT_EN = "Please explain the pasted image."
+IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN = "请查看这张图片的内容"
+IMAGE_ONLY_EXPLAIN_PROMPT_ZH_TW = "請查看這張圖片的內容"
+
+
+def _image_only_explain_prompt(language: str) -> str:
+    normalized = str(language or "").strip().lower()
+    if normalized.startswith(("zh-tw", "zh-hk", "zh-hant")):
+        return IMAGE_ONLY_EXPLAIN_PROMPT_ZH_TW
+    if normalized.startswith("zh"):
+        return IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN
+    return IMAGE_ONLY_EXPLAIN_PROMPT_EN
 
 
 class _TutorExplainEntriesMixin:
@@ -51,7 +62,9 @@ class _TutorExplainEntriesMixin:
         if normalized_text:
             async with _plugin_lock(self._lock):
                 self._state.last_ocr_text = normalized_text
-        source_text = normalized_text or "请查看这张图片的内容"
+        source_text = normalized_text or _image_only_explain_prompt(
+            self._cfg.language
+        )
         return await self.study_explain_text(
             text=source_text,
             vision_image_base64=image_payload,
@@ -150,7 +163,7 @@ class _TutorExplainEntriesMixin:
                     return validated_vision_image
                 vision_image_payload = validated_vision_image
                 if not source_text:
-                    source_text = IMAGE_ONLY_EXPLAIN_PROMPT
+                    source_text = _image_only_explain_prompt(self._cfg.language)
                     image_only_source = True
             extra_context: dict[str, Any] = {
                 "source": "ocr_snapshot"

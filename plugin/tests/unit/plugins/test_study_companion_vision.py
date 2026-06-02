@@ -615,6 +615,26 @@ async def test_study_submit_image_without_caption_preserves_ocr_fallback() -> No
 
 
 @pytest.mark.asyncio
+async def test_study_submit_image_without_caption_uses_english_prompt() -> None:
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    plugin._cfg = StudyConfig(llm_vision_enabled=True, language="en")
+    plugin._state = build_initial_state()
+    plugin._lock = threading.RLock()
+    calls: list[str] = []
+
+    async def _study_explain_text(self: StudyCompanionPlugin, text: str = "", **_: Any):
+        calls.append(text)
+        return Ok({"reply": "explained"})
+
+    plugin.study_explain_text = MethodType(_study_explain_text, plugin)
+
+    result = await plugin.study_submit_image(JPEG_IMAGE_BASE64)
+
+    assert isinstance(result, Ok)
+    assert calls == ["Please explain the pasted image."]
+
+
+@pytest.mark.asyncio
 async def test_study_submit_image_uses_call_local_image_for_overlap() -> None:
     plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
     plugin._cfg = StudyConfig(llm_vision_enabled=True)
@@ -794,9 +814,11 @@ class _StructuredVisionKnowledgeTracker:
         return 0.5
 
 
-def _make_plugin_for_explain(*, vision_enabled: bool) -> StudyCompanionPlugin:
+def _make_plugin_for_explain(
+    *, vision_enabled: bool, language: str = "zh-CN"
+) -> StudyCompanionPlugin:
     plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
-    plugin._cfg = StudyConfig(llm_vision_enabled=vision_enabled)
+    plugin._cfg = StudyConfig(llm_vision_enabled=vision_enabled, language=language)
     plugin._state = build_initial_state()
     plugin._lock = asyncio.Lock()
     plugin._agent = _FakeVisionTutorAgent()
@@ -813,10 +835,10 @@ def _make_plugin_for_explain(*, vision_enabled: bool) -> StudyCompanionPlugin:
 
 
 def _make_plugin_for_structured_vision(
-    *, vision_enabled: bool
+    *, vision_enabled: bool, language: str = "zh-CN"
 ) -> StudyCompanionPlugin:
     plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
-    plugin._cfg = StudyConfig(llm_vision_enabled=vision_enabled)
+    plugin._cfg = StudyConfig(llm_vision_enabled=vision_enabled, language=language)
     plugin._state = build_initial_state()
     plugin._lock = asyncio.Lock()
     plugin._agent = _FakeVisionTutorAgent()
@@ -924,10 +946,23 @@ async def test_study_explain_text_uses_prompt_for_image_only() -> None:
 
     assert isinstance(result, Ok)
     text, context, _mode = plugin._agent.explanations[-1]
-    assert text
+    assert text == "请查看这张图片的内容"
     assert context["source"] == "vision_image"
     assert context["source_text"] == text
     assert context["vision_image_base64"] == f"data:image/jpeg;base64,{JPEG_IMAGE_BASE64}"
+
+
+@pytest.mark.asyncio
+async def test_study_explain_text_uses_english_prompt_for_image_only() -> None:
+    plugin = _make_plugin_for_explain(vision_enabled=True, language="en")
+
+    result = await plugin.study_explain_text(vision_image_base64=JPEG_IMAGE_BASE64)
+
+    assert isinstance(result, Ok)
+    text, context, _mode = plugin._agent.explanations[-1]
+    assert text == "Please explain the pasted image."
+    assert context["source"] == "vision_image"
+    assert context["source_text"] == text
 
 
 @pytest.mark.asyncio
@@ -952,7 +987,7 @@ async def test_study_generate_question_allows_image_only() -> None:
     result = await plugin.study_generate_question(vision_image_base64=JPEG_IMAGE_BASE64)
 
     assert isinstance(result, Ok)
-    assert plugin._agent.generated_questions[-1][0]
+    assert plugin._agent.generated_questions[-1][0] == "请根据这张图片生成一道学习题。"
     assert plugin._agent.generated_questions[-1][1]["source"] == "vision_image"
     assert (
         plugin._agent.generated_questions[-1][1]["source_text"]
@@ -961,6 +996,20 @@ async def test_study_generate_question_allows_image_only() -> None:
     assert plugin._agent.generated_questions[-1][1][
         "vision_image_base64"
     ] == f"data:image/jpeg;base64,{JPEG_IMAGE_BASE64}"
+
+
+@pytest.mark.asyncio
+async def test_study_generate_question_uses_english_prompt_for_image_only() -> None:
+    plugin = _make_plugin_for_structured_vision(vision_enabled=True, language="en")
+
+    result = await plugin.study_generate_question(vision_image_base64=JPEG_IMAGE_BASE64)
+
+    assert isinstance(result, Ok)
+    assert (
+        plugin._agent.generated_questions[-1][0]
+        == "Generate a study question from the pasted image."
+    )
+    assert plugin._agent.generated_questions[-1][1]["source"] == "vision_image"
 
 
 @pytest.mark.asyncio
