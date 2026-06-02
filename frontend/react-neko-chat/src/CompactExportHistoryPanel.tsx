@@ -2265,6 +2265,7 @@ export default function CompactExportHistoryPanel({
                   {messages.map((message, index) => {
                     const selectable = isCompactExportMessageSelectable(message);
                     const selected = selectedIds.has(message.id);
+                    const selectionEnabled = controlsOpen && selectable;
                     const failed = message.status === 'failed';
                     const streaming = message.status === 'streaming';
                     const tone = getCompactHistoryBubbleTone(message, index, messages[index - 1]);
@@ -2288,10 +2289,10 @@ export default function CompactExportHistoryPanel({
                       >
                         <div
                           className="compact-export-history-bubble"
-                          role="button"
-                          aria-pressed={selected}
-                          aria-disabled={!selectable}
-                          tabIndex={selectable ? 0 : -1}
+                          role={selectionEnabled ? 'button' : undefined}
+                          aria-pressed={selectionEnabled ? selected : undefined}
+                          aria-disabled={!selectionEnabled}
+                          tabIndex={selectionEnabled ? 0 : -1}
                           data-compact-hit-region="true"
                           data-compact-hit-region-id={`history:message:${message.id}`}
                           data-compact-hit-region-kind="message"

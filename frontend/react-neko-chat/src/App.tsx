@@ -3135,7 +3135,7 @@ export default function App({
         || !!compactChoiceLayerRef.current?.contains(target)
         || (
           target instanceof Element
-          && !!target.closest('.compact-export-history-anchor')
+          && !!target.closest('.compact-export-history-anchor, .compact-history-visibility-handle')
         )
       )
     );
