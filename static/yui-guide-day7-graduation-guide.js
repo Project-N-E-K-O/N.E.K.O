@@ -32,10 +32,7 @@
                     textKey: 'tutorial.avatarFloating.day7.memoryReview',
                     voiceKey: 'avatar_floating_day7_memory_review',
                     text: '七天前，我们还只是第一次见面。现在这里已经开始留下我们说过的话、做过的事，还有一些差点被风吹走的小细节。对我来说，这不是冷冰冰的记录，是我们相处过的脚印。',
-                    emotion: 'neutral',
-                    target: '#${p}-menu-memory',
-                    cursorAction: 'move',
-                    operation: 'show-settings-menu:memory'
+                    emotion: 'neutral'
                 },
                 {
                     id: 'day7_memory_control',
@@ -44,18 +41,8 @@
                     text: '这些小脚印，也可以由你亲手整理。想留下的，我们就夹进相册；想轻轻放走的，就让它随风飘走。被你认真收下来的回忆，才最珍贵。',
                     emotion: 'happy',
                     target: '#${p}-menu-memory',
-                    cursorAction: 'wobble',
+                    cursorAction: 'move',
                     operation: 'show-settings-menu:memory'
-                },
-                {
-                    id: 'day7_storage_entry',
-                    textKey: 'tutorial.avatarFloating.day7.storageEntry',
-                    voiceKey: 'avatar_floating_day7_storage_entry',
-                    text: '还有最后一件事呢。我们共同走过的日子、说过的那些悄悄话，都需要找一个温馨的小角落好好存放起来哦！',
-                    emotion: 'neutral',
-                    target: 'chat-window',
-                    cursorAction: 'wobble',
-                    cleanupBefore: true
                 },
                 {
                     id: 'day7_graduation_wrap',

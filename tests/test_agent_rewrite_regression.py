@@ -1371,7 +1371,6 @@ def test_avatar_floating_round_director_flow_matches_day2_to_day7_contracts():
         "cleanupBefore: true",
         "this.collapseCharacterSettingsSidePanel();",
         "Day 6 插件管理预览完成",
-        "id: 'day7_storage_entry'",
         "target: 'chat-window'",
     ):
         assert expected in source
@@ -1379,9 +1378,58 @@ def test_avatar_floating_round_director_flow_matches_day2_to_day7_contracts():
     assert "cursorAction: 'wobble'" in day2_screen_entry_block
     assert "operation:" not in day2_screen_entry_block
 
-    day7_block = source[source.index("id: 'day7_storage_entry'"):source.index("id: 'day7_graduation_wrap'")]
-    assert "/cloudsave_manager" not in day7_block
-    assert "show-settings-menu" not in day7_block
+    assert "id: 'day7_storage_entry'" not in source
+    assert "/cloudsave_manager" not in guide_source
+
+
+def test_day7_memory_animation_flow_starts_on_second_line():
+    guide_source = Path("static/yui-guide-day7-graduation-guide.js").read_text(encoding="utf-8")
+    reset_source = Path("static/avatar-floating-guide-reset.js").read_text(encoding="utf-8")
+
+    def scene_block(source: str, scene_id: str) -> str:
+        match = re.search(
+            rf"\{{\s*id: '{scene_id}',(?P<body>.*?)\n\s*\}}",
+            source,
+            re.DOTALL,
+        )
+        assert match, f"missing scene {scene_id}"
+        return match.group("body")
+
+    review = scene_block(guide_source, "day7_memory_review")
+    control = scene_block(guide_source, "day7_memory_control")
+    reset_review = scene_block(reset_source, "day7_memory_review")
+    reset_control = scene_block(reset_source, "day7_memory_control")
+
+    for token in ("target:", "cursorAction:", "operation:"):
+        assert token not in review
+
+    assert "target: '#${p}-menu-memory'" in control
+    assert "cursorAction: 'move'" in control
+    assert "operation: 'show-settings-menu:memory'" in control
+
+    assert "selector:" not in reset_review
+    assert "cursorAction:" not in reset_review
+    assert "operation:" not in reset_review
+    assert "selector: '#${prefix}-menu-memory'" in reset_control
+    assert "cursorAction: 'move'" in reset_control
+    assert "operation: 'none'" in reset_control
+
+
+def test_avatar_floating_intro_look_at_focus_uses_smoothed_cursor_point():
+    source = Path("static/yui-guide-avatar-stage.js").read_text(encoding="utf-8")
+    apply_current_point_start = source.index("        applyCurrentPoint(now) {")
+    apply_current_point = source[
+        apply_current_point_start
+        :source.index("        attachTicker() {", apply_current_point_start)
+    ]
+
+    assert "const INTRO_VOICE_LOOK_AT_FIRST_POINT_RAMP_MS = 1200;" in source
+    assert "this.firstPointOrigin = this.clonePoint(this.smoothedPoint);" in apply_current_point
+    assert "const easedProgress = easeInOutCubic(progress);" in apply_current_point
+    assert "x: lerp(this.firstPointOrigin.x, point.x, easedProgress)" in apply_current_point
+    assert "y: lerp(this.firstPointOrigin.y, point.y, easedProgress)" in apply_current_point
+    assert "const focusPoint = this.smoothedPoint;" in apply_current_point
+    assert "const focusPoint = this.latestPoint || this.smoothedPoint;" not in apply_current_point
 
 
 def test_tutorial_destroy_does_not_mark_seen_but_skip_does():
