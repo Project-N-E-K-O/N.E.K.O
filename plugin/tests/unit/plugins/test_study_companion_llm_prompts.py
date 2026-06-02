@@ -82,3 +82,14 @@ def test_compact_prompt_value_limits_depth_lists_strings_and_dict_keys() -> None
 def test_build_operation_messages_rejects_unknown_operation() -> None:
     with pytest.raises(ValueError, match="unsupported study llm operation"):
         build_operation_messages("missing", {})
+
+
+def test_supported_llm_operations_include_notebook_operations() -> None:
+    from plugin.plugins.study_companion.constants import (
+        LLM_OPERATION_EXPAND_NOTE,
+        LLM_OPERATION_SUMMARIZE_TO_NOTE,
+        SUPPORTED_LLM_OPERATIONS,
+    )
+
+    assert LLM_OPERATION_EXPAND_NOTE in SUPPORTED_LLM_OPERATIONS
+    assert LLM_OPERATION_SUMMARIZE_TO_NOTE in SUPPORTED_LLM_OPERATIONS

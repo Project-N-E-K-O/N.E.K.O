@@ -496,6 +496,19 @@ class TutorLLMAgent:
             raise SdkError(f"missing runtime dependency: {details}")
 
         config_manager = get_config_manager()
+
+        def _get_model_api_config(model_group: str) -> tuple[dict[str, Any], str]:
+            try:
+                return config_manager.get_model_api_config(model_group), model_group
+            except ValueError as exc:
+                if model_group == "agent" or "Unknown model_type" not in str(exc):
+                    raise
+                self._logger.warning(
+                    "study tutor model group {} is unsupported; falling back to agent",
+                    model_group,
+                )
+                return config_manager.get_model_api_config("agent"), "agent"
+
         has_image = any(
             self._message_has_image_content(message) for message in messages
         )
@@ -512,15 +525,18 @@ class TutorLLMAgent:
             else:
                 api_config = config_manager.get_model_api_config("agent")
                 model_group = "agent"
+                call_type_group = "agent"
         else:
             model_group = requested_model_group or "agent"
-            api_config = config_manager.get_model_api_config(model_group)
+            api_config, model_group = _get_model_api_config(model_group)
+            call_type_group = model_group
             if requested_model_group:
                 requested_base_url = str(api_config.get("base_url") or "").strip()
                 requested_model = str(api_config.get("model") or "").strip()
                 if not requested_base_url or not requested_model:
                     api_config = config_manager.get_model_api_config("agent")
                     model_group = "agent"
+                    call_type_group = "agent"
         base_url = str(api_config.get("base_url") or "").strip()
         model = str(api_config.get("model") or "").strip()
         api_key = str(api_config.get("api_key") or "").strip()

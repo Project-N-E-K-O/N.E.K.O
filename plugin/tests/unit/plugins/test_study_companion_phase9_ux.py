@@ -62,6 +62,21 @@ def test_phase9_hosted_study_panel_uses_span_based_katex_rendering() -> None:
     assert "document.addEventListener('keydown', closeOrCancelOnEscape, true)" not in source
 
 
+def test_phase9_note_surfaces_avoid_reviewed_rendering_regressions() -> None:
+    study_panel = (PLUGIN_DIR / "surfaces" / "study_panel.tsx").read_text(encoding="utf-8")
+    note_editor = (PLUGIN_DIR / "surfaces" / "note_editor.tsx").read_text(encoding="utf-8")
+    notebook_panel = (PLUGIN_DIR / "surfaces" / "notebook_panel.tsx").read_text(encoding="utf-8")
+
+    assert "const mathKey =" in study_panel
+    assert "key={`math-${mathKey}`}" in study_panel
+    assert "key={`math-${index}`}" not in study_panel
+    assert "<ul key={`list-${start}`}>" in note_editor
+    assert "return <li key={key}>" not in note_editor
+    assert "const [debouncedQuery, setDebouncedQuery]" in notebook_panel
+    assert "loadNotebooks(controller.signal)" in notebook_panel
+    assert "loadNotes(controller.signal, selectedNotebookId, debouncedQuery)" in notebook_panel
+
+
 def test_phase9_onboarding_doc_is_registered_as_markdown_surface() -> None:
     plugin_toml = (PLUGIN_DIR / "plugin.toml").read_text(encoding="utf-8")
 

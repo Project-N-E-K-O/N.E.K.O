@@ -232,6 +232,32 @@ def test_notebook_search_falls_back_to_like_when_fts_errors(tmp_path) -> None:
         store.close()
 
 
+def test_notes_fts_initialization_failure_keeps_store_bootstrappable() -> None:
+    import sqlite3
+
+    from plugin.plugins.study_companion.store_schema import _init_notes_fts
+
+    class _Store:
+        def __init__(self) -> None:
+            self.warnings: list[tuple[str, object]] = []
+
+        def _log_warning(self, message: str, *args: object) -> None:
+            self.warnings.append((message, args[0] if args else ""))
+
+    class _Conn:
+        def execute(self, sql: str):
+            if "CREATE VIRTUAL TABLE" in sql:
+                raise sqlite3.OperationalError("no such module: fts5")
+            return None
+
+    store = _Store()
+
+    _init_notes_fts(store, _Conn())  # type: ignore[arg-type]
+
+    assert store.warnings
+    assert "FTS unavailable" in store.warnings[0][0]
+
+
 def test_notebook_store_serializes_concurrent_upserts(tmp_path) -> None:
     store, notebooks, _logger = _make_store(tmp_path)
     try:
@@ -334,6 +360,22 @@ async def test_notebook_summary_headings_follow_language() -> None:
 
     assert "## Key Points" in summarized.reply
     assert "### Details" in summarized.reply
+
+
+@pytest.mark.asyncio
+async def test_notebook_expand_fallback_follows_language() -> None:
+    class _BrokenNotebookAgent(_FakeNotebookAgent):
+        async def _call_model(self, messages, *, operation, model_group_override=None):
+            raise RuntimeError("model unavailable")
+
+    agent = _BrokenNotebookAgent()
+    agent._config.language = "en"
+
+    expanded = await expand_note(agent, "Original note")
+
+    assert expanded.degraded is True
+    assert "The model is currently unavailable for expansion" in expanded.reply
+    assert "暂时无法连接模型扩写" not in expanded.reply
 
 
 @pytest.mark.asyncio

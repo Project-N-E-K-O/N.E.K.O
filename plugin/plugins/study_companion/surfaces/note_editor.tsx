@@ -44,28 +44,61 @@ function insertWrap(textarea: HTMLTextAreaElement, value: string, before: string
 
 function markdownPreview(markdown: string) {
   const lines = markdown.split(/\r?\n/);
-  return lines.map((line, index) => {
+  const rendered = [];
+  let listItems: string[] = [];
+  let listStart = -1;
+
+  function flushList() {
+    if (!listItems.length) {
+      return;
+    }
+    const start = listStart;
+    const items = listItems;
+    rendered.push(
+      <ul key={`list-${start}`}>
+        {items.map((item, itemIndex) => (
+          <li key={`item-${start}-${itemIndex}-${item.slice(0, 12)}`}>{item}</li>
+        ))}
+      </ul>
+    );
+    listItems = [];
+    listStart = -1;
+  }
+
+  lines.forEach((line, index) => {
     const key = `${index}-${line.slice(0, 12)}`;
+    if (line.startsWith('- ')) {
+      if (listStart < 0) {
+        listStart = index;
+      }
+      listItems.push(line.slice(2));
+      return;
+    }
+    flushList();
     if (line.startsWith('# ')) {
-      return <h1 key={key}>{line.slice(2)}</h1>;
+      rendered.push(<h1 key={key}>{line.slice(2)}</h1>);
+      return;
     }
     if (line.startsWith('## ')) {
-      return <h2 key={key}>{line.slice(3)}</h2>;
+      rendered.push(<h2 key={key}>{line.slice(3)}</h2>);
+      return;
     }
     if (line.startsWith('### ')) {
-      return <h3 key={key}>{line.slice(4)}</h3>;
+      rendered.push(<h3 key={key}>{line.slice(4)}</h3>);
+      return;
     }
     if (line.startsWith('> ')) {
-      return <blockquote key={key}>{line.slice(2)}</blockquote>;
-    }
-    if (line.startsWith('- ')) {
-      return <li key={key}>{line.slice(2)}</li>;
+      rendered.push(<blockquote key={key}>{line.slice(2)}</blockquote>);
+      return;
     }
     if (!line.trim()) {
-      return <br key={key} />;
+      rendered.push(<br key={key} />);
+      return;
     }
-    return <p key={key}>{line}</p>;
+    rendered.push(<p key={key}>{line}</p>);
   });
+  flushList();
+  return rendered;
 }
 
 export default function NoteEditor(props: PluginSurfaceProps) {

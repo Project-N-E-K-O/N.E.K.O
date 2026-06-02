@@ -33,20 +33,22 @@ export default function NotebookPanel(props: PluginSurfaceProps) {
   const [selectedNotebookId, setSelectedNotebookId] = useState('');
   const [selectedNote, setSelectedNote] = useState<NoteItem | null>(null);
   const [query, setQuery] = useState('');
+  const [debouncedQuery, setDebouncedQuery] = useState('');
   const [notebookName, setNotebookName] = useState('');
   const [status, setStatus] = useState('');
   const [busy, setBusy] = useState(false);
 
-  async function refresh(signal?: AbortSignal, notebookId = selectedNotebookId, searchQuery = query) {
-    const [notebookPayload, notePayload] = await Promise.all([
-      callPlugin<NotebookListPayload>('study_notebook_list', { limit: 100 }, signal),
-      callPlugin<NoteListPayload>('study_note_list', {
-        notebook_id: notebookId,
-        search_query: searchQuery,
-        limit: 100,
-      }, signal),
-    ]);
+  async function loadNotebooks(signal?: AbortSignal) {
+    const notebookPayload = await callPlugin<NotebookListPayload>('study_notebook_list', { limit: 100 }, signal);
     setNotebooks(Array.isArray(notebookPayload.notebooks) ? notebookPayload.notebooks : []);
+  }
+
+  async function loadNotes(signal?: AbortSignal, notebookId = selectedNotebookId, searchQuery = debouncedQuery) {
+    const notePayload = await callPlugin<NoteListPayload>('study_note_list', {
+      notebook_id: notebookId,
+      search_query: searchQuery,
+      limit: 100,
+    }, signal);
     const nextNotes = Array.isArray(notePayload.notes) ? notePayload.notes : [];
     setNotes(nextNotes);
     setSelectedNote((current) => {
@@ -55,6 +57,13 @@ export default function NotebookPanel(props: PluginSurfaceProps) {
       }
       return nextNotes.find((note) => note.id === current.id) || nextNotes[0] || null;
     });
+  }
+
+  async function refresh(signal?: AbortSignal, notebookId = selectedNotebookId, searchQuery = debouncedQuery) {
+    await Promise.all([
+      loadNotebooks(signal),
+      loadNotes(signal, notebookId, searchQuery),
+    ]);
   }
 
   async function createNotebook() {
@@ -67,11 +76,13 @@ export default function NotebookPanel(props: PluginSurfaceProps) {
     try {
       const payload = await callPlugin<NotebookCreatePayload>('study_notebook_create', { name });
       setNotebookName('');
+      await loadNotebooks();
       if (payload.notebook?.id) {
         setSelectedNotebookId(payload.notebook.id);
         setQuery('');
+        setDebouncedQuery('');
       } else {
-        await refresh();
+        await loadNotes();
       }
     } catch (error) {
       setStatus(errorMessage(error));
@@ -113,14 +124,31 @@ export default function NotebookPanel(props: PluginSurfaceProps) {
   }
 
   useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setDebouncedQuery(query);
+    }, 250);
+    return () => window.clearTimeout(timeoutId);
+  }, [query]);
+
+  useEffect(() => {
     const controller = new AbortController();
-    refresh(controller.signal, selectedNotebookId, query).catch((error) => {
+    loadNotebooks(controller.signal).catch((error) => {
       if (!controller.signal.aborted) {
         setStatus(errorMessage(error));
       }
     });
     return () => controller.abort();
-  }, [selectedNotebookId, query]);
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    loadNotes(controller.signal, selectedNotebookId, debouncedQuery).catch((error) => {
+      if (!controller.signal.aborted) {
+        setStatus(errorMessage(error));
+      }
+    });
+    return () => controller.abort();
+  }, [selectedNotebookId, debouncedQuery]);
 
   return (
     <div className="study-panel study-notebook-shell">

@@ -47,6 +47,52 @@ def _validate_column_definition(value: str) -> str:
     return text
 
 
+def _init_notes_fts(self, conn: sqlite3.Connection) -> None:
+    try:
+        conn.execute(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
+                title,
+                content_plain,
+                tags,
+                content='notes',
+                content_rowid='rowid'
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS notes_ai AFTER INSERT ON notes BEGIN
+                INSERT INTO notes_fts(rowid, title, content_plain, tags)
+                VALUES (new.rowid, new.title, new.content_plain, new.tags);
+            END
+            """
+        )
+        conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS notes_ad AFTER DELETE ON notes BEGIN
+                INSERT INTO notes_fts(notes_fts, rowid, title, content_plain, tags)
+                VALUES ('delete', old.rowid, old.title, old.content_plain, old.tags);
+            END
+            """
+        )
+        conn.execute(
+            """
+            CREATE TRIGGER IF NOT EXISTS notes_au AFTER UPDATE ON notes BEGIN
+                INSERT INTO notes_fts(notes_fts, rowid, title, content_plain, tags)
+                VALUES ('delete', old.rowid, old.title, old.content_plain, old.tags);
+                INSERT INTO notes_fts(rowid, title, content_plain, tags)
+                VALUES (new.rowid, new.title, new.content_plain, new.tags);
+            END
+            """
+        )
+    except sqlite3.Error as exc:
+        self._log_warning(
+            "study notes FTS unavailable; falling back to LIKE search: {}",
+            exc,
+        )
+
+
 def _init_db(self) -> None:
     conn = self._require_conn()
     conn.execute(
@@ -188,43 +234,7 @@ def _init_db(self) -> None:
         )
         """
     )
-    conn.execute(
-        """
-        CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
-            title,
-            content_plain,
-            tags,
-            content='notes',
-            content_rowid='rowid'
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TRIGGER IF NOT EXISTS notes_ai AFTER INSERT ON notes BEGIN
-            INSERT INTO notes_fts(rowid, title, content_plain, tags)
-            VALUES (new.rowid, new.title, new.content_plain, new.tags);
-        END
-        """
-    )
-    conn.execute(
-        """
-        CREATE TRIGGER IF NOT EXISTS notes_ad AFTER DELETE ON notes BEGIN
-            INSERT INTO notes_fts(notes_fts, rowid, title, content_plain, tags)
-            VALUES ('delete', old.rowid, old.title, old.content_plain, old.tags);
-        END
-        """
-    )
-    conn.execute(
-        """
-        CREATE TRIGGER IF NOT EXISTS notes_au AFTER UPDATE ON notes BEGIN
-            INSERT INTO notes_fts(notes_fts, rowid, title, content_plain, tags)
-            VALUES ('delete', old.rowid, old.title, old.content_plain, old.tags);
-            INSERT INTO notes_fts(rowid, title, content_plain, tags)
-            VALUES (new.rowid, new.title, new.content_plain, new.tags);
-        END
-        """
-    )
+    _init_notes_fts(self, conn)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS qa_records (

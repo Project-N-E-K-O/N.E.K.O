@@ -23,6 +23,17 @@ _NOTE_SUMMARY_HEADINGS = {
     "pt": ("Título", "Pontos principais", "Detalhes"),
     "ru": ("Заголовок", "Ключевые моменты", "Подробности"),
 }
+_EXPAND_FALLBACK_MESSAGES = {
+    "zh": "暂时无法连接模型扩写。建议补充定义、例子、易错点和一个自测问题。",
+    "zh-cn": "暂时无法连接模型扩写。建议补充定义、例子、易错点和一个自测问题。",
+    "zh-tw": "暫時無法連接模型擴寫。建議補充定義、例子、易錯點和一個自測問題。",
+    "en": "The model is currently unavailable for expansion. Consider adding definitions, examples, common pitfalls, and one self-check question.",
+    "ja": "現在、モデルに接続してノートを拡張できません。定義、例、間違えやすい点、確認問題を1つ追加してみてください。",
+    "ko": "현재 모델에 연결해 노트를 확장할 수 없습니다. 정의, 예시, 자주 틀리는 부분, 자가 점검 질문 하나를 추가해 보세요.",
+    "es": "El modelo no está disponible para ampliar la nota. Considera añadir definiciones, ejemplos, errores comunes y una pregunta de autoevaluación.",
+    "pt": "O modelo não está disponível para expandir a nota. Considere adicionar definições, exemplos, pontos de erro comuns e uma pergunta de autoavaliação.",
+    "ru": "Модель сейчас недоступна для расширения заметки. Добавьте определения, примеры, типичные ошибки и один вопрос для самопроверки.",
+}
 
 
 def _localized_note_headings(language: str) -> tuple[str, str, str]:
@@ -31,6 +42,14 @@ def _localized_note_headings(language: str) -> tuple[str, str, str]:
         return _NOTE_SUMMARY_HEADINGS[normalized]
     primary = normalized.split("-", 1)[0]
     return _NOTE_SUMMARY_HEADINGS.get(primary, _NOTE_SUMMARY_HEADINGS["en"])
+
+
+def _localized_expand_fallback(language: str) -> str:
+    normalized = str(language or "").strip().lower().replace("_", "-")
+    if normalized in _EXPAND_FALLBACK_MESSAGES:
+        return _EXPAND_FALLBACK_MESSAGES[normalized]
+    primary = normalized.split("-", 1)[0]
+    return _EXPAND_FALLBACK_MESSAGES.get(primary, _EXPAND_FALLBACK_MESSAGES["en"])
 
 
 async def expand_note(
@@ -72,7 +91,11 @@ async def expand_note(
             operation=LLM_OPERATION_EXPAND_NOTE,
             model_group_override="tutor",
         )
-        markdown = _ensure_expanded_note_preserves_original(original, str(raw or ""))
+        markdown = _ensure_expanded_note_preserves_original(
+            original,
+            str(raw or ""),
+            language=getattr(self._config, "language", ""),
+        )
         return TutorReply(
             operation=LLM_OPERATION_EXPAND_NOTE,
             input_text=original,
@@ -81,7 +104,10 @@ async def expand_note(
             created_at=utc_now_iso(),
         )
     except Exception as exc:
-        markdown = _fallback_expand_note(original)
+        markdown = _fallback_expand_note(
+            original,
+            language=getattr(self._config, "language", ""),
+        )
         return TutorReply(
             operation=LLM_OPERATION_EXPAND_NOTE,
             input_text=original,
@@ -155,10 +181,15 @@ async def summarize_to_note(
         )
 
 
-def _ensure_expanded_note_preserves_original(original: str, raw: str) -> str:
+def _ensure_expanded_note_preserves_original(
+    original: str,
+    raw: str,
+    *,
+    language: str = "",
+) -> str:
     generated = str(raw or "").strip()
     if not generated:
-        return _fallback_expand_note(original)
+        return _fallback_expand_note(original, language=language)
     original_probe = original[:120].strip()
     has_original = bool(original_probe and original_probe in generated)
     has_ai_callout = "> [!ai]" in generated
@@ -195,11 +226,12 @@ def _ensure_note_summary_structure(
     return markdown.strip()
 
 
-def _fallback_expand_note(original: str) -> str:
+def _fallback_expand_note(original: str, *, language: str = "") -> str:
+    message = _localized_expand_fallback(language)
     return (
         f"{original.strip()}\n\n"
         "> [!ai]\n"
-        "> 暂时无法连接模型扩写。建议补充定义、例子、易错点和一个自测问题。"
+        f"> {message}"
     ).strip()
 
 

@@ -243,9 +243,10 @@ function MathReply({ text, label }: { text: string; label: string }) {
       {parts.map((part, index) => {
         if (part.type === 'math') {
           const wrapper = part.display ? '$$' : '$';
+          const mathKey = `${part.display ? 'block' : 'inline'}-${part.value}-${index}`;
           return (
             <span
-              key={`math-${index}`}
+              key={`math-${mathKey}`}
               data-study-math="true"
               data-display={part.display ? 'true' : 'false'}
               data-math={part.value}

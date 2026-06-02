@@ -2967,6 +2967,45 @@ async def test_tutor_agent_llm_cache_distinguishes_rotated_api_keys(
 
 
 @pytest.mark.asyncio
+async def test_tutor_agent_unknown_model_group_falls_back_to_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from utils import config_manager, llm_client, token_tracker
+
+    config_groups: list[str] = []
+    call_types: list[str] = []
+
+    class _ConfigManager:
+        def get_model_api_config(self, group: str):
+            config_groups.append(group)
+            if group == "tutor":
+                raise ValueError("Unknown model_type: tutor. Valid types: ['agent']")
+            return {
+                "base_url": "https://llm.example.test/v1",
+                "model": "study-agent-model",
+                "api_key": "agent-key",
+            }
+
+    class _FakeLLM:
+        async def ainvoke(self, _messages):
+            return SimpleNamespace(content="agent reply")
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: _ConfigManager())
+    monkeypatch.setattr(llm_client, "create_chat_llm", lambda **_kwargs: _FakeLLM())
+    monkeypatch.setattr(token_tracker, "set_call_type", call_types.append)
+
+    agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="en"))
+    result = await agent._call_model(
+        [{"role": "user", "content": "expand"}],
+        model_group_override="tutor",
+    )
+
+    assert result == "agent reply"
+    assert config_groups == ["tutor", "agent"]
+    assert call_types == ["agent"]
+
+
+@pytest.mark.asyncio
 async def test_study_pomodoro_status_offloads_timer_operations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
