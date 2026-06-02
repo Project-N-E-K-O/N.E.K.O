@@ -1978,57 +1978,6 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   z-index: 2;
 }
 
-/* Input-box edge bands: the rim defers interaction to release — a quick tap
-   focuses the input, a long-press drags the whole surface. Left/right are wide
-   grips (40px); top/bottom are thin (5px) since the box is only 54px tall. The
-   container has no pointer surface, so the uncovered center keeps native
-   press-to-type + caret placement. Sits above the textarea (z-index 2) but
-   below the arrow toggle (z-index 5), which keeps its own gesture. */
-.compact-chat-surface-frame > .compact-input-edge-bands {
-  position: absolute;
-  inset: 0;
-  z-index: 3;
-  pointer-events: none;
-  border-radius: inherit;
-}
-
-.compact-input-edge-band {
-  position: absolute;
-  pointer-events: auto;
-  background: transparent;
-  cursor: text;
-  touch-action: none;
-  -webkit-app-region: no-drag;
-}
-
-.compact-input-edge-band-left {
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 40px;
-}
-
-.compact-input-edge-band-right {
-  top: 0;
-  bottom: 0;
-  right: 0;
-  width: 40px;
-}
-
-.compact-input-edge-band-top {
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 5px;
-}
-
-.compact-input-edge-band-bottom {
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 5px;
-}
-
 .compact-chat-capsule-button {
   display: flex;
   align-items: center;
@@ -2092,70 +2041,6 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   background: transparent;
   border-color: transparent;
   box-shadow: none;
-}
-
-.compact-chat-drag-handle {
-  position: absolute;
-  top: 0;
-  left: 50%;
-  width: 88px;
-  height: 16px;
-  background: none;
-  border: 0;
-  cursor: grab;
-  opacity: 0;
-  pointer-events: auto;
-  transform: translateX(-50%);
-  transition: opacity 0.16s ease, transform 0.16s ease;
-  z-index: 8;
-}
-
-.compact-chat-drag-handle::before {
-  content: "";
-  position: absolute;
-  pointer-events: none;
-  top: 50%;
-  left: 50%;
-  width: 38px;
-  height: 3px;
-  background: linear-gradient(
-    90deg,
-    rgba(0, 184, 255, 0) 0%,
-    rgba(0, 184, 255, 0.72) 18%,
-    rgba(0, 196, 255, 0.88) 50%,
-    rgba(0, 184, 255, 0.72) 82%,
-    rgba(0, 184, 255, 0) 100%
-  );
-  border-radius: 999px;
-  clip-path: polygon(0 50%, 11% 0, 89% 0, 100% 50%, 89% 100%, 11% 100%);
-  transform: translate(-50%, -50%);
-  transition: width 0.16s ease, background 0.16s ease, opacity 0.16s ease;
-}
-
-.compact-chat-surface-shell:hover > .compact-chat-drag-handle,
-.compact-chat-drag-handle:hover,
-.compact-chat-drag-handle:active {
-  opacity: 1;
-}
-
-.compact-chat-drag-handle:hover {
-  transform: translateX(-50%);
-}
-
-.compact-chat-drag-handle:hover::before {
-  width: 44px;
-  background: linear-gradient(
-    90deg,
-    rgba(0, 196, 255, 0) 0%,
-    rgba(0, 196, 255, 0.82) 18%,
-    rgba(0, 210, 255, 0.96) 50%,
-    rgba(0, 196, 255, 0.82) 82%,
-    rgba(0, 196, 255, 0) 100%
-  );
-}
-
-.compact-chat-drag-handle:active {
-  cursor: grabbing;
 }
 
 .compact-chat-resize-handle {
@@ -3550,10 +3435,6 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
       rgba(0, 92, 196, 0.96) calc(360deg - var(--compact-tool-wheel-charge-second-angle)),
       rgba(0, 92, 196, 0.96) 360deg
     );
-}
-
-.compact-chat-drag-handle {
-  -webkit-app-region: no-drag;
 }
 
 .compact-input-tool-fan .compact-input-tool-item {

@@ -117,13 +117,6 @@ const COMPACT_INPUT_TOOL_TOGGLE_HOVER_OUTSET = 14;
 const COMPACT_INPUT_TOOL_FAN_ORIGIN_CLOSE_SIZE = 48;
 const COMPACT_INPUT_TOOL_FAN_INTERACTIVE_DELAY_MS = 220;
 const COMPACT_INPUT_TOOL_FAN_TRANSIENT_CLOSE_DELAY_MS = 360;
-// Long-press to grab and drag the whole compact surface (the OS window-move
-// runs in the desktop preload; see neko:compact-surface-drag-request). Hold this
-// long without moving more than the tolerance. Shared by the dropdown-arrow
-// toggle and the input-box edge bands; a quick tap on either does its own thing
-// (toggle opens the tool wheel; an edge band focuses the input) on release.
-const COMPACT_INPUT_SURFACE_LONG_PRESS_MS = 320;
-const COMPACT_INPUT_SURFACE_LONG_PRESS_MOVE_TOLERANCE = 10;
 const COMPACT_INPUT_TOOL_FAN_OUTSIDE_CLOSE_DELAY_MS = 650;
 const COMPACT_SURFACE_RESIZE_MIN_WIDTH = 430;
 const COMPACT_SURFACE_RESIZE_MAX_WIDTH = 720;
@@ -233,16 +226,6 @@ type CompactToolWheelChargeState = {
   direction: 1 | -1 | null;
   sameDirectionSteps: number;
   chargeSteps: number;
-};
-
-type CompactToolTogglePressState = {
-  pointerId: number;
-  startClientX: number;
-  startClientY: number;
-  startScreenX: number;
-  startScreenY: number;
-  longPressFired: boolean;
-  canceledTap: boolean;
 };
 
 type CompactToolWheelDragPoint = {
@@ -1166,11 +1149,6 @@ export default function App({
   const compactInputToolWheelChargeReleaseActiveRef = useRef(false);
   const compactInputToolWheelSuppressClickRef = useRef(false);
   const compactInputToolWheelScrollDeltaRef = useRef(0);
-  const compactInputToolTogglePointerHandledRef = useRef(false);
-  const compactInputToolTogglePressRef = useRef<CompactToolTogglePressState | null>(null);
-  const compactInputToolToggleLongPressTimerRef = useRef<number | null>(null);
-  const compactInputEdgePressRef = useRef<CompactToolTogglePressState | null>(null);
-  const compactInputEdgeLongPressTimerRef = useRef<number | null>(null);
   const compactInputToolFanPositionSyncRef = useRef<(() => void) | null>(null);
   const compactInputToolFanCloseTimerRef = useRef<number | null>(null);
   const compactInputToolFanInteractiveTimerRef = useRef<number | null>(null);
@@ -2749,156 +2727,6 @@ export default function App({
     openCompactInputToolFan('click');
   }, [closeCompactInputToolFanFromUserClick, openCompactInputToolFan]);
 
-  const clearCompactInputToolToggleLongPressTimer = useCallback(() => {
-    if (compactInputToolToggleLongPressTimerRef.current !== null) {
-      window.clearTimeout(compactInputToolToggleLongPressTimerRef.current);
-      compactInputToolToggleLongPressTimerRef.current = null;
-    }
-  }, []);
-
-  // Ask the desktop shell to grab and drag the whole compact surface. Only the
-  // preload/main process can move the native window; the page just signals it.
-  // Mirrors neko:compact-tool-wheel-drag-state-change as a one-shot request.
-  const dispatchCompactSurfaceDragRequest = useCallback((screenX: number, screenY: number) => {
-    window.dispatchEvent(new CustomEvent('neko:compact-surface-drag-request', {
-      detail: {
-        screenX,
-        screenY,
-        timestamp: Date.now(),
-      },
-    }));
-  }, []);
-
-  // Long-press on the dropdown-arrow toggle = grab the surface; quick tap = open
-  // the tool wheel on release (deferred so a press-and-hold never flashes it open).
-  const handleCompactInputToolTogglePointerDown = useCallback((event: ReactPointerEvent) => {
-    if (event.pointerType === 'mouse' && event.button !== 0) return;
-    event.preventDefault();
-    clearCompactInputToolToggleLongPressTimer();
-    // Fresh gesture: drop any stale click-suppression left by a prior press
-    // whose trailing click never arrived (so keyboard activation still toggles).
-    compactInputToolTogglePointerHandledRef.current = false;
-    compactInputToolTogglePressRef.current = {
-      pointerId: event.pointerId,
-      startClientX: event.clientX,
-      startClientY: event.clientY,
-      startScreenX: event.screenX,
-      startScreenY: event.screenY,
-      longPressFired: false,
-      canceledTap: false,
-    };
-    try {
-      event.currentTarget.setPointerCapture?.(event.pointerId);
-    } catch (_) {}
-    compactInputToolToggleLongPressTimerRef.current = window.setTimeout(() => {
-      compactInputToolToggleLongPressTimerRef.current = null;
-      const press = compactInputToolTogglePressRef.current;
-      if (!press || press.longPressFired || press.canceledTap) return;
-      press.longPressFired = true;
-      // Close the wheel (a hover may have opened it) so the drag starts clean.
-      closeCompactInputToolFanFromUserClick();
-      dispatchCompactSurfaceDragRequest(press.startScreenX, press.startScreenY);
-    }, COMPACT_INPUT_SURFACE_LONG_PRESS_MS);
-  }, [
-    clearCompactInputToolToggleLongPressTimer,
-    closeCompactInputToolFanFromUserClick,
-    dispatchCompactSurfaceDragRequest,
-  ]);
-
-  const handleCompactInputToolTogglePointerMove = useCallback((event: ReactPointerEvent) => {
-    const press = compactInputToolTogglePressRef.current;
-    if (!press || press.pointerId !== event.pointerId || press.longPressFired) return;
-    const dx = event.clientX - press.startClientX;
-    const dy = event.clientY - press.startClientY;
-    if (Math.hypot(dx, dy) > COMPACT_INPUT_SURFACE_LONG_PRESS_MOVE_TOLERANCE) {
-      // Moved before the hold fired: not a tap, not a long-press — do nothing.
-      press.canceledTap = true;
-      clearCompactInputToolToggleLongPressTimer();
-    }
-  }, [clearCompactInputToolToggleLongPressTimer]);
-
-  const finishCompactInputToolTogglePress = useCallback((event: ReactPointerEvent, options?: { canceled?: boolean }) => {
-    const press = compactInputToolTogglePressRef.current;
-    if (!press || press.pointerId !== event.pointerId) return;
-    clearCompactInputToolToggleLongPressTimer();
-    try {
-      event.currentTarget.releasePointerCapture?.(event.pointerId);
-    } catch (_) {}
-    compactInputToolTogglePressRef.current = null;
-    // Swallow the trailing click for any pointer-driven gesture; keyboard
-    // activation has no press record and still toggles through onClick.
-    compactInputToolTogglePointerHandledRef.current = true;
-    if (press.longPressFired) return;
-    if (options?.canceled || press.canceledTap) return;
-    toggleCompactInputToolFanByClick();
-  }, [clearCompactInputToolToggleLongPressTimer, toggleCompactInputToolFanByClick]);
-
-  useEffect(() => () => clearCompactInputToolToggleLongPressTimer(), [clearCompactInputToolToggleLongPressTimer]);
-
-  // Input-box edge bands: same long-press-to-drag gesture as the arrow, but a
-  // quick tap focuses the input for typing instead of toggling the wheel. These
-  // bands overlay only the rim; the uncovered center keeps native press-to-type.
-  const clearCompactInputEdgeLongPressTimer = useCallback(() => {
-    if (compactInputEdgeLongPressTimerRef.current !== null) {
-      window.clearTimeout(compactInputEdgeLongPressTimerRef.current);
-      compactInputEdgeLongPressTimerRef.current = null;
-    }
-  }, []);
-
-  const handleCompactInputEdgePointerDown = useCallback((event: ReactPointerEvent) => {
-    if (event.pointerType === 'mouse' && event.button !== 0) return;
-    event.preventDefault();
-    clearCompactInputEdgeLongPressTimer();
-    compactInputEdgePressRef.current = {
-      pointerId: event.pointerId,
-      startClientX: event.clientX,
-      startClientY: event.clientY,
-      startScreenX: event.screenX,
-      startScreenY: event.screenY,
-      longPressFired: false,
-      canceledTap: false,
-    };
-    try {
-      event.currentTarget.setPointerCapture?.(event.pointerId);
-    } catch (_) {}
-    compactInputEdgeLongPressTimerRef.current = window.setTimeout(() => {
-      compactInputEdgeLongPressTimerRef.current = null;
-      const press = compactInputEdgePressRef.current;
-      if (!press || press.longPressFired || press.canceledTap) return;
-      press.longPressFired = true;
-      dispatchCompactSurfaceDragRequest(press.startScreenX, press.startScreenY);
-    }, COMPACT_INPUT_SURFACE_LONG_PRESS_MS);
-  }, [clearCompactInputEdgeLongPressTimer, dispatchCompactSurfaceDragRequest]);
-
-  const handleCompactInputEdgePointerMove = useCallback((event: ReactPointerEvent) => {
-    const press = compactInputEdgePressRef.current;
-    if (!press || press.pointerId !== event.pointerId || press.longPressFired) return;
-    const dx = event.clientX - press.startClientX;
-    const dy = event.clientY - press.startClientY;
-    if (Math.hypot(dx, dy) > COMPACT_INPUT_SURFACE_LONG_PRESS_MOVE_TOLERANCE) {
-      press.canceledTap = true;
-      clearCompactInputEdgeLongPressTimer();
-    }
-  }, [clearCompactInputEdgeLongPressTimer]);
-
-  const finishCompactInputEdgePress = useCallback((event: ReactPointerEvent, options?: { canceled?: boolean }) => {
-    const press = compactInputEdgePressRef.current;
-    if (!press || press.pointerId !== event.pointerId) return;
-    clearCompactInputEdgeLongPressTimer();
-    try {
-      event.currentTarget.releasePointerCapture?.(event.pointerId);
-    } catch (_) {}
-    compactInputEdgePressRef.current = null;
-    if (press.longPressFired) return;
-    if (options?.canceled || press.canceledTap) return;
-    // Quick tap on the rim → focus the input for typing.
-    if (!composerDisabled) {
-      compactInputRef.current?.focus();
-    }
-  }, [clearCompactInputEdgeLongPressTimer, composerDisabled]);
-
-  useEffect(() => () => clearCompactInputEdgeLongPressTimer(), [clearCompactInputEdgeLongPressTimer]);
-
   const rotateCompactInputToolWheel = useCallback((direction: 1 | -1) => {
     setCompactInputToolWheelIndex(current => (
       (current + direction + COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT) % COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT
@@ -4328,14 +4156,11 @@ export default function App({
       className={`send-button-circle compact-input-tool-toggle${compactInputToolFanOpen ? ' is-open' : ''}`}
       ref={compactInputToolToggleRef}
       type={compactToolToggleActsAsSubmit ? 'submit' : 'button'}
+      data-compact-no-drag="true"
       aria-label={compactToolToggleActsAsSubmit ? sendButtonLabel : overflowMenuAriaLabel}
       aria-haspopup={compactToolToggleActsAsSubmit ? undefined : 'true'}
       aria-expanded={compactToolToggleActsAsSubmit ? undefined : compactInputToolFanOpen}
       disabled={compactToolToggleActsAsSubmit ? !canSubmit : composerDisabled}
-      onPointerDown={compactToolToggleActsAsSubmit ? undefined : handleCompactInputToolTogglePointerDown}
-      onPointerMove={compactToolToggleActsAsSubmit ? undefined : handleCompactInputToolTogglePointerMove}
-      onPointerUp={compactToolToggleActsAsSubmit ? undefined : (event) => finishCompactInputToolTogglePress(event)}
-      onPointerCancel={compactToolToggleActsAsSubmit ? undefined : (event) => finishCompactInputToolTogglePress(event, { canceled: true })}
       onPointerEnter={compactToolToggleActsAsSubmit ? undefined : handleCompactInputToolHoverEnter}
       onPointerLeave={compactToolToggleActsAsSubmit ? undefined : handleCompactInputToolHoverLeave}
       onFocus={compactToolToggleActsAsSubmit ? undefined : clearCompactInputToolFanCloseTimer}
@@ -4344,10 +4169,6 @@ export default function App({
         scheduleCompactInputCollapse();
       }}
       onClick={compactToolToggleActsAsSubmit ? undefined : () => {
-        if (compactInputToolTogglePointerHandledRef.current) {
-          compactInputToolTogglePointerHandledRef.current = false;
-          return;
-        }
         toggleCompactInputToolFanByClick();
       }}
     >
@@ -4368,6 +4189,7 @@ export default function App({
       aria-label={overflowMenuAriaLabel}
       data-compact-geometry-item="toolFan"
       data-compact-geometry-owner="surface"
+      data-compact-no-drag="true"
       data-compact-input-tool-fan-open={compactInputToolFanOpen ? 'true' : 'false'}
       data-compact-input-tool-fan-interactive={compactInputToolFanInteractive ? 'true' : 'false'}
       data-compact-tool-wheel-fast-animation={compactInputToolWheelFastAnimation ? 'true' : 'false'}
@@ -4711,6 +4533,7 @@ export default function App({
       ref={isCompactSurface ? compactChoiceLayerRef : undefined}
       data-compact-geometry-item={isCompactSurface ? 'choice' : undefined}
       data-compact-geometry-owner={isCompactSurface ? 'surface' : undefined}
+      data-compact-no-drag={isCompactSurface ? 'true' : undefined}
       data-choice-layer-open={compactChoiceLayerOpen ? 'true' : 'false'}
       data-chat-surface-mode={chatSurfaceMode}
       data-compact-choice-placement={isCompactSurface ? compactChoiceLayerPlacement : undefined}
@@ -4850,6 +4673,7 @@ export default function App({
       title={compactExportHistoryToggleLabel}
       data-compact-geometry-owner="surface"
       data-compact-geometry-item="historyHandle"
+      data-compact-no-drag="true"
       data-compact-history-open={compactExportHistoryOpen ? 'true' : 'false'}
       onPointerDown={handleCompactHistoryVisibilityPress}
       onPointerCancel={handleCompactHistoryVisibilityPointerCancel}
@@ -5067,17 +4891,11 @@ export default function App({
                 onBlurCapture={effectiveCompactChatState === 'input' ? scheduleCompactInputCollapse : undefined}
               >
                 <div
-                  className="compact-chat-drag-handle"
-                  data-compact-drag-handle="true"
-                  data-compact-geometry-item="dragHandle"
-                  data-compact-geometry-owner="surface"
-                  aria-hidden="true"
-                />
-                <div
                   className="compact-chat-resize-handle compact-chat-resize-handle-left"
                   data-compact-resize-side="left"
                   data-compact-geometry-item="resizeHandle"
                   data-compact-geometry-owner="surface"
+                  data-compact-no-drag="true"
                   aria-hidden="true"
                   onPointerDown={(event) => handleCompactSurfaceResizePointerDown('left', event)}
                   onPointerMove={handleCompactSurfaceResizePointerMove}
@@ -5090,6 +4908,7 @@ export default function App({
                   data-compact-resize-side="right"
                   data-compact-geometry-item="resizeHandle"
                   data-compact-geometry-owner="surface"
+                  data-compact-no-drag="true"
                   aria-hidden="true"
                   onPointerDown={(event) => handleCompactSurfaceResizePointerDown('right', event)}
                   onPointerMove={handleCompactSurfaceResizePointerMove}
@@ -5101,6 +4920,7 @@ export default function App({
                   className="compact-chat-surface-frame"
                   data-compact-geometry-item={effectiveCompactChatState === 'input' ? 'input' : 'capsule'}
                   data-compact-geometry-owner="surface"
+                  data-compact-drag-surface="true"
                   data-compact-chat-state={effectiveCompactChatState}
                   data-compact-geometry-part={effectiveCompactChatState === 'input' ? 'inputBody' : 'capsuleBody'}
                   data-compact-tool-toggle-visible={compactToolToggleVisible ? 'true' : 'false'}
@@ -5110,6 +4930,7 @@ export default function App({
                       <textarea
                         className="composer-input"
                         ref={compactInputRef}
+                        data-compact-no-drag="true"
                         placeholder={inputPlaceholder}
                         aria-label={inputPlaceholder}
                         rows={1}
@@ -5131,18 +4952,6 @@ export default function App({
                           }
                         }}
                       />
-                      <div className="compact-input-edge-bands" aria-hidden="true">
-                        {(['top', 'bottom', 'left', 'right'] as const).map((side) => (
-                          <div
-                            key={side}
-                            className={`compact-input-edge-band compact-input-edge-band-${side}`}
-                            onPointerDown={handleCompactInputEdgePointerDown}
-                            onPointerMove={handleCompactInputEdgePointerMove}
-                            onPointerUp={(event) => finishCompactInputEdgePress(event)}
-                            onPointerCancel={(event) => finishCompactInputEdgePress(event, { canceled: true })}
-                          />
-                        ))}
-                      </div>
                       {compactInputToolToggleButton}
                     </>
                   ) : (

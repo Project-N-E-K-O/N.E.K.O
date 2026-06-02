@@ -463,7 +463,7 @@ def test_compact_geometry_snapshot_separates_base_surface_from_extra_islands():
     assert "function isCompactSurfaceBaseAnchorKind(kind)" in script
     assert "return kind === 'surfaceShell' || kind === 'capsule' || kind === 'input';" in script
     assert "function getCompactSurfaceGeometryRole(kind)" in script
-    assert "if (kind === 'dragHandle') return 'baseHit';" in script
+    assert "if (kind === 'dragHandle') return 'baseHit';" not in script
     assert "return 'extraIsland';" in script
     assert "item.geometryRole = getCompactSurfaceGeometryRole(item.kind);" in script
 
@@ -483,6 +483,24 @@ def test_compact_geometry_snapshot_separates_base_surface_from_extra_islands():
     assert "extraIslandItems: extraIslandItems" in snapshot_block
     assert "extraIslandNativeRects:" in snapshot_block
     assert "extraIslandHitRects:" in snapshot_block
+
+
+def test_compact_surface_drag_uses_declared_surface_and_no_drag_exclusions():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    assert "function isCompactDragSurfaceTarget(target)" in script
+    assert "target.closest('[data-compact-no-drag=\"true\"]')" in script
+    assert "target.closest('[data-compact-drag-surface=\"true\"]')" in script
+    assert "function isCompactDragHandleTarget(target)" not in script
+    assert "target.closest('[data-compact-drag-handle=\"true\"]')" not in script
+    assert "if (dragState.compactSurface && !dragState.moved) return;" in script
+
+    drag_block = script.split("document.addEventListener('mousedown', function (event)", 1)[1].split(
+        "document.addEventListener('touchstart', function (event)",
+        1,
+    )[0]
+    assert "if (!isCompactDragSurfaceTarget(event.target)) return;" in drag_block
+    assert "compactSurface: true" in drag_block
 
 
 def test_desktop_compact_layout_change_resets_anchor_only_when_base_surface_changes():

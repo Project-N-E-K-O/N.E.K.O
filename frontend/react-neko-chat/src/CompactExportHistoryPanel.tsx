@@ -2304,6 +2304,7 @@ export default function CompactExportHistoryPanel({
         data-compact-geometry-owner="surface"
         data-compact-geometry-item="history"
         data-compact-geometry-hit-scope="children"
+        data-compact-no-drag="true"
         data-compact-export-history-open="true"
         data-compact-export-history-visibility={visibilityState}
         data-compact-export-preview-open={previewOpen ? 'true' : 'false'}

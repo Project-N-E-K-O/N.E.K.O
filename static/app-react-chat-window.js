@@ -1017,7 +1017,7 @@
         var item = element.getAttribute('data-compact-geometry-item') || '';
         if (item === 'choice' && element.getAttribute('data-choice-layer-open') !== 'true') return false;
         if (item === 'toolFan' && element.getAttribute('data-compact-input-tool-fan-open') !== 'true') return false;
-        if (element.getAttribute('aria-hidden') === 'true' && item !== 'dragHandle' && item !== 'resizeHandle') return false;
+        if (element.getAttribute('aria-hidden') === 'true' && item !== 'resizeHandle') return false;
         var style = window.getComputedStyle ? window.getComputedStyle(element) : null;
         if (style && (style.display === 'none' || style.visibility === 'hidden')) return false;
         return true;
@@ -1140,7 +1140,6 @@
 
     function getCompactSurfaceGeometryRole(kind) {
         if (isCompactSurfaceBaseAnchorKind(kind)) return 'baseAnchor';
-        if (kind === 'dragHandle') return 'baseHit';
         return 'extraIsland';
     }
 
@@ -4776,12 +4775,10 @@
 
     var CLICK_THRESHOLD = 5; // px – 移动距离低于此值视为点击
 
-    function isCompactDragHandleTarget(target) {
-        return !!(
-            target
-            && typeof target.closest === 'function'
-            && target.closest('[data-compact-drag-handle="true"]')
-        );
+    function isCompactDragSurfaceTarget(target) {
+        if (!target || typeof target.closest !== 'function') return false;
+        if (target.closest('[data-compact-no-drag="true"]')) return false;
+        return !!target.closest('[data-compact-drag-surface="true"]');
     }
 
     function startDrag(clientX, clientY, options) {
@@ -4818,6 +4815,8 @@
         if (Math.abs(dx) > CLICK_THRESHOLD || Math.abs(dy) > CLICK_THRESHOLD) {
             dragState.moved = true;
         }
+
+        if (dragState.compactSurface && !dragState.moved) return;
 
         var left = clientX - dragState.pointerOffsetX;
         var top = clientY - dragState.pointerOffsetY;
@@ -4890,7 +4889,7 @@
         document.addEventListener('mousedown', function (event) {
             if (event.button !== 0) return;
             if (isElectronChatWindow()) return;
-            if (!isCompactDragHandleTarget(event.target)) return;
+            if (!isCompactDragSurfaceTarget(event.target)) return;
             startDrag(event.clientX, event.clientY, {
                 compactSurface: true
             });
@@ -4900,7 +4899,7 @@
 
         document.addEventListener('touchstart', function (event) {
             if (isElectronChatWindow()) return;
-            if (!isCompactDragHandleTarget(event.target)) return;
+            if (!isCompactDragSurfaceTarget(event.target)) return;
             if (!event.touches || event.touches.length === 0) return;
             startDrag(event.touches[0].clientX, event.touches[0].clientY, {
                 compactSurface: true
