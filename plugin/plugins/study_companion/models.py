@@ -223,6 +223,90 @@ class CommunicationConfig:
         return asdict(self)
 
 
+def _clamp_int(value: object, minimum: int, maximum: int, default: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        number = default
+    return max(minimum, min(maximum, number))
+
+
+@dataclass(slots=True)
+class AwarenessConfig:
+    enabled: bool = False
+    snapshot_interval_seconds: int = 5
+    context_window_minutes: int = 5
+    classify_mode: str = "title_first"
+    image_max_bytes: int = 65_536
+    push_to_llm_interval_seconds: int = 300
+    push_to_llm_mode: str = "read"
+    os_signals_enabled: bool = True
+    distraction_detection: bool = True
+
+    def __post_init__(self) -> None:
+        self.enabled = bool(self.enabled)
+        self.snapshot_interval_seconds = _clamp_int(
+            self.snapshot_interval_seconds, 1, 60, 5
+        )
+        self.context_window_minutes = _clamp_int(
+            self.context_window_minutes, 1, 60, 5
+        )
+        mode = str(self.classify_mode or "title_first").strip().lower()
+        self.classify_mode = (
+            mode if mode in {"title_first", "ocr_text", "both"} else "title_first"
+        )
+        self.image_max_bytes = _clamp_int(self.image_max_bytes, 10_240, 512_000, 65_536)
+        self.push_to_llm_interval_seconds = _clamp_int(
+            self.push_to_llm_interval_seconds, 30, 300, 300
+        )
+        push_mode = str(self.push_to_llm_mode or "read").strip().lower()
+        self.push_to_llm_mode = (
+            push_mode if push_mode in {"blind", "read", "respond"} else "read"
+        )
+        self.os_signals_enabled = bool(self.os_signals_enabled)
+        self.distraction_detection = bool(self.distraction_detection)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+class ActivitySummary(TypedDict):
+    current_app: str
+    current_activity: str
+    app_duration_seconds: float
+    recent_apps: list[str]
+    total_focus_minutes: float
+    ocr_text_snippet: str
+    app_distribution: dict[str, float]
+
+
+@dataclass(slots=True)
+class ActivitySnapshot:
+    timestamp: float = 0.0
+    first_seen_at: float = 0.0
+    app_type: str = "other"
+    activity_type: str = ""
+    classify_method: str = "title"
+    ocr_text_snippet: str = ""
+    window_title: str = ""
+    has_content_change: bool = True
+    _thumbnail_hash: str = ""
+
+    def __post_init__(self) -> None:
+        self.timestamp = float(self.timestamp or 0.0)
+        self.first_seen_at = float(self.first_seen_at or 0.0)
+        self.app_type = str(self.app_type or "other").strip() or "other"
+        self.activity_type = str(self.activity_type or "").strip()
+        self.classify_method = str(self.classify_method or "title").strip() or "title"
+        self.ocr_text_snippet = str(self.ocr_text_snippet or "").strip()
+        self.window_title = str(self.window_title or "").strip()
+        self.has_content_change = bool(self.has_content_change)
+        self._thumbnail_hash = str(self._thumbnail_hash or "").strip()
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 @dataclass(slots=True)
 class StudyConfig:
     mode: StudyMode = MODE_COMPANION
@@ -258,6 +342,7 @@ class StudyConfig:
     supervision: SupervisionConfig = field(default_factory=SupervisionConfig)
     checkin: CheckinConfig = field(default_factory=CheckinConfig)
     communication: CommunicationConfig = field(default_factory=CommunicationConfig)
+    awareness: AwarenessConfig = field(default_factory=AwarenessConfig)
 
     def __post_init__(self) -> None:
         self.mode = normalize_mode(self.mode)
@@ -324,6 +409,12 @@ class StudyConfig:
                 CommunicationConfig(**self.communication)
                 if isinstance(self.communication, dict)
                 else CommunicationConfig()
+            )
+        if not isinstance(self.awareness, AwarenessConfig):
+            self.awareness = (
+                AwarenessConfig(**self.awareness)
+                if isinstance(self.awareness, dict)
+                else AwarenessConfig()
             )
 
     def to_dict(self) -> dict[str, Any]:
@@ -438,6 +529,15 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
         study.get("supervision") if isinstance(study.get("supervision"), dict) else {}
     )
     checkin = study.get("checkin") if isinstance(study.get("checkin"), dict) else {}
+    awareness = (
+        study.get("awareness")
+        if isinstance(study.get("awareness"), dict)
+        else study_companion.get("awareness")
+        if isinstance(study_companion.get("awareness"), dict)
+        else raw.get("awareness")
+        if isinstance(raw.get("awareness"), dict)
+        else {}
+    )
     communication = (
         study_companion.get("communication")
         if isinstance(study_companion.get("communication"), dict)
@@ -703,6 +803,57 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
                 "enabled",
                 True,
                 "communication_enabled",
+            ),
+        ),
+        awareness=AwarenessConfig(
+            enabled=_bool(awareness, "enabled", False, "awareness_enabled"),
+            snapshot_interval_seconds=_int(
+                awareness,
+                "snapshot_interval_seconds",
+                5,
+                "awareness_snapshot_interval_seconds",
+            ),
+            context_window_minutes=_int(
+                awareness,
+                "context_window_minutes",
+                5,
+                "awareness_context_window_minutes",
+            ),
+            classify_mode=_str(
+                awareness,
+                "classify_mode",
+                "title_first",
+                "awareness_classify_mode",
+            ),
+            image_max_bytes=_int(
+                awareness,
+                "image_max_bytes",
+                65_536,
+                "awareness_image_max_bytes",
+            ),
+            push_to_llm_interval_seconds=_int(
+                awareness,
+                "push_to_llm_interval_seconds",
+                300,
+                "awareness_push_to_llm_interval_seconds",
+            ),
+            push_to_llm_mode=_str(
+                awareness,
+                "push_to_llm_mode",
+                "read",
+                "awareness_push_to_llm_mode",
+            ),
+            os_signals_enabled=_bool(
+                awareness,
+                "os_signals_enabled",
+                True,
+                "awareness_os_signals_enabled",
+            ),
+            distraction_detection=_bool(
+                awareness,
+                "distraction_detection",
+                True,
+                "awareness_distraction_detection",
             ),
         ),
     )

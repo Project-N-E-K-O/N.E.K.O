@@ -102,6 +102,55 @@ _READING_KEYWORDS = (
     "知识点",
 )
 
+_CODE_EDITOR_TITLE_KEYWORDS = (
+    "visual studio code",
+    "vscode",
+    "pycharm",
+    "intellij",
+    "webstorm",
+    "neovim",
+    "vim",
+    "emacs",
+    "sublime text",
+    "atom",
+    "cursor",
+)
+_BROWSER_TITLE_KEYWORDS = (
+    " chrome",
+    "google chrome",
+    "mozilla firefox",
+    " firefox",
+    "microsoft edge",
+    "safari",
+    "arc browser",
+    "chromium",
+    "brave",
+    "opera",
+)
+_TEXT_EDITOR_TITLE_KEYWORDS = (
+    "google docs",
+    "microsoft word",
+    "libreoffice writer",
+    "notepad",
+    "wordpad",
+)
+_PDF_READER_TITLE_KEYWORDS = (
+    "adobe acrobat",
+    "acrobat reader",
+    "zotero",
+    "pdf-xchange",
+    "sumatra",
+    "preview",
+)
+_NOTE_APP_TITLE_KEYWORDS = (
+    "obsidian",
+    "notion",
+    "onenote",
+    "evernote",
+    "logseq",
+    "roam research",
+)
+
 
 @dataclass(slots=True)
 class ScreenClassification:
@@ -130,6 +179,23 @@ def normalize_screen_type(screen_type: str | None) -> str:
     if candidate in _VALID_SCREEN_TYPES:
         return candidate
     return _SCREEN_TYPE_ALIASES.get(candidate, "idle")
+
+
+def classify_app_from_title(window_title: str | None) -> str:
+    title = _clean_line(str(window_title or "")).lower()
+    if not title:
+        return "other"
+    if any(keyword in title for keyword in _CODE_EDITOR_TITLE_KEYWORDS):
+        return "code_editor"
+    if any(keyword in title for keyword in _TEXT_EDITOR_TITLE_KEYWORDS):
+        return "text_editor"
+    if any(keyword in title for keyword in _PDF_READER_TITLE_KEYWORDS):
+        return "pdf_reader"
+    if any(keyword in title for keyword in _NOTE_APP_TITLE_KEYWORDS):
+        return "note_app"
+    if any(keyword in title for keyword in _BROWSER_TITLE_KEYWORDS):
+        return "web_page"
+    return "other"
 
 
 def _clean_line(value: str) -> str:
@@ -369,6 +435,7 @@ def classify_screen_from_ocr(
 
 __all__ = [
     "ScreenClassification",
+    "classify_app_from_title",
     "classify_screen_from_ocr",
     "normalize_screen_type",
 ]

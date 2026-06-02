@@ -3,12 +3,16 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass
 import io
+import math
+import subprocess
+import sys
 import time
 from typing import Any
 
 from PIL import Image
 
-from .models import OcrSnapshot, StudyConfig, utc_now_iso
+from .models import ActivitySnapshot, OcrSnapshot, StudyConfig, utc_now_iso
+from .screen_classifier import classify_app_from_title, classify_screen_from_ocr
 
 CAPTURE_BACKEND_AUTO = "auto"
 CAPTURE_BACKEND_DXCAM = "dxcam"
@@ -32,6 +36,55 @@ class StudyCaptureProfile:
     bottom_inset_ratio: float = 0.0
 
 
+@dataclass(slots=True)
+class LightweightSnapshot:
+    status: str = "empty"
+    captured_at: str = ""
+    window_title: str = ""
+    app_type: str = "other"
+    activity_type: str = ""
+    ocr_text_snippet: str = ""
+    has_content_change: bool = True
+    thumbnail_phash: str = ""
+    jpeg_bytes: bytes | None = None
+    jpeg_base64: str = ""
+    diagnostic: str = ""
+    timestamp: float = 0.0
+    classify_method: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.captured_at:
+            self.captured_at = utc_now_iso()
+        if not self.timestamp:
+            self.timestamp = time.time()
+        self.window_title = str(self.window_title or "").strip()
+        self.app_type = str(self.app_type or "other").strip() or "other"
+        self.activity_type = str(self.activity_type or "").strip()
+        self.ocr_text_snippet = str(self.ocr_text_snippet or "").strip()
+        self.thumbnail_phash = str(self.thumbnail_phash or "").strip()
+        self.jpeg_base64 = str(self.jpeg_base64 or "")
+        self.diagnostic = str(self.diagnostic or "")
+        self.classify_method = str(self.classify_method or "").strip()
+
+    def to_activity_snapshot(self) -> ActivitySnapshot | None:
+        if self.status not in {"ok", "empty"}:
+            return None
+        method = self.classify_method
+        if not method:
+            method = "both" if self.ocr_text_snippet else "title"
+        return ActivitySnapshot(
+            timestamp=self.timestamp,
+            first_seen_at=self.timestamp,
+            app_type=self.app_type,
+            activity_type=self.activity_type,
+            classify_method=method,
+            ocr_text_snippet=self.ocr_text_snippet,
+            window_title=self.window_title,
+            has_content_change=self.has_content_change,
+            _thumbnail_hash=self.thumbnail_phash,
+        )
+
+
 class StudyOcrPipeline:
     def __init__(
         self,
@@ -47,11 +100,13 @@ class StudyOcrPipeline:
         self._capture_backend = capture_backend
         self._latest_vision_snapshot: dict[str, Any] = {}
         self._latest_vision_image_base64 = ""
+        self._latest_lightweight_phash = ""
 
     def update_config(self, config: StudyConfig) -> None:
         self._config = config
         self._ocr_backend = None
         self._capture_backend = None
+        self._latest_lightweight_phash = ""
         self._clear_vision_snapshot()
 
     def snapshot_from_image(self, image: Any, *, backend_name: str = "") -> OcrSnapshot:
@@ -91,6 +146,213 @@ class StudyOcrPipeline:
                 diagnostic=str(exc),
             )
         return self._extract_image(frame, backend_name=self._config.ocr_backend_selection)
+
+    def capture_lightweight(self, target: Any | None = None) -> LightweightSnapshot:
+        title = self._target_title(target) or self._get_active_window_title()
+        captured_at = utc_now_iso()
+        try:
+            image = self._capture_lightweight_image(target)
+        except Exception as exc:
+            return LightweightSnapshot(
+                status="capture_failed",
+                captured_at=captured_at,
+                window_title=title,
+                diagnostic=str(exc),
+            )
+
+        try:
+            jpeg_bytes = self._encode_lightweight_jpeg(
+                image,
+                max_bytes=self._config.awareness.image_max_bytes,
+            )
+        except Exception as exc:
+            return LightweightSnapshot(
+                status="capture_failed",
+                captured_at=captured_at,
+                window_title=title,
+                diagnostic=f"lightweight jpeg encode failed: {exc}",
+            )
+
+        thumbnail_phash = self._image_phash(image)
+        previous_phash = self._latest_lightweight_phash
+        self._latest_lightweight_phash = thumbnail_phash
+        app_type = classify_app_from_title(title)
+        classify_method = "title"
+        activity_type = ""
+        ocr_text = ""
+        diagnostic = ""
+
+        if self._config.awareness.classify_mode in {"ocr_text", "both"}:
+            if not self._config.ocr_enabled:
+                diagnostic = "OCR is disabled"
+            else:
+                started = time.monotonic()
+                try:
+                    backend = self._resolve_ocr_backend()
+                    raw = backend.extract_text(image)
+                    ocr_text, _boxes = self._normalize_ocr_output(raw)
+                except Exception as exc:
+                    return LightweightSnapshot(
+                        status="ocr_failed",
+                        captured_at=captured_at,
+                        window_title=title,
+                        app_type=app_type,
+                        jpeg_bytes=jpeg_bytes,
+                        jpeg_base64=self._jpeg_data_url(jpeg_bytes),
+                        thumbnail_phash=thumbnail_phash,
+                        diagnostic=str(exc),
+                    )
+                classification = classify_screen_from_ocr(
+                    ocr_text,
+                    window_title=title,
+                )
+                activity_type = classification.screen_type
+                classify_method = "both" if title else "ocr"
+                diagnostic = f"ocr_duration_seconds={time.monotonic() - started:.3f}"
+
+        has_content_change = True
+        if previous_phash and thumbnail_phash:
+            has_content_change = previous_phash != thumbnail_phash
+        status = "ok" if title or ocr_text or jpeg_bytes else "empty"
+        return LightweightSnapshot(
+            status=status,
+            captured_at=captured_at,
+            window_title=title,
+            app_type=app_type,
+            activity_type=activity_type,
+            ocr_text_snippet=ocr_text,
+            has_content_change=has_content_change,
+            thumbnail_phash=thumbnail_phash,
+            jpeg_bytes=jpeg_bytes,
+            jpeg_base64=self._jpeg_data_url(jpeg_bytes),
+            diagnostic=diagnostic,
+            classify_method=classify_method,
+        )
+
+    def _capture_lightweight_image(self, target: Any | None) -> Any:
+        if target is None:
+            return self._capture_fullscreen()
+        profile = StudyCaptureProfile(
+            left_inset_ratio=self._config.ocr_left_inset_ratio,
+            right_inset_ratio=self._config.ocr_right_inset_ratio,
+            top_ratio=self._config.ocr_top_ratio,
+            bottom_inset_ratio=self._config.ocr_bottom_inset_ratio,
+        )
+        return self._resolve_capture_backend().capture_frame(target, profile)
+
+    @staticmethod
+    def _target_title(target: Any | None) -> str:
+        if target is None:
+            return ""
+        if isinstance(target, dict):
+            return str(target.get("title") or target.get("window_title") or "").strip()
+        return str(
+            getattr(target, "title", None)
+            or getattr(target, "window_title", None)
+            or ""
+        ).strip()
+
+    @staticmethod
+    def _jpeg_data_url(raw: bytes | None) -> str:
+        if not raw:
+            return ""
+        return "data:image/jpeg;base64," + base64.b64encode(raw).decode("ascii")
+
+    @staticmethod
+    def _encode_lightweight_jpeg(image: Any, *, max_bytes: int) -> bytes:
+        if image is None or not hasattr(image, "save"):
+            raise RuntimeError("lightweight capture returned no image")
+        frame = image.convert("RGB") if hasattr(image, "convert") else image
+        limit = max(10_240, int(max_bytes or 65_536))
+        quality = 72
+        last_raw = b""
+        for _ in range(24):
+            buffer = io.BytesIO()
+            frame.save(buffer, format="JPEG", quality=quality, optimize=True)
+            raw = buffer.getvalue()
+            last_raw = raw
+            if len(raw) <= limit:
+                return raw
+            width, height = frame.size
+            if width <= 16 or height <= 16:
+                break
+            scale = math.sqrt(limit / max(float(len(raw)), 1.0)) * 0.9
+            if quality > 36:
+                quality = max(36, quality - 8)
+            new_size = (
+                max(16, int(width * max(0.2, min(0.95, scale)))),
+                max(16, int(height * max(0.2, min(0.95, scale)))),
+            )
+            if new_size == frame.size:
+                quality = max(24, quality - 8)
+                if quality == 24:
+                    new_size = (max(16, width - 1), max(16, height - 1))
+            frame = frame.resize(new_size, _PIL_RESAMPLING.LANCZOS)
+        if len(last_raw) <= limit:
+            return last_raw
+        raise RuntimeError(
+            f"unable to encode lightweight jpeg under {limit} bytes"
+        )
+
+    @staticmethod
+    def _image_phash(image: Any) -> str:
+        if image is None or not hasattr(image, "convert"):
+            return ""
+        try:
+            small = image.convert("L").resize((8, 8), _PIL_RESAMPLING.LANCZOS)
+            values = list(small.getdata())
+        except Exception:
+            return ""
+        if not values:
+            return ""
+        average = sum(int(value) for value in values) / len(values)
+        bits = 0
+        for value in values:
+            bits = (bits << 1) | (1 if int(value) >= average else 0)
+        return f"{bits:016x}"
+
+    @staticmethod
+    def _get_active_window_title() -> str:
+        if sys.platform == "darwin":
+            scripts = (
+                'tell application "System Events" to tell (first application process whose frontmost is true) to name of first window',
+                'tell application "System Events" to name of first application process whose frontmost is true',
+            )
+            for script in scripts:
+                try:
+                    result = subprocess.run(
+                        ["osascript", "-e", script],
+                        capture_output=True,
+                        text=True,
+                        timeout=1.0,
+                    )
+                except Exception:
+                    continue
+                if result.returncode == 0:
+                    title = str(result.stdout or "").strip()
+                    if title:
+                        return title
+            return ""
+        if sys.platform == "win32":
+            try:
+                import ctypes
+
+                user32 = ctypes.windll.user32
+                hwnd = user32.GetForegroundWindow()
+                length = user32.GetWindowTextLengthW(hwnd)
+                if length > 0:
+                    buffer = ctypes.create_unicode_buffer(length + 1)
+                    user32.GetWindowTextW(hwnd, buffer, length + 1)
+                    return str(buffer.value or "").strip()
+            except Exception:
+                pass
+        try:
+            import pygetwindow
+
+            window = pygetwindow.getActiveWindow()
+            return str(getattr(window, "title", "") or "").strip()
+        except Exception:
+            return ""
 
     @staticmethod
     def _capture_fullscreen() -> Any:
