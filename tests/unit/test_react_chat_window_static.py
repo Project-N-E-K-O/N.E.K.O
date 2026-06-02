@@ -502,6 +502,13 @@ def test_compact_surface_drag_uses_declared_surface_and_no_drag_exclusions():
     assert "if (!isCompactDragSurfaceTarget(event.target)) return;" in drag_block
     assert "compactSurface: true" in drag_block
 
+    touch_block = script.split("document.addEventListener('touchstart', function (event)", 1)[1].split(
+        "document.addEventListener('mousemove', function (event)",
+        1,
+    )[0]
+    assert "if (!isCompactDragSurfaceTarget(event.target)) return;" in touch_block
+    assert "compactSurface: true" in touch_block
+
 
 def test_desktop_compact_layout_change_resets_anchor_only_when_base_surface_changes():
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
