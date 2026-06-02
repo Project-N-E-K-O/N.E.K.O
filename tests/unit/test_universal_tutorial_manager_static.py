@@ -69,6 +69,29 @@ def test_home_tutorial_click_blocker_allows_intro_chat_activation_target():
     )
 
 
+def test_home_tutorial_click_blocker_allows_manual_plugin_dashboard_target():
+    source = _read_manager()
+
+    manual_target_block = source.split("    isManualPluginDashboardOpenClickTarget(target) {", 1)[1].split(
+        "    isNekoTutorialClickTarget(target) {",
+        1,
+    )[0]
+    block_event = source.split("    blockNekoTutorialClickEvent(event) {", 1)[1].split(
+        "    blockNekoTutorialClickEvents() {",
+        1,
+    )[0]
+
+    assert "manualPluginDashboardOpenAllowed !== true" in manual_target_block
+    assert "manualPluginDashboardOpenTarget" in manual_target_block
+    assert "target === manualTarget" in manual_target_block
+    assert "manualTarget.contains(target)" in manual_target_block
+    assert "#neko-sidepanel-action-agent-user-plugin-management-panel" in manual_target_block
+    assert "this.isManualPluginDashboardOpenClickTarget(event && event.target)" in block_event
+    assert block_event.index("this.isManualPluginDashboardOpenClickTarget(event && event.target)") < block_event.index(
+        "this.isNekoTutorialClickTarget(event && event.target)"
+    )
+
+
 def test_neko_tutorial_click_blocker_covers_click_and_pointer_events():
     source = _read_manager()
     install_block = source.split("    blockNekoTutorialClickEvents() {", 1)[1].split(

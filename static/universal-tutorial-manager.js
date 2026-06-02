@@ -3362,6 +3362,22 @@ class UniversalTutorialManager {
         ].join(', '));
     }
 
+    isManualPluginDashboardOpenClickTarget(target) {
+        if (!target || typeof target.closest !== 'function') return false;
+        if (!this.yuiGuideDirector || this.yuiGuideDirector.manualPluginDashboardOpenAllowed !== true) return false;
+
+        const manualTarget = this.yuiGuideDirector.manualPluginDashboardOpenTarget;
+        if (!manualTarget) return false;
+        return !!(
+            target === manualTarget
+            || (manualTarget.contains && manualTarget.contains(target))
+            || (
+                target.closest
+                && target.closest('#neko-sidepanel-action-agent-user-plugin-management-panel') === manualTarget
+            )
+        );
+    }
+
     isNekoTutorialClickTarget(target) {
         if (!target || typeof target.closest !== 'function') return false;
 
@@ -3392,6 +3408,7 @@ class UniversalTutorialManager {
         // 只拦真实用户输入；Yui 引导自身的 button.click()/MouseEvent 演出需要继续工作。
         if (event && event.isTrusted === false) return;
         if (this.isHomeIntroActivationClickTarget(event && event.target)) return;
+        if (this.isManualPluginDashboardOpenClickTarget(event && event.target)) return;
         if (!this.isNekoTutorialClickTarget(event && event.target)) return;
 
         if (event && typeof event.preventDefault === 'function') {
