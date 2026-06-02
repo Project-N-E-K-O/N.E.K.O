@@ -180,7 +180,7 @@ export function usePackageManager() {
     togglePlugin: toggleWorkbenchPlugin,
     selectAllVisible,
     clearSelection,
-  } = usePluginWorkbench(selectablePlugins)
+  } = usePluginWorkbench(selectablePlugins, { scope: 'plugin-package-workbench' })
 
   const resolvedBuildTargets = computed(() => {
     if (buildMode.value === 'all') {

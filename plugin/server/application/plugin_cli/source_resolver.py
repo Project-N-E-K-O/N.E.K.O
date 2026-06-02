@@ -75,10 +75,23 @@ class PluginSourceResolver:
             raise ValueError("plugin_ref.directory_name is required")
         safe_directory_name = _require_safe_directory_name(directory_name)
         root = self.policy.plugin_root(root_id)  # type: ignore[arg-type]
+        candidate = root / safe_directory_name
+        if candidate.is_symlink():
+            raise ValueError(
+                f"plugin_ref must point to a real plugin directory under {root_id}, "
+                f"symlinks are not allowed: {root_id}/{safe_directory_name}"
+            )
+        resolved_candidate = candidate.resolve(strict=False)
+        resolved_root = root.resolve(strict=False)
+        if not _path_is_within(resolved_candidate, resolved_root):
+            raise ValueError(
+                f"plugin_ref resolved outside {root_id} plugin root: "
+                f"{root_id}/{safe_directory_name}"
+            )
         return self._source_from_dir(
             root_id=root_id,  # type: ignore[arg-type]
             directory_name=safe_directory_name,
-            plugin_dir=(root / safe_directory_name).resolve(strict=False),
+            plugin_dir=resolved_candidate,
         )
 
     def resolve_string(self, raw: str) -> ResolvedPluginSource:

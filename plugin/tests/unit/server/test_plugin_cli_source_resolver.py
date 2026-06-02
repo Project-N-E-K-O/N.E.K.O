@@ -71,6 +71,23 @@ def test_plugin_ref_resolves_exact_root_and_directory_when_names_overlap(tmp_pat
     assert source.plugin_id == "user_shared"
 
 
+def test_plugin_ref_rejects_symlinked_directory_even_when_target_has_plugin_toml(
+    tmp_path: Path,
+) -> None:
+    policy = _make_policy(tmp_path)
+    outside_plugin = _write_plugin(tmp_path / "outside", "external", "external")
+    link = policy.user_plugins_root / "linked_external"
+    try:
+        link.symlink_to(outside_plugin, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable on this platform: {exc}")
+
+    with pytest.raises(ValueError, match="symlinks are not allowed"):
+        PluginSourceResolver(policy).resolve_plugin_ref(
+            {"root_id": "user", "directory_name": "linked_external"}
+        )
+
+
 def test_absolute_path_is_allowed_only_for_top_level_builtin_or_user_plugin(
     tmp_path: Path,
 ) -> None:
@@ -108,4 +125,3 @@ def test_string_plugin_id_ambiguity_is_reported_without_guessing(tmp_path: Path)
 
     with pytest.raises(ValueError, match="ambiguous"):
         PluginSourceResolver(policy).resolve_string("same_plugin_id")
-
