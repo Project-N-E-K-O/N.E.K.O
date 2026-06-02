@@ -47,6 +47,7 @@ function renderPanel(overrides: Partial<Parameters<typeof CompactExportHistoryPa
 describe('CompactExportHistoryPanel', () => {
   it('pins the history list to bottom when returning from preview', () => {
     const scrollTopValues: number[] = [];
+    const scrollTopByElement = new WeakMap<HTMLElement, number>();
     const scrollHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight');
     const scrollTopDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollTop');
 
@@ -59,9 +60,10 @@ describe('CompactExportHistoryPanel', () => {
     Object.defineProperty(HTMLElement.prototype, 'scrollTop', {
       configurable: true,
       get() {
-        return 0;
+        return scrollTopByElement.get(this) ?? 0;
       },
       set(value: number) {
+        scrollTopByElement.set(this, value);
         if (this.classList.contains('compact-export-history-scroll')) {
           scrollTopValues.push(value);
         }
