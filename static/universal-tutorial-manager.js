@@ -3343,6 +3343,25 @@ class UniversalTutorialManager {
         return !!target.closest('.driver-popover, #neko-tutorial-skip-btn');
     }
 
+    isHomeIntroActivationClickTarget(target) {
+        if (this.currentPage !== 'home') return false;
+        if (!target || typeof target.closest !== 'function') return false;
+        if (!this.yuiGuideDirector || this.yuiGuideDirector.awaitingIntroActivation !== true) return false;
+
+        return !!target.closest([
+            '#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="capsule"]',
+            '#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="input"]',
+            '#react-chat-window-root .compact-chat-surface-frame',
+            '#react-chat-window-root .compact-chat-surface-shell',
+            '#react-chat-window-root .composer-input',
+            '#react-chat-window-root .composer-input-shell',
+            '#react-chat-window-root .composer-panel',
+            '#textInputBox',
+            '#text-input-area',
+            '#chat-container #text-input-area'
+        ].join(', '));
+    }
+
     isNekoTutorialClickTarget(target) {
         if (!target || typeof target.closest !== 'function') return false;
 
@@ -3372,6 +3391,7 @@ class UniversalTutorialManager {
 
         // 只拦真实用户输入；Yui 引导自身的 button.click()/MouseEvent 演出需要继续工作。
         if (event && event.isTrusted === false) return;
+        if (this.isHomeIntroActivationClickTarget(event && event.target)) return;
         if (!this.isNekoTutorialClickTarget(event && event.target)) return;
 
         if (event && typeof event.preventDefault === 'function') {

@@ -190,6 +190,10 @@ def test_guide_audio_playback_state_uses_guide_message_id_for_compact_capsule_cl
         "        resolvePerformanceBubbleText",
         1,
     )[0]
+    normalize_block = source.split("        normalizeVoiceQueueSpeakOptions(options) {", 1)[1].split(
+        "        async guideChatTypeMessage",
+        1,
+    )[0]
     run_narration_block = source.split("        async runNarration(narration) {", 1)[1].split(
         "        async speakLineAndWait",
         1,
@@ -197,5 +201,6 @@ def test_guide_audio_playback_state_uses_guide_message_id_for_compact_capsule_cl
 
     assert "this.guideChatVoiceMessageIds = new Map();" in constructor_block
     assert "this.guideChatVoiceMessageIds.set(voiceKey, message.id);" in append_block
-    assert "normalizedOptions.playbackTurnId = guideMessageId;" in speak_block
+    assert "this.normalizeVoiceQueueSpeakOptions(options)" in speak_block
+    assert "normalizedOptions.playbackTurnId = guideMessageId;" in normalize_block
     assert "playbackTurnId: narration.playbackTurnId" in run_narration_block
