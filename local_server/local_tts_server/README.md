@@ -47,6 +47,14 @@ Enable custom TTS and set the URL to `ws://` or `wss://`. WebSocket custom TTS
 routes to `local_cosyvoice_worker` directly; the HTTP GPT-SoVITS path is only
 used for `http://` or `https://` custom TTS URLs.
 
+## WebSocket Origin Safety
+
+The synthesis WebSocket accepts local non-browser clients without an `Origin`
+header and browser clients from `localhost`, `127.0.0.1`, or `[::1]`. To allow
+another trusted local UI origin, set `LOCAL_TTS_ALLOWED_ORIGINS` to a
+comma-separated list of exact origins, for example
+`http://127.0.0.1:48911,http://localhost:48911`.
+
 ## Voice Selector
 
 The service accepts a model prefix in `voice`:

@@ -32,6 +32,7 @@ import wave
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import urlparse
 
 import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -75,6 +76,13 @@ LOG_SYNTHESIS_TEXT = os.getenv("LOCAL_TTS_LOG_TEXT", "0").strip().lower() in {
     "yes",
     "on",
 }
+DEFAULT_WS_ORIGIN_HOSTS = {"127.0.0.1", "localhost", "::1"}
+EXTRA_WS_ALLOWED_ORIGINS = {
+    value.strip().rstrip("/")
+    for value in os.getenv("LOCAL_TTS_ALLOWED_ORIGINS", "").split(",")
+    if value.strip()
+}
+ALLOW_ANY_WS_ORIGIN = "*" in EXTRA_WS_ALLOWED_ORIGINS
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("local_tts_server")
@@ -727,8 +735,31 @@ async def send_pcm_chunks(websocket: WebSocket, pcm: bytes) -> None:
         await asyncio.sleep(0)
 
 
+def is_websocket_origin_allowed(origin: str | None) -> bool:
+    """Reject browser-driven cross-site synthesis while allowing local clients."""
+
+    if not origin:
+        return True
+    normalized = origin.strip().rstrip("/")
+    if ALLOW_ANY_WS_ORIGIN or normalized in EXTRA_WS_ALLOWED_ORIGINS:
+        return True
+    try:
+        parsed = urlparse(normalized)
+    except ValueError:
+        return False
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    return (parsed.hostname or "").lower() in DEFAULT_WS_ORIGIN_HOSTS
+
+
 @app.websocket("/v1/audio/speech/stream")
 async def websocket_endpoint(websocket: WebSocket):
+    origin = websocket.headers.get("origin")
+    if not is_websocket_origin_allowed(origin):
+        logger.warning("Rejected local TTS websocket origin: %s", origin)
+        await websocket.close(code=1008)
+        return
+
     await websocket.accept()
     text_parts: list[str] = []
     voice = ""
