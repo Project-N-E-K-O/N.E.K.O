@@ -35,6 +35,7 @@ export default function NoteSearch(props: PluginSurfaceProps) {
     if (!trimmed) {
       setPayload({});
       setStatus('');
+      setBusy(false);
       return;
     }
     setBusy(true);
@@ -57,6 +58,12 @@ export default function NoteSearch(props: PluginSurfaceProps) {
   }
 
   useEffect(() => {
+    if (!query.trim()) {
+      setPayload({});
+      setStatus('');
+      setBusy(false);
+      return;
+    }
     const controller = new AbortController();
     const timeoutId = window.setTimeout(() => {
       runSearch(controller.signal).catch((error) => {

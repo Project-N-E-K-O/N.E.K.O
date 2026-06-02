@@ -362,13 +362,15 @@ class _NotebookEntriesMixin:
             if self._agent is None:
                 return Err(SdkError("study tutor agent is not initialized"))
             source_content = str(content or "")
-            if note_id and not source_content:
+            if note_id and not source_content.strip():
                 note = await asyncio.to_thread(self._notebook_store.get_note, note_id)
                 if note is None:
                     return Err(SdkError("study note not found", code="NOTE_NOT_FOUND"))
                 source_content = note.content
                 if not topic_context and note.topic_ids:
                     topic_context = ", ".join(note.topic_ids)
+            if not source_content.strip():
+                return Err(SdkError("study note content is required", code="MISSING_TEXT"))
             reply = await self._agent.expand_note(
                 source_content,
                 topic_context=topic_context,

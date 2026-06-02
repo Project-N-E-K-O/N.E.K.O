@@ -14,7 +14,7 @@ from plugin.plugins.study_companion.tutor_llm_agent_notebook import (
     expand_note,
     summarize_to_note,
 )
-from plugin.sdk.plugin import Ok
+from plugin.sdk.plugin import Err, Ok
 
 pytestmark = pytest.mark.unit
 
@@ -210,6 +210,7 @@ def test_notebook_filter_semantics_are_explicit(tmp_path) -> None:
             note.id
             for note in notebooks.list_notes(notebook_id=notebook.id)
         ] == [filed.id]
+        assert notebooks.list_notes(notebook_filter="specific", notebook_id=None) == []
     finally:
         store.close()
 
@@ -280,6 +281,30 @@ def test_session_note_source_filters_records_before_limit(tmp_path) -> None:
 
         assert "older session question" in source
         assert "recent question" not in source
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_note_ai_expand_rejects_missing_content_without_model_call(tmp_path) -> None:
+    class _ExpandAgent:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def expand_note(self, *args, **kwargs):
+            self.calls += 1
+            return SimpleNamespace(reply="", degraded=False, diagnostic="")
+
+    store, notebooks, _logger = _make_store(tmp_path)
+    harness = _EntryHarness(notebooks)
+    agent = _ExpandAgent()
+    harness._agent = agent
+    try:
+        result = await harness.study_note_ai_expand()
+
+        assert isinstance(result, Err)
+        assert result.error.code == "MISSING_TEXT"
+        assert agent.calls == 0
     finally:
         store.close()
 

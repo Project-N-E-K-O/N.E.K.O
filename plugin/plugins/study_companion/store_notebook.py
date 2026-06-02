@@ -793,6 +793,8 @@ class NotebookStore:
             if notebook_key is not None:
                 clauses.append(f"{column_prefix}notebook_id = ?")
                 params.append(notebook_key)
+            else:
+                clauses.append("1 = 0")
         topic_key = str(topic_id or "").strip()
         if topic_key:
             clauses.append(

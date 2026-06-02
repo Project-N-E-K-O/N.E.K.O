@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 from collections.abc import Mapping
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime
 import json
 import math
@@ -40,12 +40,13 @@ from .awareness_buffer import ActivityBuffer
 from .checkin_manager import CheckinManager
 from ._event_bus import StudyEvent, StudyEventBus
 from .pomodoro_timer import PomodoroTimer
-from .screen_classifier import classify_screen_from_ocr
+from .screen_classifier import classify_app_from_title, classify_screen_from_ocr
 from .models import (
     MODE_CONCEPT_EXPLAIN,
     STATUS_ERROR,
     STATUS_READY,
     STATUS_STOPPED,
+    ActivitySnapshot,
     ActivitySummary,
     StudyConfig,
     StudyState,
@@ -201,6 +202,8 @@ class StudyCompanionPlugin(
 ):
     def __init__(self, ctx):
         super().__init__(ctx)
+        from main_logic.activity.state_machine import ActivityStateMachine
+
         self.file_logger = self.enable_file_logging(log_level="INFO")
         self.logger = self.file_logger
         self._lock = asyncio.Lock()
@@ -237,6 +240,8 @@ class StudyCompanionPlugin(
         self._memory_habit_bridge: MemoryHabitBridge | None = None
         self._event_bus: StudyEventBus | None = None
         self._buffer: ActivityBuffer | None = None
+        self._collector: Any | None = None
+        self._activity_sm = ActivityStateMachine()
         self._awareness_task: asyncio.Task[None] | None = None
         self._last_awareness_push_at = 0.0
         self._awareness_idle_ticks = 0
@@ -442,6 +447,7 @@ class StudyCompanionPlugin(
     def stop_awareness_loop(self) -> None:
         task = self._awareness_task
         self._buffer = None
+        self._collector = None
         self._last_awareness_push_at = 0.0
         self._awareness_idle_ticks = 0
         if task is not None and not task.done():
@@ -652,6 +658,20 @@ class StudyCompanionPlugin(
             await asyncio.sleep(max(0.0, _REVIEW_DUE_INTERVAL_SECONDS))
 
     async def _run_awareness_loop(self) -> None:
+        if self._cfg.awareness.os_signals_enabled:
+            try:
+                from main_logic.activity.system_signals import (
+                    get_system_signal_collector,
+                )
+
+                self._collector = get_system_signal_collector()
+                await self._collector.start()
+            except Exception:
+                self._collector = None
+                self.logger.warning(
+                    "study awareness collector startup failed",
+                    exc_info=True,
+                )
         while self._buffer is not None:
             await self.awareness_tick()
             await asyncio.sleep(self._awareness_sleep_seconds())
@@ -667,6 +687,39 @@ class StudyCompanionPlugin(
         pipeline = self._ocr_pipeline
         if buffer is None or pipeline is None:
             return
+
+        ts = time.time()
+        sm_snap = None
+        obs = None
+        if self._cfg.awareness.os_signals_enabled and self._collector is not None:
+            try:
+                from main_logic.activity.state_machine import observation_from_system
+
+                sys_snap = self._collector.snapshot()
+                if bool(getattr(sys_snap, "os_signals_available", True)):
+                    obs = observation_from_system(sys_snap)
+                    self._activity_sm.update_system(sys_snap)
+                    self._activity_sm.update_window(obs, now=ts)
+                    sm_snap = self._activity_sm.get_snapshot(now=ts)
+            except Exception:
+                sm_snap = None
+                obs = None
+
+        if sm_snap is not None and getattr(sm_snap, "state", "") == "private":
+            await buffer.add(
+                ActivitySnapshot(
+                    timestamp=ts,
+                    first_seen_at=ts,
+                    app_type="private",
+                    activity_type="idle",
+                    classify_method="os_signal",
+                    ocr_text_snippet="",
+                    window_title="",
+                )
+            )
+            self._awareness_idle_ticks += 1
+            return
+
         try:
             snapshot = await asyncio.to_thread(pipeline.capture_lightweight)
         except Exception:
@@ -678,10 +731,40 @@ class StudyCompanionPlugin(
             self._awareness_idle_ticks += 1
             return
 
+        if hasattr(snapshot, "app_type"):
+            if obs is not None and obs.category not in ("own_app",):
+                snapshot = replace(snapshot, app_type=obs.category)
+            elif getattr(snapshot, "app_type", "") == "unknown":
+                snapshot = replace(
+                    snapshot,
+                    app_type=classify_app_from_title(
+                        getattr(snapshot, "window_title", "")
+                    ),
+                )
+
+        if self._supervision is not None:
+            foreground_category = obs.category if obs is not None else None
+            if (
+                foreground_category == "own_app"
+                or not self._cfg.awareness.distraction_detection
+            ):
+                foreground_category = None
+            self._supervision.observe_activity(
+                ocr_text=snapshot.ocr_text_snippet,
+                sensor_available=snapshot.status in {"ok", "empty"},
+                idle_seconds=(
+                    sm_snap.system_idle_seconds if sm_snap is not None else None
+                ),
+                foreground_category=foreground_category,
+            )
+
         activity = snapshot.to_activity_snapshot()
         if activity is not None:
             await buffer.add(activity)
-            if activity.app_type == "other" and activity.activity_type in ("idle", ""):
+            if activity.app_type in ("other", "unknown") and activity.activity_type in (
+                "idle",
+                "",
+            ):
                 self._awareness_idle_ticks += 1
             else:
                 self._awareness_idle_ticks = 0
