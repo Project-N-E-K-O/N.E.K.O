@@ -48,6 +48,14 @@ const AVATAR_TOOL_MANAGER_VIEWPORT_GUTTER = 12;
 const AVATAR_TOOL_MANAGER_ANCHOR_GAP = 12;
 const AVATAR_TOOL_MANAGER_FALLBACK_WIDTH = 380;
 const AVATAR_TOOL_MANAGER_FALLBACK_HEIGHT = 600;
+const AVATAR_TOOL_MANAGER_FOCUSABLE_SELECTOR = [
+  'a[href]',
+  'button:not([disabled])',
+  'input:not([disabled])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',');
 
 export type AvatarToolManagerAnchorRect = {
   left: number;
@@ -69,6 +77,7 @@ type AvatarToolManagerDialogDragSession = {
   startY: number;
   startLeft: number;
   startTop: number;
+  active: boolean;
   captureTarget: Element | null;
 };
 
@@ -196,6 +205,15 @@ function resolveAnchoredDialogPosition(
   }, dialogSize);
 }
 
+function getFocusableElements(container: HTMLElement | null): HTMLElement[] {
+  if (!container) return [];
+  return Array.from(container.querySelectorAll<HTMLElement>(AVATAR_TOOL_MANAGER_FOCUSABLE_SELECTOR))
+    .filter(element => (
+      element.tabIndex >= 0
+      && element.getAttribute('aria-hidden') !== 'true'
+    ));
+}
+
 export default function AvatarToolItemManager({
   open,
   activeToolIds,
@@ -210,6 +228,8 @@ export default function AvatarToolItemManager({
   const [dialogPosition, setDialogPosition] = useState<AvatarToolManagerPosition | null>(null);
   const [dialogDragSession, setDialogDragSession] = useState<AvatarToolManagerDialogDragSession | null>(null);
   const dialogRef = useRef<HTMLElement | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const prevActiveElementRef = useRef<HTMLElement | null>(null);
   const suppressClickRef = useRef(false);
 
   useEffect(() => {
@@ -243,6 +263,57 @@ export default function AvatarToolItemManager({
     window.addEventListener('resize', handleResize);
     return () => {
       window.removeEventListener('resize', handleResize);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || typeof document === 'undefined') return undefined;
+    prevActiveElementRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    closeButtonRef.current?.focus({ preventScroll: true });
+
+    return () => {
+      const previousElement = prevActiveElementRef.current;
+      prevActiveElementRef.current = null;
+      if (previousElement && document.contains(previousElement)) {
+        previousElement.focus({ preventScroll: true });
+      }
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || typeof document === 'undefined') return undefined;
+    const dialogElement = dialogRef.current;
+    if (!dialogElement) return undefined;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab') return;
+      const focusableElements = getFocusableElements(dialogElement);
+      if (focusableElements.length === 0) {
+        event.preventDefault();
+        dialogElement.focus({ preventScroll: true });
+        return;
+      }
+
+      const activeElement = document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+      const currentIndex = activeElement ? focusableElements.indexOf(activeElement) : -1;
+      const nextIndex = currentIndex === -1
+        ? (event.shiftKey ? focusableElements.length - 1 : 0)
+        : (
+          currentIndex
+          + (event.shiftKey ? -1 : 1)
+          + focusableElements.length
+        ) % focusableElements.length;
+      event.preventDefault();
+      focusableElements[nextIndex]?.focus({ preventScroll: true });
+    };
+
+    dialogElement.addEventListener('keydown', handleKeyDown);
+    return () => {
+      dialogElement.removeEventListener('keydown', handleKeyDown);
     };
   }, [open]);
 
@@ -368,23 +439,29 @@ export default function AvatarToolItemManager({
       startY: event.clientY,
       startLeft: dialogPosition.left,
       startTop: dialogPosition.top,
+      active: false,
       captureTarget,
     });
     try {
       captureTarget.setPointerCapture?.(event.pointerId);
     } catch (_) {}
-    event.preventDefault();
   };
 
   const updateDialogDrag = (event: ReactPointerEvent<HTMLElement>) => {
     setDialogDragSession((session) => {
       if (!session || session.pointerId !== event.pointerId) return session;
+      const active = session.active
+        || Math.hypot(event.clientX - session.startX, event.clientY - session.startY) >= AVATAR_TOOL_DRAG_THRESHOLD;
+      if (!active) return session;
       event.preventDefault();
       setDialogPosition(clampDialogPosition({
         left: session.startLeft + event.clientX - session.startX,
         top: session.startTop + event.clientY - session.startY,
       }, getDialogSize(dialogRef.current)));
-      return session;
+      return {
+        ...session,
+        active,
+      };
     });
   };
 
@@ -394,6 +471,9 @@ export default function AvatarToolItemManager({
     try {
       session.captureTarget?.releasePointerCapture?.(event.pointerId);
     } catch (_) {}
+    if (session.active) {
+      event.preventDefault();
+    }
     setDialogDragSession(null);
   };
 
@@ -410,6 +490,7 @@ export default function AvatarToolItemManager({
   }
 
   const dragTool = dragSession ? availableById.get(dragSession.toolId) : null;
+  const managerDragging = !!dialogDragSession?.active || !!dragSession?.active;
 
   const dialogStyle = dialogPosition
     ? ({
@@ -429,13 +510,14 @@ export default function AvatarToolItemManager({
       }}
     >
       <section
-        className={`avatar-tool-manager-dialog${dialogPosition ? ' is-positioned' : ''}${dialogDragSession ? ' is-dragging' : ''}`}
+        className={`avatar-tool-manager-dialog${dialogPosition ? ' is-positioned' : ''}${managerDragging ? ' is-dragging' : ''}`}
         ref={dialogRef}
         style={dialogStyle}
         role="dialog"
         aria-modal="true"
         aria-labelledby={dialogTitleId}
         aria-describedby={noticeId}
+        tabIndex={-1}
         onClick={(event) => event.stopPropagation()}
       >
         <header
@@ -452,6 +534,7 @@ export default function AvatarToolItemManager({
           <button
             className="avatar-tool-manager-icon-button"
             type="button"
+            ref={closeButtonRef}
             aria-label={i18n('chat.avatarToolManagerClose', 'Close')}
             title={i18n('chat.avatarToolManagerClose', 'Close')}
             onClick={onCancel}

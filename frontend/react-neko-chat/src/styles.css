@@ -3860,11 +3860,12 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   padding: 0 0 9px;
   border-bottom: 1px solid rgba(81, 132, 164, 0.18);
   cursor: grab;
-  touch-action: none;
+  touch-action: pan-y;
 }
 
 .avatar-tool-manager-dialog.is-dragging .avatar-tool-manager-header {
   cursor: grabbing;
+  touch-action: none;
 }
 
 .avatar-tool-manager-header > div {
@@ -3986,8 +3987,13 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
     0 7px 14px rgba(39, 83, 116, 0.13),
     inset 0 1px 0 rgba(255, 255, 255, 0.72);
   transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
-  touch-action: none;
+  touch-action: pan-y;
   user-select: none;
+}
+
+.avatar-tool-manager-dialog.is-dragging .avatar-tool-manager-slot-card,
+.avatar-tool-manager-dialog.is-dragging .avatar-tool-manager-library-card {
+  touch-action: none;
 }
 
 .avatar-tool-manager-slot-card {

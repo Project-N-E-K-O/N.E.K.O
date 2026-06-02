@@ -2,13 +2,20 @@ import { useState } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import App from './App';
 import MessageList from './MessageList';
+import { ACTIVE_AVATAR_TOOLS_STORAGE_KEY } from './avatarTools';
 import { parseChatMessage, type CompactChatState } from './message-schema';
 
 describe('App', () => {
   const COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY = 'neko.reactChatWindow.compactExportHistoryOpen';
+  const LOCAL_STORAGE_KEYS_TO_RESET = [
+    COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY,
+    ACTIVE_AVATAR_TOOLS_STORAGE_KEY,
+  ];
 
   beforeEach(() => {
-    window.localStorage.removeItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
+    LOCAL_STORAGE_KEYS_TO_RESET.forEach(key => {
+      window.localStorage.removeItem(key);
+    });
   });
 
   const openCompactInputTools = async () => {
@@ -3277,6 +3284,7 @@ describe('App', () => {
       });
 
       await waitFor(() => {
+        expect(dialog).toHaveClass('is-dragging');
         expect(dialog).toHaveStyle({
           '--avatar-tool-manager-left': '396px',
           '--avatar-tool-manager-top': '42px',
@@ -3295,6 +3303,60 @@ describe('App', () => {
       Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth });
       Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalInnerHeight });
     }
+  });
+
+  it('keeps avatar tool manager focus trapped and restores focus to the edit button on close', async () => {
+    const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+
+    await openCompactInputTools();
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+
+    const editButton = container.querySelector('.avatar-tool-quickbar-edit') as HTMLButtonElement;
+    expect(editButton).not.toBeNull();
+    editButton.focus();
+    expect(editButton).toHaveFocus();
+    fireEvent.click(editButton);
+
+    const dialog = await screen.findByRole('dialog', { name: 'Manage tools' });
+    const closeButton = screen.getByRole('button', { name: 'Close' });
+    const saveButton = screen.getByRole('button', { name: 'Save changes' });
+
+    await waitFor(() => {
+      expect(closeButton).toHaveFocus();
+    });
+
+    fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true });
+    expect(saveButton).toHaveFocus();
+
+    fireEvent.keyDown(dialog, { key: 'Tab' });
+    expect(closeButton).toHaveFocus();
+
+    fireEvent.click(closeButton);
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Manage tools' })).toBeNull();
+      expect(editButton).toHaveFocus();
+    });
+  });
+
+  it('clears avatar tool manager state when compact surface closes', async () => {
+    const { container, rerender } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+
+    await openCompactInputTools();
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+
+    const editButton = container.querySelector('.avatar-tool-quickbar-edit') as HTMLButtonElement;
+    expect(editButton).not.toBeNull();
+    fireEvent.click(editButton);
+    expect(await screen.findByRole('dialog', { name: 'Manage tools' })).toBeInTheDocument();
+
+    rerender(<App chatSurfaceMode="minimized" compactChatState="input" />);
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Manage tools' })).toBeNull();
+    });
+
+    rerender(<App chatSurfaceMode="compact" compactChatState="input" />);
+    expect(screen.queryByRole('dialog', { name: 'Manage tools' })).toBeNull();
   });
 
   it('keeps compact avatar tool choices open after the pointer leaves the tool toggle', async () => {

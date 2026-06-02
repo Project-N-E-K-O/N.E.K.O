@@ -1466,6 +1466,12 @@ export default function App({
   }, [isCompactSurface]);
 
   useEffect(() => {
+    if (isCompactSurface) return;
+    setAvatarToolManagerOpen(false);
+    setAvatarToolManagerAnchorRect(null);
+  }, [isCompactSurface]);
+
+  useEffect(() => {
     if (!compactExportHistoryOpen) return;
     if (messages.length > 0) return;
     setCompactExportPreviewOpen(false);
