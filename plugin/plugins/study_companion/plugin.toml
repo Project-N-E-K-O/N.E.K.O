@@ -52,15 +52,6 @@ streak_timezone = "local"
 makeup_window_days = 3
 auto_derive_from_session = true
 
-[study.awareness]
-enabled = false
-snapshot_interval_seconds = 5
-context_window_minutes = 5
-classify_mode = "title_first"
-image_max_bytes = 204800
-push_to_llm_interval_seconds = 30
-push_to_llm_mode = "read"
-
 [study_companion.communication]
 enabled = true
 
@@ -163,6 +154,24 @@ entry = "surfaces/note_exporter.tsx"
 permissions = ["state:read", "action:call"]
 
 [[plugin.ui.guide]]
+id = "notebook-panel"
+title = "Study Notebook"
+entry = "surfaces/notebook_panel.tsx"
+permissions = ["state:read", "action:call"]
+
+[[plugin.ui.guide]]
+id = "note-editor"
+title = "Note Editor"
+entry = "surfaces/note_editor.tsx"
+permissions = ["state:read", "action:call"]
+
+[[plugin.ui.guide]]
+id = "note-search"
+title = "Study Search"
+entry = "surfaces/note_search.tsx"
+permissions = ["state:read", "action:call"]
+
+[[plugin.ui.guide]]
 id = "habit-dashboard"
 title = "Habit Dashboard"
 entry = "surfaces/habit_dashboard.tsx"
@@ -190,6 +199,12 @@ permissions = ["state:read", "action:call"]
 id = "quickstart"
 title = "Study Companion Quickstart"
 entry = "surfaces/quickstart.tsx"
+permissions = ["state:read"]
+
+[[plugin.ui.docs]]
+id = "onboarding"
+title = "Study Companion Onboarding"
+entry = "onboarding.md"
 permissions = ["state:read"]
 
 [plugin.i18n]

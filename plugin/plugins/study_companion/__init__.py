@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 import base64
 from collections.abc import Mapping
+from dataclasses import asdict
 from datetime import datetime
-import json
 import math
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +17,7 @@ from plugin.sdk.plugin import (
     NekoPluginBase,
     Ok,
     SdkError,
+    custom_event,
     lifecycle,
     neko_plugin,
     plugin_entry,
@@ -34,7 +35,6 @@ from .constants import (
     MODE_TEACHING,
 )
 from .doc_exporter import DocExporter, normalize_format
-from .awareness_buffer import ActivityBuffer
 from .checkin_manager import CheckinManager
 from ._event_bus import StudyEvent, StudyEventBus
 from .pomodoro_timer import PomodoroTimer
@@ -44,7 +44,6 @@ from .models import (
     STATUS_ERROR,
     STATUS_READY,
     STATUS_STOPPED,
-    ActivitySummary,
     StudyConfig,
     StudyState,
     TutorReply,
@@ -70,6 +69,7 @@ from .memory_deck_store import MemoryDeckStore, MemoryItemNotFoundError
 from .memory_habit_bridge import MemoryHabitBridge
 from .state import build_initial_state
 from .store import StudyStore
+from .store_notebook import NotebookStore
 from .study_habit_store import StudyHabitStore
 from .study_ocr_pipeline import StudyOcrPipeline
 from .supervision import SupervisionController
@@ -78,6 +78,24 @@ from .tutor_llm_agent import diagnostic_code_for_exception
 from .ui_api import build_open_ui_payload
 from .ui_api import build_contribution_settings_payload, build_knowledge_map_payload
 from .ui_api import build_habit_dashboard_payload, build_pomodoro_status_payload
+from .voice_contracts import (
+    VOICE_TRANSCRIPT_EVENT_ID,
+    VOICE_TRANSCRIPT_EVENT_TYPE,
+    voice_transcript_cancel_response,
+    voice_transcript_noop,
+    voice_transcript_prime_context,
+)
+from .voice_filter import VoiceFilter, _derive_subject, build_context_for_catgirl
+
+
+def _voice_session_key(lanlan_name: str, metadata: Mapping[str, Any] | None) -> str:
+    for key in ("voice_session_id", "session_id", "conversation_id", "request_session_id"):
+        value = metadata.get(key) if isinstance(metadata, Mapping) else None
+        text = str(value or "").strip()
+        if text:
+            return f"session:{text}"
+    name = str(lanlan_name or "").strip()
+    return f"lanlan:{name}" if name else "__default__"
 
 
 def _register_install_routes() -> None:
@@ -123,6 +141,7 @@ from .entry_tutor_context_support import _TutorContextSupportMixin
 from .entry_communication_review_events import _CommunicationReviewEventsMixin
 from .entry_communication_tutor_events import _CommunicationTutorEventsMixin
 from .entry_export_support import _ExportSupportMixin
+from .entry_notebook import _NotebookEntriesMixin
 from .entry_status_entries import _StatusEntriesMixin
 from .entry_memory_card_entries import _MemoryCardEntriesMixin
 from .entry_memory_deck_entries import _MemoryDeckEntriesMixin
@@ -157,6 +176,7 @@ class StudyCompanionPlugin(
     _CommunicationReviewEventsMixin,
     _CommunicationTutorEventsMixin,
     _ExportSupportMixin,
+    _NotebookEntriesMixin,
     _StatusEntriesMixin,
     _MemoryCardEntriesMixin,
     _MemoryDeckEntriesMixin,
@@ -203,6 +223,7 @@ class StudyCompanionPlugin(
             self._store,
             retention_target=self._cfg.fsrs_retention_target,
         )
+        self._notebook_store = NotebookStore(self._store)
         self._knowledge_tracker.set_memory_deck_summary_provider(
             self._memory_deck_store.status_summary
         )
@@ -212,11 +233,8 @@ class StudyCompanionPlugin(
         self._supervision: SupervisionController | None = None
         self._memory_habit_bridge: MemoryHabitBridge | None = None
         self._event_bus: StudyEventBus | None = None
-        self._buffer: ActivityBuffer | None = None
-        self._awareness_task: asyncio.Task[None] | None = None
-        self._last_awareness_push_at = 0.0
-        self._awareness_idle_ticks = 0
         self._review_due_task: asyncio.Task[None] | None = None
+        self._voice_filter = VoiceFilter()
         self._command_queue: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue()
         self._command_worker_task: asyncio.Task[None] | None = None
         self._interruptible_task: asyncio.Task[None] | None = None
@@ -231,6 +249,9 @@ class StudyCompanionPlugin(
         try:
             raw = await self.config.dump(timeout=5.0)
             self._cfg = build_config(raw if isinstance(raw, dict) else {})
+            self._voice_filter = VoiceFilter(
+                plugin_config=raw if isinstance(raw, dict) else {}
+            )
             await asyncio.to_thread(self._store.open)
             self._cfg = await asyncio.to_thread(self._store.load_config, self._cfg)
             self._knowledge_tracker = KnowledgeTracker(
@@ -242,6 +263,7 @@ class StudyCompanionPlugin(
                 self._store,
                 retention_target=self._cfg.fsrs_retention_target,
             )
+            self._notebook_store = NotebookStore(self._store)
             self._knowledge_tracker.set_memory_deck_summary_provider(
                 self._memory_deck_store.status_summary
             )
@@ -294,6 +316,7 @@ class StudyCompanionPlugin(
                 )
             self._ocr_pipeline = StudyOcrPipeline(logger=self.logger, config=self._cfg)
             self._agent = TutorLLMAgent(logger=self.logger, config=self._cfg)
+            self._assert_notebook_agent_methods(self._agent)
             await self._refresh_dependency_status()
             self.register_static_ui("static")
             self.set_list_actions(
@@ -312,8 +335,6 @@ class StudyCompanionPlugin(
             if self._event_bus is not None:
                 await self._subscribe_neko_commands()
                 self._start_command_worker()
-            if self._cfg.awareness.enabled:
-                self.start_awareness_loop()
             status_payload = await asyncio.to_thread(self._status_payload)
             return Ok({"status": STATUS_READY, "result": status_payload})
         except asyncio.CancelledError:
@@ -327,8 +348,6 @@ class StudyCompanionPlugin(
             return Err(SdkError("failed to start study_companion"))
 
     async def _cleanup_after_failed_startup(self) -> None:
-        self.stop_awareness_loop()
-        await self._await_awareness_stop()
         await self._unsubscribe_neko_commands()
         await self._cancel_command_worker()
         await self._cancel_review_due_task()
@@ -369,8 +388,6 @@ class StudyCompanionPlugin(
 
     @lifecycle(id="shutdown")
     async def shutdown(self, **_):
-        self.stop_awareness_loop()
-        await self._await_awareness_stop()
         await self._unsubscribe_neko_commands()
         await self._cancel_command_worker()
         await self._cancel_review_due_task()
@@ -393,44 +410,6 @@ class StudyCompanionPlugin(
             return
         self._review_due_task = asyncio.create_task(self._run_review_due_loop())
         self._review_due_task.add_done_callback(self._on_review_due_task_done)
-
-    def start_awareness_loop(self) -> None:
-        if self.is_awareness_active():
-            return
-        if self._ocr_pipeline is None:
-            self.logger.warning("awareness loop skipped: OCR pipeline not initialized")
-            return
-        self._buffer = ActivityBuffer(
-            window_seconds=self._cfg.awareness.context_window_minutes * 60,
-            snapshot_interval=self._cfg.awareness.snapshot_interval_seconds,
-        )
-        self._last_awareness_push_at = 0.0
-        self._awareness_idle_ticks = 0
-        self._awareness_task = asyncio.create_task(self._run_awareness_loop())
-        self._awareness_task.add_done_callback(self._on_awareness_task_done)
-
-    def stop_awareness_loop(self) -> None:
-        task = self._awareness_task
-        self._buffer = None
-        self._last_awareness_push_at = 0.0
-        self._awareness_idle_ticks = 0
-        if task is not None and not task.done():
-            task.cancel()
-
-    async def _await_awareness_stop(self) -> None:
-        task = self._awareness_task
-        self._awareness_task = None
-        if task is None:
-            return
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-        except Exception as exc:
-            self.logger.warning("study awareness task cleanup failed: {}", exc)
-
-    def is_awareness_active(self) -> bool:
-        return self._buffer is not None
 
     def _start_command_worker(self) -> None:
         if self._event_bus is None:
@@ -605,98 +584,10 @@ class StudyCompanionPlugin(
         except Exception as exc:
             self.logger.warning("study review due task failed: {}", exc)
 
-    def _on_awareness_task_done(self, task: asyncio.Task[None]) -> None:
-        if self._awareness_task is task:
-            self._awareness_task = None
-        if task.cancelled():
-            return
-        try:
-            task.result()
-        except Exception as exc:
-            self._buffer = None
-            self.logger.warning("study awareness task failed: {}", exc)
-
     async def _run_review_due_loop(self) -> None:
         while True:
             await self._emit_review_due_if_needed()
             await asyncio.sleep(max(0.0, _REVIEW_DUE_INTERVAL_SECONDS))
-
-    async def _run_awareness_loop(self) -> None:
-        while self._buffer is not None:
-            await self.awareness_tick()
-            await asyncio.sleep(self._awareness_sleep_seconds())
-
-    def _awareness_sleep_seconds(self) -> float:
-        base = max(1.0, float(self._cfg.awareness.snapshot_interval_seconds))
-        if self._awareness_idle_ticks >= 3:
-            return max(base, 15.0)
-        return base
-
-    async def awareness_tick(self) -> None:
-        buffer = self._buffer
-        pipeline = self._ocr_pipeline
-        if buffer is None or pipeline is None:
-            return
-        try:
-            snapshot = await asyncio.to_thread(pipeline.capture_lightweight)
-        except Exception:
-            self._awareness_idle_ticks += 1
-            self.logger.warning("awareness_tick capture failed", exc_info=True)
-            return
-
-        if snapshot is None or snapshot.status == "capture_failed":
-            self._awareness_idle_ticks += 1
-            return
-
-        activity = snapshot.to_activity_snapshot()
-        if activity is not None:
-            await buffer.add(activity)
-            if activity.app_type == "other" and activity.activity_type in ("idle", ""):
-                self._awareness_idle_ticks += 1
-            else:
-                self._awareness_idle_ticks = 0
-        else:
-            self._awareness_idle_ticks += 1
-
-        if self._should_push_context():
-            summary = await buffer.summarize()
-            await self._push_awareness_context(summary)
-
-    def _should_push_context(self) -> bool:
-        if self._cfg.awareness.push_to_llm_mode == "blind":
-            return False
-        interval = self._cfg.awareness.push_to_llm_interval_seconds
-        now = time.monotonic()
-        return now - self._last_awareness_push_at >= interval
-
-    async def _push_awareness_context(self, summary: ActivitySummary) -> None:
-        mode = self._cfg.awareness.push_to_llm_mode
-        self._last_awareness_push_at = time.monotonic()
-        self.push_message(
-            visibility=[],
-            ai_behavior="read" if mode == "read" else "respond",
-            parts=[
-                {
-                    "type": "text",
-                    "text": (
-                        "[环境感知] "
-                        + json.dumps(self._summary_for_llm(summary), ensure_ascii=False)
-                    ),
-                }
-            ],
-            source="awareness",
-            priority=0,
-        )
-
-    @staticmethod
-    def _summary_for_llm(
-        summary: ActivitySummary,
-    ) -> dict[str, str | float | list[str]]:
-        return {
-            key: value
-            for key, value in summary.items()
-            if key != "app_distribution"
-        }
 
     async def _refresh_dependency_status(self) -> dict[str, Any]:
         status = await asyncio.to_thread(build_dependency_status, self._cfg)
@@ -785,13 +676,31 @@ class StudyCompanionPlugin(
             "weak_topics": self._knowledge_tracker.get_weak_topics(limit=8),
             "mastery_overview": self._store.list_mastery_overview(limit=8),
         }
+        recent_notes = [
+            asdict(note) for note in self._notebook_store.get_recent_notes(limit=8)
+        ]
         return build_status_payload(
             config=self._cfg,
             state=self._state,
             history=history,
             knowledge={**knowledge, "habit": habit_payload},
+            recent_notes=recent_notes,
             is_first_run=is_first_run,
         )
+
+    @staticmethod
+    def _assert_notebook_agent_methods(agent: TutorLLMAgent | None) -> None:
+        if agent is None:
+            raise RuntimeError("study tutor agent is not initialized")
+        missing = [
+            name
+            for name in ("expand_note", "summarize_to_note")
+            if not callable(getattr(agent, name, None))
+        ]
+        if missing:
+            raise RuntimeError(
+                f"study tutor agent missing notebook methods: {', '.join(missing)}"
+            )
 
     def _habit_status_payload(self, today: str) -> dict[str, Any]:
         if (
@@ -840,6 +749,96 @@ class StudyCompanionPlugin(
 
     def _screen_classification_context(self) -> dict[str, Any]:
         return dict(self._state.last_screen_classification)
+
+    @custom_event(
+        event_type=VOICE_TRANSCRIPT_EVENT_TYPE,
+        id=VOICE_TRANSCRIPT_EVENT_ID,
+        name="Handle study voice transcript",
+        description="Filter realtime study voice transcripts and return a voice-session action.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "transcript": {"type": "string"},
+                "lanlan_name": {"type": "string"},
+                "metadata": {"type": "object"},
+            },
+            "required": ["transcript"],
+        },
+        trigger_method="manual",
+    )
+    async def handle_voice_transcript(
+        self,
+        transcript: str = "",
+        lanlan_name: str = "",
+        metadata: dict[str, Any] | None = None,
+        **_,
+    ):
+        text = str(transcript or "").strip()
+        if not text:
+            return Ok(voice_transcript_noop("empty_transcript"))
+        metadata_payload = metadata if isinstance(metadata, dict) else {}
+        session_key = _voice_session_key(lanlan_name, metadata_payload)
+
+        async with self._lock:
+            if self._state.status != STATUS_READY:
+                return Ok(voice_transcript_noop("not_ready"))
+            state_snapshot_payload = self._state.to_dict()
+
+        # Voice filtering only needs a point-in-time view; avoid holding the
+        # plugin lock while building OCR context or applying filter rules.
+        screen_text = str(state_snapshot_payload.get("last_ocr_text") or "")
+        screen_classification = (
+            state_snapshot_payload.get("last_screen_classification")
+            if isinstance(
+                state_snapshot_payload.get("last_screen_classification"), dict
+            )
+            else {}
+        )
+        screen_type = str(screen_classification.get("screen_type") or "")
+        session_seed = (
+            state_snapshot_payload.get("session_summary_seed")
+            if isinstance(state_snapshot_payload.get("session_summary_seed"), dict)
+            else {}
+        )
+        screen_context = {
+            "topic": str(session_seed.get("last_topic") or "").strip(),
+            "subject": _derive_subject(screen_text),
+        }
+        filter_result = self._voice_filter.filter(
+            text,
+            screen_text=screen_text,
+            screen_type=screen_type,
+            subject=screen_context["subject"],
+            session_key=session_key,
+            extra_names=[lanlan_name],
+        )
+        if filter_result is None:
+            return Ok(voice_transcript_noop("not_matched"))
+        if not bool(filter_result.get("should_relay")):
+            return Ok(voice_transcript_cancel_response(filter_payload=filter_result))
+
+        state_snapshot = SimpleNamespace(**state_snapshot_payload)
+        context_text = build_context_for_catgirl(
+            text,
+            state_snapshot,
+            screen_context,
+            filter_result,
+        ).strip()
+        if not context_text:
+            return Ok(
+                voice_transcript_noop(
+                    "empty_context",
+                    filter=dict(filter_result),
+                )
+            )
+        return Ok(
+            voice_transcript_prime_context(
+                context_text,
+                skipped=False,
+                filter_payload=filter_result,
+                lanlan_name=str(lanlan_name or ""),
+            )
+        )
 
     async def _update_screen_classification(
         self, text: str, *, window_title: str = "", update_empty: bool = True

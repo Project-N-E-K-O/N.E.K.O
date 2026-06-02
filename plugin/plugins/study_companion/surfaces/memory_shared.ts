@@ -47,6 +47,7 @@ export async function callPlugin<T = JsonObject>(
   entryId: string,
   args: JsonObject = {},
   signal?: AbortSignal,
+  timeoutMs = POLL_TIMEOUT_MS,
 ): Promise<T> {
   const created = await readJsonResponse<RunCreated>(await fetch('/runs', {
     method: 'POST',
@@ -58,7 +59,7 @@ export async function callPlugin<T = JsonObject>(
   if (!runId) {
     throw new Error('Run id missing');
   }
-  const deadline = Date.now() + POLL_TIMEOUT_MS;
+  const deadline = Date.now() + Math.max(timeoutMs, POLL_INTERVAL_MS);
   while (Date.now() < deadline) {
     await waitForPoll(signal);
     const run = await readJsonResponse<RunStatus>(await fetch(`/runs/${runId}`, { signal }), 'Run poll');
