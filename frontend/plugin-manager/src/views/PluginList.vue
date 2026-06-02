@@ -810,9 +810,7 @@ async function handleImportFileChange(event: Event) {
   } catch (error: any) {
     console.error('Failed to import plugin package:', error)
     const detail = formatHttpError(error)
-    if (detail) {
-      ElMessage.error(t('plugins.importFailed') + ': ' + detail)
-    }
+    ElMessage.error(detail ? t('plugins.importFailed') + ': ' + detail : t('plugins.importFailed'))
   } finally {
     importing.value = false
   }
@@ -859,9 +857,7 @@ async function handleBatchExport() {
   } catch (error: any) {
     console.error('Failed to export plugins:', error)
     const detail = formatHttpError(error)
-    if (detail) {
-      ElMessage.error(t('plugins.exportFailed') + ': ' + detail)
-    }
+    ElMessage.error(detail ? t('plugins.exportFailed') + ': ' + detail : t('plugins.exportFailed'))
   } finally {
     batchBusy.value = false
   }
