@@ -33,7 +33,7 @@ class _Logger:
         return None
 
 
-def _store(tmp_path: Path) -> StudyStore:
+def _store(tmp_path: Path, logger: Any | None = None) -> StudyStore:
     seed = (
         Path(__file__).resolve().parents[3]
         / "plugins"
@@ -41,7 +41,9 @@ def _store(tmp_path: Path) -> StudyStore:
         / "static"
         / "knowledge_graph_seed.json"
     )
-    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger(), seed)
+    store = StudyStore(
+        tmp_path / "study.db", tmp_path / "seed.json", logger or _Logger(), seed
+    )
     store.open()
     return store
 
@@ -297,15 +299,7 @@ def test_study_store_batch_write_answer_data_keeps_answer_when_candidates_fail(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     logger = _Logger()
-    seed = (
-        Path(__file__).resolve().parents[3]
-        / "plugins"
-        / "study_companion"
-        / "static"
-        / "knowledge_graph_seed.json"
-    )
-    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", logger, seed)
-    store.open()
+    store = _store(tmp_path, logger)
     try:
         store.ensure_topic(topic_id="candidate_fail_topic", name="Candidate Fail")
 
@@ -380,6 +374,55 @@ def test_knowledge_graph_prefers_topic_id_over_name_collision() -> None:
     graph = KnowledgeGraph(_Store())
 
     assert graph.resolve_known_topic("collision") == "collision"
+
+
+def test_knowledge_graph_checks_store_when_topic_index_is_truncated() -> None:
+    class _Store:
+        def __init__(self) -> None:
+            self.find_calls: list[str] = []
+
+        def list_topics(self, limit: int = 1000):
+            return [
+                {"id": f"topic_{index}", "name": f"Topic {index}"}
+                for index in range(limit)
+            ]
+
+        def count_topics(self) -> int:
+            return 1001
+
+        def find_topic_by_name(self, name: str):
+            self.find_calls.append(str(name))
+            if name == "Late Topic":
+                return {"id": "late_topic", "name": "Late Topic"}
+            return None
+
+        def get_topic(self, topic_id: str):
+            if topic_id == "late_topic":
+                return {"id": "late_topic", "name": "Late Topic"}
+            return None
+
+        def list_mastery_overview(self, limit: int = 1000):
+            return []
+
+    store = _Store()
+    graph = KnowledgeGraph(store)
+
+    assert graph.discover_candidate("", {"topic": "Late Topic"}) == "late_topic"
+    assert graph.discover_candidate("Late Topic") == "late_topic"
+    assert store.find_calls == ["Late Topic", "Late Topic"]
+
+
+def test_knowledge_tracker_batch_gate_requires_full_batch_store_surface() -> None:
+    class _PartialStore:
+        _supports_batch_answer = True
+
+        def batch_write_answer_data(self, **_kwargs):
+            return {"ok": True}
+
+    tracker = KnowledgeTracker.__new__(KnowledgeTracker)
+    tracker.store = _PartialStore()
+
+    assert tracker._can_batch_answer_data() is False
 
 
 def test_quality_warning_failure_counter_resets_after_error_escalation() -> None:

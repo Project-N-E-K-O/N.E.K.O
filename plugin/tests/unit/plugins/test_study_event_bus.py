@@ -522,6 +522,32 @@ async def test_schedule_emit_worker_stops_after_repeated_failures(
 
 
 @pytest.mark.asyncio
+async def test_schedule_emit_worker_drops_backlog_after_failure_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(StudyEventBus, "_MAX_WORKER_FAILURES", 2)
+    monkeypatch.setattr(StudyEventBus, "_WORKER_FAILURE_BACKOFF_BASE_SECONDS", 0.001)
+    bus = StudyEventBus(plugin_ctx=_Ctx(fail=True))
+
+    task = None
+    for index in range(3):
+        task = bus.schedule_emit(
+            StudyEvent(
+                name="session_summarized",
+                payload={"duration_minutes": index, "questions_attempted": 1},
+            )
+        )
+
+    assert task is not None
+    await asyncio.wait_for(task, timeout=1.0)
+
+    assert bus._worker_task is None
+    assert bus.scheduled_emit_count == 0
+    assert bus.dropped_emit_count == 1
+    assert bus._queue.empty()
+
+
+@pytest.mark.asyncio
 async def test_schedule_emit_resets_failure_count_when_worker_restarts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -606,7 +632,12 @@ async def test_schedule_emit_drops_when_backlog_is_full(
     assert bus.dropped_emit_count == 1
     assert bus.scheduled_emit_count == bus._MAX_QUEUE_SIZE
     assert bus._queue.qsize() == bus._MAX_QUEUE_SIZE
-    queued = list(bus._queue._queue)
+    queued: list[StudyEvent] = []
+    while not bus._queue.empty():
+        queued.append(bus._queue.get_nowait())
+        bus._queue.task_done()
+    for item in queued:
+        bus._queue.put_nowait(item)
     assert queued[0].payload["duration_minutes"] == 1
     assert queued[-1].payload["duration_minutes"] == 999
     assert "dropped oldest event due to backlog" in caplog.text

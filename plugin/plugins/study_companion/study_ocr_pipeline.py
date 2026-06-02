@@ -120,6 +120,17 @@ class StudyOcrPipeline:
         executor.shutdown(wait=False)
         self._executor = None
 
+    def _retire_executor(self, executor: ThreadPoolExecutor) -> None:
+        if self._executor is not executor:
+            return
+        shutdown = getattr(executor, "shutdown", None)
+        if callable(shutdown):
+            try:
+                shutdown(wait=False)
+            except Exception:
+                pass
+        self._executor = None
+
     def _require_executor(self) -> ThreadPoolExecutor:
         if self._executor is None:
             self._executor = ThreadPoolExecutor(
@@ -199,9 +210,14 @@ class StudyOcrPipeline:
 
         try:
             thumbnail = self._prepare_lightweight_image(frame)
-            thumbnail_phash = self._calculate_thumbnail_phash(thumbnail)
-            has_content_change = self._has_content_change(thumbnail_phash)
-            self._last_thumbnail_phash = thumbnail_phash
+            thumbnail_phash_value = self._calculate_thumbnail_phash(thumbnail)
+            if thumbnail_phash_value is None:
+                thumbnail_phash = ""
+                has_content_change = False
+            else:
+                thumbnail_phash = thumbnail_phash_value
+                has_content_change = self._has_content_change(thumbnail_phash)
+                self._last_thumbnail_phash = thumbnail_phash
         except Exception as exc:
             return LightweightSnapshot(
                 status="capture_failed",
@@ -248,11 +264,13 @@ class StudyOcrPipeline:
                         jpeg_bytes = jpeg_result
                 except Exception:
                     jpeg_future.cancel()
+                    self._retire_executor(executor)
                     jpeg_bytes = None
                 try:
                     ocr_snapshot = ocr_future.result(timeout=5.0)
                 except Exception as exc:
                     ocr_future.cancel()
+                    self._retire_executor(executor)
                     ocr_snapshot = OcrSnapshot(
                         status="ocr_failed",
                         backend=self._config.ocr_backend_selection,
@@ -358,9 +376,9 @@ class StudyOcrPipeline:
             quality = _LIGHTWEIGHT_INITIAL_JPEG_QUALITY
 
     @staticmethod
-    def _calculate_thumbnail_phash(image: Image.Image) -> str:
+    def _calculate_thumbnail_phash(image: Image.Image) -> str | None:
         if imagehash is None:
-            return ""
+            return None
         return str(imagehash.phash(image, hash_size=8))
 
     def _has_content_change(self, thumbnail_phash: str) -> bool:

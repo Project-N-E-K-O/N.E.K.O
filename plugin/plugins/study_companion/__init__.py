@@ -402,11 +402,17 @@ class StudyCompanionPlugin(
             self.logger.warning("study shutdown dynamic entry cleanup failed: {}", exc)
         if self._agent is not None:
             await self._agent.shutdown()
-        if self._ocr_pipeline is not None:
-            close_ocr = getattr(self._ocr_pipeline, "close", None)
-            if callable(close_ocr):
-                close_ocr()
-            self._ocr_pipeline = None
+        ocr_pipeline = self._ocr_pipeline
+        self._ocr_pipeline = None
+        if ocr_pipeline is not None:
+            try:
+                close_ocr = getattr(ocr_pipeline, "close", None)
+                if callable(close_ocr):
+                    close_ocr()
+            except Exception as exc:
+                self.logger.warning(
+                    "study shutdown OCR pipeline cleanup failed: {}", exc
+                )
         async with self._lock:
             self._state.status = STATUS_STOPPED
         await asyncio.to_thread(self._store.save_state, self._state)

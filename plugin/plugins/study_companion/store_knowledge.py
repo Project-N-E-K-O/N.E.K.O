@@ -312,21 +312,18 @@ def candidate_status_counts(self) -> dict[str, Any]:
         )
         .fetchall()
     )
-    total_row = (
-        self._require_read_conn()
-        .execute("SELECT COUNT(*) AS count FROM candidate_knowledge_items")
-        .fetchone()
-    )
     by_status: dict[str, int] = {}
     by_type: dict[str, int] = {}
+    total = 0
     for row in rows:
         status = str(row["status"] or "candidate")
         item_type = str(row["item_type"] or "")
         count = int(row["count"] or 0)
+        total += count
         by_status[status] = by_status.get(status, 0) + count
         by_type[item_type] = by_type.get(item_type, 0) + count
     return {
-        "total": int(total_row["count"] if total_row is not None else 0),
+        "total": total,
         "by_status": by_status,
         "by_type": by_type,
     }

@@ -195,12 +195,30 @@ class StudyEventBus:
                     )
                     self._safe_task_done()
                 if should_stop:
+                    self._drop_queued_events_after_worker_stop()
                     return
                 if backoff_seconds > 0:
                     await asyncio.sleep(backoff_seconds)
         finally:
             if self._worker_task is task:
                 self._worker_task = None
+
+    def _drop_queued_events_after_worker_stop(self) -> None:
+        dropped = 0
+        while True:
+            try:
+                self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            dropped += 1
+            self._scheduled_emit_count = max(0, self._scheduled_emit_count - 1)
+            self._dropped_emit_count += 1
+            self._safe_task_done()
+        if dropped:
+            _logger.error(
+                "StudyEventBus worker dropped %s queued event(s) after stopping",
+                dropped,
+            )
 
     def _safe_task_done(self) -> None:
         try:

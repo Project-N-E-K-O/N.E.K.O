@@ -138,6 +138,7 @@ class StudyStore:
         self._read_conn: sqlite3.Connection | None = None
         self._read_local = threading.local()
         self._read_conns: set[sqlite3.Connection] = set()
+        self._read_connections_enabled = True
         self._interaction_count = 0
 
     def open(self) -> None:
@@ -151,7 +152,8 @@ class StudyStore:
                     str(self.db_path), check_same_thread=False, timeout=10.0
                 )
                 self._conn = conn
-                self._configure_connection_journal(conn, role="write")
+                journal_mode = self._configure_connection_journal(conn, role="write")
+                self._read_connections_enabled = journal_mode == "wal"
                 conn.execute("PRAGMA foreign_keys = ON")
                 conn.row_factory = sqlite3.Row
                 self._interaction_count = 0
@@ -165,6 +167,7 @@ class StudyStore:
                     except Exception:
                         pass
                 self._conn = None
+                self._read_connections_enabled = True
                 self._interaction_count = 0
                 raise
 
@@ -175,6 +178,7 @@ class StudyStore:
             self._read_conns.clear()
             self._read_conn = None
             self._read_local = threading.local()
+            self._read_connections_enabled = True
             if self._conn is not None:
                 self._conn.close()
                 self._conn = None
@@ -186,6 +190,11 @@ class StudyStore:
         return self._conn
 
     def _require_read_conn(self) -> sqlite3.Connection:
+        if not self._read_connections_enabled:
+            with self._lock:
+                if self._conn is None:
+                    self.open()
+                return self._require_conn()
         conn = getattr(self._read_local, "conn", None)
         if conn is None:
             with self._lock:
@@ -208,23 +217,53 @@ class StudyStore:
 
     def _configure_connection_journal(
         self, conn: sqlite3.Connection, *, role: str
-    ) -> None:
+    ) -> str:
         try:
-            conn.execute("PRAGMA journal_mode=WAL")
+            mode = self._journal_mode_from_cursor(conn.execute("PRAGMA journal_mode=WAL"))
         except sqlite3.DatabaseError as exc:
             self._log_warning(
                 "StudyStore %s connection WAL unavailable; falling back to DELETE journal mode: %s",
                 role,
                 exc,
             )
+            return self._configure_delete_journal(conn, role=role)
+        if mode == "wal":
+            return mode
+        self._log_warning(
+            "StudyStore %s connection requested WAL but sqlite returned %s; falling back to DELETE journal mode",
+            role,
+            mode or "unknown",
+        )
+        return self._configure_delete_journal(conn, role=role)
+
+    def _configure_delete_journal(self, conn: sqlite3.Connection, *, role: str) -> str:
+        try:
+            mode = self._journal_mode_from_cursor(conn.execute("PRAGMA journal_mode=DELETE"))
+            return mode or "delete"
+        except sqlite3.DatabaseError as fallback_exc:
+            self._log_warning(
+                "StudyStore %s connection DELETE journal fallback failed: %s",
+                role,
+                fallback_exc,
+            )
+            return ""
+
+    @staticmethod
+    def _journal_mode_from_cursor(cursor: Any) -> str:
+        try:
+            row = cursor.fetchone()
+        except Exception:
+            return ""
+        if row is None:
+            return ""
+        try:
+            value = row[0]
+        except Exception:
             try:
-                conn.execute("PRAGMA journal_mode=DELETE")
-            except sqlite3.DatabaseError as fallback_exc:
-                self._log_warning(
-                    "StudyStore %s connection DELETE journal fallback failed: %s",
-                    role,
-                    fallback_exc,
-                )
+                value = row["journal_mode"]
+            except Exception:
+                value = ""
+        return str(value or "").strip().lower()
 
     def load_answer_write_state(
         self, topic_id: str, *, recent_limit: int = 10

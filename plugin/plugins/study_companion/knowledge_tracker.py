@@ -252,6 +252,7 @@ class KnowledgeGraph:
         self._quality = KnowledgeQualityStore(store)
         self._topic_id_index: set[str] = set()
         self._topic_name_index: dict[str, str] = {}
+        self._index_truncated = False
         self._index_dirty = True
 
     def _ensure_index(self) -> None:
@@ -260,18 +261,23 @@ class KnowledgeGraph:
             return
         self._topic_id_index.clear()
         self._topic_name_index.clear()
+        self._index_truncated = False
         index_limit = self._TOPIC_INDEX_LIMIT
         topics = self._store.list_topics(limit=index_limit)
-        if len(topics) >= index_limit and callable(
-            getattr(self._store, "count_topics", None)
-        ):
-            total = int(self._store.count_topics())
-            if total > index_limit:
-                _LOGGER.warning(
-                    "KnowledgeGraph topic index limited to %s of %s topics",
-                    index_limit,
-                    total,
-                )
+        if len(topics) >= index_limit:
+            self._index_truncated = True
+            if callable(getattr(self._store, "count_topics", None)):
+                try:
+                    total = int(self._store.count_topics())
+                except Exception:
+                    total = index_limit + 1
+                self._index_truncated = total > index_limit
+                if self._index_truncated:
+                    _LOGGER.warning(
+                        "KnowledgeGraph topic index limited to %s of %s topics",
+                        index_limit,
+                        total,
+                    )
         for topic in topics:
             topic_id = str(topic.get("id") or "").strip()
             name = str(topic.get("name") or "").strip()
@@ -291,7 +297,34 @@ class KnowledgeGraph:
         self._ensure_index()
         if value in self._topic_id_index:
             return value
-        return self._topic_name_index.get(value, "")
+        indexed = self._topic_name_index.get(value, "")
+        if indexed:
+            return indexed
+        if self._index_truncated:
+            return self._resolve_store_topic(value)
+        return ""
+
+    def _resolve_store_topic(self, value: str) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        get_topic = getattr(self._store, "get_topic", None)
+        if callable(get_topic):
+            try:
+                topic = get_topic(text)
+            except Exception:
+                topic = None
+            if topic:
+                return str(topic.get("id") or text)
+        find_topic_by_name = getattr(self._store, "find_topic_by_name", None)
+        if callable(find_topic_by_name):
+            try:
+                topic = find_topic_by_name(text)
+            except Exception:
+                topic = None
+            if topic:
+                return str(topic.get("id") or "")
+        return ""
 
     def get_ready_topics(self, mastered: set[str]) -> list[str]:
         ready: list[str] = []
@@ -360,6 +393,10 @@ class KnowledgeGraph:
         normalized = str(text or "").strip()
         if not normalized:
             return None
+        if self._index_truncated:
+            known_id = self._resolve_store_topic(normalized)
+            if known_id:
+                return known_id
         for name, topic_id in self._topic_name_index.items():
             if name and name in normalized:
                 return topic_id
@@ -368,6 +405,10 @@ class KnowledgeGraph:
         )
         if not first:
             return None
+        if self._index_truncated:
+            known_id = self._resolve_store_topic(first)
+            if known_id:
+                return known_id
         candidate = self._quality.upsert_candidate(
             KnowledgeCandidateType.TOPIC.value,
             {
@@ -606,8 +647,15 @@ class KnowledgeTracker:
         }
 
     def _can_batch_answer_data(self) -> bool:
-        return bool(getattr(self.store, "_supports_batch_answer", False)) and callable(
-            getattr(self.store, "batch_write_answer_data", None)
+        if not bool(getattr(self.store, "_supports_batch_answer", False)):
+            return False
+        return all(
+            callable(getattr(self.store, name, None))
+            for name in (
+                "batch_write_answer_data",
+                "answer_write_lock",
+                "load_answer_write_state",
+            )
         )
 
     def _on_answer_legacy(

@@ -739,6 +739,59 @@ def test_study_store_read_connection_requests_wal_mode(
         store.close()
 
 
+def test_study_store_journal_config_falls_back_when_wal_returns_non_wal(
+    tmp_path: Path,
+) -> None:
+    class _Cursor:
+        def __init__(self, value: str) -> None:
+            self.value = value
+
+        def fetchone(self) -> tuple[str]:
+            return (self.value,)
+
+    class _Connection:
+        def __init__(self) -> None:
+            self.statements: list[str] = []
+
+        def execute(self, sql: str) -> _Cursor:
+            self.statements.append(sql)
+            if sql == "PRAGMA journal_mode=WAL":
+                return _Cursor("delete")
+            if sql == "PRAGMA journal_mode=DELETE":
+                return _Cursor("delete")
+            return _Cursor("")
+
+    conn = _Connection()
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+
+    mode = store._configure_connection_journal(conn, role="read")  # type: ignore[arg-type]
+
+    assert mode == "delete"
+    assert conn.statements == ["PRAGMA journal_mode=WAL", "PRAGMA journal_mode=DELETE"]
+
+
+def test_study_store_uses_write_connection_when_wal_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def configure_journal(self, conn, *, role: str):  # noqa: ANN001
+        del self, conn
+        return "delete" if role == "write" else "wal"
+
+    monkeypatch.setattr(StudyStore, "_configure_connection_journal", configure_journal)
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+    store.open()
+
+    def unexpected_read_connect(*_args, **_kwargs):
+        raise AssertionError("read connection should be disabled without WAL")
+
+    monkeypatch.setattr(sqlite3, "connect", unexpected_read_connect)
+    try:
+        assert store._require_read_conn() is store._require_conn()
+    finally:
+        store.close()
+
+
 def test_study_store_uses_thread_local_read_connections(tmp_path: Path) -> None:
     store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
     store.open()
@@ -3892,6 +3945,36 @@ async def test_shutdown_stops_event_bus_worker(
     await plugin.shutdown()
 
     assert bus._worker_task is None
+    assert task.done()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_clears_ocr_pipeline_when_close_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+
+    class _FailingClosePipeline:
+        def close(self) -> None:
+            raise RuntimeError("ocr close failed")
+
+    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    plugin.logger = ctx.logger
+    plugin._ocr_pipeline = _FailingClosePipeline()  # type: ignore[assignment]
+
+    shutdown_result = await plugin.shutdown()
+
+    assert isinstance(shutdown_result, Ok)
+    assert plugin._ocr_pipeline is None
+    assert any(
+        "study shutdown OCR pipeline cleanup failed" in str(item[0][0])
+        for item in ctx.logger.warnings
+    )
 
 
 @pytest.mark.asyncio

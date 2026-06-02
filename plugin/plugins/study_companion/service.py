@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .models import OcrSnapshot, StudyConfig, StudyState, TutorReply, json_copy
+from .models import OcrSnapshot, StudyConfig, StudyState, TutorReply
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -197,7 +197,7 @@ def _inspect_dxcam() -> dict[str, Any]:
 def build_tutor_payload(reply: TutorReply) -> dict[str, Any]:
     payload = reply.to_dict()
     if reply.payload:
-        payload.update(json_copy(reply.payload))
+        payload.update(copy.deepcopy(reply.payload))
     if not payload.get("summary"):
         payload["summary"] = reply.reply
     return payload

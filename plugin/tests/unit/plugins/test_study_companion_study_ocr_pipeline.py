@@ -188,7 +188,7 @@ def test_ocr_pipeline_imagehash_module_import_is_optional(
 
     assert StudyOcrPipeline._calculate_thumbnail_phash(
         Image.new("RGB", (16, 16), "white")
-    ) == ""
+    ) is None
 
 
 def test_ocr_pipeline_capture_lightweight_allows_missing_imagehash(
@@ -214,6 +214,7 @@ def test_ocr_pipeline_capture_lightweight_allows_missing_imagehash(
 
     assert snapshot.status == "ok"
     assert snapshot.thumbnail_phash == ""
+    assert snapshot.has_content_change is False
     assert "phash=" in snapshot.diagnostic
 
 
@@ -256,6 +257,7 @@ def test_ocr_pipeline_capture_lightweight_cancels_timed_out_workers(
     assert snapshot.status == "ok"
     assert len(futures) == 2
     assert all(future.cancelled for future in futures)
+    assert pipeline._executor is None
 
 
 def test_ocr_pipeline_capture_lightweight_reports_backend_resolve_failure() -> None:
