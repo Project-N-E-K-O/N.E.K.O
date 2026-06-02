@@ -69,6 +69,122 @@ function timeoutForEntry(entryId: string) {
   return ENTRY_TIMEOUT_MS[entryId] || 60000;
 }
 
+async function compressImageForStudy(blob: Blob): Promise<string> {
+  const MAX_LONG_SIDE = 1920;
+  const JPEG_QUALITIES = [0.8, 0.72, 0.64, 0.56, 0.48];
+  const TARGET_BYTES = 1_000_000;
+
+  const loadImage = (src: string): Promise<HTMLImageElement> => new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Failed to load image'));
+    img.src = src;
+  });
+
+  const readAsDataUrl = (targetBlob: Blob): Promise<string> => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('FileReader failed'));
+    reader.readAsDataURL(targetBlob);
+  });
+
+  const url = URL.createObjectURL(blob);
+  try {
+    const img = await loadImage(url);
+    let width = img.naturalWidth;
+    let height = img.naturalHeight;
+    const longSide = Math.max(width, height);
+    if (longSide > MAX_LONG_SIDE) {
+      const scale = MAX_LONG_SIDE / longSide;
+      width = Math.round(width * scale);
+      height = Math.round(height * scale);
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      return readAsDataUrl(blob);
+    }
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(img, 0, 0, width, height);
+    for (const quality of JPEG_QUALITIES) {
+      const dataUrl = canvas.toDataURL('image/jpeg', quality);
+      if (dataUrl.length <= TARGET_BYTES) {
+        return dataUrl;
+      }
+    }
+    return canvas.toDataURL('image/jpeg', 0.48);
+  } catch (error) {
+    console.warn('compressImageForStudy failed, falling back to original image', blob.size, error);
+    try {
+      return await readAsDataUrl(blob);
+    } catch (fallbackError) {
+      console.warn('compressImageForStudy fallback read failed', fallbackError);
+      return '';
+    }
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+type PasteSetters = {
+  setImage: (value: string) => void;
+  setTextValue: (value: string) => void;
+};
+
+function createPasteHandler(
+  setters: PasteSetters,
+  getBusy: () => boolean,
+  isMounted: () => boolean,
+) {
+  return async function handlePaste(event: {
+    clipboardData?: DataTransfer;
+    preventDefault: () => void;
+    target: EventTarget | null;
+  }) {
+    if (getBusy()) return;
+    const items = event.clipboardData?.items;
+    if (!items) return;
+    const target = event.target as HTMLTextAreaElement | null;
+    const itemList = Array.from(items);
+    if (!itemList.some((item) => item.type.startsWith('image/'))) {
+      return;
+    }
+    event.preventDefault();
+
+    for (const item of itemList) {
+      if (item.type.startsWith('image/')) {
+        const blob = item.getAsFile();
+        if (!blob) continue;
+        try {
+          const image = await compressImageForStudy(blob);
+          if (image && isMounted()) {
+            setters.setImage(image);
+          }
+        } catch (error) {
+          console.warn('study image paste failed', error);
+        }
+      } else if (item.type === 'text/plain') {
+        item.getAsString((pastedText) => {
+          if (!target || !isMounted()) return;
+          const start = target.selectionStart ?? target.value.length;
+          const end = target.selectionEnd ?? start;
+          setters.setTextValue(
+            target.value.slice(0, start) + pastedText + target.value.slice(end),
+          );
+          requestAnimationFrame(() => {
+            if (isMounted()) {
+              target.setSelectionRange(start + pastedText.length, start + pastedText.length);
+            }
+          });
+        });
+      }
+    }
+  };
+}
+
 async function exportRunResult(runId: string, signal?: AbortSignal) {
   let lastStatus = 0;
   for (let attempt = 0; attempt < RUN_EXPORT_RETRY_COUNT; attempt += 1) {
@@ -145,7 +261,10 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const [answer, setAnswer] = useState('');
   const [reply, setReply] = useState('');
   const [busy, setBusy] = useState(false);
+  const [textImage, setTextImage] = useState('');
+  const [answerImage, setAnswerImage] = useState('');
   const explainControllerRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(false);
   const currentMode = String(status.active_mode || status.mode || 'companion');
 
   function beginStudyRequest() {
@@ -301,8 +420,10 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     }
     const controller = beginStudyRequest();
     setBusy(true);
+    const explainArgs: Record<string, unknown> = { text };
+    if (textImage) explainArgs.vision_image_base64 = textImage;
     try {
-      const data = await callPlugin('study_explain_text', { text }, controller.signal) as {
+      const data = await callPlugin('study_explain_text', explainArgs, controller.signal) as {
         reply?: string;
         summary?: string;
         transition_phrase?: string;
@@ -310,6 +431,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       if (controller.signal.aborted) {
         return;
       }
+      setTextImage('');
       const nextReply = data.reply || data.summary || '';
       setReply(nextReply);
       await refresh(controller.signal, { updateReply: false });
@@ -317,6 +439,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       if (controller.signal.aborted) {
         return;
       }
+      setTextImage('');
       setReply(formatPluginError(error));
     } finally {
       if (!controller.signal.aborted) {
@@ -332,8 +455,10 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     }
     const controller = beginStudyRequest();
     setBusy(true);
+    const genArgs: Record<string, unknown> = { text };
+    if (textImage) genArgs.vision_image_base64 = textImage;
     try {
-      const data = await callPlugin('study_generate_question', { text }, controller.signal) as {
+      const data = await callPlugin('study_generate_question', genArgs, controller.signal) as {
         question?: string;
         hint?: string;
         summary?: string;
@@ -342,11 +467,13 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       if (controller.signal.aborted) {
         return;
       }
+      setTextImage('');
       setQuestion(data.question || '');
       setReply(data.hint || data.question || data.summary || data.reply || '');
       await refresh(controller.signal, { updateReply: false });
     } catch (error) {
       if (!controller.signal.aborted) {
+        setTextImage('');
         setReply(formatPluginError(error));
       }
     } finally {
@@ -367,8 +494,10 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     }
     const controller = beginStudyRequest();
     setBusy(true);
+    const evalArgs: Record<string, unknown> = { answer, question };
+    if (answerImage) evalArgs.vision_image_base64 = answerImage;
     try {
-      const data = await callPlugin('study_evaluate_answer', { answer, question }, controller.signal) as {
+      const data = await callPlugin('study_evaluate_answer', evalArgs, controller.signal) as {
         feedback?: string;
         next_action?: string;
         summary?: string;
@@ -377,11 +506,13 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       if (controller.signal.aborted) {
         return;
       }
+      setAnswerImage('');
       const replyParts = [data.feedback || data.reply || '', data.next_action ? `Next: ${data.next_action}` : ''].filter(Boolean);
       setReply(replyParts.join('\n\n') || data.summary || '');
       await refresh(controller.signal, { updateReply: false });
     } catch (error) {
       if (!controller.signal.aborted) {
+        setAnswerImage('');
         setReply(formatPluginError(error));
       }
     } finally {
@@ -422,6 +553,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   }
 
   useEffect(() => {
+    mountedRef.current = true;
     const controller = beginStudyRequest();
     refresh(controller.signal).catch((error) => {
       if (controller.signal.aborted) {
@@ -430,6 +562,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       setReply(formatPluginError(error));
     });
     return () => {
+      mountedRef.current = false;
       controller.abort();
       explainControllerRef.current?.abort();
       explainControllerRef.current = null;
@@ -441,9 +574,19 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const explainLabel = busy ? t('ui.button.loading', 'Loading...') : t('ui.button.explain', 'Explain');
   const screenType = status.screen_classification?.screen_type || 'idle';
   const evaluation = status.last_answer_evaluation;
+  const handleTextPaste = createPasteHandler(
+    { setImage: setTextImage, setTextValue: setText },
+    () => busy,
+    () => mountedRef.current,
+  );
+  const handleAnswerPaste = createPasteHandler(
+    { setImage: setAnswerImage, setTextValue: setAnswer },
+    () => busy,
+    () => mountedRef.current,
+  );
 
   return (
-    <div className="study-panel">
+    <div className="study-panel" data-busy={busy ? "true" : "false"}>
       <header className="study-panel__header">
         <div>
           <h1>{t('ui.title', 'Study Companion')}</h1>
@@ -485,8 +628,24 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         aria-label={t('ui.label.text', 'Text')}
         placeholder={t('ui.placeholder.input', 'Paste a concept, problem statement, or OCR text here.')}
         value={text}
+        readOnly={busy}
         onChange={(event) => setText(event.target.value)}
+        onPaste={handleTextPaste}
       />
+      {textImage ? (
+        <div className="study-panel__image-preview">
+          <img src={textImage} alt="pasted study context" />
+          <button
+            className="study-panel__image-remove"
+            type="button"
+            aria-label="Remove pasted image"
+            disabled={busy}
+            onClick={() => setTextImage('')}
+          >
+            x
+          </button>
+        </div>
+      ) : null}
       <div className="study-panel__actions">
         <button
           type="button"
@@ -511,8 +670,24 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       <textarea
         aria-label={t('ui.label.answer', 'Answer')}
         value={answer}
+        readOnly={busy}
         onChange={(event) => setAnswer(event.target.value)}
+        onPaste={handleAnswerPaste}
       />
+      {answerImage ? (
+        <div className="study-panel__image-preview">
+          <img src={answerImage} alt="pasted answer context" />
+          <button
+            className="study-panel__image-remove"
+            type="button"
+            aria-label="Remove pasted answer image"
+            disabled={busy}
+            onClick={() => setAnswerImage('')}
+          >
+            x
+          </button>
+        </div>
+      ) : null}
       <div className="study-panel__actions">
         <button type="button" disabled={busy} onClick={busy ? undefined : evaluateAnswer}>
           {busy ? t('ui.button.loading', 'Loading...') : t('ui.button.evaluate_answer', 'Evaluate Answer')}

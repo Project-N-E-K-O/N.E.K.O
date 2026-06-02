@@ -1229,6 +1229,30 @@ def test_study_companion_hosted_panel_uses_long_running_entry_poll_budget() -> N
     assert "status.mode.companion" in source
 
 
+def test_study_companion_hosted_panel_supports_image_paste_contract() -> None:
+    plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
+    source = (plugin_dir / "surfaces" / "study_panel.tsx").read_text(encoding="utf-8")
+    css_source = (plugin_dir / "static" / "style.css").read_text(encoding="utf-8")
+
+    assert "async function compressImageForStudy(blob: Blob)" in source
+    assert "function createPasteHandler(" in source
+    assert "if (getBusy()) return;" in source
+    assert "item.type.startsWith('image/')" in source
+    assert "item.type === 'text/plain'" in source
+    assert "onPaste={handleTextPaste}" in source
+    assert "onPaste={handleAnswerPaste}" in source
+    assert "readOnly={busy}" in source
+    assert "if (textImage) explainArgs.vision_image_base64 = textImage;" in source
+    assert "if (textImage) genArgs.vision_image_base64 = textImage;" in source
+    assert "if (answerImage) evalArgs.vision_image_base64 = answerImage;" in source
+    assert "setTextImage('');" in source
+    assert "setAnswerImage('');" in source
+    assert 'data-busy={busy ? "true" : "false"}' in source
+    assert "study-panel__image-preview" in source
+    assert "study-panel__image-remove" in source
+    assert '.study-panel[data-busy="true"] .study-panel__image-remove' in css_source
+
+
 def test_study_companion_note_exporter_uses_backend_export_poll_budget() -> None:
     plugin_dir = Path(__file__).resolve().parents[3] / "plugins" / "study_companion"
     source = (plugin_dir / "surfaces" / "note_exporter.tsx").read_text(encoding="utf-8")

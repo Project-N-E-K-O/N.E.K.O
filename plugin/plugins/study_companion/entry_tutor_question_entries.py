@@ -4,6 +4,8 @@ from .entry_common import (
     Err,
     Ok,
     SdkError,
+    _entry_exception_error,
+    _normalize_submitted_image_payload,
     plugin_entry,
     tr,
     LLM_OPERATION_QUESTION_GENERATE,
@@ -23,6 +25,7 @@ class _TutorQuestionEntriesMixin:
             "properties": {
                 "text": {"type": "string", "default": ""},
                 "topic": {"type": "string", "default": ""},
+                "vision_image_base64": {"type": "string", "default": ""},
             },
         },
         timeout=60.0,
@@ -35,33 +38,61 @@ class _TutorQuestionEntriesMixin:
             "topic",
         ],
     )
-    async def study_generate_question(self, text: str = "", topic: str = "", **_):
+    async def study_generate_question(
+        self,
+        text: str = "",
+        topic: str = "",
+        vision_image_base64: str = "",
+        **_,
+    ):
         if self._agent is None:
             return Err(SdkError("study tutor agent is not initialized"))
         source_text = str(text or "").strip()
+        vision_image_payload = str(vision_image_base64 or "").strip()
         used_ocr_fallback = False
         if not source_text:
             async with self._lock:
                 source_text = self._state.last_ocr_text
             used_ocr_fallback = bool(source_text.strip())
         source_text = source_text.strip()
-        if not source_text:
+        if not source_text and not vision_image_payload:
             return Err(
                 SdkError(
-                    "study tutor requires text or a non-empty OCR snapshot",
+                    "study tutor requires text, an image, or a non-empty OCR snapshot",
                     code="MISSING_TEXT",
                 )
             )
+        if vision_image_payload:
+            if not bool(self._cfg.llm_vision_enabled):
+                return Err(SdkError("llm_vision_enabled is not enabled"))
+            try:
+                vision_image_payload = _normalize_submitted_image_payload(
+                    vision_image_payload
+                )
+            except ValueError as exc:
+                return _entry_exception_error(
+                    self, exc, operation="study_generate_question"
+                )
         async with self._lock:
             active_mode = self._state.active_mode
         tutor_context = await self._build_learning_context(
             LLM_OPERATION_QUESTION_GENERATE,
             input_text=source_text,
             extra={
-                "source": "ocr_snapshot" if used_ocr_fallback or not text else "manual",
+                "source": "ocr_snapshot"
+                if used_ocr_fallback
+                else ("vision_image" if vision_image_payload and not source_text else "manual"),
                 "source_text": source_text,
                 "topic_hint": str(topic or "").strip(),
                 "mode": active_mode,
+                **(
+                    {
+                        "vision_enabled": True,
+                        "vision_image_base64": vision_image_payload,
+                    }
+                    if vision_image_payload
+                    else {}
+                ),
             },
         )
         reply = await self._agent.question_generate(
