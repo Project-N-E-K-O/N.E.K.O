@@ -643,7 +643,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     if (busy) {
       return;
     }
-    if (!answer.trim()) {
+    if (!answer.trim() && !answerImage) {
       setReply(t('ui.error.missing_answer', 'Please enter an answer first.'));
       return;
     }

@@ -1258,6 +1258,7 @@ def test_study_companion_hosted_panel_supports_image_paste_contract() -> None:
     assert "readOnly={busy}" in source
     assert "if (textImage) explainArgs.vision_image_base64 = textImage;" in source
     assert "if (textImage) genArgs.vision_image_base64 = textImage;" in source
+    assert "if (!answer.trim() && !answerImage)" in source
     assert "if (answerImage) evalArgs.vision_image_base64 = answerImage;" in source
     assert "const textAutoFilledFromOcrRef = useRef(false);" in source
     assert "textAutoFilledFromOcrRef.current = true;" in source
