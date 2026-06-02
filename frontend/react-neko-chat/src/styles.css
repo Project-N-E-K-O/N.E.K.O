@@ -2006,6 +2006,7 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   text-shadow: 0 1px 1px rgba(255, 255, 255, 0.64);
 }
 
+.compact-chat-capsule-text[data-compact-preview-scrollable="true"],
 .compact-chat-capsule-text[data-compact-preview-streaming="true"] {
   text-overflow: clip;
 }

@@ -261,6 +261,7 @@ type CompactMessagePreview = {
   fullText: string;
   isStreaming: boolean;
   isAssistant: boolean;
+  isGuide: boolean;
 };
 
 type DesktopCompactChoicePlacementLayout = {
@@ -329,6 +330,9 @@ function persistCompactExportHistoryOpen(open: boolean) {
 
 type SpeechPlaybackState = {
   active: boolean;
+  speechId?: string | null;
+  turnId?: string | null;
+  playbackTurnId?: string | null;
   audioContextTime: number;
   playbackStartAudioTime: number;
   playbackEndAudioTime: number;
@@ -362,6 +366,34 @@ function getEstimatedSpeechAudioTime(state: SpeechPlaybackState): number {
   return state.audioContextTime + elapsedSinceUpdate;
 }
 
+function normalizeSpeechPlaybackIdentifier(value: unknown): string | null {
+  if (value === undefined || value === null || value === '') {
+    return null;
+  }
+  return String(value);
+}
+
+function isSpeechPlaybackStillActive(state: SpeechPlaybackState | null): boolean {
+  if (!state?.active) {
+    return false;
+  }
+  if (!Number.isFinite(state.playbackEndAudioTime) || state.playbackEndAudioTime <= 0) {
+    return true;
+  }
+  return getEstimatedSpeechAudioTime(state) < state.playbackEndAudioTime - 0.02;
+}
+
+function doesSpeechPlaybackMatchMessage(state: SpeechPlaybackState | null, messageId: string): boolean {
+  if (!state || !messageId) {
+    return false;
+  }
+  const identifiers = [state.playbackTurnId, state.turnId, state.speechId].filter(Boolean);
+  if (identifiers.length === 0) {
+    return true;
+  }
+  return identifiers.some(identifier => identifier === messageId);
+}
+
 function getMessageBlockPreviewText(message: ChatMessage): string {
   if (!Array.isArray(message.blocks)) {
     return '';
@@ -382,6 +414,10 @@ function getMessageBlockPreviewText(message: ChatMessage): string {
   return normalizeCompactPreviewText(text);
 }
 
+function isGuideMessageId(id: unknown): boolean {
+  return typeof id === 'string' && id.startsWith('yui-guide-');
+}
+
 function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePreview | null {
   let latestStreamingAssistantIndex = -1;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -396,6 +432,7 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
     const turnTexts: string[] = [];
     let turnAuthor = '';
     const latestStreamingMessage = messages[latestStreamingAssistantIndex];
+    const latestStreamingIsGuide = isGuideMessageId(latestStreamingMessage?.id);
     const turnMessageId = String(latestStreamingMessage?.id || 'assistant-streaming');
     let previousIncludedCreatedAt = typeof latestStreamingMessage?.createdAt === 'number'
       && Number.isFinite(latestStreamingMessage.createdAt)
@@ -405,6 +442,9 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
       const message = messages[index];
       if (!message) continue;
       if (message.role !== 'assistant') {
+        break;
+      }
+      if (index !== latestStreamingAssistantIndex && (latestStreamingIsGuide || isGuideMessageId(message.id))) {
         break;
       }
       if (index !== latestStreamingAssistantIndex && message.status !== 'streaming') {
@@ -434,6 +474,7 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
         fullText: turnText,
         isStreaming: true,
         isAssistant: true,
+        isGuide: isGuideMessageId(latestStreamingMessage?.id),
       };
     }
   }
@@ -446,13 +487,29 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
     if (!text) continue;
 
     const isStreamingAssistantMessage = message.role === 'assistant' && message.status === 'streaming';
+    const isGuideMessage = isGuideMessageId(message.id);
+    if (isGuideMessage && !isStreamingAssistantMessage) {
+      if (fallbackPreview) {
+        break;
+      }
+      return {
+        messageId: message.id,
+        author: message.author,
+        text,
+        fullText: text,
+        isStreaming: false,
+        isAssistant: true,
+        isGuide: true,
+      };
+    }
     const preview = {
       messageId: message.id,
       author: message.author,
-      text: isStreamingAssistantMessage ? text : truncateCompactPreview(text, COMPACT_PREVIEW_MAX_LENGTH),
+      text: (isStreamingAssistantMessage || isGuideMessage) ? text : truncateCompactPreview(text, COMPACT_PREVIEW_MAX_LENGTH),
       fullText: text,
       isStreaming: isStreamingAssistantMessage,
       isAssistant: message.role === 'assistant',
+      isGuide: isGuideMessage,
     };
     if (message.role === 'assistant') {
       return preview;
@@ -1533,6 +1590,7 @@ export default function App({
   const compactMessagePreview = useMemo(() => getCompactMessagePreview(messages), [messages]);
   const compactSpeechModeActive = !!compactMessagePreview?.isAssistant
     && !!compactMessagePreview?.messageId
+    && !compactMessagePreview.isGuide
     && (
       compactMessagePreview.isStreaming
       || compactSpeechPreviewIdRef.current === compactMessagePreview.messageId
@@ -1540,15 +1598,26 @@ export default function App({
   const compactSpeechPreservedText = compactSpeechModeActive && !compactMessagePreview?.isStreaming
     ? compactSpeechPreviewTextRef.current
     : '';
+  const compactGuideFinalWaitingForSpeech = !!compactMessagePreview?.isGuide
+    && !compactMessagePreview.isStreaming
+    && !!compactMessagePreview.text
+    && isSpeechPlaybackStillActive(speechPlaybackState)
+    && doesSpeechPlaybackMatchMessage(speechPlaybackState, compactMessagePreview.messageId);
+  const compactGuideFinalHidden = !!compactMessagePreview?.isGuide
+    && !compactMessagePreview.isStreaming
+    && !!compactMessagePreview.text
+    && !compactGuideFinalWaitingForSpeech;
   const compactPreviewText = compactSpeechModeActive
     ? (
       compactMessagePreview?.isStreaming
         ? compactMessagePreview?.fullText || ''
         : compactSpeechPreservedText || compactMessagePreview?.fullText || ''
     )
-    : compactMessagePreview?.text
-    || i18n('chat.emptyState', 'Chat content will appear here.');
+    : compactMessagePreview
+      ? (compactGuideFinalHidden ? '' : compactMessagePreview.text)
+      : i18n('chat.emptyState', 'Chat content will appear here.');
   const compactPreviewIsStreaming = compactSpeechModeActive;
+  const compactPreviewAllowsScroll = compactPreviewIsStreaming || !!compactMessagePreview?.isGuide;
   const compactPreviewSpeechDuration = useMemo(() => {
     if (!compactPreviewIsStreaming || !speechPlaybackState) {
       return null;
@@ -1561,6 +1630,9 @@ export default function App({
   }, [compactPreviewIsStreaming, compactPreviewText.length, speechPlaybackState]);
   const compactPreviewDisplayText = useMemo(() => {
     if (!compactPreviewIsStreaming) {
+      if (!compactPreviewText) {
+        return '';
+      }
       return compactPreviewTextVisible || compactPreviewText;
     }
     const visibleLength = Math.min(compactPreviewText.length, compactSpeechVisibleLength);
@@ -1665,6 +1737,11 @@ export default function App({
   }, [compactSpeechVisibleLength]);
 
   useEffect(() => {
+    if (compactMessagePreview?.isGuide) {
+      compactSpeechPreviewIdRef.current = '';
+      compactSpeechPreviewTextRef.current = '';
+      return;
+    }
     if (compactMessagePreview?.isStreaming && compactMessagePreview.isAssistant) {
       compactSpeechPreviewIdRef.current = compactMessagePreview.messageId;
       compactSpeechPreviewTextRef.current = compactMessagePreview.fullText || compactMessagePreview.text || '';
@@ -1678,6 +1755,7 @@ export default function App({
   }, [
     compactMessagePreview?.fullText,
     compactMessagePreview?.isAssistant,
+    compactMessagePreview?.isGuide,
     compactMessagePreview?.isStreaming,
     compactMessagePreview?.messageId,
     compactMessagePreview?.text,
@@ -1875,6 +1953,9 @@ export default function App({
       const playbackEndAudioTime = Number(state.playbackEndAudioTime);
       return {
         active: !!state.active,
+        speechId: normalizeSpeechPlaybackIdentifier(state.speechId),
+        turnId: normalizeSpeechPlaybackIdentifier(state.turnId),
+        playbackTurnId: normalizeSpeechPlaybackIdentifier(state.playbackTurnId),
         audioContextTime: Number.isFinite(audioContextTime) ? audioContextTime : 0,
         playbackStartAudioTime: Number.isFinite(playbackStartAudioTime) ? playbackStartAudioTime : 0,
         playbackEndAudioTime: Number.isFinite(playbackEndAudioTime) ? playbackEndAudioTime : 0,
@@ -1938,12 +2019,12 @@ export default function App({
   useEffect(() => {
     const textNode = compactPreviewTextRef.current;
     if (!textNode) return;
-    if (!isCompactSurface || !compactPreviewIsStreaming) {
+    if (!isCompactSurface || !compactPreviewAllowsScroll) {
       textNode.scrollLeft = 0;
       return;
     }
     textNode.scrollLeft = textNode.scrollWidth;
-  }, [compactPreviewDisplayText, compactPreviewIsStreaming, isCompactSurface]);
+  }, [compactPreviewAllowsScroll, compactPreviewDisplayText, isCompactSurface]);
 
   const handleCompactPreviewWheel = useCallback((event: ReactWheelEvent<HTMLSpanElement>) => {
     const textNode = event.currentTarget;
@@ -3230,6 +3311,12 @@ export default function App({
       return;
     }
 
+    if (compactMessagePreview?.isGuide) {
+      setCompactPreviewTextVisible(compactPreviewText);
+      previousCompactPreviewTextRef.current = compactPreviewText;
+      return;
+    }
+
     if (!compactPreviewText) {
       setCompactPreviewTextVisible('');
       previousCompactPreviewTextRef.current = '';
@@ -3268,7 +3355,7 @@ export default function App({
         window.clearTimeout(timeoutId);
       }
     };
-  }, [compactPreviewText, isCompactSurface]);
+  }, [compactMessagePreview?.isGuide, compactPreviewText, isCompactSurface]);
 
   useEffect(() => {
     if (!isCompactSurface) return;
@@ -4803,6 +4890,7 @@ export default function App({
                           ref={compactPreviewTextRef}
                           className="compact-chat-capsule-text"
                           data-compact-preview-streaming={compactPreviewIsStreaming ? 'true' : 'false'}
+                          data-compact-preview-scrollable={compactPreviewAllowsScroll ? 'true' : 'false'}
                           onWheel={handleCompactPreviewWheel}
                         >
                           {compactPreviewDisplayText}

@@ -2419,6 +2419,211 @@ describe('App', () => {
     expect(preview).toHaveTextContent('');
   });
 
+  it('shows tutorial guide streaming text in the compact capsule immediately', () => {
+    const initialText = '先点这里打开对话。';
+    const updatedText = '先点这里打开对话，然后输入一句问候，后面这一长串教程台词也要自动向左滚动，让最新内容进入胶囊可视区域。';
+    const initialMessage = parseChatMessage({
+      id: 'yui-guide-chat-compact-input',
+      role: 'assistant',
+      author: 'YUI',
+      time: '10:01',
+      createdAt: 2,
+      blocks: [{ type: 'text', text: initialText }],
+      status: 'streaming',
+    });
+    const updatedMessage = parseChatMessage({
+      ...initialMessage,
+      blocks: [{ type: 'text', text: updatedText }],
+    });
+
+    const { container, rerender } = render(
+      <App chatSurfaceMode="compact" composerHidden messages={[initialMessage]} />,
+    );
+
+    const preview = container.querySelector('.compact-chat-capsule-text');
+    expect(preview).not.toBeNull();
+    Object.defineProperty(preview, 'scrollWidth', {
+      configurable: true,
+      value: 320,
+    });
+    expect(preview).toHaveAttribute('data-compact-preview-streaming', 'false');
+    expect(preview).toHaveAttribute('data-compact-preview-scrollable', 'true');
+    expect(preview).toHaveTextContent(initialText);
+
+    rerender(<App chatSurfaceMode="compact" composerHidden messages={[updatedMessage]} />);
+
+    expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent(updatedText);
+    expect((container.querySelector('.compact-chat-capsule-text') as HTMLSpanElement).scrollLeft).toBe(320);
+  });
+
+  it('does not replay tutorial guide text animation when a later stream patch arrives', async () => {
+    vi.useFakeTimers();
+    try {
+      const partialText = '这一句已经显示到中段。';
+      const fullText = '这一句已经显示到中段。后面继续追加的教程台词应该直接接上当前流式文本，而不是先回到开头再快速滚动。';
+      const partialMessage = parseChatMessage({
+        id: 'yui-guide-progressive-compact-line',
+        role: 'assistant',
+        author: 'YUI',
+        time: '10:01',
+        createdAt: 2,
+        blocks: [{ type: 'text', text: partialText }],
+        status: 'streaming',
+      });
+      const fullMessage = parseChatMessage({
+        ...partialMessage,
+        blocks: [{ type: 'text', text: fullText }],
+      });
+
+      const { container, rerender } = render(
+        <App chatSurfaceMode="compact" composerHidden messages={[partialMessage]} />,
+      );
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(120);
+      });
+      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent(partialText);
+
+      rerender(<App chatSurfaceMode="compact" composerHidden messages={[fullMessage]} />);
+
+      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent(fullText);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps then clears the tutorial guide line with its speech playback in the compact capsule', async () => {
+    vi.useFakeTimers();
+    try {
+      const fullText = '这是一句很长很长的新手教程台词，用来模拟胶囊输入框里已经滚动到最后的文本。它在流式播放结束后不应该被截断，也不应该触发从头开始的第二轮快速滚动。后面继续补足一长段内容，确保它明显超过紧凑预览的普通截断阈值。';
+      const streamingMessage = parseChatMessage({
+        id: 'yui-guide-finalizing-compact-line',
+        role: 'assistant',
+        author: 'YUI',
+        time: '10:01',
+        createdAt: 2,
+        blocks: [{ type: 'text', text: fullText }],
+        status: 'streaming',
+      });
+      const sentMessage = parseChatMessage({
+        ...streamingMessage,
+        status: 'sent',
+      });
+
+      const { container, rerender } = render(
+        <App chatSurfaceMode="compact" composerHidden messages={[streamingMessage]} />,
+      );
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(80);
+      });
+      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent(fullText);
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-speech-playback-state', {
+          detail: {
+            active: true,
+            speechId: 'speech-yui-guide-finalizing-compact-line',
+            turnId: streamingMessage.id,
+            playbackTurnId: streamingMessage.id,
+            audioContextTime: 0,
+            playbackStartAudioTime: 0,
+            playbackEndAudioTime: 10,
+            updatedAt: Date.now(),
+          },
+        }));
+      });
+      rerender(<App chatSurfaceMode="compact" composerHidden messages={[sentMessage]} />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1300);
+      });
+
+      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent(fullText);
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-speech-playback-state', {
+          detail: {
+            active: false,
+            speechId: 'speech-yui-guide-finalizing-compact-line',
+            turnId: streamingMessage.id,
+            playbackTurnId: streamingMessage.id,
+            audioContextTime: 10,
+            playbackStartAudioTime: 0,
+            playbackEndAudioTime: 10,
+            updatedAt: Date.now(),
+          },
+        }));
+      });
+
+      expect(container.querySelector('.compact-chat-capsule-text')).toBeEmptyDOMElement();
+      expect(container.querySelector('.compact-chat-capsule-text')).not.toHaveTextContent(fullText);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not merge the previous tutorial guide line into the next compact capsule line', () => {
+    const previousLine = '上一句引导台词已经播放完成。';
+    const currentLine = '下一句引导台词应该从这里重新开始。';
+    const previousMessage = parseChatMessage({
+      id: 'yui-guide-previous-line',
+      role: 'assistant',
+      author: 'YUI',
+      time: '10:01',
+      createdAt: 2,
+      blocks: [{ type: 'text', text: previousLine }],
+      status: 'sent',
+    });
+    const currentMessage = parseChatMessage({
+      id: 'yui-guide-current-line',
+      role: 'assistant',
+      author: 'YUI',
+      time: '10:02',
+      createdAt: 3,
+      blocks: [{ type: 'text', text: currentLine }],
+      status: 'streaming',
+    });
+
+    const { container } = render(
+      <App chatSurfaceMode="compact" composerHidden messages={[previousMessage, currentMessage]} />,
+    );
+
+    const preview = container.querySelector('.compact-chat-capsule-text');
+    expect(preview).toHaveTextContent(currentLine);
+    expect(preview).not.toHaveTextContent(previousLine);
+  });
+
+  it('does not merge an unfinished tutorial guide line into the next compact capsule line', () => {
+    const previousLine = '上一句引导台词仍在流式收尾。';
+    const currentLine = '后一句引导台词应该独立显示。';
+    const previousMessage = parseChatMessage({
+      id: 'yui-guide-previous-streaming-line',
+      role: 'assistant',
+      author: 'YUI',
+      time: '10:01',
+      createdAt: 2,
+      blocks: [{ type: 'text', text: previousLine }],
+      status: 'streaming',
+    });
+    const currentMessage = parseChatMessage({
+      id: 'yui-guide-current-streaming-line',
+      role: 'assistant',
+      author: 'YUI',
+      time: '10:02',
+      createdAt: 3,
+      blocks: [{ type: 'text', text: currentLine }],
+      status: 'streaming',
+    });
+
+    const { container } = render(
+      <App chatSurfaceMode="compact" composerHidden messages={[previousMessage, currentMessage]} />,
+    );
+
+    const preview = container.querySelector('.compact-chat-capsule-text');
+    expect(preview).toHaveTextContent(currentLine);
+    expect(preview).not.toHaveTextContent(previousLine);
+  });
+
   it('falls back to revealing compact streaming text when playback state never arrives', async () => {
     vi.useFakeTimers();
     const streamingText = '主动搭话进入紧凑态时，即使语音播放状态没有及时到达，也应该显示这段文本。';

@@ -80,7 +80,7 @@
     steps.intro_basic = createBaseStep('intro_basic', 'home', '#text-input-area');
     steps.intro_basic.tutorial.title = '语音控制入口';
     steps.intro_basic.tutorial.description = '点击输入框解锁首句旁白后，介绍对话窗里的语音控制按钮。';
-    steps.intro_basic.performance.bubbleText = '这里有一个神奇的按钮！只要点击它，就可以直接和我聊天啦！想跟我分享今天的新鲜事吗？或者只是叫叫我的名字？快来试试嘛，我已经迫不及待想听到你的声音啦！喵！';
+    steps.intro_basic.performance.bubbleText = '这里有一个神奇的小按钮！只要点击它，就可以直接和我聊天啦！想跟我分享今天的新鲜事吗？或者只是叫叫我的名字？快来试试嘛，我已经迫不及待想听到你的声音啦！喵！';
     steps.intro_basic.performance.bubbleTextKey = 'tutorial.yuiGuide.lines.introBasic';
     steps.intro_basic.performance.voiceKey = 'intro_basic';
     steps.intro_basic.performance.emotion = 'happy';
@@ -95,7 +95,7 @@
     steps.takeover_capture_cursor = createBaseStep('takeover_capture_cursor', 'home', '#${p}-btn-agent');
     steps.takeover_capture_cursor.tutorial.title = '键鼠控制介绍';
     steps.takeover_capture_cursor.tutorial.description = '介绍猫爪总开关与键鼠控制开关，并完成首页第一段自动化演示。';
-    steps.takeover_capture_cursor.performance.bubbleText = '超级魔法按钮出现！只要点一下这里，我就可以把小爪子伸到你的键盘和鼠标上啦！我会帮你打字，帮你点开网页……不过，要是那个鼠标指针动来动去的话，我可能也会忍不住扑上去抓它哦！准备好迎接我的捣乱……啊不，是帮忙了吗？喵！';
+    steps.takeover_capture_cursor.performance.bubbleText = '超级魔法开关出现！只要点一下这里，我就可以把小爪子伸到你的键盘和鼠标上啦！我会帮你打字，帮你点开网页……不过，要是那个鼠标指针动来动去的话，我可能也会忍不住扑上去抓它哦！准备好迎接我的捣乱……啊不，是帮忙了吗？喵！';
     steps.takeover_capture_cursor.performance.bubbleTextKey = 'tutorial.yuiGuide.lines.takeoverCaptureCursor';
     steps.takeover_capture_cursor.performance.voiceKey = 'takeover_capture_cursor';
     steps.takeover_capture_cursor.performance.emotion = 'happy';
@@ -165,7 +165,7 @@
     steps.interrupt_resist_light = createBaseStep('interrupt_resist_light', 'home', '#${p}-container');
     steps.interrupt_resist_light.tutorial.title = '轻微抵抗';
     steps.interrupt_resist_light.tutorial.description = '用户轻微试探时的较劲反馈。';
-    steps.interrupt_resist_light.performance.bubbleText = '喂！不要拽我啦，还没轮到你的回合呢！';
+    steps.interrupt_resist_light.performance.bubbleText = '喂！不要拽我啦，现在还没轮到你的回合呢！';
     steps.interrupt_resist_light.performance.bubbleTextKey = 'tutorial.yuiGuide.lines.interruptResistLight1';
     steps.interrupt_resist_light.performance.voiceKey = 'interrupt_resist_light';
     steps.interrupt_resist_light.performance.emotion = 'surprised';
@@ -173,8 +173,8 @@
     steps.interrupt_resist_light.performance.cursorTarget = '#${p}-container';
     steps.interrupt_resist_light.performance.interruptible = true;
     steps.interrupt_resist_light.performance.resistanceVoices = [
-        '喂！不要拽我啦，还没轮到你的回合呢！',
-        '等一下啦！还没结束呢，不要随便打断我啦！'
+        '喂！不要拽我啦，现在还没轮到你的回合呢！',
+        '等一下啦！还没结束呢，不要这么随便打断我啦！'
     ];
     steps.interrupt_resist_light.performance.resistanceVoiceKeys = [
         'tutorial.yuiGuide.lines.interruptResistLight1',
