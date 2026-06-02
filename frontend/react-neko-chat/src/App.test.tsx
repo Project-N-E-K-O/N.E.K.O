@@ -3951,6 +3951,8 @@ describe('App', () => {
 
       expect(avatarTool.querySelector('#composer-tool-popover-compact')).toBeNull();
       expect(fan.querySelector(':scope > #composer-tool-popover-compact')).not.toBeNull();
+      expect(avatarTool).toHaveAttribute('data-compact-tool-active', 'true');
+      expect(emojiButton).toHaveClass('is-active');
 
       fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
 

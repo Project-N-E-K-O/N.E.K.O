@@ -3616,6 +3616,11 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   border-radius: 999px;
 }
 
+.compact-input-tool-fan .compact-input-tool-item-avatar > .composer-emoji-btn:disabled {
+  opacity: 1;
+  cursor: inherit;
+}
+
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] {
   visibility: visible;
   pointer-events: auto;
