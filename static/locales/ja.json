@@ -784,7 +784,7 @@
         "avatarToolQuickbarEmpty": "クイックツールなし",
         "avatarToolEdit": "クイックツールを編集",
         "avatarToolSlotFull": "先にツールを1つ外してください。",
-        "avatarToolManagerTitle": "アバターツール管理",
+        "avatarToolManagerTitle": "ツール管理",
         "avatarToolManagerSubtitle": "クイックツールは最大3個まで選択できます。",
         "avatarToolManagerClose": "閉じる",
         "avatarToolCurrentTools": "現在のツール",

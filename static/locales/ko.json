@@ -784,7 +784,7 @@
         "avatarToolQuickbarEmpty": "빠른 도구 없음",
         "avatarToolEdit": "빠른 도구 편집",
         "avatarToolSlotFull": "먼저 도구 하나를 해제하세요.",
-        "avatarToolManagerTitle": "아바타 도구 관리",
+        "avatarToolManagerTitle": "도구 관리",
         "avatarToolManagerSubtitle": "빠른 도구는 최대 3개까지 선택하세요.",
         "avatarToolManagerClose": "닫기",
         "avatarToolCurrentTools": "현재 도구",
