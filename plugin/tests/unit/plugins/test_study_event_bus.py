@@ -475,7 +475,10 @@ async def test_format_session_summarized_includes_insight() -> None:
 @pytest.mark.asyncio
 async def test_schedule_emit_logs_on_exception(
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(StudyEventBus, "_MAX_WORKER_FAILURES", 3)
+    monkeypatch.setattr(StudyEventBus, "_WORKER_FAILURE_BACKOFF_BASE_SECONDS", 0.001)
     caplog.set_level(logging.ERROR, logger=event_bus_module._logger.name)
     bus = StudyEventBus(plugin_ctx=_Ctx(fail=True))
 
@@ -496,8 +499,64 @@ async def test_schedule_emit_logs_on_exception(
 
 
 @pytest.mark.asyncio
-async def test_schedule_emit_drops_when_backlog_is_full(
+async def test_schedule_emit_worker_stops_after_repeated_failures(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(StudyEventBus, "_MAX_WORKER_FAILURES", 2)
+    monkeypatch.setattr(StudyEventBus, "_WORKER_FAILURE_BACKOFF_BASE_SECONDS", 0.001)
+    bus = StudyEventBus(plugin_ctx=_Ctx(fail=True))
+
+    task = None
+    for index in range(2):
+        task = bus.schedule_emit(
+            StudyEvent(
+                name="session_summarized",
+                payload={"duration_minutes": index, "questions_attempted": 1},
+            )
+        )
+
+    assert task is not None
+    await asyncio.wait_for(task, timeout=1.0)
+    assert bus._worker_task is None
+    assert bus.scheduled_emit_count == 0
+
+
+@pytest.mark.asyncio
+async def test_schedule_emit_task_done_underflow_does_not_kill_worker(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    caplog.set_level(logging.ERROR, logger=event_bus_module._logger.name)
+    bus = StudyEventBus(plugin_ctx=_Ctx())
+
+    def broken_task_done() -> None:
+        raise ValueError("task_done underflow")
+
+    monkeypatch.setattr(bus._queue, "task_done", broken_task_done)
+
+    task = bus.schedule_emit(
+        StudyEvent(
+            name="session_summarized",
+            payload={"duration_minutes": 1, "questions_attempted": 1},
+        )
+    )
+
+    assert task is not None
+    for _ in range(10):
+        if "task_done underflow" in caplog.text:
+            break
+        await asyncio.sleep(0.01)
+
+    assert "task_done underflow" in caplog.text
+    assert not task.done()
+    await bus.stop_worker()
+
+
+@pytest.mark.asyncio
+async def test_schedule_emit_drops_when_backlog_is_full(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.WARNING, logger=event_bus_module._logger.name)
     bus = StudyEventBus(plugin_ctx=_Ctx())
     for index in range(bus._MAX_QUEUE_SIZE):
         bus._queue.put_nowait(
@@ -506,6 +565,7 @@ async def test_schedule_emit_drops_when_backlog_is_full(
                 payload={"duration_minutes": index, "questions_attempted": 1},
             )
         )
+    bus._scheduled_emit_count = bus._MAX_QUEUE_SIZE
 
     task = bus.schedule_emit(
         StudyEvent(
@@ -521,6 +581,7 @@ async def test_schedule_emit_drops_when_backlog_is_full(
     queued = list(bus._queue._queue)
     assert queued[0].payload["duration_minutes"] == 1
     assert queued[-1].payload["duration_minutes"] == 999
+    assert "dropped oldest event due to backlog" in caplog.text
     await bus.stop_worker()
 
 

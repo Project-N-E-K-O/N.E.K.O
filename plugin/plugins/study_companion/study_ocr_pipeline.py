@@ -10,6 +10,7 @@ import time
 from typing import Any
 
 from PIL import Image
+
 try:
     import imagehash
 except ImportError:
@@ -97,6 +98,13 @@ class StudyOcrPipeline:
         self._latest_vision_snapshot: dict[str, Any] = {}
         self._latest_vision_image_base64 = ""
         self._last_thumbnail_phash = ""
+        self._executor: ThreadPoolExecutor | None = ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="study-ocr"
+        )
+        if imagehash is None:
+            self._logger.warning(
+                "study OCR content-change detection disabled: imagehash is unavailable"
+            )
 
     def update_config(self, config: StudyConfig) -> None:
         self._config = config
@@ -104,6 +112,20 @@ class StudyOcrPipeline:
         self._capture_backend = None
         self._last_thumbnail_phash = ""
         self._clear_vision_snapshot()
+
+    def close(self) -> None:
+        executor = self._executor
+        if executor is None:
+            return
+        executor.shutdown(wait=False)
+        self._executor = None
+
+    def _require_executor(self) -> ThreadPoolExecutor:
+        if self._executor is None:
+            self._executor = ThreadPoolExecutor(
+                max_workers=2, thread_name_prefix="study-ocr"
+            )
+        return self._executor
 
     def snapshot_from_image(self, image: Any, *, backend_name: str = "") -> OcrSnapshot:
         if image is None:
@@ -202,35 +224,33 @@ class StudyOcrPipeline:
                 self._resolve_ocr_backend()
             except Exception:
                 pass
-            with ThreadPoolExecutor(
-                max_workers=2, thread_name_prefix="study-ocr"
-            ) as executor:
-                jpeg_future = executor.submit(
-                    self._encode_lightweight_jpeg,
-                    thumbnail,
-                    max_bytes=self._config.awareness.image_max_bytes,
+            executor = self._require_executor()
+            jpeg_future = executor.submit(
+                self._encode_lightweight_jpeg,
+                thumbnail,
+                max_bytes=self._config.awareness.image_max_bytes,
+            )
+            ocr_future = executor.submit(
+                self._extract_image,
+                thumbnail,
+                backend_name=self._config.ocr_backend_selection,
+                _skip_vision_snapshot=True,
+            )
+            try:
+                jpeg_result = jpeg_future.result(timeout=3.0)
+                if isinstance(jpeg_result, bytes):
+                    jpeg_bytes = jpeg_result
+            except Exception:
+                jpeg_bytes = None
+            try:
+                ocr_snapshot = ocr_future.result(timeout=5.0)
+            except Exception as exc:
+                ocr_snapshot = OcrSnapshot(
+                    status="ocr_failed",
+                    backend=self._config.ocr_backend_selection,
+                    captured_at=utc_now_iso(),
+                    diagnostic=str(exc),
                 )
-                ocr_future = executor.submit(
-                    self._extract_image,
-                    thumbnail,
-                    backend_name=self._config.ocr_backend_selection,
-                    _skip_vision_snapshot=True,
-                )
-                try:
-                    jpeg_result = jpeg_future.result(timeout=3.0)
-                    if isinstance(jpeg_result, bytes):
-                        jpeg_bytes = jpeg_result
-                except Exception:
-                    jpeg_bytes = None
-                try:
-                    ocr_snapshot = ocr_future.result(timeout=5.0)
-                except Exception as exc:
-                    ocr_snapshot = OcrSnapshot(
-                        status="ocr_failed",
-                        backend=self._config.ocr_backend_selection,
-                        captured_at=utc_now_iso(),
-                        diagnostic=str(exc),
-                    )
         if jpeg_bytes is None:
             jpeg_bytes = self._encode_lightweight_jpeg(
                 thumbnail,

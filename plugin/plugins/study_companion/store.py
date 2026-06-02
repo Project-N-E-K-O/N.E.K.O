@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from .knowledge_quality import KnowledgeQualityStore
 from .memory_deck_store import MemoryDeckStore, ensure_memory_schema
 from .mode_manager import normalize_mode
 from .models import (
@@ -80,6 +81,7 @@ class StudyStore:
     """SQLite main store with JSON import/export support for seeds and backups."""
 
     _INTERACTION_TRIM_INTERVAL = 10
+    _supports_batch_answer = True
 
     def __init__(
         self,
@@ -99,6 +101,8 @@ class StudyStore:
         self._lock = threading.RLock()
         self._conn: sqlite3.Connection | None = None
         self._read_conn: sqlite3.Connection | None = None
+        self._read_local = threading.local()
+        self._read_conns: set[sqlite3.Connection] = set()
         self._interaction_count = 0
 
     def open(self) -> None:
@@ -112,20 +116,18 @@ class StudyStore:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA foreign_keys = ON")
             self._conn.row_factory = sqlite3.Row
+            self._interaction_count = 0
             self._init_db()
             self._load_seed_if_empty()
             self.load_knowledge_seed()
-            self._read_conn = sqlite3.connect(
-                str(self.db_path), check_same_thread=False, timeout=5.0
-            )
-            self._read_conn.execute("PRAGMA foreign_keys = ON")
-            self._read_conn.row_factory = sqlite3.Row
 
     def close(self) -> None:
         with self._lock:
-            if self._read_conn is not None:
-                self._read_conn.close()
-                self._read_conn = None
+            for conn in list(self._read_conns):
+                conn.close()
+            self._read_conns.clear()
+            self._read_conn = None
+            self._read_local = threading.local()
             if self._conn is not None:
                 self._conn.close()
                 self._conn = None
@@ -137,12 +139,67 @@ class StudyStore:
         return self._conn
 
     def _require_read_conn(self) -> sqlite3.Connection:
-        if self._read_conn is None:
+        conn = getattr(self._read_local, "conn", None)
+        if conn is None:
             with self._lock:
-                if self._read_conn is None:
+                if self._conn is None:
                     self.open()
-        assert self._read_conn is not None
-        return self._read_conn
+                conn = sqlite3.connect(
+                    str(self.db_path), check_same_thread=False, timeout=5.0
+                )
+                conn.execute("PRAGMA foreign_keys = ON")
+                conn.row_factory = sqlite3.Row
+                self._read_conns.add(conn)
+                self._read_local.conn = conn
+                if self._read_conn is None:
+                    self._read_conn = conn
+        return conn
+
+    def answer_write_lock(self) -> threading.RLock:
+        return self._lock
+
+    def load_answer_write_state(
+        self, topic_id: str, *, recent_limit: int = 10
+    ) -> dict[str, Any]:
+        topic_key = str(topic_id or "").strip()
+        safe_limit = max(1, int(recent_limit))
+        with self._lock:
+            conn = self._require_conn()
+            if topic_key:
+                recent_rows = conn.execute(
+                    """
+                    SELECT *
+                    FROM qa_records
+                    WHERE topic_id = ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (topic_key, safe_limit),
+                ).fetchall()
+            else:
+                recent_rows = conn.execute(
+                    """
+                    SELECT *
+                    FROM qa_records
+                    WHERE topic_id IS NULL
+                    ORDER BY id DESC
+                    LIMIT ?
+                    """,
+                    (safe_limit,),
+                ).fetchall()
+            fsrs_row = conn.execute(
+                "SELECT * FROM fsrs_cards WHERE topic_id = ?", (topic_key,)
+            ).fetchone()
+        return {
+            "recent": [
+                item
+                for item in (
+                    self._qa_record_from_row(row) for row in reversed(recent_rows)
+                )
+                if item is not None
+            ],
+            "fsrs_card": self._fsrs_card_from_row(fsrs_row),
+        }
 
     @staticmethod
     def _json_loads(value: object, fallback: Any) -> Any:
@@ -386,183 +443,290 @@ class StudyStore:
                     self._batch_upsert_candidate_with_evidence(
                         conn, topic_candidate_data
                     )
-                conn.execute(
-                    """
-                    INSERT INTO sessions (id, mode, started_at, topics_touched)
-                    VALUES (?, ?, datetime('now'), '[]')
-                    ON CONFLICT(id) DO NOTHING
-                    """,
-                    (session_key, str(mode or "companion")),
-                )
-                conn.execute(
-                    """
-                    INSERT INTO qa_records (
-                        session_id, topic_id, question, user_answer,
-                        eval_result, mode, response_time_ms, created_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
-                    """,
-                    (
-                        session_key,
-                        db_topic_key,
-                        self._json_dumps(question or {}),
-                        str(user_answer or ""),
-                        self._json_dumps(eval_result or {}),
-                        str(mode or "companion"),
-                        int(response_time_ms)
-                        if response_time_ms is not None
-                        else None,
-                    ),
-                )
-                row = conn.execute(
-                    "SELECT topics_touched FROM sessions WHERE id = ?", (session_key,)
-                ).fetchone()
-                touched = (
-                    self._json_loads(row["topics_touched"], [])
-                    if row is not None
-                    else []
-                )
-                if topic_key and topic_key not in touched:
-                    touched.append(topic_key)
-                conn.execute(
-                    """
-                    UPDATE sessions
-                    SET question_count = question_count + 1, topics_touched = ?
-                    WHERE id = ?
-                    """,
-                    (self._json_dumps(touched), session_key),
-                )
-                self._trim_append_only_rows(
+                self._batch_write_session(conn, session_key, mode)
+                self._batch_write_qa_record(
                     conn,
-                    table="qa_records",
-                    group_column="topic_id",
-                    group_value=db_topic_key,
+                    session_key=session_key,
+                    topic_key=db_topic_key,
+                    question=question,
+                    user_answer=user_answer,
+                    eval_result=eval_result,
+                    mode=mode,
+                    response_time_ms=response_time_ms,
                     history_limit=history_limit,
                 )
-                if mastery_snapshot:
-                    snapshot_topic = str(
-                        mastery_snapshot.get("topic_id") or topic_key
-                    )
-                    conn.execute(
-                        """
-                        INSERT INTO mastery_snapshots (
-                            topic_id, mastery, accuracy, recency, consistency,
-                            confidence, level, attempts, flags, updated_at
-                        )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-                        """,
-                        (
-                            snapshot_topic,
-                            float(mastery_snapshot.get("mastery") or 0.0),
-                            float(mastery_snapshot.get("accuracy") or 0.0),
-                            float(mastery_snapshot.get("recency") or 0.0),
-                            float(mastery_snapshot.get("consistency") or 0.0),
-                            float(mastery_snapshot.get("confidence") or 0.0),
-                            str(mastery_snapshot.get("level") or ""),
-                            int(mastery_snapshot.get("attempts") or 0),
-                            self._json_dumps(
-                                mastery_snapshot.get("flags")
-                                if isinstance(mastery_snapshot.get("flags"), list)
-                                else []
-                            ),
-                        ),
-                    )
-                    self._trim_append_only_rows(
-                        conn,
-                        table="mastery_snapshots",
-                        group_column="topic_id",
-                        group_value=snapshot_topic,
-                        history_limit=history_limit,
-                    )
-                if wrong_question_data:
-                    wrong_question_id = str(
-                        wrong_question_data.get("id") or uuid.uuid4()
-                    )
-                    conn.execute(
-                        """
-                        INSERT INTO wrong_questions (
-                            id, topic_id, question, user_answer, expected_answer,
-                            error_type, verdict, status, retry_count,
-                            consecutive_correct, max_correct_difficulty,
-                            last_error_at, created_at, updated_at
-                        )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 0, 0, 0,
-                                datetime('now'), datetime('now'), datetime('now'))
-                        """,
-                        (
-                            wrong_question_id,
-                            str(wrong_question_data.get("topic_id") or topic_key),
-                            self._json_dumps(
-                                wrong_question_data.get("question") or {}
-                            ),
-                            str(wrong_question_data.get("user_answer") or ""),
-                            str(wrong_question_data.get("expected_answer") or ""),
-                            str(wrong_question_data.get("error_type") or "unknown"),
-                            str(wrong_question_data.get("verdict") or "wrong"),
-                        ),
-                    )
-                if fsrs_card:
-                    conn.execute(
-                        """
-                        INSERT INTO fsrs_cards (topic_id, card_data, fsrs_state, last_rating, updated_at)
-                        VALUES (?, ?, ?, ?, datetime('now'))
-                        ON CONFLICT(topic_id) DO UPDATE SET
-                            card_data = excluded.card_data,
-                            fsrs_state = excluded.fsrs_state,
-                            last_rating = excluded.last_rating,
-                            updated_at = datetime('now')
-                        """,
-                        (
-                            str(fsrs_card.get("topic_id") or topic_key),
-                            self._json_dumps(fsrs_card or {}),
-                            str((fsrs_card or {}).get("state") or ""),
-                            int(fsrs_rating or 0),
-                        ),
-                    )
-                if review_log_data:
-                    review_topic = str(review_log_data.get("topic_id") or topic_key)
-                    conn.execute(
-                        """
-                        INSERT INTO review_log (
-                            topic_id, card_id, rating, scheduled_days, actual_days, created_at
-                        )
-                        VALUES (?, ?, ?, ?, ?, datetime('now'))
-                        """,
-                        (
-                            review_topic,
-                            review_log_data.get("card_id"),
-                            int(review_log_data.get("rating") or 0),
-                            int(review_log_data.get("scheduled_days") or 0),
-                            int(review_log_data.get("actual_days") or 0),
-                        ),
-                    )
-                    self._trim_append_only_rows(
-                        conn,
-                        table="review_log",
-                        group_column="topic_id",
-                        group_value=review_topic,
-                        history_limit=history_limit,
-                    )
-                for candidate in error_candidate_data or []:
-                    self._batch_upsert_candidate_with_evidence(conn, candidate)
-                positive_item_id = ""
-                if positive_candidate_data:
-                    positive_item_id = self._batch_upsert_candidate_with_evidence(
-                        conn, positive_candidate_data
-                    )
-                if positive_evidence_data:
-                    evidence = dict(positive_evidence_data)
-                    if positive_item_id and not evidence.get("item_id"):
-                        evidence["item_id"] = positive_item_id
-                    self._batch_insert_candidate_evidence(conn, evidence)
-                    self._batch_recompute_candidate_score(
-                        conn, str(evidence.get("item_id") or "")
-                    )
+                self._batch_update_session_topics(conn, session_key, topic_key)
+                self._batch_write_mastery(
+                    conn,
+                    mastery_snapshot=mastery_snapshot,
+                    topic_key=topic_key,
+                    history_limit=history_limit,
+                )
+                wrong_question_id = self._batch_write_wrong_question(
+                    conn,
+                    wrong_question_data=wrong_question_data,
+                    topic_key=topic_key,
+                )
+                self._batch_write_fsrs_card(
+                    conn,
+                    fsrs_card=fsrs_card,
+                    fsrs_rating=fsrs_rating,
+                    topic_key=topic_key,
+                )
+                self._batch_write_review_log(
+                    conn,
+                    review_log_data=review_log_data,
+                    topic_key=topic_key,
+                    history_limit=history_limit,
+                )
+                self._batch_write_answer_candidates(
+                    conn,
+                    error_candidate_data=error_candidate_data,
+                    positive_candidate_data=positive_candidate_data,
+                    positive_evidence_data=positive_evidence_data,
+                )
                 conn.commit()
             except Exception:
                 conn.rollback()
+                self._logger.exception(
+                    "batch_write_answer_data failed session=%s topic=%s",
+                    session_key,
+                    topic_key,
+                )
                 raise
         return {"ok": True, "wrong_question_id": wrong_question_id}
+
+    def _batch_write_session(
+        self, conn: sqlite3.Connection, session_key: str, mode: str
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO sessions (id, mode, started_at, topics_touched)
+            VALUES (?, ?, datetime('now'), '[]')
+            ON CONFLICT(id) DO NOTHING
+            """,
+            (session_key, str(mode or "companion")),
+        )
+
+    def _batch_write_qa_record(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        session_key: str,
+        topic_key: str | None,
+        question: dict[str, Any],
+        user_answer: str,
+        eval_result: dict[str, Any],
+        mode: str,
+        response_time_ms: int | None,
+        history_limit: int,
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO qa_records (
+                session_id, topic_id, question, user_answer,
+                eval_result, mode, response_time_ms, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            """,
+            (
+                session_key,
+                topic_key,
+                self._json_dumps(question or {}),
+                str(user_answer or ""),
+                self._json_dumps(eval_result or {}),
+                str(mode or "companion"),
+                int(response_time_ms) if response_time_ms is not None else None,
+            ),
+        )
+        self._trim_append_only_rows(
+            conn,
+            table="qa_records",
+            group_column="topic_id",
+            group_value=topic_key,
+            history_limit=history_limit,
+        )
+
+    def _batch_update_session_topics(
+        self, conn: sqlite3.Connection, session_key: str, topic_key: str
+    ) -> None:
+        row = conn.execute(
+            "SELECT topics_touched FROM sessions WHERE id = ?", (session_key,)
+        ).fetchone()
+        touched = (
+            self._json_loads(row["topics_touched"], []) if row is not None else []
+        )
+        if topic_key and topic_key not in touched:
+            touched.append(topic_key)
+        conn.execute(
+            """
+            UPDATE sessions
+            SET question_count = question_count + 1, topics_touched = ?
+            WHERE id = ?
+            """,
+            (self._json_dumps(touched), session_key),
+        )
+
+    def _batch_write_mastery(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        mastery_snapshot: dict[str, Any] | None,
+        topic_key: str,
+        history_limit: int,
+    ) -> None:
+        if not mastery_snapshot:
+            return
+        snapshot_topic = str(mastery_snapshot.get("topic_id") or topic_key)
+        conn.execute(
+            """
+            INSERT INTO mastery_snapshots (
+                topic_id, mastery, accuracy, recency, consistency,
+                confidence, level, attempts, flags, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            """,
+            (
+                snapshot_topic,
+                float(mastery_snapshot.get("mastery") or 0.0),
+                float(mastery_snapshot.get("accuracy") or 0.0),
+                float(mastery_snapshot.get("recency") or 0.0),
+                float(mastery_snapshot.get("consistency") or 0.0),
+                float(mastery_snapshot.get("confidence") or 0.0),
+                str(mastery_snapshot.get("level") or ""),
+                int(mastery_snapshot.get("attempts") or 0),
+                self._json_dumps(
+                    mastery_snapshot.get("flags")
+                    if isinstance(mastery_snapshot.get("flags"), list)
+                    else []
+                ),
+            ),
+        )
+        self._trim_append_only_rows(
+            conn,
+            table="mastery_snapshots",
+            group_column="topic_id",
+            group_value=snapshot_topic,
+            history_limit=history_limit,
+        )
+
+    def _batch_write_wrong_question(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        wrong_question_data: dict[str, Any] | None,
+        topic_key: str,
+    ) -> str:
+        if not wrong_question_data:
+            return ""
+        wrong_question_id = str(wrong_question_data.get("id") or uuid.uuid4())
+        conn.execute(
+            """
+            INSERT INTO wrong_questions (
+                id, topic_id, question, user_answer, expected_answer,
+                error_type, verdict, status, retry_count,
+                consecutive_correct, max_correct_difficulty,
+                last_error_at, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 0, 0, 0,
+                    datetime('now'), datetime('now'), datetime('now'))
+            """,
+            (
+                wrong_question_id,
+                str(wrong_question_data.get("topic_id") or topic_key),
+                self._json_dumps(wrong_question_data.get("question") or {}),
+                str(wrong_question_data.get("user_answer") or ""),
+                str(wrong_question_data.get("expected_answer") or ""),
+                str(wrong_question_data.get("error_type") or "unknown"),
+                str(wrong_question_data.get("verdict") or "wrong"),
+            ),
+        )
+        return wrong_question_id
+
+    def _batch_write_fsrs_card(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        fsrs_card: dict[str, Any] | None,
+        fsrs_rating: int | None,
+        topic_key: str,
+    ) -> None:
+        if not fsrs_card:
+            return
+        conn.execute(
+            """
+            INSERT INTO fsrs_cards (topic_id, card_data, fsrs_state, last_rating, updated_at)
+            VALUES (?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(topic_id) DO UPDATE SET
+                card_data = excluded.card_data,
+                fsrs_state = excluded.fsrs_state,
+                last_rating = excluded.last_rating,
+                updated_at = datetime('now')
+            """,
+            (
+                str(fsrs_card.get("topic_id") or topic_key),
+                self._json_dumps(fsrs_card or {}),
+                str((fsrs_card or {}).get("state") or ""),
+                int(fsrs_rating or 0),
+            ),
+        )
+
+    def _batch_write_review_log(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        review_log_data: dict[str, Any] | None,
+        topic_key: str,
+        history_limit: int,
+    ) -> None:
+        if not review_log_data:
+            return
+        review_topic = str(review_log_data.get("topic_id") or topic_key)
+        conn.execute(
+            """
+            INSERT INTO review_log (
+                topic_id, card_id, rating, scheduled_days, actual_days, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, datetime('now'))
+            """,
+            (
+                review_topic,
+                review_log_data.get("card_id"),
+                int(review_log_data.get("rating") or 0),
+                int(review_log_data.get("scheduled_days") or 0),
+                int(review_log_data.get("actual_days") or 0),
+            ),
+        )
+        self._trim_append_only_rows(
+            conn,
+            table="review_log",
+            group_column="topic_id",
+            group_value=review_topic,
+            history_limit=history_limit,
+        )
+
+    def _batch_write_answer_candidates(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        error_candidate_data: list[dict[str, Any]] | None,
+        positive_candidate_data: dict[str, Any] | None,
+        positive_evidence_data: dict[str, Any] | None,
+    ) -> None:
+        for candidate in error_candidate_data or []:
+            self._batch_upsert_candidate_with_evidence(conn, candidate)
+        positive_item_id = ""
+        if positive_candidate_data:
+            positive_item_id = self._batch_upsert_candidate_with_evidence(
+                conn, positive_candidate_data
+            )
+        if not positive_evidence_data:
+            return
+        evidence = dict(positive_evidence_data)
+        if positive_item_id and not evidence.get("item_id"):
+            evidence["item_id"] = positive_item_id
+        self._batch_insert_candidate_evidence(conn, evidence)
+        self._batch_recompute_candidate_score(conn, str(evidence.get("item_id") or ""))
 
     def _batch_upsert_topic(
         self, conn: sqlite3.Connection, topic: dict[str, Any]
@@ -725,8 +889,6 @@ class StudyStore:
             for item in (self._evidence_from_row(evidence_row) for evidence_row in rows)
             if item is not None
         ]
-        from .knowledge_quality import KnowledgeQualityStore
-
         quality = KnowledgeQualityStore(self)
         score_parts = KnowledgeQualityStore._score_parts(candidate, evidence)
         conn.execute(
@@ -818,6 +980,18 @@ class StudyStore:
             "mode": str(row["mode"] or ""),
             "response_time_ms": int(row["response_time_ms"] or 0),
             "created_at": str(row["created_at"] or ""),
+        }
+
+    def _fsrs_card_from_row(self, row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        return {
+            "id": int(row["id"]),
+            "topic_id": str(row["topic_id"]),
+            "card": self._json_loads(row["card_data"], {}),
+            "fsrs_state": str(row["fsrs_state"] or ""),
+            "last_rating": int(row["last_rating"] or 0),
+            "updated_at": str(row["updated_at"] or ""),
         }
 
     def _wrong_question_from_row(self, row: sqlite3.Row) -> dict[str, Any]:

@@ -22,7 +22,7 @@ def build_status_payload(
     knowledge: dict[str, Any] | None = None,
     is_first_run: bool = False,
 ) -> dict[str, Any]:
-    knowledge_payload = knowledge or {}
+    knowledge_payload = copy.deepcopy(knowledge or {})
     return {
         "status": state.status,
         "is_first_run": bool(is_first_run),
@@ -31,7 +31,7 @@ def build_status_payload(
         "active_mode": state.active_mode,
         "mode_started_at": state.mode_started_at,
         "recent_mode_switches": copy.deepcopy(state.recent_mode_switches),
-        "suggestion_cooldowns": dict(state.suggestion_cooldowns),
+        "suggestion_cooldowns": copy.deepcopy(state.suggestion_cooldowns),
         "session_suggestions": copy.deepcopy(state.session_suggestions),
         "mode_lock_until": state.mode_lock_until,
         "last_error": state.last_error,
@@ -54,11 +54,12 @@ def build_status_payload(
         "last_reply_at": state.last_reply_at,
         "checkpoint": copy.deepcopy(state.checkpoint),
         "dependencies": copy.deepcopy(state.dependency_status),
-        "knowledge_summary": copy.deepcopy(knowledge_payload.get("knowledge_summary") or {}),
+        "knowledge_summary": copy.deepcopy(
+            knowledge_payload.get("knowledge_summary") or {}
+        ),
         "knowledge_quality_summary": copy.deepcopy(
             knowledge_payload.get("knowledge_quality_summary") or {}
-        )
-        or {},
+        ),
         "anonymous_knowledge_stats_summary": copy.deepcopy(
             knowledge_payload.get("anonymous_knowledge_stats_summary") or {}
         ),

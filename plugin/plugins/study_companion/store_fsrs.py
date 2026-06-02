@@ -104,16 +104,7 @@ def get_fsrs_card(self, topic_id: str) -> dict[str, Any] | None:
         )
         .fetchone()
     )
-    if row is None:
-        return None
-    return {
-        "id": int(row["id"]),
-        "topic_id": str(row["topic_id"]),
-        "card": self._json_loads(row["card_data"], {}),
-        "fsrs_state": str(row["fsrs_state"] or ""),
-        "last_rating": int(row["last_rating"] or 0),
-        "updated_at": str(row["updated_at"] or ""),
-    }
+    return self._fsrs_card_from_row(row)
 
 
 def upsert_fsrs_card(

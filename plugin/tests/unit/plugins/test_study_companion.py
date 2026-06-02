@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import os
 import shutil
+import sqlite3
 import threading
 import time
 from pathlib import Path
@@ -71,6 +73,7 @@ from plugin.plugins.study_companion.study_ocr_pipeline import (
     StudyCaptureProfile,
     StudyOcrPipeline,
 )
+from plugin.plugins.study_companion._event_bus import StudyEvent
 from plugin.plugins.study_companion import service as study_service
 from plugin.plugins.study_companion import tesseract_support as study_tesseract_support
 from plugin.plugins.study_companion.screen_classifier import (
@@ -90,6 +93,7 @@ from plugin.sdk.plugin import Err, Ok
 class _Logger:
     def __init__(self) -> None:
         self.warnings: list[tuple[tuple[object, ...], dict[str, object]]] = []
+        self.exceptions: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
     def info(self, *args, **kwargs):
         return None
@@ -105,6 +109,7 @@ class _Logger:
         return None
 
     def exception(self, *args, **kwargs):
+        self.exceptions.append((args, kwargs))
         return None
 
 
@@ -598,6 +603,31 @@ def test_study_store_enables_wal_and_read_connection(tmp_path: Path) -> None:
         store.close()
 
 
+def test_study_store_uses_thread_local_read_connections(tmp_path: Path) -> None:
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+    store.open()
+    try:
+        main_conn = store._require_read_conn()
+        barrier = threading.Barrier(3)
+
+        def read_conn_ids() -> tuple[int, int]:
+            barrier.wait(timeout=1.0)
+            first = store._require_read_conn()
+            second = store._require_read_conn()
+            return id(first), id(second)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(read_conn_ids) for _ in range(2)]
+            barrier.wait(timeout=1.0)
+            thread_results = [future.result(timeout=1.0) for future in futures]
+
+        assert id(main_conn) not in {item[0] for item in thread_results}
+        assert all(first == second for first, second in thread_results)
+        assert len({item[0] for item in thread_results}) == 2
+    finally:
+        store.close()
+
+
 def test_study_store_append_interaction_trims_on_interval(tmp_path: Path) -> None:
     store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
     store.open()
@@ -623,6 +653,47 @@ def test_study_store_append_interaction_trims_on_interval(tmp_path: Path) -> Non
         remaining = store.list_interactions(limit=10)
         assert len(remaining) == 1
         assert remaining[0]["input_text"] == "trim"
+    finally:
+        store.close()
+
+
+def test_study_store_open_resets_interaction_trim_counter(tmp_path: Path) -> None:
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+    store.open()
+    store._interaction_count = 99
+    store.close()
+
+    store.open()
+    try:
+        assert store._interaction_count == 0
+    finally:
+        store.close()
+
+
+def test_study_store_batch_write_answer_data_logs_rollback_context(
+    tmp_path: Path,
+) -> None:
+    logger = _Logger()
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", logger)
+    store.open()
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            store.batch_write_answer_data(
+                session_id="rollback-session",
+                mode="teaching",
+                topic_id="missing-topic",
+                question={"question": "q"},
+                user_answer="a",
+                eval_result={"verdict": "correct"},
+                response_time_ms=None,
+                fsrs_card={"topic_id": "missing-topic", "state": "new"},
+                fsrs_rating=3,
+            )
+
+        assert logger.exceptions
+        assert "batch_write_answer_data failed" in str(logger.exceptions[-1][0][0])
+        assert "rollback-session" in str(logger.exceptions[-1][0])
+        assert "missing-topic" in str(logger.exceptions[-1][0])
     finally:
         store.close()
 
@@ -3652,6 +3723,39 @@ async def test_communication_disabled_skips_eventbus(
         }
     finally:
         await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_stops_event_bus_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en"},
+            "study_companion": {"communication": {"enabled": True}},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    assert plugin._event_bus is not None
+    bus = plugin._event_bus
+
+    task = bus.schedule_emit(
+        StudyEvent(
+            name="session_summarized",
+            payload={"duration_minutes": 1, "questions_attempted": 1},
+        )
+    )
+    assert task is not None
+
+    await plugin.shutdown()
+
+    assert bus._worker_task is None
 
 
 @pytest.mark.asyncio

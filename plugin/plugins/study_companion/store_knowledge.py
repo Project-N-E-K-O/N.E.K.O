@@ -178,6 +178,8 @@ def list_candidate_items(
     rows = (
         self._require_read_conn()
         .execute(
+            # `where` is assembled only from static clause templates above; all
+            # external values remain bound through `params`.
             f"""
             SELECT *
             FROM candidate_knowledge_items

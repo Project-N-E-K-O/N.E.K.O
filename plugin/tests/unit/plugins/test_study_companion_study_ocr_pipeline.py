@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import Future
 from types import SimpleNamespace
 from typing import Any
 
@@ -256,6 +257,46 @@ def test_ocr_pipeline_capture_lightweight_skips_worker_vision_snapshot() -> None
 
     assert snapshot.status == "ok"
     assert pipeline.skip_values == [True]
+
+
+def test_ocr_pipeline_reuses_executor_and_closes_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image = Image.new("RGB", (800, 600), "white")
+    created: list[_FakeExecutor] = []
+
+    class _FakeExecutor:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.shutdown_calls = 0
+            created.append(self)
+
+        def submit(self, fn, /, *args: Any, **kwargs: Any):  # noqa: ANN001
+            future: Future[Any] = Future()
+            try:
+                future.set_result(fn(*args, **kwargs))
+            except Exception as exc:
+                future.set_exception(exc)
+            return future
+
+        def shutdown(self, *, wait: bool = True) -> None:
+            self.shutdown_calls += 1
+
+    monkeypatch.setattr(pipeline_module, "ThreadPoolExecutor", _FakeExecutor)
+    pipeline = StudyOcrPipeline(
+        logger=_Logger(),
+        config=StudyConfig(
+            awareness=AwarenessConfig(classify_mode="ocr_text", image_max_bytes=80_000)
+        ),
+        ocr_backend=_Backend("Question: text"),
+        capture_backend=_Capture(image),
+    )
+
+    assert pipeline.capture_lightweight(target={"hwnd": 1, "title": "Quiz"}).status == "ok"
+    assert pipeline.capture_lightweight(target={"hwnd": 1, "title": "Quiz"}).status == "ok"
+    pipeline.close()
+
+    assert len(created) == 1
+    assert created[0].shutdown_calls == 1
 
 
 def test_ocr_pipeline_capture_lightweight_content_change_and_failure_paths() -> None:

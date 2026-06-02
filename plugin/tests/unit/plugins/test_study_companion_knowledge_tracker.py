@@ -22,7 +22,14 @@ pytestmark = pytest.mark.unit
 
 
 class _Logger:
+    def __init__(self) -> None:
+        self.exceptions: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
     def warning(self, *args, **kwargs):
+        return None
+
+    def exception(self, *args, **kwargs):
+        self.exceptions.append((args, kwargs))
         return None
 
 
@@ -163,6 +170,41 @@ def test_knowledge_tracker_on_answer_uses_batch_writer_for_known_topic(
         assert calls[0]["session_id"] == "batch-session"
         assert calls[0]["mastery_snapshot"]["topic_id"] == "quadratic_vertex_form"
         assert calls[0]["fsrs_card"]["topic_id"] == "quadratic_vertex_form"
+    finally:
+        store.close()
+
+
+def test_knowledge_tracker_falls_back_when_batch_writer_fails(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    logger = _Logger()
+    try:
+        tracker = KnowledgeTracker(store, logger=logger)
+
+        def batch_write_answer_data(**_kwargs):
+            raise sqlite3.OperationalError("database is locked")
+
+        store.batch_write_answer_data = batch_write_answer_data  # type: ignore[attr-defined, method-assign]
+
+        result = tracker.on_answer(
+            topic_id="quadratic_vertex_form",
+            question={
+                "question": "q",
+                "answer": "a",
+                "topic": "quadratic_vertex_form",
+                "difficulty": 3,
+            },
+            user_answer="a",
+            eval_result={"verdict": "correct", "score": 95, "error_type": "none"},
+            mode="teaching",
+            session_id="fallback-session",
+        )
+
+        assert result["topic_id"] == "quadratic_vertex_form"
+        assert store.list_qa_records_for_topic("quadratic_vertex_form", limit=1)
+        assert logger.exceptions
+        assert "batch answer write failed" in str(logger.exceptions[-1][0][0])
     finally:
         store.close()
 
@@ -567,6 +609,7 @@ def test_add_qa_record_trims_unknown_topic_rows(tmp_path: Path) -> None:
 def test_runtime_topic_answer_records_are_pruned(tmp_path: Path) -> None:
     store = _store(tmp_path)
     try:
+        store._supports_batch_answer = False
         original_add_qa_record = store.add_qa_record
 
         def capped_add_qa_record(**kwargs):

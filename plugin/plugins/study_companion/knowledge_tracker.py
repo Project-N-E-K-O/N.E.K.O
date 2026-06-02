@@ -246,10 +246,23 @@ class KnowledgeGraph:
         self._index_dirty = True
 
     def _ensure_index(self) -> None:
+        """Refresh the in-memory topic-name index from the store when needed."""
         if not self._index_dirty:
             return
         self._topic_name_index.clear()
-        for topic in self._store.list_topics(limit=1000):
+        index_limit = 1000
+        topics = self._store.list_topics(limit=index_limit)
+        if len(topics) >= index_limit and callable(
+            getattr(self._store, "count_topics", None)
+        ):
+            total = int(self._store.count_topics())
+            if total > index_limit:
+                _LOGGER.warning(
+                    "KnowledgeGraph topic index limited to %s of %s topics",
+                    index_limit,
+                    total,
+                )
+        for topic in topics:
             topic_id = str(topic.get("id") or "").strip()
             name = str(topic.get("name") or "").strip()
             if topic_id:
@@ -260,6 +273,13 @@ class KnowledgeGraph:
 
     def mark_dirty(self) -> None:
         self._index_dirty = True
+
+    def resolve_known_topic(self, topic: str) -> str:
+        value = str(topic or "").strip()
+        if not value:
+            return ""
+        self._ensure_index()
+        return self._topic_name_index.get(value, "")
 
     def get_ready_topics(self, mastered: set[str]) -> list[str]:
         ready: list[str] = []
@@ -399,6 +419,7 @@ class KnowledgeTracker:
         self.fsrs = FSRSBridge(retention_target=retention_target)
         self._logger = logger
         self._memory_deck_summary_provider: Callable[..., dict[str, Any]] | None = None
+        self._quality_warning_failures = 0
 
     def set_memory_deck_summary_provider(
         self, provider: Callable[..., dict[str, Any]] | None
@@ -432,6 +453,29 @@ class KnowledgeTracker:
                 response_time_ms=response_time_ms,
             )
 
+        answer_lock = self.store.answer_write_lock()
+        with answer_lock:
+            return self._on_answer_batch(
+                topic_id=topic_id,
+                question=question,
+                user_answer=user_answer,
+                eval_result=eval_result,
+                mode=mode,
+                session_id=session_id,
+                response_time_ms=response_time_ms,
+            )
+
+    def _on_answer_batch(
+        self,
+        *,
+        topic_id: str,
+        question: dict[str, Any],
+        user_answer: str,
+        eval_result: dict[str, Any],
+        mode: str,
+        session_id: str,
+        response_time_ms: int | None,
+    ) -> dict[str, Any]:
         (
             topic_id,
             topic_existed,
@@ -445,8 +489,9 @@ class KnowledgeTracker:
         difficulty = _difficulty_to_float(question_payload.get("difficulty"), 0.5)
         verdict = str(eval_result.get("verdict") or "").strip().lower()
         error_type = str(eval_result.get("error_type") or "").strip() or "unknown"
-        recent = self.store.list_qa_records_for_topic(topic_id, limit=10)
-        card_row = self.store.get_fsrs_card(topic_id) if topic_existed else None
+        answer_state = self.store.load_answer_write_state(topic_id, recent_limit=10)
+        recent = answer_state.get("recent") if topic_existed else []
+        card_row = answer_state.get("fsrs_card") if topic_existed else None
         recent_results = [dict(item.get("eval_result") or {}) for item in recent]
         mastery_result = {
             "verdict": verdict,
@@ -490,30 +535,45 @@ class KnowledgeTracker:
         card = card_row.get("card") if card_row else create_card(topic_id).to_dict()
         rating = self._rating_from_eval(eval_result)
         updated_card, schedule = rate_answer(card, rating)
-        batch_result = self.store.batch_write_answer_data(
-            session_id=session_id,
-            mode=mode,
-            topic_id=topic_id,
-            question=question_payload,
-            user_answer=user_answer,
-            eval_result=eval_result,
-            response_time_ms=response_time_ms,
-            mastery_snapshot=snapshot.to_dict(),
-            wrong_question_data=wrong_question_data,
-            fsrs_card=updated_card.to_dict(),
-            fsrs_rating=int(rating),
-            review_log_data={
-                "topic_id": topic_id,
-                "card_id": int((card_row or {}).get("id") or 0) or None,
-                "rating": int(rating),
-                "scheduled_days": int(round(updated_card.scheduled_days)),
-                "actual_days": int(round(updated_card.elapsed_days)),
-            },
-            error_candidate_data=error_candidates,
-            positive_candidate_data=positive_candidate,
-            topic_upsert_data=topic_upsert_data,
-            topic_candidate_data=topic_candidate_data,
-        )
+        try:
+            batch_result = self.store.batch_write_answer_data(
+                session_id=session_id,
+                mode=mode,
+                topic_id=topic_id,
+                question=question_payload,
+                user_answer=user_answer,
+                eval_result=eval_result,
+                response_time_ms=response_time_ms,
+                mastery_snapshot=snapshot.to_dict(),
+                wrong_question_data=wrong_question_data,
+                fsrs_card=updated_card.to_dict(),
+                fsrs_rating=int(rating),
+                review_log_data={
+                    "topic_id": topic_id,
+                    "card_id": int((card_row or {}).get("id") or 0) or None,
+                    "rating": int(rating),
+                    "scheduled_days": int(round(updated_card.scheduled_days)),
+                    "actual_days": int(round(updated_card.elapsed_days)),
+                },
+                error_candidate_data=error_candidates,
+                positive_candidate_data=positive_candidate,
+                topic_upsert_data=topic_upsert_data,
+                topic_candidate_data=topic_candidate_data,
+            )
+        except Exception as exc:
+            self._log_exception(
+                "study batch answer write failed; falling back to legacy path: {}",
+                exc,
+            )
+            return self._on_answer_legacy(
+                topic_id=topic_id,
+                question=question,
+                user_answer=user_answer,
+                eval_result=eval_result,
+                mode=mode,
+                session_id=session_id,
+                response_time_ms=response_time_ms,
+            )
         if topic_upsert_data:
             self.graph.mark_dirty()
         if verdict == "correct":
@@ -531,10 +591,9 @@ class KnowledgeTracker:
         }
 
     def _can_batch_answer_data(self) -> bool:
-        if not callable(getattr(self.store, "batch_write_answer_data", None)):
-            return False
-        add_qa_record = getattr(self.store, "add_qa_record", None)
-        return getattr(add_qa_record, "__self__", None) is self.store
+        return bool(getattr(self.store, "_supports_batch_answer", False)) and callable(
+            getattr(self.store, "batch_write_answer_data", None)
+        )
 
     def _on_answer_legacy(
         self,
@@ -660,16 +719,9 @@ class KnowledgeTracker:
     def _prepare_answer_topic_data(
         self, topic_id: str, *, question: dict[str, Any], eval_result: dict[str, Any]
     ) -> tuple[str, bool, dict[str, Any] | None, dict[str, Any] | None]:
-        raw_topic = str(
-            topic_id or question.get("topic") or eval_result.get("topic") or ""
-        ).strip()
-        resolved = self._resolve_topic_id(raw_topic)
-        topic_name = str(
-            question.get("topic") or eval_result.get("topic") or resolved or "general"
-        ).strip()
-        if not resolved:
-            resolved = _slug(topic_name)
-        existing = bool(self.store.get_topic(resolved))
+        resolved, topic_name, existing = self._resolve_and_identify_topic(
+            topic_id, question=question, eval_result=eval_result
+        )
         topic_data = None
         topic_candidate = None
         if not existing:
@@ -1107,16 +1159,9 @@ class KnowledgeTracker:
     def _ensure_topic(
         self, topic_id: str, *, question: dict[str, Any], eval_result: dict[str, Any]
     ) -> str:
-        raw_topic = str(
-            topic_id or question.get("topic") or eval_result.get("topic") or ""
-        ).strip()
-        resolved = self._resolve_topic_id(raw_topic)
-        topic_name = str(
-            question.get("topic") or eval_result.get("topic") or resolved or "general"
-        ).strip()
-        if not resolved:
-            resolved = _slug(topic_name)
-        topic_existed = bool(self.store.get_topic(resolved))
+        resolved, topic_name, topic_existed = self._resolve_and_identify_topic(
+            topic_id, question=question, eval_result=eval_result
+        )
         if not topic_existed:
             self.quality.upsert_candidate(
                 KnowledgeCandidateType.TOPIC.value,
@@ -1140,10 +1185,27 @@ class KnowledgeTracker:
             self.graph.mark_dirty()
         return resolved
 
+    def _resolve_and_identify_topic(
+        self, topic_id: str, *, question: dict[str, Any], eval_result: dict[str, Any]
+    ) -> tuple[str, str, bool]:
+        raw_topic = str(
+            topic_id or question.get("topic") or eval_result.get("topic") or ""
+        ).strip()
+        resolved = self._resolve_topic_id(raw_topic)
+        topic_name = str(
+            question.get("topic") or eval_result.get("topic") or resolved or "general"
+        ).strip()
+        if not resolved:
+            resolved = _slug(topic_name)
+        return resolved, topic_name, bool(self.store.get_topic(resolved))
+
     def _resolve_topic_id(self, topic: str) -> str:
         value = str(topic or "").strip()
         if not value:
             return ""
+        indexed = self.graph.resolve_known_topic(value)
+        if indexed:
+            return indexed
         if self.store.get_topic(value):
             return value
         existing = self.store.find_topic_by_name(value)
@@ -1230,12 +1292,34 @@ class KnowledgeTracker:
         return "general"
 
     def _log_quality_warning(self, message: str, *args: Any) -> None:
+        self._quality_warning_failures += 1
+        if self._quality_warning_failures >= 3:
+            error = getattr(self._logger, "error", None)
+            if callable(error):
+                try:
+                    error(message, *args)
+                    return
+                except Exception:
+                    pass
         warning = getattr(self._logger, "warning", None)
         if callable(warning):
             try:
                 warning(message, *args)
             except Exception:
                 pass
+
+    def _log_exception(self, message: str, *args: Any) -> None:
+        exception = getattr(self._logger, "exception", None)
+        if callable(exception):
+            try:
+                exception(message, *args)
+                return
+            except Exception:
+                pass
+        try:
+            _LOGGER.exception(message.format(*args))
+        except Exception:
+            _LOGGER.exception(message)
 
     @staticmethod
     def _rating_from_review(value: str | int) -> StudyFsrsRating:
