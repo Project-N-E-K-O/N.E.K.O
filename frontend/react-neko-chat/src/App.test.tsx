@@ -2621,6 +2621,85 @@ describe('App', () => {
     }
   });
 
+  it('keeps appending when a new bubble joins a speech-revealed turn with no further playback signal', async () => {
+    vi.useFakeTimers();
+    const firstBubbleText = '第一段由语音播放揭示完。';
+    const secondBubbleText = '第二段同 turn 追加，但这次没有任何播放状态或不可用事件到达。';
+    const makeBubble = (id: string, text: string, status: 'streaming' | 'sent', createdAt: number) =>
+      parseChatMessage({
+        id,
+        role: 'assistant',
+        author: 'Neko',
+        time: '10:01',
+        createdAt,
+        blocks: [{ type: 'text', text }],
+        status,
+      });
+
+    try {
+      const firstStreaming = makeBubble('assistant-compact-speech-turn-bubble-1', firstBubbleText, 'streaming', 2);
+      const { container, rerender } = render(
+        <App chatSurfaceMode="compact" composerHidden messages={[firstStreaming]} />,
+      );
+
+      // First bubble is revealed by real speech playback (not the fallback path).
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-speech-playback-state', {
+          detail: {
+            active: true,
+            audioContextTime: 0,
+            playbackStartAudioTime: 0,
+            playbackEndAudioTime: 1,
+            updatedAt: Date.now(),
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1500);
+      });
+      // Playback ends — the first bubble settles to its full text.
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-speech-playback-state', {
+          detail: {
+            active: false,
+            audioContextTime: 1,
+            playbackStartAudioTime: 0,
+            playbackEndAudioTime: 1,
+            updatedAt: Date.now(),
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100);
+      });
+      const revealedBefore = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      expect(revealedBefore.length).toBeGreaterThan(0);
+
+      // Same-turn bubble arrives, but NO further playback state and NO
+      // speech-unavailable event. The fallback safety net must still reveal the
+      // appended text instead of freezing on the seeded prefix.
+      const firstSent = makeBubble('assistant-compact-speech-turn-bubble-1', firstBubbleText, 'sent', 2);
+      const secondStreaming = makeBubble('assistant-compact-speech-turn-bubble-2', secondBubbleText, 'streaming', 5);
+      rerender(<App chatSurfaceMode="compact" composerHidden messages={[firstSent, secondStreaming]} />);
+
+      // First tick lets the fallback safety net engage (it arms a ~700ms timer,
+      // whose state update then schedules the reveal frame); the second drives
+      // the reveal forward into the appended bubble.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(800);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8000);
+      });
+
+      const revealedLater = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      expect(revealedLater.length).toBeGreaterThan(firstBubbleText.length);
+      expect(`${firstBubbleText} ${secondBubbleText}`.startsWith(revealedLater)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('reveals compact streaming text when assistant speech is unavailable', async () => {
     vi.useFakeTimers();
     const streamingText = '语音不可用时，紧凑态仍然应该用文本速度显示猫娘正在说的内容。';
