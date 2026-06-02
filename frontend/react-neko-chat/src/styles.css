@@ -2285,6 +2285,52 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   -webkit-app-region: no-drag;
 }
 
+.compact-export-history-anchor[data-compact-export-history-visibility="open"] .compact-export-history-message {
+  animation: compact-history-message-enter 0.24s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: var(--compact-history-enter-delay, 0ms);
+}
+
+.compact-export-history-anchor[data-compact-export-history-visibility="closing"] .compact-export-history-message {
+  animation: compact-history-message-exit 0.16s ease-in both;
+  animation-delay: var(--compact-history-exit-delay, 0ms);
+  pointer-events: none;
+}
+
+.compact-export-history-anchor[data-compact-export-history-visibility="closing"] .compact-export-history-controls,
+.compact-export-history-anchor[data-compact-export-history-visibility="closing"] .compact-export-preview-region {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+@keyframes compact-history-message-enter {
+  from {
+    opacity: 0;
+    filter: blur(1.5px);
+    transform: translateY(10px) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes compact-history-message-exit {
+  from {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0) scale(1);
+  }
+
+  to {
+    opacity: 0;
+    filter: blur(1.5px);
+    transform: translateY(-8px) scale(0.985);
+  }
+}
+
 .compact-export-history-message.is-user {
   justify-content: flex-end;
 }
@@ -2764,9 +2810,9 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 .compact-history-visibility-handle {
   position: fixed;
   left: calc(var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw)) + (var(--compact-history-handle-surface-width) / 2));
-  top: calc(var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) - 2px);
+  top: calc(var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) + 8px);
   bottom: auto;
-  transform: translateX(-50%);
+  transform: translate(-50%, -50%);
   z-index: 100002;
   pointer-events: auto;
   -webkit-app-region: no-drag;
@@ -4336,13 +4382,14 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   .hammer-cursor-overlay-visual.is-active,
   .message-row-user,
   .message-row-assistant,
+  .compact-export-history-message,
+  .compact-history-visibility-handle::before,
+  .compact-history-visibility-handle::after,
   .text-chunk-reveal,
   .composer-icon-popover,
   .composer-icon-button,
   .composer-galgame-slot,
-  .composer-galgame-option,
-  .compact-history-visibility-handle::before,
-  .compact-history-visibility-handle::after {
+  .composer-galgame-option {
     animation: none !important;
     animation-delay: 0ms !important;
     transition: none !important;

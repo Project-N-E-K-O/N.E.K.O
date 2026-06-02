@@ -580,9 +580,10 @@ def test_compact_history_controls_collapse_gives_height_back_to_history_scroll()
     assert "--compact-history-handle-line-width: clamp(38px, calc(var(--compact-history-handle-surface-width) * 0.102), 50px);" in history_handle_block
     assert ".compact-history-visibility-handle.is-open {" in history_handle_block
     assert "--compact-history-handle-line-width: 100%;" in history_handle_block
-    assert "top: calc(var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) - 2px);" in history_handle_block
+    assert "top: calc(var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) + 8px);" in history_handle_block
     assert "bottom: auto;" in history_handle_block
     assert "bottom: calc(100vh - var(--desktop-compact-surface-top" not in history_handle_block
+    assert "transform: translate(-50%, -50%);" in history_handle_block
     assert "z-index: 100002;" in history_handle_block
     assert "pointer-events: auto;" in history_handle_block
     assert "-webkit-app-region: no-drag;" in history_handle_block

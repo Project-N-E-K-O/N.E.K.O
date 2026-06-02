@@ -398,19 +398,31 @@ describe('App', () => {
     expect(container.querySelector('.compact-export-history-controls')).toHaveAttribute('data-compact-hit-region-id', 'history:controls');
     expect(exportButton).toHaveAttribute('aria-pressed', 'true');
 
-    fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
-    expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
-    expect(container.querySelector('[data-compact-hit-region-id^="history:"]')).toBeNull();
-    expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'false');
-    expect(exportButton).toHaveAttribute('aria-pressed', 'false');
-    expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('false');
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
+      expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'closing');
+      expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'false');
+      expect(exportButton).toHaveAttribute('aria-pressed', 'false');
+      expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('false');
 
-    fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
-    expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
-    expect(container.querySelector('.compact-export-history-controls')).toHaveAttribute('data-compact-hit-region-id', 'history:controls');
-    expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'true');
-    expect(exportButton).toHaveAttribute('aria-pressed', 'true');
-    expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(560);
+      });
+
+      expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+      expect(container.querySelector('[data-compact-hit-region-id^="history:"]')).toBeNull();
+
+      fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
+      expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
+      expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'open');
+      expect(container.querySelector('.compact-export-history-controls')).toHaveAttribute('data-compact-hit-region-id', 'history:controls');
+      expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'true');
+      expect(exportButton).toHaveAttribute('aria-pressed', 'true');
+      expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
+    } finally {
+      vi.useRealTimers();
+    }
 
     await clickCompactExportTool();
     expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
@@ -440,37 +452,48 @@ describe('App', () => {
     expect(container.querySelector('.compact-input-tool-item-export')).toHaveAttribute('aria-pressed', 'false');
   });
 
-  it('toggles compact history visibility as soon as the handle is pressed', () => {
+  it('toggles compact history visibility as soon as the handle is pressed', async () => {
     window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
+    vi.useFakeTimers();
 
-    const { container } = render(
-      <App chatSurfaceMode="compact" compactChatState="input" />,
-    );
+    try {
+      const { container } = render(
+        <App chatSurfaceMode="compact" compactChatState="input" />,
+      );
 
-    const handle = container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle');
-    expect(handle).not.toBeNull();
-    expect(handle).toHaveAttribute('aria-expanded', 'false');
-    expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+      const handle = container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle');
+      expect(handle).not.toBeNull();
+      expect(handle).toHaveAttribute('aria-expanded', 'false');
+      expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
 
-    fireEvent.pointerDown(handle!, { pointerType: 'mouse', button: 0 });
-    expect(handle).toHaveAttribute('aria-expanded', 'true');
-    expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
-    expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
-    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'input');
+      fireEvent.pointerDown(handle!, { pointerType: 'mouse', button: 0 });
+      expect(handle).toHaveAttribute('aria-expanded', 'true');
+      expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
+      expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
+      expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'input');
 
-    fireEvent.click(handle!);
-    expect(handle).toHaveAttribute('aria-expanded', 'true');
+      fireEvent.click(handle!);
+      expect(handle).toHaveAttribute('aria-expanded', 'true');
 
-    fireEvent.pointerDown(handle!, { pointerType: 'mouse', button: 0 });
-    expect(handle).toHaveAttribute('aria-expanded', 'false');
-    expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
-    expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('false');
+      fireEvent.pointerDown(handle!, { pointerType: 'mouse', button: 0 });
+      expect(handle).toHaveAttribute('aria-expanded', 'false');
+      expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'closing');
+      expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('false');
 
-    fireEvent.click(handle!);
-    expect(handle).toHaveAttribute('aria-expanded', 'false');
+      fireEvent.click(handle!);
+      expect(handle).toHaveAttribute('aria-expanded', 'false');
 
-    fireEvent.click(handle!);
-    expect(handle).toHaveAttribute('aria-expanded', 'true');
+      fireEvent.click(handle!);
+      expect(handle).toHaveAttribute('aria-expanded', 'true');
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(560);
+      });
+
+      expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'open');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('keeps compact export history message actions read-only', async () => {
@@ -576,6 +599,10 @@ describe('App', () => {
     expect(second?.style.getPropertyValue('--compact-history-bubble-max-ratio')).toMatch(/%$/);
     expect(second?.style.getPropertyValue('--compact-history-stagger-x')).toMatch(/px$/);
     expect(user?.style.getPropertyValue('--compact-history-stagger-x')).toMatch(/^-?\d+px$/);
+    expect(first?.style.getPropertyValue('--compact-history-enter-delay')).toBe('126ms');
+    expect(image?.style.getPropertyValue('--compact-history-enter-delay')).toBe('0ms');
+    expect(first?.style.getPropertyValue('--compact-history-exit-delay')).toBe('0ms');
+    expect(image?.style.getPropertyValue('--compact-history-exit-delay')).toBe('90ms');
     const stableOffset = second?.style.getPropertyValue('--compact-history-stagger-x');
     const stableWidth = second?.style.getPropertyValue('--compact-history-bubble-max-ratio');
     const stableRotate = second?.style.getPropertyValue('--compact-history-rotate');

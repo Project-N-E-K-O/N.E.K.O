@@ -54,6 +54,7 @@ type CompactExportHistoryPanelProps = {
   previewOpen: boolean;
   controlsOpen: boolean;
   choiceLayerAbove: boolean;
+  visibilityState?: 'open' | 'closing';
   failedStatusLabel: string;
   onAutoScrollToBottomChange: (enabled: boolean) => void;
   onToggleMessage: (messageId: string) => void;
@@ -1160,6 +1161,7 @@ export default function CompactExportHistoryPanel({
   previewOpen,
   controlsOpen,
   choiceLayerAbove,
+  visibilityState = 'open',
   failedStatusLabel,
   onAutoScrollToBottomChange,
   onToggleMessage,
@@ -2240,6 +2242,7 @@ export default function CompactExportHistoryPanel({
         data-compact-geometry-item="history"
         data-compact-geometry-hit-scope="children"
         data-compact-export-history-open="true"
+        data-compact-export-history-visibility={visibilityState}
         data-compact-export-preview-open={previewOpen ? 'true' : 'false'}
         data-compact-export-under-choice={choiceLayerAbove ? 'true' : 'false'}
         aria-label={i18n('chat.exportConversation', 'Export Conversation')}
@@ -2269,12 +2272,17 @@ export default function CompactExportHistoryPanel({
                     const failed = message.status === 'failed';
                     const streaming = message.status === 'streaming';
                     const tone = getCompactHistoryBubbleTone(message, index, messages[index - 1]);
+                    const motionStyle: CSSProperties & Record<string, string> = {
+                      '--compact-history-enter-delay': `${Math.min((messages.length - 1 - index) * 42, 420)}ms`,
+                      '--compact-history-exit-delay': `${Math.min(index * 30, 320)}ms`,
+                    };
                     return (
                       <article
                         key={message.id}
                         className={getCompactHistoryMessageClassName(message, selected, selectable, selectedCount > 0)}
                         style={{
                           ...tone.style,
+                          ...motionStyle,
                           ...(activeDrag?.messageId === message.id ? getCompactHistorySourceStyle(activeDrag) : null),
                         }}
                         role="listitem"
