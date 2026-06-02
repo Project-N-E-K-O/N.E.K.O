@@ -2558,6 +2558,57 @@ describe('App', () => {
     }
   });
 
+  it('keeps the compact caption moving forward when a new bubble joins the same turn instead of replaying it', async () => {
+    vi.useFakeTimers();
+    const firstBubbleText = '猫娘先说出来的第一段内容，紧凑输入条会逐字显示这一句。';
+    const secondBubbleText = '紧接着猫娘又补了第二段，字幕应该接着往后追加而不是从头重播。';
+    const makeBubble = (id: string, text: string, status: 'streaming' | 'sent', createdAt: number) =>
+      parseChatMessage({
+        id,
+        role: 'assistant',
+        author: 'Neko',
+        time: '10:01',
+        createdAt,
+        blocks: [{ type: 'text', text }],
+        status,
+      });
+
+    try {
+      const firstStreaming = makeBubble('assistant-compact-turn-bubble-1', firstBubbleText, 'streaming', 2);
+      const { container, rerender } = render(
+        <App chatSurfaceMode="compact" composerHidden messages={[firstStreaming]} />,
+      );
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1400);
+      });
+
+      const revealedBefore = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      expect(revealedBefore.length).toBeGreaterThan(0);
+      expect(firstBubbleText.startsWith(revealedBefore)).toBe(true);
+
+      // Same turn (createdAt within the merge window): the merged preview re-keys
+      // to the new bubble's id, but the caption must keep the already-revealed
+      // prefix and continue, not rewind to empty and replay the whole turn.
+      const firstSent = makeBubble('assistant-compact-turn-bubble-1', firstBubbleText, 'sent', 2);
+      const secondStreaming = makeBubble('assistant-compact-turn-bubble-2', secondBubbleText, 'streaming', 5);
+      rerender(<App chatSurfaceMode="compact" composerHidden messages={[firstSent, secondStreaming]} />);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50);
+      });
+
+      const revealedAfter = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      // Did not replay from zero, and what stays on screen is a forward
+      // continuation of what was already revealed.
+      expect(revealedAfter.length).toBeGreaterThanOrEqual(revealedBefore.length);
+      expect(revealedAfter.startsWith(revealedBefore)).toBe(true);
+      expect(`${firstBubbleText} ${secondBubbleText}`.startsWith(revealedAfter)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('reveals compact streaming text when assistant speech is unavailable', async () => {
     vi.useFakeTimers();
     const streamingText = '语音不可用时，紧凑态仍然应该用文本速度显示猫娘正在说的内容。';

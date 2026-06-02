@@ -278,6 +278,12 @@ function createCompactToolWheelChargeState(): CompactToolWheelChargeState {
 
 type CompactMessagePreview = {
   messageId: string;
+  // Stable identity of the whole merged turn: the id of the earliest message
+  // folded into this preview. Unchanged as more bubbles stream into the same
+  // turn (messageId re-keys to the latest bubble, this does not), and changes
+  // when a genuinely new turn begins. Used to tell an appended bubble from a
+  // new turn without relying on text-prefix matching.
+  turnStartId: string;
   author: string;
   text: string;
   fullText: string;
@@ -420,6 +426,9 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
     let turnAuthor = '';
     const latestStreamingMessage = messages[latestStreamingAssistantIndex];
     const turnMessageId = String(latestStreamingMessage?.id || 'assistant-streaming');
+    // Walks backward to the earliest merged bubble, so the last assignment in
+    // the loop is the turn's anchor id.
+    let turnStartId = turnMessageId;
     let previousIncludedCreatedAt = typeof latestStreamingMessage?.createdAt === 'number'
       && Number.isFinite(latestStreamingMessage.createdAt)
       ? latestStreamingMessage.createdAt
@@ -447,11 +456,13 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
       if (!text) continue;
       turnTexts.unshift(text);
       turnAuthor = message.author || turnAuthor;
+      turnStartId = String(message.id || turnMessageId);
     }
     if (turnTexts.length > 0) {
       const turnText = normalizeCompactPreviewText(turnTexts.join(' '));
       return {
         messageId: turnMessageId || 'assistant-streaming',
+        turnStartId,
         author: turnAuthor,
         text: turnText,
         fullText: turnText,
@@ -471,6 +482,7 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
     const isStreamingAssistantMessage = message.role === 'assistant' && message.status === 'streaming';
     const preview = {
       messageId: message.id,
+      turnStartId: String(message.id),
       author: message.author,
       text: isStreamingAssistantMessage ? text : truncateCompactPreview(text, COMPACT_PREVIEW_MAX_LENGTH),
       fullText: text,
@@ -1188,11 +1200,12 @@ export default function App({
   const compactSpeechLastFrameTimeRef = useRef(0);
   const compactSpeechPreviewIdRef = useRef('');
   const compactSpeechPreviewTextRef = useRef('');
-  // Full turn text the speech reveal is currently walking through. Updated only
-  // when the preview re-keys (messageId change), so it holds the *previous*
-  // turn's text at the moment a new bubble arrives — used to tell an appended
-  // bubble (continue revealing) from a brand-new turn (rewind to the start).
-  const compactSpeechRevealBaseTextRef = useRef('');
+  // Identity of the turn the speech reveal is currently walking through (the
+  // preview's turnStartId). Updated when the preview re-keys (messageId change),
+  // so it holds the *previous* turn's anchor at the moment a new bubble arrives
+  // — used to tell an appended bubble (same turn → keep revealing) from a
+  // brand-new turn (rewind to the start) without text-prefix guessing.
+  const compactSpeechRevealTurnIdRef = useRef('');
   const compactSpeechFallbackRevealRef = useRef(false);
   const compactSpeechFallbackTimerRef = useRef<number | null>(null);
   const isCompactSurfaceRef = useRef(false);
@@ -1774,20 +1787,20 @@ export default function App({
     }
     // Decouple the input-bar caption from per-bubble identity. The merged-turn
     // preview is re-keyed to the latest streaming bubble's id, so every new
-    // bubble changes messageId even though its text only *appends* to the prior
-    // bubbles'. When the new text still extends what we were revealing, keep the
-    // revealed length so the caption continues appending instead of replaying
-    // the whole turn; only a genuinely new turn (no longer a continuation)
-    // rewinds the reveal to the start. Mirrors the seedText logic the
-    // non-streaming typewriter path already uses.
-    const previousRevealBaseText = compactSpeechRevealBaseTextRef.current;
-    const nextRevealBaseText = compactPreviewIsStreaming ? compactPreviewText : '';
-    const continuesPreviousTurn = previousRevealBaseText.length > 0
-      && nextRevealBaseText.startsWith(previousRevealBaseText);
+    // bubble changes messageId even though it belongs to the same turn. While
+    // we're still inside that turn (same turnStartId), keep the revealed length
+    // so the caption continues appending instead of replaying the whole turn;
+    // only a genuinely new turn rewinds the reveal to the start. Keyed on the
+    // turn anchor rather than a text prefix, so two turns whose text happens to
+    // share a prefix can't be mistaken for a continuation.
+    const previousRevealTurnId = compactSpeechRevealTurnIdRef.current;
+    const nextRevealTurnId = compactPreviewIsStreaming ? (compactMessagePreview?.turnStartId || '') : '';
+    const continuesPreviousTurn = nextRevealTurnId.length > 0
+      && nextRevealTurnId === previousRevealTurnId;
     const seedVisibleLength = continuesPreviousTurn
-      ? Math.min(compactSpeechVisibleLengthRef.current, nextRevealBaseText.length)
+      ? Math.min(compactSpeechVisibleLengthRef.current, compactPreviewText.length)
       : 0;
-    compactSpeechRevealBaseTextRef.current = nextRevealBaseText;
+    compactSpeechRevealTurnIdRef.current = nextRevealTurnId;
 
     compactSpeechVisibleLengthRef.current = seedVisibleLength;
     compactSpeechPlaybackStartedRef.current = false;
