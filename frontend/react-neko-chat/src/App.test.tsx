@@ -350,7 +350,7 @@ describe('App', () => {
     }
   });
 
-  it('uses the export tool for history controls and the persistent handle for history visibility', async () => {
+  it('defaults compact history open and preserves history controls through visibility toggles', async () => {
     const onExportConversationClick = vi.fn();
     const message = parseChatMessage({
       id: 'assistant-history-1',
@@ -371,8 +371,6 @@ describe('App', () => {
       />,
     );
 
-    const exportButton = await clickCompactExportTool();
-
     expect(onExportConversationClick).not.toHaveBeenCalled();
     expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
     expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-geometry-hit-scope', 'children');
@@ -381,12 +379,29 @@ describe('App', () => {
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('data-compact-hit-region', 'true');
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('data-compact-hit-region-id', 'history:message:assistant-history-1');
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('data-compact-hit-region-kind', 'message');
-    expect(container.querySelector('.compact-export-history-controls')).toHaveAttribute('data-compact-hit-region-id', 'history:controls');
+    expect(container.querySelector('.compact-export-history-controls')).toBeNull();
     expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('data-compact-geometry-item', 'historyHandle');
     expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'true');
     expect(container.querySelector('.compact-export-history-message')).toHaveAttribute('role', 'listitem');
     expect(container.querySelector('.compact-export-history-message')).not.toHaveAttribute('aria-pressed');
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('role', 'button');
+    expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBeNull();
+
+    const exportButton = await clickCompactExportTool();
+    expect(container.querySelector('.compact-export-history-controls')).toHaveAttribute('data-compact-hit-region-id', 'history:controls');
+    expect(exportButton).toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
+    expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+    expect(container.querySelector('[data-compact-hit-region-id^="history:"]')).toBeNull();
+    expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'false');
+    expect(exportButton).toHaveAttribute('aria-pressed', 'false');
+    expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('false');
+
+    fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
+    expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
+    expect(container.querySelector('.compact-export-history-controls')).toHaveAttribute('data-compact-hit-region-id', 'history:controls');
+    expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'true');
     expect(exportButton).toHaveAttribute('aria-pressed', 'true');
     expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
 
@@ -394,13 +409,6 @@ describe('App', () => {
     expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
     expect(container.querySelector('.compact-export-history-controls')).toBeNull();
     expect(exportButton).toHaveAttribute('aria-pressed', 'false');
-    expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
-
-    fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
-    expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
-    expect(container.querySelector('[data-compact-hit-region-id^="history:"]')).toBeNull();
-    expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'false');
-    expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('false');
   });
 
   it('restores compact inline history from persisted open state after remount', () => {
@@ -637,11 +645,18 @@ describe('App', () => {
         <App chatSurfaceMode="compact" compactChatState="input" messages={[assistantMessage, userMessage]} />,
       );
 
-      await clickCompactExportTool();
       const messages = container.querySelectorAll<HTMLElement>('.compact-export-history-message');
       const bubbles = container.querySelectorAll<HTMLElement>('.compact-export-history-bubble');
       fireEvent.click(bubbles[1]);
 
+      expect(messages[1]).not.toHaveClass('is-selected');
+      await clickCompactExportTool();
+      fireEvent.click(bubbles[1]);
+      expect(messages[1]).toHaveClass('is-selected');
+      await clickCompactExportTool();
+      expect(messages[1]).not.toHaveClass('is-selected');
+      await clickCompactExportTool();
+      fireEvent.click(bubbles[1]);
       expect(messages[1]).toHaveClass('is-selected');
       fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-export-history-export')!);
 
@@ -1767,7 +1782,7 @@ describe('App', () => {
 
     expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
     expect(container.querySelector('[data-compact-hit-region-id^="history:"]')).toBeNull();
-    expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
+    expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBeNull();
 
     rerender(<App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />);
 
@@ -4465,6 +4480,7 @@ describe('App', () => {
     const onCompactChatStateChange = vi.fn();
     const outsideButton = document.createElement('button');
     document.body.appendChild(outsideButton);
+    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
 
     try {
     render(

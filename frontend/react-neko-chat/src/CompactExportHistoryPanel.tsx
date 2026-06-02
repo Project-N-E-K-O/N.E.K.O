@@ -1847,7 +1847,12 @@ export default function CompactExportHistoryPanel({
   function finishPointer(event: ReactPointerEvent<HTMLElement>, message: ChatMessage, selectable: boolean) {
     const intent = pointerIntentRef.current;
     if (!intent || intent.id !== event.pointerId || intent.messageId !== message.id) return;
-    if ((intent.phase === 'pending' || intent.phase === 'click') && selectable && !isSelectionIgnoredTarget(event.target, event.currentTarget)) {
+    if (
+      (intent.phase === 'pending' || intent.phase === 'click')
+      && selectable
+      && controlsOpen
+      && !isSelectionIgnoredTarget(event.target, event.currentTarget)
+    ) {
       clearPointerIntentAfterDrag(intent);
       event.preventDefault();
       suppressNextClickForMessage(message.id);
@@ -1872,11 +1877,13 @@ export default function CompactExportHistoryPanel({
       suppressClickMessageIdRef.current = null;
       return;
     }
+    if (!controlsOpen) return;
     onToggleMessage(message.id);
   }
 
   function handleKeyDown(event: ReactKeyboardEvent<HTMLElement>, message: ChatMessage, selectable: boolean) {
     if (!selectable) return;
+    if (!controlsOpen) return;
     if (event.key !== 'Enter' && event.key !== ' ') return;
     event.preventDefault();
     onToggleMessage(message.id);

@@ -310,11 +310,12 @@ function isDesktopCompactSurfaceLayoutActive(): boolean {
 }
 
 function readPersistedCompactExportHistoryOpen(): boolean {
-  if (typeof window === 'undefined') return false;
+  if (typeof window === 'undefined') return true;
   try {
-    return window.localStorage?.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY) === 'true';
+    const persisted = window.localStorage?.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
+    return persisted === null ? true : persisted === 'true';
   } catch {
-    return false;
+    return true;
   }
 }
 
@@ -1320,10 +1321,11 @@ export default function App({
   const resolvedScreenshotAriaLabel = screenshotButtonAriaLabel || screenshotButtonLabel;
   const resolvedTranslateAriaLabel = translateButtonAriaLabel || translateButtonLabel;
   const resolvedGalgameAriaLabel = galgameToggleButtonAriaLabel || galgameToggleButtonLabel;
+  const compactExportControlsVisible = compactExportHistoryOpen && compactExportControlsOpen;
   const compactExportHistoryToggleLabel = compactExportHistoryOpen
     ? i18n('chat.compactHistoryToggleClose', 'Hide history')
     : i18n('chat.compactHistoryToggleOpen', 'Show history');
-  const compactExportControlsButtonLabel = compactExportControlsOpen
+  const compactExportControlsButtonLabel = compactExportControlsVisible
     ? i18n('chat.compactHistoryControlsHide', 'Hide history actions')
     : i18n('chat.compactHistoryControlsShow', 'Show history actions');
   // ChoicePrompt and galgame options share the same composer-anchored slot.
@@ -1426,7 +1428,6 @@ export default function App({
     setCompactExportHistoryOpen(false);
     persistCompactExportHistoryOpen(false);
     setCompactExportPreviewOpen(false);
-    setCompactExportControlsOpen(false);
   }, []);
   const handleCompactHistoryVisibilityToggle = useCallback(() => {
     if (compactExportHistoryOpen) {
@@ -1446,7 +1447,12 @@ export default function App({
       setCompactExportControlsOpen(true);
       return;
     }
-    setCompactExportControlsOpen((open) => !open);
+    setCompactExportControlsOpen((open) => {
+      if (open) {
+        setCompactExportSelectedIds(prev => (prev.size === 0 ? prev : new Set()));
+      }
+      return !open;
+    });
   }, [compactExportHistoryOpen, compactExportPreviewOpen, openCompactExportHistory]);
   const handleCompactExportToggleMessage = useCallback((messageId: string) => {
     if (!compactExportSelectableIds.has(messageId)) return;
@@ -4262,16 +4268,16 @@ export default function App({
         <img src="/static/icons/jukebox_icon.png" alt="" aria-hidden="true" />
       </button>
       <button
-        className={`composer-tool-btn compact-input-tool-item compact-input-tool-item-export${compactExportControlsOpen ? ' is-active' : ''}`}
+        className={`composer-tool-btn compact-input-tool-item compact-input-tool-item-export${compactExportControlsVisible ? ' is-active' : ''}`}
         type="button"
         aria-label={compactExportControlsButtonLabel}
-        aria-pressed={compactExportControlsOpen}
+        aria-pressed={compactExportControlsVisible}
         title={compactExportControlsButtonLabel}
         disabled={compactInputToolFanActionsDisabled}
         tabIndex={getCompactToolWheelTabIndex(5)}
         aria-hidden={getCompactToolWheelAriaHidden(5)}
         data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(5)}
-        data-compact-tool-active={compactExportControlsOpen ? 'true' : 'false'}
+        data-compact-tool-active={compactExportControlsVisible ? 'true' : 'false'}
         onClick={compactFanRunAction(handleCompactExportControlsToggle)}
       >
         <svg viewBox="0 0 1024 1024" width="24" height="24" fill="currentColor" aria-hidden="true">
@@ -4593,7 +4599,7 @@ export default function App({
       data-chat-surface-mode={chatSurfaceMode}
       data-compact-chat-state={effectiveCompactChatState}
       data-compact-export-history-open={isCompactSurface && compactExportHistoryOpen ? 'true' : 'false'}
-      data-compact-export-controls-open={isCompactSurface && compactExportControlsOpen ? 'true' : 'false'}
+      data-compact-export-controls-open={isCompactSurface && compactExportControlsVisible ? 'true' : 'false'}
       data-compact-export-preview-open={isCompactSurface && compactExportPreviewOpen ? 'true' : 'false'}
       data-compact-export-selected-count={isCompactSurface ? compactExportSelectedCount : 0}
       data-compact-export-auto-scroll={isCompactSurface && compactExportAutoScrollToBottom ? 'true' : 'false'}
