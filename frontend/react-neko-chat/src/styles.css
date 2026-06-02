@@ -1964,6 +1964,57 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   z-index: 2;
 }
 
+/* Input-box edge bands: the rim defers interaction to release — a quick tap
+   focuses the input, a long-press drags the whole surface. Left/right are wide
+   grips (40px); top/bottom are thin (5px) since the box is only 54px tall. The
+   container has no pointer surface, so the uncovered center keeps native
+   press-to-type + caret placement. Sits above the textarea (z-index 2) but
+   below the arrow toggle (z-index 5), which keeps its own gesture. */
+.compact-chat-surface-frame > .compact-input-edge-bands {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  border-radius: inherit;
+}
+
+.compact-input-edge-band {
+  position: absolute;
+  pointer-events: auto;
+  background: transparent;
+  cursor: text;
+  touch-action: none;
+  -webkit-app-region: no-drag;
+}
+
+.compact-input-edge-band-left {
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 40px;
+}
+
+.compact-input-edge-band-right {
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 40px;
+}
+
+.compact-input-edge-band-top {
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 5px;
+}
+
+.compact-input-edge-band-bottom {
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 5px;
+}
+
 .compact-chat-capsule-button {
   display: flex;
   align-items: center;
@@ -3218,6 +3269,9 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   z-index: 5;
   isolation: isolate;
   -webkit-app-region: no-drag;
+  /* Long-press grabs the surface for dragging; keep touch gestures from being
+     reinterpreted as a pan/scroll (which would pointercancel the hold). */
+  touch-action: none;
   transform: none;
 }
 
@@ -3275,6 +3329,11 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   --compact-tool-button-size: 38px;
   --compact-tool-fan-hit-outset: 52px;
   --compact-tool-wheel-hover-radius: 116px;
+  /* Orbit radius = how far the tool icons sit from the arrow center (visual
+     only). Halved from the original 91.92px to pull the wheel in tighter. The
+     drag-rotate sensitivity scalar in App.tsx is intentionally left at 91.92 so
+     rotate-by-drag feel is unchanged. */
+  --compact-tool-wheel-orbit-radius: 45.96px;
   --compact-tool-fan-focus-x: var(--compact-tool-wheel-hover-radius);
   --compact-tool-fan-focus-y: var(--compact-tool-wheel-hover-radius);
   --compact-tool-wheel-center-x: var(--compact-tool-wheel-hover-radius);
@@ -3496,7 +3555,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] {
   opacity: 1;
-  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(107.35deg) translateX(91.92px) rotate(-107.35deg) scale(0.86);
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(107.35deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(-107.35deg) scale(0.86);
   pointer-events: auto;
 }
 
@@ -3516,25 +3575,25 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-1"] {
   opacity: 1;
-  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(75.82deg) translateX(91.92px) rotate(-75.82deg) scale(0.98);
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(75.82deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(-75.82deg) scale(0.98);
   pointer-events: auto;
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="0"] {
   opacity: 1;
-  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(45deg) translateX(91.92px) rotate(-45deg) scale(1.04);
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(45deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(-45deg) scale(1.04);
   pointer-events: auto;
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="1"] {
   opacity: 1;
-  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(14.18deg) translateX(91.92px) rotate(-14.18deg) scale(0.98);
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(14.18deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(-14.18deg) scale(0.98);
   pointer-events: auto;
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] {
   opacity: 1;
-  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(-17.35deg) translateX(91.92px) rotate(17.35deg) scale(0.86);
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(-17.35deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(17.35deg) scale(0.86);
   pointer-events: auto;
 }
 
@@ -3560,15 +3619,15 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden"] {
-  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(45deg) translateX(18.38px) rotate(-45deg) scale(0.56);
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(45deg) translateX(calc(var(--compact-tool-wheel-orbit-radius) * 0.2)) rotate(-45deg) scale(0.56);
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden-forward"] {
-  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(-48.51deg) translateX(91.92px) rotate(48.51deg) scale(0.56);
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(-48.51deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(48.51deg) scale(0.56);
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden-backward"] {
-  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(138.51deg) translateX(91.92px) rotate(-138.51deg) scale(0.56);
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(138.51deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(-138.51deg) scale(0.56);
 }
 
 .compact-input-tool-fan .composer-tool-btn img {
