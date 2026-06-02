@@ -2749,6 +2749,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   justify-content: center;
   flex: 0 0 auto;
   --compact-history-handle-surface-width: var(--compact-surface-resize-width, var(--desktop-compact-surface-width, var(--compact-surface-width, 430px)));
+  --compact-history-handle-line-width: clamp(38px, calc(var(--compact-history-handle-surface-width) * 0.102), 50px);
   width: clamp(96px, calc(var(--compact-history-handle-surface-width) * 0.24), 132px);
   height: clamp(22px, calc(var(--compact-history-handle-surface-width) * 0.052), 28px);
   padding: 0;
@@ -2771,26 +2772,37 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   -webkit-app-region: no-drag;
 }
 
+.compact-history-visibility-handle.is-open {
+  --compact-history-handle-line-width: 100%;
+}
+
 .compact-history-visibility-handle::before,
 .compact-history-visibility-handle::after {
   content: "";
   position: absolute;
   top: 50%;
-  height: 2px;
   border-radius: 999px;
-  transform: translateY(-50%);
 }
 
 .compact-history-visibility-handle::before {
-  left: 0;
-  right: calc(50% + 10px);
-  background: linear-gradient(90deg, transparent, rgba(0, 184, 255, 0.72));
+  left: 50%;
+  width: var(--compact-history-handle-line-width);
+  height: 3px;
+  background: linear-gradient(
+    90deg,
+    rgba(0, 184, 255, 0) 0%,
+    rgba(0, 184, 255, 0.72) 18%,
+    rgba(0, 196, 255, 0.88) 50%,
+    rgba(0, 184, 255, 0.72) 82%,
+    rgba(0, 184, 255, 0) 100%
+  );
+  clip-path: polygon(0 50%, 18% 26%, 36% 0, 64% 0, 82% 26%, 100% 50%, 82% 74%, 64% 100%, 36% 100%, 18% 74%);
+  transform: translate(-50%, -50%);
+  transition: width 0.16s ease, background 0.16s ease;
 }
 
 .compact-history-visibility-handle::after {
-  left: calc(50% + 10px);
-  right: 0;
-  background: linear-gradient(90deg, rgba(0, 184, 255, 0.72), transparent);
+  display: none;
 }
 
 .compact-history-visibility-handle:hover {
@@ -2799,19 +2811,11 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 .compact-history-visibility-handle-triangle {
-  position: relative;
-  z-index: 1;
-  width: 0;
-  height: 0;
-  border-left: 5px solid transparent;
-  border-right: 5px solid transparent;
-  border-top: 7px solid currentColor;
-  transform: translateY(1px);
-  transition: transform 0.16s ease;
+  display: none;
 }
 
 .compact-history-visibility-handle.is-open .compact-history-visibility-handle-triangle {
-  transform: translateY(-1px) rotate(180deg);
+  display: none;
 }
 
 .compact-export-history-count {
@@ -4192,11 +4196,18 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 [data-theme="dark"] .compact-history-visibility-handle::before {
-  background: linear-gradient(90deg, transparent, rgba(0, 184, 255, 0.72));
+  background: linear-gradient(
+    90deg,
+    rgba(0, 184, 255, 0) 0%,
+    rgba(0, 184, 255, 0.72) 18%,
+    rgba(0, 196, 255, 0.88) 50%,
+    rgba(0, 184, 255, 0.72) 82%,
+    rgba(0, 184, 255, 0) 100%
+  );
 }
 
 [data-theme="dark"] .compact-history-visibility-handle::after {
-  background: linear-gradient(90deg, rgba(0, 184, 255, 0.72), transparent);
+  display: none;
 }
 
 [data-theme="dark"] .compact-export-history-empty {
