@@ -1142,45 +1142,11 @@ body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"
     pointer-events: auto;
 }
 
+/* compact 态不再把最小化按钮渲染成模型旁的悬浮球：呼吸灯外发光会被 Electron 窗口形状裁切，
+   且球漂在角色旁观感很怪。最小化的宿主管线（按钮 DOM、toggleMinimized、折叠动画）保留，
+   compact 态下的最小化入口呈现方式后续单独设计。 */
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #reactChatWindowMinimizeButton {
-    position: fixed;
-    left: var(--compact-minimize-ball-left, 16px);
-    top: var(--compact-minimize-ball-top, calc(100vh - 84px));
-    right: auto;
-}
-
-body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #reactChatWindowMinimizeButton {
-    width: 50px;
-    height: 50px;
-    display: inline-flex !important;
-    visibility: visible !important;
-    opacity: 1 !important;
-    border-radius: 50%;
-    background-color: rgba(68, 183, 254, 0.15);
-    background-image: url('/static/icons/expand_icon_off_ball.png');
-    background-position: center;
-    background-repeat: no-repeat;
-    background-size: cover;
-    box-shadow: 0 0 8px rgba(68, 183, 254, 0.6);
-    animation: breathingGlow 2s ease-in-out infinite;
-    will-change: box-shadow;
-    transform: none;
-    pointer-events: auto;
-    z-index: 100001;
-}
-
-body.electron-chat-window.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #reactChatWindowMinimizeButton {
-    display: none !important;
-    pointer-events: none !important;
-}
-
-body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #reactChatWindowMinimizeButton:hover {
-    background-color: rgba(68, 183, 254, 0.2);
-    box-shadow: 0 0 12px rgba(68, 183, 254, 0.72);
-}
-
-body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #reactChatWindowMinimizeButton img {
-    opacity: 0;
+    display: none;
 }
 
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .compact-chat-surface-shell {

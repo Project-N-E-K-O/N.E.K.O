@@ -253,7 +253,6 @@
     var mobileExpandClickGuard = null;
     var mobileExpandVisualGuardTimer = 0;
     var compactMinimizeBallFrame = 0;
-    var compactMinimizeBallSnapshot = '';
     var compactSurfaceAnchorSnapshot = '';
     var compactDesktopSurfaceAnchorSnapshot = '';
     var compactInteractionGeometrySnapshot = '';
@@ -1283,9 +1282,9 @@
         });
         var surfaceRects = surfaceItems.map(function (item) { return item.nativeRect; });
         var baseSurfaceRects = baseSurfaceItems.map(function (item) { return item.nativeRect; });
-        var ballRect = isCompactHomeMinimizeBallEnabled() && !isElectronCompactExternalBallEnabled()
-            ? normalizeCompactDomRect(getCompactMinimizeBallTarget())
-            : null;
+        // compact 态不再渲染模型旁的悬浮最小化球，故不再上报其 hit/native 区域，
+        // 避免 Electron 桌面壳为一个不可见的球保留点击区域（externalBall 仍走桌面外部球）。
+        var ballRect = null;
         return {
             mode: getCurrentChatSurfaceMode(),
             compactChatState: getCurrentCompactChatState(),
@@ -1422,47 +1421,12 @@
         syncCompactInteractionGeometry();
     }
 
-    function clearCompactMinimizeBallAnchor() {
-        var shell = getShell();
-        if (!shell) return;
-        shell.style.removeProperty('--compact-minimize-ball-left');
-        shell.style.removeProperty('--compact-minimize-ball-top');
-        compactMinimizeBallSnapshot = '';
-        syncCompactInteractionGeometry();
-    }
-
-    function syncCompactMinimizeBallAnchor() {
-        var shell = getShell();
-        if (!shell) return;
-        if (!isCompactHomeMinimizeBallEnabled()) {
-            clearCompactMinimizeBallAnchor();
-            return;
-        }
-
-        var placement = getCompactMinimizeBallTarget();
-        if (!placement) {
-            clearCompactMinimizeBallAnchor();
-            return;
-        }
-
-        var snapshot = Math.round(placement.left) + ':' + Math.round(placement.top);
-        if (snapshot === compactMinimizeBallSnapshot) {
-            return;
-        }
-
-        compactMinimizeBallSnapshot = snapshot;
-        shell.style.setProperty('--compact-minimize-ball-left', Math.round(placement.left) + 'px');
-        shell.style.setProperty('--compact-minimize-ball-top', Math.round(placement.top) + 'px');
-        syncCompactInteractionGeometry();
-    }
-
     function stopCompactMinimizeBallTracking() {
         if (compactMinimizeBallFrame) {
             window.cancelAnimationFrame(compactMinimizeBallFrame);
             compactMinimizeBallFrame = 0;
         }
         compactSurfacePendingModelOpen = false;
-        clearCompactMinimizeBallAnchor();
         clearCompactSurfaceAnchor();
     }
 
@@ -1482,13 +1446,11 @@
                 return;
             }
             syncCompactSurfaceAnchor();
-            syncCompactMinimizeBallAnchor();
             syncCompactInteractionGeometry();
             compactMinimizeBallFrame = window.requestAnimationFrame(loop);
         };
 
         syncCompactSurfaceAnchor();
-        syncCompactMinimizeBallAnchor();
         syncCompactInteractionGeometry();
         compactMinimizeBallFrame = window.requestAnimationFrame(loop);
     }
