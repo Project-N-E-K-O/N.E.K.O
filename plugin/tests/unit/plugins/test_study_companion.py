@@ -1268,11 +1268,13 @@ def test_study_companion_hosted_panel_supports_image_paste_contract() -> None:
     assert "if (!answer.trim() && !answerImage)" in source
     assert "if (answerImage) evalArgs.vision_image_base64 = answerImage;" in source
     assert "const textAutoFilledFromOcrRef = useRef(false);" in source
+    assert "const textImageRef = useRef('');" in source
     assert "textAutoFilledFromOcrRef.current = true;" in source
-    assert "if (textImage || prev.trim() || !data.last_ocr_text)" in source
+    assert "textImageRef.current = value;" in source
+    assert "if (textImageRef.current || prev.trim() || !data.last_ocr_text)" in source
     assert "setPastePending: setPastePendingState," in source
     assert "onImageAccepted: clearAutoFilledTextOnImagePaste," in source
-    assert "setTextImage('');" in source
+    assert "setTextImageValue('');" in source
     assert "setAnswerImage('');" in source
     assert 'data-busy={interactionBusy ? "true" : "false"}' in source
     assert "disabled={interactionBusy}" in source

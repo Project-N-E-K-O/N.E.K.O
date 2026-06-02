@@ -393,6 +393,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const pasteControllerRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(false);
   const textAutoFilledFromOcrRef = useRef(false);
+  const textImageRef = useRef('');
   const pastePendingRef = useRef(false);
   const currentMode = String(status.active_mode || status.mode || 'companion');
   const interactionBusy = busy || pastePending;
@@ -509,6 +510,11 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     setText(value);
   }
 
+  function setTextImageValue(value: string) {
+    textImageRef.current = value;
+    setTextImage(value);
+  }
+
   function clearAutoFilledTextOnImagePaste() {
     if (!textAutoFilledFromOcrRef.current) {
       return;
@@ -528,7 +534,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       setReply(data.last_reply || '');
     }
     setText((prev) => {
-      if (textImage || prev.trim() || !data.last_ocr_text) {
+      if (textImageRef.current || prev.trim() || !data.last_ocr_text) {
         return prev;
       }
       textAutoFilledFromOcrRef.current = true;
@@ -610,7 +616,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     } finally {
       if (!controller.signal.aborted) {
         if (shouldClearTextImage) {
-          setTextImage('');
+          setTextImageValue('');
           setTextPasteError('');
         }
         setBusy(false);
@@ -650,7 +656,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     } finally {
       if (!controller.signal.aborted) {
         if (shouldClearTextImage) {
-          setTextImage('');
+          setTextImageValue('');
           setTextPasteError('');
         }
         setBusy(false);
@@ -758,7 +764,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const evaluation = status.last_answer_evaluation;
   const handleTextPaste = createPasteHandler(
     {
-      setImage: setTextImage,
+      setImage: setTextImageValue,
       setTextValue: setManualText,
       setPasteError: setTextPasteError,
       setPastePending: setPastePendingState,
@@ -840,7 +846,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
             aria-label="Remove pasted image"
             disabled={interactionBusy}
             onClick={() => {
-              setTextImage('');
+              setTextImageValue('');
               setTextPasteError('');
             }}
           >
