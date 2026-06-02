@@ -1754,39 +1754,6 @@ svg {
   animation: composerGalgameLoadingPulse 1.6s ease-in-out infinite;
 }
 
-body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-compact-choice-placement="below"]
-  .composer-galgame-slot.is-open:not(.composer-choice-slot)
-  .composer-galgame-options:not(.is-loading)
-  .composer-galgame-option {
-  animation: composerGalgameOptionEnterDown 0.22s cubic-bezier(0.2, 0.78, 0.34, 1) both;
-}
-
-body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-compact-choice-placement="below"]
-  .composer-galgame-slot.is-open:not(.composer-choice-slot)
-  .composer-galgame-options:not(.is-loading)
-  .composer-galgame-option:nth-child(2) {
-  animation-delay: 42ms;
-}
-
-body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-compact-choice-placement="below"]
-  .composer-galgame-slot.is-open:not(.composer-choice-slot)
-  .composer-galgame-options:not(.is-loading)
-  .composer-galgame-option:nth-child(3) {
-  animation-delay: 84ms;
-}
-
-@keyframes composerGalgameOptionEnterDown {
-  from {
-    opacity: 0;
-    transform: translateY(-6px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
 @keyframes composerGalgameLoadingPulse {
   0%, 100% { opacity: 0.55; }
   50% { opacity: 0.85; }
@@ -2372,16 +2339,6 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   -webkit-app-region: no-drag;
 }
 
-.compact-export-history-anchor[data-compact-export-history-visibility="open"] .compact-export-history-bubble {
-  animation: compact-history-message-enter 0.26s cubic-bezier(0.2, 0.78, 0.34, 1) both;
-  animation-delay: var(--compact-history-enter-delay, 0ms);
-}
-
-.compact-export-history-anchor[data-compact-export-history-visibility="closing"] .compact-export-history-bubble {
-  animation: compact-history-message-exit 0.2s ease-in both;
-  animation-delay: var(--compact-history-exit-delay, 0ms);
-}
-
 .compact-export-history-anchor[data-compact-export-history-visibility="closing"] .compact-export-history-message {
   pointer-events: none;
 }
@@ -2479,6 +2436,16 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   transform-origin: var(--compact-history-drag-origin-x, 50%) var(--compact-history-drag-origin-y, 50%);
   transform: translateX(var(--compact-history-stagger-x, 0px)) rotate(var(--compact-history-rotate, 0deg));
   transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+}
+
+.compact-export-history-anchor[data-compact-export-history-visibility="open"] .compact-export-history-bubble {
+  animation: compact-history-message-enter 0.26s cubic-bezier(0.2, 0.78, 0.34, 1) both;
+  animation-delay: var(--compact-history-enter-delay, 0ms);
+}
+
+.compact-export-history-anchor[data-compact-export-history-visibility="closing"] .compact-export-history-bubble {
+  animation: compact-history-message-exit 0.2s ease-in both;
+  animation-delay: var(--compact-history-exit-delay, 0ms);
 }
 
 .compact-export-history-message.is-disabled .compact-export-history-bubble {
@@ -4469,6 +4436,11 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 
 @media (prefers-reduced-motion: reduce) {
+  .compact-export-history-anchor[data-compact-export-history-visibility="closing"] {
+    opacity: 0 !important;
+    visibility: hidden !important;
+  }
+
   .avatar-cursor-overlay-stage,
   .hammer-cursor-overlay-stage,
   .fist-floating-drop,

@@ -1,6 +1,10 @@
 import { useState } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import App from './App';
+import {
+  computeCompactHistoryEnterDelay,
+  computeCompactHistoryExitDelay,
+} from './CompactExportHistoryPanel';
 import MessageList from './MessageList';
 import { parseChatMessage, type CompactChatState } from './message-schema';
 
@@ -599,10 +603,15 @@ describe('App', () => {
     expect(second?.style.getPropertyValue('--compact-history-bubble-max-ratio')).toMatch(/%$/);
     expect(second?.style.getPropertyValue('--compact-history-stagger-x')).toMatch(/px$/);
     expect(user?.style.getPropertyValue('--compact-history-stagger-x')).toMatch(/^-?\d+px$/);
-    expect(first?.style.getPropertyValue('--compact-history-enter-delay')).toBe('126ms');
-    expect(image?.style.getPropertyValue('--compact-history-enter-delay')).toBe('0ms');
-    expect(first?.style.getPropertyValue('--compact-history-exit-delay')).toBe('0ms');
-    expect(image?.style.getPropertyValue('--compact-history-exit-delay')).toBe('90ms');
+    const initialHistoryMessageCount = 4;
+    expect(first?.style.getPropertyValue('--compact-history-enter-delay')).toBe(
+      computeCompactHistoryEnterDelay(0, initialHistoryMessageCount),
+    );
+    expect(image?.style.getPropertyValue('--compact-history-enter-delay')).toBe(
+      computeCompactHistoryEnterDelay(3, initialHistoryMessageCount),
+    );
+    expect(first?.style.getPropertyValue('--compact-history-exit-delay')).toBe(computeCompactHistoryExitDelay(0));
+    expect(image?.style.getPropertyValue('--compact-history-exit-delay')).toBe(computeCompactHistoryExitDelay(3));
     const stableFirstEnterDelay = first?.style.getPropertyValue('--compact-history-enter-delay');
     const stableImageEnterDelay = image?.style.getPropertyValue('--compact-history-enter-delay');
     const stableOffset = second?.style.getPropertyValue('--compact-history-stagger-x');
@@ -651,7 +660,9 @@ describe('App', () => {
     )?.style.getPropertyValue('--compact-history-enter-delay')).toBe(stableImageEnterDelay);
     expect(container.querySelector<HTMLElement>(
       '[data-compact-export-history-message-id="assistant-history-casual-new"]',
-    )?.style.getPropertyValue('--compact-history-enter-delay')).toBe('0ms');
+    )?.style.getPropertyValue('--compact-history-enter-delay')).toBe(
+      computeCompactHistoryEnterDelay(4, 5),
+    );
   });
 
   it('opens compact inline preview with disabled final actions when nothing is selected', async () => {

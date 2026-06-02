@@ -23,6 +23,21 @@ const COMPACT_EXPORT_TOUCH_SCROLL_ANGLE_RATIO = 1.35;
 const COMPACT_HISTORY_SCROLL_SETTLE_FRAMES = 36;
 const COMPACT_HISTORY_RETURN_ANIMATION_MS = 260;
 const COMPACT_HISTORY_SEND_ANIMATION_MS = 340;
+export const COMPACT_HISTORY_ENTER_DELAY_STEP_MS = 42;
+export const COMPACT_HISTORY_ENTER_DELAY_MAX_MS = 420;
+export const COMPACT_HISTORY_EXIT_DELAY_STEP_MS = 30;
+export const COMPACT_HISTORY_EXIT_DELAY_MAX_MS = 320;
+
+export function computeCompactHistoryEnterDelay(index: number, totalMessages: number): string {
+  return `${Math.min(
+    Math.max(totalMessages - 1 - index, 0) * COMPACT_HISTORY_ENTER_DELAY_STEP_MS,
+    COMPACT_HISTORY_ENTER_DELAY_MAX_MS,
+  )}ms`;
+}
+
+export function computeCompactHistoryExitDelay(index: number): string {
+  return `${Math.min(index * COMPACT_HISTORY_EXIT_DELAY_STEP_MS, COMPACT_HISTORY_EXIT_DELAY_MAX_MS)}ms`;
+}
 
 export type CompactExportFormat = 'markdown' | 'image';
 export type CompactExportImageStyle = 'neko' | 'original' | 'poster' | 'lyrics';
@@ -1224,7 +1239,7 @@ export default function CompactExportHistoryPanel({
     enterDelayByMessageIdRef.current = new Map(
       messages.map((message, index) => [
         message.id,
-        `${Math.min((messages.length - 1 - index) * 42, 420)}ms`,
+        computeCompactHistoryEnterDelay(index, messages.length),
       ]),
     );
   }
@@ -1235,7 +1250,7 @@ export default function CompactExportHistoryPanel({
     if (existingDelay !== undefined) return existingDelay;
     const delay = visibilityState === 'open'
       ? '0ms'
-      : `${Math.min((messages.length - 1 - index) * 42, 420)}ms`;
+      : computeCompactHistoryEnterDelay(index, messages.length);
     enterDelayByMessageIdRef.current.set(message.id, delay);
     return delay;
   }
@@ -2309,7 +2324,7 @@ export default function CompactExportHistoryPanel({
                     const tone = getCompactHistoryBubbleTone(message, index, messages[index - 1]);
                     const motionStyle: CSSProperties & Record<string, string> = {
                       '--compact-history-enter-delay': resolveCompactHistoryEnterDelay(message, index),
-                      '--compact-history-exit-delay': `${Math.min(index * 30, 320)}ms`,
+                      '--compact-history-exit-delay': computeCompactHistoryExitDelay(index),
                     };
                     return (
                       <article

@@ -623,6 +623,20 @@ def test_compact_history_layout_contract_avoids_jitter_feedback():
     assert "max-height: inherit;" in panel_block
 
 
+def test_compact_history_reduced_motion_closing_hides_immediately():
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+
+    reduced_motion_block = styles.rsplit("@media (prefers-reduced-motion: reduce)", 1)[1]
+    closing_block = css_block(
+        reduced_motion_block,
+        '.compact-export-history-anchor[data-compact-export-history-visibility="closing"] {',
+        ".avatar-cursor-overlay-stage",
+    )
+
+    assert "opacity: 0 !important;" in closing_block
+    assert "visibility: hidden !important;" in closing_block
+
+
 def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regions():
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
     panel_source = COMPACT_EXPORT_HISTORY_PANEL_PATH.read_text(encoding="utf-8")
