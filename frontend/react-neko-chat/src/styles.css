@@ -1964,6 +1964,57 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   z-index: 2;
 }
 
+/* Input-box edge bands: the rim defers interaction to release — a quick tap
+   focuses the input, a long-press drags the whole surface. Left/right are wide
+   grips (40px); top/bottom are thin (5px) since the box is only 54px tall. The
+   container has no pointer surface, so the uncovered center keeps native
+   press-to-type + caret placement. Sits above the textarea (z-index 2) but
+   below the arrow toggle (z-index 5), which keeps its own gesture. */
+.compact-chat-surface-frame > .compact-input-edge-bands {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  border-radius: inherit;
+}
+
+.compact-input-edge-band {
+  position: absolute;
+  pointer-events: auto;
+  background: transparent;
+  cursor: text;
+  touch-action: none;
+  -webkit-app-region: no-drag;
+}
+
+.compact-input-edge-band-left {
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 40px;
+}
+
+.compact-input-edge-band-right {
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 40px;
+}
+
+.compact-input-edge-band-top {
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 5px;
+}
+
+.compact-input-edge-band-bottom {
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 5px;
+}
+
 .compact-chat-capsule-button {
   display: flex;
   align-items: center;
@@ -2127,7 +2178,7 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   position: fixed;
   --compact-export-surface-width: var(--compact-surface-resize-width, var(--desktop-compact-surface-width, var(--compact-surface-width, 430px)));
   left: calc(var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw)) + (var(--compact-export-surface-width) / 2));
-  bottom: calc(100vh - var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) + 12px);
+  bottom: calc(100vh - var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) + 34px);
   /* Geometry-critical: derive collapse compensation from control metrics; do not animate layout properties here. */
   --compact-export-controls-padding-y: clamp(4px, calc(var(--compact-export-surface-width) * 0.0116), 6px);
   --compact-export-controls-border-width: 1px;
@@ -2167,9 +2218,7 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 }
 
 .compact-export-history-anchor.controls-collapsed {
-  --compact-export-controls-collapse-delta: calc(
-    var(--compact-export-controls-expanded-block-size) - var(--compact-export-controls-collapsed-block-size)
-  );
+  --compact-export-controls-collapse-delta: var(--compact-export-controls-expanded-block-size);
 }
 
 body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
@@ -2738,16 +2787,6 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
     box-shadow 0.16s ease;
 }
 
-.compact-export-history-controls.is-collapsed {
-  width: var(--compact-export-controls-collapsed-width);
-  padding: 0;
-  border-color: transparent;
-  background: transparent;
-  box-shadow: none;
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-}
-
 .compact-export-history-controls-content {
   display: flex;
   align-items: center;
@@ -2755,80 +2794,80 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   min-width: 0;
 }
 
-.compact-export-history-controls-content[hidden] {
-  display: none;
-}
-
-.compact-export-history-controls-toggle {
+.compact-history-visibility-handle {
   position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex: 0 0 auto;
-  width: 22px;
-  height: 22px;
+  --compact-history-handle-surface-width: var(--compact-surface-resize-width, var(--desktop-compact-surface-width, var(--compact-surface-width, 430px)));
+  --compact-history-handle-line-width: clamp(38px, calc(var(--compact-history-handle-surface-width) * 0.102), 50px);
+  width: clamp(96px, calc(var(--compact-history-handle-surface-width) * 0.24), 132px);
+  height: clamp(22px, calc(var(--compact-history-handle-surface-width) * 0.052), 28px);
   padding: 0;
   border: 0;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.62);
-  color: #2f6f9f;
+  background: transparent;
+  color: rgba(0, 196, 255, 0.88);
   cursor: pointer;
   transition: background 0.14s ease, color 0.14s ease, transform 0.14s ease;
 }
 
-.compact-export-history-controls.is-collapsed .compact-export-history-controls-toggle {
-  width: var(--compact-export-controls-collapsed-width);
-  height: var(--compact-export-controls-collapsed-toggle-height);
-  background: transparent;
-  color: #4f8fbd;
+.compact-history-visibility-handle {
+  position: fixed;
+  left: calc(var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw)) + (var(--compact-history-handle-surface-width) / 2));
+  top: calc(var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) - 2px);
+  bottom: auto;
+  transform: translateX(-50%);
+  z-index: 100002;
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
 }
 
-.compact-export-history-controls.is-collapsed .compact-export-history-controls-toggle::before,
-.compact-export-history-controls.is-collapsed .compact-export-history-controls-toggle::after {
+.compact-history-visibility-handle.is-open {
+  --compact-history-handle-line-width: 100%;
+}
+
+.compact-history-visibility-handle::before,
+.compact-history-visibility-handle::after {
   content: "";
   position: absolute;
   top: 50%;
-  height: 1px;
   border-radius: 999px;
-  transform: translateY(-50%);
 }
 
-.compact-export-history-controls.is-collapsed .compact-export-history-controls-toggle::before {
-  left: 0;
-  right: calc(50% + 8px);
-  background: linear-gradient(90deg, transparent, rgba(67, 145, 190, 0.46));
+.compact-history-visibility-handle::before {
+  left: 50%;
+  width: var(--compact-history-handle-line-width);
+  height: 3px;
+  background: linear-gradient(
+    90deg,
+    rgba(0, 184, 255, 0) 0%,
+    rgba(0, 184, 255, 0.72) 18%,
+    rgba(0, 196, 255, 0.88) 50%,
+    rgba(0, 184, 255, 0.72) 82%,
+    rgba(0, 184, 255, 0) 100%
+  );
+  clip-path: polygon(0 50%, 18% 26%, 36% 0, 64% 0, 82% 26%, 100% 50%, 82% 74%, 64% 100%, 36% 100%, 18% 74%);
+  transform: translate(-50%, -50%);
+  transition: width 0.16s ease, background 0.16s ease;
 }
 
-.compact-export-history-controls.is-collapsed .compact-export-history-controls-toggle::after {
-  left: calc(50% + 8px);
-  right: 0;
-  background: linear-gradient(90deg, rgba(67, 145, 190, 0.46), transparent);
+.compact-history-visibility-handle::after {
+  display: none;
 }
 
-.compact-export-history-controls-toggle:hover {
-  background: rgba(220, 242, 255, 0.94);
-  color: #1f83bd;
-}
-
-.compact-export-history-controls.is-collapsed .compact-export-history-controls-toggle:hover {
+.compact-history-visibility-handle:hover {
   background: transparent;
-  color: #1f83bd;
+  color: rgba(0, 210, 255, 0.96);
 }
 
-.compact-export-history-controls-triangle {
-  position: relative;
-  z-index: 1;
-  width: 0;
-  height: 0;
-  border-left: 4px solid transparent;
-  border-right: 4px solid transparent;
-  border-top: 6px solid currentColor;
-  transform: translateY(1px);
-  transition: transform 0.16s ease;
+.compact-history-visibility-handle-triangle {
+  display: none;
 }
 
-.compact-export-history-controls.is-collapsed .compact-export-history-controls-triangle {
-  transform: translateY(-1px) rotate(180deg);
+.compact-history-visibility-handle.is-open .compact-history-visibility-handle-triangle {
+  display: none;
 }
 
 .compact-export-history-count {
@@ -3219,6 +3258,9 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   z-index: 5;
   isolation: isolate;
   -webkit-app-region: no-drag;
+  /* Long-press grabs the surface for dragging; keep touch gestures from being
+     reinterpreted as a pan/scroll (which would pointercancel the hold). */
+  touch-action: none;
   transform: none;
 }
 
@@ -3276,6 +3318,11 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   --compact-tool-button-size: 38px;
   --compact-tool-fan-hit-outset: 52px;
   --compact-tool-wheel-hover-radius: 116px;
+  /* Orbit radius = how far the tool icons sit from the arrow center (visual
+     only). Halved from the original 91.92px to pull the wheel in tighter. The
+     drag-rotate sensitivity scalar in App.tsx is intentionally left at 91.92 so
+     rotate-by-drag feel is unchanged. */
+  --compact-tool-wheel-orbit-radius: 45.96px;
   --compact-tool-fan-focus-x: var(--compact-tool-wheel-hover-radius);
   --compact-tool-fan-focus-y: var(--compact-tool-wheel-hover-radius);
   --compact-tool-wheel-center-x: var(--compact-tool-wheel-hover-radius);
@@ -3497,7 +3544,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] {
   opacity: 1;
-  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(107.35deg) translateX(91.92px) rotate(-107.35deg) scale(0.86);
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(107.35deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(-107.35deg) scale(0.86);
   pointer-events: auto;
 }
 
@@ -3517,25 +3564,25 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="-1"] {
   opacity: 1;
-  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(75.82deg) translateX(91.92px) rotate(-75.82deg) scale(0.98);
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(75.82deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(-75.82deg) scale(0.98);
   pointer-events: auto;
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="0"] {
   opacity: 1;
-  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(45deg) translateX(91.92px) rotate(-45deg) scale(1.04);
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(45deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(-45deg) scale(1.04);
   pointer-events: auto;
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="1"] {
   opacity: 1;
-  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(14.18deg) translateX(91.92px) rotate(-14.18deg) scale(0.98);
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(14.18deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(-14.18deg) scale(0.98);
   pointer-events: auto;
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] {
   opacity: 1;
-  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(-17.35deg) translateX(91.92px) rotate(17.35deg) scale(0.86);
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(-17.35deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(17.35deg) scale(0.86);
   pointer-events: auto;
 }
 
@@ -3561,15 +3608,15 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden"] {
-  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(45deg) translateX(18.38px) rotate(-45deg) scale(0.56);
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(45deg) translateX(calc(var(--compact-tool-wheel-orbit-radius) * 0.2)) rotate(-45deg) scale(0.56);
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden-forward"] {
-  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(-48.51deg) translateX(91.92px) rotate(48.51deg) scale(0.56);
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(-48.51deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(48.51deg) scale(0.56);
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] .compact-input-tool-item[data-compact-tool-wheel-slot="hidden-backward"] {
-  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(138.51deg) translateX(91.92px) rotate(-138.51deg) scale(0.56);
+  transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(138.51deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(-138.51deg) scale(0.56);
 }
 
 .compact-input-tool-fan .composer-tool-btn img {
@@ -4198,23 +4245,29 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   color: #cfe5ff;
 }
 
-[data-theme="dark"] .compact-export-history-control,
-[data-theme="dark"] .compact-export-history-controls-toggle {
+[data-theme="dark"] .compact-export-history-control {
   background: rgba(26, 48, 70, 0.82);
   color: #bfe2ff;
 }
 
-[data-theme="dark"] .compact-export-history-controls.is-collapsed .compact-export-history-controls-toggle {
+[data-theme="dark"] .compact-history-visibility-handle {
   background: transparent;
-  color: #a6d8ff;
+  color: rgba(0, 196, 255, 0.88);
 }
 
-[data-theme="dark"] .compact-export-history-controls.is-collapsed .compact-export-history-controls-toggle::before {
-  background: linear-gradient(90deg, transparent, rgba(132, 205, 255, 0.42));
+[data-theme="dark"] .compact-history-visibility-handle::before {
+  background: linear-gradient(
+    90deg,
+    rgba(0, 184, 255, 0) 0%,
+    rgba(0, 184, 255, 0.72) 18%,
+    rgba(0, 196, 255, 0.88) 50%,
+    rgba(0, 184, 255, 0.72) 82%,
+    rgba(0, 184, 255, 0) 100%
+  );
 }
 
-[data-theme="dark"] .compact-export-history-controls.is-collapsed .compact-export-history-controls-toggle::after {
-  background: linear-gradient(90deg, rgba(132, 205, 255, 0.42), transparent);
+[data-theme="dark"] .compact-history-visibility-handle::after {
+  display: none;
 }
 
 [data-theme="dark"] .compact-export-history-empty {
@@ -4263,13 +4316,12 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   color: rgba(210, 225, 244, 0.68);
 }
 
-[data-theme="dark"] .compact-export-history-control:hover:not(:disabled),
-[data-theme="dark"] .compact-export-history-controls-toggle:hover {
+[data-theme="dark"] .compact-export-history-control:hover:not(:disabled) {
   background: rgba(40, 77, 108, 0.94);
   color: #e0f2ff;
 }
 
-[data-theme="dark"] .compact-export-history-controls.is-collapsed .compact-export-history-controls-toggle:hover {
+[data-theme="dark"] .compact-history-visibility-handle:hover {
   background: transparent;
   color: #e0f2ff;
 }

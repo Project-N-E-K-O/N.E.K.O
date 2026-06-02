@@ -104,6 +104,11 @@ const COMPACT_INPUT_TOOL_WHEEL_CHARGE_MAX_STEPS = COMPACT_INPUT_TOOL_WHEEL_CHARG
 const COMPACT_INPUT_TOOL_WHEEL_CHARGE_RELEASE_STEP_MS = 36;
 const COMPACT_INPUT_TOOL_WHEEL_CENTER_X = 116;
 const COMPACT_INPUT_TOOL_WHEEL_CENTER_Y = 116;
+// Drag-to-rotate sensitivity scalar (arc = radius * angleDelta), NOT a layout
+// value. Kept at 91.92 so the rotate-by-drag feel is unchanged even though the
+// visual orbit radius (--compact-tool-wheel-orbit-radius in styles.css) was
+// halved — the angle itself is measured from real geometry, this only scales
+// how much angular travel counts as one step.
 const COMPACT_INPUT_TOOL_WHEEL_ORBIT_RADIUS = 91.92;
 const COMPACT_INPUT_TOOL_WHEEL_HOVER_RADIUS = 116;
 const COMPACT_INPUT_TOOL_WHEEL_ANGLE_MIN_RADIUS = 16;
@@ -111,6 +116,13 @@ const COMPACT_INPUT_TOOL_TOGGLE_HOVER_OUTSET = 14;
 const COMPACT_INPUT_TOOL_FAN_ORIGIN_CLOSE_SIZE = 48;
 const COMPACT_INPUT_TOOL_FAN_INTERACTIVE_DELAY_MS = 220;
 const COMPACT_INPUT_TOOL_FAN_TRANSIENT_CLOSE_DELAY_MS = 360;
+// Long-press to grab and drag the whole compact surface (the OS window-move
+// runs in the desktop preload; see neko:compact-surface-drag-request). Hold this
+// long without moving more than the tolerance. Shared by the dropdown-arrow
+// toggle and the input-box edge bands; a quick tap on either does its own thing
+// (toggle opens the tool wheel; an edge band focuses the input) on release.
+const COMPACT_INPUT_SURFACE_LONG_PRESS_MS = 320;
+const COMPACT_INPUT_SURFACE_LONG_PRESS_MOVE_TOLERANCE = 10;
 const COMPACT_INPUT_TOOL_FAN_OUTSIDE_CLOSE_DELAY_MS = 650;
 const COMPACT_SURFACE_RESIZE_MIN_WIDTH = 430;
 const COMPACT_SURFACE_RESIZE_MAX_WIDTH = 720;
@@ -222,6 +234,16 @@ type CompactToolWheelChargeState = {
   chargeSteps: number;
 };
 
+type CompactToolTogglePressState = {
+  pointerId: number;
+  startClientX: number;
+  startClientY: number;
+  startScreenX: number;
+  startScreenY: number;
+  longPressFired: boolean;
+  canceledTap: boolean;
+};
+
 type CompactToolWheelDragPoint = {
   x: number;
   y: number;
@@ -311,11 +333,12 @@ function isDesktopCompactSurfaceLayoutActive(): boolean {
 }
 
 function readPersistedCompactExportHistoryOpen(): boolean {
-  if (typeof window === 'undefined') return false;
+  if (typeof window === 'undefined') return true;
   try {
-    return window.localStorage?.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY) === 'true';
+    const persisted = window.localStorage?.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
+    return persisted === null ? true : persisted === 'true';
   } catch {
-    return false;
+    return true;
   }
 }
 
@@ -613,6 +636,7 @@ const compactCursorZoneSelector = [
   '.compact-input-tool-fan',
   '.compact-input-tool-toggle',
   '.compact-export-history-anchor',
+  '.compact-history-visibility-handle',
   '.send-button-circle',
   '.window-topbar-actions',
   '.topbar-action-btn',
@@ -1182,6 +1206,10 @@ export default function App({
   const compactInputToolWheelSuppressClickRef = useRef(false);
   const compactInputToolWheelScrollDeltaRef = useRef(0);
   const compactInputToolTogglePointerHandledRef = useRef(false);
+  const compactInputToolTogglePressRef = useRef<CompactToolTogglePressState | null>(null);
+  const compactInputToolToggleLongPressTimerRef = useRef<number | null>(null);
+  const compactInputEdgePressRef = useRef<CompactToolTogglePressState | null>(null);
+  const compactInputEdgeLongPressTimerRef = useRef<number | null>(null);
   const compactInputToolFanPositionSyncRef = useRef<(() => void) | null>(null);
   const compactInputToolFanCloseTimerRef = useRef<number | null>(null);
   const compactInputToolFanInteractiveTimerRef = useRef<number | null>(null);
@@ -1247,10 +1275,12 @@ export default function App({
   const [compactInputToolWheelChargeReleaseActive, setCompactInputToolWheelChargeReleaseActive] = useState(false);
   const [compactSurfaceResizeWidth, setCompactSurfaceResizeWidth] = useState<number | null>(null);
   const [compactExportHistoryOpen, setCompactExportHistoryOpen] = useState(readPersistedCompactExportHistoryOpen);
+  const [compactExportControlsOpen, setCompactExportControlsOpen] = useState(false);
   const [compactExportPreviewOpen, setCompactExportPreviewOpen] = useState(false);
   const [compactExportSelectedIds, setCompactExportSelectedIds] = useState<Set<string>>(() => new Set());
   const [compactExportAutoScrollToBottom, setCompactExportAutoScrollToBottom] = useState(true);
   const compactSurfaceResizeStateRef = useRef<CompactSurfaceResizeState | null>(null);
+  const compactHistoryVisibilitySuppressClickRef = useRef(false);
   const submittingRef = useRef(false);
   const lastRollbackKeyRef = useRef('');
   const lastToolCursorResetKeyRef = useRef('');
@@ -1375,7 +1405,13 @@ export default function App({
   const resolvedScreenshotAriaLabel = screenshotButtonAriaLabel || screenshotButtonLabel;
   const resolvedTranslateAriaLabel = translateButtonAriaLabel || translateButtonLabel;
   const resolvedGalgameAriaLabel = galgameToggleButtonAriaLabel || galgameToggleButtonLabel;
-  const compactExportHistoryButtonLabel = i18n('chat.compactExportHistory', 'History');
+  const compactExportControlsVisible = compactExportHistoryOpen && compactExportControlsOpen;
+  const compactExportHistoryToggleLabel = compactExportHistoryOpen
+    ? i18n('chat.compactHistoryToggleClose', 'Hide history')
+    : i18n('chat.compactHistoryToggleOpen', 'Show history');
+  const compactExportControlsButtonLabel = compactExportControlsVisible
+    ? i18n('chat.compactHistoryControlsHide', 'Hide history actions')
+    : i18n('chat.compactHistoryControlsShow', 'Show history actions');
   // ChoicePrompt and galgame options share the same composer-anchored slot.
   // The transient invite should win when both are present so we do not stack
   // two button groups in the same compact surface.
@@ -1467,18 +1503,60 @@ export default function App({
     [compactExportSelectableMessages],
   );
   const compactExportSelectableCount = compactExportSelectableMessages.length;
-  const handleCompactExportConversationClick = useCallback(() => {
-    setCompactExportHistoryOpen((open) => {
-      const nextOpen = !open;
-      persistCompactExportHistoryOpen(nextOpen);
-      if (nextOpen) {
-        setCompactExportAutoScrollToBottom(true);
-      } else {
-        setCompactExportPreviewOpen(false);
-      }
-      return nextOpen;
-    });
+  const openCompactExportHistory = useCallback(() => {
+    setCompactExportHistoryOpen(true);
+    persistCompactExportHistoryOpen(true);
+    setCompactExportAutoScrollToBottom(true);
   }, []);
+  const closeCompactExportHistory = useCallback(() => {
+    setCompactExportHistoryOpen(false);
+    persistCompactExportHistoryOpen(false);
+    setCompactExportPreviewOpen(false);
+  }, []);
+  const handleCompactHistoryVisibilityToggle = useCallback(() => {
+    if (compactExportHistoryOpen) {
+      closeCompactExportHistory();
+      return;
+    }
+    openCompactExportHistory();
+  }, [closeCompactExportHistory, compactExportHistoryOpen, openCompactExportHistory]);
+  const handleCompactHistoryVisibilityPress = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    compactHistoryVisibilitySuppressClickRef.current = true;
+    handleCompactHistoryVisibilityToggle();
+  }, [handleCompactHistoryVisibilityToggle]);
+  const handleCompactHistoryVisibilityClick = useCallback((event: ReactMouseEvent<HTMLButtonElement>) => {
+    if (compactHistoryVisibilitySuppressClickRef.current) {
+      compactHistoryVisibilitySuppressClickRef.current = false;
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    handleCompactHistoryVisibilityToggle();
+  }, [handleCompactHistoryVisibilityToggle]);
+  const handleCompactHistoryVisibilityPointerCancel = useCallback(() => {
+    compactHistoryVisibilitySuppressClickRef.current = false;
+  }, []);
+  const handleCompactExportControlsToggle = useCallback(() => {
+    if (!compactExportHistoryOpen) {
+      openCompactExportHistory();
+      setCompactExportControlsOpen(true);
+      return;
+    }
+    if (compactExportPreviewOpen) {
+      setCompactExportPreviewOpen(false);
+      setCompactExportControlsOpen(true);
+      return;
+    }
+    setCompactExportControlsOpen((open) => {
+      if (open) {
+        setCompactExportSelectedIds(prev => (prev.size === 0 ? prev : new Set()));
+      }
+      return !open;
+    });
+  }, [compactExportHistoryOpen, compactExportPreviewOpen, openCompactExportHistory]);
   const handleCompactExportToggleMessage = useCallback((messageId: string) => {
     if (!compactExportSelectableIds.has(messageId)) return;
     setCompactExportSelectedIds((prev) => {
@@ -1562,6 +1640,7 @@ export default function App({
     setCompactExportPreviewOpen(false);
     setCompactExportSelectedIds(prev => (prev.size === 0 ? prev : new Set()));
     setCompactExportAutoScrollToBottom(true);
+    setCompactExportControlsOpen(false);
   }, [isCompactSurface]);
 
   useEffect(() => {
@@ -2441,6 +2520,19 @@ export default function App({
     }));
   }, []);
 
+  // Tell the desktop shell to keep the whole wheel region solid while the fan is
+  // open, so mouse-wheel scrolling responds across the entire circle (not only
+  // over the icon buttons). Released when the fan closes. See preload
+  // neko:compact-tool-fan-open-state-change.
+  const dispatchCompactToolFanOpenState = useCallback((open: boolean) => {
+    window.dispatchEvent(new CustomEvent('neko:compact-tool-fan-open-state-change', {
+      detail: {
+        open,
+        timestamp: Date.now(),
+      },
+    }));
+  }, []);
+
   const scheduleCompactInputToolWheelDragGuardRelease = useCallback(() => {
     clearCompactInputToolWheelDragGuardTimer();
     compactInputToolWheelDragGuardTimerRef.current = window.setTimeout(() => {
@@ -2481,6 +2573,7 @@ export default function App({
     compactInputToolFanPositionSyncRef.current?.();
     compactInputToolFanOpenRef.current = false;
     setCompactInputToolFanOpen(false);
+    dispatchCompactToolFanOpenState(false);
     if (!options?.afterClose) return;
     const desktopWindow = window as Window & {
       __nekoDesktopCompactLayout?: {
@@ -2499,6 +2592,7 @@ export default function App({
     clearCompactInputToolWheelFastAnimationTimer,
     clearCompactInputToolWheelChargeReleaseTimer,
     dispatchCompactToolWheelDragState,
+    dispatchCompactToolFanOpenState,
     resetCompactInputToolWheelCharge,
     setCompactInputToolFanInteractiveState,
   ]);
@@ -2553,6 +2647,7 @@ export default function App({
     updateCompactInputToolFanPosition();
     compactInputToolFanOpenRef.current = true;
     setCompactInputToolFanOpen(true);
+    dispatchCompactToolFanOpenState(true);
     compactInputToolFanInteractiveTimerRef.current = window.setTimeout(() => {
       compactInputToolFanInteractiveTimerRef.current = null;
       if (!compactInputToolFanOpenIntentRef.current) return;
@@ -2563,6 +2658,7 @@ export default function App({
     clearCompactInputToolFanInteractiveTimer,
     compactInputHasPayload,
     composerDisabled,
+    dispatchCompactToolFanOpenState,
     setCompactInputToolFanInteractiveState,
     updateCompactInputToolFanPosition,
   ]);
@@ -2653,6 +2749,156 @@ export default function App({
     compactInputToolFanSuppressHoverUntilLeaveRef.current = false;
     openCompactInputToolFan('click');
   }, [closeCompactInputToolFanFromUserClick, openCompactInputToolFan]);
+
+  const clearCompactInputToolToggleLongPressTimer = useCallback(() => {
+    if (compactInputToolToggleLongPressTimerRef.current !== null) {
+      window.clearTimeout(compactInputToolToggleLongPressTimerRef.current);
+      compactInputToolToggleLongPressTimerRef.current = null;
+    }
+  }, []);
+
+  // Ask the desktop shell to grab and drag the whole compact surface. Only the
+  // preload/main process can move the native window; the page just signals it.
+  // Mirrors neko:compact-tool-wheel-drag-state-change as a one-shot request.
+  const dispatchCompactSurfaceDragRequest = useCallback((screenX: number, screenY: number) => {
+    window.dispatchEvent(new CustomEvent('neko:compact-surface-drag-request', {
+      detail: {
+        screenX,
+        screenY,
+        timestamp: Date.now(),
+      },
+    }));
+  }, []);
+
+  // Long-press on the dropdown-arrow toggle = grab the surface; quick tap = open
+  // the tool wheel on release (deferred so a press-and-hold never flashes it open).
+  const handleCompactInputToolTogglePointerDown = useCallback((event: ReactPointerEvent) => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    event.preventDefault();
+    clearCompactInputToolToggleLongPressTimer();
+    // Fresh gesture: drop any stale click-suppression left by a prior press
+    // whose trailing click never arrived (so keyboard activation still toggles).
+    compactInputToolTogglePointerHandledRef.current = false;
+    compactInputToolTogglePressRef.current = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startScreenX: event.screenX,
+      startScreenY: event.screenY,
+      longPressFired: false,
+      canceledTap: false,
+    };
+    try {
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    } catch (_) {}
+    compactInputToolToggleLongPressTimerRef.current = window.setTimeout(() => {
+      compactInputToolToggleLongPressTimerRef.current = null;
+      const press = compactInputToolTogglePressRef.current;
+      if (!press || press.longPressFired || press.canceledTap) return;
+      press.longPressFired = true;
+      // Close the wheel (a hover may have opened it) so the drag starts clean.
+      closeCompactInputToolFanFromUserClick();
+      dispatchCompactSurfaceDragRequest(press.startScreenX, press.startScreenY);
+    }, COMPACT_INPUT_SURFACE_LONG_PRESS_MS);
+  }, [
+    clearCompactInputToolToggleLongPressTimer,
+    closeCompactInputToolFanFromUserClick,
+    dispatchCompactSurfaceDragRequest,
+  ]);
+
+  const handleCompactInputToolTogglePointerMove = useCallback((event: ReactPointerEvent) => {
+    const press = compactInputToolTogglePressRef.current;
+    if (!press || press.pointerId !== event.pointerId || press.longPressFired) return;
+    const dx = event.clientX - press.startClientX;
+    const dy = event.clientY - press.startClientY;
+    if (Math.hypot(dx, dy) > COMPACT_INPUT_SURFACE_LONG_PRESS_MOVE_TOLERANCE) {
+      // Moved before the hold fired: not a tap, not a long-press — do nothing.
+      press.canceledTap = true;
+      clearCompactInputToolToggleLongPressTimer();
+    }
+  }, [clearCompactInputToolToggleLongPressTimer]);
+
+  const finishCompactInputToolTogglePress = useCallback((event: ReactPointerEvent, options?: { canceled?: boolean }) => {
+    const press = compactInputToolTogglePressRef.current;
+    if (!press || press.pointerId !== event.pointerId) return;
+    clearCompactInputToolToggleLongPressTimer();
+    try {
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
+    } catch (_) {}
+    compactInputToolTogglePressRef.current = null;
+    // Swallow the trailing click for any pointer-driven gesture; keyboard
+    // activation has no press record and still toggles through onClick.
+    compactInputToolTogglePointerHandledRef.current = true;
+    if (press.longPressFired) return;
+    if (options?.canceled || press.canceledTap) return;
+    toggleCompactInputToolFanByClick();
+  }, [clearCompactInputToolToggleLongPressTimer, toggleCompactInputToolFanByClick]);
+
+  useEffect(() => () => clearCompactInputToolToggleLongPressTimer(), [clearCompactInputToolToggleLongPressTimer]);
+
+  // Input-box edge bands: same long-press-to-drag gesture as the arrow, but a
+  // quick tap focuses the input for typing instead of toggling the wheel. These
+  // bands overlay only the rim; the uncovered center keeps native press-to-type.
+  const clearCompactInputEdgeLongPressTimer = useCallback(() => {
+    if (compactInputEdgeLongPressTimerRef.current !== null) {
+      window.clearTimeout(compactInputEdgeLongPressTimerRef.current);
+      compactInputEdgeLongPressTimerRef.current = null;
+    }
+  }, []);
+
+  const handleCompactInputEdgePointerDown = useCallback((event: ReactPointerEvent) => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    event.preventDefault();
+    clearCompactInputEdgeLongPressTimer();
+    compactInputEdgePressRef.current = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startScreenX: event.screenX,
+      startScreenY: event.screenY,
+      longPressFired: false,
+      canceledTap: false,
+    };
+    try {
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    } catch (_) {}
+    compactInputEdgeLongPressTimerRef.current = window.setTimeout(() => {
+      compactInputEdgeLongPressTimerRef.current = null;
+      const press = compactInputEdgePressRef.current;
+      if (!press || press.longPressFired || press.canceledTap) return;
+      press.longPressFired = true;
+      dispatchCompactSurfaceDragRequest(press.startScreenX, press.startScreenY);
+    }, COMPACT_INPUT_SURFACE_LONG_PRESS_MS);
+  }, [clearCompactInputEdgeLongPressTimer, dispatchCompactSurfaceDragRequest]);
+
+  const handleCompactInputEdgePointerMove = useCallback((event: ReactPointerEvent) => {
+    const press = compactInputEdgePressRef.current;
+    if (!press || press.pointerId !== event.pointerId || press.longPressFired) return;
+    const dx = event.clientX - press.startClientX;
+    const dy = event.clientY - press.startClientY;
+    if (Math.hypot(dx, dy) > COMPACT_INPUT_SURFACE_LONG_PRESS_MOVE_TOLERANCE) {
+      press.canceledTap = true;
+      clearCompactInputEdgeLongPressTimer();
+    }
+  }, [clearCompactInputEdgeLongPressTimer]);
+
+  const finishCompactInputEdgePress = useCallback((event: ReactPointerEvent, options?: { canceled?: boolean }) => {
+    const press = compactInputEdgePressRef.current;
+    if (!press || press.pointerId !== event.pointerId) return;
+    clearCompactInputEdgeLongPressTimer();
+    try {
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
+    } catch (_) {}
+    compactInputEdgePressRef.current = null;
+    if (press.longPressFired) return;
+    if (options?.canceled || press.canceledTap) return;
+    // Quick tap on the rim → focus the input for typing.
+    if (!composerDisabled) {
+      compactInputRef.current?.focus();
+    }
+  }, [clearCompactInputEdgeLongPressTimer, composerDisabled]);
+
+  useEffect(() => () => clearCompactInputEdgeLongPressTimer(), [clearCompactInputEdgeLongPressTimer]);
 
   const rotateCompactInputToolWheel = useCallback((direction: 1 | -1) => {
     setCompactInputToolWheelIndex(current => (
@@ -3134,7 +3380,6 @@ export default function App({
     if (!options?.ignoreToolFan && compactInputToolFanOpen) return;
     if (draftRef.current.trim().length > 0) return;
     if (composerAttachments.length > 0) return;
-    if (!options?.ignoreFocusedShell && compactExportHistoryOpen) return;
     const activeElement = document.activeElement;
     if (
       !options?.ignoreFocusedShell
@@ -3143,7 +3388,7 @@ export default function App({
         !!compactInputShellRef.current?.contains(activeElement)
         || (
           activeElement instanceof Element
-          && !!activeElement.closest('.compact-export-history-anchor')
+          && !!activeElement.closest('.compact-export-history-anchor, .compact-history-visibility-handle')
         )
       )
     ) {
@@ -3152,7 +3397,6 @@ export default function App({
     requestCompactChatState('default');
   }, [
     compactInputToolFanOpen,
-    compactExportHistoryOpen,
     composerAttachments.length,
     effectiveCompactChatState,
     isCompactSurface,
@@ -3183,7 +3427,7 @@ export default function App({
         || !!compactChoiceLayerRef.current?.contains(target)
         || (
           target instanceof Element
-          && !!target.closest('.compact-export-history-anchor')
+          && !!target.closest('.compact-export-history-anchor, .compact-history-visibility-handle')
         )
       )
     );
@@ -4095,11 +4339,10 @@ export default function App({
       aria-haspopup={compactToolToggleActsAsSubmit ? undefined : 'true'}
       aria-expanded={compactToolToggleActsAsSubmit ? undefined : compactInputToolFanOpen}
       disabled={compactToolToggleActsAsSubmit ? !canSubmit : composerDisabled}
-      onPointerDown={compactToolToggleActsAsSubmit ? undefined : (event) => {
-        event.preventDefault();
-        compactInputToolTogglePointerHandledRef.current = true;
-        toggleCompactInputToolFanByClick();
-      }}
+      onPointerDown={compactToolToggleActsAsSubmit ? undefined : handleCompactInputToolTogglePointerDown}
+      onPointerMove={compactToolToggleActsAsSubmit ? undefined : handleCompactInputToolTogglePointerMove}
+      onPointerUp={compactToolToggleActsAsSubmit ? undefined : (event) => finishCompactInputToolTogglePress(event)}
+      onPointerCancel={compactToolToggleActsAsSubmit ? undefined : (event) => finishCompactInputToolTogglePress(event, { canceled: true })}
       onPointerEnter={compactToolToggleActsAsSubmit ? undefined : handleCompactInputToolHoverEnter}
       onPointerLeave={compactToolToggleActsAsSubmit ? undefined : handleCompactInputToolHoverLeave}
       onFocus={compactToolToggleActsAsSubmit ? undefined : clearCompactInputToolFanCloseTimer}
@@ -4322,17 +4565,17 @@ export default function App({
         <img src="/static/icons/jukebox_icon.png" alt="" aria-hidden="true" />
       </button>
       <button
-        className={`composer-tool-btn compact-input-tool-item compact-input-tool-item-export${compactExportHistoryOpen ? ' is-active' : ''}`}
+        className={`composer-tool-btn compact-input-tool-item compact-input-tool-item-export${compactExportControlsVisible ? ' is-active' : ''}`}
         type="button"
-        aria-label={compactExportHistoryButtonLabel}
-        aria-pressed={compactExportHistoryOpen}
-        title={compactExportHistoryButtonLabel}
+        aria-label={compactExportControlsButtonLabel}
+        aria-pressed={compactExportControlsVisible}
+        title={compactExportControlsButtonLabel}
         disabled={compactInputToolFanActionsDisabled}
         tabIndex={getCompactToolWheelTabIndex(5)}
         aria-hidden={getCompactToolWheelAriaHidden(5)}
         data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(5)}
-        data-compact-tool-active={compactExportHistoryOpen ? 'true' : 'false'}
-        onClick={compactFanRunAction(handleCompactExportConversationClick)}
+        data-compact-tool-active={compactExportControlsVisible ? 'true' : 'false'}
+        onClick={compactFanRunAction(handleCompactExportControlsToggle)}
       >
         <svg viewBox="0 0 1024 1024" width="24" height="24" fill="currentColor" aria-hidden="true">
           <path d="M855.467 501.333c-17.067 0-32 14.934-32 32v198.4c0 70.4-59.734 130.134-130.134 130.134H356.267c-83.2 0-151.467-66.134-151.467-149.334V358.4c0-64 53.333-117.333 117.333-117.333h168.534c17.066 0 32-14.934 32-32s-14.934-32-32-32H322.133c-100.266 0-181.333 81.066-181.333 181.333v352c0 117.333 96 213.333 215.467 213.333h337.066c106.667 0 194.134-87.466 194.134-194.133V533.333c0-17.066-14.934-32-32-32zM680.533 256H761.6L458.667 569.6A30.933 30.933 0 0 0 480 622.933c8.533 0 17.067-4.266 23.467-10.666l305.066-313.6v89.6c0 17.066 14.934 32 32 32s32-14.934 32-32v-147.2c0-27.734-23.466-51.2-51.2-51.2h-140.8c-17.066 0-32 14.933-32 32s14.934 34.133 32 34.133z" />
@@ -4585,6 +4828,7 @@ export default function App({
       selectableCount={compactExportSelectableCount}
       autoScrollToBottom={compactExportAutoScrollToBottom}
       previewOpen={compactExportPreviewOpen}
+      controlsOpen={compactExportControlsOpen}
       choiceLayerAbove={compactChoiceLayerOpen && compactChoiceLayerPlacement === 'above'}
       failedStatusLabel={failedStatusLabel}
       onAutoScrollToBottomChange={setCompactExportAutoScrollToBottom}
@@ -4603,6 +4847,24 @@ export default function App({
     />
   ) : null;
   const compactExportHistoryNode = compactExportHistoryElement;
+  const compactHistoryVisibilityHandleNode = isCompactSurface ? (
+    <button
+      className={`compact-history-visibility-handle${compactExportHistoryOpen ? ' is-open' : ''}`}
+      type="button"
+      aria-label={compactExportHistoryToggleLabel}
+      aria-expanded={compactExportHistoryOpen}
+      title={compactExportHistoryToggleLabel}
+      data-compact-geometry-owner="surface"
+      data-compact-geometry-item="historyHandle"
+      data-compact-history-open={compactExportHistoryOpen ? 'true' : 'false'}
+      onPointerDown={handleCompactHistoryVisibilityPress}
+      onPointerCancel={handleCompactHistoryVisibilityPointerCancel}
+      onPointerLeave={handleCompactHistoryVisibilityPointerCancel}
+      onClick={handleCompactHistoryVisibilityClick}
+    >
+      <span className="compact-history-visibility-handle-triangle" aria-hidden="true" />
+    </button>
+  ) : null;
   const compactSurfaceShellStyle = isCompactSurface
     && compactSurfaceEffectiveWidth !== null
     && !isDesktopCompactSurfaceLayoutActive()
@@ -4637,11 +4899,13 @@ export default function App({
       data-chat-surface-mode={chatSurfaceMode}
       data-compact-chat-state={effectiveCompactChatState}
       data-compact-export-history-open={isCompactSurface && compactExportHistoryOpen ? 'true' : 'false'}
+      data-compact-export-controls-open={isCompactSurface && compactExportControlsVisible ? 'true' : 'false'}
       data-compact-export-preview-open={isCompactSurface && compactExportPreviewOpen ? 'true' : 'false'}
       data-compact-export-selected-count={isCompactSurface ? compactExportSelectedCount : 0}
       data-compact-export-auto-scroll={isCompactSurface && compactExportAutoScrollToBottom ? 'true' : 'false'}
     >
       {compactExportHistoryNode}
+      {compactHistoryVisibilityHandleNode}
       {compactChoiceLayerNode}
       {floatingFistDrops.map(drop => (
         <span
@@ -4873,6 +5137,18 @@ export default function App({
                           }
                         }}
                       />
+                      <div className="compact-input-edge-bands" aria-hidden="true">
+                        {(['top', 'bottom', 'left', 'right'] as const).map((side) => (
+                          <div
+                            key={side}
+                            className={`compact-input-edge-band compact-input-edge-band-${side}`}
+                            onPointerDown={handleCompactInputEdgePointerDown}
+                            onPointerMove={handleCompactInputEdgePointerMove}
+                            onPointerUp={(event) => finishCompactInputEdgePress(event)}
+                            onPointerCancel={(event) => finishCompactInputEdgePress(event, { canceled: true })}
+                          />
+                        ))}
+                      </div>
                       {compactInputToolToggleButton}
                     </>
                   ) : (
