@@ -297,8 +297,8 @@ function Ensure-CudaTorchIfNeeded {
     }
 
     $hasNvidiaGpu = Test-NvidiaGpuAvailable
-    $torchProbe = Test-VenvPython "import torch; print(torch.__version__); print(torch.version.cuda); print(torch.cuda.is_available())"
-    if ($torchProbe.Ok -and ($torchProbe.Text -match "True")) {
+    $torchProbe = Test-VenvPython "import torch; print(torch.__version__); print(torch.version.cuda)"
+    if ($torchProbe.Ok) {
         return
     }
 

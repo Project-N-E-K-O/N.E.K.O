@@ -6,6 +6,7 @@ import numpy as np
 import soxr
 import time
 import json
+import math
 import re
 import base64
 import websockets
@@ -4047,8 +4048,9 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
     # OpenAI 兼容端点
     WS_URL = f'{ws_base}/v1/audio/speech/stream'
     
-    # Keep colon-delimited voice IDs intact (for example chattts:2).
-    # Speed overrides must be explicit: voice_id|speed=1.2
+    # Keep model-prefixed voice IDs intact (for example chattts:2).
+    # New speed overrides should be explicit: voice_id|speed=1.2
+    # Legacy local WS configs may still store bare voices as voice:1.2.
     voice_name = (voice_id or "").strip() or "中文女"
     speech_speed = 1.0
     if voice_name and '|' in voice_name:
@@ -4060,7 +4062,7 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                 parsed_speed = float(suffix[len(speed_prefix):])
             except (TypeError, ValueError):
                 parsed_speed = None
-            if parsed_speed and parsed_speed > 0:
+            if parsed_speed and math.isfinite(parsed_speed) and parsed_speed > 0:
                 voice_name = voice_part.strip() or "中文女"
                 speech_speed = parsed_speed
             else:
@@ -4068,6 +4070,18 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
                 voice_name = voice_part.strip() or "中文女"
         else:
             voice_name = voice_part.strip() or "中文女"
+    elif ':' in voice_name:
+        model_prefix = voice_name.split(':', 1)[0].strip().lower()
+        local_model_prefixes = {"kokoro", "melotts", "melo", "chattts", "tone"}
+        if model_prefix not in local_model_prefixes:
+            voice_part, suffix = voice_name.rsplit(':', 1)
+            try:
+                parsed_speed = float(suffix.strip())
+            except (TypeError, ValueError):
+                parsed_speed = None
+            if parsed_speed and math.isfinite(parsed_speed) and parsed_speed > 0:
+                voice_name = voice_part.strip() or "中文女"
+                speech_speed = parsed_speed
     
     # 服务器返回的采样率（22050Hz）
     SRC_RATE = 22050
