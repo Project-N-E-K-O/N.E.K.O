@@ -500,23 +500,31 @@ def test_desktop_compact_layout_change_resets_anchor_only_when_base_surface_chan
     assert "compactSurfaceAnchorSnapshot = '';" not in listener_block
 
 
-def test_electron_compact_chat_root_mask_does_not_clip_history_layer():
+def test_electron_compact_chat_retires_full_surface_chrome():
     template = CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
 
+    # The standalone /chat window renders the shared compact capsule (driven by
+    # static/css/index.css's `body.subtitle-web-host #react-chat-window-shell
+    # [data-chat-surface-mode="compact"]` rule set, which chat.html's
+    # subtitle-web-host body opts into) instead of a bespoke full-window glass
+    # panel. The retired full form used to paint an empty glass panel for one
+    # frame before React mounted and collapsed it to compact ("先 full 再
+    # compact" 的那一帧). chat.html must NOT re-introduce that full surface.
+    #
+    # Retired full-surface artifacts that must stay gone:
+    assert "@keyframes liquidFlow" not in template            # 玻璃流光关键帧
+    assert "@keyframes lightSweep" not in template
+    assert "-webkit-mask-image" not in template               # 全窗口 root 四边渐隐 mask
+    assert "#react-chat-window-shell:not(.is-minimized)::before" not in template
+    assert "#react-chat-window-shell:not(.is-minimized)::after" not in template
+    assert "inset: 40px 25px 25px 20px" not in template       # 全窗口 shell 几何
+
+    # The shell font tweak survives (compact still uses #react-chat-window-root).
     assert "#react-chat-window-root {" in template
-    assert (
-        'body.electron-chat-window.subtitle-web-host '
-        '#react-chat-window-shell[data-chat-surface-mode="compact"] #react-chat-window-root'
-    ) in template
-
-    compact_override_block = template.split(
-        'body.electron-chat-window.subtitle-web-host '
-        '#react-chat-window-shell[data-chat-surface-mode="compact"] #react-chat-window-root',
-        1,
-    )[1].split("@keyframes liquidFlow", 1)[0]
-
-    assert "-webkit-mask-image: none !important;" in compact_override_block
-    assert "mask-image: none !important;" in compact_override_block
+    # The overlay must start hidden so nothing paints before React mounts the
+    # compact surface — parity with templates/index.html, which is what kills the
+    # pre-mount full-form flash.
+    assert 'id="react-chat-window-overlay" hidden' in template
 
 
 def test_compact_history_controls_collapse_gives_height_back_to_history_scroll():
