@@ -20,6 +20,7 @@ const COMPACT_EXPORT_BOTTOM_THRESHOLD = 30;
 const COMPACT_EXPORT_CLICK_MOVE_THRESHOLD = 6;
 const COMPACT_EXPORT_DRAG_MOVE_THRESHOLD = 8;
 const COMPACT_EXPORT_TOUCH_SCROLL_ANGLE_RATIO = 1.35;
+const COMPACT_HISTORY_SCROLL_SETTLE_FRAMES = 36;
 const COMPACT_HISTORY_RETURN_ANIMATION_MS = 260;
 const COMPACT_HISTORY_SEND_ANIMATION_MS = 340;
 
@@ -1268,12 +1269,24 @@ export default function CompactExportHistoryPanel({
     if (!autoScrollToBottom) return;
     const scrollNode = scrollRef.current;
     if (!scrollNode) return;
-    scrollNode.scrollTop = scrollNode.scrollHeight;
-    const frameId = window.requestAnimationFrame(() => {
+    let frameId: number | null = null;
+    let remainingFrames = COMPACT_HISTORY_SCROLL_SETTLE_FRAMES;
+    const pinScrollToBottom = () => {
       scrollNode.scrollTop = scrollNode.scrollHeight;
-    });
-    return () => window.cancelAnimationFrame(frameId);
-  }, [autoScrollToBottom, messages]);
+      remainingFrames -= 1;
+      if (remainingFrames <= 0) {
+        frameId = null;
+        return;
+      }
+      frameId = window.requestAnimationFrame(pinScrollToBottom);
+    };
+    pinScrollToBottom();
+    return () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+      }
+    };
+  }, [autoScrollToBottom, messages, visibilityState]);
 
   useEffect(() => {
     if (!previewOpen) {
