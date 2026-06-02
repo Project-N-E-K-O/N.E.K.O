@@ -220,6 +220,7 @@ type PasteSetters = {
   setImage: (value: string) => void;
   setTextValue: (value: string) => void;
   setPasteError: (value: string) => void;
+  setPastePending?: (value: boolean) => void;
   onImageAccepted?: () => void;
   pasteErrorMessage: string;
   unsupportedTypeMessage: string;
@@ -247,54 +248,61 @@ function createPasteHandler(
     event.preventDefault();
     const signal = beginPasteSignal();
     setters.setPasteError('');
+    setters.setPastePending?.(true);
 
-    for (const item of itemList) {
-      if (item.type.startsWith('image/')) {
-        if (!SUPPORTED_PASTE_IMAGE_TYPES.has(item.type)) {
-          if (!signal.aborted && isMounted()) {
-            setters.setPasteError(setters.unsupportedTypeMessage);
-          }
-          continue;
-        }
-        const blob = item.getAsFile();
-        if (!blob) {
-          if (!signal.aborted && isMounted()) {
-            setters.setPasteError(setters.pasteErrorMessage);
-          }
-          continue;
-        }
-        try {
-          const image = await compressImageForStudy(blob, signal);
-          if (signal.aborted || !isMounted()) {
-            return;
-          }
-          if (image === null) {
-            setters.setPasteError(setters.pasteErrorMessage);
-          } else {
-            setters.onImageAccepted?.();
-            setters.setImage(image);
-            setters.setPasteError('');
-          }
-        } catch (error) {
-          if (!signal.aborted && isMounted()) {
-            setters.setPasteError(setters.pasteErrorMessage);
-          }
-          warnInDev('study image paste failed', error);
-        }
-      } else if (item.type === 'text/plain') {
-        item.getAsString((pastedText) => {
-          if (!target || signal.aborted || !isMounted() || !target.isConnected) return;
-          const start = target.selectionStart ?? target.value.length;
-          const end = target.selectionEnd ?? start;
-          setters.setTextValue(
-            target.value.slice(0, start) + pastedText + target.value.slice(end),
-          );
-          requestAnimationFrame(() => {
-            if (!signal.aborted && isMounted() && target.isConnected) {
-              target.setSelectionRange(start + pastedText.length, start + pastedText.length);
+    try {
+      for (const item of itemList) {
+        if (item.type.startsWith('image/')) {
+          if (!SUPPORTED_PASTE_IMAGE_TYPES.has(item.type)) {
+            if (!signal.aborted && isMounted()) {
+              setters.setPasteError(setters.unsupportedTypeMessage);
             }
+            continue;
+          }
+          const blob = item.getAsFile();
+          if (!blob) {
+            if (!signal.aborted && isMounted()) {
+              setters.setPasteError(setters.pasteErrorMessage);
+            }
+            continue;
+          }
+          try {
+            const image = await compressImageForStudy(blob, signal);
+            if (signal.aborted || !isMounted()) {
+              return;
+            }
+            if (image === null) {
+              setters.setPasteError(setters.pasteErrorMessage);
+            } else {
+              setters.onImageAccepted?.();
+              setters.setImage(image);
+              setters.setPasteError('');
+            }
+          } catch (error) {
+            if (!signal.aborted && isMounted()) {
+              setters.setPasteError(setters.pasteErrorMessage);
+            }
+            warnInDev('study image paste failed', error);
+          }
+        } else if (item.type === 'text/plain') {
+          item.getAsString((pastedText) => {
+            if (!target || signal.aborted || !isMounted() || !target.isConnected) return;
+            const start = target.selectionStart ?? target.value.length;
+            const end = target.selectionEnd ?? start;
+            setters.setTextValue(
+              target.value.slice(0, start) + pastedText + target.value.slice(end),
+            );
+            requestAnimationFrame(() => {
+              if (!signal.aborted && isMounted() && target.isConnected) {
+                target.setSelectionRange(start + pastedText.length, start + pastedText.length);
+              }
+            });
           });
-        });
+        }
+      }
+    } finally {
+      if (!signal.aborted && isMounted()) {
+        setters.setPastePending?.(false);
       }
     }
   };
@@ -376,6 +384,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const [answer, setAnswer] = useState('');
   const [reply, setReply] = useState('');
   const [busy, setBusy] = useState(false);
+  const [pastePending, setPastePending] = useState(false);
   const [textImage, setTextImage] = useState('');
   const [answerImage, setAnswerImage] = useState('');
   const [textPasteError, setTextPasteError] = useState('');
@@ -384,7 +393,9 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const pasteControllerRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(false);
   const textAutoFilledFromOcrRef = useRef(false);
+  const pastePendingRef = useRef(false);
   const currentMode = String(status.active_mode || status.mode || 'companion');
+  const interactionBusy = busy || pastePending;
 
   function beginStudyRequest() {
     explainControllerRef.current?.abort();
@@ -404,6 +415,15 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     const controller = new AbortController();
     pasteControllerRef.current = controller;
     return controller.signal;
+  }
+
+  function setPastePendingState(value: boolean) {
+    pastePendingRef.current = value;
+    setPastePending(value);
+  }
+
+  function isInteractionBusy() {
+    return busy || pastePendingRef.current;
   }
 
   function modeLabel(mode: string) {
@@ -508,7 +528,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       setReply(data.last_reply || '');
     }
     setText((prev) => {
-      if (prev.trim() || !data.last_ocr_text) {
+      if (textImage || prev.trim() || !data.last_ocr_text) {
         return prev;
       }
       textAutoFilledFromOcrRef.current = true;
@@ -517,7 +537,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   }
 
   async function setMode(mode: StudyMode) {
-    if (busy || mode === currentMode) {
+    if (isInteractionBusy() || mode === currentMode) {
       return;
     }
     const controller = beginStudyRequest();
@@ -560,7 +580,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   }
 
   async function explain() {
-    if (busy) {
+    if (isInteractionBusy()) {
       return;
     }
     const controller = beginStudyRequest();
@@ -600,7 +620,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   }
 
   async function generateQuestion() {
-    if (busy) {
+    if (isInteractionBusy()) {
       return;
     }
     const controller = beginStudyRequest();
@@ -640,7 +660,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   }
 
   async function evaluateAnswer() {
-    if (busy) {
+    if (isInteractionBusy()) {
       return;
     }
     if (!answer.trim() && !answerImage) {
@@ -684,7 +704,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   }
 
   async function summarizeSession() {
-    if (busy) {
+    if (isInteractionBusy()) {
       return;
     }
     const controller = beginStudyRequest();
@@ -733,7 +753,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
 
   const stateValue = status.status || 'unknown';
   const stateLabel = t(`status.state.${stateValue}`, stateValue);
-  const explainLabel = busy ? t('ui.button.loading', 'Loading...') : t('ui.button.explain', 'Explain');
+  const explainLabel = interactionBusy ? t('ui.button.loading', 'Loading...') : t('ui.button.explain', 'Explain');
   const screenType = status.screen_classification?.screen_type || 'idle';
   const evaluation = status.last_answer_evaluation;
   const handleTextPaste = createPasteHandler(
@@ -741,11 +761,12 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       setImage: setTextImage,
       setTextValue: setManualText,
       setPasteError: setTextPasteError,
+      setPastePending: setPastePendingState,
       onImageAccepted: clearAutoFilledTextOnImagePaste,
       pasteErrorMessage: t('ui.error.image_paste_failed', 'Image paste failed. Please try a smaller JPEG or PNG image.'),
       unsupportedTypeMessage: t('ui.error.image_paste_unsupported', 'Only JPEG and PNG images can be pasted here.'),
     },
-    () => busy,
+    () => isInteractionBusy(),
     () => mountedRef.current,
     beginPasteSignal,
   );
@@ -754,16 +775,17 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       setImage: setAnswerImage,
       setTextValue: setAnswer,
       setPasteError: setAnswerPasteError,
+      setPastePending: setPastePendingState,
       pasteErrorMessage: t('ui.error.image_paste_failed', 'Image paste failed. Please try a smaller JPEG or PNG image.'),
       unsupportedTypeMessage: t('ui.error.image_paste_unsupported', 'Only JPEG and PNG images can be pasted here.'),
     },
-    () => busy,
+    () => isInteractionBusy(),
     () => mountedRef.current,
     beginPasteSignal,
   );
 
   return (
-    <div className="study-panel" data-busy={busy ? "true" : "false"}>
+    <div className="study-panel" data-busy={interactionBusy ? "true" : "false"}>
       <header className="study-panel__header">
         <div>
           <h1>{t('ui.title', 'Study Companion')}</h1>
@@ -778,7 +800,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
                 type="button"
                 className={pressed ? 'is-active' : ''}
                 aria-pressed={pressed}
-                disabled={busy}
+                disabled={interactionBusy}
                 onClick={() => setMode(item.id)}
               >
                 {modeLabel(item.id)}
@@ -805,7 +827,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         aria-label={t('ui.label.text', 'Text')}
         placeholder={t('ui.placeholder.input', 'Paste a concept, problem statement, or OCR text here.')}
         value={text}
-        readOnly={busy}
+        readOnly={interactionBusy}
         onChange={(event) => setManualText(event.target.value)}
         onPaste={handleTextPaste}
       />
@@ -816,7 +838,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
             className="study-panel__image-remove"
             type="button"
             aria-label="Remove pasted image"
-            disabled={busy}
+            disabled={interactionBusy}
             onClick={() => {
               setTextImage('');
               setTextPasteError('');
@@ -832,19 +854,19 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       <div className="study-panel__actions">
         <button
           type="button"
-          disabled={busy}
-          onClick={busy ? undefined : generateQuestion}
+          disabled={interactionBusy}
+          onClick={interactionBusy ? undefined : generateQuestion}
         >
-          {busy ? t('ui.button.loading', 'Loading...') : t('ui.button.generate_question', 'Generate Question')}
+          {interactionBusy ? t('ui.button.loading', 'Loading...') : t('ui.button.generate_question', 'Generate Question')}
         </button>
       </div>
       <button
         type="button"
-        className={busy ? 'loading' : ''}
-        disabled={busy}
-        aria-busy={busy}
+        className={interactionBusy ? 'loading' : ''}
+        disabled={interactionBusy}
+        aria-busy={interactionBusy}
         aria-label={explainLabel}
-        onClick={busy ? undefined : explain}
+        onClick={interactionBusy ? undefined : explain}
       >
         {explainLabel}
       </button>
@@ -853,7 +875,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
       <textarea
         aria-label={t('ui.label.answer', 'Answer')}
         value={answer}
-        readOnly={busy}
+        readOnly={interactionBusy}
         onChange={(event) => setAnswer(event.target.value)}
         onPaste={handleAnswerPaste}
       />
@@ -864,7 +886,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
             className="study-panel__image-remove"
             type="button"
             aria-label="Remove pasted answer image"
-            disabled={busy}
+            disabled={interactionBusy}
             onClick={() => {
               setAnswerImage('');
               setAnswerPasteError('');
@@ -878,11 +900,11 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         <div className="study-panel__paste-error" role="alert">{answerPasteError}</div>
       ) : null}
       <div className="study-panel__actions">
-        <button type="button" disabled={busy} onClick={busy ? undefined : evaluateAnswer}>
-          {busy ? t('ui.button.loading', 'Loading...') : t('ui.button.evaluate_answer', 'Evaluate Answer')}
+        <button type="button" disabled={interactionBusy} onClick={interactionBusy ? undefined : evaluateAnswer}>
+          {interactionBusy ? t('ui.button.loading', 'Loading...') : t('ui.button.evaluate_answer', 'Evaluate Answer')}
         </button>
-        <button type="button" disabled={busy} onClick={busy ? undefined : summarizeSession}>
-          {busy ? t('ui.button.loading', 'Loading...') : t('ui.button.summarize_session', 'Summarize Session')}
+        <button type="button" disabled={interactionBusy} onClick={interactionBusy ? undefined : summarizeSession}>
+          {interactionBusy ? t('ui.button.loading', 'Loading...') : t('ui.button.summarize_session', 'Summarize Session')}
         </button>
       </div>
       <div className="study-panel__reply-label">{t('ui.label.reply', 'Reply')}</div>

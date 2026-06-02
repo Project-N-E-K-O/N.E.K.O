@@ -1248,6 +1248,9 @@ def test_study_companion_hosted_panel_supports_image_paste_contract() -> None:
     assert "SUPPORTED_PASTE_IMAGE_TYPES.has(item.type)" in source
     assert "item.type === 'text/plain'" in source
     assert "setPasteError" in source
+    assert "setPastePending?: (value: boolean) => void;" in source
+    assert "setters.setPastePending?.(true);" in source
+    assert "setters.setPastePending?.(false);" in source
     assert "onImageAccepted?: () => void;" in source
     assert "setters.onImageAccepted?.();" in source
     assert "study-panel__paste-error" in source
@@ -1255,17 +1258,24 @@ def test_study_companion_hosted_panel_supports_image_paste_contract() -> None:
     assert "signal.aborted" in source
     assert "onPaste={handleTextPaste}" in source
     assert "onPaste={handleAnswerPaste}" in source
-    assert "readOnly={busy}" in source
+    assert "const [pastePending, setPastePending] = useState(false);" in source
+    assert "pastePendingRef.current = value;" in source
+    assert "const interactionBusy = busy || pastePending;" in source
+    assert "return busy || pastePendingRef.current;" in source
+    assert "readOnly={interactionBusy}" in source
     assert "if (textImage) explainArgs.vision_image_base64 = textImage;" in source
     assert "if (textImage) genArgs.vision_image_base64 = textImage;" in source
     assert "if (!answer.trim() && !answerImage)" in source
     assert "if (answerImage) evalArgs.vision_image_base64 = answerImage;" in source
     assert "const textAutoFilledFromOcrRef = useRef(false);" in source
     assert "textAutoFilledFromOcrRef.current = true;" in source
+    assert "if (textImage || prev.trim() || !data.last_ocr_text)" in source
+    assert "setPastePending: setPastePendingState," in source
     assert "onImageAccepted: clearAutoFilledTextOnImagePaste," in source
     assert "setTextImage('');" in source
     assert "setAnswerImage('');" in source
-    assert 'data-busy={busy ? "true" : "false"}' in source
+    assert 'data-busy={interactionBusy ? "true" : "false"}' in source
+    assert "disabled={interactionBusy}" in source
     assert "study-panel__image-preview" in source
     assert "study-panel__image-remove" in source
     assert "warnInDev" in source
