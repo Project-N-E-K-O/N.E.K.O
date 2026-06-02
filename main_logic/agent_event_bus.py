@@ -45,6 +45,9 @@ ANALYZE_PUSH_ADDR = _zmq_addr("NEKO_ZMQ_ANALYZE_PUSH_PORT", 48963)  # main -> ag
 _main_bridge_ref: Optional["MainServerAgentBridge"] = None
 _ack_waiters: dict[str, asyncio.Future] = {}
 _ack_waiters_lock = threading.Lock()
+_voice_bridge_waiters: dict[str, asyncio.Future] = {}
+_voice_bridge_waiters_resolving: set[str] = set()
+_voice_bridge_waiters_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +319,42 @@ def notify_analyze_ack(event_id: str) -> None:
     loop.call_soon_threadsafe(_resolve)
 
 
+def notify_voice_bridge_result(event_id: str, result: Dict[str, Any]) -> None:
+    """Resolve a pending voice-bridge request sent from main_server to agent_server."""
+    if not event_id:
+        return
+    payload = result if isinstance(result, dict) else {}
+    with _voice_bridge_waiters_lock:
+        waiter = _voice_bridge_waiters.get(event_id)
+        if waiter is not None and not waiter.done():
+            _voice_bridge_waiters_resolving.add(event_id)
+        else:
+            _voice_bridge_waiters_resolving.discard(event_id)
+    if waiter is None or waiter.done():
+        return
+    loop = waiter.get_loop()
+
+    def _resolve() -> None:
+        with _voice_bridge_waiters_lock:
+            if _voice_bridge_waiters.get(event_id) is not waiter:
+                _voice_bridge_waiters_resolving.discard(event_id)
+                return
+            _voice_bridge_waiters.pop(event_id, None)
+            _voice_bridge_waiters_resolving.discard(event_id)
+        if not waiter.done():
+            waiter.set_result(payload)
+
+    try:
+        loop.call_soon_threadsafe(_resolve)
+    except RuntimeError:
+        with _voice_bridge_waiters_lock:
+            if _voice_bridge_waiters.get(event_id) is waiter:
+                if not waiter.done():
+                    waiter.cancel()
+                _voice_bridge_waiters.pop(event_id, None)
+            _voice_bridge_waiters_resolving.discard(event_id)
+
+
 # ---------------------------------------------------------------------------
 #  Layering-inversion sinks: lower layers (main_logic) emit, higher layers
 #  (plugin / main_routers) register.
@@ -492,3 +531,83 @@ async def publish_analyze_request_reliably(
             )
 
     return False
+
+
+async def publish_voice_transcript_request_reliably(
+    lanlan_name: str,
+    transcript: str,
+    *,
+    timeout_s: float = 1.2,
+    retries: int = 0,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Ask agent_server/plugins how a realtime voice transcript should be handled.
+
+    Returns a plugin-produced action payload, or ``None`` when the bridge is not
+    running or no response arrives within the bounded timeout.
+    """
+    text = str(transcript or "").strip()
+    if not text:
+        return None
+    event_id = uuid.uuid4().hex
+    loop = asyncio.get_running_loop()
+    waiter: asyncio.Future = loop.create_future()
+    with _voice_bridge_waiters_lock:
+        _voice_bridge_waiters[event_id] = waiter
+
+    try:
+        for attempt in range(max(retries, 0) + 1):
+            event = {
+                "event_type": "voice_transcript_request",
+                "event_id": event_id,
+                "lanlan_name": lanlan_name,
+                "transcript": text,
+                "metadata": dict(metadata or {}),
+                "attempt": attempt,
+            }
+            sent = await publish_session_event(event)
+            if not sent:
+                logger.debug(
+                    "[EventBus] voice_transcript_request not sent: no main bridge lanlan=%s attempt=%s",
+                    lanlan_name,
+                    attempt,
+                )
+                continue
+            try:
+                result = await asyncio.wait_for(asyncio.shield(waiter), timeout=timeout_s)
+                return result if isinstance(result, dict) else {}
+            except asyncio.TimeoutError:
+                with _voice_bridge_waiters_lock:
+                    result_is_queued = (
+                        _voice_bridge_waiters.get(event_id) is waiter
+                        and event_id in _voice_bridge_waiters_resolving
+                    )
+                if result_is_queued:
+                    try:
+                        result = await asyncio.wait_for(
+                            asyncio.shield(waiter),
+                            timeout=0.05,
+                        )
+                        return result if isinstance(result, dict) else {}
+                    except asyncio.TimeoutError:
+                        pass
+                logger.debug(
+                    "[EventBus] voice_transcript_request timed out: event_id=%s lanlan=%s attempt=%s",
+                    event_id,
+                    lanlan_name,
+                    attempt,
+                )
+                continue
+        return None
+    finally:
+        should_cancel = False
+        with _voice_bridge_waiters_lock:
+            if (
+                _voice_bridge_waiters.get(event_id) is waiter
+                and event_id not in _voice_bridge_waiters_resolving
+            ):
+                _voice_bridge_waiters.pop(event_id, None)
+                should_cancel = True
+            _voice_bridge_waiters_resolving.discard(event_id)
+        if should_cancel and not waiter.done():
+            waiter.cancel()

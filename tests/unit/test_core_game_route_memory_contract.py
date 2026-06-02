@@ -67,6 +67,18 @@ class _FakeActivityTracker:
         self.user_messages.append(text)
 
 
+class _FakeVoiceBridgeSession:
+    def __init__(self):
+        self.cancelled = 0
+        self.primed = []
+
+    async def cancel_response(self):
+        self.cancelled += 1
+
+    async def prime_context(self, context, *, skipped=False):
+        self.primed.append((context, skipped))
+
+
 class _FakeAliveThread:
     def is_alive(self):
         return True
@@ -320,6 +332,75 @@ async def test_takeover_dispatcher_receives_voice_echo_match_before_suppression(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bridge_result",
+    [
+        {"action": "cancel_response"},
+        {"action": "prime_context", "context": "screen context", "skipped": True},
+    ],
+)
+async def test_voice_bridge_result_is_ignored_after_session_change(
+    monkeypatch,
+    bridge_result,
+):
+    mgr = _make_manager()
+    original_session = _FakeVoiceBridgeSession()
+    replacement_session = _FakeVoiceBridgeSession()
+    mgr.session = original_session
+
+    async def fake_publish(*_args, **_kwargs):
+        mgr.session = replacement_session
+        return bridge_result
+
+    monkeypatch.setattr(
+        core_module,
+        "publish_voice_transcript_request_reliably",
+        fake_publish,
+    )
+
+    action = await core_module.LLMSessionManager._dispatch_voice_transcript_bridge(
+        mgr,
+        "Yui explain this step",
+    )
+
+    assert action == ""
+    assert original_session.cancelled == 0
+    assert original_session.primed == []
+    assert replacement_session.cancelled == 0
+    assert replacement_session.primed == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_voice_bridge_cancel_failure_does_not_report_cancel_action(monkeypatch):
+    mgr = _make_manager()
+    session = _FakeVoiceBridgeSession()
+    mgr.session = session
+
+    async def fail_cancel():
+        raise RuntimeError("session already finished")
+
+    async def fake_publish(*_args, **_kwargs):
+        return {"action": "cancel_response"}
+
+    session.cancel_response = fail_cancel
+    monkeypatch.setattr(
+        core_module,
+        "publish_voice_transcript_request_reliably",
+        fake_publish,
+    )
+
+    action = await core_module.LLMSessionManager._dispatch_voice_transcript_bridge(
+        mgr,
+        "Yui stop",
+    )
+
+    assert action == ""
+    assert session.cancelled == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_no_takeover_voice_transcript_uses_ordinary_flow():
     mgr = _make_transcript_manager()
 
@@ -336,6 +417,32 @@ async def test_no_takeover_voice_transcript_uses_ordinary_flow():
         "type": "user",
         "data": {"input_type": "transcript", "data": "普通语音"},
     }]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_voice_bridge_cancel_skips_user_context_side_effects():
+    mgr = _make_transcript_manager()
+    routed = []
+
+    async def fake_voice_bridge(text):
+        routed.append(text)
+        return "cancel_response"
+
+    mgr._dispatch_voice_transcript_bridge = fake_voice_bridge
+
+    await core_module.LLMSessionManager.handle_input_transcript(
+        mgr,
+        "  f(x)=x^3 derivative answer is 3x^2  ",
+        is_voice_source=True,
+    )
+
+    assert routed == ["f(x)=x^3 derivative answer is 3x^2"]
+    assert mgr._activity_tracker.voice_rms_count == 1
+    assert mgr._activity_tracker.user_messages == []
+    assert mgr._session_turn_count == 0
+    mgr._publish_user_utterance_to_plugin_bus.assert_not_called()
+    assert mgr.sync_message_queue.messages == []
 
 
 @pytest.mark.unit

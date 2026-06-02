@@ -121,7 +121,7 @@ try:
     from fastapi.responses import JSONResponse, Response # noqa
     from fastapi.staticfiles import StaticFiles # noqa
     from main_logic import core as core, cross_server as cross_server # noqa
-    from main_logic.agent_event_bus import MainServerAgentBridge, notify_analyze_ack, set_main_bridge # noqa
+    from main_logic.agent_event_bus import MainServerAgentBridge, notify_analyze_ack, notify_voice_bridge_result, set_main_bridge # noqa
     from fastapi.templating import Jinja2Templates # noqa
     from dataclasses import dataclass # noqa
     from typing import Any, Optional # noqa
@@ -606,6 +606,13 @@ async def _handle_agent_event(event: dict):
                 lanlan,
             )
             notify_analyze_ack(str(event.get("event_id") or ""))
+            return
+
+        if event_type == "voice_bridge_result":
+            notify_voice_bridge_result(
+                str(event.get("event_id") or ""),
+                event.get("result") if isinstance(event.get("result"), dict) else {},
+            )
             return
 
         # Agent status updates may be broadcast (lanlan_name omitted).
@@ -1641,7 +1648,6 @@ from main_routers.websocket_router import router as websocket_router # noqa
 from main_routers.workshop_router import router as workshop_router # noqa
 from main_routers.cookies_login_router import router as cookies_login_router # noqa
 from main_routers.game_router import router as game_router # noqa
-from main_routers.card_assist_router import router as card_assist_router # noqa
 from main_routers.debug_router import router as debug_router, start_watchdog as _start_debug_health_watchdog # noqa
 from main_routers.shared_state import init_shared_state, set_steamworks_initializer # noqa
 
@@ -1773,7 +1779,6 @@ app.include_router(tool_router)
 app.include_router(music_router)
 app.include_router(galgame_router)
 app.include_router(game_router)
-app.include_router(card_assist_router)
 app.include_router(capture_router)
 app.include_router(cookies_login_router) # Cookies登录相关路由，放在最后以避免与其他API路由冲突
 app.include_router(debug_router)  # 诊断观测：/api/debug/health（轻量、零侵入，详见 debug_router.py 头注释）

@@ -45,6 +45,7 @@ from main_logic.proactive_delivery import ProactiveDeliveryManager
 from main_logic.agent_event_bus import (
     dispatch_text_user_message,
     dispatch_user_utterance,
+    publish_voice_transcript_request_reliably,
 )
 from utils.preferences import load_global_conversation_settings, aload_global_conversation_settings
 from config import (
@@ -1966,6 +1967,75 @@ class LLMSessionManager:
             # swallowed inside the dispatcher.
             dispatch_user_utterance(bucket, event)
 
+    async def _dispatch_voice_transcript_bridge(self, transcript: str) -> str:
+        """Let plugin-side voice filters decide whether to cancel or prime context."""
+        session_snapshot = self.session
+        try:
+            result = await publish_voice_transcript_request_reliably(
+                self.lanlan_name,
+                transcript,
+                metadata={
+                    "session_type": type(session_snapshot).__name__ if session_snapshot else "",
+                    "voice_source": True,
+                },
+            )
+        except Exception as exc:
+            logger.debug("[%s] voice bridge request failed: %s", self.lanlan_name, exc)
+            return ""
+        if not isinstance(result, dict) or not result:
+            return ""
+
+        def _session_changed() -> bool:
+            if self.session is session_snapshot:
+                return False
+            logger.debug("[%s] voice bridge result ignored after session change", self.lanlan_name)
+            return True
+
+        if _session_changed():
+            return ""
+
+        action = str(result.get("action") or "").strip()
+        if action == "cancel_response":
+            if _session_changed():
+                return ""
+            cancel_response = getattr(session_snapshot, "cancel_response", None)
+            if not callable(cancel_response):
+                return ""
+            try:
+                if _session_changed():
+                    return ""
+                await cancel_response()
+                logger.debug("[%s] voice bridge cancelled current response", self.lanlan_name)
+                return action
+            except Exception as exc:
+                logger.debug("[%s] voice bridge cancel skipped/failed: %s", self.lanlan_name, exc)
+                return ""
+
+        if action == "prime_context":
+            context_text = str(result.get("context") or "").strip()
+            if not context_text:
+                return action
+            if _session_changed():
+                return ""
+            prime_context = getattr(session_snapshot, "prime_context", None)
+            if not callable(prime_context):
+                return action
+            skipped = bool(result.get("skipped", False))
+            try:
+                if _session_changed():
+                    return ""
+                await prime_context(context_text, skipped=skipped)
+                logger.debug(
+                    "[%s] voice bridge primed context len=%d skipped=%s",
+                    self.lanlan_name,
+                    len(context_text),
+                    skipped,
+                )
+            except Exception as exc:
+                logger.debug("[%s] voice bridge prime skipped/failed: %s", self.lanlan_name, exc)
+            return action
+        return action
+
     def _reset_voice_echo_suppression_cache(self) -> None:
         self._recent_ai_voice_echo_text = ''
         self._recent_ai_voice_echo_at = 0.0
@@ -2161,6 +2231,11 @@ class LLMSessionManager:
             # 即使转录为空（VAD 误触发或转录失败）也算一次"用户在发声"，
             # 维持 voice_engaged 状态。
             self._activity_tracker.on_voice_rms()
+
+        if is_voice_source and transcript_text:
+            voice_bridge_action = await self._dispatch_voice_transcript_bridge(transcript_text)
+            if voice_bridge_action == "cancel_response":
+                return
 
         if is_voice_source:
             # 仅非空转录才算"用户消息"：on_user_message 会清掉 unfinished_thread、
