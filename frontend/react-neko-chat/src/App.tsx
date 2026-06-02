@@ -92,6 +92,7 @@ const COMPACT_SPEECH_FALLBACK_REVEAL_DELAY_MS = 700;
 const SPEECH_PLAYBACK_STATE_STORAGE_KEY = 'neko_speech_playback_state';
 const SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';
 const COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY = 'neko.reactChatWindow.compactExportHistoryOpen';
+export const COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS = 560;
 const COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT = 7;
 const COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD = 22;
 const COMPACT_INPUT_TOOL_WHEEL_SCROLL_THRESHOLD = 64;
@@ -279,6 +280,12 @@ function createCompactToolWheelChargeState(): CompactToolWheelChargeState {
 type CompactMessagePreview = {
   messageId: string;
   speechMatchMessageIds?: string[];
+  // Stable identity of the whole merged turn: the id of the earliest message
+  // folded into this preview. Unchanged as more bubbles stream into the same
+  // turn (messageId re-keys to the latest bubble, this does not), and changes
+  // when a genuinely new turn begins. Used to tell an appended bubble from a
+  // new turn without relying on text-prefix matching.
+  turnStartId: string;
   author: string;
   text: string;
   fullText: string;
@@ -501,6 +508,9 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
     const latestStreamingMessage = messages[latestStreamingAssistantIndex];
     const latestStreamingIsGuide = isGuideMessageId(latestStreamingMessage?.id);
     const turnMessageId = String(latestStreamingMessage?.id || 'assistant-streaming');
+    // Walks backward to the earliest merged bubble, so the last assignment in
+    // the loop is the turn's anchor id.
+    let turnStartId = turnMessageId;
     let previousIncludedCreatedAt = typeof latestStreamingMessage?.createdAt === 'number'
       && Number.isFinite(latestStreamingMessage.createdAt)
       ? latestStreamingMessage.createdAt
@@ -527,6 +537,12 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
         }
         previousIncludedCreatedAt = createdAt;
       }
+      // Anchor the turn to every message folded in, before the empty-text skip.
+      // A bubble can be momentarily text-less (still streaming, image-only) then
+      // gain text; if the anchor only moved on text-bearing bubbles it would
+      // drift to a later bubble and back, re-keying the same turn as a new one
+      // and replaying the caption.
+      turnStartId = String(message.id || turnMessageId);
       const text = getMessageBlockPreviewText(message);
       if (!text) continue;
       turnTexts.unshift(text);
@@ -536,6 +552,7 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
       const turnText = normalizeCompactPreviewText(turnTexts.join(' '));
       return {
         messageId: turnMessageId || 'assistant-streaming',
+        turnStartId,
         author: turnAuthor,
         text: turnText,
         fullText: turnText,
@@ -562,6 +579,7 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
       return {
         messageId: message.id,
         speechMatchMessageIds: getAdjacentGuideSpeechMatchMessageIds(messages, index),
+        turnStartId: String(message.id),
         author: message.author,
         text,
         fullText: text,
@@ -572,6 +590,7 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
     }
     const preview = {
       messageId: message.id,
+      turnStartId: String(message.id),
       author: message.author,
       text: (isStreamingAssistantMessage || isGuideMessage) ? text : truncateCompactPreview(text, COMPACT_PREVIEW_MAX_LENGTH),
       fullText: text,
@@ -1290,6 +1309,12 @@ export default function App({
   const compactSpeechLastFrameTimeRef = useRef(0);
   const compactSpeechPreviewIdRef = useRef('');
   const compactSpeechPreviewTextRef = useRef('');
+  // Identity of the turn the speech reveal is currently walking through (the
+  // preview's turnStartId). Updated when the preview re-keys (messageId change),
+  // so it holds the *previous* turn's anchor at the moment a new bubble arrives
+  // — used to tell an appended bubble (same turn → keep revealing) from a
+  // brand-new turn (rewind to the start) without text-prefix guessing.
+  const compactSpeechRevealTurnIdRef = useRef('');
   const compactSpeechFallbackRevealRef = useRef(false);
   const compactSpeechFallbackTimerRef = useRef<number | null>(null);
   const isCompactSurfaceRef = useRef(false);
@@ -1320,12 +1345,14 @@ export default function App({
   const [compactInputToolWheelChargeReleaseActive, setCompactInputToolWheelChargeReleaseActive] = useState(false);
   const [compactSurfaceResizeWidth, setCompactSurfaceResizeWidth] = useState<number | null>(null);
   const [compactExportHistoryOpen, setCompactExportHistoryOpen] = useState(readPersistedCompactExportHistoryOpen);
+  const [compactExportHistoryMounted, setCompactExportHistoryMounted] = useState(readPersistedCompactExportHistoryOpen);
   const [compactExportControlsOpen, setCompactExportControlsOpen] = useState(false);
   const [compactExportPreviewOpen, setCompactExportPreviewOpen] = useState(false);
   const [compactExportSelectedIds, setCompactExportSelectedIds] = useState<Set<string>>(() => new Set());
   const [compactExportAutoScrollToBottom, setCompactExportAutoScrollToBottom] = useState(true);
   const compactSurfaceResizeStateRef = useRef<CompactSurfaceResizeState | null>(null);
   const compactHistoryVisibilitySuppressClickRef = useRef(false);
+  const compactExportHistoryUnmountTimerRef = useRef<number | null>(null);
   const submittingRef = useRef(false);
   const lastRollbackKeyRef = useRef('');
   const lastToolCursorResetKeyRef = useRef('');
@@ -1548,16 +1575,31 @@ export default function App({
     [compactExportSelectableMessages],
   );
   const compactExportSelectableCount = compactExportSelectableMessages.length;
+  const clearCompactExportHistoryUnmountTimer = useCallback(() => {
+    if (compactExportHistoryUnmountTimerRef.current === null) return;
+    window.clearTimeout(compactExportHistoryUnmountTimerRef.current);
+    compactExportHistoryUnmountTimerRef.current = null;
+  }, []);
   const openCompactExportHistory = useCallback(() => {
+    clearCompactExportHistoryUnmountTimer();
+    setCompactExportHistoryMounted(true);
     setCompactExportHistoryOpen(true);
     persistCompactExportHistoryOpen(true);
     setCompactExportAutoScrollToBottom(true);
-  }, []);
+  }, [clearCompactExportHistoryUnmountTimer]);
   const closeCompactExportHistory = useCallback(() => {
+    clearCompactExportHistoryUnmountTimer();
     setCompactExportHistoryOpen(false);
     persistCompactExportHistoryOpen(false);
     setCompactExportPreviewOpen(false);
-  }, []);
+    compactExportHistoryUnmountTimerRef.current = window.setTimeout(() => {
+      setCompactExportHistoryMounted(false);
+      compactExportHistoryUnmountTimerRef.current = null;
+    }, COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
+  }, [clearCompactExportHistoryUnmountTimer]);
+  useEffect(() => () => {
+    clearCompactExportHistoryUnmountTimer();
+  }, [clearCompactExportHistoryUnmountTimer]);
   const handleCompactHistoryVisibilityToggle = useCallback(() => {
     if (compactExportHistoryOpen) {
       closeCompactExportHistory();
@@ -1893,13 +1935,38 @@ export default function App({
       window.clearTimeout(compactSpeechFallbackTimerRef.current);
       compactSpeechFallbackTimerRef.current = null;
     }
-    compactSpeechVisibleLengthRef.current = 0;
+    // Decouple the input-bar caption from per-bubble identity. The merged-turn
+    // preview is re-keyed to the latest streaming bubble's id, so every new
+    // bubble changes messageId even though it belongs to the same turn. While
+    // we're still inside that turn (same turnStartId), keep the revealed length
+    // so the caption continues appending instead of replaying the whole turn;
+    // only a genuinely new turn rewinds the reveal to the start. Keyed on the
+    // turn anchor rather than a text prefix, so two turns whose text happens to
+    // share a prefix can't be mistaken for a continuation.
+    const previousRevealTurnId = compactSpeechRevealTurnIdRef.current;
+    const nextRevealTurnId = compactPreviewIsStreaming ? (compactMessagePreview?.turnStartId || '') : '';
+    const continuesPreviousTurn = nextRevealTurnId.length > 0
+      && nextRevealTurnId === previousRevealTurnId;
+    const seedVisibleLength = continuesPreviousTurn
+      ? Math.min(compactSpeechVisibleLengthRef.current, compactPreviewText.length)
+      : 0;
+    // When the same turn continues, carry the fallback-reveal driver forward.
+    // Otherwise the appended text would freeze: the fallback timer re-arms but
+    // bails whenever visibleLength > 0 (the seeded length), so nothing would
+    // drive the reveal past the seed in the no-speech-playback path. Playback
+    // state is still reset to false so a finished bubble's audio can't snap the
+    // appended text to full — the next bubble's audio (or the carried fallback)
+    // resumes the reveal from the seed.
+    const keepFallbackReveal = continuesPreviousTurn && compactSpeechFallbackRevealRef.current;
+    compactSpeechRevealTurnIdRef.current = nextRevealTurnId;
+
+    compactSpeechVisibleLengthRef.current = seedVisibleLength;
     compactSpeechPlaybackStartedRef.current = false;
-    compactSpeechFallbackRevealRef.current = false;
+    compactSpeechFallbackRevealRef.current = keepFallbackReveal;
     compactSpeechRevealCarryRef.current = 0;
     compactSpeechLastFrameTimeRef.current = 0;
-    setCompactSpeechVisibleLength(0);
-    setCompactSpeechFallbackRevealActive(false);
+    setCompactSpeechVisibleLength(seedVisibleLength);
+    setCompactSpeechFallbackRevealActive(keepFallbackReveal);
   }, [compactMessagePreview?.messageId]);
 
   useEffect(() => {
@@ -1953,14 +2020,26 @@ export default function App({
         !isCompactSurfaceRef.current
         || compactSpeechPlaybackStartedRef.current
         || playbackHasStarted
-        || compactSpeechVisibleLengthRef.current > 0
+        // Bail when the reveal is already being driven or has finished — NOT
+        // merely when visibleLength > 0. A same-turn continuation seeds a
+        // nonzero prefix that may still be stalled (e.g. the previous bubble was
+        // revealed by speech, the appended bubble gets no playback/unavailable
+        // signal); the old `> 0` guard left that frozen. Let the timer engage so
+        // it reveals the appended text instead.
+        || compactSpeechFallbackRevealRef.current
+        || compactSpeechVisibleLengthRef.current >= compactPreviewText.length
       ) {
         return;
       }
       compactSpeechFallbackRevealRef.current = true;
       compactSpeechRevealCarryRef.current = 0;
       compactSpeechLastFrameTimeRef.current = 0;
-      compactSpeechVisibleLengthRef.current = Math.min(1, compactPreviewText.length);
+      // Resume from the already-seeded prefix (continuation) rather than rewinding
+      // to the first char; only an unseeded first bubble starts at 1.
+      compactSpeechVisibleLengthRef.current = Math.max(
+        compactSpeechVisibleLengthRef.current,
+        Math.min(1, compactPreviewText.length),
+      );
       setCompactSpeechVisibleLength(compactSpeechVisibleLengthRef.current);
       setCompactSpeechFallbackRevealActive(true);
     }, COMPACT_SPEECH_FALLBACK_REVEAL_DELAY_MS);
@@ -2679,11 +2758,13 @@ export default function App({
     });
     return () => window.cancelAnimationFrame(frameId);
   }, [
+    activeCursorToolId,
     compactInputToolFanInteractive,
     compactInputToolFanOpen,
     compactInputToolWheelIndex,
     effectiveCompactChatState,
     isCompactSurface,
+    toolMenuOpen,
   ]);
 
   const openCompactInputToolFan = useCallback((intent: 'click' | 'hover') => {
@@ -4689,7 +4770,7 @@ export default function App({
               setToolMenuOpen(false);
             }}
           >
-            <span aria-hidden="true">脳</span>
+            <span className="composer-tool-clear-icon" aria-hidden="true" />
           </button>
         ) : null}
       </div>
@@ -4868,7 +4949,7 @@ export default function App({
     ? (typeof document !== 'undefined' ? createPortal(choiceLayerNode, document.body) : choiceLayerNode)
     : null;
 
-  const compactExportHistoryElement = isCompactSurface && compactExportHistoryOpen ? (
+  const compactExportHistoryElement = isCompactSurface && compactExportHistoryMounted ? (
     <CompactExportHistoryPanel
       messages={messages}
       selectedIds={compactExportSelectedIds}
@@ -4878,6 +4959,7 @@ export default function App({
       previewOpen={compactExportPreviewOpen}
       controlsOpen={compactExportControlsOpen}
       choiceLayerAbove={compactChoiceLayerOpen && compactChoiceLayerPlacement === 'above'}
+      visibilityState={compactExportHistoryOpen ? 'open' : 'closing'}
       failedStatusLabel={failedStatusLabel}
       onAutoScrollToBottomChange={setCompactExportAutoScrollToBottom}
       onToggleMessage={handleCompactExportToggleMessage}

@@ -1274,21 +1274,35 @@ svg {
   background: #44b7fe;
   color: #fff;
   cursor: pointer;
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 1;
   box-shadow: 0 2px 6px rgba(35, 116, 190, 0.28);
   transition: background 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.composer-tool-clear-btn::before,
+.composer-tool-clear-btn::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  top: 50%;
+  height: 1.5px;
+  border-radius: 999px;
+  background: currentColor;
+  transform-origin: center;
+}
+
+.composer-tool-clear-btn::before {
+  transform: translateY(-50%) rotate(45deg);
+}
+
+.composer-tool-clear-btn::after {
+  transform: translateY(-50%) rotate(-45deg);
 }
 
 .composer-tool-clear-btn:hover {
   background: #229ceb;
   transform: scale(1.08);
   box-shadow: 0 3px 8px rgba(35, 116, 190, 0.34);
-}
-
-.composer-tool-clear-btn span {
-  transform: translateY(-0.5px);
 }
 
 .composer-tool-btn:disabled {
@@ -2261,6 +2275,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   height: calc(var(--compact-export-history-region-height) + var(--compact-export-controls-collapse-delta));
   max-height: calc(var(--compact-export-history-region-height) + var(--compact-export-controls-collapse-delta));
   min-height: 0;
+  overflow-anchor: none;
   overflow-y: auto;
   overflow-x: visible;
   overscroll-behavior: contain;
@@ -2280,6 +2295,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   flex-direction: column;
   gap: 0;
   min-height: 100%;
+  overflow-anchor: none;
   pointer-events: none;
 }
 
@@ -2326,6 +2342,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   display: flex;
   width: 100%;
   min-width: 0;
+  --compact-history-motion-x: 46px;
   margin-top: var(--compact-history-gap-before, 8px);
   border: 0;
   background: transparent;
@@ -2337,12 +2354,49 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   -webkit-app-region: no-drag;
 }
 
+.compact-export-history-anchor[data-compact-export-history-visibility="closing"] .compact-export-history-message {
+  pointer-events: none;
+}
+
+.compact-export-history-anchor[data-compact-export-history-visibility="closing"] .compact-export-history-controls,
+.compact-export-history-anchor[data-compact-export-history-visibility="closing"] .compact-export-preview-region {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+@keyframes compact-history-message-enter {
+  from {
+    opacity: 0;
+    translate: var(--compact-history-motion-x) 0;
+  }
+
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
+}
+
+@keyframes compact-history-message-exit {
+  from {
+    opacity: 1;
+    translate: 0 0;
+  }
+
+  to {
+    opacity: 0;
+    translate: var(--compact-history-motion-x) 0;
+  }
+}
+
 .compact-export-history-message.is-user {
+  --compact-history-motion-x: -46px;
   justify-content: flex-end;
 }
 
 .compact-export-history-message.is-assistant,
 .compact-export-history-message.is-system {
+  --compact-history-motion-x: 46px;
   justify-content: flex-start;
 }
 
@@ -2397,6 +2451,17 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   transform-origin: var(--compact-history-drag-origin-x, 50%) var(--compact-history-drag-origin-y, 50%);
   transform: translateX(var(--compact-history-stagger-x, 0px)) rotate(var(--compact-history-rotate, 0deg));
   transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+}
+
+.compact-export-history-anchor[data-compact-export-history-visibility="open"] .compact-export-history-message:not([data-compact-history-drag-phase]) .compact-export-history-bubble {
+  animation: compact-history-message-enter 0.26s cubic-bezier(0.2, 0.78, 0.34, 1) both;
+  animation-delay: var(--compact-history-enter-delay, 0ms);
+}
+
+.compact-export-history-anchor[data-compact-export-history-visibility="closing"] .compact-export-history-bubble {
+  animation: compact-history-message-exit 0.2s ease-in both;
+  animation-delay: var(--compact-history-exit-delay, 0ms);
+  pointer-events: none;
 }
 
 .compact-export-history-message.is-disabled .compact-export-history-bubble {
@@ -2816,9 +2881,9 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 .compact-history-visibility-handle {
   position: fixed;
   left: calc(var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw)) + (var(--compact-history-handle-surface-width) / 2));
-  top: calc(var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) - 2px);
+  top: calc(var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) + 8px);
   bottom: auto;
-  transform: translateX(-50%);
+  transform: translate(-50%, -50%);
   z-index: 100002;
   pointer-events: auto;
   -webkit-app-region: no-drag;
@@ -2838,6 +2903,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 .compact-history-visibility-handle::before {
   left: 50%;
+  z-index: 1;
   width: var(--compact-history-handle-line-width);
   height: 3px;
   background: linear-gradient(
@@ -2849,17 +2915,68 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
     rgba(0, 184, 255, 0) 100%
   );
   clip-path: polygon(0 50%, 18% 26%, 36% 0, 64% 0, 82% 26%, 100% 50%, 82% 74%, 64% 100%, 36% 100%, 18% 74%);
+  filter:
+    drop-shadow(0 0 4px rgba(118, 220, 255, 0.4))
+    drop-shadow(0 0 9px rgba(118, 220, 255, 0.2));
+  opacity: 0.92;
   transform: translate(-50%, -50%);
+  animation: compact-history-handle-breathe 2.35s ease-in-out infinite;
   transition: width 0.16s ease, background 0.16s ease;
 }
 
 .compact-history-visibility-handle::after {
-  display: none;
+  left: 50%;
+  z-index: 0;
+  width: var(--compact-history-handle-line-width);
+  height: 8px;
+  background: linear-gradient(
+    90deg,
+    rgba(116, 220, 255, 0) 0%,
+    rgba(116, 220, 255, 0.22) 22%,
+    rgba(154, 232, 255, 0.5) 50%,
+    rgba(116, 220, 255, 0.22) 78%,
+    rgba(116, 220, 255, 0) 100%
+  );
+  filter: blur(3px);
+  opacity: 0.42;
+  transform: translate(-50%, -50%) scaleX(1.16);
+  animation: compact-history-handle-glow-breathe 2.35s ease-in-out infinite;
+  transition: width 0.16s ease, opacity 0.16s ease;
 }
 
 .compact-history-visibility-handle:hover {
   background: transparent;
   color: rgba(0, 210, 255, 0.96);
+}
+
+@keyframes compact-history-handle-breathe {
+  0%,
+  100% {
+    opacity: 0.72;
+    filter:
+      drop-shadow(0 0 3px rgba(118, 220, 255, 0.28))
+      drop-shadow(0 0 7px rgba(118, 220, 255, 0.12));
+  }
+
+  50% {
+    opacity: 1;
+    filter:
+      drop-shadow(0 0 7px rgba(118, 220, 255, 0.72))
+      drop-shadow(0 0 16px rgba(118, 220, 255, 0.36));
+  }
+}
+
+@keyframes compact-history-handle-glow-breathe {
+  0%,
+  100% {
+    opacity: 0.28;
+    transform: translate(-50%, -50%) scaleX(1.08);
+  }
+
+  50% {
+    opacity: 0.64;
+    transform: translate(-50%, -50%) scaleX(1.18);
+  }
 }
 
 .compact-history-visibility-handle-triangle {
@@ -3319,10 +3436,11 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   --compact-tool-fan-hit-outset: 52px;
   --compact-tool-wheel-hover-radius: 116px;
   /* Orbit radius = how far the tool icons sit from the arrow center (visual
-     only). Halved from the original 91.92px to pull the wheel in tighter. The
-     drag-rotate sensitivity scalar in App.tsx is intentionally left at 91.92 so
-     rotate-by-drag feel is unchanged. */
-  --compact-tool-wheel-orbit-radius: 45.96px;
+     only). 45.96px (a straight halving of the original 91.92px) packed the icons
+     in too tight, so it's dialed back to 80px. The drag-rotate sensitivity
+     scalar in App.tsx is intentionally left at 91.92 so rotate-by-drag feel is
+     unchanged. */
+  --compact-tool-wheel-orbit-radius: 80px;
   --compact-tool-fan-focus-x: var(--compact-tool-wheel-hover-radius);
   --compact-tool-fan-focus-y: var(--compact-tool-wheel-hover-radius);
   --compact-tool-wheel-center-x: var(--compact-tool-wheel-hover-radius);
@@ -4267,7 +4385,14 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 [data-theme="dark"] .compact-history-visibility-handle::after {
-  display: none;
+  background: linear-gradient(
+    90deg,
+    rgba(116, 220, 255, 0) 0%,
+    rgba(116, 220, 255, 0.24) 22%,
+    rgba(164, 236, 255, 0.54) 50%,
+    rgba(116, 220, 255, 0.24) 78%,
+    rgba(116, 220, 255, 0) 100%
+  );
 }
 
 [data-theme="dark"] .compact-export-history-empty {
@@ -4328,6 +4453,11 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 
 @media (prefers-reduced-motion: reduce) {
+  .compact-export-history-anchor[data-compact-export-history-visibility="closing"] {
+    opacity: 0 !important;
+    visibility: hidden !important;
+  }
+
   .avatar-cursor-overlay-stage,
   .hammer-cursor-overlay-stage,
   .fist-floating-drop,
@@ -4337,6 +4467,10 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   .hammer-cursor-overlay-visual.is-active,
   .message-row-user,
   .message-row-assistant,
+  .compact-export-history-message,
+  .compact-export-history-bubble,
+  .compact-history-visibility-handle::before,
+  .compact-history-visibility-handle::after,
   .text-chunk-reveal,
   .composer-icon-popover,
   .composer-icon-button,

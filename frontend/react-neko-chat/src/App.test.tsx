@@ -1,6 +1,10 @@
 import { useState } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import App from './App';
+import App, { COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS } from './App';
+import {
+  computeCompactHistoryEnterDelay,
+  computeCompactHistoryExitDelay,
+} from './CompactExportHistoryPanel';
 import MessageList from './MessageList';
 import { parseChatMessage, type CompactChatState } from './message-schema';
 
@@ -398,19 +402,41 @@ describe('App', () => {
     expect(container.querySelector('.compact-export-history-controls')).toHaveAttribute('data-compact-hit-region-id', 'history:controls');
     expect(exportButton).toHaveAttribute('aria-pressed', 'true');
 
-    fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
-    expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
-    expect(container.querySelector('[data-compact-hit-region-id^="history:"]')).toBeNull();
-    expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'false');
-    expect(exportButton).toHaveAttribute('aria-pressed', 'false');
-    expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('false');
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
+      expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'closing');
+      expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'false');
+      expect(exportButton).toHaveAttribute('aria-pressed', 'false');
+      expect(container.querySelector('.compact-export-history-bubble')).not.toHaveAttribute('role');
+      expect(container.querySelector('.compact-export-history-bubble')).not.toHaveAttribute('aria-pressed');
+      expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('aria-disabled', 'true');
+      expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('tabindex', '-1');
+      expect(container.querySelector('.compact-export-history-bubble')).not.toHaveAttribute('data-compact-hit-region');
+      expect(container.querySelector('.compact-export-history-controls')).toHaveAttribute('aria-disabled', 'true');
+      expect(container.querySelector('.compact-export-history-controls')).not.toHaveAttribute('data-compact-hit-region');
+      container.querySelectorAll<HTMLButtonElement>('.compact-export-history-control').forEach((button) => {
+        expect(button).toBeDisabled();
+      });
+      expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('false');
 
-    fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
-    expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
-    expect(container.querySelector('.compact-export-history-controls')).toHaveAttribute('data-compact-hit-region-id', 'history:controls');
-    expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'true');
-    expect(exportButton).toHaveAttribute('aria-pressed', 'true');
-    expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
+      });
+
+      expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+      expect(container.querySelector('[data-compact-hit-region-id^="history:"]')).toBeNull();
+
+      fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
+      expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
+      expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'open');
+      expect(container.querySelector('.compact-export-history-controls')).toHaveAttribute('data-compact-hit-region-id', 'history:controls');
+      expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'true');
+      expect(exportButton).toHaveAttribute('aria-pressed', 'true');
+      expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
+    } finally {
+      vi.useRealTimers();
+    }
 
     await clickCompactExportTool();
     expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
@@ -440,37 +466,48 @@ describe('App', () => {
     expect(container.querySelector('.compact-input-tool-item-export')).toHaveAttribute('aria-pressed', 'false');
   });
 
-  it('toggles compact history visibility as soon as the handle is pressed', () => {
+  it('toggles compact history visibility as soon as the handle is pressed', async () => {
     window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
+    vi.useFakeTimers();
 
-    const { container } = render(
-      <App chatSurfaceMode="compact" compactChatState="input" />,
-    );
+    try {
+      const { container } = render(
+        <App chatSurfaceMode="compact" compactChatState="input" />,
+      );
 
-    const handle = container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle');
-    expect(handle).not.toBeNull();
-    expect(handle).toHaveAttribute('aria-expanded', 'false');
-    expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+      const handle = container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle');
+      expect(handle).not.toBeNull();
+      expect(handle).toHaveAttribute('aria-expanded', 'false');
+      expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
 
-    fireEvent.pointerDown(handle!, { pointerType: 'mouse', button: 0 });
-    expect(handle).toHaveAttribute('aria-expanded', 'true');
-    expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
-    expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
-    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'input');
+      fireEvent.pointerDown(handle!, { pointerType: 'mouse', button: 0 });
+      expect(handle).toHaveAttribute('aria-expanded', 'true');
+      expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
+      expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
+      expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'input');
 
-    fireEvent.click(handle!);
-    expect(handle).toHaveAttribute('aria-expanded', 'true');
+      fireEvent.click(handle!);
+      expect(handle).toHaveAttribute('aria-expanded', 'true');
 
-    fireEvent.pointerDown(handle!, { pointerType: 'mouse', button: 0 });
-    expect(handle).toHaveAttribute('aria-expanded', 'false');
-    expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
-    expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('false');
+      fireEvent.pointerDown(handle!, { pointerType: 'mouse', button: 0 });
+      expect(handle).toHaveAttribute('aria-expanded', 'false');
+      expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'closing');
+      expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('false');
 
-    fireEvent.click(handle!);
-    expect(handle).toHaveAttribute('aria-expanded', 'false');
+      fireEvent.click(handle!);
+      expect(handle).toHaveAttribute('aria-expanded', 'false');
 
-    fireEvent.click(handle!);
-    expect(handle).toHaveAttribute('aria-expanded', 'true');
+      fireEvent.click(handle!);
+      expect(handle).toHaveAttribute('aria-expanded', 'true');
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
+      });
+
+      expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'open');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('keeps compact export history message actions read-only', async () => {
@@ -576,6 +613,17 @@ describe('App', () => {
     expect(second?.style.getPropertyValue('--compact-history-bubble-max-ratio')).toMatch(/%$/);
     expect(second?.style.getPropertyValue('--compact-history-stagger-x')).toMatch(/px$/);
     expect(user?.style.getPropertyValue('--compact-history-stagger-x')).toMatch(/^-?\d+px$/);
+    const initialHistoryMessageCount = 4;
+    expect(first?.style.getPropertyValue('--compact-history-enter-delay')).toBe(
+      computeCompactHistoryEnterDelay(0, initialHistoryMessageCount),
+    );
+    expect(image?.style.getPropertyValue('--compact-history-enter-delay')).toBe(
+      computeCompactHistoryEnterDelay(3, initialHistoryMessageCount),
+    );
+    expect(first?.style.getPropertyValue('--compact-history-exit-delay')).toBe(computeCompactHistoryExitDelay(0));
+    expect(image?.style.getPropertyValue('--compact-history-exit-delay')).toBe(computeCompactHistoryExitDelay(3));
+    const stableFirstEnterDelay = first?.style.getPropertyValue('--compact-history-enter-delay');
+    const stableImageEnterDelay = image?.style.getPropertyValue('--compact-history-enter-delay');
     const stableOffset = second?.style.getPropertyValue('--compact-history-stagger-x');
     const stableWidth = second?.style.getPropertyValue('--compact-history-bubble-max-ratio');
     const stableRotate = second?.style.getPropertyValue('--compact-history-rotate');
@@ -596,6 +644,35 @@ describe('App', () => {
     expect(rerenderedSecond?.style.getPropertyValue('--compact-history-stagger-x')).toBe(stableOffset);
     expect(rerenderedSecond?.style.getPropertyValue('--compact-history-bubble-max-ratio')).toBe(stableWidth);
     expect(rerenderedSecond?.style.getPropertyValue('--compact-history-rotate')).toBe(stableRotate);
+
+    const newAssistantMessage = parseChatMessage({
+      id: 'assistant-history-casual-new',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:04',
+      createdAt: 5,
+      blocks: [{ type: 'text', text: 'A fresh assistant message should not replay old history.' }],
+      status: 'sent',
+    });
+    rerender(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        messages={[firstAssistant, updatedSecondAssistant, userMessage, imageMessage, newAssistantMessage]}
+      />,
+    );
+
+    expect(container.querySelector<HTMLElement>(
+      '[data-compact-export-history-message-id="assistant-history-casual-1"]',
+    )?.style.getPropertyValue('--compact-history-enter-delay')).toBe(stableFirstEnterDelay);
+    expect(container.querySelector<HTMLElement>(
+      '[data-compact-export-history-message-id="assistant-history-casual-image"]',
+    )?.style.getPropertyValue('--compact-history-enter-delay')).toBe(stableImageEnterDelay);
+    expect(container.querySelector<HTMLElement>(
+      '[data-compact-export-history-message-id="assistant-history-casual-new"]',
+    )?.style.getPropertyValue('--compact-history-enter-delay')).toBe(
+      computeCompactHistoryEnterDelay(4, 5),
+    );
   });
 
   it('opens compact inline preview with disabled final actions when nothing is selected', async () => {
@@ -2860,6 +2937,148 @@ describe('App', () => {
       expect(previewText.length).toBeGreaterThan(0);
       expect(previewText).toBe(currentProactiveText.slice(0, previewText.length));
       expect(previewText).not.toContain(previousAssistantText.slice(0, 4));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the compact caption moving forward when a new bubble joins the same turn instead of replaying it', async () => {
+    vi.useFakeTimers();
+    const firstBubbleText = '猫娘先说出来的第一段内容，紧凑输入条会逐字显示这一句。';
+    const secondBubbleText = '紧接着猫娘又补了第二段，字幕应该接着往后追加而不是从头重播。';
+    const makeBubble = (id: string, text: string, status: 'streaming' | 'sent', createdAt: number) =>
+      parseChatMessage({
+        id,
+        role: 'assistant',
+        author: 'Neko',
+        time: '10:01',
+        createdAt,
+        blocks: [{ type: 'text', text }],
+        status,
+      });
+
+    try {
+      const firstStreaming = makeBubble('assistant-compact-turn-bubble-1', firstBubbleText, 'streaming', 2);
+      const { container, rerender } = render(
+        <App chatSurfaceMode="compact" composerHidden messages={[firstStreaming]} />,
+      );
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1400);
+      });
+
+      const revealedBefore = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      expect(revealedBefore.length).toBeGreaterThan(0);
+      expect(firstBubbleText.startsWith(revealedBefore)).toBe(true);
+
+      // Same turn (createdAt within the merge window): the merged preview re-keys
+      // to the new bubble's id, but the caption must keep the already-revealed
+      // prefix and continue, not rewind to empty and replay the whole turn.
+      const firstSent = makeBubble('assistant-compact-turn-bubble-1', firstBubbleText, 'sent', 2);
+      const secondStreaming = makeBubble('assistant-compact-turn-bubble-2', secondBubbleText, 'streaming', 5);
+      rerender(<App chatSurfaceMode="compact" composerHidden messages={[firstSent, secondStreaming]} />);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50);
+      });
+
+      const revealedAfter = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      const combinedText = `${firstBubbleText} ${secondBubbleText}`;
+      // Did not replay from zero, and what stays on screen is a forward
+      // continuation of what was already revealed.
+      expect(revealedAfter.length).toBeGreaterThanOrEqual(revealedBefore.length);
+      expect(revealedAfter.startsWith(revealedBefore)).toBe(true);
+      expect(combinedText.startsWith(revealedAfter)).toBe(true);
+
+      // And it keeps moving forward into the appended bubble — proving the
+      // caption source switched to the merged turn rather than freezing on the
+      // first bubble's revealed prefix.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8000);
+      });
+
+      const revealedLater = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      expect(revealedLater.length).toBeGreaterThan(firstBubbleText.length);
+      expect(combinedText.startsWith(revealedLater)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps appending when a new bubble joins a speech-revealed turn with no further playback signal', async () => {
+    vi.useFakeTimers();
+    const firstBubbleText = '第一段由语音播放揭示完。';
+    const secondBubbleText = '第二段同 turn 追加，但这次没有任何播放状态或不可用事件到达。';
+    const makeBubble = (id: string, text: string, status: 'streaming' | 'sent', createdAt: number) =>
+      parseChatMessage({
+        id,
+        role: 'assistant',
+        author: 'Neko',
+        time: '10:01',
+        createdAt,
+        blocks: [{ type: 'text', text }],
+        status,
+      });
+
+    try {
+      const firstStreaming = makeBubble('assistant-compact-speech-turn-bubble-1', firstBubbleText, 'streaming', 2);
+      const { container, rerender } = render(
+        <App chatSurfaceMode="compact" composerHidden messages={[firstStreaming]} />,
+      );
+
+      // First bubble is revealed by real speech playback (not the fallback path).
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-speech-playback-state', {
+          detail: {
+            active: true,
+            audioContextTime: 0,
+            playbackStartAudioTime: 0,
+            playbackEndAudioTime: 1,
+            updatedAt: Date.now(),
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1500);
+      });
+      // Playback ends — the first bubble settles to its full text.
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-speech-playback-state', {
+          detail: {
+            active: false,
+            audioContextTime: 1,
+            playbackStartAudioTime: 0,
+            playbackEndAudioTime: 1,
+            updatedAt: Date.now(),
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100);
+      });
+      const revealedBefore = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      expect(revealedBefore.length).toBeGreaterThan(0);
+
+      // Same-turn bubble arrives, but NO further playback state and NO
+      // speech-unavailable event. The fallback safety net must still reveal the
+      // appended text instead of freezing on the seeded prefix.
+      const firstSent = makeBubble('assistant-compact-speech-turn-bubble-1', firstBubbleText, 'sent', 2);
+      const secondStreaming = makeBubble('assistant-compact-speech-turn-bubble-2', secondBubbleText, 'streaming', 5);
+      rerender(<App chatSurfaceMode="compact" composerHidden messages={[firstSent, secondStreaming]} />);
+
+      // First tick lets the fallback safety net engage (it arms a ~700ms timer,
+      // whose state update then schedules the reveal frame); the second drives
+      // the reveal forward into the appended bubble.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(800);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8000);
+      });
+
+      const revealedLater = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      expect(revealedLater.length).toBeGreaterThan(firstBubbleText.length);
+      expect(`${firstBubbleText} ${secondBubbleText}`.startsWith(revealedLater)).toBe(true);
     } finally {
       vi.useRealTimers();
     }

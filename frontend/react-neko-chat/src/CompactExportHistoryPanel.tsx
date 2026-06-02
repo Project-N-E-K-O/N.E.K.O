@@ -2,6 +2,7 @@ import clsx from 'clsx';
 import {
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -20,8 +21,24 @@ const COMPACT_EXPORT_BOTTOM_THRESHOLD = 30;
 const COMPACT_EXPORT_CLICK_MOVE_THRESHOLD = 6;
 const COMPACT_EXPORT_DRAG_MOVE_THRESHOLD = 8;
 const COMPACT_EXPORT_TOUCH_SCROLL_ANGLE_RATIO = 1.35;
+const COMPACT_HISTORY_SCROLL_SETTLE_FRAMES = 36;
 const COMPACT_HISTORY_RETURN_ANIMATION_MS = 260;
 const COMPACT_HISTORY_SEND_ANIMATION_MS = 340;
+export const COMPACT_HISTORY_ENTER_DELAY_STEP_MS = 42;
+export const COMPACT_HISTORY_ENTER_DELAY_MAX_MS = 420;
+export const COMPACT_HISTORY_EXIT_DELAY_STEP_MS = 30;
+export const COMPACT_HISTORY_EXIT_DELAY_MAX_MS = 320;
+
+export function computeCompactHistoryEnterDelay(index: number, totalMessages: number): string {
+  return `${Math.min(
+    Math.max(totalMessages - 1 - index, 0) * COMPACT_HISTORY_ENTER_DELAY_STEP_MS,
+    COMPACT_HISTORY_ENTER_DELAY_MAX_MS,
+  )}ms`;
+}
+
+export function computeCompactHistoryExitDelay(index: number): string {
+  return `${Math.min(index * COMPACT_HISTORY_EXIT_DELAY_STEP_MS, COMPACT_HISTORY_EXIT_DELAY_MAX_MS)}ms`;
+}
 
 export type CompactExportFormat = 'markdown' | 'image';
 export type CompactExportImageStyle = 'neko' | 'original' | 'poster' | 'lyrics';
@@ -54,6 +71,7 @@ type CompactExportHistoryPanelProps = {
   previewOpen: boolean;
   controlsOpen: boolean;
   choiceLayerAbove: boolean;
+  visibilityState?: 'open' | 'closing';
   failedStatusLabel: string;
   onAutoScrollToBottomChange: (enabled: boolean) => void;
   onToggleMessage: (messageId: string) => void;
@@ -1160,6 +1178,7 @@ export default function CompactExportHistoryPanel({
   previewOpen,
   controlsOpen,
   choiceLayerAbove,
+  visibilityState = 'open',
   failedStatusLabel,
   onAutoScrollToBottomChange,
   onToggleMessage,
@@ -1195,6 +1214,8 @@ export default function CompactExportHistoryPanel({
   const pendingDragPointRef = useRef<{ intent: PointerIntentState; clientX: number; clientY: number } | null>(null);
   const suppressClickMessageIdRef = useRef<string | null>(null);
   const previewObjectUrlRef = useRef<string | null>(null);
+  const enterDelayByMessageIdRef = useRef<Map<string, string>>(new Map());
+  const previousVisibilityStateRef = useRef<'open' | 'closing' | null>(null);
   const [exportFormat, setExportFormat] = useState<CompactExportFormat>('markdown');
   const [imageStyle, setImageStyle] = useState<CompactExportImageStyle>('neko');
   const [imageFormat, setImageFormat] = useState<CompactExportImageFormat>('png');
@@ -1215,6 +1236,32 @@ export default function CompactExportHistoryPanel({
   ].join('\u001e')).join('\u001f');
   const exportBusy = pendingAction !== null;
   const exportActionsDisabled = !previewHasSelection || exportBusy;
+  const historyInteractive = visibilityState === 'open';
+  const selectionControlsInteractive = historyInteractive && controlsOpen;
+  const openingEnterDelayByMessageId = useMemo(() => (
+    visibilityState === 'open' && previousVisibilityStateRef.current !== 'open'
+      ? new Map(messages.map((message, index) => [
+        message.id,
+        computeCompactHistoryEnterDelay(index, messages.length),
+      ]))
+      : null
+  ), [messages, visibilityState]);
+
+  useLayoutEffect(() => {
+    if (openingEnterDelayByMessageId) {
+      enterDelayByMessageIdRef.current = openingEnterDelayByMessageId;
+    }
+    previousVisibilityStateRef.current = visibilityState;
+  }, [openingEnterDelayByMessageId, visibilityState]);
+
+  function resolveCompactHistoryEnterDelay(message: ChatMessage, index: number): string {
+    const existingDelay = openingEnterDelayByMessageId?.get(message.id)
+      ?? enterDelayByMessageIdRef.current.get(message.id);
+    if (existingDelay !== undefined) return existingDelay;
+    return visibilityState === 'open'
+      ? '0ms'
+      : computeCompactHistoryEnterDelay(index, messages.length);
+  }
 
   function emitCompactHistoryDragState(activeDragState: ActiveCompactHistoryDrag) {
     const state = buildCompactHistoryDragState(activeDragState, dragStateSeqRef.current);
@@ -1241,15 +1288,28 @@ export default function CompactExportHistoryPanel({
     previewObjectUrlRef.current = null;
   }
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!autoScrollToBottom) return;
     const scrollNode = scrollRef.current;
     if (!scrollNode) return;
-    const frameId = window.requestAnimationFrame(() => {
+    let frameId: number | null = null;
+    let remainingFrames = COMPACT_HISTORY_SCROLL_SETTLE_FRAMES;
+    const pinScrollToBottom = () => {
       scrollNode.scrollTop = scrollNode.scrollHeight;
-    });
-    return () => window.cancelAnimationFrame(frameId);
-  }, [autoScrollToBottom, messages]);
+      remainingFrames -= 1;
+      if (remainingFrames <= 0) {
+        frameId = null;
+        return;
+      }
+      frameId = window.requestAnimationFrame(pinScrollToBottom);
+    };
+    pinScrollToBottom();
+    return () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+      }
+    };
+  }, [autoScrollToBottom, messages, previewOpen, visibilityState]);
 
   useEffect(() => {
     if (!previewOpen) {
@@ -1782,6 +1842,7 @@ export default function CompactExportHistoryPanel({
   }
 
   function handlePointerDown(event: ReactPointerEvent<HTMLElement>, message: ChatMessage, selectable: boolean) {
+    if (!historyInteractive) return;
     if (!selectable) return;
     if (event.pointerType === 'mouse' && event.button !== 0) return;
     const imageSource = resolveImageDragSource(event.target, event.currentTarget, message);
@@ -1820,6 +1881,10 @@ export default function CompactExportHistoryPanel({
   function handlePointerMove(event: ReactPointerEvent<HTMLElement>) {
     const intent = pointerIntentRef.current;
     if (!intent || intent.id !== event.pointerId) return;
+    if (!historyInteractive) {
+      completePointerIntent(intent);
+      return;
+    }
     const dx = event.clientX - intent.x;
     const dy = event.clientY - intent.y;
     if (isDraggingPhase(intent.phase)) {
@@ -1850,7 +1915,7 @@ export default function CompactExportHistoryPanel({
     if (
       (intent.phase === 'pending' || intent.phase === 'click')
       && selectable
-      && controlsOpen
+      && selectionControlsInteractive
       && !isSelectionIgnoredTarget(event.target, event.currentTarget)
     ) {
       clearPointerIntentAfterDrag(intent);
@@ -1877,13 +1942,13 @@ export default function CompactExportHistoryPanel({
       suppressClickMessageIdRef.current = null;
       return;
     }
-    if (!controlsOpen) return;
+    if (!selectionControlsInteractive) return;
     onToggleMessage(message.id);
   }
 
   function handleKeyDown(event: ReactKeyboardEvent<HTMLElement>, message: ChatMessage, selectable: boolean) {
     if (!selectable) return;
-    if (!controlsOpen) return;
+    if (!selectionControlsInteractive) return;
     if (event.key !== 'Enter' && event.key !== ' ') return;
     event.preventDefault();
     onToggleMessage(message.id);
@@ -2240,6 +2305,7 @@ export default function CompactExportHistoryPanel({
         data-compact-geometry-item="history"
         data-compact-geometry-hit-scope="children"
         data-compact-export-history-open="true"
+        data-compact-export-history-visibility={visibilityState}
         data-compact-export-preview-open={previewOpen ? 'true' : 'false'}
         data-compact-export-under-choice={choiceLayerAbove ? 'true' : 'false'}
         aria-label={i18n('chat.exportConversation', 'Export Conversation')}
@@ -2265,16 +2331,21 @@ export default function CompactExportHistoryPanel({
                   {messages.map((message, index) => {
                     const selectable = isCompactExportMessageSelectable(message);
                     const selected = selectedIds.has(message.id);
-                    const selectionEnabled = controlsOpen && selectable;
+                    const selectionEnabled = selectionControlsInteractive && selectable;
                     const failed = message.status === 'failed';
                     const streaming = message.status === 'streaming';
                     const tone = getCompactHistoryBubbleTone(message, index, messages[index - 1]);
+                    const motionStyle: CSSProperties & Record<string, string> = {
+                      '--compact-history-enter-delay': resolveCompactHistoryEnterDelay(message, index),
+                      '--compact-history-exit-delay': computeCompactHistoryExitDelay(index),
+                    };
                     return (
                       <article
                         key={message.id}
                         className={getCompactHistoryMessageClassName(message, selected, selectable, selectedCount > 0)}
                         style={{
                           ...tone.style,
+                          ...motionStyle,
                           ...(activeDrag?.messageId === message.id ? getCompactHistorySourceStyle(activeDrag) : null),
                         }}
                         role="listitem"
@@ -2293,9 +2364,9 @@ export default function CompactExportHistoryPanel({
                           aria-pressed={selectionEnabled ? selected : undefined}
                           aria-disabled={!selectionEnabled}
                           tabIndex={selectionEnabled ? 0 : -1}
-                          data-compact-hit-region="true"
-                          data-compact-hit-region-id={`history:message:${message.id}`}
-                          data-compact-hit-region-kind="message"
+                          data-compact-hit-region={historyInteractive ? 'true' : undefined}
+                          data-compact-hit-region-id={historyInteractive ? `history:message:${message.id}` : undefined}
+                          data-compact-hit-region-kind={historyInteractive ? 'message' : undefined}
                           onPointerDown={(event) => handlePointerDown(event, message, selectable)}
                           onPointerMove={handlePointerMove}
                           onPointerUp={(event) => finishPointer(event, message, selectable)}
@@ -2333,27 +2404,29 @@ export default function CompactExportHistoryPanel({
                 className="compact-export-history-controls"
                 role="group"
                 aria-label={i18n('chat.exportConversation', 'Export Conversation')}
+                aria-disabled={!historyInteractive}
                 data-compact-export-controls-open="true"
-                data-compact-hit-region="true"
-                data-compact-hit-region-id="history:controls"
-                data-compact-hit-region-kind="controls"
+                data-compact-hit-region={historyInteractive ? 'true' : undefined}
+                data-compact-hit-region-id={historyInteractive ? 'history:controls' : undefined}
+                data-compact-hit-region-kind={historyInteractive ? 'controls' : undefined}
               >
                 <div className="compact-export-history-controls-content">
                   <div className="compact-export-history-count" aria-live="polite">
                     {selectedCount}/{selectableCount}
                   </div>
-                  <button type="button" className="compact-export-history-control" disabled={selectableCount <= 0} onClick={onSelectAll}>
+                  <button type="button" className="compact-export-history-control" disabled={!historyInteractive || selectableCount <= 0} onClick={onSelectAll}>
                     {i18n('chat.exportSelectAll', 'Select All')}
                   </button>
-                  <button type="button" className="compact-export-history-control" disabled={selectedCount <= 0} onClick={onClearSelection}>
+                  <button type="button" className="compact-export-history-control" disabled={!historyInteractive || selectedCount <= 0} onClick={onClearSelection}>
                     {i18n('chat.exportSelectNone', 'Clear')}
                   </button>
-                  <button type="button" className="compact-export-history-control" disabled={selectableCount <= 0} onClick={onInvertSelection}>
+                  <button type="button" className="compact-export-history-control" disabled={!historyInteractive || selectableCount <= 0} onClick={onInvertSelection}>
                     {i18n('chat.exportSelectInvert', 'Invert')}
                   </button>
                   <button
                     type="button"
                     className="compact-export-history-control compact-export-history-export"
+                    disabled={!historyInteractive}
                     onClick={onRequestPreview}
                   >
                     {i18n('chat.exportAction', 'Export')}

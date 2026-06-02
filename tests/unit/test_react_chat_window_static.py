@@ -285,6 +285,7 @@ def test_compact_surface_resize_handles_keep_width_in_dom_geometry_contract():
 def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    app_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
 
     fan_block = css_block(styles, ".compact-input-tool-fan {", ".compact-chat-surface-shell *")
     wheel_block = styles.split(".compact-input-tool-fan .compact-input-tool-item {", 1)[1].split(
@@ -296,6 +297,13 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
         1,
     )[0]
     native_hit_block = collector_block.split("nativeRects.forEach", 1)[1].split("return items.concat", 1)[0]
+    geometry_sync_block = app_source.split(
+        "window.dispatchEvent(new CustomEvent('neko:compact-interaction-geometry-change'));",
+        1,
+    )[1].split(
+        "const openCompactInputToolFan",
+        1,
+    )[0]
 
     assert "position: absolute;" in fan_block
     assert "--compact-tool-wheel-hover-radius: 116px;" in fan_block
@@ -313,6 +321,7 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     assert "top: calc(var(--compact-tool-toggle-center-y) - var(--compact-tool-fan-focus-y));" in fan_block
     assert "width: calc(var(--compact-tool-wheel-hover-radius) * 2);" in fan_block
     assert "height: calc(var(--compact-tool-wheel-hover-radius) * 2);" in fan_block
+    assert "--compact-tool-wheel-orbit-radius: 80px;" in fan_block
     assert "touch-action: none;" in fan_block
     assert "position: fixed;" not in fan_block
     assert "--compact-input-tool-fan-origin-left" not in fan_block
@@ -345,10 +354,10 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     assert '.compact-input-tool-item[data-compact-tool-wheel-slot="hidden"]' in styles
     assert '.compact-input-tool-item[data-compact-tool-wheel-slot="hidden-forward"]' in styles
     assert '.compact-input-tool-item[data-compact-tool-wheel-slot="hidden-backward"]' in styles
-    assert "rotate(107.35deg) translateX(91.92px) rotate(-107.35deg)" in styles
-    assert "rotate(-17.35deg) translateX(91.92px) rotate(17.35deg)" in styles
-    assert "rotate(-48.51deg) translateX(91.92px) rotate(48.51deg)" in styles
-    assert "rotate(138.51deg) translateX(91.92px) rotate(-138.51deg)" in styles
+    assert "rotate(107.35deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(-107.35deg)" in styles
+    assert "rotate(-17.35deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(17.35deg)" in styles
+    assert "rotate(-48.51deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(48.51deg)" in styles
+    assert "rotate(138.51deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(-138.51deg)" in styles
     assert "translateX(83.82px)" not in wheel_block
     assert "translateX(89.74px)" not in wheel_block
     assert "translateX(92.06px)" not in wheel_block
@@ -356,11 +365,19 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     assert "scale(0.86)" in wheel_block
     assert "scale(0.98)" in wheel_block
     assert "scale(1.04)" in wheel_block
+    assert "bubbleFloat 3.2s ease-in-out infinite" in styles
     assert '.compact-input-tool-fan[data-compact-tool-wheel-fast-animation="true"]' in styles
     assert "--compact-tool-wheel-transform-duration: 0.07s;" in styles
     assert "pointer-events: none;" in styles
+    assert "activeCursorToolId" in geometry_sync_block
+    assert "toolMenuOpen" in geometry_sync_block
+    assert "var COMPACT_TOOL_AVATAR_CHOICE_FLOAT_PADDING_X = 6;" in script
+    assert "var COMPACT_TOOL_AVATAR_CHOICE_FLOAT_PADDING_Y = 12;" in script
+    assert "function buildCompactAvatarToolChoiceHitRect(rect)" in script
     assert ".composer-icon-popover .composer-icon-button" in collector_block
     assert "toolFan:avatarToolChoice:" in collector_block
+    assert "var hitRect = isAvatarToolChoice ? buildCompactAvatarToolChoiceHitRect(rect) : rect;" in collector_block
+    assert "nativeRect: hitRect" in collector_block
     assert "slot.indexOf('hidden') === 0" in collector_block
     assert "style.pointerEvents !== 'none'" not in collector_block
     assert "hitRect: nativeRect" in native_hit_block
@@ -580,9 +597,10 @@ def test_compact_history_controls_collapse_gives_height_back_to_history_scroll()
     assert "--compact-history-handle-line-width: clamp(38px, calc(var(--compact-history-handle-surface-width) * 0.102), 50px);" in history_handle_block
     assert ".compact-history-visibility-handle.is-open {" in history_handle_block
     assert "--compact-history-handle-line-width: 100%;" in history_handle_block
-    assert "top: calc(var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) - 2px);" in history_handle_block
+    assert "top: calc(var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) + 8px);" in history_handle_block
     assert "bottom: auto;" in history_handle_block
     assert "bottom: calc(100vh - var(--desktop-compact-surface-top" not in history_handle_block
+    assert "transform: translate(-50%, -50%);" in history_handle_block
     assert "z-index: 100002;" in history_handle_block
     assert "pointer-events: auto;" in history_handle_block
     assert "-webkit-app-region: no-drag;" in history_handle_block
@@ -620,6 +638,48 @@ def test_compact_history_layout_contract_avoids_jitter_feedback():
     assert "height: calc(var(--compact-export-history-region-height)" in scroll_block
     assert "max-height: calc(var(--compact-export-history-region-height)" in scroll_block
     assert "max-height: inherit;" in panel_block
+
+
+def test_compact_history_reduced_motion_closing_hides_immediately():
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+
+    reduced_motion_block = styles.rsplit("@media (prefers-reduced-motion: reduce)", 1)[1]
+    closing_block = css_block(
+        reduced_motion_block,
+        '.compact-export-history-anchor[data-compact-export-history-visibility="closing"] {',
+        ".avatar-cursor-overlay-stage",
+    )
+
+    assert "opacity: 0 !important;" in closing_block
+    assert "visibility: hidden !important;" in closing_block
+
+
+def test_compact_history_closing_bubbles_disable_pointer_events():
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+
+    closing_bubble_block = css_block(
+        styles,
+        '.compact-export-history-anchor[data-compact-export-history-visibility="closing"] .compact-export-history-bubble {',
+        ".compact-export-history-message.is-disabled",
+    )
+
+    assert "animation: compact-history-message-exit" in closing_bubble_block
+    assert "pointer-events: none;" in closing_bubble_block
+
+
+def test_compact_history_enter_animation_excludes_drag_sources():
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+    enter_selector = (
+        '.compact-export-history-anchor[data-compact-export-history-visibility="open"] '
+        ".compact-export-history-message:not([data-compact-history-drag-phase]) "
+        ".compact-export-history-bubble"
+    )
+
+    assert enter_selector in styles
+    assert (
+        '.compact-export-history-anchor[data-compact-export-history-visibility="open"] '
+        ".compact-export-history-bubble {"
+    ) not in styles
 
 
 def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regions():
@@ -663,8 +723,8 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
     assert "function getCompactHistoryScrollbarRect(element, parentRect)" in script
     assert "id: 'history:scrollbar'" in script
     assert "data-compact-hit-region" not in scroll_jsx_block
-    assert 'data-compact-hit-region-id={`history:message:${message.id}`}' in panel_source
-    assert 'data-compact-hit-region-id="history:controls"' in panel_source
+    assert 'data-compact-hit-region-id={historyInteractive ? `history:message:${message.id}` : undefined}' in panel_source
+    assert "data-compact-hit-region-id={historyInteractive ? 'history:controls' : undefined}" in panel_source
     assert 'data-compact-hit-region-id="history:preview"' in panel_source
 
 
