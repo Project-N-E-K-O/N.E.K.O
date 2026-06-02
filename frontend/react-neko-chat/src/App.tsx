@@ -452,11 +452,16 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
         }
         previousIncludedCreatedAt = createdAt;
       }
+      // Anchor the turn to every message folded in, before the empty-text skip.
+      // A bubble can be momentarily text-less (still streaming, image-only) then
+      // gain text; if the anchor only moved on text-bearing bubbles it would
+      // drift to a later bubble and back, re-keying the same turn as a new one
+      // and replaying the caption.
+      turnStartId = String(message.id || turnMessageId);
       const text = getMessageBlockPreviewText(message);
       if (!text) continue;
       turnTexts.unshift(text);
       turnAuthor = message.author || turnAuthor;
-      turnStartId = String(message.id || turnMessageId);
     }
     if (turnTexts.length > 0) {
       const turnText = normalizeCompactPreviewText(turnTexts.join(' '));
@@ -1800,15 +1805,23 @@ export default function App({
     const seedVisibleLength = continuesPreviousTurn
       ? Math.min(compactSpeechVisibleLengthRef.current, compactPreviewText.length)
       : 0;
+    // When the same turn continues, carry the fallback-reveal driver forward.
+    // Otherwise the appended text would freeze: the fallback timer re-arms but
+    // bails whenever visibleLength > 0 (the seeded length), so nothing would
+    // drive the reveal past the seed in the no-speech-playback path. Playback
+    // state is still reset to false so a finished bubble's audio can't snap the
+    // appended text to full — the next bubble's audio (or the carried fallback)
+    // resumes the reveal from the seed.
+    const keepFallbackReveal = continuesPreviousTurn && compactSpeechFallbackRevealRef.current;
     compactSpeechRevealTurnIdRef.current = nextRevealTurnId;
 
     compactSpeechVisibleLengthRef.current = seedVisibleLength;
     compactSpeechPlaybackStartedRef.current = false;
-    compactSpeechFallbackRevealRef.current = false;
+    compactSpeechFallbackRevealRef.current = keepFallbackReveal;
     compactSpeechRevealCarryRef.current = 0;
     compactSpeechLastFrameTimeRef.current = 0;
     setCompactSpeechVisibleLength(seedVisibleLength);
-    setCompactSpeechFallbackRevealActive(false);
+    setCompactSpeechFallbackRevealActive(keepFallbackReveal);
   }, [compactMessagePreview?.messageId]);
 
   useEffect(() => {

@@ -2599,11 +2599,23 @@ describe('App', () => {
       });
 
       const revealedAfter = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      const combinedText = `${firstBubbleText} ${secondBubbleText}`;
       // Did not replay from zero, and what stays on screen is a forward
       // continuation of what was already revealed.
       expect(revealedAfter.length).toBeGreaterThanOrEqual(revealedBefore.length);
       expect(revealedAfter.startsWith(revealedBefore)).toBe(true);
-      expect(`${firstBubbleText} ${secondBubbleText}`.startsWith(revealedAfter)).toBe(true);
+      expect(combinedText.startsWith(revealedAfter)).toBe(true);
+
+      // And it keeps moving forward into the appended bubble — proving the
+      // caption source switched to the merged turn rather than freezing on the
+      // first bubble's revealed prefix.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(8000);
+      });
+
+      const revealedLater = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      expect(revealedLater.length).toBeGreaterThan(firstBubbleText.length);
+      expect(combinedText.startsWith(revealedLater)).toBe(true);
     } finally {
       vi.useRealTimers();
     }
