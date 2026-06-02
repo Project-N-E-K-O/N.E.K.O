@@ -19,8 +19,8 @@ from .entry_common import (
 
 
 IMAGE_ONLY_EXPLAIN_PROMPT_EN = "Please explain the pasted image."
-IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN = "请查看这张图片的内容"
-IMAGE_ONLY_EXPLAIN_PROMPT_ZH_TW = "請查看這張圖片的內容"
+IMAGE_ONLY_EXPLAIN_PROMPT_ZH_CN = "请解释这张图片的内容"
+IMAGE_ONLY_EXPLAIN_PROMPT_ZH_TW = "請解釋這張圖片的內容"
 
 
 def _image_only_explain_prompt(language: str) -> str:

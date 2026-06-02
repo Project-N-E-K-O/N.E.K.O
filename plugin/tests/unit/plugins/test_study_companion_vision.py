@@ -610,7 +610,7 @@ async def test_study_submit_image_without_caption_preserves_ocr_fallback() -> No
     result = await plugin.study_submit_image(JPEG_IMAGE_BASE64)
 
     assert isinstance(result, Ok)
-    assert calls == ["请查看这张图片的内容"]
+    assert calls == ["请解释这张图片的内容"]
     assert plugin._state.last_ocr_text == "previous OCR context"
 
 
@@ -946,7 +946,7 @@ async def test_study_explain_text_uses_prompt_for_image_only() -> None:
 
     assert isinstance(result, Ok)
     text, context, _mode = plugin._agent.explanations[-1]
-    assert text == "请查看这张图片的内容"
+    assert text == "请解释这张图片的内容"
     assert context["source"] == "vision_image"
     assert context["source_text"] == text
     assert context["vision_image_base64"] == f"data:image/jpeg;base64,{JPEG_IMAGE_BASE64}"
@@ -961,7 +961,7 @@ async def test_study_explain_text_prefers_pasted_image_over_stale_ocr() -> None:
 
     assert isinstance(result, Ok)
     text, context, _mode = plugin._agent.explanations[-1]
-    assert text == "请查看这张图片的内容"
+    assert text == "请解释这张图片的内容"
     assert context["source"] == "vision_image"
     assert context["source_text"] == text
     assert "stale OCR text" not in text

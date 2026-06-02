@@ -1248,6 +1248,8 @@ def test_study_companion_hosted_panel_supports_image_paste_contract() -> None:
     assert "SUPPORTED_PASTE_IMAGE_TYPES.has(item.type)" in source
     assert "item.type === 'text/plain'" in source
     assert "setPasteError" in source
+    assert "onImageAccepted?: () => void;" in source
+    assert "setters.onImageAccepted?.();" in source
     assert "study-panel__paste-error" in source
     assert "beginPasteSignal" in source
     assert "signal.aborted" in source
@@ -1257,6 +1259,9 @@ def test_study_companion_hosted_panel_supports_image_paste_contract() -> None:
     assert "if (textImage) explainArgs.vision_image_base64 = textImage;" in source
     assert "if (textImage) genArgs.vision_image_base64 = textImage;" in source
     assert "if (answerImage) evalArgs.vision_image_base64 = answerImage;" in source
+    assert "const textAutoFilledFromOcrRef = useRef(false);" in source
+    assert "textAutoFilledFromOcrRef.current = true;" in source
+    assert "onImageAccepted: clearAutoFilledTextOnImagePaste," in source
     assert "setTextImage('');" in source
     assert "setAnswerImage('');" in source
     assert 'data-busy={busy ? "true" : "false"}' in source

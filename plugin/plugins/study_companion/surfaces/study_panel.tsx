@@ -220,6 +220,7 @@ type PasteSetters = {
   setImage: (value: string) => void;
   setTextValue: (value: string) => void;
   setPasteError: (value: string) => void;
+  onImageAccepted?: () => void;
   pasteErrorMessage: string;
   unsupportedTypeMessage: string;
 };
@@ -270,6 +271,7 @@ function createPasteHandler(
           if (image === null) {
             setters.setPasteError(setters.pasteErrorMessage);
           } else {
+            setters.onImageAccepted?.();
             setters.setImage(image);
             setters.setPasteError('');
           }
@@ -381,6 +383,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const explainControllerRef = useRef<AbortController | null>(null);
   const pasteControllerRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(false);
+  const textAutoFilledFromOcrRef = useRef(false);
   const currentMode = String(status.active_mode || status.mode || 'companion');
 
   function beginStudyRequest() {
@@ -481,6 +484,19 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     setQuestion(data.current_question?.question || '');
   }
 
+  function setManualText(value: string) {
+    textAutoFilledFromOcrRef.current = false;
+    setText(value);
+  }
+
+  function clearAutoFilledTextOnImagePaste() {
+    if (!textAutoFilledFromOcrRef.current) {
+      return;
+    }
+    textAutoFilledFromOcrRef.current = false;
+    setText('');
+  }
+
   async function refresh(signal?: AbortSignal, options: { updateReply?: boolean } = {}) {
     const updateReply = options.updateReply !== false;
     const data = normalizeStudyStatus(await callPlugin('study_status', {}, signal));
@@ -491,7 +507,13 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     if (updateReply) {
       setReply(data.last_reply || '');
     }
-    setText((prev) => (prev.trim() || !data.last_ocr_text ? prev : data.last_ocr_text));
+    setText((prev) => {
+      if (prev.trim() || !data.last_ocr_text) {
+        return prev;
+      }
+      textAutoFilledFromOcrRef.current = true;
+      return data.last_ocr_text;
+    });
   }
 
   async function setMode(mode: StudyMode) {
@@ -717,8 +739,9 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const handleTextPaste = createPasteHandler(
     {
       setImage: setTextImage,
-      setTextValue: setText,
+      setTextValue: setManualText,
       setPasteError: setTextPasteError,
+      onImageAccepted: clearAutoFilledTextOnImagePaste,
       pasteErrorMessage: t('ui.error.image_paste_failed', 'Image paste failed. Please try a smaller JPEG or PNG image.'),
       unsupportedTypeMessage: t('ui.error.image_paste_unsupported', 'Only JPEG and PNG images can be pasted here.'),
     },
@@ -783,7 +806,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         placeholder={t('ui.placeholder.input', 'Paste a concept, problem statement, or OCR text here.')}
         value={text}
         readOnly={busy}
-        onChange={(event) => setText(event.target.value)}
+        onChange={(event) => setManualText(event.target.value)}
         onPaste={handleTextPaste}
       />
       {textImage ? (
