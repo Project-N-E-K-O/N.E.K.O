@@ -645,7 +645,7 @@ export default {
       lines: {
         introActivationHint: 'Clica aqui pra eu poder começar a falar, nya~!',
         introGreetingReply: 'Bem-vindo de volta para casa, miau~ O mundo lá fora pode ser tão cansativo, não é? Neste pequeno ninho só nosso, você pode deixar todas as preocupações de lado. Eu sou Lin Youyi. Pode confiar em mim nesta introdução; vou segurar sua mão e guiar você passo a passo.',
-        introBasic: 'Olha, tem um botão mágico aqui! É só clicar nele e você pode conversar diretamente comigo! Quer me contar as novidades divertidas de hoje? Ou talvez só chamar o meu nome? Vem experimentar, mal posso esperar para ouvir a sua voz! Miau!',
+        introBasic: 'Olha, há um botão mágico aqui! É só clicar nele e você pode conversar diretamente comigo! Quer me contar as novidades divertidas de hoje? Ou talvez só chamar o meu nome? Vem experimentar, mal posso esperar para ouvir a sua voz! Miau!',
         takeoverCaptureCursor: 'Um super botão mágico aparece! Basta clicar aqui e eu posso esticar minhas patinhas até o seu teclado e o seu mouse! Vou te ajudar a digitar, ajudar a abrir páginas da web... Mas, se esse ponteiro do mouse ficar se mexendo para lá e para cá, talvez eu não consiga resistir a pular em cima dele! Está pronto para a minha bagunça... quer dizer, para a minha ajuda? Miau!',
         takeoverPluginPreviewHome: 'Ainda não acabou! Olha, olha! Tem um monte de plugins divertidos aqui!',
         takeoverPluginPreviewDashboard: 'Com eles, eu não só consigo ler os comentários do Bilibili, mas também apagar as luzes e ligar o ar-condicionado pra você... Eu sou a Super Deusa Gata todo-poderosa! Hmph~',
