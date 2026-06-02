@@ -285,6 +285,7 @@ def test_compact_surface_resize_handles_keep_width_in_dom_geometry_contract():
 def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    app_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
 
     fan_block = css_block(styles, ".compact-input-tool-fan {", ".compact-chat-surface-shell *")
     wheel_block = styles.split(".compact-input-tool-fan .compact-input-tool-item {", 1)[1].split(
@@ -296,6 +297,13 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
         1,
     )[0]
     native_hit_block = collector_block.split("nativeRects.forEach", 1)[1].split("return items.concat", 1)[0]
+    geometry_sync_block = app_source.split(
+        "window.dispatchEvent(new CustomEvent('neko:compact-interaction-geometry-change'));",
+        1,
+    )[1].split(
+        "const openCompactInputToolFan",
+        1,
+    )[0]
 
     assert "position: absolute;" in fan_block
     assert "--compact-tool-wheel-hover-radius: 116px;" in fan_block
@@ -356,11 +364,19 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     assert "scale(0.86)" in wheel_block
     assert "scale(0.98)" in wheel_block
     assert "scale(1.04)" in wheel_block
+    assert "bubbleFloat 3.2s ease-in-out infinite" in styles
     assert '.compact-input-tool-fan[data-compact-tool-wheel-fast-animation="true"]' in styles
     assert "--compact-tool-wheel-transform-duration: 0.07s;" in styles
     assert "pointer-events: none;" in styles
+    assert "activeCursorToolId" in geometry_sync_block
+    assert "toolMenuOpen" in geometry_sync_block
+    assert "var COMPACT_TOOL_AVATAR_CHOICE_FLOAT_PADDING_X = 6;" in script
+    assert "var COMPACT_TOOL_AVATAR_CHOICE_FLOAT_PADDING_Y = 12;" in script
+    assert "function buildCompactAvatarToolChoiceHitRect(rect)" in script
     assert ".composer-icon-popover .composer-icon-button" in collector_block
     assert "toolFan:avatarToolChoice:" in collector_block
+    assert "var hitRect = isAvatarToolChoice ? buildCompactAvatarToolChoiceHitRect(rect) : rect;" in collector_block
+    assert "nativeRect: hitRect" in collector_block
     assert "slot.indexOf('hidden') === 0" in collector_block
     assert "style.pointerEvents !== 'none'" not in collector_block
     assert "hitRect: nativeRect" in native_hit_block
@@ -544,17 +560,12 @@ def test_compact_history_controls_collapse_gives_height_back_to_history_scroll()
     controls_block = css_block(
         styles,
         ".compact-export-history-controls {",
-        ".compact-export-history-controls.is-collapsed",
-    )
-    collapsed_block = css_block(
-        styles,
-        ".compact-export-history-controls.is-collapsed {",
         ".compact-export-history-controls-content",
     )
-    collapsed_toggle_block = css_block(
+    history_handle_block = css_block(
         styles,
-        ".compact-export-history-controls.is-collapsed .compact-export-history-controls-toggle {",
-        ".compact-export-history-controls.is-collapsed .compact-export-history-controls-toggle::before",
+        ".compact-history-visibility-handle {",
+        ".compact-history-visibility-handle::before",
     )
     control_button_block = css_block(styles, ".compact-export-history-control {", ".compact-export-history-control:hover")
 
@@ -565,12 +576,7 @@ def test_compact_history_controls_collapse_gives_height_back_to_history_scroll()
     assert "--compact-export-controls-expanded-block-size: calc(" in anchor_block
     assert "--compact-export-controls-collapsed-block-size: calc(" in anchor_block
     assert "--compact-export-controls-collapse-delta: 0px;" in anchor_block
-    assert (
-        "--compact-export-controls-collapse-delta: calc(\n"
-        "    var(--compact-export-controls-expanded-block-size) - "
-        "var(--compact-export-controls-collapsed-block-size)\n"
-        "  );"
-    ) in collapsed_anchor_block
+    assert "--compact-export-controls-collapse-delta: var(--compact-export-controls-expanded-block-size);" in collapsed_anchor_block
     assert "24px" not in collapsed_anchor_block
     assert (
         "height: calc(var(--compact-export-history-region-height) + "
@@ -584,9 +590,19 @@ def test_compact_history_controls_collapse_gives_height_back_to_history_scroll()
     assert "min-height: 40px;" not in controls_block
     assert "padding: var(--compact-export-controls-padding-y) 6px;" in controls_block
     assert "padding 0.16s ease" not in controls_block
-    assert "padding: 0;" in collapsed_block
-    assert "width: var(--compact-export-controls-collapsed-width);" in collapsed_block
-    assert "height: var(--compact-export-controls-collapsed-toggle-height);" in collapsed_toggle_block
+    assert ".compact-export-history-controls.is-collapsed" not in styles
+    assert ".compact-export-history-controls-toggle" not in styles
+    assert "position: fixed;" in history_handle_block
+    assert "--compact-history-handle-line-width: clamp(38px, calc(var(--compact-history-handle-surface-width) * 0.102), 50px);" in history_handle_block
+    assert ".compact-history-visibility-handle.is-open {" in history_handle_block
+    assert "--compact-history-handle-line-width: 100%;" in history_handle_block
+    assert "top: calc(var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) - 2px);" in history_handle_block
+    assert "bottom: auto;" in history_handle_block
+    assert "bottom: calc(100vh - var(--desktop-compact-surface-top" not in history_handle_block
+    assert "z-index: 100002;" in history_handle_block
+    assert "pointer-events: auto;" in history_handle_block
+    assert "-webkit-app-region: no-drag;" in history_handle_block
+    assert ".compact-history-visibility-handle-triangle {\n  display: none;\n}" in styles
     assert "height: var(--compact-export-controls-action-height);" in control_button_block
 
 
@@ -603,7 +619,7 @@ def test_compact_history_layout_contract_avoids_jitter_feedback():
     controls_block = css_block(
         styles,
         ".compact-export-history-controls {",
-        ".compact-export-history-controls.is-collapsed",
+        ".compact-export-history-controls-content",
     )
     preview_block = css_block(
         styles.split(".compact-export-preview-region[hidden]", 1)[1],
