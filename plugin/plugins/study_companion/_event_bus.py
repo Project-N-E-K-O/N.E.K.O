@@ -67,7 +67,8 @@ class StudyEventBus:
     _THROTTLE_TTL = 3600.0
     _RESPOND_COOLDOWN = 30.0
     _MAX_IN_FLIGHT_EMITS = 8
-    _MAX_SCHEDULED_EMITS = 64
+    _MAX_QUEUE_SIZE = 64
+    _MAX_SCHEDULED_EMITS = _MAX_QUEUE_SIZE
 
     def __init__(
         self,
@@ -85,6 +86,10 @@ class StudyEventBus:
         self._scheduled_emit_count = 0
         self._dropped_emit_count = 0
         self._emit_semaphore = asyncio.Semaphore(self._MAX_IN_FLIGHT_EMITS)
+        self._queue: asyncio.Queue[StudyEvent] = asyncio.Queue(
+            maxsize=self._MAX_QUEUE_SIZE
+        )
+        self._worker_task: asyncio.Task[None] | None = None
         self._last_respond_at = -self._RESPOND_COOLDOWN
         self._last_screen_context_type = ""
         self._screen_buf: list[tuple[str, float]] = []
@@ -101,7 +106,7 @@ class StudyEventBus:
 
     @property
     def scheduled_emit_count(self) -> int:
-        return self._scheduled_emit_count
+        return max(self._scheduled_emit_count, self._queue.qsize())
 
     @property
     def dropped_emit_count(self) -> int:
@@ -113,17 +118,54 @@ class StudyEventBus:
         except RuntimeError:
             _logger.warning("StudyEventBus.schedule_emit() called outside event loop")
             return None
-        if self._scheduled_emit_count >= self._MAX_SCHEDULED_EMITS:
+        if self._worker_task is None or self._worker_task.done():
+            self._worker_task = loop.create_task(self._consume_queue())
+        if self._queue.full():
+            try:
+                self._queue.get_nowait()
+                self._queue.task_done()
+                self._scheduled_emit_count = max(0, self._scheduled_emit_count - 1)
+                self._dropped_emit_count += 1
+            except asyncio.QueueEmpty:
+                pass
+        try:
+            self._queue.put_nowait(event)
+            self._scheduled_emit_count += 1
+        except asyncio.QueueFull:
             self._dropped_emit_count += 1
             _logger.warning(
                 "StudyEventBus.schedule_emit() dropped event due to backlog: %s",
                 event.name,
             )
             return None
-        self._scheduled_emit_count += 1
-        task = loop.create_task(self._emit_with_backpressure(event))
-        task.add_done_callback(self._on_scheduled_emit_done)
-        return task
+        return self._worker_task
+
+    async def stop_worker(self) -> None:
+        task = self._worker_task
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        finally:
+            if self._worker_task is task:
+                self._worker_task = None
+
+    async def _consume_queue(self) -> None:
+        while True:
+            event = await self._queue.get()
+            try:
+                async with self._emit_semaphore:
+                    await self.emit(event)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                _logger.exception("StudyEventBus worker emit failed")
+            finally:
+                self._scheduled_emit_count = max(0, self._scheduled_emit_count - 1)
+                self._queue.task_done()
 
     async def _emit_with_backpressure(self, event: StudyEvent) -> None:
         async with self._emit_semaphore:

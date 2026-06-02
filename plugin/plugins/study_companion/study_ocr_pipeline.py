@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import io
 import subprocess
@@ -9,6 +10,10 @@ import time
 from typing import Any
 
 from PIL import Image
+try:
+    import imagehash
+except ImportError:
+    imagehash = None
 
 from .models import (
     ActivitySnapshot,
@@ -29,7 +34,7 @@ _LIGHTWEIGHT_INITIAL_JPEG_QUALITY = 60
 _LIGHTWEIGHT_MIN_JPEG_QUALITY = 35
 _PHASH_CHANGE_THRESHOLD = 5
 _VISION_SNAPSHOT_JPEG_QUALITY = 72
-_VISION_SNAPSHOT_TTL_SECONDS = 8.0
+_VISION_SNAPSHOT_TTL_SECONDS = 30.0
 
 try:
     _PIL_RESAMPLING = Image.Resampling
@@ -172,10 +177,6 @@ class StudyOcrPipeline:
 
         try:
             thumbnail = self._prepare_lightweight_image(frame)
-            jpeg_bytes = self._encode_lightweight_jpeg(
-                thumbnail,
-                max_bytes=self._config.awareness.image_max_bytes,
-            )
             thumbnail_phash = self._calculate_thumbnail_phash(thumbnail)
             has_content_change = self._has_content_change(thumbnail_phash)
             self._last_thumbnail_phash = thumbnail_phash
@@ -193,12 +194,52 @@ class StudyOcrPipeline:
         ocr_text_snippet = ""
         ocr_diagnostic = ""
         classify_mode = str(self._config.awareness.classify_mode or "title_first")
-        if classify_mode in {"ocr_text", "both"} and self._config.ocr_enabled:
-            ocr_snapshot = self._extract_image(
-                thumbnail, backend_name=self._config.ocr_backend_selection
+        should_run_ocr = classify_mode in {"ocr_text", "both"} and self._config.ocr_enabled
+        jpeg_bytes: bytes | None = None
+        ocr_snapshot: OcrSnapshot | None = None
+        if should_run_ocr:
+            try:
+                self._resolve_ocr_backend()
+            except Exception:
+                pass
+            with ThreadPoolExecutor(
+                max_workers=2, thread_name_prefix="study-ocr"
+            ) as executor:
+                jpeg_future = executor.submit(
+                    self._encode_lightweight_jpeg,
+                    thumbnail,
+                    max_bytes=self._config.awareness.image_max_bytes,
+                )
+                ocr_future = executor.submit(
+                    self._extract_image,
+                    thumbnail,
+                    backend_name=self._config.ocr_backend_selection,
+                    _skip_vision_snapshot=True,
+                )
+                try:
+                    jpeg_result = jpeg_future.result(timeout=3.0)
+                    if isinstance(jpeg_result, bytes):
+                        jpeg_bytes = jpeg_result
+                except Exception:
+                    jpeg_bytes = None
+                try:
+                    ocr_snapshot = ocr_future.result(timeout=5.0)
+                except Exception as exc:
+                    ocr_snapshot = OcrSnapshot(
+                        status="ocr_failed",
+                        backend=self._config.ocr_backend_selection,
+                        captured_at=utc_now_iso(),
+                        diagnostic=str(exc),
+                    )
+        if jpeg_bytes is None:
+            jpeg_bytes = self._encode_lightweight_jpeg(
+                thumbnail,
+                max_bytes=self._config.awareness.image_max_bytes,
             )
+        if ocr_snapshot is not None:
             ocr_diagnostic = f"; ocr_status={ocr_snapshot.status}"
             if ocr_snapshot.status in {"ok", "empty"}:
+                self._remember_vision_snapshot(thumbnail, now=time.monotonic())
                 normalized_text = str(ocr_snapshot.text or "").strip()
                 ocr_text_snippet = normalized_text[:OCR_SNIPPET_MAX_CHARS]
                 classification = classify_screen_from_ocr(
@@ -255,17 +296,25 @@ class StudyOcrPipeline:
     def _encode_lightweight_jpeg(image: Image.Image, *, max_bytes: int) -> bytes:
         target_bytes = max(10240, int(max_bytes or 204800))
         frame = image
+        width, height = frame.size
+        current_pixels = max(1, int(width) * int(height))
+        target_pixels = max(1.0, (target_bytes * 8.0) / 0.35)
+        if current_pixels > target_pixels:
+            scale = (target_pixels / float(current_pixels)) ** 0.5
+            frame = frame.resize(
+                (max(1, int(width * scale)), max(1, int(height * scale))),
+                _PIL_RESAMPLING.LANCZOS,
+            )
         quality = _LIGHTWEIGHT_INITIAL_JPEG_QUALITY
         while True:
-            while quality >= _LIGHTWEIGHT_MIN_JPEG_QUALITY:
-                buffer = io.BytesIO()
-                frame.save(buffer, format="JPEG", quality=quality, optimize=True)
-                raw = buffer.getvalue()
-                if len(raw) <= target_bytes or quality == _LIGHTWEIGHT_MIN_JPEG_QUALITY:
-                    break
-                quality -= 5
+            buffer = io.BytesIO()
+            frame.save(buffer, format="JPEG", quality=quality, optimize=False)
+            raw = buffer.getvalue()
             if len(raw) <= target_bytes:
                 return raw
+            if quality > _LIGHTWEIGHT_MIN_JPEG_QUALITY:
+                quality = max(_LIGHTWEIGHT_MIN_JPEG_QUALITY, quality - 10)
+                continue
             if max(frame.size) <= 1:
                 raise RuntimeError(
                     f"unable to encode lightweight JPEG within {target_bytes} bytes"
@@ -279,12 +328,10 @@ class StudyOcrPipeline:
 
     @staticmethod
     def _calculate_thumbnail_phash(image: Image.Image) -> str:
-        try:
-            import imagehash
-        except ImportError as exc:
+        if imagehash is None:
             raise ImportError(
                 "imagehash is required for study awareness pHash; install imagehash"
-            ) from exc
+            )
         return str(imagehash.phash(image, hash_size=8))
 
     def _has_content_change(self, thumbnail_phash: str) -> bool:
@@ -348,9 +395,12 @@ class StudyOcrPipeline:
         except Exception:
             return ""
 
-    def _extract_image(self, image: Any, *, backend_name: str) -> OcrSnapshot:
+    def _extract_image(
+        self, image: Any, *, backend_name: str, _skip_vision_snapshot: bool = False
+    ) -> OcrSnapshot:
         started = time.monotonic()
-        self._remember_vision_snapshot(image, now=started)
+        if not _skip_vision_snapshot:
+            self._remember_vision_snapshot(image, now=started)
         try:
             backend = self._resolve_ocr_backend()
             raw = backend.extract_text(image)

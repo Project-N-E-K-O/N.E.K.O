@@ -79,6 +79,8 @@ def _sanitize_state_item_list(
 class StudyStore:
     """SQLite main store with JSON import/export support for seeds and backups."""
 
+    _INTERACTION_TRIM_INTERVAL = 10
+
     def __init__(
         self,
         db_path: Path,
@@ -96,21 +98,34 @@ class StudyStore:
         self._logger = logger
         self._lock = threading.RLock()
         self._conn: sqlite3.Connection | None = None
+        self._read_conn: sqlite3.Connection | None = None
+        self._interaction_count = 0
 
     def open(self) -> None:
         with self._lock:
+            if self._conn is not None:
+                return
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
             self._conn = sqlite3.connect(
                 str(self.db_path), check_same_thread=False, timeout=10.0
             )
+            self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA foreign_keys = ON")
             self._conn.row_factory = sqlite3.Row
             self._init_db()
             self._load_seed_if_empty()
             self.load_knowledge_seed()
+            self._read_conn = sqlite3.connect(
+                str(self.db_path), check_same_thread=False, timeout=5.0
+            )
+            self._read_conn.execute("PRAGMA foreign_keys = ON")
+            self._read_conn.row_factory = sqlite3.Row
 
     def close(self) -> None:
         with self._lock:
+            if self._read_conn is not None:
+                self._read_conn.close()
+                self._read_conn = None
             if self._conn is not None:
                 self._conn.close()
                 self._conn = None
@@ -120,6 +135,14 @@ class StudyStore:
             self.open()
         assert self._conn is not None
         return self._conn
+
+    def _require_read_conn(self) -> sqlite3.Connection:
+        if self._read_conn is None:
+            with self._lock:
+                if self._read_conn is None:
+                    self.open()
+        assert self._read_conn is not None
+        return self._read_conn
 
     @staticmethod
     def _json_loads(value: object, fallback: Any) -> Any:
@@ -212,28 +235,26 @@ class StudyStore:
                 pass
 
     def _has_interactions(self) -> bool:
-        with self._lock:
-            row = (
-                self._require_conn()
-                .execute("SELECT 1 FROM interactions LIMIT 1")
-                .fetchone()
-            )
-            return row is not None
+        row = (
+            self._require_read_conn()
+            .execute("SELECT 1 FROM interactions LIMIT 1")
+            .fetchone()
+        )
+        return row is not None
 
     def get_raw(self, key: str) -> dict[str, Any] | None:
-        with self._lock:
-            row = (
-                self._require_conn()
-                .execute("SELECT value FROM kv WHERE key = ?", (key,))
-                .fetchone()
-            )
-            if row is None:
-                return None
-            try:
-                value = json.loads(str(row["value"]))
-            except (ValueError, TypeError):
-                return None
-            return value if isinstance(value, dict) else None
+        row = (
+            self._require_read_conn()
+            .execute("SELECT value FROM kv WHERE key = ?", (key,))
+            .fetchone()
+        )
+        if row is None:
+            return None
+        try:
+            value = json.loads(str(row["value"]))
+        except (ValueError, TypeError):
+            return None
+        return value if isinstance(value, dict) else None
 
     def set_raw(self, key: str, value: dict[str, Any]) -> None:
         with self._lock:
@@ -315,32 +336,436 @@ class StudyStore:
                     time.time(),
                 ),
             )
-            conn.execute(
-                """
-                DELETE FROM interactions
-                WHERE id NOT IN (
-                    SELECT id FROM interactions ORDER BY id DESC LIMIT ?
+            self._interaction_count += 1
+            if self._interaction_count >= int(self._INTERACTION_TRIM_INTERVAL):
+                conn.execute(
+                    """
+                    DELETE FROM interactions
+                    WHERE id NOT IN (
+                        SELECT id FROM interactions ORDER BY id DESC LIMIT ?
+                    )
+                    """,
+                    (max(1, int(history_limit)),),
                 )
-                """,
-                (max(1, int(history_limit)),),
-            )
+                self._interaction_count = 0
             conn.commit()
 
-    def list_interactions(self, limit: int = 20) -> list[dict[str, Any]]:
+    def batch_write_answer_data(
+        self,
+        *,
+        session_id: str,
+        mode: str,
+        topic_id: str,
+        question: dict[str, Any],
+        user_answer: str,
+        eval_result: dict[str, Any],
+        response_time_ms: int | None,
+        mastery_snapshot: dict[str, Any] | None = None,
+        wrong_question_data: dict[str, Any] | None = None,
+        fsrs_card: dict[str, Any] | None = None,
+        fsrs_rating: int | None = None,
+        review_log_data: dict[str, Any] | None = None,
+        error_candidate_data: list[dict[str, Any]] | None = None,
+        positive_candidate_data: dict[str, Any] | None = None,
+        positive_evidence_data: dict[str, Any] | None = None,
+        topic_upsert_data: dict[str, Any] | None = None,
+        topic_candidate_data: dict[str, Any] | None = None,
+        history_limit: int = _DEFAULT_APPEND_ONLY_HISTORY_LIMIT,
+    ) -> dict[str, Any]:
+        session_key = str(session_id or "default")
+        topic_key = str(topic_id or "").strip()
+        db_topic_key = topic_key or None
+        wrong_question_id = ""
         with self._lock:
-            rows = (
-                self._require_conn()
-                .execute(
+            conn = self._require_conn()
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                if topic_upsert_data:
+                    self._batch_upsert_topic(conn, topic_upsert_data)
+                if topic_candidate_data:
+                    self._batch_upsert_candidate_with_evidence(
+                        conn, topic_candidate_data
+                    )
+                conn.execute(
                     """
+                    INSERT INTO sessions (id, mode, started_at, topics_touched)
+                    VALUES (?, ?, datetime('now'), '[]')
+                    ON CONFLICT(id) DO NOTHING
+                    """,
+                    (session_key, str(mode or "companion")),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO qa_records (
+                        session_id, topic_id, question, user_answer,
+                        eval_result, mode, response_time_ms, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                    """,
+                    (
+                        session_key,
+                        db_topic_key,
+                        self._json_dumps(question or {}),
+                        str(user_answer or ""),
+                        self._json_dumps(eval_result or {}),
+                        str(mode or "companion"),
+                        int(response_time_ms)
+                        if response_time_ms is not None
+                        else None,
+                    ),
+                )
+                row = conn.execute(
+                    "SELECT topics_touched FROM sessions WHERE id = ?", (session_key,)
+                ).fetchone()
+                touched = (
+                    self._json_loads(row["topics_touched"], [])
+                    if row is not None
+                    else []
+                )
+                if topic_key and topic_key not in touched:
+                    touched.append(topic_key)
+                conn.execute(
+                    """
+                    UPDATE sessions
+                    SET question_count = question_count + 1, topics_touched = ?
+                    WHERE id = ?
+                    """,
+                    (self._json_dumps(touched), session_key),
+                )
+                self._trim_append_only_rows(
+                    conn,
+                    table="qa_records",
+                    group_column="topic_id",
+                    group_value=db_topic_key,
+                    history_limit=history_limit,
+                )
+                if mastery_snapshot:
+                    snapshot_topic = str(
+                        mastery_snapshot.get("topic_id") or topic_key
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO mastery_snapshots (
+                            topic_id, mastery, accuracy, recency, consistency,
+                            confidence, level, attempts, flags, updated_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                        """,
+                        (
+                            snapshot_topic,
+                            float(mastery_snapshot.get("mastery") or 0.0),
+                            float(mastery_snapshot.get("accuracy") or 0.0),
+                            float(mastery_snapshot.get("recency") or 0.0),
+                            float(mastery_snapshot.get("consistency") or 0.0),
+                            float(mastery_snapshot.get("confidence") or 0.0),
+                            str(mastery_snapshot.get("level") or ""),
+                            int(mastery_snapshot.get("attempts") or 0),
+                            self._json_dumps(
+                                mastery_snapshot.get("flags")
+                                if isinstance(mastery_snapshot.get("flags"), list)
+                                else []
+                            ),
+                        ),
+                    )
+                    self._trim_append_only_rows(
+                        conn,
+                        table="mastery_snapshots",
+                        group_column="topic_id",
+                        group_value=snapshot_topic,
+                        history_limit=history_limit,
+                    )
+                if wrong_question_data:
+                    wrong_question_id = str(
+                        wrong_question_data.get("id") or uuid.uuid4()
+                    )
+                    conn.execute(
+                        """
+                        INSERT INTO wrong_questions (
+                            id, topic_id, question, user_answer, expected_answer,
+                            error_type, verdict, status, retry_count,
+                            consecutive_correct, max_correct_difficulty,
+                            last_error_at, created_at, updated_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 0, 0, 0,
+                                datetime('now'), datetime('now'), datetime('now'))
+                        """,
+                        (
+                            wrong_question_id,
+                            str(wrong_question_data.get("topic_id") or topic_key),
+                            self._json_dumps(
+                                wrong_question_data.get("question") or {}
+                            ),
+                            str(wrong_question_data.get("user_answer") or ""),
+                            str(wrong_question_data.get("expected_answer") or ""),
+                            str(wrong_question_data.get("error_type") or "unknown"),
+                            str(wrong_question_data.get("verdict") or "wrong"),
+                        ),
+                    )
+                if fsrs_card:
+                    conn.execute(
+                        """
+                        INSERT INTO fsrs_cards (topic_id, card_data, fsrs_state, last_rating, updated_at)
+                        VALUES (?, ?, ?, ?, datetime('now'))
+                        ON CONFLICT(topic_id) DO UPDATE SET
+                            card_data = excluded.card_data,
+                            fsrs_state = excluded.fsrs_state,
+                            last_rating = excluded.last_rating,
+                            updated_at = datetime('now')
+                        """,
+                        (
+                            str(fsrs_card.get("topic_id") or topic_key),
+                            self._json_dumps(fsrs_card or {}),
+                            str((fsrs_card or {}).get("state") or ""),
+                            int(fsrs_rating or 0),
+                        ),
+                    )
+                if review_log_data:
+                    review_topic = str(review_log_data.get("topic_id") or topic_key)
+                    conn.execute(
+                        """
+                        INSERT INTO review_log (
+                            topic_id, card_id, rating, scheduled_days, actual_days, created_at
+                        )
+                        VALUES (?, ?, ?, ?, ?, datetime('now'))
+                        """,
+                        (
+                            review_topic,
+                            review_log_data.get("card_id"),
+                            int(review_log_data.get("rating") or 0),
+                            int(review_log_data.get("scheduled_days") or 0),
+                            int(review_log_data.get("actual_days") or 0),
+                        ),
+                    )
+                    self._trim_append_only_rows(
+                        conn,
+                        table="review_log",
+                        group_column="topic_id",
+                        group_value=review_topic,
+                        history_limit=history_limit,
+                    )
+                for candidate in error_candidate_data or []:
+                    self._batch_upsert_candidate_with_evidence(conn, candidate)
+                positive_item_id = ""
+                if positive_candidate_data:
+                    positive_item_id = self._batch_upsert_candidate_with_evidence(
+                        conn, positive_candidate_data
+                    )
+                if positive_evidence_data:
+                    evidence = dict(positive_evidence_data)
+                    if positive_item_id and not evidence.get("item_id"):
+                        evidence["item_id"] = positive_item_id
+                    self._batch_insert_candidate_evidence(conn, evidence)
+                    self._batch_recompute_candidate_score(
+                        conn, str(evidence.get("item_id") or "")
+                    )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return {"ok": True, "wrong_question_id": wrong_question_id}
+
+    def _batch_upsert_topic(
+        self, conn: sqlite3.Connection, topic: dict[str, Any]
+    ) -> None:
+        topic_id = str(topic.get("id") or "").strip()
+        name = str(topic.get("name") or topic_id).strip()
+        if not topic_id or not name:
+            return
+        conn.execute(
+            """
+            INSERT INTO topics (
+                id, name, subject, chapter, depth, difficulty,
+                prerequisites, related, typical_misconceptions, source, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(id) DO UPDATE SET
+                name = CASE WHEN topics.source = 'seed' THEN topics.name ELSE excluded.name END,
+                subject = CASE WHEN topics.source = 'seed' THEN topics.subject ELSE excluded.subject END,
+                chapter = CASE WHEN topics.source = 'seed' THEN topics.chapter ELSE excluded.chapter END,
+                depth = CASE WHEN topics.source = 'seed' THEN topics.depth ELSE excluded.depth END,
+                difficulty = CASE WHEN topics.source = 'seed' THEN topics.difficulty ELSE excluded.difficulty END,
+                prerequisites = CASE WHEN topics.source = 'seed' THEN topics.prerequisites ELSE excluded.prerequisites END,
+                related = CASE WHEN topics.source = 'seed' THEN topics.related ELSE excluded.related END,
+                typical_misconceptions = CASE WHEN topics.source = 'seed' THEN topics.typical_misconceptions ELSE excluded.typical_misconceptions END,
+                source = CASE WHEN topics.source = 'seed' THEN topics.source ELSE excluded.source END,
+                updated_at = datetime('now')
+            """,
+            (
+                topic_id,
+                name,
+                str(topic.get("subject") or "math"),
+                str(topic.get("chapter") or ""),
+                safe_int(topic.get("depth"), 1),
+                safe_float(topic.get("difficulty"), 0.5),
+                self._json_dumps(
+                    topic.get("prerequisites")
+                    if isinstance(topic.get("prerequisites"), list)
+                    else []
+                ),
+                self._json_dumps(
+                    topic.get("related") if isinstance(topic.get("related"), list) else []
+                ),
+                self._json_dumps(
+                    topic.get("typical_misconceptions")
+                    if isinstance(topic.get("typical_misconceptions"), list)
+                    else []
+                ),
+                str(topic.get("source") or "runtime"),
+            ),
+        )
+
+    def _batch_upsert_candidate_with_evidence(
+        self, conn: sqlite3.Connection, candidate: dict[str, Any]
+    ) -> str:
+        item_type = str(candidate.get("item_type") or "").strip()
+        dedupe_key = str(candidate.get("dedupe_key") or "").strip()
+        if not item_type or not dedupe_key:
+            return ""
+        payload = (
+            candidate.get("payload")
+            if isinstance(candidate.get("payload"), dict)
+            else {}
+        )
+        source = str(candidate.get("source") or "runtime").strip() or "runtime"
+        existing = conn.execute(
+            "SELECT * FROM candidate_knowledge_items WHERE item_type = ? AND dedupe_key = ? LIMIT 1",
+            (item_type, dedupe_key),
+        ).fetchone()
+        if existing is None:
+            item_id = str(candidate.get("id") or uuid.uuid4())
+            conn.execute(
+                """
+                INSERT INTO candidate_knowledge_items (
+                    id, item_type, dedupe_key, payload_json, source, status, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+                """,
+                (
+                    item_id,
+                    item_type,
+                    dedupe_key,
+                    self._json_dumps(payload),
+                    source,
+                    str(candidate.get("status") or "candidate"),
+                ),
+            )
+        else:
+            item_id = str(existing["id"])
+            conn.execute(
+                """
+                UPDATE candidate_knowledge_items
+                SET payload_json = ?,
+                    source = CASE WHEN source = '' THEN ? ELSE source END,
+                    updated_at = datetime('now')
+                WHERE id = ?
+                """,
+                (self._json_dumps(payload), source, item_id),
+            )
+        for evidence in candidate.get("evidence") or []:
+            evidence_data = dict(evidence) if isinstance(evidence, dict) else {}
+            evidence_data["item_id"] = item_id
+            self._batch_insert_candidate_evidence(conn, evidence_data)
+        self._batch_recompute_candidate_score(conn, item_id)
+        return item_id
+
+    def _batch_insert_candidate_evidence(
+        self, conn: sqlite3.Connection, evidence: dict[str, Any]
+    ) -> None:
+        item_id = str(evidence.get("item_id") or "").strip()
+        if not item_id:
+            return
+        conn.execute(
+            """
+            INSERT INTO knowledge_evidence (item_id, event_type, weight, context_json, created_at)
+            VALUES (?, ?, ?, ?, datetime('now'))
+            """,
+            (
+                item_id,
+                str(evidence.get("event_type") or ""),
+                float(evidence.get("weight") or 0.0),
+                self._json_dumps(
+                    evidence.get("context")
+                    if isinstance(evidence.get("context"), dict)
+                    else {}
+                ),
+            ),
+        )
+        self._trim_append_only_rows(
+            conn,
+            table="knowledge_evidence",
+            group_column="item_id",
+            group_value=item_id,
+            history_limit=safe_int(evidence.get("history_limit"), _DEFAULT_APPEND_ONLY_HISTORY_LIMIT),
+        )
+
+    def _batch_recompute_candidate_score(
+        self, conn: sqlite3.Connection, item_id: str
+    ) -> None:
+        item_key = str(item_id or "").strip()
+        if not item_key:
+            return
+        row = conn.execute(
+            "SELECT * FROM candidate_knowledge_items WHERE id = ?", (item_key,)
+        ).fetchone()
+        candidate = self._candidate_from_row(row)
+        if candidate is None:
+            return
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM knowledge_evidence
+            WHERE item_id = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (item_key, _DEFAULT_APPEND_ONLY_HISTORY_LIMIT),
+        ).fetchall()
+        evidence = [
+            item
+            for item in (self._evidence_from_row(evidence_row) for evidence_row in rows)
+            if item is not None
+        ]
+        from .knowledge_quality import KnowledgeQualityStore
+
+        quality = KnowledgeQualityStore(self)
+        score_parts = KnowledgeQualityStore._score_parts(candidate, evidence)
+        conn.execute(
+            """
+            UPDATE candidate_knowledge_items
+            SET score = ?,
+                status = ?,
+                evidence_count = ?,
+                positive_count = ?,
+                negative_count = ?,
+                conflict_count = ?,
+                updated_at = datetime('now')
+            WHERE id = ?
+            """,
+            (
+                score_parts["score"],
+                quality._next_status(candidate, score_parts),
+                score_parts["evidence_count"],
+                score_parts["positive_count"],
+                score_parts["negative_count"],
+                score_parts["conflict_count"],
+                item_key,
+            ),
+        )
+
+    def list_interactions(self, limit: int = 20) -> list[dict[str, Any]]:
+        rows = (
+            self._require_read_conn()
+            .execute(
+                """
                 SELECT id, kind, input_text, output_text, metadata, created_at
                 FROM interactions
                 ORDER BY id DESC
                 LIMIT ?
                 """,
-                    (max(1, int(limit)),),
-                )
-                .fetchall()
+                (max(1, int(limit)),),
             )
+            .fetchall()
+        )
         result: list[dict[str, Any]] = []
         for row in rows:
             try:

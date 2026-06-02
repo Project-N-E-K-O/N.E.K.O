@@ -437,6 +437,7 @@ def test_study_store_round_trip_and_export(tmp_path: Path) -> None:
     config = StudyConfig(language="en", history_limit=2)
     state = build_initial_state(mode=config.mode)
     state.last_ocr_text = "photosynthesis"
+    store._INTERACTION_TRIM_INTERVAL = 3
 
     store.save_config(config)
     store.save_state(state)
@@ -578,6 +579,50 @@ def test_study_store_enforces_sqlite_foreign_keys(tmp_path: Path) -> None:
         row = store._require_conn().execute("PRAGMA foreign_keys").fetchone()
         assert row is not None
         assert int(row[0]) == 1
+    finally:
+        store.close()
+
+
+def test_study_store_enables_wal_and_read_connection(tmp_path: Path) -> None:
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+    store.open()
+    try:
+        write_mode = store._require_conn().execute("PRAGMA journal_mode").fetchone()
+        read_mode = store._require_read_conn().execute("PRAGMA journal_mode").fetchone()
+
+        assert write_mode is not None
+        assert read_mode is not None
+        assert str(write_mode[0]).lower() == "wal"
+        assert str(read_mode[0]).lower() == "wal"
+    finally:
+        store.close()
+
+
+def test_study_store_append_interaction_trims_on_interval(tmp_path: Path) -> None:
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+    store.open()
+    try:
+        store._INTERACTION_TRIM_INTERVAL = 3
+        for index in range(2):
+            store.append_interaction(
+                kind="concept_explain",
+                input_text=f"before-{index}",
+                output_text="ok",
+                history_limit=1,
+            )
+
+        assert len(store.list_interactions(limit=10)) == 2
+
+        store.append_interaction(
+            kind="concept_explain",
+            input_text="trim",
+            output_text="ok",
+            history_limit=1,
+        )
+
+        remaining = store.list_interactions(limit=10)
+        assert len(remaining) == 1
+        assert remaining[0]["input_text"] == "trim"
     finally:
         store.close()
 

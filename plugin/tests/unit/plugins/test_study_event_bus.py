@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 
 import pytest
@@ -485,33 +486,42 @@ async def test_schedule_emit_logs_on_exception(
         )
     )
     assert task is not None
-    done, pending = await asyncio.wait({task}, timeout=1.0)
-    assert task in done
-    assert not pending
-    assert task.exception() is not None
+    for _ in range(10):
+        if "StudyEventBus worker emit failed" in caplog.text:
+            break
+        await asyncio.sleep(0.01)
 
-    assert "StudyEventBus.schedule_emit() task failed" in caplog.text
+    assert "StudyEventBus worker emit failed" in caplog.text
+    await bus.stop_worker()
 
 
 @pytest.mark.asyncio
 async def test_schedule_emit_drops_when_backlog_is_full(
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.WARNING, logger=event_bus_module._logger.name)
     bus = StudyEventBus(plugin_ctx=_Ctx())
-    bus._scheduled_emit_count = bus._MAX_SCHEDULED_EMITS
+    for index in range(bus._MAX_QUEUE_SIZE):
+        bus._queue.put_nowait(
+            StudyEvent(
+                name="session_summarized",
+                payload={"duration_minutes": index, "questions_attempted": 1},
+            )
+        )
 
     task = bus.schedule_emit(
         StudyEvent(
             name="session_summarized",
-            payload={"duration_minutes": 1, "questions_attempted": 1},
+            payload={"duration_minutes": 999, "questions_attempted": 1},
         )
     )
 
-    assert task is None
+    assert task is bus._worker_task
     assert bus.dropped_emit_count == 1
-    assert bus.scheduled_emit_count == bus._MAX_SCHEDULED_EMITS
-    assert "dropped event due to backlog" in caplog.text
+    assert bus.scheduled_emit_count == bus._MAX_QUEUE_SIZE
+    assert bus._queue.qsize() == bus._MAX_QUEUE_SIZE
+    queued = list(bus._queue._queue)
+    assert queued[0].payload["duration_minutes"] == 1
+    assert queued[-1].payload["duration_minutes"] == 999
+    await bus.stop_worker()
 
 
 @pytest.mark.asyncio
@@ -537,9 +547,10 @@ async def test_schedule_emit_exposes_backlog_until_task_finishes() -> None:
     assert bus.dropped_emit_count == 0
 
     release.set()
-    await task
+    await asyncio.wait_for(bus._queue.join(), timeout=1.0)
 
     assert bus.scheduled_emit_count == 0
+    await bus.stop_worker()
 
 
 @pytest.mark.asyncio
@@ -566,3 +577,5 @@ async def test_schedule_emit_ignores_cancelled_error(
     assert task.cancelled()
 
     assert caplog.text == ""
+    with contextlib.suppress(asyncio.CancelledError):
+        await bus.stop_worker()

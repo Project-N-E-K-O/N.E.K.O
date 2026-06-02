@@ -10,6 +10,7 @@ import pytest
 
 from plugin.plugins.study_companion.fsrs_bridge import StudyFsrsRating
 from plugin.plugins.study_companion.knowledge_tracker import (
+    KnowledgeGraph,
     KnowledgeTracker,
     MasteryTracker,
     _difficulty_to_float,
@@ -123,6 +124,125 @@ def test_knowledge_tracker_on_answer_updates_mastery_wrong_question_and_fsrs(
             == "sign_reversal"
         )
         assert tracker.get_review_queue(limit=3)
+    finally:
+        store.close()
+
+
+def test_knowledge_tracker_on_answer_uses_batch_writer_for_known_topic(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    try:
+        tracker = KnowledgeTracker(store)
+        original_batch = getattr(store, "batch_write_answer_data", None)
+        calls: list[dict[str, Any]] = []
+
+        def batch_write_answer_data(**kwargs):
+            calls.append(dict(kwargs))
+            if callable(original_batch):
+                return original_batch(**kwargs)
+            return {"ok": True}
+
+        store.batch_write_answer_data = batch_write_answer_data  # type: ignore[attr-defined, method-assign]
+
+        tracker.on_answer(
+            topic_id="quadratic_vertex_form",
+            question={
+                "question": "q",
+                "answer": "a",
+                "topic": "quadratic_vertex_form",
+                "difficulty": 3,
+            },
+            user_answer="a",
+            eval_result={"verdict": "correct", "score": 95, "error_type": "none"},
+            mode="teaching",
+            session_id="batch-session",
+        )
+
+        assert len(calls) == 1
+        assert calls[0]["session_id"] == "batch-session"
+        assert calls[0]["mastery_snapshot"]["topic_id"] == "quadratic_vertex_form"
+        assert calls[0]["fsrs_card"]["topic_id"] == "quadratic_vertex_form"
+    finally:
+        store.close()
+
+
+def test_study_store_batch_write_answer_data_rolls_back_on_error(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            store.batch_write_answer_data(
+                session_id="rollback-session",
+                mode="teaching",
+                topic_id="missing-topic",
+                question={"question": "q"},
+                user_answer="a",
+                eval_result={"verdict": "correct"},
+                response_time_ms=None,
+                fsrs_card={"topic_id": "missing-topic", "state": "new"},
+                fsrs_rating=3,
+            )
+
+        assert store.list_qa_records(limit=10) == []
+        assert store.list_sessions(limit=10) == []
+    finally:
+        store.close()
+
+
+def test_knowledge_graph_reuses_topic_name_index() -> None:
+    class _Store:
+        def __init__(self) -> None:
+            self.list_calls = 0
+
+        def list_topics(self, limit: int = 1000):
+            self.list_calls += 1
+            return [{"id": "known_topic", "name": "Known Topic"}]
+
+        def list_mastery_overview(self, limit: int = 1000):
+            return []
+
+        def get_topic(self, topic_id: str):
+            return None
+
+        def find_topic_by_name(self, name: str):
+            return None
+
+    store = _Store()
+    graph = KnowledgeGraph(store)
+
+    assert graph.discover_candidate("Known Topic appears here") == "known_topic"
+    assert graph.discover_candidate("Known Topic appears again") == "known_topic"
+    assert store.list_calls == 1
+
+
+def test_knowledge_tracker_marks_graph_index_dirty_after_batch_topic_insert(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    try:
+        tracker = KnowledgeTracker(store)
+        assert tracker.graph.discover_candidate(
+            "", {"topic": "quadratic_vertex_form"}
+        ) == "quadratic_vertex_form"
+
+        tracker.on_answer(
+            topic_id="Fresh Runtime Topic",
+            question={
+                "question": "q",
+                "answer": "a",
+                "topic": "Fresh Runtime Topic",
+            },
+            user_answer="a",
+            eval_result={"verdict": "correct", "score": 95},
+            mode="teaching",
+            session_id="fresh-topic-session",
+        )
+
+        assert tracker.graph.discover_candidate(
+            "", {"topic": "Fresh Runtime Topic"}
+        ) == "fresh_runtime_topic"
     finally:
         store.close()
 
