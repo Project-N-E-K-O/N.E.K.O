@@ -88,6 +88,22 @@ def test_plugin_ref_rejects_symlinked_directory_even_when_target_has_plugin_toml
         )
 
 
+@pytest.mark.parametrize(
+    "directory_name",
+    ["C:", "C:evil", "C:/evil", "/absolute", "\\absolute"],
+)
+def test_plugin_ref_rejects_windows_drive_or_root_directory_names(
+    tmp_path: Path,
+    directory_name: str,
+) -> None:
+    policy = _make_policy(tmp_path)
+
+    with pytest.raises(ValueError, match="safe plugin directory name"):
+        PluginSourceResolver(policy).resolve_plugin_ref(
+            {"root_id": "user", "directory_name": directory_name}
+        )
+
+
 def test_absolute_path_is_allowed_only_for_top_level_builtin_or_user_plugin(
     tmp_path: Path,
 ) -> None:

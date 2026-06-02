@@ -92,5 +92,15 @@ describe('formatHttpError', () => {
 
     expect(message).toBe('target_dir must be inside packages root')
   })
-})
 
+  it('returns an empty string for HTTP responses without useful details', () => {
+    const message = formatHttpError({
+      response: {
+        data: {},
+      },
+      message: 'Request failed with status code 500',
+    })
+
+    expect(message).toBe('')
+  })
+})

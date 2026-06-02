@@ -78,9 +78,9 @@ export function formatHttpError(error: unknown): string {
     stringifyDetail(data?.message),
     stringifyDetail(data?.code),
     stringifyDetail(data?.details),
-    error instanceof Error ? error.message : '',
   ].filter(Boolean)
-  return parts[0] || stringifyDetail(error) || i18n.global.t('messages.requestFailed')
+  if (parts[0]) return parts[0]
+  return !anyError?.response && error instanceof Error ? error.message : ''
 }
 
 // 创建 axios 实例

@@ -4,7 +4,7 @@ import os
 import tomllib
 import unicodedata
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy, PluginCliRootId
@@ -42,11 +42,15 @@ def _path_is_within(path: Path, root: Path) -> bool:
 
 def _require_safe_directory_name(value: str) -> str:
     directory_name = value.strip()
+    posix_path = PurePosixPath(directory_name)
+    windows_path = PureWindowsPath(directory_name)
     if (
         not directory_name
         or directory_name in {".", ".."}
-        or "/" in directory_name
-        or "\\" in directory_name
+        or len(posix_path.parts) != 1
+        or len(windows_path.parts) != 1
+        or windows_path.drive
+        or windows_path.root
     ):
         raise ValueError(f"directory_name must be a safe plugin directory name, got {value!r}")
     return directory_name
