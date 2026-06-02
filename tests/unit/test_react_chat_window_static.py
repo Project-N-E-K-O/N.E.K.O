@@ -285,6 +285,7 @@ def test_compact_surface_resize_handles_keep_width_in_dom_geometry_contract():
 def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    app_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
 
     fan_block = css_block(styles, ".compact-input-tool-fan {", ".compact-chat-surface-shell *")
     wheel_block = styles.split(".compact-input-tool-fan .compact-input-tool-item {", 1)[1].split(
@@ -296,6 +297,13 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
         1,
     )[0]
     native_hit_block = collector_block.split("nativeRects.forEach", 1)[1].split("return items.concat", 1)[0]
+    geometry_sync_block = app_source.split(
+        "window.dispatchEvent(new CustomEvent('neko:compact-interaction-geometry-change'));",
+        1,
+    )[1].split(
+        "const openCompactInputToolFan",
+        1,
+    )[0]
 
     assert "position: absolute;" in fan_block
     assert "--compact-tool-wheel-hover-radius: 116px;" in fan_block
@@ -356,11 +364,18 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     assert "scale(0.86)" in wheel_block
     assert "scale(0.98)" in wheel_block
     assert "scale(1.04)" in wheel_block
+    assert "bubbleFloat 3.2s ease-in-out infinite" in styles
     assert '.compact-input-tool-fan[data-compact-tool-wheel-fast-animation="true"]' in styles
     assert "--compact-tool-wheel-transform-duration: 0.07s;" in styles
     assert "pointer-events: none;" in styles
+    assert "toolMenuOpen" in geometry_sync_block
+    assert "var COMPACT_TOOL_AVATAR_CHOICE_FLOAT_PADDING_X = 6;" in script
+    assert "var COMPACT_TOOL_AVATAR_CHOICE_FLOAT_PADDING_Y = 12;" in script
+    assert "function buildCompactAvatarToolChoiceHitRect(rect)" in script
     assert ".composer-icon-popover .composer-icon-button" in collector_block
     assert "toolFan:avatarToolChoice:" in collector_block
+    assert "var hitRect = isAvatarToolChoice ? buildCompactAvatarToolChoiceHitRect(rect) : rect;" in collector_block
+    assert "nativeRect: hitRect" in collector_block
     assert "slot.indexOf('hidden') === 0" in collector_block
     assert "style.pointerEvents !== 'none'" not in collector_block
     assert "hitRect: nativeRect" in native_hit_block

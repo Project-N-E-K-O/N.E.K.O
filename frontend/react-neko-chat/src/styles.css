@@ -1274,21 +1274,35 @@ svg {
   background: #44b7fe;
   color: #fff;
   cursor: pointer;
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 1;
   box-shadow: 0 2px 6px rgba(35, 116, 190, 0.28);
   transition: background 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.composer-tool-clear-btn::before,
+.composer-tool-clear-btn::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  top: 50%;
+  height: 1.5px;
+  border-radius: 999px;
+  background: currentColor;
+  transform-origin: center;
+}
+
+.composer-tool-clear-btn::before {
+  transform: translateY(-50%) rotate(45deg);
+}
+
+.composer-tool-clear-btn::after {
+  transform: translateY(-50%) rotate(-45deg);
 }
 
 .composer-tool-clear-btn:hover {
   background: #229ceb;
   transform: scale(1.08);
   box-shadow: 0 3px 8px rgba(35, 116, 190, 0.34);
-}
-
-.composer-tool-clear-btn span {
-  transform: translateY(-0.5px);
 }
 
 .composer-tool-btn:disabled {

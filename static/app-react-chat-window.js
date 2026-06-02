@@ -1070,6 +1070,8 @@
     }
 
     var COMPACT_TOOL_FAN_CIRCLE_SLICE_COUNT = 18;
+    var COMPACT_TOOL_AVATAR_CHOICE_FLOAT_PADDING_X = 6;
+    var COMPACT_TOOL_AVATAR_CHOICE_FLOAT_PADDING_Y = 12;
 
     function readCompactToolFanPixelVar(style, name, fallback) {
         var rawValue = style ? style.getPropertyValue(name) : '';
@@ -1105,6 +1107,31 @@
             });
         }
         return slices;
+    }
+
+    function expandCompactRect(rect, expandX, expandTop, expandBottom) {
+        if (!rect) return null;
+        var left = rect.left - expandX;
+        var top = rect.top - expandTop;
+        var right = rect.right + expandX;
+        var bottom = rect.bottom + expandBottom;
+        return {
+            left: left,
+            top: top,
+            width: right - left,
+            height: bottom - top,
+            right: right,
+            bottom: bottom
+        };
+    }
+
+    function buildCompactAvatarToolChoiceHitRect(rect) {
+        return expandCompactRect(
+            rect,
+            COMPACT_TOOL_AVATAR_CHOICE_FLOAT_PADDING_X,
+            COMPACT_TOOL_AVATAR_CHOICE_FLOAT_PADDING_Y,
+            COMPACT_TOOL_AVATAR_CHOICE_FLOAT_PADDING_Y
+        );
     }
 
     function isCompactSurfaceBaseAnchorKind(kind) {
@@ -1151,6 +1178,8 @@
                 if (!isAvatarToolChoice && (!slot || slot.indexOf('hidden') === 0)) return null;
                 var rect = normalizeCompactDomRect(child.getBoundingClientRect());
                 if (!rect) return null;
+                var hitRect = isAvatarToolChoice ? buildCompactAvatarToolChoiceHitRect(rect) : rect;
+                if (!hitRect) return null;
                 return {
                     id: isAvatarToolChoice
                         ? 'toolFan:avatarToolChoice:' + index
@@ -1158,8 +1187,8 @@
                     owner: 'surface',
                     kind: 'toolFan',
                     visualRect: rect,
-                    hitRect: rect,
-                    nativeRect: rect,
+                    hitRect: hitRect,
+                    nativeRect: hitRect,
                     interactive: true
                 };
             })
