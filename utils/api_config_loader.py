@@ -99,7 +99,6 @@ def _convert_core_api_profile(json_profile: Dict[str, Any]) -> Dict[str, Any]:
         'core_urls': 'CORE_URLS',
         'core_model': 'CORE_MODEL',
         'core_api_key': 'CORE_API_KEY',
-        'is_free_version': 'IS_FREE_VERSION',
     }
     
     for json_key, python_key in field_mapping.items():
@@ -133,7 +132,6 @@ def _convert_assist_api_profile(json_profile: Dict[str, Any]) -> Dict[str, Any]:
         'agent_model': 'AGENT_MODEL',
         'audio_api_key': 'AUDIO_API_KEY',
         'openrouter_api_key': 'OPENROUTER_API_KEY',
-        'is_free_version': 'IS_FREE_VERSION',
     }
     
     for json_key, python_key in field_mapping.items():

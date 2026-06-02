@@ -10,6 +10,7 @@ import re
 import shutil
 import threading
 import asyncio
+import time
 import math
 import uuid
 from datetime import date
@@ -194,7 +195,8 @@ async def ensure_default_yui_voice_for_free_api(config_manager, core_cfg: dict |
             core_cfg = {}
     if not isinstance(core_cfg, dict):
         return False
-    if core_cfg.get("coreApi") != "free" and core_cfg.get("assistApi") != "free" and not core_cfg.get("IS_FREE_VERSION"):
+    # 免费预设 YUI 音色只在 core=free 运行时可用，与 assist 无关。
+    if (core_cfg.get("coreApi") or core_cfg.get("CORE_API_TYPE")) != "free":
         return False
 
     characters = await config_manager.aload_characters()
@@ -859,7 +861,15 @@ class ConfigManager:
     """配置文件管理器"""
     _agent_quota_lock = threading.Lock()
     _selected_root_unavailable_recovery_override_roots: set[str] = set()
-    _free_agent_daily_limit = 300 # 免费配额并非只在本地实施，本地计算是为了减少无效请求、节约网络带宽。
+    _free_agent_daily_limit = 500 # 免费配额并非只在本地实施，本地计算是为了减少无效请求、节约网络带宽。
+    # 本地每日配额只对真正的免费 Agent 模型计数；模型名与 config/api_providers.json 的 assist free profile 保持一致。
+    _free_agent_model_name = "free-agent-model"
+    # 配额耗尽时给前端弹提示的节流：与 _agent_quota_lock 不同的锁，避免在持有配额锁时重入。
+    # notifier 由 agent_server 在启动时注册（进程级），收到耗尽信号最多每 _quota_notify_interval_s 秒触发一次。
+    _quota_notify_lock = threading.Lock()
+    _quota_notify_interval_s = 10.0
+    _quota_notify_last_monotonic = 0.0
+    _quota_exceeded_notifier = None
     ROOT_STATE_VERSION = 1
     CLOUDSAVE_LOCAL_STATE_VERSION = 1
     CHARACTER_TOMBSTONES_STATE_VERSION = 1
@@ -2545,7 +2555,7 @@ class ConfigManager:
         tts_config = self.get_model_api_config('tts_custom')
         base_url = tts_config.get('base_url', '')
         is_local_tts = tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://'))
-        hide_cloud_main = for_listing and self.is_free_version()
+        hide_cloud_main = for_listing and self.is_free_voice()
 
         if is_local_tts:
             # 本地 WebSocket TTS：免费版仍可用，列表必须可见
@@ -3093,23 +3103,11 @@ class ConfigManager:
         return url
 
     def _normalize_agent_url(self, url: str) -> str:
-        """Agent 模型始终走 lanlan.app（国际 API），统一 lanlan.tech → lanlan.app；
-        国际保留 www（www.lanlan.app），国内剥掉 www（lanlan.app）走就近节点。
+        """临时不改写 Agent URL。
 
-        lanlan.tech / lanlan.app 是项目自有域名，AGENT_MODEL_URL 要么是写死的
-        free 默认（https://www.lanlan.tech/text/v1），要么是用户自填的其它服务
-        URL（不含这两个域，replace 自然 no-op），所以直接字符串替换即可。
+        free-agent-model 需要走配置里的国内 ``lanlan.tech`` 文本入口；这里保持
+        AGENT_MODEL_URL 原样，避免把它归一化到 ``lanlan.app``。
         """
-        if not isinstance(url, str):
-            return url
-        url = url.replace('lanlan.tech', 'lanlan.app')
-        try:
-            if not self._check_non_mainland():
-                url = url.replace('www.lanlan.app', 'lanlan.app')
-        except Exception:
-            # 仅 _check_non_mainland 可能抛（GeoIP 探测）。探测失败时不剥 www，
-            # 保留国际形态作安全默认；线路探测不该阻断 URL 推导。
-            pass
         return url
 
     @staticmethod
@@ -3248,7 +3246,6 @@ class ConfigManager:
             'ASSIST_API_KEY_MINIMAX_INTL': '',
             'ASSIST_API_KEY_GROK': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_OPENROUTER': DEFAULT_CORE_API_KEY,
-            'IS_FREE_VERSION': False,
             'VISION_MODEL': DEFAULT_VISION_MODEL,
             'AGENT_MODEL': DEFAULT_AGENT_MODEL,
             'REALTIME_MODEL': DEFAULT_REALTIME_MODEL,
@@ -3822,11 +3819,12 @@ class ConfigManager:
         """
         Agent 模式门槛检查：
         - 必须具备可用的 AGENT_MODEL(model/url/api_key)
-        - free 版本允许使用但由前端提示风险
+        - 是否免费(计配额/前端提示)由 is_agent_free() 单独判定，与本检查无关：
+          readiness 只关心 model/url/key 三件套填没填、能否发起请求。free-access 对
+          真免费 agent 是有效占位 token，应让它过门槛；脏配置(占位 key 打自费端点)由
+          下游 401 兜底，不在这里拦。
         """
         reasons = []
-        core_config = self.get_core_config()
-        is_free = bool(core_config.get('IS_FREE_VERSION'))
         agent_api = self.get_model_api_config('agent')
         if not (agent_api.get('model') or '').strip():
             reasons.append("Agent 模型未配置")
@@ -3835,19 +3833,60 @@ class ConfigManager:
         api_key = (agent_api.get('api_key') or '').strip()
         if not api_key:
             reasons.append("Agent API Key 未配置或不可用")
-        elif api_key == 'free-access' and not is_free:
-            reasons.append("Agent API Key 未配置或不可用")
         return len(reasons) == 0, reasons
 
-    def is_free_version(self) -> bool:
-        return bool(self.get_core_config().get('IS_FREE_VERSION'))
+    def is_agent_free(self) -> bool:
+        """当前 Agent 实际用的是否为内置免费 Agent 模型(free-agent-model)。
+
+        agent 侧"是否免费"的唯一真相源——计配额、前端"免费模型易阻塞"提示都看它。
+        对偶于 is_free_voice()(语音/core 维度)：即便用免费语音(core=free)，只要 agent
+        换成自费/自定义 model，这里就为 False。
+        """
+        agent_model = (self.get_model_api_config('agent').get('model') or '').strip()
+        return agent_model == self._free_agent_model_name
+
+    def is_free_voice(self) -> bool:
+        """当前是否走内置免费语音(core=free)。语音/音色侧"是否免费"的唯一真相源——
+        免费预设音色、隐藏云端克隆音色、默认 YUI 兜底都看它。对偶于 is_agent_free()。
+
+        realtime 与文本 TTS 共用同一音色、统一跟 core 走，与 assist 无关：被
+        hide_cloud_main 隐藏的 CosyVoice/Qwen 克隆音色只是复用了 assist key，免费版
+        (core=free)运行时走 free_mode worker 播不出它们，故隐藏。
+        """
+        return (self.get_core_config().get('CORE_API_TYPE') or '') == 'free'
 
     def _get_agent_quota_path(self) -> Path:
         """本地 Agent 试用配额计数文件路径。"""
         return self.config_dir / "agent_quota.json"
 
+    @classmethod
+    def register_quota_exceeded_notifier(cls, notifier) -> None:
+        """注册"免费版 Agent 配额耗尽"通知回调（进程级，由 agent_server 启动时注册）。
+
+        notifier(used:int, limit:int) 会在配额耗尽时被调用，**最多每 10 秒一次**（见
+        ``_maybe_notify_quota_exceeded`` 的节流）。回调本身必须非阻塞——它在持有
+        ``_agent_quota_lock`` 的临界区里被调用，通常只做一次跨线程 schedule。
+        """
+        cls._quota_exceeded_notifier = notifier
+
+    def _maybe_notify_quota_exceeded(self, used: int, limit: int) -> None:
+        """配额耗尽时节流触发已注册的前端提示回调（最多每 _quota_notify_interval_s 秒一次）。"""
+        notifier = ConfigManager._quota_exceeded_notifier
+        if notifier is None:
+            return
+        now = time.monotonic()
+        with ConfigManager._quota_notify_lock:
+            last = ConfigManager._quota_notify_last_monotonic
+            if last and (now - last) < ConfigManager._quota_notify_interval_s:
+                return
+            ConfigManager._quota_notify_last_monotonic = now
+        try:
+            notifier(used, limit)
+        except Exception as e:
+            logger.debug("配额耗尽通知回调失败: %s", e)
+
     def consume_agent_daily_quota(self, source: str = "", units: int = 1) -> tuple[bool, dict]:
-        """消费 Agent 模型每日配额（仅免费版生效）。配额并非只在本地实施，本地计算是为了减少无效请求、节约网络带宽。
+        """消费 Agent 模型每日配额（仅当实际 Agent 模型为 free-agent-model 时生效）。配额并非只在本地实施，本地计算是为了减少无效请求、节约网络带宽。
 
         Returns:
             (ok, info)
@@ -3862,11 +3901,14 @@ class ConfigManager:
         if units <= 0:
             units = 1
 
-        is_free = self.is_free_version()
+        # 只对真正的免费 Agent 模型(free-agent-model)本地计数：用户换用自费/自定义 agent
+        # model 后不该再被这条免费试用配额挡。判定收口在 is_agent_free()。analyzer/deduper
+        # 这类判定器走的是 summary/emotion 模型而非 agent model，已不再调用本函数。
+        is_metered = self.is_agent_free()
         today = date.today().isoformat()
         limit = int(self._free_agent_daily_limit)
 
-        if not is_free:
+        if not is_metered:
             return True, {
                 "limited": False,
                 "date": today,
@@ -3895,6 +3937,9 @@ class ConfigManager:
 
             used = int(data.get("used", 0))
             if used + units > limit:
+                # 配额耗尽：节流通知前端弹提示（最多每 10 秒一次）。回调非阻塞，
+                # 在临界区里只做一次跨线程 schedule，不展开网络 IO。
+                self._maybe_notify_quota_exceeded(used, limit)
                 return False, {
                     "limited": True,
                     "date": today,

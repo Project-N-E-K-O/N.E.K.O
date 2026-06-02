@@ -3754,14 +3754,16 @@ async def get_voices():
     if active_native_provider:
         result["native_voices"] = get_native_voice_catalog_for_ui(active_native_provider)
 
-    if core_config.get('IS_FREE_VERSION'):
-        core_url = core_config.get('CORE_URL', '')
-        openrouter_url = core_config.get('OPENROUTER_URL', '')
-        if 'lanlan.tech' in core_url or 'lanlan.tech' in openrouter_url:
-            from utils.api_config_loader import get_free_voices
-            free_voices = get_free_voices()
-            if free_voices:
-                result["free_voices"] = free_voices
+    # 免费预设音色只在 core=free 运行时可用（与 assist 无关）；core_url 仍须指向
+    # lanlan.tech 免费端点，海外 lanlan.app 路由由 should_block_free_voice_for_route 兜底。
+    # 此处已持有 core_config，直接读 CORE_API_TYPE（等价 is_free_voice()），省一次读取。
+    # CORE_URL 用 `or ''` 归一化：key 存在但值为 None 时 `.get(k, '')` 仍返回 None，
+    # `in None` 会抛 TypeError 让 /voices 500。
+    if core_config.get('CORE_API_TYPE') == 'free' and 'lanlan.tech' in (core_config.get('CORE_URL') or ''):
+        from utils.api_config_loader import get_free_voices
+        free_voices = get_free_voices()
+        if free_voices:
+            result["free_voices"] = free_voices
 
     # 构建 voice_id → 使用该音色的角色名列表，用于前端显示
     characters = await _config_manager.aload_characters()

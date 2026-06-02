@@ -52,6 +52,15 @@ streak_timezone = "local"
 makeup_window_days = 3
 auto_derive_from_session = true
 
+[study.awareness]
+enabled = false
+snapshot_interval_seconds = 5
+context_window_minutes = 5
+classify_mode = "title_first"
+image_max_bytes = 204800
+push_to_llm_interval_seconds = 30
+push_to_llm_mode = "read"
+
 [study_companion.communication]
 enabled = true
 

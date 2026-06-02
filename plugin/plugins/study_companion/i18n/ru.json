@@ -190,5 +190,13 @@
     "ui.button.rating.hard":  "Сложно",
     "ui.button.rating.good":  "Хорошо",
     "ui.button.rating.easy":  "Легко",
-    "ui.label.name":  "Имя"
+    "ui.label.name":  "Имя",
+    "ui.awareness.title":  "Контекст окружения",
+    "ui.awareness.enabled":  "Включить анализ экрана",
+    "ui.awareness.snapshot_interval":  "Интервал снимков",
+    "ui.awareness.context_window":  "Окно контекста",
+    "ui.awareness.classify_mode":  "Режим классификации",
+    "ui.awareness.push_mode":  "Режим контекста LLM",
+    "ui.awareness.privacy_note":  "Снимки экрана обрабатываются только в памяти и не записываются на диск.",
+    "ui.awareness.translation_pending":  "Перевод ожидается"
 }

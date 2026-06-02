@@ -409,7 +409,6 @@ VRMManager.prototype.setupFloatingButtons = function() {
 
     // 创建"请她回来"按钮
     const returnButtonContainer = this.createReturnButton();
-    this._setupReturnButtonDrag(returnButtonContainer);
     this._addReturnButtonBreathingAnimation();
 
     // 创建锁图标
@@ -748,9 +747,17 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
     let dragRAFId = null;
     let pendingClientX = 0;
     let pendingClientY = 0;
+    let dragActiveDispatched = false;
 
     const handleStart = (clientX, clientY) => {
+        window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
+            detail: {
+                reason: 'return-ball-drag-start',
+                container: returnButtonContainer
+            }
+        }));
         isDragging = true;
+        dragActiveDispatched = false;
         dragStartX = clientX;
         dragStartY = clientY;
         // 同步初始化 pending 坐标，防止 click-without-move 时
@@ -792,6 +799,15 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
         const deltaY = pendingClientY - dragStartY;
         if (Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5) {
             returnButtonContainer.setAttribute('data-dragging', 'true');
+            if (!dragActiveDispatched) {
+                dragActiveDispatched = true;
+                window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
+                    detail: {
+                        reason: 'return-ball-drag-active',
+                        container: returnButtonContainer
+                    }
+                }));
+            }
         }
         const newX = Math.max(0, Math.min(containerStartX + deltaX, window.innerWidth - cachedContainerWidth));
         const newY = Math.max(0, Math.min(containerStartY + deltaY, window.innerHeight - cachedContainerHeight));
@@ -808,6 +824,15 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
         const deltaY = pendingClientY - dragStartY;
         if (Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5) {
             returnButtonContainer.setAttribute('data-dragging', 'true');
+            if (!dragActiveDispatched) {
+                dragActiveDispatched = true;
+                window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
+                    detail: {
+                        reason: 'return-ball-drag-active',
+                        container: returnButtonContainer
+                    }
+                }));
+            }
         }
         const newX = Math.max(0, Math.min(containerStartX + deltaX, window.innerWidth - cachedContainerWidth));
         const newY = Math.max(0, Math.min(containerStartY + deltaY, window.innerHeight - cachedContainerHeight));
@@ -834,10 +859,22 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
                 dragRAFId = null;
             }
             commitDragPosition();
+            const moved = returnButtonContainer.getAttribute('data-dragging') === 'true';
+            const movedDistancePx = Math.hypot(pendingClientX - dragStartX, pendingClientY - dragStartY);
 
             setTimeout(() => returnButtonContainer.setAttribute('data-dragging', 'false'), 10);
             isDragging = false;
+            dragActiveDispatched = false;
             returnButtonContainer.style.cursor = 'grab';
+            if (moved) {
+                window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
+                    detail: {
+                        reason: 'return-ball-drag-end',
+                        container: returnButtonContainer,
+                        movedDistancePx: movedDistancePx
+                    }
+                }));
+            }
 
             // 恢复拖拽期间禁用的视觉效果
             const returnBtn = returnButtonContainer.querySelector('#vrm-btn-return');
@@ -888,35 +925,7 @@ VRMManager.prototype._setupReturnButtonDrag = function (returnButtonContainer) {
  * 添加"请她回来"按钮的呼吸灯动画效果（与 Live2D 保持一致）
  */
 VRMManager.prototype._addReturnButtonBreathingAnimation = function () {
-    // 检查是否已经添加过样式
-    const opts = this._avatarButtonOptions;
-    if (document.getElementById(opts.returnBreathingStyleId)) {
-        return;
-    }
-
-    const style = document.createElement('style');
-    style.id = opts.returnBreathingStyleId;
-    style.textContent = `
-        /* 请她回来按钮呼吸特效 */
-        @keyframes vrmReturnButtonBreathing {
-            0%, 100% {
-                box-shadow: 0 0 8px rgba(68, 183, 254, 0.6), 0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08);
-            }
-            50% {
-                box-shadow: 0 0 18px rgba(68, 183, 254, 1), 0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08);
-            }
-        }
-        
-        #vrm-btn-return {
-            animation: vrmReturnButtonBreathing 2s ease-in-out infinite;
-            will-change: box-shadow;
-        }
-        
-        #vrm-btn-return:hover {
-            animation: none;
-        }
-    `;
-    document.head.appendChild(style);
+    // No-op: breathing animation removed, images provide visual identity.
 };
 
 /**

@@ -41,6 +41,7 @@ CHARACTER_SYSTEM_RESERVED_FIELDS = (
     "lighting",
     "vrm_rotation",
     "live2d_item_id",
+    "live2d_idle_animation",
     "item_id",
     "idleAnimation",
     "idleAnimations",
@@ -709,7 +710,6 @@ DEFAULT_CORE_API_PROFILES = {
         'CORE_URL': "wss://www.lanlan.tech/core",
         'CORE_MODEL': "free-model",
         'CORE_API_KEY': "free-access",
-        'IS_FREE_VERSION': True,
     },
     'qwen': {
         'CORE_URL': "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
@@ -749,10 +749,11 @@ DEFAULT_ASSIST_API_PROFILES = {
         'CORRECTION_MODEL': "free-model",
         'EMOTION_MODEL': "free-model",
         'VISION_MODEL': "free-vision-model",
-        'AGENT_MODEL': "free-model",
+        # 必须与 api_providers.json 的 free agent_model 及 _free_agent_model_name 一致，
+        # 否则 json 缺失回退到本 defaults 时免费 agent 不计配额、is_agent_free 误判。
+        'AGENT_MODEL': "free-agent-model",
         'AUDIO_API_KEY': "free-access",
         'OPENROUTER_API_KEY': "free-access",
-        'IS_FREE_VERSION': True,
     },
     'qwen': {
         'OPENROUTER_URL': "https://dashscope.aliyuncs.com/compatible-mode/v1",
