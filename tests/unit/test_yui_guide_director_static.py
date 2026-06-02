@@ -1,14 +1,20 @@
 from pathlib import Path
 import json
+import re
 
 
 YUI_GUIDE_DIRECTOR_PATH = Path(__file__).resolve().parents[2] / "static" / "yui-guide-director.js"
+YUI_GUIDE_STEPS_PATH = Path(__file__).resolve().parents[2] / "static" / "yui-guide-steps.js"
 APP_INTERPAGE_PATH = Path(__file__).resolve().parents[2] / "static" / "app-interpage.js"
 STATIC_LOCALES_DIR = Path(__file__).resolve().parents[2] / "static" / "locales"
 
 
 def _read_director() -> str:
     return YUI_GUIDE_DIRECTOR_PATH.read_text(encoding="utf-8")
+
+
+def _read_steps() -> str:
+    return YUI_GUIDE_STEPS_PATH.read_text(encoding="utf-8")
 
 
 def _read_interpage() -> str:
@@ -232,3 +238,14 @@ def test_settings_peek_copy_matches_existing_voice_audio_script():
             static_lines["takeoverSettingsPeekDetailPart1"]
             + static_lines["takeoverSettingsPeekDetailPart2"]
         )
+
+
+def test_zh_cn_intro_basic_copy_matches_step_fallback_and_voice_script():
+    steps_source = _read_steps()
+    match = re.search(r"steps\.intro_basic\.performance\.bubbleText = '([^']+)';", steps_source)
+    assert match is not None
+    fallback_text = match.group(1)
+    static_intro = _read_static_locale("zh-CN")["tutorial"]["yuiGuide"]["lines"]["introBasic"]
+
+    assert "神奇的小按钮" in fallback_text
+    assert static_intro == fallback_text
