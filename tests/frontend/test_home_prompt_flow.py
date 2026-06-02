@@ -2899,7 +2899,7 @@ def test_avatar_floating_daily_scenes_keep_persistent_cursor_look_at_enabled(
 
 
 @pytest.mark.frontend
-def test_intro_voice_cursor_look_at_responds_promptly_to_cursor_position(
+def test_intro_voice_cursor_look_at_ramps_from_forward_to_cursor_position(
     mock_page: Page,
 ):
     _bootstrap_page(
@@ -2953,15 +2953,18 @@ def test_intro_voice_cursor_look_at_responds_promptly_to_cursor_position(
                 isCancelled: () => false,
             });
             const valueAfterStart = window.live2dManager.__coreModel.__values.ParamAngleX;
+            await new Promise((resolve) => setTimeout(resolve, 1300));
+            const valueAfterRamp = window.live2dManager.__coreModel.__values.ParamAngleX;
             if (handle && typeof handle.stop === 'function') {
                 await handle.stop('test');
             }
-            return valueAfterStart;
+            return { valueAfterStart, valueAfterRamp };
         }
         """
     )
 
-    assert result >= 7
+    assert abs(result["valueAfterStart"]) < 1
+    assert result["valueAfterRamp"] >= 7
 
 
 @pytest.mark.frontend
@@ -3015,6 +3018,230 @@ def test_avatar_floating_open_agent_clears_button_highlight_for_panel(
             "hasSecondary": True,
             "secondary": None,
         }
+    ]
+
+
+@pytest.mark.frontend
+def test_day6_status_and_plugin_lines_run_split_plugin_dashboard_flow(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <button id="live2d-btn-agent" style="position:absolute; left:20px; top:30px; width:44px; height:44px;"></button>
+                <section id="live2d-popup-agent" style="display:flex; opacity:1; position:absolute; left:90px; top:28px; width:320px; height:440px;"></section>
+                <button id="live2d-toggle-agent-user-plugin" style="position:absolute; left:120px; top:150px; width:180px; height:48px;"></button>
+                <section data-neko-sidepanel data-neko-sidepanel-type="agent-user-plugin-actions" style="display:flex; opacity:1; position:absolute; left:430px; top:80px; width:260px; height:300px;">
+                    <button id="neko-sidepanel-action-agent-user-plugin-management-panel" style="position:absolute; left:30px; top:44px; width:180px; height:44px;"></button>
+                </section>
+            `;
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const calls = [];
+            director.waitForSceneDelay = async () => true;
+            const dashboardWindow = { closed: false };
+            director.setSpotlightGeometryHint = (element, options) => {
+                calls.push({
+                    type: 'geometry',
+                    id: element && element.id,
+                    geometry: options && options.geometry ? options.geometry : null,
+                    padding: options && options.padding,
+                });
+            };
+            director.applyGuideHighlights = (config) => {
+                calls.push({
+                    type: 'highlight',
+                    key: config.key || '',
+                    primaryId: config.primary ? config.primary.id : null,
+                    persistentId: config.persistent ? config.persistent.id : null,
+                });
+                return {
+                    persistent: config.persistent || null,
+                    primary: config.primary || null,
+                    secondary: config.secondary || null,
+                };
+            };
+            director.moveCursorToElement = async (element, durationMs) => {
+                calls.push({
+                    type: 'move',
+                    id: element && element.id,
+                    durationMs,
+                });
+                return true;
+            };
+            director.cursor = {
+                hasPosition: () => true,
+                showAt: () => {},
+                moveToRect: async () => true,
+                click: (visibleMs) => calls.push({ type: 'click', visibleMs }),
+                wobble: () => calls.push({ type: 'wobble' }),
+                cancel: () => {},
+                hide: () => calls.push({ type: 'cursor:hide' }),
+            };
+            director.overlay.getCursorPosition = () => ({ x: 321, y: 234 });
+            director.openAgentPanel = async () => {
+                calls.push({ type: 'api:openAgentPanel' });
+                return true;
+            };
+            director.ensureAvatarFloatingAgentSidePanel = async (toggleId) => {
+                calls.push({ type: 'api:ensureAgentSidePanel', toggleId });
+                return document.querySelector('[data-neko-sidepanel-type="agent-user-plugin-actions"]');
+            };
+            director.ensureAgentSidePanelActionVisible = async (toggleId, actionId) => {
+                calls.push({ type: 'api:ensureActionVisible', toggleId, actionId });
+                return document.getElementById('neko-sidepanel-action-agent-user-plugin-management-panel');
+            };
+            director.clickAgentSidePanelAction = async (toggleId, actionId, options) => {
+                calls.push({
+                    type: 'api:clickAgentSidePanelAction',
+                    toggleId,
+                    actionId,
+                    keepMainUIVisible: options && options.keepMainUIVisible === true,
+                    source: options && options.source,
+                    sceneId: options && options.sceneId,
+                });
+                return true;
+            };
+            director.waitForOpenedWindow = async (windowName, timeoutMs) => {
+                calls.push({ type: 'api:waitForOpenedWindow', windowName, timeoutMs });
+                return timeoutMs === 120 ? null : dashboardWindow;
+            };
+            director.waitForPluginDashboardPerformance = async (windowRef, payload) => {
+                calls.push({
+                    type: 'api:waitForPluginDashboardPerformance',
+                    sameWindow: windowRef === dashboardWindow,
+                    line: payload.line,
+                    voiceKey: payload.voiceKey,
+                    closeOnDone: payload.closeOnDone,
+                    narrationStartedAtMs: payload.narrationStartedAtMs,
+                });
+                return new Promise((resolve) => {
+                    director.__resolveDashboardPerformance = () => resolve(true);
+                });
+            };
+            director.notifyPluginDashboardNarrationFinished = () => {
+                calls.push({ type: 'api:notifyPluginDashboardNarrationFinished' });
+                if (director.__resolveDashboardPerformance) {
+                    director.__resolveDashboardPerformance();
+                }
+            };
+            director.closePluginDashboardWindowIfCreatedByGuide = async (context) => {
+                calls.push({ type: 'api:closePluginDashboardWindowIfCreatedByGuide', context });
+                dashboardWindow.closed = true;
+            };
+            director.closeAgentPanel = async () => {
+                calls.push({ type: 'api:closeAgentPanel' });
+                return true;
+            };
+            director.collapseAgentSidePanel = (toggleId) => {
+                calls.push({ type: 'ui:collapseAgentSidePanel', toggleId });
+                return true;
+            };
+            director.clearVirtualSpotlight = (key) => calls.push({ type: 'ui:clearVirtualSpotlight', key });
+            director.stopHoverElement = (element) => calls.push({ type: 'ui:stopHoverElement', id: element && element.id });
+            director.waitForHomeMainUIReady = async (timeoutMs) => {
+                calls.push({ type: 'api:waitForHomeMainUIReady', timeoutMs });
+                return true;
+            };
+            director.cursor.showAt = (x, y) => calls.push({ type: 'cursor:showAt', x, y });
+
+            const openedAgent = await director.runAvatarFloatingSceneOperation({
+                id: 'day6_agent_status_master',
+                text: '快跟我老实交代，这两天你有没有点开它试用一下呀？',
+                voiceKey: 'avatar_floating_day6_status_master',
+                operation: 'day6-plugin-open-agent-panel-flow',
+            }, null, 1700000000000);
+            const openedManagement = await director.runAvatarFloatingSceneOperation({
+                id: 'day6_plugin_side_panel',
+                text: '除了之前介绍的功能，这里还有超多好玩的插件呢',
+                voiceKey: 'avatar_floating_day6_plugin_side_panel',
+                operation: 'day6-plugin-open-management-panel-flow',
+            }, null, 1700000001000);
+            const dashboardHandoff = await director.runAvatarFloatingSceneOperation({
+                id: 'day6_plugin_dashboard',
+                text: '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼！',
+                voiceKey: 'avatar_floating_day6_plugin_dashboard',
+                operation: 'day6-plugin-dashboard-handoff-flow',
+            }, null, 1700000002000);
+            return { openedAgent, openedManagement, dashboardHandoff, calls };
+        }
+        """
+    )
+
+    assert result["openedAgent"] is True
+    assert result["openedManagement"] is True
+    assert result["dashboardHandoff"] is True
+    assert result["calls"] == [
+        {"type": "geometry", "id": "live2d-btn-agent", "geometry": "circle", "padding": 4},
+        {"type": "highlight", "key": "day6_agent_status_master-cat-paw", "primaryId": "live2d-btn-agent", "persistentId": None},
+        {"type": "move", "id": "live2d-btn-agent", "durationMs": 760},
+        {"type": "click", "visibleMs": 420},
+        {"type": "api:openAgentPanel"},
+        {
+            "type": "highlight",
+            "key": "day6_plugin_side_panel-user-plugin",
+            "primaryId": "live2d-toggle-agent-user-plugin",
+            "persistentId": None,
+        },
+        {"type": "move", "id": "live2d-toggle-agent-user-plugin", "durationMs": 720},
+        {"type": "click", "visibleMs": 420},
+        {"type": "api:ensureAgentSidePanel", "toggleId": "user-plugin"},
+        {
+            "type": "api:ensureActionVisible",
+            "toggleId": "agent-user-plugin",
+            "actionId": "management-panel",
+        },
+        {
+            "type": "geometry",
+            "id": "neko-sidepanel-action-agent-user-plugin-management-panel",
+            "geometry": None,
+            "padding": 18,
+        },
+        {
+            "type": "highlight",
+            "key": "day6_plugin_side_panel-management-panel",
+            "primaryId": "neko-sidepanel-action-agent-user-plugin-management-panel",
+            "persistentId": None,
+        },
+        {
+            "type": "move",
+            "id": "neko-sidepanel-action-agent-user-plugin-management-panel",
+            "durationMs": 720,
+        },
+        {"type": "click", "visibleMs": 420},
+        {"type": "api:waitForOpenedWindow", "windowName": "plugin_dashboard", "timeoutMs": 120},
+        {
+            "type": "api:clickAgentSidePanelAction",
+            "toggleId": "agent-user-plugin",
+            "actionId": "management-panel",
+            "keepMainUIVisible": True,
+            "source": "avatar-floating-guide",
+            "sceneId": "day6_plugin_side_panel",
+        },
+        {"type": "api:waitForOpenedWindow", "windowName": "plugin_dashboard", "timeoutMs": 1800},
+        {"type": "cursor:hide"},
+        {
+            "type": "api:waitForPluginDashboardPerformance",
+            "sameWindow": True,
+            "line": "有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼！",
+            "voiceKey": "avatar_floating_day6_plugin_dashboard",
+            "closeOnDone": False,
+            "narrationStartedAtMs": 1700000002000,
+        },
+        {"type": "api:notifyPluginDashboardNarrationFinished"},
+        {"type": "api:closePluginDashboardWindowIfCreatedByGuide", "context": "Day 6 插件管理预览完成"},
+        {"type": "ui:collapseAgentSidePanel", "toggleId": "agent-user-plugin"},
+        {"type": "ui:clearVirtualSpotlight", "key": "plugin-management-entry"},
+        {"type": "ui:stopHoverElement", "id": "live2d-toggle-agent-user-plugin"},
+        {"type": "api:closeAgentPanel"},
+        {"type": "api:waitForHomeMainUIReady", "timeoutMs": 3600},
+        {"type": "cursor:showAt", "x": 321, "y": 234},
     ]
 
 
@@ -3577,6 +3804,7 @@ def test_day4_privacy_mode_highlights_privacy_without_privacy_sidepanel(mock_pag
                 <button id="live2d-btn-settings" style="position:absolute; left:20px; top:30px; width:44px; height:44px;"></button>
                 <button id="live2d-lock-icon" style="position:absolute; left:80px; top:30px; width:44px; height:44px;"></button>
                 <button id="privacy-mode-button" style="position:absolute; left:100px; top:200px; width:120px; height:44px;"></button>
+                <section id="live2d-popup-settings" style="display:flex; opacity:1; pointer-events:auto; position:absolute; left:220px; top:40px; width:340px; height:440px;"></section>
                 <section id="animation-settings-panel" data-neko-sidepanel data-neko-sidepanel-type="animation-settings" style="display:flex; opacity:1; position:absolute; left:260px; top:70px; width:260px; height:380px;"></section>
                 <section id="privacy-panel" data-neko-sidepanel data-neko-sidepanel-type="interval-proactive-vision" style="display:none; opacity:0; position:absolute; left:260px; top:70px; width:260px; height:240px;">
                     <input id="live2d-toggle-proactive-vision" type="checkbox">
@@ -3639,7 +3867,13 @@ def test_day4_privacy_mode_highlights_privacy_without_privacy_sidepanel(mock_pag
                 cancel: () => {},
                 hide: () => {},
             };
-            director.speakGuideLine = async () => calls.push({ type: 'narration:done' });
+            director.speakGuideLine = async () => {
+                calls.push({ type: 'narration:done' });
+                const animationPanel = document.getElementById('animation-settings-panel');
+                animationPanel.style.display = 'flex';
+                animationPanel.style.opacity = '1';
+                calls.push({ type: 'sidepanel:visible-during-narration' });
+            };
 
             await director.playAvatarFloatingScene({
                 id: 'day4_privacy_mode',
@@ -3649,36 +3883,49 @@ def test_day4_privacy_mode_highlights_privacy_without_privacy_sidepanel(mock_pag
                 cursorAction: 'move',
                 operation: 'show-settings-sidepanel:interval-proactive-vision',
             }, 4, 4, 8);
-            return calls;
+            return {
+                calls,
+                settingsPopupDisplay: getComputedStyle(document.getElementById('live2d-popup-settings')).display,
+                settingsPopupOpacity: getComputedStyle(document.getElementById('live2d-popup-settings')).opacity,
+                settingsPopupPointerEvents: getComputedStyle(document.getElementById('live2d-popup-settings')).pointerEvents,
+                animationPanelDisplay: getComputedStyle(document.getElementById('animation-settings-panel')).display,
+                animationPanelOpacity: getComputedStyle(document.getElementById('animation-settings-panel')).opacity,
+            };
         }
         """
     )
+    calls = result["calls"]
 
-    assert {"type": "api:ensureSidePanel", "panelType": "interval-proactive-vision"} not in result
+    assert {"type": "api:ensureSidePanel", "panelType": "interval-proactive-vision"} not in calls
     assert [
         (call["key"], call["primaryId"], call["persistentId"])
-        for call in result
+        for call in calls
         if call["type"] == "highlight"
     ] == [
         ("day4_privacy_mode-privacy-mode-button", "privacy-mode-button", "live2d-btn-settings"),
     ]
     assert [
         (call["id"], call["durationMs"])
-        for call in result
+        for call in calls
         if call["type"] == "move"
     ] == [
         ("privacy-mode-button", 620),
     ]
-    assert not any(call.get("primaryId") == "privacy-panel" for call in result)
-    assert not any(call.get("primaryId") == "live2d-toggle-proactive-vision" for call in result)
-    assert not any(call.get("primaryId") == "live2d-lock-icon" for call in result)
-    narration_index = result.index({"type": "narration:done"})
+    assert not any(call.get("primaryId") == "privacy-panel" for call in calls)
+    assert not any(call.get("primaryId") == "live2d-toggle-proactive-vision" for call in calls)
+    assert not any(call.get("primaryId") == "live2d-lock-icon" for call in calls)
+    narration_index = calls.index({"type": "narration:done"})
     close_settings_indices = [
-        index for index, call in enumerate(result)
+        index for index, call in enumerate(calls)
         if call == {"type": "api:closeSettingsPanel"}
     ]
     assert any(index > narration_index for index in close_settings_indices)
-    assert {"type": "click"} not in result
+    assert {"type": "click"} not in calls
+    assert result["settingsPopupDisplay"] == "none"
+    assert result["settingsPopupOpacity"] == "0"
+    assert result["settingsPopupPointerEvents"] == "none"
+    assert result["animationPanelDisplay"] == "none"
+    assert result["animationPanelOpacity"] == "0"
 
 
 @pytest.mark.frontend

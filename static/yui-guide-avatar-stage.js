@@ -79,6 +79,7 @@
     const YUI_PLUGIN_DASHBOARD_FRAME_CAPABILITIES = Object.freeze(['frame']);
     const INTRO_VOICE_LOOK_AT_POINT_SMOOTHING = 0.58;
     const INTRO_VOICE_LOOK_AT_POSE_SMOOTHING = 0.72;
+    const INTRO_VOICE_LOOK_AT_FIRST_POINT_RAMP_MS = 1200;
     const INTRO_VOICE_LOOK_AT_RELEASE_MS = 220;
     const INTRO_GREETING_HUG_BLEND_IN_MS = 460;
     const YUI_WAKEUP_PARAMS = Object.freeze({
@@ -4188,6 +4189,9 @@
             this.introVoiceLookAtFlagEnabled = false;
             this.latestPoint = this.clonePoint(this.continuationState && this.continuationState.latestPoint);
             this.smoothedPoint = this.clonePoint(this.continuationState && this.continuationState.smoothedPoint);
+            this.firstPointOrigin = null;
+            this.firstPointAcquiredAt = null;
+            this.firstPointRampComplete = !!this.smoothedPoint;
             this.currentPose = this.clonePose(this.continuationState && this.continuationState.currentPose)
                 || this.computeNeutralPose();
             this.lastTickAt = 0;
@@ -4558,9 +4562,29 @@
                             : point.y
                     };
                 }
+                if (!this.firstPointRampComplete && !this.firstPointAcquiredAt) {
+                    this.firstPointOrigin = this.clonePoint(this.smoothedPoint);
+                    this.firstPointAcquiredAt = currentNow;
+                }
+                let targetPoint = point;
+                if (!this.firstPointRampComplete && this.firstPointOrigin && this.firstPointAcquiredAt) {
+                    const progress = clamp(
+                        (currentNow - this.firstPointAcquiredAt) / INTRO_VOICE_LOOK_AT_FIRST_POINT_RAMP_MS,
+                        0,
+                        1
+                    );
+                    const easedProgress = easeInOutCubic(progress);
+                    targetPoint = {
+                        x: lerp(this.firstPointOrigin.x, point.x, easedProgress),
+                        y: lerp(this.firstPointOrigin.y, point.y, easedProgress)
+                    };
+                    if (progress >= 1) {
+                        this.firstPointRampComplete = true;
+                    }
+                }
                 this.smoothedPoint = {
-                    x: lerp(this.smoothedPoint.x, point.x, pointBlendWeight),
-                    y: lerp(this.smoothedPoint.y, point.y, pointBlendWeight)
+                    x: lerp(this.smoothedPoint.x, targetPoint.x, pointBlendWeight),
+                    y: lerp(this.smoothedPoint.y, targetPoint.y, pointBlendWeight)
                 };
             } else if (this.smoothedPoint) {
                 this.smoothedPoint = {
@@ -4574,7 +4598,7 @@
                 : this.computeNeutralPose();
             this.currentPose = this.blendPose(this.currentPose, targetPose, poseBlendWeight);
 
-            const focusPoint = this.latestPoint || this.smoothedPoint;
+            const focusPoint = this.smoothedPoint;
             if (this.model && focusPoint) {
                 this.invokeModelFocus(focusPoint.x, focusPoint.y);
             }

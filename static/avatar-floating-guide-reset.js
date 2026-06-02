@@ -259,11 +259,8 @@
             steps: [
                 {
                     id: 'day7_memory_review',
-                    selector: '#${prefix}-btn-settings',
-                    text: '第七天会从设置菜单高亮记忆入口；兜底路径先打开设置，不展示敏感记忆内容。',
+                    text: '第七天先回顾相处痕迹，不展示敏感记忆内容。',
                     voiceKey: 'avatar_floating_day7_memory_review',
-                    cursorAction: 'click',
-                    operation: 'safe-click',
                     keepPanelsOpen: true,
                     performanceCue: null,
                 },
@@ -272,18 +269,9 @@
                     selector: '#${prefix}-menu-memory',
                     text: '记忆整理、保存、强力记忆和清理只在台词层说明，不自动点击高风险操作。',
                     voiceKey: 'avatar_floating_day7_memory_control',
-                    cursorAction: 'wobble',
+                    cursorAction: 'move',
                     operation: 'none',
                     keepPanelsOpen: true,
-                    performanceCue: null,
-                },
-                {
-                    id: 'day7_storage_entry',
-                    selector: '#home-avatar-floating-guide-player',
-                    text: '存储阶段只说明长期存放概念，不高亮存储位置或云存档入口。',
-                    voiceKey: 'avatar_floating_day7_storage_entry',
-                    cursorAction: 'wobble',
-                    operation: 'none',
                     performanceCue: null,
                 },
                 {
