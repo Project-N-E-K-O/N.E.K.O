@@ -402,6 +402,27 @@
             background: #40C5F1;
             color: #fff;
         }
+        @media (max-width: 520px) {
+            body .page-title-bar {
+                gap: 8px;
+                padding: 14px clamp(8px, 3vw, 18px);
+            }
+            .page-title-bar h1,
+            .page-title-bar h2 {
+                flex: 1 1 auto;
+                min-width: 0;
+                overflow: hidden;
+            }
+            .title-bar-buttons {
+                flex: 0 0 auto;
+                gap: clamp(4px, 1.5vw, 8px);
+            }
+            .minimize-btn,
+            .maximize-btn {
+                width: clamp(28px, 10vw, 32px);
+                height: clamp(28px, 10vw, 32px);
+            }
+        }
     </style>
 </head>
 

@@ -1,7 +1,14 @@
 @import url('base.css');
 
+*,
+*::before,
+*::after {
+box-sizing: border-box;
+}
+
 html {
 min-height: 100vh;
+width: 100%;
 margin: 0;
 padding: 0;
 overflow-x: hidden;
@@ -10,6 +17,7 @@ overflow-y: auto;
 
 body {
 min-height: 100vh;
+width: 100%;
 margin: 0;
 padding: 0;
 background: #e1f4ff;
@@ -175,6 +183,7 @@ body .page-title-bar {
 .layout-container {
 display: flex;
 gap: 0;
+width: 100%;
 max-width: 100%;
 margin: 0;
 padding: 0 20px;
@@ -192,6 +201,7 @@ min-height: 100vh;
     gap: 10px;
     flex: 0 0 25%;
     min-width: 200px;
+    max-width: 100%;
     padding: 3.5% 15px 15px 15px;
     background: transparent;
     border-radius: 12px;
@@ -1842,6 +1852,8 @@ color: #17A7FF;
 margin-bottom: 5px;
 position: relative;
 z-index: 2;
+min-width: 0;
+max-width: 100%;
 }
 
 #sidebar > .menu-section:not(.character-card-cover-section) {
@@ -3313,6 +3325,8 @@ border: 1px solid #40C5F1;
 border-radius: 16px;
 padding: 16px;
 margin-bottom: 16px;
+min-width: 0;
+max-width: 100%;
 }
 
 .workshop-integration-info h4 {
@@ -3351,6 +3365,7 @@ color: #40C5F1;
     font-weight: 600;
     cursor: pointer;
     transition: background 0.2s ease, transform 0.15s ease, box-shadow 0.2s ease, color 0.2s ease;
+    min-width: 0;
 }
 
 .sidebar-cloudsave-icon {
@@ -3403,21 +3418,53 @@ color: #40C5F1;
 @media (max-width: 1024px) {
 .layout-container {
 flex-direction: column;
-margin: 10px;
+width: auto;
+margin: clamp(4px, 1.5vw, 10px);
 padding: 0;
+min-height: 0;
 }
 
 #sidebar {
-width: auto;
-min-width: auto;
+flex: 0 0 auto;
+width: 100%;
+min-width: 0;
+max-width: 100%;
+padding: clamp(8px, 2vw, 20px) clamp(10px, 3vw, 15px) 12px;
+}
+
+#sidebar > .menu-section:not(.character-card-cover-section) {
+transform: none;
 }
 
 .main-content {
+flex: 1 1 auto;
+width: 100%;
 max-width: 100%;
+min-width: 0;
+padding: clamp(8px, 2vw, 20px) clamp(8px, 3vw, 20px) clamp(12px, 3vw, 20px);
+}
+
+.tab-contents {
+width: 100%;
+margin: 0;
 }
 
 .cards-container {
-grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
+}
+
+.filter-controls {
+align-items: stretch;
+}
+
+.filter-group.search-group,
+.filter-group.action-group {
+width: 100%;
+min-width: 0;
+}
+
+.filter-group.action-group {
+margin-left: 0;
 }
 }
 
@@ -3456,7 +3503,7 @@ width: 100%;
 }
             
 .cards-container {
-grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr));
 }
 }
         
@@ -3476,6 +3523,9 @@ background: #E9F9FF;
 padding: 4px;
 margin-bottom: 15px;
 justify-content: space-between;
+width: 100%;
+min-width: 0;
+max-width: 100%;
 }
 
 #sidebar .tab {
@@ -3499,10 +3549,10 @@ text-overflow: ellipsis;
 
 /* 媒体查询 - 当窗口宽度小于特定尺寸时调整标签样式 */
 @media (max-width: 600px) {
-.tab {
-flex: none;
+#sidebar .tabs .tab {
+flex: 1 1 0;
 width: auto;
-min-width: 90px;
+min-width: 0;
 padding: 10px 15px;
 font-size: 13px;
 }
@@ -3518,6 +3568,7 @@ flex: 1;
 width: auto;
 padding: 10px 15px;
 text-align: center;
+min-width: 0;
 }
 
 .tabs.compact {
@@ -3932,16 +3983,62 @@ margin-top: 10px;
 @media (max-width: 768px) {
     .chara-cards-toggle-bar {
         flex-wrap: wrap;
+        align-items: stretch;
         gap: 8px;
         padding: 8px 12px;
     }
     .chara-cards-toolbar-left {
-        flex: 1 1 auto;
+        flex: 1 1 100%;
+        flex-wrap: wrap;
         min-width: 0;
     }
-    .chara-cards-toolbar-right,
+    .chara-cards-toolbar-right {
+        flex: 1 1 100%;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        min-width: 0;
+    }
     .api-key-toolbar-btn {
         flex: 0 0 auto;
+    }
+    .chara-search-wrapper {
+        flex: 1 1 min(100%, 180px);
+        min-width: min(100%, 150px);
+        max-width: none;
+    }
+}
+
+@media (max-width: 360px) {
+    .chara-cards-toolbar-left .chara-add-btn,
+    .chara-cards-toolbar-left .chara-import-btn,
+    .chara-cards-toolbar-right .toggle-hidden-btn,
+    .chara-cards-toolbar-right .api-key-toolbar-btn {
+        flex: 1 1 0;
+        min-width: 0;
+    }
+    .chara-add-btn,
+    .chara-import-btn,
+    .api-key-toolbar-btn {
+        padding-left: 10px;
+        padding-right: 10px;
+    }
+    .chara-add-btn span,
+    .chara-import-btn span,
+    .api-key-toolbar-btn span {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .chara-add-btn svg,
+    .chara-import-btn svg,
+    .api-key-toolbar-btn img {
+        flex: 0 0 auto;
+    }
+    .chara-search-wrapper {
+        flex-basis: 100%;
+    }
+    .chara-cards-toolbar-right {
+        justify-content: space-between;
     }
 }
 
@@ -6155,20 +6252,22 @@ margin-top: 10px;
     min-width: 36px;
     height: 36px;
     padding: 0;
-    border-radius: 50%;
-    background: #ff4d55;
-    box-shadow: 0 6px 14px rgba(255, 82, 82, 0.14);
+    border-radius: 10px;
+    border: 1px solid rgba(64, 197, 241, 0.26);
+    background: rgba(255, 255, 255, 0.72);
+    box-shadow: 0 3px 8px rgba(64, 197, 241, 0.08);
 }
 
 .catgirl-panel-right .panel-tab-settings .field-row-wrapper.setting-field-row > .setting-field-delete.btn.sm:hover:not(:disabled) {
-    background: #ff6269;
-    box-shadow: 0 8px 18px rgba(255, 82, 82, 0.22);
+    border-color: rgba(64, 197, 241, 0.5);
+    background: rgba(232, 247, 255, 0.95);
+    box-shadow: 0 6px 14px rgba(64, 197, 241, 0.16);
     transform: translateY(-1px);
 }
 
 .catgirl-panel-right .panel-tab-settings .field-row-wrapper.setting-field-row > .setting-field-delete.btn.sm:active:not(:disabled) {
-    background: #f03f48;
-    box-shadow: 0 3px 8px rgba(255, 82, 82, 0.16);
+    background: rgba(211, 242, 255, 0.95);
+    box-shadow: 0 2px 6px rgba(64, 197, 241, 0.14);
     transform: translateY(0);
 }
 
@@ -6176,6 +6275,13 @@ margin-top: 10px;
     width: 17px !important;
     height: 17px !important;
     margin: 0 !important;
+    opacity: 0.82;
+    filter: brightness(0) saturate(100%) invert(49%) sepia(72%) saturate(540%) hue-rotate(151deg) brightness(95%) contrast(89%);
+}
+
+.catgirl-panel-right .panel-tab-settings .field-row-wrapper.setting-field-row > .setting-field-delete.btn.sm:hover:not(:disabled) .delete-icon {
+    opacity: 1;
+    filter: brightness(0) saturate(100%) invert(44%) sepia(78%) saturate(716%) hue-rotate(153deg) brightness(97%) contrast(92%);
 }
 
 @media (max-width: 1100px) {
@@ -8108,6 +8214,28 @@ margin-top: 10px;
     background: #18222c;
     border-color: rgba(125, 211, 252, 0.24);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+[data-theme="dark"] .catgirl-panel-right .panel-tab-settings .field-row-wrapper.setting-field-row > .setting-field-delete.btn.sm {
+    border-color: rgba(125, 211, 252, 0.22);
+    background: rgba(24, 34, 44, 0.86);
+    box-shadow: 0 3px 8px rgba(14, 116, 144, 0.12);
+}
+
+[data-theme="dark"] .catgirl-panel-right .panel-tab-settings .field-row-wrapper.setting-field-row > .setting-field-delete.btn.sm:hover:not(:disabled) {
+    border-color: rgba(125, 211, 252, 0.42);
+    background: rgba(32, 49, 62, 0.94);
+    box-shadow: 0 6px 14px rgba(14, 116, 144, 0.22);
+}
+
+[data-theme="dark"] .catgirl-panel-right .panel-tab-settings .field-row-wrapper.setting-field-row > .setting-field-delete.btn.sm:active:not(:disabled) {
+    background: rgba(18, 41, 54, 0.95);
+    box-shadow: 0 2px 6px rgba(14, 116, 144, 0.18);
+}
+
+[data-theme="dark"] .catgirl-panel-right .panel-tab-settings .field-row-wrapper.setting-field-row > .setting-field-delete.btn.sm .delete-icon {
+    opacity: 0.86;
+    filter: brightness(0) saturate(100%) invert(77%) sepia(46%) saturate(810%) hue-rotate(162deg) brightness(96%) contrast(92%);
 }
 
 [data-theme="dark"] .catgirl-panel-right .panel-tab-settings .field-row-wrapper label::before {
