@@ -637,6 +637,19 @@ def test_compact_history_reduced_motion_closing_hides_immediately():
     assert "visibility: hidden !important;" in closing_block
 
 
+def test_compact_history_closing_bubbles_disable_pointer_events():
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+
+    closing_bubble_block = css_block(
+        styles,
+        '.compact-export-history-anchor[data-compact-export-history-visibility="closing"] .compact-export-history-bubble {',
+        ".compact-export-history-message.is-disabled",
+    )
+
+    assert "animation: compact-history-message-exit" in closing_bubble_block
+    assert "pointer-events: none;" in closing_bubble_block
+
+
 def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regions():
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
     panel_source = COMPACT_EXPORT_HISTORY_PANEL_PATH.read_text(encoding="utf-8")

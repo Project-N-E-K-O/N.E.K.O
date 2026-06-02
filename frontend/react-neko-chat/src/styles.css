@@ -2446,6 +2446,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 .compact-export-history-anchor[data-compact-export-history-visibility="closing"] .compact-export-history-bubble {
   animation: compact-history-message-exit 0.2s ease-in both;
   animation-delay: var(--compact-history-exit-delay, 0ms);
+  pointer-events: none;
 }
 
 .compact-export-history-message.is-disabled .compact-export-history-bubble {
