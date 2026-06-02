@@ -522,6 +522,34 @@ async def test_schedule_emit_worker_stops_after_repeated_failures(
 
 
 @pytest.mark.asyncio
+async def test_schedule_emit_resets_failure_count_when_worker_restarts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(StudyEventBus, "_MAX_WORKER_FAILURES", 3)
+    monkeypatch.setattr(StudyEventBus, "_WORKER_FAILURE_BACKOFF_BASE_SECONDS", 0.001)
+    bus = StudyEventBus(plugin_ctx=_Ctx(fail=True))
+    bus._worker_failure_count = 3
+
+    task = bus.schedule_emit(
+        StudyEvent(
+            name="session_summarized",
+            payload={"duration_minutes": 1, "questions_attempted": 1},
+        )
+    )
+
+    assert task is not None
+    for _ in range(10):
+        if bus._worker_failure_count >= 1 or task.done():
+            break
+        await asyncio.sleep(0.01)
+
+    assert bus._worker_failure_count == 1
+    assert bus._worker_task is task
+    assert not task.done()
+    await bus.stop_worker()
+
+
+@pytest.mark.asyncio
 async def test_schedule_emit_task_done_underflow_does_not_kill_worker(
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,

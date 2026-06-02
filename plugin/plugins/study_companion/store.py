@@ -8,7 +8,11 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .knowledge_quality import KnowledgeQualityStore
+from .knowledge_quality import (
+    DEFAULT_TRUSTED_NEGATIVE_THRESHOLD,
+    KnowledgeCandidateStatus,
+    KnowledgeQualityStore,
+)
 from .memory_deck_store import MemoryDeckStore, ensure_memory_schema
 from .mode_manager import normalize_mode
 from .models import (
@@ -23,6 +27,37 @@ from .models import (
 _DROP = object()
 _STATE_ITEM_FLOAT_KEYS = {"at", "created_at", "updated_at", "expires_at", "lock_until"}
 _DEFAULT_APPEND_ONLY_HISTORY_LIMIT = 5000
+
+
+def _next_candidate_status(
+    item: dict[str, Any],
+    score_parts: dict[str, Any],
+    *,
+    trusted_negative_threshold: int = DEFAULT_TRUSTED_NEGATIVE_THRESHOLD,
+) -> str:
+    current = str(item.get("status") or KnowledgeCandidateStatus.CANDIDATE.value)
+    score = float(score_parts.get("score") or 0.0)
+    evidence_count = int(score_parts.get("evidence_count") or 0)
+    positive_count = int(score_parts.get("positive_count") or 0)
+    negative_count = int(score_parts.get("negative_count") or 0)
+    conflict_count = int(score_parts.get("conflict_count") or 0)
+    user_rejected_count = int(score_parts.get("user_rejected_count") or 0)
+    if current == KnowledgeCandidateStatus.TRUSTED.value:
+        if user_rejected_count > 0 or negative_count >= trusted_negative_threshold:
+            return KnowledgeCandidateStatus.DEPRECATED.value
+        return current
+    if score <= -0.20 or negative_count >= 2 or conflict_count >= 2:
+        return KnowledgeCandidateStatus.DEPRECATED.value
+    if score >= 0.72 and positive_count >= 4 and conflict_count == 0:
+        return KnowledgeCandidateStatus.TRUSTED.value
+    if score >= 0.35 and evidence_count >= 2:
+        return KnowledgeCandidateStatus.ACTIVE.value
+    if current in {
+        KnowledgeCandidateStatus.ACTIVE.value,
+        KnowledgeCandidateStatus.CANDIDATE.value,
+    }:
+        return current
+    return KnowledgeCandidateStatus.CANDIDATE.value
 
 
 def safe_float(value: Any, default: Any = 0.0) -> Any:
@@ -110,16 +145,28 @@ class StudyStore:
             if self._conn is not None:
                 return
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
-            self._conn = sqlite3.connect(
-                str(self.db_path), check_same_thread=False, timeout=10.0
-            )
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA foreign_keys = ON")
-            self._conn.row_factory = sqlite3.Row
-            self._interaction_count = 0
-            self._init_db()
-            self._load_seed_if_empty()
-            self.load_knowledge_seed()
+            conn: sqlite3.Connection | None = None
+            try:
+                conn = sqlite3.connect(
+                    str(self.db_path), check_same_thread=False, timeout=10.0
+                )
+                self._conn = conn
+                self._configure_connection_journal(conn, role="write")
+                conn.execute("PRAGMA foreign_keys = ON")
+                conn.row_factory = sqlite3.Row
+                self._interaction_count = 0
+                self._init_db()
+                self._load_seed_if_empty()
+                self.load_knowledge_seed()
+            except Exception:
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                self._conn = None
+                self._interaction_count = 0
+                raise
 
     def close(self) -> None:
         with self._lock:
@@ -147,6 +194,7 @@ class StudyStore:
                 conn = sqlite3.connect(
                     str(self.db_path), check_same_thread=False, timeout=5.0
                 )
+                self._configure_connection_journal(conn, role="read")
                 conn.execute("PRAGMA foreign_keys = ON")
                 conn.row_factory = sqlite3.Row
                 self._read_conns.add(conn)
@@ -157,6 +205,26 @@ class StudyStore:
 
     def answer_write_lock(self) -> threading.RLock:
         return self._lock
+
+    def _configure_connection_journal(
+        self, conn: sqlite3.Connection, *, role: str
+    ) -> None:
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.DatabaseError as exc:
+            self._log_warning(
+                "StudyStore %s connection WAL unavailable; falling back to DELETE journal mode: %s",
+                role,
+                exc,
+            )
+            try:
+                conn.execute("PRAGMA journal_mode=DELETE")
+            except sqlite3.DatabaseError as fallback_exc:
+                self._log_warning(
+                    "StudyStore %s connection DELETE journal fallback failed: %s",
+                    role,
+                    fallback_exc,
+                )
 
     def load_answer_write_state(
         self, topic_id: str, *, recent_limit: int = 10
@@ -436,14 +504,19 @@ class StudyStore:
         with self._lock:
             conn = self._require_conn()
             conn.execute("BEGIN IMMEDIATE")
+            step = "begin"
             try:
                 if topic_upsert_data:
+                    step = "topic_upsert"
                     self._batch_upsert_topic(conn, topic_upsert_data)
                 if topic_candidate_data:
+                    step = "topic_candidate"
                     self._batch_upsert_candidate_with_evidence(
                         conn, topic_candidate_data
                     )
+                step = "session"
                 self._batch_write_session(conn, session_key, mode)
+                step = "qa_record"
                 self._batch_write_qa_record(
                     conn,
                     session_key=session_key,
@@ -455,46 +528,102 @@ class StudyStore:
                     response_time_ms=response_time_ms,
                     history_limit=history_limit,
                 )
+                step = "session_topics"
                 self._batch_update_session_topics(conn, session_key, topic_key)
+                step = "mastery"
                 self._batch_write_mastery(
                     conn,
                     mastery_snapshot=mastery_snapshot,
                     topic_key=topic_key,
                     history_limit=history_limit,
                 )
+                step = "wrong_question"
                 wrong_question_id = self._batch_write_wrong_question(
                     conn,
                     wrong_question_data=wrong_question_data,
                     topic_key=topic_key,
                 )
+                step = "fsrs_card"
                 self._batch_write_fsrs_card(
                     conn,
                     fsrs_card=fsrs_card,
                     fsrs_rating=fsrs_rating,
                     topic_key=topic_key,
                 )
+                step = "review_log"
                 self._batch_write_review_log(
                     conn,
                     review_log_data=review_log_data,
                     topic_key=topic_key,
                     history_limit=history_limit,
                 )
-                self._batch_write_answer_candidates(
+                step = "answer_candidates"
+                self._batch_write_answer_candidates_noncritical(
                     conn,
+                    session_key=session_key,
+                    topic_key=topic_key,
                     error_candidate_data=error_candidate_data,
                     positive_candidate_data=positive_candidate_data,
                     positive_evidence_data=positive_evidence_data,
                 )
+                step = "commit"
                 conn.commit()
             except Exception:
                 conn.rollback()
                 self._logger.exception(
-                    "batch_write_answer_data failed session=%s topic=%s",
+                    "batch_write_answer_data failed step=%s session=%s topic=%s",
+                    step,
                     session_key,
                     topic_key,
                 )
                 raise
         return {"ok": True, "wrong_question_id": wrong_question_id}
+
+    def _batch_write_answer_candidates_noncritical(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        session_key: str,
+        topic_key: str,
+        error_candidate_data: list[dict[str, Any]] | None,
+        positive_candidate_data: dict[str, Any] | None,
+        positive_evidence_data: dict[str, Any] | None,
+    ) -> None:
+        if not (error_candidate_data or positive_candidate_data or positive_evidence_data):
+            return
+        conn.execute("SAVEPOINT answer_candidates")
+        try:
+            self._batch_write_answer_candidates(
+                conn,
+                error_candidate_data=error_candidate_data,
+                positive_candidate_data=positive_candidate_data,
+                positive_evidence_data=positive_evidence_data,
+            )
+        except Exception:
+            try:
+                conn.execute("ROLLBACK TO SAVEPOINT answer_candidates")
+            except sqlite3.DatabaseError as rollback_exc:
+                self._log_warning(
+                    "batch_write_answer_data candidate savepoint rollback failed session=%s topic=%s error=%s",
+                    session_key,
+                    topic_key,
+                    rollback_exc,
+                )
+            self._logger.exception(
+                "batch_write_answer_data candidate knowledge write failed session=%s topic=%s",
+                session_key,
+                topic_key,
+            )
+        finally:
+            try:
+                conn.execute("RELEASE SAVEPOINT answer_candidates")
+            except sqlite3.DatabaseError as release_exc:
+                self._log_warning(
+                    "batch_write_answer_data candidate savepoint release failed session=%s topic=%s error=%s",
+                    session_key,
+                    topic_key,
+                    release_exc,
+                )
 
     def _batch_write_session(
         self, conn: sqlite3.Connection, session_key: str, mode: str
@@ -889,7 +1018,6 @@ class StudyStore:
             for item in (self._evidence_from_row(evidence_row) for evidence_row in rows)
             if item is not None
         ]
-        quality = KnowledgeQualityStore(self)
         score_parts = KnowledgeQualityStore._score_parts(candidate, evidence)
         conn.execute(
             """
@@ -905,7 +1033,7 @@ class StudyStore:
             """,
             (
                 score_parts["score"],
-                quality._next_status(candidate, score_parts),
+                _next_candidate_status(candidate, score_parts),
                 score_parts["evidence_count"],
                 score_parts["positive_count"],
                 score_parts["negative_count"],

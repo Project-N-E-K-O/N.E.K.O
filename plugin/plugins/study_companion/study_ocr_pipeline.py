@@ -222,28 +222,6 @@ class StudyOcrPipeline:
         if should_run_ocr:
             try:
                 self._resolve_ocr_backend()
-            except Exception:
-                pass
-            executor = self._require_executor()
-            jpeg_future = executor.submit(
-                self._encode_lightweight_jpeg,
-                thumbnail,
-                max_bytes=self._config.awareness.image_max_bytes,
-            )
-            ocr_future = executor.submit(
-                self._extract_image,
-                thumbnail,
-                backend_name=self._config.ocr_backend_selection,
-                _skip_vision_snapshot=True,
-            )
-            try:
-                jpeg_result = jpeg_future.result(timeout=3.0)
-                if isinstance(jpeg_result, bytes):
-                    jpeg_bytes = jpeg_result
-            except Exception:
-                jpeg_bytes = None
-            try:
-                ocr_snapshot = ocr_future.result(timeout=5.0)
             except Exception as exc:
                 ocr_snapshot = OcrSnapshot(
                     status="ocr_failed",
@@ -251,6 +229,36 @@ class StudyOcrPipeline:
                     captured_at=utc_now_iso(),
                     diagnostic=str(exc),
                 )
+            else:
+                executor = self._require_executor()
+                jpeg_future = executor.submit(
+                    self._encode_lightweight_jpeg,
+                    thumbnail,
+                    max_bytes=self._config.awareness.image_max_bytes,
+                )
+                ocr_future = executor.submit(
+                    self._extract_image,
+                    thumbnail,
+                    backend_name=self._config.ocr_backend_selection,
+                    _skip_vision_snapshot=True,
+                )
+                try:
+                    jpeg_result = jpeg_future.result(timeout=3.0)
+                    if isinstance(jpeg_result, bytes):
+                        jpeg_bytes = jpeg_result
+                except Exception:
+                    jpeg_future.cancel()
+                    jpeg_bytes = None
+                try:
+                    ocr_snapshot = ocr_future.result(timeout=5.0)
+                except Exception as exc:
+                    ocr_future.cancel()
+                    ocr_snapshot = OcrSnapshot(
+                        status="ocr_failed",
+                        backend=self._config.ocr_backend_selection,
+                        captured_at=utc_now_iso(),
+                        diagnostic=str(exc),
+                    )
         if jpeg_bytes is None:
             jpeg_bytes = self._encode_lightweight_jpeg(
                 thumbnail,
@@ -258,6 +266,9 @@ class StudyOcrPipeline:
             )
         if ocr_snapshot is not None:
             ocr_diagnostic = f"; ocr_status={ocr_snapshot.status}"
+            if ocr_snapshot.diagnostic:
+                detail = " ".join(str(ocr_snapshot.diagnostic).split())[:160]
+                ocr_diagnostic += f"; ocr_diagnostic={detail}"
             if ocr_snapshot.status in {"ok", "empty"}:
                 self._remember_vision_snapshot(thumbnail, now=time.monotonic())
                 normalized_text = str(ocr_snapshot.text or "").strip()
@@ -349,9 +360,7 @@ class StudyOcrPipeline:
     @staticmethod
     def _calculate_thumbnail_phash(image: Image.Image) -> str:
         if imagehash is None:
-            raise ImportError(
-                "imagehash is required for study awareness pHash; install imagehash"
-            )
+            return ""
         return str(imagehash.phash(image, hash_size=8))
 
     def _has_content_change(self, thumbnail_phash: str) -> bool:

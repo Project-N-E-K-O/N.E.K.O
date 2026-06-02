@@ -209,6 +209,65 @@ def test_knowledge_tracker_falls_back_when_batch_writer_fails(
         store.close()
 
 
+def test_knowledge_tracker_batch_fallback_runs_outside_answer_lock(
+    tmp_path: Path,
+) -> None:
+    class _TrackingLock:
+        def __init__(self) -> None:
+            self.held = False
+
+        def __enter__(self):
+            self.held = True
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):  # noqa: ANN001
+            del exc_type, exc, traceback
+            self.held = False
+            return False
+
+    store = _store(tmp_path)
+    lock = _TrackingLock()
+    try:
+        tracker = KnowledgeTracker(store)
+        legacy_calls: list[dict[str, Any]] = []
+
+        def batch_write_answer_data(**_kwargs):
+            raise sqlite3.OperationalError("database is locked")
+
+        def on_answer_legacy(**kwargs):
+            assert lock.held is False
+            legacy_calls.append(dict(kwargs))
+            return {
+                "topic_id": kwargs["topic_id"],
+                "mastery": {},
+                "wrong_question_id": "",
+                "fsrs": {},
+            }
+
+        store.answer_write_lock = lambda: lock  # type: ignore[method-assign]
+        store.batch_write_answer_data = batch_write_answer_data  # type: ignore[attr-defined, method-assign]
+        tracker._on_answer_legacy = on_answer_legacy  # type: ignore[method-assign]
+
+        result = tracker.on_answer(
+            topic_id="quadratic_vertex_form",
+            question={
+                "question": "q",
+                "answer": "a",
+                "topic": "quadratic_vertex_form",
+                "difficulty": 3,
+            },
+            user_answer="a",
+            eval_result={"verdict": "correct", "score": 95, "error_type": "none"},
+            mode="teaching",
+            session_id="fallback-lock-session",
+        )
+
+        assert result["topic_id"] == "quadratic_vertex_form"
+        assert len(legacy_calls) == 1
+    finally:
+        store.close()
+
+
 def test_study_store_batch_write_answer_data_rolls_back_on_error(
     tmp_path: Path,
 ) -> None:
@@ -229,6 +288,51 @@ def test_study_store_batch_write_answer_data_rolls_back_on_error(
 
         assert store.list_qa_records(limit=10) == []
         assert store.list_sessions(limit=10) == []
+    finally:
+        store.close()
+
+
+def test_study_store_batch_write_answer_data_keeps_answer_when_candidates_fail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    logger = _Logger()
+    seed = (
+        Path(__file__).resolve().parents[3]
+        / "plugins"
+        / "study_companion"
+        / "static"
+        / "knowledge_graph_seed.json"
+    )
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", logger, seed)
+    store.open()
+    try:
+        store.ensure_topic(topic_id="candidate_fail_topic", name="Candidate Fail")
+
+        def fail_candidates(*_args, **_kwargs):
+            raise sqlite3.OperationalError("candidate write failed")
+
+        monkeypatch.setattr(store, "_batch_write_answer_candidates", fail_candidates)
+
+        result = store.batch_write_answer_data(
+            session_id="candidate-failure-session",
+            mode="teaching",
+            topic_id="candidate_fail_topic",
+            question={"question": "q"},
+            user_answer="a",
+            eval_result={"verdict": "correct"},
+            response_time_ms=None,
+            positive_candidate_data={
+                "item_type": "question_type",
+                "dedupe_key": "candidate-fail",
+                "payload": {"topic_id": "candidate_fail_topic"},
+            },
+        )
+
+        assert result["ok"] is True
+        assert store.list_qa_records_for_topic("candidate_fail_topic", limit=1)
+        assert logger.exceptions
+        assert "candidate knowledge write failed" in str(logger.exceptions[-1][0][0])
     finally:
         store.close()
 
@@ -257,6 +361,46 @@ def test_knowledge_graph_reuses_topic_name_index() -> None:
     assert graph.discover_candidate("Known Topic appears here") == "known_topic"
     assert graph.discover_candidate("Known Topic appears again") == "known_topic"
     assert store.list_calls == 1
+
+
+def test_knowledge_graph_prefers_topic_id_over_name_collision() -> None:
+    class _Store:
+        def list_topics(self, limit: int = 1000):
+            return [
+                {"id": "collision", "name": "Collision Topic"},
+                {"id": "other_topic", "name": "collision"},
+            ]
+
+        def list_mastery_overview(self, limit: int = 1000):
+            return []
+
+        def get_topic(self, topic_id: str):
+            return None
+
+    graph = KnowledgeGraph(_Store())
+
+    assert graph.resolve_known_topic("collision") == "collision"
+
+
+def test_quality_warning_failure_counter_resets_after_error_escalation() -> None:
+    class _LoggerWithError(_Logger):
+        def __init__(self) -> None:
+            super().__init__()
+            self.errors: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+        def error(self, *args, **kwargs):
+            self.errors.append((args, kwargs))
+            return None
+
+    logger = _LoggerWithError()
+    tracker = KnowledgeTracker.__new__(KnowledgeTracker)
+    tracker._logger = logger
+    tracker._quality_warning_failures = 2
+
+    tracker._log_quality_warning("quality warning {}", "failed")
+
+    assert len(logger.errors) == 1
+    assert tracker._quality_warning_failures == 0
 
 
 def test_knowledge_tracker_marks_graph_index_dirty_after_batch_topic_insert(

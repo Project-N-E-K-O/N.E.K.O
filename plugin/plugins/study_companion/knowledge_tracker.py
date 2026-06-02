@@ -30,6 +30,12 @@ from .models import json_copy
 _LOGGER = logging.getLogger(__name__)
 
 
+class _BatchAnswerWriteFailed(RuntimeError):
+    def __init__(self, original: Exception) -> None:
+        super().__init__(str(original))
+        self.original = original
+
+
 def _utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
@@ -239,9 +245,12 @@ class MasteryTracker:
 
 
 class KnowledgeGraph:
+    _TOPIC_INDEX_LIMIT = 1000
+
     def __init__(self, store: Any) -> None:
         self._store = store
         self._quality = KnowledgeQualityStore(store)
+        self._topic_id_index: set[str] = set()
         self._topic_name_index: dict[str, str] = {}
         self._index_dirty = True
 
@@ -249,8 +258,9 @@ class KnowledgeGraph:
         """Refresh the in-memory topic-name index from the store when needed."""
         if not self._index_dirty:
             return
+        self._topic_id_index.clear()
         self._topic_name_index.clear()
-        index_limit = 1000
+        index_limit = self._TOPIC_INDEX_LIMIT
         topics = self._store.list_topics(limit=index_limit)
         if len(topics) >= index_limit and callable(
             getattr(self._store, "count_topics", None)
@@ -266,7 +276,7 @@ class KnowledgeGraph:
             topic_id = str(topic.get("id") or "").strip()
             name = str(topic.get("name") or "").strip()
             if topic_id:
-                self._topic_name_index[topic_id] = topic_id
+                self._topic_id_index.add(topic_id)
             if name and topic_id:
                 self._topic_name_index[name] = topic_id
         self._index_dirty = False
@@ -279,6 +289,8 @@ class KnowledgeGraph:
         if not value:
             return ""
         self._ensure_index()
+        if value in self._topic_id_index:
+            return value
         return self._topic_name_index.get(value, "")
 
     def get_ready_topics(self, mastered: set[str]) -> list[str]:
@@ -330,7 +342,7 @@ class KnowledgeGraph:
         self._ensure_index()
         topic = str((context or {}).get("topic") or "").strip()
         if topic:
-            known_id = self._topic_name_index.get(topic)
+            known_id = self.resolve_known_topic(topic)
             if known_id:
                 return known_id
             candidate = self._quality.upsert_candidate(
@@ -454,8 +466,23 @@ class KnowledgeTracker:
             )
 
         answer_lock = self.store.answer_write_lock()
-        with answer_lock:
-            return self._on_answer_batch(
+        try:
+            with answer_lock:
+                return self._on_answer_batch(
+                    topic_id=topic_id,
+                    question=question,
+                    user_answer=user_answer,
+                    eval_result=eval_result,
+                    mode=mode,
+                    session_id=session_id,
+                    response_time_ms=response_time_ms,
+                )
+        except _BatchAnswerWriteFailed as exc:
+            self._log_exception(
+                "study batch answer write failed; falling back to legacy path: {}",
+                exc.original,
+            )
+            return self._on_answer_legacy(
                 topic_id=topic_id,
                 question=question,
                 user_answer=user_answer,
@@ -561,19 +588,7 @@ class KnowledgeTracker:
                 topic_candidate_data=topic_candidate_data,
             )
         except Exception as exc:
-            self._log_exception(
-                "study batch answer write failed; falling back to legacy path: {}",
-                exc,
-            )
-            return self._on_answer_legacy(
-                topic_id=topic_id,
-                question=question,
-                user_answer=user_answer,
-                eval_result=eval_result,
-                mode=mode,
-                session_id=session_id,
-                response_time_ms=response_time_ms,
-            )
+            raise _BatchAnswerWriteFailed(exc) from exc
         if topic_upsert_data:
             self.graph.mark_dirty()
         if verdict == "correct":
@@ -1298,6 +1313,7 @@ class KnowledgeTracker:
             if callable(error):
                 try:
                     error(message, *args)
+                    self._quality_warning_failures = 0
                     return
                 except Exception:
                     pass

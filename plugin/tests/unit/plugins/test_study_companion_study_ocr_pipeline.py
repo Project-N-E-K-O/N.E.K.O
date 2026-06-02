@@ -186,8 +186,98 @@ def test_ocr_pipeline_imagehash_module_import_is_optional(
 ) -> None:
     monkeypatch.setattr(pipeline_module, "imagehash", None, raising=False)
 
-    with pytest.raises(ImportError, match="imagehash is required"):
-        StudyOcrPipeline._calculate_thumbnail_phash(Image.new("RGB", (16, 16), "white"))
+    assert StudyOcrPipeline._calculate_thumbnail_phash(
+        Image.new("RGB", (16, 16), "white")
+    ) == ""
+
+
+def test_ocr_pipeline_capture_lightweight_allows_missing_imagehash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(pipeline_module, "imagehash", None, raising=False)
+    image = Image.new("RGB", (640, 360), "white")
+    pipeline = StudyOcrPipeline(
+        logger=_Logger(),
+        config=StudyConfig(
+            awareness=AwarenessConfig(
+                classify_mode="title_first",
+                image_max_bytes=50_000,
+            )
+        ),
+        ocr_backend=_Backend(RuntimeError("ocr should not run")),
+        capture_backend=_Capture(image),
+    )
+
+    snapshot = pipeline.capture_lightweight(
+        target={"hwnd": 1, "title": "main.py - Visual Studio Code"}
+    )
+
+    assert snapshot.status == "ok"
+    assert snapshot.thumbnail_phash == ""
+    assert "phash=" in snapshot.diagnostic
+
+
+def test_ocr_pipeline_capture_lightweight_cancels_timed_out_workers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image = Image.new("RGB", (640, 360), "white")
+    futures: list[_TimeoutFuture] = []
+
+    class _TimeoutFuture:
+        def __init__(self) -> None:
+            self.cancelled = False
+
+        def result(self, timeout: float | None = None) -> object:
+            raise TimeoutError(f"timed out after {timeout}")
+
+        def cancel(self) -> bool:
+            self.cancelled = True
+            return True
+
+    class _TimeoutExecutor:
+        def submit(self, fn, /, *args: Any, **kwargs: Any) -> _TimeoutFuture:  # noqa: ANN001
+            del fn, args, kwargs
+            future = _TimeoutFuture()
+            futures.append(future)
+            return future
+
+    pipeline = StudyOcrPipeline(
+        logger=_Logger(),
+        config=StudyConfig(
+            awareness=AwarenessConfig(classify_mode="ocr_text", image_max_bytes=50_000)
+        ),
+        ocr_backend=_Backend("Question: text"),
+        capture_backend=_Capture(image),
+    )
+    monkeypatch.setattr(pipeline, "_executor", _TimeoutExecutor())
+
+    snapshot = pipeline.capture_lightweight(target={"hwnd": 1, "title": "Quiz"})
+
+    assert snapshot.status == "ok"
+    assert len(futures) == 2
+    assert all(future.cancelled for future in futures)
+
+
+def test_ocr_pipeline_capture_lightweight_reports_backend_resolve_failure() -> None:
+    image = Image.new("RGB", (640, 360), "white")
+
+    class _FailingResolvePipeline(StudyOcrPipeline):
+        def _resolve_ocr_backend(self):
+            raise RuntimeError("backend missing")
+
+    pipeline = _FailingResolvePipeline(
+        logger=_Logger(),
+        config=StudyConfig(
+            awareness=AwarenessConfig(classify_mode="ocr_text", image_max_bytes=50_000)
+        ),
+        capture_backend=_Capture(image),
+    )
+
+    snapshot = pipeline.capture_lightweight(target={"hwnd": 1, "title": "Quiz"})
+
+    assert snapshot.status == "ok"
+    assert "ocr_status=ocr_failed" in snapshot.diagnostic
+    assert "backend missing" in snapshot.diagnostic
 
 
 def test_ocr_pipeline_vision_snapshot_ttl_is_extended() -> None:

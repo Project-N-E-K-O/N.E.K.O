@@ -122,6 +122,7 @@ class StudyEventBus:
             _logger.warning("StudyEventBus.schedule_emit() called outside event loop")
             return None
         if self._worker_task is None or self._worker_task.done():
+            self._worker_failure_count = 0
             self._worker_task = loop.create_task(self._consume_queue())
         if self._queue.full():
             try:

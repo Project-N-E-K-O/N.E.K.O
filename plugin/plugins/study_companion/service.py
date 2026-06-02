@@ -22,7 +22,7 @@ def build_status_payload(
     knowledge: dict[str, Any] | None = None,
     is_first_run: bool = False,
 ) -> dict[str, Any]:
-    knowledge_payload = copy.deepcopy(knowledge or {})
+    knowledge_payload = knowledge or {}
     return {
         "status": state.status,
         "is_first_run": bool(is_first_run),

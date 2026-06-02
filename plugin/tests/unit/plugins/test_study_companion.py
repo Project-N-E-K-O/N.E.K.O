@@ -603,6 +603,142 @@ def test_study_store_enables_wal_and_read_connection(tmp_path: Path) -> None:
         store.close()
 
 
+def test_study_store_open_falls_back_when_wal_pragma_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_connect = sqlite3.connect
+    created: list[_ProxyConnection] = []
+
+    class _ProxyConnection:
+        def __init__(self, conn: sqlite3.Connection) -> None:
+            object.__setattr__(self, "_conn", conn)
+            object.__setattr__(self, "wal_failures", 0)
+            object.__setattr__(self, "closed", False)
+
+        def execute(self, sql, *args, **kwargs):  # noqa: ANN001
+            if str(sql).strip().upper().startswith("PRAGMA JOURNAL_MODE=WAL"):
+                object.__setattr__(self, "wal_failures", self.wal_failures + 1)
+                raise sqlite3.OperationalError("wal denied")
+            return self._conn.execute(sql, *args, **kwargs)
+
+        def close(self) -> None:
+            object.__setattr__(self, "closed", True)
+            self._conn.close()
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._conn, name)
+
+        def __setattr__(self, name: str, value: object) -> None:
+            if name.startswith("_") or name in {"wal_failures", "closed"}:
+                object.__setattr__(self, name, value)
+            else:
+                setattr(self._conn, name, value)
+
+    def connect_spy(*args, **kwargs):  # noqa: ANN001
+        proxy = _ProxyConnection(real_connect(*args, **kwargs))
+        created.append(proxy)
+        return proxy
+
+    logger = _Logger()
+    monkeypatch.setattr(sqlite3, "connect", connect_spy)
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", logger)
+    store.open()
+    try:
+        assert created[0].wal_failures == 1
+        assert logger.warnings
+        assert "falling back" in str(logger.warnings[-1][0][0])
+    finally:
+        store.close()
+
+
+def test_study_store_open_closes_connection_when_initialization_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_connect = sqlite3.connect
+    created: list[_CloseTrackingConnection] = []
+
+    class _CloseTrackingConnection:
+        def __init__(self, conn: sqlite3.Connection) -> None:
+            object.__setattr__(self, "_conn", conn)
+            object.__setattr__(self, "closed", False)
+
+        def close(self) -> None:
+            object.__setattr__(self, "closed", True)
+            self._conn.close()
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._conn, name)
+
+        def __setattr__(self, name: str, value: object) -> None:
+            if name.startswith("_") or name == "closed":
+                object.__setattr__(self, name, value)
+            else:
+                setattr(self._conn, name, value)
+
+    def connect_spy(*args, **kwargs):  # noqa: ANN001
+        proxy = _CloseTrackingConnection(real_connect(*args, **kwargs))
+        created.append(proxy)
+        return proxy
+
+    def fail_init(self):  # noqa: ANN001
+        raise RuntimeError("init failed")
+
+    monkeypatch.setattr(sqlite3, "connect", connect_spy)
+    monkeypatch.setattr(StudyStore, "_init_db", fail_init)
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+
+    with pytest.raises(RuntimeError, match="init failed"):
+        store.open()
+
+    assert created
+    assert created[0].closed is True
+    assert store._conn is None
+
+
+def test_study_store_read_connection_requests_wal_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_connect = sqlite3.connect
+    statements: list[str] = []
+
+    class _StatementProxy:
+        def __init__(self, conn: sqlite3.Connection) -> None:
+            object.__setattr__(self, "_conn", conn)
+
+        def execute(self, sql, *args, **kwargs):  # noqa: ANN001
+            statements.append(str(sql))
+            return self._conn.execute(sql, *args, **kwargs)
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._conn, name)
+
+        def __setattr__(self, name: str, value: object) -> None:
+            if name.startswith("_"):
+                object.__setattr__(self, name, value)
+            else:
+                setattr(self._conn, name, value)
+
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
+    store.open()
+
+    def connect_spy(*args, **kwargs):  # noqa: ANN001
+        return _StatementProxy(real_connect(*args, **kwargs))
+
+    monkeypatch.setattr(sqlite3, "connect", connect_spy)
+    try:
+        store._require_read_conn()
+
+        assert any(
+            statement.strip().upper().startswith("PRAGMA JOURNAL_MODE=WAL")
+            for statement in statements
+        )
+    finally:
+        store.close()
+
+
 def test_study_store_uses_thread_local_read_connections(tmp_path: Path) -> None:
     store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", _Logger())
     store.open()
