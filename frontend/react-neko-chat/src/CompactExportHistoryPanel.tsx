@@ -1197,6 +1197,8 @@ export default function CompactExportHistoryPanel({
   const pendingDragPointRef = useRef<{ intent: PointerIntentState; clientX: number; clientY: number } | null>(null);
   const suppressClickMessageIdRef = useRef<string | null>(null);
   const previewObjectUrlRef = useRef<string | null>(null);
+  const enterDelayByMessageIdRef = useRef<Map<string, string>>(new Map());
+  const previousVisibilityStateRef = useRef<'open' | 'closing' | null>(null);
   const [exportFormat, setExportFormat] = useState<CompactExportFormat>('markdown');
   const [imageStyle, setImageStyle] = useState<CompactExportImageStyle>('neko');
   const [imageFormat, setImageFormat] = useState<CompactExportImageFormat>('png');
@@ -1217,6 +1219,25 @@ export default function CompactExportHistoryPanel({
   ].join('\u001e')).join('\u001f');
   const exportBusy = pendingAction !== null;
   const exportActionsDisabled = !previewHasSelection || exportBusy;
+  if (visibilityState === 'open' && previousVisibilityStateRef.current !== 'open') {
+    enterDelayByMessageIdRef.current = new Map(
+      messages.map((message, index) => [
+        message.id,
+        `${Math.min((messages.length - 1 - index) * 42, 420)}ms`,
+      ]),
+    );
+  }
+  previousVisibilityStateRef.current = visibilityState;
+
+  function resolveCompactHistoryEnterDelay(message: ChatMessage, index: number): string {
+    const existingDelay = enterDelayByMessageIdRef.current.get(message.id);
+    if (existingDelay !== undefined) return existingDelay;
+    const delay = visibilityState === 'open'
+      ? '0ms'
+      : `${Math.min((messages.length - 1 - index) * 42, 420)}ms`;
+    enterDelayByMessageIdRef.current.set(message.id, delay);
+    return delay;
+  }
 
   function emitCompactHistoryDragState(activeDragState: ActiveCompactHistoryDrag) {
     const state = buildCompactHistoryDragState(activeDragState, dragStateSeqRef.current);
@@ -1243,10 +1264,11 @@ export default function CompactExportHistoryPanel({
     previewObjectUrlRef.current = null;
   }
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!autoScrollToBottom) return;
     const scrollNode = scrollRef.current;
     if (!scrollNode) return;
+    scrollNode.scrollTop = scrollNode.scrollHeight;
     const frameId = window.requestAnimationFrame(() => {
       scrollNode.scrollTop = scrollNode.scrollHeight;
     });
@@ -2273,7 +2295,7 @@ export default function CompactExportHistoryPanel({
                     const streaming = message.status === 'streaming';
                     const tone = getCompactHistoryBubbleTone(message, index, messages[index - 1]);
                     const motionStyle: CSSProperties & Record<string, string> = {
-                      '--compact-history-enter-delay': `${Math.min((messages.length - 1 - index) * 42, 420)}ms`,
+                      '--compact-history-enter-delay': resolveCompactHistoryEnterDelay(message, index),
                       '--compact-history-exit-delay': `${Math.min(index * 30, 320)}ms`,
                     };
                     return (

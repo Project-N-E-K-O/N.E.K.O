@@ -603,6 +603,8 @@ describe('App', () => {
     expect(image?.style.getPropertyValue('--compact-history-enter-delay')).toBe('0ms');
     expect(first?.style.getPropertyValue('--compact-history-exit-delay')).toBe('0ms');
     expect(image?.style.getPropertyValue('--compact-history-exit-delay')).toBe('90ms');
+    const stableFirstEnterDelay = first?.style.getPropertyValue('--compact-history-enter-delay');
+    const stableImageEnterDelay = image?.style.getPropertyValue('--compact-history-enter-delay');
     const stableOffset = second?.style.getPropertyValue('--compact-history-stagger-x');
     const stableWidth = second?.style.getPropertyValue('--compact-history-bubble-max-ratio');
     const stableRotate = second?.style.getPropertyValue('--compact-history-rotate');
@@ -623,6 +625,33 @@ describe('App', () => {
     expect(rerenderedSecond?.style.getPropertyValue('--compact-history-stagger-x')).toBe(stableOffset);
     expect(rerenderedSecond?.style.getPropertyValue('--compact-history-bubble-max-ratio')).toBe(stableWidth);
     expect(rerenderedSecond?.style.getPropertyValue('--compact-history-rotate')).toBe(stableRotate);
+
+    const newAssistantMessage = parseChatMessage({
+      id: 'assistant-history-casual-new',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:04',
+      createdAt: 5,
+      blocks: [{ type: 'text', text: 'A fresh assistant message should not replay old history.' }],
+      status: 'sent',
+    });
+    rerender(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        messages={[firstAssistant, updatedSecondAssistant, userMessage, imageMessage, newAssistantMessage]}
+      />,
+    );
+
+    expect(container.querySelector<HTMLElement>(
+      '[data-compact-export-history-message-id="assistant-history-casual-1"]',
+    )?.style.getPropertyValue('--compact-history-enter-delay')).toBe(stableFirstEnterDelay);
+    expect(container.querySelector<HTMLElement>(
+      '[data-compact-export-history-message-id="assistant-history-casual-image"]',
+    )?.style.getPropertyValue('--compact-history-enter-delay')).toBe(stableImageEnterDelay);
+    expect(container.querySelector<HTMLElement>(
+      '[data-compact-export-history-message-id="assistant-history-casual-new"]',
+    )?.style.getPropertyValue('--compact-history-enter-delay')).toBe('0ms');
   });
 
   it('opens compact inline preview with disabled final actions when nothing is selected', async () => {

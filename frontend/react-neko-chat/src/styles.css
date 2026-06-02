@@ -1754,6 +1754,39 @@ svg {
   animation: composerGalgameLoadingPulse 1.6s ease-in-out infinite;
 }
 
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-compact-choice-placement="below"]
+  .composer-galgame-slot.is-open:not(.composer-choice-slot)
+  .composer-galgame-options:not(.is-loading)
+  .composer-galgame-option {
+  animation: composerGalgameOptionEnterDown 0.22s cubic-bezier(0.2, 0.78, 0.34, 1) both;
+}
+
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-compact-choice-placement="below"]
+  .composer-galgame-slot.is-open:not(.composer-choice-slot)
+  .composer-galgame-options:not(.is-loading)
+  .composer-galgame-option:nth-child(2) {
+  animation-delay: 42ms;
+}
+
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-compact-choice-placement="below"]
+  .composer-galgame-slot.is-open:not(.composer-choice-slot)
+  .composer-galgame-options:not(.is-loading)
+  .composer-galgame-option:nth-child(3) {
+  animation-delay: 84ms;
+}
+
+@keyframes composerGalgameOptionEnterDown {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @keyframes composerGalgameLoadingPulse {
   0%, 100% { opacity: 0.55; }
   50% { opacity: 0.85; }
@@ -2260,6 +2293,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   height: calc(var(--compact-export-history-region-height) + var(--compact-export-controls-collapse-delta));
   max-height: calc(var(--compact-export-history-region-height) + var(--compact-export-controls-collapse-delta));
   min-height: 0;
+  overflow-anchor: none;
   overflow-y: auto;
   overflow-x: visible;
   overscroll-behavior: contain;
@@ -2279,6 +2313,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   flex-direction: column;
   gap: 0;
   min-height: 100%;
+  overflow-anchor: none;
   pointer-events: none;
 }
 
@@ -2325,7 +2360,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   display: flex;
   width: 100%;
   min-width: 0;
-  --compact-history-motion-x: -30px;
+  --compact-history-motion-x: 46px;
   margin-top: var(--compact-history-gap-before, 8px);
   border: 0;
   background: transparent;
@@ -2337,14 +2372,17 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   -webkit-app-region: no-drag;
 }
 
-.compact-export-history-anchor[data-compact-export-history-visibility="open"] .compact-export-history-message {
+.compact-export-history-anchor[data-compact-export-history-visibility="open"] .compact-export-history-bubble {
   animation: compact-history-message-enter 0.26s cubic-bezier(0.2, 0.78, 0.34, 1) both;
   animation-delay: var(--compact-history-enter-delay, 0ms);
 }
 
-.compact-export-history-anchor[data-compact-export-history-visibility="closing"] .compact-export-history-message {
+.compact-export-history-anchor[data-compact-export-history-visibility="closing"] .compact-export-history-bubble {
   animation: compact-history-message-exit 0.2s ease-in both;
   animation-delay: var(--compact-history-exit-delay, 0ms);
+}
+
+.compact-export-history-anchor[data-compact-export-history-visibility="closing"] .compact-export-history-message {
   pointer-events: none;
 }
 
@@ -2358,35 +2396,35 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 @keyframes compact-history-message-enter {
   from {
     opacity: 0;
-    transform: translateX(var(--compact-history-motion-x));
+    translate: var(--compact-history-motion-x) 0;
   }
 
   to {
     opacity: 1;
-    transform: translateX(0);
+    translate: 0 0;
   }
 }
 
 @keyframes compact-history-message-exit {
   from {
     opacity: 1;
-    transform: translateX(0);
+    translate: 0 0;
   }
 
   to {
     opacity: 0;
-    transform: translateX(var(--compact-history-motion-x));
+    translate: var(--compact-history-motion-x) 0;
   }
 }
 
 .compact-export-history-message.is-user {
-  --compact-history-motion-x: 30px;
+  --compact-history-motion-x: -46px;
   justify-content: flex-end;
 }
 
 .compact-export-history-message.is-assistant,
 .compact-export-history-message.is-system {
-  --compact-history-motion-x: -30px;
+  --compact-history-motion-x: 46px;
   justify-content: flex-start;
 }
 
@@ -4441,6 +4479,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   .message-row-user,
   .message-row-assistant,
   .compact-export-history-message,
+  .compact-export-history-bubble,
   .compact-history-visibility-handle::before,
   .compact-history-visibility-handle::after,
   .text-chunk-reveal,
