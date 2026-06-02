@@ -1197,6 +1197,7 @@ export default function App({
   const [compactExportSelectedIds, setCompactExportSelectedIds] = useState<Set<string>>(() => new Set());
   const [compactExportAutoScrollToBottom, setCompactExportAutoScrollToBottom] = useState(true);
   const compactSurfaceResizeStateRef = useRef<CompactSurfaceResizeState | null>(null);
+  const compactHistoryVisibilitySuppressClickRef = useRef(false);
   const submittingRef = useRef(false);
   const lastRollbackKeyRef = useRef('');
   const lastToolCursorResetKeyRef = useRef('');
@@ -1436,6 +1437,25 @@ export default function App({
     }
     openCompactExportHistory();
   }, [closeCompactExportHistory, compactExportHistoryOpen, openCompactExportHistory]);
+  const handleCompactHistoryVisibilityPress = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    compactHistoryVisibilitySuppressClickRef.current = true;
+    handleCompactHistoryVisibilityToggle();
+  }, [handleCompactHistoryVisibilityToggle]);
+  const handleCompactHistoryVisibilityClick = useCallback((event: ReactMouseEvent<HTMLButtonElement>) => {
+    if (compactHistoryVisibilitySuppressClickRef.current) {
+      compactHistoryVisibilitySuppressClickRef.current = false;
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    handleCompactHistoryVisibilityToggle();
+  }, [handleCompactHistoryVisibilityToggle]);
+  const handleCompactHistoryVisibilityPointerCancel = useCallback(() => {
+    compactHistoryVisibilitySuppressClickRef.current = false;
+  }, []);
   const handleCompactExportControlsToggle = useCallback(() => {
     if (!compactExportHistoryOpen) {
       openCompactExportHistory();
@@ -4560,7 +4580,10 @@ export default function App({
       data-compact-geometry-owner="surface"
       data-compact-geometry-item="historyHandle"
       data-compact-history-open={compactExportHistoryOpen ? 'true' : 'false'}
-      onClick={handleCompactHistoryVisibilityToggle}
+      onPointerDown={handleCompactHistoryVisibilityPress}
+      onPointerCancel={handleCompactHistoryVisibilityPointerCancel}
+      onPointerLeave={handleCompactHistoryVisibilityPointerCancel}
+      onClick={handleCompactHistoryVisibilityClick}
     >
       <span className="compact-history-visibility-handle-triangle" aria-hidden="true" />
     </button>

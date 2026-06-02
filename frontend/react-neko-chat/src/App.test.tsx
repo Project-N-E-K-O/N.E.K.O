@@ -440,6 +440,41 @@ describe('App', () => {
     expect(container.querySelector('.compact-input-tool-item-export')).toHaveAttribute('aria-pressed', 'false');
   });
 
+  it('toggles compact history visibility as soon as the handle is pressed', () => {
+    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
+
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" />,
+    );
+
+    const handle = container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle');
+    expect(handle).not.toBeNull();
+    expect(handle).toHaveAttribute('aria-expanded', 'false');
+    expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+    const shellPointerDown = vi.fn();
+    container.querySelector('.compact-chat-surface-shell')?.addEventListener('pointerdown', shellPointerDown);
+
+    fireEvent.pointerDown(handle!, { pointerType: 'mouse', button: 0 });
+    expect(handle).toHaveAttribute('aria-expanded', 'true');
+    expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
+    expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
+    expect(shellPointerDown).not.toHaveBeenCalled();
+
+    fireEvent.click(handle!);
+    expect(handle).toHaveAttribute('aria-expanded', 'true');
+
+    fireEvent.pointerDown(handle!, { pointerType: 'mouse', button: 0 });
+    expect(handle).toHaveAttribute('aria-expanded', 'false');
+    expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+    expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('false');
+
+    fireEvent.click(handle!);
+    expect(handle).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(handle!);
+    expect(handle).toHaveAttribute('aria-expanded', 'true');
+  });
+
   it('keeps compact export history message actions read-only', async () => {
     const onMessageAction = vi.fn();
     const message = parseChatMessage({
