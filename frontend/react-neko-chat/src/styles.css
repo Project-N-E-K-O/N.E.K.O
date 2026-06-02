@@ -2325,6 +2325,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   display: flex;
   width: 100%;
   min-width: 0;
+  --compact-history-motion-x: -30px;
   margin-top: var(--compact-history-gap-before, 8px);
   border: 0;
   background: transparent;
@@ -2337,12 +2338,12 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 .compact-export-history-anchor[data-compact-export-history-visibility="open"] .compact-export-history-message {
-  animation: compact-history-message-enter 0.24s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: compact-history-message-enter 0.26s cubic-bezier(0.2, 0.78, 0.34, 1) both;
   animation-delay: var(--compact-history-enter-delay, 0ms);
 }
 
 .compact-export-history-anchor[data-compact-export-history-visibility="closing"] .compact-export-history-message {
-  animation: compact-history-message-exit 0.16s ease-in both;
+  animation: compact-history-message-exit 0.2s ease-in both;
   animation-delay: var(--compact-history-exit-delay, 0ms);
   pointer-events: none;
 }
@@ -2357,37 +2358,35 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 @keyframes compact-history-message-enter {
   from {
     opacity: 0;
-    filter: blur(1.5px);
-    transform: translateY(10px) scale(0.985);
+    transform: translateX(var(--compact-history-motion-x));
   }
 
   to {
     opacity: 1;
-    filter: blur(0);
-    transform: translateY(0) scale(1);
+    transform: translateX(0);
   }
 }
 
 @keyframes compact-history-message-exit {
   from {
     opacity: 1;
-    filter: blur(0);
-    transform: translateY(0) scale(1);
+    transform: translateX(0);
   }
 
   to {
     opacity: 0;
-    filter: blur(1.5px);
-    transform: translateY(-8px) scale(0.985);
+    transform: translateX(var(--compact-history-motion-x));
   }
 }
 
 .compact-export-history-message.is-user {
+  --compact-history-motion-x: 30px;
   justify-content: flex-end;
 }
 
 .compact-export-history-message.is-assistant,
 .compact-export-history-message.is-system {
+  --compact-history-motion-x: -30px;
   justify-content: flex-start;
 }
 
