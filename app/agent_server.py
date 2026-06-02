@@ -1347,7 +1347,7 @@ def _check_agent_api_gate() -> Dict[str, Any]:
     try:
         cm = get_config_manager()
         ok, reasons = cm.is_agent_api_ready()
-        return {"ready": ok, "reasons": reasons, "is_free_version": cm.is_free_version()}
+        return {"ready": ok, "reasons": reasons, "is_free_version": cm.is_agent_free()}
     except Exception as e:
         return {"ready": False, "reasons": [f"Agent API check failed: {e}"], "is_free_version": False}
 

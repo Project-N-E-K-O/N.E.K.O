@@ -67,6 +67,18 @@ class _FakeActivityTracker:
         self.user_messages.append(text)
 
 
+class _FakeVoiceBridgeSession:
+    def __init__(self):
+        self.cancelled = 0
+        self.primed = []
+
+    async def cancel_response(self):
+        self.cancelled += 1
+
+    async def prime_context(self, context, *, skipped=False):
+        self.primed.append((context, skipped))
+
+
 class _FakeAliveThread:
     def is_alive(self):
         return True
@@ -368,7 +380,7 @@ async def test_voice_bridge_cancel_skips_user_context_side_effects():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_voice_bridge_session_change_drops_stale_transcript():
+async def test_voice_bridge_session_change_continues_ordinary_transcript_flow():
     mgr = _make_transcript_manager()
     original_session = mgr.session
     replacement_session = object()
@@ -391,10 +403,54 @@ async def test_voice_bridge_session_change_drops_stale_transcript():
     assert original_session is not replacement_session
     assert mgr.session is replacement_session
     assert mgr._activity_tracker.voice_rms_count == 1
-    assert mgr._activity_tracker.user_messages == []
-    assert mgr._session_turn_count == 0
-    mgr._publish_user_utterance_to_plugin_bus.assert_not_called()
-    assert mgr.sync_message_queue.messages == []
+    assert mgr._activity_tracker.user_messages == ["  Yui explain this step  "]
+    assert mgr._session_turn_count == 1
+    mgr._publish_user_utterance_to_plugin_bus.assert_called_once_with(
+        "  Yui explain this step  ",
+        is_voice_source=True,
+    )
+    assert mgr.sync_message_queue.messages == [{
+        "type": "user",
+        "data": {"input_type": "transcript", "data": "Yui explain this step"},
+    }]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_voice_bridge_cancel_failure_continues_ordinary_transcript_flow(monkeypatch):
+    mgr = _make_transcript_manager()
+    mgr.session = _FakeVoiceBridgeSession()
+
+    async def fake_publish(*_args, **_kwargs):
+        return {"action": "cancel_response"}
+
+    async def fail_cancel_response():
+        raise RuntimeError("cancel failed")
+
+    mgr.session.cancel_response = fail_cancel_response
+    monkeypatch.setattr(
+        core_module,
+        "publish_voice_transcript_request_reliably",
+        fake_publish,
+    )
+
+    await core_module.LLMSessionManager.handle_input_transcript(
+        mgr,
+        "  continue this transcript  ",
+        is_voice_source=True,
+    )
+
+    assert mgr._activity_tracker.voice_rms_count == 1
+    assert mgr._activity_tracker.user_messages == ["  continue this transcript  "]
+    assert mgr._session_turn_count == 1
+    mgr._publish_user_utterance_to_plugin_bus.assert_called_once_with(
+        "  continue this transcript  ",
+        is_voice_source=True,
+    )
+    assert mgr.sync_message_queue.messages == [{
+        "type": "user",
+        "data": {"input_type": "transcript", "data": "continue this transcript"},
+    }]
 
 
 @pytest.mark.unit

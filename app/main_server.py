@@ -610,10 +610,19 @@ async def _handle_agent_event(event: dict):
             return
 
         if event_type == "voice_bridge_result":
-            notify_voice_bridge_result(
-                str(event.get("event_id") or ""),
-                event.get("result") if isinstance(event.get("result"), dict) else {},
-            )
+            event_id = str(event.get("event_id") or "")
+            result = event.get("result")
+            if not event_id:
+                logger.warning("[EventBus] voice_bridge_result dropped: missing event_id")
+                return
+            if not isinstance(result, dict):
+                logger.warning(
+                    "[EventBus] voice_bridge_result dropped: invalid result payload for event_id=%s payload=%r",
+                    event_id,
+                    result,
+                )
+                return
+            notify_voice_bridge_result(event_id, result)
             return
 
         # Agent status updates may be broadcast (lanlan_name omitted).
@@ -1630,6 +1639,7 @@ if _IS_MAIN_PROCESS:
 # --- 初始化共享状态并挂载路由 ---
 # 显式从各子模块导入 router，避免与包级模块导出产生同名遮蔽。
 from main_routers.agent_router import router as agent_router # noqa
+from main_routers.card_assist_router import router as card_assist_router # noqa
 from main_routers.capture_router import router as capture_router # noqa
 from main_routers.characters_router import router as characters_router # noqa
 from main_routers.cloudsave_router import router as cloudsave_router # noqa
@@ -1781,6 +1791,7 @@ app.include_router(tool_router)
 app.include_router(music_router)
 app.include_router(galgame_router)
 app.include_router(game_router)
+app.include_router(card_assist_router)
 app.include_router(capture_router)
 app.include_router(cookies_login_router) # Cookies登录相关路由，放在最后以避免与其他API路由冲突
 app.include_router(debug_router)  # 诊断观测：/api/debug/health（轻量、零侵入，详见 debug_router.py 头注释）

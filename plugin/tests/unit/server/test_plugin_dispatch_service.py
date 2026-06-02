@@ -209,6 +209,7 @@ async def test_trigger_custom_event_subscribers_keeps_per_plugin_errors(
     assert results[0]["event_id"] == "handle_transcript"
     assert results[0]["success"] is False
     assert results[0]["code"] == "PLUGIN_NOT_READY"
+    assert stopped_host.calls == []
     assert results[1] == {
         "plugin_id": "beta",
         "event_id": "handle_transcript",

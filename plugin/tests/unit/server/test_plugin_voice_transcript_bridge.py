@@ -22,11 +22,15 @@ class _DispatchService:
 
 @pytest.mark.asyncio
 async def test_resolve_voice_transcript_request_returns_noop_for_empty_text() -> None:
+    dispatch_service = _DispatchService()
+
     result = await voice_transcript_bridge.resolve_voice_transcript_request(
-        {"transcript": "   "}
+        {"transcript": "   "},
+        dispatch_service=dispatch_service,  # type: ignore[arg-type]
     )
 
     assert result == {"action": "noop", "reason": "empty_transcript"}
+    assert dispatch_service.calls == []
 
 
 @pytest.mark.asyncio

@@ -2041,7 +2041,7 @@ class LLMSessionManager:
                 return ""
             cancel_response = getattr(session_snapshot, "cancel_response", None)
             if not callable(cancel_response):
-                return action
+                return ""
             try:
                 if _session_changed():
                     return ""
@@ -2049,6 +2049,7 @@ class LLMSessionManager:
                 logger.debug("[%s] voice bridge cancelled current response", self.lanlan_name)
             except Exception as exc:
                 logger.debug("[%s] voice bridge cancel skipped/failed: %s", self.lanlan_name, exc)
+                return ""
             return action
 
         if action == "prime_context":
@@ -2326,10 +2327,10 @@ class LLMSessionManager:
             voice_bridge_action = await self._dispatch_voice_transcript_bridge(transcript_text)
             if session_snapshot is not self.session:
                 logger.debug(
-                    "[%s] stale voice transcript dropped after session change",
+                    "[%s] voice bridge action ignored after session change",
                     self.lanlan_name,
                 )
-                return
+                voice_bridge_action = ""
             if voice_bridge_action == "cancel_response":
                 return
 

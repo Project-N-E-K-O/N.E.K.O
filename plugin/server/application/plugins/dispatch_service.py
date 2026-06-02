@@ -289,7 +289,10 @@ class PluginDispatchService:
             return []
         return list(
             await asyncio.gather(
-                *(_dispatch_handler(plugin_id, event_id) for plugin_id, event_id in handlers)
+                *(
+                    _dispatch_handler(plugin_id, handler_event_id)
+                    for plugin_id, handler_event_id in handlers
+                )
             )
         )
 

@@ -103,7 +103,7 @@ def arbitrate_voice_transcript_results(dispatch_results: object) -> dict[str, An
         if action == VOICE_TRANSCRIPT_ACTION_NOOP:
             noop_count += 1
             continue
-        priority = _coerce_priority(candidate.get("priority", 0))
+        priority = candidate["priority"]
         rank = VOICE_TRANSCRIPT_ACTION_RANK.get(action, 0)
         contender = (rank, priority, -index, candidate)
         if selected is None or contender[:3] > selected[:3]:
@@ -137,7 +137,7 @@ def arbitrate_custom_event_result(
     if event_type == VOICE_TRANSCRIPT_EVENT_TYPE:
         return arbitrate_voice_transcript_results(dispatch_results)
     return {
-        "action": "noop",
+        "action": VOICE_TRANSCRIPT_ACTION_NOOP,
         "reason": "no_event_contract",
         "event_type": event_type,
     }
