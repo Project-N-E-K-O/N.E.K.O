@@ -83,7 +83,7 @@ dependencies = [
   # below — it brings opencv (~109 MB on disk) which the main program does not
   # use. Build scripts (Nuitka/PyInstaller) install --group galgame explicitly
   # so the packaged dist still bundles it; plain `uv sync` skips it.
-  "imagehash>=4.3.2",
+  "jieba",
 ]
 
 [tool.hatch.version]

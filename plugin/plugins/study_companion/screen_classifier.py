@@ -8,68 +8,6 @@ from typing import Any, Iterable
 
 
 _VALID_SCREEN_TYPES = frozenset({"idle", "reading", "question", "answering", "review", "notes", "summary"})
-_APP_TITLE_RULES: dict[str, tuple[str, ...]] = {
-    "code_editor": (
-        "visual studio code",
-        "vscode",
-        "intellij idea",
-        "pycharm",
-        "clion",
-        "vim",
-        "neovim",
-        "sublime text",
-        "notepad++",
-        "cursor",
-        "windsurf",
-        ".py - ",
-        ".js - ",
-        ".ts - ",
-        ".cpp - ",
-        ".rs - ",
-        ".go - ",
-    ),
-    "web_page": (
-        "chrome",
-        "firefox",
-        "mozilla firefox",
-        "edge",
-        "safari",
-        "brave",
-        "arc",
-        "github",
-        "stack overflow",
-        "docs.google",
-        "wikipedia",
-    ),
-    "pdf_reader": (
-        "adobe acrobat",
-        "foxit reader",
-        "sumatra pdf",
-        "zotero",
-        "pdf-xchange",
-        "pdf expert",
-        "mendeley reference manager",
-    ),
-    "note_app": (
-        "obsidian",
-        "notion",
-        "typora",
-        "bear",
-        "logseq",
-        "onenote",
-        "evernote",
-        "joplin",
-    ),
-    "text_editor": (
-        "microsoft word",
-        "apple pages",
-        "libreoffice writer",
-        "wps office",
-        "google docs",
-        ".md - ",
-        ".txt - ",
-    ),
-}
 _SCREEN_TYPE_ALIASES = {
     "blank": "idle",
     "empty": "idle",
@@ -192,30 +130,6 @@ def normalize_screen_type(screen_type: str | None) -> str:
     if candidate in _VALID_SCREEN_TYPES:
         return candidate
     return _SCREEN_TYPE_ALIASES.get(candidate, "idle")
-
-
-def _app_keyword_matches(title_lower: str, keyword: str) -> bool:
-    candidate = str(keyword or "").strip().lower()
-    if not candidate:
-        return False
-    if candidate.isalnum():
-        pattern = rf"(?<![a-z0-9]){re.escape(candidate)}(?![a-z0-9])"
-        return re.search(pattern, title_lower) is not None
-    return candidate in title_lower
-
-
-def classify_app_from_title(window_title: str, *, default: str = "other") -> str:
-    title_lower = str(window_title or "").strip().lower()
-    if not title_lower:
-        return default
-    best_match: tuple[int, str] | None = None
-    for app_type, keywords in _APP_TITLE_RULES.items():
-        for keyword in keywords:
-            if _app_keyword_matches(title_lower, keyword):
-                score = len(str(keyword or "").strip())
-                if best_match is None or score > best_match[0]:
-                    best_match = (score, app_type)
-    return best_match[1] if best_match is not None else default
 
 
 def _clean_line(value: str) -> str:
@@ -455,7 +369,6 @@ def classify_screen_from_ocr(
 
 __all__ = [
     "ScreenClassification",
-    "classify_app_from_title",
     "classify_screen_from_ocr",
     "normalize_screen_type",
 ]

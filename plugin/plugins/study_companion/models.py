@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-import logging
 import math
 from typing import Any, Literal, TypedDict
 
@@ -20,8 +19,6 @@ PLUGIN_ID = "study_companion"
 StudyMode = Literal["companion", "interactive", "teaching"]
 STUDY_EXPORT_FORMATS = ("markdown", "pdf", "docx", "xmind")
 STUDY_EXPORT_STYLES = ("neko", "academic", "compact")
-_LOGGER = logging.getLogger(__name__)
-OCR_SNIPPET_MAX_CHARS = 200
 
 
 class ModeIntentPayload(TypedDict, total=False):
@@ -56,6 +53,7 @@ class StudyStatusPayload(TypedDict, total=False):
     last_reply: str
     last_error: str
     history: list[dict[str, Any]]
+    recent_notes: list[dict[str, Any]]
 
 
 class TutorReplyPayload(TypedDict, total=False):
@@ -79,14 +77,42 @@ class TutorReplyPayload(TypedDict, total=False):
     markdown: str
 
 
-class ActivitySummary(TypedDict):
-    current_app: str
-    current_activity: str
-    app_duration_seconds: float
-    recent_apps: list[str]
-    total_focus_minutes: float
-    ocr_text_snippet: str
-    app_distribution: dict[str, float]
+@dataclass(frozen=True, slots=True)
+class NotebookMeta:
+    id: str
+    name: str
+    description: str = ""
+    sort_order: int = 0
+    created_at: str = ""
+    updated_at: str = ""
+    note_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class NoteItem:
+    id: str
+    notebook_id: str | None
+    title: str
+    content: str
+    content_plain: str
+    snippet: str
+    is_ai_generated: bool = False
+    source_type: str = "manual"
+    source_ref: str = ""
+    topic_ids: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
+    word_count: int = 0
+    created_at: str = ""
+    updated_at: str = ""
+    edited_at: str = ""
+
+
+class NoteSearchResult(TypedDict, total=False):
+    notes: list[dict[str, Any]]
+    topics: list[dict[str, Any]]
+    sessions: list[dict[str, Any]]
+    wrong_questions: list[dict[str, Any]]
+    query: str
 
 
 STATUS_READY = "ready"
@@ -109,19 +135,6 @@ def _range_or_default(value: object, minimum: int, maximum: int, default: int) -
     except (TypeError, ValueError, OverflowError):
         return default
     return number if minimum <= number <= maximum else default
-
-
-def _clamp_int_or_default(
-    value: object,
-    minimum: int,
-    maximum: int,
-    default: int,
-) -> int:
-    try:
-        number = int(value)
-    except (TypeError, ValueError, OverflowError):
-        return default
-    return max(minimum, min(maximum, number))
 
 
 @dataclass(slots=True)
@@ -211,51 +224,6 @@ class CommunicationConfig:
 
 
 @dataclass(slots=True)
-class AwarenessConfig:
-    enabled: bool = False
-    snapshot_interval_seconds: int = 5
-    context_window_minutes: int = 5
-    classify_mode: str = "title_first"
-    image_max_bytes: int = 204800
-    push_to_llm_interval_seconds: int = 30
-    push_to_llm_mode: str = "read"
-
-    def __post_init__(self) -> None:
-        self.enabled = bool(self.enabled)
-        self.snapshot_interval_seconds = _clamp_int_or_default(
-            self.snapshot_interval_seconds, 1, 60, 5
-        )
-        self.context_window_minutes = _clamp_int_or_default(
-            self.context_window_minutes, 1, 60, 5
-        )
-        classify_mode = str(self.classify_mode or "title_first").strip()
-        if classify_mode not in {"title_first", "ocr_text", "both"}:
-            _LOGGER.warning(
-                "AwarenessConfig: invalid classify_mode=%r, falling back to 'title_first'",
-                classify_mode,
-            )
-            classify_mode = "title_first"
-        self.classify_mode = classify_mode
-        self.image_max_bytes = _clamp_int_or_default(
-            self.image_max_bytes, 10240, 1_048_576, 204800
-        )
-        self.push_to_llm_interval_seconds = _clamp_int_or_default(
-            self.push_to_llm_interval_seconds, 5, 300, 30
-        )
-        push_mode = str(self.push_to_llm_mode or "read").strip()
-        if push_mode not in {"read", "blind", "respond"}:
-            _LOGGER.warning(
-                "AwarenessConfig: invalid push_to_llm_mode=%r, falling back to 'read'",
-                push_mode,
-            )
-            push_mode = "read"
-        self.push_to_llm_mode = push_mode
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-
-@dataclass(slots=True)
 class StudyConfig:
     mode: StudyMode = MODE_COMPANION
     default_mode: StudyMode = MODE_COMPANION
@@ -290,7 +258,6 @@ class StudyConfig:
     supervision: SupervisionConfig = field(default_factory=SupervisionConfig)
     checkin: CheckinConfig = field(default_factory=CheckinConfig)
     communication: CommunicationConfig = field(default_factory=CommunicationConfig)
-    awareness: AwarenessConfig = field(default_factory=AwarenessConfig)
 
     def __post_init__(self) -> None:
         self.mode = normalize_mode(self.mode)
@@ -357,12 +324,6 @@ class StudyConfig:
                 CommunicationConfig(**self.communication)
                 if isinstance(self.communication, dict)
                 else CommunicationConfig()
-            )
-        if not isinstance(self.awareness, AwarenessConfig):
-            self.awareness = (
-                AwarenessConfig(**self.awareness)
-                if isinstance(self.awareness, dict)
-                else AwarenessConfig()
             )
 
     def to_dict(self) -> dict[str, Any]:
@@ -436,19 +397,6 @@ class OcrSnapshot:
         return asdict(self)
 
 
-@dataclass(slots=True, frozen=True)
-class ActivitySnapshot:
-    timestamp: float
-    first_seen_at: float
-    app_type: str
-    activity_type: str
-    classify_method: str
-    ocr_text_snippet: str
-    window_title: str
-    has_content_change: bool
-    _thumbnail_hash: str = ""
-
-
 @dataclass(slots=True)
 class TutorReply:
     operation: str
@@ -490,13 +438,6 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
         study.get("supervision") if isinstance(study.get("supervision"), dict) else {}
     )
     checkin = study.get("checkin") if isinstance(study.get("checkin"), dict) else {}
-    awareness = (
-        study.get("awareness")
-        if isinstance(study.get("awareness"), dict)
-        else raw.get("awareness")
-        if isinstance(raw.get("awareness"), dict)
-        else {}
-    )
     communication = (
         study_companion.get("communication")
         if isinstance(study_companion.get("communication"), dict)
@@ -762,45 +703,6 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
                 "enabled",
                 True,
                 "communication_enabled",
-            ),
-        ),
-        awareness=AwarenessConfig(
-            enabled=_bool(awareness, "enabled", False, "awareness_enabled"),
-            snapshot_interval_seconds=_int(
-                awareness,
-                "snapshot_interval_seconds",
-                5,
-                "awareness_snapshot_interval_seconds",
-            ),
-            context_window_minutes=_int(
-                awareness,
-                "context_window_minutes",
-                5,
-                "awareness_context_window_minutes",
-            ),
-            classify_mode=_str(
-                awareness,
-                "classify_mode",
-                "title_first",
-                "awareness_classify_mode",
-            ),
-            image_max_bytes=_int(
-                awareness,
-                "image_max_bytes",
-                204800,
-                "awareness_image_max_bytes",
-            ),
-            push_to_llm_interval_seconds=_int(
-                awareness,
-                "push_to_llm_interval_seconds",
-                30,
-                "awareness_push_to_llm_interval_seconds",
-            ),
-            push_to_llm_mode=_str(
-                awareness,
-                "push_to_llm_mode",
-                "read",
-                "awareness_push_to_llm_mode",
             ),
         ),
     )

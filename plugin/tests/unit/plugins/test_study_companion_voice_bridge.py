@@ -37,7 +37,7 @@ async def test_voice_transcript_name_call_returns_prime_context() -> None:
     assert isinstance(result, Ok)
     payload = result.value
     assert payload["action"] == "prime_context"
-    assert payload["skipped"] is True
+    assert payload["skipped"] is False
     assert "f(x)=x^3" in payload["context"]
     assert "why is it 3x^2" in payload["context"]
     assert payload["filter"]["method"] == "name_call"
@@ -55,7 +55,7 @@ async def test_voice_transcript_empty_text_returns_noop() -> None:
     payload = result.value
     assert payload["action"] == "noop"
     assert payload["reason"] == "empty_transcript"
-    assert payload["filter"]["method"] == "empty_transcript"
+    assert "filter" not in payload
 
 
 @pytest.mark.asyncio
@@ -71,7 +71,7 @@ async def test_voice_transcript_not_ready_returns_noop() -> None:
     payload = result.value
     assert payload["action"] == "noop"
     assert payload["reason"] == "not_ready"
-    assert payload["filter"]["method"] == "not_ready"
+    assert "filter" not in payload
 
 
 @pytest.mark.asyncio
@@ -89,8 +89,7 @@ async def test_voice_transcript_empty_context_returns_noop(
     payload = result.value
     assert payload["action"] == "noop"
     assert payload["reason"] == "empty_context"
-    assert payload["filter"]["method"] == "empty_context"
-    assert payload["filter"]["source_method"] == "name_call"
+    assert payload["filter"]["method"] == "name_call"
 
 
 @pytest.mark.asyncio

@@ -88,7 +88,7 @@ class _Ctx:
     async def get_own_effective_config(
         self, profile_name: str | None = None, timeout: float = 5.0
     ):
-        return {"config": self._config}
+        return {"config": self._effective_config}
 
     async def update_own_config(self, updates, timeout: float = 10.0):
         self._config = {**self._config, **dict(updates or {})}

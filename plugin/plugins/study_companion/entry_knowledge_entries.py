@@ -85,7 +85,7 @@ class _KnowledgeEntriesMixin:
     async def study_knowledge_map(self, limit: int = 200, **_):
         try:
             safe_limit = max(1, min(1000, int(limit or 200)))
-            topics, mastery, weak_topics, wrong_questions = await asyncio.gather(
+            topics, mastery, weak_topics, wrong_questions, note_counts = await asyncio.gather(
                 asyncio.to_thread(self._store.list_topics, safe_limit),
                 asyncio.to_thread(self._store.list_mastery_overview, safe_limit),
                 asyncio.to_thread(
@@ -94,15 +94,19 @@ class _KnowledgeEntriesMixin:
                 asyncio.to_thread(
                     self._store.list_wrong_questions, limit=min(50, safe_limit)
                 ),
+                asyncio.to_thread(self._notebook_store.count_notes_by_topic),
             )
-            return Ok(
-                build_knowledge_map_payload(
-                    topics=topics,
-                    mastery_overview=mastery,
-                    weak_topics=weak_topics,
-                    wrong_questions=wrong_questions,
-                )
+            payload = build_knowledge_map_payload(
+                topics=topics,
+                mastery_overview=mastery,
+                weak_topics=weak_topics,
+                wrong_questions=wrong_questions,
             )
+            for node in payload.get("nodes") or []:
+                if isinstance(node, dict):
+                    topic_id = str(node.get("id") or "")
+                    node["note_count"] = int(note_counts.get(topic_id, 0))
+            return Ok(payload)
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_knowledge_map")
 
