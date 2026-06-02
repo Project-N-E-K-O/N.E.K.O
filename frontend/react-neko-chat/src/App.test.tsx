@@ -350,7 +350,7 @@ describe('App', () => {
     }
   });
 
-  it('toggles compact inline history from the export tool without calling the full export path', async () => {
+  it('uses the export tool for history controls and the persistent handle for history visibility', async () => {
     const onExportConversationClick = vi.fn();
     const message = parseChatMessage({
       id: 'assistant-history-1',
@@ -382,6 +382,8 @@ describe('App', () => {
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('data-compact-hit-region-id', 'history:message:assistant-history-1');
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('data-compact-hit-region-kind', 'message');
     expect(container.querySelector('.compact-export-history-controls')).toHaveAttribute('data-compact-hit-region-id', 'history:controls');
+    expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('data-compact-geometry-item', 'historyHandle');
+    expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'true');
     expect(container.querySelector('.compact-export-history-message')).toHaveAttribute('role', 'listitem');
     expect(container.querySelector('.compact-export-history-message')).not.toHaveAttribute('aria-pressed');
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('role', 'button');
@@ -389,9 +391,15 @@ describe('App', () => {
     expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
 
     await clickCompactExportTool();
+    expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
+    expect(container.querySelector('.compact-export-history-controls')).toBeNull();
+    expect(exportButton).toHaveAttribute('aria-pressed', 'false');
+    expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
+
+    fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
     expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
     expect(container.querySelector('[data-compact-hit-region-id^="history:"]')).toBeNull();
-    expect(exportButton).toHaveAttribute('aria-pressed', 'false');
+    expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'false');
     expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('false');
   });
 
@@ -412,7 +420,9 @@ describe('App', () => {
     );
 
     expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
-    expect(container.querySelector('.compact-input-tool-item-export')).toHaveAttribute('aria-pressed', 'true');
+    expect(container.querySelector('.compact-export-history-controls')).toBeNull();
+    expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'true');
+    expect(container.querySelector('.compact-input-tool-item-export')).toHaveAttribute('aria-pressed', 'false');
   });
 
   it('keeps compact export history message actions read-only', async () => {
@@ -582,10 +592,10 @@ describe('App', () => {
     const anchor = container.querySelector('.compact-export-history-anchor');
     expect(anchor).not.toHaveClass('controls-collapsed');
 
-    fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-export-history-controls-toggle')!);
+    await clickCompactExportTool();
     expect(anchor).toHaveClass('controls-collapsed');
 
-    fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-export-history-controls-toggle')!);
+    await clickCompactExportTool();
     expect(anchor).not.toHaveClass('controls-collapsed');
   });
 
