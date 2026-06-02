@@ -3332,10 +3332,11 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   --compact-tool-fan-hit-outset: 52px;
   --compact-tool-wheel-hover-radius: 116px;
   /* Orbit radius = how far the tool icons sit from the arrow center (visual
-     only). Halved from the original 91.92px to pull the wheel in tighter. The
-     drag-rotate sensitivity scalar in App.tsx is intentionally left at 91.92 so
-     rotate-by-drag feel is unchanged. */
-  --compact-tool-wheel-orbit-radius: 45.96px;
+     only). 45.96px (a straight halving of the original 91.92px) packed the icons
+     in too tight, so it's dialed back to 80px. The drag-rotate sensitivity
+     scalar in App.tsx is intentionally left at 91.92 so rotate-by-drag feel is
+     unchanged. */
+  --compact-tool-wheel-orbit-radius: 80px;
   --compact-tool-fan-focus-x: var(--compact-tool-wheel-hover-radius);
   --compact-tool-fan-focus-y: var(--compact-tool-wheel-hover-radius);
   --compact-tool-wheel-center-x: var(--compact-tool-wheel-hover-radius);

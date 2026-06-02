@@ -1188,6 +1188,11 @@ export default function App({
   const compactSpeechLastFrameTimeRef = useRef(0);
   const compactSpeechPreviewIdRef = useRef('');
   const compactSpeechPreviewTextRef = useRef('');
+  // Full turn text the speech reveal is currently walking through. Updated only
+  // when the preview re-keys (messageId change), so it holds the *previous*
+  // turn's text at the moment a new bubble arrives — used to tell an appended
+  // bubble (continue revealing) from a brand-new turn (rewind to the start).
+  const compactSpeechRevealBaseTextRef = useRef('');
   const compactSpeechFallbackRevealRef = useRef(false);
   const compactSpeechFallbackTimerRef = useRef<number | null>(null);
   const isCompactSurfaceRef = useRef(false);
@@ -1767,12 +1772,29 @@ export default function App({
       window.clearTimeout(compactSpeechFallbackTimerRef.current);
       compactSpeechFallbackTimerRef.current = null;
     }
-    compactSpeechVisibleLengthRef.current = 0;
+    // Decouple the input-bar caption from per-bubble identity. The merged-turn
+    // preview is re-keyed to the latest streaming bubble's id, so every new
+    // bubble changes messageId even though its text only *appends* to the prior
+    // bubbles'. When the new text still extends what we were revealing, keep the
+    // revealed length so the caption continues appending instead of replaying
+    // the whole turn; only a genuinely new turn (no longer a continuation)
+    // rewinds the reveal to the start. Mirrors the seedText logic the
+    // non-streaming typewriter path already uses.
+    const previousRevealBaseText = compactSpeechRevealBaseTextRef.current;
+    const nextRevealBaseText = compactPreviewIsStreaming ? compactPreviewText : '';
+    const continuesPreviousTurn = previousRevealBaseText.length > 0
+      && nextRevealBaseText.startsWith(previousRevealBaseText);
+    const seedVisibleLength = continuesPreviousTurn
+      ? Math.min(compactSpeechVisibleLengthRef.current, nextRevealBaseText.length)
+      : 0;
+    compactSpeechRevealBaseTextRef.current = nextRevealBaseText;
+
+    compactSpeechVisibleLengthRef.current = seedVisibleLength;
     compactSpeechPlaybackStartedRef.current = false;
     compactSpeechFallbackRevealRef.current = false;
     compactSpeechRevealCarryRef.current = 0;
     compactSpeechLastFrameTimeRef.current = 0;
-    setCompactSpeechVisibleLength(0);
+    setCompactSpeechVisibleLength(seedVisibleLength);
     setCompactSpeechFallbackRevealActive(false);
   }, [compactMessagePreview?.messageId]);
 
