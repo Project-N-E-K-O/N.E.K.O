@@ -23,6 +23,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
 from plugin.core.ui_manifest import normalize_plugin_ui_manifest
 from plugin.plugins import study_companion as study_companion_module
 from plugin.plugins.study_companion import StudyCompanionPlugin
+from plugin.plugins.study_companion.awareness_buffer import ActivityBuffer
 from plugin.plugins.study_companion.llm_prompts import (
     _compact_prompt_value,
     build_concept_explain_messages,
@@ -49,6 +50,7 @@ from plugin.plugins.study_companion.knowledge_contribution import (
 )
 from plugin.plugins.study_companion.knowledge_tracker import KnowledgeTracker
 from plugin.plugins.study_companion.models import (
+    AwarenessConfig,
     OcrSnapshot,
     StudyConfig,
     TutorReply,
@@ -65,6 +67,7 @@ from plugin.plugins.study_companion.study_capture_backends import (
     PyAutoGuiCaptureBackend,
 )
 from plugin.plugins.study_companion.study_ocr_pipeline import (
+    LightweightSnapshot,
     StudyCaptureProfile,
     StudyOcrPipeline,
 )
@@ -221,6 +224,106 @@ def _study_push_texts(ctx: _Ctx) -> list[str]:
 async def _drain_scheduled_events() -> None:
     await asyncio.sleep(0)
     await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_awareness_disabled_does_not_start_loop_on_startup(
+    tmp_path: Path,
+) -> None:
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "awareness": {"enabled": False}},
+            "study_companion": {"communication": {"enabled": False}},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+
+    result = await plugin.startup()
+
+    assert isinstance(result, Ok)
+    assert plugin.is_awareness_active() is False
+    assert plugin._awareness_task is None
+    await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_start_awareness_loop_runs_async_tick_and_pushes_context(
+    tmp_path: Path,
+) -> None:
+    class _FakeAwarenessPipeline:
+        def capture_lightweight(self) -> LightweightSnapshot:
+            return LightweightSnapshot(
+                status="ok",
+                captured_at="2026-06-01T00:00:00Z",
+                window_title="Quiz - Google Chrome",
+                app_type="web_page",
+                activity_type="question",
+                ocr_text_snippet="Question: Why?",
+                has_content_change=True,
+                thumbnail_phash="0" * 16,
+            )
+
+    ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
+    plugin = StudyCompanionPlugin(ctx)
+    plugin._cfg = StudyConfig(
+        awareness=AwarenessConfig(
+            enabled=True,
+            snapshot_interval_seconds=60,
+            push_to_llm_mode="read",
+        )
+    )
+    plugin._ocr_pipeline = _FakeAwarenessPipeline()
+
+    plugin.start_awareness_loop()
+    try:
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            if any(
+                message.get("source") == "awareness"
+                for message in ctx.pushed_messages
+            ):
+                break
+            await asyncio.sleep(0.01)
+        else:
+            pytest.fail("timed out waiting for awareness push")
+
+        assert plugin.is_awareness_active() is True
+        pushed = next(
+            message
+            for message in ctx.pushed_messages
+            if message.get("source") == "awareness"
+        )
+        assert pushed["ai_behavior"] == "read"
+        assert "app_distribution" not in pushed["parts"][0]["text"]
+    finally:
+        plugin.stop_awareness_loop()
+        await plugin._await_awareness_stop()
+
+    assert plugin.is_awareness_active() is False
+    assert plugin._awareness_task is None
+
+
+@pytest.mark.asyncio
+async def test_awareness_tick_counts_unusable_snapshot_as_idle(tmp_path: Path) -> None:
+    class _NoActivitySnapshot:
+        status = "ok"
+
+        def to_activity_snapshot(self):
+            return None
+
+    class _FakeAwarenessPipeline:
+        def capture_lightweight(self):
+            return _NoActivitySnapshot()
+
+    plugin = StudyCompanionPlugin(_Ctx(tmp_path, {"study": {"language": "en"}}))
+    plugin._cfg = StudyConfig(awareness=AwarenessConfig(push_to_llm_mode="blind"))
+    plugin._buffer = ActivityBuffer()
+    plugin._ocr_pipeline = _FakeAwarenessPipeline()
+
+    await plugin.awareness_tick()
+
+    assert plugin._awareness_idle_ticks == 1
 
 
 class _FakeOcrBackend:
@@ -2125,7 +2228,7 @@ async def test_study_explain_text_detects_mode_intent_and_continues_when_content
 
 
 @pytest.mark.asyncio
-async def test_study_explain_text_explain_intent_without_content_keeps_empty_input_guidance(
+async def test_study_explain_text_explain_intent_without_content_returns_err(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runtime_root = tmp_path / "runtime"
@@ -2146,10 +2249,38 @@ async def test_study_explain_text_explain_intent_without_content_keeps_empty_inp
         async with plugin._lock:
             plugin._state.last_ocr_text = ""
         explain_empty = await plugin.study_explain_text("explain")
-        assert isinstance(explain_empty, Ok)
-        assert explain_empty.value["input_text"] == ""
-        assert explain_empty.value["diagnostic"] == "empty_input"
-        assert explain_empty.value["intent"]["kind"] == "concept_explain"
+        assert isinstance(explain_empty, Err)
+        assert explain_empty.error.code == "MISSING_TEXT"
+    finally:
+        await plugin.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_study_generate_question_without_content_returns_err(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NEKO_STORAGE_SELECTED_ROOT", str(runtime_root))
+    ctx = _Ctx(
+        tmp_path,
+        {
+            "study": {"language": "en", "default_mode": MODE_COMPANION},
+            "ocr_reader": {"enabled": True},
+            "rapidocr": {"lang_type": "ch"},
+        },
+    )
+    plugin = StudyCompanionPlugin(ctx)
+    result = await plugin.startup()
+    assert isinstance(result, Ok)
+    plugin._agent = _FakeTutorAgent()
+
+    try:
+        async with plugin._lock:
+            plugin._state.last_ocr_text = ""
+        question_empty = await plugin.study_generate_question()
+
+        assert isinstance(question_empty, Err)
+        assert question_empty.error.code == "MISSING_TEXT"
     finally:
         await plugin.shutdown()
 
@@ -3051,6 +3182,48 @@ async def test_study_pomodoro_start_offloads_blocking_operations(
     assert to_thread_calls == ["status", "start", "get_goal"]
     assert supervision.goal == {"id": "goal-1", "title": "read"}
     assert supervision.planned_minutes == 30.0
+
+
+@pytest.mark.asyncio
+async def test_study_pomodoro_start_uses_validated_focus_minutes_as_supervision_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Habits:
+        def get_goal(self, goal_id: str) -> dict[str, object]:
+            return {"id": goal_id}
+
+    class _Timer:
+        def status(self) -> dict[str, object]:
+            return {"state": "idle", "current_focus_session": {}}
+
+        def start(self, **_kwargs) -> dict[str, object]:
+            return {"state": "focusing", "current_focus_session": {"id": "focus-4"}}
+
+    class _Supervision:
+        def __init__(self) -> None:
+            self.planned_minutes = -1.0
+
+        def on_focus_start(
+            self, *, goal: dict[str, object], planned_minutes: float
+        ) -> None:
+            self.planned_minutes = planned_minutes
+
+    async def _to_thread(func, /, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(study_companion_module.asyncio, "to_thread", _to_thread)
+    plugin = StudyCompanionPlugin.__new__(StudyCompanionPlugin)
+    supervision = _Supervision()
+    plugin._cfg = StudyConfig()
+    plugin._habit_store = _Habits()
+    plugin._checkin_manager = object()
+    plugin._pomodoro_timer = _Timer()
+    plugin._supervision = supervision
+
+    status = await plugin.study_pomodoro_start(goal_id="goal-1")
+
+    assert isinstance(status, Ok)
+    assert supervision.planned_minutes == 25.0
 
 
 @pytest.mark.asyncio

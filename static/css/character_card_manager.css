@@ -5968,6 +5968,14 @@ margin-top: 10px;
     grid-column: 4;
 }
 
+/* AI 辅助生成按钮放在 Add 按钮左边的 action 槽位（col 3），保持和
+   Add 按钮同一行 —— 同样的 pattern 用在 save-action / cancel-action 上。
+   注意：必须放在上面 `.settings-toolbar-row .btn.sm { grid-column: 4 }`
+   之后，靠 source order 覆盖（specificity 相同）。 */
+.catgirl-panel-right .panel-tab-settings .settings-toolbar-row .settings-secondary-action.btn.sm {
+    grid-column: 3;
+}
+
 .catgirl-panel-right .panel-tab-settings .settings-action-row .settings-save-action {
     grid-column: 3;
 }
@@ -6017,6 +6025,31 @@ margin-top: 10px;
         grid-column: 2;
         justify-self: end;
         width: min(100%, var(--settings-action-col));
+    }
+
+    /* AI 辅助 + Add Field 在 ≤1100px 仍保持同一行：把 toolbar-row 重新撑成
+       "label / spacer / col3 / col4" 四列，AI 占 col 3、Add 占 col 4。
+       通用 `.btn.sm { grid-column: 2 }` 规则被这两条更具体的选择器盖掉。
+       窄于 768px 时 `@media (max-width: 768px)` 会把布局收回 1-col，让两个
+       按钮叠成上下两行（screen 太窄时唯一合理的排版）。 */
+    .catgirl-panel-right .panel-tab-settings .settings-toolbar-row {
+        grid-template-columns:
+            var(--settings-label-col)
+            minmax(0, 1fr)
+            var(--settings-action-col)
+            var(--settings-action-col);
+    }
+
+    .catgirl-panel-right .panel-tab-settings .settings-toolbar-row .settings-secondary-action.btn.sm {
+        grid-column: 3;
+        justify-self: stretch;
+        width: 100%;
+    }
+
+    .catgirl-panel-right .panel-tab-settings .settings-toolbar-row .btn.sm:not(.settings-secondary-action) {
+        grid-column: 4;
+        justify-self: stretch;
+        width: 100%;
     }
 
     .catgirl-panel-right .panel-tab-settings .personality-row {
@@ -6076,6 +6109,14 @@ margin-top: 10px;
         width: 100%;
     }
 
+    /* @media (max-width:1100px) 里把 AI 按钮固定在 col 3 / Add 在 col 4，
+       phone breakpoint 1-col grid 时把它们也都收回 col 1，否则 grid-column:3/4
+       会让 CSS Grid 隐式生成额外列，画面错位 */
+    .catgirl-panel-right .panel-tab-settings .settings-toolbar-row .settings-secondary-action.btn.sm,
+    .catgirl-panel-right .panel-tab-settings .settings-toolbar-row .btn.sm:not(.settings-secondary-action) {
+        grid-column: 1;
+    }
+
     .catgirl-panel-right .panel-tab-settings .personality-row {
         grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     }
@@ -6091,6 +6132,86 @@ margin-top: 10px;
 
     .catgirl-panel-right .panel-tab-settings .field-row-wrapper.personality-row > .personality-clear-action {
         grid-column: 2;
+    }
+}
+
+.catgirl-panel-right .panel-tab-settings .field-row-wrapper.setting-field-row {
+    grid-template-columns:
+        var(--settings-label-col)
+        minmax(260px, 1fr)
+        36px;
+    column-gap: var(--settings-column-gap);
+}
+
+.catgirl-panel-right .panel-tab-settings .field-row-wrapper.setting-field-row > .field-row {
+    grid-column: 2;
+}
+
+.catgirl-panel-right .panel-tab-settings .field-row-wrapper.setting-field-row > .setting-field-delete.btn.sm {
+    grid-column: 3;
+    justify-self: end;
+    align-self: center;
+    width: 36px;
+    min-width: 36px;
+    height: 36px;
+    padding: 0;
+    border-radius: 50%;
+    background: #ff4d55;
+    box-shadow: 0 6px 14px rgba(255, 82, 82, 0.14);
+}
+
+.catgirl-panel-right .panel-tab-settings .field-row-wrapper.setting-field-row > .setting-field-delete.btn.sm:hover:not(:disabled) {
+    background: #ff6269;
+    box-shadow: 0 8px 18px rgba(255, 82, 82, 0.22);
+    transform: translateY(-1px);
+}
+
+.catgirl-panel-right .panel-tab-settings .field-row-wrapper.setting-field-row > .setting-field-delete.btn.sm:active:not(:disabled) {
+    background: #f03f48;
+    box-shadow: 0 3px 8px rgba(255, 82, 82, 0.16);
+    transform: translateY(0);
+}
+
+.catgirl-panel-right .panel-tab-settings .field-row-wrapper.setting-field-row > .setting-field-delete.btn.sm .delete-icon {
+    width: 17px !important;
+    height: 17px !important;
+    margin: 0 !important;
+}
+
+@media (max-width: 1100px) {
+    .catgirl-panel-right .panel-tab-settings .field-row-wrapper.setting-field-row {
+        grid-template-columns:
+            var(--settings-label-col)
+            minmax(0, 1fr)
+            36px;
+    }
+
+    .catgirl-panel-right .panel-tab-settings .field-row-wrapper.setting-field-row > .field-row {
+        grid-column: 2;
+    }
+
+    .catgirl-panel-right .panel-tab-settings .field-row-wrapper.setting-field-row > .setting-field-delete.btn.sm {
+        grid-column: 3;
+        justify-self: start;
+    }
+}
+
+@media (max-width: 768px) {
+    .catgirl-panel-right .panel-tab-settings .field-row-wrapper.setting-field-row {
+        grid-template-columns: minmax(0, 1fr) 36px;
+    }
+
+    .catgirl-panel-right .panel-tab-settings .field-row-wrapper.setting-field-row > label {
+        grid-column: 1 / 3;
+    }
+
+    .catgirl-panel-right .panel-tab-settings .field-row-wrapper.setting-field-row > .field-row {
+        grid-column: 1;
+    }
+
+    .catgirl-panel-right .panel-tab-settings .field-row-wrapper.setting-field-row > .setting-field-delete.btn.sm {
+        grid-column: 2;
+        justify-self: start;
     }
 }
 
@@ -7151,6 +7272,832 @@ margin-top: 10px;
 [data-theme="dark"] .cards-container .tag {
     background: rgba(56, 189, 248, 0.16);
     color: #bae6fd;
+}
+
+/* ===================== AI 辅助生成（按钮 + 向导窗口） ===================== */
+
+.btn.sm.ai-assist {
+    background: linear-gradient(135deg, #40C5F1 0%, #6bdcff 100%);
+    color: #fff;
+    border: 1px solid transparent;
+    box-shadow: 0 8px 18px rgba(64, 197, 241, 0.2);
+    font-weight: 800;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    transition: transform 0.15s ease, box-shadow 0.15s ease, filter 0.15s ease;
+}
+
+.btn.sm.ai-assist:hover:not(:disabled) {
+    background: linear-gradient(135deg, #53d1f6 0%, #83e5ff 100%);
+    box-shadow: 0 10px 22px rgba(64, 197, 241, 0.28);
+    transform: translateY(-1px);
+}
+
+.btn.sm.ai-assist:active:not(:disabled) {
+    background: linear-gradient(135deg, #31b8e4 0%, #54cffa 100%);
+    transform: translateY(1px) scale(0.98);
+    filter: none;
+}
+
+.btn.sm.ai-assist .ai-assist-icon {
+    font-size: 13px;
+    line-height: 1;
+}
+
+/* ===================== Companion 侧边面板（替代旧 wizard） ===================== */
+
+/* 入口按钮上方已有 .btn.sm.ai-assist 样式，保留不动 */
+
+.card-companion-panel {
+    position: fixed;
+    top: 24px;
+    right: 24px;
+    width: 460px;
+    min-width: min(340px, calc(100vw - 16px));
+    max-width: calc(100vw - 32px);
+    height: min(720px, calc(100vh - 48px));
+    min-height: min(360px, calc(100vh - 16px));
+    max-height: calc(100vh - 16px);
+    background: linear-gradient(180deg, #ffffff 0%, #f8fcff 100%);
+    border: 2px solid #b3e5fc;
+    border-radius: 28px;
+    box-shadow: 0 18px 44px rgba(64, 197, 241, 0.24);
+    display: flex;
+    flex-direction: column;
+    z-index: 10100;
+    font-family: inherit;
+    overflow: hidden;
+    animation: cardCompanionWindowIn 0.22s ease-out;
+    transition: box-shadow 0.22s ease, background 0.22s ease, opacity 0.22s ease;
+    resize: both;
+}
+
+@keyframes cardCompanionWindowIn {
+    from { transform: translateY(10px) scale(0.98); opacity: 0; }
+    to { transform: translateY(0) scale(1); opacity: 1; }
+}
+
+@keyframes cardCompanionBallGlow {
+    0%,
+    100% {
+        box-shadow:
+            0 10px 24px rgba(64, 197, 241, 0.28),
+            0 0 8px rgba(68, 183, 254, 0.48);
+    }
+
+    50% {
+        box-shadow:
+            0 14px 30px rgba(64, 197, 241, 0.34),
+            0 0 18px rgba(68, 183, 254, 0.9);
+    }
+}
+
+.card-companion-panel.card-companion-minimized {
+    box-sizing: border-box;
+    min-width: 0;
+    max-width: none;
+    min-height: 0;
+    max-height: none;
+    border-radius: 50%;
+    background:
+        radial-gradient(circle at 28% 24%, rgba(255, 255, 255, 0.92) 0 12%, rgba(255, 255, 255, 0) 34%),
+        linear-gradient(135deg, rgba(224, 247, 255, 0.92), rgba(179, 229, 252, 0.82));
+    box-shadow:
+        0 10px 24px rgba(64, 197, 241, 0.28),
+        0 0 8px rgba(68, 183, 254, 0.48);
+    animation: cardCompanionBallGlow 2s ease-in-out infinite;
+    will-change: box-shadow;
+    isolation: isolate;
+    cursor: grab;
+    resize: none;
+    overflow: hidden;
+}
+
+.card-companion-panel.card-companion-minimized::before,
+.card-companion-panel.card-companion-minimized::after {
+    content: "";
+    position: absolute;
+    border-radius: 50%;
+    pointer-events: none;
+}
+
+.card-companion-panel.card-companion-minimized::before {
+    inset: 3px;
+    z-index: 2;
+    background:
+        radial-gradient(circle at 32% 22%, rgba(255, 255, 255, 0.7) 0 11%, rgba(255, 255, 255, 0) 30%),
+        radial-gradient(circle at 66% 76%, rgba(64, 197, 241, 0.2) 0 16%, rgba(64, 197, 241, 0) 38%);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.62);
+}
+
+.card-companion-panel.card-companion-minimized::after {
+    inset: 0;
+    z-index: 3;
+    border: 1px solid rgba(255, 255, 255, 0.7);
+    box-shadow: inset 0 -8px 14px rgba(64, 197, 241, 0.18);
+}
+
+@media (max-width: 640px) {
+    .card-companion-panel {
+        top: 8px;
+        right: 8px;
+        width: calc(100vw - 16px);
+        height: min(620px, calc(100vh - 16px));
+        max-width: calc(100vw - 16px);
+        border-radius: 22px;
+        resize: none;
+    }
+
+    .card-companion-panel.card-companion-minimized {
+        min-width: 0;
+        max-width: none;
+        min-height: 0;
+        max-height: none;
+        border-radius: 50%;
+    }
+}
+
+.card-companion-panel.card-companion-dragging {
+    user-select: none;
+    box-shadow: 0 22px 52px rgba(64, 197, 241, 0.3);
+    animation-play-state: paused;
+    will-change: left, top;
+    transition: none;
+}
+
+.card-companion-panel.card-companion-collapsing {
+    opacity: 0;
+    pointer-events: none;
+    border-radius: 50%;
+    transition:
+        left 0.22s ease,
+        top 0.22s ease,
+        width 0.22s ease,
+        height 0.22s ease,
+        border-radius 0.22s ease,
+        box-shadow 0.22s ease,
+        background 0.22s ease,
+        opacity 0.22s ease;
+}
+
+.card-companion-panel.card-companion-expanding {
+    pointer-events: none;
+    transition:
+        left 0.22s ease,
+        top 0.22s ease,
+        width 0.22s ease,
+        height 0.22s ease,
+        border-radius 0.22s ease,
+        box-shadow 0.22s ease,
+        background 0.22s ease,
+        opacity 0.22s ease;
+}
+
+.card-companion-panel.card-companion-minimized .card-companion-thread,
+.card-companion-panel.card-companion-minimized .card-companion-input-bar,
+.card-companion-panel.card-companion-minimized .card-companion-title,
+.card-companion-panel.card-companion-minimized .card-companion-header-paw,
+.card-companion-panel.card-companion-minimized .card-companion-close {
+    display: none;
+}
+
+.card-companion-panel.card-companion-minimized .card-companion-header {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    min-height: 100%;
+    padding: 0;
+    justify-content: center;
+    gap: 0;
+    border-bottom: none;
+    background: transparent;
+    cursor: grab;
+}
+
+.card-companion-panel.card-companion-minimized .card-companion-avatar {
+    position: relative;
+    z-index: 1;
+    box-sizing: border-box;
+    width: 56px;
+    height: 56px;
+    border-color: rgba(255, 255, 255, 0.9);
+    box-shadow: none;
+}
+
+.card-companion-panel.card-companion-minimized .card-companion-avatar:hover,
+.card-companion-panel.card-companion-minimized .card-companion-avatar:focus-visible {
+    transform: none;
+}
+
+.card-companion-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 76px;
+    padding: 12px 18px 11px;
+    border-bottom: 2px solid #d5f2ff;
+    background:
+        linear-gradient(135deg, rgba(224, 247, 255, 0.96), rgba(255, 255, 255, 0.98) 62%),
+        url('/static/icons/dropdown_item_hover_bg.png') center / cover no-repeat;
+    flex-shrink: 0;
+    cursor: grab;
+    touch-action: none;
+}
+
+.card-companion-panel.card-companion-dragging .card-companion-header {
+    cursor: grabbing;
+}
+
+.card-companion-avatar {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    overflow: hidden;
+    flex-shrink: 0;
+    background: linear-gradient(135deg, #e0f7ff, #b3e5fc);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px solid rgba(179, 229, 252, 0.95);
+    box-shadow: 0 6px 16px rgba(64, 197, 241, 0.2);
+    cursor: pointer;
+    transition: transform 0.15s, box-shadow 0.15s, border-color 0.15s;
+}
+
+.card-companion-avatar:hover,
+.card-companion-avatar:focus-visible {
+    transform: translateY(-1px);
+    border-color: #40C5F1;
+    box-shadow: 0 8px 18px rgba(64, 197, 241, 0.28);
+}
+
+.card-companion-avatar:focus-visible {
+    outline: 3px solid rgba(64, 197, 241, 0.28);
+    outline-offset: 3px;
+}
+
+.card-companion-avatar img {
+    width: 130%;
+    height: 130%;
+    max-width: none;
+    flex-shrink: 0;
+    object-fit: cover;
+    object-position: 50% 8%;
+    transform: translateY(3px) scale(1.02);
+    transform-origin: center center;
+}
+
+.card-companion-avatar-fallback {
+    color: #40C5F1;
+    font-weight: 700;
+    font-size: 13px;
+    letter-spacing: 0.5px;
+}
+
+.card-companion-title {
+    flex: 1;
+    min-width: 0;
+}
+
+.card-companion-name {
+    font-size: 22px;
+    font-weight: 800;
+    color: #263241;
+    line-height: 1.2;
+}
+
+.card-companion-sub {
+    font-size: 14px;
+    font-weight: 700;
+    color: #6f7e8c;
+    margin-top: 5px;
+}
+
+.card-companion-header-paw {
+    width: 30px;
+    height: 30px;
+    object-fit: contain;
+    opacity: 0.72;
+    flex-shrink: 0;
+}
+
+.card-companion-close {
+    background: transparent;
+    border: none;
+    width: 34px;
+    height: 34px;
+    border-radius: 999px;
+    color: #6f7e8c;
+    cursor: pointer;
+    font-size: 22px;
+    font-weight: 800;
+    line-height: 1;
+    transition: background 0.15s, color 0.15s;
+    flex-shrink: 0;
+}
+
+.card-companion-close {
+    font-size: 28px;
+}
+
+.card-companion-close:hover {
+    background: rgba(64, 197, 241, 0.16);
+    color: #27b8ea;
+}
+
+.card-companion-thread {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: 18px 20px 22px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    background:
+        radial-gradient(circle at 18px 18px, rgba(179, 229, 252, 0.24) 0 2px, transparent 3px) 0 0 / 34px 34px,
+        linear-gradient(180deg, #ffffff 0%, #f5fcff 100%);
+    min-height: 0;
+}
+
+.card-companion-thread::-webkit-scrollbar,
+.card-companion-bubble-custom-input::-webkit-scrollbar {
+    width: 6px;
+}
+
+.card-companion-thread::-webkit-scrollbar-track,
+.card-companion-bubble-custom-input::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.card-companion-thread::-webkit-scrollbar-thumb,
+.card-companion-bubble-custom-input::-webkit-scrollbar-thumb {
+    background-color: rgba(64, 197, 241, 0.34);
+    border-radius: 999px;
+}
+
+.card-companion-input {
+    scrollbar-width: none;
+}
+
+.card-companion-input::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+}
+
+.card-companion-bubble {
+    max-width: 90%;
+    padding: 10px 14px;
+    border-radius: 20px;
+    font-size: 13.5px;
+    line-height: 1.55;
+    word-wrap: break-word;
+    animation: cardCompanionBubbleIn 0.18s ease-out;
+    box-shadow: 0 6px 16px rgba(64, 197, 241, 0.09);
+}
+
+@keyframes cardCompanionBubbleIn {
+    from { transform: translateY(4px); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+}
+
+.card-companion-bubble-assistant {
+    align-self: flex-start;
+    background: #fff;
+    color: #263241;
+    border: 2px solid #d5f2ff;
+    border-bottom-left-radius: 8px;
+}
+
+.card-companion-bubble-user {
+    align-self: flex-end;
+    background: linear-gradient(135deg, #40C5F1, #6bdcff);
+    color: #fff;
+    border: 2px solid rgba(255, 255, 255, 0.75);
+    border-bottom-right-radius: 8px;
+    box-shadow: 0 8px 18px rgba(64, 197, 241, 0.18);
+}
+
+.card-companion-bubble-system {
+    align-self: center;
+    max-width: 92%;
+    font-size: 12px;
+    font-weight: 700;
+    color: #6f7e8c;
+    background: rgba(224, 247, 255, 0.6);
+    padding: 4px 12px;
+    border: 1px solid rgba(179, 229, 252, 0.8);
+    border-radius: 999px;
+    text-align: center;
+    line-height: 1.4;
+}
+
+.card-companion-bubble-system.card-companion-error {
+    color: #b91c1c;
+    background: rgba(254, 226, 226, 0.6);
+    border: 1px solid rgba(252, 165, 165, 0.6);
+    padding: 4px 10px;
+}
+
+.card-companion-bubble-prefix {
+    font-size: 10px;
+    font-weight: 600;
+    color: #27b8ea;
+    margin-bottom: 4px;
+    letter-spacing: 0.3px;
+}
+
+.card-companion-bubble-body {
+    /* white-space: pre-wrap set inline via JS */
+}
+
+.card-companion-bubble-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-top: 8px;
+}
+
+.card-companion-chip {
+    background: #f0fbff;
+    color: #257da5;
+    border: 2px solid #b3e5fc;
+    border-radius: 999px;
+    padding: 4px 12px;
+    font-size: 11.5px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+    font-family: inherit;
+}
+
+.card-companion-chip:hover:not(:disabled) {
+    background: #e0f7ff;
+    border-color: #40C5F1;
+    color: #1686c2;
+}
+
+.card-companion-chip:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.card-companion-bubble-custom {
+    margin-top: 6px;
+}
+
+.card-companion-bubble-custom-input {
+    width: 100%;
+    padding: 6px 12px;
+    border: 2px solid #b3e5fc;
+    border-radius: 999px;
+    font-size: 12px;
+    box-sizing: border-box;
+    font-family: inherit;
+    background: #fff;
+    color: #257da5;
+}
+
+.card-companion-bubble-custom-input:focus {
+    outline: none;
+    border-color: #40C5F1;
+    background: #fff;
+    box-shadow: 0 0 0 3px rgba(64, 197, 241, 0.16);
+}
+
+.card-companion-typing-dot {
+    display: inline-block;
+    width: 5px;
+    height: 5px;
+    margin: 0 1px;
+    border-radius: 50%;
+    background: #40C5F1;
+    animation: cardCompanionDot 1s infinite ease-in-out;
+}
+
+.card-companion-typing-dot:nth-child(2) { animation-delay: 0.15s; }
+.card-companion-typing-dot:nth-child(3) { animation-delay: 0.3s; }
+
+@keyframes cardCompanionDot {
+    0%, 80%, 100% { transform: scale(0.7); opacity: 0.5; }
+    40% { transform: scale(1); opacity: 1; }
+}
+
+.card-companion-input-bar {
+    border-top: 2px solid #d5f2ff;
+    padding: 16px 18px 18px;
+    background: linear-gradient(180deg, #f8fcff 0%, #ffffff 100%);
+    flex-shrink: 0;
+}
+
+.card-companion-input-row {
+    display: flex;
+    gap: 12px;
+    align-items: flex-end;
+}
+
+.card-companion-input {
+    flex: 1;
+    min-height: 46px;
+    max-height: 120px;
+    padding: 11px 16px;
+    border: 2px solid #b3e5fc;
+    border-radius: 999px;
+    font-size: 15px;
+    box-sizing: border-box;
+    resize: none;
+    font-family: inherit;
+    line-height: 1.5;
+    overflow-y: auto;
+    color: #257da5;
+    background: #fff;
+}
+
+.card-companion-input:focus {
+    outline: none;
+    border-color: #40C5F1;
+    box-shadow: 0 0 0 3px rgba(64, 197, 241, 0.16);
+}
+
+.card-companion-input::placeholder {
+    color: #8fbfd1;
+}
+
+.card-companion-send {
+    background: linear-gradient(135deg, #40C5F1, #6bdcff);
+    color: #fff;
+    border: none;
+    border-radius: 999px;
+    padding: 0 22px;
+    height: 46px;
+    font-size: 16px;
+    font-weight: 800;
+    cursor: pointer;
+    transition: background 0.15s, transform 0.15s, box-shadow 0.15s;
+    flex-shrink: 0;
+    box-shadow: 0 8px 18px rgba(64, 197, 241, 0.2);
+}
+
+.card-companion-send:hover:not(:disabled) {
+    background: linear-gradient(135deg, #53d1f6, #83e5ff);
+    transform: translateY(-1px);
+    box-shadow: 0 10px 22px rgba(64, 197, 241, 0.28);
+}
+
+.card-companion-send:disabled {
+    background: #9fb9c5;
+    cursor: not-allowed;
+    box-shadow: none;
+}
+
+.card-companion-quick-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.card-companion-quick-chip {
+    background: #f0fbff;
+    color: #1686c2;
+    border: 2px solid #d5f2ff;
+    border-radius: 999px;
+    padding: 5px 12px;
+    font-size: 12px;
+    font-weight: 800;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, transform 0.15s;
+    font-family: inherit;
+}
+
+.card-companion-quick-chip:hover:not(:disabled) {
+    background: #e0f7ff;
+    border-color: #40C5F1;
+    transform: translateY(-1px);
+}
+
+.card-companion-quick-chip:disabled,
+.card-companion-quick-chip.card-companion-quick-chip-disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+/* ----- Dark mode ----- */
+[data-theme="dark"] .card-companion-panel {
+    background: linear-gradient(180deg, #0f172a 0%, #101d2a 100%);
+    border-color: rgba(125, 211, 252, 0.32);
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.52);
+}
+
+[data-theme="dark"] .card-companion-panel.card-companion-dragging {
+    box-shadow: 0 22px 56px rgba(0, 0, 0, 0.62);
+}
+
+[data-theme="dark"] .card-companion-header {
+    background:
+        linear-gradient(135deg, rgba(14, 116, 144, 0.24), rgba(15, 23, 42, 0.98) 62%),
+        url('/static/icons/dropdown_item_hover_bg.png') center / cover no-repeat;
+    border-bottom-color: rgba(125, 211, 252, 0.2);
+}
+
+[data-theme="dark"] .card-companion-name { color: #e5e7eb; }
+[data-theme="dark"] .card-companion-sub { color: #a6dcef; }
+
+[data-theme="dark"] .card-companion-avatar {
+    background: linear-gradient(135deg, rgba(14, 116, 144, 0.45), rgba(56, 189, 248, 0.24));
+    border-color: rgba(125, 211, 252, 0.38);
+}
+
+[data-theme="dark"] .card-companion-header-paw {
+    opacity: 0.52;
+}
+
+[data-theme="dark"] .card-companion-close {
+    color: #a6dcef;
+}
+
+[data-theme="dark"] .card-companion-close:hover {
+    background: rgba(56, 189, 248, 0.18);
+    color: #e0f7ff;
+}
+
+[data-theme="dark"] .card-companion-thread {
+    background:
+        radial-gradient(circle at 18px 18px, rgba(56, 189, 248, 0.08) 0 2px, transparent 3px) 0 0 / 34px 34px,
+        linear-gradient(180deg, #111827 0%, #101d2a 100%);
+}
+
+[data-theme="dark"] .card-companion-bubble-assistant {
+    background: #1f2937;
+    color: #e5e7eb;
+    border-color: rgba(125, 211, 252, 0.28);
+}
+
+[data-theme="dark"] .card-companion-bubble-system {
+    color: #a6dcef;
+    background: rgba(14, 116, 144, 0.18);
+    border-color: rgba(125, 211, 252, 0.22);
+}
+
+[data-theme="dark"] .card-companion-bubble-system.card-companion-error {
+    color: #fecaca;
+    background: rgba(127, 29, 29, 0.35);
+    border-color: rgba(239, 68, 68, 0.45);
+}
+
+[data-theme="dark"] .card-companion-bubble-prefix {
+    color: #7dd3fc;
+}
+
+[data-theme="dark"] .card-companion-chip {
+    background: rgba(14, 116, 144, 0.16);
+    color: #c7f2ff;
+    border-color: rgba(125, 211, 252, 0.28);
+}
+
+[data-theme="dark"] .card-companion-chip:hover:not(:disabled) {
+    background: rgba(56, 189, 248, 0.22);
+    color: #e0f7ff;
+    border-color: #38bdf8;
+}
+
+[data-theme="dark"] .card-companion-bubble-custom-input {
+    background: #0f172a;
+    border-color: rgba(125, 211, 252, 0.28);
+    color: #e0f7ff;
+}
+
+[data-theme="dark"] .card-companion-bubble-custom-input:focus {
+    background: #1e293b;
+    border-color: #38bdf8;
+}
+
+[data-theme="dark"] .card-companion-input-bar {
+    background: linear-gradient(180deg, #101d2a 0%, #0f172a 100%);
+    border-top-color: rgba(125, 211, 252, 0.2);
+}
+
+[data-theme="dark"] .card-companion-input {
+    background: #0f172a;
+    border-color: rgba(125, 211, 252, 0.28);
+    color: #e0f7ff;
+}
+
+[data-theme="dark"] .card-companion-input:focus {
+    border-color: #38bdf8;
+}
+
+[data-theme="dark"] .card-companion-input::placeholder {
+    color: #6f95a5;
+}
+
+[data-theme="dark"] .card-companion-quick-chip {
+    background: rgba(14, 116, 144, 0.16);
+    color: #c7f2ff;
+    border-color: rgba(125, 211, 252, 0.28);
+}
+
+[data-theme="dark"] .card-companion-quick-chip:hover:not(:disabled) {
+    background: rgba(56, 189, 248, 0.22);
+    border-color: #38bdf8;
+}
+
+/* companion 改了某个字段后，该字段所在的 row 闪一下绿色渐变 1.5s，
+   配合 JS 里的 scrollIntoView({block:'center'}) + textarea.focus() 让用户
+   眼睛能直接落到改动位置。
+   动画分三段：
+     0%   -> 透明
+     15%  -> 强亮 + 加粗 outline + 浅绿背景（用户注意力 hook）
+     55%  -> 衰减但仍可见，配合左右移动的渐变扫光
+     100% -> 全部消失，回归原状
+   `position: relative` 给 ::after 一个定位锚点，::after 是那条沿水平方向
+   扫过去的高亮带，强化"AI 刚改了这里"的视觉信号。 */
+.field-row-wrapper.card-assist-row-flash {
+    animation: cardAssistRowFlash 1.5s cubic-bezier(0.22, 1, 0.36, 1);
+    border-radius: 8px;
+    position: relative;
+    z-index: 1;
+}
+
+.field-row-wrapper.card-assist-row-flash::after {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    background: linear-gradient(
+        90deg,
+        rgba(34, 197, 94, 0)   0%,
+        rgba(34, 197, 94, 0.32) 35%,
+        rgba(74, 222, 128, 0.42) 50%,
+        rgba(34, 197, 94, 0.32) 65%,
+        rgba(34, 197, 94, 0)   100%
+    );
+    background-size: 220% 100%;
+    background-position: 110% 0;
+    animation: cardAssistRowFlashSweep 1.5s cubic-bezier(0.22, 1, 0.36, 1);
+    opacity: 0;
+}
+
+@keyframes cardAssistRowFlash {
+    0%   { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0);    background-color: transparent; }
+    15%  { box-shadow: 0 0 0 5px rgba(34, 197, 94, 0.65); background-color: rgba(34, 197, 94, 0.16); }
+    55%  { box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.35); background-color: rgba(34, 197, 94, 0.08); }
+    100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0);    background-color: transparent; }
+}
+
+@keyframes cardAssistRowFlashSweep {
+    0%   { background-position: 110% 0; opacity: 0; }
+    20%  { opacity: 0.95; }
+    80%  { opacity: 0.55; }
+    100% { background-position: -110% 0; opacity: 0; }
+}
+
+[data-theme="dark"] .field-row-wrapper.card-assist-row-flash {
+    animation-name: cardAssistRowFlashDark;
+}
+
+[data-theme="dark"] .field-row-wrapper.card-assist-row-flash::after {
+    background: linear-gradient(
+        90deg,
+        rgba(74, 222, 128, 0)    0%,
+        rgba(74, 222, 128, 0.4)  35%,
+        rgba(134, 239, 172, 0.55) 50%,
+        rgba(74, 222, 128, 0.4)  65%,
+        rgba(74, 222, 128, 0)    100%
+    );
+    background-size: 220% 100%;
+    background-position: 110% 0;
+}
+
+@keyframes cardAssistRowFlashDark {
+    0%   { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0);    background-color: transparent; }
+    15%  { box-shadow: 0 0 0 5px rgba(74, 222, 128, 0.7); background-color: rgba(74, 222, 128, 0.22); }
+    55%  { box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.4); background-color: rgba(74, 222, 128, 0.12); }
+    100% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0);    background-color: transparent; }
+}
+
+/* ===== prefers-reduced-motion：Companion 面板的全部入场 / 循环 / 收展 / 闪烁动画 ===== */
+/* 系统层「减少动态效果」时，把陪伴面板新增的所有动画与几何过渡静音：
+   窗口入场 cardCompanionWindowIn、最小化呼吸光 cardCompanionBallGlow、最小化↔展开的
+   收/展几何过渡（collapsing / expanding 的 left/top/width/height/...）、气泡入场
+   cardCompanionBubbleIn、typing dots cardCompanionDot、字段闪烁 cardAssistRowFlash*。
+   注：收/展的最终态切换由 JS 的 setTimeout(260) 收尾（见 toggle 最小化逻辑 ~10381/10402），
+   不依赖 transitionend，所以这里把 transition 干掉后面板会直接「瞬移就位」而非卡住。
+   各元素基础态 opacity 默认 1、无 transform，animation:none 后即回到可见终态，无需额外复位。
+   与本文件其它 prefers-reduced-motion 兜底（@1744 / @6415）保持同一套无动画语义。 */
+@media (prefers-reduced-motion: reduce) {
+    .card-companion-panel,
+    .card-companion-panel.card-companion-minimized,
+    .card-companion-panel.card-companion-dragging,
+    .card-companion-panel.card-companion-collapsing,
+    .card-companion-panel.card-companion-expanding,
+    .card-companion-bubble,
+    .card-companion-typing-dot,
+    .field-row-wrapper.card-assist-row-flash,
+    .field-row-wrapper.card-assist-row-flash::after {
+        animation: none !important;
+        transition: none !important;
+    }
 }
 
 [data-theme="dark"] .catgirl-panel-wrapper.card-only.phase-expand .catgirl-panel-left::after {

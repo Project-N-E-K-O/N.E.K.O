@@ -107,10 +107,10 @@ def test_minimized_restore_uses_previous_real_surface_mode():
 
     assert "var lastRestorableChatSurfaceMode = 'compact';" in source
     assert "var CHAT_SURFACE_MODE_SEQUENCE = ['compact', 'minimized'];" in source
-    assert "var COMPACT_CHAT_STATES = ['input'];" in source
-    assert "compactChatState: 'input'," in source
-    assert "return COMPACT_CHAT_STATES.indexOf(mode) >= 0 ? mode : 'input';" in source
-    assert "state.compactChatState = 'input';" in source
+    assert "var COMPACT_CHAT_STATES = ['default', 'options', 'input'];" in source
+    assert "compactChatState: 'default'," in source
+    assert "return COMPACT_CHAT_STATES.indexOf(mode) >= 0 ? mode : 'default';" in source
+    assert "state.compactChatState = 'default';" in source
 
     next_mode_block = source.split("function getNextChatSurfaceMode(mode)", 1)[1].split(
         "function resetCompactChatState()",
@@ -233,7 +233,8 @@ def test_compact_surface_resize_handles_keep_width_in_dom_geometry_contract():
     assert "if (isElectronChatWindow() && detail && detail.screenRect)" in script
     assert "compactSurfaceDesktopResizeActive = phase !== 'end';" in script
     assert "if (compactSurfaceDesktopResizeActive && isElectronChatWindow())" in script
-    assert "if (!compactSurfaceDesktopResizeActive) {\n                compactSurfaceAnchorLocked = false;" in script
+    assert "function handleDesktopCompactLayoutChange(layout)" in script
+    assert "if (baseAnchorChanged && !compactSurfaceDesktopResizeActive)" in script
     assert "var compactSurfaceResizeSession = null;" in script
     assert "surfaceScreenRect: surfaceScreenRect" in script
     assert "function getCompactSurfaceDesktopWindowX()" in script
@@ -333,10 +334,12 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     assert '.compact-input-tool-fan[data-compact-input-tool-fan-open="true"]' in styles
     assert "visibility: visible;" in styles
     assert (
-        '.compact-chat-surface-frame[data-compact-chat-state="input"] '
+        '.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] '
         '.compact-input-tool-toggle:hover'
     ) in styles
     assert 'padding: 5px 62px 5px 20px;' in styles
+    assert '.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"]:not([data-compact-chat-state="input"])' in styles
+    assert 'padding-right: 62px;' in styles
     assert 'right: 9px;' in styles
     assert "transform: none;" in styles
     assert '.compact-input-tool-item[data-compact-tool-wheel-slot="hidden"]' in styles
@@ -403,6 +406,22 @@ def test_compact_choice_hit_contract_uses_real_options_only():
     assert geometry_block.index("if (item === 'choice')") < geometry_block.index("var ownRect = normalizeCompactDomRect")
 
 
+def test_desktop_compact_choice_placement_uses_surface_anchor_without_frame_polling():
+    app_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
+
+    placement_effect = app_source.split("if (!compactChoiceLayerOpen) return;", 1)[1].split(
+        "const requestCompactChatState = useCallback",
+        1,
+    )[0]
+
+    assert "const shellNode = compactInputShellRef.current;" in placement_effect
+    assert "const nextShellNode = compactInputShellRef.current;" in placement_effect
+    assert "appShellRef.current" not in placement_effect
+    assert "window.addEventListener('neko:desktop-compact-layout-change', schedulePlacementUpdate);" in placement_effect
+    assert "requestAnimationFrame(trackPlacement)" not in placement_effect
+    assert "const trackPlacement = () =>" not in placement_effect
+
+
 def test_desktop_compact_history_hit_regions_are_clipped_to_visible_parent():
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
@@ -417,7 +436,68 @@ def test_desktop_compact_history_hit_regions_are_clipped_to_visible_parent():
     assert "if (!clippedRect) return null;" in composite_block
     assert "visualRect: clippedRect" in composite_block
     assert "hitRect: clippedRect" in composite_block
-    assert "nativeRect: clippedRect" in composite_block
+    assert "nativeRect: kind === 'history' ? null : clippedRect" in composite_block
+    assert "id: 'history:scrollbar'" in composite_block
+    assert "nativeRect: null" in composite_block
+
+
+def test_compact_geometry_snapshot_separates_base_surface_from_extra_islands():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    assert "function isCompactSurfaceBaseAnchorKind(kind)" in script
+    assert "return kind === 'surfaceShell' || kind === 'capsule' || kind === 'input';" in script
+    assert "function getCompactSurfaceGeometryRole(kind)" in script
+    assert "if (kind === 'dragHandle') return 'baseHit';" in script
+    assert "return 'extraIsland';" in script
+    assert "item.geometryRole = getCompactSurfaceGeometryRole(item.kind);" in script
+
+    snapshot_block = script.split("function getCompactInteractionGeometrySnapshot()", 1)[1].split(
+        "function syncCompactInteractionGeometry()",
+        1,
+    )[0]
+
+    assert "var baseSurfaceItems = surfaceItems.filter(function (item) {" in snapshot_block
+    assert "return item && item.geometryRole === 'baseAnchor';" in snapshot_block
+    assert "var extraIslandItems = surfaceItems.filter(function (item) {" in snapshot_block
+    assert "return item && item.geometryRole === 'extraIsland';" in snapshot_block
+    assert "baseSurfaceItems: baseSurfaceItems" in snapshot_block
+    assert "baseSurfaceRect: unionCompactRects(baseSurfaceRects)" in snapshot_block
+    assert "baseSurfaceNativeRects:" in snapshot_block
+    assert "baseSurfaceHitRects:" in snapshot_block
+    assert "extraIslandItems: extraIslandItems" in snapshot_block
+    assert "extraIslandNativeRects:" in snapshot_block
+    assert "extraIslandHitRects:" in snapshot_block
+
+
+def test_desktop_compact_layout_change_resets_anchor_only_when_base_surface_changes():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    assert "var compactDesktopSurfaceAnchorSnapshot = '';" in script
+    assert "function serializeCompactSurfaceRectSnapshot(rect)" in script
+    assert "function getCompactDesktopLayoutAnchorSnapshot(layout)" in script
+    assert "return 'version:' + Math.round(anchorVersion);" in script
+    assert "var screenSnapshot = serializeCompactSurfaceRectSnapshot(layout.surfaceScreenRect);" in script
+    assert "if (screenSnapshot) return 'screen:' + screenSnapshot;" in script
+
+    handler_block = script.split("function handleDesktopCompactLayoutChange(layout)", 1)[1].split(
+        "function normalizeCompactDesktopWorkArea(raw)",
+        1,
+    )[0]
+    listener_block = script.split("window.addEventListener('neko:desktop-compact-layout-change'", 1)[1].split(
+        "window.addEventListener('neko:desktop-avatar-bounds-change'",
+        1,
+    )[0]
+
+    assert "var nextAnchorSnapshot = getCompactDesktopLayoutAnchorSnapshot(layout);" in handler_block
+    assert "nextAnchorSnapshot !== compactDesktopSurfaceAnchorSnapshot" in handler_block
+    assert "compactDesktopSurfaceAnchorSnapshot = nextAnchorSnapshot;" in handler_block
+    assert "if (baseAnchorChanged && !compactSurfaceDesktopResizeActive)" in handler_block
+    assert "compactSurfaceAnchorLocked = false;" in handler_block
+    assert "compactSurfaceAnchorSnapshot = '';" in handler_block
+    assert "scheduleCompactMinimizeBallTracking();" in handler_block
+    assert "var layout = event && event.detail ? event.detail : window.__nekoDesktopCompactLayout;" in listener_block
+    assert "handleDesktopCompactLayoutChange(layout || null);" in listener_block
+    assert "compactSurfaceAnchorSnapshot = '';" not in listener_block
 
 
 def test_electron_compact_chat_root_mask_does_not_clip_history_layer():

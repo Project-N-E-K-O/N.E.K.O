@@ -1133,3 +1133,178 @@ def test_character_card_manager_panel_close_recreates_live2d_preview_context(
         for entry in state["consoleErrors"]
     )
     assert not [entry for entry in state["messages"] if entry["type"] == "error"]
+
+
+@pytest.mark.frontend
+def test_character_card_manager_card_assist_avatar_toggles_companion(
+    mock_page: Page,
+    running_server: str,
+):
+    _open_character_card_manager(mock_page, running_server)
+
+    state = mock_page.evaluate(
+        """
+        async () => {
+            if (window._cardCompanion) {
+                _companionTeardown(window._cardCompanion);
+                _companionDestroy(window._cardCompanion);
+                window._cardCompanion = null;
+            }
+
+            const form = document.createElement('form');
+            form.id = 'catgirl-form-card-assist-regression';
+            const field = document.createElement('textarea');
+            field.name = 'Personality';
+            form.appendChild(field);
+            document.body.appendChild(form);
+
+            openCardAssistCompanion(form, 'RegressionCard', false);
+            const panel = document.querySelector('.card-companion-panel');
+            const avatar = panel ? panel.querySelector('.card-companion-avatar') : null;
+            const avatarImg = avatar ? avatar.querySelector('img') : null;
+            const minimize = panel ? panel.querySelector('.card-companion-minimize') : null;
+            const avatarImgStyle = avatarImg ? window.getComputedStyle(avatarImg) : null;
+            const avatarImgObjectPosition = avatarImgStyle ? avatarImgStyle.objectPosition : null;
+            const avatarImgTransform = avatarImgStyle ? avatarImgStyle.transform : null;
+            const panelTransitionBeforeCollapse = panel ? window.getComputedStyle(panel).transitionProperty : null;
+            if (panel) panel.classList.add('card-companion-dragging');
+            const draggingTransition = panel ? window.getComputedStyle(panel).transitionProperty : null;
+            if (panel) panel.classList.remove('card-companion-dragging');
+
+            const before = panel ? panel.classList.contains('card-companion-minimized') : null;
+            const avatarRectBefore = avatar ? avatar.getBoundingClientRect() : null;
+            if (avatar) avatar.click();
+            const collapsingRightAfterClick = panel
+                ? panel.classList.contains('card-companion-collapsing')
+                : null;
+            const collapsingTransition = panel ? window.getComputedStyle(panel).transitionProperty : null;
+            const avatarRectDuringCollapse = avatar ? avatar.getBoundingClientRect() : null;
+            await new Promise(resolve => setTimeout(resolve, 420));
+            const afterFirstClick = panel ? panel.classList.contains('card-companion-minimized') : null;
+            const ariaAfterFirstClick = avatar ? avatar.getAttribute('aria-expanded') : null;
+            const minimizedRect = panel ? panel.getBoundingClientRect() : null;
+            const minimizedBorderRadius = panel ? window.getComputedStyle(panel).borderRadius : null;
+            const minimizedAnimationName = panel ? window.getComputedStyle(panel).animationName : null;
+            const titleDisplayWhenMinimized = panel
+                ? window.getComputedStyle(panel.querySelector('.card-companion-title')).display
+                : null;
+            const closeDisplayWhenMinimized = panel
+                ? window.getComputedStyle(panel.querySelector('.card-companion-close')).display
+                : null;
+            const dragStartX = minimizedRect ? minimizedRect.left + minimizedRect.width / 2 : 0;
+            const dragStartY = minimizedRect ? minimizedRect.top + minimizedRect.height / 2 : 0;
+            if (avatar) {
+                avatar.dispatchEvent(new PointerEvent('pointerdown', {
+                    bubbles: true,
+                    cancelable: true,
+                    pointerId: 17,
+                    button: 0,
+                    clientX: dragStartX,
+                    clientY: dragStartY
+                }));
+                window.dispatchEvent(new PointerEvent('pointermove', {
+                    bubbles: true,
+                    cancelable: true,
+                    pointerId: 17,
+                    clientX: dragStartX - 34,
+                    clientY: dragStartY + 22
+                }));
+                await new Promise(resolve => setTimeout(resolve, 260));
+                window.dispatchEvent(new PointerEvent('pointerup', {
+                    bubbles: true,
+                    cancelable: true,
+                    pointerId: 17,
+                    clientX: dragStartX - 34,
+                    clientY: dragStartY + 22
+                }));
+                avatar.click();
+            }
+            await new Promise(resolve => setTimeout(resolve, 40));
+            const afterMinimizedDrag = panel ? panel.classList.contains('card-companion-minimized') : null;
+            const minimizedRectAfterDrag = panel ? panel.getBoundingClientRect() : null;
+            const transformAfterMinimizedDrag = panel ? window.getComputedStyle(panel).transform : null;
+            if (window._cardCompanion) {
+                _companionSetMinimized(window._cardCompanion, false);
+            }
+            await new Promise(resolve => setTimeout(resolve, 420));
+            const afterSecondClick = panel ? panel.classList.contains('card-companion-minimized') : null;
+            const ariaAfterSecondClick = avatar ? avatar.getAttribute('aria-expanded') : null;
+
+            if (window._cardCompanion) {
+                _companionTeardown(window._cardCompanion);
+                _companionDestroy(window._cardCompanion);
+                window._cardCompanion = null;
+            }
+            form.remove();
+
+            return {
+                hasPanel: !!panel,
+                hasAvatar: !!avatar,
+                hasMinimize: !!minimize,
+                panelTransitionBeforeCollapse,
+                draggingTransition,
+                collapsingTransition,
+                before,
+                afterFirstClick,
+                afterSecondClick,
+                collapsingRightAfterClick,
+                avatarLeftBefore: avatarRectBefore ? Math.round(avatarRectBefore.left) : null,
+                avatarTopBefore: avatarRectBefore ? Math.round(avatarRectBefore.top) : null,
+                avatarWidthBefore: avatarRectBefore ? Math.round(avatarRectBefore.width) : null,
+                avatarHeightBefore: avatarRectBefore ? Math.round(avatarRectBefore.height) : null,
+                avatarWidthDuringCollapse: avatarRectDuringCollapse ? Math.round(avatarRectDuringCollapse.width) : null,
+                avatarHeightDuringCollapse: avatarRectDuringCollapse ? Math.round(avatarRectDuringCollapse.height) : null,
+                minimizedLeft: minimizedRect ? Math.round(minimizedRect.left) : null,
+                minimizedTop: minimizedRect ? Math.round(minimizedRect.top) : null,
+                minimizedWidth: minimizedRect ? Math.round(minimizedRect.width) : null,
+                minimizedHeight: minimizedRect ? Math.round(minimizedRect.height) : null,
+                minimizedBorderRadius,
+                minimizedAnimationName,
+                afterMinimizedDrag,
+                transformAfterMinimizedDrag,
+                minimizedTopAfterDrag: minimizedRectAfterDrag ? Math.round(minimizedRectAfterDrag.top) : null,
+                titleDisplayWhenMinimized,
+                closeDisplayWhenMinimized,
+                avatarSrc: avatarImg ? avatarImg.getAttribute('src') : null,
+                avatarImgObjectPosition,
+                avatarImgTransform,
+                avatarRole: avatar ? avatar.getAttribute('role') : null,
+                avatarTabIndex: avatar ? avatar.getAttribute('tabindex') : null,
+                ariaAfterFirstClick,
+                ariaAfterSecondClick
+            };
+        }
+        """
+    )
+
+    assert state["hasPanel"] is True
+    assert state["hasAvatar"] is True
+    assert state["hasMinimize"] is False
+    assert "width" not in state["panelTransitionBeforeCollapse"].split(", ")
+    assert "height" not in state["panelTransitionBeforeCollapse"].split(", ")
+    assert state["draggingTransition"] == "none"
+    assert "width" in state["collapsingTransition"].split(", ")
+    assert "height" in state["collapsingTransition"].split(", ")
+    assert state["before"] is False
+    assert state["collapsingRightAfterClick"] is True
+    assert state["afterFirstClick"] is True
+    assert state["afterSecondClick"] is False
+    assert abs(state["avatarWidthDuringCollapse"] - state["avatarWidthBefore"]) <= 1
+    assert abs(state["avatarHeightDuringCollapse"] - state["avatarHeightBefore"]) <= 1
+    assert abs(state["minimizedLeft"] - state["avatarLeftBefore"]) <= 1
+    assert abs(state["minimizedTop"] - state["avatarTopBefore"]) <= 1
+    assert abs(state["minimizedWidth"] - state["avatarWidthBefore"]) <= 1
+    assert abs(state["minimizedHeight"] - state["avatarHeightBefore"]) <= 1
+    assert state["minimizedBorderRadius"] == "50%"
+    assert state["minimizedAnimationName"] == "cardCompanionBallGlow"
+    assert state["afterMinimizedDrag"] is True
+    assert state["transformAfterMinimizedDrag"] == "none"
+    assert state["titleDisplayWhenMinimized"] == "none"
+    assert state["closeDisplayWhenMinimized"] == "none"
+    assert state["avatarSrc"].endswith("/api/characters/catgirl/YUI/card-face")
+    assert state["avatarImgObjectPosition"] == "50% 8%"
+    assert state["avatarImgTransform"] == "matrix(1.02, 0, 0, 1.02, 0, 3)"
+    assert state["avatarRole"] == "button"
+    assert state["avatarTabIndex"] == "0"
+    assert state["ariaAfterFirstClick"] == "false"
+    assert state["ariaAfterSecondClick"] == "true"

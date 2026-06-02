@@ -2176,7 +2176,6 @@
                     var notifMsg = typeof response.text === 'string' ? response.text : '';
                     if (notifMsg) {
                         if (typeof window.setFloatingAgentStatus === 'function') window.setFloatingAgentStatus(notifMsg, response.status || 'completed');
-                        if (typeof window.maybeShowAgentQuotaExceededModal === 'function') window.maybeShowAgentQuotaExceededModal(notifMsg);
                         if (typeof window.maybeShowContentFilterModal === 'function') window.maybeShowContentFilterModal(notifMsg);
                         if (response.error_message && typeof window.maybeShowContentFilterModal === 'function') {
                             window.maybeShowContentFilterModal(response.error_message);
@@ -2254,7 +2253,6 @@
                         if (task && task.status === 'failed') {
                             var errMsg = task.error || task.reason || '';
                             if (errMsg) {
-                                if (typeof window.maybeShowAgentQuotaExceededModal === 'function') window.maybeShowAgentQuotaExceededModal(errMsg);
                                 if (typeof window.maybeShowContentFilterModal === 'function') window.maybeShowContentFilterModal(errMsg);
                             }
                         }

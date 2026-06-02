@@ -126,6 +126,15 @@ class _TutorExplainEntriesMixin:
             async with _plugin_lock(self._lock):
                 source_text = self._state.last_ocr_text
             used_ocr_fallback = bool(source_text.strip())
+        source_text = source_text.strip()
+        vision_image_payload = str(vision_image_base64 or "").strip()
+        if not source_text and not vision_image_payload:
+            return Err(
+                SdkError(
+                    "study tutor requires text or a non-empty OCR snapshot",
+                    code="MISSING_TEXT",
+                )
+            )
         # Phase 3: explain with the active mode selected above.
         try:
             extra_context: dict[str, Any] = {
@@ -136,7 +145,6 @@ class _TutorExplainEntriesMixin:
                 "mode_switch": bool(mode_switch.get("changed")),
                 "source_text": source_text,
             }
-            vision_image_payload = str(vision_image_base64 or "").strip()
             if vision_image_payload:
                 if not bool(self._cfg.llm_vision_enabled):
                     return Err(SdkError("llm_vision_enabled is not enabled"))

@@ -31,10 +31,6 @@ def _make_plugins():
     ]
 
 
-async def _no_quota(_call_site):
-    return None
-
-
 async def _no_coarse_ids(_user_text, _plugins, lang="en"):
     return []
 
@@ -49,7 +45,6 @@ async def test_stage1_empty_union_does_not_fallback_to_full_plugin_list(monkeypa
     executor = object.__new__(DirectTaskExecutor)
     executor._STAGE1_TRIGGER_TOKENS = 1
     executor._stage1_llm_coarse_screen = _no_coarse_ids
-    executor._check_agent_quota = _no_quota
 
     fake_llm = _FakeLLM(
         '{"has_task": false, "can_execute": false, "task_description": "", '
@@ -81,7 +76,6 @@ async def test_stage1_empty_union_rejects_hallucinated_existing_plugin(monkeypat
     executor = object.__new__(DirectTaskExecutor)
     executor._STAGE1_TRIGGER_TOKENS = 1
     executor._stage1_llm_coarse_screen = _no_coarse_ids
-    executor._check_agent_quota = _no_quota
 
     fake_llm = _FakeLLM(
         '{"has_task": true, "can_execute": true, "task_description": "run alpha", '

@@ -4,6 +4,7 @@ import asyncio
 import base64
 from collections.abc import Mapping
 from datetime import datetime
+import json
 import math
 from pathlib import Path
 from types import SimpleNamespace
@@ -33,6 +34,7 @@ from .constants import (
     MODE_TEACHING,
 )
 from .doc_exporter import DocExporter, normalize_format
+from .awareness_buffer import ActivityBuffer
 from .checkin_manager import CheckinManager
 from ._event_bus import StudyEvent, StudyEventBus
 from .pomodoro_timer import PomodoroTimer
@@ -42,6 +44,7 @@ from .models import (
     STATUS_ERROR,
     STATUS_READY,
     STATUS_STOPPED,
+    ActivitySummary,
     StudyConfig,
     StudyState,
     TutorReply,
@@ -136,6 +139,12 @@ from .entry_tutor_question_entries import _TutorQuestionEntriesMixin
 from .entry_tutor_answer_entries import _TutorAnswerEntriesMixin
 from .entry_tutor_summary_entries import _TutorSummaryEntriesMixin
 from .entry_ocr_entries import _OcrEntriesMixin
+from .entry_neko_commands import (
+    _INTERRUPT_COMMANDS,
+    _NEKO_COMMAND_HANDLERS,
+    _NekoCommandsMixin,
+    _QUEUE_COMMANDS,
+)
 
 
 @neko_plugin
@@ -164,6 +173,7 @@ class StudyCompanionPlugin(
     _TutorAnswerEntriesMixin,
     _TutorSummaryEntriesMixin,
     _OcrEntriesMixin,
+    _NekoCommandsMixin,
     NekoPluginBase,
 ):
     def __init__(self, ctx):
@@ -202,7 +212,19 @@ class StudyCompanionPlugin(
         self._supervision: SupervisionController | None = None
         self._memory_habit_bridge: MemoryHabitBridge | None = None
         self._event_bus: StudyEventBus | None = None
+        self._buffer: ActivityBuffer | None = None
+        self._awareness_task: asyncio.Task[None] | None = None
+        self._last_awareness_push_at = 0.0
+        self._awareness_idle_ticks = 0
         self._review_due_task: asyncio.Task[None] | None = None
+        self._command_queue: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue()
+        self._command_worker_task: asyncio.Task[None] | None = None
+        self._interruptible_task: asyncio.Task[None] | None = None
+        self._neko_command_transport: Any | None = None
+        self._neko_command_handler: Any | None = None
+        self._neko_command_watcher: Any | None = None
+        self._worker_crash_count = 0
+        self._worker_last_crash_time = 0.0
 
     @lifecycle(id="startup")
     async def startup(self, **_):
@@ -287,6 +309,11 @@ class StudyCompanionPlugin(
             self._sync_doc_export_entry()
             await self._persist_state()
             self._start_review_due_task()
+            if self._event_bus is not None:
+                await self._subscribe_neko_commands()
+                self._start_command_worker()
+            if self._cfg.awareness.enabled:
+                self.start_awareness_loop()
             status_payload = await asyncio.to_thread(self._status_payload)
             return Ok({"status": STATUS_READY, "result": status_payload})
         except asyncio.CancelledError:
@@ -300,6 +327,10 @@ class StudyCompanionPlugin(
             return Err(SdkError("failed to start study_companion"))
 
     async def _cleanup_after_failed_startup(self) -> None:
+        self.stop_awareness_loop()
+        await self._await_awareness_stop()
+        await self._unsubscribe_neko_commands()
+        await self._cancel_command_worker()
         await self._cancel_review_due_task()
         agent = self._agent
         self._agent = None
@@ -338,6 +369,10 @@ class StudyCompanionPlugin(
 
     @lifecycle(id="shutdown")
     async def shutdown(self, **_):
+        self.stop_awareness_loop()
+        await self._await_awareness_stop()
+        await self._unsubscribe_neko_commands()
+        await self._cancel_command_worker()
         await self._cancel_review_due_task()
         try:
             self.unregister_dynamic_entry("study_export_notes")
@@ -358,6 +393,186 @@ class StudyCompanionPlugin(
             return
         self._review_due_task = asyncio.create_task(self._run_review_due_loop())
         self._review_due_task.add_done_callback(self._on_review_due_task_done)
+
+    def start_awareness_loop(self) -> None:
+        if self.is_awareness_active():
+            return
+        if self._ocr_pipeline is None:
+            self.logger.warning("awareness loop skipped: OCR pipeline not initialized")
+            return
+        self._buffer = ActivityBuffer(
+            window_seconds=self._cfg.awareness.context_window_minutes * 60,
+            snapshot_interval=self._cfg.awareness.snapshot_interval_seconds,
+        )
+        self._last_awareness_push_at = 0.0
+        self._awareness_idle_ticks = 0
+        self._awareness_task = asyncio.create_task(self._run_awareness_loop())
+        self._awareness_task.add_done_callback(self._on_awareness_task_done)
+
+    def stop_awareness_loop(self) -> None:
+        task = self._awareness_task
+        self._buffer = None
+        self._last_awareness_push_at = 0.0
+        self._awareness_idle_ticks = 0
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def _await_awareness_stop(self) -> None:
+        task = self._awareness_task
+        self._awareness_task = None
+        if task is None:
+            return
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            self.logger.warning("study awareness task cleanup failed: {}", exc)
+
+    def is_awareness_active(self) -> bool:
+        return self._buffer is not None
+
+    def _start_command_worker(self) -> None:
+        if self._event_bus is None:
+            return
+        if self._command_worker_task is not None and not self._command_worker_task.done():
+            return
+        if self._worker_crash_count >= 3:
+            now = time.monotonic()
+            if now - self._worker_last_crash_time < 10.0:
+                self.logger.error(
+                    "_command_worker auto-restart disabled after {} crashes",
+                    self._worker_crash_count,
+                )
+                return
+            self._worker_crash_count = 0
+        self._command_worker_task = asyncio.create_task(self._run_command_worker())
+        self._command_worker_task.add_done_callback(self._on_command_worker_done)
+
+    async def _cancel_command_worker(self) -> None:
+        worker = self._command_worker_task
+        self._command_worker_task = None
+        if worker is not None and not worker.done():
+            worker.cancel()
+            try:
+                await worker
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                self.logger.warning("study command worker cleanup failed: {}", exc)
+
+        while True:
+            try:
+                self._command_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+        task = self._interruptible_task
+        self._interruptible_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                self.logger.warning("study command task cleanup failed: {}", exc)
+
+    def _on_command_worker_done(self, task: asyncio.Task[None]) -> None:
+        if self._command_worker_task is task:
+            self._command_worker_task = None
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            self.logger.exception("_command_worker exited with error")
+            now = time.monotonic()
+            if now - self._worker_last_crash_time < 10.0:
+                self._worker_crash_count += 1
+            else:
+                self._worker_crash_count = 1
+            self._worker_last_crash_time = now
+            if self._worker_crash_count >= 3:
+                self.logger.error(
+                    "_command_worker crashed {} times in 10s; disabling auto-restart",
+                    self._worker_crash_count,
+                )
+
+    def _on_command_task_done(self, task: asyncio.Task[None]) -> None:
+        if self._interruptible_task is task:
+            self._interruptible_task = None
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            self.logger.exception("command task failed")
+
+    async def _run_command_worker(self) -> None:
+        while True:
+            try:
+                cmd, payload = await self._command_queue.get()
+            except asyncio.CancelledError:
+                while True:
+                    try:
+                        self._command_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                raise
+
+            try:
+                await self._execute_command(cmd, payload)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self.logger.exception("_command_worker failed to execute: {}", cmd)
+
+    async def _execute_command(self, cmd: str, payload: dict[str, Any]) -> None:
+        if cmd not in _QUEUE_COMMANDS or cmd in _INTERRUPT_COMMANDS:
+            return
+        handler_name = _NEKO_COMMAND_HANDLERS.get(cmd)
+        handler = getattr(self, handler_name or "", None)
+        if handler is None:
+            return
+
+        worker_task = asyncio.current_task()
+        while True:
+            current = self._interruptible_task
+            if current is None or current.done():
+                break
+            try:
+                await current
+                if worker_task is not None and worker_task.cancelling():
+                    raise asyncio.CancelledError
+            except asyncio.CancelledError:
+                if worker_task is not None and worker_task.cancelling():
+                    raise
+            except Exception:
+                pass
+
+        async def _run() -> None:
+            try:
+                await handler(payload)
+            except asyncio.CancelledError:
+                pass
+
+        task = asyncio.create_task(_run())
+        self._interruptible_task = task
+        task.add_done_callback(self._on_command_task_done)
+        try:
+            await task
+            if worker_task is not None and worker_task.cancelling():
+                raise asyncio.CancelledError
+        except asyncio.CancelledError:
+            if worker_task is not None and worker_task.cancelling():
+                raise
+        except Exception:
+            pass
 
     async def _cancel_review_due_task(self) -> None:
         task = self._review_due_task
@@ -390,10 +605,98 @@ class StudyCompanionPlugin(
         except Exception as exc:
             self.logger.warning("study review due task failed: {}", exc)
 
+    def _on_awareness_task_done(self, task: asyncio.Task[None]) -> None:
+        if self._awareness_task is task:
+            self._awareness_task = None
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception as exc:
+            self._buffer = None
+            self.logger.warning("study awareness task failed: {}", exc)
+
     async def _run_review_due_loop(self) -> None:
         while True:
             await self._emit_review_due_if_needed()
             await asyncio.sleep(max(0.0, _REVIEW_DUE_INTERVAL_SECONDS))
+
+    async def _run_awareness_loop(self) -> None:
+        while self._buffer is not None:
+            await self.awareness_tick()
+            await asyncio.sleep(self._awareness_sleep_seconds())
+
+    def _awareness_sleep_seconds(self) -> float:
+        base = max(1.0, float(self._cfg.awareness.snapshot_interval_seconds))
+        if self._awareness_idle_ticks >= 3:
+            return max(base, 15.0)
+        return base
+
+    async def awareness_tick(self) -> None:
+        buffer = self._buffer
+        pipeline = self._ocr_pipeline
+        if buffer is None or pipeline is None:
+            return
+        try:
+            snapshot = await asyncio.to_thread(pipeline.capture_lightweight)
+        except Exception:
+            self._awareness_idle_ticks += 1
+            self.logger.warning("awareness_tick capture failed", exc_info=True)
+            return
+
+        if snapshot is None or snapshot.status == "capture_failed":
+            self._awareness_idle_ticks += 1
+            return
+
+        activity = snapshot.to_activity_snapshot()
+        if activity is not None:
+            await buffer.add(activity)
+            if activity.app_type == "other" and activity.activity_type in ("idle", ""):
+                self._awareness_idle_ticks += 1
+            else:
+                self._awareness_idle_ticks = 0
+        else:
+            self._awareness_idle_ticks += 1
+
+        if self._should_push_context():
+            summary = await buffer.summarize()
+            await self._push_awareness_context(summary)
+
+    def _should_push_context(self) -> bool:
+        if self._cfg.awareness.push_to_llm_mode == "blind":
+            return False
+        interval = self._cfg.awareness.push_to_llm_interval_seconds
+        now = time.monotonic()
+        return now - self._last_awareness_push_at >= interval
+
+    async def _push_awareness_context(self, summary: ActivitySummary) -> None:
+        mode = self._cfg.awareness.push_to_llm_mode
+        self._last_awareness_push_at = time.monotonic()
+        self.push_message(
+            visibility=[],
+            ai_behavior="read" if mode == "read" else "respond",
+            parts=[
+                {
+                    "type": "text",
+                    "text": (
+                        "[环境感知] "
+                        + json.dumps(self._summary_for_llm(summary), ensure_ascii=False)
+                    ),
+                }
+            ],
+            source="awareness",
+            priority=0,
+        )
+
+    @staticmethod
+    def _summary_for_llm(
+        summary: ActivitySummary,
+    ) -> dict[str, str | float | list[str]]:
+        return {
+            key: value
+            for key, value in summary.items()
+            if key != "app_distribution"
+        }
 
     async def _refresh_dependency_status(self) -> dict[str, Any]:
         status = await asyncio.to_thread(build_dependency_status, self._cfg)
