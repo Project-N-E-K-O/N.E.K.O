@@ -6,15 +6,23 @@ import hashlib
 import logging
 import math
 import re
-from typing import Any
+from typing import Any, Callable
 
-from .fsrs_bridge import FSRSBridge, StudyFsrsRating, create_card, rate_answer
+from .fsrs_bridge import (
+    FSRSBridge,
+    StudyFsrsCard,
+    StudyFsrsRating,
+    create_card,
+    rate_answer,
+    retrievability,
+)
 from .knowledge_quality import (
     KnowledgeCandidateStatus,
     KnowledgeCandidateType,
     KnowledgeEvidenceType,
     KnowledgeQualityStore,
 )
+from .memory_text import normalize_tags
 from .models import json_copy
 
 
@@ -53,8 +61,15 @@ def _difficulty_to_float(value: object, default: float = 0.5) -> float:
     is_level_value = number.is_integer() and 1.0 <= number <= 5.0
     is_integer_level = isinstance(value, int)
     is_float_integer_level = isinstance(value, float) and is_level_value
-    is_string_integer_level = bool(re.fullmatch(r"[1-5](?:\.0+)?", text)) and is_level_value
-    if number > 1.0 or is_integer_level or is_float_integer_level or is_string_integer_level:
+    is_string_integer_level = (
+        bool(re.fullmatch(r"[1-5](?:\.0+)?", text)) and is_level_value
+    )
+    if (
+        number > 1.0
+        or is_integer_level
+        or is_float_integer_level
+        or is_string_integer_level
+    ):
         number = number / 5.0
     return _clamp(number, 0.1, 1.0)
 
@@ -166,7 +181,10 @@ class MasteryTracker:
         recent_results: list[dict[str, Any]] | None = None,
     ) -> MasterySnapshot:
         results = list(recent_results or [])[-9:] + [dict(result or {})]
-        scores = [_verdict_score(str(item.get("verdict") or ""), item.get("score")) for item in results]
+        scores = [
+            _verdict_score(str(item.get("verdict") or ""), item.get("score"))
+            for item in results
+        ]
         attempts = len(scores)
         accuracy = sum(scores) / max(1, attempts)
         variance = sum((score - accuracy) ** 2 for score in scores) / max(1, attempts)
@@ -178,7 +196,9 @@ class MasteryTracker:
         raw_mastery = accuracy * recency * (0.6 + 0.4 * consistency) * difficulty_bonus
         mastery = _clamp(raw_mastery * (0.55 + 0.45 * confidence))
         flags: list[str] = []
-        if self.detect_false_mastery_from_values(accuracy=accuracy, consistency=consistency):
+        if self.detect_false_mastery_from_values(
+            accuracy=accuracy, consistency=consistency
+        ):
             flags.append("false_mastery")
         if attempts < 3:
             flags.append("low_confidence")
@@ -194,17 +214,26 @@ class MasteryTracker:
             flags=flags,
         )
 
-    def detect_false_mastery(self, topic_id: str, recent_results: list[dict[str, Any]]) -> bool:
-        scores = [_verdict_score(str(item.get("verdict") or ""), item.get("score")) for item in recent_results]
+    def detect_false_mastery(
+        self, topic_id: str, recent_results: list[dict[str, Any]]
+    ) -> bool:
+        scores = [
+            _verdict_score(str(item.get("verdict") or ""), item.get("score"))
+            for item in recent_results
+        ]
         if not scores:
             return False
         accuracy = sum(scores) / len(scores)
         variance = sum((score - accuracy) ** 2 for score in scores) / len(scores)
         consistency = _clamp(1.0 - math.sqrt(variance) * 2.0)
-        return self.detect_false_mastery_from_values(accuracy=accuracy, consistency=consistency)
+        return self.detect_false_mastery_from_values(
+            accuracy=accuracy, consistency=consistency
+        )
 
     @staticmethod
-    def detect_false_mastery_from_values(*, accuracy: float, consistency: float) -> bool:
+    def detect_false_mastery_from_values(
+        *, accuracy: float, consistency: float
+    ) -> bool:
         return accuracy > 0.6 and consistency < 0.5
 
 
@@ -223,8 +252,17 @@ class KnowledgeGraph:
             topic_id = str(topic.get("id") or "")
             if topic_id in mastered:
                 continue
-            prerequisites = topic.get("prerequisites") if isinstance(topic.get("prerequisites"), list) else []
-            if all(mastery_by_topic.get(str(req.get("id") or ""), 0.0) >= float(req.get("required_mastery") or 0.0) for req in prerequisites if isinstance(req, dict)):
+            prerequisites = (
+                topic.get("prerequisites")
+                if isinstance(topic.get("prerequisites"), list)
+                else []
+            )
+            if all(
+                mastery_by_topic.get(str(req.get("id") or ""), 0.0)
+                >= float(req.get("required_mastery") or 0.0)
+                for req in prerequisites
+                if isinstance(req, dict)
+            ):
                 ready.append(topic_id)
         return ready
 
@@ -241,14 +279,20 @@ class KnowledgeGraph:
             if not isinstance(req, dict):
                 continue
             req_id = str(req.get("id") or "")
-            if mastery_by_topic.get(req_id, 0.0) < float(req.get("required_mastery") or 0.0):
+            if mastery_by_topic.get(req_id, 0.0) < float(
+                req.get("required_mastery") or 0.0
+            ):
                 blockers.append(req_id)
         return blockers
 
-    def discover_candidate(self, text: str, context: dict[str, Any] | None = None) -> str | None:
+    def discover_candidate(
+        self, text: str, context: dict[str, Any] | None = None
+    ) -> str | None:
         topic = str((context or {}).get("topic") or "").strip()
         if topic:
-            known = self._store.get_topic(topic) or self._store.find_topic_by_name(topic)
+            known = self._store.get_topic(topic) or self._store.find_topic_by_name(
+                topic
+            )
             if known:
                 return str(known.get("id") or "")
             candidate = self._quality.upsert_candidate(
@@ -270,7 +314,9 @@ class KnowledgeGraph:
             name = str(known.get("name") or "")
             if name and name in normalized:
                 return str(known.get("id") or "")
-        first = next((line.strip() for line in normalized.splitlines() if line.strip()), "")
+        first = next(
+            (line.strip() for line in normalized.splitlines() if line.strip()), ""
+        )
         if not first:
             return None
         candidate = self._quality.upsert_candidate(
@@ -325,7 +371,9 @@ class WrongQuestionStore:
 
 
 class KnowledgeTracker:
-    def __init__(self, store: Any, *, retention_target: float = 0.90, logger: Any | None = None) -> None:
+    def __init__(
+        self, store: Any, *, retention_target: float = 0.90, logger: Any | None = None
+    ) -> None:
         self.store = store
         self.mastery = MasteryTracker()
         self.graph = KnowledgeGraph(store)
@@ -333,6 +381,17 @@ class KnowledgeTracker:
         self.wrong_store = WrongQuestionStore(store)
         self.fsrs = FSRSBridge(retention_target=retention_target)
         self._logger = logger
+        self._memory_deck_summary_provider: Callable[..., dict[str, Any]] | None = None
+
+    def set_memory_deck_summary_provider(
+        self, provider: Callable[..., dict[str, Any]] | None
+    ) -> None:
+        self._memory_deck_summary_provider = provider
+
+    def get_mastery(self, topic_id: str) -> float:
+        resolved = self._resolve_topic_id(topic_id)
+        latest = self.store.get_latest_mastery(resolved) if resolved else None
+        return float((latest or {}).get("mastery") or 0.0)
 
     def on_answer(
         self,
@@ -345,7 +404,9 @@ class KnowledgeTracker:
         session_id: str = "default",
         response_time_ms: int | None = None,
     ) -> dict[str, Any]:
-        topic_id = self._ensure_topic(topic_id, question=question, eval_result=eval_result)
+        topic_id = self._ensure_topic(
+            topic_id, question=question, eval_result=eval_result
+        )
         question_payload = dict(question or {})
         question_payload.setdefault("topic", topic_id)
         difficulty = _difficulty_to_float(question_payload.get("difficulty"), 0.5)
@@ -364,7 +425,11 @@ class KnowledgeTracker:
             response_time_ms=response_time_ms,
         )
 
-        recent = self.store.list_qa_records_for_topic(topic_id, limit=10) if qa_topic_id else []
+        recent = (
+            self.store.list_qa_records_for_topic(topic_id, limit=10)
+            if qa_topic_id
+            else []
+        )
         if not is_known_topic:
             if verdict in {"wrong", "partial", "dont_know"}:
                 self._record_error_candidates(
@@ -375,7 +440,9 @@ class KnowledgeTracker:
                     verdict=verdict,
                 )
             elif verdict == "correct":
-                self._record_positive_question_type(topic_id=topic_id, question=question_payload)
+                self._record_positive_question_type(
+                    topic_id=topic_id, question=question_payload
+                )
             return {
                 "topic_id": topic_id,
                 "mastery": {},
@@ -389,7 +456,9 @@ class KnowledgeTracker:
             "difficulty": difficulty,
             "response_time_ms": response_time_ms,
         }
-        snapshot = self.mastery.update(topic_id, mastery_result, recent_results=recent_results)
+        snapshot = self.mastery.update(
+            topic_id, mastery_result, recent_results=recent_results
+        )
         self.store.append_mastery_snapshot(snapshot.to_dict())
 
         wrong_question_id = ""
@@ -398,7 +467,11 @@ class KnowledgeTracker:
                 topic_id=topic_id,
                 question=question_payload,
                 user_answer=user_answer,
-                expected_answer=str(question_payload.get("answer") or eval_result.get("expected_answer") or ""),
+                expected_answer=str(
+                    question_payload.get("answer")
+                    or eval_result.get("expected_answer")
+                    or ""
+                ),
                 error_type=error_type,
                 verdict=verdict,
             )
@@ -415,13 +488,17 @@ class KnowledgeTracker:
                 error_type=error_type,
                 difficulty=_difficulty_to_level(difficulty),
             )
-            self._record_positive_question_type(topic_id=topic_id, question=question_payload)
+            self._record_positive_question_type(
+                topic_id=topic_id, question=question_payload
+            )
 
         card_row = self.store.get_fsrs_card(topic_id)
         card = card_row.get("card") if card_row else create_card(topic_id).to_dict()
         rating = self._rating_from_eval(eval_result)
         updated_card, schedule = rate_answer(card, rating)
-        self.store.upsert_fsrs_card(topic_id=topic_id, card=updated_card.to_dict(), last_rating=int(rating))
+        self.store.upsert_fsrs_card(
+            topic_id=topic_id, card=updated_card.to_dict(), last_rating=int(rating)
+        )
         self.store.append_review_log(
             topic_id=topic_id,
             card_id=int((card_row or {}).get("id") or 0) or None,
@@ -452,7 +529,9 @@ class KnowledgeTracker:
             difficulty = 4
         blockers = self.graph.find_blocker(resolved) if resolved else []
         retry = self.wrong_store.get_retry(resolved) if resolved else None
-        candidate_evidence = self.quality.prompt_evidence_summary(topic_id=resolved, limit=5)
+        candidate_evidence = self.quality.prompt_evidence_summary(
+            topic_id=resolved, limit=5
+        )
         for item in candidate_evidence:
             try:
                 self.quality.add_evidence(
@@ -462,7 +541,9 @@ class KnowledgeTracker:
                     {"source": "question_prompt", "topic_id": resolved},
                 )
             except Exception as exc:
-                self._log_quality_warning("record prompt candidate evidence failed: {}", exc)
+                self._log_quality_warning(
+                    "record prompt candidate evidence failed: {}", exc
+                )
         return {
             "target_topic_id": resolved,
             "target_topic": topic or {},
@@ -473,7 +554,9 @@ class KnowledgeTracker:
             "blockers": blockers,
             "retry_wrong_question": retry or {},
             "candidate_evidence": candidate_evidence,
-            "prompt_guidance": self._question_guidance(mastery_value, blockers=blockers, retry=retry),
+            "prompt_guidance": self._question_guidance(
+                mastery_value, blockers=blockers, retry=retry
+            ),
         }
 
     def get_session_summary(self) -> dict[str, Any]:
@@ -481,8 +564,149 @@ class KnowledgeTracker:
             "mastery_overview": self.store.list_mastery_overview(limit=10),
             "weak_topics": self.get_weak_topics(limit=8),
             "review_queue": self.get_review_queue(limit=8),
-            "wrong_questions": self.store.list_wrong_questions(limit=8, statuses=("active", "retrying")),
+            "memory_deck": self.get_memory_deck_status(limit=8),
+            "wrong_questions": self.store.list_wrong_questions(
+                limit=8, statuses=("active", "retrying")
+            ),
             "candidate_evidence": self.quality.prompt_evidence_summary(limit=8),
+        }
+
+    def upsert_memory_card(
+        self,
+        *,
+        front: str,
+        back: str,
+        topic_id: str = "",
+        subject: str = "memory",
+        chapter: str = "memory_deck",
+        difficulty: object = 0.5,
+        tags: object = None,
+        source: str = "manual",
+    ) -> dict[str, Any]:
+        front_text = str(front or "").strip()
+        back_text = str(back or "").strip()
+        if not front_text:
+            raise ValueError("memory card front is required")
+        if not back_text:
+            raise ValueError("memory card back is required")
+
+        resolved = self._resolve_topic_id(str(topic_id or "").strip() or front_text)
+        if not resolved:
+            resolved = _slug(front_text)
+        self.store.ensure_topic(
+            topic_id=resolved,
+            name=front_text[:80] or resolved,
+            subject=str(subject or "memory"),
+            chapter=str(chapter or "memory_deck"),
+            difficulty=_difficulty_to_float(difficulty, 0.5),
+        )
+
+        existing = self.store.get_fsrs_card(resolved)
+        base = StudyFsrsCard.from_dict(
+            existing.get("card") if existing else create_card(resolved).to_dict()
+        )
+        card = StudyFsrsCard.from_dict(
+            {
+                **base.to_dict(),
+                "topic_id": resolved,
+                "card_type": "memory",
+                "front": front_text,
+                "back": back_text,
+                "source": str(source or "manual").strip() or "manual",
+                "tags": normalize_tags(tags),
+            }
+        )
+        self.store.upsert_fsrs_card(
+            topic_id=resolved,
+            card=card.to_dict(),
+            last_rating=int((existing or {}).get("last_rating") or 0),
+        )
+        saved = self.store.get_fsrs_card(resolved)
+        if saved is None:
+            raise RuntimeError("memory card upsert failed")
+        return {
+            "created": existing is None,
+            "card": self._memory_card_payload(saved),
+        }
+
+    def list_memory_cards(
+        self,
+        *,
+        limit: int = 50,
+        due_only: bool = False,
+        include_topic_cards: bool = False,
+    ) -> list[dict[str, Any]]:
+        rows = self._memory_card_rows(include_topic_cards=include_topic_cards)
+        due_items = self.fsrs.get_due_reviews([row["card"] for row in rows])
+        due_by_topic = {str(item.get("topic_id") or ""): item for item in due_items}
+        if due_only:
+            row_by_topic = {str(row.get("topic_id") or ""): row for row in rows}
+            ordered_rows = [
+                row_by_topic[str(item.get("topic_id") or "")]
+                for item in due_items
+                if str(item.get("topic_id") or "") in row_by_topic
+            ]
+        else:
+            ordered_rows = rows
+        safe_limit = max(1, int(limit or 50))
+        return [
+            self._memory_card_payload(
+                row, due_item=due_by_topic.get(str(row.get("topic_id") or ""))
+            )
+            for row in ordered_rows[:safe_limit]
+        ]
+
+    def get_memory_deck_status(self, *, limit: int = 8) -> dict[str, Any]:
+        if self._memory_deck_summary_provider is not None:
+            try:
+                return self._memory_deck_summary_provider(limit=limit)
+            except Exception as exc:
+                self._log_quality_warning(
+                    "Memory deck summary provider failed: %s", exc
+                )
+        rows = self._memory_card_rows(include_topic_cards=False)
+        due_count = len(self.fsrs.get_due_reviews([row["card"] for row in rows]))
+        return {
+            "card_count": len(rows),
+            "due_count": due_count,
+            "cards": self.list_memory_cards(limit=limit, due_only=False),
+            "due_cards": self.list_memory_cards(limit=limit, due_only=True),
+        }
+
+    def review_memory_card(
+        self,
+        *,
+        topic_id: str,
+        rating: str | int,
+        answer: str = "",
+    ) -> dict[str, Any]:
+        resolved = self._resolve_topic_id(topic_id)
+        if not resolved:
+            raise ValueError("memory card topic_id is required")
+        card_row = self.store.get_fsrs_card(resolved)
+        if card_row is None:
+            raise ValueError("memory card not found")
+        selected = self._rating_from_review(rating)
+        updated_card, schedule = rate_answer(card_row["card"], selected)
+        self.store.upsert_fsrs_card(
+            topic_id=resolved, card=updated_card.to_dict(), last_rating=int(selected)
+        )
+        self.store.append_review_log(
+            topic_id=resolved,
+            card_id=int(card_row.get("id") or 0) or None,
+            rating=int(selected),
+            scheduled_days=int(round(updated_card.scheduled_days)),
+            actual_days=int(round(updated_card.elapsed_days)),
+        )
+        saved = self.store.get_fsrs_card(resolved)
+        if saved is None:
+            raise RuntimeError("memory card review failed")
+        return {
+            "topic_id": resolved,
+            "rating": int(selected),
+            "answer": str(answer or ""),
+            "schedule": schedule,
+            "card": self._memory_card_payload(saved),
         }
 
     def get_review_queue(self, limit: int = 10) -> list[dict[str, Any]]:
@@ -491,7 +715,9 @@ class KnowledgeTracker:
         result: list[dict[str, Any]] = []
         for item in reviews[: max(1, int(limit))]:
             topic = self.store.get_topic(str(item.get("topic_id") or "")) or {}
-            result.append({**item, "topic": topic})
+            result.append(
+                {**item, **self._card_metadata(item.get("card") or {}), "topic": topic}
+            )
         return result
 
     def count_due_reviews(self) -> int:
@@ -503,9 +729,15 @@ class KnowledgeTracker:
         weak = [
             item
             for item in overview
-            if float(item.get("mastery") or 0.0) < 0.60 or "false_mastery" in (item.get("flags") or [])
+            if float(item.get("mastery") or 0.0) < 0.60
+            or "false_mastery" in (item.get("flags") or [])
         ]
-        weak.sort(key=lambda item: (float(item.get("mastery") or 0.0), -float(item.get("confidence") or 0.0)))
+        weak.sort(
+            key=lambda item: (
+                float(item.get("mastery") or 0.0),
+                -float(item.get("confidence") or 0.0),
+            )
+        )
         return weak[: max(1, int(limit))]
 
     def count_weak_topics(self) -> int:
@@ -513,25 +745,101 @@ class KnowledgeTracker:
         return sum(
             1
             for item in overview
-            if float(item.get("mastery") or 0.0) < 0.60 or "false_mastery" in (item.get("flags") or [])
+            if float(item.get("mastery") or 0.0) < 0.60
+            or "false_mastery" in (item.get("flags") or [])
         )
 
     def get_status_summary(self, *, limit: int = 8) -> dict[str, Any]:
         overview = self.store.list_mastery_overview(limit=limit)
+        memory_deck = self.get_memory_deck_status(limit=limit)
         return {
             "topic_count": self.store.count_topics(),
             "tracked_topic_count": self.store.count_tracked_mastery_topics(),
             "average_mastery": round(float(self.store.average_latest_mastery()), 4),
             "weak_topic_count": self.count_weak_topics(),
             "due_review_count": self.count_due_reviews(),
+            "memory_card_count": int(
+                memory_deck.get("card_count") or memory_deck.get("item_count") or 0
+            ),
             "last_updated_at": overview[0].get("updated_at") if overview else "",
             "candidate_quality": self.quality.status_summary(limit=limit),
         }
 
-    def _ensure_topic(self, topic_id: str, *, question: dict[str, Any], eval_result: dict[str, Any]) -> str:
-        raw_topic = str(topic_id or question.get("topic") or eval_result.get("topic") or "").strip()
+    def _memory_card_rows(self, *, include_topic_cards: bool) -> list[dict[str, Any]]:
+        rows = self.store.list_fsrs_cards(limit=None)
+        if include_topic_cards:
+            return rows
+        return [
+            row
+            for row in rows
+            if str((row.get("card") or {}).get("card_type") or "topic") == "memory"
+        ]
+
+    def _memory_card_payload(
+        self, row: dict[str, Any], *, due_item: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        card = StudyFsrsCard.from_dict(row.get("card") or {})
+        topic_id = str(row.get("topic_id") or card.topic_id or "")
+        topic = self.store.get_topic(topic_id) or {}
+        resolved_due_item = due_item
+        if resolved_due_item is None:
+            due_reviews = self.fsrs.get_due_reviews([card])
+            resolved_due_item = due_reviews[0] if due_reviews else None
+        retrieval = (
+            float(resolved_due_item.get("retrievability"))
+            if resolved_due_item
+            else retrievability(card)
+        )
+        return {
+            "id": int(row.get("id") or 0),
+            "topic_id": topic_id,
+            "topic": topic,
+            "front": card.front,
+            "back": card.back,
+            "tags": list(card.tags),
+            "source": card.source,
+            "card_type": card.card_type,
+            "due": card.due,
+            "is_due": resolved_due_item is not None,
+            "retrievability": round(retrieval, 4),
+            "stability": card.stability,
+            "difficulty": card.difficulty,
+            "state": card.state,
+            "scheduled_days": card.scheduled_days,
+            "reps": card.reps,
+            "lapses": card.lapses,
+            "last_review": card.last_review,
+            "created_at": card.created_at,
+            "updated_at": str(row.get("updated_at") or ""),
+            "last_rating": int(row.get("last_rating") or 0),
+            "priority": float((resolved_due_item or {}).get("priority") or 0.0),
+            "overdue_days": float((resolved_due_item or {}).get("overdue_days") or 0.0),
+            "card": card.to_dict(),
+        }
+
+    @staticmethod
+    def _card_metadata(card_payload: object) -> dict[str, Any]:
+        if not isinstance(card_payload, dict):
+            return {}
+        card = StudyFsrsCard.from_dict(card_payload)
+        return {
+            "card_type": card.card_type,
+            "front": card.front,
+            "back": card.back,
+            "source": card.source,
+            "tags": list(card.tags),
+        }
+
+    def _ensure_topic(
+        self, topic_id: str, *, question: dict[str, Any], eval_result: dict[str, Any]
+    ) -> str:
+        raw_topic = str(
+            topic_id or question.get("topic") or eval_result.get("topic") or ""
+        ).strip()
         resolved = self._resolve_topic_id(raw_topic)
-        topic_name = str(question.get("topic") or eval_result.get("topic") or resolved or "general").strip()
+        topic_name = str(
+            question.get("topic") or eval_result.get("topic") or resolved or "general"
+        ).strip()
         if not resolved:
             resolved = _slug(topic_name)
         if not self.store.get_topic(resolved):
@@ -606,7 +914,9 @@ class KnowledgeTracker:
         except Exception as exc:
             self._log_quality_warning("record question type candidate failed: {}", exc)
 
-    def _record_positive_question_type(self, *, topic_id: str, question: dict[str, Any]) -> None:
+    def _record_positive_question_type(
+        self, *, topic_id: str, question: dict[str, Any]
+    ) -> None:
         try:
             candidate = self.quality.upsert_candidate(
                 KnowledgeCandidateType.QUESTION_TYPE.value,
@@ -626,11 +936,15 @@ class KnowledgeTracker:
                 {"source": "answer_evaluation", "topic_id": topic_id},
             )
         except Exception as exc:
-            self._log_quality_warning("record positive question type candidate failed: {}", exc)
+            self._log_quality_warning(
+                "record positive question type candidate failed: {}", exc
+            )
 
     @staticmethod
     def _question_type_key(question: dict[str, Any]) -> str:
-        explicit = str(question.get("question_type") or question.get("type") or "").strip()
+        explicit = str(
+            question.get("question_type") or question.get("type") or ""
+        ).strip()
         if explicit:
             return _slug(explicit)
         difficulty = question.get("difficulty")
@@ -647,20 +961,63 @@ class KnowledgeTracker:
                 pass
 
     @staticmethod
+    def _rating_from_review(value: str | int) -> StudyFsrsRating:
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            aliases = {
+                "again": StudyFsrsRating.Again,
+                "forgot": StudyFsrsRating.Again,
+                "fail": StudyFsrsRating.Again,
+                "wrong": StudyFsrsRating.Again,
+                "不会": StudyFsrsRating.Again,
+                "忘记": StudyFsrsRating.Again,
+                "hard": StudyFsrsRating.Hard,
+                "partial": StudyFsrsRating.Hard,
+                "difficult": StudyFsrsRating.Hard,
+                "困难": StudyFsrsRating.Hard,
+                "模糊": StudyFsrsRating.Hard,
+                "good": StudyFsrsRating.Good,
+                "ok": StudyFsrsRating.Good,
+                "remembered": StudyFsrsRating.Good,
+                "记得": StudyFsrsRating.Good,
+                "easy": StudyFsrsRating.Easy,
+                "perfect": StudyFsrsRating.Easy,
+                "简单": StudyFsrsRating.Easy,
+                "熟悉": StudyFsrsRating.Easy,
+            }
+            if normalized in aliases:
+                return aliases[normalized]
+        try:
+            return StudyFsrsRating(int(value))
+        except (TypeError, ValueError):
+            return StudyFsrsRating.Good
+
+    @staticmethod
     def _rating_from_eval(eval_result: dict[str, Any]) -> StudyFsrsRating:
         verdict = str(eval_result.get("verdict") or "").strip().lower()
         error_type = str(eval_result.get("error_type") or "").strip().lower()
         score = _score_percent(eval_result.get("score"))
-        if verdict in {"wrong", "dont_know"} or error_type in {"concept_error", "misconception", "guess", "concept_missing"}:
+        if verdict in {"wrong", "dont_know"} or error_type in {
+            "concept_error",
+            "misconception",
+            "guess",
+            "concept_missing",
+        }:
             return StudyFsrsRating.Again
-        if verdict == "partial" or error_type in {"calculation_error", "missing_step", "step_skipped"}:
+        if verdict == "partial" or error_type in {
+            "calculation_error",
+            "missing_step",
+            "step_skipped",
+        }:
             return StudyFsrsRating.Hard
         if verdict == "correct" and score >= 92:
             return StudyFsrsRating.Easy
         return StudyFsrsRating.Good
 
     @staticmethod
-    def _question_guidance(mastery: float, *, blockers: list[str], retry: dict[str, Any] | None) -> str:
+    def _question_guidance(
+        mastery: float, *, blockers: list[str], retry: dict[str, Any] | None
+    ) -> str:
         if retry:
             return "Use a variant of the active wrong question and check whether the same error type reappears."
         if blockers:

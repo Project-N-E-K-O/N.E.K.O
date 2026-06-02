@@ -116,6 +116,43 @@ class TestKeybookSaveLoad:
         assert cfg['ASSIST_API_KEY_QWEN_INTL'] == 'sk-core-master'
 
     @pytest.mark.unit
+    def test_free_core_does_not_fill_paid_assist_when_key_empty(self, config_manager):
+        """core=free 时，空的非免费 assist Key 不应回退成 free-access。"""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'free-access',
+            'coreApi': 'free',
+            'assistApi': 'qwen',
+            'assistApiKeyQwen': '',
+        })
+        cfg = config_manager.get_core_config()
+
+        assert cfg['CORE_API_KEY'] == 'free-access'
+        assert cfg['CORE_API_TYPE'] == 'free'
+        assert cfg['assistApi'] == 'qwen'
+        assert cfg['ASSIST_API_KEY_QWEN'] == ''
+        assert cfg['AUDIO_API_KEY'] == ''
+        assert cfg['OPENROUTER_API_KEY'] == ''
+        assert cfg['AGENT_MODEL_API_KEY'] == ''
+        conversation_cfg = config_manager.get_model_api_config('conversation')
+        assert conversation_cfg['api_key'] == ''
+
+    @pytest.mark.unit
+    def test_free_core_preserves_paid_assist_explicit_key(self, config_manager):
+        """core=free 时，显式填写的非免费 assist Key 仍应生效。"""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'free-access',
+            'coreApi': 'free',
+            'assistApi': 'qwen',
+            'assistApiKeyQwen': 'sk-assist-qwen',
+        })
+        cfg = config_manager.get_core_config()
+
+        assert cfg['ASSIST_API_KEY_QWEN'] == 'sk-assist-qwen'
+        assert cfg['AUDIO_API_KEY'] == 'sk-assist-qwen'
+        assert cfg['OPENROUTER_API_KEY'] == 'sk-assist-qwen'
+        assert cfg['AGENT_MODEL_API_KEY'] == 'sk-assist-qwen'
+
+    @pytest.mark.unit
     def test_qwen_intl_uses_saved_successful_us_url(self, config_manager):
         """qwen_intl 连通性测试命中美国 URL 后，运行配置应使用该 URL。"""
         us_url = 'https://dashscope-us.aliyuncs.com/compatible-mode/v1'
@@ -204,25 +241,6 @@ class TestCustomApiToggle:
         assert cfg['CONVERSATION_MODEL_API_KEY'] == 'sk-custom-conv'
 
     @pytest.mark.unit
-    def test_model_vision_override_marks_custom_model_capability(self, config_manager):
-        """Explicit modelVisionOverrides should win before model-name sniffing."""
-        _write_core_config(config_manager, {
-            'coreApiKey': 'sk-core',
-            'coreApi': 'qwen',
-            'assistApi': 'qwen',
-            'enableCustomApi': True,
-            'conversationModelUrl': 'https://custom.example.com/v1',
-            'conversationModelId': 'local-multimodal',
-            'conversationModelApiKey': 'sk-custom-conv',
-            'modelVisionOverrides': {'local-multimodal': True},
-        })
-
-        cfg = config_manager.get_model_api_config('conversation')
-
-        assert cfg['model'] == 'local-multimodal'
-        assert cfg['supports_vision'] is True
-
-    @pytest.mark.unit
     def test_on_applies_all_model_types(self, config_manager):
         """enableCustomApi=true → all 8 model types can be overridden."""
         model_types = [
@@ -279,23 +297,66 @@ class TestCustomApiToggle:
 
 
 # ---------------------------------------------------------------------------
-# 3. Assist follows core when free
+# 3. Assist / Core 独立选择
 # ---------------------------------------------------------------------------
 class TestAssistFollowsCore:
 
     @pytest.mark.unit
-    def test_free_core_forces_free_assist(self, config_manager):
-        """coreApi=free → assistApi forced to free regardless of saved value."""
+    def test_free_core_defaults_assist_to_free_when_empty(self, config_manager):
+        """coreApi=free + assistApi='' → 空值兜底为 free（保持免费版一键到位体验）。"""
         _write_core_config(config_manager, {
             'coreApiKey': 'free-access',
             'coreApi': 'free',
-            'assistApi': 'qwen',  # User saved qwen, but core is free
+            'assistApi': '',
         })
         cfg = config_manager.get_core_config()
 
-        assert cfg['assistApi'] == 'free', \
-            'When core is free, assist must be forced to free'
-        assert cfg.get('IS_FREE_VERSION') is True
+        assert cfg['assistApi'] == 'free'
+        assert cfg.get('CORE_API_TYPE') == 'free'
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_get_core_config_api_defaults_empty_assist_to_free_for_free_core(self, monkeypatch):
+        """API 管理页读取旧配置时，core=free + assistApi='' 应回填 assist=free。"""
+        from main_routers import config_router
+
+        async def fake_read_json_async(_path):
+            return {
+                'coreApiKey': 'free-access',
+                'coreApi': 'free',
+                'assistApi': '',
+            }
+
+        class FakeConfigManager:
+            def get_runtime_config_path(self, _filename):
+                return 'core_config.json'
+
+        monkeypatch.setattr(config_router, 'read_json_async', fake_read_json_async)
+        monkeypatch.setattr(config_router, 'get_config_manager', lambda: FakeConfigManager())
+
+        response = await config_router.get_core_config_api()
+
+        assert response['success'] is True
+        assert response['coreApi'] == 'free'
+        assert response['assistApi'] == 'free'
+        assert response['assistApiKeyQwen'] == ''
+
+    @pytest.mark.unit
+    def test_free_core_honors_explicit_assist(self, config_manager):
+        """coreApi=free + assistApi=silicon → 显式选择被保留，agent/text 走 silicon。"""
+        _write_core_config(config_manager, {
+            'coreApiKey': 'free-access',
+            'coreApi': 'free',
+            'assistApi': 'silicon',
+            'assistApiKeySilicon': 'sk-silicon-test',
+        })
+        cfg = config_manager.get_core_config()
+
+        assert cfg['assistApi'] == 'silicon', \
+            'core=free 不应强制覆盖用户显式选择的 assist'
+        assert cfg['OPENROUTER_URL'] == 'https://api.siliconflow.cn/v1'
+        # core=free 即语音免费（is_free_voice 维度，CORE_API_TYPE=='free'），与 assist 选择无关
+        assert cfg.get('CORE_API_TYPE') == 'free'
 
     @pytest.mark.unit
     def test_non_free_core_allows_independent_assist(self, config_manager):
@@ -358,7 +419,9 @@ class TestProviderExclusion:
         from utils.api_config_loader import get_core_api_profiles
         core_profiles = get_core_api_profiles()
 
-        expected_core = {'free', 'qwen', 'qwen_intl', 'openai', 'step', 'gemini', 'glm'}
+        # grok joined core as a realtime voice provider (Grok Voice, wss
+        # endpoint) in PR #1306 — it has a core_url, so it belongs here.
+        expected_core = {'free', 'qwen', 'qwen_intl', 'openai', 'step', 'gemini', 'glm', 'grok'}
         actual_core = set(core_profiles.keys())
 
         assert actual_core == expected_core, (
@@ -383,9 +446,12 @@ class TestProviderExclusion:
         from utils.api_config_loader import get_core_api_profiles
         core_profiles = get_core_api_profiles()
 
+        # grok has a realtime voice endpoint (Grok Voice, PR #1306) so it is
+        # intentionally also a core provider — only truly text-only providers
+        # are listed here.
         must_not_be_core = [
             'deepseek', 'doubao', 'minimax', 'minimax_intl',
-            'kimi', 'grok', 'silicon',
+            'kimi', 'silicon',
         ]
         for provider in must_not_be_core:
             assert provider not in core_profiles, (
@@ -413,7 +479,16 @@ class TestProviderExclusion:
         data = get_config()
         registry = data.get('api_key_registry', {})
 
-        expected_restricted = {'openai', 'gemini', 'grok', 'claude', 'openrouter', 'elevenlabs'}
+        expected_restricted = {
+            'openai',
+            'gemini',
+            'grok',
+            'claude',
+            'openrouter',
+            'elevenlabs',
+            'qwen_intl',
+            'minimax_intl',
+        }
         for pk, entry in registry.items():
             if pk in expected_restricted:
                 assert entry.get('restricted') is True, \
@@ -579,8 +654,8 @@ class TestGetModelApiConfig:
 
     @pytest.mark.unit
     def test_agent_uses_dedicated_fields_but_not_custom_when_toggle_off(self, config_manager):
-        """Agent always uses AGENT_MODEL_URL (with lanlan.app normalization)
-        even when enableCustomApi=false, but is_custom must be False."""
+        """Agent always uses AGENT_MODEL_URL even when enableCustomApi=false,
+        but is_custom must be False."""
         _write_core_config(config_manager, {
             'coreApiKey': 'sk-core',
             'coreApi': 'qwen',
@@ -595,9 +670,44 @@ class TestGetModelApiConfig:
         # Agent should still use its dedicated fields, not generic OPENROUTER_URL
         assert result['model'] != '', 'Agent model should be populated'
         assert result['base_url'] != '', 'Agent URL should be populated'
-        # AGENT_MODEL_URL is normalized to lanlan.app; OPENROUTER_URL is not
-        assert 'lanlan.tech' not in result['base_url'], \
-            'Agent URL should have lanlan.app normalization applied'
+        assert result['base_url'] == 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+
+
+# ---------------------------------------------------------------------------
+# 7b. Agent URL normalization: temporary no-op
+# ---------------------------------------------------------------------------
+class TestAgentUrlRegionRouting:
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ('non_mainland', 'url_in', 'expected'),
+        [
+            # 临时保持原样：free-agent-model 走配置中的国内 lanlan.tech 文本入口。
+            (True, 'https://www.lanlan.tech/text/v1', 'https://www.lanlan.tech/text/v1'),
+            (False, 'https://www.lanlan.tech/text/v1', 'https://www.lanlan.tech/text/v1'),
+            (None, 'https://www.lanlan.tech/text/v1', 'https://www.lanlan.tech/text/v1'),
+            (False, 'https://www.lanlan.app/text/v1', 'https://www.lanlan.app/text/v1'),
+            (True, 'https://www.lanlan.app/text/v1', 'https://www.lanlan.app/text/v1'),
+            (True, 'https://lanlan.tech/text/v1', 'https://lanlan.tech/text/v1'),
+            (False, 'https://lanlan.tech/text/v1', 'https://lanlan.tech/text/v1'),
+        ],
+    )
+    def test_normalize_agent_url_by_region(self, config_manager, non_mainland, url_in, expected):
+        config_manager._check_non_mainland = lambda: non_mainland
+        assert config_manager._normalize_agent_url(url_in) == expected
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize('non_mainland', [True, False, None])
+    def test_normalize_agent_url_custom_url_untouched(self, config_manager, non_mainland):
+        """不含 lanlan 域的自定义 URL 原样返回，不受线路影响。"""
+        config_manager._check_non_mainland = lambda: non_mainland
+        custom = 'https://api.openai.com/v1'
+        assert config_manager._normalize_agent_url(custom) == custom
+
+    @pytest.mark.unit
+    def test_normalize_agent_url_non_string_passthrough(self, config_manager):
+        config_manager._check_non_mainland = lambda: True
+        assert config_manager._normalize_agent_url(None) is None
 
 
 # ---------------------------------------------------------------------------

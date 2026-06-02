@@ -26,7 +26,7 @@ from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from .shared_state import get_config_manager, get_steamworks, get_session_manager, get_initialize_character_data
+from .shared_state import ensure_steamworks, get_config_manager, get_session_manager, get_initialize_character_data
 from .characters_router import get_current_live2d_model
 from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.preferences import aload_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top, aload_global_conversation_settings, save_global_conversation_settings, GLOBAL_CONVERSATION_KEY
@@ -284,7 +284,7 @@ async def get_page_config(response: Response, lanlan_name: str = ""):
             # 提取JSONResponse中的内容
             model_data = model_response.body.decode('utf-8')
             model_json = json.loads(model_data)
-            model_info = model_json.get('model_info', {})
+            model_info = model_json.get('model_info') or {}
             model_path = model_info.get('path', '')
         
         result = {
@@ -465,7 +465,7 @@ async def get_steam_language():
     from utils.language_utils import normalize_language_code, refresh_global_language, is_supported_language_code
 
     try:
-        steamworks = get_steamworks()
+        steamworks = ensure_steamworks()
         
         if steamworks is None:
             # 没有 Steam 环境，默认为非大陆用户
@@ -603,14 +603,21 @@ async def get_core_config_api():
             api_key = core_config.get('CORE_API_KEY','')
             # 创建空的配置对象用于返回默认值
             core_cfg = {}
+            runtime_core_api_provider = core_config.get('CORE_API_TYPE') or ''
+            runtime_assist_api_provider = core_config.get('assistApi') or ''
+        else:
+            runtime_core_api_provider = ''
+            runtime_assist_api_provider = ''
         
         # 旧版本 core_config.json 可能只有 coreApiKey 而没有各 assistApiKey* 字段，
         # 需要与 ConfigManager.get_core_config() 保持一致的回退逻辑，
         # 但只能回退到与 coreApi / assistApi 匹配的服务商，
         # 以免将不兼容的 API Key 填充到其他服务商。
-        fallback_key = api_key or ''
-        _core_api_provider = core_cfg.get('coreApi') or 'qwen'
-        _assist_api_provider = core_cfg.get('assistApi') or 'qwen'
+        fallback_key = api_key if api_key != 'free-access' else ''
+        _core_api_provider = core_cfg.get('coreApi') or runtime_core_api_provider or 'qwen'
+        _assist_api_provider = core_cfg.get('assistApi') or runtime_assist_api_provider
+        if not _assist_api_provider:
+            _assist_api_provider = 'free' if _core_api_provider == 'free' else 'qwen'
         _fallback_providers = {_core_api_provider, _assist_api_provider}
 
         def _fb(provider: str) -> str:

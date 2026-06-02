@@ -39,6 +39,7 @@ MODELS_EXTRA_BODY_MAP: dict[str, dict] = {
     "qwen3-vl-flash": EXTRA_BODY_OPENAI,
     "qwen3.5-plus": EXTRA_BODY_OPENAI,
     "qwen3.6-plus": EXTRA_BODY_OPENAI,
+    "qwen3.6-plus-2026-04-02": EXTRA_BODY_OPENAI,
     "qwen-plus": EXTRA_BODY_OPENAI,
     # GLM 系列
     "glm-4.5-air": EXTRA_BODY_CLAUDE,

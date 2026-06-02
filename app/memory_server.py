@@ -65,6 +65,7 @@ from config.prompts.prompts_memory import (
     CHAT_HOLIDAY_CONTEXT,
     MEMORY_RECALL_HEADER, MEMORY_RESULTS_HEADER,
     PERSONA_HEADER, INNER_THOUGHTS_DYNAMIC,
+    RECENT_HISTORY_INTRO, NO_RECENT_HISTORY,
 )
 # Negative-intent prompts/scanner 已迁到 ``prompts_directives``（与 ban-topic
 # regex 同源——同是"用户负面 / 回避指令"的语义层）。``prompts_memory`` 保留
@@ -2600,8 +2601,12 @@ async def _amaybe_trigger_negative_keyword_hook(
 async def _run_persona_refine_for_character(character: str) -> None:
     """单角色 persona refine pass。embedding 不可用 / cluster_hash 全
     skip / 候选不足 → 整 pass no-op。"""
-    from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+    from config import (
+        MEMORY_LIVENESS_MAX_ATTEMPTS,
+        MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
+    )
     from memory.facts import safe_int_field
+    from memory.temporal import cooldown_elapsed
     from memory.refine import (
         MemoryRefineEngine,
         REFINE_ENTITY_KEY,
@@ -2619,14 +2624,22 @@ async def _run_persona_refine_for_character(character: str) -> None:
         # entry 不再进 cluster gather。Site 4 dead-letter——同 entry 在多
         # cluster 反复 LLM 失败后被 frozen，避免持续占用 starvation-first
         # ordering 名额空跑 LLM。recovery 路径：apply_refine_actions 在
-        # stamp 成功时会清回 0；或人工编辑 persona.json。
+        # stamp 成功时会清回 0；或人工编辑 persona.json；或时间自愈——
+        # 冻结后过 MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS 放行一次 probe，让
+        # 一次性 correction 模型宕机恢复后自愈（不再永久冻死无辜 entry）。
         entries = [
             annotate_entry(e, type_='persona', entity=entity)
             for e in section
             if isinstance(e, dict)
             and not e.get('protected')
             and e.get('id')
-            and safe_int_field(e, 'refine_attempts') < MEMORY_LIVENESS_MAX_ATTEMPTS
+            and (
+                safe_int_field(e, 'refine_attempts') < MEMORY_LIVENESS_MAX_ATTEMPTS
+                or cooldown_elapsed(
+                    e.get('last_refine_attempt_at'),
+                    MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
+                )
+            )
         ]
         if entries:
             candidates_by_entity[entity] = entries
@@ -2693,8 +2706,12 @@ async def _run_reflection_refine_for_character(character: str) -> None:
     """单角色 reflection refine pass。cluster 内可混入同 entity 的
     absorbed fact 作只读信息源（fact 不可被 split/discard/modify，apply
     层代码兜底）。"""
-    from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+    from config import (
+        MEMORY_LIVENESS_MAX_ATTEMPTS,
+        MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
+    )
     from memory.facts import safe_int_field
+    from memory.temporal import cooldown_elapsed
     from memory.refine import (
         MemoryRefineEngine,
         REFINE_ENTITY_KEY,
@@ -2718,14 +2735,21 @@ async def _run_reflection_refine_for_character(character: str) -> None:
         # Liveness 过滤：refine_attempts ≥ MEMORY_LIVENESS_MAX_ATTEMPTS 的
         # reflection 不再进 cluster gather（同 persona refine）。fact 不算
         # ——fact 是 readonly 信息源，不会被 refine 改，自然不会 bump
-        # attempts。
+        # attempts。时间自愈：冻结后过 MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS
+        # 放行一次 probe，让一次性宕机恢复后自愈。
         entity_refls = [
             annotate_entry(r, type_='reflection', entity=entity)
             for r in refls
             if isinstance(r, dict)
             and r.get('entity') == entity
             and r.get('id')
-            and safe_int_field(r, 'refine_attempts') < MEMORY_LIVENESS_MAX_ATTEMPTS
+            and (
+                safe_int_field(r, 'refine_attempts') < MEMORY_LIVENESS_MAX_ATTEMPTS
+                or cooldown_elapsed(
+                    r.get('last_refine_attempt_at'),
+                    MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
+                )
+            )
         ]
         entity_facts = [
             annotate_entry(f, type_='fact', entity=entity)
@@ -2842,6 +2866,66 @@ async def _periodic_reflection_synthesis_loop():
         await asyncio.sleep(interval)
 
 
+async def _bootstrap_embedding_worker() -> None:
+    """ready 后在后台 bootstrap 向量预热 / 去重 worker。
+
+    重 import（``memory.embedding_worker`` 拉起 embedding 栈 ~0.6s）和服务构造
+    （``get_embedding_service()`` 可能 probe/load 模型）全程在 ``to_thread`` 里跑，
+    不阻塞 event loop；``start()`` 是轻量的（只 ``create_task``），回到 loop 上调。
+    worker 自带 warmup 延迟、向量不可用也会降级，所以从 memory 启动关键路径移出来
+    对 greeting 零影响。
+
+    ⚠️ 故意**不**把 manager 作为参数传入：worker 的 getter（``lambda: persona_manager``
+    等）必须解析到模块全局，这样 /reload 重绑全局后下一轮 sweep 能看到新实例。
+    传参会让闭包捕获启动期的旧实例，绕过 worker 设计的 reload-staleness 防护。
+    """
+    global embedding_warmup_worker, fact_dedup_resolver
+    try:
+        def _build():
+            from memory.embedding_worker import EmbeddingWarmupWorker
+            from memory.fact_dedup import FactDedupResolver
+            from config import VECTORS_WARMUP_DELAY_SECONDS
+
+            def _current_catgirl_names() -> list[str]:
+                try:
+                    data = _config_manager.load_characters()
+                    return list((data or {}).get('猫娘', {}).keys())
+                except Exception:
+                    return []
+
+            bound_fact_store = fact_store
+            resolver = FactDedupResolver(bound_fact_store)
+            worker = EmbeddingWarmupWorker(
+                get_persona_manager=lambda: persona_manager,
+                get_reflection_engine=lambda: reflection_engine,
+                get_fact_store=lambda: fact_store,
+                get_character_names=_current_catgirl_names,
+                warmup_delay_seconds=VECTORS_WARMUP_DELAY_SECONDS,
+                get_dedup_resolver=lambda: fact_dedup_resolver,
+            )
+            return worker, resolver, bound_fact_store
+
+        worker, resolver, bound_fact_store = await asyncio.to_thread(_build)
+        # worker 用 getter 读全局，天然 reload-safe，直接发布。
+        embedding_warmup_worker = worker
+        # 但 resolver 是绑定到具体 fact_store 的实例：若 await（重 import + 构造）期间
+        # reload_memory_components() 换了 fact_store 并重绑了 fact_dedup_resolver，
+        # 这里再无条件赋值会用绑旧 store 的 resolver 覆盖掉 reload 的新 resolver，
+        # 导致 worker 的 get_fact_store 读新 store、get_dedup_resolver 读旧 resolver 错配。
+        # 因此只在当前全局 fact_store 仍是 resolver 绑定的那个时才发布。
+        if fact_store is bound_fact_store:
+            fact_dedup_resolver = resolver
+        else:
+            logger.info("[Memory] embedding worker bootstrap 与 reload 竞争，沿用 reload 已重绑的 fact_dedup_resolver")
+        embedding_warmup_worker.start()
+    except Exception as e:
+        logger.warning(f"[Memory] embedding worker bootstrap failed: {e}")
+        embedding_warmup_worker = None
+        # 不清 fact_dedup_resolver：若 await 期间 reload 已重绑了一个绑定新 store 的
+        # resolver，这里清成 None 会把 reload 的成果抹掉。bootstrap 失败本就只代表
+        # "没有 warmup worker"，resolver 该保留（None 维持原样，reload 设的则保留）。
+
+
 async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
     global recent_history_manager, settings_manager, time_manager, fact_store
     global persona_manager, reflection_engine, cursor_store, outbox, event_log, reconciler
@@ -2889,7 +2973,8 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
 
             install_hooks()
             TokenTracker.get_instance().start_periodic_save()
-            TokenTracker.get_instance().record_app_start()
+            # process 字段进 session_start / session_end 维度，跨进程诊断必须区分
+            TokenTracker.get_instance().record_app_start(process="memory_server")
         except Exception as e:
             logger.warning(f"[Memory] Token tracker init failed: {e}")
 
@@ -2987,35 +3072,12 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             _memory_background_tasks_started = True
 
         # memory-enhancements P2: vector embedding warmup + backfill worker.
-        # The worker is optional; startup should continue if vectors are
-        # unavailable or its bootstrap fails.
-        try:
-            from memory.embedding_worker import EmbeddingWarmupWorker
-            from memory.fact_dedup import FactDedupResolver
-            from config import VECTORS_WARMUP_DELAY_SECONDS
-
-            def _current_catgirl_names() -> list[str]:
-                try:
-                    data = _config_manager.load_characters()
-                    return list((data or {}).get('猫娘', {}).keys())
-                except Exception:
-                    return list(catgirl_names)
-
-            fact_dedup_resolver = FactDedupResolver(fact_store)
-
-            embedding_warmup_worker = EmbeddingWarmupWorker(
-                get_persona_manager=lambda: persona_manager,
-                get_reflection_engine=lambda: reflection_engine,
-                get_fact_store=lambda: fact_store,
-                get_character_names=_current_catgirl_names,
-                warmup_delay_seconds=VECTORS_WARMUP_DELAY_SECONDS,
-                get_dedup_resolver=lambda: fact_dedup_resolver,
-            )
-            embedding_warmup_worker.start()
-        except Exception as e:
-            logger.warning(f"[Memory] embedding worker bootstrap failed: {e}")
-            embedding_warmup_worker = None
-            fact_dedup_resolver = None
+        # 这块的 import（embedding 栈 ~0.6s）+ 服务构造原本同步跑在 startup
+        # handler 里，uvicorn 要等 handler 返回才开端口，于是把 memory 端口
+        # 就绪足足推后 ~1.3s（合并单进程下又被串行放大）。worker 本身是可选的、
+        # 自带 warmup 延迟，greeting 不依赖向量——所以挪到后台 task，重活全程
+        # 在 to_thread 里跑，绝不阻塞 event loop / 拖慢端口就绪。
+        _spawn_background_task(_bootstrap_embedding_worker())
 
         _memory_runtime_init_completed = True
         logger.info("[Memory] 运行态初始化完成 (reason=%s)", reason or "manual")
@@ -3233,6 +3295,30 @@ async def maybe_spawn_review(name: str) -> None:
                 f"[Review/spawn] {name}: 长挂机 bypass MIN_NEW_MSGS_FOR_REVIEW "
                 f"(new_msgs={new_msg_count}, idle={idle_secs:.0f}s)"
             )
+        # Gate 6: 失败退避（dead-letter）。review 连续失败 ≥
+        # MEMORY_LIVENESS_MAX_ATTEMPTS 次且**输入未变**（当前 history 末尾 K 条
+        # fingerprint == 上次失败时记下的）→ 跳过本次 spawn，不再每轮空烧
+        # 3×110s 超时。输入一变（master 发了新消息，尾部 fingerprint 变）→ 视为
+        # 新输入，清掉失败计数放行重试。
+        # 必须放在 Gate 5 之后：长挂机 bypass 在 correction 模型持续超时时会
+        # 主动给死循环续命，本闸门要能压过它（用户审计 #1：实锤的整夜无限重烧）。
+        from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+        from memory.recent import build_review_fingerprint
+        state = _maint_state.setdefault(name, {})
+        fail_attempts = state.get('review_fail_attempts', 0) or 0
+        if fail_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS:
+            cur_fp = build_review_fingerprint(history)
+            if state.get('review_fail_fp') == cur_fp:
+                logger.debug(
+                    f"[Review/spawn] {name}: 失败退避 dead-letter "
+                    f"(连续失败 {fail_attempts} 次 ≥ {MEMORY_LIVENESS_MAX_ATTEMPTS} "
+                    f"且输入未变)，跳过本轮"
+                )
+                return
+            # 输入已变 → 旧失败计数过期，复位后放行重试
+            state['review_fail_attempts'] = 0
+            state['review_fail_fp'] = None
+            await _asave_maint_state()
         # 全过 → spawn
         logger.info(f"[Review/spawn] {name}: 触发 review (history_len={len(history)})")
         cancel_event = asyncio.Event()
@@ -3242,6 +3328,24 @@ async def maybe_spawn_review(name: str) -> None:
         # 这样 task 自己持有的 event 引用不会被并发的新 spawn 覆盖。
         task = asyncio.create_task(_run_review_in_background(name, snapshot, cancel_event))
         correction_tasks[name] = task
+
+
+async def _record_review_failure(lanlan_name: str, snapshot: list) -> int:
+    """记一次 review 失败到失败退避计数（Gate 6 用），返回累计次数。
+
+    输入 fingerprint 与上次失败记录不同 → 先把预算归零再 +1，让每段
+    history tail 各享独立的 N 次预算，不跨输入累积（Codex P2）。'failed'
+    返回分支和 except 异常分支共用本函数，避免两处逻辑漂移。
+    """
+    from memory.recent import build_review_fingerprint
+    state = _maint_state.setdefault(lanlan_name, {})
+    cur_fp = build_review_fingerprint(snapshot)
+    if state.get('review_fail_fp') != cur_fp:
+        state['review_fail_attempts'] = 0
+    state['review_fail_attempts'] = (state.get('review_fail_attempts', 0) or 0) + 1
+    state['review_fail_fp'] = cur_fp
+    await _asave_maint_state()
+    return state['review_fail_attempts']
 
 
 async def _run_review_in_background(
@@ -3271,9 +3375,20 @@ async def _run_review_in_background(
       race，但身份检查是廉价的防御。
     """
     try:
-        result = await recent_history_manager.review_history(
-            lanlan_name, snapshot, cancel_event=cancel_event,
-        )
+        # 只把 review_history 调用本身包进内层 try：它抛异常才算"review 失败"，
+        # 收口成 ('failed', None) 走下面统一的失败分支记一次退避。成功后的 result
+        # 处理 / state 落盘异常**不**能被当成 review 失败（否则 patched/white 的
+        # save 抖动会误判成失败、误触 Gate 6 dead-letter；'failed' 分支自己 save
+        # 抛异常也会被重复记一次）——那类异常交给外层 except 纯兜底、不 bump。
+        # 注：asyncio.CancelledError 是 BaseException，不被 except Exception 捕获，
+        # 会正常冒泡到外层 CancelledError 分支。
+        try:
+            result = await recent_history_manager.review_history(
+                lanlan_name, snapshot, cancel_event=cancel_event,
+            )
+        except Exception as e:
+            logger.error(f"❌ {lanlan_name} 的 review_history 抛异常，按失败处理: {e}")
+            result = ('failed', None)
         # 兼容意外的返回类型，统一解包
         if isinstance(result, tuple) and len(result) == 2:
             status, fingerprint = result
@@ -3286,6 +3401,9 @@ async def _run_review_in_background(
             state['review_clean'] = True
             state['last_review_ts'] = datetime.now().isoformat()
             state['last_reviewed_cutoff_tail'] = fingerprint
+            # 成功 → 清掉失败退避计数（Gate 6）
+            state['review_fail_attempts'] = 0
+            state['review_fail_fp'] = None
             await _asave_maint_state()
         elif status == 'white':
             logger.info(
@@ -3294,13 +3412,32 @@ async def _run_review_in_background(
             state['last_reviewed_cutoff_tail'] = None
             # 故意不更新 last_review_ts：让下轮 gate 4 用旧 ts（通常已过 30/60s）
             # 直接放行，配合 fingerprint=None 触发 gate 5 的 ∞ 通行 → 立即重 review。
+            # 白 review 是 cutoff 失配（输入实际已变）而非失败，清退避计数允许立即重建锚点。
+            state['review_fail_attempts'] = 0
+            state['review_fail_fp'] = None
             await _asave_maint_state()
+        elif cancel_event.is_set():
+            # review_history 在 cancel_event 置位时也返回 ('failed', None)，但这是
+            # 主动取消（cancel_correction：记忆编辑后立即生效）而非失败，不能计入
+            # 失败退避——否则用户频繁编辑记忆会被误判成 poison。
+            logger.info(f"ℹ️ {lanlan_name} 的记忆整理被取消（不计入失败退避）")
         else:
-            logger.info(f"ℹ️ {lanlan_name} 的记忆整理未执行（被跳过或失败）")
+            # 'failed'：LLM 持续失败 / 超时 / 格式错误。bump 失败退避计数 + 记下
+            # 本次失败的输入 fingerprint，供 Gate 6 在输入不变时 dead-letter，避免
+            # correction 模型一直超时 + 长挂机 bypass 续命导致整夜空烧（用户审计 #1）。
+            attempts = await _record_review_failure(lanlan_name, snapshot)
+            logger.info(
+                f"ℹ️ {lanlan_name} 的记忆整理未执行（被跳过或失败），"
+                f"失败退避计数 → {attempts}"
+            )
     except asyncio.CancelledError:
         logger.info(f"⚠️ {lanlan_name} 的记忆整理任务被取消")
     except Exception as e:
-        logger.error(f"❌ {lanlan_name} 的记忆整理任务出错: {e}")
+        # 纯兜底：能到这里的只剩 result 处理 / state 持久化等"非 review 失败"
+        # 的异常（review_history 自身抛已在内层收口成 'failed'）。这类异常**不**
+        # 计入失败退避——否则成功 review 的 save 抖动会被误判成失败、误触
+        # Gate 6 dead-letter 压住后续 review（Codex P2）。
+        logger.error(f"❌ {lanlan_name} 的记忆整理后处理出错（不计入失败退避）: {e}")
     finally:
         # 按 task/event 身份比对再清理：如果并发的新 spawn 已经写入了新 task /
         # 新 event，本 task 不应该把它们清掉。
@@ -3788,21 +3925,22 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
 @app.get("/get_recent_history/{lanlan_name}")
 async def get_recent_history(lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
+    _lang = get_global_language()
     # 检查角色是否存在于配置中
     try:
         character_data = await _config_manager.aload_characters()
         catgirl_names = list(character_data.get('猫娘', {}).keys())
         if lanlan_name not in catgirl_names:
             logger.warning(f"角色 '{lanlan_name}' 不在配置中，返回空历史记录")
-            return "开始聊天前，没有历史记录。\n"
+            return _loc(NO_RECENT_HISTORY, _lang)
     except Exception as e:
         logger.error(f"检查角色配置失败: {e}")
-        return "开始聊天前，没有历史记录。\n"
+        return _loc(NO_RECENT_HISTORY, _lang)
 
     history = await recent_history_manager.aget_recent_history(lanlan_name)
     _, _, _, _, name_mapping, _, _, _, _ = await _config_manager.aget_character_data()
     name_mapping['ai'] = lanlan_name
-    result = f"开始聊天前，{lanlan_name}又在脑海内整理了近期发生的事情。\n"
+    result = _loc(RECENT_HISTORY_INTRO, _lang).format(name=lanlan_name)
     for i in history:
         if i.type == 'system':
             result += i.content + "\n"
@@ -3830,18 +3968,38 @@ async def get_memory(query: str, lanlan_name: str):
 
 
 class QueryMemoryRequest(BaseModel):
-    query: str
+    # query / time 都可选，至少给一个有效值即可（time-only 是新支持的用法）。
+    # 两者都空时不报错，hybrid_recall 对空 query 短路返回空 results，调用方
+    # 把空结果翻成"没有找到相关记忆"——和本端点"绝不让召回失败/空入参把
+    # tool call 整死"的设计一致，所以这里不做 422/400 硬校验。
+    query: str | None = None
+    # 可选时间回溯：填了就把检索限定在该时间窗口。配合 query 时做"语义 +
+    # 时间"联合检索（窗口内按 query 排序）；只给 time 时按事件时间返回最
+    # 接近的 fact + reflection。格式见 memory.temporal.parse_time_window
+    # （整点小时 / 单日 / 整月 / 整年 / 区间）。不填或解析失败则走常规全量
+    # 语义检索。
+    time: str | None = None
 
 
 @app.post("/query_memory/{lanlan_name}")
 async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
     """混合检索 entry point —— BM25 + cosine embedding 并行召回 + RRF 融合。
 
-    POST body: ``{"query": "<自然语言查询>"}``
+    POST body: ``{"query": "<自然语言查询>", "time": "<可选 ISO 时间>"}``
 
     返回 ``hybrid_recall`` 的结构化结果（见 ``memory.hybrid_recall``
     docstring）。``main_server`` 的 ``recall_memory`` 工具 handler 调
     本端点拿结果，再格式化给模型看。
+
+    路由（query / time 三种组合）：
+    - **query + time**：``hybrid_recall(query, time_window=...)`` —— 先按事件
+      时间窗口硬过滤候选池，再在窗口内条目上跑语义检索（"那段时间里和
+      query 相关的记忆"）。
+    - **只有 time**：``recall_by_time`` —— 按事件时间锚点返回离该窗口最接近
+      的若干条 fact + reflection，不做语义打分（"那天/那周发生的事"）。
+    - **只有 query**：``hybrid_recall(query)`` —— 全量语义检索。
+    - time 解析失败时按"没给 time"处理，回落到纯 query 语义检索（不能让
+      一个坏 time 把 query 的语义召回也一起吞掉返回空，Codex P2）。
 
     ⚠️ 候选范围、阈值、budget 都在 ``config.HYBRID_RECALL_*`` 里配置；
     persona 整段不入池（已经常态渲染进 system prompt），facts +
@@ -3853,17 +4011,40 @@ async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
             status_code=503,
             detail="memory_server not fully initialized (limited mode or startup incomplete)",
         )
+    time_spec = (req.time or "").strip()
+    query_text = (req.query or "").strip()
     try:
         # Import 移进 try：若 memory.hybrid_recall 自身 import 失败（循环
         # import / 依赖缺失），仍然走下面的兜底返回空 results，避免端点
         # 直接 500 把 tool call 整死。
+        time_window = None
+        if time_spec:
+            from memory.temporal import parse_time_window
+            time_window = parse_time_window(time_spec)
+            if time_window is None:
+                logger.info(
+                    "[query_memory] %s: time=%r 无法解析为时间窗口，回落语义检索",
+                    lanlan_name, time_spec,
+                )
+            elif not query_text:
+                # 只给 time、没 query → 按时间邻近返回最接近的若干条。
+                from memory.hybrid_recall import recall_by_time
+                return await recall_by_time(
+                    lanlan_name=lanlan_name,
+                    time_spec=time_spec,
+                    fact_store=fact_store,
+                    reflection_engine=reflection_engine,
+                )
+        # query（+ 可选 time_window）→ 语义检索；time_window 非空即"语义 +
+        # 时间"联合检索（窗口内按 query 排序）。
         from memory.hybrid_recall import hybrid_recall
         return await hybrid_recall(
             lanlan_name=lanlan_name,
-            query=req.query or "",
+            query=query_text,
             fact_store=fact_store,
             reflection_engine=reflection_engine,
             config_manager=_config_manager,
+            time_window=time_window,
         )
     except Exception as exc:
         # 永不让一次召回失败把 tool call 整死——返回空 results，main_server

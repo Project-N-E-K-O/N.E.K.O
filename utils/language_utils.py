@@ -552,45 +552,83 @@ def normalize_language_code(lang: str, format: str = 'short') -> str:
 # 语言检测和翻译部分（原 language_utils.py）
 # ============================================================================
 
-# 尝试导入 googletrans
-try:
-    from googletrans import Translator
-    GOOGLETRANS_AVAILABLE = True
-    logger.debug("googletrans 导入成功")
-except ImportError as e:
-    GOOGLETRANS_AVAILABLE = False
-    logger.warning(f"googletrans 导入失败（未安装）: {e}，将跳过 Google 翻译")
-except Exception as e:
-    GOOGLETRANS_AVAILABLE = False
-    logger.warning(f"googletrans 导入失败（其他错误）: {e}，将跳过 Google 翻译")
+# 翻译后端懒加载：translatepy（~0.2s，含各翻译器的语言数据表）和 googletrans
+# 都只在真正翻译时才需要，不在 greeting 链上。改成首次使用时再 import，并由
+# utils.module_warmup 在 ready 后预热，使启动链不付这笔钱。
+Translator = None  # googletrans.Translator
+TranslatepyTranslator = None
+CHINA_ACCESSIBLE_SERVICES = None
+GOOGLETRANS_AVAILABLE: bool | None = None  # None = 尚未尝试导入
+TRANSLATEPY_AVAILABLE: bool | None = None
 
-# 尝试导入 translatepy
-try:
-    from translatepy import Translator as TranslatepyTranslator
-    # 导入在中国大陆可直接访问的翻译服务
-    from translatepy.translators.microsoft import MicrosoftTranslate
-    from translatepy.translators.bing import BingTranslate
-    from translatepy.translators.reverso import ReversoTranslate
-    from translatepy.translators.libre import LibreTranslate
-    from translatepy.translators.mymemory import MyMemoryTranslate
-    from translatepy.translators.translatecom import TranslateComTranslate
-    # 定义在中国大陆可直接访问的翻译服务列表（排除需要代理的 Google、Yandex、DeepL）
-    CHINA_ACCESSIBLE_SERVICES = [
-        MicrosoftTranslate,
-        BingTranslate,
-        ReversoTranslate,
-        LibreTranslate,
-        MyMemoryTranslate,
-        TranslateComTranslate,
-    ]
-    TRANSLATEPY_AVAILABLE = True
-    logger.debug("translatepy 导入成功，已配置中国大陆可访问的翻译服务")
-except ImportError as e:
-    TRANSLATEPY_AVAILABLE = False
-    logger.warning(f"translatepy 导入失败（未安装）: {e}，将跳过 translatepy 翻译")
-except Exception as e:
-    TRANSLATEPY_AVAILABLE = False
-    logger.warning(f"translatepy 导入失败（其他错误）: {e}，将跳过 translatepy 翻译")
+
+def _ensure_googletrans() -> bool:
+    """首次调用时 import googletrans，缓存结果。返回是否可用。"""
+    global Translator, GOOGLETRANS_AVAILABLE
+    # 显式强制不可用优先 → 降级。
+    if GOOGLETRANS_AVAILABLE is False:
+        return False
+    # 已注入/导入过 Translator → 信任，不重导入。
+    if Translator is not None:
+        GOOGLETRANS_AVAILABLE = True
+        return True
+    try:
+        from googletrans import Translator as _GTrans
+        # 只补缺失，保住测试可能注入的 Translator mock。
+        if Translator is None:
+            Translator = _GTrans
+        GOOGLETRANS_AVAILABLE = True
+        logger.debug("googletrans 导入成功")
+    except ImportError as e:
+        GOOGLETRANS_AVAILABLE = False
+        logger.warning(f"googletrans 导入失败（未安装）: {e}，将跳过 Google 翻译")
+    except Exception as e:
+        GOOGLETRANS_AVAILABLE = False
+        logger.warning(f"googletrans 导入失败（其他错误）: {e}，将跳过 Google 翻译")
+    return GOOGLETRANS_AVAILABLE
+
+
+def _ensure_translatepy() -> bool:
+    """首次调用时 import translatepy 及中国大陆可访问的翻译器，缓存结果。"""
+    global TranslatepyTranslator, CHINA_ACCESSIBLE_SERVICES, TRANSLATEPY_AVAILABLE
+    # 显式强制不可用优先 → 降级。
+    if TRANSLATEPY_AVAILABLE is False:
+        return False
+    # 已注入/导入过（翻译器 + 服务列表都就位）→ 信任，不重导入。
+    if TranslatepyTranslator is not None and CHINA_ACCESSIBLE_SERVICES is not None:
+        TRANSLATEPY_AVAILABLE = True
+        return True
+    try:
+        from translatepy import Translator as _TPyTrans
+        # 导入在中国大陆可直接访问的翻译服务
+        from translatepy.translators.microsoft import MicrosoftTranslate
+        from translatepy.translators.bing import BingTranslate
+        from translatepy.translators.reverso import ReversoTranslate
+        from translatepy.translators.libre import LibreTranslate
+        from translatepy.translators.mymemory import MyMemoryTranslate
+        from translatepy.translators.translatecom import TranslateComTranslate
+        # 只补缺失，保住测试可能注入的 TranslatepyTranslator / 服务列表 mock。
+        if TranslatepyTranslator is None:
+            TranslatepyTranslator = _TPyTrans
+        if CHINA_ACCESSIBLE_SERVICES is None:
+            # 中国大陆可直接访问的翻译服务（排除需要代理的 Google、Yandex、DeepL）
+            CHINA_ACCESSIBLE_SERVICES = [
+                MicrosoftTranslate,
+                BingTranslate,
+                ReversoTranslate,
+                LibreTranslate,
+                MyMemoryTranslate,
+                TranslateComTranslate,
+            ]
+        TRANSLATEPY_AVAILABLE = True
+        logger.debug("translatepy 导入成功，已配置中国大陆可访问的翻译服务")
+    except ImportError as e:
+        TRANSLATEPY_AVAILABLE = False
+        logger.warning(f"translatepy 导入失败（未安装）: {e}，将跳过 translatepy 翻译")
+    except Exception as e:
+        TRANSLATEPY_AVAILABLE = False
+        logger.warning(f"translatepy 导入失败（其他错误）: {e}，将跳过 translatepy 翻译")
+    return TRANSLATEPY_AVAILABLE
 
 # 进程级 Google 翻译失败标记：一旦 Google 在本进程内失败过一次，
 # 后续直接跳过 Google，避免每个请求都等满超时。前端的 skip_google
@@ -720,9 +758,9 @@ async def translate_with_translatepy(text: str, source_lang: str, target_lang: s
     Returns:
         翻译后的文本，失败时返回 None
     """
-    if not text or not text.strip() or not TRANSLATEPY_AVAILABLE:
+    if not text or not text.strip() or not _ensure_translatepy():
         return None
-    
+
     try:
         # translatepy 的语言代码映射（translatepy 支持多种语言名称和代码）
         TRANSLATEPY_LANG_MAP = {
@@ -972,9 +1010,9 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
         Returns:
             翻译结果或 None（超时或失败时返回 None）
         """
-        if not GOOGLETRANS_AVAILABLE:
+        if not _ensure_googletrans():
             return None
-        
+
         try:
             translator = Translator()
             
@@ -1020,7 +1058,7 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
     if is_china:
         # 中文区：直接走 translatepy（不再尝试 Google，避免每次都等满超时）
         logger.debug("⏭️ [翻译服务] 中文区，直接使用 translatepy")
-        if TRANSLATEPY_AVAILABLE:
+        if _ensure_translatepy():
             # 拉丁脚本歧义文本：传 'unknown' 让 translatepy 走 auto-detect
             translatepy_source = 'unknown' if ambiguous_latin_source else source_lang
             logger.debug(f"🌐 [翻译服务] 尝试 translatepy (中文区): {translatepy_source} -> {target_lang}")
@@ -1040,7 +1078,7 @@ async def translate_text(text: str, target_lang: str, source_lang: Optional[str]
         # skip_google_effective 综合了调用方意愿与本进程的失败标记
         if skip_google_effective:
             logger.debug("⏭️ [翻译服务] 跳过 Google 翻译（已被标记不可用 / 调用方要求），直接使用 LLM 翻译")
-        elif GOOGLETRANS_AVAILABLE:
+        elif _ensure_googletrans():
             logger.debug(f"🌐 [翻译服务] 尝试 Google 翻译 (非中文区): {source_lang} -> {target_lang}")
             translated_text = await _try_google_translate()
             if translated_text:

@@ -154,34 +154,67 @@ def validate_catgirl_name(name: str, allow_dots: bool = False, *, reject_reserve
     return True, ""
 
 
+# 单条消息文本上限(字符)。现场触发的内存尖峰复盘:用户从外部
+# 复制一坨长文本粘贴进 recent → 整段以单条 message 形式落盘 → 后续
+# memory pipeline 把这条当成「stale entry」喂给 embedder → batch 内
+# pad-to-longest 把激活内存顶到多 GB(虽然 embedder 侧已加 token 预算
+# 兜底,这里仍在边界堵住「单条 megablob」的入口,避免把异常大对象
+# 漫到 ndjson / db / recall 等所有下游)。32K 字符 ≈ 32K token(中文)
+# 对正常对话足够宽松(单条 5K 中文 = 一篇较长文章),又把 worst-case
+# 入站体积钉住。
+_RECENT_MESSAGE_TEXT_MAX_CHARS = 32 * 1024
+# 整个 chat payload 的累计文本上限。控制「一次粘贴 1000 条 30K 文本」
+# 这种总量攻击/误操作。2 MB 对真实长会话仍宽裕,异常体积会被打回。
+_RECENT_CHAT_TOTAL_CHARS_MAX = 2 * 1024 * 1024
+# 消息条数上限。冗余防御:即使每条都很短,几十万条也能把后续
+# scan/embed/render 全拖死。
+_RECENT_CHAT_MAX_MESSAGES = 10000
+
+
 def validate_chat_payload(chat: any) -> tuple[bool, str]:
     """
     Validate the chat payload structure.
-    
+
     Args:
         chat: The chat payload to validate
-        
+
     Returns:
         tuple: (is_valid, error_message)
     """
     if not isinstance(chat, list):
         return False, "chat 必须是一个列表"
-    
+
+    if len(chat) > _RECENT_CHAT_MAX_MESSAGES:
+        return False, f"chat 消息数 {len(chat)} 超过上限 {_RECENT_CHAT_MAX_MESSAGES}"
+
+    total_chars = 0
     for idx, item in enumerate(chat):
         if not isinstance(item, dict):
             return False, f"chat[{idx}] 必须是一个字典"
-        
+
         # Validate required 'role' key
         if 'role' not in item:
             return False, f"chat[{idx}] 缺少必需的 'role' 字段"
-        
+
         if not isinstance(item['role'], str):
             return False, f"chat[{idx}]['role'] 必须是字符串"
-        
+
         # Validate optional 'text' key if present
-        if 'text' in item and not isinstance(item['text'], str):
-            return False, f"chat[{idx}]['text'] 必须是字符串"
-    
+        if 'text' in item:
+            if not isinstance(item['text'], str):
+                return False, f"chat[{idx}]['text'] 必须是字符串"
+            text_len = len(item['text'])
+            if text_len > _RECENT_MESSAGE_TEXT_MAX_CHARS:
+                return False, (
+                    f"chat[{idx}]['text'] 长度 {text_len} 超过单条上限 "
+                    f"{_RECENT_MESSAGE_TEXT_MAX_CHARS}(粘贴超长文本请拆分)"
+                )
+            total_chars += text_len
+            if total_chars > _RECENT_CHAT_TOTAL_CHARS_MAX:
+                return False, (
+                    f"chat 累计文本超过总量上限 {_RECENT_CHAT_TOTAL_CHARS_MAX}"
+                )
+
     return True, ""
 
 

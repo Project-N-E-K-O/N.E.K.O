@@ -226,6 +226,8 @@ idna==3.10
     #   httpx
     #   requests
     #   yarl
+imagehash==4.3.2
+    # via n-e-k-o
 inquirer==3.4.1
     # via translatepy
 inquirerpy==0.3.4
@@ -276,10 +278,13 @@ numpy==1.26.4
     # via
     #   contourpy
     #   dxcam
+    #   imagehash
     #   matplotlib
     #   n-e-k-o
     #   onnxruntime
     #   pyrnnoise
+    #   pywavelets
+    #   scipy
     #   soundfile
     #   soxr
 oauthlib==3.3.1
@@ -308,6 +313,7 @@ pillow==11.3.0
     # via
     #   bilibili-api-python
     #   browser-use
+    #   imagehash
     #   matplotlib
     #   n-e-k-o
     #   pyscreeze
@@ -318,6 +324,7 @@ portalocker==2.10.1
     # via
     #   browser-use
     #   bubus
+    #   n-e-k-o
 posthog==7.8.6
     # via browser-use
 prompt-toolkit==3.0.52
@@ -338,8 +345,6 @@ psutil==7.2.2
     # via
     #   browser-use
     #   n-e-k-o
-py-cpuinfo==9.0.0
-    # via n-e-k-o
 pyasn1==0.6.1
     # via
     #   pyasn1-modules
@@ -1128,7 +1133,11 @@ python-multipart==0.0.20
     # via
     #   mcp
     #   n-e-k-o
-python3-xlib==0.15 ; sys_platform == 'linux'
+python-xlib==0.33 ; sys_platform == 'linux'
+    # via
+    #   n-e-k-o
+    #   pywinauto
+python3-xlib==0.15 ; sys_platform == 'never'
     # via
     #   mouseinfo
     #   pyautogui
@@ -1136,6 +1145,8 @@ pytweening==1.2.0
     # via pyautogui
 pyuseragents==1.0.5
     # via translatepy
+pywavelets==1.9.0
+    # via imagehash
 pywin32==311 ; sys_platform == 'win32'
     # via
     #   mcp
@@ -1148,6 +1159,7 @@ pyyaml==6.0.2
     # via
     #   bilibili-api-python
     #   huggingface-hub
+    #   n-e-k-o
 pyzmq==27.1.0
     # via n-e-k-o
 qrcode==8.2
@@ -1199,6 +1211,8 @@ runs==1.2.2
     # via editor
 safeio==1.2
     # via translatepy
+scipy==1.17.1
+    # via imagehash
 screeninfo==0.8.1 ; platform_system != 'darwin'
     # via browser-use
 shellingham==1.5.4
@@ -1208,6 +1222,7 @@ six==1.17.0
     #   markdownify
     #   posthog
     #   python-dateutil
+    #   python-xlib
     #   pywinauto
 smart-open==7.5.0
     # via audiolab

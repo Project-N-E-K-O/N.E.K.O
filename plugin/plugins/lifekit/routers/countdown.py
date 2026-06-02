@@ -9,6 +9,7 @@ from plugin.sdk.plugin import plugin_entry, quick_action, Ok, Err, SdkError
 from plugin.sdk.shared.core.router import PluginRouter
 
 from .._chat import push_lifekit_content
+from .._contracts import CountdownParams, DateDetailResult, DaysBetweenParams
 
 # 常见节日/节气（公历固定日期）
 _KNOWN_DATES: Dict[str, tuple[int, int]] = {
@@ -75,25 +76,21 @@ class CountdownRouter(PluginRouter):
             "支持具体日期(2025-10-01)、月日(10-01)、节日名(圣诞节/国庆节/元旦)。"
             "适合回答「距离国庆还有几天」「离圣诞节还有多久」。"
         ),
-        llm_result_fields=["summary", "detail"],
-        input_schema={
-            "type": "object",
-            "properties": {
-                "target_date": {
-                    "type": "string",
-                    "description": "目标日期：YYYY-MM-DD、MM-DD、或节日名（元旦/圣诞节/国庆节等）",
-                },
-                "label": {
-                    "type": "string",
-                    "description": "事件名称（如：生日、旅行、考试），留空自动识别",
-                    "default": "",
-                },
-            },
-            "required": ["target_date"],
-        },
+        params=CountdownParams,
+        llm_result_model=DateDetailResult,
     )
     @quick_action(icon="⏳", priority=4)
-    async def countdown(self, target_date: str = "", label: str = "", **_):
+    async def countdown(
+        self,
+        params: CountdownParams | None = None,
+        target_date: str = "",
+        label: str = "",
+        **_,
+    ):
+        if params is not None:
+            target_date = params.target_date
+            label = params.label
+
         if not target_date.strip():
             return Err(SdkError("请指定目标日期"))
 
@@ -139,24 +136,20 @@ class CountdownRouter(PluginRouter):
             "计算两个日期之间相隔多少天。"
             "适合回答「我们认识多少天了」「从某天到某天有多久」。"
         ),
-        llm_result_fields=["summary", "detail"],
-        input_schema={
-            "type": "object",
-            "properties": {
-                "start_date": {
-                    "type": "string",
-                    "description": "起始日期 (YYYY-MM-DD)，留空表示今天",
-                    "default": "",
-                },
-                "end_date": {
-                    "type": "string",
-                    "description": "结束日期 (YYYY-MM-DD)，留空表示今天",
-                    "default": "",
-                },
-            },
-        },
+        params=DaysBetweenParams,
+        llm_result_model=DateDetailResult,
     )
-    async def days_between(self, start_date: str = "", end_date: str = "", **_):
+    async def days_between(
+        self,
+        params: DaysBetweenParams | None = None,
+        start_date: str = "",
+        end_date: str = "",
+        **_,
+    ):
+        if params is not None:
+            start_date = params.start_date
+            end_date = params.end_date
+
         today = date.today()
         d1 = _parse_date(start_date) if start_date.strip() else today
         d2 = _parse_date(end_date) if end_date.strip() else today

@@ -245,6 +245,68 @@
         return fallback;
     }
 
+    function _escapeProminentNoticeHtml(value) {
+        return String(value || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    function _stripProminentMarkdown(value) {
+        return String(value || '')
+            .replace(/^#{1,6}\s+/, '')
+            .replace(/\*\*(.*?)\*\*/g, '$1')
+            .replace(/(?<!\*)\*(?!\*)(.*?)(?<!\*)\*(?!\*)/g, '$1')
+            .trim();
+    }
+
+    function _renderChangelogNoticeContent(container, notice, displayText) {
+        const lines = String(displayText || '')
+            .split(/\r?\n/)
+            .map(line => line.trim())
+            .filter(Boolean);
+        const firstLine = lines[0] || '';
+        const firstLineIsItem = /^[-•]\s+/.test(firstLine);
+        const headingText = firstLineIsItem ? '' : _stripProminentMarkdown(firstLine);
+        const versionMatch = headingText.match(/^v?([0-9]+(?:\.[0-9]+)*)(?:\s+(.+))?$/i);
+        const version = notice.version || (versionMatch ? versionMatch[1] : '');
+        const title = notice.title || (versionMatch ? versionMatch[2] : '') || headingText || _prominentNoticeText('notice.changelog.title', '更新内容');
+        const firstLineIsHeading = !!firstLine
+            && !firstLineIsItem
+            && (!!versionMatch || (!notice.title && !!headingText));
+        const itemLines = lines
+            .slice(firstLineIsHeading ? 1 : 0)
+            .filter(line => /^[-•]\s+/.test(line));
+
+        const itemsHtml = itemLines.map(line => {
+            const content = line.replace(/^[-•]\s+/, '').trim();
+            const match = content.match(/^\*\*(.+?)\*\*\s*[:：]\s*(.+)$/);
+            const itemTitle = match ? match[1] : '';
+            const itemBody = match ? match[2] : _stripProminentMarkdown(content);
+            return [
+                '<li class="prominent-notice-changelog-item">',
+                '<span class="prominent-notice-changelog-dot" aria-hidden="true"></span>',
+                '<span class="prominent-notice-changelog-copy">',
+                itemTitle ? '<strong>' + _escapeProminentNoticeHtml(itemTitle) + '</strong>' : '',
+                '<span>', _escapeProminentNoticeHtml(itemBody), '</span>',
+                '</span>',
+                '</li>',
+            ].join('');
+        }).join('');
+
+        container.innerHTML = [
+            '<div class="prominent-notice-changelog-head">',
+            version ? '<span class="prominent-notice-changelog-version">v' + _escapeProminentNoticeHtml(version) + '</span>' : '',
+            '<h2>', _escapeProminentNoticeHtml(title), '</h2>',
+            '</div>',
+            '<ul class="prominent-notice-changelog-list">',
+            itemsHtml || '<li class="prominent-notice-changelog-item"><span class="prominent-notice-changelog-copy"><span>' + _escapeProminentNoticeHtml(_stripProminentMarkdown(displayText)) + '</span></span></li>',
+            '</ul>',
+        ].join('');
+    }
+
     function _drainProminentNoticeQueue() {
         if (_prominentNoticeActive || _prominentNoticeQueue.length === 0) return;
         const { notice, resolve } = _prominentNoticeQueue.shift();
@@ -266,6 +328,7 @@
         const displayText = (notice.code && typeof safeT === 'function')
             ? safeT(notice.code, localeFallback)
             : localeFallback;
+        const isChangelogNotice = notice && notice.kind === 'changelog';
 
         // Electron 桌面宠物模式下 body 为 pointer-events:none，
         // 导致 preload 轮询器的 elementFromPoint 无法检测到 overlay，
@@ -292,56 +355,99 @@
         box.setAttribute('aria-modal', 'true');
         box.setAttribute('aria-label', displayText || 'Notice');
         box.tabIndex = -1;
-        box.style.cssText = `
-            position: relative;
-            background: #1e293b;
-            color: #f1f5f9;
-            border: 1px solid rgba(255,255,255,0.12);
-            border-radius: 16px;
-            padding: 32px 28px 24px;
-            width: 370px; max-width: 88vw;
-            max-height: min(82vh, 720px);
-            box-sizing: border-box;
-            box-shadow: 0 12px 40px rgba(0,0,0,0.5);
-            text-align: center;
-            pointer-events: auto;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            animation: pnBoxIn 0.3s ease;
-        `;
+        box.className = isChangelogNotice
+            ? 'prominent-notice-box prominent-notice-box-changelog'
+            : 'prominent-notice-box';
+        box.style.cssText = isChangelogNotice
+            ? `
+                position: relative;
+                background: linear-gradient(180deg, #fffafd 0%, #f1f8ff 100%);
+                color: #334155;
+                border: 1px solid rgba(255,255,255,0.92);
+                border-radius: 26px;
+                padding: 28px 30px 24px;
+                width: min(640px, calc(100vw - 44px));
+                max-height: min(82vh, 720px);
+                box-sizing: border-box;
+                box-shadow: 0 24px 70px rgba(92,132,184,0.28), inset 0 1px 0 rgba(255,255,255,0.95);
+                text-align: left;
+                pointer-events: auto;
+                display: flex;
+                flex-direction: column;
+                align-items: stretch;
+                animation: pnBoxIn 0.3s ease;
+            `
+            : `
+                position: relative;
+                background: #1e293b;
+                color: #f1f5f9;
+                border: 1px solid rgba(255,255,255,0.12);
+                border-radius: 16px;
+                padding: 32px 28px 24px;
+                width: 370px; max-width: 88vw;
+                max-height: min(82vh, 720px);
+                box-sizing: border-box;
+                box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+                text-align: center;
+                pointer-events: auto;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                animation: pnBoxIn 0.3s ease;
+            `;
 
         const btn = document.createElement('button');
         const _hasMore = _prominentNoticeQueue.length > 0;
         btn.textContent = _hasMore
             ? _prominentNoticeText('common.next', '下一个')
             : _prominentNoticeText('common.confirm', '确认');
-        btn.style.cssText = `
-            background: #3b82f6; color: #fff; border: none;
-            border-radius: 10px; padding: 10px 48px;
-            font-size: 15px; font-weight: 600; cursor: pointer;
-            pointer-events: auto;
-            transition: background 0.15s;
-            flex-shrink: 0;
-        `;
+        btn.style.cssText = isChangelogNotice
+            ? `
+                align-self: center;
+                min-width: 150px;
+                background: linear-gradient(180deg, #8dccff 0%, #65aef4 100%);
+                color: #fff;
+                border: none;
+                border-radius: 999px;
+                padding: 12px 42px;
+                font-size: 15px;
+                font-weight: 700;
+                cursor: pointer;
+                pointer-events: auto;
+                transition: transform 0.15s ease, filter 0.15s ease;
+                box-shadow: 0 14px 30px rgba(101,174,244,0.34), inset 0 3px 6px rgba(255,255,255,0.36);
+                flex-shrink: 0;
+            `
+            : `
+                background: #3b82f6; color: #fff; border: none;
+                border-radius: 10px; padding: 10px 48px;
+                font-size: 15px; font-weight: 600; cursor: pointer;
+                pointer-events: auto;
+                transition: background 0.15s;
+                flex-shrink: 0;
+            `;
 
         const icon = document.createElement('img');
-        icon.src = '/static/icons/exclamation.png';
-        icon.alt = '';
-        icon.style.cssText = 'width:36px;height:36px;margin-bottom:14px;flex-shrink:0;';
+        if (!isChangelogNotice) {
+            icon.src = '/static/icons/exclamation.png';
+            icon.alt = '';
+            icon.style.cssText = 'width:36px;height:36px;margin-bottom:14px;flex-shrink:0;';
+        }
 
         const textDiv = document.createElement('div');
-        textDiv.className = 'prominent-notice-body';
+        textDiv.className = isChangelogNotice
+            ? 'prominent-notice-body prominent-notice-body-changelog'
+            : 'prominent-notice-body';
         textDiv.style.cssText = [
-            'font-size:16px',
-            'font-weight:600',
-            'line-height:1.7',
-            'margin-bottom:22px',
+            isChangelogNotice ? 'font-size:14px' : 'font-size:16px',
+            isChangelogNotice ? 'font-weight:500' : 'font-weight:600',
+            isChangelogNotice ? 'line-height:1.55' : 'line-height:1.7',
+            isChangelogNotice ? 'margin-bottom:20px' : 'margin-bottom:22px',
             'text-align:left',
             'width:100%',
             'min-height:0',
             'flex:1 1 auto',
-            'max-height:min(54vh,420px)',
+            isChangelogNotice ? 'max-height:min(56vh,460px)' : 'max-height:min(54vh,420px)',
             'overflow-y:auto',
             'overflow-x:hidden',
             'overflow-wrap:anywhere',
@@ -352,13 +458,17 @@
             'overscroll-behavior:contain',
             'box-sizing:border-box',
         ].join(';');
-        if (typeof window.renderMiniMarkdown === 'function') {
+        if (isChangelogNotice) {
+            _renderChangelogNoticeContent(textDiv, notice, displayText);
+        } else if (typeof window.renderMiniMarkdown === 'function') {
             textDiv.innerHTML = window.renderMiniMarkdown(displayText);
         } else {
             textDiv.textContent = displayText;
         }
 
-        box.appendChild(icon);
+        if (!isChangelogNotice) {
+            box.appendChild(icon);
+        }
         box.appendChild(textDiv);
         box.appendChild(btn);
         overlay.appendChild(box);
@@ -392,6 +502,110 @@
                     background: rgba(148, 163, 184, 0.62);
                     border: 2px solid transparent;
                     background-clip: padding-box;
+                }
+                .prominent-notice-box-changelog .prominent-notice-body::-webkit-scrollbar-thumb {
+                    background: rgba(126, 166, 211, 0.36);
+                }
+                .prominent-notice-box-changelog .prominent-notice-body::-webkit-scrollbar-thumb:hover {
+                    background: rgba(126, 166, 211, 0.58);
+                }
+                .prominent-notice-changelog-head {
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 12px;
+                    margin: 0 0 18px;
+                    text-align: center;
+                }
+                .prominent-notice-changelog-version {
+                    display: inline-flex;
+                    align-items: center;
+                    justify-content: center;
+                    min-width: 64px;
+                    height: 32px;
+                    padding: 0 12px;
+                    border-radius: 999px;
+                    background: rgba(107, 176, 242, 0.14);
+                    color: #4f91d6;
+                    font-size: 14px;
+                    font-weight: 800;
+                    box-shadow: inset 0 0 0 1px rgba(107,176,242,0.18);
+                }
+                .prominent-notice-changelog-head h2 {
+                    margin: 0;
+                    color: #334155;
+                    font-size: 24px;
+                    line-height: 1.25;
+                    font-weight: 800;
+                    letter-spacing: 0;
+                }
+                .prominent-notice-changelog-list {
+                    display: grid;
+                    grid-template-columns: 1fr;
+                    gap: 10px;
+                    margin: 0;
+                    padding: 0;
+                    list-style: none;
+                }
+                .prominent-notice-changelog-item {
+                    display: grid;
+                    grid-template-columns: 10px 1fr;
+                    gap: 12px;
+                    align-items: start;
+                    margin: 0 !important;
+                    padding: 12px 14px;
+                    list-style: none !important;
+                    border-radius: 14px;
+                    background: rgba(255,255,255,0.62);
+                    box-shadow: inset 0 0 0 1px rgba(148,163,184,0.13);
+                    text-align: left !important;
+                }
+                .prominent-notice-changelog-dot {
+                    width: 8px;
+                    height: 8px;
+                    margin-top: 7px;
+                    border-radius: 999px;
+                    background: #8dccff;
+                    box-shadow: 0 0 0 4px rgba(141,204,255,0.18);
+                }
+                .prominent-notice-changelog-copy {
+                    display: flex;
+                    flex-direction: column;
+                    gap: 3px;
+                    min-width: 0;
+                }
+                .prominent-notice-changelog-copy strong {
+                    color: #475569;
+                    font-size: 15px;
+                    line-height: 1.35;
+                    font-weight: 800;
+                }
+                .prominent-notice-changelog-copy span {
+                    color: #64748b;
+                    font-size: 13px;
+                    line-height: 1.55;
+                    font-weight: 600;
+                }
+                .prominent-notice-box-changelog button:hover,
+                .prominent-notice-box-changelog button:focus-visible {
+                    transform: translateY(-2px);
+                    filter: brightness(1.03);
+                    outline: none;
+                }
+                .prominent-notice-box-changelog button:active {
+                    transform: translateY(0) scale(0.98);
+                }
+                @media (max-width: 560px) {
+                    .prominent-notice-changelog-head {
+                        flex-direction: column;
+                        gap: 8px;
+                    }
+                    .prominent-notice-changelog-head h2 {
+                        font-size: 20px;
+                    }
+                    .prominent-notice-changelog-item {
+                        padding: 11px 12px;
+                    }
                 }
             `;
             document.head.appendChild(s);
@@ -1231,8 +1445,10 @@
     //     (app.js lines 6078-6785)
     // ================================================================
 
-    const MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE = 80;
+    const MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE = 160;
     let multiWindowReturnBallDragState = null;
+    let idleReturnBallDesktopDragStateFrame = 0;
+    let idleReturnBallDesktopDragStatePending = null;
 
     function waitForAnimationFrames(count) {
         const remaining = Math.max(1, Number(count) || 1);
@@ -1361,8 +1577,10 @@
         container.style.bottom = savedStyle.bottom;
         container.style.transform = savedStyle.transform;
         container.style.opacity = savedStyle.opacity;
+        container.style.visibility = savedStyle.visibility;
         container.style.transition = savedStyle.transition;
         container.style.willChange = savedStyle.willChange;
+        container.style.removeProperty('--neko-ball-drag-size');
         dragState.savedBallStyle = null;
         return true;
     }
@@ -1370,8 +1588,10 @@
     function resetReturnBallTemporaryStyle(container) {
         if (!container) return;
         container.style.removeProperty('opacity');
+        container.style.removeProperty('visibility');
         container.style.removeProperty('transition');
         container.style.removeProperty('will-change');
+        container.style.removeProperty('--neko-ball-drag-size');
         container.setAttribute('data-dragging', 'false');
     }
 
@@ -1384,6 +1604,7 @@
         container.style.display = 'none';
         container.style.pointerEvents = 'none';
         container.style.removeProperty('visibility');
+        scheduleIdleReturnBallDesktopBridge('return-ball-hide', container);
     }
 
     function positionReturnBallContainer(container, anchorRect) {
@@ -1422,6 +1643,10 @@
         container.style.visibility = 'hidden';
         container.style.pointerEvents = 'none';
         positionReturnBallContainer(container, anchorRect);
+        container.style.opacity = '0';
+        container.style.transform = 'translate3d(0, 8px, 0) scale(0.94)';
+        container.style.transition = 'opacity 420ms cubic-bezier(0.22, 1, 0.36, 1), transform 520ms cubic-bezier(0.22, 1, 0.36, 1)';
+        container.style.willChange = 'opacity, transform';
 
         void container.offsetWidth;
 
@@ -1431,12 +1656,134 @@
             if (container.style.display === 'none') return;
             container.style.visibility = 'visible';
             container.style.pointerEvents = 'auto';
+            container.style.opacity = '1';
+            container.style.transform = 'none';
+            scheduleIdleReturnBallDesktopBridge('return-ball-revealed', container);
         });
         container.__nekoReturnBallRevealFrame = revealFrameId;
+        scheduleIdleReturnBallDesktopBridge('return-ball-show', container);
         return container;
     }
 
+    function getVisibleIdleReturnBallContainer() {
+        return document.querySelector('[id$="-return-button-container"][data-neko-return-visible="true"]');
+    }
+
+    function getIdleReturnBallScreenRect(container) {
+        if (!container || typeof container.getBoundingClientRect !== 'function') return null;
+        const rect = container.getBoundingClientRect();
+        if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+        const screenLeft = Number.isFinite(window.screenX) ? window.screenX : 0;
+        const screenTop = Number.isFinite(window.screenY) ? window.screenY : 0;
+        return {
+            left: Math.round(screenLeft + rect.left),
+            top: Math.round(screenTop + rect.top),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+            right: Math.round(screenLeft + rect.left + rect.width),
+            bottom: Math.round(screenTop + rect.top + rect.height)
+        };
+    }
+
+    function canPostIdleReturnBallDesktopState() {
+        const body = document.body;
+        return !(body && body.classList && body.classList.contains('electron-chat-window'));
+    }
+
+    function postIdleReturnBallDesktopState(reason, container, overrideScreenRect) {
+        if (!canPostIdleReturnBallDesktopState()) return;
+        const target = container || getVisibleIdleReturnBallContainer();
+        const visible = !!(target && target.getAttribute('data-neko-return-visible') === 'true' && target.style.display !== 'none');
+        const tier = visible
+            ? (target.getAttribute('data-neko-idle-tier') || 'none')
+            : 'none';
+        const screenRect = overrideScreenRect || (visible ? getIdleReturnBallScreenRect(target) : null);
+        const payload = {
+            action: 'idle_return_ball_state',
+            source: 'pet-window',
+            reason: reason || 'sync',
+            visible: visible,
+            tier: tier,
+            screenRect: visible ? screenRect : null,
+            lanlan_name: (window.lanlan_config && window.lanlan_config.lanlan_name) || '',
+            timestamp: Date.now()
+        };
+
+        window.dispatchEvent(new CustomEvent('neko:idle-return-ball-state', { detail: payload }));
+
+        const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
+        if (channel && typeof channel.postMessage === 'function') {
+            try {
+                channel.postMessage(payload);
+            } catch (_) {}
+        }
+    }
+
+    function scheduleIdleReturnBallDesktopBridge(reason, container, overrideScreenRect) {
+        if (!canPostIdleReturnBallDesktopState()) return;
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                postIdleReturnBallDesktopState(reason, container, overrideScreenRect);
+            });
+        });
+    }
+
+    function clearIdleReturnBallDesktopDragStateFrame() {
+        if (idleReturnBallDesktopDragStateFrame) {
+            cancelAnimationFrame(idleReturnBallDesktopDragStateFrame);
+            idleReturnBallDesktopDragStateFrame = 0;
+        }
+        idleReturnBallDesktopDragStatePending = null;
+    }
+
+    function scheduleIdleReturnBallDesktopDragState(container, overrideScreenRect) {
+        if (!canPostIdleReturnBallDesktopState()) return;
+        idleReturnBallDesktopDragStatePending = {
+            container: container,
+            overrideScreenRect: overrideScreenRect
+        };
+        if (idleReturnBallDesktopDragStateFrame) return;
+        idleReturnBallDesktopDragStateFrame = requestAnimationFrame(() => {
+            idleReturnBallDesktopDragStateFrame = 0;
+            const pending = idleReturnBallDesktopDragStatePending;
+            idleReturnBallDesktopDragStatePending = null;
+            if (!pending) return;
+            postIdleReturnBallDesktopState(
+                'return-ball-dragging',
+                pending.container,
+                pending.overrideScreenRect
+            );
+        });
+    }
+
+    function getReturnBallDragScreenRect(screenX, screenY, width, height) {
+        const w = Math.max(1, Math.round(width || 64));
+        const h = Math.max(1, Math.round(height || 64));
+        const left = Math.round(screenX - w / 2);
+        const top = Math.round(screenY - h / 2);
+        return {
+            left: left,
+            top: top,
+            width: w,
+            height: h,
+            right: left + w,
+            bottom: top + h
+        };
+    }
+
+    window.addEventListener('neko:auto-goodbye:state-change', (event) => {
+        const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
+        if (!detail || detail.type !== 'visual-tier') return;
+        scheduleIdleReturnBallDesktopBridge(
+            detail.source === 'return-ball-drag-demotion' ? 'return-ball-drag-demotion' : 'visual-tier'
+        );
+    });
+    window.addEventListener('resize', () => {
+        scheduleIdleReturnBallDesktopBridge('viewport-resize');
+    });
+
     function clearMultiWindowReturnBallDeferredWork(state) {
+        clearIdleReturnBallDesktopDragStateFrame();
         if (!state) return;
         if (state.viewportWaitFallbackTimer) {
             clearTimeout(state.viewportWaitFallbackTimer);
@@ -1529,6 +1876,17 @@
             restoreSavedReturnBallStyle(container, state);
         }
 
+        function revealReturnBallDragWindow() {
+            if (!window.nekoPetDrag || typeof window.nekoPetDrag.reveal !== 'function') {
+                return;
+            }
+            try {
+                void window.nekoPetDrag.reveal();
+            } catch (error) {
+                console.warn('[App] 返回球拖拽渲染完成后恢复窗口显示失败:', error);
+            }
+        }
+
         function getSavedBallStyleValue(key) {
             return state.savedBallStyle ? state.savedBallStyle[key] : '';
         }
@@ -1588,8 +1946,9 @@
             clearMultiWindowReturnBallDeferredWork(state);
             const fallbackMs = options && Number.isFinite(options.fallbackMs)
                 ? options.fallbackMs
-                : 120;
+                : 600;
             const fallbackDeadline = Date.now() + Math.max(0, fallbackMs);
+            const hardFallbackDeadline = fallbackDeadline + Math.max(1000, Math.max(0, fallbackMs) * 2);
 
             const runWhenStable = () => {
                 requestAnimationFrame(() => {
@@ -1616,19 +1975,34 @@
                 void tryFinish();
             };
             window.addEventListener('resize', state.viewportWaitOnResize);
+            let timeoutWarned = false;
             const pollViewportRestore = () => {
                 if (!isActiveDragToken(dragToken)) return;
                 if (tryFinish()) return;
 
                 const remainingMs = fallbackDeadline - Date.now();
                 if (remainingMs <= 0) {
-                    console.warn(
-                        '[pollViewportRestore] waitForViewportSize timed out — dropping deferred work (click may be lost).',
-                        'dragToken:', state.dragSessionToken,
-                        'fallbackMs:', fallbackMs,
-                        'fallbackDeadline:', fallbackDeadline
-                    );
-                    clearMultiWindowReturnBallDeferredWork(state);
+                    if (Date.now() >= hardFallbackDeadline) {
+                        console.warn(
+                            '[pollViewportRestore] waitForViewportSize hard timeout; continuing best-effort cleanup.',
+                            'dragToken:', state.dragSessionToken,
+                            'fallbackMs:', fallbackMs,
+                            'fallbackDeadline:', fallbackDeadline
+                        );
+                        clearMultiWindowReturnBallDeferredWork(state);
+                        runWhenStable();
+                        return;
+                    }
+                    if (!timeoutWarned) {
+                        timeoutWarned = true;
+                        console.warn(
+                            '[pollViewportRestore] waitForViewportSize timed out; keeping return-ball hidden until viewport is restored.',
+                            'dragToken:', state.dragSessionToken,
+                            'fallbackMs:', fallbackMs,
+                            'fallbackDeadline:', fallbackDeadline
+                        );
+                    }
+                    state.viewportWaitFallbackTimer = setTimeout(pollViewportRestore, 50);
                     return;
                 }
 
@@ -1673,6 +2047,18 @@
             state.dragSessionToken += 1;
             const dragToken = state.dragSessionToken;
 
+            const dragStarted = window.nekoPetDrag.start(screenX, screenY);
+            if (dragStarted === false) {
+                return;
+            }
+
+            window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
+                detail: {
+                    reason: 'return-ball-drag-start',
+                    container: container
+                }
+            }));
+
             state.isDragging = true;
             state.hasMoved = false;
             state.startScreenX = screenX;
@@ -1692,6 +2078,7 @@
                 bottom: container.style.bottom,
                 transform: container.style.transform,
                 opacity: container.style.opacity,
+                visibility: container.style.visibility,
                 transition: container.style.transition,
                 willChange: container.style.willChange,
             };
@@ -1702,6 +2089,7 @@
             // 先隐藏球再移动到居中位置，防止闪烁
             container.style.transition = 'none';
             container.style.opacity = '0';
+            container.style.setProperty('--neko-ball-drag-size', `${state.savedBallWidth}px`);
 
             container.style.left = `${centeredLeft}px`;
             container.style.top = `${centeredTop}px`;
@@ -1719,14 +2107,15 @@
                     'body[data-neko-ball-drag], body[data-neko-ball-drag] * { background:transparent!important; background-color:transparent!important; box-shadow:none!important; }',
                     'body[data-neko-ball-drag] > *:not([id$="-return-button-container"]) { display:none!important; }',
                     'body[data-neko-ball-drag] * { transition:none!important; animation:none!important; }',
+                    'body[data-neko-ball-drag] .neko-idle-return-btn { --neko-idle-return-size:var(--neko-ball-drag-size)!important; width:var(--neko-ball-drag-size)!important; height:var(--neko-ball-drag-size)!important; min-width:var(--neko-ball-drag-size)!important; min-height:var(--neko-ball-drag-size)!important; max-width:var(--neko-ball-drag-size)!important; max-height:var(--neko-ball-drag-size)!important; }',
+                    'body[data-neko-ball-drag] .neko-idle-return-art, body[data-neko-ball-drag] .neko-idle-return-art-next { width:100%!important; height:100%!important; object-fit:contain!important; object-position:center!important; }',
                 ].join('\n');
                 document.head.appendChild(styleEl);
             }
             document.body.dataset.nekoBallDrag = '1';
-            window.nekoPetDrag.start(screenX, screenY);
 
             // dragStart 的 shrink 通过异步 IPC 落到主进程，不能再靠固定帧数猜测
-            // 80x80 视口已经生效；否则返回球会按临时 left/top 在原窗口左侧闪一帧。
+            // 拖拽视口已经生效；否则返回球会按临时 left/top 在原窗口左侧闪一帧。
             waitForViewportSize(
                 dragToken,
                 MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE,
@@ -1734,9 +2123,10 @@
                 () => {
                     if (!state.isDragging || !isActiveDragToken(dragToken)) return;
                     container.style.opacity = getSavedBallStyleValue('opacity');
+                    container.style.visibility = getSavedBallStyleValue('visibility');
                     container.style.willChange = 'opacity';
                 },
-                { fallbackMs: 160 }
+                { fallbackMs: 600 }
             );
 
             if (event) {
@@ -1749,13 +2139,30 @@
             if (!state.isDragging) return;
             state.releaseScreenX = screenX;
             state.releaseScreenY = screenY;
-            if (state.hasMoved) return;
 
             const dx = screenX - state.startScreenX;
             const dy = screenY - state.startScreenY;
-            if (Math.abs(dx) > CLICK_THRESHOLD || Math.abs(dy) > CLICK_THRESHOLD) {
+            const movedPastClickThreshold = Math.abs(dx) > CLICK_THRESHOLD || Math.abs(dy) > CLICK_THRESHOLD;
+            if (!state.hasMoved && movedPastClickThreshold) {
                 state.hasMoved = true;
                 container.setAttribute('data-dragging', 'true');
+                window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
+                    detail: {
+                        reason: 'return-ball-drag-active',
+                        container: container
+                    }
+                }));
+            }
+            if (state.hasMoved) {
+                scheduleIdleReturnBallDesktopDragState(
+                    container,
+                    getReturnBallDragScreenRect(
+                        screenX,
+                        screenY,
+                        state.savedBallWidth,
+                        state.savedBallHeight
+                    )
+                );
             }
         }
 
@@ -1771,6 +2178,8 @@
             // 先瞬间隐藏球，防止恢复 UI 时球在 (8,8) 闪烁
             container.style.transition = 'none';
             container.style.opacity = '0';
+            container.style.visibility = 'hidden';
+            void container.offsetWidth;
 
             if (!state.hasMoved) {
                 container.setAttribute('data-dragging', 'true');
@@ -1787,12 +2196,18 @@
                     restoreSavedBallStyle();
                     delete document.body.dataset.nekoBallDrag;
                     container.setAttribute('data-dragging', 'false');
+                    scheduleIdleReturnBallDesktopBridge('return-ball-drag-click', container);
+                    revealReturnBallDragWindow();
                     dispatchReturnBallClick();
                 });
                 return;
             }
             const finalBounds = await resolveFinalWindowBounds(screenX, screenY, dragToken);
             if (!isActiveDragToken(dragToken)) return;
+            const movedDistancePx = Math.hypot(
+                state.releaseScreenX - state.startScreenX,
+                state.releaseScreenY - state.startScreenY
+            );
 
             let shouldRestoreSavedBallStyle = false;
             if (finalBounds) {
@@ -1819,14 +2234,33 @@
                     restoreSavedBallStyle();
                     container.setAttribute('data-dragging', 'false');
                     delete document.body.dataset.nekoBallDrag;
+                    scheduleIdleReturnBallDesktopBridge('return-ball-drag-end', container);
+                    window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
+                        detail: {
+                            reason: 'return-ball-drag-end',
+                            container: container,
+                            movedDistancePx: movedDistancePx
+                        }
+                    }));
+                    revealReturnBallDragWindow();
                     return;
                 }
                 // 先同步恢复球 opacity，再删除 nekoBallDrag 显示页面内容，
                 // 避免 1 帧"页面可见但球不可见"的闪烁
                 container.style.opacity = getSavedBallStyleValue('opacity');
+                container.style.visibility = getSavedBallStyleValue('visibility');
                 container.style.willChange = getSavedBallStyleValue('willChange');
                 container.setAttribute('data-dragging', 'false');
                 delete document.body.dataset.nekoBallDrag;
+                scheduleIdleReturnBallDesktopBridge('return-ball-drag-end', container);
+                window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
+                    detail: {
+                        reason: 'return-ball-drag-end',
+                        container: container,
+                        movedDistancePx: movedDistancePx
+                    }
+                }));
+                revealReturnBallDragWindow();
                 // 延迟恢复 transition，避免恢复瞬间触发动画
                 state.transitionCleanupTimer = setTimeout(() => {
                     state.transitionCleanupTimer = null;

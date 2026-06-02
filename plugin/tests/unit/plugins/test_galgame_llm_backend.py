@@ -77,7 +77,7 @@ def test_llm_backend_prompt_message_contracts_are_stable() -> None:
     }
     text = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     assert hashlib.sha256(text.encode("utf-8")).hexdigest() == (
-        "7d32bddc399b7480b1471cad3e2b31cabaac894757d23b5b6246678c175b2ad6"
+        "f63025f0087981c3adf3cd5eff0f428744397990bb2a2eeb738349cc6c238821"
     )
 
 

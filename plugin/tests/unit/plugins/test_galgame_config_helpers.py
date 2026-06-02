@@ -7,7 +7,6 @@ from types import SimpleNamespace
 import pytest
 
 from plugin.plugins.galgame_plugin import GalgamePluginConfigService
-from plugin.plugins.galgame_plugin.install_tasks import install_task_state_path
 from plugin.plugins.galgame_plugin.models import (
     GalgameConfig,
     STORE_LLM_VISION_ENABLED,
@@ -21,6 +20,7 @@ from plugin.plugins.galgame_plugin.models import (
     STORE_READER_MODE,
     json_copy,
 )
+from plugin.server.routes._install_task_store import install_task_state_path
 
 
 pytestmark = pytest.mark.plugin_unit
@@ -100,7 +100,7 @@ def test_galgame_config_groups_fields_and_keeps_flat_compatibility(tmp_path: Pat
         memory_reader_hook_codes=["/HSN-4@1234"],
     )
 
-    assert len(fields(GalgameConfig)) == 7
+    assert len(fields(GalgameConfig)) == 8
     assert cfg.bridge.bridge_root == tmp_path / "bridge"
     assert cfg.bridge_root == tmp_path / "bridge"
     assert cfg.bridge.auto_open_ui is True

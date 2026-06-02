@@ -6,6 +6,12 @@
 window.AgentHUD = window.AgentHUD || {};
 
 var PLUGIN_DASHBOARD_REDIRECT_URL = '/api/agent/user_plugin/dashboard';
+const STANDALONE_HUD_POSITION = Object.freeze({
+    top: '0',
+    left: '0',
+    right: 'auto',
+    transform: 'none'
+});
 
 function appendPluginDashboardOpenerOrigin(url) {
     const target = new URL(url, document.baseURI || window.location.href);
@@ -22,6 +28,25 @@ function getPluginDashboardRedirectUrl() {
 function appendCacheBuster(url) {
     var separator = typeof url === 'string' && url.indexOf('?') >= 0 ? '&' : '?';
     return `${url}${separator}v=${Date.now()}`;
+}
+
+function isStandaloneAgentHudPage() {
+    try {
+        return !!(document.body && document.body.classList.contains('agent-hud-standalone-page'));
+    } catch (_) {
+        return false;
+    }
+}
+
+function setAgentHudDraggingState(active) {
+    try {
+        if (document.body) {
+            document.body.classList.toggle('neko-agent-hud-dragging', !!active);
+        }
+        window.dispatchEvent(new CustomEvent('neko-agent-hud-drag-state', {
+            detail: { dragging: !!active }
+        }));
+    } catch (_) {}
 }
 
 /**
@@ -363,10 +388,15 @@ window.AgentHUD.createAgentTaskHUD = function () {
     hud.id = 'agent-task-hud';
 
     // 获取保存的位置或使用默认位置
-    const savedPos = localStorage.getItem('agent-task-hud-position');
+    const standaloneAgentHud = isStandaloneAgentHudPage();
+    const savedPos = standaloneAgentHud ? null : localStorage.getItem('agent-task-hud-position');
     let position = { top: '50%', right: '20px', transform: 'translateY(-50%)' };
 
-    if (savedPos) {
+    if (standaloneAgentHud) {
+        position = STANDALONE_HUD_POSITION;
+    }
+
+    if (!standaloneAgentHud && savedPos) {
         try {
             const parsed = JSON.parse(savedPos);
             position = {
@@ -382,8 +412,9 @@ window.AgentHUD.createAgentTaskHUD = function () {
 
     Object.assign(hud.style, {
         position: 'fixed',
-        width: '320px',
-        maxHeight: '60vh',
+        width: standaloneAgentHud ? '100%' : '320px',
+        maxHeight: standaloneAgentHud ? '100vh' : '60vh',
+        height: standaloneAgentHud ? '100%' : '',
         background: 'var(--neko-popup-bg, rgba(255, 255, 255, 0.65))',
         backdropFilter: 'saturate(180%) blur(20px)',
         WebkitBackdropFilter: 'saturate(180%) blur(20px)',
@@ -401,7 +432,7 @@ window.AgentHUD.createAgentTaskHUD = function () {
         pointerEvents: 'auto',
         overflowY: 'auto',
         transition: 'opacity 0.4s cubic-bezier(0.16, 1, 0.3, 1), transform 0.4s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.3s ease, width 0.4s cubic-bezier(0.16, 1, 0.3, 1), padding 0.4s ease, max-height 0.4s ease',
-        cursor: 'move',
+        cursor: standaloneAgentHud ? 'default' : 'move',
         userSelect: 'none',
         willChange: 'transform, width',
         contain: 'layout style paint'
@@ -415,6 +446,7 @@ window.AgentHUD.createAgentTaskHUD = function () {
 
     // HUD 标题栏
     const header = document.createElement('div');
+    header.id = 'agent-task-hud-header';
     Object.assign(header.style, {
         display: 'flex',
         alignItems: 'center',
@@ -585,7 +617,7 @@ window.AgentHUD.createAgentTaskHUD = function () {
             taskList.style.opacity = '0';
             minimizeBtn.style.transform = 'rotate(-90deg)';
         } else {
-            hud.style.width = '320px';
+            hud.style.width = standaloneAgentHud ? '100%' : '320px';
             hud.style.gap = '12px'; 
             
             header.style.padding = '12px 16px';
@@ -672,8 +704,14 @@ window.AgentHUD.showAgentTaskHUD = function () {
     }
     hud.style.display = 'flex';
     hud.style.opacity = '1';
-    const savedPos = localStorage.getItem('agent-task-hud-position');
-    if (savedPos) {
+    const standaloneAgentHud = isStandaloneAgentHudPage();
+    const savedPos = standaloneAgentHud ? null : localStorage.getItem('agent-task-hud-position');
+    if (standaloneAgentHud) {
+        hud.style.left = STANDALONE_HUD_POSITION.left;
+        hud.style.top = STANDALONE_HUD_POSITION.top;
+        hud.style.right = STANDALONE_HUD_POSITION.right;
+        hud.style.transform = STANDALONE_HUD_POSITION.transform;
+    } else if (savedPos) {
         try {
             const parsed = JSON.parse(savedPos);
             if (parsed.top) hud.style.top = parsed.top;
@@ -703,8 +741,14 @@ window.AgentHUD.hideAgentTaskHUD = function () {
 
     console.log('[AgentHUD] hideAgentTaskHUD: starting fade out');
     hud.style.opacity = '0';
-    const savedPos = localStorage.getItem('agent-task-hud-position');
-    if (!savedPos) {
+    const standaloneAgentHud = isStandaloneAgentHudPage();
+    const savedPos = standaloneAgentHud ? null : localStorage.getItem('agent-task-hud-position');
+    if (standaloneAgentHud) {
+        hud.style.left = STANDALONE_HUD_POSITION.left;
+        hud.style.top = STANDALONE_HUD_POSITION.top;
+        hud.style.right = STANDALONE_HUD_POSITION.right;
+        hud.style.transform = STANDALONE_HUD_POSITION.transform;
+    } else if (!savedPos) {
         hud.style.transform = 'translateY(-50%) translateX(20px)';
     }
 
@@ -1307,9 +1351,30 @@ window.AgentHUD._createTaskCard = function (task) {
 
 // 设置HUD全局拖拽功能
 window.AgentHUD._setupDragging = function (hud) {
+    if (isStandaloneAgentHudPage()) {
+        hud.addEventListener('dragstart', (e) => e.preventDefault());
+        this._cleanupDragging = () => {};
+        return;
+    }
+
     let isDragging = false;
     let dragOffsetX = 0;
     let dragOffsetY = 0;
+
+    const resetDragVisualState = () => {
+        hud.style.cursor = 'move';
+        hud.style.boxShadow = 'var(--neko-popup-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04))';
+        hud.style.opacity = '1';
+        hud.style.transition = 'opacity 0.3s ease, transform 0.3s ease, box-shadow 0.2s ease, width 0.3s ease, padding 0.3s ease, max-height 0.3s ease';
+    };
+
+    const cancelDragState = () => {
+        if (!isDragging && !touchDragging) return;
+        isDragging = false;
+        touchDragging = false;
+        setAgentHudDraggingState(false);
+        resetDragVisualState();
+    };
 
     // 高性能拖拽函数
     const performDrag = (clientX, clientY) => {
@@ -1347,6 +1412,7 @@ window.AgentHUD._setupDragging = function (hud) {
         if (isInteractive) return;
 
         isDragging = true;
+        setAgentHudDraggingState(true);
 
         // 视觉反馈
         hud.style.cursor = 'grabbing';
@@ -1379,12 +1445,10 @@ window.AgentHUD._setupDragging = function (hud) {
         if (!isDragging) return;
 
         isDragging = false;
+        setAgentHudDraggingState(false);
 
         // 恢复视觉状态
-        hud.style.cursor = 'move';
-        hud.style.boxShadow = 'var(--neko-popup-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04))';
-        hud.style.opacity = '1';
-        hud.style.transition = 'opacity 0.3s ease, transform 0.3s ease, box-shadow 0.2s ease, width 0.3s ease, padding 0.3s ease, max-height 0.3s ease';
+        resetDragVisualState();
 
         // 最终位置校准（多屏幕支持）
         requestAnimationFrame(() => {
@@ -1450,6 +1514,7 @@ window.AgentHUD._setupDragging = function (hud) {
 
         touchDragging = true;
         isDragging = true;  // 让performDrag函数能正常工作
+        setAgentHudDraggingState(true);
 
         // 视觉反馈
         hud.style.boxShadow = '0 12px 48px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.2)';
@@ -1481,11 +1546,10 @@ window.AgentHUD._setupDragging = function (hud) {
 
         touchDragging = false;
         isDragging = false;  // 确保performDrag函数停止工作
+        setAgentHudDraggingState(false);
 
         // 恢复视觉状态
-        hud.style.boxShadow = 'var(--neko-popup-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 8px 16px rgba(0,0,0,0.08), 0 16px 32px rgba(0,0,0,0.04))';
-        hud.style.opacity = '1';
-        hud.style.transition = 'opacity 0.3s ease, transform 0.3s ease, box-shadow 0.2s ease, width 0.3s ease, padding 0.3s ease, max-height 0.3s ease';
+        resetDragVisualState();
 
         // 最终位置校准（多屏幕支持）
         requestAnimationFrame(() => {
@@ -1533,6 +1597,9 @@ window.AgentHUD._setupDragging = function (hud) {
     hud.addEventListener('touchstart', handleTouchStart, { passive: false });
     document.addEventListener('touchmove', handleTouchMove, { passive: false });
     document.addEventListener('touchend', handleTouchEnd, { passive: false });
+    document.addEventListener('touchcancel', cancelDragState, { passive: true });
+    window.addEventListener('blur', cancelDragState);
+    window.addEventListener('pointercancel', cancelDragState, true);
 
     // 窗口大小变化时重新校准位置（多屏幕支持）
     const handleResize = async () => {
@@ -1591,12 +1658,16 @@ window.AgentHUD._setupDragging = function (hud) {
 
     // 清理函数
     this._cleanupDragging = () => {
+        setAgentHudDraggingState(false);
         hud.removeEventListener('mousedown', handleMouseDown);
         document.removeEventListener('mousemove', handleMouseMove);
         document.removeEventListener('mouseup', handleMouseUp);
         hud.removeEventListener('touchstart', handleTouchStart);
         document.removeEventListener('touchmove', handleTouchMove);
         document.removeEventListener('touchend', handleTouchEnd);
+        document.removeEventListener('touchcancel', cancelDragState);
+        window.removeEventListener('blur', cancelDragState);
+        window.removeEventListener('pointercancel', cancelDragState, true);
         window.removeEventListener('resize', handleResize);
     };
 };
@@ -1612,25 +1683,6 @@ window.AgentHUD._setupDragging = function (hud) {
             0% { transform: translateX(-100%); }
             50% { transform: translateX(200%); }
             100% { transform: translateX(-100%); }
-        }
-        
-        /* 请她回来按钮呼吸特效 */
-        @keyframes returnButtonBreathing {
-            0%, 100% {
-                box-shadow: 0 0 8px rgba(68, 183, 254, 0.6), 0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08);
-            }
-            50% {
-                box-shadow: 0 0 18px rgba(68, 183, 254, 1), 0 2px 4px rgba(0, 0, 0, 0.04), 0 8px 16px rgba(0, 0, 0, 0.08);
-            }
-        }
-        
-        #live2d-btn-return {
-            animation: returnButtonBreathing 2s ease-in-out infinite;
-            will-change: box-shadow;
-        }
-        
-        #live2d-btn-return:hover {
-            animation: none;
         }
         
         #agent-task-hud::-webkit-scrollbar {

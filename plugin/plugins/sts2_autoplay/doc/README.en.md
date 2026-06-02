@@ -1,6 +1,6 @@
 # Quick Start
 
-`sts2_autoplay` is used to connect the local *Slay the Spire 2* state exposed by `STS2 AI Agent` into N.E.K.O. The plugin can read the current board state, execute legal actions, auto-play according to strategy, let the catgirl choose a single card, push observation information to the frontend, and allow the catgirl to send soft guidance in a background task to influence the next decision round.
+`sts2_autoplay` connects the local *Slay the Spire 2* state exposed by `STS2 AI Agent` into N.E.K.O, so you can inspect the current run, review the next suggested move, let it handle short stretches of play, and adjust the strategy in natural language while the run is in progress. In the current version, the interaction surface has been narrowed down to a few core abilities: check status, inspect the current run, control autoplay, toggle companion mode, adjust strategy from one sentence, preview the next move, and take the suggested step.
 
 ## Tutorial
 
@@ -47,6 +47,8 @@ The first time you switch to mod mode, the game may crash once. This is normal; 
 
 After the mod is loaded, in N.E.K.O enable Cat Paw, enable the plugin, enter the plugin panel, and manually start the Slay the Spire plugin.
 
+If you happen to be operating inside *Slay the Spire 2* at the same time that you enable or initialize the plugin, the first reply may be one beat slower than usual. This is normal. After the current board state finishes syncing, later responses should return to normal.
+
 ### Available Commands
 
 【Play a card】【Auto-play for me】【Clear a floor】【How was that play】【Stop】
@@ -68,14 +70,14 @@ Your user folder\AppData\Local\N.E.K.O\logs
 
 ## Feature Overview
 
-- Connects to the local `STS2 AI Agent` HTTP service and reads game state.
-- Supports manual single-step execution, background semi-auto play, pause, resume, and stop.
-- Supports three decision modes: `full-program`, `half-program`, and `full-model`.
-- Supports loading strategy documents by character; strategy files are located in `strategies/`.
-- Supports catgirl single-card choice: selects only one card from the currently playable `play_card` actions, pushes the reason first, then executes it.
-- Supports catgirl soft guidance: the user or the catgirl can send natural-language guidance, which will be referenced by the next LLM decision round.
-- Supports background observation reports: pushes current floor, combat, hand, enemy intents, LLM reasoning, and more to the frontend.
-- Supports safety protections: pause on low HP, slow down on Boss/dangerous attacks, auto-resume after HP recovery, desperate low-HP survival strategy, value maximization, and synergy scoring.
+- Connects to the local `STS2 AI Agent` HTTP service and reads the current run state.
+- Supports a one-shot run inspection flow that refreshes once and returns the snapshot, situation summary, and neko sync packet together.
+- Supports background autoplay control: start, pause, resume, stop, and taking the currently suggested next step.
+- Supports companion mode, which can watch the run with you and push observations, commentary, and reminders without hard-interrupting the main flow.
+- Supports natural-language strategy adjustment: one user sentence can be turned into event-level or enemy-level preference overrides for the current scene.
+- Supports checking the next suggested move before deciding whether to actually execute it.
+- Supports safety protections such as low-HP pause, dangerous-attack slowdown, speed restoration after danger passes, and auto-resume when conditions are safe again.
+- Supports passive frontend pushes for state sync, observations, companion hints, and control feedback.
 
 ## Plugin Configuration
 
@@ -85,237 +87,133 @@ Config file: `plugin.toml`
 
 | Config Item | Default | Description |
 | --- | --- | --- |
-| `base_url` | `http://127.0.0.1:8080` | Address of the local Spire Agent. |
+| `base_url` | `http://127.0.0.1:8080` | Address of the local STS2 Agent. |
 | `connect_timeout_seconds` | `5` | Connection timeout in seconds. |
 | `request_timeout_seconds` | `15` | Request timeout in seconds. |
 | `poll_interval_idle_seconds` | `3` | Polling interval while idle. |
-| `poll_interval_active_seconds` | `1` | Polling interval while auto-play is running. |
+| `poll_interval_active_seconds` | `1` | Polling interval while autoplay is running. |
 | `action_interval_seconds` | `1.5` | Extra delay between actions. |
 | `post_action_delay_seconds` | `0.5` | Delay after an action to wait for the board to stabilize. |
-| `autoplay_on_start` | `false` | Whether to automatically start playing after the plugin starts. |
-| `semi_auto_autoplay` | `true` | Whether to create a semi-auto task context when starting auto-play. |
-| `mode` | `half-program` | Current auto-play mode. |
-| `character_strategy` | `defect` | Character strategy name, corresponding to `strategies/<name>.md`. |
-| `max_consecutive_errors` | `3` | Maximum number of consecutive errors before being considered disconnected. |
-| `push_notifications` | `true` | Legacy retained field. |
-| `event_stream_enabled` | `false` | Reserved field, not actually used yet. |
+| `autoplay_on_start` | `false` | Whether to automatically start autoplay after the plugin starts. |
+| `character_strategy` | `defect` | Default strategy name. The runtime will map the current run into the matching strategy context. |
+| `max_consecutive_errors` | `3` | Maximum consecutive error count before the connection is considered unhealthy. |
 
-### Decision Modes
-
-`mode` supports the following values, as well as their Chinese aliases:
-
-| Mode | Chinese Alias | Description |
-| --- | --- | --- |
-| `full-program` | `全程序` | Pure programmatic heuristics; no model calls. |
-| `half-program` | `半程序` | Run program pre-checks first, then make one model decision, with legality validation/fallback. |
-| `full-model` | `全模型` | Two model calls: reasoning first, then final action; program checks in between, and final legality validation at the end. |
-
-### Character Strategies
-
-`character_strategy` looks up a strategy document at `strategies/<name>.md`. The currently built-in strategies are:
-
-- `defect`
-- `ironclad`
-- `silent_hunter`
-- `necrobinder`
-- `regent`
-
-You can add new Markdown files under `strategies/` to extend strategies. For example:
-
-```text
-strategies/my_strategy.md
-```
-
-Then set the config or entry parameter to:
-
-```text
-my_strategy
-```
-
-### Frontend Pushes and Catgirl Observation
+### Frontend Pushes and Companion Observation
 
 | Config Item | Default | Description |
 | --- | --- | --- |
-| `llm_frontend_output_enabled` | `true` | Whether to actively push auto-play actions/errors to the frontend. |
-| `llm_frontend_output_probability` | `0.15` | Push probability for ordinary actions; clamped into the range `0.0 ~ 1.0`. Errors are always pushed. |
-| `neko_reporting_enabled` | `true` | Whether to push catgirl observation reports. |
-| `neko_report_interval_steps` | `1` | Push one observation report every how many auto-play steps; at least `1`. |
-| `neko_commentary_enabled` | `true` | Whether to generate live catgirl commentary inside observation reports. If disabled, structured reports are still pushed, but `live_commentary.text` stays empty. |
-| `neko_commentary_probability` | `0.65` | Trigger probability for ordinary low-priority commentary; clamped into `0.0 ~ 1.0`. High-priority scenes such as low HP, lethal setups, and heavy incoming attacks can bypass this probability. |
-| `neko_commentary_min_interval_seconds` | `4` | Minimum interval in seconds before repeating commentary for the same low-priority scene, used to reduce spam and repeated voice lines. |
-| `neko_critical_commentary_always` | `true` | Whether `critical` / `high` urgency commentary should always be broadcast, such as low HP, lethal situations, or heavy enemy attacks. |
-| `neko_guidance_max_queue` | `50` | Maximum queue length for catgirl soft guidance. |
+| `llm_frontend_output_enabled` | `true` | Whether autoplay action/error updates may be pushed to the frontend. |
+| `llm_frontend_output_probability` | `1.0` | Push probability for ordinary action messages. Errors and critical control feedback may still be forced through. |
+| `autoplay_push_probability` | `0.5` | Probability for ordinary run-sync pushes when companion mode is not active. |
+| `companion_push_probability` | `0.7` | Probability for ordinary run-sync pushes while companion mode is active. |
+| `neko_reporting_enabled` | `true` | Whether companion observation behavior is enabled. |
+| `neko_report_interval_steps` | `1` | How often observation content is refreshed, measured in autoplay steps. |
+| `neko_report_hud_enabled` | `true` | Whether prepared observation content is actually pushed through the frontend HUD / message channel. |
+| `neko_commentary_enabled` | `true` | Whether companion commentary and reminders may be generated. |
+| `neko_commentary_probability` | `0.65` | Trigger probability for ordinary low-priority commentary. |
+| `neko_commentary_min_interval_seconds` | `4` | Minimum interval before repeating similar commentary, used to reduce spam. |
+| `neko_critical_commentary_always` | `true` | Whether high-priority reminders should always be broadcast. |
+| `neko_guidance_max_queue` | `50` | Internal queue limit for guidance / preference-related context. |
 
-Catgirl observation reports carry simplified metadata such as `report`, `neko_context`, `live_commentary`, and `task`, so the frontend or dialogue logic can tell that this is a process observation rather than a task completion notification. To save user tokens, pushed content only keeps the current action, HP, hand, enemies, tactical summary, consumed guidance, and task summary.
-
-`live_commentary` provides short voice-line fields for frontend/TTS: `text`, `scene`, `mood`, `urgency`, `priority`, `tts`, `interrupt`, `tone`, and `character_strategy`. Commentary is randomly selected from a scene-based template pool to reduce repetition; it also adjusts by character strategy, for example `defect` is more rational while `ironclad` is steadier. Current coverage includes near-death, low HP, lethal setups, enemy incoming attacks, defense, normal combat, rewards, shops, rest sites, events, maps, as well as event-level commentary such as combat end, key relic acquisition, and route selection completion.
-
-### Safety Protections and Autonomous Actions
+### Automatic Protection and Tempo Control
 
 | Config Item | Default | Description |
 | --- | --- | --- |
-| `neko_auto_low_hp_threshold` | `0.3` | When current HP ratio falls below this value, background auto-play will pause autonomously. |
-| `neko_auto_safe_hp_threshold` | `0.5` | Auto-play may resume after HP recovers to this ratio. |
-| `neko_auto_dangerous_attack_threshold` | `20` | Automatically slow down when incoming enemy attack reaches this value and would break defense. |
-| `neko_auto_resume_after_low_hp` | `true` | Whether to allow auto-resume after HP recovery following a low-HP pause. |
-| `neko_desperate_enabled` | `true` | Whether to enable the desperate low-HP survival strategy. |
-| `neko_desperate_hp_threshold` | `0.2` | HP ratio that triggers the desperate survival strategy. |
-| `neko_maximize_enabled` | `true` | Whether to enable value-maximizing card selection. |
-| `neko_synergy_enabled` | `true` | Whether to enable synergy/combo scoring. |
-
-Current autonomous actions include:
-
-- `pause`: Pauses on low HP, waiting for user or catgirl instructions.
-- `slow_down`: Temporarily slows the action interval during Boss fights or dangerous attacks.
-- `resume`: Resumes after the safe HP condition is met.
+| `neko_auto_low_hp_threshold` | `0.3` | When HP ratio falls below this value, autoplay will prefer to pause. |
+| `neko_auto_safe_hp_threshold` | `0.5` | When HP recovers to this value, the run may be considered safe again. |
+| `neko_auto_dangerous_attack_threshold` | `20` | High-damage enemy intents at or above this threshold may trigger slowdown protection. |
+| `neko_auto_resume_after_low_hp` | `true` | Whether autoplay may resume automatically after a low-HP pause once conditions are safe again. |
+| `neko_desperate_enabled` | `true` | Whether the desperate low-HP survival posture is enabled. |
+| `neko_desperate_hp_threshold` | `0.2` | HP ratio that triggers the desperate survival posture. |
+| `neko_maximize_enabled` | `true` | Whether a more value-maximizing decision posture is enabled. |
 
 ## Recommended Phrasing for Regular Users
 
-Regular users do not need to remember the low-level entries below. Prefer passing the user's original phrasing to `sts2_neko_command`, and let the plugin internally decide whether to check status, give advice, actually play a card, execute a step, start auto-play, pause, resume, stop, review recent plays, answer auto-play questions, or use the phrasing as soft guidance during auto-play.
+Regular users do not need to remember low-level parameters. Prefer routing the user's original wording into the currently retained high-level abilities and let the plugin decide whether the request is about inspecting the run, adjusting strategy, or taking the next suggested step.
 
-Recommended interaction rules:
+Recommended interpretation:
 
-| User Phrasing | Plugin Behavior |
+| What the user means | Best matching ability |
 | --- | --- |
-| `is the spire connected` / `what's the situation now` | Only check connection, status, or snapshot; do not operate the game. |
-| `how should I play this turn` / `which card is best to play` | Only recommend one playable card and explain the reason; do not auto-play. |
-| `play a card for me` / `pick a card and play it` | After explicit authorization, only pick one from `play_card` actions and play it. |
-| `play one step for me` / `execute one step` | After explicit authorization, execute one legal action, which may include ending the turn, picking a reward, or moving on the map. |
-| `play this run for me` / `auto-play for a bit` | Start semi-auto play; default stop condition is current floor completion. |
-| `defend first` / `don't be greedy with damage` | While auto-play is running, this becomes soft guidance for the next decision round; when not running, conservatively ask for clarification rather than acting. |
-| `how was that play` / `review the last card I played` | Provide a play-feel review based on the latest lightweight snapshot; do not operate the game. |
-| `why play it that way` / `what are you doing` | While auto-play is running, answer the current strategy and board reasoning; do not perform extra actions. |
-| `pause for a moment` / `continue` / `let's stop` | Pause, resume, or stop auto-play respectively. |
+| `what's going on right now` | `sts2_get_status` |
+| `show me the current run` | `sts2_read_state` |
+| `let her keep playing` / `pause autoplay for now` / `let her continue playing` / `stop letting her play` | autoplay control entries |
+| `adjust the strategy from this note: prefer the lower-cost route in this event` | `sts2_apply_user_override` |
+| `show me what she wants to do next` | `sts2_get_planned_operation` |
+| `take the suggested step` | `sts2_execute_planned_operation` |
+| `turn on companion mode` / `turn off companion mode` | companion mode control entries |
 
-Safe defaults: consultation does not operate, vague phrasing does not execute dangerous actions; only when the user explicitly says "play for me", "execute", "auto-play", or "take over" will real actions be performed.
+Recommended interaction order:
+1. Inspect the current run first.
+2. Then check what she wants to do next.
+3. If you disagree or want a preference change, adjust the strategy in one sentence.
+4. Finally decide whether to take the suggested step or let autoplay continue.
 
 ## Plugin Entries
 
-The following entries are exposed to the host and can be called directly in N.E.K.O. For regular user scenarios, prefer calling `sts2_neko_command`; other entries are mainly precise control interfaces for developers.
-
-### `sts2_neko_command`
-
-The natural-language master entry for Slay the Spire. Prefer calling it when the user has not explicitly specified a low-level tool.
-
-Parameters:
-
-- `command`: required, the user's original phrasing. Example: `how should I play this turn`, `play a card for me`, `defend first`, `pause for a moment`.
-- `scope`: optional, default `auto`. Possible values: `auto`, `status`, `advice`, `one_card`, `one_action`, `autoplay`, `control`, `guidance`, `review`, `question`, `chat`.
-- `confirm`: optional, default `false`. Used to confirm high-risk operations such as continuous takeover.
-
-The return includes `intent`, `action`, `executed`, `needs_confirmation`, `summary`, and the underlying `result`.
+These are the main public-facing abilities still exposed by the current plugin script. Their display names are phrased in more natural language now, but the underlying entry ids remain stable so host integrations do not need to change.
 
 ### `sts2_health_check`
 
-Checks whether the local Spire Agent service is available.
-
-### `sts2_refresh_state`
-
-Forces a refresh of the current Spire state.
+Checks whether the local STS2 Agent service is reachable. Use it first during startup checks, integration testing, or error investigation.
 
 ### `sts2_get_status`
 
-Gets connection status, auto-play status, current mode, character strategy, semi-auto task, recent errors, recent actions, and other information.
+Shows the overall runtime state: whether the connection is healthy, which screen is active, whether autoplay is running, whether standby is enabled, and what the current mode/error context looks like.
 
-### `sts2_get_snapshot`
+### `sts2_read_state`
 
-Gets the most recently cached game snapshot and currently executable actions.
+Refreshes the current run once and returns three layers together:
+- the current snapshot
+- the current situation summary
+- the current neko sync packet
 
-### `sts2_step_once`
+Use this when you want one complete readout before deciding the next move.
 
-Executes one step under the current strategy.
+### `sts2_set_standby`
 
-### `sts2_play_one_card_by_neko`
-
-Lets the catgirl pick and play a card.
-
-Parameters:
-
-- `objective`: optional, user authorization goal. Example: `pick a card and play it for me`.
-
-Behavior:
-
-1. Reads the current player, hand, enemies, and legal actions.
-2. Keeps only `play_card` actions.
-3. Lets the current mode/strategy pick a card.
-4. First pushes "which card is about to be played and why" to the frontend.
-5. Re-validates that the action is still legal.
-6. Plays the card and pushes the completion observation.
-
-If there is no playable card right now, returns `idle` and pushes the failure reason.
+Toggles standby mode. In standby mode, the plugin stops executing actions but still keeps state organization and sync preparation available.
 
 ### `sts2_start_autoplay`
 
-Starts the background semi-auto play loop.
-
-Parameters:
-
-- `objective`: optional, user authorization goal. Example: `clear this floor for me`.
-- `stop_condition`: stop condition, default `current_floor`.
-
-`stop_condition` supports:
-
-- `current_floor`: ends after the current floor is completed or the next floor is entered.
-- `current_combat` / `combat`: ends after combat is entered during the task and then exited.
-- `manual` / `none`: does not auto-complete; must be stopped manually.
-
-After starting, the plugin creates a semi-auto task context and pushes a task-start event to the frontend. When the task completes, `semi_auto_task_completed` is pushed.
+Lets her keep playing. This starts background autoplay and allows the current run to continue progressing on its own.
 
 ### `sts2_pause_autoplay`
 
-Pauses auto-play.
+Pauses autoplay for now. Useful when you want to take over manually or change strategy before the next action.
 
 ### `sts2_resume_autoplay`
 
-Resumes paused auto-play whose background task still exists. If the background task no longer exists, it safely returns `idle` and will not implicitly restart auto-play.
+Lets her continue playing from the paused state.
 
 ### `sts2_stop_autoplay`
 
-Stops auto-play and clears the semi-auto task context.
+Stops letting her play. This fully stops background autoplay and hands control back to you.
 
-### `sts2_get_history`
+### `sts2_enable_companion_mode`
 
-Gets recent action and state history.
+Turns on companion mode. With it enabled, the plugin becomes more proactive about organizing the run state, pushing observations, and offering commentary or reminders.
 
-Parameters:
+### `sts2_disable_companion_mode`
 
-- `limit`: number of entries to return, default `20`, clamped to `1 ~ 100`.
+Turns off companion mode. This stops the companion commentary layer while keeping the basic state-reading and autoplay controls available.
 
-### `sts2_send_neko_guidance`
+### `sts2_apply_user_override`
 
-Sends catgirl soft guidance to the background auto-play. The guidance enters the queue and is injected into the context for the next LLM decision round.
+Adjusts strategy from a single user note. It interprets the sentence in the current scene and turns it into the matching event-level or enemy-level override.
 
-Parameters:
+This entry also has an extra safety rule:
+- if autoplay is currently running, it **pauses autoplay first**
+- after the strategy update, it tells you to **resume autoplay manually if you want to continue**
+- it will not continue the run on its own before you explicitly choose to resume
 
-- `content`: required, natural-language guidance content. Example: `defend first, don't rush damage`.
-- `step`: optional, the corresponding step number.
-- `type`: optional, default `soft_guidance`.
+### `sts2_get_planned_operation`
 
-### `sts2_set_mode`
+Shows what she wants to do next. Use this when you want to preview the next move instead of executing it immediately.
 
-Sets the auto-play mode.
+### `sts2_execute_planned_operation`
 
-Parameters:
-
-- `mode`: supports `full-program` / `全程序`, `half-program` / `半程序`, `full-model` / `全模型`.
-
-### `sts2_set_character_strategy`
-
-Sets the character strategy name.
-
-Parameters:
-
-- `character_strategy`: matched against `strategies/<name>.md` after name normalization. For example, `defect` matches `strategies/defect.md`.
-
-### `sts2_set_speed`
-
-Sets speed parameters and writes them back into the local `plugin.toml`.
-
-Parameters:
-
-- `action_interval_seconds`
-- `post_action_delay_seconds`
-- `poll_interval_active_seconds`
+Takes the suggested step directly.
 
 ## Typical Usage
 
@@ -325,31 +223,43 @@ Parameters:
 2. Confirm `http://127.0.0.1:8080/health` is accessible.
 3. Call `sts2_health_check` in N.E.K.O.
 
-### Manually Execute One Step
+### Manually Review and Execute the Next Step
 
-Call:
-
-```text
-sts2_step_once
-```
-
-The plugin will pick and execute a legal action based on the current `mode` and `character_strategy`.
-
-### Let the Catgirl Play a Card
-
-The user can say something like:
+First inspect the current suggestion:
 
 ```text
-pick a card and play it for me
+sts2_get_planned_operation
 ```
 
-The host should call:
+If the suggestion looks good, then execute it:
 
 ```text
-sts2_play_one_card_by_neko
+sts2_execute_planned_operation
 ```
 
-The plugin will only pick from currently playable cards and will not pick end-turn, map, reward, or other actions.
+This matches the current public entry model better than calling a removed one-step action directly.
+
+### Check the Current Run Before Acting
+
+A common safe flow is:
+
+1. Check the full current run state with:
+
+```text
+sts2_read_state
+```
+
+2. See what she wants to do next with:
+
+```text
+sts2_get_planned_operation
+```
+
+3. If needed, adjust the strategy in one sentence.
+
+4. Finally decide whether to:
+   - take the suggested step with `sts2_execute_planned_operation`, or
+   - let autoplay continue with `sts2_start_autoplay`.
 
 ### Let the Catgirl Help Clear a Floor
 
@@ -365,59 +275,60 @@ The host should call:
 sts2_start_autoplay
 ```
 
-Recommended parameters:
+Once autoplay starts, use the pause / resume / stop entries to control it. Observation pushes are only progress feedback and should not be treated as task completion signals by themselves.
 
-```json
-{
-  "objective": "clear this floor for me",
-  "stop_condition": "current_floor"
-}
-```
+### Adjust Strategy Mid-run
 
-While the task is running, observation events are only progress reports and do not represent completion. Only upon receiving the semi-auto task completion event should you tell the user that this floor is done.
-
-### Mid-task Guidance
-
-During auto-play, the user or catgirl can send guidance:
+If the user wants to change the direction while the run is in progress, they can say something like:
 
 ```text
 defend first, don't take too much damage
 ```
 
-Should call:
+The host should call:
 
 ```text
-sts2_send_neko_guidance
+sts2_apply_user_override
 ```
 
 Recommended parameters:
 
 ```json
 {
-  "content": "defend first, don't take too much damage",
-  "type": "soft_guidance"
+  "instruction": "defend first, don't take too much damage",
+  "source": "user"
 }
 ```
 
-The guidance will be referenced in the next LLM decision round. The `full-program` mode does not rely on a model, so soft guidance has limited impact.
+If autoplay is currently running, this entry will pause autoplay first, apply the strategy update, and then ask the user to resume autoplay manually if they want to continue.
 
 ## Frontend Push Events
 
-The plugin pushes the following categories of events through the host's message channel. Aside from task start/completion, errors, and single-card previews, normal observations try to use short text and trimmed metadata to reduce user token consumption.
+The plugin sends several categories of passive information through the host message channel, mainly grouped into three buckets:
 
-| Event Type | Description |
-| --- | --- |
-| `action` | Normal auto-play action observation, controlled by probability. |
-| `error` | Auto-play error, force-pushed. |
-| `neko_report` | Full catgirl observation report, including current board, hand, enemies, tactical summary, and model reasoning. |
-| `neko_card_task_planned` | Catgirl single-card task plans to play a card. |
-| `neko_card_task_completed` | Catgirl single-card task executed. |
-| `neko_card_task_failed` | Catgirl single-card task could not be executed. |
-| `semi_auto_task_started` | Semi-auto task started. |
-| `semi_auto_task_completed` | Semi-auto task completed. |
-| `neko_autonomous_action` | System autonomously paused, slowed, or resumed. |
+1. **State and run sync**
+   - current run summary
+   - current suggestion summary
+   - current companion-mode sync payloads
 
-Note: `neko_report` is a process observation, not a task-completion notification. The frontend or dialogue logic should not describe a single-step action, card play, end-turn, or state refresh as "task complete", "Boss defeated", "combat over", or "run cleared". If the catgirl wants to influence the next decision round, call `sts2_send_neko_guidance`; if she wants to hard-control the flow, call the pause, resume, or stop entries.
+2. **Autoplay control feedback**
+   - autoplay started
+   - paused / resumed / stopped
+   - strategy-updated messages that require manual resume
+
+3. **Companion and protection notices**
+   - companion commentary
+   - risk reminders
+   - low-HP pause
+   - dangerous-attack slowdown
+   - speed restoration or autoplay recovery after danger passes
+
+These pushes all use passive delivery semantics by default and should not hard-interrupt the main conversation. Their frequency is further affected by:
+- `autoplay_push_probability`
+- `companion_push_probability`
+- `neko_commentary_probability`
+- `neko_report_hud_enabled`
+and related settings.
 
 ## Common Troubleshooting
 
@@ -450,24 +361,20 @@ Check:
 - During integration testing, you can first set `llm_frontend_output_probability` to `1`.
 - Whether the host frontend is actually receiving plugin push messages.
 
-### Catgirl mid-task guidance has no obvious effect
+### Catgirl mid-run strategy changes have no obvious effect
 
 Check:
 
-- Whether the current mode is `half-program` or `full-model`.
-- Whether `sts2_send_neko_guidance` returned `ok`.
-- Whether the guidance content is specific enough, such as "prioritize defense", "hit the lowest-HP enemy first", or "save the potion".
-- Whether the current legal actions can actually satisfy the guidance.
+- Whether the plugin is currently in standby.
+- Whether `sts2_apply_user_override` returned `ok`.
+- Whether the instruction is specific enough, such as "prioritize defense", "hit the lowest-HP enemy first", or "save the potion".
+- Whether the current legal actions can actually satisfy the requested adjustment.
 
-### Semi-auto task never finishes
+Remember that `sts2_apply_user_override` updates strategy preferences. It does not instantly force a specific card to be played on the current frame.
 
-Check `stop_condition`:
+### Auto-play keeps running in a direction you no longer want
 
-- If it is `manual` / `none`, the task will not complete automatically; you must call `sts2_stop_autoplay`.
-- If it is `current_combat`, the task completes after combat has been entered during the task and then exited.
-- If it is `current_floor`, it usually completes after the current floor is cleared or the next floor is entered.
-
-You can call `sts2_get_status` to inspect `autoplay.task`.
+Use `sts2_pause_autoplay` first, then call `sts2_apply_user_override` to adjust the strategy, and finally decide whether to resume with `sts2_resume_autoplay`.
 
 ### Stuck in events, popups, or transitional states
 
@@ -478,7 +385,7 @@ The current version already handles events, popups, and transitional states. Pri
 - `choose_event_option`
 - `proceed`
 
-If it is still stuck, first use `sts2_get_snapshot` to inspect the current `screen` and `available_actions`.
+If it is still stuck, first use `sts2_read_state` to inspect the current `screen` and `available_actions`.
 
 ### Auto-play suddenly pauses or slows down
 

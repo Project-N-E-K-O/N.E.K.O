@@ -18,8 +18,11 @@ let restoreChatContainerSize = null;
 let getStoredChatContainerSize = null;
 
 // 移动端检测（与 live2d.js 的 isMobileWidth 一致：基于窗口宽度）
+// Electron Pet 窗口（index.html）永不进入手机模式：优先走 canonical 谓词
+//（live2d-core.js 定义的 window.isMobileWidth 已感知 __LANLAN_IS_ELECTRON_PET__）。
 function uiIsMobileWidth() {
-    return window.innerWidth <= 768;
+    if (typeof window.isMobileWidth === 'function') return window.isMobileWidth();
+    return !window.__LANLAN_IS_ELECTRON_PET__ && window.innerWidth <= 768;
 }
 
 function isCollapsed() {

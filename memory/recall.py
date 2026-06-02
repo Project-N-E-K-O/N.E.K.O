@@ -48,12 +48,26 @@ from __future__ import annotations
 import logging
 import re
 
-from memory.embeddings import (
-    decode_embedding,
-    get_embedding_service,
-    is_cached_embedding_valid,
-    parse_dim_from_model_id,
-)
+try:
+    from memory.embeddings import (
+        decode_embedding,
+        get_embedding_service,
+        is_cached_embedding_valid,
+        parse_dim_from_model_id,
+    )
+except ImportError:
+    # See ``embedding_worker`` for context. With the disabled-service
+    # stub, ``MemoryRecallReranker`` keeps working but skips the cosine
+    # prefilter (decode_embedding returns None for every candidate) —
+    # callers already handle that path via ``rerank=False`` semantics.
+    from memory.embeddings_fallback import (
+        decode_embedding,
+        get_embedding_service,
+        is_cached_embedding_valid,
+        parse_dim_from_model_id,
+        _warn_once,
+    )
+    _warn_once(__name__)
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +114,25 @@ class MemoryRecallReranker:
         directly.
         """
         if not observations:
+            # 即使空召回也算一次 invoke，差值 = "想 recall 但没素材"，对
+            # 评估 memory pipeline 健康度有意义。
+            try:
+                from utils.instrument import counter as _instr_counter
+                _instr_counter("memory_recall_invoke", returned_empty=True)
+            except Exception:
+                # 埋点失败不能让 recall 路径报错 —— memory pipeline 是
+                # response 关键路径，宁可少一条统计也不让它 crash。
+                pass
             return []
+        # Telemetry：每次 recall 算一次 invoke，无论后续是 coarse-only 还是
+        # 走 LLM rerank。histogram 记返回 fact 数量分布；对比 invoke 次数和
+        # 返回 0 的比例可看 memory pipeline 是否在"起作用"。
+        try:
+            from utils.instrument import counter as _instr_counter
+            _instr_counter("memory_recall_invoke", returned_empty=False)
+        except Exception:
+            # 同上：埋点失败静默，不影响 recall 主路径。
+            pass
 
         # Normalise query_texts up-front so phase 2 (coarse) and phase 3
         # (LLM rerank) see the same shape: drop None/empty/whitespace

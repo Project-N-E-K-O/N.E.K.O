@@ -374,7 +374,6 @@ MMDManager.prototype.setupFloatingButtons = function() {
 
     // 创建"请她回来"按钮
     const returnButtonContainer = this.createReturnButton();
-    this._setupReturnButtonDrag(returnButtonContainer);
     this._addReturnButtonBreathingAnimation();
 
     // 创建锁图标
@@ -815,7 +814,12 @@ MMDManager.prototype._startUIUpdateLoop = function() {
                                 }
                             }
                         });
-                        lockIcon.style.opacity = isLockOverlapped ? '0.3' : '';
+                        // 与角色形象半透明状态完全同步：容器淡化(opacity<1)时锁图标镜像同一透明度
+                        const mmdFadeContainer = document.getElementById('mmd-container');
+                        const mmdFadeOpacity = mmdFadeContainer ? parseFloat(mmdFadeContainer.style.opacity) : NaN;
+                        lockIcon.style.opacity = (Number.isFinite(mmdFadeOpacity) && mmdFadeOpacity < 1)
+                            ? String(mmdFadeOpacity)
+                            : (isLockOverlapped ? '0.3' : '');
                     }
                 }
                 buttonsContainer.style.transform = `scale(${scale})`;

@@ -64,6 +64,18 @@ It is recommended to configure everything through the plugin UI under **QQ OneBo
 | `normal_relay_probability` | float | Probability that a normal user/group message is relayed to the owner |
 | `truth_reply_probability` | float | Probability that an `open` group triggers a direct reply without @ mention |
 
+### Probability fields inside trusted groups
+
+Each item in `trusted_groups` can include two optional probability fields in addition to `group_id` and `level`:
+
+- `normal_relay_probability`: only applies when `level = normal`. When a group message enters the “relay to the owner” path, this value overrides the global default relay probability for that group.
+- `open_reply_probability`: only applies when `level = open`. In open groups, when nobody @mentions the bot, this value overrides the global default proactive reply probability for that group.
+
+Notes:
+- Both values must be decimals between `0` and `1`.
+- If left empty, the plugin falls back to the global default setting.
+- `trusted` groups do not use either field, because `trusted` groups only enter the normal reply flow after the bot is explicitly @mentioned.
+
 ## Permission Levels
 
 ### User Permissions

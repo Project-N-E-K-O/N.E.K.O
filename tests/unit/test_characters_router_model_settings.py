@@ -4,6 +4,8 @@ import json
 
 import pytest
 
+from config import CHARACTER_RESERVED_FIELDS
+
 characters_router_module = importlib.import_module('main_routers.characters_router')
 from main_routers.config_router import _get_live3d_sub_type
 from utils.config_manager import delete_reserved, flatten_reserved, get_reserved, migrate_catgirl_reserved, set_reserved
@@ -34,6 +36,24 @@ class DummyConfigManager:
 
     async def asave_characters(self, characters, character_json_path=None):
         self.save_characters(characters, character_json_path)
+
+
+def test_live2d_idle_animation_is_reserved_and_hidden_from_editable_fields():
+    assert 'live2d_idle_animation' in CHARACTER_RESERVED_FIELDS
+
+    catgirl = {
+        '性格': '开朗',
+        'live2d_idle_animation': 'surprised1.motion3.json',
+    }
+
+    assert migrate_catgirl_reserved(catgirl) is True
+    assert 'live2d_idle_animation' not in catgirl
+    assert get_reserved(catgirl, 'avatar', 'live2d', 'idle_animation') == 'surprised1.motion3.json'
+
+    flattened = flatten_reserved(catgirl)
+    assert flattened['live2d_idle_animation'] == 'surprised1.motion3.json'
+    editable_keys = [k for k in flattened if k not in CHARACTER_RESERVED_FIELDS]
+    assert 'live2d_idle_animation' not in editable_keys
 
 
 def _build_characters_fixture():
@@ -73,8 +93,12 @@ async def _call_update(monkeypatch, payload, characters=None):
     async def _noop_initialize():
         return None
 
+    async def _noop_init_one(name, *, is_new=False):
+        return None
+
     monkeypatch.setattr(characters_router_module, 'get_config_manager', lambda: config_manager)
     monkeypatch.setattr(characters_router_module, 'get_initialize_character_data', lambda: _noop_initialize)
+    monkeypatch.setattr(characters_router_module, 'get_init_one_catgirl', lambda: _noop_init_one)
 
     response = await characters_router_module.update_catgirl_l2d(
         '测试角色',
@@ -224,6 +248,37 @@ async def test_switching_self_created_character_to_workshop_model_marks_current_
     assert get_reserved(saved_catgirl, 'avatar', 'asset_source_id') == expected_source_id
     assert get_reserved(saved_catgirl, 'character_origin', 'source', default='') == ''
     assert get_reserved(saved_catgirl, 'character_origin', 'source_id', default='') == ''
+
+
+@pytest.mark.asyncio
+async def test_current_live2d_model_reports_failure_when_default_fallback_is_missing(monkeypatch):
+    characters = {
+        '当前猫娘': '测试角色',
+        '猫娘': {
+            '测试角色': {
+                '_reserved': {
+                    'avatar': {
+                        'live2d': {
+                            'model_path': '',
+                        },
+                    },
+                },
+            },
+        },
+    }
+    config_manager = DummyConfigManager(characters)
+
+    monkeypatch.setattr(characters_router_module, 'get_config_manager', lambda: config_manager)
+    monkeypatch.setattr(characters_router_module, 'find_models', lambda: [])
+    monkeypatch.setattr(characters_router_module, 'find_model_directory', lambda _name: (None, ''))
+
+    response = await characters_router_module.get_current_live2d_model('测试角色')
+    body = json.loads(response.body)
+
+    assert body['success'] is False
+    assert body['model_name'] == characters_router_module.DEFAULT_LIVE2D_MODEL_NAME
+    assert body['model_info'] is None
+    assert '默认Live2D模型' in body['error']
 
 
 def test_live3d_sub_type_prefers_persisted_active_sub_type_when_both_paths_exist():

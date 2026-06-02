@@ -52,9 +52,15 @@ def build_status_payload(
         "checkpoint": json_copy(state.checkpoint),
         "dependencies": json_copy(state.dependency_status),
         "knowledge_summary": knowledge_payload.get("knowledge_summary") or {},
-        "knowledge_quality_summary": knowledge_payload.get("knowledge_quality_summary") or {},
-        "anonymous_knowledge_stats_summary": knowledge_payload.get("anonymous_knowledge_stats_summary") or {},
+        "knowledge_quality_summary": knowledge_payload.get("knowledge_quality_summary")
+        or {},
+        "anonymous_knowledge_stats_summary": knowledge_payload.get(
+            "anonymous_knowledge_stats_summary"
+        )
+        or {},
+        "habit": knowledge_payload.get("habit") or {},
         "review_queue": knowledge_payload.get("review_queue") or [],
+        "memory_deck": knowledge_payload.get("memory_deck") or {},
         "weak_topics": knowledge_payload.get("weak_topics") or [],
         "mastery_overview": knowledge_payload.get("mastery_overview") or [],
         "config": config.to_dict(),
@@ -73,7 +79,9 @@ def build_dependency_status(config: StudyConfig) -> dict[str, Any]:
             "tesseract": tesseract,
             "dxcam": dxcam,
         }.items()
-        if isinstance(status, dict) and status.get("installed") is False and status.get("can_install")
+        if isinstance(status, dict)
+        and status.get("installed") is False
+        and status.get("can_install")
     ]
     return {
         "rapidocr": rapidocr,
@@ -84,22 +92,18 @@ def build_dependency_status(config: StudyConfig) -> dict[str, Any]:
 
 
 def _inspect_rapidocr(config: StudyConfig) -> dict[str, Any]:
-    spec = importlib.util.find_spec("rapidocr_onnxruntime")
-    origin = str(getattr(spec, "origin", "") or "") if spec is not None else ""
-    installed = bool(spec)
-    return {
-        "install_supported": sys.platform == "win32",
-        "installed": installed,
-        "can_install": False,
-        "can_download_models": installed and (config.rapidocr_lang_type, config.rapidocr_ocr_version) != ("ch", "PP-OCRv4"),
-        "detected_path": str(Path(origin).resolve().parent) if origin else "",
-        "target_dir": config.rapidocr_install_target_dir,
-        "engine_type": config.rapidocr_engine_type,
-        "lang_type": config.rapidocr_lang_type,
-        "model_type": config.rapidocr_model_type,
-        "ocr_version": config.rapidocr_ocr_version,
-        "detail": "installed" if installed else "missing",
-    }
+    from plugin.plugins._shared.rapidocr.rapidocr_support import (
+        inspect_rapidocr_installation,
+    )
+
+    return inspect_rapidocr_installation(
+        install_target_dir_raw=config.rapidocr_install_target_dir,
+        engine_type=config.rapidocr_engine_type,
+        lang_type=config.rapidocr_lang_type,
+        model_type=config.rapidocr_model_type,
+        ocr_version=config.rapidocr_ocr_version,
+        plugin_id="study_companion",
+    )
 
 
 def _inspect_tesseract(config: StudyConfig) -> dict[str, Any]:
@@ -112,7 +116,9 @@ def _inspect_tesseract(config: StudyConfig) -> dict[str, Any]:
     )
 
 
-def _available_tesseract_languages(detected: Path | None, target_dir: Path | None) -> set[str]:
+def _available_tesseract_languages(
+    detected: Path | None, target_dir: Path | None
+) -> set[str]:
     tessdata_dirs = []
     if detected is not None:
         try:
@@ -124,11 +130,14 @@ def _available_tesseract_languages(detected: Path | None, target_dir: Path | Non
                 timeout=5.0,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
-            output = "\n".join(part for part in (completed.stdout, completed.stderr) if part)
+            output = "\n".join(
+                part for part in (completed.stdout, completed.stderr) if part
+            )
             languages = {
                 line.strip()
                 for line in output.splitlines()
-                if line.strip() and not line.lower().startswith("list of available languages")
+                if line.strip()
+                and not line.lower().startswith("list of available languages")
             }
             if completed.returncode != 0:
                 _LOGGER.warning(
@@ -138,9 +147,15 @@ def _available_tesseract_languages(detected: Path | None, target_dir: Path | Non
             if languages:
                 return languages
         except subprocess.TimeoutExpired as exc:
-            _LOGGER.warning("tesseract --list-langs timed out, falling back to filesystem scan: %s", exc)
+            _LOGGER.warning(
+                "tesseract --list-langs timed out, falling back to filesystem scan: %s",
+                exc,
+            )
         except OSError as exc:
-            _LOGGER.warning("tesseract --list-langs failed, falling back to filesystem scan: %s", exc)
+            _LOGGER.warning(
+                "tesseract --list-langs failed, falling back to filesystem scan: %s",
+                exc,
+            )
     if target_dir is not None:
         tessdata_dirs.append(target_dir / "tessdata")
     if detected is not None:
@@ -165,7 +180,9 @@ def _inspect_dxcam() -> dict[str, Any]:
         "detected_path": origin,
         "package_name": "dxcam",
         "target_dir": "current_python_environment",
-        "detail": "installed" if installed else ("missing" if supported else "unsupported_platform"),
+        "detail": "installed"
+        if installed
+        else ("missing" if supported else "unsupported_platform"),
         "runtime_error": "",
     }
 

@@ -267,6 +267,19 @@ def test_textractor_job_object_uses_kill_on_close(monkeypatch: pytest.MonkeyPatc
     assert [name for name, _args in calls] == ["set_info", "assign"]
 
 
+def test_memory_reader_ctypes_proxy_updates_win32_job_module(monkeypatch: pytest.MonkeyPatch) -> None:
+    from plugin.plugins.galgame_plugin import _win32_job_objects
+
+    original_ctypes = galgame_memory_reader.ctypes
+    fake_ctypes = SimpleNamespace(windll=SimpleNamespace())
+
+    try:
+        monkeypatch.setattr(galgame_memory_reader, "ctypes", fake_ctypes)
+        assert _win32_job_objects.ctypes is fake_ctypes
+    finally:
+        monkeypatch.setattr(galgame_memory_reader, "ctypes", original_ctypes)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("platform_value", "auto_detect", "textractor_exists", "expected_detail", "warning_fragment"),
@@ -1684,6 +1697,7 @@ async def test_install_textractor_records_preflight_state_before_request(
         await client.aclose()
 
     assert recorded
+    assert recorded[0]["plugin_id"] == "galgame_plugin"
     assert recorded[0]["status"] == "running"
     assert recorded[0]["phase"] == "preflight"
     assert recorded[0]["message"] == "Checking Textractor installation"

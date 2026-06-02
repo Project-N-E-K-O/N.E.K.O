@@ -145,6 +145,31 @@
         } catch (_) { /* ignore */ }
     }
 
+    /**
+     * Was this 403 produced by ``_validate_local_mutation_request``
+     * (i.e. CSRF/Origin guard), or by something else (future business
+     * rule, reverse proxy, WAF, …)? The unified-guard contract is
+     * ``error_code === "csrf_validation_failed"`` (see
+     * ``static/app-prompt-shared.js`` 520-541 and
+     * ``static/universal-tutorial-manager.js`` 120-134).
+     *
+     * Only the CSRF case warrants the ``refreshToken()`` + retry-once
+     * recovery path; treating *every* 403 as benign-and-skip means a
+     * token-expired heartbeat looks identical to a "real" 403 and the
+     * caller never recovers — proactive chat would silently stall until
+     * a full page reload (CodeRabbit Major on PR #1530).
+     */
+    async function _proactiveIsCsrfValidationFailure(resp) {
+        if (!resp || resp.status !== 403) return false;
+        try {
+            var cloned = typeof resp.clone === 'function' ? resp.clone() : resp;
+            var body = await cloned.json();
+            return Boolean(body && body.error_code === 'csrf_validation_failed');
+        } catch (_) {
+            return false;
+        }
+    }
+
     function _isChatInputElement(element) {
         if (!element || element.nodeType !== 1 || typeof element.matches !== 'function') {
             return false;
@@ -784,25 +809,62 @@
                 // 在 propensity / restricted_screen_only / 抖动 sleep 这一整套门
                 // 之前就早退；语音 scheduler 自己也是固定 baseInterval 不带 backoff。
                 // 既然两边都不读，发了也是冗余字段。
-                var resp = await fetch('/api/proactive_chat', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        lanlan_name: lanlanName,
-                        enabled_modes: voiceModes,
-                        voice_mode: true,
-                        // mini-game 邀请的用户级 toggle；后端 _maybe_deliver_mini_game_invite
-                        // 与 source-driven sources 解耦，不进 enabled_modes 数组。
-                        mini_game_invite_enabled: !!S.proactiveMiniGameInviteEnabled
-                    })
+                var voiceProactiveSec = window.nekoLocalMutationSecurity;
+                var voiceProactiveBody = JSON.stringify({
+                    lanlan_name: lanlanName,
+                    enabled_modes: voiceModes,
+                    voice_mode: true,
+                    // mini-game 邀请的用户级 toggle；后端 _maybe_deliver_mini_game_invite
+                    // 与 source-driven sources 解耦，不进 enabled_modes 数组。
+                    mini_game_invite_enabled: !!S.proactiveMiniGameInviteEnabled
                 });
+
+                async function _sendVoiceProactive() {
+                    var hdrs = { 'Content-Type': 'application/json' };
+                    if (voiceProactiveSec && typeof voiceProactiveSec.getMutationHeaders === 'function') {
+                        try { Object.assign(hdrs, await voiceProactiveSec.getMutationHeaders()); } catch (_) { }
+                    }
+                    return fetch('/api/proactive_chat', {
+                        method: 'POST',
+                        headers: hdrs,
+                        body: voiceProactiveBody,
+                    });
+                }
+
+                var resp = await _sendVoiceProactive();
+
+                // CSRF-403 retry-once: 只在 error_code === 'csrf_validation_failed'
+                // 时调 refreshToken() + 重试一次。其它 403（业务规则、反代、WAF）走
+                // 真实失败分支，避免把所有 403 当 benign pass，让 token 过期后
+                // proactive 静默停摆到整页刷新为止（CodeRabbit Major on PR #1530）。
+                if (resp.status === 403
+                    && voiceProactiveSec
+                    && typeof voiceProactiveSec.refreshToken === 'function'
+                    && await _proactiveIsCsrfValidationFailure(resp)) {
+                    try {
+                        await voiceProactiveSec.refreshToken();
+                        resp = await _sendVoiceProactive();
+                    } catch (_) { /* fall through to 403 handling below */ }
+                }
+
                 // HTTP 409 = server try_start_proactive 因并发拒绝（AI 还在响应上一轮 /
                 // 另一路 proactive 已占坑，见 main_routers/system_router.py:4241-4247）。
                 // 本次请求**根本没真正发起**一次 proactive，标 'pass' 走上游"不计数"
                 // 分支自行 schedule，否则 _voiceProactiveNoResponseCount 会被白白消耗
                 // 一格、最坏 5 次 server 忙就触发"连续 5 轮无回复，停止主动搭话"。
-                if (resp.status === 409) {
-                    console.log('[ProactiveChat] 语音模式 server 并发拒绝 (409)，不消耗 attempt');
+                //
+                // HTTP 403 csrf_validation_failed = 统一守卫拒绝。refresh+retry 仍失败
+                // 时归入"server 拒绝"分支：token bootstrap 真没完成 / 配置错位的
+                // 启动竞速窗口跟 409 同语义（server 早退、没跑业务）。当 attempt 算
+                // 会让 _voiceProactiveNoResponseCount 在 token bootstrap 完成前就
+                // 消耗光，触发"5 轮无回复，停止主动搭话"。
+                //
+                // 非 csrf 的 403（业务规则 / 反代 / WAF）会跳过上面的 retry，落到这里
+                // ——也按"不消耗 attempt"处理：这些路径在 proactive 语义里同样表示
+                // "server 没真正跑业务"，把它们计入 attempt 既无重试帮助又会污染调度。
+                if (resp.status === 409 || resp.status === 403) {
+                    console.log('[ProactiveChat] 语音模式 server 拒绝 ('
+                        + resp.status + ')，不消耗 attempt');
                     S._voiceProactiveLastResult = 'pass';
                     return false;
                 }
@@ -1057,13 +1119,37 @@
                 return;
             }
 
-            var response = await fetch('/api/proactive_chat', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(requestBody)
-            });
+            var proactiveSec = window.nekoLocalMutationSecurity;
+            var proactiveBody = JSON.stringify(requestBody);
+
+            async function _sendProactive() {
+                var hdrs = { 'Content-Type': 'application/json' };
+                if (proactiveSec && typeof proactiveSec.getMutationHeaders === 'function') {
+                    try { Object.assign(hdrs, await proactiveSec.getMutationHeaders()); } catch (_) { }
+                }
+                return fetch('/api/proactive_chat', {
+                    method: 'POST',
+                    headers: hdrs,
+                    body: proactiveBody,
+                });
+            }
+
+            var response = await _sendProactive();
+
+            // CSRF-403 retry-once: 只在 error_code === 'csrf_validation_failed'
+            // 时调 refreshToken() + 重试一次。其它 403 走真实失败分支，避免把所有
+            // 403 当 benign pass，让 token 过期后 proactive 静默停摆（CodeRabbit
+            // Major on PR #1530）。
+            if (response.status === 403
+                && proactiveSec
+                && typeof proactiveSec.refreshToken === 'function'
+                && await _proactiveIsCsrfValidationFailure(response)) {
+                try {
+                    await proactiveSec.refreshToken();
+                    response = await _sendProactive();
+                } catch (_) { /* fall through to 403 handling below */ }
+            }
+
             // HTTP 409 = server try_start_proactive 因并发拒绝（AI 还在响应上一轮 /
             // 另一路 proactive 已占坑，见 main_routers/system_router.py:4241-4247）。
             // 本次请求**根本没真正发起**一次 proactive——server 在 claim 那一步就早退
@@ -1073,8 +1159,15 @@
             // 节奏整体往后拉，跟 server 实际状态正交、用户体验上变成"server 越忙、AI
             // 越沉默"。这里 requestSent 故意不翻 true、return false 让上游识别为"没
             // 真发"、下一轮按 base interval 重排，不动 level。
-            if (response.status === 409) {
-                console.log('[ProactiveChat] server 并发拒绝 (409)，不消耗 backoff attempt');
+            //
+            // HTTP 403 csrf_validation_failed = 统一守卫拒绝（refresh+retry 后仍失败）。
+            // 跟 409 同语义——server 没跑业务逻辑、没消耗资源；非 csrf 的 403（业务
+            // 规则 / 反代 / WAF）会跳过上面的 retry 落到这里，同样按"不消耗 attempt"
+            // 处理，避免把"刚开机几秒里 token 没就位 / 部署中间态"惩罚性升级
+            // backoff。下一轮 token 通常已到位，按 base interval 重排即可。
+            if (response.status === 409 || response.status === 403) {
+                console.log('[ProactiveChat] server 拒绝 ('
+                    + response.status + ')，不消耗 backoff attempt');
                 return false;
             }
             requestSent = true;

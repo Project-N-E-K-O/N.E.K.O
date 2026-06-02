@@ -20,7 +20,7 @@
         DEFAULT_SPEAKER_VOLUME: 100,         // 扬声器默认音量
         DEFAULT_SPATIAL_AUDIO_ENABLED: true, // 空间音频默认开启
         SPATIAL_AUDIO_MIN_GAIN: 0.4,         // 副屏远端最低音量保底（防止猫娘飞远后听不见）
-        SPATIAL_AUDIO_MAX_PAN: 0.85,         // pan 绝对值上限（防止完全单声道，另一边留 ~12% 信号）
+        SPATIAL_AUDIO_MAX_PAN: 0.6,          // pan 绝对值上限（防止完全单声道，另一边留 ~31% 信号）
         SPATIAL_AUDIO_FALLOFF_RATE: 0.35,    // 超出主屏后每个 refDist 衰减比例
         SPATIAL_AUDIO_RAMP_SECONDS: 0.12,    // pan/gain 平滑过渡时长，避免突变 click
         SPATIAL_AUDIO_POLL_MS: 500,          // 位置轮询周期（兜底，事件驱动为主）
@@ -113,11 +113,25 @@
         assistantTurnStartedAt: 0,
         assistantPendingTurnServerId: null,
         assistantTurnAwaitingBubble: false,
+        // 文本会话刚把 WS payload 发出去（text 和/或 screenshot），但 gemini_response
+        // 还没回第一个 chunk 的那段空窗。用 ms 时间戳 + 15s 上限自我兜底，避免
+        // 错过 clear 时永远卡 true。专门给 isAssistantTextResponseInFlight()
+        // 用（_lastSubmittedRequestId 对纯截图请求会被故意清空，挡不住这段空窗）。
+        pendingTextTurnSubmitAt: 0,
         assistantTurnSeq: 0,
         assistantTurnCompletedId: null,
+        // 一轮干净收尾后（maybeFinalizeAssistantSpeech 成功），completedId 会被
+        // clearAssistantTurnCompletion 清成 null，但 assistantTurnId 要等下条用户
+        // 消息才清。没有这个 settled 标记的话，isAssistantTextResponseInFlight 的
+        // turnMismatch（turnId !== completedId）在每条语音回复收尾后都恒为 true，
+        // 切语音会干等满 15s。settledId 记下"这轮已收尾"，turn-start/cancel 时清。
+        assistantTurnSettledId: null,
         assistantTurnCompletionSource: null,
         assistantSpeechActiveTurnId: null,
         assistantSpeechStartedTurnId: null,
+        assistantSpeechPlaybackTurnId: null,
+        assistantSpeechPlaybackStartAudioTime: 0,
+        assistantSpeechPlaybackEndAudioTime: 0,
         // 最近一次本地麦克风 RMS 超过语音阈值的时间戳（ms epoch）。
         // 由 app-audio-capture.js 里的 monitorInputVolume 持续写入；
         // app-proactive.js 在 voice 模式 tick 时用它判断"用户最近是否在发声"，

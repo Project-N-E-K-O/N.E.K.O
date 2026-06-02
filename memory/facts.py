@@ -1273,6 +1273,8 @@ class FactStore:
             for f in current:
                 if f.get('id') == fid:
                     f['recheck_attempts'] = (f.get('recheck_attempts') or 0) + 1
+                    # 戳失败时刻供 dead-letter 时间自愈（cooldown_elapsed）
+                    f['last_recheck_attempt_at'] = datetime.now().isoformat()
                     self.save_facts(name)
                     logger.debug(
                         f"[Recheck-Fact] {name} {fid}: "
@@ -1292,11 +1294,15 @@ class FactStore:
 
         Returns: True 表示成功处理了一条；False 表示没找到候选或失败。
         """
-        from config import MEMORY_RECHECK_MAX_ATTEMPTS
+        from config import (
+            MEMORY_RECHECK_MAX_ATTEMPTS,
+            MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
+        )
         from config.prompts.prompts_memory import MEMORY_RECHECK_FACT_PROMPT
         from memory.temporal import (
             normalize_event_when as _norm_when,
             compute_event_timestamps as _compute_ts,
+            cooldown_elapsed,
         )
 
         facts = await self.aload_facts(name)
@@ -1304,8 +1310,16 @@ class FactStore:
             f for f in facts
             if (f.get('schema_version') or 1) < MEMORY_SCHEMA_VERSION_CURRENT
             # 重试预算：LLM 持续失败的 entry 累计达上限后不再阻塞队列
-            # (Codex review on PR #1316 P2，对齐 reflection 同样写法)
-            and (f.get('recheck_attempts') or 0) < MEMORY_RECHECK_MAX_ATTEMPTS
+            # (Codex review on PR #1316 P2，对齐 reflection 同样写法)。
+            # 时间自愈：达上限的 entry 过 MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS
+            # 后放行一次 probe，让一次性写盘/网络故障恢复后自愈。
+            and (
+                (f.get('recheck_attempts') or 0) < MEMORY_RECHECK_MAX_ATTEMPTS
+                or cooldown_elapsed(
+                    f.get('last_recheck_attempt_at'),
+                    MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
+                )
+            )
         ]
         if not candidates:
             return False
@@ -1410,6 +1424,12 @@ class FactStore:
             ok = await asyncio.to_thread(_apply_update)
         except Exception as e:
             logger.warning(f"[Recheck-Fact] {name} {fid}: save 失败: {e}")
+            # 落盘失败也计入 recheck_attempts：否则 cloudsave 维护态 / 只读 FS /
+            # 权限导致的持续写盘失败会让同一条 fact 每 30s 原样重判、熔断永不
+            # 触发（对齐上面 LLM 失败路径的 bump）。
+            await asyncio.to_thread(
+                self._bump_fact_recheck_attempts, name, fid, f"save failed: {e}",
+            )
             return False
         if ok:
             logger.info(

@@ -352,6 +352,108 @@ body.neko-game-active [id$="-lock-icon"] {
     display: none !important;
 }
 
+/* Goodbye 后的 return 入口 Phase 2 改为 CAT1 占位表现，但继续复用原有
+   DOM/ID/事件协议与拖拽逻辑。 */
+.neko-idle-return-button-container {
+    pointer-events: auto;
+    touch-action: none;
+}
+
+.neko-idle-return-btn {
+    --neko-idle-return-size: clamp(96px, 14vw, 122px);
+    position: relative;
+    width: var(--neko-idle-return-size);
+    height: var(--neko-idle-return-size);
+    overflow: visible;
+    isolation: isolate;
+}
+
+.neko-idle-return-art {
+    --neko-idle-return-facing-transform: scaleX(1);
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: contain;
+    object-position: center;
+    position: relative;
+    z-index: 1;
+    will-change: opacity, transform, filter;
+    transform: var(--neko-idle-return-facing-transform);
+}
+
+.neko-idle-return-btn[data-neko-idle-tier="cat2"] .neko-idle-return-art,
+.neko-idle-return-btn[data-neko-idle-tier="cat3"] .neko-idle-return-art {
+    transform-origin: center bottom;
+}
+
+.neko-idle-return-btn.is-cat1-facing-right > .neko-idle-return-art {
+    --neko-idle-return-facing-transform: scaleX(-1);
+}
+
+.neko-idle-return-art-next {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    opacity: 0;
+    pointer-events: none;
+    transform-origin: center bottom;
+}
+
+.neko-idle-return-btn.is-tier-transitioning > .neko-idle-return-art:not(.neko-idle-return-art-next) {
+    animation: nekoIdleTierOut 820ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+.neko-idle-return-btn.is-tier-transitioning > .neko-idle-return-art-next {
+    animation: nekoIdleTierIn 820ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes nekoIdleTierOut {
+    0% {
+        opacity: 1;
+        filter: blur(0);
+        transform: translate3d(0, 0, 0) scale(1) var(--neko-idle-return-facing-transform);
+    }
+    52% {
+        opacity: 0;
+        filter: blur(1px);
+        transform: translate3d(0, -4px, 0) scale(0.96) var(--neko-idle-return-facing-transform);
+    }
+    100% {
+        opacity: 0;
+        filter: blur(1px);
+        transform: translate3d(0, -4px, 0) scale(0.96) var(--neko-idle-return-facing-transform);
+    }
+}
+
+@keyframes nekoIdleTierIn {
+    0% {
+        opacity: 0;
+        filter: blur(1px);
+        transform: translate3d(0, 7px, 0) scale(0.94) var(--neko-idle-return-facing-transform);
+    }
+    28% {
+        opacity: 0;
+    }
+    100% {
+        opacity: 1;
+        filter: blur(0);
+        transform: translate3d(0, 0, 0) scale(1) var(--neko-idle-return-facing-transform);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .neko-idle-return-btn.is-tier-transitioning > .neko-idle-return-art,
+    .neko-idle-return-btn.is-tier-transitioning > .neko-idle-return-art-next {
+        animation: none;
+    }
+}
+
+@media (max-width: 768px) {
+    .neko-idle-return-btn {
+        --neko-idle-return-size: clamp(88px, 24vw, 108px);
+    }
+}
+
 /* 看板娘VR模型画布样式 */
 #vrm-canvas {
     right: 0;
@@ -529,7 +631,7 @@ body.react-chat-adapter-active #chat-container {
     opacity: 1;
     border: none;
     /* 去掉边框 */
-    border-radius: 0;
+    border-radius: 0 !important;
     /* 去掉圆角 */
     cursor: grab;
     /* 拖拽手势 */
@@ -728,8 +830,29 @@ body.react-chat-adapter-active #chat-container {
     pointer-events: auto;
 }
 
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
+    width: min(430px, calc(100vw - 32px)) !important;
+    height: auto !important;
+    min-height: 0 !important;
+    top: auto !important;
+    bottom: 18px !important;
+    left: 50% !important;
+    transform: translateX(-50%) !important;
+    border-radius: 28px;
+    overflow: visible;
+    box-shadow: 0 24px 72px rgba(12, 20, 34, 0.18);
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"] #react-chat-window-root {
+    height: auto;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"] .react-chat-resize-edge {
+    display: none;
+}
+
 /* ---- 最小化：50px 圆形悬浮窗 + 呼吸灯 ---- */
-#react-chat-window-shell.is-minimized {
+body.subtitle-web-host #react-chat-window-shell.is-minimized {
     width: 50px !important;
     height: 50px !important;
     border-radius: 50%;
@@ -741,24 +864,30 @@ body.react-chat-adapter-active #chat-container {
     overflow: hidden;
 }
 
-#react-chat-window-shell.is-minimized #react-chat-window-root,
-#react-chat-window-shell.is-minimized #react-chat-window-header-actions {
+body.subtitle-web-host #react-chat-window-shell.is-minimized.is-idle-docked:not(.is-dragging) {
+    transition: left 0.22s ease, top 0.22s ease, box-shadow 0.22s ease, filter 0.22s ease;
+    box-shadow: 0 0 12px rgba(68, 183, 254, 0.82);
+    filter: saturate(1.04);
+}
+
+body.subtitle-web-host #react-chat-window-shell.is-minimized #react-chat-window-root,
+body.subtitle-web-host #react-chat-window-shell.is-minimized #react-chat-window-header-actions {
     display: none;
 }
 
 /* 拖拽手柄撑满圆形，充当点击恢复区域 */
-#react-chat-window-shell.is-minimized #react-chat-window-drag-handle {
+body.subtitle-web-host #react-chat-window-shell.is-minimized #react-chat-window-drag-handle {
     width: 100%;
     height: 100%;
     cursor: pointer;
 }
 
 /* 最小化悬浮球内图标 */
-#react-chat-window-shell .react-chat-minimized-icon {
+body.subtitle-web-host #react-chat-window-shell .react-chat-minimized-icon {
     display: none;
 }
 
-#react-chat-window-shell.is-minimized .react-chat-minimized-icon {
+body.subtitle-web-host #react-chat-window-shell.is-minimized .react-chat-minimized-icon {
     display: block;
     width: 100%;
     height: 100%;
@@ -767,25 +896,31 @@ body.react-chat-adapter-active #chat-container {
 }
 
 /* 隐藏 resize 边缘 */
-#react-chat-window-shell.is-minimized .react-chat-resize-edge {
+body.subtitle-web-host #react-chat-window-shell.is-minimized .react-chat-resize-edge {
     display: none;
 }
 
 /* ---- 折叠动画（向左下角缩放） ---- */
-#react-chat-window-shell.is-collapsing {
+body.subtitle-web-host #react-chat-window-shell.is-collapsing {
     transform-origin: 0% 100%;
-    transition: transform 0.38s cubic-bezier(0.4, 0, 0.2, 1);
-    will-change: transform;
+    transition:
+        transform 0.38s cubic-bezier(0.4, 0, 0.2, 1),
+        left 0.38s cubic-bezier(0.4, 0, 0.2, 1),
+        top 0.38s cubic-bezier(0.4, 0, 0.2, 1);
+    will-change: transform, left, top;
 }
 
 /* ---- 展开动画（从左下角放大） ---- */
-#react-chat-window-shell.is-expanding {
+body.subtitle-web-host #react-chat-window-shell.is-expanding {
     transform-origin: 0% 100%;
-    transition: transform 0.35s cubic-bezier(0.2, 0, 0, 1);
-    will-change: transform;
+    transition:
+        transform 0.35s cubic-bezier(0.2, 0, 0, 1),
+        left 0.35s cubic-bezier(0.2, 0, 0, 1),
+        top 0.35s cubic-bezier(0.2, 0, 0, 1);
+    will-change: transform, left, top;
 }
 
-#react-chat-window-shell.is-dragging {
+body.subtitle-web-host #react-chat-window-shell.is-dragging {
     box-shadow: 0 36px 110px rgba(12, 20, 34, 0.36);
 }
 
@@ -859,6 +994,174 @@ body.galgame-mode-enabled #react-chat-window-shell:not(.is-minimized):not(.is-co
     height: 32px;
     object-fit: cover;
     pointer-events: none;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-header-actions {
+    inset: 0 !important;
+    top: 0 !important;
+    right: 0 !important;
+    width: auto;
+    height: auto;
+    overflow: visible;
+    pointer-events: none;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #avatarPreviewHeaderButton,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #exportConversationButton,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #reactChatWindowCloseButton {
+    display: none;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
+    min-height: 0 !important;
+    left: var(--compact-surface-left, 50%) !important;
+    top: var(--compact-surface-top, auto) !important;
+    bottom: auto !important;
+    width: var(--compact-surface-width, min(430px, calc(100vw - 32px))) !important;
+    margin-left: 0 !important;
+    transform: none !important;
+    border-radius: 0;
+    border: none !important;
+    overflow: visible;
+    background: transparent !important;
+    box-shadow: none !important;
+    filter: none !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding)::before,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding)::after {
+    content: none !important;
+    display: none !important;
+}
+
+body.subtitle-web-host.galgame-mode-enabled #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
+    min-height: 0 !important;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-drag-handle {
+    display: none;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .chat-window,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .composer-panel,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .composer,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .compact-chat-surface-shell {
+    background: transparent !important;
+    box-shadow: none !important;
+    border: 0 !important;
+    outline: 0 !important;
+    filter: none !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+}
+
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {
+    position: fixed;
+    left: calc(var(--compact-surface-left, 50vw) + (var(--compact-surface-width, 430px) / 2));
+    width: min(var(--compact-surface-width, 430px), 420px);
+    max-height: min(240px, calc(100vh - 96px));
+    height: max-content;
+    transform: translateX(-50%);
+    overflow-y: auto;
+    overflow-x: visible;
+    overscroll-behavior: contain;
+    scrollbar-width: none;
+    z-index: 100002;
+}
+
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"]::-webkit-scrollbar {
+    display: none;
+}
+
+/* The compact choice portal itself is transparent; only its scroll surface and options should receive input. */
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-slot,
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-options,
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option {
+    pointer-events: auto;
+}
+
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-choice-layer-open="false"] {
+    display: none;
+}
+
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-compact-choice-placement="above"] {
+    top: auto;
+    bottom: calc(100vh - var(--compact-surface-top, 0px) + 16px);
+}
+
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-compact-choice-placement="below"] {
+    top: calc(var(--compact-surface-top, 0px) + var(--compact-surface-height, 58px) + 16px);
+    bottom: auto;
+}
+
+body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {
+    max-height: 240px;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .chat-window,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .composer-panel,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .composer {
+    padding: 0 !important;
+    min-height: 0 !important;
+    width: 100% !important;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding),
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .chat-window,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .composer-panel,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .composer {
+    pointer-events: none;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) [data-compact-geometry-owner="surface"],
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) [data-compact-geometry-owner="surface"] *,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #reactChatWindowMinimizeButton,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #reactChatWindowMinimizeButton *,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-input-tool-fan[data-compact-input-tool-fan-open="true"],
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] * {
+    pointer-events: auto;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-anchor,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-panel,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-scroll,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-scroll-content,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-message {
+    pointer-events: none;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-bubble,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-controls,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-preview-region {
+    pointer-events: auto;
+}
+
+/* compact 态不再把最小化按钮渲染成模型旁的悬浮球：呼吸灯外发光会被 Electron 窗口形状裁切，
+   且球漂在角色旁观感很怪。最小化的宿主管线（按钮 DOM、toggleMinimized、折叠动画）保留，
+   compact 态下的最小化入口呈现方式后续单独设计。 */
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #reactChatWindowMinimizeButton {
+    display: none;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .compact-chat-surface-shell {
+    overflow: visible !important;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .compact-chat-surface-shell {
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .compact-chat-surface-shell .compact-input-tool-fan {
+    overflow: visible !important;
+    clip-path: none !important;
+    z-index: 100003 !important;
 }
 
 #react-chat-window-root {
@@ -956,6 +1259,10 @@ body.react-chat-window-resizing {
     box-shadow: 0 30px 100px rgba(0, 0, 0, 0.5);
 }
 
+[data-theme="dark"] #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
+    box-shadow: 0 24px 72px rgba(0, 0, 0, 0.42);
+}
+
 [data-theme="dark"] #react-chat-window-shell.is-dragging {
     box-shadow: 0 36px 110px rgba(0, 0, 0, 0.6);
 }
@@ -978,6 +1285,24 @@ body.react-chat-window-resizing {
 [data-theme="dark"] #reactChatWindowCloseButton:hover {
     background: rgba(200, 210, 230, 0.12);
     color: #dde0e8;
+}
+
+[data-theme="dark"] body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #reactChatWindowMinimizeButton {
+    background-color: rgba(68, 183, 254, 0.16);
+    box-shadow: 0 0 10px rgba(68, 183, 254, 0.66);
+}
+
+[data-theme="dark"] body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
+    background: transparent !important;
+    box-shadow: none !important;
+    filter: none !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+}
+
+[data-theme="dark"] body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #reactChatWindowMinimizeButton:hover {
+    background-color: rgba(68, 183, 254, 0.22);
+    box-shadow: 0 0 14px rgba(68, 183, 254, 0.78);
 }
 
 [data-theme="dark"] #react-chat-window-root {
@@ -1997,6 +2322,223 @@ body.react-chat-window-dragging {
     }
 }
 
+/* ===== 截图标注工具栏 ===== */
+.crop-toolbar {
+    position: absolute;
+    z-index: 6;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    max-width: calc(100vw - 24px);
+    padding: 6px 8px;
+    border-radius: 12px;
+    background: rgba(8, 11, 18, 0.85);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.4);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+    pointer-events: auto;
+    user-select: none;
+    animation: crop-fade-in 0.15s ease;
+}
+
+.crop-tool-group {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+}
+
+.crop-tool-divider {
+    width: 1px;
+    align-self: stretch;
+    margin: 4px;
+    background: rgba(255, 255, 255, 0.14);
+}
+
+/* 按钮观感对齐 react 输入框的 .composer-tool-btn */
+.crop-tool-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.82);
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.crop-tool-btn:hover {
+    background: rgba(68, 183, 254, 0.12);
+    color: #8bd8ff;
+}
+
+.crop-tool-btn.is-active {
+    background: rgba(68, 183, 254, 0.18);
+    color: #44b7fe;
+}
+
+.crop-tool-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.crop-tool-btn svg {
+    display: block;
+    pointer-events: none;
+}
+
+.crop-tool-btn:focus-visible,
+.crop-color-swatch:focus-visible,
+.crop-width-btn:focus-visible,
+.crop-opt-slider:focus-visible,
+.crop-opt-text:focus-visible {
+    outline: 2px solid rgba(68, 183, 254, 0.85);
+    outline-offset: 1px;
+}
+
+.crop-tool-confirm { color: #34c759; }
+.crop-tool-confirm:hover { background: rgba(52, 199, 89, 0.16); color: #4cd964; }
+.crop-tool-confirm.is-active { background: rgba(52, 199, 89, 0.16); color: #34c759; }
+
+.crop-tool-cancel { color: #ff6b7a; }
+.crop-tool-cancel:hover { background: rgba(220, 53, 69, 0.18); color: #ff8a97; }
+
+/* 调色板 */
+.crop-color-swatch {
+    width: 18px;
+    height: 18px;
+    margin: 0 1px;
+    padding: 0;
+    border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, 0.25);
+    cursor: pointer;
+    transition: transform 0.12s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.crop-color-swatch:hover { transform: scale(1.12); }
+
+.crop-color-swatch.is-active {
+    border-color: #fff;
+    box-shadow: 0 0 0 2px rgba(68, 183, 254, 0.7);
+}
+
+/* 线宽 S / M / L */
+.crop-width-btn {
+    min-width: 26px;
+    height: 28px;
+    padding: 0 6px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.crop-width-btn:hover { background: rgba(68, 183, 254, 0.12); color: #8bd8ff; }
+.crop-width-btn.is-active { background: rgba(68, 183, 254, 0.18); color: #44b7fe; }
+
+/* 文字工具的浮层 textarea */
+.crop-text-editor {
+    position: absolute;
+    z-index: 7;
+    margin: 0;
+    padding: 1px 2px;
+    min-width: 40px;
+    border: 1px dashed rgba(68, 183, 254, 0.9);
+    border-radius: 3px;
+    background: rgba(0, 0, 0, 0.18);
+    color: #fff;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-weight: 600;
+    line-height: 1.28;
+    white-space: pre;
+    overflow: hidden;
+    outline: none;
+    resize: none;
+    pointer-events: auto;
+    caret-color: currentColor;
+}
+
+/* 上下文选项条：随当前工具浮在主工具栏旁，展示该工具的可调属性 */
+.crop-options-bar {
+    position: absolute;
+    z-index: 6;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 14px;
+    max-width: calc(100vw - 24px);
+    padding: 8px 14px;
+    border-radius: 12px;
+    background: rgba(8, 11, 18, 0.85);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.4);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+    pointer-events: auto;
+    user-select: none;
+    animation: crop-fade-in 0.15s ease;
+}
+
+.crop-opt-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.crop-opt-label {
+    color: rgba(255, 255, 255, 0.8);
+    font-size: 0.82rem;
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.crop-opt-slider {
+    width: 120px;
+    height: 4px;
+    cursor: pointer;
+    accent-color: #44b7fe;
+}
+
+.crop-opt-value {
+    min-width: 26px;
+    color: #8bd8ff;
+    font-size: 0.8rem;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+}
+
+.crop-opt-text {
+    width: 140px;
+    height: 28px;
+    padding: 0 8px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.06);
+    color: #fff;
+    font-size: 0.85rem;
+    outline: none;
+}
+
+.crop-opt-text:focus {
+    border-color: rgba(68, 183, 254, 0.8);
+    background: rgba(68, 183, 254, 0.08);
+}
+
+/* 绘图工具激活时隐藏选区手柄与网格线，避免误触 */
+.crop-selection-box.crop-selection-box--drawing .crop-selection-handle,
+.crop-selection-box.crop-selection-box--drawing .crop-selection-grid-line {
+    display: none;
+}
+
 #text-input-row {
     display: flex;
     gap: 8px;
@@ -2282,13 +2824,14 @@ body.react-chat-window-dragging {
 
 @media only screen and (max-width: 768px) {
 
-    /* 手机端背景设为黑色 */
-    html,
-    body {
+    /* 手机端背景设为黑色（Electron Pet 窗口除外：html/body 都带 lanlan-pet-mode；
+       Electron 紧凑聊天窗口 body.electron-chat-window 也排除，它要透明透出桌面） */
+    html:not(.lanlan-pet-mode),
+    body:not(.lanlan-pet-mode):not(.electron-chat-window) {
         background: #000 !important;
     }
 
-    #live2d-container {
+    :where(body:not(.lanlan-pet-mode)) #live2d-container {
         position: fixed;
         right: 0;
         bottom: 0;
@@ -2297,7 +2840,7 @@ body.react-chat-window-dragging {
         z-index: 5;
     }
 
-    #chat-container {
+    :where(body:not(.lanlan-pet-mode)) #chat-container {
         width: 90vw;
         left: 5vw;
         bottom: 10px;
@@ -2310,12 +2853,12 @@ body.react-chat-window-dragging {
         box-shadow: none;
     }
 
-    #chat-header {
+    :where(body:not(.lanlan-pet-mode)) #chat-header {
         height: 40px;
         font-size: 0.9rem;
     }
 
-    #chat-content-wrapper {
+    :where(body:not(.lanlan-pet-mode)) #chat-content-wrapper {
         padding: 12px;
         padding-top: 44px;
         /* 禁用内容区过渡，避免折叠时对子元素产生影响 */
@@ -2324,7 +2867,7 @@ body.react-chat-window-dragging {
         /* Fluent 背景层 */
     }
 
-    #text-input-area {
+    :where(body:not(.lanlan-pet-mode)) #text-input-area {
         padding: 8px;
         /* 输入区不参与任何过渡动画 */
         transition: none !important;
@@ -2335,73 +2878,73 @@ body.react-chat-window-dragging {
     }
 
     /* 输入区内部元素也不参与过渡，避免细微跳动 */
-    #text-input-row,
-    #textInputBox,
-    #button-group {
+    :where(body:not(.lanlan-pet-mode)) #text-input-row,
+    :where(body:not(.lanlan-pet-mode)) #textInputBox,
+    :where(body:not(.lanlan-pet-mode)) #button-group {
         transition: none !important;
     }
 
-    #textInputBox {
+    :where(body:not(.lanlan-pet-mode)) #textInputBox {
         font-size: 0.9rem;
         /* 移动端：按钮纵向排列，高度匹配按钮组总高度 */
         height: 92px;
     }
 
-    #button-group {
+    :where(body:not(.lanlan-pet-mode)) #button-group {
         gap: 4px;
     }
 
-    #textSendButton,
-    #screenshotButton {
+    :where(body:not(.lanlan-pet-mode)) #textSendButton,
+    :where(body:not(.lanlan-pet-mode)) #screenshotButton {
         padding: 6px 12px;
         font-size: 0.8rem;
         min-width: 70px;
     }
 
-    .screenshot-item {
+    :where(body:not(.lanlan-pet-mode)) .screenshot-item {
         width: 80px;
     }
 
-    .screenshot-thumbnail {
+    :where(body:not(.lanlan-pet-mode)) .screenshot-thumbnail {
         width: 80px;
         height: 60px;
     }
 
-    .chat-avatar-preview-card-body {
+    :where(body:not(.lanlan-pet-mode)) .chat-avatar-preview-card-body {
         flex-direction: column;
         align-items: stretch;
     }
 
-    .chat-avatar-preview-image-shell {
+    :where(body:not(.lanlan-pet-mode)) .chat-avatar-preview-image-shell {
         width: 78px;
         height: 78px;
         border-radius: 22px;
     }
 
-    #screenshots-title {
+    :where(body:not(.lanlan-pet-mode)) #screenshots-title {
         font-size: 0.8rem;
     }
 
-    #clear-all-screenshots {
+    :where(body:not(.lanlan-pet-mode)) #clear-all-screenshots {
         font-size: 0.7rem;
         padding: 2px 6px;
     }
 
-    .screenshot-index {
+    :where(body:not(.lanlan-pet-mode)) .screenshot-index {
         font-size: 0.65rem;
     }
 
-    .message {
+    :where(body:not(.lanlan-pet-mode)) .message {
         font-size: 0.9rem;
         max-width: 85%;
     }
 
     /* 移动端显示拍照，隐藏截图 */
-    .desktop-text {
+    :where(body:not(.lanlan-pet-mode)) .desktop-text {
         display: none;
     }
 
-    .mobile-text {
+    :where(body:not(.lanlan-pet-mode)) .mobile-text {
         display: inline;
     }
 }
@@ -2409,7 +2952,7 @@ body.react-chat-window-dragging {
 @media only screen and (max-width: 768px) {
 
     /* 移动端：折叠时容器完全透明且不拦截触摸事件 */
-    #chat-container.mobile-collapsed {
+    :where(body:not(.lanlan-pet-mode)) #chat-container.mobile-collapsed {
         width: 48px !important;
         min-width: 48px !important;
         max-width: 48px !important;
@@ -2425,14 +2968,14 @@ body.react-chat-window-dragging {
         border: none !important;
     }
 
-    #chat-container.mobile-collapsed::before {
+    :where(body:not(.lanlan-pet-mode)) #chat-container.mobile-collapsed::before {
         backdrop-filter: none !important;
         -webkit-backdrop-filter: none !important;
         background: transparent !important;
     }
 
     /* 移动端：折叠时仅切换按钮可交互 */
-    #chat-container.mobile-collapsed #toggle-chat-btn {
+    :where(body:not(.lanlan-pet-mode)) #chat-container.mobile-collapsed #toggle-chat-btn {
         pointer-events: auto !important;
         left: 8px;
         right: auto;
@@ -2442,8 +2985,8 @@ body.react-chat-window-dragging {
     }
 
     /* 移动端：折叠时隐藏输入区和音乐调节条 */
-    #chat-container.mobile-collapsed #text-input-area,
-    #chat-container.mobile-collapsed .music-player-bar {
+    :where(body:not(.lanlan-pet-mode)) #chat-container.mobile-collapsed #text-input-area,
+    :where(body:not(.lanlan-pet-mode)) #chat-container.mobile-collapsed .music-player-bar {
         display: none !important;
     }
 }
@@ -2451,12 +2994,12 @@ body.react-chat-window-dragging {
 @media only screen and (max-width: 768px) {
 
     /* 移动端：最小化仅折叠内容区，输入区常驻显示 */
-    #chat-container.minimized #text-input-area {
+    :where(body:not(.lanlan-pet-mode)) #chat-container.minimized #text-input-area {
         display: block;
     }
 
     /* 移动端：最小化时保持容器尺寸，让输入区可见可用 */
-    #chat-container.minimized {
+    :where(body:not(.lanlan-pet-mode)) #chat-container.minimized {
         width: 90vw;
         left: 5vw;
         bottom: 5px;
@@ -2474,7 +3017,7 @@ body.react-chat-window-dragging {
     /* React chat window 移动端规则仅作用于 index.html 等真正的浏览器手机端。
        chat.html 是 Electron 独立窗口（无论拖得多窄都应走 PC 逻辑），
        在 <body> 加 .electron-chat-window 从此媒体查询中排除。 */
-    body:not(.electron-chat-window) #react-chat-window-shell:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
         width: calc(100vw - 12px);
         height: auto;
         max-height: 85vh;
@@ -2488,14 +3031,23 @@ body.react-chat-window-dragging {
         overflow: hidden;
     }
 
-    body:not(.electron-chat-window) #react-chat-window-shell #react-chat-window-root {
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
+        width: calc(100vw - 16px) !important;
+        left: 8px !important;
+        right: 8px;
+        bottom: 8px !important;
+        margin-left: 0 !important;
+        transform: none !important;
+    }
+
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell #react-chat-window-root {
         height: 100%;
         flex: 1 1 auto;
         overflow: hidden;
         min-height: 0;
     }
 
-    body:not(.electron-chat-window) #react-chat-window-shell .app-shell {
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell .app-shell {
         height: 100%;
         display: flex;
         flex-direction: column;
@@ -2506,7 +3058,7 @@ body.react-chat-window-dragging {
        overflow:hidden 保证输入区不会被消息挤出。shell 尺寸仍由
        syncMobileContentLayout() 写成显式像素（根据内容，最高 85vh；
        用户拖过顶部手柄后走 mobileUserHeight 持久化值）。 */
-    body:not(.electron-chat-window) #react-chat-window-shell .chat-window {
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell .chat-window {
         height: 100%;
         display: grid;
         grid-template-rows: auto 1fr auto;
@@ -2514,12 +3066,12 @@ body.react-chat-window-dragging {
         overflow: hidden;
     }
 
-    body:not(.electron-chat-window) #react-chat-window-shell .chat-body {
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell .chat-body {
         min-height: 0;
         overflow: hidden;
     }
 
-    body:not(.electron-chat-window) #react-chat-window-shell .message-list {
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell .message-list {
         height: 100%;
         min-height: 0;
         overflow-y: auto;
@@ -2528,35 +3080,35 @@ body.react-chat-window-dragging {
 
     /* .is-mobile-content-capped 现在不再影响布局（message-list 始终可滚），
        保留空规则以免其他位置若有依赖时出现样式回退。 */
-    body:not(.electron-chat-window) #react-chat-window-shell.is-mobile-content-capped .message-list {
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell.is-mobile-content-capped .message-list {
         overflow-y: auto;
     }
 
     /* Mobile: hide the divider between translate and jukebox plus the last tool button (jukebox)
        to reduce clutter on small screens. If the tool order changes, replace these positional
        selectors with a dedicated class or data attribute on the affected controls. */
-    body:not(.electron-chat-window) #react-chat-window-shell .composer-bottom-tools > .composer-tool-divider:nth-last-child(2),
-    body:not(.electron-chat-window) #react-chat-window-shell .composer-bottom-tools > .composer-tool-btn:last-child {
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell .composer-bottom-tools > .composer-tool-divider:nth-last-child(2),
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell .composer-bottom-tools > .composer-tool-btn:last-child {
         display: none;
     }
 
-    body:not(.electron-chat-window) #react-chat-window-shell.is-mobile-expand-guarding .composer-tool-btn,
-    body:not(.electron-chat-window) #react-chat-window-shell.is-mobile-expand-guarding .composer-tool-btn:hover,
-    body:not(.electron-chat-window) #react-chat-window-shell.is-mobile-expand-guarding .composer-tool-btn:active,
-    body:not(.electron-chat-window) #react-chat-window-shell.is-mobile-expand-guarding .composer-tool-btn:focus {
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell.is-mobile-expand-guarding .composer-tool-btn,
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell.is-mobile-expand-guarding .composer-tool-btn:hover,
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell.is-mobile-expand-guarding .composer-tool-btn:active,
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell.is-mobile-expand-guarding .composer-tool-btn:focus {
         background: transparent !important;
         pointer-events: none;
     }
 
-    body:not(.electron-chat-window) #react-chat-window-drag-handle {
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-drag-handle {
         cursor: grab;
     }
 
     /* 手机端：仅显示顶部拖拽边缘用于调整高度，隐藏其余方向 */
-    body:not(.electron-chat-window) #react-chat-window-shell:not(.is-minimized) .react-chat-resize-edge {
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell:not(.is-minimized) .react-chat-resize-edge {
         display: none;
     }
-    body:not(.electron-chat-window) #react-chat-window-shell:not(.is-minimized) .react-chat-resize-n {
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell:not(.is-minimized) .react-chat-resize-n {
         display: block;
         height: 14px;
         top: -4px;
@@ -2566,7 +3118,7 @@ body.react-chat-window-dragging {
         /* 可视拖拽指示条 */
         background: transparent;
     }
-    body:not(.electron-chat-window) #react-chat-window-shell:not(.is-minimized) .react-chat-resize-n::after {
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell:not(.is-minimized) .react-chat-resize-n::after {
         content: '';
         position: absolute;
         left: 50%;
@@ -2580,27 +3132,27 @@ body.react-chat-window-dragging {
 
     /* ---- 手机端最小化：50px 圆形悬浮球（与桌面端一致）----
        替代原先的全宽底部胶囊，使用圆形小球，可自由拖动 */
-    body:not(.electron-chat-window) #react-chat-window-shell.is-minimized {
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell.is-minimized {
         width: 50px !important;
         height: 50px !important;
         border-radius: 50%;
     }
 
-    body:not(.electron-chat-window) #react-chat-window-shell.is-minimized #react-chat-window-drag-handle {
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell.is-minimized #react-chat-window-drag-handle {
         display: flex;
         align-items: center;
         justify-content: center;
         cursor: pointer;
     }
 
-    body:not(.electron-chat-window) #react-chat-window-shell.is-minimized .react-chat-minimized-icon {
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell.is-minimized .react-chat-minimized-icon {
         width: 100%;
         height: 100%;
         object-fit: contain;
         pointer-events: none;
     }
 
-    #chat-container.minimized::before {
+    :where(body:not(.lanlan-pet-mode)) #chat-container.minimized::before {
         backdrop-filter: none !important;
         -webkit-backdrop-filter: none !important;
         background: transparent !important;
@@ -2801,9 +3353,9 @@ body.chat-export-modal-open {
 }
 
 .chat-export-selection-tool:hover {
-    background: #eef2ff;
-    border-color: #818cf8;
-    color: #4338ca;
+    background: #e0f7ff;
+    border-color: #7dd3fc;
+    color: #0369a1;
 }
 
 .chat-export-selection-list {
@@ -2842,7 +3394,7 @@ body.chat-export-modal-open {
     margin-top: 3px;
     width: 16px;
     height: 16px;
-    accent-color: #6366f1;
+    accent-color: #38bdf8;
     cursor: pointer;
 }
 
@@ -2922,18 +3474,18 @@ body.chat-export-modal-open {
 .chat-export-format-chip:hover,
 .chat-export-style-chip:hover,
 .chat-export-image-format-chip:hover {
-    background: #eef2ff;
-    border-color: #818cf8;
-    color: #4338ca;
+    background: #e0f7ff;
+    border-color: #7dd3fc;
+    color: #0369a1;
 }
 
 .chat-export-format-chip.is-active,
 .chat-export-style-chip.is-active,
 .chat-export-image-format-chip.is-active {
-    background: #6366f1;
-    border-color: #6366f1;
-    color: #ffffff;
-    box-shadow: 0 4px 10px rgba(99, 102, 241, 0.35);
+    background: #dff6ff;
+    border-color: #38bdf8;
+    color: #0369a1;
+    box-shadow: 0 4px 10px rgba(56, 189, 248, 0.28);
 }
 
 /* ---------- Preview body ---------- */
@@ -3024,9 +3576,9 @@ body.chat-export-modal-open {
 }
 
 .chat-export-preview-action:hover:not(:disabled) {
-    background: #eef2ff;
-    border-color: #818cf8;
-    color: #4338ca;
+    background: #e0f7ff;
+    border-color: #7dd3fc;
+    color: #0369a1;
 }
 
 .chat-export-preview-action:disabled {
@@ -3035,17 +3587,17 @@ body.chat-export-modal-open {
 }
 
 .chat-export-preview-action-primary {
-    background: #6366f1;
-    border-color: #6366f1;
+    background: #0ea5e9;
+    border-color: #0ea5e9;
     color: #ffffff;
-    box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
+    box-shadow: 0 4px 12px rgba(14, 165, 233, 0.3);
 }
 
 .chat-export-preview-action-primary:hover:not(:disabled) {
-    background: #4f46e5;
-    border-color: #4f46e5;
+    background: #0284c7;
+    border-color: #0284c7;
     color: #ffffff;
-    box-shadow: 0 6px 16px rgba(79, 70, 229, 0.4);
+    box-shadow: 0 6px 16px rgba(2, 132, 199, 0.35);
 }
 
 /* ---------- Small screens ---------- */

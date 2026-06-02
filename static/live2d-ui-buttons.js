@@ -187,7 +187,10 @@ Live2DManager.prototype.setupHTMLLockIcon = function(model) {
                     }
                 });
             }
-            lockIcon.style.opacity = isOverlapped ? '0.3' : '';
+            // 与角色形象半透明状态完全同步：容器加了 locked-hover-fade 类(opacity 0.12)时，锁图标也淡到同一透明度
+            const live2dFadeContainer = document.getElementById('live2d-container');
+            const lockShouldFade = live2dFadeContainer && live2dFadeContainer.classList.contains('locked-hover-fade');
+            lockIcon.style.opacity = lockShouldFade ? '0.12' : (isOverlapped ? '0.3' : '');
         } catch (_) {}
     };
     this._lockIconTicker = tick;
@@ -550,7 +553,6 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
 
     // 创建"请她回来"按钮
     const returnButtonContainer = this.createReturnButton();
-    this.setupReturnButtonContainerDrag(returnButtonContainer);
 
     container.style.pointerEvents = this.isLocked ? 'none' : 'auto';
 
@@ -675,6 +677,5 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
  * 设置返回按钮拖拽（Live2D 特定）
  */
 Live2DManager.prototype.setupReturnButtonContainerDrag = function(container) {
-    this._setupReturnButtonDrag(container);
     this._addReturnButtonBreathingAnimation();
 };

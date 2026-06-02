@@ -2,7 +2,10 @@
 ``SessionStateMachine`` 之后的关键行为契约。
 
 覆盖点：
-1. Voice 模式走 hot-swap，**不**触碰 SM（不 fire PROACTIVE_START，清 callbacks）
+1. Voice 模式主路径是 realtime inject（conversation.item.create + response.create），
+   **不**进 SM proactive 流水线（不 fire PROACTIVE_START）；只有 provider 抛
+   NotImplementedError 才回退 hot-swap。serialize / reject 回补 / TOCTOU 等竞态见
+   下面 voice_mode_* 用例。
 2. Text 模式在 SM 被另一路 proactive 占用时拒绝投递，callbacks 保留重试
 3. Text 模式在 ``session._is_responding == True`` 时 SM 拒绝，callbacks 保留
 4. 正常 text 投递：IDLE → PHASE1（claim）→ CLAIM → PHASE2 → DONE 事件序列
@@ -47,7 +50,7 @@ class _FakeOmniOffline(OmniOfflineClient):
         self._raise = raise_exc
         self.called_with: list[str] = []
 
-    async def prompt_ephemeral(self, instruction: str) -> bool:
+    async def prompt_ephemeral(self, instruction: str, *, images=None) -> bool:
         self.called_with.append(instruction)
         if self._raise is not None:
             raise self._raise
@@ -67,10 +70,30 @@ def _make_mgr(session=None) -> LLMSessionManager:
     mgr.websocket = None
     mgr.lock = asyncio.Lock()
     mgr._proactive_write_lock = asyncio.Lock()
+    mgr._voice_proactive_inject_lock = asyncio.Lock()
+    # Record _fire_task calls (e.g. the rejection-path re-trigger) and close
+    # the coroutine so it doesn't run recursively / warn "never awaited".
+    mgr._fired_tasks = []
+
+    def _fake_fire(coro):
+        mgr._fired_tasks.append(coro)
+        # Close the coroutine so it doesn't run / warn "never awaited". Only
+        # the cleanup-related errors are expected here; anything else should
+        # surface rather than be silently swallowed.
+        try:
+            coro.close()
+        except (RuntimeError, AttributeError):
+            # Coroutine already closed/started or not a coroutine — there is
+            # nothing to clean up; intentionally ignored in this test shim.
+            pass
+    mgr._fire_task = _fake_fire
     mgr.current_speech_id = None
     mgr._tts_done_queued_for_turn = False
     mgr.pending_agent_callbacks = []
     mgr.pending_extra_replies = []
+    # Mirror the production __init__ playback-gate flag (the double is built
+    # via __new__, so __init__ never ran). Default False = gate open.
+    mgr._voice_playback_active = False
     mgr._takeover_active = False
     mgr._takeover_input_dispatcher = None
     mgr._get_text_guard_max_length = MagicMock(return_value=200)
@@ -80,31 +103,522 @@ def _make_mgr(session=None) -> LLMSessionManager:
     return mgr
 
 
+def _make_voice_sess(*, is_responding=False, inject=None):
+    """Build an ``OmniRealtimeClient`` test double via ``__new__`` (NOT a
+    subclass).
+
+    The code under test branches on ``isinstance(session, OmniRealtimeClient)``,
+    so the fake must be a real instance — but the heavy ``__init__`` (real
+    base_url / api_key / model / WebSocket plumbing) is irrelevant to these SM
+    contract tests. ``__new__`` yields an instance without running ``__init__``;
+    and because there's no ``__init__``-overriding subclass, CodeQL's
+    "missing super().__init__" check has nothing to flag.
+
+    Behaviour is attached as instance attributes (invoked WITHOUT ``self`` —
+    instance-attribute callables aren't bound methods — which matches how the
+    production code calls ``voice_sess.is_active_response()`` /
+    ``voice_sess.inject_text_and_request_response(text, on_rejected=...)``):
+      - ``is_active_response()`` → current ``_is_responding``.
+      - ``inject_text_and_request_response`` → ``inject`` if given, else a
+        default that bumps ``inject_calls`` and records ``injected``.
+    Tests needing bespoke inject behaviour can reassign
+    ``sess.inject_text_and_request_response`` after construction (the closure
+    can capture ``sess``).
+    """
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    sess = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    sess._is_responding = is_responding
+    sess.injected = []
+    sess.inject_calls = 0
+    sess.is_active_response = lambda: sess._is_responding
+
+    if inject is None:
+        async def _default_inject(text, *, on_rejected=None):
+            sess.inject_calls += 1
+            sess.injected.append(text)
+        sess.inject_text_and_request_response = _default_inject
+    else:
+        sess.inject_text_and_request_response = inject
+    return sess
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # trigger_agent_callbacks
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def test_voice_mode_does_not_touch_sm():
-    """Voice 模式：清 pending，不 fire SM 任何事件。"""
-    from main_logic.omni_realtime_client import OmniRealtimeClient
-
-    class _VoiceSess(OmniRealtimeClient):
-        def __init__(self):
-            pass  # 跳过父类初始化
-
-    mgr = _make_mgr(session=_VoiceSess())
-    mgr.pending_agent_callbacks = [{"status": "completed", "summary": "task done"}]
+async def test_voice_mode_idle_injects_and_drops_paired_cbs_and_extras():
+    """Voice 模式（idle）：调 inject_text_and_request_response，并把 cb 从
+    pending_agent_callbacks **和** 配对的 pending_extra_replies 同步剔除——
+    后者必须清，否则 _finalize_turn_after_emit 看到 pending_extra_replies 非空
+    会触发 _trigger_immediate_preparation_for_extra 的无谓 hot-swap 准备，并在
+    下次 hot-swap 时 prime 出已经播过的内容造成重复投递。
+    不 fire SM 任何事件（voice 走 realtime API 直接 inject，不进 SM 流水线）。"""
+    sess = _make_voice_sess()
+    mgr = _make_mgr(session=sess)
+    cb = {"_callback_delivery_id": "id-task-done", "status": "completed", "summary": "task done"}
+    extra = {"_callback_delivery_id": "id-task-done", "origin": "task_result", "summary": "task done", "status": "completed"}
+    mgr.pending_agent_callbacks = [cb]
+    mgr.pending_extra_replies = [extra]
 
     events: list[SessionEvent] = []
     mgr.state.subscribe(None, lambda ev, p: events.append(ev))
 
     await LLMSessionManager.trigger_agent_callbacks(mgr)
-    # 异步订阅派发 —— 让 event loop 转一圈
     await asyncio.sleep(0)
 
+    assert len(sess.injected) == 1
     assert mgr.pending_agent_callbacks == []
+    # 关键回归：matching extras 同步剔除
+    assert mgr.pending_extra_replies == []
     assert mgr.state.phase is ProactivePhase.IDLE
-    assert events == []  # 未走 SM 任何事件
+    assert events == []
+
+
+async def test_voice_mode_inject_preserves_passive_cb_and_its_extra():
+    """Voice 模式：inject 只删 proactive cb 配对的 extras 项，
+    passive cb 及其 extras 必须原封不动留下 —— 它们要走 user-turn drain。"""
+    sess = _make_voice_sess()
+    mgr = _make_mgr(session=sess)
+    passive_cb = {
+        "_callback_delivery_id": "id-passive",
+        "status": "completed", "summary": "passive note", "delivery_mode": "passive",
+    }
+    proactive_cb = {
+        "_callback_delivery_id": "id-proactive",
+        "status": "completed", "summary": "ping user now",
+    }
+    passive_extra = {
+        "_callback_delivery_id": "id-passive",
+        "origin": "event", "summary": "passive note",
+    }
+    proactive_extra = {
+        "_callback_delivery_id": "id-proactive",
+        "origin": "task_result", "summary": "ping user now",
+    }
+    # enqueue_agent_callback stamps both queues with the same _callback_delivery_id
+    mgr.pending_agent_callbacks = [passive_cb, proactive_cb]
+    mgr.pending_extra_replies = [passive_extra, proactive_extra]
+
+    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.sleep(0)
+
+    assert len(sess.injected) == 1
+    assert mgr.pending_agent_callbacks == [passive_cb]
+    assert mgr.pending_extra_replies == [passive_extra]
+
+
+async def test_voice_mode_busy_defers_cbs_for_retry():
+    """Voice 模式（session 正在回复）：cb 留在队列等下次 response.done 后重试。"""
+    sess = _make_voice_sess(is_responding=True)
+    mgr = _make_mgr(session=sess)
+    original = [{"status": "completed", "summary": "deferred"}]
+    mgr.pending_agent_callbacks = list(original)
+
+    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.sleep(0)
+
+    assert sess.injected == []  # 没 inject
+    assert mgr.pending_agent_callbacks == original  # cb 保留
+    assert mgr.state.phase is ProactivePhase.IDLE
+
+
+async def test_voice_mode_drop_uses_id_match_not_length_alignment():
+    """Voice 模式：成功 inject 后按 ``_callback_delivery_id`` 精确剔除两队列里
+    匹配的项 —— 即使 ``drain_agent_callbacks_for_llm`` 先前清空了
+    pending_agent_callbacks 把两队列长度搞错位，extras 里 stale 项也必须被清。
+    锁死 CodeRabbit r3248967092：长度相等 != 队列对齐这条不变式。"""
+    sess = _make_voice_sess()
+    mgr = _make_mgr(session=sess)
+    # 模拟"队列错位"：旧的两条 cb 因为 user turn 走了 drain_agent_callbacks_for_llm
+    # 清空 pending_agent_callbacks，但 pending_extra_replies 仍然保留它们；
+    # 然后一条新的 proactive cb 进来 —— pac=1, extras=3。
+    stale_extra_a = {"_callback_delivery_id": "stale-A", "origin": "task_result", "summary": "old A"}
+    stale_extra_b = {"_callback_delivery_id": "stale-B", "origin": "task_result", "summary": "old B"}
+    new_cb = {"_callback_delivery_id": "new", "status": "completed", "summary": "fresh"}
+    new_extra = {"_callback_delivery_id": "new", "origin": "task_result", "summary": "fresh"}
+    mgr.pending_agent_callbacks = [new_cb]
+    mgr.pending_extra_replies = [stale_extra_a, stale_extra_b, new_extra]
+
+    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.sleep(0)
+
+    assert len(sess.injected) == 1
+    assert mgr.pending_agent_callbacks == []
+    # 关键：new_extra 必须被清，stale 的两条不归本次 inject 管，保留给 hot-swap
+    assert mgr.pending_extra_replies == [stale_extra_a, stale_extra_b]
+
+
+async def test_voice_mode_server_rejection_re_enqueues_cb():
+    """Voice 模式：``response.create`` 被 server 拒（``response_already_active``
+    等 VAD 抢跑场景）通过 error 事件异步回来，``inject_text_and_request_response``
+    本身已经 return 了。我们注册的 ``on_rejected`` 回调必须把那条已乐观剔除
+    的 cb 重新塞回 ``pending_agent_callbacks``，让 ``_finalize_turn_after_emit``
+    在下一次 response.done 后的 retry 把它捡起来。锁死 Codex r3249012424。"""
+    captured_rejection: list = []
+
+    sess = _make_voice_sess()
+
+    async def _inject(text, *, on_rejected=None):
+        sess.inject_calls += 1
+        sess.injected.append(text)
+        # 不在这里 fire；测试模拟 inject 已返回，但 cb 尚未在 server 端被处理
+        captured_rejection.append(on_rejected)
+    sess.inject_text_and_request_response = _inject
+
+    mgr = _make_mgr(session=sess)
+    cb = {"_callback_delivery_id": "id-race", "status": "completed", "summary": "race-cb"}
+    extra = {"_callback_delivery_id": "id-race", "origin": "task_result", "summary": "race-cb"}
+    mgr.pending_agent_callbacks = [cb]
+    mgr.pending_extra_replies = [extra]
+
+    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.sleep(0)
+
+    # 乐观剔除：两条队列都空
+    assert mgr.pending_agent_callbacks == []
+    assert mgr.pending_extra_replies == []
+    assert len(captured_rejection) == 1
+    assert captured_rejection[0] is not None
+
+    # 模拟 server 异步抛回 response_already_active
+    captured_rejection[0]("response_already_active")
+
+    # cb 被 on_rejected 回到 pending_agent_callbacks，等下次 trigger 重投
+    assert len(mgr.pending_agent_callbacks) == 1
+    assert mgr.pending_agent_callbacks[0]["_callback_delivery_id"] == "id-race"
+    # 配对的 extras 也必须被回补（否则后续 hot-swap fallback 会丢补报内容）
+    assert len(mgr.pending_extra_replies) == 1
+    assert mgr.pending_extra_replies[0]["_callback_delivery_id"] == "id-race"
+    # handler 不立即 re-fire trigger（Codex P1）：response_already_active 时
+    # is_active_response() 可能读到 stale False，立即 re-fire 会 re-inject→
+    # re-reject 死循环。retry 交给那个 active response 的 response.done →
+    # _finalize_turn_after_emit。所以这里不应有立即调度。
+    assert mgr._fired_tasks == []
+
+
+async def test_voice_mode_reject_during_await_not_pruned():
+    """TOCTOU 回归（Codex P1）：error 事件可能在 inject 仍 await 期间由
+    handle_messages 派发 on_rejected——此时 cb 还在队列里（乐观 prune 还没跑）。
+    旧逻辑 handler 按"已存在"跳过 re-add，随后 success 路径又按 delivered_ids
+    把它 prune 掉 → 静默丢失。修法：handler 置 _rejected 标志，await 返回后
+    若 rejected 则跳过 prune，cb 留在队列等重试。"""
+    sess = _make_voice_sess()  # is_active_response()→_is_responding，init False
+
+    async def _inject(text, *, on_rejected=None):
+        sess.inject_calls += 1
+        # 模拟 VAD 抢跑：reject 到达时 server 已经有 active response（busy），
+        # 且发生在 await 期间（prune 之前）。
+        sess._is_responding = True
+        if on_rejected is not None:
+            on_rejected("response_already_active")
+        # inject 本身正常返回（拒绝是异步事件，不是异常）
+    sess.inject_text_and_request_response = _inject
+
+    mgr = _make_mgr(session=sess)
+    cb = {"_callback_delivery_id": "id-toctou", "status": "completed", "summary": "keep me"}
+    extra = {"_callback_delivery_id": "id-toctou", "origin": "task_result", "summary": "keep me"}
+    mgr.pending_agent_callbacks = [cb]
+    mgr.pending_extra_replies = [extra]
+
+    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.sleep(0)
+
+    # 关键：cb 没被 prune 掉，两队列都还在，等下次 retry
+    assert sess.inject_calls == 1
+    assert len(mgr.pending_agent_callbacks) == 1
+    assert mgr.pending_agent_callbacks[0]["_callback_delivery_id"] == "id-toctou"
+    assert len(mgr.pending_extra_replies) == 1
+    assert mgr.pending_extra_replies[0]["_callback_delivery_id"] == "id-toctou"
+    # busy（is_active_response True）时 handler 不应立即 re-fire —— 留给
+    # response.done 后的 _finalize_turn_after_emit 重试，避免 response_already_active 死循环。
+    assert mgr._fired_tasks == []
+
+
+async def test_voice_mode_concurrent_triggers_inject_once():
+    """并发回归（Codex P1）：两个 trigger_agent_callbacks task 同时进 voice
+    分支，_voice_proactive_inject_lock 必须把 check-and-claim 串起来——只有
+    一个真正 inject，另一个拿到锁后重新过滤发现队列已空、不再重复 inject。"""
+    release = asyncio.Event()
+    entered_inject = asyncio.Event()
+
+    sess = _make_voice_sess()
+
+    async def _inject(text, *, on_rejected=None):
+        sess.inject_calls += 1
+        # 标记第一个 inject 真正进入临界区（持锁中），再卡住，给第二个 task
+        # 确定性地去抢锁——不靠固定 tick 数赌时序。
+        entered_inject.set()
+        await release.wait()
+    sess.inject_text_and_request_response = _inject
+    mgr = _make_mgr(session=sess)
+    cb = {"_callback_delivery_id": "id-concurrent", "status": "completed", "summary": "once"}
+    extra = {"_callback_delivery_id": "id-concurrent", "origin": "task_result", "summary": "once"}
+    mgr.pending_agent_callbacks = [cb]
+    mgr.pending_extra_replies = [extra]
+
+    t1 = asyncio.create_task(LLMSessionManager.trigger_agent_callbacks(mgr))
+    t2 = asyncio.create_task(LLMSessionManager.trigger_agent_callbacks(mgr))
+    # 等第一个 inject 真的进入持锁段，再给第二个 task 一个调度点去阻塞在锁上，
+    # 然后才放行——确保「两个 task 竞争同一 snapshot」这个场景真的发生。
+    await asyncio.wait_for(entered_inject.wait(), timeout=5)
+    await asyncio.sleep(0)
+    release.set()
+    # 本地超时：若 _voice_proactive_inject_lock 以后回归成死等，这里快速失败
+    # 而不是挂到 CI 全局超时。
+    await asyncio.wait_for(asyncio.gather(t1, t2), timeout=5)
+
+    # 关键：只 inject 一次，没有重复播报
+    assert sess.inject_calls == 1
+    assert mgr.pending_agent_callbacks == []
+    assert mgr.pending_extra_replies == []
+
+
+async def test_voice_mode_not_implemented_falls_back_to_hot_swap():
+    """Voice 模式 defensive fallback：若某 provider 抛 NotImplementedError，
+    drop proactive cb，走现有 hot-swap 路径（pending_extra_replies 保留供下一
+    hot-swap 注入）。注：现役 provider 全部支持 manual inject（含 Qwen 走
+    conversation.item.create、Gemini 走 send_client_content），此分支实际已
+    unreachable，仅为未来 provider 兜底——用一个显式抛 NotImplementedError 的
+    假 session 验证兜底逻辑仍正确。"""
+    sess = _make_voice_sess()
+
+    async def _inject(text, *, on_rejected=None):
+        raise NotImplementedError("test provider: no manual inject")
+    sess.inject_text_and_request_response = _inject
+
+    mgr = _make_mgr(session=sess)
+    mgr.pending_agent_callbacks = [{"status": "completed", "summary": "hot-swap fallback"}]
+    original_extras = [{"summary": "hot-swap fallback"}]
+    mgr.pending_extra_replies = list(original_extras)
+
+    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.sleep(0)
+
+    assert mgr.pending_agent_callbacks == []  # proactive cb dropped
+    # 精确相等而非 truthy：锁死 fallback 不会误改/重复 pending_extra_replies
+    assert mgr.pending_extra_replies == original_extras  # hot-swap channel preserved
+
+
+async def test_inject_gemini_routes_through_send_client_content():
+    """对偶性回归：inject_text_and_request_response 对 Gemini 也支持（走
+    send_client_content(turn_complete=True)），与 create_response →
+    _create_response_gemini 对称，不再抛 NotImplementedError。直接调真实
+    OmniRealtimeClient.inject_text_and_request_response（绕过 SM），验证它
+    把文本作为 user turn 注入并 turn_complete=True 触发响应。"""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    sent = {}
+
+    class _FakeGeminiSession:
+        async def send_client_content(self, *, turns, turn_complete):
+            sent["turns"] = turns
+            sent["turn_complete"] = turn_complete
+
+    sess = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    sess._fatal_error_occurred = False
+    sess._is_gemini = True
+    sess._gemini_session = _FakeGeminiSession()
+
+    # google.genai 在测试环境不一定装了 —— 缺则跳过（CI 装了 SDK 会跑）。
+    # 用 importorskip 而非 try/except Exception：只在 ImportError 时 skip，
+    # SDK 真实运行时错误仍会冒出来，不会被误吞成 skip 掩盖回归。
+    import pytest
+    pytest.importorskip("google.genai")
+
+    await OmniRealtimeClient.inject_text_and_request_response(sess, "（系统通知）任务完成了。")
+
+    assert sent.get("turn_complete") is True
+    assert sent.get("turns") is not None
+
+
+async def test_inject_gemini_missing_session_raises():
+    """Gemini session 不可用时 inject 必须 raise（让 caller 保留 cb），
+    不能静默成功。"""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    sess = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    sess._fatal_error_occurred = False
+    sess._is_gemini = True
+    sess._gemini_session = None
+
+    import pytest
+    with pytest.raises(RuntimeError):
+        await OmniRealtimeClient.inject_text_and_request_response(sess, "x")
+
+
+async def test_sweep_inject_rejection_handlers_clears_dict():
+    """``response.done`` lifecycle sweep 清空 inject rejection handler 字典
+    （取代固定 3s TTL 作为主清理）。锁死 Codex P2：late reject 不该因 TTL 过期
+    丢失——主清理改成 response.done 触发的 sweep，TTL 只是 hang 兜底。"""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    sess = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    sess._inject_rejection_handlers = {
+        "event_inject_item_x": lambda msg: None,
+        "event_inject_resp_x": lambda msg: None,
+    }
+    sess._sweep_inject_rejection_handlers()
+    assert sess._inject_rejection_handlers == {}
+    # 空字典再 sweep 不报错（idempotent）
+    sess._sweep_inject_rejection_handlers()
+    assert sess._inject_rejection_handlers == {}
+
+
+async def test_route_inject_rejection_id_match():
+    """精确路径：error 携带我们 stamp 的 client event_id → 命中并 fire 对应 handler。"""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    fired = []
+    sess = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    sess._inject_rejection_handlers = {"event_inject_resp_x": lambda msg: fired.append(msg)}
+    sess._route_inject_rejection("event_inject_resp_x", "response_already_active")
+    assert fired == ["response_already_active"]
+    assert sess._inject_rejection_handlers == {}  # popped
+
+
+async def test_route_inject_rejection_content_fallback_no_id():
+    """fallback 路径（Codex P1）：provider 拒绝 response.create 但 error 不带
+    client event_id。proactive inject 正等待 outcome（flag True）且内容像
+    response-conflict 时 fire 所有 pending handler，避免静默丢失。"""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    fired = []
+    sess = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    sess._inject_rejection_handlers = {"k1": lambda msg: fired.append(msg)}
+    sess._proactive_inject_awaiting_outcome = True  # inject 刚发出，正等 outcome
+    # err_event_id 缺失，但消息是 response-conflict
+    sess._route_inject_rejection(None, "Conversation already has an active response")
+    assert len(fired) == 1
+    assert sess._inject_rejection_handlers == {}
+    assert sess._proactive_inject_awaiting_outcome is False  # 窗口已消费
+
+
+async def test_route_inject_rejection_no_id_but_not_awaiting_does_not_fire():
+    """CodeRabbit Major：无 id 的 response-conflict，但当前没有 proactive inject
+    在等 outcome（flag False，例如 handler 是上一次成功 inject 的残留，或这条
+    冲突来自 create_response / tool-result / signal_user_activity_end 等别的
+    response.create 发送方）→ 绝不能 fire，否则把已接受的 cb 误回补造成重复。"""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    fired = []
+    sess = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    sess._inject_rejection_handlers = {"k1": lambda msg: fired.append(msg)}
+    sess._proactive_inject_awaiting_outcome = False  # 没有 inject 在等
+    sess._route_inject_rejection(None, "response_already_active")
+    assert fired == []
+    assert "k1" in sess._inject_rejection_handlers  # 未动
+
+
+async def test_route_inject_rejection_nonmatching_id_does_not_fire_fallback():
+    """Codex P1：error 带了 client event_id 但不匹配我们任何 pending handler
+    → 说明这是别的 response.create（create_response / tool-result 续传 /
+    signal_user_activity_end，都被 send_event setdefault 打了时间戳 id）的拒绝，
+    不是我们的 inject。即使消息文本像 response_already_active、即使有 inject 在
+    等 outcome，也**不能** fire（id present 只精确匹配），否则把模型其实已接受的
+    cb 误回补造成重复播报。content fallback 只在完全没有 client id 时才走。"""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    fired = []
+    sess = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    sess._inject_rejection_handlers = {"event_inject_resp_ours": lambda msg: fired.append(msg)}
+    sess._proactive_inject_awaiting_outcome = True  # 即便在等，也不能被别人的 id 触发
+    # 别的请求的 event_id + response-conflict 文本
+    sess._route_inject_rejection("event_create_response_other", "response_already_active")
+    assert fired == []
+    assert "event_inject_resp_ours" in sess._inject_rejection_handlers  # 未动
+
+
+async def test_route_inject_rejection_unrelated_error_does_not_fire():
+    """无 id 匹配 + 错误不像 response-conflict（如 503/quota）→ 不应 fire，
+    避免把无关错误误当成 inject 拒绝、错误回补造成重复投递。"""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    fired = []
+    sess = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    sess._inject_rejection_handlers = {"k1": lambda msg: fired.append(msg)}
+    sess._proactive_inject_awaiting_outcome = True
+    sess._route_inject_rejection(None, "503 service overloaded, try again later")
+    assert fired == []
+    assert sess._inject_rejection_handlers == {"k1": sess._inject_rejection_handlers["k1"]}
+
+
+async def test_voice_mode_inject_exception_keeps_cbs_for_retry():
+    """Voice 模式（inject 抛非 NotImplementedError）：cb 留在队列等重试。"""
+    sess = _make_voice_sess()
+
+    async def _inject(text, *, on_rejected=None):
+        sess.inject_calls += 1
+        raise RuntimeError("ws boom")
+    sess.inject_text_and_request_response = _inject
+
+    mgr = _make_mgr(session=sess)
+    original = [{"status": "completed", "summary": "retry on ws err"}]
+    mgr.pending_agent_callbacks = list(original)
+
+    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.sleep(0)
+
+    # inject 确实被调用过一次（证明走的是 inject-异常分支，而非更早的 guard 早退）
+    assert sess.inject_calls == 1
+    assert mgr.pending_agent_callbacks == original
+
+
+async def test_voice_mode_unstamped_cb_still_pruned_via_object_id_fallback():
+    """Defense in depth：production 路径都过 ``enqueue_agent_callback`` 标
+    ``_callback_delivery_id``，但 voice 成功 inject 的 pac 清理还有一条
+    object ``id()`` 兜底，确保任何未来直接 append 没标 id 的 cb 也不会被
+    后续 retry 重复投递。锁死 Codex r3249183511。"""
+    sess = _make_voice_sess()
+    mgr = _make_mgr(session=sess)
+    # 故意构造没有 _callback_delivery_id 的 cb（模拟绕过 enqueue_agent_callback 的入口）
+    unstamped_cb = {"status": "completed", "summary": "unstamped"}
+    mgr.pending_agent_callbacks = [unstamped_cb]
+    # 这里 extras 用空，因为没走 enqueue → 没配对 entries 是合理状态
+    mgr.pending_extra_replies = []
+
+    await LLMSessionManager.trigger_agent_callbacks(mgr)
+    await asyncio.sleep(0)
+
+    assert len(sess.injected) == 1
+    # 关键：unstamped cb 也被通过 id() 兜底剔除，下次 retry 不会重投
+    assert mgr.pending_agent_callbacks == []
+
+
+async def test_send_event_preserves_caller_stamped_event_id():
+    """``send_event`` 必须保留 caller 显式标的 ``event_id``，不能拿时间戳覆盖。
+    这是 ``inject_text_and_request_response`` 的 ``on_rejected`` 路径能工作的
+    前提：server ``error.event_id`` 必须能 echo 回 caller 注册的 id 才会命中
+    ``_inject_rejection_handlers``。锁死 Codex r3249069126。"""
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    class _CapturingWS:
+        def __init__(self):
+            self.sent: list[str] = []
+
+        async def send(self, payload: str) -> None:
+            self.sent.append(payload)
+
+    sess = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    sess._fatal_error_occurred = False
+    sess._is_throttled = False
+    sess._throttle_until = 0.0
+    sess._is_gemini = False
+    sess._send_semaphore = asyncio.Semaphore(25)
+    sess.on_connection_error = None
+    sess._bg_tasks = set()
+    ws = _CapturingWS()
+    sess.ws = ws
+
+    explicit_id = "event_inject_test_preserve_me"
+    await OmniRealtimeClient.send_event(
+        sess, {"type": "response.create", "event_id": explicit_id}
+    )
+
+    assert len(ws.sent) == 1
+    import json as _json
+    payload = _json.loads(ws.sent[0])
+    assert payload["event_id"] == explicit_id
 
 
 async def test_text_mode_sm_denied_when_phase_active():
@@ -276,7 +790,7 @@ async def test_user_input_between_claim_and_lock_is_detected():
         def __init__(self):
             pass
 
-        async def prompt_ephemeral(self, instruction):
+        async def prompt_ephemeral(self, instruction, *, images=None):
             await sess_wait.wait()
             return True
 
@@ -326,7 +840,7 @@ async def test_user_input_during_agent_delivery_sets_preempted():
         def __init__(self):
             pass  # 跳过父类初始化
 
-        async def prompt_ephemeral(self, instruction):
+        async def prompt_ephemeral(self, instruction, *, images=None):
             # 模拟 LLM 耗时，期间 user input 抢占
             await sess_wait.wait()
             return True

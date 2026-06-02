@@ -10,7 +10,7 @@ const PLATFORM_CONFIG_DATA = {
     'netease': {
         name: '网易云音乐',
         nameKey: 'cookiesLogin.netease',
-        icon: '🎶', theme: '#c20c0c',
+        theme: '#c20c0c',
         instructionKey: 'cookiesLogin.instructions.netease',
         fields: [
             { key: 'MUSIC_U', labelKey: 'cookiesLogin.fields.MUSIC_U.label', descKey: 'cookiesLogin.fields.MUSIC_U.desc', required: true },
@@ -20,7 +20,7 @@ const PLATFORM_CONFIG_DATA = {
     'bilibili': {
         name: 'Bilibili', 
         nameKey: 'cookiesLogin.bilibili',
-        icon: '📺', theme: '#4f46e5',
+        theme: '#40c5f1',
         instructionKey: 'cookiesLogin.instructions.bilibili',
         fields: [
             { key: 'SESSDATA', labelKey: 'cookiesLogin.fields.SESSDATA.label', descKey: 'cookiesLogin.fields.SESSDATA.desc', required: true },
@@ -32,7 +32,7 @@ const PLATFORM_CONFIG_DATA = {
     'douyin': {
         name: '抖音', 
         nameKey: 'cookiesLogin.douyin', 
-        icon: '🎵', theme: '#000000',
+        theme: '#000000',
         instructionKey: 'cookiesLogin.instructions.douyin',
         fields: [
             { key: 'sessionid', labelKey: 'cookiesLogin.fields.sessionid.label', descKey: 'cookiesLogin.fields.sessionid.desc', required: true },
@@ -44,7 +44,7 @@ const PLATFORM_CONFIG_DATA = {
     'kuaishou': {
         name: '快手', 
         nameKey: 'cookiesLogin.kuaishou', 
-        icon: '🧡', theme: '#ff5000',
+        theme: '#ff5000',
         instructionKey: 'cookiesLogin.instructions.kuaishou',
         fields: [
             { key: 'kuaishou.server.web_st', mapKey: 'ks_web_st', labelKey: 'cookiesLogin.fields.ks_web_st.label', descKey: 'cookiesLogin.fields.ks_web_st.desc', required: true },
@@ -56,7 +56,7 @@ const PLATFORM_CONFIG_DATA = {
     'weibo': {
         name: '微博', 
         nameKey: 'cookiesLogin.weibo', 
-        icon: '🌏', theme: '#f59e0b',
+        theme: '#f59e0b',
         instructionKey: 'cookiesLogin.instructions.weibo',
         fields: [
             { key: 'SUB', labelKey: 'cookiesLogin.fields.SUB.label', descKey: 'cookiesLogin.fields.SUB.desc', required: true },
@@ -66,7 +66,7 @@ const PLATFORM_CONFIG_DATA = {
     'twitter': {
         name: 'Twitter/X', 
         nameKey: 'cookiesLogin.twitter', 
-        icon: '🐦', theme: '#0ea5e9',
+        theme: '#0ea5e9',
         instructionKey: 'cookiesLogin.instructions.twitter',
         fields: [
             { key: 'auth_token', labelKey: 'cookiesLogin.fields.auth_token.label', descKey: 'cookiesLogin.fields.auth_token.desc', required: true },
@@ -76,7 +76,7 @@ const PLATFORM_CONFIG_DATA = {
     'reddit': {
         name: 'Reddit', 
         nameKey: 'cookiesLogin.reddit', 
-        icon: '👽', theme: '#ff4500',
+        theme: '#ff4500',
         instructionKey: 'cookiesLogin.instructions.reddit',
         fields: [
             { key: 'reddit_session', labelKey: 'cookiesLogin.fields.reddit_session.label', descKey: 'cookiesLogin.fields.reddit_session.desc', required: true },
@@ -136,9 +136,9 @@ function getQrStatusMessage(status, message) {
         waiting: '等待扫码'
     };
     const fallbackTemplates = {
-        success: '✅ {{message}}',
-        expired: '❌ {{message}}，请刷新',
-        scanned: '📱 {{message}}',
+        success: '{{message}}',
+        expired: '{{message}}，请刷新',
+        scanned: '{{message}}',
         waiting: '{{message}}...'
     };
     const statusMessage = getLocalizedApiMessage(
@@ -170,13 +170,12 @@ function initPlatformConfig() {
 
         PLATFORM_CONFIG[key] = {
             name: translatedName, // 界面上显示的名称 (Tabs, 列表) 现在支持多语言了！
-            icon: data.icon,
             theme: data.theme,
             
             // 附带默认中文提示，自动填入正确的域名或名称
             // 如果字典里有 instructionKey，直接用字典的（字典通常自带了网址）
             // 如果字典没有，则使用这里的模板，并填入 m.weibo.cn 或 翻译后的平台名
-            instruction: data.instructionKey ? safeT(data.instructionKey, `📌 <b>目标：</b> 请前往 <b>${targetDisplay}</b> 获取这些 Cookies。`) : '',
+            instruction: data.instructionKey ? safeT(data.instructionKey, `<b>目标：</b> 请前往 <b>${targetDisplay}</b> 获取这些 Cookies。`) : '',
             
             fields: data.fields.map(field => ({
                 key: field.key,
@@ -308,12 +307,17 @@ async function showQRLogin(config, platformKey) {
     if (isSupported){
         const QRinfo =  document.createElement("div");
         const butt = document.createElement("button");
+        const rootStyle = getComputedStyle(document.documentElement);
+        const pagePrimary = rootStyle.getPropertyValue('--primary').trim();
+        const pageButtonBg = rootStyle.getPropertyValue('--button-bg').trim() || pagePrimary;
+        const buttonTheme = platformKey === 'bilibili' && pageButtonBg ? pageButtonBg : config["theme"];
+        const buttonBorder = platformKey === 'bilibili' && pagePrimary ? pagePrimary : buttonTheme;
         QRinfo.innerHTML = safeT('cookiesLogin.qrLogin.tryQR', '或者...试试扫码登陆?');
         QRinfo.style = 'margin-bottom: 10px;color: #64748b;font-size: 14px';
-        butt.innerHTML = safeT('cookiesLogin.qrLogin.openQR', '📱 打开扫码登陆');
-        butt.style.cssText = `width: 100%; padding: 12px; margin-top: 10px; font-size: 14px; font-weight: 600; border-radius: 10px; border: 2px dashed #4f46e5; background: ${config["theme"]} ; color: #f8fafc; cursor: pointer; transition: all 0.2s;`;
-        butt.onmouseover = function() { butt.style.background = decreaseColorLightness(config["theme"],20); };
-        butt.onmouseout = function() { butt.style.background = config["theme"]; };
+        butt.innerHTML = safeT('cookiesLogin.qrLogin.openQR', '打开扫码登陆');
+        butt.style.cssText = `width: 100%; padding: 12px; margin-top: 10px; font-size: 14px; font-weight: 600; border-radius: 10px; border: 2px dashed ${buttonBorder}; background: ${buttonTheme} ; color: #f8fafc; cursor: pointer; transition: all 0.2s;`;
+        butt.onmouseover = function() { butt.style.background = decreaseColorLightness(buttonTheme,20); };
+        butt.onmouseout = function() { butt.style.background = buttonTheme; };
         butt.onclick = function(){requestQR(config, platformKey)};
         qrLoginBox.appendChild(QRinfo);
         qrLoginBox.appendChild(butt);
@@ -371,7 +375,7 @@ async function requestQR(config, platformKey) {
                         <svg width="12" height="12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
                         ${safeT('common.collapse', '收起')}
                     </button>
-                    <div style="font-weight: 600; color: #334155; margin-bottom: 12px; margin-top: 5px;">${safeT('cookiesLogin.qrLogin.scanTitle', '📱 扫码登录 {{platform}}').replace('{{platform}}', PLATFORM_CONFIG[platformKey]?.name || config["name"])}</div>
+                    <div style="font-weight: 600; color: #334155; margin-bottom: 12px; margin-top: 5px;">${safeT('cookiesLogin.qrLogin.scanTitle', '扫码登录 {{platform}}').replace('{{platform}}', PLATFORM_CONFIG[platformKey]?.name || config["name"])}</div>
                     <img src="${result.data.qrcode_image}" alt="${safeT('cookiesLogin.qrLogin.qrCodeAlt', 'QR code')}" style="width: 200px; height: 200px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
                     <div id="qr-status" style="margin-top: 12px; font-size: 13px; color: #64748b;">${safeT('cookiesLogin.qrLogin.waiting', '等待扫码...')}</div>
                     <div style="margin-top: 10px; font-size: 12px; color: #94a3b8;">${safeT('cookiesLogin.qrLogin.validFor', '二维码有效期: {{seconds}}秒').replace('{{seconds}}', timeout)}</div>
@@ -498,7 +502,7 @@ function startQrPoll(config, platformKey) {
                 // 统一成功提醒
                 let customAlert = safeT('cookiesLogin.qrLogin.successAlert', '扫码登录成功！Cookie 已自动填入，请点击保存配置');
                 if (capturedCount === 0 && cookieFields.length > 0) {
-                  customAlert = safeT('cookiesLogin.qrLogin.extractFailed', '⚠️ 扫码成功但未能自动提取到字段，请手动检查。');
+                  customAlert = safeT('cookiesLogin.qrLogin.extractFailed', '扫码成功但未能自动提取到字段，请手动检查。');
                 }
 
                 showAlert(capturedCount > 0, customAlert);
@@ -605,7 +609,7 @@ function switchTab(platformKey, btnElement, isReRender = false) {
     if (descBox) {
         if (config.instruction && config.instruction.trim() !== '') {
             descBox.style.display = 'block'; 
-            descBox.style.borderColor = config.theme;
+            descBox.style.borderColor = '';
             descBox.innerHTML = DOMPurify.sanitize(config.instruction);
         } else {
             descBox.style.display = 'none'; 
@@ -788,31 +792,26 @@ async function refreshStatusList() {
             const statusCard = document.createElement('div');
             statusCard.className = 'status-card';
 
-            // 2. 左侧：图标与名称
+            // 2. 左侧：平台名称
             const statusInfo = document.createElement('div');
             statusInfo.className = 'status-info';
-
-            const iconWrapper = document.createElement('div');
-            iconWrapper.className = 'status-icon-wrapper';
-            iconWrapper.textContent = cfg.icon;
 
             const statusName = document.createElement('div');
             statusName.className = 'status-name';
             statusName.textContent = cfg.name;
 
-            statusInfo.appendChild(iconWrapper);
             statusInfo.appendChild(statusName);
 
             // 3. 右侧：操作区（状态徽章 + 删除按钮）
             const actionsWrapper = document.createElement('div');
             actionsWrapper.className = 'status-actions';
 
-            // 获取翻译文本并过滤掉旧字典里的特殊符号（如 ○, ●）
+            // 获取翻译文本并过滤掉旧字典里的状态符号
             let statusRawText = active ? safeT('cookiesLogin.status.active', '生效中') : safeT('cookiesLogin.status.inactive', '未配置');
             
             const statusTag = document.createElement('div');
             statusTag.className = `status-tag ${active ? 'active' : 'inactive'}`;
-            statusTag.textContent = statusRawText.replace(/^[○●⚪🟢🔴]\s*/u, '');
+            statusTag.textContent = statusRawText.replace(/^[○●]\s*/u, '');
             actionsWrapper.appendChild(statusTag);
 
             // 若处于生效状态，添加红色的垃圾桶按钮

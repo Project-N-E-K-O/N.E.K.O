@@ -11,6 +11,7 @@ import queue
 import shutil
 import subprocess
 import threading
+import types as _types
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -34,221 +35,49 @@ from .models import (
 )
 from .reader import normalize_text
 
+from ._types import (
+    DetectedGameProcess,
+    MEMORY_READER_DEFAULT_ENGINE,
+    MemoryReaderProcessTarget,
+    MemoryReaderRuntime,
+    MemoryReaderTickResult,
+    ParsedTextractorLine,
+    TextractorProcessHandle,
+)
+from ._textractor_paths import (
+    TEXTRACTOR_EXECUTABLE,
+    resolve_textractor_path,
+)
+from ._process_detection import (
+    _default_process_inventory,
+    _default_process_scanner,
+    _engine_from_text,
+    _scan_processes,
+    _KIRIKIRI_DIR_CACHE,
+    _KIRIKIRI_DIR_CACHE_LOCK,
+)
+from ._textractor_handle import (
+    _AsyncioTextractorHandle,
+    _decode_textractor_stdout_line,
+    _default_process_factory,
+    _is_event_loop_binding_error,
+    _select_hook_codes_for_engine,
+    _textractor_hook_command,
+)
+from . import _win32_job_objects  # noqa: F401  # registers atexit handler
+from ._win32_job_objects import _create_kill_on_close_job_for_process
+
 MEMORY_READER_VERSION = "0.1.0"
 MEMORY_READER_BRIDGE_VERSION = f"memory-reader-{MEMORY_READER_VERSION}"
 MEMORY_READER_GAME_ID_PREFIX = "mem-"
 MEMORY_READER_UNKNOWN_SCENE = "mem:unknown_scene"
 MEMORY_READER_ROUTE_ID = ""
-MEMORY_READER_DEFAULT_ENGINE = "unknown"
 MEMORY_READER_MAX_HOOK_CACHE = 256
 _MEMORY_LINE_ID_MAX_COLLISION_SUFFIX = 10000
-TEXTRACTOR_EXECUTABLE = "TextractorCLI.exe"
-_KIRIKIRI_DIR_CACHE_TTL_SECONDS = 10.0
-_KIRIKIRI_COMMON_XP3_NAMES = {
-    "data.xp3",
-    "patch.xp3",
-    "scenario.xp3",
-}
-_KIRIKIRI_PROCESS_SIGNATURE_PRESETS = (
-    {
-        "id": "senren_banka",
-        "tokens": ("senrenbanka",),
-        "steam_app_ids": ("1144400",),
-    },
-)
-_EXCLUDED_PROCESS_NAMES = {
-    "crashpad_handler",
-}
-_EXCLUDED_PROCESS_NAME_SUBSTRINGS = (
-    "unitycrashhandler",
-    "crashhandler",
-    "crashreporter",
-)
-_TEXTRACTOR_PROCESS_LOCK = threading.Lock()
-_TEXTRACTOR_PROCESSES: set[subprocess.Popen] = set()
-_TEXTRACTOR_JOB_HANDLES: dict[subprocess.Popen, int] = {}
-_KIRIKIRI_DIR_CACHE_LOCK = threading.Lock()
-_KIRIKIRI_DIR_CACHE: dict[str, tuple[float, str, str]] = {}
-_JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS = 9
-_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
-
-
-class _JobObjectBasicLimitInformation(ctypes.Structure):
-    _fields_ = [
-        ("PerProcessUserTimeLimit", ctypes.c_longlong),
-        ("PerJobUserTimeLimit", ctypes.c_longlong),
-        ("LimitFlags", ctypes.c_uint32),
-        ("MinimumWorkingSetSize", ctypes.c_size_t),
-        ("MaximumWorkingSetSize", ctypes.c_size_t),
-        ("ActiveProcessLimit", ctypes.c_uint32),
-        ("Affinity", ctypes.c_size_t),
-        ("PriorityClass", ctypes.c_uint32),
-        ("SchedulingClass", ctypes.c_uint32),
-    ]
-
-
-class _IoCounters(ctypes.Structure):
-    _fields_ = [
-        ("ReadOperationCount", ctypes.c_ulonglong),
-        ("WriteOperationCount", ctypes.c_ulonglong),
-        ("OtherOperationCount", ctypes.c_ulonglong),
-        ("ReadTransferCount", ctypes.c_ulonglong),
-        ("WriteTransferCount", ctypes.c_ulonglong),
-        ("OtherTransferCount", ctypes.c_ulonglong),
-    ]
-
-
-class _JobObjectExtendedLimitInformation(ctypes.Structure):
-    _fields_ = [
-        ("BasicLimitInformation", _JobObjectBasicLimitInformation),
-        ("IoInfo", _IoCounters),
-        ("ProcessMemoryLimit", ctypes.c_size_t),
-        ("JobMemoryLimit", ctypes.c_size_t),
-        ("PeakProcessMemoryUsed", ctypes.c_size_t),
-        ("PeakJobMemoryUsed", ctypes.c_size_t),
-    ]
-
-
-def _track_textractor_process(process: subprocess.Popen) -> None:
-    with _TEXTRACTOR_PROCESS_LOCK:
-        _TEXTRACTOR_PROCESSES.add(process)
-        job_handle = _create_kill_on_close_job_for_process(process)
-        if job_handle:
-            _TEXTRACTOR_JOB_HANDLES[process] = job_handle
-
-
-def _untrack_textractor_process(process: subprocess.Popen) -> None:
-    job_handle = 0
-    with _TEXTRACTOR_PROCESS_LOCK:
-        _TEXTRACTOR_PROCESSES.discard(process)
-        job_handle = int(_TEXTRACTOR_JOB_HANDLES.pop(process, 0) or 0)
-    _close_windows_handle(job_handle)
-
-
-def _cleanup_tracked_textractor_processes() -> None:
-    with _TEXTRACTOR_PROCESS_LOCK:
-        processes = list(_TEXTRACTOR_PROCESSES)
-        _TEXTRACTOR_PROCESSES.clear()
-        job_handles = list(_TEXTRACTOR_JOB_HANDLES.values())
-        _TEXTRACTOR_JOB_HANDLES.clear()
-    for process in processes:
-        try:
-            if process.poll() is None:
-                process.terminate()
-        except Exception:
-            continue
-    for job_handle in job_handles:
-        _close_windows_handle(int(job_handle or 0))
-
-
-def _close_windows_handle(handle: int) -> None:
-    if not handle or not sys.platform.startswith("win"):
-        return
-    try:
-        ctypes.windll.kernel32.CloseHandle(ctypes.c_void_p(handle))
-    except Exception:
-        return
-
-
-def _create_kill_on_close_job_for_process(process: subprocess.Popen) -> int:
-    if not sys.platform.startswith("win"):
-        return 0
-    process_handle = int(getattr(process, "_handle", 0) or 0)
-    if not process_handle:
-        return 0
-    try:
-        kernel32 = ctypes.windll.kernel32
-        kernel32.CreateJobObjectW.restype = ctypes.c_void_p
-        job_handle = int(kernel32.CreateJobObjectW(None, None) or 0)
-        if not job_handle:
-            return 0
-        info = _JobObjectExtendedLimitInformation()
-        info.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-        ok = bool(
-            kernel32.SetInformationJobObject(
-                ctypes.c_void_p(job_handle),
-                _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
-                ctypes.byref(info),
-                ctypes.sizeof(info),
-            )
-        )
-        if not ok:
-            _close_windows_handle(job_handle)
-            return 0
-        if not kernel32.AssignProcessToJobObject(
-            ctypes.c_void_p(job_handle),
-            ctypes.c_void_p(process_handle),
-        ):
-            _close_windows_handle(job_handle)
-            return 0
-        return job_handle
-    except Exception:
-        try:
-            _close_windows_handle(int(locals().get("job_handle", 0) or 0))
-        except Exception:
-            pass
-        return 0
-
-
-atexit.register(_cleanup_tracked_textractor_processes)
 _SPEAKER_QUOTE_RE = re.compile(r"^\s*([^「」:：]{1,40})[「『](.+)[」』]\s*$")
 _SPEAKER_COLON_RE = re.compile(r"^\s*([^:：]{1,40})[:：]\s*(.+\S)\s*$")
 _ZERO_WIDTH_CHARS = ("\u200b", "\u200c", "\u200d", "\ufeff")
 _LOGGER = logging.getLogger(__name__)
-
-
-def _decode_textractor_stdout_line(raw: bytes) -> str:
-    payload = bytes(raw or b"").rstrip(b"\r\n")
-    if not payload:
-        return ""
-    candidates = [payload]
-    if payload.startswith(b"\x00"):
-        candidates.append(payload[1:])
-    if len(payload) % 2:
-        candidates.append(payload[:-1])
-        if payload.startswith(b"\x00"):
-            candidates.append(payload[1:-1])
-    if b"\x00" in payload:
-        for candidate in candidates:
-            if not candidate:
-                continue
-            try:
-                text = candidate.decode("utf-16-le", errors="replace")
-            except Exception:
-                _LOGGER.debug("utf-16-le decode failed for candidate", exc_info=True)
-                continue
-            cleaned = text.replace("\x00", "").replace("\ufffd", "").strip()
-            if cleaned.startswith("[") or cleaned.startswith("Usage") or "]" in cleaned:
-                return cleaned
-    return payload.decode("utf-8", errors="replace").replace("\x00", "").replace("\ufffd", "").strip()
-
-
-def _textractor_hook_command(code: str, pid: int) -> str:
-    normalized = str(code or "").strip()
-    if not normalized:
-        return ""
-    if re.search(r"(?:^|\s)-P\d+\b", normalized):
-        return normalized
-    return f"{normalized} -P{int(pid)}"
-
-
-def _select_hook_codes_for_engine(
-    config: GalgameConfig,
-    engine: str,
-) -> tuple[list[str], str]:
-    normalized_engine = str(engine or "").strip().lower() or MEMORY_READER_DEFAULT_ENGINE
-    engine_hooks = getattr(config, "memory_reader_engine_hook_codes", {}) or {}
-    configured_codes = engine_hooks.get(normalized_engine)
-    if configured_codes is not None:
-        return list(configured_codes), "hook_codes_sent" if configured_codes else "hook_codes_none"
-    legacy_codes = list(getattr(config, "memory_reader_hook_codes", []) or [])
-    if not legacy_codes:
-        return [], "hook_codes_none"
-    if normalized_engine == "unity":
-        return legacy_codes, "hook_codes_sent"
-    if normalized_engine == MEMORY_READER_DEFAULT_ENGINE:
-        return [], "hook_codes_skipped_for_unknown_engine"
-    return [], "hook_codes_skipped_for_engine"
 
 
 def is_windows_platform() -> bool:
@@ -289,609 +118,6 @@ def _split_speaker_text(raw_text: str) -> tuple[str, str]:
     if match is not None:
         return match.group(1).strip(), match.group(2).strip()
     return "", raw_text.strip()
-
-
-def _engine_from_text(text: str) -> str:
-    lowered = text.lower()
-    if "renpy" in lowered or "ren'py" in lowered:
-        return "renpy"
-    if "unity" in lowered:
-        return "unity"
-    if "kirikiri" in lowered or "krkr" in lowered:
-        return "kirikiri"
-    return ""
-
-
-def _normalize_process_signature_text(value: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
-
-
-def _path_parts_for_signature(path: str) -> list[str]:
-    normalized = str(path or "").strip()
-    if not normalized:
-        return []
-    parts: list[str] = [normalized]
-    try:
-        path_obj = Path(normalized)
-        parts.append(path_obj.stem)
-        parts.append(path_obj.name)
-        parts.append(path_obj.parent.name)
-        parts.extend(path_obj.parts[-4:])
-    except Exception:
-        _LOGGER.debug("path info extraction failed", exc_info=True)
-        pass
-    return [part for part in parts if part]
-
-
-def _kirikiri_preset_detection(
-    *,
-    name: str,
-    cmdline: str,
-    exe_path: str,
-) -> tuple[str, str]:
-    raw_values = [name, cmdline, *_path_parts_for_signature(exe_path)]
-    normalized_values = [
-        normalized
-        for value in raw_values
-        if (normalized := _normalize_process_signature_text(value))
-    ]
-    if not normalized_values:
-        return "", ""
-    combined = "\n".join(normalized_values)
-    steam_context = any("steam" in value or "steamapps" in value for value in normalized_values)
-    for preset in _KIRIKIRI_PROCESS_SIGNATURE_PRESETS:
-        preset_id = str(preset.get("id") or "").strip()
-        tokens = tuple(str(token or "").strip().lower() for token in preset.get("tokens", ()))
-        if any(token and token in combined for token in tokens):
-            return "kirikiri", f"detected_kirikiri_preset_{preset_id}"
-        app_ids = tuple(str(app_id or "").strip() for app_id in preset.get("steam_app_ids", ()))
-        if steam_context and any(app_id and app_id in combined for app_id in app_ids):
-            return "kirikiri", f"detected_kirikiri_preset_{preset_id}"
-    return "", ""
-
-
-def _is_excluded_helper_process(name: str, cmdline: str) -> bool:
-    lowered_name = str(name or "").strip().lower()
-    lowered_cmdline = str(cmdline or "").strip().lower()
-    if lowered_name in _EXCLUDED_PROCESS_NAMES:
-        return True
-    if any(token in lowered_name for token in _EXCLUDED_PROCESS_NAME_SUBSTRINGS):
-        return True
-    if "unitycrashhandler" in lowered_cmdline:
-        return True
-    return False
-
-
-@dataclass(slots=True)
-class DetectedGameProcess:
-    pid: int
-    name: str
-    create_time: float
-    engine: str
-    exe_path: str = ""
-    detection_reason: str = ""
-
-    @property
-    def process_key(self) -> str:
-        path_digest = hashlib.sha1(self.exe_path.encode("utf-8")).hexdigest()[:12] if self.exe_path else "noexe"
-        name_digest = hashlib.sha1(self.name.lower().encode("utf-8")).hexdigest()[:8] if self.name else "noname"
-        return f"memproc:{int(self.pid)}:{name_digest}:{path_digest}"
-
-    def to_dict(
-        self,
-        *,
-        is_attached: bool = False,
-        is_manual_target: bool = False,
-    ) -> dict[str, Any]:
-        return {
-            "process_key": self.process_key,
-            "pid": self.pid,
-            "process_name": self.name,
-            "exe_path": self.exe_path,
-            "detected_engine": self.engine or MEMORY_READER_DEFAULT_ENGINE,
-            "engine": self.engine or MEMORY_READER_DEFAULT_ENGINE,
-            "detection_reason": self.detection_reason,
-            "create_time": self.create_time,
-            "is_attached": is_attached,
-            "is_manual_target": is_manual_target,
-        }
-
-
-@dataclass(slots=True)
-class ParsedTextractorLine:
-    pid: int
-    hook_addr: str
-    ctx: str
-    sub_ctx: str
-    text: str
-
-    @property
-    def hook_id(self) -> str:
-        return f"{self.pid}:{self.hook_addr}:{self.ctx}:{self.sub_ctx}"
-
-
-@dataclass(slots=True)
-class MemoryReaderRuntime:
-    enabled: bool = False
-    status: str = "disabled"
-    detail: str = ""
-    target_selection_mode: str = "auto"
-    target_selection_detail: str = ""
-    process_name: str = ""
-    pid: int = 0
-    exe_path: str = ""
-    engine: str = ""
-    detection_reason: str = ""
-    hook_code_count: int = 0
-    hook_code_detail: str = ""
-    game_id: str = ""
-    session_id: str = ""
-    last_seq: int = 0
-    last_event_ts: str = ""
-    last_text_seq: int = 0
-    last_text_ts: str = ""
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "enabled": self.enabled,
-            "status": self.status,
-            "detail": self.detail,
-            "target_selection_mode": self.target_selection_mode,
-            "target_selection_detail": self.target_selection_detail,
-            "process_name": self.process_name,
-            "pid": self.pid,
-            "exe_path": self.exe_path,
-            "engine": self.engine,
-            "detection_reason": self.detection_reason,
-            "hook_code_count": self.hook_code_count,
-            "hook_code_detail": self.hook_code_detail,
-            "game_id": self.game_id,
-            "session_id": self.session_id,
-            "last_seq": self.last_seq,
-            "last_event_ts": self.last_event_ts,
-            "last_text_seq": self.last_text_seq,
-            "last_text_ts": self.last_text_ts,
-        }
-
-
-@dataclass(slots=True)
-class MemoryReaderTickResult:
-    warnings: list[str] = field(default_factory=list)
-    should_rescan: bool = False
-    runtime: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(slots=True)
-class MemoryReaderProcessTarget:
-    mode: str = "auto"
-    process_key: str = ""
-    process_name: str = ""
-    exe_path: str = ""
-    pid: int = 0
-    engine: str = ""
-    detection_reason: str = ""
-    create_time: float = 0.0
-    selected_at: str = ""
-
-    @classmethod
-    def from_dict(cls, value: dict[str, Any] | None) -> MemoryReaderProcessTarget:
-        raw = value if isinstance(value, dict) else {}
-        mode = str(raw.get("mode") or "auto").strip().lower()
-        if mode not in {"auto", "manual"}:
-            mode = "auto"
-        try:
-            pid = int(raw.get("pid") or 0)
-        except (TypeError, ValueError):
-            pid = 0
-        try:
-            create_time = float(raw.get("create_time") or 0.0)
-        except (TypeError, ValueError):
-            create_time = 0.0
-        return cls(
-            mode=mode,
-            process_key=str(raw.get("process_key") or "").strip(),
-            process_name=str(raw.get("process_name") or raw.get("name") or "").strip(),
-            exe_path=str(raw.get("exe_path") or "").strip(),
-            pid=max(0, pid),
-            engine=str(raw.get("engine") or raw.get("detected_engine") or "").strip().lower(),
-            detection_reason=str(raw.get("detection_reason") or "").strip(),
-            create_time=max(0.0, create_time),
-            selected_at=str(raw.get("selected_at") or "").strip(),
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "mode": self.mode,
-            "process_key": self.process_key,
-            "process_name": self.process_name,
-            "exe_path": self.exe_path,
-            "pid": self.pid,
-            "engine": self.engine,
-            "detected_engine": self.engine,
-            "detection_reason": self.detection_reason,
-            "create_time": self.create_time,
-            "selected_at": self.selected_at,
-        }
-
-    def is_manual(self) -> bool:
-        return self.mode == "manual"
-
-    def matches_exact(self, candidate: DetectedGameProcess) -> bool:
-        if self.process_key and self.process_key == candidate.process_key:
-            return True
-        return bool(self.pid) and self.pid == candidate.pid
-
-    def matches_signature(self, candidate: DetectedGameProcess) -> bool:
-        process_name = self.process_name.strip().lower()
-        candidate_name = candidate.name.strip().lower()
-        exe_path = os.path.normcase(self.exe_path.strip())
-        candidate_exe = os.path.normcase(candidate.exe_path.strip())
-        if exe_path and candidate_exe and exe_path != candidate_exe:
-            return False
-        if process_name and process_name != candidate_name:
-            return False
-        if not process_name and not exe_path and self.pid > 0:
-            return candidate.pid == self.pid
-        return bool(process_name or exe_path or self.pid)
-
-    def resolved_for(self, candidate: DetectedGameProcess) -> MemoryReaderProcessTarget:
-        return MemoryReaderProcessTarget(
-            mode="manual",
-            process_key=candidate.process_key,
-            process_name=candidate.name,
-            exe_path=candidate.exe_path,
-            pid=candidate.pid,
-            engine=candidate.engine,
-            detection_reason=candidate.detection_reason,
-            create_time=candidate.create_time,
-            selected_at=self.selected_at,
-        )
-
-
-class TextractorProcessHandle(Protocol):
-    async def write(self, payload: str) -> None: ...
-
-    async def readline(self, timeout: float) -> str | None: ...
-
-    def poll(self) -> int | None: ...
-
-    async def terminate(self) -> None: ...
-
-    async def wait(self, timeout: float) -> int | None: ...
-
-
-class _AsyncioTextractorHandle:
-    """Wraps a TextractorCLI subprocess with asyncio-safe I/O.
-
-    Uses synchronous subprocess.Popen so that stdin/stdout are not bound
-    to any particular asyncio event loop.  A dedicated reader thread drains
-    stdout into a plain ``queue.Queue``; the async ``readline`` method
-    pulls from that queue with a timeout via ``asyncio.to_thread``.
-    """
-
-    def __init__(self, process: subprocess.Popen, *, logger: Any | None = None) -> None:
-        self._process = process
-        self._logger = logger
-        self._queue: queue.Queue[str | None] = queue.Queue()
-        self._start_reader()
-
-    def _start_reader(self) -> None:
-        if self._process.stdout is None:
-            return
-
-        def _reader():
-            try:
-                while True:
-                    raw = self._process.stdout.readline()
-                    if not raw:
-                        break
-                    line = _decode_textractor_stdout_line(raw)
-                    if not line:
-                        continue
-                    self._queue.put(line)
-            except Exception as exc:
-                if self._logger is not None:
-                    try:
-                        self._logger.warning(
-                            "memory_reader Textractor stdout reader failed: {}",
-                            exc,
-                        )
-                    except Exception:
-                        _LOGGER.warning(
-                            "memory_reader Textractor stdout reader failed",
-                            exc_info=True,
-                        )
-                else:
-                    _LOGGER.warning(
-                        "memory_reader Textractor stdout reader failed",
-                        exc_info=True,
-                    )
-            finally:
-                self._queue.put(None)  # sentinel for EOF
-
-        threading.Thread(target=_reader, daemon=True).start()
-
-    async def write(self, payload: str) -> None:
-        if self._process.stdin is None:
-            raise RuntimeError("textractor stdin is unavailable")
-        await asyncio.to_thread(self._process.stdin.write, payload.encode("utf-8"))
-        await asyncio.to_thread(self._process.stdin.flush)
-
-    async def readline(self, timeout: float) -> str | None:
-        """Read one line. Returns str on success, '' on EOF, None on timeout."""
-        try:
-            return await asyncio.to_thread(self._queue.get, timeout=timeout)
-        except queue.Empty:
-            return None
-
-    def poll(self) -> int | None:
-        return self._process.returncode
-
-    async def terminate(self) -> None:
-        if self._process.returncode is not None:
-            _untrack_textractor_process(self._process)
-            return
-        if self._process.stdin is not None and not self._process.stdin.closed:
-            try:
-                self._process.stdin.close()
-            except Exception:
-                pass
-        if self._process.returncode is None:
-            self._process.terminate()
-
-    async def wait(self, timeout: float) -> int | None:
-        try:
-            await asyncio.wait_for(asyncio.to_thread(self._process.wait), timeout=timeout)
-        except asyncio.TimeoutError:
-            if self._process.returncode is None:
-                self._process.kill()
-                await asyncio.to_thread(self._process.wait)
-        if self._process.returncode is not None:
-            _untrack_textractor_process(self._process)
-        return self._process.returncode
-
-
-async def _default_process_factory(
-    path: str,
-    *,
-    logger: Any | None = None,
-) -> TextractorProcessHandle:
-    popen_kwargs: dict[str, Any] = {
-        "stdin": subprocess.PIPE,
-        "stdout": subprocess.PIPE,
-        "stderr": subprocess.STDOUT,
-        "bufsize": 0,
-    }
-    if sys.platform.startswith("win"):
-        create_no_window = int(getattr(subprocess, "CREATE_NO_WINDOW", 0) or 0)
-        if create_no_window:
-            popen_kwargs["creationflags"] = create_no_window
-    process = await asyncio.to_thread(
-        subprocess.Popen,
-        path,
-        **popen_kwargs,
-    )
-    _track_textractor_process(process)
-    return _AsyncioTextractorHandle(process, logger=logger)
-
-
-def _is_event_loop_binding_error(exc: BaseException) -> bool:
-    message = str(exc)
-    return (
-        "bound to a different event loop" in message
-        or "attached to a different loop" in message
-    )
-
-
-def _expand_candidate_path(raw_path: str) -> Path:
-    return Path(os.path.expanduser(os.path.expandvars(raw_path)))
-
-
-def _candidate_path_from_env(env_name: str, *parts: str) -> Path | None:
-    base = str(os.getenv(env_name) or "").strip()
-    if not base:
-        return None
-    return Path(base).joinpath(*parts)
-
-
-def _iter_textractor_candidates(
-    configured_path: str,
-    *,
-    install_target_dir_raw: str = "",
-) -> list[Path]:
-    candidates: list[Path] = []
-    seen: set[str] = set()
-
-    def _add(candidate: Path | None) -> None:
-        if candidate is None:
-            return
-        key = os.path.normcase(str(candidate))
-        if key in seen:
-            return
-        seen.add(key)
-        candidates.append(candidate)
-
-    configured = str(configured_path or "").strip()
-    if configured:
-        _add(_expand_candidate_path(configured))
-    install_target_dir = str(install_target_dir_raw or "").strip()
-    if install_target_dir:
-        _add(_expand_candidate_path(f"{install_target_dir}/{TEXTRACTOR_EXECUTABLE}"))
-    path_hit = shutil.which(TEXTRACTOR_EXECUTABLE)
-    if path_hit:
-        _add(Path(path_hit))
-    _add(
-        _candidate_path_from_env(
-            "LOCALAPPDATA",
-            "Programs",
-            "Textractor",
-            TEXTRACTOR_EXECUTABLE,
-        )
-    )
-    _add(_candidate_path_from_env("ProgramFiles", "Textractor", TEXTRACTOR_EXECUTABLE))
-    _add(
-        _candidate_path_from_env(
-            "ProgramFiles(x86)",
-            "Textractor",
-            TEXTRACTOR_EXECUTABLE,
-        )
-    )
-    return candidates
-
-
-def resolve_textractor_path(configured_path: str, *, install_target_dir_raw: str = "") -> str:
-    for candidate in _iter_textractor_candidates(
-        configured_path,
-        install_target_dir_raw=install_target_dir_raw,
-    ):
-        if candidate.is_file():
-            return str(candidate)
-    return ""
-
-
-def _loaded_module_names(proc: Any) -> set[str]:
-    names: set[str] = set()
-    try:
-        mappings = proc.memory_maps(grouped=False)
-    except Exception:
-        _LOGGER.debug(
-            "memory_reader process module scan skipped for pid=%s",
-            getattr(proc, "pid", ""),
-            exc_info=True,
-        )
-        return names
-    for item in mappings:
-        path = getattr(item, "path", "") or ""
-        if not path:
-            continue
-        names.add(Path(path).name.lower())
-    return names
-
-
-def _kirikiri_directory_detection(exe_path: str) -> tuple[str, str]:
-    normalized_path = str(exe_path or "").strip()
-    if not normalized_path:
-        return "", ""
-    try:
-        exe_dir = Path(normalized_path).parent
-    except Exception:
-        _LOGGER.debug("exe_dir resolution failed", exc_info=True)
-        return "", ""
-    if not str(exe_dir):
-        return "", ""
-    cache_key = os.path.normcase(str(exe_dir))
-    now = time.monotonic()
-    with _KIRIKIRI_DIR_CACHE_LOCK:
-        cached = _KIRIKIRI_DIR_CACHE.get(cache_key)
-        if cached is not None and now - cached[0] < _KIRIKIRI_DIR_CACHE_TTL_SECONDS:
-            return cached[1], cached[2]
-    engine = ""
-    reason = ""
-    try:
-        names = {item.name.lower() for item in exe_dir.iterdir()}
-    except Exception:
-        _LOGGER.debug("iterdir failed", exc_info=True)
-        names = set()
-    if "startup.tjs" in names:
-        engine = "kirikiri"
-        reason = "detected_kirikiri_startup_tjs"
-    elif any(name in names for name in _KIRIKIRI_COMMON_XP3_NAMES):
-        engine = "kirikiri"
-        reason = "detected_kirikiri_common_xp3"
-    elif any(name.endswith(".xp3") for name in names):
-        engine = "kirikiri"
-        reason = "detected_kirikiri_xp3"
-    with _KIRIKIRI_DIR_CACHE_LOCK:
-        _KIRIKIRI_DIR_CACHE[cache_key] = (now, engine, reason)
-        if len(_KIRIKIRI_DIR_CACHE) > 512:
-            for stale_key in list(_KIRIKIRI_DIR_CACHE)[:-512]:
-                _KIRIKIRI_DIR_CACHE.pop(stale_key, None)
-    return engine, reason
-
-
-def _detect_process_engine(
-    *,
-    name: str,
-    cmdline: str,
-    exe_path: str,
-    modules: set[str],
-) -> tuple[str, str]:
-    lowered_name = name.lower()
-    lowered_cmdline = cmdline.lower()
-    if "python" in lowered_name and "renpy" in lowered_cmdline:
-        return "renpy", "detected_renpy_cmdline"
-    if "renpy.pyd" in modules or "pygame" in modules:
-        return "renpy", "detected_renpy_module"
-    if "unity" in lowered_name or "unity" in lowered_cmdline:
-        return "unity", "detected_unity_name_or_cmdline"
-    if "unityplayer.dll" in modules or "assembly-csharp.dll" in modules:
-        return "unity", "detected_unity_module"
-    if "kirikiri" in lowered_name or "krkr" in lowered_name:
-        return "kirikiri", "detected_kirikiri_process_name"
-    if "krkr.dll" in modules:
-        return "kirikiri", "detected_kirikiri_module"
-    directory_engine, directory_reason = _kirikiri_directory_detection(exe_path)
-    if directory_engine:
-        return directory_engine, directory_reason
-    preset_engine, preset_reason = _kirikiri_preset_detection(
-        name=name,
-        cmdline=cmdline,
-        exe_path=exe_path,
-    )
-    if preset_engine:
-        return preset_engine, preset_reason
-    return "", ""
-
-
-def _scan_processes(*, include_unknown: bool = False) -> list[DetectedGameProcess]:
-    if psutil is None:
-        return []
-    detected: list[DetectedGameProcess] = []
-    for proc in psutil.process_iter(["pid", "name", "cmdline", "create_time", "exe"]):
-        try:
-            info = proc.info
-            name = str(info.get("name") or "")
-            cmdline_parts = info.get("cmdline") or []
-            cmdline = " ".join(str(item) for item in cmdline_parts)
-            if _is_excluded_helper_process(name, cmdline):
-                continue
-            exe_path = str(info.get("exe") or "")
-            modules = _loaded_module_names(proc)
-            engine, detection_reason = _detect_process_engine(
-                name=name,
-                cmdline=cmdline,
-                exe_path=exe_path,
-                modules=modules,
-            )
-            if not engine and not include_unknown:
-                continue
-            detected.append(
-                DetectedGameProcess(
-                    pid=int(info.get("pid") or 0),
-                    name=name or f"pid-{int(info.get('pid') or 0)}",
-                    create_time=float(info.get("create_time") or 0.0),
-                    engine=engine or MEMORY_READER_DEFAULT_ENGINE,
-                    exe_path=exe_path,
-                    detection_reason=detection_reason or "unknown_engine",
-                )
-            )
-        except Exception:
-            _LOGGER.debug(
-                "memory_reader process scan skipped for pid=%s",
-                getattr(proc, "pid", ""),
-                exc_info=True,
-            )
-            continue
-    detected.sort(key=lambda item: (-item.create_time, item.pid))
-    return detected
-
-
-def _default_process_scanner() -> list[DetectedGameProcess]:
-    return _scan_processes(include_unknown=False)
-
-
-def _default_process_inventory() -> list[DetectedGameProcess]:
-    return _scan_processes(include_unknown=True)
 
 
 class MemoryReaderBridgeWriter:
@@ -2036,3 +1262,35 @@ class MemoryReaderManager:
         for text in texts:
             emitted = self._writer.emit_line(text, ts=ts) or emitted
         return emitted
+
+
+# Pre-split, all memory_reader symbols lived in this one module. After the
+# split, tests that monkeypatch ``memory_reader.<name>`` must keep affecting the
+# call sites in the submodules where the name now actually lives (process
+# scanning resolves ``psutil`` in ``_process_detection``; the Textractor
+# handle resolves ``subprocess`` in ``_textractor_handle``; Win32 job setup
+# resolves ``ctypes`` in ``_win32_job_objects``). This proxy reroutes the writes
+# so the old test-time semantics survive the split unchanged.
+_PROXY_TO_PROCESS_DETECTION = frozenset({"psutil"})
+_PROXY_TO_TEXTRACTOR_HANDLE = frozenset({"subprocess"})
+_PROXY_TO_WIN32_JOB_OBJECTS = frozenset({"ctypes"})
+
+
+class _ShimModule(_types.ModuleType):
+    def __setattr__(self, name: str, value: Any) -> None:
+        super().__setattr__(name, value)
+        if name in _PROXY_TO_PROCESS_DETECTION:
+            from . import _process_detection
+
+            setattr(_process_detection, name, value)
+        if name in _PROXY_TO_TEXTRACTOR_HANDLE:
+            from . import _textractor_handle
+
+            setattr(_textractor_handle, name, value)
+        if name in _PROXY_TO_WIN32_JOB_OBJECTS:
+            from . import _win32_job_objects
+
+            setattr(_win32_job_objects, name, value)
+
+
+sys.modules[__name__].__class__ = _ShimModule

@@ -713,6 +713,45 @@
     function clearPendingAssistantTurnStart() {
         S.assistantPendingTurnServerId = null;
         S.assistantTurnAwaitingBubble = false;
+        // 同时清掉 submit-to-first-chunk 空窗 marker。本函数被所有 turn-end /
+        // response_discarded / socket_close / user_activity_cancel 路径调用，
+        // 等于把 marker 接进了完整的 turn 生命周期收尾。
+        S.pendingTextTurnSubmitAt = 0;
+    }
+
+    // turn-end / turn end agent_callback 两条路径共用的 realistic/structured
+    // buffer 收尾：标 bubble 为 sent、设 _geminiTurnEndSealed 让 adapter 在
+    // 后续 chunk 来时新建气泡而非追加到封口气泡（封口气泡的 React
+    // StreamingText 在 status sent→streaming 切换时重 mount，追加文字会视觉
+    // 丢失，详见 adapter 里的 _geminiTurnEndSealed 注释）、清 pending music、
+    // structured 流 drop 掉残余 buffer（自己有 renderer），realistic 流把
+    // 残余 trim 后 enqueue。
+    // 之前两边各写一份导致这次 PR 修 agent_callback `return` 时才发现行为不
+    // 一致；抽成共享 helper 防止下次又单边演进。
+    function flushRealisticBufferOnTurnEnd() {
+        if (typeof window.setReactMessageStatus === 'function' && window.currentGeminiMessage) {
+            window.setReactMessageStatus(window.currentGeminiMessage, 'assistant', 'sent');
+        }
+        window._geminiTurnEndSealed = true;
+        window._pendingMusicCommand = '';
+        if (window._structuredGeminiStreaming) {
+            window._realisticGeminiBuffer = '';
+            window._structuredGeminiStreaming = false;
+            return;
+        }
+        var rest = typeof window._realisticGeminiBuffer === 'string'
+            ? window._realisticGeminiBuffer.replace(/\[play_music:[^\]]*(\]|$)/g, '')
+            : '';
+        rest = rest.replace(/\[play_music:[^\]]*(\]|$)/g, '');
+        window._realisticGeminiBuffer = '';
+        var trimmed = rest.replace(/^\s+/, '').replace(/\s+$/, '');
+        if (trimmed) {
+            window._realisticGeminiQueue = window._realisticGeminiQueue || [];
+            window._realisticGeminiQueue.push(trimmed);
+            if (typeof window.processRealisticQueue === 'function') {
+                window.processRealisticQueue(window._realisticGeminiVersion || 0);
+            }
+        }
     }
 
     function clearPendingUserActivityCancel() {
@@ -771,6 +810,102 @@
             S.assistantTurnCompletedId ||
             S.assistantSpeechActiveTurnId
         );
+    }
+
+    // 一轮 AI 文本说完后的统一收尾：音乐指令（可选）+ 情感分析 + 字幕翻译。
+    // 'turn end'（用户发起）与 'turn end agent_callback'（主动消息 / 热切换回调）
+    // 两条路径共用，避免 emotion / 字幕逻辑再像以前那样在两个分支间悄悄走样
+    // ——旧版 agent_callback 分支漏掉了 emotion 分析，导致主动消息时头像表情僵住，
+    // 且这类用户在 telemetry 上表现为「有 galgame_options 调用却从无 emotion 调用」。
+    // 唯一保留的分支差异：
+    //   - music commands：proactive 轮默认关闭（主动消息自动放歌过于侵入）；
+    //   - proactive 调度：仅 'turn end' 分支 reschedule，agent_callback 不排，
+    //     防止 proactive 自己触发下一条 proactive。
+    // emotion 本身是只读的（仅向头像推一条表情，不触发对话 / 记忆 / 再投递），
+    // 没有自触发风险，因此 proactive 轮也应当照常触发。
+    function finalizeAssistantTurn(assistantTurnId, options) {
+        options = options || {};
+        var enableMusic = options.enableMusic !== false;
+
+        var bufferedFullText = typeof window._geminiTurnFullText === 'string'
+            ? window._geminiTurnFullText
+            : '';
+        var fallbackFromBubble = (window.currentGeminiMessage &&
+            window.currentGeminiMessage.nodeType === Node.ELEMENT_NODE &&
+            window.currentGeminiMessage.isConnected &&
+            typeof window.currentGeminiMessage.textContent === 'string')
+            ? window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] \u{1F380} /, '')
+            : '';
+
+        var fullText = (bufferedFullText && bufferedFullText.trim()) ? bufferedFullText : fallbackFromBubble;
+
+        // Trigger music bubble generation
+        if (enableMusic && typeof window.processMusicCommands === 'function' && fullText) {
+            window.processMusicCommands(fullText);
+        }
+
+        // Strip music commands before emotion analysis / subtitle translation
+        fullText = fullText.replace(/\[play_music:[^\]]*(\]|$)/g, '').trim();
+
+        if (!fullText || !fullText.trim()) {
+            return;
+        }
+
+        // Emotion analysis (5s timeout)
+        setTimeout(async function () {
+            try {
+                var emotionPromise = (typeof window.analyzeEmotion === 'function')
+                    ? window.analyzeEmotion(fullText)
+                    : Promise.resolve(null);
+                var timeoutPromise = new Promise(function (_, reject2) {
+                    setTimeout(function () { reject2(new Error('情感分析超时')); }, 5000);
+                });
+                var emotionResult = await Promise.race([emotionPromise, timeoutPromise]);
+                if (emotionResult && emotionResult.emotion) {
+                    console.log(window.t('console.emotionAnalysisComplete'), emotionResult);
+                    if (typeof window.applyEmotion === 'function') window.applyEmotion(emotionResult.emotion);
+                    if (assistantTurnId) {
+                        emitAssistantLifecycleEvent('neko-assistant-emotion-ready', {
+                            turnId: assistantTurnId,
+                            emotion: emotionResult.emotion,
+                            source: 'emotion_analysis'
+                        });
+                    }
+                }
+            } catch (emotionError) {
+                if (emotionError.message === '情感分析超时') {
+                    console.warn(window.t('console.emotionAnalysisTimeout'));
+                } else {
+                    console.warn(window.t('console.emotionAnalysisFailed'), emotionError);
+                }
+            }
+        }, 100);
+
+        // Frontend subtitle finalization: subtitle.js 内部根据开关决定是否
+        // 真正发请求；不需要的语言会保留流式累积的原文，不会清空字幕。
+        // 结构化 turn 收尾为 [markdown] 占位，跳过翻译链路。
+        if (window._turnIsStructured) {
+            if (typeof window.finalizeSubtitleAsStructured === 'function') {
+                try { window.finalizeSubtitleAsStructured(); } catch (_) {}
+            }
+            return;
+        }
+        (async function () {
+            try {
+                if (typeof window.translateAndShowSubtitle === 'function') {
+                    await window.translateAndShowSubtitle(fullText);
+                }
+            } catch (transError) {
+                console.error(window.t('console.translationProcessFailed'), {
+                    error: transError.message,
+                    stack: transError.stack,
+                    fullText: fullText.substring(0, 50) + '...'
+                });
+                if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+                    console.warn(window.t('console.translationUnavailable'));
+                }
+            }
+        })();
     }
 
     function ensureAssistantTurnStarted(source, serverTurnId) {
@@ -907,6 +1042,7 @@
         S.assistantSpeechActiveTurnId = null;
         S.assistantTurnId = null;
         S.assistantTurnCompletedId = null;
+        S.assistantTurnSettledId = null;
         S.assistantTurnCompletionSource = null;
         clearPendingAssistantTurnStart();
         S.currentPlayingSpeechId = null;
@@ -1172,6 +1308,33 @@
                 }
             }).catch(function () { });
 
+            // Capture bridge: tell the backend whether this renderer can
+            // service window-level captures via Electron's desktopCapturer.
+            // The backend uses this to fail /api/capture/health fast when
+            // no Electron renderer is available (e.g. running in a plain
+            // browser tab), which matters for the galgame OCR fallback path
+            // on Linux pure-Wayland where MSS / PyAutoGUI can't see other
+            // windows.
+            // Note: intentionally broadcast for all renderers; non-Electron
+            // environments send available=false and the backend ignores them.
+            try {
+                var dc = window.electronDesktopCapturer;
+                var available = !!(dc && dc.getSources && dc.captureSourceAsDataUrl);
+                if (_thisSocket && _thisSocket.readyState === WebSocket.OPEN) {
+                    _thisSocket.send(JSON.stringify({
+                        action: 'capture_bridge_status',
+                        available: available,
+                        capabilities: {
+                            getSources: !!(dc && dc.getSources),
+                            captureSourceAsDataUrl: !!(dc && dc.captureSourceAsDataUrl),
+                            captureSourceWithoutNeko: !!(dc && dc.captureSourceWithoutNeko)
+                        }
+                    }));
+                }
+            } catch (_capErr) {
+                // capture bridge is best-effort; never block the rest of onopen
+            }
+
             // Start heartbeat
             if (S.heartbeatInterval) {
                 clearInterval(S.heartbeatInterval);
@@ -1325,6 +1488,15 @@
                     emitAssistantSpeechCancel('response_discarded');
                     S.assistantTurnId = null;
                     clearPendingAssistantTurnStart();
+                    // will_retry 时后端会再发一次 LLM 请求，对外仍然是"这一轮还在跑"——
+                    // 但上面的 clearPendingAssistantTurnStart 已经把 awaitingBubble /
+                    // pendingTextTurnSubmitAt 都清零了。重新写一次时间戳，让
+                    // isAssistantTextResponseInFlight() 在 retry 的下一个 first-chunk
+                    // 到来前保持 true，否则切语音那条等待循环会过早 resolve 然后
+                    // end_session 把 retry 的 LLM 流又掐掉。
+                    if (response.will_retry) {
+                        S.pendingTextTurnSubmitAt = Date.now();
+                    }
                     var attempt = response.attempt || 0;
                     var maxAttempts = response.max_attempts || 0;
                     console.log('[Discard] AI回复被丢弃 reason=' + response.reason + ' attempt=' + attempt + '/' + maxAttempts + ' retry=' + response.will_retry);
@@ -1654,6 +1826,14 @@
                             statusDetails = statusPayload.details;
                         }
                     } catch (_) { }
+
+                    if (statusCode === 'TTS_CONNECTION_FAILED') {
+                        emitAssistantLifecycleEvent('neko-assistant-speech-unavailable', {
+                            code: statusCode,
+                            details: statusDetails || null,
+                            source: 'tts_status'
+                        });
+                    }
 
                     if (statusCode === 'GAME_ROUTE_ENDED') {
                         var shouldResumeAudio = !!(statusDetails && statusDetails.should_resume_external_on_exit);
@@ -1996,7 +2176,6 @@
                     var notifMsg = typeof response.text === 'string' ? response.text : '';
                     if (notifMsg) {
                         if (typeof window.setFloatingAgentStatus === 'function') window.setFloatingAgentStatus(notifMsg, response.status || 'completed');
-                        if (typeof window.maybeShowAgentQuotaExceededModal === 'function') window.maybeShowAgentQuotaExceededModal(notifMsg);
                         if (typeof window.maybeShowContentFilterModal === 'function') window.maybeShowContentFilterModal(notifMsg);
                         if (response.error_message && typeof window.maybeShowContentFilterModal === 'function') {
                             window.maybeShowContentFilterModal(response.error_message);
@@ -2074,7 +2253,6 @@
                         if (task && task.status === 'failed') {
                             var errMsg = task.error || task.reason || '';
                             if (errMsg) {
-                                if (typeof window.maybeShowAgentQuotaExceededModal === 'function') window.maybeShowAgentQuotaExceededModal(errMsg);
                                 if (typeof window.maybeShowContentFilterModal === 'function') window.maybeShowContentFilterModal(errMsg);
                             }
                         }
@@ -2082,7 +2260,137 @@
                         console.warn('[App] 处理 agent_task_update 失败:', e);
                     }
 
-                // -------- request_screenshot --------
+                // -------- capture_bridge_request (galgame OCR window capture) --------
+                } else if (response.type === 'capture_bridge_request') {
+                    (async function () {
+                        var requestId = response.request_id || '';
+                        var responseSocket = _thisSocket;
+                        var sendResp = function (payload) {
+                            if (!responseSocket || responseSocket.readyState !== WebSocket.OPEN) return;
+                            payload.action = 'capture_bridge_response';
+                            payload.request_id = requestId;
+                            responseSocket.send(JSON.stringify(payload));
+                        };
+                        var sourcePidMatches = function (source, pidValue) {
+                            if (!source || !pidValue) return false;
+                            var expected = String(pidValue);
+                            var directPid = source.pid || source.processId || source.ownerPid;
+                            if (directPid !== undefined && directPid !== null && String(directPid) === expected) {
+                                return true;
+                            }
+                            return false;
+                        };
+                        var sourceIdMatchesTarget = function (source, targetValue) {
+                            if (!source || !targetValue) return false;
+                            var expected = String(targetValue);
+                            var sourceId = String(source.id || '');
+                            if (sourceId === expected) return true;
+                            var tokens = sourceId.split(/[^0-9A-Za-z]+/);
+                            for (var idx = 0; idx < tokens.length; idx++) {
+                                if (tokens[idx] === expected) return true;
+                            }
+                            return false;
+                        };
+                        var normalizeCaptureBridgeImage = function (result) {
+                            if (typeof result === 'string') return result || null;
+                            if (!result || typeof result !== 'object') return null;
+                            if (result.success === false) return null;
+                            return (typeof result.dataUrl === 'string' && result.dataUrl) ? result.dataUrl : null;
+                        };
+                        try {
+                            var dc = window.electronDesktopCapturer;
+                            if (!dc || !dc.getSources) {
+                                sendResp({ success: false, error: 'unavailable' });
+                                return;
+                            }
+                            var targetId = typeof response.target_id === 'string'
+                                ? response.target_id.trim() : '';
+                            if (targetId === '0' || targetId === '<target_id>') {
+                                targetId = '';
+                            }
+                            var pid = typeof response.pid === 'number' ? response.pid : 0;
+                            var title = typeof response.title === 'string' ? response.title : '';
+                            var pidStr = pid > 0 ? String(pid) : '';
+                            var lowerTitle = title.toLowerCase();
+                            var sources = [];
+                            try {
+                                sources = await dc.getSources({
+                                    types: ['window'],
+                                    thumbnailSize: { width: 80, height: 45 }
+                                });
+                            } catch (gsErr) {
+                                sendResp({ success: false, error: 'get_sources_failed' });
+                                return;
+                            }
+                            if (!sources || !sources.length) {
+                                sendResp({ success: false, error: 'source_not_found' });
+                                return;
+                            }
+                            // Match priority: target_id exact/source-token > exact pid/token > title substring.
+                            // Never blindly pick the first window.
+                            var matched = null;
+                            if (targetId) {
+                                for (var i = 0; i < sources.length; i++) {
+                                    if (sourceIdMatchesTarget(sources[i], targetId)) {
+                                        matched = sources[i];
+                                        break;
+                                    }
+                                }
+                            }
+                            if (!matched && pidStr) {
+                                for (var j = 0; j < sources.length; j++) {
+                                    if (sourcePidMatches(sources[j], pidStr)) {
+                                        matched = sources[j];
+                                        break;
+                                    }
+                                }
+                            }
+                            if (!matched && lowerTitle) {
+                                for (var k = 0; k < sources.length; k++) {
+                                    var name = (sources[k].name || '').toLowerCase();
+                                    if (name && name.indexOf(lowerTitle) !== -1) {
+                                        matched = sources[k];
+                                        break;
+                                    }
+                                }
+                            }
+                            if (!matched) {
+                                sendResp({ success: false, error: 'source_not_found' });
+                                return;
+                            }
+                            var dataUrl = null;
+                            var captureResult = null;
+                            if (typeof dc.captureSourceWithoutNeko === 'function') {
+                                try {
+                                    captureResult = await dc.captureSourceWithoutNeko(matched.id);
+                                    dataUrl = normalizeCaptureBridgeImage(captureResult);
+                                } catch (_woNekoErr) {
+                                    dataUrl = null;
+                                }
+                            }
+                            if (!dataUrl && typeof dc.captureSourceAsDataUrl === 'function') {
+                                try {
+                                    captureResult = await dc.captureSourceAsDataUrl(matched.id);
+                                    dataUrl = normalizeCaptureBridgeImage(captureResult);
+                                } catch (_dataUrlErr) {
+                                    dataUrl = null;
+                                }
+                            }
+                            if (!dataUrl) {
+                                sendResp({ success: false, error: 'capture_failed' });
+                                return;
+                            }
+                            sendResp({
+                                success: true,
+                                image: dataUrl,
+                                source_id: matched.id || ''
+                            });
+                        } catch (capErr) {
+                            try { sendResp({ success: false, error: 'internal_error' }); } catch (_) {}
+                        }
+                    })();
+
+                // -------- request_screenshot (existing path, unrelated to capture bridge) --------
                 } else if (response.type === 'request_screenshot') {
                     (async function () {
                         try {
@@ -2127,30 +2435,7 @@
                     console.log('[WS] turn end (agent_callback) — skipping proactive chat schedule');
                     logAssistantLifecycle('ws:turn_end_agent_callback:received');
                     try {
-                        if (typeof window.setReactMessageStatus === 'function' && window.currentGeminiMessage) {
-                            window.setReactMessageStatus(window.currentGeminiMessage, 'assistant', 'sent');
-                        }
-                        // 同 'turn end' 路径：标记封口，让后续 chunk 在 adapter 里新建气泡
-                        window._geminiTurnEndSealed = true;
-                        window._pendingMusicCommand = '';
-                        if (window._structuredGeminiStreaming) {
-                            window._realisticGeminiBuffer = '';
-                            window._structuredGeminiStreaming = false;
-                            return;
-                        }
-                        var rest = typeof window._realisticGeminiBuffer === 'string'
-                            ? window._realisticGeminiBuffer.replace(/\[play_music:[^\]]*(\]|$)/g, '')
-                            : '';
-                        rest = rest.replace(/\[play_music:[^\]]*(\]|$)/g, '');
-                        window._realisticGeminiBuffer = '';
-                        var trimmed = rest.replace(/^\s+/, '').replace(/\s+$/, '');
-                        if (trimmed) {
-                            window._realisticGeminiQueue = window._realisticGeminiQueue || [];
-                            window._realisticGeminiQueue.push(trimmed);
-                            if (typeof window.processRealisticQueue === 'function') {
-                                window.processRealisticQueue(window._realisticGeminiVersion || 0);
-                            }
-                        }
+                        flushRealisticBufferOnTurnEnd();
                     } catch (e3) {
                         console.warn('[WS] turn end agent_callback flush failed:', e3);
                     }
@@ -2172,37 +2457,10 @@
                     clearPendingAssistantTurnStart();
 
                     // 主动消息 / 热切换回调也产生了 AI 文本（来自 send_lanlan_response），
-                    // 同样需要为字幕翻译。情感分析 / proactive backoff 维持原行为不动。
-                    (function () {
-                        var bufferedFullText = typeof window._geminiTurnFullText === 'string'
-                            ? window._geminiTurnFullText
-                            : '';
-                        var fallbackFromBubble = (window.currentGeminiMessage &&
-                            window.currentGeminiMessage.nodeType === Node.ELEMENT_NODE &&
-                            window.currentGeminiMessage.isConnected &&
-                            typeof window.currentGeminiMessage.textContent === 'string')
-                            ? window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] \u{1F380} /, '')
-                            : '';
-                        var fullText = (bufferedFullText && bufferedFullText.trim()) ? bufferedFullText : fallbackFromBubble;
-                        fullText = fullText.replace(/\[play_music:[^\]]*(\]|$)/g, '').trim();
-                        if (!fullText) return;
-                        // 结构化 turn（markdown/code/table/latex）→ 字幕收尾为 [markdown] 占位，不翻译
-                        if (window._turnIsStructured) {
-                            if (typeof window.finalizeSubtitleAsStructured === 'function') {
-                                try { window.finalizeSubtitleAsStructured(); } catch (_) {}
-                            }
-                            return;
-                        }
-                        (async function () {
-                            try {
-                                if (typeof window.translateAndShowSubtitle === 'function') {
-                                    await window.translateAndShowSubtitle(fullText);
-                                }
-                            } catch (transError) {
-                                console.error('[Subtitle] agent_callback translate failed:', transError);
-                            }
-                        })();
-                    })();
+                    // 与正常 'turn end' 走同一套收尾（emotion + 字幕）。music 关闭——
+                    // 主动消息不自动放歌；也不在此调 scheduleProactiveChat（见上方
+                    // "skipping proactive chat schedule"），防 proactive 自触发。
+                    finalizeAssistantTurn(agentCallbackTurnId, { enableMusic: false });
 
                 // -------- system turn end --------
                 } else if (response.type === 'system' && response.data === 'turn end') {
@@ -2217,35 +2475,7 @@
                     logAssistantLifecycle('ws:turn_end:received');
                     // Flush remaining buffer
                     try {
-                        if (typeof window.setReactMessageStatus === 'function' && window.currentGeminiMessage) {
-                            window.setReactMessageStatus(window.currentGeminiMessage, 'assistant', 'sent');
-                        }
-                        // 标记本气泡已封口：若同一 dialog turn 内还有后续 chunk
-                        // （Gemini Live late-continuation 或 tool 后续段台词），
-                        // app-chat-adapter.js 的 appendMessage 会据此新建一个气泡，
-                        // 而不是继续往封口气泡追加（封口气泡的 React StreamingText
-                        // 会在 status sent→streaming 切换时重 mount，导致追加文字
-                        // 视觉丢失）。详见 adapter 里的 _geminiTurnEndSealed 注释。
-                        window._geminiTurnEndSealed = true;
-                        window._pendingMusicCommand = '';
-                        if (window._structuredGeminiStreaming) {
-                            window._realisticGeminiBuffer = '';
-                            window._structuredGeminiStreaming = false;
-                        } else {
-                        var rest = typeof window._realisticGeminiBuffer === 'string'
-                            ? window._realisticGeminiBuffer.replace(/\[play_music:[^\]]*(\]|$)/g, '')
-                            : '';
-                        rest = rest.replace(/\[play_music:[^\]]*(\]|$)/g, '');
-                        window._realisticGeminiBuffer = '';
-                        var trimmed = rest.replace(/^\s+/, '').replace(/\s+$/, '');
-                        if (trimmed) {
-                            window._realisticGeminiQueue = window._realisticGeminiQueue || [];
-                            window._realisticGeminiQueue.push(trimmed);
-                            if (typeof window.processRealisticQueue === 'function') {
-                                window.processRealisticQueue(window._realisticGeminiVersion || 0);
-                            }
-                        }
-                        }
+                        flushRealisticBufferOnTurnEnd();
                     } catch (e3) {
                         console.warn(window.t('console.turnEndFlushFailed'), e3);
                     }
@@ -2266,88 +2496,9 @@
                     }
                     clearPendingAssistantTurnStart();
 
-                    // Emotion analysis & translation on turn completion
-                    (function () {
-                        var bufferedFullText = typeof window._geminiTurnFullText === 'string'
-                            ? window._geminiTurnFullText
-                            : '';
-                        var fallbackFromBubble = (window.currentGeminiMessage &&
-                            window.currentGeminiMessage.nodeType === Node.ELEMENT_NODE &&
-                            window.currentGeminiMessage.isConnected &&
-                            typeof window.currentGeminiMessage.textContent === 'string')
-                            ? window.currentGeminiMessage.textContent.replace(/^\[\d{2}:\d{2}:\d{2}\] \u{1F380} /, '')
-                            : '';
-
-                        var fullText = (bufferedFullText && bufferedFullText.trim()) ? bufferedFullText : fallbackFromBubble;
-
-                        // Trigger music bubble generation
-                        if (typeof window.processMusicCommands === 'function' && fullText) {
-                            window.processMusicCommands(fullText);
-                        }
-
-                        // Strip music commands before emotion analysis / subtitle translation
-                        fullText = fullText.replace(/\[play_music:[^\]]*(\]|$)/g, '').trim();
-
-                        if (!fullText || !fullText.trim()) {
-                            return;
-                        }
-
-                        // Emotion analysis (5s timeout)
-                        setTimeout(async function () {
-                            try {
-                                var emotionPromise = (typeof window.analyzeEmotion === 'function')
-                                    ? window.analyzeEmotion(fullText)
-                                    : Promise.resolve(null);
-                                var timeoutPromise = new Promise(function (_, reject2) {
-                                    setTimeout(function () { reject2(new Error('情感分析超时')); }, 5000);
-                                });
-                                var emotionResult = await Promise.race([emotionPromise, timeoutPromise]);
-                                if (emotionResult && emotionResult.emotion) {
-                                    console.log(window.t('console.emotionAnalysisComplete'), emotionResult);
-                                    if (typeof window.applyEmotion === 'function') window.applyEmotion(emotionResult.emotion);
-                                    if (assistantTurnId) {
-                                        emitAssistantLifecycleEvent('neko-assistant-emotion-ready', {
-                                            turnId: assistantTurnId,
-                                            emotion: emotionResult.emotion,
-                                            source: 'emotion_analysis'
-                                        });
-                                    }
-                                }
-                            } catch (emotionError) {
-                                if (emotionError.message === '情感分析超时') {
-                                    console.warn(window.t('console.emotionAnalysisTimeout'));
-                                } else {
-                                    console.warn(window.t('console.emotionAnalysisFailed'), emotionError);
-                                }
-                            }
-                        }, 100);
-
-                        // Frontend subtitle finalization: subtitle.js 内部根据开关决定是否
-                        // 真正发请求；不需要的语言会保留流式累积的原文，不会清空字幕。
-                        // 结构化 turn 收尾为 [markdown] 占位，跳过翻译链路。
-                        if (window._turnIsStructured) {
-                            if (typeof window.finalizeSubtitleAsStructured === 'function') {
-                                try { window.finalizeSubtitleAsStructured(); } catch (_) {}
-                            }
-                            return;
-                        }
-                        (async function () {
-                            try {
-                                if (typeof window.translateAndShowSubtitle === 'function') {
-                                    await window.translateAndShowSubtitle(fullText);
-                                }
-                            } catch (transError) {
-                                console.error(window.t('console.translationProcessFailed'), {
-                                    error: transError.message,
-                                    stack: transError.stack,
-                                    fullText: fullText.substring(0, 50) + '...'
-                                });
-                                if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-                                    console.warn(window.t('console.translationUnavailable'));
-                                }
-                            }
-                        })();
-                    })();
+                    // Emotion analysis & subtitle on turn completion —— 与
+                    // agent_callback 路径共用 finalizeAssistantTurn；正常轮启用 music。
+                    finalizeAssistantTurn(assistantTurnId);
 
                     // AI turn_end 后只 reschedule，不 reset backoff。
                     // 理由：turn_end 无法区分"用户发话引发的 turn"和"proactive 自己引发的 turn"，
@@ -2659,6 +2810,17 @@
                             gameType: response.game_type || '',
                             url: response.game_url || '',
                         });
+                    }
+
+                // -------- activity_context_prompt --------
+                // 后端活动 tracker 检测到用户「进入」游戏/娱乐（context='play'）或
+                // 「进入」专注工作（context='work'）时推这条。前端（仅 A/B 实验组
+                // vision_chat_default_off、每会话每类一次）据此弹窗问要不要开/关主动
+                // 搭话里的屏幕分享来源。分组判定 + 去重都在 app-context-prompt.js。
+                } else if (response.type === 'activity_context_prompt') {
+                    if (window.appContextPrompt
+                            && typeof window.appContextPrompt.handle === 'function') {
+                        window.appContextPrompt.handle(response.context || '');
                     }
 
                 // -------- game_window_state_change --------

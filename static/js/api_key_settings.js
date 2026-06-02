@@ -946,6 +946,33 @@ function toggleKeyBook() {
     }
 }
 
+function expandAndScrollToKeyBook(options = {}) {
+    const keyBookOptions = document.getElementById('key-book-options');
+    const keyBookButton = document.getElementById('key-book-toggle-btn');
+    if (keyBookOptions && keyBookOptions.style.display === 'none') {
+        keyBookOptions.style.display = 'block';
+        if (keyBookButton) keyBookButton.classList.add('rotated');
+    }
+
+    const section = document.getElementById('key-book-section');
+    if (section) {
+        section.scrollIntoView({
+            behavior: options.instant ? 'auto' : 'smooth',
+            block: 'center'
+        });
+    }
+}
+
+function shouldFocusKeyBookFromLocation() {
+    try {
+        const params = new URLSearchParams(window.location.search || '');
+        const focus = (params.get('focus') || params.get('target') || '').toLowerCase();
+        if (focus === 'key_book' || focus === 'key-book' || focus === 'keybook') return true;
+    } catch (_) { }
+    const hash = String(window.location.hash || '').toLowerCase();
+    return hash === '#key-book' || hash === '#key_book' || hash === '#keybook';
+}
+
 /**
  * 从 Key Book 读取某个 provider 的 key。
  * 返回 null 表示该 provider 的输入框不存在（如被 restricted 隐藏），
@@ -1160,15 +1187,7 @@ function ensureKeyBookLink(input) {
     link.style.cssText = 'font-size: 0.85em; color: #40C5F1; cursor: pointer; margin-left: 8px; white-space: nowrap;';
     link.addEventListener('click', (e) => {
         e.preventDefault();
-        // 展开 Key Book 区域并滚动到它
-        const options = document.getElementById('key-book-options');
-        const btn = document.getElementById('key-book-toggle-btn');
-        if (options && options.style.display === 'none') {
-            options.style.display = 'block';
-            if (btn) btn.classList.add('rotated');
-        }
-        const section = document.getElementById('key-book-section');
-        if (section) section.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        expandAndScrollToKeyBook();
     });
     parent.appendChild(link);
 }
@@ -1813,6 +1832,30 @@ function toggleGptSovitsConfig() {
 
 // ==================== 结束 GPT-SoVITS v3 配置相关函数 ====================
 
+function updateAssistApiKeyInputAvailability() {
+    const assistApiSelect = document.getElementById('assistApiSelect');
+    const assistApiKeyInput = document.getElementById('assistApiKeyInput');
+    if (!assistApiSelect || !assistApiKeyInput) return;
+
+    const isFreeAssistApi = assistApiSelect.value === 'free';
+    assistApiKeyInput.disabled = isFreeAssistApi;
+    assistApiKeyInput.required = false;
+
+    if (isFreeAssistApi) {
+        const freeText = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
+        assistApiKeyInput.placeholder = freeText;
+        assistApiKeyInput.dataset.realKey = '';
+        assistApiKeyInput.value = freeText;
+        attachMaskBehavior(assistApiKeyInput);
+        return;
+    }
+
+    assistApiKeyInput.placeholder = window.t ? window.t('api.assistApiKeyPlaceholder') : '留空使用管理簿对应 Key';
+    if (isFreeVersionText(getRealKey(assistApiKeyInput))) {
+        setMaskedInput(assistApiKeyInput, '');
+    }
+}
+
 // 切换自定义API启用状态
 function toggleCustomApi(skipAutoFill) {
     const enableCustomApi = document.getElementById('enableCustomApi');
@@ -1824,18 +1867,11 @@ function toggleCustomApi(skipAutoFill) {
     const isFreeVersion = coreApiSelect && coreApiSelect.value === 'free';
 
     // 禁用或启用相关控件
-    const assistApiKeyInput = document.getElementById('assistApiKeyInput');
-    if (isFreeVersion) {
-        if (assistApiSelect) assistApiSelect.disabled = true;
-        if (apiKeyInput) apiKeyInput.disabled = true;
-        if (assistApiKeyInput) assistApiKeyInput.disabled = true;
-        if (coreApiSelect) coreApiSelect.disabled = false;
-    } else {
-        if (coreApiSelect) coreApiSelect.disabled = false;
-        if (assistApiSelect) assistApiSelect.disabled = false;
-        if (apiKeyInput) apiKeyInput.disabled = false;
-        if (assistApiKeyInput) assistApiKeyInput.disabled = false;
-    }
+    // core=free 时只锁核心 API Key 输入，辅助 Key 输入由辅助服务商自身决定。
+    if (coreApiSelect) coreApiSelect.disabled = false;
+    if (assistApiSelect) assistApiSelect.disabled = false;
+    if (apiKeyInput) apiKeyInput.disabled = isFreeVersion;
+    updateAssistApiKeyInputAvailability();
 
     // 控制自定义API容器的折叠状态
     const customApiContainer = document.getElementById('custom-api-container');
@@ -2469,8 +2505,6 @@ function updateAssistApiRecommendation() {
     const apiKeyInput = document.getElementById('apiKeyInput');
     const freeVersionHint = document.getElementById('freeVersionHint');
 
-    const assistApiKeyInput = document.getElementById('assistApiKeyInput');
-
     if (selectedCoreApi === 'free') {
         if (apiKeyInput) {
             apiKeyInput.disabled = true;
@@ -2478,17 +2512,23 @@ function updateAssistApiRecommendation() {
             apiKeyInput.required = false;
             apiKeyInput.value = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
         }
-        if (assistApiKeyInput) {
-            assistApiKeyInput.disabled = true;
-            assistApiKeyInput.value = '';
-        }
+        // 辅助 API 与核心 API 解耦：core=free 仅锁核心 API Key，
+        // 辅助 Key 输入是否可用由辅助服务商自身决定。
         if (freeVersionHint) {
             freeVersionHint.style.display = 'inline';
         }
 
-        // 禁用辅助API选择框，强制为免费版
-        assistApiSelect.disabled = true;
-        assistApiSelect.value = 'free';
+        assistApiSelect.disabled = false;
+        // free 选项保持可用——core=free 时它是合理默认；用户也能切换到其它 provider。
+        const freeOption = assistApiSelect.querySelector('option[value="free"]');
+        if (freeOption) {
+            freeOption.disabled = false;
+            freeOption.textContent = window.t ? window.t('api.freeVersion') : '免费版';
+        }
+        // 用户未显式选择 assist 时默认填 'free'，保持原免费版一键到位体验。
+        if (!assistApiSelect.value) {
+            assistApiSelect.value = 'free';
+        }
         // Directly recompute follow_assist slots instead of dispatching a change
         // event, which would re-enter updateAssistApiRecommendation() recursively.
         autoFillAssistApiKey();
@@ -2506,9 +2546,6 @@ function updateAssistApiRecommendation() {
             if (isFreeVersionText(getRealKey(apiKeyInput))) {
                 setMaskedInput(apiKeyInput, '');
             }
-        }
-        if (assistApiKeyInput) {
-            assistApiKeyInput.disabled = false;
         }
         if (freeVersionHint) {
             freeVersionHint.style.display = 'none';
@@ -2541,6 +2578,8 @@ function updateAssistApiRecommendation() {
             });
         }
     }
+
+    updateAssistApiKeyInputAvailability();
 
     // Auto-fill core API key from book
     autoFillCoreApiKey();
@@ -2600,10 +2639,10 @@ function autoFillAssistApiKey(force) {
 
     const selectedAssistApi = assistApiSelect.value;
     if (selectedAssistApi === 'free') {
-        setMaskedInput(assistApiKeyInput, '');
-        attachMaskBehavior(assistApiKeyInput);
+        updateAssistApiKeyInputAvailability();
         return;
     }
+    updateAssistApiKeyInputAvailability();
 
     const bookKey = syncKeyFromBook(selectedAssistApi);
     // When forced (provider switch, disabling custom API, or init), clear input if no book key
@@ -4153,13 +4192,11 @@ async function initializePage() {
         if (coreApiSelect && apiKeyInput && freeVersionHint) {
             const selectedCoreApi = coreApiSelect.value;
 
-            const assistApiKeyInputInit = document.getElementById('assistApiKeyInput');
             if (selectedCoreApi === 'free') {
                 apiKeyInput.disabled = true;
                 apiKeyInput.placeholder = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
                 apiKeyInput.required = false;
                 apiKeyInput.value = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
-                if (assistApiKeyInputInit) assistApiKeyInputInit.disabled = true;
                 freeVersionHint.style.display = 'inline';
             } else {
                 apiKeyInput.disabled = false;
@@ -4168,9 +4205,9 @@ async function initializePage() {
                 if (isFreeVersionText(getRealKey(apiKeyInput))) {
                     setMaskedInput(apiKeyInput, '');
                 }
-                if (assistApiKeyInputInit) assistApiKeyInputInit.disabled = false;
                 freeVersionHint.style.display = 'none';
             }
+            updateAssistApiKeyInputAvailability();
 
             updateAssistApiRecommendation();
             autoFillCoreApiKey(true);
@@ -4274,6 +4311,12 @@ async function initializePage() {
             toggleCustomApi(true);
         }, 0);
 
+        if (shouldFocusKeyBookFromLocation()) {
+            setTimeout(() => {
+                expandAndScrollToKeyBook();
+            }, 80);
+        }
+
         // Task 6.3: Auto-test removed per maintainer feedback (Wehos).
         // Manual test buttons are sufficient; auto-test on page load could
         // consume tokens without user consent and /models doesn't reliably
@@ -4295,6 +4338,13 @@ async function initializePage() {
 
 // 页面加载完成后开始初始化
 document.addEventListener('DOMContentLoaded', initializePage);
+
+window.addEventListener('message', event => {
+    if (event.origin !== window.location.origin) return;
+    if (event.data && event.data.type === 'focus_api_key_book') {
+        expandAndScrollToKeyBook();
+    }
+});
 
 // 兼容性：防止在某些情况下DOMContentLoaded不触发
 window.addEventListener('load', () => {

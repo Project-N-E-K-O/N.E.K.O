@@ -512,6 +512,29 @@ v0.9: Multi-system support (Linux, mobile). N.E.K.O. Network launch. Expected: A
 
 v1.0: Focus on in-house large models and agent systems. Expected: June 2026.
 
+### Telemetry
+
+N.E.K.O. ships with **anonymous LLM-token usage telemetry enabled by default** so we can track version compatibility, model-usage distribution, and error rates. We believe shipping a product needs data — but we believe even more strongly that nothing should be collected behind your back.
+
+**One-line opt-out**: set the environment variable `DO_NOT_TRACK=1` (or `NEKO_DO_NOT_TRACK=1`). Telemetry is disabled immediately, no rebuild needed. We follow the [Console Do Not Track](https://consoledonottrack.com/) open convention.
+
+**What we do / do not collect**:
+
+| ✅ Collected | ❌ Never collected |
+| --- | --- |
+| LLM token usage (prompt / cached / completion) | Conversation content, text, voice, images |
+| Model name, call type (`conversation` / `memory` / …) | Username, API key, GitHub ID |
+| Call counts, error counts | IP address, geolocation, MAC, hardware serial |
+| App version, A/B branch, locale, timezone, distribution channel (`source` / `release` / `steam`) | File paths, cookies, browser fingerprints |
+| Pseudonymous device identifier — primary: `SHA256(OS_machine_id ‖ namespace)`; fallback: `SHA256(uuid.getnode() ‖ install_path ‖ namespace)`. During the migration window, both new and legacy IDs are sent so the server can fold cohorts | Any PII that could be traced back to a person |
+| **Whenever the Steamworks SDK can initialize at runtime AND you are signed into the Steam client**: Steam64 user ID (the public numeric ID visible in your Steam profile URL) | Any other account-system IDs (GitHub / Google / OpenAI / …) |
+
+> **About the pseudonymous device identifier**: one-way SHA-256, irreversible, contains no user data. The same machine (same OS install) reproduces the same identifier, so under GDPR / PIPL it counts as a *pseudonymous identifier*, not fully anonymous data. Used only for deduplicated DAU counting and version-compatibility attribution.
+>
+> **About Steam64**: this is the public numeric ID the Steam client exposes to any third-party SDK once you are signed in (the trailing number in your Steam profile URL is exactly it). It contains no email, phone number, or real name, but it is stable across sessions. **The actual trigger condition follows the code, not the distribution label**: [`app/main_server.py`](app/main_server.py) unconditionally calls `initialize_steamworks()` at startup, and `_get_telemetry_steam_user_id()` in [`utils/token_tracker.py`](utils/token_tracker.py) reports any non-zero Steam ID regardless of whether the distribution channel is `source`, `release`, or `steam`. The typical case is a Steam release build, but a source checkout that has the `steamworks` Python package installed, keeps `steam_appid.txt` in place, and runs while signed into Steam will also send Steam64. **If you do not want it sent: (1) the safest path is `DO_NOT_TRACK=1` to disable everything; (2) sign out of Steam; (3) source users can uninstall the `steamworks` package or remove `steam_appid.txt` from the working directory.**
+
+Full implementation and wire protocol live in [`utils/token_tracker.py`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/utils/token_tracker.py) and [`local_server/telemetry_server/README.md`](https://github.com/Project-N-E-K-O/N.E.K.O/blob/main/local_server/telemetry_server/README.md): HMAC-SHA256 signing, ±5 min replay-protection window, sliding-window rate limit (120 req/h/device), append-only storage. Each server process reports at most ~once per 60 seconds (shares the same throttling timer as local disk-flush) — no impact on the hot path.
+
 </details>
 
 ## Star History

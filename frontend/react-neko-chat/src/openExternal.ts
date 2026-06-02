@@ -24,16 +24,21 @@
 //    sharp edge (file:// could open arbitrary local content, javascript:
 //    is a non-starter, data: is unsupported by most OS handlers) — only
 //    schemes a sane new-tab/browser would accept get through.
-export function openExternalUrl(url: string): void {
-  if (!url) return;
+export function normalizeExternalUrlHref(url: string): string | null {
+  if (!url) return null;
   let normalized: URL;
   try {
     normalized = new URL(url, window.location.href);
   } catch {
-    return;
+    return null;
   }
-  if (!['http:', 'https:', 'mailto:'].includes(normalized.protocol)) return;
-  const href = normalized.toString();
+  if (!['http:', 'https:', 'mailto:'].includes(normalized.protocol)) return null;
+  return normalized.toString();
+}
+
+export function openExternalUrl(url: string): void {
+  const href = normalizeExternalUrlHref(url);
+  if (!href) return;
   const shell = (window as unknown as {
     electronShell?: { openExternal?: (u: string) => void | Promise<unknown> };
   }).electronShell;
