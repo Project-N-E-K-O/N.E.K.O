@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import App from './App';
+import App, { COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS } from './App';
 import {
   computeCompactHistoryEnterDelay,
   computeCompactHistoryExitDelay,
@@ -408,10 +408,20 @@ describe('App', () => {
       expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'closing');
       expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'false');
       expect(exportButton).toHaveAttribute('aria-pressed', 'false');
+      expect(container.querySelector('.compact-export-history-bubble')).not.toHaveAttribute('role');
+      expect(container.querySelector('.compact-export-history-bubble')).not.toHaveAttribute('aria-pressed');
+      expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('aria-disabled', 'true');
+      expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('tabindex', '-1');
+      expect(container.querySelector('.compact-export-history-bubble')).not.toHaveAttribute('data-compact-hit-region');
+      expect(container.querySelector('.compact-export-history-controls')).toHaveAttribute('aria-disabled', 'true');
+      expect(container.querySelector('.compact-export-history-controls')).not.toHaveAttribute('data-compact-hit-region');
+      container.querySelectorAll<HTMLButtonElement>('.compact-export-history-control').forEach((button) => {
+        expect(button).toBeDisabled();
+      });
       expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('false');
 
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(560);
+        await vi.advanceTimersByTimeAsync(COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
       });
 
       expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
@@ -491,7 +501,7 @@ describe('App', () => {
       expect(handle).toHaveAttribute('aria-expanded', 'true');
 
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(560);
+        await vi.advanceTimersByTimeAsync(COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
       });
 
       expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'open');

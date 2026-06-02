@@ -1235,6 +1235,8 @@ export default function CompactExportHistoryPanel({
   ].join('\u001e')).join('\u001f');
   const exportBusy = pendingAction !== null;
   const exportActionsDisabled = !previewHasSelection || exportBusy;
+  const historyInteractive = visibilityState === 'open';
+  const selectionControlsInteractive = historyInteractive && controlsOpen;
   if (visibilityState === 'open' && previousVisibilityStateRef.current !== 'open') {
     enterDelayByMessageIdRef.current = new Map(
       messages.map((message, index) => [
@@ -1834,6 +1836,7 @@ export default function CompactExportHistoryPanel({
   }
 
   function handlePointerDown(event: ReactPointerEvent<HTMLElement>, message: ChatMessage, selectable: boolean) {
+    if (!historyInteractive) return;
     if (!selectable) return;
     if (event.pointerType === 'mouse' && event.button !== 0) return;
     const imageSource = resolveImageDragSource(event.target, event.currentTarget, message);
@@ -1872,6 +1875,10 @@ export default function CompactExportHistoryPanel({
   function handlePointerMove(event: ReactPointerEvent<HTMLElement>) {
     const intent = pointerIntentRef.current;
     if (!intent || intent.id !== event.pointerId) return;
+    if (!historyInteractive) {
+      completePointerIntent(intent);
+      return;
+    }
     const dx = event.clientX - intent.x;
     const dy = event.clientY - intent.y;
     if (isDraggingPhase(intent.phase)) {
@@ -1902,7 +1909,7 @@ export default function CompactExportHistoryPanel({
     if (
       (intent.phase === 'pending' || intent.phase === 'click')
       && selectable
-      && controlsOpen
+      && selectionControlsInteractive
       && !isSelectionIgnoredTarget(event.target, event.currentTarget)
     ) {
       clearPointerIntentAfterDrag(intent);
@@ -1929,13 +1936,13 @@ export default function CompactExportHistoryPanel({
       suppressClickMessageIdRef.current = null;
       return;
     }
-    if (!controlsOpen) return;
+    if (!selectionControlsInteractive) return;
     onToggleMessage(message.id);
   }
 
   function handleKeyDown(event: ReactKeyboardEvent<HTMLElement>, message: ChatMessage, selectable: boolean) {
     if (!selectable) return;
-    if (!controlsOpen) return;
+    if (!selectionControlsInteractive) return;
     if (event.key !== 'Enter' && event.key !== ' ') return;
     event.preventDefault();
     onToggleMessage(message.id);
@@ -2318,7 +2325,7 @@ export default function CompactExportHistoryPanel({
                   {messages.map((message, index) => {
                     const selectable = isCompactExportMessageSelectable(message);
                     const selected = selectedIds.has(message.id);
-                    const selectionEnabled = controlsOpen && selectable;
+                    const selectionEnabled = selectionControlsInteractive && selectable;
                     const failed = message.status === 'failed';
                     const streaming = message.status === 'streaming';
                     const tone = getCompactHistoryBubbleTone(message, index, messages[index - 1]);
@@ -2351,9 +2358,9 @@ export default function CompactExportHistoryPanel({
                           aria-pressed={selectionEnabled ? selected : undefined}
                           aria-disabled={!selectionEnabled}
                           tabIndex={selectionEnabled ? 0 : -1}
-                          data-compact-hit-region="true"
-                          data-compact-hit-region-id={`history:message:${message.id}`}
-                          data-compact-hit-region-kind="message"
+                          data-compact-hit-region={historyInteractive ? 'true' : undefined}
+                          data-compact-hit-region-id={historyInteractive ? `history:message:${message.id}` : undefined}
+                          data-compact-hit-region-kind={historyInteractive ? 'message' : undefined}
                           onPointerDown={(event) => handlePointerDown(event, message, selectable)}
                           onPointerMove={handlePointerMove}
                           onPointerUp={(event) => finishPointer(event, message, selectable)}
@@ -2391,27 +2398,29 @@ export default function CompactExportHistoryPanel({
                 className="compact-export-history-controls"
                 role="group"
                 aria-label={i18n('chat.exportConversation', 'Export Conversation')}
+                aria-disabled={!historyInteractive}
                 data-compact-export-controls-open="true"
-                data-compact-hit-region="true"
-                data-compact-hit-region-id="history:controls"
-                data-compact-hit-region-kind="controls"
+                data-compact-hit-region={historyInteractive ? 'true' : undefined}
+                data-compact-hit-region-id={historyInteractive ? 'history:controls' : undefined}
+                data-compact-hit-region-kind={historyInteractive ? 'controls' : undefined}
               >
                 <div className="compact-export-history-controls-content">
                   <div className="compact-export-history-count" aria-live="polite">
                     {selectedCount}/{selectableCount}
                   </div>
-                  <button type="button" className="compact-export-history-control" disabled={selectableCount <= 0} onClick={onSelectAll}>
+                  <button type="button" className="compact-export-history-control" disabled={!historyInteractive || selectableCount <= 0} onClick={onSelectAll}>
                     {i18n('chat.exportSelectAll', 'Select All')}
                   </button>
-                  <button type="button" className="compact-export-history-control" disabled={selectedCount <= 0} onClick={onClearSelection}>
+                  <button type="button" className="compact-export-history-control" disabled={!historyInteractive || selectedCount <= 0} onClick={onClearSelection}>
                     {i18n('chat.exportSelectNone', 'Clear')}
                   </button>
-                  <button type="button" className="compact-export-history-control" disabled={selectableCount <= 0} onClick={onInvertSelection}>
+                  <button type="button" className="compact-export-history-control" disabled={!historyInteractive || selectableCount <= 0} onClick={onInvertSelection}>
                     {i18n('chat.exportSelectInvert', 'Invert')}
                   </button>
                   <button
                     type="button"
                     className="compact-export-history-control compact-export-history-export"
+                    disabled={!historyInteractive}
                     onClick={onRequestPreview}
                   >
                     {i18n('chat.exportAction', 'Export')}
