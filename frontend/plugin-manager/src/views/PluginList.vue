@@ -366,6 +366,7 @@ import { usePluginListContextActions, type ResolvedPluginListAction } from '@/co
 import { usePluginWorkbench } from '@/composables/usePluginWorkbench'
 import { useMarketAuth } from '@/composables/useMarketAuth'
 import { METRICS_REFRESH_INTERVAL } from '@/utils/constants'
+import { formatHttpError } from '@/utils/request'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
 import { useI18n } from 'vue-i18n'
 import type { PluginMeta } from '@/types/api'
@@ -807,7 +808,7 @@ async function handleImportFileChange(event: Event) {
     await handleRefresh()
   } catch (error: any) {
     console.error('Failed to import plugin package:', error)
-    const detail = error?.response?.data?.detail || error?.message || ''
+    const detail = formatHttpError(error)
     if (detail) {
       ElMessage.error(t('plugins.importFailed') + ': ' + detail)
     }
@@ -856,7 +857,7 @@ async function handleBatchExport() {
     }
   } catch (error: any) {
     console.error('Failed to export plugins:', error)
-    const detail = error?.response?.data?.detail || error?.message || ''
+    const detail = formatHttpError(error)
     if (detail) {
       ElMessage.error(t('plugins.exportFailed') + ': ' + detail)
     }

@@ -39,8 +39,8 @@ from plugin.server.application.install_source import (
     classify_plugin_path,
     get_install_source_manager,
 )
-from plugin.server.application.plugin_cli import service as plugin_cli_service_module
 from plugin.server.application.plugin_cli import PluginCliService
+from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
 from plugin.settings import (
     MARKET_URL,
     MARKET_WEB_URL,
@@ -1930,7 +1930,7 @@ def _utc_iso_now() -> str:
 async def _download_package(url: str, task: dict[str, Any]) -> Path:
     """Download a plugin package to a temp file with progress updates."""
 
-    download_dir = plugin_cli_service_module._TARGET_ROOT / ".downloads"
+    download_dir = PluginCliPathPolicy.from_settings().package_artifacts_root / ".downloads"
     download_dir.mkdir(parents=True, exist_ok=True)
     fd, raw_path = tempfile.mkstemp(
         prefix="neko-market-",
