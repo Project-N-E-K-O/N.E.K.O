@@ -1562,7 +1562,20 @@ function _updateNekoIdleCat1CompactTopEdgeRearmAfterManualMove(container) {
         };
     }
 
+    const compactTopEdgeRearmWasRequired = !!state.compactTopEdgeRearmRequired ||
+        state.targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE ||
+        !!(Number(state.compactTopEdgeDropUntil) || 0);
     const distance = _getNekoIdleCat1CompactTopEdgeTargetDistance(container);
+    if (!Number.isFinite(distance)) {
+        state.compactTopEdgeRearmRequired = false;
+        state.compactTopEdgeDropUntil = 0;
+        state.compactFollowAnchorRatio = null;
+        return {
+            rearmed: false,
+            shouldSync: false
+        };
+    }
+
     const rearmed = distance <= _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_REARM_DISTANCE_PX;
     if (rearmed) {
         state.compactTopEdgeRearmRequired = false;
@@ -1570,6 +1583,13 @@ function _updateNekoIdleCat1CompactTopEdgeRearmAfterManualMove(container) {
         return {
             rearmed: true,
             shouldSync: true
+        };
+    }
+
+    if (!compactTopEdgeRearmWasRequired) {
+        return {
+            rearmed: false,
+            shouldSync: false
         };
     }
 
