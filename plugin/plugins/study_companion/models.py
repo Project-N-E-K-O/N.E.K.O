@@ -246,7 +246,7 @@ class AwarenessConfig:
     push_to_llm_mode: str = "read"
     os_signals_enabled: bool = True
     distraction_detection: bool = True
-    idle_warning_minutes: int = 5
+
 
     def __post_init__(self) -> None:
         self.enabled = bool(self.enabled)
@@ -270,10 +270,6 @@ class AwarenessConfig:
         )
         self.os_signals_enabled = bool(self.os_signals_enabled)
         self.distraction_detection = bool(self.distraction_detection)
-        self.idle_warning_minutes = _clamp_int(
-            self.idle_warning_minutes, 1, 30, 5
-        )
-
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 

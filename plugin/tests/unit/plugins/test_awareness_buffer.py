@@ -238,7 +238,6 @@ def test_awareness_config_parses_clamps_and_falls_back() -> None:
                     "image_max_bytes": 1,
                     "push_to_llm_interval_seconds": 999,
                     "push_to_llm_mode": "bad",
-                    "idle_warning_minutes": 99,
                 }
             }
         }
@@ -251,4 +250,3 @@ def test_awareness_config_parses_clamps_and_falls_back() -> None:
     assert config.awareness.image_max_bytes == 10240
     assert config.awareness.push_to_llm_interval_seconds == 300
     assert config.awareness.push_to_llm_mode == "read"
-    assert config.awareness.idle_warning_minutes == 30

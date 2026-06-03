@@ -74,7 +74,7 @@ class ActivityBuffer:
             window_start = current.timestamp - self.window_seconds
             active_seconds = 0.0
             for snapshot in self.snapshots:
-                if snapshot.app_type in ("other", "unknown") or snapshot.activity_type in (
+                if snapshot.app_type in ("other", "unknown", "private") or snapshot.activity_type in (
                     "idle",
                     "",
                 ):

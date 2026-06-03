@@ -371,11 +371,5 @@ def build_config(raw: dict[str, Any]) -> StudyConfig:
                 True,
                 "awareness_distraction_detection",
             ),
-            idle_warning_minutes=_int(
-                awareness,
-                "idle_warning_minutes",
-                5,
-                "awareness_idle_warning_minutes",
-            ),
         ),
     )

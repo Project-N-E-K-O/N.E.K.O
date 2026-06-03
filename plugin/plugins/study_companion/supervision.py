@@ -7,7 +7,7 @@ from .models import SupervisionConfig
 
 
 _DISTRACTION_FOREGROUND_CATEGORIES = frozenset(
-    {"gaming", "entertainment", "casual_browsing"}
+    {"gaming", "entertainment"}
 )
 
 

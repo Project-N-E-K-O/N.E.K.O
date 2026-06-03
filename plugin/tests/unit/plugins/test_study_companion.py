@@ -373,7 +373,7 @@ async def test_awareness_tick_private_activity_tracker_skips_capture(
     assert plugin._awareness_idle_ticks == 1
     summary = await plugin._buffer.summarize()
     assert summary["current_app"] == "private"
-    assert summary["current_activity"] == "idle"
+    assert summary["current_activity"] == "private"
 
 
 @pytest.mark.asyncio

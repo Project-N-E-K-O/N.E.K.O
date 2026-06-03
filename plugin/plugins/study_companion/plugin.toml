@@ -63,7 +63,6 @@ push_to_llm_interval_seconds = 300
 push_to_llm_mode = "read"
 os_signals_enabled = true
 distraction_detection = true
-idle_warning_minutes = 5
 
 [study_companion.communication]
 enabled = true

@@ -10,6 +10,17 @@ from .awareness_buffer import ActivityBuffer
 from .models import ActivitySnapshot, ActivitySummary
 from .screen_classifier import classify_app_from_title
 
+# OS-layer foreground categories (WindowObservation.category) use a
+# different vocabulary than the local OCR/app-title classifier.  This
+# table normalises them so ActivityBuffer summaries don't mix two
+# taxonomies in app_distribution / current_app.
+_OS_CATEGORY_TO_APP_TYPE: dict[str, str] = {
+    "gaming": "game",
+    "work": "work",
+    "entertainment": "entertainment",
+    "communication": "communication",
+}
+
 
 class _AwarenessRunnerMixin:
     def start_awareness_loop(self) -> None:
@@ -118,7 +129,7 @@ class _AwarenessRunnerMixin:
                 timestamp=timestamp,
                 first_seen_at=timestamp,
                 app_type="private",
-                activity_type="idle",
+                activity_type="private",
                 classify_method="os_signal",
                 ocr_text_snippet="",
                 window_title="",
@@ -140,8 +151,9 @@ class _AwarenessRunnerMixin:
     ):
         if not hasattr(snapshot, "app_type"):
             return snapshot
-        if foreground_category is not None and foreground_category not in ("own_app",):
-            return replace(snapshot, app_type=foreground_category)
+        mapped = _OS_CATEGORY_TO_APP_TYPE.get(foreground_category or "")
+        if mapped is not None:
+            return replace(snapshot, app_type=mapped)
         if getattr(snapshot, "app_type", "") != "unknown":
             return snapshot
         return replace(
