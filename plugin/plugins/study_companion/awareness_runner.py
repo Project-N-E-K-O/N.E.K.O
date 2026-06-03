@@ -35,6 +35,7 @@ class _AwarenessRunnerMixin:
         )
         self._last_awareness_push_at = 0.0
         self._awareness_idle_ticks = 0
+        self._consecutive_os_read_failures = 0
         self._awareness_task = asyncio.create_task(self._run_awareness_loop())
         self._awareness_task.add_done_callback(self._on_awareness_task_done)
 
@@ -43,6 +44,7 @@ class _AwarenessRunnerMixin:
         self._buffer = None
         self._last_awareness_push_at = 0.0
         self._awareness_idle_ticks = 0
+        self._consecutive_os_read_failures = 0
         if task is not None and not task.done():
             task.cancel()
 
@@ -112,10 +114,25 @@ class _AwarenessRunnerMixin:
                 active_window = getattr(activity_snap, "active_window", None)
                 foreground_category = getattr(active_window, "category", None)
         except Exception:
-            self.logger.warning(
-                "study awareness activity snapshot failed",
-                exc_info=True,
-            )
+            fails = getattr(self, "_consecutive_os_read_failures", 0) + 1
+            self._consecutive_os_read_failures = fails
+            if fails <= 3:
+                self.logger.warning(
+                    "study awareness activity snapshot failed "
+                    "(consecutive=%d)",
+                    self._consecutive_os_read_failures,
+                    exc_info=True,
+                )
+            else:
+                self.logger.error(
+                    "study awareness activity snapshot FAILED "
+                    "%d consecutive times — OS signals may be permanently "
+                    "unavailable; check tracker / system collector health",
+                    self._consecutive_os_read_failures,
+                    exc_info=True,
+                )
+        else:
+            self._consecutive_os_read_failures = 0
         return activity_snap, foreground_category, os_signals_available
 
     async def _record_private_awareness_activity(
