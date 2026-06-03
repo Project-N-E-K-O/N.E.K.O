@@ -209,6 +209,52 @@
         return /\.(avif|bmp|gif|heic|heif|ico|jpe?g|png|tiff?|webp)$/i.test(name);
     }
 
+    function getImageFilesFromFileList(fileList) {
+        return Array.from(fileList || []).filter(function (file) {
+            return file instanceof File && (!file.type || /^image\//i.test(file.type) || isLikelyImageFile(file));
+        });
+    }
+
+    function dataTransferHasFiles(dataTransfer) {
+        if (!dataTransfer) return false;
+        if (dataTransfer.files && dataTransfer.files.length > 0) return true;
+        if (dataTransfer.items && dataTransfer.items.length > 0) {
+            return Array.from(dataTransfer.items).some(function (item) {
+                return item && item.kind === 'file';
+            });
+        }
+        return Array.from(dataTransfer.types || []).indexOf('Files') >= 0;
+    }
+
+    function getFilesFromDataTransfer(dataTransfer) {
+        if (!dataTransfer) return [];
+        var files = Array.from(dataTransfer.files || []);
+        if (files.length > 0) return files;
+        return Array.from(dataTransfer.items || [])
+            .filter(function (item) {
+                return item && item.kind === 'file' && typeof item.getAsFile === 'function';
+            })
+            .map(function (item) {
+                return item.getAsFile();
+            })
+            .filter(function (file) {
+                return file instanceof File;
+            });
+    }
+
+    function isChatImageDropTarget(target) {
+        var targetNode = target instanceof Node ? target : null;
+        var shell = document.getElementById('react-chat-window-shell');
+        if (shell && targetNode && shell.contains(targetNode)) return true;
+        var textInputBox = S && S.dom ? S.dom.textInputBox : null;
+        if (textInputBox && targetNode && textInputBox.contains(targetNode)) return true;
+        return !!(document.body && document.body.classList.contains('electron-chat-window'));
+    }
+
+    function shouldHandleChatFileDrop(event) {
+        return !!(event && isChatImageDropTarget(event.target) && dataTransferHasFiles(event.dataTransfer));
+    }
+
     function isLikelyJpegBlob(blob) {
         if (!blob || typeof blob !== 'object') return false;
         if (/^image\/jpe?g$/i.test(blob.type || '')) return true;
@@ -483,31 +529,7 @@
                 return;
             }
 
-            Promise.allSettled(files.map(mod.importImageFileToPendingList))
-                .then(function (results) {
-                    var succeeded = 0;
-                    var failed = 0;
-                    for (var i = 0; i < results.length; i++) {
-                        if (results[i].status === 'fulfilled') {
-                            succeeded++;
-                        } else {
-                            failed++;
-                            console.error('[导入图片] 单张处理失败:', results[i].reason);
-                        }
-                    }
-                    if (succeeded > 0) {
-                        window.showStatusToast(
-                            window.t ? window.t('app.importImageAdded', { count: succeeded }) : '已添加 ' + succeeded + ' 张图片，发送时会一并带上',
-                            3000
-                        );
-                    }
-                    if (failed > 0) {
-                        window.showStatusToast(
-                            window.t ? window.t('app.importImageFailed') : '导入图片失败',
-                            4000
-                        );
-                    }
-                })
+            mod.importImageFilesToPendingList(files, { logPrefix: '[导入图片]' })
                 .finally(function () {
                     input.value = '';
                 });
@@ -530,6 +552,45 @@
             .then(function (dataUrl) {
                 mod.addScreenshotToList(dataUrl);
                 return dataUrl;
+            });
+    };
+
+    mod.importImageFilesToPendingList = function importImageFilesToPendingList(files, options) {
+        var imageFiles = getImageFilesFromFileList(files);
+        if (!imageFiles.length) {
+            window.showStatusToast(
+                window.t ? window.t('app.importImageFailed') : '导入图片失败',
+                4000
+            );
+            return Promise.resolve({ succeeded: 0, failed: 0 });
+        }
+
+        var logPrefix = options && options.logPrefix ? options.logPrefix : '[导入图片]';
+        return Promise.allSettled(imageFiles.map(mod.importImageFileToPendingList))
+            .then(function (results) {
+                var succeeded = 0;
+                var failed = 0;
+                for (var i = 0; i < results.length; i++) {
+                    if (results[i].status === 'fulfilled') {
+                        succeeded++;
+                    } else {
+                        failed++;
+                        console.error(logPrefix + ' 单张处理失败:', results[i].reason);
+                    }
+                }
+                if (succeeded > 0) {
+                    window.showStatusToast(
+                        window.t ? window.t('app.importImageAdded', { count: succeeded }) : '已添加 ' + succeeded + ' 张图片，发送时会一并带上',
+                        3000
+                    );
+                }
+                if (failed > 0) {
+                    window.showStatusToast(
+                        window.t ? window.t('app.importImageFailed') : '导入图片失败',
+                        4000
+                    );
+                }
+                return { succeeded: succeeded, failed: failed };
             });
     };
 
@@ -3099,6 +3160,28 @@
                 }
             }
         });
+
+        // 图片文件拖到聊天框时按「导入图片」处理，避免浏览器默认打开本地文件。
+        document.addEventListener('dragover', function (e) {
+            if (!shouldHandleChatFileDrop(e)) return;
+            e.preventDefault();
+            e.stopPropagation();
+            if (e.dataTransfer) {
+                e.dataTransfer.dropEffect = isHomeTutorialInteractionLocked() ? 'none' : 'copy';
+            }
+        }, true);
+
+        document.addEventListener('drop', function (e) {
+            if (!shouldHandleChatFileDrop(e)) return;
+            e.preventDefault();
+            e.stopPropagation();
+            if (isHomeTutorialInteractionLocked()) {
+                showHomeTutorialLockedToast();
+                return;
+            }
+            var files = getFilesFromDataTransfer(e.dataTransfer);
+            mod.importImageFilesToPendingList(files, { logPrefix: '[拖放图片]' });
+        }, true);
 
         mod.ensureImportImageInput();
         mod.syncPendingComposerAttachments();

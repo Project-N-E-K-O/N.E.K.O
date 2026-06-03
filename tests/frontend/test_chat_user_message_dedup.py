@@ -220,6 +220,87 @@ def test_import_image_without_mime_converts_to_jpeg_attachment(
 
 
 @pytest.mark.frontend
+def test_drop_image_on_chat_imports_pending_attachment_without_navigation(
+    mock_page: Page,
+    running_server: str,
+):
+    mock_page.add_init_script(
+        "window.localStorage.setItem('neko_tutorial_settings', 'seen')"
+    )
+    mock_page.goto(f"{running_server}/chat", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost"
+        " && window.appButtons"
+        " && typeof window.appButtons.importImageFilesToPendingList === 'function'"
+    )
+    mock_page.evaluate(
+        """() => {
+            window.showStatusToast = () => {};
+            if (typeof window.reactChatWindowHost.setComposerAttachments === 'function') {
+                window.reactChatWindowHost.setComposerAttachments([]);
+            }
+        }"""
+    )
+
+    result = mock_page.evaluate(
+        """async () => {
+            const b64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO9Wj3sAAAAASUVORK5CYII=';
+            const bytes = Uint8Array.from(atob(b64), (char) => char.charCodeAt(0));
+            const file = new File([bytes], 'dropped.png', { type: 'image/png' });
+            const target = document.body;
+            if (!target) throw new Error('Missing chat drop target');
+
+            const createDropEvent = (type) => {
+                const transfer = {
+                    files: [file],
+                    items: [{ kind: 'file', type: file.type, getAsFile: () => file }],
+                    types: ['Files'],
+                    dropEffect: 'move',
+                };
+                const event = new Event(type, { bubbles: true, cancelable: true });
+                Object.defineProperty(event, 'dataTransfer', { value: transfer });
+                return event;
+            };
+
+            const dragover = createDropEvent('dragover');
+            target.dispatchEvent(dragover);
+            const drop = createDropEvent('drop');
+            target.dispatchEvent(drop);
+
+            await new Promise((resolve, reject) => {
+                const started = Date.now();
+                const tick = () => {
+                    const state = window.reactChatWindowHost.getState();
+                    if (state.composerAttachments.length === 1) {
+                        resolve();
+                        return;
+                    }
+                    if (Date.now() - started > 3000) {
+                        reject(new Error('Timed out waiting for dropped image import'));
+                        return;
+                    }
+                    setTimeout(tick, 25);
+                };
+                tick();
+            });
+
+            const state = window.reactChatWindowHost.getState();
+            return {
+                dragoverDefaultPrevented: dragover.defaultPrevented,
+                dropDefaultPrevented: drop.defaultPrevented,
+                attachmentCount: state.composerAttachments.length,
+                attachmentUrl: state.composerAttachments[0] && state.composerAttachments[0].url,
+            };
+        }"""
+    )
+
+    assert result["dragoverDefaultPrevented"] is True
+    assert result["dropDefaultPrevented"] is True
+    assert result["attachmentCount"] == 1
+    assert result["attachmentUrl"].startswith("data:image/")
+
+
+@pytest.mark.frontend
 def test_import_rejects_canvas_data_url_encode_fallback(
     mock_page: Page,
     running_server: str,
