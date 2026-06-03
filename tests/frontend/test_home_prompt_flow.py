@@ -4956,6 +4956,83 @@ def test_pc_overlay_suppresses_dom_cursor_on_first_show(mock_page: Page):
 
 
 @pytest.mark.frontend
+def test_externalized_chat_spotlight_reports_compact_capsule_to_pc_overlay(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/chat');
+            const begins = [];
+            const updates = [];
+            window.__externalChatOverlayBegins = begins;
+            window.__externalChatOverlayUpdates = updates;
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 100, y: 50, width: 1200, height: 800 },
+                    contentBounds: { x: 100, y: 50, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                update: (payload) => {
+                    updates.push(payload);
+                    return Promise.resolve({ ok: true });
+                },
+                begin: (payload) => {
+                    begins.push(payload);
+                    return Promise.resolve({ ok: true });
+                },
+                clear: () => Promise.resolve({ ok: true }),
+            };
+            document.body.innerHTML = `
+                <div id="react-chat-window-shell" style="position:fixed; left:560px; top:360px; width:480px; height:90px;">
+                    <div id="react-chat-window-root">
+                        <div
+                            class="compact-chat-surface-frame"
+                            data-compact-geometry-owner="surface"
+                            data-compact-geometry-item="capsule"
+                            data-compact-drag-surface="true"
+                            style="position:fixed; left:600px; top:400px; width:430px; height:54px; border-radius:999px;"
+                        ></div>
+                    </div>
+                </div>
+            `;
+        """,
+        script_names=("app-interpage.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.postMessage({
+                __nekoTutorialOverlayRelay: true,
+                payload: {
+                    action: 'yui_guide_set_chat_spotlight',
+                    kind: 'input',
+                    timestamp: Date.now(),
+                    tutorialRunId: 'test-run',
+                },
+            }, '*');
+            await new Promise((resolve) => setTimeout(resolve, 180));
+            return {
+                runId: window.localStorage.getItem('yuiGuidePcOverlayRunId'),
+                begins: window.__externalChatOverlayBegins,
+                updates: window.__externalChatOverlayUpdates,
+            };
+        }
+        """
+    )
+
+    assert result["runId"] == "test-run"
+    assert result["begins"] == [{"tutorialRunId": "test-run"}]
+    assert result["updates"]
+    first_spotlight = result["updates"][0]["payload"]["spotlights"][0]
+    assert first_spotlight["shape"] == "rounded-rect"
+    assert first_spotlight["radius"] == 999
+    assert first_spotlight["x"] == 692
+    assert first_spotlight["y"] == 442
+    assert first_spotlight["width"] == 446
+    assert first_spotlight["height"] == 70
+
+
+@pytest.mark.frontend
 def test_pc_overlay_cursor_position_updates_during_suppressed_move_for_look_at(
     mock_page: Page,
 ):

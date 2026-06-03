@@ -502,6 +502,7 @@ def test_home_yui_guide_chat_targets_prefer_compact_capsule_and_external_input()
         "'#react-chat-window-root [data-compact-geometry-owner=\"surface\"]"
         "[data-compact-geometry-item=\"capsule\"]'"
     )
+    compact_surface_selector = "'#react-chat-window-root [data-compact-drag-surface=\"true\"]'"
 
     for function_name in (
         "getChatInputTarget()",
@@ -510,11 +511,17 @@ def test_home_yui_guide_chat_targets_prefer_compact_capsule_and_external_input()
     ):
         block = director_source.split(f"\n        {function_name}", 1)[1].split("for (let index", 1)[0]
         assert compact_input_selector in block
+        assert compact_capsule_selector in block
+        assert compact_surface_selector in block
         assert block.index(compact_input_selector) < block.index("'#react-chat-window-root .composer-input'")
 
     window_block = director_source.split("getChatWindowTarget()", 1)[1].split("shouldNarrateInChat", 1)[0]
     assert compact_capsule_selector in window_block
     assert window_block.index(compact_input_selector) < window_block.index("'#react-chat-window-shell'")
+    assert "if (this.page === 'home' && this.introGreetingChatHighlightCleared)" not in director_source.split(
+        "highlightChatWindow()",
+        1,
+    )[1].split("clearIntroGreetingChatHighlight()", 1)[0]
 
     for function_name in ("highlightChatWindow()", "focusAndHighlightChatInput(spotlightTarget)"):
         block = director_source.split(function_name, 1)[1].split("\n        }", 1)[0]

@@ -2087,12 +2087,16 @@ export default function App({
   useEffect(() => {
     const textNode = compactPreviewTextRef.current;
     if (!textNode) return;
-    if (!isCompactSurface || !compactPreviewIsStreaming) {
+    const shouldAutoFollowPreview = isCompactSurface && (
+      compactPreviewIsStreaming
+      || compactMessagePreview?.isGuide === true
+    );
+    if (!shouldAutoFollowPreview) {
       textNode.scrollLeft = 0;
       return;
     }
     textNode.scrollLeft = textNode.scrollWidth;
-  }, [compactPreviewDisplayText, compactPreviewIsStreaming, isCompactSurface]);
+  }, [compactMessagePreview?.isGuide, compactPreviewDisplayText, compactPreviewIsStreaming, isCompactSurface]);
 
   const handleCompactPreviewWheel = useCallback((event: ReactWheelEvent<HTMLSpanElement>) => {
     const textNode = event.currentTarget;

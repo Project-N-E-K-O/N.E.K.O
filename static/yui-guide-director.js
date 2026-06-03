@@ -4674,6 +4674,11 @@
                 '#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="input"]',
                 '#react-chat-window-root [data-compact-geometry-part="inputBody"]',
                 '#react-chat-window-root .compact-chat-surface-frame[data-compact-chat-state="input"]',
+                '#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="capsule"]',
+                '#react-chat-window-root [data-compact-geometry-part="capsuleBody"]',
+                '#react-chat-window-root [data-compact-drag-surface="true"]',
+                '#react-chat-window-root .compact-chat-surface-frame',
+                '#react-chat-window-root .compact-chat-surface-shell',
                 '#react-chat-window-root .composer-input',
                 '#react-chat-window-root .composer-input-shell',
                 '#react-chat-window-root .composer-panel',
@@ -5075,7 +5080,7 @@
 
             if (stepId === 'intro_basic' && !this.introFlowCompleted) {
                 if (this.introGreetingChatHighlightCleared) {
-                    return fallbackTarget;
+                    return this.getChatInputTarget() || this.getChatWindowTarget() || fallbackTarget;
                 }
 
                 if (this.awaitingIntroActivation) {
@@ -5087,7 +5092,7 @@
 
             if (stepId === 'takeover_settings_peek') {
                 return this.introGreetingChatHighlightCleared
-                    ? fallbackTarget
+                    ? (this.getChatInputTarget() || this.getChatWindowTarget() || fallbackTarget)
                     : (this.getChatWindowTarget() || this.getChatInputTarget() || null);
             }
 
@@ -5097,7 +5102,7 @@
 
             if (this.shouldNarrateInChat(stepId)) {
                 return this.introGreetingChatHighlightCleared
-                    ? fallbackTarget
+                    ? (this.getChatInputTarget() || this.getChatWindowTarget() || fallbackTarget)
                     : (this.getChatWindowTarget() || fallbackTarget);
             }
 
@@ -5132,10 +5137,6 @@
         }
 
         highlightChatWindow() {
-            if (this.page === 'home' && this.introGreetingChatHighlightCleared) {
-                return;
-            }
-
             if (this.isHomeChatExternalized()) {
                 if (this.interactionTakeover && typeof this.interactionTakeover.setExternalizedChatSpotlight === 'function') {
                     this.interactionTakeover.setExternalizedChatSpotlight('input');
@@ -5160,6 +5161,9 @@
                 }
             }
 
+            this.setSpotlightGeometryHint(target, {
+                padding: DEFAULT_SPOTLIGHT_PADDING + 3
+            });
             this.overlay.setPersistentSpotlight(target);
         }
 

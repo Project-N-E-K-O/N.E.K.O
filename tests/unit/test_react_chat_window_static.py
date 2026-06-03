@@ -486,6 +486,29 @@ def test_compact_geometry_snapshot_separates_base_surface_from_extra_islands():
     assert "extraIslandHitRects:" in snapshot_block
 
 
+def test_externalized_chat_input_spotlight_uses_capsule_radius():
+    script = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
+
+    render_block = script.split("function renderYuiGuideChatSpotlight(spotlight, kind, rect)", 1)[1].split(
+        "function updateYuiGuideChatSpotlight(kind)",
+        1,
+    )[0]
+
+    assert "var radius = kind === 'window' ? 26 : 999;" in render_block
+
+
+def test_compact_tutorial_guide_preview_scrolls_without_ellipsis():
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+
+    scrollable_block = css_block(
+        styles,
+        '.compact-chat-capsule-text[data-compact-preview-scrollable="true"] {',
+        ".compact-chat-capsule-text::-webkit-scrollbar",
+    )
+
+    assert "text-overflow: clip;" in scrollable_block
+
+
 def test_compact_surface_drag_uses_declared_surface_and_no_drag_exclusions():
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 

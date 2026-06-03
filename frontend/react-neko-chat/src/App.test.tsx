@@ -2618,6 +2618,39 @@ describe('App', () => {
     expect(preview).not.toHaveTextContent(firstText);
   });
 
+  it('auto-scrolls long tutorial guide text to the latest capsule text', () => {
+    const firstText = '这是新手教程胶囊里一段较长的台词，刚出现时应该跟随到末尾。';
+    const secondText = `${firstText}后面继续补充更长的说明，胶囊文本需要向左滚动来露出最新内容。`;
+    const firstMessage = parseChatMessage({
+      id: 'yui-guide-scroll-line',
+      role: 'assistant',
+      author: '林悠怡',
+      time: '10:01',
+      createdAt: 2,
+      blocks: [{ type: 'text', text: firstText }],
+      status: 'streaming',
+    });
+    const secondMessage = parseChatMessage({
+      ...firstMessage,
+      blocks: [{ type: 'text', text: secondText }],
+    });
+
+    const { container, rerender } = render(
+      <App chatSurfaceMode="compact" composerHidden messages={[firstMessage]} />,
+    );
+    const preview = container.querySelector('.compact-chat-capsule-text') as HTMLSpanElement;
+    expect(preview).not.toBeNull();
+    Object.defineProperty(preview, 'scrollWidth', {
+      configurable: true,
+      value: 420,
+    });
+
+    rerender(<App chatSurfaceMode="compact" composerHidden messages={[secondMessage]} />);
+
+    expect(preview.scrollLeft).toBe(420);
+    expect(preview).toHaveTextContent(secondText);
+  });
+
   it('falls back to revealing compact streaming text when playback state never arrives', async () => {
     vi.useFakeTimers();
     const streamingText = '主动搭话进入紧凑态时，即使语音播放状态没有及时到达，也应该显示这段文本。';

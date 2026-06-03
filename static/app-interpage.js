@@ -2506,6 +2506,7 @@
     var yuiGuidePcOverlaySequence = 0;
     var yuiGuidePcOverlaySpotlights = [];
     var yuiGuidePcOverlayCursor = null;
+    var yuiGuidePcOverlayActive = false;
     var yuiGuidePcOverlayReady = false;
     var yuiGuidePcOverlayRunIdOverride = '';
 
@@ -2570,6 +2571,21 @@
         }
         yuiGuidePcOverlaySequence = Math.max(yuiGuidePcOverlaySequence + 1, Date.now() * 1000);
         try {
+            var tutorialRunId = getYuiGuidePcOverlayRunId();
+            if (!yuiGuidePcOverlayActive && typeof window.nekoTutorialOverlay.begin === 'function') {
+                yuiGuidePcOverlayActive = true;
+                Promise.resolve(window.nekoTutorialOverlay.begin({
+                    tutorialRunId: tutorialRunId
+                })).then(function (result) {
+                    if (result && result.ok === false) {
+                        yuiGuidePcOverlayActive = false;
+                        yuiGuidePcOverlayReady = false;
+                    }
+                }).catch(function () {
+                    yuiGuidePcOverlayActive = false;
+                    yuiGuidePcOverlayReady = false;
+                });
+            }
             var payload = {};
             if (patch && Object.prototype.hasOwnProperty.call(patch, 'spotlights')) {
                 payload.spotlights = yuiGuidePcOverlaySpotlights;
@@ -2578,17 +2594,19 @@
                 payload.cursor = yuiGuidePcOverlayCursor;
             }
             Promise.resolve(window.nekoTutorialOverlay.update({
-                tutorialRunId: getYuiGuidePcOverlayRunId(),
+                tutorialRunId: tutorialRunId,
                 sceneId: 'external-chat',
                 sequence: yuiGuidePcOverlaySequence,
                 payload: payload
             })).then(function (result) {
                 yuiGuidePcOverlayReady = !(result && result.ok === false);
             }).catch(function () {
+                yuiGuidePcOverlayActive = false;
                 yuiGuidePcOverlayReady = false;
             });
             return true;
         } catch (_) {
+            yuiGuidePcOverlayActive = false;
             yuiGuidePcOverlayReady = false;
             return false;
         }
@@ -2621,7 +2639,7 @@
         var top = rect.top - padding;
         var width = rect.width + padding * 2;
         var height = rect.height + padding * 2;
-        var radius = kind === 'window' ? 26 : 18;
+        var radius = kind === 'window' ? 26 : 999;
         if (isCircle) {
             var size = Math.max(rect.width, rect.height) + padding * 2;
             left = rect.left + rect.width / 2 - size / 2;
@@ -3295,7 +3313,7 @@
             || kind === 'mini-game-choices'
         );
         var padding = isCircleImage ? getYuiGuideChatCircleSpotlightPadding(kind) : (kind === 'window' ? 10 : 8);
-        var radius = kind === 'window' ? 26 : 18;
+        var radius = kind === 'window' ? 26 : 999;
         var left = rect.left - padding;
         var top = rect.top - padding;
         var width = rect.width + padding * 2;

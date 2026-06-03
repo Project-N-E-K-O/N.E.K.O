@@ -2024,6 +2024,10 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   text-overflow: clip;
 }
 
+.compact-chat-capsule-text[data-compact-preview-scrollable="true"] {
+  text-overflow: clip;
+}
+
 .compact-chat-capsule-text::-webkit-scrollbar {
   display: none;
 }
