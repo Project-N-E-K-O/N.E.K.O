@@ -729,6 +729,13 @@
     // 之前两边各写一份导致这次 PR 修 agent_callback `return` 时才发现行为不
     // 一致；抽成共享 helper 防止下次又单边演进。
     function flushRealisticBufferOnTurnEnd() {
+        var endingTurnId = resolveAssistantLifecycleTurnId();
+        if (endingTurnId) {
+            emitAssistantLifecycleEvent('neko-assistant-turn-ending', {
+                turnId: endingTurnId,
+                source: 'turn_end_flush'
+            });
+        }
         if (typeof window.setReactMessageStatus === 'function' && window.currentGeminiMessage) {
             window.setReactMessageStatus(window.currentGeminiMessage, 'assistant', 'sent');
         }
@@ -747,7 +754,10 @@
         var trimmed = rest.replace(/^\s+/, '').replace(/\s+$/, '');
         if (trimmed) {
             window._realisticGeminiQueue = window._realisticGeminiQueue || [];
-            window._realisticGeminiQueue.push(trimmed);
+            window._realisticGeminiQueue.push({
+                text: trimmed,
+                turnId: endingTurnId || null
+            });
             if (typeof window.processRealisticQueue === 'function') {
                 window.processRealisticQueue(window._realisticGeminiVersion || 0);
             }
@@ -910,6 +920,7 @@
 
     function ensureAssistantTurnStarted(source, serverTurnId) {
         if (S.assistantTurnId) {
+            window._nekoAssistantTurnId = S.assistantTurnId;
             clearPendingAssistantTurnStart();
             logAssistantLifecycle('ensureAssistantTurnStarted:reuse_existing', {
                 source: source || 'visible_gemini_bubble',
@@ -927,6 +938,7 @@
         S.assistantTurnId = allocateAssistantTurnId(
             serverTurnId === undefined ? S.assistantPendingTurnServerId : serverTurnId
         );
+        window._nekoAssistantTurnId = S.assistantTurnId;
         S.assistantTurnStartedAt = Date.now();
         clearPendingAssistantTurnStart();
         emitAssistantLifecycleEvent('neko-assistant-turn-start', {
@@ -964,6 +976,7 @@
         clearPendingUserActivityCancel();
         emitAssistantSpeechCancel(source || 'user_activity');
         S.assistantTurnId = null;
+        window._nekoAssistantTurnId = null;
         clearPendingAssistantTurnStart();
         S.interruptedSpeechId = interruptedSpeechId || null;
         S.pendingDecoderReset = true;
@@ -1041,6 +1054,7 @@
         emitAssistantSpeechCancel(source || 'socket_close');
         S.assistantSpeechActiveTurnId = null;
         S.assistantTurnId = null;
+        window._nekoAssistantTurnId = null;
         S.assistantTurnCompletedId = null;
         S.assistantTurnSettledId = null;
         S.assistantTurnCompletionSource = null;
@@ -1449,6 +1463,7 @@
                     }
                     if (isNewMessage || sealedContinuation) {
                         S.assistantTurnId = null;
+                        window._nekoAssistantTurnId = null;
                         S.assistantPendingTurnServerId = normalizeAssistantTurnId(response.turn_id);
                         S.assistantTurnAwaitingBubble = true;
                     }
@@ -1487,6 +1502,7 @@
                     window.invalidatePendingMusicSearch();
                     emitAssistantSpeechCancel('response_discarded');
                     S.assistantTurnId = null;
+                    window._nekoAssistantTurnId = null;
                     clearPendingAssistantTurnStart();
                     // will_retry 时后端会再发一次 LLM 请求，对外仍然是"这一轮还在跑"——
                     // 但上面的 clearPendingAssistantTurnStart 已经把 awaitingBubble /
@@ -1722,7 +1738,7 @@
                         console.log(window.t('console.audioChunkHeaderReceived'), response);
                     }
                     if (!S.assistantTurnId && S.assistantTurnAwaitingBubble) {
-                        ensureAssistantTurnStarted('audio_chunk_header_fallback');
+                        ensureAssistantTurnStarted('audio_chunk_header_fallback', response.turn_id);
                     }
                     var speechId = response.speech_id;
                     var shouldSkip = false;
@@ -1750,14 +1766,14 @@
 
                     S.pendingAudioChunkMetaQueue.push({
                         speechId: speechId || S.currentPlayingSpeechId || null,
-                        turnId: resolveAssistantLifecycleTurnId(),
+                        turnId: resolveAssistantLifecycleTurnId(response.turn_id),
                         shouldSkip: shouldSkip,
                         epoch: S.incomingAudioEpoch,
                         receivedAt: Date.now()
                     });
                     logAssistantLifecycle('ws:audio_chunk_header', {
                         speechId: speechId || S.currentPlayingSpeechId || null,
-                        turnId: resolveAssistantLifecycleTurnId(),
+                        turnId: resolveAssistantLifecycleTurnId(response.turn_id),
                         shouldSkip: shouldSkip,
                         epoch: S.incomingAudioEpoch
                     });
@@ -1829,6 +1845,7 @@
 
                     if (statusCode === 'TTS_CONNECTION_FAILED') {
                         emitAssistantLifecycleEvent('neko-assistant-speech-unavailable', {
+                            turnId: resolveAssistantLifecycleTurnId(response.turn_id),
                             code: statusCode,
                             details: statusDetails || null,
                             source: 'tts_status'
