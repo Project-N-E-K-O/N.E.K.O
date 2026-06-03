@@ -359,15 +359,13 @@ body.neko-game-active [id$="-lock-icon"] {
     touch-action: none;
 }
 
-.neko-idle-return-button-container.is-cat1-on-compact-top-edge,
-.neko-idle-return-button-container[data-neko-cat1-target="compact-top-edge"] {
-    z-index: 2147483647 !important;
-    isolation: isolate;
+.neko-idle-return-button-container.is-cat1-on-compact-top-edge {
+    z-index: 100050 !important; /* 高于 dialog(100000) 和 tooltip(100030)，避免使用最大整数层级。 */
+    isolation: isolate; /* 主动创建独立层叠上下文，避免子元素层级泄出。 */
 }
 
-.neko-idle-return-button-container.is-cat1-on-compact-top-edge > .neko-idle-return-btn,
-.neko-idle-return-button-container[data-neko-cat1-target="compact-top-edge"] > .neko-idle-return-btn {
-    z-index: 2147483647 !important;
+.neko-idle-return-button-container.is-cat1-on-compact-top-edge > .neko-idle-return-btn {
+    z-index: 100050 !important;
 }
 
 .neko-idle-return-button-container.is-cat1-dropping-from-compact-top-edge > .neko-idle-return-btn {
@@ -385,7 +383,7 @@ body.neko-game-active [id$="-lock-icon"] {
 
 .neko-idle-cat1-compact-mirror {
     position: fixed;
-    z-index: 2147483647;
+    z-index: 100050;
     pointer-events: none;
     overflow: visible;
     isolation: isolate;
@@ -487,10 +485,10 @@ body.neko-game-active [id$="-lock-icon"] {
 
 @keyframes nekoIdleCat1CompactDrop {
     0% {
-        transform: translate3d(0, -52px, 0) rotate(0deg);
+        transform: translate3d(0, clamp(-52px, -4vw, -34px), 0) rotate(0deg);
     }
     70% {
-        transform: translate3d(0, 3px, 0) rotate(-2deg);
+        transform: translate3d(0, clamp(2px, 0.25vw, 4px), 0) rotate(-2deg);
     }
     100% {
         transform: translate3d(0, 0, 0) rotate(0deg);
