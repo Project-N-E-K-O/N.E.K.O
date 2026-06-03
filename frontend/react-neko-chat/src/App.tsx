@@ -92,6 +92,7 @@ const COMPACT_SPEECH_FALLBACK_REVEAL_DELAY_MS = 700;
 const SPEECH_PLAYBACK_STATE_STORAGE_KEY = 'neko_speech_playback_state';
 const SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';
 const COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY = 'neko.reactChatWindow.compactExportHistoryOpen';
+export const COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS = 560;
 const COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT = 7;
 const COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD = 22;
 const COMPACT_INPUT_TOOL_WHEEL_SCROLL_THRESHOLD = 64;
@@ -116,13 +117,6 @@ const COMPACT_INPUT_TOOL_TOGGLE_HOVER_OUTSET = 14;
 const COMPACT_INPUT_TOOL_FAN_ORIGIN_CLOSE_SIZE = 48;
 const COMPACT_INPUT_TOOL_FAN_INTERACTIVE_DELAY_MS = 220;
 const COMPACT_INPUT_TOOL_FAN_TRANSIENT_CLOSE_DELAY_MS = 360;
-// Long-press to grab and drag the whole compact surface (the OS window-move
-// runs in the desktop preload; see neko:compact-surface-drag-request). Hold this
-// long without moving more than the tolerance. Shared by the dropdown-arrow
-// toggle and the input-box edge bands; a quick tap on either does its own thing
-// (toggle opens the tool wheel; an edge band focuses the input) on release.
-const COMPACT_INPUT_SURFACE_LONG_PRESS_MS = 320;
-const COMPACT_INPUT_SURFACE_LONG_PRESS_MOVE_TOLERANCE = 10;
 const COMPACT_INPUT_TOOL_FAN_OUTSIDE_CLOSE_DELAY_MS = 650;
 const COMPACT_SURFACE_RESIZE_MIN_WIDTH = 430;
 const COMPACT_SURFACE_RESIZE_MAX_WIDTH = 720;
@@ -234,16 +228,6 @@ type CompactToolWheelChargeState = {
   chargeSteps: number;
 };
 
-type CompactToolTogglePressState = {
-  pointerId: number;
-  startClientX: number;
-  startClientY: number;
-  startScreenX: number;
-  startScreenY: number;
-  longPressFired: boolean;
-  canceledTap: boolean;
-};
-
 type CompactToolWheelDragPoint = {
   x: number;
   y: number;
@@ -278,6 +262,12 @@ function createCompactToolWheelChargeState(): CompactToolWheelChargeState {
 
 type CompactMessagePreview = {
   messageId: string;
+  // Stable identity of the whole merged turn: the id of the earliest message
+  // folded into this preview. Unchanged as more bubbles stream into the same
+  // turn (messageId re-keys to the latest bubble, this does not), and changes
+  // when a genuinely new turn begins. Used to tell an appended bubble from a
+  // new turn without relying on text-prefix matching.
+  turnStartId: string;
   author: string;
   text: string;
   fullText: string;
@@ -420,6 +410,9 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
     let turnAuthor = '';
     const latestStreamingMessage = messages[latestStreamingAssistantIndex];
     const turnMessageId = String(latestStreamingMessage?.id || 'assistant-streaming');
+    // Walks backward to the earliest merged bubble, so the last assignment in
+    // the loop is the turn's anchor id.
+    let turnStartId = turnMessageId;
     let previousIncludedCreatedAt = typeof latestStreamingMessage?.createdAt === 'number'
       && Number.isFinite(latestStreamingMessage.createdAt)
       ? latestStreamingMessage.createdAt
@@ -443,6 +436,12 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
         }
         previousIncludedCreatedAt = createdAt;
       }
+      // Anchor the turn to every message folded in, before the empty-text skip.
+      // A bubble can be momentarily text-less (still streaming, image-only) then
+      // gain text; if the anchor only moved on text-bearing bubbles it would
+      // drift to a later bubble and back, re-keying the same turn as a new one
+      // and replaying the caption.
+      turnStartId = String(message.id || turnMessageId);
       const text = getMessageBlockPreviewText(message);
       if (!text) continue;
       turnTexts.unshift(text);
@@ -452,6 +451,7 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
       const turnText = normalizeCompactPreviewText(turnTexts.join(' '));
       return {
         messageId: turnMessageId || 'assistant-streaming',
+        turnStartId,
         author: turnAuthor,
         text: turnText,
         fullText: turnText,
@@ -471,6 +471,7 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
     const isStreamingAssistantMessage = message.role === 'assistant' && message.status === 'streaming';
     const preview = {
       messageId: message.id,
+      turnStartId: String(message.id),
       author: message.author,
       text: isStreamingAssistantMessage ? text : truncateCompactPreview(text, COMPACT_PREVIEW_MAX_LENGTH),
       fullText: text,
@@ -1148,11 +1149,6 @@ export default function App({
   const compactInputToolWheelChargeReleaseActiveRef = useRef(false);
   const compactInputToolWheelSuppressClickRef = useRef(false);
   const compactInputToolWheelScrollDeltaRef = useRef(0);
-  const compactInputToolTogglePointerHandledRef = useRef(false);
-  const compactInputToolTogglePressRef = useRef<CompactToolTogglePressState | null>(null);
-  const compactInputToolToggleLongPressTimerRef = useRef<number | null>(null);
-  const compactInputEdgePressRef = useRef<CompactToolTogglePressState | null>(null);
-  const compactInputEdgeLongPressTimerRef = useRef<number | null>(null);
   const compactInputToolFanPositionSyncRef = useRef<(() => void) | null>(null);
   const compactInputToolFanCloseTimerRef = useRef<number | null>(null);
   const compactInputToolFanInteractiveTimerRef = useRef<number | null>(null);
@@ -1188,6 +1184,12 @@ export default function App({
   const compactSpeechLastFrameTimeRef = useRef(0);
   const compactSpeechPreviewIdRef = useRef('');
   const compactSpeechPreviewTextRef = useRef('');
+  // Identity of the turn the speech reveal is currently walking through (the
+  // preview's turnStartId). Updated when the preview re-keys (messageId change),
+  // so it holds the *previous* turn's anchor at the moment a new bubble arrives
+  // — used to tell an appended bubble (same turn → keep revealing) from a
+  // brand-new turn (rewind to the start) without text-prefix guessing.
+  const compactSpeechRevealTurnIdRef = useRef('');
   const compactSpeechFallbackRevealRef = useRef(false);
   const compactSpeechFallbackTimerRef = useRef<number | null>(null);
   const isCompactSurfaceRef = useRef(false);
@@ -1218,12 +1220,14 @@ export default function App({
   const [compactInputToolWheelChargeReleaseActive, setCompactInputToolWheelChargeReleaseActive] = useState(false);
   const [compactSurfaceResizeWidth, setCompactSurfaceResizeWidth] = useState<number | null>(null);
   const [compactExportHistoryOpen, setCompactExportHistoryOpen] = useState(readPersistedCompactExportHistoryOpen);
+  const [compactExportHistoryMounted, setCompactExportHistoryMounted] = useState(readPersistedCompactExportHistoryOpen);
   const [compactExportControlsOpen, setCompactExportControlsOpen] = useState(false);
   const [compactExportPreviewOpen, setCompactExportPreviewOpen] = useState(false);
   const [compactExportSelectedIds, setCompactExportSelectedIds] = useState<Set<string>>(() => new Set());
   const [compactExportAutoScrollToBottom, setCompactExportAutoScrollToBottom] = useState(true);
   const compactSurfaceResizeStateRef = useRef<CompactSurfaceResizeState | null>(null);
   const compactHistoryVisibilitySuppressClickRef = useRef(false);
+  const compactExportHistoryUnmountTimerRef = useRef<number | null>(null);
   const submittingRef = useRef(false);
   const lastRollbackKeyRef = useRef('');
   const lastToolCursorResetKeyRef = useRef('');
@@ -1446,16 +1450,31 @@ export default function App({
     [compactExportSelectableMessages],
   );
   const compactExportSelectableCount = compactExportSelectableMessages.length;
+  const clearCompactExportHistoryUnmountTimer = useCallback(() => {
+    if (compactExportHistoryUnmountTimerRef.current === null) return;
+    window.clearTimeout(compactExportHistoryUnmountTimerRef.current);
+    compactExportHistoryUnmountTimerRef.current = null;
+  }, []);
   const openCompactExportHistory = useCallback(() => {
+    clearCompactExportHistoryUnmountTimer();
+    setCompactExportHistoryMounted(true);
     setCompactExportHistoryOpen(true);
     persistCompactExportHistoryOpen(true);
     setCompactExportAutoScrollToBottom(true);
-  }, []);
+  }, [clearCompactExportHistoryUnmountTimer]);
   const closeCompactExportHistory = useCallback(() => {
+    clearCompactExportHistoryUnmountTimer();
     setCompactExportHistoryOpen(false);
     persistCompactExportHistoryOpen(false);
     setCompactExportPreviewOpen(false);
-  }, []);
+    compactExportHistoryUnmountTimerRef.current = window.setTimeout(() => {
+      setCompactExportHistoryMounted(false);
+      compactExportHistoryUnmountTimerRef.current = null;
+    }, COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
+  }, [clearCompactExportHistoryUnmountTimer]);
+  useEffect(() => () => {
+    clearCompactExportHistoryUnmountTimer();
+  }, [clearCompactExportHistoryUnmountTimer]);
   const handleCompactHistoryVisibilityToggle = useCallback(() => {
     if (compactExportHistoryOpen) {
       closeCompactExportHistory();
@@ -1767,13 +1786,38 @@ export default function App({
       window.clearTimeout(compactSpeechFallbackTimerRef.current);
       compactSpeechFallbackTimerRef.current = null;
     }
-    compactSpeechVisibleLengthRef.current = 0;
+    // Decouple the input-bar caption from per-bubble identity. The merged-turn
+    // preview is re-keyed to the latest streaming bubble's id, so every new
+    // bubble changes messageId even though it belongs to the same turn. While
+    // we're still inside that turn (same turnStartId), keep the revealed length
+    // so the caption continues appending instead of replaying the whole turn;
+    // only a genuinely new turn rewinds the reveal to the start. Keyed on the
+    // turn anchor rather than a text prefix, so two turns whose text happens to
+    // share a prefix can't be mistaken for a continuation.
+    const previousRevealTurnId = compactSpeechRevealTurnIdRef.current;
+    const nextRevealTurnId = compactPreviewIsStreaming ? (compactMessagePreview?.turnStartId || '') : '';
+    const continuesPreviousTurn = nextRevealTurnId.length > 0
+      && nextRevealTurnId === previousRevealTurnId;
+    const seedVisibleLength = continuesPreviousTurn
+      ? Math.min(compactSpeechVisibleLengthRef.current, compactPreviewText.length)
+      : 0;
+    // When the same turn continues, carry the fallback-reveal driver forward.
+    // Otherwise the appended text would freeze: the fallback timer re-arms but
+    // bails whenever visibleLength > 0 (the seeded length), so nothing would
+    // drive the reveal past the seed in the no-speech-playback path. Playback
+    // state is still reset to false so a finished bubble's audio can't snap the
+    // appended text to full — the next bubble's audio (or the carried fallback)
+    // resumes the reveal from the seed.
+    const keepFallbackReveal = continuesPreviousTurn && compactSpeechFallbackRevealRef.current;
+    compactSpeechRevealTurnIdRef.current = nextRevealTurnId;
+
+    compactSpeechVisibleLengthRef.current = seedVisibleLength;
     compactSpeechPlaybackStartedRef.current = false;
-    compactSpeechFallbackRevealRef.current = false;
+    compactSpeechFallbackRevealRef.current = keepFallbackReveal;
     compactSpeechRevealCarryRef.current = 0;
     compactSpeechLastFrameTimeRef.current = 0;
-    setCompactSpeechVisibleLength(0);
-    setCompactSpeechFallbackRevealActive(false);
+    setCompactSpeechVisibleLength(seedVisibleLength);
+    setCompactSpeechFallbackRevealActive(keepFallbackReveal);
   }, [compactMessagePreview?.messageId]);
 
   useEffect(() => {
@@ -1827,14 +1871,26 @@ export default function App({
         !isCompactSurfaceRef.current
         || compactSpeechPlaybackStartedRef.current
         || playbackHasStarted
-        || compactSpeechVisibleLengthRef.current > 0
+        // Bail when the reveal is already being driven or has finished — NOT
+        // merely when visibleLength > 0. A same-turn continuation seeds a
+        // nonzero prefix that may still be stalled (e.g. the previous bubble was
+        // revealed by speech, the appended bubble gets no playback/unavailable
+        // signal); the old `> 0` guard left that frozen. Let the timer engage so
+        // it reveals the appended text instead.
+        || compactSpeechFallbackRevealRef.current
+        || compactSpeechVisibleLengthRef.current >= compactPreviewText.length
       ) {
         return;
       }
       compactSpeechFallbackRevealRef.current = true;
       compactSpeechRevealCarryRef.current = 0;
       compactSpeechLastFrameTimeRef.current = 0;
-      compactSpeechVisibleLengthRef.current = Math.min(1, compactPreviewText.length);
+      // Resume from the already-seeded prefix (continuation) rather than rewinding
+      // to the first char; only an unseeded first bubble starts at 1.
+      compactSpeechVisibleLengthRef.current = Math.max(
+        compactSpeechVisibleLengthRef.current,
+        Math.min(1, compactPreviewText.length),
+      );
       setCompactSpeechVisibleLength(compactSpeechVisibleLengthRef.current);
       setCompactSpeechFallbackRevealActive(true);
     }, COMPACT_SPEECH_FALLBACK_REVEAL_DELAY_MS);
@@ -2670,156 +2726,6 @@ export default function App({
     compactInputToolFanSuppressHoverUntilLeaveRef.current = false;
     openCompactInputToolFan('click');
   }, [closeCompactInputToolFanFromUserClick, openCompactInputToolFan]);
-
-  const clearCompactInputToolToggleLongPressTimer = useCallback(() => {
-    if (compactInputToolToggleLongPressTimerRef.current !== null) {
-      window.clearTimeout(compactInputToolToggleLongPressTimerRef.current);
-      compactInputToolToggleLongPressTimerRef.current = null;
-    }
-  }, []);
-
-  // Ask the desktop shell to grab and drag the whole compact surface. Only the
-  // preload/main process can move the native window; the page just signals it.
-  // Mirrors neko:compact-tool-wheel-drag-state-change as a one-shot request.
-  const dispatchCompactSurfaceDragRequest = useCallback((screenX: number, screenY: number) => {
-    window.dispatchEvent(new CustomEvent('neko:compact-surface-drag-request', {
-      detail: {
-        screenX,
-        screenY,
-        timestamp: Date.now(),
-      },
-    }));
-  }, []);
-
-  // Long-press on the dropdown-arrow toggle = grab the surface; quick tap = open
-  // the tool wheel on release (deferred so a press-and-hold never flashes it open).
-  const handleCompactInputToolTogglePointerDown = useCallback((event: ReactPointerEvent) => {
-    if (event.pointerType === 'mouse' && event.button !== 0) return;
-    event.preventDefault();
-    clearCompactInputToolToggleLongPressTimer();
-    // Fresh gesture: drop any stale click-suppression left by a prior press
-    // whose trailing click never arrived (so keyboard activation still toggles).
-    compactInputToolTogglePointerHandledRef.current = false;
-    compactInputToolTogglePressRef.current = {
-      pointerId: event.pointerId,
-      startClientX: event.clientX,
-      startClientY: event.clientY,
-      startScreenX: event.screenX,
-      startScreenY: event.screenY,
-      longPressFired: false,
-      canceledTap: false,
-    };
-    try {
-      event.currentTarget.setPointerCapture?.(event.pointerId);
-    } catch (_) {}
-    compactInputToolToggleLongPressTimerRef.current = window.setTimeout(() => {
-      compactInputToolToggleLongPressTimerRef.current = null;
-      const press = compactInputToolTogglePressRef.current;
-      if (!press || press.longPressFired || press.canceledTap) return;
-      press.longPressFired = true;
-      // Close the wheel (a hover may have opened it) so the drag starts clean.
-      closeCompactInputToolFanFromUserClick();
-      dispatchCompactSurfaceDragRequest(press.startScreenX, press.startScreenY);
-    }, COMPACT_INPUT_SURFACE_LONG_PRESS_MS);
-  }, [
-    clearCompactInputToolToggleLongPressTimer,
-    closeCompactInputToolFanFromUserClick,
-    dispatchCompactSurfaceDragRequest,
-  ]);
-
-  const handleCompactInputToolTogglePointerMove = useCallback((event: ReactPointerEvent) => {
-    const press = compactInputToolTogglePressRef.current;
-    if (!press || press.pointerId !== event.pointerId || press.longPressFired) return;
-    const dx = event.clientX - press.startClientX;
-    const dy = event.clientY - press.startClientY;
-    if (Math.hypot(dx, dy) > COMPACT_INPUT_SURFACE_LONG_PRESS_MOVE_TOLERANCE) {
-      // Moved before the hold fired: not a tap, not a long-press — do nothing.
-      press.canceledTap = true;
-      clearCompactInputToolToggleLongPressTimer();
-    }
-  }, [clearCompactInputToolToggleLongPressTimer]);
-
-  const finishCompactInputToolTogglePress = useCallback((event: ReactPointerEvent, options?: { canceled?: boolean }) => {
-    const press = compactInputToolTogglePressRef.current;
-    if (!press || press.pointerId !== event.pointerId) return;
-    clearCompactInputToolToggleLongPressTimer();
-    try {
-      event.currentTarget.releasePointerCapture?.(event.pointerId);
-    } catch (_) {}
-    compactInputToolTogglePressRef.current = null;
-    // Swallow the trailing click for any pointer-driven gesture; keyboard
-    // activation has no press record and still toggles through onClick.
-    compactInputToolTogglePointerHandledRef.current = true;
-    if (press.longPressFired) return;
-    if (options?.canceled || press.canceledTap) return;
-    toggleCompactInputToolFanByClick();
-  }, [clearCompactInputToolToggleLongPressTimer, toggleCompactInputToolFanByClick]);
-
-  useEffect(() => () => clearCompactInputToolToggleLongPressTimer(), [clearCompactInputToolToggleLongPressTimer]);
-
-  // Input-box edge bands: same long-press-to-drag gesture as the arrow, but a
-  // quick tap focuses the input for typing instead of toggling the wheel. These
-  // bands overlay only the rim; the uncovered center keeps native press-to-type.
-  const clearCompactInputEdgeLongPressTimer = useCallback(() => {
-    if (compactInputEdgeLongPressTimerRef.current !== null) {
-      window.clearTimeout(compactInputEdgeLongPressTimerRef.current);
-      compactInputEdgeLongPressTimerRef.current = null;
-    }
-  }, []);
-
-  const handleCompactInputEdgePointerDown = useCallback((event: ReactPointerEvent) => {
-    if (event.pointerType === 'mouse' && event.button !== 0) return;
-    event.preventDefault();
-    clearCompactInputEdgeLongPressTimer();
-    compactInputEdgePressRef.current = {
-      pointerId: event.pointerId,
-      startClientX: event.clientX,
-      startClientY: event.clientY,
-      startScreenX: event.screenX,
-      startScreenY: event.screenY,
-      longPressFired: false,
-      canceledTap: false,
-    };
-    try {
-      event.currentTarget.setPointerCapture?.(event.pointerId);
-    } catch (_) {}
-    compactInputEdgeLongPressTimerRef.current = window.setTimeout(() => {
-      compactInputEdgeLongPressTimerRef.current = null;
-      const press = compactInputEdgePressRef.current;
-      if (!press || press.longPressFired || press.canceledTap) return;
-      press.longPressFired = true;
-      dispatchCompactSurfaceDragRequest(press.startScreenX, press.startScreenY);
-    }, COMPACT_INPUT_SURFACE_LONG_PRESS_MS);
-  }, [clearCompactInputEdgeLongPressTimer, dispatchCompactSurfaceDragRequest]);
-
-  const handleCompactInputEdgePointerMove = useCallback((event: ReactPointerEvent) => {
-    const press = compactInputEdgePressRef.current;
-    if (!press || press.pointerId !== event.pointerId || press.longPressFired) return;
-    const dx = event.clientX - press.startClientX;
-    const dy = event.clientY - press.startClientY;
-    if (Math.hypot(dx, dy) > COMPACT_INPUT_SURFACE_LONG_PRESS_MOVE_TOLERANCE) {
-      press.canceledTap = true;
-      clearCompactInputEdgeLongPressTimer();
-    }
-  }, [clearCompactInputEdgeLongPressTimer]);
-
-  const finishCompactInputEdgePress = useCallback((event: ReactPointerEvent, options?: { canceled?: boolean }) => {
-    const press = compactInputEdgePressRef.current;
-    if (!press || press.pointerId !== event.pointerId) return;
-    clearCompactInputEdgeLongPressTimer();
-    try {
-      event.currentTarget.releasePointerCapture?.(event.pointerId);
-    } catch (_) {}
-    compactInputEdgePressRef.current = null;
-    if (press.longPressFired) return;
-    if (options?.canceled || press.canceledTap) return;
-    // Quick tap on the rim → focus the input for typing.
-    if (!composerDisabled) {
-      compactInputRef.current?.focus();
-    }
-  }, [clearCompactInputEdgeLongPressTimer, composerDisabled]);
-
-  useEffect(() => () => clearCompactInputEdgeLongPressTimer(), [clearCompactInputEdgeLongPressTimer]);
 
   const rotateCompactInputToolWheel = useCallback((direction: 1 | -1) => {
     setCompactInputToolWheelIndex(current => (
@@ -4250,14 +4156,11 @@ export default function App({
       className={`send-button-circle compact-input-tool-toggle${compactInputToolFanOpen ? ' is-open' : ''}`}
       ref={compactInputToolToggleRef}
       type={compactToolToggleActsAsSubmit ? 'submit' : 'button'}
+      data-compact-no-drag="true"
       aria-label={compactToolToggleActsAsSubmit ? sendButtonLabel : overflowMenuAriaLabel}
       aria-haspopup={compactToolToggleActsAsSubmit ? undefined : 'true'}
       aria-expanded={compactToolToggleActsAsSubmit ? undefined : compactInputToolFanOpen}
       disabled={compactToolToggleActsAsSubmit ? !canSubmit : composerDisabled}
-      onPointerDown={compactToolToggleActsAsSubmit ? undefined : handleCompactInputToolTogglePointerDown}
-      onPointerMove={compactToolToggleActsAsSubmit ? undefined : handleCompactInputToolTogglePointerMove}
-      onPointerUp={compactToolToggleActsAsSubmit ? undefined : (event) => finishCompactInputToolTogglePress(event)}
-      onPointerCancel={compactToolToggleActsAsSubmit ? undefined : (event) => finishCompactInputToolTogglePress(event, { canceled: true })}
       onPointerEnter={compactToolToggleActsAsSubmit ? undefined : handleCompactInputToolHoverEnter}
       onPointerLeave={compactToolToggleActsAsSubmit ? undefined : handleCompactInputToolHoverLeave}
       onFocus={compactToolToggleActsAsSubmit ? undefined : clearCompactInputToolFanCloseTimer}
@@ -4266,10 +4169,6 @@ export default function App({
         scheduleCompactInputCollapse();
       }}
       onClick={compactToolToggleActsAsSubmit ? undefined : () => {
-        if (compactInputToolTogglePointerHandledRef.current) {
-          compactInputToolTogglePointerHandledRef.current = false;
-          return;
-        }
         toggleCompactInputToolFanByClick();
       }}
     >
@@ -4290,6 +4189,7 @@ export default function App({
       aria-label={overflowMenuAriaLabel}
       data-compact-geometry-item="toolFan"
       data-compact-geometry-owner="surface"
+      data-compact-no-drag="true"
       data-compact-input-tool-fan-open={compactInputToolFanOpen ? 'true' : 'false'}
       data-compact-input-tool-fan-interactive={compactInputToolFanInteractive ? 'true' : 'false'}
       data-compact-tool-wheel-fast-animation={compactInputToolWheelFastAnimation ? 'true' : 'false'}
@@ -4501,7 +4401,7 @@ export default function App({
         ref={toolMenuRef}
         aria-hidden={getCompactToolWheelAriaHidden(6)}
         data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(6)}
-        data-compact-tool-active={activeToolItem ? 'true' : 'false'}
+        data-compact-tool-active={toolMenuOpen || activeToolItem ? 'true' : 'false'}
       >
         <button
           className={`composer-tool-btn composer-emoji-btn${toolMenuOpen || activeToolItem ? ' is-active' : ''}`}
@@ -4633,6 +4533,7 @@ export default function App({
       ref={isCompactSurface ? compactChoiceLayerRef : undefined}
       data-compact-geometry-item={isCompactSurface ? 'choice' : undefined}
       data-compact-geometry-owner={isCompactSurface ? 'surface' : undefined}
+      data-compact-no-drag={isCompactSurface ? 'true' : undefined}
       data-choice-layer-open={compactChoiceLayerOpen ? 'true' : 'false'}
       data-chat-surface-mode={chatSurfaceMode}
       data-compact-choice-placement={isCompactSurface ? compactChoiceLayerPlacement : undefined}
@@ -4735,7 +4636,7 @@ export default function App({
     ? (typeof document !== 'undefined' ? createPortal(choiceLayerNode, document.body) : choiceLayerNode)
     : null;
 
-  const compactExportHistoryElement = isCompactSurface && compactExportHistoryOpen ? (
+  const compactExportHistoryElement = isCompactSurface && compactExportHistoryMounted ? (
     <CompactExportHistoryPanel
       messages={messages}
       selectedIds={compactExportSelectedIds}
@@ -4745,6 +4646,7 @@ export default function App({
       previewOpen={compactExportPreviewOpen}
       controlsOpen={compactExportControlsOpen}
       choiceLayerAbove={compactChoiceLayerOpen && compactChoiceLayerPlacement === 'above'}
+      visibilityState={compactExportHistoryOpen ? 'open' : 'closing'}
       failedStatusLabel={failedStatusLabel}
       onAutoScrollToBottomChange={setCompactExportAutoScrollToBottom}
       onToggleMessage={handleCompactExportToggleMessage}
@@ -4771,6 +4673,7 @@ export default function App({
       title={compactExportHistoryToggleLabel}
       data-compact-geometry-owner="surface"
       data-compact-geometry-item="historyHandle"
+      data-compact-no-drag="true"
       data-compact-history-open={compactExportHistoryOpen ? 'true' : 'false'}
       onPointerDown={handleCompactHistoryVisibilityPress}
       onPointerCancel={handleCompactHistoryVisibilityPointerCancel}
@@ -4988,17 +4891,11 @@ export default function App({
                 onBlurCapture={effectiveCompactChatState === 'input' ? scheduleCompactInputCollapse : undefined}
               >
                 <div
-                  className="compact-chat-drag-handle"
-                  data-compact-drag-handle="true"
-                  data-compact-geometry-item="dragHandle"
-                  data-compact-geometry-owner="surface"
-                  aria-hidden="true"
-                />
-                <div
                   className="compact-chat-resize-handle compact-chat-resize-handle-left"
                   data-compact-resize-side="left"
                   data-compact-geometry-item="resizeHandle"
                   data-compact-geometry-owner="surface"
+                  data-compact-no-drag="true"
                   aria-hidden="true"
                   onPointerDown={(event) => handleCompactSurfaceResizePointerDown('left', event)}
                   onPointerMove={handleCompactSurfaceResizePointerMove}
@@ -5011,6 +4908,7 @@ export default function App({
                   data-compact-resize-side="right"
                   data-compact-geometry-item="resizeHandle"
                   data-compact-geometry-owner="surface"
+                  data-compact-no-drag="true"
                   aria-hidden="true"
                   onPointerDown={(event) => handleCompactSurfaceResizePointerDown('right', event)}
                   onPointerMove={handleCompactSurfaceResizePointerMove}
@@ -5022,6 +4920,7 @@ export default function App({
                   className="compact-chat-surface-frame"
                   data-compact-geometry-item={effectiveCompactChatState === 'input' ? 'input' : 'capsule'}
                   data-compact-geometry-owner="surface"
+                  data-compact-drag-surface="true"
                   data-compact-chat-state={effectiveCompactChatState}
                   data-compact-geometry-part={effectiveCompactChatState === 'input' ? 'inputBody' : 'capsuleBody'}
                   data-compact-tool-toggle-visible={compactToolToggleVisible ? 'true' : 'false'}
@@ -5031,6 +4930,7 @@ export default function App({
                       <textarea
                         className="composer-input"
                         ref={compactInputRef}
+                        data-compact-no-drag="true"
                         placeholder={inputPlaceholder}
                         aria-label={inputPlaceholder}
                         rows={1}
@@ -5052,18 +4952,6 @@ export default function App({
                           }
                         }}
                       />
-                      <div className="compact-input-edge-bands" aria-hidden="true">
-                        {(['top', 'bottom', 'left', 'right'] as const).map((side) => (
-                          <div
-                            key={side}
-                            className={`compact-input-edge-band compact-input-edge-band-${side}`}
-                            onPointerDown={handleCompactInputEdgePointerDown}
-                            onPointerMove={handleCompactInputEdgePointerMove}
-                            onPointerUp={(event) => finishCompactInputEdgePress(event)}
-                            onPointerCancel={(event) => finishCompactInputEdgePress(event, { canceled: true })}
-                          />
-                        ))}
-                      </div>
                       {compactInputToolToggleButton}
                     </>
                   ) : (

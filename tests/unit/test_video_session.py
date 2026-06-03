@@ -150,6 +150,29 @@ async def test_non_native_vision_fallback():
 
 
 @pytest.mark.unit
+async def test_non_native_failed_vision_clears_cached_frame(monkeypatch):
+    client = _make_client("step-realtime", supports_native_image=False)
+    client._image_description = "实时屏幕截图或相机画面正在分析中"
+
+    async def fake_analyze_image_with_vision_model(**_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "utils.screenshot_utils.analyze_image_with_vision_model",
+        fake_analyze_image_with_vision_model,
+    )
+
+    await client.stream_image(DUMMY_IMAGE_B64)
+
+    assert client._image_recognized_this_turn is False
+    assert client._latest_image_b64 is None
+    assert client._proactive_image_consumed is True
+    assert "正在分析中" in client._image_description
+
+    await client.close()
+
+
+@pytest.mark.unit
 def test_livestream_free_supports_native_vision():
     """Livestream 主播自建 server_prefix 上游同为 Gemini 系，free 路应被判定为原生视觉，
     哪怕 base_url 既不含 lanlan.app 也不含 lanlan.tech（已被派生为自建地址）。"""
