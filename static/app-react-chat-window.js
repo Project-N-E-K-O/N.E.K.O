@@ -2015,6 +2015,7 @@
             author: message.author,
             time: message.time,
             createdAt: message.createdAt,
+            turnId: message.turnId,
             avatarLabel: message.avatarLabel,
             avatarUrl: message.avatarUrl,
             blocks: Array.isArray(message.blocks) ? message.blocks.map(function (block) {
@@ -2074,6 +2075,7 @@
             author: sanitizeDisplayName(message.author) || getDefaultAuthorByRole(message.role || 'assistant'),
             time: time,
             createdAt: createdAt,
+            turnId: message.turnId ? String(message.turnId) : undefined,
             avatarLabel: message.avatarLabel,
             avatarUrl: message.avatarUrl,
             blocks: Array.isArray(message.blocks) ? message.blocks : [],
