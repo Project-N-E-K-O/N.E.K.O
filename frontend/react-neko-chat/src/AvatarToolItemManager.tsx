@@ -106,21 +106,22 @@ function getDropSlotIndexFromElement(element: Element | null): number | null {
 }
 
 function findDropSlotIndex(clientX: number, clientY: number, eventTarget: EventTarget | null): number | null {
+  if (typeof document !== 'undefined') {
+    const elements = typeof document.elementsFromPoint === 'function'
+      ? document.elementsFromPoint(clientX, clientY)
+      : (
+        typeof document.elementFromPoint === 'function'
+          ? [document.elementFromPoint(clientX, clientY)].filter((element): element is Element => element instanceof Element)
+          : []
+      );
+    for (const element of elements) {
+      const slotIndex = getDropSlotIndexFromElement(element);
+      if (slotIndex !== null) return slotIndex;
+    }
+  }
   if (eventTarget instanceof Element) {
     const eventTargetSlotIndex = getDropSlotIndexFromElement(eventTarget);
     if (eventTargetSlotIndex !== null) return eventTargetSlotIndex;
-  }
-  if (typeof document === 'undefined') return null;
-  const elements = typeof document.elementsFromPoint === 'function'
-    ? document.elementsFromPoint(clientX, clientY)
-    : (
-      typeof document.elementFromPoint === 'function'
-        ? [document.elementFromPoint(clientX, clientY)].filter((element): element is Element => element instanceof Element)
-        : []
-    );
-  for (const element of elements) {
-    const slotIndex = getDropSlotIndexFromElement(element);
-    if (slotIndex !== null) return slotIndex;
   }
   return null;
 }
