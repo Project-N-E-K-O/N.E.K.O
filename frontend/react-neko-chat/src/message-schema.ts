@@ -161,6 +161,12 @@ const avatarToolMenuOpenRequestSchema = z.object({
   reason: z.string().optional(),
 }).nullable();
 
+const compactToolFanOpenRequestSchema = z.object({
+  id: z.string().min(1),
+  open: z.boolean(),
+  reason: z.string().optional(),
+}).nullable();
+
 const avatarInteractionPayloadBaseSchema = z.object({
   interactionId: z.string().min(1),
   target: z.literal('avatar'),
@@ -298,6 +304,7 @@ export const chatWindowPropsSchema = z.object({
   galgameToggleButtonAriaLabel: z.string().optional(),
   galgameLoadingLabel: z.string().optional(),
   avatarToolMenuOpenRequest: avatarToolMenuOpenRequestSchema.optional(),
+  compactToolFanOpenRequest: compactToolFanOpenRequestSchema.optional(),
   onMessageAction: z.function()
     .args(chatMessageSchema, messageActionSchema)
     .returns(z.void())

@@ -81,6 +81,8 @@ window.isNekoHomeTutorialBlockingGreeting()
 
 ## 4. 场景注册表
 
+本节记录的是 Day 1 迁移前的首页教程注册表和行为基线。Day 1 统一到七日每日教程框架后，正式主入口应改为 `window.YuiGuideDailyGuides[1].round.scenes` + `playAvatarFloatingRound(1)`；下列 `HOME_SCENE_ORDER`、`startPrelude()`、`enterStep()` 等名称只作为迁移对照，不能继续作为 Day 1 正式每日教程的独立播放框架。
+
 首页主流程顺序由 `HOME_SCENE_ORDER` 定义：
 
 1. `intro_basic`

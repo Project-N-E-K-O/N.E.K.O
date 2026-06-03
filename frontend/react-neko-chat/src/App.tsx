@@ -1131,6 +1131,7 @@ export default function App({
   choicePrompt = null,
   onChoiceSelect,
   avatarToolMenuOpenRequest = null,
+  compactToolFanOpenRequest = null,
   onCompactChatStateChange,
   rollbackDraft,
   _rollbackKey,
@@ -1244,6 +1245,7 @@ export default function App({
   const lastRollbackKeyRef = useRef('');
   const lastToolCursorResetKeyRef = useRef('');
   const lastAvatarToolMenuOpenRequestIdRef = useRef('');
+  const lastCompactToolFanOpenRequestIdRef = useRef('');
   const compactInputHasPayload = draft.trim().length > 0 || composerAttachments.length > 0;
   const canSubmit = !composerDisabled && compactInputHasPayload;
   const clearActiveCursorToolSelection = useCallback(() => {
@@ -2633,8 +2635,8 @@ export default function App({
     toolMenuOpen,
   ]);
 
-  const openCompactInputToolFan = useCallback((intent: 'click' | 'hover') => {
-    if (composerDisabled || compactInputHasPayload) return;
+  const openCompactInputToolFan = useCallback((intent: 'click' | 'hover', options?: { ignoreDisabled?: boolean }) => {
+    if ((!options?.ignoreDisabled && composerDisabled) || compactInputHasPayload) return;
     clearCompactInputToolFanCloseTimer();
     clearCompactInputToolFanInteractiveTimer();
     compactInputToolFanOpenIntentRef.current = intent;
@@ -3672,6 +3674,17 @@ export default function App({
     }
     setToolMenuOpen(false);
   }, [avatarToolMenuOpenRequest]);
+
+  useEffect(() => {
+    const request = compactToolFanOpenRequest;
+    if (!request || !request.id || request.id === lastCompactToolFanOpenRequestIdRef.current) return;
+    lastCompactToolFanOpenRequestIdRef.current = request.id;
+    if (request.open) {
+      openCompactInputToolFan('click', { ignoreDisabled: true });
+      return;
+    }
+    closeCompactInputToolFan();
+  }, [closeCompactInputToolFan, compactToolFanOpenRequest, openCompactInputToolFan]);
 
   useEffect(() => {
     if (!activeCursorToolId) return;

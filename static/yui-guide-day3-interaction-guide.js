@@ -28,11 +28,14 @@
             title: '第 3 天：互动、娱乐与摸得到的陪伴',
             scenes: [
                 {
-                    id: 'day3_chat_tools',
+                    id: 'day3_tool_toggle_intro',
                     textKey: 'tutorial.avatarFloating.day3.intro',
                     voiceKey: 'avatar_floating_day3_intro',
-                    text: '来啦来啦！今天我们要好好聊聊这个最显眼的【对话框】哦！你可别以为它只能用来敲字打字，里面其实还藏着超级多好玩的小惊喜呢！快点跟着我一起点开，看看今天能挖出什么好玩的宝贝吧，',
-                    emotion: 'happy'
+                    text: '嘻嘻，可别以为这个聊天框只能用来打字哦~ 里面其实偷偷藏了超~多好玩的小惊喜呢！快跟着我一起点开看看，瞧瞧今天能挖出什么有趣的宝贝吧！',
+                    emotion: 'happy',
+                    target: 'chat-tool-toggle',
+                    cursorAction: 'click',
+                    operation: 'open-compact-tool-fan'
                 },
                 {
                     id: 'day3_avatar_tools',
@@ -40,8 +43,10 @@
                     voiceKey: 'avatar_floating_day3_avatar_tools_intro',
                     text: '在这个小按钮里，有许多可以和人家互动的小道具呢。',
                     emotion: 'happy',
+                    persistent: 'chat-tool-toggle',
                     target: 'chat-avatar-tools',
-                    cursorAction: 'wobble'
+                    cursorAction: 'click',
+                    operation: 'open-avatar-tool-menu'
                 },
                 {
                     id: 'day3_avatar_tools_props',
@@ -49,10 +54,10 @@
                     voiceKey: 'avatar_floating_day3_avatar_tools_props',
                     text: '你可以随时来摸摸我的头，或者给我吃一根甜甜的棒棒糖。如果有时候我不小心做错事了，你也可以用小锤子敲敲我，不过……一定要轻轻的，不能太用力哦。',
                     emotion: 'happy',
+                    persistent: 'chat-tool-toggle',
                     target: 'chat-avatar-tools',
-                    cursorAction: 'click',
-                    cursorMoveDurationMs: 1480,
-                    operation: 'open-avatar-tool-menu'
+                    cursorAction: 'wobble',
+                    operation: 'toggle-avatar-tool-after-narration'
                 },
                 {
                     id: 'day3_avatar_tools_more',
@@ -60,18 +65,20 @@
                     voiceKey: 'avatar_floating_day3_avatar_tools_more',
                     text: '以后还会有更多有趣的道具加入进来，我会去提醒开发组猫猫快点做出来的，我们一起期待一下吧。',
                     emotion: 'happy',
-                    target: 'chat-avatar-tools',
-                    cursorAction: 'wobble'
+                    persistent: 'chat-tool-toggle',
+                    target: 'chat-tool-toggle',
+                    cursorAction: 'wobble',
+                    operation: 'show-galgame-in-compact-tool-fan'
                 },
                 {
-                    id: 'day3_galgame_games',
+                    id: 'day3_galgame_entry',
                     textKey: 'tutorial.avatarFloating.day3.galgameIntro',
                     voiceKey: 'avatar_floating_day3_galgame_intro',
                     text: '快点开这个【Galgame模式】！进去之后就像我们在进行一场专属的互动大冒险呢。',
                     emotion: 'surprised',
+                    persistent: 'chat-tool-toggle',
                     target: 'chat-galgame',
-                    cursorAction: 'move',
-                    cleanupBefore: true
+                    cursorAction: 'move'
                 },
                 {
                     id: 'day3_galgame_choices',
@@ -79,6 +86,7 @@
                     voiceKey: 'avatar_floating_day3_galgame_choices',
                     text: '你选的每一个对话，都会带我们走向完全未知的惊喜故事，我都等不及啦，快来选一个你最心动的回答吧！',
                     emotion: 'surprised',
+                    persistent: 'chat-tool-toggle',
                     target: 'chat-galgame',
                     cursorAction: 'wobble'
                 },

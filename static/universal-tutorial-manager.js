@@ -2381,12 +2381,6 @@ class UniversalTutorialManager {
 
     async startAvatarFloatingGuideRound(day, options = {}) {
         const round = normalizeAvatarFloatingGuideRound(day);
-        if (round === 1) {
-            this.pendingTutorialStartSource = options.source || 'manual';
-            await this.requestTutorialStart(options.source || 'manual', options.delayMs || 0);
-            return true;
-        }
-
         const source = options.source || 'manual';
         if (this.isTutorialRunning || window.isInTutorial) {
             console.warn('[Tutorial] 引导已在运行中，跳过悬浮窗教程启动:', round);

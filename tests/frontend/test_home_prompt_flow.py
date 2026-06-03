@@ -4262,6 +4262,7 @@ def test_day3_to_day7_first_scene_does_not_hide_cursor_before_visible_anchor(
                 <div id="react-chat-window-overlay">
                     <div id="react-chat-window-shell" style="position:absolute; left:40px; top:40px; width:320px; height:240px;">
                         <div class="composer-panel" style="position:absolute; left:20px; top:160px; width:260px; height:56px;"></div>
+                        <button class="send-button-circle compact-input-tool-toggle" style="position:absolute; left:260px; top:164px; width:42px; height:42px;"></button>
                     </div>
                 </div>
             `;
@@ -4285,13 +4286,29 @@ def test_day3_to_day7_first_scene_does_not_hide_cursor_before_visible_anchor(
                 const director = window.createYuiGuideDirector({ page: 'home' });
                 const scene = window.YuiGuideDailyGuides[day].round.scenes[0];
                 const calls = [];
+                let cursorHasPosition = true;
                 director.cursor = {
-                    cancel: () => calls.push({ type: 'cancel' }),
+                    cancel: () => {
+                        cursorHasPosition = false;
+                        calls.push({ type: 'cancel' });
+                    },
                     hide: () => calls.push({ type: 'hide' }),
-                    clearPosition: () => calls.push({ type: 'clearPosition' }),
-                    showAt: (x, y) => calls.push({ type: 'showAt', x, y }),
+                    clearPosition: () => {
+                        cursorHasPosition = false;
+                        calls.push({ type: 'clearPosition' });
+                    },
+                    showAt: (x, y) => {
+                        cursorHasPosition = true;
+                        calls.push({ type: 'showAt', x, y });
+                    },
+                    moveToRect: async (rect) => {
+                        cursorHasPosition = true;
+                        calls.push({ type: 'moveToRect', x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
+                        return true;
+                    },
+                    click: () => calls.push({ type: 'click' }),
                     wobble: () => calls.push({ type: 'wobble' }),
-                    hasPosition: () => true,
+                    hasPosition: () => cursorHasPosition,
                 };
                 director.speakGuideLine = async () => null;
                 director.waitForSceneDelay = async () => true;
@@ -4682,6 +4699,7 @@ def test_externalized_chat_cursor_reports_anchor_back_to_home(mock_page: Page):
                     action: 'yui_guide_set_chat_cursor',
                     kind: 'window',
                     effect: 'wobble',
+                    effectDurationMs: 2000,
                     timestamp: Date.now(),
                     tutorialRunId: 'test-run',
                 },
@@ -4706,6 +4724,7 @@ def test_externalized_chat_cursor_reports_anchor_back_to_home(mock_page: Page):
     assert anchorRelays[-1]["y"] == 530
     assert anchorRelays[-1]["kind"] == "window"
     assert anchorRelays[-1]["effect"] == "wobble"
+    assert anchorRelays[-1]["effectDurationMs"] == 2000
     assert anchorRelays[-1]["source"] == "external-chat"
     assert result["stored"]["x"] == 820
     assert result["stored"]["y"] == 530
@@ -4811,6 +4830,7 @@ def test_home_director_owns_pc_cursor_for_externalized_chat_anchor(
                     y: 430,
                     kind: 'input',
                     effect: 'wobble',
+                    effectDurationMs: 2000,
                     source: 'external-chat',
                     timestamp: Date.now(),
                 },
@@ -4834,6 +4854,8 @@ def test_home_director_owns_pc_cursor_for_externalized_chat_anchor(
         update["payload"]["cursor"]["visible"] is True
         and update["payload"]["cursor"]["x"] == 640
         and update["payload"]["cursor"]["y"] == 430
+        and update["payload"]["cursor"].get("effect") == "wobble"
+        and update["payload"]["cursor"].get("effectDurationMs") == 2000
         for update in result["updates"]
     )
 
@@ -6339,25 +6361,28 @@ def test_day3_avatar_tools_props_sentence_opens_menu_with_cursor_click(mock_page
         """
         () => {
             const scenes = window.YuiGuideDailyGuides[3].round.scenes;
+            const toggle = scenes.find((scene) => scene.id === 'day3_tool_toggle_intro');
             const intro = scenes.find((scene) => scene.id === 'day3_avatar_tools');
             const props = scenes.find((scene) => scene.id === 'day3_avatar_tools_props');
             return {
+                toggleOperation: toggle && toggle.operation || '',
+                toggleCursorAction: toggle && toggle.cursorAction || '',
                 introOperation: intro && intro.operation || '',
                 introCursorAction: intro && intro.cursorAction || '',
                 propsOperation: props && props.operation || '',
                 propsCursorAction: props && props.cursorAction || '',
-                propsMoveDurationMs: props && props.cursorMoveDurationMs || 0,
             };
         }
         """
     )
 
     assert result == {
-        "introOperation": "",
-        "introCursorAction": "wobble",
-        "propsOperation": "open-avatar-tool-menu",
-        "propsCursorAction": "click",
-        "propsMoveDurationMs": 1480,
+        "toggleOperation": "open-compact-tool-fan",
+        "toggleCursorAction": "click",
+        "introOperation": "open-avatar-tool-menu",
+        "introCursorAction": "click",
+        "propsOperation": "toggle-avatar-tool-after-narration",
+        "propsCursorAction": "wobble",
     }
 
 

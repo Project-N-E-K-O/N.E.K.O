@@ -309,6 +309,9 @@
                     action: 'yui_guide_set_chat_cursor',
                     kind: typeof kind === 'string' ? kind : '',
                     effect: options && typeof options.effect === 'string' ? options.effect : '',
+                    effectDurationMs: options && Number.isFinite(options.effectDurationMs)
+                        ? Math.max(0, Math.floor(options.effectDurationMs))
+                        : 0,
                     targetIndex: options && Number.isFinite(options.targetIndex)
                         ? Math.max(0, Math.floor(options.targetIndex))
                         : 0,
@@ -341,11 +344,57 @@
             }
         }
 
+        setExternalizedChatCompactHistoryOpen(open, reason) {
+            if (!this.isHomeChatExternalized()) {
+                return;
+            }
+
+            const channel = this.getExternalChatChannel();
+            if (!channel || typeof channel.postMessage !== 'function') {
+                return;
+            }
+
+            try {
+                channel.postMessage({
+                    action: 'yui_guide_set_compact_history_open',
+                    open: open === true,
+                    reason: typeof reason === 'string' ? reason : '',
+                    timestamp: Date.now()
+                });
+            } catch (error) {
+                console.warn('[TutorialInteractionTakeover] 同步独立聊天窗历史面板失败:', error);
+            }
+        }
+
+        setExternalizedChatCompactToolFanOpen(open, reason) {
+            if (!this.isHomeChatExternalized()) {
+                return;
+            }
+
+            const channel = this.getExternalChatChannel();
+            if (!channel || typeof channel.postMessage !== 'function') {
+                return;
+            }
+
+            try {
+                channel.postMessage({
+                    action: 'yui_guide_set_compact_tool_fan_open',
+                    open: open === true,
+                    reason: typeof reason === 'string' ? reason : '',
+                    timestamp: Date.now()
+                });
+            } catch (error) {
+                console.warn('[TutorialInteractionTakeover] 同步独立聊天窗工具菜单失败:', error);
+            }
+        }
+
         clearExternalizedChatFx() {
             this.externalizedChatSpotlightKind = '';
             this.setExternalizedChatSpotlight('');
             this.setExternalizedChatCursor('');
             this.setExternalizedChatAvatarToolMenuOpen(false, 'clear-externalized-chat-fx');
+            this.setExternalizedChatCompactHistoryOpen(false, 'clear-externalized-chat-fx');
+            this.setExternalizedChatCompactToolFanOpen(false, 'clear-externalized-chat-fx');
         }
 
         onExternalChatReady() {

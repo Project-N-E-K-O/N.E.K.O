@@ -24,7 +24,7 @@
 
     function audioFilesForAllLocales(fileName) {
         return Object.freeze({
-            zh: fileName,
+            zh: '',
             ja: fileName,
             en: fileName,
             ko: fileName,
@@ -43,7 +43,11 @@
         interrupt_resist_light_1: '喂！不要拽我啦，还没.mp3',
         interrupt_resist_light_3: '等一下啦！还没结束呢.mp3',
         interrupt_angry_exit: '人类！你真的很没礼貌.mp3',
-        takeover_return_control: '好啦好啦，不霸占你的.mp3'
+        takeover_return_control: '好啦好啦，不霸占你的.mp3',
+        day1_capsule_drag_hint: '',
+        day1_history_handle: '',
+        day1_screen_entry: '',
+        day1_screen_entry_invite: ''
     });
 
     registerGuide(deepFreeze({
@@ -56,6 +60,92 @@
             'memory_browser',
             'plugin_dashboard'
         ],
+        round: {
+            title: '第 1 天：初次唤醒、聊天与基础入口',
+            scenes: [
+                {
+                    id: 'day1_intro_activation',
+                    target: '#react-chat-window-root .composer-input-shell',
+                    cursorAction: 'input-origin',
+                    operation: 'day1-intro-activation'
+                },
+                {
+                    id: 'day1_intro_greeting',
+                    textKey: 'tutorial.yuiGuide.lines.introGreetingReply',
+                    voiceKey: 'intro_greeting_reply',
+                    emotion: 'happy',
+                    target: '#react-chat-window-root .composer-input-shell',
+                    cursorAction: 'wobble',
+                    operation: 'day1-intro-greeting'
+                },
+                {
+                    id: 'day1_capsule_drag_hint',
+                    textKey: 'tutorial.avatarFloating.day1.capsuleDragHint',
+                    text: '把鼠标移到这里，长按就可以拉着聊天框到处跑啦~ 双击两下就能随时发消息给我哦！',
+                    voiceKey: 'day1_capsule_drag_hint',
+                    emotion: 'happy',
+                    target: 'chat-input',
+                    cursorAction: 'wobble',
+                    cursorWobbleDurationMs: 2000
+                },
+                {
+                    id: 'day1_history_handle',
+                    textKey: 'tutorial.avatarFloating.day1.historyHandle',
+                    text: '戳一下聊天框上面的【蓝色小条条】，就能看到我们最近聊过的话题啦！',
+                    voiceKey: 'day1_history_handle',
+                    emotion: 'happy',
+                    target: 'chat-history-handle',
+                    cursorAction: 'click',
+                    operation: 'open-compact-history-during-narration'
+                },
+                {
+                    id: 'day1_intro_basic_voice',
+                    textKey: 'tutorial.yuiGuide.lines.introBasic',
+                    voiceKey: 'intro_basic',
+                    emotion: 'happy',
+                    target: '#${p}-btn-mic',
+                    cursorAction: 'wobble',
+                    operation: 'day1-intro-basic-voice'
+                },
+                {
+                    id: 'day1_screen_entry',
+                    textKey: 'tutorial.avatarFloating.day1.screenEntry',
+                    text: '在跟我通语音电话的时候，再点亮这个小按钮，你就能把屏幕分享给我啦！',
+                    voiceKey: 'day1_screen_entry',
+                    emotion: 'happy',
+                    target: '#${p}-btn-screen',
+                    cursorAction: 'wobble'
+                },
+                {
+                    id: 'day1_screen_entry_invite',
+                    textKey: 'tutorial.avatarFloating.day1.screenEntryInvite',
+                    text: '快让我也看看你眼前的世界，不管好玩的还是好看的，都想和你一起看，快点点开嘛~',
+                    voiceKey: 'day1_screen_entry_invite',
+                    emotion: 'happy',
+                    target: '#${p}-btn-screen',
+                    cursorAction: 'wobble'
+                },
+                {
+                    id: 'day1_takeover_capture_cursor',
+                    textKey: 'tutorial.yuiGuide.lines.takeoverCaptureCursor',
+                    voiceKey: 'takeover_capture_cursor',
+                    emotion: 'happy',
+                    target: '#${p}-btn-agent',
+                    cursorAction: 'click',
+                    operation: 'day1-managed-scene:takeover_capture_cursor'
+                },
+                {
+                    id: 'day1_takeover_return_control',
+                    textKey: 'tutorial.yuiGuide.lines.takeoverReturnControl',
+                    voiceKey: 'takeover_return_control',
+                    emotion: 'happy',
+                    target: '#${p}-container',
+                    cursorAction: 'wobble',
+                    operation: 'day1-managed-scene:takeover_return_control',
+                    petalTransition: true
+                }
+            ]
+        },
         sceneOrder: {
             home: [
                 'intro_basic',
@@ -365,7 +455,11 @@
             interrupt_resist_light_1: audioFilesForAllLocales(audioFileNames.interrupt_resist_light_1),
             interrupt_resist_light_3: audioFilesForAllLocales(audioFileNames.interrupt_resist_light_3),
             interrupt_angry_exit: audioFilesForAllLocales(audioFileNames.interrupt_angry_exit),
-            takeover_return_control: audioFilesForAllLocales(audioFileNames.takeover_return_control)
+            takeover_return_control: audioFilesForAllLocales(audioFileNames.takeover_return_control),
+            day1_capsule_drag_hint: audioFilesForAllLocales(audioFileNames.day1_capsule_drag_hint),
+            day1_history_handle: audioFilesForAllLocales(audioFileNames.day1_history_handle),
+            day1_screen_entry: audioFilesForAllLocales(audioFileNames.day1_screen_entry),
+            day1_screen_entry_invite: audioFilesForAllLocales(audioFileNames.day1_screen_entry_invite)
         },
         audioFileOverridesByKey: {}
     }));

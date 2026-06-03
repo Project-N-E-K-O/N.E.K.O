@@ -94,6 +94,7 @@
         galgameTemporarilyDisabled: false,
         homeTutorialInteractionLocked: false,
         _avatarToolMenuOpenRequestSeq: 0,
+        _compactToolFanOpenRequestSeq: 0,
         _galgameRequestSeq: 0,
         // 通用 ChoicePrompt 框架。当前承载 mini_game_invite 与新手破冰；
         // galgame mode 仍走 galgameOptions 路径（BC，渐进迁移）。
@@ -3389,6 +3390,19 @@
         return state.viewProps.avatarToolMenuOpenRequest;
     }
 
+    function setCompactToolFanOpen(open, reason) {
+        state._compactToolFanOpenRequestSeq += 1;
+        state.viewProps = Object.assign({}, ensureViewProps(), {
+            compactToolFanOpenRequest: {
+                id: 'compact-tool-fan-' + state._compactToolFanOpenRequestSeq,
+                open: open === true,
+                reason: typeof reason === 'string' ? reason : ''
+            }
+        });
+        renderWindow();
+        return state.viewProps.compactToolFanOpenRequest;
+    }
+
     function deactivateToolCursor() {
         state._toolCursorResetKey = 'tcr-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
         renderWindow();
@@ -5655,6 +5669,7 @@
         setComposerHidden: setComposerHidden,
         setHomeTutorialInteractionLocked: setHomeTutorialInteractionLocked,
         setAvatarToolMenuOpen: setAvatarToolMenuOpen,
+        setCompactToolFanOpen: setCompactToolFanOpen,
         deactivateToolCursor: deactivateToolCursor,
         appendMessage: appendMessage,
         updateMessage: updateMessage,

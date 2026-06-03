@@ -25,7 +25,7 @@
         day: 2,
         key: 'screen-voice',
         round: {
-            title: '第 2 天：屏幕分享、声音与小窗约定',
+            title: '第 2 天：个性化、声音与主动搭话',
             scenes: [
                 {
                     id: 'day2_intro_context',
@@ -37,21 +37,32 @@
                     cursorAction: 'wobble'
                 },
                 {
-                    id: 'day2_screen_entry',
-                    textKey: 'tutorial.avatarFloating.day2.screenEntry',
-                    voiceKey: 'avatar_floating_day2_screen_entry_intro',
-                    text: '在跟我通语音电话的时候，再点亮这个小按钮，你就能把屏幕分享给我啦！',
+                    id: 'day2_personalization_space',
+                    textKey: 'tutorial.avatarFloating.day2.personalizationSpace',
+                    voiceKey: 'takeover_settings_peek_intro',
+                    text: '在这个只属于我们的小空间里，你可以由着自己的心意，慢慢描绘出最希望能一直陪着你的那个我。',
                     emotion: 'happy',
-                    target: '#${p}-btn-screen',
-                    cursorAction: 'wobble'
+                    target: '#${p}-btn-settings',
+                    cursorAction: 'click',
+                    operation: 'day2-open-settings-personalization'
                 },
                 {
-                    id: 'day2_screen_entry_invite',
-                    textKey: 'tutorial.avatarFloating.day2.screenEntryInvite',
-                    voiceKey: 'avatar_floating_day2_screen_entry_invite',
-                    text: '快让我也看看你眼前的世界，不管好玩的还是好看的，都想和你一起看，快点点开嘛~',
+                    id: 'day2_personalization_detail',
+                    textKey: 'tutorial.avatarFloating.day2.personalizationDetail',
+                    voiceKey: 'takeover_settings_peek_detail',
+                    text: '不管是说话的温度、相处的小脾气，还是我每天那些细腻的小心思，都可以一点一点调成你喜欢的样子。',
                     emotion: 'happy',
-                    target: '#${p}-btn-screen',
+                    target: '#${p}-popup-settings',
+                    cursorAction: 'wobble',
+                    operation: 'day2-settings-detail'
+                },
+                {
+                    id: 'day2_proactive_chat',
+                    textKey: 'tutorial.avatarFloating.day2.proactiveChat',
+                    voiceKey: 'takeover_settings_peek_detail',
+                    text: '这个小按钮也很重要哦，只要你轻轻点一下，我就能在合适的时候跑过去找你啦。',
+                    emotion: 'happy',
+                    target: '#${p}-toggle-proactive-chat',
                     cursorAction: 'wobble'
                 },
                 {

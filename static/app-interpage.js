@@ -51,7 +51,9 @@
     function shouldBypassYuiGuideMessageDedup(action) {
         return action === 'yui_guide_set_chat_spotlight'
             || action === 'yui_guide_set_chat_cursor'
-            || action === 'yui_guide_set_chat_buttons_disabled';
+            || action === 'yui_guide_set_chat_buttons_disabled'
+            || action === 'yui_guide_set_compact_history_open'
+            || action === 'yui_guide_set_compact_tool_fan_open';
     }
 
     function isMainUIHiddenByModelManager() {
@@ -1977,6 +1979,9 @@
                 var cursorKind = message.kind || '';
                 var cursorOptions = {
                     effect: message.effect || '',
+                    effectDurationMs: Number.isFinite(message.effectDurationMs)
+                        ? Math.max(0, Math.floor(message.effectDurationMs))
+                        : 0,
                     targetIndex: Number.isFinite(message.targetIndex)
                         ? message.targetIndex
                         : 0
@@ -2022,6 +2027,18 @@
                 if (!isStandaloneChatPage()) return true;
                 ensureYuiGuideExternalChatExpanded();
                 setYuiGuideAvatarToolMenuOpen(message.open === true, message.reason || '');
+                return true;
+            }
+            case 'yui_guide_set_compact_history_open': {
+                if (!isStandaloneChatPage()) return true;
+                ensureYuiGuideExternalChatExpanded();
+                setYuiGuideCompactHistoryOpen(message.open === true, message.reason || '');
+                return true;
+            }
+            case 'yui_guide_set_compact_tool_fan_open': {
+                if (!isStandaloneChatPage()) return true;
+                ensureYuiGuideExternalChatExpanded();
+                setYuiGuideCompactToolFanOpen(message.open === true, message.reason || '');
                 return true;
             }
             case 'yui_guide_chat_ready': {
@@ -2287,6 +2304,9 @@
                         var cursorKind = event.data.kind || '';
                         var cursorOptions = {
                             effect: event.data.effect || '',
+                            effectDurationMs: Number.isFinite(event.data.effectDurationMs)
+                                ? Math.max(0, Math.floor(event.data.effectDurationMs))
+                                : 0,
                             targetIndex: Number.isFinite(event.data.targetIndex)
                                 ? event.data.targetIndex
                                 : 0
@@ -2332,6 +2352,18 @@
                         if (!isStandaloneChatPage()) break;
                         ensureYuiGuideExternalChatExpanded();
                         setYuiGuideAvatarToolMenuOpen(event.data.open === true, event.data.reason || '');
+                        break;
+                    }
+                    case 'yui_guide_set_compact_history_open': {
+                        if (!isStandaloneChatPage()) break;
+                        ensureYuiGuideExternalChatExpanded();
+                        setYuiGuideCompactHistoryOpen(event.data.open === true, event.data.reason || '');
+                        break;
+                    }
+                    case 'yui_guide_set_compact_tool_fan_open': {
+                        if (!isStandaloneChatPage()) break;
+                        ensureYuiGuideExternalChatExpanded();
+                        setYuiGuideCompactToolFanOpen(event.data.open === true, event.data.reason || '');
                         break;
                     }
                     case 'yui_guide_chat_ready': {
@@ -2637,7 +2669,7 @@
     }
 
     function getYuiGuideChatCircleSpotlightPadding(kind) {
-        if (kind === 'avatar-tools' || kind === 'galgame') {
+        if (kind === 'tool-toggle' || kind === 'avatar-tools' || kind === 'galgame') {
             return 10;
         }
         return 22;
@@ -2650,6 +2682,7 @@
         var isCircle = (
             kind === 'avatar-tools'
             || kind === 'galgame'
+            || kind === 'tool-toggle'
             || kind === 'avatar-tool-items'
             || kind === 'avatar-tools-and-items'
             || kind === 'mini-game-choices'
@@ -2670,7 +2703,7 @@
         }
         var topLeft = yuiGuideLocalPointToScreen(left, top);
         var variant = '';
-        if (kind === 'avatar-tools' || kind === 'galgame') {
+        if (kind === 'tool-toggle' || kind === 'avatar-tools' || kind === 'galgame') {
             variant = 'circle-contained';
         } else if (
             kind === 'avatar-tool-items'
@@ -2883,14 +2916,25 @@
             return null;
         }
 
+        if (kind === 'tool-toggle') {
+            return getYuiGuideChatVisibleElement('#react-chat-window-root .send-button-circle.compact-input-tool-toggle');
+        }
+
+        if (kind === 'history') {
+            return getYuiGuideChatVisibleElement('#react-chat-window-root .compact-history-visibility-handle');
+        }
+
         if (kind === 'avatar-tools') {
-            return getYuiGuideChatVisibleElement('#react-chat-window-root .composer-emoji-btn')
+            return getYuiGuideChatVisibleElement('#react-chat-window-root .compact-input-tool-item-avatar .composer-emoji-btn')
+                || getYuiGuideChatVisibleElement('#react-chat-window-root .compact-input-tool-item-avatar')
+                || getYuiGuideChatVisibleElement('#react-chat-window-root .composer-emoji-btn')
                 || getYuiGuideChatVisibleElement('#react-chat-window-root .composer-tool-menu')
                 || getYuiGuideChatVisibleElement('#react-chat-window-root .composer-overflow-btn');
         }
 
         if (kind === 'galgame') {
-            return getYuiGuideChatVisibleElement('#react-chat-window-root .composer-galgame-btn');
+            return getYuiGuideChatVisibleElement('#react-chat-window-root .compact-input-tool-item-galgame')
+                || getYuiGuideChatVisibleElement('#react-chat-window-root .composer-galgame-btn');
         }
 
         if (kind === 'input') {
@@ -2976,7 +3020,8 @@
     }
 
     function ensureYuiGuideAvatarToolButtonReachable() {
-        var emojiButton = document.querySelector('#react-chat-window-root .composer-emoji-btn');
+        var emojiButton = document.querySelector('#react-chat-window-root .compact-input-tool-item-avatar .composer-emoji-btn')
+            || document.querySelector('#react-chat-window-root .composer-emoji-btn');
         if (isYuiGuideChatElementVisible(emojiButton)) {
             return true;
         }
@@ -2995,6 +3040,37 @@
             overflowButton.click();
         }
         return false;
+    }
+
+    function setYuiGuideCompactHistoryOpen(open, reason) {
+        var handle = document.querySelector('#react-chat-window-root .compact-history-visibility-handle');
+        if (!handle || typeof handle.click !== 'function') {
+            return false;
+        }
+        var isOpen = handle.getAttribute('aria-expanded') === 'true'
+            || handle.getAttribute('data-compact-history-open') === 'true';
+        if ((open === true && !isOpen) || (open !== true && isOpen)) {
+            handle.click();
+        }
+        return true;
+    }
+
+    function setYuiGuideCompactToolFanOpen(open, reason) {
+        var host = window.reactChatWindowHost;
+        if (host && typeof host.setCompactToolFanOpen === 'function') {
+            host.setCompactToolFanOpen(open === true, reason || 'yui-guide-external');
+            return true;
+        }
+        var toggle = document.querySelector('#react-chat-window-root .send-button-circle.compact-input-tool-toggle');
+        if (!toggle || typeof toggle.click !== 'function') {
+            return false;
+        }
+        var isOpen = toggle.getAttribute('aria-expanded') === 'true'
+            || toggle.classList.contains('is-open');
+        if ((open === true && !isOpen) || (open !== true && isOpen)) {
+            toggle.click();
+        }
+        return true;
     }
 
     function setYuiGuideAvatarToolMenuOpen(open, reason) {
@@ -3145,32 +3221,40 @@
         );
     }
 
-    function rememberYuiGuideChatCursorScreenPoint(screenPoint, kind, effect) {
+    function rememberYuiGuideChatCursorScreenPoint(screenPoint, kind, effect, effectDurationMs) {
         if (!screenPoint || !Number.isFinite(screenPoint.x) || !Number.isFinite(screenPoint.y)) {
             return;
         }
+        var normalizedEffectDurationMs = Number.isFinite(effectDurationMs)
+            ? Math.max(0, Math.floor(effectDurationMs))
+            : 0;
         try {
             window.localStorage.setItem(YUI_GUIDE_EXTERNAL_CHAT_CURSOR_SCREEN_POINT_KEY, JSON.stringify({
                 x: screenPoint.x,
                 y: screenPoint.y,
                 kind: typeof kind === 'string' ? kind : '',
                 effect: typeof effect === 'string' ? effect : '',
+                effectDurationMs: normalizedEffectDurationMs,
                 source: 'external-chat',
                 at: Date.now()
             }));
         } catch (_) {}
     }
 
-    function reportYuiGuideChatCursorAnchor(screenPoint, kind, effect) {
+    function reportYuiGuideChatCursorAnchor(screenPoint, kind, effect, effectDurationMs) {
         if (!screenPoint || !Number.isFinite(screenPoint.x) || !Number.isFinite(screenPoint.y)) {
             return;
         }
+        var normalizedEffectDurationMs = Number.isFinite(effectDurationMs)
+            ? Math.max(0, Math.floor(effectDurationMs))
+            : 0;
         var message = {
             action: 'yui_guide_chat_cursor_anchor',
             x: screenPoint.x,
             y: screenPoint.y,
             kind: typeof kind === 'string' ? kind : '',
             effect: typeof effect === 'string' ? effect : '',
+            effectDurationMs: normalizedEffectDurationMs,
             source: 'external-chat',
             timestamp: Date.now()
         };
@@ -3247,8 +3331,18 @@
         cursor.style.transitionDuration = pcMoveDurationMs > 0 ? pcMoveDurationMs + 'ms' : '';
         if (isYuiGuidePcOverlayAvailable()) {
             var screenPoint = localScreenPoint;
-            rememberYuiGuideChatCursorScreenPoint(screenPoint, kind, normalizedOptions.effect || '');
-            reportYuiGuideChatCursorAnchor(screenPoint, kind, normalizedOptions.effect || '');
+            rememberYuiGuideChatCursorScreenPoint(
+                screenPoint,
+                kind,
+                normalizedOptions.effect || '',
+                normalizedOptions.effectDurationMs || 0
+            );
+            reportYuiGuideChatCursorAnchor(
+                screenPoint,
+                kind,
+                normalizedOptions.effect || '',
+                normalizedOptions.effectDurationMs || 0
+            );
             yuiGuideChatCursorLastScreenPoint = { x: screenPoint.x, y: screenPoint.y };
             yuiGuideChatCursorVisible = true;
             cursor.hidden = true;
@@ -3270,8 +3364,18 @@
         cursor.style.transform = 'translate3d(' + Math.round(cx) + 'px, ' + Math.round(cy) + 'px, 0)';
         yuiGuideChatCursorLastScreenPoint = { x: localScreenPoint.x, y: localScreenPoint.y };
         yuiGuideChatCursorVisible = true;
-        rememberYuiGuideChatCursorScreenPoint(localScreenPoint, kind, normalizedOptions.effect || '');
-        reportYuiGuideChatCursorAnchor(localScreenPoint, kind, normalizedOptions.effect || '');
+        rememberYuiGuideChatCursorScreenPoint(
+            localScreenPoint,
+            kind,
+            normalizedOptions.effect || '',
+            normalizedOptions.effectDurationMs || 0
+        );
+        reportYuiGuideChatCursorAnchor(
+            localScreenPoint,
+            kind,
+            normalizedOptions.effect || '',
+            normalizedOptions.effectDurationMs || 0
+        );
 
         if (normalizedOptions && normalizedOptions.effect === 'click' && typeof cursor.animate === 'function') {
             cursor.animate([
@@ -3338,6 +3442,7 @@
         var isCircleImage = (
             kind === 'avatar-tools'
             || kind === 'galgame'
+            || kind === 'tool-toggle'
             || kind === 'avatar-tool-items'
             || kind === 'avatar-tools-and-items'
             || kind === 'mini-game-choices'

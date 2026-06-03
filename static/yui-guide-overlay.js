@@ -280,7 +280,7 @@
                     cursor: { visible: true, x: point.x, y: point.y, durationMs: 0 }
                 }, true);
             },
-            moveCursorTo(x, y, durationMs, effect) {
+            moveCursorTo(x, y, durationMs, effect, effectDurationMs) {
                 const point = toScreenPoint(x, y);
                 send({
                     cursor: {
@@ -288,7 +288,8 @@
                         x: point.x,
                         y: point.y,
                         durationMs: Math.max(0, Math.round(Number(durationMs) || 0)),
-                        effect: effect || ''
+                        effect: effect || '',
+                        effectDurationMs: Math.max(0, Math.round(Number(effectDurationMs) || 0))
                     }
                 }, true);
             },
@@ -2424,10 +2425,10 @@
             }, visibleMs);
         }
 
-        wobbleCursor() {
+        wobbleCursor(effectDurationMs) {
             if (this.isPcOverlayActive()) {
                 if (this.cursorPosition && this.pcOverlayBridge && typeof this.pcOverlayBridge.moveCursorTo === 'function') {
-                    this.pcOverlayBridge.moveCursorTo(this.cursorPosition.x, this.cursorPosition.y, 0, 'wobble');
+                    this.pcOverlayBridge.moveCursorTo(this.cursorPosition.x, this.cursorPosition.y, 0, 'wobble', effectDurationMs);
                 }
                 if (this.shouldSuppressDomForPcOverlay()) {
                     return;
