@@ -1168,7 +1168,7 @@
                 });
             });
         }
-        return items.concat(Array.prototype.slice.call(element.querySelectorAll('.compact-input-tool-item, .composer-icon-popover .composer-icon-button, .avatar-tool-quickbar .composer-icon-button'))
+        return items.concat(Array.prototype.slice.call(element.querySelectorAll('.compact-input-tool-item, .composer-icon-popover .composer-icon-button, .avatar-tool-quickbar .composer-icon-button, .avatar-tool-quickbar-edit'))
             .map(function (child, index) {
                 var style = window.getComputedStyle ? window.getComputedStyle(child) : null;
                 if (style && (style.display === 'none' || style.visibility === 'hidden')) return null;
