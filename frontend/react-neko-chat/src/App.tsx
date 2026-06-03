@@ -370,6 +370,19 @@ function normalizeCompactPreviewText(text: string): string {
     .trim();
 }
 
+function splitCompactPreviewGraphemes(text: string): string[] {
+  const segmenter = (Intl as typeof Intl & {
+    Segmenter?: new (
+      locale?: string,
+      options?: { granularity?: 'grapheme' },
+    ) => { segment(input: string): Iterable<{ segment: string }> };
+  }).Segmenter;
+  if (typeof segmenter === 'function') {
+    return Array.from(new segmenter(undefined, { granularity: 'grapheme' }).segment(text), part => part.segment);
+  }
+  return Array.from(text);
+}
+
 function getCompactSpeechRevealDuration(textLength: number, audioDuration: number): number {
   const readableDuration = textLength / COMPACT_SPEECH_REVEAL_MAX_CHARS_PER_SECOND;
   return Math.max(audioDuration, readableDuration, 0.05);
@@ -1727,6 +1740,35 @@ export default function App({
     compactSpeechVisibleLength,
     compactPreviewText,
     compactPreviewTextVisible,
+  ]);
+  const compactPreviewDisplayContent = useMemo(() => {
+    if (!compactPreviewIsStreaming || !compactPreviewDisplayText) {
+      return compactPreviewDisplayText;
+    }
+    const graphemes = splitCompactPreviewGraphemes(compactPreviewDisplayText);
+    const latestIndex = graphemes.length - 1;
+    if (latestIndex < 0) {
+      return '';
+    }
+    const prefix = graphemes.slice(0, latestIndex).join('');
+    const latestGrapheme = graphemes[latestIndex];
+    const keyPrefix = compactMessagePreview?.turnStartId || compactMessagePreview?.messageId || 'compact-preview';
+    return (
+      <>
+        {prefix}
+        <span
+          key={`${keyPrefix}:${latestIndex}:${latestGrapheme}`}
+          className="compact-chat-capsule-glyph"
+        >
+          {latestGrapheme}
+        </span>
+      </>
+    );
+  }, [
+    compactMessagePreview?.messageId,
+    compactMessagePreview?.turnStartId,
+    compactPreviewDisplayText,
+    compactPreviewIsStreaming,
   ]);
   const emojiButtonAriaLabel = i18n('chat.emojiButtonAriaLabel', 'Emoji');
   const toolIconsAriaLabel = i18n('chat.toolIconsAriaLabel', 'Tool icons');
@@ -5186,7 +5228,7 @@ export default function App({
                           data-compact-preview-streaming={compactPreviewIsStreaming ? 'true' : 'false'}
                           onWheel={handleCompactPreviewWheel}
                         >
-                          {compactPreviewDisplayText}
+                          {compactPreviewDisplayContent}
                         </span>
                       </button>
                       {compactInputToolToggleButton}

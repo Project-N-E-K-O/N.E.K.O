@@ -2024,6 +2024,29 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   text-overflow: clip;
 }
 
+.compact-chat-capsule-glyph {
+  display: inline;
+  white-space: pre;
+  will-change: opacity;
+  animation: compact-caption-glyph-in 90ms ease-out both;
+}
+
+@keyframes compact-caption-glyph-in {
+  from {
+    opacity: 0.58;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .compact-chat-capsule-glyph {
+    animation: none;
+  }
+}
+
 .compact-chat-capsule-text::-webkit-scrollbar {
   display: none;
 }
