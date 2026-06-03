@@ -501,7 +501,6 @@ class TutorLLMAgent:
             self._message_has_image_content(message) for message in messages
         )
         requested_model_group = str(model_group_override or "").strip()
-        call_type_group = requested_model_group or "agent"
         if has_image:
             vision_config = config_manager.get_model_api_config("vision")
             vision_base_url = str(vision_config.get("base_url") or "").strip()
@@ -509,7 +508,6 @@ class TutorLLMAgent:
             if vision_base_url and vision_model:
                 api_config = vision_config
                 model_group = "vision"
-                call_type_group = "vision"
             else:
                 api_config = config_manager.get_model_api_config("agent")
                 model_group = "agent"
@@ -522,6 +520,7 @@ class TutorLLMAgent:
                 if not requested_base_url or not requested_model:
                     api_config = config_manager.get_model_api_config("agent")
                     model_group = "agent"
+        call_type_group = model_group
         base_url = str(api_config.get("base_url") or "").strip()
         model = str(api_config.get("model") or "").strip()
         api_key = str(api_config.get("api_key") or "").strip()

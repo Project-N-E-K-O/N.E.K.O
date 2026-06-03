@@ -693,9 +693,7 @@ def test_tracker_picks_up_fresh_prefs_via_refresh_hook():
     state machine starts honouring the new override.
     """
     from main_logic.activity.tracker import UserActivityTracker
-    from main_logic.activity.system_signals import (
-        SystemSignalCollector, get_system_signal_collector,
-    )
+    from main_logic.activity.system_signals import get_system_signal_collector
 
     # Round 1 — empty prefs, nothing classified
     initial_prefs = ActivityPreferences()
@@ -804,6 +802,79 @@ def test_tracker_rule_only_snapshot_skips_enrichment_loop():
     assert snap.activity_scores == {}
     assert snap.activity_guess == ""
     assert snap.open_threads == []
+    assert snap.work_break_pending is None
+    assert snap.anti_slack_pending is None
+
+
+@pytest.mark.parametrize(
+    (
+        "include_enrichment",
+        "tick_followups",
+        "expect_enrichment",
+        "expect_pending",
+    ),
+    [
+        (False, False, False, False),
+        (False, True, False, True),
+        (True, False, True, False),
+        (True, True, True, True),
+    ],
+)
+def test_tracker_snapshot_flags_gate_enrichment_and_pending_fields(
+    include_enrichment: bool,
+    tick_followups: bool,
+    expect_enrichment: bool,
+    expect_pending: bool,
+) -> None:
+    from main_logic.activity.tracker import UserActivityTracker
+
+    class _Collector:
+        async def start(self) -> None:
+            return None
+
+        def snapshot(self) -> SystemSnapshot:
+            return _sys_snap(
+                title="Quiz - Google Chrome",
+                process="chrome.exe",
+                idle=2.0,
+                ts=100.0,
+            )
+
+    work_pending = {"kind": "work_break"}
+    anti_pending = {"kind": "anti_slack"}
+    tracker = UserActivityTracker("_test_snapshot_flags", collector=_Collector())
+    tracker._activity_scores_cache = {"focused_work": 0.8}
+    tracker._activity_guess_cache = "cached enrichment"
+    tracker._open_threads_cache = ["cached thread"]
+    tracker._build_work_break_pending = lambda: work_pending
+    tracker._build_anti_slack_pending = lambda: anti_pending
+
+    async def _collect() -> ActivitySnapshot:
+        snap = await tracker.get_snapshot(
+            now=100.0,
+            include_enrichment=include_enrichment,
+            tick_followups=tick_followups,
+        )
+        task = tracker._activity_guess_loop_task
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        return snap
+
+    snap = asyncio.run(_collect())
+
+    assert snap.activity_scores == (
+        {"focused_work": 0.8} if expect_enrichment else {}
+    )
+    assert snap.activity_guess == (
+        "cached enrichment" if expect_enrichment else ""
+    )
+    assert snap.open_threads == (["cached thread"] if expect_enrichment else [])
+    assert snap.work_break_pending == (work_pending if expect_pending else None)
+    assert snap.anti_slack_pending == (anti_pending if expect_pending else None)
 
 
 def test_update_window_collapses_on_canonical_but_invalidates_on_intensity_change():

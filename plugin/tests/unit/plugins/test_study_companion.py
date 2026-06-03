@@ -427,7 +427,7 @@ async def test_awareness_tick_uses_activity_tracker_foreground_category(
     await plugin.awareness_tick()
 
     summary = await plugin._buffer.summarize()
-    assert summary["current_app"] == "gaming"
+    assert summary["current_app"] == "game"  # normalized by _OS_CATEGORY_TO_APP_TYPE
     assert supervision.calls == [
         {
             "ocr_text": "Question: Why?",
@@ -3172,6 +3172,49 @@ async def test_tutor_agent_llm_cache_distinguishes_rotated_api_keys(
     assert all("max_completion_tokens" not in item for item in create_kwargs)
     assert "old-key" not in repr(agent._client_cache._cache)
     assert "new-key" not in repr(agent._client_cache._cache)
+
+
+@pytest.mark.asyncio
+async def test_tutor_agent_call_type_tracks_model_group_after_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from utils import config_manager, llm_client, token_tracker
+
+    config_groups: list[str] = []
+    call_types: list[str] = []
+
+    class _ConfigManager:
+        def get_model_api_config(self, group: str):
+            config_groups.append(group)
+            if group == "tutor":
+                return {
+                    "base_url": "",
+                    "model": "",
+                    "api_key": "",
+                }
+            return {
+                "base_url": "https://llm.example.test/v1",
+                "model": "study-model",
+                "api_key": "agent-key",
+            }
+
+    class _FakeLLM:
+        async def ainvoke(self, _messages):
+            return SimpleNamespace(content="agent fallback reply")
+
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: _ConfigManager())
+    monkeypatch.setattr(llm_client, "create_chat_llm", lambda **_kwargs: _FakeLLM())
+    monkeypatch.setattr(token_tracker, "set_call_type", call_types.append)
+
+    agent = TutorLLMAgent(logger=_Logger(), config=StudyConfig(language="en"))
+    reply = await agent._call_model(
+        [{"role": "user", "content": "one"}],
+        model_group_override="tutor",
+    )
+
+    assert reply == "agent fallback reply"
+    assert config_groups == ["tutor", "agent"]
+    assert call_types == ["agent"]
 
 
 @pytest.mark.asyncio

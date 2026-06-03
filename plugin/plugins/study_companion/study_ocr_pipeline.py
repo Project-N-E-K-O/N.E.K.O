@@ -186,7 +186,10 @@ class StudyOcrPipeline:
             return ocr_result
         activity_type, ocr_text, classify_method, diagnostic = ocr_result
 
-        status = "ok" if title or ocr_text or jpeg_bytes else "empty"
+        has_semantic_signal = bool(
+            title or ocr_text or (activity_type and activity_type != "idle")
+        )
+        status = "ok" if has_semantic_signal else "empty"
         return LightweightSnapshot(
             status=status,
             captured_at=captured_at,
@@ -222,6 +225,21 @@ class StudyOcrPipeline:
             raw = backend.extract_text(image)
             ocr_text, _boxes = self._normalize_ocr_output(raw)
         except Exception as exc:
+            diagnostic = f"ocr_failed: {exc}"
+            if title:
+                classification = classify_screen_from_ocr("", window_title=title)
+                return LightweightSnapshot(
+                    status="ok",
+                    captured_at=captured_at,
+                    window_title=title,
+                    app_type=app_type,
+                    activity_type=classification.screen_type,
+                    jpeg_bytes=jpeg_bytes,
+                    jpeg_base64=self._jpeg_data_url(jpeg_bytes),
+                    jpeg_metadata=jpeg_metadata,
+                    diagnostic=diagnostic,
+                    classify_method="title",
+                )
             return LightweightSnapshot(
                 status="ocr_failed",
                 captured_at=captured_at,
@@ -230,7 +248,7 @@ class StudyOcrPipeline:
                 jpeg_bytes=jpeg_bytes,
                 jpeg_base64=self._jpeg_data_url(jpeg_bytes),
                 jpeg_metadata=jpeg_metadata,
-                diagnostic=str(exc),
+                diagnostic=diagnostic,
             )
         classification = classify_screen_from_ocr(
             ocr_text,
@@ -391,11 +409,15 @@ class StudyOcrPipeline:
         try:
             from PIL import ImageGrab
 
-            return ImageGrab.grab()
+            return ImageGrab.grab(all_screens=True)
         except Exception:
-            import pyautogui
+            import mss
+            from PIL import Image
 
-            return pyautogui.screenshot()
+            with mss.mss() as sct:
+                monitor = sct.monitors[0]
+                shot = sct.grab(monitor)
+            return Image.frombytes("RGB", shot.size, shot.rgb)
 
     def _extract_image(self, image: Any, *, backend_name: str) -> OcrSnapshot:
         started = time.monotonic()

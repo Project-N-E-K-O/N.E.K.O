@@ -16,7 +16,6 @@ export type NoteItem = {
 };
 
 type NoteCardProps = {
-  key?: string;
   note: NoteItem;
   selected?: boolean;
   onSelect?: (note: NoteItem) => void;

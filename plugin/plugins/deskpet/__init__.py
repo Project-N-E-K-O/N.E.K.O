@@ -190,7 +190,7 @@ class DeskPetPlugin(NekoPluginBase):
                 )
                 self._was_stressed = True
                 self._last_phrase_at = now
-                self.logger.info("DeskPet speak(stressed): cpu={:.1f}%", cpu)
+                self.logger.info("DeskPet speak(stressed): cpu=%.1f%%", cpu)
             return
 
         # --- 恢复正常 ---
@@ -208,7 +208,7 @@ class DeskPetPlugin(NekoPluginBase):
             )
             self._was_stressed = False
             self._last_phrase_at = now
-            self.logger.info("DeskPet speak(relaxed): cpu={:.1f}%", cpu)
+            self.logger.info("DeskPet speak(relaxed): cpu=%.1f%%", cpu)
 
     # ── 手动查询入口 ──
 

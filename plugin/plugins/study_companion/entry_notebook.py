@@ -509,14 +509,25 @@ class _NotebookEntriesMixin:
                     }
                 )
             if normalized_action == "create_memory_card":
+                memory_store = getattr(self, "_memory_deck_store", None)
+                if memory_store is None or not all(
+                    callable(getattr(memory_store, name, None))
+                    for name in ("get_or_create_default_deck", "upsert_item")
+                ):
+                    return Err(
+                        SdkError(
+                            "memory deck capability unavailable",
+                            code="MEMORY_NOT_AVAILABLE",
+                        )
+                    )
                 if not text:
                     return Err(SdkError("selected_text is required", code="MISSING_TEXT"))
                 deck = await asyncio.to_thread(
-                    self._memory_deck_store.get_or_create_default_deck,
+                    memory_store.get_or_create_default_deck,
                     deck_type="custom",
                 )
                 card = await asyncio.to_thread(
-                    self._memory_deck_store.upsert_item,
+                    memory_store.upsert_item,
                     deck_id=deck["id"],
                     item_type="custom",
                     prompt=text[:160],

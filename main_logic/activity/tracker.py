@@ -540,8 +540,12 @@ class UserActivityTracker:
             activity_scores=dict(self._activity_scores_cache),
             activity_guess=self._activity_guess_cache,
             open_threads=list(self._open_threads_cache),
-            work_break_pending=self._build_work_break_pending(),
-            anti_slack_pending=self._build_anti_slack_pending(),
+            work_break_pending=(
+                self._build_work_break_pending() if tick_followups else None
+            ),
+            anti_slack_pending=(
+                self._build_anti_slack_pending() if tick_followups else None
+            ),
         )
 
     def get_snapshot_sync(self, *, now: float | None = None) -> ActivitySnapshot:

@@ -133,7 +133,7 @@
   }
 
   function normalizeLatexForKatex(value) {
-    return String(value || '').replace(/</g, '\\lt ').replace(/>/g, '\\gt ');
+    return String(value || '').replace(/</g, '\\lt').replace(/>/g, '\\gt');
   }
 
   window.__studyCompanionMathParser = {

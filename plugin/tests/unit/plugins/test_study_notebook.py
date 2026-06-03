@@ -16,7 +16,7 @@ from plugin.plugins.study_companion.tutor_llm_agent_notebook import (
     expand_note,
     summarize_to_note,
 )
-from plugin.sdk.plugin import Ok
+from plugin.sdk.plugin import Err, Ok
 
 pytestmark = pytest.mark.unit
 
@@ -238,6 +238,22 @@ async def test_notebook_entries_serialize_dataclasses(tmp_path) -> None:
         searched = await harness.study_note_search_all(query="Force")
         assert isinstance(searched, Ok)
         assert searched.value["notes"][0]["title"] == "Force"
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_notebook_highlight_memory_card_reports_unavailable_store(tmp_path) -> None:
+    store, notebooks, _logger = _make_store(tmp_path)
+    harness = _EntryHarness(notebooks)
+    try:
+        result = await harness.study_note_highlight_action(
+            action="create_memory_card",
+            selected_text="Force equals mass times acceleration.",
+        )
+
+        assert isinstance(result, Err)
+        assert result.error.code == "MEMORY_NOT_AVAILABLE"
     finally:
         store.close()
 

@@ -133,7 +133,13 @@ export default function NotebookPanel(props: PluginSurfaceProps) {
           <button type="button" disabled={busy} onClick={createNote}>
             {text(props, 'ui.notebook.new_note', 'New note')}
           </button>
-          <button type="button" disabled={busy} onClick={() => refresh()}>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              refresh().catch((error) => setStatus(errorMessage(error)));
+            }}
+          >
             {text(props, 'ui.button.refresh', 'Refresh')}
           </button>
         </div>

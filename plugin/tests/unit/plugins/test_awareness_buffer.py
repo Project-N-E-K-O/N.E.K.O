@@ -209,6 +209,8 @@ async def test_activity_buffer_concurrent_add_and_summarize_is_safe() -> None:
         ("Stack Overflow - Mozilla Firefox", "web_page"),
         ("Knowledge Base", "other"),
         ("Knowledge Base - Chrome", "web_page"),
+        ("Knowledge Base Chrome", "web_page"),
+        ("Stack Overflow Firefox", "web_page"),
         ("Google Docs - Google Chrome", "text_editor"),
         ("Paper - Adobe Acrobat", "pdf_reader"),
         ("Research - Zotero", "pdf_reader"),

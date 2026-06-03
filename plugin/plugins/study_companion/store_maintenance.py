@@ -6,6 +6,8 @@ from typing import Any, Iterator
 
 
 _PURGE_TABLES = (
+    "notes",
+    "notebooks",
     "memory_habit_progress",
     "recitation_attempts",
     "review_records",

@@ -196,6 +196,54 @@ def test_ocr_pipeline_capture_lightweight_ocr_mode_writes_activity_type() -> Non
     assert activity.activity_type == "question"
 
 
+def test_ocr_pipeline_capture_lightweight_empty_without_semantic_signal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image = Image.new("RGB", (800, 600), "white")
+    monkeypatch.setattr(StudyOcrPipeline, "_get_active_window_title", staticmethod(lambda: ""))
+    pipeline = StudyOcrPipeline(
+        logger=_Logger(),
+        config=StudyConfig(
+            awareness=AwarenessConfig(classify_mode="ocr_text", image_max_bytes=80_000)
+        ),
+        ocr_backend=_Backend(""),
+        capture_backend=_Capture(image),
+    )
+
+    snapshot = pipeline.capture_lightweight(target={"hwnd": 1, "title": ""})
+
+    assert snapshot.status == "empty"
+    assert snapshot.jpeg_bytes is not None
+    assert snapshot.activity_type == "idle"
+    assert snapshot.ocr_text_snippet == ""
+
+
+def test_ocr_pipeline_capture_lightweight_ocr_failure_falls_back_to_title() -> None:
+    image = Image.new("RGB", (800, 600), "white")
+    pipeline = StudyOcrPipeline(
+        logger=_Logger(),
+        config=StudyConfig(
+            awareness=AwarenessConfig(classify_mode="ocr_text", image_max_bytes=80_000)
+        ),
+        ocr_backend=_Backend(RuntimeError("ocr broken")),
+        capture_backend=_Capture(image),
+    )
+
+    snapshot = pipeline.capture_lightweight(
+        target={"hwnd": 1, "title": "Quiz - Google Chrome"}
+    )
+    activity = snapshot.to_activity_snapshot()
+
+    assert snapshot.status == "ok"
+    assert snapshot.classify_method == "title"
+    assert snapshot.activity_type == "question"
+    assert "ocr_failed" in snapshot.diagnostic
+    assert snapshot.jpeg_bytes is not None
+    assert activity is not None
+    assert activity.classify_method == "title"
+    assert activity.activity_type == "question"
+
+
 def test_ocr_pipeline_capture_lightweight_content_change_and_failure_paths() -> None:
     image = Image.new("RGB", (640, 360), "white")
     pipeline = StudyOcrPipeline(

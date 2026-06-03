@@ -225,7 +225,13 @@ export default function NoteEditor(props: PluginSurfaceProps) {
           content: draft.content,
           topic_ids: csvToList(draft.topics),
           tags: csvToList(draft.tags),
-        }).catch(() => undefined);
+        }).catch((error) => {
+          console.error('[NoteEditor] Auto-save on unmount failed', {
+            error,
+            noteId: draft.noteId,
+            notebookId: draft.notebookId,
+          });
+        });
       }
     };
   }, []);

@@ -116,9 +116,11 @@ _CODE_EDITOR_TITLE_KEYWORDS = (
     "cursor",
 )
 _BROWSER_TITLE_KEYWORDS = (
+    "chrome",
     " chrome",
     "google chrome",
     "mozilla firefox",
+    "firefox",
     " firefox",
     "microsoft edge",
     "safari",
