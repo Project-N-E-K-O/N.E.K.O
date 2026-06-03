@@ -919,8 +919,23 @@ def test_chat_image_file_drop_uses_import_pipeline_and_blocks_browser_navigation
     script = APP_BUTTONS_PATH.read_text(encoding="utf-8")
 
     assert "function getImageFilesFromFileList(fileList)" in script
+    assert "return file instanceof File && (/^image\\//i.test(file.type || '') || isLikelyImageFile(file));" in script
+    assert "!file.type ||" not in script
+    assert "return /^files$/i.test(String(type || ''));" in script
     assert "mod.importImageFilesToPendingList = function importImageFilesToPendingList(files, options)" in script
-    assert "mod.importImageFilesToPendingList(files, { logPrefix: '[导入图片]' })" in script
+    assert "return Promise.resolve({ succeeded: 0, failed: inputFiles.length });" in script
+    assert "window.t('app.importImagePartial', { success: succeeded, failed: failed })" in script
+
+    change_anchor = "input.addEventListener('change', function (event) {"
+    change_block = script.split(change_anchor, 1)[1].split(
+        "mod._importImageInput = input;",
+        1,
+    )[0]
+    assert script.index("function getImageFilesFromFileList(fileList)") < script.index(change_anchor)
+    assert script.index(change_anchor) < script.index(
+        "mod.importImageFilesToPendingList = function importImageFilesToPendingList(files, options)"
+    )
+    assert "mod.importImageFilesToPendingList(files, { logPrefix: '[导入图片]' })" in change_block
 
     drag_block = script.split("document.addEventListener('dragover'", 1)[1].split(
         "document.addEventListener('drop'",

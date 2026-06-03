@@ -2110,6 +2110,7 @@
         "textChattingShort": "テキストチャット中",
         "capturing": "スクリーンショット中...",
         "importImageAdded": "{{count}} 枚の画像を追加しました。送信時に一緒に送られます",
+        "importImagePartial": "{{success}} 枚の画像を追加しました。{{failed}} 枚の取り込みに失敗しました",
         "importImageFailed": "画像の取り込みに失敗しました",
         "screenshotAdded": "スクリーンショットを追加しました。送信をクリックして一緒に送信",
         "screenshotFailed": "スクリーンショット失敗",

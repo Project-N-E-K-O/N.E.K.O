@@ -2110,6 +2110,7 @@
         "textChattingShort": "Chat de texto",
         "capturing": "Capturando...",
         "importImageAdded": "Se agregaron {{count}} imágenes; serán enviados juntos",
+        "importImagePartial": "Se agregaron {{success}} imágenes; {{failed}} no se pudieron importar",
         "importImageFailed": "No se pudo importar la imagen",
         "screenshotAdded": "Captura de pantalla agregada, haga clic en enviar para enviar juntos",
         "screenshotFailed": "Error en la captura de pantalla",

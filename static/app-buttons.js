@@ -211,7 +211,7 @@
 
     function getImageFilesFromFileList(fileList) {
         return Array.from(fileList || []).filter(function (file) {
-            return file instanceof File && (!file.type || /^image\//i.test(file.type) || isLikelyImageFile(file));
+            return file instanceof File && (/^image\//i.test(file.type || '') || isLikelyImageFile(file));
         });
     }
 
@@ -223,7 +223,9 @@
                 return item && item.kind === 'file';
             });
         }
-        return Array.from(dataTransfer.types || []).indexOf('Files') >= 0;
+        return Array.from(dataTransfer.types || []).some(function (type) {
+            return /^files$/i.test(String(type || ''));
+        });
     }
 
     function getFilesFromDataTransfer(dataTransfer) {
@@ -556,20 +558,21 @@
     };
 
     mod.importImageFilesToPendingList = function importImageFilesToPendingList(files, options) {
-        var imageFiles = getImageFilesFromFileList(files);
+        var inputFiles = Array.from(files || []);
+        var imageFiles = getImageFilesFromFileList(inputFiles);
         if (!imageFiles.length) {
             window.showStatusToast(
                 window.t ? window.t('app.importImageFailed') : '导入图片失败',
                 4000
             );
-            return Promise.resolve({ succeeded: 0, failed: 0 });
+            return Promise.resolve({ succeeded: 0, failed: inputFiles.length });
         }
 
         var logPrefix = options && options.logPrefix ? options.logPrefix : '[导入图片]';
         return Promise.allSettled(imageFiles.map(mod.importImageFileToPendingList))
             .then(function (results) {
                 var succeeded = 0;
-                var failed = 0;
+                var failed = inputFiles.length - imageFiles.length;
                 for (var i = 0; i < results.length; i++) {
                     if (results[i].status === 'fulfilled') {
                         succeeded++;
@@ -578,13 +581,19 @@
                         console.error(logPrefix + ' 单张处理失败:', results[i].reason);
                     }
                 }
-                if (succeeded > 0) {
+                if (succeeded > 0 && failed > 0) {
+                    window.showStatusToast(
+                        window.t
+                            ? window.t('app.importImagePartial', { success: succeeded, failed: failed })
+                            : '已添加 ' + succeeded + ' 张图片，' + failed + ' 张导入失败',
+                        4000
+                    );
+                } else if (succeeded > 0) {
                     window.showStatusToast(
                         window.t ? window.t('app.importImageAdded', { count: succeeded }) : '已添加 ' + succeeded + ' 张图片，发送时会一并带上',
                         3000
                     );
-                }
-                if (failed > 0) {
+                } else if (failed > 0) {
                     window.showStatusToast(
                         window.t ? window.t('app.importImageFailed') : '导入图片失败',
                         4000

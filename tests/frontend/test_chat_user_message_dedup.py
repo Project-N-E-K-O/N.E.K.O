@@ -247,8 +247,11 @@ def test_drop_image_on_chat_imports_pending_attachment_without_navigation(
             const b64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO9Wj3sAAAAASUVORK5CYII=';
             const bytes = Uint8Array.from(atob(b64), (char) => char.charCodeAt(0));
             const file = new File([bytes], 'dropped.png', { type: 'image/png' });
-            const target = document.body;
+            const target = document.querySelector('.compact-chat-surface-shell')
+                || document.querySelector('.chat-window')
+                || document.getElementById('react-chat-window-shell');
             if (!target) throw new Error('Missing chat drop target');
+            const hrefBefore = window.location.href;
 
             const createDropEvent = (type) => {
                 const transfer = {
@@ -288,6 +291,8 @@ def test_drop_image_on_chat_imports_pending_attachment_without_navigation(
             return {
                 dragoverDefaultPrevented: dragover.defaultPrevented,
                 dropDefaultPrevented: drop.defaultPrevented,
+                hrefBefore,
+                hrefAfter: window.location.href,
                 attachmentCount: state.composerAttachments.length,
                 attachmentUrl: state.composerAttachments[0] && state.composerAttachments[0].url,
             };
@@ -296,6 +301,7 @@ def test_drop_image_on_chat_imports_pending_attachment_without_navigation(
 
     assert result["dragoverDefaultPrevented"] is True
     assert result["dropDefaultPrevented"] is True
+    assert result["hrefAfter"] == result["hrefBefore"]
     assert result["attachmentCount"] == 1
     assert result["attachmentUrl"].startswith("data:image/")
 
