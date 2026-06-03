@@ -1,4 +1,4 @@
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, toValue, watch, type MaybeRefOrGetter } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import {
@@ -16,6 +16,7 @@ import {
   type PluginCliBuildRequest,
   type PluginCliBuildResponse,
   type PluginCliInstallRequest,
+  type PluginCliPluginRef,
 } from '@/api/pluginCli'
 import { usePluginStore } from '@/stores/plugin'
 import {
@@ -25,6 +26,7 @@ import {
   type PluginWorkbenchLayoutMode,
 } from '@/composables/usePluginWorkbench'
 import { resolvePluginDisplayText } from '@/utils/pluginDisplay'
+import { formatHttpError } from '@/utils/request'
 
 export type LayoutMode = PluginWorkbenchLayoutMode
 export type BuildMode = PluginCliBuildMode
@@ -32,6 +34,10 @@ export type PluginGroupType = PluginWorkbenchGroupType
 export type PackageResultKind = '' | 'build' | 'inspect' | 'verify' | 'install' | 'analyze'
 
 export type SelectablePlugin = PluginWorkbenchItem
+
+export type UsePackageManagerOptions = {
+  externalSelectedPluginIds?: MaybeRefOrGetter<readonly string[] | undefined>
+}
 
 export type PackageResultRecord = {
   id: string
@@ -45,7 +51,7 @@ export type PackageResultRecord = {
   summaryWarnings: string[]
 }
 
-export function usePackageManager() {
+export function usePackageManager(options: UsePackageManagerOptions = {}) {
   const pluginStore = usePluginStore()
   // PR #1480 review-fix 1.31 (Phase 7): summary labels and the createdAt
   // timestamp must follow the active i18n locale. ``t`` reads from the
@@ -57,6 +63,7 @@ export function usePackageManager() {
   const activeTab = ref('build')
   const buildMode = ref<BuildMode>('selected')
   const localPluginIds = ref<string[]>([])
+  const localPluginRefs = ref<PluginCliPluginRef[]>([])
   const pluginsLoading = ref(false)
   const packagesLoading = ref(false)
   const localPackages = ref<PluginCliLocalPackageItem[]>([])
@@ -103,6 +110,10 @@ export function usePackageManager() {
     current_sdk_version: '',
   })
 
+  const pluginRefByKey = computed(() => {
+    return new Map(localPluginRefs.value.map((ref) => [pluginRefKey(ref), ref] as const))
+  })
+
   const selectablePlugins = computed<SelectablePlugin[]>(() => {
     const metaById = new Map(
       pluginStore.pluginsWithStatus.map((plugin) => {
@@ -132,17 +143,27 @@ export function usePackageManager() {
       })
     )
 
-    return localPluginIds.value.map((pluginId) => {
-      return (
-        metaById.get(pluginId) ?? {
-          id: pluginId,
-          name: pluginId,
+    return localPluginIds.value.map((pluginKey) => {
+      const ref = pluginRefByKey.value.get(pluginKey)
+      const meta = ref
+        ? metaById.get(ref.plugin_id || '') ?? metaById.get(ref.directory_name)
+        : metaById.get(pluginKey)
+      if (meta) {
+        return {
+          ...meta,
+          id: pluginKey,
+          displayName: ref?.label || meta.displayName,
+        }
+      }
+      const fallbackName = ref?.label || ref?.plugin_id || ref?.directory_name || pluginKey
+      return {
+          id: pluginKey,
+          name: fallbackName,
           description: '',
           version: '0.0.0',
           type: 'plugin',
           entries: [],
         }
-      )
     })
   })
   const {
@@ -163,7 +184,7 @@ export function usePackageManager() {
     togglePlugin: toggleWorkbenchPlugin,
     selectAllVisible,
     clearSelection,
-  } = usePluginWorkbench(selectablePlugins)
+  } = usePluginWorkbench(selectablePlugins, { scope: 'plugin-package-workbench' })
 
   const resolvedBuildTargets = computed(() => {
     if (buildMode.value === 'all') {
@@ -196,6 +217,58 @@ export function usePackageManager() {
     if (type === 'adapter') return 'adapter'
     if (type === 'extension') return 'extension'
     return 'plugin'
+  }
+
+  function pluginRefKey(ref: PluginCliPluginRef): string {
+    return `${ref.root_id}:${ref.directory_name}`
+  }
+
+  function pluginRefAliases(ref: PluginCliPluginRef): string[] {
+    return [
+      pluginRefKey(ref),
+      ref.plugin_id,
+      ref.directory_name,
+    ].filter((value): value is string => !!value)
+  }
+
+  function externalPluginIdsToTargets(pluginIds: readonly string[]): string[] {
+    const availableIds = new Set(localPluginIds.value)
+    const targetByAlias = new Map<string, string>()
+    for (const ref of localPluginRefs.value) {
+      const key = pluginRefKey(ref)
+      for (const alias of pluginRefAliases(ref)) {
+        targetByAlias.set(alias, key)
+      }
+    }
+
+    return pluginIds
+      .map((pluginId) => targetByAlias.get(pluginId) || (availableIds.has(pluginId) ? pluginId : ''))
+      .filter((pluginId): pluginId is string => !!pluginId)
+  }
+
+  function syncExternalSelection() {
+    const externalSelected = toValue(options.externalSelectedPluginIds)
+    if (!externalSelected) return
+    setSelectedPluginIds(externalPluginIdsToTargets(externalSelected))
+  }
+
+  function targetRef(target: string): PluginCliPluginRef | undefined {
+    const ref = pluginRefByKey.value.get(target)
+    if (!ref) return undefined
+    return {
+      root_id: ref.root_id,
+      directory_name: ref.directory_name,
+    }
+  }
+
+  function targetRefs(targets: string[]): PluginCliPluginRef[] {
+    const refs = targets.map((target) => targetRef(target))
+    return refs.every(Boolean) ? (refs as PluginCliPluginRef[]) : []
+  }
+
+  function targetLabel(target: string): string {
+    const ref = pluginRefByKey.value.get(target)
+    return ref?.label || ref?.plugin_id || ref?.directory_name || target
   }
 
   function createPrimaryBuildResult(data: Record<string, any> | null, kind: PackageResultKind) {
@@ -431,8 +504,15 @@ export function usePackageManager() {
     try {
       const syncResult = await pluginStore.syncRegistryAndFetch()
       const response = await getPluginCliPlugins()
-      localPluginIds.value = response.plugins
-      setSelectedPluginIds(selectedPluginIds.value.filter((pluginId) => response.plugins.includes(pluginId)))
+      const refs = response.plugin_refs || []
+      localPluginRefs.value = refs
+      localPluginIds.value = refs.length > 0 ? refs.map((ref) => pluginRefKey(ref)) : response.plugins
+      const availableIds = new Set(localPluginIds.value)
+      if (options.externalSelectedPluginIds) {
+        syncExternalSelection()
+      } else {
+        setSelectedPluginIds(selectedPluginIds.value.filter((pluginId) => availableIds.has(pluginId)))
+      }
       if (syncResult.warningMessage) {
         ElMessage.warning(syncResult.warningMessage)
       }
@@ -492,10 +572,7 @@ export function usePackageManager() {
   }
 
   function buildErrorMessage(error: unknown): string {
-    const detail = (error as any)?.response?.data?.detail
-    if (typeof detail === 'string' && detail.trim()) return detail
-    if (error instanceof Error) return error.message
-    return String(error)
+    return formatHttpError(error)
   }
 
   function failedBuildResponse(plugin: string, error: unknown): PluginCliBuildResponse {
@@ -525,10 +602,12 @@ export function usePackageManager() {
           return
         }
         let response: PluginCliBuildResponse
+        const refs = targetRefs(targets)
         try {
           response = await buildPluginCli({
             mode: 'bundle',
-            plugins: targets,
+            plugin_refs: refs.length > 0 ? refs : undefined,
+            plugins: refs.length > 0 ? undefined : targets,
             bundle_id: buildForm.value.bundle_id?.trim() || undefined,
             package_name: buildForm.value.package_name?.trim() || undefined,
             package_description: buildForm.value.package_description?.trim() || undefined,
@@ -537,7 +616,7 @@ export function usePackageManager() {
             keep_staging: !!buildForm.value.keep_staging,
           })
         } catch (error) {
-          response = failedBuildResponse(targets.join(', '), error)
+          response = failedBuildResponse(targets.map(targetLabel).join(', '), error)
           setResult('build', response)
           ElMessage.error(`整合包构建失败：${buildErrorMessage(error)}`)
           return
@@ -586,17 +665,19 @@ export function usePackageManager() {
       const failed: Array<{ plugin: string; error: string }> = []
 
       for (const pluginId of targets) {
+        const ref = targetRef(pluginId)
         try {
           const response = await buildPluginCli({
             mode: 'single',
-            plugin: pluginId,
+            plugin_ref: ref,
+            plugin: ref ? undefined : pluginId,
             target_dir: buildForm.value.target_dir || undefined,
             keep_staging: !!buildForm.value.keep_staging,
           })
           built.push(...response.built)
           failed.push(...response.failed)
         } catch (error) {
-          failed.push({ plugin: pluginId, error: buildErrorMessage(error) })
+          failed.push({ plugin: targetLabel(pluginId), error: buildErrorMessage(error) })
         }
       }
 
@@ -633,7 +714,7 @@ export function usePackageManager() {
       setResult('inspect', response)
       ElMessage.success('包检查完成')
     } catch (error) {
-      ElMessage.error(`包检查失败：${error instanceof Error ? error.message : String(error)}`)
+      ElMessage.error(`包检查失败：${formatHttpError(error)}`)
     } finally {
       inspecting.value = false
     }
@@ -651,7 +732,7 @@ export function usePackageManager() {
       setResult('verify', response)
       ElMessage[response.ok ? 'success' : 'warning'](response.ok ? '包校验通过' : '包未通过校验')
     } catch (error) {
-      ElMessage.error(`包校验失败：${error instanceof Error ? error.message : String(error)}`)
+      ElMessage.error(`包校验失败：${formatHttpError(error)}`)
     } finally {
       verifying.value = false
     }
@@ -675,7 +756,7 @@ export function usePackageManager() {
       await refreshPluginSources()
       ElMessage.success(`安装完成，处理了 ${response.installed_plugin_count} 个插件`)
     } catch (error) {
-      ElMessage.error(`安装失败：${error instanceof Error ? error.message : String(error)}`)
+      ElMessage.error(`安装失败：${formatHttpError(error)}`)
     } finally {
       installing.value = false
     }
@@ -689,14 +770,16 @@ export function usePackageManager() {
     analyzing.value = true
     inspectResult.value = null
     try {
+      const refs = targetRefs(analyzeForm.value.plugins)
       const response: PluginCliAnalyzeResponse = await analyzePluginBundle({
-        plugins: analyzeForm.value.plugins,
+        plugin_refs: refs.length > 0 ? refs : undefined,
+        plugins: refs.length > 0 ? undefined : analyzeForm.value.plugins,
         current_sdk_version: analyzeForm.value.current_sdk_version.trim() || undefined,
       })
       setResult('analyze', response)
       ElMessage.success('分析完成')
     } catch (error) {
-      ElMessage.error(`分析失败：${error instanceof Error ? error.message : String(error)}`)
+      ElMessage.error(`分析失败：${formatHttpError(error)}`)
     } finally {
       analyzing.value = false
     }
@@ -712,6 +795,14 @@ export function usePackageManager() {
       analyzeForm.value.plugins = [...pluginIds]
     },
     { immediate: true }
+  )
+
+  watch(
+    () => toValue(options.externalSelectedPluginIds),
+    () => {
+      syncExternalSelection()
+    },
+    { immediate: true },
   )
 
   watch(buildMode, (mode) => {
