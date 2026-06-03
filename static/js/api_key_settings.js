@@ -271,6 +271,10 @@ async function refreshLocalKokoroVoiceOptions(silent = true) {
 
     const currentProfile = normalizeLocalKokoroProfile(localProfileSelect?.value || '');
     const currentVoice = localVoiceSelect.value || localKokoroDefaultVoice(currentProfile);
+    const currentVoiceProfile = localKokoroProfileFromVoiceId(currentVoice);
+    const preferredVoice = currentVoiceProfile && currentVoiceProfile !== currentProfile
+        ? localKokoroDefaultVoice(currentProfile)
+        : currentVoice;
     localUrlInput.value = wsUrl;
     try {
         const health = await fetchLocalKokoroJson(healthUrl);
@@ -293,15 +297,17 @@ async function refreshLocalKokoroVoiceOptions(silent = true) {
             if (!rawVoiceId) return;
             const voiceId = normalizeLocalKokoroVoiceId(rawVoiceId, currentProfile);
             if (!voiceId || voiceId === 'kokoro:') return;
+            const voiceProfile = localKokoroProfileFromVoiceId(voiceId);
+            if (voiceProfile && voiceProfile !== currentProfile) return;
             const option = document.createElement('option');
             option.value = voiceId;
             option.textContent = v.name || voiceId.replace(/^kokoro:/, '');
             option.title = voiceId;
             localVoiceSelect.appendChild(option);
         });
-        ensureLocalKokoroVoiceOption(currentVoice);
-        localVoiceSelect.value = Array.from(localVoiceSelect.options).some(opt => opt.value === currentVoice)
-            ? currentVoice
+        ensureLocalKokoroVoiceOption(preferredVoice);
+        localVoiceSelect.value = Array.from(localVoiceSelect.options).some(opt => opt.value === preferredVoice)
+            ? preferredVoice
             : localKokoroDefaultVoice(currentProfile);
     } catch (e) {
         if (!silent) {
@@ -328,7 +334,7 @@ function loadLocalKokoroTtsConfig(ttsModelUrl, ttsVoiceId, ttsModelId = '') {
 
     const savedUrl = (ttsModelUrl || '').trim();
     const savedProfile = normalizeLocalKokoroProfile(
-        localKokoroProfileFromModelId(ttsModelId) || localKokoroProfileFromVoiceId(ttsVoiceId)
+        localKokoroProfileFromVoiceId(ttsVoiceId) || localKokoroProfileFromModelId(ttsModelId)
     );
     const savedVoice = normalizeLocalKokoroVoiceId(ttsVoiceId, savedProfile);
     if (/^(wss?|https?):\/\//i.test(savedUrl)) {
@@ -361,8 +367,13 @@ function applyLocalKokoroTtsConfig() {
     const enableCustomApi = document.getElementById('enableCustomApi');
 
     const wsUrl = normalizeLocalKokoroWsUrl(localUrlInput ? localUrlInput.value : '');
-    const profile = normalizeLocalKokoroProfile(localProfileSelect ? localProfileSelect.value : '');
-    const voiceId = localVoiceSelect ? normalizeLocalKokoroVoiceId(localVoiceSelect.value, profile) : localKokoroDefaultVoice(profile);
+    const selectedProfile = normalizeLocalKokoroProfile(localProfileSelect ? localProfileSelect.value : '');
+    const selectedVoice = localVoiceSelect ? normalizeLocalKokoroVoiceId(localVoiceSelect.value, selectedProfile) : localKokoroDefaultVoice(selectedProfile);
+    const profile = localKokoroProfileFromVoiceId(selectedVoice) || selectedProfile;
+    const voiceId = normalizeLocalKokoroVoiceId(selectedVoice, profile);
+    if (localProfileSelect) {
+        localProfileSelect.value = profile;
+    }
 
     if (enableCustomApi && !enableCustomApi.checked) {
         enableCustomApi.checked = true;
@@ -2138,7 +2149,14 @@ document.addEventListener('DOMContentLoaded', function () {
 
     const localKokoroVoiceSelect = document.getElementById('localKokoroVoiceSelect');
     if (localKokoroVoiceSelect) {
-        localKokoroVoiceSelect.addEventListener('change', applyLocalKokoroTtsConfig);
+        localKokoroVoiceSelect.addEventListener('change', () => {
+            const impliedProfile = localKokoroProfileFromVoiceId(localKokoroVoiceSelect.value);
+            const localKokoroProfileSelect = document.getElementById('localKokoroProfileSelect');
+            if (localKokoroProfileSelect && impliedProfile) {
+                localKokoroProfileSelect.value = impliedProfile;
+            }
+            applyLocalKokoroTtsConfig();
+        });
     }
 
     const localKokoroProfileSelect = document.getElementById('localKokoroProfileSelect');
