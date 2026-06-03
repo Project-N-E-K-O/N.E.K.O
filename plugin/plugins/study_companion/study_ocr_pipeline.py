@@ -396,6 +396,21 @@ class StudyOcrPipeline:
                         "study active window title win32 lookup failed: %s",
                         exc,
                     )
+        if sys.platform.startswith("linux"):
+            try:
+                result = subprocess.run(
+                    ["xdotool", "getactivewindow", "getwindowname"],
+                    capture_output=True,
+                    text=True,
+                    timeout=1.0,
+                )
+            except Exception:
+                pass
+            else:
+                if result.returncode == 0:
+                    title = str(result.stdout or "").strip()
+                    if title:
+                        return title
         try:
             import pygetwindow
 

@@ -95,7 +95,7 @@ def test_store_purge_all_clears_user_data_tables(tmp_path: Path) -> None:
         reviewed = memory.review_item(item_id=word["id"], rating="good")
         bridge.apply_review_progress(reviewed, date="2026-05-24")
         notebook = notebooks.create_notebook(name="Private Notes")
-        note = notebooks.create_note(
+        notebooks.create_note(
             notebook_id=notebook.id,
             title="Secret note",
             content="private study note",
@@ -108,7 +108,6 @@ def test_store_purge_all_clears_user_data_tables(tmp_path: Path) -> None:
         assert deleted["memory_habit_progress"] >= 1
         assert deleted["notebooks"] >= 1
         assert deleted["notes"] >= 1
-        assert note.id
         with store.transaction() as conn:
             table_queries = {
                 "kv": "SELECT COUNT(*) FROM kv",

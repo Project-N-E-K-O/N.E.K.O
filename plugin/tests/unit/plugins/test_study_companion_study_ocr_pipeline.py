@@ -305,3 +305,19 @@ def test_ocr_pipeline_macos_active_window_title_falls_back_to_app_name(
     monkeypatch.setattr(pipeline_module.subprocess, "run", fake_run)
 
     assert StudyOcrPipeline._get_active_window_title() == "Safari"
+
+
+def test_ocr_pipeline_linux_active_window_title_uses_xdotool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(list(cmd))
+        return SimpleNamespace(returncode=0, stdout="Lesson - Firefox\n")
+
+    monkeypatch.setattr(pipeline_module.sys, "platform", "linux")
+    monkeypatch.setattr(pipeline_module.subprocess, "run", fake_run)
+
+    assert StudyOcrPipeline._get_active_window_title() == "Lesson - Firefox"
+    assert calls == [["xdotool", "getactivewindow", "getwindowname"]]
