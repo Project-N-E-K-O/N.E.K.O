@@ -34,6 +34,7 @@ let _loadedGptSovitsState = 'none';
 // 上方普通 TTS 配置是否被用户在本页改动过
 let _ttsConfigDirty = false;
 let _localKokoroVoiceRefreshTimer = null;
+let _localKokoroProbeSeq = 0;
 
 function markTtsConfigDirty() {
     if (_isLoadingSavedConfig) return;
@@ -166,6 +167,31 @@ function localKokoroVoicesUrlFromWs(wsUrl) {
     }
 }
 
+function localKokoroHealthUrlFromWs(wsUrl) {
+    const raw = (wsUrl || '').trim();
+    if (!raw) return null;
+    try {
+        const url = new URL(raw);
+        if (url.protocol === 'ws:') {
+            url.protocol = 'http:';
+        } else if (url.protocol === 'wss:') {
+            url.protocol = 'https:';
+        } else if (!['http:', 'https:'].includes(url.protocol)) {
+            return null;
+        }
+        url.search = '';
+        url.hash = '';
+        let pathname = url.pathname.replace(/\/+$/, '');
+        pathname = pathname.replace(/\/v1\/audio\/speech\/stream$/i, '');
+        pathname = pathname.replace(/\/v1\/voices$/i, '');
+        pathname = pathname.replace(/\/health$/i, '');
+        url.pathname = `${pathname}/health`.replace(/\/{2,}/g, '/');
+        return url.toString();
+    } catch (e) {
+        return null;
+    }
+}
+
 function looksLikeLocalKokoroWsUrl(value) {
     const raw = (value || '').trim();
     if (!raw) return false;
@@ -180,29 +206,28 @@ function looksLikeLocalKokoroWsUrl(value) {
     }
 }
 
-function shouldShowLocalKokoroTtsConfig() {
+function currentTtsKokoroWsUrlCandidate() {
     const provider = (document.getElementById('ttsModelProvider')?.value || '').trim();
-    if (provider !== 'custom') return false;
-
+    if (provider !== 'custom') return '';
     const ttsUrl = (document.getElementById('ttsModelUrl')?.value || '').trim();
-    const ttsModelId = (document.getElementById('ttsModelId')?.value || '').trim();
-    const ttsVoiceId = (document.getElementById('ttsVoiceId')?.value || '').trim();
-    const hasAnyTtsValue = Boolean(ttsUrl || ttsModelId || ttsVoiceId);
+    if (!looksLikeLocalKokoroWsUrl(ttsUrl)) return '';
+    return normalizeLocalKokoroWsUrl(ttsUrl);
+}
 
-    if (!hasAnyTtsValue) return false;
-    return Boolean(
-        localKokoroProfileFromModelId(ttsModelId)
-        || localKokoroProfileFromVoiceId(ttsVoiceId)
-        || looksLikeLocalKokoroWsUrl(ttsUrl)
-    );
+function setLocalKokoroTtsConfigVisible(visible) {
+    const panel = document.getElementById('localKokoroTtsConfig');
+    if (panel) {
+        panel.style.display = visible ? '' : 'none';
+    }
 }
 
 function updateLocalKokoroTtsConfigVisibility() {
-    const panel = document.getElementById('localKokoroTtsConfig');
-    if (!panel) return false;
-    const shouldShow = shouldShowLocalKokoroTtsConfig();
-    panel.style.display = shouldShow ? '' : 'none';
-    return shouldShow;
+    const shouldProbe = Boolean(currentTtsKokoroWsUrlCandidate());
+    setLocalKokoroTtsConfigVisible(false);
+    if (!shouldProbe) {
+        _localKokoroProbeSeq += 1;
+    }
+    return shouldProbe;
 }
 
 async function fetchLocalKokoroJson(url, timeoutMs = 3000) {
@@ -239,12 +264,27 @@ async function refreshLocalKokoroVoiceOptions(silent = true) {
     if (!localUrlInput || !localVoiceSelect) return;
     if (!updateLocalKokoroTtsConfigVisibility()) return;
 
+    const probeSeq = ++_localKokoroProbeSeq;
+    const wsUrl = currentTtsKokoroWsUrlCandidate();
+    const healthUrl = localKokoroHealthUrlFromWs(wsUrl);
+    const voicesUrl = localKokoroVoicesUrlFromWs(wsUrl);
+    if (!wsUrl || !healthUrl || !voicesUrl) return;
+
     const currentProfile = normalizeLocalKokoroProfile(localProfileSelect?.value || '');
     const currentVoice = localVoiceSelect.value || localKokoroDefaultVoice(currentProfile);
-    const voicesUrl = localKokoroVoicesUrlFromWs(localUrlInput.value);
-    if (!voicesUrl) return;
+    localUrlInput.value = wsUrl;
     try {
+        const health = await fetchLocalKokoroJson(healthUrl);
+        const engines = Array.isArray(health?.engines) ? health.engines : [];
+        if (probeSeq !== _localKokoroProbeSeq) return;
+        if (!engines.includes('kokoro')) {
+            setLocalKokoroTtsConfigVisible(false);
+            return;
+        }
+        setLocalKokoroTtsConfigVisible(true);
+
         const result = await fetchLocalKokoroJson(voicesUrl);
+        if (probeSeq !== _localKokoroProbeSeq) return;
         const voices = result?.data?.kokoro || [];
         if (!Array.isArray(voices) || voices.length === 0) return;
 
@@ -357,7 +397,9 @@ function applyLocalKokoroTtsConfig() {
 
     markTtsConfigDirty();
     syncProviderSelectDropdowns(providerSelect);
-    updateLocalKokoroTtsConfigVisibility();
+    if (updateLocalKokoroTtsConfigVisibility()) {
+        refreshLocalKokoroVoiceOptions(true);
+    }
 }
 
 function getProviderResolvedUrl(scope, providerKey) {
@@ -1218,7 +1260,9 @@ function onCustomModelProviderChange(modelType) {
     }
 
     if (modelType === 'tts') {
-        updateLocalKokoroTtsConfigVisibility();
+        if (updateLocalKokoroTtsConfigVisibility()) {
+            scheduleLocalKokoroVoiceRefresh();
+        }
     }
 }
 
@@ -2066,12 +2110,16 @@ document.addEventListener('DOMContentLoaded', function () {
         if (!el) return;
         el.addEventListener('change', () => {
             markTtsConfigDirty();
-            updateLocalKokoroTtsConfigVisibility();
+            if (updateLocalKokoroTtsConfigVisibility()) {
+                scheduleLocalKokoroVoiceRefresh();
+            }
         });
         if (el.tagName !== 'SELECT') {
             el.addEventListener('input', () => {
                 markTtsConfigDirty();
-                updateLocalKokoroTtsConfigVisibility();
+                if (updateLocalKokoroTtsConfigVisibility()) {
+                    scheduleLocalKokoroVoiceRefresh();
+                }
             });
         }
     });
