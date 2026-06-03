@@ -413,7 +413,7 @@ interface InstalledMarketEntry {
   plugin_id: string
   market_id?: string
   installed_version: string
-  channel: string
+  channel: 'stable' | 'beta'
   package_url: string
 }
 const installedByPid = ref<Map<string, InstalledMarketEntry>>(new Map())
@@ -663,7 +663,7 @@ interface MarketInstalledItem {
   path: string
   latest_install_source: {
     plugin_market_id?: string
-    channel: string
+    channel: 'stable' | 'beta'
     version: string
     package_sha256: string
     payload_hash: string | null

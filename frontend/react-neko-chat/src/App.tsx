@@ -96,13 +96,13 @@ function getEffectiveCompactChatState(
   return requestedState;
 }
 
-const COMPACT_PREVIEW_MAX_LENGTH = 84;
 const COMPACT_SPEECH_REVEAL_MAX_CHARS_PER_SECOND = 8;
 const COMPACT_SPEECH_TURN_MERGE_WINDOW_MS = 12000;
 const COMPACT_SPEECH_FALLBACK_REVEAL_DELAY_MS = 700;
 const SPEECH_PLAYBACK_STATE_STORAGE_KEY = 'neko_speech_playback_state';
 const SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';
 const COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY = 'neko.reactChatWindow.compactExportHistoryOpen';
+export const COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS = 560;
 const COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT = 7;
 const COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD = 22;
 const COMPACT_INPUT_TOOL_WHEEL_SCROLL_THRESHOLD = 64;
@@ -125,15 +125,11 @@ const COMPACT_INPUT_TOOL_WHEEL_HOVER_RADIUS = 116;
 const COMPACT_INPUT_TOOL_WHEEL_ANGLE_MIN_RADIUS = 16;
 const COMPACT_INPUT_TOOL_TOGGLE_HOVER_OUTSET = 14;
 const COMPACT_INPUT_TOOL_FAN_ORIGIN_CLOSE_SIZE = 48;
+// 在工具轮盘中心（toggle / fan 原点）按下后，指针移动超过此像素阈值即视为「拖动文本框」
+// 而非「点一下展开/关闭轮盘」。与宿主 surface 拖拽的 CLICK_THRESHOLD(5px) 量级一致。
+const COMPACT_INPUT_TOOL_ORIGIN_DRAG_THRESHOLD = 6;
 const COMPACT_INPUT_TOOL_FAN_INTERACTIVE_DELAY_MS = 220;
 const COMPACT_INPUT_TOOL_FAN_TRANSIENT_CLOSE_DELAY_MS = 360;
-// Long-press to grab and drag the whole compact surface (the OS window-move
-// runs in the desktop preload; see neko:compact-surface-drag-request). Hold this
-// long without moving more than the tolerance. Shared by the dropdown-arrow
-// toggle and the input-box edge bands; a quick tap on either does its own thing
-// (toggle opens the tool wheel; an edge band focuses the input) on release.
-const COMPACT_INPUT_SURFACE_LONG_PRESS_MS = 320;
-const COMPACT_INPUT_SURFACE_LONG_PRESS_MOVE_TOLERANCE = 10;
 const COMPACT_INPUT_TOOL_FAN_OUTSIDE_CLOSE_DELAY_MS = 650;
 const COMPACT_SURFACE_RESIZE_MIN_WIDTH = 430;
 const COMPACT_SURFACE_RESIZE_MAX_WIDTH = 720;
@@ -245,16 +241,6 @@ type CompactToolWheelChargeState = {
   chargeSteps: number;
 };
 
-type CompactToolTogglePressState = {
-  pointerId: number;
-  startClientX: number;
-  startClientY: number;
-  startScreenX: number;
-  startScreenY: number;
-  longPressFired: boolean;
-  canceledTap: boolean;
-};
-
 type CompactToolWheelDragPoint = {
   x: number;
   y: number;
@@ -289,11 +275,30 @@ function createCompactToolWheelChargeState(): CompactToolWheelChargeState {
 
 type CompactMessagePreview = {
   messageId: string;
+  // Stable identity of the whole merged turn: the id of the earliest message
+  // folded into this preview. Unchanged as more bubbles stream into the same
+  // turn (messageId re-keys to the latest bubble, this does not), and changes
+  // when a genuinely new turn begins. Used to tell an appended bubble from a
+  // new turn without relying on text-prefix matching.
+  turnStartId: string;
+  turnId?: string;
   author: string;
   text: string;
   fullText: string;
   isStreaming: boolean;
   isAssistant: boolean;
+};
+
+type CompactCaptionState = {
+  turnId: string;
+  segmentId: string;
+  lastSegmentText: string;
+  segments: Array<{
+    segmentId: string;
+    text: string;
+  }>;
+  text: string;
+  isEnded?: boolean;
 };
 
 type DesktopCompactChoicePlacementLayout = {
@@ -363,6 +368,9 @@ function persistCompactExportHistoryOpen(open: boolean) {
 
 type SpeechPlaybackState = {
   active: boolean;
+  turnId?: string | null;
+  playbackTurnId?: string | null;
+  speechId?: string | null;
   audioContextTime: number;
   playbackStartAudioTime: number;
   playbackEndAudioTime: number;
@@ -376,11 +384,17 @@ function normalizeCompactPreviewText(text: string): string {
     .trim();
 }
 
-function truncateCompactPreview(text: string, maxLength: number): string {
-  if (text.length <= maxLength) {
-    return text;
+function splitCompactPreviewGraphemes(text: string): string[] {
+  const segmenter = (Intl as typeof Intl & {
+    Segmenter?: new (
+      locale?: string,
+      options?: { granularity?: 'grapheme' },
+    ) => { segment(input: string): Iterable<{ segment: string }> };
+  }).Segmenter;
+  if (typeof segmenter === 'function') {
+    return Array.from(new segmenter(undefined, { granularity: 'grapheme' }).segment(text), part => part.segment);
   }
-  return `${text.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+  return Array.from(text);
 }
 
 function getCompactSpeechRevealDuration(textLength: number, audioDuration: number): number {
@@ -394,6 +408,18 @@ function getEstimatedSpeechAudioTime(state: SpeechPlaybackState): number {
   }
   const elapsedSinceUpdate = Math.max(0, (Date.now() - state.updatedAt) / 1000);
   return state.audioContextTime + elapsedSinceUpdate;
+}
+
+function isSpeechPlaybackStateForCompactPreview(
+  state: SpeechPlaybackState | null,
+  preview: { turnId?: string } | null,
+): state is SpeechPlaybackState {
+  if (!state) return false;
+  const previewTurnId = preview?.turnId;
+  if (!previewTurnId) return true;
+  const stateTurnIds = [state.playbackTurnId, state.turnId].filter((value): value is string => !!value);
+  if (stateTurnIds.length === 0) return true;
+  return stateTurnIds.includes(previewTurnId);
 }
 
 function getMessageBlockPreviewText(message: ChatMessage): string {
@@ -420,7 +446,11 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
   let latestStreamingAssistantIndex = -1;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
-    if (message?.role === 'assistant' && message.status === 'streaming' && getMessageBlockPreviewText(message)) {
+    if (
+      message?.role === 'assistant'
+      && message.status === 'streaming'
+      && getMessageBlockPreviewText(message)
+    ) {
       latestStreamingAssistantIndex = index;
       break;
     }
@@ -430,7 +460,11 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
     const turnTexts: string[] = [];
     let turnAuthor = '';
     const latestStreamingMessage = messages[latestStreamingAssistantIndex];
+    const latestStreamingTurnId = latestStreamingMessage?.turnId;
     const turnMessageId = String(latestStreamingMessage?.id || 'assistant-streaming');
+    // Walks backward to the earliest merged bubble, so the last assignment in
+    // the loop is the turn's anchor id.
+    let turnStartId = latestStreamingTurnId ? `assistant-turn:${latestStreamingTurnId}` : turnMessageId;
     let previousIncludedCreatedAt = typeof latestStreamingMessage?.createdAt === 'number'
       && Number.isFinite(latestStreamingMessage.createdAt)
       ? latestStreamingMessage.createdAt
@@ -441,18 +475,29 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
       if (message.role !== 'assistant') {
         break;
       }
+      if (index !== latestStreamingAssistantIndex && latestStreamingTurnId && message.turnId !== latestStreamingTurnId) {
+        break;
+      }
       if (index !== latestStreamingAssistantIndex && message.status !== 'streaming') {
         const createdAt = typeof message.createdAt === 'number' && Number.isFinite(message.createdAt)
           ? message.createdAt
           : null;
-        if (
+        if (!latestStreamingTurnId && (
           previousIncludedCreatedAt === null
           || createdAt === null
           || Math.abs(previousIncludedCreatedAt - createdAt) > COMPACT_SPEECH_TURN_MERGE_WINDOW_MS
-        ) {
+        )) {
           break;
         }
         previousIncludedCreatedAt = createdAt;
+      }
+      // Anchor the turn to every message folded in, before the empty-text skip.
+      // A bubble can be momentarily text-less (still streaming, image-only) then
+      // gain text; if the anchor only moved on text-bearing bubbles it would
+      // drift to a later bubble and back, re-keying the same turn as a new one
+      // and replaying the caption.
+      if (!latestStreamingTurnId) {
+        turnStartId = String(message.id || turnMessageId);
       }
       const text = getMessageBlockPreviewText(message);
       if (!text) continue;
@@ -463,6 +508,8 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
       const turnText = normalizeCompactPreviewText(turnTexts.join(' '));
       return {
         messageId: turnMessageId || 'assistant-streaming',
+        turnStartId,
+        turnId: latestStreamingTurnId,
         author: turnAuthor,
         text: turnText,
         fullText: turnText,
@@ -472,30 +519,7 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
     }
   }
 
-  let fallbackPreview: CompactMessagePreview | null = null;
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (!message) continue;
-    const text = getMessageBlockPreviewText(message);
-    if (!text) continue;
-
-    const isStreamingAssistantMessage = message.role === 'assistant' && message.status === 'streaming';
-    const preview = {
-      messageId: message.id,
-      author: message.author,
-      text: isStreamingAssistantMessage ? text : truncateCompactPreview(text, COMPACT_PREVIEW_MAX_LENGTH),
-      fullText: text,
-      isStreaming: isStreamingAssistantMessage,
-      isAssistant: message.role === 'assistant',
-    };
-    if (message.role === 'assistant') {
-      return preview;
-    }
-    if (!fallbackPreview) {
-      fallbackPreview = preview;
-    }
-  }
-  return fallbackPreview;
+  return null;
 }
 
 type ToolIconItem = AvatarToolItem;
@@ -1065,12 +1089,21 @@ export default function App({
   const compactInputToolWheelChargeRef = useRef<CompactToolWheelChargeState>(createCompactToolWheelChargeState());
   const compactInputToolWheelChargeReleaseActiveRef = useRef(false);
   const compactInputToolWheelSuppressClickRef = useRef(false);
+  // 工具轮盘原点（toggle / fan 中心）的「按住拖动文本框」手势追踪。与轮盘旋转
+  // (compactInputToolWheelPointerRef) 互斥：原点按下时不建立旋转 pointer，旋转路径自然 no-op。
+  const compactToolOriginDragRef = useRef<{
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    startScreenX: number;
+    startScreenY: number;
+    moved: boolean;
+    captureTarget: Element | null;
+  } | null>(null);
+  // 专用于「拖动文本框后吞掉补发 click」的标志。独立于 compactInputToolWheelSuppressClickRef，
+  // 因为轮盘关闭 effect 会重置后者，无法跨「关闭轮盘 + 随后 click」存活。
+  const compactToolOriginSuppressClickRef = useRef(false);
   const compactInputToolWheelScrollDeltaRef = useRef(0);
-  const compactInputToolTogglePointerHandledRef = useRef(false);
-  const compactInputToolTogglePressRef = useRef<CompactToolTogglePressState | null>(null);
-  const compactInputToolToggleLongPressTimerRef = useRef<number | null>(null);
-  const compactInputEdgePressRef = useRef<CompactToolTogglePressState | null>(null);
-  const compactInputEdgeLongPressTimerRef = useRef<number | null>(null);
   const compactInputToolFanPositionSyncRef = useRef<(() => void) | null>(null);
   const compactInputToolFanCloseTimerRef = useRef<number | null>(null);
   const compactInputToolFanInteractiveTimerRef = useRef<number | null>(null);
@@ -1106,6 +1139,13 @@ export default function App({
   const compactSpeechLastFrameTimeRef = useRef(0);
   const compactSpeechPreviewIdRef = useRef('');
   const compactSpeechPreviewTextRef = useRef('');
+  const compactSpeechPreviewTurnIdRef = useRef('');
+  // Identity of the turn the speech reveal is currently walking through (the
+  // preview's turnStartId). Updated when the preview re-keys (messageId change),
+  // so it holds the *previous* turn's anchor at the moment a new bubble arrives
+  // — used to tell an appended bubble (same turn → keep revealing) from a
+  // brand-new turn (rewind to the start) without text-prefix guessing.
+  const compactSpeechRevealTurnIdRef = useRef('');
   const compactSpeechFallbackRevealRef = useRef(false);
   const compactSpeechFallbackTimerRef = useRef<number | null>(null);
   const isCompactSurfaceRef = useRef(false);
@@ -1126,6 +1166,11 @@ export default function App({
   const [compactSpeechVisibleLength, setCompactSpeechVisibleLength] = useState(0);
   const [compactSpeechFallbackRevealActive, setCompactSpeechFallbackRevealActive] = useState(false);
   const [speechPlaybackState, setSpeechPlaybackState] = useState<SpeechPlaybackState | null>(null);
+  const [compactCaptionState, setCompactCaptionState] = useState<CompactCaptionState | null>(null);
+  const [compactAssistantStreamingGap, setCompactAssistantStreamingGap] = useState<{
+    turnId: string;
+    acceptStreaming: boolean;
+  } | null>(null);
   const [compactChoiceLayerPlacement, setCompactChoiceLayerPlacement] = useState<'above' | 'below'>('above');
   const [compactInputToolFanOpen, setCompactInputToolFanOpen] = useState(false);
   const [compactInputToolFanInteractive, setCompactInputToolFanInteractive] = useState(false);
@@ -1136,12 +1181,14 @@ export default function App({
   const [compactInputToolWheelChargeReleaseActive, setCompactInputToolWheelChargeReleaseActive] = useState(false);
   const [compactSurfaceResizeWidth, setCompactSurfaceResizeWidth] = useState<number | null>(null);
   const [compactExportHistoryOpen, setCompactExportHistoryOpen] = useState(readPersistedCompactExportHistoryOpen);
+  const [compactExportHistoryMounted, setCompactExportHistoryMounted] = useState(readPersistedCompactExportHistoryOpen);
   const [compactExportControlsOpen, setCompactExportControlsOpen] = useState(false);
   const [compactExportPreviewOpen, setCompactExportPreviewOpen] = useState(false);
   const [compactExportSelectedIds, setCompactExportSelectedIds] = useState<Set<string>>(() => new Set());
   const [compactExportAutoScrollToBottom, setCompactExportAutoScrollToBottom] = useState(true);
   const compactSurfaceResizeStateRef = useRef<CompactSurfaceResizeState | null>(null);
   const compactHistoryVisibilitySuppressClickRef = useRef(false);
+  const compactExportHistoryUnmountTimerRef = useRef<number | null>(null);
   const submittingRef = useRef(false);
   const lastRollbackKeyRef = useRef('');
   const lastToolCursorResetKeyRef = useRef('');
@@ -1404,16 +1451,31 @@ export default function App({
     [compactExportSelectableMessages],
   );
   const compactExportSelectableCount = compactExportSelectableMessages.length;
+  const clearCompactExportHistoryUnmountTimer = useCallback(() => {
+    if (compactExportHistoryUnmountTimerRef.current === null) return;
+    window.clearTimeout(compactExportHistoryUnmountTimerRef.current);
+    compactExportHistoryUnmountTimerRef.current = null;
+  }, []);
   const openCompactExportHistory = useCallback(() => {
+    clearCompactExportHistoryUnmountTimer();
+    setCompactExportHistoryMounted(true);
     setCompactExportHistoryOpen(true);
     persistCompactExportHistoryOpen(true);
     setCompactExportAutoScrollToBottom(true);
-  }, []);
+  }, [clearCompactExportHistoryUnmountTimer]);
   const closeCompactExportHistory = useCallback(() => {
+    clearCompactExportHistoryUnmountTimer();
     setCompactExportHistoryOpen(false);
     persistCompactExportHistoryOpen(false);
     setCompactExportPreviewOpen(false);
-  }, []);
+    compactExportHistoryUnmountTimerRef.current = window.setTimeout(() => {
+      setCompactExportHistoryMounted(false);
+      compactExportHistoryUnmountTimerRef.current = null;
+    }, COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
+  }, [clearCompactExportHistoryUnmountTimer]);
+  useEffect(() => () => {
+    clearCompactExportHistoryUnmountTimer();
+  }, [clearCompactExportHistoryUnmountTimer]);
   const handleCompactHistoryVisibilityToggle = useCallback(() => {
     if (compactExportHistoryOpen) {
       closeCompactExportHistory();
@@ -1573,35 +1635,77 @@ export default function App({
     }
   }, [compactExportSelectedIds, compactExportSelectableIds]);
   const surfaceModeClassName = `chat-surface-mode-${chatSurfaceMode}`;
-  const compactMessagePreview = useMemo(() => getCompactMessagePreview(messages), [messages]);
-  const compactSpeechModeActive = !!compactMessagePreview?.isAssistant
+  const compactMessagePreviewFromMessages = useMemo(() => getCompactMessagePreview(messages), [messages]);
+  const compactCaptionPreview = useMemo<CompactMessagePreview | null>(() => {
+    if (!compactCaptionState?.turnId || !compactCaptionState.text) {
+      return null;
+    }
+    const captionMessageId = `compact-caption:${compactCaptionState.turnId}`;
+    return {
+      messageId: captionMessageId,
+      turnStartId: captionMessageId,
+      turnId: compactCaptionState.turnId,
+      author: 'Neko',
+      text: compactCaptionState.text,
+      fullText: compactCaptionState.text,
+      isStreaming: !compactCaptionState.isEnded,
+      isAssistant: true,
+    };
+  }, [compactCaptionState]);
+  const compactMessagePreview = compactCaptionPreview || compactMessagePreviewFromMessages;
+  const compactMatchedSpeechPlaybackState = isSpeechPlaybackStateForCompactPreview(
+    speechPlaybackState,
+    compactMessagePreview,
+  ) ? speechPlaybackState : null;
+  const compactPreviewMatchesStreamingGap = !!compactAssistantStreamingGap
+    && !!compactMessagePreview?.isAssistant
+    && !!compactMessagePreview.isStreaming
+    && !!compactMessagePreview.turnId
+    && compactMessagePreview.turnId === compactAssistantStreamingGap.turnId;
+  const compactPreservedSpeechMatchesEndingGap = !!compactAssistantStreamingGap
+    && !compactAssistantStreamingGap.acceptStreaming
+    && !!compactSpeechPreviewTurnIdRef.current
+    && compactSpeechPreviewTurnIdRef.current === compactAssistantStreamingGap.turnId;
+  const compactSuppressAssistantFallback = !!compactAssistantStreamingGap
+    && !compactPreviewMatchesStreamingGap
+    && !compactPreservedSpeechMatchesEndingGap;
+  const compactPreservedSpeechActive = !compactMessagePreview
+    && !compactSuppressAssistantFallback
+    && !!compactSpeechPreviewIdRef.current
+    && !!compactSpeechPreviewTextRef.current;
+  const compactSpeechModeActive = compactPreservedSpeechActive
+    || (!compactSuppressAssistantFallback
+    && !!compactMessagePreview?.isAssistant
     && !!compactMessagePreview?.messageId
     && (
       compactMessagePreview.isStreaming
       || compactSpeechPreviewIdRef.current === compactMessagePreview.messageId
-    );
-  const compactSpeechPreservedText = compactSpeechModeActive && !compactMessagePreview?.isStreaming
+    ));
+  const compactSpeechPreservedText = (compactSpeechModeActive && !compactMessagePreview?.isStreaming)
     ? compactSpeechPreviewTextRef.current
     : '';
-  const compactPreviewText = compactSpeechModeActive
-    ? (
-      compactMessagePreview?.isStreaming
-        ? compactMessagePreview?.fullText || ''
-        : compactSpeechPreservedText || compactMessagePreview?.fullText || ''
-    )
-    : compactMessagePreview?.text
-    || i18n('chat.emptyState', 'Chat content will appear here.');
+  const compactPreviewText = compactSuppressAssistantFallback
+    ? ''
+    : compactSpeechModeActive
+      ? (
+        compactMessagePreview?.isStreaming
+          ? compactMessagePreview?.fullText || ''
+          : compactSpeechPreservedText || compactMessagePreview?.fullText || ''
+      )
+      : compactMessagePreview?.text
+      || i18n('chat.emptyState', 'Chat content will appear here.');
   const compactPreviewIsStreaming = compactSpeechModeActive;
   const compactPreviewSpeechDuration = useMemo(() => {
-    if (!compactPreviewIsStreaming || !speechPlaybackState) {
+    if (!compactPreviewIsStreaming || !compactMatchedSpeechPlaybackState) {
       return null;
     }
-    const audioDuration = speechPlaybackState.playbackEndAudioTime - speechPlaybackState.playbackStartAudioTime;
+    const audioDuration = compactMatchedSpeechPlaybackState.playbackEndAudioTime
+      - compactMatchedSpeechPlaybackState.playbackStartAudioTime;
     if (!Number.isFinite(audioDuration) || audioDuration <= 0.05) {
       return null;
     }
     return getCompactSpeechRevealDuration(compactPreviewText.length, audioDuration);
-  }, [compactPreviewIsStreaming, compactPreviewText.length, speechPlaybackState]);
+  }, [compactMatchedSpeechPlaybackState, compactPreviewIsStreaming, compactPreviewText.length]);
   const compactPreviewDisplayText = useMemo(() => {
     if (!compactPreviewIsStreaming) {
       return compactPreviewTextVisible || compactPreviewText;
@@ -1618,6 +1722,37 @@ export default function App({
     compactPreviewText,
     compactPreviewTextVisible,
   ]);
+  const compactPreviewDisplayContent = useMemo(() => {
+    if (!compactPreviewIsStreaming || !compactPreviewDisplayText) {
+      return compactPreviewDisplayText;
+    }
+    const graphemes = splitCompactPreviewGraphemes(compactPreviewDisplayText);
+    const latestIndex = graphemes.length - 1;
+    if (latestIndex < 0) {
+      return '';
+    }
+    const prefix = graphemes.slice(0, latestIndex).join('');
+    const latestGrapheme = graphemes[latestIndex];
+    const keyPrefix = compactMessagePreview?.turnStartId || compactMessagePreview?.messageId || 'compact-preview';
+    return (
+      <>
+        {prefix}
+        <span
+          key={`${keyPrefix}:${latestIndex}:${latestGrapheme}`}
+          className="compact-chat-capsule-glyph"
+        >
+          {latestGrapheme}
+        </span>
+      </>
+    );
+  }, [
+    compactMessagePreview?.messageId,
+    compactMessagePreview?.turnStartId,
+    compactPreviewDisplayText,
+    compactPreviewIsStreaming,
+  ]);
+  const emojiButtonAriaLabel = i18n('chat.emojiButtonAriaLabel', 'Emoji');
+  const toolIconsAriaLabel = i18n('chat.toolIconsAriaLabel', 'Tool icons');
   const overflowMenuAriaLabel = i18n('chat.composerOverflowMenu', '更多工具');
   const clearCursorToolAriaLabel = i18n('chat.clearCursorToolAriaLabel', '恢复鼠标');
   const effectiveCursorVariant = resolveEffectiveCursorVariant(
@@ -1683,12 +1818,142 @@ export default function App({
   }, [compactPreviewTextVisible]);
 
   useEffect(() => {
-    compactPreviewTextVisibleRef.current = compactPreviewTextVisible;
-  }, [compactPreviewTextVisible]);
-
-  useEffect(() => {
     speechPlaybackStateRef.current = speechPlaybackState;
   }, [speechPlaybackState]);
+
+  useEffect(() => {
+    const handleAssistantTurnStart = (event: Event) => {
+      const detail = (event as CustomEvent).detail as Record<string, unknown> | undefined;
+      const turnId = detail?.turnId ? String(detail.turnId) : `assistant-gap-${Date.now()}`;
+      setCompactCaptionState(current => (
+        current?.turnId === turnId ? current : null
+      ));
+      setCompactAssistantStreamingGap({
+        turnId,
+        acceptStreaming: true,
+      });
+    };
+    const handleAssistantTurnBoundary = (event: Event) => {
+      const detail = (event as CustomEvent).detail as Record<string, unknown> | undefined;
+      const turnId = detail?.turnId ? String(detail.turnId) : `assistant-gap-ended-${Date.now()}`;
+      setCompactCaptionState(current => (
+        current?.turnId === turnId
+          ? {
+            ...current,
+            isEnded: true,
+          }
+          : current
+      ));
+      setCompactAssistantStreamingGap({
+        turnId,
+        acceptStreaming: false,
+      });
+    };
+    const handleCompactCaptionUpdate = (event: Event) => {
+      const detail = (event as CustomEvent).detail as Record<string, unknown> | undefined;
+      const turnId = detail?.turnId ? String(detail.turnId) : '';
+      const text = detail?.text ? normalizeCompactPreviewText(String(detail.text)) : '';
+      const rawSegmentId = detail?.segmentId ?? detail?.segmentIndex;
+      const explicitSegmentId = rawSegmentId !== undefined && rawSegmentId !== null && rawSegmentId !== ''
+        ? String(rawSegmentId)
+        : '';
+      if (!turnId || !text) {
+        return;
+      }
+      setCompactCaptionState(current => {
+        if (!current || current.turnId !== turnId) {
+          const segmentId = explicitSegmentId || 'legacy-segment-0';
+          return {
+            turnId,
+            segmentId,
+            lastSegmentText: text,
+            segments: [{
+              segmentId,
+              text,
+            }],
+            text,
+          };
+        }
+        const currentSegments = current.segments.length > 0
+          ? current.segments
+          : [{
+            segmentId: current.segmentId || 'legacy-segment-0',
+            text: current.lastSegmentText || current.text,
+          }];
+        const previousSegmentText = current.lastSegmentText || '';
+        const segmentId = explicitSegmentId
+          || (
+            !previousSegmentText
+            || text === previousSegmentText
+            || text.startsWith(previousSegmentText)
+            || previousSegmentText.startsWith(text)
+              ? current.segmentId
+              : `legacy-segment-${currentSegments.length}`
+          );
+        const existingSegmentIndex = currentSegments.findIndex(segment => segment.segmentId === segmentId);
+        const nextSegments = existingSegmentIndex >= 0
+          ? currentSegments.map((segment, index) => (
+            index === existingSegmentIndex
+              ? {
+                segmentId,
+                text,
+              }
+              : segment
+          ))
+          : currentSegments.concat({
+            segmentId,
+            text,
+          });
+        const nextText = normalizeCompactPreviewText(nextSegments.map(segment => segment.text).join(' '));
+        return {
+          turnId,
+          segmentId,
+          lastSegmentText: text,
+          segments: nextSegments,
+          text: nextText,
+          isEnded: false,
+        };
+      });
+    };
+
+    window.addEventListener('neko-assistant-turn-start', handleAssistantTurnStart);
+    window.addEventListener('neko-assistant-turn-ending', handleAssistantTurnBoundary);
+    window.addEventListener('neko-assistant-turn-end', handleAssistantTurnBoundary);
+    window.addEventListener('neko-compact-caption-update', handleCompactCaptionUpdate);
+    return () => {
+      window.removeEventListener('neko-assistant-turn-start', handleAssistantTurnStart);
+      window.removeEventListener('neko-assistant-turn-ending', handleAssistantTurnBoundary);
+      window.removeEventListener('neko-assistant-turn-end', handleAssistantTurnBoundary);
+      window.removeEventListener('neko-compact-caption-update', handleCompactCaptionUpdate);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (compactMessagePreview?.isAssistant && compactMessagePreview.isStreaming) {
+      setCompactAssistantStreamingGap(currentGap => {
+        if (!currentGap) {
+          return null;
+        }
+        if (
+          !compactMessagePreview.turnId
+          || compactMessagePreview.turnId !== currentGap.turnId
+        ) {
+          return currentGap;
+        }
+        if (!currentGap.acceptStreaming) {
+          return currentGap;
+        }
+        return null;
+      });
+    }
+  }, [
+    compactAssistantStreamingGap?.acceptStreaming,
+    compactAssistantStreamingGap?.turnId,
+    compactMessagePreview?.isAssistant,
+    compactMessagePreview?.isStreaming,
+    compactMessagePreview?.messageId,
+    compactMessagePreview?.turnId,
+  ]);
 
   useEffect(() => {
     isCompactSurfaceRef.current = isCompactSurface;
@@ -1702,12 +1967,14 @@ export default function App({
     if (compactMessagePreview?.isStreaming && compactMessagePreview.isAssistant) {
       compactSpeechPreviewIdRef.current = compactMessagePreview.messageId;
       compactSpeechPreviewTextRef.current = compactMessagePreview.fullText || compactMessagePreview.text || '';
+      compactSpeechPreviewTurnIdRef.current = compactMessagePreview.turnId || '';
     } else if (compactSpeechPreviewIdRef.current && (
-      !compactMessagePreview?.messageId
-      || compactSpeechPreviewIdRef.current !== compactMessagePreview.messageId
+      compactMessagePreview?.messageId
+      && compactSpeechPreviewIdRef.current !== compactMessagePreview.messageId
     )) {
       compactSpeechPreviewIdRef.current = '';
       compactSpeechPreviewTextRef.current = '';
+      compactSpeechPreviewTurnIdRef.current = '';
     }
   }, [
     compactMessagePreview?.fullText,
@@ -1715,21 +1982,52 @@ export default function App({
     compactMessagePreview?.isStreaming,
     compactMessagePreview?.messageId,
     compactMessagePreview?.text,
+    compactMessagePreview?.turnId,
   ]);
 
   useEffect(() => {
+    if (!compactMessagePreview && compactPreservedSpeechActive) {
+      return;
+    }
     if (compactSpeechFallbackTimerRef.current !== null) {
       window.clearTimeout(compactSpeechFallbackTimerRef.current);
       compactSpeechFallbackTimerRef.current = null;
     }
-    compactSpeechVisibleLengthRef.current = 0;
+    // Decouple the input-bar caption from per-bubble identity. The merged-turn
+    // preview is re-keyed to the latest streaming bubble's id, so every new
+    // bubble changes messageId even though it belongs to the same turn. While
+    // we're still inside that turn (same turnStartId), keep the revealed length
+    // so the caption continues appending instead of replaying the whole turn;
+    // only a genuinely new turn rewinds the reveal to the start. Keyed on the
+    // turn anchor rather than a text prefix, so two turns whose text happens to
+    // share a prefix can't be mistaken for a continuation.
+    const previousRevealTurnId = compactSpeechRevealTurnIdRef.current;
+    const nextRevealTurnId = compactPreviewIsStreaming ? (compactMessagePreview?.turnStartId || '') : '';
+    const continuesPreviousTurn = nextRevealTurnId.length > 0
+      && nextRevealTurnId === previousRevealTurnId;
+    const seedVisibleLength = continuesPreviousTurn
+      ? Math.min(compactSpeechVisibleLengthRef.current, compactPreviewText.length)
+      : 0;
+    // When the same turn continues, keep or immediately start the fallback
+    // reveal driver so appended text continues without a 700ms idle gap. The
+    // playback state is still reset to false so a finished bubble's audio can't
+    // snap the appended text to full.
+    const sameTurnHasAppendedText = continuesPreviousTurn
+      && seedVisibleLength < compactPreviewText.length;
+    const keepFallbackReveal = continuesPreviousTurn && (
+      compactSpeechFallbackRevealRef.current
+      || sameTurnHasAppendedText
+    );
+    compactSpeechRevealTurnIdRef.current = nextRevealTurnId;
+
+    compactSpeechVisibleLengthRef.current = seedVisibleLength;
     compactSpeechPlaybackStartedRef.current = false;
-    compactSpeechFallbackRevealRef.current = false;
+    compactSpeechFallbackRevealRef.current = keepFallbackReveal;
     compactSpeechRevealCarryRef.current = 0;
     compactSpeechLastFrameTimeRef.current = 0;
-    setCompactSpeechVisibleLength(0);
-    setCompactSpeechFallbackRevealActive(false);
-  }, [compactMessagePreview?.messageId]);
+    setCompactSpeechVisibleLength(seedVisibleLength);
+    setCompactSpeechFallbackRevealActive(keepFallbackReveal);
+  }, [compactMessagePreview, compactMessagePreview?.messageId, compactPreservedSpeechActive]);
 
   useEffect(() => {
     if (!compactPreviewIsStreaming) {
@@ -1747,11 +2045,11 @@ export default function App({
       return;
     }
 
-    if (!speechPlaybackState?.active) {
+    if (!compactMatchedSpeechPlaybackState?.active) {
       return;
     }
-    const estimatedAudioTime = getEstimatedSpeechAudioTime(speechPlaybackState);
-    if (estimatedAudioTime >= speechPlaybackState.playbackStartAudioTime) {
+    const estimatedAudioTime = getEstimatedSpeechAudioTime(compactMatchedSpeechPlaybackState);
+    if (estimatedAudioTime >= compactMatchedSpeechPlaybackState.playbackStartAudioTime) {
       compactSpeechPlaybackStartedRef.current = true;
       if (compactSpeechFallbackTimerRef.current !== null) {
         window.clearTimeout(compactSpeechFallbackTimerRef.current);
@@ -1762,7 +2060,7 @@ export default function App({
         setCompactSpeechFallbackRevealActive(false);
       }
     }
-  }, [compactPreviewIsStreaming, speechPlaybackState]);
+  }, [compactMatchedSpeechPlaybackState, compactPreviewIsStreaming]);
 
   useEffect(() => {
     if (compactSpeechFallbackTimerRef.current !== null) {
@@ -1776,20 +2074,37 @@ export default function App({
     compactSpeechFallbackTimerRef.current = window.setTimeout(() => {
       compactSpeechFallbackTimerRef.current = null;
       const playbackState = speechPlaybackStateRef.current;
+      const playbackMatchesPreview = isSpeechPlaybackStateForCompactPreview(
+        playbackState,
+        compactMessagePreview,
+      );
       const playbackHasStarted = !!playbackState?.active
+        && playbackMatchesPreview
         && getEstimatedSpeechAudioTime(playbackState) >= playbackState.playbackStartAudioTime;
       if (
         !isCompactSurfaceRef.current
         || compactSpeechPlaybackStartedRef.current
         || playbackHasStarted
-        || compactSpeechVisibleLengthRef.current > 0
+        // Bail when the reveal is already being driven or has finished — NOT
+        // merely when visibleLength > 0. A same-turn continuation seeds a
+        // nonzero prefix that may still be stalled (e.g. the previous bubble was
+        // revealed by speech, the appended bubble gets no playback/unavailable
+        // signal); the old `> 0` guard left that frozen. Let the timer engage so
+        // it reveals the appended text instead.
+        || compactSpeechFallbackRevealRef.current
+        || compactSpeechVisibleLengthRef.current >= compactPreviewText.length
       ) {
         return;
       }
       compactSpeechFallbackRevealRef.current = true;
       compactSpeechRevealCarryRef.current = 0;
       compactSpeechLastFrameTimeRef.current = 0;
-      compactSpeechVisibleLengthRef.current = Math.min(1, compactPreviewText.length);
+      // Resume from the already-seeded prefix (continuation) rather than rewinding
+      // to the first char; only an unseeded first bubble starts at 1.
+      compactSpeechVisibleLengthRef.current = Math.max(
+        compactSpeechVisibleLengthRef.current,
+        Math.min(1, compactPreviewText.length),
+      );
       setCompactSpeechVisibleLength(compactSpeechVisibleLengthRef.current);
       setCompactSpeechFallbackRevealActive(true);
     }, COMPACT_SPEECH_FALLBACK_REVEAL_DELAY_MS);
@@ -1800,11 +2115,16 @@ export default function App({
         compactSpeechFallbackTimerRef.current = null;
       }
     };
-  }, [compactPreviewIsStreaming, compactPreviewText.length, compactMessagePreview?.messageId]);
+  }, [compactMessagePreview, compactPreviewIsStreaming, compactPreviewText.length]);
 
   useEffect(() => {
-    function handleAssistantSpeechUnavailable() {
+    function handleAssistantSpeechUnavailable(event: Event) {
       if (!isCompactSurfaceRef.current || !compactPreviewIsStreaming || !compactMessagePreview?.isAssistant) {
+        return;
+      }
+      const detail = (event as CustomEvent).detail as Record<string, unknown> | undefined;
+      const eventTurnId = detail?.turnId ? String(detail.turnId) : '';
+      if (eventTurnId && compactMessagePreview.turnId && eventTurnId !== compactMessagePreview.turnId) {
         return;
       }
       compactSpeechFallbackRevealRef.current = true;
@@ -1817,7 +2137,7 @@ export default function App({
     return () => {
       window.removeEventListener('neko-assistant-speech-unavailable', handleAssistantSpeechUnavailable);
     };
-  }, [compactMessagePreview?.isAssistant, compactPreviewIsStreaming]);
+  }, [compactMessagePreview, compactPreviewIsStreaming]);
 
   useEffect(() => {
     if (compactSpeechAnimationFrameRef.current !== null) {
@@ -1832,7 +2152,10 @@ export default function App({
     }
 
     const tick = (frameTime: number) => {
-      const playbackState = speechPlaybackStateRef.current;
+      const playbackState = isSpeechPlaybackStateForCompactPreview(
+        speechPlaybackStateRef.current,
+        compactMessagePreview,
+      ) ? speechPlaybackStateRef.current : null;
       const fallbackReveal = compactSpeechFallbackRevealRef.current;
       const shouldContinueAfterSpeech = (compactSpeechPlaybackStartedRef.current || fallbackReveal)
         && compactSpeechVisibleLengthRef.current < compactPreviewText.length;
@@ -1896,7 +2219,13 @@ export default function App({
         compactSpeechAnimationFrameRef.current = null;
       }
     };
-  }, [compactPreviewIsStreaming, compactPreviewText.length, compactPreviewSpeechDuration, compactSpeechFallbackRevealActive]);
+  }, [
+    compactMessagePreview,
+    compactPreviewIsStreaming,
+    compactPreviewText.length,
+    compactPreviewSpeechDuration,
+    compactSpeechFallbackRevealActive,
+  ]);
 
   useEffect(() => {
     const readState = (value: unknown): SpeechPlaybackState | null => {
@@ -1909,6 +2238,9 @@ export default function App({
       const playbackEndAudioTime = Number(state.playbackEndAudioTime);
       return {
         active: !!state.active,
+        turnId: state.turnId ? String(state.turnId) : null,
+        playbackTurnId: state.playbackTurnId ? String(state.playbackTurnId) : null,
+        speechId: state.speechId ? String(state.speechId) : null,
         audioContextTime: Number.isFinite(audioContextTime) ? audioContextTime : 0,
         playbackStartAudioTime: Number.isFinite(playbackStartAudioTime) ? playbackStartAudioTime : 0,
         playbackEndAudioTime: Number.isFinite(playbackEndAudioTime) ? playbackEndAudioTime : 0,
@@ -2506,11 +2838,13 @@ export default function App({
     });
     return () => window.cancelAnimationFrame(frameId);
   }, [
+    activeCursorToolId,
     compactInputToolFanInteractive,
     compactInputToolFanOpen,
     compactInputToolWheelIndex,
     effectiveCompactChatState,
     isCompactSurface,
+    toolMenuOpen,
   ]);
 
   const openCompactInputToolFan = useCallback((intent: 'click' | 'hover') => {
@@ -2624,156 +2958,6 @@ export default function App({
     compactInputToolFanSuppressHoverUntilLeaveRef.current = false;
     openCompactInputToolFan('click');
   }, [closeCompactInputToolFanFromUserClick, openCompactInputToolFan]);
-
-  const clearCompactInputToolToggleLongPressTimer = useCallback(() => {
-    if (compactInputToolToggleLongPressTimerRef.current !== null) {
-      window.clearTimeout(compactInputToolToggleLongPressTimerRef.current);
-      compactInputToolToggleLongPressTimerRef.current = null;
-    }
-  }, []);
-
-  // Ask the desktop shell to grab and drag the whole compact surface. Only the
-  // preload/main process can move the native window; the page just signals it.
-  // Mirrors neko:compact-tool-wheel-drag-state-change as a one-shot request.
-  const dispatchCompactSurfaceDragRequest = useCallback((screenX: number, screenY: number) => {
-    window.dispatchEvent(new CustomEvent('neko:compact-surface-drag-request', {
-      detail: {
-        screenX,
-        screenY,
-        timestamp: Date.now(),
-      },
-    }));
-  }, []);
-
-  // Long-press on the dropdown-arrow toggle = grab the surface; quick tap = open
-  // the tool wheel on release (deferred so a press-and-hold never flashes it open).
-  const handleCompactInputToolTogglePointerDown = useCallback((event: ReactPointerEvent) => {
-    if (event.pointerType === 'mouse' && event.button !== 0) return;
-    event.preventDefault();
-    clearCompactInputToolToggleLongPressTimer();
-    // Fresh gesture: drop any stale click-suppression left by a prior press
-    // whose trailing click never arrived (so keyboard activation still toggles).
-    compactInputToolTogglePointerHandledRef.current = false;
-    compactInputToolTogglePressRef.current = {
-      pointerId: event.pointerId,
-      startClientX: event.clientX,
-      startClientY: event.clientY,
-      startScreenX: event.screenX,
-      startScreenY: event.screenY,
-      longPressFired: false,
-      canceledTap: false,
-    };
-    try {
-      event.currentTarget.setPointerCapture?.(event.pointerId);
-    } catch (_) {}
-    compactInputToolToggleLongPressTimerRef.current = window.setTimeout(() => {
-      compactInputToolToggleLongPressTimerRef.current = null;
-      const press = compactInputToolTogglePressRef.current;
-      if (!press || press.longPressFired || press.canceledTap) return;
-      press.longPressFired = true;
-      // Close the wheel (a hover may have opened it) so the drag starts clean.
-      closeCompactInputToolFanFromUserClick();
-      dispatchCompactSurfaceDragRequest(press.startScreenX, press.startScreenY);
-    }, COMPACT_INPUT_SURFACE_LONG_PRESS_MS);
-  }, [
-    clearCompactInputToolToggleLongPressTimer,
-    closeCompactInputToolFanFromUserClick,
-    dispatchCompactSurfaceDragRequest,
-  ]);
-
-  const handleCompactInputToolTogglePointerMove = useCallback((event: ReactPointerEvent) => {
-    const press = compactInputToolTogglePressRef.current;
-    if (!press || press.pointerId !== event.pointerId || press.longPressFired) return;
-    const dx = event.clientX - press.startClientX;
-    const dy = event.clientY - press.startClientY;
-    if (Math.hypot(dx, dy) > COMPACT_INPUT_SURFACE_LONG_PRESS_MOVE_TOLERANCE) {
-      // Moved before the hold fired: not a tap, not a long-press — do nothing.
-      press.canceledTap = true;
-      clearCompactInputToolToggleLongPressTimer();
-    }
-  }, [clearCompactInputToolToggleLongPressTimer]);
-
-  const finishCompactInputToolTogglePress = useCallback((event: ReactPointerEvent, options?: { canceled?: boolean }) => {
-    const press = compactInputToolTogglePressRef.current;
-    if (!press || press.pointerId !== event.pointerId) return;
-    clearCompactInputToolToggleLongPressTimer();
-    try {
-      event.currentTarget.releasePointerCapture?.(event.pointerId);
-    } catch (_) {}
-    compactInputToolTogglePressRef.current = null;
-    // Swallow the trailing click for any pointer-driven gesture; keyboard
-    // activation has no press record and still toggles through onClick.
-    compactInputToolTogglePointerHandledRef.current = true;
-    if (press.longPressFired) return;
-    if (options?.canceled || press.canceledTap) return;
-    toggleCompactInputToolFanByClick();
-  }, [clearCompactInputToolToggleLongPressTimer, toggleCompactInputToolFanByClick]);
-
-  useEffect(() => () => clearCompactInputToolToggleLongPressTimer(), [clearCompactInputToolToggleLongPressTimer]);
-
-  // Input-box edge bands: same long-press-to-drag gesture as the arrow, but a
-  // quick tap focuses the input for typing instead of toggling the wheel. These
-  // bands overlay only the rim; the uncovered center keeps native press-to-type.
-  const clearCompactInputEdgeLongPressTimer = useCallback(() => {
-    if (compactInputEdgeLongPressTimerRef.current !== null) {
-      window.clearTimeout(compactInputEdgeLongPressTimerRef.current);
-      compactInputEdgeLongPressTimerRef.current = null;
-    }
-  }, []);
-
-  const handleCompactInputEdgePointerDown = useCallback((event: ReactPointerEvent) => {
-    if (event.pointerType === 'mouse' && event.button !== 0) return;
-    event.preventDefault();
-    clearCompactInputEdgeLongPressTimer();
-    compactInputEdgePressRef.current = {
-      pointerId: event.pointerId,
-      startClientX: event.clientX,
-      startClientY: event.clientY,
-      startScreenX: event.screenX,
-      startScreenY: event.screenY,
-      longPressFired: false,
-      canceledTap: false,
-    };
-    try {
-      event.currentTarget.setPointerCapture?.(event.pointerId);
-    } catch (_) {}
-    compactInputEdgeLongPressTimerRef.current = window.setTimeout(() => {
-      compactInputEdgeLongPressTimerRef.current = null;
-      const press = compactInputEdgePressRef.current;
-      if (!press || press.longPressFired || press.canceledTap) return;
-      press.longPressFired = true;
-      dispatchCompactSurfaceDragRequest(press.startScreenX, press.startScreenY);
-    }, COMPACT_INPUT_SURFACE_LONG_PRESS_MS);
-  }, [clearCompactInputEdgeLongPressTimer, dispatchCompactSurfaceDragRequest]);
-
-  const handleCompactInputEdgePointerMove = useCallback((event: ReactPointerEvent) => {
-    const press = compactInputEdgePressRef.current;
-    if (!press || press.pointerId !== event.pointerId || press.longPressFired) return;
-    const dx = event.clientX - press.startClientX;
-    const dy = event.clientY - press.startClientY;
-    if (Math.hypot(dx, dy) > COMPACT_INPUT_SURFACE_LONG_PRESS_MOVE_TOLERANCE) {
-      press.canceledTap = true;
-      clearCompactInputEdgeLongPressTimer();
-    }
-  }, [clearCompactInputEdgeLongPressTimer]);
-
-  const finishCompactInputEdgePress = useCallback((event: ReactPointerEvent, options?: { canceled?: boolean }) => {
-    const press = compactInputEdgePressRef.current;
-    if (!press || press.pointerId !== event.pointerId) return;
-    clearCompactInputEdgeLongPressTimer();
-    try {
-      event.currentTarget.releasePointerCapture?.(event.pointerId);
-    } catch (_) {}
-    compactInputEdgePressRef.current = null;
-    if (press.longPressFired) return;
-    if (options?.canceled || press.canceledTap) return;
-    // Quick tap on the rim → focus the input for typing.
-    if (!composerDisabled) {
-      compactInputRef.current?.focus();
-    }
-  }, [clearCompactInputEdgeLongPressTimer, composerDisabled]);
-
-  useEffect(() => () => clearCompactInputEdgeLongPressTimer(), [clearCompactInputEdgeLongPressTimer]);
 
   const rotateCompactInputToolWheel = useCallback((direction: 1 | -1) => {
     setCompactInputToolWheelIndex(current => (
@@ -3012,6 +3196,78 @@ export default function App({
     closeCompactInputToolFanFromUserClick();
   }, [closeCompactInputToolFanFromUserClick]);
 
+  // ── 工具轮盘原点「按住拖动文本框」手势 ────────────────────────────────────
+  // 在 toggle（轮盘关闭时）或 fan 中心（轮盘展开时，命中原点）按下后移动超阈值 → 把 surface
+  // 拖拽交给宿主（web: app-react-chat-window.js / Electron: preload-chat-react.js）经
+  // neko:compact-surface-drag-grab 接管。
+  // 点按（无移动）语义保持原样：toggle 由自身 onClick 展开/关闭；fan 原点由 onPointerDownCapture
+  // 的 markCompactToolFanOriginClickSuppressed 收起（这条收起+抑制路径不动，保证既有命中测试不回归）。
+  // 用独立的 compactToolOriginSuppressClickRef 抑制拖动后补发的 click——不能复用
+  // compactInputToolWheelSuppressClickRef，因为关闭轮盘的 effect 会把它清掉（见下方 fan 关闭 effect）。
+  const beginCompactToolOriginDrag = useCallback((event: ReactPointerEvent) => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    // 每次新的原点按下都清掉可能残留的抑制标志（上一次拖拽若没补发 click 会留下 true），
+    // 保证本次点按/拖拽自洁——抑制只靠「拖动置位 + click 消费 / 下次按下清零」，不再用定时器。
+    compactToolOriginSuppressClickRef.current = false;
+    const previous = compactToolOriginDragRef.current;
+    if (previous && previous.captureTarget && previous.captureTarget.hasPointerCapture?.(previous.pointerId)) {
+      // 兜底：上一手势没收到 pointerup（罕见）→ 释放旧捕获再重置，避免卡死。
+      try { previous.captureTarget.releasePointerCapture(previous.pointerId); } catch (_) {}
+    }
+    const captureTarget = event.currentTarget instanceof Element ? event.currentTarget : null;
+    compactToolOriginDragRef.current = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startScreenX: event.screenX,
+      startScreenY: event.screenY,
+      moved: false,
+      captureTarget,
+    };
+    try {
+      captureTarget?.setPointerCapture?.(event.pointerId);
+    } catch (_) {}
+  }, []);
+
+  const updateCompactToolOriginDrag = useCallback((event: ReactPointerEvent) => {
+    const state = compactToolOriginDragRef.current;
+    if (!state || state.pointerId !== event.pointerId || state.moved) return;
+    const dx = event.clientX - state.startClientX;
+    const dy = event.clientY - state.startClientY;
+    if (Math.hypot(dx, dy) < COMPACT_INPUT_TOOL_ORIGIN_DRAG_THRESHOLD) return;
+    state.moved = true;
+    // 吞掉本次指针序列随后补发的 click，避免拖完误触发 toggle 展开 / 工具按钮。
+    // 一直 armed 到那次 click 被消费（或下次原点/轮盘按下清零）——不能用定时器，慢速拖拽
+    // 往往远超任何固定时长，定时器会在 release click 之前清掉、导致拖完轮盘被误开关。
+    compactToolOriginSuppressClickRef.current = true;
+    // 拖动是「移动文本框」手势而非工具手势，收起轮盘。
+    closeCompactInputToolFan();
+    // 把 surface 拖拽交给宿主，锚点用按下点（而非当前点），避免 surface 跳变。
+    window.dispatchEvent(new CustomEvent('neko:compact-surface-drag-grab', {
+      detail: {
+        clientX: state.startClientX,
+        clientY: state.startClientY,
+        screenX: state.startScreenX,
+        screenY: state.startScreenY,
+      },
+    }));
+  }, [closeCompactInputToolFan]);
+
+  const endCompactToolOriginDrag = useCallback((event: ReactPointerEvent) => {
+    const state = compactToolOriginDragRef.current;
+    if (!state || state.pointerId !== event.pointerId) return;
+    const captureTarget = state.captureTarget;
+    compactToolOriginDragRef.current = null;
+    if (captureTarget && typeof captureTarget.releasePointerCapture === 'function') {
+      try {
+        if (captureTarget.hasPointerCapture?.(event.pointerId)) {
+          captureTarget.releasePointerCapture(event.pointerId);
+        }
+      } catch (_) {}
+    }
+    // 无移动 = 点按：toggle 交给自身 onClick；fan 原点已由 onPointerDownCapture 收起。这里不再处理。
+  }, []);
+
   useEffect(() => () => {
     clearCompactInputToolFanCloseTimer();
     clearCompactInputToolFanInteractiveTimer();
@@ -3033,6 +3289,8 @@ export default function App({
     }
 
     const handlePointerMove = (event: PointerEvent) => {
+      // 工具轮盘原点拖拽进行中时不跑悬停展开/收起逻辑，避免拖动文本框时悬停又把轮盘弹开。
+      if (compactToolOriginDragRef.current) return;
       const pointerInHoverRegion = isCompactInputToolPointerInHoverRegion(event.clientX, event.clientY, event.target);
       if (compactInputToolFanSuppressHoverUntilLeaveRef.current) {
         if (!pointerInHoverRegion) {
@@ -4204,24 +4462,26 @@ export default function App({
       className={`send-button-circle compact-input-tool-toggle${compactInputToolFanOpen ? ' is-open' : ''}`}
       ref={compactInputToolToggleRef}
       type={compactToolToggleActsAsSubmit ? 'submit' : 'button'}
+      data-compact-no-drag="true"
       aria-label={compactToolToggleActsAsSubmit ? sendButtonLabel : overflowMenuAriaLabel}
       aria-haspopup={compactToolToggleActsAsSubmit ? undefined : 'true'}
       aria-expanded={compactToolToggleActsAsSubmit ? undefined : compactInputToolFanOpen}
       disabled={compactToolToggleActsAsSubmit ? !canSubmit : composerDisabled}
-      onPointerDown={compactToolToggleActsAsSubmit ? undefined : handleCompactInputToolTogglePointerDown}
-      onPointerMove={compactToolToggleActsAsSubmit ? undefined : handleCompactInputToolTogglePointerMove}
-      onPointerUp={compactToolToggleActsAsSubmit ? undefined : (event) => finishCompactInputToolTogglePress(event)}
-      onPointerCancel={compactToolToggleActsAsSubmit ? undefined : (event) => finishCompactInputToolTogglePress(event, { canceled: true })}
       onPointerEnter={compactToolToggleActsAsSubmit ? undefined : handleCompactInputToolHoverEnter}
       onPointerLeave={compactToolToggleActsAsSubmit ? undefined : handleCompactInputToolHoverLeave}
+      onPointerDown={compactToolToggleActsAsSubmit ? undefined : beginCompactToolOriginDrag}
+      onPointerMove={compactToolToggleActsAsSubmit ? undefined : updateCompactToolOriginDrag}
+      onPointerUp={compactToolToggleActsAsSubmit ? undefined : endCompactToolOriginDrag}
+      onPointerCancel={compactToolToggleActsAsSubmit ? undefined : endCompactToolOriginDrag}
       onFocus={compactToolToggleActsAsSubmit ? undefined : clearCompactInputToolFanCloseTimer}
       onBlur={compactToolToggleActsAsSubmit ? scheduleCompactInputCollapse : () => {
         scheduleCompactInputToolFanTransientClose();
         scheduleCompactInputCollapse();
       }}
       onClick={compactToolToggleActsAsSubmit ? undefined : () => {
-        if (compactInputToolTogglePointerHandledRef.current) {
-          compactInputToolTogglePointerHandledRef.current = false;
+        // 拖动文本框后补发的 click 已在 origin-drag 里置位抑制，这里消费掉，避免误展开/收起轮盘。
+        if (compactToolOriginSuppressClickRef.current) {
+          compactToolOriginSuppressClickRef.current = false;
           return;
         }
         toggleCompactInputToolFanByClick();
@@ -4244,6 +4504,7 @@ export default function App({
       aria-label={overflowMenuAriaLabel}
       data-compact-geometry-item="toolFan"
       data-compact-geometry-owner="surface"
+      data-compact-no-drag="true"
       data-compact-input-tool-fan-open={compactInputToolFanOpen ? 'true' : 'false'}
       data-compact-input-tool-fan-interactive={compactInputToolFanInteractive ? 'true' : 'false'}
       data-compact-tool-wheel-fast-animation={compactInputToolWheelFastAnimation ? 'true' : 'false'}
@@ -4262,6 +4523,7 @@ export default function App({
       onClickCapture={(event) => {
         if (
           compactInputToolWheelSuppressClickRef.current
+          || compactToolOriginSuppressClickRef.current
           || (compactInputToolFanOpen && !compactInputToolFanInteractiveRef.current)
         ) {
           event.preventDefault();
@@ -4288,9 +4550,13 @@ export default function App({
             && localY <= COMPACT_INPUT_TOOL_FAN_ORIGIN_CLOSE_SIZE
           );
         if (!isOriginClick) return;
+        // 按在轮盘中心：保持原有「即时收起 + 抑制随后 click」语义（既有命中测试依赖此路径），
+        // 同时额外开启原点拖拽追踪——setPointerCapture 让 fan 关闭后仍能收到 pointermove/up，
+        // 以便检测是否要拖动文本框。stopPropagation 阻止冒泡 onPointerDown 启动轮盘旋转。
         event.preventDefault();
         event.stopPropagation();
         markCompactToolFanOriginClickSuppressed();
+        beginCompactToolOriginDrag(event);
       }}
       onPointerDown={(event) => {
         if (event.pointerType === 'mouse' && event.button !== 0) return;
@@ -4312,6 +4578,7 @@ export default function App({
             && localY <= COMPACT_INPUT_TOOL_FAN_ORIGIN_CLOSE_SIZE
           );
         if (isOriginClick) {
+          // 防御：通常 onPointerDownCapture 已 stopPropagation 接管原点；这里兜底维持原收起语义。
           event.preventDefault();
           event.stopPropagation();
           markCompactToolFanOriginClickSuppressed();
@@ -4322,6 +4589,8 @@ export default function App({
         clearCompactInputToolWheelChargeReleaseTimer();
         resetCompactInputToolWheelCharge();
         compactInputToolWheelSuppressClickRef.current = false;
+        // 清掉可能残留的原点拖拽抑制（上次原点拖拽若无补发 click），避免误吞这次轮盘按钮 click。
+        compactToolOriginSuppressClickRef.current = false;
         compactInputToolWheelScrollDeltaRef.current = 0;
         compactInputToolWheelDragActiveRef.current = true;
         dispatchCompactToolWheelDragState(true, event.pointerId);
@@ -4341,6 +4610,10 @@ export default function App({
         } catch (_) {}
       }}
       onPointerMove={(event) => {
+        if (compactToolOriginDragRef.current) {
+          updateCompactToolOriginDrag(event);
+          return;
+        }
         updateCompactInputToolWheelDrag({
           pointerId: event.pointerId,
           clientX: event.clientX,
@@ -4352,9 +4625,17 @@ export default function App({
       }}
       onWheel={rotateCompactInputToolWheelByScroll}
       onPointerUp={(event) => {
+        if (compactToolOriginDragRef.current) {
+          endCompactToolOriginDrag(event);
+          return;
+        }
         finishCompactToolWheelPointer(event);
       }}
       onPointerCancel={(event) => {
+        if (compactToolOriginDragRef.current) {
+          endCompactToolOriginDrag(event);
+          return;
+        }
         finishCompactToolWheelPointer(event);
       }}
     >
@@ -4455,7 +4736,7 @@ export default function App({
         ref={toolMenuRef}
         aria-hidden={getCompactToolWheelAriaHidden(6)}
         data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(6)}
-        data-compact-tool-active={activeToolItem || toolMenuOpen ? 'true' : 'false'}
+        data-compact-tool-active={toolMenuOpen || activeToolItem ? 'true' : 'false'}
       >
         <button
           className={`composer-tool-btn composer-emoji-btn${toolMenuOpen || activeToolItem ? ' is-active' : ''}`}
@@ -4502,7 +4783,7 @@ export default function App({
               clearActiveCursorToolSelection();
             }}
           >
-            <span aria-hidden="true">×</span>
+            <span className="composer-tool-clear-icon" aria-hidden="true" />
           </button>
         ) : null}
       </div>
@@ -4546,6 +4827,7 @@ export default function App({
       ref={isCompactSurface ? compactChoiceLayerRef : undefined}
       data-compact-geometry-item={isCompactSurface ? 'choice' : undefined}
       data-compact-geometry-owner={isCompactSurface ? 'surface' : undefined}
+      data-compact-no-drag={isCompactSurface ? 'true' : undefined}
       data-choice-layer-open={compactChoiceLayerOpen ? 'true' : 'false'}
       data-chat-surface-mode={chatSurfaceMode}
       data-compact-choice-placement={isCompactSurface ? compactChoiceLayerPlacement : undefined}
@@ -4648,7 +4930,7 @@ export default function App({
     ? (typeof document !== 'undefined' ? createPortal(choiceLayerNode, document.body) : choiceLayerNode)
     : null;
 
-  const compactExportHistoryElement = isCompactSurface && compactExportHistoryOpen ? (
+  const compactExportHistoryElement = isCompactSurface && compactExportHistoryMounted ? (
     <CompactExportHistoryPanel
       messages={messages}
       selectedIds={compactExportSelectedIds}
@@ -4658,6 +4940,7 @@ export default function App({
       previewOpen={compactExportPreviewOpen}
       controlsOpen={compactExportControlsOpen}
       choiceLayerAbove={compactChoiceLayerOpen && compactChoiceLayerPlacement === 'above'}
+      visibilityState={compactExportHistoryOpen ? 'open' : 'closing'}
       failedStatusLabel={failedStatusLabel}
       onAutoScrollToBottomChange={setCompactExportAutoScrollToBottom}
       onToggleMessage={handleCompactExportToggleMessage}
@@ -4684,6 +4967,7 @@ export default function App({
       title={compactExportHistoryToggleLabel}
       data-compact-geometry-owner="surface"
       data-compact-geometry-item="historyHandle"
+      data-compact-no-drag="true"
       data-compact-history-open={compactExportHistoryOpen ? 'true' : 'false'}
       onPointerDown={handleCompactHistoryVisibilityPress}
       onPointerCancel={handleCompactHistoryVisibilityPointerCancel}
@@ -4909,17 +5193,11 @@ export default function App({
                 onBlurCapture={effectiveCompactChatState === 'input' ? scheduleCompactInputCollapse : undefined}
               >
                 <div
-                  className="compact-chat-drag-handle"
-                  data-compact-drag-handle="true"
-                  data-compact-geometry-item="dragHandle"
-                  data-compact-geometry-owner="surface"
-                  aria-hidden="true"
-                />
-                <div
                   className="compact-chat-resize-handle compact-chat-resize-handle-left"
                   data-compact-resize-side="left"
                   data-compact-geometry-item="resizeHandle"
                   data-compact-geometry-owner="surface"
+                  data-compact-no-drag="true"
                   aria-hidden="true"
                   onPointerDown={(event) => handleCompactSurfaceResizePointerDown('left', event)}
                   onPointerMove={handleCompactSurfaceResizePointerMove}
@@ -4932,6 +5210,7 @@ export default function App({
                   data-compact-resize-side="right"
                   data-compact-geometry-item="resizeHandle"
                   data-compact-geometry-owner="surface"
+                  data-compact-no-drag="true"
                   aria-hidden="true"
                   onPointerDown={(event) => handleCompactSurfaceResizePointerDown('right', event)}
                   onPointerMove={handleCompactSurfaceResizePointerMove}
@@ -4943,15 +5222,25 @@ export default function App({
                   className="compact-chat-surface-frame"
                   data-compact-geometry-item={effectiveCompactChatState === 'input' ? 'input' : 'capsule'}
                   data-compact-geometry-owner="surface"
+                  data-compact-drag-surface="true"
                   data-compact-chat-state={effectiveCompactChatState}
                   data-compact-geometry-part={effectiveCompactChatState === 'input' ? 'inputBody' : 'capsuleBody'}
                   data-compact-tool-toggle-visible={compactToolToggleVisible ? 'true' : 'false'}
                 >
                   {effectiveCompactChatState === 'input' ? (
                     <>
+                      {/* 输入态左侧拖拽把手：textarea / 工具按钮都是 no-drag，本握把不加 no-drag，
+                          于是落在 surface 本体拖拽区里——web/X11 经 isCompactDragSurfaceTarget、
+                          Wayland 经 frame 的 -webkit-app-region:drag 区域，均可按住拖动整个输入框。
+                          宿主 mousedown 会 preventDefault，按住把手不会让 textarea 失焦收起输入态。 */}
+                      <span
+                        className="compact-chat-input-drag-grip"
+                        aria-hidden="true"
+                      />
                       <textarea
                         className="composer-input"
                         ref={compactInputRef}
+                        data-compact-no-drag="true"
                         placeholder={inputPlaceholder}
                         aria-label={inputPlaceholder}
                         rows={1}
@@ -4973,18 +5262,6 @@ export default function App({
                           }
                         }}
                       />
-                      <div className="compact-input-edge-bands" aria-hidden="true">
-                        {(['top', 'bottom', 'left', 'right'] as const).map((side) => (
-                          <div
-                            key={side}
-                            className={`compact-input-edge-band compact-input-edge-band-${side}`}
-                            onPointerDown={handleCompactInputEdgePointerDown}
-                            onPointerMove={handleCompactInputEdgePointerMove}
-                            onPointerUp={(event) => finishCompactInputEdgePress(event)}
-                            onPointerCancel={(event) => finishCompactInputEdgePress(event, { canceled: true })}
-                          />
-                        ))}
-                      </div>
                       {compactInputToolToggleButton}
                     </>
                   ) : (
@@ -5004,7 +5281,7 @@ export default function App({
                           data-compact-preview-streaming={compactPreviewIsStreaming ? 'true' : 'false'}
                           onWheel={handleCompactPreviewWheel}
                         >
-                          {compactPreviewDisplayText}
+                          {compactPreviewDisplayContent}
                         </span>
                       </button>
                       {compactInputToolToggleButton}
