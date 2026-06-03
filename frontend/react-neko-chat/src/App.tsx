@@ -4724,6 +4724,7 @@ export default function App({
                       }
                     }}
                   >
+                    <span className="composer-galgame-option-label" aria-hidden="true">{option.label}.</span>
                     <span className="composer-galgame-option-text">
                       <span className="composer-galgame-option-text-inner">{option.text}</span>
                     </span>
@@ -4738,6 +4739,7 @@ export default function App({
                       disabled
                       tabIndex={-1}
                     >
+                      <span className="composer-galgame-option-label" aria-hidden="true">{label}.</span>
                       <span className="composer-galgame-option-text">
                         <span className="composer-galgame-option-text-inner">{galgameLoadingLabel}</span>
                       </span>

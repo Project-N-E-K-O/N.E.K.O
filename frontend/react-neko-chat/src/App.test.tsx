@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import App, { COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS } from './App';
 import {
+  COMPACT_HISTORY_SCROLLBAR_VISIBLE_MS,
   computeCompactHistoryEnterDelay,
   computeCompactHistoryExitDelay,
 } from './CompactExportHistoryPanel';
@@ -419,7 +420,7 @@ describe('App', () => {
       fireEvent.wheel(scroll, { deltaY: 80 });
       expect(scroll).toHaveAttribute('data-compact-scrollbar-visible', 'true');
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(900);
+        await vi.advanceTimersByTimeAsync(COMPACT_HISTORY_SCROLLBAR_VISIBLE_MS);
       });
       expect(scroll).not.toHaveAttribute('data-compact-scrollbar-visible');
 
@@ -1987,6 +1988,17 @@ describe('App', () => {
     expect(options[0]).not.toHaveAttribute('data-composer-option-marquee');
     expect(options[0].style.getPropertyValue('--composer-option-marquee-distance')).toBe('');
 
+    fireEvent.focus(options[0]);
+
+    expect(options[0]).toHaveAttribute('data-composer-option-marquee', 'true');
+    expect(options[0].style.getPropertyValue('--composer-option-marquee-distance')).toBe('178px');
+    expect(options[0].style.getPropertyValue('--composer-option-marquee-duration')).toBe('1855ms');
+
+    fireEvent.blur(options[0]);
+
+    expect(options[0]).not.toHaveAttribute('data-composer-option-marquee');
+    expect(options[0].style.getPropertyValue('--composer-option-marquee-distance')).toBe('');
+
     const shortText = options[1].querySelector<HTMLElement>('.composer-galgame-option-text');
     const shortInner = options[1].querySelector<HTMLElement>('.composer-galgame-option-text-inner');
     expect(shortText).not.toBeNull();
@@ -2001,6 +2013,10 @@ describe('App', () => {
     });
 
     fireEvent.mouseEnter(options[1]);
+
+    expect(options[1]).not.toHaveAttribute('data-composer-option-marquee');
+
+    fireEvent.focus(options[1]);
 
     expect(options[1]).not.toHaveAttribute('data-composer-option-marquee');
   });
