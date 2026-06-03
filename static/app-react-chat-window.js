@@ -1174,7 +1174,7 @@
                 if (style && (style.display === 'none' || style.visibility === 'hidden')) return null;
                 if (style && Number(style.opacity) <= 0.01) return null;
                 var slot = child.getAttribute('data-compact-tool-wheel-slot') || '';
-                var isAvatarToolChoice = child.classList && child.classList.contains('composer-icon-button');
+                var isAvatarToolChoice = child.classList && (child.classList.contains('composer-icon-button') || child.classList.contains('avatar-tool-quickbar-edit'));
                 if (!isAvatarToolChoice && (!slot || slot.indexOf('hidden') === 0)) return null;
                 var rect = normalizeCompactDomRect(child.getBoundingClientRect());
                 if (!rect) return null;
@@ -1271,7 +1271,21 @@
             });
         }
         return elements.reduce(function (items, element) {
-            if (element.classList.contains('avatar-tool-manager-dialog')) return items;
+            if (element.classList.contains('avatar-tool-manager-dialog')) {
+                var dialogRect = getCompactGeometryElementRect(element);
+                if (dialogRect) {
+                    items.push({
+                        id: 'avatarToolManagerDialog',
+                        owner: 'surface',
+                        kind: 'avatarToolManager',
+                        visualRect: dialogRect,
+                        hitRect: dialogRect,
+                        nativeRect: dialogRect,
+                        interactive: true
+                    });
+                }
+                return items;
+            }
             if (
                 !root.contains(element)
                 && !element.classList.contains('compact-input-tool-fan')
