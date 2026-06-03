@@ -129,6 +129,34 @@ def test_compact_chat_tutorial_bridge_exposes_new_targets_and_requests():
     assert "setCompactToolFanOpen" in react_host
 
 
+def test_external_chat_cursor_retry_cannot_replay_stale_wobble_after_clear():
+    source = INTERPAGE_PATH.read_text(encoding="utf-8")
+
+    assert "yuiGuideChatCursorRequestToken" in source
+    assert "var cursorRequestToken = ++yuiGuideChatCursorRequestToken;" in source
+    assert "if (cursorRequestToken !== yuiGuideChatCursorRequestToken) {" in source
+
+
+def test_pc_external_chat_ghost_cursor_routes_to_global_overlay_only():
+    source = INTERPAGE_PATH.read_text(encoding="utf-8")
+    cursor_block = source.split("function applyYuiGuideChatCursor(kind, options)", 1)[1].split(
+        "function clearYuiGuideChatSpotlightTracking()",
+        1,
+    )[0]
+
+    assert "yui-guide-chat-cursor" not in source
+    assert "getYuiGuideChatCursorElement" not in source
+    assert "cancelYuiGuideChatCursorElementAnimations" not in source
+    assert ".animate(" not in cursor_block
+    assert "sendYuiGuidePcOverlayPatch({" in cursor_block
+    assert "isYuiGuidePcCursorOnlyMode" in source
+    assert "cursor: {" in cursor_block
+    assert "visible: true" in cursor_block
+    assert "effect: normalizedOptions.effect || ''" in cursor_block
+    assert "cursor.hidden = false" not in cursor_block
+    assert "if (isYuiGuidePcCursorOnlyMode())" in cursor_block
+
+
 def test_day1_round_start_uses_avatar_floating_round_lifecycle():
     source = MANAGER_PATH.read_text(encoding="utf-8")
     start_block = source.split("async startAvatarFloatingGuideRound(day, options = {})", 1)[1].split(
@@ -164,11 +192,13 @@ def test_day1_reset_fallback_keeps_the_same_scene_shape():
 def test_day1_chat_input_round_rect_highlight_includes_capsule_drag_hint():
     source = DAY1_GUIDE_PATH.read_text(encoding="utf-8")
     round_block = source.split("round: {", 1)[1].split("sceneOrder:", 1)[0]
+    greeting_scene_block = round_block.split("id: 'day1_intro_greeting'", 1)[1].split("id: 'day1_capsule_drag_hint'", 1)[0]
     capsule_block = round_block.split("id: 'day1_capsule_drag_hint'", 1)[1].split("id: 'day1_history_handle'", 1)[0]
     history_block = round_block.split("id: 'day1_history_handle'", 1)[1].split("id: 'day1_intro_basic_voice'", 1)[0]
 
     assert "id: 'day1_intro_greeting'" in round_block
     assert "id: 'day1_takeover_return_control'" in round_block
+    assert "cursorAction: 'wobble'" not in greeting_scene_block
     assert "target: 'chat-input'" in capsule_block
     assert "spotlight: false" not in capsule_block
     assert "cursorWobbleDurationMs: 2000" in capsule_block
@@ -185,8 +215,44 @@ def test_day1_chat_input_round_rect_highlight_includes_capsule_drag_hint():
     )[0]
     assert "focusAndHighlightChatInput" not in activation_block
     assert "setExternalizedChatSpotlight('input')" not in activation_block
-    assert "focusAndHighlightChatInput" in greeting_block
+    assert "setExternalizedChatCursor('input'" not in activation_block
+    assert "effect: 'wobble'" not in activation_block
+    assert "setExternalizedChatCursor('');" in activation_block
+    assert "this.cursor.hide();" in activation_block
+    assert "setSpotlightGeometryHint(inputTarget" in greeting_block
+    assert "overlay.setPersistentSpotlight(inputTarget)" in greeting_block
     assert "setExternalizedChatSpotlight('input')" in greeting_block
+
+
+def test_day1_intro_greeting_highlights_input_without_cursor_wobble():
+    source = DIRECTOR_PATH.read_text(encoding="utf-8")
+    greeting_block = source.split("async playDay1IntroGreetingRoundScene", 1)[1].split(
+        "async playDay1IntroBasicVoiceRoundScene",
+        1,
+    )[0]
+
+    assert "setExternalizedChatSpotlight('input')" in greeting_block
+    assert "setExternalizedChatCursor('input'" not in greeting_block
+    assert "setSpotlightGeometryHint(inputTarget" in greeting_block
+    assert "overlay.setPersistentSpotlight(inputTarget)" in greeting_block
+    assert "setExternalizedChatCursor('');" in greeting_block
+    assert "this.cursor.hide();" in greeting_block
+    assert "cursor.wobble" not in greeting_block
+
+
+def test_day1_legacy_externalized_intro_greeting_does_not_send_cursor_wobble():
+    source = DIRECTOR_PATH.read_text(encoding="utf-8")
+    externalized_block = source.split("async runChatIntroPreludeExternalized", 1)[1].split(
+        "const introText = this.resolvePerformanceBubbleText",
+        1,
+    )[0]
+
+    assert "setExternalizedChatSpotlight('input')" in externalized_block
+    assert "setExternalizedChatCursor('input'" not in externalized_block
+    assert "setExternalizedChatCursor('');" in externalized_block
+    assert "effect: 'wobble'" not in externalized_block
+    assert "this.cursor.hide();" in externalized_block
+    assert "hideHomeCursorForExternalizedChat" not in externalized_block
 
 
 def test_day2_and_day3_reset_fallbacks_match_new_scene_shape():

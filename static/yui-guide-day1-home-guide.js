@@ -75,7 +75,6 @@
                     voiceKey: 'intro_greeting_reply',
                     emotion: 'happy',
                     target: '#react-chat-window-root .composer-input-shell',
-                    cursorAction: 'wobble',
                     operation: 'day1-intro-greeting'
                 },
                 {

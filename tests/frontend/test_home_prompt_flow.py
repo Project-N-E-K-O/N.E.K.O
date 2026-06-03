@@ -6296,6 +6296,22 @@ def test_externalized_chat_cursor_uses_recent_handoff_anchor_for_first_smooth_mo
         mock_page,
         setup_js="""
             window.history.pushState({}, '', '/chat');
+            window.__NEKO_MULTI_WINDOW__ = true;
+            window.__updates = [];
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'test-run');
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 0, y: 0, width: 1280, height: 720 },
+                    contentBounds: { x: 0, y: 0, width: 1280, height: 720 },
+                    zoomFactor: 1,
+                }),
+                begin: () => Promise.resolve({ ok: true }),
+                update: (payload) => {
+                    window.__updates.push(payload);
+                    return Promise.resolve({ ok: true });
+                },
+                clear: () => Promise.resolve({ ok: true }),
+            };
             document.body.innerHTML = `
                 <div id="react-chat-window-shell" style="position:fixed; left:600px; top:400px; width:240px; height:160px;"></div>
             `;
@@ -6326,25 +6342,22 @@ def test_externalized_chat_cursor_uses_recent_handoff_anchor_for_first_smooth_mo
             await new Promise((resolve) => window.requestAnimationFrame(() => {
                 window.requestAnimationFrame(resolve);
             }));
-            const cursor = document.getElementById('yui-guide-chat-cursor');
-            const durationMs = cursor
-                ? Number.parseFloat(String(cursor.style.transitionDuration || '').replace('ms', ''))
-                : 0;
+            const cursorUpdates = window.__updates
+                .map((update) => update && update.payload && update.payload.cursor)
+                .filter(Boolean);
+            const latestCursor = cursorUpdates[cursorUpdates.length - 1] || null;
             return {
-                hidden: cursor ? cursor.hidden : true,
-                transitionDuration: cursor ? cursor.style.transitionDuration : '',
-                durationMs,
-                transform: cursor ? cursor.style.transform : '',
+                hasLocalCursor: !!document.getElementById('yui-guide-chat-cursor'),
+                latestCursor,
             };
         }
         """
     )
 
-    assert result["hidden"] is False
-    assert result["transitionDuration"] != "0ms"
-    assert result["transitionDuration"] != ""
-    assert result["durationMs"] >= 900
-    assert result["transform"] != "translate3d(0, 0, 0)"
+    assert result["hasLocalCursor"] is False
+    assert result["latestCursor"]["visible"] is True
+    assert result["latestCursor"]["durationMs"] >= 900
+    assert result["latestCursor"]["effect"] == "wobble"
 
 
 @pytest.mark.frontend

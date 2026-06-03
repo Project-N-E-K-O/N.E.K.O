@@ -1976,6 +1976,7 @@
             case 'yui_guide_set_chat_cursor': {
                 if (!isStandaloneChatPage() || !document.body) return true;
                 var expandedForCursor = ensureYuiGuideExternalChatExpanded();
+                var cursorRequestToken = ++yuiGuideChatCursorRequestToken;
                 var cursorKind = message.kind || '';
                 var cursorOptions = {
                     effect: message.effect || '',
@@ -1989,6 +1990,9 @@
                 applyYuiGuideChatCursor(cursorKind, cursorOptions);
                 if (expandedForCursor) {
                     window.setTimeout(function () {
+                        if (cursorRequestToken !== yuiGuideChatCursorRequestToken) {
+                            return;
+                        }
                         applyYuiGuideChatCursor(cursorKind, cursorOptions);
                     }, 720);
                 }
@@ -2301,6 +2305,7 @@
                     case 'yui_guide_set_chat_cursor': {
                         if (!isStandaloneChatPage() || !document.body) break;
                         var expandedForCursor = ensureYuiGuideExternalChatExpanded();
+                        var cursorRequestToken = ++yuiGuideChatCursorRequestToken;
                         var cursorKind = event.data.kind || '';
                         var cursorOptions = {
                             effect: event.data.effect || '',
@@ -2314,6 +2319,9 @@
                         applyYuiGuideChatCursor(cursorKind, cursorOptions);
                         if (expandedForCursor) {
                             window.setTimeout(function () {
+                                if (cursorRequestToken !== yuiGuideChatCursorRequestToken) {
+                                    return;
+                                }
                                 applyYuiGuideChatCursor(cursorKind, cursorOptions);
                             }, 720);
                         }
@@ -2559,6 +2567,25 @@
     var yuiGuidePcOverlayReady = false;
     var yuiGuidePcOverlayRunIdOverride = '';
 
+    function canUseYuiGuidePcOverlayBridge() {
+        return !!(
+            window.nekoTutorialOverlay
+            && typeof window.nekoTutorialOverlay.update === 'function'
+            && typeof window.nekoTutorialOverlay.getWindowMetricsSync === 'function'
+        );
+    }
+
+    function isYuiGuidePcCursorOnlyMode() {
+        return !!(
+            isStandaloneChatPage()
+            && canUseYuiGuidePcOverlayBridge()
+            && (
+                window.__NEKO_MULTI_WINDOW__ === true
+                || (window.nekoChatWindow && typeof window.nekoChatWindow === 'object')
+            )
+        );
+    }
+
     function getYuiGuidePcOverlayRunId() {
         if (yuiGuidePcOverlayRunIdOverride) {
             return yuiGuidePcOverlayRunIdOverride;
@@ -2572,9 +2599,7 @@
 
     function isYuiGuidePcOverlayAvailable() {
         return !!(
-            window.nekoTutorialOverlay
-            && typeof window.nekoTutorialOverlay.update === 'function'
-            && typeof window.nekoTutorialOverlay.getWindowMetricsSync === 'function'
+            canUseYuiGuidePcOverlayBridge()
             && getYuiGuidePcOverlayRunId()
         );
     }
@@ -2835,17 +2860,6 @@
     var yuiGuideChatSpotlightKind = '';
     var yuiGuideChatSpotlightTimer = 0;
 
-    function cancelYuiGuideChatCursorElementAnimations(cursor) {
-        if (!cursor || typeof cursor.getAnimations !== 'function') {
-            return;
-        }
-        cursor.getAnimations().forEach(function (animation) {
-            if (animation && typeof animation.cancel === 'function') {
-                animation.cancel();
-            }
-        });
-    }
-
     function getYuiGuideChatSpotlightElement(index) {
         var normalizedIndex = Number.isFinite(index) && index > 0 ? Math.floor(index) : 0;
         var spotlightId = normalizedIndex > 0
@@ -3100,43 +3114,13 @@
         return false;
     }
 
-    function getYuiGuideChatCursorElement() {
-        var existing = document.getElementById('yui-guide-chat-cursor');
-        if (existing || typeof document === 'undefined' || !document.body) {
-            return existing;
-        }
-
-        var cursor = document.createElement('div');
-        cursor.id = 'yui-guide-chat-cursor';
-        cursor.hidden = true;
-        cursor.setAttribute('aria-hidden', 'true');
-        cursor.style.position = 'fixed';
-        cursor.style.left = '0';
-        cursor.style.top = '0';
-        cursor.style.width = '46px';
-        cursor.style.height = '46px';
-        cursor.style.marginLeft = '-20px';
-        cursor.style.marginTop = '-18px';
-        cursor.style.pointerEvents = 'none';
-        cursor.style.zIndex = '2147483601';
-        cursor.style.backgroundImage = "url('/static/assets/tutorial/ghost-cursor/default-ghost-cursor.png')";
-        cursor.style.backgroundRepeat = 'no-repeat';
-        cursor.style.backgroundPosition = 'center';
-        cursor.style.backgroundSize = 'contain';
-        cursor.style.filter = 'drop-shadow(0 10px 20px rgba(48, 82, 128, 0.22)) drop-shadow(0 2px 8px rgba(240, 139, 84, 0.22))';
-        cursor.style.opacity = '0';
-        cursor.style.transform = 'translate3d(0, 0, 0)';
-        cursor.style.transition = 'transform 220ms cubic-bezier(0.22, 1, 0.36, 1), opacity 140ms ease';
-        document.body.appendChild(cursor);
-        return cursor;
-    }
-
     var YUI_GUIDE_EXTERNAL_CHAT_CURSOR_SCREEN_POINT_KEY = 'neko_yui_guide_external_chat_cursor_screen_point_v1';
     var EXTERNAL_CHAT_CURSOR_EXPLICIT_MOVE_MS = 1500;
     var EXTERNAL_CHAT_CURSOR_HANDOFF_MIN_MOVE_MS = 900;
     var EXTERNAL_CHAT_CURSOR_HANDOFF_MAX_MOVE_MS = 1600;
     var yuiGuideChatCursorLastScreenPoint = null;
     var yuiGuideChatCursorVisible = false;
+    var yuiGuideChatCursorRequestToken = 0;
 
     function getRecentYuiGuideChatCursorScreenPoint(maxAgeMs) {
         try {
@@ -3275,22 +3259,19 @@
     }
 
     function applyYuiGuideChatCursor(kind, options) {
-        var cursor = getYuiGuideChatCursorElement();
-        if (!cursor) {
-            return;
-        }
-
         if (!kind) {
             yuiGuideChatCursorVisible = false;
-            cancelYuiGuideChatCursorElementAnimations(cursor);
-            cursor.style.transitionDuration = '';
-            cursor.hidden = true;
-            cursor.style.opacity = '0';
+            if (isYuiGuidePcOverlayAvailable()) {
+                sendYuiGuidePcOverlayPatch({
+                    cursor: {
+                        visible: false
+                    }
+                });
+            }
             return;
         }
 
         var normalizedOptions = options || {};
-        cancelYuiGuideChatCursorElementAnimations(cursor);
 
         var target = getYuiGuideChatCursorTargetAt(kind, normalizedOptions && Number.isFinite(normalizedOptions.targetIndex)
             ? normalizedOptions.targetIndex
@@ -3300,8 +3281,6 @@
             : null;
         if (!rect || rect.width <= 0 || rect.height <= 0) {
             yuiGuideChatCursorVisible = false;
-            cursor.hidden = true;
-            cursor.style.opacity = '0';
             return;
         }
 
@@ -3328,9 +3307,18 @@
                 localScreenPoint
             );
         }
-        cursor.style.transitionDuration = pcMoveDurationMs > 0 ? pcMoveDurationMs + 'ms' : '';
         if (isYuiGuidePcOverlayAvailable()) {
             var screenPoint = localScreenPoint;
+            sendYuiGuidePcOverlayPatch({
+                cursor: {
+                    visible: true,
+                    x: screenPoint.x,
+                    y: screenPoint.y,
+                    durationMs: pcMoveDurationMs,
+                    effect: normalizedOptions.effect || '',
+                    effectDurationMs: normalizedOptions.effectDurationMs || 0
+                }
+            });
             rememberYuiGuideChatCursorScreenPoint(
                 screenPoint,
                 kind,
@@ -3345,23 +3333,26 @@
             );
             yuiGuideChatCursorLastScreenPoint = { x: screenPoint.x, y: screenPoint.y };
             yuiGuideChatCursorVisible = true;
-            cursor.hidden = true;
-            cursor.style.opacity = '0';
+            return;
+        }
+        if (isYuiGuidePcCursorOnlyMode()) {
+            rememberYuiGuideChatCursorScreenPoint(
+                localScreenPoint,
+                kind,
+                normalizedOptions.effect || '',
+                normalizedOptions.effectDurationMs || 0
+            );
+            reportYuiGuideChatCursorAnchor(
+                localScreenPoint,
+                kind,
+                normalizedOptions.effect || '',
+                normalizedOptions.effectDurationMs || 0
+            );
+            yuiGuideChatCursorLastScreenPoint = { x: localScreenPoint.x, y: localScreenPoint.y };
+            yuiGuideChatCursorVisible = true;
             return;
         }
 
-        cursor.hidden = false;
-        cursor.style.opacity = '1';
-        cursor.style.backgroundImage = normalizedOptions && normalizedOptions.effect === 'click'
-            ? "url('/static/assets/tutorial/ghost-cursor/click-ghost-cursor.png')"
-            : "url('/static/assets/tutorial/ghost-cursor/default-ghost-cursor.png')";
-        if (handoffAnchorLocalPoint && pcMoveDurationMs > 0) {
-            cursor.style.transitionDuration = '0ms';
-            cursor.style.transform = 'translate3d(' + Math.round(handoffAnchorLocalPoint.x) + 'px, ' + Math.round(handoffAnchorLocalPoint.y) + 'px, 0)';
-            void cursor.offsetWidth;
-            cursor.style.transitionDuration = pcMoveDurationMs + 'ms';
-        }
-        cursor.style.transform = 'translate3d(' + Math.round(cx) + 'px, ' + Math.round(cy) + 'px, 0)';
         yuiGuideChatCursorLastScreenPoint = { x: localScreenPoint.x, y: localScreenPoint.y };
         yuiGuideChatCursorVisible = true;
         rememberYuiGuideChatCursorScreenPoint(
@@ -3376,35 +3367,6 @@
             normalizedOptions.effect || '',
             normalizedOptions.effectDurationMs || 0
         );
-
-        if (normalizedOptions && normalizedOptions.effect === 'click' && typeof cursor.animate === 'function') {
-            cursor.animate([
-                { transform: 'translate3d(' + Math.round(cx) + 'px, ' + Math.round(cy) + 'px, 0) scale(1)' },
-                { transform: 'translate3d(' + Math.round(cx) + 'px, ' + Math.round(cy) + 'px, 0) scale(0.9)' },
-                { transform: 'translate3d(' + Math.round(cx) + 'px, ' + Math.round(cy) + 'px, 0) scale(1)' }
-            ], {
-                duration: 420,
-                easing: 'ease'
-            });
-            window.setTimeout(function () {
-                if (!cursor.hidden) {
-                    cursor.style.backgroundImage = "url('/static/assets/tutorial/ghost-cursor/default-ghost-cursor.png')";
-                }
-            }, 440);
-            return;
-        }
-
-        if (normalizedOptions && normalizedOptions.effect === 'wobble' && typeof cursor.animate === 'function') {
-            cursor.animate([
-                { transform: 'translate3d(' + Math.round(cx) + 'px, ' + Math.round(cy) + 'px, 0) rotate(0deg)' },
-                { transform: 'translate3d(' + Math.round(cx + 3) + 'px, ' + Math.round(cy - 2) + 'px, 0) rotate(-4deg)' },
-                { transform: 'translate3d(' + Math.round(cx - 2) + 'px, ' + Math.round(cy + 2) + 'px, 0) rotate(3deg)' },
-                { transform: 'translate3d(' + Math.round(cx) + 'px, ' + Math.round(cy) + 'px, 0) rotate(0deg)' }
-            ], {
-                duration: 620,
-                easing: 'ease'
-            });
-        }
     }
 
     function clearYuiGuideChatSpotlightTracking() {
