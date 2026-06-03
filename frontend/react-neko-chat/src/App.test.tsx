@@ -4435,6 +4435,34 @@ describe('App', () => {
     }
   });
 
+  it('keeps origin drag click suppression armed across a slow drag (no timeout clear)', () => {
+    vi.useFakeTimers();
+    try {
+      render(
+        <App chatSurfaceMode="compact" compactChatState="input" />,
+      );
+      const toggle = document.body.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+      fireEvent.pointerDown(toggle, {
+        pointerId: 31, clientX: 100, clientY: 100, screenX: 300, screenY: 300,
+        button: 0, buttons: 1, pointerType: 'mouse',
+      });
+      fireEvent.pointerMove(toggle, {
+        pointerId: 31, clientX: 130, clientY: 110, buttons: 1, pointerType: 'mouse',
+      });
+      // 慢速拖拽：跨过任何旧的固定时长窗口（曾经的 120ms 定时器会在此误清抑制标志）。
+      vi.advanceTimersByTime(1000);
+      fireEvent.pointerUp(toggle, {
+        pointerId: 31, clientX: 130, clientY: 110, buttons: 0, pointerType: 'mouse',
+      });
+      // 释放后补发的 click 仍应被吞掉，轮盘不被误展开。
+      fireEvent.click(toggle);
+      const fan = document.body.querySelector('.compact-input-tool-fan');
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('treats a stationary tap on the tool toggle as open (no drag-grab)', () => {
     render(
       <App

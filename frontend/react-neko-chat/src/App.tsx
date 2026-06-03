@@ -2991,6 +2991,9 @@ export default function App({
   // compactInputToolWheelSuppressClickRef，因为关闭轮盘的 effect 会把它清掉（见下方 fan 关闭 effect）。
   const beginCompactToolOriginDrag = useCallback((event: ReactPointerEvent) => {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
+    // 每次新的原点按下都清掉可能残留的抑制标志（上一次拖拽若没补发 click 会留下 true），
+    // 保证本次点按/拖拽自洁——抑制只靠「拖动置位 + click 消费 / 下次按下清零」，不再用定时器。
+    compactToolOriginSuppressClickRef.current = false;
     const previous = compactToolOriginDragRef.current;
     if (previous && previous.captureTarget && previous.captureTarget.hasPointerCapture?.(previous.pointerId)) {
       // 兜底：上一手势没收到 pointerup（罕见）→ 释放旧捕获再重置，避免卡死。
@@ -3018,11 +3021,10 @@ export default function App({
     const dy = event.clientY - state.startClientY;
     if (Math.hypot(dx, dy) < COMPACT_INPUT_TOOL_ORIGIN_DRAG_THRESHOLD) return;
     state.moved = true;
-    // 吞掉本次指针序列随后补发的 click，避免拖完误触发 toggle 展开 / 工具按钮；120ms 自清兜底。
+    // 吞掉本次指针序列随后补发的 click，避免拖完误触发 toggle 展开 / 工具按钮。
+    // 一直 armed 到那次 click 被消费（或下次原点/轮盘按下清零）——不能用定时器，慢速拖拽
+    // 往往远超任何固定时长，定时器会在 release click 之前清掉、导致拖完轮盘被误开关。
     compactToolOriginSuppressClickRef.current = true;
-    window.setTimeout(() => {
-      compactToolOriginSuppressClickRef.current = false;
-    }, 120);
     // 拖动是「移动文本框」手势而非工具手势，收起轮盘。
     closeCompactInputToolFan();
     // 把 surface 拖拽交给宿主，锚点用按下点（而非当前点），避免 surface 跳变。
@@ -4372,6 +4374,8 @@ export default function App({
         clearCompactInputToolWheelChargeReleaseTimer();
         resetCompactInputToolWheelCharge();
         compactInputToolWheelSuppressClickRef.current = false;
+        // 清掉可能残留的原点拖拽抑制（上次原点拖拽若无补发 click），避免误吞这次轮盘按钮 click。
+        compactToolOriginSuppressClickRef.current = false;
         compactInputToolWheelScrollDeltaRef.current = 0;
         compactInputToolWheelDragActiveRef.current = true;
         dispatchCompactToolWheelDragState(true, event.pointerId);

@@ -1966,7 +1966,7 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   content: "";
   width: 4px;
   height: 18px;
-  background-image: radial-gradient(currentColor 0.9px, transparent 1.3px);
+  background-image: radial-gradient(currentcolor 0.9px, transparent 1.3px);
   background-size: 4px 6px;
   background-position: center;
   opacity: 0.22;
