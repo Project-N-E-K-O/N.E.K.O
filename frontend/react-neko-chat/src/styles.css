@@ -1764,6 +1764,41 @@ svg {
   line-height: 1.3;
 }
 
+.composer-galgame-option-text-inner {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: inherit;
+}
+
+.composer-galgame-option[data-composer-option-marquee="true"]:is(:hover, :focus-visible) .composer-galgame-option-text-inner {
+  width: max-content;
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+  animation: composer-option-marquee var(--composer-option-marquee-duration, 4800ms) linear forwards;
+  will-change: transform;
+}
+
+@keyframes composer-option-marquee {
+  from {
+    transform: translateX(0);
+  }
+
+  to {
+    transform: translateX(calc(-1 * var(--composer-option-marquee-distance, 0px)));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-galgame-option[data-composer-option-marquee="true"]:is(:hover, :focus-visible) .composer-galgame-option-text-inner {
+    animation: none;
+    transform: translateX(calc(-1 * var(--composer-option-marquee-distance, 0px)));
+  }
+}
+
 .composer-galgame-options.is-loading .composer-galgame-option {
   animation: composerGalgameLoadingPulse 1.6s ease-in-out infinite;
 }
@@ -1835,17 +1870,60 @@ body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {
   overscroll-behavior: contain;
   scrollbar-width: none;
   z-index: 100002;
+  pointer-events: none;
 }
 
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"]::-webkit-scrollbar {
   display: none;
 }
 
-/* The compact choice portal itself is transparent; only its scroll surface and options should receive input. */
-body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-slot,
+/* The compact choice portal itself is transparent; only the visible option strip should receive input. */
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-slot {
+  pointer-events: none;
+}
+
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-options,
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option {
   pointer-events: auto;
+}
+
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-options {
+  width: calc(100% - 76px);
+  max-width: 100%;
+  margin-right: auto;
+}
+
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option {
+  min-height: 38px;
+  padding: 8px 16px;
+  border: 0;
+  border-radius: 16px 0 0 16px;
+  background:
+    linear-gradient(
+      90deg,
+      rgba(206, 229, 252, 0.68) 0%,
+      rgba(232, 244, 255, 0.46) 52%,
+      rgba(247, 252, 255, 0.14) 82%,
+      rgba(255, 255, 255, 0) 100%
+    );
+  box-shadow: none;
+}
+
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option:hover:not(:disabled) {
+  background:
+    linear-gradient(
+      90deg,
+      rgba(190, 220, 249, 0.76) 0%,
+      rgba(224, 240, 255, 0.54) 52%,
+      rgba(244, 250, 255, 0.18) 82%,
+      rgba(255, 255, 255, 0) 100%
+    );
+  border-color: transparent;
+}
+
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option-text {
+  -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 78%, transparent 100%);
+  mask-image: linear-gradient(90deg, #000 0%, #000 78%, transparent 100%);
 }
 
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-choice-layer-open="false"] {
@@ -2167,8 +2245,9 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   padding: 4px 6px;
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
-  /* The fade mask is visual only; keep transparent history space pass-through. */
-  pointer-events: none;
+  /* The fade mask is visual only; the full viewport must receive wheel input,
+     even when the cursor is over the transparent space between bubbles. */
+  pointer-events: auto;
   -webkit-app-region: no-drag;
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, rgba(0, 0, 0, 0.78) 12px, #000 28px);
   mask-image: linear-gradient(to bottom, transparent 0, rgba(0, 0, 0, 0.78) 12px, #000 28px);
@@ -2187,8 +2266,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   margin-top: auto;
 }
 
-.compact-export-history-scroll:hover,
-.compact-export-history-scroll:focus-within {
+.compact-export-history-scroll[data-compact-scrollbar-visible="true"] {
   scrollbar-color: rgba(70, 160, 255, 0.42) transparent;
 }
 
@@ -2207,15 +2285,13 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   background-clip: padding-box;
 }
 
-.compact-export-history-scroll:hover::-webkit-scrollbar-thumb,
-.compact-export-history-scroll:focus-within::-webkit-scrollbar-thumb {
+.compact-export-history-scroll[data-compact-scrollbar-visible="true"]::-webkit-scrollbar-thumb {
   background:
     linear-gradient(180deg, rgba(86, 188, 255, 0.64), rgba(42, 140, 214, 0.42))
     padding-box;
 }
 
-.compact-export-history-scroll:hover::-webkit-scrollbar-thumb:hover,
-.compact-export-history-scroll:focus-within::-webkit-scrollbar-thumb:hover {
+.compact-export-history-scroll[data-compact-scrollbar-visible="true"]::-webkit-scrollbar-thumb:hover {
   background:
     linear-gradient(180deg, rgba(103, 202, 255, 0.82), rgba(36, 151, 217, 0.62))
     padding-box;
@@ -4128,6 +4204,31 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   color: #44b7fe;
 }
 
+[data-theme="dark"] body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option {
+  background:
+    linear-gradient(
+      90deg,
+      rgba(55, 113, 164, 0.58) 0%,
+      rgba(43, 83, 124, 0.38) 52%,
+      rgba(25, 54, 84, 0.14) 82%,
+      rgba(8, 17, 30, 0) 100%
+    );
+  border-color: transparent;
+  color: #e8f3ff;
+}
+
+[data-theme="dark"] body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option:hover:not(:disabled) {
+  background:
+    linear-gradient(
+      90deg,
+      rgba(66, 132, 188, 0.66) 0%,
+      rgba(50, 98, 145, 0.46) 52%,
+      rgba(30, 65, 100, 0.18) 82%,
+      rgba(8, 17, 30, 0) 100%
+    );
+  border-color: transparent;
+}
+
 [data-theme="dark"] .composer-input-shell {
   background: rgba(42, 42, 60, 0.85);
   border-color: rgba(255, 255, 255, 0.08);
@@ -4208,20 +4309,17 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   scrollbar-color: transparent transparent;
 }
 
-[data-theme="dark"] .compact-export-history-scroll:hover,
-[data-theme="dark"] .compact-export-history-scroll:focus-within {
+[data-theme="dark"] .compact-export-history-scroll[data-compact-scrollbar-visible="true"] {
   scrollbar-color: rgba(68, 183, 254, 0.46) transparent;
 }
 
-[data-theme="dark"] .compact-export-history-scroll:hover::-webkit-scrollbar-thumb,
-[data-theme="dark"] .compact-export-history-scroll:focus-within::-webkit-scrollbar-thumb {
+[data-theme="dark"] .compact-export-history-scroll[data-compact-scrollbar-visible="true"]::-webkit-scrollbar-thumb {
   background:
     linear-gradient(180deg, rgba(95, 199, 255, 0.68), rgba(47, 145, 224, 0.48))
     padding-box;
 }
 
-[data-theme="dark"] .compact-export-history-scroll:hover::-webkit-scrollbar-thumb:hover,
-[data-theme="dark"] .compact-export-history-scroll:focus-within::-webkit-scrollbar-thumb:hover {
+[data-theme="dark"] .compact-export-history-scroll[data-compact-scrollbar-visible="true"]::-webkit-scrollbar-thumb:hover {
   background:
     linear-gradient(180deg, rgba(125, 214, 255, 0.86), rgba(59, 171, 246, 0.68))
     padding-box;

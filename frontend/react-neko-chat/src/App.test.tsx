@@ -385,7 +385,9 @@ describe('App', () => {
     expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
     expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-geometry-hit-scope', 'children');
     expect(container.querySelector('.compact-export-history-anchor')).not.toHaveAttribute('data-compact-hit-region');
-    expect(container.querySelector('.compact-export-history-scroll')).not.toHaveAttribute('data-compact-hit-region');
+    expect(container.querySelector('.compact-export-history-scroll')).toHaveAttribute('data-compact-hit-region', 'true');
+    expect(container.querySelector('.compact-export-history-scroll')).toHaveAttribute('data-compact-hit-region-id', 'history:scroll');
+    expect(container.querySelector('.compact-export-history-scroll')).toHaveAttribute('data-compact-hit-region-kind', 'scroll');
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('data-compact-hit-region', 'true');
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('data-compact-hit-region-id', 'history:message:assistant-history-1');
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('data-compact-hit-region-kind', 'message');
@@ -410,6 +412,17 @@ describe('App', () => {
 
     vi.useFakeTimers();
     try {
+      const scroll = container.querySelector<HTMLElement>('.compact-export-history-scroll')!;
+      expect(scroll).not.toHaveAttribute('data-compact-scrollbar-visible');
+      fireEvent.mouseEnter(scroll);
+      expect(scroll).not.toHaveAttribute('data-compact-scrollbar-visible');
+      fireEvent.wheel(scroll, { deltaY: 80 });
+      expect(scroll).toHaveAttribute('data-compact-scrollbar-visible', 'true');
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(900);
+      });
+      expect(scroll).not.toHaveAttribute('data-compact-scrollbar-visible');
+
       fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
       expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'closing');
       expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'false');
@@ -1931,6 +1944,65 @@ describe('App', () => {
     expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'options');
     expect(document.body.querySelector('.compact-chat-choice-anchor')).not.toBeNull();
     expect(container.querySelector('.compact-input-tool-toggle')).not.toBeNull();
+  });
+
+  it('marquees overflowing compact galgame option text only while hovered', () => {
+    render(
+      <App
+        chatSurfaceMode="compact"
+        galgameModeEnabled
+        galgameOptions={[
+          { label: 'A', text: 'This generated reply is intentionally much longer than the visible option row' },
+          { label: 'B', text: 'Short reply' },
+        ]}
+      />,
+    );
+
+    const options = Array.from(document.body.querySelectorAll<HTMLButtonElement>('.composer-galgame-option'));
+    expect(options).toHaveLength(2);
+    expect(options[0]).not.toHaveAttribute('title');
+    expect(options[1]).not.toHaveAttribute('title');
+
+    const longText = options[0].querySelector<HTMLElement>('.composer-galgame-option-text');
+    const longInner = options[0].querySelector<HTMLElement>('.composer-galgame-option-text-inner');
+    expect(longText).not.toBeNull();
+    expect(longInner).not.toBeNull();
+    Object.defineProperty(longText!, 'clientWidth', {
+      configurable: true,
+      value: 110,
+    });
+    Object.defineProperty(longInner!, 'scrollWidth', {
+      configurable: true,
+      value: 260,
+    });
+
+    fireEvent.mouseEnter(options[0]);
+
+    expect(options[0]).toHaveAttribute('data-composer-option-marquee', 'true');
+    expect(options[0].style.getPropertyValue('--composer-option-marquee-distance')).toBe('178px');
+    expect(options[0].style.getPropertyValue('--composer-option-marquee-duration')).toBe('1855ms');
+
+    fireEvent.mouseLeave(options[0]);
+
+    expect(options[0]).not.toHaveAttribute('data-composer-option-marquee');
+    expect(options[0].style.getPropertyValue('--composer-option-marquee-distance')).toBe('');
+
+    const shortText = options[1].querySelector<HTMLElement>('.composer-galgame-option-text');
+    const shortInner = options[1].querySelector<HTMLElement>('.composer-galgame-option-text-inner');
+    expect(shortText).not.toBeNull();
+    expect(shortInner).not.toBeNull();
+    Object.defineProperty(shortText!, 'clientWidth', {
+      configurable: true,
+      value: 180,
+    });
+    Object.defineProperty(shortInner!, 'scrollWidth', {
+      configurable: true,
+      value: 184,
+    });
+
+    fireEvent.mouseEnter(options[1]);
+
+    expect(options[1]).not.toHaveAttribute('data-composer-option-marquee');
   });
 
   it('places compact galgame options below the surface when there is enough viewport space', async () => {
@@ -4161,6 +4233,12 @@ describe('App', () => {
     expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
 
     fireEvent.wheel(fan, { deltaY: -80 });
+    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-import');
+
+    fireEvent.wheel(fan, { deltaY: 1 });
+    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
+
+    fireEvent.wheel(fan, { deltaY: -1 });
     expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-import');
 
     fireEvent.pointerDown(fan, { pointerId: 7, clientX: 100, clientY: 100, button: 0, buttons: 1, pointerType: 'mouse' });
