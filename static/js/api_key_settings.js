@@ -199,8 +199,7 @@ function looksLikeLocalKokoroWsUrl(value) {
         const url = new URL(raw);
         if (!['ws:', 'wss:', 'http:', 'https:'].includes(url.protocol)) return false;
         const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
-        const isLocalHost = hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1';
-        return isLocalHost && url.port === '50000';
+        return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1';
     } catch (e) {
         return false;
     }
