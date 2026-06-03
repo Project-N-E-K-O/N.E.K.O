@@ -1,9 +1,10 @@
 (function () {
     'use strict';
 
-    const AUTO_GOODBYE_MS = 10 * 60 * 1000;
-    const CAT2_MS = 15 * 60 * 1000;
-    const CAT3_MS = 18 * 60 * 1000;
+    // Temporary dev timing: 5s per cat idle tier.
+    const AUTO_GOODBYE_MS = 5 * 1000;
+    const CAT2_MS = 10 * 1000;
+    const CAT3_MS = 15 * 1000;
     const CONVERSATION_GRACE_MS = 15 * 1000;
     const TICK_INTERVAL_MS = 500;
     const CAT3_DRAG_RELEASES_BEFORE_CAT2 = 3;

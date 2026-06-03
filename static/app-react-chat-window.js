@@ -18,6 +18,7 @@
     var CHAT_SURFACE_MODE_STORAGE_KEY = 'neko.reactChatWindow.chatSurfaceMode';
     var GALGAME_HISTORY_LIMIT = 6;
     var EVENT_PREFIX = 'react-chat-window:';
+    var CHAT_MINIMIZED_BALL_ICON_SRC = '/static/assets/neko-idle/chat-minimized-yarn-ball.png';
 
     var loadedPromise = null;
     var mounted = false;
@@ -27,7 +28,7 @@
     var minimized = false;
     var savedShellSize = null;
     var savedShellPosition = null; // {left, top} before minimize – used to fly back on expand
-    var HOME_IDLE_DOCK_GAP = 12;
+    var HOME_IDLE_DOCK_GAP = 4;
     var IDLE_DOCK_TIER_NONE = 'none';
     var IDLE_DOCK_TIER_CAT2 = 'cat2';
     var IDLE_DOCK_TIER_CAT3 = 'cat3';
@@ -3382,7 +3383,7 @@
         };
     }
 
-    var MINIMIZED_SIZE = 50;            // 桌面/手机：圆球直径
+    var MINIMIZED_SIZE = 40;            // 桌面/手机：毛线球直径
     var isMinimizeTransitioning = false;
     var activeAnimationCleanup = null; // 当前进行中动画的清理函数
 
@@ -4228,14 +4229,13 @@
     }
 
     function ensureMinimizedBallIcon() {
-        if (isElectronChatWindow()) return null;
         var shell = getShell();
         if (!shell) return null;
         var icon = shell.querySelector('.react-chat-minimized-icon');
         if (!icon) {
             icon = document.createElement('img');
             icon.className = 'react-chat-minimized-icon';
-            icon.src = '/static/icons/expand_icon_off_ball.png';
+            icon.src = CHAT_MINIMIZED_BALL_ICON_SRC;
             icon.alt = '';
             icon.draggable = false;
             var handle = getHeader();
@@ -4577,7 +4577,7 @@
         }
         // 重置悬浮球图标到默认态（清除可能残留的 hover 图标）
         if (ballIcon) {
-            ballIcon.src = '/static/icons/expand_icon_off_ball.png';
+            ballIcon.src = CHAT_MINIMIZED_BALL_ICON_SRC;
         }
     }
 
@@ -4606,7 +4606,7 @@
             btnIcon.alt = ariaLabel;
         }
         if (ballIcon) {
-            ballIcon.src = '/static/icons/expand_icon_off_ball.png';
+            ballIcon.src = CHAT_MINIMIZED_BALL_ICON_SRC;
         }
         if (shell) {
             shell.setAttribute('data-chat-surface-mode', surfaceMode);
@@ -5343,13 +5343,13 @@
                 if (!minimized) return;
                 var shell = getShell();
                 var ico = shell && shell.querySelector('.react-chat-minimized-icon');
-                if (ico) ico.src = '/static/icons/expand_icon_on.png';
+                if (ico) ico.src = CHAT_MINIMIZED_BALL_ICON_SRC;
             });
             header.addEventListener('mouseleave', function () {
                 if (!minimized) return;
                 var shell = getShell();
                 var ico = shell && shell.querySelector('.react-chat-minimized-icon');
-                if (ico) ico.src = '/static/icons/expand_icon_off_ball.png';
+                if (ico) ico.src = CHAT_MINIMIZED_BALL_ICON_SRC;
             });
         }
 
