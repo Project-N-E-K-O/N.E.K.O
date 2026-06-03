@@ -322,7 +322,7 @@ def test_drop_image_on_chat_imports_pending_attachment_without_navigation(
     assert result["dropDefaultPrevented"] is True
     assert result["hrefAfter"] == result["hrefBefore"]
     assert result["attachmentCount"] == 1
-    assert result["attachmentUrl"].startswith("data:image/")
+    assert result["attachmentUrl"].startswith("data:image/jpeg;base64,")
 
 
 @pytest.mark.frontend
