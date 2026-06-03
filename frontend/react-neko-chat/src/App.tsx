@@ -115,6 +115,9 @@ const COMPACT_INPUT_TOOL_WHEEL_HOVER_RADIUS = 116;
 const COMPACT_INPUT_TOOL_WHEEL_ANGLE_MIN_RADIUS = 16;
 const COMPACT_INPUT_TOOL_TOGGLE_HOVER_OUTSET = 14;
 const COMPACT_INPUT_TOOL_FAN_ORIGIN_CLOSE_SIZE = 48;
+// 在工具轮盘中心（toggle / fan 原点）按下后，指针移动超过此像素阈值即视为「拖动文本框」
+// 而非「点一下展开/关闭轮盘」。与宿主 surface 拖拽的 CLICK_THRESHOLD(5px) 量级一致。
+const COMPACT_INPUT_TOOL_ORIGIN_DRAG_THRESHOLD = 6;
 const COMPACT_INPUT_TOOL_FAN_INTERACTIVE_DELAY_MS = 220;
 const COMPACT_INPUT_TOOL_FAN_TRANSIENT_CLOSE_DELAY_MS = 360;
 const COMPACT_INPUT_TOOL_FAN_OUTSIDE_CLOSE_DELAY_MS = 650;
@@ -1148,6 +1151,20 @@ export default function App({
   const compactInputToolWheelChargeRef = useRef<CompactToolWheelChargeState>(createCompactToolWheelChargeState());
   const compactInputToolWheelChargeReleaseActiveRef = useRef(false);
   const compactInputToolWheelSuppressClickRef = useRef(false);
+  // 工具轮盘原点（toggle / fan 中心）的「按住拖动文本框」手势追踪。与轮盘旋转
+  // (compactInputToolWheelPointerRef) 互斥：原点按下时不建立旋转 pointer，旋转路径自然 no-op。
+  const compactToolOriginDragRef = useRef<{
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    startScreenX: number;
+    startScreenY: number;
+    moved: boolean;
+    captureTarget: Element | null;
+  } | null>(null);
+  // 专用于「拖动文本框后吞掉补发 click」的标志。独立于 compactInputToolWheelSuppressClickRef，
+  // 因为轮盘关闭 effect 会重置后者，无法跨「关闭轮盘 + 随后 click」存活。
+  const compactToolOriginSuppressClickRef = useRef(false);
   const compactInputToolWheelScrollDeltaRef = useRef(0);
   const compactInputToolFanPositionSyncRef = useRef<(() => void) | null>(null);
   const compactInputToolFanCloseTimerRef = useRef<number | null>(null);
@@ -2964,6 +2981,76 @@ export default function App({
     closeCompactInputToolFanFromUserClick();
   }, [closeCompactInputToolFanFromUserClick]);
 
+  // ── 工具轮盘原点「按住拖动文本框」手势 ────────────────────────────────────
+  // 在 toggle（轮盘关闭时）或 fan 中心（轮盘展开时，命中原点）按下后移动超阈值 → 把 surface
+  // 拖拽交给宿主（web: app-react-chat-window.js / Electron: preload-chat-react.js）经
+  // neko:compact-surface-drag-grab 接管。
+  // 点按（无移动）语义保持原样：toggle 由自身 onClick 展开/关闭；fan 原点由 onPointerDownCapture
+  // 的 markCompactToolFanOriginClickSuppressed 收起（这条收起+抑制路径不动，保证既有命中测试不回归）。
+  // 用独立的 compactToolOriginSuppressClickRef 抑制拖动后补发的 click——不能复用
+  // compactInputToolWheelSuppressClickRef，因为关闭轮盘的 effect 会把它清掉（见下方 fan 关闭 effect）。
+  const beginCompactToolOriginDrag = useCallback((event: ReactPointerEvent) => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    const previous = compactToolOriginDragRef.current;
+    if (previous && previous.captureTarget && previous.captureTarget.hasPointerCapture?.(previous.pointerId)) {
+      // 兜底：上一手势没收到 pointerup（罕见）→ 释放旧捕获再重置，避免卡死。
+      try { previous.captureTarget.releasePointerCapture(previous.pointerId); } catch (_) {}
+    }
+    const captureTarget = event.currentTarget instanceof Element ? event.currentTarget : null;
+    compactToolOriginDragRef.current = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startScreenX: event.screenX,
+      startScreenY: event.screenY,
+      moved: false,
+      captureTarget,
+    };
+    try {
+      captureTarget?.setPointerCapture?.(event.pointerId);
+    } catch (_) {}
+  }, []);
+
+  const updateCompactToolOriginDrag = useCallback((event: ReactPointerEvent) => {
+    const state = compactToolOriginDragRef.current;
+    if (!state || state.pointerId !== event.pointerId || state.moved) return;
+    const dx = event.clientX - state.startClientX;
+    const dy = event.clientY - state.startClientY;
+    if (Math.hypot(dx, dy) < COMPACT_INPUT_TOOL_ORIGIN_DRAG_THRESHOLD) return;
+    state.moved = true;
+    // 吞掉本次指针序列随后补发的 click，避免拖完误触发 toggle 展开 / 工具按钮；120ms 自清兜底。
+    compactToolOriginSuppressClickRef.current = true;
+    window.setTimeout(() => {
+      compactToolOriginSuppressClickRef.current = false;
+    }, 120);
+    // 拖动是「移动文本框」手势而非工具手势，收起轮盘。
+    closeCompactInputToolFan();
+    // 把 surface 拖拽交给宿主，锚点用按下点（而非当前点），避免 surface 跳变。
+    window.dispatchEvent(new CustomEvent('neko:compact-surface-drag-grab', {
+      detail: {
+        clientX: state.startClientX,
+        clientY: state.startClientY,
+        screenX: state.startScreenX,
+        screenY: state.startScreenY,
+      },
+    }));
+  }, [closeCompactInputToolFan]);
+
+  const endCompactToolOriginDrag = useCallback((event: ReactPointerEvent) => {
+    const state = compactToolOriginDragRef.current;
+    if (!state || state.pointerId !== event.pointerId) return;
+    const captureTarget = state.captureTarget;
+    compactToolOriginDragRef.current = null;
+    if (captureTarget && typeof captureTarget.releasePointerCapture === 'function') {
+      try {
+        if (captureTarget.hasPointerCapture?.(event.pointerId)) {
+          captureTarget.releasePointerCapture(event.pointerId);
+        }
+      } catch (_) {}
+    }
+    // 无移动 = 点按：toggle 交给自身 onClick；fan 原点已由 onPointerDownCapture 收起。这里不再处理。
+  }, []);
+
   useEffect(() => () => {
     clearCompactInputToolFanCloseTimer();
     clearCompactInputToolFanInteractiveTimer();
@@ -2985,6 +3072,8 @@ export default function App({
     }
 
     const handlePointerMove = (event: PointerEvent) => {
+      // 工具轮盘原点拖拽进行中时不跑悬停展开/收起逻辑，避免拖动文本框时悬停又把轮盘弹开。
+      if (compactToolOriginDragRef.current) return;
       const pointerInHoverRegion = isCompactInputToolPointerInHoverRegion(event.clientX, event.clientY, event.target);
       if (compactInputToolFanSuppressHoverUntilLeaveRef.current) {
         if (!pointerInHoverRegion) {
@@ -4163,12 +4252,21 @@ export default function App({
       disabled={compactToolToggleActsAsSubmit ? !canSubmit : composerDisabled}
       onPointerEnter={compactToolToggleActsAsSubmit ? undefined : handleCompactInputToolHoverEnter}
       onPointerLeave={compactToolToggleActsAsSubmit ? undefined : handleCompactInputToolHoverLeave}
+      onPointerDown={compactToolToggleActsAsSubmit ? undefined : beginCompactToolOriginDrag}
+      onPointerMove={compactToolToggleActsAsSubmit ? undefined : updateCompactToolOriginDrag}
+      onPointerUp={compactToolToggleActsAsSubmit ? undefined : endCompactToolOriginDrag}
+      onPointerCancel={compactToolToggleActsAsSubmit ? undefined : endCompactToolOriginDrag}
       onFocus={compactToolToggleActsAsSubmit ? undefined : clearCompactInputToolFanCloseTimer}
       onBlur={compactToolToggleActsAsSubmit ? scheduleCompactInputCollapse : () => {
         scheduleCompactInputToolFanTransientClose();
         scheduleCompactInputCollapse();
       }}
       onClick={compactToolToggleActsAsSubmit ? undefined : () => {
+        // 拖动文本框后补发的 click 已在 origin-drag 里置位抑制，这里消费掉，避免误展开/收起轮盘。
+        if (compactToolOriginSuppressClickRef.current) {
+          compactToolOriginSuppressClickRef.current = false;
+          return;
+        }
         toggleCompactInputToolFanByClick();
       }}
     >
@@ -4208,6 +4306,7 @@ export default function App({
       onClickCapture={(event) => {
         if (
           compactInputToolWheelSuppressClickRef.current
+          || compactToolOriginSuppressClickRef.current
           || (compactInputToolFanOpen && !compactInputToolFanInteractiveRef.current)
         ) {
           event.preventDefault();
@@ -4234,9 +4333,13 @@ export default function App({
             && localY <= COMPACT_INPUT_TOOL_FAN_ORIGIN_CLOSE_SIZE
           );
         if (!isOriginClick) return;
+        // 按在轮盘中心：保持原有「即时收起 + 抑制随后 click」语义（既有命中测试依赖此路径），
+        // 同时额外开启原点拖拽追踪——setPointerCapture 让 fan 关闭后仍能收到 pointermove/up，
+        // 以便检测是否要拖动文本框。stopPropagation 阻止冒泡 onPointerDown 启动轮盘旋转。
         event.preventDefault();
         event.stopPropagation();
         markCompactToolFanOriginClickSuppressed();
+        beginCompactToolOriginDrag(event);
       }}
       onPointerDown={(event) => {
         if (event.pointerType === 'mouse' && event.button !== 0) return;
@@ -4258,6 +4361,7 @@ export default function App({
             && localY <= COMPACT_INPUT_TOOL_FAN_ORIGIN_CLOSE_SIZE
           );
         if (isOriginClick) {
+          // 防御：通常 onPointerDownCapture 已 stopPropagation 接管原点；这里兜底维持原收起语义。
           event.preventDefault();
           event.stopPropagation();
           markCompactToolFanOriginClickSuppressed();
@@ -4287,6 +4391,10 @@ export default function App({
         } catch (_) {}
       }}
       onPointerMove={(event) => {
+        if (compactToolOriginDragRef.current) {
+          updateCompactToolOriginDrag(event);
+          return;
+        }
         updateCompactInputToolWheelDrag({
           pointerId: event.pointerId,
           clientX: event.clientX,
@@ -4298,9 +4406,17 @@ export default function App({
       }}
       onWheel={rotateCompactInputToolWheelByScroll}
       onPointerUp={(event) => {
+        if (compactToolOriginDragRef.current) {
+          endCompactToolOriginDrag(event);
+          return;
+        }
         finishCompactToolWheelPointer(event);
       }}
       onPointerCancel={(event) => {
+        if (compactToolOriginDragRef.current) {
+          endCompactToolOriginDrag(event);
+          return;
+        }
         finishCompactToolWheelPointer(event);
       }}
     >
@@ -4927,6 +5043,14 @@ export default function App({
                 >
                   {effectiveCompactChatState === 'input' ? (
                     <>
+                      {/* 输入态左侧拖拽把手：textarea / 工具按钮都是 no-drag，本握把不加 no-drag，
+                          于是落在 surface 本体拖拽区里——web/X11 经 isCompactDragSurfaceTarget、
+                          Wayland 经 frame 的 -webkit-app-region:drag 区域，均可按住拖动整个输入框。
+                          宿主 mousedown 会 preventDefault，按住把手不会让 textarea 失焦收起输入态。 */}
+                      <span
+                        className="compact-chat-input-drag-grip"
+                        aria-hidden="true"
+                      />
                       <textarea
                         className="composer-input"
                         ref={compactInputRef}
