@@ -2805,6 +2805,7 @@ describe('App', () => {
         window.dispatchEvent(new CustomEvent('neko-compact-caption-update', {
           detail: {
             turnId: 'compact-caption-event-turn',
+            segmentId: 'compact-caption-event-turn:segment:1',
             text: firstCaption,
           },
         }));
@@ -2832,6 +2833,7 @@ describe('App', () => {
         window.dispatchEvent(new CustomEvent('neko-compact-caption-update', {
           detail: {
             turnId: 'compact-caption-event-turn',
+            segmentId: 'compact-caption-event-turn:segment:2',
             text: secondCaption,
           },
         }));
@@ -2845,6 +2847,71 @@ describe('App', () => {
       expect(revealedAfter.length).toBeGreaterThan(revealedBefore.length);
       expect(revealedAfter.startsWith(revealedBefore)).toBe(true);
       expect(mergedCaption.startsWith(revealedAfter)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('replaces compact caption updates for the same segment instead of repeating prefixes', async () => {
+    vi.useFakeTimers();
+    const firstCaption = '第一句。';
+    const secondPartialCaption = '第二句。';
+    const secondFullCaption = '第二句话补全。';
+    const mergedCaption = `${firstCaption} ${secondFullCaption}`;
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" composerHidden messages={[]} />);
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-assistant-turn-start', {
+          detail: {
+            turnId: 'compact-caption-segment-turn',
+            source: 'test',
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-compact-caption-update', {
+          detail: {
+            turnId: 'compact-caption-segment-turn',
+            segmentId: 'compact-caption-segment-turn:segment:1',
+            text: firstCaption,
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-compact-caption-update', {
+          detail: {
+            turnId: 'compact-caption-segment-turn',
+            segmentId: 'compact-caption-segment-turn:segment:2',
+            text: secondPartialCaption,
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-compact-caption-update', {
+          detail: {
+            turnId: 'compact-caption-segment-turn',
+            segmentId: 'compact-caption-segment-turn:segment:2',
+            text: secondFullCaption,
+          },
+        }));
+      });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-assistant-speech-unavailable', {
+          detail: {
+            turnId: 'compact-caption-segment-turn',
+            source: 'test',
+          },
+        }));
+      });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+
+      const previewText = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      expect(previewText).toBe(mergedCaption);
+      expect(previewText).not.toContain(`${secondPartialCaption} ${secondFullCaption}`);
     } finally {
       vi.useRealTimers();
     }

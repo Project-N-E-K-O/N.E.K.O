@@ -106,6 +106,17 @@
         return window._nekoAssistantTurnId ? String(window._nekoAssistantTurnId) : '';
     }
 
+    function beginCompactCaptionSegment() {
+        var turnId = getCurrentAssistantTurnId();
+        if (window._nekoCompactCaptionSegmentTurnId !== turnId) {
+            window._nekoCompactCaptionSegmentTurnId = turnId;
+            window._nekoCompactCaptionSegmentSeq = 0;
+        }
+        window._nekoCompactCaptionSegmentSeq = (window._nekoCompactCaptionSegmentSeq || 0) + 1;
+        window._nekoCompactCaptionSegmentId = (turnId || 'no-turn') + ':segment:' + window._nekoCompactCaptionSegmentSeq;
+        return window._nekoCompactCaptionSegmentId;
+    }
+
     // ======================== 虚拟引用（兼容 response_discarded 清理逻辑） ========================
 
     function createVirtualBubbleRef(messageId) {
@@ -154,6 +165,7 @@
         window.dispatchEvent(new CustomEvent('neko-compact-caption-update', {
             detail: {
                 turnId: turnId,
+                segmentId: window._nekoCompactCaptionSegmentId || '',
                 text: cleanText
             }
         }));
@@ -651,6 +663,7 @@
                 window._structuredGeminiStreaming = false;
                 window._turnIsStructured = false;
                 window._geminiTurnEndSealed = false;
+                beginCompactCaptionSegment();
                 // Per-segment scoping for cleanup. response_discarded /
                 // user-activity-cancel 都只针对当前 in-flight response item，
                 // 不应跨段抹掉已经完成的上一段气泡 —— per-segment 才对。

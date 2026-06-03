@@ -277,7 +277,14 @@ type CompactMessagePreview = {
 
 type CompactCaptionState = {
   turnId: string;
+  segmentId: string;
+  lastSegmentText: string;
+  segments: Array<{
+    segmentId: string;
+    text: string;
+  }>;
   text: string;
+  isEnded?: boolean;
 };
 
 type DesktopCompactChoicePlacementLayout = {
@@ -1639,17 +1646,18 @@ export default function App({
     if (!compactCaptionState?.turnId || !compactCaptionState.text) {
       return null;
     }
+    const captionMessageId = `compact-caption:${compactCaptionState.turnId}`;
     return {
-      messageId: `compact-caption:${compactCaptionState.turnId}`,
-      turnStartId: `compact-caption:${compactCaptionState.turnId}`,
+      messageId: captionMessageId,
+      turnStartId: captionMessageId,
       turnId: compactCaptionState.turnId,
       author: 'Neko',
       text: compactCaptionState.text,
       fullText: compactCaptionState.text,
-      isStreaming: true,
+      isStreaming: !compactCaptionState.isEnded,
       isAssistant: true,
     };
-  }, [compactCaptionState?.text, compactCaptionState?.turnId]);
+  }, [compactCaptionState]);
   const compactMessagePreview = compactCaptionPreview || compactMessagePreviewFromMessages;
   const compactMatchedSpeechPlaybackState = isSpeechPlaybackStateForCompactPreview(
     speechPlaybackState,
@@ -1812,6 +1820,14 @@ export default function App({
     const handleAssistantTurnBoundary = (event: Event) => {
       const detail = (event as CustomEvent).detail as Record<string, unknown> | undefined;
       const turnId = detail?.turnId ? String(detail.turnId) : `assistant-gap-ended-${Date.now()}`;
+      setCompactCaptionState(current => (
+        current?.turnId === turnId
+          ? {
+            ...current,
+            isEnded: true,
+          }
+          : current
+      ));
       setCompactAssistantStreamingGap({
         turnId,
         acceptStreaming: false,
@@ -1821,25 +1837,65 @@ export default function App({
       const detail = (event as CustomEvent).detail as Record<string, unknown> | undefined;
       const turnId = detail?.turnId ? String(detail.turnId) : '';
       const text = detail?.text ? normalizeCompactPreviewText(String(detail.text)) : '';
+      const rawSegmentId = detail?.segmentId ?? detail?.segmentIndex;
+      const explicitSegmentId = rawSegmentId !== undefined && rawSegmentId !== null && rawSegmentId !== ''
+        ? String(rawSegmentId)
+        : '';
       if (!turnId || !text) {
         return;
       }
       setCompactCaptionState(current => {
         if (!current || current.turnId !== turnId) {
+          const segmentId = explicitSegmentId || 'legacy-segment-0';
           return {
             turnId,
+            segmentId,
+            lastSegmentText: text,
+            segments: [{
+              segmentId,
+              text,
+            }],
             text,
           };
         }
-        if (text === current.text || current.text.startsWith(text)) {
-          return current;
-        }
-        const nextText = text.startsWith(current.text)
-          ? text
-          : normalizeCompactPreviewText(`${current.text} ${text}`);
+        const currentSegments = current.segments.length > 0
+          ? current.segments
+          : [{
+            segmentId: current.segmentId || 'legacy-segment-0',
+            text: current.lastSegmentText || current.text,
+          }];
+        const previousSegmentText = current.lastSegmentText || '';
+        const segmentId = explicitSegmentId
+          || (
+            !previousSegmentText
+            || text === previousSegmentText
+            || text.startsWith(previousSegmentText)
+            || previousSegmentText.startsWith(text)
+              ? current.segmentId
+              : `legacy-segment-${currentSegments.length}`
+          );
+        const existingSegmentIndex = currentSegments.findIndex(segment => segment.segmentId === segmentId);
+        const nextSegments = existingSegmentIndex >= 0
+          ? currentSegments.map((segment, index) => (
+            index === existingSegmentIndex
+              ? {
+                segmentId,
+                text,
+              }
+              : segment
+          ))
+          : currentSegments.concat({
+            segmentId,
+            text,
+          });
+        const nextText = normalizeCompactPreviewText(nextSegments.map(segment => segment.text).join(' '));
         return {
           turnId,
+          segmentId,
+          lastSegmentText: text,
+          segments: nextSegments,
           text: nextText,
+          isEnded: false,
         };
       });
     };

@@ -224,13 +224,20 @@ export const messageBlockSchema = z.discriminatedUnion('type', [
   buttonGroupBlockSchema,
 ]);
 
+const turnIdSchema = z.preprocess((value) => {
+  if (value === null || value === undefined || value === '') {
+    return undefined;
+  }
+  return value;
+}, z.string().min(1).optional());
+
 export const chatMessageSchema = z.object({
   id: z.string().min(1),
   role: z.enum(['user', 'assistant', 'system', 'tool']),
   author: z.string().min(1),
   time: z.string(),
   createdAt: z.number().finite().optional(),
-  turnId: z.string().optional(),
+  turnId: turnIdSchema,
   avatarLabel: z.string().optional(),
   avatarUrl: z.string().optional(),
   blocks: z.array(messageBlockSchema),

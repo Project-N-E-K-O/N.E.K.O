@@ -1463,6 +1463,7 @@
                     }
                     if (isNewMessage || sealedContinuation) {
                         S.assistantTurnId = null;
+                        window._nekoAssistantTurnId = null;
                         S.assistantPendingTurnServerId = normalizeAssistantTurnId(response.turn_id);
                         S.assistantTurnAwaitingBubble = true;
                     }
@@ -1501,6 +1502,7 @@
                     window.invalidatePendingMusicSearch();
                     emitAssistantSpeechCancel('response_discarded');
                     S.assistantTurnId = null;
+                    window._nekoAssistantTurnId = null;
                     clearPendingAssistantTurnStart();
                     // will_retry 时后端会再发一次 LLM 请求，对外仍然是"这一轮还在跑"——
                     // 但上面的 clearPendingAssistantTurnStart 已经把 awaitingBubble /
