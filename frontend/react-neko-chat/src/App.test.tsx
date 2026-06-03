@@ -4187,7 +4187,7 @@ describe('App', () => {
     fireEvent.click(editButton);
 
     expect(await screen.findByRole('dialog', { name: 'Manage tools' })).toBeInTheDocument();
-    expect(document.body.style.pointerEvents).toBe('auto');
+    expect(document.body.style.pointerEvents).toBe('');
 
     fireEvent.click(screen.getByRole('button', { name: 'Close' }));
     await waitFor(() => {

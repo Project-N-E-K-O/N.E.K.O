@@ -281,7 +281,6 @@ export default function AvatarToolItemManager({
 
   useEffect(() => {
     if (!open || typeof window === 'undefined') return undefined;
-    (window as any).__nekoForceInteractive = true;
     const prevPointerEvents = document.body.style.pointerEvents;
     if (prevPointerEvents === 'none') {
       document.body.style.pointerEvents = '';
@@ -290,7 +289,6 @@ export default function AvatarToolItemManager({
       window.dispatchEvent(new CustomEvent('neko:compact-surface-resize-width-change'));
     }
     return () => {
-      (window as any).__nekoForceInteractive = false;
       if (prevPointerEvents === 'none') {
         document.body.style.pointerEvents = prevPointerEvents;
       }
