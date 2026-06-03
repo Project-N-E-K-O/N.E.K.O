@@ -3940,6 +3940,8 @@ export default function App({
       if (!menuNode) return;
       if (menuNode.contains(event.target as Node)) return;
       if (compactInputToolFanRef.current?.contains(event.target as Node)) return;
+      const target = event.target as Element | null;
+      if (target?.closest('.avatar-tool-manager-overlay, .avatar-tool-manager-dialog')) return;
       setToolMenuOpen(false);
     };
 
