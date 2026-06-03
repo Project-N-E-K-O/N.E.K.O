@@ -166,6 +166,45 @@ function localKokoroVoicesUrlFromWs(wsUrl) {
     }
 }
 
+function looksLikeLocalKokoroWsUrl(value) {
+    const raw = (value || '').trim();
+    if (!raw) return false;
+    try {
+        const url = new URL(raw);
+        if (!['ws:', 'wss:', 'http:', 'https:'].includes(url.protocol)) return false;
+        const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+        const isLocalHost = hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1';
+        return isLocalHost && url.port === '50000';
+    } catch (e) {
+        return false;
+    }
+}
+
+function shouldShowLocalKokoroTtsConfig() {
+    const provider = (document.getElementById('ttsModelProvider')?.value || '').trim();
+    if (provider !== 'custom') return false;
+
+    const ttsUrl = (document.getElementById('ttsModelUrl')?.value || '').trim();
+    const ttsModelId = (document.getElementById('ttsModelId')?.value || '').trim();
+    const ttsVoiceId = (document.getElementById('ttsVoiceId')?.value || '').trim();
+    const hasAnyTtsValue = Boolean(ttsUrl || ttsModelId || ttsVoiceId);
+
+    if (!hasAnyTtsValue) return false;
+    return Boolean(
+        localKokoroProfileFromModelId(ttsModelId)
+        || localKokoroProfileFromVoiceId(ttsVoiceId)
+        || looksLikeLocalKokoroWsUrl(ttsUrl)
+    );
+}
+
+function updateLocalKokoroTtsConfigVisibility() {
+    const panel = document.getElementById('localKokoroTtsConfig');
+    if (!panel) return false;
+    const shouldShow = shouldShowLocalKokoroTtsConfig();
+    panel.style.display = shouldShow ? '' : 'none';
+    return shouldShow;
+}
+
 async function fetchLocalKokoroJson(url, timeoutMs = 3000) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -198,6 +237,7 @@ async function refreshLocalKokoroVoiceOptions(silent = true) {
     const localProfileSelect = document.getElementById('localKokoroProfileSelect');
     const localVoiceSelect = document.getElementById('localKokoroVoiceSelect');
     if (!localUrlInput || !localVoiceSelect) return;
+    if (!updateLocalKokoroTtsConfigVisibility()) return;
 
     const currentProfile = normalizeLocalKokoroProfile(localProfileSelect?.value || '');
     const currentVoice = localVoiceSelect.value || localKokoroDefaultVoice(currentProfile);
@@ -265,7 +305,9 @@ function loadLocalKokoroTtsConfig(ttsModelUrl, ttsVoiceId, ttsModelId = '') {
     const voice = savedVoice || localKokoroDefaultVoice(savedProfile);
     ensureLocalKokoroVoiceOption(voice);
     localVoiceSelect.value = voice;
-    refreshLocalKokoroVoiceOptions(true);
+    if (updateLocalKokoroTtsConfigVisibility()) {
+        refreshLocalKokoroVoiceOptions(true);
+    }
 }
 
 function applyLocalKokoroTtsConfig() {
@@ -315,6 +357,7 @@ function applyLocalKokoroTtsConfig() {
 
     markTtsConfigDirty();
     syncProviderSelectDropdowns(providerSelect);
+    updateLocalKokoroTtsConfigVisibility();
 }
 
 function getProviderResolvedUrl(scope, providerKey) {
@@ -1173,6 +1216,10 @@ function onCustomModelProviderChange(modelType) {
         const bookKey = syncKeyFromBook(provider);
         setKeyReadonly(keyInput, bookKey);
     }
+
+    if (modelType === 'tts') {
+        updateLocalKokoroTtsConfigVisibility();
+    }
 }
 
 /**
@@ -2017,11 +2064,18 @@ document.addEventListener('DOMContentLoaded', function () {
     ['ttsModelProvider', 'ttsModelUrl', 'ttsModelId', 'ttsModelApiKey', 'ttsVoiceId'].forEach(id => {
         const el = document.getElementById(id);
         if (!el) return;
-        el.addEventListener('change', markTtsConfigDirty);
+        el.addEventListener('change', () => {
+            markTtsConfigDirty();
+            updateLocalKokoroTtsConfigVisibility();
+        });
         if (el.tagName !== 'SELECT') {
-            el.addEventListener('input', markTtsConfigDirty);
+            el.addEventListener('input', () => {
+                markTtsConfigDirty();
+                updateLocalKokoroTtsConfigVisibility();
+            });
         }
     });
+    updateLocalKokoroTtsConfigVisibility();
 
     const localKokoroUrlInput = document.getElementById('localKokoroWsUrl');
     if (localKokoroUrlInput) {
