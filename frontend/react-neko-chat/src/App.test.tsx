@@ -4463,6 +4463,149 @@ describe('App', () => {
     }
   });
 
+  it('exposes a draggable left grip in compact input mode as part of the surface drag region', () => {
+    const { container, rerender } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" />,
+    );
+    const grip = container.querySelector('.compact-chat-input-drag-grip');
+    expect(grip).not.toBeNull();
+    // 握把属于本体拖拽区：自身不是 no-drag，祖先是 drag-surface，且不在任何 no-drag 子树里。
+    expect(grip).not.toHaveAttribute('data-compact-no-drag');
+    expect(grip!.closest('[data-compact-drag-surface="true"]')).not.toBeNull();
+    expect(grip!.closest('[data-compact-no-drag="true"]')).toBeNull();
+    // 仅输入态出现；胶囊态本体本身可拖，不需要单独握把。
+    rerender(<App chatSurfaceMode="compact" compactChatState="default" />);
+    expect(container.querySelector('.compact-chat-input-drag-grip')).toBeNull();
+  });
+
+  it('dispatches a compact surface drag-grab from the tool toggle when pressed and moved past threshold', () => {
+    render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+      />,
+    );
+    const toggle = document.body.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+    expect(toggle).not.toBeNull();
+    const grabs: Array<Record<string, number>> = [];
+    const onGrab = (event: Event) => grabs.push((event as CustomEvent).detail);
+    window.addEventListener('neko:compact-surface-drag-grab', onGrab);
+    try {
+      fireEvent.pointerDown(toggle, {
+        pointerId: 7, clientX: 100, clientY: 100, screenX: 300, screenY: 320,
+        button: 0, buttons: 1, pointerType: 'mouse',
+      });
+      fireEvent.pointerMove(toggle, {
+        pointerId: 7, clientX: 122, clientY: 108, buttons: 1, pointerType: 'mouse',
+      });
+      // 拖动超阈值 → 派发一次抓取事件，锚点用按下点（不跳变）。
+      expect(grabs).toHaveLength(1);
+      expect(grabs[0]).toMatchObject({ clientX: 100, clientY: 100, screenX: 300, screenY: 320 });
+      fireEvent.pointerUp(toggle, {
+        pointerId: 7, clientX: 122, clientY: 108, buttons: 0, pointerType: 'mouse',
+      });
+      // 拖完补发的 click 被吞掉，不应展开轮盘。
+      fireEvent.click(toggle);
+      const fan = document.body.querySelector('.compact-input-tool-fan');
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+    } finally {
+      window.removeEventListener('neko:compact-surface-drag-grab', onGrab);
+    }
+  });
+
+  it('keeps origin drag click suppression armed across a slow drag (no timeout clear)', () => {
+    vi.useFakeTimers();
+    try {
+      render(
+        <App chatSurfaceMode="compact" compactChatState="input" />,
+      );
+      const toggle = document.body.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+      fireEvent.pointerDown(toggle, {
+        pointerId: 31, clientX: 100, clientY: 100, screenX: 300, screenY: 300,
+        button: 0, buttons: 1, pointerType: 'mouse',
+      });
+      fireEvent.pointerMove(toggle, {
+        pointerId: 31, clientX: 130, clientY: 110, buttons: 1, pointerType: 'mouse',
+      });
+      // 慢速拖拽：跨过任何旧的固定时长窗口（曾经的 120ms 定时器会在此误清抑制标志）。
+      vi.advanceTimersByTime(1000);
+      fireEvent.pointerUp(toggle, {
+        pointerId: 31, clientX: 130, clientY: 110, buttons: 0, pointerType: 'mouse',
+      });
+      // 释放后补发的 click 仍应被吞掉，轮盘不被误展开。
+      fireEvent.click(toggle);
+      const fan = document.body.querySelector('.compact-input-tool-fan');
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('treats a stationary tap on the tool toggle as open (no drag-grab)', () => {
+    render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+      />,
+    );
+    const toggle = document.body.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+    const grabs: Event[] = [];
+    const onGrab = (event: Event) => grabs.push(event);
+    window.addEventListener('neko:compact-surface-drag-grab', onGrab);
+    try {
+      fireEvent.pointerDown(toggle, {
+        pointerId: 8, clientX: 100, clientY: 100, screenX: 300, screenY: 320,
+        button: 0, buttons: 1, pointerType: 'mouse',
+      });
+      fireEvent.pointerUp(toggle, {
+        pointerId: 8, clientX: 101, clientY: 100, buttons: 0, pointerType: 'mouse',
+      });
+      expect(grabs).toHaveLength(0);
+      fireEvent.click(toggle);
+      const fan = document.body.querySelector('.compact-input-tool-fan');
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+    } finally {
+      window.removeEventListener('neko:compact-surface-drag-grab', onGrab);
+    }
+  });
+
+  it('dispatches a drag-grab from the open wheel origin and collapses the wheel', () => {
+    render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+      />,
+    );
+    const toggle = document.body.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+    fireEvent.click(toggle);
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+    const fanRectSpy = vi.spyOn(fan, 'getBoundingClientRect').mockReturnValue({
+      left: 0, top: 0, right: 232, bottom: 232, width: 232, height: 232, x: 0, y: 0,
+      toJSON: () => ({}),
+    } as DOMRect);
+    const grabs: Array<Record<string, number>> = [];
+    const onGrab = (event: Event) => grabs.push((event as CustomEvent).detail);
+    window.addEventListener('neko:compact-surface-drag-grab', onGrab);
+    try {
+      // 在轮盘中心（origin）按下并拖动 → 移动文本框而非旋转轮盘。
+      fireEvent.pointerDown(fan, {
+        pointerId: 9, clientX: 10, clientY: 10, screenX: 210, screenY: 210,
+        button: 0, buttons: 1, pointerType: 'mouse',
+      });
+      fireEvent.pointerMove(fan, {
+        pointerId: 9, clientX: 32, clientY: 16, buttons: 1, pointerType: 'mouse',
+      });
+      expect(grabs).toHaveLength(1);
+      expect(grabs[0]).toMatchObject({ clientX: 10, clientY: 10, screenX: 210, screenY: 210 });
+      // 拖动是移动手势 → 轮盘收起。
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+    } finally {
+      window.removeEventListener('neko:compact-surface-drag-grab', onGrab);
+      fanRectSpy.mockRestore();
+    }
+  });
+
   it('keeps angular wheel drag direction while crossing behind the center', () => {
     render(
       <App

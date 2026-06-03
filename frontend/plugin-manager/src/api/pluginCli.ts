@@ -7,10 +7,19 @@ import { API_BASE_URL } from '@/utils/constants'
 export type PluginCliConflictStrategy = 'rename' | 'fail'
 export type PluginCliBuildMode = 'selected' | 'single' | 'bundle' | 'all'
 
+export interface PluginCliPluginRef {
+  root_id: 'builtin' | 'user'
+  directory_name: string
+  plugin_id?: string
+  label?: string
+}
+
 export interface PluginCliBuildRequest {
   mode: PluginCliBuildMode
   plugin?: string
   plugins?: string[]
+  plugin_ref?: PluginCliPluginRef
+  plugin_refs?: PluginCliPluginRef[]
   out?: string
   target_dir?: string
   keep_staging?: boolean
@@ -110,7 +119,8 @@ export interface PluginCliInstallResponse {
 }
 
 export interface PluginCliAnalyzeRequest {
-  plugins: string[]
+  plugins?: string[]
+  plugin_refs?: PluginCliPluginRef[]
   current_sdk_version?: string
 }
 
@@ -141,6 +151,7 @@ export interface PluginCliAnalyzeResponse {
 
 export interface PluginCliLocalPluginsResponse {
   plugins: string[]
+  plugin_refs?: PluginCliPluginRef[]
   count: number
 }
 

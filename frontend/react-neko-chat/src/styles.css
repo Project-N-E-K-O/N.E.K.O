@@ -2021,7 +2021,47 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 
 .compact-chat-surface-frame[data-compact-chat-state="input"] {
   gap: 0;
-  padding: 5px 62px 5px 20px;
+  padding: 5px 62px 5px 10px;
+}
+
+/* 输入态左侧拖拽把手：给一处稳定可抓的「移动文本框」区域。
+   textarea / 工具按钮是 no-drag，本握把不加 no-drag，于是属于 surface 本体拖拽区
+   （web/X11 命中判定 + Wayland 原生 -webkit-app-region:drag 都覆盖到）。
+   静息低透明、hover 提亮，沿用与左右 resize 手柄一致的「平时低调、靠近才显形」手感。 */
+.compact-chat-surface-frame[data-compact-chat-state="input"] .compact-chat-input-drag-grip {
+  flex: 0 0 12px;
+  align-self: stretch;
+  margin-right: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  touch-action: none;
+  color: #2f526b;
+}
+
+.compact-chat-input-drag-grip::before {
+  content: "";
+  width: 4px;
+  height: 18px;
+  background-image: radial-gradient(currentcolor 0.9px, transparent 1.3px);
+  background-size: 4px 6px;
+  background-position: center;
+  opacity: 0.22;
+  transition: opacity 0.15s ease;
+}
+
+.compact-chat-surface-shell:hover .compact-chat-input-drag-grip::before,
+.compact-chat-input-drag-grip:active::before {
+  opacity: 0.5;
+}
+
+.compact-chat-input-drag-grip:active {
+  cursor: grabbing;
+}
+
+[data-theme="dark"] .compact-chat-surface-frame[data-compact-chat-state="input"] .compact-chat-input-drag-grip {
+  color: #e9f4ff;
 }
 
 .compact-chat-surface-frame[data-compact-tool-toggle-visible="true"]:not([data-compact-chat-state="input"]) {
