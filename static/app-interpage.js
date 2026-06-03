@@ -1647,6 +1647,59 @@
     var _yuiGuideChatFlushTimer = null;
     var _yuiGuideChatFlushAttempts = 0;
     var YUI_GUIDE_CHAT_FLUSH_MAX_ATTEMPTS = 50;
+    var IDLE_CHAT_COMPACT_SURFACE_HEARTBEAT_MS = 1000;
+    var idleChatCompactSurfaceHeartbeatTimer = 0;
+    var idleChatCompactSurfaceLastPayload = null;
+
+    function stopIdleChatCompactSurfaceHeartbeat() {
+        if (!idleChatCompactSurfaceHeartbeatTimer) return;
+        window.clearInterval(idleChatCompactSurfaceHeartbeatTimer);
+        idleChatCompactSurfaceHeartbeatTimer = 0;
+    }
+
+    function startIdleChatCompactSurfaceHeartbeat() {
+        if (idleChatCompactSurfaceHeartbeatTimer) return;
+        idleChatCompactSurfaceHeartbeatTimer = window.setInterval(function () {
+            if (!nekoBroadcastChannel ||
+                !idleChatCompactSurfaceLastPayload ||
+                !idleChatCompactSurfaceLastPayload.visible ||
+                !idleChatCompactSurfaceLastPayload.screenRect) {
+                stopIdleChatCompactSurfaceHeartbeat();
+                return;
+            }
+            nekoBroadcastChannel.postMessage(Object.assign({}, idleChatCompactSurfaceLastPayload, {
+                lanlan_name: getCurrentLanlanName(),
+                timestamp: Date.now(),
+                heartbeat: true
+            }));
+        }, IDLE_CHAT_COMPACT_SURFACE_HEARTBEAT_MS);
+    }
+
+    function syncIdleChatCompactSurfaceHeartbeat(payload) {
+        idleChatCompactSurfaceLastPayload = payload || null;
+        if (payload && payload.visible && payload.screenRect) {
+            startIdleChatCompactSurfaceHeartbeat();
+            return;
+        }
+        stopIdleChatCompactSurfaceHeartbeat();
+    }
+
+    function postIdleChatCompactSurfaceState(detail) {
+        if (!nekoBroadcastChannel) return;
+        var screenRect = detail && detail.screenRect ? detail.screenRect : null;
+        var payload = {
+            action: 'idle_chat_compact_surface_state',
+            source: 'chat-window',
+            lanlan_name: getCurrentLanlanName(),
+            visible: !!screenRect,
+            screenRect: screenRect,
+            resizeActive: !!(detail && detail.resizeActive),
+            dragging: !!(detail && detail.dragging),
+            timestamp: Date.now()
+        };
+        nekoBroadcastChannel.postMessage(payload);
+        syncIdleChatCompactSurfaceHeartbeat(payload);
+    }
 
     function scheduleYuiGuideChatMessageFlush(delay) {
         if (_yuiGuideChatFlushTimer) return;
@@ -1824,6 +1877,12 @@
                         var compactSurfaceCurrentName = getCurrentLanlanName();
                         if (event.data.lanlan_name && (!compactSurfaceCurrentName || event.data.lanlan_name !== compactSurfaceCurrentName)) break;
                         dispatchIdleChatCompactSurfaceState(event.data);
+                        break;
+                    }
+                    case 'idle_cat1_compact_mirror_state': {
+                        var cat1MirrorCurrentName = getCurrentLanlanName();
+                        if (event.data.lanlan_name && (!cat1MirrorCurrentName || event.data.lanlan_name !== cat1MirrorCurrentName)) break;
+                        dispatchIdleCat1CompactMirrorState(event.data);
                         break;
                     }
                     case 'idle_chat_pair_move_bounds': {
@@ -2135,6 +2194,24 @@
         }));
     }
 
+    function dispatchIdleCat1CompactMirrorState(detail) {
+        window.dispatchEvent(new CustomEvent('neko:idle-cat1-compact-mirror-state', {
+            detail: Object.assign({
+                action: 'idle_cat1_compact_mirror_state',
+                source: '',
+                reason: '',
+                active: false,
+                surfaceScreenRect: null,
+                anchorRatio: null,
+                catRect: null,
+                timestamp: Date.now(),
+                via: 'broadcast-channel'
+            }, detail || {}, {
+                via: 'broadcast-channel'
+            })
+        }));
+    }
+
     function dispatchIdleChatPairMoveBounds(detail) {
         window.dispatchEvent(new CustomEvent('neko:idle-chat-pair-move-bounds', {
             detail: Object.assign({
@@ -2332,18 +2409,7 @@
 
     window.addEventListener('neko:compact-surface-layout-change', function (evt) {
         var detail = evt && evt.detail && typeof evt.detail === 'object' ? evt.detail : null;
-        if (!nekoBroadcastChannel) return;
-        var screenRect = detail && detail.screenRect ? detail.screenRect : null;
-        nekoBroadcastChannel.postMessage({
-            action: 'idle_chat_compact_surface_state',
-            source: 'chat-window',
-            lanlan_name: getCurrentLanlanName(),
-            visible: !!screenRect,
-            screenRect: screenRect,
-            resizeActive: !!(detail && detail.resizeActive),
-            dragging: !!(detail && detail.dragging),
-            timestamp: Date.now()
-        });
+        postIdleChatCompactSurfaceState(detail);
     });
 
     // Chat 窗口初始化时，向 Pet 窗口请求当前已缓存的头像

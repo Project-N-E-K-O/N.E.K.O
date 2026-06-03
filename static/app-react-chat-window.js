@@ -261,6 +261,11 @@
     var compactSurfacePendingModelOpen = false;
     var compactSurfaceResizeSession = null;
     var compactSurfaceDesktopResizeActive = false;
+    var compactSurfaceDesktopDragActive = false;
+    var IDLE_CAT1_COMPACT_MIRROR_TIMEOUT_MS = 1600;
+    var idleCat1CompactMirrorElement = null;
+    var idleCat1CompactMirrorTimer = 0;
+    var idleCat1CompactMirrorLastDetail = null;
 
     function normalizeCompactDesktopRect(raw) {
         if (!raw) return null;
@@ -306,6 +311,7 @@
     }
 
     function handleDesktopCompactLayoutChange(layout) {
+        compactSurfaceDesktopDragActive = !!(layout && layout.dragging);
         var nextAnchorSnapshot = getCompactDesktopLayoutAnchorSnapshot(layout);
         var baseAnchorChanged = false;
         if (!nextAnchorSnapshot) {
@@ -641,6 +647,142 @@
         };
     }
 
+    function getIdleCat1CompactMirrorElement() {
+        if (idleCat1CompactMirrorElement && idleCat1CompactMirrorElement.isConnected) {
+            return idleCat1CompactMirrorElement;
+        }
+        var host = document.body;
+        if (!host) return null;
+        var element = document.createElement('div');
+        element.id = 'neko-idle-cat1-compact-mirror';
+        element.className = 'neko-idle-cat1-compact-mirror';
+        element.setAttribute('data-compact-geometry-owner', 'surface');
+        element.setAttribute('data-compact-geometry-item', 'cat1Mirror');
+        element.setAttribute('aria-hidden', 'true');
+        element.hidden = true;
+        var image = document.createElement('img');
+        image.className = 'neko-idle-cat1-compact-mirror-art';
+        image.alt = '';
+        image.draggable = false;
+        element.appendChild(image);
+        host.appendChild(element);
+        idleCat1CompactMirrorElement = element;
+        return element;
+    }
+
+    function clearIdleCat1CompactMirrorTimer() {
+        if (!idleCat1CompactMirrorTimer) return;
+        window.clearTimeout(idleCat1CompactMirrorTimer);
+        idleCat1CompactMirrorTimer = 0;
+    }
+
+    function hideIdleCat1CompactMirror(reason) {
+        clearIdleCat1CompactMirrorTimer();
+        var element = idleCat1CompactMirrorElement;
+        if (element) {
+            element.hidden = true;
+            element.removeAttribute('data-active');
+            element.style.removeProperty('left');
+            element.style.removeProperty('top');
+            element.style.removeProperty('width');
+            element.style.removeProperty('height');
+        }
+        idleCat1CompactMirrorLastDetail = null;
+        scheduleCompactMinimizeBallTracking();
+        syncCompactInteractionGeometry();
+    }
+
+    function getIdleCat1CompactMirrorWindowBounds() {
+        var windowBounds = getCompactSurfaceDesktopWindowBounds();
+        if (windowBounds) return windowBounds;
+        var x = Number(window.screenX);
+        var y = Number(window.screenY);
+        return {
+            x: Number.isFinite(x) ? x : 0,
+            y: Number.isFinite(y) ? y : 0
+        };
+    }
+
+    function getIdleCat1CompactMirrorPageRect(detail) {
+        var surface = normalizeCompactDesktopRect(detail && detail.surfaceScreenRect);
+        if (!surface) return null;
+        var catRect = detail && detail.catRect ? detail.catRect : null;
+        var catWidth = Math.round(Number(catRect && catRect.width) || 112);
+        var catHeight = Math.round(Number(catRect && catRect.height) || 112);
+        if (catWidth <= 0 || catHeight <= 0) return null;
+        var windowBounds = getIdleCat1CompactMirrorWindowBounds();
+        var surfaceLeft = surface.left - (Number(windowBounds.x) || 0);
+        var surfaceTop = surface.top - (Number(windowBounds.y) || 0);
+        var sidePadding = Math.max(0, Number(detail && detail.sidePaddingPx) || 12);
+        var capInset = Math.max(sidePadding, surface.height / 2 + sidePadding);
+        var edgePadding = Math.min(capInset, Math.max(0, surface.width / 2));
+        var minCenterX = surfaceLeft + edgePadding;
+        var maxCenterX = surfaceLeft + surface.width - edgePadding;
+        var ratio = Number(detail && detail.anchorRatio);
+        if (!Number.isFinite(ratio)) ratio = 0.5;
+        ratio = Math.max(0, Math.min(1, ratio));
+        var centerX = maxCenterX >= minCenterX
+            ? minCenterX + (maxCenterX - minCenterX) * ratio
+            : surfaceLeft + surface.width / 2;
+        var overlap = Number(detail && detail.overlapPx);
+        if (!Number.isFinite(overlap)) overlap = 28;
+        return {
+            left: Math.round(centerX - catWidth / 2),
+            top: Math.round(surfaceTop - catHeight + overlap),
+            width: catWidth,
+            height: catHeight
+        };
+    }
+
+    function showIdleCat1CompactMirror(detail) {
+        var element = getIdleCat1CompactMirrorElement();
+        var rect = getIdleCat1CompactMirrorPageRect(detail);
+        if (!element || !rect) {
+            hideIdleCat1CompactMirror('invalid');
+            return;
+        }
+        idleCat1CompactMirrorLastDetail = Object.assign({}, detail || {});
+        var image = element.querySelector('.neko-idle-cat1-compact-mirror-art');
+        if (image) {
+            var src = detail && detail.assetUrl ? String(detail.assetUrl) : '/static/assets/neko-idle/cat-idle-cat1.gif';
+            if (image.getAttribute('src') !== src) image.setAttribute('src', src);
+            image.style.transform = detail && detail.facingRight ? 'scaleX(-1)' : 'scaleX(1)';
+        }
+        element.style.left = rect.left + 'px';
+        element.style.top = rect.top + 'px';
+        element.style.width = rect.width + 'px';
+        element.style.height = rect.height + 'px';
+        element.hidden = false;
+        element.setAttribute('data-active', 'true');
+        clearIdleCat1CompactMirrorTimer();
+        idleCat1CompactMirrorTimer = window.setTimeout(function () {
+            hideIdleCat1CompactMirror('timeout');
+        }, IDLE_CAT1_COMPACT_MIRROR_TIMEOUT_MS);
+        scheduleCompactMinimizeBallTracking();
+        syncCompactInteractionGeometry();
+    }
+
+    function refreshIdleCat1CompactMirrorPosition() {
+        var element = idleCat1CompactMirrorElement;
+        if (!element || element.hidden || !idleCat1CompactMirrorLastDetail) return;
+        var rect = getIdleCat1CompactMirrorPageRect(idleCat1CompactMirrorLastDetail);
+        if (!rect) return;
+        element.style.left = rect.left + 'px';
+        element.style.top = rect.top + 'px';
+        element.style.width = rect.width + 'px';
+        element.style.height = rect.height + 'px';
+        syncCompactInteractionGeometry();
+    }
+
+    function handleIdleCat1CompactMirrorState(event) {
+        var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
+        if (!detail || !detail.active) {
+            hideIdleCat1CompactMirror(detail && detail.reason ? detail.reason : 'inactive');
+            return;
+        }
+        showIdleCat1CompactMirror(detail);
+    }
+
     function dispatchCompactSurfaceLayoutChange(rect) {
         var detail = rect || null;
         if (detail && isElectronChatWindow()) {
@@ -651,7 +793,7 @@
         }
         if (detail) {
             detail = Object.assign({}, detail, {
-                dragging: !!(dragState && dragState.compactSurface)
+                dragging: !!(dragState && dragState.compactSurface) || compactSurfaceDesktopDragActive
             });
         }
         window.dispatchEvent(new CustomEvent('neko:compact-surface-layout-change', {
@@ -1023,7 +1165,7 @@
         var item = element.getAttribute('data-compact-geometry-item') || '';
         if (item === 'choice' && element.getAttribute('data-choice-layer-open') !== 'true') return false;
         if (item === 'toolFan' && element.getAttribute('data-compact-input-tool-fan-open') !== 'true') return false;
-        if (element.getAttribute('aria-hidden') === 'true' && item !== 'resizeHandle') return false;
+        if (element.getAttribute('aria-hidden') === 'true' && item !== 'resizeHandle' && item !== 'cat1Mirror') return false;
         var style = window.getComputedStyle ? window.getComputedStyle(element) : null;
         if (style && (style.display === 'none' || style.visibility === 'hidden')) return false;
         return true;
@@ -1280,11 +1422,27 @@
                 !root.contains(element)
                 && !element.classList.contains('compact-input-tool-fan')
                 && !element.classList.contains('compact-chat-choice-anchor')
+                && !element.classList.contains('neko-idle-cat1-compact-mirror')
             ) return items;
             if (!shouldIncludeCompactGeometryElement(element)) return items;
             var compactGeometryItem = element.getAttribute('data-compact-geometry-item');
             if (compactGeometryItem === 'toolFan') {
                 return items.concat(collectCompactToolFanGeometryItems(element));
+            }
+            if (compactGeometryItem === 'cat1Mirror') {
+                var mirrorRect = getCompactGeometryElementRect(element);
+                if (mirrorRect) {
+                    items.push({
+                        id: 'cat1Mirror:native',
+                        owner: 'surface',
+                        kind: 'cat1Mirror',
+                        visualRect: mirrorRect,
+                        hitRect: null,
+                        nativeRect: mirrorRect,
+                        interactive: false
+                    });
+                }
+                return items;
             }
             if (element.getAttribute('data-compact-geometry-hit-scope') === 'children') {
                 return items.concat(collectCompactCompositeGeometryItems(element, compactGeometryItem));
@@ -1414,7 +1572,8 @@
             Math.round(target.left),
             Math.round(target.top),
             Math.round(target.width),
-            Math.round(target.height || COMPACT_SURFACE_DEFAULT_HEIGHT)
+            Math.round(target.height || COMPACT_SURFACE_DEFAULT_HEIGHT),
+            (!!(dragState && dragState.compactSurface) || compactSurfaceDesktopDragActive) ? 'dragging' : 'idle'
         ].join(':');
         if (snapshot === compactSurfaceAnchorSnapshot) {
             return;
@@ -4749,6 +4908,7 @@
         cancelActiveAnimation(); // 清理进行中的折叠/展开回调
         clearIdleDockState();
         deactivateToolCursor();
+        hideIdleCat1CompactMirror('close-window');
 
         // 如果当前处于最小化状态，恢复 shell 到正常态
         if (minimized) {
@@ -5462,6 +5622,7 @@
             if (!detail) return;
             scheduleElectronCat1PairMoveBounds(detail.screenRect || detail.bounds);
         });
+        window.addEventListener('neko:idle-cat1-compact-mirror-state', handleIdleCat1CompactMirrorState);
         window.addEventListener('live2d-return-click', function () {
             if (hasElectronIdleDockPendingOrActive()) { exitElectronIdleDock(); }
             if (hasIdleDockPendingOrActive()) { exitIdleDock(); return; }
@@ -5481,6 +5642,7 @@
         window.addEventListener('neko:desktop-compact-layout-change', function (event) {
             var layout = event && event.detail ? event.detail : window.__nekoDesktopCompactLayout;
             handleDesktopCompactLayoutChange(layout || null);
+            refreshIdleCat1CompactMirrorPosition();
         });
         if (window.__nekoDesktopCompactLayout) {
             handleDesktopCompactLayoutChange(window.__nekoDesktopCompactLayout);

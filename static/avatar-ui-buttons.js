@@ -202,7 +202,13 @@ const _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE = 'compact-top-edge';
 const _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE = 'minimized-side';
 const _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_OVERLAP_PX = 28;
 const _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_SIDE_PADDING_PX = 12;
-const _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_FOLLOW_DISTANCE_PX = 320;
+const _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_FOLLOW_DISTANCE_PX = 200;
+const _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_REARM_DISTANCE_PX = 100;
+const _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_STICK_MAX_SPEED_PX_PER_SEC = 1100;
+const _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_STICK_MAX_STEP_PX = 210;
+const _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_DROP_PX = 52;
+const _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_DROP_ANIMATION_MS = 360;
+const _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_DROP_COOLDOWN_MS = 900;
 const _NEKO_IDLE_CAT1_COMPACT_SURFACE_SETTLE_SYNC_MS = 160;
 const _NEKO_IDLE_CAT1_WALK_ENTER_DISTANCE_PX = 120;
 const _NEKO_IDLE_CAT1_WALK_EXIT_DISTANCE_PX = 42;
@@ -233,7 +239,11 @@ const _NEKO_IDLE_CAT1_PAIR_MOVE_SPEED_PX_PER_SEC = 96;
 const _NEKO_IDLE_CAT1_PAIR_MOVE_MIN_DURATION_MS = 720;
 const _NEKO_IDLE_CAT1_PAIR_MOVE_MAX_DURATION_MS = 2200;
 const _NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS = 2500;
+const _NEKO_IDLE_DESKTOP_COMPACT_SURFACE_RECT_STALE_MS = 10 * 1000;
 const _NEKO_IDLE_RETURN_DRAG_ACTION_CLASS = 'is-drag-action';
+const _NEKO_IDLE_CAT1_LAYER_REQUEST_HEARTBEAT_MS = 250;
+const _NEKO_IDLE_CAT1_LAYER_FOLLOW_REASSERT_MS = 80;
+const _NEKO_IDLE_CAT1_LAYER_RELEASE_DELAY_MS = 2600;
 const _NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS = 3 * 60 * 1000;
 const _NEKO_IDLE_CAT1_AMBIENT_SOUND_VOLUME = 0.14;
 const _NEKO_IDLE_CAT1_DRAG_SOUND_VOLUME = 0.16;
@@ -1038,6 +1048,11 @@ function _setNekoIdleReturnDragActionArt(button, tier) {
 function _prepareNekoIdleReturnDragActionForContainer(container) {
     const button = _getNekoIdleReturnButtonFromContainer(container);
     if (!button) return;
+    const currentState = button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey;
+    if (currentState &&
+        currentState.targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE) {
+        currentState.compactTopEdgeRearmRequired = true;
+    }
     _logNekoIdleReturnDragDebug('prepare', {
         containerId: container && container.id,
         tier: button.getAttribute('data-neko-idle-tier')
@@ -1146,7 +1161,12 @@ function _getNekoIdleReturnSubactionState(button, profile) {
         pairMoveTimer: 0,
         pairMoveToken: 0,
         pairMoveFrame: 0,
-        pairMovePlan: null
+        pairMovePlan: null,
+        compactFollowLastSurfaceRect: null,
+        compactFollowLastAt: 0,
+        compactFollowAnchorRatio: null,
+        compactTopEdgeDropUntil: 0,
+        compactTopEdgeRearmRequired: false
     };
     button.__nekoIdleCat1Journey = button.__nekoIdleReturnSubactionState;
     return button.__nekoIdleReturnSubactionState;
@@ -1173,6 +1193,174 @@ function _formatNekoIdleCat1WalkSpeedRate(rate) {
     const value = Number(rate);
     if (!Number.isFinite(value) || value <= 0) return '1';
     return Math.round(value * 1000) / 1000 + '';
+}
+
+function _dispatchNekoIdleCat1LayerRequest(container, active, reason, options = {}) {
+    if (!container) return;
+    const nextActive = !!active;
+    const now = Date.now();
+    const previousActive = !!container.__nekoIdleCat1LayerRequestActive;
+    const previousAt = Number(container.__nekoIdleCat1LayerRequestAt) || 0;
+    if (!options.force &&
+        previousActive === nextActive &&
+        (!nextActive || now - previousAt < _NEKO_IDLE_CAT1_LAYER_REQUEST_HEARTBEAT_MS)) {
+        return;
+    }
+    container.__nekoIdleCat1LayerRequestActive = nextActive;
+    container.__nekoIdleCat1LayerRequestAt = now;
+    try {
+        window.dispatchEvent(new CustomEvent('neko:idle-cat1-layer-request', {
+            detail: {
+                active: nextActive,
+                reason: reason || (nextActive ? 'compact-top-edge' : 'default-layer'),
+                targetKind: nextActive ? _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE : '',
+                containerId: container.id || '',
+                timestamp: now
+            }
+        }));
+    } catch (_) {}
+}
+
+function _clearNekoIdleCat1LayerReleaseTimer(container) {
+    if (!container || !container.__nekoIdleCat1LayerReleaseTimer) return;
+    clearTimeout(container.__nekoIdleCat1LayerReleaseTimer);
+    container.__nekoIdleCat1LayerReleaseTimer = 0;
+}
+
+function _stopNekoIdleCat1LayerHeartbeat(container) {
+    if (!container || !container.__nekoIdleCat1LayerHeartbeatTimer) return;
+    clearInterval(container.__nekoIdleCat1LayerHeartbeatTimer);
+    container.__nekoIdleCat1LayerHeartbeatTimer = 0;
+}
+
+function _startNekoIdleCat1LayerHeartbeat(container) {
+    if (!container || container.__nekoIdleCat1LayerHeartbeatTimer) return;
+    container.__nekoIdleCat1LayerHeartbeatTimer = setInterval(() => {
+        if (!container.isConnected ||
+            container.style.display === 'none' ||
+            !container.__nekoIdleCat1LayerRequestActive) {
+            _stopNekoIdleCat1LayerHeartbeat(container);
+            _clearNekoIdleCat1LayerReleaseTimer(container);
+            _dispatchNekoIdleCat1LayerRequest(container, false, 'layer-heartbeat-ended', { force: true });
+            return;
+        }
+        _dispatchNekoIdleCat1LayerRequest(container, true, 'compact-top-edge-heartbeat', { force: true });
+    }, _NEKO_IDLE_CAT1_LAYER_REQUEST_HEARTBEAT_MS);
+}
+
+function _syncNekoIdleCat1LayerRequest(container, active, reason) {
+    if (!container) return;
+    if (active) {
+        _clearNekoIdleCat1LayerReleaseTimer(container);
+        _startNekoIdleCat1LayerHeartbeat(container);
+        _dispatchNekoIdleCat1LayerRequest(container, true, reason || 'compact-top-edge');
+        return;
+    }
+
+    if (!container.__nekoIdleCat1LayerRequestActive) return;
+    if (container.__nekoIdleCat1LayerReleaseTimer) return;
+    container.__nekoIdleCat1LayerReleaseTimer = setTimeout(() => {
+        container.__nekoIdleCat1LayerReleaseTimer = 0;
+        _stopNekoIdleCat1LayerHeartbeat(container);
+        _dispatchNekoIdleCat1LayerRequest(container, false, reason || 'default-layer', { force: true });
+    }, _NEKO_IDLE_CAT1_LAYER_RELEASE_DELAY_MS);
+}
+
+function _reassertNekoIdleCat1LayerForFollow(container) {
+    if (!container) return;
+    const now = Date.now();
+    const previousAt = Number(container.__nekoIdleCat1LayerFollowReassertAt) || 0;
+    if (now - previousAt < _NEKO_IDLE_CAT1_LAYER_FOLLOW_REASSERT_MS) return;
+    container.__nekoIdleCat1LayerFollowReassertAt = now;
+    _dispatchNekoIdleCat1LayerRequest(container, true, 'compact-top-edge-follow', { force: true });
+}
+
+function _getNekoIdleScreenRectFromCompactSurfaceRect(rect) {
+    const normalized = _normalizeNekoIdleScreenRect(rect);
+    if (!normalized) return null;
+    const explicitLeft = Number(rect && rect.screenLeft);
+    const explicitTop = Number(rect && rect.screenTop);
+    const left = Number.isFinite(explicitLeft)
+        ? explicitLeft
+        : (Number.isFinite(window.screenX) ? window.screenX : 0) + normalized.left;
+    const top = Number.isFinite(explicitTop)
+        ? explicitTop
+        : (Number.isFinite(window.screenY) ? window.screenY : 0) + normalized.top;
+    return {
+        left: Math.round(left),
+        top: Math.round(top),
+        width: Math.round(normalized.width),
+        height: Math.round(normalized.height)
+    };
+}
+
+function _postNekoIdleCat1CompactMirrorState(payload) {
+    const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
+    if (!channel || typeof channel.postMessage !== 'function') return false;
+    channel.postMessage(Object.assign({
+        action: 'idle_cat1_compact_mirror_state',
+        source: 'pet-window',
+        lanlan_name: _getNekoIdleCurrentLanlanName(),
+        timestamp: Date.now()
+    }, payload || {}));
+    return true;
+}
+
+function _setNekoIdleCat1CompactMirrorActive(button, container, active, options = {}) {
+    if (!container) return false;
+    const nextActive = !!active;
+    const state = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
+    if (!nextActive) {
+        if (!container.__nekoIdleCat1CompactMirrorActive) return true;
+        container.__nekoIdleCat1CompactMirrorActive = false;
+        container.classList.remove('is-cat1-compact-mirror-active');
+        _postNekoIdleCat1CompactMirrorState({
+            active: false,
+            reason: options.reason || 'inactive',
+            containerId: container.id || ''
+        });
+        return true;
+    }
+
+    const surfaceScreenRect = _getNekoIdleScreenRectFromCompactSurfaceRect(options.surfaceRect);
+    const catRect = typeof container.getBoundingClientRect === 'function'
+        ? container.getBoundingClientRect()
+        : null;
+    if (!surfaceScreenRect || !catRect || catRect.width <= 0 || catRect.height <= 0) return false;
+    const target = options.target || null;
+    const anchorRatio = target && Number.isFinite(Number(target.anchorRatio))
+        ? Math.max(0, Math.min(1, Number(target.anchorRatio)))
+        : (state && Number.isFinite(Number(state.compactFollowAnchorRatio))
+            ? Math.max(0, Math.min(1, Number(state.compactFollowAnchorRatio)))
+            : 0.5);
+    const posted = _postNekoIdleCat1CompactMirrorState({
+        active: true,
+        reason: options.reason || 'compact-follow',
+        containerId: container.id || '',
+        surfaceScreenRect: surfaceScreenRect,
+        anchorRatio: anchorRatio,
+        catRect: {
+            width: Math.round(catRect.width),
+            height: Math.round(catRect.height)
+        },
+        overlapPx: _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_OVERLAP_PX,
+        sidePaddingPx: _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_SIDE_PADDING_PX,
+        assetUrl: _getNekoIdleReturnAssetUrl(_NEKO_IDLE_TIER_CAT1),
+        facingRight: !!(state && state.facingRight)
+    });
+    if (!posted) return false;
+    container.__nekoIdleCat1CompactMirrorActive = true;
+    container.classList.add('is-cat1-compact-mirror-active');
+    return true;
+}
+
+function _deactivateNekoIdleCat1CompactMirrors(reason) {
+    _forEachNekoIdleReturnButton((button) => {
+        const container = _getNekoIdleReturnContainerFromButton(button);
+        if (container) {
+            _setNekoIdleCat1CompactMirrorActive(button, container, false, { reason: reason || 'inactive' });
+        }
+    });
 }
 
 function _setNekoIdleCat1Classes(button, state) {
@@ -1236,6 +1424,14 @@ function _setNekoIdleCat1Classes(button, state) {
             onCompactTopEdge ? _NEKO_IDLE_RETURN_COMPACT_SURFACE_Z_INDEX : _NEKO_IDLE_RETURN_DEFAULT_Z_INDEX,
             onCompactTopEdge ? 'important' : ''
         );
+        _syncNekoIdleCat1LayerRequest(
+            container,
+            onCompactTopEdge,
+            onCompactTopEdge ? 'compact-top-edge' : 'default-layer'
+        );
+        if (!onCompactTopEdge) {
+            _setNekoIdleCat1CompactMirrorActive(button, container, false, { reason: 'default-layer' });
+        }
         if (speedRate) {
             container.setAttribute('data-neko-cat1-walk-speed-rate', speedRate);
             container.style.setProperty('--neko-idle-cat1-walk-speed-rate', speedRate);
@@ -1312,6 +1508,58 @@ function _resetNekoIdleCat1WalkSpeed(state) {
     state.walkDistanceGrowthPx = 0;
 }
 
+function _getNekoIdleNowMs() {
+    return (typeof performance !== 'undefined' && typeof performance.now === 'function')
+        ? performance.now()
+        : Date.now();
+}
+
+function _resetNekoIdleCat1CompactFollowState(state, options = {}) {
+    if (!state) return;
+    state.compactFollowLastSurfaceRect = null;
+    state.compactFollowLastAt = 0;
+    state.compactFollowAnchorRatio = null;
+    if (!options.keepDropCooldown) {
+        state.compactTopEdgeDropUntil = 0;
+    }
+}
+
+function _getNekoIdleCat1CompactTopEdgeTargetDistance(container) {
+    const surfaceRect = _getNekoIdleChatCompactSurfaceRect();
+    const target = _getNekoIdleCat1CompactTopEdgeTarget(container, surfaceRect);
+    return target && Number.isFinite(Number(target.distance)) ? Number(target.distance) : Infinity;
+}
+
+function _updateNekoIdleCat1CompactTopEdgeRearmAfterManualMove(container) {
+    const button = _getNekoIdleReturnButtonFromContainer(container);
+    const state = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
+    if (!state || !container) {
+        return {
+            rearmed: false,
+            shouldSync: false
+        };
+    }
+
+    const distance = _getNekoIdleCat1CompactTopEdgeTargetDistance(container);
+    const rearmed = distance <= _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_REARM_DISTANCE_PX;
+    if (rearmed) {
+        state.compactTopEdgeRearmRequired = false;
+        state.compactTopEdgeDropUntil = 0;
+        return {
+            rearmed: true,
+            shouldSync: true
+        };
+    }
+
+    state.compactTopEdgeRearmRequired = true;
+    state.compactFollowAnchorRatio = null;
+    state.targetKind = '';
+    return {
+        rearmed: false,
+        shouldSync: false
+    };
+}
+
 function _cancelNekoIdleReturnSubactionState(state, options = {}) {
     _cancelNekoIdleCat1Frame(state);
     _cancelNekoIdleCat1SyncFrame(state);
@@ -1319,6 +1567,7 @@ function _cancelNekoIdleReturnSubactionState(state, options = {}) {
     _cancelNekoIdleReturnPendingWalk(state);
     _cancelNekoIdleCat1PairMove(state);
     _resetNekoIdleCat1WalkSpeed(state);
+    _resetNekoIdleCat1CompactFollowState(state);
     if (!options.preserveObservers) {
         _disconnectNekoIdleCat1Observer(state);
     }
@@ -1339,6 +1588,7 @@ function _cancelNekoIdleCat1Journey(button, options = {}) {
     state.targetKind = '';
     state.actionSettled = false;
     _resetNekoIdleCat1WalkSpeed(state);
+    _resetNekoIdleCat1CompactFollowState(state);
     _setNekoIdleCat1Classes(button, state);
     if (options.resetArt) {
         const art = button.querySelector('.neko-idle-return-art');
@@ -1398,7 +1648,10 @@ function _scheduleNekoIdleCompactSurfaceSettledSync(delayMs) {
 
 function _handleNekoIdleCompactSurfaceMoveState(detail) {
     const dragging = !!(detail && detail.dragging);
+    const heartbeat = !!(detail && detail.heartbeat);
     _nekoIdleCompactSurfaceDragging = dragging;
+    const followedCompactSurface = _syncNekoIdleCat1CompactTopEdgeSurfaceFollow(detail);
+    if (heartbeat) return;
     if (dragging) {
         if (_nekoIdleCompactSurfaceSettleTimer) {
             clearTimeout(_nekoIdleCompactSurfaceSettleTimer);
@@ -1406,6 +1659,10 @@ function _handleNekoIdleCompactSurfaceMoveState(detail) {
         }
         return;
     }
+    if (!followedCompactSurface) {
+        _deactivateNekoIdleCat1CompactMirrors('compact-surface-idle');
+    }
+    if (followedCompactSurface) return;
     _scheduleNekoIdleCompactSurfaceSettledSync(_NEKO_IDLE_CAT1_COMPACT_SURFACE_SETTLE_SYNC_MS);
 }
 
@@ -1423,6 +1680,177 @@ function _getNekoIdleRectCenterMoveDistance(previousRect, nextRect) {
     const nextX = next.left + next.width / 2;
     const nextY = next.top + next.height / 2;
     return Math.hypot(nextX - previousX, nextY - previousY);
+}
+
+function _rememberNekoIdleCat1CompactFollowSurface(state, surfaceRect, nowMs) {
+    if (!state) return;
+    const normalized = _normalizeNekoIdleScreenRect(surfaceRect);
+    state.compactFollowLastSurfaceRect = normalized;
+    state.compactFollowLastAt = normalized ? (Number(nowMs) || _getNekoIdleNowMs()) : 0;
+}
+
+function _rememberNekoIdleCat1CompactFollowAnchor(state, surfaceRect, target) {
+    if (!state) return;
+    if (target &&
+        target.anchorRatio !== null &&
+        target.anchorRatio !== undefined &&
+        Number.isFinite(Number(target.anchorRatio))) {
+        state.compactFollowAnchorRatio = Math.max(0, Math.min(1, Number(target.anchorRatio)));
+    }
+}
+
+function _getNekoIdleCompactSurfaceFollowRect(detail) {
+    const currentRect = _getNekoIdleChatCompactSurfaceRect();
+    if (currentRect) return currentRect;
+    if (detail && detail.visible !== false) {
+        return _normalizeNekoIdleScreenRect(detail);
+    }
+    return null;
+}
+
+function _isNekoIdleCat1SettledOnCompactTopEdge(state, profile) {
+    return !!(state &&
+        profile &&
+        state.substate === profile.idleSubstate &&
+        state.actionSettled &&
+        state.targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE);
+}
+
+function _getNekoIdleCat1CompactFollowSpeed(state, surfaceRect, nowMs) {
+    const previousRect = state && state.compactFollowLastSurfaceRect;
+    const previousAt = state ? Number(state.compactFollowLastAt) || 0 : 0;
+    if (!previousRect || !previousAt) {
+        return {
+            distancePx: 0,
+            speedPxPerSec: 0,
+            hasPrevious: false
+        };
+    }
+    const distancePx = _getNekoIdleRectCenterMoveDistance(previousRect, surfaceRect);
+    const elapsedMs = Math.max(16, (Number(nowMs) || _getNekoIdleNowMs()) - previousAt);
+    return {
+        distancePx: Number.isFinite(distancePx) ? distancePx : Infinity,
+        speedPxPerSec: Number.isFinite(distancePx) ? (distancePx * 1000) / elapsedMs : Infinity,
+        elapsedMs: elapsedMs,
+        hasPrevious: true
+    };
+}
+
+function _finishNekoIdleCat1CompactTopEdgeDrop(button, state) {
+    const latestState = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
+    if (!latestState || latestState !== state) return;
+    _scheduleNekoIdleCat1JourneySync(button);
+}
+
+function _dropNekoIdleCat1FromCompactTopEdge(button, target, nowMs) {
+    const state = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
+    const profile = state && state.profile ? state.profile : _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;
+    const container = _getNekoIdleReturnContainerFromButton(button);
+    if (!state || !container) return;
+
+    _cancelNekoIdleCat1Frame(state);
+    _cancelNekoIdleReturnSubactionSettleTimer(state);
+    _cancelNekoIdleReturnPendingWalk(state);
+    _cancelNekoIdleCat1PairMove(state);
+    state.substate = profile.idleSubstate;
+    state.target = null;
+    state.lastStepAt = 0;
+    state.targetKind = '';
+    state.actionSettled = true;
+    state.facingRight = !!(target && target.facingRight);
+    state.compactTopEdgeDropUntil = (Number(nowMs) || _getNekoIdleNowMs()) + _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_DROP_COOLDOWN_MS;
+    state.compactTopEdgeRearmRequired = true;
+    _resetNekoIdleCat1WalkSpeed(state);
+    _resetNekoIdleCat1CompactFollowState(state, { keepDropCooldown: true });
+
+    const rect = container.getBoundingClientRect();
+    if (rect && rect.width > 0 && rect.height > 0) {
+        const nextPosition = _clampNekoIdleCat1Position(
+            rect.left,
+            rect.top + _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_DROP_PX,
+            rect.width,
+            rect.height
+        );
+        _setNekoIdleCat1ContainerPosition(container, nextPosition.left, nextPosition.top);
+    }
+
+    container.classList.add('is-cat1-dropping-from-compact-top-edge');
+    setTimeout(() => {
+        container.classList.remove('is-cat1-dropping-from-compact-top-edge');
+    }, _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_DROP_ANIMATION_MS);
+
+    const art = button.querySelector('.neko-idle-return-art');
+    if (art) {
+        _setNekoIdleReturnArtSource(art, profile.assets.idle(), profile.tier, { animate: false });
+    }
+    _setNekoIdleCat1Classes(button, state);
+    setTimeout(() => {
+        _finishNekoIdleCat1CompactTopEdgeDrop(button, state);
+    }, _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_DROP_COOLDOWN_MS);
+}
+
+function _syncNekoIdleCat1CompactTopEdgeSurfaceFollow(detail) {
+    const surfaceRect = _getNekoIdleCompactSurfaceFollowRect(detail);
+    if (!surfaceRect) return false;
+    const nowMs = _getNekoIdleNowMs();
+    let handled = false;
+
+    _forEachNekoIdleReturnButton((button) => {
+        const state = button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey;
+        const profile = state && state.profile ? state.profile : _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;
+        if (!_isNekoIdleCat1SettledOnCompactTopEdge(state, profile)) return;
+        if (state.compactTopEdgeDropUntil && nowMs < state.compactTopEdgeDropUntil) return;
+
+        const container = _getNekoIdleReturnContainerFromButton(button);
+        if (!container || container.style.display === 'none' || container.getAttribute('data-dragging') === 'true') return;
+        const rawAnchorRatio = state.compactFollowAnchorRatio;
+        const anchorRatio = rawAnchorRatio === null || rawAnchorRatio === undefined
+            ? NaN
+            : Number(rawAnchorRatio);
+        const target = _getNekoIdleCat1CompactTopEdgeTarget(container, surfaceRect, {
+            anchorRatio: Number.isFinite(anchorRatio) ? anchorRatio : null
+        });
+        if (!target) return;
+        if (!Number.isFinite(anchorRatio)) {
+            _rememberNekoIdleCat1CompactFollowAnchor(state, surfaceRect, target);
+        }
+
+        const motion = _getNekoIdleCat1CompactFollowSpeed(state, surfaceRect, nowMs);
+        const tooFast = motion.hasPrevious && (
+            motion.speedPxPerSec > _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_STICK_MAX_SPEED_PX_PER_SEC ||
+            (motion.elapsedMs <= 240 && motion.distancePx > _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_STICK_MAX_STEP_PX)
+        );
+        if (tooFast) {
+            _setNekoIdleCat1CompactMirrorActive(button, container, false, { reason: 'drop-from-compact-top-edge' });
+            _dropNekoIdleCat1FromCompactTopEdge(button, target, nowMs);
+            handled = true;
+            return;
+        }
+
+        _cancelNekoIdleReturnPendingWalk(state);
+        _cancelNekoIdleCat1PairMove(state);
+        state.target = null;
+        state.actionSettled = true;
+        state.targetKind = _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE;
+        state.compactTopEdgeRearmRequired = false;
+        _resetNekoIdleCat1WalkSpeed(state);
+        _setNekoIdleCat1ContainerPosition(container, target.left, target.top);
+        _setNekoIdleCat1Classes(button, state);
+        _reassertNekoIdleCat1LayerForFollow(container);
+        if (detail && detail.dragging) {
+            _setNekoIdleCat1CompactMirrorActive(button, container, true, {
+                reason: 'compact-surface-drag',
+                surfaceRect: surfaceRect,
+                target: target
+            });
+        } else {
+            _setNekoIdleCat1CompactMirrorActive(button, container, false, { reason: 'compact-surface-settled' });
+        }
+        _rememberNekoIdleCat1CompactFollowSurface(state, surfaceRect, nowMs);
+        handled = true;
+    });
+
+    return handled;
 }
 
 function _isNekoIdleCat1Walking(button) {
@@ -1568,7 +1996,7 @@ function _getNekoIdleReactChatCompactSurfaceRect() {
 function _getNekoIdleDesktopCompactSurfaceRect() {
     const state = _nekoIdleDesktopCompactSurfaceState;
     if (!state || !state.visible || !state.screenRect) return null;
-    if (Date.now() - (state.updatedAt || 0) > _NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS) return null;
+    if (Date.now() - (state.updatedAt || 0) > _NEKO_IDLE_DESKTOP_COMPACT_SURFACE_RECT_STALE_MS) return null;
     const screenRect = _normalizeNekoIdleScreenRect(state.screenRect);
     if (!screenRect) return null;
     const screenLeft = Number.isFinite(window.screenX) ? window.screenX : 0;
@@ -1665,21 +2093,58 @@ function _getNekoIdleCat1SideTarget(container, chatRect) {
     };
 }
 
-function _getNekoIdleCat1CompactTopEdgeTarget(container, surfaceRect) {
+function _getNekoIdleCat1CompactTopEdgeBounds(surfaceRect) {
+    if (!surfaceRect) return null;
+    const capInset = Math.max(
+        _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_SIDE_PADDING_PX,
+        surfaceRect.height / 2 + _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_SIDE_PADDING_PX
+    );
+    const edgePadding = Math.min(capInset, Math.max(0, surfaceRect.width / 2));
+    const minEdgeCenterX = surfaceRect.left + edgePadding;
+    const maxEdgeCenterX = surfaceRect.right - edgePadding;
+    return {
+        minEdgeCenterX: minEdgeCenterX,
+        maxEdgeCenterX: maxEdgeCenterX,
+        fallbackCenterX: surfaceRect.left + surfaceRect.width / 2
+    };
+}
+
+function _getNekoIdleCat1CompactTopEdgeAnchorRatio(surfaceRect, targetEdgeCenterX) {
+    const bounds = _getNekoIdleCat1CompactTopEdgeBounds(surfaceRect);
+    if (!bounds) return null;
+    const span = bounds.maxEdgeCenterX - bounds.minEdgeCenterX;
+    if (span <= 0) return 0.5;
+    const ratio = (Number(targetEdgeCenterX) - bounds.minEdgeCenterX) / span;
+    if (!Number.isFinite(ratio)) return null;
+    return Math.max(0, Math.min(1, ratio));
+}
+
+function _getNekoIdleCat1CompactTopEdgeCenterFromAnchor(surfaceRect, anchorRatio) {
+    const bounds = _getNekoIdleCat1CompactTopEdgeBounds(surfaceRect);
+    if (!bounds) return null;
+    if (anchorRatio === null || anchorRatio === undefined || anchorRatio === '') return null;
+    const ratio = Number(anchorRatio);
+    if (!Number.isFinite(ratio)) return null;
+    const span = bounds.maxEdgeCenterX - bounds.minEdgeCenterX;
+    if (span <= 0) return bounds.fallbackCenterX;
+    return bounds.minEdgeCenterX + Math.max(0, Math.min(1, ratio)) * span;
+}
+
+function _getNekoIdleCat1CompactTopEdgeTarget(container, surfaceRect, options = {}) {
     if (!container || !surfaceRect || typeof container.getBoundingClientRect !== 'function') return null;
     const rect = container.getBoundingClientRect();
     if (!rect || rect.width <= 0 || rect.height <= 0) return null;
 
     const catCenterX = rect.left + rect.width / 2;
-    const edgePadding = Math.min(
-        _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_SIDE_PADDING_PX,
-        Math.max(0, surfaceRect.width / 2)
-    );
-    const minEdgeCenterX = surfaceRect.left + edgePadding;
-    const maxEdgeCenterX = surfaceRect.right - edgePadding;
-    const targetEdgeCenterX = maxEdgeCenterX >= minEdgeCenterX
-        ? Math.max(minEdgeCenterX, Math.min(catCenterX, maxEdgeCenterX))
-        : surfaceRect.left + surfaceRect.width / 2;
+    const bounds = _getNekoIdleCat1CompactTopEdgeBounds(surfaceRect);
+    if (!bounds) return null;
+    const anchoredCenterX = _getNekoIdleCat1CompactTopEdgeCenterFromAnchor(surfaceRect, options.anchorRatio);
+    const targetEdgeCenterX = Number.isFinite(anchoredCenterX)
+        ? anchoredCenterX
+        : (bounds.maxEdgeCenterX >= bounds.minEdgeCenterX
+            ? Math.max(bounds.minEdgeCenterX, Math.min(catCenterX, bounds.maxEdgeCenterX))
+            : bounds.fallbackCenterX);
+    const anchorRatio = _getNekoIdleCat1CompactTopEdgeAnchorRatio(surfaceRect, targetEdgeCenterX);
     const rawLeft = targetEdgeCenterX - rect.width / 2;
 
     const rawTop = surfaceRect.top - rect.height + _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_OVERLAP_PX;
@@ -1695,14 +2160,20 @@ function _getNekoIdleCat1CompactTopEdgeTarget(container, surfaceRect) {
         top: clamped.top,
         distance: Math.hypot(dx, dy),
         facingRight: targetEdgeCenterX > catCenterX,
+        anchorRatio: anchorRatio,
         kind: _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE
     };
 }
 
-function _getNekoIdleCat1Target(container, chatRect) {
+function _getNekoIdleCat1Target(container, chatRect, options = {}) {
     const compactSurfaceRect = _getNekoIdleChatCompactSurfaceRect();
-    const compactTarget = _getNekoIdleCat1CompactTopEdgeTarget(container, compactSurfaceRect);
-    if (compactTarget && compactTarget.distance <= _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_FOLLOW_DISTANCE_PX) {
+    const compactTarget = _getNekoIdleCat1CompactTopEdgeTarget(container, compactSurfaceRect, {
+        anchorRatio: options.anchorRatio
+    });
+    const compactBlocked = !!(options && options.compactTopEdgeBlocked);
+    if (!compactBlocked &&
+        compactTarget &&
+        compactTarget.distance <= _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_FOLLOW_DISTANCE_PX) {
         return compactTarget;
     }
     return _getNekoIdleCat1SideTarget(container, chatRect);
@@ -1852,7 +2323,9 @@ function _getNekoIdleCat1PairMovePlan(button) {
     }
     if (chatTarget) {
         if (!chatRect || chatRect.width <= 0 || chatRect.height <= 0) return null;
-        const target = _getNekoIdleCat1Target(container, chatRect);
+        const target = _getNekoIdleCat1Target(container, chatRect, {
+            compactTopEdgeBlocked: !!(state && state.compactTopEdgeRearmRequired)
+        });
         if (!target || target.distance > profile.target.exitDistancePx) return null;
     }
 
@@ -1956,6 +2429,53 @@ function _finishNekoIdleCat1Walk(button) {
     state.actionSettled = false;
     _resetNekoIdleCat1WalkSpeed(state);
     _setNekoIdleCat1Substate(button, state.profile.finishingSubstate, { animate: true });
+}
+
+function _finishNekoIdleCat1CompactTopEdgeWalk(button) {
+    const state = _getNekoIdleCat1Journey(button);
+    if (!state) return;
+    const profile = state.profile || _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW;
+    const settledSurfaceRect = _getNekoIdleChatCompactSurfaceRect();
+    const settledTarget = state.target;
+    _cancelNekoIdleCat1Frame(state);
+    _cancelNekoIdleReturnSubactionSettleTimer(state);
+    _cancelNekoIdleReturnPendingWalk(state);
+    _cancelNekoIdleCat1PairMove(state);
+    const settleToken = state.settleToken || 0;
+    state.substate = profile.idleSubstate;
+    state.target = null;
+    state.lastStepAt = 0;
+    state.targetKind = _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE;
+    state.actionSettled = true;
+    state.compactTopEdgeRearmRequired = false;
+    _resetNekoIdleCat1WalkSpeed(state);
+    _rememberNekoIdleCat1CompactFollowAnchor(state, settledSurfaceRect, settledTarget);
+    _rememberNekoIdleCat1CompactFollowSurface(state, settledSurfaceRect, _getNekoIdleNowMs());
+    _setNekoIdleCat1Classes(button, state);
+
+    const art = button.querySelector('.neko-idle-return-art');
+    if (art) {
+        _setNekoIdleReturnArtSource(
+            art,
+            profile.assets.idle(),
+            profile.tier,
+            { animate: true }
+        );
+    }
+
+    setTimeout(() => {
+        const latestState = button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey;
+        if (!latestState ||
+            latestState.settleToken !== settleToken ||
+            latestState.substate !== profile.idleSubstate ||
+            latestState.targetKind !== _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE ||
+            !latestState.actionSettled) {
+            return;
+        }
+        latestState.facingRight = false;
+        _setNekoIdleCat1Classes(button, latestState);
+        _cancelNekoIdleCat1PairMove(latestState);
+    }, profile.settle.resetFacingAfterMs);
 }
 
 function _settleNekoIdleReturnSubactionToIdle(button) {
@@ -2094,7 +2614,16 @@ function _stepNekoIdleCat1Walk(button, timestamp) {
     }
 
     const chatRect = _getNekoIdleChatMinimizedRect();
-    const target = _getNekoIdleCat1Target(container, chatRect);
+    const rawCompactAnchorRatio = state.targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE
+        ? state.compactFollowAnchorRatio
+        : null;
+    const compactAnchorRatio = rawCompactAnchorRatio === null || rawCompactAnchorRatio === undefined
+        ? NaN
+        : Number(rawCompactAnchorRatio);
+    const target = _getNekoIdleCat1Target(container, chatRect, {
+        anchorRatio: Number.isFinite(compactAnchorRatio) ? compactAnchorRatio : null,
+        compactTopEdgeBlocked: !!state.compactTopEdgeRearmRequired
+    });
     if (!target) {
         _cancelNekoIdleCat1Journey(button, { resetArt: true, preserveObservers: true });
         return;
@@ -2107,7 +2636,11 @@ function _stepNekoIdleCat1Walk(button, timestamp) {
     const speedRate = _updateNekoIdleCat1WalkSpeedRate(button, state, target.distance);
     if (target.distance <= profile.target.exitDistancePx) {
         _setNekoIdleCat1ContainerPosition(container, target.left, target.top);
-        _finishNekoIdleCat1Walk(button);
+        if (target.kind === _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE) {
+            _finishNekoIdleCat1CompactTopEdgeWalk(button);
+        } else {
+            _finishNekoIdleCat1Walk(button);
+        }
         return;
     }
 
@@ -2223,7 +2756,9 @@ function _canScheduleNekoIdleCat1PairMove(button, state) {
 
     if (chatTarget) {
         if (!chatRect || chatRect.width <= 0 || chatRect.height <= 0) return false;
-        const target = _getNekoIdleCat1Target(container, chatRect);
+        const target = _getNekoIdleCat1Target(container, chatRect, {
+            compactTopEdgeBlocked: !!(state && state.compactTopEdgeRearmRequired)
+        });
         if (!target || target.distance > profile.target.exitDistancePx) return false;
     }
 
@@ -2388,7 +2923,16 @@ function _syncNekoIdleCat1Journey(button, tier) {
     if (state.pairMovePlan || state.pairMoveFrame) return;
 
     const chatRect = _getNekoIdleChatMinimizedRect();
-    const target = _getNekoIdleCat1Target(container, chatRect);
+    const rawCompactAnchorRatio = state.targetKind === _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE
+        ? state.compactFollowAnchorRatio
+        : null;
+    const compactAnchorRatio = rawCompactAnchorRatio === null || rawCompactAnchorRatio === undefined
+        ? NaN
+        : Number(rawCompactAnchorRatio);
+    const target = _getNekoIdleCat1Target(container, chatRect, {
+        anchorRatio: Number.isFinite(compactAnchorRatio) ? compactAnchorRatio : null,
+        compactTopEdgeBlocked: !!state.compactTopEdgeRearmRequired
+    });
     if (!target) {
         state.targetKind = '';
         _cancelNekoIdleReturnPendingWalk(state);
@@ -2406,6 +2950,22 @@ function _syncNekoIdleCat1Journey(button, tier) {
             _cancelNekoIdleCat1Journey(button, { resetArt: true, preserveObservers: true });
         }
         return;
+    }
+
+    const compactDropUntil = Number(state.compactTopEdgeDropUntil) || 0;
+    if (target.kind === _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE &&
+        compactDropUntil &&
+        _getNekoIdleNowMs() < compactDropUntil) {
+        state.target = null;
+        state.targetKind = '';
+        state.facingRight = false;
+        _cancelNekoIdleReturnPendingWalk(state);
+        _cancelNekoIdleCat1PairMove(state);
+        _setNekoIdleCat1Classes(button, state);
+        return;
+    }
+    if (compactDropUntil) {
+        state.compactTopEdgeDropUntil = 0;
     }
 
     state.target = target;
@@ -2437,7 +2997,13 @@ function _syncNekoIdleCat1Journey(button, tier) {
 
     if (state.substate === profile.walkingSubstate) {
         _cancelNekoIdleReturnPendingWalk(state);
-        _finishNekoIdleCat1Walk(button);
+        if (compactTopEdgeTarget) {
+            state.facingRight = target.facingRight;
+            _setNekoIdleCat1ContainerPosition(container, target.left, target.top);
+            _finishNekoIdleCat1CompactTopEdgeWalk(button);
+        } else {
+            _finishNekoIdleCat1Walk(button);
+        }
         return;
     }
 
@@ -2462,6 +3028,14 @@ function _syncNekoIdleCat1Journey(button, tier) {
     if (state.substate === profile.idleSubstate && state.actionSettled) {
         if (compactTopEdgeTarget) {
             _cancelNekoIdleCat1PairMove(state);
+            state.compactTopEdgeRearmRequired = false;
+            if (target.distance <= profile.target.exitDistancePx) {
+                _setNekoIdleCat1ContainerPosition(container, target.left, target.top);
+                const compactSurfaceRect = _getNekoIdleChatCompactSurfaceRect();
+                _rememberNekoIdleCat1CompactFollowAnchor(state, compactSurfaceRect, target);
+                _rememberNekoIdleCat1CompactFollowSurface(state, compactSurfaceRect, _getNekoIdleNowMs());
+                _setNekoIdleCat1Classes(button, state);
+            }
             return;
         }
         _scheduleNekoIdleCat1PairMove(button);
@@ -2716,7 +3290,8 @@ function _ensureNekoIdleReturnPresentationBridge() {
         if (!detail || !detail.container) return;
         if (detail.reason === 'return-ball-drag-end') {
             _finishNekoIdleReturnDragActionForContainer(detail.container);
-            if (_shouldRecheckNekoIdleCat1AfterManualMove(detail)) {
+            const compactTopEdgeRearmState = _updateNekoIdleCat1CompactTopEdgeRearmAfterManualMove(detail.container);
+            if (compactTopEdgeRearmState.shouldSync || _shouldRecheckNekoIdleCat1AfterManualMove(detail)) {
                 _scheduleNekoIdleCat1JourneySyncForContainer(detail.container);
             }
             return;
