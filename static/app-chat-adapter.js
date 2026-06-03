@@ -102,6 +102,10 @@
         return (s || '').replace(/\r\n/g, '\n');
     }
 
+    function getCurrentAssistantTurnId() {
+        return window._nekoAssistantTurnId ? String(window._nekoAssistantTurnId) : '';
+    }
+
     // ======================== 虚拟引用（兼容 response_discarded 清理逻辑） ========================
 
     function createVirtualBubbleRef(messageId) {
@@ -132,11 +136,27 @@
             author: resolvedAuthor,
             time: timeStr || getCurrentTimeString(),
             createdAt: Date.now(),
+            turnId: role === 'assistant' && window._nekoAssistantTurnId ? String(window._nekoAssistantTurnId) : undefined,
             avatarLabel: resolvedAuthor ? String(resolvedAuthor).trim().slice(0, 1).toUpperCase() : undefined,
             avatarUrl: avatarUrl || undefined,
             blocks: [{ type: 'text', text: cleanText }],
             status: status
         };
+    }
+
+    function emitCompactCaptionUpdate(text) {
+        var cleanText = String(text || '')
+            .replace(/\[play_music:[^\]]*(\]|$)/g, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+        var turnId = window._nekoAssistantTurnId ? String(window._nekoAssistantTurnId) : '';
+        if (!turnId || !cleanText) return;
+        window.dispatchEvent(new CustomEvent('neko-compact-caption-update', {
+            detail: {
+                turnId: turnId,
+                text: cleanText
+            }
+        }));
     }
 
     // ======================== 句子分割（从 app-chat.js 复刻） ========================
@@ -188,10 +208,45 @@
             ch === '\u301B' || ch === '\u301E' || ch === '\u301F';
     }
 
+    function getRealisticQueueItemText(item) {
+        if (item && typeof item === 'object' && typeof item.text !== 'undefined') {
+            return normalizeGeminiText(item.text);
+        }
+        return normalizeGeminiText(item);
+    }
+
+    function getRealisticQueueItemTurnId(item) {
+        if (item && typeof item === 'object' && item.turnId) {
+            return String(item.turnId);
+        }
+        return getCurrentAssistantTurnId();
+    }
+
+    function createRealisticQueueItem(text, turnId) {
+        return {
+            text: normalizeGeminiText(text),
+            turnId: turnId ? String(turnId) : getCurrentAssistantTurnId()
+        };
+    }
+
+    function getCommonRealisticQueueTurnId(queue) {
+        var commonTurnId = '';
+        for (var i = 0; i < queue.length; i++) {
+            var turnId = getRealisticQueueItemTurnId(queue[i]);
+            if (!turnId) return '';
+            if (!commonTurnId) {
+                commonTurnId = turnId;
+            } else if (commonTurnId !== turnId) {
+                return '';
+            }
+        }
+        return commonTurnId;
+    }
+
     function joinRealisticPendingPieces(pieces) {
         var joined = '';
         for (var i = 0; i < pieces.length; i++) {
-            var piece = normalizeGeminiText(pieces[i]).replace(/^\s+/, '').replace(/\s+$/, '');
+            var piece = getRealisticQueueItemText(pieces[i]).replace(/^\s+/, '').replace(/\s+$/, '');
             if (!piece) continue;
             if (!joined) {
                 joined = piece;
@@ -244,10 +299,14 @@
         var queue = window._realisticGeminiQueue;
         if (!Array.isArray(queue) || queue.length <= 2) return;
 
+        var queueTurnId = getCommonRealisticQueueTurnId(queue);
+        if (!queueTurnId) return;
         var queueText = joinRealisticPendingPieces(queue);
         var splitQueue = splitRealisticTextNearMiddle(queueText);
         if (splitQueue.length > 0 && splitQueue.length <= queue.length) {
-            window._realisticGeminiQueue = splitQueue;
+            window._realisticGeminiQueue = splitQueue.map(function (text) {
+                return createRealisticQueueItem(text, queueTurnId);
+            });
         }
     }
 
@@ -358,12 +417,28 @@
         }
     }
 
-    function createGeminiBubble(sentence) {
+    function createGeminiBubble(sentence, options) {
+        options = options || {};
         var host = getHost();
         var cleanSentence = (sentence || '').replace(/\[play_music:[^\]]*(\]|$)/g, '');
+        var explicitTurnId = options.turnId ? String(options.turnId) : '';
+        if (!explicitTurnId && typeof window.ensureAssistantTurnStarted === 'function') {
+            window.ensureAssistantTurnStarted('create_gemini_bubble');
+        }
         var msgId = nextReactMessageId('assistant');
         var timeStr = getCurrentTimeString();
-        var msg = buildMessage(msgId, 'assistant', getCurrentAssistantName(), timeStr, cleanSentence, 'streaming');
+        var previousTurnId = window._nekoAssistantTurnId;
+        var msg = null;
+        if (explicitTurnId) {
+            window._nekoAssistantTurnId = explicitTurnId;
+        }
+        try {
+            msg = buildMessage(msgId, 'assistant', getCurrentAssistantName(), timeStr, cleanSentence, 'streaming');
+        } finally {
+            if (explicitTurnId) {
+                window._nekoAssistantTurnId = previousTurnId || null;
+            }
+        }
 
         var appendedToHost = false;
         if (msg && host && typeof host.appendMessage === 'function') {
@@ -384,9 +459,6 @@
         window.currentTurnGeminiBubbles = window.currentTurnGeminiBubbles || [];
         window.currentTurnGeminiBubbles.push(ref);
 
-        if (typeof window.ensureAssistantTurnStarted === 'function') {
-            window.ensureAssistantTurnStarted('create_gemini_bubble');
-        }
         if (appendedToHost) {
             markAssistantVisibleResponseForAchievement();
         }
@@ -436,9 +508,12 @@
                     break;
                 }
 
-                var s = window._realisticGeminiQueue.shift();
-                if (s && (window._realisticGeminiVersion || 0) === queueVersion) {
-                    createGeminiBubble(s);
+                var item = window._realisticGeminiQueue.shift();
+                var itemText = getRealisticQueueItemText(item);
+                if (itemText && (window._realisticGeminiVersion || 0) === queueVersion) {
+                    createGeminiBubble(itemText, {
+                        turnId: getRealisticQueueItemTurnId(item)
+                    });
                     window._lastBubbleTime = Date.now();
                 }
             }
@@ -522,7 +597,11 @@
         if (!Array.isArray(queue) || queue.length === 0) return;
         // 同步创建所有待排队的 bubble
         for (var i = 0; i < queue.length; i++) {
-            try { createGeminiBubble(queue[i]); } catch (_) {}
+            try {
+                createGeminiBubble(getRealisticQueueItemText(queue[i]), {
+                    turnId: getRealisticQueueItemTurnId(queue[i])
+                });
+            } catch (_) {}
         }
         window._realisticGeminiQueue = [];
     }
@@ -605,6 +684,7 @@
             } else if (typeof window.updateSubtitleStreamingText === 'function') {
                 window.updateSubtitleStreamingText(streamingText);
             }
+            emitCompactCaptionUpdate(streamingText);
         }
 
         // ---------- gemini + realistic 模式 ----------
@@ -655,7 +735,10 @@
 
             if (splitResult.sentences.length > 0) {
                 window._realisticGeminiQueue = window._realisticGeminiQueue || [];
-                window._realisticGeminiQueue.push.apply(window._realisticGeminiQueue, splitResult.sentences);
+                var queueTurnId = getCurrentAssistantTurnId();
+                window._realisticGeminiQueue.push.apply(window._realisticGeminiQueue, splitResult.sentences.map(function (sentence) {
+                    return createRealisticQueueItem(sentence, queueTurnId);
+                }));
                 rebalanceRealisticQueueIfNeeded();
                 processRealisticQueue(window._realisticGeminiVersion || 0);
                 createdVisibleBubble = (window.currentTurnGeminiBubbles ? window.currentTurnGeminiBubbles.length : 0) > bubbleCountBefore;

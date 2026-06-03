@@ -230,6 +230,7 @@ export const chatMessageSchema = z.object({
   author: z.string().min(1),
   time: z.string(),
   createdAt: z.number().finite().optional(),
+  turnId: z.string().optional(),
   avatarLabel: z.string().optional(),
   avatarUrl: z.string().optional(),
   blocks: z.array(messageBlockSchema),
