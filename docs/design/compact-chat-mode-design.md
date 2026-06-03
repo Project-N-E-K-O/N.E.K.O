@@ -90,6 +90,7 @@
    - `data-compact-geometry-part="capsuleBody" | "inputBody"`
    - `data-compact-drag-surface="true"` 声明 compact 对话框本体 surface；整体拖拽只指这个本体，不包含历史、工具轮盘、选项层等浮层。
    - `data-compact-no-drag="true"` 声明 textarea、工具按钮、resize、历史、选项等真实控件和浮层排除拖拽。
+   - 工具轮盘 toggle / fan 原点仍是 `data-compact-no-drag`（宿主命中判定不自动起拖），但 App.tsx 在原点按下并移动超阈值时额外派发 `neko:compact-surface-drag-grab`（带按下点 client/screen 坐标），让宿主以该点为锚启动本体拖拽——使轮盘中心兼作「按住拖动文本框」把手；点按仍展开/关闭轮盘、悬停展开保留、轮盘边缘拖动仍旋转。拖动后补发的 click 用独立的 origin suppress 标志吞掉（不能复用 wheel suppress，轮盘关闭 effect 会清它）。Wayland 走原生 app-region 拖拽，事件式起拖不适用。
 6. 早期 `.compact-chat-capsule-shell` / `.compact-chat-input-shell` 已不是当前主体事实，后续文档和实现不要再按这两个旧类名设计。
 7. `.compact-chat-surface-frame` 是同一个 54px 高的本体：`default/options` 内放 capsule button，`input` 内放 textarea 和右侧工具/发送按钮。
 8. 旧蓝线拖拽手柄 `.compact-chat-drag-handle` / `data-compact-drag-handle="true"` 已删除，不应恢复；对话框本体拖拽走 `data-compact-drag-surface` / `data-compact-no-drag`。
@@ -121,6 +122,7 @@
    - surface geometry 收集、union、hit rect、native rect 输出。
    - 最小化 ball 的独立定位和 geometry。
    - resize session、desktop resize active 和 layout-change 事件。
+   - 监听 `neko:compact-surface-drag-grab`（来自 React 工具轮盘原点拖拽），非 Electron 时以事件坐标为锚启动 compact surface 本体拖拽（复用既有 startDrag/全局 mousemove/mouseup 与落点 click 守卫）。Electron 由 `preload-chat-react.js` 监听同一事件改走原生窗口拖拽。
 5. `static/app-buttons.js` 是发送桥之一。compact history 文本发送必须带清晰 session / request 语义，不能让已有 composer 附件在 deferred send 中被误带上。
 6. 语音模式 / `composerHidden` 下的 history drop 只保留前端拖拽、命中和收束动效；真实发送必须在 `sendCompactHistoryDropPayload` 边界跳过，不能通过改 React 拖拽 phase 或样式来伪装。
 
