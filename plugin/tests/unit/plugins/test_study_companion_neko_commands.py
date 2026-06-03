@@ -1150,7 +1150,7 @@ async def test_worker_restarts_after_crash(
 async def test_worker_poison_protection_stops_after_3_crashes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    plugin, _ctx = await _started_plugin(tmp_path, monkeypatch)
+    plugin, ctx = await _started_plugin(tmp_path, monkeypatch)
     await plugin._cancel_command_worker()
 
     async def _crash() -> None:
@@ -1171,6 +1171,11 @@ async def test_worker_poison_protection_stops_after_3_crashes(
         await _wait_until(lambda: plugin._command_queue.qsize() == 1)
         assert plugin._command_worker_task is None
         assert plugin._command_queue.qsize() == 1
+        assert any(
+            message.get("source") == "study_companion"
+            and "command worker" in str((message.get("parts") or [{}])[0].get("text") or "")
+            for message in ctx.pushed_messages
+        )
     finally:
         await plugin.shutdown()
 

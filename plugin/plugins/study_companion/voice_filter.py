@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime, timezone
 import re
@@ -80,13 +81,16 @@ class VoiceFilter:
         config_manager: Any | None = None,
         plugin_config: Mapping[str, Any] | None = None,
         clock: Callable[[], float] | None = None,
+        logger: Any | None = None,
     ) -> None:
         self._clock = clock or time.monotonic
+        self._logger = logger
         self._last_name_call_times: dict[str, float] = {}
         self._names = self._load_names(
             names,
             config_manager=config_manager,
             plugin_config=plugin_config,
+            logger=logger,
         )
 
     @property
@@ -179,11 +183,15 @@ class VoiceFilter:
         *,
         config_manager: Any | None,
         plugin_config: Mapping[str, Any] | None,
+        logger: Any | None,
     ) -> list[str]:
         candidates: list[str] = []
         _extend_names(candidates, names)
         if not candidates:
-            _extend_names(candidates, _names_from_config_manager(config_manager))
+            _extend_names(
+                candidates,
+                _names_from_config_manager(config_manager, logger=logger),
+            )
         if not candidates:
             voice_filter = (
                 plugin_config.get("voice_filter")
@@ -219,12 +227,19 @@ def _extend_names(target: list[str], values: Any) -> None:
             seen.add(key)
 
 
-def _names_from_config_manager(config_manager: Any | None) -> list[str]:
+def _names_from_config_manager(
+    config_manager: Any | None,
+    *,
+    logger: Any | None = None,
+) -> list[str]:
     if config_manager is None or not hasattr(config_manager, "get_character_data"):
         return []
     try:
         data = config_manager.get_character_data()
-    except Exception:
+    except Exception as exc:
+        warning = getattr(logger, "warning", None)
+        if callable(warning):
+            warning("voice filter failed to read configured names: {}", exc)
         return []
     if not isinstance(data, tuple) or len(data) < 4:
         return []
@@ -440,10 +455,12 @@ def _ocr_is_stale(value: Any, *, max_age_seconds: float = 5.0) -> bool:
             datetime.now(timezone.utc) - captured.astimezone(timezone.utc)
         ).total_seconds() > max_age_seconds
     except Exception:
-        return False
+        return True
 
 
 def _is_safe_cancel_exception(exc: Exception) -> bool:
+    if isinstance(exc, asyncio.InvalidStateError):
+        return True
     safe_names = {"ResourceNotFound", "InvalidState", "InvalidStateError"}
     if type(exc).__name__ in safe_names:
         return True

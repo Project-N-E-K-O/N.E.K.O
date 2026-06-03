@@ -15,6 +15,7 @@ def build_request_handlers() -> dict[str, RequestHandler]:
         handle_plugin_config_update,
     )
     from plugin.server.messaging.handlers.system_config import handle_plugin_system_config_get
+    from plugin.server.messaging.handlers.activity_snapshot import handle_activity_snapshot_get
     from plugin.server.messaging.handlers.memory import handle_memory_query
     from plugin.server.messaging.handlers.user_context import handle_user_context_get
     from plugin.server.messaging.handlers.export import handle_export_push
@@ -41,6 +42,7 @@ def build_request_handlers() -> dict[str, RequestHandler]:
         "PLUGIN_CONFIG_EFFECTIVE_GET": handle_plugin_config_effective_get,
         "PLUGIN_CONFIG_UPDATE": handle_plugin_config_update,
         "PLUGIN_SYSTEM_CONFIG_GET": handle_plugin_system_config_get,
+        "ACTIVITY_SNAPSHOT_GET": handle_activity_snapshot_get,
         "MEMORY_QUERY": handle_memory_query,
         "USER_CONTEXT_GET": handle_user_context_get,
         "EXPORT_PUSH": handle_export_push,

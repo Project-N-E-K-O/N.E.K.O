@@ -765,6 +765,47 @@ def test_tracker_picks_up_fresh_prefs_via_refresh_hook():
 # ── update_window collapse: intensity/genre must invalidate (CR Major) ─
 
 
+def test_tracker_rule_only_snapshot_skips_enrichment_loop():
+    """Rule-only consumers can reuse tracker signals without extra LLM work."""
+    from main_logic.activity.tracker import UserActivityTracker
+
+    class _Collector:
+        def __init__(self) -> None:
+            self.started = 0
+
+        async def start(self) -> None:
+            self.started += 1
+
+        def snapshot(self) -> SystemSnapshot:
+            return _sys_snap(
+                title="Quiz - Google Chrome",
+                process="chrome.exe",
+                idle=2.0,
+                ts=100.0,
+            )
+
+    collector = _Collector()
+    tracker = UserActivityTracker("_test_rule_only", collector=collector)
+    tracker._activity_scores_cache = {"focused_work": 0.8}
+    tracker._activity_guess_cache = "cached enrichment"
+    tracker._open_threads_cache = ["cached thread"]
+
+    snap = asyncio.run(
+        tracker.get_snapshot(
+            now=100.0,
+            include_enrichment=False,
+            tick_followups=False,
+        )
+    )
+
+    assert collector.started == 1
+    assert tracker._collector_started is True
+    assert tracker._activity_guess_loop_task is None
+    assert snap.activity_scores == {}
+    assert snap.activity_guess == ""
+    assert snap.open_threads == []
+
+
 def test_update_window_collapses_on_canonical_but_invalidates_on_intensity_change():
     """Hot-reloaded ``user_game_overrides`` must propagate immediately.
 

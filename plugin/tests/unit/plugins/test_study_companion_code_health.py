@@ -44,6 +44,37 @@ def test_tutor_learning_support_is_not_split_by_mro_dependency() -> None:
     assert "_TutorLearningSupportMixin" not in plugin_source
 
 
+def test_awareness_uses_activity_public_surface_only() -> None:
+    forbidden_imports = (
+        "main_logic.activity.state_machine",
+        "main_logic.activity.system_signals",
+        "get_snapshot_sync",
+    )
+    for path in _STUDY_COMPANION_ROOT.glob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        for forbidden in forbidden_imports:
+            assert forbidden not in source, path.name
+
+
+def test_screen_hash_dependency_and_fields_are_removed() -> None:
+    repo_root = _STUDY_COMPANION_ROOT.parents[2]
+    forbidden_dependencies = ("image" + "hash", "sci" + "py", "Py" + "Wavelets")
+    for path in (repo_root / "requirements.txt", repo_root / "pyproject.toml"):
+        source = path.read_text(encoding="utf-8")
+        for forbidden in forbidden_dependencies:
+            assert forbidden.lower() not in source.lower(), path.name
+
+    forbidden_fields = (
+        "thumbnail_" + "phash",
+        "has_content" + "_change",
+        "_thumbnail" + "_hash",
+    )
+    for path in _STUDY_COMPANION_ROOT.glob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        for forbidden in forbidden_fields:
+            assert forbidden not in source, path.name
+
+
 test_store_transaction_rolls_back_and_json_loads_is_public = (
     _habit_tests.test_store_transaction_rolls_back_and_json_loads_is_public
 )

@@ -27,9 +27,11 @@ collector — there's no separate update path for those.
 Snapshot consumer
 -----------------
 
-Only the proactive-chat code path calls ``get_snapshot()``. It runs on
-the order of seconds (not milliseconds), so the small per-call cost of
-running the state-machine classifier is irrelevant.
+The proactive-chat code path calls ``get_snapshot()`` with enrichment
+enabled. Rule-only consumers can call ``get_snapshot(include_enrichment=False)``
+to reuse the same classifier without starting the activity-guess LLM loop.
+Both paths run on the order of seconds (not milliseconds), so the small
+per-call cost of running the state-machine classifier is irrelevant.
 """
 
 from __future__ import annotations
@@ -455,7 +457,13 @@ class UserActivityTracker:
 
     # ── snapshot ────────────────────────────────────────────────
 
-    async def get_snapshot(self, *, now: float | None = None) -> ActivitySnapshot:
+    async def get_snapshot(
+        self,
+        *,
+        now: float | None = None,
+        include_enrichment: bool = True,
+        tick_followups: bool = True,
+    ) -> ActivitySnapshot:
         """Pull system signals and emit a fresh snapshot.
 
         Async because it ensures the system collector has been started
@@ -466,8 +474,16 @@ class UserActivityTracker:
         the resolved state is ``private``, in which case enrichment
         is suppressed (LLM input + cached output both bypassed) so the
         user's secret context never reaches the model.
+
+        Set ``include_enrichment=False`` for rule-only consumers that
+        need state / active-window / idle signals but do not consume the
+        emotion-tier enrichment cache or background activity-guess loop.
+        Set ``tick_followups=False`` for read-only pollers that must not
+        advance break-reminder / anti-slack pending state.
         """
-        await self._ensure_collector_started()
+        await self._ensure_collector_started(
+            start_activity_guess_loop=include_enrichment
+        )
         self._refresh_prefs()
 
         ts = now if now is not None else time.time()
@@ -484,7 +500,8 @@ class UserActivityTracker:
         # building pending fields. Done after sm.get_snapshot so we have
         # the resolved state (focused_work / leisure / etc) to drive
         # accumulator and transition logic.
-        self._tick_break_reminders(snap, now=ts)
+        if tick_followups:
+            self._tick_break_reminders(snap, now=ts)
         if snap.state == 'private':
             # Privacy lockdown — explicitly empty enrichment fields rather
             # than splicing in caches built from earlier (non-private)
@@ -501,6 +518,19 @@ class UserActivityTracker:
                 open_threads=[],
                 work_break_pending=None,
                 anti_slack_pending=None,
+            )
+        if not include_enrichment:
+            return dc_replace(
+                snap,
+                activity_scores={},
+                activity_guess='',
+                open_threads=[],
+                work_break_pending=(
+                    self._build_work_break_pending() if tick_followups else None
+                ),
+                anti_slack_pending=(
+                    self._build_anti_slack_pending() if tick_followups else None
+                ),
             )
         # Patch in emotion-tier enrichment caches. ``snap`` is a frozen
         # dataclass; ``replace`` returns a new instance without mutating
@@ -1186,20 +1216,29 @@ class UserActivityTracker:
 
     # ── internals ──────────────────────────────────────────────
 
-    async def _ensure_collector_started(self) -> None:
-        if self._collector_started:
-            return
-        await self._collector.start()
-        self._collector_started = True
+    async def _ensure_collector_started(
+        self,
+        *,
+        start_activity_guess_loop: bool = True,
+    ) -> None:
+        started_collector = False
+        if not self._collector_started:
+            await self._collector.start()
+            self._collector_started = True
+            started_collector = True
         # Spin up the activity_guess background loop on first snapshot
         # request. The loop self-throttles (state-signature dedup +
         # anti-thrash interval), so starting it eagerly is cheap.
-        if self._activity_guess_loop_task is None:
+        started_guess_loop = False
+        if start_activity_guess_loop and self._activity_guess_loop_task is None:
             self._activity_guess_loop_task = asyncio.create_task(
                 self._activity_guess_loop(),
                 name=f'activity_guess_loop_{self.lanlan_name}',
             )
-        logger.info(
-            '[%s] UserActivityTracker started (shared system collector + guess loop)',
-            self.lanlan_name,
-        )
+            started_guess_loop = True
+        if not started_collector and not started_guess_loop:
+            return
+        features = 'shared system collector'
+        if started_guess_loop:
+            features += ' + guess loop'
+        logger.info('[%s] UserActivityTracker started (%s)', self.lanlan_name, features)

@@ -14,16 +14,16 @@ from .entry_common import (
 )
 
 
+def _dataclass_or_dict(value: Any) -> dict[str, Any]:
+    return asdict(value) if hasattr(value, "__dataclass_fields__") else dict(value or {})
+
+
 def _note_dict(note: Any) -> dict[str, Any]:
-    return asdict(note) if hasattr(note, "__dataclass_fields__") else dict(note or {})
+    return _dataclass_or_dict(note)
 
 
 def _notebook_dict(notebook: Any) -> dict[str, Any]:
-    return (
-        asdict(notebook)
-        if hasattr(notebook, "__dataclass_fields__")
-        else dict(notebook or {})
-    )
+    return _dataclass_or_dict(notebook)
 
 
 class _NotebookEntriesMixin:
@@ -208,7 +208,11 @@ class _NotebookEntriesMixin:
                 self._notebook_store.upsert_note,
                 **update_kwargs,
             )
-            return Ok({"note": _note_dict(note)})
+            payload: dict[str, Any] = {"note": _note_dict(note)}
+            warnings = self._notebook_store.consume_last_warnings()
+            if warnings:
+                payload["warnings"] = warnings
+            return Ok(payload)
         except Exception as exc:
             return _entry_exception_error(self, exc, operation="study_note_upsert")
 

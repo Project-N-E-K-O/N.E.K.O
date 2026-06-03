@@ -478,6 +478,7 @@ class TutorLLMAgent:
         *,
         operation: str = LLM_OPERATION_CONCEPT_EXPLAIN,
         model_group_override: str | None = None,
+        timeout: float | None = None,
     ) -> str:
         get_config_manager = getattr(_config_manager_module, "get_config_manager", None)
         create_chat_llm = getattr(_llm_client_module, "create_chat_llm", None)
@@ -542,10 +543,13 @@ class TutorLLMAgent:
             model,
             self._api_key_cache_fingerprint(api_key),
         )
-        timeout_seconds = (
-            float(self._config.llm_call_timeout_seconds)
-            + _LLM_CALL_TIMEOUT_GRACE_SECONDS
-        )
+        if timeout is None:
+            timeout_seconds = (
+                float(self._config.llm_call_timeout_seconds)
+                + _LLM_CALL_TIMEOUT_GRACE_SECONDS
+            )
+        else:
+            timeout_seconds = max(1.0, float(timeout))
         llm = await self._client_cache.get_or_create(
             key,
             lambda: create_chat_llm(

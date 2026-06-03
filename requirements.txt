@@ -226,8 +226,6 @@ idna==3.10
     #   httpx
     #   requests
     #   yarl
-imagehash==4.3.2
-    # via n-e-k-o
 inquirer==3.4.1
     # via translatepy
 inquirerpy==0.3.4
@@ -278,13 +276,10 @@ numpy==1.26.4
     # via
     #   contourpy
     #   dxcam
-    #   imagehash
     #   matplotlib
     #   n-e-k-o
     #   onnxruntime
     #   pyrnnoise
-    #   pywavelets
-    #   scipy
     #   soundfile
     #   soxr
 oauthlib==3.3.1
@@ -313,7 +308,6 @@ pillow==11.3.0
     # via
     #   bilibili-api-python
     #   browser-use
-    #   imagehash
     #   matplotlib
     #   n-e-k-o
     #   pyscreeze
@@ -1145,8 +1139,6 @@ pytweening==1.2.0
     # via pyautogui
 pyuseragents==1.0.5
     # via translatepy
-pywavelets==1.9.0
-    # via imagehash
 pywin32==311 ; sys_platform == 'win32'
     # via
     #   mcp
@@ -1211,8 +1203,6 @@ runs==1.2.2
     # via editor
 safeio==1.2
     # via translatepy
-scipy==1.17.1
-    # via imagehash
 screeninfo==0.8.1 ; platform_system != 'darwin'
     # via browser-use
 shellingham==1.5.4

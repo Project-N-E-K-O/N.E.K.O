@@ -131,6 +131,16 @@ class PluginContextProtocol(Protocol):
             系统配置字典
         """
         ...
+
+    async def get_activity_snapshot(
+        self,
+        *,
+        lanlan_name: Optional[str] = None,
+        include_enrichment: bool = False,
+        timeout: float = 5.0,
+    ) -> Dict[str, Any]:
+        """Get a safe host activity snapshot."""
+        ...
     
     # ==================== 插件间通信 ====================
     def trigger_plugin_event(

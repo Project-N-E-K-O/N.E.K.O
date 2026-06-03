@@ -10,6 +10,8 @@ from plugin.plugins.study_companion.entry_notebook import _NotebookEntriesMixin
 from plugin.plugins.study_companion.models import DocExportConfig
 from plugin.plugins.study_companion.store import StudyStore
 from plugin.plugins.study_companion.store_notebook import NotebookStore
+from plugin.plugins.study_companion.store_notebook import NotebookSearchError
+from plugin.plugins.study_companion.store_notebook import _normalize_string_list
 from plugin.plugins.study_companion.tutor_llm_agent_notebook import (
     expand_note,
     summarize_to_note,
@@ -37,6 +39,11 @@ class _Logger:
         return None
 
 
+class _BrokenWarningLogger(_Logger):
+    def warning(self, *args, **kwargs):
+        raise RuntimeError("logger broken")
+
+
 class _EntryHarness(_NotebookEntriesMixin):
     def __init__(self, notebook_store: NotebookStore) -> None:
         self._notebook_store = notebook_store
@@ -57,12 +64,23 @@ class _AsyncNoopLock:
 class _FakeNotebookAgent:
     def __init__(self) -> None:
         self._config = SimpleNamespace(language="zh-CN")
-        self.calls: list[dict[str, str]] = []
+        self.calls: list[dict[str, object]] = []
         self.message_texts: list[str] = []
 
-    async def _call_model(self, messages, *, operation, model_group_override=None):
+    async def _call_model(
+        self,
+        messages,
+        *,
+        operation,
+        model_group_override=None,
+        timeout=None,
+    ):
         self.calls.append(
-            {"operation": operation, "model_group": str(model_group_override or "")}
+            {
+                "operation": operation,
+                "model_group": str(model_group_override or ""),
+                "timeout": timeout,
+            }
         )
         self.message_texts.append(str(messages[-1]["content"]))
         if operation == "expand_note":
@@ -70,11 +88,32 @@ class _FakeNotebookAgent:
         return "# 标题\n\n## 要点\n\n- A\n\n### 细节\n\nB"
 
 
+class _FailingNotebookAgent(_FakeNotebookAgent):
+    async def _call_model(self, *args, **kwargs):
+        raise RuntimeError("model unavailable")
+
+
 def _make_store(tmp_path) -> tuple[StudyStore, NotebookStore, _Logger]:
     logger = _Logger()
     store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", logger)
     store.open()
     return store, NotebookStore(store), logger
+
+
+def test_notebook_warn_falls_back_to_stderr_when_logger_fails(
+    tmp_path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    logger = _BrokenWarningLogger()
+    store = StudyStore(tmp_path / "study.db", tmp_path / "seed.json", logger)
+    store.open()
+    notebooks = NotebookStore(store)
+    try:
+        notebooks._warn("study notebook warning fallback: {}", "broken")
+        captured = capsys.readouterr()
+        assert "study notebook warning fallback: broken" in captured.err
+    finally:
+        store.close()
 
 
 def test_notebook_store_crud_search_and_topic_counts(tmp_path) -> None:
@@ -112,6 +151,9 @@ def test_notebook_store_crud_search_and_topic_counts(tmp_path) -> None:
         assert updated.source_type == "session"
         assert updated.source_ref == "session-1"
         assert updated.tags == ["updated"]
+        warnings = notebooks.consume_last_warnings()
+        assert any("source_type" in warning for warning in warnings)
+        assert any("source_ref" in warning for warning in warnings)
         assert any(
             "source_type update ignored" in str(args[0])
             for args, _kwargs in logger.warnings
@@ -125,6 +167,7 @@ def test_notebook_store_crud_search_and_topic_counts(tmp_path) -> None:
         assert partial.topic_ids == ["closure"]
         assert partial.tags == ["updated"]
         assert partial.is_ai_generated is True
+        assert notebooks.consume_last_warnings() == []
 
         manual = notebooks.upsert_note(note_id=note.id, is_ai_generated=False)
         assert manual.is_ai_generated is False
@@ -178,6 +221,16 @@ async def test_notebook_entries_serialize_dataclasses(tmp_path) -> None:
         assert isinstance(saved, Ok)
         note_id = saved.value["note"]["id"]
 
+        conflict = await harness.study_note_upsert(
+            note_id=note_id,
+            title="Force",
+            content="F = ma",
+            source_type="session",
+            source_ref="session-1",
+        )
+        assert isinstance(conflict, Ok)
+        assert any("source_type" in warning for warning in conflict.value["warnings"])
+
         listed = await harness.study_note_list(notebook_id=notebook_id)
         assert isinstance(listed, Ok)
         assert listed.value["notes"][0]["id"] == note_id
@@ -187,6 +240,11 @@ async def test_notebook_entries_serialize_dataclasses(tmp_path) -> None:
         assert searched.value["notes"][0]["title"] == "Force"
     finally:
         store.close()
+
+
+def test_normalize_string_list_rejects_non_iterable_objects() -> None:
+    with pytest.raises(TypeError, match="expected string or iterable"):
+        _normalize_string_list(object())
 
 
 def test_notebook_filter_semantics_are_explicit(tmp_path) -> None:
@@ -227,6 +285,38 @@ def test_notebook_search_falls_back_to_like_when_fts_errors(tmp_path) -> None:
 
         assert [item.id for item in results] == [note.id]
         assert any("FTS search failed" in str(args[0]) for args, _ in logger.warnings)
+    finally:
+        store.close()
+
+
+def test_notebook_search_raises_when_fts_and_like_both_fail(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, notebooks, _logger = _make_store(tmp_path)
+    try:
+        notebooks.create_note(title="Broken", content="corruption target")
+        with store._lock:
+            conn = store._require_conn()
+            conn.execute("DROP TABLE notes_fts")
+            conn.commit()
+
+        def fail_like(**_kwargs):
+            raise RuntimeError("LIKE fallback failed")
+
+        monkeypatch.setattr(notebooks, "_list_notes_like", fail_like)
+
+        with pytest.raises(NotebookSearchError, match="notebook search failed"):
+            notebooks.list_notes(search_query="corruption")
+    finally:
+        store.close()
+
+
+def test_delete_notebook_rejects_empty_id(tmp_path) -> None:
+    store, notebooks, _logger = _make_store(tmp_path)
+    try:
+        with pytest.raises(ValueError, match="notebook_id is required"):
+            notebooks.delete_notebook("")
     finally:
         store.close()
 
@@ -295,8 +385,12 @@ async def test_notebook_llm_operations_use_expected_model_tiers() -> None:
     assert "> [!ai]" in expanded.reply
     assert summarized.payload["title"] == "标题"
     assert agent.calls == [
-        {"operation": "expand_note", "model_group": "tutor"},
-        {"operation": "summarize_to_note", "model_group": "summary"},
+        {"operation": "expand_note", "model_group": "tutor", "timeout": 60.0},
+        {
+            "operation": "summarize_to_note",
+            "model_group": "summary",
+            "timeout": 60.0,
+        },
     ]
 
 
@@ -309,6 +403,17 @@ async def test_notebook_summary_headings_follow_language() -> None:
 
     assert "## Key Points" in summarized.reply
     assert "### Details" in summarized.reply
+
+
+@pytest.mark.asyncio
+async def test_notebook_expand_fallback_follows_language() -> None:
+    agent = _FailingNotebookAgent()
+    agent._config.language = "en"
+
+    expanded = await expand_note(agent, "source note")
+
+    assert expanded.degraded is True
+    assert "Unable to connect to the model" in expanded.reply
 
 
 @pytest.mark.asyncio

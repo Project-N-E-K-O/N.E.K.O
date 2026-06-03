@@ -1,0 +1,29 @@
+[plugin]
+id = "deskpet"
+name = "桌面宠物"
+description = "轻量 CPU 响应式桌面宠物 — 采样CPU占用率，高负载时出声吐槽。对标 RunCat365。"
+short_description = "CPU一高就会吐槽的桌面猫"
+keywords = ["deskpet", "CPU", "monitor", "pet", "猫", "桌面宠物", "系统监控"]
+version = "0.1.0"
+type = "plugin"
+entry = "plugin.plugins.deskpet:DeskPetPlugin"
+
+[plugin.author]
+name = "N.E.K.O Team"
+
+[plugin.sdk]
+recommended = ">=0.1.0,<0.2.0"
+supported = ">=0.1.0,<0.3.0"
+
+[plugin.store]
+enabled = false
+
+[plugin.ui]
+enabled = false
+
+[plugin_runtime]
+enabled = true
+auto_start = true
+
+[plugin_state]
+backend = "memory"

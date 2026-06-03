@@ -16,9 +16,8 @@ def _snapshot(
     *,
     app_type: str = "code_editor",
     activity_type: str = "question",
-    has_content_change: bool = True,
     text: str = "",
-    thumbnail_hash: str | None = None,
+    window_title: str = "main.py - Visual Studio Code",
 ) -> ActivitySnapshot:
     return ActivitySnapshot(
         timestamp=timestamp,
@@ -27,9 +26,7 @@ def _snapshot(
         activity_type=activity_type,
         classify_method="both" if text else "title",
         ocr_text_snippet=text,
-        window_title="main.py - Visual Studio Code",
-        has_content_change=has_content_change,
-        _thumbnail_hash=thumbnail_hash or f"{int(timestamp):016x}",
+        window_title=window_title,
     )
 
 
@@ -43,27 +40,35 @@ async def test_activity_buffer_deduplicates_homogeneous_tail_frames() -> None:
     await buffer.add(
         _snapshot(
             15,
+            app_type="web_page",
             activity_type="reading",
-            has_content_change=False,
-            text="stable",
-            thumbnail_hash="stable",
+            text="web",
         )
     )
     await buffer.add(
         _snapshot(
             20,
+            app_type="web_page",
             activity_type="reading",
-            has_content_change=False,
             text="latest",
-            thumbnail_hash="stable",
+            window_title="docs - Google Chrome",
+        )
+    )
+    await buffer.add(
+        _snapshot(
+            25,
+            app_type="web_page",
+            activity_type="reading",
+            text="latest title",
+            window_title="docs - Google Chrome",
         )
     )
 
     assert len(buffer.snapshots) == 4
-    assert [snapshot.timestamp for snapshot in list(buffer.snapshots)[:2]] == [0, 5]
-    assert buffer.snapshots[-1].timestamp == 20
-    assert buffer.snapshots[-1].first_seen_at == 15
-    assert buffer.snapshots[-1].ocr_text_snippet == "latest"
+    assert [snapshot.timestamp for snapshot in buffer.snapshots] == [5, 10, 15, 25]
+    assert buffer.snapshots[0].first_seen_at == 0
+    assert buffer.snapshots[-1].first_seen_at == 20
+    assert buffer.snapshots[-1].ocr_text_snippet == "latest title"
 
 
 @pytest.mark.asyncio
@@ -75,7 +80,6 @@ async def test_activity_buffer_prunes_window_and_caps_ring_size() -> None:
             _snapshot(
                 timestamp,
                 activity_type=f"activity-{timestamp}",
-                has_content_change=bool(timestamp % 4),
             )
         )
 
@@ -115,27 +119,21 @@ async def test_activity_buffer_focus_minutes_uses_deduplicated_duration() -> Non
         _snapshot(
             0,
             activity_type="reading",
-            has_content_change=False,
             text="page",
-            thumbnail_hash="page",
         )
     )
     await buffer.add(
         _snapshot(
             5,
             activity_type="reading",
-            has_content_change=False,
             text="page",
-            thumbnail_hash="page",
         )
     )
     await buffer.add(
         _snapshot(
             10,
             activity_type="reading",
-            has_content_change=False,
             text="page",
-            thumbnail_hash="page",
         )
     )
 
@@ -178,7 +176,6 @@ async def test_activity_buffer_concurrent_add_and_summarize_is_safe() -> None:
                     float(index),
                     app_type="code_editor" if index % 2 else "web_page",
                     activity_type=f"activity-{index % 3}",
-                    has_content_change=bool(index % 2),
                 )
             )
 
@@ -241,6 +238,7 @@ def test_awareness_config_parses_clamps_and_falls_back() -> None:
                     "image_max_bytes": 1,
                     "push_to_llm_interval_seconds": 999,
                     "push_to_llm_mode": "bad",
+                    "idle_warning_minutes": 99,
                 }
             }
         }
@@ -253,3 +251,4 @@ def test_awareness_config_parses_clamps_and_falls_back() -> None:
     assert config.awareness.image_max_bytes == 10240
     assert config.awareness.push_to_llm_interval_seconds == 300
     assert config.awareness.push_to_llm_mode == "read"
+    assert config.awareness.idle_warning_minutes == 30

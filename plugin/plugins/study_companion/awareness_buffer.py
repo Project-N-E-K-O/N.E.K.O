@@ -40,14 +40,8 @@ class ActivityBuffer:
                 last = self.snapshots[-1]
                 same_app = last.app_type == snapshot.app_type
                 same_activity = last.activity_type == snapshot.activity_type
-                last_hash = str(last._thumbnail_hash or "")
-                current_hash = str(snapshot._thumbnail_hash or "")
-                same_hash = not last_hash or not current_hash or last_hash == current_hash
-                stable_content = (
-                    not last.has_content_change and not snapshot.has_content_change
-                    and same_hash
-                )
-                if same_app and same_activity and stable_content:
+                same_title = last.window_title == snapshot.window_title
+                if same_app and same_activity and same_title:
                     self.snapshots[-1] = replace(
                         snapshot,
                         first_seen_at=last.first_seen_at,

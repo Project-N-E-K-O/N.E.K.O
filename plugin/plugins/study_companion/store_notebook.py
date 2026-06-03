@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+import logging
 import re
+import sys
 import uuid
 from typing import Any, Literal
 
 from .models import NotebookMeta, NoteItem, NoteSearchResult, utc_now_iso
 
+_logger = logging.getLogger(__name__)
+_jieba_import_error: Exception | None = None
+_jieba_warning_emitted = False
 try:
     import jieba
-except Exception:  # pragma: no cover - optional during partial dev installs.
+except Exception as exc:  # pragma: no cover - optional during partial dev installs.
+    _jieba_import_error = exc
     jieba = None  # type: ignore[assignment]
 
 
@@ -22,6 +28,23 @@ _MARKDOWN_MARKUP_RE = re.compile(r"(^|\s)[>#*+\-]{1,3}\s+|[*_~]{1,3}|^#{1,6}\s*"
 _SEARCH_TOKEN_RE = re.compile(r"[\w\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]+", re.UNICODE)
 _SNIPPET_CHARS = 200
 _UNSET = object()
+
+
+class NotebookSearchError(RuntimeError):
+    """Raised when notebook search cannot distinguish errors from no results."""
+
+
+class NotebookFtsSearchError(NotebookSearchError):
+    """Raised when the FTS index path fails before LIKE fallback."""
+
+
+def _format_warning(message: str, *args: Any) -> str:
+    if not args:
+        return str(message)
+    try:
+        return str(message).format(*args)
+    except Exception:
+        return " ".join([str(message), *(str(arg) for arg in args)])
 
 
 def _strip_markdown(content: str) -> str:
@@ -56,7 +79,7 @@ def _normalize_string_list(value: object, *, limit: int = 50) -> list[str]:
     elif isinstance(value, (list, tuple, set)):
         raw_items = list(value)
     else:
-        raw_items = [value]
+        raise TypeError("expected string or iterable of strings")
     result: list[str] = []
     seen: set[str] = set()
     for item in raw_items:
@@ -87,6 +110,7 @@ def _nullable_text(value: object) -> str | None:
 
 
 def _search_terms(query: str) -> list[str]:
+    global _jieba_warning_emitted
     text = str(query or "").strip()
     if not text:
         return []
@@ -94,8 +118,11 @@ def _search_terms(query: str) -> list[str]:
     if jieba is not None:
         try:
             terms.extend(str(item).strip() for item in jieba.cut(text) if str(item).strip())
-        except Exception:
-            pass
+        except Exception as exc:
+            _logger.warning("study notebook jieba tokenization failed: %s", exc)
+    elif _jieba_import_error is not None and not _jieba_warning_emitted:
+        _jieba_warning_emitted = True
+        _logger.warning("study notebook jieba unavailable: %s", _jieba_import_error)
     result: list[str] = []
     seen: set[str] = set()
     for term in terms or [text]:
@@ -120,14 +147,26 @@ def _like_pattern(query: str) -> str:
 class NotebookStore:
     def __init__(self, store: Any) -> None:
         self.store = store
+        self._last_warnings: list[str] = []
+
+    def consume_last_warnings(self) -> list[str]:
+        warnings = list(self._last_warnings)
+        self._last_warnings.clear()
+        return warnings
+
+    def _set_last_warnings(self, warnings: list[str]) -> None:
+        self._last_warnings = list(warnings)
 
     def _warn(self, message: str, *args: Any) -> None:
         warning = getattr(getattr(self.store, "_logger", None), "warning", None)
         if callable(warning):
             try:
                 warning(message, *args)
+                return
             except Exception:
-                pass
+                print(_format_warning(message, *args), file=sys.stderr)
+                return
+        print(_format_warning(message, *args), file=sys.stderr)
 
     def create_notebook(
         self, *, name: str, description: str = "", sort_order: int = 0
@@ -234,7 +273,7 @@ class NotebookStore:
     def delete_notebook(self, notebook_id: str) -> dict[str, int]:
         key = str(notebook_id or "").strip()
         if not key:
-            return {"deleted": 0, "notes_unlinked": 0}
+            raise ValueError("notebook_id is required")
         with self.store._lock:
             conn = self.store._require_conn()
             before = conn.execute(
@@ -339,9 +378,11 @@ class NotebookStore:
         source_type: str | None = None,
         source_ref: str | None = None,
     ) -> NoteItem:
+        operation_warnings: list[str] = []
         note_key = str(note_id or "").strip()
         existing = self.get_note(note_key) if note_key else None
         if existing is None:
+            self._set_last_warnings([])
             return self.create_note(
                 notebook_id=None if notebook_id is _UNSET else _nullable_text(notebook_id),
                 title=title or "",
@@ -356,6 +397,12 @@ class NotebookStore:
         if source_type is not None and str(source_type or "").strip():
             requested_source_type = str(source_type or "").strip()
             if requested_source_type != existing.source_type:
+                warning_text = _format_warning(
+                    "study note source_type update ignored: {} -> {}",
+                    existing.source_type,
+                    requested_source_type,
+                )
+                operation_warnings.append(warning_text)
                 self._warn(
                     "study note source_type update ignored: {} -> {}",
                     existing.source_type,
@@ -364,6 +411,12 @@ class NotebookStore:
         if source_ref is not None and str(source_ref or "").strip():
             requested_source_ref = str(source_ref or "").strip()
             if requested_source_ref != existing.source_ref:
+                warning_text = _format_warning(
+                    "study note source_ref update ignored: {} -> {}",
+                    existing.source_ref,
+                    requested_source_ref,
+                )
+                operation_warnings.append(warning_text)
                 self._warn(
                     "study note source_ref update ignored: {} -> {}",
                     existing.source_ref,
@@ -420,6 +473,7 @@ class NotebookStore:
         updated = self.get_note(note_key)
         if updated is None:
             raise RuntimeError("note update failed")
+        self._set_last_warnings(operation_warnings)
         return updated
 
     def delete_note(self, note_id: str) -> dict[str, int]:
@@ -470,24 +524,33 @@ class NotebookStore:
             notebook_filter, notebook_id
         )
         if query:
-            notes = self._list_notes_fts(
-                notebook_filter=normalized_filter,
-                notebook_id=notebook_id,
-                topic_id=topic_id,
-                tag=tag,
-                search_query=query,
-                limit=safe_limit,
-            )
-            if notes:
-                return notes
-            return self._list_notes_like(
-                notebook_filter=normalized_filter,
-                notebook_id=notebook_id,
-                topic_id=topic_id,
-                tag=tag,
-                search_query=query,
-                limit=safe_limit,
-            )
+            fts_failed = False
+            try:
+                notes = self._list_notes_fts(
+                    notebook_filter=normalized_filter,
+                    notebook_id=notebook_id,
+                    topic_id=topic_id,
+                    tag=tag,
+                    search_query=query,
+                    limit=safe_limit,
+                )
+                if notes:
+                    return notes
+            except NotebookFtsSearchError:
+                fts_failed = True
+            try:
+                return self._list_notes_like(
+                    notebook_filter=normalized_filter,
+                    notebook_id=notebook_id,
+                    topic_id=topic_id,
+                    tag=tag,
+                    search_query=query,
+                    limit=safe_limit,
+                )
+            except Exception as exc:
+                if fts_failed:
+                    raise NotebookSearchError("notebook search failed") from exc
+                raise
         where, params = self._filter_clauses(
             notebook_filter=normalized_filter,
             notebook_id=notebook_id,
@@ -729,7 +792,7 @@ class NotebookStore:
                 )
         except Exception as exc:
             self._warn("study notebook FTS search failed; falling back to LIKE: {}", exc)
-            return []
+            raise NotebookFtsSearchError("notebook FTS search failed") from exc
         return [item for item in (self._note_from_row(row) for row in rows) if item]
 
     def _list_notes_like(

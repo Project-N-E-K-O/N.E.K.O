@@ -260,8 +260,6 @@ async def test_start_awareness_loop_runs_async_tick_and_pushes_context(
                 app_type="web_page",
                 activity_type="question",
                 ocr_text_snippet="Question: Why?",
-                has_content_change=True,
-                thumbnail_phash="0" * 16,
             )
 
     ctx = _Ctx(tmp_path, {"study": {"language": "en"}})
@@ -320,10 +318,282 @@ async def test_awareness_tick_counts_unusable_snapshot_as_idle(tmp_path: Path) -
     plugin._cfg = StudyConfig(awareness=AwarenessConfig(push_to_llm_mode="blind"))
     plugin._buffer = ActivityBuffer()
     plugin._ocr_pipeline = _FakeAwarenessPipeline()
+    plugin.logger = _Logger()
 
     await plugin.awareness_tick()
 
     assert plugin._awareness_idle_ticks == 1
+
+
+@pytest.mark.asyncio
+async def test_awareness_tick_private_activity_tracker_skips_capture(
+    tmp_path: Path,
+) -> None:
+    class _CaptureShouldNotRun:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def capture_lightweight(self):
+            self.calls += 1
+            raise AssertionError("private activity must not capture the screen")
+
+    class _ActivityTracker:
+        def __init__(self) -> None:
+            self.calls: list[float | None] = []
+
+        async def get_snapshot(
+            self,
+            *,
+            now: float | None = None,
+            include_enrichment: bool = True,
+            tick_followups: bool = True,
+        ):
+            assert include_enrichment is False
+            assert tick_followups is False
+            self.calls.append(now)
+            return SimpleNamespace(
+                state="private",
+                active_window=None,
+                system_idle_seconds=12.0,
+                os_signals_available=True,
+            )
+
+    plugin = StudyCompanionPlugin(_Ctx(tmp_path, {"study": {"language": "en"}}))
+    plugin._cfg = StudyConfig(awareness=AwarenessConfig(push_to_llm_mode="blind"))
+    plugin._buffer = ActivityBuffer()
+    pipeline = _CaptureShouldNotRun()
+    plugin._ocr_pipeline = pipeline
+    tracker = _ActivityTracker()
+    plugin._activity_tracker = tracker
+
+    await plugin.awareness_tick()
+
+    assert pipeline.calls == 0
+    assert len(tracker.calls) == 1
+    assert plugin._awareness_idle_ticks == 1
+    summary = await plugin._buffer.summarize()
+    assert summary["current_app"] == "private"
+    assert summary["current_activity"] == "idle"
+
+
+@pytest.mark.asyncio
+async def test_awareness_tick_uses_activity_tracker_foreground_category(
+    tmp_path: Path,
+) -> None:
+    class _FakeAwarenessPipeline:
+        def capture_lightweight(self) -> LightweightSnapshot:
+            return LightweightSnapshot(
+                status="ok",
+                captured_at="2026-06-01T00:00:00Z",
+                window_title="Quiz - Google Chrome",
+                app_type="unknown",
+                activity_type="question",
+                ocr_text_snippet="Question: Why?",
+            )
+
+    class _ActivityTracker:
+        async def get_snapshot(
+            self,
+            *,
+            now: float | None = None,
+            include_enrichment: bool = True,
+            tick_followups: bool = True,
+        ):
+            assert include_enrichment is False
+            assert tick_followups is False
+            return SimpleNamespace(
+                state="focused_work",
+                active_window=SimpleNamespace(category="gaming"),
+                system_idle_seconds=42.0,
+                os_signals_available=True,
+            )
+
+    class _Supervision:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def observe_activity(self, **kwargs):
+            self.calls.append(dict(kwargs))
+            return {}
+
+    plugin = StudyCompanionPlugin(_Ctx(tmp_path, {"study": {"language": "en"}}))
+    plugin._cfg = StudyConfig(awareness=AwarenessConfig(push_to_llm_mode="blind"))
+    plugin._buffer = ActivityBuffer()
+    plugin._ocr_pipeline = _FakeAwarenessPipeline()
+    plugin._activity_tracker = _ActivityTracker()
+    supervision = _Supervision()
+    plugin._supervision = supervision
+
+    await plugin.awareness_tick()
+
+    summary = await plugin._buffer.summarize()
+    assert summary["current_app"] == "gaming"
+    assert supervision.calls == [
+        {
+            "ocr_text": "Question: Why?",
+            "sensor_available": True,
+            "idle_seconds": 42.0,
+            "foreground_category": "gaming",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_awareness_tick_prefers_host_activity_snapshot(
+    tmp_path: Path,
+) -> None:
+    class _HostCtx(_Ctx):
+        def __init__(self, plugin_dir: Path, config: dict[str, object]) -> None:
+            super().__init__(plugin_dir, config)
+            self._current_lanlan = "Mika"
+            self.activity_snapshot_calls: list[dict[str, object]] = []
+
+        async def get_activity_snapshot(self, **kwargs):
+            self.activity_snapshot_calls.append(dict(kwargs))
+            return {
+                "available": True,
+                "source": "host_activity_tracker",
+                "lanlan_name": "Mika",
+                "state": "focused_work",
+                "os_signals_available": True,
+                "system_idle_seconds": 3.0,
+                "active_window": {
+                    "category": "gaming",
+                    "subcategory": "game",
+                    "canonical": "Game",
+                    "is_browser": False,
+                },
+            }
+
+    class _LocalTrackerShouldNotRun:
+        async def get_snapshot(self, **kwargs):
+            raise AssertionError("host activity snapshot should be preferred")
+
+    class _FakeAwarenessPipeline:
+        def capture_lightweight(self) -> LightweightSnapshot:
+            return LightweightSnapshot(
+                status="ok",
+                captured_at="2026-06-01T00:00:00Z",
+                window_title="Quiz - Google Chrome",
+                app_type="unknown",
+                activity_type="question",
+                ocr_text_snippet="Question: Why?",
+            )
+
+    ctx = _HostCtx(tmp_path, {"study": {"language": "en"}})
+    plugin = StudyCompanionPlugin(ctx)
+    plugin._cfg = StudyConfig(awareness=AwarenessConfig(push_to_llm_mode="blind"))
+    plugin._buffer = ActivityBuffer()
+    plugin._ocr_pipeline = _FakeAwarenessPipeline()
+    plugin._activity_tracker = _LocalTrackerShouldNotRun()
+
+    await plugin.awareness_tick()
+
+    summary = await plugin._buffer.summarize()
+    assert summary["current_app"] == "gaming"
+    assert ctx.activity_snapshot_calls == [
+        {
+            "lanlan_name": "Mika",
+            "include_enrichment": False,
+            "timeout": 2.0,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_awareness_tick_ignores_unavailable_os_signals_for_supervision(
+    tmp_path: Path,
+) -> None:
+    class _FakeAwarenessPipeline:
+        def capture_lightweight(self) -> LightweightSnapshot:
+            return LightweightSnapshot(
+                status="ok",
+                captured_at="2026-06-01T00:00:00Z",
+                window_title="Quiz - Google Chrome",
+                app_type="unknown",
+                activity_type="question",
+                ocr_text_snippet="Question: Why?",
+            )
+
+    class _ActivityTracker:
+        async def get_snapshot(
+            self,
+            *,
+            now: float | None = None,
+            include_enrichment: bool = True,
+            tick_followups: bool = True,
+        ):
+            assert include_enrichment is False
+            assert tick_followups is False
+            return SimpleNamespace(
+                state="idle",
+                active_window=SimpleNamespace(category="gaming"),
+                system_idle_seconds=1.0,
+                os_signals_available=False,
+            )
+
+    class _Supervision:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def observe_activity(self, **kwargs):
+            self.calls.append(dict(kwargs))
+            return {}
+
+    plugin = StudyCompanionPlugin(_Ctx(tmp_path, {"study": {"language": "en"}}))
+    plugin._cfg = StudyConfig(awareness=AwarenessConfig(push_to_llm_mode="blind"))
+    plugin._buffer = ActivityBuffer()
+    plugin._ocr_pipeline = _FakeAwarenessPipeline()
+    plugin._activity_tracker = _ActivityTracker()
+    supervision = _Supervision()
+    plugin._supervision = supervision
+
+    await plugin.awareness_tick()
+
+    summary = await plugin._buffer.summarize()
+    assert summary["current_app"] == "web_page"
+    assert supervision.calls == [
+        {
+            "ocr_text": "Question: Why?",
+            "sensor_available": True,
+            "idle_seconds": None,
+            "foreground_category": None,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_awareness_tick_warns_when_os_activity_snapshot_fails(
+    tmp_path: Path,
+) -> None:
+    class _FakeAwarenessPipeline:
+        def capture_lightweight(self) -> LightweightSnapshot:
+            return LightweightSnapshot(
+                status="ok",
+                captured_at="2026-06-01T00:00:00Z",
+                window_title="Quiz - Google Chrome",
+                app_type="web_page",
+                activity_type="question",
+                ocr_text_snippet="Question: Why?",
+            )
+
+    plugin = StudyCompanionPlugin(_Ctx(tmp_path, {"study": {"language": "en"}}))
+    plugin._cfg = StudyConfig(awareness=AwarenessConfig(push_to_llm_mode="blind"))
+    plugin._buffer = ActivityBuffer()
+    plugin._ocr_pipeline = _FakeAwarenessPipeline()
+    plugin.logger = _Logger()
+
+    async def _fail_activity_snapshot(*, now: float):
+        raise RuntimeError("host unavailable")
+
+    plugin._read_awareness_activity_snapshot = _fail_activity_snapshot  # type: ignore[method-assign]
+
+    await plugin.awareness_tick()
+
+    assert any(
+        "study awareness activity snapshot failed" in str(args[0])
+        for args, _kwargs in plugin.logger.warnings
+    )
 
 
 class _FakeOcrBackend:

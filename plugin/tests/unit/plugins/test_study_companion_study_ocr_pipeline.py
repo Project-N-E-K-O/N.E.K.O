@@ -145,7 +145,10 @@ def test_ocr_pipeline_capture_lightweight_title_first_skips_ocr_and_limits_jpeg(
     assert snapshot.jpeg_bytes is not None
     assert len(snapshot.jpeg_bytes) <= 50_000
     assert snapshot.jpeg_base64
-    assert snapshot.app_type == "code_editor"
+    assert snapshot.jpeg_metadata["limit_bytes"] == 50_000
+    assert snapshot.jpeg_metadata["encoded_bytes"] == len(snapshot.jpeg_bytes)
+    assert snapshot.jpeg_metadata["attempts"] >= 1
+    assert snapshot.app_type == "unknown"
     assert snapshot.activity_type == ""
     assert activity is not None
     assert activity.classify_method == "title"
@@ -154,10 +157,18 @@ def test_ocr_pipeline_capture_lightweight_title_first_skips_ocr_and_limits_jpeg(
 
 def test_ocr_pipeline_lightweight_jpeg_keeps_shrinking_until_limit() -> None:
     image = Image.effect_noise((1600, 900), 120).convert("RGB")
+    metadata: dict[str, int | float] = {}
 
-    raw = StudyOcrPipeline._encode_lightweight_jpeg(image, max_bytes=10_240)
+    raw = StudyOcrPipeline._encode_lightweight_jpeg(
+        image,
+        max_bytes=10_240,
+        metadata=metadata,
+    )
 
     assert len(raw) <= 10_240
+    assert metadata["attempts"] > 1
+    assert metadata["encoded_bytes"] == len(raw)
+    assert metadata["final_quality"] <= 72
 
 
 def test_ocr_pipeline_capture_lightweight_ocr_mode_writes_activity_type() -> None:
@@ -177,7 +188,7 @@ def test_ocr_pipeline_capture_lightweight_ocr_mode_writes_activity_type() -> Non
     activity = snapshot.to_activity_snapshot()
 
     assert snapshot.status == "ok"
-    assert snapshot.app_type == "web_page"
+    assert snapshot.app_type == "unknown"
     assert snapshot.activity_type == "question"
     assert snapshot.ocr_text_snippet == "Question: Why does this happen?"
     assert activity is not None
@@ -198,9 +209,10 @@ def test_ocr_pipeline_capture_lightweight_content_change_and_failure_paths() -> 
     second = pipeline.capture_lightweight(target={"hwnd": 1, "title": "Notes - Obsidian"})
 
     assert first.status == "ok"
-    assert first.has_content_change is True
+    assert not hasattr(first, "has_content" + "_change")
+    assert not hasattr(first, "thumbnail_" + "phash")
     assert second.status == "ok"
-    assert second.has_content_change is False
+    assert not hasattr(second, "has_content" + "_change")
 
     failing = StudyOcrPipeline(
         logger=_Logger(),
