@@ -189,6 +189,16 @@
         }
     }
 
+    function shouldRenderIcebreakerOnLocalChatHost() {
+        try {
+            var path = String((window.location && window.location.pathname) || '');
+            if (window.__NEKO_MULTI_WINDOW__ === true && !/^\/chat(?:\/|$)/.test(path)) {
+                return false;
+            }
+        } catch (_) {}
+        return true;
+    }
+
     function broadcastIcebreaker(action, payload) {
         var message = Object.assign({
             action: action,
@@ -288,6 +298,9 @@
         };
         broadcastIcebreakerAppendMessage(message);
         appendLlmContext(role, messageText, meta || {});
+        if (!shouldRenderIcebreakerOnLocalChatHost()) {
+            return Promise.resolve(message);
+        }
         return waitForChatHost(30000).then(function (host) {
             if (typeof host.openWindow === 'function') {
                 host.openWindow();
@@ -372,6 +385,9 @@
             options: buildPromptOptions(node, localeData)
         };
         broadcastIcebreakerChoicePrompt(prompt);
+        if (!shouldRenderIcebreakerOnLocalChatHost()) {
+            return Promise.resolve(false);
+        }
         return waitForChatHost(30000).then(function (host) {
             if (!host || typeof host.setIcebreakerChoicePrompt !== 'function') return false;
             host.setIcebreakerChoicePrompt(prompt);
@@ -386,6 +402,7 @@
         if (!activeSession || !activeSession.sessionId) return;
         var sessionId = activeSession.sessionId;
         broadcastIcebreakerClearChoicePrompt(sessionId);
+        if (!shouldRenderIcebreakerOnLocalChatHost()) return;
         waitForChatHost(1200).then(function (host) {
             if (host && typeof host.clearIcebreakerChoicePrompt === 'function') {
                 host.clearIcebreakerChoicePrompt(sessionId);

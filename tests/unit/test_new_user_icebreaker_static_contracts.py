@@ -376,6 +376,10 @@ def test_icebreaker_uses_broadcast_channel_for_desktop_chat_window():
     assert "broadcastIcebreakerAppendMessage" in runtime
     assert "broadcastIcebreakerChoicePrompt" in runtime
     assert "broadcastIcebreakerClearChoicePrompt" in runtime
+    assert "shouldRenderIcebreakerOnLocalChatHost" in runtime
+    assert "window.__NEKO_MULTI_WINDOW__ === true" in runtime
+    assert "!/^\\/chat(?:\\/|$)/.test(path)" in runtime
+    assert "if (!shouldRenderIcebreakerOnLocalChatHost())" in runtime
     assert "window.appInterpage" in runtime
     assert "action: 'icebreaker_append_chat_message'" in runtime
     assert "action: 'icebreaker_set_choice_prompt'" in runtime
