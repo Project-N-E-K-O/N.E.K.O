@@ -81,6 +81,8 @@ def _ensure_gemini_sdk() -> bool:
 # Setup logger for this module
 logger = get_module_logger(__name__, "Main")
 
+_IMAGE_ANALYSIS_PENDING_DESCRIPTION = "[实时屏幕截图或相机画面正在分析中。先不要瞎编内容，可以稍等片刻。在此期间不要用搜索功能应付。等收到画面分析结果后再描述画面。]"
+
 
 # ── Proactive audio prompt cache ──────────────────────────────────────
 _PROACTIVE_AUDIO_DIR = Path(__file__).resolve().parent.parent / "static" / "proactive_audio"
@@ -312,7 +314,7 @@ class OmniRealtimeClient:
         self._image_recognized_this_turn = False
         self._image_sent_this_turn = False
         self._image_being_analyzed = False
-        self._image_description = "[实时屏幕截图或相机画面正在分析中。先不要瞎编内容，可以稍等片刻。在此期间不要用搜索功能应付。等收到画面分析结果后再描述画面。]"
+        self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
         self._latest_image_b64 = None  # Cached latest screenshot for proactive injection
         self._proactive_image_consumed = True  # Whether the cached image has been used by a proactive nudge
         self._proactive_injecting = False  # True while prompt_ephemeral is injecting audio — suppresses mic input
@@ -1371,21 +1373,26 @@ class OmniRealtimeClient:
                 return description
             else:
                 logger.warning("VISION_MODEL not configured or analysis failed")
-                self._image_description = "[实时屏幕截图或相机画面]: 画面分析失败或暂时无法识别。"
-                self._image_recognized_this_turn = True
+                self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
+                self._image_recognized_this_turn = False
+                self._latest_image_b64 = None
+                self._proactive_image_consumed = True
                 return ""
             
         except Exception as e:
             logger.error(f"Error analyzing image with vision model: {e}")
-            self.image_recognized_this_turn = True
-            self._image_being_analyzed = False
-            self._image_description = f"[实时屏幕截图或相机画面]: 分析出错: {str(e)}"
+            self._image_recognized_this_turn = False
+            self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
+            self._latest_image_b64 = None
+            self._proactive_image_consumed = True
             # 检测内容审查错误并发送中文提示到前端（不关闭session）
             error_str = str(e)
             if 'censorship' in error_str:
                 if self.on_status_message:
                     await self.on_status_message(json.dumps({"code": "IMAGE_BLOCKED"}))
-            return "图片识别发生严重错误！"
+            return ""
+        finally:
+            self._image_being_analyzed = False
     
     async def stream_image(self, image_b64: str, *, bypass_rate_limit: bool = False) -> None:
         """Stream raw image data to the API.
@@ -1403,6 +1410,11 @@ class OmniRealtimeClient:
         try:
             # Models without native vision (step, free on lanlan.tech) — first frame triggers VISION_MODEL analysis
             if '实时屏幕截图或相机画面正在分析中' in self._image_description and not self._supports_native_image:
+                # 非原生视觉后端只需要本轮第一帧做分析；后续高频帧直接丢弃，避免并发刷爆 VISION_MODEL。
+                async with self._image_lock:
+                    if self._image_recognized_this_turn or self._image_being_analyzed:
+                        return
+                    self._image_being_analyzed = True
                 await self._analyze_image_with_vision_model(image_b64)
                 return
             

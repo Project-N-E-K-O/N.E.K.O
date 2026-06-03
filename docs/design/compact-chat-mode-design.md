@@ -86,11 +86,13 @@
    - `.compact-chat-surface-shell`
    - `.compact-chat-surface-frame`
    - `data-compact-geometry-owner="surface"`
-   - `data-compact-geometry-item="capsule" | "input" | "dragHandle" | "resizeHandle" | "toolFan" | "history" | "historyHandle" | "choice"`
+   - `data-compact-geometry-item="capsule" | "input" | "resizeHandle" | "toolFan" | "history" | "historyHandle" | "choice"`
    - `data-compact-geometry-part="capsuleBody" | "inputBody"`
+   - `data-compact-drag-surface="true"` 声明 compact 对话框本体 surface；整体拖拽只指这个本体，不包含历史、工具轮盘、选项层等浮层。
+   - `data-compact-no-drag="true"` 声明 textarea、工具按钮、resize、历史、选项等真实控件和浮层排除拖拽。
 6. 早期 `.compact-chat-capsule-shell` / `.compact-chat-input-shell` 已不是当前主体事实，后续文档和实现不要再按这两个旧类名设计。
 7. `.compact-chat-surface-frame` 是同一个 54px 高的本体：`default/options` 内放 capsule button，`input` 内放 textarea 和右侧工具/发送按钮。
-8. 蓝线拖拽手柄是 `.compact-chat-drag-handle`，带 `data-compact-drag-handle="true"`，必须保留。
+8. 旧蓝线拖拽手柄 `.compact-chat-drag-handle` / `data-compact-drag-handle="true"` 已删除，不应恢复；对话框本体拖拽走 `data-compact-drag-surface` / `data-compact-no-drag`。
 9. 左右缩放手柄是 `.compact-chat-resize-handle-left/right`，通过 `neko:compact-surface-resize-request` 与宿主同步宽度。
 10. 工具转轮通过 portal 挂到 `document.body`，并以 `data-compact-geometry-item="toolFan"` 进入 geometry。
 11. 历史层由 `CompactExportHistoryPanel` 挂载到 `app-shell` 内，锚点是 `.compact-export-history-anchor`，并以 `data-compact-geometry-item="history"` 进入 geometry。
@@ -142,7 +144,7 @@
    - `window.__nekoDesktopCompactExternalBall`
 3. 桌面 compact surface 的 BrowserWindow bounds 由页面 surface geometry、history drag carrier bounds 和 workArea 共同派生。
 4. 最小化 ball 按外部 ball window 思路承载，不应和 surface 绑在同一个大透明窗口里。
-5. Native Wayland 下 `[data-compact-drag-handle="true"]` 需要走 `-webkit-app-region: drag`，不能强行走全局 cursor polling。
+5. Native Wayland 下 compact 对话框本体拖拽需要让 `[data-compact-drag-surface="true"]` 走 `-webkit-app-region: drag`，并用 `[data-compact-no-drag="true"]` 排除真实控件和浮层；不能强行走全局 cursor polling。
 6. 桌面历史拖拽已有桥接状态：
    - `window.__nekoDesktopCompactHistoryDragState`
    - `window.__nekoDesktopCompactHistoryPointerPassthrough`
@@ -220,13 +222,14 @@
 
 Surface island 包含：
 
-1. `.compact-chat-surface-frame` 本体。
-2. 蓝线拖拽手柄。
-3. 左右 resize 手柄。
-4. ChoicePrompt / GalGame options。
-5. 工具转轮。
-6. 内联历史 / 导出历史层。
-7. 历史拖拽视觉层。
+1. `.compact-chat-surface-frame` 本体，同时也是 compact 对话框本体拖拽 surface。
+2. 左右 resize 手柄。
+3. ChoicePrompt / GalGame options。
+4. 工具转轮。
+5. 内联历史 / 导出历史层。
+6. 历史拖拽视觉层。
+
+旧蓝线拖拽手柄不再属于 surface island；compact 对话框本体拖拽由 `.compact-chat-surface-frame` 声明承担。
 
 定位：
 
@@ -238,7 +241,7 @@ Surface island 包含：
 
 命中：
 
-1. 只有可见本体、输入、选项、工具、历史滚动区、历史控件、拖拽层、蓝线和 resize 手柄可命中。
+1. 只有可见本体、输入、选项、工具、历史滚动区、历史控件、拖拽层和 resize 手柄可命中。
 2. 透明包裹层必须穿透。
 3. 关闭态、空态、未加载态不能留下透明但吃事件的大矩形。
 4. 历史气泡之间、气泡左右留白等非对话透明区应尽量 passthrough，尤其是桌面端。
@@ -249,7 +252,7 @@ Surface island 包含：
 2. ChoicePrompt / GalGame 选项应在历史层上方。
 3. 工具转轮在输入器上方。
 4. 历史拖拽视觉层在 history/source 之上，但不应污染普通命中。
-5. 蓝线在 surface 本体上方，但不能扩大成大命中面。
+5. 旧蓝线不再参与层级；本体拖拽命中不能扩大成大透明面。
 
 ## Compact Ball Island
 
@@ -260,7 +263,7 @@ Ball island 包含最小化小球视觉与点击区域。
 1. ball 基于模型 bounds 位于模型左侧。
 2. ball 使用 viewport/workArea clamp，不能出屏。
 3. 没有模型 bounds 时才使用 fallback，并视为降级路径。
-4. ball 不随蓝线拖拽移动。
+4. ball 不随 compact surface 本体拖拽移动。
 5. ball 不读取 compact surface localStorage。
 6. ball 不参与 surface bounds 计算。
 7. 桌面端优先由独立 ball window 承载，不和 surface 之间生成大透明命中区域。
@@ -288,9 +291,8 @@ Compact Interaction Geometry 是紧凑态的根合同。所有可见、可点、
 4. `history`
 5. `historyHandle`
 6. `toolFan`
-7. `dragHandle`
-8. `resizeHandle`
-9. `ball`
+7. `resizeHandle`
+8. `ball`
 
 规则：
 
@@ -299,7 +301,7 @@ Compact Interaction Geometry 是紧凑态的根合同。所有可见、可点、
 3. surface 和 ball 之间不能通过一个大透明矩形相连。
 4. 子组件允许视觉浮出父 DOM，但浮出的可见区域必须注册进 geometry。
 5. 新增 compact 浮层时，同步补 DOM 身份、geometry item、hit 策略、native bounds 和验证项。
-6. `resizeHandle` / `dragHandle` 这类 aria-hidden 控件只有在 collector 明确允许时才能进入 geometry。
+6. `resizeHandle` 这类 aria-hidden 控件只有在 collector 明确允许时才能进入 geometry；旧 `dragHandle` 不再进入 geometry。
 
 ### 页面 Geometry 来源
 
@@ -446,7 +448,7 @@ Compact 当前文字是“当前轮轻提示”，不是完整历史记录、字
 5. 桌面端 compact resize / relayout 只影响 compact carrier，不再维护 full 模式窗口快照。
 6. 从 minimized 恢复 compact 时，必须恢复 compact bounds、shape、ignore-mouse-events、external ball 和 resizable 状态。
 7. Windows 展开 fallback 需要真实 resizable style toggle，不能把 `setResizable(false)` 到 `setResizable(false)` 当成 cache busting。
-8. Native Wayland compact drag handle 应保留原生 drag 策略，不走不可用的全局 cursor/window polling。
+8. Native Wayland compact 对话框本体拖拽应保留原生 drag 策略，不走不可用的全局 cursor/window polling。
 9. ReactChat 紧凑窗口必须保持在模型上方，并由 window manager / top coordinator 维护层级。
 
 ## 修改指导
@@ -480,7 +482,7 @@ Compact 当前文字是“当前轮轻提示”，不是完整历史记录、字
 3. 修改 ball 时，确认：
    - 只看模型 bounds。
    - 不读 surface position。
-   - 不被蓝线拖拽影响。
+   - 不被 compact surface 本体拖拽影响。
 4. 修改选项层时，确认：
    - 不塞回胶囊。
    - 下方不足能转到上方。
@@ -540,7 +542,7 @@ Surface：
 命中：
 
 1. compact 周围透明区域不挡后方内容点击。
-2. 可见胶囊、输入、选项、工具、历史、拖拽层、蓝线和 resize 手柄都能稳定点击。
+2. 可见胶囊、输入、选项、工具、历史、拖拽层和 resize 手柄都能稳定点击。
 3. 选项/历史关闭后不留透明命中区。
 4. 桌面端 BrowserWindow bounds / setShape / passthrough 与页面 geometry 一致。
 
@@ -589,23 +591,23 @@ Surface：
 3. 模型移动不会强行覆盖用户保存的 surface 位置。
 4. compact window 在模型上方。
 5. 从 minimized 恢复 compact 后窗口 bounds、shape、resizable 和 ball 状态恢复正确。
-6. Native Wayland 拖拽仍使用可工作的原生拖拽路径。
+6. Native Wayland 对话框本体拖拽仍使用可工作的原生拖拽路径。
 
 ## 禁止方案
 
 1. 禁止用 `HEAD` 覆盖当前工作区紧凑态改动。
-2. 禁止删除 `.compact-chat-drag-handle` 或 `data-compact-drag-handle="true"` 链路。
+2. 禁止恢复 `.compact-chat-drag-handle` 或 `data-compact-drag-handle="true"` 作为 compact 主拖拽入口；同时禁止误删历史显隐按钮和桌面壳折叠球链路。
 3. 禁止把 compact 背景加到 `#react-chat-window-shell` 这类外层透明窗口壳上。
 4. 禁止把 ball 固定到视口左下角当作模型左侧定位。
 5. 禁止让 compact surface 的持久化位置影响 ball 位置。
 6. 禁止让 ball 和 surface 共用一个大透明矩形作为桌面端最终方案。
-7. 禁止用全局粗暴 `pointer-events: none` 破坏输入、选项、工具、蓝线、历史或 ball。
+7. 禁止用全局粗暴 `pointer-events: none` 破坏输入、选项、工具、历史、历史显隐按钮或 ball。
 8. 禁止只给 textarea 加固定高度就宣称解决输入态撑高。
 9. 禁止只提高局部 `z-index` 就宣称解决模型上方层级问题。
 10. 禁止把 GalGame / ChoicePrompt 选项塞回胶囊内部来绕过裁切。
 11. 禁止选项或历史关闭后仍保留透明命中区域。
 12. 禁止为未来功能预留透明但吃事件的大空区域。
-13. 禁止让历史滚动误触发蓝线拖拽。
+13. 禁止让历史滚动误触发 compact surface 本体拖拽。
 14. 禁止让历史、选项或工具层参与 ball 定位。
 15. 禁止让视觉浮层依赖未登记的 `overflow: visible` 逃逸父容器。
 16. 禁止把 NEKO-PC 的实现限制反向改成网页端产品目标。

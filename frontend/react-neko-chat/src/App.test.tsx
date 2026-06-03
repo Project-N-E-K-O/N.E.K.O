@@ -148,26 +148,32 @@ describe('App', () => {
     expect(compactStage).toHaveAttribute('data-compact-chat-state', 'input');
   });
 
-  it('renders a compact drag handle in compact input and voice capsule states only', () => {
+  it('declares compact drag surface and no-drag controls in compact states only', () => {
     const { container, rerender } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
 
-    expect(container.querySelector('.compact-chat-surface-shell .compact-chat-drag-handle')).not.toBeNull();
+    expect(container.querySelector('.compact-chat-surface-shell .compact-chat-drag-handle')).toBeNull();
     expect(container.querySelectorAll('.compact-chat-surface-shell .compact-chat-resize-handle')).toHaveLength(2);
     expect(container.querySelector('.compact-chat-surface-shell')).not.toHaveAttribute('data-compact-geometry-item');
     expect(container.querySelector('[data-compact-geometry-part="inputBody"]')).toHaveAttribute('data-compact-geometry-item', 'input');
     expect(container.querySelector('[data-compact-geometry-part="inputBody"]')).toHaveAttribute('data-compact-geometry-owner', 'surface');
-    expect(container.querySelector('[data-compact-geometry-item="dragHandle"]')).toHaveAttribute('data-compact-geometry-owner', 'surface');
+    expect(container.querySelector('[data-compact-drag-surface="true"]')).toHaveAttribute('data-compact-geometry-owner', 'surface');
+    expect(container.querySelector('[data-compact-geometry-item="dragHandle"]')).toBeNull();
+    expect(container.querySelector('.composer-input')).toHaveAttribute('data-compact-no-drag', 'true');
+    expect(container.querySelector('.compact-input-tool-toggle')).toHaveAttribute('data-compact-no-drag', 'true');
     expect(container.querySelector('[data-compact-resize-side="left"]')).toHaveAttribute('data-compact-geometry-item', 'resizeHandle');
+    expect(container.querySelector('[data-compact-resize-side="left"]')).toHaveAttribute('data-compact-no-drag', 'true');
     expect(container.querySelector('[data-compact-resize-side="right"]')).toHaveAttribute('data-compact-geometry-item', 'resizeHandle');
+    expect(container.querySelector('[data-compact-resize-side="right"]')).toHaveAttribute('data-compact-no-drag', 'true');
     const stableSurfaceShell = container.querySelector('.compact-chat-surface-shell');
     const stableSurfaceFrame = container.querySelector('.compact-chat-surface-frame');
 
     rerender(<App chatSurfaceMode="compact" compactChatState="input" composerHidden />);
-    expect(container.querySelector('.compact-chat-surface-shell .compact-chat-drag-handle')).not.toBeNull();
+    expect(container.querySelector('.compact-chat-surface-shell .compact-chat-drag-handle')).toBeNull();
     expect(container.querySelectorAll('.compact-chat-surface-shell .compact-chat-resize-handle')).toHaveLength(2);
     expect(container.querySelector('.compact-chat-surface-shell')).not.toHaveAttribute('data-compact-geometry-item');
     expect(container.querySelector('[data-compact-geometry-part="capsuleBody"]')).toHaveAttribute('data-compact-geometry-item', 'capsule');
     expect(container.querySelector('[data-compact-geometry-part="capsuleBody"]')).toHaveAttribute('data-compact-geometry-owner', 'surface');
+    expect(container.querySelector('[data-compact-drag-surface="true"]')).toHaveAttribute('data-compact-geometry-part', 'capsuleBody');
     expect(container.querySelector('.compact-chat-surface-shell')).toBe(stableSurfaceShell);
     expect(container.querySelector('.compact-chat-surface-frame')).toBe(stableSurfaceFrame);
 
@@ -3643,6 +3649,7 @@ describe('App', () => {
       // A quick tap (press + release) toggles the hover-opened fan shut.
       fireEvent.pointerDown(actionButton, { pointerId: 8, button: 0, buttons: 1, pointerType: 'mouse' });
       fireEvent.pointerUp(actionButton, { pointerId: 8, button: 0, pointerType: 'mouse' });
+      fireEvent.click(actionButton);
       fireEvent.pointerLeave(actionButton, { clientX: 96, clientY: 96, pointerType: 'mouse' });
 
       await act(async () => {
@@ -3656,25 +3663,17 @@ describe('App', () => {
     }
   });
 
-  it('opens compact input tools on a primary pointer tap without requesting a drag', () => {
-    const dragRequests: Event[] = [];
-    const onDragRequest = (event: Event) => dragRequests.push(event);
-    window.addEventListener('neko:compact-surface-drag-request', onDragRequest);
-    try {
-      render(<App chatSurfaceMode="compact" compactChatState="input" />);
+  it('opens compact input tools on a primary pointer tap', () => {
+    render(<App chatSurfaceMode="compact" compactChatState="input" />);
 
-      const actionButton = screen.getByRole('button', { name: '更多工具' });
-      const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
-      // The fan now opens on release (deferred), so a press alone keeps it shut.
-      fireEvent.pointerDown(actionButton, { pointerId: 9, button: 0, buttons: 1, pointerType: 'mouse' });
-      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+    const actionButton = screen.getByRole('button', { name: '更多工具' });
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    fireEvent.pointerDown(actionButton, { pointerId: 9, button: 0, buttons: 1, pointerType: 'mouse' });
+    expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
 
-      fireEvent.pointerUp(actionButton, { pointerId: 9, button: 0, pointerType: 'mouse' });
-      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
-      expect(dragRequests).toHaveLength(0);
-    } finally {
-      window.removeEventListener('neko:compact-surface-drag-request', onDragRequest);
-    }
+    fireEvent.pointerUp(actionButton, { pointerId: 9, button: 0, pointerType: 'mouse' });
+    fireEvent.click(actionButton);
+    expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
   });
 
   it('keeps compact tool actions disabled until the fan finishes opening', async () => {
@@ -3692,6 +3691,7 @@ describe('App', () => {
       const toggle = screen.getByRole('button', { name: '更多工具' });
       fireEvent.pointerDown(toggle, { pointerId: 9, button: 0, buttons: 1, pointerType: 'mouse' });
       fireEvent.pointerUp(toggle, { pointerId: 9, button: 0, pointerType: 'mouse' });
+      fireEvent.click(toggle);
       const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
       const importButton = fan.querySelector('.compact-input-tool-item-import') as HTMLButtonElement;
 
@@ -3951,6 +3951,8 @@ describe('App', () => {
 
       expect(avatarTool.querySelector('#composer-tool-popover-compact')).toBeNull();
       expect(fan.querySelector(':scope > #composer-tool-popover-compact')).not.toBeNull();
+      expect(avatarTool).toHaveAttribute('data-compact-tool-active', 'true');
+      expect(emojiButton).toHaveClass('is-active');
 
       fireEvent.click(screen.getByRole('button', { name: '棒棒糖' }));
 
@@ -4545,6 +4547,7 @@ describe('App', () => {
     const tapToggle = (pointerId: number) => {
       fireEvent.pointerDown(actionButton, { pointerId, button: 0, buttons: 1, pointerType: 'mouse' });
       fireEvent.pointerUp(actionButton, { pointerId, button: 0, pointerType: 'mouse' });
+      fireEvent.click(actionButton);
     };
 
     tapToggle(21);
@@ -4555,88 +4558,6 @@ describe('App', () => {
 
     tapToggle(23);
     expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
-  });
-
-  it('requests a surface drag on a long-press of the tool toggle without opening the fan', async () => {
-    vi.useFakeTimers();
-    const dragRequests: CustomEvent[] = [];
-    const onDragRequest = (event: Event) => dragRequests.push(event as CustomEvent);
-    window.addEventListener('neko:compact-surface-drag-request', onDragRequest);
-    try {
-      render(<App chatSurfaceMode="compact" compactChatState="input" />);
-
-      const actionButton = document.body.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
-      const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
-
-      fireEvent.pointerDown(actionButton, {
-        pointerId: 31,
-        button: 0,
-        buttons: 1,
-        pointerType: 'mouse',
-        clientX: 100,
-        clientY: 50,
-        screenX: 512,
-        screenY: 360,
-      });
-      expect(dragRequests).toHaveLength(0);
-      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
-
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(320);
-      });
-
-      expect(dragRequests).toHaveLength(1);
-      expect(dragRequests[0].detail).toMatchObject({ screenX: 512, screenY: 360 });
-      // The wheel stays shut so the surface drag starts clean.
-      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
-
-      // Releasing after the hold must not toggle the wheel back open.
-      fireEvent.pointerUp(actionButton, { pointerId: 31, button: 0, pointerType: 'mouse' });
-      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
-    } finally {
-      window.removeEventListener('neko:compact-surface-drag-request', onDragRequest);
-      vi.useRealTimers();
-    }
-  });
-
-  it('cancels the tool toggle tap and drag when the pointer moves before the hold fires', async () => {
-    vi.useFakeTimers();
-    const dragRequests: Event[] = [];
-    const onDragRequest = (event: Event) => dragRequests.push(event);
-    window.addEventListener('neko:compact-surface-drag-request', onDragRequest);
-    try {
-      render(<App chatSurfaceMode="compact" compactChatState="input" />);
-
-      const actionButton = document.body.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
-      const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
-
-      // Touch never hover-opens the fan, so this isolates the gesture itself.
-      fireEvent.pointerDown(actionButton, {
-        pointerId: 41,
-        buttons: 1,
-        pointerType: 'touch',
-        clientX: 100,
-        clientY: 50,
-      });
-      fireEvent.pointerMove(actionButton, {
-        pointerId: 41,
-        buttons: 1,
-        pointerType: 'touch',
-        clientX: 130,
-        clientY: 50,
-      });
-
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(400);
-      });
-      fireEvent.pointerUp(actionButton, { pointerId: 41, pointerType: 'touch' });
-
-      expect(dragRequests).toHaveLength(0);
-      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
-    } finally {
-      window.removeEventListener('neko:compact-surface-drag-request', onDragRequest);
-      vi.useRealTimers();
-    }
   });
 
   it('signals fan-open solid state to the desktop shell on open and close', () => {
@@ -4651,6 +4572,7 @@ describe('App', () => {
       const tapToggle = (pointerId: number) => {
         fireEvent.pointerDown(actionButton, { pointerId, button: 0, buttons: 1, pointerType: 'mouse' });
         fireEvent.pointerUp(actionButton, { pointerId, button: 0, pointerType: 'mouse' });
+        fireEvent.click(actionButton);
       };
 
       tapToggle(51);
@@ -4662,59 +4584,6 @@ describe('App', () => {
       expect(openStates[openStates.length - 1]).toBe(false);
     } finally {
       window.removeEventListener('neko:compact-tool-fan-open-state-change', onOpenState);
-    }
-  });
-
-  it('focuses the input on a quick tap of an input-box edge band', () => {
-    render(<App chatSurfaceMode="compact" compactChatState="input" />);
-    const band = document.body.querySelector('.compact-input-edge-band-left') as HTMLElement;
-    const input = document.body.querySelector('.composer-input') as HTMLTextAreaElement;
-    expect(band).not.toBeNull();
-    // Drop the auto-focus so the tap is what re-focuses.
-    act(() => { input.blur(); });
-    expect(input).not.toHaveFocus();
-
-    fireEvent.pointerDown(band, { pointerId: 61, button: 0, buttons: 1, pointerType: 'mouse', clientX: 10, clientY: 27 });
-    fireEvent.pointerUp(band, { pointerId: 61, button: 0, pointerType: 'mouse' });
-
-    expect(input).toHaveFocus();
-  });
-
-  it('requests a surface drag on a long-press of an input-box edge band without focusing the input', async () => {
-    vi.useFakeTimers();
-    const dragRequests: CustomEvent[] = [];
-    const onDragRequest = (event: Event) => dragRequests.push(event as CustomEvent);
-    window.addEventListener('neko:compact-surface-drag-request', onDragRequest);
-    try {
-      render(<App chatSurfaceMode="compact" compactChatState="input" />);
-      const band = document.body.querySelector('.compact-input-edge-band-left') as HTMLElement;
-      const input = document.body.querySelector('.composer-input') as HTMLTextAreaElement;
-      act(() => { input.blur(); });
-
-      fireEvent.pointerDown(band, {
-        pointerId: 62,
-        button: 0,
-        buttons: 1,
-        pointerType: 'mouse',
-        clientX: 10,
-        clientY: 27,
-        screenX: 300,
-        screenY: 500,
-      });
-      expect(dragRequests).toHaveLength(0);
-
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(320);
-      });
-      expect(dragRequests).toHaveLength(1);
-      expect(dragRequests[0].detail).toMatchObject({ screenX: 300, screenY: 500 });
-
-      fireEvent.pointerUp(band, { pointerId: 62, button: 0, pointerType: 'mouse' });
-      // A long-press is a drag, not a tap — it must not focus the input.
-      expect(input).not.toHaveFocus();
-    } finally {
-      window.removeEventListener('neko:compact-surface-drag-request', onDragRequest);
-      vi.useRealTimers();
     }
   });
 
