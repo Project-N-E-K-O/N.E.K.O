@@ -1943,7 +1943,47 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 
 .compact-chat-surface-frame[data-compact-chat-state="input"] {
   gap: 0;
-  padding: 5px 62px 5px 20px;
+  padding: 5px 62px 5px 10px;
+}
+
+/* 输入态左侧拖拽把手：给一处稳定可抓的「移动文本框」区域。
+   textarea / 工具按钮是 no-drag，本握把不加 no-drag，于是属于 surface 本体拖拽区
+   （web/X11 命中判定 + Wayland 原生 -webkit-app-region:drag 都覆盖到）。
+   静息低透明、hover 提亮，沿用与左右 resize 手柄一致的「平时低调、靠近才显形」手感。 */
+.compact-chat-surface-frame[data-compact-chat-state="input"] .compact-chat-input-drag-grip {
+  flex: 0 0 12px;
+  align-self: stretch;
+  margin-right: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  touch-action: none;
+  color: #2f526b;
+}
+
+.compact-chat-input-drag-grip::before {
+  content: "";
+  width: 4px;
+  height: 18px;
+  background-image: radial-gradient(currentcolor 0.9px, transparent 1.3px);
+  background-size: 4px 6px;
+  background-position: center;
+  opacity: 0.22;
+  transition: opacity 0.15s ease;
+}
+
+.compact-chat-surface-shell:hover .compact-chat-input-drag-grip::before,
+.compact-chat-input-drag-grip:active::before {
+  opacity: 0.5;
+}
+
+.compact-chat-input-drag-grip:active {
+  cursor: grabbing;
+}
+
+[data-theme="dark"] .compact-chat-surface-frame[data-compact-chat-state="input"] .compact-chat-input-drag-grip {
+  color: #e9f4ff;
 }
 
 .compact-chat-surface-frame[data-compact-tool-toggle-visible="true"]:not([data-compact-chat-state="input"]) {
@@ -1976,57 +2016,6 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 .compact-chat-surface-frame > * {
   position: relative;
   z-index: 2;
-}
-
-/* Input-box edge bands: the rim defers interaction to release — a quick tap
-   focuses the input, a long-press drags the whole surface. Left/right are wide
-   grips (40px); top/bottom are thin (5px) since the box is only 54px tall. The
-   container has no pointer surface, so the uncovered center keeps native
-   press-to-type + caret placement. Sits above the textarea (z-index 2) but
-   below the arrow toggle (z-index 5), which keeps its own gesture. */
-.compact-chat-surface-frame > .compact-input-edge-bands {
-  position: absolute;
-  inset: 0;
-  z-index: 3;
-  pointer-events: none;
-  border-radius: inherit;
-}
-
-.compact-input-edge-band {
-  position: absolute;
-  pointer-events: auto;
-  background: transparent;
-  cursor: text;
-  touch-action: none;
-  -webkit-app-region: no-drag;
-}
-
-.compact-input-edge-band-left {
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 40px;
-}
-
-.compact-input-edge-band-right {
-  top: 0;
-  bottom: 0;
-  right: 0;
-  width: 40px;
-}
-
-.compact-input-edge-band-top {
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 5px;
-}
-
-.compact-input-edge-band-bottom {
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 5px;
 }
 
 .compact-chat-capsule-button {
@@ -2092,70 +2081,6 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   background: transparent;
   border-color: transparent;
   box-shadow: none;
-}
-
-.compact-chat-drag-handle {
-  position: absolute;
-  top: 0;
-  left: 50%;
-  width: 88px;
-  height: 16px;
-  background: none;
-  border: 0;
-  cursor: grab;
-  opacity: 0;
-  pointer-events: auto;
-  transform: translateX(-50%);
-  transition: opacity 0.16s ease, transform 0.16s ease;
-  z-index: 8;
-}
-
-.compact-chat-drag-handle::before {
-  content: "";
-  position: absolute;
-  pointer-events: none;
-  top: 50%;
-  left: 50%;
-  width: 38px;
-  height: 3px;
-  background: linear-gradient(
-    90deg,
-    rgba(0, 184, 255, 0) 0%,
-    rgba(0, 184, 255, 0.72) 18%,
-    rgba(0, 196, 255, 0.88) 50%,
-    rgba(0, 184, 255, 0.72) 82%,
-    rgba(0, 184, 255, 0) 100%
-  );
-  border-radius: 999px;
-  clip-path: polygon(0 50%, 11% 0, 89% 0, 100% 50%, 89% 100%, 11% 100%);
-  transform: translate(-50%, -50%);
-  transition: width 0.16s ease, background 0.16s ease, opacity 0.16s ease;
-}
-
-.compact-chat-surface-shell:hover > .compact-chat-drag-handle,
-.compact-chat-drag-handle:hover,
-.compact-chat-drag-handle:active {
-  opacity: 1;
-}
-
-.compact-chat-drag-handle:hover {
-  transform: translateX(-50%);
-}
-
-.compact-chat-drag-handle:hover::before {
-  width: 44px;
-  background: linear-gradient(
-    90deg,
-    rgba(0, 196, 255, 0) 0%,
-    rgba(0, 196, 255, 0.82) 18%,
-    rgba(0, 210, 255, 0.96) 50%,
-    rgba(0, 196, 255, 0.82) 82%,
-    rgba(0, 196, 255, 0) 100%
-  );
-}
-
-.compact-chat-drag-handle:active {
-  cursor: grabbing;
 }
 
 .compact-chat-resize-handle {
@@ -2274,6 +2199,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   height: calc(var(--compact-export-history-region-height) + var(--compact-export-controls-collapse-delta));
   max-height: calc(var(--compact-export-history-region-height) + var(--compact-export-controls-collapse-delta));
   min-height: 0;
+  overflow-anchor: none;
   overflow-y: auto;
   overflow-x: visible;
   overscroll-behavior: contain;
@@ -2293,6 +2219,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   flex-direction: column;
   gap: 0;
   min-height: 100%;
+  overflow-anchor: none;
   pointer-events: none;
 }
 
@@ -2339,6 +2266,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   display: flex;
   width: 100%;
   min-width: 0;
+  --compact-history-motion-x: 46px;
   margin-top: var(--compact-history-gap-before, 8px);
   border: 0;
   background: transparent;
@@ -2350,12 +2278,49 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   -webkit-app-region: no-drag;
 }
 
+.compact-export-history-anchor[data-compact-export-history-visibility="closing"] .compact-export-history-message {
+  pointer-events: none;
+}
+
+.compact-export-history-anchor[data-compact-export-history-visibility="closing"] .compact-export-history-controls,
+.compact-export-history-anchor[data-compact-export-history-visibility="closing"] .compact-export-preview-region {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+@keyframes compact-history-message-enter {
+  from {
+    opacity: 0;
+    translate: var(--compact-history-motion-x) 0;
+  }
+
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
+}
+
+@keyframes compact-history-message-exit {
+  from {
+    opacity: 1;
+    translate: 0 0;
+  }
+
+  to {
+    opacity: 0;
+    translate: var(--compact-history-motion-x) 0;
+  }
+}
+
 .compact-export-history-message.is-user {
+  --compact-history-motion-x: -46px;
   justify-content: flex-end;
 }
 
 .compact-export-history-message.is-assistant,
 .compact-export-history-message.is-system {
+  --compact-history-motion-x: 46px;
   justify-content: flex-start;
 }
 
@@ -2410,6 +2375,17 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   transform-origin: var(--compact-history-drag-origin-x, 50%) var(--compact-history-drag-origin-y, 50%);
   transform: translateX(var(--compact-history-stagger-x, 0px)) rotate(var(--compact-history-rotate, 0deg));
   transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+}
+
+.compact-export-history-anchor[data-compact-export-history-visibility="open"] .compact-export-history-message:not([data-compact-history-drag-phase]) .compact-export-history-bubble {
+  animation: compact-history-message-enter 0.26s cubic-bezier(0.2, 0.78, 0.34, 1) both;
+  animation-delay: var(--compact-history-enter-delay, 0ms);
+}
+
+.compact-export-history-anchor[data-compact-export-history-visibility="closing"] .compact-export-history-bubble {
+  animation: compact-history-message-exit 0.2s ease-in both;
+  animation-delay: var(--compact-history-exit-delay, 0ms);
+  pointer-events: none;
 }
 
 .compact-export-history-message.is-disabled .compact-export-history-bubble {
@@ -2829,9 +2805,9 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 .compact-history-visibility-handle {
   position: fixed;
   left: calc(var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw)) + (var(--compact-history-handle-surface-width) / 2));
-  top: calc(var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) - 2px);
+  top: calc(var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) + 8px);
   bottom: auto;
-  transform: translateX(-50%);
+  transform: translate(-50%, -50%);
   z-index: 100002;
   pointer-events: auto;
   -webkit-app-region: no-drag;
@@ -2851,6 +2827,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 .compact-history-visibility-handle::before {
   left: 50%;
+  z-index: 1;
   width: var(--compact-history-handle-line-width);
   height: 3px;
   background: linear-gradient(
@@ -2862,17 +2839,68 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
     rgba(0, 184, 255, 0) 100%
   );
   clip-path: polygon(0 50%, 18% 26%, 36% 0, 64% 0, 82% 26%, 100% 50%, 82% 74%, 64% 100%, 36% 100%, 18% 74%);
+  filter:
+    drop-shadow(0 0 4px rgba(118, 220, 255, 0.4))
+    drop-shadow(0 0 9px rgba(118, 220, 255, 0.2));
+  opacity: 0.92;
   transform: translate(-50%, -50%);
+  animation: compact-history-handle-breathe 2.35s ease-in-out infinite;
   transition: width 0.16s ease, background 0.16s ease;
 }
 
 .compact-history-visibility-handle::after {
-  display: none;
+  left: 50%;
+  z-index: 0;
+  width: var(--compact-history-handle-line-width);
+  height: 8px;
+  background: linear-gradient(
+    90deg,
+    rgba(116, 220, 255, 0) 0%,
+    rgba(116, 220, 255, 0.22) 22%,
+    rgba(154, 232, 255, 0.5) 50%,
+    rgba(116, 220, 255, 0.22) 78%,
+    rgba(116, 220, 255, 0) 100%
+  );
+  filter: blur(3px);
+  opacity: 0.42;
+  transform: translate(-50%, -50%) scaleX(1.16);
+  animation: compact-history-handle-glow-breathe 2.35s ease-in-out infinite;
+  transition: width 0.16s ease, opacity 0.16s ease;
 }
 
 .compact-history-visibility-handle:hover {
   background: transparent;
   color: rgba(0, 210, 255, 0.96);
+}
+
+@keyframes compact-history-handle-breathe {
+  0%,
+  100% {
+    opacity: 0.72;
+    filter:
+      drop-shadow(0 0 3px rgba(118, 220, 255, 0.28))
+      drop-shadow(0 0 7px rgba(118, 220, 255, 0.12));
+  }
+
+  50% {
+    opacity: 1;
+    filter:
+      drop-shadow(0 0 7px rgba(118, 220, 255, 0.72))
+      drop-shadow(0 0 16px rgba(118, 220, 255, 0.36));
+  }
+}
+
+@keyframes compact-history-handle-glow-breathe {
+  0%,
+  100% {
+    opacity: 0.28;
+    transform: translate(-50%, -50%) scaleX(1.08);
+  }
+
+  50% {
+    opacity: 0.64;
+    transform: translate(-50%, -50%) scaleX(1.18);
+  }
 }
 
 .compact-history-visibility-handle-triangle {
@@ -3332,10 +3360,11 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   --compact-tool-fan-hit-outset: 52px;
   --compact-tool-wheel-hover-radius: 116px;
   /* Orbit radius = how far the tool icons sit from the arrow center (visual
-     only). Halved from the original 91.92px to pull the wheel in tighter. The
-     drag-rotate sensitivity scalar in App.tsx is intentionally left at 91.92 so
-     rotate-by-drag feel is unchanged. */
-  --compact-tool-wheel-orbit-radius: 45.96px;
+     only). 45.96px (a straight halving of the original 91.92px) packed the icons
+     in too tight, so it's dialed back to 80px. The drag-rotate sensitivity
+     scalar in App.tsx is intentionally left at 91.92 so rotate-by-drag feel is
+     unchanged. */
+  --compact-tool-wheel-orbit-radius: 80px;
   --compact-tool-fan-focus-x: var(--compact-tool-wheel-hover-radius);
   --compact-tool-fan-focus-y: var(--compact-tool-wheel-hover-radius);
   --compact-tool-wheel-center-x: var(--compact-tool-wheel-hover-radius);
@@ -3448,10 +3477,6 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
     );
 }
 
-.compact-chat-drag-handle {
-  -webkit-app-region: no-drag;
-}
-
 .compact-input-tool-fan .compact-input-tool-item {
   position: absolute;
   left: 0;
@@ -3503,6 +3528,18 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 .compact-input-tool-fan .compact-input-tool-item > .composer-tool-btn {
   position: relative;
   z-index: 2;
+}
+
+.compact-input-tool-fan .compact-input-tool-item-avatar > .composer-emoji-btn,
+.compact-input-tool-fan .compact-input-tool-item-avatar > .composer-emoji-btn:hover,
+.compact-input-tool-fan .compact-input-tool-item-avatar > .composer-emoji-btn.is-active {
+  background: transparent;
+  border-radius: 999px;
+}
+
+.compact-input-tool-fan .compact-input-tool-item-avatar > .composer-emoji-btn:disabled {
+  opacity: 1;
+  cursor: inherit;
 }
 
 .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] {
@@ -4013,6 +4050,12 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   background: rgba(68, 183, 254, 0.26);
 }
 
+[data-theme="dark"] .compact-input-tool-fan .compact-input-tool-item-avatar > .composer-emoji-btn,
+[data-theme="dark"] .compact-input-tool-fan .compact-input-tool-item-avatar > .composer-emoji-btn:hover,
+[data-theme="dark"] .compact-input-tool-fan .compact-input-tool-item-avatar > .composer-emoji-btn.is-active {
+  background: transparent;
+}
+
 [data-theme="dark"] .composer-tool-clear-btn {
   border-color: rgba(28, 28, 46, 0.92);
   box-shadow: 0 2px 7px rgba(0, 0, 0, 0.44);
@@ -4280,7 +4323,14 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 [data-theme="dark"] .compact-history-visibility-handle::after {
-  display: none;
+  background: linear-gradient(
+    90deg,
+    rgba(116, 220, 255, 0) 0%,
+    rgba(116, 220, 255, 0.24) 22%,
+    rgba(164, 236, 255, 0.54) 50%,
+    rgba(116, 220, 255, 0.24) 78%,
+    rgba(116, 220, 255, 0) 100%
+  );
 }
 
 [data-theme="dark"] .compact-export-history-empty {
@@ -4341,6 +4391,11 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 
 @media (prefers-reduced-motion: reduce) {
+  .compact-export-history-anchor[data-compact-export-history-visibility="closing"] {
+    opacity: 0 !important;
+    visibility: hidden !important;
+  }
+
   .avatar-cursor-overlay-stage,
   .hammer-cursor-overlay-stage,
   .fist-floating-drop,
@@ -4350,6 +4405,10 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   .hammer-cursor-overlay-visual.is-active,
   .message-row-user,
   .message-row-assistant,
+  .compact-export-history-message,
+  .compact-export-history-bubble,
+  .compact-history-visibility-handle::before,
+  .compact-history-visibility-handle::after,
   .text-chunk-reveal,
   .composer-icon-popover,
   .composer-icon-button,

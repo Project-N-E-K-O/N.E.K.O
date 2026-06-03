@@ -253,12 +253,14 @@ import PackageResultPanel from '@/components/plugin/PackageResultPanel.vue'
 import PluginSelectorPanel from '@/components/plugin/PluginSelectorPanel.vue'
 import { usePackageManager } from '@/composables/usePackageManager'
 
-withDefaults(
+const props = withDefaults(
   defineProps<{
     embedded?: boolean
+    externalSelectedPluginIds?: readonly string[]
   }>(),
   {
     embedded: false,
+    externalSelectedPluginIds: undefined,
   },
 )
 
@@ -319,7 +321,9 @@ const {
   handleVerify,
   handleInstall,
   handleAnalyze,
-} = usePackageManager()
+} = usePackageManager({
+  externalSelectedPluginIds: () => props.externalSelectedPluginIds,
+})
 </script>
 
 <style scoped>

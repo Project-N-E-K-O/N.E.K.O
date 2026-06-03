@@ -174,8 +174,9 @@
                 var idleTime = Date.now() - S.screenCaptureStreamLastUsed;
                 if (idleTime >= IDLE_TIMEOUT) {
                     // 主动视觉活跃时，不释放屏幕流（避免 macOS 反复弹窗 getDisplayMedia）
-                    var proactiveVisionActive = S.proactiveVisionEnabled ||
-                        (S.proactiveVisionChatEnabled && S.proactiveChatEnabled);
+                    var proactiveVisionActive = S.proactiveVisionEnabled && (
+                        S.isRecording || (S.proactiveVisionChatEnabled && S.proactiveChatEnabled)
+                    );
                     var isManualScreenShare = screenButton() && screenButton().classList.contains('active');
                     if (proactiveVisionActive && !isManualScreenShare) {
                         console.log('[屏幕流闲置] 主动视觉活跃中，跳过释放并续约定时器');
@@ -994,8 +995,9 @@
         stopScreening();
 
         // 判断主动视觉是否活跃
-        var proactiveVisionActive = S.proactiveVisionEnabled ||
-            (S.proactiveVisionChatEnabled && S.proactiveChatEnabled);
+        var proactiveVisionActive = S.proactiveVisionEnabled && (
+            S.isRecording || (S.proactiveVisionChatEnabled && S.proactiveChatEnabled)
+        );
 
         // 条件释放流
         if (forceRelease || !proactiveVisionActive) {
@@ -1032,7 +1034,6 @@
             screenButton().disabled = false;
             stopButton().disabled = true;
             resetSessionButton().disabled = false;
-            window.showStatusToast(window.t ? window.t('app.speaking') : '正在语音...', 2000);
 
             // 移除active类
             screenButton().classList.remove('active');

@@ -8,6 +8,8 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from plugin.neko_plugin_cli.public import pack_plugin
+from plugin.server.application.plugin_cli.service import PluginCliService
+from plugin.server.domain.errors import ServerDomainError
 from plugin.server.infrastructure.exceptions import register_exception_handlers
 from plugin.server.routes.plugin_cli import router
 from plugin.server.routes import plugin_cli as plugin_cli_routes
@@ -60,6 +62,22 @@ def _write_vendor_dist(plugin_dir: Path, name: str, version: str) -> None:
         f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n",
         encoding="utf-8",
     )
+
+
+def _patch_plugin_cli_settings(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    builtin_root: Path,
+    user_root: Path | None = None,
+    packages_root: Path | None = None,
+    profiles_root: Path | None = None,
+) -> None:
+    import plugin.settings as plugin_settings
+
+    monkeypatch.setattr(plugin_settings, "BUILTIN_PLUGIN_CONFIG_ROOT", builtin_root)
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_CONFIG_ROOT", user_root or builtin_root)
+    monkeypatch.setattr(plugin_settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root or builtin_root)
+    monkeypatch.setattr(plugin_settings, "USER_PACKAGE_PROFILES_ROOT", profiles_root or (builtin_root / "profiles"))
 
 
 class _MemoryUploadFile:
@@ -121,10 +139,7 @@ async def test_plugin_cli_inspect_and_verify_routes(
     plugin_dir = _make_plugin_dir(tmp_path)
     package_path = tmp_path / "route_demo.neko-plugin"
     pack_plugin(plugin_dir, package_path)
-
-    import plugin.server.application.plugin_cli.service as plugin_cli_service_module
-
-    monkeypatch.setattr(plugin_cli_service_module, "_TARGET_ROOT", tmp_path)
+    _patch_plugin_cli_settings(monkeypatch, builtin_root=tmp_path, packages_root=tmp_path)
 
     transport = ASGITransport(app=plugin_cli_test_app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -149,7 +164,12 @@ async def test_plugin_cli_inspect_and_verify_routes(
 @pytest.mark.asyncio
 async def test_plugin_cli_list_plugins_route_returns_shape(
     plugin_cli_test_app: FastAPI,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _make_plugin_dir(tmp_path, plugin_id="route_list_demo")
+    _patch_plugin_cli_settings(monkeypatch, builtin_root=tmp_path, packages_root=tmp_path)
+
     transport = ASGITransport(app=plugin_cli_test_app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
         response = await client.get("/plugin-cli/plugins")
@@ -159,6 +179,146 @@ async def test_plugin_cli_list_plugins_route_returns_shape(
         assert "plugins" in body
         assert "count" in body
         assert isinstance(body["plugins"], list)
+        assert body["plugins"] == ["route_list_demo"]
+        assert body["plugin_refs"] == [
+            {
+                "root_id": "builtin",
+                "directory_name": "route_list_demo",
+                "plugin_id": "route_list_demo",
+                "label": "builtin/route_list_demo",
+            }
+        ]
+
+
+@pytest.mark.asyncio
+async def test_plugin_cli_build_single_legacy_string_resolves_user_root_when_builtin_empty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    steam_builtin_root = tmp_path / "steam" / "steamapps" / "common" / "NEKO" / "resources" / "plugin" / "plugins"
+    user_root = tmp_path / "documents" / "Neko" / "plugins"
+    packages_root = tmp_path / "documents" / "Neko" / "packages"
+    steam_builtin_root.mkdir(parents=True)
+    user_root.mkdir(parents=True)
+    packages_root.mkdir(parents=True)
+    _make_plugin_dir(user_root, plugin_id="neko_minecraft")
+    _patch_plugin_cli_settings(
+        monkeypatch,
+        builtin_root=steam_builtin_root,
+        user_root=user_root,
+        packages_root=packages_root,
+    )
+
+    body = await PluginCliService().build(mode="single", plugin="neko_minecraft")
+
+    assert body["ok"] is True
+    assert body["built_count"] == 1
+    built = body["built"][0]
+    assert built["plugin_id"] == "neko_minecraft"
+    assert Path(built["package_path"]).is_relative_to(packages_root.resolve())
+
+
+@pytest.mark.asyncio
+async def test_plugin_cli_build_all_includes_builtin_and_user_in_stable_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builtin_root = tmp_path / "builtin"
+    user_root = tmp_path / "user"
+    packages_root = tmp_path / "packages"
+    _make_plugin_dir(builtin_root, plugin_id="builtin_z")
+    _make_plugin_dir(builtin_root, plugin_id="builtin_a")
+    _make_plugin_dir(user_root, plugin_id="user_a")
+    _patch_plugin_cli_settings(
+        monkeypatch,
+        builtin_root=builtin_root,
+        user_root=user_root,
+        packages_root=packages_root,
+    )
+
+    body = await PluginCliService().build(mode="all")
+
+    assert body["ok"] is True
+    assert [item["plugin_id"] for item in body["built"]] == [
+        "builtin_a",
+        "builtin_z",
+        "user_a",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_plugin_cli_build_single_plugin_ref_routes_to_exact_user_plugin(
+    plugin_cli_test_app: FastAPI,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builtin_root = tmp_path / "builtin"
+    user_root = tmp_path / "user"
+    packages_root = tmp_path / "packages"
+    _make_plugin_dir(builtin_root, plugin_id="shared")
+    shared_user = user_root / "shared"
+    shared_user.mkdir(parents=True, exist_ok=True)
+    (shared_user / "plugin.toml").write_text(
+        "\n".join(
+            [
+                "[plugin]",
+                'id = "shared_user"',
+                'name = "Shared User"',
+                'version = "0.0.1"',
+                'type = "plugin"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    _patch_plugin_cli_settings(
+        monkeypatch,
+        builtin_root=builtin_root,
+        user_root=user_root,
+        packages_root=packages_root,
+    )
+
+    transport = ASGITransport(app=plugin_cli_test_app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.post(
+            "/plugin-cli/build",
+            json={
+                "mode": "single",
+                "plugin_ref": {"root_id": "user", "directory_name": "shared"},
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["built"][0]["plugin_id"] == "shared_user"
+
+
+@pytest.mark.asyncio
+async def test_plugin_cli_build_rejects_target_dir_outside_package_artifacts_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builtin_root = tmp_path / "builtin"
+    packages_root = tmp_path / "packages"
+    outside_root = tmp_path / "outside"
+    _make_plugin_dir(builtin_root, plugin_id="route_outside_demo")
+    _patch_plugin_cli_settings(
+        monkeypatch,
+        builtin_root=builtin_root,
+        packages_root=packages_root,
+    )
+
+    with pytest.raises(ServerDomainError) as info:
+        await PluginCliService().build(
+            mode="single",
+            plugin="route_outside_demo",
+            target_dir=str(outside_root),
+        )
+
+    assert info.value.status_code == 400
+    assert not list(outside_root.glob("*.neko-plugin"))
+    assert not list(packages_root.glob("*.neko-plugin"))
 
 
 @pytest.mark.asyncio
@@ -170,10 +330,7 @@ async def test_plugin_cli_list_packages_route_returns_target_packages(
     plugin_dir = _make_plugin_dir(tmp_path, plugin_id="route_pkg_demo")
     package_path = tmp_path / "route_pkg_demo.neko-plugin"
     pack_plugin(plugin_dir, package_path)
-
-    import plugin.server.application.plugin_cli.service as plugin_cli_service_module
-
-    monkeypatch.setattr(plugin_cli_service_module, "_TARGET_ROOT", tmp_path)
+    _patch_plugin_cli_settings(monkeypatch, builtin_root=tmp_path, packages_root=tmp_path)
 
     transport = ASGITransport(app=plugin_cli_test_app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -195,11 +352,7 @@ async def test_plugin_cli_pack_bundle_route_uses_mode_payload(
     _make_plugin_dir(tmp_path, plugin_id="route_bundle_one")
     _make_plugin_dir(tmp_path, plugin_id="route_bundle_two")
     target_dir = tmp_path / "target"
-
-    import plugin.server.application.plugin_cli.service as plugin_cli_service_module
-
-    monkeypatch.setattr(plugin_cli_service_module, "_RUNTIME_PLUGINS_ROOT", tmp_path)
-    monkeypatch.setattr(plugin_cli_service_module, "_TARGET_ROOT", tmp_path)
+    _patch_plugin_cli_settings(monkeypatch, builtin_root=tmp_path, packages_root=tmp_path)
 
     transport = ASGITransport(app=plugin_cli_test_app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -232,13 +385,13 @@ async def test_plugin_cli_route_workflow_pack_analyze_inspect_verify_and_unpack(
     target_dir = tmp_path / "target"
     plugins_root = tmp_path / "runtime_plugins"
     profiles_root = tmp_path / "runtime_profiles"
-
-    import plugin.server.application.plugin_cli.service as plugin_cli_service_module
-
-    monkeypatch.setattr(plugin_cli_service_module, "_RUNTIME_PLUGINS_ROOT", tmp_path)
-    monkeypatch.setattr(plugin_cli_service_module, "_TARGET_ROOT", target_dir)
-    monkeypatch.setattr(plugin_cli_service_module, "_INSTALL_PLUGINS_ROOT", tmp_path)
-    monkeypatch.setattr(plugin_cli_service_module, "_INSTALL_PROFILES_ROOT", profiles_root)
+    _patch_plugin_cli_settings(
+        monkeypatch,
+        builtin_root=tmp_path,
+        user_root=tmp_path,
+        packages_root=tmp_path,
+        profiles_root=profiles_root,
+    )
 
     transport = ASGITransport(app=plugin_cli_test_app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -327,12 +480,13 @@ async def test_plugin_cli_unpack_route_uses_default_roots_when_fields_omitted(
 
     default_plugins_root = tmp_path / "default_user_plugins"
     default_profiles_root = tmp_path / "default_user_profiles"
-
-    import plugin.server.application.plugin_cli.service as plugin_cli_service_module
-
-    monkeypatch.setattr(plugin_cli_service_module, "_TARGET_ROOT", tmp_path)
-    monkeypatch.setattr(plugin_cli_service_module, "_INSTALL_PLUGINS_ROOT", default_plugins_root)
-    monkeypatch.setattr(plugin_cli_service_module, "_INSTALL_PROFILES_ROOT", default_profiles_root)
+    _patch_plugin_cli_settings(
+        monkeypatch,
+        builtin_root=tmp_path,
+        user_root=default_plugins_root,
+        packages_root=tmp_path,
+        profiles_root=default_profiles_root,
+    )
 
     transport = ASGITransport(app=plugin_cli_test_app)
     async with AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -345,3 +499,44 @@ async def test_plugin_cli_unpack_route_uses_default_roots_when_fields_omitted(
         body = response.json()
         assert body["plugins_root"] == str(default_plugins_root.resolve())
         assert (default_plugins_root / "simple_plugin" / "plugin.toml").is_file()
+
+
+@pytest.mark.asyncio
+async def test_plugin_cli_upload_and_install_failure_cleans_staging_and_saved_package(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    package_source_root = tmp_path / "package_source"
+    user_root = tmp_path / "user_plugins"
+    profiles_root = tmp_path / "profiles"
+    packages_root = tmp_path / "packages"
+    plugin_dir = _make_plugin_dir(source_root, plugin_id="simple_plugin")
+    package_source_root.mkdir(parents=True, exist_ok=True)
+    package_path = package_source_root / "simple_plugin.neko-plugin"
+    pack_plugin(plugin_dir, package_path)
+    existing_target = user_root / "simple_plugin"
+    existing_target.mkdir(parents=True, exist_ok=True)
+    (existing_target / "plugin.toml").write_text(
+        '[plugin]\nid = "simple_plugin"\n',
+        encoding="utf-8",
+    )
+    _patch_plugin_cli_settings(
+        monkeypatch,
+        builtin_root=tmp_path / "builtin",
+        user_root=user_root,
+        packages_root=packages_root,
+        profiles_root=profiles_root,
+    )
+
+    with pytest.raises(ServerDomainError):
+        await PluginCliService().upload_and_install(
+            filename="simple_plugin.neko-plugin",
+            package_path=str(package_path),
+            on_conflict="fail",
+        )
+
+    assert (existing_target / "plugin.toml").is_file()
+    assert not list(user_root.glob(".neko_staging_*"))
+    assert not list(profiles_root.glob(".neko_staging_*"))
+    assert not list(packages_root.glob("*.neko-plugin"))
