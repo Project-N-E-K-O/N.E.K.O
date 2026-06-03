@@ -1766,30 +1766,6 @@ class PluginContext:
         except TimeoutError as e:
             raise TimeoutError(f"System config get timed out after {timeout}s") from e
 
-    async def get_activity_snapshot(
-        self,
-        *,
-        lanlan_name: Optional[str] = None,
-        include_enrichment: bool = False,
-        timeout: float = 5.0,
-    ) -> Dict[str, Any]:
-        try:
-            return await self._send_request_and_wait_async(
-                method_name="get_activity_snapshot",
-                request_type="ACTIVITY_SNAPSHOT_GET",
-                request_data={
-                    "lanlan_name": lanlan_name,
-                    "include_enrichment": bool(include_enrichment),
-                },
-                timeout=timeout,
-                wrap_result=True,
-                error_log_template=None,
-            )
-        except TimeoutError as e:
-            raise TimeoutError(
-                f"Activity snapshot get timed out after {timeout}s"
-            ) from e
-
     def query_memory_sync(self, lanlan_name: str, query: str, timeout: float = 5.0) -> Dict[str, Any]:
         """同步版本:查询内存数据"""
         try:

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+
 from dataclasses import replace
 import json
-from types import SimpleNamespace
+
 import time
 from typing import Any
 
@@ -75,48 +75,9 @@ class _AwarenessRunnerMixin:
             return max(base, 15.0)
         return base
 
-    @staticmethod
-    def _activity_snapshot_from_host_payload(payload: object):
-        if not isinstance(payload, Mapping) or not bool(payload.get("available")):
-            return None
-        active_window = payload.get("active_window")
-        window_obj = (
-            SimpleNamespace(**dict(active_window))
-            if isinstance(active_window, Mapping)
-            else None
-        )
-        try:
-            idle_seconds = float(payload.get("system_idle_seconds") or 0.0)
-        except (TypeError, ValueError, OverflowError):
-            idle_seconds = 0.0
-        return SimpleNamespace(
-            state=str(payload.get("state") or ""),
-            active_window=window_obj,
-            system_idle_seconds=idle_seconds,
-            os_signals_available=bool(payload.get("os_signals_available")),
-            source=str(payload.get("source") or "host_activity_tracker"),
-        )
-
     async def _read_awareness_activity_snapshot(self, *, now: float):
         if not self._cfg.awareness.os_signals_enabled:
             return None
-
-        host_getter = getattr(self.ctx, "get_activity_snapshot", None)
-        if callable(host_getter):
-            try:
-                payload = await host_getter(
-                    lanlan_name=getattr(self.ctx, "_current_lanlan", None),
-                    include_enrichment=False,
-                    timeout=2.0,
-                )
-                host_snap = self._activity_snapshot_from_host_payload(payload)
-                if host_snap is not None:
-                    return host_snap
-            except Exception:
-                self.logger.warning(
-                    "study awareness host activity snapshot failed",
-                    exc_info=True,
-                )
 
         tracker = getattr(self, "_activity_tracker", None)
         if tracker is None:

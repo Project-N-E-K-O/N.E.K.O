@@ -1,15 +1,9 @@
 from __future__ import annotations
 
 
-from types import SimpleNamespace
-
 import pytest
 
 from plugin.server.domain.errors import ServerDomainError
-from plugin.server.application.messages import (
-    activity_snapshot_service as activity_snapshot_service_module,
-)
-from plugin.server.messaging.handlers import activity_snapshot as activity_snapshot_module
 from plugin.server.messaging.handlers import events as events_module
 from plugin.server.messaging.handlers import export as export_module
 from plugin.server.messaging.handlers import lifecycle as lifecycle_module
@@ -90,119 +84,6 @@ async def test_system_config_and_memory_handlers(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(memory_module.memory_query_service, "query_memory", _fail_memory)
     await memory_module.handle_memory_query({"from_plugin": "p", "request_id": "4"}, send)
     assert send.calls[-1][3] == "Internal server error"
-
-
-@pytest.mark.plugin_unit
-@pytest.mark.asyncio
-async def test_activity_snapshot_service_uses_host_tracker_rule_only(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class _Tracker:
-        def __init__(self, *, private: bool = False) -> None:
-            self.private = private
-            self.calls: list[dict[str, object]] = []
-
-        async def get_snapshot(self, **kwargs):
-            self.calls.append(dict(kwargs))
-            if self.private:
-                return SimpleNamespace(
-                    state="private",
-                    propensity="closed",
-                    os_signals_available=True,
-                    system_idle_seconds=1.0,
-                    active_window=SimpleNamespace(
-                        category="private",
-                        subcategory="wallet",
-                        canonical="Secret Wallet",
-                        is_browser=False,
-                        title="Secret Wallet - account",
-                        process_name="wallet.exe",
-                    ),
-                )
-            return SimpleNamespace(
-                state="focused_work",
-                propensity="restricted_screen_only",
-                os_signals_available=True,
-                system_idle_seconds=7.0,
-                active_window=SimpleNamespace(
-                    category="gaming",
-                    subcategory="game",
-                    canonical="Game",
-                    is_browser=False,
-                ),
-            )
-
-    tracker = _Tracker()
-    monkeypatch.setattr(
-        activity_snapshot_service_module,
-        "get_session_manager",
-        lambda: {"Mika": SimpleNamespace(_activity_tracker=tracker)},
-    )
-
-    payload = await activity_snapshot_service_module.ActivitySnapshotService().get_activity_snapshot(
-        lanlan_name="Mika",
-    )
-
-    assert tracker.calls == [
-        {"include_enrichment": False, "tick_followups": False}
-    ]
-    assert payload["available"] is True
-    assert payload["source"] == "host_activity_tracker"
-    assert payload["lanlan_name"] == "Mika"
-    assert payload["state"] == "focused_work"
-    assert payload["active_window"] == {
-        "category": "gaming",
-        "subcategory": "game",
-        "canonical": "Game",
-        "is_browser": False,
-    }
-
-    private_tracker = _Tracker(private=True)
-    monkeypatch.setattr(
-        activity_snapshot_service_module,
-        "get_session_manager",
-        lambda: {"Mika": SimpleNamespace(_activity_tracker=private_tracker)},
-    )
-    private_payload = (
-        await activity_snapshot_service_module.ActivitySnapshotService().get_activity_snapshot(
-            lanlan_name="Mika",
-        )
-    )
-
-    assert private_payload["state"] == "private"
-    assert private_payload["active_window"] == {
-        "category": "private",
-        "subcategory": None,
-        "canonical": "[private]",
-        "is_browser": False,
-    }
-
-
-@pytest.mark.plugin_unit
-@pytest.mark.asyncio
-async def test_activity_snapshot_handler(monkeypatch: pytest.MonkeyPatch) -> None:
-    send = _Recorder()
-
-    async def _get_activity_snapshot(**kwargs) -> dict[str, object]:
-        return {"available": True, "lanlan_name": kwargs.get("lanlan_name") or ""}
-
-    monkeypatch.setattr(
-        activity_snapshot_module.activity_snapshot_service,
-        "get_activity_snapshot",
-        _get_activity_snapshot,
-    )
-    await activity_snapshot_module.handle_activity_snapshot_get(
-        {
-            "from_plugin": "p",
-            "request_id": "1",
-            "lanlan_name": "Mika",
-            "include_enrichment": False,
-        },
-        send,
-    )
-
-    assert send.calls[-1][2] == {"available": True, "lanlan_name": "Mika"}
-    assert send.calls[-1][3] is None
 
 
 @pytest.mark.plugin_unit
@@ -292,7 +173,6 @@ def test_registry_build_request_handlers_and_messages_module() -> None:
         "PLUGIN_QUERY",
         "PLUGIN_CONFIG_GET",
         "PLUGIN_SYSTEM_CONFIG_GET",
-        "ACTIVITY_SNAPSHOT_GET",
         "MEMORY_QUERY",
         "USER_CONTEXT_GET",
         "EXPORT_PUSH",

@@ -34,7 +34,6 @@ _SDK_CONTEXT_METHOD_NAMES = (
     "query_plugins",
     "trigger_plugin_event",
     "get_system_config",
-    "get_activity_snapshot",
     "query_memory",
     "run_update",
     "export_push",
@@ -82,14 +81,6 @@ class _HostContextProtocol(Protocol):
     async def trigger_plugin_event(self, **kwargs: object) -> object: ...
 
     async def get_system_config(self, timeout: float = 5.0) -> object: ...
-
-    async def get_activity_snapshot(
-        self,
-        *,
-        lanlan_name: str | None = None,
-        include_enrichment: bool = False,
-        timeout: float = 5.0,
-    ) -> object: ...
 
     async def query_memory(self, bucket_id: str, query: str, timeout: float = 5.0) -> object: ...
 
@@ -216,11 +207,6 @@ class SdkContext:
         return value if isinstance(value, dict) else {}
 
     @property
-    def _current_lanlan(self) -> str | None:
-        value = getattr(self._host_ctx, "_current_lanlan", None)
-        return str(value).strip() if value else None
-
-    @property
     def bus(self) -> SdkBusContext | None:
         cached = self._bus_ctx
         if cached is not _UNSET:
@@ -275,19 +261,6 @@ class SdkContext:
 
     async def get_system_config(self, timeout: float = 5.0) -> object:
         return await self._host_ctx.get_system_config(timeout=timeout)
-
-    async def get_activity_snapshot(
-        self,
-        *,
-        lanlan_name: str | None = None,
-        include_enrichment: bool = False,
-        timeout: float = 5.0,
-    ) -> object:
-        return await self._host_ctx.get_activity_snapshot(
-            lanlan_name=lanlan_name,
-            include_enrichment=include_enrichment,
-            timeout=timeout,
-        )
 
     async def query_memory(self, bucket_id: str, query: str, timeout: float = 5.0) -> object:
         return await self._host_ctx.query_memory(bucket_id, query, timeout=timeout)

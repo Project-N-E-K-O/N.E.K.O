@@ -117,14 +117,6 @@ class PluginContextProtocol(Protocol):
 
     async def get_system_config(self, timeout: float = 5.0) -> object: ...
 
-    async def get_activity_snapshot(
-        self,
-        *,
-        lanlan_name: str | None = None,
-        include_enrichment: bool = False,
-        timeout: float = 5.0,
-    ) -> object: ...
-
     async def query_memory(self, bucket_id: str, query: str, timeout: float = 5.0) -> object: ...
 
     async def run_update(

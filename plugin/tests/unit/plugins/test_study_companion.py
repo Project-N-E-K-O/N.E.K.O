@@ -439,68 +439,6 @@ async def test_awareness_tick_uses_activity_tracker_foreground_category(
 
 
 @pytest.mark.asyncio
-async def test_awareness_tick_prefers_host_activity_snapshot(
-    tmp_path: Path,
-) -> None:
-    class _HostCtx(_Ctx):
-        def __init__(self, plugin_dir: Path, config: dict[str, object]) -> None:
-            super().__init__(plugin_dir, config)
-            self._current_lanlan = "Mika"
-            self.activity_snapshot_calls: list[dict[str, object]] = []
-
-        async def get_activity_snapshot(self, **kwargs):
-            self.activity_snapshot_calls.append(dict(kwargs))
-            return {
-                "available": True,
-                "source": "host_activity_tracker",
-                "lanlan_name": "Mika",
-                "state": "focused_work",
-                "os_signals_available": True,
-                "system_idle_seconds": 3.0,
-                "active_window": {
-                    "category": "gaming",
-                    "subcategory": "game",
-                    "canonical": "Game",
-                    "is_browser": False,
-                },
-            }
-
-    class _LocalTrackerShouldNotRun:
-        async def get_snapshot(self, **kwargs):
-            raise AssertionError("host activity snapshot should be preferred")
-
-    class _FakeAwarenessPipeline:
-        def capture_lightweight(self) -> LightweightSnapshot:
-            return LightweightSnapshot(
-                status="ok",
-                captured_at="2026-06-01T00:00:00Z",
-                window_title="Quiz - Google Chrome",
-                app_type="unknown",
-                activity_type="question",
-                ocr_text_snippet="Question: Why?",
-            )
-
-    ctx = _HostCtx(tmp_path, {"study": {"language": "en"}})
-    plugin = StudyCompanionPlugin(ctx)
-    plugin._cfg = StudyConfig(awareness=AwarenessConfig(push_to_llm_mode="blind"))
-    plugin._buffer = ActivityBuffer()
-    plugin._ocr_pipeline = _FakeAwarenessPipeline()
-    plugin._activity_tracker = _LocalTrackerShouldNotRun()
-
-    await plugin.awareness_tick()
-
-    summary = await plugin._buffer.summarize()
-    assert summary["current_app"] == "gaming"
-    assert ctx.activity_snapshot_calls == [
-        {
-            "lanlan_name": "Mika",
-            "include_enrichment": False,
-            "timeout": 2.0,
-        }
-    ]
-
-
-@pytest.mark.asyncio
 async def test_awareness_tick_ignores_unavailable_os_signals_for_supervision(
     tmp_path: Path,
 ) -> None:
