@@ -211,7 +211,7 @@
 
     function getImageFilesFromFileList(fileList) {
         return Array.from(fileList || []).filter(function (file) {
-            return file instanceof File && (/^image\//i.test(file.type || '') || isLikelyImageFile(file));
+            return file instanceof File && (file.type === '' || isLikelyImageFile(file));
         });
     }
 

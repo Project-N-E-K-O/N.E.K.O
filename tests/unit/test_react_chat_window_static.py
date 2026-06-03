@@ -919,7 +919,7 @@ def test_chat_image_file_drop_uses_import_pipeline_and_blocks_browser_navigation
     script = APP_BUTTONS_PATH.read_text(encoding="utf-8")
 
     assert "function getImageFilesFromFileList(fileList)" in script
-    assert "return file instanceof File && (/^image\\//i.test(file.type || '') || isLikelyImageFile(file));" in script
+    assert "return file instanceof File && (file.type === '' || isLikelyImageFile(file));" in script
     assert "!file.type ||" not in script
     assert "return /^files$/i.test(String(type || ''));" in script
     assert "mod.importImageFilesToPendingList = function importImageFilesToPendingList(files, options)" in script

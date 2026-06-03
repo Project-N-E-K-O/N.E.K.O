@@ -197,23 +197,42 @@ def test_import_image_without_mime_converts_to_jpeg_attachment(
     mock_page: Page,
     running_server: str,
 ):
-    _open_react_chat_page(mock_page, running_server)
-    _install_chat_send_harness(mock_page)
+    mock_page.add_init_script(
+        "window.localStorage.setItem('neko_tutorial_settings', 'seen')"
+    )
+    mock_page.goto(f"{running_server}/chat", wait_until="domcontentloaded")
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost"
+        " && window.appButtons"
+        " && typeof window.appButtons.importImageFilesToPendingList === 'function'"
+    )
+    mock_page.evaluate(
+        """() => {
+            window.showStatusToast = () => {};
+            if (typeof window.reactChatWindowHost.setComposerAttachments === 'function') {
+                window.reactChatWindowHost.setComposerAttachments([]);
+            }
+        }"""
+    )
 
     import_result = mock_page.evaluate(
         """async () => {
             const b64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO9Wj3sAAAAASUVORK5CYII=';
             const bytes = Uint8Array.from(atob(b64), (char) => char.charCodeAt(0));
             const file = new File([bytes], 'tiny-image', { type: '' });
-            await window.appButtons.importImageFileToPendingList(file);
+            const result = await window.appButtons.importImageFilesToPendingList([file]);
             const state = window.reactChatWindowHost.getState();
             return {
+                succeeded: result.succeeded,
+                failed: result.failed,
                 attachmentCount: state.composerAttachments.length,
                 attachmentUrl: state.composerAttachments[0] && state.composerAttachments[0].url
             };
         }"""
     )
 
+    assert import_result["succeeded"] == 1
+    assert import_result["failed"] == 0
     assert import_result["attachmentCount"] == 1
     attachment_url = import_result["attachmentUrl"]
     assert attachment_url.startswith("data:image/jpeg;base64,")
