@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
@@ -14,6 +15,7 @@ import {
   type AvatarToolId,
   type AvatarToolItem,
   sanitizeAvatarToolIds,
+  withAvatarToolAssetVersion,
 } from './avatarTools';
 
 type AvatarToolSlotValue = AvatarToolId | null;
@@ -161,6 +163,14 @@ function getViewportSize() {
   };
 }
 
+function isElectronDesktopEnvironment(): boolean {
+  return typeof window !== 'undefined' && !!(
+    (window as any).__LANLAN_IS_ELECTRON_PET__
+    || (typeof document !== 'undefined'
+      && document.body?.classList.contains('electron-chat-window'))
+  );
+}
+
 function getDialogSize(dialogElement: HTMLElement | null) {
   return {
     width: dialogElement?.offsetWidth || AVATAR_TOOL_MANAGER_FALLBACK_WIDTH,
@@ -189,7 +199,7 @@ function resolveAnchoredDialogPosition(
   dialogSize: { width: number; height: number },
 ) {
   const viewport = getViewportSize();
-  if (viewport.width <= 640 || !anchorRect) {
+  if ((!isElectronDesktopEnvironment() && viewport.width <= 640) || !anchorRect) {
     return null;
   }
 
@@ -255,7 +265,7 @@ export default function AvatarToolItemManager({
     if (!open || typeof window === 'undefined') return undefined;
     const handleResize = () => {
       setDialogPosition((position) => {
-        if (getViewportSize().width <= 640) return null;
+        if (!isElectronDesktopEnvironment() && getViewportSize().width <= 640) return null;
         if (!position) return position;
         return clampDialogPosition(position, getDialogSize(dialogRef.current));
       });
@@ -265,6 +275,25 @@ export default function AvatarToolItemManager({
       window.removeEventListener('resize', handleResize);
     };
   }, [open]);
+
+  const isPositioned = dialogPosition !== null;
+
+  useEffect(() => {
+    if (!open || typeof window === 'undefined') return undefined;
+    if (!isPositioned) {
+      (window as any).__nekoForceInteractive = true;
+      if ((window as any).nekoChatWindow?.enableInteraction) {
+        (window as any).nekoChatWindow.enableInteraction();
+      }
+      return () => {
+        (window as any).__nekoForceInteractive = false;
+      };
+    }
+    window.dispatchEvent(new CustomEvent('neko:compact-surface-resize-width-change'));
+    return () => {
+      window.dispatchEvent(new CustomEvent('neko:compact-surface-resize-width-change'));
+    };
+  }, [open, isPositioned]);
 
   useEffect(() => {
     if (!open || typeof document === 'undefined') return undefined;
@@ -489,6 +518,7 @@ export default function AvatarToolItemManager({
     return null;
   }
 
+  const isDesktopMode = dialogPosition !== null;
   const dragTool = dragSession ? availableById.get(dragSession.toolId) : null;
   const managerDragging = !!dialogDragSession?.active || !!dragSession?.active;
 
@@ -499,174 +529,195 @@ export default function AvatarToolItemManager({
     } as CSSProperties)
     : undefined;
 
-  return createPortal(
-    <div
-      className="avatar-tool-manager-overlay"
-      data-testid="avatar-tool-manager-overlay"
-      onClick={(event) => {
-        if (event.target === event.currentTarget) {
-          onCancel();
-        }
-      }}
+  const stopModelDrag = (event: ReactPointerEvent<HTMLElement> | ReactMouseEvent<HTMLElement>) => {
+    if (document.body.classList.contains('neko-model-dragging')) return;
+    event.stopPropagation();
+  };
+
+  const dialogElement = (
+    <section
+      className={`avatar-tool-manager-dialog${dialogPosition ? ' is-positioned' : ''}${managerDragging ? ' is-dragging' : ''}`}
+      ref={dialogRef}
+      style={dialogStyle}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={dialogTitleId}
+      aria-describedby={noticeId}
+      tabIndex={-1}
+      data-compact-geometry-owner="surface"
+      data-compact-geometry-item="avatarToolManager"
+      onPointerDown={stopModelDrag}
+      onMouseDown={stopModelDrag}
+      onClick={(event) => event.stopPropagation()}
     >
-      <section
-        className={`avatar-tool-manager-dialog${dialogPosition ? ' is-positioned' : ''}${managerDragging ? ' is-dragging' : ''}`}
-        ref={dialogRef}
-        style={dialogStyle}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={dialogTitleId}
-        aria-describedby={noticeId}
-        tabIndex={-1}
-        onClick={(event) => event.stopPropagation()}
+      <header
+        className="avatar-tool-manager-header"
+        onPointerDown={startDialogDrag}
+        onPointerMove={updateDialogDrag}
+        onPointerUp={finishDialogDrag}
+        onPointerCancel={cancelDialogDrag}
       >
-        <header
-          className="avatar-tool-manager-header"
-          onPointerDown={startDialogDrag}
-          onPointerMove={updateDialogDrag}
-          onPointerUp={finishDialogDrag}
-          onPointerCancel={cancelDialogDrag}
+        <div>
+          <h2 id={dialogTitleId}>{i18n('chat.avatarToolManagerTitle', 'Manage tools')}</h2>
+          <p>{i18n('chat.avatarToolManagerSubtitle', 'Choose up to 3 quick tools.')}</p>
+        </div>
+        <button
+          className="avatar-tool-manager-icon-button"
+          type="button"
+          ref={closeButtonRef}
+          aria-label={i18n('chat.avatarToolManagerClose', 'Close')}
+          title={i18n('chat.avatarToolManagerClose', 'Close')}
+          onClick={onCancel}
         >
-          <div>
-            <h2 id={dialogTitleId}>{i18n('chat.avatarToolManagerTitle', 'Manage tools')}</h2>
-            <p>{i18n('chat.avatarToolManagerSubtitle', 'Choose up to 3 quick tools.')}</p>
-          </div>
-          <button
-            className="avatar-tool-manager-icon-button"
-            type="button"
-            ref={closeButtonRef}
-            aria-label={i18n('chat.avatarToolManagerClose', 'Close')}
-            title={i18n('chat.avatarToolManagerClose', 'Close')}
-            onClick={onCancel}
-          >
-            <img src="/static/icons/close_button.png" alt="" aria-hidden="true" />
-          </button>
-        </header>
+          <img src="/static/icons/close_button.png" alt="" aria-hidden="true" />
+        </button>
+      </header>
 
-        <div className="avatar-tool-manager-body">
-          <section className="avatar-tool-manager-section" aria-label={i18n('chat.avatarToolCurrentTools', 'Current tools')}>
-            <h3>{i18n('chat.avatarToolCurrentTools', 'Current tools')}</h3>
-            <div className="avatar-tool-manager-slots">
-              {draftSlots.map((toolId, index) => {
-                const tool = toolId ? availableById.get(toolId) : null;
-                const label = tool ? getToolLabel(tool) : i18n('chat.avatarToolEmptySlot', 'Empty slot');
-                return (
-                  <div
-                    key={index}
-                    className={`avatar-tool-manager-slot${tool ? ' is-filled' : ' is-empty'}`}
-                    data-avatar-tool-drop-slot={index}
-                    data-avatar-tool-id={tool?.id ?? ''}
-                  >
-                    {tool ? (
-                      <button
-                        className="avatar-tool-manager-slot-card"
-                        type="button"
-                        data-avatar-tool-slot-index={index}
-                        onPointerDown={(event) => startDrag({ kind: 'slot', toolId: tool.id, slotIndex: index }, event)}
-                        onPointerMove={updateDrag}
-                        onPointerUp={finishDrag}
-                        onPointerCancel={cancelDrag}
-                      >
-                        <img
-                          className={`avatar-tool-manager-tool-image avatar-tool-icon avatar-tool-icon-${tool.id}`}
-                          src={tool.iconImagePath}
-                          alt=""
-                          aria-hidden="true"
-                        />
-                        <span>{label}</span>
-                      </button>
-                    ) : (
-                      <span className="avatar-tool-manager-empty-slot">{label}</span>
-                    )}
-                    {tool ? (
-                      <button
-                        className="avatar-tool-manager-remove"
-                        type="button"
-                        aria-label={`${i18n('chat.avatarToolRemove', 'Remove')} ${label}`}
-                        title={`${i18n('chat.avatarToolRemove', 'Remove')} ${label}`}
-                        onClick={() => handleRemoveSlot(index)}
-                      >
-                        {i18n('chat.avatarToolRemove', 'Remove')}
-                      </button>
-                    ) : null}
-                  </div>
-                );
-              })}
-            </div>
-          </section>
-
-          <section className="avatar-tool-manager-section" aria-label={i18n('chat.avatarToolLibrary', 'Tool library')}>
-            <h3>{i18n('chat.avatarToolLibrary', 'Tool library')}</h3>
-            {availableTools.length > 0 ? (
-              <div className="avatar-tool-manager-library">
-                {availableTools.map((tool) => {
-                  const label = getToolLabel(tool);
-                  const equipped = equippedIdSet.has(tool.id);
-                  return (
+      <div className="avatar-tool-manager-body">
+        <section className="avatar-tool-manager-section" aria-label={i18n('chat.avatarToolCurrentTools', 'Current tools')}>
+          <h3>{i18n('chat.avatarToolCurrentTools', 'Current tools')}</h3>
+          <div className="avatar-tool-manager-slots">
+            {draftSlots.map((toolId, index) => {
+              const tool = toolId ? availableById.get(toolId) : null;
+              const label = tool ? getToolLabel(tool) : i18n('chat.avatarToolEmptySlot', 'Empty slot');
+              return (
+                <div
+                  key={index}
+                  className={`avatar-tool-manager-slot${tool ? ' is-filled' : ' is-empty'}`}
+                  data-avatar-tool-drop-slot={index}
+                  data-avatar-tool-id={tool?.id ?? ''}
+                >
+                  {tool ? (
                     <button
-                      key={tool.id}
-                      className={`avatar-tool-manager-library-card${equipped ? ' is-equipped' : ''}`}
+                      className="avatar-tool-manager-slot-card"
                       type="button"
-                      aria-pressed={equipped}
-                      data-avatar-tool-library-id={tool.id}
-                      onClick={() => handleLibraryClick(tool.id)}
-                      onPointerDown={equipped ? undefined : (event) => startDrag({ kind: 'library', toolId: tool.id }, event)}
+                      data-avatar-tool-slot-index={index}
+                      onPointerDown={(event) => startDrag({ kind: 'slot', toolId: tool.id, slotIndex: index }, event)}
                       onPointerMove={updateDrag}
                       onPointerUp={finishDrag}
                       onPointerCancel={cancelDrag}
                     >
                       <img
                         className={`avatar-tool-manager-tool-image avatar-tool-icon avatar-tool-icon-${tool.id}`}
-                        src={tool.iconImagePath}
+                        src={withAvatarToolAssetVersion(tool.iconImagePath)}
                         alt=""
                         aria-hidden="true"
                       />
-                      <span className="avatar-tool-manager-library-label">{label}</span>
-                      <span className="avatar-tool-manager-library-status">
-                        {equipped
-                          ? i18n('chat.avatarToolEquipped', 'Equipped')
-                          : i18n('chat.avatarToolEquip', 'Equip')}
-                      </span>
+                      <span>{label}</span>
                     </button>
-                  );
-                })}
-              </div>
-            ) : (
-              <p className="avatar-tool-manager-empty-library">
-                {i18n('chat.avatarToolNoAvailableTools', 'No tools available')}
-              </p>
-            )}
-          </section>
-        </div>
-
-        {notice ? (
-          <p id="avatar-tool-manager-notice" className="avatar-tool-manager-notice" role="status">
-            {notice}
-          </p>
-        ) : null}
-
-        <footer className="avatar-tool-manager-actions">
-          <button className="avatar-tool-manager-action secondary" type="button" onClick={onCancel}>
-            {i18n('chat.avatarToolCancel', 'Cancel')}
-          </button>
-          <button className="avatar-tool-manager-action primary" type="button" onClick={handleSave}>
-            {i18n('chat.avatarToolSave', 'Save changes')}
-          </button>
-        </footer>
-
-        {dragSession?.active && dragTool ? (
-          <div
-            className="avatar-tool-manager-drag-ghost"
-            aria-hidden="true"
-            style={{
-              transform: `translate3d(${dragSession.currentX}px, ${dragSession.currentY}px, 0)`,
-            }}
-          >
-            <img className={`avatar-tool-icon avatar-tool-icon-${dragTool.id}`} src={dragTool.iconImagePath} alt="" />
+                  ) : (
+                    <span className="avatar-tool-manager-empty-slot">{label}</span>
+                  )}
+                  {tool ? (
+                    <button
+                      className="avatar-tool-manager-remove"
+                      type="button"
+                      aria-label={`${i18n('chat.avatarToolRemove', 'Remove')} ${label}`}
+                      title={`${i18n('chat.avatarToolRemove', 'Remove')} ${label}`}
+                      onClick={() => handleRemoveSlot(index)}
+                    >
+                      {i18n('chat.avatarToolRemove', 'Remove')}
+                    </button>
+                  ) : null}
+                </div>
+              );
+            })}
           </div>
-        ) : null}
-      </section>
-    </div>,
+        </section>
+
+        <section className="avatar-tool-manager-section" aria-label={i18n('chat.avatarToolLibrary', 'Tool library')}>
+          <h3>{i18n('chat.avatarToolLibrary', 'Tool library')}</h3>
+          {availableTools.length > 0 ? (
+            <div className="avatar-tool-manager-library">
+              {availableTools.map((tool) => {
+                const label = getToolLabel(tool);
+                const equipped = equippedIdSet.has(tool.id);
+                return (
+                  <button
+                    key={tool.id}
+                    className={`avatar-tool-manager-library-card${equipped ? ' is-equipped' : ''}`}
+                    type="button"
+                    aria-pressed={equipped}
+                    data-avatar-tool-library-id={tool.id}
+                    onClick={() => handleLibraryClick(tool.id)}
+                    onPointerDown={equipped ? undefined : (event) => startDrag({ kind: 'library', toolId: tool.id }, event)}
+                    onPointerMove={updateDrag}
+                    onPointerUp={finishDrag}
+                    onPointerCancel={cancelDrag}
+                  >
+                    <img
+                      className={`avatar-tool-manager-tool-image avatar-tool-icon avatar-tool-icon-${tool.id}`}
+                      src={withAvatarToolAssetVersion(tool.iconImagePath)}
+                      alt=""
+                      aria-hidden="true"
+                    />
+                    <span className="avatar-tool-manager-library-label">{label}</span>
+                    <span className="avatar-tool-manager-library-status">
+                      {equipped
+                        ? i18n('chat.avatarToolEquipped', 'Equipped')
+                        : i18n('chat.avatarToolEquip', 'Equip')}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="avatar-tool-manager-empty-library">
+              {i18n('chat.avatarToolNoAvailableTools', 'No tools available')}
+            </p>
+          )}
+        </section>
+      </div>
+
+      {notice ? (
+        <p id="avatar-tool-manager-notice" className="avatar-tool-manager-notice" role="status">
+          {notice}
+        </p>
+      ) : null}
+
+      <footer className="avatar-tool-manager-actions">
+        <button className="avatar-tool-manager-action secondary" type="button" onClick={onCancel}>
+          {i18n('chat.avatarToolCancel', 'Cancel')}
+        </button>
+        <button className="avatar-tool-manager-action primary" type="button" onClick={handleSave}>
+          {i18n('chat.avatarToolSave', 'Save changes')}
+        </button>
+      </footer>
+
+      {dragSession?.active && dragTool ? (
+        <div
+          className="avatar-tool-manager-drag-ghost"
+          aria-hidden="true"
+          style={{
+            transform: `translate3d(${dragSession.currentX}px, ${dragSession.currentY}px, 0)`,
+          }}
+        >
+          <img
+            className={`avatar-tool-icon avatar-tool-icon-${dragTool.id}`}
+            src={withAvatarToolAssetVersion(dragTool.iconImagePath)}
+            alt=""
+          />
+        </div>
+      ) : null}
+    </section>
+  );
+
+  return createPortal(
+    <>
+      <div
+        className={`avatar-tool-manager-overlay${isDesktopMode ? ' is-desktop' : ''}`}
+        data-testid="avatar-tool-manager-overlay"
+        onPointerDown={stopModelDrag}
+        onMouseDown={stopModelDrag}
+        onClick={(event) => {
+          event.stopPropagation();
+          if (event.target === event.currentTarget) {
+            onCancel();
+          }
+        }}
+      />
+      {dialogElement}
+    </>,
     document.body,
   );
 }

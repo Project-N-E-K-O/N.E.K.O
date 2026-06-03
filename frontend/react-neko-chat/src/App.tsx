@@ -42,6 +42,7 @@ import {
   readPersistedActiveAvatarToolIds,
   resolveAvatarToolImagePaths,
   sanitizeAvatarToolIds,
+  withAvatarToolAssetVersion,
   type AvatarToolId,
   type AvatarToolItem,
   type CursorVariant,
@@ -3761,12 +3762,20 @@ export default function App({
         ? {
           id: activeToolItem.id,
           label: getToolItemLabel(activeToolItem),
-          iconImagePath: activeToolItem.iconImagePath,
-          iconImagePathAlt: activeToolItem.iconImagePathAlt,
-          iconImagePathAlt2: activeToolItem.iconImagePathAlt2,
-          cursorImagePath: activeToolItem.cursorImagePath,
-          cursorImagePathAlt: activeToolItem.cursorImagePathAlt,
-          cursorImagePathAlt2: activeToolItem.cursorImagePathAlt2,
+          iconImagePath: withAvatarToolAssetVersion(activeToolItem.iconImagePath),
+          iconImagePathAlt: activeToolItem.iconImagePathAlt
+            ? withAvatarToolAssetVersion(activeToolItem.iconImagePathAlt)
+            : undefined,
+          iconImagePathAlt2: activeToolItem.iconImagePathAlt2
+            ? withAvatarToolAssetVersion(activeToolItem.iconImagePathAlt2)
+            : undefined,
+          cursorImagePath: withAvatarToolAssetVersion(activeToolItem.cursorImagePath),
+          cursorImagePathAlt: activeToolItem.cursorImagePathAlt
+            ? withAvatarToolAssetVersion(activeToolItem.cursorImagePathAlt)
+            : undefined,
+          cursorImagePathAlt2: activeToolItem.cursorImagePathAlt2
+            ? withAvatarToolAssetVersion(activeToolItem.cursorImagePathAlt2)
+            : undefined,
           cursorHotspotX: activeToolItem.cursorHotspotX,
           cursorHotspotY: activeToolItem.cursorHotspotY,
           menuIconScale: activeToolItem.menuIconScale,

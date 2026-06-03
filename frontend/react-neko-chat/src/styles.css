@@ -3938,8 +3938,16 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   -webkit-app-region: no-drag;
 }
 
+.avatar-tool-manager-overlay.is-desktop {
+  background: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  pointer-events: none;
+}
+
 .avatar-tool-manager-dialog {
-  position: relative;
+  position: fixed;
+  z-index: 100101;
   display: flex;
   flex-direction: column;
   width: min(380px, calc(100vw - 28px));
@@ -3957,6 +3965,13 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
     0 4px 16px rgba(33, 82, 114, 0.18),
     inset 0 1px 0 rgba(255, 255, 255, 0.92);
   overflow: hidden;
+  pointer-events: auto;
+}
+
+.avatar-tool-manager-dialog:not(.is-positioned) {
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
 }
 
 .avatar-tool-manager-dialog.is-positioned {
@@ -4980,6 +4995,10 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 [data-theme="dark"] .avatar-tool-manager-overlay {
   background: rgba(2, 8, 18, 0.34);
+}
+
+[data-theme="dark"] .avatar-tool-manager-overlay.is-desktop {
+  background: none;
 }
 
 [data-theme="dark"] .avatar-tool-manager-dialog {

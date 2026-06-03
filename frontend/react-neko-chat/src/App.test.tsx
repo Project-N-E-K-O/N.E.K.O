@@ -20,6 +20,8 @@ describe('App', () => {
     LOCAL_STORAGE_KEYS_TO_RESET.forEach(key => {
       window.localStorage.removeItem(key);
     });
+    delete window.__NEKO_REACT_CHAT_ASSET_VERSION__;
+    document.body.style.pointerEvents = '';
   });
 
   const openCompactInputTools = async () => {
@@ -4151,6 +4153,47 @@ describe('App', () => {
       Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth });
       Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalInnerHeight });
     }
+  });
+
+  it('adds the React chat asset version to compact avatar tool images when provided by the host template', async () => {
+    window.__NEKO_REACT_CHAT_ASSET_VERSION__ = 'asset 1';
+    const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+
+    await openCompactInputTools();
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+
+    const editButton = container.querySelector('.avatar-tool-quickbar-edit') as HTMLButtonElement;
+    const editImage = editButton?.querySelector('img');
+    const quickbarImage = container.querySelector('.avatar-tool-quickbar-image') as HTMLImageElement;
+    expect(editButton).not.toBeNull();
+    expect(editImage).toHaveAttribute('src', '/static/icons/edit_tool_unified.png?v=asset%201');
+    expect(quickbarImage).toHaveAttribute('src', '/static/icons/chat_sugar1.png?v=asset%201');
+
+    fireEvent.click(editButton);
+    const dialog = await screen.findByRole('dialog', { name: 'Manage tools' });
+    const managerImage = dialog.querySelector('.avatar-tool-manager-tool-image') as HTMLImageElement;
+    expect(managerImage).toHaveAttribute('src', '/static/icons/chat_sugar1.png?v=asset%201');
+  });
+
+  it('temporarily restores body pointer events while the avatar tool manager is open', async () => {
+    document.body.style.pointerEvents = 'none';
+    const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+
+    await openCompactInputTools();
+    fireEvent.click(screen.getByRole('button', { name: 'Avatar tools' }));
+
+    const editButton = container.querySelector('.avatar-tool-quickbar-edit') as HTMLButtonElement;
+    expect(editButton).not.toBeNull();
+    fireEvent.click(editButton);
+
+    expect(await screen.findByRole('dialog', { name: 'Manage tools' })).toBeInTheDocument();
+    expect(document.body.style.pointerEvents).toBe('auto');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Manage tools' })).toBeNull();
+      expect(document.body.style.pointerEvents).toBe('none');
+    });
   });
 
   it('keeps avatar tool manager focus trapped and restores focus to the edit button on close', async () => {

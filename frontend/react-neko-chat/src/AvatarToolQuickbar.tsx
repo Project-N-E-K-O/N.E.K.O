@@ -5,6 +5,7 @@ import {
   type AvatarToolItem,
   type CursorVariant,
   resolveAvatarToolMenuIconVisual,
+  withAvatarToolAssetVersion,
 } from './avatarTools';
 
 type AvatarToolQuickbarProps = {
@@ -85,7 +86,7 @@ export default function AvatarToolQuickbar({
       >
         <img
           className="avatar-tool-quickbar-edit-image"
-          src="/static/icons/edit_tool_unified.png"
+          src={withAvatarToolAssetVersion('/static/icons/edit_tool_unified.png')}
           alt=""
           aria-hidden="true"
         />

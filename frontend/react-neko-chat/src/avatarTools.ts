@@ -4,6 +4,12 @@ export type AvatarToolId = AvatarInteractionPayload['toolId'];
 
 export type CursorVariant = 'primary' | 'secondary' | 'tertiary';
 
+declare global {
+  interface Window {
+    __NEKO_REACT_CHAT_ASSET_VERSION__?: string;
+  }
+}
+
 export type AvatarToolItem = {
   id: AvatarToolId;
   labelKey: string;
@@ -74,6 +80,19 @@ export const AVAILABLE_AVATAR_TOOLS: AvatarToolItem[] = [
 
 const AVAILABLE_AVATAR_TOOL_IDS = new Set<AvatarToolId>(AVAILABLE_AVATAR_TOOLS.map(item => item.id));
 
+function getReactChatAssetVersion(): string {
+  if (typeof window === 'undefined') return '';
+  const version = window.__NEKO_REACT_CHAT_ASSET_VERSION__;
+  return typeof version === 'string' ? version.trim() : '';
+}
+
+export function withAvatarToolAssetVersion(path: string): string {
+  const version = getReactChatAssetVersion();
+  if (!version || !path) return path;
+  const separator = path.includes('?') ? '&' : '?';
+  return `${path}${separator}v=${encodeURIComponent(version)}`;
+}
+
 export function isAvatarToolId(value: unknown): value is AvatarToolId {
   return typeof value === 'string' && AVAILABLE_AVATAR_TOOL_IDS.has(value as AvatarToolId);
 }
@@ -122,19 +141,22 @@ export function persistActiveAvatarToolIds(ids: AvatarToolId[]) {
 }
 
 export function resolveAvatarToolImagePaths(item: AvatarToolItem, variant: CursorVariant) {
-  return {
-    iconImagePath: variant === 'tertiary' && item.iconImagePathAlt2
-      ? item.iconImagePathAlt2
-      : variant === 'secondary' && item.iconImagePathAlt
-        ? item.iconImagePathAlt
-        : item.iconImagePath,
-    cursorImagePath: variant === 'tertiary' && item.cursorImagePathAlt2
-      ? item.cursorImagePathAlt2
-      : variant === 'secondary' && item.cursorImagePathAlt
+  const iconImagePath = variant === 'tertiary' && item.iconImagePathAlt2
+    ? item.iconImagePathAlt2
+    : variant === 'secondary' && item.iconImagePathAlt
+      ? item.iconImagePathAlt
+      : item.iconImagePath;
+  const cursorImagePath = variant === 'tertiary' && item.cursorImagePathAlt2
+    ? item.cursorImagePathAlt2
+    : variant === 'secondary' && item.cursorImagePathAlt
+      ? item.cursorImagePathAlt
+      : variant === 'tertiary' && item.cursorImagePathAlt
         ? item.cursorImagePathAlt
-        : variant === 'tertiary' && item.cursorImagePathAlt
-          ? item.cursorImagePathAlt
-          : item.cursorImagePath,
+        : item.cursorImagePath;
+
+  return {
+    iconImagePath: withAvatarToolAssetVersion(iconImagePath),
+    cursorImagePath: withAvatarToolAssetVersion(cursorImagePath),
   };
 }
 
@@ -156,7 +178,7 @@ export function resolveAvatarToolMenuIconVisual(item: AvatarToolItem, variant: C
       : (item.menuIconOffsetY ?? 0);
 
   return {
-    imagePath,
+    imagePath: withAvatarToolAssetVersion(imagePath),
     offsetX,
     offsetY,
   };

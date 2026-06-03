@@ -43,7 +43,8 @@
     <link rel="stylesheet" href="/static/css/subtitle.css?v={{ static_asset_version }}">
     <style>/* React chat adapter: hide old chat */
     #chat-container { display: none !important; visibility: hidden !important; }</style>
-    <link rel="stylesheet" href="/static/react/neko-chat/neko-chat-window.css?v={{ static_asset_version }}">
+    <script>window.__NEKO_REACT_CHAT_ASSET_VERSION__={{ react_chat_asset_version | tojson }};</script>
+    <link rel="stylesheet" href="/static/react/neko-chat/neko-chat-window.css?v={{ react_chat_asset_version }}">
     <link rel="stylesheet" href="/static/css/avatar-reaction-bubble.css?v={{ static_asset_version }}">
     <!-- 暗色模式样式 -->
     <link rel="stylesheet" href="/static/css/dark-mode.css?v={{ static_asset_version }}">
@@ -372,7 +373,7 @@
     <script src="/static/app-chat-text-utils.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-chat.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-chat-avatar.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-chat-adapter.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-chat-adapter.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app-audio-playback.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-spatial-audio.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-audio-capture.js?v={{ static_asset_version }}"></script>
@@ -387,7 +388,7 @@
     <script src="/static/app-character.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-websocket.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-telemetry.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-buttons.js?v={{ static_asset_version }}"></script>
+    <script src="/static/app-buttons.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app-prompt-shared.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-autostart-provider.js?v={{ static_asset_version }}"></script>
     <script src="/static/app-tutorial-prompt.js?v={{ static_asset_version }}"></script>
@@ -395,8 +396,8 @@
     <script src="/static/app-autostart-prompt.js?v={{ static_asset_version }}"></script>
     <script src="/static/js/character_personality_onboarding.js?v={{ static_asset_version }}"></script>
     <script src="/static/app.js?v={{ static_asset_version }}"></script>
-    <script src="/static/react/neko-chat/neko-chat-window.iife.js?v={{ static_asset_version }}"></script>
-    <script src="/static/app-react-chat-window.js?v={{ static_asset_version }}"></script>
+    <script src="/static/react/neko-chat/neko-chat-window.iife.js?v={{ react_chat_asset_version }}"></script>
+    <script src="/static/app-react-chat-window.js?v={{ react_chat_asset_version }}"></script>
     <script src="/static/app-chat-export.js?v={{ static_asset_version }}"></script>
 
     <script src="/static/subtitle.js?v={{ static_asset_version }}"></script>

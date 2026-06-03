@@ -1275,6 +1275,7 @@
                 !root.contains(element)
                 && !element.classList.contains('compact-input-tool-fan')
                 && !element.classList.contains('compact-chat-choice-anchor')
+                && !element.classList.contains('avatar-tool-manager-dialog')
             ) return items;
             if (!shouldIncludeCompactGeometryElement(element)) return items;
             var compactGeometryItem = element.getAttribute('data-compact-geometry-item');
