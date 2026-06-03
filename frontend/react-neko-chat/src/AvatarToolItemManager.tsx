@@ -282,11 +282,15 @@ export default function AvatarToolItemManager({
     if (!open || typeof window === 'undefined') return undefined;
     if (!isPositioned) {
       (window as any).__nekoForceInteractive = true;
-      if ((window as any).nekoChatWindow?.enableInteraction) {
-        (window as any).nekoChatWindow.enableInteraction();
+      const prevPointerEvents = document.body.style.pointerEvents;
+      if (prevPointerEvents === 'none') {
+        document.body.style.pointerEvents = '';
       }
       return () => {
         (window as any).__nekoForceInteractive = false;
+        if (prevPointerEvents === 'none') {
+          document.body.style.pointerEvents = prevPointerEvents;
+        }
       };
     }
     window.dispatchEvent(new CustomEvent('neko:compact-surface-resize-width-change'));

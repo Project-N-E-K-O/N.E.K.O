@@ -556,6 +556,7 @@ const compactCursorZoneSelector = [
   '.compact-input-tool-toggle',
   '.avatar-tool-quickbar',
   '.avatar-tool-manager-overlay',
+  '.avatar-tool-manager-dialog',
   '.compact-export-history-anchor',
   '.compact-history-visibility-handle',
   '.send-button-circle',
