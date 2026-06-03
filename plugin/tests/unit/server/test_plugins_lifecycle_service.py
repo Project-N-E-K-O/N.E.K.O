@@ -292,6 +292,81 @@ async def test_start_plugin_refreshes_registry_before_loading(
 
 @pytest.mark.plugin_unit
 @pytest.mark.asyncio
+async def test_start_plugin_checks_python_requirements_against_vendor_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "vendor_adapter" / "plugin.toml"
+    vendor_dir = config_path.parent / "vendor"
+    vendor_dir.mkdir(parents=True)
+    config_path.write_text(
+        "\n".join(
+            [
+                "[plugin]",
+                "id = 'vendor_adapter'",
+                "name = 'Vendor Adapter'",
+                "type = 'adapter'",
+                "entry = 'tests.fake_mcp:FakeAdapterPlugin'",
+                "",
+                "[plugin_runtime]",
+                "enabled = true",
+                "auto_start = false",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (config_path.parent / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["demo-lib>=2"]\n',
+        encoding="utf-8",
+    )
+
+    seen: dict[str, object] = {}
+
+    def _fake_find_missing(requirements, *, search_paths=None):
+        seen["requirements"] = list(requirements)
+        seen["search_paths"] = list(search_paths or [])
+        return []
+
+    monkeypatch.setattr(module.plugin_registry_service, "refresh_plugin", lambda _plugin_id: {"success": True})
+    monkeypatch.setattr(module, "_get_plugin_config_path", lambda _plugin_id: config_path)
+    monkeypatch.setattr(
+        module,
+        "resolve_plugin_config_from_path",
+        lambda *args, **kwargs: {
+            "effective_config": kwargs["base_config"],
+            "warnings": [],
+        },
+    )
+    monkeypatch.setattr(module, "_resolve_plugin_id_conflict", lambda *args, **kwargs: args[0])
+    monkeypatch.setattr(module, "_find_missing_python_requirements", _fake_find_missing)
+    monkeypatch.setattr(module, "PluginProcessHost", _FakeProcessHost)
+    monkeypatch.setattr(module.importlib, "import_module", lambda _: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin))
+    monkeypatch.setattr(module, "emit_lifecycle_event", lambda event: None)
+
+    plugins_backup = copy.deepcopy(module.state.plugins)
+    hosts_backup = dict(module.state.plugin_hosts)
+    try:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+
+        response = await module.PluginLifecycleService().start_plugin("vendor_adapter", refresh_registry=False)
+
+        assert response["success"] is True
+        assert seen["requirements"] == ["demo-lib>=2"]
+        assert seen["search_paths"] == [vendor_dir]
+    finally:
+        with module.state.acquire_plugins_write_lock():
+            module.state.plugins.clear()
+            module.state.plugins.update(plugins_backup)
+        with module.state.acquire_plugin_hosts_write_lock():
+            module.state.plugin_hosts.clear()
+            module.state.plugin_hosts.update(hosts_backup)
+
+
+@pytest.mark.plugin_unit
+@pytest.mark.asyncio
 async def test_start_plugin_persists_entries_preview_and_invalidates_stale_caches(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

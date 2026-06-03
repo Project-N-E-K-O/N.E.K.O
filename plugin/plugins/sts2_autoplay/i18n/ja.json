@@ -1,7 +1,7 @@
 {
-  "plugin.name": "Slay the Spire 2 お供",
+  "plugin.name": "Slay the Spire 2 ゲームプラグイン",
   "plugin.description": "ローカルの Slay the Spire 2 Agent サービスに接続し、ゲーム状況を読み取り、自動プレイ、単発操作、プレイ提案、自然言語コマンド、猫娘のやわらかいガイダンス、状況レポート、短い実況コメントを実行します。現在は主に原作キャラクターに対応しています。",
-  "plugin.short_description": "STS2 お供と状況レポート",
+  "plugin.short_description": "STS2 ゲームと状況レポート",
   "tools.sts2_get_status.description": "Slay the Spire の接続状態、現在画面、基本分類情報を読み取り専用で取得します。",
   "errors.internal": "STS2 プラグイン内部エラー: {error}",
   "entries.sts2_health_check.name": "STS2 サービス確認",

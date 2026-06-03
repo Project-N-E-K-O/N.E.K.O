@@ -885,6 +885,9 @@
     async function autoOpenReactChat() {
         await waitForStartupBarrier();
         hideOldChat();
+        if (window.__NEKO_MULTI_WINDOW__ && !/^\/chat(?:\/|$)/.test(window.location.pathname || '')) {
+            return;
+        }
         var host = getHost();
         if (host && typeof host.openWindow === 'function') {
             host.openWindow();

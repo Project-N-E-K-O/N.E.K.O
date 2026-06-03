@@ -10,6 +10,7 @@ from plugin.sdk.shared.core.router import PluginRouter
 from .._routing import RoutingService, format_duration, format_distance, haversine_km, suggest_modes
 from .._api import RAIN_CODES
 from .._chat import push_lifekit_content
+from .._contracts import TripAdviceParams, TripAdviceResult
 
 
 class TripRouter(PluginRouter):
@@ -27,30 +28,23 @@ class TripRouter(PluginRouter):
             "自动推荐合适的出行方式（步行/骑行/公交/驾车）。"
             "规划完成后可用 food_recommend 查看目的地美食。"
         ),
-        llm_result_fields=["summary", "routes", "next_actions"],
-        input_schema={
-            "type": "object",
-            "properties": {
-                "origin": {
-                    "type": "string",
-                    "description": "起点（地点标签或城市名，留空用默认地点）",
-                    "default": "",
-                },
-                "destination": {
-                    "type": "string",
-                    "description": "终点（地点标签或城市名）",
-                },
-                "mode": {
-                    "type": "string",
-                    "description": "出行方式: transit/walking/bicycling/driving，留空自动推荐",
-                    "default": "",
-                },
-            },
-            "required": ["destination"],
-        },
+        params=TripAdviceParams,
+        llm_result_model=TripAdviceResult,
     )
     @quick_action(icon="🗺️", priority=7)
-    async def trip_advice(self, destination: str = "", origin: str = "", mode: str = "", **_):
+    async def trip_advice(
+        self,
+        params: TripAdviceParams | None = None,
+        destination: str = "",
+        origin: str = "",
+        mode: str = "",
+        **_,
+    ):
+        if params is not None:
+            destination = params.destination
+            origin = params.origin
+            mode = params.mode
+
         plugin = self.main_plugin
         plugin._resolve_locale()
         i18n = plugin._i18n

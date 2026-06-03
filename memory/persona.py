@@ -521,7 +521,14 @@ class PersonaManager:
                 if isinstance(v, list):
                     v = '、'.join(str(item) for item in v)
                 entry_id = self._card_entry_id(entity, k)
-                text = f"{k}: {v}"
+                if str(k).startswith("__ai_context."):
+                    # 合成运行时上下文字段（如 __ai_context.profile_rename_events）：
+                    # value 已是自带本地化标签的完整句子，不能再前缀内部键名，
+                    # 否则裸键 "__ai_context.xxx: ..." 会原样泄漏进模型读到的 fact。
+                    # 用带点的前缀精确匹配约定命名，避免误伤 __ai_contextual_* 这类普通键。
+                    text = str(v)
+                else:
+                    text = f"{k}: {v}"
                 expected.append((entry_id, text))
             return expected
 

@@ -108,7 +108,7 @@ from .dependency_status import (
     infer_inspection_failed_dependencies,
     infer_missing_dependencies,
 )
-from .rapidocr_support import inspect_rapidocr_installation
+from plugin.plugins._shared.rapidocr.rapidocr_support import inspect_rapidocr_installation
 from .dxcam_support import inspect_dxcam_installation
 from .reader import tail_events_jsonl, warmup_replay_events
 from .service import (
@@ -2991,6 +2991,7 @@ class GalgamePlugin(
                 lang_type=self._cfg.rapidocr_lang_type,
                 model_type=self._cfg.rapidocr_model_type,
                 ocr_version=self._cfg.rapidocr_ocr_version,
+                plugin_id="galgame_plugin",
             )
             rapidocr["auto_detect_lang"] = bool(
                 getattr(self._cfg, "rapidocr_auto_detect_lang", True)

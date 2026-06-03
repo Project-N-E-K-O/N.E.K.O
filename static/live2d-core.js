@@ -27,7 +27,8 @@ let motionTimer = null; // 动作持续时间定时器
 let isEmotionChanging = false; // 防止快速连续点击的标志
 
 // 全局：判断是否为移动端宽度
-const isMobileWidth = () => window.innerWidth <= 768;
+// Electron Pet 窗口永不进入手机模式（本文件早于 common_ui.js 加载，故用 flag 内联判断）。
+const isMobileWidth = () => !window.__LANLAN_IS_ELECTRON_PET__ && window.innerWidth <= 768;
 
 // 口型同步参数列表常量
 // 这些参数用于控制模型的嘴部动作，在处理表情和常驻表情时需要跳过，以避免覆盖实时的口型同步

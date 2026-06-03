@@ -437,6 +437,69 @@ function truncateText(text, maxVisualWidth) {
 const CHANNEL_NAME = 'neko_page_channel';
 const MESSAGE_TIMEOUT = 2000; // 最大等待时间（毫秒）
 let broadcastChannel = null;
+const MODEL_MANAGER_PARAMETER_SAVE_MARK_PREFIX = 'neko_model_manager_parameter_save_pending:';
+const MODEL_MANAGER_LANLAN_NAME_SESSION_KEY = 'neko_model_manager_lanlan_name';
+
+function getParameterEditorLanlanName() {
+    let lanlanName = '';
+    try {
+        const urlParams = new URLSearchParams(window.location.search);
+        lanlanName = (urlParams.get('lanlan_name') || '').trim();
+    } catch (_) {
+        lanlanName = '';
+    }
+    if (lanlanName) {
+        try {
+            sessionStorage.setItem(MODEL_MANAGER_LANLAN_NAME_SESSION_KEY, lanlanName);
+        } catch (_) {}
+        return lanlanName;
+    }
+    try {
+        return (sessionStorage.getItem(MODEL_MANAGER_LANLAN_NAME_SESSION_KEY) || '').trim();
+    } catch (_) {
+        return '';
+    }
+}
+
+function getModelManagerParameterSaveMarkKey(lanlanName) {
+    const normalizedName = String(lanlanName || '').trim();
+    if (!normalizedName) return '';
+    try {
+        return MODEL_MANAGER_PARAMETER_SAVE_MARK_PREFIX + encodeURIComponent(normalizedName);
+    } catch (_) {
+        return '';
+    }
+}
+
+function getModelManagerParameterSaveStorages() {
+    const storages = [];
+    try {
+        if (window.sessionStorage) storages.push(window.sessionStorage);
+    } catch (_) {}
+    try {
+        if (window.localStorage) storages.push(window.localStorage);
+    } catch (_) {}
+    return storages;
+}
+
+function markModelManagerNeedsSaveAfterParameterEdit(modelInfo) {
+    const lanlanName = getParameterEditorLanlanName();
+    const markKey = getModelManagerParameterSaveMarkKey(lanlanName);
+    if (!markKey) return;
+
+    const payload = JSON.stringify({
+        lanlanName,
+        modelName: modelInfo?.name || '',
+        modelPath: modelInfo?.path || '',
+        timestamp: Date.now()
+    });
+
+    for (const storage of getModelManagerParameterSaveStorages()) {
+        try {
+            storage.setItem(markKey, payload);
+        } catch (_) {}
+    }
+}
 
 // 初始化 BroadcastChannel（如果支持）
 try {
@@ -580,8 +643,7 @@ backToMainBtn.addEventListener('click', () => {
     // 延迟一点确保消息发送
     setTimeout(() => {
         // 获取当前URL参数，保留lanlan_name等参数
-        const urlParams = new URLSearchParams(window.location.search);
-        const lanlanName = urlParams.get('lanlan_name');
+        const lanlanName = getParameterEditorLanlanName();
         let targetUrl = '/model_manager';
         if (lanlanName) {
             targetUrl += `?lanlan_name=${encodeURIComponent(lanlanName)}`;
@@ -1404,6 +1466,10 @@ if (saveBtn) {
                 scale,
                 paramsToSave
             );
+
+            if (fileResult.success || prefSuccess) {
+                markModelManagerNeedsSaveAfterParameterEdit(currentModelInfo);
+            }
 
             if (fileResult.success && prefSuccess) {
                 showStatus(t('live2d.parameterEditor.parametersSaved', '参数保存成功！'), 2000);

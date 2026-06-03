@@ -10,6 +10,7 @@ import re
 import shutil
 import threading
 import asyncio
+import time
 import math
 import uuid
 from datetime import date
@@ -21,6 +22,7 @@ from config import (
     APP_NAME,
     CONFIG_FILES,
     DEFAULT_CONFIG_DATA,
+    GEOIP_FORCE_NON_MAINLAND,
     RESERVED_FIELD_SCHEMA,
 )
 from config.prompts.prompts_chara import get_lanlan_prompt, is_default_prompt
@@ -193,7 +195,8 @@ async def ensure_default_yui_voice_for_free_api(config_manager, core_cfg: dict |
             core_cfg = {}
     if not isinstance(core_cfg, dict):
         return False
-    if core_cfg.get("coreApi") != "free" and core_cfg.get("assistApi") != "free" and not core_cfg.get("IS_FREE_VERSION"):
+    # 免费预设 YUI 音色只在 core=free 运行时可用，与 assist 无关。
+    if (core_cfg.get("coreApi") or core_cfg.get("CORE_API_TYPE")) != "free":
         return False
 
     characters = await config_manager.aload_characters()
@@ -295,17 +298,29 @@ def _get_persona_override(character_payload: dict) -> dict | None:
     return override
 
 
-def _build_effective_character_payload(character_payload: dict) -> dict:
+def _build_effective_character_payload(character_payload: dict, entity: str = "neko") -> dict:
     if not isinstance(character_payload, dict):
         return {}
 
     effective_payload = deepcopy(character_payload)
     override = _get_persona_override(character_payload)
     if not isinstance(override, dict):
+        for field, value in _build_ai_context_fields(
+            character_payload,
+            existing_fields=set(effective_payload.keys()),
+            entity=entity,
+        ).items():
+            effective_payload[field] = value
         return effective_payload
 
     profile = _normalize_persona_override_profile(override.get("profile"))
     for field, value in profile.items():
+        effective_payload[field] = value
+    for field, value in _build_ai_context_fields(
+        character_payload,
+        existing_fields=set(effective_payload.keys()),
+        entity=entity,
+    ).items():
         effective_payload[field] = value
     return effective_payload
 
@@ -344,6 +359,93 @@ def _append_persona_guidance_to_prompt(prompt_text: str, character_payload: dict
         return guidance
 
     return f"{prompt_text}\n\nAdditional role guidance: {guidance}"
+
+
+_AI_CONTEXT_RENAME_EVENT_FIELD = "__ai_context.profile_rename_events"
+
+
+def _unique_ai_context_field_name(existing_fields: set[str] | None) -> str:
+    existing = {str(field) for field in (existing_fields or set())}
+    if _AI_CONTEXT_RENAME_EVENT_FIELD not in existing:
+        return _AI_CONTEXT_RENAME_EVENT_FIELD
+
+    index = 2
+    while f"{_AI_CONTEXT_RENAME_EVENT_FIELD}.{index}" in existing:
+        index += 1
+    return f"{_AI_CONTEXT_RENAME_EVENT_FIELD}.{index}"
+
+
+def _join_profile_rename_old_names(lang: str | None, names: list[str]) -> str:
+    normalized_lang = str(lang or "").strip().lower()
+    separator = "、" if normalized_lang.startswith(("zh", "ja")) else ", "
+    return separator.join(names)
+
+
+def _build_ai_context_fields(
+    character_payload: dict,
+    existing_fields: set[str] | None = None,
+    entity: str = "neko",
+) -> dict[str, str]:
+    """把隐藏运行时事件展开成只给 prompt/记忆同步使用的合成字段。
+
+    entity 区分这份 payload 是猫娘（neko）还是主人（master），决定改名记录的人称：
+    主人的记录进的是猫娘 persona 的 master section，必须第二人称，不能第一人称。
+    """
+    if not isinstance(character_payload, dict):
+        return {}
+
+    rename_events = get_reserved(
+        character_payload,
+        "ai_context",
+        "rename_events",
+        default=[],
+    )
+    if not isinstance(rename_events, list):
+        return {}
+
+    try:
+        from utils.language_utils import get_global_language_full
+        lang = get_global_language_full()
+    except Exception:
+        lang = None
+
+    from config.prompts.prompts_memory import render_profile_rename_event_context
+
+    field_name = _unique_ai_context_field_name(existing_fields)
+    old_names: list[str] = []
+    current_name = ""
+    legacy_lines: list[str] = []
+    for event in rename_events:
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("type") or "").strip() != "profile_rename":
+            continue
+        old_name = str(event.get("old_name") or "").strip()
+        new_name = str(event.get("new_name") or "").strip()
+        if old_name and new_name:
+            if old_name not in old_names:
+                old_names.append(old_name)
+            current_name = new_name
+        else:
+            text = str(event.get("text") or "").strip()
+            if not text:
+                continue
+            legacy_lines.append(text)
+
+    if current_name:
+        old_names = [name for name in old_names if name != current_name]
+
+    lines: list[str] = []
+    if old_names and current_name:
+        old_names_text = _join_profile_rename_old_names(lang, old_names)
+        label, text = render_profile_rename_event_context(lang, old_names_text, current_name, entity=entity)
+        lines.append(f"{label}: {text}")
+
+    lines.extend(legacy_lines)
+
+    if not lines:
+        return {}
+    return {field_name: "\n".join(lines)}
 
 
 def _has_generated_persona_selection_prompt(prompt_text: object) -> bool:
@@ -759,7 +861,15 @@ class ConfigManager:
     """配置文件管理器"""
     _agent_quota_lock = threading.Lock()
     _selected_root_unavailable_recovery_override_roots: set[str] = set()
-    _free_agent_daily_limit = 300 # 免费配额并非只在本地实施，本地计算是为了减少无效请求、节约网络带宽。
+    _free_agent_daily_limit = 500 # 免费配额并非只在本地实施，本地计算是为了减少无效请求、节约网络带宽。
+    # 本地每日配额只对真正的免费 Agent 模型计数；模型名与 config/api_providers.json 的 assist free profile 保持一致。
+    _free_agent_model_name = "free-agent-model"
+    # 配额耗尽时给前端弹提示的节流：与 _agent_quota_lock 不同的锁，避免在持有配额锁时重入。
+    # notifier 由 agent_server 在启动时注册（进程级），收到耗尽信号最多每 _quota_notify_interval_s 秒触发一次。
+    _quota_notify_lock = threading.Lock()
+    _quota_notify_interval_s = 10.0
+    _quota_notify_last_monotonic = 0.0
+    _quota_exceeded_notifier = None
     ROOT_STATE_VERSION = 1
     CLOUDSAVE_LOCAL_STATE_VERSION = 1
     CHARACTER_TOMBSTONES_STATE_VERSION = 1
@@ -2445,7 +2555,7 @@ class ConfigManager:
         tts_config = self.get_model_api_config('tts_custom')
         base_url = tts_config.get('base_url', '')
         is_local_tts = tts_config.get('is_custom') and base_url.startswith(('ws://', 'wss://'))
-        hide_cloud_main = for_listing and self.is_free_version()
+        hide_cloud_main = for_listing and self.is_free_voice()
 
         if is_local_tts:
             # 本地 WebSocket TTS：免费版仍可用，列表必须可见
@@ -2779,7 +2889,7 @@ class ConfigManager:
         character_data.setdefault('主人', deepcopy(defaults['主人']))
         character_data.setdefault('猫娘', deepcopy(defaults['猫娘']))
 
-        master_basic_config = character_data.get('主人', {})
+        master_basic_config = _build_effective_character_payload(character_data.get('主人', {}), entity="master")
         master_name = master_basic_config.get('档案名', defaults['主人']['档案名'])
 
         raw_character_data = character_data.get('猫娘') or deepcopy(defaults['猫娘'])
@@ -2920,6 +3030,16 @@ class ConfigManager:
 
     def _check_non_mainland(self) -> bool:
         """Dual validation: both HTTP IP geo AND Steam geo must indicate non-mainland."""
+        # 调试开关：config.GEOIP_FORCE_NON_MAINLAND 非 None 时直接返回它，绕过真实检测。
+        # 生产保持 None（走下方双判）。改 config/__init__.py 那个常量即可，不动这里。
+        if GEOIP_FORCE_NON_MAINLAND is not None:
+            print(
+                f"[GeoIP] override active: forcing non-mainland={GEOIP_FORCE_NON_MAINLAND} "
+                "(config.GEOIP_FORCE_NON_MAINLAND)",
+                file=sys.stderr,
+            )
+            return GEOIP_FORCE_NON_MAINLAND
+
         if ConfigManager._region_cache is not None:
             return ConfigManager._region_cache
 
@@ -2983,23 +3103,11 @@ class ConfigManager:
         return url
 
     def _normalize_agent_url(self, url: str) -> str:
-        """Agent 模型始终走 lanlan.app（国际 API），统一 lanlan.tech → lanlan.app；
-        国际保留 www（www.lanlan.app），国内剥掉 www（lanlan.app）走就近节点。
+        """临时不改写 Agent URL。
 
-        lanlan.tech / lanlan.app 是项目自有域名，AGENT_MODEL_URL 要么是写死的
-        free 默认（https://www.lanlan.tech/text/v1），要么是用户自填的其它服务
-        URL（不含这两个域，replace 自然 no-op），所以直接字符串替换即可。
+        free-agent-model 需要走配置里的国内 ``lanlan.tech`` 文本入口；这里保持
+        AGENT_MODEL_URL 原样，避免把它归一化到 ``lanlan.app``。
         """
-        if not isinstance(url, str):
-            return url
-        url = url.replace('lanlan.tech', 'lanlan.app')
-        try:
-            if not self._check_non_mainland():
-                url = url.replace('www.lanlan.app', 'lanlan.app')
-        except Exception:
-            # 仅 _check_non_mainland 可能抛（GeoIP 探测）。探测失败时不剥 www，
-            # 保留国际形态作安全默认；线路探测不该阻断 URL 推导。
-            pass
         return url
 
     @staticmethod
@@ -3138,7 +3246,6 @@ class ConfigManager:
             'ASSIST_API_KEY_MINIMAX_INTL': '',
             'ASSIST_API_KEY_GROK': DEFAULT_CORE_API_KEY,
             'ASSIST_API_KEY_OPENROUTER': DEFAULT_CORE_API_KEY,
-            'IS_FREE_VERSION': False,
             'VISION_MODEL': DEFAULT_VISION_MODEL,
             'AGENT_MODEL': DEFAULT_AGENT_MODEL,
             'REALTIME_MODEL': DEFAULT_REALTIME_MODEL,
@@ -3191,12 +3298,15 @@ class ConfigManager:
         if core_cfg.get('coreApiKey'):
             config['CORE_API_KEY'] = core_cfg['coreApiKey']
 
-        _core_api_provider = core_cfg.get('coreApi') or 'qwen'
-        _assist_api_provider = core_cfg.get('assistApi') or 'qwen'
+        _core_api_provider = core_cfg.get('coreApi') or config['CORE_API_TYPE']
+        _assist_api_provider = core_cfg.get('assistApi')
+        if not _assist_api_provider:
+            _assist_api_provider = 'free' if _core_api_provider == 'free' else 'qwen'
         _fallback_providers = {_core_api_provider, _assist_api_provider}
+        _core_key_fallback = config['CORE_API_KEY'] if config['CORE_API_KEY'] != 'free-access' else ''
 
         def _fb(provider: str) -> str:
-            return config['CORE_API_KEY'] if provider in _fallback_providers else ''
+            return _core_key_fallback if provider in _fallback_providers else ''
 
         config['ASSIST_API_KEY_QWEN'] = core_cfg.get('assistApiKeyQwen', '') or _fb('qwen')
         config['ASSIST_API_KEY_QWEN_INTL'] = core_cfg.get('assistApiKeyQwenIntl', '') or _fb('qwen_intl')
@@ -3322,13 +3432,13 @@ class ConfigManager:
                 config['OPENROUTER_API_KEY'] = derived_key
 
         if not config['AUDIO_API_KEY']:
-            config['AUDIO_API_KEY'] = config['CORE_API_KEY']
+            config['AUDIO_API_KEY'] = _core_key_fallback
         if not config['OPENROUTER_API_KEY']:
-            config['OPENROUTER_API_KEY'] = config['CORE_API_KEY']
+            config['OPENROUTER_API_KEY'] = _core_key_fallback
 
         # Agent API Key 回退：未显式配置时跟随辅助 API Key
         if not config.get('AGENT_MODEL_API_KEY'):
-            config['AGENT_MODEL_API_KEY'] = derived_key if derived_key else config.get('CORE_API_KEY', '')
+            config['AGENT_MODEL_API_KEY'] = config.get('OPENROUTER_API_KEY', '')
 
         # 自定义API配置映射（使用大写下划线形式的内部键，且在未提供时保留已有默认值）
         enable_custom_api = core_cfg.get('enableCustomApi', False)
@@ -3709,11 +3819,12 @@ class ConfigManager:
         """
         Agent 模式门槛检查：
         - 必须具备可用的 AGENT_MODEL(model/url/api_key)
-        - free 版本允许使用但由前端提示风险
+        - 是否免费(计配额/前端提示)由 is_agent_free() 单独判定，与本检查无关：
+          readiness 只关心 model/url/key 三件套填没填、能否发起请求。free-access 对
+          真免费 agent 是有效占位 token，应让它过门槛；脏配置(占位 key 打自费端点)由
+          下游 401 兜底，不在这里拦。
         """
         reasons = []
-        core_config = self.get_core_config()
-        is_free = bool(core_config.get('IS_FREE_VERSION'))
         agent_api = self.get_model_api_config('agent')
         if not (agent_api.get('model') or '').strip():
             reasons.append("Agent 模型未配置")
@@ -3722,19 +3833,60 @@ class ConfigManager:
         api_key = (agent_api.get('api_key') or '').strip()
         if not api_key:
             reasons.append("Agent API Key 未配置或不可用")
-        elif api_key == 'free-access' and not is_free:
-            reasons.append("Agent API Key 未配置或不可用")
         return len(reasons) == 0, reasons
 
-    def is_free_version(self) -> bool:
-        return bool(self.get_core_config().get('IS_FREE_VERSION'))
+    def is_agent_free(self) -> bool:
+        """当前 Agent 实际用的是否为内置免费 Agent 模型(free-agent-model)。
+
+        agent 侧"是否免费"的唯一真相源——计配额、前端"免费模型易阻塞"提示都看它。
+        对偶于 is_free_voice()(语音/core 维度)：即便用免费语音(core=free)，只要 agent
+        换成自费/自定义 model，这里就为 False。
+        """
+        agent_model = (self.get_model_api_config('agent').get('model') or '').strip()
+        return agent_model == self._free_agent_model_name
+
+    def is_free_voice(self) -> bool:
+        """当前是否走内置免费语音(core=free)。语音/音色侧"是否免费"的唯一真相源——
+        免费预设音色、隐藏云端克隆音色、默认 YUI 兜底都看它。对偶于 is_agent_free()。
+
+        realtime 与文本 TTS 共用同一音色、统一跟 core 走，与 assist 无关：被
+        hide_cloud_main 隐藏的 CosyVoice/Qwen 克隆音色只是复用了 assist key，免费版
+        (core=free)运行时走 free_mode worker 播不出它们，故隐藏。
+        """
+        return (self.get_core_config().get('CORE_API_TYPE') or '') == 'free'
 
     def _get_agent_quota_path(self) -> Path:
         """本地 Agent 试用配额计数文件路径。"""
         return self.config_dir / "agent_quota.json"
 
+    @classmethod
+    def register_quota_exceeded_notifier(cls, notifier) -> None:
+        """注册"免费版 Agent 配额耗尽"通知回调（进程级，由 agent_server 启动时注册）。
+
+        notifier(used:int, limit:int) 会在配额耗尽时被调用，**最多每 10 秒一次**（见
+        ``_maybe_notify_quota_exceeded`` 的节流）。回调本身必须非阻塞——它在持有
+        ``_agent_quota_lock`` 的临界区里被调用，通常只做一次跨线程 schedule。
+        """
+        cls._quota_exceeded_notifier = notifier
+
+    def _maybe_notify_quota_exceeded(self, used: int, limit: int) -> None:
+        """配额耗尽时节流触发已注册的前端提示回调（最多每 _quota_notify_interval_s 秒一次）。"""
+        notifier = ConfigManager._quota_exceeded_notifier
+        if notifier is None:
+            return
+        now = time.monotonic()
+        with ConfigManager._quota_notify_lock:
+            last = ConfigManager._quota_notify_last_monotonic
+            if last and (now - last) < ConfigManager._quota_notify_interval_s:
+                return
+            ConfigManager._quota_notify_last_monotonic = now
+        try:
+            notifier(used, limit)
+        except Exception as e:
+            logger.debug("配额耗尽通知回调失败: %s", e)
+
     def consume_agent_daily_quota(self, source: str = "", units: int = 1) -> tuple[bool, dict]:
-        """消费 Agent 模型每日配额（仅免费版生效）。配额并非只在本地实施，本地计算是为了减少无效请求、节约网络带宽。
+        """消费 Agent 模型每日配额（仅当实际 Agent 模型为 free-agent-model 时生效）。配额并非只在本地实施，本地计算是为了减少无效请求、节约网络带宽。
 
         Returns:
             (ok, info)
@@ -3749,11 +3901,14 @@ class ConfigManager:
         if units <= 0:
             units = 1
 
-        is_free = self.is_free_version()
+        # 只对真正的免费 Agent 模型(free-agent-model)本地计数：用户换用自费/自定义 agent
+        # model 后不该再被这条免费试用配额挡。判定收口在 is_agent_free()。analyzer/deduper
+        # 这类判定器走的是 summary/emotion 模型而非 agent model，已不再调用本函数。
+        is_metered = self.is_agent_free()
         today = date.today().isoformat()
         limit = int(self._free_agent_daily_limit)
 
-        if not is_free:
+        if not is_metered:
             return True, {
                 "limited": False,
                 "date": today,
@@ -3782,6 +3937,9 @@ class ConfigManager:
 
             used = int(data.get("used", 0))
             if used + units > limit:
+                # 配额耗尽：节流通知前端弹提示（最多每 10 秒一次）。回调非阻塞，
+                # 在临界区里只做一次跨线程 schedule，不展开网络 IO。
+                self._maybe_notify_quota_exceeded(used, limit)
                 return False, {
                     "limited": True,
                     "date": today,

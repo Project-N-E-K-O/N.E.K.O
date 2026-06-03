@@ -184,7 +184,7 @@ function resolveActionIcon(action: ResolvedPluginListAction) {
       return VideoPause
     case 'reload':
       return RefreshRight
-    case 'pack':
+    case 'build':
       return Box
     case 'delete':
       return Delete

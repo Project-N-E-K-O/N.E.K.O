@@ -53,6 +53,19 @@ def test_model_manager_default_card_face_fallback_uses_full_card_canvas():
     assert "800 - Math.floor(800 / 6)" not in script
 
 
+def test_model_manager_parameter_save_restores_unsaved_and_offers_card_face():
+    script = MODEL_MANAGER_JS.read_text(encoding="utf-8")
+    parameter_editor = (PROJECT_ROOT / "static" / "js" / "live2d_parameter_editor.js").read_text(encoding="utf-8")
+
+    assert "window.localStorage" in parameter_editor
+    assert "window.localStorage" in script
+    assert "parameterEditorSavedNeedsModelSave" in script
+    assert "restorePendingParameterEditorSaveState(savePositionBtn, {" in script
+    assert "|| await restorePendingParameterEditorSaveState(savePositionBtn, { currentModelInfo })" in script
+    assert "parameterEditedSinceSave ||" in script
+    assert "offerCardFaceAfterModelSave" in script
+
+
 def test_card_maker_supports_closeup_model_scale():
     script = CARD_MAKER_JS.read_text(encoding="utf-8")
     template = CARD_MAKER_TEMPLATE.read_text(encoding="utf-8")
@@ -154,6 +167,17 @@ def test_card_maker_model_loading_message_exists_in_all_locales():
             missing.append(locale_path.name)
 
     assert missing == [], f"Missing cardExport keys in locale files: {', '.join(missing)}"
+
+
+def test_model_manager_parameter_save_message_exists_in_all_locales():
+    missing = []
+    for locale_path in sorted(LOCALE_DIR.glob("*.json")):
+        payload = json.loads(locale_path.read_text(encoding="utf-8"))
+        model_manager = payload.get("modelManager")
+        if not isinstance(model_manager, dict) or "parameterEditorSavedNeedsModelSave" not in model_manager:
+            missing.append(locale_path.name)
+
+    assert missing == [], f"Missing modelManager parameter-save keys in locale files: {', '.join(missing)}"
 
 
 def test_workshop_add_character_card_messages_exist_in_all_locales():

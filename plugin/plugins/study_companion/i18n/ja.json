@@ -6,6 +6,8 @@
     "entries.open_ui.description":  "study_companion の静的 UI へのパスを返します。",
     "entries.status.name":  "学習コンパニオンの状態",
     "entries.status.description":  "実行状態、依存関係、最近の学習インタラクションを返します。",
+    "entries.neko_communication_status.name":  "Neko リアルタイム通信の状態",
+    "entries.neko_communication_status.description":  "Neko とのリアルタイム通信が有効かどうかを返します。",
     "entries.dependency_status.name":  "学習 OCR 依存関係の状態",
     "entries.dependency_status.description":  "study_companion で使う RapidOCR、Tesseract、キャプチャ依存を確認します。",
     "entries.ocr_snapshot.name":  "学習 OCR スナップショット",
@@ -188,5 +190,13 @@
     "ui.button.rating.hard":  "難しい",
     "ui.button.rating.good":  "良い",
     "ui.button.rating.easy":  "簡単",
-    "ui.label.name":  "名前"
+    "ui.label.name":  "名前",
+    "ui.awareness.title":  "環境認識",
+    "ui.awareness.enabled":  "画面の環境認識を有効にする",
+    "ui.awareness.snapshot_interval":  "スナップショット間隔",
+    "ui.awareness.context_window":  "コンテキストウィンドウ",
+    "ui.awareness.classify_mode":  "分類モード",
+    "ui.awareness.push_mode":  "LLMコンテキストモード",
+    "ui.awareness.privacy_note":  "スクリーンショットはメモリ内でのみ処理され、ディスクには保存されません。",
+    "ui.awareness.translation_pending":  "翻訳保留中"
 }

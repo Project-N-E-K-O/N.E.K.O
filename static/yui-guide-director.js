@@ -4671,6 +4671,9 @@
 
         getChatInputTarget() {
             const preferredSelectors = [
+                '#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="input"]',
+                '#react-chat-window-root [data-compact-geometry-part="inputBody"]',
+                '#react-chat-window-root .compact-chat-surface-frame[data-compact-chat-state="input"]',
                 '#react-chat-window-root .composer-input',
                 '#react-chat-window-root .composer-input-shell',
                 '#react-chat-window-root .composer-panel',
@@ -4698,6 +4701,11 @@
 
         getChatWindowTarget() {
             const preferredSelectors = [
+                '#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="input"]',
+                '#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="capsule"]',
+                '#react-chat-window-root [data-compact-drag-surface="true"]',
+                '#react-chat-window-root .compact-chat-surface-frame',
+                '#react-chat-window-root .compact-chat-surface-shell',
                 '#react-chat-window-shell',
                 '#react-chat-window-root .chat-window',
                 '#react-chat-window-root',
@@ -5084,7 +5092,7 @@
             }
 
             if (stepId === 'takeover_return_control') {
-                return this.getChatWindowTarget() || this.getChatInputTarget() || null;
+                return this.getChatInputTarget() || this.getChatWindowTarget() || null;
             }
 
             if (this.shouldNarrateInChat(stepId)) {
@@ -5130,7 +5138,7 @@
 
             if (this.isHomeChatExternalized()) {
                 if (this.interactionTakeover && typeof this.interactionTakeover.setExternalizedChatSpotlight === 'function') {
-                    this.interactionTakeover.setExternalizedChatSpotlight('window');
+                    this.interactionTakeover.setExternalizedChatSpotlight('input');
                 }
                 return;
             }
@@ -5170,6 +5178,9 @@
 
         getChatIntroActivationTarget() {
             const preferredSelectors = [
+                '#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="input"]',
+                '#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="capsule"]',
+                '#react-chat-window-root [data-compact-drag-surface="true"]',
                 '#react-chat-window-root .composer-input-shell',
                 '#react-chat-window-root .composer-panel',
                 '#react-chat-window-root .composer-input',
@@ -11940,7 +11951,7 @@
 
             if (this.isHomeChatExternalized()) {
                 if (this.interactionTakeover && typeof this.interactionTakeover.setExternalizedChatSpotlight === 'function') {
-                    this.interactionTakeover.setExternalizedChatSpotlight('window');
+                    this.interactionTakeover.setExternalizedChatSpotlight('input');
                 }
                 return;
             }
@@ -12496,7 +12507,7 @@
             this.overlay.hideBubble();
             this.overlay.hidePluginPreview();
             if (this.interactionTakeover && typeof this.interactionTakeover.setExternalizedChatSpotlight === 'function') {
-                this.interactionTakeover.setExternalizedChatSpotlight('window');
+                this.interactionTakeover.setExternalizedChatSpotlight('input');
             }
             if (this.interactionTakeover && typeof this.interactionTakeover.setExternalizedChatCursor === 'function') {
                 this.interactionTakeover.setExternalizedChatCursor('input', {
@@ -12652,7 +12663,7 @@
             const bubbleText = this.resolvePerformanceBubbleText(performance);
             const anchorRect = this.resolveRect(step.anchor);
             const returnControlChatTarget = stepId === 'takeover_return_control'
-                ? (this.getChatWindowTarget() || this.getChatInputTarget() || null)
+                ? (this.getChatInputTarget() || this.getChatWindowTarget() || null)
                 : null;
             const cursorTargetRect = returnControlChatTarget && typeof returnControlChatTarget.getBoundingClientRect === 'function'
                 ? returnControlChatTarget.getBoundingClientRect()
@@ -12689,7 +12700,7 @@
             }
 
             if (stepId === 'takeover_return_control' && this.isHomeChatExternalized()) {
-                this.setExternalizedChatGuideTarget('window', {
+                this.setExternalizedChatGuideTarget('input', {
                     effect: 'wobble'
                 });
             }

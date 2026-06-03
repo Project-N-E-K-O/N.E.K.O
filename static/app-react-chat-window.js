@@ -15,17 +15,53 @@
     var STORAGE_WIDTH_KEY = 'neko.reactChatWindow.width';
     var STORAGE_HEIGHT_KEY = 'neko.reactChatWindow.height';
     var GALGAME_STORAGE_KEY = 'neko.reactChatWindow.galgameMode';
+    var CHAT_SURFACE_MODE_STORAGE_KEY = 'neko.reactChatWindow.chatSurfaceMode';
     var GALGAME_HISTORY_LIMIT = 6;
     var EVENT_PREFIX = 'react-chat-window:';
 
     var loadedPromise = null;
     var mounted = false;
     var dragState = null;
+    var suppressDragReleaseClick = false;
     var resizeState = null;
     var minimized = false;
     var savedShellSize = null;
     var savedShellPosition = null; // {left, top} before minimize – used to fly back on expand
+    var HOME_IDLE_DOCK_GAP = 12;
+    var IDLE_DOCK_TIER_NONE = 'none';
+    var IDLE_DOCK_TIER_CAT2 = 'cat2';
+    var IDLE_DOCK_TIER_CAT3 = 'cat3';
+    var idleDockTier = IDLE_DOCK_TIER_NONE;
+    var idleDockActive = false;
+    var idleDockSavedPosition = null;
+    var idleDockTriggeredMinimize = false;
+    var idleDockMinimizeObserver = null;
+    var idleDockContainerObserver = null;
+    var idleDockSyncFrame = 0;
+    var electronIdleDockActive = false;
+    var electronIdleDockTriggeredCollapse = false;
+    var electronIdleDockSavedBounds = null;
+    var electronIdleDockLastScreenRect = null;
+    var electronIdleDockEntering = false;
+    var electronIdleDockRetryTimer = 0;
+    var electronIdleDockDesired = false;
+    var electronIdleDockGeneration = 0;
+    var electronIdleDockPositionFrame = 0;
+    var electronIdleDockPositionSeq = 0;
+    var electronIdleDockCurrentBounds = null;
+    var electronIdleDockWorkArea = null;
+    var electronChatMinimizedStateFrame = 0;
+    var electronChatMinimizedStateTimer = 0;
+    var electronChatMinimizedStateSignature = '';
+    var electronChatMinimizedStatePublishedAt = 0;
+    var electronCat1PairMoveBoundsFrame = 0;
+    var electronCat1PairMovePendingBounds = null;
+    var ELECTRON_CHAT_MINIMIZED_STATE_HEARTBEAT_MS = 1000;
+    var savedExpandedShellPosition = null; // last known full-surface desktop position
+    var lastRestorableChatSurfaceMode = 'compact';
     var _sortKeySeq = 0; // monotonically increasing sortKey counter
+    var COMPACT_CHAT_STATES = ['default', 'options', 'input'];
+    var CHAT_SURFACE_MODE_SEQUENCE = ['compact', 'minimized'];
 
     var state = {
         viewProps: null,
@@ -37,11 +73,15 @@
         onComposerScreenshot: null,
         onComposerRemoveAttachment: null,
         onComposerSubmit: null,
+        onCompactHistoryDrop: null,
+        onCompactHistoryDragStateChange: null,
         onAvatarInteraction: null,
         onAvatarToolStateChange: null,
         pendingRollbackDrafts: Object.create(null),
         rollbackDraft: '',
         _toolCursorResetKey: '',
+        compactChatState: 'default',
+        chatSurfaceMode: 'compact',
         // Off until init() reads the persisted preference post-barrier and
         // calls setGalgameModeEnabled(true) — that path fires the
         // galgame-mode-change event, which is the only signal chat.html's
@@ -63,6 +103,92 @@
         // 防止 endpoint 路径 + WS push 路径同一 session 双开窗口。
         _launchedMiniGameSessionIds: Object.create(null)
     };
+
+    function normalizeChatSurfaceMode(mode) {
+        if (mode === 'full') return 'compact';
+        return CHAT_SURFACE_MODE_SEQUENCE.indexOf(mode) >= 0 ? mode : 'compact';
+    }
+
+    function normalizeCompactChatState(mode) {
+        return COMPACT_CHAT_STATES.indexOf(mode) >= 0 ? mode : 'default';
+    }
+
+    function getCurrentChatSurfaceMode() {
+        return normalizeChatSurfaceMode(state.chatSurfaceMode);
+    }
+
+    function getCurrentCompactChatState() {
+        return normalizeCompactChatState(state.compactChatState);
+    }
+
+    function isHomeCompactSurfaceRoute() {
+        var body = document.body;
+        return !!(
+            body
+            && body.classList.contains('subtitle-web-host')
+            && getCurrentChatSurfaceMode() === 'compact'
+        );
+    }
+
+    function isDesktopHomeCompactSurfaceRoute() {
+        var body = document.body;
+        return !!(
+            isElectronChatWindow()
+            && body
+            && body.classList.contains('subtitle-web-host')
+            && document.querySelector('.compact-chat-surface-shell')
+        );
+    }
+
+    function getNextChatSurfaceMode(mode) {
+        var normalized = normalizeChatSurfaceMode(mode);
+        if (normalized === 'minimized') {
+            return normalizeChatSurfaceMode(lastRestorableChatSurfaceMode);
+        }
+        var currentIndex = CHAT_SURFACE_MODE_SEQUENCE.indexOf(normalized);
+        var nextIndex = currentIndex >= 0
+            ? (currentIndex + 1) % CHAT_SURFACE_MODE_SEQUENCE.length
+            : 0;
+        return CHAT_SURFACE_MODE_SEQUENCE[nextIndex];
+    }
+
+    function resetCompactChatState() {
+        state.compactChatState = 'default';
+    }
+
+    function shouldPersistChatSurfaceModePreference() {
+        // Desktop and web share the same page state contract. The caller only
+        // persists compact only; minimized still restores to the last real surface.
+        return true;
+    }
+
+    function readChatSurfaceModePreference() {
+        if (!shouldPersistChatSurfaceModePreference()) {
+            return 'compact';
+        }
+        try {
+            var raw = localStorage.getItem(CHAT_SURFACE_MODE_STORAGE_KEY);
+            // The storage key only ever holds the restorable surface ('compact').
+            // Migrate any legacy value persisted by the old three-state build
+            // ('full') or a stray 'minimized' back to 'compact' so stale values
+            // don't linger in storage. Any other value (or first run) just
+            // resolves to 'compact' without an extra write.
+            if (raw === 'full' || raw === 'minimized') {
+                localStorage.setItem(CHAT_SURFACE_MODE_STORAGE_KEY, 'compact');
+            }
+            return 'compact';
+        } catch (_) {
+            return 'compact';
+        }
+    }
+
+    function persistChatSurfaceModePreference(mode) {
+        if (mode !== 'compact') return;
+        if (!shouldPersistChatSurfaceModePreference()) return;
+        try {
+            localStorage.setItem(CHAT_SURFACE_MODE_STORAGE_KEY, mode);
+        } catch (_) {}
+    }
 
     function readGalgameModePreference() {
         try {
@@ -113,10 +239,147 @@
     var MOBILE_EXPAND_CLICK_GUARD_MS = 700;
     var MOBILE_EXPAND_CLICK_GUARD_RADIUS = 24;
     var MOBILE_EXPAND_VISUAL_GUARD_MS = 900;
+    var COMPACT_MINIMIZE_BALL_VIEWPORT_PAD = 12;
+    var COMPACT_MINIMIZE_BALL_AVATAR_GAP = 12;
+    var COMPACT_MINIMIZE_BALL_AVATAR_VERTICAL_RATIO = 0.58;
+    var COMPACT_SURFACE_MAX_WIDTH = 430;
+    var COMPACT_SURFACE_RESIZE_MAX_WIDTH = 720;
+    var COMPACT_SURFACE_VIEWPORT_PAD_X = 16;
+    var COMPACT_SURFACE_VIEWPORT_PAD_TOP = 12;
+    var COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM = 18;
+    var COMPACT_SURFACE_DEFAULT_HEIGHT = 64;
+    var COMPACT_SURFACE_AVATAR_VERTICAL_RATIO = 0.72;
+    var COMPACT_SURFACE_POSITION_STORAGE_KEY = 'neko.reactChatWindow.compactSurfacePosition';
     var mobileUserHeight = 0; // 用户手动设置的手机端高度（0 = 自动）
     var mobileLayoutFrame = 0;
     var mobileExpandClickGuard = null;
     var mobileExpandVisualGuardTimer = 0;
+    var compactMinimizeBallFrame = 0;
+    var compactSurfaceAnchorSnapshot = '';
+    var compactDesktopSurfaceAnchorSnapshot = '';
+    var compactInteractionGeometrySnapshot = '';
+    var compactSurfaceAnchorLocked = false;
+    var compactSurfacePendingModelOpen = false;
+    var compactSurfaceResizeSession = null;
+    var compactSurfaceDesktopResizeActive = false;
+
+    function normalizeCompactDesktopRect(raw) {
+        if (!raw) return null;
+        var left = Number(raw.left);
+        var top = Number(raw.top);
+        var width = Number(raw.width);
+        var height = Number(raw.height);
+        if (!Number.isFinite(left) || !Number.isFinite(top) || !Number.isFinite(width) || !Number.isFinite(height)) {
+            return null;
+        }
+        if (width <= 0 || height <= 0) return null;
+        return {
+            left: left,
+            top: top,
+            width: width,
+            height: height,
+            right: Number.isFinite(Number(raw.right)) ? Number(raw.right) : left + width,
+            bottom: Number.isFinite(Number(raw.bottom)) ? Number(raw.bottom) : top + height
+        };
+    }
+
+    function serializeCompactSurfaceRectSnapshot(rect) {
+        var normalized = normalizeCompactDesktopRect(rect);
+        if (!normalized) return '';
+        return [
+            Math.round(normalized.left),
+            Math.round(normalized.top),
+            Math.round(normalized.width),
+            Math.round(normalized.height)
+        ].join(':');
+    }
+
+    function getCompactDesktopLayoutAnchorSnapshot(layout) {
+        if (!layout) return '';
+        var anchorVersion = Number(layout.anchorVersion);
+        if (Number.isFinite(anchorVersion)) {
+            return 'version:' + Math.round(anchorVersion);
+        }
+        var screenSnapshot = serializeCompactSurfaceRectSnapshot(layout.surfaceScreenRect);
+        if (screenSnapshot) return 'screen:' + screenSnapshot;
+        var pageSnapshot = serializeCompactSurfaceRectSnapshot(layout.surface);
+        return pageSnapshot ? 'page:' + pageSnapshot : '';
+    }
+
+    function handleDesktopCompactLayoutChange(layout) {
+        var nextAnchorSnapshot = getCompactDesktopLayoutAnchorSnapshot(layout);
+        var baseAnchorChanged = false;
+        if (!nextAnchorSnapshot) {
+            baseAnchorChanged = !!compactDesktopSurfaceAnchorSnapshot || !layout;
+            compactDesktopSurfaceAnchorSnapshot = '';
+        } else if (nextAnchorSnapshot !== compactDesktopSurfaceAnchorSnapshot) {
+            baseAnchorChanged = true;
+            compactDesktopSurfaceAnchorSnapshot = nextAnchorSnapshot;
+        }
+        if (baseAnchorChanged && !compactSurfaceDesktopResizeActive) {
+            compactSurfaceAnchorLocked = false;
+            compactSurfaceAnchorSnapshot = '';
+        }
+        scheduleCompactMinimizeBallTracking();
+    }
+
+    function normalizeCompactDesktopWorkArea(raw) {
+        if (!raw) return null;
+        var left = Number.isFinite(Number(raw.left)) ? Number(raw.left) : Number(raw.x);
+        var top = Number.isFinite(Number(raw.top)) ? Number(raw.top) : Number(raw.y);
+        var width = Number(raw.width);
+        var height = Number(raw.height);
+        if (!Number.isFinite(left) || !Number.isFinite(top) || !Number.isFinite(width) || !Number.isFinite(height)) {
+            return null;
+        }
+        if (width <= 0 || height <= 0) return null;
+        return {
+            left: left,
+            top: top,
+            width: width,
+            height: height,
+            right: left + width,
+            bottom: top + height
+        };
+    }
+
+    function normalizeCompactDesktopWindowBounds(raw) {
+        var area = normalizeCompactDesktopWorkArea(raw);
+        if (!area) return null;
+        return {
+            x: area.left,
+            y: area.top,
+            width: area.width,
+            height: area.height,
+            left: area.left,
+            top: area.top,
+            right: area.right,
+            bottom: area.bottom
+        };
+    }
+
+    function getElectronCompactLayoutOverride() {
+        if (!isElectronChatWindow()) return null;
+        var layout = window.__nekoDesktopCompactLayout;
+        if (!layout) return null;
+        var surface = normalizeCompactDesktopRect(layout.surface);
+        if (!surface) return null;
+        var surfaceScreenRect = normalizeCompactDesktopRect(layout.surfaceScreenRect);
+        var ball = normalizeCompactDesktopRect(layout.ball);
+        var workArea = normalizeCompactDesktopWorkArea(layout.workArea);
+        var windowBounds = normalizeCompactDesktopWindowBounds(layout.windowBounds);
+        var compactChoicePlacement = layout.compactChoicePlacement === 'above' || layout.compactChoicePlacement === 'below'
+            ? layout.compactChoicePlacement
+            : null;
+        return {
+            surface: surface,
+            surfaceScreenRect: surfaceScreenRect,
+            ball: ball,
+            workArea: workArea,
+            windowBounds: windowBounds,
+            compactChoicePlacement: compactChoicePlacement
+        };
+    }
 
     function getMobileMaxHeight() {
         return Math.max(MOBILE_MIN_HEIGHT, Math.floor(window.innerHeight * MOBILE_MAX_HEIGHT_RATIO));
@@ -138,7 +401,1102 @@
         if (isElectronChatWindow()) {
             return false;
         }
+        // index.html 的 Electron Pet 窗口同理：永不进入手机模式（黑背景 + 窄布局）。
+        // 标记 __LANLAN_IS_ELECTRON_PET__ 由 index.html 头部脚本同步注入。
+        if (window.__LANLAN_IS_ELECTRON_PET__) {
+            return false;
+        }
         return window.innerWidth <= 768;
+    }
+
+    function isCompactHomeMinimizeBallEnabled() {
+        var overlay = getOverlay();
+        return !!(
+            isHomeCompactSurfaceRoute()
+            && overlay
+            && !overlay.hidden
+            && !minimized
+        );
+    }
+
+    function isElectronCompactExternalBallEnabled() {
+        return !!(isElectronChatWindow() && window.__nekoDesktopCompactExternalBall);
+    }
+
+    function isHomeCompactMinimizeBallRoute() {
+        var overlay = getOverlay();
+        var body = document.body;
+        return !!(
+            body
+            && body.classList.contains('subtitle-web-host')
+            && overlay
+            && !overlay.hidden
+        );
+    }
+
+    function getCompactMinimizeBallAvatarBounds() {
+        if (isElectronChatWindow()) {
+            return normalizeCompactDesktopRect(window.__nekoDesktopAvatarBounds);
+        }
+
+        var managers = [
+            window.live2dManager,
+            window.vrmManager,
+            window.mmdManager
+        ];
+        for (var i = 0; i < managers.length; i += 1) {
+            var manager = managers[i];
+            if (!manager || !manager.currentModel || typeof manager.getModelScreenBounds !== 'function') continue;
+            if (manager === window.mmdManager && !manager.currentModel.mesh) continue;
+            try {
+                var bounds = normalizeCompactDesktopRect(manager.getModelScreenBounds());
+                if (bounds) return bounds;
+            } catch (_) {}
+        }
+        return null;
+    }
+
+    function getCompactMinimizeBallPlacement(bounds) {
+        var normalized = normalizeCompactDesktopRect(bounds);
+        if (!normalized) return null;
+        var left = normalized.left - MINIMIZED_SIZE - COMPACT_MINIMIZE_BALL_AVATAR_GAP;
+        var top = normalized.top + normalized.height * COMPACT_MINIMIZE_BALL_AVATAR_VERTICAL_RATIO - MINIMIZED_SIZE / 2;
+        var maxLeft = Math.max(COMPACT_MINIMIZE_BALL_VIEWPORT_PAD, window.innerWidth - MINIMIZED_SIZE - COMPACT_MINIMIZE_BALL_VIEWPORT_PAD);
+        var maxTop = Math.max(COMPACT_MINIMIZE_BALL_VIEWPORT_PAD, window.innerHeight - MINIMIZED_SIZE - COMPACT_MINIMIZE_BALL_VIEWPORT_PAD);
+        return {
+            width: MINIMIZED_SIZE,
+            height: MINIMIZED_SIZE,
+            left: Math.max(COMPACT_MINIMIZE_BALL_VIEWPORT_PAD, Math.min(Math.round(left), maxLeft)),
+            top: Math.max(COMPACT_MINIMIZE_BALL_VIEWPORT_PAD, Math.min(Math.round(top), maxTop))
+        };
+    }
+
+    function getCompactMinimizeBallTarget() {
+        if (!isHomeCompactMinimizeBallRoute()) {
+            return null;
+        }
+        if (isElectronCompactExternalBallEnabled()) {
+            return null;
+        }
+
+        var avatarBounds = getCompactMinimizeBallAvatarBounds();
+        var avatarPlacement = getCompactMinimizeBallPlacement(avatarBounds);
+        if (avatarPlacement) {
+            window.__nekoCompactMinimizeBallFallbackActive = false;
+            return avatarPlacement;
+        }
+
+        window.__nekoCompactMinimizeBallFallbackActive = true;
+        return {
+            width: MINIMIZED_SIZE,
+            height: MINIMIZED_SIZE,
+            left: COMPACT_MINIMIZE_BALL_VIEWPORT_PAD,
+            top: Math.max(
+                COMPACT_MINIMIZE_BALL_VIEWPORT_PAD,
+                window.innerHeight - MINIMIZED_SIZE - 34
+            )
+        };
+    }
+
+    function shouldDelayCompactSurfaceOpenForModel() {
+        return false;
+    }
+
+    function getCompactSurfaceResizeMaxWidth() {
+        return Math.max(
+            COMPACT_SURFACE_MAX_WIDTH,
+            Math.min(COMPACT_SURFACE_RESIZE_MAX_WIDTH, window.innerWidth - (COMPACT_SURFACE_VIEWPORT_PAD_X * 2))
+        );
+    }
+
+    function getCompactSurfaceMetrics() {
+        var shell = getShell();
+        var rect = getCompactSurfaceBaseRect() || (shell ? normalizeCompactDomRect(shell.getBoundingClientRect()) : null);
+        var defaultWidth = isMobileWidth()
+            ? Math.max(280, window.innerWidth - 16)
+            : Math.min(COMPACT_SURFACE_MAX_WIDTH, Math.max(280, window.innerWidth - (COMPACT_SURFACE_VIEWPORT_PAD_X * 2)));
+        var measuredWidth = rect && rect.width > 0 ? rect.width : 0;
+        var storedWidth = loadCompactSurfaceStoredWidth();
+        var width = Math.round(Math.min(
+            Math.max(defaultWidth, measuredWidth, storedWidth || 0),
+            getCompactSurfaceResizeMaxWidth()
+        ));
+        var height = rect && rect.height > 0 ? rect.height : COMPACT_SURFACE_DEFAULT_HEIGHT;
+        return {
+            width: width,
+            height: height
+        };
+    }
+
+    function clampCompactSurfacePosition(left, top, metrics) {
+        var width = metrics.width || COMPACT_SURFACE_MAX_WIDTH;
+        var height = metrics.height || COMPACT_SURFACE_DEFAULT_HEIGHT;
+        var layoutOverride = getElectronCompactLayoutOverride();
+        if (layoutOverride && layoutOverride.windowBounds && layoutOverride.workArea) {
+            var windowBounds = layoutOverride.windowBounds;
+            var workArea = layoutOverride.workArea;
+            var screenLeft = windowBounds.x + left;
+            var screenTop = windowBounds.y + top;
+            var screenMinLeft = workArea.left + COMPACT_SURFACE_VIEWPORT_PAD_X;
+            var screenMaxLeft = Math.max(screenMinLeft, workArea.right - width - COMPACT_SURFACE_VIEWPORT_PAD_X);
+            var screenMinTop = workArea.top + COMPACT_SURFACE_VIEWPORT_PAD_TOP;
+            var screenMaxTop = Math.max(screenMinTop, workArea.bottom - height - COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM);
+            return {
+                left: Math.max(screenMinLeft, Math.min(screenLeft, screenMaxLeft)) - windowBounds.x,
+                top: Math.max(screenMinTop, Math.min(screenTop, screenMaxTop)) - windowBounds.y
+            };
+        }
+        var minLeft = isMobileWidth() ? 8 : COMPACT_SURFACE_VIEWPORT_PAD_X;
+        var maxLeft = Math.max(minLeft, window.innerWidth - width - minLeft);
+        var maxTop = Math.max(
+            COMPACT_SURFACE_VIEWPORT_PAD_TOP,
+            window.innerHeight - height - COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM
+        );
+        return {
+            left: Math.max(minLeft, Math.min(left, maxLeft)),
+            top: Math.max(COMPACT_SURFACE_VIEWPORT_PAD_TOP, Math.min(top, maxTop))
+        };
+    }
+
+    function loadCompactSurfacePosition(metrics) {
+        try {
+            var raw = window.localStorage.getItem(COMPACT_SURFACE_POSITION_STORAGE_KEY);
+            if (!raw) return null;
+            var parsed = JSON.parse(raw);
+            var left = Number(parsed && parsed.left);
+            var top = Number(parsed && parsed.top);
+            if (!Number.isFinite(left) || !Number.isFinite(top)) return null;
+            return clampCompactSurfacePosition(left, top, metrics);
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function loadCompactSurfaceStoredWidth() {
+        try {
+            var raw = window.localStorage.getItem(COMPACT_SURFACE_POSITION_STORAGE_KEY);
+            if (!raw) return null;
+            var parsed = JSON.parse(raw);
+            var width = Number(parsed && parsed.width);
+            if (!Number.isFinite(width) || width <= 0) return null;
+            var maxWidth = getCompactSurfaceResizeMaxWidth();
+            return Math.round(Math.max(COMPACT_SURFACE_MAX_WIDTH, Math.min(width, maxWidth)));
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function saveCompactSurfacePosition(left, top, width) {
+        try {
+            var payload = {
+                left: Math.round(left),
+                top: Math.round(top)
+            };
+            if (Number.isFinite(Number(width)) && Number(width) > 0) {
+                payload.width = Math.round(Number(width));
+            }
+            window.localStorage.setItem(COMPACT_SURFACE_POSITION_STORAGE_KEY, JSON.stringify(payload));
+        } catch (_) {}
+    }
+
+    function saveCompactSurfaceWidth(width) {
+        try {
+            var raw = window.localStorage.getItem(COMPACT_SURFACE_POSITION_STORAGE_KEY);
+            var payload = raw ? JSON.parse(raw) : {};
+            if (!payload || typeof payload !== 'object') payload = {};
+            payload.width = Math.round(Number(width));
+            window.localStorage.setItem(COMPACT_SURFACE_POSITION_STORAGE_KEY, JSON.stringify(payload));
+        } catch (_) {}
+    }
+
+    function getCompactSurfaceDesktopWindowBounds() {
+        var layoutOverride = getElectronCompactLayoutOverride();
+        var windowBounds = layoutOverride && layoutOverride.windowBounds;
+        if (!windowBounds) return null;
+        var x = Number(windowBounds.x);
+        var y = Number(windowBounds.y);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+        return windowBounds;
+    }
+
+    function getCompactSurfaceResizeScreenRect(rect) {
+        if (!rect) return null;
+        if (compactSurfaceResizeSession) {
+            var screenLeft = compactSurfaceResizeSession.side === 'left'
+                ? compactSurfaceResizeSession.anchorRightScreen - rect.width
+                : compactSurfaceResizeSession.anchorLeftScreen;
+            return {
+                left: Math.round(screenLeft),
+                top: Math.round(compactSurfaceResizeSession.anchorTopScreen),
+                width: Math.round(rect.width),
+                height: Math.round(rect.height)
+            };
+        }
+        var windowBounds = getCompactSurfaceDesktopWindowBounds();
+        if (!windowBounds) return null;
+        return {
+            left: Math.round(Number(windowBounds.x) + rect.left),
+            top: Math.round(Number(windowBounds.y) + rect.top),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height)
+        };
+    }
+
+    function dispatchCompactSurfaceLayoutChange(rect) {
+        var detail = rect || null;
+        if (detail && isElectronChatWindow()) {
+            detail = Object.assign({}, detail, {
+                screenRect: getCompactSurfaceResizeScreenRect(detail),
+                resizeActive: !!compactSurfaceResizeSession
+            });
+        }
+        window.dispatchEvent(new CustomEvent('neko:compact-surface-layout-change', {
+            detail: detail
+        }));
+    }
+
+    function applyCompactSurfaceRect(left, top, width, height, options) {
+        var shell = getShell();
+        if (!shell) return null;
+
+        var safeWidth = Number(width);
+        var safeHeight = Number(height);
+        if (!Number.isFinite(safeWidth) || safeWidth <= 0) {
+            safeWidth = COMPACT_SURFACE_MAX_WIDTH;
+        }
+        if (!Number.isFinite(safeHeight) || safeHeight <= 0) {
+            safeHeight = COMPACT_SURFACE_DEFAULT_HEIGHT;
+        }
+
+        var clamped = clampCompactSurfacePosition(Number(left) || 0, Number(top) || 0, {
+            width: safeWidth,
+            height: safeHeight
+        });
+        var rect = {
+            left: Math.round(clamped.left),
+            top: Math.round(clamped.top),
+            width: Math.round(safeWidth),
+            height: Math.round(safeHeight)
+        };
+
+        compactSurfaceAnchorSnapshot = [
+            rect.left,
+            rect.top,
+            rect.width,
+            rect.height
+        ].join(':');
+        compactSurfaceAnchorLocked = true;
+        shell.style.setProperty('--compact-surface-left', rect.left + 'px');
+        shell.style.setProperty('--compact-surface-top', rect.top + 'px');
+        shell.style.setProperty('--compact-surface-width', rect.width + 'px');
+        shell.style.setProperty('--compact-surface-height', rect.height + 'px');
+        document.documentElement.style.setProperty('--compact-surface-left', rect.left + 'px');
+        document.documentElement.style.setProperty('--compact-surface-top', rect.top + 'px');
+        document.documentElement.style.setProperty('--compact-surface-width', rect.width + 'px');
+        document.documentElement.style.setProperty('--compact-surface-height', rect.height + 'px');
+        if (isElectronChatWindow()) {
+            shell.style.setProperty('--desktop-compact-surface-left', rect.left + 'px');
+            shell.style.setProperty('--desktop-compact-surface-top', rect.top + 'px');
+            shell.style.setProperty('--desktop-compact-surface-width', rect.width + 'px');
+            shell.style.setProperty('--desktop-compact-surface-height', rect.height + 'px');
+            document.documentElement.style.setProperty('--desktop-compact-surface-left', rect.left + 'px');
+            document.documentElement.style.setProperty('--desktop-compact-surface-top', rect.top + 'px');
+            document.documentElement.style.setProperty('--desktop-compact-surface-width', rect.width + 'px');
+            document.documentElement.style.setProperty('--desktop-compact-surface-height', rect.height + 'px');
+        }
+        shell.style.transform = 'none';
+        if (options && options.persist && !isElectronChatWindow()) {
+            saveCompactSurfacePosition(rect.left, rect.top, rect.width);
+        }
+        dispatchCompactSurfaceLayoutChange(rect);
+        syncCompactInteractionGeometry();
+        return rect;
+    }
+
+    function getCurrentCompactSurfaceRect() {
+        var shell = getShell();
+        if (!shell) return null;
+        var domRect = normalizeCompactDomRect(shell.getBoundingClientRect());
+        if (!domRect) return null;
+        var css = window.getComputedStyle ? window.getComputedStyle(document.documentElement) : null;
+        var cssLeft = css ? parseFloat(css.getPropertyValue('--compact-surface-left')) : NaN;
+        var cssTop = css ? parseFloat(css.getPropertyValue('--compact-surface-top')) : NaN;
+        var cssWidth = css ? parseFloat(css.getPropertyValue('--compact-surface-width')) : NaN;
+        var cssHeight = css ? parseFloat(css.getPropertyValue('--compact-surface-height')) : NaN;
+        return {
+            left: Number.isFinite(cssLeft) ? cssLeft : domRect.left,
+            top: Number.isFinite(cssTop) ? cssTop : domRect.top,
+            width: Number.isFinite(cssWidth) && cssWidth > 0 ? cssWidth : domRect.width,
+            height: Number.isFinite(cssHeight) && cssHeight > 0 ? cssHeight : domRect.height
+        };
+    }
+
+    function getCompactSurfaceDesktopWindowX() {
+        var windowBounds = getCompactSurfaceDesktopWindowBounds();
+        var x = Number(windowBounds && windowBounds.x);
+        return Number.isFinite(x) ? x : 0;
+    }
+
+    function getCompactSurfaceDesktopWindowY() {
+        var windowBounds = getCompactSurfaceDesktopWindowBounds();
+        var y = Number(windowBounds && windowBounds.y);
+        return Number.isFinite(y) ? y : 0;
+    }
+
+    function getCompactSurfaceDesktopScreenRect() {
+        var layoutOverride = getElectronCompactLayoutOverride();
+        return layoutOverride && layoutOverride.surfaceScreenRect
+            ? layoutOverride.surfaceScreenRect
+            : null;
+    }
+
+    function getCompactDesktopWorkAreaEdge(workArea, edge) {
+        if (!workArea) return NaN;
+        var explicit = Number(workArea[edge]);
+        if (Number.isFinite(explicit)) return explicit;
+        var x = Number(workArea.x);
+        var y = Number(workArea.y);
+        var width = Number(workArea.width);
+        var height = Number(workArea.height);
+        if (edge === 'left' && Number.isFinite(x)) return x;
+        if (edge === 'top' && Number.isFinite(y)) return y;
+        if (edge === 'right' && Number.isFinite(x) && Number.isFinite(width)) return x + width;
+        if (edge === 'bottom' && Number.isFinite(y) && Number.isFinite(height)) return y + height;
+        return NaN;
+    }
+
+    function clampCompactSurfaceResizeWidthForSide(side, desiredWidth, currentRect) {
+        var width = Number(desiredWidth);
+        if (!Number.isFinite(width) || width <= 0) {
+            width = currentRect && currentRect.width ? currentRect.width : COMPACT_SURFACE_MAX_WIDTH;
+        }
+        var layoutOverride = getElectronCompactLayoutOverride();
+        var sideMax;
+        if (layoutOverride && layoutOverride.windowBounds && layoutOverride.workArea) {
+            var windowBounds = layoutOverride.windowBounds;
+            var workArea = layoutOverride.workArea;
+            var anchorLeftScreen = compactSurfaceResizeSession
+                ? compactSurfaceResizeSession.anchorLeftScreen
+                : currentRect.left + windowBounds.x;
+            var anchorRightScreen = compactSurfaceResizeSession
+                ? compactSurfaceResizeSession.anchorRightScreen
+                : currentRect.left + currentRect.width + windowBounds.x;
+            var workAreaLeft = getCompactDesktopWorkAreaEdge(workArea, 'left');
+            var workAreaRight = getCompactDesktopWorkAreaEdge(workArea, 'right');
+            sideMax = side === 'left'
+                ? anchorRightScreen - (workAreaLeft + COMPACT_SURFACE_VIEWPORT_PAD_X)
+                : (workAreaRight - COMPACT_SURFACE_VIEWPORT_PAD_X) - anchorLeftScreen;
+            if (!Number.isFinite(sideMax) || sideMax <= 0) {
+                sideMax = currentRect && currentRect.width ? currentRect.width : COMPACT_SURFACE_MAX_WIDTH;
+            }
+        } else {
+            var minLeft = isMobileWidth() ? 8 : COMPACT_SURFACE_VIEWPORT_PAD_X;
+            var maxRight = window.innerWidth - minLeft;
+            sideMax = side === 'left'
+                ? (currentRect.left + currentRect.width) - minLeft
+                : maxRight - currentRect.left;
+        }
+        var maxWidth = Math.max(
+            COMPACT_SURFACE_MAX_WIDTH,
+            Math.min(COMPACT_SURFACE_RESIZE_MAX_WIDTH, sideMax)
+        );
+        return Math.round(Math.max(COMPACT_SURFACE_MAX_WIDTH, Math.min(width, maxWidth)));
+    }
+
+    function applyCompactSurfaceResizeRequest(detail) {
+        if (!isHomeCompactSurfaceRoute() && !isDesktopHomeCompactSurfaceRoute()) return;
+        var side = detail && detail.side === 'left' ? 'left' : 'right';
+        var phase = detail && detail.phase;
+        if (isElectronChatWindow() && detail && detail.screenRect) {
+            compactSurfaceDesktopResizeActive = phase !== 'end';
+            if (phase === 'end') {
+                compactSurfaceResizeSession = null;
+            }
+            return;
+        }
+        var currentRect = getCurrentCompactSurfaceRect();
+        if (!currentRect) return;
+        var windowX = getCompactSurfaceDesktopWindowX();
+        var desktopSurfaceRect = getCompactSurfaceDesktopScreenRect();
+        if (phase === 'start' || !compactSurfaceResizeSession || compactSurfaceResizeSession.side !== side) {
+            compactSurfaceResizeSession = {
+                side: side,
+                anchorLeftScreen: desktopSurfaceRect
+                    ? desktopSurfaceRect.left
+                    : currentRect.left + windowX,
+                anchorRightScreen: desktopSurfaceRect
+                    ? desktopSurfaceRect.right
+                    : currentRect.left + currentRect.width + windowX,
+                anchorTopScreen: desktopSurfaceRect
+                    ? desktopSurfaceRect.top
+                    : currentRect.top + getCompactSurfaceDesktopWindowY()
+            };
+        }
+        var width = clampCompactSurfaceResizeWidthForSide(side, detail && detail.width, currentRect);
+        var left = side === 'left'
+            ? compactSurfaceResizeSession.anchorRightScreen - windowX - width
+            : compactSurfaceResizeSession.anchorLeftScreen - windowX;
+        var appliedRect = applyCompactSurfaceRect(left, currentRect.top, width, currentRect.height, {
+            persist: phase === 'end'
+        });
+        if (appliedRect && detail && typeof detail === 'object') {
+            try {
+                detail.screenRect = getCompactSurfaceResizeScreenRect(appliedRect);
+            } catch (_) {}
+        }
+        if (phase === 'end' && isElectronChatWindow()) {
+            saveCompactSurfaceWidth(width);
+        }
+        if (phase === 'end') {
+            compactSurfaceResizeSession = null;
+        }
+    }
+
+    function getCompactSurfaceTarget(layoutOverride) {
+        layoutOverride = layoutOverride || getElectronCompactLayoutOverride();
+        if (layoutOverride && layoutOverride.surface) {
+            var overrideMetrics = getCompactSurfaceMetrics();
+            return {
+                width: layoutOverride.surface.width,
+                height: overrideMetrics.height,
+                left: layoutOverride.surface.left,
+                top: layoutOverride.surface.top
+            };
+        }
+
+        var metrics = getCompactSurfaceMetrics();
+        var viewportWidth = window.innerWidth;
+        var viewportHeight = window.innerHeight;
+        var fallbackTop = Math.max(
+            COMPACT_SURFACE_VIEWPORT_PAD_TOP,
+            viewportHeight - metrics.height - COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM
+        );
+
+        if (isElectronChatWindow()) {
+            return {
+                width: metrics.width,
+                height: metrics.height,
+                left: Math.max(
+                    COMPACT_SURFACE_VIEWPORT_PAD_X,
+                    Math.min(
+                        Math.round((viewportWidth - metrics.width) / 2),
+                        viewportWidth - metrics.width - COMPACT_SURFACE_VIEWPORT_PAD_X
+                    )
+                ),
+                top: fallbackTop
+            };
+        }
+
+        var storedPosition = loadCompactSurfacePosition(metrics);
+        if (storedPosition) {
+            return {
+                width: metrics.width,
+                height: metrics.height,
+                left: storedPosition.left,
+                top: storedPosition.top
+            };
+        }
+
+        var avatarBounds = getCompactMinimizeBallAvatarBounds();
+        if (!isMobileWidth() && avatarBounds) {
+            var avatarLeft = avatarBounds.left + avatarBounds.width / 2 - metrics.width / 2;
+            var avatarTop = avatarBounds.top + avatarBounds.height * COMPACT_SURFACE_AVATAR_VERTICAL_RATIO - metrics.height / 2;
+            var avatarClamped = clampCompactSurfacePosition(
+                Math.round(avatarLeft),
+                Math.round(avatarTop),
+                metrics
+            );
+            return {
+                width: metrics.width,
+                height: metrics.height,
+                left: avatarClamped.left,
+                top: avatarClamped.top
+            };
+        }
+
+        if (isMobileWidth()) {
+            return {
+                width: metrics.width,
+                height: metrics.height,
+                left: 8,
+                top: fallbackTop
+            };
+        }
+
+        return {
+            width: metrics.width,
+            height: metrics.height,
+            left: Math.max(
+                COMPACT_SURFACE_VIEWPORT_PAD_X,
+                Math.min(
+                    Math.round((viewportWidth - metrics.width) / 2),
+                    viewportWidth - metrics.width - COMPACT_SURFACE_VIEWPORT_PAD_X
+                )
+            ),
+            top: fallbackTop
+        };
+    }
+
+    function normalizeCompactDomRect(rect) {
+        if (!rect) return null;
+        var left = Number(rect.left);
+        var top = Number(rect.top);
+        var width = Number(rect.width);
+        var height = Number(rect.height);
+        if (!Number.isFinite(left) || !Number.isFinite(top) || !Number.isFinite(width) || !Number.isFinite(height)) {
+            return null;
+        }
+        if (width <= 0 || height <= 0) return null;
+        return {
+            left: left,
+            top: top,
+            width: width,
+            height: height,
+            right: Number.isFinite(Number(rect.right)) ? Number(rect.right) : left + width,
+            bottom: Number.isFinite(Number(rect.bottom)) ? Number(rect.bottom) : top + height
+        };
+    }
+
+    function getCompactSurfaceBaseRect() {
+        var root = getRoot();
+        var compactSurfaceShell = root ? root.querySelector('.compact-chat-surface-shell') : null;
+        if (compactSurfaceShell && shouldIncludeCompactGeometryElement(compactSurfaceShell)) {
+            var shellRect = normalizeCompactDomRect(compactSurfaceShell.getBoundingClientRect());
+            if (shellRect) return shellRect;
+        }
+        var candidates = [
+            '[data-compact-geometry-owner="surface"][data-compact-geometry-item="input"]',
+            '[data-compact-geometry-owner="surface"][data-compact-geometry-item="capsule"]'
+        ];
+        for (var i = 0; i < candidates.length; i += 1) {
+            var element = document.querySelector(candidates[i]);
+            if (!element || (root && !root.contains(element))) continue;
+            if (!shouldIncludeCompactGeometryElement(element)) continue;
+            var rect = normalizeCompactDomRect(element.getBoundingClientRect());
+            if (rect) return rect;
+        }
+        return null;
+    }
+
+    function unionCompactRects(rects) {
+        var valid = (rects || []).filter(Boolean);
+        if (!valid.length) return null;
+        var left = valid.reduce(function (min, rect) { return Math.min(min, rect.left); }, valid[0].left);
+        var top = valid.reduce(function (min, rect) { return Math.min(min, rect.top); }, valid[0].top);
+        var right = valid.reduce(function (max, rect) { return Math.max(max, rect.right); }, valid[0].right);
+        var bottom = valid.reduce(function (max, rect) { return Math.max(max, rect.bottom); }, valid[0].bottom);
+        return {
+            left: left,
+            top: top,
+            width: right - left,
+            height: bottom - top,
+            right: right,
+            bottom: bottom
+        };
+    }
+
+    function intersectCompactRects(a, b) {
+        var leftRect = normalizeCompactDomRect(a);
+        var rightRect = normalizeCompactDomRect(b);
+        if (!leftRect || !rightRect) return null;
+        var left = Math.max(leftRect.left, rightRect.left);
+        var top = Math.max(leftRect.top, rightRect.top);
+        var right = Math.min(leftRect.right, rightRect.right);
+        var bottom = Math.min(leftRect.bottom, rightRect.bottom);
+        if (right <= left || bottom <= top) return null;
+        return {
+            left: left,
+            top: top,
+            width: right - left,
+            height: bottom - top,
+            right: right,
+            bottom: bottom
+        };
+    }
+
+    function shouldIncludeCompactGeometryElement(element) {
+        if (!element || typeof element.getBoundingClientRect !== 'function') return false;
+        var item = element.getAttribute('data-compact-geometry-item') || '';
+        if (item === 'choice' && element.getAttribute('data-choice-layer-open') !== 'true') return false;
+        if (item === 'toolFan' && element.getAttribute('data-compact-input-tool-fan-open') !== 'true') return false;
+        if (element.getAttribute('aria-hidden') === 'true' && item !== 'resizeHandle') return false;
+        var style = window.getComputedStyle ? window.getComputedStyle(element) : null;
+        if (style && (style.display === 'none' || style.visibility === 'hidden')) return false;
+        return true;
+    }
+
+    function getCompactGeometryElementRect(element) {
+        if (!element || typeof element.getBoundingClientRect !== 'function') return null;
+        var item = element.getAttribute('data-compact-geometry-item') || '';
+        if (item === 'choice') {
+            var choiceRects = Array.prototype.slice.call(element.querySelectorAll('.composer-galgame-option'))
+                .map(function (child) {
+                    var style = window.getComputedStyle ? window.getComputedStyle(child) : null;
+                    if (style && (style.display === 'none' || style.visibility === 'hidden')) return null;
+                    return normalizeCompactDomRect(child.getBoundingClientRect());
+                })
+                .filter(Boolean);
+            return unionCompactRects(choiceRects);
+        }
+        var ownRect = normalizeCompactDomRect(element.getBoundingClientRect());
+        if (ownRect) return ownRect;
+
+        var childRects = Array.prototype.slice.call(element.querySelectorAll('button'))
+            .map(function (child) {
+                var style = window.getComputedStyle ? window.getComputedStyle(child) : null;
+                if (style && (style.display === 'none' || style.visibility === 'hidden')) return null;
+                return normalizeCompactDomRect(child.getBoundingClientRect());
+            })
+            .filter(Boolean);
+        return unionCompactRects(childRects);
+    }
+
+    function getCompactHistoryScrollbarRect(element, parentRect) {
+        if (!element || !parentRect) return null;
+        var scrollNode = element.querySelector('.compact-export-history-scroll');
+        if (!scrollNode || typeof scrollNode.getBoundingClientRect !== 'function') return null;
+        if (scrollNode.scrollHeight <= scrollNode.clientHeight + 1) return null;
+        var style = window.getComputedStyle ? window.getComputedStyle(scrollNode) : null;
+        if (style && (style.display === 'none' || style.visibility === 'hidden' || style.pointerEvents === 'none')) return null;
+        var scrollRect = intersectCompactRects(scrollNode.getBoundingClientRect(), parentRect);
+        if (!scrollRect) return null;
+        var gutterWidth = Math.min(Math.max(Number(scrollNode.offsetWidth - scrollNode.clientWidth) || 0, 8), 14);
+        return {
+            left: scrollRect.right - gutterWidth,
+            top: scrollRect.top,
+            width: gutterWidth,
+            height: scrollRect.height,
+            right: scrollRect.right,
+            bottom: scrollRect.bottom
+        };
+    }
+
+    var COMPACT_TOOL_FAN_CIRCLE_SLICE_COUNT = 18;
+    var COMPACT_TOOL_AVATAR_CHOICE_FLOAT_PADDING_X = 6;
+    var COMPACT_TOOL_AVATAR_CHOICE_FLOAT_PADDING_Y = 12;
+
+    function readCompactToolFanPixelVar(style, name, fallback) {
+        var rawValue = style ? style.getPropertyValue(name) : '';
+        var parsedValue = parseFloat(rawValue);
+        return Number.isFinite(parsedValue) ? parsedValue : fallback;
+    }
+
+    function buildCompactToolFanCircleSliceRects(rect, element) {
+        if (!rect) return null;
+        var style = window.getComputedStyle ? window.getComputedStyle(element) : null;
+        var centerX = rect.left + readCompactToolFanPixelVar(style, '--compact-tool-wheel-center-x', 116);
+        var centerY = rect.top + readCompactToolFanPixelVar(style, '--compact-tool-wheel-center-y', 116);
+        var radius = readCompactToolFanPixelVar(style, '--compact-tool-wheel-hover-radius', 116);
+        if (!Number.isFinite(radius) || radius <= 0) return null;
+        var sliceHeight = (radius * 2) / COMPACT_TOOL_FAN_CIRCLE_SLICE_COUNT;
+        var slices = [];
+        for (var index = 0; index < COMPACT_TOOL_FAN_CIRCLE_SLICE_COUNT; index += 1) {
+            var top = centerY - radius + (sliceHeight * index);
+            var bottom = index === COMPACT_TOOL_FAN_CIRCLE_SLICE_COUNT - 1
+                ? centerY + radius
+                : top + sliceHeight;
+            var middleY = (top + bottom) / 2;
+            var halfWidth = Math.sqrt(Math.max(0, (radius * radius) - ((middleY - centerY) * (middleY - centerY))));
+            var left = centerX - halfWidth;
+            var right = centerX + halfWidth;
+            slices.push({
+                left: left,
+                top: top,
+                width: right - left,
+                height: bottom - top,
+                right: right,
+                bottom: bottom
+            });
+        }
+        return slices;
+    }
+
+    function expandCompactRect(rect, expandX, expandTop, expandBottom) {
+        if (!rect) return null;
+        var left = rect.left - expandX;
+        var top = rect.top - expandTop;
+        var right = rect.right + expandX;
+        var bottom = rect.bottom + expandBottom;
+        return {
+            left: left,
+            top: top,
+            width: right - left,
+            height: bottom - top,
+            right: right,
+            bottom: bottom
+        };
+    }
+
+    function buildCompactAvatarToolChoiceHitRect(rect) {
+        return expandCompactRect(
+            rect,
+            COMPACT_TOOL_AVATAR_CHOICE_FLOAT_PADDING_X,
+            COMPACT_TOOL_AVATAR_CHOICE_FLOAT_PADDING_Y,
+            COMPACT_TOOL_AVATAR_CHOICE_FLOAT_PADDING_Y
+        );
+    }
+
+    function isCompactSurfaceBaseAnchorKind(kind) {
+        return kind === 'surfaceShell' || kind === 'capsule' || kind === 'input';
+    }
+
+    function getCompactSurfaceGeometryRole(kind) {
+        if (isCompactSurfaceBaseAnchorKind(kind)) return 'baseAnchor';
+        return 'extraIsland';
+    }
+
+    function assignCompactSurfaceGeometryRole(item) {
+        if (!item) return item;
+        item.geometryRole = getCompactSurfaceGeometryRole(item.kind);
+        return item;
+    }
+
+    function collectCompactToolFanGeometryItems(element) {
+        if (!element || element.getAttribute('data-compact-geometry-item') !== 'toolFan') return [];
+        var parentRect = getCompactGeometryElementRect(element);
+        var items = [];
+        if (parentRect) {
+            var nativeRects = buildCompactToolFanCircleSliceRects(parentRect, element) || [parentRect];
+            nativeRects.forEach(function (nativeRect, index) {
+                items.push({
+                    id: index === 0 ? 'toolFan:native' : 'toolFan:native:' + index,
+                    owner: 'surface',
+                    kind: 'toolFan',
+                    visualRect: nativeRect,
+                    hitRect: nativeRect,
+                    nativeRect: nativeRect,
+                    interactive: true
+                });
+            });
+        }
+        return items.concat(Array.prototype.slice.call(element.querySelectorAll('.compact-input-tool-item, .composer-icon-popover .composer-icon-button'))
+            .map(function (child, index) {
+                var style = window.getComputedStyle ? window.getComputedStyle(child) : null;
+                if (style && (style.display === 'none' || style.visibility === 'hidden')) return null;
+                if (style && Number(style.opacity) <= 0.01) return null;
+                var slot = child.getAttribute('data-compact-tool-wheel-slot') || '';
+                var isAvatarToolChoice = child.classList && child.classList.contains('composer-icon-button');
+                if (!isAvatarToolChoice && (!slot || slot.indexOf('hidden') === 0)) return null;
+                var rect = normalizeCompactDomRect(child.getBoundingClientRect());
+                if (!rect) return null;
+                var hitRect = isAvatarToolChoice ? buildCompactAvatarToolChoiceHitRect(rect) : rect;
+                if (!hitRect) return null;
+                return {
+                    id: isAvatarToolChoice
+                        ? 'toolFan:avatarToolChoice:' + index
+                        : 'toolFan:' + slot + ':' + index,
+                    owner: 'surface',
+                    kind: 'toolFan',
+                    visualRect: rect,
+                    hitRect: hitRect,
+                    nativeRect: hitRect,
+                    interactive: true
+                };
+            })
+            .filter(Boolean));
+    }
+
+    function collectCompactCompositeGeometryItems(element, kind) {
+        var parentRect = getCompactGeometryElementRect(element);
+        var items = [];
+        if (parentRect) {
+            items.push({
+                id: kind + ':native',
+                owner: 'surface',
+                kind: kind || 'unknown',
+                visualRect: parentRect,
+                hitRect: null,
+                nativeRect: parentRect,
+                interactive: false
+            });
+            if (kind === 'history') {
+                var scrollbarRect = getCompactHistoryScrollbarRect(element, parentRect);
+                if (scrollbarRect) {
+                    items.push({
+                        id: 'history:scrollbar',
+                        owner: 'surface',
+                        kind: kind || 'unknown',
+                        visualRect: scrollbarRect,
+                        hitRect: scrollbarRect,
+                        nativeRect: null,
+                        interactive: true,
+                        hitRegionKind: 'scrollbar'
+                    });
+                }
+            }
+        }
+        return items.concat(Array.prototype.slice.call(element.querySelectorAll('[data-compact-hit-region="true"]'))
+            .map(function (child, index) {
+                var style = window.getComputedStyle ? window.getComputedStyle(child) : null;
+                if (style && (style.display === 'none' || style.visibility === 'hidden')) return null;
+                if (style && Number(style.opacity) <= 0.01) return null;
+                var rect = normalizeCompactDomRect(child.getBoundingClientRect());
+                if (!rect) return null;
+                var clippedRect = parentRect ? intersectCompactRects(rect, parentRect) : rect;
+                if (!clippedRect) return null;
+                var interactive = style ? style.pointerEvents !== 'none' : true;
+                if (!interactive) return null;
+                var hitRegionKind = child.getAttribute('data-compact-hit-region-kind') || null;
+                return {
+                    id: child.getAttribute('data-compact-hit-region-id') || (kind + ':hit:' + index),
+                    owner: 'surface',
+                    kind: kind || 'unknown',
+                    visualRect: clippedRect,
+                    hitRect: clippedRect,
+                    nativeRect: kind === 'history' ? null : clippedRect,
+                    interactive: true,
+                    hitRegionKind: hitRegionKind
+                };
+            })
+            .filter(Boolean));
+    }
+
+    function collectCompactSurfaceGeometryItems() {
+        var root = getRoot();
+        if (!root) return [];
+        var compactSurfaceShell = root.querySelector('.compact-chat-surface-shell');
+        var shellRect = compactSurfaceShell
+            ? normalizeCompactDomRect(compactSurfaceShell.getBoundingClientRect())
+            : null;
+        var elements = Array.prototype.slice.call(document.querySelectorAll('[data-compact-geometry-owner="surface"]'));
+        var initialItems = [];
+        if (shellRect) {
+            initialItems.push({
+                id: 'surface:shell',
+                owner: 'surface',
+                kind: 'surfaceShell',
+                visualRect: shellRect,
+                hitRect: null,
+                nativeRect: shellRect,
+                interactive: false
+            });
+        }
+        return elements.reduce(function (items, element) {
+            if (
+                !root.contains(element)
+                && !element.classList.contains('compact-input-tool-fan')
+                && !element.classList.contains('compact-chat-choice-anchor')
+            ) return items;
+            if (!shouldIncludeCompactGeometryElement(element)) return items;
+            var compactGeometryItem = element.getAttribute('data-compact-geometry-item');
+            if (compactGeometryItem === 'toolFan') {
+                return items.concat(collectCompactToolFanGeometryItems(element));
+            }
+            if (element.getAttribute('data-compact-geometry-hit-scope') === 'children') {
+                return items.concat(collectCompactCompositeGeometryItems(element, compactGeometryItem));
+            }
+            var rect = getCompactGeometryElementRect(element);
+            if (!rect) return items;
+            items.push({
+                id: element.id || compactGeometryItem || element.className || 'compact-item',
+                owner: 'surface',
+                kind: compactGeometryItem || 'unknown',
+                visualRect: rect,
+                hitRect: rect,
+                nativeRect: rect,
+                interactive: true
+            });
+            return items;
+        }, initialItems).map(assignCompactSurfaceGeometryRole);
+    }
+
+    function getCompactInteractionGeometrySnapshot() {
+        if (!isHomeCompactMinimizeBallRoute()) return null;
+        var layoutOverride = getElectronCompactLayoutOverride();
+        var surfaceItems = isCompactHomeMinimizeBallEnabled() ? collectCompactSurfaceGeometryItems() : [];
+        var baseSurfaceItems = surfaceItems.filter(function (item) {
+            return item && item.geometryRole === 'baseAnchor';
+        });
+        var extraIslandItems = surfaceItems.filter(function (item) {
+            return item && item.geometryRole === 'extraIsland';
+        });
+        var surfaceRects = surfaceItems.map(function (item) { return item.nativeRect; });
+        var baseSurfaceRects = baseSurfaceItems.map(function (item) { return item.nativeRect; });
+        // compact 态不再渲染模型旁的悬浮最小化球，故不再上报其 hit/native 区域，
+        // 避免 Electron 桌面壳为一个不可见的球保留点击区域（externalBall 仍走桌面外部球）。
+        var ballRect = null;
+        return {
+            mode: getCurrentChatSurfaceMode(),
+            compactChatState: getCurrentCompactChatState(),
+            viewport: {
+                width: window.innerWidth,
+                height: window.innerHeight
+            },
+            surfaceItems: surfaceItems,
+            surfaceUnion: unionCompactRects(surfaceRects),
+            baseSurfaceItems: baseSurfaceItems,
+            baseSurfaceRect: unionCompactRects(baseSurfaceRects),
+            baseSurfaceNativeRects: baseSurfaceItems.map(function (item) { return item.nativeRect; }).filter(Boolean),
+            baseSurfaceHitRects: surfaceItems
+                .filter(function (item) { return item && (item.geometryRole === 'baseAnchor' || item.geometryRole === 'baseHit'); })
+                .map(function (item) { return item.hitRect; })
+                .filter(Boolean),
+            extraIslandItems: extraIslandItems,
+            extraIslandNativeRects: extraIslandItems.map(function (item) { return item.nativeRect; }).filter(Boolean),
+            extraIslandHitRects: extraIslandItems.map(function (item) { return item.hitRect; }).filter(Boolean),
+            surfaceHitRects: surfaceItems.map(function (item) { return item.hitRect; }).filter(Boolean),
+            surfaceNativeRects: surfaceItems.map(function (item) { return item.nativeRect; }).filter(Boolean),
+            compactChoicePlacement: layoutOverride ? layoutOverride.compactChoicePlacement : null,
+            ballRect: ballRect,
+            externalBall: isElectronCompactExternalBallEnabled()
+                ? (layoutOverride && layoutOverride.ball) || normalizeCompactDomRect(window.__nekoDesktopCompactBallScreenRect)
+                : null
+        };
+    }
+
+    function syncCompactInteractionGeometry() {
+        var snapshot = getCompactInteractionGeometrySnapshot();
+        var serialized = snapshot ? JSON.stringify(snapshot) : '';
+        if (serialized === compactInteractionGeometrySnapshot) return;
+        compactInteractionGeometrySnapshot = serialized;
+        window.__nekoCompactInteractionGeometry = snapshot;
+        window.__nekoGetCompactInteractionGeometry = getCompactInteractionGeometrySnapshot;
+        window.dispatchEvent(new CustomEvent('neko:compact-interaction-geometry-change', {
+            detail: snapshot
+        }));
+    }
+
+    function clearCompactSurfaceAnchor() {
+        var shell = getShell();
+        if (!shell) return;
+        shell.style.removeProperty('--compact-surface-left');
+        shell.style.removeProperty('--compact-surface-top');
+        shell.style.removeProperty('--compact-surface-width');
+        shell.style.removeProperty('--compact-surface-height');
+        shell.style.removeProperty('--desktop-compact-surface-left');
+        shell.style.removeProperty('--desktop-compact-surface-top');
+        shell.style.removeProperty('--desktop-compact-surface-width');
+        shell.style.removeProperty('--desktop-compact-surface-height');
+        document.documentElement.style.removeProperty('--compact-surface-left');
+        document.documentElement.style.removeProperty('--compact-surface-top');
+        document.documentElement.style.removeProperty('--compact-surface-width');
+        document.documentElement.style.removeProperty('--compact-surface-height');
+        document.documentElement.style.removeProperty('--desktop-compact-surface-left');
+        document.documentElement.style.removeProperty('--desktop-compact-surface-top');
+        document.documentElement.style.removeProperty('--desktop-compact-surface-width');
+        document.documentElement.style.removeProperty('--desktop-compact-surface-height');
+        document.documentElement.style.removeProperty('--compact-desktop-workarea-width');
+        document.documentElement.style.removeProperty('--compact-desktop-workarea-height');
+        compactSurfaceAnchorSnapshot = '';
+        compactSurfaceAnchorLocked = false;
+        dispatchCompactSurfaceLayoutChange(null);
+        syncCompactInteractionGeometry();
+    }
+
+    function syncCompactSurfaceAnchor() {
+        var shell = getShell();
+        if (!shell) return;
+        if (!isCompactHomeMinimizeBallEnabled()) {
+            clearCompactSurfaceAnchor();
+            return;
+        }
+        if (compactSurfaceAnchorLocked) {
+            return;
+        }
+        if (compactSurfaceDesktopResizeActive && isElectronChatWindow()) {
+            return;
+        }
+        if (compactSurfaceResizeSession && !isElectronChatWindow()) {
+            return;
+        }
+
+        var layoutOverride = getElectronCompactLayoutOverride();
+        var target = getCompactSurfaceTarget(layoutOverride);
+        if (!target) {
+            clearCompactSurfaceAnchor();
+            return;
+        }
+        var snapshot = [
+            Math.round(target.left),
+            Math.round(target.top),
+            Math.round(target.width),
+            Math.round(target.height || COMPACT_SURFACE_DEFAULT_HEIGHT)
+        ].join(':');
+        if (snapshot === compactSurfaceAnchorSnapshot) {
+            return;
+        }
+
+        compactSurfaceAnchorSnapshot = snapshot;
+        shell.style.setProperty('--compact-surface-left', Math.round(target.left) + 'px');
+        shell.style.setProperty('--compact-surface-top', Math.round(target.top) + 'px');
+        shell.style.setProperty('--compact-surface-width', Math.round(target.width) + 'px');
+        shell.style.setProperty('--compact-surface-height', Math.round(target.height || COMPACT_SURFACE_DEFAULT_HEIGHT) + 'px');
+        document.documentElement.style.setProperty('--compact-surface-left', Math.round(target.left) + 'px');
+        document.documentElement.style.setProperty('--compact-surface-top', Math.round(target.top) + 'px');
+        document.documentElement.style.setProperty('--compact-surface-width', Math.round(target.width) + 'px');
+        document.documentElement.style.setProperty('--compact-surface-height', Math.round(target.height || COMPACT_SURFACE_DEFAULT_HEIGHT) + 'px');
+        if (layoutOverride && layoutOverride.surface) {
+            shell.style.setProperty('--desktop-compact-surface-left', Math.round(target.left) + 'px');
+            shell.style.setProperty('--desktop-compact-surface-top', Math.round(target.top) + 'px');
+            shell.style.setProperty('--desktop-compact-surface-width', Math.round(target.width) + 'px');
+            shell.style.setProperty('--desktop-compact-surface-height', Math.round(target.height || COMPACT_SURFACE_DEFAULT_HEIGHT) + 'px');
+            document.documentElement.style.setProperty('--desktop-compact-surface-left', Math.round(target.left) + 'px');
+            document.documentElement.style.setProperty('--desktop-compact-surface-top', Math.round(target.top) + 'px');
+            document.documentElement.style.setProperty('--desktop-compact-surface-width', Math.round(target.width) + 'px');
+            document.documentElement.style.setProperty('--desktop-compact-surface-height', Math.round(target.height || COMPACT_SURFACE_DEFAULT_HEIGHT) + 'px');
+        }
+        if (layoutOverride && layoutOverride.workArea) {
+            document.documentElement.style.setProperty('--compact-desktop-workarea-width', Math.round(layoutOverride.workArea.width) + 'px');
+            document.documentElement.style.setProperty('--compact-desktop-workarea-height', Math.round(layoutOverride.workArea.height) + 'px');
+        } else {
+            document.documentElement.style.removeProperty('--compact-desktop-workarea-width');
+            document.documentElement.style.removeProperty('--compact-desktop-workarea-height');
+        }
+        dispatchCompactSurfaceLayoutChange({
+            left: Math.round(target.left),
+            top: Math.round(target.top),
+            width: Math.round(target.width),
+            height: Math.round(target.height || COMPACT_SURFACE_DEFAULT_HEIGHT)
+        });
+        syncCompactInteractionGeometry();
+    }
+
+    function stopCompactMinimizeBallTracking() {
+        if (compactMinimizeBallFrame) {
+            window.cancelAnimationFrame(compactMinimizeBallFrame);
+            compactMinimizeBallFrame = 0;
+        }
+        compactSurfacePendingModelOpen = false;
+        clearCompactSurfaceAnchor();
+    }
+
+    function scheduleCompactMinimizeBallTracking() {
+        if (!isCompactHomeMinimizeBallEnabled()) {
+            stopCompactMinimizeBallTracking();
+            return;
+        }
+        if (compactMinimizeBallFrame) {
+            return;
+        }
+
+        var loop = function () {
+            compactMinimizeBallFrame = 0;
+            if (!isCompactHomeMinimizeBallEnabled()) {
+                stopCompactMinimizeBallTracking();
+                return;
+            }
+            syncCompactSurfaceAnchor();
+            syncCompactInteractionGeometry();
+            compactMinimizeBallFrame = window.requestAnimationFrame(loop);
+        };
+
+        syncCompactSurfaceAnchor();
+        syncCompactInteractionGeometry();
+        compactMinimizeBallFrame = window.requestAnimationFrame(loop);
+    }
+
+    function revealPendingCompactSurfaceOpen() {
+        if (!compactSurfacePendingModelOpen) return false;
+        if (shouldDelayCompactSurfaceOpenForModel()) return false;
+        var overlay = getOverlay();
+        if (!overlay) return false;
+        compactSurfacePendingModelOpen = false;
+        overlay.hidden = false;
+        document.body.classList.add('react-chat-window-open');
+        syncCompactSurfaceAnchor();
+        scheduleCompactMinimizeBallTracking();
+        scheduleMobileContentLayout();
+        return true;
     }
 
     function clearMobileExpandVisualGuard() {
@@ -199,6 +1557,29 @@
     function blockMobileExpandSyntheticPointerEvent(event) {
         if (!shouldBlockMobileExpandClick(event)) return;
         // 手机端触摸展开后浏览器会补发同坐标鼠标事件；从 mousedown 起吞掉，避免按钮出现按压反馈。
+        event.preventDefault();
+        event.stopPropagation();
+        if (typeof event.stopImmediatePropagation === 'function') {
+            event.stopImmediatePropagation();
+        }
+    }
+
+    // Web 宿主下用鼠标拖拽 surface 本体后，浏览器仍会在 mouseup 落点补发一次
+    // click（mousedown 的 preventDefault 不取消 click）。落点若是胶囊按钮会被误判为
+    // 点击而展开输入框。拖拽真正移动过(moved)时 arm 此守卫，吞掉紧随其后的那一次
+    // click。click 与 mouseup 同任务同步派发，setTimeout(…,0) 必在其后清旗，既兜底
+    // 「落点无 click」也不会误吞之后无关的点击。touch 路径已在 touchstart
+    // preventDefault 阶段抑制了合成 click，不经此守卫。
+    function armDragReleaseClickGuard() {
+        suppressDragReleaseClick = true;
+        window.setTimeout(function () {
+            suppressDragReleaseClick = false;
+        }, 0);
+    }
+
+    function consumeDragReleaseClickGuard(event) {
+        if (!suppressDragReleaseClick) return;
+        suppressDragReleaseClick = false;
         event.preventDefault();
         event.stopPropagation();
         if (typeof event.stopImmediatePropagation === 'function') {
@@ -291,15 +1672,22 @@
         var topbar = root.querySelector('.window-topbar');
         var composer = root.querySelector('.composer-panel');
         var messageList = root.querySelector('.message-list');
-        if (!topbar || !composer || !messageList) {
-            resetMobileContentLayoutState(shell, topbar, composer, messageList);
+        var compactStage = root.querySelector('.chat-body-compact-surface');
+        var contentNode = messageList;
+        if (!contentNode && getCurrentChatSurfaceMode() === 'compact') {
+            contentNode = compactStage || root.querySelector('.compact-chat-stage') || root.querySelector('.compact-chat-surface-shell');
+        }
+        if (!topbar || !composer || !contentNode) {
+            resetMobileContentLayoutState(shell, topbar, composer, messageList || compactStage);
             return;
         }
 
         var maxHeight = getMobileMaxHeight();
         if (!maxHeight) return;
 
-        var desiredMessageHeight = Math.max(MOBILE_MESSAGE_MIN_HEIGHT, messageList.scrollHeight);
+        var desiredMessageHeight = getCurrentChatSurfaceMode() === 'compact'
+            ? Math.max(0, Math.ceil(contentNode.getBoundingClientRect().height))
+            : Math.max(MOBILE_MESSAGE_MIN_HEIGHT, messageList.scrollHeight);
         var desiredHeight = Math.ceil(
             topbar.getBoundingClientRect().height
             + composer.getBoundingClientRect().height
@@ -433,6 +1821,10 @@
             jukeboxButtonAriaLabel: getI18nText('chat.jukebox', '点歌台'),
             avatarGeneratorButtonLabel: getI18nText('chat.avatarPreviewLabel', '头像'),
             avatarGeneratorButtonAriaLabel: getI18nText('chat.avatarPreview', '生成头像'),
+            exportConversationButtonLabel: getI18nText('chat.exportConversation', '导出对话'),
+            exportConversationButtonAriaLabel: getI18nText('chat.exportConversation', '导出对话'),
+            chatSurfaceMode: getCurrentChatSurfaceMode(),
+            compactChatState: getCurrentCompactChatState(),
             translateEnabled: (window.appState && typeof window.appState.subtitleEnabled !== 'undefined')
                 ? !!window.appState.subtitleEnabled
                 : localStorage.getItem('subtitleEnabled') === 'true',
@@ -574,6 +1966,8 @@
             _rollbackKey: state._rollbackKey || undefined,
             _toolCursorResetKey: state._toolCursorResetKey || undefined,
             composerHidden: state.composerHidden,
+            chatSurfaceMode: getCurrentChatSurfaceMode(),
+            compactChatState: getCurrentCompactChatState(),
             galgameModeEnabled: !!state.galgameModeEnabled,
             galgameOptions: Array.isArray(state.galgameOptions) ? state.galgameOptions : [],
             galgameOptionsLoading: !!state.galgameOptionsLoading,
@@ -583,14 +1977,18 @@
             onComposerScreenshot: handleComposerScreenshot,
             onComposerRemoveAttachment: handleComposerRemoveAttachment,
             onComposerSubmit: handleComposerSubmit,
+            onCompactHistoryDrop: handleCompactHistoryDrop,
+            onCompactHistoryDragStateChange: handleCompactHistoryDragStateChange,
             onAvatarInteraction: handleAvatarInteraction,
             onAvatarToolStateChange: handleAvatarToolStateChange,
             onJukeboxClick: handleJukeboxClick,
             onAvatarGeneratorClick: handleAvatarGeneratorClick,
+            onExportConversationClick: handleExportConversationClick,
             onTranslateToggle: handleTranslateToggle,
             onGalgameModeToggle: handleGalgameModeToggle,
             onGalgameOptionSelect: handleGalgameOptionSelect,
-            onChoiceSelect: handleChoiceSelect
+            onChoiceSelect: handleChoiceSelect,
+            onCompactChatStateChange: handleCompactChatStateChange
         });
     }
 
@@ -687,6 +2085,22 @@
         } catch (_) {}
     }
 
+    function rememberExpandedShellPosition(left, top) {
+        if (isMobileWidth()) return;
+        if (!Number.isFinite(left) || !Number.isFinite(top)) return;
+        savedExpandedShellPosition = {
+            left: Math.round(left),
+            top: Math.round(top)
+        };
+    }
+
+    function snapshotExpandedShellPositionFromShell() {
+        var shell = getShell();
+        if (!shell || isMobileWidth()) return;
+        var rect = shell.getBoundingClientRect();
+        rememberExpandedShellPosition(rect.left, rect.top);
+    }
+
     function persistSize(width, height) {
         try {
             localStorage.setItem(STORAGE_WIDTH_KEY, String(Math.round(width)));
@@ -747,6 +2161,17 @@
         shell.style.transform = 'none';
     }
 
+    function applyCompactSurfacePosition(left, top) {
+        var shell = getShell();
+        if (!shell) return;
+
+        var rect = shell.getBoundingClientRect();
+        var metrics = getCompactSurfaceMetrics();
+        var width = metrics.width || rect.width || COMPACT_SURFACE_MAX_WIDTH;
+        var height = metrics.height || COMPACT_SURFACE_DEFAULT_HEIGHT;
+        applyCompactSurfaceRect(left, top, width, height, { persist: true });
+    }
+
     function positionWindowAtLeftMiddle() {
         var shell = getShell();
         if (!shell || isMobileWidth()) return;
@@ -755,6 +2180,7 @@
         var left = Math.max(0, Math.round(window.innerWidth * DESKTOP_DEFAULT_LEFT_RATIO));
         var top = Math.max(0, Math.round((window.innerHeight - rect.height) / 2));
         applyPosition(left, top);
+        rememberExpandedShellPosition(left, top);
         persistPosition(left, top);
     }
 
@@ -786,6 +2212,7 @@
         var stored = getStoredPosition();
         if (stored) {
             applyPosition(stored.left, stored.top);
+            rememberExpandedShellPosition(stored.left, stored.top);
         } else {
             positionWindowAtLeftMiddle();
         }
@@ -901,6 +2328,71 @@
         }
 
         dispatchHostEvent('submit', detail);
+    }
+
+    function handleCompactHistoryDrop(payload) {
+        var detail = payload || {};
+
+        if (typeof state.onCompactHistoryDrop === 'function') {
+            try {
+                return state.onCompactHistoryDrop(detail);
+            } catch (error) {
+                console.error('[ReactChatWindow] onCompactHistoryDrop failed:', error);
+                return false;
+            }
+        }
+        if (window.appButtons && typeof window.appButtons.sendCompactHistoryDropPayload === 'function') {
+            return window.appButtons.sendCompactHistoryDropPayload(detail);
+        }
+        if ((!detail.images || !detail.images.length) && typeof detail.text === 'string' && detail.text.trim()) {
+            handleComposerSubmit({
+                text: detail.text,
+                requestId: detail.requestId
+            });
+            return true;
+        }
+        console.warn('[ReactChatWindow] no compact history drop handler available');
+        return false;
+    }
+
+    function prepareCompactHistoryDropSubmit(payload) {
+        var detail = payload || {};
+        var text = typeof detail.text === 'string' ? detail.text.trim() : '';
+        var images = Array.isArray(detail.images) ? detail.images : [];
+        if (!text && images.length === 0) return false;
+
+        if (invalidatePendingGalgameRequest()) {
+            renderWindow();
+        }
+
+        var requestId = typeof detail.requestId === 'string' ? detail.requestId : '';
+        if (requestId) {
+            if (text) {
+                state.pendingRollbackDrafts[requestId] = text;
+            } else {
+                delete state.pendingRollbackDrafts[requestId];
+            }
+        }
+        if (state.rollbackDraft) {
+            console.log('[ROLLBACK] prepareCompactHistoryDropSubmit: clearing rollbackDraft length=' + state.rollbackDraft.length + ' key=' + state._rollbackKey);
+        }
+        state.rollbackDraft = '';
+        return true;
+    }
+
+    function handleCompactHistoryDragStateChange(payload) {
+        var detail = payload || {};
+
+        if (typeof state.onCompactHistoryDragStateChange === 'function') {
+            try {
+                state.onCompactHistoryDragStateChange(detail);
+            } catch (error) {
+                console.error('[ReactChatWindow] onCompactHistoryDragStateChange failed:', error);
+            }
+        }
+
+        dispatchHostEvent('compact-history-drag-state-change', detail);
+        window.dispatchEvent(new CustomEvent('neko:compact-history-drag-state-change', { detail: detail }));
     }
 
     function handleAvatarInteraction(payload) {
@@ -1106,6 +2598,23 @@
             captureAvatarDirect();
         } finally {
             dispatchHostEvent('avatar-generator-click', {});
+        }
+    }
+
+    function handleExportConversationClick() {
+        try {
+            if (window.appChatExport && typeof window.appChatExport.open === 'function') {
+                window.appChatExport.open();
+                return;
+            }
+            var exportButton = document.getElementById('exportConversationButton');
+            if (exportButton && typeof exportButton.click === 'function') {
+                exportButton.click();
+                return;
+            }
+            showToast(getI18nText('chat.exportPreviewFailed', '导出预览生成失败'), 3000);
+        } finally {
+            dispatchHostEvent('chat-export-click', {});
         }
     }
 
@@ -1486,6 +2995,10 @@
         dispatchHostEvent('icebreaker-choice-select', detail);
     }
 
+    function handleCompactChatStateChange(nextCompactChatState) {
+        setCompactChatState(nextCompactChatState);
+    }
+
     function handleMiniGameInviteChoice(option) {
         if (isHomeTutorialInteractionLocked()) return;
         var prompt = state.choicePrompt;
@@ -1763,7 +3276,28 @@
     }
 
     function setViewProps(nextViewProps) {
-        state.viewProps = Object.assign({}, ensureViewProps(), nextViewProps || {});
+        var nextProps = nextViewProps || {};
+        if (Object.prototype.hasOwnProperty.call(nextProps, 'chatSurfaceMode')) {
+            var normalizedChatSurfaceMode = normalizeChatSurfaceMode(nextProps.chatSurfaceMode);
+            var previousChatSurfaceMode = getCurrentChatSurfaceMode();
+            if (normalizedChatSurfaceMode !== previousChatSurfaceMode
+                && !Object.prototype.hasOwnProperty.call(nextProps, 'compactChatState')) {
+                resetCompactChatState();
+            }
+            if (normalizedChatSurfaceMode !== 'minimized') {
+                lastRestorableChatSurfaceMode = normalizedChatSurfaceMode;
+            } else if (previousChatSurfaceMode !== 'minimized') {
+                lastRestorableChatSurfaceMode = previousChatSurfaceMode;
+            }
+            state.chatSurfaceMode = normalizedChatSurfaceMode;
+        }
+        if (Object.prototype.hasOwnProperty.call(nextProps, 'compactChatState')) {
+            state.compactChatState = normalizeCompactChatState(nextProps.compactChatState);
+        }
+        state.viewProps = Object.assign({}, ensureViewProps(), nextProps, {
+            chatSurfaceMode: getCurrentChatSurfaceMode(),
+            compactChatState: getCurrentCompactChatState()
+        });
         renderWindow();
         return state.viewProps;
     }
@@ -1962,6 +3496,8 @@
         return {
             mounted: mounted,
             minimized: minimized,
+            chatSurfaceMode: getCurrentChatSurfaceMode(),
+            compactChatState: getCurrentCompactChatState(),
             viewProps: Object.assign({}, ensureViewProps()),
             messages: state.messages.map(cloneMessage),
             composerAttachments: state.composerAttachments.slice(),
@@ -1973,6 +3509,776 @@
     var isMinimizeTransitioning = false;
     var activeAnimationCleanup = null; // 当前进行中动画的清理函数
 
+    // ── Idle-dock: independent orchestration (Phase 4) ──────────
+    // Positions the minimized ball next to CAT2/CAT3 return-ball.
+    // Completely separated from setMinimized() — only reads minimized
+    // state and calls setMinimized(true/false) externally when needed.
+
+    function isIdleDockTierActive() {
+        return idleDockTier === IDLE_DOCK_TIER_CAT2 || idleDockTier === IDLE_DOCK_TIER_CAT3;
+    }
+
+    function getVisibleReturnButtonContainer() {
+        if (isElectronChatWindow()) return null;
+        return document.querySelector('[id$="-return-button-container"][data-neko-return-visible="true"]');
+    }
+
+    function getIdleDockTarget() {
+        if (!idleDockActive || !isIdleDockTierActive()) return null;
+        var container = getVisibleReturnButtonContainer();
+        if (!container || typeof container.getBoundingClientRect !== 'function') return null;
+        var rect = container.getBoundingClientRect();
+        if (!rect || rect.width <= 0 || rect.height <= 0) return null;
+        var left = Math.round(rect.left - MINIMIZED_SIZE - HOME_IDLE_DOCK_GAP);
+        var top = Math.round(rect.top + ((rect.height - MINIMIZED_SIZE) / 2));
+        return {
+            left: Math.max(0, Math.min(left, window.innerWidth - MINIMIZED_SIZE)),
+            top: Math.max(0, Math.min(top, window.innerHeight - MINIMIZED_SIZE))
+        };
+    }
+
+    function stopIdleDockMinimizeObserver() {
+        if (idleDockMinimizeObserver) {
+            try { idleDockMinimizeObserver.disconnect(); } catch (_) {}
+            idleDockMinimizeObserver = null;
+        }
+    }
+
+    function stopIdleDockContainerObserver() {
+        if (idleDockContainerObserver) {
+            try { idleDockContainerObserver.disconnect(); } catch (_) {}
+            idleDockContainerObserver = null;
+        }
+    }
+
+    function cancelIdleDockSync() {
+        if (idleDockSyncFrame) {
+            window.cancelAnimationFrame(idleDockSyncFrame);
+            idleDockSyncFrame = 0;
+        }
+    }
+
+    function clearIdleDockState() {
+        stopIdleDockMinimizeObserver();
+        stopIdleDockContainerObserver();
+        cancelIdleDockSync();
+        idleDockActive = false;
+        idleDockSavedPosition = null;
+        idleDockTriggeredMinimize = false;
+    }
+
+    function hasIdleDockPendingOrActive() {
+        return !!(idleDockActive || idleDockTriggeredMinimize || idleDockMinimizeObserver);
+    }
+
+    function applyIdleDockPosition() {
+        if (!minimized || isElectronChatWindow()) return;
+        var shell = getShell();
+        var target = getIdleDockTarget();
+        if (!shell || !target) return;
+        shell.style.left = target.left + 'px';
+        shell.style.top = target.top + 'px';
+        shell.classList.add('is-idle-docked');
+    }
+
+    function finishIdleDockMinimize(shell) {
+        if (!shell || !isIdleDockTierActive() || idleDockActive) return;
+        stopIdleDockMinimizeObserver();
+        var rect = shell.getBoundingClientRect();
+        idleDockSavedPosition = { left: rect.left, top: rect.top };
+        idleDockActive = true;
+        applyIdleDockPosition();
+        refreshIdleDockContainerObserver();
+    }
+
+    function scheduleIdleDockMinimizeFallback(shell) {
+        if (!shell) return;
+        window.setTimeout(function () {
+            if (!idleDockTriggeredMinimize || idleDockActive || !isIdleDockTierActive()) return;
+            var latestShell = getShell();
+            if (!latestShell) return;
+            minimized = true;
+            latestShell.classList.remove('is-collapsing', 'is-expanding');
+            latestShell.style.transform = 'none';
+            latestShell.style.removeProperty('width');
+            latestShell.style.removeProperty('height');
+            latestShell.style.removeProperty('right');
+            latestShell.style.removeProperty('bottom');
+            latestShell.classList.add('is-minimized');
+            syncChatSurfaceModeUI();
+            finishIdleDockMinimize(latestShell);
+        }, 460);
+    }
+
+    function refreshIdleDockContainerObserver() {
+        if (isElectronChatWindow() || !idleDockActive || !isIdleDockTierActive()) {
+            stopIdleDockContainerObserver();
+            return;
+        }
+        var container = getVisibleReturnButtonContainer();
+        if (!container || typeof MutationObserver !== 'function') {
+            stopIdleDockContainerObserver();
+            return;
+        }
+        stopIdleDockContainerObserver();
+        idleDockContainerObserver = new MutationObserver(function () {
+            scheduleIdleDockSync();
+        });
+        idleDockContainerObserver.observe(container, {
+            attributes: true,
+            attributeFilter: ['style', 'class', 'data-dragging', 'data-neko-idle-tier', 'data-neko-return-visible']
+        });
+    }
+
+    function syncIdleDockPosition() {
+        idleDockSyncFrame = 0;
+        if (!minimized || !idleDockActive || isElectronChatWindow()) return;
+        applyIdleDockPosition();
+    }
+
+    function scheduleIdleDockSync() {
+        if (!minimized || !idleDockActive || isElectronChatWindow() || idleDockSyncFrame) return;
+        idleDockSyncFrame = window.requestAnimationFrame(syncIdleDockPosition);
+    }
+
+    function getElectronIdleDockBridge() {
+        if (!isElectronChatWindow()) return null;
+        var bridge = window.nekoChatWindow;
+        if (!bridge || typeof bridge.getBounds !== 'function' || typeof bridge.setBounds !== 'function') {
+            return null;
+        }
+        return bridge;
+    }
+
+    function normalizeElectronRect(rect) {
+        if (!rect || typeof rect !== 'object') return null;
+        var left = Number(rect.left);
+        var top = Number(rect.top);
+        var width = Number(rect.width);
+        var height = Number(rect.height);
+        if (!Number.isFinite(left) || !Number.isFinite(top) ||
+            !Number.isFinite(width) || !Number.isFinite(height) ||
+            width <= 0 || height <= 0) {
+            return null;
+        }
+        return { left: left, top: top, width: width, height: height };
+    }
+
+    function normalizeElectronWindowBoundsRect(bounds) {
+        if (!bounds || typeof bounds !== 'object') return null;
+        var left = Number.isFinite(Number(bounds.left)) ? Number(bounds.left) : Number(bounds.x);
+        var top = Number.isFinite(Number(bounds.top)) ? Number(bounds.top) : Number(bounds.y);
+        var width = Number(bounds.width);
+        var height = Number(bounds.height);
+        if (!Number.isFinite(left) || !Number.isFinite(top) ||
+            !Number.isFinite(width) || !Number.isFinite(height) ||
+            width <= 0 || height <= 0) {
+            return null;
+        }
+        left = Math.round(left);
+        top = Math.round(top);
+        width = Math.round(width);
+        height = Math.round(height);
+        return {
+            left: left,
+            top: top,
+            width: width,
+            height: height,
+            right: left + width,
+            bottom: top + height
+        };
+    }
+
+    function rememberElectronIdleDockBounds(bounds) {
+        var rect = normalizeElectronWindowBoundsRect(bounds);
+        if (!rect) return null;
+        electronIdleDockCurrentBounds = {
+            x: rect.left,
+            y: rect.top,
+            width: rect.width,
+            height: rect.height
+        };
+        return electronIdleDockCurrentBounds;
+    }
+
+    function isElectronChatWindowCollapsed(bridge) {
+        if (!bridge || typeof bridge.isCollapsed !== 'function') return false;
+        try {
+            return !!bridge.isCollapsed();
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function getElectronChatMinimizedStateSignature(minimizedState, rect) {
+        if (!minimizedState || !rect) return '0';
+        return [
+            '1',
+            rect.left,
+            rect.top,
+            rect.width,
+            rect.height
+        ].join(':');
+    }
+
+    function dispatchElectronChatMinimizedState(reason) {
+        if (!isElectronChatWindow()) return;
+        var bridge = window.nekoChatWindow;
+        if (!bridge || typeof bridge.getBounds !== 'function') return;
+
+        var now = Date.now();
+        var collapsed = isElectronChatWindowCollapsed(bridge);
+        if (!collapsed) {
+            if (electronChatMinimizedStateSignature === '0' &&
+                reason === 'poll' &&
+                now - electronChatMinimizedStatePublishedAt < ELECTRON_CHAT_MINIMIZED_STATE_HEARTBEAT_MS) {
+                return;
+            }
+            electronChatMinimizedStateSignature = '0';
+            electronChatMinimizedStatePublishedAt = now;
+            window.dispatchEvent(new CustomEvent('neko:idle-chat-minimized-state', {
+                detail: {
+                    action: 'idle_chat_minimized_state',
+                    source: 'chat-window',
+                    reason: reason || 'sync',
+                    minimized: false,
+                    screenRect: null,
+                    timestamp: now
+                }
+            }));
+            return;
+        }
+
+        bridge.getBounds().then(function (bounds) {
+            var rect = normalizeElectronWindowBoundsRect(bounds);
+            if (!rect) return;
+            var now = Date.now();
+            var signature = getElectronChatMinimizedStateSignature(true, rect);
+            if (signature === electronChatMinimizedStateSignature &&
+                reason === 'poll' &&
+                now - electronChatMinimizedStatePublishedAt < ELECTRON_CHAT_MINIMIZED_STATE_HEARTBEAT_MS) {
+                return;
+            }
+            electronChatMinimizedStateSignature = signature;
+            electronChatMinimizedStatePublishedAt = now;
+            window.dispatchEvent(new CustomEvent('neko:idle-chat-minimized-state', {
+                detail: {
+                    action: 'idle_chat_minimized_state',
+                    source: 'chat-window',
+                    reason: reason || 'sync',
+                    minimized: true,
+                    screenRect: rect,
+                    timestamp: now
+                }
+            }));
+        }).catch(function () {});
+    }
+
+    function scheduleElectronChatMinimizedState(reason) {
+        if (!isElectronChatWindow() || electronChatMinimizedStateFrame) return;
+        electronChatMinimizedStateFrame = window.requestAnimationFrame(function () {
+            electronChatMinimizedStateFrame = 0;
+            dispatchElectronChatMinimizedState(reason || 'sync');
+        });
+    }
+
+    function ensureElectronChatMinimizedStateBridge() {
+        if (!isElectronChatWindow() || electronChatMinimizedStateTimer) return;
+        scheduleElectronChatMinimizedState('init');
+        electronChatMinimizedStateTimer = window.setInterval(function () {
+            scheduleElectronChatMinimizedState('poll');
+        }, 500);
+        window.addEventListener('resize', function () {
+            scheduleElectronChatMinimizedState('resize');
+        });
+        window.addEventListener('mousemove', function () {
+            scheduleElectronChatMinimizedState('pointer');
+        }, { passive: true });
+        window.addEventListener('mouseup', function () {
+            scheduleElectronChatMinimizedState('pointer');
+        }, { passive: true });
+    }
+
+    function clampElectronDockBounds(bounds, workArea) {
+        if (!bounds) return null;
+        var area = workArea && Number.isFinite(Number(workArea.x)) && Number.isFinite(Number(workArea.y))
+            ? workArea
+            : { x: 0, y: 0, width: window.screen && window.screen.availWidth || 0, height: window.screen && window.screen.availHeight || 0 };
+        var maxX = Number(area.x) + Math.max(0, Number(area.width) - bounds.width);
+        var maxY = Number(area.y) + Math.max(0, Number(area.height) - bounds.height);
+        return {
+            x: Math.round(Math.max(Number(area.x), Math.min(bounds.x, maxX))),
+            y: Math.round(Math.max(Number(area.y), Math.min(bounds.y, maxY))),
+            width: Math.round(bounds.width),
+            height: Math.round(bounds.height)
+        };
+    }
+
+    function electronRectToBounds(rect) {
+        if (!rect || typeof rect !== 'object') return null;
+        var normalized = normalizeElectronRect({
+            left: Number.isFinite(Number(rect.left)) ? rect.left : rect.x,
+            top: Number.isFinite(Number(rect.top)) ? rect.top : rect.y,
+            width: rect.width,
+            height: rect.height
+        });
+        if (!normalized) return null;
+        return {
+            x: Math.round(normalized.left),
+            y: Math.round(normalized.top),
+            width: Math.round(normalized.width),
+            height: Math.round(normalized.height)
+        };
+    }
+
+    async function applyElectronCat1PairMoveBounds(bounds) {
+        var targetBounds = electronRectToBounds(bounds);
+        if (!targetBounds) return;
+        var bridge = getElectronIdleDockBridge();
+        if (!bridge || !isElectronChatWindowCollapsed(bridge)) return;
+        if (hasElectronIdleDockPendingOrActive()) return;
+        try {
+            if (typeof bridge.idleDockCommitCollapsedBounds === 'function') {
+                await bridge.idleDockCommitCollapsedBounds(targetBounds);
+            } else {
+                bridge.setBounds(targetBounds.x, targetBounds.y, targetBounds.width, targetBounds.height);
+            }
+            scheduleElectronChatMinimizedState('cat1-pair-move');
+        } catch (_) {
+            // A transient desktop move failure should not break the CAT1 animation loop.
+        }
+    }
+
+    function scheduleElectronCat1PairMoveBounds(bounds) {
+        if (!isElectronChatWindow()) return;
+        electronCat1PairMovePendingBounds = electronRectToBounds(bounds);
+        if (!electronCat1PairMovePendingBounds || electronCat1PairMoveBoundsFrame) return;
+        electronCat1PairMoveBoundsFrame = window.requestAnimationFrame(function () {
+            var pendingBounds = electronCat1PairMovePendingBounds;
+            electronCat1PairMovePendingBounds = null;
+            electronCat1PairMoveBoundsFrame = 0;
+            applyElectronCat1PairMoveBounds(pendingBounds);
+        });
+    }
+
+    function isElectronIdleDockCurrent(generation) {
+        return electronIdleDockDesired && generation === electronIdleDockGeneration;
+    }
+
+    function clearElectronIdleDockPositionFrame() {
+        if (electronIdleDockPositionFrame) {
+            window.cancelAnimationFrame(electronIdleDockPositionFrame);
+            electronIdleDockPositionFrame = 0;
+        }
+    }
+
+    function setElectronIdleDockTargetRect(targetRect) {
+        electronIdleDockLastScreenRect = targetRect;
+        electronIdleDockPositionSeq += 1;
+    }
+
+    function scheduleElectronIdleDockPosition() {
+        if (!electronIdleDockActive || !electronIdleDockDesired || electronIdleDockPositionFrame) return;
+        electronIdleDockPositionFrame = window.requestAnimationFrame(function () {
+            electronIdleDockPositionFrame = 0;
+            applyElectronIdleDockPosition();
+        });
+    }
+
+    async function applyElectronIdleDockPosition() {
+        var bridge = getElectronIdleDockBridge();
+        var targetRect = normalizeElectronRect(electronIdleDockLastScreenRect);
+        var positionSeq = electronIdleDockPositionSeq;
+        if (!bridge || !targetRect || !electronIdleDockActive || !electronIdleDockDesired) return;
+
+        var bounds = electronIdleDockCurrentBounds;
+        if (!bounds) {
+            try {
+                bounds = rememberElectronIdleDockBounds(await bridge.getBounds());
+            } catch (_) {
+                bounds = null;
+            }
+            if (positionSeq !== electronIdleDockPositionSeq || !electronIdleDockActive || !electronIdleDockDesired) return;
+        }
+        if (!bounds || !Number.isFinite(Number(bounds.width)) || !Number.isFinite(Number(bounds.height))) {
+            return;
+        }
+
+        var width = Math.max(1, Math.round(Number(bounds.width)));
+        var height = Math.max(1, Math.round(Number(bounds.height)));
+        var nextBounds = {
+            x: Math.round(targetRect.left - width - HOME_IDLE_DOCK_GAP),
+            y: Math.round(targetRect.top + (targetRect.height - height) / 2),
+            width: width,
+            height: height
+        };
+
+        if (!electronIdleDockWorkArea && typeof bridge.getWorkArea === 'function') {
+            try {
+                electronIdleDockWorkArea = await bridge.getWorkArea();
+            } catch (_) {
+                electronIdleDockWorkArea = null;
+            }
+            if (positionSeq !== electronIdleDockPositionSeq || !electronIdleDockActive || !electronIdleDockDesired) return;
+        }
+        nextBounds = clampElectronDockBounds(nextBounds, electronIdleDockWorkArea);
+        if (positionSeq !== electronIdleDockPositionSeq || !electronIdleDockActive || !electronIdleDockDesired) return;
+
+        bridge.setBounds(nextBounds.x, nextBounds.y, nextBounds.width, nextBounds.height);
+        rememberElectronIdleDockBounds(nextBounds);
+    }
+
+    function clearElectronIdleDockRetry() {
+        if (electronIdleDockRetryTimer) {
+            window.clearTimeout(electronIdleDockRetryTimer);
+            electronIdleDockRetryTimer = 0;
+        }
+    }
+
+    function scheduleElectronIdleDockRetry(generation) {
+        if (electronIdleDockRetryTimer || !electronIdleDockLastScreenRect || !isElectronIdleDockCurrent(generation)) return;
+        electronIdleDockRetryTimer = window.setTimeout(function () {
+            electronIdleDockRetryTimer = 0;
+            if (electronIdleDockLastScreenRect && !electronIdleDockActive && isElectronIdleDockCurrent(generation)) {
+                enterElectronIdleDock(electronIdleDockLastScreenRect);
+            }
+        }, 120);
+    }
+
+    function hasElectronIdleDockPendingOrActive() {
+        return electronIdleDockActive || electronIdleDockEntering || electronIdleDockDesired || electronIdleDockRetryTimer;
+    }
+
+    function shouldIgnoreElectronIdleDockInactiveViewportResize(detail, activeTier) {
+        return !!(detail && detail.reason === 'viewport-resize' && !activeTier);
+    }
+
+    function waitElectronIdleDockCommitRetry(delayMs) {
+        return new Promise(function (resolve) {
+            setTimeout(resolve, Math.max(0, delayMs || 0));
+        });
+    }
+
+    async function commitElectronIdleDockCollapsedBounds(bridge, bounds, generation) {
+        if (!bridge || !bounds) return false;
+        if (typeof bridge.idleDockCommitCollapsedBounds === 'function') {
+            for (var attempt = 0; attempt < 4; attempt += 1) {
+                var result = null;
+                try {
+                    result = await bridge.idleDockCommitCollapsedBounds(bounds);
+                } catch (_) {
+                    result = null;
+                }
+                if (generation !== electronIdleDockGeneration || electronIdleDockDesired) return false;
+                if (result !== false && result !== null && result !== undefined) {
+                    rememberElectronIdleDockBounds(result);
+                    return true;
+                }
+                if (attempt >= 3) break;
+                await waitElectronIdleDockCommitRetry(80);
+                if (generation !== electronIdleDockGeneration || electronIdleDockDesired) return false;
+            }
+        }
+        if (typeof bridge.setBounds === 'function') {
+            bridge.setBounds(bounds.x, bounds.y, bounds.width, bounds.height);
+            rememberElectronIdleDockBounds(bounds);
+            return true;
+        }
+        return false;
+    }
+
+    async function enterElectronIdleDock(screenRect) {
+        var bridge = getElectronIdleDockBridge();
+        var targetRect = normalizeElectronRect(screenRect);
+        if (!bridge || !targetRect) return;
+        if (!electronIdleDockDesired) {
+            electronIdleDockDesired = true;
+            electronIdleDockGeneration += 1;
+        }
+        var generation = electronIdleDockGeneration;
+        setElectronIdleDockTargetRect(targetRect);
+
+        if (electronIdleDockActive) {
+            scheduleElectronIdleDockPosition();
+            return;
+        }
+
+        if (electronIdleDockEntering) {
+            return;
+        }
+
+        electronIdleDockEntering = true;
+        try {
+            electronIdleDockSavedBounds = await bridge.getBounds();
+        } catch (_) {
+            electronIdleDockSavedBounds = null;
+        }
+        var entrySavedBounds = electronIdleDockSavedBounds;
+        if (!isElectronIdleDockCurrent(generation)) {
+            electronIdleDockEntering = false;
+            return;
+        }
+
+        var alreadyCollapsed = false;
+        try {
+            alreadyCollapsed = typeof bridge.isCollapsed === 'function' && bridge.isCollapsed();
+        } catch (_) {
+            alreadyCollapsed = false;
+        }
+        var shouldCollapseForIdleDock = !alreadyCollapsed;
+        if (alreadyCollapsed) {
+            rememberElectronIdleDockBounds(entrySavedBounds);
+        }
+        if (!alreadyCollapsed && typeof bridge.idleDockCollapse !== 'function') {
+            electronIdleDockEntering = false;
+            scheduleElectronIdleDockRetry(generation);
+            return;
+        }
+
+        if (shouldCollapseForIdleDock) {
+            var collapsedResult = null;
+            try {
+                collapsedResult = await bridge.idleDockCollapse();
+            } catch (_) {
+                collapsedResult = null;
+            }
+            try {
+                alreadyCollapsed = typeof bridge.isCollapsed === 'function' && bridge.isCollapsed();
+            } catch (_) {
+                alreadyCollapsed = false;
+            }
+            if (!isElectronIdleDockCurrent(generation)) {
+                try {
+                    if (collapsedResult && alreadyCollapsed && entrySavedBounds && typeof bridge.idleDockExpand === 'function') {
+                        await bridge.idleDockExpand(entrySavedBounds);
+                    }
+                } catch (_) {
+                    // Best effort rollback; the newer generation owns the next visible state.
+                }
+                electronIdleDockEntering = false;
+                return;
+            }
+            if (!collapsedResult || !alreadyCollapsed) {
+                electronIdleDockEntering = false;
+                scheduleElectronIdleDockRetry(generation);
+                return;
+            }
+            rememberElectronIdleDockBounds(collapsedResult);
+        }
+
+        if (!isElectronIdleDockCurrent(generation)) {
+            electronIdleDockEntering = false;
+            return;
+        }
+        if (!electronIdleDockWorkArea && typeof bridge.getWorkArea === 'function') {
+            try {
+                electronIdleDockWorkArea = await bridge.getWorkArea();
+            } catch (_) {
+                electronIdleDockWorkArea = null;
+            }
+        }
+        if (!isElectronIdleDockCurrent(generation)) {
+            electronIdleDockEntering = false;
+            return;
+        }
+        electronIdleDockTriggeredCollapse = shouldCollapseForIdleDock;
+        electronIdleDockActive = true;
+        electronIdleDockEntering = false;
+        clearElectronIdleDockRetry();
+        scheduleElectronIdleDockPosition();
+        scheduleElectronChatMinimizedState('idle-dock-enter');
+    }
+
+    async function exitElectronIdleDock(options) {
+        var preserveCurrentPosition = !!(options && options.preserveCurrentPosition);
+        var preserveScreenRect = normalizeElectronRect(options && options.preserveScreenRect);
+        var bridge = getElectronIdleDockBridge();
+        var wasActive = electronIdleDockActive;
+        var triggeredCollapse = electronIdleDockTriggeredCollapse;
+        var savedBounds = electronIdleDockSavedBounds;
+        var currentBounds = electronIdleDockCurrentBounds;
+        var workArea = electronIdleDockWorkArea;
+
+        electronIdleDockDesired = false;
+        electronIdleDockGeneration += 1;
+        var exitGeneration = electronIdleDockGeneration;
+        electronIdleDockActive = false;
+        electronIdleDockTriggeredCollapse = false;
+        electronIdleDockSavedBounds = null;
+        electronIdleDockLastScreenRect = null;
+        electronIdleDockEntering = false;
+        electronIdleDockCurrentBounds = null;
+        electronIdleDockWorkArea = null;
+        clearElectronIdleDockRetry();
+        clearElectronIdleDockPositionFrame();
+        electronIdleDockPositionSeq += 1;
+
+        if (!bridge || !wasActive) return;
+
+        if (preserveCurrentPosition) {
+            var preserveBounds = null;
+            if (preserveScreenRect) {
+                var basisBounds = currentBounds || savedBounds;
+                if (!basisBounds && typeof bridge.getBounds === 'function') {
+                    try {
+                        basisBounds = await bridge.getBounds();
+                    } catch (_) {
+                        basisBounds = null;
+                    }
+                }
+                if (exitGeneration !== electronIdleDockGeneration || electronIdleDockDesired) return;
+                if (basisBounds &&
+                    Number.isFinite(Number(basisBounds.width)) &&
+                    Number.isFinite(Number(basisBounds.height))) {
+                    preserveBounds = {
+                        x: Math.round(preserveScreenRect.left - Math.max(1, Math.round(Number(basisBounds.width))) - HOME_IDLE_DOCK_GAP),
+                        y: Math.round(preserveScreenRect.top + (preserveScreenRect.height - Math.max(1, Math.round(Number(basisBounds.height)))) / 2),
+                        width: Math.max(1, Math.round(Number(basisBounds.width))),
+                        height: Math.max(1, Math.round(Number(basisBounds.height)))
+                    };
+                    if (!workArea && typeof bridge.getWorkArea === 'function') {
+                        try {
+                            workArea = await bridge.getWorkArea();
+                        } catch (_) {
+                            workArea = null;
+                        }
+                    }
+                    if (exitGeneration !== electronIdleDockGeneration || electronIdleDockDesired) return;
+                    preserveBounds = clampElectronDockBounds(preserveBounds, workArea);
+                }
+            }
+            await commitElectronIdleDockCollapsedBounds(bridge, preserveBounds, exitGeneration);
+            if (exitGeneration !== electronIdleDockGeneration || electronIdleDockDesired) return;
+            scheduleElectronChatMinimizedState('idle-dock-exit-preserve');
+            return;
+        }
+
+        if (!savedBounds) return;
+
+        if (triggeredCollapse && typeof bridge.idleDockExpand === 'function') {
+            try {
+                await bridge.idleDockExpand(savedBounds);
+                scheduleElectronChatMinimizedState('idle-dock-exit');
+                return;
+            } catch (_) {}
+        }
+        bridge.setBounds(savedBounds.x, savedBounds.y, savedBounds.width, savedBounds.height);
+        scheduleElectronChatMinimizedState('idle-dock-exit');
+    }
+
+    function handleElectronIdleReturnBallState(detail) {
+        if (!isElectronChatWindow()) return;
+        var tier = detail && detail.tier;
+        var activeTier = tier === IDLE_DOCK_TIER_CAT2 || tier === IDLE_DOCK_TIER_CAT3;
+        if (detail && detail.visible && activeTier && detail.screenRect) {
+            enterElectronIdleDock(detail.screenRect);
+            return;
+        }
+        if (hasElectronIdleDockPendingOrActive()) {
+            if (shouldIgnoreElectronIdleDockInactiveViewportResize(detail, activeTier)) {
+                return;
+            }
+            var shouldPreserveCurrentPosition = detail && (
+                detail.reason === 'return-ball-drag-demotion'
+                || detail.reason === 'return-ball-drag-end'
+            );
+            exitElectronIdleDock({
+                preserveCurrentPosition: shouldPreserveCurrentPosition,
+                preserveScreenRect: shouldPreserveCurrentPosition ? detail.screenRect : null,
+            });
+        }
+    }
+
+    // Enter idle-dock: minimize if needed, then position next to return-ball.
+    // Enters through chatSurfaceMode so compact/full/minimized state stays in sync.
+    function enterIdleDock() {
+        if (isElectronChatWindow()) return;
+
+        if (minimized) {
+            // Already minimized — save current position and dock immediately.
+            var shell = getShell();
+            if (shell) {
+                var rect = shell.getBoundingClientRect();
+                idleDockSavedPosition = { left: rect.left, top: rect.top };
+            }
+            idleDockActive = true;
+            idleDockTriggeredMinimize = false;
+            applyIdleDockPosition();
+            refreshIdleDockContainerObserver();
+        } else {
+            // Not minimized — trigger normal minimize, observe for completion.
+            idleDockTriggeredMinimize = true;
+            stopIdleDockMinimizeObserver();
+            var shell = getShell();
+            if (!shell) return;
+
+            idleDockMinimizeObserver = new MutationObserver(function () {
+                if (shell.classList.contains('is-minimized') && !shell.classList.contains('is-collapsing')) {
+                    finishIdleDockMinimize(shell);
+                }
+            });
+            idleDockMinimizeObserver.observe(shell, { attributes: true, attributeFilter: ['class'] });
+
+            setChatSurfaceMode('minimized');
+            scheduleIdleDockMinimizeFallback(shell);
+        }
+    }
+
+    // Exit idle-dock: restore position and un-minimize if idle-dock triggered it.
+    function exitIdleDock(options) {
+        var preserveCurrentPosition = !!(options && options.preserveCurrentPosition);
+        var wasActive = idleDockActive;
+        var triggered = idleDockTriggeredMinimize;
+        var wasTransitioning = isMinimizeTransitioning;
+        var saved = idleDockSavedPosition;
+        var shell = getShell();
+
+        clearIdleDockState();
+
+        if (shell) {
+            shell.classList.remove('is-idle-docked');
+            if (wasActive && saved && !preserveCurrentPosition) {
+                shell.style.left = saved.left + 'px';
+                shell.style.top = saved.top + 'px';
+            }
+        }
+
+        if (triggered && !wasActive && wasTransitioning) {
+            cancelActiveAnimation();
+            minimized = false;
+            if (shell) {
+                shell.classList.remove('is-minimized', 'is-collapsing', 'is-idle-docked');
+                shell.style.transform = 'none';
+                if (savedShellSize) {
+                    if (savedShellSize.width) shell.style.width = savedShellSize.width;
+                    if (savedShellSize.height) shell.style.height = savedShellSize.height;
+                }
+                if (savedShellPosition) {
+                    shell.style.left = savedShellPosition.left + 'px';
+                    shell.style.top = savedShellPosition.top + 'px';
+                }
+            }
+            savedShellSize = null;
+            savedShellPosition = null;
+            state.chatSurfaceMode = normalizeChatSurfaceMode(lastRestorableChatSurfaceMode);
+            renderWindow();
+            syncMinimizeUI();
+            syncChatSurfaceModeUI();
+            return;
+        }
+
+        if (wasActive && triggered && minimized && preserveCurrentPosition) {
+            syncChatSurfaceModeUI();
+            return;
+        }
+
+        if (wasActive && triggered && minimized) {
+            setChatSurfaceMode(normalizeChatSurfaceMode(lastRestorableChatSurfaceMode));
+        }
+    }
+
+    // ── End idle-dock ────────────────────────────────────────────
+
     // 返回最小化后 shell 应达到的像素几何。
     // 桌面：50x50 圆球，锚定在对话框原左下角（clamp 到视口内）。
     // 手机：全宽底部胶囊，贴屏幕底边（类似移动 App 的底栏收起态）。
@@ -1980,12 +4286,59 @@
     // target.left 应等于 rect.left 同列，target 底边应与 rect 底边对齐
     // （即 target.top = rect.bottom - target.height），这样动画过程中底边不漂移。
     function getMinimizedTarget(rect) {
+        var compactBallTarget = getCompactMinimizeBallTarget();
+        if (compactBallTarget) {
+            return compactBallTarget;
+        }
+
         // 桌面端和移动端统一使用 50px 圆形悬浮球
         return {
             width: MINIMIZED_SIZE,
             height: MINIMIZED_SIZE,
             left: Math.max(0, Math.min(rect.left, window.innerWidth - MINIMIZED_SIZE)),
             top: Math.max(0, Math.min(rect.bottom - MINIMIZED_SIZE, window.innerHeight - MINIMIZED_SIZE))
+        };
+    }
+
+    function getExpandedTargetFromSavedState() {
+        var shell = getShell();
+        if (!shell) return null;
+        if (isMobileWidth()) return null;
+
+        var width = savedShellSize ? parseFloat(savedShellSize.width) : NaN;
+        var height = savedShellSize ? parseFloat(savedShellSize.height) : NaN;
+        if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) {
+            var rect = shell.getBoundingClientRect();
+            width = rect.width;
+            height = rect.height;
+        }
+
+        if (getCurrentChatSurfaceMode() === 'compact') {
+            var compactTarget = getCompactSurfaceTarget();
+            if (compactTarget) {
+                return {
+                    width: width,
+                    height: height,
+                    left: compactTarget.left,
+                    top: compactTarget.top
+                };
+            }
+        }
+
+        var expandedTargetPosition = savedExpandedShellPosition
+            || getStoredPosition()
+            || (savedShellPosition
+                ? {
+                    left: savedShellPosition.left,
+                    top: savedShellPosition.top
+                }
+                : null);
+
+        return {
+            width: width,
+            height: height,
+            left: expandedTargetPosition ? expandedTargetPosition.left : 0,
+            top: expandedTargetPosition ? expandedTargetPosition.top : 0
         };
     }
 
@@ -1998,6 +4351,7 @@
     }
 
     function ensureMinimizedBallIcon() {
+        if (isElectronChatWindow()) return null;
         var shell = getShell();
         if (!shell) return null;
         var icon = shell.querySelector('.react-chat-minimized-icon');
@@ -2017,6 +4371,58 @@
         return icon;
     }
 
+    function setCompactChatState(nextCompactChatState) {
+        var normalized = normalizeCompactChatState(nextCompactChatState);
+        if (state.compactChatState === normalized) {
+            return normalized;
+        }
+        state.compactChatState = normalized;
+        renderWindow();
+        syncChatSurfaceModeUI();
+        dispatchHostEvent('compact-chat-state-change', {
+            state: normalized
+        });
+        return normalized;
+    }
+
+    function setChatSurfaceMode(nextMode) {
+        var normalized = normalizeChatSurfaceMode(nextMode);
+        var previousMode = getCurrentChatSurfaceMode();
+        var nextMinimized = normalized === 'minimized';
+        var previousMinimized = previousMode === 'minimized';
+        if (previousMode === normalized) {
+            syncChatSurfaceModeUI();
+            return normalized;
+        }
+
+        if (!nextMinimized) {
+            lastRestorableChatSurfaceMode = normalized;
+        } else if (!previousMinimized) {
+            lastRestorableChatSurfaceMode = previousMode;
+        }
+
+        resetCompactChatState();
+        state.chatSurfaceMode = normalized;
+        persistChatSurfaceModePreference(normalized);
+        renderWindow();
+
+        if (nextMinimized !== previousMinimized) {
+            setMinimized(nextMinimized);
+        } else {
+            syncChatSurfaceModeUI();
+        }
+
+        dispatchHostEvent('chat-surface-mode-change', {
+            mode: normalized,
+            previousMode: previousMode
+        });
+        return normalized;
+    }
+
+    function cycleChatSurfaceMode() {
+        return setChatSurfaceMode(getNextChatSurfaceMode(getCurrentChatSurfaceMode()));
+    }
+
     function setMinimized(nextMinimized) {
         var shell = getShell();
         if (!shell) return;
@@ -2028,6 +4434,16 @@
         isMinimizeTransitioning = true;
 
         minimized = willMinimize;
+
+        if (isElectronChatWindow()) {
+            shell.classList.remove('is-collapsing', 'is-expanding', 'is-minimized');
+            shell.style.removeProperty('transform');
+            shell.style.removeProperty('transform-origin');
+            shell.style.removeProperty('opacity');
+            isMinimizeTransitioning = false;
+            syncChatSurfaceModeUI();
+            return;
+        }
 
         if (willMinimize) {
             // ---- 折叠动画：向对话框左下角缩放 ----
@@ -2069,6 +4485,8 @@
             // 5. 设置目标 transform，触发动画
             requestAnimationFrame(function () {
                 requestAnimationFrame(function () {
+                    shell.style.left = targetLeft + 'px';
+                    shell.style.top = targetTop + 'px';
                     shell.style.transform = 'scale(' + sx + ', ' + sy + ')';
                 });
             });
@@ -2088,6 +4506,8 @@
                 shell.style.removeProperty('width');
                 shell.style.removeProperty('height');
                 shell.classList.remove('is-mobile-content-capped');
+                shell.style.removeProperty('right');
+                shell.style.removeProperty('bottom');
                 // 将位置设为对话框左下角
                 shell.style.left = targetLeft + 'px';
                 shell.style.top = targetTop + 'px';
@@ -2114,11 +4534,14 @@
             // ---- 展开动画：从最小化态（桌面圆球 / 手机底部胶囊）展开 ----
             var curRect = shell.getBoundingClientRect();
             var ballLeft = curRect.left;
+            var collapsedTop = curRect.top;
             // 桌面圆球的 height≈50，手机胶囊的 height≈48；curRect 直接反映真实值
             var ballBottom = curRect.top + (curRect.height || MINIMIZED_SIZE);
 
             // 恢复保存的尺寸
             shell.classList.remove('is-minimized');
+            shell.style.removeProperty('right');
+            shell.style.removeProperty('bottom');
             if (isMobileWidth()) {
                 // 手机端：宽度由 CSS calc(100vw - 12px) 控制，清除内联宽度
                 shell.style.removeProperty('width');
@@ -2143,6 +4566,11 @@
             // 先设临时位置以获取真实尺寸
             shell.style.left = '0px';
             shell.style.top = '0px';
+            var expandedTarget = getExpandedTargetFromSavedState();
+            if (expandedTarget) {
+                shell.style.left = expandedTarget.left + 'px';
+                shell.style.top = expandedTarget.top + 'px';
+            }
             shell.style.transform = 'none';
             void shell.offsetHeight;
             var expandedRect = shell.getBoundingClientRect();
@@ -2154,6 +4582,8 @@
                 if (savedShellPosition) {
                     shell.style.left = savedShellPosition.left + 'px';
                     shell.style.top = savedShellPosition.top + 'px';
+                } else if (!isMobileWidth()) {
+                    restorePosition();
                 }
                 savedShellSize = null;
                 savedShellPosition = null;
@@ -2170,10 +4600,14 @@
             // 球的左下角 = 展开后对话框的左下角
             var expandedLeft = ballLeft;
             var expandedTop = ballBottom - expandedRect.height;
+            if (expandedTarget) {
+                expandedLeft = expandedTarget.left;
+                expandedTop = expandedTarget.top;
+            }
 
             // 先不 clamp，让动画从球位置自然展开，动画结束后再 clamp
-            shell.style.left = expandedLeft + 'px';
-            shell.style.top = expandedTop + 'px';
+            shell.style.left = ballLeft + 'px';
+            shell.style.top = collapsedTop + 'px';
             shell.style.transform = 'none';
             void shell.offsetHeight;
 
@@ -2194,6 +4628,8 @@
             // 动画到 identity（展开到完整尺寸）
             requestAnimationFrame(function () {
                 requestAnimationFrame(function () {
+                    shell.style.left = expandedLeft + 'px';
+                    shell.style.top = expandedTop + 'px';
                     shell.style.transform = 'scale(1, 1)';
                 });
             });
@@ -2209,6 +4645,7 @@
                 activeAnimationCleanup = null;
                 shell.classList.remove('is-expanding');
                 shell.style.transform = 'none';
+                var surfaceModeAfterExpand = getCurrentChatSurfaceMode();
                 savedShellSize = null;
                 savedShellPosition = null;
                 isMinimizeTransitioning = false;
@@ -2216,12 +4653,14 @@
                 // 确保位置不溢出；全屏模式（/chat）不持久化，
                 // 否则 (0,0) 会覆盖 index.html 中用户保存的窗口位置
                 requestAnimationFrame(function () {
-                    var r = shell.getBoundingClientRect();
-                    var clamped = clampPosition(r.left, r.top);
-                    applyPosition(clamped.left, clamped.top);
-                    if (!window._chatAdapterActive && !isMobileWidth()) {
-                        persistPosition(clamped.left, clamped.top);
+                    if (isMobileWidth()) {
+                        restorePosition();
+                        return;
                     }
+                    if (surfaceModeAfterExpand === 'minimized') {
+                        return;
+                    }
+                    syncCompactSurfaceAnchor();
                 });
             };
             var onExpandEnd = function (e) {
@@ -2244,7 +4683,7 @@
         }
 
         // 更新按钮图标和 aria
-        syncMinimizeUI();
+        syncChatSurfaceModeUI();
     }
 
     function syncMinimizeUI() {
@@ -2265,8 +4704,56 @@
         }
     }
 
+    function syncChatSurfaceModeUI() {
+        var shell = getShell();
+        var button = getMinimizeButton();
+        var btnIcon = getMinimizeIcon();
+        var ballIcon = ensureMinimizedBallIcon();
+        var surfaceMode = getCurrentChatSurfaceMode();
+        var ariaLabel = surfaceMode === 'compact'
+            ? getI18nText('chat.reactWindowMinimize', '最小化聊天框')
+            : surfaceMode === 'minimized'
+                ? getI18nText('chat.reactWindowRestore', '恢复聊天框')
+                : getI18nText('chat.reactWindowCompact', '切换到紧凑聊天框');
+        var shortLabel = surfaceMode === 'compact'
+            ? getI18nText('chat.reactWindowMinimizeShort', '最小化')
+            : surfaceMode === 'minimized'
+                ? getI18nText('chat.reactWindowRestoreShort', '恢复')
+                : getI18nText('chat.reactWindowCompactShort', '紧凑');
+        if (button) {
+            button.setAttribute('aria-label', ariaLabel);
+            button.title = shortLabel;
+        }
+        if (btnIcon) {
+            btnIcon.src = minimized ? '/static/icons/expand_icon_on.png' : '/static/icons/expand_icon_off.png';
+            btnIcon.alt = ariaLabel;
+        }
+        if (ballIcon) {
+            ballIcon.src = '/static/icons/expand_icon_off_ball.png';
+        }
+        if (shell) {
+            shell.setAttribute('data-chat-surface-mode', surfaceMode);
+            shell.setAttribute('data-compact-chat-state', getCurrentCompactChatState());
+        }
+        scheduleCompactMinimizeBallTracking();
+    }
+
     function toggleMinimized() {
-        setMinimized(!minimized);
+        if (minimized && idleDockActive && idleDockSavedPosition) {
+            var shell = getShell();
+            if (shell) {
+                shell.style.left = idleDockSavedPosition.left + 'px';
+                shell.style.top = idleDockSavedPosition.top + 'px';
+                shell.classList.remove('is-idle-docked');
+            }
+            idleDockActive = false;
+            idleDockSavedPosition = null;
+            idleDockTier = IDLE_DOCK_TIER_NONE;
+            stopIdleDockMinimizeObserver();
+            stopIdleDockContainerObserver();
+            cancelIdleDockSync();
+        }
+        cycleChatSurfaceMode();
     }
 
     function prewarmUserDisplayName() {
@@ -2304,13 +4791,22 @@
                     pendingOpenAfterModelManagerHidden = true;
                     return;
                 }
+                // closeWindow 已经会重置 minimized，所以到这里通常 minimized=false
+                // 但如果外部直接调用 openWindow（未经 closeWindow），仍需处理
+                var wasMinimized = minimized;
+                if (wasMinimized) {
+                    // Opening a minimized window restores the last real surface.
+                    // Reset the logical surface BEFORE mountWindow() so React
+                    // rebuilds the compact body instead of the (blank) minimized
+                    // surface; closeWindow performs the same reset when it clears
+                    // the minimized shell.
+                    state.chatSurfaceMode = normalizeChatSurfaceMode(lastRestorableChatSurfaceMode);
+                    resetCompactChatState();
+                }
                 if (!mountWindow()) {
                     showToast(getI18nText('chat.reactWindowMountFailed', '聊天框挂载失败'), 3000);
                     return;
                 }
-                // closeWindow 已经会重置 minimized，所以到这里通常 minimized=false
-                // 但如果外部直接调用 openWindow（未经 closeWindow），仍需处理
-                var wasMinimized = minimized;
                 if (wasMinimized) {
                     // overlay 可能还隐藏，先显示再做展开动画
                     overlay.hidden = false;
@@ -2318,9 +4814,18 @@
                     setMinimized(false);
                     scheduleMobileContentLayout();
                 } else {
+                    if (shouldDelayCompactSurfaceOpenForModel()) {
+                        compactSurfacePendingModelOpen = true;
+                        overlay.hidden = true;
+                        document.body.classList.remove('react-chat-window-open');
+                        return;
+                    }
                     overlay.hidden = false;
                     document.body.classList.add('react-chat-window-open');
-                    restorePosition();
+                    if (getCurrentChatSurfaceMode() === 'compact') {
+                        syncCompactSurfaceAnchor();
+                        scheduleCompactMinimizeBallTracking();
+                    }
                     scheduleMobileContentLayout();
                 }
                 // closeWindow / hidden-state turn-end both invalidate the
@@ -2360,6 +4865,7 @@
         // surfacing stale A/B/C the next time the user opens the window.
         invalidatePendingGalgameRequest();
         cancelActiveAnimation(); // 清理进行中的折叠/展开回调
+        clearIdleDockState();
         deactivateToolCursor();
 
         // 如果当前处于最小化状态，恢复 shell 到正常态
@@ -2375,16 +4881,28 @@
                     shell.style.left = savedShellPosition.left + 'px';
                     shell.style.top = savedShellPosition.top + 'px';
                 }
+                shell.style.removeProperty('right');
+                shell.style.removeProperty('bottom');
                 shell.style.transform = 'none';
             }
             minimized = false;
+            // closeWindow clears the minimized shell directly without routing
+            // through setChatSurfaceMode, so the logical surface must be reset
+            // too. Otherwise state.chatSurfaceMode stays 'minimized' and the next
+            // openWindow() rebuilds the React props with chatSurfaceMode:
+            // 'minimized', rendering a blank body over a no-longer-minimized
+            // shell.
+            state.chatSurfaceMode = normalizeChatSurfaceMode(lastRestorableChatSurfaceMode);
+            resetCompactChatState();
             savedShellSize = null;
             savedShellPosition = null;
-            syncMinimizeUI();
+            syncChatSurfaceModeUI();
         }
 
         overlay.hidden = true;
+        resetCompactChatState();
         document.body.classList.remove('react-chat-window-open');
+        stopCompactMinimizeBallTracking();
         clearMobileContentCap();
         handleAvatarToolStateChange({
             active: false,
@@ -2404,17 +4922,26 @@
 
     var CLICK_THRESHOLD = 5; // px – 移动距离低于此值视为点击
 
-    function startDrag(clientX, clientY) {
+    function isCompactDragSurfaceTarget(target) {
+        if (!target || typeof target.closest !== 'function') return false;
+        if (target.closest('[data-compact-no-drag="true"]')) return false;
+        return !!target.closest('[data-compact-drag-surface="true"]');
+    }
+
+    function startDrag(clientX, clientY, options) {
         var shell = getShell();
         if (!shell) return;
         if (isYuiGuideDragLocked()) return;
 
+        var opts = options || {};
+        var compactSurface = !!(opts.compactSurface && getCurrentChatSurfaceMode() === 'compact' && !minimized);
         var rect = shell.getBoundingClientRect();
         dragState = {
             pointerOffsetX: clientX - rect.left,
             pointerOffsetY: clientY - rect.top,
             startClientX: clientX,
             startClientY: clientY,
+            compactSurface: compactSurface,
             moved: false
         };
 
@@ -2436,8 +4963,14 @@
             dragState.moved = true;
         }
 
+        if (dragState.compactSurface && !dragState.moved) return;
+
         var left = clientX - dragState.pointerOffsetX;
         var top = clientY - dragState.pointerOffsetY;
+        if (dragState.compactSurface) {
+            applyCompactSurfacePosition(left, top);
+            return;
+        }
         var clamped = clampPosition(left, top);
         applyPosition(clamped.left, clamped.top);
     }
@@ -2456,13 +4989,15 @@
             // 最小化态下不持久化悬浮球坐标到展开态存储，
             // 否则 restorePosition 会把完整窗口放到悬浮球位置
             // 移动端坐标也不持久化，避免污染桌面端保存的位置
-            if (!minimized && !isMobileWidth()) {
-                persistPosition(rect.left, rect.top);
-            }
         }
 
         dragState = null;
         document.body.classList.remove('react-chat-window-dragging');
+
+        // 移动过的拖拽不该再变成点击：吞掉 mouseup 落点补发的那一次 click。
+        if (wasMoved) {
+            armDragReleaseClickGuard();
+        }
 
         // 最小化状态下，未发生拖拽移动 → 视为点击，恢复窗口
         // 但 suppressClick=true（如教程接管强制中断）时不触发，避免误展开
@@ -2502,6 +5037,28 @@
             if (!event.touches || event.touches.length === 0) return;
             startDrag(event.touches[0].clientX, event.touches[0].clientY);
         }, { passive: true });
+
+        document.addEventListener('mousedown', function (event) {
+            if (event.button !== 0) return;
+            if (isElectronChatWindow()) return;
+            if (!isCompactDragSurfaceTarget(event.target)) return;
+            startDrag(event.clientX, event.clientY, {
+                compactSurface: true
+            });
+            event.preventDefault();
+            event.stopPropagation();
+        }, true);
+
+        document.addEventListener('touchstart', function (event) {
+            if (isElectronChatWindow()) return;
+            if (!isCompactDragSurfaceTarget(event.target)) return;
+            if (!event.touches || event.touches.length === 0) return;
+            startDrag(event.touches[0].clientX, event.touches[0].clientY, {
+                compactSurface: true
+            });
+            event.preventDefault();
+            event.stopPropagation();
+        }, { capture: true, passive: false });
 
         document.addEventListener('mousemove', function (event) {
             if (!dragState) return;
@@ -2664,9 +5221,6 @@
                 try {
                     localStorage.setItem(MOBILE_HEIGHT_STORAGE_KEY, String(mobileUserHeight));
                 } catch (_) {}
-            } else {
-                persistPosition(rect.left, rect.top);
-                persistSize(rect.width, rect.height);
             }
         }
 
@@ -2754,6 +5308,10 @@
             setGalgameModeEnabled(!!detail.enabled, { persist: detail.persist !== false });
         });
 
+        ['live2d-floating-buttons-ready', 'vrm-model-loaded', 'mmd-model-loaded'].forEach(function (eventName) {
+            window.addEventListener(eventName, revealPendingCompactSurfaceOpen);
+        });
+
         window.addEventListener('neko:tutorial-started', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
@@ -2821,6 +5379,14 @@
         var avatarHeaderButton = $('avatarPreviewHeaderButton');
 
         ensureViewProps();
+        state.chatSurfaceMode = readChatSurfaceModePreference();
+        lastRestorableChatSurfaceMode = state.chatSurfaceMode;
+        resetCompactChatState();
+        state.viewProps = Object.assign({}, ensureViewProps(), {
+            chatSurfaceMode: getCurrentChatSurfaceMode(),
+            compactChatState: getCurrentCompactChatState()
+        });
+        syncChatSurfaceModeUI();
         prewarmUserDisplayName();
         // Resolve the persisted GalGame preference now that the storage-location
         // barrier has settled (initAfterStorageBarrier has awaited it before
@@ -2867,12 +5433,14 @@
         document.addEventListener('mousedown', blockMobileExpandSyntheticPointerEvent, true);
         document.addEventListener('mouseup', blockMobileExpandSyntheticPointerEvent, true);
         document.addEventListener('click', blockMobileExpandSyntheticPointerEvent, true);
+        document.addEventListener('click', consumeDragReleaseClickGuard, true);
         bindDragging();
         createResizeEdges();
         bindResizing();
         bindBridgeEvents();
         setTimeout(refreshAssistantAvatarUrls, 0);
         setTimeout(refreshAssistantAvatarUrls, 500);
+        ensureElectronChatMinimizedStateBridge();
 
         // 恢复手机端用户设置的高度
         try {
@@ -2911,9 +5479,19 @@
         });
 
         window.addEventListener('resize', function () {
+            scheduleCompactMinimizeBallTracking();
             var overlay = getOverlay();
             if (overlay && !overlay.hidden) {
                 if (minimized) {
+                    var dockTarget = getIdleDockTarget();
+                    if (dockTarget) {
+                        var dockShell = getShell();
+                        if (dockShell) {
+                            dockShell.style.left = dockTarget.left + 'px';
+                            dockShell.style.top = dockTarget.top + 'px';
+                        }
+                        return;
+                    }
                     // 最小化态下，根据当前布局（桌面圆球 / 手机胶囊）重新贴到视口内。
                     // 手机胶囊宽度由 CSS !important 控制（width: calc(100vw - 12px)），
                     // 这里只需修正左上角坐标，避免旋转屏或拖窗后溢出。
@@ -2938,6 +5516,7 @@
                     }
                 } else {
                     restorePosition();
+                    syncCompactSurfaceAnchor();
                     scheduleMobileContentLayout();
                 }
             }
@@ -2946,6 +5525,79 @@
         window.addEventListener('localechange', function () {
             state.viewProps = createBaseViewProps();
             renderWindow();
+        });
+
+        window.addEventListener('neko:auto-goodbye:state-change', function (event) {
+            var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
+            if (!detail || detail.type !== 'visual-tier') return;
+
+            idleDockTier = detail.tier === IDLE_DOCK_TIER_CAT2 || detail.tier === IDLE_DOCK_TIER_CAT3
+                ? detail.tier
+                : IDLE_DOCK_TIER_NONE;
+
+            var overlay = getOverlay();
+            if (!overlay || overlay.hidden || isElectronChatWindow()) return;
+
+            if (isIdleDockTierActive()) {
+                if (!idleDockActive) {
+                    enterIdleDock();
+                } else {
+                    scheduleIdleDockSync();
+                    refreshIdleDockContainerObserver();
+                }
+                return;
+            }
+
+            if (hasIdleDockPendingOrActive()) {
+                exitIdleDock({
+                    preserveCurrentPosition: detail.source === 'return-ball-drag-demotion',
+                });
+                return;
+            }
+
+            clearIdleDockState();
+        });
+        window.addEventListener('neko:idle-return-ball-state', function (event) {
+            var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
+            if (!detail) return;
+            handleElectronIdleReturnBallState(detail);
+        });
+        window.addEventListener('neko:idle-chat-pair-move-bounds', function (event) {
+            var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
+            if (!detail) return;
+            scheduleElectronCat1PairMoveBounds(detail.screenRect || detail.bounds);
+        });
+        window.addEventListener('live2d-return-click', function () {
+            if (hasElectronIdleDockPendingOrActive()) { exitElectronIdleDock(); }
+            if (hasIdleDockPendingOrActive()) { exitIdleDock(); return; }
+            clearIdleDockState();
+        });
+        window.addEventListener('vrm-return-click', function () {
+            if (hasElectronIdleDockPendingOrActive()) { exitElectronIdleDock(); }
+            if (hasIdleDockPendingOrActive()) { exitIdleDock(); return; }
+            clearIdleDockState();
+        });
+        window.addEventListener('mmd-return-click', function () {
+            if (hasElectronIdleDockPendingOrActive()) { exitElectronIdleDock(); }
+            if (hasIdleDockPendingOrActive()) { exitIdleDock(); return; }
+            clearIdleDockState();
+        });
+
+        window.addEventListener('neko:desktop-compact-layout-change', function (event) {
+            var layout = event && event.detail ? event.detail : window.__nekoDesktopCompactLayout;
+            handleDesktopCompactLayoutChange(layout || null);
+        });
+        if (window.__nekoDesktopCompactLayout) {
+            handleDesktopCompactLayoutChange(window.__nekoDesktopCompactLayout);
+        }
+        window.addEventListener('neko:desktop-avatar-bounds-change', function () {
+            scheduleCompactMinimizeBallTracking();
+        });
+        window.addEventListener('neko:compact-surface-resize-request', function (event) {
+            applyCompactSurfaceResizeRequest(event.detail || {});
+        }, true);
+        window.addEventListener('neko:compact-surface-resize-width-change', function () {
+            syncCompactInteractionGeometry();
         });
     }
 
@@ -3024,6 +5676,13 @@
         setOnComposerSubmit: function (handler) {
             state.onComposerSubmit = typeof handler === 'function' ? handler : null;
         },
+        setOnCompactHistoryDrop: function (handler) {
+            state.onCompactHistoryDrop = typeof handler === 'function' ? handler : null;
+        },
+        prepareCompactHistoryDropSubmit: prepareCompactHistoryDropSubmit,
+        setOnCompactHistoryDragStateChange: function (handler) {
+            state.onCompactHistoryDragStateChange = typeof handler === 'function' ? handler : null;
+        },
         setOnAvatarInteraction: function (handler) {
             state.onAvatarInteraction = typeof handler === 'function' ? handler : null;
         },
@@ -3032,10 +5691,14 @@
         },
         rollbackLastDraft: rollbackLastDraft,
         clearPendingRollbackDraft: clearPendingRollbackDraft,
+        setChatSurfaceMode: setChatSurfaceMode,
+        cycleChatSurfaceMode: cycleChatSurfaceMode,
+        setCompactChatState: setCompactChatState,
         setGalgameModeEnabled: function (enabled, options) {
             setGalgameModeEnabled(enabled, options || {});
         },
         isGalgameModeEnabled: function () { return !!state.galgameModeEnabled; },
+        getChatSurfaceMode: function () { return getCurrentChatSurfaceMode(); },
         refreshGalgameOptions: fetchGalgameOptionsForLatestTurn,
         // Mini-game invite ChoicePrompt：app-websocket.js 收到对应 WS message 时调
         setMiniGameInvitePrompt: setMiniGameInvitePrompt,

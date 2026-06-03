@@ -75,13 +75,14 @@ class PrintWindowCaptureBackend:
         bmp = None
         mem_dc = None
         hdc_mem = None
+        previous_bitmap = None
         try:
             hdc_mem = win32ui.CreateDCFromHandle(hdc)
             mem_dc = hdc_mem.CreateCompatibleDC()
 
             bmp = win32ui.CreateBitmap()
             bmp.CreateCompatibleBitmap(hdc_mem, width, height)
-            mem_dc.SelectObject(bmp)
+            previous_bitmap = mem_dc.SelectObject(bmp)
 
             # Try PrintWindow with PW_RENDERFULLCONTENT (3) for better game capture
             # Only available on Windows 8.1+ (version 6.3+)
@@ -106,9 +107,12 @@ class PrintWindowCaptureBackend:
             )
         finally:
             if mem_dc is not None:
+                if previous_bitmap is not None:
+                    try:
+                        mem_dc.SelectObject(previous_bitmap)
+                    except Exception:
+                        pass
                 mem_dc.DeleteDC()
-            if hdc_mem is not None:
-                hdc_mem.DeleteDC()
             if bmp is not None:
                 win32gui.DeleteObject(bmp.GetHandle())
             win32gui.ReleaseDC(hwnd, hdc)

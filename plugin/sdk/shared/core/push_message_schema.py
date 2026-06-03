@@ -144,6 +144,7 @@ def translate_push_message(
     metadata: dict[str, Any] | None = None,
     target_lanlan: str | None = None,
     priority: int = 0,
+    coalesce_key: str | None = None,
 ) -> dict[str, Any]:
     """Translate (v2 + legacy) kwargs to the canonical wire payload.
 
@@ -305,6 +306,11 @@ def translate_push_message(
         "schema": SCHEMA_VERSION,
         "source": source,
         "priority": priority,
+        # Optional coalescing key for ProactiveDeliveryManager (OPT-IN):
+        # queued proactive cues sharing the SAME explicit key collapse to the
+        # newest. Empty → never coalesce (unique per cue). Set distinct keys
+        # per cue CATEGORY so distinct important cues don't drop each other.
+        "coalesce_key": coalesce_key if isinstance(coalesce_key, str) else "",
         "visibility": final_visibility,
         "ai_behavior": final_ai_behavior,
         "parts": final_parts,
