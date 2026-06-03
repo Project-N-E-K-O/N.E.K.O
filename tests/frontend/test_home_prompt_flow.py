@@ -4505,8 +4505,9 @@ def test_day2_externalized_intro_records_visible_cursor_anchor(mock_page: Page):
         async () => {
             const director = window.createYuiGuideDirector({ page: 'home' });
             const cursorKinds = [];
+            const spotlightKinds = [];
             director.interactionTakeover = {
-                setExternalizedChatSpotlight: () => {},
+                setExternalizedChatSpotlight: (kind) => spotlightKinds.push(kind),
                 setExternalizedChatCursor: (kind) => {
                     cursorKinds.push(kind);
                     if (kind) {
@@ -4540,13 +4541,15 @@ def test_day2_externalized_intro_records_visible_cursor_anchor(mock_page: Page):
 
             return {
                 cursorKinds,
+                spotlightKinds,
                 anchor: director.avatarFloatingSceneCursorAnchorPoints.day2_intro_context,
             };
         }
         """
     )
 
-    assert result["cursorKinds"] == ["", "window"]
+    assert result["cursorKinds"] == ["input"]
+    assert result["spotlightKinds"] == ["input", ""]
     assert result["anchor"] == {"x": 540, "y": 380}
 
 
@@ -4625,18 +4628,17 @@ def test_day2_externalized_intro_to_screen_entry_preserves_cursor_visibility(
                 cursorAction: 'wobble',
             }, 2, 1, 6);
 
-            const firstWindowIndex = cursorKinds.indexOf('window');
+            const firstInputIndex = cursorKinds.indexOf('input');
             return {
                 cursorKinds,
-                afterWindow: firstWindowIndex >= 0 ? cursorKinds.slice(firstWindowIndex + 1) : [],
+                afterInput: firstInputIndex >= 0 ? cursorKinds.slice(firstInputIndex + 1) : [],
             };
         }
         """
     )
 
-    assert result["cursorKinds"][0] == ""
-    assert "window" in result["cursorKinds"]
-    assert "" not in result["afterWindow"]
+    assert "input" in result["cursorKinds"]
+    assert "" not in result["afterInput"]
 
 
 @pytest.mark.frontend
@@ -4956,7 +4958,7 @@ def test_pc_overlay_suppresses_dom_cursor_on_first_show(mock_page: Page):
 
 
 @pytest.mark.frontend
-def test_externalized_chat_spotlight_reports_compact_capsule_to_pc_overlay(mock_page: Page):
+def test_externalized_chat_spotlight_renders_compact_capsule_locally(mock_page: Page):
     _bootstrap_page(
         mock_page,
         setup_js="""
@@ -4993,6 +4995,13 @@ def test_externalized_chat_spotlight_reports_compact_capsule_to_pc_overlay(mock_
                         ></div>
                     </div>
                 </div>
+                <div id="yui-guide-chat-spotlight" hidden>
+                    <div class="yui-guide-chat-spotlight-chrome"></div>
+                    <span class="yui-guide-chat-spotlight-sweep"></span>
+                    <div class="yui-guide-chat-spotlight-ear-left"></div>
+                    <div class="yui-guide-chat-spotlight-ear-right"></div>
+                    <div class="yui-guide-chat-spotlight-paw"></div>
+                </div>
             `;
         """,
         script_names=("app-interpage.js",),
@@ -5015,21 +5024,106 @@ def test_externalized_chat_spotlight_reports_compact_capsule_to_pc_overlay(mock_
                 runId: window.localStorage.getItem('yuiGuidePcOverlayRunId'),
                 begins: window.__externalChatOverlayBegins,
                 updates: window.__externalChatOverlayUpdates,
+                localSpotlightHidden: document.getElementById('yui-guide-chat-spotlight')?.hidden ?? null,
+                localSpotlightVisible: document.getElementById('yui-guide-chat-spotlight')?.classList.contains('is-visible') ?? false,
+                localSpotlightRadius: document.getElementById('yui-guide-chat-spotlight')?.style.borderRadius ?? null,
+                localSpotlightBorder: getComputedStyle(document.getElementById('yui-guide-chat-spotlight')).border,
+                localSpotlightPlainCapsule: document.getElementById('yui-guide-chat-spotlight')?.classList.contains('is-plain-capsule') ?? false,
+                chromeDisplay: getComputedStyle(document.querySelector('.yui-guide-chat-spotlight-chrome')).display,
+                sweepDisplay: getComputedStyle(document.querySelector('.yui-guide-chat-spotlight-sweep')).display,
             };
         }
         """
     )
 
     assert result["runId"] == "test-run"
-    assert result["begins"] == [{"tutorialRunId": "test-run"}]
-    assert result["updates"]
-    first_spotlight = result["updates"][0]["payload"]["spotlights"][0]
-    assert first_spotlight["shape"] == "rounded-rect"
-    assert first_spotlight["radius"] == 999
-    assert first_spotlight["x"] == 692
-    assert first_spotlight["y"] == 442
-    assert first_spotlight["width"] == 446
-    assert first_spotlight["height"] == 70
+    assert result["begins"] == []
+    assert result["updates"] == []
+    assert result["localSpotlightHidden"] is False
+    assert result["localSpotlightVisible"] is True
+    assert result["localSpotlightRadius"] == "34px"
+    assert result["localSpotlightBorder"].startswith("0px")
+    assert result["localSpotlightPlainCapsule"] is False
+    assert result["chromeDisplay"] != "none"
+    assert result["sweepDisplay"] != "none"
+
+
+@pytest.mark.frontend
+def test_externalized_chat_input_spotlight_retries_after_capsule_layout_appears(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/chat');
+            document.body.innerHTML = `
+                <div id="react-chat-window-shell" style="position:fixed; left:560px; top:360px; width:480px; height:90px;">
+                    <div id="react-chat-window-root"></div>
+                </div>
+                <div id="yui-guide-chat-spotlight" hidden>
+                    <div class="yui-guide-chat-spotlight-chrome"></div>
+                    <span class="yui-guide-chat-spotlight-sweep"></span>
+                    <div class="yui-guide-chat-spotlight-ear-left"></div>
+                    <div class="yui-guide-chat-spotlight-ear-right"></div>
+                    <div class="yui-guide-chat-spotlight-paw"></div>
+                </div>
+            `;
+        """,
+        script_names=("app-interpage.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const timestamp = Date.now();
+            window.postMessage({
+                __nekoTutorialOverlayRelay: true,
+                payload: {
+                    action: 'yui_guide_set_chat_spotlight',
+                    kind: 'input',
+                    timestamp,
+                },
+            }, '*');
+            await new Promise((resolve) => setTimeout(resolve, 120));
+            document.getElementById('react-chat-window-root').innerHTML = `
+                <div
+                    class="compact-chat-surface-frame"
+                    data-compact-geometry-owner="surface"
+                    data-compact-geometry-item="capsule"
+                    data-compact-drag-surface="true"
+                    style="position:fixed; left:600px; top:400px; width:430px; height:54px; border-radius:999px;"
+                ></div>
+            `;
+            window.postMessage({
+                __nekoTutorialOverlayRelay: true,
+                payload: {
+                    action: 'yui_guide_update_chat_message',
+                    messageId: 'guide-message',
+                    patch: { status: 'streaming' },
+                    timestamp: timestamp + 1,
+                },
+            }, '*');
+            await new Promise((resolve) => setTimeout(resolve, 420));
+            const spotlight = document.getElementById('yui-guide-chat-spotlight');
+            const rect = spotlight.getBoundingClientRect();
+            return {
+                hidden: spotlight.hidden,
+                visible: spotlight.classList.contains('is-visible'),
+                input: spotlight.classList.contains('is-input'),
+                radius: spotlight.style.borderRadius,
+                width: Math.round(rect.width),
+                height: Math.round(rect.height),
+            };
+        }
+        """
+    )
+
+    assert result == {
+        "hidden": False,
+        "visible": True,
+        "input": True,
+        "radius": "34px",
+        "width": 446,
+        "height": 70,
+    }
 
 
 @pytest.mark.frontend

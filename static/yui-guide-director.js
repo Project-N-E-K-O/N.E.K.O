@@ -5928,6 +5928,9 @@
         }
 
         getAvatarFloatingIntroExternalizedSpotlightKind(scene) {
+            if (scene && scene.id === 'day2_intro_context') {
+                return 'input';
+            }
             if (scene && scene.id === 'day3_chat_tools') {
                 return 'input';
             }
@@ -8126,6 +8129,11 @@
             this.currentStep = this.getAvatarFloatingInterruptStep(scene);
             const isFirstDailyScene = index === 0;
             const preserveExternalizedChatGuideTarget = this.shouldPreserveExternalizedChatCursor(previousSceneId, scene);
+            const preserveIntroExternalizedChatGuideTarget = !!(
+                isFirstDailyScene
+                && this.isHomeChatExternalized()
+                && this.shouldPreserveIntroExternalizedChatCursor(scene)
+            );
             if (isFirstDailyScene) {
                 this.cursor.cancel();
                 this.avatarFloatingSceneCursorAnchorPoints = Object.create(null);
@@ -8137,7 +8145,11 @@
             this.clearAllVirtualSpotlights();
             this.clearSpotlightGeometryHints();
             this.clearSpotlightVariantHints();
-            if (this.isHomeChatExternalized() && !preserveExternalizedChatGuideTarget) {
+            if (
+                this.isHomeChatExternalized()
+                && !preserveExternalizedChatGuideTarget
+                && !preserveIntroExternalizedChatGuideTarget
+            ) {
                 this.clearExternalizedChatGuideTarget();
             }
 
@@ -8316,7 +8328,19 @@
                 : null;
 
             if (introChatSpotlightTarget || introExternalizedChatSpotlightKind) {
-                await narrationPromise;
+                const introExternalizedChatStreamPromise = introExternalizedChatSpotlightKind
+                    ? this.waitForSceneDelay(this.resolveGuideChatStreamDurationMs(text, {
+                        voiceKey: voiceKey
+                    }))
+                    : null;
+                if (introExternalizedChatStreamPromise) {
+                    await Promise.all([
+                        narrationPromise,
+                        introExternalizedChatStreamPromise
+                    ]);
+                } else {
+                    await narrationPromise;
+                }
                 if (introExternalizedChatSpotlightKind) {
                     this.rememberAvatarFloatingSceneCursorAnchorFromExternalizedChat(scene.id, 30000);
                     this.interactionTakeover.setExternalizedChatSpotlight('');

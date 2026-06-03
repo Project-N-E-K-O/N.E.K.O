@@ -486,7 +486,7 @@ def test_compact_geometry_snapshot_separates_base_surface_from_extra_islands():
     assert "extraIslandHitRects:" in snapshot_block
 
 
-def test_externalized_chat_input_spotlight_uses_capsule_radius():
+def test_externalized_chat_input_spotlight_uses_rounded_rect_radius():
     script = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
 
     render_block = script.split("function renderYuiGuideChatSpotlight(spotlight, kind, rect)", 1)[1].split(
@@ -494,7 +494,49 @@ def test_externalized_chat_input_spotlight_uses_capsule_radius():
         1,
     )[0]
 
-    assert "var radius = kind === 'window' ? 26 : 999;" in render_block
+    assert (
+        "var radius = kind === 'window' ? 26 : Math.min(34, Math.max(18, "
+        "Math.round((rect.height + padding * 2) / 2)));"
+    ) in render_block
+
+
+def test_externalized_chat_input_spotlight_uses_local_generic_rect_highlight():
+    script = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
+
+    update_block = script.split("function updateYuiGuideChatSpotlight(kind)", 1)[1].split(
+        "function applyYuiGuideChatSpotlight(kind)",
+        1,
+    )[0]
+
+    assert "if (kind !== 'input' && isYuiGuidePcOverlayAvailable()) {" in update_block
+    assert "is-plain-capsule" not in update_block
+
+
+def test_yui_guide_spotlight_state_messages_bypass_cross_channel_dedup():
+    script = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
+
+    bypass_block = script.split("function shouldBypassYuiGuideMessageDedup(action)", 1)[1].split(
+        "function isMainUIHiddenByModelManager()",
+        1,
+    )[0]
+
+    assert "action === 'yui_guide_set_chat_spotlight'" in bypass_block
+    assert "action === 'yui_guide_set_chat_cursor'" in bypass_block
+    assert "!shouldBypassYuiGuideMessageDedup(message.action)" in script
+    assert "!shouldBypassYuiGuideMessageDedup(event.data.action)" in script
+
+
+def test_externalized_chat_input_spotlight_retries_after_message_layout():
+    script = (Path(__file__).resolve().parents[2] / "static" / "app-interpage.js").read_text(encoding="utf-8")
+
+    retry_block = script.split("function scheduleYuiGuideChatInputSpotlightRetry()", 1)[1].split(
+        "function renderYuiGuideChatSpotlight(spotlight, kind, rect)",
+        1,
+    )[0]
+
+    assert "if (yuiGuideChatSpotlightKind !== 'input')" in retry_block
+    assert "updateYuiGuideChatSpotlight('input');" in retry_block
+    assert "scheduleYuiGuideChatInputSpotlightRetry();" in script
 
 
 def test_compact_tutorial_guide_preview_scrolls_without_ellipsis():
