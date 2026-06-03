@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-
-from dataclasses import replace
 import json
-
 import time
+from dataclasses import replace
 from typing import Any
 
 from .awareness_buffer import ActivityBuffer
