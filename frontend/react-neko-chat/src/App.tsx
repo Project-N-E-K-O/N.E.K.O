@@ -4903,6 +4903,42 @@ export default function App({
       ) : null}
     </div>
   ) : null;
+  const composerAttachmentPreviewNode = composerAttachments.length > 0 ? (
+    <div
+      className={`composer-attachment-viewport${isCompactSurface ? ' composer-attachment-viewport-compact' : ''}`}
+      aria-label={composerAttachmentsAriaLabel}
+      data-compact-geometry-item={isCompactSurface ? 'attachments' : undefined}
+      data-compact-geometry-owner={isCompactSurface ? 'surface' : undefined}
+      data-compact-no-drag={isCompactSurface ? 'true' : undefined}
+    >
+      <div className="composer-attachments" role="list">
+        {composerAttachments.map((attachment) => (
+          <figure key={attachment.id} className="composer-attachment-card" role="listitem">
+            <img
+              className="composer-attachment-image"
+              src={attachment.url}
+              alt={attachment.alt || ''}
+              loading="lazy"
+            />
+            <button
+              className="composer-attachment-remove"
+              type="button"
+              aria-label={`${removeAttachmentButtonAriaLabel}: ${attachment.alt || attachment.id}`}
+              aria-disabled={composerDisabled}
+              disabled={composerDisabled}
+              onClick={() => {
+                if (!composerDisabled) {
+                  onComposerRemoveAttachment?.(attachment.id);
+                }
+              }}
+            >
+              <span className="composer-attachment-remove-icon" aria-hidden="true" />
+            </button>
+          </figure>
+        ))}
+      </div>
+    </div>
+  ) : null;
 
   const choiceLayerNode = (
     <div
@@ -5227,34 +5263,6 @@ export default function App({
           data-compact-chat-state={effectiveCompactChatState}
         >
           <div id="music-player-mount" />
-          {composerAttachments.length > 0 ? (
-            <div className="composer-attachments" aria-label={composerAttachmentsAriaLabel}>
-              {composerAttachments.map((attachment) => (
-                <figure key={attachment.id} className="composer-attachment-card">
-                  <img
-                    className="composer-attachment-image"
-                    src={attachment.url}
-                    alt={attachment.alt || ''}
-                    loading="lazy"
-                  />
-                  <button
-                    className="composer-attachment-remove"
-                    type="button"
-                    aria-label={`${removeAttachmentButtonAriaLabel}: ${attachment.alt || attachment.id}`}
-                    aria-disabled={composerDisabled}
-                    disabled={composerDisabled}
-                    onClick={() => {
-                      if (!composerDisabled) {
-                        onComposerRemoveAttachment?.(attachment.id);
-                      }
-                    }}
-                  >
-                    脳
-                  </button>
-                </figure>
-              ))}
-            </div>
-          ) : null}
           <form className="composer" onSubmit={(event) => {
             event.preventDefault();
             submitDraft();
@@ -5363,6 +5371,7 @@ export default function App({
                     </>
                   )}
                 </div>
+                {composerAttachmentPreviewNode}
                 {compactInputToolFanNode}
               </div>
             ) : null}

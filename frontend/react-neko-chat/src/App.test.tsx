@@ -5701,7 +5701,7 @@ describe('App', () => {
   it('renders pending composer attachments and removes them through callback', () => {
     const onComposerRemoveAttachment = vi.fn();
 
-    render(
+    const { container } = render(
       <App
         composerAttachments={[
           { id: 'img-1', url: 'data:image/png;base64,aaa', alt: 'Screenshot 1' },
@@ -5710,6 +5710,11 @@ describe('App', () => {
       />,
     );
 
+    const viewport = container.querySelector('.composer-attachment-viewport');
+    expect(viewport).toHaveClass('composer-attachment-viewport-compact');
+    expect(viewport).toHaveAttribute('data-compact-geometry-item', 'attachments');
+    expect(container.querySelector('.compact-chat-surface-shell .composer-attachment-viewport')).toBe(viewport);
+    expect(container.querySelector('.composer-panel > .composer-attachments')).toBeNull();
     expect(screen.getByAltText('Screenshot 1')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Remove image: Screenshot 1' }));
 

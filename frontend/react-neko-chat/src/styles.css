@@ -1098,24 +1098,73 @@ svg {
   display: none;
 }
 
+.composer-attachment-viewport {
+  width: 100%;
+  min-width: 0;
+  padding: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(127, 144, 170, 0.22);
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(242, 248, 255, 0.66));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.72),
+    0 6px 16px rgba(65, 91, 130, 0.08);
+  backdrop-filter: blur(18px) saturate(1.16);
+  -webkit-backdrop-filter: blur(18px) saturate(1.16);
+}
+
+.composer-attachment-viewport-compact {
+  width: 100%;
+  max-width: var(--compact-surface-active-width);
+  margin-top: 6px;
+  padding: 7px 8px 6px;
+  border-color: rgba(255, 255, 255, 0.5);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.68), rgba(239, 248, 255, 0.56));
+  box-shadow:
+    0 0 0 1px rgba(208, 233, 255, 0.12),
+    0 8px 20px rgba(42, 89, 132, 0.08);
+}
+
 .composer-attachments {
   display: flex;
-  gap: 10px;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  max-height: 74px;
   overflow-x: auto;
-  padding-bottom: 2px;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  padding: 1px 1px 4px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(96, 127, 166, 0.28) transparent;
+}
+
+.composer-attachments::-webkit-scrollbar {
+  height: 5px;
+}
+
+.composer-attachments::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.composer-attachments::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(96, 127, 166, 0.28);
 }
 
 .composer-attachment-card {
   position: relative;
-  width: 90px;
-  height: 90px;
+  width: 68px;
+  height: 68px;
   margin: 0;
   flex: 0 0 auto;
+  overflow: hidden;
+  border: 1px solid rgba(127, 144, 170, 0.28);
   border-radius: 8px;
-  overflow: visible;
-  border: 2px solid #d7dde6;
-  box-shadow: 0 4px 10px rgba(89, 108, 140, 0.08);
-  background: #fff;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 4px 12px rgba(65, 91, 130, 0.1);
 }
 
 .composer-attachment-image {
@@ -1127,19 +1176,51 @@ svg {
 
 .composer-attachment-remove {
   position: absolute;
-  top: -6px;
-  right: -6px;
-  width: 20px;
-  height: 20px;
-  border: 0;
+  top: 4px;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.82);
   border-radius: 999px;
   color: #fff;
-  background: #dc3545;
+  background: rgba(34, 47, 66, 0.72);
   cursor: pointer;
-  font-size: 0.92rem;
-  font-weight: 700;
-  line-height: 1;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 3px 8px rgba(25, 38, 58, 0.22);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: background 0.15s ease, opacity 0.15s ease, transform 0.15s ease;
+}
+
+.composer-attachment-remove::before,
+.composer-attachment-remove::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  top: 50%;
+  height: 1.5px;
+  border-radius: 999px;
+  background: currentColor;
+  transform-origin: center;
+}
+
+.composer-attachment-remove::before {
+  transform: translateY(-50%) rotate(45deg);
+}
+
+.composer-attachment-remove::after {
+  transform: translateY(-50%) rotate(-45deg);
+}
+
+.composer-attachment-remove:hover:not(:disabled) {
+  background: rgba(220, 53, 69, 0.9);
+  transform: scale(1.06);
+}
+
+.composer-attachment-remove:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
 }
 
 /* ===== 输入框统一容器 ===== */
@@ -1898,7 +1979,9 @@ body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-c
   --compact-surface-active-width: var(--compact-surface-resize-width, var(--compact-surface-width, 430px));
   position: relative;
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
   padding-top: 4px;
   width: var(--compact-surface-active-width);
   overflow: visible;
@@ -4060,9 +4143,40 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   background: rgba(28, 28, 46, 0.91);
 }
 
+[data-theme="dark"] .composer-attachment-viewport {
+  border-color: rgba(116, 187, 255, 0.18);
+  background: linear-gradient(180deg, rgba(38, 48, 68, 0.72), rgba(23, 35, 50, 0.62));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 8px 20px rgba(0, 0, 0, 0.22);
+}
+
+[data-theme="dark"] .composer-attachment-viewport-compact {
+  border-color: rgba(177, 216, 255, 0.24);
+  background: linear-gradient(180deg, rgba(31, 48, 66, 0.68), rgba(15, 29, 46, 0.6));
+  box-shadow:
+    0 0 0 1px rgba(132, 184, 236, 0.1),
+    0 8px 18px rgba(0, 0, 0, 0.18);
+}
+
+[data-theme="dark"] .composer-attachments {
+  scrollbar-color: rgba(95, 199, 255, 0.38) transparent;
+}
+
+[data-theme="dark"] .composer-attachments::-webkit-scrollbar-thumb {
+  background: rgba(95, 199, 255, 0.38);
+}
+
 [data-theme="dark"] .composer-attachment-card {
-  border-color: #444;
-  background: #2a2a3a;
+  border-color: rgba(116, 187, 255, 0.22);
+  background: rgba(33, 45, 62, 0.82);
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.24);
+}
+
+[data-theme="dark"] .composer-attachment-remove {
+  border-color: rgba(222, 240, 255, 0.26);
+  background: rgba(10, 18, 30, 0.72);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.34);
 }
 
 [data-theme="dark"] .composer-tool-btn:hover {
