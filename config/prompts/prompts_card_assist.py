@@ -253,6 +253,18 @@ How you work:
 }
 
 
+CARD_ASSIST_CHAT_ADVICE_ONLY_DIRECTIVE = {
+    "zh": (
+        "\n\n本轮是“只读建议”模式：你可以点评、指出问题、给出修改方向或候选写法，"
+        "但绝对不要提交任何字段修改动作。返回时 actions 必须是空数组 []。"
+    ),
+    "en": (
+        "\n\nThis turn is advice-only mode: you may critique the card and suggest directions or "
+        "candidate rewrites, but you must not submit any field-edit actions. Return actions as []."
+    ),
+}
+
+
 def get_card_assist_clarify_prompt(lang: str = "zh") -> str:
     return _loc(CARD_ASSIST_CLARIFY_PROMPT, lang)
 
@@ -267,3 +279,7 @@ def get_card_assist_refine_field_prompt(lang: str = "zh") -> str:
 
 def get_card_assist_chat_system_prompt(lang: str = "zh") -> str:
     return _loc(CARD_ASSIST_CHAT_SYSTEM_PROMPT, lang)
+
+
+def get_card_assist_chat_advice_only_directive(lang: str = "zh") -> str:
+    return _loc(CARD_ASSIST_CHAT_ADVICE_ONLY_DIRECTIVE, lang)

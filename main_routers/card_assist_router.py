@@ -27,6 +27,7 @@ from fastapi.responses import JSONResponse
 
 from config import CHARACTER_RESERVED_FIELDS
 from config.prompts.prompts_card_assist import (
+    get_card_assist_chat_advice_only_directive,
     get_card_assist_chat_system_prompt,
     get_card_assist_clarify_prompt,
     get_card_assist_generate_prompt,
@@ -714,16 +715,19 @@ _CHAT_REWRITE_VERB_RE = re.compile(
     re.IGNORECASE,
 )
 
-_CHAT_ADVICE_ONLY_DIRECTIVE = {
-    "zh": (
-        "\n\n本轮是“只读建议”模式：你可以点评、指出问题、给出修改方向或候选写法，"
-        "但绝对不要提交任何字段修改动作。返回时 actions 必须是空数组 []。"
-    ),
-    "en": (
-        "\n\nThis turn is advice-only mode: you may critique the card and suggest directions or "
-        "candidate rewrites, but you must not submit any field-edit actions. Return actions as []."
-    ),
-}
+_CHAT_ADVICE_ONLY_INTENT_RE = re.compile(
+    r"(建议|意见|点评|审一下|审稿|检查一下|帮我看看|看一下|指出问题|分析|优缺点|"
+    r"修改方向|修改方案|候选写法|suggest|suggestion|advice|critique|review|"
+    r"pros\s+and\s+cons|candidate\s+rewrite)",
+    re.IGNORECASE,
+)
+
+_CHAT_DIRECT_EDIT_REQUEST_RE = re.compile(
+    r"(直接|现在|立刻|马上|帮我|替我|给我)?\s*"
+    r"(改成|修改成|换成|写成|写进|应用|采纳|更新字段|保存到字段|直接改|帮我改|替我改|"
+    r"apply|make\s+the\s+changes|edit\s+the\s+field|update\s+the\s+field|change\s+it\s+to)",
+    re.IGNORECASE,
+)
 
 
 def _latest_user_text(history: list[dict]) -> str:
@@ -743,6 +747,15 @@ def _chat_text_requests_full_rewrite(text: str) -> bool:
     return bool(
         _CHAT_FULL_REWRITE_RE.search(text)
         and _CHAT_REWRITE_VERB_RE.search(text)
+    )
+
+
+def _chat_text_requests_advice_only(text: str) -> bool:
+    if not text:
+        return False
+    return bool(
+        _CHAT_ADVICE_ONLY_INTENT_RE.search(text)
+        and not _CHAT_DIRECT_EDIT_REQUEST_RE.search(text)
     )
 
 
@@ -1018,7 +1031,10 @@ async def chat(request: Request):
     target_keys = _resolve_target_keys(body, locale_code, current_card)
     target_keys_text = " / ".join(target_keys)
     latest_user = _latest_user_text(history)
-    advice_only = body.get("advice_only") is True
+    advice_only = (
+        body.get("advice_only") is True
+        or _chat_text_requests_advice_only(latest_user)
+    )
 
     dev_cat_name = str(body.get("dev_cat_name") or _DEFAULT_DEV_CAT_NAME).strip()
     if not dev_cat_name or len(dev_cat_name) > 40:
@@ -1029,7 +1045,7 @@ async def chat(request: Request):
         dev_cat_name, current_card_text, target_keys_text
     )
     if advice_only:
-        system_content += _CHAT_ADVICE_ONLY_DIRECTIVE["zh" if lang == "zh" else "en"]
+        system_content += get_card_assist_chat_advice_only_directive(lang)
     # 聊天回复 + actions 里的字段值也用目标语言（Codex #3331696257）
     system_content += _output_language_directive(locale_code)
 

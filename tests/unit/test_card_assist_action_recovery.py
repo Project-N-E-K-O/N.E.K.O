@@ -292,3 +292,42 @@ def test_chat_advice_only_discards_actions_and_skips_recovery(monkeypatch):
     assert body["success"] is True
     assert body["reply"].startswith("这里有两点建议")
     assert body["actions"] == []
+
+
+def test_chat_advice_style_text_skips_recovery_without_flag(monkeypatch):
+    monkeypatch.setattr(
+        car, "_reject_untrusted_card_assist", lambda *_args, **_kwargs: None
+    )
+
+    async def fake_invoke_detailed(prompt):
+        assert "只读建议" in prompt[0]["content"]
+        return (
+            "可以先把行为特征写得更具体，比如补一个固定小习惯；"
+            "人际关系也建议加一点冲突张力。",
+            None,
+        )
+
+    async def fake_invoke(_prompt):
+        raise AssertionError("manual advice-style text should not trigger action recovery")
+
+    monkeypatch.setattr(car, "_invoke_assist_detailed", fake_invoke_detailed)
+    monkeypatch.setattr(car, "_invoke_assist", fake_invoke)
+
+    app = FastAPI()
+    app.include_router(car.router)
+    with TestClient(app) as client:
+        resp = client.post(
+            "/api/card-assist/chat",
+            json={
+                "messages": [{"role": "user", "content": "帮我审一下并提出修改方案"}],
+                "current_card": {"行为特征": "很认真", "人际关系": "和家人关系很好"},
+                "target_field_keys": ["行为特征", "人际关系"],
+                "locale": "zh-CN",
+            },
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert body["reply"].startswith("可以先把行为特征")
+    assert body["actions"] == []
