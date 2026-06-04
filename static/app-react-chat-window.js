@@ -5131,9 +5131,10 @@
             startDrag(event.touches[0].clientX, event.touches[0].clientY, {
                 compactSurface: true
             });
-            event.preventDefault();
-            event.stopPropagation();
-        }, { capture: true, passive: false });
+            // Do not preventDefault on touchstart: a stationary tap on the
+            // compact capsule must still synthesize click so React can enter
+            // input mode. Real drags are blocked in touchmove below.
+        }, { capture: true, passive: true });
 
         document.addEventListener('mousemove', function (event) {
             if (!dragState) return;

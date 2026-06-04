@@ -552,6 +552,10 @@ def test_compact_surface_drag_uses_declared_surface_and_no_drag_exclusions():
     )[0]
     assert "if (!isCompactDragSurfaceTarget(event.target)) return;" in touch_block
     assert "compactSurface: true" in touch_block
+    assert "compact capsule must still synthesize click" in touch_block
+    assert "event.preventDefault();" not in touch_block
+    assert "event.stopPropagation();" not in touch_block
+    assert "}, { capture: true, passive: true });" in touch_block
 
 
 def test_moved_drag_suppresses_trailing_release_click():
