@@ -723,7 +723,7 @@
             // 变回猫娘前，按"作为猫咪待了多久 + 此刻所处 tier（清醒/打盹/熟睡）"
             // 请求一次专属问候。tier 必须在 setVisualTier(NONE) 清空之前读取。
             if (state.goodbyeEnteredAt > 0) {
-                const durationSeconds = Math.max(0, Math.round((nowMs() - state.goodbyeEnteredAt) / 1000));
+                const durationSeconds = Math.max(0, Math.floor((nowMs() - state.goodbyeEnteredAt) / 1000));
                 try {
                     window.dispatchEvent(new CustomEvent('neko:cat-greeting-check', {
                         detail: {
