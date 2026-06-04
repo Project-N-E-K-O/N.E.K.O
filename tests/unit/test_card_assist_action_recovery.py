@@ -343,7 +343,7 @@ def test_chat_advice_with_direct_edit_phrase_still_recovers_actions(monkeypatch)
         return ("我先分析一下：行为特征偏空，可以补一个具体习惯喵。", None)
 
     async def fake_invoke(prompt):
-        assert "先分析再改一下字段" in prompt
+        assert "先帮我分析一下，然后把行为特征改下" in prompt
         return (
             '{"actions":[{"type":"refine_field","field_key":"行为特征",'
             '"value":"会偷偷把咖啡杯按顺序摆整齐","reason":"补充具体习惯"}]}',
@@ -359,7 +359,10 @@ def test_chat_advice_with_direct_edit_phrase_still_recovers_actions(monkeypatch)
         resp = client.post(
             "/api/card-assist/chat",
             json={
-                "messages": [{"role": "user", "content": "先分析再改一下字段"}],
+                "messages": [{
+                    "role": "user",
+                    "content": "先帮我分析一下，然后把行为特征改下",
+                }],
                 "current_card": {"行为特征": "很认真", "人际关系": "和家人关系很好"},
                 "target_field_keys": ["行为特征", "人际关系"],
                 "locale": "zh-CN",
@@ -369,6 +372,7 @@ def test_chat_advice_with_direct_edit_phrase_still_recovers_actions(monkeypatch)
     assert resp.status_code == 200
     body = resp.json()
     assert body["success"] is True
+    assert body["reply"].startswith("我先分析一下")
     assert body["actions"] == [{
         "type": "refine_field",
         "field_key": "行为特征",
