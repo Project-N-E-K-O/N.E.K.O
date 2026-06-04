@@ -53,7 +53,9 @@
   window.__studyCompanionMath = {
     escapeHTML,
     normalizeLatexForKatex,
-    splitByMath: mathParser.splitByMath,
+    splitByMath: typeof mathParser.splitByMath === 'function'
+      ? mathParser.splitByMath
+      : (text) => [{ type: 'text', value: String(text || '') }],
     renderMathInText,
   };
 })();

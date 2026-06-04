@@ -232,6 +232,46 @@ def test_notebook_search_falls_back_to_like_when_fts_errors(tmp_path) -> None:
         store.close()
 
 
+def test_notebook_like_search_treats_wildcards_as_literals(tmp_path) -> None:
+    store, notebooks, _logger = _make_store(tmp_path)
+    try:
+        percent = notebooks.create_note(title="Rate 100%", content="literal percent")
+        notebooks.create_note(title="Rate 1000", content="plain digits")
+        underscore = notebooks.create_note(title="alpha_beta", content="literal underscore")
+        notebooks.create_note(title="alphaXbeta", content="plain letters")
+        slash = notebooks.create_note(title=r"path C:\tmp", content="literal slash")
+
+        with store._lock:
+            conn = store._require_conn()
+            conn.execute("DROP TABLE notes_fts")
+            conn.commit()
+
+        assert [item.id for item in notebooks.list_notes(search_query="100%")] == [
+            percent.id
+        ]
+        assert [item.id for item in notebooks.list_notes(search_query="alpha_beta")] == [
+            underscore.id
+        ]
+        assert [item.id for item in notebooks.list_notes(search_query=r"C:\tmp")] == [
+            slash.id
+        ]
+    finally:
+        store.close()
+
+
+def test_notebook_global_session_search_treats_wildcards_as_literals(tmp_path) -> None:
+    store, notebooks, _logger = _make_store(tmp_path)
+    try:
+        store.ensure_session(session_id="session_100%", mode="companion")
+        store.ensure_session(session_id="session_1000", mode="companion")
+
+        results = notebooks.search_all("100%", limit=10)
+
+        assert [item["id"] for item in results["sessions"]] == ["session_100%"]
+    finally:
+        store.close()
+
+
 def test_notes_fts_initialization_failure_keeps_store_bootstrappable() -> None:
     import sqlite3
 
