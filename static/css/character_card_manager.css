@@ -7331,6 +7331,7 @@ margin-top: 10px;
     animation: cardCompanionWindowIn 0.22s ease-out;
     transition: box-shadow 0.22s ease, background 0.22s ease, opacity 0.22s ease;
     resize: both;
+    -webkit-app-region: no-drag;
 }
 
 @keyframes cardCompanionWindowIn {
@@ -7420,6 +7421,7 @@ margin-top: 10px;
 
 .card-companion-panel.card-companion-dragging {
     user-select: none;
+    z-index: 100100;
     box-shadow: 0 22px 52px rgba(64, 197, 241, 0.3);
     animation-play-state: paused;
     will-change: left, top;
