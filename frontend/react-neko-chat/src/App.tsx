@@ -1692,6 +1692,7 @@ export default function App({
       fullText: compactCaptionState.text,
       isStreaming: !compactCaptionState.isEnded,
       isAssistant: true,
+      isGuide: false,
     };
   }, [compactCaptionState]);
   const compactMessagePreview = compactCaptionPreview || compactMessagePreviewFromMessages;
