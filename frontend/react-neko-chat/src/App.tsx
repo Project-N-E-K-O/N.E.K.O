@@ -2022,6 +2022,7 @@ export default function App({
     if (compactMessagePreview?.isGuide) {
       compactSpeechPreviewIdRef.current = '';
       compactSpeechPreviewTextRef.current = '';
+      compactSpeechPreviewTurnIdRef.current = '';
       return;
     }
     if (compactMessagePreview?.isStreaming && compactMessagePreview.isAssistant) {
