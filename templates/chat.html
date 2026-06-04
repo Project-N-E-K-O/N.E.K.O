@@ -337,8 +337,8 @@
 
         /* 折叠态毛线球 */
         #chat-container.minimized {
-            width: 40px !important; height: 40px !important;
-            max-height: 40px !important; min-width: 0 !important; min-height: 0 !important;
+            width: 51px !important; height: 51px !important;
+            max-height: 51px !important; min-width: 0 !important; min-height: 0 !important;
             border-radius: 50% !important;
             background: transparent url('/static/assets/neko-idle/chat-minimized-yarn-ball.png?v={{ static_asset_version }}') center / contain no-repeat !important;
             box-shadow: none !important;
@@ -697,8 +697,8 @@
         var rh  = document.getElementById('neko-resize-handle');
         if (!box) return;
 
-        // BALL: 折叠态毛线球窗口总尺寸（CSS .minimized 40px 内容 + 32px Electron 窗口边框/透明余量）
-        var BALL = 72;
+        // BALL: 折叠态毛线球窗口总尺寸（CSS .minimized 51px 内容 + 32px Electron 窗口边框/透明余量）
+        var BALL = 83;
         var MIN_W = 300;
         var MIN_H_BASE = 200;
         // GalGame 模式开启时输入框需要额外 ~110px 容纳 A/B/C 选项 + 间距，

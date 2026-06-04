@@ -851,10 +851,10 @@ body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"
     display: none;
 }
 
-/* ---- 最小化：40px 毛线球悬浮窗 ---- */
+/* ---- 最小化：51px 毛线球悬浮窗 ---- */
 body.subtitle-web-host #react-chat-window-shell.is-minimized {
-    width: 40px !important;
-    height: 40px !important;
+    width: 51px !important;
+    height: 51px !important;
     border-radius: 50%;
     background: transparent;
     box-shadow: none;
@@ -2690,9 +2690,9 @@ body.react-chat-window-dragging {
     background: transparent;
     box-shadow: none;
     opacity: 1;
-    width: 40px !important;
-    height: 40px !important;
-    max-height: 40px !important;
+    width: 51px !important;
+    height: 51px !important;
+    max-height: 51px !important;
     min-width: 0 !important;
     min-height: 0 !important;
     padding: 0;
@@ -3117,11 +3117,11 @@ body.react-chat-window-dragging {
         background: rgba(150, 160, 175, 0.4);
     }
 
-    /* ---- 手机端最小化：40px 毛线球（与桌面端一致）----
+    /* ---- 手机端最小化：51px 毛线球（与桌面端一致）----
        替代原先的全宽底部胶囊，使用圆形小球，可自由拖动 */
     body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell.is-minimized {
-        width: 40px !important;
-        height: 40px !important;
+        width: 51px !important;
+        height: 51px !important;
         border-radius: 50%;
     }
 

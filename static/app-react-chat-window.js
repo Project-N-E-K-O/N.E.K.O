@@ -28,7 +28,7 @@
     var minimized = false;
     var savedShellSize = null;
     var savedShellPosition = null; // {left, top} before minimize – used to fly back on expand
-    var HOME_IDLE_DOCK_GAP = 4;
+    var HOME_IDLE_DOCK_GAP = -12;
     var IDLE_DOCK_TIER_NONE = 'none';
     var IDLE_DOCK_TIER_CAT2 = 'cat2';
     var IDLE_DOCK_TIER_CAT3 = 'cat3';
@@ -240,7 +240,7 @@
     var MOBILE_EXPAND_CLICK_GUARD_RADIUS = 24;
     var MOBILE_EXPAND_VISUAL_GUARD_MS = 900;
     var COMPACT_MINIMIZE_BALL_VIEWPORT_PAD = 12;
-    var COMPACT_MINIMIZE_BALL_AVATAR_GAP = 12;
+    var COMPACT_MINIMIZE_BALL_AVATAR_GAP = -4;
     var COMPACT_MINIMIZE_BALL_AVATAR_VERTICAL_RATIO = 0.58;
     var COMPACT_SURFACE_MAX_WIDTH = 430;
     var COMPACT_SURFACE_RESIZE_MAX_WIDTH = 720;
@@ -460,7 +460,7 @@
         var normalized = normalizeCompactDesktopRect(bounds);
         if (!normalized) return null;
         var left = normalized.left - MINIMIZED_SIZE - COMPACT_MINIMIZE_BALL_AVATAR_GAP;
-        var top = normalized.top + normalized.height * COMPACT_MINIMIZE_BALL_AVATAR_VERTICAL_RATIO - MINIMIZED_SIZE / 2;
+        var top = normalized.top + normalized.height * COMPACT_MINIMIZE_BALL_AVATAR_VERTICAL_RATIO - MINIMIZED_SIZE / 2 + MINIMIZED_DOWN_OFFSET;
         var maxLeft = Math.max(COMPACT_MINIMIZE_BALL_VIEWPORT_PAD, window.innerWidth - MINIMIZED_SIZE - COMPACT_MINIMIZE_BALL_VIEWPORT_PAD);
         var maxTop = Math.max(COMPACT_MINIMIZE_BALL_VIEWPORT_PAD, window.innerHeight - MINIMIZED_SIZE - COMPACT_MINIMIZE_BALL_VIEWPORT_PAD);
         return {
@@ -3385,7 +3385,8 @@
         };
     }
 
-    var MINIMIZED_SIZE = 40;            // 桌面/手机：毛线球直径
+    var MINIMIZED_SIZE = 51;            // 桌面/手机：毛线球直径
+    var MINIMIZED_DOWN_OFFSET = 24;     // 放大后整体下移，更贴近猫 GIF
     var isMinimizeTransitioning = false;
     var activeAnimationCleanup = null; // 当前进行中动画的清理函数
 
@@ -3410,7 +3411,7 @@
         var rect = container.getBoundingClientRect();
         if (!rect || rect.width <= 0 || rect.height <= 0) return null;
         var left = Math.round(rect.left - MINIMIZED_SIZE - HOME_IDLE_DOCK_GAP);
-        var top = Math.round(rect.top + ((rect.height - MINIMIZED_SIZE) / 2));
+        var top = Math.round(rect.top + ((rect.height - MINIMIZED_SIZE) / 2) + MINIMIZED_DOWN_OFFSET);
         return {
             left: Math.max(0, Math.min(left, window.innerWidth - MINIMIZED_SIZE)),
             top: Math.max(0, Math.min(top, window.innerHeight - MINIMIZED_SIZE))
@@ -4171,12 +4172,12 @@
             return compactBallTarget;
         }
 
-        // 桌面端和移动端统一使用 50px 圆形悬浮球
+        // 桌面端和移动端统一使用圆形毛线球
         return {
             width: MINIMIZED_SIZE,
             height: MINIMIZED_SIZE,
             left: Math.max(0, Math.min(rect.left, window.innerWidth - MINIMIZED_SIZE)),
-            top: Math.max(0, Math.min(rect.bottom - MINIMIZED_SIZE, window.innerHeight - MINIMIZED_SIZE))
+            top: Math.max(0, Math.min(rect.bottom - MINIMIZED_SIZE + MINIMIZED_DOWN_OFFSET, window.innerHeight - MINIMIZED_SIZE))
         };
     }
 
