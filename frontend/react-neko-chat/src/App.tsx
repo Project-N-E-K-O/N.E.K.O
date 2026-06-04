@@ -1753,8 +1753,6 @@ export default function App({
     compactPreviewDisplayText,
     compactPreviewIsStreaming,
   ]);
-  const emojiButtonAriaLabel = i18n('chat.emojiButtonAriaLabel', 'Emoji');
-  const toolIconsAriaLabel = i18n('chat.toolIconsAriaLabel', 'Tool icons');
   const overflowMenuAriaLabel = i18n('chat.composerOverflowMenu', '更多工具');
   const clearCursorToolAriaLabel = i18n('chat.clearCursorToolAriaLabel', '恢复鼠标');
   const effectiveCursorVariant = resolveEffectiveCursorVariant(
