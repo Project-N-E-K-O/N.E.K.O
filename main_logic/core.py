@@ -5157,7 +5157,11 @@ class LLMSessionManager:
     # ------------------------------------------------------------------
 
     async def request_fresh_screenshot(self, timeout: float = 3.0) -> str:
-        """通过 WebSocket 向前端请求最新截图，失败时用后端 pyautogui 兜底。返回 base64（不含前缀）。"""
+        """通过 WebSocket 向前端请求最新截图，失败时用后端 pyautogui 兜底。
+
+        两条路径都会把截图统一压到 720p/JPEG-80，返回归一化后的 base64（不含前缀），
+        避免前端原生分辨率大图直发 vision LLM 触发代理 413。
+        """
         # 策略1: 前端 WebSocket 截图
         if self.websocket:
             try:
@@ -5166,6 +5170,25 @@ class LLMSessionManager:
                 await self.websocket.send_json({"type": "request_screenshot"})
                 b64 = await asyncio.wait_for(self._screenshot_future, timeout=timeout)
                 if b64:
+                    # 前端有的截图路径（如 Electron 主进程直捕 captureSourceAsDataUrl）
+                    # 返回原生分辨率，未走 720p 缩放，base64 可达 ~1.4MB，直接发给
+                    # vision LLM 会被代理 nginx 以 413 Request Entity Too Large 拒掉。
+                    # 这里和下方 pyautogui 兜底分支对称，统一压到 720p/JPEG-80 再返回
+                    # （avatar 注解会在其上二次编码，不影响）。压缩失败则退回原图。
+                    try:
+                        from utils.screenshot_utils import (
+                            decode_and_compress_screenshot_b64,
+                            COMPRESS_TARGET_HEIGHT, COMPRESS_JPEG_QUALITY,
+                        )
+                        b64 = await asyncio.to_thread(
+                            decode_and_compress_screenshot_b64,
+                            b64, COMPRESS_TARGET_HEIGHT, COMPRESS_JPEG_QUALITY,
+                        )
+                    except Exception as comp_err:
+                        logger.warning(
+                            "[%s] request_fresh_screenshot WS compress failed, using raw: %s",
+                            self.lanlan_name, comp_err,
+                        )
                     return b64
             except (asyncio.TimeoutError, Exception) as e:
                 logger.warning("[%s] request_fresh_screenshot WS failed: %s", self.lanlan_name, e)
