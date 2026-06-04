@@ -364,6 +364,57 @@ async def test_voice_transcript_runs_mini_game_invite_keyword(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_voice_transcript_subscriber_cancel_consumes_ordinary_flow(monkeypatch):
+    class _FakeDispatchService:
+        def __init__(self):
+            self.calls = []
+
+        async def trigger_custom_event_subscribers(self, **kwargs):
+            self.calls.append(kwargs)
+            return [
+                {
+                    "plugin_id": "study_companion",
+                    "event_id": "handle_transcript",
+                    "success": True,
+                    "result": {"action": "cancel_response", "reason": "ocr_overlap"},
+                }
+            ]
+
+    class _FakeVoiceSession:
+        def __init__(self):
+            self.cancelled = 0
+
+        async def cancel_response(self):
+            self.cancelled += 1
+
+    service = _FakeDispatchService()
+    session = _FakeVoiceSession()
+    mgr = _make_transcript_manager()
+    mgr.session = session
+    monkeypatch.setattr(core_module, "_voice_transcript_dispatch_service", service)
+
+    await core_module.LLMSessionManager.handle_input_transcript(
+        mgr,
+        "screen echo",
+        is_voice_source=True,
+    )
+
+    assert service.calls
+    assert service.calls[0]["event_type"] == "voice_transcript"
+    assert service.calls[0]["event_id"] == "handle_transcript"
+    assert service.calls[0]["args"]["transcript"] == "screen echo"
+    assert service.calls[0]["args"]["lanlan_name"] == "Lan"
+    assert service.calls[0]["args"]["metadata"]["request_id"].startswith("realtime-stt-")
+    assert session.cancelled == 1
+    assert mgr._activity_tracker.voice_rms_count == 1
+    assert mgr._activity_tracker.user_messages == []
+    assert mgr._session_turn_count == 0
+    mgr._publish_user_utterance_to_plugin_bus.assert_not_called()
+    assert mgr.sync_message_queue.messages == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_voice_transcript_keyword_outcome_pushes_invite_resolved(monkeypatch):
     """关键词命中时，语音路径推 mini_game_invite_resolved 让前端 dismiss
     ChoicePrompt（accept 兼带 game_url 当 launch 信号）。"""
@@ -501,6 +552,50 @@ async def test_last_user_message_time_uses_transcript_arrival_not_post_await(mon
 
     assert mgr.last_user_activity_time == 101.0
     assert mgr.last_user_message_time == 101.0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_voice_transcript_subscriber_prime_context_consumes_ordinary_flow(monkeypatch):
+    class _FakeDispatchService:
+        async def trigger_custom_event_subscribers(self, **_kwargs):
+            return [
+                {
+                    "plugin_id": "study_companion",
+                    "event_id": "handle_transcript",
+                    "success": True,
+                    "result": {
+                        "action": "prime_context",
+                        "context": "[问题] why is it 3x^2",
+                        "skipped": False,
+                    },
+                }
+            ]
+
+    class _FakeVoiceSession:
+        def __init__(self):
+            self.prime_context_calls = []
+
+        async def prime_context(self, text, skipped=False):
+            self.prime_context_calls.append((text, skipped))
+
+    session = _FakeVoiceSession()
+    mgr = _make_transcript_manager()
+    mgr.session = session
+    monkeypatch.setattr(core_module, "_voice_transcript_dispatch_service", _FakeDispatchService())
+
+    await core_module.LLMSessionManager.handle_input_transcript(
+        mgr,
+        "Yui why is it 3x^2",
+        is_voice_source=True,
+    )
+
+    assert session.prime_context_calls == [("[问题] why is it 3x^2", False)]
+    assert mgr._activity_tracker.voice_rms_count == 1
+    assert mgr._activity_tracker.user_messages == []
+    assert mgr._session_turn_count == 0
+    mgr._publish_user_utterance_to_plugin_bus.assert_not_called()
+    assert mgr.sync_message_queue.messages == []
 
 
 @pytest.mark.unit

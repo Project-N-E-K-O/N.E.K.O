@@ -107,6 +107,8 @@ _VOICE_ECHO_MIN_NORMALIZED_CHARS = 6
 _VOICE_ECHO_MIN_WINDOW_CHARS = 10
 _VOICE_ECHO_SIMILARITY_THRESHOLD = 0.88
 _VOICE_ECHO_NORMALIZE_RE = re.compile(r"[\W_]+", re.UNICODE)
+_VOICE_TRANSCRIPT_SUBSCRIBER_TIMEOUT_SECONDS = 1.5
+_voice_transcript_dispatch_service: Any | None = None
 
 
 def _normalize_voice_echo_text(text: str) -> str:
@@ -145,6 +147,86 @@ def _looks_like_recent_ai_echo(transcript: str, recent_ai_text: str) -> bool:
         best = max(best, SequenceMatcher(None, transcript_norm, candidate).ratio())
         if best >= _VOICE_ECHO_SIMILARITY_THRESHOLD:
             return True
+    return False
+
+
+def _get_voice_transcript_dispatch_service():
+    global _voice_transcript_dispatch_service
+    if _voice_transcript_dispatch_service is None:
+        from plugin.server.application.plugins.dispatch_service import (
+            PluginDispatchService,
+        )
+
+        _voice_transcript_dispatch_service = PluginDispatchService()
+    return _voice_transcript_dispatch_service
+
+
+async def _dispatch_voice_transcript_subscribers(
+    transcript: str,
+    lanlan_name: str,
+    *,
+    request_id: str,
+    voice_session: Any,
+) -> bool:
+    """Return True when a voice subscriber consumed the transcript."""
+    from plugin.server.application.plugins.voice_contracts import (
+        VOICE_TRANSCRIPT_ACTION_CANCEL_RESPONSE,
+        VOICE_TRANSCRIPT_ACTION_PRIME_CONTEXT,
+        VOICE_TRANSCRIPT_EVENT_ID,
+        VOICE_TRANSCRIPT_EVENT_TYPE,
+        arbitrate_voice_transcript_results,
+    )
+
+    service = _get_voice_transcript_dispatch_service()
+    dispatch_results = await service.trigger_custom_event_subscribers(
+        event_type=VOICE_TRANSCRIPT_EVENT_TYPE,
+        event_id=VOICE_TRANSCRIPT_EVENT_ID,
+        args={
+            "transcript": transcript,
+            "lanlan_name": lanlan_name,
+            "metadata": {
+                "request_id": request_id,
+                "voice_session_id": request_id,
+                "source": "realtime_stt",
+            },
+        },
+        timeout=_VOICE_TRANSCRIPT_SUBSCRIBER_TIMEOUT_SECONDS,
+    )
+    action = arbitrate_voice_transcript_results(dispatch_results)
+    action_type = str(action.get("action") or "")
+    if action_type == VOICE_TRANSCRIPT_ACTION_CANCEL_RESPONSE:
+        cancel_response = getattr(voice_session, "cancel_response", None)
+        if callable(cancel_response):
+            try:
+                await cancel_response()
+            except Exception as exc:
+                logger.debug(
+                    "[%s] voice transcript subscriber cancel skipped/failed: %s",
+                    lanlan_name,
+                    exc,
+                )
+        logger.info(
+            "[%s] voice transcript subscriber consumed transcript with cancel_response source=%s",
+            lanlan_name,
+            action.get("source_plugin", ""),
+        )
+        return True
+
+    if action_type == VOICE_TRANSCRIPT_ACTION_PRIME_CONTEXT:
+        context = str(action.get("context") or "").strip()
+        skipped = bool(action.get("skipped", False))
+        prime_context = getattr(voice_session, "prime_context", None)
+        if not context or not callable(prime_context):
+            return False
+        await prime_context(context, skipped=skipped)
+        logger.info(
+            "[%s] voice transcript subscriber primed context skipped=%s source=%s",
+            lanlan_name,
+            skipped,
+            action.get("source_plugin", ""),
+        )
+        return not skipped
+
     return False
 
 
@@ -2197,6 +2279,11 @@ class LLMSessionManager:
         """
         transcript_text = transcript.strip()
         voice_rms_recorded = False
+        realtime_voice_request_id = (
+            f"realtime-stt-{uuid4()}"
+            if is_voice_source and transcript_text
+            else ""
+        )
 
         # 更新用户活动时间戳（用于主动搭话检测）。先捕获「转写到达时刻」局部变量，
         # 下面 last_user_message_time 复用同一时刻——若 takeover dispatcher 注册，
@@ -2205,6 +2292,25 @@ class LLMSessionManager:
         # delivered_at、被下个 tick 误判成 invite 之后的回应（codex P2）。
         _transcript_arrival_ts = time.time()
         self.last_user_activity_time = _transcript_arrival_ts
+        if is_voice_source and transcript_text:
+            try:
+                subscriber_handled = await _dispatch_voice_transcript_subscribers(
+                    transcript_text,
+                    self.lanlan_name,
+                    request_id=realtime_voice_request_id,
+                    voice_session=self.session,
+                )
+                if subscriber_handled:
+                    self._activity_tracker.on_voice_rms()
+                    voice_rms_recorded = True
+                    return
+            except Exception as exc:
+                logger.warning(
+                    "[%s] voice transcript subscriber dispatch failed: %s",
+                    self.lanlan_name,
+                    exc,
+                )
+
         if (
             is_voice_source
             and transcript_text
@@ -2212,13 +2318,14 @@ class LLMSessionManager:
         ):
             # takeover 路由优先于 echo suppression；否则接管流程里用户说出
             # 与 AI 近期播报相同的口令时，会被当成脏回声提前吞掉。
-            self._activity_tracker.on_voice_rms()
-            voice_rms_recorded = True
+            if not voice_rms_recorded:
+                self._activity_tracker.on_voice_rms()
+                voice_rms_recorded = True
             try:
                 handled = await self._takeover_input_dispatcher(
                     self.lanlan_name,
                     transcript_text,
-                    request_id=f"realtime-stt-{uuid4()}",
+                    request_id=realtime_voice_request_id or f"realtime-stt-{uuid4()}",
                 )
                 logger.info(
                     "[%s] session takeover dispatcher: realtime STT transcript routed handled=%s len=%d",
