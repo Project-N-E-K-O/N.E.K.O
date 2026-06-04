@@ -33,7 +33,8 @@
 
   function renderMathInText(text) {
     const source = String(text || '');
-    if (!source || !source.includes('$') || !window.katex || typeof window.katex.renderToString !== 'function') {
+    const hasMathDelimiter = source.includes('$') || source.includes('\\(') || source.includes('\\[');
+    if (!source || !hasMathDelimiter || !window.katex || typeof window.katex.renderToString !== 'function') {
       return escapeHTML(source);
     }
     try {

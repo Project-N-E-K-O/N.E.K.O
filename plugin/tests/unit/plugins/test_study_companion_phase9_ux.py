@@ -37,6 +37,13 @@ def test_phase9_static_math_assets_are_local_and_registered() -> None:
     assert "trust: false" in renderer
 
 
+def test_phase9_katex_renderer_allows_backslash_math_delimiters() -> None:
+    renderer = (PLUGIN_DIR / "static" / "katex-render.js").read_text(encoding="utf-8")
+
+    assert "source.includes('\\\\(')" in renderer
+    assert "source.includes('\\\\[')" in renderer
+
+
 def test_phase9_static_ui_uses_standard_aria_i18n_attribute() -> None:
     index = (PLUGIN_DIR / "static" / "index.html").read_text(encoding="utf-8")
     i18n = (PLUGIN_DIR / "static" / "i18n.js").read_text(encoding="utf-8")

@@ -115,6 +115,12 @@ _CODE_EDITOR_TITLE_KEYWORDS = (
     "atom",
     "cursor",
 )
+_BROWSER_PAGE_TITLE_KEYWORDS = (
+    "github",
+    "wikipedia",
+    "stack overflow",
+    "stackoverflow",
+)
 _BROWSER_TITLE_KEYWORDS = (
     " chrome",
     "google chrome",
@@ -185,6 +191,8 @@ def classify_app_from_title(window_title: str | None) -> str:
     title = _clean_line(str(window_title or "")).lower()
     if not title:
         return "other"
+    if any(keyword in title for keyword in _BROWSER_PAGE_TITLE_KEYWORDS):
+        return "web_page"
     if any(keyword in title for keyword in _CODE_EDITOR_TITLE_KEYWORDS):
         return "code_editor"
     if any(keyword in title for keyword in _TEXT_EDITOR_TITLE_KEYWORDS):

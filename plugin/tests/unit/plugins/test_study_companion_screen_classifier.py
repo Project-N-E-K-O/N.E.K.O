@@ -4,6 +4,7 @@ import pytest
 
 from plugin.plugins.study_companion.screen_classifier import (
     ScreenClassification,
+    classify_app_from_title,
     classify_screen_from_ocr,
     normalize_screen_type,
 )
@@ -25,6 +26,21 @@ pytestmark = pytest.mark.unit
 )
 def test_normalize_screen_type_accepts_aliases(alias: str, expected: str) -> None:
     assert normalize_screen_type(alias) == expected
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("Project-N-E-K-O/N.E.K.O · GitHub", "web_page"),
+        ("Stack Overflow - Where Developers Learn", "web_page"),
+        ("Derivative - Wikipedia", "web_page"),
+        ("main.py - Visual Studio Code", "code_editor"),
+    ],
+)
+def test_classify_app_from_title_recognizes_browser_page_titles(
+    title: str, expected: str
+) -> None:
+    assert classify_app_from_title(title) == expected
 
 
 @pytest.mark.parametrize(
