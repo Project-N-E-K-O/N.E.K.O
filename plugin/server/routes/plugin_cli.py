@@ -15,10 +15,22 @@ logger = get_logger("server.routes.plugin_cli")
 service = PluginCliService()
 
 
+class PluginCliPluginRef(BaseModel):
+    root_id: str = Field(pattern="^(builtin|user)$")
+    directory_name: str
+
+
+class PluginCliPluginRefResponse(PluginCliPluginRef):
+    plugin_id: str = ""
+    label: str = ""
+
+
 class PluginCliBuildRequest(BaseModel):
     mode: str = Field(default="selected", pattern="^(selected|single|bundle|all)$")
     plugin: str | None = None
     plugins: list[str] = Field(default_factory=list)
+    plugin_ref: PluginCliPluginRef | None = None
+    plugin_refs: list[PluginCliPluginRef] = Field(default_factory=list)
     out: str | None = None
     target_dir: str | None = None
     keep_staging: bool = False
@@ -29,10 +41,10 @@ class PluginCliBuildRequest(BaseModel):
 
     @model_validator(mode="after")
     def _validate_mode_payload(self) -> "PluginCliBuildRequest":
-        if self.mode == "single" and not self.plugin:
-            raise ValueError("plugin is required when mode=single")
-        if self.mode in {"selected", "bundle"} and not self.plugins:
-            raise ValueError("plugins is required when mode=selected or mode=bundle")
+        if self.mode == "single" and not (self.plugin_ref or self.plugin):
+            raise ValueError("plugin_ref or plugin is required when mode=single")
+        if self.mode in {"selected", "bundle"} and not (self.plugin_refs or self.plugins):
+            raise ValueError("plugin_refs or plugins is required when mode=selected or mode=bundle")
         return self
 
 
@@ -48,12 +60,14 @@ class PluginCliInstallRequest(BaseModel):
 
 
 class PluginCliAnalyzeRequest(BaseModel):
-    plugins: list[str]
+    plugins: list[str] = Field(default_factory=list)
+    plugin_refs: list[PluginCliPluginRef] = Field(default_factory=list)
     current_sdk_version: str | None = None
 
 
 class PluginCliPluginListResponse(BaseModel):
     plugins: list[str]
+    plugin_refs: list[PluginCliPluginRefResponse] = Field(default_factory=list)
     count: int
 
 
@@ -231,6 +245,8 @@ async def plugin_cli_build(
             mode=payload.mode,
             plugin=payload.plugin,
             plugins=payload.plugins,
+            plugin_ref=payload.plugin_ref.model_dump() if payload.plugin_ref else None,
+            plugin_refs=[item.model_dump() for item in payload.plugin_refs],
             out=payload.out,
             target_dir=payload.target_dir,
             keep_staging=payload.keep_staging,
@@ -289,6 +305,7 @@ async def plugin_cli_analyze(
     try:
         return await service.analyze(
             plugins=payload.plugins,
+            plugin_refs=[item.model_dump() for item in payload.plugin_refs],
             current_sdk_version=payload.current_sdk_version,
         )
     except ServerDomainError as error:

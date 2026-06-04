@@ -22,6 +22,7 @@
     var loadedPromise = null;
     var mounted = false;
     var dragState = null;
+    var suppressDragReleaseClick = false;
     var resizeState = null;
     var minimized = false;
     var savedShellSize = null;
@@ -1017,7 +1018,7 @@
         var item = element.getAttribute('data-compact-geometry-item') || '';
         if (item === 'choice' && element.getAttribute('data-choice-layer-open') !== 'true') return false;
         if (item === 'toolFan' && element.getAttribute('data-compact-input-tool-fan-open') !== 'true') return false;
-        if (element.getAttribute('aria-hidden') === 'true' && item !== 'dragHandle' && item !== 'resizeHandle') return false;
+        if (element.getAttribute('aria-hidden') === 'true' && item !== 'resizeHandle') return false;
         var style = window.getComputedStyle ? window.getComputedStyle(element) : null;
         if (style && (style.display === 'none' || style.visibility === 'hidden')) return false;
         return true;
@@ -1140,7 +1141,6 @@
 
     function getCompactSurfaceGeometryRole(kind) {
         if (isCompactSurfaceBaseAnchorKind(kind)) return 'baseAnchor';
-        if (kind === 'dragHandle') return 'baseHit';
         return 'extraIsland';
     }
 
@@ -1563,6 +1563,29 @@
         }
     }
 
+    // Web 宿主下用鼠标拖拽 surface 本体后，浏览器仍会在 mouseup 落点补发一次
+    // click（mousedown 的 preventDefault 不取消 click）。落点若是胶囊按钮会被误判为
+    // 点击而展开输入框。拖拽真正移动过(moved)时 arm 此守卫，吞掉紧随其后的那一次
+    // click。click 与 mouseup 同任务同步派发，setTimeout(…,0) 必在其后清旗，既兜底
+    // 「落点无 click」也不会误吞之后无关的点击。touch 路径已在 touchstart
+    // preventDefault 阶段抑制了合成 click，不经此守卫。
+    function armDragReleaseClickGuard() {
+        suppressDragReleaseClick = true;
+        window.setTimeout(function () {
+            suppressDragReleaseClick = false;
+        }, 0);
+    }
+
+    function consumeDragReleaseClickGuard(event) {
+        if (!suppressDragReleaseClick) return;
+        suppressDragReleaseClick = false;
+        event.preventDefault();
+        event.stopPropagation();
+        if (typeof event.stopImmediatePropagation === 'function') {
+            event.stopImmediatePropagation();
+        }
+    }
+
     function getOverlay() {
         return $('react-chat-window-overlay');
     }
@@ -1828,6 +1851,7 @@
             author: message.author,
             time: message.time,
             createdAt: message.createdAt,
+            turnId: message.turnId,
             avatarLabel: message.avatarLabel,
             avatarUrl: message.avatarUrl,
             blocks: Array.isArray(message.blocks) ? message.blocks.map(function (block) {
@@ -1887,6 +1911,7 @@
             author: sanitizeDisplayName(message.author) || getDefaultAuthorByRole(message.role || 'assistant'),
             time: time,
             createdAt: createdAt,
+            turnId: message.turnId ? String(message.turnId) : undefined,
             avatarLabel: message.avatarLabel,
             avatarUrl: message.avatarUrl,
             blocks: Array.isArray(message.blocks) ? message.blocks : [],
@@ -4776,12 +4801,10 @@
 
     var CLICK_THRESHOLD = 5; // px – 移动距离低于此值视为点击
 
-    function isCompactDragHandleTarget(target) {
-        return !!(
-            target
-            && typeof target.closest === 'function'
-            && target.closest('[data-compact-drag-handle="true"]')
-        );
+    function isCompactDragSurfaceTarget(target) {
+        if (!target || typeof target.closest !== 'function') return false;
+        if (target.closest('[data-compact-no-drag="true"]')) return false;
+        return !!target.closest('[data-compact-drag-surface="true"]');
     }
 
     function startDrag(clientX, clientY, options) {
@@ -4819,6 +4842,8 @@
             dragState.moved = true;
         }
 
+        if (dragState.compactSurface && !dragState.moved) return;
+
         var left = clientX - dragState.pointerOffsetX;
         var top = clientY - dragState.pointerOffsetY;
         if (dragState.compactSurface) {
@@ -4847,6 +4872,11 @@
 
         dragState = null;
         document.body.classList.remove('react-chat-window-dragging');
+
+        // 移动过的拖拽不该再变成点击：吞掉 mouseup 落点补发的那一次 click。
+        if (wasMoved) {
+            armDragReleaseClickGuard();
+        }
 
         // 最小化状态下，未发生拖拽移动 → 视为点击，恢复窗口
         // 但 suppressClick=true（如教程接管强制中断）时不触发，避免误展开
@@ -4890,7 +4920,7 @@
         document.addEventListener('mousedown', function (event) {
             if (event.button !== 0) return;
             if (isElectronChatWindow()) return;
-            if (!isCompactDragHandleTarget(event.target)) return;
+            if (!isCompactDragSurfaceTarget(event.target)) return;
             startDrag(event.clientX, event.clientY, {
                 compactSurface: true
             });
@@ -4900,7 +4930,7 @@
 
         document.addEventListener('touchstart', function (event) {
             if (isElectronChatWindow()) return;
-            if (!isCompactDragHandleTarget(event.target)) return;
+            if (!isCompactDragSurfaceTarget(event.target)) return;
             if (!event.touches || event.touches.length === 0) return;
             startDrag(event.touches[0].clientX, event.touches[0].clientY, {
                 compactSurface: true
@@ -4927,6 +4957,18 @@
         });
         document.addEventListener('touchcancel', function (event) {
             stopDrag({ changedTouches: event.changedTouches, suppressClick: true });
+        });
+
+        // React 侧工具轮盘原点「按住拖动文本框」手势：轮盘 / toggle 是 no-drag，宿主的
+        // mousedown 命中判定不会自动起拖，所以由 React 检测到拖动意图后派发该事件，这里
+        // 以按下点为锚启动 compact surface 拖拽，复用上面的全局 mousemove/mouseup（含落点
+        // click 守卫）。Electron 下由 preload-chat-react.js 用原生窗口拖拽接管，这里早退。
+        window.addEventListener('neko:compact-surface-drag-grab', function (event) {
+            if (isElectronChatWindow()) return;
+            if (getCurrentChatSurfaceMode() !== 'compact' || minimized) return;
+            var detail = event && event.detail ? event.detail : {};
+            if (!Number.isFinite(detail.clientX) || !Number.isFinite(detail.clientY)) return;
+            startDrag(detail.clientX, detail.clientY, { compactSurface: true });
         });
     }
 
@@ -5278,6 +5320,7 @@
         document.addEventListener('mousedown', blockMobileExpandSyntheticPointerEvent, true);
         document.addEventListener('mouseup', blockMobileExpandSyntheticPointerEvent, true);
         document.addEventListener('click', blockMobileExpandSyntheticPointerEvent, true);
+        document.addEventListener('click', consumeDragReleaseClickGuard, true);
         bindDragging();
         createResizeEdges();
         bindResizing();

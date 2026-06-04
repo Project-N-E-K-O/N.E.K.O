@@ -307,6 +307,7 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
 
     assert "position: absolute;" in fan_block
     assert "--compact-tool-wheel-hover-radius: 116px;" in fan_block
+    assert "--compact-tool-wheel-orbit-radius: 80px;" in fan_block
     assert "--compact-tool-fan-focus-x: var(--compact-tool-wheel-hover-radius);" in fan_block
     assert "--compact-tool-fan-focus-y: var(--compact-tool-wheel-hover-radius);" in fan_block
     assert "--compact-tool-wheel-center-x: var(--compact-tool-wheel-hover-radius);" in fan_block
@@ -464,7 +465,7 @@ def test_compact_geometry_snapshot_separates_base_surface_from_extra_islands():
     assert "function isCompactSurfaceBaseAnchorKind(kind)" in script
     assert "return kind === 'surfaceShell' || kind === 'capsule' || kind === 'input';" in script
     assert "function getCompactSurfaceGeometryRole(kind)" in script
-    assert "if (kind === 'dragHandle') return 'baseHit';" in script
+    assert "if (kind === 'dragHandle') return 'baseHit';" not in script
     assert "return 'extraIsland';" in script
     assert "item.geometryRole = getCompactSurfaceGeometryRole(item.kind);" in script
 
@@ -484,6 +485,73 @@ def test_compact_geometry_snapshot_separates_base_surface_from_extra_islands():
     assert "extraIslandItems: extraIslandItems" in snapshot_block
     assert "extraIslandNativeRects:" in snapshot_block
     assert "extraIslandHitRects:" in snapshot_block
+
+
+def test_compact_surface_drag_uses_declared_surface_and_no_drag_exclusions():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    assert "function isCompactDragSurfaceTarget(target)" in script
+    assert "target.closest('[data-compact-no-drag=\"true\"]')" in script
+    assert "target.closest('[data-compact-drag-surface=\"true\"]')" in script
+    assert "function isCompactDragHandleTarget(target)" not in script
+    assert "target.closest('[data-compact-drag-handle=\"true\"]')" not in script
+    assert "if (dragState.compactSurface && !dragState.moved) return;" in script
+
+    drag_block = script.split("document.addEventListener('mousedown', function (event)", 1)[1].split(
+        "document.addEventListener('touchstart', function (event)",
+        1,
+    )[0]
+    assert "if (!isCompactDragSurfaceTarget(event.target)) return;" in drag_block
+    assert "compactSurface: true" in drag_block
+
+    touch_block = script.split("document.addEventListener('touchstart', function (event)", 1)[1].split(
+        "document.addEventListener('mousemove', function (event)",
+        1,
+    )[0]
+    assert "if (!isCompactDragSurfaceTarget(event.target)) return;" in touch_block
+    assert "compactSurface: true" in touch_block
+
+
+def test_moved_drag_suppresses_trailing_release_click():
+    # 移动过的拖拽（含 compact surface 本体拖拽）松开后，浏览器会在 mouseup 落点
+    # 补发一次 click；落点若是胶囊按钮会被误判为点击而展开输入框。守卫在 moved
+    # 时 arm，并在 document capture 阶段吞掉紧随的那一次 click。
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    assert "var suppressDragReleaseClick = false;" in script
+
+    stop_block = script.split("function stopDrag(options)", 1)[1].split(
+        "function bindDragging()",
+        1,
+    )[0]
+    assert "if (wasMoved) {" in stop_block
+    assert "armDragReleaseClickGuard();" in stop_block
+
+    arm_block = script.split("function armDragReleaseClickGuard()", 1)[1].split(
+        "function consumeDragReleaseClickGuard",
+        1,
+    )[0]
+    assert "suppressDragReleaseClick = true;" in arm_block
+    # setTimeout(…, 0) 兜底清旗：click 同任务先消费，无 click 时也不残留误吞后续点击。
+    assert "window.setTimeout(function () {" in arm_block
+    assert "suppressDragReleaseClick = false;" in arm_block
+
+    consume_block = script.split("function consumeDragReleaseClickGuard(event)", 1)[1].split(
+        "function getOverlay()",
+        1,
+    )[0]
+    assert "if (!suppressDragReleaseClick) return;" in consume_block
+    assert "suppressDragReleaseClick = false;" in consume_block
+    assert "event.preventDefault();" in consume_block
+    assert "event.stopPropagation();" in consume_block
+
+    # capture 阶段挂载，且排在 mobile 展开守卫之后（保留既有行为优先级）。
+    assert "document.addEventListener('click', consumeDragReleaseClickGuard, true);" in script
+    listeners_block = script.split(
+        "document.addEventListener('click', blockMobileExpandSyntheticPointerEvent, true);",
+        1,
+    )[1]
+    assert "document.addEventListener('click', consumeDragReleaseClickGuard, true);" in listeners_block
 
 
 def test_desktop_compact_layout_change_resets_anchor_only_when_base_surface_changes():
@@ -710,6 +778,14 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
         'className="compact-export-history-scroll-content"',
         1,
     )[0]
+    message_hit_block = panel_source.split('className="compact-export-history-bubble"', 1)[1].split(
+        'compact-export-history-check',
+        1,
+    )[0]
+    controls_hit_block = panel_source.split('className="compact-export-history-controls"', 1)[1].split(
+        'compact-export-history-controls-content',
+        1,
+    )[0]
 
     assert "pointer-events: none;" in anchor_block
     assert "pointer-events: none;" in panel_block
@@ -724,7 +800,11 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
     assert "id: 'history:scrollbar'" in script
     assert "data-compact-hit-region" not in scroll_jsx_block
     assert 'data-compact-hit-region-id={historyInteractive ? `history:message:${message.id}` : undefined}' in panel_source
+    assert "data-compact-hit-region={historyInteractive ? 'true' : undefined}" in message_hit_block
+    assert "data-compact-hit-region-kind={historyInteractive ? 'message' : undefined}" in message_hit_block
     assert "data-compact-hit-region-id={historyInteractive ? 'history:controls' : undefined}" in panel_source
+    assert "data-compact-hit-region={historyInteractive ? 'true' : undefined}" in controls_hit_block
+    assert "data-compact-hit-region-kind={historyInteractive ? 'controls' : undefined}" in controls_hit_block
     assert 'data-compact-hit-region-id="history:preview"' in panel_source
 
 

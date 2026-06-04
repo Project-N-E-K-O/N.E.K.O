@@ -214,7 +214,7 @@ function pluginAuthorText(plugin: PluginWorkbenchItem): string {
 
 export function usePluginWorkbench<
   T extends PluginMeta & { type?: string; enabled?: boolean; autoStart?: boolean; searchIndex?: string },
->(pluginsSource: MaybeRefOrGetter<T[]>) {
+>(pluginsSource: MaybeRefOrGetter<T[]>, options?: { scope?: string }) {
   const { locale } = useI18n()
   const normalized = computed<PluginWorkbenchItem[]>(() =>
     toValue(pluginsSource).map((plugin) => {
@@ -230,7 +230,7 @@ export function usePluginWorkbench<
   )
 
   const workbench = useGridWorkbench<PluginWorkbenchItem>(normalized, {
-    scope: 'plugin-workbench',
+    scope: options?.scope || 'plugin-workbench',
     groups: PLUGIN_GROUPS.map((groupId) => ({
       id: groupId,
       predicate: (item) => item.type === groupId,
