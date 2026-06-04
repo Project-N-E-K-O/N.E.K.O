@@ -47,6 +47,10 @@ _ack_waiters: dict[str, asyncio.Future] = {}
 _ack_waiters_lock = threading.Lock()
 _voice_bridge_waiters: dict[str, asyncio.Future] = {}
 _voice_bridge_request_seen_waiters: dict[str, asyncio.Future] = {}
+# Voice bridge waiter state is protected by _voice_bridge_waiters_lock.
+# queued means a result has been enqueued on the main loop but resolution has
+# not started; resolving means notify_voice_bridge_result is actively resolving
+# it. Normal flow is queued -> resolving -> removed.
 _voice_bridge_waiters_queued: set[str] = set()
 _voice_bridge_waiters_resolving: set[str] = set()
 _voice_bridge_waiters_lock = threading.Lock()

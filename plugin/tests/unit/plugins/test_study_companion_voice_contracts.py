@@ -4,6 +4,8 @@ import pytest
 
 from plugin.plugins.study_companion.voice_contracts import (
     arbitrate_voice_transcript_results,
+    voice_transcript_custom_event_args,
+    voice_transcript_request_has_text,
 )
 
 pytestmark = pytest.mark.plugin_unit
@@ -103,4 +105,20 @@ def test_voice_transcript_arbitration_all_noop_continues_ordinary_flow() -> None
         "skipped": False,
         "handlers": 1,
         "failures": 1,
+    }
+
+
+def test_voice_transcript_request_helpers_normalize_event_args() -> None:
+    event = {
+        "transcript": "  Yui help  ",
+        "lanlan_name": "Lan",
+        "metadata": {"request_id": "req-1"},
+    }
+
+    assert voice_transcript_request_has_text(event) is True
+    assert voice_transcript_request_has_text({"transcript": "  "}) is False
+    assert voice_transcript_custom_event_args(event) == {
+        "transcript": "Yui help",
+        "lanlan_name": "Lan",
+        "metadata": {"request_id": "req-1"},
     }

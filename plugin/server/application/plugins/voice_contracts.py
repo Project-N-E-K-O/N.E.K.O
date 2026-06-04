@@ -90,6 +90,25 @@ def voice_transcript_prime_context(
     return payload
 
 
+def voice_transcript_request_has_text(event: Mapping[str, object] | None) -> bool:
+    """Return whether a loosely-typed voice transcript request has usable text."""
+    if not isinstance(event, Mapping):
+        return False
+    return bool(str(event.get("transcript") or "").strip())
+
+
+def voice_transcript_custom_event_args(
+    event: Mapping[str, object],
+) -> dict[str, object]:
+    """Build canonical custom-event args for a voice transcript request."""
+    metadata = event.get("metadata")
+    return {
+        "transcript": str(event.get("transcript") or "").strip(),
+        "lanlan_name": str(event.get("lanlan_name") or ""),
+        "metadata": dict(metadata) if isinstance(metadata, Mapping) else {},
+    }
+
+
 # ---------------------------------------------------------------------------
 # Arbitration helpers
 # ---------------------------------------------------------------------------
@@ -217,6 +236,8 @@ __all__ = [
     "VOICE_TRANSCRIPT_EVENT_TYPE",
     "arbitrate_voice_transcript_results",
     "voice_transcript_cancel_response",
+    "voice_transcript_custom_event_args",
     "voice_transcript_noop",
     "voice_transcript_prime_context",
+    "voice_transcript_request_has_text",
 ]

@@ -16,6 +16,8 @@ from plugin.server.application.plugins.voice_contracts import (  # noqa: F401
     VOICE_TRANSCRIPT_EVENT_TYPE,
     arbitrate_voice_transcript_results,
     voice_transcript_cancel_response,
+    voice_transcript_custom_event_args,
     voice_transcript_noop,
     voice_transcript_prime_context,
+    voice_transcript_request_has_text,
 )

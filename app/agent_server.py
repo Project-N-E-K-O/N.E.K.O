@@ -50,6 +50,14 @@ from config import (
 from utils.config_manager import get_config_manager
 from utils.tokenize import truncate_to_tokens as _tt
 from main_logic.agent_event_bus import AgentServerEventBridge
+from plugin.server.application.plugins.voice_contracts import (
+    VOICE_TRANSCRIPT_EVENT_ID,
+    VOICE_TRANSCRIPT_EVENT_TYPE,
+    arbitrate_voice_transcript_results,
+    voice_transcript_custom_event_args,
+    voice_transcript_noop,
+    voice_transcript_request_has_text,
+)
 try:
     from brain.computer_use import ComputerUseAdapter
     from brain.browser_use_adapter import BrowserUseAdapter
@@ -1656,83 +1664,11 @@ async def _emit_agent_status_update(lanlan_name: Optional[str] = None) -> None:
         pass
 
 
-VOICE_TRANSCRIPT_CUSTOM_EVENT_TYPE = "voice_transcript"
-VOICE_TRANSCRIPT_CUSTOM_EVENT_ID = "handle_transcript"
 VOICE_TRANSCRIPT_CUSTOM_EVENT_TIMEOUT_SECONDS = 1.0
 
 
-def _voice_bridge_noop(reason: str, **extra: object) -> Dict[str, Any]:
-    return {
-        "action": "noop",
-        "reason": str(reason or "noop"),
-        **extra,
-    }
-
-
-def _voice_transcript_request_has_text(event: Mapping[str, object] | None) -> bool:
-    if not isinstance(event, Mapping):
-        return False
-    return bool(str(event.get("transcript") or "").strip())
-
-
-def _voice_transcript_custom_event_args(event: Mapping[str, object]) -> Dict[str, object]:
-    metadata = event.get("metadata")
-    return {
-        "transcript": str(event.get("transcript") or "").strip(),
-        "lanlan_name": str(event.get("lanlan_name") or ""),
-        "metadata": dict(metadata) if isinstance(metadata, Mapping) else {},
-    }
-
-
 def _voice_bridge_action_from_dispatch_results(dispatch_results: object) -> Dict[str, Any]:
-    if not isinstance(dispatch_results, list) or not dispatch_results:
-        return _voice_bridge_noop("no_subscribers")
-
-    from plugin.server.application.plugins.voice_contracts import (
-        arbitrate_voice_transcript_results,
-    )
-
-    arbitration_items: list[dict[str, object]] = []
-    failure_count = 0
-    for item in dispatch_results:
-        if not isinstance(item, Mapping):
-            continue
-        if not bool(item.get("success")):
-            failure_count += 1
-            continue
-        result = item.get("result")
-        if not isinstance(result, Mapping):
-            continue
-        action = str(result.get("action") or "").strip()
-        if not action:
-            continue
-        payload: Dict[str, Any] = dict(result)
-        payload["action"] = action
-        plugin_id = str(item.get("plugin_id") or "").strip()
-        if plugin_id:
-            payload.setdefault("source_plugin", plugin_id)
-        source_event_id = str(item.get("event_id") or "").strip()
-        if source_event_id:
-            payload.setdefault("source_event_id", source_event_id)
-        arbitration_items.append(
-            {
-                "plugin_id": payload.get("source_plugin") or plugin_id,
-                "event_id": payload.get("source_event_id") or source_event_id,
-                "success": True,
-                "result": payload,
-            }
-        )
-
-    if not arbitration_items:
-        return _voice_bridge_noop("no_handler_result", failures=failure_count)
-    payload = arbitrate_voice_transcript_results(arbitration_items)
-    if failure_count:
-        try:
-            existing_failures = int(payload.get("failures") or 0)
-        except (TypeError, ValueError):
-            existing_failures = 0
-        payload["failures"] = existing_failures + failure_count
-    return payload
+    return arbitrate_voice_transcript_results(dispatch_results)
 
 
 async def _dispatch_voice_transcript_custom_event(
@@ -1741,9 +1677,9 @@ async def _dispatch_voice_transcript_custom_event(
     from plugin.server.application.plugins.dispatch_service import PluginDispatchService
 
     dispatch_results = await PluginDispatchService().trigger_custom_event_subscribers(
-        event_type=VOICE_TRANSCRIPT_CUSTOM_EVENT_TYPE,
-        event_id=VOICE_TRANSCRIPT_CUSTOM_EVENT_ID,
-        args=_voice_transcript_custom_event_args(event),
+        event_type=VOICE_TRANSCRIPT_EVENT_TYPE,
+        event_id=VOICE_TRANSCRIPT_EVENT_ID,
+        args=voice_transcript_custom_event_args(event),
         timeout=VOICE_TRANSCRIPT_CUSTOM_EVENT_TIMEOUT_SECONDS,
     )
     return _voice_bridge_action_from_dispatch_results(dispatch_results)
@@ -1752,24 +1688,19 @@ async def _dispatch_voice_transcript_custom_event(
 async def _handle_voice_transcript_request(event: Dict[str, Any]) -> None:
     event_id = str((event or {}).get("event_id") or "")
     lanlan_name = (event or {}).get("lanlan_name")
-    result: Dict[str, Any] = _voice_bridge_noop("unavailable")
+    result: Dict[str, Any] = voice_transcript_noop("unavailable")
 
     try:
-        if not _voice_transcript_request_has_text(event):
-            result = _voice_bridge_noop("empty_transcript")
+        if not voice_transcript_request_has_text(event):
+            result = voice_transcript_noop("empty_transcript")
         elif not Modules.analyzer_enabled:
-            result = _voice_bridge_noop("agent_disabled")
+            result = voice_transcript_noop("agent_disabled")
         elif not Modules.agent_flags.get("user_plugin_enabled", False):
-            result = _voice_bridge_noop("user_plugin_disabled")
+            result = voice_transcript_noop("user_plugin_disabled")
+        elif not bool(Modules.plugin_lifecycle_started):
+            result = voice_transcript_noop("plugin_warming_up")
         else:
-            lifecycle_ready = bool(Modules.plugin_lifecycle_started)
-            if not lifecycle_ready:
-                lifecycle_ready = await _ensure_plugin_lifecycle_started()
-
-            if not lifecycle_ready:
-                result = _voice_bridge_noop("plugin_lifecycle_start_failed")
-            else:
-                result = await _dispatch_voice_transcript_custom_event(event)
+            result = await _dispatch_voice_transcript_custom_event(event)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
@@ -1779,11 +1710,10 @@ async def _handle_voice_transcript_request(event: Dict[str, Any]) -> None:
             lanlan_name,
             exc,
         )
-        result = {
-            "action": "noop",
-            "reason": "dispatch_failed",
-            "error_type": type(exc).__name__,
-        }
+        result = voice_transcript_noop(
+            "dispatch_failed",
+            error_type=type(exc).__name__,
+        )
 
     await _emit_main_event(
         "voice_bridge_result",

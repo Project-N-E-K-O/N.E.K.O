@@ -2050,16 +2050,21 @@ class LLMSessionManager:
         action = str(result.get("action") or "").strip()
         if action == "cancel_response":
             cancel_response = getattr(session_snapshot, "cancel_response", None)
-            if callable(cancel_response):
-                try:
-                    if _session_changed():
-                        return ""
-                    await cancel_response()
-                    logger.debug("[%s] voice bridge cancelled current response", self.lanlan_name)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    logger.debug("[%s] voice bridge cancel skipped/failed: %s", self.lanlan_name, exc)
+            if not callable(cancel_response):
+                logger.debug("[%s] voice bridge cancel skipped: session has no cancel_response", self.lanlan_name)
+                return ""
+            try:
+                if _session_changed():
+                    return ""
+                await cancel_response()
+                if _session_changed():
+                    return ""
+                logger.debug("[%s] voice bridge cancelled current response", self.lanlan_name)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("[%s] voice bridge cancel skipped/failed: %s", self.lanlan_name, exc)
+                return ""
             return action
 
         if action == "prime_context":

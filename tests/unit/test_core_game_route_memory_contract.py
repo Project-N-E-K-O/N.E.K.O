@@ -556,6 +556,82 @@ async def test_last_user_message_time_uses_transcript_arrival_not_post_await(mon
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_voice_transcript_bridge_cancel_without_session_handler_uses_ordinary_flow(
+    monkeypatch,
+):
+    async def fake_publish(*_args, **_kwargs):
+        return {"action": "cancel_response", "reason": "ocr_overlap"}
+
+    mgr = _make_transcript_manager()
+    mgr.session = object()
+    monkeypatch.setattr(
+        core_module,
+        "publish_voice_transcript_request_reliably",
+        fake_publish,
+    )
+
+    await core_module.LLMSessionManager.handle_input_transcript(
+        mgr,
+        "screen echo",
+        is_voice_source=True,
+    )
+
+    assert mgr._activity_tracker.voice_rms_count == 1
+    assert mgr._activity_tracker.user_messages == ["screen echo"]
+    assert mgr._session_turn_count == 1
+    mgr._publish_user_utterance_to_plugin_bus.assert_called_once_with(
+        "screen echo",
+        is_voice_source=True,
+    )
+    assert mgr.sync_message_queue.messages == [
+        {
+            "type": "user",
+            "data": {"input_type": "transcript", "data": "screen echo"},
+        }
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_voice_transcript_bridge_cancel_failure_uses_ordinary_flow(monkeypatch):
+    class _FailingCancelSession:
+        async def cancel_response(self):
+            raise RuntimeError("cancel failed")
+
+    async def fake_publish(*_args, **_kwargs):
+        return {"action": "cancel_response", "reason": "ocr_overlap"}
+
+    mgr = _make_transcript_manager()
+    mgr.session = _FailingCancelSession()
+    monkeypatch.setattr(
+        core_module,
+        "publish_voice_transcript_request_reliably",
+        fake_publish,
+    )
+
+    await core_module.LLMSessionManager.handle_input_transcript(
+        mgr,
+        "screen echo",
+        is_voice_source=True,
+    )
+
+    assert mgr._activity_tracker.voice_rms_count == 1
+    assert mgr._activity_tracker.user_messages == ["screen echo"]
+    assert mgr._session_turn_count == 1
+    mgr._publish_user_utterance_to_plugin_bus.assert_called_once_with(
+        "screen echo",
+        is_voice_source=True,
+    )
+    assert mgr.sync_message_queue.messages == [
+        {
+            "type": "user",
+            "data": {"input_type": "transcript", "data": "screen echo"},
+        }
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_voice_transcript_bridge_prime_context_consumes_ordinary_flow(monkeypatch):
     calls = []
 
