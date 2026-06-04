@@ -848,6 +848,7 @@ class LLMSessionManager:
         self._takeover_input_dispatcher: Optional[
             Callable[..., Awaitable[bool]]
         ] = None
+        self._latest_voice_transcript_request_id = ""
         # 由前端控制的Agent相关开关
         self.agent_flags = {
             'agent_enabled': False,
@@ -2016,6 +2017,30 @@ class LLMSessionManager:
     ) -> str:
         """Let plugin-side voice filters decide whether to cancel or prime context."""
         session_snapshot = self.session
+        request_id_snapshot = str(request_id or "")
+
+        def _session_changed() -> bool:
+            if self.session is session_snapshot:
+                return False
+            logger.debug("[%s] voice bridge result ignored after session change", self.lanlan_name)
+            return True
+
+        def _request_stale() -> bool:
+            if not request_id_snapshot:
+                return False
+            latest_request_id = str(
+                getattr(self, "_latest_voice_transcript_request_id", "") or ""
+            )
+            if latest_request_id == request_id_snapshot:
+                return False
+            logger.debug(
+                "[%s] voice bridge result ignored after newer request latest=%s current=%s",
+                self.lanlan_name,
+                latest_request_id,
+                request_id_snapshot,
+            )
+            return True
+
         metadata: dict[str, Any] = {
             "session_type": type(session_snapshot).__name__ if session_snapshot else "",
             "voice_source": True,
@@ -2023,6 +2048,9 @@ class LLMSessionManager:
         }
         if request_id:
             metadata["request_id"] = request_id
+
+        if _session_changed() or _request_stale():
+            return ""
 
         try:
             result = await publish_voice_transcript_request_reliably(
@@ -2038,13 +2066,7 @@ class LLMSessionManager:
         if not isinstance(result, dict) or not result:
             return ""
 
-        def _session_changed() -> bool:
-            if self.session is session_snapshot:
-                return False
-            logger.debug("[%s] voice bridge result ignored after session change", self.lanlan_name)
-            return True
-
-        if _session_changed():
+        if _session_changed() or _request_stale():
             return ""
 
         action = str(result.get("action") or "").strip()
@@ -2054,10 +2076,10 @@ class LLMSessionManager:
                 logger.debug("[%s] voice bridge cancel skipped: session has no cancel_response", self.lanlan_name)
                 return ""
             try:
-                if _session_changed():
+                if _session_changed() or _request_stale():
                     return ""
                 await cancel_response()
-                if _session_changed():
+                if _session_changed() or _request_stale():
                     return ""
                 logger.debug("[%s] voice bridge cancelled current response", self.lanlan_name)
             except asyncio.CancelledError:
@@ -2080,9 +2102,11 @@ class LLMSessionManager:
                 return ""
             skipped = bool(result.get("skipped", False))
             try:
-                if _session_changed():
+                if _session_changed() or _request_stale():
                     return ""
                 await prime_context(context_text, skipped=skipped)
+                if _session_changed() or _request_stale():
+                    return ""
                 logger.debug(
                     "[%s] voice bridge primed context len=%d skipped=%s",
                     self.lanlan_name,
@@ -2292,6 +2316,8 @@ class LLMSessionManager:
             if is_voice_source and transcript_text
             else ""
         )
+        if realtime_voice_request_id:
+            self._latest_voice_transcript_request_id = realtime_voice_request_id
 
         # 更新用户活动时间戳（用于主动搭话检测）。先捕获「转写到达时刻」局部变量，
         # 下面 last_user_message_time 复用同一时刻——若 takeover dispatcher 注册，

@@ -122,6 +122,7 @@ def _make_manager():
     mgr.tts_handler_task = None
     mgr._takeover_active = False
     mgr._takeover_input_dispatcher = None
+    mgr._latest_voice_transcript_request_id = ""
     mgr.sent_responses = []
     mgr.user_activity = []
     mgr.last_user_activity_time = None
@@ -405,6 +406,7 @@ async def test_voice_transcript_bridge_cancel_consumes_ordinary_flow(monkeypatch
     assert calls[0][2]["request_id"].startswith("realtime-stt-")
     assert calls[0][2]["source"] == "realtime_stt"
     assert "voice_session_id" not in calls[0][2]
+    assert mgr._latest_voice_transcript_request_id == calls[0][2]["request_id"]
     assert session.cancelled == 1
     assert mgr._activity_tracker.voice_rms_count == 1
     assert mgr._activity_tracker.user_messages == []
@@ -447,6 +449,29 @@ async def test_voice_transcript_keyword_outcome_pushes_invite_resolved(monkeypat
         "game_url": "/soccer_demo?x=1",
         "game_type": "soccer",
     }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_voice_transcript_bridge_skips_publish_for_stale_request(monkeypatch):
+    async def fail_publish(*_args, **_kwargs):
+        raise AssertionError("stale voice bridge request must not publish")
+
+    session = _FakeVoiceBridgeSession()
+    mgr = _make_transcript_manager()
+    mgr.session = session
+    mgr._latest_voice_transcript_request_id = "req-new"
+    monkeypatch.setattr(core_module, "publish_voice_transcript_request_reliably", fail_publish)
+
+    result = await core_module.LLMSessionManager._dispatch_voice_transcript_bridge(
+        mgr,
+        "screen echo",
+        request_id="req-old",
+    )
+
+    assert result == ""
+    assert session.cancelled == 0
+    assert session.prime_context_calls == []
 
 
 @pytest.mark.unit
@@ -552,6 +577,34 @@ async def test_last_user_message_time_uses_transcript_arrival_not_post_await(mon
 
     assert mgr.last_user_activity_time == 101.0
     assert mgr.last_user_message_time == 101.0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_voice_transcript_bridge_ignores_result_that_becomes_stale(monkeypatch):
+    session = _FakeVoiceBridgeSession()
+    mgr = _make_transcript_manager()
+    mgr.session = session
+    mgr._latest_voice_transcript_request_id = "req-old"
+    calls = []
+
+    async def fake_publish(lanlan_name, transcript, *, metadata):
+        calls.append((lanlan_name, transcript, metadata))
+        mgr._latest_voice_transcript_request_id = "req-new"
+        return {"action": "cancel_response", "reason": "ocr_overlap"}
+
+    monkeypatch.setattr(core_module, "publish_voice_transcript_request_reliably", fake_publish)
+
+    result = await core_module.LLMSessionManager._dispatch_voice_transcript_bridge(
+        mgr,
+        "screen echo",
+        request_id="req-old",
+    )
+
+    assert result == ""
+    assert calls[0][2]["request_id"] == "req-old"
+    assert session.cancelled == 0
+    assert session.prime_context_calls == []
 
 
 @pytest.mark.unit

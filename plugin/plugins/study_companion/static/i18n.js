@@ -143,8 +143,8 @@ const I18n = {
         el.setAttribute('placeholder', this.t(key, el.getAttribute('placeholder') || ''));
       }
     });
-    root.querySelectorAll('[data-i18n-aria-label]').forEach((el) => {
-      const key = el.getAttribute('data-i18n-aria-label');
+    root.querySelectorAll('[data-i18n-aria], [data-i18n-aria-label]').forEach((el) => {
+      const key = el.getAttribute('data-i18n-aria') || el.getAttribute('data-i18n-aria-label');
       if (key) {
         el.setAttribute('aria-label', this.t(key, el.getAttribute('aria-label') || ''));
       }

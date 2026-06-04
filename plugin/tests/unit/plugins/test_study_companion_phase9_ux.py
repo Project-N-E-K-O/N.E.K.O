@@ -37,6 +37,26 @@ def test_phase9_static_math_assets_are_local_and_registered() -> None:
     assert "trust: false" in renderer
 
 
+def test_phase9_static_ui_uses_standard_aria_i18n_attribute() -> None:
+    index = (PLUGIN_DIR / "static" / "index.html").read_text(encoding="utf-8")
+    i18n = (PLUGIN_DIR / "static" / "i18n.js").read_text(encoding="utf-8")
+
+    assert "data-i18n-aria-label" not in index
+    for key in (
+        "ui.label.study_controls",
+        "ui.label.mode",
+        "ui.label.study_state",
+        "ui.memory.title",
+        "ui.memory.ratings_aria",
+        "ui.label.study_workspace",
+        "ui.label.question_panel",
+        "ui.label.reply_panel",
+    ):
+        assert f'data-i18n-aria="{key}"' in index
+    assert "[data-i18n-aria]" in i18n
+    assert "getAttribute('data-i18n-aria')" in i18n
+
+
 def test_phase9_hosted_study_panel_uses_span_based_katex_rendering() -> None:
     source = (PLUGIN_DIR / "surfaces" / "study_panel.tsx").read_text(encoding="utf-8")
 

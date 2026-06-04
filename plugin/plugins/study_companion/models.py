@@ -239,14 +239,6 @@ class CommunicationConfig:
         return asdict(self)
 
 
-def _clamp_int(value: object, minimum: int, maximum: int, default: int) -> int:
-    try:
-        number = int(value)
-    except (TypeError, ValueError, OverflowError):
-        number = default
-    return max(minimum, min(maximum, number))
-
-
 @dataclass(slots=True)
 class AwarenessConfig:
     enabled: bool = False
@@ -261,18 +253,20 @@ class AwarenessConfig:
 
     def __post_init__(self) -> None:
         self.enabled = bool(self.enabled)
-        self.snapshot_interval_seconds = _clamp_int(
+        self.snapshot_interval_seconds = _clamp_int_or_default(
             self.snapshot_interval_seconds, 1, 60, 5
         )
-        self.context_window_minutes = _clamp_int(
+        self.context_window_minutes = _clamp_int_or_default(
             self.context_window_minutes, 1, 60, 5
         )
         mode = str(self.classify_mode or "title_first").strip().lower()
         self.classify_mode = (
             mode if mode in {"title_first", "ocr_text", "both"} else "title_first"
         )
-        self.image_max_bytes = _clamp_int(self.image_max_bytes, 10_240, 512_000, 65_536)
-        self.push_to_llm_interval_seconds = _clamp_int(
+        self.image_max_bytes = _clamp_int_or_default(
+            self.image_max_bytes, 10_240, 512_000, 65_536
+        )
+        self.push_to_llm_interval_seconds = _clamp_int_or_default(
             self.push_to_llm_interval_seconds, 30, 300, 300
         )
         push_mode = str(self.push_to_llm_mode or "read").strip().lower()
