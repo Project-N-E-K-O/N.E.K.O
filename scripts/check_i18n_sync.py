@@ -66,7 +66,7 @@ def _git(*args: str, check: bool = True) -> str:
     result = subprocess.run(
         ["git", *args],
         cwd=REPO_ROOT,
-        capture_output=True, text=True, check=False,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
     )
     if check and result.returncode != 0:
         sys.stderr.write(result.stderr)
@@ -161,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
     rev_check = subprocess.run(
         ["git", "rev-parse", "--verify", "--quiet", args.base],
         cwd=REPO_ROOT,
-        capture_output=True, text=True, check=False,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
     )
     if rev_check.returncode != 0:
         print(

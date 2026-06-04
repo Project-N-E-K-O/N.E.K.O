@@ -6,6 +6,7 @@ import numpy as np
 import soxr
 import time
 import json
+import math
 import re
 import base64
 import websockets
@@ -3939,7 +3940,7 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
             gsv_enabled = core_cfg.get('GPTSOVITS_ENABLED', False)
             if gsv_enabled and (base_url.startswith('http://') or base_url.startswith('https://')):
                 return gptsovits_tts_worker, None, 'gptsovits'
-            if gsv_enabled and (base_url.startswith('ws://') or base_url.startswith('wss://')):
+            if base_url.startswith('ws://') or base_url.startswith('wss://'):
                 return local_cosyvoice_worker, None, 'local_cosyvoice'
     except Exception as e:
         logger.warning(f'TTS调度器检查报告:{e}')
@@ -4023,7 +4024,11 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
     cm = get_config_manager()
     tts_config = cm.get_model_api_config('tts_custom')
 
-    ws_base = tts_config.get('base_url', '')
+    ws_base = (tts_config.get('base_url', '') or '').strip().rstrip('/')
+    for endpoint_suffix in ('/v1/audio/speech/stream', '/v1/voices'):
+        if ws_base.lower().endswith(endpoint_suffix):
+            ws_base = ws_base[:-len(endpoint_suffix)].rstrip('/')
+            break
     if (ws_base and not ws_base.startswith('ws://') and not ws_base.startswith('wss://')) or not ws_base:
         if ws_base:
             logger.error(f'本地cosyvoice URL协议无效: {ws_base}，需要 ws/wss 协议')
@@ -4043,16 +4048,40 @@ def local_cosyvoice_worker(request_queue, response_queue, audio_api_key, voice_i
     # OpenAI 兼容端点
     WS_URL = f'{ws_base}/v1/audio/speech/stream'
     
-    # 从 voice_id 解析 voice 和 speed（格式：voice 或 voice:speed）
-    voice_name = voice_id or "中文女"
+    # Keep model-prefixed voice IDs intact (for example chattts:2).
+    # New speed overrides should be explicit: voice_id|speed=1.2
+    # Legacy local WS configs may still store bare voices as voice:1.2.
+    voice_name = (voice_id or "").strip() or "中文女"
     speech_speed = 1.0
-    if voice_id and ':' in voice_id:
-        parts = voice_id.split(':', 1)
-        voice_name = parts[0]
-        try:
-            speech_speed = float(parts[1])
-        except ValueError:
-            pass
+    if voice_name and '|' in voice_name:
+        voice_part, suffix = voice_name.rsplit('|', 1)
+        suffix = suffix.strip()
+        speed_prefix = 'speed='
+        if suffix.lower().startswith(speed_prefix):
+            try:
+                parsed_speed = float(suffix[len(speed_prefix):])
+            except (TypeError, ValueError):
+                parsed_speed = None
+            if parsed_speed and math.isfinite(parsed_speed) and parsed_speed > 0:
+                voice_name = voice_part.strip() or "中文女"
+                speech_speed = parsed_speed
+            else:
+                logger.warning("Ignoring invalid local TTS speed override: %s", suffix)
+                voice_name = voice_part.strip() or "中文女"
+        else:
+            voice_name = voice_part.strip() or "中文女"
+    elif ':' in voice_name:
+        model_prefix = voice_name.split(':', 1)[0].strip().lower()
+        local_model_prefixes = {"kokoro", "melotts", "melo", "chattts", "tone"}
+        if model_prefix not in local_model_prefixes:
+            voice_part, suffix = voice_name.rsplit(':', 1)
+            try:
+                parsed_speed = float(suffix.strip())
+            except (TypeError, ValueError):
+                parsed_speed = None
+            if parsed_speed and math.isfinite(parsed_speed) and parsed_speed > 0:
+                voice_name = voice_part.strip() or "中文女"
+                speech_speed = parsed_speed
     
     # 服务器返回的采样率（22050Hz）
     SRC_RATE = 22050

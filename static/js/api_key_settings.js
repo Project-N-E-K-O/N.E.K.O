@@ -34,6 +34,9 @@ const CONNECTIVITY_TESTABLE_TYPES = MODEL_TYPES;
 let _loadedGptSovitsState = 'none';
 // 上方普通 TTS 配置是否被用户在本页改动过
 let _ttsConfigDirty = false;
+let _localKokoroVoiceRefreshTimer = null;
+let _localKokoroProbeSeq = 0;
+
 function markTtsConfigDirty() {
     if (_isLoadingSavedConfig) return;
     _ttsConfigDirty = true;
@@ -144,6 +147,352 @@ function looksLikeLegacyGptSovitsConfig(ttsModelUrl, ttsModelId = '', ttsModelAp
         || lowerUrl.startsWith('http://localhost:')
         || lowerUrl.startsWith('https://127.0.0.1:')
         || lowerUrl.startsWith('https://localhost:');
+}
+
+function normalizeLocalKokoroWsUrl(value) {
+    const raw = (value || '').trim();
+    if (!raw) return 'ws://127.0.0.1:50000';
+    try {
+        const url = new URL(raw);
+        if (url.protocol === 'http:') {
+            url.protocol = 'ws:';
+        } else if (url.protocol === 'https:') {
+            url.protocol = 'wss:';
+        } else if (!['ws:', 'wss:'].includes(url.protocol)) {
+            return raw;
+        }
+        url.search = '';
+        url.hash = '';
+        let pathname = url.pathname.replace(/\/+$/, '');
+        pathname = pathname.replace(/\/v1\/audio\/speech\/stream$/i, '');
+        pathname = pathname.replace(/\/v1\/voices$/i, '');
+        url.pathname = pathname || '/';
+        return url.toString().replace(/\/$/, '');
+    } catch (e) {
+        return raw;
+    }
+}
+
+function normalizeLocalKokoroProfile(value) {
+    const raw = (value || '').trim().toLowerCase();
+    if (!raw) return 'kokoro-zh';
+    if (['kokoro-en', 'en', 'english', 'english-us', 'en-us'].includes(raw)) {
+        return 'kokoro-en';
+    }
+    return 'kokoro-zh';
+}
+
+function localKokoroProfileFromModelId(modelId) {
+    const raw = (modelId || '').trim().toLowerCase();
+    if (!raw) return '';
+    if (!raw.includes('kokoro') && !raw.includes('82m')) return '';
+    if (raw.includes('kokoro-en') || raw.includes('kokoro_en') || /(^|[-_])en($|[-_])/.test(raw)) {
+        return 'kokoro-en';
+    }
+    if (raw.includes('kokoro-82m') && !raw.includes('zh')) {
+        return 'kokoro-en';
+    }
+    if (raw.includes('kokoro-zh') || raw.includes('kokoro_zh') || /(^|[-_])zh($|[-_])/.test(raw)) {
+        return 'kokoro-zh';
+    }
+    return '';
+}
+
+function localKokoroProfileFromVoiceId(voiceId) {
+    const raw = (voiceId || '').trim().toLowerCase();
+    if (!raw) return '';
+    if (raw.startsWith('kokoro:af_') || raw.startsWith('kokoro:am_') || raw.startsWith('kokoro:bf_') || raw.startsWith('kokoro:bm_')
+        || raw.startsWith('af_') || raw.startsWith('am_') || raw.startsWith('bf_') || raw.startsWith('bm_')) {
+        return 'kokoro-en';
+    }
+    if (raw.startsWith('kokoro:zf_') || raw.startsWith('kokoro:zm_') || raw.startsWith('kokoro:zh_')
+        || raw.startsWith('zf_') || raw.startsWith('zm_') || raw.startsWith('zh_')) {
+        return 'kokoro-zh';
+    }
+    return '';
+}
+
+function localKokoroDefaultVoice(profile) {
+    return normalizeLocalKokoroProfile(profile) === 'kokoro-en'
+        ? 'kokoro:af_heart'
+        : 'kokoro:zf_001';
+}
+
+function normalizeLocalKokoroVoiceId(value, profile = '') {
+    const raw = (value || '').trim();
+    if (!raw) return localKokoroDefaultVoice(profile);
+    if (raw.startsWith('kokoro:')) return raw;
+    if (/^(zf|zm|zh|af|am|bf|bm)_/i.test(raw)) return `kokoro:${raw}`;
+    return localKokoroDefaultVoice(profile);
+}
+
+function localKokoroVoicesUrlFromWs(wsUrl) {
+    const raw = (wsUrl || '').trim();
+    if (!raw) return 'http://127.0.0.1:50000/v1/voices';
+    try {
+        const url = new URL(raw);
+        if (url.protocol === 'ws:') {
+            url.protocol = 'http:';
+        } else if (url.protocol === 'wss:') {
+            url.protocol = 'https:';
+        } else if (!['http:', 'https:'].includes(url.protocol)) {
+            return null;
+        }
+        url.search = '';
+        url.hash = '';
+        let pathname = url.pathname.replace(/\/+$/, '');
+        pathname = pathname.replace(/\/v1\/audio\/speech\/stream$/i, '');
+        pathname = pathname.replace(/\/v1\/voices$/i, '');
+        url.pathname = `${pathname}/v1/voices`.replace(/\/{2,}/g, '/');
+        return url.toString();
+    } catch (e) {
+        return null;
+    }
+}
+
+function localKokoroHealthUrlFromWs(wsUrl) {
+    const raw = (wsUrl || '').trim();
+    if (!raw) return null;
+    try {
+        const url = new URL(raw);
+        if (url.protocol === 'ws:') {
+            url.protocol = 'http:';
+        } else if (url.protocol === 'wss:') {
+            url.protocol = 'https:';
+        } else if (!['http:', 'https:'].includes(url.protocol)) {
+            return null;
+        }
+        url.search = '';
+        url.hash = '';
+        let pathname = url.pathname.replace(/\/+$/, '');
+        pathname = pathname.replace(/\/v1\/audio\/speech\/stream$/i, '');
+        pathname = pathname.replace(/\/v1\/voices$/i, '');
+        pathname = pathname.replace(/\/health$/i, '');
+        url.pathname = `${pathname}/health`.replace(/\/{2,}/g, '/');
+        return url.toString();
+    } catch (e) {
+        return null;
+    }
+}
+
+function looksLikeLocalKokoroWsUrl(value) {
+    const raw = (value || '').trim();
+    if (!raw) return false;
+    try {
+        const url = new URL(raw);
+        if (!['ws:', 'wss:', 'http:', 'https:'].includes(url.protocol)) return false;
+        const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+        return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1';
+    } catch (e) {
+        return false;
+    }
+}
+
+function currentTtsKokoroWsUrlCandidate() {
+    const provider = (document.getElementById('ttsModelProvider')?.value || '').trim();
+    if (provider !== 'custom') return '';
+    const ttsUrl = (document.getElementById('ttsModelUrl')?.value || '').trim();
+    if (!looksLikeLocalKokoroWsUrl(ttsUrl)) return '';
+    return normalizeLocalKokoroWsUrl(ttsUrl);
+}
+
+function setLocalKokoroTtsConfigVisible(visible) {
+    const panel = document.getElementById('localKokoroTtsConfig');
+    if (panel) {
+        panel.style.display = visible ? '' : 'none';
+    }
+}
+
+function updateLocalKokoroTtsConfigVisibility() {
+    const shouldProbe = Boolean(currentTtsKokoroWsUrlCandidate());
+    setLocalKokoroTtsConfigVisible(false);
+    if (!shouldProbe) {
+        _localKokoroProbeSeq += 1;
+    }
+    return shouldProbe;
+}
+
+async function fetchLocalKokoroJson(url, timeoutMs = 3000) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const resp = await fetch(url, {
+            cache: 'no-store',
+            signal: controller.signal,
+        });
+        if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
+        return await resp.json();
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
+function ensureLocalKokoroVoiceOption(voiceId) {
+    const select = document.getElementById('localKokoroVoiceSelect');
+    if (!select || !voiceId) return;
+    const exists = Array.from(select.options).some(opt => opt.value === voiceId);
+    if (!exists) {
+        const option = document.createElement('option');
+        option.value = voiceId;
+        option.textContent = voiceId.replace(/^kokoro:/, '');
+        select.appendChild(option);
+    }
+}
+
+async function refreshLocalKokoroVoiceOptions(silent = true) {
+    const localUrlInput = document.getElementById('localKokoroWsUrl');
+    const localProfileSelect = document.getElementById('localKokoroProfileSelect');
+    const localVoiceSelect = document.getElementById('localKokoroVoiceSelect');
+    if (!localUrlInput || !localVoiceSelect) return;
+    if (!updateLocalKokoroTtsConfigVisibility()) return;
+
+    const probeSeq = ++_localKokoroProbeSeq;
+    const wsUrl = currentTtsKokoroWsUrlCandidate();
+    const healthUrl = localKokoroHealthUrlFromWs(wsUrl);
+    const voicesUrl = localKokoroVoicesUrlFromWs(wsUrl);
+    if (!wsUrl || !healthUrl || !voicesUrl) return;
+
+    const currentProfile = normalizeLocalKokoroProfile(localProfileSelect?.value || '');
+    const currentVoice = localVoiceSelect.value || localKokoroDefaultVoice(currentProfile);
+    const currentVoiceProfile = localKokoroProfileFromVoiceId(currentVoice);
+    const preferredVoice = currentVoiceProfile && currentVoiceProfile !== currentProfile
+        ? localKokoroDefaultVoice(currentProfile)
+        : currentVoice;
+    localUrlInput.value = wsUrl;
+    try {
+        const health = await fetchLocalKokoroJson(healthUrl);
+        const engines = Array.isArray(health?.engines) ? health.engines : [];
+        if (probeSeq !== _localKokoroProbeSeq) return;
+        if (!engines.includes('kokoro')) {
+            setLocalKokoroTtsConfigVisible(false);
+            return;
+        }
+        setLocalKokoroTtsConfigVisible(true);
+
+        const result = await fetchLocalKokoroJson(voicesUrl);
+        if (probeSeq !== _localKokoroProbeSeq) return;
+        const voices = result?.data?.kokoro || [];
+        if (!Array.isArray(voices) || voices.length === 0) return;
+
+        localVoiceSelect.innerHTML = '';
+        voices.forEach(v => {
+            const rawVoiceId = String(v.voice_id || v.id || v.name || '').trim();
+            if (!rawVoiceId) return;
+            const voiceId = normalizeLocalKokoroVoiceId(rawVoiceId, currentProfile);
+            if (!voiceId || voiceId === 'kokoro:') return;
+            const voiceProfile = localKokoroProfileFromVoiceId(voiceId);
+            if (voiceProfile && voiceProfile !== currentProfile) return;
+            const option = document.createElement('option');
+            option.value = voiceId;
+            option.textContent = v.name || voiceId.replace(/^kokoro:/, '');
+            option.title = voiceId;
+            localVoiceSelect.appendChild(option);
+        });
+        ensureLocalKokoroVoiceOption(preferredVoice);
+        localVoiceSelect.value = Array.from(localVoiceSelect.options).some(opt => opt.value === preferredVoice)
+            ? preferredVoice
+            : localKokoroDefaultVoice(currentProfile);
+    } catch (e) {
+        if (!silent) {
+            showStatus(`Local Kokoro voice list unavailable: ${e.message || e}`, 'error');
+        }
+    }
+}
+
+function scheduleLocalKokoroVoiceRefresh() {
+    if (_localKokoroVoiceRefreshTimer) {
+        clearTimeout(_localKokoroVoiceRefreshTimer);
+    }
+    _localKokoroVoiceRefreshTimer = setTimeout(() => {
+        _localKokoroVoiceRefreshTimer = null;
+        refreshLocalKokoroVoiceOptions(true);
+    }, 300);
+}
+
+function loadLocalKokoroTtsConfig(ttsModelUrl, ttsVoiceId, ttsModelId = '') {
+    const localUrlInput = document.getElementById('localKokoroWsUrl');
+    const localProfileSelect = document.getElementById('localKokoroProfileSelect');
+    const localVoiceSelect = document.getElementById('localKokoroVoiceSelect');
+    if (!localUrlInput || !localVoiceSelect) return;
+
+    const savedUrl = (ttsModelUrl || '').trim();
+    const savedProfile = normalizeLocalKokoroProfile(
+        localKokoroProfileFromVoiceId(ttsVoiceId) || localKokoroProfileFromModelId(ttsModelId)
+    );
+    const savedVoice = normalizeLocalKokoroVoiceId(ttsVoiceId, savedProfile);
+    if (/^(wss?|https?):\/\//i.test(savedUrl)) {
+        localUrlInput.value = normalizeLocalKokoroWsUrl(savedUrl);
+    } else if (!localUrlInput.value) {
+        localUrlInput.value = 'ws://127.0.0.1:50000';
+    }
+
+    if (localProfileSelect) {
+        localProfileSelect.value = savedProfile;
+    }
+
+    const voice = savedVoice || localKokoroDefaultVoice(savedProfile);
+    ensureLocalKokoroVoiceOption(voice);
+    localVoiceSelect.value = voice;
+    if (updateLocalKokoroTtsConfigVisibility()) {
+        refreshLocalKokoroVoiceOptions(true);
+    }
+}
+
+function applyLocalKokoroTtsConfig() {
+    const localUrlInput = document.getElementById('localKokoroWsUrl');
+    const localProfileSelect = document.getElementById('localKokoroProfileSelect');
+    const localVoiceSelect = document.getElementById('localKokoroVoiceSelect');
+    const providerSelect = document.getElementById('ttsModelProvider');
+    const urlInput = document.getElementById('ttsModelUrl');
+    const voiceInput = document.getElementById('ttsVoiceId');
+    const modelIdInput = document.getElementById('ttsModelId');
+    const apiKeyInput = document.getElementById('ttsModelApiKey');
+    const enableCustomApi = document.getElementById('enableCustomApi');
+
+    const wsUrl = normalizeLocalKokoroWsUrl(localUrlInput ? localUrlInput.value : '');
+    const selectedProfile = normalizeLocalKokoroProfile(localProfileSelect ? localProfileSelect.value : '');
+    const selectedVoice = localVoiceSelect ? normalizeLocalKokoroVoiceId(localVoiceSelect.value, selectedProfile) : localKokoroDefaultVoice(selectedProfile);
+    const profile = localKokoroProfileFromVoiceId(selectedVoice) || selectedProfile;
+    const voiceId = normalizeLocalKokoroVoiceId(selectedVoice, profile);
+    if (localProfileSelect) {
+        localProfileSelect.value = profile;
+    }
+
+    if (enableCustomApi && !enableCustomApi.checked) {
+        enableCustomApi.checked = true;
+        toggleCustomApi(true);
+    }
+    if (providerSelect) {
+        providerSelect.value = 'custom';
+        onCustomModelProviderChange('tts');
+    }
+    if (urlInput) {
+        urlInput.removeAttribute('readonly');
+        urlInput.value = wsUrl;
+    }
+    if (voiceInput) {
+        voiceInput.value = voiceId;
+    }
+    if (modelIdInput) {
+        modelIdInput.value = profile;
+    }
+    if (apiKeyInput) {
+        apiKeyInput.removeAttribute('readonly');
+        apiKeyInput.dataset.realKey = '';
+        apiKeyInput.value = '';
+    }
+
+    const gptsovitsEnabled = document.getElementById('gptsovitsEnabled');
+    if (gptsovitsEnabled && gptsovitsEnabled.checked) {
+        gptsovitsEnabled.checked = false;
+        toggleGptSovitsConfig();
+    }
+
+    markTtsConfigDirty();
+    syncProviderSelectDropdowns(providerSelect);
+    if (updateLocalKokoroTtsConfigVisibility()) {
+        refreshLocalKokoroVoiceOptions(true);
+    }
 }
 
 function getProviderResolvedUrl(scope, providerKey) {
@@ -1002,6 +1351,12 @@ function onCustomModelProviderChange(modelType) {
         const bookKey = syncKeyFromBook(provider);
         setKeyReadonly(keyInput, bookKey);
     }
+
+    if (modelType === 'tts') {
+        if (updateLocalKokoroTtsConfigVisibility()) {
+            scheduleLocalKokoroVoiceRefresh();
+        }
+    }
 }
 
 /**
@@ -1361,13 +1716,14 @@ async function loadCurrentApiKey() {
             setInputValue('ttsVoiceId', data.ttsVoiceId);
 
             // 加载 GPT-SoVITS 配置（优先使用显式启用状态，兼容旧配置）
-            loadGptSovitsConfig(
+        loadGptSovitsConfig(
                 data.ttsModelUrl,
                 data.ttsVoiceId,
                 data.ttsModelId,
                 data.ttsModelApiKey,
                 data.gptsovitsEnabled,
             );
+            loadLocalKokoroTtsConfig(data.ttsModelUrl, data.ttsVoiceId, data.ttsModelId);
 
             // 加载MCPR_TOKEN
             setInputValue('mcpTokenInput', data.mcpToken);
@@ -1845,11 +2201,61 @@ document.addEventListener('DOMContentLoaded', function () {
     ['ttsModelProvider', 'ttsModelUrl', 'ttsModelId', 'ttsModelApiKey', 'ttsVoiceId'].forEach(id => {
         const el = document.getElementById(id);
         if (!el) return;
-        el.addEventListener('change', markTtsConfigDirty);
+        el.addEventListener('change', () => {
+            markTtsConfigDirty();
+            if (updateLocalKokoroTtsConfigVisibility()) {
+                scheduleLocalKokoroVoiceRefresh();
+            }
+        });
         if (el.tagName !== 'SELECT') {
-            el.addEventListener('input', markTtsConfigDirty);
+            el.addEventListener('input', () => {
+                markTtsConfigDirty();
+                if (updateLocalKokoroTtsConfigVisibility()) {
+                    scheduleLocalKokoroVoiceRefresh();
+                }
+            });
         }
     });
+    updateLocalKokoroTtsConfigVisibility();
+
+    const localKokoroUrlInput = document.getElementById('localKokoroWsUrl');
+    if (localKokoroUrlInput) {
+        localKokoroUrlInput.addEventListener('change', () => {
+            applyLocalKokoroTtsConfig();
+            refreshLocalKokoroVoiceOptions(true);
+        });
+        localKokoroUrlInput.addEventListener('input', () => {
+            applyLocalKokoroTtsConfig();
+            scheduleLocalKokoroVoiceRefresh();
+        });
+    }
+
+    const localKokoroVoiceSelect = document.getElementById('localKokoroVoiceSelect');
+    if (localKokoroVoiceSelect) {
+        localKokoroVoiceSelect.addEventListener('change', () => {
+            const impliedProfile = localKokoroProfileFromVoiceId(localKokoroVoiceSelect.value);
+            const localKokoroProfileSelect = document.getElementById('localKokoroProfileSelect');
+            if (localKokoroProfileSelect && impliedProfile) {
+                localKokoroProfileSelect.value = impliedProfile;
+            }
+            applyLocalKokoroTtsConfig();
+        });
+    }
+
+    const localKokoroProfileSelect = document.getElementById('localKokoroProfileSelect');
+    if (localKokoroProfileSelect) {
+        localKokoroProfileSelect.addEventListener('change', () => {
+            const profile = normalizeLocalKokoroProfile(localKokoroProfileSelect.value);
+            const localVoiceSelect = document.getElementById('localKokoroVoiceSelect');
+            if (localVoiceSelect) {
+                const nextVoice = localKokoroDefaultVoice(profile);
+                ensureLocalKokoroVoiceOption(nextVoice);
+                localVoiceSelect.value = nextVoice;
+            }
+            applyLocalKokoroTtsConfig();
+            refreshLocalKokoroVoiceOptions(true);
+        });
+    }
 
     // 拦截所有 target="_blank" 的外部链接，使用系统默认浏览器打开
     document.querySelectorAll('a[target="_blank"]').forEach(function (link) {
