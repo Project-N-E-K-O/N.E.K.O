@@ -87,30 +87,23 @@ async function fetchVoiceCloneLoaderJson(url, options = {}) {
     return data;
 }
 
-function notifyApiSettingsKeyBookFocus(win) {
-    if (!win) return;
-    [250, 800, 1500].forEach(delay => {
-        setTimeout(() => {
-            try {
-                win.postMessage({ type: 'focus_api_key_book' }, window.location.origin);
-            } catch (_) { }
-        }, delay);
-    });
-}
-
 // 打开API设置页（带弹窗拦截回退）
-function openApiSettings(options = {}) {
-    const focusKeyBook = !!(options && options.focusKeyBook);
-    const url = focusKeyBook ? '/api_key?focus=key_book' : '/api_key';
-    const features = 'width=820,height=700,scrollbars=yes,resizable=yes';
+function openApiSettings() {
+    const url = '/api_key';
+    const windowName = 'neko_api_key';
+    const features = typeof window.buildApiKeySettingsWindowFeatures === 'function'
+        ? window.buildApiKeySettingsWindowFeatures()
+        : undefined;
     const win = typeof window.openOrFocusWindow === 'function'
-        ? window.openOrFocusWindow(url, 'apiSettings', features)
-        : window.open(url, 'apiSettings', features);
+        ? window.openOrFocusWindow(url, windowName, features)
+        : window.open(url, windowName, features);
     if (win) {
         const modal = document.getElementById('noApiModal');
         if (modal) modal.style.display = 'none';
-        if (focusKeyBook) {
-            notifyApiSettingsKeyBookFocus(win);
+        if (typeof win.focus === 'function') {
+            try {
+                win.focus();
+            } catch (_) {}
         }
     } else {
         location.href = url;
@@ -118,7 +111,7 @@ function openApiSettings(options = {}) {
 }
 
 function openApiSettingsKeyBook() {
-    openApiSettings({ focusKeyBook: true });
+    openApiSettings();
 }
 
 // 安全地解析 fetch 响应：当后端/反向代理返回 HTML（404/502/504/网关错误等）时

@@ -19,3 +19,23 @@ def test_yui_model_manager_handoff_opens_fullscreen():
     assert "if (isModelManagerPageUrl(openUrl))" in source
     assert "return buildFullscreenWindowFeatures();" in source
     assert "buildFullscreenWindowFeatures()" in source[source.index("function openModelManagerPage("):]
+
+
+def test_voice_clone_api_settings_uses_shared_named_window():
+    source = Path("static/js/voice_clone.js").read_text(encoding="utf-8")
+    common_source = Path("static/common_dialogs.js").read_text(encoding="utf-8")
+    open_api_settings = source[source.index("function openApiSettings("):source.index("function openApiSettingsKeyBook(")]
+
+    assert "function buildApiKeySettingsWindowFeatures(width = 1240, height = 940)" in common_source
+    assert "window.buildApiKeySettingsWindowFeatures = buildApiKeySettingsWindowFeatures;" in common_source
+    assert "const url = '/api_key';" in open_api_settings
+    assert "const windowName = 'neko_api_key';" in open_api_settings
+    assert "window.buildApiKeySettingsWindowFeatures()" in open_api_settings
+    assert "window.openOrFocusWindow(url, windowName, features)" in open_api_settings
+    assert "window.open(url, windowName, features)" in open_api_settings
+    assert "win.focus()" in open_api_settings
+    assert "openApiSettings();" in source[source.index("function openApiSettingsKeyBook("):]
+    assert "'apiSettings'" not in open_api_settings
+    assert "focus=key_book" not in source
+    assert "focus_api_key_book" not in source
+    assert "width=820,height=700" not in source

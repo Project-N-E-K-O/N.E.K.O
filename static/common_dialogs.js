@@ -1615,6 +1615,21 @@
 
     window.buildCenteredPopupFeatures = buildCenteredPopupFeatures;
 
+    function buildApiKeySettingsWindowFeatures(width = 1240, height = 940) {
+        const availableWidth = Math.max(1, Number(window.screen && (window.screen.availWidth || window.screen.width)) || width);
+        const availableHeight = Math.max(1, Number(window.screen && (window.screen.availHeight || window.screen.height)) || height);
+        const windowWidth = Math.min(width, Math.max(720, availableWidth - 80));
+        const windowHeight = Math.min(height, Math.max(560, availableHeight - 80));
+        if (typeof window.buildCenteredPopupFeatures === 'function') {
+            return window.buildCenteredPopupFeatures(windowWidth, windowHeight);
+        }
+        const left = Math.max(0, Math.floor((availableWidth - windowWidth) / 2));
+        const top = Math.max(0, Math.floor((availableHeight - windowHeight) / 2));
+        return `width=${windowWidth},height=${windowHeight},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+    }
+
+    window.buildApiKeySettingsWindowFeatures = buildApiKeySettingsWindowFeatures;
+
     window.addEventListener('message', function(event) {
         if (event.origin !== window.location.origin) return;
         if (!event.data || event.data.type !== 'neko:restore-window') return;
