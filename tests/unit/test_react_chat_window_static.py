@@ -909,6 +909,12 @@ def test_subtitle_web_host_keeps_compact_history_transparent_wrappers_click_thro
         "    pointer-events: auto;\n"
         "}"
     )
+    fallback_music_interactive_rule = (
+        f'{compact_surface_prefix} #music-player-mount,\n'
+        f'{compact_surface_prefix} #music-player-mount * {{\n'
+        "    pointer-events: auto;\n"
+        "}"
+    )
     history_passthrough_rule = (
         f'{compact_surface_prefix} .compact-export-history-anchor,\n'
         f'{compact_surface_prefix} .compact-export-history-panel,\n'
@@ -934,10 +940,12 @@ def test_subtitle_web_host_keeps_compact_history_transparent_wrappers_click_thro
     )
 
     assert broad_surface_rule in styles
+    assert fallback_music_interactive_rule in styles
     assert history_passthrough_rule in styles
     assert history_interactive_rule in styles
     assert history_music_volume_hidden_rule in styles
-    assert styles.index(broad_surface_rule) < styles.index(history_passthrough_rule)
+    assert styles.index(broad_surface_rule) < styles.index(fallback_music_interactive_rule)
+    assert styles.index(fallback_music_interactive_rule) < styles.index(history_passthrough_rule)
     assert styles.index(history_passthrough_rule) < styles.index(history_interactive_rule)
     assert styles.index(history_interactive_rule) < styles.index(history_music_volume_hidden_rule)
     assert ".compact-export-history-scroll,\n" in history_passthrough_rule

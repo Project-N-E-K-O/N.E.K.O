@@ -1183,6 +1183,11 @@ body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"
 
 /* 紧凑历史面板点击穿透契约：上方通用规则会重新开启 surface 子节点命中，
    因此透明包装层必须回到 none，只保留气泡、控制区、播放器和预览可交互。 */
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #music-player-mount,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #music-player-mount * {
+    pointer-events: auto;
+}
+
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-anchor,
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-panel,
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-scroll,
