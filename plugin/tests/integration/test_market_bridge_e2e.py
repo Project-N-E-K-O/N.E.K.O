@@ -173,11 +173,11 @@ def bridge_e2e_env(
 ) -> Iterator[dict[str, Any]]:
     """Build an ASGI bridge app + ISM all rooted under ``tmp_path``.
 
-    Redirects ``USER_PLUGIN_CONFIG_ROOT`` / ``USER_PLUGIN_PACKAGES_ROOT``
-    on the loaded :mod:`plugin_cli.service` module so saved packages and
-    unpacked plugins land in ``tmp_path``. Also monkeypatches the bridge's
-    own ``USER_PLUGIN_CONFIG_ROOT`` import so its upgrade path resolves
-    the correct roots.
+    Redirects the plugin root settings on :mod:`plugin.settings` so saved
+    packages and unpacked plugins land in ``tmp_path``. Both the plugin_cli
+    service and the market bridge resolve their roots through
+    ``PluginCliPathPolicy.from_settings()``, so patching the settings module
+    is enough — neither freezes the roots at import time anymore.
 
     Yields a dict with ``client`` (httpx AsyncClient), ``token``,
     ``user_root``, ``builtin_root``, ``packages_root``, ``lock_path``.
@@ -199,7 +199,10 @@ def bridge_e2e_env(
     monkeypatch.setattr(plugin_settings, "USER_PLUGIN_CONFIG_ROOT", user_root)
     monkeypatch.setattr(plugin_settings, "USER_PLUGIN_PACKAGES_ROOT", packages_root)
     monkeypatch.setattr(plugin_settings, "USER_PACKAGE_PROFILES_ROOT", profiles_root)
-    monkeypatch.setattr(market_bridge_module, "USER_PLUGIN_CONFIG_ROOT", user_root)
+    # market_bridge no longer freezes USER_PLUGIN_CONFIG_ROOT at import time; it
+    # resolves plugin roots through PluginCliPathPolicy.from_settings(), so the
+    # plugin.settings patches above are picked up without patching the module
+    # attribute (which no longer exists).
     monkeypatch.setattr(
         market_bridge_module,
         "_OAUTH_TOKEN_FILE",
