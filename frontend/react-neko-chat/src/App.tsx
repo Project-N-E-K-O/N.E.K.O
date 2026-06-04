@@ -125,6 +125,7 @@ const COMPACT_SURFACE_RESIZE_MIN_WIDTH = 430;
 const COMPACT_SURFACE_RESIZE_MOBILE_MIN_WIDTH = 280;
 const COMPACT_SURFACE_RESIZE_MAX_WIDTH = 720;
 const COMPACT_SURFACE_RESIZE_VIEWPORT_GUTTER = 32;
+const COMPACT_SURFACE_RESIZE_MOBILE_VIEWPORT_GUTTER = 16;
 const COMPACT_CHOICE_PLACEMENT_HYSTERESIS = 24;
 const COMPOSER_OPTION_MARQUEE_MIN_DISTANCE = 6;
 const COMPOSER_OPTION_MARQUEE_MIN_DURATION_MS = 1400;
@@ -323,10 +324,11 @@ function clampCompactSurfaceResizeWidth(
   width: number,
   maxAvailableWidth: number,
   minAvailableWidth = COMPACT_SURFACE_RESIZE_MIN_WIDTH,
+  viewportGutter = COMPACT_SURFACE_RESIZE_VIEWPORT_GUTTER,
 ): number {
   const maxWidth = Math.max(
     0,
-    Math.min(COMPACT_SURFACE_RESIZE_MAX_WIDTH, maxAvailableWidth - COMPACT_SURFACE_RESIZE_VIEWPORT_GUTTER),
+    Math.min(COMPACT_SURFACE_RESIZE_MAX_WIDTH, maxAvailableWidth - viewportGutter),
   );
   const minWidth = Math.min(minAvailableWidth, maxWidth || minAvailableWidth);
   return Math.round(Math.max(minWidth, Math.min(width, Math.max(minWidth, maxWidth))));
@@ -1443,17 +1445,33 @@ export default function App({
     return window.innerWidth || COMPACT_SURFACE_RESIZE_MIN_WIDTH + COMPACT_SURFACE_RESIZE_VIEWPORT_GUTTER;
   }, []);
   const getCompactSurfaceResizeMinAvailableWidth = useCallback(() => (
-    !document.body?.classList.contains('electron-chat-window') && window.innerWidth <= 768
+    !document.body?.classList.contains('electron-chat-window')
+      && !document.body?.classList.contains('lanlan-pet-mode')
+      && !(window as typeof window & { __LANLAN_IS_ELECTRON_PET__?: boolean }).__LANLAN_IS_ELECTRON_PET__
+      && window.innerWidth <= 768
       ? COMPACT_SURFACE_RESIZE_MOBILE_MIN_WIDTH
       : COMPACT_SURFACE_RESIZE_MIN_WIDTH
+  ), []);
+  const getCompactSurfaceResizeViewportGutter = useCallback(() => (
+    !document.body?.classList.contains('electron-chat-window')
+      && !document.body?.classList.contains('lanlan-pet-mode')
+      && !(window as typeof window & { __LANLAN_IS_ELECTRON_PET__?: boolean }).__LANLAN_IS_ELECTRON_PET__
+      && window.innerWidth <= 768
+      ? COMPACT_SURFACE_RESIZE_MOBILE_VIEWPORT_GUTTER
+      : COMPACT_SURFACE_RESIZE_VIEWPORT_GUTTER
   ), []);
   const getClampedCompactSurfaceResizeWidth = useCallback((width: number) => (
     clampCompactSurfaceResizeWidth(
       width,
       getCompactSurfaceResizeMaxAvailableWidth(),
       getCompactSurfaceResizeMinAvailableWidth(),
+      getCompactSurfaceResizeViewportGutter(),
     )
-  ), [getCompactSurfaceResizeMaxAvailableWidth, getCompactSurfaceResizeMinAvailableWidth]);
+  ), [
+    getCompactSurfaceResizeMaxAvailableWidth,
+    getCompactSurfaceResizeMinAvailableWidth,
+    getCompactSurfaceResizeViewportGutter,
+  ]);
   const getClampedCompactSurfaceResizeWidthForSide = useCallback((
     side: CompactSurfaceResizeSide,
     width: number,
@@ -1479,15 +1497,21 @@ export default function App({
         ? resizeState.anchorRightScreen - areaLeft
         : areaRight - resizeState.anchorLeftScreen;
       if (Number.isFinite(maxWidth) && maxWidth > 0) {
+        const viewportGutter = getCompactSurfaceResizeViewportGutter();
         return clampCompactSurfaceResizeWidth(
           width,
-          maxWidth + COMPACT_SURFACE_RESIZE_VIEWPORT_GUTTER,
+          maxWidth + viewportGutter,
           getCompactSurfaceResizeMinAvailableWidth(),
+          viewportGutter,
         );
       }
     }
     return getClampedCompactSurfaceResizeWidth(width);
-  }, [getCompactSurfaceResizeMinAvailableWidth, getClampedCompactSurfaceResizeWidth]);
+  }, [
+    getCompactSurfaceResizeMinAvailableWidth,
+    getCompactSurfaceResizeViewportGutter,
+    getClampedCompactSurfaceResizeWidth,
+  ]);
   const getCurrentCompactSurfaceWidth = useCallback(() => {
     const rectWidth = compactInputShellRef.current?.getBoundingClientRect().width;
     if (Number.isFinite(rectWidth) && rectWidth && rectWidth > 0) {
