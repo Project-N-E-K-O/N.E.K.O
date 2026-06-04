@@ -874,9 +874,16 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
     assert "data-compact-hit-region={historyInteractive ? 'true' : undefined}" in music_hit_block
     assert "data-compact-hit-region-kind={historyInteractive ? 'music' : undefined}" in music_hit_block
     assert "function getPreferredMusicMountTarget()" in music_ui_source
+    assert "function isCompactHistoryMusicMountInteractive(mount)" in music_ui_source
     assert "document.querySelector('.compact-export-history-music-mount')" in music_ui_source
+    assert "mount.getAttribute('data-compact-hit-region') !== 'true'" in music_ui_source
+    assert "data-compact-export-history-visibility') !== 'open'" in music_ui_source
     assert "document.getElementById('music-player-mount')" in music_ui_source
     assert "document.getElementById(MUSIC_CONFIG.dom.containerId)" in music_ui_source
+    assert "mutation.type === 'attributes' && isMusicMountMutationTarget(mutation.target)" in music_ui_source
+    assert "attributes: true" in music_ui_source
+    assert "'data-compact-export-history-visibility'" in music_ui_source
+    assert "'data-compact-hit-region'" in music_ui_source
     assert "mountMusicBar(musicBar)" in music_ui_source
     assert music_ui_source.count('data-compact-hit-region-id="history:music-player:volume"') == 2
     assert music_ui_source.count('data-compact-hit-region-kind="music-volume"') == 2

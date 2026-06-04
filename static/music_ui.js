@@ -355,9 +355,22 @@
     let musicMountRelocationFrame = 0;
     let pendingDetachedMusicBar = null;
 
+    function isCompactHistoryMusicMountInteractive(mount) {
+        if (!(mount instanceof Element)) return false;
+        if (mount.getAttribute('data-compact-hit-region') !== 'true') return false;
+        const anchor = mount.closest ? mount.closest('.compact-export-history-anchor') : null;
+        if (anchor && anchor.getAttribute('data-compact-export-history-visibility') !== 'open') return false;
+        if (window.getComputedStyle) {
+            const style = window.getComputedStyle(mount);
+            if (style && (style.display === 'none' || style.visibility === 'hidden' || style.pointerEvents === 'none')) return false;
+            if (style && Number(style.opacity) <= 0.01) return false;
+        }
+        return true;
+    }
+
     function getPreferredMusicMountTarget() {
         const historyMount = document.querySelector('.compact-export-history-music-mount');
-        if (historyMount) return { mountTarget: historyMount, insertBeforeEl: null };
+        if (isCompactHistoryMusicMountInteractive(historyMount)) return { mountTarget: historyMount, insertBeforeEl: null };
 
         const reactMount = document.getElementById('music-player-mount');
         if (reactMount) return { mountTarget: reactMount, insertBeforeEl: null };
@@ -405,6 +418,14 @@
         return !!(node.querySelector && node.querySelector('#music-player-mount, .compact-export-history-music-mount'));
     }
 
+    function isMusicMountMutationTarget(node) {
+        if (!(node instanceof Element)) return false;
+        return node.id === 'music-player-mount'
+            || node.classList.contains('compact-export-history-anchor')
+            || node.classList.contains('compact-export-history-music-mount')
+            || !!(node.closest && node.closest('.compact-export-history-anchor'));
+    }
+
     function scheduleMusicBarRelocation(detachedMusicBar) {
         if (detachedMusicBar) pendingDetachedMusicBar = detachedMusicBar;
         if (musicMountRelocationFrame) return;
@@ -421,6 +442,10 @@
         if (musicMountObserver || typeof MutationObserver === 'undefined' || !document.body) return;
         musicMountObserver = new MutationObserver((mutations) => {
             for (const mutation of mutations) {
+                if (mutation.type === 'attributes' && isMusicMountMutationTarget(mutation.target)) {
+                    scheduleMusicBarRelocation();
+                    return;
+                }
                 for (const node of mutation.removedNodes) {
                     const removedBar = findMusicBarInNode(node);
                     if (removedBar) {
@@ -440,7 +465,17 @@
                 }
             }
         });
-        musicMountObserver.observe(document.body, { childList: true, subtree: true });
+        musicMountObserver.observe(document.body, {
+            childList: true,
+            subtree: true,
+            attributes: true,
+            attributeFilter: [
+                'class',
+                'data-compact-export-history-visibility',
+                'data-compact-hit-region',
+                'style'
+            ]
+        });
     }
 
     const bindMirrorBarControls = (musicBar) => {
