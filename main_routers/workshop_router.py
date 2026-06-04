@@ -5019,6 +5019,13 @@ async def sync_workshop_character_cards(
     Returns:
         dict: {"added": int, "backfilled_faces": int, "skipped": int, "errors": int}
     """
+    # 复用 characters_router 的字段顺序 helper：函数级 lazy import，既避免顶层 router→router 依赖，
+    # 又只在每次同步开始导入一次，不在每个 .chara.json 上重复走 import 路径。
+    from main_routers.characters_router import (
+        _extract_catgirl_field_order_payload as _extract_field_order,
+        _sync_catgirl_field_order as _sync_field_order,
+    )
+
     added_count = 0
     backfilled_face_count = 0
     skipped_count = 0
@@ -5294,13 +5301,9 @@ async def sync_workshop_character_cards(
                                 if k not in skip_keys and v is not None:
                                     catgirl_data[k] = v
 
-                            # 字段创建顺序元数据被当作保留字段过滤掉了，这里复用 characters_router 的逻辑
-                            # 把它提回 _reserved.field_order；否则订阅同步到的工坊卡会丢失显式顺序，
+                            # 字段创建顺序元数据被当作保留字段过滤掉了，这里把它提回 _reserved.field_order
+                            # （helper 在函数开头一次性导入）；否则订阅同步到的工坊卡会丢失显式顺序，
                             # 数字 key 自定义字段会在安装后再次按对象枚举顺序乱序。
-                            from main_routers.characters_router import (
-                                _extract_catgirl_field_order_payload as _extract_field_order,
-                                _sync_catgirl_field_order as _sync_field_order,
-                            )
                             _sync_field_order(catgirl_data, _extract_field_order(chara_data))
 
                             # 工坊角色首次导入时强制清空 voice_id（当前工坊 voice_id 尚未适配）。
