@@ -847,7 +847,7 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
         1,
     )[0]
     music_hit_block = panel_source.split('className="compact-export-history-music-mount"', 1)[1].split(
-        "/>",
+        'className="compact-export-history-controls"',
         1,
     )[0]
 
@@ -870,8 +870,14 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
     assert "data-compact-hit-region={historyInteractive ? 'true' : undefined}" in controls_hit_block
     assert "data-compact-hit-region-kind={historyInteractive ? 'controls' : undefined}" in controls_hit_block
     assert "data-compact-hit-region-id={historyInteractive ? 'history:music-player' : undefined}" in panel_source
+    assert 'data-music-player-mount="compact-history"' in music_hit_block
     assert "data-compact-hit-region={historyInteractive ? 'true' : undefined}" in music_hit_block
     assert "data-compact-hit-region-kind={historyInteractive ? 'music' : undefined}" in music_hit_block
+    assert "function getPreferredMusicMountTarget()" in music_ui_source
+    assert "document.querySelector('.compact-export-history-music-mount')" in music_ui_source
+    assert "document.getElementById('music-player-mount')" in music_ui_source
+    assert "document.getElementById(MUSIC_CONFIG.dom.containerId)" in music_ui_source
+    assert "mountMusicBar(musicBar)" in music_ui_source
     assert music_ui_source.count('data-compact-hit-region-id="history:music-player:volume"') == 2
     assert music_ui_source.count('data-compact-hit-region-kind="music-volume"') == 2
     assert ".compact-export-history-anchor.under-choice-prompt .music-bar-volume-slider-wrapper" in styles

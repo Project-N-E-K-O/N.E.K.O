@@ -389,8 +389,10 @@ describe('App', () => {
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('data-compact-hit-region', 'true');
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('data-compact-hit-region-id', 'history:message:assistant-history-1');
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('data-compact-hit-region-kind', 'message');
-    expect(container.querySelector('.composer-panel #music-player-mount')).toBeNull();
-    expect(container.querySelector('.compact-export-history-panel #music-player-mount')).not.toBeNull();
+    expect(container.querySelectorAll('#music-player-mount')).toHaveLength(1);
+    expect(container.querySelector('.composer-panel #music-player-mount')).not.toBeNull();
+    expect(container.querySelector('.compact-export-history-panel #music-player-mount')).toBeNull();
+    expect(container.querySelector('.compact-export-history-music-mount')).toHaveAttribute('data-music-player-mount', 'compact-history');
     expect(container.querySelector('.compact-export-history-music-mount')).toHaveAttribute('data-compact-hit-region-id', 'history:music-player');
     expect(container.querySelector('.compact-export-history-music-mount')).toHaveAttribute('data-compact-hit-region-kind', 'music');
     expect(container.querySelector('.compact-export-history-controls')).toBeNull();
@@ -449,7 +451,9 @@ describe('App', () => {
       expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
       expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'closing');
       expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-open', 'false');
-      expect(container.querySelector('.compact-export-history-panel #music-player-mount')).not.toBeNull();
+      expect(container.querySelectorAll('#music-player-mount')).toHaveLength(1);
+      expect(container.querySelector('.composer-panel #music-player-mount')).not.toBeNull();
+      expect(container.querySelector('.compact-export-history-panel #music-player-mount')).toBeNull();
       expect(container.querySelector('[data-compact-hit-region-id^="history:"]')).toBeNull();
 
       fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
@@ -506,10 +510,15 @@ describe('App', () => {
       expect(handle).not.toBeNull();
       expect(handle).toHaveAttribute('aria-expanded', 'false');
       expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+      expect(container.querySelectorAll('#music-player-mount')).toHaveLength(1);
+      expect(container.querySelector('.composer-panel #music-player-mount')).not.toBeNull();
 
       fireEvent.pointerDown(handle!, { pointerType: 'mouse', button: 0 });
       expect(handle).toHaveAttribute('aria-expanded', 'true');
       expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
+      expect(container.querySelectorAll('#music-player-mount')).toHaveLength(1);
+      expect(container.querySelector('.compact-export-history-panel #music-player-mount')).toBeNull();
+      expect(container.querySelector('.compact-export-history-music-mount')).toHaveAttribute('data-music-player-mount', 'compact-history');
       expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
       expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'input');
 
@@ -1926,7 +1935,8 @@ describe('App', () => {
 
     expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
     expect(container.querySelector('[data-compact-hit-region-id^="history:"]')).toBeNull();
-    expect(container.querySelector('#music-player-mount')).toBeNull();
+    expect(container.querySelectorAll('#music-player-mount')).toHaveLength(1);
+    expect(container.querySelector('.compact-export-history-panel #music-player-mount')).toBeNull();
     expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBeNull();
 
     rerender(<App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />);

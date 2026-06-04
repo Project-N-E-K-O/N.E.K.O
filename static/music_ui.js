@@ -351,6 +351,98 @@
         });
     };
 
+    let musicMountObserver = null;
+    let musicMountRelocationFrame = 0;
+    let pendingDetachedMusicBar = null;
+
+    function getPreferredMusicMountTarget() {
+        const historyMount = document.querySelector('.compact-export-history-music-mount');
+        if (historyMount) return { mountTarget: historyMount, insertBeforeEl: null };
+
+        const reactMount = document.getElementById('music-player-mount');
+        if (reactMount) return { mountTarget: reactMount, insertBeforeEl: null };
+
+        const legacyMount = document.getElementById(MUSIC_CONFIG.dom.containerId);
+        return {
+            mountTarget: legacyMount,
+            insertBeforeEl: legacyMount ? document.getElementById(MUSIC_CONFIG.dom.insertBeforeId) : null
+        };
+    }
+
+    function mountMusicBar(musicBar) {
+        if (!musicBar) return false;
+        ensureMusicMountObserver();
+        if (musicBar.dataset) delete musicBar.dataset.skipMountRelocation;
+        const target = getPreferredMusicMountTarget();
+        if (!target || !target.mountTarget) return false;
+        if (musicBar.parentNode === target.mountTarget) return true;
+        if (target.insertBeforeEl && target.insertBeforeEl.parentNode === target.mountTarget) {
+            target.mountTarget.insertBefore(musicBar, target.insertBeforeEl);
+        } else {
+            target.mountTarget.appendChild(musicBar);
+        }
+        return true;
+    }
+
+    function removeMusicBarWithoutRelocation(musicBar) {
+        if (!musicBar) return;
+        if (musicBar.dataset) musicBar.dataset.skipMountRelocation = 'true';
+        musicBar.remove();
+    }
+
+    function findMusicBarInNode(node) {
+        if (!(node instanceof Element)) return null;
+        const musicBar = node.id === MUSIC_CONFIG.dom.barId
+            ? node
+            : (node.querySelector ? node.querySelector('#' + MUSIC_CONFIG.dom.barId) : null);
+        if (musicBar && musicBar.dataset && musicBar.dataset.skipMountRelocation === 'true') return null;
+        return musicBar;
+    }
+
+    function isMusicMountMutationNode(node) {
+        if (!(node instanceof Element)) return false;
+        if (node.id === 'music-player-mount' || node.classList.contains('compact-export-history-music-mount')) return true;
+        return !!(node.querySelector && node.querySelector('#music-player-mount, .compact-export-history-music-mount'));
+    }
+
+    function scheduleMusicBarRelocation(detachedMusicBar) {
+        if (detachedMusicBar) pendingDetachedMusicBar = detachedMusicBar;
+        if (musicMountRelocationFrame) return;
+        const raf = window.requestAnimationFrame || ((callback) => window.setTimeout(callback, 16));
+        musicMountRelocationFrame = raf(() => {
+            musicMountRelocationFrame = 0;
+            const musicBar = pendingDetachedMusicBar || document.getElementById(MUSIC_CONFIG.dom.barId);
+            pendingDetachedMusicBar = null;
+            mountMusicBar(musicBar);
+        });
+    }
+
+    function ensureMusicMountObserver() {
+        if (musicMountObserver || typeof MutationObserver === 'undefined' || !document.body) return;
+        musicMountObserver = new MutationObserver((mutations) => {
+            for (const mutation of mutations) {
+                for (const node of mutation.removedNodes) {
+                    const removedBar = findMusicBarInNode(node);
+                    if (removedBar) {
+                        scheduleMusicBarRelocation(removedBar);
+                        return;
+                    }
+                    if (isMusicMountMutationNode(node)) {
+                        scheduleMusicBarRelocation();
+                        return;
+                    }
+                }
+                for (const node of mutation.addedNodes) {
+                    if (isMusicMountMutationNode(node)) {
+                        scheduleMusicBarRelocation();
+                        return;
+                    }
+                }
+            }
+        });
+        musicMountObserver.observe(document.body, { childList: true, subtree: true });
+    }
+
     const bindMirrorBarControls = (musicBar) => {
         const apBtn = musicBar.querySelector('.music-bar-play');
         const closeBtn = musicBar.querySelector('.music-bar-close');
@@ -521,20 +613,14 @@
 
         if (firstRender) {
             ensureMusicUiCSS();
-            let mountTarget = document.getElementById('music-player-mount');
-            let insertBeforeEl = null;
-            if (!mountTarget) {
-                mountTarget = document.getElementById(MUSIC_CONFIG.dom.containerId);
-                insertBeforeEl = document.getElementById(MUSIC_CONFIG.dom.insertBeforeId);
-            }
+            const mountTarget = getPreferredMusicMountTarget().mountTarget;
             if (!mountTarget) return;
 
             musicBar = document.createElement('div');
             musicBar.id = MUSIC_CONFIG.dom.barId;
             musicBar.className = 'music-player-bar';
             musicBar.dataset.mirror = 'true';
-            if (insertBeforeEl) mountTarget.insertBefore(musicBar, insertBeforeEl);
-            else mountTarget.appendChild(musicBar);
+            mountMusicBar(musicBar);
 
             const randomColor = MUSIC_CONFIG.themeColors[Math.floor(Math.random() * MUSIC_CONFIG.themeColors.length)];
             musicBar.style.setProperty('--dynamic-random-color', randomColor);
@@ -577,6 +663,7 @@
             bindMirrorBarControls(musicBar);
         } else {
             musicBar.classList.remove('fading-out');
+            mountMusicBar(musicBar);
         }
 
         // 切歌 / 首次：刷新标题 + 歌手 + 封面
@@ -668,7 +755,7 @@
         }
 
         const removeNow = () => {
-            if (musicBar.parentNode) musicBar.remove();
+            if (musicBar.parentNode) removeMusicBarWithoutRelocation(musicBar);
             mirrorBarTrackSig = null;
             mirrorBarLastState = null;
             mirrorBarDestroyTimer = null;
@@ -1167,11 +1254,11 @@
                 if (fullTeardown) {
                     bar.classList.add('fading-out');
                     domRemovalTimer = setTimeout(() => {
-                        bar.remove();
+                        removeMusicBarWithoutRelocation(bar);
                         domRemovalTimer = null;
                     }, 300);
                 } else {
-                    bar.remove();
+                    removeMusicBarWithoutRelocation(bar);
                 }
             }
             clearManagedListeners();
@@ -1271,7 +1358,7 @@
                 }
                 existingBar.__mirrorTeardownCleanups = null;
             }
-            existingBar.remove();
+            removeMusicBarWithoutRelocation(existingBar);
             mirrorBarTrackSig = null;
             mirrorBarLastState = null;
             // 自己升成 owner 后就不再持有"绑定到某个 leader"的状态
@@ -1284,20 +1371,14 @@
 
         // --- 1. DOM 基础架构 ---
         if (isFirstRender) {
-            // 优先挂载到 React 聊天窗口 composer-panel 内的专用挂载点，回退到旧 chat-container
-            let mountTarget = document.getElementById('music-player-mount');
-            let insertBeforeEl = null;
-            if (!mountTarget) {
-                mountTarget = document.getElementById(MUSIC_CONFIG.dom.containerId);
-                insertBeforeEl = document.getElementById(MUSIC_CONFIG.dom.insertBeforeId);
-            }
+            // 优先使用紧凑历史目标，其次 React composer 挂载点，最后回退旧 chat-container。
+            const mountTarget = getPreferredMusicMountTarget().mountTarget;
             if (!mountTarget) return;
 
             musicBar = document.createElement('div');
             musicBar.id = MUSIC_CONFIG.dom.barId;
             musicBar.className = 'music-player-bar';
-            if (insertBeforeEl) mountTarget.insertBefore(musicBar, insertBeforeEl);
-            else mountTarget.appendChild(musicBar);
+            mountMusicBar(musicBar);
 
             const randomColor = MUSIC_CONFIG.themeColors[Math.floor(Math.random() * MUSIC_CONFIG.themeColors.length)];
             musicBar.style.setProperty('--dynamic-random-color', randomColor);
@@ -1340,18 +1421,7 @@
             ensureTitleMarqueeObserver(musicBar);
         } else {
             musicBar.classList.remove('fading-out');
-
-            // Relocate musicBar if a new mount target has appeared
-            let newMountTarget = document.getElementById('music-player-mount');
-            let newInsertBeforeEl = null;
-            if (!newMountTarget) {
-                newMountTarget = document.getElementById(MUSIC_CONFIG.dom.containerId);
-                newInsertBeforeEl = document.getElementById(MUSIC_CONFIG.dom.insertBeforeId);
-            }
-            if (newMountTarget && musicBar.parentNode !== newMountTarget) {
-                if (newInsertBeforeEl) newMountTarget.insertBefore(musicBar, newInsertBeforeEl);
-                else newMountTarget.appendChild(musicBar);
-            }
+            mountMusicBar(musicBar);
         }
 
         // 切歌前，先把上一首卡片标记为"已结束"。必须在 currentPlayingTrack
@@ -1866,7 +1936,7 @@
         } catch (err) {
             if (currentToken !== latestMusicRequestToken) return;
             console.error('[Music UI] 播放器处理异常:', err);
-            if (isFirstRender && musicBar) musicBar.remove();
+            if (isFirstRender && musicBar) removeMusicBarWithoutRelocation(musicBar);
             // 回滚：前面已经发过 emitBarInitialState，但 APlayer 没建起来，
             // 后续事件不会广播，follower 会卡着占位 bar，这里补一条 destroyed
             broadcastBarDestroyed(false);

@@ -5356,6 +5356,7 @@ export default function App({
           data-chat-surface-mode={chatSurfaceMode}
           data-compact-chat-state={effectiveCompactChatState}
         >
+          <div id="music-player-mount" className="composer-music-player-mount" />
           <form className="composer" onSubmit={(event) => {
             event.preventDefault();
             submitDraft();
