@@ -1,21 +1,33 @@
 @import url('base.css');
 
+*,
+*::before,
+*::after {
+box-sizing: border-box;
+}
+
 html {
+height: 100%;
 min-height: 100vh;
+width: 100%;
 margin: 0;
 padding: 0;
 overflow-x: hidden;
-overflow-y: auto;
+overflow-y: hidden;
 }
 
 body {
+height: 100%;
 min-height: 100vh;
+width: 100%;
 margin: 0;
 padding: 0;
 background: #e1f4ff;
 color: #222;
 font-family: 'Segoe UI', Arial, sans-serif;
-overflow: visible;
+overflow: hidden;
+display: flex;
+flex-direction: column;
 }
 
 /* 页面标题栏 - 支持窗口拖动 */
@@ -29,6 +41,7 @@ body .page-title-bar {
     position: sticky;
     top: 0;
     z-index: 100;
+    flex: 0 0 auto;
     -webkit-app-region: drag;
 }
 
@@ -175,7 +188,9 @@ body .page-title-bar {
 .layout-container {
 display: flex;
 gap: 0;
+width: 100%;
 max-width: 100%;
+min-width: 0;
 margin: 0;
 padding: 0 20px;
 background-color: transparent;
@@ -184,6 +199,12 @@ background-position: top center;
 background-repeat: no-repeat;
 background-size: 100%;
 min-height: 100vh;
+flex: 1 1 auto;
+min-height: 0;
+overflow-x: hidden;
+overflow-y: auto;
+overscroll-behavior: contain;
+scrollbar-gutter: stable;
 }
 
 #sidebar {
@@ -192,6 +213,7 @@ min-height: 100vh;
     gap: 10px;
     flex: 0 0 25%;
     min-width: 200px;
+    max-width: 100%;
     padding: 3.5% 15px 15px 15px;
     background: transparent;
     border-radius: 12px;
@@ -204,6 +226,7 @@ min-height: 100vh;
     width: 80%;
     margin-left: 10%;
     z-index: 0;
+    overflow: visible;
 }
 
 .character-card-cover {
@@ -292,11 +315,15 @@ min-height: 100vh;
 }
 
 .main-content {
-flex: 0 0 75%;
+flex: 1 1 0;
+width: auto;
+max-width: 100%;
 background: transparent;
 border-radius: 12px;
 padding: 3.5% 20px 20px 20px;
 min-width: 0;
+display: flex;
+flex-direction: column;
 /* 防止flex子项溢出 */
 overflow: visible;
 box-sizing: border-box;
@@ -306,52 +333,108 @@ position: relative;
 z-index: 5;
 }
 
-/* subscriptions-content 内部的 section-card 样式 */
-#subscriptions-content .section-card {
+/* subscriptions-content 顶部结构复用角色卡视图容器，避免通用 section 样式介入 */
+#subscriptions-content .subscription-view-area {
     margin: 0;
-    padding: 10px 15px 15px 15px;
-    background: transparent;
-    border-radius: 12px;
+    padding: 0;
+    background: linear-gradient(135deg, #7ec8e3 0%, #b3e5fc 60%, #e0f4ff 100%);
+    border-radius: 16px;
+    border: 1px solid #b3e5fc;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+/* section-header 与角色卡列表顶部保持一致 */
+#subscriptions-content .subscription-header-row {
+    margin: 0;
+    padding: 0;
     border: none;
-}
-
-/* section-header 与 tab-contents 无空隙 */
-#subscriptions-content .section-card .section-header {
-    margin: -10px -15px 15px -15px;
-    padding: 15px;
-    border-radius: 12px 12px 0 0;
     background: #fff;
-}
-
-/* section-card 顶部内边距与角色卡标签页一致 */
-#subscriptions-content .section-card {
-    padding-top: 10px;
-}
-
-/* subscriptions-content 内部的 filter-controls 样式：直角、左右无空隙、无阴影、透明背景 */
-#subscriptions-content .section-card .filter-controls {
-    border-radius: 0;
-    margin: 0;
-    box-shadow: none;
-    background: transparent;
+    height: 70px;
     position: relative;
-    padding-bottom: 30px;
+    z-index: 2;
+    -webkit-clip-path: polygon(
+        0% 0%, 38% 0%,
+        38.8% 0.2%, 39.5% 0.8%, 40.2% 2%, 40.8% 3.5%, 41.4% 5.5%, 42% 8%, 42.5% 11%, 43% 15%, 43.5% 19.5%, 44% 25%, 44.5% 30%, 45% 34%,
+        100% 34%,
+        100% 100%, 0% 100%
+    );
+    clip-path: polygon(
+        0% 0%, 38% 0%,
+        38.8% 0.2%, 39.5% 0.8%, 40.2% 2%, 40.8% 3.5%, 41.4% 5.5%, 42% 8%, 42.5% 11%, 43% 15%, 43.5% 19.5%, 44% 25%, 44.5% 30%, 45% 34%,
+        100% 34%,
+        100% 100%, 0% 100%
+    );
+}
+
+#subscriptions-content .subscription-header-row .subscription-title-area {
+    margin: 0;
+    border-radius: 0;
+    padding-left: 20px;
+    background: linear-gradient(to right, #cce9ff 0%, #e8f7ff 40%, transparent 100%);
+}
+
+/* subscriptions-content 内部的 filter-controls 样式与角色卡工具栏统一 */
+#subscriptions-content .subscription-view-area .filter-controls {
+    border-radius: 0;
+    margin: -1px 0 0;
+    box-shadow: none;
+    background: #fff;
+    position: relative;
+    padding: 6px 16px 22px;
     overflow: visible;
+    border-bottom: 1px solid #f0f0f0;
 }
 
 /* filter-controls 底部线条，贯穿左右 */
-#subscriptions-content .section-card .filter-controls::after {
+#subscriptions-content .subscription-view-area .filter-controls::after {
     content: '';
     position: absolute;
     bottom: 0;
-    left: -15px;
-    right: -15px;
+    left: 0;
+    right: 0;
     height: 1px;
     background: #9ce4ff;
 }
 
+#subscriptions-content #subscriptions-result {
+    margin-top: -1px;
+    padding: 10px 16px 16px;
+    background: #fff;
+    border-radius: 0 0 16px 16px;
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+#subscriptions-content #subscriptions-list.cards-container {
+    flex: 1 1 auto;
+    min-height: 0;
+    margin-top: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    align-content: start;
+    scrollbar-width: thin;
+    scrollbar-color: #7dd3ff transparent;
+}
+
+#subscriptions-content #subscriptions-list.cards-container > .empty-state {
+    grid-column: 1 / -1;
+    align-self: stretch;
+}
+
+#subscriptions-content .pagination {
+    flex: 0 0 auto;
+    margin-top: auto;
+    padding-top: 18px;
+}
+
 /* 下划线中间区域向下渐变，左右自然过渡 */
-#subscriptions-content .section-card .filter-controls::before {
+#subscriptions-content .subscription-view-area .filter-controls::before {
     content: '';
     position: absolute;
     bottom: -30px;
@@ -1252,6 +1335,27 @@ font-size: 16px;
 @media (max-width: 900px) {
 .layout-container {
     background-size: cover;
+    flex-direction: column;
+    padding-left: clamp(8px, 3vw, 20px);
+    padding-right: clamp(8px, 3vw, 20px);
+}
+
+#sidebar {
+    flex: 0 0 auto;
+    width: 100%;
+    min-width: 0;
+    padding: 16px 0 8px;
+}
+
+#sidebar > .menu-section:not(.character-card-cover-section) {
+    transform: none;
+}
+
+.main-content {
+    flex: 1 1 auto;
+    width: 100%;
+    max-width: 100%;
+    padding: 0 0 16px;
 }
 
 .character-card-layout {
@@ -1665,9 +1769,7 @@ box-sizing: border-box;
 display: none;
 }
 
-.tab-content.active,
-.tab-content.tab-leaving,
-.tab-content.tab-entering {
+.tab-content.active {
     display: block;
 }
 
@@ -1678,9 +1780,9 @@ padding: 0;
 }
 
 .tab-contents {
-width: 94%;
+width: 100%;
 max-width: 100%;
-margin: 0 3%;
+margin: 0;
 min-height: 100%;
 background-color: #ffffff;
 background-image: none;
@@ -1688,57 +1790,33 @@ border-radius: 16px;
 box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
 display: flex;
 flex-direction: column;
+flex: 1 1 auto;
 position: relative;
 overflow: hidden;
+min-width: 0;
 }
 
 /* 让激活的角色卡 tab 内容撑满 tab-contents，使内层 view-area 的圆角与外层底部圆角对齐，
    避免「卡片容器底部圆角 + 外层再有一个圆角结尾」的双层圆角观感。 */
 #character-cards-content.tab-content.active,
-#character-cards-content.tab-content.tab-leaving,
-#character-cards-content.tab-content.tab-entering {
+#subscriptions-content.tab-content.active {
     flex: 1 1 auto;
     display: flex;
     flex-direction: column;
     min-height: 0;
 }
 
-/* 视图转场动画：
-   采用「不透明 clip-path 揭幕」策略——新视图始终以白背景完全不透明覆盖在旧视图之上，
-   避免 opacity→0 阶段露出 body 蓝色背景。旧视图静止在下层只作为「被揭露」的原状，
-   新视图从上边下拉帘布揭示，中间不会出现任何透明间隙。 */
+/* 视图切换：旧视图先下线，新视图直接显示，避免新旧内容叠放或位移抖动。 */
 .tab-content.tab-leaving {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
+    display: none !important;
     pointer-events: none;
-    z-index: 1;
-    background: inherit;
 }
 
 .tab-content.tab-entering {
     position: relative;
-    z-index: 2;
-    background: inherit;
-    animation: viewCurtainReveal 0.5s cubic-bezier(0.22, 1, 0.36, 1) forwards;
-    transform-origin: top center;
-    box-shadow: 0 6px 18px rgba(64, 197, 241, 0.12);
-}
-
-@keyframes viewCurtainReveal {
-    0%   {
-        clip-path: inset(0 0 100% 0);
-        transform: translateY(-6px);
-    }
-    60%  {
-        clip-path: inset(0 0 0% 0);
-        transform: translateY(2px);
-    }
-    100% {
-        clip-path: inset(0 0 0% 0);
-        transform: translateY(0);
-    }
+    animation: none;
+    opacity: 1;
+    transform: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1842,6 +1920,8 @@ color: #17A7FF;
 margin-bottom: 5px;
 position: relative;
 z-index: 2;
+min-width: 0;
+max-width: 100%;
 }
 
 #sidebar > .menu-section:not(.character-card-cover-section) {
@@ -3313,6 +3393,8 @@ border: 1px solid #40C5F1;
 border-radius: 16px;
 padding: 16px;
 margin-bottom: 16px;
+min-width: 0;
+max-width: 100%;
 }
 
 .workshop-integration-info h4 {
@@ -3351,6 +3433,7 @@ color: #40C5F1;
     font-weight: 600;
     cursor: pointer;
     transition: background 0.2s ease, transform 0.15s ease, box-shadow 0.2s ease, color 0.2s ease;
+    min-width: 0;
 }
 
 .sidebar-cloudsave-icon {
@@ -3403,21 +3486,54 @@ color: #40C5F1;
 @media (max-width: 1024px) {
 .layout-container {
 flex-direction: column;
-margin: 10px;
+width: 100%;
+max-width: 100%;
+margin: 0;
 padding: 0;
+min-height: 0;
 }
 
 #sidebar {
-width: auto;
-min-width: auto;
+flex: 0 0 auto;
+width: 100%;
+min-width: 0;
+max-width: 100%;
+padding: clamp(8px, 2vw, 20px) clamp(10px, 3vw, 15px) 12px;
+}
+
+#sidebar > .menu-section:not(.character-card-cover-section) {
+transform: none;
 }
 
 .main-content {
+flex: 1 1 auto;
+width: 100%;
 max-width: 100%;
+min-width: 0;
+padding: clamp(8px, 2vw, 20px) clamp(8px, 3vw, 20px) clamp(12px, 3vw, 20px);
+}
+
+.tab-contents {
+width: 100%;
+margin: 0;
 }
 
 .cards-container {
-grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
+}
+
+.filter-controls {
+align-items: stretch;
+}
+
+.filter-group.search-group,
+.filter-group.action-group {
+width: 100%;
+min-width: 0;
+}
+
+.filter-group.action-group {
+margin-left: 0;
 }
 }
 
@@ -3456,7 +3572,7 @@ width: 100%;
 }
             
 .cards-container {
-grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr));
 }
 }
         
@@ -3476,18 +3592,22 @@ background: #E9F9FF;
 padding: 4px;
 margin-bottom: 15px;
 justify-content: space-between;
+width: 100%;
+min-width: 0;
+max-width: 100%;
 }
 
 #sidebar .tab {
 padding: 10px 20px;
-border: none;
+border: 1px solid transparent;
 background: #E9F9FF;
 cursor: pointer;
 font-size: 18px;
 font-weight: 500;
 color: #18A7FF;
 border-radius: 999px;
-transition: all 0.3s ease;
+line-height: 1.2;
+transition: background 0.3s ease, color 0.3s ease, filter 0.2s ease;
 text-align: center;
 white-space: nowrap;
 /* 响应式宽度设置 */
@@ -3499,10 +3619,10 @@ text-overflow: ellipsis;
 
 /* 媒体查询 - 当窗口宽度小于特定尺寸时调整标签样式 */
 @media (max-width: 600px) {
-.tab {
-flex: none;
+#sidebar .tabs .tab {
+flex: 1 1 0;
 width: auto;
-min-width: 90px;
+min-width: 0;
 padding: 10px 15px;
 font-size: 13px;
 }
@@ -3518,6 +3638,7 @@ flex: 1;
 width: auto;
 padding: 10px 15px;
 text-align: center;
+min-width: 0;
 }
 
 .tabs.compact {
@@ -3932,16 +4053,62 @@ margin-top: 10px;
 @media (max-width: 768px) {
     .chara-cards-toggle-bar {
         flex-wrap: wrap;
+        align-items: stretch;
         gap: 8px;
         padding: 8px 12px;
     }
     .chara-cards-toolbar-left {
-        flex: 1 1 auto;
+        flex: 1 1 100%;
+        flex-wrap: wrap;
         min-width: 0;
     }
-    .chara-cards-toolbar-right,
+    .chara-cards-toolbar-right {
+        flex: 1 1 100%;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        min-width: 0;
+    }
     .api-key-toolbar-btn {
         flex: 0 0 auto;
+    }
+    .chara-search-wrapper {
+        flex: 1 1 min(100%, 180px);
+        min-width: min(100%, 150px);
+        max-width: none;
+    }
+}
+
+@media (max-width: 360px) {
+    .chara-cards-toolbar-left .chara-add-btn,
+    .chara-cards-toolbar-left .chara-import-btn,
+    .chara-cards-toolbar-right .toggle-hidden-btn,
+    .chara-cards-toolbar-right .api-key-toolbar-btn {
+        flex: 1 1 0;
+        min-width: 0;
+    }
+    .chara-add-btn,
+    .chara-import-btn,
+    .api-key-toolbar-btn {
+        padding-left: 10px;
+        padding-right: 10px;
+    }
+    .chara-add-btn span,
+    .chara-import-btn span,
+    .api-key-toolbar-btn span {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .chara-add-btn svg,
+    .chara-import-btn svg,
+    .api-key-toolbar-btn img {
+        flex: 0 0 auto;
+    }
+    .chara-search-wrapper {
+        flex-basis: 100%;
+    }
+    .chara-cards-toolbar-right {
+        justify-content: space-between;
     }
 }
 
@@ -6155,20 +6322,22 @@ margin-top: 10px;
     min-width: 36px;
     height: 36px;
     padding: 0;
-    border-radius: 50%;
-    background: #ff4d55;
-    box-shadow: 0 6px 14px rgba(255, 82, 82, 0.14);
+    border-radius: 10px;
+    border: 1px solid rgba(64, 197, 241, 0.26);
+    background: rgba(255, 255, 255, 0.72);
+    box-shadow: 0 3px 8px rgba(64, 197, 241, 0.08);
 }
 
 .catgirl-panel-right .panel-tab-settings .field-row-wrapper.setting-field-row > .setting-field-delete.btn.sm:hover:not(:disabled) {
-    background: #ff6269;
-    box-shadow: 0 8px 18px rgba(255, 82, 82, 0.22);
+    border-color: rgba(64, 197, 241, 0.5);
+    background: rgba(232, 247, 255, 0.95);
+    box-shadow: 0 6px 14px rgba(64, 197, 241, 0.16);
     transform: translateY(-1px);
 }
 
 .catgirl-panel-right .panel-tab-settings .field-row-wrapper.setting-field-row > .setting-field-delete.btn.sm:active:not(:disabled) {
-    background: #f03f48;
-    box-shadow: 0 3px 8px rgba(255, 82, 82, 0.16);
+    background: rgba(211, 242, 255, 0.95);
+    box-shadow: 0 2px 6px rgba(64, 197, 241, 0.14);
     transform: translateY(0);
 }
 
@@ -6176,6 +6345,13 @@ margin-top: 10px;
     width: 17px !important;
     height: 17px !important;
     margin: 0 !important;
+    opacity: 0.82;
+    filter: brightness(0) saturate(100%) invert(49%) sepia(72%) saturate(540%) hue-rotate(151deg) brightness(95%) contrast(89%);
+}
+
+.catgirl-panel-right .panel-tab-settings .field-row-wrapper.setting-field-row > .setting-field-delete.btn.sm:hover:not(:disabled) .delete-icon {
+    opacity: 1;
+    filter: brightness(0) saturate(100%) invert(44%) sepia(78%) saturate(716%) hue-rotate(153deg) brightness(97%) contrast(92%);
 }
 
 @media (max-width: 1100px) {
@@ -6669,7 +6845,7 @@ margin-top: 10px;
 
 [data-theme="dark"] .section-card,
 [data-theme="dark"] #character-cards-content .section-card:first-child,
-[data-theme="dark"] #subscriptions-content .section-card .section-header,
+[data-theme="dark"] #subscriptions-content .subscription-header-row,
 [data-theme="dark"] .tab-contents .section-header {
     background: #18222c;
     border-color: rgba(125, 211, 252, 0.18);
@@ -6791,7 +6967,8 @@ margin-top: 10px;
     box-shadow: 0 10px 24px rgba(14, 116, 144, 0.34);
 }
 
-[data-theme="dark"] .chara-cards-view-area {
+[data-theme="dark"] .chara-cards-view-area,
+[data-theme="dark"] #subscriptions-content .subscription-view-area {
     background: linear-gradient(135deg, #123247 0%, #172535 58%, #18222c 100%);
     border-color: rgba(125, 211, 252, 0.28);
     color: #e6edf3;
@@ -6799,18 +6976,22 @@ margin-top: 10px;
 
 [data-theme="dark"] .chara-cards-header-row,
 [data-theme="dark"] .card-info-header-row,
-[data-theme="dark"] .tags-header-row {
+[data-theme="dark"] .tags-header-row,
+[data-theme="dark"] #subscriptions-content .subscription-header-row {
     background-color: #18222c;
 }
 
 [data-theme="dark"] .chara-cards-header-bg .card-info-title-area,
 [data-theme="dark"] .card-info-title-area,
 [data-theme="dark"] .tags-title-area,
-[data-theme="dark"] .description-title-area {
+[data-theme="dark"] .description-title-area,
+[data-theme="dark"] #subscriptions-content .subscription-header-row .subscription-title-area {
     background: linear-gradient(to right, rgba(14, 116, 144, 0.42) 0%, rgba(30, 41, 59, 0.74) 55%, transparent 100%);
 }
 
-[data-theme="dark"] .chara-cards-toggle-bar {
+[data-theme="dark"] .chara-cards-toggle-bar,
+[data-theme="dark"] #subscriptions-content .subscription-view-area .filter-controls,
+[data-theme="dark"] #subscriptions-content #subscriptions-result {
     background-color: #18222c;
     border-bottom-color: rgba(125, 211, 252, 0.18);
 }
@@ -7331,6 +7512,7 @@ margin-top: 10px;
     animation: cardCompanionWindowIn 0.22s ease-out;
     transition: box-shadow 0.22s ease, background 0.22s ease, opacity 0.22s ease;
     resize: both;
+    -webkit-app-region: no-drag;
 }
 
 @keyframes cardCompanionWindowIn {
@@ -7420,6 +7602,7 @@ margin-top: 10px;
 
 .card-companion-panel.card-companion-dragging {
     user-select: none;
+    z-index: 100100;
     box-shadow: 0 22px 52px rgba(64, 197, 241, 0.3);
     animation-play-state: paused;
     will-change: left, top;
@@ -8108,6 +8291,28 @@ margin-top: 10px;
     background: #18222c;
     border-color: rgba(125, 211, 252, 0.24);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+[data-theme="dark"] .catgirl-panel-right .panel-tab-settings .field-row-wrapper.setting-field-row > .setting-field-delete.btn.sm {
+    border-color: rgba(125, 211, 252, 0.22);
+    background: rgba(24, 34, 44, 0.86);
+    box-shadow: 0 3px 8px rgba(14, 116, 144, 0.12);
+}
+
+[data-theme="dark"] .catgirl-panel-right .panel-tab-settings .field-row-wrapper.setting-field-row > .setting-field-delete.btn.sm:hover:not(:disabled) {
+    border-color: rgba(125, 211, 252, 0.42);
+    background: rgba(32, 49, 62, 0.94);
+    box-shadow: 0 6px 14px rgba(14, 116, 144, 0.22);
+}
+
+[data-theme="dark"] .catgirl-panel-right .panel-tab-settings .field-row-wrapper.setting-field-row > .setting-field-delete.btn.sm:active:not(:disabled) {
+    background: rgba(18, 41, 54, 0.95);
+    box-shadow: 0 2px 6px rgba(14, 116, 144, 0.18);
+}
+
+[data-theme="dark"] .catgirl-panel-right .panel-tab-settings .field-row-wrapper.setting-field-row > .setting-field-delete.btn.sm .delete-icon {
+    opacity: 0.86;
+    filter: brightness(0) saturate(100%) invert(77%) sepia(46%) saturate(810%) hue-rotate(162deg) brightness(96%) contrast(92%);
 }
 
 [data-theme="dark"] .catgirl-panel-right .panel-tab-settings .field-row-wrapper label::before {

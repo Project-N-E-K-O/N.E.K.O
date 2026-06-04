@@ -11,6 +11,8 @@
 const chatContainer = document.getElementById('chat-container');
 const chatContentWrapper = document.getElementById('chat-content-wrapper');
 const toggleBtn = document.getElementById('toggle-chat-btn');
+const CHAT_MINIMIZED_YARN_BALL_ICON_SRC = '/static/assets/neko-idle/chat-minimized-yarn-ball.png';
+const CHAT_MINIMIZED_SIZE_PX = 51;
 
 let isTransitioning = false;
 let applyChatContainerSize = null;
@@ -425,7 +427,7 @@ if (toggleBtn) {
                 }
 
                 if (becomingCollapsed) {
-                    iconImg.src = '/static/icons/expand_icon_off_ball.png';
+                    iconImg.src = CHAT_MINIMIZED_YARN_BALL_ICON_SRC;
                     iconImg.alt = window.t ? window.t('common.expand') : '展开';
                     toggleBtn.title = window.t ? window.t('common.expand') : '展开';
                     // 折叠后执行回弹，避免位置越界
@@ -453,7 +455,7 @@ if (toggleBtn) {
             }
             if (willMinimize) {
                 const rect = chatContainer.getBoundingClientRect();
-                const targetSize = 50;
+                const targetSize = CHAT_MINIMIZED_SIZE_PX;
                 const scaleX = rect.width > 0 ? Math.min(1, targetSize / rect.width) : 1;
                 const scaleY = rect.height > 0 ? Math.min(1, targetSize / rect.height) : 1;
 
@@ -493,7 +495,7 @@ if (toggleBtn) {
                 }, transitionDuration);
             } else {
                 // 展开动画：从最小化尺寸过渡到完整尺寸
-                const targetSize = 50;
+                const targetSize = CHAT_MINIMIZED_SIZE_PX;
                 // 计算初始 scale（从最小尺寸到完整尺寸的逆向）
                 const storedSize = getStoredChatContainerSize ? getStoredChatContainerSize() : null;
                 const targetW = storedSize ? storedSize.width : 400;
@@ -560,7 +562,7 @@ if (toggleBtn) {
 
             if (isMinimized) {
                 // 刚刚最小化，显示展开图标（加号）
-                iconImg.src = '/static/icons/expand_icon_off_ball.png';
+                iconImg.src = CHAT_MINIMIZED_YARN_BALL_ICON_SRC;
                 iconImg.alt = window.t ? window.t('common.expand') : '展开';
                 toggleBtn.title = window.t ? window.t('common.expand') : '展开';
                 iconImg.style.width = '100%';
@@ -598,7 +600,7 @@ if (toggleBtn) {
         if (chatContainer.classList.contains('minimized')) {
             let iconImg = toggleBtn.querySelector('img');
             if (iconImg) {
-                iconImg.src = '/static/icons/expand_icon_on.png';
+                iconImg.src = CHAT_MINIMIZED_YARN_BALL_ICON_SRC;
             }
         }
     });
@@ -607,7 +609,7 @@ if (toggleBtn) {
         if (chatContainer.classList.contains('minimized')) {
             let iconImg = toggleBtn.querySelector('img');
             if (iconImg) {
-                iconImg.src = '/static/icons/expand_icon_off_ball.png';
+                iconImg.src = CHAT_MINIMIZED_YARN_BALL_ICON_SRC;
             }
         }
     });
@@ -1100,7 +1102,7 @@ async function initCommonUiAfterStorageBarrier() {
 
         if (isCollapsed()) {
             // 最小化状态，显示展开图标（加号）
-            iconImg.src = '/static/icons/expand_icon_off_ball.png';
+            iconImg.src = CHAT_MINIMIZED_YARN_BALL_ICON_SRC;
             iconImg.alt = window.t ? window.t('common.expand') : '展开';
             toggleBtn.title = window.t ? window.t('common.expand') : '展开';
         } else {

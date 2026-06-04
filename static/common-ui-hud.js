@@ -345,7 +345,9 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                     existingWindow.focus();
                     openedWindow = existingWindow;
                 } else if (typeof window.openOrFocusWindow === 'function') {
-                    openedWindow = window.openOrFocusWindow(targetUrl, actionConfig.windowName, features);
+                    openedWindow = window.openOrFocusWindow(targetUrl, actionConfig.windowName, features, {
+                        navigateOnReuse: !!actionConfig.forceReloadOnReuse
+                    });
                 } else {
                     openedWindow = window.open(targetUrl, actionConfig.windowName, features);
                 }

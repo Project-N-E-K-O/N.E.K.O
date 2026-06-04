@@ -27,3 +27,18 @@ def test_response_discarded_visible_in_react_chat():
     )[0]
     assert "document.createElement('div')" not in response_discarded_block
     assert "appendChild(messageDiv)" not in response_discarded_block
+
+
+def test_goodbye_blocks_stale_audio_session_started():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    stale_audio_guard = source.split("// -------- session_started --------", 1)[1].split(
+        "console.log(window.t('console.sessionStartedReceived')",
+        1,
+    )[0]
+
+    assert "response.input_mode !== 'text'" in stale_audio_guard
+    assert "window.isNekoGoodbyeModeActive()" in stale_audio_guard
+    assert "window.cancelPendingSessionStart('Voice start cancelled by goodbye');" in stale_audio_guard
+    assert "S.socket.send(JSON.stringify({ action: 'end_session' }));" in stale_audio_guard
+    assert "return;" in stale_audio_guard

@@ -786,6 +786,10 @@
         "galgameLoading": "返信候補を生成中…",
         "exportConversation": "会話をエクスポート",
         "compactExportHistory": "履歴",
+        "compactHistoryToggleOpen": "履歴を表示",
+        "compactHistoryToggleClose": "履歴を隠す",
+        "compactHistoryControlsShow": "履歴操作を表示",
+        "compactHistoryControlsHide": "履歴操作を隠す",
         "compactExportControlsCollapse": "選択操作を隠す",
         "compactExportControlsExpand": "選択操作を表示",
         "exportAction": "エクスポート",
@@ -2106,6 +2110,7 @@
         "textChattingShort": "テキストチャット中",
         "capturing": "スクリーンショット中...",
         "importImageAdded": "{{count}} 枚の画像を追加しました。送信時に一緒に送られます",
+        "importImagePartial": "{{success}} 枚の画像を追加しました。{{failed}} 枚の取り込みに失敗しました",
         "importImageFailed": "画像の取り込みに失敗しました",
         "screenshotAdded": "スクリーンショットを追加しました。送信をクリックして一緒に送信",
         "screenshotFailed": "スクリーンショット失敗",
@@ -3240,7 +3245,7 @@
                 "sayHello": "こんにちは"
             },
             "lines": {
-                "introBasic": "おっ、見て見て！ここにキラキラ光る小さなボタンがあるにゃ！これをポチッとするだけで、私と直接おしゃべりできるんだよ！今日の出来事を私にシェアしたい？それとも私の名前を呼んでみるだけ？早く試してみて、あなたの声を聞くのが待ちきれないにゃ！",
+                "introBasic": "おっ、見て見て！ここにキラキラ光るボタンがあるにゃ！これをポチッとするだけで、私と直接おしゃべりできるんだよ！今日の出来事を私にシェアしたい？それとも私の名前を呼んでみるだけ？早く試してみて、あなたの声を聞くのが待ちきれないにゃ！",
                 "takeoverCaptureCursor": "ジャジャーン！究極の魔法スイッチ出現！ここをタップするだけで、私の小さなおててをあなたのキーボードやマウスに伸ばせるようになるにゃ！代わりにタイピングしたり、ウェブページを開いたりしてあげる……でも、もしマウスポインターがちょこまか動いたら、思わず飛びついて捕まえたくなっちゃうかも！私のイタズラ……じゃなくて、お手伝いを受け入れる準備はできたにゃ？",
                 "takeoverPluginPreviewHome": "まだ終わってないにゃ！見て見て、ここにはすっごくたくさんの面白いプラグインがあるんだよ！",
                 "takeoverPluginPreviewDashboard": "これがあれば、Bilibiliの弾幕を見られるだけじゃなくて、電気を消したりエアコンをつけたりもできるにゃ……この私は何でもできるスーパー猫神様なんだから！ふふん！",

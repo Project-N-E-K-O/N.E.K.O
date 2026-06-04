@@ -27,6 +27,7 @@ from fastapi.responses import JSONResponse
 
 from config import CHARACTER_RESERVED_FIELDS
 from config.prompts.prompts_card_assist import (
+    get_card_assist_chat_advice_only_directive,
     get_card_assist_chat_system_prompt,
     get_card_assist_clarify_prompt,
     get_card_assist_generate_prompt,
@@ -714,6 +715,21 @@ _CHAT_REWRITE_VERB_RE = re.compile(
     re.IGNORECASE,
 )
 
+_CHAT_ADVICE_ONLY_INTENT_RE = re.compile(
+    r"(建议|意见|点评|审一下|审稿|检查一下|帮我看看|看一下|指出问题|分析|优缺点|"
+    r"修改方向|修改方案|候选写法|suggest|suggestion|advice|critique|review|"
+    r"pros\s+and\s+cons|candidate\s+rewrite)",
+    re.IGNORECASE,
+)
+
+_CHAT_DIRECT_EDIT_REQUEST_RE = re.compile(
+    r"(直接|现在|立刻|马上|帮我|替我|给我)?\s*"
+    r"(改一下|改下|改一改|修改一下|调整一下|调整下|改成|修改成|换成|写成|写进|应用|采纳|"
+    r"更新字段|保存到字段|直接改|帮我改|替我改|"
+    r"apply|make\s+the\s+changes|edit\s+the\s+field|update\s+the\s+field|change\s+it\s+to)",
+    re.IGNORECASE,
+)
+
 
 def _latest_user_text(history: list[dict]) -> str:
     for msg in reversed(history):
@@ -723,7 +739,11 @@ def _latest_user_text(history: list[dict]) -> str:
 
 
 def _chat_text_requests_edits(text: str) -> bool:
-    return bool(_CHAT_EDIT_INTENT_RE.search(text or ""))
+    text = text or ""
+    return bool(
+        _CHAT_EDIT_INTENT_RE.search(text)
+        or _CHAT_DIRECT_EDIT_REQUEST_RE.search(text)
+    )
 
 
 def _chat_text_requests_full_rewrite(text: str) -> bool:
@@ -732,6 +752,15 @@ def _chat_text_requests_full_rewrite(text: str) -> bool:
     return bool(
         _CHAT_FULL_REWRITE_RE.search(text)
         and _CHAT_REWRITE_VERB_RE.search(text)
+    )
+
+
+def _chat_text_requests_advice_only(text: str) -> bool:
+    if not text:
+        return False
+    return bool(
+        _CHAT_ADVICE_ONLY_INTENT_RE.search(text)
+        and not _CHAT_DIRECT_EDIT_REQUEST_RE.search(text)
     )
 
 
@@ -1007,6 +1036,10 @@ async def chat(request: Request):
     target_keys = _resolve_target_keys(body, locale_code, current_card)
     target_keys_text = " / ".join(target_keys)
     latest_user = _latest_user_text(history)
+    advice_only = (
+        body.get("advice_only") is True
+        or _chat_text_requests_advice_only(latest_user)
+    )
 
     dev_cat_name = str(body.get("dev_cat_name") or _DEFAULT_DEV_CAT_NAME).strip()
     if not dev_cat_name or len(dev_cat_name) > 40:
@@ -1016,6 +1049,8 @@ async def chat(request: Request):
     system_content = system_template % (
         dev_cat_name, current_card_text, target_keys_text
     )
+    if advice_only:
+        system_content += get_card_assist_chat_advice_only_directive(lang)
     # 聊天回复 + actions 里的字段值也用目标语言（Codex #3331696257）
     system_content += _output_language_directive(locale_code)
 
@@ -1049,18 +1084,20 @@ async def chat(request: Request):
         if len(reply) > _CHAT_MAX_MESSAGE_CHARS:
             reply = reply[:_CHAT_MAX_MESSAGE_CHARS] + "…"
         actions = _sanitize_actions(parsed.get("actions"))
+        if advice_only:
+            actions = []
     elif parsed is not None:
         warning = "llm_bad_shape"
 
     if not reply and content and not isinstance(parsed, dict):
         reply = (content or "")[:_CHAT_MAX_MESSAGE_CHARS]
 
-    edit_intent = _chat_text_requests_edits(latest_user)
+    edit_intent = False if advice_only else _chat_text_requests_edits(latest_user)
     # 前端「重写整张卡」quick action 透传的 locale 无关 flag 优先——本地化文案（es/ja/ko/pt/
     # ru/zh-TW 的「重写」措辞）正则匹配不到，只靠 _chat_text_requests_full_rewrite 会漏判，
     # _complete_full_rewrite_actions 补全通路不触发、部分 action 被当部分重写存下（Codex
     # #3333137718）。同时保留文本启发式，兼容用户手敲的全量重写措辞。
-    full_rewrite_intent = (
+    full_rewrite_intent = (not advice_only) and (
         body.get("full_rewrite") is True
         or _chat_text_requests_full_rewrite(latest_user)
     )

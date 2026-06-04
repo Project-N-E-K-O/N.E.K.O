@@ -193,6 +193,9 @@ class UniversalTutorialManager {
         this._tutorialPointerBlockHandler = this.blockTutorialPointerEvent.bind(this);
         this._tutorialPointerBlockOptions = { capture: true, passive: false };
         this._isTutorialPointerBlocked = false;
+        this._nekoTutorialClickBlockHandler = this.blockNekoTutorialClickEvent.bind(this);
+        this._nekoTutorialClickBlockOptions = { capture: true, passive: false };
+        this._isNekoTutorialClickBlocked = false;
         this._isDestroyed = false;
 
         // 刷新延迟常量
@@ -3340,6 +3343,114 @@ class UniversalTutorialManager {
         return !!target.closest('.driver-popover, #neko-tutorial-skip-btn');
     }
 
+    isHomeIntroActivationClickTarget(target) {
+        if (this.currentPage !== 'home') return false;
+        if (!target || typeof target.closest !== 'function') return false;
+        if (!this.yuiGuideDirector || this.yuiGuideDirector.awaitingIntroActivation !== true) return false;
+
+        return !!target.closest([
+            '#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="capsule"]',
+            '#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="input"]',
+            '#react-chat-window-root .compact-chat-surface-frame',
+            '#react-chat-window-root .compact-chat-surface-shell',
+            '#react-chat-window-root .composer-input',
+            '#react-chat-window-root .composer-input-shell',
+            '#react-chat-window-root .composer-panel',
+            '#textInputBox',
+            '#text-input-area',
+            '#chat-container #text-input-area'
+        ].join(', '));
+    }
+
+    isManualPluginDashboardOpenClickTarget(target) {
+        if (!target || typeof target.closest !== 'function') return false;
+        if (!this.yuiGuideDirector || this.yuiGuideDirector.manualPluginDashboardOpenAllowed !== true) return false;
+
+        const manualTarget = this.yuiGuideDirector.manualPluginDashboardOpenTarget;
+        if (!manualTarget) return false;
+        return !!(
+            target === manualTarget
+            || (manualTarget.contains && manualTarget.contains(target))
+            || (
+                target.closest
+                && target.closest('#neko-sidepanel-action-agent-user-plugin-management-panel') === manualTarget
+            )
+        );
+    }
+
+    isNekoTutorialClickTarget(target) {
+        if (!target || typeof target.closest !== 'function') return false;
+
+        const selectors = [
+            ...this.getTutorialInteractiveSelectors(),
+            '.neko-idle-return-button-container',
+            '.neko-idle-return-btn',
+            '.avatar-reaction-bubble',
+            '.avatar-reaction-bubble-root',
+            '[id$="-floating-buttons"]',
+            '[id$="-lock-icon"]',
+            '[id$="-return-button-container"]'
+        ];
+
+        return selectors.some(selector => {
+            try {
+                return !!target.closest(selector);
+            } catch (_) {
+                return false;
+            }
+        });
+    }
+
+    blockNekoTutorialClickEvent(event) {
+        if (!this.isTutorialRunning && !window.isInTutorial) return;
+        if (this.isTutorialControlEventTarget(event && event.target)) return;
+
+        // 只拦真实用户输入；Yui 引导自身的 button.click()/MouseEvent 演出需要继续工作。
+        if (event && event.isTrusted === false) return;
+        if (this.isHomeIntroActivationClickTarget(event && event.target)) return;
+        if (this.isManualPluginDashboardOpenClickTarget(event && event.target)) return;
+        if (!this.isNekoTutorialClickTarget(event && event.target)) return;
+
+        if (event && typeof event.preventDefault === 'function') {
+            event.preventDefault();
+        }
+        if (event && typeof event.stopImmediatePropagation === 'function') {
+            event.stopImmediatePropagation();
+        } else if (event && typeof event.stopPropagation === 'function') {
+            event.stopPropagation();
+        }
+    }
+
+    blockNekoTutorialClickEvents() {
+        if (this._isNekoTutorialClickBlocked) return;
+        window.addEventListener('pointerdown', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
+        window.addEventListener('pointerup', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
+        window.addEventListener('mousedown', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
+        window.addEventListener('mouseup', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
+        window.addEventListener('click', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
+        window.addEventListener('dblclick', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
+        window.addEventListener('auxclick', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
+        window.addEventListener('contextmenu', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
+        window.addEventListener('touchstart', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
+        window.addEventListener('touchend', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
+        this._isNekoTutorialClickBlocked = true;
+    }
+
+    unblockNekoTutorialClickEvents() {
+        if (!this._isNekoTutorialClickBlocked) return;
+        window.removeEventListener('pointerdown', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
+        window.removeEventListener('pointerup', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
+        window.removeEventListener('mousedown', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
+        window.removeEventListener('mouseup', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
+        window.removeEventListener('click', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
+        window.removeEventListener('dblclick', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
+        window.removeEventListener('auxclick', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
+        window.removeEventListener('contextmenu', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
+        window.removeEventListener('touchstart', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
+        window.removeEventListener('touchend', this._nekoTutorialClickBlockHandler, this._nekoTutorialClickBlockOptions);
+        this._isNekoTutorialClickBlocked = false;
+    }
+
     blockTutorialPointerEvent(event) {
         if (!this.isTutorialRunning && !window.isInTutorial) return;
         if (this.currentPage !== 'chara_manager') return;
@@ -3528,6 +3639,7 @@ class UniversalTutorialManager {
 
             // 立即禁用页面滚动，防止等待异步加载期间用户滚动导致高亮框位置偏移
             this.lockBodyScroll();
+            this.blockNekoTutorialClickEvents();
 
             // 检查当前页面是否需要全屏提示
             const pagesNeedingFullscreen = [
@@ -4810,6 +4922,11 @@ class UniversalTutorialManager {
             this.restoreTutorialInteractionState();
         } catch (error) {
             console.warn('[Tutorial] restoreTutorialInteractionState 失败:', error);
+        }
+        try {
+            this.unblockNekoTutorialClickEvents();
+        } catch (error) {
+            console.warn('[Tutorial] unblockNekoTutorialClickEvents 失败:', error);
         }
 
         if (this._teardownPromise) {

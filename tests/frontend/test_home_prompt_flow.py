@@ -14,6 +14,7 @@ _UNIVERSAL_TUTORIAL_DEPENDENCIES = (
     "tutorial-avatar-reload-controller.js",
 )
 _YUI_DIRECTOR_DEPENDENCIES = (
+    "yui-guide-overlay.js",
     "tutorial-interaction-takeover.js",
 )
 _PAGE_BOOTSTRAP_TEMPLATE = """
@@ -171,6 +172,60 @@ def _has_playwright_browser() -> bool:
             return Path(playwright.chromium.executable_path).exists()
     except Exception:
         return False
+
+
+@pytest.mark.frontend
+def test_yui_intro_activation_accepts_compact_chat_input_shell(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        script_names=("yui-guide-director.js",),
+        init_js="""
+            () => {
+                document.body.innerHTML = `
+                    <div id="react-chat-window-root">
+                        <div class="composer-panel">
+                            <div class="composer-input-shell">
+                                <textarea class="composer-input"></textarea>
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                const buildDirector = function(label) {
+                    const director = window.createYuiGuideDirector({ page: 'home' });
+                    director.awaitingIntroActivation = true;
+                    director._introActivationResolve = function() {
+                        window.__activationResults[label].resolved = true;
+                    };
+                    return director;
+                };
+
+                window.__activationResults = {
+                    shell: { resolved: false },
+                    panel: { resolved: false },
+                };
+
+                const shellDirector = buildDirector('shell');
+                const shell = document.querySelector('#react-chat-window-root .composer-input-shell');
+                window.__activationResults.shell.allowed =
+                    shellDirector.isAllowedTutorialInteractionTarget(shell, new MouseEvent('click'));
+                window.__activationResults.shell.awaiting = shellDirector.awaitingIntroActivation;
+
+                const panelDirector = buildDirector('panel');
+                const panel = document.querySelector('#react-chat-window-root .composer-panel');
+                window.__activationResults.panel.allowed =
+                    panelDirector.isAllowedTutorialInteractionTarget(panel, new MouseEvent('click'));
+                window.__activationResults.panel.awaiting = panelDirector.awaitingIntroActivation;
+            }
+        """,
+    )
+
+    result = mock_page.evaluate("window.__activationResults")
+
+    assert result == {
+        "shell": {"resolved": True, "allowed": True, "awaiting": False},
+        "panel": {"resolved": True, "allowed": True, "awaiting": False},
+    }
 
 
 pytestmark = pytest.mark.skipif(

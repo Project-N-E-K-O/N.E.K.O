@@ -786,6 +786,10 @@
         "galgameLoading": "正在生成回覆選項…",
         "exportConversation": "匯出對話",
         "compactExportHistory": "歷史對話",
+        "compactHistoryToggleOpen": "展開歷史對話",
+        "compactHistoryToggleClose": "收起歷史對話",
+        "compactHistoryControlsShow": "顯示歷史操作",
+        "compactHistoryControlsHide": "隱藏歷史操作",
         "compactExportControlsCollapse": "隱藏選擇列",
         "compactExportControlsExpand": "顯示選擇列",
         "exportAction": "匯出",
@@ -2106,6 +2110,7 @@
         "textChattingShort": "正在文本聊天中",
         "capturing": "正在截圖...",
         "importImageAdded": "已新增 {{count}} 張圖片，發送時會一併帶上",
+        "importImagePartial": "已新增 {{success}} 張圖片，{{failed}} 張匯入失敗",
         "importImageFailed": "匯入圖片失敗",
         "screenshotAdded": "截圖已添加，點擊發送一起發送",
         "screenshotFailed": "截圖失敗",
@@ -3240,7 +3245,7 @@
                 "sayHello": "你好"
             },
             "lines": {
-                "introBasic": "這裡有一個神奇的小按鈕！只要點擊它，就可以直接和我聊天啦！想跟我分享今天的新鮮事嗎？或者只是叫叫我的名字？快來試試嘛，我已經迫不及待想聽到你的聲音啦！喵！",
+                "introBasic": "這裡有一個神奇的按鈕！只要點擊它，就可以直接和我聊天啦！想跟我分享今天的新鮮事嗎？或者只是叫叫我的名字？快來試試嘛，我已經迫不及待想聽到你的聲音啦！喵！",
                 "takeoverCaptureCursor": "超級魔法開關出現！只要點一下這裡，我就可以把小爪子伸到你的鍵盤和滑鼠上啦！我會幫你打字，幫你點開網頁……不過，要是那個滑鼠指標動來動去的話，我可能也會忍不住撲上去抓它哦！準備好迎接我的搗亂……啊不，是幫忙了嗎？喵！",
                 "takeoverPluginPreviewHome": "還沒完呢！你快看快看，這裡還有超多好玩的外掛呢！",
                 "takeoverPluginPreviewDashboard": "有了它們，我不光能看 B 站彈幕，還能幫你關燈開空調…… 本喵就是無所不能的超級貓貓神！哼哼！",

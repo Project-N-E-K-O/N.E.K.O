@@ -23,6 +23,8 @@ def test_auto_goodbye_reuses_existing_goodbye_base_chain():
     assert "window.dispatchEvent(new CustomEvent('live2d-goodbye-click'" in auto_source
     assert "action: 'start_session'" not in auto_source
     assert "resetSessionButton.click();" in ui_source
+    assert "live2dContainerForGoodbye.classList.add('minimized');" in ui_source
+    assert "resetSessionButton.disabled = false;\n                    resetSessionButton.click();" in ui_source
 
     reset_block = _between(
         buttons_source,
@@ -30,6 +32,9 @@ def test_auto_goodbye_reuses_existing_goodbye_base_chain():
         "// ----------------------------------------------------------------\n        // Return session button click",
     )
     assert "S.socket.send(JSON.stringify({ action: 'end_session' }));" in reset_block
+    assert "window.cancelPendingSessionStart('Voice start cancelled by goodbye');" in reset_block
+    assert "S.voiceStartPending = false;" in reset_block
+    assert "window.isMicStarting = false;" in reset_block
     assert "textInputArea.classList.add('hidden');" in reset_block
     assert "window.syncVoiceChatComposerHidden(true);" in reset_block
     assert "returnSessionButton.disabled = false;" in reset_block

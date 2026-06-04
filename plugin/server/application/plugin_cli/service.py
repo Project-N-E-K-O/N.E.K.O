@@ -25,21 +25,25 @@ from plugin.server.application.install_source import (
     classify_plugin_path,
     get_install_source_manager,
 )
+from plugin.server.application.plugin_cli.paths import PluginCliPathPolicy
+from plugin.server.application.plugin_cli.source_resolver import (
+    PluginSourceResolver,
+    ResolvedPluginSource,
+)
 from plugin.server.domain.errors import ServerDomainError
 from plugin.settings import (
+    BUILTIN_PLUGIN_CONFIG_ROOT,
     USER_PACKAGE_PROFILES_ROOT,
     USER_PLUGIN_CONFIG_ROOT,
     USER_PLUGIN_PACKAGES_ROOT,
 )
 
 _PLUGIN_ROOT = Path(__file__).resolve().parents[3]
-# 源仓库内置插件目录：用于 list/build（只读扫描）。
-_RUNTIME_PLUGINS_ROOT = _PLUGIN_ROOT / "plugins"
-# install（导入）目标目录：统一落到用户我的文档下的 plugins 配置根。
+# Deprecated compatibility anchors. Package-management code below resolves
+# roots through PluginCliPathPolicy.from_settings() for each operation.
+_RUNTIME_PLUGINS_ROOT = BUILTIN_PLUGIN_CONFIG_ROOT
 _INSTALL_PLUGINS_ROOT = USER_PLUGIN_CONFIG_ROOT
 _INSTALL_PROFILES_ROOT = USER_PACKAGE_PROFILES_ROOT
-# build/upload 产物（``.neko-plugin`` / ``.neko-bundle``）落地目录：
-# 必须落到用户可写的我的文档目录，否则 Nuitka 打包安装到 Program Files 后会失败。
 _TARGET_ROOT = USER_PLUGIN_PACKAGES_ROOT
 
 # Allowed extensions for uploaded plugin packages
@@ -59,6 +63,18 @@ def _require_within(path: Path, root: Path, *, field: str) -> Path:
     return resolved
 
 
+def _require_safe_directory_name(value: str, *, field: str) -> str:
+    directory_name = value.strip()
+    if (
+        not directory_name
+        or directory_name in {".", ".."}
+        or "/" in directory_name
+        or "\\" in directory_name
+    ):
+        raise ValueError(f"{field} must be a safe plugin directory name, got {value!r}")
+    return directory_name
+
+
 class PluginCliService:
     async def list_local_plugins(self) -> dict[str, object]:
         return await asyncio.to_thread(self._list_local_plugins_sync)
@@ -72,6 +88,8 @@ class PluginCliService:
         mode: str = "selected",
         plugin: str | None = None,
         plugins: list[str] | None = None,
+        plugin_ref: dict[str, Any] | None = None,
+        plugin_refs: list[dict[str, Any]] | None = None,
         out: str | None = None,
         target_dir: str | None = None,
         keep_staging: bool = False,
@@ -85,6 +103,8 @@ class PluginCliService:
             mode=mode,
             plugin=plugin,
             plugins=plugins,
+            plugin_ref=plugin_ref,
+            plugin_refs=plugin_refs,
             out=out,
             target_dir=target_dir,
             keep_staging=keep_staging,
@@ -107,7 +127,7 @@ class PluginCliService:
         plugins_root: str | None = None,
         profiles_root: str | None = None,
         on_conflict: str = "rename",
-        use_staging: bool = False,
+        use_staging: bool = True,
         forced_directory_name: str | None = None,
     ) -> dict[str, object]:
         return await asyncio.to_thread(
@@ -124,11 +144,13 @@ class PluginCliService:
         self,
         *,
         plugins: list[str],
+        plugin_refs: list[dict[str, Any]] | None = None,
         current_sdk_version: str | None = None,
     ) -> dict[str, object]:
         return await asyncio.to_thread(
             self._analyze_sync,
             plugins=plugins,
+            plugin_refs=plugin_refs,
             current_sdk_version=current_sdk_version,
         )
 
@@ -199,15 +221,19 @@ class PluginCliService:
             raise ValueError("upload_and_install accepts content or package_path, not both")
 
         if install_source_override is None:
+            owns_saved_package = content is not None or package_path is not None
+            saved: dict[str, object] | None = None
+            unpacked_target_dirs: list[Path] = []
+            unpacked_profile_dirs: list[Path] = []
             if package_path is not None:
                 saved = await asyncio.to_thread(
-                    self._package_ref_from_path,
+                    self._save_package_file_sync,
                     filename=filename,
                     package_path=package_path,
                 )
                 actual_sha256 = await asyncio.to_thread(
                     self._sha256_file,
-                    package_path,
+                    str(saved["path"]),
                 )
             else:
                 saved = await self.save_uploaded_package(
@@ -215,24 +241,35 @@ class PluginCliService:
                     content=content or b"",
                 )
                 actual_sha256 = hashlib.sha256(content or b"").hexdigest().lower()
-
-            install_result = await self.install(
-                package=str(saved["path"]),
-                on_conflict=on_conflict,
-            )
-            warning = await self._record_install_source_best_effort(
-                install_result=install_result,
-                package_filename=filename,
-                package_sha256=actual_sha256,
-                override=None,
-            )
-            payload: dict[str, object] = {
-                "upload": saved,
-                "install": install_result,
-            }
-            if warning is not None:
-                payload["install_source_warning"] = warning
-            return payload
+            try:
+                install_result = await self.install(
+                    package=str(saved["path"]),
+                    on_conflict=on_conflict,
+                    use_staging=True,
+                )
+                unpacked_target_dirs = self._extract_unpack_target_dirs(install_result)
+                unpacked_profile_dirs = self._extract_unpack_profile_dirs(install_result)
+                warning = await self._record_install_source_best_effort(
+                    install_result=install_result,
+                    package_filename=str(saved["name"]),
+                    package_sha256=actual_sha256,
+                    override=None,
+                )
+                payload: dict[str, object] = {
+                    "upload": saved,
+                    "install": install_result,
+                }
+                if warning is not None:
+                    payload["install_source_warning"] = warning
+                return payload
+            except Exception:
+                self._cleanup_after_failure(
+                    saved=saved,
+                    unpacked_target_dirs=unpacked_target_dirs,
+                    unpacked_profile_dirs=unpacked_profile_dirs,
+                    delete_saved_package=owns_saved_package,
+                )
+                raise
 
         channel = install_source_override.get("channel")
         if channel != "market":
@@ -251,14 +288,15 @@ class PluginCliService:
             # Step 1 — materialise package bytes on disk when needed.
             if package_path is not None:
                 saved = await asyncio.to_thread(
-                    self._package_ref_from_path,
+                    self._save_package_file_sync,
                     filename=filename,
                     package_path=package_path,
                 )
                 actual_sha256 = await asyncio.to_thread(
                     self._sha256_file,
-                    package_path,
+                    str(saved["path"]),
                 )
+                owns_saved_package = True
             else:
                 saved = await self.save_uploaded_package(
                     filename=filename,
@@ -663,24 +701,42 @@ class PluginCliService:
 
     # ── Sync helpers ───────────────────────────────────────────────────
 
+    @staticmethod
+    def _path_policy() -> PluginCliPathPolicy:
+        return PluginCliPathPolicy.from_settings()
+
+    def _resolver(self) -> PluginSourceResolver:
+        return PluginSourceResolver(self._path_policy())
+
     def _list_local_plugins_sync(self) -> dict[str, object]:
         try:
-            plugins = sorted(
-                path.parent.name
-                for path in _RUNTIME_PLUGINS_ROOT.glob("*/plugin.toml")
-                if path.is_file()
-            )
-            return {"plugins": plugins, "count": len(plugins)}
+            sources = self._resolver().list_plugins()
+            plugins = [source.directory_name for source in sources]
+            plugin_refs = [
+                {
+                    "root_id": source.root_id,
+                    "directory_name": source.directory_name,
+                    "plugin_id": source.plugin_id,
+                    "label": (
+                        f"{source.plugin_id} ({source.root_id}/{source.directory_name})"
+                        if source.plugin_id and source.plugin_id != source.directory_name
+                        else f"{source.root_id}/{source.directory_name}"
+                    ),
+                }
+                for source in sources
+            ]
+            return {"plugins": plugins, "plugin_refs": plugin_refs, "count": len(sources)}
         except Exception as exc:
             raise self._domain_error_from_exception(exc, action="list_plugins") from exc
 
     def _list_local_packages_sync(self) -> dict[str, object]:
         try:
+            target_root = self._path_policy().package_artifacts_root
             items: list[dict[str, object]] = []
             package_paths = [
                 path
                 for suffix in _ALLOWED_UPLOAD_SUFFIXES
-                for path in _TARGET_ROOT.glob(f"*{suffix}")
+                for path in target_root.glob(f"*{suffix}")
                 if path.is_file()
             ]
             for path in sorted(
@@ -698,7 +754,7 @@ class PluginCliService:
                         "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
                     }
                 )
-            return {"packages": items, "count": len(items), "target_dir": str(_TARGET_ROOT)}
+            return {"packages": items, "count": len(items), "target_dir": str(target_root)}
         except Exception as exc:
             raise self._domain_error_from_exception(exc, action="list_packages") from exc
 
@@ -708,6 +764,8 @@ class PluginCliService:
         mode: str,
         plugin: str | None,
         plugins: list[str] | None,
+        plugin_ref: dict[str, Any] | None,
+        plugin_refs: list[dict[str, Any]] | None,
         out: str | None,
         target_dir: str | None,
         keep_staging: bool,
@@ -717,22 +775,31 @@ class PluginCliService:
         version: str | None,
     ) -> dict[str, object]:
         try:
-            plugin_dirs = self._resolve_plugin_dirs(mode=mode, plugin=plugin, plugins=plugins or [])
-            resolved_target_dir = Path(target_dir).expanduser().resolve() if target_dir else _TARGET_ROOT
-            _require_within(resolved_target_dir, _TARGET_ROOT, field="target_dir")
+            policy = self._path_policy()
+            target_root = policy.package_artifacts_root
+            sources = self._resolve_plugin_sources(
+                mode=mode,
+                plugin=plugin,
+                plugins=plugins or [],
+                plugin_ref=plugin_ref,
+                plugin_refs=plugin_refs or [],
+            )
+            plugin_dirs = [source.plugin_dir for source in sources]
+            resolved_target_dir = Path(target_dir).expanduser().resolve() if target_dir else target_root
+            _require_within(resolved_target_dir, target_root, field="target_dir")
             resolved_target_dir.mkdir(parents=True, exist_ok=True)
 
             if out and mode != "bundle" and len(plugin_dirs) != 1:
                 raise ValueError("'out' can only be used when building a single plugin")
 
             if mode == "bundle":
-                resolved_bundle_id = bundle_id or "__".join(sorted(item.name for item in plugin_dirs))
+                resolved_bundle_id = bundle_id or "__".join(sorted(item.directory_name for item in sources))
                 output_path = (
-                    _require_within(Path(out).expanduser().resolve(), _TARGET_ROOT, field="out")
+                    _require_within(Path(out).expanduser().resolve(), target_root, field="out")
                     if out
                     else _require_within(
                         (resolved_target_dir / f"{resolved_bundle_id}.neko-bundle").resolve(),
-                        _TARGET_ROOT,
+                        target_root,
                         field="out",
                     )
                 )
@@ -756,11 +823,12 @@ class PluginCliService:
 
             built: list[dict[str, object]] = []
             failed: list[dict[str, object]] = []
-            for plugin_dir in plugin_dirs:
+            output_stems = self._output_stems_for_sources(sources)
+            for source, plugin_dir in zip(sources, plugin_dirs, strict=True):
                 output_path = (
-                    _require_within(Path(out).expanduser().resolve(), _TARGET_ROOT, field="out")
+                    _require_within(Path(out).expanduser().resolve(), target_root, field="out")
                     if out
-                    else resolved_target_dir / f"{plugin_dir.name}.neko-plugin"
+                    else resolved_target_dir / f"{output_stems[source]}.neko-plugin"
                 )
                 try:
                     result = build_plugin(
@@ -770,7 +838,7 @@ class PluginCliService:
                     )
                     built.append(result.model_dump(mode="json"))
                 except Exception as exc:
-                    failed.append({"plugin": plugin_dir.name, "error": str(exc)})
+                    failed.append({"plugin": f"{source.root_id}/{source.directory_name}", "error": str(exc)})
 
             return {
                 "built": built,
@@ -807,19 +875,22 @@ class PluginCliService:
         plugins_root: str | None,
         profiles_root: str | None,
         on_conflict: str,
-        use_staging: bool = False,
+        use_staging: bool = True,
         forced_directory_name: str | None = None,
     ) -> dict[str, object]:
         try:
+            policy = self._path_policy()
+            install_plugins_root = policy.user_plugins_root
+            install_profiles_root = policy.package_profiles_root
             plugins_root_path = (
-                _require_within(Path(plugins_root).expanduser().resolve(), _INSTALL_PLUGINS_ROOT, field="plugins_root")
+                _require_within(Path(plugins_root).expanduser().resolve(), install_plugins_root, field="plugins_root")
                 if plugins_root
-                else _INSTALL_PLUGINS_ROOT
+                else install_plugins_root
             )
             profiles_root_path = (
-                _require_within(Path(profiles_root).expanduser().resolve(), _INSTALL_PROFILES_ROOT, field="profiles_root")
+                _require_within(Path(profiles_root).expanduser().resolve(), install_profiles_root, field="profiles_root")
                 if profiles_root
-                else _INSTALL_PROFILES_ROOT
+                else install_profiles_root
             )
             package_path = self._resolve_package_path(package)
             if use_staging:
@@ -854,6 +925,11 @@ class PluginCliService:
     ) -> InstallResult:
         """Extract into a staging tree, then rename into place atomically."""
 
+        forced_directory_name = (
+            _require_safe_directory_name(forced_directory_name, field="forced_directory_name")
+            if forced_directory_name is not None
+            else None
+        )
         staging_token = uuid.uuid4().hex
         staging_plugins = plugins_root / f".neko_staging_{staging_token}"
         staging_profiles = profiles_root / f".neko_staging_{staging_token}"
@@ -890,6 +966,8 @@ class PluginCliService:
                         renamed=(final_dir.name != item.source_folder),
                     )
                 )
+                if not (final_dir / "plugin.toml").is_file():
+                    raise ValueError(f"promoted plugin is missing plugin.toml: {final_dir}")
 
             if staged.profile_dir is not None:
                 source_profile = Path(staged.profile_dir)
@@ -948,10 +1026,17 @@ class PluginCliService:
         self,
         *,
         plugins: list[str],
+        plugin_refs: list[dict[str, Any]] | None,
         current_sdk_version: str | None,
     ) -> dict[str, object]:
         try:
-            plugin_dirs = [self._resolve_plugin_dir_candidate(item) for item in plugins]
+            plugin_dirs = [
+                source.plugin_dir
+                for source in self._resolver().resolve_many(
+                    refs=plugin_refs or [],
+                    specifiers=plugins,
+                )
+            ]
             result = analyze_bundle_plugins(
                 plugin_dirs,
                 current_sdk_version=current_sdk_version,
@@ -962,6 +1047,7 @@ class PluginCliService:
 
     def _save_uploaded_package_sync(self, *, filename: str, content: bytes) -> dict[str, object]:
         try:
+            target_root = self._path_policy().package_artifacts_root
             # Validate file size
             if len(content) > _UPLOAD_MAX_BYTES:
                 raise ValueError(
@@ -983,7 +1069,7 @@ class PluginCliService:
                 raise ValueError(f"Unsupported file type. Allowed: {allowed}")
 
             # Ensure target directory exists
-            _TARGET_ROOT.mkdir(parents=True, exist_ok=True)
+            target_root.mkdir(parents=True, exist_ok=True)
 
             stem = safe_name
             suffix = ""
@@ -995,7 +1081,7 @@ class PluginCliService:
 
             # Exclusive create: if name collides (including concurrent uploads
             # racing on the same filename), pick a UUID-suffixed dest and retry.
-            dest = _TARGET_ROOT / safe_name
+            dest = target_root / safe_name
             while True:
                 try:
                     with dest.open("xb") as file:
@@ -1003,7 +1089,7 @@ class PluginCliService:
                     break
                 except FileExistsError:
                     unique = uuid.uuid4().hex[:8]
-                    dest = _TARGET_ROOT / f"{stem}_{unique}{suffix}"
+                    dest = target_root / f"{stem}_{unique}{suffix}"
                 except Exception:
                     dest.unlink(missing_ok=True)
                     raise
@@ -1018,39 +1104,107 @@ class PluginCliService:
         except Exception as exc:
             raise self._domain_error_from_exception(exc, action="upload") from exc
 
-    def _resolve_plugin_dirs(self, *, mode: str, plugin: str | None, plugins: list[str]) -> list[Path]:
-        if mode == "all":
-            plugin_dirs = sorted(
-                path.parent.resolve()
-                for path in _RUNTIME_PLUGINS_ROOT.glob("*/plugin.toml")
-                if path.is_file()
+    def _save_package_file_sync(self, *, filename: str, package_path: str) -> dict[str, object]:
+        """Copy an existing package into the managed package artifacts root."""
+
+        source = Path(package_path).expanduser().resolve()
+        if not source.is_file():
+            raise FileNotFoundError(f"package file not found: {package_path}")
+        if source.stat().st_size > _UPLOAD_MAX_BYTES:
+            raise ValueError(
+                f"File too large: {source.stat().st_size} bytes "
+                f"(max {_UPLOAD_MAX_BYTES // (1024 * 1024)} MB)"
             )
-            if not plugin_dirs:
-                raise FileNotFoundError(f"No plugin.toml files found under {_RUNTIME_PLUGINS_ROOT}")
-            return plugin_dirs
+
+        safe_name = Path(filename or source.name).name
+        if not safe_name:
+            raise ValueError("Invalid filename")
+        has_valid_suffix = any(safe_name.endswith(suffix) for suffix in _ALLOWED_UPLOAD_SUFFIXES)
+        if not has_valid_suffix:
+            allowed = ", ".join(sorted(_ALLOWED_UPLOAD_SUFFIXES))
+            raise ValueError(f"Unsupported file type. Allowed: {allowed}")
+
+        target_root = self._path_policy().package_artifacts_root
+        target_root.mkdir(parents=True, exist_ok=True)
+        stem = safe_name
+        suffix = ""
+        for allowed_suffix in sorted(_ALLOWED_UPLOAD_SUFFIXES, key=len, reverse=True):
+            if stem.endswith(allowed_suffix):
+                suffix = allowed_suffix
+                stem = stem[: -len(allowed_suffix)]
+                break
+
+        dest = target_root / safe_name
+        while True:
+            try:
+                with source.open("rb") as src, dest.open("xb") as dst:
+                    shutil.copyfileobj(src, dst)
+                break
+            except FileExistsError:
+                unique = uuid.uuid4().hex[:8]
+                dest = target_root / f"{stem}_{unique}{suffix}"
+            except Exception:
+                dest.unlink(missing_ok=True)
+                raise
+
+        stat = dest.stat()
+        return {
+            "name": dest.name,
+            "path": str(dest.resolve()),
+            "size_bytes": stat.st_size,
+            "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+        }
+
+    def _resolve_plugin_sources(
+        self,
+        *,
+        mode: str,
+        plugin: str | None,
+        plugins: list[str],
+        plugin_ref: dict[str, Any] | None,
+        plugin_refs: list[dict[str, Any]],
+    ) -> list[ResolvedPluginSource]:
+        resolver = self._resolver()
+        if mode == "all":
+            sources = resolver.list_plugins()
+            if not sources:
+                roots = ", ".join(f"{root_id}={root}" for root_id, root in self._path_policy().build_source_roots)
+                raise FileNotFoundError(f"No plugin.toml files found under builtin or user plugin roots ({roots})")
+            return sources
 
         if mode == "single":
-            if not plugin:
-                raise ValueError("Please provide a plugin when mode=single")
-            return [self._resolve_plugin_dir_candidate(plugin)]
+            if plugin_ref is not None:
+                return [resolver.resolve_plugin_ref(plugin_ref)]
+            if plugin:
+                return [resolver.resolve_string(plugin)]
+            raise ValueError("Please provide plugin_ref or plugin when mode=single")
 
         if mode in {"selected", "bundle"}:
-            if not plugins:
-                raise ValueError(f"Please provide plugins when mode={mode}")
-            return [self._resolve_plugin_dir_candidate(item) for item in plugins]
+            if plugin_refs:
+                return [resolver.resolve_plugin_ref(item) for item in plugin_refs]
+            if plugins:
+                return [resolver.resolve_string(item) for item in plugins]
+            raise ValueError(f"Please provide plugin_refs or plugins when mode={mode}")
 
         raise ValueError("Unsupported build mode")
 
-    def _resolve_plugin_dir_candidate(self, raw: str) -> Path:
-        candidate = Path(raw).expanduser()
-        plugin_dir = candidate.resolve() if candidate.exists() else (_RUNTIME_PLUGINS_ROOT / raw).resolve()
-        _require_within(plugin_dir, _RUNTIME_PLUGINS_ROOT, field=f"plugin '{raw}'")
-        plugin_toml = plugin_dir / "plugin.toml"
-        if not plugin_toml.is_file():
-            raise FileNotFoundError(f"plugin.toml not found for plugin '{raw}': {plugin_toml}")
-        return plugin_dir
+    @staticmethod
+    def _output_stems_for_sources(sources: list[ResolvedPluginSource]) -> dict[ResolvedPluginSource, str]:
+        counts: dict[str, int] = {}
+        for source in sources:
+            counts[source.directory_name] = counts.get(source.directory_name, 0) + 1
+        return {
+            source: (
+                source.directory_name
+                if counts[source.directory_name] == 1
+                else f"{source.root_id}_{source.directory_name}"
+            )
+            for source in sources
+        }
 
     def _resolve_package_path(self, raw: str) -> Path:
+        target_root = self._path_policy().package_artifacts_root
+
         def _accept(path: Path) -> bool:
             return path.is_file() and any(
                 path.name.endswith(suffix) for suffix in _ALLOWED_UPLOAD_SUFFIXES
@@ -1059,13 +1213,13 @@ class PluginCliService:
         candidate = Path(raw).expanduser()
         if candidate.exists():
             resolved = candidate.resolve()
-            _require_within(resolved, _TARGET_ROOT, field=f"package '{raw}'")
+            _require_within(resolved, target_root, field=f"package '{raw}'")
             if _accept(resolved):
                 return resolved
 
-        target_candidate = (_TARGET_ROOT / raw).resolve()
+        target_candidate = (target_root / raw).resolve()
         if target_candidate.exists():
-            _require_within(target_candidate, _TARGET_ROOT, field=f"package '{raw}'")
+            _require_within(target_candidate, target_root, field=f"package '{raw}'")
             if _accept(target_candidate):
                 return target_candidate
 

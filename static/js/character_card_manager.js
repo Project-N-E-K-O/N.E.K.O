@@ -662,6 +662,39 @@ function applyWorkshopSyncData() {
 // 视图切换防抖锁，防止动画期间重复点击
 let _viewSwitching = false;
 
+function lockWorkshopTabLayoutForSwitch() {
+    const tabContents = document.querySelector('.tab-contents');
+    const scrollContainer = document.querySelector('.layout-container');
+    if (!tabContents) return () => {};
+
+    const previousMinHeight = tabContents.style.minHeight;
+    const currentHeight = Math.ceil(tabContents.getBoundingClientRect().height);
+    const scrollTop = scrollContainer ? scrollContainer.scrollTop : window.scrollY;
+
+    if (currentHeight > 0) {
+        tabContents.style.minHeight = currentHeight + 'px';
+    }
+
+    return () => {
+        const restoreScroll = () => {
+            if (scrollContainer) {
+                scrollContainer.scrollTop = scrollTop;
+            } else {
+                window.scrollTo(window.scrollX, scrollTop);
+            }
+        };
+
+        restoreScroll();
+        requestAnimationFrame(() => {
+            restoreScroll();
+            requestAnimationFrame(() => {
+                tabContents.style.minHeight = previousMinHeight;
+                restoreScroll();
+            });
+        });
+    };
+}
+
 function switchTab(tabId, event) {
     if (_viewSwitching) return;
 
@@ -679,6 +712,7 @@ function switchTab(tabId, event) {
     }
 
     _viewSwitching = true;
+    const unlockTabLayout = lockWorkshopTabLayoutForSwitch();
 
     // 同步按钮 active 状态（点击事件 / 编程调用都覆盖）
     tabButtons.forEach(btn => {
@@ -694,7 +728,7 @@ function switchTab(tabId, event) {
         btn.classList.toggle('active', onclick.includes(tabId));
     });
 
-    // 找到当前激活视图（要离场的）
+    // 找到当前激活视图。切换时不叠放、不位移，避免两个面板短暂覆盖或抖动。
     const tabContents = document.querySelectorAll('.tab-content');
     let leavingTab = null;
     tabContents.forEach(content => {
@@ -709,27 +743,17 @@ function switchTab(tabId, event) {
     });
 
     const finalize = () => {
+        unlockTabLayout();
         _viewSwitching = false;
     };
 
     if (leavingTab && leavingTab !== selectedTab) {
-        // 旧视图执行 leaving 动画，新视图同步入场（重叠以遮住底层蓝色背景）
-        leavingTab.classList.remove('active');
-        leavingTab.classList.add('tab-leaving');
-
-        selectedTab.classList.add('active', 'tab-entering');
+        leavingTab.classList.remove('active', 'tab-leaving', 'tab-entering');
+        leavingTab.style.display = '';
+        selectedTab.classList.remove('tab-leaving', 'tab-entering');
+        selectedTab.classList.add('active');
         if (window.updatePageTexts) window.updatePageTexts();
-
-        // 旧视图保持原状作为底层；新视图自上而下"拉下帘幕"完全覆盖（500ms 与 CSS @keyframes viewCurtainReveal 时长一致）
-        setTimeout(() => {
-            leavingTab.classList.remove('tab-leaving');
-            leavingTab.style.display = '';
-        }, 520);
-        // 新视图入场结束
-        setTimeout(() => {
-            selectedTab.classList.remove('tab-entering');
-            finalize();
-        }, 520);
+        finalize();
     } else {
         // 没有离场视图（首次或同 tab）：直接显示
         selectedTab.classList.add('active');
@@ -3894,41 +3918,40 @@ if (document.readyState === 'loading') {
     _setupImportCardButton();
 }
 
-// ===== API 设置弹窗 =====
-const _API_KEY_ALLOWED_ORIGINS = [window.location.origin];
-function openApiKeySettings() {
-    const existingModal = document.getElementById('api-key-settings-modal');
-    if (existingModal) {
-        existingModal.style.display = 'block';
-        return;
+// ===== API 设置窗口 =====
+function buildApiKeySettingsWindowFeatures(width = 1240, height = 940) {
+    const availableWidth = Math.max(1, Number(window.screen && (window.screen.availWidth || window.screen.width)) || width);
+    const availableHeight = Math.max(1, Number(window.screen && (window.screen.availHeight || window.screen.height)) || height);
+    const windowWidth = Math.min(width, Math.max(720, availableWidth - 80));
+    const windowHeight = Math.min(height, Math.max(560, availableHeight - 80));
+    // 居中走 core 公共 helper：多显示器下叠加当前屏幕偏移，避免副屏弹窗跳回主屏。
+    if (typeof window.buildCenteredPopupFeatures === 'function') {
+        return window.buildCenteredPopupFeatures(windowWidth, windowHeight);
     }
-    const modal = document.createElement('div');
-    modal.id = 'api-key-settings-modal';
-    modal.style.cssText = 'position:fixed;left:0;top:0;width:100vw;height:100vh;background:rgba(0,0,0,0.4);z-index:9999';
+    const left = Math.max(0, Math.floor((availableWidth - windowWidth) / 2));
+    const top = Math.max(0, Math.floor((availableHeight - windowHeight) / 2));
+    return `width=${windowWidth},height=${windowHeight},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+}
 
-    const apiKeyMessageHandler = function (e) {
-        if (!_API_KEY_ALLOWED_ORIGINS.includes(e.origin)) return;
-        if (e.data && e.data.type === 'close_api_key_settings') {
-            const m = document.getElementById('api-key-settings-modal');
-            if (m && m.parentNode) m.parentNode.removeChild(m);
-            window.removeEventListener('message', apiKeyMessageHandler);
+function openApiKeySettings() {
+    const url = '/api_key';
+    const windowName = 'neko_api_key';
+    const features = buildApiKeySettingsWindowFeatures();
+    let childWin = null;
+
+    if (typeof window.openOrFocusWindow === 'function') {
+        childWin = window.openOrFocusWindow(url, windowName, features);
+    } else {
+        childWin = window.open(url, windowName, features);
+    }
+
+    if (childWin && typeof childWin.focus === 'function') {
+        try {
+            childWin.focus();
+        } catch (error) {
+            // 部分浏览器环境不允许主动聚焦，忽略即可。
         }
-    };
-
-    modal.onclick = function (e) {
-        if (e.target === modal) {
-            window.removeEventListener('message', apiKeyMessageHandler);
-            if (modal.parentNode) modal.parentNode.removeChild(modal);
-        }
-    };
-
-    const iframe = document.createElement('iframe');
-    iframe.src = '/api_key';
-    iframe.style.cssText = 'width:800px;height:720px;border:none;background:#fff;display:block;margin:50px auto;border-radius:8px';
-
-    window.addEventListener('message', apiKeyMessageHandler);
-    modal.appendChild(iframe);
-    document.body.appendChild(modal);
+    }
 }
 
 function _setupApiKeySettingsButton() {
@@ -4230,17 +4253,9 @@ function switchCharaCardsView(mode) {
 
     const container = document.getElementById('chara-cards-container');
     if (container) {
-        // 退出动画
-        container.style.opacity = '0';
-        container.style.transform = 'scale(0.97)';
-        setTimeout(function () {
-            renderCharaCardsView();
-            // 入场动画
-            requestAnimationFrame(function () {
-                container.style.opacity = '1';
-                container.style.transform = 'scale(1)';
-            });
-        }, 200);
+        container.style.opacity = '1';
+        container.style.transform = 'none';
+        renderCharaCardsView();
     } else {
         renderCharaCardsView();
     }
@@ -11053,11 +11068,11 @@ function _companionBuildPanel(state) {
         { label: _cardAssistT('character.aiCompanionQuickAdvice', '💡 给点建议'),
           send: _cardAssistT('character.aiCompanionQuickAdviceMsg',
                 '看一下当前的角色设定，给我几条具体的改进建议吧。'),
-          requireMode: 'chat' },
+          requireMode: 'chat', adviceOnly: true },
         { label: _cardAssistT('character.aiCompanionQuickCheck', '🔍 帮我审一下'),
           send: _cardAssistT('character.aiCompanionQuickCheckMsg',
-                '审一下角色设定有没有矛盾、空泛或者重复的地方，并提出修改方案。'),
-          requireMode: 'chat' },
+                '审一下角色设定有没有矛盾、空泛或者重复的地方。'),
+          requireMode: 'chat', adviceOnly: true },
         { label: _cardAssistT('character.aiCompanionQuickRegen', '🎲 重写整张卡'),
           send: _cardAssistT('character.aiCompanionQuickRegenMsg',
                 '把所有可见字段都按原本的角色定位重新写一遍。'),
@@ -11077,6 +11092,7 @@ function _companionBuildPanel(state) {
             // 文案——ja/ko/pt/ru/es/zh-TW 的「重写」措辞匹配不到，后端 _complete_full_rewrite_actions
             // 补全通路就不会触发，部分 action 列表会被当部分重写存下去（Codex #3333137718）。
             state._pendingFullRewrite = !!qa.fullRewrite;
+            state._pendingAdviceOnly = !!qa.adviceOnly;
             input.value = qa.send;
             _companionSubmit(state);
         });
@@ -11529,6 +11545,10 @@ async function _companionRunChat(state) {
     // 残留、被下一条普通聊天消息误当成整卡重写（CodeRabbit #3333410664）。
     const fullRewrite = state._pendingFullRewrite === true;
     state._pendingFullRewrite = false;
+    // 「给建议 / 帮我审一下」属于只读分析，不该顺手自动改表单；和 full_rewrite 一样做一次性消费，
+    // 避免某次 advice 请求 early-return 后把标记泄漏到下一条普通聊天消息（本次回归）。
+    const adviceOnly = state._pendingAdviceOnly === true;
+    state._pendingAdviceOnly = false;
     const typing = _companionAppendTyping(state);
     try {
         if (!_companionEnsureLiveForm(state)) {
@@ -11558,6 +11578,7 @@ async function _companionRunChat(state) {
             target_field_keys: _cardAssistCollectFieldKeys(state.form),
             dev_cat_name: state.devCatName,
             locale: _cardAssistCurrentLocale(),
+            advice_only: adviceOnly,
             full_rewrite: fullRewrite,
         });
         // closed-companion guard：同 clarify/generate，关掉 companion 之后
@@ -11966,6 +11987,19 @@ function _companionTruncate(s, n) {
     return s.length > n ? s.slice(0, n) + '…' : s;
 }
 
+function _cardAssistNormalizeDisplayText(text) {
+    let s = String(text == null ? '' : text);
+    // Companion bubbles render plain text, so stray markdown markers look broken.
+    // Strip the common emphasis markers and normalize markdown bullet prefixes.
+    s = s.replace(/^\s{0,3}#{1,6}\s+/gm, '');
+    s = s.replace(/^\s*[*-]\s+/gm, '• ');
+    s = s.replace(/\*\*([^*]+)\*\*/g, '$1');
+    s = s.replace(/__([^_]+)__/g, '$1');
+    s = s.replace(/(^|[^\w])\*([^*\n]+)\*(?=[^\w]|$)/g, '$1$2');
+    s = s.replace(/(^|[^\w])_([^_\n]+)_(?=[^\w]|$)/g, '$1$2');
+    return s;
+}
+
 // ========== Bubble 工厂 ==========
 
 function _companionScrollToBottom(state) {
@@ -11990,7 +12024,7 @@ function _companionAppendAssistant(state, text, opts) {
 
     const body = document.createElement('div');
     body.className = 'card-companion-bubble-body';
-    body.textContent = text || '';
+    body.textContent = _cardAssistNormalizeDisplayText(text);
     body.style.whiteSpace = 'pre-wrap';
     bubble.appendChild(body);
 
@@ -12065,7 +12099,7 @@ function _companionAppendUser(state, text) {
 function _companionAppendSystem(state, text) {
     const bubble = document.createElement('div');
     bubble.className = 'card-companion-bubble-system';
-    bubble.textContent = text || '';
+    bubble.textContent = _cardAssistNormalizeDisplayText(text);
     state.threadEl.appendChild(bubble);
     _companionScrollToBottom(state);
     return bubble;
