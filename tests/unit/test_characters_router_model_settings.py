@@ -312,6 +312,18 @@ def test_flatten_reserved_exposes_live3d_sub_type_for_frontend_consumers():
     assert flattened['live3d_sub_type'] == 'vrm'
 
 
+def test_flatten_catgirl_for_response_preserves_numeric_field_creation_order():
+    catgirl = {
+        '喵喵喵': '文字字段',
+        '1': '数字字段',
+    }
+
+    flattened = characters_router_module._flatten_catgirl_for_response(catgirl)
+
+    assert get_reserved(flattened, 'field_order') == ['喵喵喵', '1']
+    assert '_reserved' not in catgirl
+
+
 def test_migrate_catgirl_reserved_does_not_persist_empty_live3d_sub_type():
     catgirl = _build_characters_fixture()['猫娘']['测试角色']
     avatar = catgirl['_reserved']['avatar']

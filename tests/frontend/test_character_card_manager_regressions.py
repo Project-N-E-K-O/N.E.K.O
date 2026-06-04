@@ -746,6 +746,149 @@ def test_character_card_manager_saved_new_field_survives_immediate_reopen_with_s
 
 
 @pytest.mark.frontend
+def test_character_card_manager_keeps_numeric_field_creation_order(
+    mock_page: Page,
+    running_server: str,
+):
+    _open_character_card_manager(mock_page, running_server)
+
+    state = mock_page.evaluate(
+        """
+        async () => {
+            const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+            const waitFor = async (predicate, timeout = 2500) => {
+                const startedAt = Date.now();
+                while (Date.now() - startedAt < timeout) {
+                    if (predicate()) return true;
+                    await sleep(25);
+                }
+                return false;
+            };
+
+            const originalFetch = window.fetch.bind(window);
+            const savedBodies = [];
+            window.showMessage = () => {};
+            window.showAutoSaveToast = () => {};
+            window.showAlertDialog = async () => {};
+
+            window.fetch = async (input, init = {}) => {
+                const rawUrl = typeof input === 'string' ? input : input.url;
+                const url = new URL(rawUrl, window.location.origin);
+                const path = decodeURIComponent(url.pathname);
+                const method = String(init.method || 'GET').toUpperCase();
+
+                if (path === '/api/characters/catgirl/顺序猫' && method === 'PUT') {
+                    savedBodies.push(JSON.parse(init.body || '{}'));
+                    return new Response(JSON.stringify({ success: true }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                if (path === '/api/characters' && method === 'GET') {
+                    return new Response(JSON.stringify({
+                        '主人': {},
+                        '当前猫娘': '顺序猫',
+                        '猫娘': {
+                            '顺序猫': {
+                                '1': '数字字段',
+                                '喵喵喵': '文字字段',
+                                '_reserved': { field_order: ['喵喵喵', '1'] }
+                            }
+                        }
+                    }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                if (path === '/api/characters/current_catgirl') {
+                    return new Response(JSON.stringify({ current_catgirl: '顺序猫' }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                if (path === '/api/characters/character-card/list') {
+                    return new Response(JSON.stringify({ success: true, character_cards: [] }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                if (path === '/api/characters/card-faces') {
+                    return new Response(JSON.stringify({ success: true, names: [] }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                if (path === '/api/characters/card-metas') {
+                    return new Response(JSON.stringify({ success: true, metas: {} }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                if (path === '/api/characters/voices') {
+                    return new Response(JSON.stringify({ voices: {}, free_voices: {}, voice_owners: {} }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                if (path === '/api/characters/custom_tts_voices') {
+                    return new Response(JSON.stringify({ success: true, voices: [] }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                if (path === '/api/live2d/models') {
+                    return new Response(JSON.stringify([]), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                if (path === '/api/model/vrm/models' || path === '/api/model/mmd/models') {
+                    return new Response(JSON.stringify({ success: true, models: [] }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                return originalFetch(input, init);
+            };
+
+            window.characterCards = [{
+                id: 1,
+                name: '顺序猫',
+                originalName: '顺序猫',
+                description: '',
+                tags: [],
+                rawData: {
+                    '1': '数字字段',
+                    '喵喵喵': '文字字段',
+                    _reserved: { field_order: ['喵喵喵', '1'] }
+                }
+            }];
+            window._workshopCurrentCatgirl = '顺序猫';
+            window._cardFaceNames = new Set();
+            window._cardMetas = {};
+            renderCharaCardsView();
+
+            document.querySelector('.chara-card-item')?.click();
+            await waitFor(() => document.querySelectorAll('.catgirl-panel-overlay textarea[name]').length >= 2);
+            const beforeSaveOrder = Array.from(document.querySelectorAll('.catgirl-panel-overlay textarea[name]'))
+                .map(el => el.getAttribute('name'));
+
+            document.querySelector('.catgirl-panel-overlay #save-button').click();
+            await waitFor(() => savedBodies.length > 0);
+
+            return {
+                beforeSaveOrder,
+                savedOrder: savedBodies[0]._field_order || []
+            };
+        }
+        """
+    )
+
+    assert state["beforeSaveOrder"][:2] == ["喵喵喵", "1"]
+    assert state["savedOrder"] == ["喵喵喵", "1"]
+
+
+@pytest.mark.frontend
 def test_character_card_manager_live2d_preview_loads_after_regression_fixes(
     mock_page: Page,
     running_server: str,

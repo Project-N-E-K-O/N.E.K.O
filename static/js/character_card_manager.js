@@ -9,6 +9,7 @@ const FRONTEND_FORCE_HIDDEN_FIELDS = [
     'live2d_item_id',
     'live2d_idle_animation',
     '_reserved',
+    '_field_order',
     'item_id',
     'idleAnimation',
     'idleAnimations',
@@ -79,6 +80,7 @@ function collectCharacterFields(form, options = {}) {
     } = options;
     const data = {};
     const seen = new Set();
+    const fieldOrder = [];
 
     Object.entries(baseData || {}).forEach(([key, value]) => {
         const normalizedKey = normalizeCharacterFieldName(key);
@@ -104,13 +106,81 @@ function collectCharacterFields(form, options = {}) {
             continue;
         }
         if (seen.has(key)) {
-            return { data, duplicateKey: key };
+            return { data, duplicateKey: key, fieldOrder };
         }
         data[key] = value;
         seen.add(key);
+        fieldOrder.push(key);
     }
 
-    return { data, duplicateKey: '' };
+    return { data, duplicateKey: '', fieldOrder };
+}
+
+const CHARACTER_FIELD_ORDER_PAYLOAD_KEY = '_field_order';
+
+function attachCharacterFieldOrderPayload(data, fieldOrder) {
+    if (!data || !Array.isArray(fieldOrder)) return data;
+    const seen = new Set();
+    data[CHARACTER_FIELD_ORDER_PAYLOAD_KEY] = fieldOrder
+        .map(normalizeCharacterFieldName)
+        .filter(key => {
+            if (!key || seen.has(key) || isCharacterReservedFieldName(key)) return false;
+            seen.add(key);
+            return true;
+        });
+    return data;
+}
+
+function getStoredCharacterFieldOrder(rawData) {
+    if (!rawData || typeof rawData !== 'object') return [];
+    const reserved = rawData._reserved && typeof rawData._reserved === 'object' ? rawData._reserved : null;
+    const order = reserved && Array.isArray(reserved.field_order)
+        ? reserved.field_order
+        : (Array.isArray(rawData[CHARACTER_FIELD_ORDER_PAYLOAD_KEY]) ? rawData[CHARACTER_FIELD_ORDER_PAYLOAD_KEY] : []);
+    const seen = new Set();
+    return order
+        .map(normalizeCharacterFieldName)
+        .filter(key => {
+            if (!key || seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+}
+
+function getOrderedCharacterFieldKeys(rawData, hiddenFields = []) {
+    if (!rawData || typeof rawData !== 'object') return [];
+    const hidden = new Set((hiddenFields || []).map(normalizeCharacterFieldName).filter(Boolean));
+    const seen = new Set();
+    const keys = [];
+    const addKey = (rawKey) => {
+        const key = normalizeCharacterFieldName(rawKey);
+        if (!key || seen.has(key) || hidden.has(key) || isCharacterReservedFieldName(key)) return;
+        const value = rawData[key];
+        if (value === null || value === undefined) return;
+        seen.add(key);
+        keys.push(key);
+    };
+
+    // 数字形式的对象 key 会被浏览器提前枚举，优先使用后端保存的显式顺序。
+    getStoredCharacterFieldOrder(rawData).forEach(addKey);
+    Object.keys(rawData).forEach(addKey);
+    return keys;
+}
+
+function setLocalRawDataFieldOrder(rawData, fieldOrder) {
+    if (!rawData || typeof rawData !== 'object' || !Array.isArray(fieldOrder)) return rawData;
+    const reserved = rawData._reserved && typeof rawData._reserved === 'object'
+        ? rawData._reserved
+        : (rawData._reserved = {});
+    const seen = new Set();
+    reserved.field_order = fieldOrder
+        .map(normalizeCharacterFieldName)
+        .filter(key => {
+            if (!key || seen.has(key) || isCharacterReservedFieldName(key) || rawData[key] === undefined) return false;
+            seen.add(key);
+            return true;
+        });
+    return rawData;
 }
 
 function loadCharacterReservedFieldsConfig() {
@@ -2816,12 +2886,15 @@ async function scanCharaFile(filePath, itemId, itemTitle) {
             // 跳过的字段：档案名（已处理）、保留字段
             const skipKeys = ['档案名', ...RESERVED_FIELDS];
 
-            // 添加所有非保留字段
-            for (const [key, value] of Object.entries(charaData)) {
-                if (!skipKeys.includes(key) && value !== undefined && value !== null && value !== '') {
+            const fieldOrder = [];
+            getOrderedCharacterFieldKeys(charaData, skipKeys).forEach(key => {
+                const value = charaData[key];
+                if (value !== undefined && value !== null && value !== '') {
                     catgirlFormat[key] = value;
+                    fieldOrder.push(key);
                 }
-            }
+            });
+            attachCharacterFieldOrderPayload(catgirlFormat, fieldOrder);
 
             // 重要：如果角色卡有 live2d 字段，需要同时保存 live2d_item_id
             // 这样首页加载时才能正确构建工坊模型的路径
@@ -3001,7 +3074,7 @@ function getNextCharacterCardId() {
     return maxId + 1;
 }
 
-function buildLocalCatgirlRawData(catgirlName, submittedData) {
+function buildLocalCatgirlRawData(catgirlName, submittedData, fieldOrder) {
     const cards = Array.isArray(window.characterCards) ? window.characterCards : [];
     const existingIdx = findCharacterCardIndexByName(catgirlName);
     const previousRawData = existingIdx >= 0 && cards[existingIdx]?.rawData && typeof cards[existingIdx].rawData === 'object'
@@ -3024,6 +3097,9 @@ function buildLocalCatgirlRawData(catgirlName, submittedData) {
             nextRawData[key] = value;
         }
     });
+    if (Array.isArray(fieldOrder)) {
+        setLocalRawDataFieldOrder(nextRawData, fieldOrder);
+    }
     return nextRawData;
 }
 
@@ -5347,7 +5423,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     // 自定义字段
     const ALL_RESERVED = typeof getWorkshopHiddenFields === 'function' ? ['档案名', ...getWorkshopHiddenFields()] : ['档案名'];
     const renderedCustomFields = new Set();
-    Object.keys(cat).forEach(k => {
+    getOrderedCharacterFieldKeys(cat, ALL_RESERVED).forEach(k => {
         const normalizedKey = normalizeCharacterFieldName(k);
         if (!normalizedKey || ALL_RESERVED.includes(normalizedKey) || renderedCustomFields.has(normalizedKey)) return;
         const val = cat[k];
@@ -6519,7 +6595,7 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
 
         const selectedVoiceId = (form.querySelector('select[name="voice_id"]')?.value ?? '').trim();
         const previousVoiceId = form._previousVoiceId || '';
-        const { data, duplicateKey } = collectCharacterFields(form, {
+        const { data, duplicateKey, fieldOrder } = collectCharacterFields(form, {
             baseData: { '档案名': nameInput.value.trim() },
             excludeFieldNames: ['档案名', 'voice_id'],
         });
@@ -6527,6 +6603,7 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             showMessage(window.t ? window.t('character.fieldExists') : '该设定已存在', 'error');
             return;
         }
+        attachCharacterFieldOrderPayload(data, fieldOrder);
 
         // 如果新建猫娘已被临时保存（自动创建），则改用 PUT 更新
         const effectiveIsNew = isNew && !form._autoCreated;
@@ -6553,7 +6630,7 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             showMessage(result.error || (window.t ? window.t('character.saveFailed') : '保存失败'), 'error');
             return false;
         }
-        const localRawData = buildLocalCatgirlRawData(data['档案名'], data);
+        const localRawData = buildLocalCatgirlRawData(data['档案名'], data, fieldOrder);
         let savedRawDataForCache = localRawData;
         syncCharacterCardCache(data['档案名'], localRawData);
         if (form._autoCreatedDetachedName) {
@@ -6694,6 +6771,7 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
                     ? freshData['猫娘'][data['档案名']]
                     : {};
                 savedRawDataForCache = mergeFreshCatgirlRawDataWithLocal(freshRawData, localRawData);
+                setLocalRawDataFieldOrder(savedRawDataForCache, fieldOrder);
                 syncCharacterCardCache(data['档案名'], savedRawDataForCache);
                 buildCatgirlDetailForm(data['档案名'], savedRawDataForCache, false, container);
             } catch (e) {
@@ -6702,6 +6780,7 @@ async function saveCatgirlFromPanel(form, originalName, isNew) {
             }
         }
         await loadCharacterCards();
+        setLocalRawDataFieldOrder(savedRawDataForCache, fieldOrder);
         syncCharacterCardCache(data['档案名'], savedRawDataForCache);
         return true;
     } catch (error) {
@@ -9358,7 +9437,8 @@ function updateCardPreview() {
     container.innerHTML = '';
 
     // 遍历所有属性并动态生成显示
-    for (const [key, value] of Object.entries(rawData)) {
+    for (const key of getOrderedCharacterFieldKeys(rawData, hiddenFields)) {
+        const value = rawData[key];
         // 跳过保留字段
         if (hiddenFields.includes(key)) continue;
 
@@ -10273,7 +10353,7 @@ async function panelAutoSaveCatgirlField(input, catgirlName) {
     if (!form) return;
     const fieldName = normalizeCharacterFieldName(input.name);
     if (!fieldName || fieldName === '档案名' || fieldName === 'voice_id') return;
-    const { data, duplicateKey } = collectCharacterFields(form, {
+    const { data, duplicateKey, fieldOrder } = collectCharacterFields(form, {
         baseData: { '档案名': catgirlName },
         excludeFieldNames: ['档案名', 'voice_id'],
     });
@@ -10281,6 +10361,7 @@ async function panelAutoSaveCatgirlField(input, catgirlName) {
         showMessage(window.t ? window.t('character.fieldExists') : '该设定已存在', 'error');
         return;
     }
+    attachCharacterFieldOrderPayload(data, fieldOrder);
     try {
         const resp = await fetch('/api/characters/catgirl/' + encodeURIComponent(catgirlName), {
             method: 'PUT',
@@ -10288,7 +10369,7 @@ async function panelAutoSaveCatgirlField(input, catgirlName) {
             body: JSON.stringify(data)
         });
         if (resp.ok) {
-            syncCharacterCardCache(catgirlName, buildLocalCatgirlRawData(catgirlName, data));
+            syncCharacterCardCache(catgirlName, buildLocalCatgirlRawData(catgirlName, data, fieldOrder));
             storeOriginalValue(input);
             const allInputs = form.querySelectorAll('input, textarea');
             const sentFields = new Set(Object.keys(data));
