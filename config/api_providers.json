@@ -377,7 +377,7 @@
     "sweetLady": "voice-tone-PGLmTEeUOu",
     "frailMaiden": "voice-tone-PGLmzXEX44",
     "childishMaiden": "voice-tone-PGLnVNQn7A",
-    "yui_cn": "voice-tone-R6NtLH3Hk0"
+    "yui_cn": "voice-tone-RcH2svtsrw"
   },
   "_comment_native_tts_voice_providers": "Shape: {providerKey: {catalog_prefix, default_voice, default_male_voice, catalog_value_is_display_name, voices, aliases, inherits}}. voices maps upstream voice_id to display label. Keep this list to voices available on realtime/free TTS paths; some HTTP-only or permission-gated official voices are intentionally omitted.",
   "native_tts_voice_providers": {
