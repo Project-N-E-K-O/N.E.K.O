@@ -324,6 +324,20 @@ def test_flatten_catgirl_for_response_preserves_numeric_field_creation_order():
     assert '_reserved' not in catgirl
 
 
+def test_sync_catgirl_field_order_honors_top_level_payload():
+    # 工坊上传卡的顺序存在顶层 _field_order（上传时 _reserved 被剥离）；列表/读取入口调 _sync
+    # 时不传 payload，必须认这个顶层字段，否则退回 JSON key 枚举顺序让数字 key 被提前。
+    catgirl = {
+        '1': '数字字段',
+        '喵喵喵': '文字字段',
+        '_field_order': ['喵喵喵', '1'],
+    }
+
+    characters_router_module._sync_catgirl_field_order(catgirl)
+
+    assert get_reserved(catgirl, 'field_order') == ['喵喵喵', '1']
+
+
 def test_migrate_catgirl_reserved_does_not_persist_empty_live3d_sub_type():
     catgirl = _build_characters_fixture()['猫娘']['测试角色']
     avatar = catgirl['_reserved']['avatar']

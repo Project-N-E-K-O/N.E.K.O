@@ -981,6 +981,80 @@ def test_character_card_manager_workshop_upload_preserves_field_order(
 
 
 @pytest.mark.frontend
+def test_character_card_manager_scan_import_keeps_model_fields_and_order(
+    mock_page: Page,
+    running_server: str,
+):
+    """从创意工坊导入角色卡（scanCharaFile）必须保留 live2d/model_type 等模型字段，
+    同时按显式 _field_order 排列自定义字段。若误套渲染路径的系统保留名剔除，会丢掉模型绑定。"""
+    _open_character_card_manager(mock_page, running_server)
+
+    added = mock_page.evaluate(
+        """
+        async () => {
+            const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+            const waitFor = async (predicate, timeout = 2500) => {
+                const startedAt = Date.now();
+                while (Date.now() - startedAt < timeout) {
+                    if (predicate()) return true;
+                    await sleep(25);
+                }
+                return false;
+            };
+
+            const originalFetch = window.fetch.bind(window);
+            const addBodies = [];
+            window.showMessage = () => {};
+            window.showAlert = () => {};
+
+            const charaJson = {
+                '档案名': '顺序猫',
+                'live2d': '测试模型',
+                'model_type': 'live2d',
+                '1': '数字字段',
+                '喵喵喵': '文字字段',
+                '_field_order': ['喵喵喵', '1']
+            };
+
+            window.fetch = async (input, init = {}) => {
+                const rawUrl = typeof input === 'string' ? input : input.url;
+                const url = new URL(rawUrl, window.location.origin);
+                const path = decodeURIComponent(url.pathname);
+                const method = String(init.method || 'GET').toUpperCase();
+
+                if (path === '/api/steam/workshop/read-file') {
+                    return new Response(JSON.stringify({ success: true, content: JSON.stringify(charaJson) }), {
+                        status: 200, headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                if (path === '/api/characters/catgirl' && method === 'POST') {
+                    addBodies.push(JSON.parse(init.body || '{}'));
+                    return new Response(JSON.stringify({ success: true }), {
+                        status: 200, headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                return originalFetch(input, init);
+            };
+
+            await scanCharaFile('顺序猫.chara.json', '99887', '顺序猫');
+            await waitFor(() => addBodies.length > 0);
+            return addBodies[0] || null;
+        }
+        """
+    )
+
+    assert added is not None
+    # P1：模型字段必须保留，被误过滤会丢失模型绑定、开成错误或缺失的模型
+    assert added["live2d"] == "测试模型"
+    assert added["model_type"] == "live2d"
+    assert added["live2d_item_id"] == "99887"
+    # 自定义字段及其显式创建顺序一并保留
+    assert added["1"] == "数字字段"
+    assert added["喵喵喵"] == "文字字段"
+    assert added["_field_order"] == ["喵喵喵", "1"]
+
+
+@pytest.mark.frontend
 def test_character_card_manager_live2d_preview_loads_after_regression_fixes(
     mock_page: Page,
     running_server: str,

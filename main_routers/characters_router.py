@@ -1164,7 +1164,9 @@ def _sync_catgirl_field_order(catgirl_data: dict, requested_order: list[str] | N
         if key not in CHARACTER_RESERVED_FIELD_SET
     ]
     if requested_order is None:
-        requested_order = get_reserved(catgirl_data, "field_order", default=None)
+        # 也认顶层 _field_order：工坊上传卡的顺序存在顶层（上传时 _reserved 被剥离），
+        # 只读 _reserved.field_order 会漏掉它而退回 JSON key 枚举顺序（数字 key 被提前）。
+        requested_order = _extract_catgirl_field_order_payload(catgirl_data)
     field_order = _normalize_catgirl_field_order(requested_order, available_fields)
     set_reserved(catgirl_data, "field_order", field_order)
 

@@ -147,14 +147,18 @@ function getStoredCharacterFieldOrder(rawData) {
         });
 }
 
-function getOrderedCharacterFieldKeys(rawData, hiddenFields = []) {
+function getOrderedCharacterFieldKeys(rawData, hiddenFields = [], options = {}) {
     if (!rawData || typeof rawData !== 'object') return [];
+    // 渲染自定义字段时要剔除系统保留名（live2d/model_type 等）；但工坊导入 scanCharaFile 需要保留这些
+    // 模型字段，只按调用方传入的 hiddenFields 过滤，故用此开关让调用方决定是否额外剔除保留名。
+    const { skipReservedNames = true } = options;
     const hidden = new Set((hiddenFields || []).map(normalizeCharacterFieldName).filter(Boolean));
     const seen = new Set();
     const keys = [];
     const addKey = (rawKey) => {
         const key = normalizeCharacterFieldName(rawKey);
-        if (!key || seen.has(key) || hidden.has(key) || isCharacterReservedFieldName(key)) return;
+        if (!key || seen.has(key) || hidden.has(key)) return;
+        if (skipReservedNames && isCharacterReservedFieldName(key)) return;
         const value = rawData[key];
         if (value === null || value === undefined) return;
         seen.add(key);
@@ -2887,7 +2891,9 @@ async function scanCharaFile(filePath, itemId, itemTitle) {
             const skipKeys = ['档案名', ...RESERVED_FIELDS];
 
             const fieldOrder = [];
-            getOrderedCharacterFieldKeys(charaData, skipKeys).forEach(key => {
+            // 工坊导入要保留 live2d/model_type/vrm 等模型字段（仅靠 skipKeys 过滤工坊元数据），
+            // 不能套用渲染路径对系统保留名的剔除，否则导入卡会丢失模型绑定、开成错误或缺失的模型。
+            getOrderedCharacterFieldKeys(charaData, skipKeys, { skipReservedNames: false }).forEach(key => {
                 const value = charaData[key];
                 if (value !== undefined && value !== null && value !== '') {
                     catgirlFormat[key] = value;
