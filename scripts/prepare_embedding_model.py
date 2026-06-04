@@ -25,15 +25,32 @@ DEFAULT_PROFILE_ID = "local-text-retrieval-v1"
 DEFAULT_OUTPUT_ROOT = Path("data") / "embedding_models"
 PREPARED_MARKER = ".prepared.json"
 
-# Download resilience. huggingface.co rate-limits by source IP, and the Docker
-# build runs several arch/variant jobs from a shared proxy egress, so a single
-# urlopen routinely hit HTTP 429 and killed the whole build with no recovery.
-# Retry transient failures (429 / 5xx / connection errors) with exponential
-# backoff, honoring a numeric Retry-After when the server sends one.
+# Download resilience. huggingface.co rate-limits anonymous requests per source
+# IP by the hour, and CI runs from shared runner / proxy egress IPs that are
+# chronically throttled, so a direct fetch routinely hit HTTP 429 and killed the
+# whole build with no recovery. Two defenses stack here:
+#   1. Mirror fallback: each file is tried against every endpoint in order
+#      (huggingface.co first, then the hf-mirror.com reverse proxy). A source
+#      that 429s or is unreachable falls through to the next instead of failing
+#      the build. Override the list/order via HF_ENDPOINTS (comma-separated) or a
+#      single HF_ENDPOINT (the huggingface_hub convention).
+#   2. Per-endpoint backoff: within one endpoint, retry transient failures
+#      (429 / 5xx / connection errors) with exponential backoff, honoring a
+#      numeric Retry-After when the server sends one.
+# A bounded ~30s backoff alone can't outwait an hourly per-IP limit; the mirror
+# fallback is what actually breaks the deadlock when the runner IP is throttled.
 _RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 _MAX_ATTEMPTS = 5
 _BACKOFF_BASE_SECONDS = 2.0
 _BACKOFF_CAP_SECONDS = 60.0
+# Mirror endpoints tried in order. hf-mirror.com mirrors the full
+# /{repo}/resolve/{revision}/{file} layout and is not under the same per-IP
+# throttle, so it recovers builds when huggingface.co rate-limits the shared CI
+# egress. Kept as a plain default so neither Dockerfile nor the desktop
+# workflows need to pass anything.
+DEFAULT_ENDPOINTS = ("https://huggingface.co", "https://hf-mirror.com")
+# Some CDNs reject the default "Python-urllib/x.y" agent; send a stable one.
+_USER_AGENT = "neko-embedding-prepare/1.0 (+https://github.com/Project-N-E-K-O/N.E.K.O)"
 # 40-char lowercase hex git SHA. Tags / branch refs / short SHAs are rejected
 # so the profile id stays a strict compatibility contract — anything that can
 # move under our feet, even tags (which can be force-pushed), is excluded.
@@ -85,18 +102,36 @@ def _backoff_seconds(attempt: int) -> float:
     return min(_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)), _BACKOFF_CAP_SECONDS)
 
 
-def _download(url: str, dest: Path, *, force: bool) -> None:
-    if dest.exists() and dest.stat().st_size > 0 and not force:
-        print(f"[embedding-model] keep existing {dest}")
-        return
+def _endpoints() -> list[str]:
+    """Ordered HF-compatible base URLs to try for each file.
 
+    ``HF_ENDPOINTS`` (comma-separated) takes precedence and fully replaces the
+    default order; a single ``HF_ENDPOINT`` (the huggingface_hub convention) is
+    honored next and pins to that one mirror. Otherwise the built-in
+    huggingface.co -> hf-mirror.com fallback is used.
+    """
+    raw = os.environ.get("HF_ENDPOINTS") or os.environ.get("HF_ENDPOINT")
+    if raw:
+        eps = [item.strip().rstrip("/") for item in raw.split(",") if item.strip()]
+        if eps:
+            return eps
+    return list(DEFAULT_ENDPOINTS)
+
+
+def _download_one(url: str, dest: Path) -> None:
+    """Fetch one URL into ``dest`` with bounded exponential-backoff retry.
+
+    Raises ``RuntimeError`` when retries are exhausted or the server returns a
+    non-retryable status (e.g. 404), so the caller can fall back to the next
+    mirror.
+    """
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".tmp")
-    print(f"[embedding-model] download {url}")
+    request = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
 
     for attempt in range(1, _MAX_ATTEMPTS + 1):
         try:
-            with urllib.request.urlopen(url, timeout=120) as response:
+            with urllib.request.urlopen(request, timeout=120) as response:
                 with tmp.open("wb") as f:
                     while True:
                         chunk = response.read(1024 * 1024)
@@ -143,6 +178,44 @@ def _download(url: str, dest: Path, *, force: bool) -> None:
             f"failed ({reason}); retrying in {delay:.0f}s"
         )
         time.sleep(delay)
+
+
+def _download(
+    rel: str,
+    dest: Path,
+    *,
+    repo: str,
+    revision: str,
+    endpoints: list[str],
+    force: bool,
+) -> None:
+    """Download one repo file into ``dest``, trying each mirror in order.
+
+    Each endpoint gets its own bounded backoff retry; a source that exhausts its
+    retries (e.g. a persistent 429) or returns a non-retryable status falls
+    through to the next mirror. Only when every endpoint fails does this raise.
+    """
+    if dest.exists() and dest.stat().st_size > 0 and not force:
+        print(f"[embedding-model] keep existing {dest}")
+        return
+
+    failures: list[str] = []
+    for index, base in enumerate(endpoints, 1):
+        url = f"{base}/{repo}/resolve/{revision}/{rel}"
+        suffix = f" (source {index}/{len(endpoints)})" if len(endpoints) > 1 else ""
+        print(f"[embedding-model] download {url}{suffix}")
+        try:
+            _download_one(url, dest)
+            return
+        except RuntimeError as exc:
+            failures.append(str(exc))
+            if index < len(endpoints):
+                print(f"[embedding-model] source {base} failed; falling back to next mirror")
+
+    raise RuntimeError(
+        f"failed to download {rel} from all {len(endpoints)} source(s): "
+        + " | ".join(failures)
+    )
 
 
 def _verify(profile_dir: Path, files: list[str]) -> None:
@@ -234,9 +307,16 @@ def main(argv: list[str] | None = None) -> int:
             f"forcing re-download for {args.repo}@{args.revision}",
         )
 
+    endpoints = _endpoints()
     for rel in files:
-        url = f"https://huggingface.co/{args.repo}/resolve/{args.revision}/{rel}"
-        _download(url, profile_dir / rel, force=args.force or revision_changed)
+        _download(
+            rel,
+            profile_dir / rel,
+            repo=args.repo,
+            revision=args.revision,
+            endpoints=endpoints,
+            force=args.force or revision_changed,
+        )
     _verify(profile_dir, files)
     _write_marker(profile_dir, args.repo, args.revision)
     print(f"[embedding-model] profile ready: {profile_dir}")
