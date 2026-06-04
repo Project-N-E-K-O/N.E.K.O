@@ -37,8 +37,6 @@
     var idleDockSavedPosition = null;
     var idleDockTriggeredMinimize = false;
     var idleDockMinimizeObserver = null;
-    var idleDockContainerObserver = null;
-    var idleDockSyncFrame = 0;
     var electronIdleDockActive = false;
     var electronIdleDockTriggeredCollapse = false;
     var electronIdleDockSavedBounds = null;
@@ -3425,24 +3423,8 @@
         }
     }
 
-    function stopIdleDockContainerObserver() {
-        if (idleDockContainerObserver) {
-            try { idleDockContainerObserver.disconnect(); } catch (_) {}
-            idleDockContainerObserver = null;
-        }
-    }
-
-    function cancelIdleDockSync() {
-        if (idleDockSyncFrame) {
-            window.cancelAnimationFrame(idleDockSyncFrame);
-            idleDockSyncFrame = 0;
-        }
-    }
-
     function clearIdleDockState() {
         stopIdleDockMinimizeObserver();
-        stopIdleDockContainerObserver();
-        cancelIdleDockSync();
         idleDockActive = false;
         idleDockSavedPosition = null;
         idleDockTriggeredMinimize = false;
@@ -3469,7 +3451,6 @@
         idleDockSavedPosition = { left: rect.left, top: rect.top };
         idleDockActive = true;
         applyIdleDockPosition();
-        refreshIdleDockContainerObserver();
     }
 
     function scheduleIdleDockMinimizeFallback(shell) {
@@ -3489,37 +3470,6 @@
             syncChatSurfaceModeUI();
             finishIdleDockMinimize(latestShell);
         }, 460);
-    }
-
-    function refreshIdleDockContainerObserver() {
-        if (isElectronChatWindow() || !idleDockActive || !isIdleDockTierActive()) {
-            stopIdleDockContainerObserver();
-            return;
-        }
-        var container = getVisibleReturnButtonContainer();
-        if (!container || typeof MutationObserver !== 'function') {
-            stopIdleDockContainerObserver();
-            return;
-        }
-        stopIdleDockContainerObserver();
-        idleDockContainerObserver = new MutationObserver(function () {
-            scheduleIdleDockSync();
-        });
-        idleDockContainerObserver.observe(container, {
-            attributes: true,
-            attributeFilter: ['style', 'class', 'data-dragging', 'data-neko-idle-tier', 'data-neko-return-visible']
-        });
-    }
-
-    function syncIdleDockPosition() {
-        idleDockSyncFrame = 0;
-        if (!minimized || !idleDockActive || isElectronChatWindow()) return;
-        applyIdleDockPosition();
-    }
-
-    function scheduleIdleDockSync() {
-        if (!minimized || !idleDockActive || isElectronChatWindow() || idleDockSyncFrame) return;
-        idleDockSyncFrame = window.requestAnimationFrame(syncIdleDockPosition);
     }
 
     function getElectronIdleDockBridge() {
@@ -4052,14 +4002,16 @@
         var tier = detail && detail.tier;
         var activeTier = tier === IDLE_DOCK_TIER_CAT2 || tier === IDLE_DOCK_TIER_CAT3;
         if (detail && detail.visible && activeTier && detail.screenRect) {
-            enterElectronIdleDock(detail.screenRect);
+            if (!hasElectronIdleDockPendingOrActive()) {
+                enterElectronIdleDock(detail.screenRect);
+            }
             return;
         }
         if (hasElectronIdleDockPendingOrActive()) {
             if (shouldIgnoreElectronIdleDockInactiveViewportResize(detail, activeTier)) {
                 return;
             }
-            var shouldPreserveCurrentPosition = detail && (
+            var shouldPreserveCurrentPosition = activeTier && detail && (
                 detail.reason === 'return-ball-drag-demotion'
                 || detail.reason === 'return-ball-drag-end'
             );
@@ -4085,7 +4037,6 @@
             idleDockActive = true;
             idleDockTriggeredMinimize = false;
             applyIdleDockPosition();
-            refreshIdleDockContainerObserver();
         } else {
             // Not minimized — trigger normal minimize, observe for completion.
             idleDockTriggeredMinimize = true;
@@ -4630,8 +4581,6 @@
             idleDockSavedPosition = null;
             idleDockTier = IDLE_DOCK_TIER_NONE;
             stopIdleDockMinimizeObserver();
-            stopIdleDockContainerObserver();
-            cancelIdleDockSync();
         }
         cycleChatSurfaceMode();
     }
@@ -5369,15 +5318,6 @@
             var overlay = getOverlay();
             if (overlay && !overlay.hidden) {
                 if (minimized) {
-                    var dockTarget = getIdleDockTarget();
-                    if (dockTarget) {
-                        var dockShell = getShell();
-                        if (dockShell) {
-                            dockShell.style.left = dockTarget.left + 'px';
-                            dockShell.style.top = dockTarget.top + 'px';
-                        }
-                        return;
-                    }
                     // 最小化态下，根据当前布局（桌面圆球 / 手机胶囊）重新贴到视口内。
                     // 手机胶囊宽度由 CSS !important 控制（width: calc(100vw - 12px)），
                     // 这里只需修正左上角坐标，避免旋转屏或拖窗后溢出。
@@ -5427,16 +5367,13 @@
             if (isIdleDockTierActive()) {
                 if (!idleDockActive) {
                     enterIdleDock();
-                } else {
-                    scheduleIdleDockSync();
-                    refreshIdleDockContainerObserver();
                 }
                 return;
             }
 
             if (hasIdleDockPendingOrActive()) {
                 exitIdleDock({
-                    preserveCurrentPosition: detail.source === 'return-ball-drag-demotion',
+                    preserveCurrentPosition: isIdleDockTierActive() && detail.source === 'return-ball-drag-demotion',
                 });
                 return;
             }
