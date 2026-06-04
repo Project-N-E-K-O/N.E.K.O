@@ -5373,7 +5373,7 @@
 
             if (hasIdleDockPendingOrActive()) {
                 exitIdleDock({
-                    preserveCurrentPosition: isIdleDockTierActive() && detail.source === 'return-ball-drag-demotion',
+                    preserveCurrentPosition: idleDockActive && detail.source === 'return-ball-drag-demotion',
                 });
                 return;
             }
