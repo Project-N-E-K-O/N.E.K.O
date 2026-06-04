@@ -310,7 +310,7 @@ def test_mobile_web_compact_surface_respects_width_bounds_and_position_vars():
         1,
     )[0]
     mobile_width_bounds_block = script.split("function getCompactSurfaceMobileWidthBounds()", 1)[1].split(
-        "function getCompactSurfaceResizeMaxWidth",
+        "function getCompactSurfaceResizeMaxWidth()",
         1,
     )[0]
 
