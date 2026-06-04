@@ -8,6 +8,7 @@
     const RESET_BROADCAST_KEY = 'neko_avatar_floating_guide_reset_event';
     const HOME_TUTORIAL_KEYS = ['neko_tutorial_home_yui_v1', 'neko_tutorial_home'];
     const HOME_MANUAL_INTENT_KEY = 'neko_tutorial_home_manual_intent';
+    const PC_OVERLAY_RUN_ID_KEY = 'yuiGuidePcOverlayRunId';
     const ROUND_COUNT = 7;
     const RESET_HISTORY_LIMIT = 20;
     const DAY_TUTORIALS = {
@@ -28,7 +29,7 @@
                     selector: '#react-chat-window-root .composer-input-shell',
                     text: '首句问候期间继续高亮输入区或 PC 胶囊输入框；第一句话播放完后清理该高光。',
                     voiceKey: 'intro_greeting_reply',
-                    cursorAction: 'wobble',
+                    cursorAction: 'move',
                     operation: 'day1-intro-greeting',
                     performanceCue: null,
                 },
@@ -55,7 +56,7 @@
                     selector: '#${prefix}-btn-mic',
                     text: '随后高亮语音按钮，Ghost Cursor 从输入区锚点平滑移动到按钮，只指认不点击。',
                     voiceKey: 'intro_basic',
-                    cursorAction: 'wobble',
+                    cursorAction: 'move',
                     operation: 'day1-intro-basic-voice',
                     performanceCue: null,
                 },
@@ -64,7 +65,7 @@
                     selector: '#${prefix}-btn-screen',
                     text: '复用原 Day 2 屏幕分享入口流程，只指认入口，不点击按钮。',
                     voiceKey: 'day1_screen_entry',
-                    cursorAction: 'wobble',
+                    cursorAction: 'move',
                     operation: 'none',
                     performanceCue: null,
                 },
@@ -73,7 +74,7 @@
                     selector: '#${prefix}-btn-screen',
                     text: '继续高亮屏幕分享按钮，不打开来源列表。',
                     voiceKey: 'day1_screen_entry_invite',
-                    cursorAction: 'wobble',
+                    cursorAction: 'move',
                     operation: 'none',
                     performanceCue: null,
                 },
@@ -91,7 +92,7 @@
                     selector: '#home-avatar-floating-guide-player',
                     text: '收尾重新高亮聊天窗，约 70% cue 清理高光和 Ghost Cursor 并播放花瓣。',
                     voiceKey: 'takeover_return_control',
-                    cursorAction: 'wobble',
+                    cursorAction: 'move',
                     operation: 'day1-managed-scene:takeover_return_control',
                     performanceCue: 'returnControl',
                 },
@@ -120,10 +121,10 @@
                 },
                 {
                     id: 'day2_personalization_detail',
-                    selector: '#${prefix}-popup-settings',
-                    text: '只展示设置/个性化区域，不保存临时配置。',
+                    selector: '#${prefix}-menu-character',
+                    text: '高亮角色设置按钮，点击后展开角色设置侧边栏，再高亮侧边栏并移动 Ghost Cursor。',
                     voiceKey: 'takeover_settings_peek_detail',
-                    cursorAction: 'wobble',
+                    cursorAction: 'click',
                     operation: 'day2-settings-detail',
                     performanceCue: null,
                 },
@@ -132,7 +133,7 @@
                     selector: '#${prefix}-toggle-proactive-chat',
                     text: '高亮主动搭话入口，停留但不点击。',
                     voiceKey: 'takeover_settings_peek_detail',
-                    cursorAction: 'wobble',
+                    cursorAction: 'move',
                     operation: 'none',
                     performanceCue: null,
                 },
@@ -141,7 +142,7 @@
                     selector: '#home-avatar-floating-guide-player',
                     text: '今天的教程到这里就结束了呢。',
                     voiceKey: 'avatar_floating_day2_wrap_intro',
-                    cursorAction: 'wobble',
+                    cursorAction: 'move',
                     operation: 'cleanup',
                     performanceCue: null,
                 },
@@ -150,7 +151,7 @@
                     selector: '#home-avatar-floating-guide-player',
                     text: '其实只要能这样陪着你，听听你的声音，或者静静看着你分享的画面，我就已经觉得很幸福了。',
                     voiceKey: 'avatar_floating_day2_wrap_companion',
-                    cursorAction: 'wobble',
+                    cursorAction: 'move',
                     operation: 'cleanup',
                     performanceCue: null,
                 },
@@ -159,7 +160,7 @@
                     selector: '#home-avatar-floating-guide-player',
                     text: '最终收尾约 70% 处触发每日花瓣转场。',
                     voiceKey: 'avatar_floating_day2_wrap',
-                    cursorAction: 'wobble',
+                    cursorAction: 'move',
                     operation: 'cleanup',
                     performanceCue: 'returnControl',
                 },
@@ -815,6 +816,89 @@
         return true;
     }
 
+    function isVisibleResetElement(element) {
+        if (!element || typeof element.getBoundingClientRect !== 'function') return false;
+        const rect = element.getBoundingClientRect();
+        return !!(rect && rect.width > 0 && rect.height > 0);
+    }
+
+    async function waitForResetElement(factory, timeoutMs = 1200) {
+        const startedAt = Date.now();
+        while (Date.now() - startedAt < timeoutMs) {
+            const element = typeof factory === 'function' ? factory() : null;
+            if (element && isVisibleResetElement(element)) return element;
+            await sleep(80);
+        }
+        const fallback = typeof factory === 'function' ? factory() : null;
+        return fallback && isVisibleResetElement(fallback) ? fallback : null;
+    }
+
+    async function ensureResetSettingsPanelVisible(prefix) {
+        const settingsPopupSelector = resolveSelector('#${prefix}-popup-settings', prefix);
+        const existingPopup = document.querySelector(settingsPopupSelector);
+        if (isVisibleResetElement(existingPopup)) return existingPopup;
+
+        const settingsButton = document.querySelector(resolveSelector('#${prefix}-btn-settings', prefix));
+        safeClickTarget(settingsButton);
+        return waitForResetElement(() => document.querySelector(settingsPopupSelector), 1400);
+    }
+
+    async function ensureResetCharacterSettingsSidePanelVisible(prefix) {
+        await ensureResetSettingsPanelVisible(prefix);
+        const panelSelector = '[data-neko-sidepanel-type="character-settings"]';
+        const existingPanel = document.querySelector(panelSelector);
+        if (existingPanel && typeof existingPanel._expand === 'function') {
+            existingPanel._expand();
+        }
+
+        const anchor = document.querySelector(resolveSelector('#${prefix}-sidepanel-character', prefix));
+        if (anchor) {
+            try {
+                anchor.dispatchEvent(new MouseEvent('mouseenter', {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window,
+                }));
+            } catch (_) {}
+        }
+
+        return waitForResetElement(() => document.querySelector(panelSelector), 1400);
+    }
+
+    function getResetCharacterSettingsButton(prefix) {
+        return document.querySelector(resolveSelector('#${prefix}-menu-character', prefix))
+            || document.querySelector(resolveSelector('#${prefix}-sidepanel-character', prefix));
+    }
+
+    function collapseResetCharacterSettingsSidePanel() {
+        const sidePanel = document.querySelector('[data-neko-sidepanel-type="character-settings"]');
+        if (!sidePanel) return;
+        if (sidePanel._hoverCollapseTimer) {
+            window.clearTimeout(sidePanel._hoverCollapseTimer);
+            sidePanel._hoverCollapseTimer = null;
+        }
+        if (typeof sidePanel._collapse === 'function') {
+            sidePanel._collapse();
+            return;
+        }
+        if (sidePanel._collapseTimeout) {
+            window.clearTimeout(sidePanel._collapseTimeout);
+            sidePanel._collapseTimeout = null;
+        }
+        sidePanel.style.transition = 'none';
+        sidePanel.style.opacity = '0';
+        sidePanel.style.display = 'none';
+        sidePanel.style.pointerEvents = 'none';
+        sidePanel.style.transition = '';
+    }
+
+    async function prepareResetStepOperation(step, prefix) {
+        const operation = step && typeof step.operation === 'string' ? step.operation : '';
+        if (operation === 'day2-settings-detail' || (step && step.id === 'day2_proactive_chat')) {
+            await ensureResetSettingsPanelVisible(prefix);
+        }
+    }
+
     function getGuideAssistantName() {
         return window.__NEKO_TUTORIAL_ASSISTANT_NAME_OVERRIDE__ ||
             (window.lanlan_config && window.lanlan_config.lanlan_name) ||
@@ -839,6 +923,110 @@
         }
         const overlay = document.getElementById('react-chat-window-overlay');
         return !!(overlay && overlay.style.display === 'none');
+    }
+
+    function isPcTutorialOverlayAvailable() {
+        return !!(
+            window.nekoTutorialOverlay
+            && typeof window.nekoTutorialOverlay.begin === 'function'
+            && typeof window.nekoTutorialOverlay.update === 'function'
+            && typeof window.nekoTutorialOverlay.getWindowMetricsSync === 'function'
+            && isHomeChatExternalized()
+        );
+    }
+
+    function getPcTutorialOverlayRunId() {
+        try {
+            let runId = window.localStorage.getItem(PC_OVERLAY_RUN_ID_KEY) || '';
+            if (!runId) {
+                runId = 'avatar-floating-reset-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+                window.localStorage.setItem(PC_OVERLAY_RUN_ID_KEY, runId);
+            }
+            return runId;
+        } catch (_) {
+            return 'avatar-floating-reset-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+        }
+    }
+
+    function getPcTutorialOverlayMetrics() {
+        try {
+            const metrics = window.nekoTutorialOverlay.getWindowMetricsSync();
+            if (metrics && (metrics.bounds || metrics.contentBounds)) {
+                return metrics;
+            }
+        } catch (_) {}
+        return {
+            bounds: {
+                x: Number.isFinite(window.screenX) ? window.screenX : 0,
+                y: Number.isFinite(window.screenY) ? window.screenY : 0,
+            },
+            contentBounds: {
+                x: Number.isFinite(window.screenX) ? window.screenX : 0,
+                y: Number.isFinite(window.screenY) ? window.screenY : 0,
+            },
+        };
+    }
+
+    function localPointToPcTutorialScreenPoint(x, y) {
+        const metrics = getPcTutorialOverlayMetrics();
+        const bounds = metrics.bounds || metrics.contentBounds || { x: 0, y: 0 };
+        const viewport = window.visualViewport || null;
+        const offsetLeft = viewport && Number.isFinite(Number(viewport.offsetLeft)) ? Number(viewport.offsetLeft) : 0;
+        const offsetTop = viewport && Number.isFinite(Number(viewport.offsetTop)) ? Number(viewport.offsetTop) : 0;
+        return {
+            x: Number(bounds.x || 0) + Number(x || 0) + offsetLeft,
+            y: Number(bounds.y || 0) + Number(y || 0) + offsetTop,
+        };
+    }
+
+    let pcTutorialOverlaySequence = 0;
+
+    function sendPcTutorialOverlayCursor(cursorPatch) {
+        if (!isPcTutorialOverlayAvailable()) {
+            return false;
+        }
+        const tutorialRunId = getPcTutorialOverlayRunId();
+        pcTutorialOverlaySequence = Math.max(pcTutorialOverlaySequence + 1, Date.now() * 1000);
+        try {
+            Promise.resolve(window.nekoTutorialOverlay.begin({ tutorialRunId })).catch(() => {});
+            Promise.resolve(window.nekoTutorialOverlay.update({
+                tutorialRunId,
+                sceneId: 'avatar-floating-guide-reset',
+                sequence: pcTutorialOverlaySequence,
+                payload: {
+                    cursor: cursorPatch || null,
+                },
+            })).catch(() => {});
+            return true;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function movePcTutorialOverlayCursor(x, y, durationMs, effect = '', effectDurationMs = 0) {
+        const point = localPointToPcTutorialScreenPoint(x, y);
+        return sendPcTutorialOverlayCursor({
+            visible: true,
+            x: point.x,
+            y: point.y,
+            durationMs: Math.max(0, Math.round(Number(durationMs) || 0)),
+            effect: effect || '',
+            effectDurationMs: Math.max(0, Math.round(Number(effectDurationMs) || 0)),
+        });
+    }
+
+    function clickPcTutorialOverlayCursor(x, y) {
+        return movePcTutorialOverlayCursor(x, y, 420, 'click', 420);
+    }
+
+    function wobblePcTutorialOverlayCursor(x, y) {
+        return movePcTutorialOverlayCursor(x, y, 0, 'wobble', 2000);
+    }
+
+    function hidePcTutorialOverlayCursor() {
+        return sendPcTutorialOverlayCursor({
+            visible: false,
+        });
     }
 
     function buildGuideChatMessage(step, day) {
@@ -989,7 +1177,6 @@
         let prevBtn = null;
         let nextBtn = null;
         let finishBtn = null;
-        let cursorEl = null;
         let stepRunToken = 0;
         let destroyed = false;
         let stopping = false;
@@ -1054,9 +1241,6 @@
                 '  <button type="button" data-guide-action="finish">完成</button>',
                 '</div>',
             ].join('');
-            cursorEl = document.createElement('div');
-            cursorEl.className = 'home-avatar-floating-guide-cursor';
-            cursorEl.setAttribute('aria-hidden', 'true');
             titleEl = shell.querySelector('.home-avatar-floating-guide-title');
             textEl = shell.querySelector('.home-avatar-floating-guide-text');
             metaEl = shell.querySelector('.home-avatar-floating-guide-meta');
@@ -1075,7 +1259,6 @@
                 destroy('complete').catch(error => console.warn('[AvatarFloatingGuideReset] 完成清理失败:', error));
             });
             document.body.appendChild(shell);
-            document.body.appendChild(cursorEl);
         }
 
         function setupLifecycleControllers() {
@@ -1370,6 +1553,9 @@
             await sleep(260);
             if (destroyed || token !== stepRunToken) return;
 
+            await prepareResetStepOperation(step, prefix);
+            if (destroyed || token !== stepRunToken) return;
+
             const selector = resolveSelector(step.selector, prefix);
             const target = selector ? document.querySelector(selector) : null;
             if (target) {
@@ -1384,6 +1570,21 @@
                     metaEl.textContent = `文本输出 → 高亮 → cursor click → 打开真实 UI · 步骤 ${stepIndex + 1}/${config.steps.length} · voiceKey: ${step.voiceKey}`;
                     safeClickTarget(target);
                     await sleep(320);
+                } else if (step.operation === 'day2-open-settings-personalization') {
+                    metaEl.textContent = `文本输出 → 高亮 → cursor click → 打开设置面板 · 步骤 ${stepIndex + 1}/${config.steps.length} · voiceKey: ${step.voiceKey}`;
+                    safeClickTarget(target);
+                    await ensureResetSettingsPanelVisible(prefix);
+                } else if (step.operation === 'day2-settings-detail') {
+                    metaEl.textContent = `文本输出 → 高亮角色设置按钮 → cursor click → 展开角色设置侧边栏 · 步骤 ${stepIndex + 1}/${config.steps.length} · voiceKey: ${step.voiceKey}`;
+                    safeClickTarget(target);
+                    const sidePanel = await ensureResetCharacterSettingsSidePanelVisible(prefix);
+                    if (destroyed || token !== stepRunToken) return;
+                    if (sidePanel) {
+                        applyStepHighlights(step, sidePanel);
+                        await moveGhostCursorTo(sidePanel, 'move', token);
+                        await runGhostCursorEllipseOnTarget(sidePanel, token);
+                        collapseResetCharacterSettingsSidePanel();
+                    }
                 } else if (step.operation === 'cleanup') {
                     closeFloatingPanels();
                     metaEl.textContent = `文本输出 → 清理临时弹窗和高亮 · 步骤 ${stepIndex + 1}/${config.steps.length} · voiceKey: ${step.voiceKey}`;
@@ -1400,14 +1601,24 @@
         }
 
         function applyStepHighlights(step, target) {
+            const characterSettingsButton = (
+                step
+                && (step.id === 'day2_personalization_detail' || step.id === 'day2_proactive_chat')
+            )
+                ? getResetCharacterSettingsButton(prefix)
+                : null;
+            const secondaryTarget = characterSettingsButton && characterSettingsButton !== target
+                ? characterSettingsButton
+                : null;
             if (highlightController) {
                 highlightController.applyGuideHighlights({
                     key: step && step.id ? step.id : 'avatar-floating-guide-step',
                     persistent: shell,
                     primary: target || null,
+                    secondary: secondaryTarget,
                 });
                 if (typeof highlightController.setPreciseHighlightTargets === 'function') {
-                    highlightController.setPreciseHighlightTargets(target ? [target] : []);
+                    highlightController.setPreciseHighlightTargets([target, secondaryTarget].filter(Boolean));
                 }
                 return;
             }
@@ -1421,10 +1632,14 @@
                 target.setAttribute('data-home-avatar-floating-guide-highlight', 'true');
                 target.setAttribute('data-home-avatar-floating-guide-role', 'action');
             }
+            if (secondaryTarget) {
+                secondaryTarget.setAttribute('data-home-avatar-floating-guide-highlight', 'true');
+                secondaryTarget.setAttribute('data-home-avatar-floating-guide-role', 'secondary');
+            }
         }
 
         async function moveGhostCursorTo(target, action, token) {
-            if (!cursorEl || !target) return;
+            if (!target) return;
             if (action === 'none') {
                 hideGhostCursor();
                 return;
@@ -1432,51 +1647,59 @@
             if (action === 'input-origin') {
                 const origin = getChatInputCenter();
                 if (origin) {
-                    cursorEl.classList.remove('is-clicking', 'is-wobbling');
-                    cursorEl.style.left = `${Math.round(origin.x)}px`;
-                    cursorEl.style.top = `${Math.round(origin.y)}px`;
-                    cursorEl.classList.add('is-visible');
+                    if (isPcTutorialOverlayAvailable()) {
+                        movePcTutorialOverlayCursor(origin.x, origin.y, 0);
+                    }
                 } else {
                     hideGhostCursor();
                 }
                 return;
             }
-            if (!cursorEl.classList.contains('is-visible')) {
-                const origin = getChatInputCenter();
-                if (origin) {
-                    cursorEl.style.left = `${Math.round(origin.x)}px`;
-                    cursorEl.style.top = `${Math.round(origin.y)}px`;
-                    cursorEl.classList.add('is-visible');
-                    await sleep(120);
-                    if (destroyed || token !== stepRunToken) return;
-                }
+            if (isPcTutorialOverlayAvailable()) {
+                const center = getElementCenter(target);
+                await moveGhostCursorToPoint(center.x, center.y, action, token);
             }
-            const center = getElementCenter(target);
-            await moveGhostCursorToPoint(center.x, center.y, action, token);
         }
 
         async function moveGhostCursorToPoint(x, y, action = 'show', token = stepRunToken) {
-            if (!cursorEl) return;
-            cursorEl.classList.remove('is-clicking', 'is-wobbling');
-            cursorEl.style.left = `${Math.round(x)}px`;
-            cursorEl.style.top = `${Math.round(y)}px`;
-            cursorEl.classList.add('is-visible');
-            await sleep(520);
-            if (destroyed || token !== stepRunToken) return;
-            if (action === 'click') {
-                cursorEl.classList.add('is-clicking');
-                await sleep(180);
-                cursorEl.classList.remove('is-clicking');
-            } else if (action === 'wobble') {
-                cursorEl.classList.add('is-wobbling');
-                await sleep(360);
-                cursorEl.classList.remove('is-wobbling');
+            if (isPcTutorialOverlayAvailable()) {
+                movePcTutorialOverlayCursor(x, y, 520);
+                await sleep(520);
+                if (destroyed || token !== stepRunToken) return;
+                if (action === 'click') {
+                    clickPcTutorialOverlayCursor(x, y);
+                    await sleep(180);
+                } else if (action === 'wobble') {
+                    wobblePcTutorialOverlayCursor(x, y);
+                    await sleep(360);
+                }
+            }
+        }
+
+        async function runGhostCursorEllipseOnTarget(target, token = stepRunToken) {
+            if (!isPcTutorialOverlayAvailable() || !target || typeof target.getBoundingClientRect !== 'function') return;
+            const rect = target.getBoundingClientRect();
+            if (!rect || rect.width <= 0 || rect.height <= 0) return;
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+            const radiusX = Math.max(36, rect.width * 0.32);
+            const radiusY = Math.max(60, rect.height * 0.36);
+            const startedAt = Date.now();
+            const durationMs = 2200;
+            while (!destroyed && token === stepRunToken && Date.now() - startedAt < durationMs) {
+                const progress = ((Date.now() - startedAt) % 1400) / 1400;
+                const angle = progress * Math.PI * 2;
+                movePcTutorialOverlayCursor(
+                    centerX + Math.cos(angle) * radiusX,
+                    centerY + Math.sin(angle) * radiusY,
+                    160
+                );
+                await sleep(160);
             }
         }
 
         function hideGhostCursor() {
-            if (!cursorEl) return;
-            cursorEl.classList.remove('is-visible', 'is-clicking', 'is-wobbling');
+            hidePcTutorialOverlayCursor();
         }
 
         async function destroy(reason = 'complete') {
@@ -1516,11 +1739,7 @@
             if (shell && shell.parentNode) {
                 shell.parentNode.removeChild(shell);
             }
-            if (cursorEl && cursorEl.parentNode) {
-                cursorEl.parentNode.removeChild(cursorEl);
-            }
             shell = null;
-            cursorEl = null;
             if (avatarOverrideStarted && manager && typeof manager.restoreTutorialAvatarOverride === 'function') {
                 try {
                     await manager.restoreTutorialAvatarOverride();

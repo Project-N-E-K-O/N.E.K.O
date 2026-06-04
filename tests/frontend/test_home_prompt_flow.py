@@ -4231,13 +4231,13 @@ def test_day2_first_scene_does_not_hide_cursor_before_chat_anchor(
             director.appendGuideChatMessage = () => {};
             director.applyGuideEmotion = () => {};
 
-            await director.playAvatarFloatingScene({
-                id: 'day2_intro_context',
-                text: 'intro',
-                voiceKey: 'avatar_floating_day2_intro',
-                target: 'chat-window',
-                cursorAction: 'wobble',
-            }, 2, 0, 6);
+	            await director.playAvatarFloatingScene({
+	                id: 'day2_intro_context',
+	                text: 'intro',
+	                voiceKey: 'avatar_floating_day2_intro',
+	                target: 'chat-window',
+	                cursorAction: 'move',
+	            }, 2, 0, 6);
 
             return calls;
         }
@@ -4248,6 +4248,244 @@ def test_day2_first_scene_does_not_hide_cursor_before_chat_anchor(
     assert all(call["type"] != "hide" for call in result)
     assert all(call["type"] != "clearPosition" for call in result)
     assert any(call["type"] == "showAt" for call in result)
+
+
+@pytest.mark.frontend
+def test_day2_personalization_detail_clicks_character_settings_then_ellipses_sidebar(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <button id="character-settings-button" style="position:absolute; left:100px; top:80px; width:130px; height:44px;"></button>
+                <section id="character-settings-panel" data-neko-sidepanel data-neko-sidepanel-type="character-settings" style="position:absolute; left:260px; top:70px; width:260px; height:380px;"></section>
+            `;
+            document.getElementById('character-settings-panel')._anchorElement = document.getElementById('character-settings-button');
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const calls = [];
+            let releaseNarration;
+            director.appendGuideChatMessage = (text) => calls.push({ type: 'message', text });
+            director.applyGuideEmotion = (emotion) => calls.push({ type: 'emotion', emotion });
+            director.enableInterrupts = () => calls.push({ type: 'interrupts' });
+            director.openSettingsPanel = async () => {
+                calls.push({ type: 'api:openSettingsPanel' });
+                return true;
+            };
+            director.ensureAvatarFloatingSettingsSidePanel = async (type) => {
+                calls.push({ type: 'api:ensureSidePanel', panelType: type });
+                return document.getElementById('character-settings-panel');
+            };
+            director.collapseCharacterSettingsSidePanel = () => {
+                calls.push({ type: 'api:collapseCharacterSettingsSidePanel' });
+            };
+            director.applyGuideHighlights = (config) => {
+                calls.push({
+                    type: 'highlight',
+                    key: config.key,
+                    primaryId: config.primary ? config.primary.id : null,
+                });
+                return config;
+            };
+            director.moveCursorToElement = async (element, durationMs) => {
+                calls.push({ type: 'move', id: element && element.id, durationMs });
+                return true;
+            };
+            director.clickCursorAndWait = async (durationMs) => {
+                calls.push({ type: 'click:start', durationMs });
+                await new Promise((resolve) => window.setTimeout(resolve, 12));
+                calls.push({ type: 'click:done', durationMs });
+            };
+            director.cursor = {
+                hasPosition: () => true,
+                runPauseAwareEllipse: async (x, y, radiusX, radiusY) => {
+                    calls.push({ type: 'ellipse', x, y, radiusX, radiusY });
+                    if (releaseNarration) {
+                        releaseNarration();
+                    }
+                    return true;
+                },
+                cancel: () => calls.push({ type: 'cancel' }),
+                hide: () => {},
+            };
+            director.speakGuideLine = () => new Promise((resolve) => {
+                releaseNarration = () => {
+                    calls.push({ type: 'narration:done' });
+                    releaseNarration = null;
+                    resolve();
+                };
+                window.setTimeout(() => {
+                    if (releaseNarration) {
+                        releaseNarration();
+                    }
+                }, 20);
+            });
+
+            await director.playAvatarFloatingScene({
+                id: 'day2_personalization_detail',
+                text: '不管是说话的温度、相处的小脾气，还是我每天那些细腻的小心思，都可以一点一点调成你喜欢的样子。',
+                voiceKey: 'takeover_settings_peek_detail',
+                target: '#${p}-menu-character',
+                cursorAction: 'click',
+                operation: 'day2-settings-detail',
+            }, 2, 2, 7);
+            return calls;
+        }
+        """
+    )
+
+    highlights = [
+        (call["key"], call["primaryId"])
+        for call in result
+        if call["type"] == "highlight"
+    ]
+    assert highlights[:2] == [
+        ("day2_personalization_detail-character-settings-button", "character-settings-button"),
+        ("day2_personalization_detail-character-settings-panel", "character-settings-panel"),
+    ]
+    assert result.index({"type": "move", "id": "character-settings-button", "durationMs": 620}) < result.index({
+        "type": "click:start",
+        "durationMs": 420,
+    })
+    assert result.index({"type": "click:done", "durationMs": 420}) < result.index({
+        "type": "api:ensureSidePanel",
+        "panelType": "character-settings",
+    })
+    assert result.index({
+        "type": "move",
+        "id": "character-settings-panel",
+        "durationMs": 620,
+    }) < next(index for index, call in enumerate(result) if call["type"] == "ellipse")
+    assert any(call["type"] == "ellipse" and call["radiusX"] > 0 and call["radiusY"] > 0 for call in result)
+    assert result.index({"type": "narration:done"}) < result.index({
+        "type": "api:collapseCharacterSettingsSidePanel",
+    })
+
+
+@pytest.mark.frontend
+def test_day2_proactive_chat_keeps_character_settings_button_highlight_until_line_end(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <button id="character-settings-button" style="position:absolute; left:100px; top:80px; width:130px; height:44px;"></button>
+                <button id="proactive-toggle" style="position:absolute; left:280px; top:180px; width:150px; height:42px;"></button>
+            `;
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const calls = [];
+            director.getDay5CharacterSettingsButtonTarget = () => document.getElementById('character-settings-button');
+            director.prepareAvatarFloatingScene = async () => {};
+            director.resolveAvatarFloatingPersistent = async () => null;
+            director.resolveAvatarFloatingTarget = async () => document.getElementById('proactive-toggle');
+            director.resolveAvatarFloatingSceneText = (scene) => scene.text || '';
+            director.speakGuideLine = async () => calls.push({ type: 'narration:done' });
+            director.waitForSceneDelay = async () => true;
+            director.appendGuideChatMessage = () => {};
+            director.applyGuideEmotion = () => {};
+            director.moveAvatarFloatingCursor = async () => {};
+            director.runAvatarFloatingSceneOperation = async () => true;
+            director.applyGuideHighlights = (config) => {
+                calls.push({
+                    type: 'highlight',
+                    key: config.key,
+                    persistentId: config.persistent ? config.persistent.id : null,
+                    primaryId: config.primary ? config.primary.id : null,
+                });
+                return config;
+            };
+
+            await director.playAvatarFloatingScene({
+                id: 'day2_proactive_chat',
+                text: '这个小按钮也很重要哦，只要你轻轻点一下，我就能在合适的时候跑过去找你啦。',
+                voiceKey: 'takeover_settings_peek_detail',
+                target: '#${p}-toggle-proactive-chat',
+                cursorAction: 'move',
+            }, 2, 3, 7);
+
+            return calls;
+        }
+        """
+    )
+
+    proactive_highlight = next(
+        call for call in result
+        if call["type"] == "highlight" and call["key"] == "day2_proactive_chat"
+    )
+    assert proactive_highlight == {
+        "type": "highlight",
+        "key": "day2_proactive_chat",
+        "persistentId": "character-settings-button",
+        "primaryId": "proactive-toggle",
+    }
+    assert result.index(proactive_highlight) < result.index({"type": "narration:done"})
+
+
+@pytest.mark.frontend
+def test_day2_personalization_space_opens_settings_without_character_sidebar(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <button id="live2d-btn-settings" style="position:absolute; left:20px; top:30px; width:44px; height:44px;"></button>
+            `;
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const calls = [];
+            director.openSettingsPanel = async () => {
+                calls.push({ type: 'api:openSettingsPanel' });
+                return true;
+            };
+            director.ensureCharacterSettingsSidePanelVisible = async () => {
+                calls.push({ type: 'api:ensureCharacterSettingsSidePanelVisible' });
+                return true;
+            };
+            director.speakGuideLine = async () => {};
+            director.waitForSceneDelay = async () => true;
+            director.appendGuideChatMessage = () => {};
+            director.applyGuideEmotion = () => {};
+            director.applyGuideHighlights = () => {};
+            director.moveAvatarFloatingCursor = async () => {};
+
+            await director.playAvatarFloatingScene({
+                id: 'day2_personalization_space',
+                text: '在这个只属于我们的小空间里，你可以由着自己的心意，慢慢描绘出最希望能一直陪着你的那个我。',
+                voiceKey: 'takeover_settings_peek_intro',
+                target: '#${p}-btn-settings',
+                cursorAction: 'click',
+                operation: 'day2-open-settings-personalization',
+            }, 2, 1, 7);
+            return calls;
+        }
+        """
+    )
+
+    assert {"type": "api:openSettingsPanel"} in result
+    assert {"type": "api:ensureCharacterSettingsSidePanelVisible"} not in result
 
 
 @pytest.mark.frontend
@@ -4418,15 +4656,15 @@ def test_day2_wrap_intro_externalized_cursor_target_is_not_reissued_after_cleanu
             director.applyGuideEmotion = () => {};
             director.enableInterrupts = () => {};
 
-            await director.playAvatarFloatingScene({
-                id: 'day2_wrap_intro',
-                text: '今天的教程到这里就结束了呢。',
-                voiceKey: 'avatar_floating_day2_wrap_intro',
-                target: 'chat-window',
-                cursorAction: 'wobble',
-                cursorMoveDurationMs: 900,
-                operation: 'cleanup',
-            }, 2, 4, 6);
+	            await director.playAvatarFloatingScene({
+	                id: 'day2_wrap_intro',
+	                text: '今天的教程到这里就结束了呢。',
+	                voiceKey: 'avatar_floating_day2_wrap_intro',
+	                target: 'chat-window',
+	                cursorAction: 'move',
+	                cursorMoveDurationMs: 900,
+	                operation: 'cleanup',
+	            }, 2, 4, 6);
 
             return calls;
         }
@@ -4438,7 +4676,7 @@ def test_day2_wrap_intro_externalized_cursor_target_is_not_reissued_after_cleanu
         if call["type"] == "cursor" and call["kind"] == "window"
     ]
     assert window_cursor_calls == [
-        {"type": "cursor", "kind": "window", "effect": "wobble"}
+        {"type": "cursor", "kind": "window", "effect": "move"}
     ]
 
 
@@ -4459,14 +4697,14 @@ def test_day2_screen_entry_uses_externalized_intro_cursor_anchor(mock_page: Page
                 begin: () => Promise.resolve({ ok: true }),
                 clear: () => Promise.resolve({ ok: true }),
             };
-            window.localStorage.setItem('neko_yui_guide_external_chat_cursor_screen_point_v1', JSON.stringify({
-                x: 640,
-                y: 430,
-                kind: 'window',
-                effect: 'wobble',
-                source: 'external-chat',
-                at: Date.now(),
-            }));
+	            window.localStorage.setItem('neko_yui_guide_external_chat_cursor_screen_point_v1', JSON.stringify({
+	                x: 640,
+	                y: 430,
+	                kind: 'window',
+	                effect: 'move',
+	                source: 'external-chat',
+	                at: Date.now(),
+	            }));
             document.body.innerHTML = `
                 <div id="react-chat-window-overlay" style="display:none;">
                     <div id="react-chat-window-shell" style="position:absolute; left:40px; top:40px; width:320px; height:240px;"></div>
@@ -4528,14 +4766,14 @@ def test_day2_externalized_intro_records_visible_cursor_anchor(mock_page: Page):
                 setExternalizedChatCursor: (kind) => {
                     cursorKinds.push(kind);
                     if (kind) {
-                        window.localStorage.setItem('neko_yui_guide_external_chat_cursor_screen_point_v1', JSON.stringify({
-                            x: 640,
-                            y: 430,
-                            kind,
-                            effect: 'wobble',
-                            source: 'external-chat',
-                            at: Date.now(),
-                        }));
+	                        window.localStorage.setItem('neko_yui_guide_external_chat_cursor_screen_point_v1', JSON.stringify({
+	                            x: 640,
+	                            y: 430,
+	                            kind,
+	                            effect: 'move',
+	                            source: 'external-chat',
+	                            at: Date.now(),
+	                        }));
                     }
                 },
             };
@@ -4549,12 +4787,12 @@ def test_day2_externalized_intro_records_visible_cursor_anchor(mock_page: Page):
             director.runAvatarFloatingSceneOperation = async () => {};
 
             await director.playAvatarFloatingScene({
-                id: 'day2_intro_context',
-                text: 'intro',
-                voiceKey: 'avatar_floating_day2_intro',
-                target: 'chat-window',
-                cursorAction: 'wobble',
-            }, 2, 0, 6);
+	                id: 'day2_intro_context',
+	                text: 'intro',
+	                voiceKey: 'avatar_floating_day2_intro',
+	                target: 'chat-window',
+	                cursorAction: 'move',
+	            }, 2, 0, 6);
 
             return {
                 cursorKinds,
@@ -4609,13 +4847,13 @@ def test_day2_externalized_intro_to_screen_entry_preserves_cursor_visibility(
                     if (kind) {
                         window.dispatchEvent(new CustomEvent('neko:yui-guide:external-chat-cursor-anchor', {
                             detail: {
-                                x: 640,
-                                y: 430,
-                                kind,
-                                effect: 'wobble',
-                                source: 'external-chat',
-                                timestamp: Date.now(),
-                            },
+	                                x: 640,
+	                                y: 430,
+	                                kind,
+	                                effect: 'move',
+	                                source: 'external-chat',
+	                                timestamp: Date.now(),
+	                            },
                         }));
                     }
                 },
@@ -4629,21 +4867,21 @@ def test_day2_externalized_intro_to_screen_entry_preserves_cursor_visibility(
             director.runAvatarFloatingSceneOperation = async () => {};
 
             await director.playAvatarFloatingScene({
-                id: 'day2_intro_context',
-                text: 'intro',
-                voiceKey: 'avatar_floating_day2_intro',
-                target: 'chat-window',
-                cursorAction: 'wobble',
-            }, 2, 0, 6);
+	                id: 'day2_intro_context',
+	                text: 'intro',
+	                voiceKey: 'avatar_floating_day2_intro',
+	                target: 'chat-window',
+	                cursorAction: 'move',
+	            }, 2, 0, 6);
 
             director.resolveAvatarFloatingTarget = async () => document.getElementById('live2d-btn-screen');
             await director.playAvatarFloatingScene({
-                id: 'day2_screen_entry',
-                text: 'screen',
-                voiceKey: 'avatar_floating_day2_screen_entry_intro',
-                target: '#${p}-btn-screen',
-                cursorAction: 'wobble',
-            }, 2, 1, 6);
+	                id: 'day2_screen_entry',
+	                text: 'screen',
+	                voiceKey: 'avatar_floating_day2_screen_entry_intro',
+	                target: '#${p}-btn-screen',
+	                cursorAction: 'move',
+	            }, 2, 1, 6);
 
             const firstInputIndex = cursorKinds.indexOf('input');
             return {
@@ -4728,8 +4966,12 @@ def test_externalized_chat_cursor_reports_anchor_back_to_home(mock_page: Page):
     assert anchorRelays[-1]["source"] == "external-chat"
     assert result["stored"]["x"] == 820
     assert result["stored"]["y"] == 530
-    assert all(
-        "cursor" not in update.get("payload", {})
+    assert any(
+        update.get("payload", {}).get("cursor", {}).get("visible") is True
+        and update["payload"]["cursor"]["x"] == 820
+        and update["payload"]["cursor"]["y"] == 530
+        and update["payload"]["cursor"].get("effect") == "wobble"
+        and update["payload"]["cursor"].get("effectDurationMs") == 2000
         for update in result["updates"]
     )
 
@@ -4768,13 +5010,13 @@ def test_home_director_receives_externalized_chat_cursor_anchor_event(
             director.currentSceneId = 'day2_intro_context';
             window.dispatchEvent(new CustomEvent('neko:yui-guide:external-chat-cursor-anchor', {
                 detail: {
-                    x: 640,
-                    y: 430,
-                    kind: 'window',
-                    effect: 'wobble',
-                    source: 'external-chat',
-                    timestamp: Date.now(),
-                },
+	                    x: 640,
+	                    y: 430,
+	                    kind: 'window',
+	                    effect: 'move',
+	                    source: 'external-chat',
+	                    timestamp: Date.now(),
+	                },
             }));
             return {
                 anchor: director.avatarFloatingSceneCursorAnchorPoints.day2_intro_context,
@@ -4840,7 +5082,7 @@ def test_home_director_owns_pc_cursor_for_externalized_chat_anchor(
             return {
                 currentPosition: director.overlay.getCursorPosition(),
                 visible: director.overlay.isCursorVisible(),
-                domHidden: cursorShell ? cursorShell.hidden : null,
+                domExists: !!cursorShell,
                 updates: window.__pcOverlayUpdates,
             };
         }
@@ -4849,7 +5091,7 @@ def test_home_director_owns_pc_cursor_for_externalized_chat_anchor(
 
     assert result["currentPosition"] == {"x": 540, "y": 380}
     assert result["visible"] is True
-    assert result["domHidden"] is True
+    assert result["domExists"] is False
     assert any(
         update["payload"]["cursor"]["visible"] is True
         and update["payload"]["cursor"]["x"] == 640
@@ -4908,13 +5150,13 @@ def test_home_director_smoothly_moves_hidden_cursor_to_externalized_chat_anchor(
 
             window.dispatchEvent(new CustomEvent('neko:yui-guide:external-chat-cursor-anchor', {
                 detail: {
-                    x: 640,
-                    y: 430,
-                    kind: 'window',
-                    effect: 'wobble',
-                    source: 'external-chat',
-                    timestamp: Date.now(),
-                },
+	                    x: 640,
+	                    y: 430,
+	                    kind: 'window',
+	                    effect: 'move',
+	                    source: 'external-chat',
+	                    timestamp: Date.now(),
+	                },
             }));
             await Promise.resolve();
 
@@ -4966,7 +5208,7 @@ def test_pc_overlay_suppresses_dom_cursor_on_first_show(mock_page: Page):
             director.cursor.showAt(320, 240);
             const cursorShell = document.querySelector('#yui-guide-overlay .yui-guide-cursor-shell');
             return {
-                domHidden: cursorShell ? cursorShell.hidden : null,
+                domExists: !!cursorShell,
                 bodyActive: document.body.classList.contains('yui-guide-ghost-cursor-active'),
                 updates: window.__pcOverlayUpdates,
             };
@@ -4974,9 +5216,67 @@ def test_pc_overlay_suppresses_dom_cursor_on_first_show(mock_page: Page):
         """
     )
 
-    assert result["domHidden"] is True
+    assert result["domExists"] is False
     assert result["bodyActive"] is False
     assert result["updates"][0]["payload"]["cursor"]["visible"] is True
+
+
+@pytest.mark.frontend
+def test_pc_overlay_move_with_existing_position_never_reveals_dom_cursor(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.__pcOverlayUpdates = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 100, y: 50, width: 1200, height: 800 },
+                    contentBounds: { x: 100, y: 50, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                update: (payload) => {
+                    window.__pcOverlayUpdates.push(payload);
+                    return Promise.resolve({ ok: true });
+                },
+                begin: () => Promise.resolve({ ok: true }),
+                clear: () => Promise.resolve({ ok: true }),
+            };
+        """,
+        script_names=("yui-guide-overlay.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const overlay = new window.YuiGuideOverlay(document);
+            overlay.cursorPosition = { x: 242, y: 202 };
+            overlay.cursorVisible = true;
+            const movePromise = overlay.moveCursorTo(320, 220, { durationMs: 900 });
+            await new Promise((resolve) => setTimeout(resolve, 120));
+            const cursorShell = document.querySelector('#yui-guide-overlay .yui-guide-cursor-shell');
+            await movePromise;
+            return {
+                domExists: !!cursorShell,
+                domVisibleClass: cursorShell ? cursorShell.classList.contains('is-visible') : false,
+                bodyActive: document.body.classList.contains('yui-guide-ghost-cursor-active'),
+                cursorVisible: overlay.isCursorVisible(),
+                updates: window.__pcOverlayUpdates,
+            };
+        }
+        """
+    )
+
+    assert result["domExists"] is False
+    assert result["domVisibleClass"] is False
+    assert result["bodyActive"] is False
+    assert result["cursorVisible"] is True
+    assert any(
+        update.get("payload", {}).get("cursor", {}).get("x") == 420
+        and update["payload"]["cursor"].get("y") == 270
+        for update in result["updates"]
+    )
 
 
 @pytest.mark.frontend
@@ -5210,14 +5510,6 @@ def test_pc_overlay_suppressed_ellipse_keeps_dom_cursor_hidden(mock_page: Page):
             };
             overlay.showCursorAt(100, 100);
             const cursorShellBefore = document.querySelector('#yui-guide-overlay .yui-guide-cursor-shell');
-            const originalClassAdd = cursorShellBefore.classList.add.bind(cursorShellBefore.classList);
-            let domCursorRevealCount = 0;
-            cursorShellBefore.classList.add = (...tokens) => {
-                if (tokens.includes('is-visible')) {
-                    domCursorRevealCount += 1;
-                }
-                return originalClassAdd(...tokens);
-            };
             let cancel = false;
             const animation = overlay.runEllipseAnimation(
                 200,
@@ -5232,27 +5524,88 @@ def test_pc_overlay_suppressed_ellipse_keeps_dom_cursor_hidden(mock_page: Page):
             await new Promise((resolve) => setTimeout(resolve, 420));
             const cursorShell = document.querySelector('#yui-guide-overlay .yui-guide-cursor-shell');
             const duringAnimation = {
-                domHidden: cursorShell ? cursorShell.hidden : null,
+                domExistsBefore: !!cursorShellBefore,
+                domExists: !!cursorShell,
                 bodyActive: document.body.classList.contains('yui-guide-ghost-cursor-active'),
                 pcMoveCount: pcMoves.filter((entry) => entry.type === 'move').length,
                 cursorVisible: overlay.isCursorVisible(),
-                domCursorRevealCount,
             };
             cancel = true;
             await animation;
             return {
                 duringAnimation,
-                finalDomHidden: cursorShell ? cursorShell.hidden : null,
+                finalDomExists: !!cursorShell,
             };
         }
         """
     )
 
-    assert result["duringAnimation"]["domHidden"] is True
+    assert result["duringAnimation"]["domExistsBefore"] is False
+    assert result["duringAnimation"]["domExists"] is False
     assert result["duringAnimation"]["bodyActive"] is False
     assert result["duringAnimation"]["pcMoveCount"] >= 6
     assert result["duringAnimation"]["cursorVisible"] is True
-    assert result["duringAnimation"]["domCursorRevealCount"] == 0
+    assert result["finalDomExists"] is False
+
+
+@pytest.mark.frontend
+def test_pc_overlay_ellipse_uses_global_overlay_on_first_cursor_animation(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.__pcOverlayUpdates = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 100, y: 50, width: 1200, height: 800 },
+                    contentBounds: { x: 100, y: 50, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                update: (payload) => {
+                    window.__pcOverlayUpdates.push(payload);
+                    return Promise.resolve({ ok: true });
+                },
+                begin: () => Promise.resolve({ ok: true }),
+                clear: () => Promise.resolve({ ok: true }),
+            };
+        """,
+        script_names=("yui-guide-overlay.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const overlay = new window.YuiGuideOverlay(document);
+            const animation = overlay.runEllipseAnimation(
+                200,
+                120,
+                48,
+                28,
+                900,
+                () => false,
+                null,
+                () => false
+            );
+            await new Promise((resolve) => setTimeout(resolve, 260));
+            const cursorShell = document.querySelector('#yui-guide-overlay .yui-guide-cursor-shell');
+            return {
+                domExists: !!cursorShell,
+                bodyActive: document.body.classList.contains('yui-guide-ghost-cursor-active'),
+                cursorVisible: overlay.isCursorVisible(),
+                pcCursorUpdates: window.__pcOverlayUpdates
+                    .map((update) => update && update.payload && update.payload.cursor)
+                    .filter(Boolean).length,
+            };
+        }
+        """
+    )
+
+    assert result["domExists"] is False
+    assert result["bodyActive"] is False
+    assert result["cursorVisible"] is True
+    assert result["pcCursorUpdates"] >= 1
 
 
 @pytest.mark.frontend
@@ -6543,6 +6896,456 @@ def test_avatar_floating_click_scene_operation_starts_with_cursor_click(
         "operation:open-agent",
     ]
     assert result["eventsAfterClickRelease"] == result["eventsBeforeClickRelease"]
+
+
+@pytest.mark.frontend
+def test_day1_externalized_history_click_starts_operation_with_director_click(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.__NEKO_MULTI_WINDOW__ = true;
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 100, y: 50, width: 1200, height: 800 },
+                    contentBounds: { x: 100, y: 50, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                update: () => Promise.resolve({ ok: true }),
+                begin: () => Promise.resolve({ ok: true }),
+                clear: () => Promise.resolve({ ok: true }),
+            };
+            document.body.innerHTML = `<div id="react-chat-window-overlay" style="display:none;"></div>`;
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const events = [];
+            let releaseClick;
+            const clickStarted = new Promise((resolve) => {
+                director.clickCursorAndWait = () => {
+                    events.push('click:start');
+                    resolve();
+                    return new Promise((release) => {
+                        releaseClick = release;
+                    });
+                };
+            });
+            director.interactionTakeover = {
+                setExternalizedChatSpotlight: (kind) => events.push('spotlight:' + kind),
+                setExternalizedChatCursor: (kind, options) => {
+                    events.push('cursor:' + kind + ':' + String(options && options.effect || ''));
+                    window.dispatchEvent(new CustomEvent('neko:yui-guide:external-chat-cursor-anchor', {
+                        detail: {
+                            x: 640,
+                            y: 430,
+                            kind,
+                            effect: options && options.effect || '',
+                            source: 'external-chat',
+                            timestamp: Date.now(),
+                        },
+                    }));
+                },
+            };
+            director.cursor.showAt(500, 360);
+            director.speakGuideLine = async () => null;
+            director.waitForSceneDelay = async () => true;
+            director.appendGuideChatMessage = () => {};
+            director.applyGuideEmotion = () => {};
+            director.prepareAvatarFloatingScene = async () => {};
+            director.enableInterrupts = () => {};
+            director.runAvatarFloatingSceneOperation = async (scene) => {
+                events.push('operation:' + String(scene.operation || ''));
+                return true;
+            };
+
+            const scenePromise = director.playAvatarFloatingScene({
+                id: 'day1_history_handle',
+                text: '戳一下聊天框上面的【蓝色小条条】，就能看到我们最近聊过的话题啦！',
+                voiceKey: 'day1_history_handle',
+                target: 'chat-input',
+                cursorTarget: 'chat-history-handle',
+                cursorAction: 'click',
+                operation: 'open-compact-history-during-narration',
+            }, 1, 2, 8);
+
+            await clickStarted;
+            const eventsBeforeClickRelease = events.slice();
+            releaseClick();
+            await scenePromise;
+
+            return {
+                eventsBeforeClickRelease,
+                eventsAfterClickRelease: events.slice(),
+            };
+        }
+        """
+    )
+
+    events_before_click_release = result["eventsBeforeClickRelease"]
+    assert "cursor:history:click" not in events_before_click_release
+    assert "cursor:history:move" in events_before_click_release
+    assert "click:start" in events_before_click_release
+    assert "operation:open-compact-history-during-narration" in events_before_click_release
+    assert events_before_click_release.index("cursor:history:move") < events_before_click_release.index("click:start")
+    assert events_before_click_release.index("click:start") < events_before_click_release.index(
+        "operation:open-compact-history-during-narration"
+    )
+    assert result["eventsAfterClickRelease"] == events_before_click_release
+
+
+@pytest.mark.frontend
+def test_day1_externalized_capsule_and_history_do_not_spotlight_chat_input(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.__NEKO_MULTI_WINDOW__ = true;
+            document.body.innerHTML = `<div id="react-chat-window-overlay" style="display:none;"></div>`;
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const events = [];
+            director.interactionTakeover = {
+                setExternalizedChatSpotlight: (kind) => events.push('spotlight:' + String(kind || '')),
+                setExternalizedChatCursor: (kind, options) => {
+                    events.push('cursor:' + String(kind || '') + ':' + String(options && options.effect || ''));
+                    window.dispatchEvent(new CustomEvent('neko:yui-guide:external-chat-cursor-anchor', {
+                        detail: {
+                            x: kind === 'history' ? 640 : 520,
+                            y: kind === 'history' ? 430 : 390,
+                            kind,
+                            effect: options && options.effect || '',
+                            source: 'external-chat',
+                            timestamp: Date.now(),
+                        },
+                    }));
+                },
+            };
+            director.speakGuideLine = async () => null;
+            director.waitForSceneDelay = async () => true;
+            director.appendGuideChatMessage = () => {};
+            director.applyGuideEmotion = () => {};
+            director.prepareAvatarFloatingScene = async () => {};
+            director.enableInterrupts = () => {};
+            director.runAvatarFloatingSceneOperation = async () => true;
+            director.clickCursorAndWait = async () => {};
+
+            await director.playAvatarFloatingScene({
+                id: 'day1_capsule_drag_hint',
+                text: '把鼠标移到这里，长按就可以拉着聊天框到处跑啦~ 双击两下就能随时发消息给我哦！',
+                target: 'chat-input',
+                cursorAction: 'wobble',
+                cursorWobbleDurationMs: 2000,
+                spotlight: false,
+            }, 1, 1, 8);
+            await director.playAvatarFloatingScene({
+                id: 'day1_history_handle',
+                text: '戳一下聊天框上面的【蓝色小条条】，就能看到我们最近聊过的话题啦！',
+                target: 'chat-input',
+                cursorTarget: 'chat-history-handle',
+                cursorAction: 'click',
+                operation: 'open-compact-history-during-narration',
+                spotlight: false,
+            }, 1, 2, 8);
+
+            return events;
+        }
+        """
+    )
+
+    assert "spotlight:input" not in result
+    assert "cursor:input:wobble" in result
+    assert "cursor:history:move" in result
+
+
+@pytest.mark.frontend
+def test_day1_managed_takeover_scene_continues_after_inner_scene_run_changes(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const events = [];
+            director.sceneRunId = 42;
+            director.getAgentSwitchSnapshot = async () => ({ agent: false });
+            director.clearExternalizedChatGuideTarget = () => events.push('clear-external-chat');
+            director.playManagedScene = async (sceneId, options) => {
+                events.push('managed:' + sceneId + ':' + String(options && options.source || ''));
+                director.sceneRunId += 1;
+            };
+
+            const keepGoing = await director.playDay1AvatarFloatingScene({
+                id: 'day1_takeover_capture_cursor',
+                operation: 'day1-managed-scene:takeover_capture_cursor',
+            }, 42, 'day1_screen_entry_invite', 6, 8);
+
+            return {
+                keepGoing,
+                sceneRunId: director.sceneRunId,
+                events,
+            };
+        }
+        """
+    )
+
+    assert result["keepGoing"] is True
+    assert result["sceneRunId"] == 43
+    assert result["events"] == [
+        "clear-external-chat",
+        "managed:takeover_capture_cursor:avatar-floating-day1-round",
+    ]
+
+
+@pytest.mark.frontend
+def test_day1_takeover_capture_cursor_does_not_highlight_chat_capsule(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <div id="react-chat-window-root">
+                    <div
+                        id="compact-chat-input"
+                        data-compact-geometry-owner="surface"
+                        data-compact-geometry-item="input"
+                        style="position:absolute; left:20px; top:20px; width:280px; height:48px;"
+                    ></div>
+                </div>
+                <button id="live2d-btn-agent" style="position:absolute; left:220px; top:180px; width:44px; height:44px;"></button>
+            `;
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const events = [];
+            const registry = {
+                getStep: (stepId) => stepId === 'takeover_capture_cursor' ? {
+                    page: 'home',
+                    anchor: '#live2d-btn-agent',
+                    performance: {
+                        bubbleText: '超级魔法开关出现！',
+                        voiceKey: 'takeover_capture_cursor',
+                        emotion: 'happy',
+                        cursorAction: 'click',
+                        cursorTarget: '#live2d-btn-agent',
+                        interruptible: true,
+                    },
+                    interrupts: {},
+                } : null,
+            };
+            const director = window.createYuiGuideDirector({ page: 'home', registry });
+            const persistentSpotlights = [];
+            const realPersistentSpotlight = director.overlay.setPersistentSpotlight.bind(director.overlay);
+            director.overlay.setPersistentSpotlight = (target) => {
+                persistentSpotlights.push(target ? target.id || target.getAttribute('data-compact-geometry-item') || target.tagName : '');
+                return realPersistentSpotlight(target);
+            };
+            director.syncPersistentGhostCursorLookAtForScene = async () => null;
+            director.ensurePersistentGhostCursorLookAtPerformance = async () => null;
+            director.stopPersistentGhostCursorLookAtPerformance = async () => null;
+            director.stopPluginDashboardCornerPeekPerformance = async () => null;
+            director.speakGuideLine = async () => null;
+            director.runTakeoverKeyboardControlSequence = async () => null;
+            director.waitForSceneDelay = async () => true;
+            director.appendGuideChatMessage = () => {};
+            director.applyGuideEmotion = () => {};
+            director.enableInterrupts = () => {};
+            director.clearRetainedExtraSpotlights = () => {};
+            director.clearVirtualSpotlight = (key) => events.push('clear-virtual:' + key);
+            director.highlightChatWindow = () => events.push('highlight-chat-window');
+
+            await director.playManagedScene('takeover_capture_cursor', {
+                source: 'avatar-floating-day1-round',
+            });
+
+            return { events, persistentSpotlights };
+        }
+        """
+    )
+
+    assert "highlight-chat-window" not in result["events"]
+    assert "compact-chat-input" not in result["persistentSpotlights"]
+
+
+@pytest.mark.frontend
+def test_day1_intro_basic_voice_waits_for_history_cursor_move_before_voice_button(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <button id="live2d-btn-mic" style="position:absolute; left:220px; top:180px; width:44px; height:44px;"></button>
+            `;
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const events = [];
+            let releaseHistoryMove;
+            director.latestExternalizedChatCursorMoveSceneId = 'day1_history_handle';
+            director.latestExternalizedChatCursorMovePromise = new Promise((resolve) => {
+                releaseHistoryMove = () => {
+                    events.push('history:move:done');
+                    resolve(true);
+                };
+            });
+            director.avatarFloatingSceneCursorAnchorPoints.day1_history_handle = { x: 540, y: 380 };
+            director.moveCursorToElement = async (element) => {
+                events.push('move-to:' + element.id);
+                return true;
+            };
+            director.waitForSceneDelay = async () => true;
+
+            const showcasePromise = director.runIntroVoiceControlButtonShowcase(
+                'intro_basic',
+                '这里有一个神奇的按钮！'
+            );
+            await Promise.resolve();
+            const beforeRelease = events.slice();
+            releaseHistoryMove();
+            await showcasePromise;
+
+            return {
+                beforeRelease,
+                afterRelease: events,
+            };
+        }
+        """
+    )
+
+    assert result["beforeRelease"] == []
+    assert result["afterRelease"] == [
+        "history:move:done",
+        "move-to:live2d-btn-mic",
+    ]
+
+
+@pytest.mark.frontend
+def test_day1_history_to_intro_basic_voice_preserves_externalized_cursor(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            return director.shouldPreserveExternalizedChatCursor(
+                'day1_history_handle',
+                { id: 'day1_intro_basic_voice' }
+            );
+        }
+        """
+    )
+
+    assert result is True
+
+
+@pytest.mark.frontend
+def test_day1_intro_basic_voice_sends_pc_overlay_move_from_history_to_voice_button(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.__NEKO_MULTI_WINDOW__ = true;
+            window.__pcOverlayUpdates = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 100, y: 50, width: 1200, height: 800 },
+                    contentBounds: { x: 100, y: 50, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                update: (payload) => {
+                    window.__pcOverlayUpdates.push(payload);
+                    return Promise.resolve({ ok: true });
+                },
+                begin: () => Promise.resolve({ ok: true }),
+                clear: () => Promise.resolve({ ok: true }),
+            };
+            document.body.innerHTML = `
+                <button id="live2d-btn-mic" style="position:absolute; left:220px; top:180px; width:44px; height:44px;"></button>
+            `;
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            director.currentSceneId = 'day1_history_handle';
+            director.cursor.showAt(500, 360);
+            window.dispatchEvent(new CustomEvent('neko:yui-guide:external-chat-cursor-anchor', {
+                detail: {
+                    x: 640,
+                    y: 430,
+                    kind: 'history',
+                    effect: 'move',
+                    source: 'external-chat',
+                    timestamp: Date.now(),
+                },
+            }));
+            await director.waitForExternalizedChatCursorMove('day1_history_handle', 1800);
+            director.currentSceneId = 'day1_intro_basic_voice';
+            await director.runIntroVoiceControlButtonShowcase(
+                'intro_basic',
+                '这里有一个神奇的按钮！'
+            );
+            const cursorUpdates = window.__pcOverlayUpdates
+                .map((update) => update && update.payload && update.payload.cursor)
+                .filter(Boolean);
+            return {
+                cursorUpdates,
+                currentPosition: director.overlay.getCursorPosition(),
+            };
+        }
+        """
+    )
+
+    assert result["currentPosition"] == {"x": 242, "y": 202}
+    assert any(
+        update["visible"] is True
+        and update["x"] == 342
+        and update["y"] == 252
+        and update["durationMs"] >= 900
+        for update in result["cursorUpdates"]
+    )
 
 
 @pytest.mark.frontend

@@ -3492,6 +3492,22 @@
         return changed;
     }
 
+    function isYuiGuideChatMessage(message) {
+        return !!(message && typeof message.id === 'string' && message.id.indexOf('yui-guide-') === 0);
+    }
+
+    function clearGuideMessages() {
+        var beforeLength = state.messages.length;
+        state.messages = state.messages.filter(function (message) {
+            return !isYuiGuideChatMessage(message);
+        });
+        var changed = state.messages.length !== beforeLength;
+        if (changed) {
+            renderWindow();
+        }
+        return changed;
+    }
+
     function clearMessages() {
         state.messages = [];
         _sortKeySeq = 0;
@@ -5674,6 +5690,7 @@
         appendMessage: appendMessage,
         updateMessage: updateMessage,
         removeMessage: removeMessage,
+        clearGuideMessages: clearGuideMessages,
         clearMessages: clearMessages,
         getState: getStateSnapshot,
         setOnMessageAction: function (handler) {

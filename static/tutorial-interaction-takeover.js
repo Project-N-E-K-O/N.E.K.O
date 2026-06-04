@@ -388,6 +388,26 @@
             }
         }
 
+        clearExternalizedChatGuideMessages() {
+            if (!this.isHomeChatExternalized()) {
+                return;
+            }
+
+            const channel = this.getExternalChatChannel();
+            if (!channel || typeof channel.postMessage !== 'function') {
+                return;
+            }
+
+            try {
+                channel.postMessage({
+                    action: 'yui_guide_clear_chat_messages',
+                    timestamp: Date.now()
+                });
+            } catch (error) {
+                console.warn('[TutorialInteractionTakeover] 清理独立聊天窗教程台词失败:', error);
+            }
+        }
+
         clearExternalizedChatFx() {
             this.externalizedChatSpotlightKind = '';
             this.setExternalizedChatSpotlight('');
@@ -395,6 +415,7 @@
             this.setExternalizedChatAvatarToolMenuOpen(false, 'clear-externalized-chat-fx');
             this.setExternalizedChatCompactHistoryOpen(false, 'clear-externalized-chat-fx');
             this.setExternalizedChatCompactToolFanOpen(false, 'clear-externalized-chat-fx');
+            this.clearExternalizedChatGuideMessages();
         }
 
         onExternalChatReady() {

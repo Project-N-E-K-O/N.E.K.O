@@ -85,7 +85,8 @@
                     emotion: 'happy',
                     target: 'chat-input',
                     cursorAction: 'wobble',
-                    cursorWobbleDurationMs: 2000
+                    cursorWobbleDurationMs: 2000,
+                    spotlight: false
                 },
                 {
                     id: 'day1_history_handle',
@@ -93,9 +94,11 @@
                     text: '戳一下聊天框上面的【蓝色小条条】，就能看到我们最近聊过的话题啦！',
                     voiceKey: 'day1_history_handle',
                     emotion: 'happy',
-                    target: 'chat-history-handle',
+                    target: 'chat-input',
+                    cursorTarget: 'chat-history-handle',
                     cursorAction: 'click',
-                    operation: 'open-compact-history-during-narration'
+                    operation: 'open-compact-history-during-narration',
+                    spotlight: false
                 },
                 {
                     id: 'day1_intro_basic_voice',
@@ -103,7 +106,7 @@
                     voiceKey: 'intro_basic',
                     emotion: 'happy',
                     target: '#${p}-btn-mic',
-                    cursorAction: 'wobble',
+                    cursorAction: 'move',
                     operation: 'day1-intro-basic-voice'
                 },
                 {
@@ -113,7 +116,7 @@
                     voiceKey: 'day1_screen_entry',
                     emotion: 'happy',
                     target: '#${p}-btn-screen',
-                    cursorAction: 'wobble'
+                    cursorAction: 'move'
                 },
                 {
                     id: 'day1_screen_entry_invite',
@@ -122,7 +125,7 @@
                     voiceKey: 'day1_screen_entry_invite',
                     emotion: 'happy',
                     target: '#${p}-btn-screen',
-                    cursorAction: 'wobble'
+                    cursorAction: 'move'
                 },
                 {
                     id: 'day1_takeover_capture_cursor',
@@ -139,7 +142,7 @@
                     voiceKey: 'takeover_return_control',
                     emotion: 'happy',
                     target: '#${p}-container',
-                    cursorAction: 'wobble',
+                    cursorAction: 'move',
                     operation: 'day1-managed-scene:takeover_return_control',
                     petalTransition: true
                 }
@@ -276,7 +279,7 @@
                     bubbleTextKey: 'tutorial.yuiGuide.lines.takeoverReturnControl',
                     voiceKey: 'takeover_return_control',
                     emotion: 'happy',
-                    cursorAction: 'wobble',
+                    cursorAction: 'move',
                     cursorTarget: '#${p}-container',
                     interruptible: true,
                     timeline: [

@@ -1719,6 +1719,10 @@
         return updated;
     }
 
+    function isYuiGuideChatMessage(message) {
+        return !!(message && typeof message.id === 'string' && message.id.indexOf('yui-guide-') === 0);
+    }
+
     function appendYuiGuideChatMessage(message) {
         if (!isStandaloneChatPage()) return;
         if (!message || typeof message !== 'object') return;
@@ -1749,6 +1753,39 @@
         scheduleYuiGuideChatInputSpotlightRetry();
     }
 
+    function clearYuiGuideChatMessages() {
+        if (!isStandaloneChatPage()) return;
+        _pendingYuiGuideChatMessages = _pendingYuiGuideChatMessages.filter(function (message) {
+            return !isYuiGuideChatMessage(message);
+        });
+
+        var host = window.reactChatWindowHost;
+        if (host && typeof host.clearGuideMessages === 'function') {
+            try {
+                host.clearGuideMessages();
+                return;
+            } catch (error) {
+                console.warn('[YuiGuide] Failed to clear guide chat messages:', error);
+            }
+        }
+
+        if (!host || typeof host.getState !== 'function' || typeof host.removeMessage !== 'function') {
+            return;
+        }
+
+        try {
+            var state = host.getState();
+            var messages = state && Array.isArray(state.messages) ? state.messages : [];
+            messages.forEach(function (message) {
+                if (isYuiGuideChatMessage(message)) {
+                    host.removeMessage(message.id);
+                }
+            });
+        } catch (error) {
+            console.warn('[YuiGuide] Failed to remove guide chat messages:', error);
+        }
+    }
+
     function handleYuiGuideChatBridgeData(data) {
         if (!data || !data.action) return false;
         switch (data.action) {
@@ -1759,6 +1796,10 @@
             case 'yui_guide_update_chat_message':
                 if (isDuplicateMessage(data.action, data.timestamp)) return true;
                 updateYuiGuideChatMessage(data.messageId, data.patch);
+                return true;
+            case 'yui_guide_clear_chat_messages':
+                if (isDuplicateMessage(data.action, data.timestamp)) return true;
+                clearYuiGuideChatMessages();
                 return true;
             default:
                 return false;
@@ -1959,6 +2000,10 @@
             }
             case 'yui_guide_update_chat_message': {
                 updateYuiGuideChatMessage(message.messageId, message.patch);
+                return true;
+            }
+            case 'yui_guide_clear_chat_messages': {
+                clearYuiGuideChatMessages();
                 return true;
             }
             case 'yui_guide_set_chat_buttons_disabled': {
@@ -2211,6 +2256,7 @@
                     }
                     case 'yui_guide_append_chat_message':
                     case 'yui_guide_update_chat_message':
+                    case 'yui_guide_clear_chat_messages':
                         break;
                     case 'yui_guide_message_action': {
                         if (isStandaloneChatPage()) break;

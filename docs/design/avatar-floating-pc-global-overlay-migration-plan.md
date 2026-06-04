@@ -199,7 +199,7 @@ type TutorialTargetRectReport = {
 ## 风险与降级
 
 1. **跨显示器移动断裂**：先分段处理，源 display 隐藏、目标 display 显示；后续再做跨 display 连续轨迹。
-2. **Wayland 置顶不稳定**：只在 PC 全局 overlay 不可用时回退旧外置聊天窗 cursor；一旦 PC 全局 overlay 可用，外置聊天窗只能回传锚点，不能同时渲染第二套 cursor。
+2. **Wayland 置顶不稳定**：PC 全局 overlay 不可用时不再回退旧外置聊天窗 cursor，只保留教程文字、高光和业务操作；一旦 PC 全局 overlay 可用，外置聊天窗只能回传锚点，不能同时渲染第二套 cursor。
 3. **截图误捕获 overlay**：截图/主动视觉前主进程隐藏教程 overlay，完成后恢复。
 4. **目标 rect 上报失败**：跳过该 spotlight 或使用语义 fallback，不使用屏幕中心。
 5. **旧命令复活高亮**：所有命令和 rect 回包必须携带 `tutorialRunId`/`sequence`，主进程丢弃旧 run 或过期序号。

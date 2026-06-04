@@ -296,46 +296,6 @@ body {
     filter: drop-shadow(0 0 12px rgba(255, 231, 122, 0.86));
 }
 
-.home-avatar-floating-guide-cursor {
-    position: fixed;
-    top: 0;
-    left: 0;
-    z-index: 100060;
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    border: 2px solid rgba(255, 255, 255, 0.92);
-    background: rgba(255, 231, 122, 0.9);
-    box-shadow: 0 0 0 5px rgba(255, 231, 122, 0.22), 0 8px 18px rgba(0, 0, 0, 0.28);
-    opacity: 0;
-    pointer-events: none;
-    transform: translate(-50%, -50%) scale(0.82);
-    transition: top 0.52s cubic-bezier(0.22, 1, 0.36, 1),
-        left 0.52s cubic-bezier(0.22, 1, 0.36, 1),
-        opacity 0.16s ease,
-        transform 0.16s ease;
-}
-
-.home-avatar-floating-guide-cursor.is-visible {
-    opacity: 1;
-    transform: translate(-50%, -50%) scale(1);
-}
-
-.home-avatar-floating-guide-cursor.is-clicking {
-    transform: translate(-50%, -50%) scale(0.72);
-    box-shadow: 0 0 0 9px rgba(255, 231, 122, 0.16), 0 8px 18px rgba(0, 0, 0, 0.28);
-}
-
-.home-avatar-floating-guide-cursor.is-wobbling {
-    animation: home-avatar-floating-guide-cursor-wobble 0.36s ease-in-out 1;
-}
-
-@keyframes home-avatar-floating-guide-cursor-wobble {
-    0%, 100% { transform: translate(-50%, -50%) scale(1); }
-    35% { transform: translate(calc(-50% - 4px), -50%) scale(1.04); }
-    70% { transform: translate(calc(-50% + 4px), -50%) scale(1.04); }
-}
-
 /* 移动端响应式设计 */
 @media (max-width: 600px) {
     #status-toast {

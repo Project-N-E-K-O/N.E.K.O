@@ -481,13 +481,22 @@ def test_yui_takeover_overlay_keeps_window_hittable_during_plugin_preview_cleanu
         assert expected in style_source
 
 
-def test_yui_guide_dom_fallback_cursor_layer_stays_above_page_controls():
+def test_yui_guide_has_no_local_dom_ghost_cursor_layer():
     style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
+    overlay_source = Path("static/yui-guide-overlay.js").read_text(encoding="utf-8")
 
     assert "z-index: 2147483000;" in style_source
     assert "isolation: isolate;" in style_source
-    assert ".yui-guide-cursor-shell {\n  position: fixed;\n  top: 0;\n  left: 0;\n  z-index: 40;" in style_source
-    assert ".yui-guide-cursor-trail-layer {\n  position: fixed;\n  inset: 0;\n  z-index: 39;" in style_source
+    for forbidden in (
+        "yui-guide-cursor-shell",
+        "yui-guide-cursor-trail",
+        "yui-guide-click-star",
+        "default-ghost-cursor",
+        "click-ghost-cursor",
+        "yui-guide-ghost-cursor-active",
+    ):
+        assert forbidden not in style_source
+        assert forbidden not in overlay_source
 
 
 def test_home_yui_guide_chat_targets_prefer_compact_capsule_and_external_input():
@@ -805,7 +814,7 @@ def test_day6_status_and_plugin_lines_split_plugin_panel_flow_before_dashboard_h
     assert "cursorAction:" not in plugin_dashboard
 
 
-def test_yui_guide_cat_paw_click_state_is_visible_before_actions():
+def test_yui_guide_click_actions_use_pc_overlay_only_without_local_cursor_fx():
     overlay_source = Path("static/yui-guide-overlay.js").read_text(encoding="utf-8")
     director_source = Path("static/yui-guide-director.js").read_text(encoding="utf-8")
     style_source = Path("static/css/yui-guide.css").read_text(encoding="utf-8")
@@ -815,25 +824,6 @@ def test_yui_guide_cat_paw_click_state_is_visible_before_actions():
         assert "DEFAULT_CURSOR_CLICK_VISIBLE_MS = 420" in source
 
     for expected in (
-        "this.cursorClickTimer",
-        "window.clearTimeout(this.cursorClickTimer)",
-        "this.cursorInner.classList.add('is-clicking')",
-        "CURSOR_CLICK_STAR_COUNT = 7",
-        "spawnCursorClickStars()",
-        "this.spawnCursorClickStars();",
-        "yui-guide-click-star",
-        "--star-mid-x",
-        "CURSOR_TRAIL_ICON_URLS",
-        "CURSOR_TRAIL_BLUE_PARTICLE_CHANCE = 0.42",
-        "/static/icons/send_icon.png",
-        "/static/icons/paw_ui.png",
-        "maybeSpawnCursorTrail(nextX, nextY, previousX, previousY, now)",
-        "isBlueParticle ? 'is-blue-particle' : 'is-icon'",
-        "is-blue-particle",
-    ):
-        assert expected in overlay_source
-
-    for expected in (
         "this.cursor.click(visibleMs)",
         "return await this.waitForSceneDelay(visibleMs)",
         "async runActionWithCursorClick(holdMs, action)",
@@ -841,28 +831,19 @@ def test_yui_guide_cat_paw_click_state_is_visible_before_actions():
     ):
         assert expected in director_source
 
-    assert "animation: yui-guide-cursor-click 420ms ease;" in style_source
-    assert "@keyframes yui-guide-click-star-burst" in style_source
-    assert ".yui-guide-click-star" in style_source
-    assert ".yui-guide-cursor-trail.is-glow" in style_source
-    assert ".yui-guide-cursor-trail.is-icon" in style_source
-    assert ".yui-guide-cursor-trail.is-blue-particle" in style_source
-    assert "rgba(119, 233, 255, 0.96)" in style_source
-    assert "opacity: 0.52;" in style_source
-    assert "drop-shadow(0 0 7px rgba(255, 244, 164, 0.92))" in style_source
-    assert "@keyframes yui-guide-cursor-trail-fade" in style_source
-    assert "animation: yui-guide-plugin-click 420ms ease;" in plugin_runtime_source
-    assert "CURSOR_CLICK_STAR_COUNT = 7" in plugin_runtime_source
-    assert "const size = 6 + Math.random() * 6" in overlay_source
-    assert "const size = 6 + Math.random() * 6" in plugin_runtime_source
-    assert "0.09 + Math.random() * 0.1" in plugin_runtime_source
-    assert "CURSOR_TRAIL_ICON_URLS = [sendIconUrl, pawUiUrl]" in plugin_runtime_source
-    assert "CURSOR_TRAIL_BLUE_PARTICLE_CHANCE = 0.42" in plugin_runtime_source
-    assert "yui-guide-plugin-click-star" in plugin_runtime_source
-    assert "yui-guide-plugin-cursor-trail ${isBlueParticle ? 'is-blue-particle' : 'is-icon'}" in plugin_runtime_source
-    assert "is-blue-particle" in plugin_runtime_source
-    assert "maybeSpawnCursorTrail(position.x, position.y, previous.x, previous.y, now)" in plugin_runtime_source
-    assert "spawnCursorClickStars()" in plugin_runtime_source
+    for source in (overlay_source, style_source, plugin_runtime_source):
+        for forbidden in (
+            "cursorInner.classList.add('is-clicking')",
+            "cursorInner.classList.add('is-wobbling')",
+            "click-star",
+            "cursor-trail",
+            "default-ghost-cursor",
+            "click-ghost-cursor",
+            "is-blue-particle",
+        ):
+            assert forbidden not in source
+
+    assert "this.pcOverlayBridge.moveCursorTo" in overlay_source
     assert "await this.waitForSceneDelay(DEFAULT_CURSOR_CLICK_VISIBLE_MS, isCurrent)" in plugin_runtime_source
 
 
@@ -1339,9 +1320,9 @@ def test_home_avatar_floating_guide_day_reset_buttons_are_wired():
     template_source = Path("templates/index.html").read_text(encoding="utf-8")
     reset_source = Path("static/avatar-floating-guide-reset.js").read_text(encoding="utf-8")
     style_source = Path("static/css/index.css").read_text(encoding="utf-8")
-    day2_screen_entry_block = reset_source[
-        reset_source.index("id: 'day2_screen_entry'")
-        :reset_source.index("id: 'day2_wrap'", reset_source.index("id: 'day2_screen_entry'"))
+    day2_block = reset_source[
+        reset_source.index("2: {")
+        :reset_source.index("3: {", reset_source.index("2: {"))
     ]
 
     assert "/static/avatar-floating-guide-reset.js" in template_source
@@ -1351,7 +1332,7 @@ def test_home_avatar_floating_guide_day_reset_buttons_are_wired():
 
     assert "neko_avatar_floating_guide_v1" in reset_source
     assert "neko:avatar-floating-guide-reset" in reset_source
-    assert "window.universalTutorialManager.resetPageTutorial('home')" in reset_source
+    assert "window.universalTutorialManager.resetPageTutorial('home')" not in reset_source
     assert "completedRounds = omitRound(state.completedRounds, round)" in reset_source
     assert "skippedRounds = omitRound(state.skippedRounds, round)" in reset_source
     assert "pendingRound = round" in reset_source
@@ -1383,9 +1364,9 @@ def test_home_avatar_floating_guide_day_reset_buttons_are_wired():
     assert "interruptController.playLightResistance" in reset_source
     assert "interruptController.abortAsAngryExit" in reset_source
     assert "interruptController.destroy()" in reset_source
-    assert "voiceKey: 'avatar_floating_day2_screen_entry_intro'" in day2_screen_entry_block
-    assert "cursorAction: 'wobble'" in day2_screen_entry_block
-    assert "operation: 'none'" in day2_screen_entry_block
+    assert "id: 'day2_screen_entry'" not in day2_block
+    assert "id: 'day2_screen_entry_invite'" not in day2_block
+    assert "cursorAction: 'wobble'" not in day2_block
     assert "runStepShowcase(step, token)" in reset_source
     assert "safeClickTarget(target)" in reset_source
     assert "closeFloatingPanels()" in reset_source
@@ -1393,9 +1374,38 @@ def test_home_avatar_floating_guide_day_reset_buttons_are_wired():
     assert "window.resetHomeTutorialDay = resetHomeTutorialDay" in reset_source
     assert "pointer-events: auto" in style_source
     assert "home-avatar-floating-guide-player" in style_source
-    assert "home-avatar-floating-guide-cursor" in style_source
+    assert "home-avatar-floating-guide-cursor" not in style_source
     assert 'data-home-avatar-floating-guide-role="action"' in style_source
     assert 'data-home-avatar-floating-guide-highlight="true"' in style_source
+
+
+def test_avatar_floating_reset_fallback_cursor_routes_to_pc_global_overlay():
+    reset_source = Path("static/avatar-floating-guide-reset.js").read_text(encoding="utf-8")
+
+    assert "function isPcTutorialOverlayAvailable()" in reset_source
+    assert "function sendPcTutorialOverlayCursor" in reset_source
+    assert "window.nekoTutorialOverlay.update" in reset_source
+    assert "movePcTutorialOverlayCursor" in reset_source
+    assert "clickPcTutorialOverlayCursor" in reset_source
+    assert "wobblePcTutorialOverlayCursor" in reset_source
+    assert "home-avatar-floating-guide-cursor" not in reset_source
+    assert "is-clicking" not in reset_source
+    assert "is-wobbling" not in reset_source
+
+    move_block = reset_source.split("async function moveGhostCursorToPoint", 1)[1].split(
+        "function hideGhostCursor",
+        1,
+    )[0]
+    hide_block = reset_source.split("function hideGhostCursor", 1)[1].split(
+        "async function destroy",
+        1,
+    )[0]
+
+    assert "if (isPcTutorialOverlayAvailable())" in move_block
+    assert "movePcTutorialOverlayCursor" in move_block
+    assert "clickPcTutorialOverlayCursor" in move_block
+    assert "wobblePcTutorialOverlayCursor" in move_block
+    assert "hidePcTutorialOverlayCursor();" in hide_block
 
 
 def test_avatar_floating_guide_runtime_has_no_obsolete_hidden_cursor_paths():
@@ -1438,15 +1448,11 @@ def test_avatar_floating_round_director_flow_matches_day2_to_day7_contracts():
         )
     )
     source = director_source + "\n" + guide_source
-    day2_screen_entry_block = day2_source[
-        day2_source.index("id: 'day2_screen_entry'")
-        :day2_source.index("id: 'day2_screen_entry_invite'")
-    ]
 
     for expected in (
         "resolveAvatarFloatingSceneEmotion(scene)",
         "return hasAvatarFloatingGuideUsage('voiceUsed') ? 'happy' : 'sad';",
-        "id: 'day3_galgame_games'",
+        "id: 'day3_galgame_entry'",
         "cleanupBefore: true",
         "this.collapseCharacterSettingsSidePanel();",
         "Day 6 插件管理预览完成",
@@ -1454,8 +1460,9 @@ def test_avatar_floating_round_director_flow_matches_day2_to_day7_contracts():
     ):
         assert expected in source
 
-    assert "cursorAction: 'wobble'" in day2_screen_entry_block
-    assert "operation:" not in day2_screen_entry_block
+    assert "id: 'day2_screen_entry'" not in day2_source
+    assert "id: 'day2_screen_entry_invite'" not in day2_source
+    assert "cursorAction: 'wobble'" not in day2_source
 
     assert "id: 'day7_storage_entry'" not in source
     assert "/cloudsave_manager" not in guide_source

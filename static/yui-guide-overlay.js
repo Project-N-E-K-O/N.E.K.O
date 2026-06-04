@@ -9,30 +9,8 @@
     const BACKDROP_CUTOUT_INSET = 4;
     const BACKDROP_DIM_ENABLED = false;
     const DEFAULT_CURSOR_CLICK_VISIBLE_MS = 420;
-    const CURSOR_CLICK_STAR_COUNT = 7;
-    const CURSOR_CLICK_STAR_LIFETIME_MS = 760;
-    const CURSOR_TRAIL_PARTICLE_LIFETIME_MS = 420;
-    const CURSOR_TRAIL_MIN_DISTANCE = 3;
-    const CURSOR_TRAIL_MIN_INTERVAL_MS = 8;
-    const CURSOR_TRAIL_SEGMENT_SPACING = 9;
-    const CURSOR_TRAIL_MAX_SEGMENTS_PER_FRAME = 6;
-    const CURSOR_TRAIL_MAX_POINTS = 34;
-    const CURSOR_TRAIL_MAX_PARTICLES = 24;
-    const CURSOR_TRAIL_ICON_CHANCE = 0.045;
-    const CURSOR_TRAIL_BLUE_PARTICLE_CHANCE = 0.42;
-    const CURSOR_TRAIL_MOVE_BURST_COUNT = 3;
-    const CURSOR_TRAIL_ACTION_BURST_COUNT = 5;
-    const CURSOR_TRAIL_BODY_HEAD_WIDTH = 34;
-    const CURSOR_TRAIL_BODY_TAIL_WIDTH = 8;
-    const CURSOR_TRAIL_CORE_HEAD_WIDTH = 14;
-    const CURSOR_TRAIL_CORE_TAIL_WIDTH = 3.8;
-    const CURSOR_TRAIL_HEAD_RADIUS = 15;
     const SMOOTH_CURSOR_SHOW_DURATION_MS = 560;
     const PC_OVERLAY_CURSOR_EASE = Object.freeze([0.22, 1, 0.36, 1]);
-    const CURSOR_TRAIL_ICON_URLS = Object.freeze([
-        '/static/icons/send_icon.png',
-        '/static/icons/paw_ui.png'
-    ]);
 
     function createElement(tagName, className) {
         const element = document.createElement(tagName);
@@ -483,25 +461,10 @@
             this.preview = null;
             this.previewTitle = null;
             this.previewList = null;
-            this.cursorShell = null;
-            this.cursorInner = null;
             this.pcOverlayBridge = createPcOverlayBridge(this.document);
             this.cursorPosition = null;
             this.cursorVisible = false;
             this.suppressedCursorMotion = null;
-            this.cursorClickTimer = 0;
-            this.activeClickStars = new Set();
-            this.activeTrailParticles = new Set();
-            this.cursorTrailLastPoint = null;
-            this.cursorTrailLastAt = 0;
-            this.cursorTrailSvg = null;
-            this.cursorTrailBody = null;
-            this.cursorTrailCore = null;
-            this.cursorTrailHead = null;
-            this.cursorTrailHeadCore = null;
-            this.cursorTrailGradient = null;
-            this.cursorTrailPoints = [];
-            this.cursorTrailDecayFrame = 0;
             this.persistentHighlightedElement = null;
             this.actionHighlightedElement = null;
             this.secondaryActionHighlightedElement = null;
@@ -650,12 +613,6 @@
                 preview.appendChild(previewTitle);
                 preview.appendChild(previewList);
 
-                const cursorShell = createElement('div', 'yui-guide-cursor-shell');
-                cursorShell.hidden = true;
-                const cursorInner = createElement('div', 'yui-guide-cursor');
-                cursorShell.appendChild(cursorInner);
-                const cursorTrailSvg = this.createCursorTrailLayer();
-
                 stage.appendChild(backdrop);
                 stage.appendChild(interactionShield);
                 stage.appendChild(persistentSpotlightFrame);
@@ -663,8 +620,6 @@
                 stage.appendChild(secondaryActionSpotlightFrame);
                 stage.appendChild(bubble);
                 stage.appendChild(preview);
-                stage.appendChild(cursorTrailSvg);
-                stage.appendChild(cursorShell);
                 root.appendChild(stage);
                 this.document.body.appendChild(root);
 
@@ -688,8 +643,6 @@
                 this.preview = preview;
                 this.previewTitle = previewTitle;
                 this.previewList = previewList;
-                this.cursorShell = cursorShell;
-                this.cursorInner = cursorInner;
                 this.extraSpotlightEntries = extraSpotlightEntries;
             } else {
                 this.stage = root.querySelector('.yui-guide-stage');
@@ -719,17 +672,6 @@
                 this.preview = root.querySelector('.yui-guide-preview');
                 this.previewTitle = root.querySelector('.yui-guide-preview-title');
                 this.previewList = root.querySelector('.yui-guide-preview-list');
-                this.cursorShell = root.querySelector('.yui-guide-cursor-shell');
-                this.cursorInner = root.querySelector('.yui-guide-cursor');
-                this.cursorTrailSvg = root.querySelector('.yui-guide-cursor-trail-layer');
-                this.cursorTrailBody = root.querySelector('.yui-guide-cursor-trail-ribbon');
-                this.cursorTrailCore = root.querySelector('.yui-guide-cursor-trail-core');
-                this.cursorTrailHead = root.querySelector('.yui-guide-cursor-trail-head');
-                this.cursorTrailHeadCore = root.querySelector('.yui-guide-cursor-trail-head-core');
-                this.cursorTrailGradient = root.querySelector('#' + ROOT_ID + '-cursor-trail-gradient');
-                if (!this.cursorTrailSvg && this.stage && this.cursorShell) {
-                    this.stage.insertBefore(this.createCursorTrailLayer(), this.cursorShell);
-                }
                 this.extraSpotlightEntries = [];
                 const cutouts = root.querySelectorAll('.yui-guide-backdrop-cutout-extra');
                 const frames = root.querySelectorAll('.yui-guide-spotlight-frame-extra');
@@ -745,78 +687,6 @@
 
             this.root = root;
             return root;
-        }
-
-        createCursorTrailLayer() {
-            const trailSvg = createSvgElement('svg', 'yui-guide-cursor-trail-layer');
-            trailSvg.setAttribute('aria-hidden', 'true');
-            trailSvg.setAttribute('data-yui-cursor-hidden', 'true');
-            trailSvg.setAttribute('preserveAspectRatio', 'none');
-
-            const defs = createSvgElement('defs');
-            const gradient = createSvgElement('linearGradient');
-            gradient.id = ROOT_ID + '-cursor-trail-gradient';
-            gradient.setAttribute('gradientUnits', 'userSpaceOnUse');
-
-            [
-                ['0%', '#3157e8', '0'],
-                ['22%', '#396dff', '0'],
-                ['58%', '#26bfff', '0.24'],
-                ['100%', '#55efff', '0.52']
-            ].forEach((entry) => {
-                const stop = createSvgElement('stop');
-                stop.setAttribute('offset', entry[0]);
-                stop.setAttribute('stop-color', entry[1]);
-                stop.setAttribute('stop-opacity', entry[2]);
-                gradient.appendChild(stop);
-            });
-
-            const headGradient = createSvgElement('radialGradient');
-            headGradient.id = ROOT_ID + '-cursor-trail-head-gradient';
-            headGradient.setAttribute('cx', '50%');
-            headGradient.setAttribute('cy', '50%');
-            headGradient.setAttribute('r', '58%');
-            [
-                ['0%', '#7df7ff', '0.44'],
-                ['48%', '#31c8ff', '0.2'],
-                ['100%', '#2d5cff', '0']
-            ].forEach((entry) => {
-                const stop = createSvgElement('stop');
-                stop.setAttribute('offset', entry[0]);
-                stop.setAttribute('stop-color', entry[1]);
-                stop.setAttribute('stop-opacity', entry[2]);
-                headGradient.appendChild(stop);
-            });
-
-            defs.appendChild(gradient);
-            defs.appendChild(headGradient);
-
-            const body = createSvgElement('path', 'yui-guide-cursor-trail-ribbon');
-            body.setAttribute('fill', 'url(#' + ROOT_ID + '-cursor-trail-gradient)');
-
-            const core = createSvgElement('path', 'yui-guide-cursor-trail-core');
-            core.setAttribute('fill', 'url(#' + ROOT_ID + '-cursor-trail-gradient)');
-
-            const head = createSvgElement('circle', 'yui-guide-cursor-trail-head');
-            head.setAttribute('fill', 'url(#' + ROOT_ID + '-cursor-trail-head-gradient)');
-
-            const headCore = createSvgElement('circle', 'yui-guide-cursor-trail-head-core');
-            headCore.setAttribute('fill', '#66f3ff');
-
-            trailSvg.appendChild(defs);
-            trailSvg.appendChild(body);
-            trailSvg.appendChild(core);
-            trailSvg.appendChild(head);
-            trailSvg.appendChild(headCore);
-
-            this.cursorTrailSvg = trailSvg;
-            this.cursorTrailBody = body;
-            this.cursorTrailCore = core;
-            this.cursorTrailHead = head;
-            this.cursorTrailHeadCore = headCore;
-            this.cursorTrailGradient = gradient;
-
-            return trailSvg;
         }
 
         ensureExtraSpotlightEntry(index) {
@@ -1564,14 +1434,7 @@
         }
 
         isCursorVisible() {
-            return !!(
-                this.cursorVisible
-                || (
-                    this.cursorShell
-                    && !this.cursorShell.hidden
-                    && this.cursorShell.classList.contains('is-visible')
-                )
-            );
+            return !!this.cursorVisible;
         }
 
         getCursorPosition() {
@@ -1590,8 +1453,6 @@
             this.finishSuppressedCursorMotion(false);
             this.cursorPosition = null;
             this.cursorVisible = false;
-            this.cursorTrailLastPoint = null;
-            this.cursorTrailLastAt = 0;
         }
 
         finishSuppressedCursorMotion(completed) {
@@ -1714,11 +1575,6 @@
 
         keepDomCursorSuppressedForPcOverlay() {
             this.cursorVisible = true;
-            this.document.body.classList.remove('yui-guide-ghost-cursor-active');
-            if (this.cursorShell) {
-                this.cursorShell.hidden = true;
-                this.cursorShell.classList.remove('is-visible');
-            }
         }
 
         getSmoothCursorShowDurationMs(x, y) {
@@ -1743,43 +1599,16 @@
                 } else if (this.pcOverlayBridge && typeof this.pcOverlayBridge.showCursorAt === 'function') {
                     this.pcOverlayBridge.showCursorAt(x, y);
                 }
-                if (this.shouldSuppressDomForPcOverlay()) {
-                    this.cursorVisible = true;
-                    this.document.body.classList.remove('yui-guide-ghost-cursor-active');
-                    if (this.cursorShell) {
-                        this.cursorShell.hidden = true;
-                        this.cursorShell.classList.remove('is-visible');
-                    }
-                    if (previous && glideDurationMs > 0) {
-                        return this.animateSuppressedCursorPositionTo(x, y, glideDurationMs);
-                    }
-                    this.cursorPosition = { x: x, y: y };
-                    return Promise.resolve(true);
+                this.keepDomCursorSuppressedForPcOverlay();
+                if (previous && glideDurationMs > 0) {
+                    return this.animateSuppressedCursorPositionTo(x, y, glideDurationMs);
                 }
+                this.cursorPosition = { x: x, y: y };
+                this.cursorVisible = true;
+                return Promise.resolve(true);
             }
-            const shouldGlide = !!(
-                previous
-                && glideDurationMs > 0
-                && this.cursorShell
-                && !this.cursorShell.hidden
-                && this.cursorShell.classList.contains('is-visible')
-            );
-            this.document.body.classList.add('yui-guide-ghost-cursor-active');
-            if (shouldGlide) {
-                this.cursorShell.hidden = false;
-                this.cursorShell.classList.add('is-visible');
-                this.cursorTrailLastPoint = { x: previous.x, y: previous.y };
-                this.cursorTrailLastAt = 0;
-                return this.moveCursorTo(x, y, { durationMs: 360 });
-            }
-            this.cursorShell.style.transitionDuration = '0ms';
-            this.cursorShell.style.transform = 'translate(' + Math.round(x) + 'px, ' + Math.round(y) + 'px)';
             this.cursorPosition = { x: x, y: y };
-            this.cursorVisible = true;
-            this.cursorTrailLastPoint = null;
-            this.cursorTrailLastAt = 0;
-            this.cursorShell.hidden = false;
-            this.cursorShell.classList.add('is-visible');
+            this.cursorVisible = false;
             return Promise.resolve(true);
         }
 
@@ -1797,38 +1626,25 @@
                 if (!this.cursorPosition) {
                     if (this.pcOverlayBridge && typeof this.pcOverlayBridge.showCursorAt === 'function') {
                         this.pcOverlayBridge.showCursorAt(x, y);
+                    } else if (this.pcOverlayBridge && typeof this.pcOverlayBridge.moveCursorTo === 'function') {
+                        this.pcOverlayBridge.moveCursorTo(x, y, durationMs, normalizedOptions.effect || '');
                     }
-                    if (this.shouldSuppressDomForPcOverlay()) {
-                        this.cursorPosition = { x: x, y: y };
-                        this.cursorVisible = true;
-                        this.document.body.classList.remove('yui-guide-ghost-cursor-active');
-                        if (this.cursorShell) {
-                            this.cursorShell.hidden = true;
-                            this.cursorShell.classList.remove('is-visible');
-                        }
-                        return Promise.resolve(true);
-                    }
-                } else if (this.shouldSuppressDomForPcOverlay()) {
+                    this.keepDomCursorSuppressedForPcOverlay();
+                    this.cursorPosition = { x: x, y: y };
+                    this.cursorVisible = true;
+                    return Promise.resolve(true);
+                }
+                if (this.cursorPosition) {
                     if (this.pcOverlayBridge && typeof this.pcOverlayBridge.moveCursorTo === 'function') {
                         this.pcOverlayBridge.moveCursorTo(x, y, durationMs, normalizedOptions.effect || '');
                     }
-                    this.cursorVisible = true;
-                    this.document.body.classList.remove('yui-guide-ghost-cursor-active');
-                    if (this.cursorShell) {
-                        this.cursorShell.hidden = true;
-                        this.cursorShell.classList.remove('is-visible');
-                    }
+                    this.keepDomCursorSuppressedForPcOverlay();
                     return this.animateSuppressedCursorPositionTo(x, y, durationMs, {
                         pauseCheck: pauseCheck,
                         cancelCheck: cancelCheck
                     });
                 }
-                if (this.pcOverlayBridge && typeof this.pcOverlayBridge.moveCursorTo === 'function') {
-                    this.pcOverlayBridge.moveCursorTo(x, y, durationMs, normalizedOptions.effect || '');
-                }
             }
-            this.ensureRoot();
-
             const normalizedOptions = options || {};
             const durationMs = Number.isFinite(normalizedOptions.durationMs) ? normalizedOptions.durationMs : 480;
             const pauseCheck = typeof normalizedOptions.pauseCheck === 'function'
@@ -1839,545 +1655,16 @@
                 : null;
 
             if (!this.cursorPosition) {
-                this.showCursorAt(x, y);
-                return Promise.resolve(true);
-            }
-
-            this.document.body.classList.add('yui-guide-ghost-cursor-active');
-            this.cursorShell.hidden = false;
-            this.cursorShell.classList.add('is-visible');
-            if (shouldReduceMotion()) {
-                if (cancelCheck && cancelCheck()) {
-                    return Promise.resolve(false);
-                }
-                this.cursorShell.style.transitionDuration = '0ms';
-                this.cursorShell.style.transform = 'translate(' + Math.round(x) + 'px, ' + Math.round(y) + 'px)';
                 this.cursorPosition = { x: x, y: y };
-                this.cursorVisible = true;
-                this.cursorTrailLastPoint = null;
-                this.cursorTrailLastAt = 0;
+                this.cursorVisible = false;
                 return Promise.resolve(true);
             }
 
-            return new Promise((resolve) => {
-                let settled = false;
-                let frameId = 0;
-                let elapsedMs = 0;
-                let lastNow = 0;
-                const startX = this.cursorPosition.x;
-                const startY = this.cursorPosition.y;
-                const deltaX = x - startX;
-                const deltaY = y - startY;
-                const totalDistance = Math.hypot(deltaX, deltaY);
-                const movementAngle = Math.atan2(deltaY, deltaX || 0.001);
-                this.cursorTrailLastPoint = { x: startX, y: startY };
-                this.cursorTrailLastAt = 0;
-                const finish = (completed) => {
-                    if (settled) {
-                        return;
-                    }
-                    settled = true;
-                    if (frameId) {
-                        window.cancelAnimationFrame(frameId);
-                        frameId = 0;
-                    }
-                    if (completed) {
-                        this.cursorPosition = { x: x, y: y };
-                        this.cursorVisible = true;
-                        if (totalDistance > 8) {
-                            this.spawnCursorTrailBurst(x, y, movementAngle, CURSOR_TRAIL_MOVE_BURST_COUNT);
-                        }
-                    }
-                    resolve(completed !== false);
-                };
-
-                const tick = (now) => {
-                    if (settled || !this.cursorShell || !this.cursorShell.isConnected) {
-                        finish(false);
-                        return;
-                    }
-
-                    if (cancelCheck && cancelCheck()) {
-                        finish(false);
-                        return;
-                    }
-
-                    if (pauseCheck && pauseCheck()) {
-                        lastNow = now;
-                        frameId = window.requestAnimationFrame(tick);
-                        return;
-                    }
-
-                    if (!lastNow) {
-                        lastNow = now;
-                    }
-
-                    elapsedMs += Math.max(0, now - lastNow);
-                    lastNow = now;
-
-                    const progress = durationMs <= 0
-                        ? 1
-                        : Math.max(0, Math.min(1, elapsedMs / durationMs));
-                    const nextX = startX + (deltaX * progress);
-                    const nextY = startY + (deltaY * progress);
-                    const previousX = this.cursorPosition ? this.cursorPosition.x : startX;
-                    const previousY = this.cursorPosition ? this.cursorPosition.y : startY;
-
-                    this.cursorShell.style.transitionDuration = '0ms';
-                    this.cursorShell.style.transform = 'translate(' + Math.round(nextX) + 'px, ' + Math.round(nextY) + 'px)';
-                    this.cursorPosition = { x: nextX, y: nextY };
-                    this.cursorVisible = true;
-                    this.maybeSpawnCursorTrail(nextX, nextY, previousX, previousY, now);
-
-                    if (progress >= 1) {
-                        finish(true);
-                        return;
-                    }
-
-                    frameId = window.requestAnimationFrame(tick);
-                };
-
-                frameId = window.requestAnimationFrame(tick);
+            this.cursorVisible = false;
+            return this.animateSuppressedCursorPositionTo(x, y, durationMs, {
+                pauseCheck: pauseCheck,
+                cancelCheck: cancelCheck
             });
-        }
-
-        removeCursorTrailEntry(entry) {
-            if (!entry) {
-                return;
-            }
-            if (entry.timer) {
-                window.clearTimeout(entry.timer);
-            }
-            if (entry.element && entry.element.parentNode) {
-                entry.element.parentNode.removeChild(entry.element);
-            }
-            this.activeTrailParticles.delete(entry);
-        }
-
-        trimCursorTrailParticles() {
-            while (this.activeTrailParticles.size > CURSOR_TRAIL_MAX_PARTICLES) {
-                const first = this.activeTrailParticles.values().next().value;
-                if (!first) {
-                    return;
-                }
-                this.removeCursorTrailEntry(first);
-            }
-        }
-
-        clearCursorTrailParticles() {
-            if (this.cursorTrailDecayFrame) {
-                window.cancelAnimationFrame(this.cursorTrailDecayFrame);
-                this.cursorTrailDecayFrame = 0;
-            }
-
-            if (this.activeTrailParticles && this.activeTrailParticles.size > 0) {
-                Array.from(this.activeTrailParticles).forEach((entry) => {
-                    this.removeCursorTrailEntry(entry);
-                });
-            }
-
-            this.cursorTrailPoints = [];
-            this.cursorTrailLastPoint = null;
-            this.cursorTrailLastAt = 0;
-            if (this.cursorTrailSvg) {
-                this.cursorTrailSvg.classList.remove('is-visible');
-            }
-            if (this.cursorTrailBody) {
-                this.cursorTrailBody.setAttribute('d', '');
-            }
-            if (this.cursorTrailCore) {
-                this.cursorTrailCore.setAttribute('d', '');
-            }
-        }
-
-        spawnCursorTrailParticle(x, y, angle, kind) {
-            if (!this.stage || shouldReduceMotion()) {
-                return;
-            }
-
-            const isBlueParticle = kind === 'blue';
-            const particle = createElement(
-                'span',
-                'yui-guide-cursor-trail ' + (isBlueParticle ? 'is-blue-particle' : 'is-icon')
-            );
-            const width = isBlueParticle
-                ? 5 + Math.random() * 5
-                : 7 + Math.random() * 5;
-            const opacity = isBlueParticle
-                ? 0.46 + Math.random() * 0.22
-                : 0.09 + Math.random() * 0.1;
-            const drift = isBlueParticle
-                ? 14 + Math.random() * 24
-                : 10 + Math.random() * 16;
-            const sideJitter = (Math.random() - 0.5) * (isBlueParticle ? 30 : 20);
-            const backOffset = isBlueParticle
-                ? 10 + Math.random() * 28
-                : 22 + Math.random() * 20;
-            const cos = Math.cos(angle);
-            const sin = Math.sin(angle);
-            const baseX = x - (cos * backOffset) - (sin * sideJitter);
-            const baseY = y - (sin * backOffset) + (cos * sideJitter);
-
-            particle.setAttribute('aria-hidden', 'true');
-            particle.style.left = baseX.toFixed(2) + 'px';
-            particle.style.top = baseY.toFixed(2) + 'px';
-            particle.style.setProperty('--trail-width', width.toFixed(2) + 'px');
-            particle.style.setProperty('--trail-height', width.toFixed(2) + 'px');
-            particle.style.setProperty('--trail-angle', (angle * 180 / Math.PI).toFixed(2) + 'deg');
-            particle.style.setProperty('--trail-drift-x', (-cos * drift).toFixed(2) + 'px');
-            particle.style.setProperty('--trail-drift-y', (-sin * drift).toFixed(2) + 'px');
-            particle.style.setProperty('--trail-opacity', opacity.toFixed(2));
-
-            if (!isBlueParticle) {
-                particle.style.setProperty('--trail-brightness', (0.78 + Math.random() * 0.2).toFixed(2));
-                const iconUrl = CURSOR_TRAIL_ICON_URLS[Math.floor(Math.random() * CURSOR_TRAIL_ICON_URLS.length)];
-                particle.style.setProperty('--trail-icon', 'url("' + iconUrl + '")');
-            }
-
-            const entry = {
-                element: particle,
-                timer: 0
-            };
-            entry.timer = window.setTimeout(() => {
-                this.removeCursorTrailEntry(entry);
-            }, CURSOR_TRAIL_PARTICLE_LIFETIME_MS + 120);
-
-            this.activeTrailParticles.add(entry);
-            this.stage.appendChild(particle);
-            this.trimCursorTrailParticles();
-        }
-
-        spawnCursorTrailBurst(x, y, angle, count) {
-            if (!this.stage || shouldReduceMotion()) {
-                return;
-            }
-
-            const normalizedCount = Math.max(1, Math.round(Number.isFinite(count) ? count : CURSOR_TRAIL_MOVE_BURST_COUNT));
-            const baseAngle = Number.isFinite(angle) ? angle : 0;
-            for (let index = 0; index < normalizedCount; index += 1) {
-                const offset = normalizedCount <= 1
-                    ? 0
-                    : ((index / (normalizedCount - 1)) - 0.5) * 1.7;
-                this.spawnCursorTrailParticle(x, y, baseAngle + offset + ((Math.random() - 0.5) * 0.38), 'blue');
-            }
-        }
-
-        getCursorTrailNow(now) {
-            if (Number.isFinite(now)) {
-                return now;
-            }
-            if (window.performance && typeof window.performance.now === 'function') {
-                return window.performance.now();
-            }
-            return Date.now();
-        }
-
-        syncCursorTrailViewport() {
-            if (!this.cursorTrailSvg) {
-                return;
-            }
-            const width = Math.max(1, window.innerWidth || this.document.documentElement.clientWidth || 1);
-            const height = Math.max(1, window.innerHeight || this.document.documentElement.clientHeight || 1);
-            this.cursorTrailSvg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
-        }
-
-        trimCursorTrailPoints(now) {
-            const cutoff = now - CURSOR_TRAIL_PARTICLE_LIFETIME_MS;
-            this.cursorTrailPoints = (this.cursorTrailPoints || [])
-                .filter((point) => point && Number.isFinite(point.x) && Number.isFinite(point.y) && point.t >= cutoff);
-
-            if (this.cursorTrailPoints.length > CURSOR_TRAIL_MAX_POINTS) {
-                this.cursorTrailPoints = this.cursorTrailPoints.slice(this.cursorTrailPoints.length - CURSOR_TRAIL_MAX_POINTS);
-            }
-        }
-
-        formatCursorTrailPoint(point) {
-            return point.x.toFixed(1) + ' ' + point.y.toFixed(1);
-        }
-
-        appendSmoothCursorTrailPath(points, useMove) {
-            if (!points || points.length === 0) {
-                return '';
-            }
-
-            let path = (useMove ? 'M ' : 'L ') + this.formatCursorTrailPoint(points[0]);
-            if (points.length === 1) {
-                return path;
-            }
-
-            for (let index = 1; index < points.length - 1; index += 1) {
-                const current = points[index];
-                const next = points[index + 1];
-                const mid = {
-                    x: (current.x + next.x) / 2,
-                    y: (current.y + next.y) / 2
-                };
-                path += ' Q ' + this.formatCursorTrailPoint(current) + ' ' + this.formatCursorTrailPoint(mid);
-            }
-
-            path += ' L ' + this.formatCursorTrailPoint(points[points.length - 1]);
-            return path;
-        }
-
-        buildCursorTrailRibbonPath(points, headWidth, tailWidth) {
-            if (!points || points.length < 2) {
-                return '';
-            }
-
-            const left = [];
-            const right = [];
-            const count = points.length;
-
-            for (let index = 0; index < count; index += 1) {
-                const point = points[index];
-                const previous = points[Math.max(0, index - 1)];
-                const next = points[Math.min(count - 1, index + 1)];
-                let dx = next.x - previous.x;
-                let dy = next.y - previous.y;
-                let length = Math.hypot(dx, dy);
-
-                if (length < 0.001 && index > 0) {
-                    dx = point.x - points[index - 1].x;
-                    dy = point.y - points[index - 1].y;
-                    length = Math.hypot(dx, dy);
-                }
-                if (length < 0.001) {
-                    dx = 1;
-                    dy = 0;
-                    length = 1;
-                }
-
-                const progress = count <= 1 ? 1 : index / (count - 1);
-                const eased = progress * progress * (3 - (2 * progress));
-                const width = tailWidth + ((headWidth - tailWidth) * eased);
-                const normalX = -dy / length;
-                const normalY = dx / length;
-                const halfWidth = width / 2;
-
-                left.push({
-                    x: point.x + (normalX * halfWidth),
-                    y: point.y + (normalY * halfWidth)
-                });
-                right.push({
-                    x: point.x - (normalX * halfWidth),
-                    y: point.y - (normalY * halfWidth)
-                });
-            }
-
-            return this.appendSmoothCursorTrailPath(left, true)
-                + ' '
-                + this.appendSmoothCursorTrailPath(right.slice().reverse(), false)
-                + ' Z';
-        }
-
-        updateCursorTrail(now) {
-            if (!this.stage || shouldReduceMotion()) {
-                this.clearCursorTrailParticles();
-                return;
-            }
-
-            if (!this.cursorTrailSvg || !this.cursorTrailBody || !this.cursorTrailCore) {
-                const layer = this.createCursorTrailLayer();
-                if (this.cursorShell) {
-                    this.stage.insertBefore(layer, this.cursorShell);
-                } else {
-                    this.stage.appendChild(layer);
-                }
-            }
-
-            const currentNow = this.getCursorTrailNow(now);
-            this.syncCursorTrailViewport();
-            this.trimCursorTrailPoints(currentNow);
-
-            if (this.cursorTrailPoints.length < 2) {
-                if (this.cursorTrailSvg) {
-                    this.cursorTrailSvg.classList.remove('is-visible');
-                }
-                this.cursorTrailBody.setAttribute('d', '');
-                this.cursorTrailCore.setAttribute('d', '');
-                return;
-            }
-
-            const points = this.cursorTrailPoints;
-            const tail = points[0];
-            const head = points[points.length - 1];
-            const bodyPath = this.buildCursorTrailRibbonPath(
-                points,
-                CURSOR_TRAIL_BODY_HEAD_WIDTH,
-                CURSOR_TRAIL_BODY_TAIL_WIDTH
-            );
-            const corePath = this.buildCursorTrailRibbonPath(
-                points,
-                CURSOR_TRAIL_CORE_HEAD_WIDTH,
-                CURSOR_TRAIL_CORE_TAIL_WIDTH
-            );
-
-            if (this.cursorTrailGradient) {
-                this.cursorTrailGradient.setAttribute('x1', tail.x.toFixed(1));
-                this.cursorTrailGradient.setAttribute('y1', tail.y.toFixed(1));
-                this.cursorTrailGradient.setAttribute('x2', head.x.toFixed(1));
-                this.cursorTrailGradient.setAttribute('y2', head.y.toFixed(1));
-            }
-
-            this.cursorTrailBody.setAttribute('d', bodyPath);
-            this.cursorTrailCore.setAttribute('d', corePath);
-            if (this.cursorTrailHead) {
-                this.cursorTrailHead.setAttribute('cx', head.x.toFixed(1));
-                this.cursorTrailHead.setAttribute('cy', head.y.toFixed(1));
-                this.cursorTrailHead.setAttribute('r', String(CURSOR_TRAIL_HEAD_RADIUS));
-            }
-            if (this.cursorTrailHeadCore) {
-                this.cursorTrailHeadCore.setAttribute('cx', head.x.toFixed(1));
-                this.cursorTrailHeadCore.setAttribute('cy', head.y.toFixed(1));
-                this.cursorTrailHeadCore.setAttribute('r', '3.8');
-            }
-            if (this.cursorTrailSvg) {
-                this.cursorTrailSvg.classList.add('is-visible');
-            }
-        }
-
-        scheduleCursorTrailDecay() {
-            if (this.cursorTrailDecayFrame || shouldReduceMotion()) {
-                return;
-            }
-
-            const tick = (now) => {
-                this.cursorTrailDecayFrame = 0;
-                this.updateCursorTrail(now);
-                if (this.cursorTrailPoints && this.cursorTrailPoints.length > 0) {
-                    this.cursorTrailDecayFrame = window.requestAnimationFrame(tick);
-                }
-            };
-
-            this.cursorTrailDecayFrame = window.requestAnimationFrame(tick);
-        }
-
-        maybeSpawnCursorTrail(x, y, previousX, previousY, now) {
-            if (shouldReduceMotion()) {
-                return;
-            }
-
-            const dx = x - previousX;
-            const dy = y - previousY;
-            const stepDistance = Math.hypot(dx, dy);
-            if (stepDistance < 0.6) {
-                return;
-            }
-
-            const currentNow = this.getCursorTrailNow(now);
-            const lastPoint = this.cursorTrailLastPoint;
-            const elapsedMs = Number.isFinite(currentNow) && Number.isFinite(this.cursorTrailLastAt)
-                ? currentNow - this.cursorTrailLastAt
-                : CURSOR_TRAIL_MIN_INTERVAL_MS;
-            const distanceFromLast = lastPoint
-                ? Math.hypot(x - lastPoint.x, y - lastPoint.y)
-                : CURSOR_TRAIL_MIN_DISTANCE;
-
-            if (distanceFromLast < CURSOR_TRAIL_MIN_DISTANCE && elapsedMs < CURSOR_TRAIL_MIN_INTERVAL_MS) {
-                return;
-            }
-
-            const startPoint = lastPoint
-                ? {
-                    x: lastPoint.x,
-                    y: lastPoint.y,
-                    t: Number.isFinite(lastPoint.t) ? lastPoint.t : Math.max(0, currentNow - 16)
-                }
-                : {
-                    x: previousX,
-                    y: previousY,
-                    t: Math.max(0, currentNow - 16)
-                };
-            if (!lastPoint || this.cursorTrailPoints.length === 0) {
-                this.cursorTrailPoints.push(startPoint);
-            }
-
-            const distance = Math.hypot(x - startPoint.x, y - startPoint.y);
-            const segmentCount = Math.max(
-                1,
-                Math.min(CURSOR_TRAIL_MAX_SEGMENTS_PER_FRAME, Math.ceil(distance / CURSOR_TRAIL_SEGMENT_SPACING))
-            );
-            const startTime = Number.isFinite(startPoint.t) ? startPoint.t : currentNow - 16;
-
-            for (let index = 1; index <= segmentCount; index += 1) {
-                const ratio = index / segmentCount;
-                this.cursorTrailPoints.push({
-                    x: startPoint.x + ((x - startPoint.x) * ratio),
-                    y: startPoint.y + ((y - startPoint.y) * ratio),
-                    t: startTime + ((currentNow - startTime) * ratio)
-                });
-            }
-
-            this.cursorTrailLastPoint = { x: x, y: y, t: currentNow };
-            this.cursorTrailLastAt = currentNow;
-            this.updateCursorTrail(currentNow);
-            this.scheduleCursorTrailDecay();
-
-            if (Math.random() < CURSOR_TRAIL_BLUE_PARTICLE_CHANCE && distance > 10) {
-                this.spawnCursorTrailParticle(x, y, Math.atan2(dy, dx), 'blue');
-            }
-            if (Math.random() < CURSOR_TRAIL_ICON_CHANCE && distance > 16) {
-                this.spawnCursorTrailParticle(x, y, Math.atan2(dy, dx), 'icon');
-            }
-        }
-
-        clearCursorClickStars() {
-            if (!this.activeClickStars || this.activeClickStars.size === 0) {
-                return;
-            }
-
-            this.activeClickStars.forEach((entry) => {
-                if (!entry) {
-                    return;
-                }
-                if (entry.timer) {
-                    window.clearTimeout(entry.timer);
-                }
-                if (entry.element && entry.element.parentNode) {
-                    entry.element.parentNode.removeChild(entry.element);
-                }
-            });
-            this.activeClickStars.clear();
-        }
-
-        spawnCursorClickStars() {
-            if (!this.cursorShell || shouldReduceMotion()) {
-                return;
-            }
-
-            const fragment = this.document.createDocumentFragment();
-            for (let index = 0; index < CURSOR_CLICK_STAR_COUNT; index += 1) {
-                const angle = ((Math.PI * 2) * (index / CURSOR_CLICK_STAR_COUNT)) + ((Math.random() - 0.5) * 0.92);
-                const distance = 28 + Math.random() * 34;
-                const size = 6 + Math.random() * 6;
-                const x = Math.cos(angle) * distance;
-                const y = Math.sin(angle) * distance;
-                const star = createElement('span', 'yui-guide-click-star');
-                star.setAttribute('aria-hidden', 'true');
-                star.style.setProperty('--star-x', x.toFixed(2) + 'px');
-                star.style.setProperty('--star-y', y.toFixed(2) + 'px');
-                star.style.setProperty('--star-mid-x', (x * 0.76).toFixed(2) + 'px');
-                star.style.setProperty('--star-mid-y', (y * 0.76).toFixed(2) + 'px');
-                star.style.setProperty('--star-size', size.toFixed(2) + 'px');
-                star.style.setProperty('--star-rotate', Math.round(Math.random() * 180) + 'deg');
-                star.style.setProperty('--star-delay', Math.round(Math.random() * 60) + 'ms');
-                star.style.setProperty('--star-hue', String(Math.round(36 + Math.random() * 28)));
-                fragment.appendChild(star);
-
-                const entry = {
-                    element: star,
-                    timer: 0
-                };
-                entry.timer = window.setTimeout(() => {
-                    if (star.parentNode) {
-                        star.parentNode.removeChild(star);
-                    }
-                    this.activeClickStars.delete(entry);
-                }, CURSOR_CLICK_STAR_LIFETIME_MS + 120);
-                this.activeClickStars.add(entry);
-            }
-
-            this.cursorShell.appendChild(fragment);
         }
 
         clickCursor(durationMs) {
@@ -2385,44 +1672,10 @@
                 if (this.cursorPosition && this.pcOverlayBridge && typeof this.pcOverlayBridge.moveCursorTo === 'function') {
                     this.pcOverlayBridge.moveCursorTo(this.cursorPosition.x, this.cursorPosition.y, durationMs || DEFAULT_CURSOR_CLICK_VISIBLE_MS, 'click');
                 }
-                if (this.shouldSuppressDomForPcOverlay()) {
-                    return;
-                }
-            }
-            this.ensureRoot();
-            if (!this.cursorInner) {
+                this.keepDomCursorSuppressedForPcOverlay();
                 return;
             }
-            const visibleMs = Number.isFinite(durationMs)
-                ? Math.max(DEFAULT_CURSOR_CLICK_VISIBLE_MS, Math.round(durationMs))
-                : DEFAULT_CURSOR_CLICK_VISIBLE_MS;
-            if (this.cursorClickTimer) {
-                window.clearTimeout(this.cursorClickTimer);
-                this.cursorClickTimer = 0;
-            }
-            if (this.cursorShell) {
-                this.document.body.classList.add('yui-guide-ghost-cursor-active');
-                this.cursorShell.hidden = false;
-                this.cursorShell.classList.add('is-visible');
-            }
-            this.cursorInner.classList.remove('is-clicking');
-            void this.cursorInner.offsetWidth;
-            this.cursorInner.classList.add('is-clicking');
-            this.spawnCursorClickStars();
-            if (this.cursorPosition) {
-                this.spawnCursorTrailBurst(
-                    this.cursorPosition.x,
-                    this.cursorPosition.y,
-                    -Math.PI / 2,
-                    CURSOR_TRAIL_ACTION_BURST_COUNT
-                );
-            }
-            this.cursorClickTimer = window.setTimeout(() => {
-                this.cursorClickTimer = 0;
-                if (this.cursorInner) {
-                    this.cursorInner.classList.remove('is-clicking');
-                }
-            }, visibleMs);
+            this.cursorVisible = false;
         }
 
         wobbleCursor(effectDurationMs) {
@@ -2430,34 +1683,14 @@
                 if (this.cursorPosition && this.pcOverlayBridge && typeof this.pcOverlayBridge.moveCursorTo === 'function') {
                     this.pcOverlayBridge.moveCursorTo(this.cursorPosition.x, this.cursorPosition.y, 0, 'wobble', effectDurationMs);
                 }
-                if (this.shouldSuppressDomForPcOverlay()) {
-                    return;
-                }
-            }
-            this.ensureRoot();
-            if (!this.cursorInner) {
+                this.keepDomCursorSuppressedForPcOverlay();
                 return;
             }
-            this.cursorInner.classList.remove('is-wobbling');
-            void this.cursorInner.offsetWidth;
-            this.cursorInner.classList.add('is-wobbling');
-            if (this.cursorPosition) {
-                this.spawnCursorTrailBurst(
-                    this.cursorPosition.x,
-                    this.cursorPosition.y,
-                    Math.PI,
-                    CURSOR_TRAIL_ACTION_BURST_COUNT
-                );
-            }
-            window.setTimeout(() => {
-                if (this.cursorInner) {
-                    this.cursorInner.classList.remove('is-wobbling');
-                }
-            }, 700);
+            this.cursorVisible = false;
         }
 
         runEllipseAnimation(centerX, centerY, radiusX, radiusY, cycleMs, abortCheck, pauseCheck, cancelCheck) {
-            if (this.isPcOverlayActive() && this.shouldSuppressDomForPcOverlay()) {
+            if (this.isPcOverlayActive()) {
                 return this.runSuppressedPcOverlayEllipseAnimation(
                     centerX,
                     centerY,
@@ -2469,111 +1702,18 @@
                     cancelCheck
                 );
             }
-            this.ensureRoot();
-            if (!this.cursorShell) {
-                return Promise.resolve(false);
-            }
-
             var self = this;
             var startX = centerX + radiusX;
             var startY = centerY;
-
-            self.document.body.classList.add('yui-guide-ghost-cursor-active');
-            self.cursorShell.hidden = false;
-            self.cursorShell.classList.add('is-visible');
-            var startDistance = self.cursorPosition
-                ? Math.hypot(startX - self.cursorPosition.x, startY - self.cursorPosition.y)
-                : 0;
-            if (shouldReduceMotion()) {
-                if (typeof cancelCheck === 'function' && cancelCheck()) {
-                    return Promise.resolve(false);
-                }
-                if (typeof abortCheck === 'function' && abortCheck()) {
-                    return Promise.resolve(false);
-                }
-                self.cursorShell.style.transitionDuration = '0ms';
-                self.cursorShell.style.transform = 'translate(' + Math.round(startX) + 'px, ' + Math.round(startY) + 'px)';
-                self.cursorPosition = { x: startX, y: startY };
-                self.cursorTrailLastPoint = null;
-                self.cursorTrailLastAt = 0;
-                return Promise.resolve(true);
+            if (typeof cancelCheck === 'function' && cancelCheck()) {
+                return Promise.resolve(false);
             }
-            var prepareMove = self.cursorPosition && startDistance > 2
-                ? self.moveCursorTo(startX, startY, {
-                    durationMs: Math.min(520, Math.max(220, Math.round(cycleMs * 0.08))),
-                    pauseCheck: pauseCheck,
-                    cancelCheck: cancelCheck
-                })
-                : Promise.resolve(true);
-
-            return prepareMove.then(function (prepared) {
-                if (!prepared) {
-                    return false;
-                }
-
-                var startedAt = performance.now();
-                var pausedTotalMs = 0;
-                var pausedAt = 0;
-                self.cursorTrailLastPoint = self.cursorPosition
-                    ? { x: self.cursorPosition.x, y: self.cursorPosition.y }
-                    : null;
-                self.cursorTrailLastAt = 0;
-
-                return new Promise(function (resolve) {
-                function tick(now) {
-                    if (!self.cursorShell || !self.cursorShell.isConnected) {
-                        resolve(false);
-                        return;
-                    }
-
-                    if (typeof cancelCheck === 'function' && cancelCheck()) {
-                        resolve(false);
-                        return;
-                    }
-
-                    if (typeof abortCheck === 'function' && abortCheck()) {
-                        if (pausedAt) {
-                            pausedTotalMs += Math.max(0, now - pausedAt);
-                            pausedAt = 0;
-                        }
-                        resolve(false);
-                        return;
-                    }
-
-                    if (typeof pauseCheck === 'function' && pauseCheck()) {
-                        if (!pausedAt) {
-                            pausedAt = now;
-                        }
-                        window.requestAnimationFrame(tick);
-                        return;
-                    }
-
-                    if (pausedAt) {
-                        pausedTotalMs += Math.max(0, now - pausedAt);
-                        pausedAt = 0;
-                    }
-
-                    var progress = Math.max(0, Math.min(1, (now - startedAt - pausedTotalMs) / cycleMs));
-                    var angle = progress * Math.PI * 2;
-                    var x = centerX + Math.cos(angle) * radiusX;
-                    var y = centerY + Math.sin(angle) * radiusY;
-                    var previousX = self.cursorPosition ? self.cursorPosition.x : x;
-                    var previousY = self.cursorPosition ? self.cursorPosition.y : y;
-                    self.cursorShell.style.transitionDuration = '80ms';
-                    self.cursorShell.style.transform = 'translate(' + Math.round(x) + 'px, ' + Math.round(y) + 'px)';
-                    self.cursorPosition = { x: x, y: y };
-                    self.maybeSpawnCursorTrail(x, y, previousX, previousY, now);
-
-                    if (progress >= 1) {
-                        resolve(true);
-                        return;
-                    }
-                    window.requestAnimationFrame(tick);
-                }
-
-                window.requestAnimationFrame(tick);
-            });
-            });
+            if (typeof abortCheck === 'function' && abortCheck()) {
+                return Promise.resolve(false);
+            }
+            self.cursorPosition = { x: startX, y: startY };
+            self.cursorVisible = false;
+            return Promise.resolve(true);
         }
 
         runSuppressedPcOverlayEllipseAnimation(centerX, centerY, radiusX, radiusY, cycleMs, abortCheck, pauseCheck, cancelCheck) {
@@ -2678,25 +1818,10 @@
                 if (this.pcOverlayBridge && typeof this.pcOverlayBridge.hideCursor === 'function') {
                     this.pcOverlayBridge.hideCursor();
                 }
-                if (this.shouldSuppressDomForPcOverlay()) {
-                    this.cursorVisible = false;
-                    return;
-                }
+                this.cursorVisible = false;
+                return;
             }
-            this.ensureRoot();
             this.cursorVisible = false;
-            this.document.body.classList.remove('yui-guide-ghost-cursor-active');
-            if (this.cursorClickTimer) {
-                window.clearTimeout(this.cursorClickTimer);
-                this.cursorClickTimer = 0;
-            }
-            if (this.cursorInner) {
-                this.cursorInner.classList.remove('is-clicking');
-            }
-            this.clearCursorClickStars();
-            this.clearCursorTrailParticles();
-            this.cursorShell.hidden = true;
-            this.cursorShell.classList.remove('is-visible');
         }
 
         playPetalTransition(origin, options) {
@@ -2716,15 +1841,8 @@
                 this.pcOverlayBridge.clear();
             }
             this.document.body.classList.remove('yui-taking-over');
-            this.document.body.classList.remove('yui-guide-ghost-cursor-active');
             this.document.documentElement.style.cursor = '';
             this.document.body.style.cursor = '';
-            if (this.cursorClickTimer) {
-                window.clearTimeout(this.cursorClickTimer);
-                this.cursorClickTimer = 0;
-            }
-            this.clearCursorClickStars();
-            this.clearCursorTrailParticles();
             this.clearSpotlight();
             if (this.root && this.root.isConnected) {
                 this.root.remove();
@@ -2750,19 +1868,8 @@
             this.preview = null;
             this.previewTitle = null;
             this.previewList = null;
-            this.cursorShell = null;
-            this.cursorInner = null;
             this.cursorPosition = null;
             this.cursorVisible = false;
-            this.cursorTrailSvg = null;
-            this.cursorTrailBody = null;
-            this.cursorTrailCore = null;
-            this.cursorTrailHead = null;
-            this.cursorTrailHeadCore = null;
-            this.cursorTrailGradient = null;
-            this.cursorTrailPoints = [];
-            this.cursorTrailLastPoint = null;
-            this.cursorTrailLastAt = 0;
             this.persistentHighlightedElement = null;
             this.actionHighlightedElement = null;
             this.secondaryActionHighlightedElement = null;

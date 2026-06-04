@@ -417,11 +417,14 @@ def test_yui_guide_chat_bridge_has_storage_queue_fallback():
     assert "postYuiGuideChatBridgeMessage" in director
     assert "action: 'yui_guide_append_chat_message'" in director
     assert "action: 'yui_guide_update_chat_message'" in director
+    assert "action: 'yui_guide_clear_chat_messages'" in director
 
     assert "YUI_GUIDE_CHAT_BRIDGE_QUEUE_KEY" in interpage
     assert "drainPendingYuiGuideChatBridgeQueue" in interpage
     assert "handleYuiGuideChatBridgeStorageEvent" in interpage
     assert "window.addEventListener('storage', handleYuiGuideChatBridgeStorageEvent)" in interpage
+    assert "clearYuiGuideChatMessages" in interpage
+    assert "case 'yui_guide_clear_chat_messages':" in interpage
 
 
 def test_icebreaker_free_text_uses_fallback_instead_of_llm():

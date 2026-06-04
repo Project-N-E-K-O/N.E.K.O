@@ -38,6 +38,21 @@ def assert_no_layout_transition(block: str) -> None:
         assert prop not in transition_section
 
 
+def test_react_chat_host_can_clear_only_yui_guide_messages():
+    source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    clear_block = source.split("function clearGuideMessages()", 1)[1].split(
+        "function clearMessages()",
+        1,
+    )[0]
+
+    assert "function isYuiGuideChatMessage(message)" in source
+    assert "message.id.indexOf('yui-guide-') === 0" in source
+    assert "return !isYuiGuideChatMessage(message);" in clear_block
+    assert "clearGuideMessages: clearGuideMessages" in source
+    assert "state.messages = []" not in clear_block
+
+
 def test_chat_surface_mode_preference_is_shared_with_electron():
     source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
