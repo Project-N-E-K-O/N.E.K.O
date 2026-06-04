@@ -32,6 +32,7 @@ from utils.screenshot_utils import process_screen_data, overlay_avatar_annotatio
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.tts_client import get_tts_worker, dummy_tts_worker, TTS_PROVIDER_REGISTRY
+from utils.gptsovits_config import is_gsv_disabled_voice_id
 from main_logic.tool_calling import (
     ToolCall,
     ToolDefinition,
@@ -549,7 +550,7 @@ _proactive_expected_sid: contextvars.ContextVar[str | None] = contextvars.Contex
 )
 
 # TTS 错误码：不可恢复，禁止 respawn（欠费 / API Key 无效）
-NO_RETRY_TTS_CODES = {'API_ARREARS', 'API_KEY_REJECTED'}
+NO_RETRY_TTS_CODES = {'API_ARREARS', 'API_KEY_REJECTED', 'TTS_CONFIG_INVALID'}
 # TTS 错误码：立即上报前端，不受"第3次才通知"门槛限制（含配额——仍允许重试）
 IMMEDIATE_REPORT_TTS_CODES = NO_RETRY_TTS_CODES | {'API_QUOTA_TIME'}
 
@@ -3317,16 +3318,13 @@ class LLMSessionManager:
         )
         if uses_provider_native_voice:
             return False
-        # 克隆音色始终走 custom 路径；
-        # ENABLE_CUSTOM_API + TTS_MODEL_URL 仅在 gptsovitsEnabled 开启时才视为 custom，
-        # 否则 caller 会用 tts_custom credentials 启动 default worker，导致鉴权失败。
+        gsv_enabled = bool(core_config.get('GPTSOVITS_ENABLED'))
+        if gsv_enabled:
+            return True
+        # 克隆音色始终走 custom 路径。
         if bool(self.voice_id) and not self._is_free_preset_voice:
             return True
-        return bool(
-            core_config.get('ENABLE_CUSTOM_API')
-            and core_config.get('TTS_MODEL_URL')
-            and core_config.get('GPTSOVITS_ENABLED')
-        )
+        return False
 
     def _start_tts_thread(self):
         """创建并启动 TTS Worker 线程。
@@ -3635,9 +3633,8 @@ class LLMSessionManager:
     ) -> bool:
         """Resolve whether this session should use the external TTS pipeline."""
         has_custom_tts_config = (
-            core_config_snapshot.get('ENABLE_CUSTOM_API')
-            and core_config_snapshot.get('TTS_MODEL_URL')
-            and core_config_snapshot.get('GPTSOVITS_ENABLED')
+            bool(core_config_snapshot.get('GPTSOVITS_ENABLED'))
+            and not is_gsv_disabled_voice_id(core_config_snapshot.get('TTS_VOICE_ID', ''))
         )
 
         if input_mode == 'text':
@@ -4118,7 +4115,14 @@ class LLMSessionManager:
                 # core_config 在单次 start_session 内不会变（改它走 save_core_api → end_session），复用顶部 snapshot
                 tts_voice_id = core_config_snapshot.get('TTS_VOICE_ID', '')
                 # 过滤掉 GPT-SoVITS 禁用时的占位符（格式: __gptsovits_disabled__|...）
-                if core_config_snapshot.get('ENABLE_CUSTOM_API') and tts_voice_id and not tts_voice_id.startswith('__gptsovits_disabled__'):
+                if (
+                    tts_voice_id
+                    and not is_gsv_disabled_voice_id(tts_voice_id)
+                    and (
+                        core_config_snapshot.get('ENABLE_CUSTOM_API')
+                        or core_config_snapshot.get('GPTSOVITS_ENABLED')
+                    )
+                ):
                     self.voice_id = tts_voice_id
                     logger.info(f"🔄 使用自定义TTS回退音色: '{self.voice_id}'")
                     self._is_free_preset_voice = False
@@ -4800,7 +4804,14 @@ class LLMSessionManager:
                 # 复用本次热切换准备顶部的 snapshot（save_core_api 会 end_session 才能改 core_config）
                 tts_voice_id = core_config_snapshot.get('TTS_VOICE_ID', '')
                 # 过滤掉 GPT-SoVITS 禁用时的占位符（格式: __gptsovits_disabled__|...）
-                if core_config_snapshot.get('ENABLE_CUSTOM_API') and tts_voice_id and not tts_voice_id.startswith('__gptsovits_disabled__'):
+                if (
+                    tts_voice_id
+                    and not is_gsv_disabled_voice_id(tts_voice_id)
+                    and (
+                        core_config_snapshot.get('ENABLE_CUSTOM_API')
+                        or core_config_snapshot.get('GPTSOVITS_ENABLED')
+                    )
+                ):
                     self.voice_id = tts_voice_id
                     logger.info(f"🔄 热切换准备: 使用自定义TTS回退音色: '{self.voice_id}'")
                     self._is_free_preset_voice = False
@@ -7857,7 +7868,7 @@ class LLMSessionManager:
                             'API_ARREARS', 'API_QUOTA_TIME', 'API_KEY_REJECTED',
                             'API_RATE_LIMIT', 'API_POLICY_VIOLATION',
                             'API_1008_FALLBACK', 'TTS_CONNECTION_FAILED',
-                            'UPSTREAM_SERVER_BUSY',
+                            'UPSTREAM_SERVER_BUSY', 'TTS_CONFIG_INVALID',
                         }
                         _parsed_code = None
                         _keyword_target = error_msg_text  # 非 JSON 错误时回退使用
