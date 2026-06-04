@@ -9,10 +9,13 @@ builds all share the same on-disk layout.
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import re
+import socket
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -21,6 +24,16 @@ from pathlib import Path
 DEFAULT_PROFILE_ID = "local-text-retrieval-v1"
 DEFAULT_OUTPUT_ROOT = Path("data") / "embedding_models"
 PREPARED_MARKER = ".prepared.json"
+
+# Download resilience. huggingface.co rate-limits by source IP, and the Docker
+# build runs several arch/variant jobs from a shared proxy egress, so a single
+# urlopen routinely hit HTTP 429 and killed the whole build with no recovery.
+# Retry transient failures (429 / 5xx / connection errors) with exponential
+# backoff, honoring a numeric Retry-After when the server sends one.
+_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+_MAX_ATTEMPTS = 5
+_BACKOFF_BASE_SECONDS = 2.0
+_BACKOFF_CAP_SECONDS = 60.0
 # 40-char lowercase hex git SHA. Tags / branch refs / short SHAs are rejected
 # so the profile id stays a strict compatibility contract — anything that can
 # move under our feet, even tags (which can be force-pushed), is excluded.
@@ -51,6 +64,27 @@ def _iter_files(variant: str) -> list[str]:
     return list(FILES_BY_VARIANT[variant])
 
 
+def _retry_after_seconds(exc: urllib.error.HTTPError) -> float | None:
+    """Return the Retry-After delay in seconds, if the server sent a numeric one.
+
+    Only the delta-seconds form is honored. The HTTP-date form is valid per spec
+    but rare from huggingface.co; rather than parse dates we fall back to plain
+    exponential backoff for it.
+    """
+    headers = getattr(exc, "headers", None)
+    raw = headers.get("Retry-After") if headers else None
+    if not raw:
+        return None
+    raw = raw.strip()
+    if raw.isdigit():
+        return float(raw)
+    return None
+
+
+def _backoff_seconds(attempt: int) -> float:
+    return min(_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)), _BACKOFF_CAP_SECONDS)
+
+
 def _download(url: str, dest: Path, *, force: bool) -> None:
     if dest.exists() and dest.stat().st_size > 0 and not force:
         print(f"[embedding-model] keep existing {dest}")
@@ -59,20 +93,56 @@ def _download(url: str, dest: Path, *, force: bool) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".tmp")
     print(f"[embedding-model] download {url}")
-    try:
-        with urllib.request.urlopen(url, timeout=120) as response:
-            with tmp.open("wb") as f:
-                while True:
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-    except urllib.error.URLError as exc:
-        if tmp.exists():
-            tmp.unlink()
-        raise RuntimeError(f"failed to download {url}: {exc}") from exc
-    os.replace(tmp, dest)
-    print(f"[embedding-model] wrote {dest} ({dest.stat().st_size} bytes)")
+
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=120) as response:
+                with tmp.open("wb") as f:
+                    while True:
+                        chunk = response.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+            os.replace(tmp, dest)
+            print(f"[embedding-model] wrote {dest} ({dest.stat().st_size} bytes)")
+            return
+        except urllib.error.HTTPError as exc:
+            # HTTPError is a subclass of URLError, so this branch must precede it.
+            if tmp.exists():
+                tmp.unlink()
+            retryable = exc.code in _RETRYABLE_STATUS
+            if not retryable or attempt == _MAX_ATTEMPTS:
+                raise RuntimeError(f"failed to download {url}: {exc}") from exc
+            # Cap Retry-After too: a server-sent `Retry-After: 3600` would
+            # otherwise sleep past the job timeout instead of failing within
+            # the bounded backoff window.
+            delay = min(_retry_after_seconds(exc) or _backoff_seconds(attempt), _BACKOFF_CAP_SECONDS)
+            reason = f"HTTP {exc.code}"
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            socket.timeout,
+            ConnectionError,
+            http.client.IncompleteRead,
+        ) as exc:
+            # Transient network failures. urlopen()'s timeout only covers the
+            # connect phase and wraps connect errors in URLError, but a stall
+            # during response.read() of a large ONNX file surfaces as
+            # socket.timeout / TimeoutError / IncompleteRead — none of which
+            # subclass URLError, so they must be caught explicitly or they would
+            # abort the build on the first attempt instead of retrying.
+            if tmp.exists():
+                tmp.unlink()
+            if attempt == _MAX_ATTEMPTS:
+                raise RuntimeError(f"failed to download {url}: {exc}") from exc
+            delay = _backoff_seconds(attempt)
+            reason = str(getattr(exc, "reason", exc)) or exc.__class__.__name__
+
+        print(
+            f"[embedding-model] attempt {attempt}/{_MAX_ATTEMPTS} for {url} "
+            f"failed ({reason}); retrying in {delay:.0f}s"
+        )
+        time.sleep(delay)
 
 
 def _verify(profile_dir: Path, files: list[str]) -> None:
