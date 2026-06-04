@@ -58,6 +58,14 @@ function markTtsConfigDirty() {
         }
     }
 
+    function clearActive() {
+        for (const name of windowNames) {
+            try {
+                window.localStorage.removeItem(registryPrefix + name);
+            } catch (_) {}
+        }
+    }
+
     function restoreAndFocus(payload) {
         const restoreApi = window.nekoWindowControl;
         if (restoreApi && typeof restoreApi.restore === 'function') {
@@ -100,13 +108,17 @@ function markTtsConfigDirty() {
         } catch (_) {}
     });
 
-    window.addEventListener('pagehide', () => {
+    function cleanupRegistry() {
+        clearActive();
         if (channel && typeof channel.close === 'function') {
             try {
                 channel.close();
             } catch (_) {}
         }
-    });
+    }
+
+    window.addEventListener('pagehide', cleanupRegistry);
+    window.addEventListener('unload', cleanupRegistry);
 })();
 
 function setInputValue(elementId, value, placeholder) {
