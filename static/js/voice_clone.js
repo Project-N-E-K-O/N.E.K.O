@@ -87,9 +87,21 @@ async function fetchVoiceCloneLoaderJson(url, options = {}) {
     return data;
 }
 
+function notifyApiSettingsKeyBookFocus(win) {
+    if (!win) return;
+    [250, 800, 1500].forEach(delay => {
+        setTimeout(() => {
+            try {
+                win.postMessage({ type: 'focus_api_key_book' }, window.location.origin);
+            } catch (_) { }
+        }, delay);
+    });
+}
+
 // 打开API设置页（带弹窗拦截回退）
-function openApiSettings() {
-    const url = '/api_key';
+function openApiSettings(options = {}) {
+    const focusKeyBook = !!(options && options.focusKeyBook);
+    const url = focusKeyBook ? '/api_key?focus=key_book' : '/api_key';
     const windowName = 'neko_api_key';
     const features = typeof window.buildApiKeySettingsWindowFeatures === 'function'
         ? window.buildApiKeySettingsWindowFeatures()
@@ -105,13 +117,16 @@ function openApiSettings() {
                 win.focus();
             } catch (_) {}
         }
+        if (focusKeyBook) {
+            notifyApiSettingsKeyBookFocus(win);
+        }
     } else {
         location.href = url;
     }
 }
 
 function openApiSettingsKeyBook() {
-    openApiSettings();
+    openApiSettings({ focusKeyBook: true });
 }
 
 // 安全地解析 fetch 响应：当后端/反向代理返回 HTML（404/502/504/网关错误等）时
