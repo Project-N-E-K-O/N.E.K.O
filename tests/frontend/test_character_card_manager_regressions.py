@@ -870,8 +870,10 @@ def test_character_card_manager_keeps_numeric_field_creation_order(
 
             document.querySelector('.chara-card-item')?.click();
             await waitFor(() => document.querySelectorAll('.catgirl-panel-overlay textarea[name]').length >= 2);
+            const targetFieldNames = new Set(['喵喵喵', '1']);
             const beforeSaveOrder = Array.from(document.querySelectorAll('.catgirl-panel-overlay textarea[name]'))
-                .map(el => el.getAttribute('name'));
+                .map(el => el.getAttribute('name'))
+                .filter(name => targetFieldNames.has(name));
 
             document.querySelector('.catgirl-panel-overlay #save-button').click();
             await waitFor(() => savedBodies.length > 0);
@@ -884,8 +886,98 @@ def test_character_card_manager_keeps_numeric_field_creation_order(
         """
     )
 
-    assert state["beforeSaveOrder"][:2] == ["喵喵喵", "1"]
+    assert state["beforeSaveOrder"] == ["喵喵喵", "1"]
     assert state["savedOrder"] == ["喵喵喵", "1"]
+
+
+@pytest.mark.frontend
+def test_character_card_manager_workshop_upload_preserves_field_order(
+    mock_page: Page,
+    running_server: str,
+):
+    """上传到创意工坊会剥掉系统保留字段（含承载顺序的 _reserved），需确保字段创建顺序
+    以顶层 _field_order 幸存，否则下载方按对象枚举顺序渲染时数字 key 字段会再次乱序。"""
+    _open_character_card_manager(mock_page, running_server)
+
+    uploaded = mock_page.evaluate(
+        """
+        async () => {
+            const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+            const waitFor = async (predicate, timeout = 2500) => {
+                const startedAt = Date.now();
+                while (Date.now() - startedAt < timeout) {
+                    if (predicate()) return true;
+                    await sleep(25);
+                }
+                return false;
+            };
+
+            const originalFetch = window.fetch.bind(window);
+            const uploadBodies = [];
+            window.showMessage = () => {};
+            window.showAutoSaveToast = () => {};
+            window.showAlertDialog = async () => {};
+            // 模型判定走真实逻辑会牵扯大量全局状态，这里直接放行，把断言聚焦在字段顺序上。
+            window.isDefaultModel = () => false;
+            window.isStaticDefaultLive2DModel = () => false;
+
+            window.fetch = async (input, init = {}) => {
+                const rawUrl = typeof input === 'string' ? input : input.url;
+                const url = new URL(rawUrl, window.location.origin);
+                const path = decodeURIComponent(url.pathname);
+                const method = String(init.method || 'GET').toUpperCase();
+
+                if (path === '/api/steam/workshop/prepare-upload' && method === 'POST') {
+                    uploadBodies.push(JSON.parse(init.body || '{}'));
+                    return new Response(JSON.stringify({ success: true }), {
+                        status: 200,
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                return originalFetch(input, init);
+            };
+
+            // handleUploadToWorkshop 会读页面上的描述输入框；测试页面未必挂载它，按需补一个。
+            if (!document.getElementById('character-card-description')) {
+                const descInput = document.createElement('textarea');
+                descInput.id = 'character-card-description';
+                document.body.appendChild(descInput);
+            }
+
+            const card = {
+                id: 9301,
+                name: '顺序猫',
+                originalName: '顺序猫',
+                description: '用于工坊上传顺序回归',
+                tags: [],
+                rawData: {
+                    '1': '数字字段',
+                    '喵喵喵': '文字字段',
+                    '描述': '用于工坊上传顺序回归',
+                    _reserved: { field_order: ['喵喵喵', '1'] }
+                }
+            };
+            window.characterCards = [card];
+            // expandCharacterCardSection 第一行即设置 currentCharacterCardId；后续填表副作用与本用例无关，吞掉即可。
+            try { expandCharacterCardSection(card); } catch (_) {}
+            // 放在 expand 之后，避免被其填充逻辑覆盖，保证模型校验直接通过。
+            window.currentCharacterCardModelType = 'live2d';
+            window.currentCharacterCardModel = '顺序猫模型';
+
+            await handleUploadToWorkshop();
+            await waitFor(() => uploadBodies.length > 0);
+
+            const charaData = uploadBodies.length ? uploadBodies[0].charaData : null;
+            return {
+                fieldOrder: (charaData && charaData._field_order) || null,
+                hasReserved: !!(charaData && charaData._reserved)
+            };
+        }
+        """
+    )
+
+    assert uploaded["fieldOrder"] == ["喵喵喵", "1"]
+    assert uploaded["hasReserved"] is False
 
 
 @pytest.mark.frontend

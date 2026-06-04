@@ -7885,6 +7885,10 @@ async function handleUploadToWorkshop() {
         // 现在角色使用的是 rawData 中的数据，只覆盖 description 和 tags
         const fullCharaData = { ...rawData };
 
+        // 字段顺序是展示属性，先在删保留字段前抓住它，删完再以顶层 _field_order 挂回。
+        // 否则数字 key 的自定义字段名会被下载方按对象枚举顺序提前，复现本次修复要解决的乱序问题。
+        const workshopFieldOrder = getStoredCharacterFieldOrder(rawData);
+
         // 重要：清理系统保留字段，防止恶意数据或循环引用被上传到工坊
         // 这些字段是下载时由系统添加的元数据，不应该出现在工坊角色卡中
         // description/tags 及其中文版本是工坊上传时自动生成的，不属于角色卡原始数据
@@ -7892,6 +7896,10 @@ async function handleUploadToWorkshop() {
         const SYSTEM_RESERVED_FIELDS = getWorkshopReservedFields();
         for (const field of SYSTEM_RESERVED_FIELDS) {
             delete fullCharaData[field];
+        }
+        // 顺序元数据本身被当作系统保留字段删掉了，这里按显式顺序重新挂回，供下载方按创建顺序渲染。
+        if (workshopFieldOrder.length) {
+            attachCharacterFieldOrderPayload(fullCharaData, workshopFieldOrder);
         }
 
         // 重要：添加"档案名"字段，这是下载后解析为 characters.json key 的必需字段
