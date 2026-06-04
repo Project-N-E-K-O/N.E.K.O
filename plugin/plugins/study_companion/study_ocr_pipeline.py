@@ -173,7 +173,7 @@ class StudyOcrPipeline:
                 diagnostic=f"lightweight jpeg encode failed: {exc}",
             )
 
-        thumbnail_phash = self._image_phash(image)
+        thumbnail_phash = self._image_ahash(image)
         previous_phash = self._latest_lightweight_phash
         self._latest_lightweight_phash = thumbnail_phash
         has_content_change = True
@@ -287,7 +287,8 @@ class StudyOcrPipeline:
         )
 
     @staticmethod
-    def _image_phash(image: Any) -> str:
+    def _image_ahash(image: Any) -> str:
+        """Compute a simple average hash for lightweight change detection."""
         if image is None or not hasattr(image, "convert"):
             return ""
         try:

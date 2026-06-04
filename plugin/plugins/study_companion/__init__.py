@@ -669,7 +669,7 @@ class StudyCompanionPlugin(
             except Exception:
                 self._collector = None
                 self.logger.warning(
-                    "study awareness collector startup failed",
+                    "study awareness collector startup failed; continuing without os signals",
                     exc_info=True,
                 )
         while self._buffer is not None:
