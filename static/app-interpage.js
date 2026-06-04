@@ -2028,6 +2028,9 @@
                     effectDurationMs: Number.isFinite(message.effectDurationMs)
                         ? Math.max(0, Math.floor(message.effectDurationMs))
                         : 0,
+                    durationMs: Number.isFinite(message.durationMs)
+                        ? Math.max(0, Math.floor(message.durationMs))
+                        : null,
                     targetIndex: Number.isFinite(message.targetIndex)
                         ? message.targetIndex
                         : 0
@@ -2358,6 +2361,9 @@
                             effectDurationMs: Number.isFinite(event.data.effectDurationMs)
                                 ? Math.max(0, Math.floor(event.data.effectDurationMs))
                                 : 0,
+                            durationMs: Number.isFinite(event.data.durationMs)
+                                ? Math.max(0, Math.floor(event.data.durationMs))
+                                : null,
                             targetIndex: Number.isFinite(event.data.targetIndex)
                                 ? event.data.targetIndex
                                 : 0
@@ -2683,6 +2689,7 @@
             yuiGuidePcOverlayReady = false;
             return false;
         }
+        var hasCursor = patch && Object.prototype.hasOwnProperty.call(patch, 'cursor');
         if (patch && Object.prototype.hasOwnProperty.call(patch, 'spotlights')) {
             yuiGuidePcOverlaySpotlights = Array.isArray(patch.spotlights) ? patch.spotlights : [];
         }
@@ -2706,11 +2713,10 @@
                     yuiGuidePcOverlayReady = false;
                 });
             }
-            var payload = {};
-            if (patch && Object.prototype.hasOwnProperty.call(patch, 'spotlights')) {
-                payload.spotlights = yuiGuidePcOverlaySpotlights;
-            }
-            if (patch && Object.prototype.hasOwnProperty.call(patch, 'cursor')) {
+            var payload = {
+                spotlights: yuiGuidePcOverlaySpotlights
+            };
+            if (yuiGuidePcOverlayCursor || hasCursor) {
                 payload.cursor = yuiGuidePcOverlayCursor;
             }
             Promise.resolve(window.nekoTutorialOverlay.update({
@@ -3117,20 +3123,23 @@
 
     function setYuiGuideCompactToolFanOpen(open, reason) {
         var host = window.reactChatWindowHost;
+        var toggle = document.querySelector('#react-chat-window-root .send-button-circle.compact-input-tool-toggle');
+        var isOpen = !!(toggle && (
+            toggle.getAttribute('aria-expanded') === 'true'
+            || toggle.classList.contains('is-open')
+        ));
+        if (toggle && typeof toggle.click === 'function' && ((open === true && !isOpen) || (open !== true && isOpen))) {
+            toggle.click();
+            if (host && typeof host.setCompactToolFanOpen === 'function') {
+                host.setCompactToolFanOpen(open === true, reason || 'yui-guide-external-click-fallback');
+            }
+            return true;
+        }
         if (host && typeof host.setCompactToolFanOpen === 'function') {
             host.setCompactToolFanOpen(open === true, reason || 'yui-guide-external');
             return true;
         }
-        var toggle = document.querySelector('#react-chat-window-root .send-button-circle.compact-input-tool-toggle');
-        if (!toggle || typeof toggle.click !== 'function') {
-            return false;
-        }
-        var isOpen = toggle.getAttribute('aria-expanded') === 'true'
-            || toggle.classList.contains('is-open');
-        if ((open === true && !isOpen) || (open !== true && isOpen)) {
-            toggle.click();
-        }
-        return true;
+        return false;
     }
 
     function setYuiGuideAvatarToolMenuOpen(open, reason) {
@@ -3138,6 +3147,27 @@
             ensureYuiGuideAvatarToolButtonReachable();
         }
         var host = window.reactChatWindowHost;
+        var button = getYuiGuideChatSpotlightTarget('avatar-tools');
+        var popover = document.getElementById('composer-tool-popover')
+            || document.getElementById('composer-tool-popover-compact');
+        var isOpen = !!(
+            popover
+            || (
+                button
+                && (
+                    button.getAttribute('aria-expanded') === 'true'
+                    || button.classList.contains('is-active')
+                    || button.classList.contains('is-open')
+                )
+            )
+        );
+        if (button && typeof button.click === 'function' && ((open === true && !isOpen) || (open !== true && isOpen))) {
+            button.click();
+            if (host && typeof host.setAvatarToolMenuOpen === 'function') {
+                host.setAvatarToolMenuOpen(open === true, reason || 'yui-guide-external-click-fallback');
+            }
+            return true;
+        }
         if (host && typeof host.setAvatarToolMenuOpen === 'function') {
             host.setAvatarToolMenuOpen(open === true, reason || 'yui-guide-external');
             if (open === true) {
@@ -3346,8 +3376,13 @@
                 yuiGuideChatCursorVisible = true;
             }
         }
-        var pcMoveDurationMs = resolveYuiGuideChatCursorMoveDurationMs(localScreenPoint, normalizedOptions.effect || '');
-        if (handoffAnchorScreenPoint) {
+        var explicitDurationMs = Number.isFinite(normalizedOptions.durationMs)
+            ? Math.max(0, Math.floor(normalizedOptions.durationMs))
+            : null;
+        var pcMoveDurationMs = explicitDurationMs !== null
+            ? explicitDurationMs
+            : resolveYuiGuideChatCursorMoveDurationMs(localScreenPoint, normalizedOptions.effect || '');
+        if (handoffAnchorScreenPoint && explicitDurationMs === null) {
             pcMoveDurationMs = resolveYuiGuideChatCursorHandoffMoveDurationMs(
                 handoffAnchorScreenPoint,
                 localScreenPoint

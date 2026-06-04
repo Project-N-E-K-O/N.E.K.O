@@ -71,7 +71,7 @@
                     voiceKey: 'avatar_floating_day2_wrap_intro',
                     text: '今天的教程到这里就结束了呢。',
                     emotion: 'happy',
-                    target: 'chat-window',
+                    target: 'chat-input',
                     cursorAction: 'move',
                     cursorMoveDurationMs: 900,
                     operation: 'cleanup'
@@ -82,7 +82,7 @@
                     voiceKey: 'avatar_floating_day2_wrap_companion',
                     text: '其实只要能这样陪着你，听听你的声音，或者静静看着你分享的画面，我就已经觉得很幸福了。',
                     emotion: 'happy',
-                    target: 'chat-window',
+                    target: 'chat-input',
                     cursorAction: 'move',
                     operation: 'cleanup'
                 },
@@ -92,7 +92,7 @@
                     voiceKey: 'avatar_floating_day2_wrap',
                     text: '我们不需要着急，每天都多了解彼此一点点就好。今天接下来的时间，你想让我陪你做点什么呢？',
                     emotion: 'happy',
-                    target: 'chat-window',
+                    target: 'chat-input',
                     cursorAction: 'move',
                     operation: 'cleanup',
                     petalTransition: true

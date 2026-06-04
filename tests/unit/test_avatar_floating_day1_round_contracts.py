@@ -40,7 +40,6 @@ EXPECTED_DAY3_SCENES = [
     "day3_tool_toggle_intro",
     "day3_avatar_tools",
     "day3_avatar_tools_props",
-    "day3_avatar_tools_more",
     "day3_galgame_entry",
     "day3_galgame_choices",
     "day3_wrap",
@@ -83,6 +82,15 @@ def test_day2_round_keeps_intro_text_and_moves_personalization_after_it():
         "id: 'day2_proactive_chat'",
         1,
     )[0]
+    wrap_intro_block = round_block.split("id: 'day2_wrap_intro'", 1)[1].split(
+        "id: 'day2_wrap_companion'",
+        1,
+    )[0]
+    wrap_companion_block = round_block.split("id: 'day2_wrap_companion'", 1)[1].split(
+        "id: 'day2_wrap'",
+        1,
+    )[0]
+    wrap_block = round_block.split("id: 'day2_wrap'", 1)[1]
 
     for scene_id in EXPECTED_DAY2_SCENES:
         assert f"id: '{scene_id}'" in round_block
@@ -95,15 +103,47 @@ def test_day2_round_keeps_intro_text_and_moves_personalization_after_it():
     assert "target: '#${p}-menu-character'" in detail_block
     assert "cursorAction: 'click'" in detail_block
     assert "target: '#${p}-popup-settings'" not in detail_block
+    assert "target: 'chat-input'" in wrap_intro_block
+    assert "target: 'chat-input'" in wrap_companion_block
+    assert "target: 'chat-input'" in wrap_block
 
 
 def test_day3_round_targets_new_compact_tool_flow():
     source = DAY3_GUIDE_PATH.read_text(encoding="utf-8")
     round_block = source.split("round: {", 1)[1]
+    intro_block = round_block.split("id: 'day3_tool_toggle_intro'", 1)[1].split(
+        "id: 'day3_avatar_tools'",
+        1,
+    )[0]
+    avatar_tools_block = round_block.split("id: 'day3_avatar_tools'", 1)[1].split(
+        "id: 'day3_avatar_tools_props'",
+        1,
+    )[0]
+    avatar_tools_props_block = round_block.split("id: 'day3_avatar_tools_props'", 1)[1].split(
+        "id: 'day3_galgame_entry'",
+        1,
+    )[0]
 
     for scene_id in EXPECTED_DAY3_SCENES:
         assert f"id: '{scene_id}'" in round_block
     assert_scene_order(round_block, EXPECTED_DAY3_SCENES)
+    assert "day3_avatar_tools_more" not in round_block
+    assert "avatarToolsMore" not in round_block
+    assert "avatar_floating_day3_avatar_tools_more" not in round_block
+    assert "show-galgame-in-compact-tool-fan" not in round_block
+    assert "cursorAction: 'wobble'" not in round_block
+    assert "target: 'chat-input'" in intro_block
+    assert "cursorAction: 'move'" in intro_block
+    assert "operation: 'open-compact-tool-fan'" not in intro_block
+    assert "persistent: 'chat-tool-toggle'" in avatar_tools_block
+    assert "target: 'chat-tool-toggle'" in avatar_tools_block
+    assert "cursorAction: 'click'" in avatar_tools_block
+    assert "cursorMoveDurationMs: 1480" in avatar_tools_block
+    assert "operation: 'open-compact-tool-fan'" in avatar_tools_block
+    assert "persistent: 'chat-tool-toggle'" in avatar_tools_props_block
+    assert "target: 'chat-avatar-tools'" in avatar_tools_props_block
+    assert "cursorAction: 'click'" in avatar_tools_props_block
+    assert "operation: 'show-avatar-tools-then-hide-after-narration'" in avatar_tools_props_block
     assert "target: 'chat-tool-toggle'" in round_block
     assert "target: 'chat-avatar-tools'" in round_block
     assert "target: 'chat-galgame'" in round_block

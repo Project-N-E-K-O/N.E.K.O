@@ -305,7 +305,7 @@
             }
 
             try {
-                channel.postMessage({
+                const message = {
                     action: 'yui_guide_set_chat_cursor',
                     kind: typeof kind === 'string' ? kind : '',
                     effect: options && typeof options.effect === 'string' ? options.effect : '',
@@ -316,7 +316,11 @@
                         ? Math.max(0, Math.floor(options.targetIndex))
                         : 0,
                     timestamp: Date.now()
-                });
+                };
+                if (options && Number.isFinite(options.durationMs)) {
+                    message.durationMs = Math.max(0, Math.floor(options.durationMs));
+                }
+                channel.postMessage(message);
             } catch (error) {
                 console.warn('[TutorialInteractionTakeover] 同步独立聊天窗 Ghost Cursor 失败:', error);
             }

@@ -8,14 +8,13 @@
 
 | 顺序 | scene | 台词 | 高光与 Ghost Cursor |
 | --- | --- | --- | --- |
-| 1 | `day3_tool_toggle_intro` | 嘻嘻，可别以为这个聊天框只能用来打字哦~ 里面其实偷偷藏了超~多好玩的小惊喜呢！快跟着我一起点开看看，瞧瞧今天能挖出什么有趣的宝贝吧！ | 圆形高亮 `button.send-button-circle.compact-input-tool-toggle`；Ghost Cursor 平滑移动到该按钮并模拟点击，同时并行调用 API 触发按钮点击事件，打开弧形工具菜单。 |
-| 2 | `day3_avatar_tools` | 在这个小按钮里，有许多可以和人家互动的小道具呢。 | 持续圆形高亮 `button.send-button-circle.compact-input-tool-toggle`；Ghost Cursor 平滑移动到 Avatar 互动工具按钮并模拟点击，同时并行调用 API 触发该按钮点击事件。 |
-| 3 | `day3_avatar_tools_props` | 你可以随时来摸摸我的头，或者给我吃一根甜甜的棒棒糖。如果有时候我不小心做错事了，你也可以用小锤子敲敲我，不过……一定要轻轻的，不能太用力哦。 | 持续圆形高亮 `button.send-button-circle.compact-input-tool-toggle`；Ghost Cursor 停留在 Avatar 互动工具。台词播放完后再次触发 Avatar 互动工具按钮点击事件。 |
-| 4 | `day3_avatar_tools_more` | 以后还会有更多有趣的道具加入进来，我会去提醒开发组猫猫快点做出来的，我们一起期待一下吧。 | 持续圆形高亮 `button.send-button-circle.compact-input-tool-toggle`；Ghost Cursor 在点击总按钮后出现的弧形菜单栏上模拟滑动，直到 Galgame 按钮出现在弧形菜单栏右偏下约 45 度位置。 |
-| 5 | `day3_galgame_entry` | 快点开这个【Galgame模式】！进去之后就像我们在进行一场专属的互动大冒险呢。 | 持续圆形高亮 `button.send-button-circle.compact-input-tool-toggle`；Ghost Cursor 移动到 `.compact-input-tool-item-galgame`。教程期间不强制开启 Galgame。 |
-| 6 | `day3_galgame_choices` | 你选的每一个对话，都会带我们走向完全未知的惊喜故事，我都等不及啦，快来选一个你最心动的回答吧！ | 继续指认 Galgame 入口或真实选项区域；不伪造选择局。 |
-| 7 | `day3_wrap` | 今天带你认识的这些功能，其实都是为了让我们在一起的时光变得更有趣呢。 | 收尾前关闭弧形菜单和 Avatar 工具菜单，重新高亮聊天窗。 |
-| 8 | `day3_wrap_ready` | 不管是想摸摸我的头，还是想开启属于我们的故事，我都已经做好准备了。 | 约 70% cue 同步隐藏 Ghost Cursor、清理高光和菜单并播放花瓣。 |
+| 1 | `day3_tool_toggle_intro` | 嘻嘻，可别以为这个聊天框只能用来打字哦~ 里面其实偷偷藏了超~多好玩的小惊喜呢！快跟着我一起点开看看，瞧瞧今天能挖出什么有趣的宝贝吧！ | 圆角矩形高亮胶囊输入框 `chat-input`；Ghost Cursor 直接显示在胶囊聊天框中间并停留，不从默认点移动进入，不点击、不打开弧形工具菜单。 |
+| 2 | `day3_avatar_tools` | 在这个小按钮里，有许多可以和人家互动的小道具呢。 | 持续圆形高亮 `button.send-button-circle.compact-input-tool-toggle`；Ghost Cursor 从胶囊输入框位置以约 1480ms 慢慢平滑移动到工具总按钮 `button.send-button-circle.compact-input-tool-toggle` 并模拟点击；点击动画开始时并行调用 API 打开弧形工具菜单，不打开 Avatar 工具菜单。 |
+| 3 | `day3_avatar_tools_props` | 你可以随时来摸摸我的头，或者给我吃一根甜甜的棒棒糖。如果有时候我不小心做错事了，你也可以用小锤子敲敲我，不过……一定要轻轻的，不能太用力哦。 | 持续圆形高亮 `button.send-button-circle.compact-input-tool-toggle`；Ghost Cursor 平滑移动到 Avatar 互动工具按钮，然后在 Avatar 互动工具按钮处模拟点击并触发 Avatar 互动工具按钮点击事件，显示三个小道具。台词播放完后再次触发 Avatar 互动工具按钮点击事件并隐藏三个小道具。 |
+| 4 | `day3_galgame_entry` | 快点开这个【Galgame模式】！进去之后就像我们在进行一场专属的互动大冒险呢。 | 持续圆形高亮 `button.send-button-circle.compact-input-tool-toggle`；Ghost Cursor 移动到 `.compact-input-tool-item-galgame`。教程期间不强制开启 Galgame。 |
+| 5 | `day3_galgame_choices` | 你选的每一个对话，都会带我们走向完全未知的惊喜故事，我都等不及啦，快来选一个你最心动的回答吧！ | 继续指认 Galgame 入口或真实选项区域；不伪造选择局。 |
+| 6 | `day3_wrap` | 今天带你认识的这些功能，其实都是为了让我们在一起的时光变得更有趣呢。 | 收尾前关闭弧形菜单和 Avatar 工具菜单，重新高亮聊天窗。 |
+| 7 | `day3_wrap_ready` | 不管是想摸摸我的头，还是想开启属于我们的故事，我都已经做好准备了。 | 约 70% cue 同步隐藏 Ghost Cursor、清理高光和菜单并播放花瓣。 |
 
 ## 新版 UI 目标
 
@@ -27,6 +26,9 @@
 | Galgame 按钮 | `.compact-input-tool-item-galgame` |
 
 Avatar 工具按钮和 Galgame 按钮只使用圆形高光；总按钮持续高亮时使用同一套圆形高光，不给菜单项再叠猫耳、猫爪或第二层外框。
+`day3_avatar_tools` 在内置与外置聊天窗 / PC 全局 overlay 模式下都必须保持 `chat-tool-toggle` 作为 persistent spotlight；Ghost Cursor 只移动到 `chat-tool-toggle` 并点击，点击后只打开弧形工具菜单，不打开 Avatar 工具菜单，也不得把 persistent spotlight 切成 Avatar 工具按钮。
+Day 3 主线仅使用 `move` 和 `click`：需要指认的位置使用 `move`，需要真实触发的位置使用 `click`，不使用左右晃动停留动作。
+所有 Day 3 的 `click` scene 都必须在 Ghost Cursor 点击动画开始的同一刻触发真实目标按钮的 `click()`；`setCompactToolFanOpen()` / `setAvatarToolMenuOpen()` 只能作为兜底同步状态，不能替代按钮点击事件。
 
 ## 验收清单
 

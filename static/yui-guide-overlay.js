@@ -164,17 +164,24 @@
         };
 
         const send = (patch, force) => {
-            const payload = {};
+            const hasCursor = patch && Object.prototype.hasOwnProperty.call(patch, 'cursor');
+            const hasPetal = patch && Object.prototype.hasOwnProperty.call(patch, 'petal');
             if (patch && Object.prototype.hasOwnProperty.call(patch, 'spotlights')) {
                 currentSpotlights = Array.isArray(patch.spotlights) ? patch.spotlights : [];
-                payload.spotlights = currentSpotlights;
             }
             if (patch && Object.prototype.hasOwnProperty.call(patch, 'cursor')) {
                 currentCursor = patch.cursor || null;
-                payload.cursor = currentCursor;
             }
             if (patch && Object.prototype.hasOwnProperty.call(patch, 'petal')) {
                 currentPetal = patch.petal || null;
+            }
+            const payload = {
+                spotlights: currentSpotlights
+            };
+            if (currentCursor || hasCursor) {
+                payload.cursor = currentCursor;
+            }
+            if (currentPetal || hasPetal) {
                 payload.petal = currentPetal;
             }
             const key = JSON.stringify(payload || {});
@@ -1670,7 +1677,13 @@
         clickCursor(durationMs) {
             if (this.isPcOverlayActive()) {
                 if (this.cursorPosition && this.pcOverlayBridge && typeof this.pcOverlayBridge.moveCursorTo === 'function') {
-                    this.pcOverlayBridge.moveCursorTo(this.cursorPosition.x, this.cursorPosition.y, durationMs || DEFAULT_CURSOR_CLICK_VISIBLE_MS, 'click');
+                    this.pcOverlayBridge.moveCursorTo(
+                        this.cursorPosition.x,
+                        this.cursorPosition.y,
+                        0,
+                        'click',
+                        durationMs || DEFAULT_CURSOR_CLICK_VISIBLE_MS
+                    );
                 }
                 this.keepDomCursorSuppressedForPcOverlay();
                 return;

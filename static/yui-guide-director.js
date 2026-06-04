@@ -4320,7 +4320,7 @@
         }
 
         getDay2CharacterSettingsPersistenceTarget(sceneId) {
-            if (sceneId === 'day2_personalization_detail' || sceneId === 'day2_proactive_chat') {
+            if (sceneId === 'day2_personalization_detail') {
                 return this.getDay5CharacterSettingsButtonTarget()
                     || this.getSettingsMenuElement('character');
             }
@@ -5984,7 +5984,7 @@
 
         getAvatarFloatingIntroSpotlightTarget(scene) {
             if (scene && scene.id === 'day3_tool_toggle_intro') {
-                return null;
+                return this.getChatInputTarget() || this.getChatWindowTarget();
             }
             return this.getAvatarFloatingBaseTarget('chat-window');
         }
@@ -5994,7 +5994,7 @@
                 return 'input';
             }
             if (scene && scene.id === 'day3_tool_toggle_intro') {
-                return '';
+                return 'input';
             }
             return 'window';
         }
@@ -6379,6 +6379,9 @@
         }
 
         getExternalizedChatCursorEffect(scene) {
+            if (scene && scene.id === 'day3_tool_toggle_intro') {
+                return '';
+            }
             if (scene && scene.id === 'day3_avatar_tools') {
                 return 'move';
             }
@@ -6423,13 +6426,17 @@
                 : 0;
             this.rememberExternalizedChatCursorHandoffPoint(normalizedKind, effect);
             if (typeof this.interactionTakeover.setExternalizedChatCursor === 'function') {
-                this.interactionTakeover.setExternalizedChatCursor(normalizedKind, {
+                const cursorOptions = {
                     effect: effect,
                     effectDurationMs: effectDurationMs,
                     targetIndex: options && Number.isFinite(options.targetIndex)
                         ? Math.max(0, Math.floor(options.targetIndex))
                         : 0
-                });
+                };
+                if (options && Number.isFinite(options.durationMs)) {
+                    cursorOptions.durationMs = Math.max(0, Math.floor(options.durationMs));
+                }
+                this.interactionTakeover.setExternalizedChatCursor(normalizedKind, cursorOptions);
             }
             this.hideHomeCursorForExternalizedChat();
             return true;
@@ -6520,13 +6527,17 @@
             const effectDurationMs = options && Number.isFinite(options.effectDurationMs)
                 ? Math.max(0, Math.floor(options.effectDurationMs))
                 : 0;
-            this.interactionTakeover.setExternalizedChatCursor(kind || '', {
+            const cursorOptions = {
                 effect: effect || '',
                 effectDurationMs: effectDurationMs,
                 targetIndex: options && Number.isFinite(options.targetIndex)
                     ? Math.max(0, Math.floor(options.targetIndex))
                     : 0
-            });
+            };
+            if (options && Number.isFinite(options.durationMs)) {
+                cursorOptions.durationMs = Math.max(0, Math.floor(options.durationMs));
+            }
+            this.interactionTakeover.setExternalizedChatCursor(kind || '', cursorOptions);
             return true;
         }
 
@@ -6851,13 +6862,12 @@
                 this.setChatAvatarToolMenuOpen(false, 'avatar-floating-guide-prepare');
             }
             if (
-                operation === 'open-compact-tool-fan'
-                || operation === 'show-galgame-in-compact-tool-fan'
-                || operation === 'toggle-avatar-tool-after-narration'
+                operation === 'toggle-avatar-tool-after-narration'
+                || operation === 'show-avatar-tools-then-hide-after-narration'
             ) {
                 this.setCompactToolFanOpen(true, 'avatar-floating-guide-prepare-tool-fan');
             }
-            if (operation === 'day2-open-settings-personalization' || operation === 'day2-settings-detail') {
+            if (operation === 'day2-settings-detail') {
                 await this.closeAgentPanel().catch(() => {});
                 await this.openSettingsPanel();
             }
@@ -7918,6 +7928,8 @@
 	                return false;
 	            }
 	            this.collapseCharacterSettingsSidePanel();
+	            this.overlay.clearActionSpotlight();
+	            this.overlay.clearPersistentSpotlight();
 	            await this.waitForSceneDelay(index >= total - 1 ? 260 : 420);
 	            return sceneRunId === this.sceneRunId && !this.isStopping();
 	        }
@@ -8057,14 +8069,53 @@
                 return true;
             }
             if (operation === 'open-compact-tool-fan') {
+                const toggle = primaryTarget || this.resolveAvatarFloatingSelector('chat-tool-toggle');
+                const isOpen = !!(toggle && (
+                    toggle.getAttribute('aria-expanded') === 'true'
+                    || toggle.classList.contains('is-open')
+                ));
+                if (!this.isHomeChatExternalized() && toggle && typeof toggle.click === 'function' && !isOpen) {
+                    toggle.click();
+                }
                 this.setCompactToolFanOpen(true, 'avatar-floating-guide-open-tool-fan');
                 await this.waitForSceneDelay(360);
                 return true;
             }
-            if (operation === 'show-galgame-in-compact-tool-fan') {
-                this.setCompactToolFanOpen(true, 'avatar-floating-guide-show-galgame');
-                await this.waitForElement(() => this.resolveAvatarFloatingSelector('chat-galgame'), 900);
-                return true;
+            if (operation === 'show-avatar-tools-then-hide-after-narration') {
+                this.setCompactToolFanOpen(true, 'avatar-floating-guide-open-avatar-tool-fan');
+                const durationMs = this.getAvatarFloatingNarrationDurationMs(scene.voiceKey || '', scene.text || '');
+                const getRemainingNarrationMs = () => {
+                    const elapsedMs = Number.isFinite(narrationStartedAt)
+                        ? Math.max(0, Date.now() - narrationStartedAt)
+                        : 0;
+                    return Math.max(360, durationMs - elapsedMs);
+                };
+                if (this.isHomeChatExternalized()) {
+                    this.setChatAvatarToolMenuOpen(true, 'avatar-floating-guide-open-avatar-tool-menu');
+                    await this.waitForSceneDelay(getRemainingNarrationMs());
+                    this.setExternalizedChatCursorEffect('avatar-tools', 'click');
+                    this.setChatAvatarToolMenuOpen(false, 'avatar-floating-guide-close-avatar-tool-menu-after-narration');
+                    return true;
+                }
+                const button = primaryTarget || this.resolveAvatarFloatingSelector('chat-avatar-tools');
+                if (button && typeof button.click === 'function') {
+                    button.click();
+                }
+                if (!this.getVisibleChatAvatarToolMenuPopover()) {
+                    this.setChatAvatarToolMenuOpen(true, 'avatar-floating-guide-open-avatar-tool-menu');
+                }
+                let toolTargets = await this.waitForAvatarToolMenuTargets(3, 900);
+                if (toolTargets.length < 3) {
+                    this.setChatAvatarToolMenuOpen(true, 'avatar-floating-guide-open-avatar-tool-menu-retry');
+                    toolTargets = await this.waitForAvatarToolMenuTargets(3, 1400);
+                }
+                this.keepAvatarToolButtonHighlightedAfterMenuOpen(button, scene);
+                await this.waitForSceneDelay(getRemainingNarrationMs());
+                if (button && typeof button.click === 'function') {
+                    button.click();
+                }
+                this.setChatAvatarToolMenuOpen(false, 'avatar-floating-guide-close-avatar-tool-menu-after-narration');
+                return toolTargets.length >= 3;
             }
             if (operation === 'toggle-avatar-tool-after-narration') {
                 const durationMs = this.getAvatarFloatingNarrationDurationMs(scene.voiceKey || '', scene.text || '');
@@ -8108,7 +8159,9 @@
                         this.interactionTakeover
                         && typeof this.interactionTakeover.setExternalizedChatSpotlight === 'function'
                     ) {
-                        this.interactionTakeover.setExternalizedChatSpotlight('avatar-tools');
+                        this.interactionTakeover.setExternalizedChatSpotlight(
+                            this.getExternalizedChatTargetKind(scene.persistent || '', scene) || 'avatar-tools'
+                        );
                     }
                     this.setExternalizedChatCursorEffect('avatar-tools', 'wobble');
                     await this.waitForSceneDelay(520);
@@ -8901,6 +8954,14 @@
             )
                 ? this.getExternalizedChatTargetKind(this.getAvatarFloatingCursorTargetKey(scene), scene)
                 : '';
+            const externalizedScenePersistentKind = (
+                !isFirstDailyScene
+                && this.isHomeChatExternalized()
+                && scene
+                && typeof scene.persistent === 'string'
+            )
+                ? this.getExternalizedChatTargetKind(scene.persistent, scene)
+                : '';
             const shouldShowSceneSpotlight = scene.spotlight !== false;
             let persistentTarget = null;
             let primaryTarget = null;
@@ -8925,7 +8986,9 @@
                         introRect.left + introRect.width / 2,
                         introRect.top + introRect.height / 2
                     );
-                    this.cursor.wobble();
+                    if (scene.cursorAction !== 'move') {
+                        this.cursor.wobble();
+                    }
                 } else {
                     const introCursorOrigin = this.getDefaultCursorOrigin();
                     this.cursor.showAt(introCursorOrigin.x, introCursorOrigin.y);
@@ -8937,22 +9000,26 @@
                 if (scene && scene.cursorAction === 'click') {
                     externalizedCursorOptions.effect = 'move';
                 }
+                if (Number.isFinite(scene.cursorMoveDurationMs)) {
+                    externalizedCursorOptions.durationMs = Math.max(0, Math.floor(scene.cursorMoveDurationMs));
+                }
                 if (Number.isFinite(scene.cursorWobbleDurationMs)) {
                     externalizedCursorOptions.effectDurationMs = Math.max(0, Math.floor(scene.cursorWobbleDurationMs));
                 }
+                const externalizedSpotlightKind = externalizedScenePersistentKind || externalizedSceneTargetKind;
                 let externalizedCursorAlreadySet = false;
                 if (
                     shouldShowSceneSpotlight
-                    && externalizedSceneTargetKind === externalizedSceneCursorKind
+                    && externalizedSpotlightKind === externalizedSceneCursorKind
                 ) {
-                    this.setExternalizedChatGuideTarget(externalizedSceneTargetKind, externalizedCursorOptions);
+                    this.setExternalizedChatGuideTarget(externalizedSpotlightKind, externalizedCursorOptions);
                     externalizedCursorAlreadySet = true;
                 } else if (shouldShowSceneSpotlight) {
                     if (
                         this.interactionTakeover
                         && typeof this.interactionTakeover.setExternalizedChatSpotlight === 'function'
                     ) {
-                        this.interactionTakeover.setExternalizedChatSpotlight(externalizedSceneTargetKind);
+                        this.interactionTakeover.setExternalizedChatSpotlight(externalizedSpotlightKind);
                     }
                 } else {
                     this.clearExternalizedChatSpotlightOnly();
@@ -9154,6 +9221,10 @@
             }
             if (sceneRunId !== this.sceneRunId || this.isStopping()) {
                 return false;
+            }
+            if (scene && scene.id === 'day2_proactive_chat') {
+                this.forceHideManagedPanel('settings');
+                this.collapseAvatarFloatingSidePanelsExcept(null);
             }
             await this.waitForSceneDelay(index >= total - 1 ? 260 : 420);
             return sceneRunId === this.sceneRunId && !this.isStopping();
