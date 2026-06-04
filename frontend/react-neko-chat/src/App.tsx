@@ -122,6 +122,7 @@ const COMPACT_INPUT_TOOL_FAN_INTERACTIVE_DELAY_MS = 220;
 const COMPACT_INPUT_TOOL_FAN_TRANSIENT_CLOSE_DELAY_MS = 360;
 const COMPACT_INPUT_TOOL_FAN_OUTSIDE_CLOSE_DELAY_MS = 650;
 const COMPACT_SURFACE_RESIZE_MIN_WIDTH = 430;
+const COMPACT_SURFACE_RESIZE_MOBILE_MIN_WIDTH = 280;
 const COMPACT_SURFACE_RESIZE_MAX_WIDTH = 720;
 const COMPACT_SURFACE_RESIZE_VIEWPORT_GUTTER = 32;
 const COMPACT_CHOICE_PLACEMENT_HYSTERESIS = 24;
@@ -318,12 +319,16 @@ type DesktopCompactChoicePlacementLayout = {
   } | null;
 };
 
-function clampCompactSurfaceResizeWidth(width: number, maxAvailableWidth: number): number {
+function clampCompactSurfaceResizeWidth(
+  width: number,
+  maxAvailableWidth: number,
+  minAvailableWidth = COMPACT_SURFACE_RESIZE_MIN_WIDTH,
+): number {
   const maxWidth = Math.max(
     0,
     Math.min(COMPACT_SURFACE_RESIZE_MAX_WIDTH, maxAvailableWidth - COMPACT_SURFACE_RESIZE_VIEWPORT_GUTTER),
   );
-  const minWidth = Math.min(COMPACT_SURFACE_RESIZE_MIN_WIDTH, maxWidth || COMPACT_SURFACE_RESIZE_MIN_WIDTH);
+  const minWidth = Math.min(minAvailableWidth, maxWidth || minAvailableWidth);
   return Math.round(Math.max(minWidth, Math.min(width, Math.max(minWidth, maxWidth))));
 }
 
@@ -1437,9 +1442,18 @@ export default function App({
     }
     return window.innerWidth || COMPACT_SURFACE_RESIZE_MIN_WIDTH + COMPACT_SURFACE_RESIZE_VIEWPORT_GUTTER;
   }, []);
+  const getCompactSurfaceResizeMinAvailableWidth = useCallback(() => (
+    !document.body?.classList.contains('electron-chat-window') && window.innerWidth <= 768
+      ? COMPACT_SURFACE_RESIZE_MOBILE_MIN_WIDTH
+      : COMPACT_SURFACE_RESIZE_MIN_WIDTH
+  ), []);
   const getClampedCompactSurfaceResizeWidth = useCallback((width: number) => (
-    clampCompactSurfaceResizeWidth(width, getCompactSurfaceResizeMaxAvailableWidth())
-  ), [getCompactSurfaceResizeMaxAvailableWidth]);
+    clampCompactSurfaceResizeWidth(
+      width,
+      getCompactSurfaceResizeMaxAvailableWidth(),
+      getCompactSurfaceResizeMinAvailableWidth(),
+    )
+  ), [getCompactSurfaceResizeMaxAvailableWidth, getCompactSurfaceResizeMinAvailableWidth]);
   const getClampedCompactSurfaceResizeWidthForSide = useCallback((
     side: CompactSurfaceResizeSide,
     width: number,
@@ -1465,11 +1479,15 @@ export default function App({
         ? resizeState.anchorRightScreen - areaLeft
         : areaRight - resizeState.anchorLeftScreen;
       if (Number.isFinite(maxWidth) && maxWidth > 0) {
-        return clampCompactSurfaceResizeWidth(width, maxWidth + COMPACT_SURFACE_RESIZE_VIEWPORT_GUTTER);
+        return clampCompactSurfaceResizeWidth(
+          width,
+          maxWidth + COMPACT_SURFACE_RESIZE_VIEWPORT_GUTTER,
+          getCompactSurfaceResizeMinAvailableWidth(),
+        );
       }
     }
     return getClampedCompactSurfaceResizeWidth(width);
-  }, [getClampedCompactSurfaceResizeWidth]);
+  }, [getCompactSurfaceResizeMinAvailableWidth, getClampedCompactSurfaceResizeWidth]);
   const getCurrentCompactSurfaceWidth = useCallback(() => {
     const rectWidth = compactInputShellRef.current?.getBoundingClientRect().width;
     if (Number.isFinite(rectWidth) && rectWidth && rectWidth > 0) {
@@ -1481,8 +1499,8 @@ export default function App({
     if (Number.isFinite(cssWidth) && cssWidth > 0) {
       return getClampedCompactSurfaceResizeWidth(cssWidth);
     }
-    return COMPACT_SURFACE_RESIZE_MIN_WIDTH;
-  }, [getClampedCompactSurfaceResizeWidth]);
+    return getCompactSurfaceResizeMinAvailableWidth();
+  }, [getCompactSurfaceResizeMinAvailableWidth, getClampedCompactSurfaceResizeWidth]);
   const compactSurfaceEffectiveWidth = isCompactSurface
     && compactSurfaceResizeWidth !== null
     ? getClampedCompactSurfaceResizeWidth(compactSurfaceResizeWidth)

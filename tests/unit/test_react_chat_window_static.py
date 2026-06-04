@@ -282,6 +282,49 @@ def test_compact_surface_resize_handles_keep_width_in_dom_geometry_contract():
     assert "right: -4px;" in styles
 
 
+def test_mobile_web_compact_surface_respects_width_bounds_and_position_vars():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    styles = STATIC_INDEX_CSS_PATH.read_text(encoding="utf-8")
+    app_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
+
+    mobile_compact_block = css_block(
+        styles,
+        'body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {',
+        'body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell #react-chat-window-root',
+    )
+    mobile_compact_overflow_block = css_block(
+        styles,
+        'body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root,',
+        'body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell .app-shell',
+    )
+    metrics_block = script.split("function getCompactSurfaceMetrics()", 1)[1].split(
+        "function clampCompactSurfacePosition(left, top, metrics)",
+        1,
+    )[0]
+    stored_width_block = script.split("function loadCompactSurfaceStoredWidth()", 1)[1].split(
+        "function saveCompactSurfacePosition",
+        1,
+    )[0]
+    resize_clamp_block = script.split("function clampCompactSurfaceResizeWidthForSide", 1)[1].split(
+        "function applyCompactSurfaceResizeRequest",
+        1,
+    )[0]
+
+    assert "COMPACT_SURFACE_RESIZE_MOBILE_MIN_WIDTH = 280" in app_source
+    assert "getCompactSurfaceResizeMinAvailableWidth" in app_source
+    assert "window.innerWidth <= 768" in app_source
+    assert "COMPACT_SURFACE_MOBILE_MIN_WIDTH = 280" in script
+    assert "COMPACT_SURFACE_MOBILE_VIEWPORT_GUTTER" in script
+    assert "isMobileWidth() && storedWidth" in metrics_block
+    assert "getCompactSurfaceMobileWidthBounds().minWidth" in stored_width_block
+    assert "getCompactSurfaceMobileWidthBounds().minWidth" in resize_clamp_block
+    assert "width: var(--compact-surface-width, calc(100vw - 16px)) !important;" in mobile_compact_block
+    assert "left: var(--compact-surface-left, 8px) !important;" in mobile_compact_block
+    assert "right: auto;" in mobile_compact_block
+    assert ".chat-window.chat-surface-mode-compact" in mobile_compact_overflow_block
+    assert "overflow: visible;" in mobile_compact_overflow_block
+
+
 def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")

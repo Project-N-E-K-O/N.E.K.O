@@ -243,6 +243,8 @@
     var COMPACT_MINIMIZE_BALL_AVATAR_VERTICAL_RATIO = 0.58;
     var COMPACT_SURFACE_MAX_WIDTH = 430;
     var COMPACT_SURFACE_RESIZE_MAX_WIDTH = 720;
+    var COMPACT_SURFACE_MOBILE_MIN_WIDTH = 280;
+    var COMPACT_SURFACE_MOBILE_VIEWPORT_GUTTER = 16;
     var COMPACT_SURFACE_VIEWPORT_PAD_X = 16;
     var COMPACT_SURFACE_VIEWPORT_PAD_TOP = 12;
     var COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM = 18;
@@ -507,7 +509,20 @@
         return false;
     }
 
+    function getCompactSurfaceMobileWidthBounds() {
+        var viewportWidth = Math.max(1, window.innerWidth || 0);
+        var viewportMax = Math.max(1, viewportWidth - COMPACT_SURFACE_MOBILE_VIEWPORT_GUTTER);
+        var minWidth = Math.min(COMPACT_SURFACE_MOBILE_MIN_WIDTH, viewportMax);
+        return {
+            minWidth: Math.round(minWidth),
+            maxWidth: Math.round(Math.max(minWidth, viewportMax))
+        };
+    }
+
     function getCompactSurfaceResizeMaxWidth() {
+        if (isMobileWidth()) {
+            return getCompactSurfaceMobileWidthBounds().maxWidth;
+        }
         return Math.max(
             COMPACT_SURFACE_MAX_WIDTH,
             Math.min(COMPACT_SURFACE_RESIZE_MAX_WIDTH, window.innerWidth - (COMPACT_SURFACE_VIEWPORT_PAD_X * 2))
@@ -517,15 +532,18 @@
     function getCompactSurfaceMetrics() {
         var shell = getShell();
         var rect = getCompactSurfaceBaseRect() || (shell ? normalizeCompactDomRect(shell.getBoundingClientRect()) : null);
+        var mobileWidthBounds = isMobileWidth() ? getCompactSurfaceMobileWidthBounds() : null;
         var defaultWidth = isMobileWidth()
-            ? Math.max(280, window.innerWidth - 16)
+            ? mobileWidthBounds.maxWidth
             : Math.min(COMPACT_SURFACE_MAX_WIDTH, Math.max(280, window.innerWidth - (COMPACT_SURFACE_VIEWPORT_PAD_X * 2)));
         var measuredWidth = rect && rect.width > 0 ? rect.width : 0;
         var storedWidth = loadCompactSurfaceStoredWidth();
-        var width = Math.round(Math.min(
-            Math.max(defaultWidth, measuredWidth, storedWidth || 0),
-            getCompactSurfaceResizeMaxWidth()
-        ));
+        var width = isMobileWidth() && storedWidth
+            ? storedWidth
+            : Math.round(Math.min(
+                Math.max(defaultWidth, measuredWidth, storedWidth || 0),
+                getCompactSurfaceResizeMaxWidth()
+            ));
         var height = rect && rect.height > 0 ? rect.height : COMPACT_SURFACE_DEFAULT_HEIGHT;
         return {
             width: width,
@@ -585,7 +603,10 @@
             var width = Number(parsed && parsed.width);
             if (!Number.isFinite(width) || width <= 0) return null;
             var maxWidth = getCompactSurfaceResizeMaxWidth();
-            return Math.round(Math.max(COMPACT_SURFACE_MAX_WIDTH, Math.min(width, maxWidth)));
+            var minWidth = isMobileWidth()
+                ? getCompactSurfaceMobileWidthBounds().minWidth
+                : COMPACT_SURFACE_MAX_WIDTH;
+            return Math.round(Math.max(minWidth, Math.min(width, maxWidth)));
         } catch (_) {
             return null;
         }
@@ -942,11 +963,14 @@
                 ? (currentRect.left + currentRect.width) - minLeft
                 : maxRight - currentRect.left;
         }
+        var minWidth = isMobileWidth()
+            ? getCompactSurfaceMobileWidthBounds().minWidth
+            : COMPACT_SURFACE_MAX_WIDTH;
         var maxWidth = Math.max(
-            COMPACT_SURFACE_MAX_WIDTH,
-            Math.min(COMPACT_SURFACE_RESIZE_MAX_WIDTH, sideMax)
+            minWidth,
+            Math.min(getCompactSurfaceResizeMaxWidth(), sideMax)
         );
-        return Math.round(Math.max(COMPACT_SURFACE_MAX_WIDTH, Math.min(width, maxWidth)));
+        return Math.round(Math.max(minWidth, Math.min(width, maxWidth)));
     }
 
     function applyCompactSurfaceResizeRequest(detail) {

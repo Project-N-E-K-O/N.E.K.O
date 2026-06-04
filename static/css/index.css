@@ -3086,12 +3086,13 @@ body.react-chat-window-dragging {
     }
 
     body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {
-        width: calc(100vw - 16px) !important;
-        left: 8px !important;
-        right: 8px;
+        width: var(--compact-surface-width, calc(100vw - 16px)) !important;
+        left: var(--compact-surface-left, 8px) !important;
+        right: auto;
         bottom: 8px !important;
         margin-left: 0 !important;
         transform: none !important;
+        overflow: visible;
     }
 
     body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell #react-chat-window-root {
@@ -3099,6 +3100,11 @@ body.react-chat-window-dragging {
         flex: 1 1 auto;
         overflow: hidden;
         min-height: 0;
+    }
+
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root,
+    body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .chat-window.chat-surface-mode-compact {
+        overflow: visible;
     }
 
     body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell .app-shell {
