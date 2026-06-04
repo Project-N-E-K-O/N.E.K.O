@@ -176,6 +176,9 @@ class StudyOcrPipeline:
         thumbnail_phash = self._image_phash(image)
         previous_phash = self._latest_lightweight_phash
         self._latest_lightweight_phash = thumbnail_phash
+        has_content_change = True
+        if previous_phash and thumbnail_phash:
+            has_content_change = previous_phash != thumbnail_phash
         app_type = classify_app_from_title(title)
         classify_method = "title"
         activity_type = ""
@@ -192,27 +195,16 @@ class StudyOcrPipeline:
                     raw = backend.extract_text(image)
                     ocr_text, _boxes = self._normalize_ocr_output(raw)
                 except Exception as exc:
-                    return LightweightSnapshot(
-                        status="ocr_failed",
-                        captured_at=captured_at,
+                    diagnostic = f"ocr_failed: {exc}"
+                else:
+                    classification = classify_screen_from_ocr(
+                        ocr_text,
                         window_title=title,
-                        app_type=app_type,
-                        jpeg_bytes=jpeg_bytes,
-                        jpeg_base64=self._jpeg_data_url(jpeg_bytes),
-                        thumbnail_phash=thumbnail_phash,
-                        diagnostic=str(exc),
                     )
-                classification = classify_screen_from_ocr(
-                    ocr_text,
-                    window_title=title,
-                )
-                activity_type = classification.screen_type
-                classify_method = "both" if title else "ocr"
-                diagnostic = f"ocr_duration_seconds={time.monotonic() - started:.3f}"
+                    activity_type = classification.screen_type
+                    classify_method = "both" if title else "ocr"
+                    diagnostic = f"ocr_duration_seconds={time.monotonic() - started:.3f}"
 
-        has_content_change = True
-        if previous_phash and thumbnail_phash:
-            has_content_change = previous_phash != thumbnail_phash
         status = "ok" if title or ocr_text or jpeg_bytes else "empty"
         return LightweightSnapshot(
             status=status,

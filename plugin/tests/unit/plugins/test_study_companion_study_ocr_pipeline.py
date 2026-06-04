@@ -185,6 +185,35 @@ def test_ocr_pipeline_capture_lightweight_ocr_mode_writes_activity_type() -> Non
     assert activity.activity_type == "question"
 
 
+def test_ocr_pipeline_capture_lightweight_ocr_failure_keeps_title_activity() -> None:
+    image = Image.new("RGB", (800, 600), "white")
+    pipeline = StudyOcrPipeline(
+        logger=_Logger(),
+        config=StudyConfig(
+            awareness=AwarenessConfig(classify_mode="ocr_text", image_max_bytes=80_000)
+        ),
+        ocr_backend=_Backend(RuntimeError("ocr unavailable")),
+        capture_backend=_Capture(image),
+    )
+
+    snapshot = pipeline.capture_lightweight(
+        target={"hwnd": 1, "title": "Quiz - Google Chrome"}
+    )
+    activity = snapshot.to_activity_snapshot()
+
+    assert snapshot.status == "ok"
+    assert snapshot.app_type == "web_page"
+    assert snapshot.activity_type == ""
+    assert snapshot.ocr_text_snippet == ""
+    assert snapshot.has_content_change is True
+    assert snapshot.jpeg_bytes is not None
+    assert "ocr unavailable" in snapshot.diagnostic
+    assert activity is not None
+    assert activity.window_title == "Quiz - Google Chrome"
+    assert activity.app_type == "web_page"
+    assert activity.classify_method == "title"
+
+
 def test_ocr_pipeline_capture_lightweight_content_change_and_failure_paths() -> None:
     image = Image.new("RGB", (640, 360), "white")
     pipeline = StudyOcrPipeline(
