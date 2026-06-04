@@ -11053,11 +11053,11 @@ function _companionBuildPanel(state) {
         { label: _cardAssistT('character.aiCompanionQuickAdvice', '💡 给点建议'),
           send: _cardAssistT('character.aiCompanionQuickAdviceMsg',
                 '看一下当前的角色设定，给我几条具体的改进建议吧。'),
-          requireMode: 'chat' },
+          requireMode: 'chat', adviceOnly: true },
         { label: _cardAssistT('character.aiCompanionQuickCheck', '🔍 帮我审一下'),
           send: _cardAssistT('character.aiCompanionQuickCheckMsg',
-                '审一下角色设定有没有矛盾、空泛或者重复的地方，并提出修改方案。'),
-          requireMode: 'chat' },
+                '审一下角色设定有没有矛盾、空泛或者重复的地方。'),
+          requireMode: 'chat', adviceOnly: true },
         { label: _cardAssistT('character.aiCompanionQuickRegen', '🎲 重写整张卡'),
           send: _cardAssistT('character.aiCompanionQuickRegenMsg',
                 '把所有可见字段都按原本的角色定位重新写一遍。'),
@@ -11077,6 +11077,7 @@ function _companionBuildPanel(state) {
             // 文案——ja/ko/pt/ru/es/zh-TW 的「重写」措辞匹配不到，后端 _complete_full_rewrite_actions
             // 补全通路就不会触发，部分 action 列表会被当部分重写存下去（Codex #3333137718）。
             state._pendingFullRewrite = !!qa.fullRewrite;
+            state._pendingAdviceOnly = !!qa.adviceOnly;
             input.value = qa.send;
             _companionSubmit(state);
         });
@@ -11529,6 +11530,10 @@ async function _companionRunChat(state) {
     // 残留、被下一条普通聊天消息误当成整卡重写（CodeRabbit #3333410664）。
     const fullRewrite = state._pendingFullRewrite === true;
     state._pendingFullRewrite = false;
+    // 「给建议 / 帮我审一下」属于只读分析，不该顺手自动改表单；和 full_rewrite 一样做一次性消费，
+    // 避免某次 advice 请求 early-return 后把标记泄漏到下一条普通聊天消息（本次回归）。
+    const adviceOnly = state._pendingAdviceOnly === true;
+    state._pendingAdviceOnly = false;
     const typing = _companionAppendTyping(state);
     try {
         if (!_companionEnsureLiveForm(state)) {
@@ -11558,6 +11563,7 @@ async function _companionRunChat(state) {
             target_field_keys: _cardAssistCollectFieldKeys(state.form),
             dev_cat_name: state.devCatName,
             locale: _cardAssistCurrentLocale(),
+            advice_only: adviceOnly,
             full_rewrite: fullRewrite,
         });
         // closed-companion guard：同 clarify/generate，关掉 companion 之后
@@ -11966,6 +11972,19 @@ function _companionTruncate(s, n) {
     return s.length > n ? s.slice(0, n) + '…' : s;
 }
 
+function _cardAssistNormalizeDisplayText(text) {
+    let s = String(text == null ? '' : text);
+    // Companion bubbles render plain text, so stray markdown markers look broken.
+    // Strip the common emphasis markers and normalize markdown bullet prefixes.
+    s = s.replace(/^\s{0,3}#{1,6}\s+/gm, '');
+    s = s.replace(/^\s*[*-]\s+/gm, '• ');
+    s = s.replace(/\*\*([^*]+)\*\*/g, '$1');
+    s = s.replace(/__([^_]+)__/g, '$1');
+    s = s.replace(/(^|[^\w])\*([^*\n]+)\*(?=[^\w]|$)/g, '$1$2');
+    s = s.replace(/(^|[^\w])_([^_\n]+)_(?=[^\w]|$)/g, '$1$2');
+    return s;
+}
+
 // ========== Bubble 工厂 ==========
 
 function _companionScrollToBottom(state) {
@@ -11990,7 +12009,7 @@ function _companionAppendAssistant(state, text, opts) {
 
     const body = document.createElement('div');
     body.className = 'card-companion-bubble-body';
-    body.textContent = text || '';
+    body.textContent = _cardAssistNormalizeDisplayText(text);
     body.style.whiteSpace = 'pre-wrap';
     bubble.appendChild(body);
 
@@ -12065,7 +12084,7 @@ function _companionAppendUser(state, text) {
 function _companionAppendSystem(state, text) {
     const bubble = document.createElement('div');
     bubble.className = 'card-companion-bubble-system';
-    bubble.textContent = text || '';
+    bubble.textContent = _cardAssistNormalizeDisplayText(text);
     state.threadEl.appendChild(bubble);
     _companionScrollToBottom(state);
     return bubble;

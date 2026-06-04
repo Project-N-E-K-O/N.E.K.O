@@ -255,3 +255,40 @@ def test_chat_action_only_json_does_not_echo_raw_json(monkeypatch):
     assert body["success"] is True
     assert body["reply"] == ""
     assert body["actions"][0]["field_key"] == "招牌台词"
+
+
+def test_chat_advice_only_discards_actions_and_skips_recovery(monkeypatch):
+    monkeypatch.setattr(car, "_reject_untrusted_card_assist", lambda *_args, **_kwargs: None)
+
+    async def fake_invoke_detailed(prompt):
+        assert "只读建议" in prompt[0]["content"]
+        return (
+            '{"reply":"这里有两点建议：一是补具体习惯，二是把关系张力写得更实。","actions":[{"type":"refine_field","field_key":"行为特征","value":"会偷偷把咖啡杯按顺序摆整齐"}]}',
+            None,
+        )
+
+    async def fake_invoke(_prompt):
+        raise AssertionError("advice_only should not trigger action recovery")
+
+    monkeypatch.setattr(car, "_invoke_assist_detailed", fake_invoke_detailed)
+    monkeypatch.setattr(car, "_invoke_assist", fake_invoke)
+
+    app = FastAPI()
+    app.include_router(car.router)
+    with TestClient(app) as client:
+        resp = client.post(
+            "/api/card-assist/chat",
+            json={
+                "messages": [{"role": "user", "content": "看一下当前的角色设定，给我几条具体的改进建议吧。"}],
+                "current_card": {"行为特征": "很认真", "人际关系": "和家人关系很好"},
+                "target_field_keys": ["行为特征", "人际关系"],
+                "locale": "zh-CN",
+                "advice_only": True,
+            },
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert body["reply"].startswith("这里有两点建议")
+    assert body["actions"] == []

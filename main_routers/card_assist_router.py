@@ -714,6 +714,17 @@ _CHAT_REWRITE_VERB_RE = re.compile(
     re.IGNORECASE,
 )
 
+_CHAT_ADVICE_ONLY_DIRECTIVE = {
+    "zh": (
+        "\n\n本轮是“只读建议”模式：你可以点评、指出问题、给出修改方向或候选写法，"
+        "但绝对不要提交任何字段修改动作。返回时 actions 必须是空数组 []。"
+    ),
+    "en": (
+        "\n\nThis turn is advice-only mode: you may critique the card and suggest directions or "
+        "candidate rewrites, but you must not submit any field-edit actions. Return actions as []."
+    ),
+}
+
 
 def _latest_user_text(history: list[dict]) -> str:
     for msg in reversed(history):
@@ -1007,6 +1018,7 @@ async def chat(request: Request):
     target_keys = _resolve_target_keys(body, locale_code, current_card)
     target_keys_text = " / ".join(target_keys)
     latest_user = _latest_user_text(history)
+    advice_only = body.get("advice_only") is True
 
     dev_cat_name = str(body.get("dev_cat_name") or _DEFAULT_DEV_CAT_NAME).strip()
     if not dev_cat_name or len(dev_cat_name) > 40:
@@ -1016,6 +1028,8 @@ async def chat(request: Request):
     system_content = system_template % (
         dev_cat_name, current_card_text, target_keys_text
     )
+    if advice_only:
+        system_content += _CHAT_ADVICE_ONLY_DIRECTIVE["zh" if lang == "zh" else "en"]
     # 聊天回复 + actions 里的字段值也用目标语言（Codex #3331696257）
     system_content += _output_language_directive(locale_code)
 
@@ -1049,18 +1063,20 @@ async def chat(request: Request):
         if len(reply) > _CHAT_MAX_MESSAGE_CHARS:
             reply = reply[:_CHAT_MAX_MESSAGE_CHARS] + "…"
         actions = _sanitize_actions(parsed.get("actions"))
+        if advice_only:
+            actions = []
     elif parsed is not None:
         warning = "llm_bad_shape"
 
     if not reply and content and not isinstance(parsed, dict):
         reply = (content or "")[:_CHAT_MAX_MESSAGE_CHARS]
 
-    edit_intent = _chat_text_requests_edits(latest_user)
+    edit_intent = False if advice_only else _chat_text_requests_edits(latest_user)
     # 前端「重写整张卡」quick action 透传的 locale 无关 flag 优先——本地化文案（es/ja/ko/pt/
     # ru/zh-TW 的「重写」措辞）正则匹配不到，只靠 _chat_text_requests_full_rewrite 会漏判，
     # _complete_full_rewrite_actions 补全通路不触发、部分 action 被当部分重写存下（Codex
     # #3333137718）。同时保留文本启发式，兼容用户手敲的全量重写措辞。
-    full_rewrite_intent = (
+    full_rewrite_intent = (not advice_only) and (
         body.get("full_rewrite") is True
         or _chat_text_requests_full_rewrite(latest_user)
     )
