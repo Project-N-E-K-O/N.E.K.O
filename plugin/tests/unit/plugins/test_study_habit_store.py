@@ -11,6 +11,7 @@ from plugin.plugins.study_companion.memory_deck_store import MemoryDeckStore
 from plugin.plugins.study_companion.memory_habit_bridge import MemoryHabitBridge
 from plugin.plugins.study_companion.study_habit_store import StudyHabitStore
 from plugin.plugins.study_companion.store import StudyStore
+from plugin.plugins.study_companion.store_notebook import NotebookStore
 
 
 class _Logger:
@@ -53,6 +54,7 @@ def test_store_purge_all_clears_user_data_tables(tmp_path: Path) -> None:
     try:
         habits = StudyHabitStore(store)
         memory = MemoryDeckStore(store)
+        notebooks = NotebookStore(store)
         bridge = MemoryHabitBridge(store=store, memory=memory, habits=habits)
 
         with store.transaction() as conn:
@@ -90,6 +92,12 @@ def test_store_purge_all_clears_user_data_tables(tmp_path: Path) -> None:
             target_amount=1,
             unit="cards",
         )
+        notebook = notebooks.create_notebook(name="Private Notes")
+        notebooks.create_note(
+            notebook_id=notebook.id,
+            title="Private note",
+            content="reset should remove this note",
+        )
         reviewed = memory.review_item(item_id=word["id"], rating="good")
         bridge.apply_review_progress(reviewed, date="2026-05-24")
 
@@ -98,6 +106,8 @@ def test_store_purge_all_clears_user_data_tables(tmp_path: Path) -> None:
         assert deleted["kv"] >= 1
         assert deleted["daily_goals"] >= 1
         assert deleted["memory_habit_progress"] >= 1
+        assert deleted["notes"] >= 1
+        assert deleted["notebooks"] >= 1
         with store.transaction() as conn:
             table_queries = {
                 "kv": "SELECT COUNT(*) FROM kv",
@@ -109,6 +119,8 @@ def test_store_purge_all_clears_user_data_tables(tmp_path: Path) -> None:
                 "memory_fsrs_cards": "SELECT COUNT(*) FROM memory_fsrs_cards",
                 "review_records": "SELECT COUNT(*) FROM review_records",
                 "memory_habit_progress": "SELECT COUNT(*) FROM memory_habit_progress",
+                "notes": "SELECT COUNT(*) FROM notes",
+                "notebooks": "SELECT COUNT(*) FROM notebooks",
             }
             for table, query in table_queries.items():
                 count = conn.execute(query).fetchone()[0]

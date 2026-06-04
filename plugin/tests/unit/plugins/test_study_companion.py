@@ -58,6 +58,7 @@ from plugin.plugins.study_companion.models import (
 )
 from plugin.plugins.study_companion.state import build_initial_state
 from plugin.plugins.study_companion.store import StudyStore
+from plugin.plugins.study_companion.store_notebook import NotebookStore
 from plugin.plugins.study_companion import (
     study_capture_backends as study_capture_backends_module,
 )
@@ -450,6 +451,15 @@ def test_study_store_round_trip_and_export(tmp_path: Path) -> None:
         kind="concept_explain", input_text="e", output_text="f", history_limit=2
     )
     store.ensure_topic(topic_id="photosynthesis_topic", name="Photosynthesis")
+    notebooks = NotebookStore(store)
+    notebook = notebooks.create_notebook(name="Biology")
+    note = notebooks.create_note(
+        notebook_id=notebook.id,
+        title="Photosynthesis note",
+        content="Plants convert light into sugar.",
+        topic_ids=["photosynthesis_topic"],
+        tags=["biology"],
+    )
     store.ensure_session(session_id="session-1", mode="interactive")
     store.add_qa_record(
         session_id="session-1",
@@ -520,6 +530,9 @@ def test_study_store_round_trip_and_export(tmp_path: Path) -> None:
     assert exported["qa_records"][-1]["question"]["question"] == "Recent QA 1"
     assert exported["review_log"][0]["topic_id"] == "photosynthesis_topic"
     assert exported["knowledge_evidence"][0]["item_id"] == candidate["id"]
+    assert exported["notebooks"][0]["id"] == notebook.id
+    assert exported["notes"][0]["id"] == note.id
+    assert exported["notes"][0]["content"] == "Plants convert light into sugar."
     store.close()
 
 

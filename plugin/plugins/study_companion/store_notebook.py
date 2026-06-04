@@ -465,13 +465,13 @@ class NotebookStore:
         - "unfiled": only notes with notebook_id IS NULL.
         - "specific": notes under notebook_id.
         """
-        safe_limit = max(1, min(500, int(limit or 50)))
+        safe_limit = max(1, min(5000, int(limit or 50)))
         query = str(search_query or "").strip()
         normalized_filter = self._normalize_notebook_filter(
             notebook_filter, notebook_id
         )
         if query:
-            notes = self._list_notes_fts(
+            fts_notes = self._list_notes_fts(
                 notebook_filter=normalized_filter,
                 notebook_id=notebook_id,
                 topic_id=topic_id,
@@ -479,9 +479,7 @@ class NotebookStore:
                 search_query=query,
                 limit=safe_limit,
             )
-            if notes:
-                return notes
-            return self._list_notes_like(
+            like_notes = self._list_notes_like(
                 notebook_filter=normalized_filter,
                 notebook_id=notebook_id,
                 topic_id=topic_id,
@@ -489,6 +487,16 @@ class NotebookStore:
                 search_query=query,
                 limit=safe_limit,
             )
+            seen: set[str] = set()
+            merged: list[NoteItem] = []
+            for note in [*fts_notes, *like_notes]:
+                if note.id in seen:
+                    continue
+                merged.append(note)
+                seen.add(note.id)
+                if len(merged) >= safe_limit:
+                    break
+            return merged
         where, params = self._filter_clauses(
             notebook_filter=normalized_filter,
             notebook_id=notebook_id,

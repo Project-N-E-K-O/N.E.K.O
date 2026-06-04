@@ -159,6 +159,25 @@ def test_notebook_search_all_and_note_id_export(tmp_path) -> None:
         store.close()
 
 
+def test_notebook_search_merges_fts_and_like_substring_matches(tmp_path) -> None:
+    store, notebooks, _logger = _make_store(tmp_path)
+    try:
+        exact = notebooks.create_note(title="导数", content="calculus term")
+        substring = notebooks.create_note(
+            title="变化率",
+            content="导数描述瞬时变化率",
+        )
+
+        results = notebooks.list_notes(search_query="导数", limit=10)
+
+        result_ids = [note.id for note in results]
+        assert exact.id in result_ids
+        assert substring.id in result_ids
+        assert len(result_ids) == len(set(result_ids))
+    finally:
+        store.close()
+
+
 @pytest.mark.asyncio
 async def test_notebook_entries_serialize_dataclasses(tmp_path) -> None:
     store, notebooks, _logger = _make_store(tmp_path)

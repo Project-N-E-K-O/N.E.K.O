@@ -16,6 +16,8 @@ _PURGE_TABLES = (
     "focus_sessions",
     "checkins",
     "daily_goals",
+    "notes",
+    "notebooks",
     "qa_records",
     "sessions",
     "review_log",
