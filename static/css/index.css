@@ -1183,8 +1183,12 @@ body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"
     pointer-events: auto;
 }
 
+/* Compact history pass-through contract: the broad surface rule above re-enables
+   hit-testing for all surface descendants, so every transparent history wrapper
+   must be reset to none. Only visible bubbles, controls, and preview are auto. */
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-anchor,
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-panel,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-scroll,
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-scroll-content,
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-message {
     pointer-events: none;

@@ -511,7 +511,10 @@
 
     function getCompactSurfaceMobileWidthBounds() {
         var viewportWidth = Math.max(1, window.innerWidth || 0);
-        var viewportMax = Math.max(1, viewportWidth - COMPACT_SURFACE_MOBILE_VIEWPORT_GUTTER);
+        var viewportMax = Math.max(
+            1,
+            Math.min(COMPACT_SURFACE_RESIZE_MAX_WIDTH, viewportWidth - COMPACT_SURFACE_MOBILE_VIEWPORT_GUTTER)
+        );
         var minWidth = Math.min(COMPACT_SURFACE_MOBILE_MIN_WIDTH, viewportMax);
         return {
             minWidth: Math.round(minWidth),
