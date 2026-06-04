@@ -6135,7 +6135,7 @@ margin-top: 10px;
     grid-column: 4;
 }
 
-/* AI 辅助生成按钮放在 Add 按钮左边的 action 槽位（col 3），保持和
+/* 猫猫辅助生成按钮放在 Add 按钮左边的 action 槽位（col 3），保持和
    Add 按钮同一行 —— 同样的 pattern 用在 save-action / cancel-action 上。
    注意：必须放在上面 `.settings-toolbar-row .btn.sm { grid-column: 4 }`
    之后，靠 source order 覆盖（specificity 相同）。 */
@@ -7455,7 +7455,7 @@ margin-top: 10px;
     color: #bae6fd;
 }
 
-/* ===================== AI 辅助生成（按钮 + 向导窗口） ===================== */
+/* ===================== 猫猫辅助生成（按钮 + 向导窗口） ===================== */
 
 .btn.sm.ai-assist {
     background: linear-gradient(135deg, #40C5F1 0%, #6bdcff 100%);

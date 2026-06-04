@@ -3,7 +3,7 @@
 Card-Assist Router
 
 Four endpoints powering the in-app AI assistant that helps users author a
-catgirl character card (Character Card Manager → "AI 辅助生成" button):
+catgirl character card (Character Card Manager → "猫猫辅助生成" button):
 
   POST /api/card-assist/clarify   — return 2-4 chip-style clarifying questions
   POST /api/card-assist/generate  — return a full field dict (Chinese keys)

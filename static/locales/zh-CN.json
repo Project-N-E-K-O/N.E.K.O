@@ -1911,7 +1911,7 @@
         "systemPrompt": "系统指令（谨慎修改）",
         "systemPromptWarning": "系统指令 - 修改可能导致角色行为异常，后果自负",
         "addField": "新增设定",
-        "aiAssist": "AI 辅助生成",
+        "aiAssist": "猫猫辅助生成",
         "aiCompanionSeedDescribe": "基于这段描述生成猫娘卡：",
         "aiCompanionSeedGenerated": "已生成并填入表单：",
         "aiCompanionSub": "设定捏人助手 · 暂代开发猫",

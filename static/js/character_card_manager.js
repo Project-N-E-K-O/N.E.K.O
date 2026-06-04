@@ -5507,7 +5507,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     addFieldSpacer.style.flex = '1';
     addFieldArea.appendChild(addFieldSpacer);
 
-    // AI 辅助生成按钮（位于「新增设定」左侧）。
+    // 猫猫辅助生成按钮（位于「新增设定」左侧）。
     // `settings-secondary-action` 是 grid placement marker —— 详情面板的 settings
     // toolbar row 用 CSS Grid 把 `.btn.sm` 默认塞到 grid-column: 4；不显式标 col
     // 的话 AI 按钮和 Add 按钮会在同一列里堆成上下两行。靠这个 class 把它推到
@@ -5519,7 +5519,7 @@ function buildCatgirlDetailForm(name, rawData, isNew, container) {
     aiAssistBtn.style.minWidth = '140px';
     const aiAssistText = (window.t && typeof window.t === 'function')
         ? '<span class="ai-assist-icon" aria-hidden="true">✨</span> <span data-i18n="character.aiAssist">' + window.t('character.aiAssist') + '</span>'
-        : '<span class="ai-assist-icon" aria-hidden="true">✨</span> <span data-i18n="character.aiAssist">AI 辅助生成</span>';
+        : '<span class="ai-assist-icon" aria-hidden="true">✨</span> <span data-i18n="character.aiAssist">猫猫辅助生成</span>';
     aiAssistBtn.innerHTML = aiAssistText;
     aiAssistBtn.onclick = function () {
         try {
@@ -10697,8 +10697,8 @@ function panelAttachAutoSaveListener(input, catgirlName) {
     });
 }
 
-// ===================== AI 辅助生成猫娘设定（陪伴式聊天面板） =====================
-// 设计：点击「✨ AI 辅助生成」会在屏幕右侧拉出一个驻留的聊天面板，扮演一只
+// ===================== 猫猫辅助生成猫娘设定（陪伴式聊天面板） =====================
+// 设计：点击「✨ 猫猫辅助生成」会在屏幕右侧拉出一个驻留的聊天面板，扮演一只
 // 「设定捏人助手猫娘」（暂用 YUI 的卡面顶替，未来会换成开发猫角色）。面板里：
 //   - 先一句话描述 → AI 抛 2-4 道带 chip 的澄清问题 → AI 一次性生成全部字段
 //     并自动应用到表单 → 进入自由聊天模式

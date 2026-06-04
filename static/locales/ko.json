@@ -1911,7 +1911,7 @@
         "systemPrompt": "시스템 프롬프트(주의해서 편집)",
         "systemPromptWarning": "시스템 프롬프트 - 수정으로 인해 예기치 않은 동작이 발생할 수 있습니다. 편집에 따른 책임은 본인에게 있습니다.",
         "addField": "필드 추가",
-        "aiAssist": "AI 보조 생성",
+        "aiAssist": "고양이 보조 생성",
         "aiCompanionSub": "설정 보조 · YUI 가 개발 고양이 대행",
         "aiCompanionClose": "닫기",
         "aiCompanionMinimize": "최소화",

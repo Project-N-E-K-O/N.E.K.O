@@ -1911,7 +1911,7 @@
         "systemPrompt": "システムプロンプト（注意して編集してください）",
         "systemPromptWarning": "システムプロンプト - 変更により予期しない動作が発生する可能性があります。自己責任で編集してください。",
         "addField": "フィールドを追加",
-        "aiAssist": "AI アシスト生成",
+        "aiAssist": "猫ちゃんアシスト生成",
         "aiCompanionSub": "設定捏ね助手 · YUI が開発猫の代役",
         "aiCompanionClose": "閉じる",
         "aiCompanionMinimize": "最小化",

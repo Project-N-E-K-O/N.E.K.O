@@ -1911,7 +1911,7 @@
         "systemPrompt": "System Prompt (Edit with caution)",
         "systemPromptWarning": "System Prompt - Modifications may cause unexpected behavior. Edit at your own risk.",
         "addField": "Add Field",
-        "aiAssist": "AI Assist",
+        "aiAssist": "Cat Assist",
         "aiCompanionSeedDescribe": "Generate a catgirl card based on this description: ",
         "aiCompanionSeedGenerated": "Generated and filled into the form: ",
         "aiCompanionSub": "Card-design buddy · YUI standing in for the dev cat",

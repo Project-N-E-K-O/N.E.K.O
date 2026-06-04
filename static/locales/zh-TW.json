@@ -1911,7 +1911,7 @@
         "systemPrompt": "系統指令（謹慎修改）",
         "systemPromptWarning": "系統指令 - 修改可能導致角色行為異常，後果自負",
         "addField": "新增設定",
-        "aiAssist": "AI 輔助生成",
+        "aiAssist": "貓貓輔助生成",
         "aiCompanionSub": "設定捏人助手 · YUI 暫代開發貓",
         "aiCompanionClose": "關閉",
         "aiCompanionMinimize": "收起",
