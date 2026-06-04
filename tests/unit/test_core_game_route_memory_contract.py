@@ -67,6 +67,18 @@ class _FakeActivityTracker:
         self.user_messages.append(text)
 
 
+class _FakeVoiceBridgeSession:
+    def __init__(self):
+        self.cancelled = 0
+        self.prime_context_calls = []
+
+    async def cancel_response(self):
+        self.cancelled += 1
+
+    async def prime_context(self, text, skipped=False):
+        self.prime_context_calls.append((text, skipped))
+
+
 class _FakeAliveThread:
     def is_alive(self):
         return True
@@ -265,9 +277,14 @@ async def test_mirror_assistant_output_can_finalize_user_reply_turn():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_takeover_dispatcher_handles_voice_transcript_and_skips_ordinary_user_context():
+async def test_takeover_dispatcher_handles_voice_transcript_and_skips_ordinary_user_context(monkeypatch):
     mgr = _make_transcript_manager()
     routed = []
+
+    async def fail_voice_bridge(*_args, **_kwargs):
+        raise AssertionError("takeover-handled transcript must not reach voice bridge")
+
+    monkeypatch.setattr(core_module, "publish_voice_transcript_request_reliably", fail_voice_bridge)
 
     async def fake_dispatcher(lanlan_name, text, *, request_id):
         routed.append((lanlan_name, text, request_id))
@@ -364,34 +381,17 @@ async def test_voice_transcript_runs_mini_game_invite_keyword(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_voice_transcript_subscriber_cancel_consumes_ordinary_flow(monkeypatch):
-    class _FakeDispatchService:
-        def __init__(self):
-            self.calls = []
+async def test_voice_transcript_bridge_cancel_consumes_ordinary_flow(monkeypatch):
+    calls = []
 
-        async def trigger_custom_event_subscribers(self, **kwargs):
-            self.calls.append(kwargs)
-            return [
-                {
-                    "plugin_id": "study_companion",
-                    "event_id": "handle_transcript",
-                    "success": True,
-                    "result": {"action": "cancel_response", "reason": "ocr_overlap"},
-                }
-            ]
+    async def fake_publish(lanlan_name, transcript, *, metadata):
+        calls.append((lanlan_name, transcript, metadata))
+        return {"action": "cancel_response", "reason": "ocr_overlap"}
 
-    class _FakeVoiceSession:
-        def __init__(self):
-            self.cancelled = 0
-
-        async def cancel_response(self):
-            self.cancelled += 1
-
-    service = _FakeDispatchService()
-    session = _FakeVoiceSession()
+    session = _FakeVoiceBridgeSession()
     mgr = _make_transcript_manager()
     mgr.session = session
-    monkeypatch.setattr(core_module, "_voice_transcript_dispatch_service", service)
+    monkeypatch.setattr(core_module, "publish_voice_transcript_request_reliably", fake_publish)
 
     await core_module.LLMSessionManager.handle_input_transcript(
         mgr,
@@ -399,12 +399,12 @@ async def test_voice_transcript_subscriber_cancel_consumes_ordinary_flow(monkeyp
         is_voice_source=True,
     )
 
-    assert service.calls
-    assert service.calls[0]["event_type"] == "voice_transcript"
-    assert service.calls[0]["event_id"] == "handle_transcript"
-    assert service.calls[0]["args"]["transcript"] == "screen echo"
-    assert service.calls[0]["args"]["lanlan_name"] == "Lan"
-    assert service.calls[0]["args"]["metadata"]["request_id"].startswith("realtime-stt-")
+    assert calls
+    assert calls[0][0] == "Lan"
+    assert calls[0][1] == "screen echo"
+    assert calls[0][2]["request_id"].startswith("realtime-stt-")
+    assert calls[0][2]["source"] == "realtime_stt"
+    assert "voice_session_id" not in calls[0][2]
     assert session.cancelled == 1
     assert mgr._activity_tracker.voice_rms_count == 1
     assert mgr._activity_tracker.user_messages == []
@@ -556,33 +556,21 @@ async def test_last_user_message_time_uses_transcript_arrival_not_post_await(mon
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_voice_transcript_subscriber_prime_context_consumes_ordinary_flow(monkeypatch):
-    class _FakeDispatchService:
-        async def trigger_custom_event_subscribers(self, **_kwargs):
-            return [
-                {
-                    "plugin_id": "study_companion",
-                    "event_id": "handle_transcript",
-                    "success": True,
-                    "result": {
-                        "action": "prime_context",
-                        "context": "[问题] why is it 3x^2",
-                        "skipped": False,
-                    },
-                }
-            ]
+async def test_voice_transcript_bridge_prime_context_consumes_ordinary_flow(monkeypatch):
+    calls = []
 
-    class _FakeVoiceSession:
-        def __init__(self):
-            self.prime_context_calls = []
+    async def fake_publish(lanlan_name, transcript, *, metadata):
+        calls.append((lanlan_name, transcript, metadata))
+        return {
+            "action": "prime_context",
+            "context": "[问题] why is it 3x^2",
+            "skipped": False,
+        }
 
-        async def prime_context(self, text, skipped=False):
-            self.prime_context_calls.append((text, skipped))
-
-    session = _FakeVoiceSession()
+    session = _FakeVoiceBridgeSession()
     mgr = _make_transcript_manager()
     mgr.session = session
-    monkeypatch.setattr(core_module, "_voice_transcript_dispatch_service", _FakeDispatchService())
+    monkeypatch.setattr(core_module, "publish_voice_transcript_request_reliably", fake_publish)
 
     await core_module.LLMSessionManager.handle_input_transcript(
         mgr,
@@ -590,6 +578,12 @@ async def test_voice_transcript_subscriber_prime_context_consumes_ordinary_flow(
         is_voice_source=True,
     )
 
+    assert calls
+    assert calls[0][0] == "Lan"
+    assert calls[0][1] == "Yui why is it 3x^2"
+    assert calls[0][2]["request_id"].startswith("realtime-stt-")
+    assert calls[0][2]["source"] == "realtime_stt"
+    assert "voice_session_id" not in calls[0][2]
     assert session.prime_context_calls == [("[问题] why is it 3x^2", False)]
     assert mgr._activity_tracker.voice_rms_count == 1
     assert mgr._activity_tracker.user_messages == []

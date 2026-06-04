@@ -122,7 +122,13 @@ try:
     from fastapi.responses import JSONResponse, Response # noqa
     from fastapi.staticfiles import StaticFiles # noqa
     from main_logic import core as core, cross_server as cross_server # noqa
-    from main_logic.agent_event_bus import MainServerAgentBridge, notify_analyze_ack, set_main_bridge # noqa
+    from main_logic.agent_event_bus import (
+        MainServerAgentBridge,
+        notify_analyze_ack,
+        notify_voice_bridge_request_seen,
+        notify_voice_bridge_result,
+        set_main_bridge,
+    ) # noqa
     from fastapi.templating import Jinja2Templates # noqa
     from dataclasses import dataclass # noqa
     from typing import Any, Optional # noqa
@@ -607,6 +613,17 @@ async def _handle_agent_event(event: dict):
                 lanlan,
             )
             notify_analyze_ack(str(event.get("event_id") or ""))
+            return
+
+        if event_type == "voice_bridge_result":
+            notify_voice_bridge_result(
+                str(event.get("event_id") or ""),
+                event.get("result") if isinstance(event.get("result"), dict) else {},
+            )
+            return
+
+        if event_type == "voice_bridge_request_seen":
+            notify_voice_bridge_request_seen(str(event.get("event_id") or ""))
             return
 
         # Agent status updates may be broadcast (lanlan_name omitted).

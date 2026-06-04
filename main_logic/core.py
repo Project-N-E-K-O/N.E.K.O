@@ -46,6 +46,7 @@ from main_logic.proactive_delivery import ProactiveDeliveryManager
 from main_logic.agent_event_bus import (
     dispatch_text_user_message,
     dispatch_user_utterance,
+    publish_voice_transcript_request_reliably,
 )
 from utils.preferences import load_global_conversation_settings, aload_global_conversation_settings
 from config import (
@@ -107,8 +108,6 @@ _VOICE_ECHO_MIN_NORMALIZED_CHARS = 6
 _VOICE_ECHO_MIN_WINDOW_CHARS = 10
 _VOICE_ECHO_SIMILARITY_THRESHOLD = 0.88
 _VOICE_ECHO_NORMALIZE_RE = re.compile(r"[\W_]+", re.UNICODE)
-_VOICE_TRANSCRIPT_SUBSCRIBER_TIMEOUT_SECONDS = 1.5
-_voice_transcript_dispatch_service: Any | None = None
 
 
 def _normalize_voice_echo_text(text: str) -> str:
@@ -147,86 +146,6 @@ def _looks_like_recent_ai_echo(transcript: str, recent_ai_text: str) -> bool:
         best = max(best, SequenceMatcher(None, transcript_norm, candidate).ratio())
         if best >= _VOICE_ECHO_SIMILARITY_THRESHOLD:
             return True
-    return False
-
-
-def _get_voice_transcript_dispatch_service():
-    global _voice_transcript_dispatch_service
-    if _voice_transcript_dispatch_service is None:
-        from plugin.server.application.plugins.dispatch_service import (
-            PluginDispatchService,
-        )
-
-        _voice_transcript_dispatch_service = PluginDispatchService()
-    return _voice_transcript_dispatch_service
-
-
-async def _dispatch_voice_transcript_subscribers(
-    transcript: str,
-    lanlan_name: str,
-    *,
-    request_id: str,
-    voice_session: Any,
-) -> bool:
-    """Return True when a voice subscriber consumed the transcript."""
-    from plugin.server.application.plugins.voice_contracts import (
-        VOICE_TRANSCRIPT_ACTION_CANCEL_RESPONSE,
-        VOICE_TRANSCRIPT_ACTION_PRIME_CONTEXT,
-        VOICE_TRANSCRIPT_EVENT_ID,
-        VOICE_TRANSCRIPT_EVENT_TYPE,
-        arbitrate_voice_transcript_results,
-    )
-
-    service = _get_voice_transcript_dispatch_service()
-    dispatch_results = await service.trigger_custom_event_subscribers(
-        event_type=VOICE_TRANSCRIPT_EVENT_TYPE,
-        event_id=VOICE_TRANSCRIPT_EVENT_ID,
-        args={
-            "transcript": transcript,
-            "lanlan_name": lanlan_name,
-            "metadata": {
-                "request_id": request_id,
-                "voice_session_id": request_id,
-                "source": "realtime_stt",
-            },
-        },
-        timeout=_VOICE_TRANSCRIPT_SUBSCRIBER_TIMEOUT_SECONDS,
-    )
-    action = arbitrate_voice_transcript_results(dispatch_results)
-    action_type = str(action.get("action") or "")
-    if action_type == VOICE_TRANSCRIPT_ACTION_CANCEL_RESPONSE:
-        cancel_response = getattr(voice_session, "cancel_response", None)
-        if callable(cancel_response):
-            try:
-                await cancel_response()
-            except Exception as exc:
-                logger.debug(
-                    "[%s] voice transcript subscriber cancel skipped/failed: %s",
-                    lanlan_name,
-                    exc,
-                )
-        logger.info(
-            "[%s] voice transcript subscriber consumed transcript with cancel_response source=%s",
-            lanlan_name,
-            action.get("source_plugin", ""),
-        )
-        return True
-
-    if action_type == VOICE_TRANSCRIPT_ACTION_PRIME_CONTEXT:
-        context = str(action.get("context") or "").strip()
-        skipped = bool(action.get("skipped", False))
-        prime_context = getattr(voice_session, "prime_context", None)
-        if not context or not callable(prime_context):
-            return False
-        await prime_context(context, skipped=skipped)
-        logger.info(
-            "[%s] voice transcript subscriber primed context skipped=%s source=%s",
-            lanlan_name,
-            skipped,
-            action.get("source_plugin", ""),
-        )
-        return not skipped
-
     return False
 
 
@@ -2089,6 +2008,90 @@ class LLMSessionManager:
             # swallowed inside the dispatcher.
             dispatch_user_utterance(bucket, event)
 
+    async def _dispatch_voice_transcript_bridge(
+        self,
+        transcript: str,
+        *,
+        request_id: str = "",
+    ) -> str:
+        """Let plugin-side voice filters decide whether to cancel or prime context."""
+        session_snapshot = self.session
+        metadata: dict[str, Any] = {
+            "session_type": type(session_snapshot).__name__ if session_snapshot else "",
+            "voice_source": True,
+            "source": "realtime_stt",
+        }
+        if request_id:
+            metadata["request_id"] = request_id
+
+        try:
+            result = await publish_voice_transcript_request_reliably(
+                self.lanlan_name,
+                transcript,
+                metadata=metadata,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug("[%s] voice bridge request failed: %s", self.lanlan_name, exc)
+            return ""
+        if not isinstance(result, dict) or not result:
+            return ""
+
+        def _session_changed() -> bool:
+            if self.session is session_snapshot:
+                return False
+            logger.debug("[%s] voice bridge result ignored after session change", self.lanlan_name)
+            return True
+
+        if _session_changed():
+            return ""
+
+        action = str(result.get("action") or "").strip()
+        if action == "cancel_response":
+            cancel_response = getattr(session_snapshot, "cancel_response", None)
+            if callable(cancel_response):
+                try:
+                    if _session_changed():
+                        return ""
+                    await cancel_response()
+                    logger.debug("[%s] voice bridge cancelled current response", self.lanlan_name)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.debug("[%s] voice bridge cancel skipped/failed: %s", self.lanlan_name, exc)
+            return action
+
+        if action == "prime_context":
+            context_text = apply_role_placeholders(
+                str(result.get("context") or "").strip(),
+                lanlan_name=self.lanlan_name,
+                master_name=self.master_name,
+            )
+            if not context_text:
+                return ""
+            prime_context = getattr(session_snapshot, "prime_context", None)
+            if not callable(prime_context):
+                return ""
+            skipped = bool(result.get("skipped", False))
+            try:
+                if _session_changed():
+                    return ""
+                await prime_context(context_text, skipped=skipped)
+                logger.debug(
+                    "[%s] voice bridge primed context len=%d skipped=%s",
+                    self.lanlan_name,
+                    len(context_text),
+                    skipped,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug("[%s] voice bridge prime skipped/failed: %s", self.lanlan_name, exc)
+                return ""
+            return "" if skipped else action
+        return action
+
     def _reset_voice_echo_suppression_cache(self) -> None:
         self._recent_ai_voice_echo_text = ''
         self._recent_ai_voice_echo_at = 0.0
@@ -2292,25 +2295,6 @@ class LLMSessionManager:
         # delivered_at、被下个 tick 误判成 invite 之后的回应（codex P2）。
         _transcript_arrival_ts = time.time()
         self.last_user_activity_time = _transcript_arrival_ts
-        if is_voice_source and transcript_text:
-            try:
-                subscriber_handled = await _dispatch_voice_transcript_subscribers(
-                    transcript_text,
-                    self.lanlan_name,
-                    request_id=realtime_voice_request_id,
-                    voice_session=self.session,
-                )
-                if subscriber_handled:
-                    self._activity_tracker.on_voice_rms()
-                    voice_rms_recorded = True
-                    return
-            except Exception as exc:
-                logger.warning(
-                    "[%s] voice transcript subscriber dispatch failed: %s",
-                    self.lanlan_name,
-                    exc,
-                )
-
         if (
             is_voice_source
             and transcript_text
@@ -2358,6 +2342,14 @@ class LLMSessionManager:
             # 即使转录为空（VAD 误触发或转录失败）也算一次"用户在发声"，
             # 维持 voice_engaged 状态。
             self._activity_tracker.on_voice_rms()
+
+        if is_voice_source and transcript_text:
+            voice_bridge_action = await self._dispatch_voice_transcript_bridge(
+                transcript_text,
+                request_id=realtime_voice_request_id,
+            )
+            if voice_bridge_action in {"cancel_response", "prime_context"}:
+                return
 
         if is_voice_source:
             # 仅非空转录才算"用户消息"：on_user_message 会清掉 unfinished_thread、
