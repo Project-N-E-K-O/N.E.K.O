@@ -9,9 +9,11 @@ builds all share the same on-disk layout.
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import re
+import socket
 import sys
 import time
 import urllib.error
@@ -111,16 +113,30 @@ def _download(url: str, dest: Path, *, force: bool) -> None:
             retryable = exc.code in _RETRYABLE_STATUS
             if not retryable or attempt == _MAX_ATTEMPTS:
                 raise RuntimeError(f"failed to download {url}: {exc}") from exc
-            delay = _retry_after_seconds(exc) or _backoff_seconds(attempt)
+            # Cap Retry-After too: a server-sent `Retry-After: 3600` would
+            # otherwise sleep past the job timeout instead of failing within
+            # the bounded backoff window.
+            delay = min(_retry_after_seconds(exc) or _backoff_seconds(attempt), _BACKOFF_CAP_SECONDS)
             reason = f"HTTP {exc.code}"
-        except urllib.error.URLError as exc:
-            # Connection reset / DNS / timeout — transient, worth a retry.
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            socket.timeout,
+            ConnectionError,
+            http.client.IncompleteRead,
+        ) as exc:
+            # Transient network failures. urlopen()'s timeout only covers the
+            # connect phase and wraps connect errors in URLError, but a stall
+            # during response.read() of a large ONNX file surfaces as
+            # socket.timeout / TimeoutError / IncompleteRead — none of which
+            # subclass URLError, so they must be caught explicitly or they would
+            # abort the build on the first attempt instead of retrying.
             if tmp.exists():
                 tmp.unlink()
             if attempt == _MAX_ATTEMPTS:
                 raise RuntimeError(f"failed to download {url}: {exc}") from exc
             delay = _backoff_seconds(attempt)
-            reason = str(exc.reason)
+            reason = str(getattr(exc, "reason", exc)) or exc.__class__.__name__
 
         print(
             f"[embedding-model] attempt {attempt}/{_MAX_ATTEMPTS} for {url} "
