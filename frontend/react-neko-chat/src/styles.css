@@ -4409,11 +4409,6 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
     padding: 20px 22px;
   }
 
-  .avatar-tool-manager-dialog.is-positioned {
-    position: relative;
-    left: auto;
-    top: auto;
-  }
 }
 
 @media (max-width: 380px) {
