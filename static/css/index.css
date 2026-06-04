@@ -906,23 +906,21 @@ body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"
     display: none;
 }
 
-/* ---- 最小化：50px 圆形悬浮窗 + 呼吸灯 ---- */
+/* ---- 最小化：51px 毛线球悬浮窗 ---- */
 body.subtitle-web-host #react-chat-window-shell.is-minimized {
-    width: 50px !important;
-    height: 50px !important;
+    width: 51px !important;
+    height: 51px !important;
     border-radius: 50%;
-    background: rgba(68, 183, 254, 0.15);
-    box-shadow: 0 0 8px rgba(68, 183, 254, 0.6);
-    animation: breathingGlow 2s ease-in-out infinite;
-    will-change: box-shadow;
+    background: transparent;
+    box-shadow: none;
+    animation: none;
+    will-change: auto;
     cursor: pointer;
-    overflow: hidden;
+    overflow: visible;
 }
 
 body.subtitle-web-host #react-chat-window-shell.is-minimized.is-idle-docked:not(.is-dragging) {
-    transition: left 0.22s ease, top 0.22s ease, box-shadow 0.22s ease, filter 0.22s ease;
-    box-shadow: 0 0 12px rgba(68, 183, 254, 0.82);
-    filter: saturate(1.04);
+    transition: left 0.22s ease, top 0.22s ease;
 }
 
 body.subtitle-web-host #react-chat-window-shell.is-minimized #react-chat-window-root,
@@ -1322,7 +1320,8 @@ body.react-chat-window-resizing {
 }
 
 [data-theme="dark"] #react-chat-window-shell.is-minimized {
-    background: rgba(68, 183, 254, 0.2);
+    background: transparent;
+    box-shadow: none;
 }
 
 [data-theme="dark"] #avatarPreviewHeaderButton,
@@ -2742,19 +2741,20 @@ body.react-chat-window-dragging {
 }
 
 #chat-container.minimized {
-    background: rgba(68, 183, 254, 0.15);
+    background: transparent;
+    box-shadow: none;
     opacity: 1;
-    width: 50px !important;
-    height: 50px !important;
-    max-height: 50px !important;
+    width: 51px !important;
+    height: 51px !important;
+    max-height: 51px !important;
     min-width: 0 !important;
     min-height: 0 !important;
     padding: 0;
     cursor: pointer;
     border-radius: 50%;
     transition: none;
-    animation: breathingGlow 2s ease-in-out infinite;
-    will-change: box-shadow;
+    animation: none;
+    will-change: auto;
 }
 
 #chat-container.minimized #chat-header {
@@ -2823,19 +2823,6 @@ body.react-chat-window-dragging {
 #chat-container.minimized #toggle-chat-btn img {
     width: 100% !important;
     height: 100% !important;
-}
-
-/* 折叠状态下的呼吸特效动画 */
-@keyframes breathingGlow {
-
-    0%,
-    100% {
-        box-shadow: 0 0 8px rgba(68, 183, 254, 0.6);
-    }
-
-    50% {
-        box-shadow: 0 0 16px rgba(68, 183, 254, 1);
-    }
 }
 
 #input-row {
@@ -3184,11 +3171,11 @@ body.react-chat-window-dragging {
         background: rgba(150, 160, 175, 0.4);
     }
 
-    /* ---- 手机端最小化：50px 圆形悬浮球（与桌面端一致）----
+    /* ---- 手机端最小化：51px 毛线球（与桌面端一致）----
        替代原先的全宽底部胶囊，使用圆形小球，可自由拖动 */
     body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell.is-minimized {
-        width: 50px !important;
-        height: 50px !important;
+        width: 51px !important;
+        height: 51px !important;
         border-radius: 50%;
     }
 

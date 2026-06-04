@@ -2110,6 +2110,7 @@
         "textChattingShort": "Текстовый чат",
         "capturing": "Захват...",
         "importImageAdded": "Добавлено изображений: {{count}}. Они будут отправлены вместе",
+        "importImagePartial": "Добавлено изображений: {{success}}. Не удалось импортировать: {{failed}}",
         "importImageFailed": "Не удалось импортировать изображение",
         "screenshotAdded": "Скриншот добавлен, нажмите отправить",
         "screenshotFailed": "Ошибка скриншота",

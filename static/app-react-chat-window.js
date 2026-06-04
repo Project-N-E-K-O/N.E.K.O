@@ -18,6 +18,7 @@
     var CHAT_SURFACE_MODE_STORAGE_KEY = 'neko.reactChatWindow.chatSurfaceMode';
     var GALGAME_HISTORY_LIMIT = 6;
     var EVENT_PREFIX = 'react-chat-window:';
+    var CHAT_MINIMIZED_BALL_ICON_SRC = '/static/assets/neko-idle/chat-minimized-yarn-ball.png';
 
     var loadedPromise = null;
     var mounted = false;
@@ -27,7 +28,7 @@
     var minimized = false;
     var savedShellSize = null;
     var savedShellPosition = null; // {left, top} before minimize – used to fly back on expand
-    var HOME_IDLE_DOCK_GAP = 12;
+    var HOME_IDLE_DOCK_GAP = -12;
     var IDLE_DOCK_TIER_NONE = 'none';
     var IDLE_DOCK_TIER_CAT2 = 'cat2';
     var IDLE_DOCK_TIER_CAT3 = 'cat3';
@@ -36,8 +37,6 @@
     var idleDockSavedPosition = null;
     var idleDockTriggeredMinimize = false;
     var idleDockMinimizeObserver = null;
-    var idleDockContainerObserver = null;
-    var idleDockSyncFrame = 0;
     var electronIdleDockActive = false;
     var electronIdleDockTriggeredCollapse = false;
     var electronIdleDockSavedBounds = null;
@@ -239,7 +238,7 @@
     var MOBILE_EXPAND_CLICK_GUARD_RADIUS = 24;
     var MOBILE_EXPAND_VISUAL_GUARD_MS = 900;
     var COMPACT_MINIMIZE_BALL_VIEWPORT_PAD = 12;
-    var COMPACT_MINIMIZE_BALL_AVATAR_GAP = 12;
+    var COMPACT_MINIMIZE_BALL_AVATAR_GAP = -4;
     var COMPACT_MINIMIZE_BALL_AVATAR_VERTICAL_RATIO = 0.58;
     var COMPACT_SURFACE_MAX_WIDTH = 430;
     var COMPACT_SURFACE_RESIZE_MAX_WIDTH = 720;
@@ -465,7 +464,7 @@
         var normalized = normalizeCompactDesktopRect(bounds);
         if (!normalized) return null;
         var left = normalized.left - MINIMIZED_SIZE - COMPACT_MINIMIZE_BALL_AVATAR_GAP;
-        var top = normalized.top + normalized.height * COMPACT_MINIMIZE_BALL_AVATAR_VERTICAL_RATIO - MINIMIZED_SIZE / 2;
+        var top = normalized.top + normalized.height * COMPACT_MINIMIZE_BALL_AVATAR_VERTICAL_RATIO - MINIMIZED_SIZE / 2 + MINIMIZED_DOWN_OFFSET;
         var maxLeft = Math.max(COMPACT_MINIMIZE_BALL_VIEWPORT_PAD, window.innerWidth - MINIMIZED_SIZE - COMPACT_MINIMIZE_BALL_VIEWPORT_PAD);
         var maxTop = Math.max(COMPACT_MINIMIZE_BALL_VIEWPORT_PAD, window.innerHeight - MINIMIZED_SIZE - COMPACT_MINIMIZE_BALL_VIEWPORT_PAD);
         return {
@@ -3548,7 +3547,8 @@
         };
     }
 
-    var MINIMIZED_SIZE = 50;            // 桌面/手机：圆球直径
+    var MINIMIZED_SIZE = 51;            // 桌面/手机：毛线球直径
+    var MINIMIZED_DOWN_OFFSET = 24;     // 放大后整体下移，更贴近猫 GIF
     var isMinimizeTransitioning = false;
     var activeAnimationCleanup = null; // 当前进行中动画的清理函数
 
@@ -3573,7 +3573,7 @@
         var rect = container.getBoundingClientRect();
         if (!rect || rect.width <= 0 || rect.height <= 0) return null;
         var left = Math.round(rect.left - MINIMIZED_SIZE - HOME_IDLE_DOCK_GAP);
-        var top = Math.round(rect.top + ((rect.height - MINIMIZED_SIZE) / 2));
+        var top = Math.round(rect.top + ((rect.height - MINIMIZED_SIZE) / 2) + MINIMIZED_DOWN_OFFSET);
         return {
             left: Math.max(0, Math.min(left, window.innerWidth - MINIMIZED_SIZE)),
             top: Math.max(0, Math.min(top, window.innerHeight - MINIMIZED_SIZE))
@@ -3587,24 +3587,8 @@
         }
     }
 
-    function stopIdleDockContainerObserver() {
-        if (idleDockContainerObserver) {
-            try { idleDockContainerObserver.disconnect(); } catch (_) {}
-            idleDockContainerObserver = null;
-        }
-    }
-
-    function cancelIdleDockSync() {
-        if (idleDockSyncFrame) {
-            window.cancelAnimationFrame(idleDockSyncFrame);
-            idleDockSyncFrame = 0;
-        }
-    }
-
     function clearIdleDockState() {
         stopIdleDockMinimizeObserver();
-        stopIdleDockContainerObserver();
-        cancelIdleDockSync();
         idleDockActive = false;
         idleDockSavedPosition = null;
         idleDockTriggeredMinimize = false;
@@ -3631,7 +3615,6 @@
         idleDockSavedPosition = { left: rect.left, top: rect.top };
         idleDockActive = true;
         applyIdleDockPosition();
-        refreshIdleDockContainerObserver();
     }
 
     function scheduleIdleDockMinimizeFallback(shell) {
@@ -3651,37 +3634,6 @@
             syncChatSurfaceModeUI();
             finishIdleDockMinimize(latestShell);
         }, 460);
-    }
-
-    function refreshIdleDockContainerObserver() {
-        if (isElectronChatWindow() || !idleDockActive || !isIdleDockTierActive()) {
-            stopIdleDockContainerObserver();
-            return;
-        }
-        var container = getVisibleReturnButtonContainer();
-        if (!container || typeof MutationObserver !== 'function') {
-            stopIdleDockContainerObserver();
-            return;
-        }
-        stopIdleDockContainerObserver();
-        idleDockContainerObserver = new MutationObserver(function () {
-            scheduleIdleDockSync();
-        });
-        idleDockContainerObserver.observe(container, {
-            attributes: true,
-            attributeFilter: ['style', 'class', 'data-dragging', 'data-neko-idle-tier', 'data-neko-return-visible']
-        });
-    }
-
-    function syncIdleDockPosition() {
-        idleDockSyncFrame = 0;
-        if (!minimized || !idleDockActive || isElectronChatWindow()) return;
-        applyIdleDockPosition();
-    }
-
-    function scheduleIdleDockSync() {
-        if (!minimized || !idleDockActive || isElectronChatWindow() || idleDockSyncFrame) return;
-        idleDockSyncFrame = window.requestAnimationFrame(syncIdleDockPosition);
     }
 
     function getElectronIdleDockBridge() {
@@ -4214,14 +4166,16 @@
         var tier = detail && detail.tier;
         var activeTier = tier === IDLE_DOCK_TIER_CAT2 || tier === IDLE_DOCK_TIER_CAT3;
         if (detail && detail.visible && activeTier && detail.screenRect) {
-            enterElectronIdleDock(detail.screenRect);
+            if (!hasElectronIdleDockPendingOrActive()) {
+                enterElectronIdleDock(detail.screenRect);
+            }
             return;
         }
         if (hasElectronIdleDockPendingOrActive()) {
             if (shouldIgnoreElectronIdleDockInactiveViewportResize(detail, activeTier)) {
                 return;
             }
-            var shouldPreserveCurrentPosition = detail && (
+            var shouldPreserveCurrentPosition = activeTier && detail && (
                 detail.reason === 'return-ball-drag-demotion'
                 || detail.reason === 'return-ball-drag-end'
             );
@@ -4247,7 +4201,6 @@
             idleDockActive = true;
             idleDockTriggeredMinimize = false;
             applyIdleDockPosition();
-            refreshIdleDockContainerObserver();
         } else {
             // Not minimized — trigger normal minimize, observe for completion.
             idleDockTriggeredMinimize = true;
@@ -4334,12 +4287,12 @@
             return compactBallTarget;
         }
 
-        // 桌面端和移动端统一使用 50px 圆形悬浮球
+        // 桌面端和移动端统一使用圆形毛线球
         return {
             width: MINIMIZED_SIZE,
             height: MINIMIZED_SIZE,
             left: Math.max(0, Math.min(rect.left, window.innerWidth - MINIMIZED_SIZE)),
-            top: Math.max(0, Math.min(rect.bottom - MINIMIZED_SIZE, window.innerHeight - MINIMIZED_SIZE))
+            top: Math.max(0, Math.min(rect.bottom - MINIMIZED_SIZE + MINIMIZED_DOWN_OFFSET, window.innerHeight - MINIMIZED_SIZE))
         };
     }
 
@@ -4394,14 +4347,13 @@
     }
 
     function ensureMinimizedBallIcon() {
-        if (isElectronChatWindow()) return null;
         var shell = getShell();
         if (!shell) return null;
         var icon = shell.querySelector('.react-chat-minimized-icon');
         if (!icon) {
             icon = document.createElement('img');
             icon.className = 'react-chat-minimized-icon';
-            icon.src = '/static/icons/expand_icon_off_ball.png';
+            icon.src = CHAT_MINIMIZED_BALL_ICON_SRC;
             icon.alt = '';
             icon.draggable = false;
             var handle = getHeader();
@@ -4743,7 +4695,7 @@
         }
         // 重置悬浮球图标到默认态（清除可能残留的 hover 图标）
         if (ballIcon) {
-            ballIcon.src = '/static/icons/expand_icon_off_ball.png';
+            ballIcon.src = CHAT_MINIMIZED_BALL_ICON_SRC;
         }
     }
 
@@ -4772,7 +4724,7 @@
             btnIcon.alt = ariaLabel;
         }
         if (ballIcon) {
-            ballIcon.src = '/static/icons/expand_icon_off_ball.png';
+            ballIcon.src = CHAT_MINIMIZED_BALL_ICON_SRC;
         }
         if (shell) {
             shell.setAttribute('data-chat-surface-mode', surfaceMode);
@@ -4793,8 +4745,6 @@
             idleDockSavedPosition = null;
             idleDockTier = IDLE_DOCK_TIER_NONE;
             stopIdleDockMinimizeObserver();
-            stopIdleDockContainerObserver();
-            cancelIdleDockSync();
         }
         cycleChatSurfaceMode();
     }
@@ -5517,13 +5467,13 @@
                 if (!minimized) return;
                 var shell = getShell();
                 var ico = shell && shell.querySelector('.react-chat-minimized-icon');
-                if (ico) ico.src = '/static/icons/expand_icon_on.png';
+                if (ico) ico.src = CHAT_MINIMIZED_BALL_ICON_SRC;
             });
             header.addEventListener('mouseleave', function () {
                 if (!minimized) return;
                 var shell = getShell();
                 var ico = shell && shell.querySelector('.react-chat-minimized-icon');
-                if (ico) ico.src = '/static/icons/expand_icon_off_ball.png';
+                if (ico) ico.src = CHAT_MINIMIZED_BALL_ICON_SRC;
             });
         }
 
@@ -5540,15 +5490,6 @@
             var overlay = getOverlay();
             if (overlay && !overlay.hidden) {
                 if (minimized) {
-                    var dockTarget = getIdleDockTarget();
-                    if (dockTarget) {
-                        var dockShell = getShell();
-                        if (dockShell) {
-                            dockShell.style.left = dockTarget.left + 'px';
-                            dockShell.style.top = dockTarget.top + 'px';
-                        }
-                        return;
-                    }
                     // 最小化态下，根据当前布局（桌面圆球 / 手机胶囊）重新贴到视口内。
                     // 手机胶囊宽度由 CSS !important 控制（width: calc(100vw - 12px)），
                     // 这里只需修正左上角坐标，避免旋转屏或拖窗后溢出。
@@ -5598,16 +5539,13 @@
             if (isIdleDockTierActive()) {
                 if (!idleDockActive) {
                     enterIdleDock();
-                } else {
-                    scheduleIdleDockSync();
-                    refreshIdleDockContainerObserver();
                 }
                 return;
             }
 
             if (hasIdleDockPendingOrActive()) {
                 exitIdleDock({
-                    preserveCurrentPosition: detail.source === 'return-ball-drag-demotion',
+                    preserveCurrentPosition: idleDockActive && detail.source === 'return-ball-drag-demotion',
                 });
                 return;
             }
