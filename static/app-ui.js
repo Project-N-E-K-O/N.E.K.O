@@ -2478,6 +2478,18 @@
                 console.log('[App] 已禁用 live2d-canvas 交互（pointer-events: none），等待过渡动画完成后再隐藏');
             }
 
+            // 语音启动中 resetSessionButton 会短暂 disabled；先在 goodbye 事件内让 Live2D
+            // 立即进入退出态，避免旧 reset click 被浏览器吞掉时模型停在原位。
+            const live2dContainerForGoodbye = document.getElementById('live2d-container');
+            if (live2dContainerForGoodbye) {
+                live2dContainerForGoodbye.style.removeProperty('visibility');
+                live2dContainerForGoodbye.style.removeProperty('display');
+                live2dContainerForGoodbye.style.removeProperty('opacity');
+                live2dContainerForGoodbye.style.removeProperty('transform');
+                live2dContainerForGoodbye.classList.add('minimized');
+                console.log('[App] goodbye 事件已立即最小化 live2d-container');
+            }
+
             // 判断当前激活的模型类型
             const vrmContainer = document.getElementById('vrm-container');
             const live2dContainer = document.getElementById('live2d-container');
@@ -2721,6 +2733,9 @@
             if (resetSessionButton) {
                 setTimeout(() => {
                     console.log('[App] 触发 resetSessionButton.click()，当前 goodbyeClicked 状态:', window.live2dManager ? window.live2dManager._goodbyeClicked : 'undefined');
+                    // 语音启动会把侧栏离开按钮置为 disabled；程序化 click 需要先恢复，
+                    // 后续最终按钮状态仍交给 reset handler 统一收口。
+                    resetSessionButton.disabled = false;
                     resetSessionButton.click();
                 }, 10);
             } else {

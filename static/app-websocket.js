@@ -2539,6 +2539,31 @@
 
                 // -------- session_started --------
                 } else if (response.type === 'session_started') {
+                    if (response.input_mode !== 'text'
+                            && typeof window.isNekoGoodbyeModeActive === 'function'
+                            && window.isNekoGoodbyeModeActive()) {
+                        console.log('[App] ignore stale audio session_started while goodbye is active');
+                        if (typeof window.cancelPendingSessionStart === 'function') {
+                            window.cancelPendingSessionStart('Voice start cancelled by goodbye');
+                        } else {
+                            S.voiceStartPending = false;
+                            window.isMicStarting = false;
+                            S.sessionStartedResolver = null;
+                            S.sessionStartedRejecter = null;
+                        }
+                        S.isTextSessionActive = false;
+                        S.voiceChatActive = false;
+                        if (window.sessionTimeoutId) {
+                            clearTimeout(window.sessionTimeoutId);
+                            window.sessionTimeoutId = null;
+                        }
+                        if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
+                        if (S.socket && S.socket.readyState === WebSocket.OPEN) {
+                            S._suppressCharacterLeft = true;
+                            S.socket.send(JSON.stringify({ action: 'end_session' }));
+                        }
+                        return;
+                    }
                     console.log(window.t('console.sessionStartedReceived'), response.input_mode);
                     S.isTextSessionActive = response.input_mode === 'text';
                     S.voiceChatActive = response.input_mode !== 'text';
