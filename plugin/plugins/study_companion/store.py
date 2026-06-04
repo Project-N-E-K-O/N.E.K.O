@@ -29,6 +29,85 @@ _STATE_ITEM_FLOAT_KEYS = {"at", "created_at", "updated_at", "expires_at", "lock_
 _DEFAULT_APPEND_ONLY_HISTORY_LIMIT = 5000
 
 
+class _LockedReadCursor:
+    def __init__(self, cursor: sqlite3.Cursor, lock: Any) -> None:
+        self._cursor = cursor
+        self._lock = lock
+        self._released = False
+
+    def _release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        self._lock.release()
+
+    def fetchone(self) -> sqlite3.Row | tuple[Any, ...] | None:
+        try:
+            return self._cursor.fetchone()
+        finally:
+            self._release()
+
+    def fetchall(self) -> list[Any]:
+        try:
+            return self._cursor.fetchall()
+        finally:
+            self._release()
+
+    def fetchmany(self, size: int | None = None) -> list[Any]:
+        try:
+            if size is None:
+                return self._cursor.fetchmany()
+            return self._cursor.fetchmany(size)
+        finally:
+            self._release()
+
+    def close(self) -> None:
+        try:
+            self._cursor.close()
+        finally:
+            self._release()
+
+    def __iter__(self) -> Any:
+        try:
+            yield from self._cursor
+        finally:
+            self._release()
+
+    def __enter__(self) -> "_LockedReadCursor":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+        self.close()
+        return False
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._cursor, name)
+
+    def __del__(self) -> None:
+        try:
+            self._release()
+        except Exception:
+            pass
+
+
+class _LockedReadConnection:
+    def __init__(self, conn: sqlite3.Connection, lock: Any) -> None:
+        self._conn = conn
+        self._lock = lock
+
+    def execute(self, *args: Any, **kwargs: Any) -> _LockedReadCursor:
+        self._lock.acquire()
+        try:
+            cursor = self._conn.execute(*args, **kwargs)
+        except Exception:
+            self._lock.release()
+            raise
+        return _LockedReadCursor(cursor, self._lock)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._conn, name)
+
+
 def _next_candidate_status(
     item: dict[str, Any],
     score_parts: dict[str, Any],
@@ -139,6 +218,7 @@ class StudyStore:
         self._read_local = threading.local()
         self._read_conns: set[sqlite3.Connection] = set()
         self._read_connections_enabled = True
+        self._fallback_read_conn: _LockedReadConnection | None = None
         self._interaction_count = 0
 
     def open(self) -> None:
@@ -168,6 +248,7 @@ class StudyStore:
                         pass
                 self._conn = None
                 self._read_connections_enabled = True
+                self._fallback_read_conn = None
                 self._interaction_count = 0
                 raise
 
@@ -179,6 +260,7 @@ class StudyStore:
             self._read_conn = None
             self._read_local = threading.local()
             self._read_connections_enabled = True
+            self._fallback_read_conn = None
             if self._conn is not None:
                 self._conn.close()
                 self._conn = None
@@ -189,12 +271,18 @@ class StudyStore:
         assert self._conn is not None
         return self._conn
 
-    def _require_read_conn(self) -> sqlite3.Connection:
+    def _require_read_conn(self) -> sqlite3.Connection | _LockedReadConnection:
         if not self._read_connections_enabled:
             with self._lock:
                 if self._conn is None:
                     self.open()
-                return self._require_conn()
+                conn = self._require_conn()
+                if (
+                    self._fallback_read_conn is None
+                    or self._fallback_read_conn._conn is not conn
+                ):
+                    self._fallback_read_conn = _LockedReadConnection(conn, self._lock)
+                return self._fallback_read_conn
         conn = getattr(self._read_local, "conn", None)
         if conn is None:
             with self._lock:

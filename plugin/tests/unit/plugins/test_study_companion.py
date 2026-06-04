@@ -770,7 +770,7 @@ def test_study_store_journal_config_falls_back_when_wal_returns_non_wal(
     assert conn.statements == ["PRAGMA journal_mode=WAL", "PRAGMA journal_mode=DELETE"]
 
 
-def test_study_store_uses_write_connection_when_wal_is_unavailable(
+def test_study_store_serializes_fallback_reads_when_wal_is_unavailable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -787,7 +787,53 @@ def test_study_store_uses_write_connection_when_wal_is_unavailable(
 
     monkeypatch.setattr(sqlite3, "connect", unexpected_read_connect)
     try:
-        assert store._require_read_conn() is store._require_conn()
+        class _TrackingRLock:
+            def __init__(self) -> None:
+                self._lock = threading.RLock()
+                self.depth = 0
+
+            def acquire(self, *args, **kwargs) -> bool:  # noqa: ANN002, ANN003
+                acquired = self._lock.acquire(*args, **kwargs)
+                if acquired:
+                    self.depth += 1
+                return acquired
+
+            def release(self) -> None:
+                self.depth -= 1
+                self._lock.release()
+
+            def __enter__(self) -> "_TrackingRLock":
+                self.acquire()
+                return self
+
+            def __exit__(self, exc_type: object, exc: object, tb: object) -> bool:
+                self.release()
+                return False
+
+            @property
+            def held(self) -> bool:
+                return self.depth > 0
+
+        lock = _TrackingRLock()
+        store._lock = lock  # type: ignore[assignment]
+        observed: list[bool] = []
+
+        def lock_held() -> int:
+            observed.append(lock.held)
+            return int(lock.held)
+
+        store._require_conn().create_function("lock_held", 0, lock_held)
+
+        row = (
+            store._require_read_conn()
+            .execute("SELECT lock_held() AS held")
+            .fetchone()
+        )
+
+        assert row is not None
+        assert int(row["held"]) == 1
+        assert observed == [True]
+        assert lock.held is False
     finally:
         store.close()
 
