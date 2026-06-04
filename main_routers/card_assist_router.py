@@ -724,7 +724,8 @@ _CHAT_ADVICE_ONLY_INTENT_RE = re.compile(
 
 _CHAT_DIRECT_EDIT_REQUEST_RE = re.compile(
     r"(直接|现在|立刻|马上|帮我|替我|给我)?\s*"
-    r"(改成|修改成|换成|写成|写进|应用|采纳|更新字段|保存到字段|直接改|帮我改|替我改|"
+    r"(改一下|改一改|修改一下|调整一下|改成|修改成|换成|写成|写进|应用|采纳|"
+    r"更新字段|保存到字段|直接改|帮我改|替我改|"
     r"apply|make\s+the\s+changes|edit\s+the\s+field|update\s+the\s+field|change\s+it\s+to)",
     re.IGNORECASE,
 )

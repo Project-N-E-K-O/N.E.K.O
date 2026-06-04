@@ -331,3 +331,47 @@ def test_chat_advice_style_text_skips_recovery_without_flag(monkeypatch):
     assert body["success"] is True
     assert body["reply"].startswith("可以先把行为特征")
     assert body["actions"] == []
+
+
+def test_chat_advice_with_direct_edit_phrase_still_recovers_actions(monkeypatch):
+    monkeypatch.setattr(
+        car, "_reject_untrusted_card_assist", lambda *_args, **_kwargs: None
+    )
+
+    async def fake_invoke_detailed(prompt):
+        assert "只读建议" not in prompt[0]["content"]
+        return ("我先分析一下：行为特征偏空，可以补一个具体习惯喵。", None)
+
+    async def fake_invoke(prompt):
+        assert "先分析再改一下字段" in prompt
+        return (
+            '{"actions":[{"type":"refine_field","field_key":"行为特征",'
+            '"value":"会偷偷把咖啡杯按顺序摆整齐","reason":"补充具体习惯"}]}',
+            None,
+        )
+
+    monkeypatch.setattr(car, "_invoke_assist_detailed", fake_invoke_detailed)
+    monkeypatch.setattr(car, "_invoke_assist", fake_invoke)
+
+    app = FastAPI()
+    app.include_router(car.router)
+    with TestClient(app) as client:
+        resp = client.post(
+            "/api/card-assist/chat",
+            json={
+                "messages": [{"role": "user", "content": "先分析再改一下字段"}],
+                "current_card": {"行为特征": "很认真", "人际关系": "和家人关系很好"},
+                "target_field_keys": ["行为特征", "人际关系"],
+                "locale": "zh-CN",
+            },
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    assert body["actions"] == [{
+        "type": "refine_field",
+        "field_key": "行为特征",
+        "reason": "补充具体习惯",
+        "value": "会偷偷把咖啡杯按顺序摆整齐",
+    }]
