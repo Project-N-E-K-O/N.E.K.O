@@ -1870,18 +1870,14 @@ body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] {
   overscroll-behavior: contain;
   scrollbar-width: none;
   z-index: 100002;
-  pointer-events: none;
 }
 
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"]::-webkit-scrollbar {
   display: none;
 }
 
-/* The compact choice portal itself is transparent; only the visible option strip should receive input. */
-body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-slot {
-  pointer-events: none;
-}
-
+/* The compact choice portal itself is transparent; only its scroll surface and options should receive input. */
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-slot,
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-options,
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option {
   pointer-events: auto;
@@ -2021,7 +2017,7 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 
 .compact-chat-surface-frame[data-compact-chat-state="input"] {
   gap: 0;
-  padding: 5px 62px 5px 10px;
+  padding: 5px 62px 5px 20px;
 }
 
 /* 输入态左侧拖拽把手：给一处稳定可抓的「移动文本框」区域。
@@ -2308,9 +2304,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   padding: 4px 6px;
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
-  /* The fade mask is visual only; the full viewport must receive wheel input,
-     even when the cursor is over the transparent space between bubbles. */
-  pointer-events: auto;
+  pointer-events: none;
   -webkit-app-region: no-drag;
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, rgba(0, 0, 0, 0.78) 12px, #000 28px);
   mask-image: linear-gradient(to bottom, transparent 0, rgba(0, 0, 0, 0.78) 12px, #000 28px);
