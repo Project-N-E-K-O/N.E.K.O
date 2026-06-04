@@ -27,7 +27,8 @@ async def _cleanup_task(task):
         task.cancel()
         try:
             await task
-        except BaseException:
+        except (asyncio.CancelledError, Exception):
+            # cleanup-only：吞掉 cancel 抛出的 CancelledError 及 task 内部任何异常
             pass
 
 

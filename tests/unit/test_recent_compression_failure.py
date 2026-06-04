@@ -184,9 +184,8 @@ def test_compress_history_returns_memo_on_success(tmp_path):
 
 
 def test_split_messages_by_budget(tmp_path, monkeypatch):
-    import memory.recent as recent_mod
     mgr, name = _make_manager(tmp_path)
-    monkeypatch.setattr(recent_mod, "RECENT_COMPRESS_INPUT_BUDGET_TOKENS", 5)
+    monkeypatch.setattr("memory.recent.RECENT_COMPRESS_INPUT_BUDGET_TOKENS", 5)
     msgs = [HumanMessage(content=f"message number {i}") for i in range(6)]
     chunks = mgr._split_messages_by_budget(msgs, name)
     assert len(chunks) >= 2
@@ -196,9 +195,8 @@ def test_split_messages_by_budget(tmp_path, monkeypatch):
 
 
 def test_compress_history_uses_segmented_path_for_large_input(tmp_path, monkeypatch):
-    import memory.recent as recent_mod
     mgr, name = _make_manager(tmp_path)
-    monkeypatch.setattr(recent_mod, "RECENT_COMPRESS_INPUT_BUDGET_TOKENS", 5)
+    monkeypatch.setattr("memory.recent.RECENT_COMPRESS_INPUT_BUDGET_TOKENS", 5)
     fake_llm = _ValidSummaryLLM("s")
     setattr(mgr, "_get_llm", lambda: fake_llm)
     _mock_summary_anchors(mgr)
@@ -211,9 +209,8 @@ def test_compress_history_uses_segmented_path_for_large_input(tmp_path, monkeypa
 
 
 def test_enforce_hard_cap_drops_oldest_keeps_memo_and_recent(tmp_path, monkeypatch):
-    import memory.recent as recent_mod
     mgr, name = _make_manager(tmp_path)
-    monkeypatch.setattr(recent_mod, "RECENT_HARD_CAP_TOKENS", 20)
+    monkeypatch.setattr("memory.recent.RECENT_HARD_CAP_TOKENS", 20)
     memo = SystemMessage(content="先前对话的备忘录: 长期记忆。")
     body = [HumanMessage(content=f"original message {i} with some length") for i in range(12)]
     mgr.user_histories[name] = [memo] + body
@@ -299,3 +296,17 @@ def test_update_history_callback_ok_true_on_success(tmp_path):
 
     _run(mgr.update_history([HumanMessage(content="new")], name, on_compress_done=_cb))
     assert calls == [(name, True)]
+
+
+def test_merge_backup_memo_reports_failed_on_write_error(tmp_path, monkeypatch):
+    mgr, name = _make_manager(tmp_path)
+    batch = [HumanMessage(content="u1"), AIMessage(content="a1"), HumanMessage(content="u2")]
+    mgr.user_histories[name] = list(batch)
+
+    async def _boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("memory.recent.atomic_write_json_async", _boom)
+
+    status = _run(mgr.merge_backup_memo(name, list(batch), SystemMessage(content="memo")))
+    assert status == "failed"  # 落盘失败必须报 failed，不能谎报 merged

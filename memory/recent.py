@@ -583,7 +583,13 @@ class CompressedRecentHistoryManager:
                 new_partials.append(s)
             partials = new_partials
             depth += 1
-        return "\n\n".join(partials)
+        merged = "\n\n".join(partials)
+        # reduce 缩不动 / 深度耗尽时 merged 仍可能超预算 → 硬截到预算兜底，保证
+        # 交给主体最终总结的输入有界（best-effort，丢尾部）。
+        if await acount_tokens(merged) > RECENT_COMPRESS_INPUT_BUDGET_TOKENS:
+            from utils.tokenize import atruncate_to_tokens
+            merged = await atruncate_to_tokens(merged, RECENT_COMPRESS_INPUT_BUDGET_TOKENS)
+        return merged
 
     # detailed: 保留尽可能多的细节
     async def compress_history(self, messages, lanlan_name, detailed=False):
@@ -622,18 +628,28 @@ class CompressedRecentHistoryManager:
             # 时间衰减提醒是 best-effort；失败不能挡 summary 主流程
             logger.debug(f"[RecentHistory] {lanlan_name}: stale hint 注入失败: {e}")
 
-        summary = await self._invoke_summary_llm(prompt)
-        if summary is None:
-            # 摘要失败时不生成空备忘录，避免覆盖既有 memo 或丢弃未压缩原文。
-            logger.warning(f"[RecentHistory] {lanlan_name} 摘要连续失败，跳过本轮压缩")
-            return None
-
-        if await acount_tokens(summary) > MAX_SUMMARY_TOKENS:
-            reduced = await self.further_compress(summary)
-            if reduced is None:
-                logger.warning(f"[RecentHistory] {lanlan_name} 二次压缩失败，跳过本轮压缩")
+        # Stage-1 + Stage-2 联合重试：原行为是 further_compress 失败时重试整个
+        # stage-1（stage-1 LLM 有随机性，重下一次可能直接生成 ≤MAX 的 summary 而
+        # 不必二次压缩）。重构后用有限计数循环复现该重试，同时避免原 `continue`
+        # 不计数可能导致的死循环。
+        summary = None
+        for _ in range(3):
+            s = await self._invoke_summary_llm(prompt)
+            if s is None:
+                # stage-1 连续失败：不生成空备忘录，避免覆盖既有 memo 或丢未压原文。
+                logger.warning(f"[RecentHistory] {lanlan_name} 摘要连续失败，跳过本轮压缩")
                 return None
-            summary = reduced if isinstance(reduced, str) else json.dumps(reduced, ensure_ascii=False)
+            if await acount_tokens(s) <= MAX_SUMMARY_TOKENS:
+                summary = s
+                break
+            reduced = await self.further_compress(s)
+            if reduced is not None:
+                summary = reduced if isinstance(reduced, str) else json.dumps(reduced, ensure_ascii=False)
+                break
+            # stage-2 失败 → 重试 stage-1（最多 3 轮）
+        if summary is None:
+            logger.warning(f"[RecentHistory] {lanlan_name} 二次压缩连续失败，跳过本轮压缩")
+            return None
 
         # 推进 past-block 更新锚点（best-effort）：第一次 compress 建 baseline；
         # 注入过 stale hint 表示 LLM 本轮真的更新了 past block。常规压缩不动锚点，
@@ -663,21 +679,40 @@ class CompressedRecentHistoryManager:
         直到 ≤ 上限。只在压缩持续失败、历史无限膨胀时触发（上限设很大，平时
         不触发），保证 prompt 有界。"""
         history = self.user_histories.get(lanlan_name, [])
-        if len(history) <= self.max_history_length + 1:
-            return  # 太短，不可能超大上限
+        if not history:
+            return
+        # 不用条数提前断言"不可能超上限"——几条超长原文就能顶破 token 上限。
+        # 统一交给下面按真实 token 算的 _trim 决定（_trim 内仍保证至少留近期
+        # max_history_length 条，丢不动就不丢）。
 
         from utils.tokenize import count_tokens
 
+        def _raw_tokens(msgs):
+            # 硬上限按**真实注入 prompt** 的 token 算，不能走 _render_messages_to_text
+            # （那个为压缩输入把每条截到 ≤RECENT_PER_MESSAGE_MAX_TOKENS，会严重低估
+            # 长消息、让硬上限对超长原文失效）。这里数原始 content 的 token。
+            total = 0
+            for m in msgs:
+                c = getattr(m, 'content', '')
+                if isinstance(c, list):
+                    c = ' '.join(
+                        p.get('text', '') if isinstance(p, dict) else str(p) for p in c
+                    )
+                elif not isinstance(c, str):
+                    c = str(c)
+                total += count_tokens(c)
+            return total
+
         def _trim():
-            if count_tokens(self._render_messages_to_text(history, lanlan_name)) <= RECENT_HARD_CAP_TOKENS:
+            if _raw_tokens(history) <= RECENT_HARD_CAP_TOKENS:
                 return None  # 未超，不动
             # 首条若是备忘录（已压缩的长期记忆）则保留，只丢正文里最旧的原文。
             head = [history[0]] if isinstance(history[0], SystemMessage) else []
             body = history[len(head):]
             kept = []
-            kept_tok = count_tokens(self._render_messages_to_text(head, lanlan_name)) if head else 0
+            kept_tok = _raw_tokens(head)
             for msg in reversed(body):
-                mtok = count_tokens(self._render_messages_to_text([msg], lanlan_name))
+                mtok = _raw_tokens([msg])
                 if kept and kept_tok + mtok > RECENT_HARD_CAP_TOKENS and len(kept) >= self.max_history_length:
                     break
                 kept.append(msg)
@@ -729,7 +764,10 @@ class CompressedRecentHistoryManager:
         except MaintenanceModeError:
             raise
         except Exception as e:
+            # 落盘失败 → 内存与磁盘不一致（下次 update_history reload 会回滚内存），
+            # 报 'failed' 让上层 bump 退避、不清计数，而不是谎报 'merged'。
             logger.error(f"[RecentHistory] {lanlan_name} 后台压缩合并落盘失败: {e}", exc_info=True)
+            return 'failed'
         logger.info(
             f"[RecentHistory] {lanlan_name} 后台压缩合并完成：history {len(current)}→{len(new_history)}"
         )

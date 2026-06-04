@@ -3400,6 +3400,11 @@ async def _run_backup_compress(lanlan_name: str, snapshot: list, detailed: bool)
         #    主路径压掉 / 被清空就返回 'moot' 丢弃（白做）。
         async with _get_settle_lock(lanlan_name):
             status = await recent_history_manager.merge_backup_memo(lanlan_name, snapshot, result[0])
+        if status == 'failed':
+            # 合并落盘失败 → 没真正写成功，bump 退避（不清），下次再试。
+            attempts = await _record_compress_backup_failure(lanlan_name, snapshot)
+            logger.info(f"[CompressBackup] {lanlan_name} 后台压缩合并落盘失败，退避计数 → {attempts}")
+            return
         # 'merged' 或 'moot' 都说明这段积压已处理 / 已过时，清退避计数。
         await _clear_compress_backup_failure(lanlan_name)
         logger.info(f"[CompressBackup] {lanlan_name} 后台压缩完成：{status}")
