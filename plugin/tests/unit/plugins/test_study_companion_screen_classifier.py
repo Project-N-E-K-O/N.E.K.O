@@ -34,6 +34,9 @@ def test_normalize_screen_type_accepts_aliases(alias: str, expected: str) -> Non
         ("Project-N-E-K-O/N.E.K.O · GitHub", "web_page"),
         ("Stack Overflow - Where Developers Learn", "web_page"),
         ("Derivative - Wikipedia", "web_page"),
+        ("Chrome", "web_page"),
+        ("Firefox", "web_page"),
+        ("Edge", "web_page"),
         ("main.py - Visual Studio Code", "code_editor"),
     ],
 )

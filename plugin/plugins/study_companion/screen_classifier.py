@@ -121,6 +121,11 @@ _BROWSER_PAGE_TITLE_KEYWORDS = (
     "stack overflow",
     "stackoverflow",
 )
+_BROWSER_APP_NAME_KEYWORDS = frozenset({
+    "chrome",
+    "firefox",
+    "edge",
+})
 _BROWSER_TITLE_KEYWORDS = (
     " chrome",
     "google chrome",
@@ -191,6 +196,8 @@ def classify_app_from_title(window_title: str | None) -> str:
     title = _clean_line(str(window_title or "")).lower()
     if not title:
         return "other"
+    if title in _BROWSER_APP_NAME_KEYWORDS:
+        return "web_page"
     if any(keyword in title for keyword in _BROWSER_PAGE_TITLE_KEYWORDS):
         return "web_page"
     if any(keyword in title for keyword in _CODE_EDITOR_TITLE_KEYWORDS):
