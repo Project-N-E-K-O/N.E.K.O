@@ -359,6 +359,48 @@ body.neko-game-active [id$="-lock-icon"] {
     touch-action: none;
 }
 
+.neko-idle-return-button-container.is-cat1-on-compact-top-edge {
+    z-index: 100050 !important; /* 高于 dialog(100000) 和 tooltip(100030)，避免使用最大整数层级。 */
+    isolation: isolate; /* 主动创建独立层叠上下文，避免子元素层级泄出。 */
+}
+
+.neko-idle-return-button-container.is-cat1-on-compact-top-edge > .neko-idle-return-btn {
+    z-index: 100050 !important;
+}
+
+.neko-idle-return-button-container.is-cat1-dropping-from-compact-top-edge > .neko-idle-return-btn {
+    animation: nekoIdleCat1CompactDrop 360ms cubic-bezier(0.22, 0.72, 0.2, 1) both;
+}
+
+.neko-idle-return-button-container.is-cat1-compact-mirror-active {
+    pointer-events: none;
+}
+
+.neko-idle-return-button-container.is-cat1-compact-mirror-active > .neko-idle-return-btn {
+    opacity: 0;
+    pointer-events: none;
+}
+
+.neko-idle-cat1-compact-mirror {
+    position: fixed;
+    z-index: 100050;
+    pointer-events: none;
+    overflow: visible;
+    isolation: isolate;
+}
+
+.neko-idle-cat1-compact-mirror[hidden] {
+    display: none !important;
+}
+
+.neko-idle-cat1-compact-mirror-art {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: contain;
+    object-position: center;
+}
+
 .neko-idle-return-btn {
     --neko-idle-return-size: clamp(96px, 14vw, 122px);
     position: relative;
@@ -441,9 +483,22 @@ body.neko-game-active [id$="-lock-icon"] {
     }
 }
 
+@keyframes nekoIdleCat1CompactDrop {
+    0% {
+        transform: translate3d(0, clamp(-52px, -4vw, -34px), 0) rotate(0deg);
+    }
+    70% {
+        transform: translate3d(0, clamp(2px, 0.25vw, 4px), 0) rotate(-2deg);
+    }
+    100% {
+        transform: translate3d(0, 0, 0) rotate(0deg);
+    }
+}
+
 @media (prefers-reduced-motion: reduce) {
     .neko-idle-return-btn.is-tier-transitioning > .neko-idle-return-art,
-    .neko-idle-return-btn.is-tier-transitioning > .neko-idle-return-art-next {
+    .neko-idle-return-btn.is-tier-transitioning > .neko-idle-return-art-next,
+    .neko-idle-return-button-container.is-cat1-dropping-from-compact-top-edge > .neko-idle-return-btn {
         animation: none;
     }
 }
@@ -1128,7 +1183,6 @@ body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"
 
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-anchor,
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-panel,
-body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-scroll,
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-scroll-content,
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-message {
     pointer-events: none;

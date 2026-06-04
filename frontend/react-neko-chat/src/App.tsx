@@ -5,6 +5,7 @@
   useRef,
   useCallback,
   type CSSProperties,
+  type FocusEvent as ReactFocusEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
@@ -94,7 +95,7 @@ const COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY = 'neko.reactChatWindow.compactExp
 export const COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS = 560;
 const COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT = 7;
 const COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD = 22;
-const COMPACT_INPUT_TOOL_WHEEL_SCROLL_THRESHOLD = 64;
+const COMPACT_INPUT_TOOL_WHEEL_SCROLL_DEADZONE = 0.5;
 const COMPACT_INPUT_TOOL_WHEEL_DRAG_GUARD_MS = 4000;
 const COMPACT_INPUT_TOOL_WHEEL_FAST_GESTURE_MS = 140;
 const COMPACT_INPUT_TOOL_WHEEL_FAST_ANIMATION_MS = 180;
@@ -124,6 +125,11 @@ const COMPACT_SURFACE_RESIZE_MIN_WIDTH = 430;
 const COMPACT_SURFACE_RESIZE_MAX_WIDTH = 720;
 const COMPACT_SURFACE_RESIZE_VIEWPORT_GUTTER = 32;
 const COMPACT_CHOICE_PLACEMENT_HYSTERESIS = 24;
+const COMPOSER_OPTION_MARQUEE_MIN_DISTANCE = 6;
+const COMPOSER_OPTION_MARQUEE_MIN_DURATION_MS = 1400;
+const COMPOSER_OPTION_MARQUEE_MAX_DURATION_MS = 12000;
+const COMPOSER_OPTION_MARQUEE_PIXELS_PER_SECOND = 96;
+const COMPOSER_OPTION_MARQUEE_END_PADDING = 28;
 
 type CompactSurfaceResizeSide = 'left' | 'right';
 
@@ -1185,7 +1191,6 @@ export default function App({
   // 专用于「拖动文本框后吞掉补发 click」的标志。独立于 compactInputToolWheelSuppressClickRef，
   // 因为轮盘关闭 effect 会重置后者，无法跨「关闭轮盘 + 随后 click」存活。
   const compactToolOriginSuppressClickRef = useRef(false);
-  const compactInputToolWheelScrollDeltaRef = useRef(0);
   const compactInputToolFanPositionSyncRef = useRef<(() => void) | null>(null);
   const compactInputToolFanCloseTimerRef = useRef<number | null>(null);
   const compactInputToolFanInteractiveTimerRef = useRef<number | null>(null);
@@ -3123,30 +3128,20 @@ export default function App({
       return rawDelta * 16;
     }
     if (event.deltaMode === 2) {
-      return rawDelta * Math.max(window.innerHeight || 0, COMPACT_INPUT_TOOL_WHEEL_SCROLL_THRESHOLD);
+      return rawDelta * Math.max(window.innerHeight || 1, 1);
     }
     return rawDelta;
   }, []);
 
   const rotateCompactInputToolWheelByScroll = useCallback((event: ReactWheelEvent<HTMLDivElement>) => {
     const normalizedDelta = getCompactInputToolWheelNormalizedDelta(event);
-    if (normalizedDelta === 0) return;
+    if (Math.abs(normalizedDelta) < COMPACT_INPUT_TOOL_WHEEL_SCROLL_DEADZONE) return;
 
     event.preventDefault();
     event.stopPropagation();
 
-    const nextDelta = compactInputToolWheelScrollDeltaRef.current + normalizedDelta;
-    const stepCount = Math.floor(Math.abs(nextDelta) / COMPACT_INPUT_TOOL_WHEEL_SCROLL_THRESHOLD);
-    if (stepCount <= 0) {
-      compactInputToolWheelScrollDeltaRef.current = nextDelta;
-      return;
-    }
-
-    const direction: 1 | -1 = nextDelta > 0 ? 1 : -1;
-    rotateCompactInputToolWheelSteps(direction, stepCount);
-    compactInputToolWheelScrollDeltaRef.current = nextDelta - (
-      direction * stepCount * COMPACT_INPUT_TOOL_WHEEL_SCROLL_THRESHOLD
-    );
+    const direction: 1 | -1 = normalizedDelta > 0 ? 1 : -1;
+    rotateCompactInputToolWheelSteps(direction, 1, { forceFast: true });
   }, [getCompactInputToolWheelNormalizedDelta, rotateCompactInputToolWheelSteps]);
 
   const getCompactToolWheelBoundedDragPoint = useCallback((clientX: number, clientY: number): CompactToolWheelDragPoint => {
@@ -3651,7 +3646,6 @@ export default function App({
     compactInputToolWheelPointerRef.current = null;
     compactInputToolWheelDragActiveRef.current = false;
     compactInputToolWheelSuppressClickRef.current = false;
-    compactInputToolWheelScrollDeltaRef.current = 0;
     compactInputToolWheelLastRotationAtRef.current = 0;
     resetCompactInputToolWheelCharge();
     setCompactInputToolWheelFastAnimation(false);
@@ -4633,7 +4627,6 @@ export default function App({
         compactInputToolWheelSuppressClickRef.current = false;
         // 清掉可能残留的原点拖拽抑制（上次原点拖拽若无补发 click），避免误吞这次轮盘按钮 click。
         compactToolOriginSuppressClickRef.current = false;
-        compactInputToolWheelScrollDeltaRef.current = 0;
         compactInputToolWheelDragActiveRef.current = true;
         dispatchCompactToolWheelDragState(true, event.pointerId);
         clearCompactInputToolFanCloseTimer();
@@ -4904,6 +4897,45 @@ export default function App({
     </div>
   ) : null;
 
+  function prepareComposerOptionMarquee(
+    event: ReactMouseEvent<HTMLButtonElement> | ReactFocusEvent<HTMLButtonElement>,
+  ) {
+    const button = event.currentTarget;
+    const text = button.querySelector<HTMLElement>('.composer-galgame-option-text');
+    const inner = button.querySelector<HTMLElement>('.composer-galgame-option-text-inner');
+
+    button.removeAttribute('data-composer-option-marquee');
+    button.style.removeProperty('--composer-option-marquee-distance');
+    button.style.removeProperty('--composer-option-marquee-duration');
+
+    if (!text || !inner) return;
+
+    const overflowDistance = Math.ceil(inner.scrollWidth - text.clientWidth);
+    if (overflowDistance <= COMPOSER_OPTION_MARQUEE_MIN_DISTANCE) return;
+
+    const distance = overflowDistance + COMPOSER_OPTION_MARQUEE_END_PADDING;
+
+    const duration = Math.min(
+      Math.max(
+        Math.ceil((distance / COMPOSER_OPTION_MARQUEE_PIXELS_PER_SECOND) * 1000),
+        COMPOSER_OPTION_MARQUEE_MIN_DURATION_MS,
+      ),
+      COMPOSER_OPTION_MARQUEE_MAX_DURATION_MS,
+    );
+
+    button.style.setProperty('--composer-option-marquee-distance', `${distance}px`);
+    button.style.setProperty('--composer-option-marquee-duration', `${duration}ms`);
+    button.setAttribute('data-composer-option-marquee', 'true');
+  }
+
+  function clearComposerOptionMarquee(
+    event: ReactMouseEvent<HTMLButtonElement> | ReactFocusEvent<HTMLButtonElement>,
+  ) {
+    event.currentTarget.removeAttribute('data-composer-option-marquee');
+    event.currentTarget.style.removeProperty('--composer-option-marquee-distance');
+    event.currentTarget.style.removeProperty('--composer-option-marquee-duration');
+  }
+
   const choiceLayerNode = (
     <div
       className={`composer-choice-layer${isCompactSurface ? ' compact-chat-choice-anchor' : ''}`}
@@ -4931,9 +4963,12 @@ export default function App({
                     key={`${index}-${option.label}`}
                     type="button"
                     className="composer-galgame-option"
-                    title={option.text}
                     disabled={composerDisabled || galgameOptionsLoading}
                     tabIndex={compactChoiceLayerOpen && galgameOptionsVisible ? 0 : -1}
+                    onMouseEnter={prepareComposerOptionMarquee}
+                    onMouseLeave={clearComposerOptionMarquee}
+                    onFocus={prepareComposerOptionMarquee}
+                    onBlur={clearComposerOptionMarquee}
                     onClick={() => {
                       if (submittingRef.current) return;
                       submittingRef.current = true;
@@ -4947,7 +4982,9 @@ export default function App({
                     }}
                   >
                     <span className="composer-galgame-option-label" aria-hidden="true">{option.label}.</span>
-                    <span className="composer-galgame-option-text">{option.text}</span>
+                    <span className="composer-galgame-option-text">
+                      <span className="composer-galgame-option-text-inner">{option.text}</span>
+                    </span>
                   </button>
                 ))
               : galgameOptionsLoading
@@ -4960,7 +4997,9 @@ export default function App({
                       tabIndex={-1}
                     >
                       <span className="composer-galgame-option-label" aria-hidden="true">{label}.</span>
-                      <span className="composer-galgame-option-text">{galgameLoadingLabel}</span>
+                      <span className="composer-galgame-option-text">
+                        <span className="composer-galgame-option-text-inner">{galgameLoadingLabel}</span>
+                      </span>
                     </button>
                   ))
                 : null}
@@ -4985,8 +5024,11 @@ export default function App({
                 key={`${index}-${option.choice}`}
                 type="button"
                 className="composer-galgame-option composer-choice-option"
-                title={option.label}
                 disabled={composerDisabled}
+                onMouseEnter={prepareComposerOptionMarquee}
+                onMouseLeave={clearComposerOptionMarquee}
+                onFocus={prepareComposerOptionMarquee}
+                onBlur={clearComposerOptionMarquee}
                 onClick={() => {
                   if (submittingRef.current) return;
                   submittingRef.current = true;
@@ -5000,7 +5042,7 @@ export default function App({
                 }}
               >
                 <span className="composer-galgame-option-text composer-choice-option-text">
-                  {option.label}
+                  <span className="composer-galgame-option-text-inner">{option.label}</span>
                 </span>
               </button>
             ))}
