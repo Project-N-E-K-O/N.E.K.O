@@ -41,6 +41,12 @@ config/user_preferences.json
 config/voice_storage.json
 N.E.K.O/
 
+# Embedding model weights: the image downloads the pinned revision in
+# docker/Dockerfile's pre-copy layer (step 5b), so the later `COPY . /app` must
+# not drag a developer's locally-prepared (possibly stale/partial) copy over the
+# verified download. Also trims build-context upload size.
+data/embedding_models
+
 # Build artifacts
 build/
 dist/
