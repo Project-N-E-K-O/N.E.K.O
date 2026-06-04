@@ -6175,6 +6175,116 @@ class LLMSessionManager:
         finally:
             await self.state.fire(SessionEvent.PROACTIVE_DONE)
 
+    async def trigger_cat_greeting(self, duration_seconds: float, tier: str, was_auto: bool) -> None:
+        """从猫咪形态变回猫娘（请她回来）时，按"行为(tier) × 猫咪停留时长"触发一次专属问候。
+
+        与 trigger_greeting 对偶，但独立计时：不查 last_conversation_gap，直接用前端
+        测量并传入的猫咪停留时长（datetime gap 是"距上次对话"，这里是"作为猫咪待了多久"，
+        两套时钟互不干扰）。流程：选行为/时长档 → 构建引导词 → 主动拉起 text session → 投递。
+        """
+        # ── 守卫：语音 session 正在启动 / 已活跃时，跳过（与 trigger_greeting 对偶）──
+        if self._is_voice_session_active_or_starting():
+            logger.info("[%s] trigger_cat_greeting: voice session active/starting, skipping", self.lanlan_name)
+            return
+        if self._takeover_active:
+            logger.info("[%s] trigger_cat_greeting: session takeover active, skipping", self.lanlan_name)
+            return
+
+        # tier → 行为：cat1=清醒 / cat2=打盹 / cat3=熟睡。
+        behavior = {"cat1": "awake", "cat2": "nap", "cat3": "sleep"}.get(str(tier or "").strip().lower(), "awake")
+
+        _lang = normalize_language_code(self.user_language, format='short')
+        from config.prompts.prompts_proactive import (
+            get_cat_greeting_prompt, get_cat_greeting_reason_hint, get_time_of_day_hint,
+        )
+        from utils.time_format import format_elapsed as _format_elapsed
+        # < 3min 静默由 get_cat_greeting_prompt 内部判定，返回 None 时不触发。
+        template = get_cat_greeting_prompt(behavior, duration_seconds, _lang)
+        if not template:
+            logger.debug("[%s] trigger_cat_greeting: duration %.0fs below threshold, skipping", self.lanlan_name, duration_seconds)
+            return
+
+        # 投递通道：已有空闲 text session 则直接用，否则主动拉起（与 trigger_greeting 对偶）
+        if isinstance(self.session, OmniOfflineClient) and not getattr(self.session, "_is_responding", False):
+            pass
+        else:
+            if self._is_voice_session_active_or_starting():
+                logger.info("[%s] trigger_cat_greeting: voice session appeared before text session auto-start, skipping", self.lanlan_name)
+                return
+            ws = self.websocket
+            if not ws or not hasattr(ws, 'client_state') or ws.client_state != ws.client_state.CONNECTED:
+                logger.warning("[%s] trigger_cat_greeting: no connected websocket, aborting", self.lanlan_name)
+                return
+            try:
+                logger.info("[%s] trigger_cat_greeting: auto-starting text session", self.lanlan_name)
+                await self.start_session(ws, new=False, input_mode='text')
+            except Exception as e:
+                logger.warning("[%s] trigger_cat_greeting: auto start_session failed: %s", self.lanlan_name, e)
+                return
+
+        if not isinstance(self.session, OmniOfflineClient):
+            logger.warning("[%s] trigger_cat_greeting: session is not text mode after start, aborting", self.lanlan_name)
+            return
+
+        # 与 time_hint 一样，reason_hint 先 format 好 {master} 再注入主模板。
+        reason_hint = get_cat_greeting_reason_hint(was_auto, _lang).format(master=self.master_name)
+        elapsed = _format_elapsed(_lang, duration_seconds)
+        time_hint = get_time_of_day_hint(_lang).format(master=self.master_name)
+
+        instruction = template.format(
+            reason_hint=reason_hint, elapsed=elapsed, name=self.lanlan_name,
+            master=self.master_name, time_hint=time_hint,
+        )
+        print(f"[trigger_cat_greeting] instruction:\n{instruction}")
+        logger.info("[%s] trigger_cat_greeting: behavior=%s duration=%.0fs was_auto=%s elapsed=%s, delivering",
+                    self.lanlan_name, behavior, duration_seconds, was_auto, elapsed)
+
+        # ── 投递前最终检查：构建 instruction 期间语音可能已接管 ──
+        if self._is_voice_session_active_or_starting():
+            logger.info("[%s] trigger_cat_greeting: voice session took over before delivery, skipping", self.lanlan_name)
+            return
+
+        # 原子 SM claim：与 trigger_greeting / trigger_agent_callbacks / proactive_chat 互斥
+        if not await self.state.try_start_proactive(session=self.session):
+            logger.info(
+                "[%s] trigger_cat_greeting: SM denied claim (phase=%s), skipping",
+                self.lanlan_name, self.state.phase.value,
+            )
+            return
+
+        try:
+            async with self._proactive_write_lock:
+                if self._is_voice_session_active_or_starting():
+                    logger.info("[%s] trigger_cat_greeting: voice session took over while waiting for write lock, skipping", self.lanlan_name)
+                    return
+                async with self.lock:
+                    if self.state.is_proactive_preempted():
+                        logger.info("[%s] trigger_cat_greeting: preempted before sid claim, skipping", self.lanlan_name)
+                        return
+                    self.current_speech_id = str(uuid4())
+                    self._tts_done_queued_for_turn = False
+                    self._tts_done_pending_until_ready = False
+                    proactive_sid = self.current_speech_id
+                await self.state.fire(SessionEvent.PROACTIVE_CLAIM, sid=proactive_sid)
+                await self.state.fire(SessionEvent.PROACTIVE_PHASE2)
+                _sid_token = _proactive_expected_sid.set(proactive_sid)
+                try:
+                    # stale session 防御：与 trigger_greeting 同款快照 + 类型校验。
+                    session_ref = self.session
+                    if not isinstance(session_ref, OmniOfflineClient):
+                        logger.info(
+                            "[%s] trigger_cat_greeting: session swapped/nullified "
+                            "before prompt_ephemeral (now=%s), skipping",
+                            self.lanlan_name, type(session_ref).__name__,
+                        )
+                        return
+                    delivered = await session_ref.prompt_ephemeral(instruction)
+                finally:
+                    _proactive_expected_sid.reset(_sid_token)
+                logger.info("[%s] trigger_cat_greeting: delivered=%s", self.lanlan_name, delivered)
+        finally:
+            await self.state.fire(SessionEvent.PROACTIVE_DONE)
+
     async def trigger_new_character_greeting(self) -> None:
         from config.prompts.prompts_proactive import get_new_character_greeting_prompt
         from utils.new_character_greeting_state import has_pending, remove_pending

@@ -3273,6 +3273,39 @@
         }
     });
 
+    // 从猫咪形态变回猫娘（请她回来）时，按猫咪停留时长 + tier 请求一次专属问候。
+    // 与 greeting_check 对偶，但走独立 action，时长由 app-auto-goodbye 测量传入。
+    // 变回不重连 WS，所以这里直接在事件触发时发；若无连接则静默放弃（普通 greeting
+    // 会在下次 WS 重连时按对话 gap 兜底）。
+    window.addEventListener('neko:cat-greeting-check', function (event) {
+        var detail = (event && event.detail && typeof event.detail === 'object') ? event.detail : {};
+        if (!S.socket || S.socket.readyState !== WebSocket.OPEN) {
+            return;
+        }
+        var durationSeconds = Number(detail.durationSeconds) || 0;
+        if (durationSeconds < 180) {
+            return; // < 3min 静默（前端先挡一道，后端 get_cat_greeting_prompt 再挡一道）
+        }
+        var catLang = '';
+        try {
+            if (window.i18next && window.i18next.language) catLang = window.i18next.language;
+            else catLang = localStorage.getItem('i18nextLng') || '';
+            if (!catLang && typeof navigator !== 'undefined' && navigator.language) catLang = navigator.language;
+        } catch (_) { catLang = ''; }
+        try {
+            S.socket.send(JSON.stringify({
+                action: 'cat_greeting_check',
+                cat_duration_seconds: durationSeconds,
+                tier: detail.tier || '',
+                was_auto: !!detail.wasAuto,
+                language: catLang
+            }));
+            console.log('[cat_greeting_check] sent, duration=' + durationSeconds + 's tier=' + (detail.tier || '-') + ' was_auto=' + (!!detail.wasAuto));
+        } catch (e) {
+            console.warn('[cat_greeting_check] send failed:', e);
+        }
+    });
+
     // ========================  Export module  ========================
     window.appWebSocket = mod;
 })();
