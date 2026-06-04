@@ -564,7 +564,7 @@
                 <button type="button" class="music-bar-play" aria-label="Play/Pause" title="Play/Pause">▶</button>
                 <div class="music-bar-volume-container">
                     <button type="button" class="music-bar-volume-btn" aria-label="Volume" title="Volume">🔊</button>
-                    <div class="music-bar-volume-slider-wrapper">
+                    <div class="music-bar-volume-slider-wrapper" data-compact-hit-region="true" data-compact-hit-region-id="history:music-player:volume" data-compact-hit-region-kind="music-volume">
                         <div class="music-bar-volume-slider">
                             <div class="music-bar-volume-slider-fill"></div>
                             <div class="music-bar-volume-slider-handle"></div>
@@ -1327,7 +1327,7 @@
                 <button type="button" class="music-bar-play" aria-label="Play/Pause" title="Play/Pause">▶</button>
                 <div class="music-bar-volume-container">
                     <button type="button" class="music-bar-volume-btn" aria-label="Volume" title="Volume">🔊</button>
-                    <div class="music-bar-volume-slider-wrapper">
+                    <div class="music-bar-volume-slider-wrapper" data-compact-hit-region="true" data-compact-hit-region-id="history:music-player:volume" data-compact-hit-region-kind="music-volume">
                         <div class="music-bar-volume-slider">
                             <div class="music-bar-volume-slider-fill"></div>
                             <div class="music-bar-volume-slider-handle"></div>

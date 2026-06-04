@@ -2343,7 +2343,7 @@ export default function CompactExportHistoryPanel({
         data-compact-geometry-item="history"
         data-compact-geometry-hit-scope="children"
         data-compact-no-drag="true"
-        data-compact-export-history-open="true"
+        data-compact-export-history-open={historyInteractive ? 'true' : 'false'}
         data-compact-export-history-visibility={visibilityState}
         data-compact-export-preview-open={previewOpen ? 'true' : 'false'}
         data-compact-export-under-choice={choiceLayerAbove ? 'true' : 'false'}
@@ -2439,6 +2439,13 @@ export default function CompactExportHistoryPanel({
                 </div>
               ) : null}
             </div>
+            <div
+              id="music-player-mount"
+              className="compact-export-history-music-mount"
+              data-compact-hit-region={historyInteractive ? 'true' : undefined}
+              data-compact-hit-region-id={historyInteractive ? 'history:music-player' : undefined}
+              data-compact-hit-region-kind={historyInteractive ? 'music' : undefined}
+            />
             {controlsOpen ? (
               <div
                 className="compact-export-history-controls"
