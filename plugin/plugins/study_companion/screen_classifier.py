@@ -198,8 +198,6 @@ def classify_app_from_title(window_title: str | None) -> str:
         return "other"
     if title in _BROWSER_APP_NAME_KEYWORDS:
         return "web_page"
-    if any(keyword in title for keyword in _BROWSER_PAGE_TITLE_KEYWORDS):
-        return "web_page"
     if any(keyword in title for keyword in _CODE_EDITOR_TITLE_KEYWORDS):
         return "code_editor"
     if any(keyword in title for keyword in _TEXT_EDITOR_TITLE_KEYWORDS):
@@ -208,6 +206,8 @@ def classify_app_from_title(window_title: str | None) -> str:
         return "pdf_reader"
     if any(keyword in title for keyword in _NOTE_APP_TITLE_KEYWORDS):
         return "note_app"
+    if any(keyword in title for keyword in _BROWSER_PAGE_TITLE_KEYWORDS):
+        return "web_page"
     if any(keyword in title for keyword in _BROWSER_TITLE_KEYWORDS):
         return "web_page"
     return "other"

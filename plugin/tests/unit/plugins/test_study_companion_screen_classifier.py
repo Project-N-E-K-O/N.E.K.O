@@ -38,6 +38,7 @@ def test_normalize_screen_type_accepts_aliases(alias: str, expected: str) -> Non
         ("Firefox", "web_page"),
         ("Edge", "web_page"),
         ("main.py - Visual Studio Code", "code_editor"),
+        ("GitHub Pull Requests - Visual Studio Code", "code_editor"),
     ],
 )
 def test_classify_app_from_title_recognizes_browser_page_titles(
