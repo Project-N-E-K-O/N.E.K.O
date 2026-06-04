@@ -38,6 +38,15 @@ function buildAvatarCenteredWindowFeatures(width, height) {
     return `width=${windowWidth},height=${windowHeight},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
 }
 
+function buildAvatarFullscreenWindowFeatures() {
+    const screenRef = window.screen || {};
+    const width = Math.max(720, Math.floor(Number(screenRef.availWidth || screenRef.width) || 1280));
+    const height = Math.max(560, Math.floor(Number(screenRef.availHeight || screenRef.height) || 900));
+    const left = Number.isFinite(screenRef.availLeft) ? screenRef.availLeft : 0;
+    const top = Number.isFinite(screenRef.availTop) ? screenRef.availTop : 0;
+    return `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+}
+
 function getAvatarNavigationWindowFeatures(finalUrl) {
     if (isAvatarFramedSettingsWindowUrl(finalUrl)) {
         return buildAvatarCenteredWindowFeatures(
@@ -855,7 +864,8 @@ function createSidePanelMenuItem(manager, prefix, item) {
                 finalUrl = `${item.urlBase}?lanlan_name=${encodeURIComponent(lanlanName)}`;
                 isOpening = true;
                 windowName = `neko_${item.id}_${encodeURIComponent(lanlanName || 'default')}`;
-                openAndPauseMainUI(finalUrl, windowName);
+                features = buildAvatarFullscreenWindowFeatures();
+                openAndPauseMainUI(finalUrl, windowName, features);
                 setTimeout(() => { isOpening = false; }, 500);
             } else if (item.id === 'voice-clone' && item.url) {
                 const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';

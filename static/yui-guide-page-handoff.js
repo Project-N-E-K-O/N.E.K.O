@@ -82,13 +82,13 @@
         try {
             targetUrl = new URL(openUrl, window.location.origin).toString();
         } catch (_) {}
-        var existingWindow = getOpenedWindow(fullName);
-        var hadExistingWindow = !!(existingWindow && !existingWindow.closed);
         var childWin;
 
         var resolvedFeatures = getDefaultPageWindowFeatures(openUrl, features);
         if (typeof window.openOrFocusWindow === 'function') {
-            childWin = window.openOrFocusWindow(targetUrl, fullName, resolvedFeatures);
+            childWin = window.openOrFocusWindow(targetUrl, fullName, resolvedFeatures, {
+                navigateOnReuse: !!normalizedOptions.forceReload
+            });
         } else {
             childWin = window.open(targetUrl, fullName, resolvedFeatures);
         }
@@ -107,18 +107,6 @@
         try {
             childWin.focus();
         } catch (_) {}
-
-        if (normalizedOptions.forceReload && hadExistingWindow) {
-            try {
-                childWin.location.replace(targetUrl);
-            } catch (_) {
-                try {
-                    childWin.location.href = targetUrl;
-                } catch (error) {
-                    console.warn('[YuiGuideHandoff] 窗口重载失败:', targetUrl, error);
-                }
-            }
-        }
 
         if (!normalizedOptions.keepMainUIVisible && typeof window.handleHideMainUI === 'function') {
             window.handleHideMainUI();
@@ -818,6 +806,15 @@
         return 'width=' + w + ',height=' + h + ',left=' + left + ',top=' + top + ',menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes';
     }
 
+    function buildFullscreenWindowFeatures() {
+        var screenRef = window.screen || {};
+        var width = Math.max(720, Math.floor(Number(screenRef.availWidth || screenRef.width) || 1280));
+        var height = Math.max(560, Math.floor(Number(screenRef.availHeight || screenRef.height) || 900));
+        var left = Number.isFinite(screenRef.availLeft) ? screenRef.availLeft : 0;
+        var top = Number.isFinite(screenRef.availTop) ? screenRef.availTop : 0;
+        return 'width=' + width + ',height=' + height + ',left=' + left + ',top=' + top + ',menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes';
+    }
+
     function isFramedSettingsPageUrl(openUrl) {
         try {
             var path = new URL(openUrl, window.location.origin).pathname;
@@ -830,8 +827,19 @@
         }
     }
 
+    function isModelManagerPageUrl(openUrl) {
+        try {
+            return new URL(openUrl, window.location.origin).pathname === '/model_manager';
+        } catch (_) {
+            return false;
+        }
+    }
+
     function getDefaultPageWindowFeatures(openUrl, features) {
         if (features) return features;
+        if (isModelManagerPageUrl(openUrl)) {
+            return buildFullscreenWindowFeatures();
+        }
         if (isFramedSettingsPageUrl(openUrl)) {
             return buildCenteredWindowFeatures(1240, 940);
         }
@@ -1295,7 +1303,7 @@
         return openPage(
             url,
             windowName,
-            buildCenteredWindowFeatures(1280, 900)
+            buildFullscreenWindowFeatures()
         );
     }
 
