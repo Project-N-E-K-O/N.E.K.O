@@ -4426,7 +4426,6 @@ export default function App({
       onComposerSubmit?.({ text });
       setDraft('');
       restoreCompactExportHistoryToBottomForOutgoingMessage();
-      requestCompactChatState('default');
     } finally {
       requestAnimationFrame(() => { submittingRef.current = false; });
     }

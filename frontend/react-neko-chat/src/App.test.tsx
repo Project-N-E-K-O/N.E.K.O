@@ -5747,6 +5747,32 @@ describe('App', () => {
     expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Test compact send' });
   });
 
+  it('keeps controlled compact input open after submitting text for continuous typing', () => {
+    const onComposerSubmit = vi.fn();
+
+    function CompactContinuousInputHarness() {
+      const [compactChatState, setCompactChatState] = useState<CompactChatState>('input');
+      return (
+        <App
+          chatSurfaceMode="compact"
+          compactChatState={compactChatState}
+          onCompactChatStateChange={setCompactChatState}
+          onComposerSubmit={onComposerSubmit}
+        />
+      );
+    }
+
+    const { container } = render(<CompactContinuousInputHarness />);
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: 'First compact message' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'First compact message' });
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'input');
+    expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('');
+  });
+
   it('returns empty compact input to subtitle state when it loses focus', async () => {
     const onCompactChatStateChange = vi.fn();
     const outsideButton = document.createElement('button');
