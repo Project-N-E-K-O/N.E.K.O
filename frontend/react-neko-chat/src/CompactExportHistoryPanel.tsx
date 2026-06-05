@@ -2439,13 +2439,6 @@ export default function CompactExportHistoryPanel({
                 </div>
               ) : null}
             </div>
-            <div
-              className="compact-export-history-music-mount"
-              data-music-player-mount="compact-history"
-              data-compact-hit-region={historyInteractive ? 'true' : undefined}
-              data-compact-hit-region-id={historyInteractive ? 'history:music-player' : undefined}
-              data-compact-hit-region-kind={historyInteractive ? 'music' : undefined}
-            />
             {controlsOpen ? (
               <div
                 className="compact-export-history-controls"

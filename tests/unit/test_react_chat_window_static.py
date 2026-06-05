@@ -5,6 +5,7 @@ APP_REACT_CHAT_WINDOW_PATH = Path(__file__).resolve().parents[2] / "static" / "a
 APP_BUTTONS_PATH = Path(__file__).resolve().parents[2] / "static" / "app-buttons.js"
 APP_CHAT_EXPORT_PATH = Path(__file__).resolve().parents[2] / "static" / "app-chat-export.js"
 MUSIC_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "music_ui.js"
+MUSIC_UI_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "music_ui.css"
 STATIC_INDEX_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "index.css"
 REACT_CHAT_STYLES_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "styles.css"
 REACT_CHAT_APP_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "App.tsx"
@@ -505,7 +506,9 @@ def test_desktop_compact_history_hit_regions_are_clipped_to_visible_parent():
         1,
     )[0]
 
-    assert "var clippedRect = parentRect ? intersectCompactRects(rect, parentRect) : rect;" in composite_block
+    assert "var clippedRect = kind === 'musicPlayer'" in composite_block
+    assert "? rect" in composite_block
+    assert ": (parentRect ? intersectCompactRects(rect, parentRect) : rect);" in composite_block
     assert "if (!clippedRect) return null;" in composite_block
     assert "visualRect: clippedRect" in composite_block
     assert "hitRect: clippedRect" in composite_block
@@ -811,7 +814,9 @@ def test_compact_history_enter_animation_excludes_drag_sources():
 
 def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regions():
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+    music_ui_styles = MUSIC_UI_CSS_PATH.read_text(encoding="utf-8")
     panel_source = COMPACT_EXPORT_HISTORY_PANEL_PATH.read_text(encoding="utf-8")
+    app_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
     music_ui_source = MUSIC_UI_PATH.read_text(encoding="utf-8")
 
@@ -831,7 +836,7 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
     bubble_block = css_block(styles, ".compact-export-history-bubble {", ".compact-export-history-message.is-disabled")
     shared_hit_block = css_block(
         styles,
-        ".compact-export-history-controls,\n.compact-export-history-music-mount,\n.compact-export-preview-region {",
+        ".compact-export-history-controls,\n.compact-export-preview-region {",
         ".compact-export-history-controls {",
     )
     scroll_jsx_block = panel_source.split('className="compact-export-history-scroll"', 1)[1].split(
@@ -846,11 +851,6 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
         'compact-export-history-controls-content',
         1,
     )[0]
-    music_hit_block = panel_source.split('className="compact-export-history-music-mount"', 1)[1].split(
-        'className="compact-export-history-controls"',
-        1,
-    )[0]
-
     assert "pointer-events: none;" in anchor_block
     assert "pointer-events: none;" in panel_block
     assert "overflow-y: auto;" in scroll_block
@@ -858,7 +858,7 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
     assert "pointer-events: none;" in content_block
     assert "pointer-events: none;" in message_block
     assert "pointer-events: auto;" in bubble_block
-    assert ".compact-export-history-controls,\n.compact-export-history-music-mount,\n.compact-export-preview-region {" in styles
+    assert ".compact-export-history-controls,\n.compact-export-preview-region {" in styles
     assert "pointer-events: auto;" in shared_hit_block
     assert "function getCompactHistoryScrollbarRect(element, parentRect)" in script
     assert "id: 'history:scrollbar'" in script
@@ -869,26 +869,41 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
     assert "data-compact-hit-region-id={historyInteractive ? 'history:controls' : undefined}" in panel_source
     assert "data-compact-hit-region={historyInteractive ? 'true' : undefined}" in controls_hit_block
     assert "data-compact-hit-region-kind={historyInteractive ? 'controls' : undefined}" in controls_hit_block
-    assert "data-compact-hit-region-id={historyInteractive ? 'history:music-player' : undefined}" in panel_source
-    assert 'data-music-player-mount="compact-history"' in music_hit_block
-    assert "data-compact-hit-region={historyInteractive ? 'true' : undefined}" in music_hit_block
-    assert "data-compact-hit-region-kind={historyInteractive ? 'music' : undefined}" in music_hit_block
+    assert "compact-export-history-music-mount" not in panel_source
+    assert 'className="compact-music-player-mount"' in app_source
+    assert 'data-music-player-mount="compact-surface"' in app_source
+    assert 'data-compact-geometry-item="musicPlayer"' in app_source
+    assert 'data-compact-geometry-hit-scope="children"' in app_source
     assert "function getPreferredMusicMountTarget()" in music_ui_source
-    assert "function isCompactHistoryMusicMountInteractive(mount)" in music_ui_source
-    assert "document.querySelector('.compact-export-history-music-mount')" in music_ui_source
-    assert "mount.getAttribute('data-compact-hit-region') !== 'true'" in music_ui_source
-    assert "data-compact-export-history-visibility') !== 'open'" in music_ui_source
+    assert "function getCompactMusicMountTarget()" in music_ui_source
+    assert "document.querySelector('[data-music-player-mount=\"compact-surface\"]')" in music_ui_source
     assert "document.getElementById('music-player-mount')" in music_ui_source
     assert "document.getElementById(MUSIC_CONFIG.dom.containerId)" in music_ui_source
     assert "mutation.type === 'attributes' && isMusicMountMutationTarget(mutation.target)" in music_ui_source
     assert "attributes: true" in music_ui_source
-    assert "'data-compact-export-history-visibility'" in music_ui_source
-    assert "'data-compact-hit-region'" in music_ui_source
+    assert "'data-music-player-mount'" in music_ui_source
     assert "mountMusicBar(musicBar)" in music_ui_source
-    assert music_ui_source.count('data-compact-hit-region-id="history:music-player:volume"') == 2
+    assert "musicBar.setAttribute('data-compact-hit-region-id', 'music-player')" in music_ui_source
+    assert "neko:compact-interaction-geometry-refresh" in music_ui_source
+    assert "window.addEventListener('neko:compact-interaction-geometry-refresh'" in script
+    assert "kind === 'musicPlayer'" in script
+    assert music_ui_source.count('data-compact-hit-region-id="music-player:volume"') == 2
     assert music_ui_source.count('data-compact-hit-region-kind="music-volume"') == 2
-    assert ".compact-export-history-anchor.under-choice-prompt .music-bar-volume-slider-wrapper" in styles
-    assert '.compact-export-history-anchor[data-compact-export-history-visibility="closing"] .music-bar-volume-slider-wrapper' in styles
+    assert "#music-player-mount.compact-music-player-mount {" in styles
+    assert "#music-player-mount.compact-music-player-mount {" in music_ui_styles
+    assert "width: min(calc(var(--compact-music-player-surface-width) - 16px), 360px, calc(100vw - 24px));" in styles
+    assert "width: min(calc(var(--compact-music-player-surface-width) - 16px), 360px, calc(100vw - 24px));" in music_ui_styles
+    assert "#music-player-mount.compact-music-player-mount > .music-player-bar" in styles
+    assert "#music-player-mount.compact-music-player-mount > .music-player-bar" in music_ui_styles
+    assert "max-inline-size: 100%;" in styles
+    assert "max-inline-size: 100%;" in music_ui_styles
+    assert "#music-player-mount.compact-music-player-mount .music-bar-info" in styles
+    assert "#music-player-mount.compact-music-player-mount .music-bar-info" in music_ui_styles
+    assert "--compact-music-player-reserved-block-size: 88px;" in styles
+    assert "--compact-music-player-history-gap: 14px;" in styles
+    assert "+ var(--compact-music-player-reserved-block-size, 88px)" in styles
+    assert "+ var(--compact-music-player-history-gap, 14px)" in styles
+    assert ".app-shell:has(> .compact-music-player-mount:not(:empty)) .compact-export-history-anchor" in styles
     assert 'data-compact-hit-region-id="history:preview"' in panel_source
 
 
@@ -909,7 +924,7 @@ def test_subtitle_web_host_keeps_compact_history_transparent_wrappers_click_thro
         "    pointer-events: auto;\n"
         "}"
     )
-    fallback_music_interactive_rule = (
+    compact_music_interactive_rule = (
         f'{compact_surface_prefix} #music-player-mount,\n'
         f'{compact_surface_prefix} #music-player-mount * {{\n'
         "    pointer-events: auto;\n"
@@ -927,27 +942,18 @@ def test_subtitle_web_host_keeps_compact_history_transparent_wrappers_click_thro
     history_interactive_rule = (
         f'{compact_surface_prefix} .compact-export-history-bubble,\n'
         f'{compact_surface_prefix} .compact-export-history-controls,\n'
-        f'{compact_surface_prefix} .compact-export-history-music-mount,\n'
         f'{compact_surface_prefix} .compact-export-preview-region {{\n'
         "    pointer-events: auto;\n"
         "}"
     )
-    history_music_volume_hidden_rule = (
-        f'{compact_surface_prefix} .compact-export-history-anchor.under-choice-prompt .music-bar-volume-slider-wrapper,\n'
-        f'{compact_surface_prefix} .compact-export-history-anchor[data-compact-export-history-visibility="closing"] .music-bar-volume-slider-wrapper {{\n'
-        "    pointer-events: none;\n"
-        "}"
-    )
 
     assert broad_surface_rule in styles
-    assert fallback_music_interactive_rule in styles
+    assert compact_music_interactive_rule in styles
     assert history_passthrough_rule in styles
     assert history_interactive_rule in styles
-    assert history_music_volume_hidden_rule in styles
-    assert styles.index(broad_surface_rule) < styles.index(fallback_music_interactive_rule)
-    assert styles.index(fallback_music_interactive_rule) < styles.index(history_passthrough_rule)
+    assert styles.index(broad_surface_rule) < styles.index(compact_music_interactive_rule)
+    assert styles.index(compact_music_interactive_rule) < styles.index(history_passthrough_rule)
     assert styles.index(history_passthrough_rule) < styles.index(history_interactive_rule)
-    assert styles.index(history_interactive_rule) < styles.index(history_music_volume_hidden_rule)
     assert ".compact-export-history-scroll,\n" in history_passthrough_rule
 
 
