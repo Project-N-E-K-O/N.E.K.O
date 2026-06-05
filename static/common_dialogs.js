@@ -213,7 +213,6 @@
 
         .modal-overlay-autostart-retention {
             background: rgba(245, 248, 255, 0.62);
-            backdrop-filter: blur(8px);
         }
 
         .modal-dialog-autostart-retention {
@@ -828,10 +827,53 @@
     /**
      * 创建模态对话框
      */
+    function emitDecisionPromptLifecycleEvent(type, detail) {
+        try {
+            window.dispatchEvent(new CustomEvent(type, {
+                detail: Object.assign({ source: 'common-dialogs' }, detail || {})
+            }));
+        } catch (_) {
+            // ignore
+        }
+    }
+
+    function temporarilyHideReactChatOverlayForModal(modalConfig) {
+        if (!modalConfig || modalConfig.skin !== 'autostart-retention') {
+            return function noop() {};
+        }
+        const overlay = document.getElementById('react-chat-window-overlay');
+        if (!overlay || overlay.hidden) {
+            return function noop() {};
+        }
+
+        const body = document.body;
+        const hadOpenClass = !!(
+            body
+            && body.classList
+            && typeof body.classList.contains === 'function'
+            && body.classList.contains('react-chat-window-open')
+        );
+        overlay.hidden = true;
+        if (body && body.classList && typeof body.classList.remove === 'function') {
+            body.classList.remove('react-chat-window-open');
+        }
+
+        return function restoreReactChatOverlay() {
+            if (overlay.hidden) {
+                overlay.hidden = false;
+            }
+            if (hadOpenClass && body && body.classList && typeof body.classList.add === 'function') {
+                body.classList.add('react-chat-window-open');
+            }
+        };
+    }
+
     function createModal(config) {
         return new Promise((resolve) => {
             const modalConfig = config || {};
             const isAutostartRetentionSkin = modalConfig.skin === 'autostart-retention';
+            const isDecisionPrompt = modalConfig.type === 'decision';
+            const restoreObscuredUi = temporarilyHideReactChatOverlayForModal(modalConfig);
             let settled = false;
             const dismissValue = Object.prototype.hasOwnProperty.call(modalConfig, 'dismissValue')
                 ? modalConfig.dismissValue
@@ -1029,6 +1071,13 @@
                     if (overlay.parentNode) {
                         overlay.parentNode.removeChild(overlay);
                     }
+                    if (isDecisionPrompt) {
+                        emitDecisionPromptLifecycleEvent('neko:decision-prompt-closed', {
+                            skin: modalConfig.skin || '',
+                            type: modalConfig.type || ''
+                        });
+                    }
+                    restoreObscuredUi();
                     resolve(value);
                 }, 200);
             }
@@ -1185,6 +1234,12 @@
 
             // 添加到页面
             document.body.appendChild(overlay);
+            if (isDecisionPrompt) {
+                emitDecisionPromptLifecycleEvent('neko:decision-prompt-opened', {
+                    skin: modalConfig.skin || '',
+                    type: modalConfig.type || ''
+                });
+            }
 
             if (typeof modalConfig.onShown === 'function') {
                 const notifyShown = function () {
