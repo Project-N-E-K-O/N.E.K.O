@@ -547,7 +547,8 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
         "const clearDragSafetyTimer = () => {",
         "const resetDragStateAfterMissingEnd = (safetyToken) => {",
         "if (dragSafetyToken !== safetyToken || !isDragging) return;",
-        "const finishDragState = (moved) => {",
+        "const finishDragState = (moved, safetyToken) => {",
+        "if (safetyToken !== dragSafetyToken) return;",
         "container.setAttribute('data-dragging', 'false');",
         "_dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-end'",
     ):
@@ -555,9 +556,9 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
     _assert_source_order(
         drag_setup,
         "return button drag setup helpers",
-        "const finishDragState = (moved) => {",
+        "const finishDragState = (moved, safetyToken) => {",
         "const resetDragStateAfterMissingEnd = (safetyToken) => {",
-        "finishDragState(moved);",
+        "finishDragState(moved, safetyToken);",
     )
     _assert_source_contains(
         handle_start,
@@ -580,9 +581,10 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
         "dragSafetyTimer = setTimeout(() => {",
     )
     _assert_source_contains(handle_end, "clearDragSafetyTimer();", "return button drag end handler")
+    _assert_source_contains(handle_end, "const safetyToken = dragSafetyToken;", "return button drag end handler")
     _assert_source_contains(
         handle_end,
-        "finishDragState(moved);",
+        "finishDragState(moved, safetyToken);",
         "return button drag end handler",
     )
     _assert_source_order(
@@ -590,7 +592,8 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
         "return button drag end handler",
         "clearDragSafetyTimer();",
         "if (isDragging) {",
-        "finishDragState(moved);",
+        "const safetyToken = dragSafetyToken;",
+        "finishDragState(moved, safetyToken);",
     )
 
     sync_block = _source_slice_between(

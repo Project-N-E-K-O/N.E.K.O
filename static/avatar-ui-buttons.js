@@ -3929,7 +3929,8 @@ const AvatarButtonMixin = {
                 dragSafetyTimer = 0;
             };
 
-            const finishDragState = (moved) => {
+            const finishDragState = (moved, safetyToken) => {
+                if (safetyToken !== dragSafetyToken) return;
                 container.setAttribute('data-dragging', 'false');
                 if (moved) {
                     _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-end', {
@@ -3947,7 +3948,7 @@ const AvatarButtonMixin = {
                 isDragging = false;
                 dragActiveDispatched = false;
                 container.style.cursor = 'grab';
-                finishDragState(moved);
+                finishDragState(moved, safetyToken);
             };
 
             const handleStart = (clientX, clientY) => {
@@ -3995,12 +3996,13 @@ const AvatarButtonMixin = {
             const handleEnd = () => {
                 clearDragSafetyTimer();
                 if (isDragging) {
+                    const safetyToken = dragSafetyToken;
                     const moved = container.getAttribute('data-dragging') === 'true';
                     isDragging = false;
                     dragActiveDispatched = false;
                     container.style.cursor = 'grab';
                     setTimeout(() => {
-                        finishDragState(moved);
+                        finishDragState(moved, safetyToken);
                     }, 10);
                 }
             };
