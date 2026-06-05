@@ -868,8 +868,12 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
     assert "id: 'history:scrollbar'" in script
     assert "scrollNode.getAttribute('data-compact-scrollbar-visible') !== 'true'" in script
     assert "element.querySelector('.compact-export-history-scrollbar-hit')" in script
-    assert "hitStyle.pointerEvents !== 'none'" in script
-    assert "style.pointerEvents === 'none'" not in script.split("function getCompactHistoryScrollbarRect(element, parentRect)", 1)[1].split("var COMPACT_TOOL_FAN_CIRCLE_SLICE_COUNT", 1)[0]
+    scrollbar_block = script.split("function getCompactHistoryScrollbarRect(element, parentRect)", 1)[1].split(
+        "var COMPACT_TOOL_FAN_CIRCLE_SLICE_COUNT",
+        1,
+    )[0]
+    assert "if (hitStyle && hitStyle.pointerEvents === 'none') return null;" in scrollbar_block
+    assert "style.pointerEvents === 'none'" not in scrollbar_block
     assert "data-compact-hit-region" not in scroll_jsx_block
     assert 'className="compact-export-history-scrollbar-hit"' in panel_source
     assert 'data-compact-scrollbar-hit="true"' in panel_source

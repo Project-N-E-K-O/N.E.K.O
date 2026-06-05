@@ -1234,6 +1234,7 @@
         var scrollbarHit = element.querySelector('.compact-export-history-scrollbar-hit');
         if (scrollbarHit && typeof scrollbarHit.getBoundingClientRect === 'function') {
             var hitStyle = window.getComputedStyle ? window.getComputedStyle(scrollbarHit) : null;
+            if (hitStyle && hitStyle.pointerEvents === 'none') return null;
             if (!hitStyle || (
                 hitStyle.display !== 'none'
                 && hitStyle.visibility !== 'hidden'
