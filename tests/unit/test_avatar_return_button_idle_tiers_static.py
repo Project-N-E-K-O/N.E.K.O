@@ -249,6 +249,29 @@ def test_desktop_return_ball_drag_lifecycle_waits_for_restored_viewport_before_r
     assert begin_index < native_start_index < dispatch_start_index < drag_style_index
 
 
+def test_desktop_return_ball_drag_recovers_when_mouse_release_is_lost():
+    source = APP_UI_PATH.read_text(encoding="utf-8")
+
+    assert "RETURN_BALL_DRAG_RECOVERY_POLL_MS = 250" in source
+    assert "RETURN_BALL_DRAG_STALE_RECOVERY_MS = 12000" in source
+    assert "function finishDragIfMouseButtonReleased(event, reason)" in source
+    assert "event.pointerType && event.pointerType !== 'mouse'" in source
+    assert "event.buttons !== 0" in source
+    assert "cancelActiveDrag('window-blur')" in source
+    assert "cancelActiveDrag('visibility-hidden')" in source
+    assert "cancelActiveDrag('pagehide')" in source
+    assert "cancelActiveDrag('pointercancel')" in source
+    assert "cancelActiveDrag('stale-pointer-timeout')" in source
+    assert "document.addEventListener('pointermove', state.handlePointerMove, true)" in source
+    assert "document.addEventListener('pointerup', state.handlePointerUp, true)" in source
+    assert "document.addEventListener('pointercancel', state.handlePointerCancel, true)" in source
+    assert "window.addEventListener('blur', state.handleWindowBlur)" in source
+    assert "document.addEventListener('visibilitychange', state.handleVisibilityChange)" in source
+    assert "suppressClick ? 'return-ball-drag-cancel' : 'return-ball-drag-click'" in source
+    assert "if (!suppressClick)" in source
+    assert "window.nekoPetDrag.stop(stopScreenX, stopScreenY)" in source
+
+
 def test_return_button_drag_has_single_owner_per_runtime_path():
     avatar_source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
     live2d_source = LIVE2D_UI_BUTTONS_PATH.read_text(encoding="utf-8")
