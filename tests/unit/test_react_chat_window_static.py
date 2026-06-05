@@ -822,6 +822,7 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
     )
     panel_block = css_block(styles, ".compact-export-history-panel {", ".compact-export-history-anchor.under-choice-prompt")
     scroll_block = css_block(styles, ".compact-export-history-scroll {", ".compact-export-history-scroll-content")
+    scrollbar_hit_block = css_block(styles, ".compact-export-history-scrollbar-hit {", ".compact-export-history-message")
     content_block = css_block(
         styles,
         ".compact-export-history-scroll-content {",
@@ -855,6 +856,9 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
     assert "pointer-events: none;" in panel_block
     assert "overflow-y: auto;" in scroll_block
     assert "pointer-events: none;" in scroll_block
+    assert "position: absolute;" in scrollbar_hit_block
+    assert "width: 20px;" in scrollbar_hit_block
+    assert "pointer-events: auto;" in scrollbar_hit_block
     assert "pointer-events: none;" in content_block
     assert "pointer-events: none;" in message_block
     assert "pointer-events: auto;" in bubble_block
@@ -862,7 +866,14 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
     assert "pointer-events: auto;" in shared_hit_block
     assert "function getCompactHistoryScrollbarRect(element, parentRect)" in script
     assert "id: 'history:scrollbar'" in script
+    assert "scrollNode.getAttribute('data-compact-scrollbar-visible') !== 'true'" in script
+    assert "element.querySelector('.compact-export-history-scrollbar-hit')" in script
+    assert "hitStyle.pointerEvents !== 'none'" in script
+    assert "style.pointerEvents === 'none'" not in script.split("function getCompactHistoryScrollbarRect(element, parentRect)", 1)[1].split("var COMPACT_TOOL_FAN_CIRCLE_SLICE_COUNT", 1)[0]
     assert "data-compact-hit-region" not in scroll_jsx_block
+    assert 'className="compact-export-history-scrollbar-hit"' in panel_source
+    assert 'data-compact-scrollbar-hit="true"' in panel_source
+    assert "hasPointerCapture?.(event.pointerId)" in panel_source
     assert 'data-compact-hit-region-id={historyInteractive ? `history:message:${message.id}` : undefined}' in panel_source
     assert "data-compact-hit-region={historyInteractive ? 'true' : undefined}" in message_hit_block
     assert "data-compact-hit-region-kind={historyInteractive ? 'message' : undefined}" in message_hit_block

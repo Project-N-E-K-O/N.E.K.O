@@ -24,6 +24,7 @@ const COMPACT_EXPORT_DRAG_MOVE_THRESHOLD = 8;
 const COMPACT_EXPORT_TOUCH_SCROLL_ANGLE_RATIO = 1.35;
 const COMPACT_HISTORY_SCROLL_SETTLE_FRAMES = 36;
 export const COMPACT_HISTORY_SCROLLBAR_VISIBLE_MS = 860;
+const COMPACT_HISTORY_SCROLLBAR_THUMB_MIN_HEIGHT = 24;
 const COMPACT_HISTORY_RETURN_ANIMATION_MS = 260;
 const COMPACT_HISTORY_SEND_ANIMATION_MS = 340;
 export const COMPACT_HISTORY_ENTER_DELAY_STEP_MS = 42;
@@ -220,6 +221,14 @@ type PointerIntentState = {
   originElement: HTMLElement | null;
   pointerOffset: { x: number; y: number };
   autoScrollToBottomOnStart: boolean;
+};
+
+type ScrollbarDragState = {
+  pointerId: number;
+  startY: number;
+  startScrollTop: number;
+  scrollableHeight: number;
+  draggableTrackHeight: number;
 };
 
 type CompactHistoryBubbleTone = {
@@ -569,6 +578,26 @@ function getCompactHistoryDragVisualStyle(activeDrag: ActiveCompactHistoryDrag) 
 
 function clampCompactHistoryValue(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max);
+}
+
+function getCompactHistoryScrollbarMetrics(scrollNode: HTMLDivElement) {
+  const scrollableHeight = scrollNode.scrollHeight - scrollNode.clientHeight;
+  const trackHeight = scrollNode.clientHeight;
+  if (scrollableHeight <= 0 || trackHeight <= 0 || scrollNode.scrollHeight <= 0) return null;
+  const proportionalThumbHeight = (scrollNode.clientHeight / scrollNode.scrollHeight) * trackHeight;
+  const thumbHeight = clampCompactHistoryValue(
+    proportionalThumbHeight,
+    Math.min(COMPACT_HISTORY_SCROLLBAR_THUMB_MIN_HEIGHT, trackHeight),
+    trackHeight,
+  );
+  const draggableTrackHeight = trackHeight - thumbHeight;
+  if (draggableTrackHeight <= 0) return null;
+  return {
+    scrollableHeight,
+    trackHeight,
+    thumbHeight,
+    draggableTrackHeight,
+  };
 }
 
 function getCompactHistoryDragCenter(activeDrag: ActiveCompactHistoryDrag) {
@@ -1198,6 +1227,8 @@ export default function CompactExportHistoryPanel({
   onDragStateChange,
 }: CompactExportHistoryPanelProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const scrollbarDragRef = useRef<ScrollbarDragState | null>(null);
+  const desktopHistoryHoverActiveRef = useRef(false);
   const pointerIntentRef = useRef<PointerIntentState | null>(null);
   const activeDragRef = useRef<ActiveCompactHistoryDrag | null>(null);
   const currentOverDropTargetRef = useRef(false);
@@ -1277,6 +1308,7 @@ export default function CompactExportHistoryPanel({
     if (!historyInteractive) return;
     clearScrollbarVisibleTimer();
     setScrollbarVisible(true);
+    if (desktopHistoryHoverActiveRef.current) return;
     scrollbarVisibleTimerRef.current = window.setTimeout(() => {
       scrollbarVisibleTimerRef.current = null;
       setScrollbarVisible(false);
@@ -1289,6 +1321,106 @@ export default function CompactExportHistoryPanel({
       revealScrollbarForWheel();
     }
   }
+
+  function handleScrollbarWheel(event: ReactWheelEvent<HTMLDivElement>) {
+    if (!historyInteractive) return;
+    const scrollNode = scrollRef.current;
+    if (!scrollNode) return;
+    const delta = event.deltaY !== 0 ? event.deltaY : event.deltaX;
+    if (delta === 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    scrollNode.scrollTop += delta;
+    handleScroll();
+    revealScrollbarForWheel();
+  }
+
+  function handleScrollbarPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!historyInteractive || !scrollbarVisible) return;
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    const scrollNode = scrollRef.current;
+    if (!scrollNode) return;
+    const metrics = getCompactHistoryScrollbarMetrics(scrollNode);
+    if (!metrics) return;
+    const rect = scrollNode.getBoundingClientRect();
+    const localY = event.clientY - rect.top;
+    const thumbTop = metrics.draggableTrackHeight * (scrollNode.scrollTop / metrics.scrollableHeight);
+    const thumbBottom = thumbTop + metrics.thumbHeight;
+    event.preventDefault();
+    event.stopPropagation();
+    clearScrollbarVisibleTimer();
+    setScrollbarVisible(true);
+    if (localY < thumbTop || localY > thumbBottom) {
+      scrollNode.scrollTop = clampCompactHistoryValue(
+        ((localY - metrics.thumbHeight / 2) / metrics.draggableTrackHeight) * metrics.scrollableHeight,
+        0,
+        metrics.scrollableHeight,
+      );
+      handleScroll();
+    }
+    scrollbarDragRef.current = {
+      pointerId: event.pointerId,
+      startY: event.clientY,
+      startScrollTop: scrollNode.scrollTop,
+      scrollableHeight: metrics.scrollableHeight,
+      draggableTrackHeight: metrics.draggableTrackHeight,
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  }
+
+  function handleScrollbarPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    const drag = scrollbarDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const scrollNode = scrollRef.current;
+    if (!scrollNode) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const deltaY = event.clientY - drag.startY;
+    scrollNode.scrollTop = clampCompactHistoryValue(
+      drag.startScrollTop + (deltaY / drag.draggableTrackHeight) * drag.scrollableHeight,
+      0,
+      drag.scrollableHeight,
+    );
+    handleScroll();
+  }
+
+  function finishScrollbarPointerDrag(event: ReactPointerEvent<HTMLDivElement>) {
+    const drag = scrollbarDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    scrollbarDragRef.current = null;
+    event.stopPropagation();
+    try {
+      if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+        event.currentTarget.releasePointerCapture?.(event.pointerId);
+      }
+    } catch (_) {
+      // Some hosts release capture before dispatching the final capture event.
+    }
+    revealScrollbarForWheel();
+  }
+
+  useEffect(() => {
+    if (historyInteractive) return;
+    clearScrollbarVisibleTimer();
+    setScrollbarVisible(false);
+    scrollbarDragRef.current = null;
+    desktopHistoryHoverActiveRef.current = false;
+  }, [historyInteractive]);
+
+  useEffect(() => {
+    function handleDesktopHistoryHoverStateChange(event: Event) {
+      if (!historyInteractive) return;
+      const detail = (event as CustomEvent<{ active?: boolean }>).detail;
+      desktopHistoryHoverActiveRef.current = detail?.active === true;
+      clearScrollbarVisibleTimer();
+      setScrollbarVisible(desktopHistoryHoverActiveRef.current);
+    }
+
+    window.addEventListener('neko:compact-history-hover-state-change', handleDesktopHistoryHoverStateChange);
+    return () => {
+      window.removeEventListener('neko:compact-history-hover-state-change', handleDesktopHistoryHoverStateChange);
+    };
+  }, [historyInteractive]);
 
   function emitCompactHistoryDragState(activeDragState: ActiveCompactHistoryDrag) {
     const state = buildCompactHistoryDragState(activeDragState, dragStateSeqRef.current);
@@ -2439,6 +2571,19 @@ export default function CompactExportHistoryPanel({
                 </div>
               ) : null}
             </div>
+            {scrollbarVisible ? (
+              <div
+                className="compact-export-history-scrollbar-hit"
+                data-compact-scrollbar-hit="true"
+                aria-hidden="true"
+                onWheel={handleScrollbarWheel}
+                onPointerDown={handleScrollbarPointerDown}
+                onPointerMove={handleScrollbarPointerMove}
+                onPointerUp={finishScrollbarPointerDrag}
+                onPointerCancel={finishScrollbarPointerDrag}
+                onLostPointerCapture={finishScrollbarPointerDrag}
+              />
+            ) : null}
             <div
               className="compact-export-history-music-mount"
               data-music-player-mount="compact-history"

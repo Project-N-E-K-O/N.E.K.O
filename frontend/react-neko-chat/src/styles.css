@@ -2352,6 +2352,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 .compact-export-history-panel {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -2361,6 +2362,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 .compact-export-history-anchor.under-choice-prompt .compact-export-history-scroll,
+.compact-export-history-anchor.under-choice-prompt .compact-export-history-scrollbar-hit,
 .compact-export-history-anchor.under-choice-prompt .compact-export-history-controls,
 .compact-export-history-anchor.under-choice-prompt .compact-export-history-music-mount,
 .compact-export-history-anchor.under-choice-prompt .compact-export-preview-region {
@@ -2443,6 +2445,21 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   background:
     linear-gradient(180deg, rgba(103, 202, 255, 0.82), rgba(36, 151, 217, 0.62))
     padding-box;
+}
+
+.compact-export-history-scrollbar-hit {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 20px;
+  height: calc(var(--compact-export-history-region-height) + var(--compact-export-controls-collapse-delta));
+  max-height: calc(var(--compact-export-history-region-height) + var(--compact-export-controls-collapse-delta));
+  cursor: ns-resize;
+  pointer-events: auto;
+  touch-action: none;
+  background: transparent;
+  z-index: 2;
+  -webkit-app-region: no-drag;
 }
 
 .compact-export-history-message {
