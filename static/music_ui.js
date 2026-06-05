@@ -439,6 +439,14 @@
             || node.getAttribute('data-music-player-mount') === 'compact-surface';
     }
 
+    function isCompactMusicGeometryMutationTarget(node) {
+        if (!(node instanceof Element)) return false;
+        const compactMusicMount = node.closest && node.closest('[data-music-player-mount="compact-surface"]');
+        if (!compactMusicMount) return false;
+        return node.classList.contains('music-bar-volume-container')
+            || node.classList.contains('music-bar-volume-slider-wrapper');
+    }
+
     function scheduleMusicBarRelocation(detachedMusicBar) {
         if (detachedMusicBar) pendingDetachedMusicBar = detachedMusicBar;
         if (musicMountRelocationFrame) return;
@@ -457,6 +465,10 @@
             for (const mutation of mutations) {
                 if (mutation.type === 'attributes' && isMusicMountMutationTarget(mutation.target)) {
                     scheduleMusicBarRelocation();
+                    return;
+                }
+                if (mutation.type === 'attributes' && isCompactMusicGeometryMutationTarget(mutation.target)) {
+                    requestCompactMusicGeometrySync();
                     return;
                 }
                 for (const node of mutation.removedNodes) {
@@ -514,7 +526,10 @@
 
         if (volumeBtn) volumeBtn.onclick = (e) => {
             e.preventDefault(); e.stopPropagation();
-            if (volumeContainer) volumeContainer.classList.toggle('expanded');
+            if (volumeContainer) {
+                volumeContainer.classList.toggle('expanded');
+                requestCompactMusicGeometrySync();
+            }
         };
 
         if (volumeSliderWrapper && volumeSlider) {
@@ -634,6 +649,7 @@
             const closeOnOutside = (e) => {
                 if (volumeContainer.classList.contains('expanded') && !volumeContainer.contains(e.target)) {
                     volumeContainer.classList.remove('expanded');
+                    requestCompactMusicGeometrySync();
                 }
             };
             document.addEventListener('mousedown', closeOnOutside);
@@ -1747,6 +1763,7 @@
                     e.preventDefault();
                     e.stopPropagation();
                     volumeContainer.classList.toggle('expanded');
+                    requestCompactMusicGeometrySync();
                 };
 
                 let isDraggingVolume = false;
@@ -1811,6 +1828,7 @@
                 const closeVolumeOnOutsideClick = (e) => {
                     if (volumeContainer.classList.contains('expanded') && !volumeContainer.contains(e.target)) {
                         volumeContainer.classList.remove('expanded');
+                        requestCompactMusicGeometrySync();
                     }
                 };
                 addManagedListener('mousedown', closeVolumeOnOutsideClick);

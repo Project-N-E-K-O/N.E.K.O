@@ -882,11 +882,24 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
     assert "document.getElementById('music-player-mount')" in music_ui_source
     assert "document.getElementById(MUSIC_CONFIG.dom.containerId)" in music_ui_source
     assert "mutation.type === 'attributes' && isMusicMountMutationTarget(mutation.target)" in music_ui_source
+    assert "function isCompactMusicGeometryMutationTarget(node)" in music_ui_source
+    assert "node.closest('[data-music-player-mount=\"compact-surface\"]')" in music_ui_source
+    assert "node.classList.contains('music-bar-volume-container')" in music_ui_source
+    assert "node.classList.contains('music-bar-volume-slider-wrapper')" in music_ui_source
+    assert "mutation.type === 'attributes' && isCompactMusicGeometryMutationTarget(mutation.target)" in music_ui_source
     assert "attributes: true" in music_ui_source
     assert "'data-music-player-mount'" in music_ui_source
     assert "mountMusicBar(musicBar)" in music_ui_source
     assert "musicBar.setAttribute('data-compact-hit-region-id', 'music-player')" in music_ui_source
     assert "neko:compact-interaction-geometry-refresh" in music_ui_source
+    volume_toggle_segments = music_ui_source.split("volumeContainer.classList.toggle('expanded');")
+    assert len(volume_toggle_segments) == 3
+    for segment in volume_toggle_segments[1:]:
+        assert "requestCompactMusicGeometrySync();" in segment[:96]
+    volume_close_segments = music_ui_source.split("volumeContainer.classList.remove('expanded');")
+    assert len(volume_close_segments) == 3
+    for segment in volume_close_segments[1:]:
+        assert "requestCompactMusicGeometrySync();" in segment[:96]
     assert "window.addEventListener('neko:compact-interaction-geometry-refresh'" in script
     assert "kind === 'musicPlayer'" in script
     assert music_ui_source.count('data-compact-hit-region-id="music-player:volume"') == 2
