@@ -117,3 +117,25 @@ def test_neko_tutorial_click_blocker_covers_click_and_pointer_events():
     ):
         assert f"window.addEventListener('{event_name}'" in install_block
         assert f"window.removeEventListener('{event_name}'" in uninstall_block
+
+
+def test_home_tutorial_teardown_restores_chat_input_lock_before_early_return():
+    source = _read_manager()
+
+    teardown_prefix = source.split("    _teardownTutorialUI() {", 1)[1].split(
+        "        if (this._teardownPromise) {",
+        1,
+    )[0]
+    assert "this.restoreYuiGuideChatInputState(" in teardown_prefix
+
+    restore_block = source.split("    restoreYuiGuideChatInputState(reason = 'tutorial-ended') {", 1)[1].split(
+        "    _teardownTutorialUI() {",
+        1,
+    )[0]
+    assert "document.body.classList.remove('yui-guide-chat-buttons-disabled')" in restore_block
+    assert "data-yui-guide-prev-readonly" in restore_block
+    assert "data-yui-guide-prev-contenteditable" in restore_block
+    assert "action: 'yui_guide_set_chat_buttons_disabled'" in restore_block
+    assert "disabled: false" in restore_block
+    assert "reactChatWindowHost" in restore_block
+    assert "setHomeTutorialInteractionLocked(false" in restore_block

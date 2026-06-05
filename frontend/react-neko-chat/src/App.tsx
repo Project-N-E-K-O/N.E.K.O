@@ -87,6 +87,11 @@ function getEffectiveCompactChatState(
 }
 
 const COMPACT_PREVIEW_MAX_LENGTH = 84;
+
+function isGuideChatButtonLockActive(): boolean {
+  return document.body?.classList.contains('yui-guide-chat-buttons-disabled') === true;
+}
+
 const COMPACT_SPEECH_REVEAL_MAX_CHARS_PER_SECOND = 8;
 const COMPACT_SPEECH_TURN_MERGE_WINDOW_MS = 12000;
 const COMPACT_SPEECH_FALLBACK_REVEAL_DELAY_MS = 700;
@@ -1335,6 +1340,7 @@ export default function App({
   const [compactExportAutoScrollToBottom, setCompactExportAutoScrollToBottom] = useState(true);
   const compactSurfaceResizeStateRef = useRef<CompactSurfaceResizeState | null>(null);
   const compactHistoryVisibilitySuppressClickRef = useRef(false);
+  const compactExportHistoryUnmountTimerRef = useRef<number | null>(null);
   const submittingRef = useRef(false);
   const lastRollbackKeyRef = useRef('');
   const lastToolCursorResetKeyRef = useRef('');
@@ -1596,17 +1602,31 @@ export default function App({
     [compactExportSelectableMessages],
   );
   const compactExportSelectableCount = compactExportSelectableMessages.length;
+  const clearCompactExportHistoryUnmountTimer = useCallback(() => {
+    if (compactExportHistoryUnmountTimerRef.current === null) return;
+    window.clearTimeout(compactExportHistoryUnmountTimerRef.current);
+    compactExportHistoryUnmountTimerRef.current = null;
+  }, []);
   const openCompactExportHistory = useCallback(() => {
+    clearCompactExportHistoryUnmountTimer();
     setCompactExportHistoryMounted(true);
     setCompactExportHistoryOpen(true);
     persistCompactExportHistoryOpen(true);
     setCompactExportAutoScrollToBottom(true);
-  }, []);
+  }, [clearCompactExportHistoryUnmountTimer]);
   const closeCompactExportHistory = useCallback(() => {
+    clearCompactExportHistoryUnmountTimer();
     setCompactExportHistoryOpen(false);
     persistCompactExportHistoryOpen(false);
     setCompactExportPreviewOpen(false);
-  }, []);
+    compactExportHistoryUnmountTimerRef.current = window.setTimeout(() => {
+      setCompactExportHistoryMounted(false);
+      compactExportHistoryUnmountTimerRef.current = null;
+    }, COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
+  }, [clearCompactExportHistoryUnmountTimer]);
+  useEffect(() => () => {
+    clearCompactExportHistoryUnmountTimer();
+  }, [clearCompactExportHistoryUnmountTimer]);
   const handleCompactHistoryVisibilityToggle = useCallback(() => {
     if (compactExportHistoryOpen) {
       closeCompactExportHistory();
@@ -5555,6 +5575,7 @@ export default function App({
                         disabled={composerDisabled}
                         onClick={() => {
                           if (composerHidden) return;
+                          if (isGuideChatButtonLockActive()) return;
                           requestCompactChatState('input');
                         }}
                       >

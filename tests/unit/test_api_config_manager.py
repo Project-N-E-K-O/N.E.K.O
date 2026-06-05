@@ -711,6 +711,33 @@ class TestAgentUrlRegionRouting:
 
 
 # ---------------------------------------------------------------------------
+# 7c. Free API URL region routing: 海外统一走 www.lanlan.app（含 /tts）
+# ---------------------------------------------------------------------------
+class TestFreeApiUrlRegionRouting:
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ('non_mainland', 'url_in', 'expected'),
+        [
+            # 海外：lanlan.tech → lanlan.app，/tts 不再降级到裸 lanlan.app，
+            # 统一停在 www.lanlan.app（透传 voice 到 Gemini）。
+            (True, 'wss://www.lanlan.tech/tts', 'wss://www.lanlan.app/tts'),
+            (True, 'wss://www.lanlan.tech/core', 'wss://www.lanlan.app/core'),
+            (True, 'https://www.lanlan.tech/text/v1', 'https://www.lanlan.app/text/v1'),
+            # 国内：原样保留。
+            (False, 'wss://www.lanlan.tech/tts', 'wss://www.lanlan.tech/tts'),
+            # 非 lanlan.tech 自定义 URL 不受影响。
+            (True, 'wss://api.stepfun.com/v1/realtime/audio', 'wss://api.stepfun.com/v1/realtime/audio'),
+        ],
+    )
+    def test_adjust_free_api_url_keeps_tts_on_www_lanlan_app(
+        self, config_manager, non_mainland, url_in, expected,
+    ):
+        config_manager._check_non_mainland = lambda: non_mainland
+        assert config_manager._adjust_free_api_url(url_in, True) == expected
+
+
+# ---------------------------------------------------------------------------
 # 8. MiniMax / Qwen voice clone key resolution
 # ---------------------------------------------------------------------------
 class TestVoiceCloneKeyResolution:

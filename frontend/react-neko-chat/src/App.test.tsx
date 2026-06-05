@@ -14,6 +14,7 @@ describe('App', () => {
 
   beforeEach(() => {
     window.localStorage.removeItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
+    document.body.classList.remove('yui-guide-chat-buttons-disabled');
   });
 
   const openCompactInputTools = async () => {
@@ -134,6 +135,20 @@ describe('App', () => {
     // 点击胶囊后内部 state 兜底切到输入态，输入框出现
     expect(container.querySelector('.composer-input')).not.toBeNull();
     expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'input');
+  });
+
+  it('keeps compact capsule clicks from entering input while the tutorial locks chat buttons', () => {
+    document.body.classList.add('yui-guide-chat-buttons-disabled');
+    const onCompactChatStateChange = vi.fn();
+    const { container } = render(
+      <App chatSurfaceMode="compact" onCompactChatStateChange={onCompactChatStateChange} />,
+    );
+
+    fireEvent.click(container.querySelector('.compact-chat-capsule-button') as HTMLButtonElement);
+
+    expect(container.querySelector('.composer-input')).toBeNull();
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'default');
+    expect(onCompactChatStateChange).not.toHaveBeenCalled();
   });
 
   it('exposes explicit surface mode state on the rendered shell', () => {
@@ -448,9 +463,7 @@ describe('App', () => {
         await vi.advanceTimersByTimeAsync(COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
       });
 
-      expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
-      expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'closing');
-      expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-open', 'false');
+      expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
       expect(container.querySelectorAll('#music-player-mount')).toHaveLength(1);
       expect(container.querySelector('.composer-panel #music-player-mount')).not.toBeNull();
       expect(container.querySelector('.compact-export-history-panel #music-player-mount')).toBeNull();
@@ -473,6 +486,70 @@ describe('App', () => {
     expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
     expect(container.querySelector('.compact-export-history-controls')).toBeNull();
     expect(exportButton).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('keeps compact history hidden for new conversation messages after the user closes it', async () => {
+    const initialMessage = parseChatMessage({
+      id: 'assistant-history-before-close',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: 'I am visible before closing.' }],
+      status: 'sent',
+    });
+    const userMessage = parseChatMessage({
+      id: 'user-history-after-close',
+      role: 'user',
+      author: 'You',
+      time: '10:01',
+      createdAt: 2,
+      blocks: [{ type: 'text', text: 'This should not flash while history is closed.' }],
+      status: 'sent',
+    });
+    const assistantMessage = parseChatMessage({
+      id: 'assistant-history-after-close',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:02',
+      createdAt: 3,
+      blocks: [{ type: 'text', text: 'But it should appear after reopening history.' }],
+      status: 'sent',
+    });
+
+    vi.useFakeTimers();
+    try {
+      const { container, rerender } = render(
+        <App chatSurfaceMode="compact" compactChatState="input" messages={[initialMessage]} />,
+      );
+      expect(container.querySelector('[data-compact-export-history-message-id="assistant-history-before-close"]')).not.toBeNull();
+
+      fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
+      expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'closing');
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
+      });
+      expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+
+      rerender(
+        <App
+          chatSurfaceMode="compact"
+          compactChatState="input"
+          messages={[initialMessage, userMessage, assistantMessage]}
+        />,
+      );
+      expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+      expect(container.querySelector('[data-compact-export-history-message-id="user-history-after-close"]')).toBeNull();
+      expect(container.querySelector('[data-compact-export-history-message-id="assistant-history-after-close"]')).toBeNull();
+
+      fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
+      expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'open');
+      expect(container.querySelector('[data-compact-export-history-message-id="user-history-after-close"]')).not.toBeNull();
+      expect(container.querySelector('[data-compact-export-history-message-id="assistant-history-after-close"]')).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('restores compact inline history from persisted open state after remount', () => {
@@ -823,7 +900,7 @@ describe('App', () => {
       });
       expect(exportWindow.appChatExport?.buildCompactInlinePreview).toHaveBeenCalledWith({
         messageIds: ['user-history-select'],
-        format: 'markdown',
+        format: 'image',
         imageStyle: 'neko',
         imageFormat: 'png',
       });
@@ -1848,7 +1925,7 @@ describe('App', () => {
       await waitFor(() => {
         expect(buildCompactInlinePreview).toHaveBeenCalledWith({
           messageIds: ['assistant-history-export-action'],
-          format: 'markdown',
+          format: 'image',
           imageStyle: 'neko',
           imageFormat: 'png',
         });
@@ -1858,7 +1935,7 @@ describe('App', () => {
       await waitFor(() => {
         expect(copyCompactInlineSelection).toHaveBeenCalledWith({
           messageIds: ['assistant-history-export-action'],
-          format: 'markdown',
+          format: 'image',
           imageStyle: 'neko',
           imageFormat: 'png',
         });

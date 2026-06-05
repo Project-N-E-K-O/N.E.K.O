@@ -129,7 +129,7 @@ describe('CompactExportHistoryPanel', () => {
       });
       expect(onCopyExport).toHaveBeenCalledWith({
         messageIds: [message.id],
-        format: 'markdown',
+        format: 'image',
         imageStyle: 'neko',
         imageFormat: 'png',
       });

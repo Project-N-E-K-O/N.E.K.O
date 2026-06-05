@@ -36,7 +36,7 @@ from utils.llm_client import HumanMessage, SystemMessage, create_chat_llm
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
 
-from .shared_state import get_config_manager
+from .shared_state import get_config_manager, get_session_manager
 
 router = APIRouter(prefix="/api", tags=["galgame"])
 
@@ -256,6 +256,24 @@ async def generate_galgame_options(request: Request):
         or _loc(GALGAME_DEFAULT_LANLAN_PLACEHOLDER, lang)
     master_name = (data.get('master_name') or master_name_current or '').strip() \
         or _loc(GALGAME_DEFAULT_MASTER_PLACEHOLDER, lang)
+
+    # 纵深防御：game route 接管会话期间（语音输入被改路由进游戏逻辑），
+    # React composer 的 galgame 面板并非当前活动界面，此时生成选项只会白白
+    # 烧掉 summary 档 token。前端已在聊天窗口隐藏（voice-only / proactive
+    # 路径）时跳过该请求；这里与 core.py 里 voice-proactive 的 _takeover_active
+    # 守卫对称，确保异常 / 老版本客户端也无法绕过空耗 token。
+    try:
+        mgr = get_session_manager().get(lanlan_name)
+    except Exception:
+        mgr = None
+    if mgr is not None and getattr(mgr, "_takeover_active", False):
+        logger.info("GalGame options skipped: session takeover active")
+        return JSONResponse({
+            "success": True,
+            "options": _fallback_options(lang),
+            "fallback": True,
+            "reason": "session_takeover",
+        })
 
     summary_config = config_manager.get_model_api_config('summary') or {}
     api_key = (summary_config.get('api_key') or '').strip()

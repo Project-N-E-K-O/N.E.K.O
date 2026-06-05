@@ -3809,6 +3809,39 @@ async def get_microphone():
         return {"microphone_id": None}
 
 
+def _build_free_intl_voice_pins(native_catalog: dict, voice_id_exists=None) -> list[dict]:
+    """海外免费（free_intl）列表顶部的两个置顶音色。
+
+    - yui：初始/默认角色音色，下发字面量 "yui"（服务端映射到 yui 专属声音）。
+    - default：与 Leda 同义，下发 "Leda"。仍以普通条目保留在 Gemini 长列表里
+      （不去重），这里只是把它再置顶一份并换成 "默认" 文案。
+
+    展示名交给前端按 i18n_key 本地化；这里只给 voice_id / i18n_key / 兜底 prefix。
+
+    voice_id_exists：若某 pin 的 voice_id 与用户已注册/克隆音色撞名（如本地 TTS
+    用户自建了一个 ID 叫 "yui"/"Leda" 的音色），runtime 路由会按撞名优先走克隆
+    路径、不再当 native（见 NativeVoiceProvider.resolve_for_routing 的 collision
+    分支），此时置顶 pin 点了也到不了 Gemini，故直接隐藏，避免误导。
+    """
+    def _pin(voice_id: str, i18n_key: str, fallback: str) -> dict | None:
+        if callable(voice_id_exists) and voice_id_exists(voice_id):
+            return None
+        meta = native_catalog.get(voice_id) or {}
+        return {
+            "voice_id": voice_id,
+            "i18n_key": i18n_key,
+            "prefix": meta.get("prefix") or fallback,
+            "provider": "free_intl",
+            "builtin": True,
+        }
+
+    pins = [
+        _pin("yui", "voice.freeVoice.yui", "Yui"),
+        _pin("Leda", "voice.freeVoice.default", "Default"),
+    ]
+    return [pin for pin in pins if pin is not None]
+
+
 @router.get('/voices')
 async def get_voices():
     """获取当前API key对应的所有已注册音色"""
@@ -3818,7 +3851,33 @@ async def get_voices():
     core_config = await _config_manager.aget_core_config()
     active_native_provider = get_active_realtime_native_provider_for_ui(_config_manager)
     if active_native_provider:
-        result["native_voices"] = get_native_voice_catalog_for_ui(active_native_provider)
+        native_catalog = get_native_voice_catalog_for_ui(active_native_provider) or {}
+        if active_native_provider == 'free_intl':
+            # 海外免费（lanlan.app/Gemini）：yui + default(=Leda) 两个置顶 pin，
+            # 其后是 Gemini 全量目录。yui 从长列表里挪到 pin（不重复展示）；
+            # Leda 不去重，仍作为普通条目留在长列表里（= default pin 的目标）。
+            # pin 的展示名由前端按 i18n_key 本地化。
+            voice_exists = getattr(_config_manager, "voice_id_exists_in_any_storage", None)
+            result["pinned_voices"] = _build_free_intl_voice_pins(
+                native_catalog,
+                voice_id_exists=voice_exists,
+            )
+            # 撞名（跨 api-key 桶存在同名克隆/自定义音色）的条目也从长列表里去掉：
+            # runtime 路由/preview 用 any-storage 撞名判定会拒绝当 native，展示了
+            # 点选也到不了 Gemini（与 pin 的撞名隐藏对偶）。前端只按当前 api 的
+            # voices 去重，跨桶撞名漏网，故在后端按同一谓词收口。
+            def _free_intl_keep(voice_id: str) -> bool:
+                if voice_id == 'yui':
+                    return False
+                if callable(voice_exists) and voice_exists(voice_id):
+                    return False
+                return True
+            native_catalog = {
+                voice_id: meta
+                for voice_id, meta in native_catalog.items()
+                if _free_intl_keep(voice_id)
+            }
+        result["native_voices"] = native_catalog
 
     # 免费预设音色只在 core=free 运行时可用（与 assist 无关）；core_url 仍须指向
     # lanlan.tech 免费端点，海外 lanlan.app 路由由 should_block_free_voice_for_route 兜底。
@@ -3904,11 +3963,13 @@ async def get_voice_preview(
         if native_preview_provider:
             native_voice_id, _ = normalize_native_voice(native_preview_provider, voice_id)
             try:
-                if native_preview_provider in ('step', 'free'):
+                if native_preview_provider in ('step', 'free', 'free_intl'):
                     # 只读 tts_default.api_key —— 跟 step_realtime_tts_worker 走的 key 对偶；
                     # 不能回退到 audio_api_key（顶上从 tts_custom / AUDIO_API_KEY 取的，都是
                     # GPT-SoVITS / CosyVoice 这种别家 provider 的 bearer，把它透给
                     # api.stepfun.com 一律 401，错误现象比明确缺 key 难排查。
+                    # free_intl（海外免费 Gemini 代理）预览同 free，走 www.lanlan.app/tts
+                    # 流式合成（StepFun-shape，proxy 把 voice_id 透传给 Gemini）。
                     try:
                         native_tts_config = _config_manager.get_model_api_config('tts_default')
                         native_audio_api_key = native_tts_config.get('api_key', '') or ''
@@ -3925,7 +3986,7 @@ async def get_voice_preview(
                         preview_line=text,
                         preview_language=preview_language,
                         audio_api_key=native_audio_api_key,
-                        free_mode=(native_preview_provider == 'free'),
+                        free_mode=(native_preview_provider in ('free', 'free_intl')),
                     )
                 elif native_preview_provider == 'gemini':
                     core_config = await _config_manager.aget_core_config()
