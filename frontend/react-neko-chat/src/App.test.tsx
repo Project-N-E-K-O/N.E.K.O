@@ -407,6 +407,8 @@ describe('App', () => {
     expect(container.querySelectorAll('#music-player-mount')).toHaveLength(1);
     expect(container.querySelector('.compact-music-player-mount#music-player-mount')).not.toBeNull();
     expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('data-music-player-mount', 'compact-surface');
+    expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('data-compact-music-player-visibility', 'open');
+    expect(container.querySelector('.compact-music-player-mount')).not.toHaveAttribute('aria-hidden');
     expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('data-compact-geometry-item', 'musicPlayer');
     expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('data-compact-geometry-hit-scope', 'children');
     expect(container.querySelector('.composer-panel #music-player-mount')).toBeNull();
@@ -446,6 +448,8 @@ describe('App', () => {
 
       fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
       expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'closing');
+      expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('data-compact-music-player-visibility', 'closing');
+      expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('aria-hidden', 'true');
       expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'false');
       expect(exportButton).toHaveAttribute('aria-pressed', 'false');
       expect(container.querySelector('.compact-export-history-bubble')).not.toHaveAttribute('role');
@@ -468,6 +472,8 @@ describe('App', () => {
       expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
       expect(container.querySelectorAll('#music-player-mount')).toHaveLength(1);
       expect(container.querySelector('.compact-music-player-mount#music-player-mount')).not.toBeNull();
+      expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('data-compact-music-player-visibility', 'closed');
+      expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('aria-hidden', 'true');
       expect(container.querySelector('.composer-panel #music-player-mount')).toBeNull();
       expect(container.querySelector('.compact-export-history-panel #music-player-mount')).toBeNull();
       expect(container.querySelector('[data-compact-hit-region-id^="history:"]')).toBeNull();
@@ -476,6 +482,8 @@ describe('App', () => {
       expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
       expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'open');
       expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-open', 'true');
+      expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('data-compact-music-player-visibility', 'open');
+      expect(container.querySelector('.compact-music-player-mount')).not.toHaveAttribute('aria-hidden');
       expect(container.querySelector('.compact-export-history-music-mount')).toBeNull();
       expect(container.querySelector('.compact-export-history-controls')).toHaveAttribute('data-compact-hit-region-id', 'history:controls');
       expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'true');
@@ -592,6 +600,8 @@ describe('App', () => {
       expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
       expect(container.querySelectorAll('#music-player-mount')).toHaveLength(1);
       expect(container.querySelector('.compact-music-player-mount#music-player-mount')).not.toBeNull();
+      expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('data-compact-music-player-visibility', 'closed');
+      expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('aria-hidden', 'true');
       expect(container.querySelector('.composer-panel #music-player-mount')).toBeNull();
 
       fireEvent.pointerDown(handle!, { pointerType: 'mouse', button: 0 });
@@ -601,6 +611,8 @@ describe('App', () => {
       expect(container.querySelector('.compact-export-history-panel #music-player-mount')).toBeNull();
       expect(container.querySelector('.compact-export-history-music-mount')).toBeNull();
       expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('data-music-player-mount', 'compact-surface');
+      expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('data-compact-music-player-visibility', 'open');
+      expect(container.querySelector('.compact-music-player-mount')).not.toHaveAttribute('aria-hidden');
       expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
       expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'input');
 
@@ -610,6 +622,8 @@ describe('App', () => {
       fireEvent.pointerDown(handle!, { pointerType: 'mouse', button: 0 });
       expect(handle).toHaveAttribute('aria-expanded', 'false');
       expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'closing');
+      expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('data-compact-music-player-visibility', 'closing');
+      expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('aria-hidden', 'true');
       expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('false');
 
       fireEvent.click(handle!);

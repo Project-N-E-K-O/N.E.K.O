@@ -872,6 +872,8 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
     assert "compact-export-history-music-mount" not in panel_source
     assert 'className="compact-music-player-mount"' in app_source
     assert 'data-music-player-mount="compact-surface"' in app_source
+    assert 'data-compact-music-player-visibility={compactMusicPlayerVisibility}' in app_source
+    assert "aria-hidden={compactMusicPlayerVisibility === 'open' ? undefined : true}" in app_source
     assert 'data-compact-geometry-item="musicPlayer"' in app_source
     assert 'data-compact-geometry-hit-scope="children"' in app_source
     assert "function getPreferredMusicMountTarget()" in music_ui_source
@@ -891,6 +893,13 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
     assert music_ui_source.count('data-compact-hit-region-kind="music-volume"') == 2
     assert "#music-player-mount.compact-music-player-mount {" in styles
     assert "#music-player-mount.compact-music-player-mount {" in music_ui_styles
+    assert '#music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closing"]' in styles
+    assert '#music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closed"]' in styles
+    assert "visibility: hidden;" in css_block(
+        styles,
+        '#music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closed"] {',
+        '#music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closing"] *',
+    )
     assert "width: min(calc(var(--compact-music-player-surface-width) - 16px), 360px, calc(100vw - 24px));" in styles
     assert "width: min(calc(var(--compact-music-player-surface-width) - 16px), 360px, calc(100vw - 24px));" in music_ui_styles
     assert "#music-player-mount.compact-music-player-mount > .music-player-bar" in styles
@@ -930,6 +939,14 @@ def test_subtitle_web_host_keeps_compact_history_transparent_wrappers_click_thro
         "    pointer-events: auto;\n"
         "}"
     )
+    compact_music_hidden_rule = (
+        f'{compact_surface_prefix} #music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closing"],\n'
+        f'{compact_surface_prefix} #music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closing"] *,\n'
+        f'{compact_surface_prefix} #music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closed"],\n'
+        f'{compact_surface_prefix} #music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closed"] * {{\n'
+        "    pointer-events: none;\n"
+        "}"
+    )
     history_passthrough_rule = (
         f'{compact_surface_prefix} .compact-export-history-anchor,\n'
         f'{compact_surface_prefix} .compact-export-history-panel,\n'
@@ -949,10 +966,12 @@ def test_subtitle_web_host_keeps_compact_history_transparent_wrappers_click_thro
 
     assert broad_surface_rule in styles
     assert compact_music_interactive_rule in styles
+    assert compact_music_hidden_rule in styles
     assert history_passthrough_rule in styles
     assert history_interactive_rule in styles
     assert styles.index(broad_surface_rule) < styles.index(compact_music_interactive_rule)
-    assert styles.index(compact_music_interactive_rule) < styles.index(history_passthrough_rule)
+    assert styles.index(compact_music_interactive_rule) < styles.index(compact_music_hidden_rule)
+    assert styles.index(compact_music_hidden_rule) < styles.index(history_passthrough_rule)
     assert styles.index(history_passthrough_rule) < styles.index(history_interactive_rule)
     assert ".compact-export-history-scroll,\n" in history_passthrough_rule
 

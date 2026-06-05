@@ -2962,14 +2962,34 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   background: transparent;
   box-shadow: none;
   overflow: visible;
+  opacity: 1;
+  visibility: visible;
   pointer-events: auto;
   transform: translateX(-50%);
+  transition: opacity 0.2s ease, transform 0.2s ease, visibility 0s linear 0s;
   z-index: 8;
   -webkit-app-region: no-drag;
 }
 
 #music-player-mount.compact-music-player-mount:empty {
   display: none;
+}
+
+#music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closing"],
+#music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closed"] {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-50%) translateY(8px);
+}
+
+#music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closed"] {
+  visibility: hidden;
+  transition: opacity 0.2s ease, transform 0.2s ease, visibility 0s linear 0.2s;
+}
+
+#music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closing"] *,
+#music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closed"] * {
+  pointer-events: none;
 }
 
 .app-shell:has(> .compact-music-player-mount:not(:empty)) .compact-export-history-anchor {
