@@ -56,6 +56,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat-move-1.gif",
     _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat-move-2.gif",
     _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat-move-3.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat_model_change.gif",
     _PROJECT_ROOT / "static/assets/neko-idle/chat-minimized-yarn-ball.png",
     _PROJECT_ROOT / "static/assets/neko-idle/cat1-voice-click.mp3",
     _PROJECT_ROOT / "static/assets/neko-idle/cat1-voice1.mp3",

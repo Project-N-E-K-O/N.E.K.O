@@ -28,7 +28,7 @@
       "name": "GPT-Realtime（OpenAI）",
       "description": "智能水平最高，但国内无法使用且价格昂贵",
       "core_url": "wss://api.openai.com/v1/realtime",
-      "core_model": "gpt-realtime-1.5"
+      "core_model": "gpt-realtime-2"
     },
     "step": {
       "key": "step",
@@ -79,12 +79,12 @@
       "name": "阿里百炼（推荐）",
       "description": "推荐选择，支持自定义语音和Agent模式，价格适中，国内版",
       "openrouter_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-      "conversation_model": "qwen3.6-plus",
-      "summary_model": "qwen3.6-plus",
-      "correction_model": "qwen3.6-plus-2026-04-02",
-      "emotion_model": "qwen3.6-flash-2026-04-16",
-      "vision_model": "qwen3.6-plus-2026-04-02",
-      "agent_model": "qwen3.6-plus-2026-04-02"
+      "conversation_model": "qwen3.7-plus-2026-05-26",
+      "summary_model": "qwen3.7-plus-2026-05-26",
+      "correction_model": "qwen3.7-plus",
+      "emotion_model": "qwen3.6-flash",
+      "vision_model": "qwen3.7-plus-2026-05-26",
+      "agent_model": "qwen3.7-plus"
     },
     "qwen_intl": {
       "key": "qwen_intl",
