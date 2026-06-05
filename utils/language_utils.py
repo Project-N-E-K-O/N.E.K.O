@@ -705,6 +705,7 @@ TTS_LANGUAGE_CODE_MAP = {
     'en':    'en-US',
     'ja':    'ja-JP',
     'ko':    'ko-KR',
+    'pt':    'pt-BR',
     'es':    'es-ES',
     'fr':    'fr-FR',
     'de':    'de-DE',

@@ -86,6 +86,12 @@ class TestStepTtsCreateBuilder:
         monkeypatch.setattr("utils.language_utils.get_global_language_full", lambda: "zh-TW")
         assert _get_tts_language_code() == "cmn-tw"
 
+    def test_tts_language_code_maps_portuguese(self, monkeypatch):
+        # pt 是受支持 locale，需有自己的 language_code，否则海外 TTS/realtime 会
+        # 兜底成 cmn-CN，葡语用户拿到普通话合成。
+        monkeypatch.setattr("utils.language_utils.get_global_language_full", lambda: "pt-BR")
+        assert _get_tts_language_code() == "pt-BR"
+
     def test_lanlan_tech_ja_adds_voice_label(self):
         data = self._build(voice_id="v1", session_id="s1", lang_hint="ja", is_lanlan_app=False)
         assert data["voice_label"] == {"language": "日语"}
