@@ -224,11 +224,18 @@ async def ensure_default_yui_voice_for_free_api(config_manager, core_cfg: dict |
 
     # 海外免费（free + *.lanlan.app）：默认音色是品牌 yui（free_intl 的 default_voice），
     # 下发字面量 "yui"。国内免费（lanlan.tech）仍按语言绑定 free_voices 里的 yui 音色。
+    #
+    # 注意：update_core_config 传进来的 raw core_cfg 里 CORE_URL 还是 lanlan.tech，
+    # get_core_config() 才会按非大陆改写成 lanlan.app，直接判 URL 会漏判海外。
+    # 故 URL 命中 lanlan.app 走快路，否则用 _check_non_mainland 兜底判海外。
     core_url = str((core_cfg or {}).get("CORE_URL") or "")
-    if is_free_lanlan_app_route("free", core_url):
-        yui_voice_id = "yui"
-    else:
-        yui_voice_id = _get_default_yui_free_voice_id()
+    overseas = is_free_lanlan_app_route("free", core_url)
+    if not overseas:
+        try:
+            overseas = bool(config_manager._check_non_mainland())
+        except Exception:
+            overseas = False
+    yui_voice_id = "yui" if overseas else _get_default_yui_free_voice_id()
     if not yui_voice_id:
         return False
 

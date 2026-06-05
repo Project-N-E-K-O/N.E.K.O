@@ -13,10 +13,14 @@ YUI_FREE_VOICE_ID = "voice-tone-RcH2svtsrw"
 
 
 class _FakeConfigManager:
-    def __init__(self, characters: dict, core_config: dict | None = None):
+    def __init__(self, characters: dict, core_config: dict | None = None, non_mainland: bool = False):
         self.characters = deepcopy(characters)
         self.core_config = deepcopy(core_config or {})
         self.saved_characters = None
+        self._non_mainland = non_mainland
+
+    def _check_non_mainland(self) -> bool:
+        return self._non_mainland
 
     async def aload_characters(self):
         return deepcopy(self.characters)
@@ -104,6 +108,30 @@ async def test_overseas_free_binds_yui_sentinel_voice(monkeypatch):
     changed = await ensure_default_yui_voice_for_free_api(
         config_manager,
         {"coreApi": "free", "assistApi": "free", "CORE_URL": "wss://lanlan.app/realtime"},
+    )
+
+    assert changed is True
+    yui = config_manager.saved_characters["猫娘"]["YUI"]
+    assert get_reserved(yui, "voice_id", default="") == "yui"
+
+
+@pytest.mark.asyncio
+async def test_overseas_free_binds_yui_with_raw_lanlan_tech_url(monkeypatch):
+    """回归 Codex P2：update_core_config 传入的 raw core_cfg 里 CORE_URL 仍是
+    lanlan.tech（区域改写在 get_core_config 才发生），此时海外用户应靠
+    _check_non_mainland 兜底判海外、绑 yui，而不是落到国内 voice-tone-* 预设。"""
+    monkeypatch.setattr(
+        "utils.api_config_loader.get_free_voices",
+        lambda: {"yui_cn": YUI_FREE_VOICE_ID},
+    )
+    config_manager = _FakeConfigManager(
+        _characters_with_current_yui(voice_id=""),
+        non_mainland=True,
+    )
+
+    changed = await ensure_default_yui_voice_for_free_api(
+        config_manager,
+        {"coreApi": "free", "assistApi": "free", "CORE_URL": "wss://www.lanlan.tech/core"},
     )
 
     assert changed is True

@@ -6216,8 +6216,13 @@ function _panelCreateVoiceSelectUi(selectEl) {
         selectedText.textContent = displayText;
         header.title = selectedOption ? (selectedOption.title || displayText) : '';
 
+        // 只高亮第一个值匹配项：海外免费列表里 default(pin) 与 Leda(原生) voice_id
+        // 同为 "Leda"（刻意不去重），若按 value 全量比较会多项同时选中。原生
+        // <select> 在重复 value 下 selectedIndex 也只落第一个，这里与之对齐。
+        let matched = false;
         options.querySelectorAll('.voice-select-option').forEach(item => {
-            const isSelected = item.dataset.value === selectEl.value;
+            const isSelected = !matched && item.dataset.value === selectEl.value;
+            if (isSelected) matched = true;
             item.classList.toggle('selected', isSelected);
             item.setAttribute('aria-selected', isSelected ? 'true' : 'false');
         });
