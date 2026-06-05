@@ -390,7 +390,11 @@ class TopicHookPool:
 
     def _cancel_trigger(self, name: str) -> None:
         task = self._trigger_tasks.pop(name, None)
-        if task is not None and not task.done():
+        try:
+            current_task = asyncio.current_task()
+        except RuntimeError:
+            current_task = None
+        if task is not None and task is not current_task and not task.done():
             task.cancel()
 
     def _schedule_trigger(

@@ -430,6 +430,40 @@ async def test_topic_pool_retries_pending_material_after_delivery_defers():
 
 
 @pytest.mark.asyncio
+async def test_topic_pool_does_not_cancel_current_trigger_when_ai_turn_is_recorded():
+    async def fake_analyzer(*, user_msgs, ai_msgs, lang, **kwargs):
+        return [
+            {
+                "interest": "买车像进入新生活阶段",
+                "hook": "从买车背后的生活阶段感切入",
+                "priority": 95,
+            }
+        ]
+
+    pool = None
+
+    async def fake_trigger(*, lanlan_name, material, lang):
+        pool.note_ai_message(lanlan_name, "我刚刚把这个话题自然说出来了", lang=lang)
+        await asyncio.sleep(0)
+        return True
+
+    pool = TopicHookPool(
+        analyzer=fake_analyzer,
+        auto_schedule=False,
+        enable_online_enrichment=False,
+        topic_trigger=fake_trigger,
+        trigger_delay_seconds=0.01,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "我感觉买车算人生大事，最近一直在想它是不是代表生活进入新阶段", lang="zh-CN")
+
+    await pool.process_now("妮可")
+    await asyncio.sleep(0.04)
+
+    assert pool.get_ready_materials("妮可")[0]["status"] == "used"
+
+
+@pytest.mark.asyncio
 async def test_topic_pool_resets_trigger_wait_when_chat_continues():
     delivered = []
 
