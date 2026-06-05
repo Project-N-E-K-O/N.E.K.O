@@ -350,7 +350,9 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
 
     assert "_NEKO_IDLE_CAT1_SUBSTATE_WALKING = 'walking-to-chat'" in source
     assert "_NEKO_IDLE_CAT1_SUBSTATE_STRETCH = 'stretch-near-chat'" in source
-    assert '_NEKO_IDLE_CAT1_WALK_SPEED_PX_PER_SEC = 101' in source
+    assert '_NEKO_IDLE_CAT1_CHAT_GAP_PX = -12' in source
+    assert '_NEKO_IDLE_CAT1_WALK_SPEED_PX_PER_SEC = 82' in source
+    assert '_NEKO_IDLE_CAT1_WALK_EXIT_DISTANCE_PX = 14' in source
     assert '_NEKO_IDLE_CAT1_WALK_MAX_SPEED_RATE = 1.5' in source
     assert '_NEKO_IDLE_CAT1_WALK_DISTANCE_INCREASE_THRESHOLD_PX' in source
     assert '_NEKO_IDLE_CAT1_WALK_DISTANCE_GROWTH_FOR_MAX_RATE_PX' in source
@@ -358,6 +360,12 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert '_NEKO_IDLE_CAT1_WALK_ENTER_DISTANCE_PX' in source
     assert '_NEKO_IDLE_CAT1_WALK_EXIT_DISTANCE_PX' in source
     assert '_NEKO_IDLE_CAT1_RECHECK_MOVE_DISTANCE_PX' in source
+    assert '_NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_STICK_MAX_SPEED_PX_PER_SEC = 1100' in source
+    assert '_NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_STICK_MAX_STEP_PX = 210' in source
+    assert '_NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_DROP_FAST_MOVE_COUNT = 3' in source
+    assert 'compactTopEdgeFastMoveCount: 0' in source
+    assert 'state.compactTopEdgeFastMoveCount = 0' in source
+    assert 'state.compactTopEdgeFastMoveCount >= _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_DROP_FAST_MOVE_COUNT' in source
     assert '_NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW' in source
     assert '_NEKO_IDLE_RETURN_SUBACTION_PROFILES' in source
     assert '_getNekoIdleReturnSubactionProfile' in source
@@ -382,10 +390,18 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert 'pendingWalkTimer' in source
     assert 'pendingWalkReady' in source
     assert '_cancelNekoIdleReturnPendingWalk' in source
+    walk_start_block = source[
+        source.index('function _scheduleNekoIdleCat1WalkStart'):
+        source.index('function _canScheduleNekoIdleCat1PairMove')
+    ]
+    assert "if (art && art.__nekoIdleHoverSrc)" in walk_start_block
+    assert "_finishNekoIdleHoverArtAfterPlayback(art, profile.tier)" in walk_start_block
+    assert walk_start_block.index("if (art && art.__nekoIdleHoverSrc)") < walk_start_block.index("if (state.pendingWalkReady)")
     assert '_NEKO_IDLE_CAT1_WALK_LONG_DELAY_MAX_MS = 5 * 60 * 1000' in source
     assert '_NEKO_IDLE_CAT1_PAIR_MOVE_SHORT_DELAY_MIN_MS = 5 * 1000' in source
     assert '_NEKO_IDLE_CAT1_PAIR_MOVE_SHORT_DELAY_MAX_MS = 90 * 1000' in source
     assert '_NEKO_IDLE_CAT1_PAIR_MOVE_LONG_DELAY_MAX_MS = 5 * 60 * 1000' in source
+    assert '_NEKO_IDLE_CAT1_PAIR_MOVE_SPEED_PX_PER_SEC = 82' in source
     assert 'pairMove: Object.freeze' in source
     assert 'intervalChoices' in source
     assert 'pairMoveTimer' in source
