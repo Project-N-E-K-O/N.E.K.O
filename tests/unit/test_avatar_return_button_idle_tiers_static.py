@@ -232,6 +232,7 @@ def test_desktop_return_ball_drag_lifecycle_waits_for_restored_viewport_before_r
 
     assert "MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_FALLBACK_MS = 220" in source
     assert "MULTI_WINDOW_RETURN_BALL_DRAG_RESTORE_FALLBACK_MS = 600" in source
+    assert "MULTI_WINDOW_RETURN_BALL_REVEAL_FALLBACK_MS = 600" in source
     assert "continueOnFallback" in source
     assert "waitForViewportSize timed out; continuing best-effort cleanup" in source
     assert "keeping return-ball hidden until viewport is restored" in source
@@ -239,8 +240,14 @@ def test_desktop_return_ball_drag_lifecycle_waits_for_restored_viewport_before_r
     assert "clearMultiWindowReturnBallDeferredWork(state)" in source
     assert "state.viewportWaitFallbackTimer = setTimeout(pollViewportRestore, 50)" in source
     assert "runWhenStable({ timedOut: true })" in source
-    assert "async function revealReturnBallDragWindow()" in source
+    assert "function revealReturnBallDragWindow()" in source
     assert "window.nekoPetDrag.reveal" in source
+    assert "function dispatchReturnBallRevealFailed(reason, error)" in source
+    assert "'return-ball-reveal-failed'" in source
+    assert "'neko:return-ball-reveal-failed'" in source
+    assert "Promise.resolve(revealResult)" in source
+    assert "dispatchReturnBallRevealFailed('reveal-timeout')" in source
+    assert "await revealReturnBallDragWindow()" not in source
     assert "function isNativeReturnBallDragDisabled()" in source
     assert "isNativeReturnBallDragDisabled() || !window.nekoPetDrag" in source
     assert "const dragStarted = window.nekoPetDrag.start(screenX, screenY)" in source
@@ -258,7 +265,7 @@ def test_desktop_return_ball_drag_lifecycle_waits_for_restored_viewport_before_r
     no_move_end = source.index("const finalBounds = await resolveFinalWindowBounds", no_move_start)
     no_move_block = source[no_move_start:no_move_end]
 
-    assert no_move_block.index("await revealReturnBallDragWindow();") < no_move_block.index("dispatchReturnBallClick();")
+    assert no_move_block.index("revealReturnBallDragWindow();") < no_move_block.index("dispatchReturnBallClick();")
 
 
 def test_return_button_drag_has_single_owner_per_runtime_path():

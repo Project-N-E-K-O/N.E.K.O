@@ -1472,6 +1472,7 @@
     const MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE = 160;
     const MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_FALLBACK_MS = 220;
     const MULTI_WINDOW_RETURN_BALL_DRAG_RESTORE_FALLBACK_MS = 600;
+    const MULTI_WINDOW_RETURN_BALL_REVEAL_FALLBACK_MS = 600;
     let multiWindowReturnBallDragState = null;
     let idleReturnBallDesktopDragStateFrame = 0;
     let idleReturnBallDesktopDragStatePending = null;
@@ -2347,14 +2348,47 @@
             restoreSavedReturnBallStyle(container, state);
         }
 
-        async function revealReturnBallDragWindow() {
+        function dispatchReturnBallRevealFailed(reason, error) {
+            scheduleIdleReturnBallDesktopBridge('return-ball-reveal-failed', container);
+            window.dispatchEvent(new CustomEvent('neko:return-ball-reveal-failed', {
+                detail: {
+                    reason: reason || 'unknown',
+                    container: container,
+                    errorMessage: error && (error.message || String(error))
+                }
+            }));
+        }
+
+        function revealReturnBallDragWindow() {
             if (!window.nekoPetDrag || typeof window.nekoPetDrag.reveal !== 'function') {
+                dispatchReturnBallRevealFailed('bridge-unavailable');
                 return false;
             }
+            let settled = false;
+            const fallbackTimer = setTimeout(() => {
+                if (settled) return;
+                dispatchReturnBallRevealFailed('reveal-timeout');
+            }, MULTI_WINDOW_RETURN_BALL_REVEAL_FALLBACK_MS);
             try {
-                return await window.nekoPetDrag.reveal();
+                const revealResult = window.nekoPetDrag.reveal();
+                Promise.resolve(revealResult).then((ok) => {
+                    settled = true;
+                    clearTimeout(fallbackTimer);
+                    if (ok === false) {
+                        dispatchReturnBallRevealFailed('reveal-failed');
+                    }
+                }).catch((error) => {
+                    settled = true;
+                    clearTimeout(fallbackTimer);
+                    console.warn('[App] 返回球拖拽渲染完成后恢复窗口显示失败:', error);
+                    dispatchReturnBallRevealFailed('reveal-rejected', error);
+                });
+                return true;
             } catch (error) {
+                settled = true;
+                clearTimeout(fallbackTimer);
                 console.warn('[App] 返回球拖拽渲染完成后恢复窗口显示失败:', error);
+                dispatchReturnBallRevealFailed('reveal-threw', error);
                 return false;
             }
         }
@@ -2694,12 +2728,12 @@
                 if (!isActiveDragToken(dragToken)) return;
                 const expectedWidth = restoreBounds ? restoreBounds.width : state.savedWindowW;
                 const expectedHeight = restoreBounds ? restoreBounds.height : state.savedWindowH;
-                waitForViewportSize(dragToken, expectedWidth, expectedHeight, async () => {
+                waitForViewportSize(dragToken, expectedWidth, expectedHeight, () => {
                     restoreSavedBallStyle();
                     delete document.body.dataset.nekoBallDrag;
                     container.setAttribute('data-dragging', 'false');
                     scheduleIdleReturnBallDesktopBridge('return-ball-drag-click', container);
-                    await revealReturnBallDragWindow();
+                    revealReturnBallDragWindow();
                     dispatchReturnBallClick();
                 }, {
                     fallbackMs: MULTI_WINDOW_RETURN_BALL_DRAG_RESTORE_FALLBACK_MS,
@@ -2734,7 +2768,7 @@
 
             const expectedWidth = finalBounds ? finalBounds.width : state.savedWindowW;
             const expectedHeight = finalBounds ? finalBounds.height : state.savedWindowH;
-            waitForViewportSize(dragToken, expectedWidth, expectedHeight, async () => {
+            waitForViewportSize(dragToken, expectedWidth, expectedHeight, () => {
                 if (shouldRestoreSavedBallStyle) {
                     restoreSavedBallStyle();
                     container.setAttribute('data-dragging', 'false');
@@ -2747,7 +2781,7 @@
                             movedDistancePx: movedDistancePx
                         }
                     }));
-                    await revealReturnBallDragWindow();
+                    revealReturnBallDragWindow();
                     return;
                 }
                 // 先同步恢复球 opacity，再删除 nekoBallDrag 显示页面内容，
@@ -2765,7 +2799,7 @@
                         movedDistancePx: movedDistancePx
                     }
                 }));
-                await revealReturnBallDragWindow();
+                revealReturnBallDragWindow();
                 // 延迟恢复 transition，避免恢复瞬间触发动画
                 state.transitionCleanupTimer = setTimeout(() => {
                     state.transitionCleanupTimer = null;
