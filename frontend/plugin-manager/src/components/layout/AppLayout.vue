@@ -104,8 +104,15 @@ async function minimizeWindow() {
 
 async function toggleMaximize() {
   const api = getWindowControlApi()
-  if (!api || typeof api.maximize !== 'function') return
+  if (!api) return
   try {
+    if (isMaximized.value) {
+      if (typeof api.restore !== 'function') return
+      await api.restore()
+      await refreshMaximizeState()
+      return
+    }
+    if (typeof api.maximize !== 'function') return
     const result = await api.maximize()
     if (result && typeof result.isMaximized === 'boolean') {
       isMaximized.value = result.isMaximized
