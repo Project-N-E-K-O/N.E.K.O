@@ -6,6 +6,7 @@ APP_BUTTONS_PATH = Path(__file__).resolve().parents[2] / "static" / "app-buttons
 APP_CHAT_EXPORT_PATH = Path(__file__).resolve().parents[2] / "static" / "app-chat-export.js"
 MUSIC_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "music_ui.js"
 STATIC_INDEX_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "index.css"
+STATIC_DARK_MODE_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "dark-mode.css"
 REACT_CHAT_STYLES_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "styles.css"
 REACT_CHAT_APP_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "App.tsx"
 CHAT_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "chat.html"
@@ -37,6 +38,19 @@ def assert_no_layout_transition(block: str) -> None:
     transition_section = block.split("transition:", 1)[1].split(";", 1)[0] if "transition:" in block else ""
     for prop in ("width", "height", "max-height", "min-height", "padding", "margin", "top", "right", "bottom", "left"):
         assert prop not in transition_section
+
+
+def test_subtitle_window_dark_mode_keeps_transparent_background():
+    source = STATIC_DARK_MODE_CSS_PATH.read_text(encoding="utf-8")
+    selector = (
+        'html[data-theme="dark"].subtitle-window-host,\n'
+        'html[data-theme="dark"].subtitle-window-host body.subtitle-window-host {'
+    )
+    assert selector in source
+    block = source.split(selector, 1)[1].split("}", 1)[0]
+
+    assert "background: transparent !important;" in block
+    assert source.index(selector) > source.index("background: #000 !important;")
 
 
 def test_chat_surface_mode_preference_is_shared_with_electron():

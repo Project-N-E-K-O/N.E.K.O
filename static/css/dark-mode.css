@@ -302,9 +302,9 @@ html #chat-container {
 
 /* ===== 暗色模式：字幕显示区域 ===== */
 [data-theme="dark"] #subtitle-display {
-  background: linear-gradient(135deg, rgba(42, 123, 196, 0.92) 0%, rgba(42, 123, 196, 0.88) 50%, rgba(60, 145, 220, 0.92) 100%);
+  background: linear-gradient(135deg, rgba(18, 29, 45, 0.95) 0%, rgba(22, 45, 68, 0.91) 52%, rgba(30, 74, 108, 0.95) 100%);
   border-color: rgba(255, 255, 255, 0.25);
-  box-shadow: 0 8px 32px rgba(42, 123, 196, 0.5),
+  box-shadow: 0 8px 32px rgba(6, 12, 24, 0.5),
     0 0 0 1px rgba(255, 255, 255, 0.2) inset;
 }
 
@@ -668,6 +668,13 @@ html #chat-container {
     background: rgba(40, 40, 40, 0.55);
     border-top: 1px solid rgba(255, 255, 255, 0.06);
   }
+}
+
+/* 独立字幕窗口是透明 BrowserWindow；暗色移动端黑底规则会因 600px 窗口宽度命中。
+   这里在黑底规则之后重新钉住 html/body 透明，避免字幕翻译窗口露出整块黑底。 */
+html[data-theme="dark"].subtitle-window-host,
+html[data-theme="dark"].subtitle-window-host body.subtitle-window-host {
+  background: transparent !important;
 }
 
 /* ===========================================================

@@ -28,6 +28,50 @@ def _open_subtitle_harness(
 
 
 @pytest.mark.frontend
+def test_subtitle_background_opacity_tracks_dark_theme(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display">
+            <div id="subtitle-scroll"><span id="subtitle-text"></span></div>
+        </div>
+        """,
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            document.documentElement.setAttribute('data-theme', 'dark');
+            window.localStorage.setItem('subtitleOpacity', '80');
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const controller = window.nekoSubtitleShared.initSubtitleUI({ host: 'web' });
+            const display = document.getElementById('subtitle-display');
+            const darkBackground = display.style.background;
+            document.documentElement.removeAttribute('data-theme');
+            window.dispatchEvent(new CustomEvent('neko-theme-changed', {
+                detail: { darkMode: false },
+            }));
+            const lightBackground = display.style.background;
+            controller.destroy();
+            return { darkBackground, lightBackground };
+        }
+        """
+    )
+
+    assert "rgba(18, 29, 45, 0.8)" in result["darkBackground"]
+    assert "rgba(68, 183, 254, 0.8)" in result["lightBackground"]
+
+
+@pytest.mark.frontend
 def test_subtitle_incremental_translation_starts_when_sentence_punctuation_arrives(
     mock_page: Page,
 ):
