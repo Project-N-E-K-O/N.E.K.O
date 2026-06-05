@@ -1273,6 +1273,9 @@ export default function CompactExportHistoryPanel({
   const exportActionsDisabled = !previewHasSelection || exportBusy;
   const historyInteractive = visibilityState === 'open';
   const selectionControlsInteractive = historyInteractive && controlsOpen;
+  const scrollbarHitVisible = scrollbarVisible
+    && !!scrollRef.current
+    && !!getCompactHistoryScrollbarMetrics(scrollRef.current);
   const openingEnterDelayByMessageId = useMemo(() => (
     visibilityState === 'open' && previousVisibilityStateRef.current !== 'open'
       ? new Map(messages.map((message, index) => [
@@ -2564,7 +2567,7 @@ export default function CompactExportHistoryPanel({
                 </div>
               ) : null}
             </div>
-            {scrollbarVisible ? (
+            {scrollbarHitVisible ? (
               <div
                 className="compact-export-history-scrollbar-hit"
                 data-compact-scrollbar-hit="true"

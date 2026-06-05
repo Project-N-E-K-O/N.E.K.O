@@ -151,6 +151,51 @@ describe('CompactExportHistoryPanel', () => {
     }
   });
 
+  it('does not render the scrollbar hit area when the history cannot scroll', () => {
+    const scrollHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight');
+    const clientHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight');
+
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
+      configurable: true,
+      get() {
+        return this.classList.contains('compact-export-history-scroll') ? 240 : 0;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+      configurable: true,
+      get() {
+        return this.classList.contains('compact-export-history-scroll') ? 240 : 0;
+      },
+    });
+
+    try {
+      const { container } = renderPanel({
+        previewOpen: false,
+        visibilityState: 'open',
+      });
+
+      const scroll = container.querySelector('.compact-export-history-scroll');
+      expect(scroll).not.toBeNull();
+
+      fireEvent(window, new CustomEvent('neko:compact-history-hover-state-change', {
+        detail: { active: true },
+      }));
+      expect(scroll).toHaveAttribute('data-compact-scrollbar-visible', 'true');
+      expect(container.querySelector('.compact-export-history-scrollbar-hit')).toBeNull();
+    } finally {
+      if (scrollHeightDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollHeight', scrollHeightDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollHeight');
+      }
+      if (clientHeightDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'clientHeight', clientHeightDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'clientHeight');
+      }
+    }
+  });
+
   it('scrolls the compact history list when the visible scrollbar hit area is dragged', () => {
     const scrollTopByElement = new WeakMap<HTMLElement, number>();
     const scrollHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight');
