@@ -34,6 +34,28 @@ CAT3_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-i
 CAT_MODEL_CHANGE_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat_model_change.gif"
 
 
+def _source_slice_between(source, start_marker, end_marker, block_name):
+    start = source.find(start_marker)
+    assert start != -1, f"{block_name} start marker not found: {start_marker}"
+    end = source.find(end_marker, start + len(start_marker))
+    assert end != -1, f"{block_name} end marker not found after start: {end_marker}"
+    assert start < end, f"{block_name} start marker must precede end marker"
+    return source[start:end]
+
+
+def _assert_source_contains(block, expected, block_name):
+    assert expected in block, f"{block_name} missing expected source: {expected}"
+
+
+def _assert_source_order(block, block_name, *expected_markers):
+    positions = []
+    for marker in expected_markers:
+        position = block.find(marker)
+        assert position != -1, f"{block_name} missing expected source: {marker}"
+        positions.append(position)
+    assert positions == sorted(positions), f"{block_name} expected order: {' -> '.join(expected_markers)}"
+
+
 def test_return_button_idle_tier_assets_are_mapped_in_source():
     source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
     app_ui_source = APP_UI_PATH.read_text(encoding="utf-8")
@@ -495,6 +517,142 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert "movedDistancePx: movedDistancePx" in app_ui_source
     assert "this._setupReturnButtonDrag(returnButtonContainer)" in source
     assert "if (!window.__NEKO_MULTI_WINDOW__)" in source
+
+
+def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
+    source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+
+    drag_setup = _source_slice_between(
+        source,
+        "ManagerPrototype._setupReturnButtonDrag = function(container) {",
+        "container.addEventListener('mousedown'",
+        "return button drag setup",
+    )
+    handle_start = _source_slice_between(
+        source,
+        "const handleStart = (clientX, clientY) => {",
+        "const handleMove = (clientX, clientY) => {",
+        "return button drag start handler",
+    )
+    handle_end = _source_slice_between(
+        source,
+        "const handleEnd = () => {",
+        "container.addEventListener('mousedown'",
+        "return button drag end handler",
+    )
+
+    for expected in (
+        "let dragSafetyTimer = 0;",
+        "let dragSafetyToken = 0;",
+        "const clearDragSafetyTimer = () => {",
+        "const resetDragStateAfterMissingEnd = (safetyToken) => {",
+        "if (dragSafetyToken !== safetyToken || !isDragging) return;",
+        "const finishDragState = (moved, safetyToken) => {",
+        "if (safetyToken !== dragSafetyToken) return;",
+        "container.setAttribute('data-dragging', 'false');",
+        "_dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-end'",
+    ):
+        _assert_source_contains(drag_setup, expected, "return button drag setup")
+    _assert_source_order(
+        drag_setup,
+        "return button drag setup helpers",
+        "const finishDragState = (moved, safetyToken) => {",
+        "const resetDragStateAfterMissingEnd = (safetyToken) => {",
+        "finishDragState(moved, safetyToken);",
+    )
+    _assert_source_contains(
+        handle_start,
+        "container.setAttribute('data-dragging', 'pending')",
+        "return button drag start handler",
+    )
+    _assert_source_contains(handle_start, "const safetyToken = dragSafetyToken + 1", "return button drag start handler")
+    _assert_source_contains(handle_start, "dragSafetyTimer = setTimeout(() => {", "return button drag start handler")
+    _assert_source_contains(
+        handle_start,
+        "resetDragStateAfterMissingEnd(safetyToken);",
+        "return button drag start handler",
+    )
+    _assert_source_contains(handle_start, "}, 5000);", "return button drag start handler")
+    _assert_source_order(
+        handle_start,
+        "return button drag start handler",
+        "clearDragSafetyTimer();",
+        "container.setAttribute('data-dragging', 'pending')",
+        "dragSafetyTimer = setTimeout(() => {",
+    )
+    _assert_source_contains(handle_end, "clearDragSafetyTimer();", "return button drag end handler")
+    _assert_source_contains(handle_end, "const safetyToken = dragSafetyToken;", "return button drag end handler")
+    _assert_source_contains(
+        handle_end,
+        "finishDragState(moved, safetyToken);",
+        "return button drag end handler",
+    )
+    _assert_source_order(
+        handle_end,
+        "return button drag end handler",
+        "clearDragSafetyTimer();",
+        "if (isDragging) {",
+        "const safetyToken = dragSafetyToken;",
+        "finishDragState(moved, safetyToken);",
+    )
+
+    sync_block = _source_slice_between(
+        source,
+        "function _syncNekoIdleCat1Journey",
+        "function _scheduleNekoIdleCat1JourneySync(button)",
+        "cat1 journey sync",
+    )
+    for expected in (
+        "const initialContainer = _getNekoIdleReturnContainerFromButton(button)",
+        "const initialDragging = initialContainer && initialContainer.getAttribute('data-dragging')",
+        "if (initialDragging && initialDragging !== 'false') return",
+    ):
+        _assert_source_contains(sync_block, expected, "cat1 journey sync")
+    _assert_source_order(
+        sync_block,
+        "cat1 journey sync drag guard",
+        "if (_isNekoIdleCompactSurfaceDragging()) return",
+        "if (initialDragging && initialDragging !== 'false') return",
+        "const normalizedTier",
+    )
+
+    container_observer = _source_slice_between(
+        source,
+        "state.containerObserver = new MutationObserver(() => {",
+        "state.containerObserver.observe(container",
+        "cat1 container observer",
+    )
+    _assert_source_contains(
+        container_observer,
+        "const observerDragging = container.getAttribute('data-dragging');",
+        "cat1 container observer",
+    )
+    _assert_source_contains(
+        container_observer,
+        "if (observerDragging && observerDragging !== 'false') return;",
+        "cat1 container observer",
+    )
+
+    walk_start = _source_slice_between(
+        source,
+        "function _startNekoIdleCat1Walk",
+        "function _scheduleNekoIdleCat1WalkStart",
+        "cat1 walk start",
+    )
+    for expected in (
+        "if (_isNekoIdleReturnDragActionActive(button)) return",
+        "const walkContainer = _getNekoIdleReturnContainerFromButton(button)",
+        "const walkDragging = walkContainer && walkContainer.getAttribute('data-dragging')",
+        "if (walkDragging && walkDragging !== 'false') return",
+    ):
+        _assert_source_contains(walk_start, expected, "cat1 walk start")
+    _assert_source_order(
+        walk_start,
+        "cat1 walk start drag guard",
+        "if (!state) return",
+        "if (_isNekoIdleReturnDragActionActive(button)) return",
+        "const profile = state.profile",
+    )
 
 
 def test_return_button_idle_tier_assets_are_version_tracked():

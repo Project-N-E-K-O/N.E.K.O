@@ -4298,6 +4298,7 @@ describe('App', () => {
 
     const fan = container.querySelector('.compact-input-tool-fan');
     const shell = container.querySelector('.compact-chat-surface-shell');
+    const appShell = container.querySelector('.app-shell');
     const inlineInput = container.querySelector('[data-compact-geometry-part="inputBody"]');
     expect(onComposerSubmit).not.toHaveBeenCalled();
     expect(fan).not.toBeNull();
@@ -4307,6 +4308,8 @@ describe('App', () => {
     expect(fan?.parentElement).toBe(shell);
     expect(inlineInput?.contains(fan)).toBe(false);
     expect(shell?.contains(fan)).toBe(true);
+    expect(shell).toHaveAttribute('data-compact-tool-layer-open', 'true');
+    expect(appShell).toHaveAttribute('data-compact-tool-layer-open', 'true');
     expect(fan).not.toHaveAttribute('style');
     expect(fan?.querySelector('.compact-input-tool-fan-hit-region')).not.toBeNull();
     expect(fan?.querySelector('.compact-input-tool-wheel-charge')).not.toBeNull();
