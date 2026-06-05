@@ -50,6 +50,182 @@ const MODE_ORDER: Array<{ id: StudyMode; labelKey: string; fallback: string }> =
   { id: 'interactive', labelKey: 'status.mode.interactive', fallback: 'Interactive' },
   { id: 'teaching', labelKey: 'status.mode.teaching', fallback: 'Teaching' },
 ];
+const KATEX_CSS_URL = '/plugin/study_companion/ui/katex.min.css';
+const KATEX_SCRIPT_URL = '/plugin/study_companion/ui/katex.min.js';
+const KATEX_RENDER_SCRIPT_URL = '/plugin/study_companion/ui/katex-render.js';
+let katexLoadPromise: Promise<void> | null = null;
+
+type MathTextPart = {
+  type: 'text' | 'math';
+  value: string;
+  display?: boolean;
+};
+
+type StudyMathTools = {
+  splitByMath: (value: string) => MathTextPart[];
+  normalizeLatexForKatex: (value: string) => string;
+};
+
+function getStudyMathTools(): StudyMathTools | null {
+  const tools = (window as any).__studyCompanionMath;
+  if (
+    tools
+    && typeof tools.splitByMath === 'function'
+    && typeof tools.normalizeLatexForKatex === 'function'
+  ) {
+    return tools as StudyMathTools;
+  }
+  return null;
+}
+
+function hasHostedKatex() {
+  const katex = (window as any).katex;
+  return Boolean(
+    katex
+    && typeof katex.render === 'function'
+    && typeof katex.renderToString === 'function',
+  );
+}
+
+function ensureHostedScript(id: string, src: string) {
+  return new Promise<void>((resolve) => {
+    const resolveLoad = (script: HTMLScriptElement) => {
+      script.dataset.studyKatexLoaded = 'true';
+      resolve();
+    };
+    const resolveError = (script: HTMLScriptElement) => {
+      script.dataset.studyKatexFailed = 'true';
+      katexLoadPromise = null;
+      script.remove();
+      resolve();
+    };
+    const existing = document.getElementById(id) as HTMLScriptElement | null;
+    if (existing) {
+      if (existing.dataset.studyKatexLoaded === 'true') {
+        resolve();
+        return;
+      }
+      if (existing.dataset.studyKatexFailed === 'true') {
+        existing.remove();
+      } else {
+        existing.addEventListener('load', () => resolveLoad(existing), { once: true });
+        existing.addEventListener('error', () => resolveError(existing), { once: true });
+        return;
+      }
+    }
+    const script = document.createElement('script');
+    script.id = id;
+    script.src = src;
+    script.async = true;
+    script.addEventListener('load', () => resolveLoad(script), { once: true });
+    script.addEventListener('error', () => resolveError(script), { once: true });
+    document.head.appendChild(script);
+  });
+}
+
+function ensureHostedKatex() {
+  if (hasHostedKatex() && getStudyMathTools()) {
+    return Promise.resolve();
+  }
+  if (katexLoadPromise) {
+    return katexLoadPromise;
+  }
+  katexLoadPromise = new Promise((resolve) => {
+    if (!document.getElementById('study-companion-katex-css')) {
+      const link = document.createElement('link');
+      link.id = 'study-companion-katex-css';
+      link.rel = 'stylesheet';
+      link.href = KATEX_CSS_URL;
+      document.head.appendChild(link);
+    }
+    ensureHostedScript('study-companion-katex-script', KATEX_SCRIPT_URL)
+      .then(() => ensureHostedScript('study-companion-katex-render-script', KATEX_RENDER_SCRIPT_URL))
+      .then(resolve);
+  });
+  return katexLoadPromise;
+}
+
+function renderMathSpans(root: HTMLElement | null) {
+  const katex = (window as any).katex;
+  const mathTools = getStudyMathTools();
+  if (!root || !mathTools || !katex || typeof katex.render !== 'function') {
+    return;
+  }
+  root.querySelectorAll<HTMLElement>('[data-study-math]').forEach((node) => {
+    const tex = mathTools.normalizeLatexForKatex(node.getAttribute('data-math') || '');
+    if (!tex) {
+      return;
+    }
+    try {
+      katex.render(tex, node, {
+        displayMode: node.getAttribute('data-display') === 'true',
+        throwOnError: false,
+        trust: false,
+      });
+    } catch (_error) {
+      // Keep the source text fallback already rendered in the span.
+    }
+  });
+}
+
+function MathReply({ text, label }: { text: string; label: string }) {
+  const containerRef = useRef<HTMLElement | null>(null);
+  const [mathReady, setMathReady] = useState(() => Boolean(getStudyMathTools()));
+  useEffect(() => {
+    let active = true;
+    ensureHostedKatex().then(() => {
+      if (active) {
+        setMathReady(Boolean(getStudyMathTools()));
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+  useEffect(() => {
+    if (mathReady) {
+      renderMathSpans(containerRef.current);
+    }
+  }, [mathReady, text]);
+  const mathTools = mathReady ? getStudyMathTools() : null;
+  const parts = mathTools ? mathTools.splitByMath(text) : [{ type: 'text', value: text }];
+  return (
+    <div
+      ref={containerRef}
+      className="study-panel__math-reply"
+      role="status"
+      aria-live="polite"
+      aria-label={label}
+      style={{
+        minHeight: '180px',
+        whiteSpace: 'pre-wrap',
+        overflowWrap: 'break-word',
+        border: '1px solid rgba(148, 163, 184, 0.36)',
+        borderRadius: '8px',
+        background: 'rgba(255, 255, 255, 0.84)',
+        padding: '12px',
+        lineHeight: '1.5',
+      }}
+    >
+      {parts.map((part, index) => {
+        if (part.type === 'math') {
+          const wrapper = part.display ? '$$' : '$';
+          return (
+            <span
+              key={`math-${index}`}
+              data-study-math="true"
+              data-display={part.display ? 'true' : 'false'}
+              data-math={part.value}
+            >
+              {wrapper}{part.value}{wrapper}
+            </span>
+          );
+        }
+        return <span key={`text-${index}`}>{part.value}</span>;
+      })}
+    </div>
+  );
+}
 
 function delay(ms: number, signal?: AbortSignal) {
   return new Promise<void>((resolve, reject) => {
@@ -146,6 +322,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const [reply, setReply] = useState('');
   const [busy, setBusy] = useState(false);
   const explainControllerRef = useRef<AbortController | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
   const currentMode = String(status.active_mode || status.mode || 'companion');
 
   function beginStudyRequest() {
@@ -436,6 +613,33 @@ export default function StudyPanel(props: PluginSurfaceProps) {
     };
   }, []);
 
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!panel) {
+      return undefined;
+    }
+    const closeOrCancelOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') {
+        return;
+      }
+      const hasInFlightRequest = !!explainControllerRef.current;
+      if (!hasInFlightRequest) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      explainControllerRef.current?.abort();
+      explainControllerRef.current = null;
+      setBusy(false);
+      const activeElement = document.activeElement as HTMLElement | null;
+      activeElement?.blur?.();
+    };
+    panel.addEventListener('keydown', closeOrCancelOnEscape, true);
+    return () => {
+      panel.removeEventListener('keydown', closeOrCancelOnEscape, true);
+    };
+  }, []);
+
   const stateValue = status.status || 'unknown';
   const stateLabel = t(`status.state.${stateValue}`, stateValue);
   const explainLabel = busy ? t('ui.button.loading', 'Loading...') : t('ui.button.explain', 'Explain');
@@ -443,7 +647,12 @@ export default function StudyPanel(props: PluginSurfaceProps) {
   const evaluation = status.last_answer_evaluation;
 
   return (
-    <div className="study-panel">
+    <div
+      ref={panelRef}
+      className="study-panel"
+      role="region"
+      aria-label={t('ui.surface.study_panel', 'Study Panel')}
+    >
       <header className="study-panel__header">
         <div>
           <h1>{t('ui.title', 'Study Companion')}</h1>
@@ -522,7 +731,7 @@ export default function StudyPanel(props: PluginSurfaceProps) {
         </button>
       </div>
       <div className="study-panel__reply-label">{t('ui.label.reply', 'Reply')}</div>
-      <pre>{reply}</pre>
+      <MathReply text={reply} label={t('ui.label.reply', 'Reply')} />
     </div>
   );
 }

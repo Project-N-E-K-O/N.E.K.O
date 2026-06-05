@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import App, { COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS } from './App';
 import {
+  COMPACT_HISTORY_SCROLLBAR_VISIBLE_MS,
   computeCompactHistoryEnterDelay,
   computeCompactHistoryExitDelay,
 } from './CompactExportHistoryPanel';
@@ -13,6 +14,7 @@ describe('App', () => {
 
   beforeEach(() => {
     window.localStorage.removeItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
+    document.body.classList.remove('yui-guide-chat-buttons-disabled');
   });
 
   const openCompactInputTools = async () => {
@@ -133,6 +135,20 @@ describe('App', () => {
     // 点击胶囊后内部 state 兜底切到输入态，输入框出现
     expect(container.querySelector('.composer-input')).not.toBeNull();
     expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'input');
+  });
+
+  it('keeps compact capsule clicks from entering input while the tutorial locks chat buttons', () => {
+    document.body.classList.add('yui-guide-chat-buttons-disabled');
+    const onCompactChatStateChange = vi.fn();
+    const { container } = render(
+      <App chatSurfaceMode="compact" onCompactChatStateChange={onCompactChatStateChange} />,
+    );
+
+    fireEvent.click(container.querySelector('.compact-chat-capsule-button') as HTMLButtonElement);
+
+    expect(container.querySelector('.composer-input')).toBeNull();
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'default');
+    expect(onCompactChatStateChange).not.toHaveBeenCalled();
   });
 
   it('exposes explicit surface mode state on the rendered shell', () => {
@@ -385,10 +401,15 @@ describe('App', () => {
     expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
     expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-geometry-hit-scope', 'children');
     expect(container.querySelector('.compact-export-history-anchor')).not.toHaveAttribute('data-compact-hit-region');
-    expect(container.querySelector('.compact-export-history-scroll')).not.toHaveAttribute('data-compact-hit-region');
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('data-compact-hit-region', 'true');
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('data-compact-hit-region-id', 'history:message:assistant-history-1');
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('data-compact-hit-region-kind', 'message');
+    expect(container.querySelectorAll('#music-player-mount')).toHaveLength(1);
+    expect(container.querySelector('.composer-panel #music-player-mount')).not.toBeNull();
+    expect(container.querySelector('.compact-export-history-panel #music-player-mount')).toBeNull();
+    expect(container.querySelector('.compact-export-history-music-mount')).toHaveAttribute('data-music-player-mount', 'compact-history');
+    expect(container.querySelector('.compact-export-history-music-mount')).toHaveAttribute('data-compact-hit-region-id', 'history:music-player');
+    expect(container.querySelector('.compact-export-history-music-mount')).toHaveAttribute('data-compact-hit-region-kind', 'music');
     expect(container.querySelector('.compact-export-history-controls')).toBeNull();
     expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('data-compact-geometry-item', 'historyHandle');
     expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'true');
@@ -410,6 +431,17 @@ describe('App', () => {
 
     vi.useFakeTimers();
     try {
+      const scroll = container.querySelector<HTMLElement>('.compact-export-history-scroll')!;
+      expect(scroll).not.toHaveAttribute('data-compact-scrollbar-visible');
+      fireEvent.mouseEnter(scroll);
+      expect(scroll).not.toHaveAttribute('data-compact-scrollbar-visible');
+      fireEvent.wheel(scroll, { deltaY: 80 });
+      expect(scroll).toHaveAttribute('data-compact-scrollbar-visible', 'true');
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(COMPACT_HISTORY_SCROLLBAR_VISIBLE_MS);
+      });
+      expect(scroll).not.toHaveAttribute('data-compact-scrollbar-visible');
+
       fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
       expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'closing');
       expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'false');
@@ -419,6 +451,7 @@ describe('App', () => {
       expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('aria-disabled', 'true');
       expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('tabindex', '-1');
       expect(container.querySelector('.compact-export-history-bubble')).not.toHaveAttribute('data-compact-hit-region');
+      expect(container.querySelector('.compact-export-history-music-mount')).not.toHaveAttribute('data-compact-hit-region');
       expect(container.querySelector('.compact-export-history-controls')).toHaveAttribute('aria-disabled', 'true');
       expect(container.querySelector('.compact-export-history-controls')).not.toHaveAttribute('data-compact-hit-region');
       container.querySelectorAll<HTMLButtonElement>('.compact-export-history-control').forEach((button) => {
@@ -431,11 +464,16 @@ describe('App', () => {
       });
 
       expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+      expect(container.querySelectorAll('#music-player-mount')).toHaveLength(1);
+      expect(container.querySelector('.composer-panel #music-player-mount')).not.toBeNull();
+      expect(container.querySelector('.compact-export-history-panel #music-player-mount')).toBeNull();
       expect(container.querySelector('[data-compact-hit-region-id^="history:"]')).toBeNull();
 
       fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
       expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
       expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'open');
+      expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-open', 'true');
+      expect(container.querySelector('.compact-export-history-music-mount')).toHaveAttribute('data-compact-hit-region-id', 'history:music-player');
       expect(container.querySelector('.compact-export-history-controls')).toHaveAttribute('data-compact-hit-region-id', 'history:controls');
       expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'true');
       expect(exportButton).toHaveAttribute('aria-pressed', 'true');
@@ -448,6 +486,70 @@ describe('App', () => {
     expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
     expect(container.querySelector('.compact-export-history-controls')).toBeNull();
     expect(exportButton).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('keeps compact history hidden for new conversation messages after the user closes it', async () => {
+    const initialMessage = parseChatMessage({
+      id: 'assistant-history-before-close',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      createdAt: 1,
+      blocks: [{ type: 'text', text: 'I am visible before closing.' }],
+      status: 'sent',
+    });
+    const userMessage = parseChatMessage({
+      id: 'user-history-after-close',
+      role: 'user',
+      author: 'You',
+      time: '10:01',
+      createdAt: 2,
+      blocks: [{ type: 'text', text: 'This should not flash while history is closed.' }],
+      status: 'sent',
+    });
+    const assistantMessage = parseChatMessage({
+      id: 'assistant-history-after-close',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:02',
+      createdAt: 3,
+      blocks: [{ type: 'text', text: 'But it should appear after reopening history.' }],
+      status: 'sent',
+    });
+
+    vi.useFakeTimers();
+    try {
+      const { container, rerender } = render(
+        <App chatSurfaceMode="compact" compactChatState="input" messages={[initialMessage]} />,
+      );
+      expect(container.querySelector('[data-compact-export-history-message-id="assistant-history-before-close"]')).not.toBeNull();
+
+      fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
+      expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'closing');
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
+      });
+      expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+
+      rerender(
+        <App
+          chatSurfaceMode="compact"
+          compactChatState="input"
+          messages={[initialMessage, userMessage, assistantMessage]}
+        />,
+      );
+      expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+      expect(container.querySelector('[data-compact-export-history-message-id="user-history-after-close"]')).toBeNull();
+      expect(container.querySelector('[data-compact-export-history-message-id="assistant-history-after-close"]')).toBeNull();
+
+      fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
+      expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'open');
+      expect(container.querySelector('[data-compact-export-history-message-id="user-history-after-close"]')).not.toBeNull();
+      expect(container.querySelector('[data-compact-export-history-message-id="assistant-history-after-close"]')).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('restores compact inline history from persisted open state after remount', () => {
@@ -485,10 +587,15 @@ describe('App', () => {
       expect(handle).not.toBeNull();
       expect(handle).toHaveAttribute('aria-expanded', 'false');
       expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+      expect(container.querySelectorAll('#music-player-mount')).toHaveLength(1);
+      expect(container.querySelector('.composer-panel #music-player-mount')).not.toBeNull();
 
       fireEvent.pointerDown(handle!, { pointerType: 'mouse', button: 0 });
       expect(handle).toHaveAttribute('aria-expanded', 'true');
       expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
+      expect(container.querySelectorAll('#music-player-mount')).toHaveLength(1);
+      expect(container.querySelector('.compact-export-history-panel #music-player-mount')).toBeNull();
+      expect(container.querySelector('.compact-export-history-music-mount')).toHaveAttribute('data-music-player-mount', 'compact-history');
       expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
       expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'input');
 
@@ -793,7 +900,7 @@ describe('App', () => {
       });
       expect(exportWindow.appChatExport?.buildCompactInlinePreview).toHaveBeenCalledWith({
         messageIds: ['user-history-select'],
-        format: 'markdown',
+        format: 'image',
         imageStyle: 'neko',
         imageFormat: 'png',
       });
@@ -1818,7 +1925,7 @@ describe('App', () => {
       await waitFor(() => {
         expect(buildCompactInlinePreview).toHaveBeenCalledWith({
           messageIds: ['assistant-history-export-action'],
-          format: 'markdown',
+          format: 'image',
           imageStyle: 'neko',
           imageFormat: 'png',
         });
@@ -1828,7 +1935,7 @@ describe('App', () => {
       await waitFor(() => {
         expect(copyCompactInlineSelection).toHaveBeenCalledWith({
           messageIds: ['assistant-history-export-action'],
-          format: 'markdown',
+          format: 'image',
           imageStyle: 'neko',
           imageFormat: 'png',
         });
@@ -1905,6 +2012,8 @@ describe('App', () => {
 
     expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
     expect(container.querySelector('[data-compact-hit-region-id^="history:"]')).toBeNull();
+    expect(container.querySelectorAll('#music-player-mount')).toHaveLength(1);
+    expect(container.querySelector('.compact-export-history-panel #music-player-mount')).toBeNull();
     expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBeNull();
 
     rerender(<App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />);
@@ -1931,6 +2040,80 @@ describe('App', () => {
     expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'options');
     expect(document.body.querySelector('.compact-chat-choice-anchor')).not.toBeNull();
     expect(container.querySelector('.compact-input-tool-toggle')).not.toBeNull();
+  });
+
+  it('marquees overflowing compact galgame option text only while hovered', () => {
+    render(
+      <App
+        chatSurfaceMode="compact"
+        galgameModeEnabled
+        galgameOptions={[
+          { label: 'A', text: 'This generated reply is intentionally much longer than the visible option row' },
+          { label: 'B', text: 'Short reply' },
+        ]}
+      />,
+    );
+
+    const options = Array.from(document.body.querySelectorAll<HTMLButtonElement>('.composer-galgame-option'));
+    expect(options).toHaveLength(2);
+    expect(options[0]).not.toHaveAttribute('title');
+    expect(options[1]).not.toHaveAttribute('title');
+
+    const longText = options[0].querySelector<HTMLElement>('.composer-galgame-option-text');
+    const longInner = options[0].querySelector<HTMLElement>('.composer-galgame-option-text-inner');
+    expect(longText).not.toBeNull();
+    expect(longInner).not.toBeNull();
+    Object.defineProperty(longText!, 'clientWidth', {
+      configurable: true,
+      value: 110,
+    });
+    Object.defineProperty(longInner!, 'scrollWidth', {
+      configurable: true,
+      value: 260,
+    });
+
+    fireEvent.mouseEnter(options[0]);
+
+    expect(options[0]).toHaveAttribute('data-composer-option-marquee', 'true');
+    expect(options[0].style.getPropertyValue('--composer-option-marquee-distance')).toBe('178px');
+    expect(options[0].style.getPropertyValue('--composer-option-marquee-duration')).toBe('1855ms');
+
+    fireEvent.mouseLeave(options[0]);
+
+    expect(options[0]).not.toHaveAttribute('data-composer-option-marquee');
+    expect(options[0].style.getPropertyValue('--composer-option-marquee-distance')).toBe('');
+
+    fireEvent.focus(options[0]);
+
+    expect(options[0]).toHaveAttribute('data-composer-option-marquee', 'true');
+    expect(options[0].style.getPropertyValue('--composer-option-marquee-distance')).toBe('178px');
+    expect(options[0].style.getPropertyValue('--composer-option-marquee-duration')).toBe('1855ms');
+
+    fireEvent.blur(options[0]);
+
+    expect(options[0]).not.toHaveAttribute('data-composer-option-marquee');
+    expect(options[0].style.getPropertyValue('--composer-option-marquee-distance')).toBe('');
+
+    const shortText = options[1].querySelector<HTMLElement>('.composer-galgame-option-text');
+    const shortInner = options[1].querySelector<HTMLElement>('.composer-galgame-option-text-inner');
+    expect(shortText).not.toBeNull();
+    expect(shortInner).not.toBeNull();
+    Object.defineProperty(shortText!, 'clientWidth', {
+      configurable: true,
+      value: 180,
+    });
+    Object.defineProperty(shortInner!, 'scrollWidth', {
+      configurable: true,
+      value: 184,
+    });
+
+    fireEvent.mouseEnter(options[1]);
+
+    expect(options[1]).not.toHaveAttribute('data-composer-option-marquee');
+
+    fireEvent.focus(options[1]);
+
+    expect(options[1]).not.toHaveAttribute('data-composer-option-marquee');
   });
 
   it('places compact galgame options below the surface when there is enough viewport space', async () => {
@@ -2566,6 +2749,83 @@ describe('App', () => {
     const preview = container.querySelector('.compact-chat-capsule-text');
     expect(preview).toHaveAttribute('data-compact-preview-streaming', 'true');
     expect(preview?.textContent ?? '').toBe('');
+  });
+
+  it('shows tutorial guide streaming text in the compact capsule immediately', () => {
+    const initialText = '先点这里打开对话。';
+    const updatedText = '先点这里打开对话，然后输入一句问候，后面这一长串教程台词也要自动向左滚动，让最新内容进入胶囊可视区域。';
+    const initialMessage = parseChatMessage({
+      id: 'yui-guide-chat-compact-input',
+      role: 'assistant',
+      author: 'YUI',
+      time: '10:01',
+      createdAt: 2,
+      blocks: [{ type: 'text', text: initialText }],
+      status: 'streaming',
+    });
+    const updatedMessage = parseChatMessage({
+      ...initialMessage,
+      blocks: [{ type: 'text', text: updatedText }],
+    });
+
+    const { container, rerender } = render(
+      <App chatSurfaceMode="compact" composerHidden messages={[initialMessage]} />,
+    );
+
+    const preview = container.querySelector('.compact-chat-capsule-text');
+    expect(preview).not.toBeNull();
+    Object.defineProperty(preview, 'scrollWidth', {
+      configurable: true,
+      value: 320,
+    });
+    Object.defineProperty(preview, 'clientWidth', {
+      configurable: true,
+      value: 100,
+    });
+    expect(preview).toHaveAttribute('data-compact-preview-streaming', 'false');
+    expect(preview).toHaveAttribute('data-compact-preview-scrollable', 'true');
+    expect(preview).toHaveTextContent(initialText);
+
+    rerender(<App chatSurfaceMode="compact" composerHidden messages={[updatedMessage]} />);
+
+    expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent(updatedText);
+    expect((container.querySelector('.compact-chat-capsule-text') as HTMLSpanElement).scrollLeft).toBe(320);
+  });
+
+  it('does not replay tutorial guide text animation when a later stream patch arrives', async () => {
+    vi.useFakeTimers();
+    try {
+      const partialText = '这一句已经显示到中段。';
+      const fullText = '这一句已经显示到中段。后面继续追加的教程台词应该直接接上当前流式文本，而不是先回到开头再快速滚动。';
+      const partialMessage = parseChatMessage({
+        id: 'yui-guide-progressive-compact-line',
+        role: 'assistant',
+        author: 'YUI',
+        time: '10:01',
+        createdAt: 2,
+        blocks: [{ type: 'text', text: partialText }],
+        status: 'streaming',
+      });
+      const fullMessage = parseChatMessage({
+        ...partialMessage,
+        blocks: [{ type: 'text', text: fullText }],
+      });
+
+      const { container, rerender } = render(
+        <App chatSurfaceMode="compact" composerHidden messages={[partialMessage]} />,
+      );
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(120);
+      });
+      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent(partialText);
+
+      rerender(<App chatSurfaceMode="compact" composerHidden messages={[fullMessage]} />);
+
+      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent(fullText);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('falls back to revealing compact streaming text when playback state never arrives', async () => {
@@ -4721,6 +4981,12 @@ describe('App', () => {
     fireEvent.wheel(fan, { deltaY: -80 });
     expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-import');
 
+    fireEvent.wheel(fan, { deltaY: 1 });
+    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
+
+    fireEvent.wheel(fan, { deltaY: -1 });
+    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-import');
+
     fireEvent.pointerDown(fan, { pointerId: 7, clientX: 100, clientY: 100, button: 0, buttons: 1, pointerType: 'mouse' });
     fireEvent.pointerMove(fan, { pointerId: 7, clientX: 102, clientY: 132, buttons: 1, pointerType: 'mouse' });
     expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
@@ -5701,7 +5967,7 @@ describe('App', () => {
   it('renders pending composer attachments and removes them through callback', () => {
     const onComposerRemoveAttachment = vi.fn();
 
-    render(
+    const { container } = render(
       <App
         composerAttachments={[
           { id: 'img-1', url: 'data:image/png;base64,aaa', alt: 'Screenshot 1' },
@@ -5710,6 +5976,11 @@ describe('App', () => {
       />,
     );
 
+    const viewport = container.querySelector('.composer-attachment-viewport');
+    expect(viewport).toHaveClass('composer-attachment-viewport-compact');
+    expect(viewport).toHaveAttribute('data-compact-geometry-item', 'attachments');
+    expect(container.querySelector('.compact-chat-surface-shell .composer-attachment-viewport')).toBe(viewport);
+    expect(container.querySelector('.composer-panel > .composer-attachments')).toBeNull();
     expect(screen.getByAltText('Screenshot 1')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Remove image: Screenshot 1' }));
 

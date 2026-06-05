@@ -1,4 +1,4 @@
-# pyright: reportUnknownVariableType=false, reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownParameterType=false
+﻿# pyright: reportUnknownVariableType=false, reportUnknownArgumentType=false, reportUnknownMemberType=false, reportUnknownParameterType=false
 
 from __future__ import annotations
 
@@ -1766,20 +1766,20 @@ class CosplayPlugin(NekoPluginBase):
     # ══════════════════════════════════════════════════════════
 
     def _get_work_manager(self):
-        from plugin.plugins.cosplay_plugin.work_manager import WorkManager
+        from ._core import WorkManager
         return WorkManager(self._data_root, self.store)
 
     def _get_character_library(self):
-        from plugin.plugins.cosplay_plugin.character_library import CharacterLibrary
+        from ._core import CharacterLibrary
         return CharacterLibrary(self._data_root, self.store)
 
     def _get_template_manager(self):
-        from plugin.plugins.cosplay_plugin.template_manager import TemplateManager
+        from ._core import TemplateManager
         return TemplateManager()
 
     def _get_exporter(self):
-        from plugin.plugins.cosplay_plugin.exporter import WorkExporter
-        return WorkExporter(self._data_root / "works")
+        from ._core import WorkExporter
+        return WorkExporter(self._data_root)
 
     # ── 作品管理 ────────────────────────────────────────────
 
@@ -1850,7 +1850,7 @@ class CosplayPlugin(NekoPluginBase):
     @plugin_entry(id="create_character", llm_result_fields=["character_id", "name"])
     async def create_character(self, **kwargs):
         lib = self._get_character_library()
-        from plugin.plugins.cosplay_plugin.cosplay_types import CosplayCharacter
+        from ._core import CosplayCharacter
         char = CosplayCharacter.from_dict(kwargs)
         char = lib.create_character(char)
         return Ok({"character_id": char.id, "name": char.name})

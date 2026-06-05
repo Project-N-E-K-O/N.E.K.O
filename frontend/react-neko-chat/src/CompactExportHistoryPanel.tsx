@@ -9,6 +9,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
+  type WheelEvent as ReactWheelEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
 import { i18n } from './i18n';
@@ -22,6 +23,7 @@ const COMPACT_EXPORT_CLICK_MOVE_THRESHOLD = 6;
 const COMPACT_EXPORT_DRAG_MOVE_THRESHOLD = 8;
 const COMPACT_EXPORT_TOUCH_SCROLL_ANGLE_RATIO = 1.35;
 const COMPACT_HISTORY_SCROLL_SETTLE_FRAMES = 36;
+export const COMPACT_HISTORY_SCROLLBAR_VISIBLE_MS = 860;
 const COMPACT_HISTORY_RETURN_ANIMATION_MS = 260;
 const COMPACT_HISTORY_SEND_ANIMATION_MS = 340;
 export const COMPACT_HISTORY_ENTER_DELAY_STEP_MS = 42;
@@ -1208,6 +1210,7 @@ export default function CompactExportHistoryPanel({
   const dragElasticCurveRef = useRef<{ x: number; y: number } | null>(null);
   const dragAnimationTimerRef = useRef<number | null>(null);
   const dragMoveFrameRef = useRef<number | null>(null);
+  const scrollbarVisibleTimerRef = useRef<number | null>(null);
   const dragRebasePendingRef = useRef<string | null>(null);
   const dragStateSeqRef = useRef(0);
   const lastDragStateSessionIdRef = useRef<string | null>(null);
@@ -1216,13 +1219,14 @@ export default function CompactExportHistoryPanel({
   const previewObjectUrlRef = useRef<string | null>(null);
   const enterDelayByMessageIdRef = useRef<Map<string, string>>(new Map());
   const previousVisibilityStateRef = useRef<'open' | 'closing' | null>(null);
-  const [exportFormat, setExportFormat] = useState<CompactExportFormat>('markdown');
+  const [exportFormat, setExportFormat] = useState<CompactExportFormat>('image');
   const [imageStyle, setImageStyle] = useState<CompactExportImageStyle>('neko');
   const [imageFormat, setImageFormat] = useState<CompactExportImageFormat>('png');
   const [pendingAction, setPendingAction] = useState<'copy' | 'download' | null>(null);
   const [exportActionError, setExportActionError] = useState<string | null>(null);
   const [previewState, setPreviewState] = useState<CompactExportPreviewState>({ status: 'idle' });
   const [activeDrag, setActiveDrag] = useState<ActiveCompactHistoryDrag | null>(null);
+  const [scrollbarVisible, setScrollbarVisible] = useState(false);
   const selectedMessages = messages.filter(message => selectedIds.has(message.id));
   const previewHasSelection = selectedMessages.length > 0;
   const selectedMessageIds = selectedMessages.map(message => message.id);
@@ -1261,6 +1265,29 @@ export default function CompactExportHistoryPanel({
     return visibilityState === 'open'
       ? '0ms'
       : computeCompactHistoryEnterDelay(index, messages.length);
+  }
+
+  function clearScrollbarVisibleTimer() {
+    if (scrollbarVisibleTimerRef.current === null) return;
+    window.clearTimeout(scrollbarVisibleTimerRef.current);
+    scrollbarVisibleTimerRef.current = null;
+  }
+
+  function revealScrollbarForWheel() {
+    if (!historyInteractive) return;
+    clearScrollbarVisibleTimer();
+    setScrollbarVisible(true);
+    scrollbarVisibleTimerRef.current = window.setTimeout(() => {
+      scrollbarVisibleTimerRef.current = null;
+      setScrollbarVisible(false);
+    }, COMPACT_HISTORY_SCROLLBAR_VISIBLE_MS);
+  }
+
+  function handleWheel(event: ReactWheelEvent<HTMLDivElement>) {
+    event.stopPropagation();
+    if (event.deltaX !== 0 || event.deltaY !== 0 || event.deltaZ !== 0) {
+      revealScrollbarForWheel();
+    }
   }
 
   function emitCompactHistoryDragState(activeDragState: ActiveCompactHistoryDrag) {
@@ -1360,6 +1387,17 @@ export default function CompactExportHistoryPanel({
 
   useEffect(() => () => {
     revokeCompactPreviewObjectUrl();
+  }, []);
+
+  useEffect(() => {
+    if (historyInteractive) return undefined;
+    clearScrollbarVisibleTimer();
+    setScrollbarVisible(false);
+    return undefined;
+  }, [historyInteractive]);
+
+  useEffect(() => () => {
+    clearScrollbarVisibleTimer();
   }, []);
 
   useLayoutEffect(() => {
@@ -2305,7 +2343,7 @@ export default function CompactExportHistoryPanel({
         data-compact-geometry-item="history"
         data-compact-geometry-hit-scope="children"
         data-compact-no-drag="true"
-        data-compact-export-history-open="true"
+        data-compact-export-history-open={historyInteractive ? 'true' : 'false'}
         data-compact-export-history-visibility={visibilityState}
         data-compact-export-preview-open={previewOpen ? 'true' : 'false'}
         data-compact-export-under-choice={choiceLayerAbove ? 'true' : 'false'}
@@ -2323,8 +2361,9 @@ export default function CompactExportHistoryPanel({
               className="compact-export-history-scroll"
               role="list"
               aria-label={i18n('chat.messageListAriaLabel', 'Chat messages')}
+              data-compact-scrollbar-visible={scrollbarVisible ? 'true' : undefined}
               onScroll={handleScroll}
-              onWheel={(event) => event.stopPropagation()}
+              onWheel={handleWheel}
               onTouchMove={(event) => event.stopPropagation()}
             >
               {messages.length > 0 ? (
@@ -2400,6 +2439,13 @@ export default function CompactExportHistoryPanel({
                 </div>
               ) : null}
             </div>
+            <div
+              className="compact-export-history-music-mount"
+              data-music-player-mount="compact-history"
+              data-compact-hit-region={historyInteractive ? 'true' : undefined}
+              data-compact-hit-region-id={historyInteractive ? 'history:music-player' : undefined}
+              data-compact-hit-region-kind={historyInteractive ? 'music' : undefined}
+            />
             {controlsOpen ? (
               <div
                 className="compact-export-history-controls"

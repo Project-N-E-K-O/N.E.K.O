@@ -1590,7 +1590,9 @@
             "sweetLady": "Sweet Lady",
             "frailMaiden": "Frail Maiden",
             "childishMaiden": "Childish Maiden",
-            "yui_cn": "YUI (Chinese)"
+            "yui_cn": "YUI (Chinese)",
+            "yui": "YUI",
+            "default": "Default"
         },
         "cloneMethod": "Clone Method",
         "cloneMethodFile": "Local File",
@@ -1911,7 +1913,7 @@
         "systemPrompt": "System Prompt (Edit with caution)",
         "systemPromptWarning": "System Prompt - Modifications may cause unexpected behavior. Edit at your own risk.",
         "addField": "Add Field",
-        "aiAssist": "AI Assist",
+        "aiAssist": "Cat Assist",
         "aiCompanionSeedDescribe": "Generate a catgirl card based on this description: ",
         "aiCompanionSeedGenerated": "Generated and filled into the form: ",
         "aiCompanionSub": "Card-design buddy · YUI standing in for the dev cat",
@@ -2110,6 +2112,7 @@
         "textChattingShort": "Text chatting",
         "capturing": "Capturing...",
         "importImageAdded": "Added {{count}} image(s); they will be sent together",
+        "importImagePartial": "Added {{success}} image(s), {{failed}} failed to import",
         "importImageFailed": "Failed to import image",
         "screenshotAdded": "Screenshot added, click send to send together",
         "screenshotFailed": "Screenshot failed",
@@ -3244,7 +3247,7 @@
                 "sayHello": "Hello"
             },
             "lines": {
-                "introBasic": "Ooh, look at this shiny little button! Give it a click, and we can start chatting right away! Want to share today's news with me? Or just call my name? Come on and try it, I can't wait to hear your voice! Meow!",
+                "introBasic": "Ooh, look at this shiny button! Give it a click, and we can start chatting right away! Want to share today's news with me? Or just call my name? Come on and try it, I can't wait to hear your voice! Meow!",
                 "takeoverCaptureCursor": "Ta-da! The ultimate magic switch appears! Just tap right here, and I can stretch my little paws onto your keyboard and mouse! I'll help you type, help you open webpages... But, if that mouse pointer moves around, I might not be able to resist pouncing on it! Are you ready for my troublemaking... ah no, my help? Meow!",
                 "takeoverPluginPreviewHome": "It's not over yet! Hey, look, there are soooo many fun plugins here!",
                 "takeoverPluginPreviewDashboard": "With them, not only can I read Bilibili danmaku, but I can also help you turn off the lights and turn on the AC... I am the omnipotent super cat god! Hehe!",

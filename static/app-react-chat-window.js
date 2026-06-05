@@ -18,6 +18,7 @@
     var CHAT_SURFACE_MODE_STORAGE_KEY = 'neko.reactChatWindow.chatSurfaceMode';
     var GALGAME_HISTORY_LIMIT = 6;
     var EVENT_PREFIX = 'react-chat-window:';
+    var CHAT_MINIMIZED_BALL_ICON_SRC = '/static/assets/neko-idle/chat-minimized-yarn-ball.png';
 
     var loadedPromise = null;
     var mounted = false;
@@ -27,7 +28,7 @@
     var minimized = false;
     var savedShellSize = null;
     var savedShellPosition = null; // {left, top} before minimize – used to fly back on expand
-    var HOME_IDLE_DOCK_GAP = 12;
+    var HOME_IDLE_DOCK_GAP = -12;
     var IDLE_DOCK_TIER_NONE = 'none';
     var IDLE_DOCK_TIER_CAT2 = 'cat2';
     var IDLE_DOCK_TIER_CAT3 = 'cat3';
@@ -36,8 +37,6 @@
     var idleDockSavedPosition = null;
     var idleDockTriggeredMinimize = false;
     var idleDockMinimizeObserver = null;
-    var idleDockContainerObserver = null;
-    var idleDockSyncFrame = 0;
     var electronIdleDockActive = false;
     var electronIdleDockTriggeredCollapse = false;
     var electronIdleDockSavedBounds = null;
@@ -239,10 +238,12 @@
     var MOBILE_EXPAND_CLICK_GUARD_RADIUS = 24;
     var MOBILE_EXPAND_VISUAL_GUARD_MS = 900;
     var COMPACT_MINIMIZE_BALL_VIEWPORT_PAD = 12;
-    var COMPACT_MINIMIZE_BALL_AVATAR_GAP = 12;
+    var COMPACT_MINIMIZE_BALL_AVATAR_GAP = -4;
     var COMPACT_MINIMIZE_BALL_AVATAR_VERTICAL_RATIO = 0.58;
     var COMPACT_SURFACE_MAX_WIDTH = 430;
     var COMPACT_SURFACE_RESIZE_MAX_WIDTH = 720;
+    var COMPACT_SURFACE_MOBILE_MIN_WIDTH = 280;
+    var COMPACT_SURFACE_MOBILE_VIEWPORT_GUTTER = 16;
     var COMPACT_SURFACE_VIEWPORT_PAD_X = 16;
     var COMPACT_SURFACE_VIEWPORT_PAD_TOP = 12;
     var COMPACT_SURFACE_VIEWPORT_PAD_BOTTOM = 18;
@@ -262,6 +263,11 @@
     var compactSurfacePendingModelOpen = false;
     var compactSurfaceResizeSession = null;
     var compactSurfaceDesktopResizeActive = false;
+    var compactSurfaceDesktopDragActive = false;
+    var IDLE_CAT1_COMPACT_MIRROR_TIMEOUT_MS = 1600;
+    var idleCat1CompactMirrorElement = null;
+    var idleCat1CompactMirrorTimer = 0;
+    var idleCat1CompactMirrorLastDetail = null;
 
     function normalizeCompactDesktopRect(raw) {
         if (!raw) return null;
@@ -307,6 +313,7 @@
     }
 
     function handleDesktopCompactLayoutChange(layout) {
+        compactSurfaceDesktopDragActive = !!(layout && layout.dragging);
         var nextAnchorSnapshot = getCompactDesktopLayoutAnchorSnapshot(layout);
         var baseAnchorChanged = false;
         if (!nextAnchorSnapshot) {
@@ -460,7 +467,7 @@
         var normalized = normalizeCompactDesktopRect(bounds);
         if (!normalized) return null;
         var left = normalized.left - MINIMIZED_SIZE - COMPACT_MINIMIZE_BALL_AVATAR_GAP;
-        var top = normalized.top + normalized.height * COMPACT_MINIMIZE_BALL_AVATAR_VERTICAL_RATIO - MINIMIZED_SIZE / 2;
+        var top = normalized.top + normalized.height * COMPACT_MINIMIZE_BALL_AVATAR_VERTICAL_RATIO - MINIMIZED_SIZE / 2 + MINIMIZED_DOWN_OFFSET;
         var maxLeft = Math.max(COMPACT_MINIMIZE_BALL_VIEWPORT_PAD, window.innerWidth - MINIMIZED_SIZE - COMPACT_MINIMIZE_BALL_VIEWPORT_PAD);
         var maxTop = Math.max(COMPACT_MINIMIZE_BALL_VIEWPORT_PAD, window.innerHeight - MINIMIZED_SIZE - COMPACT_MINIMIZE_BALL_VIEWPORT_PAD);
         return {
@@ -502,7 +509,23 @@
         return false;
     }
 
+    function getCompactSurfaceMobileWidthBounds() {
+        var viewportWidth = Math.max(1, window.innerWidth || 0);
+        var viewportMax = Math.max(
+            1,
+            Math.min(COMPACT_SURFACE_RESIZE_MAX_WIDTH, viewportWidth - COMPACT_SURFACE_MOBILE_VIEWPORT_GUTTER)
+        );
+        var minWidth = Math.min(COMPACT_SURFACE_MOBILE_MIN_WIDTH, viewportMax);
+        return {
+            minWidth: Math.round(minWidth),
+            maxWidth: Math.round(Math.max(minWidth, viewportMax))
+        };
+    }
+
     function getCompactSurfaceResizeMaxWidth() {
+        if (isMobileWidth()) {
+            return getCompactSurfaceMobileWidthBounds().maxWidth;
+        }
         return Math.max(
             COMPACT_SURFACE_MAX_WIDTH,
             Math.min(COMPACT_SURFACE_RESIZE_MAX_WIDTH, window.innerWidth - (COMPACT_SURFACE_VIEWPORT_PAD_X * 2))
@@ -512,15 +535,18 @@
     function getCompactSurfaceMetrics() {
         var shell = getShell();
         var rect = getCompactSurfaceBaseRect() || (shell ? normalizeCompactDomRect(shell.getBoundingClientRect()) : null);
+        var mobileWidthBounds = isMobileWidth() ? getCompactSurfaceMobileWidthBounds() : null;
         var defaultWidth = isMobileWidth()
-            ? Math.max(280, window.innerWidth - 16)
+            ? mobileWidthBounds.maxWidth
             : Math.min(COMPACT_SURFACE_MAX_WIDTH, Math.max(280, window.innerWidth - (COMPACT_SURFACE_VIEWPORT_PAD_X * 2)));
         var measuredWidth = rect && rect.width > 0 ? rect.width : 0;
         var storedWidth = loadCompactSurfaceStoredWidth();
-        var width = Math.round(Math.min(
-            Math.max(defaultWidth, measuredWidth, storedWidth || 0),
-            getCompactSurfaceResizeMaxWidth()
-        ));
+        var width = isMobileWidth() && storedWidth
+            ? storedWidth
+            : Math.round(Math.min(
+                Math.max(defaultWidth, measuredWidth, storedWidth || 0),
+                getCompactSurfaceResizeMaxWidth()
+            ));
         var height = rect && rect.height > 0 ? rect.height : COMPACT_SURFACE_DEFAULT_HEIGHT;
         return {
             width: width,
@@ -580,7 +606,10 @@
             var width = Number(parsed && parsed.width);
             if (!Number.isFinite(width) || width <= 0) return null;
             var maxWidth = getCompactSurfaceResizeMaxWidth();
-            return Math.round(Math.max(COMPACT_SURFACE_MAX_WIDTH, Math.min(width, maxWidth)));
+            var minWidth = isMobileWidth()
+                ? getCompactSurfaceMobileWidthBounds().minWidth
+                : COMPACT_SURFACE_MAX_WIDTH;
+            return Math.round(Math.max(minWidth, Math.min(width, maxWidth)));
         } catch (_) {
             return null;
         }
@@ -642,12 +671,153 @@
         };
     }
 
+    function getIdleCat1CompactMirrorElement() {
+        if (idleCat1CompactMirrorElement && idleCat1CompactMirrorElement.isConnected) {
+            return idleCat1CompactMirrorElement;
+        }
+        var host = document.body;
+        if (!host) return null;
+        var element = document.createElement('div');
+        element.id = 'neko-idle-cat1-compact-mirror';
+        element.className = 'neko-idle-cat1-compact-mirror';
+        element.setAttribute('data-compact-geometry-owner', 'surface');
+        element.setAttribute('data-compact-geometry-item', 'cat1Mirror');
+        element.setAttribute('aria-hidden', 'true');
+        element.hidden = true;
+        var image = document.createElement('img');
+        image.className = 'neko-idle-cat1-compact-mirror-art';
+        image.alt = '';
+        image.draggable = false;
+        element.appendChild(image);
+        host.appendChild(element);
+        idleCat1CompactMirrorElement = element;
+        return element;
+    }
+
+    function clearIdleCat1CompactMirrorTimer() {
+        if (!idleCat1CompactMirrorTimer) return;
+        window.clearTimeout(idleCat1CompactMirrorTimer);
+        idleCat1CompactMirrorTimer = 0;
+    }
+
+    function hideIdleCat1CompactMirror(reason) {
+        clearIdleCat1CompactMirrorTimer();
+        var element = idleCat1CompactMirrorElement;
+        if (element) {
+            element.hidden = true;
+            element.removeAttribute('data-active');
+            element.style.removeProperty('left');
+            element.style.removeProperty('top');
+            element.style.removeProperty('width');
+            element.style.removeProperty('height');
+        }
+        idleCat1CompactMirrorLastDetail = null;
+        scheduleCompactMinimizeBallTracking();
+        syncCompactInteractionGeometry();
+    }
+
+    function getIdleCat1CompactMirrorWindowBounds() {
+        var windowBounds = getCompactSurfaceDesktopWindowBounds();
+        if (windowBounds) return windowBounds;
+        var x = Number(window.screenX);
+        var y = Number(window.screenY);
+        return {
+            x: Number.isFinite(x) ? x : 0,
+            y: Number.isFinite(y) ? y : 0
+        };
+    }
+
+    function getIdleCat1CompactMirrorPageRect(detail) {
+        var surface = normalizeCompactDesktopRect(detail && detail.surfaceScreenRect);
+        if (!surface) return null;
+        var catRect = detail && detail.catRect ? detail.catRect : null;
+        var catWidth = Math.round(Number(catRect && catRect.width) || 112);
+        var catHeight = Math.round(Number(catRect && catRect.height) || 112);
+        if (catWidth <= 0 || catHeight <= 0) return null;
+        var windowBounds = getIdleCat1CompactMirrorWindowBounds();
+        var surfaceLeft = surface.left - (Number(windowBounds.x) || 0);
+        var surfaceTop = surface.top - (Number(windowBounds.y) || 0);
+        var sidePadding = Math.max(0, Number(detail && detail.sidePaddingPx) || 12);
+        var capInset = Math.max(sidePadding, surface.height / 2 + sidePadding);
+        var edgePadding = Math.min(capInset, Math.max(0, surface.width / 2));
+        var minCenterX = surfaceLeft + edgePadding;
+        var maxCenterX = surfaceLeft + surface.width - edgePadding;
+        var ratio = Number(detail && detail.anchorRatio);
+        if (!Number.isFinite(ratio)) ratio = 0.5;
+        ratio = Math.max(0, Math.min(1, ratio));
+        var centerX = maxCenterX >= minCenterX
+            ? minCenterX + (maxCenterX - minCenterX) * ratio
+            : surfaceLeft + surface.width / 2;
+        var overlap = Number(detail && detail.overlapPx);
+        if (!Number.isFinite(overlap)) overlap = 28;
+        return {
+            left: Math.round(centerX - catWidth / 2),
+            top: Math.round(surfaceTop - catHeight + overlap),
+            width: catWidth,
+            height: catHeight
+        };
+    }
+
+    function showIdleCat1CompactMirror(detail) {
+        var element = getIdleCat1CompactMirrorElement();
+        var rect = getIdleCat1CompactMirrorPageRect(detail);
+        if (!element || !rect) {
+            hideIdleCat1CompactMirror('invalid');
+            return;
+        }
+        idleCat1CompactMirrorLastDetail = Object.assign({}, detail || {});
+        var image = element.querySelector('.neko-idle-cat1-compact-mirror-art');
+        if (image) {
+            var src = detail && detail.assetUrl ? String(detail.assetUrl) : '/static/assets/neko-idle/cat-idle-cat1.gif';
+            if (image.getAttribute('src') !== src) image.setAttribute('src', src);
+            image.style.transform = detail && detail.facingRight ? 'scaleX(-1)' : 'scaleX(1)';
+        }
+        element.style.left = rect.left + 'px';
+        element.style.top = rect.top + 'px';
+        element.style.width = rect.width + 'px';
+        element.style.height = rect.height + 'px';
+        element.hidden = false;
+        element.setAttribute('data-active', 'true');
+        clearIdleCat1CompactMirrorTimer();
+        idleCat1CompactMirrorTimer = window.setTimeout(function () {
+            hideIdleCat1CompactMirror('timeout');
+        }, IDLE_CAT1_COMPACT_MIRROR_TIMEOUT_MS);
+        scheduleCompactMinimizeBallTracking();
+        syncCompactInteractionGeometry();
+    }
+
+    function refreshIdleCat1CompactMirrorPosition() {
+        var element = idleCat1CompactMirrorElement;
+        if (!element || element.hidden || !idleCat1CompactMirrorLastDetail) return;
+        var rect = getIdleCat1CompactMirrorPageRect(idleCat1CompactMirrorLastDetail);
+        if (!rect) return;
+        element.style.left = rect.left + 'px';
+        element.style.top = rect.top + 'px';
+        element.style.width = rect.width + 'px';
+        element.style.height = rect.height + 'px';
+        syncCompactInteractionGeometry();
+    }
+
+    function handleIdleCat1CompactMirrorState(event) {
+        var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
+        if (!detail || !detail.active) {
+            hideIdleCat1CompactMirror(detail && detail.reason ? detail.reason : 'inactive');
+            return;
+        }
+        showIdleCat1CompactMirror(detail);
+    }
+
     function dispatchCompactSurfaceLayoutChange(rect) {
         var detail = rect || null;
         if (detail && isElectronChatWindow()) {
             detail = Object.assign({}, detail, {
                 screenRect: getCompactSurfaceResizeScreenRect(detail),
                 resizeActive: !!compactSurfaceResizeSession
+            });
+        }
+        if (detail) {
+            detail = Object.assign({}, detail, {
+                dragging: !!(dragState && dragState.compactSurface) || compactSurfaceDesktopDragActive
             });
         }
         window.dispatchEvent(new CustomEvent('neko:compact-surface-layout-change', {
@@ -796,11 +966,14 @@
                 ? (currentRect.left + currentRect.width) - minLeft
                 : maxRight - currentRect.left;
         }
+        var minWidth = isMobileWidth()
+            ? getCompactSurfaceMobileWidthBounds().minWidth
+            : COMPACT_SURFACE_MAX_WIDTH;
         var maxWidth = Math.max(
-            COMPACT_SURFACE_MAX_WIDTH,
-            Math.min(COMPACT_SURFACE_RESIZE_MAX_WIDTH, sideMax)
+            minWidth,
+            Math.min(getCompactSurfaceResizeMaxWidth(), sideMax)
         );
-        return Math.round(Math.max(COMPACT_SURFACE_MAX_WIDTH, Math.min(width, maxWidth)));
+        return Math.round(Math.max(minWidth, Math.min(width, maxWidth)));
     }
 
     function applyCompactSurfaceResizeRequest(detail) {
@@ -1019,7 +1192,7 @@
         var item = element.getAttribute('data-compact-geometry-item') || '';
         if (item === 'choice' && element.getAttribute('data-choice-layer-open') !== 'true') return false;
         if (item === 'toolFan' && element.getAttribute('data-compact-input-tool-fan-open') !== 'true') return false;
-        if (element.getAttribute('aria-hidden') === 'true' && item !== 'resizeHandle') return false;
+        if (element.getAttribute('aria-hidden') === 'true' && item !== 'resizeHandle' && item !== 'cat1Mirror') return false;
         var style = window.getComputedStyle ? window.getComputedStyle(element) : null;
         if (style && (style.display === 'none' || style.visibility === 'hidden')) return false;
         return true;
@@ -1276,11 +1449,27 @@
                 !root.contains(element)
                 && !element.classList.contains('compact-input-tool-fan')
                 && !element.classList.contains('compact-chat-choice-anchor')
+                && !element.classList.contains('neko-idle-cat1-compact-mirror')
             ) return items;
             if (!shouldIncludeCompactGeometryElement(element)) return items;
             var compactGeometryItem = element.getAttribute('data-compact-geometry-item');
             if (compactGeometryItem === 'toolFan') {
                 return items.concat(collectCompactToolFanGeometryItems(element));
+            }
+            if (compactGeometryItem === 'cat1Mirror') {
+                var mirrorRect = getCompactGeometryElementRect(element);
+                if (mirrorRect) {
+                    items.push({
+                        id: 'cat1Mirror:native',
+                        owner: 'surface',
+                        kind: 'cat1Mirror',
+                        visualRect: mirrorRect,
+                        hitRect: null,
+                        nativeRect: mirrorRect,
+                        interactive: false
+                    });
+                }
+                return items;
             }
             if (element.getAttribute('data-compact-geometry-hit-scope') === 'children') {
                 return items.concat(collectCompactCompositeGeometryItems(element, compactGeometryItem));
@@ -1410,7 +1599,8 @@
             Math.round(target.left),
             Math.round(target.top),
             Math.round(target.width),
-            Math.round(target.height || COMPACT_SURFACE_DEFAULT_HEIGHT)
+            Math.round(target.height || COMPACT_SURFACE_DEFAULT_HEIGHT),
+            (!!(dragState && dragState.compactSurface) || compactSurfaceDesktopDragActive) ? 'dragging' : 'idle'
         ].join(':');
         if (snapshot === compactSurfaceAnchorSnapshot) {
             return;
@@ -3422,7 +3612,8 @@
         };
     }
 
-    var MINIMIZED_SIZE = 50;            // 桌面/手机：圆球直径
+    var MINIMIZED_SIZE = 51;            // 桌面/手机：毛线球直径
+    var MINIMIZED_DOWN_OFFSET = 24;     // 放大后整体下移，更贴近猫 GIF
     var isMinimizeTransitioning = false;
     var activeAnimationCleanup = null; // 当前进行中动画的清理函数
 
@@ -3447,7 +3638,7 @@
         var rect = container.getBoundingClientRect();
         if (!rect || rect.width <= 0 || rect.height <= 0) return null;
         var left = Math.round(rect.left - MINIMIZED_SIZE - HOME_IDLE_DOCK_GAP);
-        var top = Math.round(rect.top + ((rect.height - MINIMIZED_SIZE) / 2));
+        var top = Math.round(rect.top + ((rect.height - MINIMIZED_SIZE) / 2) + MINIMIZED_DOWN_OFFSET);
         return {
             left: Math.max(0, Math.min(left, window.innerWidth - MINIMIZED_SIZE)),
             top: Math.max(0, Math.min(top, window.innerHeight - MINIMIZED_SIZE))
@@ -3461,24 +3652,8 @@
         }
     }
 
-    function stopIdleDockContainerObserver() {
-        if (idleDockContainerObserver) {
-            try { idleDockContainerObserver.disconnect(); } catch (_) {}
-            idleDockContainerObserver = null;
-        }
-    }
-
-    function cancelIdleDockSync() {
-        if (idleDockSyncFrame) {
-            window.cancelAnimationFrame(idleDockSyncFrame);
-            idleDockSyncFrame = 0;
-        }
-    }
-
     function clearIdleDockState() {
         stopIdleDockMinimizeObserver();
-        stopIdleDockContainerObserver();
-        cancelIdleDockSync();
         idleDockActive = false;
         idleDockSavedPosition = null;
         idleDockTriggeredMinimize = false;
@@ -3505,7 +3680,6 @@
         idleDockSavedPosition = { left: rect.left, top: rect.top };
         idleDockActive = true;
         applyIdleDockPosition();
-        refreshIdleDockContainerObserver();
     }
 
     function scheduleIdleDockMinimizeFallback(shell) {
@@ -3525,37 +3699,6 @@
             syncChatSurfaceModeUI();
             finishIdleDockMinimize(latestShell);
         }, 460);
-    }
-
-    function refreshIdleDockContainerObserver() {
-        if (isElectronChatWindow() || !idleDockActive || !isIdleDockTierActive()) {
-            stopIdleDockContainerObserver();
-            return;
-        }
-        var container = getVisibleReturnButtonContainer();
-        if (!container || typeof MutationObserver !== 'function') {
-            stopIdleDockContainerObserver();
-            return;
-        }
-        stopIdleDockContainerObserver();
-        idleDockContainerObserver = new MutationObserver(function () {
-            scheduleIdleDockSync();
-        });
-        idleDockContainerObserver.observe(container, {
-            attributes: true,
-            attributeFilter: ['style', 'class', 'data-dragging', 'data-neko-idle-tier', 'data-neko-return-visible']
-        });
-    }
-
-    function syncIdleDockPosition() {
-        idleDockSyncFrame = 0;
-        if (!minimized || !idleDockActive || isElectronChatWindow()) return;
-        applyIdleDockPosition();
-    }
-
-    function scheduleIdleDockSync() {
-        if (!minimized || !idleDockActive || isElectronChatWindow() || idleDockSyncFrame) return;
-        idleDockSyncFrame = window.requestAnimationFrame(syncIdleDockPosition);
     }
 
     function getElectronIdleDockBridge() {
@@ -4088,14 +4231,16 @@
         var tier = detail && detail.tier;
         var activeTier = tier === IDLE_DOCK_TIER_CAT2 || tier === IDLE_DOCK_TIER_CAT3;
         if (detail && detail.visible && activeTier && detail.screenRect) {
-            enterElectronIdleDock(detail.screenRect);
+            if (!hasElectronIdleDockPendingOrActive()) {
+                enterElectronIdleDock(detail.screenRect);
+            }
             return;
         }
         if (hasElectronIdleDockPendingOrActive()) {
             if (shouldIgnoreElectronIdleDockInactiveViewportResize(detail, activeTier)) {
                 return;
             }
-            var shouldPreserveCurrentPosition = detail && (
+            var shouldPreserveCurrentPosition = activeTier && detail && (
                 detail.reason === 'return-ball-drag-demotion'
                 || detail.reason === 'return-ball-drag-end'
             );
@@ -4121,7 +4266,6 @@
             idleDockActive = true;
             idleDockTriggeredMinimize = false;
             applyIdleDockPosition();
-            refreshIdleDockContainerObserver();
         } else {
             // Not minimized — trigger normal minimize, observe for completion.
             idleDockTriggeredMinimize = true;
@@ -4208,12 +4352,12 @@
             return compactBallTarget;
         }
 
-        // 桌面端和移动端统一使用 50px 圆形悬浮球
+        // 桌面端和移动端统一使用圆形毛线球
         return {
             width: MINIMIZED_SIZE,
             height: MINIMIZED_SIZE,
             left: Math.max(0, Math.min(rect.left, window.innerWidth - MINIMIZED_SIZE)),
-            top: Math.max(0, Math.min(rect.bottom - MINIMIZED_SIZE, window.innerHeight - MINIMIZED_SIZE))
+            top: Math.max(0, Math.min(rect.bottom - MINIMIZED_SIZE + MINIMIZED_DOWN_OFFSET, window.innerHeight - MINIMIZED_SIZE))
         };
     }
 
@@ -4268,14 +4412,13 @@
     }
 
     function ensureMinimizedBallIcon() {
-        if (isElectronChatWindow()) return null;
         var shell = getShell();
         if (!shell) return null;
         var icon = shell.querySelector('.react-chat-minimized-icon');
         if (!icon) {
             icon = document.createElement('img');
             icon.className = 'react-chat-minimized-icon';
-            icon.src = '/static/icons/expand_icon_off_ball.png';
+            icon.src = CHAT_MINIMIZED_BALL_ICON_SRC;
             icon.alt = '';
             icon.draggable = false;
             var handle = getHeader();
@@ -4617,7 +4760,7 @@
         }
         // 重置悬浮球图标到默认态（清除可能残留的 hover 图标）
         if (ballIcon) {
-            ballIcon.src = '/static/icons/expand_icon_off_ball.png';
+            ballIcon.src = CHAT_MINIMIZED_BALL_ICON_SRC;
         }
     }
 
@@ -4646,7 +4789,7 @@
             btnIcon.alt = ariaLabel;
         }
         if (ballIcon) {
-            ballIcon.src = '/static/icons/expand_icon_off_ball.png';
+            ballIcon.src = CHAT_MINIMIZED_BALL_ICON_SRC;
         }
         if (shell) {
             shell.setAttribute('data-chat-surface-mode', surfaceMode);
@@ -4667,8 +4810,6 @@
             idleDockSavedPosition = null;
             idleDockTier = IDLE_DOCK_TIER_NONE;
             stopIdleDockMinimizeObserver();
-            stopIdleDockContainerObserver();
-            cancelIdleDockSync();
         }
         cycleChatSurfaceMode();
     }
@@ -4784,6 +4925,7 @@
         cancelActiveAnimation(); // 清理进行中的折叠/展开回调
         clearIdleDockState();
         deactivateToolCursor();
+        hideIdleCat1CompactMirror('close-window');
 
         // 如果当前处于最小化状态，恢复 shell 到正常态
         if (minimized) {
@@ -4898,6 +5040,7 @@
         var changedTouch = opts.changedTouches && opts.changedTouches.length > 0 ? opts.changedTouches[0] : null;
 
         var wasMoved = dragState.moved;
+        var wasCompactSurface = !!dragState.compactSurface;
 
         var shell = getShell();
         if (shell) {
@@ -4910,6 +5053,12 @@
 
         dragState = null;
         document.body.classList.remove('react-chat-window-dragging');
+        if (wasCompactSurface && wasMoved) {
+            var compactRect = getCurrentCompactSurfaceRect();
+            if (compactRect) {
+                dispatchCompactSurfaceLayoutChange(compactRect);
+            }
+        }
 
         // 移动过的拖拽不该再变成点击：吞掉 mouseup 落点补发的那一次 click。
         if (wasMoved) {
@@ -4973,9 +5122,10 @@
             startDrag(event.touches[0].clientX, event.touches[0].clientY, {
                 compactSurface: true
             });
-            event.preventDefault();
-            event.stopPropagation();
-        }, { capture: true, passive: false });
+            // Do not preventDefault on touchstart: a stationary tap on the
+            // compact capsule must still synthesize click so React can enter
+            // input mode. Real drags are blocked in touchmove below.
+        }, { capture: true, passive: true });
 
         document.addEventListener('mousemove', function (event) {
             if (!dragState) return;
@@ -5383,13 +5533,13 @@
                 if (!minimized) return;
                 var shell = getShell();
                 var ico = shell && shell.querySelector('.react-chat-minimized-icon');
-                if (ico) ico.src = '/static/icons/expand_icon_on.png';
+                if (ico) ico.src = CHAT_MINIMIZED_BALL_ICON_SRC;
             });
             header.addEventListener('mouseleave', function () {
                 if (!minimized) return;
                 var shell = getShell();
                 var ico = shell && shell.querySelector('.react-chat-minimized-icon');
-                if (ico) ico.src = '/static/icons/expand_icon_off_ball.png';
+                if (ico) ico.src = CHAT_MINIMIZED_BALL_ICON_SRC;
             });
         }
 
@@ -5406,15 +5556,6 @@
             var overlay = getOverlay();
             if (overlay && !overlay.hidden) {
                 if (minimized) {
-                    var dockTarget = getIdleDockTarget();
-                    if (dockTarget) {
-                        var dockShell = getShell();
-                        if (dockShell) {
-                            dockShell.style.left = dockTarget.left + 'px';
-                            dockShell.style.top = dockTarget.top + 'px';
-                        }
-                        return;
-                    }
                     // 最小化态下，根据当前布局（桌面圆球 / 手机胶囊）重新贴到视口内。
                     // 手机胶囊宽度由 CSS !important 控制（width: calc(100vw - 12px)），
                     // 这里只需修正左上角坐标，避免旋转屏或拖窗后溢出。
@@ -5464,16 +5605,13 @@
             if (isIdleDockTierActive()) {
                 if (!idleDockActive) {
                     enterIdleDock();
-                } else {
-                    scheduleIdleDockSync();
-                    refreshIdleDockContainerObserver();
                 }
                 return;
             }
 
             if (hasIdleDockPendingOrActive()) {
                 exitIdleDock({
-                    preserveCurrentPosition: detail.source === 'return-ball-drag-demotion',
+                    preserveCurrentPosition: idleDockActive && detail.source === 'return-ball-drag-demotion',
                 });
                 return;
             }
@@ -5490,6 +5628,7 @@
             if (!detail) return;
             scheduleElectronCat1PairMoveBounds(detail.screenRect || detail.bounds);
         });
+        window.addEventListener('neko:idle-cat1-compact-mirror-state', handleIdleCat1CompactMirrorState);
         window.addEventListener('live2d-return-click', function () {
             if (hasElectronIdleDockPendingOrActive()) { exitElectronIdleDock(); }
             if (hasIdleDockPendingOrActive()) { exitIdleDock(); return; }
@@ -5509,6 +5648,7 @@
         window.addEventListener('neko:desktop-compact-layout-change', function (event) {
             var layout = event && event.detail ? event.detail : window.__nekoDesktopCompactLayout;
             handleDesktopCompactLayoutChange(layout || null);
+            refreshIdleCat1CompactMirrorPosition();
         });
         if (window.__nekoDesktopCompactLayout) {
             handleDesktopCompactLayoutChange(window.__nekoDesktopCompactLayout);

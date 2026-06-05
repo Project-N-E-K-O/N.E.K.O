@@ -1590,7 +1590,9 @@
             "sweetLady": "dulce dama",
             "frailMaiden": "doncella frágil",
             "childishMaiden": "doncella infantil",
-            "yui_cn": "YUI (chino)"
+            "yui_cn": "YUI (chino)",
+            "yui": "YUI",
+            "default": "Predeterminado"
         },
         "cloneMethod": "Método de clonación",
         "cloneMethodFile": "Archivo Local",
@@ -1911,7 +1913,7 @@
         "systemPrompt": "Aviso del sistema (editar con precaución)",
         "systemPromptWarning": "Aviso del sistema: las modificaciones pueden provocar un comportamiento inesperado. Edite bajo su propio riesgo.",
         "addField": "Agregar campo",
-        "aiAssist": "Asistente IA",
+        "aiAssist": "Asistente gatuno",
         "aiCompanionSub": "Asistente de diseño de carta · YUI sustituye al gatito desarrollador",
         "aiCompanionClose": "Cerrar",
         "aiCompanionMinimize": "Minimizar",
@@ -2110,6 +2112,7 @@
         "textChattingShort": "Chat de texto",
         "capturing": "Capturando...",
         "importImageAdded": "Se agregaron {{count}} imágenes; serán enviados juntos",
+        "importImagePartial": "Se agregaron {{success}} imágenes; {{failed}} no se pudieron importar",
         "importImageFailed": "No se pudo importar la imagen",
         "screenshotAdded": "Captura de pantalla agregada, haga clic en enviar para enviar juntos",
         "screenshotFailed": "Error en la captura de pantalla",
@@ -3244,7 +3247,7 @@
                 "sayHello": "Hola"
             },
             "lines": {
-                "introBasic": "¡Oh, mira este botoncito brillante! Haz clic en él y podremos empezar a charlar enseguida. ¿Quieres contarme las novedades de hoy? ¿O solo decir mi nombre? Vamos, pruébalo, ¡no puedo esperar a escuchar tu voz! ¡Miau!",
+                "introBasic": "¡Oh, mira este botón brillante! Haz clic en él y podremos empezar a charlar enseguida. ¿Quieres contarme las novedades de hoy? ¿O solo decir mi nombre? Vamos, pruébalo, ¡no puedo esperar a escuchar tu voz! ¡Miau!",
                 "takeoverCaptureCursor": "¡Ta-dán! ¡Aparece el interruptor mágico definitivo! Con solo tocar aquí, puedo estirar mis patitas hasta tu teclado y tu ratón. Te ayudaré a escribir, a abrir páginas web... Pero, si ese puntero del ratón se mueve por ahí, quizá no pueda resistirme a saltar sobre él. ¿Estás listo para mis travesuras... ah, no, para mi ayuda? ¡Miau!",
                 "takeoverPluginPreviewHome": "¡Aún no ha terminado! Mira, mira, ¡aquí hay un montón de plugins divertidos!",
                 "takeoverPluginPreviewDashboard": "Con ellos, no solo puedo leer el danmaku de Bilibili, también puedo ayudarte a apagar las luces y encender el aire acondicionado... ¡Soy la omnipotente súper diosa gata! ¡Jeje!",

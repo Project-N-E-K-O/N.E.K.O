@@ -1346,10 +1346,11 @@
         ctx.fillRect(0, 0, w, h);
 
         if (!sel) {
-            // No selection — show image area more clearly
+            // 未选区时按原图亮度预览：只把图片区域上的暗罩清掉，不再额外压暗。
+            // 之前这里又盖了一层 rgba(0,0,0,0.15)，让刚进编辑界面的整图就暗了 15%、
+            // 对比度也被拉低显得发糊——用户要的是临时预览＝原图画质，故移除。
+            // 图片外的 letterbox 仍保留上面的 0.5 遮罩。
             ctx.clearRect(imgDisplayLeft, imgDisplayTop, imgDisplayWidth, imgDisplayHeight);
-            ctx.fillStyle = 'rgba(0, 0, 0, 0.15)';
-            ctx.fillRect(imgDisplayLeft, imgDisplayTop, imgDisplayWidth, imgDisplayHeight);
             return;
         }
 
