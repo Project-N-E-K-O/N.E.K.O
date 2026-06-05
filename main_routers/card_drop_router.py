@@ -86,6 +86,20 @@ async def candidates_endpoint(
     return _relay(r)
 
 
+@router.get("/collection", summary="代理云端「我的卡片」：收集册（含 rarity / 编号）")
+async def collection_endpoint(
+    limit: int = Query(100, ge=1, le=200),
+):
+    base, cid = _require_ctx()
+    url = f"{base}/api/cards/mine"
+    try:
+        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
+            r = await client.get(url, headers={"X-Client-Id": cid}, params={"limit": limit})
+    except (httpx.HTTPError, OSError) as exc:
+        raise HTTPException(status_code=502, detail=f"cloud_unreachable: {exc}") from exc
+    return _relay(r)
+
+
 @router.post("/test-trigger", summary="（调试）手动广播一次 card_drop_available，触发前端开卡演出")
 async def test_trigger_endpoint(
     lanlan_name: str = Query("test", min_length=1, max_length=64),

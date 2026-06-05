@@ -74,11 +74,12 @@
     return els;
   }
 
-  function openModal() {
+  function openShell() {
     ensureDom();
     els.backdrop.classList.add('cd-open');
-    loadCandidates();
   }
+  function openModal() { openShell(); loadCandidates(); }       // 开卡（5选1）
+  function openCollection() { openShell(); loadCollection(); }  // 卡册
   function closeModal() {
     if (!els) return;
     els.backdrop.classList.remove('cd-open');
@@ -239,6 +240,72 @@
     els.body.appendChild(actions);
   }
 
+  // ---- collection (卡册) ----
+  function loadCollection() {
+    state.busy = true;
+    setHead('🎴 我的卡册', '');
+    els.body.innerHTML = '<div class="cd-msg">正在读取卡册…</div>';
+    api('/api/card-drop/collection?limit=100')
+      .then(function (list) { state.busy = false; renderCollection(Array.isArray(list) ? list : []); })
+      .catch(function (e) { state.busy = false; renderError(e); });
+  }
+
+  function renderCollection(cards) {
+    state.collection = cards;
+    setHead('🎴 我的卡册', cards.length ? ('共 ' + cards.length + ' 张') : '');
+    els.body.innerHTML = '';
+    if (!cards.length) {
+      els.body.innerHTML = '<div class="cd-msg">还没有卡 —— 去对话里掉一张，或开卡试试 ✦</div>';
+      return;
+    }
+    var grid = el('div', 'cd-coll-grid');
+    cards.forEach(function (c) {
+      var rk = (c.rarity || 'N').toUpperCase();
+      var item = el('button', 'cd-coll-card cd-rar-' + rk);
+      var art = el('div', 'cd-coll-art');
+      var img = el('img'); img.src = c.cover_url || PLACEHOLDER_ART; img.alt = '';
+      art.appendChild(img);
+      art.appendChild(el('span', 'cd-coll-rank', rk));
+      item.appendChild(art);
+      item.appendChild(el('div', 'cd-coll-title', escapeHtml(c.title || '未命名')));
+      if (c.serial) item.appendChild(el('div', 'cd-coll-serial', escapeHtml(c.serial)));
+      item.addEventListener('click', function () { showCardDetail(c); });
+      grid.appendChild(item);
+    });
+    els.body.appendChild(grid);
+  }
+
+  function showCardDetail(card) {
+    var rk = (card.rarity || 'N').toUpperCase();
+    setHead('', '');
+    var wrap = el('div', 'cd-reveal cd-rar-' + rk);
+    wrap.appendChild(el('div', 'cd-halo'));
+    var cardEl = el('div', 'cd-card');
+    var inner = el('div', 'cd-card-inner');
+    var img = el('img'); img.src = card.cover_url || PLACEHOLDER_ART; img.alt = '';
+    inner.appendChild(img);
+    inner.appendChild(el('div', 'cd-rank', rk));
+    if (card.serial) inner.appendChild(el('div', 'cd-serial', escapeHtml(card.serial)));
+    cardEl.appendChild(inner); wrap.appendChild(cardEl);
+    wrap.appendChild(el('div', 'cd-rar-label', rk));
+    wrap.appendChild(el('h2', null, escapeHtml(card.title || '未命名')));
+    var story = (card.summary || card.story_md || '').replace(/[#*`>]/g, '').trim();
+    wrap.appendChild(el('div', 'cd-story', escapeHtml(story.slice(0, 120))));
+    var actions = el('div', 'cd-actions');
+    var back = el('button', 'cd-btn cd-btn-ghost', '← 返回卡册');
+    back.addEventListener('click', function () { renderCollection(state.collection || []); });
+    actions.appendChild(back); wrap.appendChild(actions);
+    els.body.innerHTML = ''; els.body.appendChild(wrap);
+  }
+
+  function injectFab() {
+    if (document.getElementById('cd-fab')) return;
+    var b = el('button', 'cd-fab', '🎴');
+    b.id = 'cd-fab'; b.title = '我的卡册';
+    b.addEventListener('click', function () { openCollection(); });
+    document.body.appendChild(b);
+  }
+
   function escapeHtml(s) {
     return String(s == null ? '' : s)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -260,4 +327,10 @@
     state.lanlan = String(lanlan || (window.lanlan_config && window.lanlan_config.lanlan_name) || 'test');
     openModal();
   };
+
+  // 卡册（收集）入口
+  window.openCardCollection = function () { openCollection(); };
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', injectFab);
+  else injectFab();
 })();
