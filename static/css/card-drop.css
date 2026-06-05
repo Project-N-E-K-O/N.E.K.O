@@ -1,11 +1,14 @@
 /* 对话掉落卡片：开卡模态 + 揭晓演出。自包含、cd- 前缀，不依赖其它样式表。 */
 
 .cd-backdrop {
-  position: fixed; inset: 0; z-index: 9000;
+  position: fixed; inset: 0; z-index: 2000000;
   background: radial-gradient(120% 90% at 50% 0%, rgba(40,20,60,.66), rgba(8,6,14,.86));
   backdrop-filter: blur(6px);
   display: none; align-items: center; justify-content: center;
   opacity: 0; transition: opacity .28s ease;
+  /* 宿主(NEKO 桌宠)给 html/body 设了 pointer-events:none 做点击穿透；模态挂在 body 下
+     会继承到、导致整个弹窗点不动。这里显式 auto 抢回交互。 */
+  pointer-events: auto;
 }
 .cd-backdrop.cd-open { display: flex; opacity: 1; }
 
@@ -152,10 +155,11 @@
 
 /* 卡册入口浮标 */
 .cd-fab {
-  position: fixed; left: 16px; bottom: 16px; z-index: 8000;
+  position: fixed; left: 16px; bottom: 16px; z-index: 1999000;
   width: 46px; height: 46px; border-radius: 50%; border: 1px solid rgba(255,255,255,.2); cursor: pointer;
   background: linear-gradient(135deg,#2a2140,#3a2b55); color: #fff; font-size: 22px; line-height: 1;
   box-shadow: 0 6px 18px rgba(0,0,0,.42); transition: transform .15s ease;
+  pointer-events: auto;  /* 同上：抢回点击（宿主 body pointer-events:none） */
 }
 .cd-fab:hover { transform: scale(1.08); }
 
