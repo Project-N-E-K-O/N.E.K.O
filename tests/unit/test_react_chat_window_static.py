@@ -10,6 +10,7 @@ STATIC_DARK_MODE_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "cs
 REACT_CHAT_STYLES_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "styles.css"
 REACT_CHAT_APP_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "App.tsx"
 CHAT_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "chat.html"
+SUBTITLE_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "subtitle.html"
 COMPACT_EXPORT_HISTORY_PANEL_PATH = (
     Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "CompactExportHistoryPanel.tsx"
 )
@@ -51,6 +52,13 @@ def test_subtitle_window_dark_mode_keeps_transparent_background():
 
     assert "background: transparent !important;" in block
     assert source.index(selector) > source.index("background: #000 !important;")
+
+
+def test_standalone_subtitle_page_initializes_theme_before_subtitle_scripts():
+    source = SUBTITLE_TEMPLATE_PATH.read_text(encoding="utf-8")
+
+    assert '<script src="/static/theme-manager.js"></script>' in source
+    assert source.index('/static/theme-manager.js') < source.index('/static/subtitle-shared.js')
 
 
 def test_chat_surface_mode_preference_is_shared_with_electron():
