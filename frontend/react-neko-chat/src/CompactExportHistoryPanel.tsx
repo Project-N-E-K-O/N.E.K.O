@@ -2149,7 +2149,21 @@ export default function CompactExportHistoryPanel({
           aria-label={i18n('chat.previewClose', 'Close')}
           title={i18n('chat.previewClose', 'Close')}
         >
-          ‹
+          <svg
+            className="compact-export-preview-back-icon"
+            viewBox="0 0 16 16"
+            aria-hidden="true"
+            focusable="false"
+          >
+            <path
+              d="M9.75 4.25 6.25 8l3.5 3.75"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
         </button>
         <div className="compact-export-preview-heading">
           <div className="compact-export-preview-title">{i18n('chat.exportPreviewTitle', 'Export Preview')}</div>

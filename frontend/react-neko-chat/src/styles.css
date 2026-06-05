@@ -3323,9 +3323,8 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 .compact-export-preview-back {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  display: inline-grid;
+  place-items: center;
   width: 28px;
   height: 28px;
   padding: 0;
@@ -3333,9 +3332,15 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.66);
   color: #4e6c8d;
-  font-size: 1.38rem;
-  line-height: 1;
+  line-height: 0;
   cursor: pointer;
+}
+
+.compact-export-preview-back-icon {
+  display: block;
+  width: 14px;
+  height: 14px;
+  pointer-events: none;
 }
 
 .compact-export-preview-format-strip,
