@@ -823,7 +823,7 @@ describe('App', () => {
       });
       expect(exportWindow.appChatExport?.buildCompactInlinePreview).toHaveBeenCalledWith({
         messageIds: ['user-history-select'],
-        format: 'markdown',
+        format: 'image',
         imageStyle: 'neko',
         imageFormat: 'png',
       });
@@ -1848,7 +1848,7 @@ describe('App', () => {
       await waitFor(() => {
         expect(buildCompactInlinePreview).toHaveBeenCalledWith({
           messageIds: ['assistant-history-export-action'],
-          format: 'markdown',
+          format: 'image',
           imageStyle: 'neko',
           imageFormat: 'png',
         });
@@ -1858,7 +1858,7 @@ describe('App', () => {
       await waitFor(() => {
         expect(copyCompactInlineSelection).toHaveBeenCalledWith({
           messageIds: ['assistant-history-export-action'],
-          format: 'markdown',
+          format: 'image',
           imageStyle: 'neko',
           imageFormat: 'png',
         });

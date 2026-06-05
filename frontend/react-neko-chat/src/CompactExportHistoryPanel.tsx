@@ -1219,7 +1219,7 @@ export default function CompactExportHistoryPanel({
   const previewObjectUrlRef = useRef<string | null>(null);
   const enterDelayByMessageIdRef = useRef<Map<string, string>>(new Map());
   const previousVisibilityStateRef = useRef<'open' | 'closing' | null>(null);
-  const [exportFormat, setExportFormat] = useState<CompactExportFormat>('markdown');
+  const [exportFormat, setExportFormat] = useState<CompactExportFormat>('image');
   const [imageStyle, setImageStyle] = useState<CompactExportImageStyle>('neko');
   const [imageFormat, setImageFormat] = useState<CompactExportImageFormat>('png');
   const [pendingAction, setPendingAction] = useState<'copy' | 'download' | null>(null);
