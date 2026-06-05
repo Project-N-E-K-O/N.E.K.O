@@ -956,6 +956,7 @@ async def test_signal_user_activity_end_gpt_manual_clears_uplink_resampler():
         try:
             sent.append(json.loads(payload))
         except json.JSONDecodeError:
+            # Why: payload may be bytes audio frames, not JSON — ignore non-JSON in this collector.
             pass
 
     client.ws = AsyncMock()
