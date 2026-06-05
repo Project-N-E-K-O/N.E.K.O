@@ -5247,6 +5247,7 @@ export default function App({
       data-compact-export-preview-open={isCompactSurface && compactExportPreviewOpen ? 'true' : 'false'}
       data-compact-export-selected-count={isCompactSurface ? compactExportSelectedCount : 0}
       data-compact-export-auto-scroll={isCompactSurface && compactExportAutoScrollToBottom ? 'true' : 'false'}
+      data-compact-tool-layer-open={isCompactSurface && compactInputToolFanOpen ? 'true' : 'false'}
     >
       {compactExportHistoryNode}
       {compactHistoryVisibilityHandleNode}
@@ -5385,6 +5386,7 @@ export default function App({
                 className="compact-chat-surface-shell"
                 ref={compactInputShellRef}
                 data-compact-chat-state={effectiveCompactChatState}
+                data-compact-tool-layer-open={compactToolToggleVisible && compactInputToolFanOpen ? 'true' : 'false'}
                 style={compactSurfaceShellStyle}
                 onBlurCapture={effectiveCompactChatState === 'input' ? scheduleCompactInputCollapse : undefined}
               >

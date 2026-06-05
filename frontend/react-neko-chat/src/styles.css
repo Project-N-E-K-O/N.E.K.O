@@ -2064,6 +2064,10 @@ body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-c
   -webkit-app-region: no-drag;
 }
 
+.compact-chat-surface-shell[data-compact-tool-layer-open="true"] {
+  z-index: 100003;
+}
+
 body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   position: fixed;
   left: var(--desktop-compact-surface-left, var(--compact-surface-left, 0px));
