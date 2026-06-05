@@ -2647,6 +2647,15 @@ class OmniRealtimeClient:
                         and self.on_output_transcript
                         and self._audio_delta_count > 0
                     ):
+                        # 「有声无字」是反复出现的问题（见上方 ISSUE4b），留一条 debug
+                        # 日志方便下次诊断时确认是这条兜底生效、还是 streaming/transcript.done
+                        # 路径生效。audio_delta_count 此处尚未清零，记录的是本轮真实值。
+                        logger.debug(
+                            "response.done 兜底 flush 输出转录: buffer_len=%d audio_deltas=%d is_first=%s",
+                            len(self._output_transcript_buffer),
+                            self._audio_delta_count,
+                            self._is_first_transcript_chunk,
+                        )
                         await self.on_output_transcript(
                             self._output_transcript_buffer, self._is_first_transcript_chunk
                         )
