@@ -8,6 +8,7 @@ MUSIC_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "music_ui.js"
 STATIC_INDEX_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "index.css"
 REACT_CHAT_STYLES_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "styles.css"
 REACT_CHAT_APP_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "App.tsx"
+REACT_CHAT_IIFE_PATH = Path(__file__).resolve().parents[2] / "static" / "react" / "neko-chat" / "neko-chat-window.iife.js"
 CHAT_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "chat.html"
 COMPACT_EXPORT_HISTORY_PANEL_PATH = (
     Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "CompactExportHistoryPanel.tsx"
@@ -460,6 +461,18 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     assert "readCompactToolFanPixelVar(style, '--compact-tool-wheel-hover-radius', 116)" in script
     assert "Math.sqrt(Math.max(0" in script
     assert "id: index === 0 ? 'toolFan:native' : 'toolFan:native:' + index" in script
+
+
+def test_compact_tool_wheel_rotate_request_is_present_in_host_and_built_bundle():
+    host_source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    app_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
+    bundle_source = REACT_CHAT_IIFE_PATH.read_text(encoding="utf-8")
+
+    assert "rotateCompactToolWheel: rotateCompactToolWheel" in host_source
+    assert "compactToolWheelRotateRequest = null" in app_source
+    assert "rotateCompactInputToolWheelSteps(request.direction, request.stepCount" in app_source
+    assert "compactToolWheelRotateRequest:" in bundle_source
+    assert "compactToolWheelRotateRequest" in bundle_source
 
 
 def test_compact_choice_hit_contract_uses_real_options_only():

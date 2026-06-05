@@ -5071,7 +5071,7 @@ describe('App', () => {
         compactToolWheelRotateRequest={{
           id: 'compact-tool-wheel-rotate-guide',
           direction: 1,
-          stepCount: 2,
+          stepCount: 1,
           reason: 'avatar-floating-guide-galgame-drag',
           forceFast: true,
         }}
@@ -5079,7 +5079,52 @@ describe('App', () => {
     );
 
     await waitFor(() => {
-      expect(fan.querySelector('.compact-input-tool-item-galgame')).toHaveAttribute('data-compact-tool-wheel-slot', '0');
+      expect(fan.querySelector('.compact-input-tool-item-galgame')).toHaveAttribute('data-compact-tool-wheel-slot', '1');
+    });
+  });
+
+  it('sets compact input tool wheel index from a guide request', async () => {
+    const { rerender } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        compactToolFanOpenRequest={{
+          id: 'compact-tool-fan-open-guide',
+          open: true,
+          reason: 'avatar-floating-guide-open-tool-fan',
+        }}
+        compactToolWheelIndexRequest={{
+          id: 'compact-tool-wheel-index-non-default',
+          index: 6,
+          reason: 'test-non-default',
+        }}
+      />,
+    );
+
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    await waitFor(() => {
+      expect(fan.querySelector('.compact-input-tool-item-import')).toHaveAttribute('data-compact-tool-wheel-slot', '1');
+    });
+
+    rerender(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        compactToolFanOpenRequest={{
+          id: 'compact-tool-fan-open-guide',
+          open: true,
+          reason: 'avatar-floating-guide-open-tool-fan',
+        }}
+        compactToolWheelIndexRequest={{
+          id: 'compact-tool-wheel-index-day3-entry',
+          index: 0,
+          reason: 'avatar-floating-guide-day3-entry-reset',
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(fan.querySelector('.compact-input-tool-item-import')).toHaveAttribute('data-compact-tool-wheel-slot', '0');
     });
   });
 
@@ -6016,6 +6061,28 @@ describe('App', () => {
 
     expect(onComposerSubmit).not.toHaveBeenCalled();
     expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+  });
+
+  it('locks only compact text entry while tutorial input lock is active', async () => {
+    const onComposerSubmit = vi.fn();
+    const onComposerImportImage = vi.fn();
+    renderInputApp({
+      compactInputLocked: true,
+      onComposerSubmit,
+      onComposerImportImage,
+    });
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    expect(input).not.toBeDisabled();
+    expect(input).toHaveAttribute('readonly');
+
+    fireEvent.change(input, { target: { value: 'Blocked send' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+
+    await openCompactInputTools();
+    fireEvent.click(document.body.querySelector('.compact-input-tool-item-import')!);
+    expect(onComposerImportImage).toHaveBeenCalledTimes(1);
   });
 
   it('does not render a local optimistic user bubble before the host echoes messages', () => {

@@ -34,7 +34,7 @@
                     text: '今天，就让我悄悄跟上你的步伐吧。特别希望能在这个温馨的日子里，再多了解你一点点呢。',
                     emotion: 'happy',
                     target: 'chat-window',
-                    cursorAction: 'wobble'
+                    cursorAction: 'move'
                 },
                 {
                     id: 'day4_chat_settings',
@@ -84,7 +84,7 @@
                     text: '总是小心不触碰到、把我点歪吗？那就快把我牢牢固定在当前的位置吧！开启锁定后，我就哪儿也不去，乖乖在原地陪着你~',
                     emotion: 'happy',
                     target: '#${p}-lock-icon',
-                    cursorAction: 'wobble',
+                    cursorAction: 'move',
                     cleanupBefore: true
                 },
                 {
@@ -95,7 +95,7 @@
                     emotion: 'happy',
                     target: '#${p}-btn-goodbye',
                     secondary: '#${p}-btn-return',
-                    cursorAction: 'wobble'
+                    cursorAction: 'move'
                 },
                 {
                     id: 'day4_wrap',
@@ -104,7 +104,7 @@
                     text: '真正舒服的陪伴才不是一刻不停地粘着主人呢~ 而是懂得什么时候该悄悄靠近抓抓你的衣角撒个娇，什么时候该安安静静地趴在一旁，用目光默默守候着主人喵~',
                     emotion: 'happy',
                     target: 'chat-window',
-                    cursorAction: 'wobble',
+                    cursorAction: 'move',
                     operation: 'cleanup',
                     petalTransition: true
                 }

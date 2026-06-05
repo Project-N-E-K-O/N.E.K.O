@@ -1495,6 +1495,22 @@
             };
         }
 
+        syncCursorPosition(x, y, visible) {
+            const normalizedX = Number(x);
+            const normalizedY = Number(y);
+            if (!Number.isFinite(normalizedX) || !Number.isFinite(normalizedY)) {
+                return false;
+            }
+            this.updateSuppressedCursorMotion();
+            this.finishSuppressedCursorMotion(false);
+            this.cursorPosition = { x: normalizedX, y: normalizedY };
+            this.cursorVisible = visible !== false;
+            if (this.isPcOverlayActive() && this.cursorVisible) {
+                this.keepDomCursorSuppressedForPcOverlay();
+            }
+            return true;
+        }
+
         clearCursorPosition() {
             this.finishSuppressedCursorMotion(false);
             this.cursorPosition = null;

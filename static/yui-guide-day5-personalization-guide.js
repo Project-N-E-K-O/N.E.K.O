@@ -64,7 +64,7 @@
                     text: '好啦好啦，快去试试这些好玩的定制功能吧！换上新衣服、调好新声音，让我变成全天下最懂你、只属于你一个人的专属猫娘！我已经迫不及待想看到全新的自己啦！',
                     emotion: 'happy',
                     target: 'chat-window',
-                    cursorAction: 'wobble',
+                    cursorAction: 'move',
                     operation: 'cleanup',
                     petalTransition: true
                 }

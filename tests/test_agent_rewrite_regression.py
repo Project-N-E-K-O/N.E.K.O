@@ -792,7 +792,7 @@ def test_day6_status_and_plugin_lines_split_plugin_panel_flow_before_dashboard_h
     plugin_dashboard = scene_block("day6_plugin_dashboard")
 
     assert "target: 'chat-window'" in intro
-    assert "cursorAction: 'wobble'" in intro
+    assert "cursorAction: 'move'" in intro
     assert "target: '#${p}-btn-agent'" not in intro
     assert "operation: 'open-agent'" not in intro
     assert "persistent: '#${p}-popup-agent'" not in intro

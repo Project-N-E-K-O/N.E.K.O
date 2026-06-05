@@ -34,7 +34,7 @@
                     text: '噔噔噔噔！今天必须要打起精神，好好跟你聊聊咱们的【猫爪】啦！前两天虽然简单提过一下，但它里面藏着的厉害功能可多着呢。',
                     emotion: 'happy',
                     target: 'chat-window',
-                    cursorAction: 'wobble'
+                    cursorAction: 'move'
                 },
                 {
                     id: 'day6_agent_status_master',
@@ -87,7 +87,7 @@
                     text: '呼……把这些繁琐的界面都收起来，这样就不会打扰到你啦。',
                     emotion: 'happy',
                     target: 'chat-window',
-                    cursorAction: 'wobble',
+                    cursorAction: 'move',
                     operation: 'cleanup'
                 },
                 {
@@ -97,7 +97,7 @@
                     text: '你可以放心地继续做你自己的事情，不管是需要我用小爪子帮你忙，还是只想让我安安静静地陪着你，我都一直在守候着你，今天也要开开心心的呀。',
                     emotion: 'happy',
                     target: 'chat-window',
-                    cursorAction: 'wobble',
+                    cursorAction: 'move',
                     petalTransition: true
                 }
             ]

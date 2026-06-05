@@ -1159,6 +1159,7 @@ export default function App({
   composerToolsAriaLabel: _composerToolsAriaLabel,
   composerHidden = false,
   composerDisabled = false,
+  compactInputLocked = false,
   chatSurfaceMode = 'compact',
   compactChatState,
   composerAttachments = [],
@@ -1205,12 +1206,14 @@ export default function App({
   avatarToolMenuOpenRequest = null,
   compactToolFanOpenRequest = null,
   compactToolWheelRotateRequest = null,
+  compactToolWheelIndexRequest = null,
   onCompactChatStateChange,
   rollbackDraft,
   _rollbackKey,
   _toolCursorResetKey,
 }: ChatWindowProps) {
   const [draft, setDraft] = useState('');
+  const compactTextEntryLocked = composerDisabled || compactInputLocked;
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
   const [activeCursorToolId, setActiveCursorToolId] = useState<string | null>(null);
   const [avatarRangeCursorVariants, setAvatarRangeCursorVariants] = useState<ToolCursorVariantState>(() => createDefaultToolCursorVariantState());
@@ -1338,8 +1341,9 @@ export default function App({
   const lastAvatarToolMenuOpenRequestIdRef = useRef('');
   const lastCompactToolFanOpenRequestIdRef = useRef('');
   const lastCompactToolWheelRotateRequestIdRef = useRef('');
+  const lastCompactToolWheelIndexRequestIdRef = useRef('');
   const compactInputHasPayload = draft.trim().length > 0 || composerAttachments.length > 0;
-  const canSubmit = !composerDisabled && compactInputHasPayload;
+  const canSubmit = !compactTextEntryLocked && compactInputHasPayload;
   const clearActiveCursorToolSelection = useCallback(() => {
     clearGlobalToolCursorState();
     latestPointerTargetRef.current = null;
@@ -4111,6 +4115,22 @@ export default function App({
   }, [closeCompactInputToolFan, compactToolFanOpenRequest, openCompactInputToolFan]);
 
   useEffect(() => {
+    const request = compactToolWheelIndexRequest;
+    if (!request || !request.id || request.id === lastCompactToolWheelIndexRequestIdRef.current) return;
+    lastCompactToolWheelIndexRequestIdRef.current = request.id;
+    clearCompactInputToolWheelFastAnimationTimer();
+    clearCompactInputToolWheelChargeReleaseTimer();
+    resetCompactInputToolWheelCharge();
+    setCompactInputToolWheelFastAnimation(false);
+    setCompactInputToolWheelIndex(request.index);
+  }, [
+    clearCompactInputToolWheelChargeReleaseTimer,
+    clearCompactInputToolWheelFastAnimationTimer,
+    compactToolWheelIndexRequest,
+    resetCompactInputToolWheelCharge,
+  ]);
+
+  useEffect(() => {
     const request = compactToolWheelRotateRequest;
     if (!request || !request.id || request.id === lastCompactToolWheelRotateRequestIdRef.current) return;
     lastCompactToolWheelRotateRequestIdRef.current = request.id;
@@ -4481,7 +4501,7 @@ export default function App({
   }
 
   function submitDraft() {
-    if (composerDisabled) return;
+    if (compactTextEntryLocked) return;
     if (submittingRef.current) return;
     const text = draft.trim();
     if (!text && composerAttachments.length === 0) return;
@@ -5507,9 +5527,10 @@ export default function App({
                         aria-label={inputPlaceholder}
                         rows={1}
                         value={draft}
-                        readOnly={composerDisabled}
+                        readOnly={compactTextEntryLocked}
                         disabled={composerDisabled}
                         onChange={(event) => {
+                          if (compactInputLocked && !composerDisabled) return;
                           setDraft(event.target.value);
                           if (event.target.value.trim().length > 0) {
                             closeCompactInputToolFan();

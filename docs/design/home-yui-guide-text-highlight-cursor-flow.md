@@ -397,7 +397,7 @@ ghost cursor 流程：
 
 1. 新增教程台词时，先确认文本输出位置：聊天窗口、overlay 气泡，还是外部页面 handoff。
 2. 每段台词最多有一个主 persistent spotlight；多个 UI 目标应使用 action/secondary/extra，而不是反复重设 persistent。
-3. ghost cursor 的移动必须跟真实 UI 操作一致：先高亮，再移动；需要模拟点击的场景到达目标后 click，真实打开/开关 API 必须在 click 动画开始的同一刻启动，不得等点击动画结束后才调用。Day 2 屏幕分享按钮是例外：Ghost Cursor 只移动并 wobble，不播放模拟点击动画，也不触发真实按钮 click。
+3. ghost cursor 的移动必须跟真实 UI 操作一致：先高亮，再移动；需要模拟点击的场景到达目标后 click，真实打开/开关 API 必须在 click 动画开始的同一刻启动，不得等点击动画结束后才调用。Day 2 屏幕分享按钮是例外：Ghost Cursor 只移动并停留，不播放模拟点击动画，也不触发真实按钮 click。
 4. 所有可见 ghost cursor 位置变化都必须平滑过渡；每日主流程只记录可见锚点，首次出现后只使用当前可见位置、上一 scene 可见锚点或真实目标中心作为移动起点。
 5. 不能只移动 cursor 而不执行真实状态变更，也不能只改状态而没有可见 click 反馈。
 6. dashboard、settings 等跨面板流程结束时必须清理 retained、virtual、scene extra 和 action spotlight。

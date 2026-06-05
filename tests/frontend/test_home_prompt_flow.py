@@ -2921,6 +2921,110 @@ def test_avatar_floating_round_starts_cursor_look_at_before_first_scene(
 
 
 @pytest.mark.frontend
+def test_avatar_floating_round_locks_compact_input_until_round_cleanup(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.__tutorialInputLocks = [];
+            window.reactChatWindowHost = {
+                setHomeTutorialInputLocked: (locked, reason) => {
+                    window.__tutorialInputLocks.push({ locked, reason });
+                },
+            };
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            director.getAvatarFloatingRoundConfig = () => ({
+                scenes: [{ id: 'day1_intro', text: '', voiceKey: '' }],
+            });
+            director.ensureAvatarFloatingGuideSurfaceReady = async () => {};
+            director.ensureGuideIdleSwayPerformance = async () => null;
+            director.ensurePersistentGhostCursorLookAtPerformance = async () => null;
+            director.stopPersistentGhostCursorLookAtPerformance = async () => {};
+            director.stopIntroVoiceCursorLookAtPerformance = async () => {};
+            director.closeAvatarFloatingGuidePanels = async () => {};
+            director.playAvatarFloatingScene = async () => true;
+
+            await director.playAvatarFloatingRound(1, { source: 'test' });
+            return window.__tutorialInputLocks;
+        }
+        """
+    )
+
+    assert result[0] == {
+        "locked": True,
+        "reason": "avatar-floating-guide-day1",
+    }
+    assert result[-1] == {
+        "locked": False,
+        "reason": "avatar-floating-guide-day1-complete",
+    }
+
+
+@pytest.mark.frontend
+def test_day3_round_resets_compact_tool_wheel_import_to_slot_zero(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.__guideSurfaceCalls = [];
+            window.reactChatWindowHost = {
+                setCompactToolWheelIndex: (index, reason) => {
+                    window.__guideSurfaceCalls.push({
+                        type: 'wheelIndex',
+                        index,
+                        reason,
+                    });
+                },
+            };
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const calls = window.__guideSurfaceCalls;
+            director.getAvatarFloatingRoundConfig = () => ({
+                scenes: [{ id: 'day3_tool_toggle_intro', text: '', voiceKey: '', target: 'chat-input' }],
+            });
+            director.ensureAvatarFloatingGuideSurfaceReady = async () => {
+                calls.push({ type: 'surface' });
+            };
+            director.ensureGuideIdleSwayPerformance = async () => null;
+            director.ensurePersistentGhostCursorLookAtPerformance = async () => null;
+            director.stopPersistentGhostCursorLookAtPerformance = async () => null;
+            director.stopIntroVoiceCursorLookAtPerformance = async () => null;
+            director.closeAvatarFloatingGuidePanels = async () => {};
+            director.playAvatarFloatingScene = async () => {
+                calls.push({ type: 'scene' });
+                return true;
+            };
+
+            await director.playAvatarFloatingRound(3, { source: 'test' });
+            return calls;
+        }
+        """
+    )
+
+    reset = {
+        "type": "wheelIndex",
+        "index": 0,
+        "reason": "avatar-floating-guide-day3-entry-reset",
+    }
+    assert reset in result
+    assert result.index({"type": "surface"}) < result.index(reset)
+    assert result.index(reset) < result.index({"type": "scene"})
+
+
+@pytest.mark.frontend
 def test_avatar_floating_daily_scenes_keep_persistent_cursor_look_at_enabled(
     mock_page: Page,
 ):
@@ -4052,7 +4156,7 @@ def test_day4_model_lock_highlights_lock_during_model_lock_line(mock_page: Page)
                 text: '总是小心不触碰到、把我点歪吗？那就快把我牢牢固定在当前的位置吧！开启锁定后，我就哪儿也不去，乖乖在原地陪着你~',
                 voiceKey: 'avatar_floating_day4_model_lock',
                 target: '#${p}-lock-icon',
-                cursorAction: 'wobble',
+                cursorAction: 'move',
                 cleanupBefore: true,
             }, 4, 5, 8);
             return calls;
@@ -4078,7 +4182,7 @@ def test_day4_model_lock_highlights_lock_during_model_lock_line(mock_page: Page)
         "durationMs": 760,
         "display": "block",
     } in result
-    assert {"type": "wobble"} in result
+    assert {"type": "wobble"} not in result
     assert {"type": "click"} not in result
 
 
@@ -4137,7 +4241,7 @@ def test_day4_model_lock_uses_active_model_lock_icon_when_prefix_fallback_is_liv
                 text: '总是小心不触碰到、把我点歪吗？那就快把我牢牢固定在当前的位置吧！开启锁定后，我就哪儿也不去，乖乖在原地陪着你~',
                 voiceKey: 'avatar_floating_day4_model_lock',
                 target: '#${p}-lock-icon',
-                cursorAction: 'wobble',
+                cursorAction: 'move',
                 cleanupBefore: true,
             }, 4, 5, 8);
             return calls;
@@ -4157,7 +4261,7 @@ def test_day4_model_lock_uses_active_model_lock_icon_when_prefix_fallback_is_liv
         "durationMs": 760,
         "display": "block",
     } in result
-    assert {"type": "wobble"} in result
+    assert {"type": "wobble"} not in result
 
 
 @pytest.mark.frontend
@@ -5338,6 +5442,84 @@ def test_externalized_chat_cursor_explicit_duration_overrides_handoff_speed(
 
 
 @pytest.mark.frontend
+def test_externalized_chat_cursor_anchor_reports_after_pc_move_duration(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/chat');
+            window.__externalChatOverlayUpdates = [];
+            window.__externalChatAnchorRelays = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 100, y: 50, width: 1200, height: 800 },
+                    contentBounds: { x: 100, y: 50, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                update: (payload) => {
+                    window.__externalChatOverlayUpdates.push(payload);
+                    return Promise.resolve({ ok: true });
+                },
+                begin: () => Promise.resolve({ ok: true }),
+                clear: () => Promise.resolve({ ok: true }),
+                relayToPet: (payload) => window.__externalChatAnchorRelays.push(payload),
+            };
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'test-run');
+            document.body.innerHTML = `
+                <div id="react-chat-window-root">
+                    <button
+                        class="send-button-circle compact-input-tool-toggle"
+                        style="position:fixed; left:600px; top:400px; width:42px; height:42px;"
+                    ></button>
+                </div>
+            `;
+        """,
+        script_names=("app-interpage.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.postMessage({
+                __nekoTutorialOverlayRelay: true,
+                payload: {
+                    action: 'yui_guide_set_chat_cursor',
+                    kind: 'tool-toggle',
+                    effect: 'move',
+                    durationMs: 120,
+                    timestamp: Date.now(),
+                    tutorialRunId: 'test-run',
+                },
+            }, '*');
+            await new Promise((resolve) => setTimeout(resolve, 60));
+            const beforeMoveSettled = window.__externalChatAnchorRelays.filter(
+                (relay) => relay && relay.action === 'yui_guide_chat_cursor_anchor'
+            );
+            await new Promise((resolve) => setTimeout(resolve, 120));
+            const afterMoveSettled = window.__externalChatAnchorRelays.filter(
+                (relay) => relay && relay.action === 'yui_guide_chat_cursor_anchor'
+            );
+            const raw = window.localStorage.getItem('neko_yui_guide_external_chat_cursor_screen_point_v1');
+            return {
+                beforeMoveSettled,
+                afterMoveSettled,
+                stored: raw ? JSON.parse(raw) : null,
+            };
+        }
+        """
+    )
+
+    assert result["beforeMoveSettled"] == []
+    assert result["afterMoveSettled"]
+    assert result["afterMoveSettled"][-1]["kind"] == "tool-toggle"
+    assert result["afterMoveSettled"][-1]["effect"] == ""
+    assert result["afterMoveSettled"][-1]["settled"] is True
+    assert result["stored"]["kind"] == "tool-toggle"
+    assert result["stored"]["settled"] is True
+
+
+@pytest.mark.frontend
 def test_home_director_receives_externalized_chat_cursor_anchor_event(
     mock_page: Page,
 ):
@@ -5461,6 +5643,63 @@ def test_home_director_owns_pc_cursor_for_externalized_chat_anchor(
         and update["payload"]["cursor"].get("effectDurationMs") == 2000
         for update in result["updates"]
     )
+
+
+@pytest.mark.frontend
+def test_home_director_ignores_click_effect_from_externalized_chat_anchor(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.__NEKO_MULTI_WINDOW__ = true;
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 100, y: 50, width: 1200, height: 800 },
+                    contentBounds: { x: 100, y: 50, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                update: () => Promise.resolve({ ok: true }),
+                begin: () => Promise.resolve({ ok: true }),
+                clear: () => Promise.resolve({ ok: true }),
+            };
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const clicks = [];
+            director.currentSceneId = 'day3_avatar_tools';
+            director.clickCursorAndWait = async (durationMs) => {
+                clicks.push(durationMs);
+                return true;
+            };
+            window.dispatchEvent(new CustomEvent('neko:yui-guide:external-chat-cursor-anchor', {
+                detail: {
+                    x: 640,
+                    y: 430,
+                    kind: 'tool-toggle',
+                    effect: 'click',
+                    effectDurationMs: 420,
+                    source: 'external-chat',
+                    timestamp: Date.now(),
+                },
+            }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return {
+                clicks,
+                currentPosition: director.overlay.getCursorPosition(),
+            };
+        }
+        """
+    )
+
+    assert result["clicks"] == []
+    assert result["currentPosition"] == {"x": 540, "y": 380}
 
 
 @pytest.mark.frontend
@@ -7193,6 +7432,8 @@ def test_day3_avatar_tools_props_sentence_opens_menu_with_cursor_click(mock_page
             const toggle = scenes.find((scene) => scene.id === 'day3_tool_toggle_intro');
             const intro = scenes.find((scene) => scene.id === 'day3_avatar_tools');
             const props = scenes.find((scene) => scene.id === 'day3_avatar_tools_props');
+            const wrap = scenes.find((scene) => scene.id === 'day3_wrap');
+            const wrapReady = scenes.find((scene) => scene.id === 'day3_wrap_ready');
             return {
                 toggleTarget: toggle && toggle.target || '',
                 toggleOperation: toggle && toggle.operation || '',
@@ -7200,11 +7441,17 @@ def test_day3_avatar_tools_props_sentence_opens_menu_with_cursor_click(mock_page
                 introOperation: intro && intro.operation || '',
                 introTarget: intro && intro.target || '',
                 introCursorAction: intro && intro.cursorAction || '',
-                introCursorMoveDurationMs: intro && intro.cursorMoveDurationMs || 0,
+                introHasCursorMoveDurationMs: !!(intro && Object.prototype.hasOwnProperty.call(intro, 'cursorMoveDurationMs')),
                 propsOperation: props && props.operation || '',
                 propsCursorAction: props && props.cursorAction || '',
                 propsTarget: props && props.target || '',
                 galgameOperation: scenes.find((scene) => scene.id === 'day3_galgame_entry')?.operation || '',
+                wrapTarget: wrap && wrap.target || '',
+                wrapCursorAction: wrap && wrap.cursorAction || '',
+                wrapOperation: wrap && wrap.operation || '',
+                wrapReadyTarget: wrapReady && wrapReady.target || '',
+                wrapReadyCursorAction: wrapReady && wrapReady.cursorAction || '',
+                wrapReadyPetalTransition: !!(wrapReady && wrapReady.petalTransition === true),
             };
         }
         """
@@ -7217,11 +7464,51 @@ def test_day3_avatar_tools_props_sentence_opens_menu_with_cursor_click(mock_page
         "introOperation": "open-compact-tool-fan",
         "introTarget": "chat-tool-toggle",
         "introCursorAction": "click",
-        "introCursorMoveDurationMs": 1480,
+        "introHasCursorMoveDurationMs": False,
         "propsOperation": "show-avatar-tools-then-hide-after-narration",
         "propsCursorAction": "click",
         "propsTarget": "chat-avatar-tools",
         "galgameOperation": "rotate-galgame-tool-into-center",
+        "wrapTarget": "chat-input",
+        "wrapCursorAction": "move",
+        "wrapOperation": "cleanup",
+        "wrapReadyTarget": "chat-input",
+        "wrapReadyCursorAction": "move",
+        "wrapReadyPetalTransition": True,
+    }
+
+
+@pytest.mark.frontend
+def test_day3_externalized_cursor_effect_never_defaults_to_wobble(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            return {
+                day3Fallback: director.getExternalizedChatCursorEffect({
+                    id: 'day3_future_scene',
+                    cursorAction: 'tour',
+                }),
+                day4Fallback: director.getExternalizedChatCursorEffect({
+                    id: 'day4_future_scene',
+                    cursorAction: 'tour',
+                }),
+            };
+        }
+        """
+    )
+
+    assert result == {
+        "day3Fallback": "move",
+        "day4Fallback": "move",
     }
 
 
@@ -7305,6 +7592,107 @@ def test_day3_first_line_highlights_capsule_input_and_centers_cursor(mock_page: 
 
 
 @pytest.mark.frontend
+def test_day3_wrap_highlights_capsule_input_and_keeps_cursor_there(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <div id="react-chat-window-root">
+                    <div
+                        id="compact-chat-input"
+                        data-compact-geometry-owner="surface"
+                        data-compact-geometry-item="input"
+                        style="position:absolute; left:140px; top:110px; width:360px; height:60px;"
+                    ></div>
+                    <button
+                        class="compact-input-tool-item-galgame"
+                        style="position:absolute; left:560px; top:120px; width:42px; height:42px;"
+                    ></button>
+                </div>
+            `;
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js", "yui-guide-day3-interaction-guide.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const events = [];
+            const scene = window.YuiGuideDailyGuides[3].round.scenes.find(
+                (candidate) => candidate.id === 'day3_wrap'
+            );
+            director.currentSceneId = 'day3_galgame_choices';
+            director.cursor.showAt(581, 141);
+            director.speakGuideLine = async () => null;
+            director.waitForSceneDelay = async () => true;
+            director.appendGuideChatMessage = () => {};
+            director.applyGuideEmotion = () => {};
+            director.prepareAvatarFloatingScene = async () => {};
+            director.enableInterrupts = () => {};
+            director.applyGuideHighlights = (config) => {
+                events.push({
+                    type: 'highlight',
+                    key: config.key || '',
+                    primaryId: config.primary && config.primary.id,
+                    primaryItem: config.primary && config.primary.getAttribute('data-compact-geometry-item'),
+                });
+            };
+            director.runAvatarFloatingSceneOperation = async (playedScene) => {
+                events.push({ type: 'operation', operation: playedScene.operation || '' });
+                return true;
+            };
+            director.moveCursorToElement = async (element, durationMs) => {
+                const rect = element.getBoundingClientRect();
+                events.push({
+                    type: 'move',
+                    id: element.id || '',
+                    item: element.getAttribute('data-compact-geometry-item'),
+                    x: rect.left + rect.width / 2,
+                    y: rect.top + rect.height / 2,
+                    durationMs,
+                });
+                return true;
+            };
+
+            await director.playAvatarFloatingScene(scene, 3, 5, 7);
+            return events;
+        }
+        """
+    )
+
+    first_highlight = {
+        "type": "highlight",
+        "key": "day3_wrap",
+        "primaryId": "compact-chat-input",
+        "primaryItem": "input",
+    }
+    settled_highlight = {
+        "type": "highlight",
+        "key": "day3_wrap-settled",
+        "primaryId": "compact-chat-input",
+        "primaryItem": "input",
+    }
+    move = {
+        "type": "move",
+        "id": "compact-chat-input",
+        "item": "input",
+        "x": 320,
+        "y": 140,
+        "durationMs": 760,
+    }
+    operation = {"type": "operation", "operation": "cleanup"}
+    assert first_highlight in result
+    assert move in result
+    assert operation in result
+    assert settled_highlight in result
+    assert result.index(first_highlight) < result.index(move)
+    assert result.index(move) < result.index(operation)
+    assert result.index(operation) < result.index(settled_highlight)
+
+
+@pytest.mark.frontend
 def test_day3_first_line_externalized_chat_uses_input_spotlight_and_cursor(
     mock_page: Page,
 ):
@@ -7374,7 +7762,7 @@ def test_day3_first_line_externalized_chat_uses_input_spotlight_and_cursor(
 
 
 @pytest.mark.frontend
-def test_day3_avatar_tools_line_slowly_moves_to_toggle_and_opens_tool_fan_on_click(
+def test_day3_avatar_tools_line_moves_to_toggle_and_opens_tool_fan_on_click(
     mock_page: Page,
 ):
     _bootstrap_page(
@@ -7456,7 +7844,7 @@ def test_day3_avatar_tools_line_slowly_moves_to_toggle_and_opens_tool_fan_on_cli
         "persistentId": "tool-toggle",
         "primaryId": "tool-toggle",
     } in result["beforeRelease"]
-    assert {"type": "move", "id": "tool-toggle", "durationMs": 1480} in result["beforeRelease"]
+    assert {"type": "move", "id": "tool-toggle", "durationMs": 760} in result["beforeRelease"]
     assert {"type": "click:start", "durationMs": 420} in result["beforeRelease"]
     assert {"type": "button:click"} in result["beforeRelease"]
     assert {"type": "toolFan", "open": True, "reason": "avatar-floating-guide-open-tool-fan"} in result["beforeRelease"]
@@ -7554,17 +7942,294 @@ def test_day3_avatar_tools_externalized_moves_to_toggle_and_opens_tool_fan_on_cl
 
     assert "toolFan:true:avatar-floating-guide-prepare-tool-fan" not in result["beforeRelease"]
     assert "spotlight:tool-toggle" in result["beforeRelease"]
-    assert "cursor:tool-toggle:move:1480:0" in result["beforeRelease"]
-    assert "cursor:tool-toggle:click:0:420" in result["beforeRelease"]
-    assert "click:start:420" not in result["beforeRelease"]
+    assert "cursor:tool-toggle:move:0:0" in result["beforeRelease"]
+    assert "cursor:tool-toggle:click:0:420" not in result["beforeRelease"]
+    assert "click:start:420" in result["beforeRelease"]
     assert "toolFan:true:avatar-floating-guide-open-tool-fan" in result["beforeRelease"]
-    assert result["beforeRelease"].index("cursor:tool-toggle:click:0:420") < result["beforeRelease"].index(
+    assert result["beforeRelease"].index("click:start:420") < result["beforeRelease"].index(
         "toolFan:true:avatar-floating-guide-open-tool-fan"
     )
-    assert result["afterRelease"].count("click:start:420") == 0
-    assert result["afterRelease"].count("cursor:tool-toggle:click:0:420") == 1
+    assert result["afterRelease"].count("click:start:420") == 1
+    assert result["afterRelease"].count("cursor:tool-toggle:click:0:420") == 0
     assert "avatarMenu:true:avatar-floating-guide-open-avatar-tool-menu" not in result["afterRelease"]
     assert "spotlight:avatar-tools" not in result["afterRelease"]
+
+
+@pytest.mark.frontend
+def test_day3_avatar_tools_externalized_waits_for_anchor_before_click(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.__NEKO_MULTI_WINDOW__ = true;
+            document.body.innerHTML = `<div id="react-chat-window-overlay" style="display:none;"></div>`;
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js", "yui-guide-day3-interaction-guide.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const events = [];
+            const scene = window.YuiGuideDailyGuides[3].round.scenes.find(
+                (candidate) => candidate.id === 'day3_avatar_tools'
+            );
+            let releaseCursorAnchor;
+            const cursorAnchorReached = new Promise((resolve) => { releaseCursorAnchor = resolve; });
+            director.waitForExternalizedChatCursorMove = async (sceneId, maxWaitMs) => {
+                events.push('anchorWait:' + String(sceneId || '') + ':' + String(maxWaitMs || 0));
+                return cursorAnchorReached;
+            };
+            director.waitForSceneDelay = (durationMs) => {
+                events.push('delay:' + String(durationMs || 0));
+                return Promise.resolve(true);
+            };
+            director.clickCursorAndWait = async (durationMs) => {
+                events.push('click:start:' + String(durationMs || 0));
+                return true;
+            };
+            director.interactionTakeover = {
+                setExternalizedChatSpotlight: (kind) => events.push('spotlight:' + String(kind || '')),
+                setExternalizedChatCursor: (kind, options) => events.push(
+                    'cursor:'
+                    + String(kind || '')
+                    + ':'
+                    + String(options && options.effect || '')
+                    + ':'
+                    + String(options && options.durationMs || 0)
+                    + ':'
+                    + String(options && options.effectDurationMs || 0)
+                ),
+                setExternalizedChatCompactToolFanOpen: (open, reason) => events.push(
+                    'toolFan:' + String(open) + ':' + String(reason || '')
+                ),
+                setExternalizedChatAvatarToolMenuOpen: (open, reason) => events.push(
+                    'avatarMenu:' + String(open) + ':' + String(reason || '')
+                ),
+                clickExternalizedChatAvatarToolButton: (reason) => events.push(
+                    'avatarClick:' + String(reason || '')
+                ),
+            };
+            director.speakGuideLine = async () => null;
+            director.appendGuideChatMessage = () => {};
+            director.applyGuideEmotion = () => {};
+            director.enableInterrupts = () => {};
+
+            const playPromise = director.playAvatarFloatingScene(scene, 3, 1, 8);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const beforeAnchorRelease = events.slice();
+            releaseCursorAnchor(true);
+            await playPromise;
+            return {
+                beforeAnchorRelease,
+                afterRelease: events,
+            };
+        }
+        """
+    )
+
+    assert "cursor:tool-toggle:move:0:0" in result["beforeAnchorRelease"]
+    assert "anchorWait:day3_avatar_tools:0" in result["beforeAnchorRelease"]
+    assert "cursor:tool-toggle:click:0:420" not in result["beforeAnchorRelease"]
+    assert "click:start:420" not in result["beforeAnchorRelease"]
+    assert "toolFan:true:avatar-floating-guide-open-tool-fan" not in result["beforeAnchorRelease"]
+    assert "delay:1480" not in result["afterRelease"]
+    assert "cursor:tool-toggle:click:0:420" not in result["afterRelease"]
+    assert "click:start:420" in result["afterRelease"]
+    assert result["afterRelease"].index("anchorWait:day3_avatar_tools:0") < result["afterRelease"].index(
+        "click:start:420"
+    )
+    assert result["afterRelease"].index("click:start:420") < result["afterRelease"].index(
+        "toolFan:true:avatar-floating-guide-open-tool-fan"
+    )
+
+
+@pytest.mark.frontend
+def test_day3_externalized_click_waits_for_future_anchor_report_before_click(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.__NEKO_MULTI_WINDOW__ = true;
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js", "yui-guide-day3-interaction-guide.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const events = [];
+            const scene = window.YuiGuideDailyGuides[3].round.scenes.find(
+                (candidate) => candidate.id === 'day3_avatar_tools'
+            );
+            director.currentSceneId = 'day3_avatar_tools';
+            director.screenPointToLocalPoint = (point) => ({ x: point.x, y: point.y });
+            director.overlay.isPcOverlayActive = () => true;
+            director.overlay.getCursorPosition = () => ({ x: 320, y: 280 });
+            director.overlay.syncCursorPosition = (x, y) => {
+                events.push('sync:' + String(x) + ':' + String(y));
+                return true;
+            };
+            director.cursor.hasPosition = () => true;
+            director.cursor.hasVisiblePosition = () => true;
+            director.cursor.moveToPoint = async (x, y) => {
+                events.push('move:' + String(x) + ':' + String(y));
+                return true;
+            };
+            director.clickCursorAndWait = async (durationMs) => {
+                events.push('click:start:' + String(durationMs || 0));
+                return true;
+            };
+
+            const playPromise = director.moveExternalizedChatCursor(scene, {
+                onClickStart: () => events.push('operation:start'),
+            });
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const beforeAnchor = events.slice();
+            window.dispatchEvent(new CustomEvent('neko:yui-guide:external-chat-cursor-anchor', {
+                detail: {
+                    x: 640,
+                    y: 430,
+                    kind: 'tool-toggle',
+                    effect: '',
+                    source: 'external-chat',
+                    settled: true,
+                    timestamp: Date.now(),
+                },
+            }));
+            await playPromise;
+            return {
+                beforeAnchor,
+                afterAnchor: events,
+            };
+        }
+        """
+    )
+
+    assert "click:start:420" not in result["beforeAnchor"]
+    assert "operation:start" not in result["beforeAnchor"]
+    assert "sync:640:430" in result["afterAnchor"]
+    assert "click:start:420" in result["afterAnchor"]
+    assert result["afterAnchor"].index("sync:640:430") < result["afterAnchor"].index("click:start:420")
+    assert result["afterAnchor"].index("click:start:420") < result["afterAnchor"].index("operation:start")
+
+
+@pytest.mark.frontend
+def test_settled_externalized_anchor_syncs_home_cursor_without_second_move(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.__NEKO_MULTI_WINDOW__ = true;
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const events = [];
+            director.currentSceneId = 'day3_avatar_tools';
+            director.overlay.isPcOverlayActive = () => true;
+            director.overlay.getCursorPosition = () => ({ x: 320, y: 280 });
+            director.overlay.syncCursorPosition = (x, y, visible) => {
+                events.push('sync:' + String(x) + ':' + String(y) + ':' + String(visible));
+                return true;
+            };
+            director.cursor.hasPosition = () => true;
+            director.cursor.hasVisiblePosition = () => true;
+            director.cursor.showAt = (x, y) => events.push('show:' + String(x) + ':' + String(y));
+            director.cursor.moveToPoint = async (x, y) => {
+                events.push('move:' + String(x) + ':' + String(y));
+                return true;
+            };
+
+            director.moveHomeCursorToExternalizedChatAnchor(
+                { x: 640, y: 430 },
+                { kind: 'tool-toggle', effect: '', settled: true }
+            );
+            await director.waitForExternalizedChatCursorMove('day3_avatar_tools', 50);
+            return events;
+        }
+        """
+    )
+
+    assert "sync:640:430:true" in result
+    assert all(not event.startswith("move:") for event in result)
+    assert all(not event.startswith("show:") for event in result)
+
+
+@pytest.mark.frontend
+def test_day3_externalized_click_uses_cursor_move_helper_like_local_click(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.__NEKO_MULTI_WINDOW__ = true;
+            document.body.innerHTML = `<div id="react-chat-window-overlay" style="display:none;"></div>`;
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js", "yui-guide-day3-interaction-guide.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const events = [];
+            const scene = window.YuiGuideDailyGuides[3].round.scenes.find(
+                (candidate) => candidate.id === 'day3_avatar_tools'
+            );
+            director.moveExternalizedChatCursor = async (playedScene, options) => {
+                events.push('externalizedMove:' + String(playedScene && playedScene.id || ''));
+                const operationPromise = options && typeof options.onClickStart === 'function'
+                    ? options.onClickStart({ scene: playedScene })
+                    : Promise.resolve();
+                events.push('externalizedClickDone');
+                await operationPromise;
+            };
+            director.interactionTakeover = {
+                setExternalizedChatSpotlight: (kind) => events.push('spotlight:' + String(kind || '')),
+                setExternalizedChatCursor: (kind, options) => events.push(
+                    'cursor:'
+                    + String(kind || '')
+                    + ':'
+                    + String(options && options.effect || '')
+                    + ':'
+                    + String(options && options.durationMs || 0)
+                    + ':'
+                    + String(options && options.effectDurationMs || 0)
+                ),
+                setExternalizedChatCompactToolFanOpen: (open, reason) => events.push(
+                    'toolFan:' + String(open) + ':' + String(reason || '')
+                ),
+            };
+            director.speakGuideLine = async () => null;
+            director.waitForSceneDelay = async () => true;
+            director.appendGuideChatMessage = () => {};
+            director.applyGuideEmotion = () => {};
+            director.enableInterrupts = () => {};
+
+            await director.playAvatarFloatingScene(scene, 3, 1, 8);
+            return events;
+        }
+        """
+    )
+
+    assert "externalizedMove:day3_avatar_tools" in result
+    assert result.index("externalizedMove:day3_avatar_tools") < result.index(
+        "toolFan:true:avatar-floating-guide-open-tool-fan"
+    )
 
 
 @pytest.mark.frontend
@@ -7645,26 +8310,255 @@ def test_day3_galgame_entry_drags_wheel_down_and_moves_to_centered_galgame(
 
     assert {"type": "move", "id": "galgame", "durationMs": 760} in result
     assert {"type": "click", "durationMs": 900} in result
-    assert {"type": "drag", "x": 405, "y": 245, "durationMs": 260} in result
+    assert {"type": "drag", "x": 405, "y": 297, "durationMs": 260} in result
     assert {
         "type": "rotate",
         "direction": 1,
-        "stepCount": 2,
+        "stepCount": 1,
         "reason": "avatar-floating-guide-galgame-drag",
     } in result
     assert result.index({"type": "click", "durationMs": 900}) < result.index({
         "type": "drag",
         "x": 405,
-        "y": 245,
+        "y": 297,
         "durationMs": 260,
     })
     assert result.index({
         "type": "rotate",
         "direction": 1,
-        "stepCount": 2,
+        "stepCount": 1,
         "reason": "avatar-floating-guide-galgame-drag",
     }) < result.index({"type": "move", "id": "galgame", "durationMs": 520})
     assert result[-1] == {"type": "move", "id": "galgame", "durationMs": 520}
+
+
+@pytest.mark.frontend
+def test_day3_galgame_entry_externalized_drags_wheel_before_final_galgame_move(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.__NEKO_MULTI_WINDOW__ = true;
+            document.body.innerHTML = `<div id="react-chat-window-overlay" style="display:none;"></div>`;
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js", "yui-guide-day3-interaction-guide.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const events = [];
+            const scene = window.YuiGuideDailyGuides[3].round.scenes.find(
+                (candidate) => candidate.id === 'day3_galgame_entry'
+            );
+            director.speakGuideLine = async () => null;
+            director.waitForSceneDelay = async () => true;
+            director.waitForExternalizedChatCursorMove = async (sceneId, maxWaitMs) => {
+                events.push({ type: 'anchorWait', sceneId, maxWaitMs });
+                return true;
+            };
+            director.appendGuideChatMessage = () => {};
+            director.applyGuideEmotion = () => {};
+            director.enableInterrupts = () => {};
+            director.applyGuideHighlights = () => {};
+            director.interactionTakeover = {
+                setExternalizedChatSpotlight: (kind) => events.push({
+                    type: 'spotlight',
+                    kind,
+                }),
+                setExternalizedChatCursor: (kind, options) => events.push({
+                    type: 'cursor',
+                    kind,
+                    effect: options && options.effect || '',
+                    durationMs: options && options.durationMs || 0,
+                    effectDurationMs: options && options.effectDurationMs || 0,
+                }),
+                setExternalizedChatCompactToolFanOpen: (open, reason) => events.push({
+                    type: 'toolFan',
+                    open,
+                    reason,
+                }),
+                dragExternalizedChatCursor: (kind, options) => events.push({
+                    type: 'drag',
+                    kind,
+                    deltaY: options && options.deltaY || 0,
+                    hasDurationMs: !!(options && Object.prototype.hasOwnProperty.call(options, 'durationMs')),
+                    durationMs: options && options.durationMs || 0,
+                    effect: options && options.effect || '',
+                    effectDurationMs: options && options.effectDurationMs || 0,
+                }),
+                rotateExternalizedChatCompactToolWheel: (direction, stepCount, reason) => events.push({
+                    type: 'rotate',
+                    direction,
+                    stepCount,
+                    reason,
+                }),
+            };
+
+            await director.playAvatarFloatingScene(scene, 3, 3, 8);
+            return events;
+        }
+        """
+    )
+
+    initial_move = {
+        "type": "cursor",
+        "kind": "galgame",
+        "effect": "move",
+        "durationMs": 0,
+        "effectDurationMs": 0,
+    }
+    drag = {
+        "type": "drag",
+        "kind": "galgame",
+        "deltaY": 100,
+        "hasDurationMs": False,
+        "durationMs": 0,
+        "effect": "click",
+        "effectDurationMs": 900,
+    }
+    rotate = {
+        "type": "rotate",
+        "direction": 1,
+        "stepCount": 1,
+        "reason": "avatar-floating-guide-galgame-drag",
+    }
+    final_move = {
+        "type": "cursor",
+        "kind": "galgame",
+        "effect": "move",
+        "durationMs": 0,
+        "effectDurationMs": 0,
+    }
+    assert initial_move in result
+    assert {"type": "anchorWait", "sceneId": "day3_galgame_entry", "maxWaitMs": 1800} in result
+    assert drag in result
+    assert rotate in result
+    assert result.index(initial_move) < result.index({
+        "type": "anchorWait",
+        "sceneId": "day3_galgame_entry",
+        "maxWaitMs": 1800,
+    })
+    assert result.index({
+        "type": "anchorWait",
+        "sceneId": "day3_galgame_entry",
+        "maxWaitMs": 1800,
+    }) < result.index(drag)
+    assert result.index(drag) < result.index(rotate)
+    assert result[-1] == final_move
+    assert result.index(rotate) < len(result) - 1
+
+
+@pytest.mark.frontend
+def test_externalized_chat_drag_without_duration_uses_default_click_drag_motion(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/chat');
+            window.__externalChatOverlayUpdates = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 100, y: 50, width: 1200, height: 800 },
+                    contentBounds: { x: 100, y: 50, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                update: (payload) => {
+                    window.__externalChatOverlayUpdates.push(payload);
+                    return Promise.resolve({ ok: true });
+                },
+                begin: () => Promise.resolve({ ok: true }),
+                clear: () => Promise.resolve({ ok: true }),
+                relayToPet: () => {},
+            };
+            window.localStorage.setItem('yuiGuidePcOverlayRunId', 'test-run');
+            document.body.innerHTML = `
+                <div id="react-chat-window-root">
+                    <button
+                        class="compact-input-tool-item-galgame"
+                        style="position:fixed; left:600px; top:400px; width:42px; height:42px;"
+                    ></button>
+                </div>
+            `;
+        """,
+        script_names=("app-interpage.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.postMessage({
+                __nekoTutorialOverlayRelay: true,
+                payload: {
+                    action: 'yui_guide_drag_chat_cursor',
+                    kind: 'galgame',
+                    deltaY: 48,
+                    effect: 'click',
+                    effectDurationMs: 900,
+                    timestamp: Date.now(),
+                    tutorialRunId: 'test-run',
+                },
+            }, '*');
+            await new Promise((resolve) => setTimeout(resolve, 80));
+            return window.__externalChatOverlayUpdates
+                .map((update) => update && update.payload && update.payload.cursor)
+                .filter(Boolean);
+        }
+        """
+    )
+
+    assert len(result) >= 2
+    assert result[0]["effect"] == "click"
+    assert result[0]["durationMs"] == 0
+    assert result[-1]["effect"] == "click"
+    assert result[-1]["durationMs"] == 260
+    assert result[-1]["y"] - result[0]["y"] == 48
+    assert result[-1]["effectDurationMs"] == 900
+
+
+@pytest.mark.frontend
+def test_externalized_chat_drag_message_omits_duration_when_not_supplied(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.__messages = [];
+        """,
+        script_names=("tutorial-interaction-takeover.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const controller = window.TutorialInteractionTakeover.createController({
+                page: 'home',
+                externalizedChatDetector: () => true,
+                externalChatChannelProvider: () => ({
+                    postMessage: (message) => window.__messages.push(message),
+                }),
+            });
+            controller.dragExternalizedChatCursor('galgame', {
+                deltaY: 48,
+                effect: 'click',
+                effectDurationMs: 900,
+            });
+            controller.destroy();
+            return window.__messages.find((message) => message.action === 'yui_guide_drag_chat_cursor') || null;
+        }
+        """
+    )
+
+    assert result["kind"] == "galgame"
+    assert result["deltaY"] == 48
+    assert result["effect"] == "click"
+    assert result["effectDurationMs"] == 900
+    assert "durationMs" not in result
 
 
 @pytest.mark.frontend
@@ -7700,6 +8594,95 @@ def test_externalized_compact_tool_wheel_rotate_request_reaches_chat_host(
                 },
             }, '*');
             await new Promise((resolve) => setTimeout(resolve, 0));
+            return window.__hostRequests;
+        }
+        """
+    )
+
+    assert result == [{
+        "direction": 1,
+        "stepCount": 2,
+        "reason": "avatar-floating-guide-galgame-drag",
+    }]
+
+
+@pytest.mark.frontend
+def test_externalized_compact_tool_wheel_index_request_reaches_chat_host(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/chat');
+            window.__hostRequests = [];
+            window.reactChatWindowHost = {
+                setCompactToolWheelIndex: (index, reason) => {
+                    window.__hostRequests.push({ index, reason });
+                },
+            };
+            document.body.innerHTML = `<div id="react-chat-window-root"></div>`;
+        """,
+        script_names=("app-interpage.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.postMessage({
+                __nekoTutorialOverlayRelay: true,
+                payload: {
+                    action: 'yui_guide_set_compact_tool_wheel_index',
+                    index: 0,
+                    reason: 'avatar-floating-guide-day3-entry-reset',
+                    timestamp: Date.now(),
+                },
+            }, '*');
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return window.__hostRequests;
+        }
+        """
+    )
+
+    assert result == [{
+        "index": 0,
+        "reason": "avatar-floating-guide-day3-entry-reset",
+    }]
+
+
+@pytest.mark.frontend
+def test_externalized_compact_tool_wheel_rotate_retries_until_chat_host_ready(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/chat');
+            window.__hostRequests = [];
+            document.body.innerHTML = `<div id="react-chat-window-root"></div>`;
+        """,
+        script_names=("app-interpage.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.postMessage({
+                __nekoTutorialOverlayRelay: true,
+                payload: {
+                    action: 'yui_guide_rotate_compact_tool_wheel',
+                    direction: 1,
+                    stepCount: 2,
+                    reason: 'avatar-floating-guide-galgame-drag',
+                    timestamp: Date.now(),
+                },
+            }, '*');
+            await new Promise((resolve) => setTimeout(resolve, 80));
+            window.reactChatWindowHost = {
+                rotateCompactToolWheel: (direction, stepCount, reason) => {
+                    window.__hostRequests.push({ direction, stepCount, reason });
+                },
+            };
+            await new Promise((resolve) => setTimeout(resolve, 900));
             return window.__hostRequests;
         }
         """
@@ -7799,18 +8782,164 @@ def test_day3_avatar_tools_props_externalized_uses_single_cursor_click_and_opens
 
     assert "spotlight:tool-toggle" in result["beforeRelease"]
     assert "cursor:avatar-tools:move:0:0" in result["beforeRelease"]
-    assert "cursor:avatar-tools:click:0:420" in result["beforeRelease"]
-    assert "click:start:420" not in result["beforeRelease"]
+    assert "cursor:avatar-tools:click:0:420" not in result["beforeRelease"]
+    assert "click:start:420" in result["beforeRelease"]
     assert "toolFan:true:avatar-floating-guide-open-avatar-tool-fan" not in result["beforeRelease"]
     assert "avatarClick:avatar-floating-guide-open-avatar-tool-menu" in result["beforeRelease"]
     assert "avatarMenu:true:avatar-floating-guide-open-avatar-tool-menu" in result["beforeRelease"]
-    assert result["beforeRelease"].index("cursor:avatar-tools:click:0:420") < result["beforeRelease"].index(
+    assert result["beforeRelease"].index("click:start:420") < result["beforeRelease"].index(
         "avatarMenu:true:avatar-floating-guide-open-avatar-tool-menu"
     )
-    assert result["afterRelease"].count("click:start:420") == 0
-    assert result["afterRelease"].count("cursor:avatar-tools:click:0:420") == 2
+    assert result["afterRelease"].count("click:start:420") == 1
+    assert result["afterRelease"].count("cursor:avatar-tools:click:0:420") == 0
     assert "avatarMenu:false:avatar-floating-guide-close-avatar-tool-menu-after-narration" in result["afterRelease"]
     assert "avatarClick:avatar-floating-guide-close-avatar-tool-menu-after-narration" in result["afterRelease"]
+
+
+@pytest.mark.frontend
+def test_day3_avatar_tools_props_externalized_waits_for_cursor_move_before_open_click(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.__NEKO_MULTI_WINDOW__ = true;
+            document.body.innerHTML = `<div id="react-chat-window-overlay" style="display:none;"></div>`;
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js", "yui-guide-day3-interaction-guide.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const events = [];
+            const scene = window.YuiGuideDailyGuides[3].round.scenes.find(
+                (candidate) => candidate.id === 'day3_avatar_tools_props'
+            );
+            let releaseCursorAnchor;
+            const cursorAnchorReached = new Promise((resolve) => { releaseCursorAnchor = resolve; });
+            director.waitForExternalizedChatCursorMove = async (sceneId, maxWaitMs) => {
+                events.push('anchorWait:' + String(sceneId || '') + ':' + String(maxWaitMs || 0));
+                return cursorAnchorReached;
+            };
+            director.waitForSceneDelay = (durationMs) => {
+                events.push('delay:' + String(durationMs || 0));
+                return Promise.resolve(true);
+            };
+            director.clickCursorAndWait = async (durationMs) => {
+                events.push('click:start:' + String(durationMs || 0));
+                return true;
+            };
+            director.getAvatarFloatingNarrationDurationMs = () => 1000;
+            director.interactionTakeover = {
+                setExternalizedChatSpotlight: (kind) => events.push('spotlight:' + String(kind || '')),
+                setExternalizedChatCursor: (kind, options) => events.push(
+                    'cursor:'
+                    + String(kind || '')
+                    + ':'
+                    + String(options && options.effect || '')
+                    + ':'
+                    + String(options && options.durationMs || 0)
+                    + ':'
+                    + String(options && options.effectDurationMs || 0)
+                ),
+                setExternalizedChatCompactToolFanOpen: (open, reason) => events.push(
+                    'toolFan:' + String(open) + ':' + String(reason || '')
+                ),
+                setExternalizedChatAvatarToolMenuOpen: (open, reason) => events.push(
+                    'avatarMenu:' + String(open) + ':' + String(reason || '')
+                ),
+                clickExternalizedChatAvatarToolButton: (reason) => events.push(
+                    'avatarClick:' + String(reason || '')
+                ),
+            };
+            director.speakGuideLine = async () => null;
+            director.appendGuideChatMessage = () => {};
+            director.applyGuideEmotion = () => {};
+            director.enableInterrupts = () => {};
+
+            const playPromise = director.playAvatarFloatingScene(scene, 3, 2, 8);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const beforeAnchorRelease = events.slice();
+            releaseCursorAnchor(true);
+            await playPromise;
+            return {
+                beforeAnchorRelease,
+                afterRelease: events,
+            };
+        }
+        """
+    )
+
+    assert "cursor:avatar-tools:move:0:0" in result["beforeAnchorRelease"]
+    assert "anchorWait:day3_avatar_tools_props:0" in result["beforeAnchorRelease"]
+    assert "cursor:avatar-tools:click:0:420" not in result["beforeAnchorRelease"]
+    assert "click:start:420" not in result["beforeAnchorRelease"]
+    assert "avatarMenu:true:avatar-floating-guide-open-avatar-tool-menu" not in result["beforeAnchorRelease"]
+    assert "delay:760" not in result["afterRelease"]
+    assert "cursor:avatar-tools:click:0:420" not in result["afterRelease"]
+    assert "click:start:420" in result["afterRelease"]
+    assert result["afterRelease"].index("anchorWait:day3_avatar_tools_props:0") < result["afterRelease"].index(
+        "click:start:420"
+    )
+    assert result["afterRelease"].index("click:start:420") < result["afterRelease"].index(
+        "avatarMenu:true:avatar-floating-guide-open-avatar-tool-menu"
+    )
+
+
+@pytest.mark.frontend
+def test_day3_externalized_avatar_tool_menu_operation_does_not_send_cursor_effect(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.__NEKO_MULTI_WINDOW__ = true;
+            document.body.innerHTML = `<div id="react-chat-window-overlay" style="display:none;"></div>`;
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const events = [];
+            director.waitForSceneDelay = async () => true;
+            director.interactionTakeover = {
+                setExternalizedChatCursor: (kind, options) => events.push(
+                    'cursor:'
+                    + String(kind || '')
+                    + ':'
+                    + String(options && options.effect || '')
+                    + ':'
+                    + String(options && options.effectDurationMs || 0)
+                ),
+                setExternalizedChatSpotlight: (kind) => events.push('spotlight:' + String(kind || '')),
+                setExternalizedChatCompactToolFanOpen: (open, reason) => events.push(
+                    'toolFan:' + String(open) + ':' + String(reason || '')
+                ),
+                setExternalizedChatAvatarToolMenuOpen: (open, reason) => events.push(
+                    'avatarMenu:' + String(open) + ':' + String(reason || '')
+                ),
+            };
+
+            await director.runAvatarFloatingSceneOperation({
+                id: 'day3_avatar_tools_props',
+                persistent: 'chat-tool-toggle',
+                operation: 'open-avatar-tool-menu',
+            }, null, Date.now());
+            return events;
+        }
+        """
+    )
+
+    assert "cursor:avatar-tools:wobble:0" not in result
+    assert "cursor:avatar-tools:click:0" not in result
+    assert "avatarMenu:true:avatar-floating-guide-open-avatar-tool-menu" in result
 
 
 @pytest.mark.frontend

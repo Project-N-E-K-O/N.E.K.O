@@ -45,7 +45,6 @@
                     persistent: 'chat-tool-toggle',
                     target: 'chat-tool-toggle',
                     cursorAction: 'click',
-                    cursorMoveDurationMs: 1480,
                     operation: 'open-compact-tool-fan'
                 },
                 {
@@ -86,7 +85,7 @@
                     voiceKey: 'avatar_floating_day3_wrap_intro',
                     text: '今天带你认识的这些功能，其实都是为了让我们在一起的时光变得更有趣呢。',
                     emotion: 'happy',
-                    target: 'chat-window',
+                    target: 'chat-input',
                     cursorAction: 'move',
                     operation: 'cleanup'
                 },
@@ -96,7 +95,7 @@
                     voiceKey: 'avatar_floating_day3_wrap_ready',
                     text: '不管是想摸摸我的头，还是想开启属于我们的故事，我都已经做好准备了。',
                     emotion: 'happy',
-                    target: 'chat-window',
+                    target: 'chat-input',
                     cursorAction: 'move',
                     petalTransition: true
                 }

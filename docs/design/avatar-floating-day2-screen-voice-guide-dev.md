@@ -74,5 +74,5 @@ UniversalTutorialManager.startAvatarFloatingGuideRound(2)
 2. `day2_intro_context` 文案、text key 和 voice key 保持原样。
 3. 设置按钮、设置侧边栏、主动搭话入口都有明确高光目标、Ghost Cursor 路径和禁止点击/保存约束。
 4. Day 2 主线不触发屏幕分享、主动搭话或用户配置保存。
-5. Day 2 主线不发送 `cursorAction: 'wobble'`；普通指认统一使用平滑移动和停留。
+5. Day 2 主线普通指认统一使用平滑移动和停留。
 6. Day 2 完成、skip、destroy 和 angry exit 的结束态语义不变。

@@ -272,6 +272,28 @@
             }
         }
 
+        setExternalizedChatInputLocked(locked, reason) {
+            if (!this.isHomeChatExternalized()) {
+                return;
+            }
+
+            const channel = this.getExternalChatChannel();
+            if (!channel || typeof channel.postMessage !== 'function') {
+                return;
+            }
+
+            try {
+                channel.postMessage({
+                    action: 'yui_guide_set_chat_input_locked',
+                    locked: locked === true,
+                    reason: typeof reason === 'string' ? reason : '',
+                    timestamp: Date.now()
+                });
+            } catch (error) {
+                console.warn('[TutorialInteractionTakeover] 同步独立聊天窗口输入锁定状态失败', error);
+            }
+        }
+
         setExternalizedChatSpotlight(kind) {
             if (!this.isHomeChatExternalized()) {
                 return;
@@ -436,6 +458,28 @@
             }
         }
 
+        setExternalizedChatCompactToolWheelIndex(index, reason) {
+            if (!this.isHomeChatExternalized()) {
+                return;
+            }
+
+            const channel = this.getExternalChatChannel();
+            if (!channel || typeof channel.postMessage !== 'function') {
+                return;
+            }
+
+            try {
+                channel.postMessage({
+                    action: 'yui_guide_set_compact_tool_wheel_index',
+                    index: Number.isFinite(Number(index)) ? Math.max(0, Math.min(6, Math.floor(Number(index)))) : 0,
+                    reason: typeof reason === 'string' ? reason : '',
+                    timestamp: Date.now()
+                });
+            } catch (error) {
+                console.warn('[TutorialInteractionTakeover] sync external chat compact tool wheel index failed:', error);
+            }
+        }
+
         dragExternalizedChatCursor(kind, options) {
             if (!this.isHomeChatExternalized()) {
                 return;
@@ -448,17 +492,23 @@
 
             const normalizedOptions = options || {};
             try {
-                channel.postMessage({
+                const message = {
                     action: 'yui_guide_drag_chat_cursor',
                     kind: typeof kind === 'string' ? kind : '',
                     deltaX: Number.isFinite(Number(normalizedOptions.deltaX)) ? Number(normalizedOptions.deltaX) : 0,
                     deltaY: Number.isFinite(Number(normalizedOptions.deltaY)) ? Number(normalizedOptions.deltaY) : 0,
-                    durationMs: Number.isFinite(Number(normalizedOptions.durationMs)) ? Math.max(0, Math.floor(Number(normalizedOptions.durationMs))) : 0,
                     effect: typeof normalizedOptions.effect === 'string' ? normalizedOptions.effect : '',
                     effectDurationMs: Number.isFinite(Number(normalizedOptions.effectDurationMs)) ? Math.max(0, Math.floor(Number(normalizedOptions.effectDurationMs))) : 0,
                     targetIndex: Number.isFinite(Number(normalizedOptions.targetIndex)) ? Math.max(0, Math.floor(Number(normalizedOptions.targetIndex))) : 0,
                     timestamp: Date.now()
-                });
+                };
+                if (
+                    Object.prototype.hasOwnProperty.call(normalizedOptions, 'durationMs')
+                    && Number.isFinite(Number(normalizedOptions.durationMs))
+                ) {
+                    message.durationMs = Math.max(0, Math.floor(Number(normalizedOptions.durationMs)));
+                }
+                channel.postMessage(message);
             } catch (error) {
                 console.warn('[TutorialInteractionTakeover] 同步独立聊天窗教程光标拖拽失败:', error);
             }

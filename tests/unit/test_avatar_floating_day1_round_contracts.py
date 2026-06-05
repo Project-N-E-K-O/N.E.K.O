@@ -440,3 +440,18 @@ def test_day2_and_day3_reset_fallbacks_match_new_scene_shape():
     assert "ensureResetCharacterSettingsSidePanelVisible(prefix)" not in reset_open_settings_block
     for scene_id in EXPECTED_DAY3_SCENES:
         assert f"id: '{scene_id}'" in day3_block
+    assert "cursorAction: 'wobble'" not in day3_block
+
+
+def test_only_day1_tutorial_configs_use_cursor_wobble():
+    guide_files = sorted(Path("static").glob("yui-guide-day*-*.js"))
+    for guide_file in guide_files:
+        if guide_file.name.startswith("yui-guide-day1-"):
+            continue
+        source = guide_file.read_text(encoding="utf-8")
+        assert "cursorAction: 'wobble'" not in source
+
+    reset_source = Path("static/avatar-floating-guide-reset.js").read_text(encoding="utf-8")
+    for day in range(2, 8):
+        day_block = reset_source.split(f"{day}: {{", 1)[1].split(f"{day + 1}: {{", 1)[0] if day < 7 else reset_source.split("7: {", 1)[1].split("};", 1)[0]
+        assert "cursorAction: 'wobble'" not in day_block

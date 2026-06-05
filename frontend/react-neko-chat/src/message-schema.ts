@@ -175,6 +175,12 @@ const compactToolWheelRotateRequestSchema = z.object({
   forceFast: z.boolean().optional(),
 }).nullable();
 
+const compactToolWheelIndexRequestSchema = z.object({
+  id: z.string().min(1),
+  index: z.number().int().min(0).max(6),
+  reason: z.string().optional(),
+}).nullable();
+
 const avatarInteractionPayloadBaseSchema = z.object({
   interactionId: z.string().min(1),
   target: z.literal('avatar'),
@@ -304,6 +310,7 @@ export const chatWindowPropsSchema = z.object({
   exportConversationButtonAriaLabel: z.string().optional(),
   composerHidden: z.boolean().optional(),
   composerDisabled: z.boolean().optional(),
+  compactInputLocked: z.boolean().optional(),
   chatSurfaceMode: chatSurfaceModeInputSchema.optional(),
   compactChatState: compactChatStateSchema.optional(),
   onCompactChatStateChange: z.function()
@@ -322,6 +329,7 @@ export const chatWindowPropsSchema = z.object({
   avatarToolMenuOpenRequest: avatarToolMenuOpenRequestSchema.optional(),
   compactToolFanOpenRequest: compactToolFanOpenRequestSchema.optional(),
   compactToolWheelRotateRequest: compactToolWheelRotateRequestSchema.optional(),
+  compactToolWheelIndexRequest: compactToolWheelIndexRequestSchema.optional(),
   onMessageAction: z.function()
     .args(chatMessageSchema, messageActionSchema)
     .returns(z.void())

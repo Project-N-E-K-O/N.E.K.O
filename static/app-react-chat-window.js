@@ -92,9 +92,11 @@
         galgameOptionsLoading: false,
         galgameTemporarilyDisabled: false,
         homeTutorialInteractionLocked: false,
+        homeTutorialInputLocked: false,
         _avatarToolMenuOpenRequestSeq: 0,
         _compactToolFanOpenRequestSeq: 0,
         _compactToolWheelRotateRequestSeq: 0,
+        _compactToolWheelIndexRequestSeq: 0,
         _galgameRequestSeq: 0,
         // 通用 ChoicePrompt 框架。当前承载 mini_game_invite 与新手破冰；
         // galgame mode 仍走 galgameOptions 路径（BC，渐进迁移）。
@@ -2025,7 +2027,8 @@
             galgameToggleButtonLabel: getI18nText('chat.galgameToggle', 'GalGame 模式'),
             galgameToggleButtonAriaLabel: getI18nText('chat.galgameToggleAriaLabel', '切换 GalGame 选项模式'),
             galgameLoadingLabel: getI18nText('chat.galgameLoading', '生成回复选项中…'),
-            composerDisabled: !!state.homeTutorialInteractionLocked
+            composerDisabled: !!state.homeTutorialInteractionLocked,
+            compactInputLocked: !!state.homeTutorialInputLocked
         };
     }
 
@@ -2454,7 +2457,7 @@
     }
 
     function handleComposerSubmit(payload) {
-        if (state.homeTutorialInteractionLocked) {
+        if (state.homeTutorialInteractionLocked || state.homeTutorialInputLocked) {
             return;
         }
         var requestId = payload && typeof payload.requestId === 'string' && payload.requestId
@@ -3570,6 +3573,18 @@
         renderWindow();
     }
 
+    function setHomeTutorialInputLocked(locked, reason) {
+        var next = !!locked;
+        if (state.homeTutorialInputLocked === next) {
+            return;
+        }
+        state.homeTutorialInputLocked = next;
+        state.viewProps = Object.assign({}, ensureViewProps(), {
+            compactInputLocked: next
+        });
+        renderWindow();
+    }
+
     function setAvatarToolMenuOpen(open, reason) {
         state._avatarToolMenuOpenRequestSeq += 1;
         state.viewProps = Object.assign({}, ensureViewProps(), {
@@ -3613,6 +3628,22 @@
         });
         renderWindow();
         return state.viewProps.compactToolWheelRotateRequest;
+    }
+
+    function setCompactToolWheelIndex(index, reason) {
+        var normalizedIndex = Number.isFinite(Number(index))
+            ? Math.max(0, Math.min(6, Math.floor(Number(index))))
+            : 0;
+        state._compactToolWheelIndexRequestSeq += 1;
+        state.viewProps = Object.assign({}, ensureViewProps(), {
+            compactToolWheelIndexRequest: {
+                id: 'compact-tool-wheel-index-' + state._compactToolWheelIndexRequestSeq,
+                index: normalizedIndex,
+                reason: typeof reason === 'string' ? reason : ''
+            }
+        });
+        renderWindow();
+        return state.viewProps.compactToolWheelIndexRequest;
     }
 
     function deactivateToolCursor() {
@@ -5529,24 +5560,28 @@
         window.addEventListener('neko:tutorial-started', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
+            setHomeTutorialInputLocked(true, 'tutorial-started');
             setGalgameModeTemporarilyDisabled(true);
         });
 
         window.addEventListener('neko:tutorial-completed', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
+            setHomeTutorialInputLocked(false, 'tutorial-completed');
             setGalgameModeTemporarilyDisabled(false);
         });
 
         window.addEventListener('neko:tutorial-skipped', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
+            setHomeTutorialInputLocked(false, 'tutorial-skipped');
             setGalgameModeTemporarilyDisabled(false);
         });
 
         window.addEventListener('neko:tutorial-ended-without-completion', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
+            setHomeTutorialInputLocked(false, 'tutorial-ended-without-completion');
             setGalgameModeTemporarilyDisabled(false);
         });
 
@@ -5858,9 +5893,11 @@
         setComposerAttachments: setComposerAttachments,
         setComposerHidden: setComposerHidden,
         setHomeTutorialInteractionLocked: setHomeTutorialInteractionLocked,
+        setHomeTutorialInputLocked: setHomeTutorialInputLocked,
         setAvatarToolMenuOpen: setAvatarToolMenuOpen,
         setCompactToolFanOpen: setCompactToolFanOpen,
         rotateCompactToolWheel: rotateCompactToolWheel,
+        setCompactToolWheelIndex: setCompactToolWheelIndex,
         deactivateToolCursor: deactivateToolCursor,
         appendMessage: appendMessage,
         updateMessage: updateMessage,
