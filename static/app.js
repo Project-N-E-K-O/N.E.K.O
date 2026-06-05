@@ -323,9 +323,20 @@ window.addEventListener('load', async () => {
             }
             if (entries.length > 0) {
                 const changelogPromises = entries.map(entry => {
-                    const title = `v${entry.version} ${window.safeT ? window.safeT('notice.changelog.title', '更新内容') : '更新内容'}`;
+                    const changelogTitleKey = 'notice.changelog.title';
+                    const resolvedChangelogTitle = typeof window.t === 'function'
+                        ? window.t(changelogTitleKey)
+                        : '';
+                    const changelogTitle = (typeof resolvedChangelogTitle === 'string'
+                        && resolvedChangelogTitle
+                        && resolvedChangelogTitle !== changelogTitleKey)
+                        ? resolvedChangelogTitle
+                        : '更新内容';
                     return window.showProminentNotice({
-                        message: `**${title}**\n\n${(entry.content || '').trim()}`,
+                        kind: 'changelog',
+                        version: entry.version,
+                        title: changelogTitle,
+                        message: `**v${entry.version} ${changelogTitle}**\n\n${(entry.content || '').trim()}`,
                     });
                 });
                 await Promise.all(changelogPromises);
@@ -345,11 +356,33 @@ window.addEventListener('load', async () => {
                 // 先全部入队（不 await），让 UI 能感知队列长度以显示"下一个"按钮
                 const promises = notices.filter(Boolean).map(n => window.showProminentNotice(n));
                 await Promise.all(promises);
-                await fetch('/api/pending-notices/ack', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ cursor }),
-                }).catch(() => { });
+                const ackHeaders = { 'Content-Type': 'application/json' };
+                const sec = window.nekoLocalMutationSecurity;
+                if (sec && typeof sec.getMutationHeaders === 'function') {
+                    try { Object.assign(ackHeaders, await sec.getMutationHeaders()); } catch (_) { }
+                }
+                // 不能静默 .catch —— CodeRabbit on PR #1530 指出：如果 ACK
+                // 因为 token 还没注入返了 403，原来的 `.catch(() => {})` 会
+                // 当成成功，但后端没真正 drain cursor，下次启动还会再弹同一批。
+                // 显式检查 response.ok + 在失败时 console.warn，让"下次启动
+                // GET /api/pending-notices 仍带这批 → 再 ACK 一次"自然成为
+                // 重试路径，不在这里硬塞 retry/queue 复杂度。
+                try {
+                    const ackResp = await fetch('/api/pending-notices/ack', {
+                        method: 'POST',
+                        headers: ackHeaders,
+                        body: JSON.stringify({ cursor }),
+                    });
+                    if (!ackResp.ok) {
+                        console.warn(
+                            '[pending-notices/ack] backend rejected ack '
+                            + 'with HTTP ' + ackResp.status
+                            + '; notices will be re-shown on next page load',
+                        );
+                    }
+                } catch (e) {
+                    console.warn('[pending-notices/ack] ack request failed:', e);
+                }
             }
         } catch (_) { }
     })();

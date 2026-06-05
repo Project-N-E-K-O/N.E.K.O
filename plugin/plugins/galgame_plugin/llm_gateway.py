@@ -5,6 +5,7 @@ from collections import OrderedDict
 from enum import Enum
 import json
 import logging
+from difflib import SequenceMatcher
 import time
 from typing import Any, Callable, Mapping
 
@@ -21,55 +22,36 @@ from .service import (
     build_summarize_degraded_result,
 )
 
-_EXPLAIN_EVIDENCE_TYPES = frozenset({"current_line", "history_line", "choice"})
-_KEY_POINT_TYPES = frozenset({"plot", "emotion", "decision", "reveal", "objective"})
-_LLM_RESPONSE_CACHE_MAX_ITEMS = 50
-_LLM_PROVIDER_BACKOFF_SECONDS = 2.0
-_LLM_PROVIDER_BACKOFF_CATEGORIES = frozenset({"busy", "gateway_unavailable", "timeout"})
 
-
-class PluginErrorCategory(str, Enum):
-    TIMEOUT = "timeout"
-    BUSY = "busy"
-    PROVIDER_REJECTED = "provider_rejected"
-    PROVIDER_UNAVAILABLE = "provider_unavailable"
-    ENTRY_UNAVAILABLE = "entry_unavailable"
-    INTERNAL_ERROR = "internal_error"
-
-
-def _json_payload_copy(value: Any) -> Any:
-    try:
-        return json.loads(json.dumps(value, ensure_ascii=False))
-    except (TypeError, ValueError):
-        return json_copy(value)
-
-
-def _stable_json_value(value: Any) -> Any:
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, Mapping):
-        return {
-            str(key): _stable_json_value(value[key])
-            for key in sorted(value.keys(), key=lambda item: str(item))
-        }
-    if isinstance(value, (list, tuple)):
-        return [_stable_json_value(item) for item in value]
-    if isinstance(value, (set, frozenset)):
-        normalized_items = [_stable_json_value(item) for item in value]
-        return sorted(
-            normalized_items,
-            key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True),
-        )
-    return {"__non_json_type__": f"{type(value).__module__}.{type(value).__qualname__}"}
-
-
-def _stable_json_fingerprint(value: Any) -> str:
-    return json.dumps(
-        _stable_json_value(value),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+from ._gateway_utils import (
+    _EXPLAIN_EVIDENCE_TYPES,
+    _KEY_POINT_TYPES,
+    _LLM_NEAR_MATCH_CACHE_MAX_ITEMS,
+    _LLM_PROVIDER_BACKOFF_CATEGORIES,
+    _LLM_PROVIDER_BACKOFF_SECONDS,
+    _LLM_RESPONSE_CACHE_MAX_ITEMS,
+    _LOCAL_QUEUE_TIMEOUT_DIAGNOSTIC,
+    _NEAR_MATCH_EXCLUDED_KEYS,
+    _NEAR_MATCH_OBSERVED_SIGNATURE_MAX_CHARS,
+    _NEAR_MATCH_SUPPORTED_OPERATIONS,
+    _OBSERVED_SIMILARITY_THRESHOLD,
+    _REPEAT_GUARD_MAX_ITEMS,
+    _context_lines,
+    _current_line_for_near_match,
+    _hash_line,
+    _hash_stable_lines,
+    _jaccard_similarity,
+    _json_payload_copy,
+    _line_similarity_signature,
+    _near_match_context_value,
+    _ngrams,
+    _normalize_observed_text,
+    _observed_similarity,
+    _response_similarity,
+    _stable_json_fingerprint,
+    _stable_json_value,
+)
+from ._repeat_guard import PluginErrorCategory, ResponseRepeatGuard
 
 
 class LLMGateway:
@@ -80,21 +62,41 @@ class LLMGateway:
         self._backend = backend or GalgameLLMBackend(logger, config)
         self._runtime_loop: asyncio.AbstractEventLoop | None = None
         self._lock: asyncio.Lock | None = None
+        self._semaphore: asyncio.Semaphore | None = None
+        self._semaphore_limit = 0
+        self._semaphore_acquired = 0
         self._inflight: dict[str, asyncio.Task[dict[str, Any]]] = {}
         self._cache: OrderedDict[str, tuple[float, dict[str, Any], dict[str, Any]]] = OrderedDict()
+        self._near_match_cache: OrderedDict[
+            str,
+            tuple[float, dict[str, Any], dict[str, Any], dict[str, Any]],
+        ] = OrderedDict()
         self._provider_backoff: dict[tuple[str, str], tuple[float, str]] = {}
-        self._active_calls = 0
         self._context_metrics: ContextMetricsCollector | None = None
+        self._repeat_guard = ResponseRepeatGuard()
 
     def update_config(self, config) -> None:
         old_cache_config_fingerprint = self._cache_config_fingerprint()
+        old_near_match_config_fingerprint = self._near_match_config_fingerprint()
+        old_repeat_config_fingerprint = self._repeat_config_fingerprint()
         self._config = config
         if not self._metrics_enabled():
             self._context_metrics = None
         if hasattr(self._backend, "_config"):
             self._backend._config = config
-        if self._cache_config_fingerprint() != old_cache_config_fingerprint:
+        cache_config_changed = (
+            self._cache_config_fingerprint() != old_cache_config_fingerprint
+        )
+        near_match_config_changed = (
+            self._near_match_config_fingerprint()
+            != old_near_match_config_fingerprint
+        )
+        if cache_config_changed:
             self._cache.clear()
+        if cache_config_changed or near_match_config_changed:
+            self._near_match_cache.clear()
+        if self._repeat_config_fingerprint() != old_repeat_config_fingerprint:
+            self._repeat_guard.clear()
 
     @property
     def context_metrics(self) -> ContextMetricsCollector | None:
@@ -112,19 +114,40 @@ class LLMGateway:
 
     def _ensure_loop_affinity(self) -> None:
         loop = asyncio.get_running_loop()
-        if self._runtime_loop is loop and self._lock is not None:
+        limit = self._max_in_flight()
+        if (
+            self._runtime_loop is loop
+            and self._lock is not None
+            and self._semaphore is not None
+        ):
+            if limit > self._semaphore_limit:
+                for _ in range(limit - self._semaphore_limit):
+                    self._semaphore.release()
+            self._semaphore_limit = limit
             return
         if self._runtime_loop is not None and self._runtime_loop is not loop:
             self._clear_loop_bound_state()
         self._runtime_loop = loop
         self._lock = asyncio.Lock()
+        self._semaphore = asyncio.Semaphore(limit)
+        self._semaphore_limit = limit
+        self._semaphore_acquired = 0
 
     def _clear_loop_bound_state(self) -> None:
         for task in self._inflight.values():
             self._cancel_foreign_task(task)
         self._inflight.clear()
         self._provider_backoff.clear()
-        self._active_calls = 0
+        self._semaphore = None
+        self._semaphore_limit = 0
+        self._semaphore_acquired = 0
+
+    def _max_in_flight(self) -> int:
+        try:
+            value = int(getattr(self._config, "llm_max_in_flight", 2))
+        except (TypeError, ValueError):
+            value = 2
+        return max(1, value)
 
     @staticmethod
     def _cancel_foreign_task(task: asyncio.Task[dict[str, Any]]) -> None:
@@ -151,8 +174,9 @@ class LLMGateway:
             tasks = list(self._inflight.values())
             self._inflight.clear()
             self._cache.clear()
+            self._near_match_cache.clear()
             self._provider_backoff.clear()
-            self._active_calls = 0
+            self._repeat_guard.clear()
         for task in tasks:
             task.cancel()
         if tasks:
@@ -223,6 +247,8 @@ class LLMGateway:
         wait_task: asyncio.Task[dict[str, Any]] | None = None
         cached_payload: dict[str, Any] | None = None
         cached_prompt_metadata: dict[str, Any] | None = None
+        near_match_key = self._near_match_fingerprint(operation, context)
+        near_match_meta = self._build_near_match_meta(context)
 
         async with self._lock:
             cached = self._cache.get(fingerprint)
@@ -234,6 +260,20 @@ class LLMGateway:
                 self._cache.pop(fingerprint, None)
 
             if cached_payload is None:
+                if near_match_key:
+                    near_cached = self._near_match_cache.get(near_match_key)
+                    if near_cached is not None and near_cached[0] > now:
+                        if self._validate_near_match(
+                            near_cached[3],
+                            near_match_meta,
+                        ):
+                            self._near_match_cache.move_to_end(near_match_key)
+                            cached_payload = near_cached[1]
+                            cached_prompt_metadata = near_cached[2]
+                    elif near_cached is not None:
+                        self._near_match_cache.pop(near_match_key, None)
+
+            if cached_payload is None:
                 backoff = self._active_provider_backoff_locked(provider_key, now=now)
                 if backoff is not None:
                     _category, diagnostic = backoff
@@ -243,10 +283,6 @@ class LLMGateway:
                 if in_flight is not None:
                     wait_task = in_flight
                 else:
-                    if self._active_calls >= int(self._config.llm_max_in_flight):
-                        return degraded("busy: throttled by llm_max_in_flight")
-
-                    self._active_calls += 1
                     wait_task = asyncio.create_task(
                         self._perform_call(
                             fingerprint=fingerprint,
@@ -278,8 +314,16 @@ class LLMGateway:
         mode = str(
             getattr(self._config, "context_counting_mode", "char") or "char"
         ).strip().lower()
+        semantic_compression = bool(
+            getattr(self._config, "context_semantic_compression", False)
+        )
         if mode != "token":
-            return _stable_json_fingerprint({"context_counting_mode": "char"})
+            return _stable_json_fingerprint(
+                {
+                    "context_counting_mode": "char",
+                    "context_semantic_compression": semantic_compression,
+                }
+            )
         try:
             budget = int(getattr(self._config, "context_max_tokens", 6000))
         except (TypeError, ValueError):
@@ -288,6 +332,36 @@ class LLMGateway:
             {
                 "context_counting_mode": "token",
                 "context_max_tokens": max(1, budget),
+                "context_semantic_compression": semantic_compression,
+            }
+        )
+
+    def _near_match_config_fingerprint(self) -> str:
+        try:
+            ttl = float(getattr(self._config, "llm_near_match_cache_ttl_seconds", 15.0))
+        except (TypeError, ValueError):
+            ttl = 15.0
+        return _stable_json_fingerprint(
+            {
+                "llm_near_match_cache_enabled": bool(
+                    getattr(self._config, "llm_near_match_cache_enabled", False)
+                ),
+                "llm_near_match_cache_ttl_seconds": max(0.0, ttl),
+            }
+        )
+
+    def _repeat_config_fingerprint(self) -> str:
+        raw_threshold = getattr(self._config, "llm_repeat_similarity_threshold", None)
+        try:
+            threshold = 0.85 if raw_threshold is None else float(raw_threshold)
+        except (TypeError, ValueError):
+            threshold = 0.85
+        return _stable_json_fingerprint(
+            {
+                "llm_repeat_detection_enabled": bool(
+                    getattr(self._config, "llm_repeat_detection_enabled", False)
+                ),
+                "llm_repeat_similarity_threshold": max(0.0, min(threshold, 1.0)),
             }
         )
 
@@ -302,6 +376,76 @@ class LLMGateway:
             f"{_stable_json_fingerprint(context)}"
         )
 
+    def _near_match_fingerprint(
+        self,
+        operation: str,
+        context: dict[str, Any],
+    ) -> str | None:
+        if operation not in _NEAR_MATCH_SUPPORTED_OPERATIONS:
+            return None
+        if not bool(getattr(self._config, "llm_near_match_cache_enabled", False)):
+            return None
+        context_view = _near_match_context_value(context)
+        return f"{operation}:{_stable_json_fingerprint(context_view)}"
+
+    @staticmethod
+    def _build_near_match_meta(context: dict[str, Any]) -> dict[str, Any]:
+        observed_lines = _context_lines(context, "observed_lines")
+        return {
+            "stable_hash": _hash_stable_lines(_context_lines(context, "stable_lines")),
+            "current_line_hash": _hash_line(_current_line_for_near_match(context)),
+            "observed_signature": [
+                _line_similarity_signature(item)
+                for item in observed_lines
+                if _line_similarity_signature(item)
+            ],
+        }
+
+    @staticmethod
+    def _validate_near_match(
+        cached_meta: dict[str, Any],
+        current_meta: dict[str, Any],
+    ) -> bool:
+        if not cached_meta or not current_meta:
+            return False
+        if str(cached_meta.get("stable_hash") or "") != str(
+            current_meta.get("stable_hash") or ""
+        ):
+            return False
+        if str(cached_meta.get("current_line_hash") or "") != str(
+            current_meta.get("current_line_hash") or ""
+        ):
+            return False
+        cached_observed = cached_meta.get("observed_signature")
+        current_observed = current_meta.get("observed_signature")
+        if not isinstance(cached_observed, list) or not isinstance(current_observed, list):
+            return False
+        return _observed_similarity(
+            [str(item) for item in cached_observed],
+            [str(item) for item in current_observed],
+        ) >= _OBSERVED_SIMILARITY_THRESHOLD
+
+    def _ttl_for_operation(self, operation: str) -> float:
+        if operation == "explain_line":
+            return self._safe_config_float("llm_explain_cache_ttl_seconds", 8.0)
+        if operation in {"scene_summary", "summarize_scene"}:
+            return self._safe_config_float("llm_scene_summary_cache_ttl_seconds", 10.0)
+        if operation == "suggest_choice":
+            return self._safe_config_float("llm_choice_cache_ttl_seconds", 4.0)
+        return self._safe_config_float("llm_request_cache_ttl_seconds", 2.0)
+
+    def _near_match_ttl(self) -> float:
+        if not bool(getattr(self._config, "llm_near_match_cache_enabled", False)):
+            return 0.0
+        return self._safe_config_float("llm_near_match_cache_ttl_seconds", 15.0)
+
+    def _safe_config_float(self, name: str, fallback: float) -> float:
+        try:
+            value = float(getattr(self._config, name, fallback))
+        except (TypeError, ValueError):
+            value = fallback
+        return max(0.0, value)
+
     async def _perform_call(
         self,
         *,
@@ -315,27 +459,42 @@ class LLMGateway:
         start_time = time.monotonic()
         prompt_metadata: dict[str, Any] = {}
         try:
-            result = await self._call_target(
-                operation=operation,
-                context=context,
-                validate=validate,
-                degraded=degraded,
-            )
+            semaphore = self._semaphore
+            if semaphore is None:
+                self._ensure_loop_affinity()
+                semaphore = self._semaphore
+            if semaphore is None:
+                raise RuntimeError("LLM gateway semaphore was not initialized")
+            call_timeout = self._safe_config_float("llm_call_timeout_seconds", 30.0)
+            deadline = time.monotonic() + call_timeout
+            try:
+                acquired = await self._acquire_call_slot(semaphore, deadline=deadline)
+            except asyncio.TimeoutError:
+                result = degraded(_LOCAL_QUEUE_TIMEOUT_DIAGNOSTIC)
+            else:
+                try:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise asyncio.TimeoutError
+                    result = await asyncio.wait_for(
+                        self._call_and_maybe_retry_repeated_response(
+                            operation=operation,
+                            context=context,
+                            validate=validate,
+                            degraded=degraded,
+                        ),
+                        timeout=remaining,
+                    )
+                except asyncio.TimeoutError:
+                    result = degraded("timeout: llm request exceeded llm_call_timeout_seconds")
+                finally:
+                    self._release_call_slot(acquired)
             prompt_metadata = self._consume_backend_prompt_metadata()
             total_time_ms = (time.monotonic() - start_time) * 1000.0
-            if operation in {"scene_summary", "summarize_scene"}:
-                ttl = max(
-                    0.0,
-                    float(
-                        getattr(
-                            self._config,
-                            "llm_scene_summary_cache_ttl_seconds",
-                            self._config.llm_request_cache_ttl_seconds,
-                        )
-                    ),
-                )
-            else:
-                ttl = max(0.0, float(self._config.llm_request_cache_ttl_seconds))
+            ttl = self._ttl_for_operation(operation)
+            near_match_ttl = self._near_match_ttl()
+            near_match_key = self._near_match_fingerprint(operation, context)
+            near_match_meta = self._build_near_match_meta(context)
             async with self._lock:
                 self._update_provider_backoff_locked(
                     provider_key,
@@ -351,6 +510,20 @@ class LLMGateway:
                     self._cache.move_to_end(fingerprint)
                     while len(self._cache) > _LLM_RESPONSE_CACHE_MAX_ITEMS:
                         self._cache.popitem(last=False)
+                if (
+                    near_match_key
+                    and near_match_ttl > 0
+                    and not result.get("degraded")
+                ):
+                    self._near_match_cache[near_match_key] = (
+                        time.monotonic() + near_match_ttl,
+                        _json_payload_copy(result),
+                        dict(prompt_metadata),
+                        dict(near_match_meta),
+                    )
+                    self._near_match_cache.move_to_end(near_match_key)
+                    while len(self._near_match_cache) > _LLM_NEAR_MATCH_CACHE_MAX_ITEMS:
+                        self._near_match_cache.popitem(last=False)
             self._record_context_metric(
                 operation=operation,
                 context=context,
@@ -362,7 +535,101 @@ class LLMGateway:
         finally:
             async with self._lock:
                 self._inflight.pop(fingerprint, None)
-                self._active_calls = max(0, self._active_calls - 1)
+
+    async def _call_and_maybe_retry_repeated_response(
+        self,
+        *,
+        operation: str,
+        context: dict[str, Any],
+        validate: Callable[[dict[str, Any]], dict[str, Any]],
+        degraded: Callable[[str], dict[str, Any]],
+    ) -> dict[str, Any]:
+        result = await self._call_target(
+            operation=operation,
+            context=context,
+            validate=validate,
+            degraded=degraded,
+        )
+        return await self._maybe_retry_repeated_response(
+            operation=operation,
+            context=context,
+            result=result,
+            validate=validate,
+            degraded=degraded,
+        )
+
+    async def _acquire_call_slot(
+        self,
+        semaphore: asyncio.Semaphore,
+        *,
+        deadline: float,
+    ) -> asyncio.Semaphore:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise asyncio.TimeoutError("llm semaphore acquire timed out")
+            try:
+                await asyncio.wait_for(semaphore.acquire(), timeout=remaining)
+            except asyncio.TimeoutError as exc:
+                raise asyncio.TimeoutError("llm semaphore acquire timed out") from exc
+            acquired_slot = False
+            try:
+                async with self._lock:
+                    self._ensure_loop_affinity()
+                    if self._semaphore is not semaphore:
+                        continue
+                    if self._semaphore_acquired < self._semaphore_limit:
+                        self._semaphore_acquired += 1
+                        acquired_slot = True
+                        return semaphore
+            finally:
+                if not acquired_slot:
+                    semaphore.release()
+            await asyncio.sleep(0)
+
+    def _release_call_slot(self, semaphore: asyncio.Semaphore) -> None:
+        self._semaphore_acquired = max(0, self._semaphore_acquired - 1)
+        semaphore.release()
+
+    async def _maybe_retry_repeated_response(
+        self,
+        *,
+        operation: str,
+        context: dict[str, Any],
+        result: dict[str, Any],
+        validate: Callable[[dict[str, Any]], dict[str, Any]],
+        degraded: Callable[[str], dict[str, Any]],
+    ) -> dict[str, Any]:
+        if operation != "agent_reply":
+            return result
+        if not bool(getattr(self._config, "llm_repeat_detection_enabled", False)):
+            return result
+        if bool(result.get("degraded")):
+            return result
+        try:
+            threshold = float(getattr(self._config, "llm_repeat_similarity_threshold", 0.85))
+        except (TypeError, ValueError):
+            threshold = 0.85
+        threshold = max(0.0, min(threshold, 1.0))
+        if not self._repeat_guard.is_repeat(result, threshold=threshold):
+            self._repeat_guard.record(result)
+            return result
+
+        retry_context = _json_payload_copy(context)
+        retry_context["_anti_repeat_instruction"] = (
+            "The previous agent reply was too similar to a recent reply. "
+            "Answer using the current public_context, avoid repeating the same wording, "
+            "and add only facts supported by context."
+        )
+        retry = await self._call_target(
+            operation=operation,
+            context=retry_context,
+            validate=validate,
+            degraded=degraded,
+        )
+        final = result if bool(retry.get("degraded")) else retry
+        self._repeat_guard.record(final)
+        return final
 
     def _consume_backend_prompt_metadata(self) -> dict[str, Any]:
         consume = getattr(self._backend, "consume_prompt_metadata", None)
@@ -498,6 +765,8 @@ class LLMGateway:
             self._clear_provider_backoff_locked(provider_key)
             return
         diagnostic = str(result.get("diagnostic") or "").strip()
+        if diagnostic == _LOCAL_QUEUE_TIMEOUT_DIAGNOSTIC:
+            return
         category = self._provider_backoff_category(diagnostic)
         if category is None:
             return

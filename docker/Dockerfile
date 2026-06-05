@@ -42,7 +42,10 @@ ARG HTTPS_PROXY
 # Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
-ENV UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+# Per-request HTTP timeout for uv downloads (default 30s). Bumped because the
+# build runs on US Azure runners while the package mirror is in China, so large
+# wheels are slow to transfer; 30s caused spurious "operation timed out" failures.
+ENV UV_HTTP_TIMEOUT=120
 
 # Set working directory
 WORKDIR /app
@@ -101,11 +104,48 @@ COPY --from=ghcr.io/astral-sh/uv:0.6.17 /uv /usr/local/bin/uv
 RUN chmod +x /usr/local/bin/uv && \
     echo 'export PATH="/usr/local/bin:$PATH"' >> /root/.bashrc
 
-# 5. Configure uv to use Aliyun mirror
+# 5. Configure uv mirrors + fallback.
+# Two China mirrors are tried in order (aliyun -> tsinghua); neither is marked
+# default, so the implicit default (pypi.org) stays as the final fallback -- which
+# is actually fastest on the US runner. If any mirror is missing a package or
+# stalls, uv walks down the list instead of single-pointing at aliyun.
 RUN mkdir -p /root/.config/uv && \
-    echo '[[index]]' > /root/.config/uv/uv.toml && \
-    echo 'url = "https://mirrors.aliyun.com/pypi/simple/"' >> /root/.config/uv/uv.toml && \
-    echo 'default = true' >> /root/.config/uv/uv.toml
+    printf '%s\n' \
+      '[[index]]' \
+      'name = "aliyun"' \
+      'url = "https://mirrors.aliyun.com/pypi/simple/"' \
+      '[[index]]' \
+      'name = "tsinghua"' \
+      'url = "https://pypi.tuna.tsinghua.edu.cn/simple/"' \
+      > /root/.config/uv/uv.toml
+
+# 5b. Bundle the local embedding model BEFORE copying the source tree.
+# Keying this layer on the model ARGs + the downloader script alone — instead of
+# on every source change via the `COPY . /app` below — keeps it cached across
+# commits, so it only re-downloads when the pin changes. Previously this sat
+# AFTER `COPY . /app`, re-ran on every commit, and kept tripping huggingface.co's
+# per-IP rate limit (HTTP 429), failing the build. The build context excludes
+# data/embedding_models, so the later `COPY . /app` does not clobber these
+# weights. Pure-stdlib downloader run on the system python3 (the uv venv is not
+# built yet); honors the proxy ARGs. repo+revision are pinned identically to
+# .github/workflows/build-desktop.yml so every build path resolves the same
+# on-disk profile. Standard image ships only the int8 variant (the runtime
+# `auto` default) to stay lightweight; the full image bundles fp32 too.
+ARG EMBEDDING_MODEL_REPO=jinaai/jina-embeddings-v5-text-nano-retrieval
+ARG EMBEDDING_MODEL_REVISION=ac5d898c8d382b17167c33e5c8af644a3519b47d
+ARG EMBEDDING_MODEL_PROFILE_ID=local-text-retrieval-v1
+COPY scripts/prepare_embedding_model.py /app/scripts/prepare_embedding_model.py
+RUN cd /app && \
+    if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
+    if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
+    python3 scripts/prepare_embedding_model.py \
+        --repo "$EMBEDDING_MODEL_REPO" \
+        --revision "$EMBEDDING_MODEL_REVISION" \
+        --profile-id "$EMBEDDING_MODEL_PROFILE_ID" \
+        --output-root data/embedding_models \
+        --variant int8 && \
+    unset http_proxy && \
+    unset https_proxy
 
 # 6. Copy N.E.K.O. project from local build context (with correct ownership)
 COPY --chown=neko:neko . /app
@@ -129,7 +169,7 @@ RUN cd /app && \
     unset http_proxy && \
     unset https_proxy
 
-# 8b. Fix ownership after root operations (uv sync creates files as root)
+# 8c. Fix ownership after root operations (uv sync + model download create files as root)
 RUN chown -R neko:neko /app
 
 # 9. Set Playwright environment variable

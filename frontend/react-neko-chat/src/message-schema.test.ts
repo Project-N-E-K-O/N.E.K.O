@@ -15,6 +15,29 @@ describe('message-schema', () => {
     expect(message.blocks[0]?.type).toBe('text');
   });
 
+  it('normalizes empty turn ids while preserving non-empty turn ids', () => {
+    const baseMessage = {
+      id: 'msg-turn',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      blocks: [{ type: 'text', text: 'hello' }],
+    };
+
+    expect(parseChatMessage({
+      ...baseMessage,
+      turnId: null,
+    }).turnId).toBeUndefined();
+    expect(parseChatMessage({
+      ...baseMessage,
+      turnId: '',
+    }).turnId).toBeUndefined();
+    expect(parseChatMessage({
+      ...baseMessage,
+      turnId: 'turn-1',
+    }).turnId).toBe('turn-1');
+  });
+
   it('rejects invalid message payloads', () => {
     expect(() => parseChatMessage({
       id: 'msg-2',
@@ -29,6 +52,26 @@ describe('message-schema', () => {
     const props = parseChatWindowProps(undefined);
 
     expect(props).toEqual({});
+  });
+
+  it('accepts chat surface mode props', () => {
+    const props = parseChatWindowProps({
+      chatSurfaceMode: 'compact',
+      compactChatState: 'input',
+    });
+
+    expect(props.chatSurfaceMode).toBe('compact');
+    expect(props.compactChatState).toBe('input');
+  });
+
+  it('migrates the legacy "full" surface mode to compact instead of throwing', () => {
+    const props = parseChatWindowProps({
+      // Cast: 'full' is no longer part of the public type but mixed-version
+      // hosts can still send it; the schema must migrate rather than reject.
+      chatSurfaceMode: 'full' as unknown as 'compact',
+    });
+
+    expect(props.chatSurfaceMode).toBe('compact');
   });
 
   it('accepts an avatar interaction callback in window props', () => {
@@ -49,6 +92,31 @@ describe('message-schema', () => {
       timestamp: Date.now(),
     });
     expect(onAvatarInteraction).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts compact history drag state callbacks in window props', () => {
+    const onCompactHistoryDragStateChange = vi.fn();
+    const props = parseChatWindowProps({ onCompactHistoryDragStateChange });
+
+    expect(typeof props.onCompactHistoryDragStateChange).toBe('function');
+    props.onCompactHistoryDragStateChange?.({
+      active: true,
+      sessionId: 'compact-history-drag-1',
+      seq: 1,
+      phase: 'dragging',
+      dragType: 'image',
+      messageId: 'msg-1',
+      pointerClient: { clientX: 10, clientY: 20 },
+      sourceFrameRect: { left: 0, top: 0, right: 100, bottom: 50, width: 100, height: 50 },
+      dragVisualRect: { left: 10, top: 20, right: 90, bottom: 60, width: 80, height: 40 },
+      connectionVisualRect: { left: 0, top: 0, right: 90, bottom: 60, width: 90, height: 60 },
+      dragHitRect: { left: 8, top: 18, right: 92, bottom: 62, width: 84, height: 44 },
+      overTarget: false,
+      needsDesktopBounds: true,
+      timestamp: Date.now(),
+    });
+
+    expect(onCompactHistoryDragStateChange).toHaveBeenCalledTimes(1);
   });
 
   it('rejects avatar interaction payloads with a non-avatar target', () => {

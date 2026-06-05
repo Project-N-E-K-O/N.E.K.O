@@ -96,9 +96,9 @@ def _convert_core_api_profile(json_profile: Dict[str, Any]) -> Dict[str, Any]:
     # 转换字段名：snake_case -> UPPER_SNAKE_CASE
     field_mapping = {
         'core_url': 'CORE_URL',
+        'core_urls': 'CORE_URLS',
         'core_model': 'CORE_MODEL',
         'core_api_key': 'CORE_API_KEY',
-        'is_free_version': 'IS_FREE_VERSION',
     }
     
     for json_key, python_key in field_mapping.items():
@@ -123,6 +123,7 @@ def _convert_assist_api_profile(json_profile: Dict[str, Any]) -> Dict[str, Any]:
     # 转换字段名：snake_case -> UPPER_SNAKE_CASE
     field_mapping = {
         'openrouter_url': 'OPENROUTER_URL',
+        'openrouter_urls': 'OPENROUTER_URLS',
         'conversation_model': 'CONVERSATION_MODEL',
         'summary_model': 'SUMMARY_MODEL',
         'correction_model': 'CORRECTION_MODEL',
@@ -131,7 +132,6 @@ def _convert_assist_api_profile(json_profile: Dict[str, Any]) -> Dict[str, Any]:
         'agent_model': 'AGENT_MODEL',
         'audio_api_key': 'AUDIO_API_KEY',
         'openrouter_api_key': 'OPENROUTER_API_KEY',
-        'is_free_version': 'IS_FREE_VERSION',
     }
     
     for json_key, python_key in field_mapping.items():
@@ -359,11 +359,23 @@ def _resolve_native_tts_voice_provider_config(
             resolving,
         )
 
+    # voices / aliases 走 dict 深合并：继承父目录后只需在子配置里增量声明
+    # 新增/覆盖的条目（如 free_intl 在 gemini 全量目录上只加一个 yui），
+    # 不必把父目录整张重抄一遍。其余标量字段（catalog_prefix / default_voice
+    # 等）仍是子覆盖父的整体替换语义。
+    _MERGE_DICT_FIELDS = ('voices', 'aliases')
     merged = deepcopy(inherited)
     for field, value in raw.items():
         if field == 'inherits':
             continue
-        merged[field] = deepcopy(value)
+        if (
+            field in _MERGE_DICT_FIELDS
+            and isinstance(value, dict)
+            and isinstance(merged.get(field), dict)
+        ):
+            merged[field] = {**merged[field], **deepcopy(value)}
+        else:
+            merged[field] = deepcopy(value)
     return merged
 
 
@@ -408,14 +420,39 @@ def get_native_tts_voice_provider_configs() -> Dict[str, Dict[str, Any]]:
 
 
 _COSYVOICE_CLONE_MODEL_DEFAULT = "cosyvoice-v3.5-plus"
+_COSYVOICE_INTL_CLONE_MODEL_DEFAULT = "cosyvoice-v3-plus"
 
 
-def get_cosyvoice_clone_model() -> str:
+def get_cosyvoice_clone_model(provider: str | None = None) -> str:
     """获取 CosyVoice 克隆/合成使用的模型名称。
 
-    读取 api_providers.json → default_models.cosyvoice_clone_model，
-    未配置时 fallback 到 ``cosyvoice-v3.5-plus``。
+    国内版读取 api_providers.json → default_models.cosyvoice_clone_model，
+    国际版读取 default_models.cosyvoice_intl_clone_model。阿里国际部署不支持
+    ``cosyvoice-v3.5-plus``，需要使用国际区域可用的 v3 系列模型。
     """
+    normalized_provider = str(provider or '').strip().lower()
+    intl_aliases = {
+        'cosyvoice_intl',
+        'qwen_intl',
+        'qwen_us',
+        'intl',
+        'international',
+        'us',
+        'usa',
+        'united_states',
+        'dashscope_us',
+        'dashscope-us',
+    }
+    if (
+        normalized_provider in intl_aliases
+        or "dashscope-intl.aliyuncs.com" in normalized_provider
+        or "dashscope-us.aliyuncs.com" in normalized_provider
+    ):
+        return (
+            get_default_models().get('cosyvoice_intl_clone_model')
+            or _COSYVOICE_INTL_CLONE_MODEL_DEFAULT
+        )
+
     return (
         get_default_models().get('cosyvoice_clone_model')
         or _COSYVOICE_CLONE_MODEL_DEFAULT
@@ -461,7 +498,11 @@ def get_livestream_config() -> Dict[str, Any]:
             with open(standalone_path, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
             if isinstance(loaded, dict):
-                raw = loaded
+                # 兼容两种 shape：flat（顶层就是 enabled/server_prefix/voice_id）
+                # 与 wrapped（顶层 'livestream_config' 包一层，跟 api_providers.json
+                # 同构）。主播复用 api_providers.json 结构是常见操作，不强求扁平。
+                inner = loaded.get('livestream_config')
+                raw = inner if isinstance(inner, dict) else loaded
         except Exception as e:
             logger.warning(
                 f"读取 {standalone_path.name} 失败，回退到 api_providers.json: {e}"

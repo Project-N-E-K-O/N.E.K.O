@@ -98,7 +98,7 @@
                     @click.stop
                     @change="$emit('togglePlugin', plugin.id)"
                   />
-                  <span class="plugin-list-row__name">{{ pluginDisplayName(plugin) }}</span>
+                  <span class="plugin-list-row__name">{{ plugin.displayName || plugin.name }}</span>
                 </div>
               </template>
               <template v-else>
@@ -123,7 +123,6 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import PluginCard from '@/components/plugin/PluginCard.vue'
-import { resolvePluginI18nMessage } from '@/utils/i18nLabel'
 import type { PluginMeta } from '@/types/api'
 
 type LayoutMode = 'list' | 'single' | 'double' | 'compact'
@@ -134,6 +133,7 @@ type SelectablePlugin = PluginMeta & {
   type: PluginGroupType
   enabled?: boolean
   autoStart?: boolean
+  displayName?: string
 }
 
 const props = defineProps<{
@@ -167,7 +167,7 @@ defineEmits<{
   'update:layoutMode': [value: LayoutMode]
 }>()
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 
 const layoutClass = computed(() => `plugin-selector-grid--${props.layoutMode}`)
 const totalFilteredCount = computed(
@@ -182,15 +182,6 @@ const sections = computed(() => [
 
 function isSelected(pluginId: string): boolean {
   return props.selectedPluginIds.includes(pluginId)
-}
-
-function pluginDisplayName(plugin: SelectablePlugin): string {
-  return resolvePluginI18nMessage(
-    plugin.i18n,
-    'plugin.name',
-    locale.value,
-    plugin.name || plugin.id,
-  )
 }
 </script>
 

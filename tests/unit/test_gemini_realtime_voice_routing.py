@@ -11,7 +11,6 @@ from main_logic.core import LLMSessionManager
 from utils.config_manager import ConfigManager
 from utils.native_voice_registry import (
     resolve_native_voice_for_routing,
-    should_block_free_voice_for_route,
 )
 
 
@@ -175,11 +174,11 @@ def test_step_native_preview_provider_respects_custom_voice_collision():
     colliding_mgr = _FakeCharactersRouterConfigManager(
         "free",
         "wss://lanlan.tech/realtime",
-        stored_voice_ids={"linjiameimei"},
+        stored_voice_ids={"qingchunshaonv"},
     )
 
     assert characters_router._get_active_native_preview_provider(native_mgr, "中文女") == "free"
-    assert characters_router._get_active_native_preview_provider(colliding_mgr, "linjiameimei") is None
+    assert characters_router._get_active_native_preview_provider(colliding_mgr, "qingchunshaonv") is None
     assert characters_router._get_active_native_preview_provider(colliding_mgr, "中文女") is None
 
 
@@ -206,7 +205,9 @@ async def test_voice_catalog_uses_active_realtime_provider(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_free_voice_catalog_hidden_on_lanlan_app(monkeypatch):
+async def test_free_voice_catalog_on_lanlan_app_shows_free_intl(monkeypatch):
+    """海外免费（lanlan.app）展示 free_intl（Gemini 全量）+ yui/default 置顶 pin；
+    国内免费（lanlan.tech）展示 free（阶跃）原生，无 pin。"""
     monkeypatch.setattr(
         characters_router,
         "get_config_manager",
@@ -229,40 +230,87 @@ async def test_free_voice_catalog_hidden_on_lanlan_app(monkeypatch):
 
     domestic_free_result = await characters_router.get_voices()
 
-    assert "native_voices" not in overseas_free_result
+    # 海外：Gemini 全量原生 + yui/default 置顶；yui 已从长列表挪进 pin，Leda 保留
+    assert "native_voices" in overseas_free_result
+    assert "yui" not in overseas_free_result["native_voices"]
+    assert "Leda" in overseas_free_result["native_voices"]
+    pins = overseas_free_result.get("pinned_voices")
+    assert [p["voice_id"] for p in pins] == ["yui", "Leda"]
+    assert pins[0]["i18n_key"] == "voice.freeVoice.yui"
+    assert pins[1]["i18n_key"] == "voice.freeVoice.default"
+
+    # 国内：阶跃原生，无置顶 pin
     assert "native_voices" in domestic_free_result
+    assert "pinned_voices" not in domestic_free_result
 
 
-def test_free_native_voice_blocked_on_lanlan_app_route():
+@pytest.mark.asyncio
+async def test_free_intl_pin_hidden_when_voice_id_collides_with_clone(monkeypatch):
+    """用户克隆/自建音色撞名 yui → 该置顶 pin 隐藏（runtime 会按撞名走克隆，
+    pin 点了到不了 Gemini）；未撞名的 default(Leda) pin 保留。"""
+    monkeypatch.setattr(
+        characters_router,
+        "get_config_manager",
+        lambda: _FakeCharactersRouterConfigManager(
+            "free",
+            "wss://lanlan.app/realtime",
+            stored_voice_ids={"yui"},
+        ),
+    )
+
+    result = await characters_router.get_voices()
+    pins = result.get("pinned_voices")
+    assert [p["voice_id"] for p in pins] == ["Leda"]
+
+
+@pytest.mark.asyncio
+async def test_free_intl_native_entry_hidden_when_voice_id_collides(monkeypatch):
+    """撞名（跨桶克隆同名）的 Gemini 音色也要从长列表去掉：runtime 按 any-storage
+    撞名判定拒绝当 native，展示了点选也到不了 Gemini（与 pin 撞名隐藏对偶）。"""
+    monkeypatch.setattr(
+        characters_router,
+        "get_config_manager",
+        lambda: _FakeCharactersRouterConfigManager(
+            "free",
+            "wss://lanlan.app/realtime",
+            stored_voice_ids={"Leda"},
+        ),
+    )
+
+    result = await characters_router.get_voices()
+    # default pin（Leda）撞名隐藏
+    assert [p["voice_id"] for p in result.get("pinned_voices")] == ["yui"]
+    # 长列表里的 Leda 也撞名隐藏；其它 Gemini 音色不受影响
+    assert "Leda" not in result["native_voices"]
+    assert "Puck" in result["native_voices"]
+
+
+def test_free_intl_remaps_gemini_and_yui_native_on_lanlan_app_route():
+    """海外免费路由（free + *.lanlan.app）下，Gemini 音色与 yui 经 free_intl 认成
+    native；阶跃预设音色不在 free_intl 目录里，按非 native fall through。"""
     voice_id_exists = _FakeConfigManager().voice_id_exists_in_any_storage
 
-    assert (
-        should_block_free_voice_for_route(
-            "free",
-            "  qingchunshaonv  ",
-            "wss://lanlan.app/realtime",
-            voice_id_exists,
-        )
-        is True
-    )
-    assert (
-        should_block_free_voice_for_route(
-            "free",
-            "qingchunshaonv",
-            "wss://lanlan.tech/realtime",
-            voice_id_exists,
-        )
-        is False
-    )
-    assert (
-        should_block_free_voice_for_route(
-            "free",
-            "qingchunshaonv",
-            "wss://notlanlan.app/realtime",
-            voice_id_exists,
-        )
-        is False
-    )
+    # Gemini 音色 / yui → 海外 free 路由认 native
+    assert resolve_native_voice_for_routing(
+        "free", "Puck", voice_id_exists, realtime_base_url="wss://lanlan.app/realtime",
+    ) == ("Puck", True)
+    assert resolve_native_voice_for_routing(
+        "free", "  yui  ", voice_id_exists, realtime_base_url="wss://edge.lanlan.app/realtime",
+    ) == ("yui", True)
+    # default 别名 → Leda
+    assert resolve_native_voice_for_routing(
+        "free", "default", voice_id_exists, realtime_base_url="wss://lanlan.app/realtime",
+    ) == ("Leda", True)
+
+    # 国内 free（lanlan.tech）：阶跃目录不识别 Gemini 音色
+    assert resolve_native_voice_for_routing(
+        "free", "Puck", voice_id_exists, realtime_base_url="wss://lanlan.tech/realtime",
+    ) == ("Puck", False)
+
+    # 海外 free：阶跃预设不在 free_intl 目录 → 非 native
+    assert resolve_native_voice_for_routing(
+        "free", "qingchunshaonv", voice_id_exists, realtime_base_url="wss://lanlan.app/realtime",
+    ) == ("qingchunshaonv", False)
 
 
 def test_voice_mode_gemini_native_uses_realtime_audio_not_external_tts():
@@ -276,6 +324,85 @@ def test_voice_mode_gemini_native_uses_realtime_audio_not_external_tts():
             {"ENABLE_CUSTOM_API": True, "TTS_MODEL_URL": "http://localhost:9880"},
         )
         is False
+    )
+
+
+def test_livestream_skips_external_tts_regardless_of_voice_preset(monkeypatch):
+    """Livestream 上游是 free 路 Gemini 系，无论角色卡 voice_id 是不是 free preset，
+    都应跳过外部 TTS 走服务端原生语音。PR #1369 的 free-preset gate 漏掉了
+    "livestream + 非 preset 音色"（克隆 / 空 voice_id）这条路径——本测试守门。"""
+    monkeypatch.setattr(
+        "main_logic.core.is_livestream_active",
+        lambda: True,
+    )
+    realtime_config = {"base_url": "wss://主播自建.example.com/realtime"}
+    core_config = {
+        "ENABLE_CUSTOM_API": True,
+        "TTS_MODEL_URL": "http://localhost:9880",
+        "GPTSOVITS_ENABLED": True,
+    }
+
+    # 角色卡是克隆音色（非 free preset）
+    mgr_clone = _make_mgr("voice-clone-abc")
+    mgr_clone.core_api_type = "free"
+    mgr_clone._is_free_preset_voice = False
+    assert (
+        LLMSessionManager._resolve_session_use_tts(
+            mgr_clone, "audio", realtime_config, core_config,
+        )
+        is False
+    )
+
+    # 角色卡 voice_id 为空
+    mgr_empty = _make_mgr("")
+    mgr_empty.core_api_type = "free"
+    mgr_empty._is_free_preset_voice = False
+    assert (
+        LLMSessionManager._resolve_session_use_tts(
+            mgr_empty, "audio", realtime_config, core_config,
+        )
+        is False
+    )
+
+    # 文本模式仍然启用 TTS（没有 realtime audio 通道兜底）
+    mgr_text = _make_mgr("voice-clone-abc")
+    mgr_text.core_api_type = "free"
+    mgr_text._is_free_preset_voice = False
+    assert (
+        LLMSessionManager._resolve_session_use_tts(
+            mgr_text, "text", realtime_config, core_config,
+        )
+        is True
+    )
+
+
+def test_non_livestream_free_preset_still_skips_tts_only_on_lanlan_tech(monkeypatch):
+    """回归 PR #1369 原 gate 的窄路径：非 livestream 时，free preset 仅在
+    base_url 指向 lanlan.tech 域时跳 TTS，其他域照旧 fallback 外部 TTS。"""
+    monkeypatch.setattr(
+        "main_logic.core.is_livestream_active",
+        lambda: False,
+    )
+    core_config = {
+        "ENABLE_CUSTOM_API": True,
+        "TTS_MODEL_URL": "http://localhost:9880",
+        "GPTSOVITS_ENABLED": True,
+    }
+    mgr = _make_mgr("qingchunshaonv")
+    mgr.core_api_type = "free"
+    mgr._is_free_preset_voice = True
+
+    assert (
+        LLMSessionManager._resolve_session_use_tts(
+            mgr, "audio", {"base_url": "wss://lanlan.tech/realtime"}, core_config,
+        )
+        is False
+    )
+    assert (
+        LLMSessionManager._resolve_session_use_tts(
+            mgr, "audio", {"base_url": "wss://lanlan.app/realtime"}, core_config,
+        )
+        is True
     )
 
 

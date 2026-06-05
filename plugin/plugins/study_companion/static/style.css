@@ -118,6 +118,13 @@ button:hover {
   background: #f8fafc;
 }
 
+button:focus-visible,
+textarea:focus-visible,
+a:focus-visible {
+  outline: 3px solid rgba(46, 91, 255, 0.36);
+  outline-offset: 2px;
+}
+
 button.is-active {
   background: #2e5bff;
   border-color: #2e5bff;
@@ -139,9 +146,57 @@ button.loading {
 }
 
 .study-workspace,
+.memory-panel,
 .question-panel,
 .reply-panel {
   margin-top: 18px;
+}
+
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.section-heading span {
+  color: #5a6472;
+  font-size: 13px;
+}
+
+.memory-inputs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 12px;
+}
+
+.memory-inputs .input-label {
+  margin-bottom: -2px;
+}
+
+#memoryFrontInput,
+#memoryBackInput {
+  min-height: 92px;
+}
+
+.memory-card {
+  min-height: 96px;
+  margin-top: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid #c8d0dc;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 12px;
+  line-height: 1.5;
+}
+
+.memory-review-actions {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
 }
 
 .input-label {
@@ -169,6 +224,19 @@ textarea {
   flex-wrap: wrap;
 }
 
+.study-panel__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  padding: 8px 0;
+}
+
+.study-panel__row span {
+  overflow-wrap: anywhere;
+}
+
 .reply-panel {
   border-top: 1px solid #d8dde6;
   padding-top: 18px;
@@ -184,6 +252,23 @@ pre {
   background: #ffffff;
   padding: 12px;
   line-height: 1.5;
+}
+
+#replyText .katex {
+  font-size: 1.02em;
+}
+
+#replyText .katex-display {
+  margin: 0.75rem 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+#replyText code {
+  border-radius: 5px;
+  background: #eef2f7;
+  padding: 2px 5px;
+  color: #1d2430;
 }
 
 #questionText {
@@ -218,8 +303,17 @@ pre {
     grid-template-columns: 1fr;
   }
 
+  .memory-inputs,
+  .memory-review-actions {
+    grid-template-columns: 1fr;
+  }
+
   .mode-strip button {
     flex: 1 1 0;
     min-width: 0;
+  }
+
+  .study-panel__row {
+    grid-template-columns: 1fr;
   }
 }

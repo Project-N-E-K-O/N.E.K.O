@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,14 @@ Page = playwright_sync_api.Page
 expect = playwright_sync_api.expect
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_UNIVERSAL_TUTORIAL_DEPENDENCIES = (
+    "tutorial-skip-controller.js",
+    "tutorial-avatar-reload-controller.js",
+)
+_YUI_DIRECTOR_DEPENDENCIES = (
+    "yui-guide-overlay.js",
+    "tutorial-interaction-takeover.js",
+)
 _PAGE_BOOTSTRAP_TEMPLATE = """
 () => {
     window.safeT = function(key, fallback) {
@@ -59,6 +68,22 @@ __FETCH_JS__
 """
 
 
+def _expand_script_dependencies(script_names: tuple[str, ...]) -> tuple[str, ...]:
+    expanded = []
+    for script_name in script_names:
+        if script_name == "yui-guide-director.js":
+            for dependency in _YUI_DIRECTOR_DEPENDENCIES:
+                if dependency not in expanded:
+                    expanded.append(dependency)
+        if script_name == "universal-tutorial-manager.js":
+            for dependency in _UNIVERSAL_TUTORIAL_DEPENDENCIES:
+                if dependency not in expanded:
+                    expanded.append(dependency)
+        if script_name not in expanded:
+            expanded.append(script_name)
+    return tuple(expanded)
+
+
 def _bootstrap_page(
     mock_page: Page,
     *,
@@ -81,7 +106,7 @@ def _bootstrap_page(
         .replace("__SETUP_JS__", setup_js.strip())
         .replace("__FETCH_JS__", fetch_js.strip())
     )
-    for script_name in script_names:
+    for script_name in _expand_script_dependencies(script_names):
         mock_page.add_script_tag(path=str(PROJECT_ROOT / "static" / script_name))
     if init_js:
         mock_page.evaluate(init_js)
@@ -149,6 +174,60 @@ def _has_playwright_browser() -> bool:
         return False
 
 
+@pytest.mark.frontend
+def test_yui_intro_activation_accepts_compact_chat_input_shell(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        script_names=("yui-guide-director.js",),
+        init_js="""
+            () => {
+                document.body.innerHTML = `
+                    <div id="react-chat-window-root">
+                        <div class="composer-panel">
+                            <div class="composer-input-shell">
+                                <textarea class="composer-input"></textarea>
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                const buildDirector = function(label) {
+                    const director = window.createYuiGuideDirector({ page: 'home' });
+                    director.awaitingIntroActivation = true;
+                    director._introActivationResolve = function() {
+                        window.__activationResults[label].resolved = true;
+                    };
+                    return director;
+                };
+
+                window.__activationResults = {
+                    shell: { resolved: false },
+                    panel: { resolved: false },
+                };
+
+                const shellDirector = buildDirector('shell');
+                const shell = document.querySelector('#react-chat-window-root .composer-input-shell');
+                window.__activationResults.shell.allowed =
+                    shellDirector.isAllowedTutorialInteractionTarget(shell, new MouseEvent('click'));
+                window.__activationResults.shell.awaiting = shellDirector.awaitingIntroActivation;
+
+                const panelDirector = buildDirector('panel');
+                const panel = document.querySelector('#react-chat-window-root .composer-panel');
+                window.__activationResults.panel.allowed =
+                    panelDirector.isAllowedTutorialInteractionTarget(panel, new MouseEvent('click'));
+                window.__activationResults.panel.awaiting = panelDirector.awaitingIntroActivation;
+            }
+        """,
+    )
+
+    result = mock_page.evaluate("window.__activationResults")
+
+    assert result == {
+        "shell": {"resolved": True, "allowed": True, "awaiting": False},
+        "panel": {"resolved": True, "allowed": True, "awaiting": False},
+    }
+
+
 pytestmark = pytest.mark.skipif(
     not _has_playwright_browser(),
     reason="requires Playwright browser binaries",
@@ -159,6 +238,37 @@ pytestmark = pytest.mark.skipif(
 def mock_memory_server():
     """This browser-only prompt test does not need the repo-level mock memory server."""
     yield
+
+
+@pytest.mark.frontend
+def test_changelog_notice_preserves_leading_list_item(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.appState = { dom: {} };
+            window.appConst = {};
+        """,
+        script_names=("app-ui.js",),
+    )
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.showProminentNotice({
+                kind: 'changelog',
+                version: '0.8.2',
+                title: '更新内容',
+                message: '- **新增**：第一条更新\\n- **修复**：第二条更新',
+            });
+        }
+        """
+    )
+
+    items = mock_page.locator(".prominent-notice-changelog-item")
+    expect(items).to_have_count(2)
+    expect(items.nth(0)).to_contain_text("新增")
+    expect(items.nth(0)).to_contain_text("第一条更新")
+    expect(items.nth(1)).to_contain_text("第二条更新")
 
 
 @pytest.mark.frontend
@@ -339,8 +449,21 @@ def test_home_prompt_queue_serializes_tutorial_and_autostart_prompts(
 
     expect(tutorial_title).to_have_text("要不要让 N.E.K.O 开机自动启动？", timeout=5000)
     expect(mock_page.locator(".modal-overlay")).to_have_count(1)
+    expect(mock_page.locator(".modal-dialog-autostart-retention")).to_have_count(1)
+    expect(mock_page.locator(".exit-retention-cat-character")).to_have_count(1)
+    expect(mock_page.locator(".exit-retention-cat-head-group")).to_have_count(1)
+    expect(mock_page.locator(".exit-retention-cat-mouth")).to_have_count(1)
+    expect(mock_page.locator(".exit-retention-cat-paw")).to_have_count(2)
 
-    mock_page.get_by_role("button", name="稍后再说").click()
+    dialog = mock_page.locator(".modal-dialog-autostart-retention")
+    mock_page.locator(".modal-body").hover()
+    expect(dialog).to_have_class(re.compile(r"\bstate-curious\b"))
+    mock_page.get_by_role("button", name="开启自启动").hover()
+    expect(dialog).to_have_class(re.compile(r"\bstate-happy\b"))
+    mock_page.get_by_role("button", name="以后提醒").hover()
+    expect(dialog).to_have_class(re.compile(r"\bstate-sad\b"))
+
+    mock_page.get_by_role("button", name="以后提醒").click()
     expect(mock_page.locator(".modal-overlay")).to_have_count(0, timeout=5000)
 
     request_log = mock_page.evaluate("() => window.__requestLog")
@@ -350,6 +473,142 @@ def test_home_prompt_queue_serializes_tutorial_and_autostart_prompts(
     assert "/api/tutorial-prompt/tutorial-started" in requested_urls
     assert "/api/autostart-prompt/heartbeat" in requested_urls
     assert "/api/autostart-prompt/decision" in requested_urls
+
+
+@pytest.mark.frontend
+def test_autostart_prompt_offers_never_after_backend_allows_it(
+    mock_page: Page,
+):
+    _bootstrap_tutorial_prompt_page(
+        mock_page,
+        include_common_dialogs=True,
+        include_autostart_prompt=True,
+        setup_js="""
+            window.__requestLog = [];
+            window.nekoAutostartProvider = {
+                getStatus: async function() {
+                    return {
+                        ok: true,
+                        supported: true,
+                        enabled: false,
+                        authoritative: true,
+                        provider: 'backend',
+                    };
+                },
+                enable: async function() {
+                    return {
+                        ok: true,
+                        supported: true,
+                        enabled: true,
+                        authoritative: true,
+                        provider: 'backend',
+                    };
+                },
+            };
+        """,
+        fetch_js="""
+            window.__requestLog.push({
+                url: requestUrl,
+                method: method,
+                body: body,
+            });
+
+            if (requestUrl === '/api/tutorial-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'completed',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: true,
+                    },
+                });
+            }
+            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: false,
+                    prompt_reason: 'tutorial_completed',
+                    prompt_token: null,
+                    state: {
+                        status: 'completed',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: true,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                        can_never_remind: true,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/heartbeat') {
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: true,
+                    prompt_reason: 'usage_timeout',
+                    prompt_token: 'autostart-token',
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                        can_never_remind: true,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/shown') {
+                return jsonResponse({
+                    ok: true,
+                    already_acknowledged: false,
+                    state: {
+                        status: 'prompted',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                        can_never_remind: true,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/decision') {
+                return jsonResponse({
+                    ok: true,
+                    state: {
+                        status: body && body.decision === 'never' ? 'never' : 'deferred',
+                        never_remind: body && body.decision === 'never',
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                        can_never_remind: true,
+                    },
+                });
+            }
+        """,
+    )
+
+    expect(mock_page.locator(".modal-dialog-autostart-retention")).to_have_count(1, timeout=5000)
+    expect(mock_page.get_by_role("button", name="不再提示")).to_be_visible()
+    expect(mock_page.get_by_role("button", name="以后提醒")).to_be_visible()
+    expect(mock_page.get_by_role("button", name="开启自启动")).to_be_visible()
+
+    mock_page.get_by_role("button", name="不再提示").click()
+    expect(mock_page.locator(".modal-overlay")).to_have_count(0, timeout=5000)
+
+    request_log = mock_page.evaluate("() => window.__requestLog")
+    autostart_decisions = [
+        entry for entry in request_log
+        if entry["url"] == "/api/autostart-prompt/decision"
+    ]
+
+    assert autostart_decisions
+    assert autostart_decisions[-1]["body"]["decision"] == "never"
 
 
 @pytest.mark.frontend
@@ -2220,6 +2479,52 @@ def test_home_tutorial_skip_restores_temporarily_disabled_galgame_mode(
 
 
 @pytest.mark.frontend
+def test_home_tutorial_early_end_restores_temporarily_disabled_galgame_mode(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.localStorage.setItem('neko.reactChatWindow.galgameMode', 'true');
+        """,
+        script_names=("app-react-chat-window.js",),
+    )
+
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost && window.reactChatWindowHost.isGalgameModeEnabled() === true",
+        timeout=5000,
+    )
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.dispatchEvent(new CustomEvent('neko:tutorial-started', {
+                detail: { page: 'home' },
+            }));
+        }
+        """
+    )
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost.isGalgameModeEnabled() === false",
+        timeout=5000,
+    )
+
+    mock_page.evaluate(
+        """
+        () => {
+            window.dispatchEvent(new CustomEvent('neko:tutorial-ended-without-completion', {
+                detail: { page: 'home', reason: 'page-changed' },
+            }));
+        }
+        """
+    )
+    mock_page.wait_for_function(
+        "() => window.reactChatWindowHost.isGalgameModeEnabled() === true",
+        timeout=5000,
+    )
+
+
+@pytest.mark.frontend
 def test_home_tutorial_feature_controller_restores_live_galgame_state_after_legacy_listener(
     mock_page: Page,
 ):
@@ -2517,6 +2822,331 @@ def test_tutorial_heartbeat_does_not_report_completed_while_tutorial_is_running(
 
     assert result["manual_home_tutorial_viewed"] is True
     assert result["home_tutorial_completed"] is False
+
+
+@pytest.mark.frontend
+def test_autostart_foreground_timer_starts_after_character_onboarding_settles(
+    mock_page: Page,
+):
+    _bootstrap_tutorial_prompt_page(
+        mock_page,
+        include_autostart_prompt=True,
+        setup_js="""
+            window.__now = 1000;
+            Date.now = function() { return window.__now; };
+            window.__autostartHeartbeatBodies = [];
+            window.__resolveCharacterOnboarding = null;
+            window.CharacterPersonalityOnboarding = {
+                whenSettled: function() {
+                    if (!window.__characterOnboardingPromise) {
+                        window.__characterOnboardingPromise = new Promise(function(resolve) {
+                            window.__resolveCharacterOnboarding = resolve;
+                        });
+                    }
+                    return window.__characterOnboardingPromise;
+                },
+            };
+            window.nekoAutostartProvider = {
+                getStatus: async function() {
+                    window.__now = 1000 + (4 * 60 * 1000);
+                    return {
+                        ok: true,
+                        supported: true,
+                        enabled: false,
+                        authoritative: true,
+                        provider: 'neko-pc',
+                    };
+                },
+                enable: async function() {
+                    throw new Error('enable should not be called');
+                },
+            };
+        """,
+        fetch_js="""
+            if (requestUrl === '/api/tutorial-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'completed',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: true,
+                    },
+                });
+            }
+            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: false,
+                    state: {
+                        status: 'completed',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: true,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/heartbeat') {
+                window.__autostartHeartbeatBodies.push(body);
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: false,
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+        """,
+    )
+
+    mock_page.wait_for_function("() => window.__autostartHeartbeatBodies.length > 0")
+
+    first_body = mock_page.evaluate("() => window.__autostartHeartbeatBodies[0]")
+
+    assert first_body["foreground_ms_delta"] == 0
+
+    mock_page.evaluate("() => window.__resolveCharacterOnboarding()")
+    mock_page.wait_for_timeout(50)
+    mock_page.evaluate(
+        """
+        () => {
+            window.__now = 1000 + (4 * 60 * 1000) + 10000;
+            window.dispatchEvent(new CustomEvent('neko:autostart-status-changed', {
+                detail: {
+                    supported: true,
+                    enabled: false,
+                    authoritative: true,
+                    provider: 'neko-pc',
+                },
+            }));
+        }
+        """
+    )
+    mock_page.wait_for_function(
+        "() => window.__autostartHeartbeatBodies.some((body) => body.foreground_ms_delta > 0)"
+    )
+
+
+@pytest.mark.frontend
+def test_autostart_foreground_timer_starts_immediately_for_settled_character_onboarding(
+    mock_page: Page,
+):
+    _bootstrap_tutorial_prompt_page(
+        mock_page,
+        include_autostart_prompt=True,
+        setup_js="""
+            window.__now = 1000;
+            Date.now = function() { return window.__now; };
+            window.__autostartHeartbeatBodies = [];
+            window.CharacterPersonalityOnboarding = {
+                whenSettled: function() {
+                    return Promise.resolve();
+                },
+            };
+            window.nekoAutostartProvider = {
+                getStatus: async function() {
+                    return {
+                        ok: true,
+                        supported: true,
+                        enabled: false,
+                        authoritative: true,
+                        provider: 'neko-pc',
+                    };
+                },
+                enable: async function() {
+                    throw new Error('enable should not be called');
+                },
+            };
+        """,
+        fetch_js="""
+            if (requestUrl === '/api/tutorial-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'completed',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: true,
+                    },
+                });
+            }
+            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: false,
+                    state: {
+                        status: 'completed',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: true,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/heartbeat') {
+                window.__autostartHeartbeatBodies.push(body);
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: false,
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+        """,
+    )
+
+    mock_page.wait_for_function("() => window.__autostartHeartbeatBodies.length > 0")
+    mock_page.evaluate(
+        """
+        () => {
+            window.__now = 1000 + 10000;
+            window.dispatchEvent(new CustomEvent('neko:autostart-status-changed', {
+                detail: {
+                    supported: true,
+                    enabled: false,
+                    authoritative: true,
+                    provider: 'neko-pc',
+                },
+            }));
+        }
+        """
+    )
+    mock_page.wait_for_timeout(1300)
+
+    mock_page.wait_for_function(
+        "() => window.__autostartHeartbeatBodies.some((body) => body.foreground_ms_delta > 0)"
+    )
+
+
+@pytest.mark.frontend
+def test_autostart_prompt_display_continues_when_startup_gate_rejects(
+    mock_page: Page,
+):
+    _bootstrap_tutorial_prompt_page(
+        mock_page,
+        include_autostart_prompt=True,
+        setup_js="""
+            window.__promptTitles = [];
+            window.waitForStorageLocationStartupBarrier = function() {
+                return Promise.reject(new Error('startup gate unavailable'));
+            };
+            window.showDecisionPrompt = async function(options) {
+                window.__promptTitles.push(String(options && options.title || ''));
+                if (options && typeof options.onShown === 'function') {
+                    await options.onShown();
+                }
+                return null;
+            };
+            window.nekoAutostartProvider = {
+                getStatus: async function() {
+                    return {
+                        ok: true,
+                        supported: true,
+                        enabled: false,
+                        authoritative: true,
+                        provider: 'neko-pc',
+                    };
+                },
+                enable: async function() {
+                    throw new Error('enable should not be called');
+                },
+            };
+        """,
+        fetch_js="""
+            if (requestUrl === '/api/tutorial-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'completed',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: true,
+                    },
+                });
+            }
+            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: false,
+                    state: {
+                        status: 'completed',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: true,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/heartbeat') {
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: true,
+                    prompt_reason: 'usage_timeout',
+                    prompt_token: 'autostart-token',
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/shown') {
+                return jsonResponse({
+                    ok: true,
+                    already_acknowledged: false,
+                    state: {
+                        status: 'prompted',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+        """,
+    )
+
+    mock_page.wait_for_function("() => window.__promptTitles.length === 1")
+
+    assert mock_page.evaluate("() => window.__promptTitles[0]") == "要不要让 N.E.K.O 开机自动启动？"
 
 
 @pytest.mark.frontend
@@ -3672,6 +4302,432 @@ def test_autostart_prompt_stays_suppressed_when_provider_reports_blocked_status(
     assert result["autostartStatusCalls"] > 0
     assert result["promptCalls"] == []
     assert "/api/autostart-prompt/heartbeat" in result["requestLog"]
+
+
+@pytest.mark.frontend
+def test_autostart_prompt_omits_never_button_and_keeps_later_action(
+    mock_page: Page,
+):
+    _bootstrap_tutorial_prompt_page(
+        mock_page,
+        include_autostart_prompt=True,
+        setup_js="""
+            window.__promptButtons = [];
+            window.__promptSkins = [];
+            window.__autostartDecisionBodies = [];
+            window.showDecisionPrompt = async function(config) {
+                window.__promptSkins.push(config.skin);
+                window.__promptButtons.push(
+                    (config.buttons || []).map(function(button) {
+                        return { value: button.value, text: button.text };
+                    })
+                );
+                return 'later';
+            };
+            window.nekoAutostartProvider = {
+                getStatus: async function() {
+                    return {
+                        ok: true,
+                        supported: true,
+                        enabled: false,
+                        authoritative: true,
+                        provider: 'neko-pc',
+                    };
+                },
+                enable: async function() {
+                    throw new Error('enable should not be called for later decision');
+                },
+            };
+            window.universalTutorialManager = {
+                currentPage: 'home',
+                isTutorialRunning: false,
+                hasSeenTutorial: function() {
+                    return true;
+                },
+                logPromptFlow: function() {},
+                requestTutorialStart: async function() {
+                    return false;
+                },
+            };
+        """,
+        fetch_js="""
+            if (requestUrl === '/api/tutorial-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'completed',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: true,
+                    },
+                });
+            }
+            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: false,
+                    state: {
+                        status: 'completed',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: true,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/heartbeat') {
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: true,
+                    prompt_reason: 'usage_timeout',
+                    prompt_token: 'autostart-token',
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/shown') {
+                return jsonResponse({
+                    ok: true,
+                    already_acknowledged: false,
+                    state: {
+                        status: 'prompted',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/decision') {
+                window.__autostartDecisionBodies.push(body);
+                return jsonResponse({
+                    ok: true,
+                    state: {
+                        status: 'deferred',
+                        never_remind: false,
+                        deferred_until: Date.now() + 3 * 24 * 60 * 60 * 1000,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+        """,
+    )
+
+    mock_page.wait_for_function(
+        "() => window.__autostartDecisionBodies.length === 1",
+        timeout=5000,
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => ({
+            promptSkin: window.__promptSkins[0],
+            promptButtons: window.__promptButtons[0],
+            decisionBody: window.__autostartDecisionBodies[0],
+        })
+        """
+    )
+
+    assert result["promptButtons"] == [
+        {"value": "later", "text": "以后提醒"},
+        {"value": "accept", "text": "开启自启动"},
+    ]
+    assert result["promptSkin"] == "autostart-retention"
+    assert result["decisionBody"]["decision"] == "later"
+
+
+@pytest.mark.frontend
+def test_autostart_prompt_plays_voice_on_show_and_stops_immediately_on_decision(
+    mock_page: Page,
+):
+    _bootstrap_tutorial_prompt_page(
+        mock_page,
+        include_common_dialogs=True,
+        include_autostart_prompt=True,
+        setup_js="""
+            window.__audioEvents = [];
+            window.__requestLog = [];
+            window.i18next = { language: 'ko-KR' };
+            window.Audio = function(src) {
+                this.src = String(src || '');
+                this.currentTime = 0;
+                window.__audioEvents.push({ event: 'create', src: this.src });
+                this.play = function() {
+                    window.__audioEvents.push({ event: 'play', src: this.src });
+                    return Promise.resolve();
+                };
+                this.pause = function() {
+                    window.__audioEvents.push({
+                        event: 'pause',
+                        src: this.src,
+                        currentTime: this.currentTime,
+                    });
+                };
+            };
+            window.nekoAutostartProvider = {
+                getStatus: async function() {
+                    return {
+                        ok: true,
+                        supported: true,
+                        enabled: false,
+                        authoritative: true,
+                        provider: 'neko-pc',
+                    };
+                },
+                enable: async function() {
+                    throw new Error('enable should not be called for later decision');
+                },
+            };
+            window.universalTutorialManager = {
+                currentPage: 'home',
+                isTutorialRunning: false,
+                hasSeenTutorial: function() {
+                    return true;
+                },
+                logPromptFlow: function() {},
+                requestTutorialStart: async function() {
+                    return false;
+                },
+            };
+        """,
+        fetch_js="""
+            window.__requestLog.push(requestUrl);
+
+            if (requestUrl === '/api/tutorial-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'completed',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: true,
+                    },
+                });
+            }
+            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: false,
+                    state: {
+                        status: 'completed',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: true,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/heartbeat') {
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: true,
+                    prompt_reason: 'usage_timeout',
+                    prompt_token: 'autostart-token',
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/shown') {
+                return jsonResponse({
+                    ok: true,
+                    already_acknowledged: false,
+                    state: {
+                        status: 'prompted',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/decision') {
+                return jsonResponse({
+                    ok: true,
+                    state: {
+                        status: 'deferred',
+                        never_remind: false,
+                        deferred_until: Date.now() + 3 * 24 * 60 * 60 * 1000,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+        """,
+    )
+
+    expect(mock_page.locator(".modal-dialog-autostart-retention")).to_have_count(1, timeout=5000)
+    mock_page.wait_for_function(
+        "() => window.__audioEvents.some((entry) => entry.event === 'play')",
+        timeout=5000,
+    )
+
+    events_before_click = mock_page.evaluate("() => window.__audioEvents.slice()")
+    assert events_before_click[:2] == [
+        {"event": "create", "src": "http://neko.test/static/autostart_prompt_voices/ko.mp3"},
+        {"event": "play", "src": "http://neko.test/static/autostart_prompt_voices/ko.mp3"},
+    ]
+
+    mock_page.get_by_role("button", name="以后提醒").click()
+
+    events_after_click = mock_page.evaluate("() => window.__audioEvents.slice()")
+    assert events_after_click[-1] == {
+        "event": "pause",
+        "src": "http://neko.test/static/autostart_prompt_voices/ko.mp3",
+        "currentTime": 0,
+    }
+
+
+@pytest.mark.frontend
+def test_autostart_prompt_missing_voice_degrades_to_text_only(
+    mock_page: Page,
+):
+    _bootstrap_tutorial_prompt_page(
+        mock_page,
+        include_common_dialogs=True,
+        include_autostart_prompt=True,
+        setup_js="""
+            window.__audioEvents = [];
+            window.i18next = { language: 'ja' };
+            window.Audio = function(src) {
+                window.__audioEvents.push({ event: 'create', src: String(src || '') });
+                this.play = function() {
+                    window.__audioEvents.push({ event: 'play', src: String(src || '') });
+                    return Promise.resolve();
+                };
+                this.pause = function() {
+                    window.__audioEvents.push({ event: 'pause', src: String(src || '') });
+                };
+            };
+            window.nekoAutostartProvider = {
+                getStatus: async function() {
+                    return {
+                        ok: true,
+                        supported: true,
+                        enabled: false,
+                        authoritative: true,
+                        provider: 'neko-pc',
+                    };
+                },
+                enable: async function() {
+                    throw new Error('enable should not be called for later decision');
+                },
+            };
+            window.universalTutorialManager = {
+                currentPage: 'home',
+                isTutorialRunning: false,
+                hasSeenTutorial: function() {
+                    return true;
+                },
+                logPromptFlow: function() {},
+                requestTutorialStart: async function() {
+                    return false;
+                },
+            };
+        """,
+        fetch_js="""
+            if (requestUrl === '/api/tutorial-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'completed',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: true,
+                    },
+                });
+            }
+            if (requestUrl === '/api/tutorial-prompt/heartbeat') {
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: false,
+                    state: {
+                        status: 'completed',
+                        never_remind: false,
+                        deferred_until: 0,
+                        manual_home_tutorial_viewed: true,
+                        home_tutorial_completed: true,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/state') {
+                return jsonResponse({
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/heartbeat') {
+                return jsonResponse({
+                    ok: true,
+                    should_prompt: true,
+                    prompt_reason: 'usage_timeout',
+                    prompt_token: 'autostart-token',
+                    state: {
+                        status: 'observing',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/shown') {
+                return jsonResponse({
+                    ok: true,
+                    already_acknowledged: false,
+                    state: {
+                        status: 'prompted',
+                        never_remind: false,
+                        deferred_until: 0,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+            if (requestUrl === '/api/autostart-prompt/decision') {
+                return jsonResponse({
+                    ok: true,
+                    state: {
+                        status: 'deferred',
+                        never_remind: false,
+                        deferred_until: Date.now() + 3 * 24 * 60 * 60 * 1000,
+                        autostart_enabled: false,
+                    },
+                });
+            }
+        """,
+    )
+
+    expect(mock_page.locator(".modal-dialog-autostart-retention")).to_have_count(1, timeout=5000)
+    mock_page.get_by_role("button", name="以后提醒").click()
+    expect(mock_page.locator(".modal-overlay")).to_have_count(0, timeout=5000)
+    assert mock_page.evaluate("() => window.__audioEvents.slice()") == []
 
 
 @pytest.mark.frontend

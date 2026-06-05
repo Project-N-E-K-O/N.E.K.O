@@ -6,11 +6,11 @@ Usage (from repo root with venv activated):
 This will:
 1. Scan for visible game-sized windows
 2. Capture the largest candidate window
-3. Run Tesseract OCR on the cropped text region
+3. Run RapidOCR on the cropped text region
 4. Print the raw OCR result so you can verify the pipeline works
 
 Prerequisites:
-- Tesseract OCR installed and languages available (e.g. chi_sim, eng)
+- RapidOCR runtime and selected model files available
 - Windows with pywin32 and Pillow in the venv
 """
 from __future__ import annotations
@@ -28,11 +28,11 @@ from plugin.plugins.galgame_plugin.models import (
 from plugin.plugins.galgame_plugin.ocr_reader import (
     OcrCaptureProfile,
     OcrReaderManager,
+    RapidOcrBackend,
     Win32CaptureBackend,
-    TesseractOcrBackend,
     _default_window_scanner,
 )
-from plugin.plugins.galgame_plugin.rapidocr_support import DEFAULT_RAPIDOCR_OCR_VERSION
+from plugin.plugins._shared.rapidocr.rapidocr_support import DEFAULT_RAPIDOCR_OCR_VERSION
 
 
 def _noop_logger():
@@ -87,16 +87,18 @@ async def main() -> None:
     frame.save(str(debug_path))
     print(f"  Saved cropped frame to: {debug_path.resolve()}")
 
-    # Check Tesseract
-    ocr = TesseractOcrBackend(
-        tesseract_path="",
+    # Check RapidOCR
+    ocr = RapidOcrBackend(
         install_target_dir_raw="",
-        languages="chi_sim+jpn+eng",
+        engine_type="onnxruntime",
+        lang_type="ch",
+        model_type="mobile",
+        ocr_version=DEFAULT_RAPIDOCR_OCR_VERSION,
     )
     if not ocr.is_available():
-        print("\nERROR: Tesseract OCR is not available.")
-        print("  - Make sure tesseract.exe is installed")
-        print("  - Required .traineddata files exist in tessdata/")
+        print("\nERROR: RapidOCR is not available.")
+        print("  - Make sure RapidOCR is installed or bundled")
+        print("  - Required model files exist in the RapidOCR model cache")
         return
 
     print("\nRunning OCR...")
@@ -143,7 +145,6 @@ async def main() -> None:
         ocr_reader_enabled=True,
         ocr_reader_backend_selection="auto",
         ocr_reader_capture_backend="auto",
-        ocr_reader_tesseract_path="",
         ocr_reader_install_manifest_url="",
         ocr_reader_install_target_dir="",
         ocr_reader_install_timeout_seconds=60.0,

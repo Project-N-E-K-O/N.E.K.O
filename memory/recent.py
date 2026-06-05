@@ -17,6 +17,7 @@ from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writa
 from utils.language_utils import get_global_language
 from utils.tokenize import acount_tokens
 from config import (
+    MEMORY_LLM_HARD_TIMEOUT_SECONDS,
     RECENT_HISTORY_MAX_ITEMS,
     RECENT_COMPRESS_THRESHOLD_ITEMS,
     RECENT_SUMMARY_MAX_TOKENS,
@@ -252,9 +253,10 @@ class CompressedRecentHistoryManager:
     def _get_review_llm(self):
         """动态获取审核LLM实例以支持配置热重载。
 
-        timeout=120 给 review_history 重写历史足够余量。review 是纯后台任务
-        （Phase C 重设计后不持锁、不阻塞用户路径、并发跑也无所谓），完全可以
-        开 thinking——重写历史的判断密度高，思考受益明显。
+        timeout 用 MEMORY_LLM_HARD_TIMEOUT_SECONDS（上游转发 120s hard
+        cap，必须 ≤110）。review 是纯后台任务（Phase C 重设计后不持锁、
+        不阻塞用户路径、并发跑也无所谓），完全可以开 thinking——重写
+        历史的判断密度高，思考受益明显。
 
         Phase D：extra_body=None 显式覆盖 create_chat_llm 自动解析，让 thinking
         模型按其默认行为响应（thinking 模式开启）。
@@ -264,7 +266,7 @@ class CompressedRecentHistoryManager:
         return create_chat_llm(
             api_config['model'], api_config['base_url'],
             api_config['api_key'] or None,
-            timeout=120, max_retries=0,
+            timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS, max_retries=0,
             extra_body=None,
         )
 
@@ -309,8 +311,14 @@ class CompressedRecentHistoryManager:
 
             if compress and len(self.user_histories[lanlan_name]) > self.compress_threshold:
                 to_compress = self.user_histories[lanlan_name][:-self.max_history_length+1]
-                compressed = [(await self.compress_history(to_compress, lanlan_name, detailed))[0]]
-                self.user_histories[lanlan_name] = compressed + self.user_histories[lanlan_name][-self.max_history_length+1:]
+                compressed_result = await self.compress_history(to_compress, lanlan_name, detailed)
+                if compressed_result is None:
+                    logger.warning(
+                        f"[RecentHistory] {lanlan_name} 摘要失败，跳过本轮压缩以保留原始历史"
+                    )
+                else:
+                    compressed = [compressed_result[0]]
+                    self.user_histories[lanlan_name] = compressed + self.user_histories[lanlan_name][-self.max_history_length+1:]
         except Exception as e:
             logger.error(f"[RecentHistory] 更新历史记录时出错: {e}", exc_info=True)
 
@@ -529,9 +537,9 @@ class CompressedRecentHistoryManager:
                 print(f'❌ 摘要模型失败：{e}')
                 # 如果解析失败，重试
                 retries += 1
-        # 如果所有重试都失败，返回None
-        from config.prompts.prompts_sys import _loc, MEMORY_MEMO_EMPTY
-        return SystemMessage(content=_loc(MEMORY_MEMO_EMPTY, get_global_language())), ""
+        # 摘要失败时不生成空备忘录，避免覆盖既有 memo 或丢弃未压缩原文。
+        logger.warning(f"[RecentHistory] {lanlan_name} 摘要连续失败，跳过本轮压缩")
+        return None
 
     async def further_compress(self, initial_summary):
         # Stage-2 LLM 输出硬限：RECENT_SUMMARY_MAX_TOKENS + 100 余量 = 1100 token。

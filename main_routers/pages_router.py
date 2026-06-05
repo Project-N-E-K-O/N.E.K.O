@@ -26,11 +26,49 @@ router = APIRouter(tags=["pages"])
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/css/yui-guide.css",
+    _PROJECT_ROOT / "static/css/index.css",
     _PROJECT_ROOT / "static/yui-guide-steps.js",
     _PROJECT_ROOT / "static/yui-guide-overlay.js",
     _PROJECT_ROOT / "static/yui-guide-page-handoff.js",
+    _PROJECT_ROOT / "static/tutorial-interaction-takeover.js",
+    _PROJECT_ROOT / "static/tutorial-skip-controller.js",
+    _PROJECT_ROOT / "static/tutorial-avatar-reload-controller.js",
+    _PROJECT_ROOT / "static/avatar-performance-stage.js",
+    _PROJECT_ROOT / "static/yui-guide-avatar-stage.js",
     _PROJECT_ROOT / "static/yui-guide-wakeup.js",
     _PROJECT_ROOT / "static/yui-guide-director.js",
+    _PROJECT_ROOT / "static/app-auto-goodbye.js",
+    _PROJECT_ROOT / "static/app-ui.js",
+    _PROJECT_ROOT / "static/app-interpage.js",
+    _PROJECT_ROOT / "static/common_ui.js",
+    _PROJECT_ROOT / "static/common-ui-hud.js",
+    _PROJECT_ROOT / "static/app-react-chat-window.js",
+    _PROJECT_ROOT / "static/avatar-ui-buttons.js",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat1.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat1-click.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat2.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat2-click.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat3.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat3-click.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat4-1.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat4-2.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat4-3.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat-move-1.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat-move-2.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat-idle-cat-move-3.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/chat-minimized-yarn-ball.png",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat1-voice-click.mp3",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat1-voice1.mp3",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat1-voice2.mp3",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat1-voice3.mp3",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat2-sleep.mp3",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat3-sleep.mp3",
+    _PROJECT_ROOT / "static/css/character_card_manager.css",
+    _PROJECT_ROOT / "static/js/character_card_manager.js",
+    _PROJECT_ROOT / "static/css/card_maker.css",
+    _PROJECT_ROOT / "static/js/card_maker.js",
+    _PROJECT_ROOT / "static/css/model_manager.css",
+    _PROJECT_ROOT / "static/js/model_manager.js",
 )
 _STATIC_ASSET_CACHE_TTL = 30.0
 _static_asset_version_cache: tuple[float, str] = (0.0, "0")
@@ -110,6 +148,7 @@ def _render_model_manager(request: Request):
     return templates.TemplateResponse("templates/model_manager.html", {
         "request": request,
         **_vrm_defaults_ctx(),
+        **_static_assets_ctx(),
     })
 
 
@@ -149,7 +188,8 @@ async def live2d_emotion_manager(request: Request):
     """Live2D情感映射管理器页面"""
     templates = get_templates()
     return templates.TemplateResponse("templates/live2d_emotion_manager.html", {
-        "request": request
+        "request": request,
+        **_static_assets_ctx(),
     })
 
 
@@ -158,7 +198,8 @@ async def vrm_emotion_manager(request: Request):
     """VRM情感映射管理器页面"""
     templates = get_templates()
     return templates.TemplateResponse("templates/vrm_emotion_manager.html", {
-        "request": request
+        "request": request,
+        **_static_assets_ctx(),
     })
 
 
@@ -167,7 +208,8 @@ async def mmd_emotion_manager(request: Request):
     """MMD情感映射管理器页面"""
     templates = get_templates()
     return templates.TemplateResponse("templates/mmd_emotion_manager.html", {
-        "request": request
+        "request": request,
+        **_static_assets_ctx(),
     })
 
 
@@ -198,7 +240,11 @@ async def chara_manager_redirect(request: Request):
 @router.get('/character_card_manager', response_class=HTMLResponse)
 async def character_card_manager_page(request: Request, lanlan_name: str = ""):
     templates = get_templates()
-    return templates.TemplateResponse("templates/character_card_manager.html", {"request": request, "lanlan_name": lanlan_name})
+    return templates.TemplateResponse("templates/character_card_manager.html", {
+        "request": request,
+        "lanlan_name": lanlan_name,
+        **_static_assets_ctx(),
+    })
 
 
 @router.get('/cloudsave_manager', response_class=HTMLResponse)
@@ -261,6 +307,7 @@ async def get_card_maker_page(request: Request):
     return templates.TemplateResponse("templates/card_maker.html", {
         "request": request,
         **_vrm_defaults_ctx(),
+        **_static_assets_ctx(),
     })
 
 

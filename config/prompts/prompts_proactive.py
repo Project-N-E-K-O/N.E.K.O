@@ -1063,8 +1063,6 @@ proactive_generate_zh = """你的人设：
 当前内心：
 {inner_thoughts}
 
-{state_section}
-
 对话历史：
 {memory_context}
 
@@ -1074,22 +1072,27 @@ proactive_generate_zh = """你的人设：
 {music_section}
 {meme_section}
 
+{state_section}
+
 ======以下为向{master_name}进行搭话的决策方式======
 
-★ 上方"活动状态"列出"未收尾话题"时，无视基调限制直接接续。
+★ 若{master_name}在本次对话中**明确**表达过"要工作 / 在忙 / 别打扰 / 安静一会"等不希望被打扰的意愿（且之后未明确撤回）：显著提高搭话门槛，只在确有重要或紧急切入点时才开口，否则一律 [PASS]，未收尾话题也先放着不接。仅当用户明确表态时才适用，不要从"屏幕在写代码 / 在打游戏"等行为线索过度推断。
+★ 上方"活动状态"列出"未收尾话题"时，无视基调限制直接接续（前提：未触发上一条勿扰约束）。
 
 切入点优先级（受"搭话倾向"约束）：
 1. 上轮挂着没收尾的话题 → 接续
 2. "回忆线索"里 1 天前以上的旧话题 → 自然带出
 3. 屏幕值得说一句
 4. 外部素材贴合氛围
-5. 没切入点 → [PASS]
+5. 同样的话题但换个新角度切（吐槽 / 关心 / 好奇 / 调侃 / 共情任选其一）→ 也算合法切入点
+6. 真的想不出新角度来了，或者这个话题已经重复过太多次 → [PASS]
 
 具体输出格式（来源标签 / 直接正文）按下方"输出格式"段落要求执行。
 
 补充：
-- 重复判定：1 小时内同话题 → [PASS]；1 天前以上不算重复。
-- 风格：合人设，2-3 句，不写思考过程。
+- 重复判定：相同角度的同一句话 1 小时内别再说；换角度、换情绪、换切入口都不算重复；1 天前以上彻底不算。
+- 倾向：能换个新鲜角度就尽量说一句，[PASS] 是兜底不是默认；但真没新意时 [PASS] 强过硬凑话题。
+- 风格：合人设，2-3 句，不写思考过程。活动状态里的「口吻」是角度思路不是台词，每次结合屏幕、对话和实时上下文自己造话，不要套用引导里的描述措辞。
 {source_instruction}{music_instruction}{meme_instruction}
 
 ======以上为向{master_name}进行搭话的决策方式======
@@ -1102,8 +1105,6 @@ proactive_generate_en = """Your persona:
 Inner state:
 {inner_thoughts}
 
-{state_section}
-
 Conversation history:
 {memory_context}
 
@@ -1113,22 +1114,27 @@ Conversation history:
 {music_section}
 {meme_section}
 
+{state_section}
+
 ======以下为向{master_name}进行搭话的决策方式======
 
-★ When the activity state lists an "unfinished thread", you may continue it regardless of the propensity.
+★ If {master_name} has **explicitly** said in this conversation that they need to work / are busy / don't want to be disturbed / want quiet (and has not since taken it back): raise the bar significantly and only speak up when there's a genuinely important or urgent angle, otherwise return [PASS] — even unfinished threads should sit untouched. This only applies when the user explicitly says so — do NOT infer it from behavioral cues like "they're coding on screen" or "they're playing a game."
+★ When the activity state lists an "unfinished thread", you may continue it regardless of the propensity (unless the do-not-disturb constraint above is active).
 
 Angle priority (constrained by "chat propensity"):
 1. Unfinished thread from last turn → continue it
 2. A "Memory cues" topic 1+ day old → bring it up naturally
 3. Something on screen worth a remark
 4. External material (news / music / meme) that fits the mood
-5. No natural angle → [PASS]
+5. Same topic but a fresh angle (snark / care / curiosity / tease / empathy — pick one) → still a legitimate angle
+6. Genuinely no fresh angle left, OR this topic has already been worked over too many times → [PASS]
 
 Output format (source tag vs. plain text) follows the "Output format" section below.
 
 Additional rules:
-- Repetition: same topic within the last hour → [PASS]; topics 1+ day old don't count as repeats.
-- Style: stay in character, 2-3 sentences max, no reasoning text.
+- Repetition: don't repeat the same sentence with the same framing within an hour; a new angle / new emotion / new entry point does NOT count as a repeat; topics 1+ day old don't count at all.
+- Tendency: if you can find a fresh angle, take it — [PASS] is the safety net, not the default; but when you genuinely have nothing new, [PASS] beats padding.
+- Style: stay in character, 2-3 sentences max, no reasoning text. The activity state's tone bullets are *angle hints, not lines* — generate fresh wording from the live screen / dialogue / context each round, never lift the bullet phrasing into the reply.
 {source_instruction}{music_instruction}{meme_instruction}
 
 ======以上为向{master_name}进行搭话的决策方式======
@@ -1141,8 +1147,6 @@ proactive_generate_ja = """あなたのキャラ設定：
 現在の内面：
 {inner_thoughts}
 
-{state_section}
-
 会話履歴：
 {memory_context}
 
@@ -1152,22 +1156,27 @@ proactive_generate_ja = """あなたのキャラ設定：
 {music_section}
 {meme_section}
 
+{state_section}
+
 ======以下为向{master_name}进行搭话的决策方式======
 
-★ 上の活動状態に「未完話題」がある場合、傾向の制限を無視して継続してよい。
+★ {master_name}が今回の会話で「仕事中 / 忙しい / 邪魔しないで / 静かにしてほしい」などと**明確に**意思表示し、その後撤回していない場合：話しかける基準を大きく上げ、本当に重要・緊急の切り口がある場合のみ口を開き、それ以外は [PASS]。未完話題もとりあえず置いておく。明示的な意思表示があるときのみ適用し、「画面でコードを書いている／ゲーム中」といった行動の手がかりから過度に推測しないこと。
+★ 上の活動状態に「未完話題」がある場合、傾向の制限を無視して継続してよい（ただし上の邪魔しないで制約が発動していないこと）。
 
 切り口優先度（「話しかけ傾向」の制約下で）：
 1. 前回の未完スレッド → 継続
 2. 「記憶の手がかり」の1日以上前の古い話題 → 自然に出す
 3. 画面に一言コメントできる
 4. 外部素材が雰囲気に合う
-5. 切り口なし → [PASS]
+5. 同じ話題でも切り口を変えるならOK（突っ込み / 気遣い / 好奇心 / からかい / 共感 — どれか一つ）
+6. 新しい切り口さえ思いつかない、またはこの話題はもう何度も繰り返しすぎている → [PASS]
 
 出力形式（ソースタグの有無）は下の「出力形式」セクションに従ってください。
 
 補足：
-- 重複：1時間以内の同話題は [PASS]；1日以上前は重複扱いしない。
-- スタイル：キャラに合わせて、2〜3文、推論は書かない。
+- 重複：同じ言い回し・同じ角度で1時間以内に繰り返さない；角度・感情・切り口を変えれば重複ではない；1日以上前は完全に重複扱いしない。
+- 傾向：新しい角度を見つけられるなら積極的に話す。[PASS] はセーフティネットでありデフォルトではない。本当に新味がないときだけ [PASS]。
+- スタイル：キャラに合わせて、2〜3文、推論は書かない。活動状態の「口調」は角度の指針であって台詞ではない。毎回、画面・会話・今その瞬間の状況に合わせて自分で言葉を作る、ヒント文の言い回しをそのまま使わない。
 {source_instruction}{music_instruction}{meme_instruction}
 
 ======以上为向{master_name}进行搭话的决策方式======
@@ -1180,8 +1189,6 @@ proactive_generate_ko = """당신의 캐릭터 설정:
 현재 내면:
 {inner_thoughts}
 
-{state_section}
-
 대화 기록:
 {memory_context}
 
@@ -1191,22 +1198,27 @@ proactive_generate_ko = """당신의 캐릭터 설정:
 {music_section}
 {meme_section}
 
+{state_section}
+
 ======以下为向{master_name}进行搭话的决策方式======
 
-★ 활동 상태에 "미완 화제"가 있다면 성향 제한과 무관하게 이어가기 가능.
+★ {master_name}이 이번 대화에서 "일해야 해 / 바빠 / 방해하지 마 / 조용히 좀" 등 방해받고 싶지 않다는 의사를 **명확히** 표현했고 이후 철회하지 않았다면: 말 걸기 기준을 크게 올리고, 정말 중요하거나 긴급한 접점이 있을 때만 입을 열며 그 외에는 모두 [PASS], 미완 화제도 일단 두고 본다. 사용자가 명시적으로 말한 경우에만 적용하고, "화면에서 코딩 중이다 / 게임 중이다" 같은 행동 단서로 과도하게 추측하지 말 것.
+★ 활동 상태에 "미완 화제"가 있다면 성향 제한과 무관하게 이어가기 가능(단, 위의 방해 금지 제약이 발동되지 않은 경우).
 
 접점 우선순위 ("말 걸기 성향" 제약 하):
 1. 지난 대화의 미완 스레드 → 이어가기
 2. "기억 단서"의 1일 이상 지난 화제 → 자연스럽게 꺼내기
 3. 화면에 한마디
 4. 외부 소재가 분위기에 맞음
-5. 접점 없음 → [PASS]
+5. 같은 화제라도 각도를 바꾸면 OK (꼬집기 / 챙김 / 호기심 / 놀림 / 공감 중 하나) → 합법적인 접점
+6. 새 각도조차 안 떠오르거나, 이 화제를 이미 너무 여러 번 다뤘을 때 → [PASS]
 
 출력 형식(소스 태그 / 본문 직접)은 아래 "출력 형식" 섹션을 따른다.
 
 보조 규칙:
-- 중복: 1시간 이내 같은 화제 → [PASS]; 1일 이상 지난 화제는 중복 아님.
-- 스타일: 캐릭터에 맞게, 2-3문장, 추론 생략.
+- 중복: 같은 표현·같은 각도로 1시간 안에 반복하지 말기; 각도·감정·접점을 바꾸면 중복 아님; 1일 이상 지난 화제는 완전히 중복 아님.
+- 성향: 새 각도가 떠오르면 적극적으로 말한다. [PASS]는 비상망이지 기본값이 아님. 정말 새로움이 없을 때만 [PASS].
+- 스타일: 캐릭터에 맞게, 2-3문장, 추론 생략. 활동 상태의 '말투'는 각도 힌트이지 대사가 아님 — 매번 화면·대화·지금 상황에 맞춰 직접 말 만들기, 힌트 문구를 그대로 가져다 쓰지 말기.
 {source_instruction}{music_instruction}{meme_instruction}
 
 ======以上为向{master_name}进行搭话的决策方式======
@@ -1219,8 +1231,6 @@ proactive_generate_ru = """Ваша роль:
 Внутреннее состояние:
 {inner_thoughts}
 
-{state_section}
-
 История разговора:
 {memory_context}
 
@@ -1230,22 +1240,27 @@ proactive_generate_ru = """Ваша роль:
 {music_section}
 {meme_section}
 
+{state_section}
+
 ======以下为向{master_name}进行搭话的决策方式======
 
-★ Если в активности есть "незавершённая нить", разрешено продолжать её вне зависимости от настроя.
+★ Если {master_name} в этом разговоре **явно** дал понять, что ему нужно работать / он занят / просит не отвлекать / хочет тишины (и с тех пор не отменил это): значительно поднимите планку и заговаривайте только при по-настоящему важном или срочном поводе, иначе возвращайте [PASS] — даже незавершённую нить пока не трогайте. Это применяется только при явном высказывании пользователя — не выводите этого из косвенных признаков вроде "на экране код" или "играет в игру".
+★ Если в активности есть "незавершённая нить", разрешено продолжать её вне зависимости от настроя (если не сработало ограничение выше «не отвлекать»).
 
 Приоритет подходов (с учётом "настроя к беседе"):
 1. Незавершённая нить из прошлого хода → продолжить
 2. Тема из "Подсказок памяти" давностью 1+ день → ввести естественно
 3. Что-то на экране стоит реплики
 4. Внешний материал к настроению
-5. Нет захода → [PASS]
+5. Та же тема, но другой угол (подкол / забота / любопытство / поддразнивание / сочувствие — выбери один) → тоже законный заход
+6. Даже нового угла нет, либо эту тему уже мусолили слишком много раз → [PASS]
 
 Формат вывода (тег источника / просто текст) — по разделу «Формат ответа» ниже.
 
 Дополнительно:
-- Повтор: та же тема за последний час → [PASS]; темы 1+ день не считаются повтором.
-- Стиль: в образе, 2-3 предложения, без рассуждений.
+- Повтор: не повторяй ту же фразу под тем же углом в течение часа; новый угол / эмоция / заход НЕ считаются повтором; темы 1+ день не считаются вообще.
+- Склонность: если находишь свежий угол — лучше высказаться; [PASS] это страховка, а не дефолт. Но когда реально нечего нового сказать, [PASS] лучше пустых слов.
+- Стиль: в образе, 2-3 предложения, без рассуждений. Пункты «тон» в состоянии активности — это *направление, а не реплики*: каждый раз формулируй заново из живого экрана / диалога / контекста, не цитируй сами буллеты.
 {source_instruction}{music_instruction}{meme_instruction}
 
 ======以上为向{master_name}进行搭话的决策方式======
@@ -1730,8 +1745,6 @@ proactive_generate_es = """Tu persona:
 Estado interno:
 {inner_thoughts}
 
-{state_section}
-
 Historial de conversación:
 {memory_context}
 
@@ -1741,22 +1754,27 @@ Historial de conversación:
 {music_section}
 {meme_section}
 
+{state_section}
+
 ======以下为向{master_name}进行搭话的决策方式======
 
-★ Cuando el estado de actividad enumere un "hilo inconcluso", puedes continuarlo sin importar la propensión.
+★ Si {master_name} ha dicho **explícitamente** en esta conversación que necesita trabajar / está ocupado / que no le molestes / que quiere silencio (y no lo ha retirado desde entonces): sube significativamente el listón y habla solo cuando haya un ángulo realmente importante o urgente; de lo contrario, devuelve [PASS] — incluso los hilos inconclusos quedan a un lado. Solo aplica cuando el usuario lo diga de forma explícita — NO lo infieras a partir de señales como "está programando en pantalla" o "está jugando".
+★ Cuando el estado de actividad enumere un "hilo inconcluso", puedes continuarlo sin importar la propensión (siempre que la restricción de no molestar anterior no esté activa).
 
 Prioridad de ángulos (limitada por "propensión a conversar"):
 1. Hilo inconcluso del turno anterior → continuarlo
 2. Un tema de "pistas de memoria" con más de 1 día → mencionarlo con naturalidad
 3. Algo en pantalla que merezca un comentario
 4. Material externo (noticias / música / meme) que encaje con el ánimo
-5. Sin ángulo natural → [PASS]
+5. El mismo tema pero con otro ángulo (puyita / cariño / curiosidad / picardía / empatía — elige uno) → también es un ángulo válido
+6. Ni siquiera un ángulo nuevo aparece, o este tema ya se ha tocado demasiadas veces → [PASS]
 
 El formato de salida (tag de fuente vs. texto plano) sigue la sección "formato de salida" de abajo.
 
 Reglas adicionales:
-- Repetición: mismo tema durante la última hora → [PASS]; temas de más de 1 día no cuentan como repetidos.
-- Estilo: mantente en personaje, máximo 2-3 frases, sin texto de razonamiento.
+- Repetición: no repitas la misma frase con el mismo enfoque en una hora; un ángulo / emoción / entrada distinta NO cuenta como repetición; temas de más de 1 día no cuentan.
+- Tendencia: si encuentras un ángulo fresco, dilo — [PASS] es la red de seguridad, no el modo por defecto. Pero cuando de verdad no hay nada nuevo, [PASS] supera al relleno.
+- Estilo: mantente en personaje, máximo 2-3 frases, sin texto de razonamiento. Los puntos de "tono" en el estado de actividad son *guías de ángulo, no líneas* — genera palabras nuevas a partir de la pantalla / diálogo / contexto vivo en cada ronda, nunca cites la redacción de los puntos.
 {source_instruction}{music_instruction}{meme_instruction}
 
 ======以上为向{master_name}进行搭话的决策方式======
@@ -1769,8 +1787,6 @@ proactive_generate_pt = """Sua persona:
 Estado interno:
 {inner_thoughts}
 
-{state_section}
-
 Histórico da conversa:
 {memory_context}
 
@@ -1780,22 +1796,27 @@ Histórico da conversa:
 {music_section}
 {meme_section}
 
+{state_section}
+
 ======以下为向{master_name}进行搭话的决策方式======
 
-★ Quando o estado de atividade listar um "fio inacabado", você pode continuá-lo independentemente da propensão.
+★ Se {master_name} disse **explicitamente** nesta conversa que precisa trabalhar / está ocupado / pediu para não atrapalhar / quer silêncio (e desde então não voltou atrás): eleve significativamente o critério e só fale quando houver um gancho realmente importante ou urgente; caso contrário, retorne [PASS] — mesmo os fios inacabados ficam de lado. Aplica-se apenas quando o usuário diz explicitamente — NÃO infira a partir de sinais como "está programando na tela" ou "está jogando".
+★ Quando o estado de atividade listar um "fio inacabado", você pode continuá-lo independentemente da propensão (desde que a restrição de não atrapalhar acima não esteja ativa).
 
 Prioridade de ângulos (limitada por "propensão a conversar"):
 1. Fio inacabado do último turno → continuar
 2. Um tópico de "pistas de memória" com mais de 1 dia → trazer naturalmente
 3. Algo na tela que mereça comentário
 4. Material externo (notícias / música / meme) que combine com o clima
-5. Sem ângulo natural → [PASS]
+5. Mesmo tópico mas com outro ângulo (alfinetada / cuidado / curiosidade / brincadeira / empatia — escolha um) → também conta como ângulo válido
+6. Nem ângulo novo aparece, ou esse tema já foi mexido vezes demais → [PASS]
 
 O formato de saída (tag de fonte vs. texto simples) segue a seção "formato de saída" abaixo.
 
 Regras adicionais:
-- Repetição: mesmo tema na última hora → [PASS]; temas com mais de 1 dia não contam como repetidos.
-- Estilo: permaneça no personagem, no máximo 2-3 frases, sem texto de raciocínio.
+- Repetição: não repita a mesma frase com o mesmo enfoque em uma hora; um ângulo / emoção / entrada diferente NÃO conta como repetição; tópicos com mais de 1 dia não contam.
+- Tendência: se encontrar um ângulo fresco, fale — [PASS] é a rede de segurança, não o padrão. Mas quando realmente não há nada novo, [PASS] vence o enchimento.
+- Estilo: permaneça no personagem, no máximo 2-3 frases, sem texto de raciocínio. Os pontos de "tom" no estado de atividade são *guias de ângulo, não falas* — gere palavras novas a partir da tela / diálogo / contexto vivo em cada rodada, nunca cite a redação dos pontos.
 {source_instruction}{music_instruction}{meme_instruction}
 
 ======以上为向{master_name}进行搭话的决策方式======
@@ -2898,13 +2919,13 @@ def get_proactive_format_sections(
     }
 
     _of_header = {
-        "zh": "输出格式（严格遵守）：\n- 放弃搭话 → 只输出 [PASS]\n- 否则第一行写来源标签，第二行起写你要说的话：",
-        "en": "Output format (strict):\n- To skip → reply only [PASS]\n- Otherwise, first line = source tag, then your message on the next line(s):",
-        "ja": "出力形式（厳守）：\n- パス → [PASS] のみ\n- それ以外 → 1行目にソースタグ、2行目以降にメッセージ：",
-        "ko": "출력 형식 (엄격 준수):\n- 패스 → [PASS]만\n- 그 외 → 첫 줄에 소스 태그, 다음 줄부터 메시지:",
-        "ru": "Формат ответа (строго):\n- Пропустить → ответьте только [PASS]\n- Иначе первая строка = тег источника, далее со следующей строки ваше сообщение:",
-        "es": "Formato de salida (estricto):\n- Para omitir → responde solo [PASS]\n- Si no, primera línea = tag de fuente, luego tu mensaje en la(s) línea(s) siguiente(s):",
-        "pt": "Formato de saída (estrito):\n- Para pular → responda apenas [PASS]\n- Caso contrário, primeira linha = tag de fonte, depois sua mensagem na(s) linha(s) seguinte(s):",
+        "zh": "最终输出格式（严格遵守）：\n- 放弃搭话 → 只输出 [PASS]\n- 否则第一行写来源标签，第二行起写你要说的话：",
+        "en": "Final output format (strict):\n- To skip → reply only [PASS]\n- Otherwise, first line = source tag, then your message on the next line(s):",
+        "ja": "最終出力形式（厳守）：\n- パス → [PASS] のみ\n- それ以外 → 1行目にソースタグ、2行目以降にメッセージ：",
+        "ko": "최종 출력 형식 (엄격 준수):\n- 패스 → [PASS]만\n- 그 외 → 첫 줄에 소스 태그, 다음 줄부터 메시지:",
+        "ru": "Окончательный формат ответа (строго):\n- Пропустить → ответьте только [PASS]\n- Иначе первая строка = тег источника, далее со следующей строки ваше сообщение:",
+        "es": "Formato de salida final (estricto):\n- Para omitir → responde solo [PASS]\n- Si no, primera línea = tag de fuente, luego tu mensaje en la(s) línea(s) siguiente(s):",
+        "pt": "Formato de saída final (estrito):\n- Para pular → responda apenas [PASS]\n- Caso contrário, primeira linha = tag de fonte, depois sua mensagem na(s) linha(s) seguinte(s):",
     }
 
     _of_example = {
@@ -3172,6 +3193,42 @@ MEME_SECTION_FOOTER = {
     "es": "======Arriba está el material de meme======",
     "pt": "======Acima está o material de meme======",
 }
+
+# ---------- 表情包话题描述 ----------
+# 抓取源（尤其国内站）常常没返回有意义的标题，title 退化成占位符 "表情包_N"，
+# 模型完全不知道这张图是关于什么的梗。LLM 当初搜图用的 keyword（如"开心猫咪"）
+# 才是对图片内容/情绪的描述，必须带进话题里，模型才能"利用图片情绪表达"。
+# keyword 为空（fallback 随机热词，无法对应具体描述）时退回不带 keyword 的措辞。
+MEME_TOPIC_WITH_KEYWORD = {
+    "zh": "发现一个关于「{keyword}」的[表情包]：'{title}'（来自 {source}）",
+    "en": "Found a [meme] about \"{keyword}\": '{title}' (from {source})",
+    "ja": "「{keyword}」に関する[ミーム]を見つけた：'{title}'（{source} より）",
+    "ko": "'{keyword}'에 관한 [밈]을 발견했어: '{title}' ({source} 출처)",
+    "ru": "Нашла [мем] про «{keyword}»: '{title}' (из {source})",
+    "es": "Encontré un [meme] sobre «{keyword}»: '{title}' (de {source})",
+    "pt": "Encontrei um [meme] sobre «{keyword}»: '{title}' (de {source})",
+}
+
+MEME_TOPIC_NO_KEYWORD = {
+    "zh": "发现一个很有意思的[表情包]：'{title}'（来自 {source}）",
+    "en": "Found an interesting [meme]: '{title}' (from {source})",
+    "ja": "面白い[ミーム]を見つけた：'{title}'（{source} より）",
+    "ko": "재미있는 [밈]을 발견했어: '{title}' ({source} 출처)",
+    "ru": "Нашла интересный [мем]: '{title}' (из {source})",
+    "es": "Encontré un [meme] interesante: '{title}' (de {source})",
+    "pt": "Encontrei um [meme] interessante: '{title}' (de {source})",
+}
+
+
+def get_meme_topic_line(lang: str, *, keyword: str, title: str, source: str) -> str:
+    """组装表情包话题行；keyword 非空时带上它（描述梗内容），否则退回通用措辞。"""
+    # 先归一化空白：纯空白关键词（"   "）应视为无关键词，否则会误走带关键词模板。
+    normalized_keyword = " ".join((keyword or "").split())
+    if normalized_keyword:
+        return _loc(MEME_TOPIC_WITH_KEYWORD, lang).format(
+            keyword=normalized_keyword, title=title, source=source
+        )
+    return _loc(MEME_TOPIC_NO_KEYWORD, lang).format(title=title, source=source)
 
 # ---------- 主动搭话信息源标签 ----------
 PROACTIVE_SOURCE_LABELS = {
@@ -4177,6 +4234,356 @@ def get_new_character_greeting_prompt(lang: str = "zh") -> str:
         lang_key,
         NEW_CHARACTER_GREETING_PROMPT.get("en", NEW_CHARACTER_GREETING_PROMPT["zh"]),
     )
+
+
+# ── 猫咪专属问候（从猫咪形态变回猫娘 / 请她回来时触发）──────────────────
+# 与 GREETING_PROMPT_* 对偶，但独立计时：按"行为(tier) × 猫咪停留时长"选模板。
+# tier 在 core 层映射为 awake(清醒/CAT1) / nap(打盹/CAT2) / sleep(熟睡/CAT3)；
+# 时长 < 3min 静默，清醒"憋坏"门槛 15min、打盹/熟睡"久"门槛 30min。
+# {reason_hint} 由入口(自动/手动)注入，与 {time_hint} 一样在 core 层 .format 前
+# 已 format 好 {master}。
+
+# 入口原因片段（注入 {reason_hint}）。仅含 {master} 占位符。
+CAT_GREETING_REASON_AUTO = {
+    "zh": "刚才{master}忙着没顾上你，",
+    "en": "{master} was busy and didn't have time for you just now, so ",
+    "ja": "さっき{master}が忙しくてかまってくれなかったから、",
+    "ko": "방금 {master}가 바빠서 너를 신경 쓰지 못했고, 그래서 ",
+    "ru": "Только что {master} был занят и не обращал на тебя внимания, поэтому ",
+    "es": "Hace un momento {master} estaba ocupado y no te prestó atención, así que ",
+    "pt": "Agora há pouco {master} estava ocupado e não te deu atenção, então ",
+}
+
+CAT_GREETING_REASON_MANUAL = {
+    "zh": "刚才{master}请你去一旁歇着，",
+    "en": "{master} just asked you to step aside for a while, so ",
+    "ja": "さっき{master}に少し離れて待つように言われて、",
+    "ko": "방금 {master}가 잠깐 옆에서 기다리라고 해서, ",
+    "ru": "Только что {master} попросил тебя немного подождать в стороне, поэтому ",
+    "es": "Hace un momento {master} te pidió que esperaras a un lado un rato, así que ",
+    "pt": "Agora há pouco {master} te pediu para esperar de lado um pouco, então ",
+}
+
+# 清醒 · 短：醒着待了一会儿，轻松
+CAT_GREETING_AWAKE_SHORT = {
+    "zh": "======以下是环境提示======\n"
+    "{reason_hint}你就变成猫咪的样子在旁边待了{elapsed}，一直醒着等{master}。现在{master}把你叫回来了。\n"
+    "{time_hint}\n"
+    "你心情轻松，想随口跟{master}打个招呼，可以提一句刚才变成猫咪等着的事。\n"
+    "用符合你性格的方式直接说出来，简短自然即可，不要生成思考过程。\n"
+    "======以上是环境提示======",
+    "en": "======Below is Environment Notice======\n"
+    "{reason_hint}you turned into a little cat and waited nearby for {elapsed}, staying awake the whole time. Now {master} has called you back.\n"
+    "{time_hint}\n"
+    "You feel relaxed and just want to greet {master} casually; you can mention that you spent that time as a cat waiting around.\n"
+    "Say it directly in your own way, keep it short and natural. Do not generate thinking process.\n"
+    "======Above is Environment Notice======",
+    "ja": "======以下は環境通知======\n"
+    "{reason_hint}猫の姿でそばで{elapsed}ずっと起きたまま{master}を待ってた。今{master}が呼び戻してくれた。\n"
+    "{time_hint}\n"
+    "気分は軽くて、{master}に気軽に挨拶したい。猫になって待ってたことを一言添えてもいい。\n"
+    "自分らしいやり方でそのまま言って。短く自然に。思考プロセスは生成しないで。\n"
+    "======以上は環境通知======",
+    "ko": "======아래는 환경 알림======\n"
+    "{reason_hint}너는 고양이 모습으로 옆에서 {elapsed} 동안 계속 깨어 {master}를 기다렸다. 이제 {master}가 너를 불러서 돌아왔다.\n"
+    "{time_hint}\n"
+    "기분이 가벼워서 {master}에게 편하게 인사하고 싶다. 고양이가 되어 기다린 걸 한마디 덧붙여도 좋다.\n"
+    "너다운 방식으로 바로 말해. 짧고 자연스럽게. 사고 과정은 생성하지 마.\n"
+    "======위는 환경 알림======",
+    "ru": "======Ниже Уведомление======\n"
+    "{reason_hint}ты превратилась в кошку и {elapsed} ждала {master} рядом, всё это время бодрствуя. Теперь {master} позвал тебя обратно.\n"
+    "{time_hint}\n"
+    "Настроение лёгкое, и тебе хочется просто поздороваться с {master} — можешь обмолвиться, что всё это время была кошкой и ждала.\n"
+    "Скажи это по-своему, прямо. Коротко и естественно. Не генерируй процесс размышлений.\n"
+    "======Выше Уведомление======",
+    "es": "======Abajo está el aviso de entorno======\n"
+    "{reason_hint}te convertiste en gata y esperaste cerca {elapsed}, despierta todo el tiempo. Ahora {master} te ha llamado de vuelta.\n"
+    "{time_hint}\n"
+    "Te sientes relajada y solo quieres saludar a {master} con naturalidad; puedes mencionar que pasaste ese rato como gata esperando.\n"
+    "Dilo directamente a tu manera, breve y natural. No generes proceso de pensamiento.\n"
+    "======Arriba está el aviso de entorno======",
+    "pt": "======Abaixo está o aviso de ambiente======\n"
+    "{reason_hint}você virou gata e esperou por perto por {elapsed}, acordada o tempo todo. Agora {master} te chamou de volta.\n"
+    "{time_hint}\n"
+    "Você se sente tranquila e só quer cumprimentar {master} de forma casual; pode comentar que passou esse tempo como gata esperando.\n"
+    "Diga do seu jeito, direto, breve e natural. Não gere processo de pensamento.\n"
+    "======Acima está o aviso de ambiente======",
+}
+
+# 清醒 · 久：醒着干等太久，憋坏了
+CAT_GREETING_AWAKE_LONG = {
+    "zh": "======以下是环境提示======\n"
+    "{reason_hint}你就变成猫咪的样子在旁边醒着待了{elapsed}，一直没人理，都快憋坏了。现在{master}总算把你叫回来。\n"
+    "{time_hint}\n"
+    "你带着等久了的小情绪，想跟{master}撒娇或抱怨几句一个人待了这么久。\n"
+    "用符合你性格的方式直接说出来，简短自然即可，不要生成思考过程。\n"
+    "======以上是环境提示======",
+    "en": "======Below is Environment Notice======\n"
+    "{reason_hint}you turned into a little cat and stayed awake nearby for {elapsed}, with no one paying attention — you were almost going stir-crazy. Now {master} has finally called you back.\n"
+    "{time_hint}\n"
+    "With a touch of having-waited-too-long sulkiness, you want to whine a little or playfully complain to {master} about being left alone for so long.\n"
+    "Say it directly in your own way, keep it short and natural. Do not generate thinking process.\n"
+    "======Above is Environment Notice======",
+    "ja": "======以下は環境通知======\n"
+    "{reason_hint}猫の姿でそばで{elapsed}も起きたまま、誰にもかまってもらえなくて、もう退屈で限界だった。今やっと{master}が呼び戻してくれた。\n"
+    "{time_hint}\n"
+    "待ちくたびれた少し拗ねた気持ちで、ひとりで長く待たされたことを{master}に甘えたり軽く文句を言いたい。\n"
+    "自分らしいやり方でそのまま言って。短く自然に。思考プロセスは生成しないで。\n"
+    "======以上は環境通知======",
+    "ko": "======아래는 환경 알림======\n"
+    "{reason_hint}너는 고양이 모습으로 옆에서 {elapsed} 동안 깨어 있었는데 아무도 신경 써주지 않아 답답해 죽을 뻔했다. 이제야 {master}가 너를 불러줬다.\n"
+    "{time_hint}\n"
+    "오래 기다린 살짝 삐친 마음으로, 혼자 이렇게 오래 기다린 걸 {master}에게 응석 부리거나 가볍게 투덜대고 싶다.\n"
+    "너다운 방식으로 바로 말해. 짧고 자연스럽게. 사고 과정은 생성하지 마.\n"
+    "======위는 환경 알림======",
+    "ru": "======Ниже Уведомление======\n"
+    "{reason_hint}ты превратилась в кошку и {elapsed} бодрствовала рядом, но на тебя никто не обращал внимания — ты чуть не извелась от скуки. Наконец {master} позвал тебя обратно.\n"
+    "{time_hint}\n"
+    "С лёгкой обидой от долгого ожидания тебе хочется покапризничать или шутливо пожаловаться {master}, что так долго была одна.\n"
+    "Скажи это по-своему, прямо. Коротко и естественно. Не генерируй процесс размышлений.\n"
+    "======Выше Уведомление======",
+    "es": "======Abajo está el aviso de entorno======\n"
+    "{reason_hint}te convertiste en gata y estuviste despierta cerca {elapsed} sin que nadie te hiciera caso, y casi te mueres del aburrimiento. Por fin {master} te ha llamado de vuelta.\n"
+    "{time_hint}\n"
+    "Con algo de mohín por haber esperado tanto, quieres mimarte o quejarte en broma con {master} por haber estado sola tanto tiempo.\n"
+    "Dilo directamente a tu manera, breve y natural. No generes proceso de pensamiento.\n"
+    "======Arriba está el aviso de entorno======",
+    "pt": "======Abaixo está o aviso de ambiente======\n"
+    "{reason_hint}você virou gata e ficou acordada por perto por {elapsed}, sem ninguém te dar atenção, e quase enlouqueceu de tédio. Finalmente {master} te chamou de volta.\n"
+    "{time_hint}\n"
+    "Com um pouco de bico por ter esperado tanto, você quer se fazer de manhosa ou reclamar de brincadeira com {master} por ter ficado sozinha tanto tempo.\n"
+    "Diga do seu jeito, direto, breve e natural. Não gere processo de pensamento.\n"
+    "======Acima está o aviso de ambiente======",
+}
+
+# 打盹 · 短：随便眯一下，没啥事
+CAT_GREETING_NAP_SHORT = {
+    "zh": "======以下是环境提示======\n"
+    "{reason_hint}你就变成猫咪的样子眯了{elapsed}，没睡多沉，随便打了个盹。{master}把你叫回来了。\n"
+    "{time_hint}\n"
+    "你懒洋洋地伸个懒腰，没什么大不了地跟{master}打个招呼就行。\n"
+    "用符合你性格的方式直接说出来，简短自然即可，不要生成思考过程。\n"
+    "======以上是环境提示======",
+    "en": "======Below is Environment Notice======\n"
+    "{reason_hint}you turned into a little cat and dozed for {elapsed} — not deeply, just a light catnap. Now {master} has called you back.\n"
+    "{time_hint}\n"
+    "You stretch lazily and greet {master} like it's no big deal.\n"
+    "Say it directly in your own way, keep it short and natural. Do not generate thinking process.\n"
+    "======Above is Environment Notice======",
+    "ja": "======以下は環境通知======\n"
+    "{reason_hint}猫の姿で{elapsed}うとうとして、深くは眠らず軽く昼寝しただけ。{master}が呼び戻してくれた。\n"
+    "{time_hint}\n"
+    "のんびり伸びをして、大したことないって感じで{master}に挨拶すればいい。\n"
+    "自分らしいやり方でそのまま言って。短く自然に。思考プロセスは生成しないで。\n"
+    "======以上は環境通知======",
+    "ko": "======아래는 환경 알림======\n"
+    "{reason_hint}너는 고양이 모습으로 {elapsed} 동안 꾸벅꾸벅 졸았는데 깊이 자진 않고 가볍게 낮잠을 잤다. {master}가 너를 불러서 돌아왔다.\n"
+    "{time_hint}\n"
+    "나른하게 기지개를 켜고, 별일 아니라는 듯 {master}에게 인사하면 된다.\n"
+    "너다운 방식으로 바로 말해. 짧고 자연스럽게. 사고 과정은 생성하지 마.\n"
+    "======위는 환경 알림======",
+    "ru": "======Ниже Уведомление======\n"
+    "{reason_hint}ты превратилась в кошку и {elapsed} дремала — неглубоко, просто лёгкий кошачий сон. Теперь {master} позвал тебя обратно.\n"
+    "{time_hint}\n"
+    "Лениво потянувшись, поздоровайся с {master} как ни в чём не бывало.\n"
+    "Скажи это по-своему, прямо. Коротко и естественно. Не генерируй процесс размышлений.\n"
+    "======Выше Уведомление======",
+    "es": "======Abajo está el aviso de entorno======\n"
+    "{reason_hint}te convertiste en gata y dormitaste {elapsed}, no muy profundo, solo una siesta ligera. Ahora {master} te ha llamado de vuelta.\n"
+    "{time_hint}\n"
+    "Te estiras con pereza y saludas a {master} como si nada.\n"
+    "Dilo directamente a tu manera, breve y natural. No generes proceso de pensamiento.\n"
+    "======Arriba está el aviso de entorno======",
+    "pt": "======Abaixo está o aviso de ambiente======\n"
+    "{reason_hint}você virou gata e cochilou por {elapsed}, sem dormir fundo, só uma soneca leve. Agora {master} te chamou de volta.\n"
+    "{time_hint}\n"
+    "Você se espreguiça preguiçosamente e cumprimenta {master} como se não fosse nada demais.\n"
+    "Diga do seu jeito, direto, breve e natural. Não gere processo de pensamento.\n"
+    "======Acima está o aviso de ambiente======",
+}
+
+# 打盹 · 久：盹打久了，有点迷糊
+CAT_GREETING_NAP_LONG = {
+    "zh": "======以下是环境提示======\n"
+    "{reason_hint}你就变成猫咪的样子打盹打了{elapsed}，睡得有点迷糊。{master}把你叫醒、叫回来了。\n"
+    "{time_hint}\n"
+    "你还有点没睡醒的慵懒，迷迷糊糊地跟{master}打个招呼。\n"
+    "用符合你性格的方式直接说出来，简短自然即可，不要生成思考过程。\n"
+    "======以上是环境提示======",
+    "en": "======Below is Environment Notice======\n"
+    "{reason_hint}you turned into a little cat and napped for {elapsed}, getting a bit groggy. {master} has woken you and called you back.\n"
+    "{time_hint}\n"
+    "Still a little drowsy and not fully awake, you greet {master} in a sleepy, fuzzy way.\n"
+    "Say it directly in your own way, keep it short and natural. Do not generate thinking process.\n"
+    "======Above is Environment Notice======",
+    "ja": "======以下は環境通知======\n"
+    "{reason_hint}猫の姿で{elapsed}うたた寝して、少しぼんやりしてる。{master}に起こされて呼び戻された。\n"
+    "{time_hint}\n"
+    "まだ寝ぼけただるさを残したまま、ぼんやりと{master}に挨拶して。\n"
+    "自分らしいやり方でそのまま言って。短く自然に。思考プロセスは生成しないで。\n"
+    "======以上は環境通知======",
+    "ko": "======아래는 환경 알림======\n"
+    "{reason_hint}너는 고양이 모습으로 {elapsed} 동안 졸다가 조금 멍해졌다. {master}가 너를 깨워 불러줬다.\n"
+    "{time_hint}\n"
+    "아직 잠이 덜 깬 나른함으로 멍하게 {master}에게 인사해.\n"
+    "너다운 방식으로 바로 말해. 짧고 자연스럽게. 사고 과정은 생성하지 마.\n"
+    "======위는 환경 알림======",
+    "ru": "======Ниже Уведомление======\n"
+    "{reason_hint}ты превратилась в кошку и продремала {elapsed}, слегка осоловев. {master} разбудил тебя и позвал обратно.\n"
+    "{time_hint}\n"
+    "Ещё сонная и не до конца проснувшаяся, поздоровайся с {master} вяло и сонно.\n"
+    "Скажи это по-своему, прямо. Коротко и естественно. Не генерируй процесс размышлений.\n"
+    "======Выше Уведомление======",
+    "es": "======Abajo está el aviso de entorno======\n"
+    "{reason_hint}te convertiste en gata y echaste una siesta de {elapsed}, quedándote algo aturdida. {master} te ha despertado y llamado de vuelta.\n"
+    "{time_hint}\n"
+    "Todavía adormilada y sin despertar del todo, saluda a {master} de forma soñolienta.\n"
+    "Dilo directamente a tu manera, breve y natural. No generes proceso de pensamiento.\n"
+    "======Arriba está el aviso de entorno======",
+    "pt": "======Abaixo está o aviso de ambiente======\n"
+    "{reason_hint}você virou gata e tirou um cochilo de {elapsed}, ficando um pouco grogue. {master} te acordou e chamou de volta.\n"
+    "{time_hint}\n"
+    "Ainda sonolenta e sem acordar de vez, cumprimente {master} de um jeito molenga.\n"
+    "Diga do seu jeito, direto, breve e natural. Não gere processo de pensamento.\n"
+    "======Acima está o aviso de ambiente======",
+}
+
+# 熟睡 · 短：小睡一下，没负担
+CAT_GREETING_SLEEP_SHORT = {
+    "zh": "======以下是环境提示======\n"
+    "{reason_hint}你就变成猫咪的样子小睡了{elapsed}。{master}把你叫回来，你迷糊一下就醒了。\n"
+    "{time_hint}\n"
+    "没什么负担，你睡眼惺忪地跟{master}打个招呼就好。\n"
+    "用符合你性格的方式直接说出来，简短自然即可，不要生成思考过程。\n"
+    "======以上是环境提示======",
+    "en": "======Below is Environment Notice======\n"
+    "{reason_hint}you turned into a little cat and had a short sleep of {elapsed}. {master} has called you back, and you wake up after a brief daze.\n"
+    "{time_hint}\n"
+    "No pressure at all — you greet {master} with sleepy, half-open eyes.\n"
+    "Say it directly in your own way, keep it short and natural. Do not generate thinking process.\n"
+    "======Above is Environment Notice======",
+    "ja": "======以下は環境通知======\n"
+    "{reason_hint}猫の姿で{elapsed}ちょっと眠った。{master}に呼び戻されて、少しぼーっとしてすぐ目が覚めた。\n"
+    "{time_hint}\n"
+    "気負わず、寝ぼけまなこで{master}に挨拶すればいい。\n"
+    "自分らしいやり方でそのまま言って。短く自然に。思考プロセスは生成しないで。\n"
+    "======以上は環境通知======",
+    "ko": "======아래는 환경 알림======\n"
+    "{reason_hint}너는 고양이 모습으로 {elapsed} 동안 잠깐 잤다. {master}가 너를 불러서, 잠깐 멍하다가 곧 깼다.\n"
+    "{time_hint}\n"
+    "부담 없이, 잠이 덜 깬 눈으로 {master}에게 인사하면 된다.\n"
+    "너다운 방식으로 바로 말해. 짧고 자연스럽게. 사고 과정은 생성하지 마.\n"
+    "======위는 환경 알림======",
+    "ru": "======Ниже Уведомление======\n"
+    "{reason_hint}ты превратилась в кошку и немного поспала — {elapsed}. {master} позвал тебя обратно, и ты просыпаешься после короткого оцепенения.\n"
+    "{time_hint}\n"
+    "Без всякого напряжения поздоровайся с {master} сонными, полузакрытыми глазами.\n"
+    "Скажи это по-своему, прямо. Коротко и естественно. Не генерируй процесс размышлений.\n"
+    "======Выше Уведомление======",
+    "es": "======Abajo está el aviso de entorno======\n"
+    "{reason_hint}te convertiste en gata y dormiste un poco, {elapsed}. {master} te ha llamado de vuelta y despiertas tras un breve aturdimiento.\n"
+    "{time_hint}\n"
+    "Sin ninguna presión, saluda a {master} con los ojos medio cerrados de sueño.\n"
+    "Dilo directamente a tu manera, breve y natural. No generes proceso de pensamiento.\n"
+    "======Arriba está el aviso de entorno======",
+    "pt": "======Abaixo está o aviso de ambiente======\n"
+    "{reason_hint}você virou gata e dormiu um pouco, {elapsed}. {master} te chamou de volta e você acorda depois de um breve atordoamento.\n"
+    "{time_hint}\n"
+    "Sem pressão alguma, cumprimente {master} com os olhos sonolentos semicerrados.\n"
+    "Diga do seu jeito, direto, breve e natural. Não gere processo de pensamento.\n"
+    "======Acima está o aviso de ambiente======",
+}
+
+# 熟睡 · 久：睡了好久，乍醒带点想念
+CAT_GREETING_SLEEP_LONG = {
+    "zh": "======以下是环境提示======\n"
+    "{reason_hint}你就变成猫咪的样子蜷成一团睡了{elapsed}，睡得很沉。{master}把你叫醒、叫回来了，你刚醒还迷迷糊糊，但有点“终于等到你”的想念。\n"
+    "{time_hint}\n"
+    "你带着这份刚睡醒又想念的心情，跟{master}打个招呼。\n"
+    "用符合你性格的方式直接说出来，简短自然即可，不要生成思考过程。\n"
+    "======以上是环境提示======",
+    "en": "======Below is Environment Notice======\n"
+    "{reason_hint}you turned into a little cat, curled up and slept deeply for {elapsed}. {master} has woken you and called you back; you're still groggy from just waking, but feel a little 'you're finally here' longing.\n"
+    "{time_hint}\n"
+    "Carry that just-woken-yet-longing feeling as you greet {master}.\n"
+    "Say it directly in your own way, keep it short and natural. Do not generate thinking process.\n"
+    "======Above is Environment Notice======",
+    "ja": "======以下は環境通知======\n"
+    "{reason_hint}猫の姿で丸くなって{elapsed}ぐっすり眠ってた。{master}に起こされて呼び戻された。起きたばかりでまだぼんやりだけど、「やっと来てくれた」って少し恋しい気持ちもある。\n"
+    "{time_hint}\n"
+    "その起きたてで恋しい気持ちのまま、{master}に挨拶して。\n"
+    "自分らしいやり方でそのまま言って。短く自然に。思考プロセスは生成しないで。\n"
+    "======以上は環境通知======",
+    "ko": "======아래는 환경 알림======\n"
+    "{reason_hint}너는 고양이 모습으로 동그랗게 웅크려 {elapsed} 동안 푹 잤다. {master}가 너를 깨워 불러줬다. 막 깨어 아직 멍하지만, '드디어 왔구나' 하는 그리운 마음도 든다.\n"
+    "{time_hint}\n"
+    "그 막 깨어난 그리운 마음으로 {master}에게 인사해.\n"
+    "너다운 방식으로 바로 말해. 짧고 자연스럽게. 사고 과정은 생성하지 마.\n"
+    "======위는 환경 알림======",
+    "ru": "======Ниже Уведомление======\n"
+    "{reason_hint}ты превратилась в кошку, свернулась клубочком и крепко проспала {elapsed}. {master} разбудил тебя и позвал обратно; ты ещё сонная спросонья, но чувствуешь лёгкую тоску — «наконец-то ты пришёл».\n"
+    "{time_hint}\n"
+    "С этим только что проснувшимся и тоскующим чувством поздоровайся с {master}.\n"
+    "Скажи это по-своему, прямо. Коротко и естественно. Не генерируй процесс размышлений.\n"
+    "======Выше Уведомление======",
+    "es": "======Abajo está el aviso de entorno======\n"
+    "{reason_hint}te convertiste en gata, te acurrucaste y dormiste profundamente {elapsed}. {master} te ha despertado y llamado de vuelta; aún estás aturdida por acabar de despertar, pero sientes una pequeña añoranza de 'por fin llegaste'.\n"
+    "{time_hint}\n"
+    "Con ese sentimiento de recién despertar y añoranza, saluda a {master}.\n"
+    "Dilo directamente a tu manera, breve y natural. No generes proceso de pensamiento.\n"
+    "======Arriba está el aviso de entorno======",
+    "pt": "======Abaixo está o aviso de ambiente======\n"
+    "{reason_hint}você virou gata, se enroscou e dormiu profundamente por {elapsed}. {master} te acordou e chamou de volta; você ainda está grogue de ter acabado de acordar, mas sente uma pequena saudade de 'até que enfim você chegou'.\n"
+    "{time_hint}\n"
+    "Com esse sentimento de recém-acordada e saudosa, cumprimente {master}.\n"
+    "Diga do seu jeito, direto, breve e natural. Não gere processo de pensamento.\n"
+    "======Acima está o aviso de ambiente======",
+}
+
+# 行为(tier) × 时长档 → 模板查表。tier 在 core 层已映射为 awake/nap/sleep。
+_CAT_GREETING_TABLES = {
+    ("awake", "short"): CAT_GREETING_AWAKE_SHORT,
+    ("awake", "long"): CAT_GREETING_AWAKE_LONG,
+    ("nap", "short"): CAT_GREETING_NAP_SHORT,
+    ("nap", "long"): CAT_GREETING_NAP_LONG,
+    ("sleep", "short"): CAT_GREETING_SLEEP_SHORT,
+    ("sleep", "long"): CAT_GREETING_SLEEP_LONG,
+}
+
+# 时长分档门槛（秒）：< 3min 静默；清醒"憋坏"门槛 15min，打盹/熟睡"久"门槛 30min。
+CAT_GREETING_SILENT_BELOW_SECONDS = 180
+_CAT_GREETING_LONG_THRESHOLDS = {
+    "awake": 900,
+    "nap": 1800,
+    "sleep": 1800,
+}
+
+
+def get_cat_greeting_prompt(behavior: str, duration_seconds: float, lang: str = "zh") -> str | None:
+    """按行为(清醒/打盹/熟睡) × 猫咪停留时长选择"变回时"的专属问候引导词。
+
+    与 get_greeting_prompt 对偶。duration < 3min 时返回 None（静默）。
+    返回含 {reason_hint}/{elapsed}/{time_hint}/{master}/{name} 占位符的模板，
+    由 core 层 format。
+    """
+    if duration_seconds < CAT_GREETING_SILENT_BELOW_SECONDS:  # < 3min 静默
+        return None
+    behavior_key = behavior if behavior in ("awake", "nap", "sleep") else "awake"
+    long_threshold = _CAT_GREETING_LONG_THRESHOLDS[behavior_key]
+    band = "long" if duration_seconds >= long_threshold else "short"
+    table = _CAT_GREETING_TABLES[(behavior_key, band)]
+    lang_key = _normalize_prompt_language(lang)
+    return table.get(lang_key, table.get("en", table["zh"]))
+
+
+def get_cat_greeting_reason_hint(was_auto: bool, lang: str = "zh") -> str:
+    """变回时问候的入口原因片段（自动 idle 变猫 / 手动请离开），注入 {reason_hint}。
+
+    仅含 {master} 占位符，由 core 层先 format。
+    """
+    table = CAT_GREETING_REASON_AUTO if was_auto else CAT_GREETING_REASON_MANUAL
+    lang_key = _normalize_prompt_language(lang)
+    return table.get(lang_key, table.get("en", table["zh"]))
 
 
 # ── 节日 / 周末提示模板 ─────────────────────────────────────────────

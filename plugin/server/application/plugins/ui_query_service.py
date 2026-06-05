@@ -857,7 +857,7 @@ class PluginUiQueryService:
             with state.acquire_plugin_hosts_read_lock():
                 host = state.plugin_hosts.get(plugin_id)
             if host is None or not hasattr(host, "is_alive") or not host.is_alive() or not hasattr(host, "trigger"):
-                logger.warning(
+                logger.debug(
                     "Hosted UI action rejected: plugin_id={}, surface={}:{}, action_id={}, reason=plugin_not_running",
                     plugin_id, kind, surface_id, action_id,
                 )
@@ -866,6 +866,7 @@ class PluginUiQueryService:
                     message=f"Plugin '{plugin_id}' is not running",
                     status_code=409,
                     details={"plugin_id": plugin_id},
+                    log_level="debug",
                 )
 
             actions: list[object] = []

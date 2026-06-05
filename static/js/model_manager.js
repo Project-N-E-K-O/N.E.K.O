@@ -543,6 +543,168 @@ function sendMessageToMainPage(action, payload = {}) {
 
 // 全局变量：跟踪未保存的更改
 window.hasUnsavedChanges = false;
+window._modelManagerParameterEditedSinceSave = false;
+window._modelManagerParameterSaveNoticeShown = false;
+const MODEL_MANAGER_PARAMETER_SAVE_MARK_PREFIX = 'neko_model_manager_parameter_save_pending:';
+const MODEL_MANAGER_PARAMETER_SAVE_MARK_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const MODEL_MANAGER_LANLAN_NAME_SESSION_KEY = 'neko_model_manager_lanlan_name';
+
+function normalizeModelManagerLanlanName(value) {
+    return String(value || '').trim();
+}
+
+function getModelManagerLanlanNameFromUrl() {
+    try {
+        const urlParams = new URLSearchParams(window.location.search);
+        return normalizeModelManagerLanlanName(urlParams.get('lanlan_name'));
+    } catch (_) {
+        return '';
+    }
+}
+
+function rememberModelManagerLanlanNameFallback(lanlanName) {
+    const normalizedName = normalizeModelManagerLanlanName(lanlanName);
+    if (!normalizedName) return;
+    try {
+        sessionStorage.setItem(MODEL_MANAGER_LANLAN_NAME_SESSION_KEY, normalizedName);
+    } catch (_) {}
+}
+
+function getModelManagerLanlanNameFromSession() {
+    try {
+        return normalizeModelManagerLanlanName(sessionStorage.getItem(MODEL_MANAGER_LANLAN_NAME_SESSION_KEY));
+    } catch (_) {
+        return '';
+    }
+}
+
+async function resolveModelManagerParameterSaveLanlanName() {
+    let lanlanName = getModelManagerLanlanNameFromUrl();
+    if (lanlanName) {
+        rememberModelManagerLanlanNameFallback(lanlanName);
+        return lanlanName;
+    }
+
+    lanlanName = getModelManagerLanlanNameFromSession();
+    if (lanlanName) return lanlanName;
+
+    if (typeof resolveModelManagerLanlanName === 'function') {
+        try {
+            lanlanName = normalizeModelManagerLanlanName(await resolveModelManagerLanlanName());
+        } catch (_) {
+            lanlanName = '';
+        }
+    }
+    if (lanlanName) {
+        rememberModelManagerLanlanNameFallback(lanlanName);
+    }
+    return lanlanName;
+}
+
+async function getModelManagerParameterSaveMarkKey(lanlanName) {
+    const normalizedName = normalizeModelManagerLanlanName(lanlanName || await resolveModelManagerParameterSaveLanlanName());
+    if (!normalizedName) return '';
+    try {
+        return MODEL_MANAGER_PARAMETER_SAVE_MARK_PREFIX + encodeURIComponent(normalizedName);
+    } catch (_) {
+        return '';
+    }
+}
+
+function getModelManagerParameterSaveStorages() {
+    const storages = [];
+    try {
+        if (window.sessionStorage) storages.push(window.sessionStorage);
+    } catch (_) {}
+    try {
+        if (window.localStorage) storages.push(window.localStorage);
+    } catch (_) {}
+    return storages;
+}
+
+function isPendingParameterEditorSaveValid(pendingSave) {
+    if (!pendingSave || typeof pendingSave !== 'object') return false;
+    const timestamp = Number(pendingSave.timestamp || 0);
+    if (!timestamp) return true;
+    return Date.now() - timestamp <= MODEL_MANAGER_PARAMETER_SAVE_MARK_TTL_MS;
+}
+
+function normalizeModelManagerModelMarkValue(value) {
+    return String(value || '').trim();
+}
+
+function pendingParameterEditorSaveMatchesCurrentModel(pendingSave, modelInfo) {
+    if (!pendingSave || !modelInfo) return false;
+    const pendingPath = normalizeModelManagerModelMarkValue(pendingSave.modelPath);
+    const currentPath = normalizeModelManagerModelMarkValue(modelInfo.path);
+    if (pendingPath) {
+        return pendingPath === currentPath;
+    }
+
+    const pendingName = normalizeModelManagerModelMarkValue(pendingSave.modelName);
+    if (!pendingName) return true;
+    return pendingName === normalizeModelManagerModelMarkValue(modelInfo.name);
+}
+
+async function readPendingParameterEditorSave() {
+    const markKey = await getModelManagerParameterSaveMarkKey();
+    if (!markKey) return null;
+    for (const storage of getModelManagerParameterSaveStorages()) {
+        try {
+            const raw = storage.getItem(markKey);
+            if (!raw) continue;
+            const pendingSave = JSON.parse(raw);
+            if (!isPendingParameterEditorSaveValid(pendingSave)) {
+                storage.removeItem(markKey);
+                continue;
+            }
+            return pendingSave;
+        } catch (_) {}
+    }
+    return null;
+}
+
+async function clearPendingParameterEditorSaveState() {
+    const markKey = await getModelManagerParameterSaveMarkKey();
+    if (markKey) {
+        for (const storage of getModelManagerParameterSaveStorages()) {
+            try {
+                storage.removeItem(markKey);
+            } catch (_) {}
+        }
+    }
+    window._modelManagerParameterEditedSinceSave = false;
+    window._modelManagerParameterSaveNoticeShown = false;
+}
+
+async function restorePendingParameterEditorSaveState(saveButton, options = {}) {
+    const pendingSave = await readPendingParameterEditorSave();
+    if (!pendingSave) return false;
+    if (!pendingParameterEditorSaveMatchesCurrentModel(pendingSave, options.currentModelInfo)) {
+        await clearPendingParameterEditorSaveState();
+        return false;
+    }
+
+    window._modelManagerParameterEditedSinceSave = true;
+    window.hasUnsavedChanges = true;
+    if (saveButton) {
+        saveButton.disabled = false;
+    }
+    if (options.showNotice && !window._modelManagerParameterSaveNoticeShown) {
+        const message = modelManagerText(
+            'modelManager.parameterEditorSavedNeedsModelSave',
+            '捏脸参数已保存，请点击「保存设置」同步到角色配置。'
+        );
+        if (typeof options.showStatus === 'function') {
+            options.showStatus(message, options.statusDuration || 4000);
+        }
+        if (typeof options.showToast === 'function') {
+            options.showToast(message, options.toastDuration || 4200, 'warning');
+        }
+        window._modelManagerParameterSaveNoticeShown = true;
+    }
+    return true;
+}
 
 // 全局辅助：从待机动作多选容器获取已勾选 URL 列表（供快照使用）
 function _getSelectedIdleAnimationsGlobal(containerId) {
@@ -652,12 +814,14 @@ function setModelManagerStatusText(message) {
 
 async function resolveModelManagerLanlanName() {
     if (window._modelManagerLanlanName && window._modelManagerLanlanName.trim() !== '') {
+        rememberModelManagerLanlanNameFallback(window._modelManagerLanlanName);
         return window._modelManagerLanlanName;
     }
     try {
         const data = await RequestHelper.fetchJson('/api/config/page_config');
         if (data && data.success && data.lanlan_name) {
             window._modelManagerLanlanName = data.lanlan_name;
+            rememberModelManagerLanlanNameFallback(window._modelManagerLanlanName);
         }
     } catch (e) {
         console.warn('[模型管理] 获取 lanlan_name 失败，跳过缓存:', e);
@@ -837,7 +1001,7 @@ function watchCardMakerCloseForDefaultCardFace(makerWindow, lanlanName, state = 
     let channel = null;
     let cachedDefaultCardFaceImage = null;
     let fallbackAbortController = null;
-    const cachedDefaultCardFaceImagePromise = captureDefaultCardFaceModelImage(state, 600, 800 - Math.floor(800 / 6))
+    const cachedDefaultCardFaceImagePromise = captureDefaultCardFaceModelImage(state, 600, 800)
         .then(image => {
             cachedDefaultCardFaceImage = image;
             if (window._modelManagerActiveCardMakerFallback?.token === fallbackToken) {
@@ -1248,8 +1412,7 @@ async function generateDefaultCardFaceFromModelManager(lanlanName, state = {}, o
 
     const cardW = 600;
     const cardH = 800;
-    const headerH = Math.floor(cardH / 6);
-    const modelImage = options.modelImage || await captureDefaultCardFaceModelImage(state, cardW, cardH - headerH);
+    const modelImage = options.modelImage || await captureDefaultCardFaceModelImage(state, cardW, cardH);
     throwIfCancelled();
     const sourceCanvas = modelImage.canvas;
     const output = document.createElement('canvas');
@@ -1261,23 +1424,13 @@ async function generateDefaultCardFaceFromModelManager(lanlanName, state = {}, o
     ctx.fillStyle = '#E8F4F8';
     ctx.fillRect(0, 0, cardW, cardH);
 
-    ctx.fillStyle = '#40C5F1';
-    ctx.fillRect(0, 0, cardW, headerH);
-
-    ctx.font = 'bold 42px "Microsoft YaHei", "SimHei", "PingFang SC", sans-serif';
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
-    ctx.fillText(lanlanName, 42, headerH / 2 + 2);
-    ctx.fillStyle = '#FFFFFF';
-    ctx.fillText(lanlanName, 40, headerH / 2);
-
     drawImageCover(
         ctx,
         sourceCanvas,
         0,
-        headerH,
+        0,
         cardW,
-        cardH - headerH,
+        cardH,
         modelImage.drawOptions || {}
     );
 
@@ -1811,17 +1964,24 @@ document.addEventListener('DOMContentLoaded', async () => {
             const charData = data['猫娘']?.[lanlanName];
 
             // 优先从 _reserved 保留字段读取，兼容旧版本的直接平铺结构
-            // 使用 ?? 替代 || 以保留空字符串语义（用户清空后的有效值）
-            const live2dIdleAnimation = charData?._reserved?.avatar?.live2d?.idle_animation
-                                     ?? charData?.avatar?.live2d?.idle_animation
-                                     ?? charData?.live2d_idle_animation;  // 兼容旧版本平铺字段
+            // 显式检查字段是否存在，以保留空字符串/null 语义（用户清空后的有效值）
+            const hasOwn = (obj, key) => !!obj && Object.prototype.hasOwnProperty.call(obj, key);
+            const reservedLive2D = charData?._reserved?.avatar?.live2d;
+            const avatarLive2D = charData?.avatar?.live2d;
+            let live2dIdleAnimation;
+            let hasExplicitIdleAnimation = false;
+            if (hasOwn(reservedLive2D, 'idle_animation')) {
+                live2dIdleAnimation = reservedLive2D.idle_animation;
+                hasExplicitIdleAnimation = true;
+            } else if (hasOwn(avatarLive2D, 'idle_animation')) {
+                live2dIdleAnimation = avatarLive2D.idle_animation;
+                hasExplicitIdleAnimation = true;
+            } else if (hasOwn(charData, 'live2d_idle_animation')) {
+                live2dIdleAnimation = charData.live2d_idle_animation;  // 兼容旧版本平铺字段
+                hasExplicitIdleAnimation = true;
+            }
 
             console.log('[Live2D Restore] live2dIdleAnimation:', live2dIdleAnimation);
-
-            if (!live2dIdleAnimation) {
-                console.log('[Live2D Restore] 没有保存的待机动作');
-                return;
-            }
 
             const motionSelect = document.getElementById('motion-select');
             console.log('[Live2D Restore] motionSelect:', motionSelect);
@@ -1829,6 +1989,20 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             const motionFiles = currentModelFiles?.motion_files || [];
             console.log('[Live2D Restore] motionFiles:', motionFiles);
+            if (!live2dIdleAnimation) {
+                if (hasExplicitIdleAnimation) {
+                    console.log('[Live2D Restore] 待机动作已明确清空');
+                    return;
+                }
+                if (motionFiles.length === 1) {
+                    live2dIdleAnimation = motionFiles[0];
+                    console.log('[Live2D Restore] 没有保存的待机动作，使用唯一 motion 作为默认待机动作:', live2dIdleAnimation);
+                } else {
+                    console.log('[Live2D Restore] 没有保存的待机动作');
+                    return;
+                }
+            }
+
             console.log('[Live2D Restore] 检查动作是否在列表中:', motionFiles.includes(live2dIdleAnimation));
             if (!motionFiles.includes(live2dIdleAnimation)) {
                 console.log('[Live2D] 保存的待机动作不在当前模型的动作列表中，跳过恢复:', live2dIdleAnimation);
@@ -2738,6 +2912,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (paramEditorBtn) {
                 const lanlanName = await getLanlanName();
                 if (lanlanName) {
+                    rememberModelManagerLanlanNameFallback(lanlanName);
                     paramEditorBtn.href = `/live2d_parameter_editor?lanlan_name=${encodeURIComponent(lanlanName)}`;
                 }
             }
@@ -7627,6 +7802,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         const beforeSaveSnapshot = window._savedModelSnapshot
             ? { ...window._savedModelSnapshot }
             : captureSettingsSnapshot();
+        const parameterEditedSinceSave = window._modelManagerParameterEditedSinceSave === true
+            || await restorePendingParameterEditorSaveState(savePositionBtn, { currentModelInfo });
 
         try {
             // Live3D模式下，即使模型未加载，只要有选择的模型就可以保存
@@ -7772,9 +7949,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             const shouldOfferCardFace = modelFullySaved
                 && (
                     savedFallbackModelAsExplicitBinding ||
+                    parameterEditedSinceSave ||
                     window._modelManagerModelChangedSinceSave
                     || modelSelectionChanged(beforeSaveSnapshot, captureSettingsSnapshot())
             );
+            if (modelFullySaved) {
+                await clearPendingParameterEditorSaveState();
+            }
             if (shouldOfferCardFace) {
                 const savedLive3dSubType = modelSaveResult?.details?.effectiveLive3dSubType || currentLive3dSubType;
                 offerCardFaceAfterModelSave({
@@ -7849,7 +8030,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     backToMainBtn.addEventListener('click', async () => {
         // 退出前：比对当前设置和已保存快照，完全一致则视为无更改
-        if (window.hasUnsavedChanges && window._savedModelSnapshot) {
+        if (window.hasUnsavedChanges && window._savedModelSnapshot && !window._modelManagerParameterEditedSinceSave) {
             if (snapshotsEqual(window._savedModelSnapshot, captureSettingsSnapshot())) {
                 window.hasUnsavedChanges = false;
             }
@@ -7863,6 +8044,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             // 用户确认离开，重置未保存状态，避免被 beforeunload 拦截
             window.hasUnsavedChanges = false;
+            await clearPendingParameterEditorSaveState();
         }
 
         // 如果处于全屏状态，先退出全屏
@@ -9480,6 +9662,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const currentModelData = await RequestHelper.fetchJson(apiUrl);
 
                 if (!currentModelData.success) {
+                    showStatus(currentModelData.error || t('live2d.loadCurrentModelFailed', '加载当前角色模型失败'));
                     return;
                 }
 
@@ -9533,9 +9716,22 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
+    await restorePendingParameterEditorSaveState(savePositionBtn, {
+        currentModelInfo,
+        showNotice: true,
+        showStatus,
+        showToast: showModelManagerToast
+    });
+
     // 等待异步设置（打光、待机动作等）加载完成后记录快照
-    setTimeout(() => {
+    setTimeout(async () => {
         window._savedModelSnapshot = captureSettingsSnapshot();
+        await restorePendingParameterEditorSaveState(savePositionBtn, {
+            currentModelInfo,
+            showNotice: true,
+            showStatus,
+            showToast: showModelManagerToast
+        });
     }, 500);
   } catch (_fatalError) {
     console.error('[模型管理] DOMContentLoaded 致命错误:', _fatalError);

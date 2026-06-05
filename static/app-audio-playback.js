@@ -25,9 +25,17 @@
 
     const ASSISTANT_TURN_COMPLETION_FALLBACK_MS = 700;
     const ASSISTANT_AUDIO_HEADER_STALL_MS = 1800;
+    // 最后兜底：如果 turn-end 包压根没到（server 漏发 / packet 掉），
+    // maybeFinalizeAssistantSpeech 永远 skip_completion_mismatch，
+    // S.isPlaying / S.assistantSpeechActiveTurnId 没人清，proactive gate
+    // 和 mic focus gate 都会卡死。此处守门：所有音频队列空了且 flag
+    // 还粘着，30s 后强制 cancel 收尾。比 ASSISTANT_TURN_COMPLETION_FALLBACK_MS
+    // 长一个数量级——前者覆盖正常 race，后者覆盖 server 漏包。
+    const STUCK_SPEAKING_FALLBACK_MS = 30000;
     let _assistantTurnCompletionFallbackTimer = 0;
     let _assistantTurnCompletionFallbackTurnId = null;
     let _pendingAudioMetaStallTimer = 0;
+    let _stuckSpeakingFallbackTimer = 0;
     const SPEECH_PLAYBACK_STATE_KEY = 'neko_speech_playback_state';
     const SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';
     const SPEECH_PLAYBACK_STATE_HEARTBEAT_MS = 200;
@@ -87,6 +95,9 @@
             active: remaining > 0.05 || S.scheduledSources.length > 0 || S.audioBufferQueue.length > 0 || pendingAudioWork,
             speechId: S.currentPlayingSpeechId || null,
             turnId: S.assistantSpeechActiveTurnId || S.assistantTurnId || null,
+            playbackTurnId: S.assistantSpeechPlaybackTurnId || null,
+            playbackStartAudioTime: Number.isFinite(S.assistantSpeechPlaybackStartAudioTime) ? S.assistantSpeechPlaybackStartAudioTime : 0,
+            playbackEndAudioTime: Number.isFinite(S.assistantSpeechPlaybackEndAudioTime) ? S.assistantSpeechPlaybackEndAudioTime : 0,
             scheduledEndAudioTime: scheduledEnd,
             audioContextTime: audioTime,
             audioContextState: S.audioPlayerContext ? S.audioPlayerContext.state : '',
@@ -115,6 +126,11 @@
         } else {
             clearSpeechPlaybackStateHeartbeat();
         }
+        try {
+            window.dispatchEvent(new CustomEvent('neko-speech-playback-state', {
+                detail: state
+            }));
+        } catch (_) { /* noop */ }
         return state;
     }
 
@@ -148,6 +164,26 @@
                 timestamp: Date.now()
             }, detail || {})
         }));
+    }
+
+    // Report REAL audio playback boundaries to the backend so the proactive
+    // inject gate keys off actual playback (queue drained) rather than the
+    // realtime API's response.done (generation finished while audio is still
+    // buffered/playing). Rides the same ws as every other action, including
+    // the Electron chat.html WSProxy/IPC bridge → Pet real ws. readyState
+    // may be undefined on a proxy socket — send anyway (try/catch guards).
+    function sendVoicePlaybackSignal(action, turnId) {
+        try {
+            var sock = S.socket;
+            if (sock && typeof sock.send === 'function' &&
+                (sock.readyState === 1 || typeof sock.readyState === 'undefined')) {
+                sock.send(JSON.stringify({
+                    action: action,
+                    turnId: turnId || null,
+                    source: 'audio_playback'
+                }));
+            }
+        } catch (_) { /* noop — best-effort signal */ }
     }
 
     function getActiveAvatarModelType() {
@@ -280,6 +316,12 @@
 
     function dispatchAssistantSpeechStart(turnId) {
         var normalizedTurnId = normalizeAssistantTurnId(turnId);
+        // 新 chunk 入队 = 真实音频活动，无论是不是同一 turn 都要撤掉 stuck watchdog。
+        // 否则 choppy stream 里：第一段播完 arm 表 → 第二段到来仍是同一 turn 早 return →
+        // 表不撤 → 30s 到点时如果刚好在第 N 段间隙 → 误 fire cancel。
+        if (normalizedTurnId) {
+            clearStuckSpeakingFallback();
+        }
         if (!normalizedTurnId || S.assistantSpeechActiveTurnId === normalizedTurnId) {
             return;
         }
@@ -293,6 +335,7 @@
             turnId: normalizedTurnId,
             source: 'audio_playback'
         });
+        sendVoicePlaybackSignal('voice_play_start', normalizedTurnId);
     }
 
     function dispatchAssistantSpeechEnd(turnId) {
@@ -304,6 +347,12 @@
             return;
         }
         S.assistantSpeechActiveTurnId = null;
+        if (S.assistantSpeechPlaybackTurnId === normalizedTurnId) {
+            S.assistantSpeechPlaybackTurnId = null;
+            S.assistantSpeechPlaybackStartAudioTime = 0;
+            S.assistantSpeechPlaybackEndAudioTime = 0;
+        }
+        clearStuckSpeakingFallback();
         logAudioLifecycle('dispatchAssistantSpeechEnd', {
             turnId: normalizedTurnId
         });
@@ -311,6 +360,7 @@
             turnId: normalizedTurnId,
             source: 'audio_playback'
         });
+        sendVoicePlaybackSignal('voice_play_end', normalizedTurnId);
     }
 
     function resolveAssistantSpeechCancelTurnId() {
@@ -371,6 +421,10 @@
             return;
         }
         S.assistantSpeechActiveTurnId = null;
+        S.assistantSpeechPlaybackTurnId = null;
+        S.assistantSpeechPlaybackStartAudioTime = 0;
+        S.assistantSpeechPlaybackEndAudioTime = 0;
+        clearStuckSpeakingFallback();
         logAudioLifecycle('dispatchAssistantSpeechCancel', {
             turnId: normalizedTurnId,
             source: source || 'audio_playback'
@@ -379,6 +433,9 @@
             turnId: normalizedTurnId,
             source: source || 'audio_playback'
         });
+        // Cancel/interruption also means audio playback has stopped → open
+        // the proactive gate (same as a natural end).
+        sendVoicePlaybackSignal('voice_play_end', normalizedTurnId);
     }
 
     function clearAssistantTurnCompletionFallback() {
@@ -389,11 +446,105 @@
         _assistantTurnCompletionFallbackTurnId = null;
     }
 
+    function clearStuckSpeakingFallback() {
+        if (_stuckSpeakingFallbackTimer) {
+            clearTimeout(_stuckSpeakingFallbackTimer);
+            _stuckSpeakingFallbackTimer = 0;
+        }
+    }
+
+    // 4 个队列 + 3 个 in-flight async flag，覆盖所有"音频还在路上"的状态。
+    // - 4 queue 对齐 isAssistantTurnPlaybackDrained（少查 pendingAudioChunkMetaQueue
+    //   会在 header 到了 blob 还没到的窗口里误判空）
+    // - 3 async flag 对齐 publishSpeechPlaybackState:86-92 的 pendingAudioWork：
+    //   processIncomingAudioBlobQueue 会先 shift 出 blob 再 await handleAudioBlob，
+    //   shift 之后 incomingAudioBlobQueue.length 是 0 但解码还在跑；decoder reset
+    //   同理是个 Promise 在 flight。这些都属于"未真正 idle"，arm watchdog 就是误伤。
+    // filter shouldSkip 是因为上游可能 mark 跳过项。
+    function _hasPendingAudioWork() {
+        var pendingMeta = S.pendingAudioChunkMetaQueue.some(function (item) {
+            return item && !item.shouldSkip;
+        });
+        return (
+            S.scheduledSources.length > 0 ||
+            S.audioBufferQueue.length > 0 ||
+            pendingMeta ||
+            S.incomingAudioBlobQueue.length > 0 ||
+            !!S.pendingDecoderReset ||
+            !!S.decoderResetPromise ||
+            !!S.isProcessingIncomingAudioBlob
+        );
+    }
+
+    // 兜底：所有音频队列空了且 isPlaying / assistantSpeechActiveTurnId 还粘着
+    // → STUCK_SPEAKING_FALLBACK_MS 后强制走 cancel 路径收尾。
+    // 触发点是 source.onended（最后一段音频刚播完，maybeFinalizeAssistantSpeech
+    // 因为没收到 turn-end 而 skip 的那一刻），fire 时再 re-check 一次，
+    // 期间如果新音频进来或正常 finalize 走完，会被 clearStuckSpeakingFallback 撤掉。
+    function maybeArmStuckSpeakingFallback() {
+        if (_stuckSpeakingFallbackTimer) return;
+        var flagsSet = !!(S.isPlaying || S.assistantSpeechActiveTurnId);
+        if (_hasPendingAudioWork() || !flagsSet) return;
+
+        logAudioLifecycle('stuckSpeakingFallback:armed', {
+            isPlaying: S.isPlaying,
+            assistantSpeechActiveTurnId: S.assistantSpeechActiveTurnId,
+            assistantTurnId: S.assistantTurnId,
+            assistantTurnCompletedId: S.assistantTurnCompletedId,
+            delayMs: STUCK_SPEAKING_FALLBACK_MS
+        });
+
+        _stuckSpeakingFallbackTimer = window.setTimeout(function () {
+            _stuckSpeakingFallbackTimer = 0;
+            var hasPending = _hasPendingAudioWork();
+            var flagsStillSet = !!(S.isPlaying || S.assistantSpeechActiveTurnId);
+            if (hasPending || !flagsStillSet) {
+                logAudioLifecycle('stuckSpeakingFallback:skip_resolved', {
+                    hasPendingAudioWork: hasPending,
+                    flagsStillSet: flagsStillSet
+                });
+                return;
+            }
+            var snapshot = {
+                isPlaying: S.isPlaying,
+                assistantSpeechActiveTurnId: S.assistantSpeechActiveTurnId,
+                assistantTurnId: S.assistantTurnId,
+                assistantTurnCompletedId: S.assistantTurnCompletedId,
+                assistantTurnStartedAt: S.assistantTurnStartedAt,
+                scheduledSources: S.scheduledSources.length,
+                audioBufferQueue: S.audioBufferQueue.length,
+                pendingAudioChunkMetaQueue: S.pendingAudioChunkMetaQueue.length,
+                incomingAudioBlobQueue: S.incomingAudioBlobQueue.length,
+                pendingDecoderReset: !!S.pendingDecoderReset,
+                decoderResetPromise: !!S.decoderResetPromise,
+                isProcessingIncomingAudioBlob: !!S.isProcessingIncomingAudioBlob
+            };
+            console.warn('[Audio] sticky speaking flag detected, force-resetting via cancel after ' +
+                STUCK_SPEAKING_FALLBACK_MS + 'ms with empty queues', snapshot);
+            logAudioLifecycle('stuckSpeakingFallback:fire', snapshot);
+            // 走 cancel 通道：dispatchAssistantSpeechCancel 会清 assistantSpeechActiveTurnId
+            // 并 dispatch neko-assistant-speech-cancel，下方 handler 会清 isPlaying。
+            try { dispatchAssistantSpeechCancel('stuck_speaking_fallback'); } catch (_) { /* noop */ }
+            // 双保险：上面任一步没把 isPlaying 抹掉就强清。
+            if (S.isPlaying) {
+                S.isPlaying = false;
+            }
+            if (S.assistantSpeechActiveTurnId) {
+                S.assistantSpeechActiveTurnId = null;
+            }
+        }, STUCK_SPEAKING_FALLBACK_MS);
+    }
+
     function clearAssistantTurnCompletion() {
         clearAssistantTurnCompletionFallback();
         S.assistantTurnCompletedId = null;
         S.assistantTurnCompletionSource = null;
         S.assistantSpeechStartedTurnId = null;
+        // settled 标记随完成状态一起清：turn-start / speech-cancel / clearAudioQueue
+        // 都经由本函数，等于把 settledId 接进完整的 turn 生命周期收尾。
+        // maybeFinalizeAssistantSpeech 在调用本函数之后再设 settledId（见那里），
+        // 所以"干净收尾"路径的 settledId 不会被这里误清。
+        S.assistantTurnSettledId = null;
     }
 
     function scheduleAssistantTurnCompletionFallback(turnId, source) {
@@ -543,6 +694,11 @@
         dispatchAssistantSpeechEnd(normalizedTurnId);
         var completionSource = S.assistantTurnCompletionSource;
         clearAssistantTurnCompletion();
+        // 这一轮已干净收尾。clearAssistantTurnCompletion 刚把 completedId 清成 null，
+        // 但 assistantTurnId 仍指向本轮（要等下条用户消息才清），若不标记 settled，
+        // isAssistantTextResponseInFlight 会一直把"已说完的轮"误判成在路上 → 切语音
+        // 干等 15s。这里在清空之后再标 settled，记下"turnId 这轮已收尾"。
+        S.assistantTurnSettledId = normalizedTurnId;
         logAudioLifecycle('maybeFinalizeAssistantSpeech:completed', {
             requestedTurnId: normalizedTurnId,
             completionSource: completionSource
@@ -606,6 +762,7 @@
 
         window.addEventListener('neko-assistant-speech-cancel', function () {
             clearAssistantTurnCompletion();
+            clearStuckSpeakingFallback();
             // [BUGFIX] 切换猫娘后语音模式 mic 永远 skip=focus 的根因：
             // 原来只清 turn-tracking 标志，S.isPlaying 留在 true。
             // 切换瞬间 emitAssistantSpeechCancel('character_switch') 被调，
@@ -894,6 +1051,19 @@
 
                     var scheduledStartTime = S.nextChunkTime;
                     var scheduledEndTime = scheduledStartTime + nextBuffer.duration;
+                    if (source._nekoAssistantTurnId) {
+                        if (S.assistantSpeechPlaybackTurnId !== source._nekoAssistantTurnId ||
+                            !Number.isFinite(S.assistantSpeechPlaybackStartAudioTime) ||
+                            S.assistantSpeechPlaybackStartAudioTime <= 0 ||
+                            scheduledStartTime < S.assistantSpeechPlaybackStartAudioTime) {
+                            S.assistantSpeechPlaybackTurnId = source._nekoAssistantTurnId;
+                            S.assistantSpeechPlaybackStartAudioTime = scheduledStartTime;
+                        }
+                        S.assistantSpeechPlaybackEndAudioTime = Math.max(
+                            Number.isFinite(S.assistantSpeechPlaybackEndAudioTime) ? S.assistantSpeechPlaybackEndAudioTime : 0,
+                            scheduledEndTime
+                        );
+                    }
 
                     // Precise time scheduling
                     source.start(scheduledStartTime);
@@ -912,7 +1082,11 @@
                                 speechId: S.currentPlayingSpeechId || src._nekoSpeechId || null,
                                 turnId: src._nekoAssistantTurnId || null
                             });
-                            maybeFinalizeAssistantSpeech(src._nekoAssistantTurnId);
+                            var finalized = maybeFinalizeAssistantSpeech(src._nekoAssistantTurnId);
+                            // 兜底：finalize 没走通（多半是 turn-end 没到），队列已空但 flag 还粘着 → 30s 后强制收尾。
+                            if (!finalized) {
+                                maybeArmStuckSpeakingFallback();
+                            }
                         };
                     })(source);
 
@@ -924,6 +1098,9 @@
                         active: true,
                         speechId: normalizeAssistantTurnId(item.speechId) || S.currentPlayingSpeechId || null,
                         turnId: source._nekoAssistantTurnId || null,
+                        playbackTurnId: S.assistantSpeechPlaybackTurnId || null,
+                        playbackStartAudioTime: S.assistantSpeechPlaybackStartAudioTime || 0,
+                        playbackEndAudioTime: S.assistantSpeechPlaybackEndAudioTime || scheduledEndTime,
                         scheduledEndAudioTime: S.nextChunkTime
                     });
                 } else {

@@ -30,7 +30,7 @@ from urllib.parse import quote, unquote
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, JSONResponse
 
-from .shared_state import get_steamworks, get_config_manager, get_initialize_character_data
+from .shared_state import ensure_steamworks as get_steamworks, get_config_manager, get_initialize_character_data
 from utils.cloudsave_runtime import MaintenanceModeError, is_write_fence_active
 from utils.file_utils import atomic_write_json, atomic_write_json_async, read_json_async
 from utils.workshop_utils import (
@@ -77,6 +77,10 @@ _ITEM_STATE_INSTALLED = 4
 _ITEM_STATE_NEEDS_UPDATE = 8
 _ITEM_STATE_DOWNLOADING = 16
 _ITEM_STATE_DOWNLOAD_PENDING = 32
+
+
+class UnsupportedUGCDetailsError(RuntimeError):
+    """Raised when the loaded Steamworks wrapper cannot query UGC item details."""
 
 
 def _safe_get_workshop_install_folder(steamworks, item_id_int: int) -> str:
@@ -178,7 +182,7 @@ WORKSHOP_REFERENCE_AUDIO_CONTENT_TYPES = {
     'audio/x-pn-wav': '.wav',
 }
 WORKSHOP_REFERENCE_LANGUAGES = {'ch', 'en', 'fr', 'de', 'ja', 'ko', 'ru'}
-WORKSHOP_REFERENCE_PROVIDER_HINTS = {'cosyvoice', 'minimax', 'minimax_intl'}
+WORKSHOP_REFERENCE_PROVIDER_HINTS = {'cosyvoice', 'cosyvoice_intl', 'minimax', 'minimax_intl'}
 WORKSHOP_CARD_FACE_SIZE = (768, 1024)
 WORKSHOP_CARD_FACE_PADDING = 48
 WORKSHOP_CARD_FACE_RATIO_TOLERANCE = 0.02
@@ -245,6 +249,38 @@ def _load_deleted_character_names(config_mgr) -> set[str]:
         if character_name:
             deleted_names.add(character_name)
     return deleted_names
+
+
+def _remove_deleted_character_tombstones(config_mgr, character_names: list[str]) -> list[str]:
+    """移除手动恢复角色对应的 tombstone，避免后续同步继续把它当作已删除。"""
+    target_names = {str(name or "").strip() for name in character_names}
+    target_names.discard("")
+    if not target_names:
+        return []
+
+    tombstone_state = config_mgr.load_character_tombstones_state()
+    original_entries = tombstone_state.get("tombstones") or []
+    remaining_entries = []
+    removed_names: list[str] = []
+
+    for entry in original_entries:
+        if not isinstance(entry, dict):
+            remaining_entries.append(entry)
+            continue
+        character_name = str(entry.get("character_name") or "").strip()
+        if character_name in target_names:
+            removed_names.append(character_name)
+            continue
+        remaining_entries.append(entry)
+
+    if not removed_names:
+        return []
+
+    config_mgr.save_character_tombstones_state({
+        "version": getattr(config_mgr, "CHARACTER_TOMBSTONES_STATE_VERSION", 1),
+        "tombstones": remaining_entries,
+    })
+    return removed_names
 
 
 def _derive_workshop_origin_display_name(raw_model_name: str, fallback_name: str) -> str:
@@ -344,6 +380,24 @@ def _all_items_cache_valid(item_ids: list[int]) -> bool:
     return all(_is_item_cache_valid(iid) for iid in item_ids)
 
 
+def _steamworks_method_unavailable(method) -> bool:
+    return bool(getattr(method, '_neko_steamworks_unavailable', False))
+
+
+def _ugc_details_query_supported(steamworks) -> bool:
+    required_methods = (
+        'Workshop_CreateQueryUGCDetailsRequest',
+        'Workshop_SetQueryCompletedCallback',
+        'Workshop_SendQueryUGCRequest',
+        'Workshop_GetQueryUGCResult',
+    )
+    for method_name in required_methods:
+        method = getattr(steamworks, method_name, None)
+        if method is None or _steamworks_method_unavailable(method):
+            return False
+    return True
+
+
 async def _query_ugc_details_batch(steamworks, item_ids: list[int], max_retries: int = 2) -> dict[int, object]:
     """
     批量查询 UGC 物品详情，带重试逻辑。
@@ -358,6 +412,15 @@ async def _query_ugc_details_batch(steamworks, item_ids: list[int], max_retries:
     """
     if not item_ids:
         return {}
+
+    if not _ugc_details_query_supported(steamworks):
+        logger.info(
+            "UGC 批量详情查询不可用：当前 Steamworks wrapper 缺少 Linux UGC query 桥接，"
+            "将保留订阅/安装目录扫描并跳过标题、作者等详情预热"
+        )
+        raise UnsupportedUGCDetailsError(
+            "Steamworks wrapper does not expose UGC details query methods"
+        )
     
     for attempt in range(max_retries):
         try:
@@ -456,26 +519,218 @@ async def _query_ugc_details_batch(steamworks, item_ids: list[int], max_retries:
     return {}
 
 
+# 本地 Steam 用户身份缓存：(steam_id, persona_name)，TTL 5 分钟
+# 用于检测 GetFriendPersonaName 返回值是否被 fallback 成本地用户名。
+_local_steam_identity_cache: tuple[int | None, str | None] | None = None
+_local_steam_identity_cache_ts: float = 0.0
+_LOCAL_IDENTITY_TTL = 300
+
+# Steam Community 公开 XML 接口的 persona name 缓存
+# { steam_id(int): (name_or_empty, _cache_ts) }
+# 缓存值用空串表示「200 OK 但没解析出名字」的 negative-hit；
+# 瞬时失败（超时 / 非 200 / 异常）不写入此缓存。
+_persona_web_cache: dict[int, tuple[str, float]] = {}
+_PERSONA_WEB_TTL = 3600
+# Steam Community Web 兜底的并发上限。订阅一多就一次性 fan-out 容易把
+# 自己打超时或被对端限流，限制并发到 8 个比较稳。
+_PERSONA_WEB_CONCURRENCY = 8
+# Web 兜底整轮的总耗时上限（秒）。Steam Community 慢 / 抖动时，几十个
+# 非好友 owner × 5s 单请求 × 8 并发批次会让 /subscribed-items 阻塞几十
+# 秒。这里给整轮 fan-out 设个硬墙：超时直接收割已完成的结果，剩下的
+# task 全部 cancel，让接口尽快返回；没补回来的下次刷新会重试（因为
+# transient failure 不写缓存）。
+_PERSONA_WEB_TOTAL_DEADLINE = 8.0
+
+
+def _get_local_steam_identity(steamworks) -> tuple[int | None, str | None]:
+    """获取本地 Steam 用户的 (steam_id, persona_name)，带短期缓存。
+
+    Steamworks 在未通过 RequestUserInformation 请求过的 Steam ID 上调用
+    GetFriendPersonaName 时，可能 fallback 返回本地用户的 persona name —
+    这会让所有非好友工坊条目都显示成本地用户（典型症状：开发者上传的
+    所有卡片都显示成发行账号本人）。这里读出本地用户信息，便于上游做
+    伪造检测。
+    """
+    global _local_steam_identity_cache, _local_steam_identity_cache_ts
+    if (
+        _local_steam_identity_cache is not None
+        and time.time() - _local_steam_identity_cache_ts < _LOCAL_IDENTITY_TTL
+    ):
+        return _local_steam_identity_cache
+    local_id: int | None = None
+    local_name: str | None = None
+    try:
+        raw_id = steamworks.Users.GetSteamID()
+        local_id = int(raw_id) if raw_id else None
+    except Exception as e:
+        logger.debug(f"读取本地 Steam ID 失败: {e}")
+    try:
+        raw_name = steamworks.Friends.GetPlayerName()
+        if isinstance(raw_name, bytes):
+            raw_name = raw_name.decode('utf-8', errors='replace')
+        local_name = (raw_name or '').strip() or None
+    except Exception as e:
+        logger.debug(f"读取本地 Steam persona name 失败: {e}")
+    _local_steam_identity_cache = (local_id, local_name)
+    _local_steam_identity_cache_ts = time.time()
+    return _local_steam_identity_cache
+
+
 def _resolve_author_name(steamworks, owner_id: int) -> str | None:
     """
-    将 Steam ID 解析为显示名称。
-    
+    将 Steam ID 解析为显示名称（同步路径，仅依赖 Friends API）。
+
+    Steamworks 的 GetFriendPersonaName 对未通过 RequestUserInformation
+    预热过的非好友 Steam ID，可能返回 "[unknown]" 或——更糟——本地用户
+    的 persona name。后者会让所有创意工坊条目都显示成开发者本人。这里
+    做硬性过滤；返回 None 时由 ``_fetch_persona_via_steam_web`` 走 Web
+    API 兜底。
+
     Returns:
-        str | None: 用户名或 None（解析失败时）
+        str | None: 用户名或 None（解析失败 / 被判定为伪造时）
     """
     if not owner_id:
         return None
     try:
         persona_name = steamworks.Friends.GetFriendPersonaName(owner_id)
-        if persona_name:
-            if isinstance(persona_name, bytes):
-                persona_name = persona_name.decode('utf-8', errors='replace')
-            # 过滤空串和纯数字 ID；保留 [unknown] 作为合法 fallback
-            if persona_name and persona_name.strip() and persona_name != str(owner_id):
-                return persona_name.strip()
     except Exception as e:
         logger.debug(f"解析 Steam ID {owner_id} 名称失败: {e}")
-    return None
+        return None
+    if isinstance(persona_name, bytes):
+        persona_name = persona_name.decode('utf-8', errors='replace')
+    persona_name = (persona_name or '').strip()
+    if not persona_name:
+        return None
+    # 占位符与纯数字 ID 串
+    if persona_name == '[unknown]' or persona_name == str(owner_id):
+        return None
+    # 伪造检测：返回值等于本地 persona，但 owner_id 不是本地 Steam ID
+    local_id, local_name = _get_local_steam_identity(steamworks)
+    if local_name and persona_name == local_name and local_id and owner_id != local_id:
+        logger.debug(
+            f"忽略 owner_id={owner_id} 的伪造 persona '{persona_name}' "
+            f"(等于本地用户 {local_id}/{local_name})"
+        )
+        return None
+    return persona_name
+
+
+async def _fetch_persona_via_steam_web(owner_id: int) -> str | None:
+    """通过 steamcommunity.com 公开 XML 接口拉取 persona name。
+
+    用于在 Steamworks Friends API 因未走 RequestUserInformation 而无法
+    解析时兜底。该端点对所有公开个人资料都可访问，无需 API key；带 1
+    小时模块级缓存避免反复请求同一 owner。
+
+    只在拿到确定性结果（HTTP 200 + 完整解析）时写缓存——拿到名字就缓存
+    名字，拿到 200 但 XML 里没有名字（私人资料 / 已注销）就缓存空串当
+    negative-hit；超时 / 非 200 / 连接错误等瞬时失败不写缓存，避免一次
+    抖动把同一 owner 的兜底路径黑洞化 1 小时。
+
+    Returns:
+        str | None: persona name；瞬时失败 / 私人资料 / 解析失败 → None
+    """
+    if not owner_id:
+        return None
+    cached = _persona_web_cache.get(owner_id)
+    if cached is not None and time.time() - cached[1] < _PERSONA_WEB_TTL:
+        return cached[0] or None
+    name: str | None = None
+    cacheable = False
+    try:
+        import re as _re
+        import httpx as _httpx
+        async with _httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
+            resp = await client.get(
+                f"https://steamcommunity.com/profiles/{owner_id}/",
+                params={"xml": "1"},
+                headers={"User-Agent": "Mozilla/5.0 N.E.K.O Workshop"},
+            )
+            if resp.status_code == 200:
+                cacheable = True
+                match = _re.search(
+                    r"<steamID>\s*<!\[CDATA\[(.*?)\]\]>\s*</steamID>",
+                    resp.text,
+                    _re.DOTALL,
+                )
+                if match:
+                    candidate = match.group(1).strip()
+                    if candidate:
+                        name = candidate
+    except Exception as e:
+        logger.debug(f"Steam Web 获取 persona name 失败 (owner_id={owner_id}): {e}")
+    if cacheable:
+        _persona_web_cache[owner_id] = (name or '', time.time())
+    return name
+
+
+async def _resolve_missing_author_names(items_info: list[dict]) -> None:
+    """对 items_info 中缺失 authorName 的条目，并发走 Web API 兜底回填。
+
+    in-place 修改 items_info；同时把解析出的名字写回 ``_ugc_details_cache``，
+    避免下次列表请求又落到同一兜底路径。
+    """
+    missing: list[tuple[dict, int]] = []
+    for it in items_info:
+        if it.get('authorName'):
+            continue
+        raw_owner = it.get('steamIDOwner') or ''
+        try:
+            owner_id = int(raw_owner) if raw_owner else 0
+        except (TypeError, ValueError):
+            owner_id = 0
+        if owner_id:
+            missing.append((it, owner_id))
+    if not missing:
+        return
+    unique_owners = list({owner_id for _, owner_id in missing})
+    semaphore = asyncio.Semaphore(_PERSONA_WEB_CONCURRENCY)
+
+    async def _bounded(oid: int) -> tuple[int, str | None]:
+        async with semaphore:
+            try:
+                return (oid, await _fetch_persona_via_steam_web(oid))
+            except Exception:
+                return (oid, None)
+
+    tasks = [asyncio.create_task(_bounded(oid)) for oid in unique_owners]
+    name_by_owner: dict[int, str] = {}
+    try:
+        done, pending = await asyncio.wait(
+            tasks, timeout=_PERSONA_WEB_TOTAL_DEADLINE
+        )
+    except Exception as e:
+        logger.debug(f"Web 兜底 wait 异常: {e}")
+        done, pending = set(), set(tasks)
+    if pending:
+        for t in pending:
+            t.cancel()
+        # 把取消的 task 收割掉，避免 "Task was destroyed but it is pending!"
+        await asyncio.gather(*pending, return_exceptions=True)
+        logger.info(
+            f"Web 兜底超过 {_PERSONA_WEB_TOTAL_DEADLINE}s 总预算，"
+            f"已收割 {len(done)} 个、取消 {len(pending)} 个；剩余 owner 下次刷新重试"
+        )
+    for t in done:
+        try:
+            oid, name = t.result()
+        except Exception:
+            continue
+        if name:
+            name_by_owner[oid] = name
+    if not name_by_owner:
+        return
+    for it, owner_id in missing:
+        name = name_by_owner.get(owner_id)
+        if not name:
+            continue
+        it['authorName'] = name
+        try:
+            item_id_int = int(it.get('publishedFileId') or 0)
+        except (TypeError, ValueError):
+            item_id_int = 0
+        if item_id_int and item_id_int in _ugc_details_cache:
+            _ugc_details_cache[item_id_int]['authorName'] = name
 
 
 def _safe_text(value) -> str:
@@ -569,7 +824,11 @@ async def warmup_ugc_cache() -> None:
             return
         
         logger.info(f"UGC 缓存预热: 开始查询 {len(all_item_ids)} 个物品...")
-        ugc_results = await _query_ugc_details_batch(steamworks, all_item_ids, max_retries=3)
+        try:
+            ugc_results = await _query_ugc_details_batch(steamworks, all_item_ids, max_retries=3)
+        except UnsupportedUGCDetailsError:
+            logger.info("UGC 缓存预热: 当前平台不支持详情查询，跳过预热")
+            return
         
         if ugc_results:
             # 将结果写入缓存
@@ -1061,15 +1320,36 @@ def _is_matching_workshop_character(catgirl_data: dict, item_id) -> bool:
         return False
 
     try:
-        source = str(get_reserved(catgirl_data, 'character_origin', 'source', default='') or '').strip()
-        if source != 'steam_workshop':
+        current_item_id = str(item_id or '').strip()
+        if not current_item_id:
             return False
 
-        current_item_id = str(item_id or '').strip()
-        source_id = str(get_reserved(catgirl_data, 'character_origin', 'source_id', default='') or '').strip()
-        if not current_item_id or not source_id:
-            return False
-        return source_id == current_item_id
+        # 归属判定与退订确认路径（_is_confirmed_workshop_character）保持一致：
+        #   - character_origin.source_id 表示角色最初来自哪个 Workshop 物品
+        #   - avatar.asset_source_id 表示当前实际绑定的模型来源
+        # 旧数据 / 半迁移数据可能只有 avatar 绑定（例如 live2d_item_id 迁移只写
+        # avatar.asset_source_id，或用户在模型设置里手动绑定 Workshop 模型时只写
+        # avatar.*）。若这里只看 character_origin，这类角色会被退订路径按 avatar
+        # 命中删除并打上 tombstone，却无法被恢复路径识别，导致 tombstone 永远清不掉、
+        # /sync-character/{item_id} 一直回 409。两边判定必须对偶。
+        origin_source = str(
+            get_reserved(catgirl_data, 'character_origin', 'source', default='') or ''
+        ).strip()
+        origin_source_id = str(
+            get_reserved(catgirl_data, 'character_origin', 'source_id', default='') or ''
+        ).strip()
+        avatar_source = str(
+            get_reserved(catgirl_data, 'avatar', 'asset_source', default='') or ''
+        ).strip()
+        avatar_source_id = str(
+            get_reserved(catgirl_data, 'avatar', 'asset_source_id', default='') or ''
+        ).strip()
+
+        return (
+            origin_source == 'steam_workshop' and origin_source_id == current_item_id
+        ) or (
+            avatar_source == 'steam_workshop' and avatar_source_id == current_item_id
+        )
     except Exception:
         return False
 
@@ -1571,6 +1851,8 @@ async def get_subscribed_workshop_items():
                 else:
                     logger.info(f'批量查询 {len(all_item_ids)} 个物品的详细信息')
                     ugc_results = await _query_ugc_details_batch(steamworks, all_item_ids, max_retries=2)
+        except UnsupportedUGCDetailsError:
+            logger.info("UGC 详情查询不可用，订阅列表将使用安装目录/默认信息降级返回")
         except Exception as batch_error:
             logger.warning(f"批量查询物品详情失败: {batch_error}")
         
@@ -1876,13 +2158,22 @@ async def get_subscribed_workshop_items():
                     logger.error(f"添加基本物品信息也失败了: {basic_error}")
                 # 继续处理下一个物品
                 continue
-        
+
+        # 对于 Friends API 没能解析出 authorName 的物品（典型是
+        # GetFriendPersonaName 把非好友 owner 误回成本地用户名，被
+        # _resolve_author_name 判伪丢弃），走 Steam Community 公开 XML
+        # 接口兜底，并发查询并写回 items / 缓存。
+        try:
+            await _resolve_missing_author_names(items_info)
+        except Exception as fallback_err:
+            logger.debug(f"Web API 补全 authorName 时出错（忽略）: {fallback_err}")
+
         return {
             "success": True,
             "items": items_info,
             "total": len(items_info)
         }
-        
+
     except Exception as e:
         logger.error(f"获取订阅物品列表时出错: {e}")
         return JSONResponse({
@@ -2105,6 +2396,140 @@ def get_workshop_item_download_status(item_id: str):
     }
 
 
+def _build_ugc_details_unsupported_item_response(steamworks, item_id_int: int, item_state: int):
+    """Build an explicit partial detail response when UGC details are unsupported."""
+    install_info = None
+    installed = False
+    folder = ''
+    size = 0
+
+    try:
+        install_info = steamworks.Workshop.GetItemInstallInfo(item_id_int)
+    except (FileNotFoundError, OSError) as exc:
+        logger.debug(f"获取物品 {item_id_int} 安装信息失败（可能刚取消订阅）: {exc}")
+    except Exception as exc:
+        logger.warning(f"获取物品 {item_id_int} 安装信息失败: {exc}")
+
+    if install_info and isinstance(install_info, dict):
+        raw_folder = install_info.get('folder', '') or ''
+        folder = str(raw_folder) if raw_folder else ''
+        installed = bool(folder and os.path.isdir(folder))
+        disk_size = install_info.get('disk_size')
+        if installed and isinstance(disk_size, (int, float)):
+            size = int(disk_size)
+    elif isinstance(install_info, tuple) and len(install_info) >= 3:
+        raw_installed, raw_folder, raw_size = install_info[:3]
+        folder = str(raw_folder) if raw_folder and isinstance(raw_folder, (str, bytes)) else ''
+        installed = bool(raw_installed) and bool(folder and os.path.isdir(folder))
+        if installed and isinstance(raw_size, (int, float)):
+            size = int(raw_size)
+
+    try:
+        download_info = steamworks.Workshop.GetItemDownloadInfo(item_id_int) or {}
+    except Exception as exc:
+        logger.debug(f"GetItemDownloadInfo({item_id_int}) 失败: {exc}")
+        download_info = {}
+
+    downloaded = 0
+    total = 0
+    progress = 0.0
+    if isinstance(download_info, dict):
+        downloaded = int(download_info.get("downloaded", 0) or 0)
+        total = int(download_info.get("total", 0) or 0)
+    elif isinstance(download_info, tuple) and len(download_info) >= 3:
+        downloaded = int(download_info[0] or 0)
+        total = int(download_info[1] or 0)
+        progress = float(download_info[2] or 0.0)
+    downloading = total > 0 and downloaded < total
+
+    return {
+        "success": True,
+        "partial": True,
+        "detailsAvailable": False,
+        "detailsUnavailableReason": "ugc_details_query_unsupported",
+        "item": {
+            "publishedFileId": item_id_int,
+            "title": f"未知物品_{item_id_int}",
+            "description": "",
+            "steamIDOwner": "",
+            "authorName": None,
+            "timeCreated": 0,
+            "timeUpdated": 0,
+            "previewImageUrl": "",
+            "associatedUrl": "",
+            "fileUrl": "",
+            "fileSize": 0,
+            "fileId": 0,
+            "previewFileId": 0,
+            "tags": [],
+            "state": {
+                "subscribed": bool(item_state & _ITEM_STATE_SUBSCRIBED),
+                "legacyItem": bool(item_state & 2),
+                "installed": installed,
+                "needsUpdate": bool(item_state & _ITEM_STATE_NEEDS_UPDATE),
+                "downloading": bool(item_state & _ITEM_STATE_DOWNLOADING) or downloading,
+                "downloadPending": bool(item_state & _ITEM_STATE_DOWNLOAD_PENDING),
+                "isWorkshopItem": bool(item_state & 128),
+            },
+            "installedFolder": folder if installed else None,
+            "fileSizeOnDisk": size if installed else 0,
+            "downloadProgress": {
+                "bytesDownloaded": downloaded if downloading else 0,
+                "bytesTotal": total if downloading else 0,
+                "percentage": (progress * 100) if progress > 0 and downloading
+                else ((downloaded / total * 100) if total > 0 and downloading else 0),
+            },
+        },
+    }
+
+
+def _is_known_item_when_ugc_details_unsupported(steamworks, item_id_int: int, item_state: int) -> bool:
+    """Return whether an item is known without rich UGC details.
+
+    Linux wrappers can lack UGC details query methods, but that degradation must
+    not turn arbitrary numeric IDs into fake successful items. Only return a
+    partial response when Steam still exposes local/subscription state for the
+    item through the non-UGC-detail APIs.
+    """
+    known_state_bits = (
+        _ITEM_STATE_SUBSCRIBED
+        | _ITEM_STATE_INSTALLED
+        | _ITEM_STATE_NEEDS_UPDATE
+        | _ITEM_STATE_DOWNLOADING
+        | _ITEM_STATE_DOWNLOAD_PENDING
+    )
+    if item_state & known_state_bits:
+        return True
+
+    try:
+        subscribed_items = steamworks.Workshop.GetSubscribedItems()
+        parsed_subscribed_items = set()
+        for raw_item_id in subscribed_items or []:
+            try:
+                parsed_subscribed_items.add(int(raw_item_id))
+            except (TypeError, ValueError):
+                continue
+        if item_id_int in parsed_subscribed_items:
+            return True
+    except Exception as exc:
+        logger.debug(f"GetSubscribedItems fallback for {item_id_int} failed: {exc}")
+
+    folder = _safe_get_workshop_install_folder(steamworks, item_id_int)
+    if folder and os.path.isdir(folder):
+        return True
+
+    try:
+        download_info = steamworks.Workshop.GetItemDownloadInfo(item_id_int) or {}
+    except Exception as exc:
+        logger.debug(f"GetItemDownloadInfo({item_id_int}) fallback failed: {exc}")
+        download_info = {}
+    if isinstance(download_info, dict):
+        return int(download_info.get("total", 0) or 0) > 0
+    if isinstance(download_info, tuple) and len(download_info) >= 2:
+        return int(download_info[1] or 0) > 0
+    return False
+
+
 @router.get('/item/{item_id}/path')
 def get_workshop_item_path(item_id: str):
     """
@@ -2314,7 +2739,17 @@ async def get_workshop_item_details(item_id: str):
         item_state = steamworks.Workshop.GetItemState(item_id_int)
         
         # 使用统一的批量查询辅助函数（带重试）查询单个物品
-        ugc_results = await _query_ugc_details_batch(steamworks, [item_id_int], max_retries=2)
+        try:
+            ugc_results = await _query_ugc_details_batch(steamworks, [item_id_int], max_retries=2)
+        except UnsupportedUGCDetailsError:
+            if not _is_known_item_when_ugc_details_unsupported(steamworks, item_id_int, item_state):
+                return JSONResponse({
+                    "success": False,
+                    "error": "获取物品详情失败，未找到物品",
+                    "detailsAvailable": False,
+                    "detailsUnavailableReason": "ugc_details_query_unsupported",
+                }, status_code=404)
+            return _build_ugc_details_unsupported_item_response(steamworks, item_id_int, item_state)
         result = ugc_results.get(item_id_int)
         
         # 如果查询失败，尝试使用缓存（按条目粒度检查 TTL）
@@ -2457,7 +2892,13 @@ async def get_workshop_item_details(item_id: str):
                     "percentage": (bytes_downloaded / bytes_total * 100) if bytes_total > 0 and downloading else 0
                 }
             }
-            
+
+            # 走 Web API 兜底补全 authorName（Friends API 在非好友 owner 上常返回伪造值）
+            try:
+                await _resolve_missing_author_names([item_info])
+            except Exception as fallback_err:
+                logger.debug(f"Web API 补全单条 authorName 出错（忽略）: {fallback_err}")
+
             return {
                 "success": True,
                 "item": item_info
@@ -4302,7 +4743,11 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
                 # 增强的Steam连接状态验证
                 # 基础连接状态检查
                 is_steam_running = steamworks.IsSteamRunning()
-                is_overlay_enabled = steamworks.IsOverlayEnabled()
+                try:
+                    is_overlay_enabled = steamworks.IsOverlayEnabled()
+                except Exception as overlay_error:
+                    is_overlay_enabled = None
+                    logger.warning(f"Steam覆盖层启用状态检查不可用: {overlay_error}")
                 is_logged_on = steamworks.Users.LoggedOn()
                 steam_id = steamworks.Users.GetSteamID()
             
@@ -4313,7 +4758,10 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
             
                 # 记录详细的连接状态
                 logger.info(f"Steam客户端运行状态: {is_steam_running}")
-                logger.info(f"Steam覆盖层启用状态: {is_overlay_enabled}")
+                logger.info(
+                    "Steam覆盖层启用状态: "
+                    + ("不可用" if is_overlay_enabled is None else str(is_overlay_enabled))
+                )
                 logger.info(f"用户登录状态: {is_logged_on}")
                 logger.info(f"用户SteamID: {steam_id}")
                 logger.info(f"应用ID {app_id} 安装状态: {app_owned}")
@@ -4557,7 +5005,10 @@ def _publish_workshop_item(steamworks, title, description, content_folder, previ
 
 # ─── 创意工坊角色卡同步 ────────────────────────────────────────────────
 
-async def sync_workshop_character_cards() -> dict:
+async def sync_workshop_character_cards(
+    target_item_id: str | int | None = None,
+    restore_deleted: bool = False,
+) -> dict:
     """
     服务端自动扫描所有已订阅且已安装的创意工坊物品，
     将其中的 .chara.json 角色卡同步到系统 characters.json。
@@ -4568,10 +5019,59 @@ async def sync_workshop_character_cards() -> dict:
     Returns:
         dict: {"added": int, "backfilled_faces": int, "skipped": int, "errors": int}
     """
+    # 复用 characters_router 的字段顺序 helper：函数级 lazy import，既避免顶层 router→router 依赖，
+    # 又只在每次同步开始导入一次，不在每个 .chara.json 上重复走 import 路径。
+    from main_routers.characters_router import (
+        _extract_catgirl_field_order_payload as _extract_field_order,
+        _sync_catgirl_field_order as _sync_field_order,
+    )
+
     added_count = 0
     backfilled_face_count = 0
     skipped_count = 0
     error_count = 0
+    target_item_id_str = str(target_item_id).strip() if target_item_id is not None else ""
+    target_found = not bool(target_item_id_str)
+    scanned_item_count = 0
+    installed_item_count = 0
+    found_character_names: list[str] = []
+    added_character_names: list[str] = []
+    existing_character_names: list[str] = []
+    deleted_character_names_seen: list[str] = []
+    restored_deleted_names: list[str] = []
+    tombstone_cleanup_deferred = False
+
+    def _append_unique(bucket: list[str], name: str) -> None:
+        normalized_name = str(name or "").strip()
+        if normalized_name and normalized_name not in bucket:
+            bucket.append(normalized_name)
+
+    def _sync_result(*, blocked_by_write_fence: bool = False, code: str | None = None) -> dict:
+        payload = {
+            "added": added_count,
+            "backfilled_faces": backfilled_face_count,
+            "skipped": skipped_count,
+            "errors": error_count,
+        }
+        if blocked_by_write_fence:
+            payload["blocked_by_write_fence"] = True
+        if tombstone_cleanup_deferred:
+            payload["tombstone_cleanup_deferred"] = True
+        if target_item_id_str:
+            payload.update({
+                "target_item_id": target_item_id_str,
+                "target_found": target_found,
+                "scanned_items": scanned_item_count,
+                "installed_items": installed_item_count,
+                "found_character_names": found_character_names,
+                "added_character_names": added_character_names,
+                "existing_character_names": existing_character_names,
+                "deleted_character_names": deleted_character_names_seen,
+                "restored_deleted_names": restored_deleted_names,
+            })
+        if code:
+            payload["code"] = code
+        return payload
     
     try:
         # 1. 获取所有订阅的创意工坊物品
@@ -4581,33 +5081,79 @@ async def sync_workshop_character_cards() -> dict:
         if isinstance(items_result, JSONResponse):
             # JSONResponse — 说明出错了，直接返回
             logger.warning("sync_workshop_character_cards: 获取订阅物品失败（返回了 JSONResponse）")
-            return {"added": 0, "backfilled_faces": 0, "skipped": 0, "errors": 1}
+            error_count += 1
+            return _sync_result(code="WORKSHOP_SUBSCRIPTIONS_UNAVAILABLE")
         
         if not isinstance(items_result, dict) or not items_result.get('success'):
             logger.warning("sync_workshop_character_cards: 获取订阅物品失败")
-            return {"added": 0, "backfilled_faces": 0, "skipped": 0, "errors": 1}
+            error_count += 1
+            return _sync_result(code="WORKSHOP_SUBSCRIPTIONS_UNAVAILABLE")
         
         subscribed_items = items_result.get('items', [])
-        if not subscribed_items:
+        if target_item_id_str:
+            subscribed_items = [
+                item for item in subscribed_items
+                if str(item.get('publishedFileId', '')).strip() == target_item_id_str
+            ]
+            target_found = bool(subscribed_items)
+            if not subscribed_items:
+                logger.info(
+                    "sync_workshop_character_cards: 未找到目标订阅物品 %s",
+                    target_item_id_str,
+                )
+                return _sync_result(code="WORKSHOP_ITEM_NOT_FOUND")
+        elif not subscribed_items:
             logger.info("sync_workshop_character_cards: 没有订阅物品，跳过同步")
-            return {"added": 0, "backfilled_faces": 0, "skipped": 0, "errors": 0}
+            return _sync_result()
         
         config_mgr = get_config_manager()
 
         def _write_fence_blocked_result() -> dict:
-            return {
-                "added": 0,
-                "backfilled_faces": backfilled_face_count,
-                "skipped": skipped_count,
-                "errors": error_count,
-                "blocked_by_write_fence": True,
-            }
+            payload = _sync_result(blocked_by_write_fence=True)
+            payload["added"] = 0
+            return payload
 
         def _abort_if_write_fence_active(message: str):
             if not is_write_fence_active(config_mgr):
                 return None
             logger.info(message)
             return _write_fence_blocked_result()
+
+        async def _clear_restored_existing_tombstones():
+            nonlocal error_count
+            restored_existing_candidates = [
+                name for name in confirmed_recoverable_existing_names
+                if name not in restored_deleted_names
+            ]
+            if not restored_existing_candidates:
+                return None
+
+            blocked_result = _abort_if_write_fence_active(
+                "sync_workshop_character_cards: 移除已存在恢复角色 tombstone 前检测到维护态写围栏，跳过本轮同步并等待后续重试"
+            )
+            if blocked_result is not None:
+                return blocked_result
+
+            try:
+                removed_names = await asyncio.to_thread(
+                    _remove_deleted_character_tombstones,
+                    config_mgr,
+                    restored_existing_candidates,
+                )
+                for removed_name in removed_names:
+                    _append_unique(restored_deleted_names, removed_name)
+                if removed_names:
+                    logger.info(
+                        "sync_workshop_character_cards: 已移除已存在恢复角色的 tombstone: %s",
+                        ", ".join(removed_names),
+                    )
+            except Exception as tombstone_err:
+                error_count += 1
+                logger.warning(
+                    "sync_workshop_character_cards: 移除已存在恢复角色 tombstone 失败: %s",
+                    tombstone_err,
+                )
+            return None
 
         blocked_result = _abort_if_write_fence_active(
             "sync_workshop_character_cards: 检测到维护态写围栏，跳过本轮同步并等待后续重试"
@@ -4625,12 +5171,17 @@ async def sync_workshop_character_cards() -> dict:
             need_save = False
             pending_added_catgirls = {}
             pending_card_face_writes = {}
+            pending_item_ids = {}
+            pending_restore_tombstone_names: set[str] = set()
+            confirmed_recoverable_existing_names: set[str] = set()
             
             # 2. 遍历所有已安装的物品
             for item in subscribed_items:
+                scanned_item_count += 1
                 installed_folder = item.get('installedFolder')
                 if not installed_folder or not os.path.isdir(installed_folder):
                     continue
+                installed_item_count += 1
                 
                 item_id = item.get('publishedFileId', '')
                 
@@ -4653,15 +5204,20 @@ async def sync_workshop_character_cards() -> dict:
                             if not chara_name or '/' in chara_name or '\\' in chara_name or '..' in chara_name or len(chara_name) > 120:
                                 logger.warning(f"sync_workshop_character_cards: 跳过非法角色名 '{chara_name_raw}' (物品 {item_id})")
                                 continue
+                            _append_unique(found_character_names, chara_name)
 
                             if chara_name in deleted_character_names:
-                                skipped_count += 1
-                                logger.info(
-                                    "sync_workshop_character_cards: 跳过已删除角色 '%s'（tombstone 生效，物品 %s）",
-                                    chara_name,
-                                    item_id,
-                                )
-                                continue
+                                _append_unique(deleted_character_names_seen, chara_name)
+                                if restore_deleted:
+                                    pending_restore_tombstone_names.add(chara_name)
+                                else:
+                                    skipped_count += 1
+                                    logger.info(
+                                        "sync_workshop_character_cards: 跳过已删除角色 '%s'（tombstone 生效，物品 %s）",
+                                        chara_name,
+                                        item_id,
+                                    )
+                                    continue
                             chara_file_stem = Path(chara_file_path).name[:-11]
                             preview_image_path = find_preview_image_in_folder(
                                 installed_folder,
@@ -4682,8 +5238,12 @@ async def sync_workshop_character_cards() -> dict:
                                         item_id,
                                     )
                                     continue
+                                _append_unique(existing_character_names, chara_name)
                                 existing_data = characters['猫娘'].get(chara_name) or {}
-                                if _is_matching_workshop_character(existing_data, item_id):
+                                existing_matches_item = _is_matching_workshop_character(existing_data, item_id)
+                                if existing_matches_item and restore_deleted and chara_name in pending_restore_tombstone_names:
+                                    confirmed_recoverable_existing_names.add(chara_name)
+                                if existing_matches_item:
                                     try:
                                         blocked_result = _abort_if_write_fence_active(
                                             f"sync_workshop_character_cards: 回填角色卡封面前检测到维护态写围栏，跳过本轮同步并等待后续重试（角色 {chara_name}，物品 {item_id}）"
@@ -4740,6 +5300,11 @@ async def sync_workshop_character_cards() -> dict:
                             for k, v in chara_data.items():
                                 if k not in skip_keys and v is not None:
                                     catgirl_data[k] = v
+
+                            # 字段创建顺序元数据被当作保留字段过滤掉了，这里把它提回 _reserved.field_order
+                            # （helper 在函数开头一次性导入）；否则订阅同步到的工坊卡会丢失显式顺序，
+                            # 数字 key 自定义字段会在安装后再次按对象枚举顺序乱序。
+                            _sync_field_order(catgirl_data, _extract_field_order(chara_data))
 
                             # 工坊角色首次导入时强制清空 voice_id（当前工坊 voice_id 尚未适配）。
                             # 仅影响新增角色；已存在角色会在上面的分支直接跳过。
@@ -4805,6 +5370,7 @@ async def sync_workshop_character_cards() -> dict:
                                 'preview_image_path': preview_image_path,
                                 'item': item,
                             }
+                            pending_item_ids[chara_name] = item_id
                             need_save = True
                             added_count += 1
                             logger.info(f"sync_workshop_character_cards: 发现待添加角色卡 '{chara_name}' (来自物品 {item_id})")
@@ -4839,12 +5405,7 @@ async def sync_workshop_character_cards() -> dict:
                         )
                         added_count = 0
                         error_count += 1
-                        return {
-                            "added": added_count,
-                            "backfilled_faces": backfilled_face_count,
-                            "skipped": skipped_count,
-                            "errors": error_count,
-                        }
+                        return _sync_result()
                     latest_catgirls = latest_characters.get('猫娘')
                     if not isinstance(latest_catgirls, dict):
                         logger.warning(
@@ -4853,19 +5414,29 @@ async def sync_workshop_character_cards() -> dict:
                         )
                         added_count = 0
                         error_count += 1
-                        return {
-                            "added": added_count,
-                            "backfilled_faces": backfilled_face_count,
-                            "skipped": skipped_count,
-                            "errors": error_count,
-                        }
+                        return _sync_result()
 
                     latest_deleted_character_names = _load_deleted_character_names(config_mgr)
                     actually_added_count = 0
                     skipped_due_to_race_count = 0
                     for pending_name, pending_payload in pending_added_catgirls.items():
-                        if pending_name in latest_deleted_character_names or pending_name in latest_catgirls:
+                        pending_name_is_deleted = pending_name in latest_deleted_character_names
+                        if (
+                            (pending_name_is_deleted and not restore_deleted)
+                            or pending_name in latest_catgirls
+                        ):
                             skipped_due_to_race_count += 1
+                            if pending_name in latest_catgirls:
+                                _append_unique(existing_character_names, pending_name)
+                                if (
+                                    restore_deleted
+                                    and pending_name in pending_restore_tombstone_names
+                                    and _is_matching_workshop_character(
+                                        latest_catgirls.get(pending_name) or {},
+                                        pending_item_ids.get(pending_name, ""),
+                                    )
+                                ):
+                                    confirmed_recoverable_existing_names.add(pending_name)
                             continue
                         latest_catgirls[pending_name] = pending_payload
                         actually_added_count += 1
@@ -4888,6 +5459,35 @@ async def sync_workshop_character_cards() -> dict:
                         return _write_fence_blocked_result()
 
                     logger.info(f"sync_workshop_character_cards: 已保存，新增 {added_count} 个角色卡，回填 {backfilled_face_count} 个封面")
+
+                    for added_name in actually_added_names:
+                        _append_unique(added_character_names, added_name)
+
+                    if restore_deleted and actually_added_names:
+                        restored_candidates = [
+                            name for name in actually_added_names
+                            if name in pending_restore_tombstone_names
+                        ]
+                        if restored_candidates:
+                            try:
+                                removed_names = await asyncio.to_thread(
+                                    _remove_deleted_character_tombstones,
+                                    config_mgr,
+                                    restored_candidates,
+                                )
+                                for removed_name in removed_names:
+                                    _append_unique(restored_deleted_names, removed_name)
+                                if removed_names:
+                                    logger.info(
+                                        "sync_workshop_character_cards: 已移除手动恢复角色的 tombstone: %s",
+                                        ", ".join(removed_names),
+                                    )
+                            except Exception as tombstone_err:
+                                error_count += 1
+                                logger.warning(
+                                    "sync_workshop_character_cards: 移除手动恢复角色 tombstone 失败: %s",
+                                    tombstone_err,
+                                )
 
                     for added_name in actually_added_names:
                         write_info = pending_card_face_writes.get(added_name) or {}
@@ -4934,6 +5534,13 @@ async def sync_workshop_character_cards() -> dict:
                                 write_item_id,
                                 face_meta_err,
                             )
+
+                blocked_result = await _clear_restored_existing_tombstones()
+                if blocked_result is not None:
+                    tombstone_cleanup_deferred = True
+                    logger.warning(
+                        "sync_workshop_character_cards: 角色已保存，但 tombstone 清理被维护态写围栏延后"
+                    )
                 
                 try:
                     initialize_character_data = get_initialize_character_data()
@@ -4943,16 +5550,24 @@ async def sync_workshop_character_cards() -> dict:
                 except Exception as e:
                     logger.warning(f"sync_workshop_character_cards: 重新加载角色配置失败: {e}")
             else:
+                blocked_result = await _clear_restored_existing_tombstones()
+                if blocked_result is not None:
+                    return blocked_result
                 if backfilled_face_count > 0:
                     logger.info(f"sync_workshop_character_cards: 无新增角色卡，但已回填 {backfilled_face_count} 个封面")
                 else:
                     logger.info("sync_workshop_character_cards: 无需更新，所有角色卡已存在")
         
     except Exception as e:
+        # 真实后端异常（磁盘/Steamworks/序列化等）必须显式标记为同步失败，
+        # 否则下游 API 只按业务 code 分支，会把它误判成
+        # WORKSHOP_CHARACTER_NOT_FOUND / NOT_ADDED，让前端把服务端故障当成
+        # “此订阅里没有角色卡”。用专属 code 兜住，区别于逐角色的部分错误。
         logger.error(f"sync_workshop_character_cards: 同步过程出错: {e}", exc_info=True)
         error_count += 1
-    
-    return {"added": added_count, "backfilled_faces": backfilled_face_count, "skipped": skipped_count, "errors": error_count}
+        return _sync_result(code="WORKSHOP_SYNC_FAILED")
+
+    return _sync_result()
 
 
 @router.post('/sync-characters')
@@ -4976,6 +5591,26 @@ async def api_sync_workshop_character_cards():
                     "errors": result.get("errors", 0),
                 },
             )
+        if result.get("code") == "WORKSHOP_SUBSCRIPTIONS_UNAVAILABLE":
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "success": False,
+                    "code": "WORKSHOP_SUBSCRIPTIONS_UNAVAILABLE",
+                    "error": "获取订阅物品失败，请确认 Steam 客户端已运行并已登录。",
+                    **result,
+                },
+            )
+        if result.get("code") == "WORKSHOP_SYNC_FAILED":
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "code": "WORKSHOP_SYNC_FAILED",
+                    "error": "同步创意工坊角色卡时发生内部错误，请稍后重试。",
+                    **result,
+                },
+            )
         return {
             "success": True,
             "added": result["added"],
@@ -4990,6 +5625,122 @@ async def api_sync_workshop_character_cards():
         }
     except Exception as e:
         logger.error(f"API sync-characters 失败: {e}")
+        return JSONResponse({
+            "success": False,
+            "error": str(e)
+        }, status_code=500)
+
+
+@router.post('/sync-character/{item_id}')
+async def api_sync_single_workshop_character_card(item_id: str):
+    """
+    手动从指定订阅物品加入角色卡。
+    与启动自动同步不同，这个入口会允许用户恢复之前手动删除过的工坊角色卡。
+    """
+    try:
+        result = await sync_workshop_character_cards(
+            target_item_id=item_id,
+            restore_deleted=True,
+        )
+        if result.get("blocked_by_write_fence"):
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "success": False,
+                    "code": "WRITE_FENCE_ACTIVE",
+                    "error": "当前处于存储维护态，暂时不能同步创意工坊角色卡，请稍后重试。",
+                    **result,
+                },
+            )
+
+        if result.get("code") == "WORKSHOP_SUBSCRIPTIONS_UNAVAILABLE":
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "success": False,
+                    "code": "WORKSHOP_SUBSCRIPTIONS_UNAVAILABLE",
+                    "error": "获取订阅物品失败，请确认 Steam 客户端已运行并已登录。",
+                    **result,
+                },
+            )
+
+        if result.get("code") == "WORKSHOP_SYNC_FAILED":
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "success": False,
+                    "code": "WORKSHOP_SYNC_FAILED",
+                    "error": "同步创意工坊角色卡时发生内部错误，请稍后重试。",
+                    **result,
+                },
+            )
+
+        if not result.get("target_found"):
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "success": False,
+                    "code": result.get("code") or "WORKSHOP_ITEM_NOT_FOUND",
+                    "error": "未找到对应的订阅物品，请刷新订阅列表后重试。",
+                    **result,
+                },
+            )
+
+        restored_names = result.get("restored_deleted_names") or []
+        if result.get("added", 0) > 0 or restored_names:
+            added_names = result.get("added_character_names") or []
+            successful_names = []
+            for name in [*added_names, *restored_names]:
+                if name and name not in successful_names:
+                    successful_names.append(name)
+            names_text = "、".join(successful_names) if successful_names else "角色卡"
+            # 前端成功提示只读 added_character_names；仅清 tombstone 的恢复成功路径
+            # 里它本来是空的，会把恢复角色名丢成“未知角色卡”。把去重后的成功名字
+            # 回写过去，同时保留 restored_deleted_names（来自 **result）。
+            return {
+                "success": True,
+                "message": f"已加入角色卡：{names_text}",
+                **result,
+                "added_character_names": successful_names,
+            }
+
+        existing_names = [
+            name for name in (result.get("existing_character_names") or [])
+            if name not in restored_names
+        ]
+        if existing_names:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "success": False,
+                    "code": "WORKSHOP_CHARACTER_ALREADY_EXISTS",
+                    "error": "角色卡已存在。",
+                    **result,
+                },
+            )
+
+        if not result.get("found_character_names"):
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "success": False,
+                    "code": "WORKSHOP_CHARACTER_NOT_FOUND",
+                    "error": "此订阅内容中未找到可加入的角色卡，请确认内容已下载完成。",
+                    **result,
+                },
+            )
+
+        return JSONResponse(
+            status_code=422,
+            content={
+                "success": False,
+                "code": "WORKSHOP_CHARACTER_NOT_ADDED",
+                "error": "未加入新的角色卡。",
+                **result,
+            },
+        )
+    except Exception as e:
+        logger.error(f"API sync-character 失败: {e}")
         return JSONResponse({
             "success": False,
             "error": str(e)

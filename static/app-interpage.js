@@ -24,11 +24,14 @@
     const mod = {};
     const S = window.appState;
     // const C = window.appConst;  // not used in this module currently
+    const MAIN_UI_HIDDEN_BY_MODEL_MANAGER_KEY = '__NEKO_MAIN_UI_HIDDEN_BY_MODEL_MANAGER';
 
     // =====================================================================
     // Message deduplication (BC + postMessage deliver the same message twice)
     // =====================================================================
     var _processedMsgKeys = {};
+    var CROSS_WINDOW_IDLE_ACTIVITY_MIN_INTERVAL_MS = 250;
+    var _lastCrossWindowIdleActivityAt = 0;
 
     /**
      * Returns true if this action+timestamp was already processed (duplicate).
@@ -41,6 +44,53 @@
         _processedMsgKeys[key] = true;
         setTimeout(function () { delete _processedMsgKeys[key]; }, 5000);
         return false;
+    }
+
+    function isMainUIHiddenByModelManager() {
+        return window[MAIN_UI_HIDDEN_BY_MODEL_MANAGER_KEY] === true;
+    }
+
+    function ensureMainUIHiddenStyle() {
+        if (document.getElementById('neko-main-ui-hidden-by-model-manager-style')) return;
+        var style = document.createElement('style');
+        style.id = 'neko-main-ui-hidden-by-model-manager-style';
+        style.textContent = [
+            'body.neko-main-ui-hidden-by-model-manager #live2d-container,',
+            'body.neko-main-ui-hidden-by-model-manager #vrm-container,',
+            'body.neko-main-ui-hidden-by-model-manager #mmd-container,',
+            'body.neko-main-ui-hidden-by-model-manager #live2d-canvas,',
+            'body.neko-main-ui-hidden-by-model-manager #vrm-canvas,',
+            'body.neko-main-ui-hidden-by-model-manager #mmd-canvas,',
+            'body.neko-main-ui-hidden-by-model-manager #chat-container,',
+            'body.neko-main-ui-hidden-by-model-manager #react-chat-window-overlay,',
+            'body.neko-main-ui-hidden-by-model-manager #live2d-floating-buttons,',
+            'body.neko-main-ui-hidden-by-model-manager #vrm-floating-buttons,',
+            'body.neko-main-ui-hidden-by-model-manager #mmd-floating-buttons,',
+            'body.neko-main-ui-hidden-by-model-manager #live2d-lock-icon,',
+            'body.neko-main-ui-hidden-by-model-manager #vrm-lock-icon,',
+            'body.neko-main-ui-hidden-by-model-manager #mmd-lock-icon,',
+            'body.neko-main-ui-hidden-by-model-manager #live2d-return-button-container,',
+            'body.neko-main-ui-hidden-by-model-manager #vrm-return-button-container,',
+            'body.neko-main-ui-hidden-by-model-manager #mmd-return-button-container {',
+            '  display: none !important;',
+            '  visibility: hidden !important;',
+            '  pointer-events: none !important;',
+            '}'
+        ].join('\n');
+        (document.head || document.documentElement).appendChild(style);
+    }
+
+    function setMainUIHiddenByModelManager(hidden) {
+        window[MAIN_UI_HIDDEN_BY_MODEL_MANAGER_KEY] = !!hidden;
+        ensureMainUIHiddenStyle();
+        if (document.body) {
+            document.body.classList.toggle('neko-main-ui-hidden-by-model-manager', !!hidden);
+        }
+        try {
+            window.dispatchEvent(new CustomEvent('neko:main-ui-hidden-by-model-manager-changed', {
+                detail: { hidden: !!hidden }
+            }));
+        } catch (_) {}
     }
 
     function applyTutorialChatIdentityOverride(payload) {
@@ -812,7 +862,7 @@
 
                             await window.live2dManager.loadModel(newModelPath, {
                                 preferences: modelPreferences,
-                                isMobile: window.innerWidth <= 768,
+                                isMobile: typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (window.innerWidth <= 768),
                                 suppressInitialIdle: skipIdleRestore
                             });
 
@@ -892,6 +942,13 @@
             window._modelReloadInFlight = false;
             resolveReload();
 
+            // If the model manager is still open, keep the Pet UI hidden even
+            // though the reload path briefly re-created containers/buttons.
+            if (isMainUIHiddenByModelManager()) {
+                console.log('[Model] 主界面处于模型管理隐藏状态，模型重载完成后重新隐藏 UI');
+                handleHideMainUI({ preserveHiddenState: true });
+            }
+
             // Process any queued reload request
             if (window._pendingModelReload) {
                 console.log('[Model] 执行待处理的模型重载请求');
@@ -958,12 +1015,29 @@
     // 原因：SDK 会检查 motionGroups 是否已有内容来判断动作是否已加载。
     // 如果放入 JSON 配置对象，SDK 会误认为动作已加载，跳过网络请求和解析。
     // =====================================================================
-    async function restoreLive2DIdleAnimationOnMainPage() {
+    async function restoreLive2DIdleAnimationOnMainPage(options = {}) {
         try {
+            const shouldContinue = options && typeof options.shouldContinue === 'function'
+                ? options.shouldContinue
+                : null;
+            const canContinue = () => {
+                if (!shouldContinue) return true;
+                try {
+                    return shouldContinue() !== false;
+                } catch (guardError) {
+                    console.warn('[Live2D Main] 待机动作恢复 guard 失败，跳过恢复:', guardError);
+                    return false;
+                }
+            };
+
             // 1. 获取当前角色名称，并作为当前任务的标识（防竞态）
             const initialLanlanName = window.lanlan_config?.lanlan_name;
             if (!initialLanlanName) {
                 console.log('[Live2D Main] 没有 lanlan_name，跳过恢复待机动作');
+                return;
+            }
+            if (!canContinue()) {
+                console.log('[Live2D Main] 待机动作恢复已被新的交互取消');
                 return;
             }
 
@@ -973,25 +1047,34 @@
 
             // 【竞态防护】如果中途角色被切换了，立刻中止
             if (window.lanlan_config?.lanlan_name !== initialLanlanName) return;
+            if (!canContinue()) {
+                console.log('[Live2D Main] 待机动作恢复已被新的交互取消');
+                return;
+            }
 
             const charData = data['猫娘']?.[initialLanlanName];
             // 【修复】兼容新旧版字段，穿透 _reserved 读取 Live2D 待机动作
-            const live2dIdleAnimation = charData?._reserved?.avatar?.live2d?.idle_animation
-                                     || charData?.live2d_idle_animation
-                                     || charData?.avatar?.live2d?.idle_animation;
-            const live2dModelName = charData?.live2d;
-
-            if (!live2dIdleAnimation) {
-                console.log('[Live2D Main] 没有保存的待机动作');
-                return;
+            const hasOwn = (obj, key) => !!obj && Object.prototype.hasOwnProperty.call(obj, key);
+            const reservedLive2D = charData?._reserved?.avatar?.live2d;
+            const avatarLive2D = charData?.avatar?.live2d;
+            let live2dIdleAnimation;
+            let hasExplicitIdleAnimation = false;
+            if (hasOwn(reservedLive2D, 'idle_animation')) {
+                live2dIdleAnimation = reservedLive2D.idle_animation;
+                hasExplicitIdleAnimation = true;
+            } else if (hasOwn(charData, 'live2d_idle_animation')) {
+                live2dIdleAnimation = charData.live2d_idle_animation;
+                hasExplicitIdleAnimation = true;
+            } else if (hasOwn(avatarLive2D, 'idle_animation')) {
+                live2dIdleAnimation = avatarLive2D.idle_animation;
+                hasExplicitIdleAnimation = true;
             }
+            const live2dModelName = charData?.live2d;
 
             if (!live2dModelName) {
                 console.log('[Live2D Main] 没有模型名称');
                 return;
             }
-
-            console.log('[Live2D Main] 开始恢复待机动作:', live2dIdleAnimation);
 
             // 3. 从 API 获取模型的动作文件列表（主页没有初始化 PreviewAll 组）
             let modelFilesData;
@@ -1005,8 +1088,33 @@
 
             // 【竞态防护】如果中途角色被切换了，立刻中止
             if (window.lanlan_config?.lanlan_name !== initialLanlanName) return;
+            if (!canContinue()) {
+                console.log('[Live2D Main] 待机动作恢复已被新的交互取消');
+                return;
+            }
 
             const motionFiles = modelFilesData?.motion_files || [];
+            if (!live2dIdleAnimation) {
+                if (hasExplicitIdleAnimation) {
+                    console.log('[Live2D Main] 待机动作已明确清空');
+                    return;
+                }
+                if (motionFiles.length === 1) {
+                    const singleMotion = typeof motionFiles[0] === 'string' ? motionFiles[0].trim() : '';
+                    if (!singleMotion) {
+                        console.log('[Live2D Main] 唯一的 motion 文件名为空，跳过恢复');
+                        return;
+                    }
+                    live2dIdleAnimation = singleMotion;
+                    console.log('[Live2D Main] 没有保存的待机动作，使用唯一 motion 作为默认待机动作:', live2dIdleAnimation);
+                } else {
+                    console.log('[Live2D Main] 没有保存的待机动作');
+                    return;
+                }
+            }
+
+            console.log('[Live2D Main] 开始恢复待机动作:', live2dIdleAnimation);
+
             const motionIndex = motionFiles.indexOf(live2dIdleAnimation);
             if (motionIndex < 0) {
                 console.log('[Live2D Main] 待机动作不在当前模型的动作列表中:', live2dIdleAnimation);
@@ -1045,6 +1153,10 @@
                 console.log('[Live2D Main] 模型或角色已切换，中止待机动作播放');
                 return;
             }
+            if (!canContinue()) {
+                console.log('[Live2D Main] 待机动作恢复已被新的交互取消');
+                return;
+            }
 
             // 7. 设置循环播放
             const motionInstance = motionManager.motionGroups?.[groupName]?.[motionIndex];
@@ -1076,8 +1188,13 @@
     /**
      * Hide main-page model rendering (entering model manager).
      */
-    function handleHideMainUI() {
+    function handleHideMainUI(options) {
         if (!_isModelHostPage()) return;
+        options = options || {};
+        var skipHiddenStateUpdate = options.skipHiddenStateUpdate || options.preserveHiddenState;
+        if (!skipHiddenStateUpdate) {
+            setMainUIHiddenByModelManager(true);
+        }
         console.log('[UI] 隐藏主界面并暂停渲染');
 
         try {
@@ -1151,13 +1268,15 @@
                 '#live2d-lock-icon, #vrm-lock-icon, #mmd-lock-icon, ' +
                 '#live2d-return-button-container, #vrm-return-button-container, #mmd-return-button-container'
             ).forEach(function (el) {
-                var computedDisplay = '';
-                try {
-                    computedDisplay = window.getComputedStyle(el).display || '';
-                } catch (_) {}
-                el.dataset.nekoPreHideDisplay = computedDisplay && computedDisplay !== 'none'
-                    ? computedDisplay
-                    : (el.style.display || 'none');
+                if (!el.dataset.nekoPreHideDisplay) {
+                    var computedDisplay = '';
+                    try {
+                        computedDisplay = window.getComputedStyle(el).display || '';
+                    } catch (_) {}
+                    el.dataset.nekoPreHideDisplay = computedDisplay && computedDisplay !== 'none'
+                        ? computedDisplay
+                        : (el.style.display || 'none');
+                }
                 el.style.display = 'none';
             });
         } catch (error) {
@@ -1170,6 +1289,7 @@
      */
     function handleShowMainUI() {
         if (!_isModelHostPage()) return;
+        setMainUIHiddenByModelManager(false);
         // 模型重载进行中时跳过：handleModelReload 自己会正确切换容器，
         // 此时 lanlan_config.model_type 尚未更新，handleShowMainUI 会
         // 错误地恢复旧模型类型的容器，导致需要切换两次才能成功。
@@ -1527,6 +1647,59 @@
     var _yuiGuideChatFlushTimer = null;
     var _yuiGuideChatFlushAttempts = 0;
     var YUI_GUIDE_CHAT_FLUSH_MAX_ATTEMPTS = 50;
+    var IDLE_CHAT_COMPACT_SURFACE_HEARTBEAT_MS = 1000;
+    var idleChatCompactSurfaceHeartbeatTimer = 0;
+    var idleChatCompactSurfaceLastPayload = null;
+
+    function stopIdleChatCompactSurfaceHeartbeat() {
+        if (!idleChatCompactSurfaceHeartbeatTimer) return;
+        window.clearInterval(idleChatCompactSurfaceHeartbeatTimer);
+        idleChatCompactSurfaceHeartbeatTimer = 0;
+    }
+
+    function startIdleChatCompactSurfaceHeartbeat() {
+        if (idleChatCompactSurfaceHeartbeatTimer) return;
+        idleChatCompactSurfaceHeartbeatTimer = window.setInterval(function () {
+            if (!nekoBroadcastChannel ||
+                !idleChatCompactSurfaceLastPayload ||
+                !idleChatCompactSurfaceLastPayload.visible ||
+                !idleChatCompactSurfaceLastPayload.screenRect) {
+                stopIdleChatCompactSurfaceHeartbeat();
+                return;
+            }
+            nekoBroadcastChannel.postMessage(Object.assign({}, idleChatCompactSurfaceLastPayload, {
+                lanlan_name: getCurrentLanlanName(),
+                timestamp: Date.now(),
+                heartbeat: true
+            }));
+        }, IDLE_CHAT_COMPACT_SURFACE_HEARTBEAT_MS);
+    }
+
+    function syncIdleChatCompactSurfaceHeartbeat(payload) {
+        idleChatCompactSurfaceLastPayload = payload || null;
+        if (payload && payload.visible && payload.screenRect) {
+            startIdleChatCompactSurfaceHeartbeat();
+            return;
+        }
+        stopIdleChatCompactSurfaceHeartbeat();
+    }
+
+    function postIdleChatCompactSurfaceState(detail) {
+        if (!nekoBroadcastChannel) return;
+        var screenRect = detail && detail.screenRect ? detail.screenRect : null;
+        var payload = {
+            action: 'idle_chat_compact_surface_state',
+            source: 'chat-window',
+            lanlan_name: getCurrentLanlanName(),
+            visible: !!screenRect,
+            screenRect: screenRect,
+            resizeActive: !!(detail && detail.resizeActive),
+            dragging: !!(detail && detail.dragging),
+            timestamp: Date.now()
+        };
+        nekoBroadcastChannel.postMessage(payload);
+        syncIdleChatCompactSurfaceHeartbeat(payload);
+    }
 
     function scheduleYuiGuideChatMessageFlush(delay) {
         if (_yuiGuideChatFlushTimer) return;
@@ -1572,6 +1745,13 @@
         }
     }
 
+    function appendYuiGuideChatMessage(message) {
+        if (!isStandaloneChatPage()) return;
+        if (!message || typeof message !== 'object') return;
+        _pendingYuiGuideChatMessages.push(message);
+        scheduleYuiGuideChatMessageFlush(0);
+    }
+
     function updatePendingYuiGuideChatMessage(messageId, patch) {
         var targetId = String(messageId || '');
         if (!targetId || !patch || typeof patch !== 'object') {
@@ -1587,13 +1767,6 @@
             return Object.assign({}, message, patch);
         });
         return updated;
-    }
-
-    function appendYuiGuideChatMessage(message) {
-        if (!isStandaloneChatPage()) return;
-        if (!message || typeof message !== 'object') return;
-        _pendingYuiGuideChatMessages.push(message);
-        scheduleYuiGuideChatMessageFlush(0);
     }
 
     function updateYuiGuideChatMessage(messageId, patch) {
@@ -1675,6 +1848,47 @@
                             S.voiceChatActive = vcEffectiveHidden;
                         }
                         applyVoiceChatComposerHidden(vcEffectiveHidden);
+                        break;
+                    }
+                    case 'idle_activity': {
+                        var idleCurrentName = getCurrentLanlanName();
+                        if (event.data.lanlan_name && (!idleCurrentName || event.data.lanlan_name !== idleCurrentName)) break;
+                        dispatchCrossWindowIdleActivity({
+                            source: event.data.source || 'interaction',
+                            kind: event.data.kind === 'conversation' ? 'conversation' : 'interaction',
+                            via: 'broadcast-channel',
+                            timestamp: event.data.timestamp || Date.now()
+                        });
+                        break;
+                    }
+                    case 'idle_return_ball_state': {
+                        var idleReturnCurrentName = getCurrentLanlanName();
+                        if (event.data.lanlan_name && (!idleReturnCurrentName || event.data.lanlan_name !== idleReturnCurrentName)) break;
+                        dispatchIdleReturnBallState(event.data);
+                        break;
+                    }
+                    case 'idle_chat_minimized_state': {
+                        var idleChatCurrentName = getCurrentLanlanName();
+                        if (event.data.lanlan_name && (!idleChatCurrentName || event.data.lanlan_name !== idleChatCurrentName)) break;
+                        dispatchIdleChatMinimizedState(event.data);
+                        break;
+                    }
+                    case 'idle_chat_compact_surface_state': {
+                        var compactSurfaceCurrentName = getCurrentLanlanName();
+                        if (event.data.lanlan_name && (!compactSurfaceCurrentName || event.data.lanlan_name !== compactSurfaceCurrentName)) break;
+                        dispatchIdleChatCompactSurfaceState(event.data);
+                        break;
+                    }
+                    case 'idle_cat1_compact_mirror_state': {
+                        var cat1MirrorCurrentName = getCurrentLanlanName();
+                        if (event.data.lanlan_name && (!cat1MirrorCurrentName || event.data.lanlan_name !== cat1MirrorCurrentName)) break;
+                        dispatchIdleCat1CompactMirrorState(event.data);
+                        break;
+                    }
+                    case 'idle_chat_pair_move_bounds': {
+                        var pairMoveChatCurrentName = getCurrentLanlanName();
+                        if (event.data.lanlan_name && (!pairMoveChatCurrentName || event.data.lanlan_name !== pairMoveChatCurrentName)) break;
+                        dispatchIdleChatPairMoveBounds(event.data);
                         break;
                     }
                     case 'voice_config_switching': {
@@ -1839,6 +2053,8 @@
         console.log('[BroadcastChannel] 初始化失败，将使用 postMessage 后备方案:', e);
     }
 
+    bindStandaloneChatIdleActivityRelay();
+
     function applyYuiGuideChatLockState(disabled) {
         if (!document.body) {
             return;
@@ -1921,6 +2137,147 @@
         return pathname === '/chat' || pathname === '/chat/';
     }
 
+    function dispatchCrossWindowIdleActivity(detail) {
+        window.dispatchEvent(new CustomEvent('neko:cross-window-user-activity', {
+            detail: Object.assign({
+                source: '',
+                kind: 'interaction',
+                via: 'broadcast-channel',
+                timestamp: Date.now()
+            }, detail || {})
+        }));
+    }
+
+    function dispatchIdleReturnBallState(detail) {
+        window.dispatchEvent(new CustomEvent('neko:idle-return-ball-state', {
+            detail: Object.assign({
+                action: 'idle_return_ball_state',
+                source: '',
+                reason: '',
+                visible: false,
+                tier: 'none',
+                screenRect: null,
+                timestamp: Date.now()
+            }, detail || {})
+        }));
+    }
+
+    function dispatchIdleChatMinimizedState(detail) {
+        window.dispatchEvent(new CustomEvent('neko:idle-chat-minimized-state', {
+            detail: Object.assign({
+                action: 'idle_chat_minimized_state',
+                source: '',
+                reason: '',
+                minimized: false,
+                screenRect: null,
+                timestamp: Date.now(),
+                via: 'broadcast-channel'
+            }, detail || {}, {
+                via: 'broadcast-channel'
+            })
+        }));
+    }
+
+    function dispatchIdleChatCompactSurfaceState(detail) {
+        window.dispatchEvent(new CustomEvent('neko:idle-chat-compact-surface-state', {
+            detail: Object.assign({
+                action: 'idle_chat_compact_surface_state',
+                source: '',
+                reason: '',
+                visible: false,
+                screenRect: null,
+                timestamp: Date.now(),
+                via: 'broadcast-channel'
+            }, detail || {}, {
+                via: 'broadcast-channel'
+            })
+        }));
+    }
+
+    function dispatchIdleCat1CompactMirrorState(detail) {
+        window.dispatchEvent(new CustomEvent('neko:idle-cat1-compact-mirror-state', {
+            detail: Object.assign({
+                action: 'idle_cat1_compact_mirror_state',
+                source: '',
+                reason: '',
+                active: false,
+                surfaceScreenRect: null,
+                anchorRatio: null,
+                catRect: null,
+                timestamp: Date.now(),
+                via: 'broadcast-channel'
+            }, detail || {}, {
+                via: 'broadcast-channel'
+            })
+        }));
+    }
+
+    function dispatchIdleChatPairMoveBounds(detail) {
+        window.dispatchEvent(new CustomEvent('neko:idle-chat-pair-move-bounds', {
+            detail: Object.assign({
+                action: 'idle_chat_pair_move_bounds',
+                source: '',
+                screenRect: null,
+                timestamp: Date.now(),
+                via: 'broadcast-channel'
+            }, detail || {}, {
+                via: 'broadcast-channel'
+            })
+        }));
+    }
+
+    function broadcastCrossWindowIdleActivity(source, kind) {
+        if (!isStandaloneChatPage()) return;
+
+        var now = Date.now();
+        if (now - _lastCrossWindowIdleActivityAt < CROSS_WINDOW_IDLE_ACTIVITY_MIN_INTERVAL_MS) {
+            return;
+        }
+        _lastCrossWindowIdleActivityAt = now;
+
+        var payload = {
+            action: 'idle_activity',
+            source: source || 'interaction',
+            kind: kind === 'conversation' ? 'conversation' : 'interaction',
+            lanlan_name: getCurrentLanlanName(),
+            timestamp: now
+        };
+
+        if (nekoBroadcastChannel) {
+            nekoBroadcastChannel.postMessage(payload);
+            return;
+        }
+
+        if (window.opener && !window.opener.closed) {
+            try {
+                window.opener.postMessage(payload, window.location.origin);
+            } catch (_) { /* noop */ }
+        }
+    }
+
+    function bindStandaloneChatIdleActivityRelay() {
+        if (!isStandaloneChatPage()) return;
+
+        document.addEventListener('pointerdown', function () {
+            broadcastCrossWindowIdleActivity('pointerdown');
+        }, true);
+        document.addEventListener('keydown', function () {
+            broadcastCrossWindowIdleActivity('keydown');
+        }, true);
+        document.addEventListener('touchstart', function () {
+            broadcastCrossWindowIdleActivity('touchstart');
+        }, { capture: true, passive: true });
+        document.addEventListener('wheel', function () {
+            broadcastCrossWindowIdleActivity('wheel');
+        }, { capture: true, passive: true });
+        window.addEventListener('neko:user-content-sent', function () {
+            broadcastCrossWindowIdleActivity('user-content-sent', 'conversation');
+        });
+        window.addEventListener('neko:voice-session-started', function () {
+            broadcastCrossWindowIdleActivity('voice-session-started', 'conversation');
+        });
+    }
+
     var yuiGuideChatSpotlightKind = '';
     var yuiGuideChatSpotlightTimer = 0;
 
@@ -1934,7 +2291,11 @@
         }
 
         if (kind === 'input') {
-            return document.querySelector('#react-chat-window-root .composer-panel')
+            return document.querySelector('#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="input"]')
+                || document.querySelector('#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="capsule"]')
+                || document.querySelector('#react-chat-window-root .compact-chat-surface-frame')
+                || document.querySelector('#react-chat-window-root .compact-chat-surface-shell')
+                || document.querySelector('#react-chat-window-root .composer-panel')
                 || document.querySelector('#react-chat-window-root .composer-input-shell')
                 || document.getElementById('text-input-area');
         }
@@ -1971,7 +2332,7 @@
         }
 
         var padding = kind === 'window' ? 10 : 8;
-        var radius = kind === 'window' ? 26 : 18;
+        var radius = kind === 'window' ? 26 : Math.min(34, Math.max(18, Math.round((rect.height + padding * 2) / 2)));
         spotlight.hidden = false;
         spotlight.classList.remove('is-window', 'is-input');
         spotlight.classList.add(kind === 'window' ? 'is-window' : 'is-input');
@@ -2036,6 +2397,23 @@
             modelType: (evt.detail && evt.detail.modelType) || '',
             timestamp: Date.now()
         });
+    });
+
+    window.addEventListener('neko:idle-chat-minimized-state', function (evt) {
+        var detail = evt && evt.detail && typeof evt.detail === 'object' ? evt.detail : null;
+        if (!detail || detail.via === 'broadcast-channel') return;
+        if (!nekoBroadcastChannel) return;
+        nekoBroadcastChannel.postMessage(Object.assign({
+            action: 'idle_chat_minimized_state',
+            source: 'chat-window',
+            lanlan_name: getCurrentLanlanName(),
+            timestamp: Date.now()
+        }, detail));
+    });
+
+    window.addEventListener('neko:compact-surface-layout-change', function (evt) {
+        var detail = evt && evt.detail && typeof evt.detail === 'object' ? evt.detail : null;
+        postIdleChatCompactSurfaceState(detail);
     });
 
     // Chat 窗口初始化时，向 Pet 窗口请求当前已缓存的头像
@@ -2116,6 +2494,30 @@
             return;
         }
         handleVoiceConfigSwitchingMessage(data);
+    });
+
+    window.addEventListener('message', function (event) {
+        if (event.origin !== window.location.origin) {
+            console.warn('[Security] 拒绝来自不同源的 idle_activity 消息:', event.origin);
+            return;
+        }
+        var data = event.data || {};
+        if (data.action !== 'idle_activity' && data.type !== 'idle_activity') {
+            return;
+        }
+        if (isDuplicateMessage('idle_activity', data.timestamp)) {
+            return;
+        }
+        var idleCurrentName = getCurrentLanlanName();
+        if (data.lanlan_name && (!idleCurrentName || data.lanlan_name !== idleCurrentName)) {
+            return;
+        }
+        dispatchCrossWindowIdleActivity({
+            source: data.source || 'interaction',
+            kind: data.kind === 'conversation' ? 'conversation' : 'interaction',
+            via: 'post-message',
+            timestamp: data.timestamp || Date.now()
+        });
     });
 
     // N.E.K.O.-PC 多窗口兜底：由 Electron 主进程广播音色切换准备态
@@ -2222,6 +2624,7 @@
     mod.resetToDefaultModel = resetToDefaultModel;
     mod.handleHideMainUI = handleHideMainUI;
     mod.handleShowMainUI = handleShowMainUI;
+    mod.isMainUIHiddenByModelManager = isMainUIHiddenByModelManager;
     mod.handleMemoryEdited = handleMemoryEdited;
     mod.cleanupLive2DOverlayUI = cleanupLive2DOverlayUI;
     mod.cleanupVRMOverlayUI = cleanupVRMOverlayUI;
@@ -2237,6 +2640,7 @@
     window.resetToDefaultModel = resetToDefaultModel;
     window.handleHideMainUI = handleHideMainUI;
     window.handleShowMainUI = handleShowMainUI;
+    window.isMainUIHiddenByModelManager = isMainUIHiddenByModelManager;
     window.cleanupLive2DOverlayUI = cleanupLive2DOverlayUI;
     window.cleanupVRMOverlayUI = cleanupVRMOverlayUI;
     window.cleanupMMDOverlayUI = cleanupMMDOverlayUI;

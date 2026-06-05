@@ -62,8 +62,8 @@ const PLUGIN_MAIN_SPOTLIGHT_INSET = -25
 const PLUGIN_DASHBOARD_DEFAULT_TOTAL_MS = 9000
 const MIN_SPOTLIGHT_RADIUS = 4
 const RESISTANCE_LINES = [
-  '喂！不要拽我啦，还没轮到你的回合呢！',
-  '等一下啦！还没结束呢，不要随便打断我啦！',
+  '喂！不要拽我啦，现在还没轮到你的回合呢！',
+  '等一下啦！还没结束呢，不要这么随便打断我啦！',
 ] as const
 const RESISTANCE_VOICE_KEYS = [
   'interrupt_resist_light_1',
@@ -73,6 +73,7 @@ const ANGRY_EXIT_LINE = '人类！你真的很没礼貌喵！既然你这么想�
 const GUIDE_AUDIO_FILE_NAMES = {
   takeover_plugin_preview_dashboard: '有了它们，我不光能看.mp3',
   interrupt_resist_light_1: '喂！不要拽我啦，还没.mp3',
+  interrupt_resist_light_1_zh: '喂！不要拽我啦，现在.mp3',
   interrupt_resist_light_3: '等一下啦！还没结束呢.mp3',
   interrupt_angry_exit: '人类！你真的很没礼貌.mp3',
 } as const
@@ -85,7 +86,7 @@ const GUIDE_AUDIO_BY_KEY = {
     ru: GUIDE_AUDIO_FILE_NAMES.takeover_plugin_preview_dashboard,
   },
   interrupt_resist_light_1: {
-    zh: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1,
+    zh: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1_zh,
     en: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1,
     ja: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1,
     ko: GUIDE_AUDIO_FILE_NAMES.interrupt_resist_light_1,
@@ -108,7 +109,6 @@ const GUIDE_AUDIO_BY_KEY = {
 } as const
 
 const LOCAL_TUTORIAL_ACTION_EVENT = 'neko:plugin-tutorial:action'
-export const LOCAL_TUTORIAL_STATE_EVENT = 'neko:plugin-tutorial:state'
 
 export type PluginDashboardLocalTutorialMotion = 'point' | 'click' | 'ellipse'
 
@@ -131,8 +131,6 @@ type StartPluginDashboardTutorialOptions = {
     keyboardHint?: string
   }
 }
-
-type StartPluginDashboardTutorialOptionsFactory = () => StartPluginDashboardTutorialOptions
 
 function normalizeOrigin(value: string) {
   const normalizedValue = String(value || '').trim()
@@ -1406,11 +1404,7 @@ class PluginDashboardGuideRuntime {
       return
     }
 
-    if (
-      typeof window.MouseEvent !== 'undefined'
-      && event instanceof window.MouseEvent
-      && this.forwardHomeSkipClick(event)
-    ) {
+    if (this.forwardHomeSkipClick(event)) {
       return
     }
 
@@ -1828,8 +1822,47 @@ class PluginDashboardGuideRuntime {
     return 6
   }
 
-  forwardHomeSkipClick(event: PointerEvent | MouseEvent) {
+  getEventScreenPoint(event: Event) {
+    if (
+      typeof window.MouseEvent !== 'undefined'
+      && event instanceof window.MouseEvent
+    ) {
+      return {
+        screenX: Number(event.screenX),
+        screenY: Number(event.screenY),
+      }
+    }
+
+    if (
+      typeof window.TouchEvent !== 'undefined'
+      && event instanceof window.TouchEvent
+    ) {
+      const touch = event.changedTouches[0] || event.touches[0]
+      if (touch) {
+        return {
+          screenX: Number(touch.screenX),
+          screenY: Number(touch.screenY),
+        }
+      }
+    }
+
+    return null
+  }
+
+  isHomeSkipForwardActivationEvent(event: Event) {
+    return (
+      event.type === 'pointerdown'
+      || event.type === 'mousedown'
+      || event.type === 'touchstart'
+      || event.type === 'click'
+    )
+  }
+
+  forwardHomeSkipClick(event: Event) {
     if (!this.running || !event || !this.activeSessionId) {
+      return false
+    }
+    if (!this.isHomeSkipForwardActivationEvent(event)) {
       return false
     }
 
@@ -1838,8 +1871,9 @@ class PluginDashboardGuideRuntime {
       return false
     }
 
-    const screenX = Number.isFinite(event.screenX) ? Number(event.screenX) : NaN
-    const screenY = Number.isFinite(event.screenY) ? Number(event.screenY) : NaN
+    const point = this.getEventScreenPoint(event)
+    const screenX = point && Number.isFinite(point.screenX) ? point.screenX : NaN
+    const screenY = point && Number.isFinite(point.screenY) ? point.screenY : NaN
     if (!Number.isFinite(screenX) || !Number.isFinite(screenY)) {
       return false
     }
@@ -4081,41 +4115,16 @@ class PluginDashboardLocalTutorialRunner {
 }
 
 let activeLocalTutorialRunner: PluginDashboardLocalTutorialRunner | null = null
-let activeLocalTutorialOptionsFactory: StartPluginDashboardTutorialOptionsFactory | null = null
 
-export function startPluginDashboardTutorial(
-  options: StartPluginDashboardTutorialOptions | StartPluginDashboardTutorialOptionsFactory,
-) {
-  const optionsFactory = typeof options === 'function' ? options : () => options
-  const resolvedOptions = optionsFactory()
+export function startPluginDashboardTutorial(options: StartPluginDashboardTutorialOptions) {
   activeLocalTutorialRunner?.cleanup()
   const runner = new PluginDashboardLocalTutorialRunner()
   activeLocalTutorialRunner = runner
-  activeLocalTutorialOptionsFactory = optionsFactory
-  window.dispatchEvent(new CustomEvent(LOCAL_TUTORIAL_STATE_EVENT, {
-    detail: {
-      running: true,
-    },
-  }))
-  void runner.start(resolvedOptions).finally(() => {
+  void runner.start(options).finally(() => {
     if (activeLocalTutorialRunner === runner) {
       activeLocalTutorialRunner = null
-      activeLocalTutorialOptionsFactory = null
-      window.dispatchEvent(new CustomEvent(LOCAL_TUTORIAL_STATE_EVENT, {
-        detail: {
-          running: false,
-        },
-      }))
     }
   })
-}
-
-export function restartActivePluginDashboardTutorial() {
-  if (!activeLocalTutorialRunner || !activeLocalTutorialOptionsFactory) {
-    return false
-  }
-  startPluginDashboardTutorial(activeLocalTutorialOptionsFactory)
-  return true
 }
 
 export function initPluginDashboardYuiGuideRuntime() {

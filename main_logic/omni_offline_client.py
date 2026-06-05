@@ -6,7 +6,7 @@ import re
 import time
 from typing import Optional, Callable, Dict, Any, Awaitable, List
 from utils.llm_client import SystemMessage, HumanMessage, AIMessage, create_chat_llm
-from openai import APIConnectionError, InternalServerError, RateLimitError
+from openai import APIConnectionError, AuthenticationError, InternalServerError, RateLimitError
 from utils.frontend_utils import calculate_text_similarity
 from utils.tokenize import count_tokens, truncate_to_tokens
 from config import OMNI_RECENT_RESPONSES_MAX
@@ -18,17 +18,46 @@ from main_logic.tool_calling import (
     parse_arguments_json,
 )
 
-# Lazy-import flag for google-genai (offline Gemini path). The SDK is already
-# imported by omni_realtime_client at module load; we duplicate the guard
-# here so the offline client can degrade gracefully if it isn't available.
-try:
-    from google import genai as _genai
-    from google.genai import types as _genai_types
-    _GENAI_AVAILABLE = True
-except Exception:  # pragma: no cover — environment-specific
-    _genai = None
-    _genai_types = None
-    _GENAI_AVAILABLE = False
+# google-genai 懒加载。该 SDK import 很重（~0.6s），且在 import 时会捎带 mcp
+# （~0.5s），但 offline 路径只有用户用 native-Gemini 端点时才需要它。改成首次使用
+# 时再 import，并由 utils.module_warmup 在 ready 后用后台线程提前预热，所以常规
+# 启动（OpenAI-compat 端点 / greeting）完全不付这笔钱。
+_genai = None
+_genai_types = None
+_GENAI_AVAILABLE: bool | None = None  # None = 尚未尝试导入
+
+
+def _ensure_genai() -> bool:
+    """首次调用时 import google-genai，并缓存结果（成功或失败）。
+
+    返回 SDK 是否可用。并发竞态下最坏只是重复 import 一次，Python 的模块缓存
+    让其幂等，无副作用。
+    """
+    global _genai, _genai_types, _GENAI_AVAILABLE
+    # 显式强制不可用优先级最高（测试用它当强制降级开关）→ 即便对象已塞进全局也降级。
+    if _GENAI_AVAILABLE is False:
+        return False
+    # 对象已就位（真 import 过 / 测试注入了 mock）→ 直接信任，不重导入。
+    if _genai is not None and _genai_types is not None:
+        _GENAI_AVAILABLE = True
+        return True
+    try:
+        from google import genai as genai_mod
+        from google.genai import types as genai_types_mod
+        # 只补缺失的，保住测试可能注入的 _genai mock。
+        if _genai is None:
+            _genai = genai_mod
+        if _genai_types is None:
+            _genai_types = genai_types_mod
+        _GENAI_AVAILABLE = True
+    except Exception:  # pragma: no cover — environment-specific
+        # 不覆盖外部强制设过的可用性标志；也不清空可能被测试注入的 _genai/_genai_types
+        # （只补缺失原则——导入失败时保留已注入的部分 mock）。
+        if _GENAI_AVAILABLE is None:
+            _GENAI_AVAILABLE = False
+    # 只有可用标志为真且对象确实就位才算可用——避免 forced True 但 import 失败时
+    # 谎报可用、让调用点在 None 上解引用 _genai_types。
+    return bool(_GENAI_AVAILABLE) and _genai is not None and _genai_types is not None
 
 
 # Hostname / model fragments that indicate the request should go through
@@ -46,6 +75,77 @@ _GENAI_NATIVE_MODEL_HINTS = ("gemini",)
 # rerolls have been exhausted. Commas, semicolons, and colons are NOT
 # included on purpose — those would leave the kept text mid-thought.
 _SENTENCE_END_CHARS = '.!?。！？…'
+
+# Broader pause-causing punctuation used to pick the TTS cutover point in
+# the "long-but-readable" summary path. Once ``_total`` crosses
+# ``max_response_length`` we look for the first character in this set so
+# the part TTS already enqueued ends at a natural breath, not mid-clause.
+# Commas / semicolons / colons are intentional here (the summary takes
+# over speaking right after).
+_SUMMARY_TERMINATOR_CHARS = _SENTENCE_END_CHARS + ',，;；:：'
+
+# Slack after which the summary path stops trying to ABANDON the summary.
+# If the model only writes a tiny bit past the budget (less than this many
+# tokens), the tail is small enough to just keep reading — no summary,
+# no UI/TTS divergence. Larger overshoot → summary kicks in.
+_SUMMARY_LATE_FINISH_SLACK = 25
+
+# How often (in tail-token count) to recheck gibberish during summary
+# mode. If the tail buffer crosses one of these thresholds we re-run
+# ``_is_gibberish_response`` on the accumulated tail; on positive hit we
+# abandon the summary path and fall back to the existing gibberish
+# discard flow.
+_SUMMARY_GIBBERISH_RECHECK_TOKENS = 100
+
+# Hard token cap on the summary LLM output. Defensive backstop: prompt
+# asks for "1-2 sentences" but small models drift. After stripping quotes
+# and slicing to the first 2 sentence-end-delimited segments, we still
+# hard-truncate to this many tokens (tiktoken, same unit as the budget)
+# before feeding TTS. Token-based so the cap behaves consistently across
+# languages (a char cap punishes CJK, where one char ≈ one token, far
+# harder than Latin scripts). 50 tokens keeps the summary in the
+# "quick wrap-up" zone regardless of model obedience.
+_SUMMARY_HARD_TOKEN_CAP = 50
+
+
+# Floor on API-side ``max_completion_tokens`` when summary mode is on.
+# NOT a hard ceiling — if the caller's ``max_response_length`` already
+# exceeds this value, we let API budget grow with it (budget + slack).
+# The floor only kicks in to lift the default-300-budget chat case up
+# to ~3000 so the model has room to finish its thought before we
+# summarize. 3000 tokens is roughly 2000 Chinese chars / 1500 English
+# words, well above any "took a long detour" reply we want to recover
+# from.
+_SUMMARY_API_BUDGET_FLOOR = 3000
+_API_KEY_REJECTED_KEYWORDS = (
+    "incorrect api key",
+    "incorect api key",
+    "invalid_api_key",
+    "invalid api key",
+    "invalid key",
+    "api key is invalid",
+)
+
+
+def _is_api_key_rejected_error(error: BaseException | str) -> bool:
+    """Return True when an upstream error clearly means the API key was rejected."""
+    status_code = getattr(error, "status_code", None)
+    text = f"{type(error).__name__}: {error}".lower()
+    has_api_key_indicator = any(keyword in text for keyword in _API_KEY_REJECTED_KEYWORDS)
+    if status_code == 401:
+        return True
+    if status_code == 403:
+        return has_api_key_indicator
+    if "401" in text:
+        return True
+    if "403" in text:
+        return has_api_key_indicator
+    if has_api_key_indicator:
+        return True
+    return (
+        ("authenticationerror" in text or "authentication" in text or "unauthorized" in text)
+        and "api key" in text
+    )
 
 
 def _truncate_to_last_sentence_end(text: str) -> str:
@@ -82,14 +182,39 @@ _MAX_TOKENS_SLACK = 20
 _UNLIMITED_BUDGET = 999999  # sentinel set when user picks the slider's "无限制"
 
 
-def _budget_to_max_tokens(budget: int) -> int | None:
+def _budget_to_max_tokens(budget: int, summary_mode: bool = False) -> int | None:
     """Convert ``max_response_length`` budget into the LLM API's
     ``max_completion_tokens``. ``None`` for the unlimited sentinel so the
     request omits the field entirely (large fixed values get rejected as
-    out-of-range by some providers)."""
+    out-of-range by some providers).
+
+    When ``summary_mode`` is True the API-side ceiling is lifted to at
+    least ``_SUMMARY_API_BUDGET_FLOOR`` (or the caller's budget+slack if
+    that is larger — never CAPS to the floor, just raises the small
+    defaults). The Python-side guard then decides per-response whether
+    to abandon, summarize, or pass through the overshoot.
+    """
     if budget >= _UNLIMITED_BUDGET:
         return None
+    if summary_mode:
+        return max(budget + _MAX_TOKENS_SLACK, _SUMMARY_API_BUDGET_FLOOR)
     return budget + _MAX_TOKENS_SLACK
+
+
+def _find_summary_terminator(text: str) -> int:
+    """Return the offset of the FIRST pause-causing punctuation char in
+    ``text`` (one of ``_SUMMARY_TERMINATOR_CHARS``), or ``-1`` if none.
+
+    Used in summary-mode cutover: once the response crosses the budget
+    we want TTS to stop at the next natural breath rather than mid-word.
+    Caller treats ``offset + 1`` as the inclusive boundary.
+    """
+    best = -1
+    for ch in _SUMMARY_TERMINATOR_CHARS:
+        pos = text.find(ch)
+        if pos >= 0 and (best < 0 or pos < best):
+            best = pos
+    return best
 
 
 def _is_gibberish_response(text: str) -> bool:
@@ -157,7 +282,7 @@ def _genai_messages_to_contents(
     ``Content(role="model", parts=[Part(function_call=...)])``; role=tool
     becomes ``Content(role="user", parts=[Part(function_response=...)])``.
     """
-    if not _GENAI_AVAILABLE:
+    if not _ensure_genai():
         raise _GenaiToolsUnsupported("google-genai SDK not importable")
     types = _genai_types
     system_instruction: Optional[str] = None
@@ -326,15 +451,22 @@ def _should_use_genai_sdk(model: str, base_url: str | None) -> bool:
     its base_url ('lanlan.app') stays on the OpenAI path. Tools won't
     work there until the proxy is upgraded — see TODO in core.py.
     """
-    if not _GENAI_AVAILABLE:
-        return False
+    # 先做便宜的字符串判断：只有路由确实指向 native Gemini 时才去 import SDK。
+    # 这样常规 OpenAI-compat 端点（含 greeting）构造 client 时不会触发 genai
+    # 这条重 import；而真要走 genai 的用户，本来下一步就得用到它。
     bl = (base_url or "").lower()
     ml = (model or "").lower()
-    if any(h in bl for h in _GENAI_NATIVE_BASE_URL_HINTS):
-        return True
-    if not bl and any(h in ml for h in _GENAI_NATIVE_MODEL_HINTS):
-        return True
-    return False
+    native = (
+        any(h in bl for h in _GENAI_NATIVE_BASE_URL_HINTS)
+        or (not bl and any(h in ml for h in _GENAI_NATIVE_MODEL_HINTS))
+    )
+    if not native:
+        return False
+    # 路由判断只需"是否可用"这个布尔；尊重已知/被强制的标志（测试会 force
+    # _GENAI_AVAILABLE 而不装 google-genai），只有真未知时才去付 lazy import。
+    if _GENAI_AVAILABLE is None:
+        return _ensure_genai()
+    return bool(_GENAI_AVAILABLE)
 
 class OmniOfflineClient:
     """
@@ -396,7 +528,8 @@ class OmniOfflineClient:
         master_name: str = "",
         on_tool_call: Optional[OnToolCallCallback] = None,
         tool_definitions: Optional[List[ToolDefinition]] = None,
-        max_tool_iterations: int = 6,
+        max_tool_iterations: int = 3,
+        enable_long_response_summary: bool = False,
     ):
         # Use base_url directly without conversion
         self.base_url = base_url
@@ -433,10 +566,23 @@ class OmniOfflineClient:
         # 第 2 次仍超长时不再丢弃整段，而是回退到最后一个句末标点截断。
         self.max_response_rerolls = 1
 
+        # 长回复 summary 路径开关：开 → 长但可读的回复不再 inline abort+truncate，
+        # 而是让模型继续写到 budget+slack（最少 _SUMMARY_API_BUDGET_FLOOR），TTS
+        # 在 budget 后的下个 terminator 停掉，emotion-tier 小模型用人设口吻把
+        # 尾巴压成一两句话续到 TTS。前端 live 看完整原文、history 存 prefix+summary，
+        # 刻意的语义分叉。默认 False（保留 game 这种 max=100 短台词的现行 abort
+        # 行为），core 在创建 chat client 时显式打开。
+        self.enable_long_response_summary = bool(enable_long_response_summary)
+
         # Initialize ChatOpenAI client. max_completion_tokens 设为
         # max_response_length + 20 让 LLM API 自然在 budget+20 token 处停下来，
         # 既省掉无效生成成本，又给 fence 留 20 token slack 看到 overshoot
         # 能区分 truncate / gibberish-filter 路径。
+        # ⚠️ 这里**永远**用普通 budget，不烤进 summary 的 3000 floor —— 因为
+        # 同一个 self.llm 既给 stream_text 又给 prompt_ephemeral（proactive）用，
+        # 把 3000 烤进 client 会让没有长度 guard 的 proactive 轮次也能吐到 3000
+        # token。summary 的 budget 抬升改成 stream_text 内临时 bump + finally
+        # 还原（见 stream_text 顶部），把 3000 严格限定在长回复流式路径里。
         self.llm = create_chat_llm(
             self.model, self.base_url, self.api_key,
             streaming=True, max_retries=0,
@@ -460,6 +606,17 @@ class OmniOfflineClient:
         self._instructions = ""
         self._stream_task = None
         self._pending_images = []  # Store pending images to send with next text
+
+        # ── Empty-completion 诊断（finish_reason / prompt_tokens / block_reason）──
+        # Gemini 在 SAFETY / RECITATION / MAX_TOKENS 等场景会返回 finish_reason
+        # 非 stop 但 content 为空；走 OpenAI-compat 代理时 HTTP 仍是 200，没异常，
+        # 上层只能看到"流跑完了，0 个文本 token"。这里记最后一次 attempt 在 LLM
+        # 这一层看到的 finish_reason / block_reason / prompt_tokens，让 stream_text
+        # 的 "所有重试均未产生文本回复" / prompt_ephemeral 的 delivered=False 兜底
+        # 警告能把"为什么 empty"原样吐出来。
+        self._last_finish_reason: Optional[str] = None
+        self._last_block_reason: Optional[str] = None
+        self._last_prompt_tokens: Optional[int] = None
         
         # 重复度检测
         self._recent_responses = []  # 存储最近3轮助手回复
@@ -514,6 +671,7 @@ class OmniOfflineClient:
         messages,
         calls,
         assistant_text: str = "",
+        assistant_reasoning: str = "",
     ) -> None:
         """Run each tool call through ``on_tool_call`` and mutate
         ``messages`` in place: append one assistant turn announcing all
@@ -526,6 +684,12 @@ class OmniOfflineClient:
         某些 OpenAI-compat provider 会"先吐文字再进 tool_calls"。和 Gemini
         路径的 streamed_text_buffer 一样，这条 text 必须一起写进历史，否则
         下一轮上下文丢前缀，模型重复 / 改口。
+
+        ``assistant_reasoning`` 是 thinking 模型本轮的推理链（``reasoning_content``）。
+        DeepSeek-R / Qwen / GLM thinking 等端点在多轮 tool calling 时要求把发起
+        tool_calls 那条 assistant 消息的 ``reasoning_content`` 原样回填，否则下一轮
+        报 400 "The `reasoning_content` in the thinking mode must be passed back to
+        the API."。非 thinking 端点恒为空，此时不写该字段以免污染普通会话。
         """
         # 防御性过滤：``ChatOpenAI.collect_tool_calls`` 已会丢弃空 name 槽位，
         # 但万一调用方直接构造（或上游聚合实现替换），这里再兜一层 ——
@@ -534,7 +698,7 @@ class OmniOfflineClient:
         calls = [c for c in calls if (getattr(c, "name", "") or "").strip()]
         if not calls:
             return
-        messages.append({
+        assistant_turn = {
             "role": "assistant",
             "content": assistant_text or "",
             "tool_calls": [
@@ -548,7 +712,10 @@ class OmniOfflineClient:
                 }
                 for i, c in enumerate(calls)
             ],
-        })
+        }
+        if assistant_reasoning:
+            assistant_turn["reasoning_content"] = assistant_reasoning
+        messages.append(assistant_turn)
         for i, c in enumerate(calls):
             tool_call = ToolCall(
                 name=c.name,
@@ -657,16 +824,62 @@ class OmniOfflineClient:
             # 一 turn 既有 content 又有 tool_calls；某些兼容 provider 真会
             # 先吐文字再进 tool_calls。和 Gemini 路径完全对偶。
             streamed_text_buffer = ""
+            # Thinking 模型本轮的推理链：finish_reason=tool_calls 时必须随
+            # assistant tool_calls turn 一起回填，否则部分 provider 下一轮报
+            # 400（reasoning_content must be passed back）。普通端点恒为空。
+            streamed_reasoning_buffer = ""
             async for chunk in self.llm.astream(messages, **overrides):
                 if getattr(chunk, "content", None):
                     streamed_text_buffer += chunk.content
+                if getattr(chunk, "reasoning_content", None):
+                    streamed_reasoning_buffer += chunk.reasoning_content
                 if chunk.tool_call_deltas:
                     deltas_per_chunk.append(chunk.tool_call_deltas)
                 if chunk.finish_reason:
                     finish_reason = chunk.finish_reason
+                # Empty-completion 诊断：记最新的 finish_reason 和 prompt_tokens，
+                # 给上层 stream_text / prompt_ephemeral 的兜底 warning 用。
+                # usage chunk（terminal）才带 prompt_tokens；前面 text chunk 不带。
+                if chunk.usage_metadata:
+                    pt = chunk.usage_metadata.get("prompt_tokens")
+                    if pt:
+                        self._last_prompt_tokens = pt
+                # 纯 reasoning chunk（thinking 模型先吐推理链，content 为空、无
+                # tool delta / finish / usage）只在上面累积进 buffer，不向下游
+                # 转发：``stream_text`` 在首个 yield 的 chunk 上记 TTFT，放行
+                # reasoning-only 会把"首推理 token"误当首 token，拉低延迟埋点。
+                if (
+                    getattr(chunk, "reasoning_content", None)
+                    and not getattr(chunk, "content", None)
+                    and not chunk.tool_call_deltas
+                    and not chunk.finish_reason
+                    and not chunk.usage_metadata
+                ):
+                    continue
                 # 永远 yield 文本 chunk —— 即便是 tool-only turn 也可能在
                 # finish_reason=tool_calls 之前 emit usage chunk 和空 content。
                 yield chunk
+            # 记录本次 attempt 的最终 finish_reason，供上层 empty-completion
+            # 兜底警告引用（"safety" / "length" / "content_filter" / "stop" 都
+            # 可能在 content 为空时出现，是诊断 Gemini-via-OpenAI-compat 静默
+            # empty 的关键线索）。
+            self._last_finish_reason = finish_reason
+            if (
+                not streamed_text_buffer
+                and not deltas_per_chunk
+                and finish_reason != "tool_calls"
+            ):
+                # 单独一行 INFO：empty completion 落地证据。tool_iter / model 一起
+                # 打出来，配合上层 warning 可以拼出"哪一轮哪个 attempt 被 safety
+                # 拦了 / 被 length 截了"。getattr 防御：测试桩可能 __new__ 绕过
+                # __init__，所以 model / _last_prompt_tokens 字段都用 getattr 兜底。
+                logger.info(
+                    "OmniOfflineClient(openai): empty completion finish_reason=%s "
+                    "tool_iter=%d model=%s prompt_tokens=%s",
+                    finish_reason, tool_iter,
+                    getattr(self, "model", None),
+                    getattr(self, "_last_prompt_tokens", None),
+                )
             if (
                 finish_reason == "tool_calls"
                 and deltas_per_chunk
@@ -679,7 +892,9 @@ class OmniOfflineClient:
                 from utils.llm_client import LLMStreamChunk as _LLMStreamChunk
                 calls = _ChatOpenAI.collect_tool_calls(deltas_per_chunk)
                 await self._execute_and_append_openai_tool_calls(
-                    messages, calls, assistant_text=streamed_text_buffer,
+                    messages, calls,
+                    assistant_text=streamed_text_buffer,
+                    assistant_reasoning=streamed_reasoning_buffer,
                 )
                 # 通知上游 ``stream_text``：本轮的 pre-tool text + tool_calls
                 # 已经写进 history（assistant turn）。stream_text 据此清空
@@ -689,9 +904,43 @@ class OmniOfflineClient:
                 continue
             return
         logger.warning(
-            "OmniOfflineClient: tool iteration cap %d reached, stopping",
+            "OmniOfflineClient: tool iteration cap %d reached; forcing final answer without tools",
             self.max_tool_iterations,
         )
+        # Forced-finalize：工具轮次封顶后，去掉 tools 再调一次，逼模型基于已
+        # 积累的 tool 结果给出最终文本。否则弱模型在 finish_reason=tool_calls
+        # 上死循环到封顶后整轮静默，上游只能报"未产生文本回复"，用户那边就
+        # 表现为不回话。去掉 tools 后模型无法再发起调用，必须输出文本。
+        final_overrides = {
+            k: v for k, v in overrides.items() if k not in ("tools", "tool_choice")
+        }
+        final_finish_reason: Optional[str] = None
+        final_prompt_tokens: Optional[int] = None
+        async for chunk in self.llm.astream(messages, **final_overrides):
+            if chunk.finish_reason:
+                final_finish_reason = chunk.finish_reason
+            if chunk.usage_metadata:
+                pt = chunk.usage_metadata.get("prompt_tokens")
+                if pt:
+                    final_prompt_tokens = pt
+            # 与常规 tool-loop 路径一致：不向下游转发 thinking 模型的纯
+            # reasoning chunk（有 reasoning_content、无 content / tool delta /
+            # finish / usage）。stream_text 在首个 yield 的 chunk 上记 TTFT，
+            # 放行 reasoning-only 会把"首推理 token"误当首 token，污染封顶轮延迟埋点。
+            if (
+                getattr(chunk, "reasoning_content", None)
+                and not getattr(chunk, "content", None)
+                and not chunk.tool_call_deltas
+                and not chunk.finish_reason
+                and not chunk.usage_metadata
+            ):
+                continue
+            yield chunk
+        # prompt_tokens 走局部变量、流结束后无条件回填（与 genai 路径同口径）：这次
+        # forced-finalize 没给 usage 时写回 None，而非沿用上一轮 tool-iteration 的旧
+        # 值，避免上层 empty-completion 诊断串台。
+        self._last_finish_reason = final_finish_reason
+        self._last_prompt_tokens = final_prompt_tokens
 
     async def _astream_genai_with_tools(self, messages, **overrides):
         """google-genai streaming with tool support. Yields
@@ -709,7 +958,7 @@ class OmniOfflineClient:
         Raises ``_GenaiToolsUnsupported`` if the SDK or this model
         cannot handle tools — caller falls back to OpenAI-compat."""
         from utils.llm_client import LLMStreamChunk
-        if not _GENAI_AVAILABLE:
+        if not _ensure_genai():
             raise _GenaiToolsUnsupported("google-genai SDK not importable")
         types = _genai_types
 
@@ -777,13 +1026,29 @@ class OmniOfflineClient:
             # 不知道自己已经说过这部分话，可能重复或改口。
             streamed_text_buffer = ""
             usage_emitted = False
+            # Empty-completion 诊断：最后一次见到的 finish_reason 和 prompt_feedback.
+            # block_reason。Gemini 的 SAFETY / RECITATION / MAX_TOKENS 都在这两个
+            # 字段里露出来；OpenAI-compat 那条路径丢这些信息，所以这里直接从 SDK
+            # 原 chunk 读。
+            iter_finish_reason: Optional[str] = None
+            iter_block_reason: Optional[str] = None
 
             try:
                 async for chunk in stream:
+                    # prompt_feedback.block_reason：Gemini 整段 input 被 safety
+                    # 拦掉时填这个，candidate 可能根本没出现。
+                    pf = getattr(chunk, "prompt_feedback", None)
+                    if pf is not None:
+                        br = getattr(pf, "block_reason", None)
+                        if br:
+                            iter_block_reason = str(br)
                     candidates = getattr(chunk, "candidates", None) or []
                     if not candidates:
                         continue
                     cand = candidates[0]
+                    fr = getattr(cand, "finish_reason", None)
+                    if fr:
+                        iter_finish_reason = str(fr)
                     cand_content = getattr(cand, "content", None)
                     parts = getattr(cand_content, "parts", None) or []
                     for part in parts:
@@ -829,6 +1094,10 @@ class OmniOfflineClient:
                                 "completion_tokens": getattr(usage_meta, "candidates_token_count", 0) or 0,
                                 "total_tokens": getattr(usage_meta, "total_token_count", 0) or 0,
                             }
+                            # Empty-completion 诊断：把 prompt_tokens 落进 self，
+                            # 给上层 stream_text 兜底警告引用，跟 OpenAI 路径对偶。
+                            if usage_dict["prompt_tokens"]:
+                                self._last_prompt_tokens = usage_dict["prompt_tokens"]
                             yield LLMStreamChunk(
                                 content="",
                                 usage_metadata=usage_dict,
@@ -856,6 +1125,21 @@ class OmniOfflineClient:
                 ):
                     raise _GenaiToolsUnsupported(f"genai stream rejected tools: {e}") from e
                 raise
+
+            # Empty-completion 诊断：落 self 字段 + 单独 INFO log。和 OpenAI 路径
+            # 对偶；finish_reason / block_reason 两边都有可能填，谁先填就以谁为
+            # 准（stream_text/prompt_ephemeral 的兜底 warning 会读这两个字段）。
+            self._last_finish_reason = iter_finish_reason
+            self._last_block_reason = iter_block_reason
+            if not had_text and not collected_tool_calls:
+                # getattr 防御同 OpenAI 路径；__new__ 绕过 __init__ 的测试桩不会崩。
+                logger.info(
+                    "OmniOfflineClient(genai): empty completion finish_reason=%s "
+                    "block_reason=%s tool_iter=%d model=%s prompt_tokens=%s",
+                    iter_finish_reason, iter_block_reason, tool_iter,
+                    getattr(self, "model", None),
+                    getattr(self, "_last_prompt_tokens", None),
+                )
 
             if collected_tool_calls and self.on_tool_call is not None:
                 # Execute tools, append a unified assistant + tool history (dict shape
@@ -912,9 +1196,73 @@ class OmniOfflineClient:
                 continue
             return
         logger.warning(
-            "OmniOfflineClient(genai): tool iteration cap %d reached",
+            "OmniOfflineClient(genai): tool iteration cap %d reached; forcing final answer without tools",
             self.max_tool_iterations,
         )
+        # Forced-finalize：与 OpenAI 路径对偶。去掉 tools 再生成一次，逼模型
+        # 基于已积累的 tool 结果输出最终文本，避免封顶后整轮静默。
+        # 不吞异常：与 OpenAI 路径一致，让 SDK 调用失败原样向上抛，由 stream_text /
+        # prompt_ephemeral 现成的 retry / 状态上报 / response_discarded 清泡泡逻辑
+        # 接管。若在这里 try/except 成 warning，就把真实失败伪装成"空回复"，弱模型
+        # 超限后反而可能重回静音态，与本兜底目标冲突。
+        final_cfg_kw = {k: v for k, v in gen_config_kw.items() if k != "tools"}
+        final_system_instruction, final_contents = _genai_messages_to_contents(messages)
+        if final_system_instruction:
+            final_cfg_kw["system_instruction"] = final_system_instruction
+        final_config = types.GenerateContentConfig(**final_cfg_kw)
+        final_stream = await self._genai_client.aio.models.generate_content_stream(
+            model=self.model,
+            contents=final_contents,
+            config=final_config,
+        )
+        final_finish_reason: Optional[str] = None
+        final_block_reason: Optional[str] = None
+        final_prompt_tokens: Optional[int] = None
+        final_had_text = False
+        async for chunk in final_stream:
+            # 与常规 genai 分支对偶地采集空回复诊断：block_reason / finish_reason /
+            # prompt_tokens。否则若 forced-finalize 也被 safety / recitation /
+            # max-tokens 挡住而无文本，上层只能引用上一轮 tool-iteration 的过期
+            # finish_reason，诊断失真。
+            pf = getattr(chunk, "prompt_feedback", None)
+            if pf is not None:
+                br = getattr(pf, "block_reason", None)
+                if br:
+                    final_block_reason = str(br)
+            usage_meta = getattr(chunk, "usage_metadata", None)
+            if usage_meta is not None:
+                pt = getattr(usage_meta, "prompt_token_count", 0) or 0
+                if pt:
+                    final_prompt_tokens = pt
+            candidates = getattr(chunk, "candidates", None) or []
+            if not candidates:
+                continue
+            cand = candidates[0]
+            fr = getattr(cand, "finish_reason", None)
+            if fr:
+                final_finish_reason = str(fr)
+            cand_content = getattr(cand, "content", None)
+            for part in (getattr(cand_content, "parts", None) or []):
+                if getattr(part, "thought", False):
+                    continue
+                text = getattr(part, "text", None) or ""
+                if text:
+                    final_had_text = True
+                    yield LLMStreamChunk(content=text)
+        # 统一回填本次 forced-finalize 自己的诊断值（含 prompt_tokens）。prompt_tokens
+        # 走局部变量、流结束后无条件回填：若这次被挡住/没给 usage，写回 None 而非沿用
+        # 上一轮 tool-iteration 的旧值，避免 INFO log / 上层 LLM_NO_RESPONSE 诊断串台。
+        self._last_finish_reason = final_finish_reason
+        self._last_block_reason = final_block_reason
+        self._last_prompt_tokens = final_prompt_tokens
+        if not final_had_text:
+            logger.info(
+                "OmniOfflineClient(genai): forced-finalize empty completion "
+                "finish_reason=%s block_reason=%s model=%s prompt_tokens=%s",
+                final_finish_reason, final_block_reason,
+                getattr(self, "model", None),
+                final_prompt_tokens,
+            )
 
     def update_max_response_length(self, max_length: int) -> None:
         """更新回复 token 上限（用户可能在对话期间修改设置）。
@@ -927,6 +1275,7 @@ class OmniOfflineClient:
         if isinstance(max_length, int):
             self.max_response_length = max_length if max_length > 0 else _UNLIMITED_BUDGET
             if self.llm is not None:
+                # 普通 budget；summary 的 3000 抬升只在 stream_text 内临时生效。
                 self.llm.max_completion_tokens = _budget_to_max_tokens(self.max_response_length)
             logger.debug(f"OmniOfflineClient: token 上限已更新为 {max_length}")
 
@@ -989,6 +1338,7 @@ class OmniOfflineClient:
             new_llm = create_chat_llm(
                 new_model, base_url, api_key,
                 streaming=True, max_retries=0,
+                # 普通 budget；summary 的 3000 抬升只在 stream_text 内临时生效。
                 max_completion_tokens=_budget_to_max_tokens(self.max_response_length),
             )
             old_llm = self.llm
@@ -1070,11 +1420,142 @@ class OmniOfflineClient:
             except Exception as e:
                 logger.warning(f"通知 response_discarded 失败: {e}")
 
-    async def stream_text(self, text: str) -> None:
+    async def _summarize_tail_for_tts(self, prefix: str, tail: str) -> Optional[str]:
+        """长回复 summary 路径的小模型调用。
+
+        ``prefix`` 是 TTS 已经播给用户听的那段（用作上下文锚点，让 summary
+        自然衔接）；``tail`` 是 cutover 之后没读出来、待压缩的那段。返回
+        emotion-tier LLM 写出来的 1-2 句收尾，或在配置缺失/调用失败时返回
+        ``None`` —— 由 caller fallback 到"完整原文照读"。
+
+        prompt 不灌 persona —— prefix/tail 本身就是主模型用人设口吻写出来的，
+        小模型只要保留原有语气、把尾巴压短即可，不需要再演一遍人设。语种从
+        ``tail`` 检测（前缀可能很短，尾巴信息量更稳）。
+        """
+        if not (tail and tail.strip()):
+            return None
+
+        # emotion 配置在 config/api_providers.json 每个 provider 下都有
+        # `emotion_model` 字段；config_manager 拿到的就是当前 provider 的
+        # emotion 子配置（model/base_url/api_key）。
+        try:
+            from utils.config_manager import get_config_manager  # 延迟 import 防循环
+            cfg_mgr = get_config_manager()
+            emotion_config = cfg_mgr.get_model_api_config('emotion') if cfg_mgr else None
+        except Exception as e:
+            logger.warning("summary: 取 emotion 配置失败: %s", e)
+            return None
+        if not emotion_config:
+            return None
+        emotion_api_key = emotion_config.get('api_key')
+        emotion_model = emotion_config.get('model')
+        emotion_base_url = emotion_config.get('base_url')
+        if not (emotion_api_key and emotion_model):
+            logger.info("summary: emotion 模型/Key 未配置，跳过长回复摘要")
+            return None
+
+        try:
+            from utils.language_utils import detect_language, normalize_language_code
+            detected = detect_language(tail) or 'zh'
+            lang = normalize_language_code(detected, format='short') or 'zh'
+        except Exception:
+            lang = 'zh'
+
+        try:
+            from config.prompts.prompts_response import get_long_response_tail_summary_prompts
+            templates = get_long_response_tail_summary_prompts(lang)
+        except Exception as e:
+            logger.warning("summary: prompt 模板取失败: %s", e)
+            return None
+
+        # system 模板 persona-agnostic，无占位符直接用；user 模板只填 prefix/tail。
+        system_text = templates['system']
+        try:
+            user_text = templates['user_template'].format(
+                prefix=prefix or '',
+                tail=tail,
+            )
+        except KeyError as e:
+            logger.warning("summary: prompt 占位符缺失: %s", e)
+            return None
+
+        # 调用 token 用量打到 "long_response_summary" 类别下，与 emotion 区分。
+        set_call_type("long_response_summary")
+        messages = [
+            SystemMessage(content=system_text),
+            HumanMessage(content=user_text),
+        ]
+        # 不传 temperature：project policy 让 provider 默认值决定
+        # （scripts/check_no_temperature.py 会守门）。emotion-tier 模型自带
+        # 一个合适的 temperature，不需要 caller 干预。
+        try:
+            llm = create_chat_llm(
+                emotion_model, emotion_base_url, emotion_api_key,
+                max_completion_tokens=120,
+            )
+        except Exception as e:
+            logger.warning("summary: 构造 emotion LLM 失败: %s", e)
+            return None
+
+        try:
+            async with llm:
+                result = await llm.ainvoke(messages)
+        except Exception as e:
+            logger.warning("summary: emotion 模型调用失败: %s", e)
+            return None
+
+        summary = ""
+        try:
+            summary = (result.content or "").strip()
+        except Exception:
+            summary = ""
+        # 兜底：去掉模型可能加的引号 / 元前缀。emotion-tier 模型偶尔仍会写
+        # "总之，xxx" / "总结：xxx" 之类，prompt 已禁但模型不一定听话；这里
+        # 只剥首尾的引号和最常见的元前缀，剩下的就当 character 自然口语。
+        if summary and summary[0] in '“”"\'「『' and summary[-1] in '“”"\'」』':
+            summary = summary[1:-1].strip()
+        if not summary:
+            return None
+        # 硬性收口：emotion-tier 模型即使被 prompt 约束也可能输出 3-4 句话，
+        # 直接灌进 TTS 会把"短促收尾"这个核心目标打废。最多保留 2 个 sentence-end
+        # 段，再硬截到 ``_SUMMARY_HARD_TOKEN_CAP`` 个 token。两个限制叠加：先按
+        # 句末切，再按 token 兜底——任意一条触发都收口。token 口径与 budget
+        # 一致，跨语种行为统一（字符口径会过度惩罚 CJK）。
+        sentence_segments: list[str] = []
+        cursor = 0
+        for idx, ch in enumerate(summary):
+            if ch in _SENTENCE_END_CHARS:
+                sentence_segments.append(summary[cursor:idx + 1])
+                cursor = idx + 1
+                if len(sentence_segments) >= 2:
+                    break
+        if sentence_segments:
+            trimmed = "".join(sentence_segments)
+            # 若模型在 2 句之外还塞了尾巴，丢弃
+            summary = trimmed.strip()
+        if count_tokens(summary) > _SUMMARY_HARD_TOKEN_CAP:
+            summary = truncate_to_tokens(summary, _SUMMARY_HARD_TOKEN_CAP).rstrip()
+        if not summary:
+            return None
+        return summary
+
+    async def stream_text(self, text: str, *, system_prefix: str | None = None) -> None:
         """
         Send a text message to the API and stream the response.
         If there are pending images, temporarily switch to vision model for this turn.
         Uses langchain ChatOpenAI for streaming.
+
+        ``system_prefix`` 用途：caller（典型场景 SessionManager 把 passive agent
+        callback 渲染成自带 watermark 的 ``======[系统通知] xxx======`` 文本）
+        把这段中性 system notice 文本**就地拼到本轮 user message 的 content
+        前缀**——LLM 把它当作"用户当前发声那一刻附带的额外上下文"，在同一轮
+        回答里自然提及，不再起独立 turn 也不再单开 SystemMessage。
+
+        与 voice mode 的对偶：``OmniRealtimeClient.prime_context(skipped=False)``
+        在 GPT/GLM/Step 上同样走 ``create_response`` 把 callback 注入成 user
+        role 消息触发响应。inline 进 user content 即接受 callback 文本随
+        user message 进入 ``_conversation_history`` 持久化（跟 voice 端 user
+        role 注入语义一致）。
         """
         if not text or not text.strip():
             # If only images without text, use a default prompt
@@ -1082,10 +1563,18 @@ class OmniOfflineClient:
                 text = "请分析这些图片。"
             else:
                 return
-        
+
         # Check if we need to switch to vision model
         has_images = len(self._pending_images) > 0
-        
+        # 就地植入 system_prefix：拼到 user content 的 text 段前缀（watermark
+        # 自带，不补 separator 也能区分）。callback 文本随 HumanMessage 一起
+        # 落 history，跟 voice mode user-role 注入对偶。
+        _user_text = text.strip()
+        _prefix_clean = (system_prefix or "").strip()
+        _user_text_with_prefix = (
+            f"{_prefix_clean}\n\n{_user_text}" if _prefix_clean else _user_text
+        )
+
         # Prepare user message content
         if has_images:
             # Switch to vision model permanently for this session
@@ -1093,10 +1582,10 @@ class OmniOfflineClient:
             if self.vision_model and self.vision_model != self.model:
                 logger.info(f"🖼️ Temporarily switching to vision model: {self.vision_model} (from {self.model})")
                 await self.switch_model(self.vision_model, use_vision_config=True)
-            
+
             # Multi-modal message: images + text
             content = []
-            
+
             # Add images first
             for img_b64 in self._pending_images:
                 content.append({
@@ -1105,28 +1594,30 @@ class OmniOfflineClient:
                         "url": f"data:image/jpeg;base64,{img_b64}"
                     }
                 })
-            
-            # Add text
+
+            # Add text（已含 system_prefix watermark 前缀，若有）
             content.append({
                 "type": "text",
-                "text": text.strip()
+                "text": _user_text_with_prefix,
             })
-            
+
             user_message = HumanMessage(content=content)
             logger.info(f"Sending multi-modal message with {len(self._pending_images)} images")
-            
+
             # Clear pending images after using them
             self._pending_images.clear()
         else:
-            # Text-only message
-            user_message = HumanMessage(content=text.strip())
-        
+            # Text-only message（已含 system_prefix watermark 前缀，若有）
+            user_message = HumanMessage(content=_user_text_with_prefix)
+
         self._conversation_history.append(user_message)
-        
+        if has_images:
+            self._evict_old_images()
+
         # Callback for user input
         if self.on_input_transcript:
             await self.on_input_transcript(text.strip())
-        
+
         # Retry策略：重试2次，间隔1秒、2秒
         max_retries = 3
         retry_delays = [1, 2]
@@ -1134,7 +1625,30 @@ class OmniOfflineClient:
         assistant_message_total = ""  # 整轮累计（含 pre-tool），整轮级判定看它
         status_reported = False
         guard_exhausted = False
-        
+        # Empty-completion 诊断字段重置：每轮 turn 独立，否则会读到上一轮的旧值。
+        self._last_finish_reason = None
+        self._last_block_reason = None
+        self._last_prompt_tokens = None
+
+        # 单测会用 __new__ 绕过 __init__ 直接 mock OmniOfflineClient，此时
+        # ``enable_long_response_summary`` 属性根本不存在。这里取一次本地
+        # snapshot 避免后面每一处都 getattr，也防止运行中外部改属性导致
+        # state machine 半生效。
+        summary_mode_enabled = bool(getattr(self, "enable_long_response_summary", False))
+
+        # summary 模式临时把 API budget 抬到 _SUMMARY_API_BUDGET_FLOOR：让模型
+        # 有空间把话写完，cutover 之后的尾巴才有东西可摘要（普通 budget 下模型
+        # 在 ~budget 处就停了，没有尾巴）。**只在 stream_text 内 bump**，finally
+        # 还原，避免泄漏到共用同一 self.llm 的 prompt_ephemeral（proactive 没有
+        # 长度 guard，被抬到 3000 会吐超长回复）。snapshot 原值精确还原，兼容
+        # 运行中 update_max_response_length 改过 budget 的场景。
+        _summary_prev_max_tokens = None
+        if summary_mode_enabled and getattr(self, "llm", None) is not None:
+            _summary_prev_max_tokens = self.llm.max_completion_tokens
+            self.llm.max_completion_tokens = _budget_to_max_tokens(
+                self.max_response_length, summary_mode=True,
+            )
+
         try:
             self._is_responding = True
             reroll_count = 0
@@ -1173,6 +1687,11 @@ class OmniOfflineClient:
                     assistant_message = ""
                     assistant_message_total = ""
                     guard_attempt = 0
+                    # Telemetry：TTFT（首 token 延迟）。从这里到第一个 chunk 到达
+                    # 的时长，D1 流失里"响应太慢"的关键信号。只记一次（首 attempt
+                    # 首 chunk）；reroll 不重置，反映用户真实等待体感。
+                    _ttft_start = time.time()
+                    _ttft_recorded = False
                     while guard_attempt <= self.max_response_rerolls:
                         self._is_responding = True
                         assistant_message = ""           # 仅最后一段未持久化的 text，用于 final AIMessage append
@@ -1188,6 +1707,40 @@ class OmniOfflineClient:
                         chunk_usage = None
                         prefix_buffer = ""
                         prefix_checked = not bool(self._prefix_buffer_size)
+
+                        # ── Summary-mode 状态机（仅 summary_mode_enabled 时生效）──
+                        # 完整流转图，便于把散在 4 处（这里初始化 / 长度 trigger /
+                        # emit fork / 流末 epilogue）的逻辑拼成一张图：
+                        #
+                        #   idle ──(_total 越过 budget)──▶ pending_cutover
+                        #     │                                 │
+                        #     │                  (找到 budget 之后的 terminator)
+                        #     │                                 ▼
+                        #     │                           cutover_done
+                        #     │                          /     │      \
+                        #     │           (tail 攒到乱码)/      │       \(stream 结束)
+                        #     │                       /        │        \
+                        #     │           gibberish_fallback   │   epilogue 决策：
+                        #     │           (静默截断，          │   · final<budget+slack → abandon，tail 续 TTS
+                        #     │            history 只留 prefix) │   · 否则 → 调小模型摘要续 TTS（失败则 abandon）
+                        #     │                                 │
+                        #     └─(stream 结束仍 idle / pending)──┴─▶ 常规：完整原文进 history
+                        #
+                        # 各状态的 emit 去向：
+                        #   idle / pending_cutover  → UI + TTS（both）
+                        #   cutover_done            → 仅 UI（tail 攒进 summary_tail_buffer）
+                        # tool_round_persisted 触发时：先把 cutover 后的 tail abandon 给
+                        # TTS（否则永远听不到），再把整套状态重置回 idle。
+                        summary_state = 'idle'
+                        summary_prefix_for_history = ""  # cutover 触发那一刻 assistant_message 的快照
+                        summary_tail_buffer = ""        # post-cutover UI-only 文本
+                        summary_next_gibberish_check = _SUMMARY_GIBBERISH_RECHECK_TOKENS
+                        summary_trigger_tokens = 0     # 触发 summary 时的 _total（仅日志）
+                        # 越界点 char offset：模型一口气 yield 一个超大 chunk 时
+                        # （多个 sentence/clause），budget 之前的 terminator 不算数 ——
+                        # 应该从这个点开始找 terminator。trigger chunk 之后立即
+                        # 消费回 0，下一 chunk 从头扫（因为它整段已经在 budget 之后）。
+                        summary_overflow_offset = 0
 
                         def _has_unpersisted_recovery_suffix(recovery_text: str) -> bool:
                             if not recovery_text:
@@ -1205,6 +1758,14 @@ class OmniOfflineClient:
                         # shape as raw ``self.llm.astream``, so the existing
                         # prefix/fence/length-guard logic below is untouched.
                         async for chunk in self._astream_with_tools(self._conversation_history):
+                            if not _ttft_recorded:
+                                _ttft_recorded = True
+                                try:
+                                    from utils.instrument import histogram as _instr_h
+                                    _instr_h("llm_ttft_ms", max(0.0, (time.time() - _ttft_start) * 1000.0))
+                                except Exception:
+                                    # 埋点 best-effort，绝不打断流式响应主路径。
+                                    pass
                             if hasattr(chunk, 'usage_metadata') and chunk.usage_metadata:
                                 chunk_usage = chunk.usage_metadata
                                 logger.debug(f"🔍 [Usage] {chunk_usage}")
@@ -1226,6 +1787,36 @@ class OmniOfflineClient:
                                 pipe_count = 0
                                 prefix_buffer = ""
                                 prefix_checked = not bool(self._prefix_buffer_size)
+                                # Summary 状态收尾：cutover 之后的 tail 已经 UI-only
+                                # 发出去了，但 TTS 还没听到。tool 边界处不知道
+                                # post-tool 段会有多长，没法走"final < max+slack"
+                                # 那套判断，所以一律 abandon —— 把 tail 续给 TTS
+                                # 当原文读完。`_astream_*_with_tools` 已经把含
+                                # tail 的完整 pre-tool 文本写进 assistant.tool_calls.content
+                                # 持久化到 _conversation_history，UI/TTS/history 这下
+                                # 三家口径一致。然后再重置 state 让 post-tool 重新
+                                # 走 idle 起点。
+                                if (
+                                    summary_mode_enabled
+                                    and summary_state == 'cutover_done'
+                                    and summary_tail_buffer
+                                ):
+                                    logger.info(
+                                        "OmniOfflineClient summary: tool 边界 abandon "
+                                        "(pre-tool tail %d chars 续给 TTS)",
+                                        len(summary_tail_buffer),
+                                    )
+                                    if self.on_text_delta:
+                                        await self.on_text_delta(
+                                            summary_tail_buffer, False,
+                                            ui_enabled=False, tts_enabled=True,
+                                        )
+                                summary_state = 'idle'
+                                summary_prefix_for_history = ""
+                                summary_tail_buffer = ""
+                                summary_next_gibberish_check = _SUMMARY_GIBBERISH_RECHECK_TOKENS
+                                summary_trigger_tokens = 0
+                                summary_overflow_offset = 0
                                 continue
                             if not self._is_responding:
                                 break
@@ -1280,39 +1871,154 @@ class OmniOfflineClient:
                                         candidate_total = assistant_message_total + truncated_content
                                         current_length = count_tokens(candidate_total)
                                         if current_length > self.max_response_length:
-                                            guard_triggered = True
-                                            discard_reason = f"length>{self.max_response_length}"
-                                            length_guard_original_tokens = current_length
-                                            logger.info(f"OmniOfflineClient: 检测到长回复 ({current_length} tokens)，准备停止生成")
-                                            self._is_responding = False
-                                            emit_content = ""
-                                            if not _is_gibberish_response(candidate_total):
-                                                capped = truncate_to_tokens(
-                                                    candidate_total, self.max_response_length,
-                                                )
-                                                candidate_recovery = _truncate_to_last_sentence_end(capped)
-                                                if candidate_recovery:
-                                                    if candidate_recovery.startswith(assistant_message_total):
-                                                        recovery_suffix = candidate_recovery[len(assistant_message_total):]
-                                                        if recovery_suffix.strip():
-                                                            emit_content = recovery_suffix
-                                                            length_guard_recovery_text = candidate_recovery
-                                                    elif (
-                                                        assistant_message_total
-                                                        and _has_unpersisted_recovery_suffix(assistant_message_total)
-                                                    ):
-                                                        # 已流式发出的前缀无法撤回；保持 history 与
-                                                        # UI/TTS 一致，避免可见文本和上下文分叉。
-                                                        length_guard_recovery_text = assistant_message_total
+                                            if summary_mode_enabled:
+                                                # Summary 路径：长但可读 → 不 abort、不 inline truncate。
+                                                # 第一次过线把 state 切到 pending_cutover；从这 chunk 起
+                                                # 在每个 chunk 里找 terminator（含逗号），找到就走 cutover。
+                                                # 不设 guard_triggered，让 stream 继续到自然终止/3000 cap，
+                                                # 由 stream 结束后的 epilogue 决策 abandon / summarize。
+                                                if summary_state == 'idle':
+                                                    summary_state = 'pending_cutover'
+                                                    summary_trigger_tokens = current_length
+                                                    # 算 chunk 里"刚好越过 budget"的 char offset：
+                                                    # truncate_to_tokens 把 candidate_total 砍到 budget，
+                                                    # 差出来的长度就是这一 chunk 里的越线位置。供下面
+                                                    # emit fork 从该 offset 起找 terminator，避免误把
+                                                    # budget 之前的早期逗号当 cutover。
+                                                    _capped = truncate_to_tokens(
+                                                        candidate_total, self.max_response_length,
+                                                    )
+                                                    summary_overflow_offset = max(
+                                                        0, len(_capped) - len(assistant_message_total),
+                                                    )
+                                                    logger.info(
+                                                        "OmniOfflineClient summary: 长回复触发 "
+                                                        "(%d tokens > %d，chunk 内越界 offset=%d)，"
+                                                        "等待下一个 terminator",
+                                                        current_length, self.max_response_length,
+                                                        summary_overflow_offset,
+                                                    )
+                                                # emit_content 保持原 chunk，下面 emit-split 块继续走
+                                            else:
+                                                guard_triggered = True
+                                                discard_reason = f"length>{self.max_response_length}"
+                                                length_guard_original_tokens = current_length
+                                                logger.info(f"OmniOfflineClient: 检测到长回复 ({current_length} tokens)，准备停止生成")
+                                                self._is_responding = False
+                                                emit_content = ""
+                                                if not _is_gibberish_response(candidate_total):
+                                                    capped = truncate_to_tokens(
+                                                        candidate_total, self.max_response_length,
+                                                    )
+                                                    candidate_recovery = _truncate_to_last_sentence_end(capped)
+                                                    if candidate_recovery:
+                                                        if candidate_recovery.startswith(assistant_message_total):
+                                                            recovery_suffix = candidate_recovery[len(assistant_message_total):]
+                                                            if recovery_suffix.strip():
+                                                                emit_content = recovery_suffix
+                                                                length_guard_recovery_text = candidate_recovery
+                                                        elif (
+                                                            assistant_message_total
+                                                            and _has_unpersisted_recovery_suffix(assistant_message_total)
+                                                        ):
+                                                            # 已流式发出的前缀无法撤回；保持 history 与
+                                                            # UI/TTS 一致，避免可见文本和上下文分叉。
+                                                            length_guard_recovery_text = assistant_message_total
 
                                     if emit_content and emit_content.strip():
-                                        assistant_message += emit_content
-                                        assistant_message_total += emit_content
-                                        if self.on_text_delta:
-                                            await self.on_text_delta(emit_content, is_first_chunk)
-                                        is_first_chunk = False
+                                        # Emit fork：summary 模式下要按 cutover 边界拆分
+                                        # UI / TTS 路径。其余场景（含 summary_state == 'idle'
+                                        # 与 'gibberish_fallback'）都走 both 默认路径。
+                                        if (
+                                            summary_mode_enabled
+                                            and summary_state in ('pending_cutover', 'cutover_done')
+                                        ):
+                                            if summary_state == 'pending_cutover':
+                                                # Trigger chunk 上 offset > 0 表示越界点在 chunk 中段，
+                                                # terminator 搜索从越界点开始；后续 chunk 整段都在
+                                                # budget 之后，offset 复位到 0 从头扫。一次性消费。
+                                                search_from = summary_overflow_offset
+                                                summary_overflow_offset = 0
+                                                term_pos_in_slice = _find_summary_terminator(
+                                                    emit_content[search_from:]
+                                                )
+                                                if term_pos_in_slice >= 0:
+                                                    term_pos = search_from + term_pos_in_slice
+                                                    pre = emit_content[:term_pos + 1]
+                                                    post = emit_content[term_pos + 1:]
+                                                    if pre:
+                                                        assistant_message += pre
+                                                        assistant_message_total += pre
+                                                        if self.on_text_delta:
+                                                            await self.on_text_delta(pre, is_first_chunk)
+                                                        is_first_chunk = False
+                                                    # 锁定 cutover：当前 assistant_message 即 prefix
+                                                    summary_prefix_for_history = assistant_message
+                                                    summary_state = 'cutover_done'
+                                                    logger.info(
+                                                        "OmniOfflineClient summary: cutover 完成 "
+                                                        "(prefix_chars=%d, trigger=%d tokens)",
+                                                        len(assistant_message), summary_trigger_tokens,
+                                                    )
+                                                    if post:
+                                                        assistant_message += post
+                                                        assistant_message_total += post
+                                                        summary_tail_buffer += post
+                                                        if self.on_text_delta:
+                                                            await self.on_text_delta(
+                                                                post, is_first_chunk,
+                                                                ui_enabled=True, tts_enabled=False,
+                                                            )
+                                                        is_first_chunk = False
+                                                else:
+                                                    # 没找到 terminator → 整段走 both，state 不变
+                                                    assistant_message += emit_content
+                                                    assistant_message_total += emit_content
+                                                    if self.on_text_delta:
+                                                        await self.on_text_delta(emit_content, is_first_chunk)
+                                                    is_first_chunk = False
+                                            else:
+                                                # cutover_done：UI only，并攒进 tail buffer
+                                                assistant_message += emit_content
+                                                assistant_message_total += emit_content
+                                                summary_tail_buffer += emit_content
+                                                if self.on_text_delta:
+                                                    await self.on_text_delta(
+                                                        emit_content, is_first_chunk,
+                                                        ui_enabled=True, tts_enabled=False,
+                                                    )
+                                                is_first_chunk = False
+
+                                            # cutover_done 后做一次 gibberish 重检（pending→done
+                                            # 同 chunk 转换也算）：每 _SUMMARY_GIBBERISH_RECHECK_TOKENS
+                                            # tail token 重检一次，命中就跳到 fallback 让 epilogue 走
+                                            # RESPONSE_INVALID。
+                                            if summary_state == 'cutover_done' and summary_tail_buffer:
+                                                tail_tokens = count_tokens(summary_tail_buffer)
+                                                if tail_tokens >= summary_next_gibberish_check:
+                                                    if _is_gibberish_response(summary_tail_buffer):
+                                                        summary_state = 'gibberish_fallback'
+                                                        logger.warning(
+                                                            "OmniOfflineClient summary: tail gibberish "
+                                                            "命中 (%d tokens)，中止本轮生成",
+                                                            tail_tokens,
+                                                        )
+                                                        self._is_responding = False
+                                                    else:
+                                                        summary_next_gibberish_check = (
+                                                            tail_tokens + _SUMMARY_GIBBERISH_RECHECK_TOKENS
+                                                        )
+                                        else:
+                                            assistant_message += emit_content
+                                            assistant_message_total += emit_content
+                                            if self.on_text_delta:
+                                                await self.on_text_delta(emit_content, is_first_chunk)
+                                            is_first_chunk = False
 
                                     if guard_triggered:
+                                        break
+                                    if summary_state == 'gibberish_fallback':
+                                        # 不设 guard_triggered，让 epilogue 走 summary-fallback 路径
                                         break
                             elif content and not content.strip():
                                 logger.debug(f"OmniOfflineClient: 过滤空白内容 - content_repr: {repr(content)[:100]}")
@@ -1346,32 +2052,111 @@ class OmniOfflineClient:
                                         candidate_total = assistant_message_total + flush_text
                                         current_length = count_tokens(candidate_total)
                                         if current_length > self.max_response_length:
-                                            guard_triggered = True
-                                            discard_reason = f"length>{self.max_response_length}"
-                                            length_guard_original_tokens = current_length
-                                            emit_flush_text = ""
-                                            if not _is_gibberish_response(candidate_total):
-                                                capped = truncate_to_tokens(
-                                                    candidate_total, self.max_response_length,
-                                                )
-                                                candidate_recovery = _truncate_to_last_sentence_end(capped)
-                                                if candidate_recovery:
-                                                    if candidate_recovery.startswith(assistant_message_total):
-                                                        recovery_suffix = candidate_recovery[len(assistant_message_total):]
-                                                        if recovery_suffix.strip():
-                                                            emit_flush_text = recovery_suffix
-                                                            length_guard_recovery_text = candidate_recovery
-                                                    elif (
-                                                        assistant_message_total
-                                                        and _has_unpersisted_recovery_suffix(assistant_message_total)
-                                                    ):
-                                                        length_guard_recovery_text = assistant_message_total
+                                            if summary_mode_enabled:
+                                                # 与主累加块对偶：summary 模式下不 abort，
+                                                # 切到 pending_cutover，下面 emit-split 块处理。
+                                                if summary_state == 'idle':
+                                                    summary_state = 'pending_cutover'
+                                                    summary_trigger_tokens = current_length
+                                                    # 算 flush_text 内的越界 char offset（与主累加块对偶）
+                                                    _capped = truncate_to_tokens(
+                                                        candidate_total, self.max_response_length,
+                                                    )
+                                                    summary_overflow_offset = max(
+                                                        0, len(_capped) - len(assistant_message_total),
+                                                    )
+                                                    logger.info(
+                                                        "OmniOfflineClient summary: 长回复触发于 flush "
+                                                        "(%d tokens > %d，flush 内越界 offset=%d)",
+                                                        current_length, self.max_response_length,
+                                                        summary_overflow_offset,
+                                                    )
+                                            else:
+                                                guard_triggered = True
+                                                discard_reason = f"length>{self.max_response_length}"
+                                                length_guard_original_tokens = current_length
+                                                emit_flush_text = ""
+                                                if not _is_gibberish_response(candidate_total):
+                                                    capped = truncate_to_tokens(
+                                                        candidate_total, self.max_response_length,
+                                                    )
+                                                    candidate_recovery = _truncate_to_last_sentence_end(capped)
+                                                    if candidate_recovery:
+                                                        if candidate_recovery.startswith(assistant_message_total):
+                                                            recovery_suffix = candidate_recovery[len(assistant_message_total):]
+                                                            if recovery_suffix.strip():
+                                                                emit_flush_text = recovery_suffix
+                                                                length_guard_recovery_text = candidate_recovery
+                                                        elif (
+                                                            assistant_message_total
+                                                            and _has_unpersisted_recovery_suffix(assistant_message_total)
+                                                        ):
+                                                            length_guard_recovery_text = assistant_message_total
                                     if emit_flush_text and emit_flush_text.strip():
-                                        assistant_message += emit_flush_text
-                                        assistant_message_total += emit_flush_text
-                                        if self.on_text_delta:
-                                            await self.on_text_delta(emit_flush_text, is_first_chunk)
-                                        is_first_chunk = False
+                                        # Emit fork（与主累加块对偶）：summary 模式下按 cutover 拆 UI/TTS
+                                        if (
+                                            summary_mode_enabled
+                                            and summary_state in ('pending_cutover', 'cutover_done')
+                                        ):
+                                            if summary_state == 'pending_cutover':
+                                                # 与主累加块对偶：消费 trigger flush 的越界 offset
+                                                search_from = summary_overflow_offset
+                                                summary_overflow_offset = 0
+                                                term_pos_in_slice = _find_summary_terminator(
+                                                    emit_flush_text[search_from:]
+                                                )
+                                                if term_pos_in_slice >= 0:
+                                                    term_pos = search_from + term_pos_in_slice
+                                                    pre = emit_flush_text[:term_pos + 1]
+                                                    post = emit_flush_text[term_pos + 1:]
+                                                    if pre:
+                                                        assistant_message += pre
+                                                        assistant_message_total += pre
+                                                        if self.on_text_delta:
+                                                            await self.on_text_delta(pre, is_first_chunk)
+                                                        is_first_chunk = False
+                                                    summary_prefix_for_history = assistant_message
+                                                    summary_state = 'cutover_done'
+                                                    # 对偶 chunk-loop emit fork 的 cutover 日志：
+                                                    # 用 summary_trigger_tokens（flush 入口写入的）
+                                                    # 把"什么时候触发的"信息留在日志里。
+                                                    logger.info(
+                                                        "OmniOfflineClient summary: cutover 完成于 flush "
+                                                        "(prefix_chars=%d, trigger=%d tokens)",
+                                                        len(assistant_message), summary_trigger_tokens,
+                                                    )
+                                                    if post:
+                                                        assistant_message += post
+                                                        assistant_message_total += post
+                                                        summary_tail_buffer += post
+                                                        if self.on_text_delta:
+                                                            await self.on_text_delta(
+                                                                post, is_first_chunk,
+                                                                ui_enabled=True, tts_enabled=False,
+                                                            )
+                                                        is_first_chunk = False
+                                                else:
+                                                    assistant_message += emit_flush_text
+                                                    assistant_message_total += emit_flush_text
+                                                    if self.on_text_delta:
+                                                        await self.on_text_delta(emit_flush_text, is_first_chunk)
+                                                    is_first_chunk = False
+                                            else:
+                                                assistant_message += emit_flush_text
+                                                assistant_message_total += emit_flush_text
+                                                summary_tail_buffer += emit_flush_text
+                                                if self.on_text_delta:
+                                                    await self.on_text_delta(
+                                                        emit_flush_text, is_first_chunk,
+                                                        ui_enabled=True, tts_enabled=False,
+                                                    )
+                                                is_first_chunk = False
+                                        else:
+                                            assistant_message += emit_flush_text
+                                            assistant_message_total += emit_flush_text
+                                            if self.on_text_delta:
+                                                await self.on_text_delta(emit_flush_text, is_first_chunk)
+                                            is_first_chunk = False
 
                         if guard_triggered:
                             guard_attempt += 1
@@ -1515,7 +2300,89 @@ class OmniOfflineClient:
                             assistant_message = ""
                             guard_exhausted = True
                             break
-                        
+
+                        # ── Summary 模式 epilogue ──
+                        # 走到这里 guard_triggered 一定是 False（summary 路径不设
+                        # length 类 guard）。根据 summary_state 决定：
+                        #   - gibberish_fallback：tail 被判定胡言乱语，静默截断
+                        #     —— 不发 RESPONSE_INVALID，因为那会触发 core 端的
+                        #     _clear_tts_pipeline 把还在队列里没读完的 prefix
+                        #     音频也清掉，反而让"已经听到的话"被截断。这里只
+                        #     log + commit prefix 到 history，TTS 自然把队列
+                        #     里残余的 prefix 播完。UI 显示的 gibberish 尾巴
+                        #     与 live ≠ reload 的设计分岔本来就允许。
+                        #   - cutover_done + 最终长度 ≤ max+slack：太短没必要摘要，把
+                        #     tail 直接续给 TTS 读完，history 留完整原文。
+                        #   - cutover_done + 最终长度更长：调小模型摘要，TTS 续上摘要，
+                        #     history 写 prefix+summary。摘要失败 fallback 到 tail 续读。
+                        #   - pending_cutover：触发了但 stream 结束前没找到 terminator
+                        #     (整段无标点)。tail 全在主路径里发出去了，相当于没摘要，
+                        #     history 写完整原文。
+                        #   - idle：从未触发，常规流程，啥也不用做。
+                        if summary_mode_enabled and summary_state == 'gibberish_fallback':
+                            logger.warning(
+                                "OmniOfflineClient summary: gibberish fallback, "
+                                "静默 commit prefix (%d chars) 到 history，TTS 残队列保留",
+                                len(summary_prefix_for_history),
+                            )
+                            if summary_prefix_for_history:
+                                self._conversation_history.append(
+                                    AIMessage(content=summary_prefix_for_history)
+                                )
+                            # 重复检测只看 prefix（= 真正进 history / 被 TTS 读的部分）。
+                            # 用 assistant_message_total 会把判定为乱码、已丢弃的 tail
+                            # 也塞进 _recent_responses，污染后续重复判定。
+                            if summary_prefix_for_history:
+                                await self._check_repetition(summary_prefix_for_history)
+                            assistant_message = ""
+                            guard_exhausted = True
+                            break
+
+                        if summary_mode_enabled and summary_state == 'cutover_done':
+                            final_tokens = count_tokens(assistant_message_total)
+                            slack_threshold = self.max_response_length + _SUMMARY_LATE_FINISH_SLACK
+                            if final_tokens < slack_threshold:
+                                # 尾巴太短：放弃摘要，tail 直接续给 TTS。
+                                logger.info(
+                                    "OmniOfflineClient summary: 最终 %d tokens < %d，放弃摘要，"
+                                    "tail (%d chars) 续给 TTS",
+                                    final_tokens, slack_threshold, len(summary_tail_buffer),
+                                )
+                                if summary_tail_buffer and self.on_text_delta:
+                                    await self.on_text_delta(
+                                        summary_tail_buffer, False,
+                                        ui_enabled=False, tts_enabled=True,
+                                    )
+                            else:
+                                summary_text = await self._summarize_tail_for_tts(
+                                    prefix=summary_prefix_for_history,
+                                    tail=summary_tail_buffer,
+                                )
+                                if summary_text:
+                                    logger.info(
+                                        "OmniOfflineClient summary: 摘要成功 "
+                                        "(tail=%d chars → summary=%d chars)",
+                                        len(summary_tail_buffer), len(summary_text),
+                                    )
+                                    if self.on_text_delta:
+                                        await self.on_text_delta(
+                                            summary_text, False,
+                                            ui_enabled=False, tts_enabled=True,
+                                        )
+                                    # history = prefix + summary，与 TTS 听到的对齐
+                                    assistant_message = summary_prefix_for_history + summary_text
+                                else:
+                                    logger.info(
+                                        "OmniOfflineClient summary: 摘要失败/为空，"
+                                        "tail 续给 TTS 读完"
+                                    )
+                                    if summary_tail_buffer and self.on_text_delta:
+                                        await self.on_text_delta(
+                                            summary_tail_buffer, False,
+                                            ui_enabled=False, tts_enabled=True,
+                                        )
+                                    # assistant_message 不动 → history 写完整原文
+
                         # Token usage 由 _AsyncStreamWrapper hook 在流结束时自动记录，
                         # 此处不再手动调用 TokenTracker.record() 避免双重计数。
 
@@ -1539,23 +2406,45 @@ class OmniOfflineClient:
                     if assistant_message_total:
                         break
 
-                except (APIConnectionError, InternalServerError, RateLimitError) as e:
+                except (APIConnectionError, AuthenticationError, InternalServerError, RateLimitError) as e:
                     error_type = type(e).__name__
                     error_str_lower = str(e).lower()
                     is_internal_error = isinstance(e, InternalServerError)
                     logger.info(f"ℹ️ 捕获到 {error_type} 错误")
 
+                    def _count_llm_error(api_key_rejected: bool = False):
+                        # D1 失败诊断：typed API 错误（连接/认证/限流/欠费/配额/
+                        # key 拒绝）的**终态**也要计入 llm_error。只在给上的 break
+                        # 路径调，不在 retry-continue 调（重试中不算失败）。generic
+                        # except 与本块互斥，不会双计（Codex）。
+                        try:
+                            from utils.instrument import counter as _ic
+                            # before_first_loop：错误发生在用户体验到核心 loop 之前 =
+                            # 首次体验障碍型流失（开了口但没收到回复）。true/false/unknown
+                            # 低基数；区分"卡在首次体验"vs"用过之后才报错"两类 D1 流失。
+                            try:
+                                from utils.token_tracker import TokenTracker as _TT
+                                _bfl = "false" if _TT.get_instance().has_completed_core_loop() else "true"
+                            except Exception:
+                                _bfl = "unknown"
+                            _ic("llm_error", error_class=error_type[:48], before_first_loop=_bfl)
+                            if api_key_rejected:
+                                _ic("api_key_invalid", before_first_loop=_bfl)
+                        except Exception:
+                            # 埋点 best-effort，绝不影响错误上报 / 重试主流程。
+                            pass
+
                     # 欠费/API Key 错误立即上报并终止；配额错误上报但继续重试
                     if '欠费' in error_str_lower or 'standing' in error_str_lower:
                         logger.error(f"OmniOfflineClient: 检测到欠费错误，直接上报: {e}")
+                        _count_llm_error()
                         if self.on_status_message:
                             await self.on_status_message(json.dumps({"code": "API_ARREARS"}))
                             status_reported = True
                         break
-                    elif ('401' in error_str_lower or 'unauthorized' in error_str_lower
-                            or 'authentication' in error_str_lower
-                            or ('invalid' in error_str_lower and 'key' in error_str_lower)):
+                    elif _is_api_key_rejected_error(e):
                         logger.error(f"OmniOfflineClient: 检测到 API Key 错误，直接上报: {e}")
+                        _count_llm_error(api_key_rejected=True)
                         if self.on_status_message:
                             await self.on_status_message(json.dumps({"code": "API_KEY_REJECTED"}))
                             status_reported = True
@@ -1586,6 +2475,7 @@ class OmniOfflineClient:
                     else:
                         error_msg = f"💥 LLM连接失败（{error_type}），已重试{max_retries}次: {e}"
                         logger.error(error_msg)
+                        _count_llm_error()  # 重试耗尽 = 终态失败，计入 llm_error
                         if self.on_status_message:
                             if is_internal_error:
                                 await self.on_status_message(json.dumps({"code": "LLM_UPSTREAM_ERROR"}))
@@ -1594,7 +2484,45 @@ class OmniOfflineClient:
                             status_reported = True
                         break
                 except Exception as e:
-                    error_msg = f"💥 文本生成异常: {type(e).__name__}: {e}"
+                    is_api_key_rejected = _is_api_key_rejected_error(e)
+                    # Telemetry：D1 流失里 LLM 调用失败是大头。error_class 低基数
+                    # （exception 类名）；api_key_invalid 单独计——首日配错 key
+                    # 是源码版用户的常见流失坑。
+                    try:
+                        from utils.instrument import counter as _instr_counter
+                        # before_first_loop 与 typed 错误路径（_count_llm_error）保持
+                        # 同维度，避免 llm_error/api_key_invalid 混合标签拆裂 D1 分桶。
+                        try:
+                            from utils.token_tracker import TokenTracker as _TT
+                            _bfl = "false" if _TT.get_instance().has_completed_core_loop() else "true"
+                        except Exception:
+                            _bfl = "unknown"
+                        _instr_counter("llm_error", error_class=type(e).__name__[:48], before_first_loop=_bfl)
+                        if is_api_key_rejected:
+                            _instr_counter("api_key_invalid", before_first_loop=_bfl)
+                    except Exception:
+                        # 埋点 best-effort，绝不掩盖/打断原始 LLM 错误的处理路径。
+                        pass
+                    if is_api_key_rejected:
+                        status_error_payload = {"code": "API_KEY_REJECTED"}
+                        discard_error_payload = status_error_payload
+                        error_msg = f"💥 文本生成异常: 检测到 API Key 被拒绝: {type(e).__name__}: {e}"
+                    else:
+                        status_error_payload = {
+                            "code": "TEXT_GEN_ERROR",
+                            "details": {
+                                "error_type": type(e).__name__,
+                                "error": str(e),
+                            },
+                        }
+                        discard_error_payload = {
+                            "code": "TEXT_GEN_ERROR_AFTER_PARTIAL",
+                            "details": {
+                                "error_type": type(e).__name__,
+                                "error": str(e),
+                            },
+                        }
+                        error_msg = f"💥 文本生成异常: {type(e).__name__}: {e}"
                     logger.error(error_msg)
                     # 如果本轮已经向前端吐过文本（典型场景：genai 路径在
                     # _astream_with_tools 已吐文本后再抛 transient/tools-
@@ -1612,13 +2540,7 @@ class OmniOfflineClient:
                                 attempt + 1,
                                 max_retries,
                                 will_retry=False,
-                                message=json.dumps({
-                                    "code": "TEXT_GEN_ERROR_AFTER_PARTIAL",
-                                    "details": {
-                                        "error_type": type(e).__name__,
-                                        "error": str(e),
-                                    },
-                                }),
+                                message=json.dumps(discard_error_payload),
                             )
                             status_reported = True
                         except Exception as _notify_err:
@@ -1627,16 +2549,31 @@ class OmniOfflineClient:
                                 _notify_err,
                             )
                     if not status_reported and self.on_status_message:
-                        await self.on_status_message(json.dumps({"code": "TEXT_GEN_ERROR", "details": {"error_type": type(e).__name__, "error": str(e)}}))
+                        await self.on_status_message(json.dumps(status_error_payload))
                         status_reported = True
                     break
         finally:
             self._is_responding = False
-            
+
+            # 还原 summary 模式临时抬高的 API budget，别泄漏给 prompt_ephemeral。
+            if _summary_prev_max_tokens is not None and getattr(self, "llm", None) is not None:
+                self.llm.max_completion_tokens = _summary_prev_max_tokens
+
             # 整轮判定：所有重试都没产生过任何文本（包括 pre-tool）才算 LLM_NO_RESPONSE。
             # 用 final-segment 会让"tool 轮跑完了但模型没出 final 文本"的场景被错报。
             if not assistant_message_total and not guard_exhausted and not status_reported:
-                logger.warning("OmniOfflineClient: 所有重试均未产生文本回复")
+                # 把最后一次 attempt 的 finish_reason / block_reason / prompt_tokens
+                # 拼进 warning。Gemini-via-OpenAI-compat 静默 empty 时（safety /
+                # recitation / max_tokens / 上下文超限），这条 log 是日志里能拿到
+                # 的唯一"为什么 empty"线索。
+                logger.warning(
+                    "OmniOfflineClient: 所有重试均未产生文本回复 "
+                    "(finish_reason=%s block_reason=%s prompt_tokens=%s model=%s)",
+                    getattr(self, "_last_finish_reason", None),
+                    getattr(self, "_last_block_reason", None),
+                    getattr(self, "_last_prompt_tokens", None),
+                    getattr(self, "model", None),
+                )
                 if self.on_status_message:
                     await self.on_status_message(json.dumps({"code": "LLM_NO_RESPONSE"}))
             
@@ -1648,10 +2585,14 @@ class OmniOfflineClient:
         """Compatibility method - not used in text mode"""
         pass
     
-    async def stream_image(self, image_b64: str) -> None:
+    async def stream_image(self, image_b64: str, *, bypass_rate_limit: bool = False) -> None:
         """
         Add an image to pending images queue.
         Images will be sent together with the next text message.
+
+        ``bypass_rate_limit`` is accepted for signature parity with the
+        realtime client (text mode has no frame-rate throttle — it's an
+        in-memory append) and is ignored here.
         """
         if not image_b64:
             return
@@ -1663,6 +2604,37 @@ class OmniOfflineClient:
     def has_pending_images(self) -> bool:
         """Check if there are pending images waiting to be sent."""
         return len(self._pending_images) > 0
+
+    def _evict_old_images(self, keep_turns: int = 2) -> None:
+        # 只保留最近 keep_turns 个含图 HumanMessage 的图片，更早的剥掉 image_url
+        # 仅留文本。base64 图片在 vision tokenizer 下约 1.5k~3k tokens/张，
+        # 多轮累积会把 input 推到 128k+。
+        image_turn_indices = [
+            idx for idx, msg in enumerate(self._conversation_history)
+            if isinstance(msg, HumanMessage) and isinstance(msg.content, list)
+            and any(isinstance(item, dict) and item.get("type") == "image_url" for item in msg.content)
+        ]
+        if len(image_turn_indices) <= keep_turns:
+            return
+
+        evicted_imgs = 0
+        for idx in image_turn_indices[:-keep_turns]:
+            old = self._conversation_history[idx]
+            kept_parts = []
+            for item in old.content:
+                if isinstance(item, dict) and item.get("type") == "image_url":
+                    evicted_imgs += 1
+                else:
+                    kept_parts.append(item)
+            if len(kept_parts) == 1 and isinstance(kept_parts[0], dict) and kept_parts[0].get("type") == "text":
+                self._conversation_history[idx] = HumanMessage(content=kept_parts[0].get("text", ""))
+            else:
+                self._conversation_history[idx] = HumanMessage(content=kept_parts)
+
+        logger.info(
+            f"🖼️ Evicted {evicted_imgs} image(s) from {len(image_turn_indices) - keep_turns} older turn(s); "
+            f"kept images in last {keep_turns} turn(s)"
+        )
     
     # ------------------------------------------------------------------
     # LLM message injection channels
@@ -1756,6 +2728,7 @@ class OmniOfflineClient:
         self,
         instruction: str,
         *,
+        images: Optional[list] = None,
         completion_mode: str = "proactive",
         persist_response: bool = True,
     ) -> bool:
@@ -1796,10 +2769,33 @@ class OmniOfflineClient:
 
         # 临时注入：instruction 已由调用方用 ======== 格式封装，作为 HumanMessage 发送，
         # 不持久化到 _conversation_history，避免污染长期上下文。
-        messages_to_send = (
-            self._conversation_history
-            + [HumanMessage(content=instruction)]
-        )
+        # Proactive media is passed EXPLICITLY via ``images`` (per-callback,
+        # carried on cb.media_images by the caller) — it is NOT pulled from
+        # self._pending_images. _pending_images is the USER's screen/camera
+        # staging queue for the next stream_text; consuming it here would steal
+        # the user's pending frame into this proactive/greeting turn and rob the
+        # user's next message of its visual context (Codex P2). When proactive
+        # images are present we switch to the vision model exactly like
+        # stream_text does (一旦带图就永久切 vision — 既定设计；vision model 也能跑
+        # 后续纯文本轮). The instruction itself stays ephemeral (not persisted).
+        if images:
+            if self.vision_model and self.vision_model != self.model:
+                logger.info(
+                    f"🖼️ prompt_ephemeral: switching to vision model {self.vision_model} (from {self.model}) for proactive media"
+                )
+                await self.switch_model(self.vision_model, use_vision_config=True)
+            _ephemeral_content: list = []
+            for img_b64 in images:
+                _ephemeral_content.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"},
+                })
+            _ephemeral_content.append({"type": "text", "text": instruction})
+            logger.info(f"prompt_ephemeral: attaching {len(images)} proactive image(s)")
+            _ephemeral_msg = HumanMessage(content=_ephemeral_content)
+        else:
+            _ephemeral_msg = HumanMessage(content=instruction)
+        messages_to_send = self._conversation_history + [_ephemeral_msg]
 
         # Retry 策略与 stream_text 对偶（max_retries=3, [1, 2]s 间隔）。
         # 但主动搭话语义不同：用户没在等回复，retry 用尽时**静默吞掉**，
@@ -1809,6 +2805,10 @@ class OmniOfflineClient:
         max_retries = 3
         retry_delays = [1, 2]
         assistant_message = ""
+        # Empty-completion 诊断重置：与 stream_text 对偶。
+        self._last_finish_reason = None
+        self._last_block_reason = None
+        self._last_prompt_tokens = None
 
         try:
             self._is_responding = True
@@ -1895,7 +2895,7 @@ class OmniOfflineClient:
 
                     break  # 流正常结束，跳出 retry 循环
 
-                except (APIConnectionError, InternalServerError, RateLimitError) as e:
+                except (APIConnectionError, AuthenticationError, InternalServerError, RateLimitError) as e:
                     error_type = type(e).__name__
                     error_str_lower = str(e).lower()
                     logger.info(f"ℹ️ prompt_ephemeral 捕获到 {error_type} 错误")
@@ -1908,9 +2908,7 @@ class OmniOfflineClient:
                             await self.on_status_message(json.dumps({"code": "API_ARREARS"}))
                         assistant_message = ""
                         return False
-                    elif ('401' in error_str_lower or 'unauthorized' in error_str_lower
-                            or 'authentication' in error_str_lower
-                            or ('invalid' in error_str_lower and 'key' in error_str_lower)):
+                    elif _is_api_key_rejected_error(e):
                         logger.error(f"prompt_ephemeral: 检测到 API Key 错误，直接上报: {e}")
                         if self.on_status_message:
                             await self.on_status_message(json.dumps({"code": "API_KEY_REJECTED"}))
@@ -1949,6 +2947,12 @@ class OmniOfflineClient:
                     assistant_message = ""
                     return False
         except Exception as e:
+            if _is_api_key_rejected_error(e):
+                logger.error(f"prompt_ephemeral: 检测到 API Key 错误，直接上报: {e}")
+                if self.on_status_message:
+                    await self.on_status_message(json.dumps({"code": "API_KEY_REJECTED"}))
+                assistant_message = ""
+                return False
             # 兜底：非 API 错误（编程错误 / 数据异常）静默吞掉，截断错误文本
             # 防 HTML 错误页之类淹没日志。和上方 (APIConnectionError 等) 分支
             # 语义对偶 —— 都不向前端发 status_message。
@@ -1965,6 +2969,22 @@ class OmniOfflineClient:
             # 此处不再手动调用 TokenTracker.record() 避免双重计数。
             committed_text = _strip_nonverbal_directives(assistant_message).strip()
             content_committed = bool(committed_text)
+            # Empty-completion 诊断：和 stream_text 的兜底 warning 对偶。
+            # 主动搭话语义上是"静默放弃"，所以不发 status_message，但 INFO
+            # 一行 finish_reason 让日志能复盘——上次出问题就是因为没法区分
+            # "trigger_greeting 静默失败 = LLM 被 safety 拦" vs "LLM 真的觉得
+            # 这一轮不该说话"。
+            if not content_committed:
+                logger.info(
+                    "OmniOfflineClient.prompt_ephemeral: 无可提交文本 "
+                    "(finish_reason=%s block_reason=%s prompt_tokens=%s model=%s "
+                    "completion_mode=%s)",
+                    getattr(self, "_last_finish_reason", None),
+                    getattr(self, "_last_block_reason", None),
+                    getattr(self, "_last_prompt_tokens", None),
+                    getattr(self, "model", None),
+                    completion_mode,
+                )
             if content_committed and persist_response:
                 self._conversation_history.append(AIMessage(content=assistant_message))
                 # 防复读 corpus：只录常规 reply（completion_mode == "response"）。

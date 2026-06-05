@@ -19,8 +19,10 @@ import time
 import pytest
 
 from main_logic.activity.snapshot import (
+    ActivitySnapshot,
     derive_skip_probability,
     derive_tone,
+    format_activity_state_section,
 )
 from main_logic.activity.state_machine import (
     ActivityStateMachine,
@@ -419,12 +421,14 @@ def test_loader_drops_invalid_threshold_values():
     ('stale_returning', None,           None,     'warm'),
     ('focused_work',    None,           None,     'concise'),
     # ``idle`` while desk-pet is up reads as 摸鱼 territory — pair with
-    # ``playful`` (matches casual_browsing) instead of the businesslike
-    # ``concise``. ``transitioning`` and ``away`` keep ``concise``:
-    # the former is mid-context-switch, the latter doesn't render.
+    # ``playful`` (light banter) instead of the businesslike ``concise``.
+    # ``transitioning`` and ``away`` keep ``concise``: the former is
+    # mid-context-switch, the latter doesn't render.
     ('idle',            None,           None,     'playful'),
     ('away',            None,           None,     'concise'),
-    ('casual_browsing', None,           None,     'playful'),
+    # casual_browsing == watching anime/video → snarky ``witty`` (with a
+    # [PASS]-if-not-funny quality bar rendered separately), not generic playful.
+    ('casual_browsing', None,           None,     'witty'),
     ('private',         None,           None,     'concise'),
     ('gaming',          'competitive',  'moba',   'terse'),
     ('gaming',          'competitive',  'fps',    'terse'),
@@ -438,6 +442,42 @@ def test_loader_drops_invalid_threshold_values():
 def test_tone_derivation_table(state, intensity, genre, expected):
     """Pin the (state, intensity, genre) → tone mapping."""
     assert derive_tone(state, game_intensity=intensity, game_genre=genre) == expected
+
+
+def _witty_snapshot() -> ActivitySnapshot:
+    """A minimal casual_browsing / witty snapshot for render assertions."""
+    return ActivitySnapshot(
+        state='casual_browsing', state_age_seconds=120.0, previous_state=None,
+        transitioned_recently=False, stale_returning=False,
+        propensity='open', tone='witty',
+    )
+
+
+@pytest.mark.unit
+# zh/ja/ko/ru/en 是 _normalize_lang 能区分出的全部语言；es/pt 经 _normalize_lang
+# 回退 en，这里一并断言它们至少拿到 en 质量闸（而非什么都没有）。
+@pytest.mark.parametrize('lang', ['zh', 'en', 'ja', 'ko', 'ru', 'es', 'pt'])
+def test_witty_quality_bar_renders(lang):
+    """``witty`` 渲染时必须带上「没梗就 [PASS]」质量闸（区别于其它语气）。
+
+    回归保护：质量闸是 witty 专属的额外一行，靠 ACTIVITY_TONE_QUALITY_BARS +
+    formatter 的 .get(tone) 渲染。若任一环节回归（漏渲染 / 表里缺 lang），
+    entertainment 就退回「有啥说啥」，丢掉「没梗宁可不说」的产品意图。
+    """
+    out = format_activity_state_section(_witty_snapshot(), lang=lang)
+    assert '[PASS]' in out, f'{lang}: witty 质量闸（[PASS] 指令）未渲染'
+
+
+@pytest.mark.unit
+def test_non_witty_tone_has_no_quality_bar():
+    """非 witty 语气不应渲染质量闸——它是 witty 专属，别误伤其它语气。"""
+    snap = ActivitySnapshot(
+        state='idle', state_age_seconds=10.0, previous_state=None,
+        transitioned_recently=False, stale_returning=False,
+        propensity='open', tone='playful',
+    )
+    out = format_activity_state_section(snap, lang='zh')
+    assert '[PASS]' not in out
 
 
 # ── #1 / skip_probability ───────────────────────────────────────────
@@ -994,6 +1034,51 @@ def _tick_for_seconds(tracker, *, state: str, seconds: float, step: float = 20.0
         now = min(now + step, end)
         tracker._tick_break_reminders(snap, now=now)
     return now
+
+
+@pytest.mark.unit
+def test_context_prompt_reemits_after_session_baseline_reset():
+    """跨 session 仍在同一状态时，reset 基线后应重新算作「进入」再置 pending。
+
+    回归保护 Codex P2：tracker 跨 session 长存，若不在 session 开始清情境弹窗基线，
+    「上个 session 在游戏、新 session 仍在游戏」就检测不到进入、漏弹。也确认这只动情境
+    弹窗专属基线、状态保持期间不会重复触发。
+    """
+    tracker = _make_tracker_for_break_tests()
+
+    # session A：进入 gaming → 置 play pending
+    tracker._tick_break_reminders(_snap_for_state('gaming', app='Game'), now=1000.0)
+    assert tracker._context_prompt_pending is not None
+    assert tracker._context_prompt_pending['context'] == 'play'
+
+    # 模拟 drain 消费掉；仍在 gaming → 状态保持，下一 tick 不重复触发
+    tracker._context_prompt_pending = None
+    tracker._tick_break_reminders(_snap_for_state('gaming', app='Game'), now=1020.0)
+    assert tracker._context_prompt_pending is None
+
+    # 新 session：清基线 → 仍在 gaming 也重新算「进入」→ 再置 play pending
+    tracker.reset_context_prompt_baseline()
+    tracker._tick_break_reminders(_snap_for_state('gaming', app='Game'), now=1040.0)
+    assert tracker._context_prompt_pending is not None
+    assert tracker._context_prompt_pending['context'] == 'play'
+
+
+@pytest.mark.unit
+def test_context_prompt_pending_cleared_on_leaving_target_state():
+    """进游戏置 pending 后、还没 drain 就切到非目标态(idle) → 过期 pending 应被清掉。
+
+    回归保护 Codex P2：pending 可能由 get_snapshot 路径（实验组 kick）置、还没等 loop
+    drain，用户就离开了游戏/工作；不清就会把已离开的场景推成过期弹窗。
+    """
+    tracker = _make_tracker_for_break_tests()
+
+    # 进 gaming → 置 play pending（模拟 get_snapshot 置、未 drain）
+    tracker._tick_break_reminders(_snap_for_state('gaming', app='Game'), now=1000.0)
+    assert tracker._context_prompt_pending is not None
+
+    # 切到 idle（非目标态）→ 过期 pending 被清
+    tracker._tick_break_reminders(_snap_for_state('idle', app=None), now=1020.0)
+    assert tracker._context_prompt_pending is None
 
 
 def test_break_acc_advances_during_focused_work():

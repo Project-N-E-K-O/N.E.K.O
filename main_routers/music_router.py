@@ -68,17 +68,39 @@ def _patch_pyncm_async() -> None:
             logger.error("[Music] Failed to patch pyncm_async: %s", exc)
             return
 
-_patch_pyncm_async()
+# pyncm_async 仅用于网易云 VIP 直链播放，import 偏重（~0.15s）且不在启动/greeting
+# 链上，改成首次播放时再 import（含 <3.12 兼容补丁），由 module_warmup 预热。
+pyncm_async = None  # type: ignore[assignment]
+GetTrackAudio = None  # type: ignore[assignment,misc]
+_PYNCM_AVAILABLE: bool | None = None  # None = 尚未尝试导入
 
-try:
-    import pyncm_async
-    from pyncm_async.apis.track import GetTrackAudio
-    _PYNCM_AVAILABLE = True
-except Exception as _pyncm_err:
-    pyncm_async = None  # type: ignore[assignment]
-    GetTrackAudio = None  # type: ignore[assignment,misc]
-    _PYNCM_AVAILABLE = False
-    logger.error("[Music] pyncm_async unavailable, netease VIP playback disabled: %s", _pyncm_err)
+
+def _ensure_pyncm() -> bool:
+    """首次调用时打补丁并 import pyncm_async，缓存结果。返回是否可用。"""
+    global pyncm_async, GetTrackAudio, _PYNCM_AVAILABLE
+    # 显式强制不可用优先 → 降级。
+    if _PYNCM_AVAILABLE is False:
+        return False
+    # 对象已就位（真 import 过 / 测试注入了 mock）→ 直接信任，不重导入。
+    if pyncm_async is not None and GetTrackAudio is not None:
+        _PYNCM_AVAILABLE = True
+        return True
+    _patch_pyncm_async()
+    try:
+        import pyncm_async as _pyncm
+        from pyncm_async.apis.track import GetTrackAudio as _GetTrackAudio
+        # 只补缺失的，保住测试可能注入的 mock。
+        if pyncm_async is None:
+            pyncm_async = _pyncm
+        if GetTrackAudio is None:
+            GetTrackAudio = _GetTrackAudio
+        _PYNCM_AVAILABLE = True
+    except Exception as _pyncm_err:
+        pyncm_async = None  # type: ignore[assignment]
+        GetTrackAudio = None  # type: ignore[assignment,misc]
+        _PYNCM_AVAILABLE = False
+        logger.error("[Music] pyncm_async unavailable, netease VIP playback disabled: %s", _pyncm_err)
+    return _PYNCM_AVAILABLE
 
 # ==================== 音乐代理缓存 ====================
 # 仅缓存小文件（<10MB），大文件流式传输
@@ -345,7 +367,7 @@ async def play_netease_music(song_id: str):
         return JSONResponse(content={"success": False, "error": "invalid song_id"}, status_code=400)
     song_id_int = int(song_id)
 
-    if not _PYNCM_AVAILABLE:
+    if not _ensure_pyncm():
         fallback_url = f"https://music.163.com/song/media/outer/url?id={song_id_int}.mp3"
         logger.warning("[音乐播放] pyncm_async 不可用，直接使用公开外链")
         return RedirectResponse(url=fallback_url)

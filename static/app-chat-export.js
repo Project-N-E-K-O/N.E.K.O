@@ -17,6 +17,7 @@
 
     var MAX_EXPORT_SELECTION = 100;
     var DEFAULT_USER_EXPORT_AVATAR = '/static/icons/avatar/master-avatar.png';
+    var EXPORT_PREVIEW_SHELL_URL = '/static/chat-export-preview-shell.html';
 
     // ======================== State ========================
 
@@ -44,7 +45,13 @@
         if (typeof window.t === 'function') {
             try {
                 var translated = params ? window.t(key, params) : window.t(key);
-                if (translated && translated !== key) return translated;
+                if (
+                    translated != null
+                    && (typeof translated === 'string' || typeof translated === 'number')
+                    && String(translated) !== key
+                ) {
+                    return String(translated);
+                }
             } catch (_) {}
         }
         if (params && fallback) {
@@ -57,6 +64,155 @@
 
     function translateLabel(key, fallback) {
         return translateText(key, fallback);
+    }
+
+    function buildWindowControlCssHtml() {
+        return '<link rel="stylesheet" href="/static/css/window_controls.css">';
+    }
+
+    function buildWindowControlScriptHtml() {
+        return '<script src="/static/js/window_controls.js" defer data-neko-window-controls="1"></script>';
+    }
+
+    function buildWindowControlAssetsHtml() {
+        return buildWindowControlCssHtml() + buildWindowControlScriptHtml();
+    }
+
+    function setWindowControlButtonLabel(button, key, fallback) {
+        if (!button) return;
+        var label = translateLabel(key, fallback);
+        button.setAttribute('data-i18n-title', key);
+        button.setAttribute('data-i18n-aria', key);
+        button.setAttribute('title', label);
+        button.setAttribute('aria-label', label);
+    }
+
+    function createWindowControlButton(doc, control, key, fallback, iconClass) {
+        var button = doc.createElement('button');
+        button.type = 'button';
+        button.className = 'neko-window-control-btn';
+        button.setAttribute('data-neko-window-control', control);
+        setWindowControlButtonLabel(button, key, fallback);
+        var icon = doc.createElement('span');
+        icon.className = iconClass;
+        button.appendChild(icon);
+        return button;
+    }
+
+    function ensureWindowControlsForDocument(doc) {
+        if (!doc || !doc.head) return;
+        var view = doc.defaultView || null;
+        if (view && view.nekoWindowControls && typeof view.nekoWindowControls.init === 'function') {
+            view.nekoWindowControls.init();
+            return;
+        }
+        if (doc.querySelector('script[data-neko-window-controls="1"]')) return;
+        var script = doc.createElement('script');
+        script.src = '/static/js/window_controls.js';
+        script.defer = true;
+        script.setAttribute('data-neko-window-controls', '1');
+        script.addEventListener('load', function () {
+            var loadedView = doc.defaultView || null;
+            if (loadedView && loadedView.nekoWindowControls && typeof loadedView.nekoWindowControls.init === 'function') {
+                loadedView.nekoWindowControls.init();
+            }
+        });
+        doc.head.appendChild(script);
+    }
+
+    function getExportPreviewShellUrl() {
+        try {
+            return new URL(EXPORT_PREVIEW_SHELL_URL, window.location.href).href;
+        } catch (_) {
+            return EXPORT_PREVIEW_SHELL_URL;
+        }
+    }
+
+    function isExportPreviewShellReady(previewWindow, targetUrl) {
+        if (!previewWindow || previewWindow.closed) return false;
+        try {
+            var href = previewWindow.location && previewWindow.location.href;
+            if (!href || href === 'about:blank') return false;
+            var current = new URL(href, window.location.href);
+            var target = new URL(targetUrl, window.location.href);
+            if (current.origin !== target.origin || current.pathname !== target.pathname) {
+                return false;
+            }
+            var doc = previewWindow.document;
+            return !!(doc && (doc.readyState === 'interactive' || doc.readyState === 'complete'));
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function hasExportPreviewWindowControlApi(previewWindow) {
+        if (!previewWindow || previewWindow.closed) return false;
+        try {
+            var api = previewWindow.nekoWindowControl;
+            return !!(api && typeof api.minimize === 'function' && typeof api.maximize === 'function');
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function waitForExportPreviewShell(previewWindow, targetUrl, timeoutMs) {
+        return new Promise(function (resolve) {
+            if (!previewWindow || previewWindow.closed) {
+                resolve(false);
+                return;
+            }
+
+            var waitMs = Number(timeoutMs);
+            if (!Number.isFinite(waitMs) || waitMs <= 0) waitMs = 1500;
+            var settled = false;
+            var pollTimer = null;
+            var timeoutTimer = null;
+
+            function cleanup() {
+                if (pollTimer) {
+                    window.clearInterval(pollTimer);
+                    pollTimer = null;
+                }
+                if (timeoutTimer) {
+                    window.clearTimeout(timeoutTimer);
+                    timeoutTimer = null;
+                }
+                try {
+                    previewWindow.removeEventListener('load', checkReady);
+                } catch (_) {}
+            }
+
+            function finish(ok) {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                resolve(!!ok);
+            }
+
+            function checkReady() {
+                if (!previewWindow || previewWindow.closed) {
+                    finish(false);
+                    return;
+                }
+                if (isExportPreviewShellReady(previewWindow, targetUrl)) {
+                    finish(true);
+                }
+            }
+
+            try {
+                previewWindow.addEventListener('load', checkReady);
+            } catch (_) {}
+            pollTimer = window.setInterval(checkReady, 40);
+            timeoutTimer = window.setTimeout(function () { finish(false); }, waitMs);
+            checkReady();
+        });
+    }
+
+    async function waitForExportPreviewRewriteGate(previewWindow, targetUrl) {
+        var shellReady = await waitForExportPreviewShell(previewWindow, targetUrl, 1500);
+        if (shellReady || hasExportPreviewWindowControlApi(previewWindow)) return true;
+        shellReady = await waitForExportPreviewShell(previewWindow, targetUrl, 6500);
+        return !!(shellReady || hasExportPreviewWindowControlApi(previewWindow));
     }
 
     function showToast(key, fallback, duration) {
@@ -362,6 +518,21 @@
         return styles.find(function (s) { return s.id === state.imageExportStyle; }) || styles[0];
     }
 
+    function normalizeExportFormatId(formatId) {
+        var formats = getExportFormats();
+        return (formats.find(function (format) { return format.id === formatId; }) || formats[0]).id;
+    }
+
+    function normalizeImageExportStyleId(styleId) {
+        var styles = getImageExportStyles();
+        return (styles.find(function (style) { return style.id === styleId; }) || styles[0]).id;
+    }
+
+    function normalizeImageExportFormatId(formatId) {
+        var formats = getImageExportFormats();
+        return (formats.find(function (format) { return format.id === formatId; }) || formats[0]).id;
+    }
+
     // ======================== Markdown export ========================
 
     function buildMarkdownExportDocument(entries, now) {
@@ -477,10 +648,16 @@
             '.preview-wrap img{max-width:100%;height:auto;border-radius:6px;margin:0.5em 0;}',
             '.preview-wrap a{color:#2563eb;text-decoration:none;}',
             '.preview-wrap a:hover{text-decoration:underline;}',
-            '@media (prefers-color-scheme:dark){html,body{background:#111827;color:#e5e7eb;}.preview-wrap h1{border-color:#374151;}.preview-wrap h2{color:#cbd5e1;}.preview-wrap blockquote{background:#1f2937;color:#9ca3af;border-color:#4b5563;}.preview-wrap code{background:#1f2937;}}'
+            '[data-theme="dark"],[data-theme="dark"] body{background:#111827;color:#e5e7eb;}',
+            '[data-theme="dark"] .preview-wrap h1{border-color:#374151;}',
+            '[data-theme="dark"] .preview-wrap h2{color:#cbd5e1;}',
+            '[data-theme="dark"] .preview-wrap blockquote{background:#1f2937;color:#9ca3af;border-color:#4b5563;}',
+            '[data-theme="dark"] .preview-wrap code{background:#1f2937;}',
+            '[data-theme="dark"] .preview-wrap a{color:#93c5fd;}',
+            '@media (prefers-color-scheme:dark){html:not([data-theme]),html:not([data-theme]) body{background:#111827;color:#e5e7eb;}html:not([data-theme]) .preview-wrap h1{border-color:#374151;}html:not([data-theme]) .preview-wrap h2{color:#cbd5e1;}html:not([data-theme]) .preview-wrap blockquote{background:#1f2937;color:#9ca3af;border-color:#4b5563;}html:not([data-theme]) .preview-wrap code{background:#1f2937;}}'
         ].join('');
         return '<!DOCTYPE html><html lang="' + escapeHtml(document.documentElement.lang || 'en')
-            + '"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'
+            + '"' + getPreviewThemeAttributesHtml() + '><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>'
             + escapeHtml(translateLabel('chat.exportFileTitle', 'Project N.E.K.O Conversation Export'))
             + '</title><style>' + css + '</style></head><body><div class="preview-wrap">'
             + bodyHtml + '</div></body></html>';
@@ -619,6 +796,21 @@
     function isDarkTheme() {
         return document.documentElement
             && document.documentElement.getAttribute('data-theme') === 'dark';
+    }
+
+    function getPreviewThemeAttributesHtml() {
+        return isDarkTheme() ? ' data-theme="dark" class="dark"' : ' data-theme="light"';
+    }
+
+    function applyPreviewThemeToDocument(doc) {
+        if (!doc || !doc.documentElement) return;
+        if (isDarkTheme()) {
+            doc.documentElement.setAttribute('data-theme', 'dark');
+            doc.documentElement.classList.add('dark');
+        } else {
+            doc.documentElement.setAttribute('data-theme', 'light');
+            doc.documentElement.classList.remove('dark');
+        }
     }
 
     // Canvas helpers: wrap text to a max width and return array of lines.
@@ -1592,7 +1784,7 @@
 
     // ======================== Download + copy ========================
 
-    function downloadExportFile(fileName, content, contentType) {
+    function downloadExportFile(fileName, content, contentType, preferredHostWindow) {
         var blob = content instanceof Blob
             ? content
             : new Blob([content], { type: contentType });
@@ -1602,13 +1794,15 @@
         // silently drop for image-sized blobs (markdown sometimes slips
         // through). Place the anchor in the popup's realm so the download
         // inherits the same user-activation context as the tap.
-        var hostWindow = window;
-        try {
-            if (state.previewWindow && !state.previewWindow.closed && state.previewWindow.document) {
-                hostWindow = state.previewWindow;
+        var hostWindow = preferredHostWindow || window;
+        if (!preferredHostWindow) {
+            try {
+                if (state.previewWindow && !state.previewWindow.closed && state.previewWindow.document) {
+                    hostWindow = state.previewWindow;
+                }
+            } catch (_) {
+                hostWindow = window;
             }
-        } catch (_) {
-            hostWindow = window;
         }
         var hostDoc = hostWindow.document;
         var hostURL = hostWindow.URL || hostWindow.webkitURL || URL;
@@ -1695,12 +1889,13 @@
     function buildPreviewCacheKey(entries, formatId) {
         var currentFormatId = formatId || getCurrentExportFormat().id;
         var locale = document.documentElement.lang || '';
+        var theme = isDarkTheme() ? 'dark' : 'light';
         var signature = (entries || []).map(function (entry) {
             return entry.id + ':' + (entry.textContent || '').length + ':' + (entry.mediaDescriptors ? entry.mediaDescriptors.length : 0);
         }).join('|');
         var imageStyleId = currentFormatId === 'image' ? getCurrentImageExportStyle().id : '';
         var imageFormatId = currentFormatId === 'image' ? getCurrentImageExportFormat().id : '';
-        return [currentFormatId, imageStyleId, imageFormatId, locale, signature].join('::');
+        return [currentFormatId, imageStyleId, imageFormatId, locale, theme, signature].join('::');
     }
 
     function revokePreviewPayload(payload) {
@@ -1797,6 +1992,31 @@
         var summary = doc.createElement('div');
         summary.className = 'chat-export-preview-summary';
 
+        var isStandaloneWindow = !!(doc.body && doc.body.classList.contains('chat-export-window'));
+        var windowControls = null;
+        var minimizeButton = null;
+        var maximizeButton = null;
+        if (isStandaloneWindow) {
+            windowControls = doc.createElement('div');
+            windowControls.className = 'neko-window-controls chat-export-preview-window-controls';
+            minimizeButton = createWindowControlButton(
+                doc,
+                'minimize',
+                'common.minimize',
+                'Minimize',
+                'neko-window-minimize-icon'
+            );
+            maximizeButton = createWindowControlButton(
+                doc,
+                'maximize',
+                'common.maximize',
+                'Maximize',
+                'neko-window-maximize-icon'
+            );
+            windowControls.appendChild(minimizeButton);
+            windowControls.appendChild(maximizeButton);
+        }
+
         var closeButton = doc.createElement('button');
         closeButton.type = 'button';
         closeButton.className = 'chat-export-preview-close close-btn';
@@ -1809,7 +2029,12 @@
 
         header.appendChild(title);
         header.appendChild(summary);
-        header.appendChild(closeButton);
+        if (windowControls) {
+            windowControls.appendChild(closeButton);
+            header.appendChild(windowControls);
+        } else {
+            header.appendChild(closeButton);
+        }
 
         var selectionSection = doc.createElement('div');
         selectionSection.className = 'chat-export-selection-section';
@@ -1916,6 +2141,8 @@
             panel: panel,
             title: title,
             summary: summary,
+            minimizeButton: minimizeButton,
+            maximizeButton: maximizeButton,
             closeButton: closeButton,
             closeIcon: closeIcon,
             selectionToolbar: selectionToolbar,
@@ -1985,9 +2212,10 @@
         openWindowButton.addEventListener('click', handleOpenWindowClick);
         downloadButton.addEventListener('click', handleDownloadClick);
 
-        // Update localized modal attributes when the app locale changes
+        // 应用语言变化时同步预览窗口文案
         var localeHandler = function () {
             closeButton.setAttribute('aria-label', translateLabel('common.close', 'Close'));
+            setWindowControlButtonLabel(minimizeButton, 'common.minimize', 'Minimize');
             title.textContent = translateLabel('chat.exportPreviewTitle', 'Export Preview');
             title.setAttribute('data-text', title.textContent);
             frame.setAttribute('title', translateLabel('chat.exportPreviewTitle', 'Export Preview'));
@@ -1998,9 +2226,18 @@
             selectInvertButton.textContent = translateLabel('chat.exportSelectInvert', 'Invert');
             copyButton.textContent = translateLabel('chat.copyToClipboard', 'Copy to Clipboard');
             openWindowButton.textContent = translateLabel('chat.previewOpenWindow', 'Open In Window');
+            setWindowControlButtonLabel(maximizeButton, 'common.maximize', 'Maximize');
+            var view = doc.defaultView || null;
+            if (view && view.nekoWindowControls && typeof view.nekoWindowControls.refresh === 'function') {
+                view.nekoWindowControls.refresh();
+            }
         };
         window.addEventListener('localechange', localeHandler);
         modal._localeHandler = localeHandler;
+
+        if (isStandaloneWindow) {
+            ensureWindowControlsForDocument(doc);
+        }
 
         return modal;
     }
@@ -2009,6 +2246,16 @@
         if (modal && modal.panel && modal.panel.ownerDocument) return modal.panel.ownerDocument;
         if (state.previewWindow && !state.previewWindow.closed && state.previewWindow.document) return state.previewWindow.document;
         return document;
+    }
+
+    function syncPreviewWindowTheme() {
+        try {
+            if (state.previewWindow && !state.previewWindow.closed && state.previewWindow.document) {
+                applyPreviewThemeToDocument(state.previewWindow.document);
+            } else if (state.previewModal) {
+                applyPreviewThemeToDocument(getPreviewModalDocument(state.previewModal));
+            }
+        } catch (_) {}
     }
 
     function detachPreviewHandlers(modal) {
@@ -2317,25 +2564,40 @@
             + width + ',height=' + height + ',left=' + left + ',top=' + top;
     }
 
-    function openExportPreviewWindow() {
+    async function openExportPreviewWindow() {
         var previewTitle = translateLabel('chat.exportPreviewTitle', 'Export Preview');
         var isExistingWindow = !!(state.previewWindow && !state.previewWindow.closed);
         var previewWindow = isExistingWindow
             ? state.previewWindow
-            : window.open('', 'neko-chat-export-preview', buildExportWindowFeatures());
+            : window.open(getExportPreviewShellUrl(), 'neko-chat-export-preview', buildExportWindowFeatures());
         if (!previewWindow) return null;
 
         if (isExistingWindow) {
             disposePreviewModal(false);
         }
         state.previewWindow = previewWindow;
+        if (!isExistingWindow) {
+            var canRewritePreview = await waitForExportPreviewRewriteGate(previewWindow, getExportPreviewShellUrl());
+            if (!previewWindow || previewWindow.closed) return null;
+            if (!canRewritePreview) {
+                if (state.previewWindow === previewWindow) state.previewWindow = null;
+                try {
+                    previewWindow.close();
+                } catch (_) {}
+                return null;
+            }
+        }
+        try {
+            if (typeof previewWindow.stop === 'function') previewWindow.stop();
+        } catch (_) {}
         var doc = previewWindow.document;
         doc.open();
-        doc.write('<!DOCTYPE html><html><head><meta charset="utf-8">'
+        doc.write('<!DOCTYPE html><html lang="' + escapeHtml(document.documentElement.lang || 'en') + '"' + getPreviewThemeAttributesHtml() + '><head><meta charset="utf-8">'
             + '<meta name="viewport" content="width=device-width, initial-scale=1.0">'
             + '<title>' + escapeHtml(previewTitle) + '</title>'
             + '<link rel="stylesheet" href="/static/css/api_key_settings.css">'
             + '<link rel="stylesheet" href="/static/css/index.css">'
+            + buildWindowControlAssetsHtml()
             + '<link rel="stylesheet" href="/static/css/dark-mode.css">'
             + '<style>'
             + 'html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#f8fafc;}'
@@ -2345,10 +2607,15 @@
             + 'body.chat-export-window .chat-export-preview-header.container-header{position:sticky;top:0;z-index:100;flex-shrink:0;border-bottom:0;}'
             + 'body.chat-export-window .chat-export-preview-title{white-space:nowrap;}'
             + 'body.chat-export-window .chat-export-preview-summary{color:rgba(255,255,255,.92);font-weight:600;text-shadow:0 1px 2px rgba(0,80,140,.24);}'
+            + 'body.chat-export-window .chat-export-preview-window-controls{margin-left:8px;}'
             + 'body.chat-export-window .chat-export-preview-close img{pointer-events:none;}'
             + 'body.chat-export-window .chat-export-preview-body{max-height:none;}'
+            + 'html[data-theme="dark"],html[data-theme="dark"] body.chat-export-window{background:#0f172a;color:#e2e8f0;}'
+            + 'html[data-theme="dark"] body.chat-export-window .chat-export-preview-panel{background:#1e293b;color:#e2e8f0;}'
+            + 'html[data-theme="dark"] body.chat-export-window .chat-export-preview-body,html[data-theme="dark"] body.chat-export-window .chat-export-preview-frame{background:#0f172a;}'
             + '</style></head><body class="chat-export-window"></body></html>');
         doc.close();
+        applyPreviewThemeToDocument(doc);
         previewWindow.focus();
         if (!previewWindow._chatExportBeforeUnloadHandler) {
             var beforeUnloadHandler = function () {
@@ -2363,12 +2630,13 @@
     }
 
     async function openPreviewModal(previewWindow) {
-        previewWindow = previewWindow || openExportPreviewWindow();
+        previewWindow = previewWindow || await openExportPreviewWindow();
         if (!previewWindow) {
             showToast('chat.previewOpenBlocked', 'Unable to open a new preview window.', 4000);
             return;
         }
         var modal = ensurePreviewModal(previewWindow.document);
+        applyPreviewThemeToDocument(previewWindow.document);
 
         // Re-register localeHandler if it was removed on previous close
         if (!modal._localeHandler) {
@@ -2414,6 +2682,144 @@
     function closePreviewModal() {
         disposePreviewModal(true);
         clearPreviewCache();
+    }
+
+    // ======================== Compact inline API ========================
+
+    function getCompactInlineExportOptions() {
+        return {
+            formats: getExportFormats(),
+            imageStyles: getImageExportStyles(),
+            imageFormats: getImageExportFormats(),
+            state: {
+                exportFormat: state.exportFormat,
+                imageExportStyle: state.imageExportStyle,
+                imageExportFormat: state.imageExportFormat,
+                isCopying: state.isCopying,
+                isExporting: state.isExporting
+            }
+        };
+    }
+
+    function applyCompactInlineExportSelection(options) {
+        var opts = options && typeof options === 'object' ? options : {};
+        var messageIds = Array.isArray(opts.messageIds) ? opts.messageIds : [];
+        var selectedIds = new Set();
+        messageIds.map(function (id) { return String(id); }).filter(Boolean).some(function (id) {
+            selectedIds.add(id);
+            return selectedIds.size >= MAX_EXPORT_SELECTION;
+        });
+        state.allMessages = getReactMessages();
+        state.selectedIds = selectedIds;
+        state.exportFormat = normalizeExportFormatId(opts.format);
+        state.imageExportStyle = normalizeImageExportStyleId(opts.imageStyle);
+        state.imageExportFormat = normalizeImageExportFormatId(opts.imageFormat);
+        return getSelectedEntries();
+    }
+
+    function restoreCompactInlineExportState(previous) {
+        state.allMessages = previous.allMessages;
+        state.selectedIds = previous.selectedIds;
+        state.exportFormat = previous.exportFormat;
+        state.imageExportStyle = previous.imageExportStyle;
+        state.imageExportFormat = previous.imageExportFormat;
+    }
+
+    async function buildCompactInlinePreview(options) {
+        var previous = {
+            allMessages: state.allMessages,
+            selectedIds: state.selectedIds,
+            exportFormat: state.exportFormat,
+            imageExportStyle: state.imageExportStyle,
+            imageExportFormat: state.imageExportFormat
+        };
+        try {
+            var entries = applyCompactInlineExportSelection(options);
+            if (!entries.length) {
+                return { previewKind: 'empty' };
+            }
+            var exportData = await buildExportDocument(entries, state.exportFormat);
+            if (state.exportFormat === 'image') {
+                return {
+                    previewKind: 'image',
+                    previewUrl: URL.createObjectURL(exportData.previewBlob)
+                };
+            }
+            return {
+                previewKind: 'document',
+                previewDocument: buildMarkdownPreviewDocument(exportData.content)
+            };
+        } finally {
+            restoreCompactInlineExportState(previous);
+        }
+    }
+
+    async function runCompactInlineExportAction(options, action) {
+        var previous = {
+            allMessages: state.allMessages,
+            selectedIds: state.selectedIds,
+            exportFormat: state.exportFormat,
+            imageExportStyle: state.imageExportStyle,
+            imageExportFormat: state.imageExportFormat
+        };
+        try {
+            var entries = applyCompactInlineExportSelection(options);
+            if (!entries.length) {
+                showToast('chat.exportSelectionEmpty', 'Select at least one message to export.');
+                return;
+            }
+            await action(entries);
+        } finally {
+            restoreCompactInlineExportState(previous);
+        }
+    }
+
+    async function copyCompactInlineSelection(options) {
+        if (state.isCopying) return;
+        var compactFormat = normalizeExportFormatId(options && options.format);
+        state.isCopying = true;
+        try {
+            await runCompactInlineExportAction(options, async function (entries) {
+                if (state.exportFormat === 'image') {
+                    var imgData = await buildExportDocument(entries, 'image');
+                    var imgBlob = imgData.previewBlob || imgData.content;
+                    var imgOk = await copyImageToClipboard(imgBlob);
+                    if (imgOk) showToast('chat.copyImageSuccess', 'Image copied to clipboard.');
+                    else showToast('chat.copyImageFailed', 'Failed to copy image to clipboard.', 4000);
+                } else {
+                    var mdData = await buildExportDocument(entries, 'markdown');
+                    var mdOk = await copyTextToClipboard(mdData.content);
+                    if (mdOk) showToast('chat.copyMarkdownSuccess', 'Markdown copied to clipboard.');
+                    else showToast('chat.copyMarkdownFailed', 'Failed to copy Markdown.', 4000);
+                }
+            });
+        } catch (error) {
+            logExportError('copyCompactInlineSelection', error);
+            if (compactFormat === 'image') {
+                showToast('chat.copyImageFailed', 'Failed to copy image to clipboard.', 4000);
+            } else {
+                showToast('chat.copyMarkdownFailed', 'Failed to copy Markdown.', 4000);
+            }
+        } finally {
+            state.isCopying = false;
+        }
+    }
+
+    async function downloadCompactInlineSelection(options) {
+        if (state.isExporting) return;
+        state.isExporting = true;
+        try {
+            await runCompactInlineExportAction(options, async function (entries) {
+                var data = await buildExportDocument(entries, state.exportFormat);
+                downloadExportFile(data.fileName, data.content, data.contentType, window);
+                showToast('chat.exportSuccess', 'Conversation exported successfully');
+            });
+        } catch (error) {
+            logExportError('downloadCompactInlineSelection', error);
+            showToastMessage(getErrorMessage(error), 4000);
+        } finally {
+            state.isExporting = false;
+        }
     }
 
     // ======================== Action handlers ========================
@@ -2478,7 +2884,7 @@
         }
     }
 
-    /** Build the HTML for a draggable title-bar with a close button (for frameless Electron windows). */
+    /** 构建无边框 Electron 窗口使用的自绘标题栏。 */
     function buildWindowChromeHtml(title) {
         var closeLabel = escapeHtml(translateLabel('chat.previewClose', 'Close'));
         var scrollbarCss = '<style>'
@@ -2488,8 +2894,8 @@
             + '::-webkit-scrollbar-thumb:hover{background:rgba(140,140,140,0.6);}'
             + '::-webkit-scrollbar-corner{background:transparent;}'
             + '@media (prefers-color-scheme:dark){'
-            + '::-webkit-scrollbar-thumb{background:rgba(200,200,200,0.25);}'
-            + '::-webkit-scrollbar-thumb:hover{background:rgba(200,200,200,0.4);}'
+            + 'html:not([data-theme])::-webkit-scrollbar-thumb,html:not([data-theme]) ::-webkit-scrollbar-thumb{background:rgba(200,200,200,0.25);}'
+            + 'html:not([data-theme])::-webkit-scrollbar-thumb:hover,html:not([data-theme]) ::-webkit-scrollbar-thumb:hover{background:rgba(200,200,200,0.4);}'
             + '}'
             + '</style>';
         return scrollbarCss
@@ -2535,9 +2941,9 @@
                 return;
             }
             var doc = payload.previewDocument;
-            // Sanitize any unsafe protocol URLs before injecting into the new window
+            // 写入新窗口前先清理不安全协议
             doc = sanitizeHtmlUrls(doc);
-            // Inject window chrome (title bar + close button) into the preview document
+            // 注入自绘标题栏并给正文留出顶部空间
             doc = doc.replace(/(<body[^>]*>)/, '$1' + chromeHtml + '<div style="padding-top:36px;">');
             doc = doc.replace(/<\/body>/, '</div></body>');
             var win = window.open('', '_blank');
@@ -2579,14 +2985,13 @@
             return;
         }
 
-        var previewWindow = openExportPreviewWindow();
-        if (!previewWindow) {
-            showToast('chat.previewOpenBlocked', 'Unable to open a new preview window.', 4000);
-            return;
-        }
-
         state.isPreparingPreview = true;
         try {
+            var previewWindow = await openExportPreviewWindow();
+            if (!previewWindow) {
+                showToast('chat.previewOpenBlocked', 'Unable to open a new preview window.', 4000);
+                return;
+            }
             state.allMessages = messages;
             state.selectedIds = new Set();
             clearPreviewCache();
@@ -2616,6 +3021,13 @@
             renderControls();
             schedulePreviewRender();
         });
+
+        window.addEventListener('neko-theme-changed', function () {
+            syncPreviewWindowTheme();
+            if (!state.previewModal || state.previewModal.panel.hidden) return;
+            clearPreviewCache();
+            schedulePreviewRender();
+        });
     }
 
     async function initAfterStorageBarrier() {
@@ -2640,6 +3052,10 @@
 
     window.appChatExport = {
         open: handleExportButtonClick,
-        close: closePreviewModal
+        close: closePreviewModal,
+        getCompactInlineOptions: getCompactInlineExportOptions,
+        buildCompactInlinePreview: buildCompactInlinePreview,
+        copyCompactInlineSelection: copyCompactInlineSelection,
+        downloadCompactInlineSelection: downloadCompactInlineSelection
     };
 })();

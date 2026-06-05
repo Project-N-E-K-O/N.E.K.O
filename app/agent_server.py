@@ -1342,7 +1342,9 @@ def _check_agent_api_gate() -> Dict[str, Any]:
     try:
         cm = get_config_manager()
         ok, reasons = cm.is_agent_api_ready()
-        return {"ready": ok, "reasons": reasons, "is_free_version": cm.is_free_version()}
+        # 字段名保留 is_free_version（前端/下游 gate 消费者沿用），值取 agent 维度的
+        # is_agent_free()：判 agent 是否走内置免费模型，而非 core/assist 的版本免费。
+        return {"ready": ok, "reasons": reasons, "is_free_version": cm.is_agent_free()}
     except Exception as e:
         return {"ready": False, "reasons": [f"Agent API check failed: {e}"], "is_free_version": False}
 
@@ -1784,6 +1786,13 @@ async def _run_computer_use_task(
     instruction: str,
 ) -> None:
     """Run a computer-use task in a thread pool; emit results directly via ZeroMQ."""
+    # Telemetry：按 agent 类型计使用量（cua/browser/plugin/openclaw/openfang），
+    # 看哪类 agent 真被用、用多少。best-effort 不阻塞 agent 执行。
+    try:
+        from utils.instrument import counter as _ic
+        _ic("agent_invoked", agent_type="cua")
+    except Exception:
+        pass  # 埋点 best-effort，不阻塞 cua 任务执行
     info = Modules.task_registry.get(task_id, {})
     lanlan_name = info.get("lanlan_name")
 
@@ -2236,6 +2245,19 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     await _emit_main_event("task_update", lanlan_name, task=task_payload)
 
                 async def _run_user_plugin_dispatch():
+                    try:
+                        from utils.instrument import counter as _ic
+                        # agent_invoked 只按 agent_type 分，保持单 key 即"plugin
+                        # 总计"——本地 admin 视图 get_top_counters 按完整 metric_key
+                        # GROUP BY、不做 dim 聚合，若把 plugin_id 塞进这里会把该
+                        # 总计行打散成 per-plugin 行、丢掉聚合。per-plugin 细分另发
+                        # 独立指标 plugin_invoked，其全量之和恒等于本行，互不重复
+                        # 计数。plugin_id 基数由已安装插件数限定，截断兜底防异常长
+                        # id 撑爆 counter key 空间。
+                        _ic("agent_invoked", agent_type="plugin")
+                        _ic("plugin_invoked", plugin_id=str(plugin_id or "unknown")[:48])
+                    except Exception:
+                        pass  # 埋点 best-effort，不阻塞 plugin 分派
                     # Default delivery mode; overridden after the plugin result
                     # is parsed below. Cancel / exception branches read this so
                     # they honor whatever the plugin already declared, not a
@@ -2591,6 +2613,11 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     logger.debug("[OpenClaw] emit proactive_message(ack) failed: task_id=%s error=%s", result.task_id, emit_err)
                 async def _run_openclaw_dispatch():
                     try:
+                        from utils.instrument import counter as _ic
+                        _ic("agent_invoked", agent_type="openclaw")
+                    except Exception:
+                        pass  # 埋点 best-effort
+                    try:
                         nk_result = await Modules.openclaw.run_instruction(
                             instruction,
                             attachments=attachments,
@@ -2779,6 +2806,11 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                     logger.debug("[BrowserUse] emit task_update(running) failed: task_id=%s error=%s", bu_task_id, e)
                 async def _run_browser_use_dispatch():
                     try:
+                        from utils.instrument import counter as _ic
+                        _ic("agent_invoked", agent_type="browser")
+                    except Exception:
+                        pass  # 埋点 best-effort
+                    try:
                         bres = await Modules.browser_use.run_instruction(
                             result.task_description,
                             session_id=bu_session.session_id,
@@ -2947,6 +2979,11 @@ async def _do_analyze_and_plan(messages: list[dict[str, Any]], lanlan_name: Opti
                         logger.debug("[OpenFang] emit task_update(running) failed: task_id=%s error=%s", of_task_id, e)
 
                     async def _run_openfang_dispatch():
+                        try:
+                            from utils.instrument import counter as _ic
+                            _ic("agent_invoked", agent_type="openfang")
+                        except Exception:
+                            pass  # 埋点 best-effort
                         try:
                             of_res = await Modules.openfang.run_instruction(
                                 result.task_description,
@@ -3148,9 +3185,14 @@ async def startup():
         from utils.token_tracker import TokenTracker, install_hooks
         install_hooks()
         TokenTracker.get_instance().start_periodic_save()
-        TokenTracker.get_instance().record_app_start()
+        # process 字段进 session_start / session_end 维度，跨进程诊断必须区分
+        TokenTracker.get_instance().record_app_start(process="agent_server")
     except Exception as e:
         logger.warning(f"[Agent] Token tracker init failed: {e}")
+
+    # 注：模块预热统一由 main_server 在其 runtime init 完成后触发（见
+    # _ensure_main_server_runtime_initialized 末尾）。合并模式下三个 app 同进程，
+    # 那一处覆盖本进程全部 lazy 模块；不在这里另起，避免与启动期抢 GIL。
 
     os.environ["NEKO_PLUGIN_HOSTED_BY_AGENT"] = "true"
     Modules.computer_use = ComputerUseAdapter()
@@ -3291,7 +3333,61 @@ async def startup():
                         except Exception as parse_err:
                             logger.debug(f"[Agent] plugin_list_provider parse error: {parse_err}")
                             data = {}
-                        return data.get("plugins", []) or []
+                        raw = data.get("plugins", []) or []
+                        # ISOLATION BOUNDARY: only expose RUNNING plugins to the
+                        # analyzer / plugin LLM. Without this filter, every plugin
+                        # the host knows about (including disabled, stopped,
+                        # load-failed, source-missing, and extension plugins in
+                        # 'pending' state) flows into the LLM's candidate set.
+                        # The LLM then wastes tokens evaluating capabilities the
+                        # user explicitly didn't enable, and worse — picks a
+                        # plugin that has no live process to receive the dispatch,
+                        # surfacing fake "available capability" to the user. See
+                        # _resolve_plugin_status() in
+                        # plugin/server/application/plugins/query_service.py for
+                        # the full status taxonomy; "running" is the only state
+                        # where the plugin's process is alive and responsive.
+                        running = [
+                            p for p in raw
+                            if isinstance(p, dict) and p.get("status") == "running"
+                        ]
+                        if len(running) != len(raw):
+                            dropped = [
+                                (p.get("id"), p.get("status"))
+                                for p in raw
+                                if isinstance(p, dict) and p.get("status") != "running"
+                            ]
+                            logger.debug(
+                                "[Agent] plugin_list_provider filtered out %d non-running plugins: %s",
+                                len(dropped), dropped,
+                            )
+                        # AUDIENCE BOUNDARY: ``@llm_tool``-registered methods
+                        # also surface as plugin entries with id prefix
+                        # ``__llm_tool__<name>`` (see plugin SDK collect_entries).
+                        # Those tools are *also* exposed to the dialog LLM via
+                        # ``LLMSessionManager.tool_registry`` — letting the
+                        # analyzer/plugin LLM dispatch them too means the same
+                        # tool can be triggered by both LLMs, with the
+                        # analyzer path's ~10s decision latency racing against
+                        # the dialog LLM's direct call. The dialog LLM is the
+                        # canonical caller for ``@llm_tool`` (it gets the
+                        # tool's full schema, can pass typed args, and runs
+                        # synchronously); the analyzer should only see
+                        # ``@plugin_entry`` registered entries (queries /
+                        # status / config). Strip ``__llm_tool__`` entries
+                        # from the analyzer's view here.
+                        for p in running:
+                            entries = p.get("entries")
+                            if isinstance(entries, list):
+                                p["entries"] = [
+                                    e for e in entries
+                                    if not (
+                                        isinstance(e, dict)
+                                        and isinstance(e.get("id"), str)
+                                        and e["id"].startswith("__llm_tool__")
+                                    )
+                                ]
+                        return running
             except Exception as e:
                 logger.debug(f"[Agent] plugin_list_provider http fetch failed: {e}")
             return []
@@ -3315,6 +3411,24 @@ async def startup():
         await Modules.agent_bridge.start()
     except Exception as e:
         logger.warning(f"[Agent] Event bridge startup failed: {e}")
+    # 免费版 Agent 每日配额耗尽 → 节流通知前端弹提示（最多每 10 秒一次）。
+    # consume_agent_daily_quota 跑在 worker 线程里调这个回调，用 run_coroutine_threadsafe
+    # 把异步 ZeroMQ emit 调度回 agent_server 的事件循环；不 .result()，保持非阻塞。
+    try:
+        _quota_notify_loop = asyncio.get_running_loop()
+
+        def _notify_agent_quota_exceeded(used: int, limit: int) -> None:
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    _emit_main_event("agent_quota_exceeded", None, used=used, limit=limit),
+                    _quota_notify_loop,
+                )
+            except Exception as e:
+                logger.debug("[Agent] schedule agent_quota_exceeded emit failed: %s", e)
+
+        get_config_manager().register_quota_exceeded_notifier(_notify_agent_quota_exceeded)
+    except Exception as e:
+        logger.warning(f"[Agent] register quota-exceeded notifier failed: {e}")
     # Push initial server status so frontend can render Agent popup without waiting.
     _bump_state_revision()
 

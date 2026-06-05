@@ -14,6 +14,15 @@ let _apiKeyRegistry = {};
 let _assistApiProviders = {};
 // 核心API服务商完整信息（从后端加载）
 let _coreApiProviders = {};
+// 连通性测试确认可用的区域 URL，key 形如 "assist:qwen_intl"
+let _resolvedProviderUrls = {};
+// 核心 Key 输入框是否被用户手动改过；未改动时优先采用服务商管理簿的专属 Key
+let _coreApiKeyInputDirty = false;
+// 保存/检测期间锁住设置页，避免用户中途关闭或重复操作
+let _apiSaveInProgress = false;
+// 本页已提醒过的阿里美国 API URL，避免同一轮检测重复弹窗。
+const _aliyunUsApiWarningShownKeys = new Set();
+
 // 所有模型类型
 const MODEL_TYPES = ['conversation', 'summary', 'correction', 'emotion', 'vision', 'agent', 'omni', 'tts'];
 // Model types that support connectivity testing.
@@ -29,6 +38,88 @@ function markTtsConfigDirty() {
     if (_isLoadingSavedConfig) return;
     _ttsConfigDirty = true;
 }
+
+(function registerApiKeySettingsNamedWindow() {
+    const windowNames = Array.from(new Set(['neko_api_key', window.name].filter(name => typeof name === 'string' && name.trim())));
+    const registryPrefix = 'neko:named-window:';
+    const focusPrefix = 'neko:named-window-focus:';
+    const channelName = 'neko:named-window';
+    let channel = null;
+
+    function markActive() {
+        const payload = JSON.stringify({
+            url: window.location.href,
+            timestamp: Date.now()
+        });
+        for (const name of windowNames) {
+            try {
+                window.localStorage.setItem(registryPrefix + name, payload);
+            } catch (_) {}
+        }
+    }
+
+    function clearActive() {
+        for (const name of windowNames) {
+            try {
+                window.localStorage.removeItem(registryPrefix + name);
+            } catch (_) {}
+        }
+    }
+
+    function restoreAndFocus(payload) {
+        const restoreApi = window.nekoWindowControl;
+        if (restoreApi && typeof restoreApi.restore === 'function') {
+            Promise.resolve(restoreApi.restore()).catch(() => {});
+        }
+        try {
+            window.focus();
+        } catch (_) {}
+        if (payload && payload.type === 'focus_api_key_book' && typeof expandAndScrollToKeyBook === 'function') {
+            setTimeout(() => expandAndScrollToKeyBook(), 0);
+        }
+    }
+
+    function handleSharedWindowMessage(data) {
+        if (!data || !windowNames.includes(data.windowName)) return;
+        if (data.type === 'neko:named-window-focus') {
+            restoreAndFocus(null);
+        } else if (data.type === 'neko:named-window-message') {
+            restoreAndFocus(data.payload || null);
+        }
+    }
+
+    markActive();
+    setInterval(markActive, 1000);
+
+    try {
+        if ('BroadcastChannel' in window) {
+            channel = new BroadcastChannel(channelName);
+            channel.onmessage = event => handleSharedWindowMessage(event.data);
+        }
+    } catch (_) {
+        channel = null;
+    }
+
+    window.addEventListener('storage', event => {
+        if (!event.key || !event.newValue) return;
+        if (!windowNames.some(name => event.key === focusPrefix + name)) return;
+        try {
+            handleSharedWindowMessage(JSON.parse(event.newValue));
+        } catch (_) {}
+    });
+
+    function cleanupRegistry() {
+        clearActive();
+        if (channel && typeof channel.close === 'function') {
+            try {
+                channel.close();
+            } catch (_) {}
+        }
+    }
+
+    window.addEventListener('pagehide', cleanupRegistry);
+    window.addEventListener('unload', cleanupRegistry);
+})();
 
 function setInputValue(elementId, value, placeholder) {
     const element = document.getElementById(elementId);
@@ -53,6 +144,73 @@ function looksLikeLegacyGptSovitsConfig(ttsModelUrl, ttsModelId = '', ttsModelAp
         || lowerUrl.startsWith('http://localhost:')
         || lowerUrl.startsWith('https://127.0.0.1:')
         || lowerUrl.startsWith('https://localhost:');
+}
+
+function getProviderResolvedUrl(scope, providerKey) {
+    const key = `${scope}:${providerKey}`;
+    return (_resolvedProviderUrls && _resolvedProviderUrls[key]) || '';
+}
+
+function getProviderOpenrouterUrl(providerKey, profile) {
+    if (!profile) return '';
+    return getProviderResolvedUrl('assist', providerKey)
+        || profile.openrouter_url
+        || (Array.isArray(profile.openrouter_urls) ? profile.openrouter_urls[0] : '')
+        || '';
+}
+
+function getProviderCoreUrl(providerKey, profile) {
+    if (!profile) return '';
+    return getProviderResolvedUrl('core', providerKey)
+        || profile.core_url
+        || (Array.isArray(profile.core_urls) ? profile.core_urls[0] : '')
+        || '';
+}
+
+function isAliyunUsApiUrl(url) {
+    const rawUrl = String(url || '').trim();
+    if (!rawUrl) return false;
+    try {
+        return new URL(rawUrl).hostname.toLowerCase() === 'dashscope-us.aliyuncs.com';
+    } catch (error) {
+        return rawUrl.toLowerCase().includes('dashscope-us.aliyuncs.com');
+    }
+}
+
+function showAliyunUsApiWarningModal() {
+    const modal = document.getElementById('aliyun-us-api-warning-modal');
+    if (!modal) {
+        showStatus(
+            window.t
+                ? window.t('api.aliyunUsApiWarning.message')
+                : '当前使用了阿里的美国API，不支持TTS与实时语音，建议更换阿里的新加坡API',
+            'error'
+        );
+        return;
+    }
+    modal.style.display = 'flex';
+}
+
+function closeAliyunUsApiWarningModal() {
+    const modal = document.getElementById('aliyun-us-api-warning-modal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
+}
+
+function maybeShowAliyunUsApiWarning(scope, providerKey, resolvedUrl) {
+    if (!isAliyunUsApiUrl(resolvedUrl)) return;
+    const warningKey = `${scope}:${providerKey}:${resolvedUrl}`;
+    if (_aliyunUsApiWarningShownKeys.has(warningKey)) return;
+    _aliyunUsApiWarningShownKeys.add(warningKey);
+    showAliyunUsApiWarningModal();
+}
+
+function rememberResolvedProviderUrl(scope, providerKey, resolvedUrl) {
+    if (!scope || !providerKey || !resolvedUrl) return;
+    const key = `${scope}:${providerKey}`;
+    _resolvedProviderUrls[key] = resolvedUrl;
+    maybeShowAliyunUsApiWarning(scope, providerKey, resolvedUrl);
 }
 
 /**
@@ -151,7 +309,7 @@ function isProviderRestricted(providerKey) {
     return entry && entry.restricted;
 }
 
-function showStatus(message, type = 'info') {
+function showStatus(message, type = 'info', options = {}) {
     const statusDiv = document.getElementById('status');
     if (!statusDiv) {
         console.warn('[API Key Settings] status element not found');
@@ -168,11 +326,37 @@ function showStatus(message, type = 'info') {
     statusDiv.className = `status ${type}`;
     statusDiv.style.display = 'block';
 
+    if (options && options.sticky) {
+        return;
+    }
+
     const delay = type === 'error' ? 5000 : 3000;
     showStatus._hideTimer = setTimeout(() => {
         statusDiv.style.display = 'none';
         showStatus._hideTimer = null;
     }, delay);
+}
+
+function setApiSaveInProgress(isBusy) {
+    _apiSaveInProgress = !!isBusy;
+
+    const mainContent = document.getElementById('main-content');
+    if (mainContent) {
+        mainContent.classList.toggle('api-save-busy', _apiSaveInProgress);
+        mainContent.setAttribute('aria-busy', _apiSaveInProgress ? 'true' : 'false');
+        if ('inert' in mainContent) {
+            mainContent.inert = _apiSaveInProgress;
+        } else if (_apiSaveInProgress) {
+            mainContent.setAttribute('inert', '');
+        } else {
+            mainContent.removeAttribute('inert');
+        }
+    }
+
+    const saveButton = document.getElementById('save-settings-btn');
+    if (saveButton) {
+        saveButton.disabled = _apiSaveInProgress;
+    }
 }
 
 function showCurrentApiKey(message, rawKey = '', hasKey = false) {
@@ -596,6 +780,33 @@ function toggleKeyBook() {
     }
 }
 
+function expandAndScrollToKeyBook(options = {}) {
+    const keyBookOptions = document.getElementById('key-book-options');
+    const keyBookButton = document.getElementById('key-book-toggle-btn');
+    if (keyBookOptions && keyBookOptions.style.display === 'none') {
+        keyBookOptions.style.display = 'block';
+        if (keyBookButton) keyBookButton.classList.add('rotated');
+    }
+
+    const section = document.getElementById('key-book-section');
+    if (section) {
+        section.scrollIntoView({
+            behavior: options.instant ? 'auto' : 'smooth',
+            block: 'center'
+        });
+    }
+}
+
+function shouldFocusKeyBookFromLocation() {
+    try {
+        const params = new URLSearchParams(window.location.search || '');
+        const focus = (params.get('focus') || params.get('target') || '').toLowerCase();
+        if (focus === 'key_book' || focus === 'key-book' || focus === 'keybook') return true;
+    } catch (_) { }
+    const hash = String(window.location.hash || '').toLowerCase();
+    return hash === '#key-book' || hash === '#key_book' || hash === '#keybook';
+}
+
 /**
  * 从 Key Book 读取某个 provider 的 key。
  * 返回 null 表示该 provider 的输入框不存在（如被 restricted 隐藏），
@@ -750,7 +961,7 @@ function onCustomModelProviderChange(modelType) {
                 const coreProviderKey = coreSelect ? coreSelect.value : '';
                 const coreProfile = _coreApiProviders[coreProviderKey] || {};
                 if (urlInput) {
-                    urlInput.value = coreProfile.core_url || '';
+                    urlInput.value = getProviderCoreUrl(coreProviderKey, coreProfile);
                     urlInput.setAttribute('readonly', 'readonly');
                 }
                 const coreBookKey = syncKeyFromBook(coreProviderKey);
@@ -758,7 +969,7 @@ function onCustomModelProviderChange(modelType) {
             } else {
                 const pInfo = _assistApiProviders[sourceProviderKey] || _coreApiProviders[sourceProviderKey] || {};
                 if (urlInput) {
-                    urlInput.value = pInfo.openrouter_url || pInfo.core_url || '';
+                    urlInput.value = getProviderOpenrouterUrl(sourceProviderKey, pInfo) || getProviderCoreUrl(sourceProviderKey, pInfo);
                     urlInput.setAttribute('readonly', 'readonly');
                 }
                 const bookKey = syncKeyFromBook(sourceProviderKey);
@@ -779,12 +990,12 @@ function onCustomModelProviderChange(modelType) {
         if (modelType === 'omni') {
             const coreProfile = _coreApiProviders[provider] || {};
             if (urlInput) {
-                urlInput.value = coreProfile.core_url || pInfo.core_url || '';
+                urlInput.value = getProviderCoreUrl(provider, coreProfile) || getProviderCoreUrl(provider, pInfo);
                 urlInput.setAttribute('readonly', 'readonly');
             }
         } else {
             if (urlInput) {
-                urlInput.value = pInfo.openrouter_url || pInfo.core_url || '';
+                urlInput.value = getProviderOpenrouterUrl(provider, pInfo) || getProviderCoreUrl(provider, pInfo);
                 urlInput.setAttribute('readonly', 'readonly');
             }
         }
@@ -810,15 +1021,7 @@ function ensureKeyBookLink(input) {
     link.style.cssText = 'font-size: 0.85em; color: #40C5F1; cursor: pointer; margin-left: 8px; white-space: nowrap;';
     link.addEventListener('click', (e) => {
         e.preventDefault();
-        // 展开 Key Book 区域并滚动到它
-        const options = document.getElementById('key-book-options');
-        const btn = document.getElementById('key-book-toggle-btn');
-        if (options && options.style.display === 'none') {
-            options.style.display = 'block';
-            if (btn) btn.classList.add('rotated');
-        }
-        const section = document.getElementById('key-book-section');
-        if (section) section.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        expandAndScrollToKeyBook();
     });
     parent.appendChild(link);
 }
@@ -990,6 +1193,9 @@ async function loadCurrentApiKey() {
         const response = await fetch('/api/config/core_api');
         if (response.ok) {
             const data = await response.json();
+            _resolvedProviderUrls = (data.resolvedProviderUrls && typeof data.resolvedProviderUrls === 'object')
+                ? { ...data.resolvedProviderUrls }
+                : {};
             // 设置API Key显示
             if (data.enableCustomApi) {
                 showCurrentApiKey(window.t ? window.t('api.currentUsingCustomApi') : '当前使用：自定义API模式', '', true);
@@ -1076,12 +1282,20 @@ async function loadCurrentApiKey() {
             // Use api_key_registry as single source of truth for field mapping
             Object.keys(_apiKeyRegistry).forEach(providerKey => {
                 if (providerKey === 'free') return;
+                // 当前核心 provider 对应的管理簿位置在上面已经用 data.api_key
+                // (coreApiKey, 权威值) 同步过了。这里再覆盖一次 data.assistApiKey<X>
+                // 是旧 assist 用法的残留：用户曾经把 qwen 当 assist 用过，留下了
+                // 一个旧 assistApiKeyQwen 字段；后来切回 qwen 当核心并换新 Key，
+                // 旧字段还在但已失效。保存时 _coreApiKeyInputDirty=false 会
+                // 优先用管理簿值 → coreApiKey 被悄悄 rollback 成旧 Key
+                // (Codex P1 #3258747306)。data.api_key 为空时不跳过 —— 那种情况
+                // step 1 没写过 keybook，仍然允许 assistApiKey<X> 提供初始值。
+                if (providerKey === data.coreApi && data.api_key) return;
                 const dataField = _apiKeyRegistry[providerKey].config_field;
                 if (!dataField || !data.hasOwnProperty(dataField)) return;
                 const val = data[dataField];
-                // 当前核心API服务商的Key已由上方 data.api_key 写入管理簿，
-                // 此处跳过以免 assistApiKey* 字段的旧值覆盖核心Key
-                if (providerKey === data.coreApi && data.api_key) return;
+                // 服务商专属 Key 优先进入管理簿；coreApiKey 仅作为旧配置回退。
+                // 这样 qwen_intl 同时作为核心/辅助时，不会用旧核心 Key 覆盖国际版 Key。
                 // Only sync non-empty values; empty strings from the backend
                 // usually mean "not configured" rather than "intentionally cleared".
                 if (val !== '') {
@@ -1451,6 +1665,30 @@ function toggleGptSovitsConfig() {
 
 // ==================== 结束 GPT-SoVITS v3 配置相关函数 ====================
 
+function updateAssistApiKeyInputAvailability() {
+    const assistApiSelect = document.getElementById('assistApiSelect');
+    const assistApiKeyInput = document.getElementById('assistApiKeyInput');
+    if (!assistApiSelect || !assistApiKeyInput) return;
+
+    const isFreeAssistApi = assistApiSelect.value === 'free';
+    assistApiKeyInput.disabled = isFreeAssistApi;
+    assistApiKeyInput.required = false;
+
+    if (isFreeAssistApi) {
+        const freeText = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
+        assistApiKeyInput.placeholder = freeText;
+        assistApiKeyInput.dataset.realKey = '';
+        assistApiKeyInput.value = freeText;
+        attachMaskBehavior(assistApiKeyInput);
+        return;
+    }
+
+    assistApiKeyInput.placeholder = window.t ? window.t('api.assistApiKeyPlaceholder') : '留空使用管理簿对应 Key';
+    if (isFreeVersionText(getRealKey(assistApiKeyInput))) {
+        setMaskedInput(assistApiKeyInput, '');
+    }
+}
+
 // 切换自定义API启用状态
 function toggleCustomApi(skipAutoFill) {
     const enableCustomApi = document.getElementById('enableCustomApi');
@@ -1462,18 +1700,11 @@ function toggleCustomApi(skipAutoFill) {
     const isFreeVersion = coreApiSelect && coreApiSelect.value === 'free';
 
     // 禁用或启用相关控件
-    const assistApiKeyInput = document.getElementById('assistApiKeyInput');
-    if (isFreeVersion) {
-        if (assistApiSelect) assistApiSelect.disabled = true;
-        if (apiKeyInput) apiKeyInput.disabled = true;
-        if (assistApiKeyInput) assistApiKeyInput.disabled = true;
-        if (coreApiSelect) coreApiSelect.disabled = false;
-    } else {
-        if (coreApiSelect) coreApiSelect.disabled = false;
-        if (assistApiSelect) assistApiSelect.disabled = false;
-        if (apiKeyInput) apiKeyInput.disabled = false;
-        if (assistApiKeyInput) assistApiKeyInput.disabled = false;
-    }
+    // core=free 时只锁核心 API Key 输入，辅助 Key 输入由辅助服务商自身决定。
+    if (coreApiSelect) coreApiSelect.disabled = false;
+    if (assistApiSelect) assistApiSelect.disabled = false;
+    if (apiKeyInput) apiKeyInput.disabled = isFreeVersion;
+    updateAssistApiKeyInputAvailability();
 
     // 控制自定义API容器的折叠状态
     const customApiContainer = document.getElementById('custom-api-container');
@@ -1641,7 +1872,8 @@ document.addEventListener('DOMContentLoaded', function () {
 
 async function save_button_down(e) {
 
-    e.preventDefault();
+    if (e && e.preventDefault) e.preventDefault();
+    if (_apiSaveInProgress) return;
 
     const apiKeyInput = document.getElementById('apiKeyInput');
 
@@ -1677,6 +1909,16 @@ async function save_button_down(e) {
         apiKey = '';
     }
 
+    // handleCoreKeyChange 用 300ms 防抖才翻 _coreApiKeyInputDirty / syncKeyToBook,
+    // 用户快速 type/paste/clear 后立刻点保存会落在窗口内：dirty 还是 false、book DOM
+    // 也还是旧值。这里按 input 当前值和 book 快照对比直接判脏，绕过防抖窗口。
+    if (coreApi && coreApi !== 'free' && !_coreApiKeyInputDirty && _apiKeyRegistry[coreApi]) {
+        const bookSnapshot = syncKeyFromBook(coreApi);
+        if (bookSnapshot !== null && bookSnapshot !== apiKey) {
+            _coreApiKeyInputDirty = true;
+        }
+    }
+
     // 读取辅助API Key
     const assistKeyInput = document.getElementById('assistApiKeyInput');
     const assistKeyVal = getRealKey(assistKeyInput);
@@ -1696,7 +1938,9 @@ async function save_button_down(e) {
     // 【修复】将上方主输入框的修改强制覆盖到保存 payload 中
     // 否则直接点保存时，后台的 assistApiKey[Provider] 会保留 Key Book 中的旧值
     if (coreApi && coreApi !== 'free' && _apiKeyRegistry[coreApi]) {
-        if (!isFreeVersionText(apiKey)) {
+        if (_coreApiKeyInputDirty) {
+            allBookKeys[coreApi] = isFreeVersionText(apiKey) ? '' : apiKey;
+        } else if (!(coreApi in allBookKeys) && !isFreeVersionText(apiKey)) {
             allBookKeys[coreApi] = apiKey;
         }
     }
@@ -1771,10 +2015,19 @@ async function save_button_down(e) {
 
     const mcpToken = getVal('mcpTokenInput');
 
-    const apiKeyForSave = (coreApi === 'free' || assistApi === 'free') ? 'free-access' : apiKey;
+    const hasCoreBookKeyForSave = !!(
+        coreApi
+        && coreApi !== 'free'
+        && Object.prototype.hasOwnProperty.call(allBookKeys, coreApi)
+    );
+    const coreBookKeyForSave = hasCoreBookKeyForSave ? allBookKeys[coreApi] : '';
+    const effectiveCoreApiKeyForSave = (!_coreApiKeyInputDirty && hasCoreBookKeyForSave)
+        ? coreBookKeyForSave
+        : apiKey;
+    const apiKeyForSave = (coreApi === 'free' || assistApi === 'free') ? 'free-access' : effectiveCoreApiKeyForSave;
 
     // 免费版和启用自定义API时不需要API Key检查
-    if (!enableCustomApi && coreApi !== 'free' && assistApi !== 'free' && !apiKey) {
+    if (!enableCustomApi && coreApi !== 'free' && assistApi !== 'free' && !apiKeyForSave) {
         showStatus(window.t ? window.t('api.pleaseEnterApiKeyError') : '请输入API Key', 'error');
         return;
     }
@@ -1811,6 +2064,7 @@ async function save_button_down(e) {
         omniModelUrl, omniModelId, omniModelApiKey,
         ttsModelUrl, ttsModelId, ttsModelApiKey, ttsVoiceId,
         mcpToken, enableCustomApi, gptsovitsEnabled,
+        resolvedProviderUrls: _resolvedProviderUrls,
         ...modelProviders
     };
     if (gptsovitsEnabled) {
@@ -1838,7 +2092,81 @@ async function save_button_down(e) {
 document.getElementById('api-key-form').addEventListener('submit', save_button_down);
 
 
+async function runConnectivityCheckBeforeSave(params) {
+    if (typeof ConnectivityManager === 'undefined' || typeof ConnectivityManager.testAll !== 'function') {
+        return null;
+    }
+
+    showStatus(window.t ? window.t('connectivity.status.testing', '正在检测API连通性...') : '正在检测API连通性...', 'info', { sticky: true });
+    try {
+        const summary = await ConnectivityManager.testAll();
+        params.resolvedProviderUrls = _resolvedProviderUrls;
+        // 后端保存前复用本轮已测 URL，避免重复请求。
+        params.connectivityCheckedProviderUrls = summary && summary.resolvedProviderUrls
+            ? summary.resolvedProviderUrls
+            : {};
+        return summary;
+    } catch (error) {
+        console.warn('[ConnectivityManager] 保存前自动检测失败:', error);
+        params.resolvedProviderUrls = _resolvedProviderUrls;
+        // 检测失败时仍显式传空对象，让后端自行重新解析。
+        params.connectivityCheckedProviderUrls = {};
+        return {
+            total: 0,
+            succeeded: 0,
+            failed: 1,
+            error: error && error.message ? error.message : String(error)
+        };
+    }
+}
+
+
+function refreshAutoResolvedModelUrlsForSave(params) {
+    if (!params || typeof params !== 'object') return;
+
+    const resolveUrl = (modelType, providerMode) => {
+        if (!providerMode || providerMode === 'custom') return '';
+
+        let providerKey = providerMode;
+        let scope = 'assist';
+        if (providerMode === 'follow_core') {
+            providerKey = params.coreApi || '';
+            scope = modelType === 'omni' ? 'core' : 'assist';
+        } else if (providerMode === 'follow_assist') {
+            providerKey = params.assistApi || '';
+            scope = 'assist';
+        } else if (modelType === 'omni') {
+            scope = 'core';
+        }
+
+        if (!providerKey) return '';
+        if (scope === 'core') {
+            return getProviderCoreUrl(providerKey, _coreApiProviders[providerKey] || {});
+        }
+
+        const assistProfile = _assistApiProviders[providerKey] || _coreApiProviders[providerKey] || {};
+        return getProviderOpenrouterUrl(providerKey, assistProfile) || getProviderCoreUrl(providerKey, assistProfile);
+    };
+
+    MODEL_TYPES.forEach(modelType => {
+        if (modelType === 'tts' && params.gptsovitsEnabled) return;
+
+        const providerField = `${modelType}ModelProvider`;
+        const urlField = `${modelType}ModelUrl`;
+        const resolvedUrl = resolveUrl(modelType, params[providerField]);
+        if (!resolvedUrl) return;
+
+        params[urlField] = resolvedUrl;
+        const input = document.getElementById(urlField);
+        if (input && input.hasAttribute('readonly')) {
+            input.value = resolvedUrl;
+        }
+    });
+}
+
+
 async function saveApiKey(params) {
+    if (_apiSaveInProgress) return;
     const { apiKey, coreApi, assistApi, enableCustomApi } = params;
 
     // 统一处理免费版 API Key 的保存值
@@ -1853,7 +2181,11 @@ async function saveApiKey(params) {
         return;
     }
 
+    setApiSaveInProgress(true);
     try {
+        await runConnectivityCheckBeforeSave(params);
+        refreshAutoResolvedModelUrlsForSave(params);
+
         // Build the request body from params
         // Include empty strings so the backend can clear fields
         const body = {};
@@ -1924,6 +2256,8 @@ async function saveApiKey(params) {
         showStatus(window.t ? window.t('api.saveError', { error: error.message }) : '保存时出错: ' + error.message, 'error');
         // 即使出错也尝试重新加载当前API Key
         await loadCurrentApiKey();
+    } finally {
+        setApiSaveInProgress(false);
     }
 }
 
@@ -1972,8 +2306,6 @@ function updateAssistApiRecommendation() {
     const apiKeyInput = document.getElementById('apiKeyInput');
     const freeVersionHint = document.getElementById('freeVersionHint');
 
-    const assistApiKeyInput = document.getElementById('assistApiKeyInput');
-
     if (selectedCoreApi === 'free') {
         if (apiKeyInput) {
             apiKeyInput.disabled = true;
@@ -1981,17 +2313,23 @@ function updateAssistApiRecommendation() {
             apiKeyInput.required = false;
             apiKeyInput.value = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
         }
-        if (assistApiKeyInput) {
-            assistApiKeyInput.disabled = true;
-            assistApiKeyInput.value = '';
-        }
+        // 辅助 API 与核心 API 解耦：core=free 仅锁核心 API Key，
+        // 辅助 Key 输入是否可用由辅助服务商自身决定。
         if (freeVersionHint) {
             freeVersionHint.style.display = 'inline';
         }
 
-        // 禁用辅助API选择框，强制为免费版
-        assistApiSelect.disabled = true;
-        assistApiSelect.value = 'free';
+        assistApiSelect.disabled = false;
+        // free 选项保持可用——core=free 时它是合理默认；用户也能切换到其它 provider。
+        const freeOption = assistApiSelect.querySelector('option[value="free"]');
+        if (freeOption) {
+            freeOption.disabled = false;
+            freeOption.textContent = window.t ? window.t('api.freeVersion') : '免费版';
+        }
+        // 用户未显式选择 assist 时默认填 'free'，保持原免费版一键到位体验。
+        if (!assistApiSelect.value) {
+            assistApiSelect.value = 'free';
+        }
         // Directly recompute follow_assist slots instead of dispatching a change
         // event, which would re-enter updateAssistApiRecommendation() recursively.
         autoFillAssistApiKey();
@@ -2009,9 +2347,6 @@ function updateAssistApiRecommendation() {
             if (isFreeVersionText(getRealKey(apiKeyInput))) {
                 setMaskedInput(apiKeyInput, '');
             }
-        }
-        if (assistApiKeyInput) {
-            assistApiKeyInput.disabled = false;
         }
         if (freeVersionHint) {
             freeVersionHint.style.display = 'none';
@@ -2044,6 +2379,8 @@ function updateAssistApiRecommendation() {
             });
         }
     }
+
+    updateAssistApiKeyInputAvailability();
 
     // Auto-fill core API key from book
     autoFillCoreApiKey();
@@ -2082,12 +2419,14 @@ function autoFillCoreApiKey(force) {
     if (force && (bookKey === null || bookKey === '')) {
         setMaskedInput(apiKeyInput, '');
         attachMaskBehavior(apiKeyInput);
+        _coreApiKeyInputDirty = false;
         return;
     }
     // Non-forced: only fill if book has a value
     if (bookKey !== null && bookKey !== '') {
         setMaskedInput(apiKeyInput, bookKey);
         attachMaskBehavior(apiKeyInput);
+        _coreApiKeyInputDirty = false;
     }
 }
 
@@ -2101,10 +2440,10 @@ function autoFillAssistApiKey(force) {
 
     const selectedAssistApi = assistApiSelect.value;
     if (selectedAssistApi === 'free') {
-        setMaskedInput(assistApiKeyInput, '');
-        attachMaskBehavior(assistApiKeyInput);
+        updateAssistApiKeyInputAvailability();
         return;
     }
+    updateAssistApiKeyInputAvailability();
 
     const bookKey = syncKeyFromBook(selectedAssistApi);
     // When forced (provider switch, disabling custom API, or init), clear input if no book key
@@ -2412,6 +2751,19 @@ function updateErrorMessage(errorDisplayElement, errorCode, errorDetail) {
     errorDisplayElement.style.display = 'inline';
 }
 
+function buildConnectivityCacheId(scope, providerKey, key, url) {
+    // 内置 provider 的 cacheId 故意不带 url：URL 会在第一次 testKey 成功后从
+    // 候选值翻成 rememberResolvedProviderUrl 写入的 resolved_url，
+    // 把 url 带进 cacheId 会让指示灯/错误面板的注册 key 凭空换一份，
+    // 导致后续刷新打不到原 DOM，表现成检测灯卡住或丢状态。
+    // 同一组 scope+providerKey 在 key 也是空（free 端点专用）时退到空字符串占位，
+    // 也不要回退到 url，保持 cacheId 在 URL 翻新时稳定。
+    if (scope && providerKey) {
+        return `${scope}|${providerKey}|${key || ''}`;
+    }
+    return key || url || '';
+}
+
 // ==================== 连通性测试：ConnectivityManager ====================
 
 const ConnectivityManager = {
@@ -2456,16 +2808,24 @@ const ConnectivityManager = {
             if (coreProvider === 'free') {
                 // 免费版：使用预配置端点和 Key
                 const coreProfile = _coreApiProviders['free'] || {};
-                result.url = coreProfile.core_url || '';
+                result.url = getProviderCoreUrl('free', coreProfile);
                 result.key = 'free-access';
                 result.providerType = 'websocket';
             } else {
                 const coreProfile = _coreApiProviders[coreProvider] || {};
-                result.url = coreProfile.core_url || '';
-                result.key = getRealKey(apiKeyInput);
+                result.url = getProviderCoreUrl(coreProvider, coreProfile);
+                const inputKey = getRealKey(apiKeyInput);
+                const bookKey = syncKeyFromBook(coreProvider);
+                if (_coreApiKeyInputDirty && !isFreeVersionText(inputKey)) {
+                    result.key = inputKey;
+                } else if (bookKey !== null && bookKey !== '') {
+                    result.key = bookKey;
+                } else {
+                    result.key = inputKey;
+                }
                 result.providerType = 'websocket';
             }
-            result.cacheId = (result.key || result.url) ? ('core|' + (result.key || result.url)) : '';
+            result.cacheId = buildConnectivityCacheId(result.providerScope, result.providerKey, result.key, result.url);
             return result;
         }
 
@@ -2475,12 +2835,12 @@ const ConnectivityManager = {
             result.providerScope = 'assist';
             if (assistProvider === 'free') {
                 const assistProfile = _assistApiProviders['free'] || {};
-                result.url = assistProfile.openrouter_url || '';
+                result.url = getProviderOpenrouterUrl('free', assistProfile);
                 result.key = 'free-access';
                 result.providerType = 'openai_compatible';
             } else {
                 const assistProfile = _assistApiProviders[assistProvider] || {};
-                result.url = assistProfile.openrouter_url || '';
+                result.url = getProviderOpenrouterUrl(assistProvider, assistProfile);
                 // 优先从输入框读取，其次从 Key Book
                 const inputKey = getRealKey(assistApiKeyInput);
                 if (inputKey && !isFreeVersionText(inputKey)) {
@@ -2491,7 +2851,7 @@ const ConnectivityManager = {
                 }
                 result.providerType = 'openai_compatible';
             }
-            result.cacheId = (result.key || result.url) ? ('assist|' + (result.key || result.url)) : '';
+            result.cacheId = buildConnectivityCacheId(result.providerScope, result.providerKey, result.key, result.url);
             return result;
         }
 
@@ -2520,7 +2880,7 @@ const ConnectivityManager = {
                     // 非 omni 跟随核心时，使用核心服务商的 assist 配置
                     const coreProvider = coreApiSelect ? coreApiSelect.value : '';
                     const pInfo = _assistApiProviders[coreProvider] || _coreApiProviders[coreProvider] || {};
-                    result.url = pInfo.openrouter_url || pInfo.core_url || '';
+                    result.url = getProviderOpenrouterUrl(coreProvider, pInfo) || getProviderCoreUrl(coreProvider, pInfo);
                     result.key = coreResult.key;
                     result.providerType = 'openai_compatible';
                     result.providerKey = coreProvider;
@@ -2544,20 +2904,26 @@ const ConnectivityManager = {
                 result.key = (bookKey !== null) ? bookKey : '';
                 if (mt === 'omni') {
                     const coreProfile = _coreApiProviders[provider] || {};
-                    result.url = coreProfile.core_url || '';
+                    result.url = getProviderCoreUrl(provider, coreProfile);
                     result.providerType = 'websocket';
                     result.providerKey = provider;
                     result.providerScope = 'core';
                 } else {
                     const pInfo = _assistApiProviders[provider] || _coreApiProviders[provider] || {};
-                    result.url = pInfo.openrouter_url || pInfo.core_url || '';
+                    result.url = getProviderOpenrouterUrl(provider, pInfo) || getProviderCoreUrl(provider, pInfo);
                     result.providerType = 'openai_compatible';
                     result.providerKey = provider;
                     result.providerScope = 'assist';
                 }
             }
 
-            result.cacheId = result.key || result.url;
+            if (result.key || result.url) {
+                if (result.providerKey && result.providerScope) {
+                    result.cacheId = buildConnectivityCacheId(result.providerScope, result.providerKey, result.key, result.url);
+                } else {
+                    result.cacheId = `custom|${mt}|${result.url || ''}|${result.key || ''}`;
+                }
+            }
             return result;
         }
 
@@ -2630,16 +2996,22 @@ const ConnectivityManager = {
         });
         // 取消同一 cacheId 的前一次未完成请求（使用 scoped cacheId 避免不同上下文互相干扰）
         if (cacheId && this._abortControllers[cacheId]) {
-            this._abortControllers[cacheId].abort();
+            this._abortControllers[cacheId].cancelledByNewerTest = true;
+            this._abortControllers[cacheId].controller.abort();
         }
 
         const controller = new AbortController();
+        const controllerState = { controller, cancelledByNewerTest: false };
         if (cacheId) {
-            this._abortControllers[cacheId] = controller;
+            this._abortControllers[cacheId] = controllerState;
         }
 
         // 前端 15 秒超时
-        const timeoutId = setTimeout(() => controller.abort(), 15000);
+        let timedOut = false;
+        const timeoutId = setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+        }, 15000);
 
         try {
             // Build request body based on mode
@@ -2665,7 +3037,7 @@ const ConnectivityManager = {
 
             clearTimeout(timeoutId);
             // Only delete if map still points to this controller (avoid race with newer request)
-            if (cacheId && this._abortControllers[cacheId] === controller) {
+            if (cacheId && this._abortControllers[cacheId] === controllerState) {
                 delete this._abortControllers[cacheId];
             }
 
@@ -2678,21 +3050,33 @@ const ConnectivityManager = {
             }
 
             const data = await response.json();
+            if (data.success && data.resolved_url && provider_key && provider_scope) {
+                rememberResolvedProviderUrl(provider_scope, provider_key, data.resolved_url);
+            }
             return {
                 success: !!data.success,
                 error: data.error || null,
-                error_code: data.error_code || null
+                error_code: data.error_code || null,
+                resolved_url: data.resolved_url || null
             };
         } catch (err) {
             clearTimeout(timeoutId);
-            if (cacheId && this._abortControllers[cacheId] === controller) {
+            if (cacheId && this._abortControllers[cacheId] === controllerState) {
                 delete this._abortControllers[cacheId];
             }
 
             if (err.name === 'AbortError') {
+                if (controllerState.cancelledByNewerTest) {
+                    return {
+                        success: false,
+                        cancelled: true,
+                        error: null,
+                        error_code: null
+                    };
+                }
                 return {
                     success: false,
-                    error: 'Request timed out or was cancelled',
+                    error: timedOut ? 'Request timed out' : 'Request was cancelled',
                     error_code: 'timeout'
                 };
             }
@@ -2771,9 +3155,29 @@ const ConnectivityManager = {
             this.syncErrorDisplaysForKey(key);
         });
 
+        const summary = {
+            total: Object.keys(keyConfigs).length,
+            succeeded: 0,
+            failed: 0,
+            resolvedProviderUrls: {},
+            results: {}
+        };
+
         // 并发测试所有唯一配置
         const testPromises = Object.entries(keyConfigs).map(async ([cacheId, config]) => {
             const result = await this.testKey({ ...config, cache_id: cacheId });
+            if (result.cancelled) {
+                return {
+                    cacheId,
+                    cancelled: true,
+                    success: false,
+                    error: '',
+                    error_code: '',
+                    provider_key: config.provider_key || '',
+                    provider_scope: config.provider_scope || '',
+                    resolved_url: ''
+                };
+            }
             if (result.success) {
                 this.keyStatusMap[cacheId] = LightStatus.CONNECTED;
                 this.keyErrorMap[cacheId] = null;
@@ -2786,9 +3190,37 @@ const ConnectivityManager = {
             }
             this.syncLightsForKey(cacheId);
             this.syncErrorDisplaysForKey(cacheId);
+            return {
+                cacheId,
+                success: !!result.success,
+                error: result.error || '',
+                error_code: result.error_code || '',
+                provider_key: config.provider_key || '',
+                provider_scope: config.provider_scope || '',
+                resolved_url: result.resolved_url || ''
+            };
         });
 
-        await Promise.allSettled(testPromises);
+        const settledResults = await Promise.allSettled(testPromises);
+        settledResults.forEach(item => {
+            if (item.status === 'fulfilled') {
+                const value = item.value;
+                summary.results[value.cacheId] = value;
+                if (value.cancelled) {
+                    return;
+                } else if (value.success) {
+                    summary.succeeded += 1;
+                    if (value.provider_key && value.provider_scope && value.resolved_url) {
+                        summary.resolvedProviderUrls[`${value.provider_scope}:${value.provider_key}`] = value.resolved_url;
+                    }
+                } else {
+                    summary.failed += 1;
+                }
+            } else {
+                summary.failed += 1;
+            }
+        });
+        return summary;
     },
 
     /**
@@ -2877,6 +3309,9 @@ const ConnectivityManager = {
         // 并发测试
         const testPromises = Object.entries(keyConfigs).map(async ([cacheId, config]) => {
             const result = await this.testKey({ ...config, cache_id: cacheId });
+            if (result.cancelled) {
+                return;
+            }
             if (result.success) {
                 this.keyStatusMap[cacheId] = LightStatus.CONNECTED;
                 this.keyErrorMap[cacheId] = null;
@@ -3039,7 +3474,11 @@ function initConnectivityLights() {
                     url: resolved.url, api_key: resolved.key, provider_type: resolved.providerType, is_free: isFree,
                     cache_id: resolved.cacheId
                 });
-                if (result.success) {
+                if (result.cancelled) {
+                    coreTestBtn.classList.remove('testing');
+                    coreTestBtn.disabled = false;
+                    return;
+                } else if (result.success) {
                     ConnectivityManager.keyStatusMap[resolved.cacheId] = LightStatus.CONNECTED;
                     ConnectivityManager.keyErrorMap[resolved.cacheId] = null;
                 } else {
@@ -3090,7 +3529,11 @@ function initConnectivityLights() {
                     url: resolved.url, api_key: resolved.key, provider_type: resolved.providerType, is_free: isFree,
                     cache_id: resolved.cacheId
                 });
-                if (result.success) {
+                if (result.cancelled) {
+                    assistTestBtn.classList.remove('testing');
+                    assistTestBtn.disabled = false;
+                    return;
+                } else if (result.success) {
                     ConnectivityManager.keyStatusMap[resolved.cacheId] = LightStatus.CONNECTED;
                     ConnectivityManager.keyErrorMap[resolved.cacheId] = null;
                 } else {
@@ -3224,6 +3667,13 @@ function initConnectivityLights() {
     // Core API key input change
     if (apiKeyInput) {
         const handleCoreKeyChange = debounce(() => {
+            if (!_isLoadingSavedConfig) {
+                _coreApiKeyInputDirty = true;
+                const providerKey = coreApiSelect ? coreApiSelect.value : '';
+                if (providerKey && providerKey !== 'free') {
+                    syncKeyToBook(providerKey, getRealKey(apiKeyInput), apiKeyInput);
+                }
+            }
             const oldKey = coreCurrentKey;
             coreCurrentKey = reRegister(
                 lightRefs.core.light, lightRefs.core.errorDisplay,
@@ -3543,13 +3993,11 @@ async function initializePage() {
         if (coreApiSelect && apiKeyInput && freeVersionHint) {
             const selectedCoreApi = coreApiSelect.value;
 
-            const assistApiKeyInputInit = document.getElementById('assistApiKeyInput');
             if (selectedCoreApi === 'free') {
                 apiKeyInput.disabled = true;
                 apiKeyInput.placeholder = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
                 apiKeyInput.required = false;
                 apiKeyInput.value = window.t ? window.t('api.freeVersionNoApiKey') : '免费版无需API Key';
-                if (assistApiKeyInputInit) assistApiKeyInputInit.disabled = true;
                 freeVersionHint.style.display = 'inline';
             } else {
                 apiKeyInput.disabled = false;
@@ -3558,9 +4006,9 @@ async function initializePage() {
                 if (isFreeVersionText(getRealKey(apiKeyInput))) {
                     setMaskedInput(apiKeyInput, '');
                 }
-                if (assistApiKeyInputInit) assistApiKeyInputInit.disabled = false;
                 freeVersionHint.style.display = 'none';
             }
+            updateAssistApiKeyInputAvailability();
 
             updateAssistApiRecommendation();
             autoFillCoreApiKey(true);
@@ -3664,6 +4112,12 @@ async function initializePage() {
             toggleCustomApi(true);
         }, 0);
 
+        if (shouldFocusKeyBookFromLocation()) {
+            setTimeout(() => {
+                expandAndScrollToKeyBook();
+            }, 80);
+        }
+
         // Task 6.3: Auto-test removed per maintainer feedback (Wehos).
         // Manual test buttons are sufficient; auto-test on page load could
         // consume tokens without user consent and /models doesn't reliably
@@ -3685,6 +4139,13 @@ async function initializePage() {
 
 // 页面加载完成后开始初始化
 document.addEventListener('DOMContentLoaded', initializePage);
+
+window.addEventListener('message', event => {
+    if (event.origin !== window.location.origin) return;
+    if (event.data && event.data.type === 'focus_api_key_book') {
+        expandAndScrollToKeyBook();
+    }
+});
 
 // 兼容性：防止在某些情况下DOMContentLoaded不触发
 window.addEventListener('load', () => {

@@ -184,6 +184,11 @@
         restoreCurrentWindowFromOpener();
     });
 
+    window.nekoWindowControls = Object.assign({}, window.nekoWindowControls || {}, {
+        init: initWindowControls,
+        refresh: refreshMaximizeState
+    });
+
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', () => {
             initWindowControls();

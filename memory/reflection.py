@@ -238,6 +238,11 @@ class ReflectionEngine:
         # threading.Lock guards the dict itself (reads/writes of _alocks are
         # pure Python, no await inside this critical section).
         self._alocks_guard = threading.Lock()
+        # synth 失败退避的进程内镜像 {name: {key: {"n", "at"}}}。它是 session 内
+        # 的权威工作副本，磁盘只是持久化 + 重启恢复。这样即使 synth_backoff.json
+        # 写盘失败（只读 FS / 权限），失败计数也不会丢、dead-letter 闸门照常生效
+        # （Codex P2）。对齐 review 的 _maint_state 进程内持久语义。
+        self._synth_backoff_mem: dict[str, dict] = {}
 
     def _get_alock(self, name: str) -> asyncio.Lock:
         """Get (or lazily create) the per-character asyncio.Lock.
@@ -294,6 +299,106 @@ class ReflectionEngine:
     def _surfaced_path(self, name: str) -> str:
         from memory import ensure_character_dir
         return os.path.join(ensure_character_dir(self._config_manager.memory_dir, name), 'surfaced.json')
+
+    def _synth_backoff_path(self, name: str) -> str:
+        """Per-character sidecar tracking per-rid synthesis 失败次数。
+
+        synthesize_reflections 在 LLM 失败时没有任何可挂 attempts 的实体
+        （reflection 还没建），所以失败计数落在这个 ``{rid: attempts}`` map
+        里。rid 由 source_fact_ids 决定（确定性）——facts 一变 rid 就变、
+        attempts 天然复位，所以持续失败的同批 facts 会被 dead-letter，新
+        输入立即重试。
+        """
+        from memory import ensure_character_dir
+        return os.path.join(
+            ensure_character_dir(self._config_manager.memory_dir, name),
+            'synth_backoff.json',
+        )
+
+    async def _aload_synth_backoff_from_disk(self, name: str) -> dict:
+        """从磁盘读 {key: {"n": attempts(int), "at": last_fail_iso|None}} map；
+        缺文件 / 损坏 → 空 dict。兼容旧格式 {key: int}（at 补 None）。"""
+        path = self._synth_backoff_path(name)
+        if not await asyncio.to_thread(os.path.exists, path):
+            return {}
+        try:
+            data = await read_json_async(path)
+        except Exception:
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        out: dict[str, dict] = {}
+        for k, v in data.items():
+            if isinstance(v, dict):
+                try:
+                    out[str(k)] = {"n": int(v.get("n", 0)), "at": v.get("at")}
+                except (TypeError, ValueError):
+                    continue
+            else:
+                # 旧格式 {key: int}
+                try:
+                    out[str(k)] = {"n": int(v), "at": None}
+                except (TypeError, ValueError):
+                    continue
+        return out
+
+    async def _aload_synth_backoff(self, name: str) -> dict:
+        """返回失败退避 map。优先用进程内镜像（最新工作副本，即使上次写盘
+        失败也不丢计数）；首次访问该角色时从磁盘加载并缓存。"""
+        cached = self._synth_backoff_mem.get(name)
+        if cached is not None:
+            return cached
+        loaded = await self._aload_synth_backoff_from_disk(name)
+        self._synth_backoff_mem[name] = loaded
+        return loaded
+
+    async def _asave_synth_backoff(self, name: str, backoff: dict) -> None:
+        """先更新进程内镜像（session 内权威，保证写盘失败也不丢 throttle），
+        再 best-effort 落盘。写盘失败 WARN 但不抛——镜像已生效，dead-letter
+        闸门照常工作；重启才会从磁盘读，那时已是另一种恢复语境（Codex P2）。"""
+        self._synth_backoff_mem[name] = backoff
+        try:
+            await atomic_write_json_async(
+                self._synth_backoff_path(name), backoff,
+                indent=2, ensure_ascii=False,
+            )
+        except Exception as e:
+            logger.warning(
+                f"[Reflection] {name}: synth_backoff 写盘失败（进程内镜像仍生效，"
+                f"throttle 不受影响）: {e}"
+            )
+
+    async def _abump_synth_backoff(self, name: str, key: str, reason: str) -> int:
+        """记 key 一次合成失败，返回累计次数并戳上失败时刻（供时间自愈）。
+        caller 不持锁（失败分支都在 post-LLM 锁之外），这里自取 _get_alock
+        做 read-modify-write。"""
+        async with self._get_alock(name):
+            # 拷贝一份再改：_aload_synth_backoff 返回的是进程内镜像引用，
+            # 由 _asave_synth_backoff 统一回写，避免半改状态被并发读看到。
+            backoff = dict(await self._aload_synth_backoff(name))
+            attempts = backoff.get(key, {}).get("n", 0) + 1
+            entry = {"n": attempts, "at": datetime.now().isoformat()}
+            backoff[key] = entry
+            # 防失败 key 长期累积：超阈值时只留 attempts 最高的若干条
+            # （dead-letter 候选优先保活，被丢的低分 key 下次失败重新计起）。
+            if len(backoff) > 64:
+                backoff = dict(
+                    sorted(backoff.items(), key=lambda kv: -kv[1].get("n", 0))[:64]
+                )
+                backoff[key] = entry  # 确保当前 key 不被裁掉
+            await self._asave_synth_backoff(name, backoff)
+        logger.debug(
+            f"[Reflection] {name}: key {key} 合成失败退避 → {attempts} ({reason})"
+        )
+        return attempts
+
+    async def _aclear_synth_backoff(self, name: str, key: str) -> None:
+        """key 成功落盘后清掉其失败记录。caller 不持锁。"""
+        async with self._get_alock(name):
+            backoff = dict(await self._aload_synth_backoff(name))
+            if key in backoff:
+                del backoff[key]
+                await self._asave_synth_backoff(name, backoff)
 
     # ── persistence ──────────────────────────────────────────────────
 
@@ -368,6 +473,14 @@ class ReflectionEngine:
             'embedding': None,
             'embedding_text_sha256': None,
             'embedding_model_id': None,
+            # MemoryRefineEngine cluster_hash skip 状态（Phase A-3）。
+            # cluster_hash = sha1(sorted(member_ids))；refine 跑完后所有
+            # 存活成员都 stamp 上当前 cluster 的 hash + timestamp。下次
+            # 同 cluster 再形成时，全员 hash 命中 + 未超 REVISIT_AFTER_DAYS
+            # → 直接 skip（不送 LLM）。任一成员被 merge/split/modify/discard
+            # 后新条目无 stamp，cluster member set 变化 → hash 自然 invalidate。
+            'last_refine_cluster_hash': None,
+            'last_refine_at': None,
         }
         for k, v in defaults.items():
             entry.setdefault(k, v)
@@ -656,6 +769,14 @@ class ReflectionEngine:
         if len(unabsorbed) < MIN_FACTS_FOR_REFLECTION:
             return []
 
+        # 失败退避 key 必须覆盖**全部** unabsorbed facts，所以在 cap 之前先取。
+        # 不能用 rid（下面那个 capped top-N 子集的 hash）当退避 key：否则一个
+        # poison 的 top-N 批次 dead-letter 后，新到的低 importance facts 进不了
+        # top-N → rid 不变 → 合成被永久跳过，把整个 unabsorbed 池饿死（Codex P2）。
+        # 用全集 key 时任何新 fact 都会改 key → 预算复位 → 重试一次。
+        all_unabsorbed_ids = sorted(f['id'] for f in unabsorbed)
+        backoff_key = _reflection_id_from_facts(all_unabsorbed_ids)
+
         # Cap unabsorbed facts entering this synthesis call. 上游
         # aget_unabsorbed_facts 没有 limit 参数，长期不上线时可能堆几百
         # 条；按 importance(desc) → 创建时间(asc) 排序后取前 N 条，避免
@@ -690,29 +811,55 @@ class ReflectionEngine:
             )
             return []
 
+        # 失败退避（dead-letter）：同一批 unabsorbed facts(backoff_key) 合成已连续
+        # 失败 ≥ MEMORY_LIVENESS_MAX_ATTEMPTS 次 → 不再每 180s 原样重抽空跑 LLM。
+        # 任一 unabsorbed fact 增减 → backoff_key 变、计数天然复位（用户审计 #2）。
+        # 时间自愈：池子不变（挂机）时，每过 MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS
+        # 放行一次 probe，让一次性模型宕机恢复后自愈，poison 批仍被压到每 5h 一次。
+        from config import (
+            MEMORY_LIVENESS_MAX_ATTEMPTS,
+            MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
+        )
+        from memory.temporal import cooldown_elapsed
+        synth_entry = (await self._aload_synth_backoff(lanlan_name)).get(backoff_key, {})
+        synth_attempts = synth_entry.get("n", 0)
+        if synth_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS and not cooldown_elapsed(
+            synth_entry.get("at"), MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
+        ):
+            logger.debug(
+                f"[Reflection] {lanlan_name}: backoff_key {backoff_key} 合成连续失败 "
+                f"{synth_attempts} 次 ≥ {MEMORY_LIVENESS_MAX_ATTEMPTS}，dead-letter 跳过"
+                f"（未到 {MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS}s 自愈窗口）"
+            )
+            return []
+
         _, _, _, _, name_mapping, _, _, _, _ = await self._config_manager.aget_character_data()
         master_name = name_mapping.get('human', '主人')
 
         facts_text = "\n".join(f"- {f['text']} (importance: {f.get('importance', 5)})" for f in unabsorbed)
+        related_block = await self._build_related_context_block(lanlan_name, unabsorbed)
         reflection_prompt = get_reflection_prompt(get_global_language())
-        prompt = reflection_prompt.replace('{FACTS}', facts_text)
+        prompt = reflection_prompt.replace('{RELATED_CONTEXT_BLOCK}', related_block)
+        prompt = prompt.replace('{FACTS}', facts_text)
         prompt = prompt.replace('{LANLAN_NAME}', lanlan_name)
         prompt = prompt.replace('{MASTER_NAME}', master_name)
 
         try:
             set_call_type("memory_reflection")
             api_config = self._config_manager.get_model_api_config('summary')
-            # timeout=120: 开 thinking 后输出多字段 JSON ontology（reflection
-            # text + entity + relation_type + temporal_scope + subject）+ 思考
-            # 过程，比简单分类长。LLM 在锁外，不阻塞同角色其他 reflection 写。
+            # timeout: 见 MEMORY_LLM_HARD_TIMEOUT_SECONDS 注释（上游转发
+            # 120s hard cap，client 必须 ≤110s）。开 thinking 后输出多字段
+            # JSON ontology 比简单分类长，吃满 110 也算合理。LLM 在锁外
+            # 不阻塞同角色其他 reflection 写。
             # max_retries=0: 禁 SDK 自动重试（无业务 retry，单次即终态，外层
             # try/except 兜底返回 []）。
             # extra_body=None: 显式开 thinking——synth 是创意+结构化合成，
             # 思考能改善 ontology 字段的一致性和 reflection text 的质量。
+            from config import MEMORY_LLM_HARD_TIMEOUT_SECONDS
             llm = create_chat_llm(
                 api_config['model'],
                 api_config['base_url'], api_config['api_key'],
-                timeout=120, max_retries=0,
+                timeout=MEMORY_LLM_HARD_TIMEOUT_SECONDS, max_retries=0,
                 extra_body=None,
             )
             try:
@@ -725,10 +872,12 @@ class ReflectionEngine:
             result = robust_json_loads(raw)
             if not isinstance(result, dict):
                 logger.warning(f"[Reflection] LLM 返回非 dict: {type(result)}")
+                await self._abump_synth_backoff(lanlan_name, backoff_key, "non-dict response")
                 return []
             reflection_text = result.get('reflection', '')
             if not isinstance(reflection_text, str):
                 logger.warning(f"[Reflection] reflection 字段非 str: {type(reflection_text)}")
+                await self._abump_synth_backoff(lanlan_name, backoff_key, "reflection field non-str")
                 return []
             reflection_text = reflection_text.strip()
             reflection_entity = result.get('entity', 'relationship')
@@ -771,9 +920,11 @@ class ReflectionEngine:
                 subject = None
         except Exception as e:
             logger.warning(f"[Reflection] 合成失败: {e}")
+            await self._abump_synth_backoff(lanlan_name, backoff_key, f"LLM/parse exception: {e}")
             return []
 
         if not reflection_text:
+            await self._abump_synth_backoff(lanlan_name, backoff_key, "empty reflection text")
             return []
 
         # Create pending reflection — id 已在函数开头由 source_fact_ids 决定
@@ -846,6 +997,11 @@ class ReflectionEngine:
                 await self.asave_reflections(lanlan_name, reflections)
                 created = True
 
+        # reflection 已落盘（本次 append 或并发对方先写），清掉本次 unabsorbed
+        # 全集的失败退避记录——锁外调用（_aclear_synth_backoff 自取锁，避免
+        # reentrant 死锁）。
+        await self._aclear_synth_backoff(lanlan_name, backoff_key)
+
         # 无条件 mark_absorbed：幂等，且覆盖 save 成功后但在此崩溃的补跑情况
         # （fact_store 自己有锁，不需要在 reflection 锁内）
         await self._fact_store.amark_absorbed(lanlan_name, source_fact_ids)
@@ -859,6 +1015,462 @@ class ReflectionEngine:
         logger.info(f"[Reflection] {lanlan_name}: 合成了新反思 {rid} (len={len(reflection_text)} chars)")
         print(f"[Reflection] {lanlan_name}: 新反思 {rid}: {reflection_text[:50]}...")
         return [reflection]
+
+    async def _build_related_context_block(
+        self, lanlan_name: str, unabsorbed: list[dict]
+    ) -> str:
+        """Embedding 可用时召回 absorbed fact 作 RELATED_CONTEXT；不可用 /
+        召回为空 → 返回空字符串（{RELATED_CONTEXT_BLOCK} 渲染消失，prompt 与
+        改造前等价）。远期 fact 仅作参考，不进 source_fact_ids、不
+        mark_absorbed —— 幂等性由 unabsorbed 集合的 rid hash 保证。"""
+        try:
+            from memory.embeddings import (
+                get_embedding_service,
+                is_cached_embedding_valid,
+            )
+            # 同时检查 is_disabled (sticky 关闭) 和 is_available (READY) ——
+            # INIT/LOADING 状态下 is_disabled=False 但 is_available=False，
+            # 若只看前者，reranker 会降级到 evidence-only 排序，把无关历史
+            # fact 当 "相关背景" 塞进 prompt（Codex P2 #1392）。
+            service = get_embedding_service()
+            if service.is_disabled() or not service.is_available():
+                return ""
+            model_id = service.model_id()
+            if not model_id:
+                return ""
+        except Exception:
+            return ""
+
+        if not unabsorbed:
+            return ""
+
+        unabsorbed_ids = {f['id'] for f in unabsorbed if 'id' in f}
+        try:
+            # Phase C-2: 用 full 池含归档 fact，让远期 absorbed 也能被召回
+            all_facts = await self._fact_store.aload_facts_full(lanlan_name)
+        except Exception as e:
+            logger.warning(f"[Reflection] related context load_facts 失败: {e}")
+            return ""
+
+        # Codex P2 #1392：必须 pre-filter 出有 valid embedding 的 fact 才能
+        # 进 reranker。fact 没 evidence `score` 字段，若放进 rerank=False 的
+        # coarse_rank 而 embedding 又是 stale/missing（model-id 切换后 / backfill
+        # 前），fallback 路径会按 evidence_score=0 排序 → 顺序近似随机 →
+        # 把任意 fact 当 "相关背景" 注入 prompt。这里先 filter，pool 为空就
+        # early return，宁可没 RELATED_CONTEXT 也不要塞无关历史。
+        absorbed_pool = [
+            f for f in all_facts
+            if f.get('absorbed')
+            and f.get('id') not in unabsorbed_ids
+            and is_cached_embedding_valid(f, f.get('text', ''), model_id)
+        ]
+        if not absorbed_pool:
+            return ""
+
+        query_texts = [f.get('text', '') for f in unabsorbed if f.get('text')]
+        if not query_texts:
+            return ""
+
+        try:
+            from memory.recall import MemoryRecallReranker
+            from config import (
+                REFLECTION_RELATED_PER_QUERY_K,
+                REFLECTION_RELATED_TOTAL_CAP,
+            )
+            reranker = MemoryRecallReranker()
+            # Per-query top-K（每条 unabsorbed fact 单独享 ``PER_QUERY_K`` 配额，
+            # union dedup 后截到 ``TOTAL_CAP``），不走 max-pool 全局预算。详见
+            # ``aretrieve_per_query_topk`` docstring 和 PR #1401 thread：max-pool
+            # 在 unabsorbed 主题分散时会让冷门主题挤不进 anchor，per-query 配
+            # 额保证每条 unabsorbed 至少能拿自己的近邻。
+            related = await reranker.aretrieve_per_query_topk(
+                absorbed_pool, query_texts,
+                per_query_k=REFLECTION_RELATED_PER_QUERY_K,
+                total_cap=REFLECTION_RELATED_TOTAL_CAP,
+            )
+        except Exception as e:
+            logger.warning(f"[Reflection] related context 召回失败: {e}")
+            return ""
+
+        if not related:
+            return ""
+
+        related_text = "\n".join(
+            f"- {f.get('text', '')} (importance: {f.get('importance', 5)})"
+            for f in related
+        )
+        return (
+            "======以下为相关历史背景======\n"
+            f"{related_text}\n"
+            "（仅供参考，本轮不要为它们单独产出 reflection）\n"
+            "======以上为相关历史背景======\n\n"
+        )
+
+    # ── refine apply (Phase A-3 MemoryRefineEngine) ─────────────────
+
+    @staticmethod
+    def _refine_reflection_id(text: str) -> str:
+        """Salted hash so split-into-N pieces get distinct ids even when
+        the underlying fact set is shared."""
+        salt = datetime.now().isoformat()
+        return f"ref_{hashlib.sha1(f'{text}|{salt}'.encode('utf-8')).hexdigest()[:16]}"
+
+    def _build_split_reflection(
+        self,
+        src: dict,
+        produce_item: dict,
+        entity: str,
+        now: datetime,
+        *,
+        split_count: int,
+    ) -> dict:
+        """构造 split 产出的新 reflection；继承 src 的 source_fact_ids、
+        ontology、event_when。reinforcement 按实际 split_count 等分
+        （Codex P2 #1392：原本硬编码 /2，N>2 时低估了每条强度）。
+        split_count 至少 2（caller 在 len(produce)<2 时已跳过）。"""
+        text = str(produce_item.get('text', '')).strip()
+        rel_type = produce_item.get('relation_type') or src.get('relation_type')
+        temporal = produce_item.get('temporal_scope') or src.get('temporal_scope')
+        denom = max(int(split_count), 2)
+        return self._normalize_reflection({
+            'id': self._refine_reflection_id(text),
+            'text': text,
+            'entity': entity,
+            'status': src.get('status') or 'pending',
+            'source_fact_ids': list(src.get('source_fact_ids') or []),
+            'created_at': now.isoformat(),
+            'reinforcement': float(src.get('reinforcement', 0) or 0) / denom,
+            'relation_type': rel_type,
+            'temporal_scope': temporal,
+            'subject': src.get('subject'),
+            'event_when_raw': src.get('event_when_raw'),
+            'event_start_at': src.get('event_start_at'),
+            'event_end_at': src.get('event_end_at'),
+            'schema_version': src.get('schema_version', 2),
+        })
+
+    def _build_merge_reflection(
+        self,
+        srcs: list[dict],
+        fact_source_ids: list[str],
+        produce: dict,
+        entity: str,
+        now: datetime,
+    ) -> dict:
+        """构造 merge 产出的新 reflection；合并 source_fact_ids（含
+        absorbed_from_fact_ids），status 取最高（promoted > confirmed >
+        pending），reinforcement 取最大。"""
+        text = str(produce.get('text', '')).strip()
+        rel_type = produce.get('relation_type') or (srcs[0].get('relation_type') if srcs else None)
+        temporal = produce.get('temporal_scope') or (srcs[0].get('temporal_scope') if srcs else None)
+        combined_facts: set[str] = set(fact_source_ids)
+        for s in srcs:
+            combined_facts.update(s.get('source_fact_ids') or [])
+        status_priority = {'promoted': 3, 'confirmed': 2, 'pending': 1}
+        best_status = max(
+            (s.get('status', 'pending') for s in srcs),
+            key=lambda st: status_priority.get(st, 0),
+            default='pending',
+        )
+        max_rein = max(
+            (float(s.get('reinforcement', 0) or 0) for s in srcs),
+            default=0.0,
+        )
+        first = srcs[0] if srcs else {}
+        return self._normalize_reflection({
+            'id': self._refine_reflection_id(text),
+            'text': text,
+            'entity': entity,
+            'status': best_status,
+            'source_fact_ids': sorted(combined_facts),
+            'created_at': now.isoformat(),
+            'reinforcement': max_rein,
+            'relation_type': rel_type,
+            'temporal_scope': temporal,
+            'subject': first.get('subject'),
+            'event_when_raw': first.get('event_when_raw'),
+            'event_start_at': first.get('event_start_at'),
+            'event_end_at': first.get('event_end_at'),
+            'schema_version': first.get('schema_version', 2),
+        })
+
+    async def apply_refine_actions(
+        self,
+        name: str,
+        entity: str,
+        cluster: list[dict],
+        actions: list[dict],
+        cluster_hash: str,
+    ) -> int:
+        """Apply MemoryRefineEngine 输出的四件套 actions 到 reflections。
+
+        cluster 内 fact entries 是只读信息源 —— 任何针对 fact id 的
+        split / discard / modify 一律 reject；fact 只能作 merge / modify
+        的 absorbed_from_fact_ids。代码层兜底，不靠 prompt 自觉。
+
+        Lock 内：reload → validate → apply → stamp → save。
+        新产生的 reflection 不 stamp —— 下轮 cron 重新审视。
+
+        Returns: 成功应用的 action 数。"""
+        from memory.refine import REFINE_TYPE_KEY, VALID_REFINE_ACTIONS
+
+        cluster_refl_ids = {
+            e.get('id') for e in cluster
+            if isinstance(e, dict)
+            and e.get(REFINE_TYPE_KEY) == 'reflection'
+            and e.get('id')
+        }
+        cluster_fact_ids = {
+            e.get('id') for e in cluster
+            if isinstance(e, dict)
+            and e.get(REFINE_TYPE_KEY) == 'fact'
+            and e.get('id')
+        }
+
+        async with self._get_alock(name):
+            reflections = await self.aload_reflections(name)
+            refl_by_id = {
+                r.get('id'): r for r in reflections
+                if isinstance(r, dict) and r.get('id')
+            }
+
+            consumed: set[str] = set()
+            produced: list[dict] = []
+            applied = 0
+            now = datetime.now()
+            now_iso = now.isoformat()
+
+            for act_obj in actions:
+                if not isinstance(act_obj, dict):
+                    continue
+                act = act_obj.get('action')
+                if act not in VALID_REFINE_ACTIONS:
+                    logger.warning(f"[Refine apply] reflection: 非法 action {act!r}")
+                    continue
+
+                # fact 不可作 split / discard / modify 的 source_id —— 代码层硬拦
+                if act in ('split', 'discard', 'modify'):
+                    sid = act_obj.get('source_id')
+                    if sid in cluster_fact_ids:
+                        logger.warning(
+                            f"[Refine apply] reflection: 拒绝对 fact id={sid} 做 {act}"
+                        )
+                        continue
+
+                if act == 'split':
+                    src_id = act_obj.get('source_id')
+                    if not src_id or src_id not in cluster_refl_ids or src_id in consumed:
+                        continue
+                    src = refl_by_id.get(src_id)
+                    if not src:
+                        continue
+                    produce = act_obj.get('produce')
+                    if not isinstance(produce, list) or len(produce) < 2:
+                        continue
+                    # 先过滤出有效 produce items，再以实际数量作 split_count
+                    valid_produce = [
+                        p for p in produce
+                        if isinstance(p, dict) and str(p.get('text', '')).strip()
+                    ]
+                    if len(valid_produce) < 2:
+                        continue
+                    new_entries = [
+                        self._build_split_reflection(
+                            src, p, entity, now, split_count=len(valid_produce),
+                        )
+                        for p in valid_produce
+                    ]
+                    produced.extend(new_entries)
+                    consumed.add(src_id)
+                    applied += 1
+
+                elif act == 'merge':
+                    src_ids_raw = act_obj.get('source_ids') or []
+                    if not isinstance(src_ids_raw, list):
+                        continue
+                    # source_ids 必须全是 reflection；含 fact id → 拒绝整个 action
+                    if any(sid in cluster_fact_ids for sid in src_ids_raw):
+                        logger.warning(
+                            "[Refine apply] reflection: merge source_ids 含 fact，拒绝"
+                        )
+                        continue
+                    valid_refl_ids = [
+                        sid for sid in src_ids_raw
+                        if sid in cluster_refl_ids
+                        and sid in refl_by_id
+                        and sid not in consumed
+                    ]
+                    if len(valid_refl_ids) < 2:
+                        continue
+                    absorbed_fact_ids = act_obj.get('absorbed_from_fact_ids') or []
+                    if not isinstance(absorbed_fact_ids, list):
+                        absorbed_fact_ids = []
+                    valid_fact_sources = [
+                        fid for fid in absorbed_fact_ids if fid in cluster_fact_ids
+                    ]
+                    produce = act_obj.get('produce')
+                    if not isinstance(produce, dict):
+                        continue
+                    text = str(produce.get('text', '')).strip()
+                    if not text:
+                        continue
+                    new_refl = self._build_merge_reflection(
+                        [refl_by_id[sid] for sid in valid_refl_ids],
+                        valid_fact_sources, produce, entity, now,
+                    )
+                    produced.append(new_refl)
+                    consumed.update(valid_refl_ids)
+                    applied += 1
+
+                elif act == 'modify':
+                    src_id = act_obj.get('source_id')
+                    if not src_id or src_id not in cluster_refl_ids or src_id in consumed:
+                        continue
+                    src = refl_by_id.get(src_id)
+                    if not src:
+                        continue
+                    produce = act_obj.get('produce')
+                    if not isinstance(produce, dict):
+                        continue
+                    new_text = str(produce.get('text', '')).strip()
+                    if not new_text:
+                        continue
+                    absorbed_fact_ids = act_obj.get('absorbed_from_fact_ids') or []
+                    if not isinstance(absorbed_fact_ids, list):
+                        absorbed_fact_ids = []
+                    valid_fact_sources = [
+                        fid for fid in absorbed_fact_ids if fid in cluster_fact_ids
+                    ]
+                    reason = str(act_obj.get('reason') or 'refine_modify')
+                    old_text = src.get('text', '')
+                    src['text'] = new_text
+                    existing_sources = list(src.get('source_fact_ids') or [])
+                    src['source_fact_ids'] = sorted(
+                        set(existing_sources + valid_fact_sources)
+                    )
+                    mod_history = list(src.get('modification_history') or [])
+                    mod_history.append({
+                        'old_text': old_text,
+                        'modified_at': now_iso,
+                        'reason': reason,
+                        'absorbed_fact_ids': valid_fact_sources,
+                    })
+                    src['modification_history'] = mod_history
+                    # 文本变 → embedding 失效（下次 worker 扫描重 embed）
+                    src['embedding'] = None
+                    src['embedding_text_sha256'] = None
+                    src['embedding_model_id'] = None
+                    applied += 1
+
+                elif act == 'discard':
+                    src_id = act_obj.get('source_id')
+                    if not src_id or src_id not in cluster_refl_ids or src_id in consumed:
+                        continue
+                    consumed.add(src_id)
+                    applied += 1
+
+            # Stamp 决策（Codex P1 + P2 #1392 合并语义）：
+            # - applied > 0：有变化，必 stamp + save
+            # - applied == 0 + actions 为空：LLM 明确 no-op，stamp 防
+            #   cluster_hash skip 失效（Codex P1）
+            # - applied == 0 + actions 非空：所有 action 全 reject = LLM
+            #   语义垃圾，不 stamp 等下轮重试（Codex P2）
+            if applied == 0 and actions:
+                return 0
+
+            new_reflections = [
+                r for r in reflections
+                if not (isinstance(r, dict) and r.get('id') in consumed)
+            ]
+            new_reflections.extend(produced)
+
+            stamped = 0
+            for r in new_reflections:
+                if not isinstance(r, dict):
+                    continue
+                rid = r.get('id')
+                if rid in cluster_refl_ids and rid not in consumed:
+                    r['last_refine_cluster_hash'] = cluster_hash
+                    r['last_refine_at'] = now_iso
+                    # 成功 stamp → 清 Site 4 liveness 计数器（对偶
+                    # PersonaManager.apply_refine_actions）
+                    if r.get('refine_attempts'):
+                        r['refine_attempts'] = 0
+                    stamped += 1
+
+            if applied == 0 and stamped == 0:
+                return 0
+
+            await self.asave_reflections(name, new_reflections)
+            logger.info(
+                f"[Reflection] {name} entity={entity}: refine 应用 {applied} action "
+                f"(cluster_hash={cluster_hash}, stamped={stamped}, "
+                f"+{len(produced)} produced, -{len(consumed)} consumed)"
+            )
+        return applied
+
+    async def _abump_refine_attempts(
+        self, name: str, cluster: list[dict], cluster_hash: str,
+    ) -> None:
+        """Site 4 liveness 兜底：refine cluster LLM 失败时给非 fact 的
+        reflection 成员 bump ``refine_attempts``。对偶
+        ``PersonaManager._abump_refine_attempts``——同样治法、不同存储位
+        （reflections.json vs persona.json）。
+
+        Recovery：成功 refine（apply_refine_actions 跑到 stamp 分支）会把
+        ``refine_attempts`` 清回 0；或人工编辑 reflections.json。
+        """
+        from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+        from memory.facts import safe_int_field
+        from memory.refine import REFINE_TYPE_KEY
+
+        # fact 不计 attempts（fact 是 readonly 信息源，refine 永远不改它）；
+        # 只 bump reflection 成员。reflection 不分 entity section 单独存（全
+        # 在一个 list 里按 entity 字段区分），所以收集 set[rid] 即可。
+        member_rids: set[str] = set()
+        for e in cluster:
+            if not isinstance(e, dict):
+                continue
+            if e.get(REFINE_TYPE_KEY) == 'fact':
+                continue
+            rid = e.get('id')
+            if rid:
+                member_rids.add(rid)
+        if not member_rids:
+            return
+
+        async with self._get_alock(name):
+            reflections = await self._aload_reflections_full(name)
+            modified = False
+            for r in reflections:
+                if not isinstance(r, dict) or r.get('id') not in member_rids:
+                    continue
+                new_attempts = safe_int_field(r, 'refine_attempts') + 1
+                r['refine_attempts'] = new_attempts
+                # 戳失败时刻供 dead-letter 时间自愈（cooldown_elapsed），对偶
+                # persona 侧——一次性宕机顶到 MAX 后过 5h 冷却重新 probe。
+                r['last_refine_attempt_at'] = datetime.now().isoformat()
+                modified = True
+                if new_attempts == MEMORY_LIVENESS_MAX_ATTEMPTS:
+                    logger.warning(
+                        f"[ReflectionRefine] {name}: reflection id={r.get('id')} "
+                        f"refine_attempts={new_attempts} ≥ "
+                        f"{MEMORY_LIVENESS_MAX_ATTEMPTS}（dead-letter，"
+                        f"cluster_hash={cluster_hash}）。下次 refine gather "
+                        f"不再选入，避免毒 cluster 占用名额。"
+                    )
+            if modified:
+                # CodeRabbit: 传 active-only 给 ``asave_reflections``。
+                # ``_prepare_save_reflections`` 把 input 当 "想要存活的 active 集",
+                # all_on_disk 里 id 在 input set 中的会跳过归档判断。如果传
+                # full list（含 terminal），``to_archive`` 永远是空，老 promoted/
+                # denied 永远 archive 不掉，跟 arecord_mentions / aupdate_suppressions
+                # 走同一约定保证归档流程正常推进。
+                active = [
+                    r for r in reflections
+                    if r.get('status') not in REFLECTION_TERMINAL_STATUSES
+                ]
+                await self.asave_reflections(name, active)
 
     # alias for backward compat (system_router calls .reflect())
     async def reflect(self, lanlan_name: str) -> dict | None:
@@ -2005,7 +2617,16 @@ class ReflectionEngine:
                 for r in current:
                     if r.get('id') == rid:
                         r['recheck_attempts'] = (r.get('recheck_attempts') or 0) + 1
-                        await self.asave_reflections(lanlan_name, current)
+                        # 戳失败时刻供 dead-letter 时间自愈（cooldown_elapsed）
+                        r['last_recheck_attempt_at'] = datetime.now().isoformat()
+                        # 传 active-only：对齐 _abump_refine_attempts / arecord_mentions
+                        # 的 save 约定，让 promoted/denied 等 terminal 条目正常归档，
+                        # 不被多留一个周期（CodeRabbit 一致性 nitpick）。
+                        active = [
+                            x for x in current
+                            if x.get('status') not in REFLECTION_TERMINAL_STATUSES
+                        ]
+                        await self.asave_reflections(lanlan_name, active)
                         logger.debug(
                             f"[Recheck-Reflection] {lanlan_name} {rid}: "
                             f"recheck_attempts → {r['recheck_attempts']} ({reason})"
@@ -2035,6 +2656,7 @@ class ReflectionEngine:
         from config import (
             MEMORY_SCHEMA_VERSION_CURRENT as _SCHEMA_V,
             MEMORY_RECHECK_MAX_ATTEMPTS as _MAX_ATTEMPTS,
+            MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS as _SELF_HEAL,
         )
         from config.prompts.prompts_memory import (
             MEMORY_RECHECK_REFLECTION_PROMPT,
@@ -2042,6 +2664,7 @@ class ReflectionEngine:
         from memory.temporal import (
             normalize_event_when as _norm_when,
             compute_event_timestamps as _compute_ts,
+            cooldown_elapsed,
             ACTIVE_TEMPORAL_SCOPES,
         )
 
@@ -2052,8 +2675,12 @@ class ReflectionEngine:
             if (r.get('schema_version') or 1) < _SCHEMA_V
             and r.get('status') not in REFLECTION_TERMINAL_STATUSES
             # 重试预算：LLM 持续给出无效 temporal_scope 或抛异常的 entry
-            # 累计达上限后不再阻塞队列（Codex review on PR #1316 P2 catch）
-            and (r.get('recheck_attempts') or 0) < _MAX_ATTEMPTS
+            # 累计达上限后不再阻塞队列（Codex review on PR #1316 P2 catch）。
+            # 时间自愈：达上限的 entry 过 _SELF_HEAL 后放行一次 probe。
+            and (
+                (r.get('recheck_attempts') or 0) < _MAX_ATTEMPTS
+                or cooldown_elapsed(r.get('last_recheck_attempt_at'), _SELF_HEAL)
+            )
         ]
         if not candidates:
             return False
@@ -2157,6 +2784,7 @@ class ReflectionEngine:
         )
 
         # ── 锁内：reload + 找同 id + 更新字段 + save ──────────────
+        save_failed_reason: str | None = None
         async with self._get_alock(lanlan_name):
             current = await self._aload_reflections_full(lanlan_name)
             found = None
@@ -2175,7 +2803,23 @@ class ReflectionEngine:
             found['event_start_at'] = event_start_at
             found['event_end_at'] = event_end_at
             found['schema_version'] = _SCHEMA_V
-            await self.asave_reflections(lanlan_name, current)
+            try:
+                await self.asave_reflections(lanlan_name, current)
+            except Exception as e:
+                # 落盘失败也要计入 recheck_attempts：否则 cloudsave 维护态 /
+                # 只读 FS / 权限导致的持续写盘失败会让同一条 reflection 每 30s
+                # 原样重判、熔断永不触发（对齐上面 LLM 失败路径的 bump）。
+                # bump helper 自取锁，asyncio.Lock 不可重入，必须退出本锁后再调。
+                save_failed_reason = f"save failed: {e}"
+
+        if save_failed_reason is not None:
+            logger.warning(
+                f"[Recheck-Reflection] {lanlan_name} {rid}: {save_failed_reason}"
+            )
+            await self._abump_reflection_recheck_attempts(
+                lanlan_name, rid, save_failed_reason,
+            )
+            return False
 
         logger.info(
             f"[Recheck-Reflection] {lanlan_name} {rid}: v1→v{_SCHEMA_V} "

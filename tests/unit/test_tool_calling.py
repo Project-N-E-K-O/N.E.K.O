@@ -18,6 +18,7 @@ import json
 import sys
 from pathlib import Path
 
+import httpx
 import pytest
 
 # Ensure the project root is importable when pytest is invoked from
@@ -292,6 +293,149 @@ async def test_offline_openai_path_runs_tool_then_text():
     assert json.loads(messages[2]["content"])["temp_c"] == 22
     # tool 消息必须带 name（Gemini 转换路径靠这个字段填 FunctionResponse.name）
     assert messages[2]["name"] == "get_weather"
+
+
+@pytest.mark.asyncio
+async def test_offline_openai_path_persists_reasoning_content_with_tool_call():
+    """Thinking 模型（DeepSeek-R / Qwen / GLM thinking 等 OpenAI-compat 端点）
+    在多轮 tool calling 时，发起 tool_calls 的那条 assistant 消息必须把本轮流出的
+    ``reasoning_content`` 原样回填，否则下一轮报 400 "The `reasoning_content` in the
+    thinking mode must be passed back to the API."（触发 memory_recall 时复现过）。
+
+    本测试 script 一个带 reasoning_content 的 tool-call 轮，断言写回历史的
+    assistant tool_calls 消息里 reasoning_content 被保留。"""
+    from utils.llm_client import LLMStreamChunk
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
+
+    tool_def = ToolDefinition(
+        name="memory_recall",
+        description="recall",
+        parameters={"type": "object", "properties": {"q": {"type": "string"}}},
+        handler=lambda args: {"hits": []},
+    )
+
+    # 第一轮：先流推理链，再流 tool_call，finish_reason=tool_calls。
+    chunks_call_1 = [
+        LLMStreamChunk(content="", reasoning_content="用户问起以前的事，"),
+        LLMStreamChunk(content="", reasoning_content="我得查一下记忆。"),
+        LLMStreamChunk(
+            content="",
+            tool_call_deltas=[{
+                "index": 0,
+                "id": "call_m",
+                "type": "function",
+                "function": {"name": "memory_recall", "arguments": '{"q":"生日"}'},
+            }],
+            finish_reason=None,
+        ),
+        LLMStreamChunk(content="", tool_call_deltas=None, finish_reason="tool_calls"),
+    ]
+    chunks_call_2 = [
+        LLMStreamChunk(content="我记得是夏天。", finish_reason="stop"),
+    ]
+
+    fake_llm = _FakeLLM([chunks_call_1, chunks_call_2])
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.llm = fake_llm
+    client._tool_definitions = [tool_def]
+    client.max_tool_iterations = 4
+    client._use_genai_sdk = False
+    client._genai_tools_unsupported = False
+
+    async def handler(call: ToolCall) -> ToolResult:
+        return ToolResult(call_id=call.call_id, name=call.name, output={"hits": []})
+
+    client.on_tool_call = handler
+
+    messages = [{"role": "user", "content": "我生日是什么时候？"}]
+    out_chunks = []
+    async for ch in client._astream_with_tools(messages):
+        out_chunks.append(ch)
+
+    # 纯 reasoning chunk（content 空 + 无 tool/finish/usage）不得向下游转发，
+    # 否则 stream_text 会把首个推理 chunk 误记成 TTFT 首 token（Codex P2）。
+    assert not any(
+        getattr(ch, "reasoning_content", None)
+        and not getattr(ch, "content", None)
+        and not ch.tool_call_deltas
+        and not ch.finish_reason
+        and not ch.usage_metadata
+        for ch in out_chunks
+    ), "reasoning-only chunk 不应 surface 给通用流式消费者（TTFT 会被拉低）"
+
+    assistant_with_tool_calls = next(
+        m for m in messages
+        if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")
+    )
+    assert assistant_with_tool_calls.get("reasoning_content") == "用户问起以前的事，我得查一下记忆。", (
+        "thinking 模型发起 tool_calls 那轮的 reasoning_content 必须累积并回填进历史，"
+        "否则部分 provider 下一轮报 400"
+    )
+    # 第二轮请求确实带上了含 reasoning_content 的历史，且值与本轮累积的推理链
+    # 完全一致（不只验存在——中间路径若截断/改写 reasoning_content 也要抓到）。
+    second_call_messages = fake_llm.calls[1][0]
+    replayed = next(
+        m.get("reasoning_content")
+        for m in second_call_messages
+        if isinstance(m, dict) and m.get("reasoning_content")
+    )
+    assert replayed == "用户问起以前的事，我得查一下记忆。"
+
+
+@pytest.mark.asyncio
+async def test_offline_openai_path_omits_reasoning_when_absent():
+    """非 thinking 端点（delta 不带 reasoning_content）时，assistant tool_calls
+    消息不应凭空塞入 reasoning_content 字段，免得污染普通会话 / 触发某些 provider
+    对 reasoning_content 的反向校验。"""
+    from utils.llm_client import LLMStreamChunk
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
+
+    tool_def = ToolDefinition(
+        name="memory_recall",
+        description="recall",
+        parameters={"type": "object", "properties": {"q": {"type": "string"}}},
+        handler=lambda args: {"hits": []},
+    )
+    chunks_call_1 = [
+        LLMStreamChunk(
+            content="",
+            tool_call_deltas=[{
+                "index": 0,
+                "id": "call_m",
+                "type": "function",
+                "function": {"name": "memory_recall", "arguments": "{}"},
+            }],
+            finish_reason=None,
+        ),
+        LLMStreamChunk(content="", tool_call_deltas=None, finish_reason="tool_calls"),
+    ]
+    chunks_call_2 = [LLMStreamChunk(content="好的喵。", finish_reason="stop")]
+    fake_llm = _FakeLLM([chunks_call_1, chunks_call_2])
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.llm = fake_llm
+    client._tool_definitions = [tool_def]
+    client.max_tool_iterations = 4
+    client._use_genai_sdk = False
+    client._genai_tools_unsupported = False
+
+    async def handler(call: ToolCall) -> ToolResult:
+        return ToolResult(call_id=call.call_id, name=call.name, output={"hits": []})
+
+    client.on_tool_call = handler
+
+    messages = [{"role": "user", "content": "hi"}]
+    async for _ in client._astream_with_tools(messages):
+        pass
+
+    assistant_with_tool_calls = next(
+        m for m in messages
+        if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")
+    )
+    assert "reasoning_content" not in assistant_with_tool_calls
 
 
 @pytest.mark.asyncio
@@ -701,6 +845,431 @@ async def test_unregister_tool_router_isolates_per_role_failures():
     assert result["ok"] is True
 
 
+# ---------------------------------------------------------------------------
+# 死插件自动驱逐：_remote_dispatch 在同一 plugin source 连续 N 次"连接级"失败
+# 后扫除该 source 的所有工具。覆盖 kill -9 杀插件进程后 main_server registry
+# 里残留死端点工具的场景——优雅 shutdown 走 /api/tools/clear，崩溃没机会触发。
+# ---------------------------------------------------------------------------
+
+
+def _make_eviction_stub_mgr(name: str):
+    """造一个能配合 _evict_dead_callback_origin 的最小 mgr：暴露
+    ``tool_registry`` + 私有的 ``_fire_task`` / ``_sync_tools_to_active_session``
+    （驱逐通道用它们触发 wire 同步，跟 register_tool / clear_tools 走同一条
+    路径）。``_fire_task`` 直接 close 掉 coro 避免"coroutine was never awaited"
+    告警，单测只需要验证它被调用过了。"""
+    from main_logic.tool_calling import ToolRegistry
+
+    class _StubMgr:
+        def __init__(self, lanlan_name: str):
+            self.lanlan_name = lanlan_name
+            self.tool_registry = ToolRegistry()
+            self.fire_task_count = 0
+
+        async def _sync_tools_to_active_session(self):
+            # 单测里没有 active session，wire 同步是 noop。
+            return None
+
+        def _fire_task(self, coro):
+            self.fire_task_count += 1
+            coro.close()
+
+    return _StubMgr(name)
+
+
+@pytest.fixture
+def _reset_eviction_counter():
+    """每个 eviction 测试前后都把模块级失败计数清空，避免跨测试污染。"""
+    from main_routers import tool_router as _tr
+    _tr._consecutive_connect_failures.clear()
+    yield
+    _tr._consecutive_connect_failures.clear()
+
+
+@pytest.mark.asyncio
+async def test_remote_dispatch_evicts_dead_plugin_after_three_connect_failures(
+    monkeypatch, _reset_eviction_counter,
+):
+    """插件 kill -9 之后，model 连撞 3 次 connect refused → 该 plugin 的
+    所有工具从所有 session manager 的 registry 里清除；builtin 工具不动。
+
+    回归保护：lifecycle 审计发现 plugin 崩溃没有清理路径。"""
+    from main_logic.tool_calling import ToolCall, ToolDefinition
+    from main_routers import tool_router as _tr
+
+    # 准备一个 stub session_manager，挂两个"角色"，每个 mgr 都有同一个 plugin
+    # 的两个工具（模拟 role=None 的全局注册）和一个 builtin。
+    mgr_a = _make_eviction_stub_mgr("Alpha")
+    mgr_b = _make_eviction_stub_mgr("Beta")
+    for mgr in (mgr_a, mgr_b):
+        mgr.tool_registry.register(ToolDefinition(
+            name="weather", description="", handler=None,
+            metadata={"source": "plugin:dead_foo", "callback_url": "http://127.0.0.1:9999/cb"},
+        ))
+        mgr.tool_registry.register(ToolDefinition(
+            name="search", description="", handler=None,
+            metadata={"source": "plugin:dead_foo", "callback_url": "http://127.0.0.1:9999/cb"},
+        ))
+        mgr.tool_registry.register(ToolDefinition(
+            name="recall_memory", description="", handler=lambda _: "",
+            metadata={"source": "builtin"},
+        ))
+
+    fake_session_manager = {"Alpha": mgr_a, "Beta": mgr_b}
+    monkeypatch.setattr(_tr, "get_session_manager", lambda: fake_session_manager)
+
+    # 让 httpx client 永远 ConnectError —— 模拟插件进程已经死了。
+    class _DeadClient:
+        async def post(self, *_a, **_kw):
+            raise httpx.ConnectError("Connection refused")
+
+    monkeypatch.setattr(_tr, "_get_http_client", lambda: _DeadClient())
+
+    # 模型走 dispatch 3 次（任意角色都会触发 module-level 计数，跨 mgr 共享）。
+    call = ToolCall(name="weather", arguments={}, call_id="c")
+    metadata = {
+        "source": "plugin:dead_foo",
+        "callback_url": "http://127.0.0.1:9999/cb",
+        "timeout_seconds": 5,
+    }
+    for _ in range(_tr._EVICTION_FAILURE_THRESHOLD):
+        result = await _tr._remote_dispatch(call, metadata)
+        # 单次 dispatch 失败必须仍然回 ToolResult（不抛异常），
+        # 让模型看到结构化错误而不是 client 崩。
+        assert result.is_error is True
+
+    # 阈值后：两个 mgr 上所有 plugin:dead_foo 的工具都该被扫掉，
+    # builtin 工具留下。
+    for mgr in (mgr_a, mgr_b):
+        names = sorted(mgr.tool_registry.names())
+        assert names == ["recall_memory"], (
+            f"mgr {mgr.lanlan_name}: plugin tools should be evicted, "
+            f"builtin should remain; got {names}"
+        )
+        # 驱逐必须 fire 一次 wire 同步，让模型在 schema 上也看不到死工具。
+        assert mgr.fire_task_count >= 1, (
+            f"mgr {mgr.lanlan_name}: eviction must fire session.update sync; "
+            f"got fire_task_count={mgr.fire_task_count}"
+        )
+
+    # 计数器在驱逐后清零，避免下次 1 次失败就触发误杀。
+    dead_origin = _tr._callback_origin("http://127.0.0.1:9999/cb")
+    assert ("plugin:dead_foo", dead_origin) not in _tr._consecutive_connect_failures
+
+
+@pytest.mark.asyncio
+async def test_remote_dispatch_business_error_does_not_evict(
+    monkeypatch, _reset_eviction_counter,
+):
+    """插件 callback 业务上返回 ``is_error=True``（或 HTTP 5xx）说明插件是活的，
+    只是工具内部出错——这是工具 bug 不是 lifecycle bug，不能算驱逐计数。"""
+    from main_logic.tool_calling import ToolCall, ToolDefinition
+    from main_routers import tool_router as _tr
+
+    mgr = _make_eviction_stub_mgr("Solo")
+    mgr.tool_registry.register(ToolDefinition(
+        name="buggy_tool", description="", handler=None,
+        metadata={"source": "plugin:buggy", "callback_url": "http://127.0.0.1:9999/cb"},
+    ))
+    monkeypatch.setattr(_tr, "get_session_manager", lambda: {"Solo": mgr})
+
+    # 模拟插件活着（200 + is_error=true body）。
+    class _AliveButBuggyResp:
+        status_code = 200
+        text = '{"is_error": true, "error": "tool blew up"}'
+        def json(self):
+            return {"is_error": True, "error": "tool blew up"}
+
+    class _AliveClient:
+        async def post(self, *_a, **_kw):
+            return _AliveButBuggyResp()
+
+    monkeypatch.setattr(_tr, "_get_http_client", lambda: _AliveClient())
+
+    call = ToolCall(name="buggy_tool", arguments={}, call_id="c")
+    metadata = {
+        "source": "plugin:buggy",
+        "callback_url": "http://127.0.0.1:9999/cb",
+        "timeout_seconds": 5,
+    }
+    # 比阈值多调几次。
+    for _ in range(_tr._EVICTION_FAILURE_THRESHOLD + 2):
+        result = await _tr._remote_dispatch(call, metadata)
+        assert result.is_error is True  # 业务错误透传
+
+    # 工具仍在 registry 里——业务错不是 lifecycle 错。
+    assert mgr.tool_registry.names() == ["buggy_tool"]
+    assert mgr.fire_task_count == 0
+    # 计数器从未累加（每次成功 HTTP 都清零）。
+    buggy_origin = _tr._callback_origin("http://127.0.0.1:9999/cb")
+    assert ("plugin:buggy", buggy_origin) not in _tr._consecutive_connect_failures
+
+
+@pytest.mark.asyncio
+async def test_remote_dispatch_success_resets_failure_counter(
+    monkeypatch, _reset_eviction_counter,
+):
+    """连续 2 次 connect failure（还不到阈值）后一次成功 → 计数器清零，
+    后续再失败要从 1 重新计起。防止"偶发 connection refused"长期累积成误杀。"""
+    from main_logic.tool_calling import ToolCall, ToolDefinition
+    from main_routers import tool_router as _tr
+
+    mgr = _make_eviction_stub_mgr("Solo")
+    mgr.tool_registry.register(ToolDefinition(
+        name="flaky", description="", handler=None,
+        metadata={"source": "plugin:flaky", "callback_url": "http://127.0.0.1:9999/cb"},
+    ))
+    monkeypatch.setattr(_tr, "get_session_manager", lambda: {"Solo": mgr})
+
+    class _OkResp:
+        status_code = 200
+        text = '{"output": "ok"}'
+        def json(self): return {"output": "ok"}
+
+    fail_then_ok = [
+        httpx.ConnectError("refused"),
+        httpx.ConnectError("refused"),
+        _OkResp(),
+        httpx.ConnectError("refused"),
+        httpx.ConnectError("refused"),
+    ]
+    class _SwitchingClient:
+        async def post(self, *_a, **_kw):
+            item = fail_then_ok.pop(0)
+            if isinstance(item, BaseException):
+                raise item
+            return item
+
+    monkeypatch.setattr(_tr, "_get_http_client", lambda: _SwitchingClient())
+
+    call = ToolCall(name="flaky", arguments={}, call_id="c")
+    metadata = {"source": "plugin:flaky", "callback_url": "http://127.0.0.1:9999/cb", "timeout_seconds": 5}
+
+    # fail, fail (counter=2), ok (counter=0), fail, fail (counter=2) — 仍未到阈值
+    for _ in range(5):
+        await _tr._remote_dispatch(call, metadata)
+
+    # 工具还在，counter 累计但没超阈值。
+    assert mgr.tool_registry.names() == ["flaky"]
+    assert mgr.fire_task_count == 0
+    flaky_origin = _tr._callback_origin("http://127.0.0.1:9999/cb")
+    assert _tr._consecutive_connect_failures.get(("plugin:flaky", flaky_origin)) == 2
+
+
+@pytest.mark.asyncio
+async def test_remote_dispatch_builtin_source_never_evicted(
+    monkeypatch, _reset_eviction_counter,
+):
+    """``source="builtin"`` 永远不进入驱逐计数——builtin 工具是 in-process
+    handler，通常根本不走 _remote_dispatch；万一被错配成 remote，也不能因为
+    "连续失败"就把内置工具扫掉。"""
+    from main_logic.tool_calling import ToolCall, ToolDefinition
+    from main_routers import tool_router as _tr
+
+    mgr = _make_eviction_stub_mgr("Solo")
+    # 病态注册：builtin 但 handler=None，硬走 remote 路径。
+    mgr.tool_registry.register(ToolDefinition(
+        name="recall_memory", description="", handler=None,
+        metadata={"source": "builtin", "callback_url": "http://127.0.0.1:9999/cb"},
+    ))
+    monkeypatch.setattr(_tr, "get_session_manager", lambda: {"Solo": mgr})
+
+    class _DeadClient:
+        async def post(self, *_a, **_kw):
+            raise httpx.ConnectError("Connection refused")
+
+    monkeypatch.setattr(_tr, "_get_http_client", lambda: _DeadClient())
+
+    call = ToolCall(name="recall_memory", arguments={}, call_id="c")
+    metadata = {"source": "builtin", "callback_url": "http://127.0.0.1:9999/cb", "timeout_seconds": 5}
+    for _ in range(_tr._EVICTION_FAILURE_THRESHOLD + 3):
+        await _tr._remote_dispatch(call, metadata)
+
+    # 工具仍在 registry，计数器从未被建。
+    assert mgr.tool_registry.names() == ["recall_memory"]
+    assert mgr.fire_task_count == 0
+    # builtin source 永远不进 counter dict
+    assert not any(src == "builtin" for src, _origin in _tr._consecutive_connect_failures)
+
+
+@pytest.mark.asyncio
+async def test_remote_dispatch_read_timeout_does_not_evict(
+    monkeypatch, _reset_eviction_counter,
+):
+    """ReadTimeout 表示插件接住了请求但执行慢——是工具实现问题，不是
+    "端点不可达"。只有 ConnectError/ConnectTimeout 才算 lifecycle 失败。"""
+    from main_logic.tool_calling import ToolCall, ToolDefinition
+    from main_routers import tool_router as _tr
+
+    mgr = _make_eviction_stub_mgr("Solo")
+    mgr.tool_registry.register(ToolDefinition(
+        name="slow", description="", handler=None,
+        metadata={"source": "plugin:slow", "callback_url": "http://127.0.0.1:9999/cb"},
+    ))
+    monkeypatch.setattr(_tr, "get_session_manager", lambda: {"Solo": mgr})
+
+    class _SlowClient:
+        async def post(self, *_a, **_kw):
+            raise httpx.ReadTimeout("tool ran past deadline")
+
+    monkeypatch.setattr(_tr, "_get_http_client", lambda: _SlowClient())
+
+    call = ToolCall(name="slow", arguments={}, call_id="c")
+    metadata = {"source": "plugin:slow", "callback_url": "http://127.0.0.1:9999/cb", "timeout_seconds": 5}
+    for _ in range(_tr._EVICTION_FAILURE_THRESHOLD + 2):
+        result = await _tr._remote_dispatch(call, metadata)
+        assert result.is_error is True  # 超时仍透传给模型作为错误
+
+    # 工具不动：ReadTimeout 不算 connection-level，counter 也没累加。
+    assert mgr.tool_registry.names() == ["slow"]
+    assert mgr.fire_task_count == 0
+    slow_origin = _tr._callback_origin("http://127.0.0.1:9999/cb")
+    assert ("plugin:slow", slow_origin) not in _tr._consecutive_connect_failures
+
+
+@pytest.mark.asyncio
+async def test_remote_dispatch_endpoint_local_outage_preserves_sibling_endpoints(
+    monkeypatch, _reset_eviction_counter,
+):
+    """同一 plugin source 下若注册的工具指向不同 callback origin（不同 port），
+    单端点不可达只能扫掉该端点的工具，不能把同 source 的其他健康端点工具
+    一起带走。
+
+    回归保护：Codex review on PR #1382——单按 source 聚合会把"一个端点
+    死了"误升级成"整个 plugin 全死"。"""
+    from main_logic.tool_calling import ToolCall, ToolDefinition
+    from main_routers import tool_router as _tr
+
+    mgr = _make_eviction_stub_mgr("Solo")
+    # 同一 plugin source，两个工具指向不同 port。
+    mgr.tool_registry.register(ToolDefinition(
+        name="tool_on_dead_port", description="", handler=None,
+        metadata={"source": "plugin:multi_port", "callback_url": "http://127.0.0.1:9001/cb"},
+    ))
+    mgr.tool_registry.register(ToolDefinition(
+        name="tool_on_live_port", description="", handler=None,
+        metadata={"source": "plugin:multi_port", "callback_url": "http://127.0.0.1:9002/cb"},
+    ))
+    monkeypatch.setattr(_tr, "get_session_manager", lambda: {"Solo": mgr})
+
+    # 只有 port 9001 不可达；9002 正常。
+    class _OkResp:
+        status_code = 200
+        text = '{"output": "ok"}'
+        def json(self): return {"output": "ok"}
+
+    class _PortSelectiveClient:
+        async def post(self, url, *_a, **_kw):
+            if ":9001" in url:
+                raise httpx.ConnectError("Connection refused on 9001")
+            return _OkResp()
+
+    monkeypatch.setattr(_tr, "_get_http_client", lambda: _PortSelectiveClient())
+
+    dead_call = ToolCall(name="tool_on_dead_port", arguments={}, call_id="d")
+    dead_metadata = {
+        "source": "plugin:multi_port",
+        "callback_url": "http://127.0.0.1:9001/cb",
+        "timeout_seconds": 5,
+    }
+    # 3 次撞死端口 → 触发驱逐
+    for _ in range(_tr._EVICTION_FAILURE_THRESHOLD):
+        await _tr._remote_dispatch(dead_call, dead_metadata)
+
+    # 关键断言：只有指向 9001 的工具被扫，9002 的 sibling 工具完好。
+    names = sorted(mgr.tool_registry.names())
+    assert names == ["tool_on_live_port"], (
+        f"endpoint-local outage on 9001 must NOT evict sibling tool on 9002; "
+        f"got remaining={names}"
+    )
+
+    # 活端口的 counter 应当从未建立——它没失败过。
+    live_origin = _tr._callback_origin("http://127.0.0.1:9002/cb")
+    assert ("plugin:multi_port", live_origin) not in _tr._consecutive_connect_failures
+
+    # 健康端点继续可调用、保持 schema 中可见。
+    live_call = ToolCall(name="tool_on_live_port", arguments={}, call_id="L")
+    live_metadata = {
+        "source": "plugin:multi_port",
+        "callback_url": "http://127.0.0.1:9002/cb",
+        "timeout_seconds": 5,
+    }
+    result = await _tr._remote_dispatch(live_call, live_metadata)
+    assert result.is_error is False
+    assert result.output == "ok"
+
+
+def test_callback_origin_normalizes_to_scheme_host_port():
+    """``_callback_origin`` 必须把 (scheme, host, port) 折叠成同一 bucket key——
+    path / query / fragment 不能让同一 server 的不同 URL 被当成不同 endpoint。
+    """
+    from main_routers.tool_router import _callback_origin
+
+    base = _callback_origin("http://127.0.0.1:9000/api/cb")
+    # 同 origin 不同 path / query → 同一 key
+    assert _callback_origin("http://127.0.0.1:9000/api/cb") == base
+    assert _callback_origin("http://127.0.0.1:9000/other/path") == base
+    assert _callback_origin("http://127.0.0.1:9000/api/cb?x=1") == base
+    # 不同 port → 不同 key
+    assert _callback_origin("http://127.0.0.1:9001/api/cb") != base
+    # 默认端口要显式化（http→80, https→443），避免 ``http://h/`` 和
+    # ``http://h:80/`` 被当成两个 endpoint
+    assert _callback_origin("http://127.0.0.1/cb") == "http://127.0.0.1:80"
+    assert _callback_origin("https://127.0.0.1/cb") == "https://127.0.0.1:443"
+    # 异常输入兜底：空 / 不可 parse → 不抛
+    assert _callback_origin("") == "<unknown>"
+    # 畸形端口（非数字）会让 ParseResult.port 抛 ValueError——
+    # loopback validator 没拦端口语法，所以 dispatch 路径必须自己兜住，
+    # 否则会破坏 ToolResult 结构化错误 + 驱逐 bookkeeping。
+    # （Codex review on PR #1382）
+    bad_port = "http://127.0.0.1:abc/cb"
+    assert _callback_origin(bad_port) == bad_port  # 回退到原串、不抛
+    # 同一畸形 URL 必须映射到同一 key——不然失败计数会因为 key collision
+    # 退化，永远到不了阈值。
+    assert _callback_origin(bad_port) == _callback_origin(bad_port)
+
+
+@pytest.mark.asyncio
+async def test_remote_dispatch_survives_malformed_callback_url(
+    monkeypatch, _reset_eviction_counter,
+):
+    """``ToolRegisterRequest`` 的 loopback validator 不管端口语法，畸形
+    端口（``http://127.0.0.1:abc/cb``）可以通过注册。``_callback_origin``
+    必须不抛——否则 dispatch 路径会被破坏：原本应该返回结构化 ToolResult
+    error，结果上抛到 ToolRegistry.execute 的兜底 catch，错误消息丢精度。
+
+    回归保护：Codex review on PR #1382."""
+    from main_logic.tool_calling import ToolCall, ToolDefinition
+    from main_routers import tool_router as _tr
+
+    bad_url = "http://127.0.0.1:abc/cb"
+    mgr = _make_eviction_stub_mgr("Solo")
+    mgr.tool_registry.register(ToolDefinition(
+        name="malformed_tool", description="", handler=None,
+        metadata={"source": "plugin:malformed", "callback_url": bad_url},
+    ))
+    monkeypatch.setattr(_tr, "get_session_manager", lambda: {"Solo": mgr})
+
+    class _DeadClient:
+        async def post(self, *_a, **_kw):
+            raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr(_tr, "_get_http_client", lambda: _DeadClient())
+
+    call = ToolCall(name="malformed_tool", arguments={}, call_id="c")
+    metadata = {"source": "plugin:malformed", "callback_url": bad_url, "timeout_seconds": 5}
+
+    # 不能抛——必须每次回结构化 ToolResult(is_error=True)。
+    for _ in range(_tr._EVICTION_FAILURE_THRESHOLD):
+        result = await _tr._remote_dispatch(call, metadata)
+        assert result.is_error is True
+        assert "HTTP failure" in result.error_message
+
+    # 即使 URL 畸形，eviction bookkeeping 仍应正常工作——3 次后扫掉。
+    assert mgr.tool_registry.names() == []
+    assert mgr.fire_task_count >= 1
+
+
 @pytest.mark.asyncio
 async def test_genai_unsupported_keyword_matches_underscore_variant(monkeypatch):
     """`not_support` 下划线变体也得当成 tools 永久不支持，避免每轮先撞
@@ -851,6 +1420,102 @@ async def test_stream_text_notifies_discarded_when_partial_text_then_error(monke
     last = discarded_calls[-1]
     assert "text_gen_error" in last["reason"]
     assert last["will_retry"] is False  # 通用 except 不再重试
+
+
+@pytest.mark.asyncio
+async def test_stream_text_maps_incorrect_api_key_keyword_to_structured_status(monkeypatch):
+    """Raw provider auth errors should not leak the full exception into UI text."""
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import SystemMessage
+
+    async def _astream_auth_error(self, messages, **overrides):
+        raise RuntimeError(
+            "AuthenticationError: Error code: 401 - {'error': {'message': "
+            "'Incorrect API key provided.', 'code': 'invalid_api_key'}}"
+        )
+        if False:  # pragma: no cover - keeps this as an async generator
+            yield None
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream_auth_error)
+
+    status_messages: list[dict] = []
+
+    async def fake_status(msg):
+        status_messages.append(json.loads(msg))
+
+    async def fake_done():
+        pass
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.lanlan_name = "Test"
+    client.master_name = "M"
+    client._prefix_buffer_size = 0
+    client._conversation_history = [SystemMessage(content="sys")]
+    client._pending_images = []
+    client._is_responding = False
+    client._recent_responses = []
+    client._repetition_threshold = 0.8
+    client._max_recent_responses = 3
+    client.max_response_length = 300
+    client.max_response_rerolls = 0
+    client.enable_response_guard = False
+    client.vision_model = ""
+    client.model = "qwen-plus"
+    client.on_text_delta = None
+    client.on_input_transcript = None
+    client.on_response_done = fake_done
+    client.on_response_discarded = None
+    client.on_status_message = fake_status
+    client.on_repetition_detected = None
+
+    await client.stream_text("hi")
+
+    assert status_messages == [{"code": "API_KEY_REJECTED"}]
+
+
+def test_api_key_error_helper_does_not_treat_plain_403_as_invalid_key():
+    from main_logic.omni_offline_client import _is_api_key_rejected_error
+
+    class ForbiddenError(Exception):
+        status_code = 403
+
+    assert _is_api_key_rejected_error(ForbiddenError("model access denied in this region")) is False
+    assert _is_api_key_rejected_error(ForbiddenError("Error 403: Incorrect API key provided")) is True
+    assert _is_api_key_rejected_error(RuntimeError("AuthenticationError: OAuth token expired")) is False
+
+
+@pytest.mark.asyncio
+async def test_prompt_ephemeral_reports_key_error_from_catch_all(monkeypatch):
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import SystemMessage
+
+    async def _astream_auth_error(self, messages, **overrides):
+        raise RuntimeError("AuthenticationError: Incorrect API key provided")
+        if False:  # pragma: no cover - keeps this as an async generator
+            yield None
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream_auth_error)
+
+    status_messages: list[dict] = []
+
+    async def fake_status(msg):
+        status_messages.append(json.loads(msg))
+
+    async def fake_done(*_args):
+        pass
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.lanlan_name = "Test"
+    client.master_name = "M"
+    client._prefix_buffer_size = 0
+    client._conversation_history = [SystemMessage(content="sys")]
+    client._is_responding = False
+    client.on_text_delta = None
+    client.on_response_done = fake_done
+    client.on_status_message = fake_status
+
+    assert await client.prompt_ephemeral("hello") is False
+    assert status_messages == [{"code": "API_KEY_REJECTED"}]
 
 
 @pytest.mark.asyncio
@@ -1464,7 +2129,9 @@ async def test_stream_text_length_guard_after_tool_call_rejects_pretool_only_rec
 @pytest.mark.asyncio
 async def test_offline_iteration_cap_breaks_runaway_loop():
     """If the model keeps requesting tools forever, we stop after
-    ``max_tool_iterations`` LLM calls instead of looping indefinitely."""
+    ``max_tool_iterations`` tool rounds and then do ONE forced-finalize
+    call (tools removed) so the user gets a final answer instead of
+    silence."""
     from utils.llm_client import LLMStreamChunk
     from main_logic.omni_offline_client import OmniOfflineClient
     from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
@@ -1474,8 +2141,8 @@ async def test_offline_iteration_cap_breaks_runaway_loop():
 
     tool = ToolDefinition(name="loop", description="", handler=loop_tool)
 
-    # Every scripted call returns another tool_call.
-    def chunks():
+    # Every tool round returns another tool_call.
+    def loop_chunks():
         return [
             LLMStreamChunk(
                 content="",
@@ -1488,7 +2155,11 @@ async def test_offline_iteration_cap_breaks_runaway_loop():
             LLMStreamChunk(content="", finish_reason="tool_calls"),
         ]
 
-    fake_llm = _FakeLLM([chunks() for _ in range(10)])
+    # The forced-finalize call (4th) can no longer call tools → returns text.
+    final_text_chunks = [
+        LLMStreamChunk(content="最终答案", finish_reason="stop"),
+    ]
+    fake_llm = _FakeLLM([loop_chunks(), loop_chunks(), loop_chunks(), final_text_chunks])
 
     client = OmniOfflineClient.__new__(OmniOfflineClient)
     client.llm = fake_llm
@@ -1496,6 +2167,8 @@ async def test_offline_iteration_cap_breaks_runaway_loop():
     client.max_tool_iterations = 3
     client._use_genai_sdk = False
     client._genai_tools_unsupported = False
+    client._last_finish_reason = None
+    client._last_prompt_tokens = None
 
     async def handler(call: ToolCall) -> ToolResult:
         return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
@@ -1503,11 +2176,19 @@ async def test_offline_iteration_cap_breaks_runaway_loop():
     client.on_tool_call = handler
 
     messages = [{"role": "user", "content": "loop forever"}]
-    async for _ in client._astream_with_tools(messages):
-        pass
+    streamed = ""
+    async for c in client._astream_with_tools(messages):
+        if getattr(c, "content", ""):
+            streamed += c.content
 
-    # Exactly max_tool_iterations LLM calls occurred — no infinite loop.
-    assert len(fake_llm.calls) == 3
+    # max_tool_iterations tool rounds + 1 forced-finalize call.
+    assert len(fake_llm.calls) == 4
+    # Forced-finalize streamed real text instead of leaving the turn silent.
+    assert "最终答案" in streamed
+    # The forced-finalize call must NOT advertise tools/tool_choice.
+    _final_overrides = fake_llm.calls[-1][1]
+    assert "tools" not in _final_overrides
+    assert "tool_choice" not in _final_overrides
 
 
 # ---------------------------------------------------------------------------
@@ -1672,3 +2353,424 @@ async def test_realtime_apply_tools_to_session_step_emits_function_tools_only():
     tools = sent[0]["session"]["tools"]
     assert all(t.get("type") != "web_search" for t in tools)
     assert any(t.get("type") == "function" for t in tools)
+
+
+# ============================================================================
+# Summary-mode（长回复 emotion-tier 摘要路径）
+# ============================================================================
+
+def _build_summary_client(monkeypatch, *, max_response_length: int = 4):
+    """组装一个走 summary 路径的 OmniOfflineClient stub。
+
+    单测里 count_tokens 走"按词切空格"，刚好让 ``one two three four. ...``
+    这种字符串里每个词都恰好 1 token，方便控制何时跨阈值。
+    """
+    from main_logic import omni_offline_client as _ofc
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import SystemMessage
+
+    monkeypatch.setattr(_ofc, "count_tokens", lambda text: len((text or "").split()))
+    monkeypatch.setattr(
+        _ofc,
+        "truncate_to_tokens",
+        lambda text, budget: " ".join((text or "").split()[:budget]),
+    )
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.lanlan_name = "T"
+    client.master_name = "M"
+    client._prefix_buffer_size = 0
+    client._conversation_history = [SystemMessage(content="sys")]
+    client._pending_images = []
+    client._is_responding = False
+    client._recent_responses = []
+    client._repetition_threshold = 0.8
+    client._max_recent_responses = 3
+    client.max_response_length = max_response_length
+    client.max_response_rerolls = 1
+    client.enable_response_guard = True
+    client.enable_long_response_summary = True
+    client.vision_model = ""
+    client.model = "x"
+    return client
+
+
+@pytest.mark.asyncio
+async def test_stream_text_summary_replaces_tail_when_overshoot_large(monkeypatch):
+    """Summary 路径 happy path：模型超 budget 很多，越过 budget 后第一个
+    terminator 后的尾巴替换成 emotion-tier 摘要。UI 看完整原文，TTS 听
+    prefix+summary，history 存 prefix+summary。"""
+    from main_logic import omni_offline_client as _ofc
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import LLMStreamChunk
+
+    # 让 summary 调用产出固定字符串
+    async def fake_summarize(self, prefix, tail):
+        fake_summarize.captured = {"prefix": prefix, "tail": tail}
+        return "总之就这样啦"
+    fake_summarize.captured = {}
+    monkeypatch.setattr(OmniOfflineClient, "_summarize_tail_for_tts", fake_summarize)
+
+    # budget=4，但要让 cutover 落在越界点之后 —— budget 前的句号不该被当
+    # cutover。trigger chunk 后排几个逗号分隔的子句，第一个逗号在 budget
+    # 之后，cutover 应该落到那里。尾巴 ≥ 25 tokens 大于 slack，触发摘要。
+    prefix_segment = "one two three four."  # 4 words, 用尽 budget
+    overshoot_segment = " five, six seven eight nine ten."  # 越界后第一个 terminator 是逗号
+    long_tail = " " + " ".join(f"w{i}" for i in range(25)) + "."
+    long_text = prefix_segment + overshoot_segment + long_tail
+
+    async def _astream(self, messages, **overrides):
+        yield LLMStreamChunk(content=long_text)
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream)
+
+    delta_calls: list[dict] = []
+
+    async def fake_text_delta(text, is_first, **kwargs):
+        delta_calls.append({
+            "text": text,
+            "is_first": is_first,
+            "ui_enabled": kwargs.get("ui_enabled", True),
+            "tts_enabled": kwargs.get("tts_enabled", True),
+        })
+
+    async def noop(*_a, **_kw):
+        pass
+
+    client = _build_summary_client(monkeypatch, max_response_length=4)
+    client.on_text_delta = fake_text_delta
+    client.on_input_transcript = noop
+    client.on_response_done = noop
+    client.on_response_discarded = None
+    client.on_status_message = noop
+    client.on_repetition_detected = None
+
+    await client.stream_text("trigger long")
+
+    # 3 类调用都必须出现
+    both_emits = [c for c in delta_calls if c["ui_enabled"] and c["tts_enabled"]]
+    ui_only_emits = [c for c in delta_calls if c["ui_enabled"] and not c["tts_enabled"]]
+    tts_only_emits = [c for c in delta_calls if not c["ui_enabled"] and c["tts_enabled"]]
+
+    assert both_emits, "cutover 之前的 prefix 必须以 both 模式发出"
+    assert ui_only_emits, "cutover 之后的 tail 必须只去 UI"
+    assert len(tts_only_emits) == 1, "summary 必须以 tts-only 注入一次"
+    assert tts_only_emits[0]["text"] == "总之就这样啦"
+
+    # _summarize_tail_for_tts 收到的 prefix 应当以越界后的 terminator 结尾。
+    # 关键：budget 内已经有句号 "four." (offset 18) —— 旧的从 chunk 头扫的实现
+    # 会在那里 cutover；overflow-offset 修复后应当跳过它，落到 "five," 处。
+    captured_prefix = fake_summarize.captured["prefix"].rstrip()
+    assert captured_prefix.endswith(","), (
+        "cutover 应该落在越界后的逗号，不应该在 budget 之内的句号 "
+        "(actual prefix: %r)" % captured_prefix
+    )
+    assert fake_summarize.captured["tail"]
+
+    # history 写 prefix + summary（与 TTS 听到的对齐）
+    last_msg = client._conversation_history[-1].content
+    assert last_msg.endswith("总之就这样啦")
+    # prefix 必然包含 budget 之前的部分
+    assert "one two three four." in last_msg
+    # 越界后才出现的 tail 词不应进 history
+    assert "w24" not in last_msg
+
+
+@pytest.mark.asyncio
+async def test_stream_text_summary_abandoned_when_overshoot_under_slack(monkeypatch):
+    """超 budget 但只多几个 token（< slack）时放弃摘要，tail 续给 TTS 读完，
+    history 留完整原文，没有 prefix/summary 分裂。"""
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import LLMStreamChunk
+
+    summarize_called = []
+
+    async def fake_summarize(self, prefix, tail):
+        summarize_called.append((prefix, tail))
+        return "should not be used"
+    monkeypatch.setattr(OmniOfflineClient, "_summarize_tail_for_tts", fake_summarize)
+
+    # budget=4，模型只写 7 词，7 < 4+25 → abandon。trigger chunk 后必须有
+    # 至少一个 terminator 在越界点之后，否则 cutover 退化到流末 / 没 tail。
+    short_overshoot = "one two three four. five, six seven."
+
+    async def _astream(self, messages, **overrides):
+        yield LLMStreamChunk(content=short_overshoot)
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream)
+
+    delta_calls: list[dict] = []
+
+    async def fake_text_delta(text, is_first, **kwargs):
+        delta_calls.append({
+            "text": text,
+            "ui_enabled": kwargs.get("ui_enabled", True),
+            "tts_enabled": kwargs.get("tts_enabled", True),
+        })
+
+    async def noop(*_a, **_kw):
+        pass
+
+    client = _build_summary_client(monkeypatch, max_response_length=4)
+    client.on_text_delta = fake_text_delta
+    client.on_input_transcript = noop
+    client.on_response_done = noop
+    client.on_response_discarded = None
+    client.on_status_message = noop
+    client.on_repetition_detected = None
+
+    await client.stream_text("short overshoot")
+
+    assert summarize_called == [], "overshoot 不够大不应当调摘要"
+    # 必须看到一次 ui_only 发出（cutover 之后的 tail）+ 一次 tts_only 发出（abandon 时补给 TTS）
+    ui_only_emits = [c for c in delta_calls if c["ui_enabled"] and not c["tts_enabled"]]
+    tts_only_emits = [c for c in delta_calls if not c["ui_enabled"] and c["tts_enabled"]]
+    assert ui_only_emits, "cutover 后的 tail 必须只去 UI"
+    assert len(tts_only_emits) == 1, "abandon 路径 tail 必须补一次 TTS-only"
+    # 不只验通道，还要验内容：abandon 续给 TTS 的必须是原文 tail，
+    # 绝不能是摘要器的返回值（那条 path 不该被走到）。
+    tts_text = tts_only_emits[0]["text"]
+    assert "six seven." in tts_text, f"TTS 续读应是原文 tail，实际: {tts_text!r}"
+    assert "should not be used" not in tts_text
+
+    # history 是完整原文
+    assert client._conversation_history[-1].content.strip() == short_overshoot.strip()
+
+
+@pytest.mark.asyncio
+async def test_stream_text_summary_gibberish_fallback_silently_commits_prefix(monkeypatch):
+    """cutover 后 tail 在 gibberish 重检阈值上被判定为乱码 → 静默截断：
+    不发 RESPONSE_INVALID（那会触发 core 端 _clear_tts_pipeline 把队列里未播完
+    的 prefix 一起清掉，反而让用户已经在听的话被截断）。history 只留 prefix，
+    TTS 自然把队列残余播完。"""
+    from main_logic import omni_offline_client as _ofc
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import LLMStreamChunk
+
+    # 降低 gibberish 重检阈值，避免单测吐 100+ tokens 才触发
+    monkeypatch.setattr(_ofc, "_SUMMARY_GIBBERISH_RECHECK_TOKENS", 2)
+
+    # 强制 _is_gibberish_response 在尾巴被检测时返 True
+    monkeypatch.setattr(_ofc, "_is_gibberish_response", lambda text: "GIB" in text)
+
+    summarize_called = []
+
+    async def fake_summarize(self, prefix, tail):
+        summarize_called.append((prefix, tail))
+        return "unused"
+    monkeypatch.setattr(OmniOfflineClient, "_summarize_tail_for_tts", fake_summarize)
+
+    # prefix 部分先走 both，cutover 落在越界后的第一个逗号；之后 "GIB" 进 tail，
+    # 重检触发 gibberish 命中。
+    async def _astream(self, messages, **overrides):
+        yield LLMStreamChunk(content="one two three four. five, GIB GIB GIB.")
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream)
+
+    discarded: list[dict] = []
+
+    async def fake_text_delta(text, is_first, **kwargs):
+        # 这里不关心具体 delta；focus 在 discard 通知上
+        return None
+
+    async def fake_notify_discarded(reason, attempt, max_attempts, will_retry, message=None):
+        discarded.append({
+            "reason": reason,
+            "will_retry": will_retry,
+            "message": message,
+        })
+
+    async def noop(*_a, **_kw):
+        pass
+
+    client = _build_summary_client(monkeypatch, max_response_length=4)
+    client.on_text_delta = fake_text_delta
+    client.on_input_transcript = noop
+    client.on_response_done = noop
+    client.on_response_discarded = fake_notify_discarded
+    client.on_status_message = noop
+    client.on_repetition_detected = None
+
+    await client.stream_text("trigger gibberish tail")
+
+    assert summarize_called == [], "gibberish fallback 不应调摘要"
+    # 关键：不再发 response_discarded —— 否则 core 会 _clear_tts_pipeline，
+    # 把已经在 TTS 队列里的 prefix 一并清掉。
+    assert discarded == []
+
+    # history 只保留 prefix（cutover 之前的部分），不含 tail
+    last_msg = client._conversation_history[-1].content
+    assert "GIB" not in last_msg
+    assert last_msg.startswith("one two three four.")
+
+
+@pytest.mark.asyncio
+async def test_stream_text_summary_overflow_offset_consumed_across_chunks(monkeypatch):
+    """Trigger chunk 没有 terminator 时 state 停在 pending_cutover，
+    `summary_overflow_offset` 必须消费回 0，让下一个 chunk 能从头扫到
+    leading terminator。没消费回 0 的话，搜索会跳过 chunk 头部，把 cutover
+    错放到 chunk 尾。codex P2 的回归守门。"""
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import LLMStreamChunk
+
+    summarize_called: list = []
+
+    async def fake_summarize(self, prefix, tail):
+        summarize_called.append((prefix, tail))
+        return "总之"
+    monkeypatch.setattr(OmniOfflineClient, "_summarize_tail_for_tts", fake_summarize)
+
+    # Trigger chunk: 5 词无 terminator (budget=4) → state 切到 pending_cutover，
+    # 找不到 terminator，offset 必须消费回 0。
+    # 下一个 chunk 头部就有逗号；如果 offset 没消费，搜索从 > 0 起会跳过它。
+    async def _astream(self, messages, **overrides):
+        # 单独 yield，模拟 provider 多 chunk 流；chunk 2 头部加 leading space
+        # 避免 token 边界粘连导致 word-split count_tokens 把 "e" 和 "h," 合并。
+        yield LLMStreamChunk(content="a b c d e")
+        yield LLMStreamChunk(content=" h, i j k l m n o p q r s t u v w x y z aa bb cc dd ee ff.")
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream)
+
+    async def fake_text_delta(text, is_first, **kwargs):
+        return None
+
+    async def noop(*_a, **_kw):
+        pass
+
+    client = _build_summary_client(monkeypatch, max_response_length=4)
+    client.on_text_delta = fake_text_delta
+    client.on_input_transcript = noop
+    client.on_response_done = noop
+    client.on_response_discarded = None
+    client.on_status_message = noop
+    client.on_repetition_detected = None
+
+    await client.stream_text("multi-chunk offset reset")
+
+    # cutover 必须发生（summary 被调），并且 prefix 应该结束于第二 chunk
+    # 头部的逗号 —— 这只有在 offset 消费回 0 时才可能。
+    assert summarize_called, "second chunk 必须能 cutover（offset 已被消费）"
+    captured_prefix = summarize_called[0][0]
+    assert captured_prefix.endswith("h,"), (
+        "cutover 应该落在 second chunk 头部的逗号 (offset=0)，没消费回 0 "
+        "时会跳过该逗号。实际 prefix: %r" % captured_prefix
+    )
+
+
+@pytest.mark.asyncio
+async def test_stream_text_summary_budget_bump_scoped_to_stream_text(monkeypatch):
+    """summary 模式只在 stream_text 期间把 self.llm.max_completion_tokens 抬到
+    _SUMMARY_API_BUDGET_FLOOR，结束后精确还原 —— 不泄漏给共用同一 self.llm 的
+    prompt_ephemeral（proactive 没长度 guard，被抬到 3000 会吐超长回复）。"""
+    from types import SimpleNamespace
+    from main_logic import omni_offline_client as _ofc
+    from main_logic.omni_offline_client import (
+        OmniOfflineClient, _budget_to_max_tokens, _SUMMARY_API_BUDGET_FLOOR,
+    )
+    from utils.llm_client import LLMStreamChunk
+
+    observed: dict = {}
+
+    async def _astream(self, messages, **overrides):
+        # 记录流式进行中 client 上的 cap
+        observed["during"] = self.llm.max_completion_tokens
+        yield LLMStreamChunk(content="hi there.")
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream)
+
+    async def noop(*_a, **_kw):
+        pass
+
+    client = _build_summary_client(monkeypatch, max_response_length=4)
+    normal_budget = _budget_to_max_tokens(4)  # budget+slack，远小于 3000 floor
+    client.llm = SimpleNamespace(max_completion_tokens=normal_budget)
+    client.on_text_delta = noop
+    client.on_input_transcript = noop
+    client.on_response_done = noop
+    client.on_response_discarded = None
+    client.on_status_message = noop
+    client.on_repetition_detected = None
+
+    await client.stream_text("trigger")
+
+    # 流中被抬到 floor（normal_budget < 3000）
+    assert observed["during"] == _SUMMARY_API_BUDGET_FLOOR
+    # 流结束后精确还原到原值，不泄漏给 prompt_ephemeral
+    assert client.llm.max_completion_tokens == normal_budget
+
+
+@pytest.mark.asyncio
+async def test_stream_text_summary_disabled_keeps_old_truncate_behavior(monkeypatch):
+    """没开 summary 的 client（game/默认 stream_text 调用）必须保持原来的
+    abort+inline truncate 行为，不被新路径干扰，并且小模型摘要器一次也不能调。"""
+    from main_logic import omni_offline_client as _ofc
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import LLMStreamChunk, SystemMessage
+
+    monkeypatch.setattr(_ofc, "count_tokens", lambda text: len((text or "").split()))
+    monkeypatch.setattr(
+        _ofc,
+        "truncate_to_tokens",
+        lambda text, budget: " ".join((text or "").split()[:budget]),
+    )
+
+    summarize_calls: list = []
+
+    async def fake_summarize(self, prefix, tail):
+        summarize_calls.append((prefix, tail))
+        return "should never run"
+
+    monkeypatch.setattr(OmniOfflineClient, "_summarize_tail_for_tts", fake_summarize)
+
+    async def _astream(self, messages, **overrides):
+        # 6 词，budget=4 → 过线触发旧 guard 路径
+        yield LLMStreamChunk(content="one two three four. five six.")
+
+    monkeypatch.setattr(OmniOfflineClient, "_astream_with_tools", _astream)
+
+    delta_calls: list[dict] = []
+
+    async def fake_text_delta(text, is_first, **kwargs):
+        delta_calls.append({
+            "text": text,
+            "ui_enabled": kwargs.get("ui_enabled", True),
+            "tts_enabled": kwargs.get("tts_enabled", True),
+        })
+
+    async def fake_notify_discarded(reason, attempt, max_attempts, will_retry, message=None):
+        pass
+
+    async def noop(*_a, **_kw):
+        pass
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    client.lanlan_name = "T"
+    client.master_name = "M"
+    client._prefix_buffer_size = 0
+    client._conversation_history = [SystemMessage(content="sys")]
+    client._pending_images = []
+    client._is_responding = False
+    client._recent_responses = []
+    client._repetition_threshold = 0.8
+    client._max_recent_responses = 3
+    client.max_response_length = 4
+    client.max_response_rerolls = 1
+    client.enable_response_guard = True
+    client.enable_long_response_summary = False  # 关键
+    client.vision_model = ""
+    client.model = "x"
+    client.on_text_delta = fake_text_delta
+    client.on_input_transcript = noop
+    client.on_response_done = noop
+    client.on_response_discarded = fake_notify_discarded
+    client.on_status_message = noop
+    client.on_repetition_detected = None
+
+    await client.stream_text("disabled summary")
+
+    # 旧路径：所有 emit 都是 both（没 ui/tts 拆分）
+    assert delta_calls, "至少要 emit 过一次"
+    for c in delta_calls:
+        assert c["ui_enabled"] and c["tts_enabled"]
+    # 关键回归：禁用模式下小模型摘要器一次都不能被调
+    assert summarize_calls == []

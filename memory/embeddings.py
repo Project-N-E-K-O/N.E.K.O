@@ -55,7 +55,16 @@ import re
 import sys
 from typing import Any
 
-logger = logging.getLogger(__name__)
+# 走 get_module_logger(..., "Memory") 把本模块日志归到 N.E.K.O.Memory.*，
+# 否则 ``logging.getLogger(__name__)`` 产生的 ``memory.embeddings`` logger
+# 落在 N.E.K.O 命名空间之外，向上只能传到无 handler 的 root，导致
+# "EmbeddingService: ready / vectors disabled (reason)" 这类关键状态行
+# 永远不进 Memory 日志文件——线上排"为啥向量召回是空的"时根本看不到原因。
+try:
+    from utils.logger_config import get_module_logger
+    logger = get_module_logger(__name__, "Memory")
+except Exception:  # noqa: BLE001 — 极早期/裸测试环境拿不到 config，退回裸 logger
+    logger = logging.getLogger(__name__)
 
 
 # ── on-disk vector encoding ──────────────────────────────────────────
@@ -95,7 +104,19 @@ DEFAULT_VECTORS_MODEL_PROFILE_ID = "local-text-retrieval-v1"
 DEFAULT_VECTORS_QUANTIZATION = "auto"             # "auto" | "int8" | "fp32"
 DEFAULT_VECTORS_MIN_RAM_GB = 4.0
 DEFAULT_VECTORS_MODEL_DIR_NAME = "embedding_models"
-DEFAULT_VECTORS_MAX_LENGTH = 8192
+DEFAULT_VECTORS_MAX_LENGTH = 1024
+
+# 推理峰值上限。激活内存近似 ``batch × seq × hidden × layers``;固定
+# batch + pad-to-longest 让一条长文本就能把激活顶到上百 GB(实测:
+# 用户粘贴一段长 recent 进记忆,凛天上线那个 sweep 把 RSS 从 1.1 GB
+# 顶到 12.4 GB)。改成 token 预算 ``batch × max_len ≤ _INFER_TOKEN_BUDGET``,
+# 长文本时 batch 自动缩到 1~2 条,峰值有硬上界。
+#
+# 选 16384:在新 max_length=1024 下,一桶能放下 16 条满长(等同
+# worker BATCH_SIZE=16 的原行为),正常路径吞吐零损失;当历史数据 /
+# 测试 / 自定义 profile 把 max_length 顶到旧 8192 时也只允许 2 条
+# 一桶,峰值仍可控。"""
+_INFER_TOKEN_BUDGET = 16384
 
 # Matryoshka discrete steps supported by the default local profile.
 _DIM_STEPS = (32, 64, 128, 256, 512, 768)
@@ -123,9 +144,23 @@ class _DisableReason(enum.Enum):
     # the install commands diverge.
     NO_TOKENIZERS = "tokenizers_not_importable"
     NO_MODEL_FILE = "model_file_missing"
-    # Default bundle is INT8; ``auto`` picks INT8 only when VNNI is present or
-    # detection is inconclusive — confirmed absence disables local vectors.
+    # ``enable_truncation`` 失败 = tokenizer 实例存在但截断契约没能建立。
+    # 必须当成 load 失败(Codex / CodeRabbit 在 PR #1585 联合指出 P2):
+    # ``model_id`` 现在把 max_length 编进 cache id,如果继续 ready,长文本
+    # 会被「未截断」地编码、却 stamp 成 ``-mlen1024``,跟未来真的 1024 截
+    # 断的 vector 在同一 id 下混存,is_cached_embedding_valid 会判它们「同
+    # 一空间」做 cosine,召回质量静默漂移。宁可 disable 也不能错配 cache。
+    TRUNCATION_SETUP_FAILED = "tokenizer_truncation_setup_failed"
+    # Default bundle is INT8. ``auto`` picks INT8 when *any* usable SIMD int8
+    # path exists: AVX-VNNI (fast) OR plain AVX2 (slower but fine for our nano
+    # model + small corpus). Only when BOTH are confirmed absent (SSE-only
+    # ancient/low-end CPUs) does auto disable — see NO_SIMD_INT8_PATH.
     AVX_VNNI_REQUIRED_FOR_INT8 = "avx_vnni_required_for_int8_bundle"
+    # No AVX-VNNI *and* no AVX2 (both confirmed): int8 kernels would fall to
+    # SSE, too slow to justify auto-enabling. Distinct from the VNNI reason so
+    # the log separates "no fast path at all" from the now-supported "no VNNI
+    # but AVX2 present" case (Haswell 2013+ / Zen+).
+    NO_SIMD_INT8_PATH = "no_avx2_or_vnni_for_int8"
     LOW_RAM = "ram_below_threshold"
     LOAD_ERROR = "load_raised"
     INFERENCE_ERROR = "inference_raised"
@@ -217,7 +252,16 @@ def decode_embedding(emb: Any):
 # would reject every freshly stamped vector forever (size mismatch),
 # pinning the worker into an infinite re-embed loop. Codex review
 # PR #1147.
-_MODEL_ID_DIM_RE = re.compile(r"-(\d+)d-(?:int8|fp32)$")
+#
+# ``-mlen<N>`` 后缀(PR #1585):tokenizer 截断长度是 embedding 输入空间的
+# 一部分 —— 同一段 2K-token 文本在 max_length=8192 下喂全量、在
+# max_length=1024 下只喂前缀,得到的向量在同一模型下也不可比。把 mlen
+# 编进 model_id,降 max_length 时旧 cache 自动失效,worker 重新 embed,
+# 避免不同 token 输入空间的向量混用做 cosine。后缀可选(``mlen<N>?``)是
+# 为了向后兼容已经在用户磁盘上的老 cache id —— 它们解析 dim 仍然成功,
+# 在 is_cached_embedding_valid 里会因为 model_id 字符串比较失败被识别
+# 为 stale,然后被 worker 重新 stamp 上带 mlen 的新 id。
+_MODEL_ID_DIM_RE = re.compile(r"-(\d+)d-(?:int8|fp32)(?:-mlen\d+)?$")
 
 
 def parse_dim_from_model_id(model_id: str | None) -> int | None:
@@ -268,31 +312,248 @@ def detect_total_ram_gb() -> float | None:
         return None
 
 
-def detect_avx_vnni_details() -> tuple[bool, bool]:
-    """Return ``(has_vnni, vnni_absence_confirmed)``.
+# Known-good thresholds for CPU microarchitectures that ship AVX-VNNI.
+# Family/model is a stable hardware identifier readable from
+# ``HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0\Identifier`` on
+# Windows and ``/proc/cpuinfo`` on Linux — a plain registry / text read,
+# nothing an AV heuristic can mistake for a low-level CPU-probing trick.
+#
+# Conservative: a "yes" from the table is authoritative (confirmed=True);
+# an "I don't know" falls through to numpy CPU features / /proc/cpuinfo so
+# brand-new microarchitectures aren't false-negatived just because the
+# table predates them.
+_INTEL_VNNI_MIN_MODEL_FAMILY_6 = 0x97  # Alder Lake — also covers Raptor,
+                                       # Meteor, Arrow, Lunar, Panther
+                                       # Lake; Sapphire/Emerald Rapids.
 
-    When ``vnni_absence_confirmed`` is False we could not read CPU flags
-    (should be rare now that ``py-cpuinfo`` is a required dependency).
-    ``auto`` quantization
-    still selects INT8 in that case — we only skip vectors when we are
-    *confident* the CPU lacks AVX-VNNI (INT8 would be slow and FP32 weights
-    are not shipped).
+# AMD Family 0x19 is shared between Zen 3 (no AVX-VNNI) and Zen 4 (yes), so
+# family alone is not enough — gate on the documented Zen 4 model ranges
+# instead. Zen 5 lives on Family 0x1A and every shipped part has VNNI, so
+# Family >= 0x1A is a straight yes; Family < 0x19 is a straight no
+# (Zen 1 / Zen 2 at 0x17, older microarchitectures at 0x15 / 0x16).
+_AMD_ZEN4_MODEL_RANGES_FAMILY_19 = (
+    (0x10, 0x1F),  # Genoa / Bergamo / Storm Peak (Zen 4 server, EPYC 9004,
+                   # Threadripper 7000)
+    (0x60, 0x6F),  # Raphael / Dragon Range (Zen 4 desktop / mobile HX,
+                   # Ryzen 7000 / 7045)
+    (0x70, 0x7F),  # Phoenix / Phoenix 2 / Hawk Point (Zen 4 mobile,
+                   # Ryzen 7040 / 8040)
+    (0xA0, 0xAF),  # Zen 4c derivatives reserved by AMD's CPUID
+                   # documentation; included for forward compat so a
+                   # future Family-19h Zen-4c part isn't false-negatived.
+)
 
-    Detection priority:
-      1. ``py-cpuinfo``
-      2. ``/proc/cpuinfo`` on Linux
-      3. Otherwise inconclusive → ``(False, False)``
+# Zen 3 model ranges on Family 0x19 — definitively no AVX-VNNI. Listed
+# explicitly so we can answer ``(False, True)`` (confirmed-no) for them
+# rather than ``(False, False)`` (inconclusive), which would let
+# ``auto`` quantization optimistically pick int8 on a CPU that genuinely
+# can not run it well.
+_AMD_ZEN3_MODEL_RANGES_FAMILY_19 = (
+    (0x00, 0x0F),  # Milan EPYC / Vermeer (Ryzen 5000 desktop)
+    (0x20, 0x2F),  # Cezanne / Lucienne / Barceló (Ryzen 5000G/U APU)
+    (0x30, 0x3F),  # Milan-X / Trento (EPYC 7003X)
+    (0x40, 0x4F),  # Rembrandt (Ryzen 6000 mobile, Zen 3+)
+    (0x50, 0x5F),  # Barceló-R refresh
+)
+
+
+def _read_cpu_family_model() -> tuple[str, int, int] | None:
+    """Return ``(vendor, family, model)`` from a plain registry/text read,
+    or None when neither the Windows registry nor ``/proc/cpuinfo``
+    answered.
+
+    Vendor strings are normalised to the CPUID brand strings
+    (``GenuineIntel`` / ``AuthenticAMD``) so the lookup table is indexed
+    identically across OSes.
     """
+    system = platform.system()
     try:
-        import cpuinfo  # type: ignore
-        flags = cpuinfo.get_cpu_info().get("flags", []) or []
-        # Empty flags (e.g. some virtualised hosts) is *not* a confirmed
-        # absence — fall through so /proc/cpuinfo can have a try.
-        if flags:
-            has = any("vnni" in f for f in flags)
-            return has, True
+        if system == "Windows":
+            import winreg
+            with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"HARDWARE\DESCRIPTION\System\CentralProcessor\0",
+            ) as k:
+                vendor = winreg.QueryValueEx(k, "VendorIdentifier")[0]
+                ident = winreg.QueryValueEx(k, "Identifier")[0]
+            m = re.search(r"Family (\d+) Model (\d+)", ident)
+            if not m:
+                return None
+            return vendor, int(m.group(1)), int(m.group(2))
+        if system == "Linux":
+            vendor, family, model = None, None, None
+            with open("/proc/cpuinfo", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("vendor_id"):
+                        vendor = line.split(":", 1)[1].strip()
+                    elif line.startswith("cpu family"):
+                        try:
+                            family = int(line.split(":", 1)[1].strip())
+                        except ValueError:
+                            # Malformed numeric field — keep scanning;
+                            # the surrounding ``vendor/family/model``
+                            # presence check below treats a missing
+                            # field as "no answer" and returns None.
+                            pass
+                    # ``model name`` shares the prefix; check ``model`` first
+                    # but skip when the line is actually ``model name``.
+                    elif line.startswith("model") and not line.startswith("model name"):
+                        try:
+                            model = int(line.split(":", 1)[1].strip())
+                        except ValueError:
+                            # Same fallthrough as above — better to
+                            # answer "I don't know" than to crash CPU
+                            # detection on an exotic /proc/cpuinfo.
+                            pass
+                    if vendor and family is not None and model is not None:
+                        break
+            if vendor is None or family is None or model is None:
+                return None
+            return vendor, family, model
     except Exception:
-        pass
+        return None
+    return None
+
+
+def _vnni_via_family_model() -> tuple[bool, bool]:
+    """Authoritative VNNI answer via CPU family/model lookup.
+
+    Returns ``(has_vnni, confirmed)``. ``confirmed=True`` means the
+    family/model fell inside (or strictly below) a known range and the
+    answer is final. ``(False, False)`` means the table doesn't know —
+    let the caller fall through to numpy CPU features / ``/proc/cpuinfo``.
+
+    Replaces the deleted low-level CPUID probe. Strictly less precise
+    in one direction (brand-new microarchitectures that ship before the
+    table is updated stay inconclusive instead of authoritative), but
+    the consumer's ``auto`` quantization path treats inconclusive as
+    "pick int8 optimistically" — the same behaviour the CPUID probe
+    produced for sandboxes that refused executable allocation.
+    """
+    info = _read_cpu_family_model()
+    if info is None:
+        return False, False
+    vendor, family, model = info
+    if vendor == "GenuineIntel":
+        # All Intel client microarchitectures shipping AVX-VNNI live in
+        # Family 6 with model >= Alder Lake's 0x97. Earlier Family-6
+        # parts that carry AVX512-VNNI (Ice Lake server, Tiger/Rocket
+        # Lake, Sapphire Rapids) are detected by numpy's ``AVX512VNNI``
+        # feature flag and don't need enumeration here.
+        if family == 6 and model >= _INTEL_VNNI_MIN_MODEL_FAMILY_6:
+            return True, True
+    elif vendor == "AuthenticAMD":
+        # Zen 5 (Family 0x1A, and any later family AMD ships) — every
+        # part has AVX-VNNI.
+        if family >= 0x1A:
+            return True, True
+        # Family 0x19 is shared between Zen 3 (no VNNI) and Zen 4 (yes),
+        # so we have to look at the model. The Zen-4 ranges below are
+        # AMD's documented CPUID model groupings.
+        if family == 0x19:
+            for lo, hi in _AMD_ZEN4_MODEL_RANGES_FAMILY_19:
+                if lo <= model <= hi:
+                    return True, True
+            for lo, hi in _AMD_ZEN3_MODEL_RANGES_FAMILY_19:
+                if lo <= model <= hi:
+                    return False, True
+            # An unmapped Family-19h model (e.g. a future stepping not
+            # yet covered by AMD's published groupings) stays
+            # inconclusive so numpy's feature map can have a try
+            # instead of silently picking the wrong path.
+            return False, False
+        # Family < 0x19 covers Zen 1 / Zen 2 (0x17), Excavator (0x15) and
+        # earlier — none have AVX-VNNI, so the answer is definitive.
+        return False, True
+    return False, False
+
+
+def _numpy_cpu_features() -> dict | None:
+    """Read numpy's runtime CPU SIMD feature map, or None if unavailable.
+
+    numpy probes CPU features in its compiled C core at import (for kernel
+    dispatch) and exposes the result as ``__cpu_features__`` — a plain
+    ``{feature_name: bool}`` dict. We read it instead of calling py-cpuinfo
+    because py-cpuinfo probes the CPU by generating a tiny native routine at
+    runtime and calling into it from a child process — a low-level trick that
+    antivirus heuristics (notably Huorong) match and act on, quarantining
+    whichever Python file happens to be on the import stack at the time. The
+    launcher starts the memory server as a spawn child that re-imports this
+    module, so on Windows that file is ``embeddings.py`` — which is why the AV
+    report blamed it (the report's ``--multiprocessing-fork`` line is that
+    spawn child, not the probe). numpy's detection is pure compiled C with
+    none of that, so the heuristic has nothing to bite, and numpy is already a
+    hard dependency we import for inference. See PR #1437 / #1525 and this
+    module's git history for the full write-up.
+
+    Returns None on exotic builds where the private attribute is gone, so
+    callers fall through to ``/proc/cpuinfo`` (Linux) or stay inconclusive.
+    """
+    import warnings
+    # numpy >= 2.0 renamed the private module ``numpy.core`` → ``numpy._core``
+    # and warns on the old path; try the new spelling first, suppress the
+    # DeprecationWarning on the legacy one for numpy 1.x.
+    for modpath in ("numpy._core._multiarray_umath",
+                    "numpy.core._multiarray_umath"):
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                mod = __import__(modpath, fromlist=["__cpu_features__"])
+            feats = getattr(mod, "__cpu_features__", None)
+            if isinstance(feats, dict) and feats:
+                return feats
+        except Exception:
+            continue
+    return None
+
+
+def _np_feature(feats: dict, *needles: str) -> bool:
+    """Case-insensitive substring test against numpy's CPU feature map.
+
+    numpy's ``__cpu_features__`` keys are stable upper-case spellings today
+    (``AVX2`` / ``AVX512VNNI`` / ``ASIMDDP``), but we case-fold and match a
+    substring so a future numpy that re-cases or lightly renames a key (e.g.
+    ``AVX512_VNNI``) still resolves — the same forgiving stance the old
+    py-cpuinfo ``any("vnni" in flag)`` search had. Returns True when *any*
+    needle matches a present key whose value is truthy.
+
+    ``"vnni"`` also matches Knights-Mill ``AVX5124VNNIW`` (a different,
+    extinct instruction set), but that part still carries AVX512 so int8
+    kernels run fine on it anyway — the resulting "pick int8" decision is the
+    right one, so the loose match costs nothing.
+    """
+    lowered = [n.lower() for n in needles]
+    return any(
+        v and any(n in k.lower() for n in lowered)
+        for k, v in feats.items()
+    )
+
+
+def _detect_int8_fast_path_x86() -> tuple[bool, bool]:
+    """x86 INT8 fast path = AVX-VNNI (client) or AVX512-VNNI (server).
+
+    Detection order (plain reads only, no child process):
+      1. CPU family/model lookup (:func:`_vnni_via_family_model`) — the
+         only path that authoritatively answers for Alder-Lake+ Intel
+         *client* CPUs, whose AVX-VNNI flag numpy's feature map does not
+         track (it only carries the AVX512 variant).
+      2. numpy ``__cpu_features__`` "vnni" match — server VNNI parts
+         (Cascade / Ice Lake-SP / Sapphire Rapids, key ``AVX512VNNI``).
+         Client AVX-VNNI parts are all Alder-Lake+ and already answered
+         authoritatively by (1).
+      3. ``/proc/cpuinfo`` on Linux — text parse if numpy's map is gone.
+
+    Returns ``(has_vnni, absence_confirmed)``. ``absence_confirmed=False``
+    means no source could read CPU features — the caller stays optimistic
+    and picks INT8 in that case (consistent with the ARM branch).
+    """
+    has_vnni, confirmed = _vnni_via_family_model()
+    if confirmed:
+        return has_vnni, True
+
+    feats = _numpy_cpu_features()
+    if feats is not None:
+        return _np_feature(feats, "vnni"), True
 
     if platform.system() == "Linux":
         try:
@@ -307,10 +568,201 @@ def detect_avx_vnni_details() -> tuple[bool, bool]:
     return False, False
 
 
+def _detect_int8_fast_path_arm() -> tuple[bool, bool]:
+    """ARM64 INT8 fast path = ARMv8.2-A NEON sdot/udot (``asimddp`` feature).
+
+    Strategy (plain reads only, no child process):
+
+      * macOS — Apple Silicon (M1+) universally has dotprod; Apple has
+        never shipped an ARM Mac without it, so we short-circuit to
+        ``(True, True)``.
+      * numpy ``__cpu_features__`` "asimddp" — but its *trustworthiness is
+        OS-dependent*. numpy only runtime-probes ARM features (HWCAP) on
+        Linux/BSD; on Windows it falls back to compile-time baseline macros,
+        so a win-arm64 wheel's conservative baseline reports ``ASIMDDP=False``
+        even on dotprod-capable Snapdragon X. We therefore trust a numpy
+        *positive* on any OS, but a numpy *negative* only on Linux. A Windows
+        numpy-negative is NOT confirmed — it falls through to the kernel
+        probe below (Codex P1 on PR #1525, restoring PR #1394's intent).
+      * Linux fallback — ``/proc/cpuinfo`` ``Features`` line if numpy's map
+        is unavailable. The ARM SBC ecosystem still has plenty of
+        Cortex-A53 / A57 / A72 cores that predate dotprod (Pi-3 class).
+      * Windows — ``IsProcessorFeaturePresent`` kernel32 API (a documented
+        feature-query call, nothing low-level). Its 0 return is ambiguous
+        (lacks dotprod OR old Win build that returns 0 for unknown feature
+        ids), reported as inconclusive so ``auto`` stays optimistic.
+
+    Returns ``(has_dotprod, absence_confirmed)``. Inconclusive cases let
+    ``auto`` quantization still pick int8 without claiming a definitive
+    answer.
+    """
+    system = platform.system()
+    if system == "Darwin":
+        return True, True
+
+    feats = _numpy_cpu_features()
+    if feats is not None and _np_feature(feats, "asimddp", "dotprod"):
+        # Positive is authoritative on any OS — the flag is only set when the
+        # feature is genuinely present.
+        return True, True
+    if feats is not None and system == "Linux":
+        # numpy runtime-probes ARM HWCAP on Linux, so a negative is reliable.
+        return False, True
+
+    if system == "Linux":
+        try:
+            # ARM Linux /proc/cpuinfo uses "Features" (capital F), not "flags".
+            with open("/proc/cpuinfo", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("Features") and (
+                        "asimddp" in line or "dotprod" in line
+                    ):
+                        return True, True
+            return False, True
+        except Exception:
+            return False, False
+
+    if system == "Windows":
+        try:
+            import ctypes
+            # PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE = 43 — the canonical
+            # Win32 feature constant for ARMv8.2 dotprod instructions. This
+            # is the path numpy's compile-time-baseline negative can't be
+            # trusted to replace.
+            if ctypes.windll.kernel32.IsProcessorFeaturePresent(43):
+                return True, True
+            # 0 from this API is ambiguous: the CPU truly lacks dotprod
+            # OR the running Windows build predates feature 43 and
+            # returns 0 for every unrecognised constant. Stay
+            # inconclusive so we don't false-disable embeddings on a
+            # capable Snapdragon X running an older Win10 ARM build
+            # (Codex P1 review on PR #1394).
+            return False, False
+        except Exception:
+            # ctypes call failed on a non-standard runtime — be
+            # inconclusive rather than wrong in either direction.
+            return True, False
+
+    # Unknown OS on ARM64 — modern ARM64 almost certainly has dotprod,
+    # but we can't confirm.
+    return True, False
+
+
+# Per-process one-shot flag so we log the "no INT8 fast path" outcome
+# exactly once at startup, with the vendor/family/model that drove the
+# decision. Reset by :func:`reset_embedding_service_for_tests` so unit
+# tests can re-trigger the log under monkeypatched detection.
+_VNNI_DECISION_LOGGED = False
+
+
+def _log_int8_fast_path_decision(has_vnni: bool, confirmed: bool) -> None:
+    """Emit one warning per process when no INT8 fast path is detected.
+
+    Triaging "why are my vectors disabled?" needs to know whether
+    detection was authoritative (the family/model table or a CPU that
+    truly lacks VNNI) or just inconclusive (exotic build with no numpy
+    feature map, unknown arch). Including the vendor/family/model in the
+    log lets us extend the lookup table for future microarchitectures
+    based on real reports instead of guesses.
+
+    We stay silent on the positive path — every successful boot would
+    just add noise to the log."""
+    global _VNNI_DECISION_LOGGED
+    if _VNNI_DECISION_LOGGED:
+        return
+    _VNNI_DECISION_LOGGED = True
+    if has_vnni:
+        return
+    info = _read_cpu_family_model()
+    if info is None:
+        vendor, family_str, model_str = "?", "?", "?"
+    else:
+        vendor, family, model = info
+        family_str = f"0x{family:X}"
+        model_str = f"0x{model:X}"
+    # No AVX-VNNI fast path. ``auto`` no longer disables on this alone — it
+    # falls back to the slower AVX2 int8 kernel (and only disables when AVX2 is
+    # *also* confirmed absent). So the message describes the fallback, not a
+    # disable, to avoid the old "vectors are off" misread.
+    logger.warning(
+        "EmbeddingService: no AVX-VNNI int8 fast path on this CPU "
+        "(vendor=%s family=%s model=%s arch=%s vnni_absence_confirmed=%s). "
+        "`auto` will fall back to the slower AVX2 int8 kernel if AVX2 is "
+        "present (disable only when AVX2 is also absent). Force with "
+        "VECTORS_QUANTIZATION=int8 / =fp32 if needed.",
+        vendor, family_str, model_str, platform.machine() or "?", confirmed,
+    )
+
+
+def detect_avx_vnni_details() -> tuple[bool, bool]:
+    """Return ``(has_int8_fast_path, absence_confirmed)``.
+
+    The name keeps the historical ``vnni`` spelling for backward compat,
+    but semantically this answers "does the CPU have a fast INT8 dot
+    product?" — what the quantization picker actually needs. The fast
+    path is architecture-specific:
+
+      * x86 → AVX-VNNI / AVX512-VNNI
+      * ARM64 → ARMv8.2-A NEON sdot/udot (``asimddp`` feature)
+
+    ``absence_confirmed=False`` means detection was inconclusive. For
+    ``auto`` quantization, INT8 is still selected in that case — we only
+    skip vectors when we are *confident* the CPU lacks the fast path
+    (INT8 would be slow and FP32 weights are not shipped).
+    """
+    if platform.machine().lower() in ("arm64", "aarch64"):
+        result = _detect_int8_fast_path_arm()
+    else:
+        result = _detect_int8_fast_path_x86()
+    _log_int8_fast_path_decision(*result)
+    return result
+
+
 def detect_avx_vnni() -> bool:
     """Backward-compatible: whether AVX-VNNI was detected."""
     has_vnni, _confirmed = detect_avx_vnni_details()
     return has_vnni
+
+
+def detect_avx2_details() -> tuple[bool, bool]:
+    """Return ``(has_avx2, absence_confirmed)`` for x86; ARM is treated as
+    "has a usable int8 SIMD path" (NEON is universal on ARM64).
+
+    AVX2 is the *slow-but-acceptable* int8 floor: without AVX-VNNI's fused
+    dot product, onnxruntime's MLAS still has solid AVX2 int8 kernels (256-bit,
+    ~2× SSE throughput) — fine for our nano model + small corpus. Below AVX2
+    (SSE-only) int8 would be too slow to auto-enable.
+
+    Source is numpy ``__cpu_features__['AVX2']`` (compiled C probe) rather
+    than py-cpuinfo, whose CPU probe runs a generated native routine in a
+    child process — the low-level pattern Huorong's heuristic quarantines
+    this file over (see :func:`_numpy_cpu_features`).
+    ``absence_confirmed=False`` means no source could read CPU features —
+    caller stays optimistic (picks int8), matching the VNNI-inconclusive policy.
+    """
+    if platform.machine().lower() in ("arm64", "aarch64"):
+        # On ARM the only tier boundary we act on is dotprod — it plays VNNI's
+        # role (fast int8). There is no separate "acceptable 256-bit floor vs
+        # disable" split like x86's AVX2-vs-SSE: base NEON is 128-bit, the
+        # SSE-equivalent *disable* tier under this PR's own logic. So the int8
+        # floor on ARM == the dotprod gate. Returning that (not a blanket
+        # (True, True)) keeps prior behavior intact — no-dotprod SBCs
+        # (Cortex-A53/A57/A72, Pi-3 class) still disable under auto, exactly as
+        # before. The AVX2 broadening is x86-only. (Codex P2 on PR #1482.)
+        return _detect_int8_fast_path_arm()
+    feats = _numpy_cpu_features()
+    if feats is not None:
+        return _np_feature(feats, "avx2"), True
+    if platform.system() == "Linux":
+        try:
+            with open("/proc/cpuinfo", encoding="utf-8") as f:
+                for line in f:
+                    if line.startswith("flags") and "avx2" in line.split():
+                        return True, True
+            return False, True
+        except Exception:
+            return False, False
+    return False, False
 
 
 def resolve_dim_for_ram(ram_gb: float | None) -> int | None:
@@ -359,52 +811,87 @@ def _coerce_dim(value, ram_gb: float | None) -> int | None:
     return as_int
 
 
+def _auto_int8_or_none(
+    has_vnni: bool,
+    vnni_absence_confirmed: bool,
+    has_avx2: bool,
+    avx2_absence_confirmed: bool,
+) -> str | None:
+    """``auto`` policy core: pick ``int8`` when *any* usable int8 SIMD path
+    exists, else ``None`` (disable).
+
+    Tiers:
+      1. AVX-VNNI present → int8 (fast path).
+      2. VNNI inconclusive → int8 (optimistic, unchanged from before).
+      3. VNNI confirmed absent, but AVX2 present → int8 (slow-but-fine —
+         Haswell 2013+ / Zen+; covers the bulk of pre-2021 desktops).
+      4. VNNI confirmed absent, AVX2 inconclusive → int8 (optimistic).
+      5. VNNI *and* AVX2 both confirmed absent → None (SSE-only; too slow).
+    """
+    if has_vnni or not vnni_absence_confirmed:
+        return "int8"
+    if has_avx2 or not avx2_absence_confirmed:
+        return "int8"
+    return None
+
+
 def _resolve_quantization(
     value: str | None,
     has_vnni: bool,
     *,
     vnni_absence_confirmed: bool = True,
+    has_avx2: bool = True,
+    avx2_absence_confirmed: bool = False,
 ) -> str | None:
-    """Map ``\"auto\"`` / ``\"int8\"`` / ``\"fp32\"`` after VNNI policy.
+    """Map ``\"auto\"`` / ``\"int8\"`` / ``\"fp32\"`` onto a loadable variant.
 
     Returns ``\"int8\"``, ``\"fp32\"``, or ``None``. ``None`` means local
-    embeddings are off for ``auto`` when AVX-VNNI is confidently absent.
-    Explicit ``\"fp32\"`` always loads the FP32 ONNX when files exist.
+    embeddings are off — for ``auto``, only when the CPU has *neither* AVX-VNNI
+    nor AVX2 (both confirmed). Explicit ``\"fp32\"`` always loads the FP32 ONNX
+    when files exist.
 
-    Explicit ``\"int8\"`` without VNNI is still honoured (with a warning)
-    so operators can force INT8 on slow CPUs if they accept the cost.
+    Explicit ``\"int8\"`` is always honoured (with a warning when no VNNI fast
+    path) so operators can force INT8 even on SSE-only CPUs if they accept the
+    cost. ``has_avx2`` defaults True so the historical 3-arg call sites keep the
+    old (VNNI-only) behaviour until they pass the AVX2 detection through.
     """
     if value == "fp32":
         return "fp32"
-    if value == "auto" or value is None:
-        if has_vnni:
-            return "int8"
-        if not vnni_absence_confirmed:
-            return "int8"
-        return None
-    if value not in ("int8", "fp32"):
-        if has_vnni:
-            return "int8"
-        if not vnni_absence_confirmed:
-            return "int8"
-        return None
-    if value == "int8" and not has_vnni:
+    if value == "auto" or value is None or value not in ("int8", "fp32"):
+        return _auto_int8_or_none(
+            has_vnni, vnni_absence_confirmed, has_avx2, avx2_absence_confirmed,
+        )
+    # value == "int8" (forced)
+    if not has_vnni:
         logger.warning(
-            "EmbeddingService: int8 requested but AVX-VNNI not detected — "
-            "expect slower inference than a hypothetical fp32 build",
+            "EmbeddingService: int8 requested but AVX-VNNI not detected "
+            "(avx2=%s) — expect slower inference (AVX2 kernel or SSE fallback)",
+            has_avx2,
         )
     return "int8"
 
 
-def build_model_id(profile: str, dim: int, quantization: str) -> str:
+def build_model_id(
+    profile: str, dim: int, quantization: str, max_length: int | None = None,
+) -> str:
     """Return the canonical id used in ``embedding_model_id`` cache fields.
 
-    Format: ``<profile>-<dim>d-<quant>`` (e.g.
-    ``local-text-retrieval-v1-128d-int8``).
+    Format: ``<profile>-<dim>d-<quant>`` 或 ``<profile>-<dim>d-<quant>-mlen<N>``
+    (e.g. ``local-text-retrieval-v1-128d-int8-mlen1024``).
     A change to any axis flips the id, which invalidates cached
     embeddings on the next read — same idea as ``tokenizer_identity``.
+
+    ``max_length`` 是 tokenizer 截断长度 —— Codex 在 PR #1585 指出:同段
+    长文本在 max_length=8192 / max_length=1024 下喂进 ONNX 的 token 序列
+    根本不一样,得到的向量空间也不同;不编进 id 就会让升级后旧 cache
+    "看起来还有效",跟新 query 做 cosine 比较时静默偏移召回质量。
+    None 时回退到不带 mlen 的旧格式 — 仅给老调用点(如未传 max_length
+    的 legacy 测试 fixture)做兼容,真正的 service 路径总会传。
     """
-    return f"{profile}-{dim}d-{quantization}"
+    base = f"{profile}-{dim}d-{quantization}"
+    if max_length is None:
+        return base
+    return f"{base}-mlen{max_length}"
 
 
 def _profile_exists(model_dir: str, profile_id: str) -> bool:
@@ -542,6 +1029,8 @@ class EmbeddingService:
         ram_gb: float | None = None,        # injected for tests
         has_vnni: bool | None = None,       # injected for tests
         vnni_absence_confirmed: bool | None = None,  # False = inconclusive detect
+        has_avx2: bool | None = None,       # injected for tests
+        avx2_absence_confirmed: bool | None = None,  # False = inconclusive detect
     ) -> None:
         self._model_dir = model_dir
         self._enabled = enabled
@@ -563,6 +1052,15 @@ class EmbeddingService:
             detected_vnni, absence_confirmed = detect_avx_vnni_details()
             self._has_vnni = detected_vnni
             self._vnni_absence_confirmed = absence_confirmed
+        if has_avx2 is not None:
+            self._has_avx2 = has_avx2
+            self._avx2_absence_confirmed = (
+                True if avx2_absence_confirmed is None else avx2_absence_confirmed
+            )
+        else:
+            detected_avx2, avx2_confirmed = detect_avx2_details()
+            self._has_avx2 = detected_avx2
+            self._avx2_absence_confirmed = avx2_confirmed
         self._dim = _coerce_dim(embedding_dim_setting, self._ram_gb)
         if quantization_setting not in ("auto", "int8", "fp32"):
             logger.warning(
@@ -576,6 +1074,8 @@ class EmbeddingService:
             norm_quant,
             self._has_vnni,
             vnni_absence_confirmed=self._vnni_absence_confirmed,
+            has_avx2=self._has_avx2,
+            avx2_absence_confirmed=self._avx2_absence_confirmed,
         )
 
         self._state = EmbeddingState.INIT
@@ -597,7 +1097,9 @@ class EmbeddingService:
             # caught it already.
             self._mark_disabled(_DisableReason.LOW_RAM, log=False)
         elif self._quantization is None:
-            self._mark_disabled(_DisableReason.AVX_VNNI_REQUIRED_FOR_INT8, log=True)
+            # auto + neither AVX-VNNI nor AVX2 (both confirmed) → SSE-only,
+            # too slow to auto-enable. (Forced int8 never resolves to None.)
+            self._mark_disabled(_DisableReason.NO_SIMD_INT8_PATH, log=True)
 
     # ── public API ────────────────────────────────────────────────────
 
@@ -626,7 +1128,12 @@ class EmbeddingService:
             or self._quantization not in ("int8", "fp32")
         ):
             return None
-        return build_model_id(self._profile_id, self._dim, self._quantization)
+        return build_model_id(
+            self._profile_id,
+            self._dim,
+            self._quantization,
+            DEFAULT_VECTORS_MAX_LENGTH,
+        )
 
     def dim(self) -> int | None:
         return self._dim
@@ -639,6 +1146,9 @@ class EmbeddingService:
 
     def has_vnni(self) -> bool:
         return self._has_vnni
+
+    def has_avx2(self) -> bool:
+        return self._has_avx2
 
     async def request_load(self) -> bool:
         """Load the ONNX session if not already loaded. Returns
@@ -672,8 +1182,8 @@ class EmbeddingService:
                 return False
             self._state = EmbeddingState.READY
             logger.info(
-                "EmbeddingService: ready (model_id=%s, ram=%.1fGB, vnni=%s)",
-                self.model_id(), self._ram_gb or 0.0, self._has_vnni,
+                "EmbeddingService: ready (model_id=%s, ram=%.1fGB, vnni=%s, avx2=%s)",
+                self.model_id(), self._ram_gb or 0.0, self._has_vnni, self._has_avx2,
             )
             return True
 
@@ -786,14 +1296,28 @@ class EmbeddingService:
         sess_opts = ort.SessionOptions()
         sess_opts.intra_op_num_threads = max(1, (os.cpu_count() or 2) // 2)
         sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        # Arena 默认 True(BFCArena 只涨不还):一次性大分配后 RSS 永久
+        # 钉在高水位,把瞬时尖峰变成永久占用。我们的输入有 _INFER_TOKEN_BUDGET
+        # 兜底,峰值已可控;关掉 arena 让分配器跟实际需求走,RSS 能跌回,
+        # 也避免冷路径偶发长批次永久污染基线。代价:每次 run 重新 malloc,
+        # CPU 推理本来就 100ms+ 级,malloc 几 μs 可忽略。
+        sess_opts.enable_cpu_mem_arena = False
         self._session = ort.InferenceSession(
             model_path, sess_options=sess_opts, providers=["CPUExecutionProvider"],
         )
         self._tokenizer = Tokenizer.from_file(tokenizer_path)
         try:
             self._tokenizer.enable_truncation(max_length=DEFAULT_VECTORS_MAX_LENGTH)
-        except Exception as e:  # noqa: BLE001 — old tokenizers can still run without it
-            logger.warning("EmbeddingService: tokenizer truncation setup failed: %s", e)
+        except Exception as e:  # noqa: BLE001
+            # 不能继续 ready —— 见 _DisableReason.TRUNCATION_SETUP_FAILED 注释:
+            # model_id 把 max_length 编进 cache id,truncation 没生效时长文本
+            # 会被未截断地编码、却 stamp 成 mlen1024,污染 cache 语义。让 load
+            # 失败走 disable 路径,fallback service 接管,比错配 cache 安全得多。
+            logger.warning(
+                "EmbeddingService: tokenizer truncation setup failed (max_length=%d): %s",
+                DEFAULT_VECTORS_MAX_LENGTH, e,
+            )
+            raise _DisabledError(_DisableReason.TRUNCATION_SETUP_FAILED) from e
 
     def _infer_blocking(self, texts: list[str]) -> list[list[float]]:
         """Tokenize + run ONNX session + L2-normalize + Matryoshka-trunc.
@@ -802,22 +1326,72 @@ class EmbeddingService:
         encodes the dim: a 64-d cached vector and a 256-d freshly
         computed vector are NOT comparable, even though they come from
         the same checkpoint, so the cache key MUST contain the dim.
+
+        Sub-batching: ``texts`` arrives already capped by the worker's
+        ``BATCH_SIZE`` (currently 16), but pad-to-longest means a single
+        long entry can blow up activation memory for the whole batch
+        (a long blob pasted into recent → entire 16-batch padded to
+        thousands of tokens → multi-GB activations). We re-bucket here
+        by token budget ``batch × max_len ≤ _INFER_TOKEN_BUDGET``: short
+        rows still pack densely (same throughput as before for the
+        normal case), and long rows fall into smaller buckets — capping
+        the per-run activation footprint regardless of input shape.
         """
         if self._session is None or self._tokenizer is None:
             raise RuntimeError("session not loaded")
         encoded = self._tokenizer.encode_batch(texts)
-        ids = [e.ids for e in encoded]
-        mask = [e.attention_mask for e in encoded]
-        # Pad to longest. Only allocate as much as we need — model accepts
-        # variable length within its 32K context.
-        max_len = max(len(x) for x in ids)
         import numpy as np
-        ids_arr = np.zeros((len(texts), max_len), dtype=np.int64)
-        mask_arr = np.zeros((len(texts), max_len), dtype=np.int64)
+
+        input_names = {i.name for i in self._session.get_inputs()}
+        # 按长度升序桶装。排序的目的是让相近长度凑一起,避免「一条短一条长」
+        # 浪费 padding 预算。每条出桶时记录 original index,run 完按原顺序填回。
+        order = sorted(range(len(encoded)), key=lambda i: len(encoded[i].ids))
+        out: list[list[float] | None] = [None] * len(texts)
+
+        bucket_idx: list[int] = []
+        bucket_max_len = 0
+        for orig_i in order:
+            n = len(encoded[orig_i].ids)
+            new_max = max(bucket_max_len, n)
+            # 空桶必接受(哪怕单条 > budget),否则极端 max_length 配置会死锁;
+            # 非空桶按预算 flush。
+            if bucket_idx and new_max * (len(bucket_idx) + 1) > _INFER_TOKEN_BUDGET:
+                self._run_bucket(bucket_idx, encoded, input_names, out, np)
+                bucket_idx = [orig_i]
+                bucket_max_len = n
+            else:
+                bucket_idx.append(orig_i)
+                bucket_max_len = new_max
+        if bucket_idx:
+            self._run_bucket(bucket_idx, encoded, input_names, out, np)
+
+        # 桶分配按 range(len(encoded)) 全覆盖 — 任何 None 残留都是 bug
+        # 而不是「正常但失败」,所以这里 assert 而不是静默过滤(过滤会改长度,
+        # 把 zip(texts, vectors) 错位)。
+        assert all(v is not None for v in out), "bucket coverage gap"
+        return out  # type: ignore[return-value]
+
+    def _run_bucket(
+        self,
+        bucket_idx: list[int],
+        encoded: list,
+        input_names: set,
+        out: list,
+        np,
+    ) -> None:
+        """单桶的 pad → ONNX run → pool → L2-norm → 写回 ``out``。
+
+        拆出来纯粹是为了让 ``_infer_blocking`` 的桶装循环短一些;状态全
+        通过参数传,无副作用(``out`` 是按 original index 原地写)。
+        """
+        ids = [encoded[i].ids for i in bucket_idx]
+        mask = [encoded[i].attention_mask for i in bucket_idx]
+        max_len = max(len(x) for x in ids)
+        ids_arr = np.zeros((len(bucket_idx), max_len), dtype=np.int64)
+        mask_arr = np.zeros((len(bucket_idx), max_len), dtype=np.int64)
         for i, (id_row, mask_row) in enumerate(zip(ids, mask)):
             ids_arr[i, : len(id_row)] = id_row
             mask_arr[i, : len(mask_row)] = mask_row
-        input_names = {i.name for i in self._session.get_inputs()}
         feeds = {"input_ids": ids_arr}
         if "attention_mask" in input_names:
             feeds["attention_mask"] = mask_arr
@@ -828,13 +1402,14 @@ class EmbeddingService:
         # and Matryoshka-truncate to the active dim.
         token_embeddings = outputs[0]
         last_indices = np.maximum(mask_arr.sum(axis=1) - 1, 0)
-        pooled = token_embeddings[np.arange(len(texts)), last_indices]
+        pooled = token_embeddings[np.arange(len(bucket_idx)), last_indices]
         if self._dim is not None and self._dim < pooled.shape[1]:
             pooled = pooled[:, : self._dim]
         norms = np.linalg.norm(pooled, axis=1, keepdims=True)
         norms = np.where(norms == 0, 1.0, norms)
         normalized = pooled / norms
-        return [row.tolist() for row in normalized]
+        for i, orig_i in enumerate(bucket_idx):
+            out[orig_i] = normalized[i].tolist()
 
     # ── disable bookkeeping ──────────────────────────────────────────
 
@@ -880,9 +1455,14 @@ def get_embedding_service() -> EmbeddingService:
 
 def reset_embedding_service_for_tests() -> None:
     """Test-only: drop the singleton so the next ``get_embedding_service``
-    call rebuilds with whatever monkeypatched config / RAM the test set up."""
-    global _SERVICE
+    call rebuilds with whatever monkeypatched config / RAM the test set up.
+
+    Also clears :data:`_VNNI_DECISION_LOGGED` so a test that monkeypatches
+    detection can verify the warning is emitted on its synthetic boot.
+    """
+    global _SERVICE, _VNNI_DECISION_LOGGED
     _SERVICE = None
+    _VNNI_DECISION_LOGGED = False
 
 
 def _build_default_service() -> EmbeddingService:
@@ -929,6 +1509,7 @@ def _build_default_service() -> EmbeddingService:
     # profile that only contains the *other* variant would still satisfy the
     # completeness check and short-circuit a complete bundled fallback.
     has_vnni, vnni_absence_confirmed = detect_avx_vnni_details()
+    has_avx2, avx2_absence_confirmed = detect_avx2_details()
     norm_q = (
         VECTORS_QUANTIZATION
         if VECTORS_QUANTIZATION in ("auto", "int8", "fp32")
@@ -936,6 +1517,7 @@ def _build_default_service() -> EmbeddingService:
     )
     resolved_quantization = _resolve_quantization(
         norm_q, has_vnni, vnni_absence_confirmed=vnni_absence_confirmed,
+        has_avx2=has_avx2, avx2_absence_confirmed=avx2_absence_confirmed,
     )
 
     model_dir = (
@@ -955,6 +1537,8 @@ def _build_default_service() -> EmbeddingService:
         profile_id=VECTORS_MODEL_PROFILE_ID,
         has_vnni=has_vnni,
         vnni_absence_confirmed=vnni_absence_confirmed,
+        has_avx2=has_avx2,
+        avx2_absence_confirmed=avx2_absence_confirmed,
     )
 
 

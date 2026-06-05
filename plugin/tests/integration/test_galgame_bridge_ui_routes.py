@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 import time
@@ -8,13 +9,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 
 from plugin._types.models import RunCreateResponse
 from plugin.core.state import state
-from plugin.plugins.galgame_plugin import install_tasks as install_task_module
-from plugin.plugins.galgame_plugin import install_routes as galgame_install_route_module
+from plugin.server import install_registry as install_registry_module
+from plugin.server.routes import _install_task_store as install_task_module
+from plugin.server.routes import plugin_install as galgame_install_route_module
 from plugin.runs.manager import RunError, RunRecord
 from plugin.server.infrastructure.exceptions import register_exception_handlers
 from plugin.server.domain.errors import ServerDomainError
@@ -27,6 +29,48 @@ pytestmark = pytest.mark.plugin_integration
 @pytest.fixture
 def galgame_plugin_dir() -> Path:
     return Path(__file__).resolve().parents[2] / "plugins" / "galgame_plugin"
+
+
+@pytest.fixture(autouse=True)
+def registered_install_plugins(
+    monkeypatch: pytest.MonkeyPatch,
+    galgame_plugin_dir: Path,
+) -> None:
+    monkeypatch.setattr(install_registry_module, "_install_plugin_registry", {})
+    galgame_install_route_module.register_install_plugin(
+        "galgame_plugin",
+        install_kinds={
+            "textractor": galgame_install_route_module.InstallKindRegistration(
+                entry_id="galgame_install_textractor",
+                label="Textractor",
+                queued_message="Textractor install queued",
+            ),
+            "rapidocr_models": galgame_install_route_module.InstallKindRegistration(
+                entry_id="galgame_download_rapidocr_models",
+                label="RapidOCR Models",
+                queued_message="RapidOCR model download queued",
+            ),
+        },
+        ui_i18n_dir=galgame_plugin_dir / "i18n" / "ui",
+        tutorial_enabled=True,
+    )
+    galgame_install_route_module.register_install_plugin(
+        "study_companion",
+        install_kinds={
+            "rapidocr_models": galgame_install_route_module.InstallKindRegistration(
+                entry_id="study_download_rapidocr_models",
+                label="RapidOCR Models",
+                queued_message="RapidOCR model download queued",
+            ),
+            "tesseract": galgame_install_route_module.InstallKindRegistration(
+                entry_id="study_install_tesseract",
+                label="Tesseract",
+                queued_message="Tesseract install queued",
+            ),
+        },
+        ui_i18n_dir=galgame_plugin_dir.parent / "study_companion" / "i18n",
+        tutorial_enabled=True,
+    )
 
 
 @pytest.fixture
@@ -54,6 +98,24 @@ def galgame_install_runtime_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
         lambda: SimpleNamespace(app_docs_dir=app_docs_dir),
     )
     return app_docs_dir
+
+
+@pytest.fixture
+def tutorial_runtime_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    runtime_root = tmp_path / "RuntimeData"
+    monkeypatch.setattr(
+        galgame_install_route_module,
+        "resolve_runtime_data_root",
+        lambda: runtime_root,
+    )
+    if isinstance(getattr(install_registry_module, "_tutorial_migration_hooks", None), dict):
+        monkeypatch.setattr(install_registry_module, "_tutorial_migration_hooks", {})
+    else:
+        monkeypatch.setattr(install_registry_module, "_tutorial_migration_hooks", [])
+    monkeypatch.setattr(galgame_install_route_module, "_tutorial_migrated_paths", set(), raising=False)
+    monkeypatch.setattr(galgame_install_route_module, "_tutorial_store_instance", None, raising=False)
+    monkeypatch.setattr(galgame_install_route_module, "_tutorial_store_instances", {}, raising=False)
+    return runtime_root
 
 
 @pytest.fixture
@@ -114,6 +176,32 @@ def _running_install_run(
     )
 
 
+def _terminal_install_run(
+    run_id: str,
+    *,
+    entry_id: str,
+    status: str = "succeeded",
+    stage: str = "completed",
+    message: str = "Install completed",
+    now: float | None = None,
+) -> RunRecord:
+    now = time.time() if now is None else now
+    return RunRecord(
+        run_id=run_id,
+        plugin_id="galgame_plugin",
+        entry_id=entry_id,
+        status=status,
+        created_at=now - 5,
+        updated_at=now,
+        started_at=now - 4,
+        finished_at=now,
+        stage=stage,
+        message=message,
+        error=None,
+        metrics={},
+    )
+
+
 @pytest.mark.asyncio
 async def test_galgame_plugin_ui_index_route_serves_static_dashboard(
     plugin_ui_async_client: AsyncClient,
@@ -132,7 +220,6 @@ async def test_galgame_plugin_ui_index_route_serves_static_dashboard(
     assert "Textractor" in response.text
     assert 'id="rapidocrCard"' in response.text
     assert 'id="dxcamCard"' in response.text
-    assert 'id="tesseractCard"' in response.text
     assert 'id="textractorCard"' in response.text
     assert "OCR 截图校准" in response.text
     assert 'id="primaryDiagnosisPanel"' in response.text
@@ -156,13 +243,11 @@ async def test_galgame_plugin_ui_script_uses_runs_and_install_ui_api(
     assert "const RUNS_URL = '/runs';" in response.text
     # rapidocr / dxcam install URLs and restore state helpers removed —
     # both packages are now bundled main-program deps (see pyproject.toml
-    # [dependency-groups] galgame). Only textractor + tesseract retain
-    # runtime install machinery (they're native binaries, not Python wheels).
-    assert "const TESSERACT_INSTALL_URL = `${UI_API_BASE}/tesseract/install`;" in response.text
+    # [dependency-groups] galgame). Only textractor retains runtime install
+    # machinery; RapidOCR models use the same task lifecycle.
     assert "const TEXTRACTOR_INSTALL_URL = `${UI_API_BASE}/textractor/install`;" in response.text
     assert "new EventSource(" in response.text
     assert "restoreTextractorInstallState" in response.text
-    assert "restoreTesseractInstallState" in response.text
     assert "session.json" not in response.text
     assert "events.jsonl" not in response.text
     assert "galgame_get_status" in response.text
@@ -186,7 +271,6 @@ async def test_galgame_plugin_ui_script_uses_runs_and_install_ui_api(
     assert "excluded_non_game_process" in response.text
     assert "rapidocr" in response.text
     assert "dxcam" in response.text
-    assert "tesseract" in response.text
     assert "textractor" in response.text
     assert "function uiT(" in response.text
     assert "getInstallUIConfig" in response.text
@@ -253,7 +337,6 @@ async def test_galgame_plugin_ui_i18n_api_serves_locale_bundle(
     assert bundle["ui.button.collapse"]
     # `ui.install.rapidocr.action` removed (no in-app install action). Use a
     # remaining install-namespace key that exists in all 5 locales.
-    assert bundle["ui.install.tesseract.action"]
 
     missing_response = await plugin_ui_async_client.get(
         "/plugin/galgame_plugin/ui-api/i18n/ui/../../plugin.toml.json"
@@ -264,6 +347,31 @@ async def test_galgame_plugin_ui_i18n_api_serves_locale_bundle(
         "/plugin/galgame_plugin/ui-api/i18n/ui/es.json"
     )
     assert unsupported_response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_unregistered_plugin_install_route_returns_404(
+    plugin_ui_async_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(install_registry_module, "_install_plugin_registry", {})
+
+    response = await plugin_ui_async_client.post(
+        "/plugin/unknown_plugin/ui-api/rapidocr-models",
+        json={"force": False},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Plugin 'unknown_plugin' has no install API"
+
+
+def test_invalid_plugin_id_404_does_not_reflect_raw_input() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        galgame_install_route_module._get_plugin_registration("../secret")
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Plugin has no install API"
+    assert "../secret" not in str(exc_info.value.detail)
 
 
 @pytest.mark.asyncio
@@ -310,7 +418,14 @@ async def test_galgame_plugin_textractor_install_start_route_creates_run_and_see
         assert payload.args == {"force": True, "_ctx": {"entry_timeout": 600.0}}
         return RunCreateResponse(run_id="run-textractor-1", status="queued")
 
+    blocking_calls: list[str] = []
+
+    async def _fake_run_blocking(func, *args, **kwargs):
+        blocking_calls.append(getattr(func, "__name__", ""))
+        return func(*args, **kwargs)
+
     monkeypatch.setattr(galgame_install_route_module.run_service, "create_run", _fake_create_run)
+    monkeypatch.setattr(galgame_install_route_module, "_run_blocking", _fake_run_blocking)
 
     response = await plugin_ui_async_client.post(
         "/plugin/galgame_plugin/ui-api/textractor/install",
@@ -322,39 +437,62 @@ async def test_galgame_plugin_textractor_install_start_route_creates_run_and_see
     assert payload["task_id"] == "run-textractor-1"
     assert payload["state"]["status"] == "queued"
     assert payload["state"]["phase"] == "queued"
-    saved = install_task_module.load_install_task_state("run-textractor-1")
+    assert "update_install_task_state" in blocking_calls
+    saved = install_task_module.load_install_task_state(
+        "run-textractor-1",
+        plugin_id="galgame_plugin",
+    )
     assert saved is not None
     assert saved["message"] == "Textractor install queued"
 
 
 @pytest.mark.asyncio
-async def test_galgame_plugin_tesseract_install_start_route_creates_run_and_seeds_state(
+async def test_run_blocking_times_out_blocking_io(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(galgame_install_route_module, "_BLOCKING_IO_TIMEOUT_SECONDS", 0.01, raising=False)
+
+    def _slow_blocking_call() -> str:
+        time.sleep(0.05)
+        return "late"
+
+    with pytest.raises(TimeoutError):
+        await galgame_install_route_module._run_blocking(_slow_blocking_call)
+
+
+@pytest.mark.asyncio
+async def test_install_start_returns_retryable_state_when_local_persist_raises_value_error(
     plugin_ui_async_client: AsyncClient,
-    registered_galgame_plugin_meta,
     galgame_install_runtime_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    del galgame_install_runtime_root
+
     async def _fake_create_run(payload, *, client_host):
-        del client_host
-        assert payload.plugin_id == "galgame_plugin"
-        assert payload.entry_id == "galgame_install_tesseract"
-        assert payload.args == {"force": True, "_ctx": {"entry_timeout": 300.0}}
-        return RunCreateResponse(run_id="run-tesseract-1", status="queued")
+        del payload, client_host
+        return RunCreateResponse(run_id="run-local-state-value-error", status="queued")
+
+    async def _fake_run_blocking(func, *args, **kwargs):
+        del args, kwargs
+        if getattr(func, "__name__", "") == "update_install_task_state":
+            raise ValueError("invalid local state")
+        return func(*args, **kwargs)
 
     monkeypatch.setattr(galgame_install_route_module.run_service, "create_run", _fake_create_run)
+    monkeypatch.setattr(galgame_install_route_module, "_run_blocking", _fake_run_blocking)
 
     response = await plugin_ui_async_client.post(
-        "/plugin/galgame_plugin/ui-api/tesseract/install",
-        json={"force": True},
+        "/plugin/galgame_plugin/ui-api/textractor/install",
+        json={"force": False},
     )
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["task_id"] == "run-tesseract-1"
-    assert payload["state"]["kind"] == "tesseract"
-    saved = install_task_module.load_install_task_state("run-tesseract-1", kind="tesseract")
-    assert saved is not None
-    assert saved["message"] == "Tesseract install queued"
+    assert payload["task_id"] == "run-local-state-value-error"
+    assert payload["local_save_failed"] is True
+    assert payload["error"] == "local_state_persist_failed"
+    assert payload["retry_hint"]
+    assert payload["state"]["status"] == "queued"
+    assert payload["state"]["plugin_id"] == "galgame_plugin"
+    assert payload["state"]["message"] == "Textractor install queued"
 
 
 @pytest.mark.asyncio
@@ -372,41 +510,52 @@ async def test_study_companion_install_routes_map_to_study_entries(
 
     monkeypatch.setattr(galgame_install_route_module.run_service, "create_run", _fake_create_run)
 
-    tesseract_response = await plugin_ui_async_client.post(
-        "/plugin/study_companion/ui-api/tesseract/install",
-        json={"force": True},
-    )
     rapidocr_response = await plugin_ui_async_client.post(
         "/plugin/study_companion/ui-api/rapidocr-models",
         json={"force": False},
+    )
+    tesseract_response = await plugin_ui_async_client.post(
+        "/plugin/study_companion/ui-api/tesseract/install",
+        json={"force": True},
     )
     textractor_response = await plugin_ui_async_client.post(
         "/plugin/study_companion/ui-api/textractor/install",
         json={"force": True},
     )
 
-    assert tesseract_response.status_code == 200
     assert rapidocr_response.status_code == 200
+    assert tesseract_response.status_code == 200
     assert textractor_response.status_code == 404
     assert seen == [
-        ("study_companion", "study_install_tesseract", {"force": True, "_ctx": {"entry_timeout": 300.0}}),
         ("study_companion", "study_download_rapidocr_models", {"force": False, "_ctx": {"entry_timeout": 600.0}}),
+        ("study_companion", "study_install_tesseract", {"force": True, "_ctx": {"entry_timeout": 600.0}}),
     ]
-    assert tesseract_response.json()["state"]["kind"] == "tesseract"
-    assert tesseract_response.json()["state"]["plugin_id"] == "study_companion"
     assert rapidocr_response.json()["state"]["kind"] == "rapidocr_models"
     assert rapidocr_response.json()["state"]["plugin_id"] == "study_companion"
-    assert install_task_module.load_install_task_state("run-study_install_tesseract", kind="tesseract") is None
-    assert install_task_module.load_install_task_state(
-        "run-study_install_tesseract",
-        kind="tesseract",
-        plugin_id="study_companion",
-    ) is not None
+    assert tesseract_response.json()["state"]["kind"] == "tesseract"
+    assert tesseract_response.json()["state"]["plugin_id"] == "study_companion"
     assert install_task_module.load_install_task_state(
         "run-study_download_rapidocr_models",
         kind="rapidocr_models",
         plugin_id="study_companion",
     ) is not None
+    assert install_task_module.load_install_task_state(
+        "run-study_install_tesseract",
+        kind="tesseract",
+        plugin_id="study_companion",
+    ) is not None
+
+
+@pytest.mark.asyncio
+async def test_study_companion_install_i18n_compat_route_uses_study_bundle(
+    plugin_ui_async_client: AsyncClient,
+) -> None:
+    response = await plugin_ui_async_client.get(
+        "/plugin/study_companion/ui-api/i18n/ui/en.json"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["entries.open_ui.name"] == "Open Study Companion UI"
 
 
 @pytest.mark.asyncio
@@ -418,6 +567,7 @@ async def test_galgame_plugin_textractor_install_status_route_reads_persisted_st
 ) -> None:
     install_task_module.update_install_task_state(
         "run-textractor-2",
+        plugin_id="galgame_plugin",
         run_id="run-textractor-2",
         status="running",
         phase="downloading",
@@ -463,57 +613,12 @@ async def test_galgame_plugin_install_status_route_rejects_invalid_task_id_befor
 
     monkeypatch.setattr(galgame_install_route_module.run_service, "get_run", _unexpected_get_run)
 
-    # Path traversal guard test re-targeted at tesseract since rapidocr/dxcam
-    # install routes were removed (those packages are now bundled main deps).
     response = await plugin_ui_async_client.get(
-        "/plugin/galgame_plugin/ui-api/tesseract/install/..."
+        "/plugin/galgame_plugin/ui-api/textractor/install/..."
     )
 
     assert response.status_code == 400
-    assert response.json()["detail"] == "Invalid Tesseract install task_id"
-
-
-@pytest.mark.asyncio
-async def test_galgame_plugin_tesseract_install_status_route_reads_persisted_state(
-    plugin_ui_async_client: AsyncClient,
-    registered_galgame_plugin_meta,
-    galgame_install_runtime_root: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    install_task_module.update_install_task_state(
-        "run-tesseract-2",
-        kind="tesseract",
-        run_id="run-tesseract-2",
-        status="running",
-        phase="languages",
-        message="Downloading jpn.traineddata",
-        progress=0.66,
-        downloaded_bytes=66,
-        total_bytes=100,
-        asset_name="jpn.traineddata",
-    )
-
-    def _fake_get_run(run_id: str) -> RunRecord:
-        assert run_id == "run-tesseract-2"
-        return _running_install_run(
-            run_id,
-            entry_id="galgame_install_tesseract",
-            stage="languages",
-            message="Downloading jpn.traineddata",
-        )
-
-    monkeypatch.setattr(galgame_install_route_module.run_service, "get_run", _fake_get_run)
-
-    response = await plugin_ui_async_client.get(
-        "/plugin/galgame_plugin/ui-api/tesseract/install/run-tesseract-2"
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["kind"] == "tesseract"
-    assert payload["status"] == "running"
-    assert payload["phase"] == "languages"
-    assert payload["downloaded_bytes"] == 66
+    assert response.json()["detail"] == "Invalid Textractor install task_id"
 
 
 @pytest.mark.asyncio
@@ -521,15 +626,25 @@ async def test_galgame_plugin_textractor_install_latest_route_returns_latest_sta
     plugin_ui_async_client: AsyncClient,
     registered_galgame_plugin_meta,
     galgame_install_runtime_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_task_module.update_install_task_state(
         "run-textractor-latest",
+        plugin_id="galgame_plugin",
         run_id="run-textractor-latest",
         status="completed",
         phase="completed",
         message="Textractor installation completed",
         progress=1.0,
     )
+
+    blocking_calls: list[str] = []
+
+    async def _fake_run_blocking(func, *args, **kwargs):
+        blocking_calls.append(getattr(func, "__name__", ""))
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(galgame_install_route_module, "_run_blocking", _fake_run_blocking)
 
     response = await plugin_ui_async_client.get(
         "/plugin/galgame_plugin/ui-api/textractor/install/latest"
@@ -539,33 +654,8 @@ async def test_galgame_plugin_textractor_install_latest_route_returns_latest_sta
     payload = response.json()
     assert payload["task_id"] == "run-textractor-latest"
     assert payload["status"] == "completed"
-
-
-@pytest.mark.asyncio
-async def test_galgame_plugin_tesseract_install_latest_route_returns_latest_state(
-    plugin_ui_async_client: AsyncClient,
-    registered_galgame_plugin_meta,
-    galgame_install_runtime_root: Path,
-) -> None:
-    install_task_module.update_install_task_state(
-        "run-tesseract-latest",
-        kind="tesseract",
-        run_id="run-tesseract-latest",
-        status="completed",
-        phase="completed",
-        message="Tesseract installation completed",
-        progress=1.0,
-    )
-
-    response = await plugin_ui_async_client.get(
-        "/plugin/galgame_plugin/ui-api/tesseract/install/latest"
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["task_id"] == "run-tesseract-latest"
-    assert payload["kind"] == "tesseract"
-    assert payload["status"] == "completed"
+    assert "load_latest_install_task_state" in blocking_calls
+    assert "_resolve_install_task_payload" in blocking_calls
 
 
 @pytest.mark.asyncio
@@ -575,38 +665,38 @@ async def test_install_latest_routes_are_namespaced_by_plugin_id(
     galgame_install_runtime_root: Path,
 ) -> None:
     install_task_module.update_install_task_state(
-        "run-galgame-tesseract-latest",
-        kind="tesseract",
+        "run-galgame-models-latest",
+        kind="rapidocr_models",
         plugin_id="galgame_plugin",
-        run_id="run-galgame-tesseract-latest",
+        run_id="run-galgame-models-latest",
         status="completed",
         phase="completed",
-        message="Galgame Tesseract installation completed",
+        message="Galgame RapidOCR model download completed",
         progress=1.0,
     )
     install_task_module.update_install_task_state(
-        "run-study-tesseract-latest",
-        kind="tesseract",
+        "run-study-models-latest",
+        kind="rapidocr_models",
         plugin_id="study_companion",
-        run_id="run-study-tesseract-latest",
+        run_id="run-study-models-latest",
         status="completed",
         phase="completed",
-        message="Study Tesseract installation completed",
+        message="Study RapidOCR model download completed",
         progress=1.0,
     )
 
     galgame_response = await plugin_ui_async_client.get(
-        "/plugin/galgame_plugin/ui-api/tesseract/install/latest"
+        "/plugin/galgame_plugin/ui-api/rapidocr-models/latest"
     )
     study_response = await plugin_ui_async_client.get(
-        "/plugin/study_companion/ui-api/tesseract/install/latest"
+        "/plugin/study_companion/ui-api/rapidocr-models/latest"
     )
 
     assert galgame_response.status_code == 200
     assert study_response.status_code == 200
-    assert galgame_response.json()["task_id"] == "run-galgame-tesseract-latest"
+    assert galgame_response.json()["task_id"] == "run-galgame-models-latest"
     assert galgame_response.json()["plugin_id"] == "galgame_plugin"
-    assert study_response.json()["task_id"] == "run-study-tesseract-latest"
+    assert study_response.json()["task_id"] == "run-study-models-latest"
     assert study_response.json()["plugin_id"] == "study_companion"
 
 
@@ -618,6 +708,7 @@ async def test_galgame_plugin_textractor_install_stream_route_emits_sse_payload(
 ) -> None:
     install_task_module.update_install_task_state(
         "run-textractor-stream",
+        plugin_id="galgame_plugin",
         run_id="run-textractor-stream",
         status="completed",
         phase="completed",
@@ -642,6 +733,295 @@ async def test_galgame_plugin_textractor_install_stream_route_emits_sse_payload(
 
 
 @pytest.mark.asyncio
+async def test_galgame_plugin_install_stream_emits_failed_event_when_state_read_crashes(
+    plugin_ui_async_client: AsyncClient,
+    registered_galgame_plugin_meta,
+    galgame_install_runtime_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del registered_galgame_plugin_meta, galgame_install_runtime_root
+    running_payload = install_task_module.build_install_task_state(
+        task_id="run-stream-crash",
+        plugin_id="galgame_plugin",
+        status="running",
+        phase="downloading",
+        message="Downloading",
+    )
+    resolve_calls = 0
+
+    async def _fake_run_blocking(func, *args, **kwargs):
+        nonlocal resolve_calls
+        if getattr(func, "__name__", "") == "_resolve_install_task_payload":
+            resolve_calls += 1
+            if resolve_calls == 1:
+                return dict(running_payload)
+            raise OSError("state read failed")
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(galgame_install_route_module, "_run_blocking", _fake_run_blocking)
+
+    async with plugin_ui_async_client.stream(
+        "GET",
+        "/plugin/galgame_plugin/ui-api/textractor/install/run-stream-crash/stream",
+    ) as response:
+        assert response.status_code == 200
+        payload = None
+        async with asyncio.timeout(3.0):
+            async for line in response.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                try:
+                    candidate = json.loads(line[len("data: "):])
+                except json.JSONDecodeError:
+                    continue
+                if candidate.get("status") == "failed":
+                    payload = candidate
+                    break
+
+    assert payload is not None
+    assert payload["task_id"] == "run-stream-crash"
+    assert payload["status"] == "failed"
+    assert payload["stream_error"] is True
+    assert "could not be read" in payload["message"]
+
+
+def test_mark_stale_install_task_returns_failed_payload_when_persist_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = install_task_module.build_install_task_state(
+        task_id="run-stale-write-fails",
+        plugin_id="galgame_plugin",
+        status="running",
+        phase="downloading",
+        message="Downloading",
+    )
+
+    def _raise_persist_failure(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(galgame_install_route_module, "_persist_install_payload", _raise_persist_failure)
+
+    result = galgame_install_route_module._mark_stale_install_task(
+        "run-stale-write-fails",
+        plugin_id="galgame_plugin",
+        kind="textractor",
+        label="Textractor",
+        payload=payload,
+    )
+
+    assert result["status"] == "failed"
+    assert result["phase"] == "failed"
+    assert result["local_save_failed"] is True
+    assert "install task was interrupted" in result["message"]
+
+
+def test_terminal_run_payload_returns_memory_state_when_first_persist_fails(
+    galgame_install_runtime_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del galgame_install_runtime_root
+
+    def _fake_get_run(run_id: str) -> RunRecord:
+        assert run_id == "run-terminal-write-fails"
+        return _terminal_install_run(
+            run_id,
+            entry_id="galgame_install_textractor",
+            message="Textractor installation completed",
+        )
+
+    def _raise_persist_failure(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(galgame_install_route_module.run_service, "get_run", _fake_get_run)
+    monkeypatch.setattr(galgame_install_route_module, "_persist_install_payload", _raise_persist_failure)
+
+    result = galgame_install_route_module._resolve_install_task_payload(
+        "run-terminal-write-fails",
+        plugin_id="galgame_plugin",
+        kind="textractor",
+        label="Textractor",
+    )
+
+    assert result["status"] == "completed"
+    assert result["phase"] == "completed"
+    assert result["message"] == "Textractor installation completed"
+    assert result["local_save_failed"] is True
+
+
+def test_terminal_run_payload_with_existing_state_returns_memory_state_when_persist_fails(
+    galgame_install_runtime_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del galgame_install_runtime_root
+    install_task_module.update_install_task_state(
+        "run-terminal-existing-state-write-fails",
+        plugin_id="galgame_plugin",
+        status="running",
+        phase="downloading",
+        message="Downloading",
+        progress=0.42,
+    )
+
+    def _fake_get_run(run_id: str) -> RunRecord:
+        assert run_id == "run-terminal-existing-state-write-fails"
+        return _terminal_install_run(
+            run_id,
+            entry_id="galgame_install_textractor",
+            message="Textractor installation completed",
+        )
+
+    def _raise_persist_failure(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(galgame_install_route_module.run_service, "get_run", _fake_get_run)
+    monkeypatch.setattr(galgame_install_route_module, "_persist_install_payload", _raise_persist_failure)
+
+    result = galgame_install_route_module._resolve_install_task_payload(
+        "run-terminal-existing-state-write-fails",
+        plugin_id="galgame_plugin",
+        kind="textractor",
+        label="Textractor",
+    )
+
+    assert result["status"] == "completed"
+    assert result["phase"] == "completed"
+    assert result["message"] == "Textractor installation completed"
+    assert result["local_save_failed"] is True
+
+
+def test_install_task_store_logs_corrupt_state_json(
+    galgame_install_runtime_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del galgame_install_runtime_root
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        install_task_module,
+        "logger",
+        SimpleNamespace(warning=lambda message, *args, **kwargs: warnings.append(str(message))),
+        raising=False,
+    )
+    path = install_task_module.install_task_state_path(
+        "corrupt-state",
+        plugin_id="galgame_plugin",
+    )
+    path.write_text("{bad json", encoding="utf-8")
+
+    assert install_task_module.load_install_task_state(
+        "corrupt-state",
+        plugin_id="galgame_plugin",
+    ) is None
+    assert any("failed to load install task state" in message for message in warnings)
+
+
+def test_install_task_store_reads_legacy_galgame_state_path(
+    galgame_install_runtime_root: Path,
+) -> None:
+    task_payload = {
+        "task_id": "legacy-textractor-task",
+        "kind": "textractor",
+        "run_id": "legacy-textractor-task",
+        "plugin_id": "galgame_plugin",
+        "status": "running",
+        "phase": "downloading",
+        "message": "Legacy download still running",
+        "progress": 0.5,
+    }
+    legacy_tasks_dir = (
+        galgame_install_runtime_root
+        / "plugin-runtime"
+        / "galgame_plugin"
+        / "textractor-installs"
+    )
+    legacy_tasks_dir.mkdir(parents=True, exist_ok=True)
+    (legacy_tasks_dir / "legacy-textractor-task.json").write_text(
+        json.dumps(task_payload),
+        encoding="utf-8",
+    )
+    (legacy_tasks_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "task_id": "legacy-textractor-task",
+                "kind": "textractor",
+                "run_id": "legacy-textractor-task",
+                "plugin_id": "galgame_plugin",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = install_task_module.load_install_task_state(
+        "legacy-textractor-task",
+        plugin_id="galgame_plugin",
+    )
+    latest = install_task_module.load_latest_install_task_state(
+        plugin_id="galgame_plugin",
+    )
+
+    assert loaded == task_payload
+    assert latest == task_payload
+
+
+def test_install_task_store_rejects_unregistered_dxcam_kind() -> None:
+    with pytest.raises(ValueError):
+        install_task_module.build_install_task_state(task_id="dxcam-task", kind="dxcam")
+
+
+@pytest.mark.asyncio
+async def test_tutorial_progress_is_namespaced_by_plugin_id(
+    plugin_ui_async_client: AsyncClient,
+    tutorial_runtime_root: Path,
+) -> None:
+    del tutorial_runtime_root
+
+    save_response = await plugin_ui_async_client.post(
+        "/plugin/galgame_plugin/ui-api/tutorial/progress",
+        json={"completed": True, "last_step_index": 4, "completed_at": 123.0},
+    )
+    study_response = await plugin_ui_async_client.get(
+        "/plugin/study_companion/ui-api/tutorial/status"
+    )
+
+    assert save_response.status_code == 200
+    assert save_response.json()["progress"]["completed"] is True
+    assert study_response.status_code == 200
+    assert study_response.json()["progress"]["completed"] is False
+
+
+@pytest.mark.asyncio
+async def test_tutorial_migration_failure_returns_500(
+    plugin_ui_async_client: AsyncClient,
+    tutorial_runtime_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del tutorial_runtime_root
+
+    def _fail_migration(_store_path: Path) -> None:
+        raise ValueError("bad migration")
+
+    if isinstance(getattr(install_registry_module, "_tutorial_migration_hooks", None), dict):
+        monkeypatch.setattr(
+            install_registry_module,
+            "_tutorial_migration_hooks",
+            {"galgame_plugin": [_fail_migration]},
+        )
+    else:
+        monkeypatch.setattr(
+            install_registry_module,
+            "_tutorial_migration_hooks",
+            [_fail_migration],
+        )
+    monkeypatch.setattr(galgame_install_route_module, "_tutorial_migrated_paths", set(), raising=False)
+    monkeypatch.setattr(galgame_install_route_module, "_tutorial_store_instance", None, raising=False)
+    monkeypatch.setattr(galgame_install_route_module, "_tutorial_store_instances", {}, raising=False)
+
+    response = await plugin_ui_async_client.get("/plugin/galgame_plugin/ui-api/tutorial/status")
+
+    assert response.status_code == 500
+    assert response.json()["ok"] is False
+
+
+@pytest.mark.asyncio
 async def test_galgame_plugin_install_stream_route_returns_404_before_stream_for_missing_task(
     plugin_ui_async_client: AsyncClient,
     registered_galgame_plugin_meta,
@@ -658,43 +1038,9 @@ async def test_galgame_plugin_install_stream_route_returns_404_before_stream_for
 
     monkeypatch.setattr(galgame_install_route_module.run_service, "get_run", _missing_get_run)
 
-    # Re-targeted at tesseract since rapidocr install route was removed.
     response = await plugin_ui_async_client.get(
-        "/plugin/galgame_plugin/ui-api/tesseract/install/missing-stream-task/stream"
+        "/plugin/galgame_plugin/ui-api/textractor/install/missing-stream-task/stream"
     )
 
     assert response.status_code == 404
-    assert response.json()["detail"] == "Tesseract install task 'missing-stream-task' not found"
-
-
-@pytest.mark.asyncio
-async def test_galgame_plugin_tesseract_install_stream_route_emits_sse_payload(
-    plugin_ui_async_client: AsyncClient,
-    registered_galgame_plugin_meta,
-    galgame_install_runtime_root: Path,
-) -> None:
-    install_task_module.update_install_task_state(
-        "run-tesseract-stream",
-        kind="tesseract",
-        run_id="run-tesseract-stream",
-        status="completed",
-        phase="completed",
-        message="Tesseract installation completed",
-        progress=1.0,
-    )
-
-    async with plugin_ui_async_client.stream(
-        "GET",
-        "/plugin/galgame_plugin/ui-api/tesseract/install/run-tesseract-stream/stream",
-    ) as response:
-        assert response.status_code == 200
-        body = ""
-        async for line in response.aiter_lines():
-            if line.startswith("data: "):
-                body = line[len("data: "):]
-                break
-
-    payload = json.loads(body)
-    assert payload["task_id"] == "run-tesseract-stream"
-    assert payload["kind"] == "tesseract"
-    assert payload["status"] == "completed"
+    assert response.json()["detail"] == "Textractor install task 'missing-stream-task' not found"

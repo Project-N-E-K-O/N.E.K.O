@@ -1,4 +1,6 @@
 {
+  "plugin.name": "Монитор данмаку Bilibili",
+  "plugin.description": "Отслеживает данмаку прямых трансляций Bilibili в реальном времени, фильтрует их и передаёт ИИ для анализа и ответов",
   "account.already_logged_in": "Выполнен вход",
   "account.check_cred": "Проверить учётные данные",
   "account.check_cred_failed": "Ошибка проверки учётных данных：",

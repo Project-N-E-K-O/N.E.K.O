@@ -27,7 +27,8 @@ let motionTimer = null; // 动作持续时间定时器
 let isEmotionChanging = false; // 防止快速连续点击的标志
 
 // 全局：判断是否为移动端宽度
-const isMobileWidth = () => window.innerWidth <= 768;
+// Electron Pet 窗口永不进入手机模式（本文件早于 common_ui.js 加载，故用 flag 内联判断）。
+const isMobileWidth = () => !window.__LANLAN_IS_ELECTRON_PET__ && window.innerWidth <= 768;
 
 // 口型同步参数列表常量
 // 这些参数用于控制模型的嘴部动作，在处理表情和常驻表情时需要跳过，以避免覆盖实时的口型同步
@@ -53,6 +54,18 @@ const LIVE2D_BUBBLE_GEOMETRY_OVERRIDES = Object.freeze({});
 // 模型刚加载完成时，物理/动作还可能在收敛，首帧头框容易偏离。
 // 在稳定窗口后允许缓存自动刷新一次，避免“早期误识别被长期锁死”。
 const LIVE2D_BUBBLE_GEOMETRY_SETTLE_REFRESH_MS = 1800;
+const LIVE2D_LINUX_X11_DEFAULT_QUALITY = 'low';
+const LIVE2D_LINUX_X11_INTERACTIVE_FPS = 60;
+const LIVE2D_LINUX_X11_INTERACTIVE_FPS_HOLD_MS = 900;
+
+function isDesktopLinuxX11Runtime() {
+    return !!(window.__NEKO_DESKTOP_RUNTIME__ && window.__NEKO_DESKTOP_RUNTIME__.isLinuxX11);
+}
+
+function getEffectiveLive2DRenderQuality(quality) {
+    if (quality) return quality;
+    return isDesktopLinuxX11Runtime() ? LIVE2D_LINUX_X11_DEFAULT_QUALITY : 'medium';
+}
 
 // 验证模型偏好是否有效
 function isValidModelPreferences(scale, position) {
@@ -109,6 +122,9 @@ class Live2DManager {
         this._bubbleGeometrySettleRefreshMs = LIVE2D_BUBBLE_GEOMETRY_SETTLE_REFRESH_MS;
         this._bubbleGeometryModelReadyAt = 0;
         this._bubbleGeometryRefreshPass = 0;
+        this._linuxX11RendererProfileOptimized = false;
+        this._linuxX11FpsRestoreTimer = null;
+        this._linuxX11BaseTargetFps = null;
 
         // 常驻表情：使用官方 expression 播放并在清理后自动重放
         this.persistentExpressionNames = [];
@@ -228,7 +244,7 @@ class Live2DManager {
             autoStart: true,
             transparent: true,
             backgroundAlpha: 0,
-            resolution: this._getRenderResolutionForQuality(window.renderQuality || 'medium'),
+            resolution: this._getRenderResolutionForQuality(getEffectiveLive2DRenderQuality(window.renderQuality)),
             autoDensity: true
         };
 
@@ -251,6 +267,19 @@ class Live2DManager {
                     throw new Error('PIXI.Application 创建失败：返回值为 null 或 undefined');
                 }
 
+                try {
+                    canvas.style.background = 'transparent';
+                    canvas.style.backgroundColor = 'transparent';
+                    container.style.background = 'transparent';
+                    container.style.backgroundColor = 'transparent';
+                    if (this.pixi_app.renderer) {
+                        this.pixi_app.renderer.backgroundAlpha = 0;
+                        if (this.pixi_app.renderer.background) {
+                            this.pixi_app.renderer.background.alpha = 0;
+                        }
+                    }
+                } catch (_) {}
+
                 if (!this.pixi_app.stage) {
                     throw new Error('PIXI.Application 创建失败：stage 属性不存在');
                 }
@@ -270,17 +299,31 @@ class Live2DManager {
                 // 任务栏、DevTools、输入法等视口变化不会触发（幂等判定跳过）
                 let lastScreenW = window.screen.width;
                 let lastScreenH = window.screen.height;
+                let lastDevicePixelRatio = window.devicePixelRatio || 1;
 
                 const doResize = (reason) => {
                     if (!this.pixi_app || !this.pixi_app.renderer) return;
+                    const renderer = this.pixi_app.renderer;
                     const prevW = this.pixi_app.renderer.screen.width;
                     const prevH = this.pixi_app.renderer.screen.height;
                     // 以 CSS 像素为准（= BrowserWindow 当前像素尺寸），这是模型真正可见的区域
                     const newW = Math.max(window.innerWidth || window.screen.width || 1, 1);
                     const newH = Math.max(window.innerHeight || window.screen.height || 1, 1);
-                    if (prevW === newW && prevH === newH) return;
+                    const prevResolution = renderer.resolution || 1;
+                    const nextResolution = this._getRenderResolutionForQuality(getEffectiveLive2DRenderQuality(window.renderQuality));
+                    const sizeChanged = prevW !== newW || prevH !== newH;
+                    const resolutionChanged = Math.abs(prevResolution - nextResolution) >= 0.001;
+                    if (!sizeChanged && !resolutionChanged) return;
 
-                    this.pixi_app.renderer.resize(newW, newH);
+                    if (resolutionChanged) {
+                        renderer.resolution = nextResolution;
+                    }
+                    renderer.resize(newW, newH);
+
+                    if (!sizeChanged) {
+                        console.log('[Live2D Core] renderer resolution 已刷新:', { reason, prevResolution, nextResolution, newW, newH });
+                        return;
+                    }
 
                     // 跨屏切换路径（Live2DManager._checkAndSwitchDisplay）已在 moveWindowToDisplay 之后
                     // 主动把 model.x/y 设置为新屏窗口坐标。若这里再按 (newW/prevW, newH/prevH) 缩放，
@@ -306,14 +349,21 @@ class Live2DManager {
                 this._screenChangeHandler = () => {
                     const sw = window.screen.width;
                     const sh = window.screen.height;
-                    if (sw === lastScreenW && sh === lastScreenH) return;
+                    const dpr = window.devicePixelRatio || 1;
+                    if (sw === lastScreenW && sh === lastScreenH && Math.abs(dpr - lastDevicePixelRatio) < 0.001) return;
                     lastScreenW = sw;
                     lastScreenH = sh;
-                    doResize('window.screen changed');
+                    lastDevicePixelRatio = dpr;
+                    doResize('window.screen/devicePixelRatio changed');
                 };
                 // 跨屏切换信号：主进程 setBounds 后广播；这里等一帧让 innerWidth/Height 落地再 resize
                 this._displayChangeHandler = () => {
-                    requestAnimationFrame(() => doResize('electron-display-changed'));
+                    requestAnimationFrame(() => {
+                        lastDevicePixelRatio = window.devicePixelRatio || 1;
+                        doResize('electron-display-changed');
+                        requestAnimationFrame(() => doResize('electron-display-changed:settled'));
+                        setTimeout(() => doResize('electron-display-changed:delayed'), 120);
+                    });
                 };
 
                 window.addEventListener('resize', this._screenChangeHandler);
@@ -426,9 +476,78 @@ class Live2DManager {
      */
     setTargetFPS(fps) {
         if (this.pixi_app && this.pixi_app.ticker) {
+            if (this._linuxX11FpsRestoreTimer) {
+                clearTimeout(this._linuxX11FpsRestoreTimer);
+                this._linuxX11FpsRestoreTimer = null;
+                this._linuxX11BaseTargetFps = null;
+            }
             this.pixi_app.ticker.maxFPS = fps;
             console.log(`[Live2D Core] 目标帧率设置为 ${fps === 0 ? 'VSync (无限制)' : fps + 'fps'}`);
         }
+    }
+
+    boostLinuxX11InteractiveFPS(durationMs = LIVE2D_LINUX_X11_INTERACTIVE_FPS_HOLD_MS) {
+        if (!isDesktopLinuxX11Runtime()) return;
+        if (!this.pixi_app || !this.pixi_app.ticker) return;
+
+        const ticker = this.pixi_app.ticker;
+        const configured = typeof window.targetFrameRate === 'number' ? window.targetFrameRate : 60;
+        const configuredFps = Number(configured);
+        if (configuredFps === 0) {
+            if (this._linuxX11FpsRestoreTimer) {
+                clearTimeout(this._linuxX11FpsRestoreTimer);
+                this._linuxX11FpsRestoreTimer = null;
+                this._linuxX11BaseTargetFps = null;
+            }
+            if (ticker.maxFPS !== 0) {
+                ticker.maxFPS = 0;
+            }
+            return;
+        }
+
+        const baseFps = Math.max(1, Number.isFinite(configuredFps) ? configuredFps : 60);
+        const boostFps = Math.max(baseFps, LIVE2D_LINUX_X11_INTERACTIVE_FPS);
+        this._linuxX11BaseTargetFps = baseFps;
+        const originalTicker = ticker;
+        if (ticker.maxFPS !== boostFps) {
+            ticker.maxFPS = boostFps;
+        }
+        if (this._linuxX11FpsRestoreTimer) {
+            clearTimeout(this._linuxX11FpsRestoreTimer);
+        }
+        this._linuxX11FpsRestoreTimer = setTimeout(() => {
+            this._linuxX11FpsRestoreTimer = null;
+            const latestConfigured = typeof window.targetFrameRate === 'number' ? Number(window.targetFrameRate) : NaN;
+            const restoreFps = Number.isFinite(latestConfigured)
+                ? latestConfigured
+                : (Number.isFinite(this._linuxX11BaseTargetFps) ? this._linuxX11BaseTargetFps : 60);
+            this._linuxX11BaseTargetFps = null;
+            if (this.pixi_app && this.pixi_app.ticker === originalTicker) {
+                originalTicker.maxFPS = restoreFps;
+            }
+        }, Math.max(100, Number(durationMs) || LIVE2D_LINUX_X11_INTERACTIVE_FPS_HOLD_MS));
+    }
+
+    /**
+     * Electron/X11 的透明全屏窗口里，WebGL getter 会造成明显同步阻塞。
+     * pixi-live2d-display 的 Cubism renderer 每帧都 save/restore WebGL profile，
+     * 其中包含一批 gl.getParameter/getVertexAttrib 调用；当前页面只有这一个
+     * Live2D WebGL pipeline，PIXI 会在同一帧内重新设置所需状态，所以桌面 X11 下
+     * 跳过这段 profile 保存可以避免每帧 GPU/CPU 同步等待。
+     */
+    _optimizeLinuxX11RendererProfile(model) {
+        if (!isDesktopLinuxX11Runtime()) return;
+        const renderer = model && model.internalModel && model.internalModel.renderer;
+        if (!renderer || typeof renderer.saveProfile !== 'function' || typeof renderer.restoreProfile !== 'function') return;
+        if (renderer.__nekoLinuxX11ProfileOptimized) return;
+
+        renderer.__nekoOriginalSaveProfile = renderer.saveProfile;
+        renderer.__nekoOriginalRestoreProfile = renderer.restoreProfile;
+        renderer.saveProfile = function() {};
+        renderer.restoreProfile = function() {};
+        renderer.__nekoLinuxX11ProfileOptimized = true;
+        this._linuxX11RendererProfileOptimized = true;
+        console.log('[Live2D Core] Linux X11 renderer profile optimization enabled');
     }
 
     /**
@@ -436,6 +555,7 @@ class Live2DManager {
      * 只调整 canvas 后备缓冲尺寸，不改模型贴图本体，避免破坏 Live2D 图集和裁剪蒙版。
      */
     _getRenderResolutionForQuality(quality) {
+        quality = getEffectiveLive2DRenderQuality(quality);
         const deviceRatio = Math.max(1, window.devicePixelRatio || 1);
         if (quality === 'low') {
             return Math.max(0.75, Math.min(deviceRatio * 0.75, 1));
@@ -453,14 +573,15 @@ class Live2DManager {
     applyRenderQuality(quality) {
         if (!this.pixi_app || !this.pixi_app.renderer) return;
         const renderer = this.pixi_app.renderer;
-        const resolution = this._getRenderResolutionForQuality(quality || 'medium');
+        const effectiveQuality = getEffectiveLive2DRenderQuality(quality);
+        const resolution = this._getRenderResolutionForQuality(effectiveQuality);
         if (Math.abs((renderer.resolution || 1) - resolution) < 0.001) return;
 
         const width = Math.max(renderer.screen?.width || window.innerWidth || window.screen.width || 1, 1);
         const height = Math.max(renderer.screen?.height || window.innerHeight || window.screen.height || 1, 1);
         renderer.resolution = resolution;
         renderer.resize(width, height);
-        console.log('[Live2D Core] 画质已应用:', { quality, resolution, width, height });
+        console.log('[Live2D Core] 画质已应用:', { quality: effectiveQuality, requestedQuality: quality, resolution, width, height });
     }
 
     // 加载用户偏好
@@ -479,6 +600,10 @@ class Live2DManager {
     // 保存用户偏好
     async saveUserPreferences(modelPath, position, scale, parameters, display, viewport) {
         try {
+            // 观看模式只读：viewer 不应把本地拖动覆盖到全局模型布局（也避免向 monitor 的只读端点 POST 触发 405）
+            if (window.isViewerMode) {
+                return false;
+            }
             // 验证位置和缩放值是否为有效的有限数值
             if (!isValidModelPreferences(scale, position)) {
                 console.error('位置或缩放值无效:', { scale, position });
@@ -4506,7 +4631,10 @@ class Live2DManager {
     setMouseTrackingEnabled(enabled) {
         this._mouseTrackingEnabled = enabled;
         window.mouseTrackingEnabled = enabled;
-        const effectiveEnabled = enabled && window.nekoYuiGuideFaceForwardLock !== true;
+        const effectiveEnabled = enabled && (
+            window.nekoYuiGuideFaceForwardLock !== true
+            || window.nekoYuiGuideIntroVoiceLookAtActive === true
+        );
 
         if (effectiveEnabled) {
             // 重新启用时，如果模型存在且没有鼠标跟踪监听器，则启用
@@ -4532,7 +4660,10 @@ class Live2DManager {
      * @returns {boolean}
      */
     isMouseTrackingEnabled() {
-        if (window.nekoYuiGuideFaceForwardLock === true) {
+        if (
+            window.nekoYuiGuideFaceForwardLock === true
+            && window.nekoYuiGuideIntroVoiceLookAtActive !== true
+        ) {
             return false;
         }
         return this._mouseTrackingEnabled !== false;

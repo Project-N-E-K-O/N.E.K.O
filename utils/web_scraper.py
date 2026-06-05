@@ -138,7 +138,12 @@ def _fix_bilibili_api_env():
         # 最后的兜底，确保此函数无论如何不会导致主程序崩溃
         logger.warning(f"⚠️ 尝试自修复 B站 API 环境时发生非预期异常: {e}")
 
-# 在模块加载时立即执行
+# 在模块加载时立即执行：该修复会在 bilibili_api 安装目录里创建缺失的 data 文件
+# （磁盘级、进程无关、一次性）。除了 web_scraper 自身，plugin/plugins/bilibili_*
+# 也会直接 import bilibili_api 并依赖这些文件已就位——所以这一步必须在 import
+# 期跑（而非 lazy 到 web_scraper 的 B 站函数被调时），否则那些插件在全新环境下
+# 会踩到缺文件错误（见 PR #1496 codex review）。开销主要是首次 import bilibili_api，
+# 相对整体启动优化可忽略。
 _fix_bilibili_api_env()
 
 # ==================================================
@@ -251,7 +256,7 @@ async def fetch_bilibili_trending(limit: int = 30) -> Dict[str, Any]:
     """
     try:
         from bilibili_api import homepage
-        
+
         # 获取认证信息（如果有）
         credential = _get_bilibili_credential()
         
@@ -1528,6 +1533,153 @@ def parse_google_results(html_content: str, limit: int = 5) -> List[Dict[str, st
         return []
 
 
+async def search_duckduckgo(query: str, limit: int = 10) -> Dict[str, Any]:
+    """
+    使用 DuckDuckGo 搜索关键词并获取搜索结果（用于非中文区域）。
+
+    取代 Google：Google 对无头/脚本请求的反爬几乎必现（302 → /sorry/index → 429），
+    主动搭话的窗口上下文搜索基本拿不到结果。DuckDuckGo 的 HTML 端点
+    （html.duckduckgo.com）对脚本访问宽容得多，结果直接内嵌在 HTML 里便于解析。
+
+    Args:
+        query: 搜索关键词
+        limit: 返回结果数量限制
+
+    Returns:
+        包含搜索结果的字典
+    """
+    try:
+        if not query or len(query.strip()) < 2:
+            return {
+                'success': False,
+                'error': '搜索关键词太短'
+            }
+
+        # 清理查询词
+        query = query.strip()
+        encoded_query = quote(query)
+
+        # DuckDuckGo 无 JS 的 HTML 端点（kl=us-en 对齐非中文区域口径）
+        url = f"https://html.duckduckgo.com/html/?q={encoded_query}&kl=us-en"
+
+        headers = {
+            'User-Agent': get_random_user_agent(),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://duckduckgo.com/',
+            'Connection': 'keep-alive',
+            'DNT': '1',
+            'Cache-Control': 'no-cache',
+        }
+
+        # 添加随机延迟
+        await asyncio.sleep(random.uniform(0.2, 0.5))
+
+        client = get_external_http_client()
+        response = await client.get(url, headers=headers, timeout=5.0)
+        response.raise_for_status()
+        html_content = response.text
+
+        # 解析搜索结果（BS4 大 HTML 同步解析放线程池，避免阻塞 event loop）
+        results = await asyncio.to_thread(parse_duckduckgo_results, html_content, limit)
+
+        if results:
+            return {
+                'success': True,
+                'query': query,
+                'results': results
+            }
+        else:
+            return {
+                'success': False,
+                'error': '未能解析到搜索结果',
+                'query': query
+            }
+
+    except httpx.TimeoutException:
+        logger.exception("DuckDuckGo搜索超时")
+        return {
+            'success': False,
+            'error': '搜索超时'
+        }
+    except Exception as e:
+        logger.exception(f"DuckDuckGo搜索失败: {e}")
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
+
+def parse_duckduckgo_results(html_content: str, limit: int = 5) -> List[Dict[str, str]]:
+    """
+    解析 DuckDuckGo HTML 端点的搜索结果页面
+
+    Args:
+        html_content: HTML页面内容
+        limit: 结果数量限制
+
+    Returns:
+        搜索结果列表，每个结果包含 title, abstract, url
+    """
+    results = []
+
+    try:
+        from urllib.parse import urlparse, parse_qs
+        soup = BeautifulSoup(html_content, 'lxml')
+
+        # html.duckduckgo.com 每条结果是 div.result（正常结果还带 web-result）
+        result_divs = soup.find_all('div', class_='result')
+
+        for div in result_divs[:limit * 2]:
+            # 跳过广告（class 含 result--ad / results_links_deep 之外的 ad 变体）
+            cls = div.get('class') or []
+            if any('ad' in c for c in cls):
+                continue
+
+            link = div.find('a', class_='result__a')
+            if not link:
+                continue
+
+            title = link.get_text(strip=True)
+            if not title or not (3 < len(title) < 200):
+                continue
+
+            # DDG 用跳转链接包裹真实地址：//duckduckgo.com/l/?uddg=<urlencoded>&rut=...
+            href = link.get('href', '')
+            url = ''
+            if href:
+                if 'uddg=' in href:
+                    # //duckduckgo.com/l/?uddg=<urlencoded>&rut=... ——
+                    # parse_qs 已对 uddg 值做一次百分号解码，得到的就是真实地址，
+                    # 不要再 unquote（否则真实 URL 里的字面 % 会被二次解码损坏）。
+                    parsed = urlparse(href if href.startswith('http') else 'https:' + href)
+                    qs = parse_qs(parsed.query)
+                    url = qs.get('uddg', [''])[0]
+                elif href.startswith('http'):
+                    url = href
+
+            # 摘要片段
+            abstract = ''
+            snippet = div.find(class_='result__snippet')
+            if snippet:
+                abstract = snippet.get_text(strip=True)[:200]
+
+            results.append({
+                'title': title,
+                'abstract': abstract,
+                'url': url
+            })
+            if len(results) >= limit:
+                break
+
+        logger.info(f"解析到 {len(results)} 条DuckDuckGo搜索结果")
+        return results[:limit]
+
+    except Exception as e:
+        logger.exception(f"解析DuckDuckGo搜索结果失败: {e}")
+        return []
+
+
 async def search_baidu(query: str, limit: int = 5) -> Dict[str, Any]:
     """
     使用百度搜索关键词并获取搜索结果
@@ -1777,7 +1929,7 @@ async def fetch_window_context_content(limit: int = 5) -> Dict[str, Any]:
     
     使用区域检测来决定搜索引擎：
     - 中文区域：百度搜索
-    - 非中文区域：Google搜索
+    - 非中文区域：DuckDuckGo搜索（取代 Google，规避其反爬 429）
     
     Args:
         limit: 搜索结果数量限制
@@ -1840,7 +1992,8 @@ async def fetch_window_context_content(limit: int = 5) -> Dict[str, Any]:
         if china_region:
             search_func = search_baidu
         else:
-            search_func = search_google
+            # 非中文区域改用 DuckDuckGo：Google 对脚本请求几乎必触发 429/sorry 反爬
+            search_func = search_duckduckgo
         
         for query in search_queries:
             if not query or len(query) < 2:

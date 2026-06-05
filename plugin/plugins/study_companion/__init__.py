@@ -1,12 +1,28 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+from collections.abc import Mapping
+from datetime import datetime
+import json
+import math
 from pathlib import Path
-import threading
+from types import SimpleNamespace
 import time
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from plugin.sdk.plugin import Err, NekoPluginBase, Ok, SdkError, lifecycle, neko_plugin, plugin_entry, tr
+from plugin.sdk.plugin import (
+    Err,
+    NekoPluginBase,
+    Ok,
+    SdkError,
+    custom_event,
+    lifecycle,
+    neko_plugin,
+    plugin_entry,
+    tr,
+)
 
 from .constants import (
     LLM_OPERATION_ANSWER_EVALUATE,
@@ -18,12 +34,18 @@ from .constants import (
     MODE_INTERACTIVE,
     MODE_TEACHING,
 )
+from .doc_exporter import DocExporter, normalize_format
+from .awareness_buffer import ActivityBuffer
+from .checkin_manager import CheckinManager
+from ._event_bus import StudyEvent, StudyEventBus
+from .pomodoro_timer import PomodoroTimer
 from .screen_classifier import classify_screen_from_ocr
 from .models import (
     MODE_CONCEPT_EXPLAIN,
     STATUS_ERROR,
     STATUS_READY,
     STATUS_STOPPED,
+    ActivitySummary,
     StudyConfig,
     StudyState,
     TutorReply,
@@ -37,24 +59,140 @@ from .service import (
     build_status_payload,
     build_tutor_payload,
 )
-from .mode_manager import ModeManager, build_transition_phrase, handle_user_intent, normalize_mode
+from .mode_manager import (
+    ModeManager,
+    build_transition_phrase,
+    handle_user_intent,
+    normalize_mode,
+)
 from .knowledge_contribution import PublicGraphContributionBuilder
 from .knowledge_tracker import KnowledgeTracker
+from .memory_deck_store import MemoryDeckStore, MemoryItemNotFoundError
+from .memory_habit_bridge import MemoryHabitBridge
 from .state import build_initial_state
 from .store import StudyStore
+from .study_habit_store import StudyHabitStore
 from .study_ocr_pipeline import StudyOcrPipeline
+from .supervision import SupervisionController
 from .tutor_llm_agent import TutorLLMAgent
 from .tutor_llm_agent import diagnostic_code_for_exception
 from .ui_api import build_open_ui_payload
+from .ui_api import build_contribution_settings_payload, build_knowledge_map_payload
+from .ui_api import build_habit_dashboard_payload, build_pomodoro_status_payload
+from .voice_filter import VoiceFilter, _derive_subject, build_context_for_catgirl
+
+
+def _voice_session_key(lanlan_name: str, metadata: Mapping[str, Any] | None) -> str:
+    for key in ("voice_session_id", "session_id", "conversation_id", "request_session_id"):
+        value = metadata.get(key) if isinstance(metadata, Mapping) else None
+        text = str(value or "").strip()
+        if text:
+            return f"session:{text}"
+    name = str(lanlan_name or "").strip()
+    return f"lanlan:{name}" if name else "__default__"
+
+
+def _register_install_routes() -> None:
+    from plugin.server.install_registry import (
+        InstallKindRegistration,
+        register_install_plugin,
+    )
+
+    register_install_plugin(
+        "study_companion",
+        install_kinds={
+            "rapidocr_models": InstallKindRegistration(
+                entry_id="study_download_rapidocr_models",
+                label="RapidOCR Models",
+                queued_message="RapidOCR model download queued",
+            ),
+            "tesseract": InstallKindRegistration(
+                entry_id="study_install_tesseract",
+                label="Tesseract",
+                queued_message="Tesseract install queued",
+            ),
+        },
+        ui_i18n_dir=Path(__file__).resolve().parent / "i18n",
+        tutorial_enabled=True,
+    )
+
+
+try:
+    _register_install_routes()
+except Exception:  # noqa: BLE001 - route registration should not block package import.
+    from plugin.logging_config import get_logger
+
+    get_logger("study.install_routes").warning(
+        "study install route registration failed",
+        exc_info=True,
+    )
+
+
+_REVIEW_DUE_INTERVAL_SECONDS = 1800.0
+
+
+from .entry_tutor_context_support import _TutorContextSupportMixin
+from .entry_communication_review_events import _CommunicationReviewEventsMixin
+from .entry_communication_tutor_events import _CommunicationTutorEventsMixin
+from .entry_export_support import _ExportSupportMixin
+from .entry_status_entries import _StatusEntriesMixin
+from .entry_memory_card_entries import _MemoryCardEntriesMixin
+from .entry_memory_deck_entries import _MemoryDeckEntriesMixin
+from .entry_memory_import_entries import _MemoryImportEntriesMixin
+from .entry_memory_review_entries import _MemoryReviewEntriesMixin
+from .entry_pomodoro_entries import _PomodoroEntriesMixin
+from .entry_goal_entries import _GoalEntriesMixin
+from .entry_checkin_entries import _CheckinEntriesMixin
+from .entry_supervision_entries import _SupervisionEntriesMixin
+from .entry_knowledge_entries import _KnowledgeEntriesMixin
+from .entry_mode_entries import _ModeEntriesMixin
+from .entry_tutor_explain_entries import _TutorExplainEntriesMixin
+from .entry_tutor_question_entries import _TutorQuestionEntriesMixin
+from .entry_tutor_answer_entries import _TutorAnswerEntriesMixin
+from .entry_tutor_summary_entries import _TutorSummaryEntriesMixin
+from .entry_ocr_entries import _OcrEntriesMixin
+from .entry_neko_commands import (
+    _INTERRUPT_COMMANDS,
+    _NEKO_COMMAND_HANDLERS,
+    _NekoCommandsMixin,
+    _QUEUE_COMMANDS,
+)
 
 
 @neko_plugin
-class StudyCompanionPlugin(NekoPluginBase):
+# MRO notes:
+# - _TutorContextSupportMixin owns tutor finalization and learning tracking.
+# - Tutor entry mixins call context/finalization helpers from that support mixin.
+# Keep the support mixin before tutor entry mixins unless those helpers move.
+class StudyCompanionPlugin(
+    _TutorContextSupportMixin,
+    _CommunicationReviewEventsMixin,
+    _CommunicationTutorEventsMixin,
+    _ExportSupportMixin,
+    _StatusEntriesMixin,
+    _MemoryCardEntriesMixin,
+    _MemoryDeckEntriesMixin,
+    _MemoryImportEntriesMixin,
+    _MemoryReviewEntriesMixin,
+    _PomodoroEntriesMixin,
+    _GoalEntriesMixin,
+    _CheckinEntriesMixin,
+    _SupervisionEntriesMixin,
+    _KnowledgeEntriesMixin,
+    _ModeEntriesMixin,
+    _TutorExplainEntriesMixin,
+    _TutorQuestionEntriesMixin,
+    _TutorAnswerEntriesMixin,
+    _TutorSummaryEntriesMixin,
+    _OcrEntriesMixin,
+    _NekoCommandsMixin,
+    NekoPluginBase,
+):
     def __init__(self, ctx):
         super().__init__(ctx)
         self.file_logger = self.enable_file_logging(log_level="INFO")
         self.logger = self.file_logger
-        self._lock = threading.RLock()
+        self._lock = asyncio.Lock()
         self._install_in_progress = False
         self._rapidocr_models_in_progress = False
         self._cfg = StudyConfig()
@@ -73,12 +211,42 @@ class StudyCompanionPlugin(NekoPluginBase):
             retention_target=self._cfg.fsrs_retention_target,
             logger=self.logger,
         )
+        self._memory_deck_store = MemoryDeckStore(
+            self._store,
+            retention_target=self._cfg.fsrs_retention_target,
+        )
+        self._knowledge_tracker.set_memory_deck_summary_provider(
+            self._memory_deck_store.status_summary
+        )
+        self._habit_store: StudyHabitStore | None = None
+        self._checkin_manager: CheckinManager | None = None
+        self._pomodoro_timer: PomodoroTimer | None = None
+        self._supervision: SupervisionController | None = None
+        self._memory_habit_bridge: MemoryHabitBridge | None = None
+        self._event_bus: StudyEventBus | None = None
+        self._buffer: ActivityBuffer | None = None
+        self._awareness_task: asyncio.Task[None] | None = None
+        self._last_awareness_push_at = 0.0
+        self._awareness_idle_ticks = 0
+        self._voice_filter = VoiceFilter()
+        self._review_due_task: asyncio.Task[None] | None = None
+        self._command_queue: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue()
+        self._command_worker_task: asyncio.Task[None] | None = None
+        self._interruptible_task: asyncio.Task[None] | None = None
+        self._neko_command_transport: Any | None = None
+        self._neko_command_handler: Any | None = None
+        self._neko_command_watcher: Any | None = None
+        self._worker_crash_count = 0
+        self._worker_last_crash_time = 0.0
 
     @lifecycle(id="startup")
     async def startup(self, **_):
         try:
             raw = await self.config.dump(timeout=5.0)
             self._cfg = build_config(raw if isinstance(raw, dict) else {})
+            self._voice_filter = VoiceFilter(
+                plugin_config=raw if isinstance(raw, dict) else {}
+            )
             await asyncio.to_thread(self._store.open)
             self._cfg = await asyncio.to_thread(self._store.load_config, self._cfg)
             self._knowledge_tracker = KnowledgeTracker(
@@ -86,11 +254,45 @@ class StudyCompanionPlugin(NekoPluginBase):
                 retention_target=self._cfg.fsrs_retention_target,
                 logger=self.logger,
             )
-            restored = await asyncio.to_thread(self._store.load_state, build_initial_state(mode=self._cfg.mode))
-            with self._lock:
+            self._memory_deck_store = MemoryDeckStore(
+                self._store,
+                retention_target=self._cfg.fsrs_retention_target,
+            )
+            self._knowledge_tracker.set_memory_deck_summary_provider(
+                self._memory_deck_store.status_summary
+            )
+            self._habit_store = StudyHabitStore(self._store)
+            self._checkin_manager = CheckinManager(
+                self._habit_store,
+                makeup_window_days=self._cfg.checkin.makeup_window_days,
+            )
+            self._pomodoro_timer = PomodoroTimer(
+                self._habit_store,
+                config=self._cfg.pomodoro,
+                auto_derive_from_session=self._cfg.checkin.auto_derive_from_session,
+                checkin_timezone=self._cfg.checkin.streak_timezone,
+            )
+            self._supervision = SupervisionController(self._cfg.supervision)
+            self._memory_habit_bridge = MemoryHabitBridge(
+                store=self._store,
+                memory=self._memory_deck_store,
+                habits=self._habit_store,
+                checkin_timezone=self._cfg.checkin.streak_timezone,
+            )
+            self._event_bus = (
+                StudyEventBus(plugin_ctx=self.ctx)
+                if self._cfg.communication.enabled
+                else None
+            )
+            restored = await asyncio.to_thread(
+                self._store.load_state, build_initial_state(mode=self._cfg.mode)
+            )
+            async with self._lock:
                 self._state = restored
                 self._state.status = STATUS_READY
-                self._state.active_mode = normalize_mode(self._state.active_mode or self._cfg.mode)
+                self._state.active_mode = normalize_mode(
+                    self._state.active_mode or self._cfg.mode
+                )
                 self._state.mode_started_at = float(self._state.mode_started_at or 0.0)
                 self._state.mode_lock_until = float(self._state.mode_lock_until or 0.0)
                 self._cfg.mode = self._state.active_mode
@@ -105,10 +307,10 @@ class StudyCompanionPlugin(NekoPluginBase):
                         "session_suggestions": self._state.session_suggestions,
                         "mode_lock_until": self._state.mode_lock_until,
                     }
-            )
+                )
             self._ocr_pipeline = StudyOcrPipeline(logger=self.logger, config=self._cfg)
             self._agent = TutorLLMAgent(logger=self.logger, config=self._cfg)
-            await asyncio.to_thread(self._refresh_dependency_status)
+            await self._refresh_dependency_status()
             self.register_static_ui("static")
             self.set_list_actions(
                 [
@@ -120,7 +322,14 @@ class StudyCompanionPlugin(NekoPluginBase):
                     }
                 ]
             )
+            self._sync_doc_export_entry()
             await self._persist_state()
+            self._start_review_due_task()
+            if self._event_bus is not None:
+                await self._subscribe_neko_commands()
+                self._start_command_worker()
+            if self._cfg.awareness.enabled:
+                self.start_awareness_loop()
             status_payload = await asyncio.to_thread(self._status_payload)
             return Ok({"status": STATUS_READY, "result": status_payload})
         except asyncio.CancelledError:
@@ -128,19 +337,36 @@ class StudyCompanionPlugin(NekoPluginBase):
         except Exception as exc:
             self.logger.warning("study plugin startup failed: {}", exc)
             await self._cleanup_after_failed_startup()
-            with self._lock:
+            async with self._lock:
                 self._state.status = STATUS_ERROR
                 self._state.last_error = "startup_failed"
             return Err(SdkError("failed to start study_companion"))
 
     async def _cleanup_after_failed_startup(self) -> None:
+        self.stop_awareness_loop()
+        await self._await_awareness_stop()
+        await self._unsubscribe_neko_commands()
+        await self._cancel_command_worker()
+        await self._cancel_review_due_task()
         agent = self._agent
         self._agent = None
         self._ocr_pipeline = None
+        self._knowledge_tracker = None
+        self._memory_deck_store = None
+        self._habit_store = None
+        self._checkin_manager = None
+        self._pomodoro_timer = None
+        self._supervision = None
+        self._memory_habit_bridge = None
+        self._event_bus = None
         try:
             self.clear_list_actions()
         except Exception as exc:
             self.logger.warning("study startup cleanup clear actions failed: {}", exc)
+        try:
+            self.unregister_dynamic_entry("study_export_notes")
+        except Exception as exc:
+            self.logger.warning("study startup cleanup dynamic entry failed: {}", exc)
         try:
             self._static_ui_config = None
         except Exception as exc:
@@ -149,7 +375,9 @@ class StudyCompanionPlugin(NekoPluginBase):
             try:
                 await agent.shutdown()
             except Exception as exc:
-                self.logger.warning("study startup cleanup agent shutdown failed: {}", exc)
+                self.logger.warning(
+                    "study startup cleanup agent shutdown failed: {}", exc
+                )
         try:
             await asyncio.to_thread(self._store.close)
         except Exception as exc:
@@ -157,17 +385,338 @@ class StudyCompanionPlugin(NekoPluginBase):
 
     @lifecycle(id="shutdown")
     async def shutdown(self, **_):
+        self.stop_awareness_loop()
+        await self._await_awareness_stop()
+        await self._unsubscribe_neko_commands()
+        await self._cancel_command_worker()
+        await self._cancel_review_due_task()
+        try:
+            self.unregister_dynamic_entry("study_export_notes")
+        except Exception as exc:
+            self.logger.warning("study shutdown dynamic entry cleanup failed: {}", exc)
         if self._agent is not None:
             await self._agent.shutdown()
-        with self._lock:
+        async with self._lock:
             self._state.status = STATUS_STOPPED
         await asyncio.to_thread(self._store.save_state, self._state)
         await asyncio.to_thread(self._store.close)
         return Ok({"status": STATUS_STOPPED})
 
-    def _refresh_dependency_status(self) -> dict[str, Any]:
-        status = build_dependency_status(self._cfg)
-        with self._lock:
+    def _start_review_due_task(self) -> None:
+        if self._event_bus is None:
+            return
+        if self._review_due_task is not None and not self._review_due_task.done():
+            return
+        self._review_due_task = asyncio.create_task(self._run_review_due_loop())
+        self._review_due_task.add_done_callback(self._on_review_due_task_done)
+
+    def start_awareness_loop(self) -> None:
+        if self.is_awareness_active():
+            return
+        if self._ocr_pipeline is None:
+            self.logger.warning("awareness loop skipped: OCR pipeline not initialized")
+            return
+        self._buffer = ActivityBuffer(
+            window_seconds=self._cfg.awareness.context_window_minutes * 60,
+            snapshot_interval=self._cfg.awareness.snapshot_interval_seconds,
+        )
+        self._last_awareness_push_at = 0.0
+        self._awareness_idle_ticks = 0
+        self._awareness_task = asyncio.create_task(self._run_awareness_loop())
+        self._awareness_task.add_done_callback(self._on_awareness_task_done)
+
+    def stop_awareness_loop(self) -> None:
+        task = self._awareness_task
+        self._buffer = None
+        self._last_awareness_push_at = 0.0
+        self._awareness_idle_ticks = 0
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def _await_awareness_stop(self) -> None:
+        task = self._awareness_task
+        self._awareness_task = None
+        if task is None:
+            return
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            self.logger.warning("study awareness task cleanup failed: {}", exc)
+
+    def is_awareness_active(self) -> bool:
+        return self._buffer is not None
+
+    def _start_command_worker(self) -> None:
+        if self._event_bus is None:
+            return
+        if self._command_worker_task is not None and not self._command_worker_task.done():
+            return
+        if self._worker_crash_count >= 3:
+            now = time.monotonic()
+            if now - self._worker_last_crash_time < 10.0:
+                self.logger.error(
+                    "_command_worker auto-restart disabled after {} crashes",
+                    self._worker_crash_count,
+                )
+                return
+            self._worker_crash_count = 0
+        self._command_worker_task = asyncio.create_task(self._run_command_worker())
+        self._command_worker_task.add_done_callback(self._on_command_worker_done)
+
+    async def _cancel_command_worker(self) -> None:
+        worker = self._command_worker_task
+        self._command_worker_task = None
+        if worker is not None and not worker.done():
+            worker.cancel()
+            try:
+                await worker
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                self.logger.warning("study command worker cleanup failed: {}", exc)
+
+        while True:
+            try:
+                self._command_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+        task = self._interruptible_task
+        self._interruptible_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                self.logger.warning("study command task cleanup failed: {}", exc)
+
+    def _on_command_worker_done(self, task: asyncio.Task[None]) -> None:
+        if self._command_worker_task is task:
+            self._command_worker_task = None
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            self.logger.exception("_command_worker exited with error")
+            now = time.monotonic()
+            if now - self._worker_last_crash_time < 10.0:
+                self._worker_crash_count += 1
+            else:
+                self._worker_crash_count = 1
+            self._worker_last_crash_time = now
+            if self._worker_crash_count >= 3:
+                self.logger.error(
+                    "_command_worker crashed {} times in 10s; disabling auto-restart",
+                    self._worker_crash_count,
+                )
+
+    def _on_command_task_done(self, task: asyncio.Task[None]) -> None:
+        if self._interruptible_task is task:
+            self._interruptible_task = None
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            self.logger.exception("command task failed")
+
+    async def _run_command_worker(self) -> None:
+        while True:
+            try:
+                cmd, payload = await self._command_queue.get()
+            except asyncio.CancelledError:
+                while True:
+                    try:
+                        self._command_queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
+                raise
+
+            try:
+                await self._execute_command(cmd, payload)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self.logger.exception("_command_worker failed to execute: {}", cmd)
+
+    async def _execute_command(self, cmd: str, payload: dict[str, Any]) -> None:
+        if cmd not in _QUEUE_COMMANDS or cmd in _INTERRUPT_COMMANDS:
+            return
+        handler_name = _NEKO_COMMAND_HANDLERS.get(cmd)
+        handler = getattr(self, handler_name or "", None)
+        if handler is None:
+            return
+
+        worker_task = asyncio.current_task()
+        while True:
+            current = self._interruptible_task
+            if current is None or current.done():
+                break
+            try:
+                await current
+                if worker_task is not None and worker_task.cancelling():
+                    raise asyncio.CancelledError
+            except asyncio.CancelledError:
+                if worker_task is not None and worker_task.cancelling():
+                    raise
+            except Exception:
+                pass
+
+        async def _run() -> None:
+            try:
+                await handler(payload)
+            except asyncio.CancelledError:
+                pass
+
+        task = asyncio.create_task(_run())
+        self._interruptible_task = task
+        task.add_done_callback(self._on_command_task_done)
+        try:
+            await task
+            if worker_task is not None and worker_task.cancelling():
+                raise asyncio.CancelledError
+        except asyncio.CancelledError:
+            if worker_task is not None and worker_task.cancelling():
+                raise
+        except Exception:
+            pass
+
+    async def _cancel_review_due_task(self) -> None:
+        task = self._review_due_task
+        self._review_due_task = None
+        if task is None:
+            return
+        if task.done():
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                self.logger.warning("study review due task cleanup failed: {}", exc)
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            self.logger.warning("study review due task cleanup failed: {}", exc)
+
+    def _on_review_due_task_done(self, task: asyncio.Task[None]) -> None:
+        if self._review_due_task is task:
+            self._review_due_task = None
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception as exc:
+            self.logger.warning("study review due task failed: {}", exc)
+
+    def _on_awareness_task_done(self, task: asyncio.Task[None]) -> None:
+        if self._awareness_task is task:
+            self._awareness_task = None
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception as exc:
+            self._buffer = None
+            self.logger.warning("study awareness task failed: {}", exc)
+
+    async def _run_review_due_loop(self) -> None:
+        while True:
+            await self._emit_review_due_if_needed()
+            await asyncio.sleep(max(0.0, _REVIEW_DUE_INTERVAL_SECONDS))
+
+    async def _run_awareness_loop(self) -> None:
+        while self._buffer is not None:
+            await self.awareness_tick()
+            await asyncio.sleep(self._awareness_sleep_seconds())
+
+    def _awareness_sleep_seconds(self) -> float:
+        base = max(1.0, float(self._cfg.awareness.snapshot_interval_seconds))
+        if self._awareness_idle_ticks >= 3:
+            return max(base, 15.0)
+        return base
+
+    async def awareness_tick(self) -> None:
+        buffer = self._buffer
+        pipeline = self._ocr_pipeline
+        if buffer is None or pipeline is None:
+            return
+        try:
+            snapshot = await asyncio.to_thread(pipeline.capture_lightweight)
+        except Exception:
+            self._awareness_idle_ticks += 1
+            self.logger.warning("awareness_tick capture failed", exc_info=True)
+            return
+
+        if snapshot is None or snapshot.status == "capture_failed":
+            self._awareness_idle_ticks += 1
+            return
+
+        activity = snapshot.to_activity_snapshot()
+        if activity is not None:
+            await buffer.add(activity)
+            if activity.app_type == "other" and activity.activity_type in ("idle", ""):
+                self._awareness_idle_ticks += 1
+            else:
+                self._awareness_idle_ticks = 0
+        else:
+            self._awareness_idle_ticks += 1
+
+        if self._should_push_context():
+            summary = await buffer.summarize()
+            await self._push_awareness_context(summary)
+
+    def _should_push_context(self) -> bool:
+        if self._cfg.awareness.push_to_llm_mode == "blind":
+            return False
+        interval = self._cfg.awareness.push_to_llm_interval_seconds
+        now = time.monotonic()
+        return now - self._last_awareness_push_at >= interval
+
+    async def _push_awareness_context(self, summary: ActivitySummary) -> None:
+        mode = self._cfg.awareness.push_to_llm_mode
+        self._last_awareness_push_at = time.monotonic()
+        self.push_message(
+            visibility=[],
+            ai_behavior="read" if mode == "read" else "respond",
+            parts=[
+                {
+                    "type": "text",
+                    "text": (
+                        "[环境感知] "
+                        + json.dumps(self._summary_for_llm(summary), ensure_ascii=False)
+                    ),
+                }
+            ],
+            source="awareness",
+            priority=0,
+        )
+
+    @staticmethod
+    def _summary_for_llm(
+        summary: ActivitySummary,
+    ) -> dict[str, str | float | list[str]]:
+        return {
+            key: value
+            for key, value in summary.items()
+            if key != "app_distribution"
+        }
+
+    async def _refresh_dependency_status(self) -> dict[str, Any]:
+        status = await asyncio.to_thread(build_dependency_status, self._cfg)
+        async with self._lock:
             self._state.dependency_status = status
         return status
 
@@ -175,8 +724,10 @@ class StudyCompanionPlugin(NekoPluginBase):
         await asyncio.to_thread(self._store.save_config, self._cfg)
         await asyncio.to_thread(self._store.save_state, self._state)
 
-    async def _apply_mode_switch(self, mode: str, reason: str, *, language: str | None = None) -> dict[str, Any]:
-        with self._lock:
+    async def _apply_mode_switch(
+        self, mode: str, reason: str, *, language: str | None = None
+    ) -> dict[str, Any]:
+        async with self._lock:
             self._mode_manager.restore(
                 {
                     "current_mode": self._state.active_mode,
@@ -187,14 +738,35 @@ class StudyCompanionPlugin(NekoPluginBase):
                     "mode_lock_until": self._state.mode_lock_until,
                 }
             )
-            result = self._mode_manager.switch_to(mode, reason, language=language or self._cfg.language)
-            checkpoint = result.get("checkpoint") if isinstance(result.get("checkpoint"), dict) else {}
-            self._state.active_mode = str(result.get("new_mode") or self._state.active_mode)
-            self._state.mode_started_at = float(checkpoint.get("mode_started_at") or self._state.mode_started_at or 0.0)
-            self._state.recent_mode_switches = checkpoint.get("recent_mode_switches") if isinstance(checkpoint.get("recent_mode_switches"), list) else self._state.recent_mode_switches
-            self._state.suggestion_cooldowns = checkpoint.get("suggestion_cooldowns") if isinstance(checkpoint.get("suggestion_cooldowns"), dict) else self._state.suggestion_cooldowns
-            self._state.session_suggestions = checkpoint.get("session_suggestions") if isinstance(checkpoint.get("session_suggestions"), list) else self._state.session_suggestions
-            self._state.mode_lock_until = float(checkpoint.get("mode_lock_until") or self._state.mode_lock_until or 0.0)
+            result = self._mode_manager.switch_to(
+                mode, reason, language=language or self._cfg.language
+            )
+            checkpoint = (
+                result.get("checkpoint")
+                if isinstance(result.get("checkpoint"), dict)
+                else {}
+            )
+            self._state.active_mode = str(
+                result.get("new_mode") or self._state.active_mode
+            )
+            if "mode_started_at" in checkpoint:
+                self._state.mode_started_at = float(
+                    checkpoint.get("mode_started_at") or 0.0
+                )
+            if isinstance(checkpoint.get("recent_mode_switches"), list):
+                self._state.recent_mode_switches = checkpoint.get(
+                    "recent_mode_switches"
+                )
+            if isinstance(checkpoint.get("suggestion_cooldowns"), dict):
+                self._state.suggestion_cooldowns = checkpoint.get(
+                    "suggestion_cooldowns"
+                )
+            if isinstance(checkpoint.get("session_suggestions"), list):
+                self._state.session_suggestions = checkpoint.get("session_suggestions")
+            if "mode_lock_until" in checkpoint:
+                self._state.mode_lock_until = float(
+                    checkpoint.get("mode_lock_until") or 0.0
+                )
             self._state.checkpoint = {
                 **checkpoint,
                 "changed": bool(result.get("changed")),
@@ -215,75 +787,183 @@ class StudyCompanionPlugin(NekoPluginBase):
 
     def _status_payload(self) -> dict[str, Any]:
         history = self._store.list_interactions(limit=10)
+        is_first_run = not bool(self._store.list_interactions(limit=1))
+        today = self._today()
+        habit_payload = self._habit_status_payload(today)
         knowledge = {
             "knowledge_summary": self._knowledge_tracker.get_status_summary(limit=8),
-            "knowledge_quality_summary": self._knowledge_tracker.quality.status_summary(limit=8),
+            "knowledge_quality_summary": self._knowledge_tracker.quality.status_summary(
+                limit=8
+            ),
             "anonymous_knowledge_stats_summary": self._store.anonymous_knowledge_stats_summary(),
             "review_queue": self._knowledge_tracker.get_review_queue(limit=8),
+            "memory_deck": self._memory_deck_store.status_summary(limit=8),
             "weak_topics": self._knowledge_tracker.get_weak_topics(limit=8),
             "mastery_overview": self._store.list_mastery_overview(limit=8),
         }
-        return build_status_payload(config=self._cfg, state=self._state, history=history, knowledge=knowledge)
+        return build_status_payload(
+            config=self._cfg,
+            state=self._state,
+            history=history,
+            knowledge={**knowledge, "habit": habit_payload},
+            is_first_run=is_first_run,
+        )
+
+    def _habit_status_payload(self, today: str) -> dict[str, Any]:
+        if (
+            self._habit_store is None
+            or self._checkin_manager is None
+            or self._pomodoro_timer is None
+        ):
+            return {
+                "available": False,
+                "error": "study habit system is not initialized",
+            }
+        try:
+            payload = build_habit_dashboard_payload(
+                goals=self._habit_store.list_goals(date=today),
+                checkin=self._checkin_manager.checkin_status(date=today, today=today),
+                pomodoro=self._pomodoro_timer.status(),
+                summary=self._checkin_manager.daily_summary(date=today),
+                supervision=self._supervision.status()
+                if self._supervision is not None
+                else {},
+            )
+            if self._memory_habit_bridge is not None:
+                payload["summary"]["memory_summary"] = (
+                    self._memory_habit_bridge.memory_summary(date=today)
+                )
+            payload["available"] = True
+            return payload
+        except Exception as exc:
+            self.logger.warning("study habit status payload degraded: {}", exc)
+            return {"available": False, "error": str(exc)}
+
+    def _today(self) -> str:
+        timezone_name = str(self._cfg.checkin.streak_timezone or "local").strip()
+        if timezone_name and timezone_name.lower() != "local":
+            try:
+                return datetime.now(ZoneInfo(timezone_name)).date().isoformat()
+            except ZoneInfoNotFoundError:
+                self.logger.warning(
+                    "invalid study checkin timezone configured: {}",
+                    timezone_name[:64],
+                )
+        return datetime.now().astimezone().date().isoformat()
 
     def _state_snapshot(self) -> dict[str, Any]:
-        with self._lock:
-            return self._state.to_dict()
-
-    def _merge_session_summary_seed(
-        self,
-        operation: str,
-        *,
-        payload: dict[str, Any] | None = None,
-        seed: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        current = dict(seed or {})
-        payload = dict(payload or {})
-        current["event_count"] = int(current.get("event_count") or 0) + 1
-        current["last_operation"] = operation
-        current["last_updated_at"] = utc_now_iso()
-        screen_type = str(payload.get("screen_type") or current.get("last_screen_type") or "").strip()
-        if screen_type:
-            current["last_screen_type"] = screen_type
-        if operation == LLM_OPERATION_QUESTION_GENERATE:
-            current["question_count"] = int(current.get("question_count") or 0) + 1
-        elif operation == LLM_OPERATION_ANSWER_EVALUATE:
-            current["answer_count"] = int(current.get("answer_count") or 0) + 1
-            verdict = str(payload.get("verdict") or "").strip()
-            if verdict:
-                verdict_counts = dict(current.get("verdict_counts") or {})
-                verdict_counts[verdict] = int(verdict_counts.get(verdict) or 0) + 1
-                current["verdict_counts"] = verdict_counts
-            weak_points = [item for item in payload.get("weak_points") or [] if str(item).strip()]
-            if weak_points:
-                current["weak_points"] = weak_points[:6]
-        elif operation == LLM_OPERATION_CONCEPT_EXPLAIN:
-            current["explain_count"] = int(current.get("explain_count") or 0) + 1
-        elif operation == LLM_OPERATION_KNOWLEDGE_TRACK:
-            current["track_count"] = int(current.get("track_count") or 0) + 1
-        elif operation == LLM_OPERATION_SUMMARIZE_SESSION:
-            current["summary_count"] = int(current.get("summary_count") or 0) + 1
-        topic = str(payload.get("topic") or "").strip()
-        if topic:
-            current["last_topic"] = topic
-        weak_points = [item for item in payload.get("weak_points") or [] if str(item).strip()]
-        if weak_points:
-            current["weak_points"] = weak_points[:6]
-        return current
+        return self._state.to_dict()
 
     def _screen_classification_context(self) -> dict[str, Any]:
-        with self._lock:
-            return dict(self._state.last_screen_classification)
+        return dict(self._state.last_screen_classification)
 
-    def _update_screen_classification(self, text: str, *, window_title: str = "", update_empty: bool = True) -> dict[str, Any]:
+    @custom_event(
+        event_type="voice_transcript",
+        id="handle_transcript",
+        name="Handle study voice transcript",
+        description="Filter realtime study voice transcripts and return a voice-session action.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "transcript": {"type": "string"},
+                "lanlan_name": {"type": "string"},
+                "metadata": {"type": "object"},
+            },
+            "required": ["transcript"],
+        },
+        trigger_method="manual",
+    )
+    async def handle_voice_transcript(
+        self,
+        transcript: str = "",
+        lanlan_name: str = "",
+        metadata: dict[str, Any] | None = None,
+        **_,
+    ):
+        def voice_noop(reason: str, filter_result: Mapping[str, Any] | None = None):
+            filter_payload = dict(filter_result or {})
+            original_method = str(filter_payload.get("method") or "")
+            if original_method and original_method != reason:
+                filter_payload["source_method"] = original_method
+            filter_payload["method"] = reason
+            return Ok({"action": "noop", "reason": reason, "filter": filter_payload})
+
+        text = str(transcript or "").strip()
+        if not text:
+            return voice_noop("empty_transcript")
+        metadata_payload = metadata if isinstance(metadata, dict) else {}
+        session_key = _voice_session_key(lanlan_name, metadata_payload)
+
+        async with self._lock:
+            if self._state.status != STATUS_READY:
+                return voice_noop("not_ready")
+            state_snapshot_payload = self._state.to_dict()
+
+        # Voice filtering only needs a point-in-time view; avoid holding the
+        # plugin lock while building OCR context or applying filter rules.
+        screen_text = str(state_snapshot_payload.get("last_ocr_text") or "")
+        screen_classification = (
+            state_snapshot_payload.get("last_screen_classification")
+            if isinstance(
+                state_snapshot_payload.get("last_screen_classification"), dict
+            )
+            else {}
+        )
+        screen_type = str(screen_classification.get("screen_type") or "")
+        session_seed = (
+            state_snapshot_payload.get("session_summary_seed")
+            if isinstance(state_snapshot_payload.get("session_summary_seed"), dict)
+            else {}
+        )
+        screen_context = {
+            "topic": str(session_seed.get("last_topic") or "").strip(),
+            "subject": _derive_subject(screen_text),
+        }
+        filter_result = self._voice_filter.filter(
+            text,
+            screen_text=screen_text,
+            screen_type=screen_type,
+            subject=screen_context["subject"],
+            session_key=session_key,
+            extra_names=[lanlan_name],
+        )
+        if filter_result is None:
+            return voice_noop("not_matched")
+        if not bool(filter_result.get("should_relay")):
+            return Ok({"action": "cancel_response", "filter": dict(filter_result)})
+
+        state_snapshot = SimpleNamespace(**state_snapshot_payload)
+        context_text = build_context_for_catgirl(
+            text,
+            state_snapshot,
+            screen_context,
+            filter_result,
+        ).strip()
+        if not context_text:
+            return voice_noop("empty_context", filter_result)
+        return Ok(
+            {
+                "action": "prime_context",
+                "context": context_text,
+                "skipped": True,
+                "filter": dict(filter_result),
+                "lanlan_name": str(lanlan_name or ""),
+            }
+        )
+
+    async def _update_screen_classification(
+        self, text: str, *, window_title: str = "", update_empty: bool = True
+    ) -> dict[str, Any]:
         normalized = str(text or "").strip()
-        if not normalized and not update_empty:
-            with self._lock:
+        async with self._lock:
+            if not normalized and not update_empty:
                 return dict(self._state.last_screen_classification)
-        with self._lock:
             recent = list(self._state.recent_screen_classifications)
-        classification = classify_screen_from_ocr(normalized, window_title=window_title, recent_classifications=recent)
-        payload = classification.to_payload()
-        with self._lock:
+            previous = dict(self._state.last_screen_classification)
+            classification = classify_screen_from_ocr(
+                normalized, window_title=window_title, recent_classifications=recent
+            )
+            payload = classification.to_payload()
             if normalized or update_empty:
                 self._state.last_screen_classification = payload
                 recent_classifications = list(self._state.recent_screen_classifications)
@@ -294,215 +974,26 @@ class StudyCompanionPlugin(NekoPluginBase):
                     payload=payload,
                     seed=self._state.session_summary_seed,
                 )
+            previous_type = str(previous.get("screen_type") or "").strip()
+            new_type = str(payload.get("screen_type") or "").strip()
+            if (
+                self._event_bus is not None
+                and self._event_bus.should_schedule_screen_context(
+                    new_type, previous_type
+                )
+            ):
+                self._event_bus.schedule_emit(
+                    StudyEvent(
+                        name="screen_context_changed",
+                        payload={
+                            "screen_type": new_type,
+                            "confidence": payload.get("confidence", 0.0),
+                            "ocr_summary": normalized[:200],
+                            "previous_type": previous_type,
+                        },
+                    )
+                )
         return payload
-
-    async def _build_learning_context(
-        self,
-        operation: str,
-        *,
-        input_text: str = "",
-        extra: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        snapshot = self._state_snapshot()
-        history_limit = max(5, min(12, int(self._cfg.history_limit or 10)))
-        history = await asyncio.to_thread(self._store.list_interactions, history_limit)
-        context = {
-            "operation": operation,
-            "input_text": input_text,
-            "language": self._cfg.language,
-            "mode": snapshot.get("active_mode") or self._cfg.mode,
-            "screen_classification": snapshot.get("last_screen_classification") or {},
-            "recent_screen_classifications": snapshot.get("recent_screen_classifications") or [],
-            "current_question": snapshot.get("current_question") or {},
-            "last_answer_evaluation": snapshot.get("last_answer_evaluation") or {},
-            "session_summary_seed": snapshot.get("session_summary_seed") or {},
-            "recent_learning_events": (snapshot.get("recent_learning_events") or [])[-8:],
-            "last_ocr_text": snapshot.get("last_ocr_text") or "",
-            "last_ocr_at": snapshot.get("last_ocr_at") or "",
-            "history": history,
-        }
-        if operation == LLM_OPERATION_QUESTION_GENERATE:
-            hint = ""
-            if extra:
-                hint = str(extra.get("topic_hint") or extra.get("topic") or "").strip()
-            context["knowledge_question_params"] = await asyncio.to_thread(
-                self._knowledge_tracker.get_next_question_params,
-                hint,
-            )
-        elif operation == LLM_OPERATION_SUMMARIZE_SESSION:
-            context["knowledge_session_summary"] = await asyncio.to_thread(
-                self._knowledge_tracker.get_session_summary
-            )
-        else:
-            context["knowledge_summary"] = await asyncio.to_thread(
-                self._knowledge_tracker.get_status_summary,
-                limit=5,
-            )
-        if extra:
-            context.update(extra)
-        return context
-
-    def _record_tutor_result(self, operation: str, reply: TutorReply, *, extra: dict[str, Any] | None = None) -> None:
-        payload = dict(reply.payload or {})
-        summary = str(reply.reply or "").strip()
-        event = {
-            "operation": operation,
-            "kind": operation,
-            "input_text": reply.input_text,
-            "summary": summary,
-            "degraded": bool(reply.degraded),
-            "diagnostic": reply.diagnostic,
-            "at": time.time(),
-            "created_at": reply.created_at or utc_now_iso(),
-            "screen_type": str(payload.get("screen_type") or (extra or {}).get("screen_type") or self._screen_classification_context().get("screen_type") or ""),
-        }
-        with self._lock:
-            seed = self._merge_session_summary_seed(operation, payload=payload, seed=self._state.session_summary_seed)
-            self._state.session_summary_seed = seed
-            self._state.recent_learning_events = (self._state.recent_learning_events + [event])[-16:]
-            if operation != LLM_OPERATION_KNOWLEDGE_TRACK:
-                self._state.last_reply = summary
-                self._state.last_reply_at = reply.created_at or utc_now_iso()
-                if operation == LLM_OPERATION_QUESTION_GENERATE:
-                    if str(payload.get("question") or "").strip():
-                        self._state.current_question = dict(payload)
-                        self._state.last_question_at = reply.created_at or utc_now_iso()
-                elif operation == LLM_OPERATION_ANSWER_EVALUATE:
-                    self._state.last_answer_evaluation = dict(payload)
-                    self._state.last_answer_evaluated_at = reply.created_at or utc_now_iso()
-                elif operation == LLM_OPERATION_SUMMARIZE_SESSION:
-                    self._state.last_session_summary = str(payload.get("summary") or "").strip()
-                    self._state.last_session_summary_at = reply.created_at or utc_now_iso()
-
-    async def _finalize_tutor_call(
-        self,
-        operation: str,
-        reply: TutorReply,
-        *,
-        history_kind: str,
-        metadata: dict[str, Any],
-        extra_context: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        self._record_tutor_result(operation, reply)
-        diagnostic = str(reply.diagnostic or "")
-        if diagnostic and reply.degraded:
-            with self._lock:
-                self._state.last_error = diagnostic
-        await asyncio.to_thread(
-            self._store.append_interaction,
-            kind=history_kind,
-            input_text=reply.input_text,
-            output_text=reply.reply,
-            metadata=metadata,
-            history_limit=self._cfg.history_limit,
-        )
-        if operation != LLM_OPERATION_SUMMARIZE_SESSION:
-            await self._track_learning(operation, reply, extra_context=extra_context)
-        await self._persist_state()
-        return build_tutor_payload(reply)
-
-    async def _track_learning(
-        self,
-        operation: str,
-        reply: TutorReply,
-        *,
-        extra_context: dict[str, Any] | None = None,
-    ) -> None:
-        if self._agent is None or not hasattr(self._agent, "knowledge_track"):
-            return
-        try:
-            track_context = await self._build_learning_context(
-                LLM_OPERATION_KNOWLEDGE_TRACK,
-                input_text=reply.input_text,
-                extra={
-                    "operation": operation,
-                    "result": reply.payload or {"reply": reply.reply},
-                    "reply": reply.reply,
-                    "degraded": reply.degraded,
-                    "diagnostic": reply.diagnostic,
-                    **(extra_context or {}),
-                },
-            )
-            track_reply = await self._agent.knowledge_track(mode=self._state.active_mode, context=track_context)
-        except Exception as exc:
-            self.logger.warning("study knowledge track failed: {}", exc)
-            track_reply = TutorReply(
-                operation=LLM_OPERATION_KNOWLEDGE_TRACK,
-                input_text=reply.input_text,
-                reply="knowledge track updated",
-                payload={
-                    "topic": self._guess_track_topic(reply),
-                    "mastery_delta": 0.0,
-                    "confidence": 0.35,
-                    "weak_points": [],
-                    "next_steps": [],
-                    "screen_type": self._screen_classification_context().get("screen_type") or "",
-                },
-                degraded=True,
-                diagnostic=diagnostic_code_for_exception(exc),
-                created_at=utc_now_iso(),
-            )
-        self._record_tutor_result(LLM_OPERATION_KNOWLEDGE_TRACK, track_reply)
-        if operation == LLM_OPERATION_ANSWER_EVALUATE:
-            await self._record_answer_knowledge(reply, track_reply, extra_context=extra_context)
-
-    async def _record_answer_knowledge(
-        self,
-        eval_reply: TutorReply,
-        track_reply: TutorReply,
-        *,
-        extra_context: dict[str, Any] | None = None,
-    ) -> None:
-        context = dict(extra_context or {})
-        track_payload = dict(track_reply.payload or {})
-        eval_payload = dict(eval_reply.payload or {})
-        current_question = dict(context.get("current_question") or {})
-        question_payload = dict(context.get("question_payload") or current_question)
-        question_text = str(context.get("question") or question_payload.get("question") or current_question.get("question") or "").strip()
-        question_payload["question"] = question_text
-        question_payload["answer"] = str(context.get("expected_answer") or question_payload.get("answer") or current_question.get("answer") or "")
-        topic = str(
-            question_payload.get("topic")
-            or track_payload.get("topic")
-            or eval_payload.get("topic")
-            or self._guess_track_topic(track_reply)
-        ).strip()
-        if topic:
-            question_payload.setdefault("topic", topic)
-        eval_result = {
-            **eval_payload,
-            "topic": topic,
-            "track": track_payload,
-        }
-        session_id = str(
-            context.get("session_id")
-            or context.get("run_id")
-            or getattr(self._state, "run_id", "")
-            or getattr(self.ctx, "run_id", "")
-            or "default"
-        ).strip() or "default"
-        try:
-            await asyncio.to_thread(
-                self._knowledge_tracker.on_answer,
-                topic_id=topic,
-                question=question_payload,
-                user_answer=str(context.get("answer") or eval_reply.input_text or ""),
-                eval_result=eval_result,
-                mode=str(context.get("mode") or self._state.active_mode),
-                session_id=session_id,
-            )
-        except Exception as exc:
-            self.logger.warning("study knowledge tracker persistence failed: {}", exc)
-
-    @staticmethod
-    def _guess_track_topic(reply: TutorReply) -> str:
-        payload = dict(reply.payload or {})
-        topic = str(payload.get("topic") or "").strip()
-        if topic:
-            return topic
-        text = str(reply.input_text or "").strip()
-        first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
-        return first_line[:48] or "general"
 
     def _resolve_current_run_id(self, extra_args: dict[str, Any] | None = None) -> str:
         if isinstance(extra_args, dict):
@@ -542,472 +1033,27 @@ class StudyCompanionPlugin(NekoPluginBase):
 
         return _progress_update
 
-    @plugin_entry(
-        id="study_open_ui",
-        name=tr("entries.open_ui.name", default="Open Study Companion UI"),
-        description=tr("entries.open_ui.description", default="Return the static UI path for study_companion."),
-        input_schema={"type": "object", "properties": {}},
-        llm_result_fields=["available", "path", "message_key"],
-    )
-    async def study_open_ui(self, **_):
-        return Ok(build_open_ui_payload(plugin_id=self.plugin_id, available=self.get_static_ui_config() is not None))
-
-    @plugin_entry(
-        id="study_status",
-        name=tr("entries.status.name", default="Study Companion Status"),
-        description=tr("entries.status.description", default="Return runtime status, dependencies, and recent study interactions."),
-        input_schema={"type": "object", "properties": {}},
-        llm_result_fields=["status", "active_mode", "screen_classification", "current_question", "last_answer_evaluation"],
-    )
-    async def study_status(self, **_):
-        payload = await asyncio.to_thread(self._status_payload)
-        return Ok(payload)
-
-    @plugin_entry(
-        id="study_knowledge_quality_status",
-        name=tr("entries.knowledge_quality_status.name", default="Study Knowledge Quality Status"),
-        description=tr("entries.knowledge_quality_status.description", default="Return candidate knowledge quality counts and recent evidence."),
-        input_schema={"type": "object", "properties": {"limit": {"type": "integer", "default": 20}}},
-        llm_result_fields=["total", "by_status", "recent_evidence"],
-    )
-    async def study_knowledge_quality_status(self, limit: int = 20, **_):
-        payload = await asyncio.to_thread(self._knowledge_tracker.quality.status_summary, limit=max(1, int(limit or 20)))
-        return Ok(payload)
-
-    @plugin_entry(
-        id="study_anonymous_knowledge_preview",
-        name=tr("entries.anonymous_knowledge_preview.name", default="Study Anonymous Knowledge Preview"),
-        description=tr("entries.anonymous_knowledge_preview.description", default="Build and return a local anonymized knowledge contribution preview. Phase 4 does not upload it."),
-        input_schema={"type": "object", "properties": {"limit": {"type": "integer", "default": 100}}},
-        llm_result_fields=["summary", "stats", "opt_in"],
-    )
-    async def study_anonymous_knowledge_preview(self, limit: int = 100, **_):
-        builder = PublicGraphContributionBuilder(self._store, self._cfg)
-        payload = await asyncio.to_thread(builder.preview, limit=max(1, int(limit or 100)))
-        return Ok(payload)
-
-    @plugin_entry(
-        id="study_clear_knowledge_contribution_queue",
-        name=tr("entries.clear_knowledge_contribution_queue.name", default="Clear Study Knowledge Contribution Queue"),
-        description=tr("entries.clear_knowledge_contribution_queue.description", default="Clear the local anonymous knowledge contribution queue."),
-        input_schema={"type": "object", "properties": {}},
-        llm_result_fields=["cleared_count"],
-    )
-    async def study_clear_knowledge_contribution_queue(self, **_):
-        builder = PublicGraphContributionBuilder(self._store, self._cfg)
-        cleared = await asyncio.to_thread(builder.clear_queue)
-        return Ok({"cleared_count": cleared})
-
-    @plugin_entry(
-        id="study_detect_mode_intent",
-        name=tr("entries.detect_mode_intent.name", default="Detect Study Mode Intent"),
-        description=tr("entries.detect_mode_intent.description", default="Detect whether a text snippet contains a study mode switch intent."),
-        input_schema={"type": "object", "properties": {"text": {"type": "string", "default": ""}}},
-        llm_result_fields=["mode", "pure_switch", "transition_phrase"],
-    )
-    async def study_detect_mode_intent(self, text: str = "", **_):
-        return Ok(handle_user_intent(text, language=self._cfg.language))
-
-    @plugin_entry(
-        id="study_set_mode",
-        name=tr("entries.set_mode.name", default="Set Study Mode"),
-        description=tr("entries.set_mode.description", default="Switch the study companion between companion, interactive, and teaching modes."),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "mode": {"type": "string", "enum": [MODE_COMPANION, MODE_INTERACTIVE, MODE_TEACHING]},
-                "reason": {"type": "string", "default": "ui"},
-            },
-            "required": ["mode"],
-        },
-        llm_result_fields=["changed", "new_mode", "transition_phrase"],
-    )
-    async def study_set_mode(self, mode: str, reason: str = "ui", **_):
-        try:
-            result = await self._apply_mode_switch(mode, reason, language=self._cfg.language)
-        except ValueError as exc:
-            return Err(SdkError(str(exc)))
-        return Ok(result)
-
-    @plugin_entry(
-        id="study_dependency_status",
-        name=tr("entries.dependency_status.name", default="Study OCR Dependency Status"),
-        description=tr("entries.dependency_status.description", default="Inspect RapidOCR, Tesseract, and capture dependencies used by study_companion."),
-        input_schema={"type": "object", "properties": {}},
-        llm_result_fields=["missing_installable"],
-    )
-    async def study_dependency_status(self, **_):
-        status = await asyncio.to_thread(self._refresh_dependency_status)
-        await self._persist_state()
-        return Ok(status)
-
-    @plugin_entry(
-        id="study_ocr_snapshot",
-        name=tr("entries.ocr_snapshot.name", default="Study OCR Snapshot"),
-        description=tr("entries.ocr_snapshot.description", default="Run a lightweight OCR snapshot. Phase 1 attempts fullscreen capture and returns diagnostics on failure."),
-        input_schema={"type": "object", "properties": {}},
-        timeout=45.0,
-        llm_result_fields=["summary", "status", "diagnostic"],
-    )
-    async def study_ocr_snapshot(self, **_):
-        if self._ocr_pipeline is None:
-            return Err(SdkError("study OCR pipeline is not initialized"))
-        snapshot = await asyncio.to_thread(self._ocr_pipeline.capture_snapshot)
-        payload = build_ocr_payload(snapshot)
-        if snapshot.text.strip():
-            with self._lock:
-                self._state.last_ocr_text = snapshot.text
-                self._state.last_ocr_at = snapshot.captured_at
-            payload["screen_classification"] = self._update_screen_classification(snapshot.text, update_empty=False)
-        elif snapshot.status == "empty":
-            payload["screen_classification"] = self._update_screen_classification("", update_empty=True)
-        await self._persist_state()
-        return Ok(payload)
-
-    @plugin_entry(
-        id="study_explain_text",
-        name=tr("entries.explain_text.name", default="Explain Study Text"),
-        description=tr("entries.explain_text.description", default="Explain a concept from supplied text, or use the latest OCR text if text is omitted."),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "text": {"type": "string", "default": ""},
-            },
-        },
-        timeout=45.0,
-        llm_result_fields=["summary", "reply", "diagnostic"],
-    )
-    async def study_explain_text(self, text: str = "", **_):
-        if self._agent is None:
-            return Err(SdkError("study tutor agent is not initialized"))
-        raw_text = str(text or "").strip()
-        # Phase 1: detect an explicit mode intent and switch first when present.
-        intent = handle_user_intent(raw_text, language=self._cfg.language) if raw_text else {"matched": False, "pure_switch": False, "mode": "", "remaining_text": ""}
-        with self._lock:
-            active_mode = self._state.active_mode
-        mode_switch: dict[str, Any] = {}
-        if intent.get("matched") and intent.get("kind") == "mode_switch":
-            try:
-                mode_switch = await self._apply_mode_switch(str(intent.get("mode") or MODE_COMPANION), f"intent:{intent.get('keyword') or 'text'}", language=self._cfg.language)
-                active_mode = str(mode_switch.get("new_mode") or active_mode)
-            except ValueError as exc:
-                return Err(SdkError(str(exc)))
-            if intent.get("pure_switch"):
-                transition_phrase = str(mode_switch.get("transition_phrase") or intent.get("transition_phrase") or "")
-                return Ok(
-                    {
-                        **mode_switch,
-                        "reply": transition_phrase,
-                        "summary": transition_phrase,
-                        "operation": MODE_CONCEPT_EXPLAIN,
-                        "input_text": raw_text,
-                        "degraded": False,
-                    }
-                )
-        # Phase 2: resolve the text to explain.
-        intent_kind = str(intent.get("kind") or "")
-        source_text = str(intent.get("remaining_text") or "").strip()
-        if not source_text and intent_kind != "concept_explain":
-            source_text = raw_text
-        used_ocr_fallback = False
-        if not source_text:
-            with self._lock:
-                source_text = self._state.last_ocr_text
-            used_ocr_fallback = bool(source_text.strip())
-        # Phase 3: explain with the active mode selected above.
-        tutor_context = await self._build_learning_context(
-            LLM_OPERATION_CONCEPT_EXPLAIN,
-            input_text=source_text,
-            extra={
-                "source": "ocr_snapshot" if used_ocr_fallback or not raw_text else "manual",
-                "mode": active_mode,
-                "mode_switch": bool(mode_switch.get("changed")),
-                "source_text": source_text,
-            },
+    def _require_habit_components(
+        self,
+    ) -> tuple[StudyHabitStore, CheckinManager, PomodoroTimer, SupervisionController]:
+        if (
+            self._habit_store is None
+            or self._checkin_manager is None
+            or self._pomodoro_timer is None
+            or self._supervision is None
+        ):
+            raise RuntimeError("study habit system is not initialized")
+        return (
+            self._habit_store,
+            self._checkin_manager,
+            self._pomodoro_timer,
+            self._supervision,
         )
-        reply = await self._agent.concept_explain(
-            source_text,
-            mode=active_mode,
-            context=tutor_context,
-        )
-        payload = await self._finalize_tutor_call(
-            LLM_OPERATION_CONCEPT_EXPLAIN,
-            reply,
-            history_kind=MODE_CONCEPT_EXPLAIN,
-            metadata={
-                "degraded": reply.degraded,
-                "diagnostic": reply.diagnostic,
-                "mode": active_mode,
-                "mode_switch": mode_switch,
-                "intent": intent,
-                "screen_classification": tutor_context.get("screen_classification") or {},
-            },
-            extra_context=tutor_context,
-        )
-        if mode_switch:
-            payload["mode_switch"] = mode_switch
-        if intent.get("matched"):
-            payload["intent"] = intent
-            if intent.get("pure_switch"):
-                payload["transition_phrase"] = str(mode_switch.get("transition_phrase") or intent.get("transition_phrase") or "")
-        return Ok(payload)
 
-    @plugin_entry(
-        id="study_generate_question",
-        name=tr("entries.generate_question.name", default="Generate Study Question"),
-        description=tr("entries.generate_question.description", default="Generate one study question from supplied text or the latest OCR text."),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "text": {"type": "string", "default": ""},
-                "topic": {"type": "string", "default": ""},
-            },
-        },
-        timeout=60.0,
-        llm_result_fields=["summary", "question", "answer", "hint", "difficulty", "topic"],
-    )
-    async def study_generate_question(self, text: str = "", topic: str = "", **_):
-        if self._agent is None:
-            return Err(SdkError("study tutor agent is not initialized"))
-        source_text = str(text or "").strip()
-        used_ocr_fallback = False
-        if not source_text:
-            with self._lock:
-                source_text = self._state.last_ocr_text
-            used_ocr_fallback = bool(source_text.strip())
-        with self._lock:
-            active_mode = self._state.active_mode
-        tutor_context = await self._build_learning_context(
-            LLM_OPERATION_QUESTION_GENERATE,
-            input_text=source_text,
-            extra={
-                "source": "ocr_snapshot" if used_ocr_fallback or not text else "manual",
-                "source_text": source_text,
-                "topic_hint": str(topic or "").strip(),
-                "mode": active_mode,
-            },
-        )
-        reply = await self._agent.question_generate(source_text, mode=active_mode, context=tutor_context)
-        payload = await self._finalize_tutor_call(
-            LLM_OPERATION_QUESTION_GENERATE,
-            reply,
-            history_kind=LLM_OPERATION_QUESTION_GENERATE,
-            metadata={
-                "degraded": reply.degraded,
-                "diagnostic": reply.diagnostic,
-                "payload": reply.payload,
-                "screen_classification": tutor_context.get("screen_classification") or {},
-            },
-            extra_context=tutor_context,
-        )
-        payload["screen_classification"] = tutor_context.get("screen_classification") or {}
-        return Ok(payload)
-
-    @plugin_entry(
-        id="study_evaluate_answer",
-        name=tr("entries.evaluate_answer.name", default="Evaluate Study Answer"),
-        description=tr("entries.evaluate_answer.description", default="Evaluate an answer against the current generated question or a supplied question."),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "answer": {"type": "string", "default": ""},
-                "question": {"type": "string", "default": ""},
-                "expected_answer": {"type": "string", "default": ""},
-            },
-        },
-        timeout=60.0,
-        llm_result_fields=["summary", "verdict", "score", "error_type", "feedback", "next_action"],
-    )
-    async def study_evaluate_answer(self, answer: str = "", question: str = "", expected_answer: str = "", **kwargs):
-        if self._agent is None:
-            return Err(SdkError("study tutor agent is not initialized"))
-        with self._lock:
-            current_question = dict(self._state.current_question)
-            active_mode = self._state.active_mode
-        supplied_question = str(question or "").strip()
-        supplied_expected = str(expected_answer or "").strip()
-        state_question = str(current_question.get("question") or "").strip()
-        state_expected = str(current_question.get("answer") or "").strip()
-        resolved_question = supplied_question or state_question
-        if not resolved_question:
-            return Err(SdkError("study tutor requires a question to evaluate against"))
-        resolved_expected = supplied_expected
-        if not resolved_expected and (not supplied_question or supplied_question == state_question):
-            resolved_expected = state_expected
-        answer_text = str(answer or "").strip()
-        using_current_question = not supplied_question or supplied_question == state_question
-        question_payload = dict(current_question) if using_current_question else {}
-        question_payload.update(
-            {
-                "question": resolved_question,
-                "answer": resolved_expected,
-            }
-        )
-        run_id = self._resolve_current_run_id(kwargs)
-        session_id = str(kwargs.get("session_id") or "").strip()
-        tutor_context = await self._build_learning_context(
-            LLM_OPERATION_ANSWER_EVALUATE,
-            input_text=answer_text,
-            extra={
-                "question": resolved_question,
-                "expected_answer": resolved_expected,
-                "answer": answer_text,
-                "current_question": current_question if using_current_question else {},
-                "question_payload": question_payload,
-                "question_source": "current_question" if using_current_question else "supplied",
-                "run_id": run_id,
-                "session_id": session_id,
-                "mode": active_mode,
-            },
-        )
-        reply = await self._agent.answer_evaluate(
-            question=resolved_question,
-            answer=answer_text,
-            expected_answer=resolved_expected,
-            mode=active_mode,
-            context=tutor_context,
-        )
-        payload = await self._finalize_tutor_call(
-            LLM_OPERATION_ANSWER_EVALUATE,
-            reply,
-            history_kind=LLM_OPERATION_ANSWER_EVALUATE,
-            metadata={
-                "question": resolved_question,
-                "expected_answer": resolved_expected,
-                "degraded": reply.degraded,
-                "diagnostic": reply.diagnostic,
-                "payload": reply.payload,
-                "screen_classification": tutor_context.get("screen_classification") or {},
-            },
-            extra_context=tutor_context,
-        )
-        payload["question"] = resolved_question
-        payload["screen_classification"] = tutor_context.get("screen_classification") or {}
-        return Ok(payload)
-
-    @plugin_entry(
-        id="study_summarize_session",
-        name=tr("entries.summarize_session.name", default="Summarize Study Session"),
-        description=tr("entries.summarize_session.description", default="Summarize recent study interactions into compact study notes."),
-        input_schema={"type": "object", "properties": {"focus": {"type": "string", "default": ""}}},
-        timeout=75.0,
-        llm_result_fields=["summary", "markdown", "highlights", "weak_points", "next_actions"],
-    )
-    async def study_summarize_session(self, focus: str = "", **_):
-        if self._agent is None:
-            return Err(SdkError("study tutor agent is not initialized"))
-        with self._lock:
-            active_mode = self._state.active_mode
-        history = await asyncio.to_thread(self._store.list_interactions, max(5, min(30, self._cfg.history_limit)))
-        tutor_context = await self._build_learning_context(
-            LLM_OPERATION_SUMMARIZE_SESSION,
-            input_text="session",
-            extra={
-                "focus": str(focus or "").strip(),
-                "history": history,
-                "mode": active_mode,
-            },
-        )
-        reply = await self._agent.summarize_session(history, mode=active_mode, context=tutor_context)
-        payload = await self._finalize_tutor_call(
-            LLM_OPERATION_SUMMARIZE_SESSION,
-            reply,
-            history_kind=LLM_OPERATION_SUMMARIZE_SESSION,
-            metadata={
-                "degraded": reply.degraded,
-                "diagnostic": reply.diagnostic,
-                "payload": reply.payload,
-                "screen_classification": tutor_context.get("screen_classification") or {},
-            },
-        )
-        payload["screen_classification"] = tutor_context.get("screen_classification") or {}
-        return Ok(payload)
-
-    @plugin_entry(
-        id="study_install_tesseract",
-        name=tr("entries.install_tesseract.name", default="Install Tesseract for Study OCR"),
-        description=tr("entries.install_tesseract.description", default="Install local Tesseract OCR for study_companion and refresh dependency status."),
-        input_schema={"type": "object", "properties": {"force": {"type": "boolean", "default": False}}},
-        timeout=300.0,
-        llm_result_fields=["summary"],
-    )
-    async def study_install_tesseract(self, force: bool = False, **kwargs):
-        with self._lock:
-            if self._install_in_progress:
-                return Err(SdkError("Tesseract install is already running"))
-            self._install_in_progress = True
-        run_id = self._resolve_current_run_id(kwargs)
-        try:
-            from plugin.plugins.galgame_plugin.tesseract_support import install_tesseract
-
-            result = await install_tesseract(
-                logger=self.logger,
-                configured_path=self._cfg.ocr_tesseract_path,
-                install_target_dir_raw=self._cfg.ocr_install_target_dir,
-                manifest_url=self._cfg.ocr_install_manifest_url,
-                timeout_seconds=self._cfg.ocr_install_timeout_seconds,
-                languages=self._cfg.ocr_languages,
-                force=bool(force),
-                task_id=run_id or None,
-                plugin_id=self.plugin_id,
-                progress_callback=self._resolve_install_progress_callback(run_id),
-            )
-            self._refresh_dependency_status()
-            await self._persist_state()
-            return Ok({"summary": str(result.get("summary") or "Tesseract is ready"), "install_result": result})
-        except Exception as exc:
-            return Err(SdkError(f"Tesseract install failed: {exc}"))
-        finally:
-            with self._lock:
-                self._install_in_progress = False
-
-    @plugin_entry(
-        id="study_download_rapidocr_models",
-        name=tr("entries.download_rapidocr_models.name", default="Download RapidOCR Models for Study OCR"),
-        description=tr("entries.download_rapidocr_models.description", default="Download missing RapidOCR model files for the configured study_companion OCR language."),
-        input_schema={"type": "object", "properties": {"force": {"type": "boolean", "default": False}}},
-        timeout=600.0,
-        llm_result_fields=["summary"],
-    )
-    async def study_download_rapidocr_models(self, force: bool = False, **kwargs):
-        with self._lock:
-            if self._rapidocr_models_in_progress:
-                return Err(SdkError("RapidOCR model download is already running"))
-            self._rapidocr_models_in_progress = True
-        run_id = self._resolve_current_run_id(kwargs)
-        try:
-            from plugin.plugins.galgame_plugin.rapidocr_support import download_rapidocr_models
-
-            result = await download_rapidocr_models(
-                logger=self.logger,
-                install_target_dir_raw=self._cfg.rapidocr_install_target_dir,
-                ocr_version=self._cfg.rapidocr_ocr_version,
-                lang_type=self._cfg.rapidocr_lang_type,
-                timeout_seconds=float(self._cfg.ocr_install_timeout_seconds or 180.0),
-                force=bool(force),
-                task_id=run_id or None,
-                plugin_id=self.plugin_id,
-                progress_callback=self._resolve_install_progress_callback(run_id),
-                before_completed_callback=lambda: None,
-            )
-            self._refresh_dependency_status()
-            await self._persist_state()
-            downloaded = result.get("downloaded") or []
-            return Ok(
-                {
-                    "summary": (
-                        f"RapidOCR models ready ({len(downloaded)} file(s) downloaded)"
-                        if downloaded
-                        else "RapidOCR models already present"
-                    ),
-                    "download_result": result,
-                }
-            )
-        except Exception as exc:
-            return Err(SdkError(f"RapidOCR model download failed: {exc}"))
-        finally:
-            with self._lock:
-                self._rapidocr_models_in_progress = False
+    def _require_memory_habit_bridge(self) -> MemoryHabitBridge:
+        if self._memory_habit_bridge is None:
+            raise RuntimeError("memory habit bridge is not initialized")
+        return self._memory_habit_bridge
 
 
 StudyCompanionBridgePlugin = StudyCompanionPlugin

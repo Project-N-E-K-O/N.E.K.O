@@ -86,7 +86,7 @@ async def test_replace_records_old_text_in_version_history(tmp_path):
 
     await pm._aqueue_correction("小天", "主人住在东京", "主人住在大阪", "master")
     fake_llm = _make_llm_mock([{
-        "index": 0, "action": "replace", "text": "主人后来搬到了大阪",
+        "index": 0, "action": "merge", "text": "主人后来搬到了大阪",
     }])
     with patch("utils.llm_client.create_chat_llm", return_value=fake_llm):
         resolved = await pm.resolve_corrections("小天")
@@ -109,12 +109,12 @@ async def test_replace_chains_history_across_multiple_corrections(tmp_path):
     await _seed_master_fact(pm, "小天", "主人住在东京")
 
     await pm._aqueue_correction("小天", "主人住在东京", "主人住在大阪", "master")
-    fake_llm = _make_llm_mock([{"index": 0, "action": "replace", "text": "主人住在大阪"}])
+    fake_llm = _make_llm_mock([{"index": 0, "action": "merge", "text": "主人住在大阪"}])
     with patch("utils.llm_client.create_chat_llm", return_value=fake_llm):
         await pm.resolve_corrections("小天")
 
     await pm._aqueue_correction("小天", "主人住在大阪", "主人住在福冈", "master")
-    fake_llm = _make_llm_mock([{"index": 0, "action": "replace", "text": "主人住在福冈"}])
+    fake_llm = _make_llm_mock([{"index": 0, "action": "merge", "text": "主人住在福冈"}])
     with patch("utils.llm_client.create_chat_llm", return_value=fake_llm):
         await pm.resolve_corrections("小天")
 
@@ -145,7 +145,7 @@ async def test_replace_preserves_id_source_and_evidence_metadata(tmp_path):
     )
 
     await pm._aqueue_correction("小天", "主人住在东京", "主人住在大阪", "master")
-    fake_llm = _make_llm_mock([{"index": 0, "action": "replace", "text": "主人住在大阪"}])
+    fake_llm = _make_llm_mock([{"index": 0, "action": "merge", "text": "主人住在大阪"}])
     with patch("utils.llm_client.create_chat_llm", return_value=fake_llm):
         await pm.resolve_corrections("小天")
 
@@ -181,7 +181,7 @@ async def test_replace_invalidates_token_count_cache(tmp_path):
     )
 
     await pm._aqueue_correction("小天", "主人住在东京", "主人住在大阪", "master")
-    fake_llm = _make_llm_mock([{"index": 0, "action": "replace", "text": "主人住在大阪"}])
+    fake_llm = _make_llm_mock([{"index": 0, "action": "merge", "text": "主人住在大阪"}])
     with patch("utils.llm_client.create_chat_llm", return_value=fake_llm):
         await pm.resolve_corrections("小天")
 

@@ -1,10 +1,9 @@
 import clsx from 'clsx';
-import SmartTextBlock from './SmartTextBlock';
 import { i18n } from './i18n';
+import MessageBlockView, { isGuideMessage } from './MessageBlockView';
 import {
   type ChatMessage,
   type MessageAction,
-  type MessageBlock,
 } from './message-schema';
 
 type MessageBubbleProps = {
@@ -36,99 +35,12 @@ function getRowClassName(message: ChatMessage) {
   });
 }
 
-function isGuideMessage(message: ChatMessage) {
-  return typeof message.id === 'string' && message.id.startsWith('yui-guide-');
-}
-
 function getAvatarClassName(message: ChatMessage) {
   return clsx('avatar', {
     'avatar-user': message.role === 'user',
     'avatar-tool': message.role === 'tool',
     'avatar-assistant': message.role === 'assistant',
   });
-}
-
-function MessageBlockView({
-  block,
-  message,
-  isStreaming,
-  onAction,
-}: {
-  block: MessageBlock;
-  message: ChatMessage;
-  isStreaming?: boolean;
-  onAction?: (message: ChatMessage, action: MessageAction) => void;
-}) {
-  if (block.type === 'text') {
-    return (
-      <SmartTextBlock
-        text={block.text}
-        isStreaming={isStreaming}
-        disableStreamingReveal={isGuideMessage(message)}
-      />
-    );
-  }
-
-  if (block.type === 'image') {
-    return (
-      <figure
-        className="message-block message-block-image"
-        style={block.width && block.height ? { aspectRatio: `${block.width} / ${block.height}` } : undefined}
-      >
-        <img src={block.url} alt={block.alt || ''} loading="lazy" />
-      </figure>
-    );
-  }
-
-  if (block.type === 'link') {
-    return (
-      <a
-        className="message-block message-block-link"
-        href={block.url}
-        target="_blank"
-        rel="noreferrer"
-      >
-        {block.thumbnailUrl ? (
-          <div className="message-link-thumb">
-            <img src={block.thumbnailUrl} alt="" loading="lazy" />
-          </div>
-        ) : null}
-        <div className="message-link-copy">
-          <div className="message-link-title">{block.title || block.url}</div>
-          {block.description ? <div className="message-link-description">{block.description}</div> : null}
-          <div className="message-link-url">{block.siteName || block.url}</div>
-        </div>
-      </a>
-    );
-  }
-
-  if (block.type === 'status') {
-    return (
-      <div className={`message-block message-block-status tone-${block.tone || 'info'}`}>
-        {block.text}
-      </div>
-    );
-  }
-
-  if (block.type === 'buttons') {
-    return (
-      <div className="message-block message-block-buttons">
-        {block.buttons.map((action) => (
-          <button
-            key={action.id}
-            className={`message-action-button variant-${action.variant || 'secondary'}`}
-            type="button"
-            disabled={action.disabled}
-            onClick={() => onAction?.(message, action)}
-          >
-            {action.label}
-          </button>
-        ))}
-      </div>
-    );
-  }
-
-  return null;
 }
 
 export default function MessageBubble({

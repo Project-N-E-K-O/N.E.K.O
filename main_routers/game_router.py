@@ -1890,7 +1890,29 @@ def _update_route_start_state_from_payload(state: dict, data: dict, *, exiting: 
     if accidental is True:
         state["accidental_game_entry_exit"] = True
 
-    return not was_started and state.get("game_started") is True
+    started_now = not was_started and state.get("game_started") is True
+    if started_now:
+        # 在 game_started 首次 false→true 的边沿统计游玩次数——不在 /route/start
+        # 计数：前端 _prepareGameForStartScreen 会先打开开始屏并调 route/start，
+        # 此时 game_started 仍为 false，用户若从开始屏关闭会被记 accidental_page_entry，
+        # 那种"开了没玩"不应计入。本函数是所有上报 gameStarted 路径的唯一汇聚点，
+        # was_started 守卫保证每局只记一次。game_type 从 state 取（route/start 已写入）。
+        #
+        # 不带 neko_initiated 维度：state["nekoInitiated"] 只来自 route/start payload，
+        # 而邀请被接受后 window.open(game_url) 只透传 lanlan_name/session_id、不回填
+        # nekoInitiated，故邀请局会被误标 false。要修准要么动 nekoInitiated（同时驱动
+        # pregame 语气分析，越界）要么跨三端加 from_invite 管线（无法充分验证 Electron）。
+        # 该维度本非需求项，宁缺毋滥；邀请→游玩转化由 mini_game_invited 与本计数的总量得出。
+        try:
+            from utils.instrument import counter as _instr_counter
+            _instr_counter(
+                "mini_game_played",
+                game_type=str(state.get("game_type") or "")[:24],
+            )
+        except Exception:
+            # 埋点 best-effort，失败不影响游戏状态机
+            pass
+    return started_now
 
 
 def _route_game_started_elapsed_ms(state: dict, *, prefer_exit_elapsed: bool = False) -> float | None:
@@ -3509,7 +3531,10 @@ async def _build_and_register_game_session(
     lanlan_name = str(char_info.get("lanlan_name") or "").strip()
     reply_chunks: list[str] = []
 
-    async def on_text_delta(text: str, is_first: bool):
+    async def on_text_delta(text: str, is_first: bool, **_kwargs):
+        # **_kwargs 吞掉 ui_enabled / tts_enabled（OmniOfflineClient summary 路径会传，
+        # 但 game 短台词跑的是非 summary 模式，理论上不会发 UI/TTS 分流。保留 kwargs
+        # forward-compat 防签名漂移触发 TypeError。）
         reply_chunks.append(text)
 
     set_call_type("game_chat")
@@ -5496,16 +5521,22 @@ async def game_quick_lines(game_type: str, request: Request):
 
 
 @router.get("/{game_type}/character")
-async def game_character(game_type: str):
+async def game_character(game_type: str, request: Request):
     """获取当前角色信息（需求 2：角色替换用）。
 
-    返回当前角色的模型类型和路径。足球游戏 AI 侧目前只支持 Live2D，
-    如果当前角色不是 Live2D 类型，前端应回退到默认模型。
+    返回角色的模型类型和路径。足球游戏 AI 侧支持 Live2D / VRM；
+    MMD 仍由前端回退到 Live2D 默认模型。
     """
     try:
         config_manager = get_config_manager()
         characters = await asyncio.to_thread(config_manager.load_characters)
-        current_name = characters.get('当前猫娘', '')
+        requested_name = str(request.query_params.get('lanlan_name') or '').strip()
+        all_nekos = characters.get('猫娘', {}) if isinstance(characters, dict) else {}
+        current_name = (
+            requested_name
+            if requested_name and isinstance(all_nekos, dict) and requested_name in all_nekos
+            else characters.get('当前猫娘', '')
+        )
         neko_data = characters.get('猫娘', {}).get(current_name, {})
 
         # 获取 _reserved.avatar 配置
@@ -5544,7 +5575,9 @@ async def game_character(game_type: str):
             if isinstance(vrm_info, dict):
                 raw = vrm_info.get('model_path', '')
                 if raw:
-                    vrm_path = raw if raw.startswith('/static/') else f'/static/{raw}'
+                    from .config_router import _resolve_vrm_path
+
+                    vrm_path = _resolve_vrm_path(raw, config_manager, current_name)
 
         return {
             'lanlan_name': current_name,

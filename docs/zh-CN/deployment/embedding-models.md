@@ -10,7 +10,7 @@ local-text-retrieval-v1
 
 ## 开发环境准备
 
-安装项目主依赖（已包含 `onnxruntime`、`tokenizers`、`py-cpuinfo`）：
+安装项目主依赖（已包含 `onnxruntime`、`tokenizers`；CPU SIMD 能力改读 numpy 的 `__cpu_features__`，不再需要 `py-cpuinfo`）：
 
 ```bash
 uv sync

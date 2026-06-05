@@ -61,7 +61,7 @@
     <!-- 主内容容器 - 直接显示原有UI，通过遮罩层半透明覆盖 -->
     <div id="main-content">
         <div class="container">
-            <div class="container-header">
+            <div class="container-header page-title-bar">
                 <h2 data-i18n="api.settings" data-text="API Key Settings">API Key 设置</h2>
                 <div class="neko-window-controls">
                     <button type="button" class="neko-window-control-btn" data-neko-window-control="minimize" data-i18n-title="common.minimize" data-i18n-aria="common.minimize" title="最小化" aria-label="最小化">
@@ -128,7 +128,7 @@
                         <form id="api-key-form">
                             <div class="field-row">
                                 <label for="coreApiSelect">
-                                    <span data-i18n="api.coreApiProvider">核心API服务商</span>
+                                    <span data-i18n="api.coreApiProvider">核心API（语音对话，仅支持全模态，DeepSeek 为纯文本不可用）</span>
                                     <div class="tooltip-container">
                                         <span class="tooltip-icon">?</span>
                                         <div class="tooltip-content">
@@ -699,6 +699,18 @@
             </div>
         </div>
 
+        <!-- 阿里美国 API 提醒 -->
+        <div id="aliyun-us-api-warning-modal" class="modal-overlay" onclick="closeAliyunUsApiWarningModal()">
+            <div class="modal-warning" onclick="event.stopPropagation()">
+                <h3 data-i18n="api.aliyunUsApiWarning.title">阿里美国 API 提醒</h3>
+                <p data-i18n="api.aliyunUsApiWarning.message">当前使用了阿里的美国API，不支持TTS与实时语音，建议更换阿里的新加坡API</p>
+                <div class="modal-buttons">
+                    <button type="button" class="btn" onclick="closeAliyunUsApiWarningModal()"
+                        data-i18n="api.wsWarning.confirm">我知道了</button>
+                </div>
+            </div>
+        </div>
+
         <!-- 清空自定义API确认弹窗 -->
         <div id="clear-custom-api-modal" class="modal-overlay" onclick="closeClearCustomApiModal()">
             <div class="modal-warning" onclick="event.stopPropagation()">
@@ -738,7 +750,10 @@
     <script src="/static/yui-guide-steps.js?v={{ static_asset_version }}"></script>
     <script src="/static/yui-guide-overlay.js?v={{ static_asset_version }}"></script>
     <script src="/static/yui-guide-page-handoff.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial-interaction-takeover.js?v={{ static_asset_version }}"></script>
     <script src="/static/yui-guide-director.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial-skip-controller.js?v={{ static_asset_version }}"></script>
+    <script src="/static/tutorial-avatar-reload-controller.js?v={{ static_asset_version }}"></script>
     <!-- 通用教程管理器 -->
     <script src="/static/universal-tutorial-manager.js?v={{ static_asset_version }}"></script>
 

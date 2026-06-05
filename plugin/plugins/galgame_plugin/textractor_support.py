@@ -11,10 +11,11 @@ import time
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Awaitable, Callable
+from urllib.parse import urlparse
 
 import httpx
 
-from .install_tasks import update_install_task_state
+from plugin.server.routes._install_task_store import update_install_task_state
 from .memory_reader import (
     TEXTRACTOR_EXECUTABLE,
     is_windows_platform,
@@ -24,6 +25,14 @@ from .memory_reader import (
 DEFAULT_TEXTRACTOR_RELEASE_API_URL = (
     "https://api.github.com/repos/Artikash/Textractor/releases/latest"
 )
+DEFAULT_TEXTRACTOR_ASSET_NAME = "Textractor-5.2.0-Zip-Version-English-Only.zip"
+DEFAULT_TEXTRACTOR_ASSET_SHA256 = (
+    "3efdcf390261fcfb6a44220113c68b06eba22a3ef441ac618208238b52ee7974"
+)
+# TODO: Add a verified Textractor Baidu pan mirror before enabling mirror install.
+_BAIDU_YUN_TEXTTRACTOR_URL = ""
+_BAIDU_YUN_TEXTTRACTOR_CODE = ""
+_GALGAME_PLUGIN_ID = "galgame_plugin"
 ProgressCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
 
 
@@ -42,6 +51,17 @@ async def _emit_progress(
     maybe_awaitable = progress_callback(dict(payload))
     if inspect.isawaitable(maybe_awaitable):
         await maybe_awaitable
+
+
+def _update_textractor_install_task_state(
+    task_id: str,
+    **changes: object,
+) -> dict[str, object]:
+    return update_install_task_state(
+        task_id,
+        plugin_id=_GALGAME_PLUGIN_ID,
+        **changes,
+    )
 
 
 def _compute_phase_progress(
@@ -127,7 +147,7 @@ async def _mark_textractor_install_failed(
         "failed_phase": failed_phase,
     }
     if task_id:
-        update_install_task_state(task_id, **failed_payload)
+        _update_textractor_install_task_state(task_id, **failed_payload)
     await _emit_progress(progress_callback, failed_payload)
 
 
@@ -160,7 +180,21 @@ def _asset_sha256(asset: dict[str, Any]) -> str:
         digest = _normalize_sha256(asset.get(key))
         if digest:
             return digest
+    if str(asset.get("name") or "").strip() == DEFAULT_TEXTRACTOR_ASSET_NAME:
+        return DEFAULT_TEXTRACTOR_ASSET_SHA256
     return ""
+
+
+def _validate_release_api_endpoint(url: str) -> str:
+    normalized = str(url or "").strip() or DEFAULT_TEXTRACTOR_RELEASE_API_URL
+    parsed = urlparse(normalized)
+    if parsed.scheme != "https":
+        raise ValueError("Textractor release API URL must use HTTPS")
+    if parsed.netloc != "api.github.com":
+        raise ValueError("Textractor release API URL host must be api.github.com")
+    if not parsed.path.startswith("/repos/"):
+        raise ValueError("Textractor release API URL must be a GitHub repository API endpoint")
+    return normalized
 
 
 def _verify_file_sha256(path: Path, expected_sha256: str) -> bool:
@@ -259,10 +293,8 @@ def _candidate_assets(release_payload: dict[str, Any]) -> list[dict[str, str]]:
         url = str(asset.get("browser_download_url") or "").strip()
         if not name or not url or not name.lower().endswith(".zip"):
             continue
-        entry = {"name": name, "url": url}
         expected_sha256 = _asset_sha256(asset)
-        if expected_sha256:
-            entry["sha256"] = expected_sha256
+        entry = {"name": name, "url": url, "sha256": expected_sha256}
         lowered = name.lower()
         if "source code" in lowered:
             continue
@@ -369,7 +401,7 @@ async def _download_file(
                 "error": "",
             }
             if task_id:
-                update_install_task_state(task_id, **initial_progress)
+                _update_textractor_install_task_state(task_id, **initial_progress)
             await _emit_progress(progress_callback, initial_progress)
             last_progress_emit_at = time.monotonic()
 
@@ -407,7 +439,7 @@ async def _download_file(
                         "error": "",
                     }
                     if task_id:
-                        update_install_task_state(task_id, **chunk_progress)
+                        _update_textractor_install_task_state(task_id, **chunk_progress)
                     await _emit_progress(progress_callback, chunk_progress)
 
             result = {
@@ -439,7 +471,7 @@ async def install_textractor(
     progress_callback: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     if task_id:
-        update_install_task_state(
+        _update_textractor_install_task_state(
             task_id,
             status="running",
             phase="preflight",
@@ -478,7 +510,7 @@ async def install_textractor(
             "asset_name": "",
         }
         if task_id:
-            update_install_task_state(
+            _update_textractor_install_task_state(
                 task_id,
                 status="completed",
                 phase="completed",
@@ -508,9 +540,20 @@ async def install_textractor(
     target_dir = resolve_textractor_install_target(install_target_dir_raw)
     if not target_dir:
         raise RuntimeError("missing Textractor install target directory")
-    release_endpoint = str(release_api_url or "").strip() or DEFAULT_TEXTRACTOR_RELEASE_API_URL
+    try:
+        release_endpoint = _validate_release_api_endpoint(release_api_url)
+    except ValueError as exc:
+        error_message = str(exc)
+        await _mark_textractor_install_failed(
+            task_id=task_id,
+            progress_callback=progress_callback,
+            target_dir=target_dir,
+            error_message=error_message,
+            failed_phase="fetch_release",
+        )
+        raise TextractorInstallError(error_message, failed_phase="fetch_release") from exc
     if task_id:
-        update_install_task_state(
+        _update_textractor_install_task_state(
             task_id,
             status="running",
             phase="metadata",
@@ -626,7 +669,7 @@ async def install_textractor(
                 candidate_phase = "downloading"
                 try:
                     if task_id:
-                        update_install_task_state(
+                        _update_textractor_install_task_state(
                             task_id,
                             status="running",
                             phase="downloading",
@@ -684,7 +727,7 @@ async def install_textractor(
                         "asset_name": asset_name,
                     }
                     if task_id:
-                        update_install_task_state(task_id, **download_progress)
+                        _update_textractor_install_task_state(task_id, **download_progress)
                     await _emit_progress(progress_callback, download_progress)
 
                     candidate_phase = "extracting"
@@ -702,7 +745,7 @@ async def install_textractor(
                         "asset_name": asset_name,
                     }
                     if task_id:
-                        update_install_task_state(task_id, **extracting_progress)
+                        _update_textractor_install_task_state(task_id, **extracting_progress)
                     await _emit_progress(progress_callback, extracting_progress)
                     extraction_root = tmp_dir / f"extract-{asset_name}"
                     source_dir = await asyncio.to_thread(
@@ -733,7 +776,7 @@ async def install_textractor(
                         "asset_name": asset_name,
                     }
                     if task_id:
-                        update_install_task_state(task_id, **verifying_progress)
+                        _update_textractor_install_task_state(task_id, **verifying_progress)
                     await _emit_progress(progress_callback, verifying_progress)
 
                     staging_exe = install_staging_dir / TEXTRACTOR_EXECUTABLE
@@ -778,7 +821,7 @@ async def install_textractor(
                         "error": "",
                     }
                     if task_id:
-                        update_install_task_state(task_id, **completed_progress)
+                        _update_textractor_install_task_state(task_id, **completed_progress)
                     await _emit_progress(progress_callback, completed_progress)
                     return result
                 except Exception as exc:
