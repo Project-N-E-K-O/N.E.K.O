@@ -339,6 +339,11 @@ def test_cat1_voice_sounds_are_limited_to_non_drag_and_drag_states():
     assert "urls[Math.floor(Math.random() * urls.length)]" in source
     assert "_scheduleNekoIdleCat1AmbientSoundInterval(startedAt + _NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS)" in source
     assert "normalizedTier !== _NEKO_IDLE_TIER_CAT1 || _isAnyNekoIdleReturnDragActionActive()" in source
+    assert "_playNekoIdleCat1SoundReaction()" in source
+    assert "const clickSrc = _getNekoIdleReturnClickAssetUrl(_NEKO_IDLE_TIER_CAT1);" in source
+    assert "state.targetKind !== _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE" in source
+    assert "_playNekoIdleHoverArt(art, _NEKO_IDLE_TIER_CAT1);" in source
+    assert "_finishNekoIdleHoverArtAfterPlayback(art, _NEKO_IDLE_TIER_CAT1);" in source
     assert "_playNekoIdleCat1DragSound(tier)" in source
     assert "_fadeOutNekoIdleCat1DragSound()" in source
     assert "_fadeOutNekoIdleSoundAudio(_nekoIdleCat1DragSoundState, _NEKO_IDLE_CAT1_DRAG_SOUND_FADE_OUT_MS)" in source
@@ -370,6 +375,12 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert 'compactTopEdgeFastMoveCount: 0' in source
     assert 'state.compactTopEdgeFastMoveCount = 0' in source
     assert 'state.compactTopEdgeFastMoveCount >= _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_DROP_FAST_MOVE_COUNT' in source
+    assert "function _postNekoIdleCat1CompactMirrorState(payload)" in source
+    assert "new CustomEvent('neko:idle-cat1-compact-mirror-state'" in source
+    assert "via: 'local'" in source
+    assert "return dispatchedLocal;" in source
+    assert "assetUrl: options.assetUrl || _getNekoIdleReturnAssetUrl(_NEKO_IDLE_TIER_CAT1)" in source
+    assert "_syncNekoIdleCat1CompactMirrorReaction(button, container, clickSrc, 'cat1-sound-reaction')" in source
     assert '_NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW' in source
     assert '_NEKO_IDLE_RETURN_SUBACTION_PROFILES' in source
     assert '_getNekoIdleReturnSubactionProfile' in source

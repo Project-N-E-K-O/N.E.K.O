@@ -568,6 +568,7 @@ function _playNekoIdleCat1AmbientSound(token) {
         _pickNekoIdleCat1AmbientSoundUrl(),
         _NEKO_IDLE_CAT1_AMBIENT_SOUND_VOLUME
     );
+    _playNekoIdleCat1SoundReaction();
 }
 
 function _scheduleNekoIdleCat1AmbientSoundInterval(intervalStartedAt) {
@@ -629,6 +630,66 @@ function _playNekoIdleCat1DragSound(tier) {
 
 function _fadeOutNekoIdleCat1DragSound() {
     _fadeOutNekoIdleSoundAudio(_nekoIdleCat1DragSoundState, _NEKO_IDLE_CAT1_DRAG_SOUND_FADE_OUT_MS);
+}
+
+function _syncNekoIdleCat1CompactMirrorReaction(button, container, assetUrl, reason) {
+    const state = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
+    if (!state ||
+        !container ||
+        !container.__nekoIdleCat1CompactMirrorActive ||
+        state.targetKind !== _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE) {
+        return;
+    }
+
+    const surfaceRect = _getNekoIdleChatCompactSurfaceRect();
+    if (!surfaceRect) return;
+    _setNekoIdleCat1CompactMirrorActive(button, container, true, {
+        reason: reason || 'cat1-sound-reaction',
+        surfaceRect: surfaceRect,
+        target: {
+            anchorRatio: state.compactFollowAnchorRatio
+        },
+        assetUrl: assetUrl
+    });
+}
+
+function _playNekoIdleCat1SoundReaction() {
+    const clickSrc = _getNekoIdleReturnClickAssetUrl(_NEKO_IDLE_TIER_CAT1);
+    _forEachNekoIdleReturnButton((button) => {
+        if (_normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier')) !== _NEKO_IDLE_TIER_CAT1) return;
+        if (_isNekoIdleReturnDragActionActive(button)) return;
+        const container = _getNekoIdleReturnContainerFromButton(button);
+        if (!container || container.style.display === 'none') return;
+        const state = button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey;
+        if (!state || state.targetKind !== _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE) return;
+        const art = button.querySelector('.neko-idle-return-art');
+        if (!art) return;
+
+        _playNekoIdleHoverArt(art, _NEKO_IDLE_TIER_CAT1);
+        _finishNekoIdleHoverArtAfterPlayback(art, _NEKO_IDLE_TIER_CAT1);
+        _syncNekoIdleCat1CompactMirrorReaction(button, container, clickSrc, 'cat1-sound-reaction');
+
+        const token = art.__nekoIdleHoverToken || 0;
+        _getNekoIdleGifDurationMs(clickSrc).then((durationMs) => {
+            window.setTimeout(() => {
+                if ((art.__nekoIdleHoverToken || 0) !== token) return;
+                const latestState = button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey;
+                const latestContainer = _getNekoIdleReturnContainerFromButton(button);
+                if (!latestState ||
+                    latestState.targetKind !== _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE ||
+                    !latestContainer ||
+                    !latestContainer.__nekoIdleCat1CompactMirrorActive) {
+                    return;
+                }
+                _syncNekoIdleCat1CompactMirrorReaction(
+                    button,
+                    latestContainer,
+                    _getNekoIdleReturnCurrentArtUrl(button, _NEKO_IDLE_TIER_CAT1),
+                    'cat1-sound-reaction-finished'
+                );
+            }, Math.max(0, Number(durationMs) || 0));
+        });
+    });
 }
 
 const _NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW = Object.freeze({
@@ -1300,21 +1361,32 @@ function _getNekoIdleScreenRectFromCompactSurfaceRect(rect) {
 }
 
 function _postNekoIdleCat1CompactMirrorState(payload) {
-    const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
-    if (!channel || typeof channel.postMessage !== 'function') return false;
+    const message = Object.assign({
+        action: 'idle_cat1_compact_mirror_state',
+        source: 'pet-window',
+        lanlan_name: _getNekoIdleCurrentLanlanName(),
+        timestamp: Date.now()
+    }, payload || {});
+    let dispatchedLocal = false;
     try {
-        channel.postMessage(Object.assign({
-            action: 'idle_cat1_compact_mirror_state',
-            source: 'pet-window',
-            lanlan_name: _getNekoIdleCurrentLanlanName(),
-            timestamp: Date.now()
-        }, payload || {}));
+        window.dispatchEvent(new CustomEvent('neko:idle-cat1-compact-mirror-state', {
+            detail: Object.assign({
+                via: 'local'
+            }, message)
+        }));
+        dispatchedLocal = true;
+    } catch (_) {}
+
+    const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
+    if (!channel || typeof channel.postMessage !== 'function') return dispatchedLocal;
+    try {
+        channel.postMessage(message);
         return true;
     } catch (error) {
         if (typeof console !== 'undefined' && console.warn) {
             console.warn('[NekoIdleCat1] compact mirror postMessage failed:', error && error.message ? error.message : error);
         }
-        return false;
+        return dispatchedLocal;
     }
 }
 
@@ -1357,7 +1429,7 @@ function _setNekoIdleCat1CompactMirrorActive(button, container, active, options 
         },
         overlapPx: _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_OVERLAP_PX,
         sidePaddingPx: _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_SIDE_PADDING_PX,
-        assetUrl: _getNekoIdleReturnAssetUrl(_NEKO_IDLE_TIER_CAT1),
+        assetUrl: options.assetUrl || _getNekoIdleReturnAssetUrl(_NEKO_IDLE_TIER_CAT1),
         facingRight: !!(state && state.facingRight)
     });
     if (!posted) return false;
