@@ -616,6 +616,21 @@ class OmniRealtimeClient:
         else:
             logger.info("apply_tools_to_session: api_type=%s does not support custom tools — ignoring", api)
 
+    def _clear_uplink_resampler(self) -> None:
+        """Drop the uplink resampler's pending FIR tail (soxr holds ~21ms of
+        algorithmic delay at 16k→24k HQ).
+
+        Called at every server-buffer clear/commit boundary so a finished
+        turn's residual samples are not carried into — and prepended to —
+        the next turn. Discard (not flush-and-send) is the right semantics:
+        on ``input_audio_buffer.clear`` the server is throwing that audio
+        away anyway, and on a MANUAL commit the trailing ~21ms is end-of-turn
+        tail. Mirrors AudioProcessor's downsample-resampler ``.clear()`` on
+        reset. No-op for every 16kHz-native provider (resampler is None).
+        """
+        if self._uplink_resampler is not None:
+            self._uplink_resampler.clear()
+
     def _resample_uplink(self, pcm16_bytes: bytes) -> bytes:
         """Upsample 16kHz PCM16 mic/cache audio to the provider's uplink rate.
 
@@ -750,6 +765,9 @@ class OmniRealtimeClient:
             logger.debug("Gemini mode: no WebSocket input_audio_buffer.clear event")
             return
         await self.send_event({"type": "input_audio_buffer.clear"})
+        # The server is discarding this buffer; drop the uplink resampler's
+        # held tail too so it isn't prepended to the next utterance.
+        self._clear_uplink_resampler()
         logger.debug("📤 已发送 input_audio_buffer.clear 事件")
 
     async def connect(self, instructions: str, native_audio=True) -> None:
@@ -785,8 +803,7 @@ class OmniRealtimeClient:
             self._audio_processor.reset()
         # Flush uplink resampler FIR history so a previous session's tail
         # samples don't bleed into the new connection's first frames.
-        if self._uplink_resampler is not None:
-            self._uplink_resampler.clear()
+        self._clear_uplink_resampler()
 
         # WebSocket-based APIs (GLM, Qwen, GPT, Step, Free)
         url = f"{self.base_url}?model={self.model}" if self._model_lower != "free-model" else self.base_url
@@ -897,9 +914,10 @@ class OmniRealtimeClient:
                 "audio": {
                     "input": {
                         # OpenAI Realtime PCM 输入只支持 24kHz；显式声明以匹配
-                        # 我们 _resample_uplink 上采后的实际采样率（默认也是
-                        # 24k，但写明可防 API 默认值漂移 + 自我文档化）。
-                        "format": {"type": "audio/pcm", "rate": 24000},
+                        # 我们 _resample_uplink 上采后的实际采样率。复用
+                        # _uplink_sample_rate（此分支恒为 24000）作单一数据源，
+                        # 避免声明与实际两处来源漂移。
+                        "format": {"type": "audio/pcm", "rate": self._uplink_sample_rate},
                         "transcription": {"model": "gpt-4o-mini-transcribe"},
                         "turn_detection": None if is_manual else {
                             "type": "semantic_vad",
@@ -1408,6 +1426,9 @@ class OmniRealtimeClient:
                     self._fatal_error_occurred = True
             return
         await self.send_event({"type": "input_audio_buffer.commit"})
+        # The committed buffer excludes the ~21ms tail soxr still holds in the
+        # uplink resampler; drop it so it isn't prepended to the next turn.
+        self._clear_uplink_resampler()
         await self.send_event({"type": "response.create"})
 
     async def _analyze_image_with_vision_model(self, image_b64: str) -> str:

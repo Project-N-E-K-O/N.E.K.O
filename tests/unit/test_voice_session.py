@@ -920,3 +920,52 @@ async def test_connect_gpt_session_declares_24k_pcm_input_format():
     assert session is not None
     fmt = session.get("audio", {}).get("input", {}).get("format")
     assert fmt == {"type": "audio/pcm", "rate": 24000}, f"got {fmt!r}"
+
+
+@pytest.mark.unit
+async def test_clear_audio_buffer_drops_uplink_resampler_tail_for_gpt():
+    """clear_audio_buffer must also clear the uplink resampler. soxr holds
+    ~21ms of FIR tail; on a server-buffer clear (e.g. 4s-silence reset) that
+    tail must be dropped, not prepended to the next utterance."""
+    from unittest.mock import MagicMock
+
+    client = _make_server_vad_client(model="gpt-realtime", api_type="openai")
+    client.ws = AsyncMock()
+    fake_resampler = MagicMock()
+    client._uplink_resampler = fake_resampler
+
+    await client.clear_audio_buffer()
+
+    fake_resampler.clear.assert_called_once()
+
+
+@pytest.mark.unit
+async def test_signal_user_activity_end_gpt_manual_clears_uplink_resampler():
+    """MANUAL commit excludes soxr's held ~21ms tail; that tail must be
+    dropped so it isn't carried into the next turn (Codex P2 on PR #1644)."""
+    from unittest.mock import MagicMock
+
+    client = _make_manual_client(
+        model="gpt-realtime",
+        base_url="wss://api.openai.com/v1/realtime",
+        api_type="openai",
+    )
+    sent: list[dict] = []
+
+    async def fake_send(payload):
+        try:
+            sent.append(json.loads(payload))
+        except json.JSONDecodeError:
+            pass
+
+    client.ws = AsyncMock()
+    client.ws.send = AsyncMock(side_effect=fake_send)
+    fake_resampler = MagicMock()
+    client._uplink_resampler = fake_resampler
+
+    await client.signal_user_activity_end()
+
+    types_sent = [e.get("type") for e in sent]
+    assert "input_audio_buffer.commit" in types_sent
+    assert "response.create" in types_sent
+    fake_resampler.clear.assert_called_once()
