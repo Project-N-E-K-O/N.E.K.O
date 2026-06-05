@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import App, { COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS } from './App';
 import {
+  COMPACT_HISTORY_SCROLLBAR_VISIBLE_MS,
   computeCompactHistoryEnterDelay,
   computeCompactHistoryExitDelay,
 } from './CompactExportHistoryPanel';
@@ -385,10 +386,15 @@ describe('App', () => {
     expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
     expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-geometry-hit-scope', 'children');
     expect(container.querySelector('.compact-export-history-anchor')).not.toHaveAttribute('data-compact-hit-region');
-    expect(container.querySelector('.compact-export-history-scroll')).not.toHaveAttribute('data-compact-hit-region');
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('data-compact-hit-region', 'true');
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('data-compact-hit-region-id', 'history:message:assistant-history-1');
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('data-compact-hit-region-kind', 'message');
+    expect(container.querySelectorAll('#music-player-mount')).toHaveLength(1);
+    expect(container.querySelector('.composer-panel #music-player-mount')).not.toBeNull();
+    expect(container.querySelector('.compact-export-history-panel #music-player-mount')).toBeNull();
+    expect(container.querySelector('.compact-export-history-music-mount')).toHaveAttribute('data-music-player-mount', 'compact-history');
+    expect(container.querySelector('.compact-export-history-music-mount')).toHaveAttribute('data-compact-hit-region-id', 'history:music-player');
+    expect(container.querySelector('.compact-export-history-music-mount')).toHaveAttribute('data-compact-hit-region-kind', 'music');
     expect(container.querySelector('.compact-export-history-controls')).toBeNull();
     expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('data-compact-geometry-item', 'historyHandle');
     expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'true');
@@ -410,6 +416,17 @@ describe('App', () => {
 
     vi.useFakeTimers();
     try {
+      const scroll = container.querySelector<HTMLElement>('.compact-export-history-scroll')!;
+      expect(scroll).not.toHaveAttribute('data-compact-scrollbar-visible');
+      fireEvent.mouseEnter(scroll);
+      expect(scroll).not.toHaveAttribute('data-compact-scrollbar-visible');
+      fireEvent.wheel(scroll, { deltaY: 80 });
+      expect(scroll).toHaveAttribute('data-compact-scrollbar-visible', 'true');
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(COMPACT_HISTORY_SCROLLBAR_VISIBLE_MS);
+      });
+      expect(scroll).not.toHaveAttribute('data-compact-scrollbar-visible');
+
       fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
       expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'closing');
       expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'false');
@@ -419,6 +436,7 @@ describe('App', () => {
       expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('aria-disabled', 'true');
       expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('tabindex', '-1');
       expect(container.querySelector('.compact-export-history-bubble')).not.toHaveAttribute('data-compact-hit-region');
+      expect(container.querySelector('.compact-export-history-music-mount')).not.toHaveAttribute('data-compact-hit-region');
       expect(container.querySelector('.compact-export-history-controls')).toHaveAttribute('aria-disabled', 'true');
       expect(container.querySelector('.compact-export-history-controls')).not.toHaveAttribute('data-compact-hit-region');
       container.querySelectorAll<HTMLButtonElement>('.compact-export-history-control').forEach((button) => {
@@ -430,12 +448,19 @@ describe('App', () => {
         await vi.advanceTimersByTimeAsync(COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
       });
 
-      expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+      expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
+      expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'closing');
+      expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-open', 'false');
+      expect(container.querySelectorAll('#music-player-mount')).toHaveLength(1);
+      expect(container.querySelector('.composer-panel #music-player-mount')).not.toBeNull();
+      expect(container.querySelector('.compact-export-history-panel #music-player-mount')).toBeNull();
       expect(container.querySelector('[data-compact-hit-region-id^="history:"]')).toBeNull();
 
       fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
       expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
       expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'open');
+      expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-open', 'true');
+      expect(container.querySelector('.compact-export-history-music-mount')).toHaveAttribute('data-compact-hit-region-id', 'history:music-player');
       expect(container.querySelector('.compact-export-history-controls')).toHaveAttribute('data-compact-hit-region-id', 'history:controls');
       expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'true');
       expect(exportButton).toHaveAttribute('aria-pressed', 'true');
@@ -485,10 +510,15 @@ describe('App', () => {
       expect(handle).not.toBeNull();
       expect(handle).toHaveAttribute('aria-expanded', 'false');
       expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+      expect(container.querySelectorAll('#music-player-mount')).toHaveLength(1);
+      expect(container.querySelector('.composer-panel #music-player-mount')).not.toBeNull();
 
       fireEvent.pointerDown(handle!, { pointerType: 'mouse', button: 0 });
       expect(handle).toHaveAttribute('aria-expanded', 'true');
       expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
+      expect(container.querySelectorAll('#music-player-mount')).toHaveLength(1);
+      expect(container.querySelector('.compact-export-history-panel #music-player-mount')).toBeNull();
+      expect(container.querySelector('.compact-export-history-music-mount')).toHaveAttribute('data-music-player-mount', 'compact-history');
       expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
       expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'input');
 
@@ -793,7 +823,7 @@ describe('App', () => {
       });
       expect(exportWindow.appChatExport?.buildCompactInlinePreview).toHaveBeenCalledWith({
         messageIds: ['user-history-select'],
-        format: 'markdown',
+        format: 'image',
         imageStyle: 'neko',
         imageFormat: 'png',
       });
@@ -1818,7 +1848,7 @@ describe('App', () => {
       await waitFor(() => {
         expect(buildCompactInlinePreview).toHaveBeenCalledWith({
           messageIds: ['assistant-history-export-action'],
-          format: 'markdown',
+          format: 'image',
           imageStyle: 'neko',
           imageFormat: 'png',
         });
@@ -1828,7 +1858,7 @@ describe('App', () => {
       await waitFor(() => {
         expect(copyCompactInlineSelection).toHaveBeenCalledWith({
           messageIds: ['assistant-history-export-action'],
-          format: 'markdown',
+          format: 'image',
           imageStyle: 'neko',
           imageFormat: 'png',
         });
@@ -1905,6 +1935,8 @@ describe('App', () => {
 
     expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
     expect(container.querySelector('[data-compact-hit-region-id^="history:"]')).toBeNull();
+    expect(container.querySelectorAll('#music-player-mount')).toHaveLength(1);
+    expect(container.querySelector('.compact-export-history-panel #music-player-mount')).toBeNull();
     expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBeNull();
 
     rerender(<App chatSurfaceMode="compact" compactChatState="input" messages={[message]} />);
@@ -1931,6 +1963,80 @@ describe('App', () => {
     expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'options');
     expect(document.body.querySelector('.compact-chat-choice-anchor')).not.toBeNull();
     expect(container.querySelector('.compact-input-tool-toggle')).not.toBeNull();
+  });
+
+  it('marquees overflowing compact galgame option text only while hovered', () => {
+    render(
+      <App
+        chatSurfaceMode="compact"
+        galgameModeEnabled
+        galgameOptions={[
+          { label: 'A', text: 'This generated reply is intentionally much longer than the visible option row' },
+          { label: 'B', text: 'Short reply' },
+        ]}
+      />,
+    );
+
+    const options = Array.from(document.body.querySelectorAll<HTMLButtonElement>('.composer-galgame-option'));
+    expect(options).toHaveLength(2);
+    expect(options[0]).not.toHaveAttribute('title');
+    expect(options[1]).not.toHaveAttribute('title');
+
+    const longText = options[0].querySelector<HTMLElement>('.composer-galgame-option-text');
+    const longInner = options[0].querySelector<HTMLElement>('.composer-galgame-option-text-inner');
+    expect(longText).not.toBeNull();
+    expect(longInner).not.toBeNull();
+    Object.defineProperty(longText!, 'clientWidth', {
+      configurable: true,
+      value: 110,
+    });
+    Object.defineProperty(longInner!, 'scrollWidth', {
+      configurable: true,
+      value: 260,
+    });
+
+    fireEvent.mouseEnter(options[0]);
+
+    expect(options[0]).toHaveAttribute('data-composer-option-marquee', 'true');
+    expect(options[0].style.getPropertyValue('--composer-option-marquee-distance')).toBe('178px');
+    expect(options[0].style.getPropertyValue('--composer-option-marquee-duration')).toBe('1855ms');
+
+    fireEvent.mouseLeave(options[0]);
+
+    expect(options[0]).not.toHaveAttribute('data-composer-option-marquee');
+    expect(options[0].style.getPropertyValue('--composer-option-marquee-distance')).toBe('');
+
+    fireEvent.focus(options[0]);
+
+    expect(options[0]).toHaveAttribute('data-composer-option-marquee', 'true');
+    expect(options[0].style.getPropertyValue('--composer-option-marquee-distance')).toBe('178px');
+    expect(options[0].style.getPropertyValue('--composer-option-marquee-duration')).toBe('1855ms');
+
+    fireEvent.blur(options[0]);
+
+    expect(options[0]).not.toHaveAttribute('data-composer-option-marquee');
+    expect(options[0].style.getPropertyValue('--composer-option-marquee-distance')).toBe('');
+
+    const shortText = options[1].querySelector<HTMLElement>('.composer-galgame-option-text');
+    const shortInner = options[1].querySelector<HTMLElement>('.composer-galgame-option-text-inner');
+    expect(shortText).not.toBeNull();
+    expect(shortInner).not.toBeNull();
+    Object.defineProperty(shortText!, 'clientWidth', {
+      configurable: true,
+      value: 180,
+    });
+    Object.defineProperty(shortInner!, 'scrollWidth', {
+      configurable: true,
+      value: 184,
+    });
+
+    fireEvent.mouseEnter(options[1]);
+
+    expect(options[1]).not.toHaveAttribute('data-composer-option-marquee');
+
+    fireEvent.focus(options[1]);
+
+    expect(options[1]).not.toHaveAttribute('data-composer-option-marquee');
   });
 
   it('places compact galgame options below the surface when there is enough viewport space', async () => {
@@ -4798,6 +4904,12 @@ describe('App', () => {
     fireEvent.wheel(fan, { deltaY: -80 });
     expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-import');
 
+    fireEvent.wheel(fan, { deltaY: 1 });
+    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
+
+    fireEvent.wheel(fan, { deltaY: -1 });
+    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-import');
+
     fireEvent.pointerDown(fan, { pointerId: 7, clientX: 100, clientY: 100, button: 0, buttons: 1, pointerType: 'mouse' });
     fireEvent.pointerMove(fan, { pointerId: 7, clientX: 102, clientY: 132, buttons: 1, pointerType: 'mouse' });
     expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
@@ -5778,7 +5890,7 @@ describe('App', () => {
   it('renders pending composer attachments and removes them through callback', () => {
     const onComposerRemoveAttachment = vi.fn();
 
-    render(
+    const { container } = render(
       <App
         composerAttachments={[
           { id: 'img-1', url: 'data:image/png;base64,aaa', alt: 'Screenshot 1' },
@@ -5787,6 +5899,11 @@ describe('App', () => {
       />,
     );
 
+    const viewport = container.querySelector('.composer-attachment-viewport');
+    expect(viewport).toHaveClass('composer-attachment-viewport-compact');
+    expect(viewport).toHaveAttribute('data-compact-geometry-item', 'attachments');
+    expect(container.querySelector('.compact-chat-surface-shell .composer-attachment-viewport')).toBe(viewport);
+    expect(container.querySelector('.composer-panel > .composer-attachments')).toBeNull();
     expect(screen.getByAltText('Screenshot 1')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Remove image: Screenshot 1' }));
 

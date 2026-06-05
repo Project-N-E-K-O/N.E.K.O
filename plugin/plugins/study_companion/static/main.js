@@ -60,7 +60,12 @@ function setStatus(text) {
 }
 
 function setReply(text) {
-  replyText.textContent = text || '';
+  const value = text || '';
+  if (window.renderMathInText && typeof window.renderMathInText === 'function') {
+    replyText.innerHTML = window.renderMathInText(value);
+  } else {
+    replyText.textContent = value;
+  }
 }
 
 function modeLabel(mode) {

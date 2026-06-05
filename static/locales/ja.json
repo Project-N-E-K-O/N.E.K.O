@@ -1590,7 +1590,9 @@
             "sweetLady": "甘々な女性",
             "frailMaiden": "病弱な少女",
             "childishMaiden": "幼い少女",
-            "yui_cn": "YUI（中国語）"
+            "yui_cn": "YUI（中国語）",
+            "yui": "YUI",
+            "default": "デフォルト"
         },
         "cloneMethod": "クローン方式",
         "cloneMethodFile": "ローカルファイル",
@@ -1911,7 +1913,7 @@
         "systemPrompt": "システムプロンプト（注意して編集してください）",
         "systemPromptWarning": "システムプロンプト - 変更により予期しない動作が発生する可能性があります。自己責任で編集してください。",
         "addField": "フィールドを追加",
-        "aiAssist": "AI アシスト生成",
+        "aiAssist": "猫ちゃんアシスト生成",
         "aiCompanionSub": "設定捏ね助手 · YUI が開発猫の代役",
         "aiCompanionClose": "閉じる",
         "aiCompanionMinimize": "最小化",
@@ -2110,6 +2112,7 @@
         "textChattingShort": "テキストチャット中",
         "capturing": "スクリーンショット中...",
         "importImageAdded": "{{count}} 枚の画像を追加しました。送信時に一緒に送られます",
+        "importImagePartial": "{{success}} 枚の画像を追加しました。{{failed}} 枚の取り込みに失敗しました",
         "importImageFailed": "画像の取り込みに失敗しました",
         "screenshotAdded": "スクリーンショットを追加しました。送信をクリックして一緒に送信",
         "screenshotFailed": "スクリーンショット失敗",

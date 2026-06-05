@@ -311,8 +311,14 @@ class CompressedRecentHistoryManager:
 
             if compress and len(self.user_histories[lanlan_name]) > self.compress_threshold:
                 to_compress = self.user_histories[lanlan_name][:-self.max_history_length+1]
-                compressed = [(await self.compress_history(to_compress, lanlan_name, detailed))[0]]
-                self.user_histories[lanlan_name] = compressed + self.user_histories[lanlan_name][-self.max_history_length+1:]
+                compressed_result = await self.compress_history(to_compress, lanlan_name, detailed)
+                if compressed_result is None:
+                    logger.warning(
+                        f"[RecentHistory] {lanlan_name} 摘要失败，跳过本轮压缩以保留原始历史"
+                    )
+                else:
+                    compressed = [compressed_result[0]]
+                    self.user_histories[lanlan_name] = compressed + self.user_histories[lanlan_name][-self.max_history_length+1:]
         except Exception as e:
             logger.error(f"[RecentHistory] 更新历史记录时出错: {e}", exc_info=True)
 
@@ -531,9 +537,9 @@ class CompressedRecentHistoryManager:
                 print(f'❌ 摘要模型失败：{e}')
                 # 如果解析失败，重试
                 retries += 1
-        # 如果所有重试都失败，返回None
-        from config.prompts.prompts_sys import _loc, MEMORY_MEMO_EMPTY
-        return SystemMessage(content=_loc(MEMORY_MEMO_EMPTY, get_global_language())), ""
+        # 摘要失败时不生成空备忘录，避免覆盖既有 memo 或丢弃未压缩原文。
+        logger.warning(f"[RecentHistory] {lanlan_name} 摘要连续失败，跳过本轮压缩")
+        return None
 
     async def further_compress(self, initial_summary):
         # Stage-2 LLM 输出硬限：RECENT_SUMMARY_MAX_TOKENS + 100 余量 = 1100 token。

@@ -1590,7 +1590,9 @@
             "sweetLady": "甜美御姐",
             "frailMaiden": "病弱少女",
             "childishMaiden": "稚氣少女",
-            "yui_cn": "YUI（中文）"
+            "yui_cn": "YUI（中文）",
+            "yui": "YUI",
+            "default": "預設"
         },
         "cloneMethod": "克隆方式",
         "cloneMethodFile": "本地檔案",
@@ -1911,7 +1913,7 @@
         "systemPrompt": "系統指令（謹慎修改）",
         "systemPromptWarning": "系統指令 - 修改可能導致角色行為異常，後果自負",
         "addField": "新增設定",
-        "aiAssist": "AI 輔助生成",
+        "aiAssist": "貓貓輔助生成",
         "aiCompanionSub": "設定捏人助手 · YUI 暫代開發貓",
         "aiCompanionClose": "關閉",
         "aiCompanionMinimize": "收起",
@@ -2110,6 +2112,7 @@
         "textChattingShort": "正在文本聊天中",
         "capturing": "正在截圖...",
         "importImageAdded": "已新增 {{count}} 張圖片，發送時會一併帶上",
+        "importImagePartial": "已新增 {{success}} 張圖片，{{failed}} 張匯入失敗",
         "importImageFailed": "匯入圖片失敗",
         "screenshotAdded": "截圖已添加，點擊發送一起發送",
         "screenshotFailed": "截圖失敗",

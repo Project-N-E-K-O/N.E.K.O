@@ -1093,29 +1093,78 @@ svg {
   min-width: 0;
 }
 
-/* Hide empty music-player-mount so it doesn't occupy a grid row */
+/* 空播放器挂载点不占用布局行。 */
 #music-player-mount:empty {
   display: none;
 }
 
+.composer-attachment-viewport {
+  width: 100%;
+  min-width: 0;
+  padding: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(127, 144, 170, 0.22);
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(242, 248, 255, 0.66));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.72),
+    0 6px 16px rgba(65, 91, 130, 0.08);
+  backdrop-filter: blur(18px) saturate(1.16);
+  -webkit-backdrop-filter: blur(18px) saturate(1.16);
+}
+
+.composer-attachment-viewport-compact {
+  width: 100%;
+  max-width: var(--compact-surface-active-width);
+  margin-top: 6px;
+  padding: 7px 8px 6px;
+  border-color: rgba(255, 255, 255, 0.5);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.68), rgba(239, 248, 255, 0.56));
+  box-shadow:
+    0 0 0 1px rgba(208, 233, 255, 0.12),
+    0 8px 20px rgba(42, 89, 132, 0.08);
+}
+
 .composer-attachments {
   display: flex;
-  gap: 10px;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  max-height: 74px;
   overflow-x: auto;
-  padding-bottom: 2px;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  padding: 1px 1px 4px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(96, 127, 166, 0.28) transparent;
+}
+
+.composer-attachments::-webkit-scrollbar {
+  height: 5px;
+}
+
+.composer-attachments::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.composer-attachments::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(96, 127, 166, 0.28);
 }
 
 .composer-attachment-card {
   position: relative;
-  width: 90px;
-  height: 90px;
+  width: 68px;
+  height: 68px;
   margin: 0;
   flex: 0 0 auto;
+  overflow: hidden;
+  border: 1px solid rgba(127, 144, 170, 0.28);
   border-radius: 8px;
-  overflow: visible;
-  border: 2px solid #d7dde6;
-  box-shadow: 0 4px 10px rgba(89, 108, 140, 0.08);
-  background: #fff;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 4px 12px rgba(65, 91, 130, 0.1);
 }
 
 .composer-attachment-image {
@@ -1127,19 +1176,51 @@ svg {
 
 .composer-attachment-remove {
   position: absolute;
-  top: -6px;
-  right: -6px;
-  width: 20px;
-  height: 20px;
-  border: 0;
+  top: 4px;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.82);
   border-radius: 999px;
   color: #fff;
-  background: #dc3545;
+  background: rgba(34, 47, 66, 0.72);
   cursor: pointer;
-  font-size: 0.92rem;
-  font-weight: 700;
-  line-height: 1;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 3px 8px rgba(25, 38, 58, 0.22);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: background 0.15s ease, opacity 0.15s ease, transform 0.15s ease;
+}
+
+.composer-attachment-remove::before,
+.composer-attachment-remove::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  top: 50%;
+  height: 1.5px;
+  border-radius: 999px;
+  background: currentColor;
+  transform-origin: center;
+}
+
+.composer-attachment-remove::before {
+  transform: translateY(-50%) rotate(45deg);
+}
+
+.composer-attachment-remove::after {
+  transform: translateY(-50%) rotate(-45deg);
+}
+
+.composer-attachment-remove:hover:not(:disabled) {
+  background: rgba(220, 53, 69, 0.9);
+  transform: scale(1.06);
+}
+
+.composer-attachment-remove:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
 }
 
 /* ===== 输入框统一容器 ===== */
@@ -1764,6 +1845,41 @@ svg {
   line-height: 1.3;
 }
 
+.composer-galgame-option-text-inner {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: inherit;
+}
+
+.composer-galgame-option[data-composer-option-marquee="true"]:is(:hover, :focus-visible) .composer-galgame-option-text-inner {
+  width: max-content;
+  max-width: none;
+  overflow: visible;
+  text-overflow: clip;
+  animation: composer-option-marquee var(--composer-option-marquee-duration, 4800ms) linear forwards;
+  will-change: transform;
+}
+
+@keyframes composer-option-marquee {
+  from {
+    transform: translateX(0);
+  }
+
+  to {
+    transform: translateX(calc(-1 * var(--composer-option-marquee-distance, 0px)));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-galgame-option[data-composer-option-marquee="true"]:is(:hover, :focus-visible) .composer-galgame-option-text-inner {
+    animation: none;
+    transform: translateX(calc(-1 * var(--composer-option-marquee-distance, 0px)));
+  }
+}
+
 .composer-galgame-options.is-loading .composer-galgame-option {
   animation: composerGalgameLoadingPulse 1.6s ease-in-out infinite;
 }
@@ -1848,6 +1964,45 @@ body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-g
   pointer-events: auto;
 }
 
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-options {
+  width: calc(100% - 76px);
+  max-width: 100%;
+  margin-right: auto;
+}
+
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option {
+  min-height: 38px;
+  padding: 8px 16px;
+  border: 0;
+  border-radius: 16px 0 0 16px;
+  background:
+    linear-gradient(
+      90deg,
+      rgba(206, 229, 252, 0.68) 0%,
+      rgba(232, 244, 255, 0.46) 52%,
+      rgba(247, 252, 255, 0.14) 82%,
+      rgba(255, 255, 255, 0) 100%
+    );
+  box-shadow: none;
+}
+
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option:hover:not(:disabled) {
+  background:
+    linear-gradient(
+      90deg,
+      rgba(190, 220, 249, 0.76) 0%,
+      rgba(224, 240, 255, 0.54) 52%,
+      rgba(244, 250, 255, 0.18) 82%,
+      rgba(255, 255, 255, 0) 100%
+    );
+  border-color: transparent;
+}
+
+body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option-text {
+  -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 78%, transparent 100%);
+  mask-image: linear-gradient(90deg, #000 0%, #000 78%, transparent 100%);
+}
+
 body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"][data-choice-layer-open="false"] {
   display: none;
 }
@@ -1898,7 +2053,9 @@ body.electron-chat-window.subtitle-web-host > .compact-chat-choice-anchor[data-c
   --compact-surface-active-width: var(--compact-surface-resize-width, var(--compact-surface-width, 430px));
   position: relative;
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
   padding-top: 4px;
   width: var(--compact-surface-active-width);
   overflow: visible;
@@ -1943,7 +2100,7 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 
 .compact-chat-surface-frame[data-compact-chat-state="input"] {
   gap: 0;
-  padding: 5px 62px 5px 10px;
+  padding: 5px 62px 5px 20px;
 }
 
 /* 输入态左侧拖拽把手：给一处稳定可抓的「移动文本框」区域。
@@ -2205,6 +2362,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 .compact-export-history-anchor.under-choice-prompt .compact-export-history-scroll,
 .compact-export-history-anchor.under-choice-prompt .compact-export-history-controls,
+.compact-export-history-anchor.under-choice-prompt .compact-export-history-music-mount,
 .compact-export-history-anchor.under-choice-prompt .compact-export-preview-region {
   opacity: 0.32;
   filter: blur(1.5px);
@@ -2214,6 +2372,12 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 .compact-export-history-anchor.under-choice-prompt .compact-export-history-bubble,
 .compact-export-history-anchor.under-choice-prompt .compact-export-history-empty {
+  pointer-events: none;
+}
+
+.compact-export-history-anchor.under-choice-prompt .music-bar-volume-slider-wrapper {
+  opacity: 0;
+  visibility: hidden;
   pointer-events: none;
 }
 
@@ -2231,7 +2395,6 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   padding: 4px 6px;
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
-  /* The fade mask is visual only; keep transparent history space pass-through. */
   pointer-events: none;
   -webkit-app-region: no-drag;
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, rgba(0, 0, 0, 0.78) 12px, #000 28px);
@@ -2251,8 +2414,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   margin-top: auto;
 }
 
-.compact-export-history-scroll:hover,
-.compact-export-history-scroll:focus-within {
+.compact-export-history-scroll[data-compact-scrollbar-visible="true"] {
   scrollbar-color: rgba(70, 160, 255, 0.42) transparent;
 }
 
@@ -2271,15 +2433,13 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   background-clip: padding-box;
 }
 
-.compact-export-history-scroll:hover::-webkit-scrollbar-thumb,
-.compact-export-history-scroll:focus-within::-webkit-scrollbar-thumb {
+.compact-export-history-scroll[data-compact-scrollbar-visible="true"]::-webkit-scrollbar-thumb {
   background:
     linear-gradient(180deg, rgba(86, 188, 255, 0.64), rgba(42, 140, 214, 0.42))
     padding-box;
 }
 
-.compact-export-history-scroll:hover::-webkit-scrollbar-thumb:hover,
-.compact-export-history-scroll:focus-within::-webkit-scrollbar-thumb:hover {
+.compact-export-history-scroll[data-compact-scrollbar-visible="true"]::-webkit-scrollbar-thumb:hover {
   background:
     linear-gradient(180deg, rgba(103, 202, 255, 0.82), rgba(36, 151, 217, 0.62))
     padding-box;
@@ -2307,10 +2467,17 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 .compact-export-history-anchor[data-compact-export-history-visibility="closing"] .compact-export-history-controls,
+.compact-export-history-anchor[data-compact-export-history-visibility="closing"] .compact-export-history-music-mount,
 .compact-export-history-anchor[data-compact-export-history-visibility="closing"] .compact-export-preview-region {
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.12s ease;
+}
+
+.compact-export-history-anchor[data-compact-export-history-visibility="closing"] .music-bar-volume-slider-wrapper {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 @keyframes compact-history-message-enter {
@@ -2771,6 +2938,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 .compact-export-history-controls,
+.compact-export-history-music-mount,
 .compact-export-preview-region {
   display: flex;
   align-items: center;
@@ -2787,6 +2955,138 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   -webkit-backdrop-filter: blur(8px) saturate(1.08);
   pointer-events: auto;
   -webkit-app-region: no-drag;
+}
+
+.compact-export-history-music-mount {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.compact-export-history-music-mount:empty {
+  display: none;
+}
+
+/* 历史面板内播放器：覆盖独立播放器的深色样式，贴合聊天记录的玻璃质感。 */
+.compact-export-history-music-mount > .music-player-bar {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  padding: 7px 8px;
+  gap: 8px;
+  border: 1px solid rgba(100, 184, 255, 0.2);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(237, 248, 255, 0.74));
+  color: #273042;
+  box-shadow: 0 8px 18px rgba(22, 48, 84, 0.1);
+  backdrop-filter: blur(10px) saturate(1.08);
+  -webkit-backdrop-filter: blur(10px) saturate(1.08);
+}
+
+.compact-export-history-music-mount .music-bar-cover {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  box-shadow: 0 4px 10px rgba(52, 100, 148, 0.18);
+}
+
+.compact-export-history-music-mount .music-bar-cover img {
+  border-radius: 8px;
+}
+
+.compact-export-history-music-mount .music-bar-info {
+  align-items: stretch;
+  text-align: left;
+}
+
+.compact-export-history-music-mount .music-bar-title-wrap {
+  margin-bottom: 1px;
+}
+
+.compact-export-history-music-mount .music-bar-title-seg {
+  color: #273042;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.compact-export-history-music-mount .music-bar-artist,
+.compact-export-history-music-mount .music-bar-time {
+  color: #5d7797;
+}
+
+.compact-export-history-music-mount .music-bar-artist {
+  font-size: 0.68rem;
+}
+
+.compact-export-history-music-mount .music-bar-time {
+  font-size: 0.64rem;
+}
+
+.compact-export-history-music-mount .music-bar-progress-container {
+  height: 4px;
+  margin: 4px 0 2px;
+  background: rgba(101, 136, 176, 0.16);
+}
+
+.compact-export-history-music-mount .music-bar-progress-fill {
+  background: linear-gradient(90deg, rgba(76, 176, 255, 0.88), rgba(112, 205, 239, 0.76));
+}
+
+.compact-export-history-music-mount .music-bar-play,
+.compact-export-history-music-mount .music-bar-volume-btn {
+  width: 28px;
+  height: 28px;
+  color: #eaf7ff;
+  background: linear-gradient(135deg, #2f8fcd, #56c5e8);
+  box-shadow: 0 5px 12px rgba(44, 122, 184, 0.2);
+}
+
+.compact-export-history-music-mount .music-bar-volume-btn {
+  color: #2f6f9f;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(100, 184, 255, 0.16);
+}
+
+.compact-export-history-music-mount .music-bar-close {
+  width: 22px;
+  height: 22px;
+  color: rgba(93, 119, 151, 0.76);
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.compact-export-history-music-mount .music-bar-close:hover {
+  color: #2f6f9f;
+  background: rgba(220, 242, 255, 0.94);
+}
+
+.compact-export-history-music-mount .music-bar-volume-slider-wrapper {
+  bottom: 36px;
+  border: 1px solid rgba(100, 184, 255, 0.18);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 10px 22px rgba(22, 48, 84, 0.14);
+}
+
+.compact-export-history-music-mount .music-bar-volume-slider {
+  background: rgba(101, 136, 176, 0.18);
+}
+
+.compact-export-history-music-mount .music-bar-volume-slider-fill {
+  background: linear-gradient(to top, rgba(76, 176, 255, 0.9), rgba(112, 205, 239, 0.8));
+}
+
+.compact-export-history-music-mount .music-bar-volume-slider-handle {
+  background: #f8fcff;
+  box-shadow: 0 0 0 1px rgba(72, 152, 220, 0.2), 0 3px 8px rgba(22, 48, 84, 0.16);
 }
 
 .compact-export-history-controls {
@@ -4061,9 +4361,40 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   background: rgba(28, 28, 46, 0.91);
 }
 
+[data-theme="dark"] .composer-attachment-viewport {
+  border-color: rgba(116, 187, 255, 0.18);
+  background: linear-gradient(180deg, rgba(38, 48, 68, 0.72), rgba(23, 35, 50, 0.62));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 8px 20px rgba(0, 0, 0, 0.22);
+}
+
+[data-theme="dark"] .composer-attachment-viewport-compact {
+  border-color: rgba(177, 216, 255, 0.24);
+  background: linear-gradient(180deg, rgba(31, 48, 66, 0.68), rgba(15, 29, 46, 0.6));
+  box-shadow:
+    0 0 0 1px rgba(132, 184, 236, 0.1),
+    0 8px 18px rgba(0, 0, 0, 0.18);
+}
+
+[data-theme="dark"] .composer-attachments {
+  scrollbar-color: rgba(95, 199, 255, 0.38) transparent;
+}
+
+[data-theme="dark"] .composer-attachments::-webkit-scrollbar-thumb {
+  background: rgba(95, 199, 255, 0.38);
+}
+
 [data-theme="dark"] .composer-attachment-card {
-  border-color: #444;
-  background: #2a2a3a;
+  border-color: rgba(116, 187, 255, 0.22);
+  background: rgba(33, 45, 62, 0.82);
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.24);
+}
+
+[data-theme="dark"] .composer-attachment-remove {
+  border-color: rgba(222, 240, 255, 0.26);
+  background: rgba(10, 18, 30, 0.72);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.34);
 }
 
 [data-theme="dark"] .composer-tool-btn:hover {
@@ -4192,6 +4523,31 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   color: #44b7fe;
 }
 
+[data-theme="dark"] body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option {
+  background:
+    linear-gradient(
+      90deg,
+      rgba(55, 113, 164, 0.58) 0%,
+      rgba(43, 83, 124, 0.38) 52%,
+      rgba(25, 54, 84, 0.14) 82%,
+      rgba(8, 17, 30, 0) 100%
+    );
+  border-color: transparent;
+  color: #e8f3ff;
+}
+
+[data-theme="dark"] body > .compact-chat-choice-anchor[data-chat-surface-mode="compact"] .composer-galgame-option:hover:not(:disabled) {
+  background:
+    linear-gradient(
+      90deg,
+      rgba(66, 132, 188, 0.66) 0%,
+      rgba(50, 98, 145, 0.46) 52%,
+      rgba(30, 65, 100, 0.18) 82%,
+      rgba(8, 17, 30, 0) 100%
+    );
+  border-color: transparent;
+}
+
 [data-theme="dark"] .composer-input-shell {
   background: rgba(42, 42, 60, 0.85);
   border-color: rgba(255, 255, 255, 0.08);
@@ -4272,20 +4628,17 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   scrollbar-color: transparent transparent;
 }
 
-[data-theme="dark"] .compact-export-history-scroll:hover,
-[data-theme="dark"] .compact-export-history-scroll:focus-within {
+[data-theme="dark"] .compact-export-history-scroll[data-compact-scrollbar-visible="true"] {
   scrollbar-color: rgba(68, 183, 254, 0.46) transparent;
 }
 
-[data-theme="dark"] .compact-export-history-scroll:hover::-webkit-scrollbar-thumb,
-[data-theme="dark"] .compact-export-history-scroll:focus-within::-webkit-scrollbar-thumb {
+[data-theme="dark"] .compact-export-history-scroll[data-compact-scrollbar-visible="true"]::-webkit-scrollbar-thumb {
   background:
     linear-gradient(180deg, rgba(95, 199, 255, 0.68), rgba(47, 145, 224, 0.48))
     padding-box;
 }
 
-[data-theme="dark"] .compact-export-history-scroll:hover::-webkit-scrollbar-thumb:hover,
-[data-theme="dark"] .compact-export-history-scroll:focus-within::-webkit-scrollbar-thumb:hover {
+[data-theme="dark"] .compact-export-history-scroll[data-compact-scrollbar-visible="true"]::-webkit-scrollbar-thumb:hover {
   background:
     linear-gradient(180deg, rgba(125, 214, 255, 0.86), rgba(59, 171, 246, 0.68))
     padding-box;
@@ -4312,10 +4665,46 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 [data-theme="dark"] .compact-export-history-controls,
+[data-theme="dark"] .compact-export-history-music-mount,
 [data-theme="dark"] .compact-export-preview-region {
   border-color: rgba(116, 187, 255, 0.22);
   background: rgba(23, 35, 50, 0.28);
   box-shadow: 0 8px 18px rgba(0, 0, 0, 0.22);
+}
+
+[data-theme="dark"] .compact-export-history-music-mount {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+[data-theme="dark"] .compact-export-history-music-mount > .music-player-bar {
+  border-color: rgba(116, 187, 255, 0.22);
+  background: rgba(33, 45, 62, 0.88);
+  color: #e8f0fb;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.28);
+}
+
+[data-theme="dark"] .compact-export-history-music-mount .music-bar-title-seg {
+  color: #e8f0fb;
+}
+
+[data-theme="dark"] .compact-export-history-music-mount .music-bar-artist,
+[data-theme="dark"] .compact-export-history-music-mount .music-bar-time {
+  color: rgba(210, 225, 244, 0.72);
+}
+
+[data-theme="dark"] .compact-export-history-music-mount .music-bar-progress-container,
+[data-theme="dark"] .compact-export-history-music-mount .music-bar-volume-slider {
+  background: rgba(202, 224, 248, 0.16);
+}
+
+[data-theme="dark"] .compact-export-history-music-mount .music-bar-volume-btn,
+[data-theme="dark"] .compact-export-history-music-mount .music-bar-close,
+[data-theme="dark"] .compact-export-history-music-mount .music-bar-volume-slider-wrapper {
+  border-color: rgba(116, 187, 255, 0.18);
+  background: rgba(26, 48, 70, 0.86);
+  color: #bfe2ff;
 }
 
 [data-theme="dark"] .compact-export-history-count,
@@ -4431,6 +4820,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   .message-row-assistant,
   .compact-export-history-message,
   .compact-export-history-bubble,
+  .compact-export-history-music-mount,
   .compact-history-visibility-handle::before,
   .compact-history-visibility-handle::after,
   .text-chunk-reveal,

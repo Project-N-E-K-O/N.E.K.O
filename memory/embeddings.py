@@ -315,8 +315,8 @@ def detect_total_ram_gb() -> float | None:
 # Known-good thresholds for CPU microarchitectures that ship AVX-VNNI.
 # Family/model is a stable hardware identifier readable from
 # ``HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0\Identifier`` on
-# Windows and ``/proc/cpuinfo`` on Linux — no executable-page allocation,
-# no inline machine code, no AV heuristic match.
+# Windows and ``/proc/cpuinfo`` on Linux — a plain registry / text read,
+# nothing an AV heuristic can mistake for a low-level CPU-probing trick.
 #
 # Conservative: a "yes" from the table is authoritative (confirmed=True);
 # an "I don't know" falls through to numpy CPU features / /proc/cpuinfo so
@@ -358,7 +358,7 @@ _AMD_ZEN3_MODEL_RANGES_FAMILY_19 = (
 
 
 def _read_cpu_family_model() -> tuple[str, int, int] | None:
-    """Return ``(vendor, family, model)`` from a non-shellcode source,
+    """Return ``(vendor, family, model)`` from a plain registry/text read,
     or None when neither the Windows registry nor ``/proc/cpuinfo``
     answered.
 
@@ -423,7 +423,7 @@ def _vnni_via_family_model() -> tuple[bool, bool]:
     answer is final. ``(False, False)`` means the table doesn't know —
     let the caller fall through to numpy CPU features / ``/proc/cpuinfo``.
 
-    Replaces the deleted CPUID shellcode probe. Strictly less precise
+    Replaces the deleted low-level CPUID probe. Strictly less precise
     in one direction (brand-new microarchitectures that ship before the
     table is updated stay inconclusive instead of authoritative), but
     the consumer's ``auto`` quantization path treats inconclusive as
@@ -474,17 +474,17 @@ def _numpy_cpu_features() -> dict | None:
     numpy probes CPU features in its compiled C core at import (for kernel
     dispatch) and exposes the result as ``__cpu_features__`` — a plain
     ``{feature_name: bool}`` dict. We read it instead of calling py-cpuinfo
-    because py-cpuinfo detects features by allocating an *executable* memory
-    page and running inline CPUID machine code inside a ``multiprocessing``
-    child (its ``ASM`` class: VirtualAlloc → VirtualProtect(PAGE_EXECUTE) →
-    CFUNCTYPE → call). That is the exact VirtualAlloc+shellcode pattern
-    PR #1437 stripped out of *this* module — Huorong's heuristic scanner
-    flags it as ``Trojan/Python.ShellLoader`` and quarantines this file (it's
-    the module on the import stack when py-cpuinfo's cpuid subprocess fires,
-    which is why the AV report blames ``embeddings.py`` running under
-    ``multiprocessing.spawn``). numpy's detection is pure compiled C — no
-    user-space RWX page, no subprocess — so the heuristic has nothing to
-    bite, and numpy is already a hard dependency we import for inference.
+    because py-cpuinfo probes the CPU by generating a tiny native routine at
+    runtime and calling into it from a child process — a low-level trick that
+    antivirus heuristics (notably Huorong) match and act on, quarantining
+    whichever Python file happens to be on the import stack at the time. The
+    launcher starts the memory server as a spawn child that re-imports this
+    module, so on Windows that file is ``embeddings.py`` — which is why the AV
+    report blamed it (the report's ``--multiprocessing-fork`` line is that
+    spawn child, not the probe). numpy's detection is pure compiled C with
+    none of that, so the heuristic has nothing to bite, and numpy is already a
+    hard dependency we import for inference. See PR #1437 / #1525 and this
+    module's git history for the full write-up.
 
     Returns None on exotic builds where the private attribute is gone, so
     callers fall through to ``/proc/cpuinfo`` (Linux) or stay inconclusive.
@@ -532,7 +532,7 @@ def _np_feature(feats: dict, *needles: str) -> bool:
 def _detect_int8_fast_path_x86() -> tuple[bool, bool]:
     """x86 INT8 fast path = AVX-VNNI (client) or AVX512-VNNI (server).
 
-    Detection order (no shellcode, no subprocess):
+    Detection order (plain reads only, no child process):
       1. CPU family/model lookup (:func:`_vnni_via_family_model`) — the
          only path that authoritatively answers for Alder-Lake+ Intel
          *client* CPUs, whose AVX-VNNI flag numpy's feature map does not
@@ -571,7 +571,7 @@ def _detect_int8_fast_path_x86() -> tuple[bool, bool]:
 def _detect_int8_fast_path_arm() -> tuple[bool, bool]:
     """ARM64 INT8 fast path = ARMv8.2-A NEON sdot/udot (``asimddp`` feature).
 
-    Strategy (no shellcode, no subprocess):
+    Strategy (plain reads only, no child process):
 
       * macOS — Apple Silicon (M1+) universally has dotprod; Apple has
         never shipped an ARM Mac without it, so we short-circuit to
@@ -588,7 +588,7 @@ def _detect_int8_fast_path_arm() -> tuple[bool, bool]:
         is unavailable. The ARM SBC ecosystem still has plenty of
         Cortex-A53 / A57 / A72 cores that predate dotprod (Pi-3 class).
       * Windows — ``IsProcessorFeaturePresent`` kernel32 API (a documented
-        call, not executable-memory injection). Its 0 return is ambiguous
+        feature-query call, nothing low-level). Its 0 return is ambiguous
         (lacks dotprod OR old Win build that returns 0 for unknown feature
         ids), reported as inconclusive so ``auto`` stays optimistic.
 
@@ -734,9 +734,9 @@ def detect_avx2_details() -> tuple[bool, bool]:
     (SSE-only) int8 would be too slow to auto-enable.
 
     Source is numpy ``__cpu_features__['AVX2']`` (compiled C probe) rather
-    than py-cpuinfo, whose CPUID probe allocates an executable page and runs
-    machine code in a multiprocessing child — the VirtualAlloc+shellcode
-    pattern Huorong quarantines as ShellLoader (see :func:`_numpy_cpu_features`).
+    than py-cpuinfo, whose CPU probe runs a generated native routine in a
+    child process — the low-level pattern Huorong's heuristic quarantines
+    this file over (see :func:`_numpy_cpu_features`).
     ``absence_confirmed=False`` means no source could read CPU features —
     caller stays optimistic (picks int8), matching the VNNI-inconclusive policy.
     """

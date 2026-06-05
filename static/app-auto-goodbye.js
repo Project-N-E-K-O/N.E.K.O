@@ -63,6 +63,9 @@
         cat3DragReleaseCount: 0,
         dragDemotionTier: TIER_NONE,
         dragDemotionStartedAt: 0,
+        // 变猫时刻 + 入口（自动 idle / 手动请离开），供"变回时"猫咪专属问候独立计时
+        goodbyeEnteredAt: 0,
+        goodbyeWasAuto: false,
     };
 
     function nowMs() {
@@ -696,6 +699,11 @@
         window.addEventListener('live2d-goodbye-click', (event) => {
             const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
             clearConversationGrace();
+            // 记录"变成猫咪"的时刻与入口，供变回时按猫咪停留时长触发专属问候。
+            // goodbye-click 只在真正进入猫咪态时派发（手动按钮 / 自动 idle-timeout），
+            // 直接覆盖即可：旧值会在 handleReturn 清零，跨角色切换等异常残留会被下次进入覆盖。
+            state.goodbyeEnteredAt = nowMs();
+            state.goodbyeWasAuto = detail.autoGoodbye === true;
             if (detail.autoGoodbye === true) {
                 state.autoGoodbyeTriggered = true;
                 state.lastReason = typeof detail.reason === 'string' ? detail.reason : 'idle-timeout';
@@ -712,6 +720,22 @@
         });
 
         const handleReturn = () => {
+            // 变回猫娘前，按"作为猫咪待了多久 + 此刻所处 tier（清醒/打盹/熟睡）"
+            // 请求一次专属问候。tier 必须在 setVisualTier(NONE) 清空之前读取。
+            if (state.goodbyeEnteredAt > 0) {
+                const durationSeconds = Math.max(0, Math.floor((nowMs() - state.goodbyeEnteredAt) / 1000));
+                try {
+                    window.dispatchEvent(new CustomEvent('neko:cat-greeting-check', {
+                        detail: {
+                            durationSeconds: durationSeconds,
+                            tier: state.visualTier,
+                            wasAuto: !!state.goodbyeWasAuto,
+                        },
+                    }));
+                } catch (_) {}
+            }
+            state.goodbyeEnteredAt = 0;
+            state.goodbyeWasAuto = false;
             clearConversationGrace();
             state.autoGoodbyeTriggered = false;
             clearDragTierMemory();

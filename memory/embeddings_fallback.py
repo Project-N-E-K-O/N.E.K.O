@@ -2,9 +2,9 @@
 """Import-time fallback stubs for :mod:`memory.embeddings`.
 
 This module exists so that if ``memory/embeddings.py`` is quarantined or
-deleted by an external actor (over-eager antivirus has done both: the
-historical CPUID probe was flagged ``Trojan/Python.ShellLoader.i`` and
-the file was removed on disk while N.E.K.O was running), the memory
+deleted by an external actor (over-eager antivirus has done both: a
+historical low-level CPU probe was flagged as a trojan and the file was
+removed on disk while N.E.K.O was running), the memory
 subsystem still imports successfully and degrades to the pre-vector code
 path instead of crashing with ``ImportError`` at module load.
 
@@ -16,8 +16,8 @@ would answer when its :class:`EmbeddingService` is in the sticky
 pipeline, so consumers don't need any extra ``hasattr`` guards.
 
 Kept intentionally pure-Python with no imports beyond ``logging`` and no
-ctypes / VirtualAlloc / inline machine code, so AV heuristic scanners
-have nothing to latch onto here.
+low-level CPU-probing tricks, so AV heuristic scanners have nothing to
+latch onto here.
 """
 from __future__ import annotations
 

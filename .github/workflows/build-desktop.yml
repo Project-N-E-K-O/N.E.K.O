@@ -337,6 +337,12 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package=tiktoken"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=tiktoken_ext"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=onnxruntime"
+          # onnxruntime.transformers/ is a benchmark + model-conversion toolbox
+          # nothing at runtime imports (rapidocr uses only the core InferenceSession).
+          # --include-package=onnxruntime would recurse and compile the whole subtree,
+          # including a 130k+ line gpt2 benchmark C unit that crashes the C backend.
+          # Synced with build_nuitka.bat.
+          NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=onnxruntime.transformers"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=tokenizers"
           # bilibili_dm/bilibili_danmaku plugins import bilibili_api; compile the
           # package itself (CI previously only carried its package-data).
@@ -502,6 +508,12 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=tiktoken
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=tiktoken_ext
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=onnxruntime
+          rem onnxruntime.transformers/ is a benchmark + model-conversion toolbox
+          rem nothing at runtime imports (rapidocr uses only the core InferenceSession).
+          rem --include-package=onnxruntime would recurse and compile the whole subtree,
+          rem including a 130k+ line gpt2 benchmark C unit that crashes the C backend.
+          rem Synced with build_nuitka.bat.
+          set NUITKA_OPTS=%NUITKA_OPTS% --nofollow-import-to=onnxruntime.transformers
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package=tokenizers
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=jinja2
           set NUITKA_OPTS=%NUITKA_OPTS% --include-package-data=certifi

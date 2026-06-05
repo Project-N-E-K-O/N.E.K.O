@@ -4,6 +4,7 @@ from pathlib import Path
 APP_REACT_CHAT_WINDOW_PATH = Path(__file__).resolve().parents[2] / "static" / "app-react-chat-window.js"
 APP_BUTTONS_PATH = Path(__file__).resolve().parents[2] / "static" / "app-buttons.js"
 APP_CHAT_EXPORT_PATH = Path(__file__).resolve().parents[2] / "static" / "app-chat-export.js"
+MUSIC_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "music_ui.js"
 STATIC_INDEX_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "index.css"
 REACT_CHAT_STYLES_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "styles.css"
 REACT_CHAT_APP_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "App.tsx"
@@ -282,6 +283,60 @@ def test_compact_surface_resize_handles_keep_width_in_dom_geometry_contract():
     assert "right: -4px;" in styles
 
 
+def test_mobile_web_compact_surface_respects_width_bounds_and_position_vars():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    styles = STATIC_INDEX_CSS_PATH.read_text(encoding="utf-8")
+    app_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
+
+    mobile_compact_block = css_block(
+        styles,
+        'body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) {',
+        'body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell #react-chat-window-root',
+    )
+    mobile_compact_overflow_block = css_block(
+        styles,
+        'body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root,',
+        'body:not(.electron-chat-window):where(:not(.lanlan-pet-mode)) #react-chat-window-shell .app-shell',
+    )
+    metrics_block = script.split("function getCompactSurfaceMetrics()", 1)[1].split(
+        "function clampCompactSurfacePosition(left, top, metrics)",
+        1,
+    )[0]
+    stored_width_block = script.split("function loadCompactSurfaceStoredWidth()", 1)[1].split(
+        "function saveCompactSurfacePosition",
+        1,
+    )[0]
+    resize_clamp_block = script.split("function clampCompactSurfaceResizeWidthForSide", 1)[1].split(
+        "function applyCompactSurfaceResizeRequest",
+        1,
+    )[0]
+    mobile_width_bounds_block = script.split("function getCompactSurfaceMobileWidthBounds()", 1)[1].split(
+        "function getCompactSurfaceResizeMaxWidth()",
+        1,
+    )[0]
+
+    assert "COMPACT_SURFACE_RESIZE_MOBILE_MIN_WIDTH = 280" in app_source
+    assert "COMPACT_SURFACE_RESIZE_MOBILE_VIEWPORT_GUTTER = 16" in app_source
+    assert "getCompactSurfaceResizeMinAvailableWidth" in app_source
+    assert "getCompactSurfaceResizeViewportGutter" in app_source
+    assert "maxAvailableWidth - viewportGutter" in app_source
+    assert "window.innerWidth <= 768" in app_source
+    assert "lanlan-pet-mode" in app_source
+    assert "__LANLAN_IS_ELECTRON_PET__" in app_source
+    assert "COMPACT_SURFACE_MOBILE_MIN_WIDTH = 280" in script
+    assert "COMPACT_SURFACE_MOBILE_VIEWPORT_GUTTER" in script
+    assert "COMPACT_SURFACE_RESIZE_MAX_WIDTH" in mobile_width_bounds_block
+    assert "viewportWidth - COMPACT_SURFACE_MOBILE_VIEWPORT_GUTTER" in mobile_width_bounds_block
+    assert "isMobileWidth() && storedWidth" in metrics_block
+    assert "getCompactSurfaceMobileWidthBounds().minWidth" in stored_width_block
+    assert "getCompactSurfaceMobileWidthBounds().minWidth" in resize_clamp_block
+    assert "width: var(--compact-surface-width, calc(100vw - 16px)) !important;" in mobile_compact_block
+    assert "left: var(--compact-surface-left, 8px) !important;" in mobile_compact_block
+    assert "right: auto;" in mobile_compact_block
+    assert ".chat-window.chat-surface-mode-compact" in mobile_compact_overflow_block
+    assert "overflow: visible;" in mobile_compact_overflow_block
+
+
 def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
@@ -510,6 +565,10 @@ def test_compact_surface_drag_uses_declared_surface_and_no_drag_exclusions():
     )[0]
     assert "if (!isCompactDragSurfaceTarget(event.target)) return;" in touch_block
     assert "compactSurface: true" in touch_block
+    assert "compact capsule must still synthesize click" in touch_block
+    assert "event.preventDefault();" not in touch_block
+    assert "event.stopPropagation();" not in touch_block
+    assert "}, { capture: true, passive: true });" in touch_block
 
 
 def test_moved_drag_suppresses_trailing_release_click():
@@ -754,6 +813,7 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
     panel_source = COMPACT_EXPORT_HISTORY_PANEL_PATH.read_text(encoding="utf-8")
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    music_ui_source = MUSIC_UI_PATH.read_text(encoding="utf-8")
 
     anchor_block = css_block(
         styles,
@@ -771,7 +831,7 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
     bubble_block = css_block(styles, ".compact-export-history-bubble {", ".compact-export-history-message.is-disabled")
     shared_hit_block = css_block(
         styles,
-        ".compact-export-history-controls,\n.compact-export-preview-region {",
+        ".compact-export-history-controls,\n.compact-export-history-music-mount,\n.compact-export-preview-region {",
         ".compact-export-history-controls {",
     )
     scroll_jsx_block = panel_source.split('className="compact-export-history-scroll"', 1)[1].split(
@@ -786,6 +846,10 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
         'compact-export-history-controls-content',
         1,
     )[0]
+    music_hit_block = panel_source.split('className="compact-export-history-music-mount"', 1)[1].split(
+        'className="compact-export-history-controls"',
+        1,
+    )[0]
 
     assert "pointer-events: none;" in anchor_block
     assert "pointer-events: none;" in panel_block
@@ -794,7 +858,7 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
     assert "pointer-events: none;" in content_block
     assert "pointer-events: none;" in message_block
     assert "pointer-events: auto;" in bubble_block
-    assert ".compact-export-history-controls,\n.compact-export-preview-region {" in styles
+    assert ".compact-export-history-controls,\n.compact-export-history-music-mount,\n.compact-export-preview-region {" in styles
     assert "pointer-events: auto;" in shared_hit_block
     assert "function getCompactHistoryScrollbarRect(element, parentRect)" in script
     assert "id: 'history:scrollbar'" in script
@@ -805,47 +869,86 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
     assert "data-compact-hit-region-id={historyInteractive ? 'history:controls' : undefined}" in panel_source
     assert "data-compact-hit-region={historyInteractive ? 'true' : undefined}" in controls_hit_block
     assert "data-compact-hit-region-kind={historyInteractive ? 'controls' : undefined}" in controls_hit_block
+    assert "data-compact-hit-region-id={historyInteractive ? 'history:music-player' : undefined}" in panel_source
+    assert 'data-music-player-mount="compact-history"' in music_hit_block
+    assert "data-compact-hit-region={historyInteractive ? 'true' : undefined}" in music_hit_block
+    assert "data-compact-hit-region-kind={historyInteractive ? 'music' : undefined}" in music_hit_block
+    assert "function getPreferredMusicMountTarget()" in music_ui_source
+    assert "function isCompactHistoryMusicMountInteractive(mount)" in music_ui_source
+    assert "document.querySelector('.compact-export-history-music-mount')" in music_ui_source
+    assert "mount.getAttribute('data-compact-hit-region') !== 'true'" in music_ui_source
+    assert "data-compact-export-history-visibility') !== 'open'" in music_ui_source
+    assert "document.getElementById('music-player-mount')" in music_ui_source
+    assert "document.getElementById(MUSIC_CONFIG.dom.containerId)" in music_ui_source
+    assert "mutation.type === 'attributes' && isMusicMountMutationTarget(mutation.target)" in music_ui_source
+    assert "attributes: true" in music_ui_source
+    assert "'data-compact-export-history-visibility'" in music_ui_source
+    assert "'data-compact-hit-region'" in music_ui_source
+    assert "mountMusicBar(musicBar)" in music_ui_source
+    assert music_ui_source.count('data-compact-hit-region-id="history:music-player:volume"') == 2
+    assert music_ui_source.count('data-compact-hit-region-kind="music-volume"') == 2
+    assert ".compact-export-history-anchor.under-choice-prompt .music-bar-volume-slider-wrapper" in styles
+    assert '.compact-export-history-anchor[data-compact-export-history-visibility="closing"] .music-bar-volume-slider-wrapper' in styles
     assert 'data-compact-hit-region-id="history:preview"' in panel_source
 
 
 def test_subtitle_web_host_keeps_compact_history_transparent_wrappers_click_through():
     styles = STATIC_INDEX_CSS_PATH.read_text(encoding="utf-8")
 
-    broad_surface_selector = (
+    compact_surface_prefix = (
         'body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):'
-        'not(.is-collapsing):not(.is-expanding) [data-compact-geometry-owner="surface"] *'
+        'not(.is-collapsing):not(.is-expanding)'
     )
-    history_anchor_selector = (
-        'body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):'
-        'not(.is-collapsing):not(.is-expanding) .compact-export-history-anchor'
+    broad_surface_rule = (
+        f'{compact_surface_prefix} [data-compact-geometry-owner="surface"],\n'
+        f'{compact_surface_prefix} [data-compact-geometry-owner="surface"] *,\n'
+        f'{compact_surface_prefix} #reactChatWindowMinimizeButton,\n'
+        f'{compact_surface_prefix} #reactChatWindowMinimizeButton *,\n'
+        f'{compact_surface_prefix} .compact-input-tool-fan[data-compact-input-tool-fan-open="true"],\n'
+        f'{compact_surface_prefix} .compact-input-tool-fan[data-compact-input-tool-fan-open="true"] * {{\n'
+        "    pointer-events: auto;\n"
+        "}"
     )
-    history_bubble_selector = (
-        'body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):'
-        'not(.is-collapsing):not(.is-expanding) .compact-export-history-bubble'
+    fallback_music_interactive_rule = (
+        f'{compact_surface_prefix} #music-player-mount,\n'
+        f'{compact_surface_prefix} #music-player-mount * {{\n'
+        "    pointer-events: auto;\n"
+        "}"
+    )
+    history_passthrough_rule = (
+        f'{compact_surface_prefix} .compact-export-history-anchor,\n'
+        f'{compact_surface_prefix} .compact-export-history-panel,\n'
+        f'{compact_surface_prefix} .compact-export-history-scroll,\n'
+        f'{compact_surface_prefix} .compact-export-history-scroll-content,\n'
+        f'{compact_surface_prefix} .compact-export-history-message {{\n'
+        "    pointer-events: none;\n"
+        "}"
+    )
+    history_interactive_rule = (
+        f'{compact_surface_prefix} .compact-export-history-bubble,\n'
+        f'{compact_surface_prefix} .compact-export-history-controls,\n'
+        f'{compact_surface_prefix} .compact-export-history-music-mount,\n'
+        f'{compact_surface_prefix} .compact-export-preview-region {{\n'
+        "    pointer-events: auto;\n"
+        "}"
+    )
+    history_music_volume_hidden_rule = (
+        f'{compact_surface_prefix} .compact-export-history-anchor.under-choice-prompt .music-bar-volume-slider-wrapper,\n'
+        f'{compact_surface_prefix} .compact-export-history-anchor[data-compact-export-history-visibility="closing"] .music-bar-volume-slider-wrapper {{\n'
+        "    pointer-events: none;\n"
+        "}"
     )
 
-    assert broad_surface_selector in styles
-    assert history_anchor_selector in styles
-    assert history_bubble_selector in styles
-    assert styles.index(broad_surface_selector) < styles.index(history_anchor_selector)
-
-    passthrough_block = styles.split(history_anchor_selector, 1)[1].split(history_bubble_selector, 1)[0]
-    interactive_block = styles.split(history_bubble_selector, 1)[1].split(
-        'body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #reactChatWindowMinimizeButton',
-        1,
-    )[0]
-
-    for selector in (
-        ".compact-export-history-panel",
-        ".compact-export-history-scroll",
-        ".compact-export-history-scroll-content",
-        ".compact-export-history-message",
-    ):
-        assert selector in passthrough_block
-    assert "pointer-events: none;" in passthrough_block
-    assert ".compact-export-history-controls" in interactive_block
-    assert ".compact-export-preview-region" in interactive_block
-    assert "pointer-events: auto;" in interactive_block
+    assert broad_surface_rule in styles
+    assert fallback_music_interactive_rule in styles
+    assert history_passthrough_rule in styles
+    assert history_interactive_rule in styles
+    assert history_music_volume_hidden_rule in styles
+    assert styles.index(broad_surface_rule) < styles.index(fallback_music_interactive_rule)
+    assert styles.index(fallback_music_interactive_rule) < styles.index(history_passthrough_rule)
+    assert styles.index(history_passthrough_rule) < styles.index(history_interactive_rule)
+    assert styles.index(history_interactive_rule) < styles.index(history_music_volume_hidden_rule)
+    assert ".compact-export-history-scroll,\n" in history_passthrough_rule
 
 
 def test_compact_inline_export_uses_windowless_app_chat_export_api():
@@ -914,3 +1017,46 @@ def test_compact_history_drop_payload_suppresses_real_send_in_voice_mode_only_at
     assert "compactHistoryDropPayloadQueue = Promise.resolve();" in script
     assert "sendCompactHistoryDropPayloadNow(payload)" in script
     assert "prepareCompactHistoryDropSubmit" in drop_block
+
+
+def test_chat_image_file_drop_uses_import_pipeline_and_blocks_browser_navigation():
+    script = APP_BUTTONS_PATH.read_text(encoding="utf-8")
+
+    assert "function getImageFilesFromFileList(fileList)" in script
+    assert "return file instanceof File && (file.type === '' || isLikelyImageFile(file));" in script
+    assert "!file.type ||" not in script
+    assert "return /^files$/i.test(String(type || ''));" in script
+    assert "mod.importImageFilesToPendingList = function importImageFilesToPendingList(files, options)" in script
+    assert "return Promise.resolve({ succeeded: 0, failed: inputFiles.length });" in script
+    assert "window.t('app.importImagePartial', { success: succeeded, failed: failed })" in script
+
+    change_anchor = "input.addEventListener('change', function (event) {"
+    change_block = script.split(change_anchor, 1)[1].split(
+        "mod._importImageInput = input;",
+        1,
+    )[0]
+    assert script.index("function getImageFilesFromFileList(fileList)") < script.index(change_anchor)
+    assert script.index(change_anchor) < script.index(
+        "mod.importImageFilesToPendingList = function importImageFilesToPendingList(files, options)"
+    )
+    assert "mod.importImageFilesToPendingList(files, { logPrefix: '[导入图片]' })" in change_block
+
+    drag_block = script.split("document.addEventListener('dragover'", 1)[1].split(
+        "document.addEventListener('drop'",
+        1,
+    )[0]
+    drop_block = script.split("document.addEventListener('drop'", 1)[1].split(
+        "mod.ensureImportImageInput();",
+        1,
+    )[0]
+
+    assert "shouldHandleChatFileDrop(e)" in drag_block
+    assert "e.preventDefault();" in drag_block
+    assert "e.stopPropagation();" in drag_block
+    assert "e.dataTransfer.dropEffect = isHomeTutorialInteractionLocked() ? 'none' : 'copy';" in drag_block
+
+    assert "shouldHandleChatFileDrop(e)" in drop_block
+    assert "e.preventDefault();" in drop_block
+    assert "e.stopPropagation();" in drop_block
+    assert "showHomeTutorialLockedToast();" in drop_block
+    assert "mod.importImageFilesToPendingList(files, { logPrefix: '[拖放图片]' });" in drop_block

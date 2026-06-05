@@ -402,6 +402,27 @@
             background: #40C5F1;
             color: #fff;
         }
+        @media (max-width: 520px) {
+            body .page-title-bar {
+                gap: 8px;
+                padding: 14px clamp(8px, 3vw, 18px);
+            }
+            .page-title-bar h1,
+            .page-title-bar h2 {
+                flex: 1 1 auto;
+                min-width: 0;
+                overflow: hidden;
+            }
+            .title-bar-buttons {
+                flex: 0 0 auto;
+                gap: clamp(4px, 1.5vw, 8px);
+            }
+            .minimize-btn,
+            .maximize-btn {
+                width: clamp(28px, 10vw, 32px);
+                height: clamp(28px, 10vw, 32px);
+            }
+        }
     </style>
 </head>
 
@@ -494,9 +515,17 @@
 <div class="tab-contents">
 <!-- 订阅内容标签页 -->
 <div id="subscriptions-content" class="tab-content">
-<div class="section-card">
-<div class="section-header">
-<h2 data-i18n="steam.mySubscriptions">我的订阅</h2>
+<div class="subscription-view-area chara-cards-view-area">
+<div class="chara-cards-header-bg subscription-header-bg">
+<div class="chara-cards-header-row subscription-header-row">
+<div class="card-info-title-area subscription-title-area">
+<div class="card-info-header-text">
+<svg width="15" height="15" viewBox="0 0 24 24" fill="#40C5F1" xmlns="http://www.w3.org/2000/svg"><path d="M12 2 L14.5 9.5 L22 12 L14.5 14.5 L12 22 L9.5 14.5 L2 12 L9.5 9.5 Z" stroke="#7EC8E3" stroke-width="2" stroke-linejoin="round" fill="#40C5F1"/></svg>
+<span data-i18n="steam.mySubscriptions">我的订阅</span>
+</div>
+<img src="/static/icons/paw_ui.png" class="card-info-paw" alt="">
+</div>
+</div>
 </div>
                     
 <div class="filter-controls">

@@ -1590,7 +1590,9 @@
             "sweetLady": "Сладкая леди",
             "frailMaiden": "Хрупкая девушка",
             "childishMaiden": "Детская девушка",
-            "yui_cn": "YUI (китайский)"
+            "yui_cn": "YUI (китайский)",
+            "yui": "YUI",
+            "default": "По умолчанию"
         },
         "cloneMethod": "Способ клонирования",
         "cloneMethodFile": "Локальный файл",
@@ -1911,7 +1913,7 @@
         "systemPrompt": "Системный промпт (Редактируйте с осторожностью)",
         "systemPromptWarning": "Системный промпт — Изменения могут вызвать непредвиденное поведение.",
         "addField": "Добавить поле",
-        "aiAssist": "ИИ-помощник",
+        "aiAssist": "Кошачий помощник",
         "aiCompanionSub": "Помощник по созданию карт · YUI вместо кота-разработчика",
         "aiCompanionClose": "Закрыть",
         "aiCompanionMinimize": "Свернуть",
@@ -2110,6 +2112,7 @@
         "textChattingShort": "Текстовый чат",
         "capturing": "Захват...",
         "importImageAdded": "Добавлено изображений: {{count}}. Они будут отправлены вместе",
+        "importImagePartial": "Добавлено изображений: {{success}}. Не удалось импортировать: {{failed}}",
         "importImageFailed": "Не удалось импортировать изображение",
         "screenshotAdded": "Скриншот добавлен, нажмите отправить",
         "screenshotFailed": "Ошибка скриншота",

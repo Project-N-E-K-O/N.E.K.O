@@ -17,6 +17,7 @@ from plugin.sdk.plugin import (
     NekoPluginBase,
     Ok,
     SdkError,
+    custom_event,
     lifecycle,
     neko_plugin,
     plugin_entry,
@@ -78,6 +79,17 @@ from .tutor_llm_agent import diagnostic_code_for_exception
 from .ui_api import build_open_ui_payload
 from .ui_api import build_contribution_settings_payload, build_knowledge_map_payload
 from .ui_api import build_habit_dashboard_payload, build_pomodoro_status_payload
+from .voice_filter import VoiceFilter, _derive_subject, build_context_for_catgirl
+
+
+def _voice_session_key(lanlan_name: str, metadata: Mapping[str, Any] | None) -> str:
+    for key in ("voice_session_id", "session_id", "conversation_id", "request_session_id"):
+        value = metadata.get(key) if isinstance(metadata, Mapping) else None
+        text = str(value or "").strip()
+        if text:
+            return f"session:{text}"
+    name = str(lanlan_name or "").strip()
+    return f"lanlan:{name}" if name else "__default__"
 
 
 def _register_install_routes() -> None:
@@ -216,6 +228,7 @@ class StudyCompanionPlugin(
         self._awareness_task: asyncio.Task[None] | None = None
         self._last_awareness_push_at = 0.0
         self._awareness_idle_ticks = 0
+        self._voice_filter = VoiceFilter()
         self._review_due_task: asyncio.Task[None] | None = None
         self._command_queue: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue()
         self._command_worker_task: asyncio.Task[None] | None = None
@@ -231,6 +244,9 @@ class StudyCompanionPlugin(
         try:
             raw = await self.config.dump(timeout=5.0)
             self._cfg = build_config(raw if isinstance(raw, dict) else {})
+            self._voice_filter = VoiceFilter(
+                plugin_config=raw if isinstance(raw, dict) else {}
+            )
             await asyncio.to_thread(self._store.open)
             self._cfg = await asyncio.to_thread(self._store.load_config, self._cfg)
             self._knowledge_tracker = KnowledgeTracker(
@@ -840,6 +856,100 @@ class StudyCompanionPlugin(
 
     def _screen_classification_context(self) -> dict[str, Any]:
         return dict(self._state.last_screen_classification)
+
+    @custom_event(
+        event_type="voice_transcript",
+        id="handle_transcript",
+        name="Handle study voice transcript",
+        description="Filter realtime study voice transcripts and return a voice-session action.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "transcript": {"type": "string"},
+                "lanlan_name": {"type": "string"},
+                "metadata": {"type": "object"},
+            },
+            "required": ["transcript"],
+        },
+        trigger_method="manual",
+    )
+    async def handle_voice_transcript(
+        self,
+        transcript: str = "",
+        lanlan_name: str = "",
+        metadata: dict[str, Any] | None = None,
+        **_,
+    ):
+        def voice_noop(reason: str, filter_result: Mapping[str, Any] | None = None):
+            filter_payload = dict(filter_result or {})
+            original_method = str(filter_payload.get("method") or "")
+            if original_method and original_method != reason:
+                filter_payload["source_method"] = original_method
+            filter_payload["method"] = reason
+            return Ok({"action": "noop", "reason": reason, "filter": filter_payload})
+
+        text = str(transcript or "").strip()
+        if not text:
+            return voice_noop("empty_transcript")
+        metadata_payload = metadata if isinstance(metadata, dict) else {}
+        session_key = _voice_session_key(lanlan_name, metadata_payload)
+
+        async with self._lock:
+            if self._state.status != STATUS_READY:
+                return voice_noop("not_ready")
+            state_snapshot_payload = self._state.to_dict()
+
+        # Voice filtering only needs a point-in-time view; avoid holding the
+        # plugin lock while building OCR context or applying filter rules.
+        screen_text = str(state_snapshot_payload.get("last_ocr_text") or "")
+        screen_classification = (
+            state_snapshot_payload.get("last_screen_classification")
+            if isinstance(
+                state_snapshot_payload.get("last_screen_classification"), dict
+            )
+            else {}
+        )
+        screen_type = str(screen_classification.get("screen_type") or "")
+        session_seed = (
+            state_snapshot_payload.get("session_summary_seed")
+            if isinstance(state_snapshot_payload.get("session_summary_seed"), dict)
+            else {}
+        )
+        screen_context = {
+            "topic": str(session_seed.get("last_topic") or "").strip(),
+            "subject": _derive_subject(screen_text),
+        }
+        filter_result = self._voice_filter.filter(
+            text,
+            screen_text=screen_text,
+            screen_type=screen_type,
+            subject=screen_context["subject"],
+            session_key=session_key,
+            extra_names=[lanlan_name],
+        )
+        if filter_result is None:
+            return voice_noop("not_matched")
+        if not bool(filter_result.get("should_relay")):
+            return Ok({"action": "cancel_response", "filter": dict(filter_result)})
+
+        state_snapshot = SimpleNamespace(**state_snapshot_payload)
+        context_text = build_context_for_catgirl(
+            text,
+            state_snapshot,
+            screen_context,
+            filter_result,
+        ).strip()
+        if not context_text:
+            return voice_noop("empty_context", filter_result)
+        return Ok(
+            {
+                "action": "prime_context",
+                "context": context_text,
+                "skipped": True,
+                "filter": dict(filter_result),
+                "lanlan_name": str(lanlan_name or ""),
+            }
+        )
 
     async def _update_screen_classification(
         self, text: str, *, window_title: str = "", update_empty: bool = True
