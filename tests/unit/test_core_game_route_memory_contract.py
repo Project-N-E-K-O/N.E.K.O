@@ -473,6 +473,38 @@ async def test_empty_voice_transcript_does_not_stamp_last_user_message_time(monk
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_last_user_message_time_uses_transcript_arrival_not_post_await(monkeypatch):
+    """takeover dispatcher 注册但未消费该转写时，last_user_message_time 必须用转写
+    到达时刻（await 之前），不能用 await 之后的 time.time()——否则 await 期间投递的
+    invite 会把 invite 之前的发言误记成之后的回应、提前清掉 pending invite（codex
+    P2）。time.time() 每次递增，断言两个时间戳都锁在首次（到达）取值 101。"""
+    mgr = _make_transcript_manager()
+    calls = {"n": 0}
+
+    def _ticking_time():
+        calls["n"] += 1
+        return 100.0 + calls["n"]
+
+    monkeypatch.setattr(core_module.time, "time", _ticking_time)
+    monkeypatch.setattr(core_module, "dispatch_text_user_message", lambda name, text: None)
+
+    async def _dispatcher(name, text, request_id=None):
+        core_module.time.time()  # 模拟 await 期间时钟流逝
+        return False             # 未处理 → 继续普通流程走到真消息块
+
+    mgr._takeover_input_dispatcher = _dispatcher
+    mgr.session = object()
+
+    await core_module.LLMSessionManager.handle_input_transcript(
+        mgr, "你好呀", is_voice_source=True,
+    )
+
+    assert mgr.last_user_activity_time == 101.0
+    assert mgr.last_user_message_time == 101.0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_likely_ai_echo_voice_transcript_is_suppressed(monkeypatch):
     mgr = _make_transcript_manager()
     monkeypatch.setattr(core_module, "HIDE_DIRTY_VOICE_TRANSCRIPTS", True)

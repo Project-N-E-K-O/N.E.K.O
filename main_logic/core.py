@@ -2166,8 +2166,13 @@ class LLMSessionManager:
         transcript_text = transcript.strip()
         voice_rms_recorded = False
 
-        # 更新用户活动时间戳（用于主动搭话检测）
-        self.last_user_activity_time = time.time()
+        # 更新用户活动时间戳（用于主动搭话检测）。先捕获「转写到达时刻」局部变量，
+        # 下面 last_user_message_time 复用同一时刻——若 takeover dispatcher 注册，
+        # 这条转写会先 await 它再走到下面的真消息块；用 await 之后的 time.time() 会
+        # 把时间戳推迟，万一 await 期间投递了 invite，invite 之前说的话会被记成 >
+        # delivered_at、被下个 tick 误判成 invite 之后的回应（codex P2）。
+        _transcript_arrival_ts = time.time()
+        self.last_user_activity_time = _transcript_arrival_ts
         if (
             is_voice_source
             and transcript_text
@@ -2223,7 +2228,9 @@ class LLMSessionManager:
                 self._activity_tracker.on_user_message(text=transcript)
                 # 真实用户语音消息（已过 echo 抑制 + 非空）才刷「真消息」时间戳，
                 # 给 mini-game 邀请隐式 dismiss 用，避免回声/空噪声误判用户已回应。
-                self.last_user_message_time = time.time()
+                # 用顶部捕获的到达时刻而非此处 time.time()：takeover dispatcher 的
+                # await 不会把它推迟到 await 之后（codex P2）。
+                self.last_user_message_time = _transcript_arrival_ts
                 self._session_turn_count += 1
                 # Telemetry：D1 漏斗——本进程首条用户消息（语音路径）。
                 try:
