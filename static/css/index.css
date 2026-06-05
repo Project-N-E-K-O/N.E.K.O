@@ -292,12 +292,12 @@ body {
     filter: drop-shadow(0 0 10px rgba(255, 231, 122, 0.82));
 }
 
-[data-home-avatar-floating-guide-role="persistent"] {
+[data-home-avatar-floating-guide-highlight="true"][data-home-avatar-floating-guide-role="persistent"] {
     outline-color: rgba(120, 205, 255, 0.92) !important;
     filter: drop-shadow(0 0 10px rgba(120, 205, 255, 0.54));
 }
 
-[data-home-avatar-floating-guide-role="action"] {
+[data-home-avatar-floating-guide-highlight="true"][data-home-avatar-floating-guide-role="action"] {
     outline-color: rgba(255, 231, 122, 0.95) !important;
     filter: drop-shadow(0 0 12px rgba(255, 231, 122, 0.86));
 }

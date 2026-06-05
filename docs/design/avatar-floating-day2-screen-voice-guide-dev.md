@@ -59,6 +59,17 @@ UniversalTutorialManager.startAvatarFloatingGuideRound(2)
   - `TutorialInteractionTakeover.setExternalizedChatSpotlight()`
   - `TutorialInteractionTakeover.setExternalizedChatCursor()`
 
+### Cursor anchor 保持与复用
+
+外置聊天窗 / PC 全局 overlay 模式下，Day 2 需要保存并复用 Ghost Cursor 的目标锚点，避免跨 scene 或跨窗口切换时从默认点硬跳。建议入口 API：
+
+- `saveCursorAnchor(anchor)`：在播放结束、目标移动完成或收到 settled anchor 后保存 `{ sceneId, kind, x, y, settled, updatedAt }`。
+- `readCursorAnchor(sceneId)`：scene 进入时优先读取同 scene / 同 kind 的未过期 anchor；可用时平滑移动到该 anchor，不可用时再走默认目标解析和 fallback jump。
+- `invalidateCursorAnchor(sceneId)`：目标 DOM 消失、窗口关闭、尺寸变化过大或教程结束/跳过/生气退出时失效对应 anchor。
+- `syncAnchorAcrossWindows(windowId, anchor)`：外置聊天窗回传 anchor 后同步到首页和 PC overlay；窗口 id 不匹配或 anchor 过期时丢弃。
+
+锚点必须有过期时间；外置窗口传播时只传坐标、目标 kind、sceneId 和 settled 状态，不携带点击 effect。播放结束保存，下一 scene 进入先读；读不到或目标不可信时使用当前默认目标重新解析。
+
 ## 约束
 
 1. Day 2 不再包含 `day2_screen_entry` / `day2_screen_entry_invite`。

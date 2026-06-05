@@ -2457,7 +2457,7 @@
     }
 
     function handleComposerSubmit(payload) {
-        if (state.homeTutorialInteractionLocked || state.homeTutorialInputLocked) {
+        if (state.homeTutorialInteractionLocked || state.homeTutorialInputLocked || isHomeTutorialInteractionLocked()) {
             return;
         }
         var requestId = payload && typeof payload.requestId === 'string' && payload.requestId
@@ -5628,12 +5628,17 @@
         var avatarHeaderButton = $('avatarPreviewHeaderButton');
 
         ensureViewProps();
+        var tutorialLockActive = isHomeTutorialRunning();
+        state.homeTutorialInteractionLocked = tutorialLockActive;
+        state.homeTutorialInputLocked = tutorialLockActive;
         state.chatSurfaceMode = readChatSurfaceModePreference();
         lastRestorableChatSurfaceMode = state.chatSurfaceMode;
         resetCompactChatState();
         state.viewProps = Object.assign({}, ensureViewProps(), {
             chatSurfaceMode: getCurrentChatSurfaceMode(),
-            compactChatState: getCurrentCompactChatState()
+            compactChatState: getCurrentCompactChatState(),
+            composerDisabled: !!state.homeTutorialInteractionLocked,
+            compactInputLocked: !!state.homeTutorialInputLocked
         });
         syncChatSurfaceModeUI();
         prewarmUserDisplayName();

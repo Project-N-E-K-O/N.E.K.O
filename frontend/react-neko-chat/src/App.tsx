@@ -397,7 +397,7 @@ function truncateCompactPreview(text: string, maxLength: number): string {
   if (text.length <= maxLength) {
     return text;
   }
-  return `${text.slice(0, Math.max(0, maxLength - 1))}...`;
+  return `${text.slice(0, Math.max(0, maxLength - 3))}...`;
 }
 
 function splitCompactPreviewGraphemes(text: string): string[] {
@@ -2944,6 +2944,7 @@ export default function App({
     compactInputToolFanPositionSyncRef.current?.();
     compactInputToolFanOpenRef.current = false;
     setCompactInputToolFanOpen(false);
+    setToolMenuOpen(false);
     dispatchCompactToolFanOpenState(false);
     if (!options?.afterClose) return;
     const desktopWindow = window as Window & {
@@ -3012,7 +3013,7 @@ export default function App({
   ]);
 
   const openCompactInputToolFan = useCallback((intent: 'click' | 'hover', options?: { ignoreDisabled?: boolean }) => {
-    if ((!options?.ignoreDisabled && composerDisabled) || compactInputHasPayload) return;
+    if ((!options?.ignoreDisabled && composerDisabled) || compactInputHasPayload) return false;
     clearCompactInputToolFanCloseTimer();
     clearCompactInputToolFanInteractiveTimer();
     compactInputToolFanOpenIntentRef.current = intent;
@@ -3026,6 +3027,7 @@ export default function App({
       if (!compactInputToolFanOpenIntentRef.current) return;
       setCompactInputToolFanInteractiveState(true);
     }, COMPACT_INPUT_TOOL_FAN_INTERACTIVE_DELAY_MS);
+    return true;
   }, [
     clearCompactInputToolFanCloseTimer,
     clearCompactInputToolFanInteractiveTimer,
@@ -4115,9 +4117,9 @@ export default function App({
     const requestId = request.id;
     lastAvatarToolMenuOpenRequestIdRef.current = requestId;
     if (request.open) {
-      openCompactInputToolFan('click', { ignoreDisabled: true });
+      const opened = openCompactInputToolFan('click', { ignoreDisabled: true });
       setActiveCursorToolId(null);
-      setToolMenuOpen(true);
+      setToolMenuOpen(opened);
       return;
     }
     setToolMenuOpen(false);

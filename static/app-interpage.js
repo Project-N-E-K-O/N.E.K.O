@@ -420,6 +420,67 @@
         let mmdRequestSessionId = '';
         let activeMmdLoadingSessionId = '';
 
+        async function restorePreviousModelUiAfterFailedSwitch() {
+            if (!oldModelType) return;
+            try {
+                if (oldModelType === 'live2d') {
+                    var live2dContainer = document.getElementById('live2d-container');
+                    if (live2dContainer) {
+                        live2dContainer.classList.remove('hidden');
+                        live2dContainer.style.display = 'block';
+                        live2dContainer.style.visibility = 'visible';
+                        live2dContainer.style.removeProperty('pointer-events');
+                    }
+                    var live2dCanvas = document.getElementById('live2d-canvas');
+                    if (live2dCanvas) {
+                        live2dCanvas.style.visibility = 'visible';
+                        live2dCanvas.style.pointerEvents = 'auto';
+                    }
+                    if (window.live2dManager && typeof window.live2dManager.resumeRendering === 'function') {
+                        window.live2dManager.resumeRendering();
+                    }
+                } else if (oldModelType === 'vrm' || (oldModelType === 'live3d' && oldLive3dSubType === 'vrm')) {
+                    var vrmContainer = document.getElementById('vrm-container');
+                    if (vrmContainer) {
+                        vrmContainer.classList.remove('hidden');
+                        vrmContainer.style.display = 'block';
+                        vrmContainer.style.visibility = 'visible';
+                        vrmContainer.style.removeProperty('pointer-events');
+                    }
+                    var vrmCanvas = document.getElementById('vrm-canvas');
+                    if (vrmCanvas) {
+                        vrmCanvas.style.visibility = 'visible';
+                        vrmCanvas.style.pointerEvents = 'auto';
+                    }
+                    if (window.vrmManager && typeof window.vrmManager.resumeRendering === 'function') {
+                        window.vrmManager.resumeRendering();
+                    }
+                } else if (oldModelType === 'live3d' && oldLive3dSubType === 'mmd') {
+                    var mmdContainer = document.getElementById('mmd-container');
+                    if (mmdContainer) {
+                        mmdContainer.classList.remove('hidden');
+                        mmdContainer.style.display = 'block';
+                        mmdContainer.style.visibility = 'visible';
+                        mmdContainer.style.removeProperty('pointer-events');
+                    }
+                    var mmdCanvas = document.getElementById('mmd-canvas');
+                    if (mmdCanvas) {
+                        clearMMDCanvasLoadingSession(mmdCanvas);
+                        mmdCanvas.style.visibility = 'visible';
+                        mmdCanvas.style.pointerEvents = 'auto';
+                    }
+                    if (window.mmdManager && typeof window.mmdManager.resumeRendering === 'function') {
+                        window.mmdManager.resumeRendering();
+                    }
+                }
+                if (typeof window.showCurrentModel === 'function') {
+                    await window.showCurrentModel();
+                }
+            } catch (restoreError) {
+                console.warn('[Model] failed to restore previous model UI after switch failure:', restoreError);
+            }
+        }
+
         try {
             // 1. Re-fetch page config, or use a caller-provided temporary runtime config.
             var nameForConfig = targetLanlanName || currentLanlanName;
@@ -941,6 +1002,9 @@
                 window.lanlan_config.model_type = oldModelType;
                 window.lanlan_config.live3d_sub_type = oldLive3dSubType || '';
                 console.warn('[Model] 已回滚 config:', { model_type: oldModelType, live3d_sub_type: oldLive3dSubType });
+            }
+            if (typeChanged) {
+                await restorePreviousModelUiAfterFailedSwitch();
             }
             if (!suppressToast) {
                 window.showStatusToast(
@@ -2229,6 +2293,9 @@
     window.addEventListener('message', function (event) {
         var data = event && event.data;
         if (!data || data.__nekoTutorialOverlayRelay !== true) {
+            return;
+        }
+        if (event.origin !== window.location.origin) {
             return;
         }
         var message = data.payload;

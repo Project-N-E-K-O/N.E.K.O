@@ -262,6 +262,21 @@ def run_monitor() -> dict[str, Any]:
                     const toolIds = Array.from(document.querySelectorAll(
                         '#composer-tool-popover-compact .composer-icon-button[data-avatar-tool-id], #composer-tool-popover .composer-icon-button[data-avatar-tool-id]'
                     )).map((node) => node.getAttribute('data-avatar-tool-id'));
+                    const isVisible = (node) => {
+                        if (!node) return false;
+                        const rect = node.getBoundingClientRect();
+                        const style = window.getComputedStyle(node);
+                        return rect.width > 0
+                            && rect.height > 0
+                            && style.visibility !== 'hidden'
+                            && style.display !== 'none'
+                            && Number(style.opacity || '1') > 0.01;
+                    };
+                    const visibleToolIds = Array.from(document.querySelectorAll(
+                        '#composer-tool-popover-compact .composer-icon-button[data-avatar-tool-id], #composer-tool-popover .composer-icon-button[data-avatar-tool-id]'
+                    ))
+                        .filter(isVisible)
+                        .map((node) => node.getAttribute('data-avatar-tool-id'));
                     return {
                         toggleExists: !!toggle,
                         toggleOpen: !!(toggle && (toggle.classList.contains('is-open') || toggle.getAttribute('aria-expanded') === 'true')),
@@ -275,6 +290,8 @@ def run_monitor() -> dict[str, Any]:
                         popoverExists: !!popover,
                         toolIds,
                         toolCount: toolIds.length,
+                        visibleToolIds,
+                        visibleToolCount: visibleToolIds.length,
                     };
                 }
                 patchButton();
@@ -536,20 +553,43 @@ def analyze(raw: dict[str, Any]) -> tuple[list[Finding], dict[str, Any]]:
                 tool_toggle_open_before_home_click = True
 
     chat_state = raw.get("chatState") or {}
-    snapshots = [
-        event.get("detail") or {}
+    snapshot_events = [
+        event
         for event in all_events
         if isinstance(event.get("detail"), dict) and "toolCount" in (event.get("detail") or {})
     ]
-    max_tool_count = max([int(snapshot.get("toolCount") or 0) for snapshot in snapshots] or [0])
+    snapshots = [event.get("detail") or {} for event in snapshot_events]
+    max_tool_count = max([int(snapshot.get("visibleToolCount") or snapshot.get("toolCount") or 0) for snapshot in snapshots] or [0])
+
+    def closest_snapshot_to(event_types: set[str], source: str | None = None) -> dict[str, Any]:
+        targets = [
+            event
+            for event in all_events
+            if event.get("type") in event_types
+            and (source is None or event.get("source") == source)
+            and isinstance(event.get("at"), (int, float))
+        ]
+        if not targets:
+            return {}
+        best: tuple[float, dict[str, Any]] | None = None
+        for snapshot_event in snapshot_events:
+            if not isinstance(snapshot_event.get("at"), (int, float)):
+                continue
+            detail = snapshot_event.get("detail") or {}
+            distance = min(abs(snapshot_event["at"] - target["at"]) for target in targets)
+            if best is None or distance < best[0]:
+                best = (distance, detail)
+        return best[1] if best else {}
+
+    avatar_click_snapshot = closest_snapshot_to({"avatar-button-dom-click"}, "chat") or closest_snapshot_to({"home-clickCursorAndWait-start"})
     visible_tool_ids = []
     visible_tool_at = None
     for event in all_events:
         detail = event.get("detail") or {}
         if not isinstance(detail, dict):
             continue
-        if int(detail.get("toolCount") or 0) >= 3:
-            visible_tool_ids = detail.get("toolIds") or []
+        if int(detail.get("visibleToolCount") or detail.get("toolCount") or 0) >= 3:
+            visible_tool_ids = detail.get("visibleToolIds") or detail.get("toolIds") or []
             visible_tool_at = event.get("at")
             break
     close_clicks = count(
@@ -590,10 +630,10 @@ def analyze(raw: dict[str, Any]) -> tuple[list[Finding], dict[str, Any]]:
             f"过程里最多只检测到 {max_tool_count} 个道具；最终状态: {chat_state.get('toolIds')}",
         ),
         _finding(
-            chat_state.get("fanInteractive") == "true",
+            avatar_click_snapshot.get("fanInteractive") == "true",
             "Compact tool fan is interactive when Avatar click runs",
             "弧形菜单已进入 interactive=true 状态。",
-            f"弧形菜单 interactive={chat_state.get('fanInteractive')}；过早 click 会被 React shouldSuppressCompactToolClick 吃掉。",
+            f"弧形菜单 interactive={avatar_click_snapshot.get('fanInteractive')} avatarExpanded={avatar_click_snapshot.get('avatarExpanded')}；过早 click 会被 React shouldSuppressCompactToolClick 吃掉。",
         ),
         _finding(
             close_clicks >= 1,
@@ -617,6 +657,7 @@ def analyze(raw: dict[str, Any]) -> tuple[list[Finding], dict[str, Any]]:
         "maxToolCountDuringRun": max_tool_count,
         "visibleToolIdsDuringRun": visible_tool_ids,
         "visibleToolAtMs": visible_tool_at,
+        "avatarClickSnapshot": avatar_click_snapshot,
         "finalChatState": chat_state,
     }
     return findings, summary

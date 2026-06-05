@@ -2751,7 +2751,7 @@ describe('App', () => {
     expect(preview?.textContent ?? '').toBe('');
   });
 
-  it('shows tutorial guide streaming text in the compact capsule immediately', () => {
+  it('keeps tutorial guide streaming text fully readable in the compact capsule', () => {
     const initialText = '先点这里打开对话。';
     const updatedText = '先点这里打开对话，然后输入一句问候，后面这一长串教程台词也要自动向左滚动，让最新内容进入胶囊可视区域。';
     const initialMessage = parseChatMessage({

@@ -559,7 +559,7 @@
         return endState;
     }
 
-    function markGuideRoundOutcome(day, outcome) {
+    function markGuideRoundOutcome(day, outcome, endState) {
         const round = normalizeRound(day);
         const state = loadGuideState();
         state.currentRound = null;
@@ -572,19 +572,12 @@
             state.skippedRounds = normalizeRoundList(state.skippedRounds.concat(round));
             state.completedRounds = omitRound(state.completedRounds, round);
         }
-        const endedAt = Date.now();
-        state.lastEndState = {
-            day: round,
-            ended: true,
-            outcome: outcome,
-            rawReason: outcome,
-            isAngryExit: false,
-            completed: outcome === 'complete',
-            skipped: outcome === 'skip',
-            source: 'avatar_floating_guide_state',
-            endedAt: endedAt
-        };
-        state.updatedAt = new Date(endedAt).toISOString();
+        const fullEndState = endState && typeof endState === 'object'
+            ? Object.assign({}, endState, { day: round })
+            : recordAvatarFloatingGuideEndState(round, outcome, outcome, 'avatar_floating_guide_state');
+        window.avatarFloatingGuideEndState = fullEndState;
+        state.lastEndState = fullEndState;
+        state.updatedAt = new Date(fullEndState.endedAt || Date.now()).toISOString();
         saveGuideState(state);
         window.dispatchEvent(new CustomEvent(`neko:avatar-floating-guide-${outcome}`, {
             detail: { day: round, state, endState: state.lastEndState },
@@ -621,6 +614,9 @@
         if (state.lastAutoShownRound === round) {
             state.lastAutoShownRound = null;
             state.lastAutoShownDate = '';
+        }
+        if (state.lastEndState && state.lastEndState.day === round) {
+            state.lastEndState = null;
         }
         state.pendingRound = round;
         state.manualResetRound = round;
@@ -662,7 +658,7 @@
         if (document.getElementById('mmd-floating-buttons')) return 'mmd';
         if (document.getElementById('live2d-floating-buttons')) return 'live2d';
         const cfg = window.lanlan_config && window.lanlan_config.model_type;
-        if (cfg === 'vrm') return 'vrm';
+        if (cfg === 'live3d' || cfg === 'vrm') return 'live3d';
         if (cfg === 'mmd') return 'mmd';
         return 'live2d';
     }
@@ -1131,8 +1127,12 @@
     }
 
     function setRoundCurrent(day) {
+        const round = normalizeRound(day);
         const state = loadGuideState();
-        state.currentRound = normalizeRound(day);
+        state.currentRound = round;
+        if (state.lastEndState && state.lastEndState.day === round) {
+            state.lastEndState = null;
+        }
         state.updatedAt = new Date().toISOString();
         saveGuideState(state);
     }
@@ -1745,10 +1745,10 @@
                     console.warn('[AvatarFloatingGuideReset] fallback 模型恢复失败:', error);
                 }
             }
+            const endState = recordAvatarFloatingGuideEndState(day, outcome, rawReason, options.source || 'home_reset_button');
             if (outcome === 'skip' || outcome === 'complete') {
-                markGuideRoundOutcome(day, outcome);
+                markGuideRoundOutcome(day, outcome, endState);
             }
-            recordAvatarFloatingGuideEndState(day, outcome, rawReason, options.source || 'home_reset_button');
             if (activeRoundPlayer && activeRoundPlayer.destroy === destroy) {
                 activeRoundPlayer = null;
             }

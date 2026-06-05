@@ -3334,7 +3334,11 @@
 
     window.addEventListener('neko:home-tutorial-features-suppressed', function (event) {
         var detail = event && event.detail ? event.detail : {};
-        sendHomeTutorialState(detail.active === false ? 'features-restored' : 'features-suppressed');
+        var reason = detail.reason || (detail.active === false ? 'features-restored' : 'features-suppressed');
+        if (detail.active === false && reason) {
+            S._greetingCheckReason = reason;
+        }
+        sendHomeTutorialState(reason);
         if (detail.active === false) {
             _sendGreetingCheckIfReady();
         }

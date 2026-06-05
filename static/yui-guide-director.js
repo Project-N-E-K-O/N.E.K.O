@@ -8971,8 +8971,12 @@
             this.enableInterrupts(introStep);
             if (this.isHomeChatExternalized()) {
                 this.hideHomeCursorForExternalizedChat();
+                this.cursor.hide();
                 if (this.interactionTakeover && typeof this.interactionTakeover.setExternalizedChatSpotlight === 'function') {
                     this.interactionTakeover.setExternalizedChatSpotlight('input');
+                }
+                if (this.interactionTakeover && typeof this.interactionTakeover.setExternalizedChatCursor === 'function') {
+                    this.interactionTakeover.setExternalizedChatCursor('');
                 }
             } else {
                 const inputTarget = this.getChatInputTarget();
@@ -13644,8 +13648,12 @@
             this.overlay.hideBubble();
             this.overlay.hidePluginPreview();
             this.hideHomeCursorForExternalizedChat();
+            this.cursor.hide();
             if (this.interactionTakeover && typeof this.interactionTakeover.setExternalizedChatSpotlight === 'function') {
                 this.interactionTakeover.setExternalizedChatSpotlight('input');
+            }
+            if (this.interactionTakeover && typeof this.interactionTakeover.setExternalizedChatCursor === 'function') {
+                this.interactionTakeover.setExternalizedChatCursor('');
             }
 
             this.enableInterrupts(introStep);

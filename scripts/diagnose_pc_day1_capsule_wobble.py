@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -37,6 +38,15 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _safe_extract(source: str, start_token: str, end_token: str) -> str | None:
+    if start_token not in source:
+        return None
+    tail = source.split(start_token, 1)[1]
+    if end_token not in tail:
+        return None
+    return tail.split(end_token, 1)[0]
+
+
 def _check(condition: bool, name: str, ok_detail: str, fail_detail: str) -> Check:
     return Check(
         name=name,
@@ -46,31 +56,57 @@ def _check(condition: bool, name: str, ok_detail: str, fail_detail: str) -> Chec
 
 
 def run_static_checks(pc_repo: Path) -> list[Check]:
-    day1 = _read(STATIC_DIR / "yui-guide-day1-home-guide.js")
-    director = _read(STATIC_DIR / "yui-guide-director.js")
-    takeover = _read(STATIC_DIR / "tutorial-interaction-takeover.js")
-    interpage = _read(STATIC_DIR / "app-interpage.js")
-    overlay = _read(STATIC_DIR / "yui-guide-overlay.js")
-    pc_preload = _read(pc_repo / "src" / "preload-tutorial-global-overlay.js")
-    pc_service = _read(pc_repo / "src" / "tutorial-global-overlay-service.js")
+    checks: list[Check] = []
+    try:
+        sources = {
+            "day1": _read(STATIC_DIR / "yui-guide-day1-home-guide.js"),
+            "director": _read(STATIC_DIR / "yui-guide-director.js"),
+            "takeover": _read(STATIC_DIR / "tutorial-interaction-takeover.js"),
+            "interpage": _read(STATIC_DIR / "app-interpage.js"),
+            "overlay": _read(STATIC_DIR / "yui-guide-overlay.js"),
+            "pc_preload": _read(pc_repo / "src" / "preload-tutorial-global-overlay.js"),
+            "pc_service": _read(pc_repo / "src" / "tutorial-global-overlay-service.js"),
+        }
+    except Exception as exc:
+        return [Check("Static source preflight", "FAIL", f"Failed to read required source: {exc}")]
 
-    greeting_block = day1.split("id: 'day1_intro_greeting'", 1)[1].split(
-        "id: 'day1_capsule_drag_hint'",
-        1,
-    )[0]
-    capsule_block = day1.split("id: 'day1_capsule_drag_hint'", 1)[1].split(
-        "id: 'day1_history_handle'",
-        1,
-    )[0]
-    legacy_externalized_intro_block = director.split("async runChatIntroPreludeExternalized", 1)[1].split(
+    day1 = sources["day1"]
+    director = sources["director"]
+    takeover = sources["takeover"]
+    interpage = sources["interpage"]
+    overlay = sources["overlay"]
+    pc_preload = sources["pc_preload"]
+    pc_service = sources["pc_service"]
+
+    greeting_block = _safe_extract(day1, "id: 'day1_intro_greeting'", "id: 'day1_capsule_drag_hint'")
+    capsule_block = _safe_extract(day1, "id: 'day1_capsule_drag_hint'", "id: 'day1_history_handle'")
+    legacy_externalized_intro_block = _safe_extract(
+        director,
+        "async runChatIntroPreludeExternalized",
         "const introText = this.resolvePerformanceBubbleText",
-        1,
-    )[0]
-    greeting_play_block = director.split("async playDay1IntroGreetingRoundScene", 1)[1].split(
+    )
+    greeting_play_block = _safe_extract(
+        director,
+        "async playDay1IntroGreetingRoundScene",
         "await this.playIntroGreetingReply();",
-        1,
-    )[0]
-    return [
+    )
+    missing_blocks = [
+        name
+        for name, block in [
+            ("day1_intro_greeting", greeting_block),
+            ("day1_capsule_drag_hint", capsule_block),
+            ("runChatIntroPreludeExternalized", legacy_externalized_intro_block),
+            ("playDay1IntroGreetingRoundScene", greeting_play_block),
+        ]
+        if block is None
+    ]
+    if missing_blocks:
+        checks.append(Check("Static block extraction", "FAIL", "Missing expected block(s): " + ", ".join(missing_blocks)))
+    greeting_block = greeting_block or ""
+    capsule_block = capsule_block or ""
+    legacy_externalized_intro_block = legacy_externalized_intro_block or ""
+    greeting_play_block = greeting_play_block or ""
+    checks.extend([
         _check(
             "cursorAction: 'wobble'" not in greeting_block
             and "setExternalizedChatCursor('input'" not in legacy_externalized_intro_block
@@ -137,7 +173,8 @@ def run_static_checks(pc_repo: Path) -> list[Check]:
             "tutorial-global-overlay-service defines visible horizontal wobble with a 2000ms fallback.",
             "PC renderer CSS still lacks a visible 2000ms horizontal wobble.",
         ),
-    ]
+    ])
+    return checks
 
 
 def run_browser_bridge_probe() -> tuple[list[Check], dict[str, Any]]:
@@ -442,6 +479,25 @@ def run_browser_bridge_probe() -> tuple[list[Check], dict[str, Any]]:
 
 
 def run_pc_renderer_probe(pc_repo: Path) -> tuple[list[Check], dict[str, Any]]:
+    if not pc_repo.exists():
+        result = {"pcRepo": str(pc_repo), "reason": "missing_pc_repo"}
+        return [
+            Check(
+                "PC repo preflight",
+                "FAIL",
+                f"N.E.K.O.-PC repo was not found at {pc_repo}.",
+            )
+        ], result
+    if shutil.which("node") is None:
+        result = {"reason": "missing_node"}
+        return [
+            Check(
+                "Node runtime preflight",
+                "FAIL",
+                "Node.js was not found on PATH, so the PC renderer probe could not run.",
+            )
+        ], result
+
     node_script = f"""
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -572,14 +628,24 @@ console.log(JSON.stringify(result));
         handle.write(node_script)
         temp_path = Path(handle.name)
     try:
-        completed = subprocess.run(
-            ["node", str(temp_path)],
-            cwd=str(pc_repo),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
+        try:
+            completed = subprocess.run(
+                ["node", str(temp_path)],
+                cwd=str(pc_repo),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+        except Exception as exc:
+            result = {"pcRepo": str(pc_repo), "reason": "node_probe_failed_to_start", "error": str(exc)}
+            return [
+                Check(
+                    "PC renderer probe executed",
+                    "FAIL",
+                    f"Node VM could not start: {exc}",
+                )
+            ], result
     finally:
         try:
             temp_path.unlink()

@@ -25,6 +25,17 @@
 
     let compactHistoryDropPayloadQueue = Promise.resolve();
 
+    function rejectPendingTextSessionStart(reason) {
+        if (!mod._textSessionStartRejecter) return;
+        var rejecter = mod._textSessionStartRejecter;
+        mod._textSessionStartRejecter = null;
+        var error = reason instanceof Error
+            ? reason
+            : new Error(reason || 'Text session start cancelled');
+        error.textSessionStartCancelled = true;
+        rejecter(error);
+    }
+
     function isHomeTutorialInteractionLocked() {
         try {
             return typeof window.isNekoHomeTutorialInteractionLocked === 'function'
@@ -1895,6 +1906,7 @@
                     clearTimeout(window.sessionTimeoutId);
                     window.sessionTimeoutId = null;
                 }
+                rejectPendingTextSessionStart(error);
                 S.sessionStartedResolver = null;
                 S.sessionStartedRejecter = null;
 
@@ -1974,6 +1986,7 @@
             } else {
                 S.voiceStartPending = false;
                 window.isMicStarting = false;
+                rejectPendingTextSessionStart('Voice start cancelled by goodbye');
                 S.sessionStartedResolver = null;
                 S.sessionStartedRejecter = null;
             }
@@ -2235,6 +2248,7 @@
                     clearTimeout(window.sessionTimeoutId);
                     window.sessionTimeoutId = null;
                 }
+                rejectPendingTextSessionStart(error);
                 S.sessionStartedResolver = null;
                 S.sessionStartedRejecter = null;
 
@@ -2341,6 +2355,7 @@
                             var sessionStartPromise = new Promise(function (resolve, reject) {
                                 S.sessionStartedResolver = resolve;
                                 S.sessionStartedRejecter = reject;
+                                mod._textSessionStartRejecter = reject;
 
                                 if (window.sessionTimeoutId) {
                                     clearTimeout(window.sessionTimeoutId);
@@ -2361,6 +2376,7 @@
                                     var rejecter = S.sessionStartedRejecter;
                                     S.sessionStartedResolver = null;
                                     S.sessionStartedRejecter = null;
+                                    mod._textSessionStartRejecter = null;
                                     window.sessionTimeoutId = null;
 
                                     if (S.socket && S.socket.readyState === WebSocket.OPEN) {
@@ -2386,6 +2402,7 @@
                             window.showStatusToast(window.t ? window.t('app.textChattingShort') : '\u6B63\u5728\u6587\u672C\u804A\u5929\u4E2D', 2000);
                         })().finally(function () {
                             mod._textSessionStartPromise = null;
+                            mod._textSessionStartRejecter = null;
                         });
                     }
 

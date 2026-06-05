@@ -222,7 +222,7 @@ this.interactionTakeover = window.TutorialInteractionTakeover.createController({
 })
 ```
 
-如果页面处于旧缓存状态导致 `static/tutorial-interrupt-controller.js` 暂时没有加载，Director 会降级为空操作并保留 skip / angry exit 终止兜底，不能因为模块缺失阻断教程结束链路。正常页面必须按上面的模板顺序加载该模块。
+如果页面处于旧缓存状态导致 `static/tutorial-interaction-takeover.js` 暂时没有加载，Director 只能降级交互接管与外置聊天窗同步能力，并保留 skip / angry exit 终止兜底，不能因为 takeover 模块缺失阻断教程结束链路。正常页面必须按上面的模板顺序加载该模块。
 
 然后在 Director 内保留一层薄包装：
 

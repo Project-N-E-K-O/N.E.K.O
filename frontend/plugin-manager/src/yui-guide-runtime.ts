@@ -851,7 +851,7 @@ function injectStyle() {
     body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-backdrop,
     body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-backdrop *,
     body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-interaction-shield,
-    body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-spotlight, {
+    body.yui-taking-over.yui-user-cursor-revealed #${ROOT_ID} .yui-guide-plugin-spotlight {
       cursor: auto !important;
     }
 
@@ -1148,6 +1148,7 @@ class PluginDashboardGuideRuntime {
   lastForwardedSkipScreenX = NaN
   lastForwardedSkipScreenY = NaN
   spotlightRefreshRaf: number | null = null
+  cursorClickResetTimer: number | null = null
   boundPointerMoveHandler = (event: PointerEvent | MouseEvent) => {
     this.handleInterrupt(event)
   }
@@ -2031,10 +2032,34 @@ class PluginDashboardGuideRuntime {
   }
 
   clickCursor(durationMs = DEFAULT_CURSOR_CLICK_VISIBLE_MS) {
-    void durationMs
+    if (this.cursorClickResetTimer !== null) {
+      window.clearTimeout(this.cursorClickResetTimer)
+      this.cursorClickResetTimer = null
+    }
+    this.root?.setAttribute('data-yui-cursor-hidden', 'true')
+    this.spotlight?.setAttribute('data-yui-cursor-hidden', 'true')
+    document.documentElement.classList.add('yui-user-cursor-revealed')
+    document.body.classList.add('yui-user-cursor-revealed')
+    document.documentElement.classList.add('yui-taking-over')
+    document.body.classList.add('yui-taking-over')
+    this.cursorClickResetTimer = window.setTimeout(() => {
+      this.cursorClickResetTimer = null
+      this.resetCursorVisualState()
+    }, Math.max(0, durationMs))
   }
 
-  resetCursorVisualState() {}
+  resetCursorVisualState() {
+    if (this.cursorClickResetTimer !== null) {
+      window.clearTimeout(this.cursorClickResetTimer)
+      this.cursorClickResetTimer = null
+    }
+    this.root?.removeAttribute('data-yui-cursor-hidden')
+    this.spotlight?.removeAttribute('data-yui-cursor-hidden')
+    if (!this.userCursorRevealed) {
+      document.documentElement.classList.remove('yui-user-cursor-revealed')
+      document.body.classList.remove('yui-user-cursor-revealed')
+    }
+  }
 
   stopGhostCursorAnimation() {
     this.cancelCursorMotion()

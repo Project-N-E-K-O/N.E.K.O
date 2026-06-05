@@ -119,6 +119,16 @@
         }
     }
 
+    /**
+     * Returns whether the seven-day new-user icebreaker is still in progress.
+     *
+     * The proactive scheduler uses this to stay quiet while onboarding owns the
+     * user experience. A live icebreaker session wins immediately; otherwise
+     * the persisted day store is scanned for any started/completed/touched day,
+     * and day 7 completion closes the period.
+     *
+     * @returns {boolean} True when proactive chat should be suppressed for onboarding.
+     */
     function isNewUserIcebreakerPeriodActive() {
         try {
             if (window.newUserIcebreaker && typeof window.newUserIcebreaker.getActiveSession === 'function') {

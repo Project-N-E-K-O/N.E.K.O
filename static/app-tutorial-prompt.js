@@ -480,6 +480,16 @@
         }
     }
 
+    async function forceDisableAgentForTutorial(reason) {
+        try {
+            await postAgentCommand('set_agent_enabled', { enabled: false });
+            await postAgentFlags({ agent_enabled: false });
+            syncAgentFlagsUi();
+        } catch (error) {
+            console.warn('[TutorialPrompt] failed to enforce agent disable:', reason || '', error);
+        }
+    }
+
     function beginHomeTutorialFeatureSuppression(reason) {
         if (!isHomePage()) {
             return;
@@ -519,6 +529,7 @@
         const suppression = state.featureSuppression;
         if (!suppression.active) {
             beginHomeTutorialFeatureSuppression(reason || 'tutorial-enforced');
+            void forceDisableAgentForTutorial(reason || 'tutorial-enforced');
             return;
         }
 
@@ -528,6 +539,7 @@
             proactiveOff[key] = false;
         });
         applyProactiveState(proactiveOff);
+        void forceDisableAgentForTutorial(reason || (suppression.snapshot && suppression.snapshot.reason) || 'tutorial-enforced');
 
         window.dispatchEvent(new CustomEvent('neko:home-tutorial-features-suppressed', {
             detail: {
