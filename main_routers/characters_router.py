@@ -3857,14 +3857,25 @@ async def get_voices():
             # 其后是 Gemini 全量目录。yui 从长列表里挪到 pin（不重复展示）；
             # Leda 不去重，仍作为普通条目留在长列表里（= default pin 的目标）。
             # pin 的展示名由前端按 i18n_key 本地化。
+            voice_exists = getattr(_config_manager, "voice_id_exists_in_any_storage", None)
             result["pinned_voices"] = _build_free_intl_voice_pins(
                 native_catalog,
-                voice_id_exists=getattr(_config_manager, "voice_id_exists_in_any_storage", None),
+                voice_id_exists=voice_exists,
             )
+            # 撞名（跨 api-key 桶存在同名克隆/自定义音色）的条目也从长列表里去掉：
+            # runtime 路由/preview 用 any-storage 撞名判定会拒绝当 native，展示了
+            # 点选也到不了 Gemini（与 pin 的撞名隐藏对偶）。前端只按当前 api 的
+            # voices 去重，跨桶撞名漏网，故在后端按同一谓词收口。
+            def _free_intl_keep(voice_id: str) -> bool:
+                if voice_id == 'yui':
+                    return False
+                if callable(voice_exists) and voice_exists(voice_id):
+                    return False
+                return True
             native_catalog = {
                 voice_id: meta
                 for voice_id, meta in native_catalog.items()
-                if voice_id != 'yui'
+                if _free_intl_keep(voice_id)
             }
         result["native_voices"] = native_catalog
 
