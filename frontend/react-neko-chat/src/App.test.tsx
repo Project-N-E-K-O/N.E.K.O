@@ -5747,7 +5747,7 @@ describe('App', () => {
     expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Test compact send' });
   });
 
-  it('keeps controlled compact input open after submitting text for continuous typing', () => {
+  it('keeps controlled compact input focused after submitting text for continuous typing', async () => {
     const onComposerSubmit = vi.fn();
 
     function CompactContinuousInputHarness() {
@@ -5766,11 +5766,17 @@ describe('App', () => {
 
     const input = screen.getByPlaceholderText('Type a message...');
     fireEvent.change(input, { target: { value: 'First compact message' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    const sendButton = screen.getByRole('button', { name: 'Send' });
+    sendButton.focus();
+    expect(document.activeElement).toBe(sendButton);
+    fireEvent.click(sendButton);
 
     expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'First compact message' });
     expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'input');
     expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('');
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByPlaceholderText('Type a message...'));
+    });
   });
 
   it('returns empty compact input to subtitle state when it loses focus', async () => {

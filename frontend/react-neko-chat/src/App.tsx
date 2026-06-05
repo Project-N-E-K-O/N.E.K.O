@@ -4415,6 +4415,20 @@ export default function App({
     }
   }
 
+  function focusCompactInputForContinuousTyping() {
+    const inputNode = compactInputRef.current;
+    if (!inputNode || inputNode.disabled || inputNode.readOnly) return;
+    const activeElement = document.activeElement;
+    if (
+      activeElement instanceof Node
+      && compactInputShellRef.current
+      && !compactInputShellRef.current.contains(activeElement)
+    ) return;
+    inputNode.focus();
+    const selectionEnd = inputNode.value.length;
+    inputNode.setSelectionRange(selectionEnd, selectionEnd);
+  }
+
   function submitDraft() {
     if (composerDisabled) return;
     if (submittingRef.current) return;
@@ -4422,12 +4436,21 @@ export default function App({
     if (!text && composerAttachments.length === 0) return;
     closeCompactInputToolFan();
     submittingRef.current = true;
+    let shouldRefocusCompactInput = false;
     try {
       onComposerSubmit?.({ text });
       setDraft('');
       restoreCompactExportHistoryToBottomForOutgoingMessage();
+      shouldRefocusCompactInput = isCompactSurface
+        && effectiveCompactChatState === 'input'
+        && text.length > 0;
     } finally {
-      requestAnimationFrame(() => { submittingRef.current = false; });
+      requestAnimationFrame(() => {
+        submittingRef.current = false;
+        if (shouldRefocusCompactInput) {
+          focusCompactInputForContinuousTyping();
+        }
+      });
     }
   }
 
