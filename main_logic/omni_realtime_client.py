@@ -8,6 +8,7 @@ import base64
 import time
 import wave
 import numpy as np
+import soxr
 from pathlib import Path
 
 from typing import Optional, Callable, Dict, Any, Awaitable, List
@@ -343,7 +344,27 @@ class OmniRealtimeClient:
             noise_reduce_enabled=True,  # RNNoise noise reduction + VAD
             on_silence_reset=self._on_silence_reset  # 静音重置时发送 input_audio_buffer.clear
         )
-        
+
+        # ── Uplink (client→provider) sample rate ──────────────────────
+        # 内部管线一律 16kHz（RNNoise 降采样到 16k、移动端原生 16k、主动
+        # 注入 WAV 也是 16k）。绝大多数 Realtime API（Gemini/Qwen/GLM/Step/
+        # Grok/free）都吃 16kHz PCM —— 唯独 OpenAI Realtime 的 PCM 输入
+        # *只* 接受 24kHz（GA 文档：audio/pcm 的 rate 固定 24000，不能声明
+        # 16000）。否则服务端会把我们的 16k 字节当 24k 解，等于喂模型 1.5×
+        # 变速变调的音频，拖累 ASR 与 server VAD。
+        # 因此只为 GPT 在「发送前的最后一刻」把 16k 上采到 24k；其余各家
+        # _uplink_sample_rate 保持 16000，_uplink_resampler 为 None → 整条
+        # 重采样彻底短路，行为与改动前完全一致。
+        self._uplink_sample_rate = 24000 if 'gpt' in self._model_lower else 16000
+        # 持续型流式重采样器：连续麦克风流必须维持 FIR 状态，否则每个 chunk
+        # 边界都会引入伪影（与 AudioProcessor 的 downsample stream 同理）。
+        # 一次性的预录 WAV（prompt_ephemeral）走整段无状态重采样，不复用它。
+        self._uplink_resampler = (
+            soxr.ResampleStream(16000, self._uplink_sample_rate, 1, dtype='float32', quality='HQ')
+            if self._uplink_sample_rate != 16000
+            else None
+        )
+
         # 静音重置事件异步队列（RNNoise 4秒静音回调用）
         self._silence_reset_pending = False
         # 按“上次语音时间”做静音清 buffer：无 RNNoise 时也生效，与 RESET_TIMEOUT 一致
@@ -595,6 +616,25 @@ class OmniRealtimeClient:
         else:
             logger.info("apply_tools_to_session: api_type=%s does not support custom tools — ignoring", api)
 
+    def _resample_uplink(self, pcm16_bytes: bytes) -> bytes:
+        """Upsample 16kHz PCM16 mic/cache audio to the provider's uplink rate.
+
+        No-op for every provider that accepts 16kHz (``_uplink_resampler``
+        is None) — returns the bytes unchanged. Only OpenAI Realtime needs
+        24kHz, in which case the persistent stream resampler converts each
+        chunk while carrying FIR state across calls (no boundary clicks).
+
+        Returns ``b''`` if the resampler is still buffering and produced no
+        output for this chunk; callers should skip sending empty frames.
+        """
+        if self._uplink_resampler is None or not pcm16_bytes:
+            return pcm16_bytes
+        samples = np.frombuffer(pcm16_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+        out = self._uplink_resampler.resample_chunk(samples)
+        if len(out) == 0:
+            return b''
+        return (out * 32768.0).clip(-32768, 32767).astype(np.int16).tobytes()
+
     async def process_audio_chunk_async(self, audio_chunk: bytes) -> bytes:
         """
         Asynchronously process audio chunk using RNNoise in a separate thread.
@@ -743,6 +783,10 @@ class OmniRealtimeClient:
         self._ai_recent_activity_time = 0.0
         if self._audio_processor is not None:
             self._audio_processor.reset()
+        # Flush uplink resampler FIR history so a previous session's tail
+        # samples don't bleed into the new connection's first frames.
+        if self._uplink_resampler is not None:
+            self._uplink_resampler.clear()
 
         # WebSocket-based APIs (GLM, Qwen, GPT, Step, Free)
         url = f"{self.base_url}?model={self.model}" if self._model_lower != "free-model" else self.base_url
@@ -852,6 +896,10 @@ class OmniRealtimeClient:
                 "output_modalities": ['audio'] if 'audio' in self._modalities else ['text'],
                 "audio": {
                     "input": {
+                        # OpenAI Realtime PCM 输入只支持 24kHz；显式声明以匹配
+                        # 我们 _resample_uplink 上采后的实际采样率（默认也是
+                        # 24k，但写明可防 API 默认值漂移 + 自我文档化）。
+                        "format": {"type": "audio/pcm", "rate": 24000},
                         "transcription": {"model": "gpt-4o-mini-transcribe"},
                         "turn_detection": None if is_manual else {
                             "type": "semantic_vad",
@@ -1285,11 +1333,18 @@ class OmniRealtimeClient:
             self._silence_reset_pending = False
             await self.clear_audio_buffer()
 
-        # Gemini uses different API
+        # Gemini uses different API (16kHz, no uplink resample needed)
         if self._is_gemini:
             await self._stream_audio_gemini(audio_chunk)
             return
-        
+
+        # By this point audio_chunk is always 16kHz (RNNoise-downsampled,
+        # mobile-native, or hot-swap-cache replay). Upsample to the provider
+        # uplink rate as the very last step (24kHz for OpenAI; no-op others).
+        audio_chunk = self._resample_uplink(audio_chunk)
+        if not audio_chunk:
+            return  # resampler still buffering — nothing to send this frame
+
         audio_b64 = base64.b64encode(audio_chunk).decode()
 
         append_event = {
@@ -2088,6 +2143,15 @@ class OmniRealtimeClient:
                 logger.warning("prompt_ephemeral: no audio file found for %s", filename)
                 return False
 
+        # Proactive WAVs are stored at 16kHz; for OpenAI's 24kHz-only uplink,
+        # upsample the whole clip once (stateless — it's a complete signal, so
+        # no chunk-boundary artifacts and no need to touch the mic-stream
+        # resampler). No-op for every 16kHz-native provider.
+        if self._uplink_sample_rate != 16000:
+            _clip = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32) / 32768.0
+            _clip = soxr.resample(_clip, 16000, self._uplink_sample_rate, quality='HQ')
+            pcm_data = (_clip * 32768.0).clip(-32768, 32767).astype(np.int16).tobytes()
+
         # ── Non-native vision: inject text description before audio ───
         # step / lanlan.tech+free can't receive raw images; send the
         # VISION_MODEL text analysis so the model has visual context.
@@ -2106,8 +2170,9 @@ class OmniRealtimeClient:
         self._proactive_injecting = True
 
         # ── Send audio chunks (same pacing as hot-swap flush) ─────────
-        # 320 bytes = 10 ms @16 kHz 16-bit mono, ×5 multiplier → 1600 bytes
-        chunk_size = 320 * 5  # 1600 bytes = 50 ms of audio
+        # 10 ms @16-bit mono = (rate/100)*2 bytes, ×5 multiplier → 50 ms/chunk.
+        # Rate-derived so pacing stays 50 ms/chunk after the 24kHz upsample.
+        chunk_size = (self._uplink_sample_rate // 100) * 2 * 5  # 50 ms of audio
         sleep_interval = 0.025  # 25 ms → 40 chunks/s, 2× real-time
 
         logger.info(
