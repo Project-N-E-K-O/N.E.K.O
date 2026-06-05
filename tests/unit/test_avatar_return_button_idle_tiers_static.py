@@ -167,9 +167,13 @@ def test_model_goodbye_exit_shrinks_in_place_instead_of_sliding_right():
     assert "#vrm-container.minimized" in source
     assert "#mmd-container.minimized" in source
     assert "transform: scale(0.38) translateZ(0);" in source
-    assert "opacity 280ms ease-in, transform 400ms cubic-bezier(0.22, 1, 0.36, 1)" in source
-    assert "height 0ms 400ms" in source
+    assert "--neko-model-opacity-transition: opacity 280ms ease-in;" in source
+    assert "--neko-model-transform-transition: transform 400ms cubic-bezier(0.22, 1, 0.36, 1);" in source
+    assert "--neko-model-visibility-delay: 400ms;" in source
+    assert "transition: var(--neko-model-opacity-transition), var(--neko-model-transform-transition)" in source
+    assert "height 0ms var(--neko-model-visibility-delay)" in source
     assert "transform-origin: var(--neko-model-exit-origin-x, 50%) var(--neko-model-exit-origin-y, 50%);" in source
+    assert source.count("transform-origin: var(--neko-model-exit-origin-x, 50%) var(--neko-model-exit-origin-y, 50%);") >= 3
     assert "function setModelExitTransformOrigin(container, rect)" in app_ui_source
     assert "function playModelGoodbyeExit(container, rect)" in app_ui_source
     assert "function applyModelGoodbyeVisualFade(container, options = {})" in app_ui_source
@@ -521,6 +525,17 @@ def test_no_box_shadow_or_border_in_base_return_btn_css():
 
 
 def _extract_css_block(source, selector):
+    """Extract a selector's CSS block body from source.
+
+    Args:
+        source: CSS source string to search.
+        selector: Selector text whose following brace-delimited block is read.
+
+    Returns:
+        The string inside the matched braces, or '' when the selector/opening
+        brace/closing brace is not found. Nested braces are handled with
+        brace-depth tracking.
+    """
     start = source.find(selector)
     if start == -1:
         return ''

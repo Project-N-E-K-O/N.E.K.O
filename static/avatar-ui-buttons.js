@@ -3883,7 +3883,10 @@ const AvatarButtonMixin = {
                         anchorRect: rect,
                         coverRect: window._savedGoodbyeRect || null,
                         container: returnButtonContainer
-                    }).catch(() => {});
+                    }).catch((error) => {
+                        console.warn('[AvatarButtonMixin] model/cat return transition failed:', error);
+                        returnButtonContainer.removeAttribute('data-neko-model-cat-transitioning');
+                    });
                     dispatchReturnEvent();
                     return;
                 }

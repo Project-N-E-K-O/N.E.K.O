@@ -1,5 +1,11 @@
 @import url('base.css');
 
+:root {
+    --neko-model-opacity-transition: opacity 280ms ease-in;
+    --neko-model-transform-transition: transform 400ms cubic-bezier(0.22, 1, 0.36, 1);
+    --neko-model-visibility-delay: 400ms;
+}
+
 html,
 body {
     height: 100%;
@@ -233,7 +239,7 @@ button * {
     opacity: 1;
     overflow: hidden;
     visibility: visible;
-    transition: opacity 280ms ease-in, transform 400ms cubic-bezier(0.22, 1, 0.36, 1), height 0ms 400ms, width 0ms 400ms, visibility 0ms 400ms;
+    transition: var(--neko-model-opacity-transition), var(--neko-model-transform-transition), height 0ms var(--neko-model-visibility-delay), width 0ms var(--neko-model-visibility-delay), visibility 0ms var(--neko-model-visibility-delay);
     /* GPU 合成层隔离：减少窗口级重绘对 canvas 的影响 */
     will-change: transform;
     transform: translateZ(0);
@@ -293,10 +299,11 @@ button * {
     /* 【修复】仅过渡 opacity 和 transform，排除 visibility 的过渡影响，
      * 避免 MMD 模式下隐藏 VRM 容器时因 transition: all 导致约 1s 的视觉
      * 残留窗口，使 VRM canvas 中缓存的旧模型（如 sister1.0）短暂可见。 */
-    transition: opacity 280ms ease-in, transform 400ms cubic-bezier(0.22, 1, 0.36, 1);
+    transition: var(--neko-model-opacity-transition), var(--neko-model-transform-transition);
     /* GPU 合成层隔离：减少窗口级重绘对 canvas 的影响 */
     will-change: transform;
     transform: translateZ(0);
+    transform-origin: var(--neko-model-exit-origin-x, 50%) var(--neko-model-exit-origin-y, 50%);
 }
 
 /* 看板娘MMD模型判定框-容器 */
@@ -314,7 +321,7 @@ button * {
     opacity: 1;
     overflow: hidden;
     visibility: visible;
-    transition: opacity 280ms ease-in, transform 400ms cubic-bezier(0.22, 1, 0.36, 1);
+    transition: var(--neko-model-opacity-transition), var(--neko-model-transform-transition);
     /* GPU 合成层隔离 */
     will-change: transform;
     transform: translateZ(0);
