@@ -211,7 +211,7 @@ day3_wrap
 day3_wrap_ready
 ```
 
-Day 2 的 `day2_intro_context` 台词、text key 和 voice key 不变。Day 1 的屏幕分享两句复用旧 Day 2 屏幕分享按钮流程，只指认入口，不点击、不打开来源列表。Day 3 首句先回到胶囊输入框；后续 Avatar/Galgame 目标必须来自新版弧形菜单：总按钮是 `.send-button-circle.compact-input-tool-toggle`，Avatar 工具是 `.compact-input-tool-item-avatar`，Galgame 是 `.compact-input-tool-item-galgame`。
+Day 2 的 `day2_intro_context` 台词、text key 和 voice key 不变。Day 1 的屏幕分享两句复用旧 Day 2 屏幕分享按钮流程，只指认入口，不点击、不打开来源列表。Day 3 首句先回到胶囊输入框；后续 Avatar/Galgame 目标必须来自新版弧形菜单：总按钮是 `.send-button-circle.compact-input-tool-toggle`，Avatar 工具是 `.compact-input-tool-item-avatar`，Galgame 是 `.compact-input-tool-item-galgame`。Galgame 入口台词必须先用 Ghost Cursor 点击态下拖轮盘向下约 48px，按 22px/步把 Galgame 从 slot 2 正向转到 slot 0，再移动到新的 Galgame 中心。
 
 ### 当前 Day 1 主线
 
@@ -254,7 +254,7 @@ Day 1 分支/条件台词：
 | 1 | `day3_tool_toggle_intro` | 嘻嘻，可别以为这个聊天框只能用来打字哦~ 里面其实偷偷藏了超~多好玩的小惊喜呢！快跟着我一起点开看看，瞧瞧今天能挖出什么有趣的宝贝吧！ | 圆角矩形高亮胶囊输入框 `chat-input`；Ghost Cursor 直接显示在胶囊聊天框中间并停留，不从默认点移动进入，不点击、不打开弧形工具菜单。 |
 | 2 | `day3_avatar_tools` | 在这个小按钮里，有许多可以和人家互动的小道具呢。 | 持续圆形高亮 `button.send-button-circle.compact-input-tool-toggle`；Ghost Cursor 从胶囊输入框位置以约 1480ms 慢慢平滑移动到工具总按钮 `button.send-button-circle.compact-input-tool-toggle` 并模拟点击；点击动画开始时并行调用 API 打开弧形工具菜单，不打开 Avatar 工具菜单。内置与外置聊天窗 / PC 全局 overlay 都必须保持工具总按钮作为 persistent spotlight，不得切到 Avatar 按钮 persistent。 |
 | 3 | `day3_avatar_tools_props` | 你可以随时来摸摸我的头，或者给我吃一根甜甜的棒棒糖。如果有时候我不小心做错事了，你也可以用小锤子敲敲我，不过……一定要轻轻的，不能太用力哦。 | 持续圆形高亮 `button.send-button-circle.compact-input-tool-toggle`；Ghost Cursor 平滑移动到 Avatar 互动工具按钮，然后在 Avatar 互动工具按钮处模拟点击并触发 Avatar 互动工具按钮点击事件，同时用 `setAvatarToolMenuOpen(true)` 同步 React 状态以显示三个小道具。台词播放完后再次触发 Avatar 互动工具按钮点击事件，并用 `setAvatarToolMenuOpen(false)` 隐藏三个小道具。PC 多通道中继下，这条 open/close 状态消息必须允许重复到达，不能被同 timestamp 去重吞掉。 |
-| 4 | `day3_galgame_entry` | 快点开这个【Galgame模式】！进去之后就像我们在进行一场专属的互动大冒险呢。 | 持续圆形高亮 `button.send-button-circle.compact-input-tool-toggle`；Ghost Cursor 移动到 Galgame 按钮。 |
+| 4 | `day3_galgame_entry` | 快点开这个【Galgame模式】！进去之后就像我们在进行一场专属的互动大冒险呢。 | 持续圆形高亮 `button.send-button-circle.compact-input-tool-toggle`；Ghost Cursor 移动到当前 Galgame 按钮，切换点击态后向下拖动轮盘约 48px，按 22px/步正向累计 2 步把 Galgame 从 slot 2 转到 slot 0；随后平滑移动并停在新的 `.compact-input-tool-item-galgame` 中心，不强制开启 Galgame。 |
 | 5 | `day3_galgame_choices` | 你选的每一个对话，都会带我们走向完全未知的惊喜故事，我都等不及啦，快来选一个你最心动的回答吧！ | 继续指认 Galgame 入口或真实选项区域，不伪造选择局。 |
 | 6 | `day3_wrap` | 今天带你认识的这些功能，其实都是为了让我们在一起的时光变得更有趣呢。 | 收尾前关闭弧形菜单和 Avatar 工具菜单，重新高亮聊天窗。 |
 | 7 | `day3_wrap_ready` | 不管是想摸摸我的头，还是想开启属于我们的故事，我都已经做好准备了。 | 约 70% cue 同步隐藏 Ghost Cursor、清理高光和菜单并播放花瓣。 |
@@ -327,7 +327,7 @@ Day 1 registry 还注册了 API Key、记忆浏览和插件面板的 handoff sce
 | --- | --- | --- | --- |
 | `day3_chat_tools`：“来啦来啦...” | `happy`，兴奋邀请动作 | 首个 scene T+0 primary 高亮 composer 区：`.composer-panel` 优先，其次 `.composer-input-shell`；外置聊天窗 kind `input`；Ghost Cursor 直接显示/保持在工具区中心；台词结束后清理该区域。 | 不高亮整聊天窗，不同时高亮具体工具按钮。 |
 | `day3_avatar_tools` / `day3_avatar_tools_props`：“在这个小按钮里...”两句 | `happy`，互动玩耍动作 | 准备阶段关闭旧工具菜单；第一句 T+0 持续圆形高亮 `button.send-button-circle.compact-input-tool-toggle`，T+220ms cursor 以 1480ms 慢慢平滑移动到工具总按钮并模拟点击，只打开弧形工具菜单；第二句持续高亮工具总按钮，cursor 平滑移动到 Avatar 互动工具按钮并模拟点击，同时触发 Avatar 互动工具按钮点击事件显示三个小道具；台词播放完后再次触发 Avatar 互动工具按钮点击事件隐藏三个小道具。 | 工具总按钮保持 persistent 圆形高光；道具入口只展示，不出现高亮或 cursor tour；不触发真实道具消耗。 |
-| `day3_galgame_games` / `day3_galgame_choices`：“快点开这个【Galgame模式】...”两句 | `surprised`，冒险期待动作 | `cleanupBefore` 先收起 Avatar 道具菜单；第一句 T+0 primary 圆形高亮 `.composer-galgame-btn`；若折叠先打开更多菜单；T+220ms cursor move 指认，不强制点击；第二句继续保持 Galgame 按钮高亮。若真实存在 `choicePrompt.source === 'mini_game_invite'`，只能在内置聊天窗圆形高亮前三个真实选项并让 cursor 依次划过。 | Galgame 按钮和小游戏选项不能同时与 composer 大区域重叠；不得伪造小游戏局。 |
+| `day3_galgame_entry` / `day3_galgame_choices`：“快点开这个【Galgame模式】...”两句 | `surprised`，冒险期待动作 | 先收起 Avatar 道具菜单并保持工具总按钮 persistent 圆形高亮；第一句 cursor 先移动到当前 `.compact-input-tool-item-galgame`，再用 click 态从轮盘向下拖约 48px，触发 `compactToolWheelRotateRequest(direction=1, stepCount=2)`，把 Galgame 从 slot 2 转到 slot 0，最后重新移动到新的 Galgame 中心；不强制点击 Galgame、不改 Galgame 设置。第二句继续保持 Galgame 按钮高亮。若真实存在 `choicePrompt.source === 'mini_game_invite'`，只能在内置聊天窗圆形高亮前三个真实选项并让 cursor 依次划过。 | Galgame 按钮和小游戏选项不能同时与 composer 大区域重叠；不得伪造小游戏局。 |
 | `day3_wrap` / `day3_wrap_ready`：“今天带你认识的这些功能...”两句 | `happy`，鼓励尝试动作 | 收尾第一句关闭工具菜单/更多菜单并清理按钮高光；T+0 primary 回聊天窗，cursor move 到聊天窗；第二句继续保持聊天窗高亮；第二句 T+70% 花瓣 cue 清理内置/外置高光、工具区 spotlight 和 cursor；完成 Day 3。 | 不保留 Galgame 或道具菜单高光。 |
 
 ## Day 4：相处距离、主动陪伴与模型行为
@@ -373,6 +373,8 @@ Day 1 registry 还注册了 API Key、记忆浏览和插件面板的 handoff sce
 ## 外置聊天窗等价规则
 
 外置聊天窗不直接使用首页 DOM 高光，必须用 `TutorialInteractionTakeover` 发送 kind。PC 全局 overlay 启用时，外置聊天窗的 cursor kind 用于解析目标、回传 `yui_guide_chat_cursor_anchor`，并可把 show/move/click/wobble/hide 的 cursor patch 发送到 PC 全局 overlay；但外置聊天窗自身不得渲染本地 `#yui-guide-chat-cursor`。首页 Director 收到外置聊天窗锚点时必须保持 cursor 轨迹连续：可见 cursor 直接 move；隐藏但有 position 的 cursor 先在旧 position 恢复可见，再 move 到新锚点；没有可用 position 时才允许直接 show 到新锚点。
+
+外置聊天窗的 `cursorAction: click` 只允许由外置窗口解析目标后发送一次 `cursor:*:click` patch 到 PC 全局 overlay，点击图切换时长沿用统一 `DEFAULT_CURSOR_CLICK_VISIBLE_MS=420`。同一 click scene 中首页 Director 只等待同等时长并并行启动真实 operation，不再额外播放首页 `clickCursorAndWait()`；外置聊天窗回传 anchor 时 `effect` 必须为空，避免锚点同步触发第二次点击。
 
 | 首页语义 | 外置 kind | 要求 |
 | --- | --- | --- |

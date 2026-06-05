@@ -413,6 +413,57 @@
             }
         }
 
+        rotateExternalizedChatCompactToolWheel(direction, stepCount, reason) {
+            if (!this.isHomeChatExternalized()) {
+                return;
+            }
+
+            const channel = this.getExternalChatChannel();
+            if (!channel || typeof channel.postMessage !== 'function') {
+                return;
+            }
+
+            try {
+                channel.postMessage({
+                    action: 'yui_guide_rotate_compact_tool_wheel',
+                    direction: Number(direction) < 0 ? -1 : 1,
+                    stepCount: Number.isFinite(Number(stepCount)) ? Math.max(1, Math.min(7, Math.floor(Number(stepCount)))) : 1,
+                    reason: typeof reason === 'string' ? reason : '',
+                    timestamp: Date.now()
+                });
+            } catch (error) {
+                console.warn('[TutorialInteractionTakeover] 同步独立聊天窗工具轮盘旋转失败:', error);
+            }
+        }
+
+        dragExternalizedChatCursor(kind, options) {
+            if (!this.isHomeChatExternalized()) {
+                return;
+            }
+
+            const channel = this.getExternalChatChannel();
+            if (!channel || typeof channel.postMessage !== 'function') {
+                return;
+            }
+
+            const normalizedOptions = options || {};
+            try {
+                channel.postMessage({
+                    action: 'yui_guide_drag_chat_cursor',
+                    kind: typeof kind === 'string' ? kind : '',
+                    deltaX: Number.isFinite(Number(normalizedOptions.deltaX)) ? Number(normalizedOptions.deltaX) : 0,
+                    deltaY: Number.isFinite(Number(normalizedOptions.deltaY)) ? Number(normalizedOptions.deltaY) : 0,
+                    durationMs: Number.isFinite(Number(normalizedOptions.durationMs)) ? Math.max(0, Math.floor(Number(normalizedOptions.durationMs))) : 0,
+                    effect: typeof normalizedOptions.effect === 'string' ? normalizedOptions.effect : '',
+                    effectDurationMs: Number.isFinite(Number(normalizedOptions.effectDurationMs)) ? Math.max(0, Math.floor(Number(normalizedOptions.effectDurationMs))) : 0,
+                    targetIndex: Number.isFinite(Number(normalizedOptions.targetIndex)) ? Math.max(0, Math.floor(Number(normalizedOptions.targetIndex))) : 0,
+                    timestamp: Date.now()
+                });
+            } catch (error) {
+                console.warn('[TutorialInteractionTakeover] 同步独立聊天窗教程光标拖拽失败:', error);
+            }
+        }
+
         clearExternalizedChatGuideMessages() {
             if (!this.isHomeChatExternalized()) {
                 return;

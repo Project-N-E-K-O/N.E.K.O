@@ -94,6 +94,7 @@
         homeTutorialInteractionLocked: false,
         _avatarToolMenuOpenRequestSeq: 0,
         _compactToolFanOpenRequestSeq: 0,
+        _compactToolWheelRotateRequestSeq: 0,
         _galgameRequestSeq: 0,
         // 通用 ChoicePrompt 框架。当前承载 mini_game_invite 与新手破冰；
         // galgame mode 仍走 galgameOptions 路径（BC，渐进迁移）。
@@ -3595,6 +3596,25 @@
         return state.viewProps.compactToolFanOpenRequest;
     }
 
+    function rotateCompactToolWheel(direction, stepCount, reason) {
+        var normalizedDirection = Number(direction) < 0 ? -1 : 1;
+        var normalizedStepCount = Number.isFinite(Number(stepCount))
+            ? Math.max(1, Math.min(7, Math.floor(Number(stepCount))))
+            : 1;
+        state._compactToolWheelRotateRequestSeq += 1;
+        state.viewProps = Object.assign({}, ensureViewProps(), {
+            compactToolWheelRotateRequest: {
+                id: 'compact-tool-wheel-rotate-' + state._compactToolWheelRotateRequestSeq,
+                direction: normalizedDirection,
+                stepCount: normalizedStepCount,
+                reason: typeof reason === 'string' ? reason : '',
+                forceFast: true
+            }
+        });
+        renderWindow();
+        return state.viewProps.compactToolWheelRotateRequest;
+    }
+
     function deactivateToolCursor() {
         state._toolCursorResetKey = 'tcr-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6);
         renderWindow();
@@ -5840,6 +5860,7 @@
         setHomeTutorialInteractionLocked: setHomeTutorialInteractionLocked,
         setAvatarToolMenuOpen: setAvatarToolMenuOpen,
         setCompactToolFanOpen: setCompactToolFanOpen,
+        rotateCompactToolWheel: rotateCompactToolWheel,
         deactivateToolCursor: deactivateToolCursor,
         appendMessage: appendMessage,
         updateMessage: updateMessage,

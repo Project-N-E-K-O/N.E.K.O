@@ -6335,6 +6335,37 @@
             return false;
         }
 
+        rotateCompactToolWheelForGuide(direction, stepCount, reason) {
+            const normalizedDirection = Number(direction) < 0 ? -1 : 1;
+            const normalizedStepCount = Number.isFinite(Number(stepCount))
+                ? Math.max(1, Math.min(7, Math.floor(Number(stepCount))))
+                : 1;
+            if (this.isHomeChatExternalized()) {
+                if (
+                    this.interactionTakeover
+                    && typeof this.interactionTakeover.rotateExternalizedChatCompactToolWheel === 'function'
+                ) {
+                    this.interactionTakeover.rotateExternalizedChatCompactToolWheel(
+                        normalizedDirection,
+                        normalizedStepCount,
+                        reason || 'avatar-floating-guide'
+                    );
+                    return true;
+                }
+                return false;
+            }
+            const host = window.reactChatWindowHost;
+            if (!host || typeof host.rotateCompactToolWheel !== 'function') {
+                return false;
+            }
+            host.rotateCompactToolWheel(
+                normalizedDirection,
+                normalizedStepCount,
+                reason || 'avatar-floating-guide'
+            );
+            return true;
+        }
+
         setCompactHistoryOpen(open, reason) {
             if (this.isHomeChatExternalized()) {
                 if (
@@ -6773,6 +6804,61 @@
                 moveMs: 420,
                 pauseMs: 180
             });
+        }
+
+        async runDay3GalgameWheelDragScene(scene, primaryTarget) {
+            this.setCompactToolFanOpen(true, 'avatar-floating-guide-galgame-tool-fan-open');
+            await this.waitForSceneDelay(120);
+            const dragDeltaY = 48;
+            const dragDurationMs = 260;
+            const rotateReason = 'avatar-floating-guide-galgame-drag';
+
+            if (this.isHomeChatExternalized()) {
+                if (
+                    this.interactionTakeover
+                    && typeof this.interactionTakeover.dragExternalizedChatCursor === 'function'
+                ) {
+                    this.interactionTakeover.dragExternalizedChatCursor('galgame', {
+                        deltaY: dragDeltaY,
+                        durationMs: dragDurationMs,
+                        effect: 'click',
+                        effectDurationMs: 900
+                    });
+                }
+                await this.waitForSceneDelay(dragDurationMs + 80);
+                this.rotateCompactToolWheelForGuide(1, 2, rotateReason);
+                await this.waitForSceneDelay(260);
+                this.setExternalizedChatCursorEffect('galgame', 'move', {
+                    durationMs: 520
+                });
+                return true;
+            }
+
+            const target = primaryTarget || await this.resolveAvatarFloatingTarget(scene, 'primary');
+            const rect = this.getElementRect(target);
+            if (!rect) {
+                return false;
+            }
+            this.cursor.click(900);
+            const moved = await this.cursor.moveToPoint(
+                rect.left + (rect.width / 2),
+                rect.top + (rect.height / 2) + dragDeltaY,
+                {
+                    durationMs: dragDurationMs,
+                    pauseCheck: () => this.scenePausedForResistance,
+                    cancelCheck: () => this.isStopping()
+                }
+            );
+            if (!moved || this.isStopping()) {
+                return false;
+            }
+            this.rotateCompactToolWheelForGuide(1, 2, rotateReason);
+            await this.waitForSceneDelay(260);
+            const finalTarget = await this.resolveAvatarFloatingTarget(scene, 'primary');
+            if (finalTarget) {
+                await this.moveCursorToElement(finalTarget, 520);
+            }
+            return true;
         }
 
         async resolveAvatarFloatingTarget(scene, role) {
@@ -8050,6 +8136,9 @@
             if (operation === 'day6-plugin-sidepanel-flow') {
                 return this.runDay6PluginSidePanelFlow(scene, narrationStartedAt);
             }
+            if (operation === 'rotate-galgame-tool-into-center') {
+                return this.runDay3GalgameWheelDragScene(scene, primaryTarget);
+            }
             if (operation.indexOf('show-agent-sidepanel:') === 0 && scene.activateSecondaryAction === true) {
                 const parts = operation.split(':');
                 const toggleId = parts[1] === 'openclaw' ? 'agent-openclaw' : 'agent-user-plugin';
@@ -8564,12 +8653,15 @@
             }
             const cursorKind = this.getExternalizedChatTargetKind(this.getAvatarFloatingCursorTargetKey(scene), scene)
                 || this.getExternalizedChatTargetKind(scene && scene.target || '', scene);
-            if (cursorKind) {
-                this.setExternalizedChatCursorEffect(cursorKind, 'click', {
+            const externalizedClickStarted = !!(
+                cursorKind
+                && this.setExternalizedChatCursorEffect(cursorKind, 'click', {
                     effectDurationMs: DEFAULT_CURSOR_CLICK_VISIBLE_MS
-                });
-            }
-            const clickPromise = this.clickCursorAndWait(DEFAULT_CURSOR_CLICK_VISIBLE_MS);
+                })
+            );
+            const clickPromise = externalizedClickStarted
+                ? this.waitForSceneDelay(DEFAULT_CURSOR_CLICK_VISIBLE_MS)
+                : this.clickCursorAndWait(DEFAULT_CURSOR_CLICK_VISIBLE_MS);
             if (typeof startSceneOperation === 'function') {
                 startSceneOperation({
                     scene: scene

@@ -67,7 +67,8 @@
                     emotion: 'surprised',
                     persistent: 'chat-tool-toggle',
                     target: 'chat-galgame',
-                    cursorAction: 'move'
+                    cursorAction: 'move',
+                    operation: 'rotate-galgame-tool-into-center'
                 },
                 {
                     id: 'day3_galgame_choices',

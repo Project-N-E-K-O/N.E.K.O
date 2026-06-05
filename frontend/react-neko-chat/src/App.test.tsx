@@ -5043,6 +5043,46 @@ describe('App', () => {
     fireEvent.pointerUp(fan, { pointerId: 7, clientX: 101, clientY: 100, buttons: 0, pointerType: 'mouse' });
   });
 
+  it('rotates compact input tools from a guide request', async () => {
+    const { rerender } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        compactToolFanOpenRequest={{
+          id: 'compact-tool-fan-open-guide',
+          open: true,
+          reason: 'avatar-floating-guide-open-tool-fan',
+        }}
+      />,
+    );
+
+    const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    expect(fan.querySelector('.compact-input-tool-item-galgame')).toHaveAttribute('data-compact-tool-wheel-slot', '2');
+
+    rerender(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        compactToolFanOpenRequest={{
+          id: 'compact-tool-fan-open-guide',
+          open: true,
+          reason: 'avatar-floating-guide-open-tool-fan',
+        }}
+        compactToolWheelRotateRequest={{
+          id: 'compact-tool-wheel-rotate-guide',
+          direction: 1,
+          stepCount: 2,
+          reason: 'avatar-floating-guide-galgame-drag',
+          forceFast: true,
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(fan.querySelector('.compact-input-tool-item-galgame')).toHaveAttribute('data-compact-tool-wheel-slot', '0');
+    });
+  });
+
   it('stops compact input tool wheel motion on pointer release', async () => {
     vi.useFakeTimers();
     try {

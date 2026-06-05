@@ -105,6 +105,7 @@
         let lastKey = '';
         let currentSpotlights = [];
         let currentCursor = null;
+        let currentCursorEffectSuppressUntil = 0;
         let currentPetal = null;
 
         const getAssetUrl = (assetPath) => {
@@ -173,6 +174,27 @@
             return nextCursor;
         }
 
+        function getCursorEffectDurationMs(cursor) {
+            if (!cursor || cursor.visible === false) {
+                return 0;
+            }
+            const effect = typeof cursor.effect === 'string' ? cursor.effect : '';
+            if (effect !== 'click' && effect !== 'wobble') {
+                return 0;
+            }
+            const effectDurationMs = Number.isFinite(cursor.effectDurationMs)
+                ? Math.max(0, Math.floor(cursor.effectDurationMs))
+                : 0;
+            if (effectDurationMs > 0) {
+                return effectDurationMs;
+            }
+            return effect === 'click' ? DEFAULT_CURSOR_CLICK_VISIBLE_MS : 2000;
+        }
+
+        function isCursorEffectActive() {
+            return currentCursorEffectSuppressUntil > 0 && Date.now() < currentCursorEffectSuppressUntil;
+        }
+
         const send = (patch, force) => {
             const hasCursor = patch && Object.prototype.hasOwnProperty.call(patch, 'cursor');
             const hasPetal = patch && Object.prototype.hasOwnProperty.call(patch, 'petal');
@@ -181,6 +203,10 @@
             }
             if (patch && Object.prototype.hasOwnProperty.call(patch, 'cursor')) {
                 currentCursor = withoutTransientCursorEffect(patch.cursor);
+                const cursorEffectDurationMs = getCursorEffectDurationMs(patch.cursor);
+                currentCursorEffectSuppressUntil = cursorEffectDurationMs > 0
+                    ? Date.now() + cursorEffectDurationMs
+                    : 0;
             }
             if (patch && Object.prototype.hasOwnProperty.call(patch, 'petal')) {
                 currentPetal = patch.petal || null;
@@ -190,7 +216,7 @@
             };
             if (hasCursor) {
                 payload.cursor = patch.cursor || null;
-            } else if (currentCursor) {
+            } else if (currentCursor && !isCursorEffectActive()) {
                 payload.cursor = currentCursor;
             }
             if (currentPetal || hasPetal) {
@@ -320,6 +346,7 @@
                 failed = false;
                 currentSpotlights = [];
                 currentCursor = null;
+                currentCursorEffectSuppressUntil = 0;
                 currentPetal = null;
                 try {
                     if (window.localStorage.getItem('yuiGuidePcOverlayRunId') === runId) {

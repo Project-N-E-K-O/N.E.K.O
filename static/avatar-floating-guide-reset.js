@@ -202,10 +202,10 @@
                 {
                     id: 'day3_galgame_entry',
                     selector: '#react-chat-window-root .compact-input-tool-item-galgame',
-                    text: '移动到 Galgame 按钮，不强制开启 Galgame。',
+                    text: '按住工具轮盘向下拖动约 48px，把 Galgame 从 slot 2 转到 slot 0 后移动到 Galgame 按钮。',
                     voiceKey: 'avatar_floating_day3_galgame_intro',
                     cursorAction: 'move',
-                    operation: 'none',
+                    operation: 'rotate-galgame-tool-into-center',
                     keepPanelsOpen: true,
                     performanceCue: null,
                 },
