@@ -472,3 +472,106 @@ async def test_galgame_missing_model_base_url_returns_fallback(monkeypatch):
     assert data["fallback"] is True
     assert "error" not in data
     assert [item["text"] for item in data["options"]] == list(get_galgame_fallback_options("zh"))
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_galgame_options_skipped_when_session_takeover_active(monkeypatch):
+    """game route 接管会话期间（语音输入被改路由进游戏逻辑），React composer
+    的 galgame 面板不是当前活动界面。此时生成选项只会白烧 summary 档 token，
+    所以端点必须短路到 fallback 且**不调用 LLM** —— 与 core.py 里 voice-proactive
+    的 `_takeover_active` 守卫对称。"""
+    config_manager = FakeConfigManager(
+        {
+            "model": "local-summary",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "api_key": "",
+        }
+    )
+    monkeypatch.setattr(galgame_router, "get_config_manager", lambda: config_manager)
+    monkeypatch.setattr(
+        galgame_router,
+        "create_chat_llm",
+        lambda *args, **kwargs: pytest.fail(
+            "LLM must not be called while the session is taken over"
+        ),
+    )
+    monkeypatch.setattr(
+        galgame_router,
+        "get_session_manager",
+        lambda: {"猫娘": SimpleNamespace(_takeover_active=True)},
+    )
+
+    response = await galgame_router.generate_galgame_options(
+        FakeRequest(
+            {
+                "messages": [{"role": "assistant", "text": "刚才那件事你怎么看？"}],
+                "language": "zh-CN",
+                "lanlan_name": "猫娘",
+            }
+        )
+    )
+
+    data = _decode_response(response)
+    assert data["success"] is True
+    assert data["fallback"] is True
+    assert data["reason"] == "session_takeover"
+    assert _option_texts(data) == list(get_galgame_fallback_options("zh"))
+    # 守卫必须在解析 summary 模型配置之前短路，summary 档配置不应被读取。
+    assert "summary" not in config_manager.calls
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_galgame_options_generated_when_session_not_taken_over(monkeypatch):
+    """守卫只在接管期间短路 —— mgr 存在但未接管时必须照常生成选项。不能因为
+    「有活跃（语音）会话」就一刀切拦掉：用户开着聊天窗口用文字选项插话是合法
+    用法。"""
+    config_manager = FakeConfigManager(
+        {
+            "model": "local-summary",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "api_key": "",
+        }
+    )
+    called = {"llm": False}
+
+    class FakeLLM:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def ainvoke(self, messages):
+            called["llm"] = True
+            return SimpleNamespace(
+                content=json.dumps(
+                    {"A": "认真听。", "B": "陪着你。", "C": "幻想一下。"},
+                    ensure_ascii=False,
+                )
+            )
+
+    monkeypatch.setattr(galgame_router, "get_config_manager", lambda: config_manager)
+    monkeypatch.setattr(galgame_router, "create_chat_llm", lambda *a, **k: FakeLLM())
+    monkeypatch.setattr(
+        galgame_router,
+        "get_session_manager",
+        lambda: {"猫娘": SimpleNamespace(_takeover_active=False)},
+    )
+
+    response = await galgame_router.generate_galgame_options(
+        FakeRequest(
+            {
+                "messages": [{"role": "assistant", "text": "刚才那件事你怎么看？"}],
+                "language": "zh-CN",
+                "lanlan_name": "猫娘",
+            }
+        )
+    )
+
+    data = _decode_response(response)
+    assert called["llm"] is True
+    assert data["success"] is True
+    assert "fallback" not in data
+    assert _option_texts(data) == ["认真听。", "陪着你。", "幻想一下。"]

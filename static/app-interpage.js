@@ -61,7 +61,6 @@
             'body.neko-main-ui-hidden-by-model-manager #live2d-canvas,',
             'body.neko-main-ui-hidden-by-model-manager #vrm-canvas,',
             'body.neko-main-ui-hidden-by-model-manager #mmd-canvas,',
-            'body.neko-main-ui-hidden-by-model-manager #chat-container,',
             'body.neko-main-ui-hidden-by-model-manager #react-chat-window-overlay,',
             'body.neko-main-ui-hidden-by-model-manager #live2d-floating-buttons,',
             'body.neko-main-ui-hidden-by-model-manager #vrm-floating-buttons,',

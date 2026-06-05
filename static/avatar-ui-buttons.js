@@ -206,13 +206,14 @@ const _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_FOLLOW_DISTANCE_PX = 200;
 const _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_REARM_DISTANCE_PX = 100;
 const _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_STICK_MAX_SPEED_PX_PER_SEC = 1100;
 const _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_STICK_MAX_STEP_PX = 210;
+const _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_DROP_FAST_MOVE_COUNT = 3;
 const _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_DROP_PX = 52;
 const _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_DROP_ANIMATION_MS = 360;
 const _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_DROP_COOLDOWN_MS = 900;
 const _NEKO_IDLE_CAT1_COMPACT_SURFACE_SETTLE_SYNC_MS = 160;
 const _NEKO_IDLE_CAT1_WALK_ENTER_DISTANCE_PX = 120;
-const _NEKO_IDLE_CAT1_WALK_EXIT_DISTANCE_PX = 42;
-const _NEKO_IDLE_CAT1_WALK_SPEED_PX_PER_SEC = 101;
+const _NEKO_IDLE_CAT1_WALK_EXIT_DISTANCE_PX = 14;
+const _NEKO_IDLE_CAT1_WALK_SPEED_PX_PER_SEC = 82;
 const _NEKO_IDLE_CAT1_WALK_MAX_SPEED_RATE = 1.5;
 const _NEKO_IDLE_CAT1_WALK_DISTANCE_INCREASE_THRESHOLD_PX = 6;
 const _NEKO_IDLE_CAT1_WALK_DISTANCE_GROWTH_FOR_MAX_RATE_PX = 220;
@@ -235,7 +236,7 @@ const _NEKO_IDLE_CAT1_PAIR_MOVE_LONG_DELAY_MAX_MS = 5 * 60 * 1000;
 const _NEKO_IDLE_CAT1_PAIR_MOVE_MIN_DISTANCE_PX = 72;
 const _NEKO_IDLE_CAT1_PAIR_MOVE_MAX_DISTANCE_PX = 160;
 const _NEKO_IDLE_CAT1_PAIR_MOVE_MIN_USABLE_DISTANCE_PX = 36;
-const _NEKO_IDLE_CAT1_PAIR_MOVE_SPEED_PX_PER_SEC = 96;
+const _NEKO_IDLE_CAT1_PAIR_MOVE_SPEED_PX_PER_SEC = 82;
 const _NEKO_IDLE_CAT1_PAIR_MOVE_MIN_DURATION_MS = 720;
 const _NEKO_IDLE_CAT1_PAIR_MOVE_MAX_DURATION_MS = 2200;
 const _NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS = 2500;
@@ -1168,7 +1169,8 @@ function _getNekoIdleReturnSubactionState(button, profile) {
         compactTopEdgeDropUntil: 0,
         compactTopEdgeRearmRequired: false,
         compactTopEdgeDropAnimationTimer: 0,
-        compactTopEdgeDropCooldownTimer: 0
+        compactTopEdgeDropCooldownTimer: 0,
+        compactTopEdgeFastMoveCount: 0
     };
     button.__nekoIdleCat1Journey = button.__nekoIdleReturnSubactionState;
     return button.__nekoIdleReturnSubactionState;
@@ -1529,6 +1531,7 @@ function _resetNekoIdleCat1CompactFollowState(state, options = {}) {
     state.compactFollowLastSurfaceRect = null;
     state.compactFollowLastAt = 0;
     state.compactFollowAnchorRatio = null;
+    state.compactTopEdgeFastMoveCount = 0;
     if (!options.keepDropCooldown) {
         state.compactTopEdgeDropUntil = 0;
     }
@@ -1867,10 +1870,17 @@ function _syncNekoIdleCat1CompactTopEdgeSurfaceFollow(detail) {
         }
 
         const motion = _getNekoIdleCat1CompactFollowSpeed(state, surfaceRect, nowMs);
-        const tooFast = motion.hasPrevious && (
+        const fastMove = motion.hasPrevious && (
             motion.speedPxPerSec > _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_STICK_MAX_SPEED_PX_PER_SEC ||
             (motion.elapsedMs <= 240 && motion.distancePx > _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_STICK_MAX_STEP_PX)
         );
+        state.compactTopEdgeFastMoveCount = fastMove
+            ? Math.min(
+                _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_DROP_FAST_MOVE_COUNT,
+                (Number(state.compactTopEdgeFastMoveCount) || 0) + 1
+            )
+            : 0;
+        const tooFast = state.compactTopEdgeFastMoveCount >= _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_DROP_FAST_MOVE_COUNT;
         if (tooFast) {
             _setNekoIdleCat1CompactMirrorActive(button, container, false, { reason: 'drop-from-compact-top-edge' });
             _dropNekoIdleCat1FromCompactTopEdge(button, target, nowMs);
@@ -2750,6 +2760,13 @@ function _scheduleNekoIdleCat1WalkStart(button, target) {
     state.targetKind = target && target.kind ? target.kind : '';
     state.facingRight = !!(target && target.facingRight);
     _setNekoIdleCat1Classes(button, state);
+    const art = button.querySelector('.neko-idle-return-art');
+    if (art && art.__nekoIdleHoverSrc) {
+        if (!art.__nekoIdleHoverTimer) {
+            _finishNekoIdleHoverArtAfterPlayback(art, profile.tier);
+        }
+        return;
+    }
     if (state.pendingWalkReady) {
         state.pendingWalkReady = false;
         _startNekoIdleCat1Walk(button, target);
@@ -3833,7 +3850,11 @@ const AvatarButtonMixin = {
             });
 
             returnBtn.addEventListener('click', (e) => {
-                if (returnButtonContainer.getAttribute('data-dragging') === 'true') {
+                if (
+                    returnButtonContainer.getAttribute('data-dragging') === 'true' ||
+                    returnButtonContainer.getAttribute('data-neko-model-cat-transitioning') === 'cat-to-model' ||
+                    (typeof window.isNekoModelCatTransitionActive === 'function' && window.isNekoModelCatTransitionActive())
+                ) {
                     e.preventDefault();
                     e.stopPropagation();
                     return;
@@ -3852,7 +3873,24 @@ const AvatarButtonMixin = {
                         }
                     }
                 });
-                window.dispatchEvent(event);
+                const dispatchReturnEvent = () => {
+                    window.dispatchEvent(event);
+                };
+                if (typeof window.playNekoModelCatTransition === 'function') {
+                    returnButtonContainer.setAttribute('data-neko-model-cat-transitioning', 'cat-to-model');
+                    window.playNekoModelCatTransition({
+                        direction: 'cat-to-model',
+                        anchorRect: rect,
+                        coverRect: window._savedGoodbyeRect || null,
+                        container: returnButtonContainer
+                    }).catch((error) => {
+                        console.warn('[AvatarButtonMixin] model/cat return transition failed:', error);
+                        returnButtonContainer.removeAttribute('data-neko-model-cat-transitioning');
+                    });
+                    dispatchReturnEvent();
+                    return;
+                }
+                dispatchReturnEvent();
             });
 
             returnBtn.appendChild(returnArt);

@@ -23,7 +23,11 @@ def test_auto_goodbye_reuses_existing_goodbye_base_chain():
     assert "window.dispatchEvent(new CustomEvent('live2d-goodbye-click'" in auto_source
     assert "action: 'start_session'" not in auto_source
     assert "resetSessionButton.click();" in ui_source
-    assert "live2dContainerForGoodbye.classList.add('minimized');" in ui_source
+    assert "function playModelGoodbyeExit(container, rect)" in ui_source
+    assert "playModelGoodbyeExit(live2dContainerForGoodbye, savedGoodbyeRect)" in ui_source
+    assert "playModelGoodbyeExit(mmdContainer, savedGoodbyeRect)" in ui_source
+    assert "playModelGoodbyeExit(vrmContainer, savedGoodbyeRect)" in ui_source
+    assert "container.classList.add('minimized');" in ui_source
     assert "resetSessionButton.disabled = false;\n                    resetSessionButton.click();" in ui_source
 
     reset_block = _between(
