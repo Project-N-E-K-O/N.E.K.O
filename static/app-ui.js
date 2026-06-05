@@ -1470,6 +1470,8 @@
     // ================================================================
 
     const MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE = 160;
+    const MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_FALLBACK_MS = 220;
+    const MULTI_WINDOW_RETURN_BALL_DRAG_RESTORE_FALLBACK_MS = 600;
     let multiWindowReturnBallDragState = null;
     let idleReturnBallDesktopDragStateFrame = 0;
     let idleReturnBallDesktopDragStatePending = null;
@@ -2260,6 +2262,14 @@
         }
     }
 
+    function isNativeReturnBallDragDisabled() {
+        const runtime = window.__NEKO_DESKTOP_RUNTIME__ || {};
+        return !!(
+            window.__NEKO_DISABLE_NATIVE_RETURN_BALL_DRAG__ ||
+            runtime.disableNativeReturnBallDrag
+        );
+    }
+
     function cleanupMultiWindowReturnBallDrag() {
         const state = multiWindowReturnBallDragState;
         if (!state) return;
@@ -2286,7 +2296,7 @@
     }
 
     function ensureMultiWindowReturnBallDrag(container) {
-        if (!window.__NEKO_MULTI_WINDOW__ || !window.nekoPetDrag || !container) {
+        if (!window.__NEKO_MULTI_WINDOW__ || isNativeReturnBallDragDisabled() || !window.nekoPetDrag || !container) {
             cleanupMultiWindowReturnBallDrag();
             return;
         }
@@ -2337,14 +2347,15 @@
             restoreSavedReturnBallStyle(container, state);
         }
 
-        function revealReturnBallDragWindow() {
+        async function revealReturnBallDragWindow() {
             if (!window.nekoPetDrag || typeof window.nekoPetDrag.reveal !== 'function') {
-                return;
+                return false;
             }
             try {
-                void window.nekoPetDrag.reveal();
+                return await window.nekoPetDrag.reveal();
             } catch (error) {
                 console.warn('[App] 返回球拖拽渲染完成后恢复窗口显示失败:', error);
+                return false;
             }
         }
 
@@ -2425,12 +2436,13 @@
                 : 600;
             const fallbackDeadline = Date.now() + Math.max(0, fallbackMs);
             const hardFallbackDeadline = fallbackDeadline + Math.max(1000, Math.max(0, fallbackMs) * 2);
+            const continueOnFallback = !!(options && options.continueOnFallback);
 
-            const runWhenStable = () => {
+            const runWhenStable = (meta) => {
                 requestAnimationFrame(() => {
                     requestAnimationFrame(() => {
                         if (!isActiveDragToken(dragToken)) return;
-                        onReady();
+                        onReady(meta || {});
                     });
                 });
             };
@@ -2458,6 +2470,17 @@
 
                 const remainingMs = fallbackDeadline - Date.now();
                 if (remainingMs <= 0) {
+                    if (continueOnFallback) {
+                        console.warn(
+                            '[pollViewportRestore] waitForViewportSize timed out; continuing best-effort cleanup.',
+                            'dragToken:', state.dragSessionToken,
+                            'fallbackMs:', fallbackMs,
+                            'fallbackDeadline:', fallbackDeadline
+                        );
+                        clearMultiWindowReturnBallDeferredWork(state);
+                        runWhenStable({ timedOut: true });
+                        return;
+                    }
                     if (Date.now() >= hardFallbackDeadline) {
                         console.warn(
                             '[pollViewportRestore] waitForViewportSize hard timeout; continuing best-effort cleanup.',
@@ -2602,7 +2625,10 @@
                     container.style.visibility = getSavedBallStyleValue('visibility');
                     container.style.willChange = 'opacity';
                 },
-                { fallbackMs: 600 }
+                {
+                    fallbackMs: MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_FALLBACK_MS,
+                    continueOnFallback: true
+                }
             );
 
             if (event) {
@@ -2668,13 +2694,16 @@
                 if (!isActiveDragToken(dragToken)) return;
                 const expectedWidth = restoreBounds ? restoreBounds.width : state.savedWindowW;
                 const expectedHeight = restoreBounds ? restoreBounds.height : state.savedWindowH;
-                waitForViewportSize(dragToken, expectedWidth, expectedHeight, () => {
+                waitForViewportSize(dragToken, expectedWidth, expectedHeight, async () => {
                     restoreSavedBallStyle();
                     delete document.body.dataset.nekoBallDrag;
                     container.setAttribute('data-dragging', 'false');
                     scheduleIdleReturnBallDesktopBridge('return-ball-drag-click', container);
-                    revealReturnBallDragWindow();
+                    await revealReturnBallDragWindow();
                     dispatchReturnBallClick();
+                }, {
+                    fallbackMs: MULTI_WINDOW_RETURN_BALL_DRAG_RESTORE_FALLBACK_MS,
+                    continueOnFallback: true
                 });
                 return;
             }
@@ -2705,7 +2734,7 @@
 
             const expectedWidth = finalBounds ? finalBounds.width : state.savedWindowW;
             const expectedHeight = finalBounds ? finalBounds.height : state.savedWindowH;
-            waitForViewportSize(dragToken, expectedWidth, expectedHeight, () => {
+            waitForViewportSize(dragToken, expectedWidth, expectedHeight, async () => {
                 if (shouldRestoreSavedBallStyle) {
                     restoreSavedBallStyle();
                     container.setAttribute('data-dragging', 'false');
@@ -2718,7 +2747,7 @@
                             movedDistancePx: movedDistancePx
                         }
                     }));
-                    revealReturnBallDragWindow();
+                    await revealReturnBallDragWindow();
                     return;
                 }
                 // 先同步恢复球 opacity，再删除 nekoBallDrag 显示页面内容，
@@ -2736,7 +2765,7 @@
                         movedDistancePx: movedDistancePx
                     }
                 }));
-                revealReturnBallDragWindow();
+                await revealReturnBallDragWindow();
                 // 延迟恢复 transition，避免恢复瞬间触发动画
                 state.transitionCleanupTimer = setTimeout(() => {
                     state.transitionCleanupTimer = null;
@@ -2744,6 +2773,9 @@
                     container.style.transition = getSavedBallStyleValue('transition');
                     state.savedBallStyle = null;
                 }, 180);
+            }, {
+                fallbackMs: MULTI_WINDOW_RETURN_BALL_DRAG_RESTORE_FALLBACK_MS,
+                continueOnFallback: true
             });
         }
 

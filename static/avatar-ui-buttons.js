@@ -330,6 +330,14 @@ function _normalizeNekoIdleReturnTier(tier) {
     return _NEKO_IDLE_TIER_CAT1;
 }
 
+function _isNekoNativeReturnBallDragDisabled() {
+    const runtime = window.__NEKO_DESKTOP_RUNTIME__ || {};
+    return !!(
+        window.__NEKO_DISABLE_NATIVE_RETURN_BALL_DRAG__ ||
+        runtime.disableNativeReturnBallDrag
+    );
+}
+
 function _getNekoIdleReturnAssetUrl(tier) {
     const normalizedTier = _normalizeNekoIdleReturnTier(tier);
     const versionSuffix = _getNekoIdleReturnAssetVersionSuffix();
@@ -3898,7 +3906,7 @@ const AvatarButtonMixin = {
             document.body.appendChild(returnButtonContainer);
             this._returnButtonContainer = returnButtonContainer;
             _applyNekoIdleReturnPresentation(returnBtn, currentTier);
-            if (!window.__NEKO_MULTI_WINDOW__) {
+            if (!window.__NEKO_MULTI_WINDOW__ || _isNekoNativeReturnBallDragDisabled()) {
                 this._setupReturnButtonDrag(returnButtonContainer);
             }
 
