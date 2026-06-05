@@ -254,6 +254,10 @@ def test_desktop_return_ball_drag_recovers_when_mouse_release_is_lost():
 
     assert "RETURN_BALL_DRAG_RECOVERY_POLL_MS = 250" in source
     assert "RETURN_BALL_DRAG_STALE_RECOVERY_MS = 12000" in source
+    assert "function getReturnBallDragScreenCoordinate(value, fallback)" in source
+    assert "Number.isFinite(value) ? value : fallback" in source
+    assert "state.releaseScreenX || state.startScreenX" not in source
+    assert "state.releaseScreenY || state.startScreenY" not in source
     assert "function finishDragIfMouseButtonReleased(event, reason)" in source
     assert "event.pointerType && event.pointerType !== 'mouse'" in source
     assert "event.buttons !== 0" in source

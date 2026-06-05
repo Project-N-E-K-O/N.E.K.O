@@ -2268,13 +2268,17 @@
         state.dragRecoveryTimer = null;
     }
 
+    function getReturnBallDragScreenCoordinate(value, fallback) {
+        return Number.isFinite(value) ? value : fallback;
+    }
+
     function cleanupMultiWindowReturnBallDrag() {
         const state = multiWindowReturnBallDragState;
         if (!state) return;
 
         const shouldStopNativeDrag = state.isDragging;
-        const stopScreenX = state.releaseScreenX || state.startScreenX;
-        const stopScreenY = state.releaseScreenY || state.startScreenY;
+        const stopScreenX = getReturnBallDragScreenCoordinate(state.releaseScreenX, state.startScreenX);
+        const stopScreenY = getReturnBallDragScreenCoordinate(state.releaseScreenY, state.startScreenY);
 
         state.dragSessionToken += 1;
         state.isDragging = false;
@@ -2454,8 +2458,8 @@
 
         function cancelActiveDrag(reason) {
             if (!state.isDragging) return;
-            const screenX = state.releaseScreenX || state.startScreenX;
-            const screenY = state.releaseScreenY || state.startScreenY;
+            const screenX = getReturnBallDragScreenCoordinate(state.releaseScreenX, state.startScreenX);
+            const screenY = getReturnBallDragScreenCoordinate(state.releaseScreenY, state.startScreenY);
             void finishDrag(screenX, screenY, {
                 reason: reason || 'return-ball-drag-cancel',
                 suppressClick: true
