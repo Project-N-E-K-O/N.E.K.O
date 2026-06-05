@@ -902,6 +902,14 @@ class LLMSessionManager:
         # 用户活动时间戳：用于主动搭话检测最近是否有用户输入
         self.last_user_activity_time = None  # float timestamp or None
 
+        # 用户「真实消息」时间戳：仅在非空、非 AI 回声的真用户输入时刷新（语音
+        # 真转录 / 文本输入），不含 VAD 空噪声、麦克风录回 AI 自己 TTS 的回声。
+        # 区别于 last_user_activity_time（顶部无条件刷新，含回声/空噪声）——后者拿
+        # 来判 mini-game 邀请「用户是否已回应」会被 AI 念邀请台词的回声污染，导致
+        # 隐式 dismiss 在用户还没点按钮前就把 pending 邀请清掉、按钮撤走，用户随后
+        # 点「现在不想玩」落到 expired、真正的 decline 冷却起不来、邀请反复重来。
+        self.last_user_message_time = None  # float timestamp or None
+
         # 用户静默 ≥ IDLE_SESSION_RESET_THRESHOLD_SECONDS 时主动断 session 的
         # 后台 loop。lazily 在首次 start_session 时启动，永久存活（per-manager
         # 单例），无 active session 时 sleep 后继续轮询。
@@ -2098,6 +2106,50 @@ class LLMSessionManager:
         recent_ai_text = getattr(self, "_recent_ai_voice_echo_text", "") or ""
         return _looks_like_recent_ai_echo(transcript_text, recent_ai_text)
 
+    async def _dispatch_mini_game_invite_keyword(self, user_text: str) -> None:
+        """扫一遍用户原话里的 mini-game 邀请 accept/decline/later 关键词，命中即
+        触发对应 state 转换 + 推 ``mini_game_invite_resolved`` 让前端 dismiss
+        ChoicePrompt（accept 时兼当 launch 信号带 game_url）。
+
+        文本输入路径（``_process_stream_data_internal``）与语音转写路径
+        （``handle_input_transcript``）共用——语音用户没法点 ChoicePrompt 三按钮，
+        只能说话；口头"现在不想玩"必须和打字 / 点按钮一样触发真正的 decline 冷却。
+        否则语音口头拒绝既不算 decline，又会被下一个 proactive tick 的
+        ``_mini_game_invite_advance_response`` 当成隐式 dismiss = 'later'（只抑制
+        5min），邀请反复重来。**不吃掉消息**：普通 chat 流水线仍然回应这条话。
+
+        main_routers' keyword matcher is registered as a hook on the bus
+        (see app/runtime_bindings.py). Dispatcher swallows per-hook errors;
+        if no hook is bound (e.g. entrypoint without main_routers), result
+        is None.
+        """
+        outcome = dispatch_text_user_message(self.lanlan_name, user_text or '')
+        # 推一条 mini_game_invite_resolved 给前端：accept 时兼当 launch 信号
+        # （带 game_url），decline/later 时让 ChoicePrompt UI 清掉不让按钮挂着——
+        # codex P2 指出，原版只对 accept 推，decline/later 命中后前端 prompt 不
+        # 消失，用户后续点按钮会被 endpoint 当 expired，state 早变了。
+        if not (outcome and outcome.get('action')):
+            return
+        try:
+            if self.websocket and hasattr(self.websocket, 'send_json'):
+                ws_state = getattr(self.websocket, 'client_state', None)
+                if ws_state is None or ws_state == ws_state.CONNECTED:
+                    payload = {
+                        'type': 'mini_game_invite_resolved',
+                        'session_id': outcome.get('session_id') or '',
+                        'action': outcome['action'],
+                    }
+                    if outcome.get('game_url'):
+                        payload['game_url'] = outcome['game_url']
+                    if outcome.get('game_type'):
+                        payload['game_type'] = outcome['game_type']
+                    await self.websocket.send_json(payload)
+        except Exception as _push_err:
+            logger.warning(
+                f"[{self.lanlan_name}] mini_game_invite_resolved "
+                f"WS push failed: {_push_err}",
+            )
+
     async def handle_input_transcript(self, transcript: str, *, is_voice_source: bool = True):
         """输入转录回调：同步转录文本到消息队列和缓存，并发送到前端显示
 
@@ -2169,6 +2221,9 @@ class LLMSessionManager:
             # emotion-tier LLM 用——空 transcript 这些副作用都不该触发。
             if transcript_text:
                 self._activity_tracker.on_user_message(text=transcript)
+                # 真实用户语音消息（已过 echo 抑制 + 非空）才刷「真消息」时间戳，
+                # 给 mini-game 邀请隐式 dismiss 用，避免回声/空噪声误判用户已回应。
+                self.last_user_message_time = time.time()
                 self._session_turn_count += 1
                 # Telemetry：D1 漏斗——本进程首条用户消息（语音路径）。
                 try:
@@ -2187,6 +2242,13 @@ class LLMSessionManager:
                 # 这里只覆盖语音路径，避免 openclaw handoff（is_voice_source=False）
                 # 重复发布。
                 self._publish_user_utterance_to_plugin_bus(transcript, is_voice_source=True)
+
+                # Mini-game 邀请关键词兜底：与文本路径
+                # （_process_stream_data_internal）对偶。语音用户没法点
+                # ChoicePrompt 三按钮，只能说话——口头"现在不想玩"必须和打字 /
+                # 点按钮一样触发真正的 decline 冷却，否则邀请会按 5min 隐式
+                # dismiss 反复重来。详见 _dispatch_mini_game_invite_keyword。
+                await self._dispatch_mini_game_invite_keyword(transcript)
         else:
             # Non-voice reuse of this method (e.g. openclaw text handoff).
             # Skip activity-tracker hooks entirely — the text-mode entry
@@ -7146,6 +7208,9 @@ class LLMSessionManager:
                     # 对偶）。idle reset loop 依赖该字段判断静默时长，文本路径不补的话
                     # 纯文本会话永远满足"静默 ≥ 30 min"被误重置。
                     self.last_user_activity_time = time.time()
+                    # 文本输入天然就是真实用户消息（无 echo/噪声问题），同步刷「真
+                    # 消息」时间戳，保持跨模式语义一致。
+                    self.last_user_message_time = time.time()
 
                     # 更新字数限制（可能用户在对话期间修改了设置）
                     if hasattr(self.session, 'update_max_response_length'):
@@ -7199,46 +7264,13 @@ class LLMSessionManager:
                     )
 
                     # Mini-game 邀请的关键词文本兜底（PR #1141 follow-up E2）。
-                    # 用户在 pending 邀请期间自己打字（没点 ChoicePrompt 三按
-                    # 钮）→ 扫关键词命中就触发对应 state 转换。**不吃掉消息**：
-                    # 继续走普通 chat 流水线，AI 仍然会回应这条话——AI 收到的
-                    # 上下文里也含这条用户输入，所以模型会自然把"好啊"、"不
-                    # 玩了"之类的回复处理掉。仅做 state side effect + accept 时
-                    # 推一条 mini_game_launch WS 让前端 window.open 游戏。
-                    # main_routers' keyword matcher is registered as a hook
-                    # on the bus (see app/runtime_bindings.py). Dispatcher
-                    # swallows per-hook errors; if no hook is bound (e.g.
-                    # entrypoint without main_routers), result is None.
-                    _kw_outcome = dispatch_text_user_message(
-                        self.lanlan_name,
+                    # 用户在 pending 邀请期间自己打字（没点 ChoicePrompt 三按钮）
+                    # → 扫关键词命中就触发对应 state 转换。与语音转写路径
+                    # （handle_input_transcript）共用同一方法，逻辑见
+                    # _dispatch_mini_game_invite_keyword。
+                    await self._dispatch_mini_game_invite_keyword(
                         data if isinstance(data, str) else '',
                     )
-                    # 推一条 mini_game_invite_resolved 给前端：accept 时兼当 launch
-                    # 信号（带 game_url），decline/later 时让 ChoicePrompt UI 清掉
-                    # 不让按钮挂着——codex P2 指出，原版只对 accept 推，
-                    # decline/later keyword 命中后前端 prompt 不消失，用户后续点
-                    # 按钮会被 endpoint 当 expired，state 早变了。
-                    if _kw_outcome and _kw_outcome.get('action'):
-                        try:
-                            if (self.websocket
-                                    and hasattr(self.websocket, 'send_json')):
-                                ws_state = getattr(self.websocket, 'client_state', None)
-                                if ws_state is None or ws_state == ws_state.CONNECTED:
-                                    payload = {
-                                        'type': 'mini_game_invite_resolved',
-                                        'session_id': _kw_outcome.get('session_id') or '',
-                                        'action': _kw_outcome['action'],
-                                    }
-                                    if _kw_outcome.get('game_url'):
-                                        payload['game_url'] = _kw_outcome['game_url']
-                                    if _kw_outcome.get('game_type'):
-                                        payload['game_type'] = _kw_outcome['game_type']
-                                    await self.websocket.send_json(payload)
-                        except Exception as _push_err:
-                            logger.warning(
-                                f"[{self.lanlan_name}] mini_game_invite_resolved "
-                                f"WS push failed: {_push_err}",
-                            )
 
                     should_handoff, openclaw_messages = await self._should_handoff_text_to_openclaw(data)
                     if should_handoff:
