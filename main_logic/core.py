@@ -7215,9 +7215,13 @@ class LLMSessionManager:
                     # 对偶）。idle reset loop 依赖该字段判断静默时长，文本路径不补的话
                     # 纯文本会话永远满足"静默 ≥ 30 min"被误重置。
                     self.last_user_activity_time = time.time()
-                    # 文本输入天然就是真实用户消息（无 echo/噪声问题），同步刷「真
-                    # 消息」时间戳，保持跨模式语义一致。
-                    self.last_user_message_time = time.time()
+                    # 「真消息」时间戳：strip 后非空才刷，与语音路径
+                    # `if transcript_text:` 对偶——空白输入不算真实回应，否则会误
+                    # 推进 mini-game 邀请隐式 dismiss 判定（CodeRabbit）。注意
+                    # last_user_activity_time 仍无条件刷（服务 idle reset，语义是
+                    # 「有没有发请求」，与「是不是真消息」不同）。
+                    if data.strip():
+                        self.last_user_message_time = time.time()
 
                     # 更新字数限制（可能用户在对话期间修改了设置）
                     if hasattr(self.session, 'update_max_response_length'):
