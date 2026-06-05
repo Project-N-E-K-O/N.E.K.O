@@ -3833,7 +3833,11 @@ const AvatarButtonMixin = {
             });
 
             returnBtn.addEventListener('click', (e) => {
-                if (returnButtonContainer.getAttribute('data-dragging') === 'true') {
+                if (
+                    returnButtonContainer.getAttribute('data-dragging') === 'true' ||
+                    returnButtonContainer.getAttribute('data-neko-model-cat-transitioning') === 'cat-to-model' ||
+                    (typeof window.isNekoModelCatTransitionActive === 'function' && window.isNekoModelCatTransitionActive())
+                ) {
                     e.preventDefault();
                     e.stopPropagation();
                     return;
@@ -3852,7 +3856,21 @@ const AvatarButtonMixin = {
                         }
                     }
                 });
-                window.dispatchEvent(event);
+                const dispatchReturnEvent = () => {
+                    window.dispatchEvent(event);
+                };
+                if (typeof window.playNekoModelCatTransition === 'function') {
+                    returnButtonContainer.setAttribute('data-neko-model-cat-transitioning', 'cat-to-model');
+                    window.playNekoModelCatTransition({
+                        direction: 'cat-to-model',
+                        anchorRect: rect,
+                        coverRect: window._savedGoodbyeRect || null,
+                        container: returnButtonContainer
+                    }).catch(() => {});
+                    dispatchReturnEvent();
+                    return;
+                }
+                dispatchReturnEvent();
             });
 
             returnBtn.appendChild(returnArt);

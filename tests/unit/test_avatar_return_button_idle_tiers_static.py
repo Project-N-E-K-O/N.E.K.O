@@ -31,10 +31,12 @@ CAT1_INTERACTIVE_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" /
 CAT1_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-move-1.gif"
 CAT2_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-move-2.gif"
 CAT3_DRAG_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat-idle-cat-move-3.gif"
+CAT_MODEL_CHANGE_ASSET_PATH = PROJECT_ROOT / "static" / "assets" / "neko-idle" / "cat_model_change.gif"
 
 
 def test_return_button_idle_tier_assets_are_mapped_in_source():
     source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+    app_ui_source = APP_UI_PATH.read_text(encoding="utf-8")
 
     # Non-click states
     assert "/static/assets/neko-idle/cat-idle-cat1.gif" in source
@@ -60,8 +62,92 @@ def test_return_button_idle_tier_assets_are_mapped_in_source():
     assert "/static/assets/neko-idle/cat-idle-cat-move-1.gif" in source
     assert "/static/assets/neko-idle/cat-idle-cat-move-2.gif" in source
     assert "/static/assets/neko-idle/cat-idle-cat-move-3.gif" in source
+    assert "/static/assets/neko-idle/cat_model_change.gif" in app_ui_source
     assert '_getNekoIdleReturnClickAssetUrl' in source
     assert '_getNekoIdleReturnDragAssetUrl' in source
+
+
+def test_model_cat_transition_contract_is_present():
+    source = APP_UI_PATH.read_text(encoding="utf-8")
+    avatar_source = AVATAR_UI_BUTTONS_PATH.read_text(encoding="utf-8")
+
+    assert "function playNekoModelCatTransition" in source
+    assert "window.playNekoModelCatTransition = playNekoModelCatTransition" in source
+    assert "let nekoModelCatTransitionActive = null" in source
+    assert "function isNekoModelCatTransitionActive(direction = '')" in source
+    assert "function reserveNekoModelCatTransition(direction)" in source
+    assert "function releaseNekoModelCatTransition(token)" in source
+    assert "const goodbyeTransitionToken = reserveNekoModelCatTransition('model-to-cat')" in source
+    assert "transitionToken: goodbyeTransitionToken" in source
+    assert "releaseNekoModelCatTransition(goodbyeTransitionToken)" in source
+    assert "window.isNekoModelCatTransitionActive = isNekoModelCatTransitionActive" in source
+    assert "blocked: true" in source
+    assert "isNekoModelCatTransitionActive()" in source
+    assert "isNekoModelCatTransitionActive('model-to-cat')" in source
+    assert "window.isNekoModelCatTransitionActive()" in avatar_source
+    assert "data-neko-model-cat-transitioning" in source
+    assert "function playModelReturnEnter(container, rect)" in source
+    assert "window._nekoModelReturnEnterRect = returnRect || savedRect || null" in source
+    assert "consumeModelReturnEnterRect()" in source
+    assert "NEKO_MODEL_CAT_TRANSITION_MODEL_SCALE = 0.38" in source
+    assert "function getModelCatTransitionScaleTransform()" in source
+    assert "getModelCatTransitionScaleTransform()" in source
+    assert "function prepareModelReturnContainer(container, rect, options = {})" in source
+    assert "container.style.transform = 'scale(1) translateZ(0)'" in source
+    assert "NEKO_MODEL_RETURN_ENTER_TRANSITION = 'opacity 1120ms ease-out, transform 1080ms cubic-bezier(0.22, 1, 0.36, 1)'" in source
+    assert "NEKO_MODEL_RETURN_ENTER_CLEANUP_MS = 1160" in source
+    assert "NEKO_MODEL_RETURN_CANVAS_FADE_TRANSITION = 'opacity 1.12s ease-out'" in source
+    assert "NEKO_MODEL_RETURN_CANVAS_FADE_CLEANUP_MS = 1160" in source
+    assert "1450" not in source
+    return_enter_block = source[
+        source.index("function playModelReturnEnter(container, rect)"):
+        source.index("function mergeNekoTransitionAnchorRect(anchorRect, coverRect)")
+    ]
+    assert "}, NEKO_MODEL_RETURN_ENTER_CLEANUP_MS)" in return_enter_block
+    assert "NEKO_MODEL_RETURN_CANVAS_FADE_CLEANUP_MS" not in return_enter_block
+    assert "NEKO_MODEL_GOODBYE_VISUAL_FADE_TRANSITION = 'opacity 240ms ease-in'" in source
+    assert "function getActiveModelTransitionRect()" in source
+    assert "getModelScreenBounds" in source
+    assert "savedGoodbyeRect = savedModelRect || savedGoodbyeRect" in source
+    assert "NEKO_MODEL_CAT_TRANSITION_DURATION_MS = 850" in source
+    assert "NEKO_MODEL_CAT_TRANSITION_LOOP_GUARD_MS = 70" in source
+    assert "NEKO_MODEL_CAT_TO_MODEL_LOCK_MS = 1120" in source
+    assert "function getNekoModelCatOverlayVisibleMs()" in source
+    assert "function getNekoModelCatSettleMs(direction)" in source
+    assert "NEKO_MODEL_CAT_TRANSITION_DURATION_MS - NEKO_MODEL_CAT_TRANSITION_LOOP_GUARD_MS" in source
+    assert "overflow: 'hidden'" in source
+    assert "borderRadius: '50%'" in source
+    assert "NEKO_MODEL_CAT_TRANSITION_EDGE_MASK = 'radial-gradient(circle at center" in source
+    assert "rgba(0,0,0,0.18) 72%" in source
+    assert "rgba(0,0,0,0) 88%" in source
+    assert "function applyNekoTransitionMask(element)" in source
+    assert "maskImage: NEKO_MODEL_CAT_TRANSITION_EDGE_MASK" in source
+    assert "element.style.webkitMaskImage = NEKO_MODEL_CAT_TRANSITION_EDGE_MASK" in source
+    assert "element.style.setProperty('-webkit-mask-image', NEKO_MODEL_CAT_TRANSITION_EDGE_MASK)" in source
+    assert "function createNekoModelCatTransitionOverlay(rect, direction)" in source
+    assert "applyNekoTransitionMask(overlay)" in source
+    assert "applyNekoTransitionMask(image)" in source
+    assert "parseGifDurationMs" not in source
+    assert "getNekoModelCatTransitionDurationMs" not in source
+    assert "NEKO_MODEL_CAT_TRANSITION_MIN_SIZE = 260" in source
+    assert "NEKO_MODEL_CAT_TRANSITION_MAX_SIZE = 680" in source
+    assert "NEKO_MODEL_CAT_TRANSITION_SIZE_FACTOR = 0.86" in source
+    assert "Math.round(basis * NEKO_MODEL_CAT_TRANSITION_SIZE_FACTOR)" in source
+    assert "const transitionAnchorRect = savedGoodbyeRect || activeReturnButtonContainer.getBoundingClientRect()" in source
+    assert "function mergeNekoTransitionAnchorRect(anchorRect, coverRect)" in source
+    assert "const coverRect = options.coverRect || null" in source
+    assert "coverRect: window._savedGoodbyeRect || getActiveModelTransitionRect()" in source
+    assert "coverRect: window._savedGoodbyeRect || null" in avatar_source
+    assert "direction: 'model-to-cat'" in source
+    assert "direction: 'cat-to-model'" in source
+    assert "return-ball-model-cat-transition-done" in source
+    assert "return-ball-model-cat-transition-fallback" in source
+    assert "NEKO_MODEL_CAT_TRANSITION_MODEL_EXIT_WAIT_MS" not in source
+    assert "deferReveal" not in source
+    assert "dispatchClickEvent();" in source
+    assert "window.playNekoModelCatTransition" in avatar_source
+    assert "window.dispatchEvent(event);" in avatar_source
+    assert "dispatchReturnEvent();" in avatar_source
 
 
 def test_return_button_idle_tier_styles_are_present():
@@ -70,6 +156,43 @@ def test_return_button_idle_tier_styles_are_present():
     assert '.neko-idle-return-btn[data-neko-idle-tier="cat2"]' in source
     assert '.neko-idle-return-btn[data-neko-idle-tier="cat3"]' in source
     assert '.neko-idle-return-btn.is-cat1-facing-right' in source
+
+
+def test_model_goodbye_exit_shrinks_in_place_instead_of_sliding_right():
+    source = INDEX_CSS_PATH.read_text(encoding="utf-8")
+    app_ui_source = APP_UI_PATH.read_text(encoding="utf-8")
+
+    assert "translateX(300px)" not in source
+    assert "#live2d-container.minimized" in source
+    assert "#vrm-container.minimized" in source
+    assert "#mmd-container.minimized" in source
+    assert "transform: scale(0.38) translateZ(0);" in source
+    assert "opacity 280ms ease-in, transform 400ms cubic-bezier(0.22, 1, 0.36, 1)" in source
+    assert "height 0ms 400ms" in source
+    assert "transform-origin: var(--neko-model-exit-origin-x, 50%) var(--neko-model-exit-origin-y, 50%);" in source
+    assert "function setModelExitTransformOrigin(container, rect)" in app_ui_source
+    assert "function playModelGoodbyeExit(container, rect)" in app_ui_source
+    assert "function applyModelGoodbyeVisualFade(container, options = {})" in app_ui_source
+    assert "visualLayer.style.transition = NEKO_MODEL_GOODBYE_VISUAL_FADE_TRANSITION" in app_ui_source
+    assert "if (options.restart !== false)" in app_ui_source
+    assert "visualLayer.style.opacity = '0'" in app_ui_source
+    assert "applyModelGoodbyeVisualFade(container, { restart: false })" in app_ui_source
+    assert "applyModelGoodbyeVisualFade(container, { restart: true })" in app_ui_source
+    assert "const isGoodbyeExiting = container.getAttribute('data-neko-model-goodbye-exiting') === 'true';" in app_ui_source
+    assert "if (live2dCanvasForHide && !isGoodbyeExiting)" in app_ui_source
+    assert "container.style.transition = NEKO_MODEL_GOODBYE_EXIT_TRANSITION" not in app_ui_source
+    assert "container.classList.add('minimized')" in app_ui_source
+    assert "playModelGoodbyeExit(live2dContainerForGoodbye, savedGoodbyeRect)" in app_ui_source
+    assert "playModelGoodbyeExit(vrmContainer, savedGoodbyeRect)" in app_ui_source
+    assert "playModelGoodbyeExit(mmdContainer, savedGoodbyeRect)" in app_ui_source
+    assert "mmdCanvas.style.transition = 'opacity 0.62s ease-out'" not in app_ui_source
+
+    live2d_minimized_block = _extract_css_block(source, "#live2d-container.minimized")
+    vrm_minimized_block = _extract_css_block(source, "#vrm-container.minimized")
+    mmd_minimized_block = _extract_css_block(source, "#mmd-container.minimized")
+    assert "visibility: hidden" not in live2d_minimized_block
+    assert "visibility: hidden" not in vrm_minimized_block
+    assert "visibility: hidden" not in mmd_minimized_block
 
 
 def test_desktop_return_ball_drag_viewport_preserves_measured_cat_size():
@@ -365,7 +488,8 @@ def test_return_button_idle_tier_assets_are_version_tracked():
                  CAT2_SLEEP_SOUND_PATH, CAT3_SLEEP_SOUND_PATH,
                  CAT1_WALK_ASSET_PATH, CAT1_STRETCH_ASSET_PATH,
                  CAT1_INTERACTIVE_ASSET_PATH,
-                 CAT1_DRAG_ASSET_PATH, CAT2_DRAG_ASSET_PATH, CAT3_DRAG_ASSET_PATH):
+                 CAT1_DRAG_ASSET_PATH, CAT2_DRAG_ASSET_PATH, CAT3_DRAG_ASSET_PATH,
+                 CAT_MODEL_CHANGE_ASSET_PATH):
         assert path in pages_router._YUI_GUIDE_ASSET_VERSION_PATHS
         assert path.is_file()
 
@@ -378,6 +502,25 @@ def test_no_box_shadow_or_border_in_base_return_btn_css():
     assert 'box-shadow' not in base_block
     assert 'border' not in base_block
     assert 'backdrop-filter' not in base_block
+
+
+def _extract_css_block(source, selector):
+    start = source.find(selector)
+    if start == -1:
+        return ''
+    open_brace = source.find('{', start + len(selector))
+    if open_brace == -1:
+        return ''
+    depth = 0
+    for index in range(open_brace, len(source)):
+        char = source[index]
+        if char == '{':
+            depth += 1
+        elif char == '}':
+            depth -= 1
+            if depth == 0:
+                return source[open_brace + 1:index]
+    return ''
 
 
 def _extract_neko_return_btn_block(source):
