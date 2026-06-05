@@ -114,7 +114,7 @@ async function toggleMaximize() {
     }
     if (typeof api.maximize !== 'function') return
     const result = await api.maximize()
-    if (result && typeof result.isMaximized === 'boolean') {
+    if (result && result.ok && typeof result.isMaximized === 'boolean') {
       isMaximized.value = result.isMaximized
       return
     }
