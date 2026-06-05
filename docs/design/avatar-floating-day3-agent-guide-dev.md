@@ -28,7 +28,9 @@
 Avatar 工具按钮和 Galgame 按钮只使用圆形高光；总按钮持续高亮时使用同一套圆形高光，不给菜单项再叠猫耳、猫爪或第二层外框。
 `day3_avatar_tools` 在内置与外置聊天窗 / PC 全局 overlay 模式下都必须保持 `chat-tool-toggle` 作为 persistent spotlight；Ghost Cursor 只移动到 `chat-tool-toggle` 并点击，点击后只打开弧形工具菜单，不打开 Avatar 工具菜单，也不得把 persistent spotlight 切成 Avatar 工具按钮。
 Day 3 主线仅使用 `move` 和 `click`：需要指认的位置使用 `move`，需要真实触发的位置使用 `click`，不使用左右晃动停留动作。
-所有 Day 3 的 `click` scene 都必须在 Ghost Cursor 点击动画开始的同一刻触发真实目标按钮的 `click()`；`setCompactToolFanOpen()` / `setAvatarToolMenuOpen()` 只能作为兜底同步状态，不能替代按钮点击事件。
+所有 Day 3 的 `click` scene 都必须在 Ghost Cursor 点击动画开始的同一刻触发真实目标按钮的 `click()`；弧形工具菜单打开继续以工具总按钮点击为准。Avatar 道具菜单的显示/隐藏必须同时调用 `setAvatarToolMenuOpen()` 主机 API 同步 React 状态，因为教程锁定期间 Avatar 按钮可能处于 disabled，浏览器会吞掉 DOM click。React 内三个道具的渲染条件是 `toolMenuOpen && compactInputToolFanOpen`，所以 Avatar 道具菜单 open request 必须同时保证弧形工具菜单仍为 open；教程锁定 `composerDisabled=true` 时不得因为禁用输入而把承载道具菜单的弧形菜单关掉。
+
+PC 端教程 overlay 会把同一条聊天窗指令同时通过 `neko:tutorial-overlay-relay` 和 `postMessage.__nekoTutorialOverlayRelay` 中继，并可能携带相同 `timestamp`。`yui_guide_set_avatar_tool_menu_open` 是幂等状态同步，不是一次性点击事件，必须和 `yui_guide_set_compact_tool_fan_open` 一样跳过消息去重；否则某个较早通道先占用去重 key 后，后续能真正同步 React host 的通道会被挡掉，表现为 Avatar 按钮 click 动画播放了但 `lollipop` / `fist` / `hammer` 三个道具始终不渲染。`yui_guide_click_avatar_tool_button` 仍然要保留去重，避免同一时间戳下双击按钮导致菜单刚打开又被反向收起。
 
 ## 验收清单
 
@@ -38,3 +40,4 @@ Day 3 主线仅使用 `move` 和 `click`：需要指认的位置使用 `move`，
 4. Avatar 工具菜单通过既有 `setAvatarToolMenuOpen()` API 打开/关闭，不自动消耗道具。
 5. 教程期间不强制开启 Galgame，不伪造小游戏或选项。
 6. 收尾清理弧形菜单、Avatar 工具菜单、Ghost Cursor 和所有高光。
+7. PC 端重启第三天教程时，播放 `day3_avatar_tools_props` 后能在真实聊天窗 DOM 中看到 `#composer-tool-popover-compact`，并且可见 `data-avatar-tool-id` 依次包含 `lollipop`、`fist`、`hammer`；同一时刻 Ghost Cursor 只停在 Avatar 互动工具按钮，不移动到三个道具项。

@@ -53,6 +53,7 @@
             || action === 'yui_guide_set_chat_cursor'
             || action === 'yui_guide_set_chat_buttons_disabled'
             || action === 'yui_guide_set_compact_history_open'
+            || action === 'yui_guide_set_avatar_tool_menu_open'
             || action === 'yui_guide_set_compact_tool_fan_open';
     }
 
@@ -2134,6 +2135,12 @@
                 setYuiGuideAvatarToolMenuOpen(message.open === true, message.reason || '');
                 return true;
             }
+            case 'yui_guide_click_avatar_tool_button': {
+                if (!isStandaloneChatPage()) return true;
+                ensureYuiGuideExternalChatExpanded();
+                clickYuiGuideAvatarToolButton(message.reason || '');
+                return true;
+            }
             case 'yui_guide_set_compact_history_open': {
                 if (!isStandaloneChatPage()) return true;
                 ensureYuiGuideExternalChatExpanded();
@@ -2190,7 +2197,11 @@
             return;
         }
         var message = data.payload;
-        if (message && isDuplicateMessage(message.action, message.timestamp)) {
+        if (
+            message
+            && !shouldBypassYuiGuideMessageDedup(message.action)
+            && isDuplicateMessage(message.action, message.timestamp)
+        ) {
             return;
         }
         handleYuiGuideRelayedMessage(message);
@@ -2479,6 +2490,12 @@
                         setYuiGuideAvatarToolMenuOpen(event.data.open === true, event.data.reason || '');
                         break;
                     }
+                    case 'yui_guide_click_avatar_tool_button': {
+                        if (!isStandaloneChatPage()) break;
+                        ensureYuiGuideExternalChatExpanded();
+                        clickYuiGuideAvatarToolButton(event.data.reason || '');
+                        break;
+                    }
                     case 'yui_guide_set_compact_history_open': {
                         if (!isStandaloneChatPage()) break;
                         ensureYuiGuideExternalChatExpanded();
@@ -2749,6 +2766,16 @@
         };
     }
 
+    function withoutTransientYuiGuideCursorEffect(cursor) {
+        if (!cursor) {
+            return null;
+        }
+        var nextCursor = Object.assign({}, cursor);
+        delete nextCursor.effect;
+        delete nextCursor.effectDurationMs;
+        return nextCursor;
+    }
+
     function sendYuiGuidePcOverlayPatch(patch) {
         if (!isYuiGuidePcOverlayAvailable()) {
             yuiGuidePcOverlayReady = false;
@@ -2759,7 +2786,7 @@
             yuiGuidePcOverlaySpotlights = Array.isArray(patch.spotlights) ? patch.spotlights : [];
         }
         if (patch && Object.prototype.hasOwnProperty.call(patch, 'cursor')) {
-            yuiGuidePcOverlayCursor = patch.cursor || null;
+            yuiGuidePcOverlayCursor = withoutTransientYuiGuideCursorEffect(patch.cursor);
         }
         yuiGuidePcOverlaySequence = Math.max(yuiGuidePcOverlaySequence + 1, Date.now() * 1000);
         try {
@@ -2781,7 +2808,9 @@
             var payload = {
                 spotlights: yuiGuidePcOverlaySpotlights
             };
-            if (yuiGuidePcOverlayCursor || hasCursor) {
+            if (hasCursor) {
+                payload.cursor = patch.cursor || null;
+            } else if (yuiGuidePcOverlayCursor) {
                 payload.cursor = yuiGuidePcOverlayCursor;
             }
             Promise.resolve(window.nekoTutorialOverlay.update({
@@ -3260,33 +3289,28 @@
                 )
             )
         );
-        if (button && typeof button.click === 'function' && ((open === true && !isOpen) || (open !== true && isOpen))) {
-            button.click();
-            if (host && typeof host.setAvatarToolMenuOpen === 'function') {
-                host.setAvatarToolMenuOpen(open === true, reason || 'yui-guide-external-click-fallback');
-            }
+        if ((open === true && isOpen) || (open !== true && !isOpen)) {
             return true;
         }
         if (host && typeof host.setAvatarToolMenuOpen === 'function') {
             host.setAvatarToolMenuOpen(open === true, reason || 'yui-guide-external');
-            if (open === true) {
-                window.setTimeout(function () {
-                    ensureYuiGuideAvatarToolButtonReachable();
-                    host.setAvatarToolMenuOpen(true, reason || 'yui-guide-external-retry');
-                }, 180);
-            }
             return true;
         }
-        window.setTimeout(function () {
-            var delayedHost = window.reactChatWindowHost;
-            if (delayedHost && typeof delayedHost.setAvatarToolMenuOpen === 'function') {
-                if (open === true) {
-                    ensureYuiGuideAvatarToolButtonReachable();
-                }
-                delayedHost.setAvatarToolMenuOpen(open === true, reason || 'yui-guide-external-delayed');
-            }
-        }, 120);
+        if (button && typeof button.click === 'function' && !button.disabled) {
+            button.click();
+            return true;
+        }
         return false;
+    }
+
+    function clickYuiGuideAvatarToolButton(reason) {
+        ensureYuiGuideAvatarToolButtonReachable();
+        var button = getYuiGuideChatSpotlightTarget('avatar-tools');
+        if (!button || typeof button.click !== 'function') {
+            return false;
+        }
+        button.click();
+        return true;
     }
 
     var YUI_GUIDE_EXTERNAL_CHAT_CURSOR_SCREEN_POINT_KEY = 'neko_yui_guide_external_chat_cursor_screen_point_v1';

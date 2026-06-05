@@ -348,6 +348,27 @@
             }
         }
 
+        clickExternalizedChatAvatarToolButton(reason) {
+            if (!this.isHomeChatExternalized()) {
+                return;
+            }
+
+            const channel = this.getExternalChatChannel();
+            if (!channel || typeof channel.postMessage !== 'function') {
+                return;
+            }
+
+            try {
+                channel.postMessage({
+                    action: 'yui_guide_click_avatar_tool_button',
+                    reason: typeof reason === 'string' ? reason : '',
+                    timestamp: Date.now()
+                });
+            } catch (error) {
+                console.warn('[TutorialInteractionTakeover] 点击独立聊天窗 Avatar 工具按钮失败:', error);
+            }
+        }
+
         setExternalizedChatCompactHistoryOpen(open, reason) {
             if (!this.isHomeChatExternalized()) {
                 return;

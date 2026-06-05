@@ -163,6 +163,16 @@
             };
         };
 
+        function withoutTransientCursorEffect(cursor) {
+            if (!cursor) {
+                return null;
+            }
+            const nextCursor = Object.assign({}, cursor);
+            delete nextCursor.effect;
+            delete nextCursor.effectDurationMs;
+            return nextCursor;
+        }
+
         const send = (patch, force) => {
             const hasCursor = patch && Object.prototype.hasOwnProperty.call(patch, 'cursor');
             const hasPetal = patch && Object.prototype.hasOwnProperty.call(patch, 'petal');
@@ -170,7 +180,7 @@
                 currentSpotlights = Array.isArray(patch.spotlights) ? patch.spotlights : [];
             }
             if (patch && Object.prototype.hasOwnProperty.call(patch, 'cursor')) {
-                currentCursor = patch.cursor || null;
+                currentCursor = withoutTransientCursorEffect(patch.cursor);
             }
             if (patch && Object.prototype.hasOwnProperty.call(patch, 'petal')) {
                 currentPetal = patch.petal || null;
@@ -178,7 +188,9 @@
             const payload = {
                 spotlights: currentSpotlights
             };
-            if (currentCursor || hasCursor) {
+            if (hasCursor) {
+                payload.cursor = patch.cursor || null;
+            } else if (currentCursor) {
                 payload.cursor = currentCursor;
             }
             if (currentPetal || hasPetal) {

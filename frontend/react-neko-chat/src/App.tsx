@@ -86,6 +86,7 @@ function getEffectiveCompactChatState(
   return requestedState;
 }
 
+const COMPACT_PREVIEW_MAX_LENGTH = 84;
 const COMPACT_SPEECH_REVEAL_MAX_CHARS_PER_SECOND = 8;
 const COMPACT_SPEECH_TURN_MERGE_WINDOW_MS = 12000;
 const COMPACT_SPEECH_FALLBACK_REVEAL_DELAY_MS = 700;
@@ -3714,7 +3715,8 @@ export default function App({
 
   useEffect(() => {
     if (!compactInputToolFanOpen) return;
-    if (!isCompactSurface || composerHidden || composerDisabled || compactInputHasPayload) {
+    const shouldCloseForDisabled = composerDisabled && !toolMenuOpen;
+    if (!isCompactSurface || composerHidden || shouldCloseForDisabled || compactInputHasPayload) {
       closeCompactInputToolFan();
     }
   }, [
@@ -3724,6 +3726,7 @@ export default function App({
     composerDisabled,
     composerHidden,
     isCompactSurface,
+    toolMenuOpen,
   ]);
 
   useEffect(() => {
@@ -4086,12 +4089,13 @@ export default function App({
     const requestId = request.id;
     lastAvatarToolMenuOpenRequestIdRef.current = requestId;
     if (request.open) {
+      openCompactInputToolFan('click', { ignoreDisabled: true });
       setActiveCursorToolId(null);
       setToolMenuOpen(true);
       return;
     }
     setToolMenuOpen(false);
-  }, [avatarToolMenuOpenRequest]);
+  }, [avatarToolMenuOpenRequest, openCompactInputToolFan]);
 
   useEffect(() => {
     const request = compactToolFanOpenRequest;

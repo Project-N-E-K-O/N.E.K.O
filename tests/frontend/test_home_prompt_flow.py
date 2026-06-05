@@ -7360,7 +7360,12 @@ def test_day3_avatar_tools_line_slowly_moves_to_toggle_and_opens_tool_fan_on_cli
     assert {"type": "move", "id": "tool-toggle", "durationMs": 1480} in result["beforeRelease"]
     assert {"type": "click:start", "durationMs": 420} in result["beforeRelease"]
     assert {"type": "button:click"} in result["beforeRelease"]
-    assert {"type": "toolFan", "open": True, "reason": "avatar-floating-guide-open-tool-fan"} in result["afterRelease"]
+    assert {"type": "toolFan", "open": True, "reason": "avatar-floating-guide-open-tool-fan"} in result["beforeRelease"]
+    assert result["beforeRelease"].index({"type": "click:start", "durationMs": 420}) < result["beforeRelease"].index({
+        "type": "toolFan",
+        "open": True,
+        "reason": "avatar-floating-guide-open-tool-fan",
+    })
     assert {"type": "avatarMenu", "open": True, "reason": "avatar-floating-guide-open-avatar-tool-menu"} not in result["afterRelease"]
 
 
@@ -7422,6 +7427,9 @@ def test_day3_avatar_tools_externalized_moves_to_toggle_and_opens_tool_fan_on_cl
                 setExternalizedChatAvatarToolMenuOpen: (open, reason) => events.push(
                     'avatarMenu:' + String(open) + ':' + String(reason || '')
                 ),
+                clickExternalizedChatAvatarToolButton: (reason) => events.push(
+                    'avatarClick:' + String(reason || '')
+                ),
             };
             director.speakGuideLine = async () => null;
             director.waitForSceneDelay = async () => true;
@@ -7446,7 +7454,11 @@ def test_day3_avatar_tools_externalized_moves_to_toggle_and_opens_tool_fan_on_cl
     assert "spotlight:tool-toggle" in result["beforeRelease"]
     assert "cursor:tool-toggle:move:1480" in result["beforeRelease"]
     assert "click:start" in result["beforeRelease"]
-    assert "toolFan:true:avatar-floating-guide-open-tool-fan" in result["afterRelease"]
+    assert "cursor:tool-toggle:click:0" in result["beforeRelease"]
+    assert "toolFan:true:avatar-floating-guide-open-tool-fan" in result["beforeRelease"]
+    assert result["beforeRelease"].index("click:start") < result["beforeRelease"].index(
+        "toolFan:true:avatar-floating-guide-open-tool-fan"
+    )
     assert "avatarMenu:true:avatar-floating-guide-open-avatar-tool-menu" not in result["afterRelease"]
     assert "spotlight:avatar-tools" not in result["afterRelease"]
 
@@ -7509,6 +7521,9 @@ def test_day3_avatar_tools_props_externalized_uses_single_cursor_click_and_opens
                 setExternalizedChatAvatarToolMenuOpen: (open, reason) => events.push(
                     'avatarMenu:' + String(open) + ':' + String(reason || '')
                 ),
+                clickExternalizedChatAvatarToolButton: (reason) => events.push(
+                    'avatarClick:' + String(reason || '')
+                ),
             };
             director.speakGuideLine = async () => null;
             director.waitForSceneDelay = async () => true;
@@ -7533,11 +7548,17 @@ def test_day3_avatar_tools_props_externalized_uses_single_cursor_click_and_opens
     assert "spotlight:tool-toggle" in result["beforeRelease"]
     assert "cursor:avatar-tools:move:0" in result["beforeRelease"]
     assert "click:start" in result["beforeRelease"]
-    assert "toolFan:true:avatar-floating-guide-open-avatar-tool-fan" in result["beforeRelease"]
+    assert "toolFan:true:avatar-floating-guide-open-avatar-tool-fan" not in result["beforeRelease"]
+    assert "avatarClick:avatar-floating-guide-open-avatar-tool-menu" in result["beforeRelease"]
     assert "avatarMenu:true:avatar-floating-guide-open-avatar-tool-menu" in result["beforeRelease"]
-    assert "cursor:avatar-tools:click:0" not in result["beforeRelease"]
+    assert result["beforeRelease"].index("click:start") < result["beforeRelease"].index(
+        "avatarMenu:true:avatar-floating-guide-open-avatar-tool-menu"
+    )
+    assert "cursor:avatar-tools:click:0" in result["beforeRelease"]
     assert result["afterRelease"].count("click:start") == 1
+    assert result["afterRelease"].count("cursor:avatar-tools:click:0") == 2
     assert "avatarMenu:false:avatar-floating-guide-close-avatar-tool-menu-after-narration" in result["afterRelease"]
+    assert "avatarClick:avatar-floating-guide-close-avatar-tool-menu-after-narration" in result["afterRelease"]
 
 
 @pytest.mark.frontend
@@ -7606,7 +7627,7 @@ def test_externalized_compact_tool_fan_request_opens_fan_immediately_when_toggle
 
 
 @pytest.mark.frontend
-def test_externalized_avatar_tool_menu_request_opens_menu_immediately_when_button_disabled(
+def test_externalized_avatar_tool_menu_request_opens_menu_when_button_disabled(
     mock_page: Page,
 ):
     _bootstrap_page(
@@ -7614,29 +7635,30 @@ def test_externalized_avatar_tool_menu_request_opens_menu_immediately_when_butto
         setup_js="""
             window.history.pushState({}, '', '/chat');
             window.__hostRequests = [];
+            window.__buttonClicks = 0;
             window.reactChatWindowHost = {
                 setAvatarToolMenuOpen: (open, reason) => {
                     window.__hostRequests.push({ open, reason });
                     if (open) {
                         const popover = document.createElement('div');
                         popover.id = 'composer-tool-popover-compact';
-                        ['lollipop', 'fist', 'hammer'].forEach((toolId) => {
-                            const button = document.createElement('button');
-                            button.className = 'composer-icon-button';
-                            button.dataset.avatarToolId = toolId;
-                            popover.appendChild(button);
-                        });
                         document.getElementById('react-chat-window-root').appendChild(popover);
+                    } else {
+                        const popover = document.getElementById('composer-tool-popover-compact');
+                        if (popover) {
+                            popover.remove();
+                        }
                     }
                 },
             };
             document.body.innerHTML = `
                 <div id="react-chat-window-root">
-                    <div class="compact-input-tool-item-avatar">
+                    <div class="compact-input-tool-item-avatar" data-compact-tool-fan-interactive="true">
                         <button
                             class="composer-emoji-btn"
                             disabled
                             style="position:absolute; left:100px; top:100px; width:40px; height:40px;"
+                            onclick="window.__buttonClicks += 1"
                         ></button>
                     </div>
                 </div>
@@ -7660,9 +7682,74 @@ def test_externalized_avatar_tool_menu_request_opens_menu_immediately_when_butto
             await new Promise((resolve) => setTimeout(resolve, 0));
             return {
                 hostRequests: window.__hostRequests,
-                toolCount: document.querySelectorAll(
-                    '#composer-tool-popover-compact .composer-icon-button[data-avatar-tool-id]'
-                ).length,
+                buttonClicks: window.__buttonClicks,
+                menuOpen: !!document.getElementById('composer-tool-popover-compact'),
+            };
+        }
+        """
+    )
+
+    assert result["buttonClicks"] == 0
+    assert result["hostRequests"] == [{
+        "open": True,
+        "reason": "avatar-floating-guide-open-avatar-tool-menu",
+    }]
+    assert result["menuOpen"] is True
+
+
+@pytest.mark.frontend
+def test_externalized_avatar_tool_menu_request_replays_after_early_relay_duplicate(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/chat');
+            window.__hostRequests = [];
+        """,
+        script_names=("app-interpage.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const timestamp = Date.now();
+            const payload = {
+                action: 'yui_guide_set_avatar_tool_menu_open',
+                open: true,
+                reason: 'avatar-floating-guide-open-avatar-tool-menu',
+                timestamp,
+            };
+            window.dispatchEvent(new CustomEvent('neko:tutorial-overlay-relay', { detail: payload }));
+            window.reactChatWindowHost = {
+                setAvatarToolMenuOpen: (open, reason) => {
+                    window.__hostRequests.push({ open, reason });
+                    if (open) {
+                        const popover = document.createElement('div');
+                        popover.id = 'composer-tool-popover-compact';
+                        document.getElementById('react-chat-window-root').appendChild(popover);
+                    }
+                },
+            };
+            document.body.innerHTML = `
+                <div id="react-chat-window-root">
+                    <div class="compact-input-tool-item-avatar" data-compact-tool-fan-interactive="true">
+                        <button
+                            class="composer-emoji-btn"
+                            disabled
+                            style="position:absolute; left:100px; top:100px; width:40px; height:40px;"
+                        ></button>
+                    </div>
+                </div>
+            `;
+            window.postMessage({
+                __nekoTutorialOverlayRelay: true,
+                payload,
+            }, '*');
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return {
+                hostRequests: window.__hostRequests,
+                menuOpen: !!document.getElementById('composer-tool-popover-compact'),
             };
         }
         """
@@ -7672,7 +7759,61 @@ def test_externalized_avatar_tool_menu_request_opens_menu_immediately_when_butto
         "open": True,
         "reason": "avatar-floating-guide-open-avatar-tool-menu",
     }]
-    assert result["toolCount"] == 3
+    assert result["menuOpen"] is True
+
+
+@pytest.mark.frontend
+def test_externalized_avatar_tool_click_request_triggers_button_click_without_host_fallback(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/chat');
+            window.__hostRequests = [];
+            window.__buttonClicks = 0;
+            window.reactChatWindowHost = {
+                setAvatarToolMenuOpen: (open, reason) => {
+                    window.__hostRequests.push({ open, reason });
+                },
+            };
+            document.body.innerHTML = `
+                <div id="react-chat-window-root">
+                    <div class="compact-input-tool-item-avatar">
+                        <button
+                            class="composer-emoji-btn"
+                            style="position:absolute; left:100px; top:100px; width:40px; height:40px;"
+                            onclick="window.__buttonClicks += 1"
+                        ></button>
+                    </div>
+                </div>
+            `;
+        """,
+        script_names=("app-interpage.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            window.postMessage({
+                __nekoTutorialOverlayRelay: true,
+                payload: {
+                    action: 'yui_guide_click_avatar_tool_button',
+                    reason: 'avatar-floating-guide-open-avatar-tool-menu',
+                    timestamp: Date.now(),
+                },
+            }, '*');
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            return {
+                hostRequests: window.__hostRequests,
+                buttonClicks: window.__buttonClicks,
+            };
+        }
+        """
+    )
+
+    assert result["buttonClicks"] == 1
+    assert result["hostRequests"] == []
 
 
 @pytest.mark.frontend
@@ -7912,11 +8053,12 @@ def test_day1_externalized_history_click_starts_operation_with_director_click(
     )
 
     events_before_click_release = result["eventsBeforeClickRelease"]
-    assert "cursor:history:click" not in events_before_click_release
     assert "cursor:history:move" in events_before_click_release
+    assert "cursor:history:click" in events_before_click_release
     assert "click:start" in events_before_click_release
     assert "operation:open-compact-history-during-narration" in events_before_click_release
     assert events_before_click_release.index("cursor:history:move") < events_before_click_release.index("click:start")
+    assert events_before_click_release.index("cursor:history:click") < events_before_click_release.index("click:start")
     assert events_before_click_release.index("click:start") < events_before_click_release.index(
         "operation:open-compact-history-during-narration"
     )
@@ -8015,6 +8157,7 @@ def test_day1_managed_takeover_scene_continues_after_inner_scene_run_changes(
             director.clearExternalizedChatGuideTarget = () => events.push('clear-external-chat');
             director.playManagedScene = async (sceneId, options) => {
                 events.push('managed:' + sceneId + ':' + String(options && options.source || ''));
+                events.push('previous:' + String(options && options.previousSceneId || ''));
                 director.sceneRunId += 1;
             };
 
@@ -8035,8 +8178,8 @@ def test_day1_managed_takeover_scene_continues_after_inner_scene_run_changes(
     assert result["keepGoing"] is True
     assert result["sceneRunId"] == 43
     assert result["events"] == [
-        "clear-external-chat",
         "managed:takeover_capture_cursor:avatar-floating-day1-round",
+        "previous:day1_screen_entry_invite",
     ]
 
 
@@ -8196,6 +8339,253 @@ def test_day1_history_to_intro_basic_voice_preserves_externalized_cursor(mock_pa
     )
 
     assert result is True
+
+
+@pytest.mark.frontend
+def test_day1_intro_basic_voice_to_screen_entry_preserves_externalized_cursor(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            return director.shouldPreserveExternalizedChatCursor(
+                'day1_intro_basic_voice',
+                { id: 'day1_screen_entry' }
+            );
+        }
+        """
+    )
+
+    assert result is True
+
+
+@pytest.mark.frontend
+def test_day1_screen_entry_invite_preserves_externalized_cursor(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            return director.shouldPreserveExternalizedChatCursor(
+                'day1_screen_entry',
+                { id: 'day1_screen_entry_invite' }
+            );
+        }
+        """
+    )
+
+    assert result is True
+
+
+@pytest.mark.frontend
+def test_day1_screen_entry_invite_to_takeover_capture_preserves_externalized_cursor(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            return director.shouldPreserveExternalizedChatCursor(
+                'day1_screen_entry_invite',
+                { id: 'day1_takeover_capture_cursor' }
+            );
+        }
+        """
+    )
+
+    assert result is True
+
+
+@pytest.mark.frontend
+def test_day1_takeover_capture_from_screen_entry_invite_does_not_clear_cursor(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const events = [];
+            director.sceneRunId = 42;
+            director.getAgentSwitchSnapshot = async () => ({ agent: false });
+            director.clearExternalizedChatGuideTarget = () => events.push('clear-external-chat');
+            director.playManagedScene = async (sceneId, options) => {
+                events.push('managed:' + sceneId + ':' + String(options && options.source || ''));
+                events.push('previous:' + String(options && options.previousSceneId || ''));
+            };
+
+            await director.playDay1AvatarFloatingScene({
+                id: 'day1_takeover_capture_cursor',
+                operation: 'day1-managed-scene:takeover_capture_cursor',
+            }, 42, 'day1_screen_entry_invite', 6, 8);
+
+            return events;
+        }
+        """
+    )
+
+    assert result == [
+        "managed:takeover_capture_cursor:avatar-floating-day1-round",
+        "previous:day1_screen_entry_invite",
+    ]
+
+
+@pytest.mark.frontend
+def test_normal_externalized_panel_cleanup_preserves_cursor(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.__NEKO_MULTI_WINDOW__ = true;
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const events = [];
+            director.interactionTakeover = {
+                setExternalizedChatSpotlight: (kind) => events.push('spotlight:' + String(kind)),
+                setExternalizedChatCursor: (kind) => events.push('cursor:' + String(kind)),
+            };
+            director.closeChatToolPopover = () => events.push('close-tool-popover');
+            director.collapseAvatarFloatingSidePanelsExcept = () => events.push('collapse-sidepanels');
+            director.clearSceneExtraSpotlights = () => {};
+            director.clearRetainedExtraSpotlights = () => {};
+            director.clearSpotlightGeometryHints = () => {};
+            director.clearSpotlightVariantHints = () => {};
+            director.overlay.clearActionSpotlight = () => {};
+            director.closeManagedPanels = async () => {};
+            director.collapseAgentSidePanel = () => {};
+            director.collapseCharacterSettingsSidePanel = () => {};
+
+            await director.closeAvatarFloatingGuidePanels();
+            return events;
+        }
+        """
+    )
+
+    assert "spotlight:" in result
+    assert "cursor:" not in result
+
+
+@pytest.mark.frontend
+def test_exit_externalized_panel_cleanup_clears_cursor(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.__NEKO_MULTI_WINDOW__ = true;
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const events = [];
+            director.interactionTakeover = {
+                setExternalizedChatSpotlight: (kind) => events.push('spotlight:' + String(kind)),
+                setExternalizedChatCursor: (kind) => events.push('cursor:' + String(kind)),
+            };
+            director.closeChatToolPopover = () => {};
+            director.collapseAvatarFloatingSidePanelsExcept = () => {};
+            director.clearSceneExtraSpotlights = () => {};
+            director.clearRetainedExtraSpotlights = () => {};
+            director.clearSpotlightGeometryHints = () => {};
+            director.clearSpotlightVariantHints = () => {};
+            director.overlay.clearActionSpotlight = () => {};
+            director.closeManagedPanels = async () => {};
+            director.collapseAgentSidePanel = () => {};
+            director.collapseCharacterSettingsSidePanel = () => {};
+
+            await director.closeAvatarFloatingGuidePanels({ clearCursor: true });
+            return events;
+        }
+        """
+    )
+
+    assert "spotlight:" in result
+    assert "cursor:" in result
+
+
+@pytest.mark.frontend
+def test_cross_window_handoff_does_not_hide_pc_overlay_cursor(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.__NEKO_MULTI_WINDOW__ = true;
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const events = [];
+            director.overlay.isPcOverlayActive = () => true;
+            director.overlay.hideCursor = () => events.push('hide-cursor');
+
+            director.hideHomeCursorForExternalizedChat();
+            return events;
+        }
+        """
+    )
+
+    assert result == []
+
+
+@pytest.mark.frontend
+def test_day1_screen_entry_starts_from_intro_basic_voice_anchor(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <button id="live2d-btn-screen" style="position:absolute; left:320px; top:180px; width:44px; height:44px;"></button>
+            `;
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            director.avatarFloatingSceneCursorAnchorPoints.day1_intro_basic_voice = { x: 242, y: 202 };
+            const screenButton = document.getElementById('live2d-btn-screen');
+            return director.resolveAvatarFloatingCursorStartPoint(
+                { id: 'day1_screen_entry' },
+                [screenButton],
+                'day1_intro_basic_voice'
+            );
+        }
+        """
+    )
+
+    assert result == {"x": 242, "y": 202}
 
 
 @pytest.mark.frontend
@@ -8498,7 +8888,7 @@ def test_day3_avatar_tools_props_opens_tools_on_click_then_closes_after_narratio
     )
 
     assert result["opened"] is True
-    assert result["events"][0] == {"type": "toolFan", "open": True, "reason": "avatar-floating-guide-open-avatar-tool-fan"}
+    assert {"type": "toolFan", "open": True, "reason": "avatar-floating-guide-open-avatar-tool-fan"} not in result["events"]
     assert {"type": "button:click"} in result["events"]
     assert {
         "type": "avatarMenu",

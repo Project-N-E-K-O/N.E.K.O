@@ -236,6 +236,36 @@ def test_pc_external_chat_ghost_cursor_routes_to_global_overlay_only():
     assert "if (isYuiGuidePcCursorOnlyMode())" in cursor_block
 
 
+def test_pc_overlay_cursor_effect_is_one_shot_not_persisted_on_home_bridge():
+    source = (ROOT / "static" / "yui-guide-overlay.js").read_text(encoding="utf-8")
+    bridge_block = source.split("function createPcOverlayBridge(doc)", 1)[1].split(
+        "function createExtraSpotlightElement",
+        1,
+    )[0]
+    send_block = source.split("const send = (patch, force) => {", 1)[1].split(
+        "const key = JSON.stringify(payload || {});",
+        1,
+    )[0]
+
+    assert "function withoutTransientCursorEffect(cursor)" in bridge_block
+    assert "currentCursor = withoutTransientCursorEffect(patch.cursor);" in send_block
+    assert "payload.cursor = patch.cursor || null;" in send_block
+    assert "payload.cursor = currentCursor;" in send_block
+
+
+def test_pc_overlay_cursor_effect_is_one_shot_not_persisted_on_external_chat_bridge():
+    source = INTERPAGE_PATH.read_text(encoding="utf-8")
+    bridge_block = source.split("function sendYuiGuidePcOverlayPatch(patch)", 1)[1].split(
+        "function isYuiGuidePcCursorOnlyMode()",
+        1,
+    )[0]
+
+    assert "function withoutTransientYuiGuideCursorEffect(cursor)" in source
+    assert "yuiGuidePcOverlayCursor = withoutTransientYuiGuideCursorEffect(patch.cursor);" in bridge_block
+    assert "payload.cursor = patch.cursor || null;" in bridge_block
+    assert "payload.cursor = yuiGuidePcOverlayCursor;" in bridge_block
+
+
 def test_day1_round_start_uses_avatar_floating_round_lifecycle():
     source = MANAGER_PATH.read_text(encoding="utf-8")
     start_block = source.split("async startAvatarFloatingGuideRound(day, options = {})", 1)[1].split(
@@ -321,8 +351,8 @@ def test_day1_chat_input_round_rect_highlight_excludes_mid_flow_cursor_scenes():
     assert "setExternalizedChatSpotlight('input')" not in activation_block
     assert "setExternalizedChatCursor('input'" not in activation_block
     assert "effect: 'wobble'" not in activation_block
-    assert "setExternalizedChatCursor('');" in activation_block
-    assert "this.cursor.hide();" in activation_block
+    assert "setExternalizedChatCursor('');" not in activation_block
+    assert "this.hideHomeCursorForExternalizedChat();" in activation_block
     assert "setSpotlightGeometryHint(inputTarget" in greeting_block
     assert "overlay.setPersistentSpotlight(inputTarget)" in greeting_block
 
@@ -350,8 +380,9 @@ def test_day1_intro_greeting_highlights_input_without_cursor_wobble():
     assert "setExternalizedChatCursor('input'" not in greeting_block
     assert "setSpotlightGeometryHint(inputTarget" in greeting_block
     assert "overlay.setPersistentSpotlight(inputTarget)" in greeting_block
-    assert "setExternalizedChatCursor('');" in greeting_block
-    assert "this.cursor.hide();" in greeting_block
+    assert "setExternalizedChatCursor('');" not in greeting_block
+    assert "this.hideHomeCursorForExternalizedChat();" in greeting_block
+    assert "this.cursor.hide();" not in greeting_block
     assert "cursor.wobble" not in greeting_block
 
 
@@ -364,10 +395,10 @@ def test_day1_legacy_externalized_intro_greeting_does_not_send_cursor_wobble():
 
     assert "setExternalizedChatSpotlight('input')" in externalized_block
     assert "setExternalizedChatCursor('input'" not in externalized_block
-    assert "setExternalizedChatCursor('');" in externalized_block
+    assert "setExternalizedChatCursor('');" not in externalized_block
     assert "effect: 'wobble'" not in externalized_block
-    assert "this.cursor.hide();" in externalized_block
-    assert "hideHomeCursorForExternalizedChat" not in externalized_block
+    assert "this.cursor.hide();" not in externalized_block
+    assert "hideHomeCursorForExternalizedChat" in externalized_block
 
 
 def test_day2_intro_externalized_cursor_uses_scene_action_not_wobble():

@@ -4369,6 +4369,45 @@ describe('App', () => {
     }
   });
 
+  it('opens compact fan when an external avatar tool menu request arrives during tutorial lock', async () => {
+    const { container, rerender } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        composerDisabled
+      />,
+    );
+
+    expect(container.querySelector('.compact-input-tool-fan')).toHaveAttribute(
+      'data-compact-input-tool-fan-open',
+      'false',
+    );
+    expect(container.querySelector('#composer-tool-popover-compact')).toBeNull();
+
+    rerender(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+        composerDisabled
+        avatarToolMenuOpenRequest={{
+          id: 'avatar-tools-open-1',
+          open: true,
+          reason: 'avatar-floating-guide-open-avatar-tool-menu',
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector('.compact-input-tool-fan')).toHaveAttribute(
+        'data-compact-input-tool-fan-open',
+        'true',
+      );
+      expect(
+        container.querySelectorAll('#composer-tool-popover-compact .composer-icon-button[data-avatar-tool-id]'),
+      ).toHaveLength(3);
+    });
+  });
+
   it('opens compact input tools on hover-capable pointer enter', () => {
     const originalMatchMedia = window.matchMedia;
     mockHoverCapableMatchMedia();
