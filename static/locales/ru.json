@@ -1917,8 +1917,6 @@
         "aiCompanionSub": "Помощник по созданию карт · YUI вместо кота-разработчика",
         "aiCompanionClose": "Закрыть",
         "aiCompanionMinimize": "Свернуть",
-        "aiCompanionExpand": "Развернуть",
-        "aiCompanionDragHint": "Перетащите окно",
         "aiCompanionPlaceholder": "Скажи что-нибудь… (Enter — отправить, Shift+Enter — новая строка)",
         "aiCompanionSend": "Отправить",
         "aiCompanionGreeting": "Мяу~ Я твой помощник по созданию карт. Сначала расскажи, какую NEKO ты хочешь — одной строки достаточно! Я задам пару уточняющих вопросов и напишу всю карту за тебя.",
