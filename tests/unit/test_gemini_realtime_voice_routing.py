@@ -244,6 +244,25 @@ async def test_free_voice_catalog_on_lanlan_app_shows_free_intl(monkeypatch):
     assert "pinned_voices" not in domestic_free_result
 
 
+@pytest.mark.asyncio
+async def test_free_intl_pin_hidden_when_voice_id_collides_with_clone(monkeypatch):
+    """用户克隆/自建音色撞名 yui → 该置顶 pin 隐藏（runtime 会按撞名走克隆，
+    pin 点了到不了 Gemini）；未撞名的 default(Leda) pin 保留。"""
+    monkeypatch.setattr(
+        characters_router,
+        "get_config_manager",
+        lambda: _FakeCharactersRouterConfigManager(
+            "free",
+            "wss://lanlan.app/realtime",
+            stored_voice_ids={"yui"},
+        ),
+    )
+
+    result = await characters_router.get_voices()
+    pins = result.get("pinned_voices")
+    assert [p["voice_id"] for p in pins] == ["Leda"]
+
+
 def test_free_intl_remaps_gemini_and_yui_native_on_lanlan_app_route():
     """海外免费路由（free + *.lanlan.app）下，Gemini 音色与 yui 经 free_intl 认成
     native；阶跃预设音色不在 free_intl 目录里，按非 native fall through。"""

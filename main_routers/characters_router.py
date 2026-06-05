@@ -3809,7 +3809,7 @@ async def get_microphone():
         return {"microphone_id": None}
 
 
-def _build_free_intl_voice_pins(native_catalog: dict) -> list[dict]:
+def _build_free_intl_voice_pins(native_catalog: dict, voice_id_exists=None) -> list[dict]:
     """海外免费（free_intl）列表顶部的两个置顶音色。
 
     - yui：初始/默认角色音色，下发字面量 "yui"（服务端映射到 yui 专属声音）。
@@ -3817,8 +3817,15 @@ def _build_free_intl_voice_pins(native_catalog: dict) -> list[dict]:
       （不去重），这里只是把它再置顶一份并换成 "默认" 文案。
 
     展示名交给前端按 i18n_key 本地化；这里只给 voice_id / i18n_key / 兜底 prefix。
+
+    voice_id_exists：若某 pin 的 voice_id 与用户已注册/克隆音色撞名（如本地 TTS
+    用户自建了一个 ID 叫 "yui"/"Leda" 的音色），runtime 路由会按撞名优先走克隆
+    路径、不再当 native（见 NativeVoiceProvider.resolve_for_routing 的 collision
+    分支），此时置顶 pin 点了也到不了 Gemini，故直接隐藏，避免误导。
     """
-    def _pin(voice_id: str, i18n_key: str, fallback: str) -> dict:
+    def _pin(voice_id: str, i18n_key: str, fallback: str) -> dict | None:
+        if callable(voice_id_exists) and voice_id_exists(voice_id):
+            return None
         meta = native_catalog.get(voice_id) or {}
         return {
             "voice_id": voice_id,
@@ -3828,10 +3835,11 @@ def _build_free_intl_voice_pins(native_catalog: dict) -> list[dict]:
             "builtin": True,
         }
 
-    return [
+    pins = [
         _pin("yui", "voice.freeVoice.yui", "Yui"),
         _pin("Leda", "voice.freeVoice.default", "Default"),
     ]
+    return [pin for pin in pins if pin is not None]
 
 
 @router.get('/voices')
@@ -3849,7 +3857,10 @@ async def get_voices():
             # 其后是 Gemini 全量目录。yui 从长列表里挪到 pin（不重复展示）；
             # Leda 不去重，仍作为普通条目留在长列表里（= default pin 的目标）。
             # pin 的展示名由前端按 i18n_key 本地化。
-            result["pinned_voices"] = _build_free_intl_voice_pins(native_catalog)
+            result["pinned_voices"] = _build_free_intl_voice_pins(
+                native_catalog,
+                voice_id_exists=getattr(_config_manager, "voice_id_exists_in_any_storage", None),
+            )
             native_catalog = {
                 voice_id: meta
                 for voice_id, meta in native_catalog.items()
