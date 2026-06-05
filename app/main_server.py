@@ -1564,6 +1564,7 @@ from main_routers.websocket_router import router as websocket_router # noqa
 from main_routers.workshop_router import router as workshop_router # noqa
 from main_routers.cookies_login_router import router as cookies_login_router # noqa
 from main_routers.game_router import router as game_router # noqa
+from main_routers.card_drop_router import router as card_drop_router # noqa
 from main_routers.debug_router import router as debug_router, start_watchdog as _start_debug_health_watchdog # noqa
 from main_routers.shared_state import init_shared_state, set_steamworks_initializer # noqa
 
@@ -1657,6 +1658,7 @@ app.include_router(tool_router)
 app.include_router(music_router)
 app.include_router(galgame_router)
 app.include_router(game_router)
+app.include_router(card_drop_router)  # 对话掉落卡片：本地 → 云端 N.E.K.O.Servers 代理
 app.include_router(capture_router)
 app.include_router(cookies_login_router) # Cookies登录相关路由，放在最后以避免与其他API路由冲突
 app.include_router(debug_router)  # 诊断观测：/api/debug/health（轻量、零侵入，详见 debug_router.py 头注释）
