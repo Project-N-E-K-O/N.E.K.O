@@ -102,13 +102,21 @@ function notifyApiSettingsKeyBookFocus(win) {
 function openApiSettings(options = {}) {
     const focusKeyBook = !!(options && options.focusKeyBook);
     const url = focusKeyBook ? '/api_key?focus=key_book' : '/api_key';
-    const features = 'width=820,height=700,scrollbars=yes,resizable=yes';
+    const windowName = 'neko_api_key';
+    const features = typeof window.buildApiKeySettingsWindowFeatures === 'function'
+        ? window.buildApiKeySettingsWindowFeatures()
+        : undefined;
     const win = typeof window.openOrFocusWindow === 'function'
-        ? window.openOrFocusWindow(url, 'apiSettings', features)
-        : window.open(url, 'apiSettings', features);
+        ? window.openOrFocusWindow(url, windowName, features)
+        : window.open(url, windowName, features);
     if (win) {
         const modal = document.getElementById('noApiModal');
         if (modal) modal.style.display = 'none';
+        if (typeof win.focus === 'function') {
+            try {
+                win.focus();
+            } catch (_) {}
+        }
         if (focusKeyBook) {
             notifyApiSettingsKeyBookFocus(win);
         }

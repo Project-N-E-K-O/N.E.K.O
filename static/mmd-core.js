@@ -60,8 +60,7 @@ class MMDCore {
         }
     }
 
-    applyPerformanceSettings() {
-        if (!this.manager.renderer) return;
+    _getPerformancePixelRatio() {
         const devicePixelRatio = window.devicePixelRatio || 1;
         let pixelRatio;
         if (this.performanceMode === 'low') {
@@ -72,7 +71,43 @@ class MMDCore {
             pixelRatio = devicePixelRatio;
         }
         pixelRatio = Math.max(1.0, pixelRatio);
+        return pixelRatio;
+    }
+
+    _getQualityPixelRatio(quality) {
+        const devicePixelRatio = window.devicePixelRatio || 1;
+        if (quality === 'low') return Math.min(0.8, devicePixelRatio);
+        if (quality === 'medium') return Math.min(1.0, devicePixelRatio);
+        return this._getPerformancePixelRatio();
+    }
+
+    applyPerformanceSettings() {
+        if (!this.manager.renderer) return;
+        const pixelRatio = this._getPerformancePixelRatio();
         this.manager.renderer.setPixelRatio(pixelRatio);
+    }
+
+    syncRendererPixelRatio(reason = 'resize') {
+        if (!this.manager.renderer) return;
+        const renderer = this.manager.renderer;
+        const prevPixelRatio = typeof renderer.getPixelRatio === 'function'
+            ? renderer.getPixelRatio()
+            : null;
+
+        renderer.setPixelRatio(this._getQualityPixelRatio(window.renderQuality || 'medium'));
+
+        const nextPixelRatio = typeof renderer.getPixelRatio === 'function'
+            ? renderer.getPixelRatio()
+            : null;
+        if (Number.isFinite(prevPixelRatio) && Number.isFinite(nextPixelRatio) &&
+            Math.abs(prevPixelRatio - nextPixelRatio) >= 0.001) {
+            console.log('[MMD Core] renderer pixelRatio 已刷新:', {
+                reason,
+                prevPixelRatio,
+                nextPixelRatio,
+                devicePixelRatio: window.devicePixelRatio || 1
+            });
+        }
     }
 
     /**
@@ -343,11 +378,30 @@ class MMDCore {
             window.addEventListener('resize', this.manager._resizeHandler);
         }
 
+        if (!this.manager._displayChangeHandler) {
+            this.manager._displayChangeHandler = () => {
+                requestAnimationFrame(() => {
+                    this.onWindowResize('electron-display-changed');
+                    requestAnimationFrame(() => this.onWindowResize('electron-display-changed:settled'));
+                    setTimeout(() => this.onWindowResize('electron-display-changed:delayed'), 120);
+                });
+            };
+        }
+
+        const alreadyDisplayRegistered = this.manager._coreWindowHandlers.some(
+            h => h.event === 'electron-display-changed' && h.handler === this.manager._displayChangeHandler
+        );
+        if (!alreadyDisplayRegistered) {
+            this.manager._coreWindowHandlers.push({ event: 'electron-display-changed', handler: this.manager._displayChangeHandler });
+            window.addEventListener('electron-display-changed', this.manager._displayChangeHandler);
+        }
+
         // 监听画质变更事件
         const qualityChangeHandler = (e) => {
             const quality = e.detail?.quality;
             if (quality && window.mmdManager?.core) {
                 window.mmdManager.core.applyQualitySettings(quality);
+                window.mmdManager.core.onWindowResize('neko-render-quality-changed');
             }
         };
         const alreadyQualityRegistered = this.manager._coreWindowHandlers.some(
@@ -985,8 +1039,9 @@ class MMDCore {
 
     // ═══════════════════ Resize ═══════════════════
 
-    onWindowResize() {
+    onWindowResize(reason = 'resize') {
         if (!this.manager.renderer || !this.manager.camera) return;
+        this.syncRendererPixelRatio(reason);
 
         const container = this.manager.container;
         let width = container ? (container.clientWidth || container.offsetWidth) : window.innerWidth;

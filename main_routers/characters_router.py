@@ -1119,6 +1119,67 @@ def _filter_mutable_catgirl_fields(data: dict) -> dict:
     }
 
 
+def _normalize_catgirl_field_order(order, available_fields: list[str]) -> list[str]:
+    """按显式顺序排列普通设定字段，并把遗漏字段按当前存储顺序补在末尾。"""
+    available = {str(key) for key in available_fields}
+    result: list[str] = []
+    seen: set[str] = set()
+
+    if isinstance(order, list):
+        for raw_key in order:
+            key = str(raw_key or "").strip()
+            if not key or key in seen or key not in available:
+                continue
+            result.append(key)
+            seen.add(key)
+
+    for raw_key in available_fields:
+        key = str(raw_key or "").strip()
+        if key and key not in seen:
+            result.append(key)
+            seen.add(key)
+    return result
+
+
+def _extract_catgirl_field_order_payload(raw_data: dict) -> list[str] | None:
+    """读取前端提交的字段顺序；没有显式顺序时返回 None。"""
+    if not isinstance(raw_data, dict):
+        return None
+    raw_order = raw_data.get("_field_order")
+    if isinstance(raw_order, list):
+        return [str(item or "").strip() for item in raw_order]
+    reserved = raw_data.get("_reserved")
+    if isinstance(reserved, dict) and isinstance(reserved.get("field_order"), list):
+        return [str(item or "").strip() for item in reserved["field_order"]]
+    return None
+
+
+def _sync_catgirl_field_order(catgirl_data: dict, requested_order: list[str] | None = None) -> None:
+    """维护普通设定字段的创建顺序，避免数字 key 被 JS 枚举规则提前。"""
+    if not isinstance(catgirl_data, dict):
+        return
+    available_fields = [
+        str(key)
+        for key in catgirl_data.keys()
+        if key not in CHARACTER_RESERVED_FIELD_SET
+    ]
+    if requested_order is None:
+        # 也认顶层 _field_order：工坊上传卡的顺序存在顶层（上传时 _reserved 被剥离），
+        # 只读 _reserved.field_order 会漏掉它而退回 JSON key 枚举顺序（数字 key 被提前）。
+        requested_order = _extract_catgirl_field_order_payload(catgirl_data)
+    field_order = _normalize_catgirl_field_order(requested_order, available_fields)
+    set_reserved(catgirl_data, "field_order", field_order)
+
+
+def _flatten_catgirl_for_response(catgirl_data: dict) -> dict:
+    """展开保留字段前补上字段顺序，供前端按创建顺序渲染。"""
+    if not isinstance(catgirl_data, dict):
+        return catgirl_data
+    data = copy.deepcopy(catgirl_data)
+    _sync_catgirl_field_order(data)
+    return flatten_reserved(data)
+
+
 def _build_minimax_request_prefix(prefix: str, provider_label: str) -> tuple[str, str]:
     """将用户输入的前缀规范化为 MiniMax 可接受的安全前缀。"""
     import uuid
@@ -1517,7 +1578,7 @@ async def get_characters(request: Request):
         # COMPAT(v1->v2): 前端仍依赖旧平铺字段，接口层按需展开。
         for cat_name, cat_data in list(characters_data['猫娘'].items()):
             if isinstance(cat_data, dict):
-                characters_data['猫娘'][cat_name] = flatten_reserved(cat_data)
+                characters_data['猫娘'][cat_name] = _flatten_catgirl_for_response(cat_data)
 
     # 尝试从请求参数或请求头获取用户语言
     user_language = request.query_params.get('language')
@@ -3271,6 +3332,7 @@ async def add_catgirl(request: Request):
     if err:
         return JSONResponse({'success': False, 'error': err}, status_code=400)
     data = _filter_mutable_catgirl_fields(raw_data)
+    requested_field_order = _extract_catgirl_field_order_payload(raw_data)
     data['档案名'] = str(profile_name).strip()
 
     _config_manager = get_config_manager()
@@ -3298,6 +3360,7 @@ async def add_catgirl(request: Request):
                 catgirl_data[k] = v
 
     characters['猫娘'][key] = catgirl_data
+    _sync_catgirl_field_order(catgirl_data, requested_field_order)
     # 默认走 free preset：非 free / 非 lanlan.tech 通道由 LLMSessionManager 现有 gate 清空 self.voice_id，不会泄漏给其他 TTS provider。
     # 从 free_voices['cuteGirl'] 读以避免硬编码漂移；缺失时回退到首个非空预设，再回退到旧版默认值。
     default_free_voice_id = _get_new_catgirl_default_voice_id()
@@ -3355,6 +3418,7 @@ async def update_catgirl(name: str, request: Request):
             )
 
     data = _filter_mutable_catgirl_fields(raw_data)
+    requested_field_order = _extract_catgirl_field_order_payload(raw_data)
     _config_manager = get_config_manager()
     characters = await _config_manager.aload_characters()
     if name not in characters.get('猫娘', {}):
@@ -3399,6 +3463,8 @@ async def update_catgirl(name: str, request: Request):
     # 兼容前端自动修复：若请求中带有 model_type，则同步写入保留字段。
     if model_type_in_payload and requested_model_type:
         set_reserved(characters['猫娘'][name], 'avatar', 'model_type', requested_model_type)
+
+    _sync_catgirl_field_order(characters['猫娘'][name], requested_field_order)
 
     await _config_manager.asave_characters(characters)
 
@@ -5139,6 +5205,7 @@ async def get_character_cards():
             try:
                 data = await read_json_async(file_path)
                 if data and data.get('name'):
+                    _sync_catgirl_field_order(data)
                     return {
                         'id': filename[:-11],  # 去掉 .chara.json 后缀
                         'name': data['name'],

@@ -15,6 +15,29 @@ describe('message-schema', () => {
     expect(message.blocks[0]?.type).toBe('text');
   });
 
+  it('normalizes empty turn ids while preserving non-empty turn ids', () => {
+    const baseMessage = {
+      id: 'msg-turn',
+      role: 'assistant',
+      author: 'Neko',
+      time: '10:00',
+      blocks: [{ type: 'text', text: 'hello' }],
+    };
+
+    expect(parseChatMessage({
+      ...baseMessage,
+      turnId: null,
+    }).turnId).toBeUndefined();
+    expect(parseChatMessage({
+      ...baseMessage,
+      turnId: '',
+    }).turnId).toBeUndefined();
+    expect(parseChatMessage({
+      ...baseMessage,
+      turnId: 'turn-1',
+    }).turnId).toBe('turn-1');
+  });
+
   it('rejects invalid message payloads', () => {
     expect(() => parseChatMessage({
       id: 'msg-2',

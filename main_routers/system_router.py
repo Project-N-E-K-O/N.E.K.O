@@ -3334,7 +3334,13 @@ async def set_achievement_status(name: str, request: Request):
                     logger.info(f"成功设置成就: {name}")
                     steamworks.UserStats.StoreStats()
                     steamworks.run_callbacks()
-                    return JSONResponse(content={"success": True, "message": f"成就 {name} 处理完成"})
+                    return JSONResponse(content={
+                        "success": True,
+                        "achievement": name,
+                        "newlyUnlocked": True,
+                        "alreadyUnlocked": False,
+                        "message": f"成就 {name} 已解锁",
+                    })
                 else:
                     # 第一次失败，等待后重试一次
                     logger.warning(f"设置成就首次尝试失败，正在重试: {name}")
@@ -3345,13 +3351,25 @@ async def set_achievement_status(name: str, request: Request):
                         logger.info(f"成功设置成就（重试后）: {name}")
                         steamworks.UserStats.StoreStats()
                         steamworks.run_callbacks()
-                        return JSONResponse(content={"success": True, "message": f"成就 {name} 处理完成"})
+                        return JSONResponse(content={
+                            "success": True,
+                            "achievement": name,
+                            "newlyUnlocked": True,
+                            "alreadyUnlocked": False,
+                            "message": f"成就 {name} 已解锁",
+                        })
                     else:
                         logger.error(f"设置成就失败: {name}，请确认成就ID在Steam后台已配置")
                         return JSONResponse(content={"success": False, "error": f"设置成就失败: {name}，请确认成就ID在Steam后台已配置"}, status_code=500)
             else:
                 logger.info(f"成就已解锁，无需重复设置: {name}")
-                return JSONResponse(content={"success": True, "message": f"成就 {name} 处理完成"})
+                return JSONResponse(content={
+                    "success": True,
+                    "achievement": name,
+                    "newlyUnlocked": False,
+                    "alreadyUnlocked": True,
+                    "message": f"成就 {name} 已经解锁",
+                })
         except Exception as e:
             logger.error(f"设置成就失败: {e}")
             return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
@@ -4623,12 +4641,20 @@ async def proactive_chat(request: Request):
         # can_start_proactive 做 409 判定即可。
         if data.get('voice_mode') and mgr.is_active and isinstance(mgr.session, OmniRealtimeClient):
             # Mini-game invite 状态机推进：voice fast path 不走 activity tracker，
-            # 直接用 mgr.last_user_activity_time（session 自己跟踪 RMS / 文本输入
-            # 活动）作为「用户最后一次活动时间」喂给 advance_response。否则纯
-            # voice 用户收到 mini-game 邀请回应后，pending 永远翻不掉，邀请会被
-            # 永久抑制；CodeRabbit Major review 指出。
+            # 直接用 session 自己跟踪的「用户最后一次真实消息时间」喂给
+            # advance_response。否则纯 voice 用户收到 mini-game 邀请回应后，
+            # pending 永远翻不掉，邀请会被永久抑制；CodeRabbit Major review 指出。
+            #
+            # ⚠️ 用 last_user_message_time（仅真实非空非 echo 用户输入）而非
+            # last_user_activity_time（顶部无条件刷新，含 VAD 空噪声 + 麦克风录回
+            # AI 自己 TTS 的回声）。后者会被 AI 念邀请台词的回声污染：邀请投递后
+            # 回声立刻把 activity 刷到 > delivered_at，下一个 tick 的隐式 dismiss
+            # 误判「用户已回应」→ 把 pending 邀请清成 'later'（5min）+ 撤掉按钮，
+            # 用户随后点「现在不想玩」落到 expired、真正的 5h decline 起不来、邀请
+            # 5min 后反复重来。改用真消息时间戳后，纯点按钮（不说话）的用户活动
+            # 时间不会越过 delivered_at，pending 一直留到用户显式点按钮 / 说话。
             _voice_advance_outcome = _mini_game_invite_advance_response(
-                lanlan_name, getattr(mgr, 'last_user_activity_time', None),
+                lanlan_name, getattr(mgr, 'last_user_message_time', None),
             )
             # advance 触发了隐式 dismiss → 推 WS 让前端清掉 prompt UI（cross-window
             # 一致性）。codex P2 指出非按钮路径漏推 WS 让 UI 挂着。

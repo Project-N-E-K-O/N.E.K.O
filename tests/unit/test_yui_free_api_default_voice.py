@@ -9,7 +9,7 @@ import main_routers.characters_router as characters_router
 from utils.config_manager import ensure_default_yui_voice_for_free_api, get_reserved
 
 
-YUI_FREE_VOICE_ID = "voice-tone-R6NtLH3Hk0"
+YUI_FREE_VOICE_ID = "voice-tone-RcH2svtsrw"
 
 
 class _FakeConfigManager:

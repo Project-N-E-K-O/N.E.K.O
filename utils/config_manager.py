@@ -35,6 +35,7 @@ from utils.api_config_loader import (
 )
 from utils.custom_tts_adapter import check_custom_tts_voice_allowed
 from utils.file_utils import atomic_write_json
+from utils.gptsovits_config import normalize_gsv_api_url
 from utils.logger_config import get_module_logger
 from utils.native_voice_registry import (
     get_active_realtime_native_provider,
@@ -3445,7 +3446,7 @@ class ConfigManager:
         config['ENABLE_CUSTOM_API'] = enable_custom_api
 
         # GPT-SoVITS 配置映射
-        config['GPTSOVITS_ENABLED'] = core_cfg.get('gptsovitsEnabled', False)
+        config['GPTSOVITS_ENABLED'] = _as_bool(core_cfg.get('gptsovitsEnabled', False))
 
         config['ELEVENLABS_API_KEY'] = core_cfg.get('assistApiKeyElevenlabs', '')
         config['TTS_PROVIDER'] = core_cfg.get('ttsProvider', '')
@@ -3468,6 +3469,12 @@ class ConfigManager:
         except (TypeError, ValueError):
             config['TEXT_GUARD_MAX_LENGTH'] = 300
         
+        # GPT-SoVITS 是本地 TTS 运行时，不依赖 enableCustomApi 总开关。用户
+        # 保存的 ttsModelUrl 是 GSV server URL，不能被 follow_core/follow_assist
+        # 的 LLM URL 覆盖；空值只在运行时默认到 127.0.0.1，不写回配置文件。
+        if config['GPTSOVITS_ENABLED']:
+            config['TTS_MODEL_URL'] = normalize_gsv_api_url(core_cfg.get('ttsModelUrl'))
+
         # 只有在启用自定义API时才允许覆盖各模型相关字段
         if enable_custom_api:
             # URL / Model ID 字段：空值回退到已有配置。
@@ -3535,29 +3542,27 @@ class ConfigManager:
                 # 路径里读不到（fallback 用 CORE_MODEL，不是 REALTIME_MODEL/TTS_MODEL），
                 # 那是另一个层面的问题，下个 PR 跟进。
                 is_follow = provider in ('follow_core', 'follow_assist')
-                # GSV 启用时 ttsModelUrl 是 api_key_settings.js (save_button_down 那段)
-                # 强制覆盖进去的 GPT-SoVITS server URL，不是 follow_* 联动出来的 readonly
-                # 提示值。如果还按 skip_url_for_follow 跳过，TTS_MODEL_URL 永远是空，
-                # tts_custom 走 fallthrough → is_custom=False → 整条 GSV 链路全断
-                # （/custom_tts_voices 报 CUSTOM_API_NOT_ENABLED，TTS dispatcher 落到
-                # cosyvoice_vc_tts_worker 撞 dashscope 鉴权）。默认 ttsModelProvider 是
-                # 'follow_assist'，用户开 GSV 但不会专门去把 provider 改成 'custom'，
-                # 这条豁免必须在后端兜住。
-                gsv_enabled_for_url = bool(core_cfg.get('gptsovitsEnabled', False))
+                # GSV 启用时 ttsModelUrl 是 GPT-SoVITS server URL，不是 follow_*
+                # 联动出来的 LLM URL。即便 ttsModelProvider 仍是默认 follow_assist，
+                # 也必须优先保留 GSV URL，否则对话 TTS 会连到辅助 LLM endpoint。
+                gsv_enabled_for_url = config['GPTSOVITS_ENABLED']
+                gsv_tts_url_override = prefix == 'tts' and gsv_enabled_for_url
                 skip_url_for_follow = (
                     is_follow
                     and prefix in ('omni', 'tts')
-                    and not (prefix == 'tts' and gsv_enabled_for_url)
+                    and not gsv_tts_url_override
                 )
 
                 # URL: 空值回退到已有配置；omni/tts follow_* 时跳过
-                if not skip_url_for_follow:
+                cfg_url = core_cfg.get(f'{prefix}ModelUrl')
+                if gsv_tts_url_override:
+                    config[url_key] = normalize_gsv_api_url(cfg_url or config.get(url_key))
+                elif not skip_url_for_follow:
                     if is_follow:
                         followed_url = _resolve_follow_model_url(prefix, provider)
                         if followed_url:
                             config[url_key] = followed_url
                     else:
-                        cfg_url = core_cfg.get(f'{prefix}ModelUrl')
                         if cfg_url is not None:
                             config[url_key] = cfg_url or config.get(url_key, '')
 
@@ -3597,6 +3602,9 @@ class ConfigManager:
             # TTS Voice ID 作为角色 voice_id 的回退
             if core_cfg.get('ttsVoiceId') is not None:
                 config['TTS_VOICE_ID'] = core_cfg.get('ttsVoiceId', '')
+
+        if config['GPTSOVITS_ENABLED'] and core_cfg.get('ttsVoiceId') is not None:
+            config['TTS_VOICE_ID'] = core_cfg.get('ttsVoiceId', '')
 
         for key, value in config.items():
             if key.endswith('_URL') and isinstance(value, str):

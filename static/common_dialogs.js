@@ -1395,6 +1395,9 @@
     if (!window._openedWindows) {
         window._openedWindows = {};
     }
+    const SHARED_NAMED_WINDOW_PREFIX = 'neko:named-window:';
+    const SHARED_NAMED_WINDOW_FOCUS_PREFIX = 'neko:named-window-focus:';
+    const SHARED_NAMED_WINDOW_TTL_MS = 5000;
     
     /**
      * 打开或聚焦窗口
@@ -1404,40 +1407,177 @@
      * @param {string} url - 要打开的 URL
      * @param {string} windowName - 窗口名称（用于标识和重用）
      * @param {string} [features] - 窗口特性（可选，默认为标准设置窗口）
+     * @param {{navigateOnReuse?: boolean}} [options] - 复用同名窗口时是否强制导航
      * @returns {Window|null} - 返回窗口对象
      */
-    window.openOrFocusWindow = function(url, windowName, features) {
+    window.openOrFocusWindow = function(url, windowName, features, options) {
         // 默认窗口特性（移除 noopener 以便获取窗口引用）
         const defaultFeatures = 'width=1000,height=800,menubar=no,toolbar=no,location=no,status=no';
         features = features || defaultFeatures;
+        const targetUrl = resolveOpenedWindowUrl(url);
+        const normalizedOptions = options && typeof options === 'object' ? options : {};
 
         // 检查窗口是否已打开且未关闭
         const existingWindow = window._openedWindows[windowName];
         if (existingWindow && !existingWindow.closed) {
+            if (normalizedOptions.navigateOnReuse) {
+                navigateOpenedWindow(existingWindow, targetUrl, !!normalizedOptions.navigateOnReuse);
+            }
+            applyOpenedWindowFeatures(existingWindow, features);
             requestOpenedWindowRestore(existingWindow);
             existingWindow.focus();
             return existingWindow;
         }
 
-        // 打开新窗口并存储引用
-        const newWindow = window.open(url, windowName, features);
-        if (newWindow) {
-            window._openedWindows[windowName] = newWindow;
+        if (!normalizedOptions.navigateOnReuse && isSharedNamedWindowActive(windowName)) {
+            requestSharedNamedWindowFocus(windowName);
+            return createSharedNamedWindowProxy(windowName);
+        }
 
-            // 监听窗口关闭事件，清理引用
-            const checkClosed = setInterval(() => {
-                if (newWindow.closed) {
-                    clearInterval(checkClosed);
-                    // 只有当缓存的引用仍然是这个窗口时才删除
-                    // 防止在1秒内重新打开同名窗口时误删新窗口的引用
-                    if (window._openedWindows[windowName] === newWindow) {
-                        delete window._openedWindows[windowName];
-                    }
-                }
-            }, 1000);
+        // 没有本地 handle 且目标页未登记为活跃时，直接按 URL 打开。
+        // 避免先打开 about:blank；部分 Electron/window.open handler 会因此卡住。
+        const newWindow = window.open(targetUrl, windowName, features);
+        if (newWindow) {
+            cacheOpenedWindow(windowName, newWindow);
+            applyOpenedWindowFeatures(newWindow, features);
+            requestOpenedWindowRestore(newWindow);
         }
         return newWindow;
     };
+
+    function isReusableNamedWindowName(windowName) {
+        if (!windowName) return false;
+        const name = String(windowName).toLowerCase();
+        return name !== '_blank' && name !== '_self' && name !== '_parent' && name !== '_top';
+    }
+
+    function resolveOpenedWindowUrl(url) {
+        try {
+            return new URL(url, window.location.href).toString();
+        } catch (_) {
+            return url;
+        }
+    }
+
+    function getSharedNamedWindowKey(windowName) {
+        return SHARED_NAMED_WINDOW_PREFIX + String(windowName || '');
+    }
+
+    function getSharedNamedWindowFocusKey(windowName) {
+        return SHARED_NAMED_WINDOW_FOCUS_PREFIX + String(windowName || '');
+    }
+
+    function isSharedNamedWindowActive(windowName) {
+        if (!isReusableNamedWindowName(windowName)) return false;
+        try {
+            const storage = window.localStorage;
+            if (!storage) return false;
+            const raw = storage.getItem(getSharedNamedWindowKey(windowName));
+            if (!raw) return false;
+            const data = JSON.parse(raw);
+            const timestamp = Number(data && data.timestamp);
+            return Number.isFinite(timestamp) && (Date.now() - timestamp) < SHARED_NAMED_WINDOW_TTL_MS;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function requestSharedNamedWindowFocus(windowName, payload) {
+        if (!isReusableNamedWindowName(windowName)) return;
+        const message = {
+            type: payload ? 'neko:named-window-message' : 'neko:named-window-focus',
+            windowName: windowName,
+            payload: payload || null,
+            timestamp: Date.now()
+        };
+        try {
+            if ('BroadcastChannel' in window) {
+                const channel = new BroadcastChannel('neko:named-window');
+                channel.postMessage(message);
+                channel.close();
+            }
+        } catch (_) {}
+        try {
+            window.localStorage.setItem(getSharedNamedWindowFocusKey(windowName), JSON.stringify(message));
+        } catch (_) {}
+    }
+
+    function createSharedNamedWindowProxy(windowName) {
+        const proxy = {
+            focus: function() {
+                requestSharedNamedWindowFocus(windowName);
+            },
+            close: function() {},
+            postMessage: function(message) {
+                requestSharedNamedWindowFocus(windowName, message);
+            }
+        };
+        Object.defineProperty(proxy, 'closed', {
+            get: function() {
+                return !isSharedNamedWindowActive(windowName);
+            }
+        });
+        return proxy;
+    }
+
+    function cacheOpenedWindow(windowName, targetWindow) {
+        if (!windowName || !targetWindow) return;
+        window._openedWindows[windowName] = targetWindow;
+
+        // 监听窗口关闭事件，清理引用
+        const checkClosed = setInterval(() => {
+            if (targetWindow.closed) {
+                clearInterval(checkClosed);
+                // 只有当缓存的引用仍然是这个窗口时才删除
+                // 防止在1秒内重新打开同名窗口时误删新窗口的引用
+                if (window._openedWindows[windowName] === targetWindow) {
+                    delete window._openedWindows[windowName];
+                }
+            }
+        }, 1000);
+    }
+
+    function navigateOpenedWindow(targetWindow, url, replace) {
+        if (!targetWindow || targetWindow.closed || !url) return;
+        try {
+            if (replace && targetWindow.location && typeof targetWindow.location.replace === 'function') {
+                targetWindow.location.replace(url);
+            } else {
+                targetWindow.location.href = url;
+            }
+        } catch (_) {
+            try {
+                targetWindow.location.href = url;
+            } catch (_) {}
+        }
+    }
+
+    function getOpenedWindowFeatureNumber(features, name) {
+        if (!features || !name) return null;
+        const pattern = new RegExp('(?:^|,)\\s*' + name + '\\s*=\\s*(-?\\d+)', 'i');
+        const match = String(features).match(pattern);
+        if (!match) return null;
+        const value = Number(match[1]);
+        return Number.isFinite(value) ? value : null;
+    }
+
+    function applyOpenedWindowFeatures(targetWindow, features) {
+        if (!targetWindow || targetWindow.closed || !features) return;
+        const width = getOpenedWindowFeatureNumber(features, 'width');
+        const height = getOpenedWindowFeatureNumber(features, 'height');
+        const left = getOpenedWindowFeatureNumber(features, 'left');
+        const top = getOpenedWindowFeatureNumber(features, 'top');
+        try {
+            if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+                targetWindow.resizeTo(width, height);
+            }
+        } catch (_) {}
+        try {
+            if (Number.isFinite(left) && Number.isFinite(top)) {
+                targetWindow.moveTo(left, top);
+            }
+        } catch (_) {}
+    }
 
     function requestOpenedWindowRestore(targetWindow) {
         if (!targetWindow || targetWindow.closed) return;
@@ -1449,6 +1589,46 @@
     }
 
     window.requestOpenedWindowRestore = requestOpenedWindowRestore;
+
+    /**
+     * 计算「在当前所在显示器可用区域内居中」的 window.open features 字符串。
+     * 多显示器下 window.open 的 left/top 是相对整个虚拟桌面原点的坐标，必须叠加当前屏幕
+     * 偏移（screen.availLeft/availTop，回退 window.screenX/screenY），否则副屏打开会按主屏
+     * 原点居中、跳回主屏。调用方负责把尺寸 clamp 好后传入最终窗口尺寸。
+     *
+     * @param {number} windowWidth - 最终窗口宽度
+     * @param {number} windowHeight - 最终窗口高度
+     * @returns {string}
+     */
+    function buildCenteredPopupFeatures(windowWidth, windowHeight) {
+        const screenRef = window.screen || {};
+        const width = Math.max(1, Math.floor(Number(windowWidth)) || 1);
+        const height = Math.max(1, Math.floor(Number(windowHeight)) || 1);
+        const availableWidth = Math.max(width, Number(screenRef.availWidth || screenRef.width) || width);
+        const availableHeight = Math.max(height, Number(screenRef.availHeight || screenRef.height) || height);
+        const screenLeft = Number.isFinite(screenRef.availLeft) ? screenRef.availLeft : (Number(window.screenX) || 0);
+        const screenTop = Number.isFinite(screenRef.availTop) ? screenRef.availTop : (Number(window.screenY) || 0);
+        const left = Math.round(screenLeft + Math.max(0, (availableWidth - width) / 2));
+        const top = Math.round(screenTop + Math.max(0, (availableHeight - height) / 2));
+        return `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+    }
+
+    window.buildCenteredPopupFeatures = buildCenteredPopupFeatures;
+
+    function buildApiKeySettingsWindowFeatures(width = 1240, height = 940) {
+        const availableWidth = Math.max(1, Number(window.screen && (window.screen.availWidth || window.screen.width)) || width);
+        const availableHeight = Math.max(1, Number(window.screen && (window.screen.availHeight || window.screen.height)) || height);
+        const windowWidth = Math.min(width, Math.max(720, availableWidth - 80));
+        const windowHeight = Math.min(height, Math.max(560, availableHeight - 80));
+        if (typeof window.buildCenteredPopupFeatures === 'function') {
+            return window.buildCenteredPopupFeatures(windowWidth, windowHeight);
+        }
+        const left = Math.max(0, Math.floor((availableWidth - windowWidth) / 2));
+        const top = Math.max(0, Math.floor((availableHeight - windowHeight) / 2));
+        return `width=${windowWidth},height=${windowHeight},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+    }
+
+    window.buildApiKeySettingsWindowFeatures = buildApiKeySettingsWindowFeatures;
 
     window.addEventListener('message', function(event) {
         if (event.origin !== window.location.origin) return;

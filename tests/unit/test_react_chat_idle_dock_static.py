@@ -193,6 +193,23 @@ def test_idle_dock_uses_mutation_observer_to_detect_minimize_completion():
     assert "shell.classList.remove('is-minimized', 'is-collapsing', 'is-idle-docked')" in source
 
 
+def test_idle_dock_does_not_follow_return_ball_after_initial_dock():
+    source = _read(APP_REACT_CHAT_WINDOW_PATH)
+    electron_return_block = _between(
+        source,
+        "function handleElectronIdleReturnBallState(detail) {",
+        "    // Enter idle-dock:",
+    )
+
+    assert "idleDockContainerObserver" not in source
+    assert "refreshIdleDockContainerObserver" not in source
+    assert "scheduleIdleDockSync" not in source
+    assert "dockTarget = getIdleDockTarget()" not in source
+    guard_index = electron_return_block.index("!hasElectronIdleDockPendingOrActive()")
+    enter_index = electron_return_block.index("enterElectronIdleDock(detail.screenRect)")
+    assert guard_index < enter_index
+
+
 def test_toggle_minimized_restores_position_before_expand_when_idle_docked():
     source = _read(APP_REACT_CHAT_WINDOW_PATH)
 
@@ -207,13 +224,13 @@ def test_toggle_minimized_restores_position_before_expand_when_idle_docked():
     assert "is-idle-docked" in toggle_block
 
 
-def test_idle_dock_exit_preserves_drag_demotion_position():
+def test_idle_dock_exit_clears_cat2_to_cat1_drag_binding():
     source = _read(APP_REACT_CHAT_WINDOW_PATH)
 
     assert "function exitIdleDock(options)" in source
     assert "function exitElectronIdleDock(options)" in source
     assert "preserveCurrentPosition" in source
-    assert "detail.source === 'return-ball-drag-demotion'" in source
+    assert "idleDockActive && detail.source === 'return-ball-drag-demotion'" in source
     assert "detail.reason === 'return-ball-drag-demotion'" in source
     assert "detail.reason === 'return-ball-drag-end'" in source
     assert "detail.reason === 'viewport-resize'" in source
@@ -222,6 +239,7 @@ def test_idle_dock_exit_preserves_drag_demotion_position():
     assert "async function commitElectronIdleDockCollapsedBounds(bridge, bounds, generation)" in source
     assert "result !== false && result !== null && result !== undefined" in source
     assert "await waitElectronIdleDockCommitRetry(80)" in source
+    assert "activeTier && detail && (" in source
     assert "preserveScreenRect: shouldPreserveCurrentPosition ? detail.screenRect : null" in source
     assert "await commitElectronIdleDockCollapsedBounds(bridge, preserveBounds, exitGeneration)" in source
     assert "wasActive && saved && !preserveCurrentPosition" in source

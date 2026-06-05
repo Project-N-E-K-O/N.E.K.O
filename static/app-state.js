@@ -109,6 +109,7 @@
         isSwitchingMode: false,
         sessionStartedResolver: null,
         sessionStartedRejecter: null,
+        voiceSessionStartEpoch: 0,
         assistantTurnId: null,
         assistantTurnStartedAt: 0,
         assistantPendingTurnServerId: null,
@@ -197,6 +198,39 @@
     };
 
     window.appState = S;
+
+    window.isNekoGoodbyeModeActive = function () {
+        return !!(
+            (window.live2dManager && window.live2dManager._goodbyeClicked)
+            || (window.vrmManager && window.vrmManager._goodbyeClicked)
+            || (window.mmdManager && window.mmdManager._goodbyeClicked)
+        );
+    };
+
+    window.makeNekoSessionAbortError = function (reason) {
+        var error = new Error(reason || 'Session aborted');
+        error.sessionStartCancelled = true;
+        error.voiceStartCancelled = true;
+        return error;
+    };
+
+    window.cancelPendingSessionStart = function (reason) {
+        if (window.sessionTimeoutId) {
+            clearTimeout(window.sessionTimeoutId);
+            window.sessionTimeoutId = null;
+        }
+        S.voiceSessionStartEpoch += 1;
+        S.voiceStartPending = false;
+        window.isMicStarting = false;
+
+        if (S.sessionStartedRejecter) {
+            try {
+                S.sessionStartedRejecter(window.makeNekoSessionAbortError(reason));
+            } catch (_) { }
+        }
+        S.sessionStartedResolver = null;
+        S.sessionStartedRejecter = null;
+    };
 
     // ======================== 工具函数 ========================
     /** 分贝转线性增益 */

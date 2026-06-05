@@ -278,6 +278,12 @@ jobs:
           NUITKA_OPTS="$NUITKA_OPTS --include-package=tiktoken"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=tiktoken_ext"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=onnxruntime"
+          # onnxruntime.transformers/ is a benchmark + model-conversion toolbox
+          # nothing at runtime imports (rapidocr uses only the core InferenceSession).
+          # --include-package=onnxruntime would recurse and compile the whole subtree,
+          # including a 130k+ line gpt2 benchmark C unit that crashes the C backend.
+          # Mirrors build-desktop.yml.
+          NUITKA_OPTS="$NUITKA_OPTS --nofollow-import-to=onnxruntime.transformers"
           NUITKA_OPTS="$NUITKA_OPTS --include-package=tokenizers"
 
           # Package data
