@@ -92,6 +92,26 @@ async def test_free_api_bind_can_use_current_core_config_when_reader_entry_calls
 
 
 @pytest.mark.asyncio
+async def test_overseas_free_binds_yui_sentinel_voice(monkeypatch):
+    """海外免费（free + *.lanlan.app）默认音色绑定品牌 yui（下发字面量 "yui"），
+    而非国内的 free_voices 阶跃音色。"""
+    monkeypatch.setattr(
+        "utils.api_config_loader.get_free_voices",
+        lambda: {"yui_cn": YUI_FREE_VOICE_ID},
+    )
+    config_manager = _FakeConfigManager(_characters_with_current_yui(voice_id=""))
+
+    changed = await ensure_default_yui_voice_for_free_api(
+        config_manager,
+        {"coreApi": "free", "assistApi": "free", "CORE_URL": "wss://lanlan.app/realtime"},
+    )
+
+    assert changed is True
+    yui = config_manager.saved_characters["猫娘"]["YUI"]
+    assert get_reserved(yui, "voice_id", default="") == "yui"
+
+
+@pytest.mark.asyncio
 async def test_non_free_api_does_not_bind_empty_yui_voice(monkeypatch):
     monkeypatch.setattr(
         "utils.api_config_loader.get_free_voices",

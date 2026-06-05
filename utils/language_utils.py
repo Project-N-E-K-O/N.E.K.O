@@ -695,6 +695,34 @@ def detect_tts_language_hint(text: str) -> Optional[str]:
     return None
 
 
+# lanlan.app（海外免费 Gemini 代理）streaming-TTS / realtime 用的 language_code。
+# BCP-47 风格（cmn=普通话）。TTS server 与 core/realtime 两条路共用，建 session
+# 时一次性指定。日语另由 lang_hint 覆盖成 'ja-JP'。
+TTS_LANGUAGE_CODE_MAP = {
+    'zh':    'cmn-CN',
+    'zh-CN': 'cmn-CN',
+    'zh-TW': 'cmn-tw',
+    'en':    'en-US',
+    'ja':    'ja-JP',
+    'ko':    'ko-KR',
+    'es':    'es-ES',
+    'fr':    'fr-FR',
+    'de':    'de-DE',
+    'it':    'it-IT',
+    'ru':    'ru-RU',
+    'tr':    'tr-TR',
+}
+
+
+def get_tts_language_code() -> str:
+    """按当前全局语言返回 lanlan.app 所需的 language_code，兜底 'cmn-CN'。"""
+    try:
+        lang = normalize_language_code(get_global_language_full(), format='full')
+    except Exception:
+        lang = 'zh-CN'
+    return TTS_LANGUAGE_CODE_MAP.get(lang, 'cmn-CN')
+
+
 def _split_text_into_chunks(text: str, max_chunk_size: int) -> List[str]:
     """
     将文本分段，尝试在句号、换行符等位置分割

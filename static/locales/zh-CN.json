@@ -1590,7 +1590,9 @@
             "sweetLady": "甜美御姐",
             "frailMaiden": "病弱少女",
             "childishMaiden": "稚气少女",
-            "yui_cn": "YUI（中文）"
+            "yui_cn": "YUI（中文）",
+            "yui": "YUI",
+            "default": "默认"
         },
         "cloneMethod": "克隆方式",
         "cloneMethodFile": "本地文件",
@@ -1917,6 +1919,8 @@
         "aiCompanionSub": "设定捏人助手 · 暂代开发猫",
         "aiCompanionClose": "关闭",
         "aiCompanionMinimize": "收起",
+        "aiCompanionExpand": "展开",
+        "aiCompanionDragHint": "拖动窗口",
         "aiCompanionPlaceholder": "说点什么…（Enter 发送、Shift+Enter 换行）",
         "aiCompanionSend": "发送",
         "aiCompanionGreeting": "喵～我是设定捏人助手，先告诉我你想要一只什么样的猫娘呀？一句话描述就好，我会再问几个细节，然后帮你把整张卡写好喵。",

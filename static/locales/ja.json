@@ -1590,7 +1590,9 @@
             "sweetLady": "甘々な女性",
             "frailMaiden": "病弱な少女",
             "childishMaiden": "幼い少女",
-            "yui_cn": "YUI（中国語）"
+            "yui_cn": "YUI（中国語）",
+            "yui": "YUI",
+            "default": "デフォルト"
         },
         "cloneMethod": "クローン方式",
         "cloneMethodFile": "ローカルファイル",
@@ -1915,6 +1917,8 @@
         "aiCompanionSub": "設定捏ね助手 · YUI が開発猫の代役",
         "aiCompanionClose": "閉じる",
         "aiCompanionMinimize": "最小化",
+        "aiCompanionExpand": "展開",
+        "aiCompanionDragHint": "ウィンドウをドラッグ",
         "aiCompanionPlaceholder": "なにか話してね…（Enter で送信、Shift+Enter で改行）",
         "aiCompanionSend": "送信",
         "aiCompanionGreeting": "にゃ〜 設定捏ね助手だよ。まず、どんな猫娘がいいか一言で教えてくれる？ いくつか追加で質問して、それからカード全体を書いてあげるね。",

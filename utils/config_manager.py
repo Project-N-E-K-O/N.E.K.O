@@ -38,8 +38,8 @@ from utils.file_utils import atomic_write_json
 from utils.gptsovits_config import normalize_gsv_api_url
 from utils.logger_config import get_module_logger
 from utils.native_voice_registry import (
-    get_active_realtime_native_provider,
-    is_native_voice,
+    is_free_lanlan_app_route,
+    is_saveable_native_voice,
 )
 from utils.persona_presets import PERSONA_OVERRIDE_FIELDS
 from utils.steam_state import get_steamworks
@@ -222,7 +222,13 @@ async def ensure_default_yui_voice_for_free_api(config_manager, core_cfg: dict |
     if current_voice_id:
         return False
 
-    yui_voice_id = _get_default_yui_free_voice_id()
+    # 海外免费（free + *.lanlan.app）：默认音色是品牌 yui（free_intl 的 default_voice），
+    # 下发字面量 "yui"。国内免费（lanlan.tech）仍按语言绑定 free_voices 里的 yui 音色。
+    core_url = str((core_cfg or {}).get("CORE_URL") or "")
+    if is_free_lanlan_app_route("free", core_url):
+        yui_voice_id = "yui"
+    else:
+        yui_voice_id = _get_default_yui_free_voice_id()
     if not yui_voice_id:
         return False
 
@@ -2800,8 +2806,7 @@ class ConfigManager:
         if voice_id in voices:
             return True
 
-        active_native_provider = get_active_realtime_native_provider(self)
-        if active_native_provider and is_native_voice(voice_id, active_native_provider):
+        if is_saveable_native_voice(self, voice_id):
             return True
 
         # 免费预设音色允许豁免保存校验，运行时再由 core.py 按当前线路动态判断可用性
@@ -2830,8 +2835,7 @@ class ConfigManager:
         if voice_id in voices:
             return True
 
-        active_native_provider = get_active_realtime_native_provider(self)
-        if active_native_provider and is_native_voice(voice_id, active_native_provider):
+        if is_saveable_native_voice(self, voice_id):
             return True
 
         from utils.api_config_loader import get_free_voices
@@ -3097,7 +3101,10 @@ class ConfigManager:
 
         try:
             if self._check_non_mainland():
-                return url.replace('lanlan.tech', 'lanlan.app').replace("www.lanlan.app/tts", "lanlan.app/tts")
+                # 海外免费统一走 www.lanlan.app（含 /tts）：该节点透传客户端
+                # voice 字段到 Gemini，支持 Gemini 全量 + yui。早期把 /tts 降级到
+                # 裸 lanlan.app（硬覆盖 Leda 的旧端点）的 .replace 已移除。
+                return url.replace('lanlan.tech', 'lanlan.app')
         except Exception:
             pass
 

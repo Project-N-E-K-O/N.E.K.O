@@ -1590,7 +1590,9 @@
             "sweetLady": "dulce dama",
             "frailMaiden": "doncella frágil",
             "childishMaiden": "doncella infantil",
-            "yui_cn": "YUI (chino)"
+            "yui_cn": "YUI (chino)",
+            "yui": "YUI",
+            "default": "Predeterminado"
         },
         "cloneMethod": "Método de clonación",
         "cloneMethodFile": "Archivo Local",
@@ -1915,6 +1917,8 @@
         "aiCompanionSub": "Asistente de diseño de carta · YUI sustituye al gatito desarrollador",
         "aiCompanionClose": "Cerrar",
         "aiCompanionMinimize": "Minimizar",
+        "aiCompanionExpand": "Expandir",
+        "aiCompanionDragHint": "Arrastra la ventana",
         "aiCompanionPlaceholder": "Di algo… (Enter para enviar, Shift+Enter para nueva línea)",
         "aiCompanionSend": "Enviar",
         "aiCompanionGreeting": "¡Miau~ Soy tu asistente de diseño de carta. Primero dime qué tipo de NEKO quieres — ¡con una línea basta! Te haré algunas preguntas de seguimiento y luego escribiré toda la carta por ti.",
