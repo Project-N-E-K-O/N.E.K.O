@@ -233,30 +233,14 @@ def _ws_is_open(ws_conn) -> bool:
     return not getattr(ws_conn, "closed", True)
 
 
-_TTS_LANGUAGE_CODE_MAP = {
-    'zh':    'cmn-CN',
-    'zh-CN': 'cmn-CN',
-    'zh-TW': 'cmn-tw',
-    'en':    'en-US',
-    'ja':    'ja-JP',
-    'ko':    'ko-KR',
-    'es':    'es-ES',
-    'fr':    'fr-FR',
-    'de':    'de-DE',
-    'it':    'it-IT',
-    'ru':    'ru-RU',
-    'tr':    'tr-TR'
-}
-
-
 def _get_tts_language_code() -> str:
-    """获取 lanlan.app TTS 服务器所需的 language_code。"""
-    try:
-        from utils.language_utils import get_global_language_full, normalize_language_code
-        lang = normalize_language_code(get_global_language_full(), format='full')
-    except Exception:
-        lang = 'zh-CN'
-    return _TTS_LANGUAGE_CODE_MAP.get(lang, 'cmn-CN')
+    """获取 lanlan.app TTS 服务器所需的 language_code。
+
+    实现收敛到 utils.language_utils.get_tts_language_code —— core/realtime 与
+    TTS server 两条路共用同一张 BCP-47 映射表，避免漂移。
+    """
+    from utils.language_utils import get_tts_language_code
+    return get_tts_language_code()
 
 
 def _build_step_tts_create_data(sid_: str, voice_id: str, lang_hint, is_lanlan_app: bool) -> dict:
@@ -268,7 +252,8 @@ def _build_step_tts_create_data(sid_: str, voice_id: str, lang_hint, is_lanlan_a
         "sample_rate": 24000,
     }
     if is_lanlan_app:
-        data["voice_id"] = "Leda"
+        # 发真实 voice_id（data 里已带传入值），由 www.lanlan.app 服务端透传给
+        # Gemini 并做映射；不再客户端硬覆盖成 Leda。
         data["language_code"] = "ja-JP" if lang_hint == "ja" else _get_tts_language_code()
     else:
         # lanlan.tech (free) 和自建 StepFun 协议对称，都用 voice_label。
@@ -1378,6 +1363,18 @@ register_tts_worker_resolver(
 )
 register_tts_worker_resolver(
     'free',
+    make_native_tts_resolver(
+        step_realtime_tts_worker,
+        'tts_default_api_key',
+        worker_kwargs={'free_mode': True},
+    ),
+)
+# free_intl（海外免费 *.lanlan.app）：上游 Gemini 代理走 www.lanlan.app/tts，
+# 协议同 free（StepFun-shape streaming，proxy 把 voice_id 透传给 Gemini），
+# 因此复用 free 的 worker。与 free 对偶，仅 provider key 不同（registry 按
+# host 把 free→free_intl 重映射，让 yui/Gemini 音色短路到这里而非外部 TTS）。
+register_tts_worker_resolver(
+    'free_intl',
     make_native_tts_resolver(
         step_realtime_tts_worker,
         'tts_default_api_key',

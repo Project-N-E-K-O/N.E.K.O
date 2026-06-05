@@ -1590,7 +1590,9 @@
             "sweetLady": "甘々な女性",
             "frailMaiden": "病弱な少女",
             "childishMaiden": "幼い少女",
-            "yui_cn": "YUI（中国語）"
+            "yui_cn": "YUI（中国語）",
+            "yui": "YUI",
+            "default": "デフォルト"
         },
         "cloneMethod": "クローン方式",
         "cloneMethodFile": "ローカルファイル",

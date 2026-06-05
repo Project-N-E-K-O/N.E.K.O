@@ -367,6 +367,7 @@
   },
   "_comment_free_voices": "Shape: {voiceKey: voice_id}. Keys are i18n identifiers (e.g., playfulGirl, cuteGirl) that the frontend must localize for display. Do not treat keys as display names.",
   "free_voices": {
+    "yui_cn": "voice-tone-RcH2svtsrw",
     "playfulGirl": "voice-tone-PGLiTXeJCS",
     "cuteGirl": "voice-tone-PGLiyZt65w",
     "cuteMaiden": "voice-tone-PGLjbHIMbI",
@@ -376,8 +377,7 @@
     "gentleMaiden": "voice-tone-PGLlrd5SNM",
     "sweetLady": "voice-tone-PGLmTEeUOu",
     "frailMaiden": "voice-tone-PGLmzXEX44",
-    "childishMaiden": "voice-tone-PGLnVNQn7A",
-    "yui_cn": "voice-tone-RcH2svtsrw"
+    "childishMaiden": "voice-tone-PGLnVNQn7A"
   },
   "_comment_native_tts_voice_providers": "Shape: {providerKey: {catalog_prefix, default_voice, default_male_voice, catalog_value_is_display_name, voices, aliases, inherits}}. voices maps upstream voice_id to display label. Keep this list to voices available on realtime/free TTS paths; some HTTP-only or permission-gated official voices are intentionally omitted.",
   "native_tts_voice_providers": {
@@ -460,6 +460,19 @@
         "女": "Leda",
         "女声": "Leda",
         "中文女": "Leda"
+      }
+    },
+    "free_intl": {
+      "inherits": "gemini",
+      "catalog_prefix": "Gemini",
+      "default_voice": "yui",
+      "default_male_voice": "Puck",
+      "voices": {
+        "yui": "Female"
+      },
+      "aliases": {
+        "default": "Leda",
+        "默认": "Leda"
       }
     },
     "grok": {

@@ -1590,7 +1590,9 @@
             "sweetLady": "Doce senhora",
             "frailMaiden": "Donzela Frágil",
             "childishMaiden": "Donzela Infantil",
-            "yui_cn": "YUI (chinês)"
+            "yui_cn": "YUI (chinês)",
+            "yui": "YUI",
+            "default": "Padrão"
         },
         "cloneMethod": "Método Clonar",
         "cloneMethodFile": "Arquivo local",

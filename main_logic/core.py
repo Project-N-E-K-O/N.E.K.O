@@ -504,8 +504,6 @@ from utils.logger_config import get_module_logger
 from utils.native_voice_registry import (
     is_free_preset_voice_id,
     resolve_native_voice_for_routing,
-    should_block_free_native_voice,
-    should_block_free_voice_for_route,
 )
 from utils.api_config_loader import (
     get_livestream_config,
@@ -761,7 +759,7 @@ class LLMSessionManager:
         self.core_api_type = realtime_config.get('api_type', '') or self._config_manager.get_core_config().get('CORE_API_TYPE', '')
         self.memory_server_port = MEMORY_SERVER_PORT
         self.audio_api_key = self._config_manager.get_core_config()['AUDIO_API_KEY']  # 用于CosyVoice自定义音色
-        self._apply_voice_id_for_route(realtime_config.get('base_url', ''))
+        self._apply_voice_id_for_route()
         # 注意：use_tts 会在 start_session 中根据 input_mode 重新设置
         self.use_tts = False
         self.generation_config = {}  # Qwen暂时不用
@@ -3377,6 +3375,14 @@ class LLMSessionManager:
         # auto-start 不被误清），但 end_session 语义就是整轮收尾，必须强制清场。
         await self.state.reset(force=True)
 
+    def _realtime_base_url(self) -> str:
+        """读取 realtime 线路 base_url，供 native voice 路由的 host 重映射
+        （海外免费 free→free_intl）使用。读不到时返回空串，按非 lanlan.app 处理。"""
+        try:
+            return str((self._config_manager.get_model_api_config('realtime') or {}).get('base_url') or '')
+        except Exception:
+            return ''
+
     def _has_custom_tts(self) -> bool:
         """判断当前会话是否使用自定义 TTS（克隆音色或自定义 TTS URL）。"""
         core_config = self._config_manager.get_core_config()
@@ -3384,6 +3390,7 @@ class LLMSessionManager:
             self.core_api_type,
             self.voice_id,
             self._config_manager.voice_id_exists_in_any_storage,
+            realtime_base_url=self._realtime_base_url(),
         )
         if uses_provider_native_voice:
             return False
@@ -3722,17 +3729,12 @@ class LLMSessionManager:
             logger.info(f"{log_prefix}🎙️ livestream 模式：使用服务端原生语音，跳过外部 TTS")
             return False
         base_url = realtime_config.get('base_url', '')
-        if should_block_free_native_voice(
-            self.core_api_type, self.voice_id, base_url,
+        _, uses_provider_native_voice = resolve_native_voice_for_routing(
+            self.core_api_type,
+            self.voice_id,
             self._config_manager.voice_id_exists_in_any_storage,
-        ):
-            uses_provider_native_voice = False
-        else:
-            _, uses_provider_native_voice = resolve_native_voice_for_routing(
-                self.core_api_type,
-                self.voice_id,
-                self._config_manager.voice_id_exists_in_any_storage,
-            )
+            realtime_base_url=base_url,
+        )
         if uses_provider_native_voice:
             logger.info(f"{log_prefix}🔊 {self.core_api_type} 原生音色 '{self.voice_id}' 将直接传入 RealtimeClient")
             return False
@@ -3760,24 +3762,23 @@ class LLMSessionManager:
         # 比较 / route gating / is_free_preset_voice_id 之类的 callee 失配。
         return (raw or '').strip()
 
-    def _apply_voice_id_for_route(self, realtime_base_url: str) -> None:
+    def _apply_voice_id_for_route(self) -> None:
         """按当前 route 把角色卡里的 voice_id 解析进 self.voice_id /
         self._is_free_preset_voice。
 
         __init__ / start_session / _background_prepare_pending_session 三处
-        共用：读取 _get_voice_id() → 海外 free 路由屏蔽 → 校正 free preset
-        与 core_api_type 的匹配关系。集中在这里避免规则漂移。
+        共用：读取 _get_voice_id() → 校正 free preset 与 core_api_type 的匹配
+        关系。集中在这里避免规则漂移。
+
+        历史上这里还按"海外 lanlan.app 会硬覆盖成 Leda"屏蔽 voice 下发；
+        现在海外免费统一走 www.lanlan.app 透传 voice（Gemini 全量 + yui，由
+        free_intl provider 认领），不再屏蔽——stale 的阶跃/free 预设音色在海外
+        路由下不会命中 free_intl catalog，自然 fall through，不需要预清。
+
+        空 voice_id 保持空：海外免费下"空 → 默认音色"的映射交给服务端
+        （www.lanlan.app）处理，客户端不再注入兜底音色。
         """
         raw_voice_id = self._get_voice_id()
-        if should_block_free_voice_for_route(
-            self.core_api_type,
-            raw_voice_id,
-            realtime_base_url,
-            self._config_manager.voice_id_exists_in_any_storage,
-        ):
-            self.voice_id = ''
-            self._is_free_preset_voice = False
-            return
         self.voice_id = raw_voice_id
         self._is_free_preset_voice = is_free_preset_voice_id(raw_voice_id)
         # free preset 选了但当前非 free 模式 → 不下发，避免把 preset id 透给别的 provider。
@@ -3799,20 +3800,16 @@ class LLMSessionManager:
            （绕过 free_voices preset gate，base_url 已被派生不含 lanlan.tech）
         3. 否则保留原逻辑：仅在角色 voice 是 free preset、core_api_type='free'
            且 base_url 仍指向 lanlan.tech 域时下发，避免把 preset id 透给非
-           lanlan 服务（lanlan.app 的屏蔽由 should_block_free_voice_for_route 兜底）
+           lanlan 服务。海外免费（free + *.lanlan.app）的 yui / Gemini 音色由
+           resolve_native_voice_for_routing 经 free_intl 重映射在第 1 步直接命中。
         """
         base_url = realtime_config.get('base_url', '')
-        if should_block_free_native_voice(
-            self.core_api_type, self.voice_id, base_url,
+        voice_name, uses_provider_native_voice = resolve_native_voice_for_routing(
+            self.core_api_type,
+            self.voice_id,
             self._config_manager.voice_id_exists_in_any_storage,
-        ):
-            voice_name, uses_provider_native_voice = self.voice_id, False
-        else:
-            voice_name, uses_provider_native_voice = resolve_native_voice_for_routing(
-                self.core_api_type,
-                self.voice_id,
-                self._config_manager.voice_id_exists_in_any_storage,
-            )
+            realtime_base_url=base_url,
+        )
         if uses_provider_native_voice:
             return voice_name
         if self._is_livestream_active():
@@ -4177,7 +4174,7 @@ class LLMSessionManager:
             # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
             _, _, _, self.lanlan_basic_config, _, _, _, _, _ = await self._config_manager.aget_character_data()
             old_voice_id = self.voice_id
-            self._apply_voice_id_for_route(realtime_config.get('base_url', ''))
+            self._apply_voice_id_for_route()
 
             # 如果角色没有设置 voice_id，尝试使用自定义API配置的 TTS_VOICE_ID 作为回退
             if not self.voice_id:
@@ -4866,7 +4863,7 @@ class LLMSessionManager:
             # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
             _, _, _, self.lanlan_basic_config, _, _, _, _, _ = await self._config_manager.aget_character_data()
             old_voice_id = self.voice_id
-            self._apply_voice_id_for_route(realtime_config.get('base_url', ''))
+            self._apply_voice_id_for_route()
 
             # 如果角色没有设置 voice_id，尝试使用自定义API配置的 TTS_VOICE_ID 作为回退
             if not self.voice_id:

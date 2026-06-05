@@ -6216,8 +6216,13 @@ function _panelCreateVoiceSelectUi(selectEl) {
         selectedText.textContent = displayText;
         header.title = selectedOption ? (selectedOption.title || displayText) : '';
 
+        // 只高亮第一个值匹配项：海外免费列表里 default(pin) 与 Leda(原生) voice_id
+        // 同为 "Leda"（刻意不去重），若按 value 全量比较会多项同时选中。原生
+        // <select> 在重复 value 下 selectedIndex 也只落第一个，这里与之对齐。
+        let matched = false;
         options.querySelectorAll('.voice-select-option').forEach(item => {
-            const isSelected = item.dataset.value === selectEl.value;
+            const isSelected = !matched && item.dataset.value === selectEl.value;
+            if (isSelected) matched = true;
             item.classList.toggle('selected', isSelected);
             item.setAttribute('aria-selected', isSelected ? 'true' : 'false');
         });
@@ -6360,6 +6365,23 @@ async function _loadPanelVoices(selectEl, currentVoiceId) {
             defaultOption.value = '';
             defaultOption.textContent = window.t ? window.t('character.voiceNotSet') : '未指定音色';
             selectEl.appendChild(defaultOption);
+
+            // 置顶音色（海外免费 free_intl：yui + default），紧跟在"未指定音色"之后，
+            // 排在列表最上面。展示名按 i18n_key 本地化；Leda 不去重，仍出现在 Gemini
+            // 长列表里（default pin 的目标）。
+            if (Array.isArray(data.pinned_voices) && data.pinned_voices.length > 0) {
+                data.pinned_voices.forEach(function (pin) {
+                    if (!pin || !pin.voice_id) return;
+                    const option = document.createElement('option');
+                    option.value = pin.voice_id;
+                    option.textContent = (window.t && pin.i18n_key)
+                        ? window.t(pin.i18n_key)
+                        : (pin.prefix || pin.voice_id);
+                    option.title = pin.voice_id;
+                    if (pin.voice_id === currentVoiceId) option.selected = true;
+                    selectEl.appendChild(option);
+                });
+            }
 
             // 添加音色选项
             Object.entries(data.voices).forEach(function ([voiceId, voiceData]) {

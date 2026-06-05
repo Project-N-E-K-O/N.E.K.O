@@ -983,6 +983,12 @@ class OmniRealtimeClient:
                     "type": "server_vad"
                 },
             }
+            # 海外免费（lanlan.app，Gemini 代理）建 session 时一次性指定
+            # language_code，与 TTS server 路对偶；lanlan.tech（StepFun）不发，
+            # 沿用其自动识别 / voice_label 语义。
+            if 'lanlan.app' in (self.base_url or ''):
+                from utils.language_utils import get_tts_language_code
+                free_session["language_code"] = get_tts_language_code()
             free_tools: List[Dict[str, Any]] = []
             if self.has_tools():
                 free_tools.extend(self._tools_for_step())
