@@ -272,7 +272,10 @@ def test_desktop_return_ball_drag_recovers_when_mouse_release_is_lost():
     assert "window.addEventListener('blur', state.handleWindowBlur)" in source
     assert "document.addEventListener('visibilitychange', state.handleVisibilityChange)" in source
     assert "suppressClick ? 'return-ball-drag-cancel' : 'return-ball-drag-click'" in source
-    assert "if (!suppressClick)" in source
+    assert "if (suppressClick)" in source
+    assert "dragCancelled: true" in source
+    assert "movedDistancePx: 0" in source
+    assert "dispatchReturnBallClick();" in source
     assert "window.nekoPetDrag.stop(stopScreenX, stopScreenY)" in source
 
 

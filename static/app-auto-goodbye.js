@@ -749,7 +749,7 @@
         window.addEventListener('mmd-return-click', handleReturn);
         window.addEventListener('neko:return-ball-manual-move', (event) => {
             const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
-            if (detail.reason === 'return-ball-drag-end') {
+            if (detail.reason === 'return-ball-drag-end' && detail.dragCancelled !== true) {
                 handleReturnBallDragEnd();
             }
         });

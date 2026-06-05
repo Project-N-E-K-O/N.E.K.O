@@ -2772,7 +2772,16 @@
                         container
                     );
                     revealReturnBallDragWindow();
-                    if (!suppressClick) {
+                    if (suppressClick) {
+                        window.dispatchEvent(new CustomEvent('neko:return-ball-manual-move', {
+                            detail: {
+                                reason: 'return-ball-drag-end',
+                                container: container,
+                                movedDistancePx: 0,
+                                dragCancelled: true
+                            }
+                        }));
+                    } else {
                         dispatchReturnBallClick();
                     }
                 });
