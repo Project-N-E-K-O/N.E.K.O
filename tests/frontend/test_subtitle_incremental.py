@@ -52,23 +52,25 @@ def test_subtitle_background_opacity_tracks_dark_theme(
 
     result = mock_page.evaluate(
         """
-        () => {
+        async () => {
             const controller = window.nekoSubtitleShared.initSubtitleUI({ host: 'web' });
             const display = document.getElementById('subtitle-display');
             const darkBackground = display.style.background;
             document.documentElement.removeAttribute('data-theme');
-            window.dispatchEvent(new CustomEvent('neko-theme-changed', {
-                detail: { darkMode: false },
-            }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
             const lightBackground = display.style.background;
+            document.documentElement.setAttribute('data-theme', 'dark');
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const darkBackgroundAfterAttributeChange = display.style.background;
             controller.destroy();
-            return { darkBackground, lightBackground };
+            return { darkBackground, lightBackground, darkBackgroundAfterAttributeChange };
         }
         """
     )
 
     assert "rgba(18, 29, 45, 0.8)" in result["darkBackground"]
     assert "rgba(68, 183, 254, 0.8)" in result["lightBackground"]
+    assert "rgba(18, 29, 45, 0.8)" in result["darkBackgroundAfterAttributeChange"]
 
 
 @pytest.mark.frontend

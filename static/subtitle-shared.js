@@ -880,13 +880,37 @@
         applyState(state, { changedKeys: [], source: 'init' });
         cleanupFns.push(subscribeSettings(applyState, { immediate: false }));
 
+        var observedThemeDark = isDarkThemeActive();
+        var applyThemeStateIfChanged = function(source) {
+            var nextThemeDark = isDarkThemeActive();
+            if (nextThemeDark === observedThemeDark) return;
+            observedThemeDark = nextThemeDark;
+            applyState(getSettings(), { changedKeys: ['theme'], source: source });
+        };
         var onThemeChanged = function() {
-            applyState(getSettings(), { changedKeys: ['theme'], source: 'subtitle-ui-theme' });
+            applyThemeStateIfChanged('subtitle-ui-theme-event');
         };
         window.addEventListener('neko-theme-changed', onThemeChanged);
         cleanupFns.push(function() {
             window.removeEventListener('neko-theme-changed', onThemeChanged);
         });
+        if (window.MutationObserver && document.documentElement) {
+            var themeObserver = new MutationObserver(function(mutations) {
+                for (var i = 0; i < mutations.length; i += 1) {
+                    if (mutations[i].attributeName === 'data-theme') {
+                        applyThemeStateIfChanged('subtitle-ui-theme-attribute');
+                        break;
+                    }
+                }
+            });
+            themeObserver.observe(document.documentElement, {
+                attributes: true,
+                attributeFilter: ['data-theme']
+            });
+            cleanupFns.push(function() {
+                themeObserver.disconnect();
+            });
+        }
 
         if (window.i18next && typeof window.i18next.on === 'function') {
             var onLanguageChanged = function(nextLocale) {
