@@ -14,6 +14,7 @@ describe('App', () => {
 
   beforeEach(() => {
     window.localStorage.removeItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
+    document.body.classList.remove('yui-guide-chat-buttons-disabled');
   });
 
   const openCompactInputTools = async () => {
@@ -134,6 +135,20 @@ describe('App', () => {
     // 点击胶囊后内部 state 兜底切到输入态，输入框出现
     expect(container.querySelector('.composer-input')).not.toBeNull();
     expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'input');
+  });
+
+  it('keeps compact capsule clicks from entering input while the tutorial locks chat buttons', () => {
+    document.body.classList.add('yui-guide-chat-buttons-disabled');
+    const onCompactChatStateChange = vi.fn();
+    const { container } = render(
+      <App chatSurfaceMode="compact" onCompactChatStateChange={onCompactChatStateChange} />,
+    );
+
+    fireEvent.click(container.querySelector('.compact-chat-capsule-button') as HTMLButtonElement);
+
+    expect(container.querySelector('.composer-input')).toBeNull();
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'default');
+    expect(onCompactChatStateChange).not.toHaveBeenCalled();
   });
 
   it('exposes explicit surface mode state on the rendered shell', () => {

@@ -4901,6 +4901,76 @@ class UniversalTutorialManager {
         console.log('[Tutorial] 引导已完成，页面:', this.currentPage);
     }
 
+    restoreYuiGuideChatInputState(reason = 'tutorial-ended') {
+        const restoreReason = typeof reason === 'string' && reason.trim()
+            ? reason.trim()
+            : 'tutorial-ended';
+
+        if (document.body) {
+            document.body.classList.remove('yui-guide-chat-buttons-disabled');
+        }
+
+        const readonlyTargets = document.querySelectorAll(
+            '#react-chat-window-shell textarea, '
+            + '#react-chat-window-shell input, '
+            + '#text-input-area textarea, '
+            + '#text-input-area input'
+        );
+        readonlyTargets.forEach((element) => {
+            if (!element || !('readOnly' in element)) {
+                return;
+            }
+
+            const prevReadOnly = element.getAttribute('data-yui-guide-prev-readonly');
+            if (prevReadOnly !== null) {
+                element.readOnly = prevReadOnly === 'true';
+                element.removeAttribute('data-yui-guide-prev-readonly');
+            } else {
+                element.readOnly = false;
+            }
+        });
+
+        const contentEditableTargets = document.querySelectorAll(
+            '#react-chat-window-shell [contenteditable="true"], '
+            + '#react-chat-window-shell [contenteditable="plaintext-only"], '
+            + '#react-chat-window-shell [data-yui-guide-prev-contenteditable]'
+        );
+        contentEditableTargets.forEach((element) => {
+            if (!element || typeof element.getAttribute !== 'function') {
+                return;
+            }
+
+            const prevContentEditable = element.getAttribute('data-yui-guide-prev-contenteditable');
+            if (prevContentEditable !== null) {
+                element.setAttribute('contenteditable', prevContentEditable);
+                element.removeAttribute('data-yui-guide-prev-contenteditable');
+            }
+        });
+
+        const host = window.reactChatWindowHost;
+        if (host && typeof host.setHomeTutorialInteractionLocked === 'function') {
+            try {
+                host.setHomeTutorialInteractionLocked(false, restoreReason);
+            } catch (error) {
+                console.warn('[Tutorial] 恢复 React 聊天输入状态失败:', error);
+            }
+        }
+
+        const channel = window.appInterpage && window.appInterpage.nekoBroadcastChannel;
+        if (channel && typeof channel.postMessage === 'function') {
+            try {
+                channel.postMessage({
+                    action: 'yui_guide_set_chat_buttons_disabled',
+                    disabled: false,
+                    reason: restoreReason,
+                    timestamp: Date.now()
+                });
+            } catch (error) {
+                console.warn('[Tutorial] 同步独立聊天窗输入恢复失败:', error);
+            }
+        }
+    }
+
     /**
      * 拆除引导期间安装的 UI 状态（定时器、临时样式、监听器等）。
      * 不写入"已看过"存储，也不派发 tutorial-completed 事件，
@@ -4927,6 +4997,11 @@ class UniversalTutorialManager {
             this.unblockNekoTutorialClickEvents();
         } catch (error) {
             console.warn('[Tutorial] unblockNekoTutorialClickEvents 失败:', error);
+        }
+        try {
+            this.restoreYuiGuideChatInputState(this._tutorialEndRawReason || this._tutorialEndReason || 'tutorial-ended');
+        } catch (error) {
+            console.warn('[Tutorial] restoreYuiGuideChatInputState 失败:', error);
         }
 
         if (this._teardownPromise) {
