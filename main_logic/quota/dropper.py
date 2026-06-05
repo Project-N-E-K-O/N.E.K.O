@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from functools import lru_cache
@@ -47,8 +48,34 @@ def _load_rules() -> dict[str, Any]:
         return {}
 
 
+def _emit_card_drop_event(lanlan_name: str | None, trigger_type: str) -> None:
+    """掉落触发时把「掉了一张卡」事件 WS 广播给前端，让前端起开卡演出。
+
+    沿用现有 WS 广播：lazy import app.main_server._broadcast_to_all_connected，在当前
+    event loop 上 fire-and-forget 调度（与 cloud_sync.send_drop_hint 同套路，互不阻塞）。
+    前端 app-websocket.js onmessage 据 type == 'card_drop_available' 分发到开卡模态。
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+
+    async def _do() -> None:
+        try:
+            from app.main_server import _broadcast_to_all_connected
+            await _broadcast_to_all_connected({
+                "type": "card_drop_available",
+                "lanlan_name": lanlan_name,
+                "trigger_type": trigger_type,
+            })
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("dropper: card_drop emit failed: %s", exc)
+
+    loop.create_task(_do())
+
+
 def _maybe_drop(lanlan_name: str | None, trigger_type: str, cooldown_sec: int, *, reset_word: bool = False) -> bool:
-    """统一的"触发掉落"路径：cooldown 检查 → 更新 state → fire-and-forget 调云端。"""
+    """统一的"触发掉落"路径：cooldown 检查 → 更新 state → fire-and-forget 调云端 + 推前端。"""
     if not ux_state.can_trigger(trigger_type, cooldown_sec):
         return False
     snapshot = ux_state.record_drop(trigger_type, reset_word_count=reset_word)
@@ -57,6 +84,7 @@ def _maybe_drop(lanlan_name: str | None, trigger_type: str, cooldown_sec: int, *
         trigger_type, lanlan_name, snapshot.get("dropped_count", -1),
     )
     cloud_sync.send_drop_hint(lanlan_name, trigger_type)
+    _emit_card_drop_event(lanlan_name, trigger_type)
     return True
 
 

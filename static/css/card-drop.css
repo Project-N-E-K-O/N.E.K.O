@@ -1,0 +1,140 @@
+/* 对话掉落卡片：开卡模态 + 揭晓演出。自包含、cd- 前缀，不依赖其它样式表。 */
+
+.cd-backdrop {
+  position: fixed; inset: 0; z-index: 9000;
+  background: radial-gradient(120% 90% at 50% 0%, rgba(40,20,60,.66), rgba(8,6,14,.86));
+  backdrop-filter: blur(6px);
+  display: none; align-items: center; justify-content: center;
+  opacity: 0; transition: opacity .28s ease;
+}
+.cd-backdrop.cd-open { display: flex; opacity: 1; }
+
+.cd-modal {
+  position: relative; width: min(560px, 92vw); max-height: 88vh; overflow: hidden;
+  border-radius: 20px; color: #fff;
+  background: linear-gradient(160deg, #241a33, #160e22 70%);
+  border: 1px solid rgba(255,255,255,.12);
+  box-shadow: 0 24px 70px rgba(0,0,0,.6);
+  transform: translateY(14px) scale(.96); opacity: 0;
+  transition: transform .3s cubic-bezier(.2,.9,.3,1.2), opacity .3s;
+  display: flex; flex-direction: column;
+}
+.cd-backdrop.cd-open .cd-modal { transform: none; opacity: 1; }
+
+.cd-close {
+  position: absolute; top: 12px; right: 12px; z-index: 5;
+  width: 34px; height: 34px; border-radius: 50%; border: none; cursor: pointer;
+  background: rgba(255,255,255,.14); color: #fff; font-size: 18px; line-height: 34px;
+}
+.cd-close:hover { background: rgba(255,255,255,.26); }
+
+.cd-head { padding: 22px 24px 8px; text-align: center; }
+.cd-head h3 { margin: 0 0 4px; font-size: 19px; font-weight: 800; letter-spacing: .02em; }
+.cd-head p  { margin: 0; font-size: 12.5px; opacity: .72; line-height: 1.6; }
+
+.cd-body { padding: 12px 22px 22px; overflow: auto; }
+
+/* ---- 5选1 候选 ---- */
+.cd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 6px 0 16px; }
+.cd-cand {
+  text-align: left; cursor: pointer; padding: 12px 13px; border-radius: 12px;
+  background: rgba(255,255,255,.06); border: 1.5px solid rgba(255,255,255,.12);
+  transition: all .15s ease; color: #fff; font: inherit;
+}
+.cd-cand:hover { background: rgba(255,255,255,.1); border-color: rgba(255,255,255,.28); }
+.cd-cand.cd-picked {
+  border-color: #ffd86b; background: linear-gradient(135deg, rgba(255,216,107,.22), rgba(255,158,207,.14));
+  box-shadow: 0 0 0 1px #ffd86b inset;
+}
+.cd-cand-text { font-size: 13px; line-height: 1.55; }
+.cd-cand-tag {
+  display: inline-block; margin-top: 8px; font-size: 11px; padding: 2px 8px; border-radius: 99px;
+  background: rgba(255,255,255,.14); opacity: .85;
+}
+.cd-cand-tag.cd-preset { background: rgba(154,166,189,.3); }
+
+.cd-actions { display: flex; gap: 10px; justify-content: center; }
+.cd-btn {
+  cursor: pointer; border: none; font: inherit; font-weight: 700; font-size: 14px;
+  padding: 11px 22px; border-radius: 12px; transition: all .15s ease; color: #fff;
+}
+.cd-btn-ghost { background: rgba(255,255,255,.12); }
+.cd-btn-ghost:hover { background: rgba(255,255,255,.2); }
+.cd-btn-primary { background: linear-gradient(135deg,#ffd86b,#ff9ecf,#9ad6ff); color: #3a2350; }
+.cd-btn-primary:disabled { opacity: .45; cursor: not-allowed; filter: grayscale(.3); }
+
+.cd-msg { text-align: center; padding: 28px 10px; font-size: 13.5px; opacity: .8; line-height: 1.7; }
+
+/* ---- charging / forging ---- */
+.cd-charge { text-align: center; padding: 34px 10px; }
+.cd-orb {
+  width: 92px; height: 92px; margin: 0 auto 18px; border-radius: 50%;
+  background: radial-gradient(circle at 38% 32%, #fff, var(--cd-c, #b06bff) 55%, #5a2a8c 100%);
+  box-shadow: 0 0 60px var(--cd-glow, rgba(176,107,255,.6));
+  animation: cd-pulse .7s ease-in-out infinite alternate;
+}
+@keyframes cd-pulse { from { transform: scale(.9); } to { transform: scale(1.08); } }
+
+/* ---- reveal ---- */
+.cd-reveal { text-align: center; padding: 8px 6px 18px; position: relative; }
+.cd-card {
+  width: 196px; margin: 8px auto 14px; border-radius: 16px; padding: 4px; position: relative;
+  background-image: linear-gradient(150deg, var(--cd-c,#9aa6bd), #fff5, var(--cd-c,#9aa6bd));
+  box-shadow: 0 0 50px var(--cd-glow, rgba(154,166,189,.5)), 0 18px 40px rgba(0,0,0,.5);
+  animation: cd-pop .55s cubic-bezier(.2,.9,.3,1.3);
+}
+@keyframes cd-pop { 0% { transform: scale(.6) rotate(-6deg); opacity: 0; } 100% { transform: none; opacity: 1; } }
+.cd-card-inner { border-radius: 13px; overflow: hidden; background: #0c0712; aspect-ratio: 3/4; position: relative; }
+.cd-card-inner img { width: 100%; height: 100%; object-fit: cover; opacity: .9; }
+.cd-rank {
+  position: absolute; top: 10px; left: 10px; font-weight: 900; font-size: 15px; letter-spacing: .04em;
+  padding: 3px 10px; border-radius: 8px; background: rgba(0,0,0,.5); color: var(--cd-accent,#fff);
+  border: 1px solid var(--cd-c,#9aa6bd);
+}
+.cd-serial {
+  position: absolute; bottom: 8px; right: 10px; font-size: 11px; font-weight: 700;
+  letter-spacing: .06em; color: #fff; text-shadow: 0 1px 4px #000; opacity: .92;
+}
+.cd-reveal h2 { margin: 6px 0 4px; font-size: 21px; font-weight: 900; }
+.cd-reveal .cd-rar-label { font-size: 13px; font-weight: 800; letter-spacing: .22em; color: var(--cd-c,#9aa6bd); }
+.cd-reveal .cd-story { font-size: 12.5px; opacity: .78; line-height: 1.65; max-width: 380px; margin: 6px auto 16px; }
+
+/* halo behind revealed card */
+.cd-halo {
+  position: absolute; left: 50%; top: 120px; width: 460px; height: 460px; transform: translate(-50%,-50%);
+  border-radius: 50%; pointer-events: none; opacity: .5; filter: blur(2px);
+  background: conic-gradient(from 0deg, transparent, var(--cd-glow), transparent, var(--cd-glow), transparent);
+  animation: cd-spin 8s linear infinite;
+}
+@keyframes cd-spin { to { transform: translate(-50%,-50%) rotate(360deg); } }
+
+/* particles */
+.cd-particle {
+  position: fixed; width: 9px; height: 9px; border-radius: 50%; z-index: 9100; pointer-events: none;
+  background: var(--cd-c, #ffd86b); box-shadow: 0 0 10px var(--cd-c, #ffd86b);
+  animation: cd-burst var(--cd-dur, .9s) ease-out forwards;
+}
+@keyframes cd-burst {
+  0%   { transform: translate(0,0) scale(1); opacity: 1; }
+  100% { transform: translate(var(--cd-dx,0), var(--cd-dy,0)) scale(.2); opacity: 0; }
+}
+
+/* screen flash for high rarity */
+.cd-flash {
+  position: fixed; inset: 0; z-index: 9050; pointer-events: none;
+  background: radial-gradient(circle at 50% 42%, var(--cd-glow), transparent 60%);
+  opacity: 0; animation: cd-flash .8s ease-out forwards;
+}
+@keyframes cd-flash { 0% { opacity: .85; } 100% { opacity: 0; } }
+@keyframes cd-shake {
+  0%,100% { transform: translate(0,0); } 25% { transform: translate(-6px,3px); }
+  50% { transform: translate(5px,-4px); } 75% { transform: translate(-4px,-2px); }
+}
+.cd-shake { animation: cd-shake .5s ease-in-out; }
+
+/* rarity palettes (set as CSS vars on the reveal/card root) */
+.cd-rar-N   { --cd-c:#9aa6bd; --cd-glow:rgba(154,166,189,.5);  --cd-accent:#cfd6e4; }
+.cd-rar-R   { --cd-c:#39b7f5; --cd-glow:rgba(57,183,245,.6);   --cd-accent:#bfe9ff; }
+.cd-rar-SR  { --cd-c:#b06bff; --cd-glow:rgba(176,107,255,.66); --cd-accent:#e6ccff; }
+.cd-rar-SSR { --cd-c:#ffb627; --cd-glow:rgba(255,182,39,.72);  --cd-accent:#ffe9a8; }
+.cd-rar-UR  { --cd-c:#ff5d8f; --cd-glow:rgba(255,93,143,.75);  --cd-accent:#ffd0df; }

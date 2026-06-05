@@ -1813,6 +1813,12 @@
                         window.handleCatgirlSwitch(newCatgirl, oldCatgirl);
                     }
 
+                // -------- card_drop_available --------
+                } else if (response.type === 'card_drop_available') {
+                    if (typeof window.handleCardDropAvailable === 'function') {
+                        window.handleCardDropAvailable(response);
+                    }
+
                 // -------- status --------
                 } else if (response.type === 'status') {
                     var statusCode = null;

@@ -86,6 +86,22 @@ async def candidates_endpoint(
     return _relay(r)
 
 
+@router.post("/test-trigger", summary="（调试）手动广播一次 card_drop_available，触发前端开卡演出")
+async def test_trigger_endpoint(
+    lanlan_name: str = Query("test", min_length=1, max_length=64),
+):
+    try:
+        from app.main_server import _broadcast_to_all_connected
+        n = await _broadcast_to_all_connected({
+            "type": "card_drop_available",
+            "lanlan_name": lanlan_name,
+            "trigger_type": "manual_test",
+        })
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"broadcast_failed: {exc}") from exc
+    return {"broadcast_to": n, "lanlan_name": lanlan_name}
+
+
 @router.post("/draw", summary="代理云端开卡：roll 稀有度 + 建卡（含唯一编号）")
 async def draw_endpoint(payload: dict = Body(...)):
     base, cid = _require_ctx()
