@@ -1521,13 +1521,6 @@ export default function CompactExportHistoryPanel({
     revokeCompactPreviewObjectUrl();
   }, []);
 
-  useEffect(() => {
-    if (historyInteractive) return undefined;
-    clearScrollbarVisibleTimer();
-    setScrollbarVisible(false);
-    return undefined;
-  }, [historyInteractive]);
-
   useEffect(() => () => {
     clearScrollbarVisibleTimer();
   }, []);

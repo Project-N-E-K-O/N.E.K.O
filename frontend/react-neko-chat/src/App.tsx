@@ -4503,6 +4503,9 @@ export default function App({
       return false;
     }
 
+    if (request.payload.type === 'bubble' && hasText && !hasImages) {
+      return false;
+    }
     restoreCompactExportHistoryToBottomForOutgoingMessage();
     if (onCompactHistoryDrop) {
       return normalizeCompactHistoryDropResult(onCompactHistoryDrop(payload));
