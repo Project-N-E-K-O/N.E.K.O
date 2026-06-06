@@ -318,6 +318,9 @@ def test_desktop_return_ball_drag_recovers_when_mouse_release_is_lost():
     assert "movedDistancePx: 0" in source
     assert "dispatchReturnBallClick();" in source
     assert "window.nekoPetDrag.stop(stopScreenX, stopScreenY)" in source
+    # 已经移动过的拖拽被中断（截图/blur/超时）时也要传播取消标记，
+    # 否则 moved 分支照常派发 drag-end，app-auto-goodbye 会当成真实释放降级猫档
+    assert "dragCancelled: suppressClick" in source
 
 
 def test_return_button_drag_has_single_owner_per_runtime_path():

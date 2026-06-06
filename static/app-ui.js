@@ -2887,7 +2887,8 @@
                         detail: {
                             reason: 'return-ball-drag-end',
                             container: container,
-                            movedDistancePx: movedDistancePx
+                            movedDistancePx: movedDistancePx,
+                            dragCancelled: suppressClick
                         }
                     }));
                     revealReturnBallDragWindow();
@@ -2905,7 +2906,8 @@
                     detail: {
                         reason: 'return-ball-drag-end',
                         container: container,
-                        movedDistancePx: movedDistancePx
+                        movedDistancePx: movedDistancePx,
+                        dragCancelled: suppressClick
                     }
                 }));
                 revealReturnBallDragWindow();
