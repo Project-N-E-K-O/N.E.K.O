@@ -570,7 +570,9 @@
             state.skippedRounds = omitRound(state.skippedRounds, round);
         } else if (outcome === 'skip') {
             state.skippedRounds = normalizeRoundList(state.skippedRounds.concat(round));
-            state.completedRounds = omitRound(state.completedRounds, round);
+            state.completedRounds = round === 1
+                ? normalizeRoundList(state.completedRounds.concat(round))
+                : omitRound(state.completedRounds, round);
         }
         const fullEndState = endState && typeof endState === 'object'
             ? Object.assign({}, endState, { day: round })
@@ -631,23 +633,30 @@
     async function resetHomeTutorialFallback() {
         HOME_TUTORIAL_KEYS.forEach(key => localStorage.removeItem(key));
         localStorage.setItem(HOME_MANUAL_INTENT_KEY, 'true');
-        window.dispatchEvent(new CustomEvent('neko:home-tutorial-reset', {
-            detail: { pageKey: 'home', reason: 'manual_home_tutorial_reset' },
-        }));
+        const detail = { pageKey: 'home', reason: 'manual_home_tutorial_reset' };
+        window.dispatchEvent(new CustomEvent('neko:home-tutorial-reset', { detail }));
     }
 
     async function resetHomeTutorialDay(day, options = {}) {
         const round = normalizeRound(day);
+        const source = options.source || 'home_reset_button';
         let state = null;
         const manager = window.universalTutorialManager || null;
         if (manager && typeof manager.resetAvatarFloatingGuideRoundState === 'function') {
             state = manager.resetAvatarFloatingGuideRoundState(round, options);
             resetIcebreakerDay(round);
+            dispatchGuideResetEvent({
+                day: round,
+                source,
+                resetAt: state && state.updatedAt ? state.updatedAt : new Date().toISOString(),
+                state,
+            });
         } else {
             state = resetGuideRoundState(round, options);
         }
 
-        await startAvatarFloatingGuideDay(round, { source: options.source || 'home_reset_button' });
+        await resetHomeTutorialFallback();
+        await startAvatarFloatingGuideDay(round, { source });
 
         showResetToast(round);
         return state;
@@ -658,7 +667,7 @@
         if (document.getElementById('mmd-floating-buttons')) return 'mmd';
         if (document.getElementById('live2d-floating-buttons')) return 'live2d';
         const cfg = window.lanlan_config && window.lanlan_config.model_type;
-        if (cfg === 'live3d' || cfg === 'vrm') return 'live3d';
+        if (cfg === 'live3d' || cfg === 'vrm') return 'vrm';
         if (cfg === 'mmd') return 'mmd';
         return 'live2d';
     }

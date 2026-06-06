@@ -290,6 +290,55 @@ def test_day1_reset_uses_avatar_floating_day_launcher():
     assert "startAvatarFloatingGuideDay(round" in reset_block
 
 
+def test_day1_reset_manager_path_dispatches_reset_and_home_fallback():
+    source = RESET_PATH.read_text(encoding="utf-8")
+    reset_block = source.split("async function resetHomeTutorialDay(day, options = {})", 1)[1].split(
+        "function detectModelPrefix()",
+        1,
+    )[0]
+    fallback_block = source.split("async function resetHomeTutorialFallback()", 1)[1].split(
+        "async function resetHomeTutorialDay(day, options = {})",
+        1,
+    )[0]
+
+    assert "dispatchGuideResetEvent({" in reset_block.split("} else {", 1)[0]
+    assert "await resetHomeTutorialFallback();" in reset_block
+    assert "HOME_TUTORIAL_KEYS.forEach(key => localStorage.removeItem(key));" in fallback_block
+    assert "localStorage.setItem(HOME_MANUAL_INTENT_KEY, 'true');" in fallback_block
+    assert "new CustomEvent('neko:home-tutorial-reset', { detail })" in fallback_block
+
+
+def test_day1_skip_fallback_preserves_completed_round():
+    source = RESET_PATH.read_text(encoding="utf-8")
+    outcome_block = source.split("function markGuideRoundOutcome(day, outcome, endState)", 1)[1].split(
+        "function dispatchGuideResetEvent(detail)",
+        1,
+    )[0]
+    skip_block = outcome_block.split("} else if (outcome === 'skip') {", 1)[1].split(
+        "}",
+        1,
+    )[0]
+
+    assert "state.skippedRounds = normalizeRoundList(state.skippedRounds.concat(round));" in skip_block
+    assert "state.completedRounds = round === 1" in skip_block
+    assert "? normalizeRoundList(state.completedRounds.concat(round))" in skip_block
+    assert ": omitRound(state.completedRounds, round);" in skip_block
+
+
+def test_reset_model_prefix_uses_vrm_for_live3d_config():
+    source = RESET_PATH.read_text(encoding="utf-8")
+    detect_block = source.split("function detectModelPrefix()", 1)[1].split(
+        "function resolveSelector(selector, prefix)",
+        1,
+    )[0]
+
+    assert "document.getElementById('vrm-floating-buttons')" in detect_block
+    assert "document.getElementById('mmd-floating-buttons')" in detect_block
+    assert "document.getElementById('live2d-floating-buttons')" in detect_block
+    assert "if (cfg === 'live3d' || cfg === 'vrm') return 'vrm';" in detect_block
+    assert "return 'live3d'" not in detect_block
+
+
 def test_day1_reset_fallback_keeps_the_same_scene_shape():
     source = RESET_PATH.read_text(encoding="utf-8")
     day1_block = source.split("1: {", 1)[1].split("2: {", 1)[0]
