@@ -80,6 +80,14 @@ _ITEM_STATE_DOWNLOADING = 16
 _ITEM_STATE_DOWNLOAD_PENDING = 32
 
 
+def mark_session_deleted_character_name(character_name: str) -> bool:
+    normalized_name = str(character_name or "").strip()
+    if not normalized_name:
+        return False
+    _session_deleted_names.add(normalized_name)
+    return True
+
+
 class UnsupportedUGCDetailsError(RuntimeError):
     """Raised when the loaded Steamworks wrapper cannot query UGC item details."""
 
@@ -294,9 +302,7 @@ def _remove_deleted_character_tombstones(config_mgr, character_names: list[str])
 
 
 def _write_deleted_character_tombstone(config_mgr, character_name: str, build_tombstone_state) -> bool:
-    normalized_name = str(character_name or "").strip()
-    if normalized_name:
-        _session_deleted_names.add(normalized_name)
+    mark_session_deleted_character_name(character_name)
     if is_cloudsave_disabled():
         return False
 

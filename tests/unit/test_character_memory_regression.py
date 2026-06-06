@@ -1078,6 +1078,8 @@ async def test_delete_catgirl_skips_tombstone_state_when_cloudsave_local_state_i
             )
 
             characters_router_module = reload_module("main_routers.characters_router")
+            workshop_router_module = reload_module("main_routers.workshop_router")
+            workshop_router_module._session_deleted_names.clear()
             characters = cm.load_characters()
             initial_name = next(iter(characters.get("猫娘", {})))
             characters["猫娘"]["禁用云存档删除角色"] = {"昵称": "禁用云存档删除角色"}
@@ -1119,6 +1121,36 @@ async def test_delete_catgirl_skips_tombstone_state_when_cloudsave_local_state_i
             current_characters = cm.load_characters()
             assert "禁用云存档删除角色" not in current_characters.get("猫娘", {})
             assert current_characters["当前猫娘"] == initial_name
+
+            installed_folder = Path(td) / "disabled_cloudsave_workshop_item"
+            installed_folder.mkdir(parents=True, exist_ok=True)
+            (installed_folder / "角色卡.chara.json").write_text(
+                json.dumps({"档案名": "禁用云存档删除角色", "昵称": "来自工坊"}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            with patch.object(
+                workshop_router_module,
+                "get_subscribed_workshop_items",
+                AsyncMock(
+                    return_value={
+                        "success": True,
+                        "items": [
+                            {
+                                "publishedFileId": "123456",
+                                "installedFolder": str(installed_folder),
+                            }
+                        ],
+                    }
+                ),
+            ):
+                sync_result = await workshop_router_module.sync_workshop_character_cards()
+
+            assert sync_result["added"] == 0
+            assert sync_result["skipped"] >= 1
+            current_characters = cm.load_characters()
+            assert "禁用云存档删除角色" not in current_characters.get("猫娘", {})
+            workshop_router_module._session_deleted_names.clear()
 
 
 @pytest.mark.unit

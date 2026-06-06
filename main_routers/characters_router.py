@@ -3624,6 +3624,13 @@ async def delete_catgirl(name: str):
             memory_server_reloaded = await notify_memory_server_reload(reason=f"删除角色: {name}")
             if not memory_server_reloaded:
                 raise RuntimeError("notify_memory_server_reload returned False")
+            if is_cloudsave_disabled():
+                try:
+                    from main_routers.workshop_router import mark_session_deleted_character_name
+
+                    mark_session_deleted_character_name(name)
+                except Exception as exc:
+                    logger.warning("记录本会话工坊删除标记失败: %s", exc)
         except MaintenanceModeError as exc:
             rollback_error = await _rollback_character_operation(
                 _config_manager,
