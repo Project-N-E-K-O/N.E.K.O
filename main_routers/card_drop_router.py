@@ -136,35 +136,51 @@ def _access_token() -> str | None:
     return a.get("access_token") if a else None
 
 
-async def _store_session(base: str, access: str | None, refresh: str | None, user: dict) -> None:
+async def _store_session(base: str, access: str | None, refresh: str | None, user: dict) -> dict:
     """存 JWT 到 community_auth.json + bind-client 迁移游客卡到账号。
 
-    邮箱密码登录与 Steam 登录共用这一段落地逻辑。
+    邮箱密码登录与 Steam 登录共用这一段落地逻辑。返回 bind 结果
+    ``{"bound": bool, "error": str|None}`` 并一并存进 auth 文件（供 auth-status 透出），
+    这样「此设备已绑到别的账号 → 卡没迁移」不会被静默吞、UI 也不会谎报「已存入卡册」。
     """
-    _save_auth({
-        "access_token": access,
-        "refresh_token": refresh,
-        "user": {"display_name": user.get("display_name"), "email": user.get("email")},
-    })
+    bind: dict = {"bound": False, "error": None}
     cid = _get_client_id()
-    if access and cid:
+    if not cid:
+        bind["error"] = "client_not_registered"
+    elif access:
         try:
             async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
-                await client.post(
+                r = await client.post(
                     f"{base}/api/auth/bind-client",
                     headers={"Authorization": f"Bearer {access}"},
                     json={"client_id": cid},
                 )
+            if r.status_code < 400:
+                bind["bound"] = True
+            else:
+                try:
+                    bind["error"] = r.json().get("detail") or f"http_{r.status_code}"
+                except (ValueError, KeyError, AttributeError):
+                    bind["error"] = f"http_{r.status_code}"
+                logger.info("card_drop: bind-client returned %s: %s", r.status_code, bind["error"])
         except (httpx.HTTPError, OSError) as exc:
+            bind["error"] = "cloud_unreachable"
             logger.info("card_drop: bind-client after login failed: %s", exc)
+    _save_auth({
+        "access_token": access,
+        "refresh_token": refresh,
+        "user": {"display_name": user.get("display_name"), "email": user.get("email")},
+        "bind": bind,
+    })
+    return bind
 
 
-async def _finish_login(base: str, login_out: dict) -> dict:
-    """邮箱密码登录落地：存 JWT + bind-client。返回 user dict。"""
+async def _finish_login(base: str, login_out: dict) -> tuple[dict, dict]:
+    """邮箱密码登录落地：存 JWT + bind-client。返回 (user, bind)。"""
     tokens = login_out.get("tokens") or {}
     user = login_out.get("user") or {}
-    await _store_session(base, tokens.get("access_token"), tokens.get("refresh_token"), user)
-    return user
+    bind = await _store_session(base, tokens.get("access_token"), tokens.get("refresh_token"), user)
+    return user, bind
 
 
 # ---- Steam 登录：开浏览器到云端 OpenID → 云端验完重定向回本地 /steam-callback ----
@@ -301,8 +317,14 @@ async def auth_status_endpoint():
     a = _load_auth()
     if a and a.get("access_token"):
         u = a.get("user") or {}
-        return {"logged_in": True, "user": {"display_name": u.get("display_name"), "email": u.get("email")}}
-    return {"logged_in": False, "user": None}
+        # 老会话没存 bind 字段 → 视为已绑（向后兼容，正常单账号场景成立）
+        bind = a.get("bind") or {"bound": True, "error": None}
+        return {
+            "logged_in": True,
+            "user": {"display_name": u.get("display_name"), "email": u.get("email")},
+            "bind": bind,
+        }
+    return {"logged_in": False, "user": None, "bind": None}
 
 
 @router.post("/login", summary="邮箱密码登录社区账号（存 JWT + 迁移游客卡）")
@@ -317,8 +339,8 @@ async def login_endpoint(payload: dict = Body(...)):
             r = await client.post(f"{base}/api/auth/login", json={"email": email, "password": password})
     except (httpx.HTTPError, OSError) as exc:
         raise HTTPException(status_code=502, detail=f"cloud_unreachable: {exc}") from exc
-    user = await _finish_login(base, _relay(r))
-    return {"user": user}
+    user, bind = await _finish_login(base, _relay(r))
+    return {"user": user, "bind": bind}
 
 
 @router.post("/register", summary="邮箱密码注册社区账号（存 JWT + 迁移游客卡）")
@@ -337,8 +359,8 @@ async def register_endpoint(payload: dict = Body(...)):
             r = await client.post(f"{base}/api/auth/register", json=body)
     except (httpx.HTTPError, OSError) as exc:
         raise HTTPException(status_code=502, detail=f"cloud_unreachable: {exc}") from exc
-    user = await _finish_login(base, _relay(r))
-    return {"user": user}
+    user, bind = await _finish_login(base, _relay(r))
+    return {"user": user, "bind": bind}
 
 
 @router.post("/logout", summary="登出（清本地 JWT）")
@@ -406,9 +428,15 @@ async def steam_callback_endpoint(
             logger.info("card_drop: steam-callback /me returned %s", r.status_code)
     except (httpx.HTTPError, OSError, ValueError) as exc:
         logger.info("card_drop: steam-callback fetch /me failed: %s", exc)
-    await _store_session(base, access_token, refresh_token, user)
+    bind = await _store_session(base, access_token, refresh_token, user)
     name = user.get("display_name") or "你"
-    return _steam_callback_html(f"已登录，欢迎 {name}", "卡片会存进你的卡册了，可以关掉本页回到 NEKO。")
+    if bind.get("bound"):
+        sub = "卡片会存进你的卡册了，可以关掉本页回到 NEKO。"
+    elif bind.get("error") == "client_already_bound_to_other_user":
+        sub = "已登录，但这台设备早先绑过别的社区账号，这次的卡留在原账号里。可关掉本页回到 NEKO。"
+    else:
+        sub = "已登录，但游客卡迁移没完成（稍后可重试）。可关掉本页回到 NEKO。"
+    return _steam_callback_html(f"已登录，欢迎 {name}", sub)
 
 
 @router.post("/draw", summary="代理云端开卡：roll 稀有度 + 建卡（登录则卡归账号）")

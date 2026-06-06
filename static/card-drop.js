@@ -219,7 +219,15 @@
     var box = el('div', 'cd-auth');
     if (state.auth && state.auth.logged_in) {
       var name = (state.auth.user && state.auth.user.display_name) || '你';
-      box.appendChild(el('div', 'cd-auth-ok', '✦ 已存入 ' + escapeHtml(name) + ' 的卡册'));
+      var bind = state.auth.bind;
+      if (bind && bind.bound === false) {
+        var warn = bind.error === 'client_already_bound_to_other_user'
+          ? '✦ 已登录 ' + escapeHtml(name) + '（此设备已绑到别的账号，这张卡留在原账号）'
+          : '✦ 已登录 ' + escapeHtml(name) + '（这张卡没能迁移，可稍后重试）';
+        box.appendChild(el('div', 'cd-auth-ok cd-auth-warn', warn));
+      } else {
+        box.appendChild(el('div', 'cd-auth-ok', '✦ 已存入 ' + escapeHtml(name) + ' 的卡册'));
+      }
     } else {
       box.appendChild(el('div', 'cd-auth-hint', '登录猫娘社区，把这张卡存进你的卡册 ✦'));
       var btn = el('button', 'cd-btn cd-btn-ghost cd-auth-btn', '登录 / 注册');
@@ -253,8 +261,13 @@
       api('/api/card-drop/' + (isReg ? 'register' : 'login'), {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
       }).then(function (d) {
-        state.auth = { logged_in: true, user: d.user };
-        toast('✦ 已登录，卡存进卡册了', 3000);
+        state.auth = { logged_in: true, user: d.user, bind: d.bind };
+        if (d.bind && d.bind.bound === false) {
+          toast(d.bind.error === 'client_already_bound_to_other_user'
+            ? '已登录，但此设备绑了别的账号，这张卡没迁移' : '已登录，但卡没能迁移', 3500);
+        } else {
+          toast('✦ 已登录，卡存进卡册了', 3000);
+        }
         reveal(state.lastCard || {}, true);
       }).catch(function (e) { submit.disabled = false; errEl.textContent = (e && (e.detail || e.message)) || '登录失败'; });
     }
@@ -321,7 +334,12 @@
         if (d && d.logged_in) {
           state.steamPolling = false;
           state.auth = d;
-          toast('✦ 已用 Steam 登录，卡存进卡册了', 3000);
+          if (d.bind && d.bind.bound === false) {
+            toast(d.bind.error === 'client_already_bound_to_other_user'
+              ? '已用 Steam 登录，但此设备绑了别的账号，这张卡没迁移' : '已用 Steam 登录，但卡没能迁移', 3500);
+          } else {
+            toast('✦ 已用 Steam 登录，卡存进卡册了', 3000);
+          }
           reveal(state.lastCard || {}, true);
           return;
         }
