@@ -2404,9 +2404,13 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   overflow-x: visible;
   overscroll-behavior: contain;
   touch-action: pan-y;
-  /* 底部 padding 给最下方气泡的 box-shadow(下沿~25px)留空间；block 容器下它被算进可滚区，钉底后阴影完整。
-     border-box 下不增 scroll 盒总高(=region)，只让出底部内容区，不额外增整体留白。 */
-  padding: 4px 6px 26px;
+  /* 底部 padding 给最下方气泡的 box-shadow 留空间，block 容器下它被算进可滚区、钉底后阴影不被 overflow 裁；
+     border-box 下不增 scroll 盒总高(=region)，只让出底部内容区，不额外增整体留白。
+     取 16px：box-shadow(0 7px 18px)数学下沿~25px，但实测(canvas 阴影衰减,白底最大对比)其视觉可见
+     下沿只到气泡实体底以下~16px(此处 alpha≈3/255≈1.2%,再往下不可察)；清晰可见段(alpha≥8)仅~9px、
+     可感知段(alpha≥5)~13px,均落在 16px 内。压到 16 让气泡实体底更贴输入框(实体底到输入框由~28px→~18px)、
+     同时可见阴影完整不裁。再小(如12)会切到可感知段,不取。 */
+  padding: 4px 6px 16px;
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
   pointer-events: none;
