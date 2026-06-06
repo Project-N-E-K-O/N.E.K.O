@@ -551,6 +551,10 @@ export default function CompactExportHistoryPanel({
     if (!selectable) return;
     if (isSelectionIgnoredTarget(event.target, event.currentTarget)) return;
     if (!selectionControlsInteractive) return;
+    // 气泡是 user-select:text，可划词复制；拖选文字后 mouseup 也会再冒出一次 click。
+    // 此刻若存在非折叠的非空选区，说明用户在复制文本而非勾选，跳过 toggle 避免误选。
+    const selection = typeof window !== 'undefined' ? window.getSelection() : null;
+    if (selection && !selection.isCollapsed && selection.toString().trim().length > 0) return;
     onToggleMessage(message.id);
   }
 
