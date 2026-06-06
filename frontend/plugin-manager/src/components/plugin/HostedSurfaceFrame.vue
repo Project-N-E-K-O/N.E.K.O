@@ -329,6 +329,16 @@ function handleError() {
   emit('error', t('plugins.ui.loadError'))
 }
 
+async function switchToMobileModeForHostedSurface() {
+  const api = window.nekoWindowControl
+  if (!api || typeof api.switchToMobileMode !== 'function') return
+  try {
+    await api.switchToMobileMode()
+  } catch (caught) {
+    console.warn('[HostedSurfaceFrame] 切换手机版失败', caught)
+  }
+}
+
 async function loadHostedTsx() {
   if (!['hosted-tsx', 'markdown'].includes(props.surface.mode) || props.surface.available === false) {
     hostedDocument.value = ''
@@ -416,6 +426,10 @@ function handleMessage(event: MessageEvent) {
   if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-open-external') {
     const url = typeof data.payload?.url === 'string' ? data.payload.url : ''
     if (url) openExternalUrl(url)
+    return
+  }
+  if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-switch-mobile-mode') {
+    void switchToMobileModeForHostedSurface()
     return
   }
   if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-request') {

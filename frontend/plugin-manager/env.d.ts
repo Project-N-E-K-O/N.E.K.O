@@ -19,6 +19,7 @@ interface NekoWindowControlApi {
   restore?: () => Promise<unknown> | unknown
   maximize?: () => Promise<NekoWindowControlResult> | NekoWindowControlResult
   isMaximized?: () => Promise<boolean> | boolean
+  switchToMobileMode?: () => Promise<unknown> | unknown
 }
 
 interface Window {
