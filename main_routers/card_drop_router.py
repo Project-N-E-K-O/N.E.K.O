@@ -301,8 +301,8 @@ async def test_trigger_endpoint(
     lanlan_name: str = Query("test", min_length=1, max_length=64),
 ):
     try:
-        from app.main_server import _broadcast_to_all_connected
-        n = await _broadcast_to_all_connected({
+        from main_logic.agent_event_bus import broadcast_ws_event
+        n = await broadcast_ws_event({
             "type": "card_drop_available",
             "lanlan_name": lanlan_name,
             "trigger_type": "manual_test",

@@ -51,8 +51,9 @@ def _load_rules() -> dict[str, Any]:
 def _emit_card_drop_event(lanlan_name: str | None, trigger_type: str) -> None:
     """掉落触发时把「掉了一张卡」事件 WS 广播给前端，让前端起开卡演出。
 
-    沿用现有 WS 广播：lazy import app.main_server._broadcast_to_all_connected，在当前
-    event loop 上 fire-and-forget 调度（与 cloud_sync.send_drop_hint 同套路，互不阻塞）。
+    经 main_logic.agent_event_bus 的 WS 广播器 seam 推送（app 启动时注册真正的
+    _broadcast_to_all_connected），在当前 event loop 上 fire-and-forget 调度
+    （与 cloud_sync.send_drop_hint 同套路，互不阻塞）；低层不 import app，避免层级倒挂。
     前端 app-websocket.js onmessage 据 type == 'card_drop_available' 分发到开卡模态。
     """
     try:
@@ -62,8 +63,8 @@ def _emit_card_drop_event(lanlan_name: str | None, trigger_type: str) -> None:
 
     async def _do() -> None:
         try:
-            from app.main_server import _broadcast_to_all_connected
-            await _broadcast_to_all_connected({
+            from main_logic.agent_event_bus import broadcast_ws_event
+            await broadcast_ws_event({
                 "type": "card_drop_available",
                 "lanlan_name": lanlan_name,
                 "trigger_type": trigger_type,

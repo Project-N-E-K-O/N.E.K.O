@@ -593,6 +593,12 @@ async def _broadcast_to_all_connected(event_payload: dict) -> int:
     return sum(1 for r in results if r is True)
 
 
+# 把 WS 广播器注册进 main_logic 事件总线，让低层（quota dropper / card_drop_router）
+# 无需 import app 即可推 WS 事件（避免 main_logic/main_routers → app 的层级倒挂 + 循环）。
+from main_logic.agent_event_bus import register_ws_broadcaster as _register_ws_broadcaster  # noqa: E402
+_register_ws_broadcaster(_broadcast_to_all_connected)
+
+
 async def _handle_agent_event(event: dict):
     """通过 ZeroMQ 接收 agent_server 事件，并分发到 core/websocket。"""
     try:
