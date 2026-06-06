@@ -193,7 +193,7 @@ function getCompactHistoryBubbleTone(
     group,
     complexity: richContent ? 'rich' : 'plain',
     style: {
-      // 去掉随机宽度 / 水平偏移 / 旋转（强迫症友好）：气泡规整、宽度统一（比对话条窄约 48px）、不歪扭。
+      // 去掉随机宽度 / 水平偏移 / 旋转（强迫症友好）：气泡规整、宽度统一（比历史区窄约 48px）、不歪扭。
       // 仅保留按分组的垂直间距（gap-before）——那是消息分组节奏，不是歪扭。
       '--compact-history-bubble-max-ratio': 'calc(100% - 48px)',
       '--compact-history-stagger-x': '0px',
