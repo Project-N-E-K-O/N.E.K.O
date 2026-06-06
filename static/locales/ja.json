@@ -2471,6 +2471,8 @@
             "allowInterrupt": "割り込み許可",
             "mergeMessages": "メッセージ結合",
             "avatarReactionBubble": "表情バブル",
+            "autoCat": "自動ねこ化",
+            "autoCatTooltip": "しばらく操作がないと自動的に子猫になります",
             "proactiveChat": "自発的会話",
             "proactiveVision": "プライバシーモード",
             "proactiveVisionTooltip": "オフのとき：ネコ娘はアクティブウィンドウのタイトルに応じて活発さや会話モードを変え、話しかけるときに画面の内容を取り入れることがあります。\nオンのとき：ネコ娘は自分から画面を見ることができず、あなたが何をしているか把握できません。スクリーンショットの手動送信は引き続き可能です。",

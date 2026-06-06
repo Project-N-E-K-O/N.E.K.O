@@ -566,6 +566,7 @@ function createChatSettingsSidePanel(manager, prefix, popup) {
         { id: 'merge-messages', label: window.t ? window.t('settings.toggles.mergeMessages') : '合并消息', labelKey: 'settings.toggles.mergeMessages', alwaysTinted: true },
         { id: 'focus-mode', label: window.t ? window.t('settings.toggles.allowInterrupt') : '允许打断', labelKey: 'settings.toggles.allowInterrupt', storageKey: 'focusModeEnabled', inverted: true, alwaysTinted: true },
         { id: 'avatar-reaction-bubble', label: window.t ? window.t('settings.toggles.avatarReactionBubble') : '表情气泡', labelKey: 'settings.toggles.avatarReactionBubble', storageKey: 'avatarReactionBubbleEnabled', alwaysTinted: true },
+        { id: 'auto-cat', label: window.t ? window.t('settings.toggles.autoCat') : '自动变猫', labelKey: 'settings.toggles.autoCat', tooltipKey: 'settings.toggles.autoCatTooltip', alwaysTinted: true },
     ];
 
     chatToggles.forEach(toggle => {
@@ -2154,6 +2155,8 @@ function createSettingsToggleItem(manager, prefix, toggle) {
         checkbox.checked = toggle.inverted ? !window.proactiveVisionEnabled : window.proactiveVisionEnabled;
     } else if (toggle.id === 'fullscreen-tracking' && typeof window.live2dFullscreenTrackingEnabled !== 'undefined') {
         checkbox.checked = window.live2dFullscreenTrackingEnabled;
+    } else if (toggle.id === 'auto-cat' && window.nekoAutoGoodbye && typeof window.nekoAutoGoodbye.isAutoCatEnabled === 'function') {
+        checkbox.checked = window.nekoAutoGoodbye.isAutoCatEnabled();
     }
 
     const indicator = document.createElement('div');
@@ -2293,6 +2296,12 @@ function createSettingsToggleItem(manager, prefix, toggle) {
             }
             if (typeof window.saveNEKOSettings === 'function') {
                 window.saveNEKOSettings();
+            }
+        } else if (toggle.id === 'auto-cat') {
+            // 「自动变猫」开关：开=启用自动 idle 变猫（默认）。状态由 app-auto-goodbye 自管（独立 localStorage），
+            // 不走 saveNEKOSettings 的 server-sync 对话设置管线。
+            if (window.nekoAutoGoodbye && typeof window.nekoAutoGoodbye.setAutoCatEnabled === 'function') {
+                window.nekoAutoGoodbye.setAutoCatEnabled(isChecked);
             }
         }
     };

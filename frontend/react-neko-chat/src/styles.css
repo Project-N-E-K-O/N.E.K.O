@@ -2107,51 +2107,55 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 
 .compact-chat-surface-frame[data-compact-chat-state="input"] {
   gap: 0;
-  padding: 5px 62px 5px 20px;
+  padding: 5px 62px 5px 8px;
 }
 
-/* 输入态左侧拖拽把手：给一处稳定可抓的「移动文本框」区域。
-   textarea / 工具按钮是 no-drag，本握把不加 no-drag，于是属于 surface 本体拖拽区
-   （web/X11 命中判定 + Wayland 原生 -webkit-app-region:drag 都覆盖到）。
-   静息低透明、hover 提亮，沿用与左右 resize 手柄一致的「平时低调、靠近才显形」手感。 */
-.compact-chat-surface-frame[data-compact-chat-state="input"] .compact-chat-input-drag-grip {
-  flex: 0 0 12px;
-  align-self: stretch;
-  margin-right: 4px;
+/* compact 输入框/胶囊左侧毛绒球（minimize 折叠入口）：点按=折叠为 minimized 毛绒球小窗口，
+   按住拖>6px=拖动整个 surface（与右侧工具轮盘原点对偶的 origin-drag 手势）。
+   平时低调、hover/active 提亮微放大，沿用「平时低调、靠近才显形」手感。 */
+.compact-chat-minimize-ball {
+  flex: 0 0 auto;
+  align-self: center;
+  margin-right: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
   cursor: grab;
   touch-action: none;
-  color: #2f526b;
 }
 
-.compact-chat-input-drag-grip::before {
-  content: "";
-  width: 4px;
-  height: 18px;
-  background-image: radial-gradient(currentcolor 0.9px, transparent 1.3px);
-  background-size: 4px 6px;
-  background-position: center;
-  opacity: 0.22;
-  transition: opacity 0.15s ease;
-}
-
-.compact-chat-surface-shell:hover .compact-chat-input-drag-grip::before,
-.compact-chat-input-drag-grip:active::before {
-  opacity: 0.5;
-}
-
-.compact-chat-input-drag-grip:active {
+.compact-chat-minimize-ball:active {
   cursor: grabbing;
 }
 
-[data-theme="dark"] .compact-chat-surface-frame[data-compact-chat-state="input"] .compact-chat-input-drag-grip {
-  color: #e9f4ff;
+.compact-chat-minimize-ball:disabled {
+  cursor: default;
+}
+
+.compact-chat-minimize-ball-icon {
+  width: 26px;
+  height: 26px;
+  object-fit: contain;
+  opacity: 0.8;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  pointer-events: none;
+}
+
+.compact-chat-surface-shell:hover .compact-chat-minimize-ball-icon,
+.compact-chat-minimize-ball:hover .compact-chat-minimize-ball-icon,
+.compact-chat-minimize-ball:active .compact-chat-minimize-ball-icon {
+  opacity: 1;
+  transform: scale(1.08);
 }
 
 .compact-chat-surface-frame[data-compact-tool-toggle-visible="true"]:not([data-compact-chat-state="input"]) {
   padding-right: 62px;
+  padding-left: 8px;
 }
 
 .compact-chat-surface-frame::before {
@@ -2186,7 +2190,8 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   display: flex;
   align-items: center;
   justify-content: flex-start;
-  width: 100%;
+  flex: 1 1 auto;
+  width: auto;
   height: 100%;
   min-width: 0;
   padding: 0;

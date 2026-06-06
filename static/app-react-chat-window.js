@@ -243,6 +243,9 @@
     var COMPACT_SURFACE_MAX_WIDTH = 430;
     var COMPACT_SURFACE_RESIZE_MAX_WIDTH = 720;
     var COMPACT_SURFACE_MOBILE_MIN_WIDTH = 280;
+    // 桌面端 compact surface 可拖到的最短宽度。默认/初始宽度仍为 COMPACT_SURFACE_MAX_WIDTH=430
+    // （见 getCompactSurfaceMetrics），这里只放宽 resize 下限，让用户能把对话条拖得更窄。
+    var COMPACT_SURFACE_DESKTOP_MIN_WIDTH = 280;
     var COMPACT_SURFACE_MOBILE_VIEWPORT_GUTTER = 16;
     var COMPACT_SURFACE_VIEWPORT_PAD_X = 16;
     var COMPACT_SURFACE_VIEWPORT_PAD_TOP = 12;
@@ -540,12 +543,24 @@
             : Math.min(COMPACT_SURFACE_MAX_WIDTH, Math.max(280, window.innerWidth - (COMPACT_SURFACE_VIEWPORT_PAD_X * 2)));
         var measuredWidth = rect && rect.width > 0 ? rect.width : 0;
         var storedWidth = loadCompactSurfaceStoredWidth();
-        var width = isMobileWidth() && storedWidth
-            ? storedWidth
-            : Math.round(Math.min(
-                Math.max(defaultWidth, measuredWidth, storedWidth || 0),
+        // 有用户拖拽记忆（stored）时以它为准——桌面端允许小于默认 430（仅 clamp 到 [桌面最短, resize 上限]），
+        // 否则 applyCompactSurfacePosition 等重算会用 max(default,…) 把拖窄后的宽度顶回 430。
+        // 无 stored 时才回退默认宽度（首次/重置仍为 430，不改默认）。
+        var width;
+        if (isMobileWidth() && storedWidth) {
+            width = storedWidth;
+        } else if (storedWidth && storedWidth > 0) {
+            // 桌面端有拖拽记忆：以 stored 为准，可小于默认 430（仅 clamp 到 [桌面最短, resize 上限]）。
+            width = Math.round(Math.min(
+                Math.max(storedWidth, COMPACT_SURFACE_DESKTOP_MIN_WIDTH),
                 getCompactSurfaceResizeMaxWidth()
             ));
+        } else {
+            width = Math.round(Math.min(
+                Math.max(defaultWidth, measuredWidth),
+                getCompactSurfaceResizeMaxWidth()
+            ));
+        }
         var height = rect && rect.height > 0 ? rect.height : COMPACT_SURFACE_DEFAULT_HEIGHT;
         return {
             width: width,
@@ -967,7 +982,7 @@
         }
         var minWidth = isMobileWidth()
             ? getCompactSurfaceMobileWidthBounds().minWidth
-            : COMPACT_SURFACE_MAX_WIDTH;
+            : COMPACT_SURFACE_DESKTOP_MIN_WIDTH;
         var maxWidth = Math.max(
             minWidth,
             Math.min(getCompactSurfaceResizeMaxWidth(), sideMax)
@@ -2169,7 +2184,8 @@
             onGalgameModeToggle: handleGalgameModeToggle,
             onGalgameOptionSelect: handleGalgameOptionSelect,
             onChoiceSelect: handleChoiceSelect,
-            onCompactChatStateChange: handleCompactChatStateChange
+            onCompactChatStateChange: handleCompactChatStateChange,
+            onCompactMinimizeRequest: handleCompactMinimizeRequest
         });
     }
 
@@ -3144,6 +3160,13 @@
 
     function handleCompactChatStateChange(nextCompactChatState) {
         setCompactChatState(nextCompactChatState);
+    }
+
+    // React compact 输入框/胶囊左侧毛绒球点按 → 折叠为 minimized。最小化控制权在宿主，
+    // 走 setChatSurfaceMode('minimized')（既有的 setMinimized + 位置持久化 + chat-surface-mode-change
+    // 派发都在其中）；不用 toggleMinimized——毛绒球只在非 minimized 态出现，语义恒为「收起」。
+    function handleCompactMinimizeRequest() {
+        setChatSurfaceMode('minimized');
     }
 
     function handleMiniGameInviteChoice(option) {

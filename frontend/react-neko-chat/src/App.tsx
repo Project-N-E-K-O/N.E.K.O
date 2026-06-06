@@ -55,6 +55,7 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
   // callback path until the host fully migrates to the shared choice slot.
   onChoiceSelect?: (option: ChoiceOption, source: ChoicePromptSource) => void;
   onCompactChatStateChange?: (state: CompactChatState) => void;
+  onCompactMinimizeRequest?: () => void;
 };
 
 type CompactInlineExportBridge = {
@@ -125,7 +126,7 @@ const COMPACT_INPUT_TOOL_ORIGIN_DRAG_THRESHOLD = 6;
 const COMPACT_INPUT_TOOL_FAN_INTERACTIVE_DELAY_MS = 220;
 const COMPACT_INPUT_TOOL_FAN_TRANSIENT_CLOSE_DELAY_MS = 360;
 const COMPACT_INPUT_TOOL_FAN_OUTSIDE_CLOSE_DELAY_MS = 650;
-const COMPACT_SURFACE_RESIZE_MIN_WIDTH = 430;
+const COMPACT_SURFACE_RESIZE_MIN_WIDTH = 280;
 const COMPACT_SURFACE_RESIZE_MOBILE_MIN_WIDTH = 280;
 const COMPACT_SURFACE_RESIZE_MAX_WIDTH = 720;
 const COMPACT_SURFACE_RESIZE_VIEWPORT_GUTTER = 32;
@@ -1166,6 +1167,7 @@ export default function App({
   choicePrompt = null,
   onChoiceSelect,
   onCompactChatStateChange,
+  onCompactMinimizeRequest,
   rollbackDraft,
   _rollbackKey,
   _toolCursorResetKey,
@@ -4628,6 +4630,38 @@ export default function App({
     </button>
   ) : null;
 
+  // compact 输入框/胶囊左侧毛绒球：点按=折叠为 minimized（毛绒球小窗口），按住拖>6px=拖动整个 surface。
+  // 复用与右侧工具轮盘原点对偶的 origin-drag 手势：data-compact-no-drag 让宿主被动 hit-test 不重复起拖，
+  // 真正拖拽经 neko:compact-surface-drag-grab 交宿主接管（web: startDrag / Electron: preload 原生窗口拖拽）。
+  const compactMinimizeButton = (
+    <button
+      type="button"
+      className="compact-chat-minimize-ball"
+      aria-label={i18n('chat.reactWindowMinimize', 'Minimize')}
+      title={i18n('chat.reactWindowMinimize', 'Minimize')}
+      data-compact-no-drag="true"
+      onPointerDown={beginCompactToolOriginDrag}
+      onPointerMove={updateCompactToolOriginDrag}
+      onPointerUp={endCompactToolOriginDrag}
+      onPointerCancel={endCompactToolOriginDrag}
+      onClick={() => {
+        // 拖动后补发的 click 已在 origin-drag 里置位抑制，这里消费掉；仅「无拖动的纯点按」折叠。
+        if (compactToolOriginSuppressClickRef.current) {
+          compactToolOriginSuppressClickRef.current = false;
+          return;
+        }
+        onCompactMinimizeRequest?.();
+      }}
+    >
+      <img
+        className="compact-chat-minimize-ball-icon"
+        src="/static/assets/neko-idle/chat-minimized-yarn-ball.png"
+        alt=""
+        aria-hidden="true"
+      />
+    </button>
+  );
+
   const compactInputToolFanNode = compactToolToggleVisible ? (
     <div
       ref={compactInputToolFanRef}
@@ -5469,14 +5503,9 @@ export default function App({
                 >
                   {effectiveCompactChatState === 'input' ? (
                     <>
-                      {/* 输入态左侧拖拽把手：textarea / 工具按钮都是 no-drag，本握把不加 no-drag，
-                          于是落在 surface 本体拖拽区里——web/X11 经 isCompactDragSurfaceTarget、
-                          Wayland 经 frame 的 -webkit-app-region:drag 区域，均可按住拖动整个输入框。
-                          宿主 mousedown 会 preventDefault，按住把手不会让 textarea 失焦收起输入态。 */}
-                      <span
-                        className="compact-chat-input-drag-grip"
-                        aria-hidden="true"
-                      />
+                      {/* 输入态左侧毛绒球：点按折叠为 minimized，按住拖动整个输入框（见 compactMinimizeButton 定义）。
+                          按住把手不会让 textarea 失焦收起输入态——宿主 mousedown 会 preventDefault。 */}
+                      {compactMinimizeButton}
                       <textarea
                         className="composer-input"
                         ref={compactInputRef}
@@ -5506,6 +5535,7 @@ export default function App({
                     </>
                   ) : (
                     <>
+                      {compactMinimizeButton}
                       <button
                         className="compact-chat-capsule-button"
                         type="button"

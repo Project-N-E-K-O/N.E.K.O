@@ -425,7 +425,7 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
         '.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] '
         '.compact-input-tool-toggle:hover'
     ) in styles
-    assert 'padding: 5px 62px 5px 20px;' in styles
+    assert 'padding: 5px 62px 5px 8px;' in styles
     assert '.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"]:not([data-compact-chat-state="input"])' in styles
     assert 'padding-right: 62px;' in styles
     assert 'right: 9px;' in styles

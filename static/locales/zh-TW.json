@@ -2471,6 +2471,8 @@
             "allowInterrupt": "允許打斷",
             "mergeMessages": "閤並消息",
             "avatarReactionBubble": "表情氣泡",
+            "autoCat": "自動變貓",
+            "autoCatTooltip": "一段時間無互動後自動變成小貓",
             "proactiveChat": "主動搭話",
             "proactiveVision": "隱私模式",
             "proactiveVisionTooltip": "關閉時：貓娘會根據活躍視窗的標題改變活躍度與搭話模式，可能會在搭話時結合螢幕內容。\n開啟時：貓娘無法主動觀看螢幕，也無法瞭解你正在做什麼。你仍然可以主動傳送截圖。",
