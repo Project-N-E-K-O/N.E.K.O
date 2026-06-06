@@ -128,6 +128,9 @@ const COMPACT_INPUT_TOOL_FAN_INTERACTIVE_DELAY_MS = 220;
 const COMPACT_INPUT_TOOL_FAN_TRANSIENT_CLOSE_DELAY_MS = 360;
 const COMPACT_INPUT_TOOL_FAN_OUTSIDE_CLOSE_DELAY_MS = 650;
 const COMPACT_SURFACE_RESIZE_MIN_WIDTH = 280;
+// compact 对话条默认/初始宽度（无法从 rect/CSS 量到时的回退值）。与 resize 下限解耦：
+// 减小最短宽度只动 RESIZE_MIN_WIDTH，默认仍是这个值，保证「默认宽度不变」。
+const COMPACT_SURFACE_DEFAULT_WIDTH = 430;
 const COMPACT_SURFACE_RESIZE_MOBILE_MIN_WIDTH = 280;
 const COMPACT_SURFACE_RESIZE_MAX_WIDTH = 720;
 const COMPACT_SURFACE_RESIZE_VIEWPORT_GUTTER = 32;
@@ -1606,8 +1609,8 @@ export default function App({
     if (Number.isFinite(cssWidth) && cssWidth > 0) {
       return getClampedCompactSurfaceResizeWidth(cssWidth);
     }
-    return getCompactSurfaceResizeMinAvailableWidth();
-  }, [getCompactSurfaceResizeMinAvailableWidth, getClampedCompactSurfaceResizeWidth]);
+    return getClampedCompactSurfaceResizeWidth(COMPACT_SURFACE_DEFAULT_WIDTH);
+  }, [getClampedCompactSurfaceResizeWidth]);
   const compactSurfaceEffectiveWidth = isCompactSurface
     && compactSurfaceResizeWidth !== null
     ? getClampedCompactSurfaceResizeWidth(compactSurfaceResizeWidth)

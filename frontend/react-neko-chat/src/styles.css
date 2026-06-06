@@ -2107,7 +2107,7 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 
 .compact-chat-surface-frame[data-compact-chat-state="input"] {
   gap: 0;
-  padding: 5px 62px 5px 8px;
+  padding: 5px 62px 5px 4px;
 }
 
 /* compact 输入框/胶囊左侧毛绒球（minimize 折叠入口）：点按=折叠为 minimized 毛绒球小窗口，
@@ -2120,8 +2120,8 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 34px;
+  height: 34px;
   padding: 0;
   border: 0;
   background: transparent;
@@ -2138,8 +2138,8 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 }
 
 .compact-chat-minimize-ball-icon {
-  width: 26px;
-  height: 26px;
+  width: 31px;
+  height: 31px;
   object-fit: contain;
   opacity: 0.8;
   transition: opacity 0.15s ease, transform 0.15s ease;
@@ -2155,7 +2155,7 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 
 .compact-chat-surface-frame[data-compact-tool-toggle-visible="true"]:not([data-compact-chat-state="input"]) {
   padding-right: 62px;
-  padding-left: 8px;
+  padding-left: 4px;
 }
 
 .compact-chat-surface-frame::before {
@@ -2653,7 +2653,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 .compact-export-history-resize-bar::after {
   content: "";
   display: block;
-  width: 40px;
+  width: 80px;
   height: 4px;
   margin: 4px auto 0;
   border-radius: 999px;
@@ -2661,12 +2661,9 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   opacity: 0;
 }
 
-/* 顶部高度 bar 的浮现热区：鼠标进入「可调尺寸」区域时连带显现，而不是 hover 整个历史区就亮——
-   即左右宽度 handle（.compact-chat-resize-handle，与 anchor 同在 .app-shell 下，跨子树用 :has）
-   或历史滚动条命中区（.compact-export-history-scrollbar-hit，anchor 后代）；
-   外加直接 hover bar 本体 / 拖动中（is-active）。这样在「调宽 / 滚动」语境里统一提示也能调高度。 */
-.app-shell:has(.compact-chat-resize-handle:hover) .compact-export-history-resize-bar::after,
-.compact-export-history-anchor:has(.compact-export-history-scrollbar-hit:hover) .compact-export-history-resize-bar::after,
+/* hover 整个历史区即浮现顶部高度 bar（含直接 hover bar 本体 / 拖动中 is-active），
+   让整个历史记录气泡区域都能唤出 resize bar。 */
+.compact-export-history-anchor:hover .compact-export-history-resize-bar::after,
 .compact-export-history-resize-bar:hover::after,
 .compact-export-history-resize-bar.is-active::after {
   opacity: 0.55;
@@ -3262,6 +3259,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 .compact-history-visibility-handle.is-open {
   --compact-history-handle-line-width: 100%;
+  width: clamp(124px, calc(var(--compact-history-handle-surface-width) * 0.30), 168px);
 }
 
 .compact-history-visibility-handle::before,

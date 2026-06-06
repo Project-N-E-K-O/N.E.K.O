@@ -311,7 +311,7 @@ describe('App', () => {
       });
 
       await waitFor(() => {
-        expect(document.documentElement.style.getPropertyValue('--compact-surface-resize-width')).toBe('430px');
+        expect(document.documentElement.style.getPropertyValue('--compact-surface-resize-width')).toBe('280px');
       });
       fireEvent.pointerUp(rightHandle!, {
         pointerId: 22,
@@ -5222,19 +5222,22 @@ describe('App', () => {
     }
   });
 
-  it('exposes a draggable left grip in compact input mode as part of the surface drag region', () => {
+  it('exposes a yarn-ball minimize entry in compact input and capsule states', () => {
+    const onCompactMinimizeRequest = vi.fn();
     const { container, rerender } = render(
-      <App chatSurfaceMode="compact" compactChatState="input" />,
+      <App chatSurfaceMode="compact" compactChatState="input" onCompactMinimizeRequest={onCompactMinimizeRequest} />,
     );
-    const grip = container.querySelector('.compact-chat-input-drag-grip');
-    expect(grip).not.toBeNull();
-    // 握把属于本体拖拽区：自身不是 no-drag，祖先是 drag-surface，且不在任何 no-drag 子树里。
-    expect(grip).not.toHaveAttribute('data-compact-no-drag');
-    expect(grip!.closest('[data-compact-drag-surface="true"]')).not.toBeNull();
-    expect(grip!.closest('[data-compact-no-drag="true"]')).toBeNull();
-    // 仅输入态出现；胶囊态本体本身可拖，不需要单独握把。
-    rerender(<App chatSurfaceMode="compact" compactChatState="default" />);
-    expect(container.querySelector('.compact-chat-input-drag-grip')).toBeNull();
+    const ball = container.querySelector('.compact-chat-minimize-ball');
+    expect(ball).not.toBeNull();
+    // 毛绒球走 origin-drag 手势（单击折叠 / 长按拖 surface，与右侧轮盘原点对偶），
+    // 标记 no-drag 避免宿主被动 hit-test 重复起拖。
+    expect(ball).toHaveAttribute('data-compact-no-drag', 'true');
+    // 纯单击（无拖动）折叠为 minimized。
+    fireEvent.click(ball!);
+    expect(onCompactMinimizeRequest).toHaveBeenCalledTimes(1);
+    // 胶囊态同样有毛绒球折叠入口（两态都覆盖）。
+    rerender(<App chatSurfaceMode="compact" compactChatState="default" onCompactMinimizeRequest={onCompactMinimizeRequest} />);
+    expect(container.querySelector('.compact-chat-minimize-ball')).not.toBeNull();
   });
 
   it('dispatches a compact surface drag-grab from the tool toggle when pressed and moved past threshold', () => {

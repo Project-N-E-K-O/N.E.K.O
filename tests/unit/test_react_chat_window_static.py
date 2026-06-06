@@ -425,7 +425,7 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
         '.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] '
         '.compact-input-tool-toggle:hover'
     ) in styles
-    assert 'padding: 5px 62px 5px 8px;' in styles
+    assert 'padding: 5px 62px 5px 4px;' in styles
     assert '.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"]:not([data-compact-chat-state="input"])' in styles
     assert 'padding-right: 62px;' in styles
     assert 'right: 9px;' in styles
@@ -716,14 +716,9 @@ def test_compact_history_resize_bar_is_draggable_and_persisted():
     after_block = css_block(styles, ".compact-export-history-resize-bar::after {", ".compact-history-drag-layer")
     assert "opacity: 0;" in after_block
     assert ".compact-export-history-resize-bar.is-active::after {" in styles
-    # 浮现热区：hover 左右宽度 handle（跨子树 :has）或历史滚动条命中区时连带显现，
-    # 不再用「hover 整个历史区就亮」的旧触发。
-    assert ".app-shell:has(.compact-chat-resize-handle:hover) .compact-export-history-resize-bar::after" in styles
-    assert (
-        ".compact-export-history-anchor:has(.compact-export-history-scrollbar-hit:hover) "
-        ".compact-export-history-resize-bar::after"
-    ) in styles
-    assert ".compact-export-history-anchor:hover .compact-export-history-resize-bar" not in styles
+    # hover 整个历史区即浮现顶部高度 bar（回滚 fd138cd 的「调尺寸热区联动浮现」收窄，
+    # 让整个历史记录气泡区域都能唤出 resize bar）。
+    assert ".compact-export-history-anchor:hover .compact-export-history-resize-bar::after" in styles
 
     # bar 的 DOM：带可命中且不穿透的 hit-region，拖拽不触发面板 / 整窗拖动。
     assert "className={clsx('compact-export-history-resize-bar'" in panel_source
