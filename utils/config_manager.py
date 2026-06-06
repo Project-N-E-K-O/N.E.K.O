@@ -2373,19 +2373,24 @@ class ConfigManager:
         """voice_id 是否是已被替换、仍残留在存量存档里的免费 YUI 预设音色。"""
         return bool(voice_id) and str(voice_id).strip() in _DEPRECATED_FREE_YUI_VOICE_IDS
 
-    def remap_deprecated_free_yui_voice_id(self, voice_id) -> str:
+    def remap_deprecated_free_yui_voice_id(self, voice_id):
         """废弃的免费 YUI 预设音色 → 现役 yui_cn 值。
 
-        非废弃值、或现役 yui_cn 无法解析（仍落在废弃集合）时原样返回，让调用方
-        继续走既有的 validate / 清空兜底，绝不把废弃换成另一个废弃造成死循环。
+        非废弃值原样返回（不做 strip 归一化），避免调用方把单纯的前后空白差异
+        误当成「已迁移」而 continue，漏掉本轮对无效 voice_id 的清理。
+
+        目标只认 free_voices 的 yui_cn（废弃值本就是它的旧版本）；yui_cn 缺失、
+        为空、或仍落在废弃集合时同样原样返回，交既有 validate / 清空兜底——绝不
+        借用 cuteGirl 等其它 preset 当替身，那会把 YUI 串成别的音色，也不会把废弃
+        换成另一个废弃造成死循环。
         """
-        normalized = str(voice_id or '').strip()
-        if not self.is_deprecated_free_yui_voice_id(normalized):
-            return normalized
-        current = _get_default_yui_free_voice_id()
+        if not self.is_deprecated_free_yui_voice_id(voice_id):
+            return voice_id
+        from utils.api_config_loader import get_free_voices
+        current = str((get_free_voices() or {}).get("yui_cn") or "").strip()
         if current and current not in _DEPRECATED_FREE_YUI_VOICE_IDS:
             return current
-        return normalized
+        return voice_id
 
     def get_tts_api_key(self, provider: str) -> str | None:
         """根据 provider 统一获取 TTS API Key，返回 None 表示未配置。

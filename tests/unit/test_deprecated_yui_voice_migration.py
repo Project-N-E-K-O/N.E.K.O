@@ -32,7 +32,6 @@ def _yui(voice_id: str) -> dict:
 
 def _patch_free_voices(monkeypatch, free_voices: dict):
     monkeypatch.setattr("utils.api_config_loader.get_free_voices", lambda: free_voices)
-    monkeypatch.setattr("utils.language_utils.get_global_language_full", lambda: "zh-CN")
 
 
 def test_cleanup_migrates_deprecated_yui_voice(monkeypatch):
@@ -47,6 +46,18 @@ def test_cleanup_migrates_deprecated_yui_voice(monkeypatch):
     assert get_reserved(character_data["猫娘"]["YUI"], "voice_id", default="") == NEW_YUI_VOICE_ID
     # 迁移命中应触发存盘
     assert mgr._saved.get("data") is character_data
+
+
+def test_cleanup_migrates_whitespace_padded_deprecated_voice(monkeypatch):
+    """带前后空白的废弃值也应被识别并平移到干净的现役 yui_cn。"""
+    _patch_free_voices(monkeypatch, {"yui_cn": NEW_YUI_VOICE_ID})
+    character_data = _yui(f"  {OLD_YUI_VOICE_ID}  ")
+    mgr = _make_manager(character_data)
+
+    cleaned, legacy = mgr.cleanup_invalid_voice_ids()
+
+    assert cleaned == 0
+    assert get_reserved(character_data["猫娘"]["YUI"], "voice_id", default="") == NEW_YUI_VOICE_ID
 
 
 def test_cleanup_keeps_current_yui_voice_untouched(monkeypatch):
@@ -76,8 +87,31 @@ def test_cleanup_still_clears_unrelated_invalid_voice(monkeypatch):
     assert get_reserved(character_data["猫娘"]["A"], "voice_id", default="") == ""
 
 
+def test_cleanup_clears_whitespace_padded_invalid_voice(monkeypatch):
+    """回归（CodeRabbit / Codex）：带前后空白的非废弃无效 voice_id 不能被 remap
+    的归一化误当成「已迁移」而漏清，必须照常走 invalid 清空。"""
+    _patch_free_voices(monkeypatch, {"yui_cn": NEW_YUI_VOICE_ID})
+    character_data = {"猫娘": {"A": {"_reserved": {"voice_id": "  some-stale-clone  "}}}}
+    mgr = _make_manager(character_data)
+    mgr.validate_voice_id = lambda voice_id: False
+
+    cleaned, legacy = mgr.cleanup_invalid_voice_ids()
+
+    assert cleaned == 1
+    assert get_reserved(character_data["猫娘"]["A"], "voice_id", default="") == ""
+
+
+def test_remap_requires_yui_cn_not_other_preset(monkeypatch):
+    """回归（Codex）：free_voices 缺 yui_cn、只有别的 preset 时不得借 cuteGirl
+    等当替身把废弃 YUI 串成别的音色——原样返回，交清空兜底。"""
+    _patch_free_voices(monkeypatch, {"cuteGirl": "voice-tone-PGLiyZt65w"})
+    mgr = object.__new__(ConfigManager)
+
+    assert mgr.remap_deprecated_free_yui_voice_id(OLD_YUI_VOICE_ID) == OLD_YUI_VOICE_ID
+
+
 def test_remap_keeps_deprecated_when_current_unresolvable(monkeypatch):
-    """防御：现役 yui_cn 解析不出（或仍落在废弃集合）时不乱换，交给既有清空兜底。"""
+    """现役 yui_cn 解析不出（free_voices 为空）时不乱换。"""
     _patch_free_voices(monkeypatch, {})
     mgr = object.__new__(ConfigManager)
 
