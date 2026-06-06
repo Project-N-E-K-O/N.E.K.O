@@ -421,52 +421,64 @@
 
         async function restorePreviousModelUiAfterFailedSwitch() {
             if (!oldModelType) return;
+            function hideModelSurface(containerId, canvasId) {
+                var container = document.getElementById(containerId);
+                if (container) {
+                    container.style.display = 'none';
+                    container.classList.add('hidden');
+                    container.style.visibility = 'hidden';
+                    container.style.pointerEvents = 'none';
+                }
+                var canvas = document.getElementById(canvasId);
+                if (canvas) {
+                    canvas.style.visibility = 'hidden';
+                    canvas.style.pointerEvents = 'none';
+                }
+            }
+            function showModelSurface(containerId, canvasId) {
+                var container = document.getElementById(containerId);
+                if (container) {
+                    container.classList.remove('hidden');
+                    container.style.display = 'block';
+                    container.style.visibility = 'visible';
+                    container.style.removeProperty('pointer-events');
+                }
+                var canvas = document.getElementById(canvasId);
+                if (canvas) {
+                    canvas.style.visibility = 'visible';
+                    canvas.style.pointerEvents = 'auto';
+                }
+                return canvas;
+            }
+            function hideFailedTargetSurface() {
+                if (newModelType === 'live3d' && live3dSubType === 'mmd') {
+                    var failedMmdCanvas = document.getElementById('mmd-canvas');
+                    if (failedMmdCanvas) {
+                        delete failedMmdCanvas.dataset.mmdLoadingSessionId;
+                    }
+                    hideModelSurface('mmd-container', 'mmd-canvas');
+                } else if (newModelType === 'vrm' || (newModelType === 'live3d' && live3dSubType === 'vrm')) {
+                    hideModelSurface('vrm-container', 'vrm-canvas');
+                } else {
+                    hideModelSurface('live2d-container', 'live2d-canvas');
+                }
+            }
             try {
+                hideFailedTargetSurface();
                 if (oldModelType === 'live2d') {
-                    var live2dContainer = document.getElementById('live2d-container');
-                    if (live2dContainer) {
-                        live2dContainer.classList.remove('hidden');
-                        live2dContainer.style.display = 'block';
-                        live2dContainer.style.visibility = 'visible';
-                        live2dContainer.style.removeProperty('pointer-events');
-                    }
-                    var live2dCanvas = document.getElementById('live2d-canvas');
-                    if (live2dCanvas) {
-                        live2dCanvas.style.visibility = 'visible';
-                        live2dCanvas.style.pointerEvents = 'auto';
-                    }
+                    showModelSurface('live2d-container', 'live2d-canvas');
                     if (window.live2dManager && typeof window.live2dManager.resumeRendering === 'function') {
                         window.live2dManager.resumeRendering();
                     }
                 } else if (oldModelType === 'vrm' || (oldModelType === 'live3d' && oldLive3dSubType === 'vrm')) {
-                    var vrmContainer = document.getElementById('vrm-container');
-                    if (vrmContainer) {
-                        vrmContainer.classList.remove('hidden');
-                        vrmContainer.style.display = 'block';
-                        vrmContainer.style.visibility = 'visible';
-                        vrmContainer.style.removeProperty('pointer-events');
-                    }
-                    var vrmCanvas = document.getElementById('vrm-canvas');
-                    if (vrmCanvas) {
-                        vrmCanvas.style.visibility = 'visible';
-                        vrmCanvas.style.pointerEvents = 'auto';
-                    }
+                    showModelSurface('vrm-container', 'vrm-canvas');
                     if (window.vrmManager && typeof window.vrmManager.resumeRendering === 'function') {
                         window.vrmManager.resumeRendering();
                     }
                 } else if (oldModelType === 'live3d' && oldLive3dSubType === 'mmd') {
-                    var mmdContainer = document.getElementById('mmd-container');
-                    if (mmdContainer) {
-                        mmdContainer.classList.remove('hidden');
-                        mmdContainer.style.display = 'block';
-                        mmdContainer.style.visibility = 'visible';
-                        mmdContainer.style.removeProperty('pointer-events');
-                    }
-                    var mmdCanvas = document.getElementById('mmd-canvas');
+                    var mmdCanvas = showModelSurface('mmd-container', 'mmd-canvas');
                     if (mmdCanvas) {
-                        clearMMDCanvasLoadingSession(mmdCanvas);
-                        mmdCanvas.style.visibility = 'visible';
-                        mmdCanvas.style.pointerEvents = 'auto';
+                        delete mmdCanvas.dataset.mmdLoadingSessionId;
                     }
                     if (window.mmdManager && typeof window.mmdManager.resumeRendering === 'function') {
                         window.mmdManager.resumeRendering();

@@ -88,6 +88,7 @@
             active: false,
             token: 0,
             snapshot: null,
+            agentSuppressionPromise: null,
         },
     };
 
@@ -371,6 +372,11 @@
             && state.featureSuppression.token === restoreToken;
     }
 
+    function isFeatureSuppressionTokenActive(token) {
+        return state.featureSuppression.active
+            && state.featureSuppression.token === token;
+    }
+
     async function restoreAgentSnapshot(flags, restoreToken) {
         if (!flags) {
             return false;
@@ -480,14 +486,44 @@
         }
     }
 
-    async function forceDisableAgentForTutorial(reason) {
+    async function reapplySuppressedAgentFlags(token, reason) {
         try {
+            if (!isFeatureSuppressionTokenActive(token)) {
+                return false;
+            }
             await postAgentCommand('set_agent_enabled', { enabled: false });
-            await postAgentFlags({ agent_enabled: false });
+            if (!isFeatureSuppressionTokenActive(token)) {
+                return false;
+            }
+            await postAgentFlags(buildDisabledAgentChildFlags());
+            if (!isFeatureSuppressionTokenActive(token)) {
+                return false;
+            }
             syncAgentFlagsUi();
+            return true;
         } catch (error) {
-            console.warn('[TutorialPrompt] failed to enforce agent disable:', reason || '', error);
+            console.warn('[TutorialPrompt] failed to enforce agent suppression:', reason || '', error);
+            return false;
         }
+    }
+
+    function setAgentSuppressionPromise(promise) {
+        const suppression = state.featureSuppression;
+        suppression.agentSuppressionPromise = promise;
+        void promise.finally(function () {
+            if (suppression.agentSuppressionPromise === promise) {
+                suppression.agentSuppressionPromise = null;
+            }
+        });
+    }
+
+    function queueSuppressedAgentFlagsReapply(token, reason) {
+        const suppression = state.featureSuppression;
+        const previous = suppression.agentSuppressionPromise || Promise.resolve();
+        const next = previous.catch(function () {}).then(function () {
+            return reapplySuppressedAgentFlags(token, reason);
+        });
+        setAgentSuppressionPromise(next);
     }
 
     function beginHomeTutorialFeatureSuppression(reason) {
@@ -515,7 +551,7 @@
             proactiveOff[key] = false;
         });
         applyProactiveState(proactiveOff);
-        void snapshotAndDisableAgentFlags(token);
+        setAgentSuppressionPromise(snapshotAndDisableAgentFlags(token));
 
         window.dispatchEvent(new CustomEvent('neko:home-tutorial-features-suppressed', {
             detail: { active: true, reason: reason || 'tutorial-started' },
@@ -529,7 +565,6 @@
         const suppression = state.featureSuppression;
         if (!suppression.active) {
             beginHomeTutorialFeatureSuppression(reason || 'tutorial-enforced');
-            void forceDisableAgentForTutorial(reason || 'tutorial-enforced');
             return;
         }
 
@@ -539,7 +574,10 @@
             proactiveOff[key] = false;
         });
         applyProactiveState(proactiveOff);
-        void forceDisableAgentForTutorial(reason || (suppression.snapshot && suppression.snapshot.reason) || 'tutorial-enforced');
+        queueSuppressedAgentFlagsReapply(
+            suppression.token,
+            reason || (suppression.snapshot && suppression.snapshot.reason) || 'tutorial-enforced'
+        );
 
         window.dispatchEvent(new CustomEvent('neko:home-tutorial-features-suppressed', {
             detail: {
