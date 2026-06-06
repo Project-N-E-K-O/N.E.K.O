@@ -4403,6 +4403,56 @@ describe('App', () => {
     }
   });
 
+  it('uses the visual viewport when checking compact tool wheel clipping on mobile', () => {
+    const originalMatchMedia = window.matchMedia;
+    const originalInnerWidth = window.innerWidth;
+    const originalInnerHeight = window.innerHeight;
+    const originalVisualViewport = window.visualViewport;
+    mockMobileMatchMedia();
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 844 });
+    Object.defineProperty(window, 'visualViewport', {
+      configurable: true,
+      value: {
+        width: 390,
+        height: 500,
+        offsetLeft: 0,
+        offsetTop: 300,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      },
+    });
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+      const fan = container.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+      vi.spyOn(fan, 'getBoundingClientRect').mockReturnValue({
+        left: 10,
+        top: 10,
+        right: 242,
+        bottom: 242,
+        width: 232,
+        height: 232,
+        x: 10,
+        y: 10,
+        toJSON: () => ({}),
+      });
+
+      const actionButton = container.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+      expect(actionButton).not.toBeNull();
+      fireEvent.click(actionButton);
+
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-layout', 'viewport-fit');
+    } finally {
+      window.matchMedia = originalMatchMedia;
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth });
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalInnerHeight });
+      Object.defineProperty(window, 'visualViewport', { configurable: true, value: originalVisualViewport });
+    }
+  });
+
   it('anchors compact avatar tool bubbles to the fan origin instead of the rotating tool item', async () => {
     vi.useFakeTimers();
     try {

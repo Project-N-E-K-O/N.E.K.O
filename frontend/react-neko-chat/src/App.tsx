@@ -3107,8 +3107,11 @@ export default function App({
     const fanRect = fanElement?.getBoundingClientRect();
     if (!fanElement || !fanRect || fanRect.width <= 0 || fanRect.height <= 0) return 'default';
 
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
+    const visualViewport = window.visualViewport;
+    const viewportLeft = visualViewport?.offsetLeft ?? 0;
+    const viewportTop = visualViewport?.offsetTop ?? 0;
+    const viewportWidth = visualViewport?.width ?? window.innerWidth;
+    const viewportHeight = visualViewport?.height ?? window.innerHeight;
     if (!Number.isFinite(viewportWidth) || viewportWidth <= 0 || !Number.isFinite(viewportHeight) || viewportHeight <= 0) {
       return 'default';
     }
@@ -3124,10 +3127,10 @@ export default function App({
     const centerY = fanRect.top + readFanPixelVar('--compact-tool-wheel-center-y', COMPACT_INPUT_TOOL_WHEEL_CENTER_Y);
     const orbitRadius = readFanPixelVar('--compact-tool-wheel-orbit-radius', 80);
     const buttonSize = readFanPixelVar('--compact-tool-button-size', 38);
-    const minX = COMPACT_INPUT_TOOL_WHEEL_VIEWPORT_MARGIN;
-    const minY = COMPACT_INPUT_TOOL_WHEEL_VIEWPORT_MARGIN;
-    const maxX = viewportWidth - COMPACT_INPUT_TOOL_WHEEL_VIEWPORT_MARGIN;
-    const maxY = viewportHeight - COMPACT_INPUT_TOOL_WHEEL_VIEWPORT_MARGIN;
+    const minX = viewportLeft + COMPACT_INPUT_TOOL_WHEEL_VIEWPORT_MARGIN;
+    const minY = viewportTop + COMPACT_INPUT_TOOL_WHEEL_VIEWPORT_MARGIN;
+    const maxX = viewportLeft + viewportWidth - COMPACT_INPUT_TOOL_WHEEL_VIEWPORT_MARGIN;
+    const maxY = viewportTop + viewportHeight - COMPACT_INPUT_TOOL_WHEEL_VIEWPORT_MARGIN;
 
     const overflowsViewport = compactInputToolWheelDefaultVisibleSlots.some(({ angleDeg, scale }) => {
       const angle = angleDeg * (Math.PI / 180);
