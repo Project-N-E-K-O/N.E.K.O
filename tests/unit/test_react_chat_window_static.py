@@ -237,6 +237,14 @@ def test_compact_history_size_tokens_are_ratio_based_for_ui_optimization():
     assert "--compact-export-surface-width: var(--compact-surface-resize-width, var(--desktop-compact-surface-width, var(--compact-surface-width, 430px)));" in anchor_block
     assert "--compact-export-history-inline-size: min(" in anchor_block
     assert "calc(var(--compact-export-surface-width) * var(--compact-export-history-width-ratio))" in anchor_block
+    assert "--compact-export-history-half-inline-size: calc(var(--compact-export-history-inline-size) / 2);" in anchor_block
+    assert "--compact-export-history-safe-inset: calc(var(--compact-export-history-viewport-gutter) / 2);" in anchor_block
+    assert "--compact-export-history-center-x: calc(var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw)) + (var(--compact-export-surface-width) / 2));" in anchor_block
+    assert "--compact-export-history-surface-gap: 20px;" in anchor_block
+    assert "left: clamp(" in anchor_block
+    assert "var(--compact-export-history-center-x)" in anchor_block
+    assert "calc(100vw - var(--compact-export-history-half-inline-size) - var(--compact-export-history-safe-inset))" in anchor_block
+    assert "+ var(--compact-export-history-surface-gap, 20px)" in anchor_block
     assert "width: var(--compact-export-history-inline-size);" in anchor_block
     assert "--compact-export-history-max-inline-size: calc(100vw - var(--compact-export-history-viewport-gutter));" in anchor_block
     assert "--compact-export-history-max-inline-size: calc(" in desktop_history_block
