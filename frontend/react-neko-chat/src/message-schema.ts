@@ -226,6 +226,10 @@ export const chatWindowPropsSchema = z.object({
     .args(compactChatStateSchema)
     .returns(z.void())
     .optional(),
+  onCompactMinimizeRequest: z.function()
+    .args()
+    .returns(z.void())
+    .optional(),
   translateEnabled: z.boolean().optional(),
   translateButtonLabel: z.string().optional(),
   translateButtonAriaLabel: z.string().optional(),

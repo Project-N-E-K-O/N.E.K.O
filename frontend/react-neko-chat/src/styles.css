@@ -2340,7 +2340,9 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   --compact-export-preview-bubble-max-ratio: 90%;
   --compact-export-preview-system-bubble-max-ratio: 95%;
   width: var(--compact-export-history-inline-size);
-  max-height: min(calc(var(--compact-export-surface-width) * 1.46), 78vh);
+  /* 与 JS getCompactHistorySlotMaxHeight 对齐：高度上限只受屏幕(78vh)约束、不再挂对话条宽度，
+     否则窄宽+高屏时 JS 允许的 slot 高 > CSS anchor 高，hit region 会被裁出死区(Codex P2)。 */
+  max-height: 78vh;
   transform: translateX(-50%);
   z-index: 100001;
   pointer-events: none;

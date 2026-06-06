@@ -620,7 +620,7 @@
             var maxWidth = getCompactSurfaceResizeMaxWidth();
             var minWidth = isMobileWidth()
                 ? getCompactSurfaceMobileWidthBounds().minWidth
-                : COMPACT_SURFACE_MAX_WIDTH;
+                : COMPACT_SURFACE_DESKTOP_MIN_WIDTH;
             return Math.round(Math.max(minWidth, Math.min(width, maxWidth)));
         } catch (_) {
             return null;
