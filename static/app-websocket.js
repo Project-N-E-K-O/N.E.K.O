@@ -3160,9 +3160,6 @@
     }
     function _isTutorialBlockingGreeting() {
         if (!_isHomeTutorialPage()) return false;
-        if (isNewUserIcebreakerBlockingGreeting()) {
-            return true;
-        }
         try {
             if (isHomeTutorialLockedForGreeting()) {
                 return true;
@@ -3211,9 +3208,22 @@
         S._greetingCheckIsSwitch = !!isSwitch;
         S._greetingCheckReason = reason || '';
     }
+    function _consumeGreetingCheckForNewUserIcebreaker() {
+        if (!isNewUserIcebreakerBlockingGreeting()) return false;
+        sendHomeTutorialState('greeting-check-consumed-by-icebreaker');
+        S._greetingCheckPending = false;
+        S._greetingCheckIsSwitch = false;
+        S._greetingCheckReason = '';
+        _resetGreetingCheckRetry(true);
+        console.log('[greeting_check] consumed by new-user icebreaker period');
+        return true;
+    }
     function _sendGreetingCheckIfReady() {
         if (!S._greetingCheckPending || !S._modelReady) {
             if (!S._greetingCheckPending) _resetGreetingCheckRetry(true);
+            return;
+        }
+        if (_consumeGreetingCheckForNewUserIcebreaker()) {
             return;
         }
         if (_isGreetingCheckBlocked()) {
