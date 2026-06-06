@@ -2107,7 +2107,7 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 
 .compact-chat-surface-frame[data-compact-chat-state="input"] {
   gap: 0;
-  padding: 5px 62px 5px 4px;
+  padding: 5px 62px 5px 2px;
 }
 
 /* compact 输入框/胶囊左侧毛绒球（minimize 折叠入口）：点按=折叠为 minimized 毛绒球小窗口，
@@ -2120,8 +2120,8 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 34px;
-  height: 34px;
+  width: 41px;
+  height: 41px;
   padding: 0;
   border: 0;
   background: transparent;
@@ -2138,8 +2138,8 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 }
 
 .compact-chat-minimize-ball-icon {
-  width: 31px;
-  height: 31px;
+  width: 37px;
+  height: 37px;
   object-fit: contain;
   opacity: 0.8;
   transition: opacity 0.15s ease, transform 0.15s ease;
@@ -2155,7 +2155,7 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 
 .compact-chat-surface-frame[data-compact-tool-toggle-visible="true"]:not([data-compact-chat-state="input"]) {
   padding-right: 62px;
-  padding-left: 4px;
+  padding-left: 2px;
 }
 
 .compact-chat-surface-frame::before {
