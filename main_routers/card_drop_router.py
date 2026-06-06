@@ -1,21 +1,26 @@
-"""对话掉落卡片 —— NEKO 本地后端 → 云端 N.E.K.O.Servers 的代理。
+"""对话掉落卡片 —— NEKO 瘦客户端职责。
 
-前端（浏览器）没有云端身份（X-Client-Id 存在后端 cloudsave 本地状态里），所以由后端
-代理转发并补上 X-Client-Id：
+职责切分（用户定）：
+- NEKO Electron 只负责：① 对话触发掉落 ② **从本地记忆给 5选1 候选** ③ 显示开卡演出。
+- 云端 N.E.K.O.Servers 负责：从选中记忆**文本**生成卡（稀有度/编号/故事/卡面）+ 存储。
+- 卡册去**猫娘社区 web** 看，NEKO 不渲染卡册。
 
-- GET  /api/card-drop/candidates?lanlan_name=...&size=5  → 云端 GET /api/cards/draw-candidates
-- POST /api/card-drop/draw   {lanlan_name, fact_id|preset_id, prefer_tags?}
-                                                          → 云端 POST /api/cards/draw
+端点：
+- GET  /api/card-drop/candidates?lanlan_name=...&size=5
+      → **本地**读 memory/<角色>/facts.json 偏重要随机抽 size 条 + 预设补满（不走云端）。
+- POST /api/card-drop/draw  {lanlan_name, source_text, prefer_tags?}
+      → 代理云端 POST /api/cards/draw（补 X-Client-Id）。source_text = 选中候选的文本。
 
-需 ``NEKO_SOCIAL_BASE_URL``（默认 http://localhost:8080）+ 本地已注册 client_id
-（由 facts_sync 启动时 /api/clients/register 注册）。云端契约见 N.E.K.O.Servers
-app/modules/cards/router.py。
+云端契约见 N.E.K.O.Servers app/modules/cards/router.py。
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import random
+from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, Body, HTTPException, Query
@@ -26,6 +31,18 @@ router = APIRouter(prefix="/api/card-drop", tags=["card-drop"])
 
 _HTTP_TIMEOUT_SEC = 60.0
 _DEFAULT_SOCIAL_BASE_URL = "http://localhost:8080"
+
+# 真实记忆不足 size 时的预设补满文案（通用占位，与云端 memory_presets.yaml 同风格）。
+_PRESETS = [
+    "某个普通的傍晚，你们一起看着天色一点点暗下来，谁都没说话。",
+    "TA 悄悄记下了你随口提过的一个小小愿望。",
+    "下雨那天，你们躲在同一处屋檐下，听了很久的雨声。",
+    "你第一次轻轻喊出 TA 名字的那一刻。",
+    "深夜里一句没头没尾、却让人安心的晚安。",
+    "一起沉默着，却一点也不觉得尴尬的那段时光。",
+    "TA 学着你的口头禅，把你自己都逗笑了。",
+    "你说过的一个小秘密，TA 一直替你好好守着。",
+]
 
 
 def _social_base_url() -> str:
@@ -67,37 +84,77 @@ def _relay(r: httpx.Response):
     return r.json()
 
 
-@router.get("/candidates", summary="代理云端开卡候选（5选1）")
+def _local_facts(lanlan_name: str) -> list[dict]:
+    """读本地 memory/<角色>/facts.json，返回 [{text, importance}]（过滤 private/redacted/空）。"""
+    try:
+        from utils.config_manager import get_config_manager
+        mem = Path(get_config_manager().memory_dir)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("card_drop: memory_dir read failed: %s", exc)
+        return []
+    fp = mem / lanlan_name / "facts.json"
+    # 路径穿越防护：解析后必须仍在 memory_dir 下
+    try:
+        if mem.resolve() not in fp.resolve().parents:
+            return []
+    except OSError:
+        return []
+    if not fp.exists():
+        return []
+    try:
+        data = json.loads(fp.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        logger.debug("card_drop: facts.json read failed: %s", exc)
+        return []
+    out: list[dict] = []
+    for f in (data if isinstance(data, list) else []):
+        if not isinstance(f, dict):
+            continue
+        if f.get("private") is True or f.get("redacted") is True:
+            continue
+        text = f.get("text")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        try:
+            imp = float(f.get("importance") or 0.0)
+        except (TypeError, ValueError):
+            imp = 0.0
+        out.append({"text": text.strip(), "importance": imp})
+    return out
+
+
+def _weighted_sample(items: list[dict], k: int) -> list[dict]:
+    """按 importance 加权随机抽 k 条（Efraimidis-Spirakis，不放回，偏重要）。"""
+    if k <= 0 or not items:
+        return []
+    if len(items) <= k:
+        out = list(items)
+        random.shuffle(out)
+        return out
+    scored: list[tuple[float, dict]] = []
+    for it in items:
+        w = max(float(it.get("importance") or 0.0) + 0.1, 1e-4)
+        scored.append((random.random() ** (1.0 / w), it))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [it for _, it in scored[:k]]
+
+
+@router.get("/candidates", summary="本地记忆 5选1 候选（不足用预设补满，不走云端）")
 async def candidates_endpoint(
     lanlan_name: str = Query(..., min_length=1, max_length=64),
     size: int = Query(5, ge=1, le=10),
 ):
-    base, cid = _require_ctx()
-    url = f"{base}/api/cards/draw-candidates"
-    try:
-        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
-            r = await client.get(
-                url,
-                headers={"X-Client-Id": cid},
-                params={"lanlan_name": lanlan_name, "size": size},
-            )
-    except (httpx.HTTPError, OSError) as exc:
-        raise HTTPException(status_code=502, detail=f"cloud_unreachable: {exc}") from exc
-    return _relay(r)
-
-
-@router.get("/collection", summary="代理云端「我的卡片」：收集册（含 rarity / 编号）")
-async def collection_endpoint(
-    limit: int = Query(100, ge=1, le=200),
-):
-    base, cid = _require_ctx()
-    url = f"{base}/api/cards/mine"
-    try:
-        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
-            r = await client.get(url, headers={"X-Client-Id": cid}, params={"limit": limit})
-    except (httpx.HTTPError, OSError) as exc:
-        raise HTTPException(status_code=502, detail=f"cloud_unreachable: {exc}") from exc
-    return _relay(r)
+    facts = _local_facts(lanlan_name)
+    chosen = _weighted_sample(facts, size)
+    candidates = [
+        {"kind": "fact", "text": f["text"], "importance": f["importance"], "is_preset": False}
+        for f in chosen
+    ]
+    if len(candidates) < size:
+        need = size - len(candidates)
+        for text in random.sample(_PRESETS, min(need, len(_PRESETS))):
+            candidates.append({"kind": "preset", "text": text, "is_preset": True})
+    return {"lanlan_name": lanlan_name, "size": len(candidates), "candidates": candidates}
 
 
 @router.post("/test-trigger", summary="（调试）手动广播一次 card_drop_available，触发前端开卡演出")

@@ -135,34 +135,6 @@
 }
 .cd-shake { animation: cd-shake .5s ease-in-out; }
 
-/* ---- collection 卡册 ---- */
-.cd-coll-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; padding: 4px 2px 6px; }
-.cd-coll-card { cursor: pointer; border: none; font: inherit; color: #fff; text-align: center; background: transparent; padding: 0; }
-.cd-coll-art {
-  position: relative; border-radius: 12px; padding: 3px; aspect-ratio: 3/4; overflow: hidden;
-  background-image: linear-gradient(150deg, var(--cd-c,#9aa6bd), rgba(255,255,255,.27), var(--cd-c,#9aa6bd));
-  box-shadow: 0 0 16px var(--cd-glow, rgba(154,166,189,.35));
-  transition: transform .15s ease, box-shadow .15s ease;
-}
-.cd-coll-card:hover .cd-coll-art { transform: translateY(-3px); box-shadow: 0 0 28px var(--cd-glow); }
-.cd-coll-art img { width: 100%; height: 100%; object-fit: cover; border-radius: 9px; display: block; }
-.cd-coll-rank {
-  position: absolute; top: 6px; left: 6px; font-size: 11px; font-weight: 900; padding: 1px 6px; border-radius: 6px;
-  background: rgba(0,0,0,.55); color: var(--cd-accent,#fff); border: 1px solid var(--cd-c,#9aa6bd);
-}
-.cd-coll-title { font-size: 11.5px; font-weight: 700; margin-top: 6px; line-height: 1.3; max-height: 2.6em; overflow: hidden; }
-.cd-coll-serial { font-size: 10px; opacity: .6; margin-top: 1px; letter-spacing: .04em; }
-
-/* 卡册入口浮标 */
-.cd-fab {
-  position: fixed; left: 16px; bottom: 16px; z-index: 1999000;
-  width: 46px; height: 46px; border-radius: 50%; border: 1px solid rgba(255,255,255,.2); cursor: pointer;
-  background: linear-gradient(135deg,#2a2140,#3a2b55); color: #fff; font-size: 22px; line-height: 1;
-  box-shadow: 0 6px 18px rgba(0,0,0,.42); transition: transform .15s ease;
-  pointer-events: auto;  /* 同上：抢回点击（宿主 body pointer-events:none） */
-}
-.cd-fab:hover { transform: scale(1.08); }
-
 /* rarity palettes (set as CSS vars on the reveal/card root) */
 .cd-rar-N   { --cd-c:#9aa6bd; --cd-glow:rgba(154,166,189,.5);  --cd-accent:#cfd6e4; }
 .cd-rar-R   { --cd-c:#39b7f5; --cd-glow:rgba(57,183,245,.6);   --cd-accent:#bfe9ff; }
