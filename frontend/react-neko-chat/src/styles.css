@@ -2365,7 +2365,10 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
     min(calc(var(--compact-export-surface-width) * 1.18), calc(var(--compact-desktop-workarea-height, 900px) * 0.63))
   );
   --compact-export-history-viewport-inline-start: var(--compact-desktop-workarea-left, 0px);
-  --compact-export-history-viewport-inline-end: var(--compact-desktop-workarea-right, var(--compact-desktop-workarea-width, 1440px));
+  --compact-export-history-viewport-inline-end: var(
+    --compact-desktop-workarea-right,
+    calc(var(--compact-desktop-workarea-left, 0px) + var(--compact-desktop-workarea-width, 1440px))
+  );
   --compact-export-history-viewport-inline-size: calc(
     var(--compact-export-history-viewport-inline-end) - var(--compact-export-history-viewport-inline-start)
   );

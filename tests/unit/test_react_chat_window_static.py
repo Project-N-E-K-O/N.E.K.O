@@ -258,7 +258,9 @@ def test_compact_history_size_tokens_are_ratio_based_for_ui_optimization():
     assert "width: var(--compact-export-history-inline-size);" in anchor_block
     assert "--compact-export-history-max-inline-size: calc(var(--compact-export-history-viewport-inline-size) - var(--compact-export-history-viewport-gutter));" in anchor_block
     assert "--compact-export-history-viewport-inline-start: var(--compact-desktop-workarea-left, 0px);" in desktop_history_block
-    assert "--compact-export-history-viewport-inline-end: var(--compact-desktop-workarea-right, var(--compact-desktop-workarea-width, 1440px));" in desktop_history_block
+    assert "--compact-export-history-viewport-inline-end: var(" in desktop_history_block
+    assert "--compact-desktop-workarea-right," in desktop_history_block
+    assert "calc(var(--compact-desktop-workarea-left, 0px) + var(--compact-desktop-workarea-width, 1440px))" in desktop_history_block
     assert "--compact-export-history-viewport-inline-size: calc(" in desktop_history_block
     assert "var(--compact-export-history-viewport-inline-end) - var(--compact-export-history-viewport-inline-start)" in desktop_history_block
     assert "--compact-export-history-max-inline-size: calc(" in desktop_history_block
