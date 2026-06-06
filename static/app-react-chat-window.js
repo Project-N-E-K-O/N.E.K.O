@@ -374,6 +374,8 @@
         var ball = normalizeCompactDesktopRect(layout.ball);
         var workArea = normalizeCompactDesktopWorkArea(layout.workArea);
         var windowBounds = normalizeCompactDesktopWindowBounds(layout.windowBounds);
+        var historyOffsetX = Number(layout.historyOffsetX);
+        var historyCenterX = Number(layout.historyCenterX);
         var compactChoicePlacement = layout.compactChoicePlacement === 'above' || layout.compactChoicePlacement === 'below'
             ? layout.compactChoicePlacement
             : null;
@@ -383,6 +385,8 @@
             ball: ball,
             workArea: workArea,
             windowBounds: windowBounds,
+            historyOffsetX: Number.isFinite(historyOffsetX) ? historyOffsetX : 0,
+            historyCenterX: Number.isFinite(historyCenterX) ? historyCenterX : null,
             compactChoicePlacement: compactChoicePlacement
         };
     }
@@ -1593,6 +1597,8 @@
         document.documentElement.style.removeProperty('--compact-desktop-workarea-right');
         document.documentElement.style.removeProperty('--compact-desktop-workarea-width');
         document.documentElement.style.removeProperty('--compact-desktop-workarea-height');
+        document.documentElement.style.removeProperty('--desktop-compact-history-offset-x');
+        document.documentElement.style.removeProperty('--desktop-compact-history-center-x');
         compactSurfaceAnchorSnapshot = '';
         compactSurfaceAnchorLocked = false;
         dispatchCompactSurfaceLayoutChange(null);
@@ -1651,6 +1657,12 @@
             document.documentElement.style.setProperty('--desktop-compact-surface-top', Math.round(target.top) + 'px');
             document.documentElement.style.setProperty('--desktop-compact-surface-width', Math.round(target.width) + 'px');
             document.documentElement.style.setProperty('--desktop-compact-surface-height', Math.round(target.height || COMPACT_SURFACE_DEFAULT_HEIGHT) + 'px');
+            document.documentElement.style.setProperty('--desktop-compact-history-offset-x', Math.round(layoutOverride.historyOffsetX || 0) + 'px');
+            if (Number.isFinite(layoutOverride.historyCenterX)) {
+                document.documentElement.style.setProperty('--desktop-compact-history-center-x', Math.round(layoutOverride.historyCenterX) + 'px');
+            } else {
+                document.documentElement.style.removeProperty('--desktop-compact-history-center-x');
+            }
         }
         if (layoutOverride && layoutOverride.workArea) {
             var workAreaWindowX = layoutOverride.windowBounds ? Math.round(layoutOverride.windowBounds.x) : Math.round(layoutOverride.workArea.left);
