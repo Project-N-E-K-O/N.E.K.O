@@ -155,6 +155,14 @@ def test_model_cat_transition_contract_is_present():
     assert "NEKO_MODEL_CAT_TRANSITION_MAX_SIZE = 680" in source
     assert "NEKO_MODEL_CAT_TRANSITION_SIZE_FACTOR = 0.86" in source
     assert "Math.round(basis * NEKO_MODEL_CAT_TRANSITION_SIZE_FACTOR)" in source
+    transition_rect_block = source[
+        source.index("function normalizeNekoTransitionRect(anchorRect, container, coverRect)"):
+        source.index("function clearNekoModelCatTransitionOverlay()")
+    ]
+    assert "left: Math.round(centerX - size / 2)" in transition_rect_block
+    assert "top: Math.round(centerY - size / 2)" in transition_rect_block
+    assert "maxLeft" not in transition_rect_block
+    assert "maxTop" not in transition_rect_block
     assert "const transitionAnchorRect = savedGoodbyeRect || activeReturnButtonContainer.getBoundingClientRect()" in source
     assert "function mergeNekoTransitionAnchorRect(anchorRect, coverRect)" in source
     assert "const coverRect = options.coverRect || null" in source
@@ -414,6 +422,12 @@ def test_cat1_voice_sounds_are_limited_to_non_drag_and_drag_states():
     assert "urls[Math.floor(Math.random() * urls.length)]" in source
     assert "_scheduleNekoIdleCat1AmbientSoundInterval(startedAt + _NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS)" in source
     assert "normalizedTier !== _NEKO_IDLE_TIER_CAT1 || _isAnyNekoIdleReturnDragActionActive()" in source
+    assert "_playNekoIdleCat1SoundReaction()" in source
+    assert "state.targetKind !== _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE" in source
+    assert "_playNekoIdleHoverArt(art, _NEKO_IDLE_TIER_CAT1);" in source
+    assert "const reactionSrc = art.__nekoIdleHoverSrc;" in source
+    assert "const reactionStartedAt = Math.max(0, Number(art.__nekoIdleHoverStartedAt) || Date.now());" in source
+    assert "_finishNekoIdleHoverArtAfterPlayback(art, _NEKO_IDLE_TIER_CAT1);" in source
     assert "_playNekoIdleCat1DragSound(tier)" in source
     assert "_fadeOutNekoIdleCat1DragSound()" in source
     assert "_fadeOutNekoIdleSoundAudio(_nekoIdleCat1DragSoundState, _NEKO_IDLE_CAT1_DRAG_SOUND_FADE_OUT_MS)" in source
@@ -445,6 +459,25 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert 'compactTopEdgeFastMoveCount: 0' in source
     assert 'state.compactTopEdgeFastMoveCount = 0' in source
     assert 'state.compactTopEdgeFastMoveCount >= _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_DROP_FAST_MOVE_COUNT' in source
+    assert "function _postNekoIdleCat1CompactMirrorState(payload)" in source
+    assert "new CustomEvent('neko:idle-cat1-compact-mirror-state'" in source
+    assert "via: 'local'" in source
+    assert "return dispatchedLocal;" in source
+    assert "assetUrl: options.assetUrl || _getNekoIdleReturnAssetUrl(_NEKO_IDLE_TIER_CAT1)" in source
+    mirror_state_block = source.split("function _setNekoIdleCat1CompactMirrorActive", 1)[1].split(
+        "const surfaceScreenRect = _getNekoIdleScreenRectFromCompactSurfaceRect(options.surfaceRect)",
+        1,
+    )[0]
+    assert "inactiveReason === 'compact-surface-settled'" in mirror_state_block
+    assert "clearTimeout(container.__nekoIdleCat1CompactMirrorSettleTimer);" in mirror_state_block
+    immediate_clear_index = mirror_state_block.rindex("clearTimeout(container.__nekoIdleCat1CompactMirrorSettleTimer);")
+    assert mirror_state_block.index("inactiveReason === 'compact-surface-settled'") < immediate_clear_index
+    assert immediate_clear_index < mirror_state_block.index(
+        "if (!container.__nekoIdleCat1CompactMirrorActive) return true;"
+    )
+    assert "_syncNekoIdleCat1CompactMirrorReaction(button, container, reactionSrc, 'cat1-sound-reaction')" in source
+    assert "_getNekoIdleGifDurationMs(reactionSrc)" in source
+    assert "const remainingMs = Math.max(0, (Number(durationMs) || 0) - elapsedMs);" in source
     assert '_NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW' in source
     assert '_NEKO_IDLE_RETURN_SUBACTION_PROFILES' in source
     assert '_getNekoIdleReturnSubactionProfile' in source

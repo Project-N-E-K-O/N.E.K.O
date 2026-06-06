@@ -1853,12 +1853,10 @@
             NEKO_MODEL_CAT_TRANSITION_MIN_SIZE,
             Math.min(NEKO_MODEL_CAT_TRANSITION_MAX_SIZE, Math.round(basis * NEKO_MODEL_CAT_TRANSITION_SIZE_FACTOR))
         );
-        const maxLeft = Math.max(0, window.innerWidth - size);
-        const maxTop = Math.max(0, window.innerHeight - size);
 
         return {
-            left: Math.max(0, Math.min(Math.round(centerX - size / 2), maxLeft)),
-            top: Math.max(0, Math.min(Math.round(centerY - size / 2), maxTop)),
+            left: Math.round(centerX - size / 2),
+            top: Math.round(centerY - size / 2),
             width: size,
             height: size,
         };

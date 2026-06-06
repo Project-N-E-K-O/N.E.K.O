@@ -1,6 +1,7 @@
 ﻿import {
   useState,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useCallback,
@@ -113,6 +114,7 @@ const COMPACT_INPUT_TOOL_WHEEL_CENTER_Y = 116;
 const COMPACT_INPUT_TOOL_WHEEL_ORBIT_RADIUS = 91.92;
 const COMPACT_INPUT_TOOL_WHEEL_HOVER_RADIUS = 116;
 const COMPACT_INPUT_TOOL_WHEEL_ANGLE_MIN_RADIUS = 16;
+const COMPACT_INPUT_TOOL_WHEEL_VIEWPORT_MARGIN = 8;
 const COMPACT_INPUT_TOOL_TOGGLE_HOVER_OUTSET = 14;
 const COMPACT_INPUT_TOOL_FAN_ORIGIN_CLOSE_SIZE = 48;
 // 在工具轮盘中心（toggle / fan 原点）按下后，指针移动超过此像素阈值即视为「拖动文本框」
@@ -121,6 +123,20 @@ const COMPACT_INPUT_TOOL_ORIGIN_DRAG_THRESHOLD = 6;
 const COMPACT_INPUT_TOOL_FAN_INTERACTIVE_DELAY_MS = 220;
 const COMPACT_INPUT_TOOL_FAN_TRANSIENT_CLOSE_DELAY_MS = 360;
 const COMPACT_INPUT_TOOL_FAN_OUTSIDE_CLOSE_DELAY_MS = 650;
+const compactInputToolWheelDefaultVisibleSlots = [
+  { angleDeg: 107.35, scale: 0.86 },
+  { angleDeg: 75.82, scale: 0.98 },
+  { angleDeg: 45, scale: 1.04 },
+  { angleDeg: 14.18, scale: 0.98 },
+  { angleDeg: -17.35, scale: 0.86 },
+] as const;
+const compactInputToolWheelViewportFitVisibleSlots = [
+  { angleDeg: -200, scale: 0.86 },
+  { angleDeg: -170, scale: 0.98 },
+  { angleDeg: -140, scale: 1.04 },
+  { angleDeg: -110, scale: 0.98 },
+  { angleDeg: -80, scale: 0.86 },
+] as const;
 const COMPACT_SURFACE_RESIZE_MIN_WIDTH = 280;
 // compact 对话条默认/初始宽度（无法从 rect/CSS 量到时的回退值）。与 resize 下限解耦：
 // 减小最短宽度只动 RESIZE_MIN_WIDTH，默认仍是这个值，保证「默认宽度不变」。
@@ -654,6 +670,7 @@ type ToolCursorVariantState = Record<string, CursorVariant>;
 type InteractionIntensity = NonNullable<AvatarInteractionPayload['intensity']>;
 type AvatarInteractionToolId = AvatarToolId;
 type AvatarTouchZone = 'ear' | 'head' | 'face' | 'body';
+type CompactInputToolWheelLayout = 'default' | 'viewport-fit';
 type AvatarInteractionPayloadByTool = {
   [K in AvatarInteractionToolId]: Extract<AvatarInteractionPayload, { toolId: K }>;
 };
@@ -1260,6 +1277,7 @@ export default function App({
   const [compactChoiceLayerPlacement, setCompactChoiceLayerPlacement] = useState<'above' | 'below'>('above');
   const [compactInputToolFanOpen, setCompactInputToolFanOpen] = useState(false);
   const [compactInputToolFanInteractive, setCompactInputToolFanInteractive] = useState(false);
+  const [compactInputToolWheelLayout, setCompactInputToolWheelLayout] = useState<CompactInputToolWheelLayout>('default');
   const [compactInputToolWheelIndex, setCompactInputToolWheelIndex] = useState(0);
   const [compactInputToolWheelFastAnimation, setCompactInputToolWheelFastAnimation] = useState(false);
   const [compactInputToolWheelChargeRatio, setCompactInputToolWheelChargeRatio] = useState(0);
@@ -1270,6 +1288,7 @@ export default function App({
   const [compactHistoryResizeActive, setCompactHistoryResizeActive] = useState(false);
   const [compactExportHistoryOpen, setCompactExportHistoryOpen] = useState(readPersistedCompactExportHistoryOpen);
   const [compactExportHistoryMounted, setCompactExportHistoryMounted] = useState(readPersistedCompactExportHistoryOpen);
+  const [compactExportHistoryClosingMessages, setCompactExportHistoryClosingMessages] = useState<ChatMessage[] | null>(null);
   const [compactExportControlsOpen, setCompactExportControlsOpen] = useState(false);
   const [compactExportPreviewOpen, setCompactExportPreviewOpen] = useState(false);
   const [compactExportSelectedIds, setCompactExportSelectedIds] = useState<Set<string>>(() => new Set());
@@ -1542,6 +1561,7 @@ export default function App({
   }, []);
   const openCompactExportHistory = useCallback(() => {
     clearCompactExportHistoryUnmountTimer();
+    setCompactExportHistoryClosingMessages(null);
     setCompactExportHistoryMounted(true);
     setCompactExportHistoryOpen(true);
     persistCompactExportHistoryOpen(true);
@@ -1549,14 +1569,16 @@ export default function App({
   }, [clearCompactExportHistoryUnmountTimer]);
   const closeCompactExportHistory = useCallback(() => {
     clearCompactExportHistoryUnmountTimer();
+    setCompactExportHistoryClosingMessages(messages);
     setCompactExportHistoryOpen(false);
     persistCompactExportHistoryOpen(false);
     setCompactExportPreviewOpen(false);
     compactExportHistoryUnmountTimerRef.current = window.setTimeout(() => {
       setCompactExportHistoryMounted(false);
+      setCompactExportHistoryClosingMessages(null);
       compactExportHistoryUnmountTimerRef.current = null;
     }, COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
-  }, [clearCompactExportHistoryUnmountTimer]);
+  }, [clearCompactExportHistoryUnmountTimer, messages]);
   useEffect(() => () => {
     clearCompactExportHistoryUnmountTimer();
   }, [clearCompactExportHistoryUnmountTimer]);
@@ -3003,6 +3025,60 @@ export default function App({
     compactInputToolFanSuppressHoverUntilLeaveRef.current = false;
   }, []);
 
+  const resolveCompactInputToolWheelLayout = useCallback((): CompactInputToolWheelLayout => {
+    if (!window.matchMedia?.('(max-width: 820px)').matches) return 'default';
+    const fanElement = compactInputToolFanRef.current;
+    const fanRect = fanElement?.getBoundingClientRect();
+    if (!fanElement || !fanRect || fanRect.width <= 0 || fanRect.height <= 0) return 'default';
+
+    const visualViewport = window.visualViewport;
+    const viewportLeft = visualViewport?.offsetLeft ?? 0;
+    const viewportTop = visualViewport?.offsetTop ?? 0;
+    const viewportWidth = visualViewport?.width ?? window.innerWidth;
+    const viewportHeight = visualViewport?.height ?? window.innerHeight;
+    if (!Number.isFinite(viewportWidth) || viewportWidth <= 0 || !Number.isFinite(viewportHeight) || viewportHeight <= 0) {
+      return 'default';
+    }
+
+    const fanStyle = window.getComputedStyle ? window.getComputedStyle(fanElement) : null;
+    const readFanPixelVar = (name: string, fallback: number) => {
+      const rawValue = fanStyle?.getPropertyValue(name).trim() || '';
+      const parsedValue = Number.parseFloat(rawValue);
+      return Number.isFinite(parsedValue) ? parsedValue : fallback;
+    };
+
+    const centerX = fanRect.left + readFanPixelVar('--compact-tool-wheel-center-x', COMPACT_INPUT_TOOL_WHEEL_CENTER_X);
+    const centerY = fanRect.top + readFanPixelVar('--compact-tool-wheel-center-y', COMPACT_INPUT_TOOL_WHEEL_CENTER_Y);
+    const orbitRadius = readFanPixelVar('--compact-tool-wheel-orbit-radius', 80);
+    const buttonSize = readFanPixelVar('--compact-tool-button-size', 38);
+    const minX = viewportLeft + COMPACT_INPUT_TOOL_WHEEL_VIEWPORT_MARGIN;
+    const minY = viewportTop + COMPACT_INPUT_TOOL_WHEEL_VIEWPORT_MARGIN;
+    const maxX = viewportLeft + viewportWidth - COMPACT_INPUT_TOOL_WHEEL_VIEWPORT_MARGIN;
+    const maxY = viewportTop + viewportHeight - COMPACT_INPUT_TOOL_WHEEL_VIEWPORT_MARGIN;
+
+    const wheelLayoutFitsViewport = (slots: ReadonlyArray<{ angleDeg: number; scale: number }>) => slots.every(({ angleDeg, scale }) => {
+      const angle = angleDeg * (Math.PI / 180);
+      const itemCenterX = centerX + (Math.cos(angle) * orbitRadius);
+      const itemCenterY = centerY + (Math.sin(angle) * orbitRadius);
+      const halfSize = (buttonSize * scale) / 2;
+      return itemCenterX - halfSize >= minX
+        && itemCenterX + halfSize <= maxX
+        && itemCenterY - halfSize >= minY
+        && itemCenterY + halfSize <= maxY;
+    });
+
+    if (wheelLayoutFitsViewport(compactInputToolWheelDefaultVisibleSlots)) return 'default';
+    if (wheelLayoutFitsViewport(compactInputToolWheelViewportFitVisibleSlots)) return 'viewport-fit';
+    return 'default';
+  }, []);
+
+  const syncCompactInputToolWheelLayout = useCallback(() => {
+    const nextLayout = resolveCompactInputToolWheelLayout();
+    setCompactInputToolWheelLayout(currentLayout => (
+      currentLayout === nextLayout ? currentLayout : nextLayout
+    ));
+  }, [resolveCompactInputToolWheelLayout]);
+
   const closeCompactInputToolFan = useCallback((options?: {
     afterClose?: () => void;
     deferDesktopAction?: boolean;
@@ -3019,6 +3095,7 @@ export default function App({
     compactInputToolWheelLastRotationAtRef.current = 0;
     resetCompactInputToolWheelCharge();
     setCompactInputToolWheelFastAnimation(false);
+    setCompactInputToolWheelLayout('default');
     setCompactInputToolFanInteractiveState(false);
     compactInputToolFanPositionSyncRef.current?.();
     compactInputToolFanOpenRef.current = false;
@@ -3090,11 +3167,39 @@ export default function App({
     toolMenuOpen,
   ]);
 
+  useLayoutEffect(() => {
+    if (!compactInputToolFanOpen) {
+      setCompactInputToolWheelLayout('default');
+      return undefined;
+    }
+
+    syncCompactInputToolWheelLayout();
+    const frameId = window.requestAnimationFrame(syncCompactInputToolWheelLayout);
+    window.addEventListener('resize', syncCompactInputToolWheelLayout);
+    window.addEventListener('neko:compact-interaction-geometry-change', syncCompactInputToolWheelLayout);
+    window.visualViewport?.addEventListener('resize', syncCompactInputToolWheelLayout);
+    window.visualViewport?.addEventListener('scroll', syncCompactInputToolWheelLayout);
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      window.removeEventListener('resize', syncCompactInputToolWheelLayout);
+      window.removeEventListener('neko:compact-interaction-geometry-change', syncCompactInputToolWheelLayout);
+      window.visualViewport?.removeEventListener('resize', syncCompactInputToolWheelLayout);
+      window.visualViewport?.removeEventListener('scroll', syncCompactInputToolWheelLayout);
+    };
+  }, [
+    compactInputToolFanOpen,
+    compactSurfaceResizeWidth,
+    effectiveCompactChatState,
+    syncCompactInputToolWheelLayout,
+  ]);
+
   const openCompactInputToolFan = useCallback((intent: 'click' | 'hover') => {
     if (composerDisabled || compactInputHasPayload) return;
     clearCompactInputToolFanCloseTimer();
     clearCompactInputToolFanInteractiveTimer();
     compactInputToolFanOpenIntentRef.current = intent;
+    setCompactInputToolWheelLayout('default');
     setCompactInputToolFanInteractiveState(false);
     updateCompactInputToolFanPosition();
     compactInputToolFanOpenRef.current = true;
@@ -4736,6 +4841,7 @@ export default function App({
       data-compact-no-drag="true"
       data-compact-input-tool-fan-open={compactInputToolFanOpen ? 'true' : 'false'}
       data-compact-input-tool-fan-interactive={compactInputToolFanInteractive ? 'true' : 'false'}
+      data-compact-tool-wheel-layout={compactInputToolWheelLayout}
       data-compact-tool-wheel-fast-animation={compactInputToolWheelFastAnimation ? 'true' : 'false'}
       data-compact-tool-wheel-charge-active={compactInputToolWheelChargeRatio > 0 ? 'true' : 'false'}
       data-compact-tool-wheel-charge-direction={compactInputToolWheelChargeDirection === 1 ? 'forward' : compactInputToolWheelChargeDirection === -1 ? 'backward' : 'none'}
@@ -5284,9 +5390,12 @@ export default function App({
     ? (typeof document !== 'undefined' ? createPortal(choiceLayerNode, document.body) : choiceLayerNode)
     : null;
 
+  const compactExportHistoryMessages = compactExportHistoryOpen
+    ? messages
+    : (compactExportHistoryClosingMessages || messages);
   const compactExportHistoryElement = isCompactSurface && compactExportHistoryMounted ? (
     <CompactExportHistoryPanel
-      messages={messages}
+      messages={compactExportHistoryMessages}
       selectedIds={compactExportSelectedIds}
       selectedCount={compactExportSelectedCount}
       selectableCount={compactExportSelectableCount}
