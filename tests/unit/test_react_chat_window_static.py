@@ -205,6 +205,19 @@ def test_desktop_compact_history_uses_workarea_not_browserwindow_viewport():
     assert "var workAreaWindowX = layoutOverride.windowBounds ? Math.round(layoutOverride.windowBounds.x) : Math.round(layoutOverride.workArea.left);" in script
     assert "Math.round(layoutOverride.workArea.left - workAreaWindowX) + 'px'" in script
     assert "Math.round(layoutOverride.workArea.right - workAreaWindowX) + 'px'" in script
+    assert "function getCompactDesktopCssVarSnapshot(layoutOverride)" in script
+    assert "Math.round(layoutOverride.workArea.left - workAreaWindowX)" in script
+    assert "Math.round(layoutOverride.workArea.right - workAreaWindowX)" in script
+    assert "Number.isFinite(layoutOverride.historyCenterX) ? Math.round(layoutOverride.historyCenterX) : 'none'" in script
+
+    sync_anchor_block = script.split("function syncCompactSurfaceAnchor()", 1)[1].split(
+        "function stopCompactMinimizeBallTracking()",
+        1,
+    )[0]
+    assert "getCompactDesktopCssVarSnapshot(layoutOverride)" in sync_anchor_block
+    assert sync_anchor_block.index("getCompactDesktopCssVarSnapshot(layoutOverride)") < sync_anchor_block.index(
+        "if (snapshot === compactSurfaceAnchorSnapshot)"
+    )
 
     desktop_history_block = styles.split(
         "body.electron-chat-window.subtitle-web-host .compact-export-history-anchor",

@@ -1123,6 +1123,29 @@
         };
     }
 
+    function getCompactDesktopCssVarSnapshot(layoutOverride) {
+        if (!layoutOverride) return 'desktop:none';
+        var parts = [];
+        if (layoutOverride.workArea) {
+            var workAreaWindowX = layoutOverride.windowBounds ? Math.round(layoutOverride.windowBounds.x) : Math.round(layoutOverride.workArea.left);
+            parts.push(
+                'workarea',
+                Math.round(layoutOverride.workArea.left - workAreaWindowX),
+                Math.round(layoutOverride.workArea.right - workAreaWindowX),
+                Math.round(layoutOverride.workArea.width),
+                Math.round(layoutOverride.workArea.height)
+            );
+        } else {
+            parts.push('workarea:none');
+        }
+        parts.push(
+            'history',
+            Math.round(layoutOverride.historyOffsetX || 0),
+            Number.isFinite(layoutOverride.historyCenterX) ? Math.round(layoutOverride.historyCenterX) : 'none'
+        );
+        return parts.join(':');
+    }
+
     function normalizeCompactDomRect(rect) {
         if (!rect) return null;
         var left = Number(rect.left);
@@ -1633,7 +1656,8 @@
             Math.round(target.top),
             Math.round(target.width),
             Math.round(target.height || COMPACT_SURFACE_DEFAULT_HEIGHT),
-            (!!(dragState && dragState.compactSurface) || compactSurfaceDesktopDragActive) ? 'dragging' : 'idle'
+            (!!(dragState && dragState.compactSurface) || compactSurfaceDesktopDragActive) ? 'dragging' : 'idle',
+            getCompactDesktopCssVarSnapshot(layoutOverride)
         ].join(':');
         if (snapshot === compactSurfaceAnchorSnapshot) {
             return;
