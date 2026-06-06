@@ -2321,10 +2321,7 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   );
   --compact-export-history-half-inline-size: calc(var(--compact-export-history-inline-size) / 2);
   --compact-export-history-safe-inset: calc(var(--compact-export-history-viewport-gutter) / 2);
-  --compact-export-history-center-x: var(
-    --desktop-compact-history-center-x,
-    calc(var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw)) + (var(--compact-export-surface-width) / 2) + var(--desktop-compact-history-offset-x, 0px))
-  );
+  --compact-export-history-center-x: calc(var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw)) + (var(--compact-export-surface-width) / 2) + var(--desktop-compact-history-offset-x, 0px));
   left: clamp(
     calc(var(--compact-export-history-viewport-inline-start) + var(--compact-export-history-half-inline-size) + var(--compact-export-history-safe-inset)),
     var(--compact-export-history-center-x),

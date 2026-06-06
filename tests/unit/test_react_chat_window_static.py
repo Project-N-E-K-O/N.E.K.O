@@ -195,20 +195,15 @@ def test_desktop_compact_history_uses_workarea_not_browserwindow_viewport():
     assert "--compact-desktop-workarea-width" in script
     assert "--compact-desktop-workarea-height" in script
     assert "var historyOffsetX = Number(layout.historyOffsetX);" in script
-    assert "var historyCenterX = Number(layout.historyCenterX);" in script
     assert "historyOffsetX: Number.isFinite(historyOffsetX) ? historyOffsetX : 0" in script
-    assert "historyCenterX: Number.isFinite(historyCenterX) ? historyCenterX : null" in script
     assert "document.documentElement.style.setProperty('--desktop-compact-history-offset-x', Math.round(layoutOverride.historyOffsetX || 0) + 'px');" in script
-    assert "document.documentElement.style.setProperty('--desktop-compact-history-center-x', Math.round(layoutOverride.historyCenterX) + 'px');" in script
     assert "document.documentElement.style.removeProperty('--desktop-compact-history-offset-x');" in script
-    assert "document.documentElement.style.removeProperty('--desktop-compact-history-center-x');" in script
     assert "var workAreaWindowX = layoutOverride.windowBounds ? Math.round(layoutOverride.windowBounds.x) : Math.round(layoutOverride.workArea.left);" in script
     assert "Math.round(layoutOverride.workArea.left - workAreaWindowX) + 'px'" in script
     assert "Math.round(layoutOverride.workArea.right - workAreaWindowX) + 'px'" in script
     assert "function getCompactDesktopCssVarSnapshot(layoutOverride)" in script
     assert "Math.round(layoutOverride.workArea.left - workAreaWindowX)" in script
     assert "Math.round(layoutOverride.workArea.right - workAreaWindowX)" in script
-    assert "Number.isFinite(layoutOverride.historyCenterX) ? Math.round(layoutOverride.historyCenterX) : 'none'" in script
 
     sync_anchor_block = script.split("function syncCompactSurfaceAnchor()", 1)[1].split(
         "function stopCompactMinimizeBallTracking()",
@@ -268,9 +263,8 @@ def test_compact_history_size_tokens_are_ratio_based_for_ui_optimization():
     assert "calc(var(--compact-export-surface-width) * var(--compact-export-history-width-ratio))" in anchor_block
     assert "--compact-export-history-half-inline-size: calc(var(--compact-export-history-inline-size) / 2);" in anchor_block
     assert "--compact-export-history-safe-inset: calc(var(--compact-export-history-viewport-gutter) / 2);" in anchor_block
-    assert "--compact-export-history-center-x: var(" in anchor_block
-    assert "--desktop-compact-history-center-x," in anchor_block
-    assert "calc(var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw)) + (var(--compact-export-surface-width) / 2) + var(--desktop-compact-history-offset-x, 0px))" in anchor_block
+    assert "--compact-export-history-center-x: calc(var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw)) + (var(--compact-export-surface-width) / 2) + var(--desktop-compact-history-offset-x, 0px));" in anchor_block
+    assert "--desktop-compact-history-center-x" not in anchor_block
     assert "--compact-export-history-viewport-inline-start: 0px;" in anchor_block
     assert "--compact-export-history-viewport-inline-size: 100vw;" in anchor_block
     assert "--compact-export-history-viewport-inline-end: calc(" in anchor_block
