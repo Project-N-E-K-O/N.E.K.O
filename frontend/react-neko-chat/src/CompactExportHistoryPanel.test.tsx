@@ -45,6 +45,23 @@ function renderPanel(overrides: Partial<Parameters<typeof CompactExportHistoryPa
 }
 
 describe('CompactExportHistoryPanel', () => {
+  it('shows the history height resize bar only outside preview and wires its hit-region', () => {
+    const { container, rerender } = renderPanel({ previewOpen: false, visibilityState: 'open' });
+    const bar = container.querySelector('.compact-export-history-resize-bar');
+    expect(bar).not.toBeNull();
+    expect(bar?.getAttribute('data-compact-hit-region-id')).toBe('history:resize');
+    expect(bar?.getAttribute('data-compact-hit-region-kind')).toBe('resize');
+    expect(bar?.getAttribute('data-compact-no-drag')).toBe('true');
+
+    rerender(<CompactExportHistoryPanel {...createPanelProps({ previewOpen: true, visibilityState: 'open' })} />);
+    expect(container.querySelector('.compact-export-history-resize-bar')).toBeNull();
+  });
+
+  it('marks the history resize bar active while dragging', () => {
+    const { container } = renderPanel({ previewOpen: false, visibilityState: 'open', historyResizeActive: true });
+    expect(container.querySelector('.compact-export-history-resize-bar.is-active')).not.toBeNull();
+  });
+
   it('pins the history list to bottom when returning from preview', () => {
     const scrollTopValues: number[] = [];
     const scrollTopByElement = new WeakMap<HTMLElement, number>();

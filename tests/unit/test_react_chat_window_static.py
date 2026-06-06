@@ -696,6 +696,36 @@ def test_electron_compact_chat_retires_full_surface_chrome():
     assert 'id="react-chat-window-overlay" hidden' in template
 
 
+def test_compact_history_resize_bar_is_draggable_and_persisted():
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+    panel_source = COMPACT_EXPORT_HISTORY_PANEL_PATH.read_text(encoding="utf-8")
+    app_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
+
+    # 顶部 resize bar 的样式：可纵向拖、可接收 pointer、平时透明、不触发原生窗口拖动。
+    bar_block = css_block(
+        styles,
+        ".compact-export-history-resize-bar {",
+        ".compact-export-history-resize-bar::after",
+    )
+    assert "cursor: ns-resize;" in bar_block
+    assert "pointer-events: auto;" in bar_block
+    assert "opacity: 0;" in bar_block
+    assert "-webkit-app-region: no-drag;" in bar_block
+    assert ".compact-export-history-resize-bar.is-active {" in styles
+
+    # bar 的 DOM：带可命中且不穿透的 hit-region，拖拽不触发面板 / 整窗拖动。
+    assert "className={clsx('compact-export-history-resize-bar'" in panel_source
+    assert "data-compact-hit-region-id={historyInteractive ? 'history:resize' : undefined}" in panel_source
+    assert "data-compact-hit-region-kind={historyInteractive ? 'resize' : undefined}" in panel_source
+    resize_bar_jsx = panel_source.split("compact-export-history-resize-bar", 1)[1].split("/>", 1)[0]
+    assert 'data-compact-no-drag="true"' in resize_bar_jsx
+
+    # 高度上限写预留覆盖变量 + 独立 localStorage key；变更后触发宿主几何重算（Electron 窗口联动）。
+    assert "COMPACT_HISTORY_HEIGHT_STORAGE_KEY = 'neko.reactChatWindow.compactHistorySlotHeight'" in app_source
+    assert "'--compact-history-slot-height'" in app_source
+    assert "new CustomEvent('neko:compact-interaction-geometry-refresh')" in app_source
+
+
 def test_compact_history_controls_collapse_gives_height_back_to_history_scroll():
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
 

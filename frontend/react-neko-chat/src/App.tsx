@@ -96,6 +96,7 @@ const COMPACT_SPEECH_FALLBACK_REVEAL_DELAY_MS = 700;
 const SPEECH_PLAYBACK_STATE_STORAGE_KEY = 'neko_speech_playback_state';
 const SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';
 const COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY = 'neko.reactChatWindow.compactExportHistoryOpen';
+const COMPACT_HISTORY_HEIGHT_STORAGE_KEY = 'neko.reactChatWindow.compactHistorySlotHeight';
 export const COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS = 560;
 const COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT = 7;
 const COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD = 22;
@@ -130,6 +131,14 @@ const COMPACT_SURFACE_RESIZE_MOBILE_MIN_WIDTH = 280;
 const COMPACT_SURFACE_RESIZE_MAX_WIDTH = 720;
 const COMPACT_SURFACE_RESIZE_VIEWPORT_GUTTER = 32;
 const COMPACT_SURFACE_RESIZE_MOBILE_VIEWPORT_GUTTER = 16;
+// compact 历史堆砌区（CompactExportHistoryPanel）顶部 resize bar 的高度上限钳位参数。
+// 下限压到 ~1-2 个气泡以便节约屏幕；上限对齐 anchor 的 max-height（width*1.46 / 78% 视口），
+// 避免拖超 anchor 二次截断产生「拖了没反应」的死区。默认（未拖动）公式仍是 width*1.18 / 63%。
+const COMPACT_HISTORY_SLOT_MIN_HEIGHT = 120;
+const COMPACT_HISTORY_SLOT_MAX_WIDTH_RATIO = 1.46;
+const COMPACT_HISTORY_SLOT_MAX_VIEWPORT_RATIO = 0.78;
+const COMPACT_HISTORY_SLOT_DEFAULT_WIDTH_RATIO = 1.18;
+const COMPACT_HISTORY_SLOT_DEFAULT_VIEWPORT_RATIO = 0.63;
 const COMPACT_CHOICE_PLACEMENT_HYSTERESIS = 24;
 const COMPOSER_OPTION_MARQUEE_MIN_DISTANCE = 6;
 const COMPOSER_OPTION_MARQUEE_MIN_DURATION_MS = 1400;
@@ -149,6 +158,14 @@ type CompactSurfaceResizeState = {
   anchorRightScreen: number;
   anchorTopScreen: number;
   surfaceHeight: number;
+  captureTarget: Element | null;
+};
+
+type CompactHistoryResizeState = {
+  pointerId: number;
+  startPointerY: number;
+  startHeight: number;
+  lastHeight: number;
   captureTarget: Element | null;
 };
 
@@ -371,6 +388,53 @@ function persistCompactExportHistoryOpen(open: boolean) {
   } catch {
     // localStorage can be unavailable in restricted hosts; keep the in-memory state.
   }
+}
+
+function readPersistedCompactHistorySlotHeight(): number | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const persisted = window.localStorage?.getItem(COMPACT_HISTORY_HEIGHT_STORAGE_KEY);
+    if (persisted === null || persisted === undefined) return null;
+    const value = Number(persisted);
+    return Number.isFinite(value) && value > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistCompactHistorySlotHeight(value: number | null) {
+  if (typeof window === 'undefined') return;
+  try {
+    if (value === null) {
+      window.localStorage?.removeItem(COMPACT_HISTORY_HEIGHT_STORAGE_KEY);
+    } else {
+      window.localStorage?.setItem(COMPACT_HISTORY_HEIGHT_STORAGE_KEY, String(Math.round(value)));
+    }
+  } catch {
+    // localStorage can be unavailable in restricted hosts; keep the in-memory state.
+  }
+}
+
+// 历史区高度上限的基数：Electron 独立窗口用工作区高度（窗口可能只覆盖部分屏，不能用 innerHeight），
+// 网页路径用视口高度。与 styles.css 里默认公式的 63vh / workarea*0.63 取同一基数。
+function getCompactHistoryViewportBase(): number {
+  if (typeof window === 'undefined') return 900;
+  const desktopLayout = (window as typeof window & {
+    __nekoDesktopCompactLayout?: { workArea?: { height?: number } | null } | null;
+  }).__nekoDesktopCompactLayout;
+  const workAreaHeight = Number(desktopLayout?.workArea?.height);
+  if (isDesktopCompactSurfaceLayoutActive() && Number.isFinite(workAreaHeight) && workAreaHeight > 0) {
+    return workAreaHeight;
+  }
+  return window.innerHeight || 900;
+}
+
+function getCompactHistoryResizePointerY(event: ReactPointerEvent<HTMLDivElement>): number {
+  const screenY = Number(event.screenY);
+  if (Number.isFinite(screenY)) {
+    return screenY;
+  }
+  return event.clientY;
 }
 
 type SpeechPlaybackState = {
@@ -1284,6 +1348,8 @@ export default function App({
   const [compactInputToolWheelChargeDirection, setCompactInputToolWheelChargeDirection] = useState<1 | -1 | null>(null);
   const [compactInputToolWheelChargeReleaseActive, setCompactInputToolWheelChargeReleaseActive] = useState(false);
   const [compactSurfaceResizeWidth, setCompactSurfaceResizeWidth] = useState<number | null>(null);
+  const [compactHistorySlotHeight, setCompactHistorySlotHeight] = useState<number | null>(readPersistedCompactHistorySlotHeight);
+  const [compactHistoryResizeActive, setCompactHistoryResizeActive] = useState(false);
   const [compactExportHistoryOpen, setCompactExportHistoryOpen] = useState(readPersistedCompactExportHistoryOpen);
   const [compactExportHistoryMounted, setCompactExportHistoryMounted] = useState(readPersistedCompactExportHistoryOpen);
   const [compactExportControlsOpen, setCompactExportControlsOpen] = useState(false);
@@ -1291,6 +1357,7 @@ export default function App({
   const [compactExportSelectedIds, setCompactExportSelectedIds] = useState<Set<string>>(() => new Set());
   const [compactExportAutoScrollToBottom, setCompactExportAutoScrollToBottom] = useState(true);
   const compactSurfaceResizeStateRef = useRef<CompactSurfaceResizeState | null>(null);
+  const compactHistoryResizeStateRef = useRef<CompactHistoryResizeState | null>(null);
   const compactHistoryVisibilitySuppressClickRef = useRef(false);
   const compactExportHistoryUnmountTimerRef = useRef<number | null>(null);
   const submittingRef = useRef(false);
@@ -2731,6 +2798,137 @@ export default function App({
     event.stopPropagation();
     finishCompactSurfaceResize(event);
   }, [finishCompactSurfaceResize]);
+
+  const getCompactHistorySlotMaxHeight = useCallback(() => {
+    const surfaceWidth = getCurrentCompactSurfaceWidth();
+    const base = getCompactHistoryViewportBase();
+    return Math.round(Math.max(
+      COMPACT_HISTORY_SLOT_MIN_HEIGHT,
+      Math.min(
+        surfaceWidth * COMPACT_HISTORY_SLOT_MAX_WIDTH_RATIO,
+        base * COMPACT_HISTORY_SLOT_MAX_VIEWPORT_RATIO,
+      ),
+    ));
+  }, [getCurrentCompactSurfaceWidth]);
+
+  const getClampedCompactHistorySlotHeight = useCallback((height: number) => (
+    Math.round(Math.max(
+      COMPACT_HISTORY_SLOT_MIN_HEIGHT,
+      Math.min(height, getCompactHistorySlotMaxHeight()),
+    ))
+  ), [getCompactHistorySlotMaxHeight]);
+
+  // 用户未拖动过时（slot 为 null），起拖高度取 styles.css 默认公式值（width*1.18 / 63%），
+  // 保证拖动第一帧从当前可见高度连续起步、不跳变。
+  const getCompactHistoryStartHeight = useCallback(() => {
+    if (compactHistorySlotHeight !== null) return compactHistorySlotHeight;
+    const surfaceWidth = getCurrentCompactSurfaceWidth();
+    const base = getCompactHistoryViewportBase();
+    return Math.round(Math.min(
+      surfaceWidth * COMPACT_HISTORY_SLOT_DEFAULT_WIDTH_RATIO,
+      base * COMPACT_HISTORY_SLOT_DEFAULT_VIEWPORT_RATIO,
+    ));
+  }, [compactHistorySlotHeight, getCurrentCompactSurfaceWidth]);
+
+  const applyCompactHistorySlotHeightVar = useCallback((height: number | null) => {
+    if (typeof document === 'undefined') return;
+    if (height === null) {
+      document.documentElement.style.removeProperty('--compact-history-slot-height');
+    } else {
+      document.documentElement.style.setProperty(
+        '--compact-history-slot-height',
+        `${getClampedCompactHistorySlotHeight(height)}px`,
+      );
+    }
+    // CSS 变量变更不会自己通知宿主；让宿主重算 history 命中 rect / Electron 窗口 bounds / 鼠标穿透区。
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('neko:compact-interaction-geometry-refresh'));
+    }
+  }, [getClampedCompactHistorySlotHeight]);
+
+  const finishCompactHistoryResize = useCallback((event?: ReactPointerEvent<HTMLDivElement>) => {
+    const resizeState = compactHistoryResizeStateRef.current;
+    if (!resizeState) return;
+    if (event && resizeState.pointerId !== event.pointerId) return;
+    persistCompactHistorySlotHeight(resizeState.lastHeight);
+    setCompactHistorySlotHeight(resizeState.lastHeight);
+    const captureTarget = resizeState.captureTarget;
+    if (captureTarget && typeof captureTarget.releasePointerCapture === 'function') {
+      try {
+        if (captureTarget.hasPointerCapture?.(resizeState.pointerId)) {
+          captureTarget.releasePointerCapture(resizeState.pointerId);
+        }
+      } catch (_) {}
+    }
+    compactHistoryResizeStateRef.current = null;
+    setCompactHistoryResizeActive(false);
+  }, []);
+
+  const handleCompactHistoryResizePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!isCompactSurface) return;
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const startHeight = getCompactHistoryStartHeight();
+    compactHistoryResizeStateRef.current = {
+      pointerId: event.pointerId,
+      startPointerY: getCompactHistoryResizePointerY(event),
+      startHeight,
+      lastHeight: getClampedCompactHistorySlotHeight(startHeight),
+      captureTarget: event.currentTarget,
+    };
+    setCompactHistoryResizeActive(true);
+    try {
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    } catch (_) {}
+  }, [getClampedCompactHistorySlotHeight, getCompactHistoryStartHeight, isCompactSurface]);
+
+  const handleCompactHistoryResizePointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const resizeState = compactHistoryResizeStateRef.current;
+    if (!resizeState || resizeState.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    // bar 在堆砌区顶部：上拖（deltaY < 0）增高，下拖减高。
+    const deltaY = getCompactHistoryResizePointerY(event) - resizeState.startPointerY;
+    const nextHeight = getClampedCompactHistorySlotHeight(resizeState.startHeight - deltaY);
+    resizeState.lastHeight = nextHeight;
+    setCompactHistorySlotHeight(nextHeight);
+    applyCompactHistorySlotHeightVar(nextHeight);
+  }, [applyCompactHistorySlotHeightVar, getClampedCompactHistorySlotHeight]);
+
+  const handleCompactHistoryResizePointerUp = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    finishCompactHistoryResize(event);
+  }, [finishCompactHistoryResize]);
+
+  const handleCompactHistoryResizePointerCancel = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    finishCompactHistoryResize(event);
+  }, [finishCompactHistoryResize]);
+
+  // 把已存/恢复的高度写进 CSS 变量（覆盖默认公式）；slot 为 null 时清掉、回落默认。
+  useEffect(() => {
+    if (!isCompactSurface) return;
+    applyCompactHistorySlotHeightVar(compactHistorySlotHeight);
+  }, [applyCompactHistorySlotHeightVar, compactHistorySlotHeight, isCompactSurface]);
+
+  // 视口 / 桌面工作区变化后，对已存高度重新 clamp，避免上限失配后被 anchor 二次截断。
+  useEffect(() => {
+    if (!isCompactSurface) return undefined;
+    const clampExistingHeight = () => {
+      setCompactHistorySlotHeight(current => (
+        current === null ? current : getClampedCompactHistorySlotHeight(current)
+      ));
+    };
+    window.addEventListener('resize', clampExistingHeight);
+    window.addEventListener('neko:desktop-compact-layout-change', clampExistingHeight);
+    return () => {
+      window.removeEventListener('resize', clampExistingHeight);
+      window.removeEventListener('neko:desktop-compact-layout-change', clampExistingHeight);
+    };
+  }, [getClampedCompactHistorySlotHeight, isCompactSurface]);
 
   useEffect(() => {
     if (!isCompactSurface || compactSurfaceEffectiveWidth === null) {
@@ -5212,6 +5410,11 @@ export default function App({
       isDropTargetAt={isCompactHistoryDropTargetAt}
       onDropToTarget={handleCompactHistoryDropToAvatar}
       onDragStateChange={onCompactHistoryDragStateChange}
+      historyResizeActive={compactHistoryResizeActive}
+      onHistoryResizePointerDown={handleCompactHistoryResizePointerDown}
+      onHistoryResizePointerMove={handleCompactHistoryResizePointerMove}
+      onHistoryResizePointerUp={handleCompactHistoryResizePointerUp}
+      onHistoryResizePointerCancel={handleCompactHistoryResizePointerCancel}
     />
   ) : null;
   const compactExportHistoryNode = compactExportHistoryElement;
