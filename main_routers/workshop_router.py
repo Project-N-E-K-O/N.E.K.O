@@ -31,7 +31,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from .shared_state import ensure_steamworks as get_steamworks, get_config_manager, get_initialize_character_data
-from utils.cloudsave_runtime import MaintenanceModeError, is_write_fence_active
+from utils.cloudsave_runtime import MaintenanceModeError, is_cloudsave_disabled, is_write_fence_active
 from utils.file_utils import atomic_write_json, atomic_write_json_async, read_json_async
 from utils.workshop_utils import (
     ensure_workshop_folder_exists,
@@ -60,6 +60,7 @@ _ugc_sync_task = None    # 后台角色卡同步任务
 
 # 全局互斥锁，用于序列化角色卡同步的 load_characters -> save_characters 流程
 _ugc_sync_lock = asyncio.Lock()
+_session_deleted_names: set[str] = set()
 
 # 全局互斥锁，用于序列化 UGC 批量查询（CreateQuery → SendQuery → 回调），
 # 避免并发调用 override_callback=True 导致回调覆盖竞态
@@ -77,6 +78,14 @@ _ITEM_STATE_INSTALLED = 4
 _ITEM_STATE_NEEDS_UPDATE = 8
 _ITEM_STATE_DOWNLOADING = 16
 _ITEM_STATE_DOWNLOAD_PENDING = 32
+
+
+def mark_session_deleted_character_name(character_name: str) -> bool:
+    normalized_name = str(character_name or "").strip()
+    if not normalized_name:
+        return False
+    _session_deleted_names.add(normalized_name)
+    return True
 
 
 class UnsupportedUGCDetailsError(RuntimeError):
@@ -235,7 +244,10 @@ def _read_first_line(path: str, encoding: str = 'utf-8') -> str:
 
 
 def _load_deleted_character_names(config_mgr) -> set[str]:
-    deleted_names: set[str] = set()
+    deleted_names: set[str] = set(_session_deleted_names)
+    if is_cloudsave_disabled():
+        return deleted_names
+
     try:
         tombstone_state = config_mgr.load_character_tombstones_state()
     except Exception as exc:
@@ -258,6 +270,12 @@ def _remove_deleted_character_tombstones(config_mgr, character_names: list[str])
     if not target_names:
         return []
 
+    session_removed_names = sorted(name for name in target_names if name in _session_deleted_names)
+    _session_deleted_names.difference_update(target_names)
+
+    if is_cloudsave_disabled():
+        return session_removed_names
+
     tombstone_state = config_mgr.load_character_tombstones_state()
     original_entries = tombstone_state.get("tombstones") or []
     remaining_entries = []
@@ -274,13 +292,23 @@ def _remove_deleted_character_tombstones(config_mgr, character_names: list[str])
         remaining_entries.append(entry)
 
     if not removed_names:
-        return []
+        return session_removed_names
 
     config_mgr.save_character_tombstones_state({
         "version": getattr(config_mgr, "CHARACTER_TOMBSTONES_STATE_VERSION", 1),
         "tombstones": remaining_entries,
     })
-    return removed_names
+    return sorted(set(session_removed_names) | set(removed_names))
+
+
+def _write_deleted_character_tombstone(config_mgr, character_name: str, build_tombstone_state) -> bool:
+    mark_session_deleted_character_name(character_name)
+    if is_cloudsave_disabled():
+        return False
+
+    tombstone_state = build_tombstone_state(config_mgr, character_name)
+    config_mgr.save_character_tombstones_state(tombstone_state)
+    return True
 
 
 def _derive_workshop_origin_display_name(raw_model_name: str, fallback_name: str) -> str:
@@ -3382,9 +3410,11 @@ async def unsubscribe_workshop_item(request: Request):
                     )
 
             async def _write_tombstone(name: str) -> None:
-                tombstone_state = _build_character_tombstones_state(config_mgr, name)
                 await asyncio.to_thread(
-                    config_mgr.save_character_tombstones_state, tombstone_state
+                    _write_deleted_character_tombstone,
+                    config_mgr,
+                    name,
+                    _build_character_tombstones_state,
                 )
 
             async def _remove_one(name: str) -> None:

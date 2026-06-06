@@ -5,17 +5,37 @@
         <img src="@/assets/paw.png" alt="" class="titlebar-paw" draggable="false" />
         <span class="titlebar-text">{{ t('app.titleSuffix') }}</span>
       </div>
-      <button
-        class="titlebar-close"
-        type="button"
-        :title="t('common.close')"
-        :aria-label="t('common.close')"
-        @click="closeWindow"
-      >
-        <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-          <path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-        </svg>
-      </button>
+      <div class="titlebar-controls">
+        <button
+          class="titlebar-control"
+          type="button"
+          :title="t('common.minimize')"
+          :aria-label="t('common.minimize')"
+          @click="minimizeWindow"
+        >
+          <span class="titlebar-minimize-icon" aria-hidden="true"></span>
+        </button>
+        <button
+          class="titlebar-control"
+          type="button"
+          :title="maximizeLabel"
+          :aria-label="maximizeLabel"
+          @click="toggleMaximize"
+        >
+          <span class="titlebar-maximize-icon" :class="{ 'is-restored': isMaximized }" aria-hidden="true"></span>
+        </button>
+        <button
+          class="titlebar-control titlebar-control--close"
+          type="button"
+          :title="t('common.close')"
+          :aria-label="t('common.close')"
+          @click="closeWindow"
+        >
+          <svg class="titlebar-close-icon" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false">
+            <path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+        </button>
+      </div>
     </div>
 
     <div class="app-shell">
@@ -26,7 +46,7 @@
       <div class="app-body">
         <div v-if="connectionStore.disconnected" class="connection-banner">
           <div class="connection-banner__inner">
-            ⚠️ {{ t('common.disconnected') }}
+            {{ t('common.disconnected') }}
           </div>
         </div>
 
@@ -47,6 +67,7 @@
 </template>
 
 <script setup lang="ts">
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import Sidebar from './Sidebar.vue'
 import Header from './Header.vue'
 import { useI18n } from 'vue-i18n'
@@ -54,10 +75,64 @@ import { useConnectionStore } from '@/stores/connection'
 
 const { t } = useI18n()
 const connectionStore = useConnectionStore()
+const isMaximized = ref(false)
+const maximizeLabel = computed(() => isMaximized.value ? t('common.restore') : t('common.maximize'))
+
+function getWindowControlApi() {
+  return window.nekoWindowControl
+}
+
+async function refreshMaximizeState() {
+  const api = getWindowControlApi()
+  if (!api || typeof api.isMaximized !== 'function') return
+  try {
+    isMaximized.value = !!(await api.isMaximized())
+  } catch {
+    // 非桌面窗口环境下忽略状态查询失败
+  }
+}
+
+async function minimizeWindow() {
+  const api = getWindowControlApi()
+  if (!api || typeof api.minimize !== 'function') return
+  try {
+    await api.minimize()
+  } catch {
+    // 非桌面窗口环境下忽略最小化失败
+  }
+}
+
+async function toggleMaximize() {
+  const api = getWindowControlApi()
+  if (!api || typeof api.maximize !== 'function') return
+  try {
+    const result = await api.maximize()
+    if (result && result.ok && typeof result.isMaximized === 'boolean') {
+      isMaximized.value = result.isMaximized
+      return
+    }
+    await refreshMaximizeState()
+  } catch {
+    // 非桌面窗口环境下忽略最大化失败
+  }
+}
+
+function handleWindowResize() {
+  void refreshMaximizeState()
+}
 
 function closeWindow() {
   window.close()
 }
+
+onMounted(() => {
+  void refreshMaximizeState()
+  window.addEventListener('resize', handleWindowResize)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', handleWindowResize)
+})
 </script>
 
 <style scoped>
@@ -68,7 +143,7 @@ function closeWindow() {
   overflow: hidden;
 }
 
-/* ── Title bar (acrylic) ── */
+/* 标题栏玻璃效果 */
 .window-titlebar {
   padding: 0 6px 0 12px;
   height: 38px;
@@ -79,7 +154,6 @@ function closeWindow() {
   -webkit-app-region: drag;
   user-select: none;
   z-index: 9999;
-  /* Acrylic effect — matches react-neko-chat topbar */
   background:
     linear-gradient(135deg,
       rgba(75, 212, 253, 0.82) 0%,
@@ -117,7 +191,14 @@ function closeWindow() {
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
 }
 
-.titlebar-close {
+.titlebar-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-control {
   -webkit-app-region: no-drag;
   background: transparent;
   border: none;
@@ -132,16 +213,56 @@ function closeWindow() {
   transition: background 0.18s, color 0.18s;
 }
 
-.titlebar-close:hover {
+.titlebar-control:hover {
   background: rgba(255, 255, 255, 0.18);
   color: #fff;
 }
 
-.titlebar-close:active {
+.titlebar-control:active {
   background: rgba(0, 0, 0, 0.08);
 }
 
-/* ── Shell layout ── */
+.titlebar-control--close:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.titlebar-minimize-icon {
+  width: 12px;
+  height: 1.5px;
+  border-radius: 999px;
+  background: currentColor;
+  transform: translateY(4px);
+}
+
+.titlebar-maximize-icon {
+  position: relative;
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid currentColor;
+  border-radius: 2px;
+}
+
+.titlebar-maximize-icon.is-restored {
+  transform: translate(1.5px, 1.5px);
+}
+
+.titlebar-maximize-icon.is-restored::before {
+  content: '';
+  position: absolute;
+  left: -4px;
+  top: -4px;
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid currentColor;
+  border-radius: 2px;
+}
+
+.titlebar-close-icon {
+  width: 10px;
+  height: 10px;
+}
+
+/* 主体布局 */
 .app-shell {
   flex: 1;
   display: flex;
@@ -188,7 +309,7 @@ function closeWindow() {
   background: var(--el-bg-color-page);
 }
 
-/* ── Connection banner ── */
+/* 连接状态提示 */
 .connection-banner {
   padding: 8px 20px 0;
 }
@@ -203,7 +324,7 @@ function closeWindow() {
   font-weight: 500;
 }
 
-/* ── Page transition ── */
+/* 页面切换动画 */
 .page-enter-active {
   transition:
     opacity 0.3s cubic-bezier(0.22, 1, 0.36, 1),
@@ -230,7 +351,7 @@ function closeWindow() {
   filter: blur(2px);
 }
 
-/* ── Dark mode acrylic overrides ── */
+/* 深色模式覆盖 */
 html.dark .window-titlebar {
   background:
     linear-gradient(135deg,

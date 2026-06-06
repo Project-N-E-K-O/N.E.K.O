@@ -5,10 +5,13 @@ APP_REACT_CHAT_WINDOW_PATH = Path(__file__).resolve().parents[2] / "static" / "a
 APP_BUTTONS_PATH = Path(__file__).resolve().parents[2] / "static" / "app-buttons.js"
 APP_CHAT_EXPORT_PATH = Path(__file__).resolve().parents[2] / "static" / "app-chat-export.js"
 MUSIC_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "music_ui.js"
+MUSIC_UI_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "music_ui.css"
 STATIC_INDEX_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "index.css"
+STATIC_DARK_MODE_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "dark-mode.css"
 REACT_CHAT_STYLES_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "styles.css"
 REACT_CHAT_APP_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "App.tsx"
 CHAT_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "chat.html"
+SUBTITLE_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "subtitle.html"
 COMPACT_EXPORT_HISTORY_PANEL_PATH = (
     Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "CompactExportHistoryPanel.tsx"
 )
@@ -37,6 +40,26 @@ def assert_no_layout_transition(block: str) -> None:
     transition_section = block.split("transition:", 1)[1].split(";", 1)[0] if "transition:" in block else ""
     for prop in ("width", "height", "max-height", "min-height", "padding", "margin", "top", "right", "bottom", "left"):
         assert prop not in transition_section
+
+
+def test_subtitle_window_dark_mode_keeps_transparent_background():
+    source = STATIC_DARK_MODE_CSS_PATH.read_text(encoding="utf-8")
+    selector = (
+        'html[data-theme="dark"].subtitle-window-host,\n'
+        'html[data-theme="dark"].subtitle-window-host body.subtitle-window-host {'
+    )
+    assert selector in source
+    block = source.split(selector, 1)[1].split("}", 1)[0]
+
+    assert "background: transparent !important;" in block
+    assert source.index(selector) > source.index("background: #000 !important;")
+
+
+def test_standalone_subtitle_page_initializes_theme_before_subtitle_scripts():
+    source = SUBTITLE_TEMPLATE_PATH.read_text(encoding="utf-8")
+
+    assert '<script src="/static/theme-manager.js"></script>' in source
+    assert source.index('/static/theme-manager.js') < source.index('/static/subtitle-shared.js')
 
 
 def test_chat_surface_mode_preference_is_shared_with_electron():
@@ -138,6 +161,28 @@ def test_minimized_restore_uses_previous_real_surface_mode():
     assert "lastRestorableChatSurfaceMode = normalizedChatSurfaceMode;" in set_view_props_block
     assert "lastRestorableChatSurfaceMode = previousChatSurfaceMode;" in set_view_props_block
     assert "lastRestorableChatSurfaceMode = state.chatSurfaceMode;" in init_block
+
+
+def test_idle_cat1_compact_mirror_ignores_pet_window_local_events():
+    source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    assert "function shouldIgnoreIdleCat1CompactMirrorState(detail)" in source
+    ignore_block = source.split("function shouldIgnoreIdleCat1CompactMirrorState(detail)", 1)[1].split(
+        "function handleIdleCat1CompactMirrorState(event)",
+        1,
+    )[0]
+    assert "window.__LANLAN_IS_ELECTRON_PET__" in ignore_block
+    assert "detail.via === 'local'" in ignore_block
+    assert "detail.source === 'pet-window'" in ignore_block
+
+    handler_block = source.split("function handleIdleCat1CompactMirrorState(event)", 1)[1].split(
+        "function dispatchCompactSurfaceLayoutChange(rect)",
+        1,
+    )[0]
+    ignore_call = "if (shouldIgnoreIdleCat1CompactMirrorState(detail)) return;"
+    inactive_branch = "if (!detail || !detail.active)"
+    assert ignore_call in handler_block
+    assert handler_block.index(ignore_call) < handler_block.index(inactive_branch)
 
 
 def test_desktop_compact_history_uses_workarea_not_browserwindow_viewport():
@@ -402,7 +447,7 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
         '.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] '
         '.compact-input-tool-toggle:hover'
     ) in styles
-    assert 'padding: 5px 62px 5px 20px;' in styles
+    assert 'padding: 5px 62px 5px 2px;' in styles
     assert '.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"]:not([data-compact-chat-state="input"])' in styles
     assert 'padding-right: 62px;' in styles
     assert 'right: 9px;' in styles
@@ -505,7 +550,9 @@ def test_desktop_compact_history_hit_regions_are_clipped_to_visible_parent():
         1,
     )[0]
 
-    assert "var clippedRect = parentRect ? intersectCompactRects(rect, parentRect) : rect;" in composite_block
+    assert "var clippedRect = kind === 'musicPlayer'" in composite_block
+    assert "? rect" in composite_block
+    assert ": (parentRect ? intersectCompactRects(rect, parentRect) : rect);" in composite_block
     assert "if (!clippedRect) return null;" in composite_block
     assert "visualRect: clippedRect" in composite_block
     assert "hitRect: clippedRect" in composite_block
@@ -671,6 +718,53 @@ def test_electron_compact_chat_retires_full_surface_chrome():
     assert 'id="react-chat-window-overlay" hidden' in template
 
 
+def test_compact_history_resize_bar_is_draggable_and_persisted():
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+    panel_source = COMPACT_EXPORT_HISTORY_PANEL_PATH.read_text(encoding="utf-8")
+    app_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
+
+    # 顶部 resize bar 的样式：可纵向拖、可接收 pointer、平时透明、不触发原生窗口拖动。
+    bar_block = css_block(
+        styles,
+        ".compact-export-history-resize-bar {",
+        ".compact-export-history-resize-bar::after",
+    )
+    assert "cursor: ns-resize;" in bar_block
+    assert "pointer-events: auto;" in bar_block
+    assert "-webkit-app-region: no-drag;" in bar_block
+    # bar 本体不能透明：宿主几何收集器按 opacity<=0.01 丢弃 hit-region，透明会让 Electron 下鼠标穿透、点不到。
+    assert "opacity: 0;" not in bar_block
+    # 只让视觉抓手（伪元素）平时透明、hover/拖动显现。
+    after_block = css_block(
+        styles,
+        ".compact-export-history-resize-bar::after {",
+        ".compact-export-history-anchor:hover .compact-export-history-resize-bar::after",
+    )
+    assert "opacity: 0;" in after_block
+    assert ".compact-export-history-resize-bar.is-active::after {" in styles
+    # hover 整个历史区即浮现顶部高度 bar（回滚 fd138cd 的「调尺寸热区联动浮现」收窄，
+    # 让整个历史记录气泡区域都能唤出 resize bar）。
+    assert ".compact-export-history-anchor:hover .compact-export-history-resize-bar::after" in styles
+
+    # bar 的 DOM：带可命中且不穿透的 hit-region，拖拽不触发面板 / 整窗拖动。
+    assert "className={clsx('compact-export-history-resize-bar'" in panel_source
+    # hit-region 受 historyInteractive && !choiceLayerAbove 双重 gate：choice prompt 压在历史上方时，
+    # bar 不再上报命中区（与 scroll/controls 一起惰性，Electron 下不留可拖 / 不穿透的活条）。
+    assert "data-compact-hit-region-id={historyInteractive && !choiceLayerAbove ? 'history:resize' : undefined}" in panel_source
+    assert "data-compact-hit-region-kind={historyInteractive && !choiceLayerAbove ? 'resize' : undefined}" in panel_source
+    resize_bar_jsx = panel_source.split("compact-export-history-resize-bar", 1)[1].split("/>", 1)[0]
+    assert 'data-compact-no-drag="true"' in resize_bar_jsx
+    # under-choice 态把 bar 一并纳入 pointer-events:none / 淡化规则。
+    assert ".compact-export-history-anchor.under-choice-prompt .compact-export-history-resize-bar," in styles
+    # 纯点击不落库：finish 仅在 moved 时 persist。
+    assert "if (resizeState.moved) {" in app_source
+
+    # 高度上限写预留覆盖变量 + 独立 localStorage key；变更后触发宿主几何重算（Electron 窗口联动）。
+    assert "COMPACT_HISTORY_HEIGHT_STORAGE_KEY = 'neko.reactChatWindow.compactHistorySlotHeight'" in app_source
+    assert "'--compact-history-slot-height'" in app_source
+    assert "new CustomEvent('neko:compact-interaction-geometry-refresh')" in app_source
+
+
 def test_compact_history_controls_collapse_gives_height_back_to_history_scroll():
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
 
@@ -794,24 +888,48 @@ def test_compact_history_closing_bubbles_disable_pointer_events():
     assert "pointer-events: none;" in closing_bubble_block
 
 
-def test_compact_history_enter_animation_excludes_drag_sources():
-    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
-    enter_selector = (
-        '.compact-export-history-anchor[data-compact-export-history-visibility="open"] '
-        ".compact-export-history-message:not([data-compact-history-drag-phase]) "
-        ".compact-export-history-bubble"
-    )
+def test_compact_history_bubbles_are_text_selectable_and_drag_free():
+    """拖到 avatar 子系统已删除：气泡不再捕获指针，文本可被鼠标选中复制。
 
-    assert enter_selector in styles
-    assert (
-        '.compact-export-history-anchor[data-compact-export-history-visibility="open"] '
-        ".compact-export-history-bubble {"
-    ) not in styles
+    断言气泡 CSS 显式声明 user-select:text / cursor:text（覆盖 [role=\"button\"]
+    的 user-select:none），且气泡 JSX 不再挂任何指针拖拽 handler（只留 onClick /
+    onKeyDown 驱动导出勾选）。"""
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+    panel_source = COMPACT_EXPORT_HISTORY_PANEL_PATH.read_text(encoding="utf-8")
+
+    bubble_block = css_block(
+        styles,
+        ".compact-export-history-bubble {",
+        ".compact-export-history-anchor[data-compact-export-history-visibility=\"open\"]",
+    )
+    assert "user-select: text;" in bubble_block
+    assert "-webkit-user-select: text;" in bubble_block
+    assert "cursor: text;" in bubble_block
+    assert "cursor: pointer;" not in bubble_block
+
+    # 拖拽 CSS 全部移除。
+    assert "compact-history-drag-layer" not in styles
+    assert "data-compact-history-drag" not in styles
+
+    # 气泡 JSX 只保留 onClick / onKeyDown，不再有拖拽指针 handler。
+    bubble_jsx = panel_source.split('className="compact-export-history-bubble"', 1)[1].split(
+        "compact-export-history-check",
+        1,
+    )[0]
+    assert "onClick={(event) => handleClick(event, message, selectable)}" in bubble_jsx
+    assert "onKeyDown={(event) => handleKeyDown(event, message, selectable)}" in bubble_jsx
+    assert "onPointerDown" not in bubble_jsx
+    assert "onPointerMove" not in bubble_jsx
+    assert "onPointerUp" not in bubble_jsx
+    assert "handlePointerDown" not in panel_source
+    assert "startCompactHistoryDrag" not in panel_source
 
 
 def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regions():
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+    music_ui_styles = MUSIC_UI_CSS_PATH.read_text(encoding="utf-8")
     panel_source = COMPACT_EXPORT_HISTORY_PANEL_PATH.read_text(encoding="utf-8")
+    app_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
     music_ui_source = MUSIC_UI_PATH.read_text(encoding="utf-8")
 
@@ -822,6 +940,7 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
     )
     panel_block = css_block(styles, ".compact-export-history-panel {", ".compact-export-history-anchor.under-choice-prompt")
     scroll_block = css_block(styles, ".compact-export-history-scroll {", ".compact-export-history-scroll-content")
+    scrollbar_hit_block = css_block(styles, ".compact-export-history-scrollbar-hit {", ".compact-export-history-message")
     content_block = css_block(
         styles,
         ".compact-export-history-scroll-content {",
@@ -831,7 +950,7 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
     bubble_block = css_block(styles, ".compact-export-history-bubble {", ".compact-export-history-message.is-disabled")
     shared_hit_block = css_block(
         styles,
-        ".compact-export-history-controls,\n.compact-export-history-music-mount,\n.compact-export-preview-region {",
+        ".compact-export-history-controls,\n.compact-export-preview-region {",
         ".compact-export-history-controls {",
     )
     scroll_jsx_block = panel_source.split('className="compact-export-history-scroll"', 1)[1].split(
@@ -846,49 +965,102 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
         'compact-export-history-controls-content',
         1,
     )[0]
-    music_hit_block = panel_source.split('className="compact-export-history-music-mount"', 1)[1].split(
-        'className="compact-export-history-controls"',
-        1,
-    )[0]
-
     assert "pointer-events: none;" in anchor_block
     assert "pointer-events: none;" in panel_block
     assert "overflow-y: auto;" in scroll_block
     assert "pointer-events: none;" in scroll_block
+    assert "position: absolute;" in scrollbar_hit_block
+    assert "width: 20px;" in scrollbar_hit_block
+    assert "pointer-events: auto;" in scrollbar_hit_block
     assert "pointer-events: none;" in content_block
     assert "pointer-events: none;" in message_block
     assert "pointer-events: auto;" in bubble_block
-    assert ".compact-export-history-controls,\n.compact-export-history-music-mount,\n.compact-export-preview-region {" in styles
+    assert ".compact-export-history-controls,\n.compact-export-preview-region {" in styles
     assert "pointer-events: auto;" in shared_hit_block
     assert "function getCompactHistoryScrollbarRect(element, parentRect)" in script
     assert "id: 'history:scrollbar'" in script
+    assert "scrollNode.getAttribute('data-compact-scrollbar-visible') !== 'true'" in script
+    assert "element.querySelector('.compact-export-history-scrollbar-hit')" in script
+    scrollbar_block = script.split("function getCompactHistoryScrollbarRect(element, parentRect)", 1)[1].split(
+        "var COMPACT_TOOL_FAN_CIRCLE_SLICE_COUNT",
+        1,
+    )[0]
+    assert "if (hitStyle && hitStyle.pointerEvents === 'none') return null;" in scrollbar_block
+    assert "style.pointerEvents === 'none'" not in scrollbar_block
     assert "data-compact-hit-region" not in scroll_jsx_block
+    assert 'className="compact-export-history-scrollbar-hit"' in panel_source
+    assert 'data-compact-scrollbar-hit="true"' in panel_source
+    assert "hasPointerCapture?.(event.pointerId)" in panel_source
     assert 'data-compact-hit-region-id={historyInteractive ? `history:message:${message.id}` : undefined}' in panel_source
     assert "data-compact-hit-region={historyInteractive ? 'true' : undefined}" in message_hit_block
     assert "data-compact-hit-region-kind={historyInteractive ? 'message' : undefined}" in message_hit_block
     assert "data-compact-hit-region-id={historyInteractive ? 'history:controls' : undefined}" in panel_source
     assert "data-compact-hit-region={historyInteractive ? 'true' : undefined}" in controls_hit_block
     assert "data-compact-hit-region-kind={historyInteractive ? 'controls' : undefined}" in controls_hit_block
-    assert "data-compact-hit-region-id={historyInteractive ? 'history:music-player' : undefined}" in panel_source
-    assert 'data-music-player-mount="compact-history"' in music_hit_block
-    assert "data-compact-hit-region={historyInteractive ? 'true' : undefined}" in music_hit_block
-    assert "data-compact-hit-region-kind={historyInteractive ? 'music' : undefined}" in music_hit_block
+    assert "compact-export-history-music-mount" not in panel_source
+    assert 'className="compact-music-player-mount"' in app_source
+    assert 'data-music-player-mount="compact-surface"' in app_source
+    assert 'data-compact-music-player-visibility={compactMusicPlayerVisibility}' in app_source
+    assert "aria-hidden={compactMusicPlayerVisibility === 'open' ? undefined : true}" in app_source
+    assert 'data-compact-geometry-item="musicPlayer"' in app_source
+    assert 'data-compact-geometry-hit-scope="children"' in app_source
     assert "function getPreferredMusicMountTarget()" in music_ui_source
-    assert "function isCompactHistoryMusicMountInteractive(mount)" in music_ui_source
-    assert "document.querySelector('.compact-export-history-music-mount')" in music_ui_source
-    assert "mount.getAttribute('data-compact-hit-region') !== 'true'" in music_ui_source
-    assert "data-compact-export-history-visibility') !== 'open'" in music_ui_source
+    assert "function getCompactMusicMountTarget()" in music_ui_source
+    assert "document.querySelector('[data-music-player-mount=\"compact-surface\"]')" in music_ui_source
     assert "document.getElementById('music-player-mount')" in music_ui_source
     assert "document.getElementById(MUSIC_CONFIG.dom.containerId)" in music_ui_source
     assert "mutation.type === 'attributes' && isMusicMountMutationTarget(mutation.target)" in music_ui_source
+    assert "function isCompactMusicGeometryMutationTarget(node)" in music_ui_source
+    assert "node.closest('[data-music-player-mount=\"compact-surface\"]')" in music_ui_source
+    assert "node.classList.contains('music-bar-volume-container')" in music_ui_source
+    assert "node.classList.contains('music-bar-volume-slider-wrapper')" in music_ui_source
+    assert "mutation.type === 'attributes' && isCompactMusicGeometryMutationTarget(mutation.target)" in music_ui_source
     assert "attributes: true" in music_ui_source
-    assert "'data-compact-export-history-visibility'" in music_ui_source
-    assert "'data-compact-hit-region'" in music_ui_source
+    assert "'data-music-player-mount'" in music_ui_source
     assert "mountMusicBar(musicBar)" in music_ui_source
-    assert music_ui_source.count('data-compact-hit-region-id="history:music-player:volume"') == 2
+    assert "musicBar.setAttribute('data-compact-hit-region-id', 'music-player')" in music_ui_source
+    assert "neko:compact-interaction-geometry-refresh" in music_ui_source
+    volume_toggle_segments = music_ui_source.split("volumeContainer.classList.toggle('expanded');")
+    assert len(volume_toggle_segments) == 3
+    for segment in volume_toggle_segments[1:]:
+        assert "requestCompactMusicGeometrySync();" in segment[:96]
+    volume_close_segments = music_ui_source.split("volumeContainer.classList.remove('expanded');")
+    assert len(volume_close_segments) == 3
+    for segment in volume_close_segments[1:]:
+        assert "requestCompactMusicGeometrySync();" in segment[:96]
+    assert "window.addEventListener('neko:compact-interaction-geometry-refresh'" in script
+    assert "kind === 'musicPlayer'" in script
+    assert music_ui_source.count('data-compact-hit-region-id="music-player:volume"') == 2
     assert music_ui_source.count('data-compact-hit-region-kind="music-volume"') == 2
-    assert ".compact-export-history-anchor.under-choice-prompt .music-bar-volume-slider-wrapper" in styles
-    assert '.compact-export-history-anchor[data-compact-export-history-visibility="closing"] .music-bar-volume-slider-wrapper' in styles
+    assert "#music-player-mount.compact-music-player-mount {" in styles
+    assert "#music-player-mount.compact-music-player-mount {" in music_ui_styles
+    assert '#music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closing"]' in styles
+    assert '#music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closed"]' in styles
+    assert "visibility: hidden;" in css_block(
+        styles,
+        '#music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closed"] {',
+        '#music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closing"] *',
+    )
+    assert "width: min(calc(var(--compact-music-player-surface-width) - 16px), 360px, calc(100vw - 24px));" in styles
+    assert "width: min(calc(var(--compact-music-player-surface-width) - 16px), 360px, calc(100vw - 24px));" in music_ui_styles
+    assert "#music-player-mount.compact-music-player-mount > .music-player-bar" in styles
+    assert "#music-player-mount.compact-music-player-mount > .music-player-bar" in music_ui_styles
+    assert "max-inline-size: 100%;" in styles
+    assert "max-inline-size: 100%;" in music_ui_styles
+    assert "#music-player-mount.compact-music-player-mount .music-bar-info" in styles
+    assert "#music-player-mount.compact-music-player-mount .music-bar-info" in music_ui_styles
+    assert "--compact-music-player-reserved-block-size: 88px;" in styles
+    assert "--compact-music-player-history-gap: 14px;" in styles
+    assert "+ var(--compact-music-player-reserved-block-size, 88px)" in styles
+    assert "+ var(--compact-music-player-history-gap, 14px)" in styles
+    assert ".app-shell:has(> .compact-music-player-mount:not(:empty)) .compact-export-history-anchor" in styles
+    # 音量弹层展开时滑块向上伸进 history 区域，播放器整体提到 history(100001) 之上，
+    # 但仍低于工具轮盘态 surface-shell(100003)，避免抢点击又不破坏工具轮盘对表情按钮的让位。
+    assert "z-index: 100002;" in css_block(
+        styles,
+        "#music-player-mount.compact-music-player-mount:has(.music-bar-volume-container.expanded) {",
+        "#music-player-mount.compact-music-player-mount:empty",
+    )
     assert 'data-compact-hit-region-id="history:preview"' in panel_source
 
 
@@ -909,10 +1081,18 @@ def test_subtitle_web_host_keeps_compact_history_transparent_wrappers_click_thro
         "    pointer-events: auto;\n"
         "}"
     )
-    fallback_music_interactive_rule = (
+    compact_music_interactive_rule = (
         f'{compact_surface_prefix} #music-player-mount,\n'
         f'{compact_surface_prefix} #music-player-mount * {{\n'
         "    pointer-events: auto;\n"
+        "}"
+    )
+    compact_music_hidden_rule = (
+        f'{compact_surface_prefix} #music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closing"],\n'
+        f'{compact_surface_prefix} #music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closing"] *,\n'
+        f'{compact_surface_prefix} #music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closed"],\n'
+        f'{compact_surface_prefix} #music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closed"] * {{\n'
+        "    pointer-events: none;\n"
         "}"
     )
     history_passthrough_rule = (
@@ -927,27 +1107,20 @@ def test_subtitle_web_host_keeps_compact_history_transparent_wrappers_click_thro
     history_interactive_rule = (
         f'{compact_surface_prefix} .compact-export-history-bubble,\n'
         f'{compact_surface_prefix} .compact-export-history-controls,\n'
-        f'{compact_surface_prefix} .compact-export-history-music-mount,\n'
         f'{compact_surface_prefix} .compact-export-preview-region {{\n'
         "    pointer-events: auto;\n"
         "}"
     )
-    history_music_volume_hidden_rule = (
-        f'{compact_surface_prefix} .compact-export-history-anchor.under-choice-prompt .music-bar-volume-slider-wrapper,\n'
-        f'{compact_surface_prefix} .compact-export-history-anchor[data-compact-export-history-visibility="closing"] .music-bar-volume-slider-wrapper {{\n'
-        "    pointer-events: none;\n"
-        "}"
-    )
 
     assert broad_surface_rule in styles
-    assert fallback_music_interactive_rule in styles
+    assert compact_music_interactive_rule in styles
+    assert compact_music_hidden_rule in styles
     assert history_passthrough_rule in styles
     assert history_interactive_rule in styles
-    assert history_music_volume_hidden_rule in styles
-    assert styles.index(broad_surface_rule) < styles.index(fallback_music_interactive_rule)
-    assert styles.index(fallback_music_interactive_rule) < styles.index(history_passthrough_rule)
+    assert styles.index(broad_surface_rule) < styles.index(compact_music_interactive_rule)
+    assert styles.index(compact_music_interactive_rule) < styles.index(compact_music_hidden_rule)
+    assert styles.index(compact_music_hidden_rule) < styles.index(history_passthrough_rule)
     assert styles.index(history_passthrough_rule) < styles.index(history_interactive_rule)
-    assert styles.index(history_interactive_rule) < styles.index(history_music_volume_hidden_rule)
     assert ".compact-export-history-scroll,\n" in history_passthrough_rule
 
 

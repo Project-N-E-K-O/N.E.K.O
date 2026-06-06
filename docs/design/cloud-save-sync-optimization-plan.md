@@ -85,16 +85,30 @@
 
 执行顺序：
 
-1. `bootstrap_local_cloudsave_environment()`。
-2. `CloudSaveManager.import_if_needed(reason="launcher_phase0_prelaunch_import")`。
-3. root mode 切回 `normal`。
-4. 发送 `cloudsave_bootstrap_ready` 事件。
+1. launcher 先在 fence 外校验本机 `state/` 目录可创建/可写。
+2. 进入 `cloud_apply_fence(mode="bootstrap_importing")`。
+3. `bootstrap_local_cloudsave_environment()` 创建/校验 `state/` 与 `cloudsave/` 基础骨架，并执行 legacy/recovery 启动逻辑。
+4. `CloudSaveManager.import_if_needed(reason="launcher_phase0_prelaunch_import")`，真正应用快照仍在 fence 内执行。
+5. root mode 切回 `normal`。
+6. 发送 `cloudsave_bootstrap_ready` 事件。
 
 事件脱敏契约：`import_result` 只允许：
 
 - `success`
 - `action`
 - `requested_reason`
+
+若本机 `state/` 初始化失败（例如 `%LOCALAPPDATA%/N.E.K.O`、其 `state/` 或 state JSON 被同名文件/目录占用、不可写或被安全软件拦截），launcher 不得再尝试写入 `maintenance_readonly`，因为这会再次依赖同一个不可用的 `state/`。
+
+当前降级口径：
+
+- 设置 `NEKO_CLOUDSAVE_DISABLED=local_state_unavailable`，本次会话禁用 cloudsave bootstrap/import/export 与 write fence。
+- main_server / memory_server 继续按本地运行时真源启动，不自动应用 Steam `cloudsave/` 快照。
+- 云存档接口与页面应显示 provider unavailable / disabled，不再读取坏的本机 state。
+- 普通角色、配置、记忆等本地运行时写入不应被 cloudsave state 问题拖垮。
+- 存储位置只读状态接口可继续返回 disabled 诊断；需要写 `root_state` / migration checkpoint 的存储迁移动作必须拒绝执行，避免坏 `state/` 再污染迁移控制面。
+
+关闭 Steam Cloud 不会影响该本机状态目录初始化；降级只是保证用户能先启动应用，仍应提示用户修复 `anchor_root` / `local_state_dir` / `failed_path` 指向的本机路径。
 
 ### 4.2 main_server 直启兜底
 

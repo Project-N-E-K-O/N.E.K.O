@@ -402,9 +402,40 @@ document.addEventListener('DOMContentLoaded', function () {
     // 云存档管理按钮
     const openCloudsaveManagerBtn = document.getElementById('open-cloudsave-manager-btn');
     if (openCloudsaveManagerBtn) {
+        setCloudsaveManagerEntryDisabled(openCloudsaveManagerBtn, true);
         openCloudsaveManagerBtn.addEventListener('click', openCloudsaveManager);
+        void refreshCloudsaveManagerEntryAvailability(openCloudsaveManagerBtn);
     }
 });
+
+function setCloudsaveManagerEntryDisabled(openCloudsaveManagerBtn, disabled) {
+    if (!openCloudsaveManagerBtn) return;
+    const isDisabled = disabled === true;
+    openCloudsaveManagerBtn.disabled = isDisabled;
+    openCloudsaveManagerBtn.setAttribute('aria-disabled', isDisabled ? 'true' : 'false');
+    openCloudsaveManagerBtn.classList.toggle('button-disabled', isDisabled);
+}
+
+async function refreshCloudsaveManagerEntryAvailability(openCloudsaveManagerBtn) {
+    if (!openCloudsaveManagerBtn || typeof fetch !== 'function') return;
+
+    try {
+        const response = await fetch('/api/cloudsave/summary', { cache: 'no-store' });
+        if (!response.ok) {
+            setCloudsaveManagerEntryDisabled(openCloudsaveManagerBtn, false);
+            return;
+        }
+        const summary = await response.json();
+        const steamAutoCloud = summary && summary.steam_autocloud && typeof summary.steam_autocloud === 'object'
+            ? summary.steam_autocloud
+            : {};
+        const disabled = summary.provider_available === false || steamAutoCloud.disabled === true;
+        setCloudsaveManagerEntryDisabled(openCloudsaveManagerBtn, disabled);
+    } catch (error) {
+        console.warn('刷新云存档入口状态失败:', error);
+        setCloudsaveManagerEntryDisabled(openCloudsaveManagerBtn, false);
+    }
+}
 
 // 构建云存档管理页 URL（带当前 UI 语言；角色名由云存档页内自行选择）
 function buildCloudsaveManagerUrl() {
@@ -421,6 +452,14 @@ function buildCloudsaveManagerUrl() {
 
 // 打开云存档管理窗口（与 chara_manager.js 中的实现保持行为一致）
 function openCloudsaveManager() {
+    const openCloudsaveManagerBtn = document.getElementById('open-cloudsave-manager-btn');
+    if (!openCloudsaveManagerBtn) {
+        return;
+    }
+    if (openCloudsaveManagerBtn.disabled) {
+        return;
+    }
+
     const url = buildCloudsaveManagerUrl();
     const windowName = 'neko_cloudsave_manager';
     const width = 1180;

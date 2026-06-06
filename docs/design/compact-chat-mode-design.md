@@ -126,7 +126,7 @@
    - 监听 `neko:compact-surface-drag-grab`（来自 React 工具轮盘原点拖拽），非 Electron 时以事件坐标为锚启动 compact surface 本体拖拽（复用既有 startDrag/全局 mousemove/mouseup 与落点 click 守卫）。Electron 由 `preload-chat-react.js` 监听同一事件改走原生窗口拖拽。
 5. `static/app-buttons.js` 是发送桥之一。compact history 文本发送必须带清晰 session / request 语义，不能让已有 composer 附件在 deferred send 中被误带上。
 6. 语音模式 / `composerHidden` 下的 history drop 只保留前端拖拽、命中和收束动效；真实发送必须在 `sendCompactHistoryDropPayload` 边界跳过，不能通过改 React 拖拽 phase 或样式来伪装。
-7. `static/music_ui.js` 的音乐播放器优先挂到打开且可交互的 `.compact-export-history-music-mount`；历史关闭或卸载后应回落到 composer 内唯一 `#music-player-mount`。不要为了保住音乐挂载点让整个历史消息面板长期常驻。
+7. `static/music_ui.js` 的音乐播放器在 compact 模式下优先挂到常驻 `.compact-music-player-mount#music-player-mount`；历史关闭或卸载不能把播放器挪回 composer fallback，但播放器视觉显隐必须跟随历史打开、closing、closed 状态，也不能被通用 `#music-player-mount` 样式撑成超过 compact surface 的横向尺寸；音量弹层展开/收起时必须刷新 compact geometry，避免浮出播放器原生矩形的滑块看得见但不可点。
 
 ### NEKO-PC 桌面壳
 
@@ -368,12 +368,12 @@ Compact 历史默认在初次启动时显示。历史列表本身由常驻展开
 8. 常驻 `.compact-history-visibility-handle` 只控制历史列表显隐；它关闭历史时不清除操作栏打开状态。
 9. 工具转轮历史/导出按钮控制操作栏显示；如果历史关闭时点击该按钮，应先打开历史并显示操作栏。
 10. 历史关闭后可以播放 closing 动画；动画结束后历史面板必须卸载。关闭期间新增的文字/语音消息不得进入历史面板 DOM，也不得在历史区域短暂闪现；重新打开历史时再按最新 `messages` 完整渲染。
-11. closing 期间历史气泡、操作栏、音乐 mount 和预览控件都不进入 history hit region，不保留按钮语义、键盘焦点或透明命中区。
+11. closing 期间历史气泡、操作栏和预览控件都不进入 history hit region，不保留按钮语义、键盘焦点或透明命中区。
 12. 操作栏显示期间进入选择模式：气泡点击 / 键盘 Enter / Space 可以选中或取消选中历史消息。
 13. 操作栏隐藏时退出选择模式：必须清空当前选中项，并禁止继续通过点击或键盘选择；拖拽源识别和拖拽发送不受这个选择模式限制。
 14. 操作栏包含选择和导出动作，如计数、全选、取消/清空、反选、导出预览等；操作栏自身进入 history hit region。
 15. 选择状态、导出预览和操作栏显示状态由 React state 管理；操作栏状态可以跨历史显隐保留，但只在历史实际打开时算作可见。
-16. 历史面板内有专用 `.compact-export-history-music-mount`，只在历史打开且可交互时作为音乐播放器优先挂载点；关闭/卸载后播放器必须回落到 composer 的 `#music-player-mount`。
+16. 音乐播放器有独立 `.compact-music-player-mount#music-player-mount`，它与历史消息面板分离并作为 `musicPlayer` 几何项进入 compact surface；历史关闭/卸载后播放器必须继续停留在该独立挂载点，但视觉上要随历史一起收起和展开；横向尺寸必须限制在 compact surface 宽度内；历史记录底部必须为播放器高度和阴影预留间距，不能与播放器重叠；音量滑块展开到播放器外侧时要触发 geometry refresh。
 17. 预览关闭时要清理 stale export error 和必要 preview lifecycle 状态，避免重新打开显示旧错误。
 18. 历史透明区域不能长期遮挡后方；可见气泡、按钮、预览控件和必要滚动区域可命中，气泡间透明区应尽量穿透。
 19. GalGame / ChoicePrompt 出现时，选项层在历史层上方。
@@ -581,7 +581,7 @@ Surface：
 7. 历史透明区不遮挡后方。
 8. 历史关闭动画结束后，历史面板卸载；关闭期间继续发生文字/语音对话时，历史区域不出现新气泡闪现。
 9. 历史重新展开后，关闭期间产生的新消息会按最新 `messages` 正常出现在历史中。
-10. 播放中的音乐栏在历史打开时可挂到历史面板，历史关闭/卸载后能回落到 composer 挂载点。
+10. 播放中的音乐栏在 compact 模式下停留在独立播放器挂载点；历史打开时显示，历史 closing / closed 时同步收起且不再命中；历史打开、关闭或卸载都不能把它挪回 composer，横向宽度不能突破 compact surface，历史记录不能贴住或覆盖播放器；音量滑块展开后可以点击和拖拽。
 11. 预览关闭不会保留旧 error。
 
 历史拖拽：

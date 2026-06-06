@@ -75,6 +75,7 @@ from utils.cloudsave_runtime import (
     MaintenanceModeError,
     ROOT_MODE_NORMAL,
     bootstrap_local_cloudsave_environment,
+    is_cloudsave_disabled,
     is_write_fence_active,
     maintenance_error_payload,
     set_root_mode,
@@ -2031,21 +2032,25 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
             return False
 
         try:
-            bootstrap_local_cloudsave_environment(_config_manager)
-            import_result = None
-            try:
-                import_result = await _run_cloudsave_manager_action(
-                    "import_if_needed",
-                    reason="main_server_startup",
-                    budget_seconds=10.0,
-                )
-                logger.info("Steam Auto-Cloud startup import: %s", import_result)
-            except CloudsaveDeadlineExceeded:
-                logger.warning(
-                    "Steam Auto-Cloud startup import exceeded 10.0s budget before applying runtime changes; continuing with local runtime state"
-                )
-            except Exception as e:
-                logger.warning(f"Steam Auto-Cloud startup import failed: {e}")
+            if is_cloudsave_disabled():
+                logger.warning("Steam Auto-Cloud startup skipped because cloudsave is disabled for this session")
+                import_result = None
+            else:
+                bootstrap_local_cloudsave_environment(_config_manager)
+                import_result = None
+                try:
+                    import_result = await _run_cloudsave_manager_action(
+                        "import_if_needed",
+                        reason="main_server_startup",
+                        budget_seconds=10.0,
+                    )
+                    logger.info("Steam Auto-Cloud startup import: %s", import_result)
+                except CloudsaveDeadlineExceeded:
+                    logger.warning(
+                        "Steam Auto-Cloud startup import exceeded 10.0s budget before applying runtime changes; continuing with local runtime state"
+                    )
+                except Exception as e:
+                    logger.warning(f"Steam Auto-Cloud startup import failed: {e}")
 
             await initialize_character_data()
             await _sync_memory_server_after_startup_import(import_result)
@@ -2097,8 +2102,16 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
             except Exception as e:
                 logger.warning(f"全局语言初始化失败（不影响启动）: {e}")
 
-            current_root_state = _config_manager.load_root_state()
-            if should_write_root_mode_normal_after_startup(current_root_state):
+            if is_cloudsave_disabled():
+                logger.warning("跳过 ROOT_MODE_NORMAL 写入：cloudsave 已为本次会话禁用")
+                current_root_state = None
+            else:
+                current_root_state = _config_manager.load_root_state()
+
+            if current_root_state is None:
+                if not is_cloudsave_disabled():
+                    logger.warning("跳过 ROOT_MODE_NORMAL 写入：root_state 缺失或读取失败")
+            elif should_write_root_mode_normal_after_startup(current_root_state):
                 try:
                     set_root_mode(
                         _config_manager,

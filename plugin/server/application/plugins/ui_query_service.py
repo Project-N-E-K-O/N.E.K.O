@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from plugin.core.state import state
+from plugin._types.exceptions import PluginExecutionError
 from plugin._types.models import PluginUiSurface, PluginUiWarning
 from plugin.logging_config import get_logger
 from plugin.core.ui_manifest import (
@@ -910,7 +911,32 @@ class PluginUiQueryService:
                     details={"plugin_id": plugin_id, "kind": kind, "surface_id": surface_id, "action_id": action_id},
                 )
 
-            result = await host.trigger(resolved_action_id, dict(args or {}))
+            try:
+                result = await host.trigger(resolved_action_id, dict(args or {}))
+            except PluginExecutionError as exc:
+                message = exc.error if isinstance(exc.error, str) and exc.error else str(exc)
+                logger.warning(
+                    "Hosted UI action failed in plugin entry: plugin_id={}, surface={}:{}, action_id={}, entry_id={}, err={}",
+                    plugin_id,
+                    kind,
+                    surface_id,
+                    action_id,
+                    resolved_action_id,
+                    message,
+                )
+                raise ServerDomainError(
+                    code="PLUGIN_UI_ACTION_FAILED",
+                    message=message,
+                    status_code=500,
+                    details={
+                        "plugin_id": plugin_id,
+                        "kind": kind,
+                        "surface_id": surface_id,
+                        "action_id": action_id,
+                        "entry_id": resolved_action_id,
+                        "error_type": type(exc).__name__,
+                    },
+                ) from exc
             return {
                 "plugin_id": plugin_id,
                 "action_id": resolved_action_id,

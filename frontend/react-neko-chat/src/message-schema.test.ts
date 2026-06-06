@@ -94,31 +94,6 @@ describe('message-schema', () => {
     expect(onAvatarInteraction).toHaveBeenCalledTimes(1);
   });
 
-  it('accepts compact history drag state callbacks in window props', () => {
-    const onCompactHistoryDragStateChange = vi.fn();
-    const props = parseChatWindowProps({ onCompactHistoryDragStateChange });
-
-    expect(typeof props.onCompactHistoryDragStateChange).toBe('function');
-    props.onCompactHistoryDragStateChange?.({
-      active: true,
-      sessionId: 'compact-history-drag-1',
-      seq: 1,
-      phase: 'dragging',
-      dragType: 'image',
-      messageId: 'msg-1',
-      pointerClient: { clientX: 10, clientY: 20 },
-      sourceFrameRect: { left: 0, top: 0, right: 100, bottom: 50, width: 100, height: 50 },
-      dragVisualRect: { left: 10, top: 20, right: 90, bottom: 60, width: 80, height: 40 },
-      connectionVisualRect: { left: 0, top: 0, right: 90, bottom: 60, width: 90, height: 60 },
-      dragHitRect: { left: 8, top: 18, right: 92, bottom: 62, width: 84, height: 44 },
-      overTarget: false,
-      needsDesktopBounds: true,
-      timestamp: Date.now(),
-    });
-
-    expect(onCompactHistoryDragStateChange).toHaveBeenCalledTimes(1);
-  });
-
   it('rejects avatar interaction payloads with a non-avatar target', () => {
     const onAvatarInteraction = vi.fn();
     const props = parseChatWindowProps({ onAvatarInteraction });
