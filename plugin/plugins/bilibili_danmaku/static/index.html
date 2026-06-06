@@ -2352,6 +2352,7 @@
     const btn = document.querySelector('[onclick="testBgLLM()"]');
     const dot = document.getElementById('bgLlmDot');
     const statusEl = document.getElementById('bgLlmStatus');
+    const statsEl = document.getElementById('bgLlmStats');
     const originalBtnHTML = btn.innerHTML;
 
     const url = document.getElementById('bgLlmApiUrl').value.trim();
@@ -2375,16 +2376,19 @@
       if (data.success) {
         dot.className = "status-dot connected";
         statusEl.textContent = "✅ " + I18n.t("bgllm.test_ok", "背景LLM连接正常");
+        statsEl.textContent = "";
         toast(I18n.t("bgllm.test_ok", "背景LLM连接正常"), "success");
       } else {
         dot.className = "status-dot error";
         statusEl.textContent = data.error || I18n.t("bgllm.test_failed", "测试失败");
+        statsEl.textContent = I18n.t("bgllm.test_show_detail", "详情：") + JSON.stringify(data);
         toast(I18n.t("bgllm.test_failed", "测试失败：") + (data.error || ""), "error");
       }
     } catch (e) {
       dot.className = "status-dot error";
       const msg = I18n.t("bgllm.test_failed", "测试失败：") + (e.message || e);
       statusEl.textContent = msg;
+      statsEl.textContent = "";
       toast(msg, "error");
     } finally {
       btn.disabled = false;

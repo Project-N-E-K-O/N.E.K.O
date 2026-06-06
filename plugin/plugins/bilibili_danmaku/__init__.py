@@ -1997,8 +1997,8 @@ class BiliDanmakuPlugin(NekoPluginBase):
         api_key = (api_key or "").strip()
         model = (model or "").strip()
 
-        # 未填写时回退到 saved config.json
-        if not url or not api_key:
+        # 任一字段留空时从已保存配置回退
+        if not url or not api_key or not model:
             try:
                 config_path = Path(__file__).resolve().parent / "data" / "config.json"
                 if config_path.exists():
@@ -2017,10 +2017,13 @@ class BiliDanmakuPlugin(NekoPluginBase):
         if not url:
             return Ok({"success": False, "error": "请先填写 API 地址", "error_code": "missing_params"})
 
-        # 构造完整 chat/completions 地址
+        # 构造完整 chat/completions 地址，兼容 /v1 结尾的 base URL
         api_url = url.rstrip("/")
         if not api_url.endswith("/chat/completions"):
-            api_url += "/v1/chat/completions"
+            if api_url.endswith("/v1"):
+                api_url += "/chat/completions"
+            else:
+                api_url += "/v1/chat/completions"
 
         if not _is_safe_url(api_url):
             return Ok({"success": False, "error": "不安全的 API 地址：仅允许公网 HTTP/HTTPS 请求", "error_code": "ssrf_blocked"})
