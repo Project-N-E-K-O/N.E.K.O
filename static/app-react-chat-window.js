@@ -797,8 +797,18 @@
         syncCompactInteractionGeometry();
     }
 
+    function shouldIgnoreIdleCat1CompactMirrorState(detail) {
+        return !!(
+            window.__LANLAN_IS_ELECTRON_PET__
+            && detail
+            && detail.via === 'local'
+            && detail.source === 'pet-window'
+        );
+    }
+
     function handleIdleCat1CompactMirrorState(event) {
         var detail = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
+        if (shouldIgnoreIdleCat1CompactMirrorState(detail)) return;
         if (!detail || !detail.active) {
             hideIdleCat1CompactMirror(detail && detail.reason ? detail.reason : 'inactive');
             return;

@@ -163,6 +163,28 @@ def test_minimized_restore_uses_previous_real_surface_mode():
     assert "lastRestorableChatSurfaceMode = state.chatSurfaceMode;" in init_block
 
 
+def test_idle_cat1_compact_mirror_ignores_pet_window_local_events():
+    source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    assert "function shouldIgnoreIdleCat1CompactMirrorState(detail)" in source
+    ignore_block = source.split("function shouldIgnoreIdleCat1CompactMirrorState(detail)", 1)[1].split(
+        "function handleIdleCat1CompactMirrorState(event)",
+        1,
+    )[0]
+    assert "window.__LANLAN_IS_ELECTRON_PET__" in ignore_block
+    assert "detail.via === 'local'" in ignore_block
+    assert "detail.source === 'pet-window'" in ignore_block
+
+    handler_block = source.split("function handleIdleCat1CompactMirrorState(event)", 1)[1].split(
+        "function dispatchCompactSurfaceLayoutChange(rect)",
+        1,
+    )[0]
+    ignore_call = "if (shouldIgnoreIdleCat1CompactMirrorState(detail)) return;"
+    inactive_branch = "if (!detail || !detail.active)"
+    assert ignore_call in handler_block
+    assert handler_block.index(ignore_call) < handler_block.index(inactive_branch)
+
+
 def test_desktop_compact_history_uses_workarea_not_browserwindow_viewport():
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
