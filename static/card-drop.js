@@ -297,7 +297,19 @@
     els.body.appendChild(form);
   }
 
+  // authorize_url 来自后端（由 NEKO_SOCIAL_BASE_URL 拼装）。万一 base 被配错/污染成
+  // javascript:、file: 等非 http(s) 协议，这里挡掉，避免把用户引导到危险目标。
+  function isSafeExternalUrl(raw) {
+    try {
+      var u = new URL(raw, window.location.origin);
+      return u.protocol === 'https:' || u.protocol === 'http:';
+    } catch (_) {
+      return false;
+    }
+  }
+
   function openExternalUrl(url) {
+    if (!isSafeExternalUrl(url)) throw new Error('invalid_external_url');
     if (window.electronShell && typeof window.electronShell.openExternal === 'function') {
       window.electronShell.openExternal(url);
     } else {
