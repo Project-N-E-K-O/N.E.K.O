@@ -2374,18 +2374,38 @@ class ConfigManager:
         return bool(voice_id) and str(voice_id).strip() in _DEPRECATED_FREE_YUI_VOICE_IDS
 
     def remap_deprecated_free_yui_voice_id(self, voice_id):
-        """废弃的免费 YUI 预设音色 → 现役 yui_cn 值。
+        """废弃的免费 YUI 预设音色 → 现役 YUI 音色（按路由判定目标）。
 
         非废弃值原样返回（不做 strip 归一化），避免调用方把单纯的前后空白差异
         误当成「已迁移」而 continue，漏掉本轮对无效 voice_id 的清理。
 
-        目标只认 free_voices 的 yui_cn（废弃值本就是它的旧版本）；yui_cn 缺失、
-        为空、或仍落在废弃集合时同样原样返回，交既有 validate / 清空兜底——绝不
-        借用 cuteGirl 等其它 preset 当替身，那会把 YUI 串成别的音色，也不会把废弃
-        换成另一个废弃造成死循环。
+        废弃值是国内 StepFun YUI tone，只有 core=free 才该迁移，且目标按线路分流，
+        与 ensure_default_yui_voice_for_free_api 的 "yui"/yui_cn 二分对偶：
+          - 海外免费（lanlan.app → free_intl）：voice-tone-* 不是该线路 native，
+            换成另一个国内 StepFun tone 反而让非空 voice_id 落进 external TTS；改绑
+            品牌 sentinel "yui"（free_intl 的 native/default），走海外原生语音路径。
+          - 国内免费（lanlan.tech）：换成现役 free_voices["yui_cn"]。
+        非 free 路由、或现役 yui_cn 缺失/为空/仍落废弃集合时原样返回，交既有 validate
+        清空兜底——绝不借 cuteGirl 等其它 preset 当替身把 YUI 串成别的音色。
         """
         if not self.is_deprecated_free_yui_voice_id(voice_id):
             return voice_id
+        core_cfg = self.get_core_config() or {}
+        if (core_cfg.get("CORE_API_TYPE") or core_cfg.get("coreApi")) != "free":
+            return voice_id
+
+        # get_core_config() 已按非大陆把 CORE_URL 改写成 lanlan.app，URL 即可判海外；
+        # _check_non_mainland 兜底地理判定。与 ensure_default 同源。
+        core_url = str(core_cfg.get("CORE_URL") or "")
+        overseas = is_free_lanlan_app_route("free", core_url)
+        if not overseas:
+            try:
+                overseas = bool(self._check_non_mainland())
+            except Exception:
+                overseas = False
+        if overseas:
+            return "yui"
+
         from utils.api_config_loader import get_free_voices
         current = str((get_free_voices() or {}).get("yui_cn") or "").strip()
         if current and current not in _DEPRECATED_FREE_YUI_VOICE_IDS:
