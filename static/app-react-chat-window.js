@@ -1404,7 +1404,9 @@
                 if (style && Number(style.opacity) <= 0.01) return null;
                 var rect = normalizeCompactDomRect(child.getBoundingClientRect());
                 if (!rect) return null;
-                var clippedRect = parentRect ? intersectCompactRects(rect, parentRect) : rect;
+                var clippedRect = kind === 'musicPlayer'
+                    ? rect
+                    : (parentRect ? intersectCompactRects(rect, parentRect) : rect);
                 if (!clippedRect) return null;
                 var interactive = style ? style.pointerEvents !== 'none' : true;
                 if (!interactive) return null;
@@ -5622,6 +5624,9 @@
             applyCompactSurfaceResizeRequest(event.detail || {});
         }, true);
         window.addEventListener('neko:compact-surface-resize-width-change', function () {
+            syncCompactInteractionGeometry();
+        });
+        window.addEventListener('neko:compact-interaction-geometry-refresh', function () {
             syncCompactInteractionGeometry();
         });
     }
