@@ -44,6 +44,13 @@ concurrency:
 env:
   REGISTRY_GHCR: ghcr.io
   IMAGE_NAME: project-n-e-k-o/n.e.k.o
+  # Embedding model pin (kept identical to .github/workflows/build-desktop.yml and
+  # docker/Dockerfile{,.full} ARG defaults). The weights are pre-fetched on the
+  # native runner and cached so the Docker build never hits huggingface.co — see
+  # the "Prepare embedding model" steps below and Dockerfile step 6b.
+  EMBEDDING_MODEL_REPO: jinaai/jina-embeddings-v5-text-nano-retrieval
+  EMBEDDING_MODEL_PROFILE_ID: local-text-retrieval-v1
+  EMBEDDING_MODEL_REVISION: ac5d898c8d382b17167c33e5c8af644a3519b47d
 
 jobs:
   # ============================================================================
@@ -154,6 +161,27 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Pre-fetch the embedding weights on the native runner and cache them by
+      # revision, so the (QEMU-emulated, throttle-prone) Docker build below never
+      # touches huggingface.co. Cache hit -> the downloader is a no-op; only a
+      # cold cache (revision bump / 7-day eviction) actually downloads, natively,
+      # once. The weights ride into the build via the context (Dockerfile 6b).
+      # Standard image ships int8 only to stay lightweight.
+      - name: Cache embedding model weights (int8)
+        uses: actions/cache@v4
+        with:
+          path: data/embedding_models
+          key: embedding-model-${{ env.EMBEDDING_MODEL_REVISION }}-int8
+
+      - name: Prepare embedding model assets (int8)
+        run: |
+          python3 scripts/prepare_embedding_model.py \
+            --repo "$EMBEDDING_MODEL_REPO" \
+            --revision "$EMBEDDING_MODEL_REVISION" \
+            --profile-id "$EMBEDDING_MODEL_PROFILE_ID" \
+            --output-root data/embedding_models \
+            --variant int8
+
       - name: Check if Dockerfile exists
         id: check-dockerfile
         run: |
@@ -247,6 +275,10 @@ jobs:
           file: ./docker/Dockerfile
           platforms: ${{ matrix.platform }}
           push: true
+          build-args: |
+            EMBEDDING_MODEL_REPO=${{ env.EMBEDDING_MODEL_REPO }}
+            EMBEDDING_MODEL_REVISION=${{ env.EMBEDDING_MODEL_REVISION }}
+            EMBEDDING_MODEL_PROFILE_ID=${{ env.EMBEDDING_MODEL_PROFILE_ID }}
           tags: ${{ steps.meta_ghcr.outputs.tags || steps.meta_both.outputs.tags }}
           labels: ${{ steps.meta_ghcr.outputs.labels || steps.meta_both.outputs.labels }}
           cache-from: type=gha
@@ -271,6 +303,27 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      # Pre-fetch the embedding weights on the native runner and cache them by
+      # revision, so the (QEMU-emulated, throttle-prone) Docker build below never
+      # touches huggingface.co. Cache hit -> the downloader is a no-op; only a
+      # cold cache (revision bump / 7-day eviction) actually downloads, natively,
+      # once. The weights ride into the build via the context (Dockerfile.full
+      # 6b). Full image bundles both int8 and fp32.
+      - name: Cache embedding model weights (both)
+        uses: actions/cache@v4
+        with:
+          path: data/embedding_models
+          key: embedding-model-${{ env.EMBEDDING_MODEL_REVISION }}-both
+
+      - name: Prepare embedding model assets (both)
+        run: |
+          python3 scripts/prepare_embedding_model.py \
+            --repo "$EMBEDDING_MODEL_REPO" \
+            --revision "$EMBEDDING_MODEL_REVISION" \
+            --profile-id "$EMBEDDING_MODEL_PROFILE_ID" \
+            --output-root data/embedding_models \
+            --variant both
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -350,6 +403,10 @@ jobs:
           file: ./docker/Dockerfile.full
           platforms: ${{ matrix.platform }}
           push: true
+          build-args: |
+            EMBEDDING_MODEL_REPO=${{ env.EMBEDDING_MODEL_REPO }}
+            EMBEDDING_MODEL_REVISION=${{ env.EMBEDDING_MODEL_REVISION }}
+            EMBEDDING_MODEL_PROFILE_ID=${{ env.EMBEDDING_MODEL_PROFILE_ID }}
           tags: ${{ steps.meta_ghcr.outputs.tags || steps.meta_both.outputs.tags }}
           labels: ${{ steps.meta_ghcr.outputs.labels || steps.meta_both.outputs.labels }}
           cache-from: type=gha

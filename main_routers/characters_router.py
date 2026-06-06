@@ -121,7 +121,7 @@ from utils.persona_presets import (
     list_persona_presets,
 )
 from utils.url_utils import encode_url_path
-from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
+from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable, is_cloudsave_disabled
 from config import (
     MEMORY_SERVER_PORT,
     TFLINK_UPLOAD_URL,
@@ -1494,6 +1494,9 @@ def _restore_snapshot_paths(records) -> None:
 
 
 def _build_character_tombstones_state(config_manager, character_name: str) -> dict:
+    if is_cloudsave_disabled():
+        return config_manager.build_default_character_tombstones_state()
+
     cloud_state = config_manager.load_cloudsave_local_state()
     sequence_number = max(1, int(cloud_state.get("next_sequence_number") or 1))
     tombstone_state = config_manager.load_character_tombstones_state()
@@ -3591,7 +3594,8 @@ async def delete_catgirl(name: str):
         tombstone_snapshot = None
         memory_server_reloaded = False
         try:
-            tombstone_snapshot = copy.deepcopy(_config_manager.load_character_tombstones_state())
+            if not is_cloudsave_disabled():
+                tombstone_snapshot = copy.deepcopy(_config_manager.load_character_tombstones_state())
 
             removed_memory_paths = await asyncio.to_thread(
                 delete_character_memory_storage, _config_manager, name
@@ -3605,10 +3609,11 @@ async def delete_catgirl(name: str):
             if meta_path.exists():
                 await asyncio.to_thread(meta_path.unlink)
 
-            await asyncio.to_thread(
-                _config_manager.save_character_tombstones_state,
-                _build_character_tombstones_state(_config_manager, name),
-            )
+            if not is_cloudsave_disabled():
+                await asyncio.to_thread(
+                    _config_manager.save_character_tombstones_state,
+                    _build_character_tombstones_state(_config_manager, name),
+                )
 
             # 删除角色配置
             del characters['猫娘'][name]
@@ -3619,6 +3624,13 @@ async def delete_catgirl(name: str):
             memory_server_reloaded = await notify_memory_server_reload(reason=f"删除角色: {name}")
             if not memory_server_reloaded:
                 raise RuntimeError("notify_memory_server_reload returned False")
+            if is_cloudsave_disabled():
+                try:
+                    from main_routers.workshop_router import mark_session_deleted_character_name
+
+                    mark_session_deleted_character_name(name)
+                except Exception as exc:
+                    logger.warning("记录本会话工坊删除标记失败: %s", exc)
         except MaintenanceModeError as exc:
             rollback_error = await _rollback_character_operation(
                 _config_manager,

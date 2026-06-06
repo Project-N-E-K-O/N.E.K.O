@@ -57,6 +57,58 @@
     border-radius: 12px 12px 0 0;
 }
 
+/* 紧凑聊天独立挂载点必须压过上方 ID 通用宽度，避免播放器撑成整屏。 */
+#music-player-mount.compact-music-player-mount {
+    --compact-music-player-surface-width: var(--compact-surface-resize-width, var(--desktop-compact-surface-width, var(--compact-surface-width, 430px)));
+    width: min(calc(var(--compact-music-player-surface-width) - 16px), 360px, calc(100vw - 24px));
+    max-width: min(calc(var(--compact-music-player-surface-width) - 16px), calc(100vw - 24px));
+    min-width: 0;
+    box-sizing: border-box;
+}
+
+#music-player-mount.compact-music-player-mount > .music-player-bar {
+    flex: 0 1 auto;
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    max-inline-size: 100%;
+    box-sizing: border-box;
+}
+
+#music-player-mount.compact-music-player-mount .music-bar-info,
+#music-player-mount.compact-music-player-mount .music-bar-title-wrap,
+#music-player-mount.compact-music-player-mount .music-bar-artist,
+#music-player-mount.compact-music-player-mount .music-bar-time,
+#music-player-mount.compact-music-player-mount .music-bar-progress-container {
+    min-width: 0;
+    max-width: 100%;
+}
+
+#music-player-mount.compact-music-player-mount .music-bar-info {
+    flex: 1 1 0;
+}
+
+#music-player-mount.compact-music-player-mount .music-bar-cover {
+    flex: 0 0 32px;
+    min-width: 32px;
+}
+
+#music-player-mount.compact-music-player-mount .music-bar-play,
+#music-player-mount.compact-music-player-mount .music-bar-volume-btn {
+    flex: 0 0 28px;
+    min-width: 28px;
+}
+
+#music-player-mount.compact-music-player-mount .music-bar-volume-container {
+    flex: 0 0 28px;
+    min-width: 28px;
+}
+
+#music-player-mount.compact-music-player-mount .music-bar-close {
+    flex: 0 0 22px;
+    min-width: 22px;
+}
+
 .music-player-bar.fading-out {
     animation: musicBarFadeOut 0.2s ease forwards;
 }

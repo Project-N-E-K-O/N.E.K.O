@@ -33,7 +33,13 @@ from main_routers.shared_state import (
     get_request_app_shutdown,
     get_release_storage_startup_barrier,
 )
-from utils.cloudsave_runtime import ROOT_MODE_MAINTENANCE_READONLY, ROOT_MODE_NORMAL, set_root_mode
+from utils.cloudsave_runtime import (
+    ROOT_MODE_MAINTENANCE_READONLY,
+    ROOT_MODE_NORMAL,
+    cloudsave_disabled_reason,
+    is_cloudsave_disabled_due_to_local_state_unavailable,
+    set_root_mode,
+)
 from utils.storage_location_bootstrap import (
     STORAGE_STARTUP_BLOCKING_REASONS,
     STORAGE_STATUS_POLL_INTERVAL_MS,
@@ -111,6 +117,19 @@ def _set_no_cache_headers(response: Response) -> None:
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     response.headers["Pragma"] = "no-cache"
     response.headers["Expires"] = "0"
+
+
+def _reject_storage_mutation_when_cloudsave_disabled(response: Response) -> dict[str, Any] | None:
+    if not is_cloudsave_disabled_due_to_local_state_unavailable():
+        return None
+    response.status_code = 409
+    return {
+        "ok": False,
+        "error_code": "cloudsave_local_state_unavailable",
+        "error": "本机状态目录不可用，当前会话已禁用云存档。请先修复本机 state 路径后重启应用，再进行存储位置变更。",
+        "cloudsave_disabled": True,
+        "cloudsave_disabled_reason": cloudsave_disabled_reason(),
+    }
 
 
 def _normalize_optional_path(value: Any) -> str:
@@ -1081,6 +1100,10 @@ async def post_storage_location_exit(request: Request, response: Response):
             "error": "缺少存储退出确认标记。",
         }
 
+    disabled_response = _reject_storage_mutation_when_cloudsave_disabled(response)
+    if disabled_response is not None:
+        return disabled_response
+
     config_manager = _get_storage_config_manager()
     bootstrap_payload = build_storage_location_bootstrap_payload(config_manager)
     blocking_reason = str(bootstrap_payload.get("blocking_reason") or "").strip()
@@ -1216,6 +1239,10 @@ async def _post_storage_location_retained_source_cleanup_locked(
 ):
     _set_no_cache_headers(response)
 
+    disabled_response = _reject_storage_mutation_when_cloudsave_disabled(response)
+    if disabled_response is not None:
+        return disabled_response
+
     config_manager = _get_storage_config_manager()
     notice = _build_completed_migration_notice(
         config_manager,
@@ -1299,6 +1326,10 @@ async def _post_storage_location_select_locked(
     response: Response,
 ):
     _set_no_cache_headers(response)
+
+    disabled_response = _reject_storage_mutation_when_cloudsave_disabled(response)
+    if disabled_response is not None:
+        return disabled_response
 
     config_manager = _get_storage_config_manager()
     current_root = normalize_runtime_root(config_manager.app_docs_dir)
@@ -1508,6 +1539,10 @@ async def post_storage_location_preflight(
 ):
     _set_no_cache_headers(response)
 
+    disabled_response = _reject_storage_mutation_when_cloudsave_disabled(response)
+    if disabled_response is not None:
+        return disabled_response
+
     config_manager = _get_storage_config_manager()
     current_root = normalize_runtime_root(config_manager.app_docs_dir)
     anchor_root = compute_anchor_root(config_manager, current_root=current_root)
@@ -1586,6 +1621,10 @@ async def _post_storage_location_restart_locked(
     response: Response,
 ):
     _set_no_cache_headers(response)
+
+    disabled_response = _reject_storage_mutation_when_cloudsave_disabled(response)
+    if disabled_response is not None:
+        return disabled_response
 
     config_manager = _get_storage_config_manager()
     current_root = normalize_runtime_root(config_manager.app_docs_dir)

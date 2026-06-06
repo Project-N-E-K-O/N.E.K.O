@@ -307,6 +307,25 @@ def main(argv: list[str] | None = None) -> int:
             f"forcing re-download for {args.repo}@{args.revision}",
         )
 
+    # Existing non-empty weights with no .prepared.json marker can't be trusted
+    # to match the pin: they may be a developer's runtime-downloaded copy that
+    # rode into the Docker build context (.dockerignore no longer excludes
+    # data/embedding_models). Otherwise _download would keep them and the marker
+    # written below would bless them as the pinned revision, silently packaging
+    # the wrong model. Re-fetch instead. CI's prepare step always writes the
+    # marker, so the cache-hit path stays fully offline.
+    unmarked_existing = existing is None and any(
+        (profile_dir / rel).exists() and (profile_dir / rel).stat().st_size > 0
+        for rel in files
+    )
+    if unmarked_existing:
+        print(
+            "[embedding-model] existing weights present without a .prepared.json "
+            f"marker; re-downloading pinned {args.repo}@{args.revision} rather "
+            "than trusting unverified files",
+        )
+
+    force = args.force or revision_changed or unmarked_existing
     endpoints = _endpoints()
     for rel in files:
         _download(
@@ -315,7 +334,7 @@ def main(argv: list[str] | None = None) -> int:
             repo=args.repo,
             revision=args.revision,
             endpoints=endpoints,
-            force=args.force or revision_changed,
+            force=force,
         )
     _verify(profile_dir, files)
     _write_marker(profile_dir, args.repo, args.revision)
