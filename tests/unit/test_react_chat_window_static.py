@@ -716,6 +716,14 @@ def test_compact_history_resize_bar_is_draggable_and_persisted():
     after_block = css_block(styles, ".compact-export-history-resize-bar::after {", ".compact-history-drag-layer")
     assert "opacity: 0;" in after_block
     assert ".compact-export-history-resize-bar.is-active::after {" in styles
+    # 浮现热区：hover 左右宽度 handle（跨子树 :has）或历史滚动条命中区时连带显现，
+    # 不再用「hover 整个历史区就亮」的旧触发。
+    assert ".app-shell:has(.compact-chat-resize-handle:hover) .compact-export-history-resize-bar::after" in styles
+    assert (
+        ".compact-export-history-anchor:has(.compact-export-history-scrollbar-hit:hover) "
+        ".compact-export-history-resize-bar::after"
+    ) in styles
+    assert ".compact-export-history-anchor:hover .compact-export-history-resize-bar" not in styles
 
     # bar 的 DOM：带可命中且不穿透的 hit-region，拖拽不触发面板 / 整窗拖动。
     assert "className={clsx('compact-export-history-resize-bar'" in panel_source

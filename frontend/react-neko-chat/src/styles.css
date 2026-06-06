@@ -2656,7 +2656,12 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   opacity: 0;
 }
 
-.compact-export-history-anchor:hover .compact-export-history-resize-bar::after,
+/* 顶部高度 bar 的浮现热区：鼠标进入「可调尺寸」区域时连带显现，而不是 hover 整个历史区就亮——
+   即左右宽度 handle（.compact-chat-resize-handle，与 anchor 同在 .app-shell 下，跨子树用 :has）
+   或历史滚动条命中区（.compact-export-history-scrollbar-hit，anchor 后代）；
+   外加直接 hover bar 本体 / 拖动中（is-active）。这样在「调宽 / 滚动」语境里统一提示也能调高度。 */
+.app-shell:has(.compact-chat-resize-handle:hover) .compact-export-history-resize-bar::after,
+.compact-export-history-anchor:has(.compact-export-history-scrollbar-hit:hover) .compact-export-history-resize-bar::after,
 .compact-export-history-resize-bar:hover::after,
 .compact-export-history-resize-bar.is-active::after {
   opacity: 0.55;
