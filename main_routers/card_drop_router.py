@@ -84,6 +84,78 @@ def _relay(r: httpx.Response):
     return r.json()
 
 
+# ---- 社区账号登录：JWT 存本地 community_auth.json；draw 时带 Authorization ----
+_AUTH_FILENAME = "community_auth.json"
+
+
+def _auth_path() -> Path | None:
+    try:
+        from utils.config_manager import get_config_manager
+        return Path(get_config_manager().memory_dir).parent / _AUTH_FILENAME
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("card_drop: auth path resolve failed: %s", exc)
+        return None
+
+
+def _load_auth() -> dict | None:
+    p = _auth_path()
+    if not p or not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def _save_auth(data: dict) -> None:
+    p = _auth_path()
+    if not p:
+        return
+    try:
+        p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as exc:
+        logger.warning("card_drop: save auth failed: %s", exc)
+
+
+def _clear_auth() -> None:
+    p = _auth_path()
+    if p and p.exists():
+        try:
+            p.unlink()
+        except OSError:
+            pass
+
+
+def _access_token() -> str | None:
+    a = _load_auth()
+    return a.get("access_token") if a else None
+
+
+async def _finish_login(base: str, login_out: dict) -> dict:
+    """存 JWT + bind-client 迁移游客卡到账号。返回 user dict。"""
+    tokens = login_out.get("tokens") or {}
+    user = login_out.get("user") or {}
+    access = tokens.get("access_token")
+    _save_auth({
+        "access_token": access,
+        "refresh_token": tokens.get("refresh_token"),
+        "user": {"display_name": user.get("display_name"), "email": user.get("email")},
+    })
+    cid = _get_client_id()
+    if access and cid:
+        try:
+            async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
+                await client.post(
+                    f"{base}/api/auth/bind-client",
+                    headers={"Authorization": f"Bearer {access}"},
+                    json={"client_id": cid},
+                )
+        except (httpx.HTTPError, OSError) as exc:
+            logger.info("card_drop: bind-client after login failed: %s", exc)
+    return user
+
+
 def _local_facts(lanlan_name: str) -> list[dict]:
     """读本地 memory/<角色>/facts.json，返回 [{text, importance}]（过滤 private/redacted/空）。"""
     try:
@@ -173,17 +245,68 @@ async def test_trigger_endpoint(
     return {"broadcast_to": n, "lanlan_name": lanlan_name}
 
 
-@router.post("/draw", summary="代理云端开卡：roll 稀有度 + 建卡（含唯一编号）")
+@router.get("/auth-status", summary="社区登录状态")
+async def auth_status_endpoint():
+    a = _load_auth()
+    if a and a.get("access_token"):
+        u = a.get("user") or {}
+        return {"logged_in": True, "user": {"display_name": u.get("display_name"), "email": u.get("email")}}
+    return {"logged_in": False, "user": None}
+
+
+@router.post("/login", summary="邮箱密码登录社区账号（存 JWT + 迁移游客卡）")
+async def login_endpoint(payload: dict = Body(...)):
+    email = (payload.get("email") or "").strip()
+    password = payload.get("password") or ""
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="missing_email_or_password")
+    base = _social_base_url()
+    try:
+        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
+            r = await client.post(f"{base}/api/auth/login", json={"email": email, "password": password})
+    except (httpx.HTTPError, OSError) as exc:
+        raise HTTPException(status_code=502, detail=f"cloud_unreachable: {exc}") from exc
+    user = await _finish_login(base, _relay(r))
+    return {"user": user}
+
+
+@router.post("/register", summary="邮箱密码注册社区账号（存 JWT + 迁移游客卡）")
+async def register_endpoint(payload: dict = Body(...)):
+    email = (payload.get("email") or "").strip()
+    password = payload.get("password") or ""
+    display_name = (payload.get("display_name") or "").strip() or None
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="missing_email_or_password")
+    body = {"email": email, "password": password}
+    if display_name:
+        body["display_name"] = display_name
+    base = _social_base_url()
+    try:
+        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
+            r = await client.post(f"{base}/api/auth/register", json=body)
+    except (httpx.HTTPError, OSError) as exc:
+        raise HTTPException(status_code=502, detail=f"cloud_unreachable: {exc}") from exc
+    user = await _finish_login(base, _relay(r))
+    return {"user": user}
+
+
+@router.post("/logout", summary="登出（清本地 JWT）")
+async def logout_endpoint():
+    _clear_auth()
+    return {"logged_in": False}
+
+
+@router.post("/draw", summary="代理云端开卡：roll 稀有度 + 建卡（登录则卡归账号）")
 async def draw_endpoint(payload: dict = Body(...)):
     base, cid = _require_ctx()
+    headers = {"X-Client-Id": cid, "Content-Type": "application/json"}
+    token = _access_token()  # 登录了就带 JWT → 云端把卡归到 user 账号
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     url = f"{base}/api/cards/draw"
     try:
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
-            r = await client.post(
-                url,
-                headers={"X-Client-Id": cid, "Content-Type": "application/json"},
-                json=payload,
-            )
+            r = await client.post(url, headers=headers, json=payload)
     except (httpx.HTTPError, OSError) as exc:
         raise HTTPException(status_code=502, detail=f"cloud_unreachable: {exc}") from exc
     return _relay(r)

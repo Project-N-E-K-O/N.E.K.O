@@ -135,6 +135,24 @@
 }
 .cd-shake { animation: cd-shake .5s ease-in-out; }
 
+/* ---- 社区登录（卡存卡册）---- */
+.cd-auth { margin: 4px auto 14px; max-width: 320px; }
+.cd-auth-ok { font-size: 12.5px; font-weight: 700; color: #9ad6a0; opacity: .95; }
+.cd-auth-hint { font-size: 12.5px; opacity: .72; margin-bottom: 8px; line-height: 1.5; }
+.cd-auth-btn { padding: 8px 18px; font-size: 13px; }
+
+.cd-login { max-width: 320px; margin: 6px auto 4px; display: flex; flex-direction: column; gap: 10px; }
+.cd-input {
+  width: 100%; box-sizing: border-box; padding: 11px 14px; border-radius: 11px; font: inherit; font-size: 14px;
+  color: #fff; background: rgba(255,255,255,.1); border: 1.5px solid rgba(255,255,255,.22); outline: none;
+}
+.cd-input::placeholder { color: rgba(255,255,255,.5); }
+.cd-input:focus { border-color: #ffd86b; }
+.cd-login-err { font-size: 12.5px; color: #ff9ec0; min-height: 16px; line-height: 1.4; }
+.cd-login-sub { display: flex; justify-content: center; gap: 16px; margin-top: 10px; }
+.cd-link { background: none; border: none; cursor: pointer; color: rgba(255,255,255,.72); font: inherit; font-size: 12.5px; }
+.cd-link:hover { color: #fff; }
+
 /* rarity palettes (set as CSS vars on the reveal/card root) */
 .cd-rar-N   { --cd-c:#9aa6bd; --cd-glow:rgba(154,166,189,.5);  --cd-accent:#cfd6e4; }
 .cd-rar-R   { --cd-c:#39b7f5; --cd-glow:rgba(57,183,245,.6);   --cd-accent:#bfe9ff; }

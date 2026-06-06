@@ -78,7 +78,7 @@
     ensureDom();
     els.backdrop.classList.add('cd-open');
   }
-  function openModal() { openShell(); loadCandidates(); }       // 开卡（5选1）
+  function openModal() { openShell(); loadAuth(); loadCandidates(); }   // 开卡（5选1）
   function closeModal() {
     if (!els) return;
     els.backdrop.classList.remove('cd-open');
@@ -160,7 +160,8 @@
   }
 
   // ---- step: reveal ----
-  function reveal(card) {
+  function reveal(card, skipFx) {
+    state.lastCard = card;
     var rk = (card.rarity || 'N').toUpperCase();
     var meta = RAR[rk] || RAR.N;
     var cls = 'cd-rar-' + rk;
@@ -185,6 +186,8 @@
     var story = (card.summary || card.story_md || '').replace(/[#*`>]/g, '').trim();
     wrap.appendChild(el('div', 'cd-story', escapeHtml(story.slice(0, 90))));
 
+    wrap.appendChild(buildAuthSection());
+
     var actions = el('div', 'cd-actions');
     var done = el('button', 'cd-btn cd-btn-primary', '收下 ✦');
     done.addEventListener('click', closeModal);
@@ -194,6 +197,7 @@
     els.body.innerHTML = '';
     els.body.appendChild(wrap);
 
+    if (skipFx) return;
     // 演出：音效（多重叮）+ 屏闪 + 震屏 + 粒子
     for (var m = 0; m < meta.multi; m++) {
       (function (k) { setTimeout(function () { playSound(SOUND_COIN, meta.vol); }, k * 110); })(m);
@@ -201,6 +205,74 @@
     if (meta.flash) screenFlash(cls);
     if (meta.shake) els.modal.classList.add('cd-shake'), setTimeout(function () { els.modal.classList.remove('cd-shake'); }, 520);
     spawnParticles(cardEl, meta.particles, cls);
+  }
+
+  // ---- 社区登录（卡存进卡册）----
+  function loadAuth() {
+    return api('/api/card-drop/auth-status')
+      .then(function (d) { state.auth = d; })
+      .catch(function () { state.auth = { logged_in: false }; });
+  }
+
+  function buildAuthSection() {
+    var box = el('div', 'cd-auth');
+    if (state.auth && state.auth.logged_in) {
+      var name = (state.auth.user && state.auth.user.display_name) || '你';
+      box.appendChild(el('div', 'cd-auth-ok', '✦ 已存入 ' + escapeHtml(name) + ' 的卡册'));
+    } else {
+      box.appendChild(el('div', 'cd-auth-hint', '登录猫娘社区，把这张卡存进你的卡册 ✦'));
+      var btn = el('button', 'cd-btn cd-btn-ghost cd-auth-btn', '登录 / 注册');
+      btn.addEventListener('click', function () { showLogin('login'); });
+      box.appendChild(btn);
+    }
+    return box;
+  }
+
+  function showLogin(mode) {
+    mode = mode || 'login';
+    var isReg = mode === 'register';
+    setHead(isReg ? '注册猫娘社区' : '登录猫娘社区', '登录后掉落的卡会存进你的卡册');
+    els.body.innerHTML = '';
+    var form = el('div', 'cd-login');
+    var emailIn = el('input', 'cd-input'); emailIn.type = 'email'; emailIn.placeholder = '邮箱';
+    var pwIn = el('input', 'cd-input'); pwIn.type = 'password'; pwIn.placeholder = '密码（≥8 位）';
+    form.appendChild(emailIn); form.appendChild(pwIn);
+    var nameIn = null;
+    if (isReg) { nameIn = el('input', 'cd-input'); nameIn.type = 'text'; nameIn.placeholder = '昵称（可选）'; form.appendChild(nameIn); }
+    var errEl = el('div', 'cd-login-err');
+    form.appendChild(errEl);
+
+    var submit = el('button', 'cd-btn cd-btn-primary', isReg ? '注册并登录' : '登录');
+    function go() {
+      var email = emailIn.value.trim(), pw = pwIn.value;
+      if (!email || !pw) { errEl.textContent = '请填邮箱和密码'; return; }
+      submit.disabled = true; errEl.textContent = '登录中…';
+      var body = { email: email, password: pw };
+      if (nameIn && nameIn.value.trim()) body.display_name = nameIn.value.trim();
+      api('/api/card-drop/' + (isReg ? 'register' : 'login'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+      }).then(function (d) {
+        state.auth = { logged_in: true, user: d.user };
+        toast('✦ 已登录，卡存进卡册了', 3000);
+        reveal(state.lastCard || {}, true);
+      }).catch(function (e) { submit.disabled = false; errEl.textContent = (e && (e.detail || e.message)) || '登录失败'; });
+    }
+    submit.addEventListener('click', go);
+    pwIn.addEventListener('keydown', function (e) { if (e.key === 'Enter') go(); });
+
+    var actions = el('div', 'cd-actions');
+    actions.appendChild(submit);
+    form.appendChild(actions);
+
+    var toggle = el('button', 'cd-link', isReg ? '已有账号？去登录' : '没有账号？去注册');
+    toggle.addEventListener('click', function () { showLogin(isReg ? 'login' : 'register'); });
+    var back = el('button', 'cd-link', '← 返回卡片');
+    back.addEventListener('click', function () { reveal(state.lastCard || {}, true); });
+    var sub = el('div', 'cd-login-sub');
+    sub.appendChild(toggle); sub.appendChild(back);
+    form.appendChild(sub);
+
+    els.body.appendChild(form);
   }
 
   function screenFlash(cls) {
