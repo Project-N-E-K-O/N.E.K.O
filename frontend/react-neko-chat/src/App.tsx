@@ -133,7 +133,6 @@ const COMPACT_SURFACE_RESIZE_MOBILE_VIEWPORT_GUTTER = 16;
 // 下限压到 ~1-2 个气泡以便节约屏幕；上限对齐 anchor 的 max-height（width*1.46 / 78% 视口），
 // 避免拖超 anchor 二次截断产生「拖了没反应」的死区。默认（未拖动）公式仍是 width*1.18 / 63%。
 const COMPACT_HISTORY_SLOT_MIN_HEIGHT = 120;
-const COMPACT_HISTORY_SLOT_MAX_WIDTH_RATIO = 1.46;
 const COMPACT_HISTORY_SLOT_MAX_VIEWPORT_RATIO = 0.78;
 const COMPACT_HISTORY_SLOT_DEFAULT_WIDTH_RATIO = 1.18;
 const COMPACT_HISTORY_SLOT_DEFAULT_VIEWPORT_RATIO = 0.63;
@@ -2719,19 +2718,15 @@ export default function App({
   }, [finishCompactSurfaceResize]);
 
   const getCompactHistorySlotMaxHeight = useCallback(() => {
-    const surfaceWidth = getCurrentCompactSurfaceWidth();
     const base = getCompactHistoryViewportBase();
-    // anchor 的 max-height = min(width*1.46, 78%)，但 panel 里 scroll 上方有 bar、下方有 controls；
+    // 上限只受「屏幕可用高度」约束（去掉对话条宽度挂钩那条）；panel 里 scroll 上方有 bar、下方有 controls，
     // 先扣掉这部分非滚动 chrome，scroll 区才不会吃满 anchor 把 controls / 底部气泡顶出可视/可点区。
-    const anchorMax = Math.min(
-      surfaceWidth * COMPACT_HISTORY_SLOT_MAX_WIDTH_RATIO,
-      base * COMPACT_HISTORY_SLOT_MAX_VIEWPORT_RATIO,
-    );
+    const anchorMax = base * COMPACT_HISTORY_SLOT_MAX_VIEWPORT_RATIO;
     return Math.round(Math.max(
       COMPACT_HISTORY_SLOT_MIN_HEIGHT,
       anchorMax - COMPACT_HISTORY_SLOT_CHROME_RESERVE,
     ));
-  }, [getCurrentCompactSurfaceWidth]);
+  }, []);
 
   const getClampedCompactHistorySlotHeight = useCallback((height: number) => (
     Math.round(Math.max(
