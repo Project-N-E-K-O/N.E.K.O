@@ -72,8 +72,6 @@
         onComposerScreenshot: null,
         onComposerRemoveAttachment: null,
         onComposerSubmit: null,
-        onCompactHistoryDrop: null,
-        onCompactHistoryDragStateChange: null,
         onAvatarInteraction: null,
         onAvatarToolStateChange: null,
         pendingRollbackDrafts: Object.create(null),
@@ -2173,8 +2171,6 @@
             onComposerScreenshot: handleComposerScreenshot,
             onComposerRemoveAttachment: handleComposerRemoveAttachment,
             onComposerSubmit: handleComposerSubmit,
-            onCompactHistoryDrop: handleCompactHistoryDrop,
-            onCompactHistoryDragStateChange: handleCompactHistoryDragStateChange,
             onAvatarInteraction: handleAvatarInteraction,
             onAvatarToolStateChange: handleAvatarToolStateChange,
             onJukeboxClick: handleJukeboxClick,
@@ -2516,31 +2512,6 @@
         dispatchHostEvent('submit', detail);
     }
 
-    function handleCompactHistoryDrop(payload) {
-        var detail = payload || {};
-
-        if (typeof state.onCompactHistoryDrop === 'function') {
-            try {
-                return state.onCompactHistoryDrop(detail);
-            } catch (error) {
-                console.error('[ReactChatWindow] onCompactHistoryDrop failed:', error);
-                return false;
-            }
-        }
-        if (window.appButtons && typeof window.appButtons.sendCompactHistoryDropPayload === 'function') {
-            return window.appButtons.sendCompactHistoryDropPayload(detail);
-        }
-        if ((!detail.images || !detail.images.length) && typeof detail.text === 'string' && detail.text.trim()) {
-            handleComposerSubmit({
-                text: detail.text,
-                requestId: detail.requestId
-            });
-            return true;
-        }
-        console.warn('[ReactChatWindow] no compact history drop handler available');
-        return false;
-    }
-
     function prepareCompactHistoryDropSubmit(payload) {
         var detail = payload || {};
         var text = typeof detail.text === 'string' ? detail.text.trim() : '';
@@ -2564,21 +2535,6 @@
         }
         state.rollbackDraft = '';
         return true;
-    }
-
-    function handleCompactHistoryDragStateChange(payload) {
-        var detail = payload || {};
-
-        if (typeof state.onCompactHistoryDragStateChange === 'function') {
-            try {
-                state.onCompactHistoryDragStateChange(detail);
-            } catch (error) {
-                console.error('[ReactChatWindow] onCompactHistoryDragStateChange failed:', error);
-            }
-        }
-
-        dispatchHostEvent('compact-history-drag-state-change', detail);
-        window.dispatchEvent(new CustomEvent('neko:compact-history-drag-state-change', { detail: detail }));
     }
 
     function handleAvatarInteraction(payload) {
@@ -5742,13 +5698,7 @@
         setOnComposerSubmit: function (handler) {
             state.onComposerSubmit = typeof handler === 'function' ? handler : null;
         },
-        setOnCompactHistoryDrop: function (handler) {
-            state.onCompactHistoryDrop = typeof handler === 'function' ? handler : null;
-        },
         prepareCompactHistoryDropSubmit: prepareCompactHistoryDropSubmit,
-        setOnCompactHistoryDragStateChange: function (handler) {
-            state.onCompactHistoryDragStateChange = typeof handler === 'function' ? handler : null;
-        },
         setOnAvatarInteraction: function (handler) {
             state.onAvatarInteraction = typeof handler === 'function' ? handler : null;
         },

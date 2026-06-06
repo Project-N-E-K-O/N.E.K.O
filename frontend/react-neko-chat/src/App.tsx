@@ -16,7 +16,6 @@ import CompactExportHistoryPanel, {
   isCompactExportMessageSelectable,
   type CompactExportActionRequest,
   type CompactExportPreviewResult,
-  type CompactHistoryDropRequest,
 } from './CompactExportHistoryPanel';
 import { i18n } from './i18n';
 import {
@@ -25,12 +24,9 @@ import {
   type ChatWindowSchemaProps,
   type ComposerSubmitPayload,
   type ComposerAttachment,
-  type CompactHistoryDropPayload,
-  type CompactHistoryDragStatePayload,
   type AvatarInteractionPayload,
   type AvatarToolStatePayload,
   type CompactChatState,
-  type MessageBlock,
   type GalgameOption,
   type ChoiceOption,
   type ChoicePromptSource,
@@ -42,8 +38,6 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
   onComposerScreenshot?: () => void;
   onComposerRemoveAttachment?: (attachmentId: ComposerAttachment['id']) => void;
   onComposerSubmit?: (payload: ComposerSubmitPayload) => void;
-  onCompactHistoryDrop?: (payload: CompactHistoryDropPayload) => unknown;
-  onCompactHistoryDragStateChange?: (payload: CompactHistoryDragStatePayload) => void;
   onAvatarInteraction?: (payload: AvatarInteractionPayload) => void;
   onAvatarToolStateChange?: (payload: AvatarToolStatePayload) => void;
   onJukeboxClick?: () => void;
@@ -176,80 +170,6 @@ type CompactHistoryResizeState = {
   moved: boolean;
   captureTarget: Element | null;
 };
-
-function createCompactHistoryDropRequestId() {
-  return `compact-history-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function normalizeCompactHistoryTextFragment(value: string | undefined) {
-  return typeof value === 'string' ? value.trim() : '';
-}
-
-function getCompactHistoryTextFromBlock(block: MessageBlock) {
-  if (block.type === 'text' || block.type === 'status') {
-    return normalizeCompactHistoryTextFragment(block.text);
-  }
-  if (block.type === 'link') {
-    return [
-      normalizeCompactHistoryTextFragment(block.title),
-      normalizeCompactHistoryTextFragment(block.description),
-      normalizeCompactHistoryTextFragment(block.url),
-    ].filter(Boolean).join('\n');
-  }
-  if (block.type === 'buttons') {
-    return block.buttons
-      .map(button => normalizeCompactHistoryTextFragment(button.label))
-      .filter(Boolean)
-      .join(' / ');
-  }
-  return '';
-}
-
-function buildCompactHistoryDropPayload(request: CompactHistoryDropRequest): CompactHistoryDropPayload {
-  const textParts: string[] = [];
-  const images: NonNullable<CompactHistoryDropPayload['images']> = [];
-
-  if (request.payload.type === 'image') {
-    images.push({
-      url: request.payload.url,
-      alt: request.payload.alt,
-      width: request.payload.width,
-      height: request.payload.height,
-    });
-  } else {
-    for (const block of request.payload.blocks) {
-      if (block.type === 'image') {
-        images.push({
-          url: block.url,
-          alt: block.alt,
-          width: block.width,
-          height: block.height,
-        });
-        continue;
-      }
-      const text = getCompactHistoryTextFromBlock(block);
-      if (text) {
-        textParts.push(text);
-      }
-    }
-  }
-
-  return {
-    text: textParts.join('\n').trim(),
-    images,
-    requestId: createCompactHistoryDropRequestId(),
-    sourceMessageId: request.messageId,
-    dragType: request.type,
-    compactHistoryDragSessionId: request.sessionId,
-  };
-}
-
-function normalizeCompactHistoryDropResult(result: unknown): Promise<boolean | void> | boolean | void {
-  if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
-    return Promise.resolve(result).then(value => (value === false ? false : undefined));
-  }
-  return result === false ? false : undefined;
-}
 
 type CompactToolWheelPointerState = {
   id: number;
@@ -774,13 +694,6 @@ type AvatarRangeHit = {
   touchZone: AvatarTouchZone;
 };
 
-type CompactHistoryDesktopDropTargetDetail = {
-  active?: boolean;
-  sessionId?: string;
-  desktopOverAvatar?: boolean | null;
-  timestamp?: number;
-};
-
 function normalizeHostAvatarBounds(bounds: unknown): HostAvatarBounds | null {
   if (!bounds || typeof bounds !== 'object') return null;
   const raw = bounds as Partial<HostAvatarBounds>;
@@ -1223,8 +1136,6 @@ export default function App({
   onComposerScreenshot,
   onComposerRemoveAttachment,
   onComposerSubmit,
-  onCompactHistoryDrop,
-  onCompactHistoryDragStateChange,
   onAvatarInteraction,
   onAvatarToolStateChange,
   onJukeboxClick,
@@ -1302,7 +1213,6 @@ export default function App({
   const interactionBurstHistoryRef = useRef<Record<string, number[]>>({});
   const latestPointerPositionRef = useRef({ x: 0, y: 0 });
   const latestPointerTargetRef = useRef<EventTarget | null>(null);
-  const compactHistoryDesktopDropTargetRef = useRef<{ sessionId?: string; overTarget: boolean; timestamp: number } | null>(null);
   const avatarRangeHoldUntilRef = useRef(0);
   const avatarRangeHoldTimerRef = useRef<number | null>(null);
   const draftRef = useRef(draft);
@@ -4673,72 +4583,6 @@ export default function App({
     }
   }
 
-  useEffect(() => {
-    function handleDesktopDropTargetChange(event: Event) {
-      const detail = (event as CustomEvent<CompactHistoryDesktopDropTargetDetail>).detail;
-      if (detail?.active === false) {
-        compactHistoryDesktopDropTargetRef.current = null;
-        return;
-      }
-      if (!detail?.sessionId || typeof detail.desktopOverAvatar !== 'boolean') return;
-      compactHistoryDesktopDropTargetRef.current = {
-        sessionId: detail.sessionId,
-        overTarget: detail.desktopOverAvatar,
-        timestamp: Number.isFinite(Number(detail.timestamp)) ? Number(detail.timestamp) : Date.now(),
-      };
-    }
-
-    window.addEventListener('neko:compact-history-drag-desktop-target-change', handleDesktopDropTargetChange);
-    return () => {
-      window.removeEventListener('neko:compact-history-drag-desktop-target-change', handleDesktopDropTargetChange);
-    };
-  }, []);
-
-  const getCompactHistoryDesktopDropTarget = useCallback((sessionId?: string) => {
-    const desktopDropTarget = compactHistoryDesktopDropTargetRef.current;
-    if (!desktopDropTarget) return null;
-    if (sessionId && desktopDropTarget.sessionId && desktopDropTarget.sessionId !== sessionId) return null;
-    if (Date.now() - desktopDropTarget.timestamp >= 800) return null;
-    return desktopDropTarget.overTarget;
-  }, []);
-
-  const isCompactHistoryDropTargetAt = useCallback((point: { clientX: number; clientY: number; sessionId?: string }) => (
-    getCompactHistoryDesktopDropTarget(point.sessionId) ?? isPointerWithinAvatarRange(point.clientX, point.clientY, avatarToolCacheState)
-  ), [avatarToolCacheState, getCompactHistoryDesktopDropTarget]);
-
-  const handleCompactHistoryDropToAvatar = useCallback((request: CompactHistoryDropRequest) => {
-    const desktopDropTarget = getCompactHistoryDesktopDropTarget(request.sessionId);
-    if (
-      desktopDropTarget !== true
-      && (desktopDropTarget !== null || !isPointerWithinAvatarRange(request.point.clientX, request.point.clientY, avatarToolCacheState))
-    ) {
-      return false;
-    }
-
-    const payload = buildCompactHistoryDropPayload(request);
-    const hasText = !!payload.text?.trim();
-    const hasImages = (payload.images?.length ?? 0) > 0;
-    if (!hasText && !hasImages) {
-      return false;
-    }
-
-    if (request.payload.type === 'bubble' && hasText && !hasImages) {
-      return false;
-    }
-    restoreCompactExportHistoryToBottomForOutgoingMessage();
-    if (onCompactHistoryDrop) {
-      return normalizeCompactHistoryDropResult(onCompactHistoryDrop(payload));
-    }
-    if (hasImages) {
-      return false;
-    }
-    onComposerSubmit?.({
-      text: payload.text ?? '',
-      requestId: payload.requestId,
-    });
-    return true;
-  }, [avatarToolCacheState, compactExportHistoryOpen, getCompactHistoryDesktopDropTarget, onCompactHistoryDrop, onComposerSubmit]);
-
   const compactFanRunAction = (action: (() => void) | undefined) => (event: ReactMouseEvent) => {
     if (shouldSuppressCompactToolClick(event)) {
       event.preventDefault();
@@ -5460,9 +5304,6 @@ export default function App({
       onBuildPreview={handleCompactInlineBuildPreview}
       onCopyExport={handleCompactInlineCopyExport}
       onDownloadExport={handleCompactInlineDownloadExport}
-      isDropTargetAt={isCompactHistoryDropTargetAt}
-      onDropToTarget={handleCompactHistoryDropToAvatar}
-      onDragStateChange={onCompactHistoryDragStateChange}
       historyResizeActive={compactHistoryResizeActive}
       onHistoryResizePointerDown={handleCompactHistoryResizePointerDown}
       onHistoryResizePointerMove={handleCompactHistoryResizePointerMove}

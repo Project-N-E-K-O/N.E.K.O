@@ -713,7 +713,11 @@ def test_compact_history_resize_bar_is_draggable_and_persisted():
     # bar 本体不能透明：宿主几何收集器按 opacity<=0.01 丢弃 hit-region，透明会让 Electron 下鼠标穿透、点不到。
     assert "opacity: 0;" not in bar_block
     # 只让视觉抓手（伪元素）平时透明、hover/拖动显现。
-    after_block = css_block(styles, ".compact-export-history-resize-bar::after {", ".compact-history-drag-layer")
+    after_block = css_block(
+        styles,
+        ".compact-export-history-resize-bar::after {",
+        ".compact-export-history-anchor:hover .compact-export-history-resize-bar::after",
+    )
     assert "opacity: 0;" in after_block
     assert ".compact-export-history-resize-bar.is-active::after {" in styles
     # hover 整个历史区即浮现顶部高度 bar（回滚 fd138cd 的「调尺寸热区联动浮现」收窄，
@@ -862,19 +866,41 @@ def test_compact_history_closing_bubbles_disable_pointer_events():
     assert "pointer-events: none;" in closing_bubble_block
 
 
-def test_compact_history_enter_animation_excludes_drag_sources():
-    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
-    enter_selector = (
-        '.compact-export-history-anchor[data-compact-export-history-visibility="open"] '
-        ".compact-export-history-message:not([data-compact-history-drag-phase]) "
-        ".compact-export-history-bubble"
-    )
+def test_compact_history_bubbles_are_text_selectable_and_drag_free():
+    """拖到 avatar 子系统已删除：气泡不再捕获指针，文本可被鼠标选中复制。
 
-    assert enter_selector in styles
-    assert (
-        '.compact-export-history-anchor[data-compact-export-history-visibility="open"] '
-        ".compact-export-history-bubble {"
-    ) not in styles
+    断言气泡 CSS 显式声明 user-select:text / cursor:text（覆盖 [role=\"button\"]
+    的 user-select:none），且气泡 JSX 不再挂任何指针拖拽 handler（只留 onClick /
+    onKeyDown 驱动导出勾选）。"""
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+    panel_source = COMPACT_EXPORT_HISTORY_PANEL_PATH.read_text(encoding="utf-8")
+
+    bubble_block = css_block(
+        styles,
+        ".compact-export-history-bubble {",
+        ".compact-export-history-anchor[data-compact-export-history-visibility=\"open\"]",
+    )
+    assert "user-select: text;" in bubble_block
+    assert "-webkit-user-select: text;" in bubble_block
+    assert "cursor: text;" in bubble_block
+    assert "cursor: pointer;" not in bubble_block
+
+    # 拖拽 CSS 全部移除。
+    assert "compact-history-drag-layer" not in styles
+    assert "data-compact-history-drag" not in styles
+
+    # 气泡 JSX 只保留 onClick / onKeyDown，不再有拖拽指针 handler。
+    bubble_jsx = panel_source.split('className="compact-export-history-bubble"', 1)[1].split(
+        "compact-export-history-check",
+        1,
+    )[0]
+    assert "onClick={(event) => handleClick(event, message, selectable)}" in bubble_jsx
+    assert "onKeyDown={(event) => handleKeyDown(event, message, selectable)}" in bubble_jsx
+    assert "onPointerDown" not in bubble_jsx
+    assert "onPointerMove" not in bubble_jsx
+    assert "onPointerUp" not in bubble_jsx
+    assert "handlePointerDown" not in panel_source
+    assert "startCompactHistoryDrag" not in panel_source
 
 
 def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regions():

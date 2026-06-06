@@ -2540,31 +2540,6 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   opacity: 0.85;
 }
 
-.compact-export-history-message[data-compact-history-drag-source][data-compact-history-drag-phase="dragging"] .compact-export-history-bubble,
-.compact-export-history-message[data-compact-history-drag-source][data-compact-history-drag-phase="sending"] .compact-export-history-bubble {
-  border-color: transparent;
-  background: transparent;
-  box-shadow: none;
-}
-
-.compact-export-history-message[data-compact-history-drag-source][data-compact-history-drag-phase="dragging"] .compact-export-history-bubble {
-  opacity: 0;
-}
-
-.compact-export-history-message[data-compact-history-drag-source][data-compact-history-drag-phase="dragging"] .compact-export-history-bubble > *,
-.compact-export-history-message[data-compact-history-drag-source][data-compact-history-drag-phase="sending"] .compact-export-history-bubble > * {
-  opacity: var(--compact-history-drag-source-content-opacity, 0);
-  transition: opacity 0.08s linear;
-}
-
-.compact-export-history-message[data-compact-history-drag-phase="returning"] .compact-export-history-bubble {
-  transition: border-color 0.16s ease, box-shadow 0.22s ease, transform 0.26s cubic-bezier(0.22, 1.22, 0.36, 1);
-}
-
-.compact-export-history-message[data-compact-history-drag-phase="sending"] .compact-export-history-bubble {
-  animation: compact-history-source-send 0.34s ease both;
-}
-
 .compact-export-history-bubble {
   position: relative;
   max-width: var(--compact-history-bubble-max-ratio, var(--compact-export-history-bubble-max-ratio));
@@ -2577,14 +2552,18 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   box-shadow: 0 7px 18px rgba(22, 48, 84, 0.08);
   backdrop-filter: blur(8px) saturate(1.08);
   -webkit-backdrop-filter: blur(8px) saturate(1.08);
-  cursor: pointer;
+  /* 历史气泡文本可被鼠标正常选中复制（拖到 avatar 子系统已移除，不再捕获指针）。
+     选择模式下气泡是 role="button"，styles 里 [role="button"] 有 user-select:none，
+     这里用更高特异度的 class 规则覆盖回 text，确保选择/勾选两态都能选中文本。 */
+  cursor: text;
+  user-select: text;
+  -webkit-user-select: text;
   pointer-events: auto;
-  transform-origin: var(--compact-history-drag-origin-x, 50%) var(--compact-history-drag-origin-y, 50%);
   transform: translateX(var(--compact-history-stagger-x, 0px)) rotate(var(--compact-history-rotate, 0deg));
   transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
 }
 
-.compact-export-history-anchor[data-compact-export-history-visibility="open"] .compact-export-history-message:not([data-compact-history-drag-phase]) .compact-export-history-bubble {
+.compact-export-history-anchor[data-compact-export-history-visibility="open"] .compact-export-history-message .compact-export-history-bubble {
   animation: compact-history-message-enter 0.26s cubic-bezier(0.2, 0.78, 0.34, 1) both;
   animation-delay: var(--compact-history-enter-delay, 0ms);
 }
@@ -2615,8 +2594,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   --compact-history-rotate: 0deg;
 }
 
-.compact-export-history-bubble .message-block-image img,
-.compact-history-drag-bubble .message-block-image img {
+.compact-export-history-bubble .message-block-image img {
   height: auto;
   object-fit: contain;
 }
@@ -2667,232 +2645,6 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 .compact-export-history-resize-bar:hover::after,
 .compact-export-history-resize-bar.is-active::after {
   opacity: 0.55;
-}
-
-.compact-history-drag-layer {
-  position: fixed;
-  left: var(--compact-history-drag-left, 0px);
-  top: var(--compact-history-drag-top, 0px);
-  width: var(--compact-history-drag-width, 1px);
-  min-width: 1px;
-  min-height: 1px;
-  z-index: 100020;
-  pointer-events: none;
-  -webkit-app-region: no-drag;
-  overflow: visible;
-  transform: translateZ(0);
-  will-change: left, top, transform;
-  contain: layout style;
-}
-
-.compact-history-drag-layer[data-compact-drag-phase="returning"],
-.compact-history-drag-layer[data-compact-drag-phase="sending"] {
-  transition:
-    left 0.26s cubic-bezier(0.22, 1.22, 0.36, 1),
-    top 0.26s cubic-bezier(0.22, 1.22, 0.36, 1);
-}
-
-.compact-history-drag-filter-defs {
-  position: fixed;
-  width: 0;
-  height: 0;
-  overflow: hidden;
-  pointer-events: none;
-}
-
-.compact-history-drag-elastic {
-  position: fixed;
-  inset: 0;
-  width: 100vw;
-  height: 100vh;
-  z-index: 100019;
-  pointer-events: none;
-  -webkit-app-region: no-drag;
-  overflow: visible;
-  opacity: var(--compact-history-elastic-opacity, 0.86);
-  filter:
-    drop-shadow(0 10px 20px rgb(var(--compact-history-drag-shadow-rgb, 42 93 145) / 0.16))
-    drop-shadow(0 1px 0 rgb(var(--compact-history-drag-edge-rgb, 77 160 220) / 0.04));
-  transform: translateZ(0);
-  will-change: opacity, filter;
-  contain: layout style paint;
-}
-
-.compact-history-drag-goo-group {
-  filter: url("#compact-history-goo-filter");
-}
-
-.compact-history-drag-elastic-fill,
-.compact-history-drag-bubble-shell-fill {
-  fill: rgb(var(--compact-history-drag-surface-rgb, 255 255 255) / 0.9);
-  stroke: transparent;
-  stroke-width: 0;
-}
-
-.compact-history-drag-bubble-shell-fill {
-  fill: rgb(var(--compact-history-drag-surface-rgb, 255 255 255) / 0.92);
-}
-
-.compact-history-drag-elastic[data-compact-drag-over-target="true"] {
-  opacity: 0.94;
-  filter: drop-shadow(0 12px 26px rgba(46, 178, 132, 0.2));
-}
-
-.compact-history-drag-elastic[data-compact-drag-phase="returning"],
-.compact-history-drag-elastic[data-compact-drag-phase="sending"] {
-  opacity: 0;
-  transition: opacity 0.16s ease;
-}
-
-.compact-history-drag-shadow {
-  box-sizing: border-box;
-  width: 100%;
-  min-height: var(--compact-history-drag-height, 1px);
-  border-radius: inherit;
-  overflow: visible;
-  opacity: 0.94;
-  transform:
-    scaleX(var(--compact-history-drag-scale-x, 1.04))
-    scaleY(var(--compact-history-drag-scale-y, 0.98));
-  transform-origin: var(--compact-history-drag-origin-x, 50%) var(--compact-history-drag-origin-y, 50%);
-  filter: drop-shadow(0 12px 24px rgb(var(--compact-history-drag-shadow-rgb, 42 93 145) / 0.2));
-  transition:
-    opacity 0.2s ease,
-    transform 0.24s cubic-bezier(0.2, 1.1, 0.32, 1),
-    filter 0.2s ease;
-}
-
-.compact-history-drag-layer[data-compact-drag-over-target="true"] .compact-history-drag-shadow {
-  filter: drop-shadow(0 14px 28px rgba(46, 178, 132, 0.22));
-  transform:
-    scaleX(calc(var(--compact-history-drag-scale-x, 1.01) + 0.015))
-    scaleY(calc(var(--compact-history-drag-scale-y, 1) + 0.01));
-}
-
-.compact-history-drag-layer[data-compact-drag-phase="returning"] .compact-history-drag-shadow {
-  opacity: 0;
-  transform: scale(0.72);
-  filter: drop-shadow(0 4px 10px rgba(23, 55, 91, 0.08));
-}
-
-.compact-history-drag-layer[data-compact-drag-phase="sending"] .compact-history-drag-shadow {
-  opacity: 0;
-  transform: scale(0.42) translateY(-8px);
-  filter: drop-shadow(0 4px 16px rgba(46, 178, 132, 0.18));
-}
-
-.compact-history-drag-layer[data-compact-drag-type="image"] .compact-history-drag-shadow {
-  min-height: 0;
-}
-
-.compact-history-drag-layer[data-compact-drag-type="bubble"] .compact-history-drag-shadow {
-  filter: none;
-  transform: none;
-}
-
-.compact-history-drag-image {
-  box-sizing: border-box;
-  display: block;
-  width: 100%;
-  height: auto;
-  max-height: 220px;
-  border-radius: 12px;
-  object-fit: contain;
-  background: rgb(var(--compact-history-drag-surface-rgb, 220 228 240) / 0.9);
-  border: 1px solid rgb(var(--compact-history-drag-edge-rgb, 77 160 220) / 0.22);
-}
-
-.compact-history-drag-bubble {
-  box-sizing: border-box;
-  position: relative;
-  isolation: isolate;
-  width: 100%;
-  max-width: 100%;
-  min-width: 0;
-  padding: 8px 10px;
-  border: 1.5px solid transparent;
-  border-radius:
-    var(--compact-history-bubble-radius-tl, 8px)
-    var(--compact-history-bubble-radius-tr, 16px)
-    var(--compact-history-bubble-radius-br, 16px)
-    var(--compact-history-bubble-radius-bl, 16px);
-  color: var(--compact-history-drag-text, #273042);
-  background: transparent;
-  box-shadow: none;
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-}
-
-.compact-history-drag-layer[data-compact-drag-type="bubble"] .compact-history-drag-bubble {
-  background: transparent;
-  box-shadow: none;
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-}
-
-.compact-history-drag-layer[data-compact-drag-role="user"] .compact-history-drag-bubble {
-  border-radius:
-    var(--compact-history-bubble-radius-tl, 16px)
-    var(--compact-history-bubble-radius-tr, 8px)
-    var(--compact-history-bubble-radius-br, 16px)
-    var(--compact-history-bubble-radius-bl, 16px);
-  color: #142033;
-}
-
-.compact-history-drag-layer[data-compact-drag-role="system"] .compact-history-drag-bubble {
-  color: #607086;
-}
-
-.compact-history-drag-bubble-content {
-  position: relative;
-  z-index: 1;
-  transform:
-    scaleX(var(--compact-history-bubble-content-scale-x, 1))
-    scaleY(var(--compact-history-bubble-content-scale-y, 1));
-  transform-origin: var(--compact-history-bubble-shell-origin-x, 50%) var(--compact-history-bubble-shell-origin-y, 50%);
-}
-
-@keyframes compact-history-source-send {
-  0% {
-    opacity: 1;
-    transform:
-      translateX(calc(var(--compact-history-stagger-x, 0px) + var(--compact-history-drag-pull-x, 0px)))
-      translateY(var(--compact-history-drag-pull-y, 0px))
-      rotate(var(--compact-history-rotate, 0deg))
-      scaleX(var(--compact-history-drag-stretch-x, 1.02))
-      scaleY(var(--compact-history-drag-stretch-y, 0.985));
-  }
-  42% {
-    opacity: 0.28;
-    transform:
-      translateX(var(--compact-history-stagger-x, 0px))
-      translateY(0)
-      rotate(var(--compact-history-rotate, 0deg))
-      scale(0.9);
-  }
-  100% {
-    opacity: 1;
-    transform:
-      translateX(var(--compact-history-stagger-x, 0px))
-      translateY(0)
-      rotate(var(--compact-history-rotate, 0deg))
-      skewX(0deg)
-      scale(1);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .compact-history-drag-layer,
-  .compact-history-drag-shadow,
-  .compact-history-drag-elastic,
-  .compact-export-history-message[data-compact-history-drag-source] .compact-export-history-bubble {
-    transition: none;
-    animation: none;
-  }
-
-  .compact-history-drag-elastic {
-    display: none;
-  }
 }
 
 .compact-export-history-check {
