@@ -135,6 +135,13 @@ const compactInputToolWheelDefaultVisibleSlots = [
   { angleDeg: 14.18, scale: 0.98 },
   { angleDeg: -17.35, scale: 0.86 },
 ] as const;
+const compactInputToolWheelViewportFitVisibleSlots = [
+  { angleDeg: -200, scale: 0.86 },
+  { angleDeg: -170, scale: 0.98 },
+  { angleDeg: -140, scale: 1.04 },
+  { angleDeg: -110, scale: 0.98 },
+  { angleDeg: -80, scale: 0.86 },
+] as const;
 const COMPACT_SURFACE_RESIZE_MIN_WIDTH = 430;
 const COMPACT_SURFACE_RESIZE_MOBILE_MIN_WIDTH = 280;
 const COMPACT_SURFACE_RESIZE_MAX_WIDTH = 720;
@@ -3132,18 +3139,20 @@ export default function App({
     const maxX = viewportLeft + viewportWidth - COMPACT_INPUT_TOOL_WHEEL_VIEWPORT_MARGIN;
     const maxY = viewportTop + viewportHeight - COMPACT_INPUT_TOOL_WHEEL_VIEWPORT_MARGIN;
 
-    const overflowsViewport = compactInputToolWheelDefaultVisibleSlots.some(({ angleDeg, scale }) => {
+    const wheelLayoutFitsViewport = (slots: ReadonlyArray<{ angleDeg: number; scale: number }>) => slots.every(({ angleDeg, scale }) => {
       const angle = angleDeg * (Math.PI / 180);
       const itemCenterX = centerX + (Math.cos(angle) * orbitRadius);
       const itemCenterY = centerY + (Math.sin(angle) * orbitRadius);
       const halfSize = (buttonSize * scale) / 2;
-      return itemCenterX - halfSize < minX
-        || itemCenterX + halfSize > maxX
-        || itemCenterY - halfSize < minY
-        || itemCenterY + halfSize > maxY;
+      return itemCenterX - halfSize >= minX
+        && itemCenterX + halfSize <= maxX
+        && itemCenterY - halfSize >= minY
+        && itemCenterY + halfSize <= maxY;
     });
 
-    return overflowsViewport ? 'viewport-fit' : 'default';
+    if (wheelLayoutFitsViewport(compactInputToolWheelDefaultVisibleSlots)) return 'default';
+    if (wheelLayoutFitsViewport(compactInputToolWheelViewportFitVisibleSlots)) return 'viewport-fit';
+    return 'default';
   }, []);
 
   const syncCompactInputToolWheelLayout = useCallback(() => {
