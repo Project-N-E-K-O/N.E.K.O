@@ -139,6 +139,9 @@ const COMPACT_HISTORY_SLOT_MAX_WIDTH_RATIO = 1.46;
 const COMPACT_HISTORY_SLOT_MAX_VIEWPORT_RATIO = 0.78;
 const COMPACT_HISTORY_SLOT_DEFAULT_WIDTH_RATIO = 1.18;
 const COMPACT_HISTORY_SLOT_DEFAULT_VIEWPORT_RATIO = 0.63;
+// scroll 区上方的 bar(12px+margin) 与下方 controls(展开块 ≤44px) 的固定 chrome；
+// 从 anchor max-height 里扣掉，避免拖到上限时 scroll 吃满 anchor、controls 溢出被裁成非交互。
+const COMPACT_HISTORY_SLOT_CHROME_RESERVE = 72;
 const COMPACT_CHOICE_PLACEMENT_HYSTERESIS = 24;
 const COMPOSER_OPTION_MARQUEE_MIN_DISTANCE = 6;
 const COMPOSER_OPTION_MARQUEE_MIN_DURATION_MS = 1400;
@@ -2802,12 +2805,15 @@ export default function App({
   const getCompactHistorySlotMaxHeight = useCallback(() => {
     const surfaceWidth = getCurrentCompactSurfaceWidth();
     const base = getCompactHistoryViewportBase();
+    // anchor 的 max-height = min(width*1.46, 78%)，但 panel 里 scroll 上方有 bar、下方有 controls；
+    // 先扣掉这部分非滚动 chrome，scroll 区才不会吃满 anchor 把 controls / 底部气泡顶出可视/可点区。
+    const anchorMax = Math.min(
+      surfaceWidth * COMPACT_HISTORY_SLOT_MAX_WIDTH_RATIO,
+      base * COMPACT_HISTORY_SLOT_MAX_VIEWPORT_RATIO,
+    );
     return Math.round(Math.max(
       COMPACT_HISTORY_SLOT_MIN_HEIGHT,
-      Math.min(
-        surfaceWidth * COMPACT_HISTORY_SLOT_MAX_WIDTH_RATIO,
-        base * COMPACT_HISTORY_SLOT_MAX_VIEWPORT_RATIO,
-      ),
+      anchorMax - COMPACT_HISTORY_SLOT_CHROME_RESERVE,
     ));
   }, [getCurrentCompactSurfaceWidth]);
 
@@ -2821,14 +2827,18 @@ export default function App({
   // 用户未拖动过时（slot 为 null），起拖高度取 styles.css 默认公式值（width*1.18 / 63%），
   // 保证拖动第一帧从当前可见高度连续起步、不跳变。
   const getCompactHistoryStartHeight = useCallback(() => {
-    if (compactHistorySlotHeight !== null) return compactHistorySlotHeight;
+    // 起拖基准必须是「当前可见高度」（按当前约束 clamp 后）。存量高度可能来自更大屏 / 更宽 surface，
+    // 此时面板已被钳到 max、若用 stale 大值做基准，向下拖会出现「先拖一段没反应」的死区。
+    if (compactHistorySlotHeight !== null) {
+      return getClampedCompactHistorySlotHeight(compactHistorySlotHeight);
+    }
     const surfaceWidth = getCurrentCompactSurfaceWidth();
     const base = getCompactHistoryViewportBase();
-    return Math.round(Math.min(
+    return getClampedCompactHistorySlotHeight(Math.round(Math.min(
       surfaceWidth * COMPACT_HISTORY_SLOT_DEFAULT_WIDTH_RATIO,
       base * COMPACT_HISTORY_SLOT_DEFAULT_VIEWPORT_RATIO,
-    ));
-  }, [compactHistorySlotHeight, getCurrentCompactSurfaceWidth]);
+    )));
+  }, [compactHistorySlotHeight, getClampedCompactHistorySlotHeight, getCurrentCompactSurfaceWidth]);
 
   const applyCompactHistorySlotHeightVar = useCallback((height: number | null) => {
     if (typeof document === 'undefined') return;
@@ -2914,21 +2924,21 @@ export default function App({
     applyCompactHistorySlotHeightVar(compactHistorySlotHeight);
   }, [applyCompactHistorySlotHeightVar, compactHistorySlotHeight, isCompactSurface]);
 
-  // 视口 / 桌面工作区变化后，对已存高度重新 clamp，避免上限失配后被 anchor 二次截断。
+  // 视口 / 工作区 / compact surface 宽度变化后，按新约束重写 CSS 变量（用新 max clamp 显示高度）。
+  // 刻意不改 state、不覆盖 storage：存量 raw 值保留，换屏 / 改宽再放大时能恢复；起拖死区另由
+  // getCompactHistoryStartHeight 对基准 clamp 解决。
   useEffect(() => {
     if (!isCompactSurface) return undefined;
-    const clampExistingHeight = () => {
-      setCompactHistorySlotHeight(current => (
-        current === null ? current : getClampedCompactHistorySlotHeight(current)
-      ));
-    };
-    window.addEventListener('resize', clampExistingHeight);
-    window.addEventListener('neko:desktop-compact-layout-change', clampExistingHeight);
+    const reapplySlotHeight = () => applyCompactHistorySlotHeightVar(compactHistorySlotHeight);
+    window.addEventListener('resize', reapplySlotHeight);
+    window.addEventListener('neko:desktop-compact-layout-change', reapplySlotHeight);
+    window.addEventListener('neko:compact-surface-resize-width-change', reapplySlotHeight);
     return () => {
-      window.removeEventListener('resize', clampExistingHeight);
-      window.removeEventListener('neko:desktop-compact-layout-change', clampExistingHeight);
+      window.removeEventListener('resize', reapplySlotHeight);
+      window.removeEventListener('neko:desktop-compact-layout-change', reapplySlotHeight);
+      window.removeEventListener('neko:compact-surface-resize-width-change', reapplySlotHeight);
     };
-  }, [getClampedCompactHistorySlotHeight, isCompactSurface]);
+  }, [applyCompactHistorySlotHeightVar, compactHistorySlotHeight, isCompactSurface]);
 
   useEffect(() => {
     if (!isCompactSurface || compactSurfaceEffectiveWidth === null) {

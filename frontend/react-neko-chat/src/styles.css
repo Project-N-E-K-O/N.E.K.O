@@ -2629,8 +2629,11 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
     0 8px 20px rgba(36, 151, 217, 0.12);
 }
 
-/* 堆砌区顶部的高度 resize bar：平时透明，hover 整个历史区 / 拖动中（is-active）半透明显现。
-   与左右宽度 handle 一致采用「平时低调、靠近才显形」手感（opacity 切换，无过渡）。 */
+/* 堆砌区顶部的高度 resize bar：视觉抓手平时透明，hover 整个历史区 / 拖动中（is-active）半透明显现。
+   与左右宽度 handle 一致采用「平时低调、靠近才显形」手感（opacity 切换，无过渡）。
+   注意：透明只施加在 ::after 伪元素上，bar 本体保持不透明——宿主几何收集器
+   （app-react-chat-window.js）会按 computed opacity <= 0.01 丢弃 hit-region，
+   若 bar 本体透明则 Electron 下整条会鼠标穿透、永远 hover/点不到、无法发起拖拽。 */
 .compact-export-history-resize-bar {
   flex: 0 0 auto;
   height: 12px;
@@ -2638,7 +2641,6 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   cursor: ns-resize;
   pointer-events: auto;
   touch-action: none;
-  opacity: 0;
   -webkit-app-region: no-drag;
 }
 
@@ -2650,11 +2652,12 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   margin: 4px auto 0;
   border-radius: 999px;
   background: rgba(120, 142, 170, 0.75);
+  opacity: 0;
 }
 
-.compact-export-history-anchor:hover .compact-export-history-resize-bar,
-.compact-export-history-resize-bar:hover,
-.compact-export-history-resize-bar.is-active {
+.compact-export-history-anchor:hover .compact-export-history-resize-bar::after,
+.compact-export-history-resize-bar:hover::after,
+.compact-export-history-resize-bar.is-active::after {
   opacity: 0.55;
 }
 

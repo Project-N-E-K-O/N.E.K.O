@@ -709,9 +709,13 @@ def test_compact_history_resize_bar_is_draggable_and_persisted():
     )
     assert "cursor: ns-resize;" in bar_block
     assert "pointer-events: auto;" in bar_block
-    assert "opacity: 0;" in bar_block
     assert "-webkit-app-region: no-drag;" in bar_block
-    assert ".compact-export-history-resize-bar.is-active {" in styles
+    # bar 本体不能透明：宿主几何收集器按 opacity<=0.01 丢弃 hit-region，透明会让 Electron 下鼠标穿透、点不到。
+    assert "opacity: 0;" not in bar_block
+    # 只让视觉抓手（伪元素）平时透明、hover/拖动显现。
+    after_block = css_block(styles, ".compact-export-history-resize-bar::after {", ".compact-history-drag-layer")
+    assert "opacity: 0;" in after_block
+    assert ".compact-export-history-resize-bar.is-active::after {" in styles
 
     # bar 的 DOM：带可命中且不穿透的 hit-region，拖拽不触发面板 / 整窗拖动。
     assert "className={clsx('compact-export-history-resize-bar'" in panel_source
