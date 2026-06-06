@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -31,6 +32,9 @@ class FakeClassList {{
   }}
 
   add(...names) {{
+    for (const existingName of String(this.element.className || '').split(/\\s+/).filter(Boolean)) {{
+      this._classes.add(existingName);
+    }}
     for (const name of names) {{
       if (!name) continue;
       this._classes.add(String(name));
@@ -40,6 +44,16 @@ class FakeClassList {{
 
   contains(name) {{
     return this._classes.has(String(name));
+  }}
+
+  remove(...names) {{
+    for (const existingName of String(this.element.className || '').split(/\\s+/).filter(Boolean)) {{
+      this._classes.add(existingName);
+    }}
+    for (const name of names) {{
+      this._classes.delete(String(name));
+    }}
+    this.element.className = Array.from(this._classes).join(' ');
   }}
 }}
 
@@ -201,6 +215,9 @@ const document = {{
     const results = this.querySelectorAll(selector);
     return results.length > 0 ? results[0] : null;
   }},
+  getElementById(_id) {{
+    return null;
+  }},
 }};
 
 const silentConsole = {{
@@ -216,6 +233,12 @@ global.document = document;
 global.navigator = {{}};
 global.console = silentConsole;
 global.location = {{ origin: 'http://localhost' }};
+global.CustomEvent = class FakeCustomEvent {{
+  constructor(type, init) {{
+    this.type = type;
+    this.detail = init && init.detail ? init.detail : {{}};
+  }}
+}};
 global._listeners = new Map();
 global.addEventListener = function (type, handler) {{
   const handlers = this._listeners.get(type) || [];
@@ -300,6 +323,143 @@ runScenario()
         )
 
     return json.loads(result.stdout)
+
+
+@pytest.mark.unit
+def test_autostart_retention_overlay_does_not_blur_page_background():
+    source = COMMON_DIALOGS_PATH.read_text(encoding="utf-8")
+    match = re.search(r"\.modal-overlay-autostart-retention\s*\{(?P<body>[^}]*)\}", source)
+    assert match is not None
+    assert "backdrop-filter" not in match.group("body")
+    assert "filter:" not in match.group("body")
+
+
+@pytest.mark.unit
+def test_autostart_retention_prompt_temporarily_hides_react_chat_overlay_without_resetting_state():
+    result = _run_common_dialogs_node_scenario(
+        """
+    const state = {
+      calls: [],
+      resolved: [],
+    };
+
+    const chatOverlay = { hidden: false };
+    document.getElementById = function (id) {
+      return id === 'react-chat-window-overlay' ? chatOverlay : null;
+    };
+    window.reactChatWindowHost = {
+      closeWindow() {
+        state.calls.push('close');
+        chatOverlay.hidden = true;
+      },
+      openWindow() {
+        state.calls.push('open');
+        chatOverlay.hidden = false;
+      },
+    };
+    document.body.classList.add('react-chat-window-open');
+
+    window.showDecisionPrompt({
+      skin: 'autostart-retention',
+      title: 'Autostart',
+      message: 'Enable autostart?',
+      buttons: [
+        { value: 'later', text: 'Later', variant: 'secondary' },
+      ],
+    }).then((value) => {
+      state.resolved.push(value);
+    });
+
+    await wait(10);
+    assert.deepStrictEqual(state.calls, []);
+    assert.strictEqual(chatOverlay.hidden, true);
+    assert.strictEqual(document.body.classList.contains('react-chat-window-open'), false);
+
+    document.querySelectorAll('.modal-overlay')[0].querySelectorAll('.modal-btn')[0].onclick();
+    await wait(250);
+
+    assert.deepStrictEqual(state.calls, []);
+    assert.strictEqual(chatOverlay.hidden, false);
+    assert.strictEqual(document.body.classList.contains('react-chat-window-open'), true);
+    assert.deepStrictEqual(state.resolved, ['later']);
+
+    return state;
+        """
+    )
+
+    assert result == {
+        "calls": [],
+        "resolved": ["later"],
+    }
+
+
+@pytest.mark.unit
+def test_decision_prompt_lifecycle_events_do_not_fire_for_alerts():
+    result = _run_common_dialogs_node_scenario(
+        """
+    const state = {
+      events: [],
+      resolved: [],
+    };
+    window.addEventListener('neko:decision-prompt-opened', (event) => {
+      state.events.push({ type: event.type, skin: event.detail.skin || '', promptType: event.detail.type || '' });
+    });
+    window.addEventListener('neko:decision-prompt-closed', (event) => {
+      state.events.push({ type: event.type, skin: event.detail.skin || '', promptType: event.detail.type || '' });
+    });
+
+    window.showAlert('alert body', 'Alert').then((value) => {
+      state.resolved.push({ name: 'alert', value });
+    });
+    await wait(10);
+    document.querySelectorAll('.modal-overlay')[0].querySelectorAll('.modal-btn')[0].onclick();
+    await wait(250);
+
+    window.showDecisionPrompt({
+      skin: 'autostart-retention',
+      title: 'Decision',
+      message: 'pick one',
+      buttons: [
+        { value: 'accept', text: 'Accept', variant: 'primary' },
+      ],
+    }).then((value) => {
+      state.resolved.push({ name: 'decision', value });
+    });
+    await wait(10);
+    document.querySelectorAll('.modal-overlay')[0].querySelectorAll('.modal-btn')[0].onclick();
+    await wait(250);
+
+    assert.deepStrictEqual(state.resolved, [
+      { name: 'alert', value: true },
+      { name: 'decision', value: 'accept' },
+    ]);
+    assert.deepStrictEqual(state.events, [
+      { type: 'neko:decision-prompt-opened', skin: 'autostart-retention', promptType: 'decision' },
+      { type: 'neko:decision-prompt-closed', skin: 'autostart-retention', promptType: 'decision' },
+    ]);
+
+    return state;
+        """
+    )
+
+    assert result == {
+        "events": [
+            {
+                "type": "neko:decision-prompt-opened",
+                "skin": "autostart-retention",
+                "promptType": "decision",
+            },
+            {
+                "type": "neko:decision-prompt-closed",
+                "skin": "autostart-retention",
+                "promptType": "decision",
+            },
+        ],
+        "resolved": [
+            {"name": "alert", "value": True},
+            {"name": "decision", "value": "accept"},
+        ],
+    }
 
 
 @pytest.mark.unit

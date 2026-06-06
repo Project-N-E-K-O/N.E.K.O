@@ -1233,8 +1233,22 @@
         var scrollNode = element.querySelector('.compact-export-history-scroll');
         if (!scrollNode || typeof scrollNode.getBoundingClientRect !== 'function') return null;
         if (scrollNode.scrollHeight <= scrollNode.clientHeight + 1) return null;
+        if (scrollNode.getAttribute('data-compact-scrollbar-visible') !== 'true') return null;
         var style = window.getComputedStyle ? window.getComputedStyle(scrollNode) : null;
-        if (style && (style.display === 'none' || style.visibility === 'hidden' || style.pointerEvents === 'none')) return null;
+        if (style && (style.display === 'none' || style.visibility === 'hidden')) return null;
+        var scrollbarHit = element.querySelector('.compact-export-history-scrollbar-hit');
+        if (scrollbarHit && typeof scrollbarHit.getBoundingClientRect === 'function') {
+            var hitStyle = window.getComputedStyle ? window.getComputedStyle(scrollbarHit) : null;
+            if (hitStyle && hitStyle.pointerEvents === 'none') return null;
+            if (!hitStyle || (
+                hitStyle.display !== 'none'
+                && hitStyle.visibility !== 'hidden'
+                && hitStyle.pointerEvents !== 'none'
+            )) {
+                var hitRect = intersectCompactRects(scrollbarHit.getBoundingClientRect(), parentRect);
+                if (hitRect) return hitRect;
+            }
+        }
         var scrollRect = intersectCompactRects(scrollNode.getBoundingClientRect(), parentRect);
         if (!scrollRect) return null;
         var gutterWidth = Math.min(Math.max(Number(scrollNode.offsetWidth - scrollNode.clientWidth) || 0, 8), 14);
@@ -1409,7 +1423,9 @@
                 if (style && Number(style.opacity) <= 0.01) return null;
                 var rect = normalizeCompactDomRect(child.getBoundingClientRect());
                 if (!rect) return null;
-                var clippedRect = parentRect ? intersectCompactRects(rect, parentRect) : rect;
+                var clippedRect = kind === 'musicPlayer'
+                    ? rect
+                    : (parentRect ? intersectCompactRects(rect, parentRect) : rect);
                 if (!clippedRect) return null;
                 var interactive = style ? style.pointerEvents !== 'none' : true;
                 if (!interactive) return null;
@@ -5841,6 +5857,9 @@
             applyCompactSurfaceResizeRequest(event.detail || {});
         }, true);
         window.addEventListener('neko:compact-surface-resize-width-change', function () {
+            syncCompactInteractionGeometry();
+        });
+        window.addEventListener('neko:compact-interaction-geometry-refresh', function () {
             syncCompactInteractionGeometry();
         });
     }
