@@ -4634,6 +4634,9 @@ margin-top: 10px;
 }
 
 .catgirl-panel-wrapper.card-only.phase-expand {
+    --panel-actions-reserved-height: 178px;
+    --panel-card-face-height: clamp(200px, min(56vh, calc(80vh - var(--panel-actions-reserved-height))), 560px);
+    --panel-card-face-width: calc(var(--panel-card-face-height) * 0.75);
     height: 80vh;
 }
 
@@ -4655,22 +4658,25 @@ margin-top: 10px;
     overflow: hidden;
 }
 
-/* phase-expand 后，左侧容器恢复正常对齐；卡面图片尺寸保持原设，
-   卡面信息与操作按钮显示在下方剩余空间（约 15vh） */
+/* phase-expand 后，左侧容器恢复正常对齐；压缩高度时卡面让出操作区空间 */
 .catgirl-panel-wrapper.card-only.phase-expand .catgirl-panel-left {
+    min-width: 240px;
     align-items: stretch;
     padding: 0;
     background: #fafcff;
-    overflow: hidden;
+    overflow-y: auto;
+    overflow-x: hidden;
     display: flex;
     border-right: 1px solid #f0f0f0;
     flex-direction: column;
+    min-height: 0;
 }
 
 .catgirl-panel-wrapper.card-only.phase-expand .catgirl-panel-card-image {
     width: var(--panel-card-face-width);
     height: var(--panel-card-face-height);
     border-radius: 0;
+    align-self: center;
     flex-shrink: 0;
     margin: 0;
     box-shadow: none;
@@ -4695,6 +4701,7 @@ margin-top: 10px;
     .catgirl-panel-wrapper.card-only .catgirl-panel-left,
     .catgirl-panel-wrapper.card-only.phase-expand .catgirl-panel-left {
         width: 100%;
+        min-width: 0;
         height: auto;
         max-height: 55vh;
         overflow-y: visible;
@@ -6648,6 +6655,10 @@ margin-top: 10px;
     transition: opacity 0.24s ease, transform 0.24s ease;
 }
 
+.catgirl-panel-wrapper.card-only.phase-expand .card-meta-block {
+    min-height: 72px;
+}
+
 .card-meta-block::-webkit-scrollbar {
     width: 6px;
 }
@@ -6784,10 +6795,18 @@ margin-top: 10px;
     color: #fff;
     cursor: pointer;
     transition: filter 0.18s, transform 0.15s, box-shadow 0.18s;
+    min-width: 0;
 }
 
 .card-panel-action-btn svg {
     flex-shrink: 0;
+}
+
+.card-panel-action-btn span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .card-panel-action-btn.export-btn {
