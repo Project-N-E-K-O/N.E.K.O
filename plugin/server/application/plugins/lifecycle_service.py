@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 import re
 import shutil
 import time as time_module
@@ -17,7 +16,7 @@ from typing import Protocol, runtime_checkable
 from fastapi import HTTPException
 
 from plugin._types.exceptions import PluginError
-from plugin.core.host import PluginProcessHost
+from plugin.core.host import PluginProcessHost, _import_plugin_module
 from plugin.core.registry import (
     _collect_plugin_python_requirements,
     _collect_plugin_python_requirement_paths,
@@ -670,7 +669,7 @@ class PluginLifecycleService:
                 current_plugin_id,
             )
             module_path, class_name = entry.split(":", 1)
-            module_obj = await asyncio.to_thread(importlib.import_module, module_path)
+            module_obj = await asyncio.to_thread(_import_plugin_module, module_path, config_path, logger)
             cls_obj = getattr(module_obj, class_name)
             if not isinstance(cls_obj, type):
                 raise _to_domain_error(
