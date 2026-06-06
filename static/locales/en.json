@@ -52,9 +52,9 @@
         "resetToDefaultFailed": "Failed to restore default model"
     },
     "autostartPrompt": {
-        "title": "Want N.E.K.O to launch at startup?",
-        "message": "It will be ready automatically the next time you turn on your computer, so you won't need to launch it manually.",
-        "note": "This only enables launch at login for the current user, and you can turn it off later.",
+        "title": "Want N.E.K.O. to launch at startup?",
+        "message": "N.E.K.O. will be ready next time you start your computer.",
+        "note": "You can turn this off later.",
         "startNow": "Enable auto launch",
         "later": "Remind me later",
         "never": "Don't remind me",

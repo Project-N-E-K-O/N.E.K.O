@@ -52,9 +52,9 @@
         "resetToDefaultFailed": "恢復預設模型失敗"
     },
     "autostartPrompt": {
-        "title": "要不要讓 N.E.K.O 開機自動啟動？",
-        "message": "下次打開電腦後，N.E.K.O 會自動準備好，不需要再手動啟動。",
-        "note": "只會為目前使用者啟用，之後也可以隨時關閉。",
+        "title": "要不要讓 N.E.K.O. 開機自動啟動？",
+        "message": "下次開機，N.E.K.O. 會自動準備好。",
+        "note": "之後可隨時關閉。",
         "startNow": "開啟自啟動",
         "later": "以後提醒",
         "never": "不再提示",

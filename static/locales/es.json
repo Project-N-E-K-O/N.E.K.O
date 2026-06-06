@@ -52,9 +52,9 @@
         "resetToDefaultFailed": "No se pudo restaurar el modelo predeterminado"
     },
     "autostartPrompt": {
-        "title": "¿Quieres que N.E.K.O se lance al inicio?",
-        "message": "Estará listo automáticamente la próxima vez que encienda su computadora, por lo que no necesitará iniciarlo manualmente.",
-        "note": "Esto solo permite el inicio al iniciar sesión para el usuario actual y puede desactivarlo más tarde.",
+        "title": "¿Quieres que N.E.K.O. se lance al inicio?",
+        "message": "N.E.K.O. estará listo la próxima vez que enciendas tu computadora.",
+        "note": "Puedes desactivarlo más tarde.",
         "startNow": "Habilitar el inicio automático",
         "later": "Recordármelo más tarde",
         "never": "no me lo recuerdes",
