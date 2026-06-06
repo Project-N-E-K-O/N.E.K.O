@@ -1470,6 +1470,9 @@
     // ================================================================
 
     const MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_SIZE = 160;
+    const MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_FALLBACK_MS = 220;
+    const MULTI_WINDOW_RETURN_BALL_DRAG_RESTORE_FALLBACK_MS = 600;
+    const MULTI_WINDOW_RETURN_BALL_REVEAL_FALLBACK_MS = 600;
     let multiWindowReturnBallDragState = null;
     let idleReturnBallDesktopDragStateFrame = 0;
     let idleReturnBallDesktopDragStatePending = null;
@@ -2260,6 +2263,14 @@
         }
     }
 
+    function isNativeReturnBallDragDisabled() {
+        const runtime = window.__NEKO_DESKTOP_RUNTIME__ || {};
+        return !!(
+            window.__NEKO_DISABLE_NATIVE_RETURN_BALL_DRAG__ ||
+            runtime.disableNativeReturnBallDrag
+        );
+    }
+
     function cleanupMultiWindowReturnBallDrag() {
         const state = multiWindowReturnBallDragState;
         if (!state) return;
@@ -2286,7 +2297,7 @@
     }
 
     function ensureMultiWindowReturnBallDrag(container) {
-        if (!window.__NEKO_MULTI_WINDOW__ || !window.nekoPetDrag || !container) {
+        if (!window.__NEKO_MULTI_WINDOW__ || isNativeReturnBallDragDisabled() || !window.nekoPetDrag || !container) {
             cleanupMultiWindowReturnBallDrag();
             return;
         }
@@ -2337,14 +2348,48 @@
             restoreSavedReturnBallStyle(container, state);
         }
 
+        function dispatchReturnBallRevealFailed(reason, error) {
+            scheduleIdleReturnBallDesktopBridge('return-ball-reveal-failed', container);
+            window.dispatchEvent(new CustomEvent('neko:return-ball-reveal-failed', {
+                detail: {
+                    reason: reason || 'unknown',
+                    container: container,
+                    errorMessage: error && (error.message || String(error))
+                }
+            }));
+        }
+
         function revealReturnBallDragWindow() {
             if (!window.nekoPetDrag || typeof window.nekoPetDrag.reveal !== 'function') {
-                return;
+                dispatchReturnBallRevealFailed('bridge-unavailable');
+                return false;
             }
+            let settled = false;
+            const fallbackTimer = setTimeout(() => {
+                if (settled) return;
+                dispatchReturnBallRevealFailed('reveal-timeout');
+            }, MULTI_WINDOW_RETURN_BALL_REVEAL_FALLBACK_MS);
             try {
-                void window.nekoPetDrag.reveal();
+                const revealResult = window.nekoPetDrag.reveal();
+                Promise.resolve(revealResult).then((ok) => {
+                    settled = true;
+                    clearTimeout(fallbackTimer);
+                    if (ok === false) {
+                        dispatchReturnBallRevealFailed('reveal-failed');
+                    }
+                }).catch((error) => {
+                    settled = true;
+                    clearTimeout(fallbackTimer);
+                    console.warn('[App] 返回球拖拽渲染完成后恢复窗口显示失败:', error);
+                    dispatchReturnBallRevealFailed('reveal-rejected', error);
+                });
+                return true;
             } catch (error) {
+                settled = true;
+                clearTimeout(fallbackTimer);
                 console.warn('[App] 返回球拖拽渲染完成后恢复窗口显示失败:', error);
+                dispatchReturnBallRevealFailed('reveal-threw', error);
+                return false;
             }
         }
 
@@ -2425,12 +2470,13 @@
                 : 600;
             const fallbackDeadline = Date.now() + Math.max(0, fallbackMs);
             const hardFallbackDeadline = fallbackDeadline + Math.max(1000, Math.max(0, fallbackMs) * 2);
+            const continueOnFallback = !!(options && options.continueOnFallback);
 
-            const runWhenStable = () => {
+            const runWhenStable = (meta) => {
                 requestAnimationFrame(() => {
                     requestAnimationFrame(() => {
                         if (!isActiveDragToken(dragToken)) return;
-                        onReady();
+                        onReady(meta || {});
                     });
                 });
             };
@@ -2458,6 +2504,17 @@
 
                 const remainingMs = fallbackDeadline - Date.now();
                 if (remainingMs <= 0) {
+                    if (continueOnFallback) {
+                        console.warn(
+                            '[pollViewportRestore] waitForViewportSize timed out; continuing best-effort cleanup.',
+                            'dragToken:', state.dragSessionToken,
+                            'fallbackMs:', fallbackMs,
+                            'fallbackDeadline:', fallbackDeadline
+                        );
+                        clearMultiWindowReturnBallDeferredWork(state);
+                        runWhenStable({ timedOut: true });
+                        return;
+                    }
                     if (Date.now() >= hardFallbackDeadline) {
                         console.warn(
                             '[pollViewportRestore] waitForViewportSize hard timeout; continuing best-effort cleanup.',
@@ -2602,7 +2659,10 @@
                     container.style.visibility = getSavedBallStyleValue('visibility');
                     container.style.willChange = 'opacity';
                 },
-                { fallbackMs: 600 }
+                {
+                    fallbackMs: MULTI_WINDOW_RETURN_BALL_DRAG_SHRINK_FALLBACK_MS,
+                    continueOnFallback: true
+                }
             );
 
             if (event) {
@@ -2675,6 +2735,9 @@
                     scheduleIdleReturnBallDesktopBridge('return-ball-drag-click', container);
                     revealReturnBallDragWindow();
                     dispatchReturnBallClick();
+                }, {
+                    fallbackMs: MULTI_WINDOW_RETURN_BALL_DRAG_RESTORE_FALLBACK_MS,
+                    continueOnFallback: true
                 });
                 return;
             }
@@ -2744,6 +2807,9 @@
                     container.style.transition = getSavedBallStyleValue('transition');
                     state.savedBallStyle = null;
                 }, 180);
+            }, {
+                fallbackMs: MULTI_WINDOW_RETURN_BALL_DRAG_RESTORE_FALLBACK_MS,
+                continueOnFallback: true
             });
         }
 
