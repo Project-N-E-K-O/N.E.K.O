@@ -597,6 +597,8 @@ def test_autostart_prompt_offers_never_after_backend_allows_it(
     expect(mock_page.get_by_role("button", name="不再提示")).to_be_visible()
     expect(mock_page.get_by_role("button", name="以后提醒")).to_be_visible()
     expect(mock_page.get_by_role("button", name="开启自启动")).to_be_visible()
+    button_texts = mock_page.locator(".modal-dialog-autostart-retention .modal-btn").all_text_contents()
+    assert button_texts == ["以后提醒", "开启自启动", "不再提示"]
 
     mock_page.get_by_role("button", name="不再提示").click()
     expect(mock_page.locator(".modal-overlay")).to_have_count(0, timeout=5000)

@@ -640,3 +640,49 @@ def test_show_decision_prompt_serializes_concurrent_prompts():
             {"name": "second", "value": "second-ok"},
         ],
     }
+
+
+@pytest.mark.unit
+def test_autostart_retention_prompt_supports_link_button_variant():
+    result = _run_common_dialogs_node_scenario(
+        """
+    window.showDecisionPrompt({
+      skin: 'autostart-retention',
+      title: 'Autostart',
+      message: 'message',
+      buttons: [
+        { value: 'later', text: 'Later', variant: 'secondary' },
+        { value: 'accept', text: 'Start', variant: 'primary' },
+        { value: 'never', text: 'Never', variant: 'link' },
+      ],
+    });
+
+    await wait(10);
+    const overlay = document.querySelectorAll('.modal-overlay')[0];
+    const buttons = overlay.querySelectorAll('.modal-btn').map((button) => ({
+      text: button.textContent,
+      className: button.className,
+    }));
+
+    return { buttons };
+        """
+    )
+
+    assert result == {
+        "buttons": [
+            {"text": "Later", "className": "modal-btn modal-btn-secondary"},
+            {"text": "Start", "className": "modal-btn modal-btn-primary"},
+            {"text": "Never", "className": "modal-btn modal-btn-link"},
+        ]
+    }
+
+
+@pytest.mark.unit
+def test_autostart_retention_button_style_contract_is_scoped():
+    source = COMMON_DIALOGS_PATH.read_text(encoding="utf-8")
+
+    assert ".modal-dialog-autostart-retention .modal-btn-link" in source
+    assert "flex-wrap: wrap;" in source
+    assert "padding: 22px 0 0;" in source
+    assert "padding: 38px 0 34px;" in source
+    assert "translateY(-2px)" in source
