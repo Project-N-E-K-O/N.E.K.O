@@ -1,11 +1,12 @@
-"""废弃免费 YUI 预设音色的自动平移（PR: voice-tone-R6NtLH3Hk0 → 现役 YUI 音色）。
+"""废弃免费 YUI 预设音色的自动平移（PR: voice-tone-R6NtLH3Hk0 → 现役国内 yui_cn）。
 
 回归点：YUI 默认音色 ID 更替后，存量用户 characters.json 里残留的旧 tone ID
 已不在 free_voices 白名单，cleanup_invalid_voice_ids 会判 invalid 清空 → 空
 voice 落到 free/step 的 default_voice（qingchunshaonv），导致默认 YUI 用户无声
-掉档到通用女声。cleanup 在判 invalid 前先把旧值按线路平移：国内 free → 现役
-yui_cn；海外 free → 品牌 sentinel "yui"（free_intl native），与
-ensure_default_yui_voice_for_free_api 对偶。
+掉档到通用女声。cleanup 在判 invalid 前先迁移：仅国内 free（lanlan.tech）平移到
+现役 yui_cn；海外 free（lanlan.app→free_intl）与非 free 路由不迁移，原样交既有
+validate 清空 → 落服务端默认（free_intl 的 "未知 ID 交服务端默认" 契约，PR #1643：
+客户端不得把 StepFun magic id 或 alias 注入 free_intl catalog）。
 """
 from __future__ import annotations
 
@@ -71,28 +72,34 @@ def test_cleanup_migrates_whitespace_padded_deprecated_voice(monkeypatch):
     assert mgr._saved.get("data") is character_data
 
 
-def test_cleanup_overseas_free_remaps_to_yui_sentinel(monkeypatch):
-    """海外免费（lanlan.app）下废弃 StepFun tone 应绑品牌 sentinel "yui"，
-    而非国内 voice-tone preset——否则非空 voice_id 会落进 external TTS。"""
+def test_remap_overseas_free_keeps_value_for_server_default(monkeypatch):
+    """海外 free（lanlan.app→free_intl）：废弃 StepFun tone 不迁移，原样返回，交既有
+    validate 清空 → 落服务端默认。客户端绝不注入 "yui"/native alias（PR #1643）。"""
+    _patch_free_voices(monkeypatch, {"yui_cn": NEW_YUI_VOICE_ID})
+    mgr = _make_manager({}, core_config=_OVERSEAS_FREE)
+
+    assert mgr.remap_deprecated_free_yui_voice_id(OLD_YUI_VOICE_ID) == OLD_YUI_VOICE_ID
+
+
+def test_remap_overseas_by_geo_keeps_value(monkeypatch):
+    """URL 仍是 lanlan.tech 但地理判海外时，靠 _check_non_mainland 兜底也不迁移。"""
+    _patch_free_voices(monkeypatch, {"yui_cn": NEW_YUI_VOICE_ID})
+    mgr = _make_manager({}, core_config=_DOMESTIC_FREE, non_mainland=True)
+
+    assert mgr.remap_deprecated_free_yui_voice_id(OLD_YUI_VOICE_ID) == OLD_YUI_VOICE_ID
+
+
+def test_cleanup_overseas_clears_stale_yui_for_server_default(monkeypatch):
+    """端到端：海外 free 下废弃 tone 不被迁移、由 validate 判 invalid 清空 → 落服务端默认。"""
     _patch_free_voices(monkeypatch, {"yui_cn": NEW_YUI_VOICE_ID})
     character_data = _yui(OLD_YUI_VOICE_ID)
     mgr = _make_manager(character_data, core_config=_OVERSEAS_FREE)
+    mgr.validate_voice_id = lambda voice_id: False  # 海外线路下 stale StepFun tone invalid
 
     cleaned, legacy = mgr.cleanup_invalid_voice_ids()
 
-    assert cleaned == 0
-    assert get_reserved(character_data["猫娘"]["YUI"], "voice_id", default="") == "yui"
-
-
-def test_cleanup_overseas_by_geo_remaps_to_yui_sentinel(monkeypatch):
-    """URL 仍是 lanlan.tech 但地理判海外时，靠 _check_non_mainland 兜底绑 "yui"。"""
-    _patch_free_voices(monkeypatch, {"yui_cn": NEW_YUI_VOICE_ID})
-    character_data = _yui(OLD_YUI_VOICE_ID)
-    mgr = _make_manager(character_data, core_config=_DOMESTIC_FREE, non_mainland=True)
-
-    mgr.cleanup_invalid_voice_ids()
-
-    assert get_reserved(character_data["猫娘"]["YUI"], "voice_id", default="") == "yui"
+    assert cleaned == 1
+    assert get_reserved(character_data["猫娘"]["YUI"], "voice_id", default="") == ""
 
 
 def test_remap_non_free_route_keeps_value(monkeypatch):
