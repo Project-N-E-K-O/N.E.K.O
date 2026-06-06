@@ -70,15 +70,20 @@ describe('CompactExportHistoryPanel', () => {
     expect(anchor?.getAttribute('data-compact-export-history-resizing')).toBe('true');
   });
 
-  it('re-pins the history list to the bottom on slot-height (geometry refresh) changes only while auto-following', () => {
+  it('re-pins the history list to the bottom on geometry refresh only while shrinking and auto-following', () => {
+    // 方向化钉底：只有「缩小」（可视窗口高度变小）才强制把可视窗口锚回下端；「增高」方向交给浏览器
+    // 自然 clamp（每帧强写 scrollTop 会与正被揭出的上方新气泡重排打架→展开抖动）；非 auto-following 一律不动。
     const scrollTopValues: number[] = [];
     const scrollTopByElement = new WeakMap<HTMLElement, number>();
+    // 可控的可视窗口高度，模拟拖动 resize bar 时 clientHeight 的逐帧变化。
+    let mockClientHeight = 300;
     const scrollHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight');
     const clientHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight');
     const scrollTopDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollTop');
 
     Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
       configurable: true,
+      // resizing 态内容锚定在 max，scrollHeight 在一次拖动里保持不变。
       get() {
         return this.classList.contains('compact-export-history-scroll') ? 640 : 0;
       },
@@ -86,7 +91,7 @@ describe('CompactExportHistoryPanel', () => {
     Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
       configurable: true,
       get() {
-        return this.classList.contains('compact-export-history-scroll') ? 200 : 0;
+        return this.classList.contains('compact-export-history-scroll') ? mockClientHeight : 0;
       },
     });
     Object.defineProperty(HTMLElement.prototype, 'scrollTop', {
@@ -103,17 +108,29 @@ describe('CompactExportHistoryPanel', () => {
     });
 
     try {
-      // auto-following off: shrinking (geometry refresh) must not yank the viewport away from the user's scroll position.
+      // auto-following off：即便缩小也不该把视口从用户当前滚动位置拽走。
       const { rerender } = renderPanel({ previewOpen: false, visibilityState: 'open', autoScrollToBottom: false });
       scrollTopValues.length = 0;
+      mockClientHeight = 200; // 缩小
       act(() => {
         window.dispatchEvent(new CustomEvent('neko:compact-interaction-geometry-refresh'));
       });
       expect(scrollTopValues).not.toContain(440);
 
-      // auto-following on: re-pin to bottom (scrollHeight - clientHeight) so the newest message stays anchored at the bottom edge.
+      // auto-following on，但方向是「增高」：不强制钉底，交给浏览器自然 clamp（消除展开抖动）。
+      // 上一次 refresh 已把方向基线（lastGeometryClientHeight）更新到 200，这里从 200 → 360 是增高。
       rerender(<CompactExportHistoryPanel {...createPanelProps({ previewOpen: false, visibilityState: 'open', autoScrollToBottom: true })} />);
       scrollTopValues.length = 0;
+      mockClientHeight = 360; // 增高
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko:compact-interaction-geometry-refresh'));
+      });
+      expect(scrollTopValues).toHaveLength(0);
+
+      // auto-following on，方向是「缩小」：钉底到 scrollHeight - clientHeight = 640 - 200 = 440。
+      // 上一帧 refresh 已把基线更新到 360，这里 360 → 200 是缩小。
+      scrollTopValues.length = 0;
+      mockClientHeight = 200; // 缩小
       act(() => {
         window.dispatchEvent(new CustomEvent('neko:compact-interaction-geometry-refresh'));
       });

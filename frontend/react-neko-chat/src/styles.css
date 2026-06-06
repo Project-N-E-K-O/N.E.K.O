@@ -2309,7 +2309,7 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   position: fixed;
   --compact-export-surface-width: var(--compact-surface-resize-width, var(--desktop-compact-surface-width, var(--compact-surface-width, 430px)));
   left: calc(var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw)) + (var(--compact-export-surface-width) / 2));
-  bottom: calc(100vh - var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) + 10px);
+  bottom: calc(100vh - var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) + 6px);
   /* Geometry-critical: derive collapse compensation from control metrics; do not animate layout properties here. */
   --compact-export-controls-padding-y: clamp(4px, calc(var(--compact-export-surface-width) * 0.0116), 6px);
   --compact-export-controls-border-width: 1px;
@@ -2390,8 +2390,12 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 }
 
 .compact-export-history-scroll {
-  display: flex;
-  flex-direction: column;
+  /* display:block（不是 flex）：scroll 盒的底部 padding 只有在 block 容器里才会被算进可滚区(scrollHeight)，
+     钉底后给最下方气泡的 box-shadow(下沿~25px)留出真实空间、不被 overflow-y:auto 裁。
+     flex/grid column 容器的「末端 padding」会被 Chromium 排除出 scroll overflow（实测 scrollHeight 不含它、
+     钉底后最下气泡贴裁剪边、阴影被切——这是之前 padding 一直没生效的真因，与「落在容器还是子元素」无关）。
+     单个直接子元素 scroll-content 自带 min-height:100% 撑满高度 + 内部 flex 列做底部对齐，无需此处 flex。 */
+  display: block;
   height: calc(var(--compact-export-history-region-height) + var(--compact-export-controls-collapse-delta));
   max-height: calc(var(--compact-export-history-region-height) + var(--compact-export-controls-collapse-delta));
   min-height: 0;
@@ -2400,9 +2404,8 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   overflow-x: visible;
   overscroll-behavior: contain;
   touch-action: pan-y;
-  /* 底部 padding 给最下方气泡的 box-shadow(下沿~25px) 留空间：padding 区在 scrollport(padding box)内、
-     不被 overflow-y:auto 裁，阴影完整。必须落在 scroll 盒(容器)本身——子元素 scroll-content 的 padding-bottom
-     会被 Chromium 排除出可滚区、钉底后仍贴裁剪边而无效。border-box 下不增 scroll 盒总高(=region)，只让出底部内容区。 */
+  /* 底部 padding 给最下方气泡的 box-shadow(下沿~25px)留空间；block 容器下它被算进可滚区，钉底后阴影完整。
+     border-box 下不增 scroll 盒总高(=region)，只让出底部内容区，不额外增整体留白。 */
   padding: 4px 6px 26px;
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;

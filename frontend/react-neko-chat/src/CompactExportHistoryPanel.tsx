@@ -240,6 +240,8 @@ export default function CompactExportHistoryPanel({
   const previewObjectUrlRef = useRef<string | null>(null);
   const enterDelayByMessageIdRef = useRef<Map<string, string>>(new Map());
   const previousVisibilityStateRef = useRef<'open' | 'closing' | null>(null);
+  // 记录上一次几何刷新时的可视窗口高度，用于判断 resize 方向（缩小 vs 增高）。
+  const lastGeometryClientHeightRef = useRef<number | null>(null);
   const [exportFormat, setExportFormat] = useState<CompactExportFormat>('image');
   const [imageStyle, setImageStyle] = useState<CompactExportImageStyle>('neko');
   const [imageFormat, setImageFormat] = useState<CompactExportImageFormat>('png');
@@ -446,24 +448,36 @@ export default function CompactExportHistoryPanel({
   // 拖动开始/结束两个边界：content 的布局高度在 resizing 切换瞬间从 100% ↔ max 跳变（见 styles.css），
   // 若用户停在底部需同步把可视窗口重新锚定到下端，否则开始拖时内容会因 content 突然撑高而相对上移、
   // 结束时又下落，产生跳动。useLayoutEffect 在 data 属性应用、布局更新后、绘制前同步钉底，无闪烁。
+  // 同时把方向判断的基线（lastGeometryClientHeight）重置为当前值，让边界后第一帧 refresh 与正确基线比较。
   useLayoutEffect(() => {
-    if (!autoScrollToBottomRef.current) return;
     const scrollNode = scrollRef.current;
     if (!scrollNode) return;
+    lastGeometryClientHeightRef.current = scrollNode.clientHeight;
+    if (!autoScrollToBottomRef.current) return;
     scrollNode.scrollTop = scrollNode.scrollHeight - scrollNode.clientHeight;
   }, [historyResizeActive]);
 
   // slot / max 高度变化（拖 resize bar、视口/工作区/宽度变化触发的 reapply）只裁剪 scroll 盒可视窗口，
-  // 内容不再 reflow；这里在变更后把可视窗口重新锚定到下端（最新消息固定在底，上端被顶部 mask 折起），
-  // 实现「卷帘从上往下收」。仅当用户当前停在底部（autoScrollToBottom）时钉底，否则尊重其向上查看老消息的位置。
+  // 内容不再 reflow。仅当用户当前停在底部（autoScrollToBottom）时处理，否则尊重其向上查看老消息的位置。
+  //
+  // 方向化钉底：只在「缩小」（可视窗口高度变小）时强制把可视窗口重新锚定到下端——此时若不钉底，下端会随
+  // 窗口收缩移出视野（实测：clientHeight 减、scrollTop 不动 → 最下气泡逐帧上移出界）。而「增高」方向
+  // 下端本就在视野里，浏览器会把 scrollTop 自然 clamp 到新的 (scrollHeight - clientHeight)、底部保持锚定，
+  // 无需手动写 scrollTop；继续每帧强写会与「正被增高揭出的上方新气泡的重排」打架，产生跳变抖动（问题 2 根因）。
+  // 故增高/不变时跳过强制钉底，交给浏览器自然 clamp —— 卷帘从上往下收照旧，且消除展开抖动。
   useEffect(() => {
     function handleGeometryRefresh() {
-      if (!autoScrollToBottomRef.current) return;
       const scrollNode = scrollRef.current;
       if (!scrollNode) return;
-      // 事件在 CSS 变量（scroll 盒 height）写入后同步派发；同步读 scrollHeight 触发一次 layout 拿到新值，
-      // 但内容高度此刻锚定在 max（resizing 态）不变，故不额外引入内容 reflow。同步钉底比 rAF 更跟手、无掉帧。
-      scrollNode.scrollTop = scrollNode.scrollHeight - scrollNode.clientHeight;
+      // 同步读 clientHeight（事件在 CSS 变量写入后同步派发，已是新值）判断方向。
+      const nextClientHeight = scrollNode.clientHeight;
+      const previousClientHeight = lastGeometryClientHeightRef.current;
+      lastGeometryClientHeightRef.current = nextClientHeight;
+      if (!autoScrollToBottomRef.current) return;
+      // 增高 / 首帧基线缺失 / 不变：不强制写 scrollTop，浏览器自然 clamp 维持底部锚定，避免展开抖动。
+      if (previousClientHeight === null || nextClientHeight >= previousClientHeight) return;
+      // 缩小：同步钉底，把下端重新锚回可视窗口底部。
+      scrollNode.scrollTop = scrollNode.scrollHeight - nextClientHeight;
     }
     window.addEventListener('neko:compact-interaction-geometry-refresh', handleGeometryRefresh);
     return () => {
