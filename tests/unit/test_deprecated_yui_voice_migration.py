@@ -58,6 +58,8 @@ def test_cleanup_migrates_whitespace_padded_deprecated_voice(monkeypatch):
 
     assert cleaned == 0
     assert get_reserved(character_data["猫娘"]["YUI"], "voice_id", default="") == NEW_YUI_VOICE_ID
+    # 迁移命中应触发存盘（与 test_cleanup_migrates_deprecated_yui_voice 对偶）
+    assert mgr._saved.get("data") is character_data
 
 
 def test_cleanup_keeps_current_yui_voice_untouched(monkeypatch):
