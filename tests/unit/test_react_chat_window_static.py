@@ -631,6 +631,7 @@ def test_yui_guide_spotlight_state_messages_bypass_cross_channel_dedup():
 
     assert "action === 'yui_guide_set_chat_spotlight'" in bypass_block
     assert "action === 'yui_guide_set_chat_cursor'" in bypass_block
+    assert "action === 'yui_guide_rotate_compact_tool_wheel'" not in bypass_block
     assert "!shouldBypassYuiGuideMessageDedup(message.action)" in script
     assert "!shouldBypassYuiGuideMessageDedup(event.data.action)" in script
 

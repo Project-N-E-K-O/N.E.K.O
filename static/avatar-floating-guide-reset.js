@@ -642,10 +642,10 @@
         const manager = window.universalTutorialManager || null;
         if (manager && typeof manager.resetAvatarFloatingGuideRoundState === 'function') {
             state = manager.resetAvatarFloatingGuideRoundState(round, options);
+            resetIcebreakerDay(round);
         } else {
             state = resetGuideRoundState(round, options);
         }
-        resetIcebreakerDay(round);
 
         await startAvatarFloatingGuideDay(round, { source: options.source || 'home_reset_button' });
 

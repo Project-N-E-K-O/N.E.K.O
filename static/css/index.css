@@ -534,10 +534,13 @@ body.neko-game-active #status-toast,
 body.neko-game-active #subtitle-display,
 body.neko-game-active #react-chat-window-overlay,
 body.neko-game-active #chat-avatar-preview-popup,
+body.neko-game-active .home-tutorial-reset-controls,
+body.neko-game-active .home-avatar-floating-guide-player,
 body.neko-game-active [id$="-floating-buttons"],
 body.neko-game-active [id$="-return-button-container"],
 body.neko-game-active [id$="-lock-icon"] {
     display: none !important;
+    pointer-events: none !important;
 }
 
 /* Goodbye 后的 return 入口 Phase 2 改为 CAT1 占位表现，但继续复用原有

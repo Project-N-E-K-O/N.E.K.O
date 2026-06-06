@@ -55,6 +55,37 @@ def _check(condition: bool, name: str, ok_detail: str, fail_detail: str) -> Chec
     )
 
 
+def validate_pc_repo(pc_repo: Path) -> list[Check]:
+    required_files = [
+        pc_repo / "src" / "preload-tutorial-global-overlay.js",
+        pc_repo / "src" / "tutorial-global-overlay-service.js",
+    ]
+    failures: list[str] = []
+    if not pc_repo.exists():
+        failures.append("path does not exist")
+    elif not pc_repo.is_dir():
+        failures.append("path is not a directory")
+    else:
+        missing = [str(path.relative_to(pc_repo)) for path in required_files if not path.exists()]
+        if missing:
+            failures.append("missing required file(s): " + ", ".join(missing))
+    if not failures:
+        return [
+            Check(
+                "PC repo preflight",
+                "PASS",
+                f"PC repo is readable at {pc_repo}.",
+            )
+        ]
+    return [
+        Check(
+            "PC repo preflight",
+            "FAIL",
+            f"Invalid --pc-repo {pc_repo}: " + "; ".join(failures),
+        )
+    ]
+
+
 def run_static_checks(pc_repo: Path) -> list[Check]:
     checks: list[Check] = []
     try:
@@ -715,14 +746,25 @@ def main(argv: list[str]) -> int:
 
     checks: list[Check] = []
     raw: dict[str, Any] = {}
-    checks.extend(run_static_checks(args.pc_repo))
+    pc_repo_checks = validate_pc_repo(args.pc_repo)
+    checks.extend(pc_repo_checks)
+    pc_repo_ok = all(check.status == "PASS" for check in pc_repo_checks)
+    if pc_repo_ok:
+        checks.extend(run_static_checks(args.pc_repo))
+    else:
+        raw["pcRepoPreflight"] = {
+            "pcRepo": str(args.pc_repo),
+            "ok": False,
+            "errors": [check.detail for check in pc_repo_checks if check.status == "FAIL"],
+        }
     if not args.skip_browser:
         browser_checks, browser_raw = run_browser_bridge_probe()
         checks.extend(browser_checks)
         raw["browser"] = browser_raw
-    pc_checks, pc_raw = run_pc_renderer_probe(args.pc_repo)
-    checks.extend(pc_checks)
-    raw["pcRenderer"] = pc_raw
+    if pc_repo_ok:
+        pc_checks, pc_raw = run_pc_renderer_probe(args.pc_repo)
+        checks.extend(pc_checks)
+        raw["pcRenderer"] = pc_raw
 
     if args.json:
         print(json.dumps(

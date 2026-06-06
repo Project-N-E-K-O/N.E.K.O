@@ -363,6 +363,14 @@ Day 6 猫爪生态回访支线已移入 [七日新手教程剧场后聊天窗支
 - 已有基础：教程运行时已有轻度抗拒、暂停/恢复旁白、生气退出、跳过流程和 Avatar 互动工具。
 - 待补能力：真正的软锁、输入框提示、工具栏自动切换、棒棒糖计数解锁和恢复到原场景，需要新增状态机与聊天窗 action/interaction handler。
 
+#### 待补能力实现与跟踪计划
+
+- 软锁：不包含在当前主线 PR 中，后续独立 PR 接入；当前 graceful degradation 复用 `composerDisabled` 与 `home tutorial interaction lock`，只能阻止常规输入和提交，不新增“生气软锁”状态机。
+- 输入框提示：后续独立 PR 接入；当前主线在锁定期间沿用现有禁用态/Toast，不强制注入新的输入框 placeholder 或错误文案。
+- 工具栏自动切换：后续独立 PR 接入；当前 Day 1-7 主流程只使用已有教程高光、Ghost Cursor 路径和 host request，必要时退回现有 Avatar 互动工具入口。
+- 棒棒糖计数解锁：后续独立 PR 接入“棒棒糖计数解锁”状态、计数器和 Avatar tool interaction handler；当前主线不依赖该能力完成，只保留跳过、生气退出和恢复清理兜底。
+- 跟踪方式：以上四项以独立 follow-up ticket/PR 跟踪，当前文档不绑定具体 Jira ID；合并前只要求确认 Day 1-7 主线在没有这些增强能力时仍可完整运行，并通过现有 `composerDisabled` / `home tutorial interaction lock` / fallback UX 降级。
+
 ### 常规表现
 
 - 悠怡优先触发已有的生气退出/抗拒表现；兜底使用 angry 反应气泡、隐藏高亮和暂停导览来表达生气。

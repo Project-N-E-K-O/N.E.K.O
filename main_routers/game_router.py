@@ -4769,7 +4769,7 @@ async def game_project_context(game_type: str, request: Request):
     except Exception:
         return {"ok": False, "reason": "invalid_body"}
     if not isinstance(data, dict):
-        data = {}
+        return {"ok": False, "reason": "invalid_body"}
 
     role = str(data.get("role") or "").strip()
     text = str(data.get("text") or "").strip()

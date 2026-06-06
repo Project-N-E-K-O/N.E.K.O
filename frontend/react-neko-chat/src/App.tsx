@@ -394,8 +394,14 @@ function normalizeCompactPreviewText(text: string): string {
 }
 
 function truncateCompactPreview(text: string, maxLength: number): string {
+  if (maxLength <= 0) {
+    return '';
+  }
   if (text.length <= maxLength) {
     return text;
+  }
+  if (maxLength < 3) {
+    return text.slice(0, maxLength);
   }
   return `${text.slice(0, Math.max(0, maxLength - 3))}...`;
 }
@@ -4115,24 +4121,28 @@ export default function App({
     const request = avatarToolMenuOpenRequest;
     if (!request || !request.id || request.id === lastAvatarToolMenuOpenRequestIdRef.current) return;
     const requestId = request.id;
-    lastAvatarToolMenuOpenRequestIdRef.current = requestId;
     if (request.open) {
       const opened = openCompactInputToolFan('click', { ignoreDisabled: true });
+      if (!opened) return;
+      lastAvatarToolMenuOpenRequestIdRef.current = requestId;
       setActiveCursorToolId(null);
       setToolMenuOpen(opened);
       return;
     }
+    lastAvatarToolMenuOpenRequestIdRef.current = requestId;
     setToolMenuOpen(false);
   }, [avatarToolMenuOpenRequest, openCompactInputToolFan]);
 
   useEffect(() => {
     const request = compactToolFanOpenRequest;
     if (!request || !request.id || request.id === lastCompactToolFanOpenRequestIdRef.current) return;
-    lastCompactToolFanOpenRequestIdRef.current = request.id;
     if (request.open) {
-      openCompactInputToolFan('click', { ignoreDisabled: true });
+      const opened = openCompactInputToolFan('click', { ignoreDisabled: true });
+      if (!opened) return;
+      lastCompactToolFanOpenRequestIdRef.current = request.id;
       return;
     }
+    lastCompactToolFanOpenRequestIdRef.current = request.id;
     closeCompactInputToolFan();
   }, [closeCompactInputToolFan, compactToolFanOpenRequest, openCompactInputToolFan]);
 
@@ -4155,8 +4165,9 @@ export default function App({
   useEffect(() => {
     const request = compactToolWheelRotateRequest;
     if (!request || !request.id || request.id === lastCompactToolWheelRotateRequestIdRef.current) return;
+    const opened = openCompactInputToolFan('click', { ignoreDisabled: true });
+    if (!opened) return;
     lastCompactToolWheelRotateRequestIdRef.current = request.id;
-    openCompactInputToolFan('click', { ignoreDisabled: true });
     rotateCompactInputToolWheelSteps(request.direction, request.stepCount, {
       forceFast: request.forceFast !== false,
     });

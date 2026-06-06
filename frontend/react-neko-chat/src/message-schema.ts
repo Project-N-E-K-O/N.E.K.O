@@ -167,17 +167,20 @@ const compactToolFanOpenRequestSchema = z.object({
   reason: z.string().optional(),
 }).nullable();
 
+export const COMPACT_TOOL_WHEEL_POSITIONS = 7;
+
 const compactToolWheelRotateRequestSchema = z.object({
   id: z.string().min(1),
+  // 1 rotates clockwise, -1 rotates counter-clockwise.
   direction: z.union([z.literal(1), z.literal(-1)]),
-  stepCount: z.number().int().positive().max(7),
+  stepCount: z.number().int().positive().max(COMPACT_TOOL_WHEEL_POSITIONS),
   reason: z.string().optional(),
   forceFast: z.boolean().optional(),
 }).nullable();
 
 const compactToolWheelIndexRequestSchema = z.object({
   id: z.string().min(1),
-  index: z.number().int().min(0).max(6),
+  index: z.number().int().min(0).max(COMPACT_TOOL_WHEEL_POSITIONS - 1),
   reason: z.string().optional(),
 }).nullable();
 

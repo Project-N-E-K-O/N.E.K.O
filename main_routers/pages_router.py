@@ -24,6 +24,7 @@ from .shared_state import get_templates
 router = APIRouter(tags=["pages"])
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_ICEBREAKER_LOCALE_PATHS = tuple(sorted((_PROJECT_ROOT / "static/icebreaker/locales").glob("*.json")))
 _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/css/yui-guide.css",
     _PROJECT_ROOT / "static/css/index.css",
@@ -76,7 +77,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/avatar-floating-guide-reset.js",
     _PROJECT_ROOT / "static/icebreaker/new-user-icebreaker.js",
     _PROJECT_ROOT / "static/icebreaker/icebreaker_scripts.json",
-    _PROJECT_ROOT / "static/icebreaker/locales/zh-CN.json",
+    *_ICEBREAKER_LOCALE_PATHS,
 )
 _STATIC_ASSET_CACHE_TTL = 30.0
 _static_asset_version_cache: tuple[float, str] = (0.0, "0")

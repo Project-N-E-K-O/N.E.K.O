@@ -2065,6 +2065,7 @@
             createdAt: message.createdAt,
             turnId: message.turnId,
             avatarLabel: message.avatarLabel,
+            baseAvatarUrl: message.baseAvatarUrl || message.avatarUrl,
             avatarUrl: message.avatarUrl,
             blocks: Array.isArray(message.blocks) ? message.blocks.map(function (block) {
                 if (!block || typeof block !== 'object') return null;
@@ -2117,6 +2118,7 @@
             }
         }
 
+        var baseAvatarUrl = message.baseAvatarUrl || message.avatarUrl;
         return {
             id: String(message.id),
             role: message.role || 'assistant',
@@ -2125,7 +2127,8 @@
             createdAt: createdAt,
             turnId: message.turnId ? String(message.turnId) : undefined,
             avatarLabel: message.avatarLabel,
-            avatarUrl: resolveCurrentAssistantAvatarUrl(message.role) || message.avatarUrl,
+            baseAvatarUrl: baseAvatarUrl,
+            avatarUrl: resolveCurrentAssistantAvatarUrl(message.role, baseAvatarUrl),
             blocks: Array.isArray(message.blocks) ? message.blocks : [],
             actions: Array.isArray(message.actions) ? message.actions : undefined,
             status: message.status,
@@ -2133,26 +2136,27 @@
         };
     }
 
-    function resolveCurrentAssistantAvatarUrl(role) {
-        if (role !== 'assistant') return undefined;
+    function resolveCurrentAssistantAvatarUrl(role, baseAvatarUrl) {
+        if (role !== 'assistant') return baseAvatarUrl || undefined;
         try {
             if (window.appChatAvatar && typeof window.appChatAvatar.getCurrentAvatarDataUrl === 'function') {
-                return window.appChatAvatar.getCurrentAvatarDataUrl() || undefined;
+                return window.appChatAvatar.getCurrentAvatarDataUrl() || baseAvatarUrl || undefined;
             }
         } catch (_) {}
-        return undefined;
+        return baseAvatarUrl || undefined;
     }
 
     function refreshAssistantAvatarUrls(event) {
-        var avatarUrl = resolveCurrentAssistantAvatarUrl('assistant');
         var shouldClear = event && event.type === 'chat-avatar-preview-cleared';
-        if (!avatarUrl && !shouldClear) return;
         var changed = false;
         state.messages = state.messages.map(function (message) {
             if (!message || message.role !== 'assistant') return message;
-            if (message.avatarUrl === avatarUrl) return message;
+            var baseAvatarUrl = message.baseAvatarUrl || message.avatarUrl || '';
+            var avatarUrl = resolveCurrentAssistantAvatarUrl('assistant', baseAvatarUrl);
+            if (message.avatarUrl === avatarUrl && message.baseAvatarUrl === baseAvatarUrl) return message;
             changed = true;
             return Object.assign({}, message, {
+                baseAvatarUrl: baseAvatarUrl,
                 avatarUrl: avatarUrl
             });
         });
@@ -5646,7 +5650,10 @@
         ensureViewProps();
         var tutorialLockActive = isHomeTutorialRunning();
         state.homeTutorialInteractionLocked = tutorialLockActive;
-        state.homeTutorialInputLocked = tutorialLockActive;
+        state.homeTutorialInputLocked = false;
+        if (tutorialLockActive) {
+            setHomeTutorialInputLocked(true, 'tutorial-startup');
+        }
         state.chatSurfaceMode = readChatSurfaceModePreference();
         lastRestorableChatSurfaceMode = state.chatSurfaceMode;
         resetCompactChatState();

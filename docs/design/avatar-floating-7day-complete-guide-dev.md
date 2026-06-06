@@ -29,7 +29,7 @@
 | 跳过按钮 | `static/tutorial-skip-controller.js`、`static/universal-tutorial-manager.js` |
 | 临时切换教程模型并恢复 | `static/tutorial-avatar-reload-controller.js`、`static/universal-tutorial-manager.js` |
 | React 聊天窗真实工具按钮 | `frontend/react-neko-chat/src/App.tsx`、`static/app-react-chat-window.js` |
-| PC 全局透明教程 overlay（迁移目标） | `docs/design/avatar-floating-pc-global-overlay-migration-plan.md`、`/Users/mac/Code/N.E.K.O.-PC/src/avatar-tool-cursor-service.js` |
+| PC 全局透明教程 overlay（迁移目标） | `docs/design/avatar-floating-pc-global-overlay-migration-plan.md`、`N.E.K.O.-PC/src/avatar-tool-cursor-service.js` |
 
 所有选择器里的 `${p}` 都由 `YuiGuideDirector.resolveElement()` 按当前悬浮 UI 前缀展开。
 

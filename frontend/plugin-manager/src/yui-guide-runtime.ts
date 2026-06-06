@@ -2560,7 +2560,7 @@ class PluginDashboardGuideRuntime {
       return
     }
 
-    if (!this.hasDesktopTutorialSkipBridge() && typeof document.hasFocus === 'function' && !document.hasFocus()) {
+    if (!this.canRequestHomeInterruptPlayback() && typeof document.hasFocus === 'function' && !document.hasFocus()) {
       return
     }
 
