@@ -692,18 +692,22 @@ async def arena_forge_card_story(body: dict[str, Any]):
 
 @app.get("/arena/active-character")
 async def arena_active_character():
-    """返回当前 NEKO 配置/运行态的猫娘名，供社区 Beta 铸造前端跟随（无则空串）。
+    """返回当前 NEKO 配置/运行态的猫娘名 + 主人名，供社区 Beta 铸造前端跟随（无则空串）。
 
     社区 SPA 跨源调本端点拿"当前猫娘"，再据此调 /arena/forge-facts 抽本地记忆。
     复用 active_neko_context（与 forge-facts 同一份"当前猫娘"解析），享受同一 CORS 白名单。
+    master_name 透传给云端 /api/cards/forge-beta 当故事 prompt 的主人称谓；社区前端只读，
+    不写回本地 —— 这里仅暴露 NEKO 既有的主人设定，不引入新的可识别信息。
     """
     try:
         context = await _resolve_active_facts_context(None, None)
         name = context.lanlan_name if context else ""
+        master = context.master_name if context else ""
     except Exception as exc:
         logger.warning("active-character: resolve failed: %s", type(exc).__name__)
         name = ""
-    return {"name": name or ""}
+        master = ""
+    return {"name": name or "", "master_name": master or ""}
 
 
 @app.get("/health")
