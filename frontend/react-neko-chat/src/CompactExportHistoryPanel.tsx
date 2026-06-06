@@ -90,6 +90,11 @@ type CompactExportHistoryPanelProps = {
   isDropTargetAt?: (point: CompactHistoryDropPoint) => boolean;
   onDropToTarget?: (request: CompactHistoryDropRequest) => Promise<boolean | void> | boolean | void;
   onDragStateChange?: (state: CompactHistoryDragStatePayload) => void;
+  historyResizeActive?: boolean;
+  onHistoryResizePointerDown?: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onHistoryResizePointerMove?: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onHistoryResizePointerUp?: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onHistoryResizePointerCancel?: (event: ReactPointerEvent<HTMLDivElement>) => void;
 };
 
 export type CompactHistoryDragType = 'image' | 'bubble';
@@ -1225,6 +1230,11 @@ export default function CompactExportHistoryPanel({
   isDropTargetAt,
   onDropToTarget,
   onDragStateChange,
+  historyResizeActive,
+  onHistoryResizePointerDown,
+  onHistoryResizePointerMove,
+  onHistoryResizePointerUp,
+  onHistoryResizePointerCancel,
 }: CompactExportHistoryPanelProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const scrollbarDragRef = useRef<ScrollbarDragState | null>(null);
@@ -2498,6 +2508,21 @@ export default function CompactExportHistoryPanel({
         <div className="compact-export-history-panel">
         {previewOpen ? previewNode : (
           <>
+            {/* 堆砌区顶部的高度 resize bar：平时透明，hover / 拖动中半透明显现（is-active）。
+                放在 scroll 之前，命中区随 anchor 的 children hit-scope 上报给宿主、Electron 下可点不穿透。 */}
+            <div
+              className={clsx('compact-export-history-resize-bar', { 'is-active': historyResizeActive })}
+              data-compact-hit-region={historyInteractive && !choiceLayerAbove ? 'true' : undefined}
+              data-compact-hit-region-id={historyInteractive && !choiceLayerAbove ? 'history:resize' : undefined}
+              data-compact-hit-region-kind={historyInteractive && !choiceLayerAbove ? 'resize' : undefined}
+              data-compact-no-drag="true"
+              aria-hidden="true"
+              onPointerDown={onHistoryResizePointerDown}
+              onPointerMove={onHistoryResizePointerMove}
+              onPointerUp={onHistoryResizePointerUp}
+              onPointerCancel={onHistoryResizePointerCancel}
+              onLostPointerCapture={onHistoryResizePointerCancel}
+            />
             <div
               ref={scrollRef}
               className="compact-export-history-scroll"

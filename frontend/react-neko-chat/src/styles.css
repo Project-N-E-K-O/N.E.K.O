@@ -2375,6 +2375,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 .compact-export-history-anchor.under-choice-prompt .compact-export-history-scroll,
 .compact-export-history-anchor.under-choice-prompt .compact-export-history-scrollbar-hit,
+.compact-export-history-anchor.under-choice-prompt .compact-export-history-resize-bar,
 .compact-export-history-anchor.under-choice-prompt .compact-export-history-controls,
 .compact-export-history-anchor.under-choice-prompt .compact-export-preview-region {
   opacity: 0.32;
@@ -2632,6 +2633,43 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   box-shadow:
     0 0 0 3px rgba(36, 151, 217, 0.18),
     0 8px 20px rgba(36, 151, 217, 0.12);
+}
+
+/* 堆砌区顶部的高度 resize bar：视觉抓手平时透明，hover 整个历史区 / 拖动中（is-active）半透明显现。
+   与左右宽度 handle 一致采用「平时低调、靠近才显形」手感（opacity 切换，无过渡）。
+   注意：透明只施加在 ::after 伪元素上，bar 本体保持不透明——宿主几何收集器
+   （app-react-chat-window.js）会按 computed opacity <= 0.01 丢弃 hit-region，
+   若 bar 本体透明则 Electron 下整条会鼠标穿透、永远 hover/点不到、无法发起拖拽。 */
+.compact-export-history-resize-bar {
+  flex: 0 0 auto;
+  height: 12px;
+  margin: 0 8px 2px;
+  cursor: ns-resize;
+  pointer-events: auto;
+  touch-action: none;
+  -webkit-app-region: no-drag;
+}
+
+.compact-export-history-resize-bar::after {
+  content: "";
+  display: block;
+  width: 40px;
+  height: 4px;
+  margin: 4px auto 0;
+  border-radius: 999px;
+  background: rgba(120, 142, 170, 0.75);
+  opacity: 0;
+}
+
+/* 顶部高度 bar 的浮现热区：鼠标进入「可调尺寸」区域时连带显现，而不是 hover 整个历史区就亮——
+   即左右宽度 handle（.compact-chat-resize-handle，与 anchor 同在 .app-shell 下，跨子树用 :has）
+   或历史滚动条命中区（.compact-export-history-scrollbar-hit，anchor 后代）；
+   外加直接 hover bar 本体 / 拖动中（is-active）。这样在「调宽 / 滚动」语境里统一提示也能调高度。 */
+.app-shell:has(.compact-chat-resize-handle:hover) .compact-export-history-resize-bar::after,
+.compact-export-history-anchor:has(.compact-export-history-scrollbar-hit:hover) .compact-export-history-resize-bar::after,
+.compact-export-history-resize-bar:hover::after,
+.compact-export-history-resize-bar.is-active::after {
+  opacity: 0.55;
 }
 
 .compact-history-drag-layer {
