@@ -68,6 +68,7 @@ describe('CompactExportHistoryPanel', () => {
     expect(bar).not.toBeNull();
     expect(bar?.getAttribute('data-compact-hit-region-id')).toBeNull();
     expect(bar?.getAttribute('data-compact-hit-region')).toBeNull();
+    expect(bar?.getAttribute('data-compact-hit-region-kind')).toBeNull();
   });
 
   it('pins the history list to bottom when returning from preview', () => {
