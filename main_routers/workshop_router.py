@@ -60,6 +60,7 @@ _ugc_sync_task = None    # 后台角色卡同步任务
 
 # 全局互斥锁，用于序列化角色卡同步的 load_characters -> save_characters 流程
 _ugc_sync_lock = asyncio.Lock()
+_session_deleted_names: set[str] = set()
 
 # 全局互斥锁，用于序列化 UGC 批量查询（CreateQuery → SendQuery → 回调），
 # 避免并发调用 override_callback=True 导致回调覆盖竞态
@@ -235,7 +236,7 @@ def _read_first_line(path: str, encoding: str = 'utf-8') -> str:
 
 
 def _load_deleted_character_names(config_mgr) -> set[str]:
-    deleted_names: set[str] = set()
+    deleted_names: set[str] = set(_session_deleted_names)
     if is_cloudsave_disabled():
         return deleted_names
 
@@ -256,13 +257,16 @@ def _load_deleted_character_names(config_mgr) -> set[str]:
 
 def _remove_deleted_character_tombstones(config_mgr, character_names: list[str]) -> list[str]:
     """移除手动恢复角色对应的 tombstone，避免后续同步继续把它当作已删除。"""
-    if is_cloudsave_disabled():
-        return []
-
     target_names = {str(name or "").strip() for name in character_names}
     target_names.discard("")
     if not target_names:
         return []
+
+    session_removed_names = sorted(name for name in target_names if name in _session_deleted_names)
+    _session_deleted_names.difference_update(target_names)
+
+    if is_cloudsave_disabled():
+        return session_removed_names
 
     tombstone_state = config_mgr.load_character_tombstones_state()
     original_entries = tombstone_state.get("tombstones") or []
@@ -280,16 +284,19 @@ def _remove_deleted_character_tombstones(config_mgr, character_names: list[str])
         remaining_entries.append(entry)
 
     if not removed_names:
-        return []
+        return session_removed_names
 
     config_mgr.save_character_tombstones_state({
         "version": getattr(config_mgr, "CHARACTER_TOMBSTONES_STATE_VERSION", 1),
         "tombstones": remaining_entries,
     })
-    return removed_names
+    return sorted(set(session_removed_names) | set(removed_names))
 
 
 def _write_deleted_character_tombstone(config_mgr, character_name: str, build_tombstone_state) -> bool:
+    normalized_name = str(character_name or "").strip()
+    if normalized_name:
+        _session_deleted_names.add(normalized_name)
     if is_cloudsave_disabled():
         return False
 

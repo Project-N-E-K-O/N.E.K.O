@@ -2102,9 +2102,15 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
             except Exception as e:
                 logger.warning(f"全局语言初始化失败（不影响启动）: {e}")
 
-            current_root_state = None if is_cloudsave_disabled() else _config_manager.load_root_state()
-            if current_root_state is None:
+            if is_cloudsave_disabled():
                 logger.warning("跳过 ROOT_MODE_NORMAL 写入：cloudsave 已为本次会话禁用")
+                current_root_state = None
+            else:
+                current_root_state = _config_manager.load_root_state()
+
+            if current_root_state is None:
+                if not is_cloudsave_disabled():
+                    logger.warning("跳过 ROOT_MODE_NORMAL 写入：root_state 缺失或读取失败")
             elif should_write_root_mode_normal_after_startup(current_root_state):
                 try:
                     set_root_mode(

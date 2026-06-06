@@ -53,8 +53,13 @@ def test_storage_location_locale_namespace_matches_used_keys():
 def test_storage_location_cloudsave_local_state_error_code_is_translated():
     source = STORAGE_LOCATION_JS.read_text(encoding="utf-8")
 
-    assert "case 'cloudsave_local_state_unavailable'" in source
-    assert "storage.cloudsaveLocalStateUnavailable" in source
+    branch_pattern = re.compile(
+        r"case\s+['\"]cloudsave_local_state_unavailable['\"]\s*:"
+        r"(?:(?!\n\s*(?:case\s+['\"]|default\s*:)).)*"
+        r"storage\.cloudsaveLocalStateUnavailable",
+        re.DOTALL | re.MULTILINE,
+    )
+    assert branch_pattern.search(source)
 
 
 @pytest.mark.unit

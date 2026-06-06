@@ -3806,6 +3806,17 @@ def save_cloudsave_manifest(config_manager, data: dict[str, Any]) -> None:
     atomic_write_json(config_manager.cloudsave_manifest_path, data, ensure_ascii=False, indent=2)
 
 
+def _ensure_local_state_directory_or_raise(config_manager, context: str) -> None:
+    if config_manager.ensure_local_state_directory():
+        return
+    if hasattr(config_manager, "_raise_local_state_directory_error"):
+        config_manager._raise_local_state_directory_error(context)
+    diagnostic = getattr(config_manager, "_last_local_state_directory_error", None)
+    if diagnostic is not None:
+        raise diagnostic
+    raise OSError("failed to ensure local state directory")
+
+
 def ensure_cloudsave_manifest(config_manager, *, preserve_existing_client_id: bool = False) -> dict[str, Any]:
     config_manager.ensure_cloudsave_structure()
     cloud_state = config_manager.load_cloudsave_local_state()
@@ -3870,13 +3881,7 @@ def bootstrap_local_cloudsave_environment(config_manager) -> dict[str, Any]:
             },
         }
 
-    if not config_manager.ensure_local_state_directory():
-        if hasattr(config_manager, "_raise_local_state_directory_error"):
-            config_manager._raise_local_state_directory_error("preparing local cloudsave state")
-        diagnostic = getattr(config_manager, "_last_local_state_directory_error", None)
-        if diagnostic is not None:
-            raise diagnostic
-        raise OSError("failed to ensure local state directory")
+    _ensure_local_state_directory_or_raise(config_manager, "preparing local cloudsave state")
 
     if not config_manager.ensure_cloudsave_structure():
         raise OSError("failed to ensure cloudsave directory structure")
@@ -4173,13 +4178,7 @@ def _recover_stale_write_blocking_mode(config_manager, root_state: dict[str, Any
 @contextmanager
 def cloud_apply_fence(config_manager, *, mode: str = ROOT_MODE_MAINTENANCE_READONLY, reason: str = ""):
     """Acquire the global cloud apply lock and switch root_state into maintenance."""
-    if not config_manager.ensure_local_state_directory():
-        if hasattr(config_manager, "_raise_local_state_directory_error"):
-            config_manager._raise_local_state_directory_error("entering cloud_apply_fence")
-        diagnostic = getattr(config_manager, "_last_local_state_directory_error", None)
-        if diagnostic is not None:
-            raise diagnostic
-        raise OSError("failed to ensure local state directory")
+    _ensure_local_state_directory_or_raise(config_manager, "entering cloud_apply_fence")
 
     previous_state = get_root_state(config_manager)
     previous_mode = str(previous_state.get("mode") or ROOT_MODE_NORMAL)
