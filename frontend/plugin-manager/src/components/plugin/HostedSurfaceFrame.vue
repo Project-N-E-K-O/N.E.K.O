@@ -330,12 +330,17 @@ function handleError() {
 }
 
 async function switchToMobileModeForHostedSurface() {
-  const api = window.nekoWindowControl
-  if (!api || typeof api.switchToMobileMode !== 'function') {
+  const api = window.nekoWindowControl?.switchToMobileMode || window.nekoHost?.switchToMobileMode
+  if (typeof api !== 'function') {
     throw new Error('switch_to_mobile_mode_unavailable')
   }
   try {
-    return await api.switchToMobileMode()
+    const result = await api()
+    if (result && typeof result === 'object' && 'ok' in result && (result as { ok?: boolean }).ok === false) {
+      const error = (result as { error?: unknown }).error
+      throw new Error(error ? String(error) : 'switch_to_mobile_mode_failed')
+    }
+    return result
   } catch (caught) {
     console.warn('[HostedSurfaceFrame] 切换手机版失败', caught)
     throw caught

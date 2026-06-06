@@ -22,6 +22,11 @@ interface NekoWindowControlApi {
   switchToMobileMode?: () => Promise<unknown> | unknown
 }
 
+interface NekoHostApi {
+  switchToMobileMode?: () => Promise<unknown> | unknown
+}
+
 interface Window {
   nekoWindowControl?: NekoWindowControlApi
+  nekoHost?: NekoHostApi
 }
