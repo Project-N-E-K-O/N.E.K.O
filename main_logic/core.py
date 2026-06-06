@@ -32,6 +32,7 @@ from utils.screenshot_utils import process_screen_data, overlay_avatar_annotatio
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from main_logic.tts_client import get_tts_worker, dummy_tts_worker, TTS_PROVIDER_REGISTRY
+from utils.gptsovits_config import is_gsv_disabled_voice_id
 from main_logic.tool_calling import (
     ToolCall,
     ToolDefinition,
@@ -39,7 +40,9 @@ from main_logic.tool_calling import (
     ToolResult,
 )
 from utils.llm_client import AIMessage
-from main_logic.session_state import SessionStateMachine, SessionEvent
+from main_logic.session_state import SessionStateMachine, SessionEvent, ProactivePhase
+from main_logic.lifecycle_bus import LifecycleEventBus
+from main_logic.proactive_delivery import ProactiveDeliveryManager
 from main_logic.agent_event_bus import (
     dispatch_text_user_message,
     dispatch_user_utterance,
@@ -501,8 +504,6 @@ from utils.logger_config import get_module_logger
 from utils.native_voice_registry import (
     is_free_preset_voice_id,
     resolve_native_voice_for_routing,
-    should_block_free_native_voice,
-    should_block_free_voice_for_route,
 )
 from utils.api_config_loader import (
     get_livestream_config,
@@ -547,7 +548,7 @@ _proactive_expected_sid: contextvars.ContextVar[str | None] = contextvars.Contex
 )
 
 # TTS 错误码：不可恢复，禁止 respawn（欠费 / API Key 无效）
-NO_RETRY_TTS_CODES = {'API_ARREARS', 'API_KEY_REJECTED'}
+NO_RETRY_TTS_CODES = {'API_ARREARS', 'API_KEY_REJECTED', 'TTS_CONFIG_INVALID'}
 # TTS 错误码：立即上报前端，不受"第3次才通知"门槛限制（含配额——仍允许重试）
 IMMEDIATE_REPORT_TTS_CODES = NO_RETRY_TTS_CODES | {'API_QUOTA_TIME'}
 
@@ -758,7 +759,7 @@ class LLMSessionManager:
         self.core_api_type = realtime_config.get('api_type', '') or self._config_manager.get_core_config().get('CORE_API_TYPE', '')
         self.memory_server_port = MEMORY_SERVER_PORT
         self.audio_api_key = self._config_manager.get_core_config()['AUDIO_API_KEY']  # 用于CosyVoice自定义音色
-        self._apply_voice_id_for_route(realtime_config.get('base_url', ''))
+        self._apply_voice_id_for_route()
         # 注意：use_tts 会在 start_session 中根据 input_mode 重新设置
         self.use_tts = False
         self.generation_config = {}  # Qwen暂时不用
@@ -791,8 +792,44 @@ class LLMSessionManager:
         self.pending_extra_replies: list[dict] = []
         # 结构化 agent 任务回调队列（用于按会话类型注入）
         self.pending_agent_callbacks: list[dict] = []
+        # ── Proactive delivery front stage ───────────────────────────────
+        # Generic, plugin-agnostic pacing/ordering for proactive cues
+        # (push_message ai_behavior="respond" + agent task results). The
+        # manager OWNS waiting cues and decides which/when to hand one off
+        # into enqueue_agent_callback + trigger_agent_callbacks below; it
+        # does not replace pending_agent_callbacks (which stays the
+        # race-tested delivery buffer). ``_voice_playback_active`` is set by
+        # the FRONTEND-reported voice_play_start/end signals so the voice
+        # inject gate keys off ACTUAL audio playback completion rather than
+        # the realtime API's response.done (generation, not playback).
+        self.lifecycle_bus = LifecycleEventBus(name=self.lanlan_name)
+        self._voice_playback_active = False
+        # When playback started (monotonic). Used to time-bound the gate so a
+        # missing voice_play_end (frontend disconnect/refresh mid-playback)
+        # can't wedge proactive delivery forever — see _is_voice_playing().
+        self._voice_playback_started_ts = 0.0
+        self.proactive_manager = ProactiveDeliveryManager(
+            deliver=self._deliver_proactive_batch,
+            name=self.lanlan_name,
+            can_release=self._can_release_proactive,
+        )
+        self.lifecycle_bus.subscribe("voice_play_start", self.proactive_manager.on_playback_start)
+        self.lifecycle_bus.subscribe("voice_play_end", self.proactive_manager.on_playback_end)
+        self.lifecycle_bus.subscribe("text_start", self.proactive_manager.on_text_start)
+        self.lifecycle_bus.subscribe("text_end", self.proactive_manager.on_text_end)
         # 防止 trigger_agent_callbacks 和 finish_proactive_delivery 并发写 WS/sync_message_queue
         self._proactive_write_lock = asyncio.Lock()
+        # Serializes the voice-mode proactive inject path. trigger_agent_callbacks
+        # is fired via asyncio.create_task from multiple sites (EventBus per-
+        # callback scheduling, _finalize_turn_after_emit, start_session), so two
+        # tasks can race: both pass the (phase / is_active_response) gate before
+        # either sends, then both inject the SAME snapshot → duplicate
+        # conversation.item.create and a response_already_active on the second
+        # response.create. The voice branch holds this lock across
+        # gate-check → render → inject → prune and re-filters the queue inside,
+        # making check-and-claim atomic. (Text mode uses the SM's
+        # try_start_proactive claim instead; voice deliberately bypasses the SM.)
+        self._voice_proactive_inject_lock = asyncio.Lock()
         # ── Session takeover ──────────────────────────────────────────
         # 当某个外部 controller 接管这个 session 时，本地 chat LLM 的输出
         # （text/audio delta、output transcript、response.complete、
@@ -862,6 +899,14 @@ class LLMSessionManager:
         
         # 用户活动时间戳：用于主动搭话检测最近是否有用户输入
         self.last_user_activity_time = None  # float timestamp or None
+
+        # 用户「真实消息」时间戳：仅在非空、非 AI 回声的真用户输入时刷新（语音
+        # 真转录 / 文本输入），不含 VAD 空噪声、麦克风录回 AI 自己 TTS 的回声。
+        # 区别于 last_user_activity_time（顶部无条件刷新，含回声/空噪声）——后者拿
+        # 来判 mini-game 邀请「用户是否已回应」会被 AI 念邀请台词的回声污染，导致
+        # 隐式 dismiss 在用户还没点按钮前就把 pending 邀请清掉、按钮撤走，用户随后
+        # 点「现在不想玩」落到 expired、真正的 decline 冷却起不来、邀请反复重来。
+        self.last_user_message_time = None  # float timestamp or None
 
         # 用户静默 ≥ IDLE_SESSION_RESET_THRESHOLD_SECONDS 时主动断 session 的
         # 后台 loop。lazily 在首次 start_session 时启动，永久存活（per-manager
@@ -2059,6 +2104,50 @@ class LLMSessionManager:
         recent_ai_text = getattr(self, "_recent_ai_voice_echo_text", "") or ""
         return _looks_like_recent_ai_echo(transcript_text, recent_ai_text)
 
+    async def _dispatch_mini_game_invite_keyword(self, user_text: str) -> None:
+        """扫一遍用户原话里的 mini-game 邀请 accept/decline/later 关键词，命中即
+        触发对应 state 转换 + 推 ``mini_game_invite_resolved`` 让前端 dismiss
+        ChoicePrompt（accept 时兼当 launch 信号带 game_url）。
+
+        文本输入路径（``_process_stream_data_internal``）与语音转写路径
+        （``handle_input_transcript``）共用——语音用户没法点 ChoicePrompt 三按钮，
+        只能说话；口头"现在不想玩"必须和打字 / 点按钮一样触发真正的 decline 冷却。
+        否则语音口头拒绝既不算 decline，又会被下一个 proactive tick 的
+        ``_mini_game_invite_advance_response`` 当成隐式 dismiss = 'later'（只抑制
+        5min），邀请反复重来。**不吃掉消息**：普通 chat 流水线仍然回应这条话。
+
+        main_routers' keyword matcher is registered as a hook on the bus
+        (see app/runtime_bindings.py). Dispatcher swallows per-hook errors;
+        if no hook is bound (e.g. entrypoint without main_routers), result
+        is None.
+        """
+        outcome = dispatch_text_user_message(self.lanlan_name, user_text or '')
+        # 推一条 mini_game_invite_resolved 给前端：accept 时兼当 launch 信号
+        # （带 game_url），decline/later 时让 ChoicePrompt UI 清掉不让按钮挂着——
+        # codex P2 指出，原版只对 accept 推，decline/later 命中后前端 prompt 不
+        # 消失，用户后续点按钮会被 endpoint 当 expired，state 早变了。
+        if not (outcome and outcome.get('action')):
+            return
+        try:
+            if self.websocket and hasattr(self.websocket, 'send_json'):
+                ws_state = getattr(self.websocket, 'client_state', None)
+                if ws_state is None or ws_state == ws_state.CONNECTED:
+                    payload = {
+                        'type': 'mini_game_invite_resolved',
+                        'session_id': outcome.get('session_id') or '',
+                        'action': outcome['action'],
+                    }
+                    if outcome.get('game_url'):
+                        payload['game_url'] = outcome['game_url']
+                    if outcome.get('game_type'):
+                        payload['game_type'] = outcome['game_type']
+                    await self.websocket.send_json(payload)
+        except Exception as _push_err:
+            logger.warning(
+                f"[{self.lanlan_name}] mini_game_invite_resolved "
+                f"WS push failed: {_push_err}",
+            )
+
     async def handle_input_transcript(self, transcript: str, *, is_voice_source: bool = True):
         """输入转录回调：同步转录文本到消息队列和缓存，并发送到前端显示
 
@@ -2075,8 +2164,13 @@ class LLMSessionManager:
         transcript_text = transcript.strip()
         voice_rms_recorded = False
 
-        # 更新用户活动时间戳（用于主动搭话检测）
-        self.last_user_activity_time = time.time()
+        # 更新用户活动时间戳（用于主动搭话检测）。先捕获「转写到达时刻」局部变量，
+        # 下面 last_user_message_time 复用同一时刻——若 takeover dispatcher 注册，
+        # 这条转写会先 await 它再走到下面的真消息块；用 await 之后的 time.time() 会
+        # 把时间戳推迟，万一 await 期间投递了 invite，invite 之前说的话会被记成 >
+        # delivered_at、被下个 tick 误判成 invite 之后的回应（codex P2）。
+        _transcript_arrival_ts = time.time()
+        self.last_user_activity_time = _transcript_arrival_ts
         if (
             is_voice_source
             and transcript_text
@@ -2130,6 +2224,11 @@ class LLMSessionManager:
             # emotion-tier LLM 用——空 transcript 这些副作用都不该触发。
             if transcript_text:
                 self._activity_tracker.on_user_message(text=transcript)
+                # 真实用户语音消息（已过 echo 抑制 + 非空）才刷「真消息」时间戳，
+                # 给 mini-game 邀请隐式 dismiss 用，避免回声/空噪声误判用户已回应。
+                # 用顶部捕获的到达时刻而非此处 time.time()：takeover dispatcher 的
+                # await 不会把它推迟到 await 之后（codex P2）。
+                self.last_user_message_time = _transcript_arrival_ts
                 self._session_turn_count += 1
                 # Telemetry：D1 漏斗——本进程首条用户消息（语音路径）。
                 try:
@@ -2148,6 +2247,13 @@ class LLMSessionManager:
                 # 这里只覆盖语音路径，避免 openclaw handoff（is_voice_source=False）
                 # 重复发布。
                 self._publish_user_utterance_to_plugin_bus(transcript, is_voice_source=True)
+
+                # Mini-game 邀请关键词兜底：与文本路径
+                # （_process_stream_data_internal）对偶。语音用户没法点
+                # ChoicePrompt 三按钮，只能说话——口头"现在不想玩"必须和打字 /
+                # 点按钮一样触发真正的 decline 冷却，否则邀请会按 5min 隐式
+                # dismiss 反复重来。详见 _dispatch_mini_game_invite_keyword。
+                await self._dispatch_mini_game_invite_keyword(transcript)
         else:
             # Non-voice reuse of this method (e.g. openclaw text handoff).
             # Skip activity-tracker hooks entirely — the text-mode entry
@@ -3269,6 +3375,14 @@ class LLMSessionManager:
         # auto-start 不被误清），但 end_session 语义就是整轮收尾，必须强制清场。
         await self.state.reset(force=True)
 
+    def _realtime_base_url(self) -> str:
+        """读取 realtime 线路 base_url，供 native voice 路由的 host 重映射
+        （海外免费 free→free_intl）使用。读不到时返回空串，按非 lanlan.app 处理。"""
+        try:
+            return str((self._config_manager.get_model_api_config('realtime') or {}).get('base_url') or '')
+        except Exception:
+            return ''
+
     def _has_custom_tts(self) -> bool:
         """判断当前会话是否使用自定义 TTS（克隆音色或自定义 TTS URL）。"""
         core_config = self._config_manager.get_core_config()
@@ -3276,19 +3390,17 @@ class LLMSessionManager:
             self.core_api_type,
             self.voice_id,
             self._config_manager.voice_id_exists_in_any_storage,
+            realtime_base_url=self._realtime_base_url(),
         )
         if uses_provider_native_voice:
             return False
-        # 克隆音色始终走 custom 路径；
-        # ENABLE_CUSTOM_API + TTS_MODEL_URL 仅在 gptsovitsEnabled 开启时才视为 custom，
-        # 否则 caller 会用 tts_custom credentials 启动 default worker，导致鉴权失败。
+        gsv_enabled = bool(core_config.get('GPTSOVITS_ENABLED'))
+        if gsv_enabled:
+            return True
+        # 克隆音色始终走 custom 路径。
         if bool(self.voice_id) and not self._is_free_preset_voice:
             return True
-        return bool(
-            core_config.get('ENABLE_CUSTOM_API')
-            and core_config.get('TTS_MODEL_URL')
-            and core_config.get('GPTSOVITS_ENABLED')
-        )
+        return False
 
     def _start_tts_thread(self):
         """创建并启动 TTS Worker 线程。
@@ -3597,9 +3709,8 @@ class LLMSessionManager:
     ) -> bool:
         """Resolve whether this session should use the external TTS pipeline."""
         has_custom_tts_config = (
-            core_config_snapshot.get('ENABLE_CUSTOM_API')
-            and core_config_snapshot.get('TTS_MODEL_URL')
-            and core_config_snapshot.get('GPTSOVITS_ENABLED')
+            bool(core_config_snapshot.get('GPTSOVITS_ENABLED'))
+            and not is_gsv_disabled_voice_id(core_config_snapshot.get('TTS_VOICE_ID', ''))
         )
 
         if input_mode == 'text':
@@ -3618,17 +3729,12 @@ class LLMSessionManager:
             logger.info(f"{log_prefix}🎙️ livestream 模式：使用服务端原生语音，跳过外部 TTS")
             return False
         base_url = realtime_config.get('base_url', '')
-        if should_block_free_native_voice(
-            self.core_api_type, self.voice_id, base_url,
+        _, uses_provider_native_voice = resolve_native_voice_for_routing(
+            self.core_api_type,
+            self.voice_id,
             self._config_manager.voice_id_exists_in_any_storage,
-        ):
-            uses_provider_native_voice = False
-        else:
-            _, uses_provider_native_voice = resolve_native_voice_for_routing(
-                self.core_api_type,
-                self.voice_id,
-                self._config_manager.voice_id_exists_in_any_storage,
-            )
+            realtime_base_url=base_url,
+        )
         if uses_provider_native_voice:
             logger.info(f"{log_prefix}🔊 {self.core_api_type} 原生音色 '{self.voice_id}' 将直接传入 RealtimeClient")
             return False
@@ -3656,24 +3762,23 @@ class LLMSessionManager:
         # 比较 / route gating / is_free_preset_voice_id 之类的 callee 失配。
         return (raw or '').strip()
 
-    def _apply_voice_id_for_route(self, realtime_base_url: str) -> None:
+    def _apply_voice_id_for_route(self) -> None:
         """按当前 route 把角色卡里的 voice_id 解析进 self.voice_id /
         self._is_free_preset_voice。
 
         __init__ / start_session / _background_prepare_pending_session 三处
-        共用：读取 _get_voice_id() → 海外 free 路由屏蔽 → 校正 free preset
-        与 core_api_type 的匹配关系。集中在这里避免规则漂移。
+        共用：读取 _get_voice_id() → 校正 free preset 与 core_api_type 的匹配
+        关系。集中在这里避免规则漂移。
+
+        历史上这里还按"海外 lanlan.app 会硬覆盖成 Leda"屏蔽 voice 下发；
+        现在海外免费统一走 www.lanlan.app 透传 voice（Gemini 全量 + yui，由
+        free_intl provider 认领），不再屏蔽——stale 的阶跃/free 预设音色在海外
+        路由下不会命中 free_intl catalog，自然 fall through，不需要预清。
+
+        空 voice_id 保持空：海外免费下"空 → 默认音色"的映射交给服务端
+        （www.lanlan.app）处理，客户端不再注入兜底音色。
         """
         raw_voice_id = self._get_voice_id()
-        if should_block_free_voice_for_route(
-            self.core_api_type,
-            raw_voice_id,
-            realtime_base_url,
-            self._config_manager.voice_id_exists_in_any_storage,
-        ):
-            self.voice_id = ''
-            self._is_free_preset_voice = False
-            return
         self.voice_id = raw_voice_id
         self._is_free_preset_voice = is_free_preset_voice_id(raw_voice_id)
         # free preset 选了但当前非 free 模式 → 不下发，避免把 preset id 透给别的 provider。
@@ -3695,20 +3800,16 @@ class LLMSessionManager:
            （绕过 free_voices preset gate，base_url 已被派生不含 lanlan.tech）
         3. 否则保留原逻辑：仅在角色 voice 是 free preset、core_api_type='free'
            且 base_url 仍指向 lanlan.tech 域时下发，避免把 preset id 透给非
-           lanlan 服务（lanlan.app 的屏蔽由 should_block_free_voice_for_route 兜底）
+           lanlan 服务。海外免费（free + *.lanlan.app）的 yui / Gemini 音色由
+           resolve_native_voice_for_routing 经 free_intl 重映射在第 1 步直接命中。
         """
         base_url = realtime_config.get('base_url', '')
-        if should_block_free_native_voice(
-            self.core_api_type, self.voice_id, base_url,
+        voice_name, uses_provider_native_voice = resolve_native_voice_for_routing(
+            self.core_api_type,
+            self.voice_id,
             self._config_manager.voice_id_exists_in_any_storage,
-        ):
-            voice_name, uses_provider_native_voice = self.voice_id, False
-        else:
-            voice_name, uses_provider_native_voice = resolve_native_voice_for_routing(
-                self.core_api_type,
-                self.voice_id,
-                self._config_manager.voice_id_exists_in_any_storage,
-            )
+            realtime_base_url=base_url,
+        )
         if uses_provider_native_voice:
             return voice_name
         if self._is_livestream_active():
@@ -4013,6 +4114,11 @@ class LLMSessionManager:
         # 标记正在启动（使用计数器，避免并发 start_session 的 finally 互相覆盖）
         self._starting_session_count += 1
         self._starting_input_mode = input_mode
+        # 干净的播放门控：清掉上一会话可能残留的 playback flag / manager 队列
+        # （前端中途断线/刷新导致 voice_play_end 丢失时尤为重要）。放在熔断早退
+        # 与 "正在启动中" 去重早退 *之后*——那些早退不会真正起新 session，提前
+        # reset 会误清掉仍在播放的旧会话门控（Codex P1）。这里已确定要起新会话。
+        self._reset_proactive_gate()
         # 首次 start_session 起算，让 idle reset loop 永久存活
         self._ensure_idle_session_reset_loop()
         # rebase idle 计时基准：last_user_activity_time 是 manager 状态、跨 session 持久。
@@ -4068,14 +4174,21 @@ class LLMSessionManager:
             # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
             _, _, _, self.lanlan_basic_config, _, _, _, _, _ = await self._config_manager.aget_character_data()
             old_voice_id = self.voice_id
-            self._apply_voice_id_for_route(realtime_config.get('base_url', ''))
+            self._apply_voice_id_for_route()
 
             # 如果角色没有设置 voice_id，尝试使用自定义API配置的 TTS_VOICE_ID 作为回退
             if not self.voice_id:
                 # core_config 在单次 start_session 内不会变（改它走 save_core_api → end_session），复用顶部 snapshot
                 tts_voice_id = core_config_snapshot.get('TTS_VOICE_ID', '')
                 # 过滤掉 GPT-SoVITS 禁用时的占位符（格式: __gptsovits_disabled__|...）
-                if core_config_snapshot.get('ENABLE_CUSTOM_API') and tts_voice_id and not tts_voice_id.startswith('__gptsovits_disabled__'):
+                if (
+                    tts_voice_id
+                    and not is_gsv_disabled_voice_id(tts_voice_id)
+                    and (
+                        core_config_snapshot.get('ENABLE_CUSTOM_API')
+                        or core_config_snapshot.get('GPTSOVITS_ENABLED')
+                    )
+                ):
                     self.voice_id = tts_voice_id
                     logger.info(f"🔄 使用自定义TTS回退音色: '{self.voice_id}'")
                     self._is_free_preset_voice = False
@@ -4750,14 +4863,21 @@ class LLMSessionManager:
             # 重新读取角色配置以获取最新的voice_id（支持角色切换后的音色热更新）
             _, _, _, self.lanlan_basic_config, _, _, _, _, _ = await self._config_manager.aget_character_data()
             old_voice_id = self.voice_id
-            self._apply_voice_id_for_route(realtime_config.get('base_url', ''))
+            self._apply_voice_id_for_route()
 
             # 如果角色没有设置 voice_id，尝试使用自定义API配置的 TTS_VOICE_ID 作为回退
             if not self.voice_id:
                 # 复用本次热切换准备顶部的 snapshot（save_core_api 会 end_session 才能改 core_config）
                 tts_voice_id = core_config_snapshot.get('TTS_VOICE_ID', '')
                 # 过滤掉 GPT-SoVITS 禁用时的占位符（格式: __gptsovits_disabled__|...）
-                if core_config_snapshot.get('ENABLE_CUSTOM_API') and tts_voice_id and not tts_voice_id.startswith('__gptsovits_disabled__'):
+                if (
+                    tts_voice_id
+                    and not is_gsv_disabled_voice_id(tts_voice_id)
+                    and (
+                        core_config_snapshot.get('ENABLE_CUSTOM_API')
+                        or core_config_snapshot.get('GPTSOVITS_ENABLED')
+                    )
+                ):
                     self.voice_id = tts_voice_id
                     logger.info(f"🔄 热切换准备: 使用自定义TTS回退音色: '{self.voice_id}'")
                     self._is_free_preset_voice = False
@@ -5114,7 +5234,11 @@ class LLMSessionManager:
     # ------------------------------------------------------------------
 
     async def request_fresh_screenshot(self, timeout: float = 3.0) -> str:
-        """通过 WebSocket 向前端请求最新截图，失败时用后端 pyautogui 兜底。返回 base64（不含前缀）。"""
+        """通过 WebSocket 向前端请求最新截图，失败时用后端 pyautogui 兜底。
+
+        两条路径都会把截图统一压到 720p/JPEG-80，返回归一化后的 base64（不含前缀），
+        避免前端原生分辨率大图直发 vision LLM 触发代理 413。
+        """
         # 策略1: 前端 WebSocket 截图
         if self.websocket:
             try:
@@ -5123,6 +5247,25 @@ class LLMSessionManager:
                 await self.websocket.send_json({"type": "request_screenshot"})
                 b64 = await asyncio.wait_for(self._screenshot_future, timeout=timeout)
                 if b64:
+                    # 前端有的截图路径（如 Electron 主进程直捕 captureSourceAsDataUrl）
+                    # 返回原生分辨率，未走 720p 缩放，base64 可达 ~1.4MB，直接发给
+                    # vision LLM 会被代理 nginx 以 413 Request Entity Too Large 拒掉。
+                    # 这里和下方 pyautogui 兜底分支对称，统一压到 720p/JPEG-80 再返回
+                    # （avatar 注解会在其上二次编码，不影响）。压缩失败则退回原图。
+                    try:
+                        from utils.screenshot_utils import (
+                            decode_and_compress_screenshot_b64,
+                            COMPRESS_TARGET_HEIGHT, COMPRESS_JPEG_QUALITY,
+                        )
+                        b64 = await asyncio.to_thread(
+                            decode_and_compress_screenshot_b64,
+                            b64, COMPRESS_TARGET_HEIGHT, COMPRESS_JPEG_QUALITY,
+                        )
+                    except Exception as comp_err:
+                        logger.warning(
+                            "[%s] request_fresh_screenshot WS compress failed, using raw: %s",
+                            self.lanlan_name, comp_err,
+                        )
                     return b64
             except (asyncio.TimeoutError, Exception) as e:
                 logger.warning("[%s] request_fresh_screenshot WS failed: %s", self.lanlan_name, e)
@@ -5548,15 +5691,274 @@ class LLMSessionManager:
             )
             return
 
-        # Voice mode 走 hot-swap，不进 SM proactive 流水线。Drop only the
-        # proactive cbs from the queue; passive cbs stay for the next drain.
+        # Voice mode：直接 conversation.item.create(role=user) + response.create，
+        # 让 LLM 立即用本角色嗓音主动回应 proactive callback，不等用户开口。
+        #
+        # Gate：realtime API 同一时刻只允许一个 active response。如果 user 正在
+        # 说话（server-VAD 触发 → 自动 response.create）或上一个 response 还
+        # 没结束（含 prompt_ephemeral 走的 fudge response），client 再发
+        # response.create 会被 reject。phase != IDLE 时说明 text-mode proactive
+        # 流水线在跑，也跳。两条都不满足时 callbacks 留在队列，等
+        # _finalize_turn_after_emit 在 response.done 之后重新调用本函数重试。
         if isinstance(self.session, OmniRealtimeClient):
-            self.pending_agent_callbacks = [
-                cb for cb in self.pending_agent_callbacks
-                if cb.get("delivery_mode") == "passive"
-            ]
-            logger.debug("[%s] trigger_agent_callbacks: voice mode, deferring to hot-swap", self.lanlan_name)
-            return
+            # Serialize the whole check-and-claim against concurrent trigger
+            # tasks (see ``_voice_proactive_inject_lock``). Hold the lock across
+            # gate → render → inject → prune; a second task blocks here and,
+            # once it acquires, re-filters the (now-pruned) queue and finds
+            # nothing left to send.
+            async with self._voice_proactive_inject_lock:
+                # Read the session INSIDE the lock — start_session / end_session
+                # / hot-swap may have swapped or torn it down while we waited
+                # for the lock. Re-check the type; if it's no longer a voice
+                # session, bail (a text-mode path / no session shouldn't be
+                # driven from this branch). Using the lock-time instance for
+                # gate + inject avoids injecting into a closing old session.
+                voice_sess = self.session
+                if not isinstance(voice_sess, OmniRealtimeClient):
+                    return
+                # Re-filter inside the lock: a concurrent task may have already
+                # injected+pruned these cbs while we waited on the lock.
+                proactive_cbs = [
+                    cb for cb in self.pending_agent_callbacks
+                    if cb.get("delivery_mode") != "passive"
+                ]
+                if not proactive_cbs:
+                    return
+                # Playback-aware gate: ``_voice_playback_active`` is True
+                # between the FRONTEND's voice_play_start and voice_play_end,
+                # i.e. while buffered audio is still AUDIBLY playing — which
+                # outlasts the realtime API's response.done (generation end).
+                # Injecting then makes her interrupt herself, so defer; the
+                # voice_play_end signal re-fires this and the manager releases
+                # the next cue only once she has truly stopped talking.
+                if (
+                    self.state.phase is not ProactivePhase.IDLE
+                    or voice_sess.is_active_response()
+                    or self._is_voice_playing()
+                ):
+                    logger.debug(
+                        "[%s] trigger_agent_callbacks: voice session busy (phase=%s, active_response=%s, playback=%s); deferring proactive (n=%d)",
+                        self.lanlan_name,
+                        self.state.phase.value,
+                        voice_sess.is_active_response(),
+                        self._voice_playback_active,
+                        len(proactive_cbs),
+                    )
+                    return
+
+                _lang = normalize_language_code(self.user_language, format='short')
+                instruction = _build_callback_instruction(
+                    proactive_cbs,
+                    lang=_lang,
+                    lanlan_name=self.lanlan_name,
+                    master_name=self.master_name,
+                    passive=False,
+                )
+                voice_snapshot = list(proactive_cbs)
+                # Snapshot the paired extras entries NOW (before prune) so the
+                # rejection handler can restore BOTH queues if the server
+                # rejects asynchronously.
+                delivered_ids = {
+                    cb.get("_callback_delivery_id")
+                    for cb in voice_snapshot
+                    if cb.get("_callback_delivery_id")
+                }
+                voice_extra_snapshot = [
+                    extra for extra in self.pending_extra_replies
+                    if extra.get("_callback_delivery_id") in delivered_ids
+                ]
+
+                # Server-side rejection of ``response.create`` (e.g.
+                # ``response_already_active`` from a VAD race winning between
+                # our gate check and our send) is delivered asynchronously as
+                # an ``error`` event, not via this call's return value or an
+                # exception — and ``handle_messages`` can dispatch it WHILE we
+                # are still awaiting ``inject_text_and_request_response`` (i.e.
+                # BEFORE the optimistic prune below runs). The handler must
+                # survive both orderings:
+                #   (a) reject fires DURING the await (cb still in the queue):
+                #       set ``_rejected`` so the post-await code SKIPS the prune
+                #       — otherwise the success prune would delete a cb the
+                #       server refused. Do NOT re-add here (it's still present).
+                #   (b) reject fires AFTER the trigger returned + pruned (cb
+                #       gone): re-add to BOTH queues by id (dedup-guarded) and,
+                #       if idle, re-fire trigger so it doesn't wait for the next
+                #       unrelated response.done.
+                # The dedup-by-presence check distinguishes the two: present →
+                # case (a) (skip re-add, rely on skip-prune); absent → case (b).
+                lanlan_name_snapshot = self.lanlan_name
+                _reject_state = {"rejected": False}
+
+                def _on_voice_inject_rejected(
+                    error_msg: str,
+                    _snapshot=voice_snapshot,
+                    _extra_snapshot=voice_extra_snapshot,
+                    _lanlan=lanlan_name_snapshot,
+                    _state=_reject_state,
+                ) -> None:
+                    _state["rejected"] = True
+                    logger.warning(
+                        "[%s] voice proactive inject rejected by server: %s; re-enqueuing %d cb(s) for retry",
+                        _lanlan, error_msg, len(_snapshot),
+                    )
+                    # Restore BOTH queues in lockstep — only entries whose
+                    # delivery_id is not already present. Present means the
+                    # optimistic prune hasn't run yet (case a): leave them and
+                    # let the post-await ``_rejected`` check skip the prune.
+                    existing_cb_ids = {
+                        cb.get("_callback_delivery_id")
+                        for cb in self.pending_agent_callbacks
+                        if cb.get("_callback_delivery_id")
+                    }
+                    # Object-identity fallback, symmetric with the success-path
+                    # prune: an unstamped cb (no _callback_delivery_id, e.g. a
+                    # future caller bypassing enqueue_agent_callback) would
+                    # otherwise fail the id-based dedup and get re-appended even
+                    # when it's still in the queue (case a) — then skip-prune
+                    # keeps both copies → double-delivery on retry. Dedup such
+                    # entries by Python id().
+                    existing_cb_obj_ids = {id(cb) for cb in self.pending_agent_callbacks}
+                    existing_extra_ids = {
+                        extra.get("_callback_delivery_id")
+                        for extra in self.pending_extra_replies
+                        if extra.get("_callback_delivery_id")
+                    }
+                    for cb in _snapshot:
+                        cb_id = cb.get("_callback_delivery_id")
+                        if (cb_id and cb_id in existing_cb_ids) or (
+                            not cb_id and id(cb) in existing_cb_obj_ids
+                        ):
+                            continue
+                        self.pending_agent_callbacks.append(cb)
+                        if cb_id:
+                            existing_cb_ids.add(cb_id)
+                        else:
+                            existing_cb_obj_ids.add(id(cb))
+                    for extra in _extra_snapshot:
+                        extra_id = extra.get("_callback_delivery_id")
+                        if extra_id and extra_id in existing_extra_ids:
+                            continue
+                        self.pending_extra_replies.append(extra)
+                    # Do NOT immediately re-fire trigger here. The dominant
+                    # rejection is ``response_already_active``, which by
+                    # definition means an active response exists — but the
+                    # client may not have processed its ``response.created``
+                    # yet, so ``is_active_response()`` reads a STALE False. A
+                    # re-fire on that stale state would re-inject → re-reject →
+                    # tight loop until state flips (Codex P1). Instead rely on
+                    # the retry guaranteed by that active response's
+                    # ``response.done`` → ``handle_response_complete`` →
+                    # ``_finalize_turn_after_emit`` (which re-calls this when
+                    # ``pending_agent_callbacks`` is non-empty). The cb is kept
+                    # queued above, so the retry is not lost — just deferred to
+                    # the loop-free turn-end hook.
+
+                # Stream any images carried by these cues into the (guaranteed)
+                # voice session right before inject, so the proactive response
+                # sees the matching visual context (Codex P2).
+                if not await self._stream_cb_media(voice_snapshot, voice_sess):
+                    # A media stream failed — DEFER the whole inject so this cb
+                    # retries WITH its image rather than being delivered
+                    # text-only and pruned (which would lose the retained
+                    # media). cbs are still in pending_agent_callbacks (not yet
+                    # pruned). The manager already emptied its queue and its
+                    # inflight timeout only pumps manager-queued items, and no
+                    # response.create fired (so no response.done / voice_play_end
+                    # to re-drive trigger) — so re-arm a delayed retry here,
+                    # otherwise a transient media/WS failure leaves the cue
+                    # waiting for an unrelated user turn (Codex P2).
+                    logger.info(
+                        "[%s] trigger_agent_callbacks: proactive media stream failed; deferring voice inject (%d cb kept, retry armed)",
+                        self.lanlan_name, len(voice_snapshot),
+                    )
+                    self._schedule_proactive_retry(self.proactive_manager.min_gap_s)
+                    return
+                try:
+                    await voice_sess.inject_text_and_request_response(
+                        instruction, on_rejected=_on_voice_inject_rejected
+                    )
+                except NotImplementedError:
+                    # Defensive fallback. As of now every realtime provider
+                    # (OpenAI / GLM / Step / free / GPT / Qwen / Grok via
+                    # conversation.item.create, Gemini via send_client_content)
+                    # supports manual inject, so this branch is unreachable in
+                    # practice — kept so a hypothetical future provider that
+                    # raises NotImplementedError degrades to hot-swap instead of
+                    # losing the cb. Drop the proactive cbs so they don't loop
+                    # forever, but keep ``pending_extra_replies`` populated for
+                    # the next user-turn prime_context() drain.
+                    voice_ids = {id(cb) for cb in voice_snapshot}
+                    self.pending_agent_callbacks = [
+                        cb for cb in self.pending_agent_callbacks
+                        if id(cb) not in voice_ids
+                    ]
+                    logger.info(
+                        "[%s] trigger_agent_callbacks: voice provider does not support manual inject; falling back to hot-swap (n=%d)",
+                        self.lanlan_name, len(voice_snapshot),
+                    )
+                    return
+                except Exception as exc:
+                    # WS error / fatal / response_already_active race — keep cbs
+                    # in the queue so the next phase-idle hook retries them.
+                    logger.warning(
+                        "[%s] trigger_agent_callbacks: voice proactive inject failed: %s; keeping cbs for retry",
+                        self.lanlan_name, exc,
+                    )
+                    return
+
+                # If the server rejected asynchronously DURING the await above
+                # (case a — ``_on_voice_inject_rejected`` already fired while
+                # the cbs were still in the queue), the cbs were intentionally
+                # left in place. Pruning now would delete a cb the server
+                # refused → silent loss. Skip the prune; the cbs stay queued and
+                # are retried via _finalize_turn_after_emit (or the re-fire the
+                # handler scheduled). The active response that caused the
+                # rejection will fire response.done and trigger the retry.
+                if _reject_state["rejected"]:
+                    logger.info(
+                        "[%s] trigger_agent_callbacks: voice proactive inject rejected during await; keeping %d cb(s) queued for retry",
+                        self.lanlan_name, len(voice_snapshot),
+                    )
+                    return
+
+                # Inject succeeded. Drop the cbs we delivered from BOTH queues:
+                # ``pending_agent_callbacks`` (text-mode drain + proactive
+                # trigger) AND the matching ``pending_extra_replies`` entries
+                # (voice hot-swap prime channel). Leaving the extras intact would
+                # have two concrete bad consequences:
+                #   1. ``_finalize_turn_after_emit`` gates immediate session
+                #      preparation on ``bool(pending_extra_replies)`` — stale
+                #      entries trigger needless background hot-swap prep.
+                #   2. The eventual hot-swap re-primes the new session with cbs
+                #      the AI already spoke about, producing duplicate
+                #      announcements.
+                # Match by the stable ``_callback_delivery_id`` stamped on both
+                # entries by ``enqueue_agent_callback``. Length-based alignment
+                # would be unsafe — ``drain_agent_callbacks_for_llm`` clears
+                # ``pending_agent_callbacks`` while leaving
+                # ``pending_extra_replies`` intact, so the queues legitimately
+                # drift apart across user turns.
+                # Object-identity fallback for pending_agent_callbacks: defense
+                # in depth against any future code path that appends a cb
+                # without going through ``enqueue_agent_callback`` (the only
+                # stamper of ``_callback_delivery_id``). extras dicts are fresh
+                # objects so there is no id() link — extras rely on the
+                # delivery_id contract.
+                voice_obj_ids = {id(cb) for cb in voice_snapshot}
+                self.pending_agent_callbacks = [
+                    cb for cb in self.pending_agent_callbacks
+                    if cb.get("_callback_delivery_id") not in delivered_ids
+                    and id(cb) not in voice_obj_ids
+                ]
+                self.pending_extra_replies = [
+                    extra for extra in self.pending_extra_replies
+                    if extra.get("_callback_delivery_id") not in delivered_ids
+                ]
+                logger.info(
+                    "[%s] trigger_agent_callbacks: voice proactive inject sent (n=%d)",
+                    self.lanlan_name, len(voice_snapshot),
+                )
+                return
 
         _lang = normalize_language_code(self.user_language, format='short')
         # Render via _build_callback_instruction on the proactive subset only.
@@ -5657,11 +6059,44 @@ class LLMSessionManager:
             # pending_agent_callbacks here — passive cbs would also get wiped.
             # per-task contextvar：prompt_ephemeral 回调链里 handle_text_data
             # 识别本路径 chunk 并在 sid 被用户抢走后丢弃
+            # Collect proactive images carried ON the callbacks and pass them
+            # EXPLICITLY to prompt_ephemeral — separate from the user's
+            # _pending_images staging queue (which holds the user's next
+            # screen/camera frame). Sharing that queue would steal the user's
+            # pending image into this proactive turn and rob the user's next
+            # message of its visual context (Codex P2). Media stays on the cb
+            # until the cb is delivered & pruned, so a failed retry re-collects
+            # and re-passes it (preserve-until-success). NOTE: we do NOT call
+            # _stream_cb_media for text mode (that's the voice path, which uses
+            # the realtime session's persistent conversation.item).
+            _proactive_images: list = []
+            for _cb in callbacks_snapshot:
+                if isinstance(_cb, dict):
+                    _proactive_images.extend(_cb.get("media_images") or [])
             _sid_token = _proactive_expected_sid.set(proactive_sid)
+            # Text-mode playback boundary for the pacing manager: no frontend
+            # audio signal arrives for text delivery, so bracket prompt_ephemeral
+            # with text_start/text_end. text_end clears the manager's in-flight
+            # slot + applies min-gap before the next proactive cue.
             try:
-                delivered = await self.session.prompt_ephemeral(instruction)
+                self.lifecycle_bus.emit("text_start")
+            except Exception:
+                # A lifecycle signal must never break delivery. The bus
+                # already isolates per-handler failures (logger.exception);
+                # this guard only covers an emit() that itself somehow raises.
+                logger.debug("[%s] lifecycle_bus emit(text_start) failed", self.lanlan_name)
+            try:
+                delivered = await self.session.prompt_ephemeral(
+                    instruction, images=_proactive_images or None
+                )
             finally:
                 _proactive_expected_sid.reset(_sid_token)
+                try:
+                    self.lifecycle_bus.emit("text_end")
+                except Exception:
+                    # Same rationale as text_start; never let signalling break
+                    # the delivery path's finally cleanup.
+                    logger.debug("[%s] lifecycle_bus emit(text_end) failed", self.lanlan_name)
             logger.debug("[%s] trigger_agent_callbacks: prompt_ephemeral delivered=%s", self.lanlan_name, delivered)
             if delivered:
                 # pending_extra_replies parallels pending_agent_callbacks but
@@ -5840,6 +6275,116 @@ class LLMSessionManager:
         finally:
             await self.state.fire(SessionEvent.PROACTIVE_DONE)
 
+    async def trigger_cat_greeting(self, duration_seconds: float, tier: str, was_auto: bool) -> None:
+        """从猫咪形态变回猫娘（请她回来）时，按"行为(tier) × 猫咪停留时长"触发一次专属问候。
+
+        与 trigger_greeting 对偶，但独立计时：不查 last_conversation_gap，直接用前端
+        测量并传入的猫咪停留时长（datetime gap 是"距上次对话"，这里是"作为猫咪待了多久"，
+        两套时钟互不干扰）。流程：选行为/时长档 → 构建引导词 → 主动拉起 text session → 投递。
+        """
+        # ── 守卫：语音 session 正在启动 / 已活跃时，跳过（与 trigger_greeting 对偶）──
+        if self._is_voice_session_active_or_starting():
+            logger.info("[%s] trigger_cat_greeting: voice session active/starting, skipping", self.lanlan_name)
+            return
+        if self._takeover_active:
+            logger.info("[%s] trigger_cat_greeting: session takeover active, skipping", self.lanlan_name)
+            return
+
+        # tier → 行为：cat1=清醒 / cat2=打盹 / cat3=熟睡。
+        behavior = {"cat1": "awake", "cat2": "nap", "cat3": "sleep"}.get(str(tier or "").strip().lower(), "awake")
+
+        _lang = normalize_language_code(self.user_language, format='short')
+        from config.prompts.prompts_proactive import (
+            get_cat_greeting_prompt, get_cat_greeting_reason_hint, get_time_of_day_hint,
+        )
+        from utils.time_format import format_elapsed as _format_elapsed
+        # < 3min 静默由 get_cat_greeting_prompt 内部判定，返回 None 时不触发。
+        template = get_cat_greeting_prompt(behavior, duration_seconds, _lang)
+        if not template:
+            logger.debug("[%s] trigger_cat_greeting: duration %.0fs below threshold, skipping", self.lanlan_name, duration_seconds)
+            return
+
+        # 投递通道：已有空闲 text session 则直接用，否则主动拉起（与 trigger_greeting 对偶）
+        if isinstance(self.session, OmniOfflineClient) and not getattr(self.session, "_is_responding", False):
+            pass
+        else:
+            if self._is_voice_session_active_or_starting():
+                logger.info("[%s] trigger_cat_greeting: voice session appeared before text session auto-start, skipping", self.lanlan_name)
+                return
+            ws = self.websocket
+            if not ws or not hasattr(ws, 'client_state') or ws.client_state != ws.client_state.CONNECTED:
+                logger.warning("[%s] trigger_cat_greeting: no connected websocket, aborting", self.lanlan_name)
+                return
+            try:
+                logger.info("[%s] trigger_cat_greeting: auto-starting text session", self.lanlan_name)
+                await self.start_session(ws, new=False, input_mode='text')
+            except Exception as e:
+                logger.warning("[%s] trigger_cat_greeting: auto start_session failed: %s", self.lanlan_name, e)
+                return
+
+        if not isinstance(self.session, OmniOfflineClient):
+            logger.warning("[%s] trigger_cat_greeting: session is not text mode after start, aborting", self.lanlan_name)
+            return
+
+        # 与 time_hint 一样，reason_hint 先 format 好 {master} 再注入主模板。
+        reason_hint = get_cat_greeting_reason_hint(was_auto, _lang).format(master=self.master_name)
+        elapsed = _format_elapsed(_lang, duration_seconds)
+        time_hint = get_time_of_day_hint(_lang).format(master=self.master_name)
+
+        instruction = template.format(
+            reason_hint=reason_hint, elapsed=elapsed, name=self.lanlan_name,
+            master=self.master_name, time_hint=time_hint,
+        )
+        print(f"[trigger_cat_greeting] instruction:\n{instruction}")
+        logger.info("[%s] trigger_cat_greeting: behavior=%s duration=%.0fs was_auto=%s elapsed=%s, delivering",
+                    self.lanlan_name, behavior, duration_seconds, was_auto, elapsed)
+
+        # ── 投递前最终检查：构建 instruction 期间语音可能已接管 ──
+        if self._is_voice_session_active_or_starting():
+            logger.info("[%s] trigger_cat_greeting: voice session took over before delivery, skipping", self.lanlan_name)
+            return
+
+        # 原子 SM claim：与 trigger_greeting / trigger_agent_callbacks / proactive_chat 互斥
+        if not await self.state.try_start_proactive(session=self.session):
+            logger.info(
+                "[%s] trigger_cat_greeting: SM denied claim (phase=%s), skipping",
+                self.lanlan_name, self.state.phase.value,
+            )
+            return
+
+        try:
+            async with self._proactive_write_lock:
+                if self._is_voice_session_active_or_starting():
+                    logger.info("[%s] trigger_cat_greeting: voice session took over while waiting for write lock, skipping", self.lanlan_name)
+                    return
+                async with self.lock:
+                    if self.state.is_proactive_preempted():
+                        logger.info("[%s] trigger_cat_greeting: preempted before sid claim, skipping", self.lanlan_name)
+                        return
+                    self.current_speech_id = str(uuid4())
+                    self._tts_done_queued_for_turn = False
+                    self._tts_done_pending_until_ready = False
+                    proactive_sid = self.current_speech_id
+                await self.state.fire(SessionEvent.PROACTIVE_CLAIM, sid=proactive_sid)
+                await self.state.fire(SessionEvent.PROACTIVE_PHASE2)
+                _sid_token = _proactive_expected_sid.set(proactive_sid)
+                try:
+                    # stale session 防御：与 trigger_greeting 同款快照 + 类型校验。
+                    session_ref = self.session
+                    if not isinstance(session_ref, OmniOfflineClient):
+                        logger.info(
+                            "[%s] trigger_cat_greeting: session swapped/nullified "
+                            "before prompt_ephemeral (now=%s), skipping",
+                            self.lanlan_name, type(session_ref).__name__,
+                        )
+                        return
+                    delivered = await session_ref.prompt_ephemeral(instruction)
+                finally:
+                    _proactive_expected_sid.reset(_sid_token)
+                logger.info("[%s] trigger_cat_greeting: delivered=%s", self.lanlan_name, delivered)
+        finally:
+            await self.state.fire(SessionEvent.PROACTIVE_DONE)
+
     async def trigger_new_character_greeting(self) -> None:
         from config.prompts.prompts_proactive import get_new_character_greeting_prompt
         from utils.new_character_greeting_state import has_pending, remove_pending
@@ -5944,6 +6489,256 @@ class LLMSessionManager:
             finally:
                 await self.state.fire(SessionEvent.PROACTIVE_DONE)
 
+    def submit_proactive_callback(
+        self,
+        callback: dict,
+        *,
+        priority: int = 0,
+        coalesce_key: Optional[str] = None,
+    ) -> None:
+        """Hand a proactive (ai_behavior="respond") cue to the delivery
+        manager, which paces/orders/coalesces it before release.
+
+        Replaces the EventBus's old "enqueue + immediately fire trigger"
+        for proactive cues. Passive/silent cues do NOT come here — they keep
+        their existing direct enqueue-only path so ``delivery="passive"``'s
+        "don't interrupt" promise is unchanged.
+        """
+        self.proactive_manager.submit(callback, priority=priority, coalesce_key=coalesce_key)
+
+    async def _deliver_proactive_batch(self, callbacks: list) -> None:
+        """Release hook invoked by ProactiveDeliveryManager when the gate is
+        open. Enqueues the WHOLE batch then fires ONE trigger — trigger drains
+        all pending proactive callbacks into a single LLM turn, restoring the
+        legacy "several near-simultaneous cues batched into one turn"
+        behaviour (the manager only governs WHEN the batch is released, not
+        how many cues per turn)."""
+        if not callbacks:
+            return
+        for callback in callbacks:
+            self.enqueue_agent_callback(callback)
+        # NOTE: images carried by these cues (push_message media_parts for
+        # ai_behavior="respond") are streamed at the ACTUAL delivery point
+        # inside trigger_agent_callbacks via _stream_cb_media — NOT here. That
+        # binds streaming to a guaranteed session and covers every delivery
+        # path (manager release / reconnect redelivery / turn-end retry),
+        # instead of streaming into a possibly-None / about-to-be-swapped
+        # session at release time (Codex P2).
+        await self.trigger_agent_callbacks()
+
+    async def _stream_cb_media(self, callbacks: list, session) -> bool:
+        """Stream images carried by proactive callbacks (push_message
+        media_parts with ai_behavior="respond") into ``session`` right before
+        delivery, so the proactive response sees matching visual context.
+
+        Returns False if ANY image failed to stream — the caller must then
+        DEFER the whole delivery (don't inject/prompt the text), so the cb
+        retries WITH its media next time. Delivering text-only here and then
+        pruning the cb would drop the retained media for good (Codex P2).
+        Returns True when every image streamed (or there were none / no
+        session).
+
+        Bound to the delivery point (not the manager-release point) so it
+        covers every path that actually delivers a cb — manager release,
+        reconnect redelivery, turn-end retry.
+
+        VOICE path only: OmniRealtimeClient.stream_image() persists the image
+        as a conversation.item the immediately-following proactive
+        response.create sees (same-turn), and the realtime conversation is an
+        accumulating log (not a single-consume queue), so adding a proactive
+        image can't steal a user's pending frame. TEXT mode does NOT go through
+        here — its proactive images are passed explicitly to prompt_ephemeral()
+        (separate from the user's _pending_images staging queue); see
+        _deliver_agent_callbacks_text.
+
+        Media is LEFT on the cb (NOT popped) until the cb is delivered &
+        pruned, so a deferred / failed-and-retried cb re-streams it instead of
+        losing the visual context. On a PARTIAL stream failure the FULL set is
+        kept (not just the tail): a stream failure usually means the session is
+        closing, so the retry lands on a new session that has none of the
+        earlier images — re-streaming everything is correct (Codex P2)."""
+        si = getattr(session, "stream_image", None)
+        if si is None:
+            return True
+        all_ok = True
+        for cb in callbacks:
+            if not isinstance(cb, dict):
+                continue
+            images = cb.get("media_images")
+            if not images:
+                continue
+            streamed = 0
+            for b64 in images:
+                try:
+                    # Deliberate cue image: bypass the native-vision frame-rate
+                    # throttle so it isn't silently dropped behind a recent
+                    # high-frequency screen/camera frame (Codex P2).
+                    await si(b64, bypass_rate_limit=True)
+                    streamed += 1
+                except Exception as e:
+                    # Keep the FULL media set (do NOT trim already-streamed
+                    # ones): a voice stream_image failure almost always means
+                    # the session is closing, so the retry runs on a NEW session
+                    # whose conversation has none of the earlier images —
+                    # trimming would permanently drop them. Re-streaming the
+                    # whole set on the (likely new) session is correct; the only
+                    # downside is duplicate items if the SAME session is retried,
+                    # which is rare in a failure path and harmless (Codex P2 —
+                    # overrides the earlier tail-trim). media_images is left
+                    # untouched (already the full set). Signal the caller to
+                    # DEFER (don't send text-only and prune the media away).
+                    logger.warning(
+                        "[%s] proactive media stream_image failed (streamed %d/%d); keeping FULL set for retry: %s",
+                        self.lanlan_name, streamed, len(images), e,
+                    )
+                    all_ok = False
+                    break
+            # All streamed: keep media_images on the cb until it's delivered+
+            # pruned (preserve-until-success) so an inject/prompt failure retry
+            # re-streams it. Successful delivery removes the cb (and its media).
+        return all_ok
+
+    def on_voice_playback_signal(self, *, playing: bool, **meta) -> None:
+        """Handle a FRONTEND-reported audio playback boundary.
+
+        ``playing=True`` (voice_play_start) → real audio started; close the
+        voice inject gate. ``playing=False`` (voice_play_end) → the browser's
+        audio queue fully drained (she actually stopped talking) → open the
+        gate and let the manager release the next cue. Re-fires
+        ``trigger_agent_callbacks`` on end so a cue deferred mid-playback is
+        delivered promptly rather than waiting for the next response.done.
+        """
+        self._voice_playback_active = bool(playing)
+        if playing:
+            self._voice_playback_started_ts = time.monotonic()
+        try:
+            self.lifecycle_bus.emit(
+                "voice_play_start" if playing else "voice_play_end", **meta
+            )
+        except Exception:
+            logger.exception("[%s] lifecycle_bus emit failed", self.lanlan_name)
+        if not playing and self.pending_agent_callbacks:
+            # A cue deferred while she was speaking (gate busy at release) can
+            # now go out — but honor the manager's min-gap so this retry doesn't
+            # start the next proactive turn with ZERO gap right at audio end.
+            # Parity with the manager's own post-playback pump, which also
+            # waits min_gap (Codex P2). trigger_agent_callbacks re-gates itself,
+            # so a fire that lands while she's speaking again just defers.
+            try:
+                delay = max(0.0, float(self.proactive_manager.min_gap_s))
+            except Exception:
+                delay = 0.0
+            if delay <= 0.0:
+                self._fire_task(self.trigger_agent_callbacks())
+            else:
+                try:
+                    asyncio.get_running_loop().call_later(
+                        delay, lambda: self._fire_task(self.trigger_agent_callbacks())
+                    )
+                except RuntimeError:
+                    self._fire_task(self.trigger_agent_callbacks())
+
+    # Ceiling for a missing voice_play_end before the playback gate self-heals:
+    # above a normal single reply, but recovers a dropped end-signal reasonably
+    # fast. Disconnect/refresh (the common cause) is already handled by session
+    # teardown reset, so this only backstops the rare "connection alive but end
+    # signal lost" case. Mirror of ProactiveDeliveryManager.max_play_s.
+    _VOICE_PLAYBACK_STALE_S = 45.0
+
+    def _is_voice_playing(self) -> bool:
+        """Time-bounded read of the playback gate. Auto-clears a stuck
+        ``_voice_playback_active`` when no voice_play_end has arrived within
+        ``_VOICE_PLAYBACK_STALE_S`` (frontend disconnect/refresh mid-playback),
+        so the voice inject gate can never wedge proactive delivery forever."""
+        if not self._voice_playback_active:
+            return False
+        if time.monotonic() - self._voice_playback_started_ts > self._VOICE_PLAYBACK_STALE_S:
+            logger.warning(
+                "[%s] voice playback gate watchdog: no voice_play_end after %.0fs; clearing stuck flag",
+                self.lanlan_name, self._VOICE_PLAYBACK_STALE_S,
+            )
+            self._voice_playback_active = False
+            return False
+        return True
+
+    def _schedule_proactive_retry(self, delay: float) -> None:
+        """Schedule a delayed ``trigger_agent_callbacks`` so a cb left in
+        pending_agent_callbacks (e.g. the voice media-stream deferral path) is
+        retried even when nothing else would drive it — the manager has already
+        emptied its queue and its inflight timeout only pumps manager-queued
+        items, and a media failure before response.create means no
+        response.done / voice_play_end arrives to re-fire trigger."""
+        try:
+            asyncio.get_running_loop().call_later(
+                max(0.0, float(delay)),
+                lambda: self._fire_task(self.trigger_agent_callbacks()),
+            )
+        except RuntimeError:
+            self._fire_task(self.trigger_agent_callbacks())
+
+    def _can_release_proactive(self) -> bool:
+        """Manager-release gate, mirroring the defer conditions in
+        ``trigger_agent_callbacks`` so cues stay UNDER manager ordering
+        (coalescing/priority) until they can actually be delivered — rather
+        than being released into the inner trigger, deferred, and parked in
+        ``pending_agent_callbacks`` outside the manager (Codex P2).
+
+        Returns False while: audio is playing (frontend gate), the SM is not
+        IDLE (another proactive/greeting turn owns it), or the session is still
+        GENERATING a response (_is_responding — covers BOTH the realtime
+        response.created→voice_play_start window the playback gate can't see,
+        AND an active offline/text user response where try_start_proactive
+        would deny the claim)."""
+        # Time-bounded read (NOT the raw _voice_playback_active flag): if the
+        # frontend dropped voice_play_end, _is_voice_playing() self-heals after
+        # the 30s watchdog, so a stuck flag can't make can_release return False
+        # forever and wedge the queue in an endless busy-recheck (Codex P1).
+        if self._is_voice_playing():
+            return False
+        try:
+            if self.state.phase is not ProactivePhase.IDLE:
+                return False
+        except Exception:
+            # State unavailable → treat as IDLE and fall through to the rest of
+            # the gate; never block delivery on a phase-read hiccup.
+            logger.debug("[%s] _can_release_proactive: state.phase unavailable; treating as IDLE", self.lanlan_name)
+        sess = self.session
+        # Both realtime AND offline sessions expose _is_responding (set while
+        # generating a response — user OR proactive); realtime's
+        # is_active_response() is just a read of it. Releasing while True would
+        # have trigger deny/defer the claim (voice: is_active_response gate;
+        # text: try_start_proactive denies during _is_responding) and park the
+        # cue in pending_agent_callbacks outside the manager (Codex P2).
+        try:
+            if sess is not None and getattr(sess, "_is_responding", False):
+                return False
+        except Exception:
+            # Read hiccup → treat as not-responding rather than wedging the queue.
+            logger.debug("[%s] _can_release_proactive: _is_responding check failed; treating as not-responding", self.lanlan_name)
+        return True
+
+    def _reset_proactive_gate(self) -> None:
+        """Reset the playback gate on session lifecycle boundaries (session
+        start / end / character switch) so a dropped voice_play_end can't
+        carry stale playback state into the next session and wedge delivery.
+
+        Proactive cues are generally important, so cues still queued in the
+        manager are NOT dropped: they're moved into pending_agent_callbacks,
+        which persists across teardown and is redelivered by the reconnect /
+        next-turn path. Only the gate/single-flight state is cleared."""
+        self._voice_playback_active = False
+        self._voice_playback_started_ts = 0.0
+        try:
+            leftover = self.proactive_manager.drain_pending()
+            for cb in leftover:
+                # Hand back to the persistent queue so the reconnect path
+                # (websocket_router) / next trigger redelivers rather than
+                # losing it.
+                self.enqueue_agent_callback(cb)
+            self.proactive_manager.reset_gate()
+        except Exception:
+            logger.exception("[%s] proactive_manager reset/drain failed", self.lanlan_name)
+
     def enqueue_agent_callback(self, callback: dict) -> None:
         """Enqueue a structured agent task callback for LLM injection.
 
@@ -5993,8 +6788,17 @@ class LLMSessionManager:
             # discarded.
             if not summary and not detail and not error_message and not source_name and status == "completed":
                 return
+            # Stable delivery id so the voice inject success path can
+            # precisely drop the matching extras entry from
+            # ``pending_extra_replies``. Length-based alignment is unsafe:
+            # ``drain_agent_callbacks_for_llm`` clears
+            # ``pending_agent_callbacks`` while leaving
+            # ``pending_extra_replies`` intact, so the queues legitimately
+            # drift apart across user turns.
+            delivery_id = callback.setdefault("_callback_delivery_id", uuid4().hex)
             self.pending_agent_callbacks.append(callback)
             self.pending_extra_replies.append({
+                "_callback_delivery_id": delivery_id,
                 "origin": origin,
                 "summary": summary,
                 "detail": detail,
@@ -6408,6 +7212,13 @@ class LLMSessionManager:
                     # 对偶）。idle reset loop 依赖该字段判断静默时长，文本路径不补的话
                     # 纯文本会话永远满足"静默 ≥ 30 min"被误重置。
                     self.last_user_activity_time = time.time()
+                    # 「真消息」时间戳：strip 后非空才刷，与语音路径
+                    # `if transcript_text:` 对偶——空白输入不算真实回应，否则会误
+                    # 推进 mini-game 邀请隐式 dismiss 判定（CodeRabbit）。注意
+                    # last_user_activity_time 仍无条件刷（服务 idle reset，语义是
+                    # 「有没有发请求」，与「是不是真消息」不同）。
+                    if data.strip():
+                        self.last_user_message_time = time.time()
 
                     # 更新字数限制（可能用户在对话期间修改了设置）
                     if hasattr(self.session, 'update_max_response_length'):
@@ -6461,46 +7272,13 @@ class LLMSessionManager:
                     )
 
                     # Mini-game 邀请的关键词文本兜底（PR #1141 follow-up E2）。
-                    # 用户在 pending 邀请期间自己打字（没点 ChoicePrompt 三按
-                    # 钮）→ 扫关键词命中就触发对应 state 转换。**不吃掉消息**：
-                    # 继续走普通 chat 流水线，AI 仍然会回应这条话——AI 收到的
-                    # 上下文里也含这条用户输入，所以模型会自然把"好啊"、"不
-                    # 玩了"之类的回复处理掉。仅做 state side effect + accept 时
-                    # 推一条 mini_game_launch WS 让前端 window.open 游戏。
-                    # main_routers' keyword matcher is registered as a hook
-                    # on the bus (see app/runtime_bindings.py). Dispatcher
-                    # swallows per-hook errors; if no hook is bound (e.g.
-                    # entrypoint without main_routers), result is None.
-                    _kw_outcome = dispatch_text_user_message(
-                        self.lanlan_name,
+                    # 用户在 pending 邀请期间自己打字（没点 ChoicePrompt 三按钮）
+                    # → 扫关键词命中就触发对应 state 转换。与语音转写路径
+                    # （handle_input_transcript）共用同一方法，逻辑见
+                    # _dispatch_mini_game_invite_keyword。
+                    await self._dispatch_mini_game_invite_keyword(
                         data if isinstance(data, str) else '',
                     )
-                    # 推一条 mini_game_invite_resolved 给前端：accept 时兼当 launch
-                    # 信号（带 game_url），decline/later 时让 ChoicePrompt UI 清掉
-                    # 不让按钮挂着——codex P2 指出，原版只对 accept 推，
-                    # decline/later keyword 命中后前端 prompt 不消失，用户后续点
-                    # 按钮会被 endpoint 当 expired，state 早变了。
-                    if _kw_outcome and _kw_outcome.get('action'):
-                        try:
-                            if (self.websocket
-                                    and hasattr(self.websocket, 'send_json')):
-                                ws_state = getattr(self.websocket, 'client_state', None)
-                                if ws_state is None or ws_state == ws_state.CONNECTED:
-                                    payload = {
-                                        'type': 'mini_game_invite_resolved',
-                                        'session_id': _kw_outcome.get('session_id') or '',
-                                        'action': _kw_outcome['action'],
-                                    }
-                                    if _kw_outcome.get('game_url'):
-                                        payload['game_url'] = _kw_outcome['game_url']
-                                    if _kw_outcome.get('game_type'):
-                                        payload['game_type'] = _kw_outcome['game_type']
-                                    await self.websocket.send_json(payload)
-                        except Exception as _push_err:
-                            logger.warning(
-                                f"[{self.lanlan_name}] mini_game_invite_resolved "
-                                f"WS push failed: {_push_err}",
-                            )
 
                     should_handoff, openclaw_messages = await self._should_handoff_text_to_openclaw(data)
                     if should_handoff:
@@ -6770,6 +7548,12 @@ class LLMSessionManager:
                 # 尽早取消 TTS 延迟重试任务并清理错误码（持锁状态下），
                 # 防止 _init_renew_status 期间 respawn task 触发无效重试
                 self._reset_tts_retry_state()
+
+        # Clear the playback gate + manager queue on genuine teardown. Placed
+        # AFTER the stale-session guards above (which `return` early) so a stale/
+        # duplicate end_session callback can't reset the CURRENT live session's
+        # gate or drop its queued cues (Codex P1).
+        self._reset_proactive_gate()
 
         if _inactive_early:
             if reset_starting_count:
@@ -7147,7 +7931,7 @@ class LLMSessionManager:
                             'API_ARREARS', 'API_QUOTA_TIME', 'API_KEY_REJECTED',
                             'API_RATE_LIMIT', 'API_POLICY_VIOLATION',
                             'API_1008_FALLBACK', 'TTS_CONNECTION_FAILED',
-                            'UPSTREAM_SERVER_BUSY',
+                            'UPSTREAM_SERVER_BUSY', 'TTS_CONFIG_INVALID',
                         }
                         _parsed_code = None
                         _keyword_target = error_msg_text  # 非 JSON 错误时回退使用

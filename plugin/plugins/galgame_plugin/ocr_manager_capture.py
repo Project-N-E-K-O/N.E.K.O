@@ -80,7 +80,7 @@ from .aihong_state import (
     matches_aihong_target as _matches_aihong_target,
     normalize_aihong_choice_box_text as _normalize_aihong_choice_box_text,
 )
-from .rapidocr_support import (
+from plugin.plugins._shared.rapidocr.rapidocr_support import (
     inspect_rapidocr_installation,
     load_rapidocr_runtime,
 )

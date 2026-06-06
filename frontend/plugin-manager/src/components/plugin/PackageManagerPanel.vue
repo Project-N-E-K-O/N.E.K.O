@@ -56,9 +56,9 @@
       <div class="content-stack" data-yui-guide-id="package-manager-content">
         <div v-if="embedded" class="embedded-selection-summary" data-yui-guide-id="package-manager-selection-summary">
           <el-tag size="small" type="primary">已选 {{ selectedPluginIds.length }}</el-tag>
-          <el-tag size="small" type="info">可打包 {{ selectablePlugins.length }}</el-tag>
+          <el-tag size="small" type="info">可构建 {{ selectablePlugins.length }}</el-tag>
           <span class="embedded-selection-summary__text">
-            打包和整合分析默认使用左侧当前可见范围与已选插件。
+            构建和整合分析默认使用左侧当前可见范围与已选插件。
           </span>
         </div>
 
@@ -66,45 +66,45 @@
           <template #header>
             <div class="card-header">
               <span>包管理</span>
-              <el-tag size="small" type="info">目标 {{ resolvedPackTargets.length }}</el-tag>
+              <el-tag size="small" type="info">目标 {{ resolvedBuildTargets.length }}</el-tag>
             </div>
           </template>
 
           <el-tabs v-model="activeTab" stretch class="pkg-tabs">
-            <el-tab-pane label="打包" name="pack">
+            <el-tab-pane label="构建" name="build">
               <el-form label-position="top">
-                <el-form-item label="打包模式">
-                  <el-radio-group v-model="packMode">
-                    <el-radio-button label="selected">打包选中插件</el-radio-button>
-                    <el-radio-button label="single">打包单个插件</el-radio-button>
-                    <el-radio-button label="bundle">打包整合包</el-radio-button>
-                    <el-radio-button label="all">打包全部插件</el-radio-button>
+                <el-form-item label="构建模式">
+                  <el-radio-group v-model="buildMode">
+                    <el-radio-button label="selected">构建选中插件</el-radio-button>
+                    <el-radio-button label="single">构建单个插件</el-radio-button>
+                    <el-radio-button label="bundle">构建整合包</el-radio-button>
+                    <el-radio-button label="all">构建全部插件</el-radio-button>
                   </el-radio-group>
                 </el-form-item>
 
-                <el-form-item v-if="packMode === 'single'" label="插件">
-                  <el-select v-model="packForm.plugin" placeholder="选择插件" clearable filterable>
+                <el-form-item v-if="buildMode === 'single'" label="插件">
+                  <el-select v-model="buildForm.plugin" placeholder="选择插件" clearable filterable>
                     <el-option
                       v-for="plugin in selectablePlugins"
                       :key="plugin.id"
-                      :label="pluginDisplayName(plugin)"
+                      :label="plugin.displayName || plugin.name"
                       :value="plugin.id"
                     />
                   </el-select>
                 </el-form-item>
 
-                <template v-if="packMode === 'bundle'">
+                <template v-if="buildMode === 'bundle'">
                   <el-form-item label="整合包 ID">
-                    <el-input v-model="packForm.bundle_id" placeholder="默认按插件 ID 自动生成" />
+                    <el-input v-model="buildForm.bundle_id" placeholder="默认按插件 ID 自动生成" />
                   </el-form-item>
 
                   <el-form-item label="整合包名称">
-                    <el-input v-model="packForm.package_name" placeholder="默认自动生成" />
+                    <el-input v-model="buildForm.package_name" placeholder="默认自动生成" />
                   </el-form-item>
 
                   <el-form-item label="整合包描述">
                     <el-input
-                      v-model="packForm.package_description"
+                      v-model="buildForm.package_description"
                       type="textarea"
                       :rows="2"
                       placeholder="可选"
@@ -112,27 +112,27 @@
                   </el-form-item>
 
                   <el-form-item label="整合包版本">
-                    <el-input v-model="packForm.version" placeholder="默认 0.1.0" />
+                    <el-input v-model="buildForm.version" placeholder="默认 0.1.0" />
                   </el-form-item>
                 </template>
 
                 <el-form-item label="输出目录">
-                  <el-input v-model="packForm.target_dir" placeholder="默认使用应用插件包目录" />
+                  <el-input v-model="buildForm.target_dir" placeholder="默认使用应用插件包目录" />
                 </el-form-item>
 
                 <el-form-item label="保留 staging">
-                  <el-switch v-model="packForm.keep_staging" />
+                  <el-switch v-model="buildForm.keep_staging" />
                 </el-form-item>
 
                 <div class="hint-row">
                   <el-tag type="info" effect="plain">
-                    当前会处理 {{ resolvedPackTargets.length }} 个插件
+                    当前会处理 {{ resolvedBuildTargets.length }} 个插件
                   </el-tag>
                 </div>
 
                 <div class="action-row">
-                  <el-button type="primary" :loading="packing" @click="handlePack">
-                    执行打包
+                  <el-button type="primary" :loading="building" @click="handleBuild">
+                    执行构建
                   </el-button>
                 </div>
               </el-form>
@@ -153,33 +153,33 @@
               </el-form>
             </el-tab-pane>
 
-            <el-tab-pane label="解包" name="unpack">
+            <el-tab-pane label="安装" name="install">
               <el-form label-position="top">
                 <el-form-item label="包路径">
-                  <el-input v-model="unpackForm.package" placeholder="例如 qq_auto_reply.neko-plugin" />
+                  <el-input v-model="installForm.package" placeholder="例如 qq_auto_reply.neko-plugin" />
                 </el-form-item>
 
                 <el-form-item label="插件目录">
-                  <el-input v-model="unpackForm.plugins_root" placeholder="默认写入我的文档下的用户插件目录" />
+                  <el-input v-model="installForm.plugins_root" placeholder="默认写入我的文档下的用户插件目录" />
                 </el-form-item>
 
                 <el-form-item label="Profiles 目录">
                   <el-input
-                    v-model="unpackForm.profiles_root"
+                    v-model="installForm.profiles_root"
                     placeholder="默认写入我的文档下的 .neko-package-profiles 目录"
                   />
                 </el-form-item>
 
                 <el-form-item label="冲突策略">
-                  <el-radio-group v-model="unpackForm.on_conflict">
+                  <el-radio-group v-model="installForm.on_conflict">
                     <el-radio-button label="rename">rename</el-radio-button>
                     <el-radio-button label="fail">fail</el-radio-button>
                   </el-radio-group>
                 </el-form-item>
 
                 <div class="action-row">
-                  <el-button type="warning" :loading="unpacking" @click="handleUnpack">
-                    执行解包
+                  <el-button type="warning" :loading="installing" @click="handleInstall">
+                    执行安装
                   </el-button>
                 </div>
               </el-form>
@@ -197,7 +197,7 @@
                     <el-option
                       v-for="plugin in selectablePlugins"
                       :key="plugin.id"
-                      :label="pluginDisplayName(plugin)"
+                      :label="plugin.displayName || plugin.name"
                       :value="plugin.id"
                     />
                   </el-select>
@@ -229,7 +229,7 @@
           @select="selectPackage"
           @inspect="inspectSelectedPackage"
           @verify="verifySelectedPackage"
-          @prepare-unpack="prepareUnpackPackage"
+          @prepare-install="prepareInstallPackage"
           @update:package-filter-type="packageFilterType = $event"
         />
         </div>
@@ -247,21 +247,20 @@
 </template>
 
 <script setup lang="ts">
-import { useI18n } from 'vue-i18n'
 import { Close } from '@element-plus/icons-vue'
 import PackageArchiveListPanel from '@/components/plugin/PackageArchiveListPanel.vue'
 import PackageResultPanel from '@/components/plugin/PackageResultPanel.vue'
 import PluginSelectorPanel from '@/components/plugin/PluginSelectorPanel.vue'
 import { usePackageManager } from '@/composables/usePackageManager'
-import { resolvePluginI18nMessage } from '@/utils/i18nLabel'
-import type { PluginMeta } from '@/types/api'
 
-withDefaults(
+const props = withDefaults(
   defineProps<{
     embedded?: boolean
+    externalSelectedPluginIds?: readonly string[]
   }>(),
   {
     embedded: false,
+    externalSelectedPluginIds: undefined,
   },
 )
 
@@ -272,7 +271,7 @@ defineEmits<{
 const {
   activeTab,
   layoutMode,
-  packMode,
+  buildMode,
   pluginFilter,
   useRegex,
   filterMode,
@@ -283,18 +282,18 @@ const {
   localPackages,
   targetDir,
   packageFilterType,
-  packing,
+  building,
   inspecting,
   verifying,
-  unpacking,
+  installing,
   analyzing,
   resultDialogVisible,
   resultHistory,
   activeResultId,
   activeResultRecord,
-  packForm,
+  buildForm,
   packageRef,
-  unpackForm,
+  installForm,
   analyzeForm,
   selectablePlugins,
   pluginCount,
@@ -304,7 +303,7 @@ const {
   filteredAdapters,
   filteredExtensions,
   selectedPluginIds,
-  resolvedPackTargets,
+  resolvedBuildTargets,
   filteredLocalPackages,
   setActiveResult,
   openResultDialog,
@@ -316,24 +315,15 @@ const {
   selectPackage,
   inspectSelectedPackage,
   verifySelectedPackage,
-  prepareUnpackPackage,
-  handlePack,
+  prepareInstallPackage,
+  handleBuild,
   handleInspect,
   handleVerify,
-  handleUnpack,
+  handleInstall,
   handleAnalyze,
-} = usePackageManager()
-
-const { locale } = useI18n()
-
-function pluginDisplayName(plugin: PluginMeta): string {
-  return resolvePluginI18nMessage(
-    plugin.i18n,
-    'plugin.name',
-    locale.value,
-    plugin.name || plugin.id,
-  )
-}
+} = usePackageManager({
+  externalSelectedPluginIds: () => props.externalSelectedPluginIds,
+})
 </script>
 
 <style scoped>

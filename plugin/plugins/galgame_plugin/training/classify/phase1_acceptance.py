@@ -559,7 +559,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--coverage-source",
         nargs="+",
         default=[
-            "plugin/plugins/galgame_plugin/_runtime.py",
+            "plugin/plugins/_shared/rapidocr/_runtime.py",
             "plugin/plugins/galgame_plugin/ocr_capture_backends/_helpers.py",
             "plugin/plugins/galgame_plugin/ocr_manager_capture.py",
             "plugin/plugins/galgame_plugin/ocr_manager_runtime.py",

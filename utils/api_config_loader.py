@@ -99,7 +99,6 @@ def _convert_core_api_profile(json_profile: Dict[str, Any]) -> Dict[str, Any]:
         'core_urls': 'CORE_URLS',
         'core_model': 'CORE_MODEL',
         'core_api_key': 'CORE_API_KEY',
-        'is_free_version': 'IS_FREE_VERSION',
     }
     
     for json_key, python_key in field_mapping.items():
@@ -133,7 +132,6 @@ def _convert_assist_api_profile(json_profile: Dict[str, Any]) -> Dict[str, Any]:
         'agent_model': 'AGENT_MODEL',
         'audio_api_key': 'AUDIO_API_KEY',
         'openrouter_api_key': 'OPENROUTER_API_KEY',
-        'is_free_version': 'IS_FREE_VERSION',
     }
     
     for json_key, python_key in field_mapping.items():
@@ -361,11 +359,23 @@ def _resolve_native_tts_voice_provider_config(
             resolving,
         )
 
+    # voices / aliases 走 dict 深合并：继承父目录后只需在子配置里增量声明
+    # 新增/覆盖的条目（如 free_intl 在 gemini 全量目录上只加一个 yui），
+    # 不必把父目录整张重抄一遍。其余标量字段（catalog_prefix / default_voice
+    # 等）仍是子覆盖父的整体替换语义。
+    _MERGE_DICT_FIELDS = ('voices', 'aliases')
     merged = deepcopy(inherited)
     for field, value in raw.items():
         if field == 'inherits':
             continue
-        merged[field] = deepcopy(value)
+        if (
+            field in _MERGE_DICT_FIELDS
+            and isinstance(value, dict)
+            and isinstance(merged.get(field), dict)
+        ):
+            merged[field] = {**merged[field], **deepcopy(value)}
+        else:
+            merged[field] = deepcopy(value)
     return merged
 
 

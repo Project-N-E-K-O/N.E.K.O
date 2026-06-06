@@ -38,17 +38,8 @@ class StudyHabitStore:
         self._store = store
         self.ensure_tables()
 
-    def _conn(self) -> sqlite3.Connection:
-        try:
-            return self._store._require_conn()  # noqa: SLF001 - plugin-local store extension.
-        except Exception as exc:  # pragma: no cover - defensive wrapper
-            raise StudyHabitStoreError(
-                f"study habit database unavailable: {exc}"
-            ) from exc
-
     def ensure_tables(self) -> None:
-        with self._store._lock:  # noqa: SLF001 - share StudyStore connection lock.
-            conn = self._conn()
+        with self._store.transaction() as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS daily_goals (
@@ -103,7 +94,6 @@ class StudyHabitStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_focus_sessions_started ON focus_sessions(started_at, status)"
             )
-            conn.commit()
 
     @staticmethod
     def _goal_from_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -169,8 +159,7 @@ class StudyHabitStore:
             target_type = "custom"
         goal_id = str(uuid.uuid4())
         now = _now_iso()
-        with self._store._lock:  # noqa: SLF001
-            conn = self._conn()
+        with self._store.transaction() as conn:
             conn.execute(
                 """
                 INSERT INTO daily_goals (
@@ -191,7 +180,6 @@ class StudyHabitStore:
                     now,
                 ),
             )
-            conn.commit()
             row = conn.execute(
                 "SELECT * FROM daily_goals WHERE id = ?", (goal_id,)
             ).fetchone()
@@ -201,14 +189,10 @@ class StudyHabitStore:
         return goal
 
     def get_goal(self, goal_id: str) -> dict[str, Any] | None:
-        with self._store._lock:  # noqa: SLF001
-            row = (
-                self._conn()
-                .execute(
-                    "SELECT * FROM daily_goals WHERE id = ?", (str(goal_id or ""),)
-                )
-                .fetchone()
-            )
+        with self._store.transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM daily_goals WHERE id = ?", (str(goal_id or ""),)
+            ).fetchone()
         return self._goal_from_row(row)
 
     def list_goals(
@@ -222,20 +206,16 @@ class StudyHabitStore:
         if not include_cancelled:
             clauses.append("status != 'cancelled'")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        with self._store._lock:  # noqa: SLF001
-            rows = (
-                self._conn()
-                .execute(
-                    f"""
+        with self._store.transaction() as conn:
+            rows = conn.execute(
+                f"""
                 SELECT *
                 FROM daily_goals
                 {where}
                 ORDER BY date DESC, created_at ASC
                 """,
-                    tuple(params),
-                )
-                .fetchall()
-            )
+                tuple(params),
+            ).fetchall()
         return [
             goal
             for goal in (self._goal_from_row(row) for row in rows)
@@ -270,8 +250,7 @@ class StudyHabitStore:
             new_status = current["status"]
         if new_status == "active" and new_target > 0 and new_progress >= new_target:
             new_status = "completed"
-        with self._store._lock:  # noqa: SLF001
-            conn = self._conn()
+        with self._store.transaction() as conn:
             conn.execute(
                 """
                 UPDATE daily_goals
@@ -280,7 +259,6 @@ class StudyHabitStore:
                 """,
                 (new_target, new_progress, new_status, _now_iso(), str(goal_id)),
             )
-            conn.commit()
         updated = self.get_goal(goal_id)
         if updated is None:
             raise StudyHabitStoreError("daily goal update failed")
@@ -288,11 +266,9 @@ class StudyHabitStore:
 
     def delete_goal(self, goal_id: str) -> bool:
         key = str(goal_id or "")
-        with self._store._lock:  # noqa: SLF001
-            conn = self._conn()
-            with conn:
-                conn.execute("DELETE FROM focus_sessions WHERE goal_id = ?", (key,))
-                cursor = conn.execute("DELETE FROM daily_goals WHERE id = ?", (key,))
+        with self._store.transaction() as conn:
+            conn.execute("DELETE FROM focus_sessions WHERE goal_id = ?", (key,))
+            cursor = conn.execute("DELETE FROM daily_goals WHERE id = ?", (key,))
             return cursor.rowcount > 0
 
     def record_checkin(
@@ -306,8 +282,7 @@ class StudyHabitStore:
         status = status if status in CHECKIN_STATUSES else "checked_in"
         source = source if source in CHECKIN_SOURCES else "manual"
         checkin_id = str(uuid.uuid4())
-        with self._store._lock:  # noqa: SLF001
-            conn = self._conn()
+        with self._store.transaction() as conn:
             conn.execute(
                 """
                 INSERT INTO checkins (id, date, status, source, note, created_at)
@@ -322,7 +297,6 @@ class StudyHabitStore:
                     _now_iso(),
                 ),
             )
-            conn.commit()
             row = conn.execute(
                 "SELECT * FROM checkins WHERE id = ?", (checkin_id,)
             ).fetchone()
@@ -340,21 +314,17 @@ class StudyHabitStore:
             where = "WHERE date = ?"
             params.append(str(date)[:10])
         params.append(max(1, int(limit)))
-        with self._store._lock:  # noqa: SLF001
-            rows = (
-                self._conn()
-                .execute(
-                    f"""
+        with self._store.transaction() as conn:
+            rows = conn.execute(
+                f"""
                 SELECT *
                 FROM checkins
                 {where}
                 ORDER BY date DESC, created_at DESC
                 LIMIT ?
                 """,
-                    tuple(params),
-                )
-                .fetchall()
-            )
+                tuple(params),
+            ).fetchall()
         return [
             item
             for item in (self._checkin_from_row(row) for row in rows)
@@ -367,11 +337,9 @@ class StudyHabitStore:
         if limit is not None:
             limit_clause = "LIMIT ?"
             params.append(max(1, int(limit)))
-        with self._store._lock:  # noqa: SLF001
-            rows = (
-                self._conn()
-                .execute(
-                    f"""
+        with self._store.transaction() as conn:
+            rows = conn.execute(
+                f"""
                 SELECT DISTINCT date
                 FROM checkins
                 WHERE date <= ?
@@ -379,10 +347,8 @@ class StudyHabitStore:
                 ORDER BY date DESC
                 {limit_clause}
                 """,
-                    tuple(params),
-                )
-                .fetchall()
-            )
+                tuple(params),
+            ).fetchall()
         return {str(row["date"]) for row in rows}
 
     def create_focus_session(
@@ -395,8 +361,7 @@ class StudyHabitStore:
     ) -> dict[str, Any]:
         mode = mode if mode in FOCUS_MODES else "focus"
         session_id = str(uuid.uuid4())
-        with self._store._lock:  # noqa: SLF001
-            conn = self._conn()
+        with self._store.transaction() as conn:
             conn.execute(
                 """
                 INSERT INTO focus_sessions (
@@ -413,7 +378,6 @@ class StudyHabitStore:
                     str(started_at),
                 ),
             )
-            conn.commit()
             row = conn.execute(
                 "SELECT * FROM focus_sessions WHERE id = ?", (session_id,)
             ).fetchone()
@@ -433,8 +397,7 @@ class StudyHabitStore:
         interrupt_count: int = 0,
     ) -> dict[str, Any]:
         status = status if status in FOCUS_STATUSES else "completed"
-        with self._store._lock:  # noqa: SLF001
-            conn = self._conn()
+        with self._store.transaction() as conn:
             conn.execute(
                 """
                 UPDATE focus_sessions
@@ -454,7 +417,6 @@ class StudyHabitStore:
                     str(session_id or ""),
                 ),
             )
-            conn.commit()
             row = conn.execute(
                 "SELECT * FROM focus_sessions WHERE id = ?", (str(session_id or ""),)
             ).fetchone()
@@ -473,21 +435,17 @@ class StudyHabitStore:
             params.append(str(date)[:10])
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.append(max(1, int(limit)))
-        with self._store._lock:  # noqa: SLF001
-            rows = (
-                self._conn()
-                .execute(
-                    f"""
+        with self._store.transaction() as conn:
+            rows = conn.execute(
+                f"""
                 SELECT *
                 FROM focus_sessions
                 {where}
                 ORDER BY started_at DESC
                 LIMIT ?
                 """,
-                    tuple(params),
-                )
-                .fetchall()
-            )
+                tuple(params),
+            ).fetchall()
         return [
             item
             for item in (self._focus_from_row(row) for row in rows)
@@ -495,19 +453,15 @@ class StudyHabitStore:
         ]
 
     def focus_minutes_for_date(self, date: str) -> float:
-        with self._store._lock:  # noqa: SLF001
-            row = (
-                self._conn()
-                .execute(
-                    """
+        with self._store.transaction() as conn:
+            row = conn.execute(
+                """
                 SELECT COALESCE(SUM(actual_minutes), 0) AS total
                 FROM focus_sessions
                 WHERE substr(started_at, 1, 10) = ?
                   AND mode = 'focus'
                   AND status = 'completed'
                 """,
-                    (str(date)[:10],),
-                )
-                .fetchone()
-            )
+                (str(date)[:10],),
+            ).fetchone()
         return safe_float(row["total"] if row is not None else 0.0, 0.0)

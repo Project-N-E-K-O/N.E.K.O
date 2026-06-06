@@ -404,6 +404,24 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 else:
                     logger.info(f"[{lanlan_name}] greeting_check: since_disconnect={since_disconnect:.1f}s ≤15s reason={greeting_reason or '-'} → skip (refresh/reconnect)")
 
+            elif action == "cat_greeting_check":
+                # 从猫咪形态变回猫娘（请她回来）时，前端按猫咪停留时长请求一次专属问候。
+                # 与 greeting_check 对偶，但独立计时：时长由前端测量传入，不查对话 gap；
+                # 不发 agent intent restore（那是"首次进入会话"信号，变回不是）。
+                if _is_home_tutorial_blocking_greeting(lanlan_name):
+                    logger.info(f"[{lanlan_name}] cat_greeting_check: skipped by home tutorial guard")
+                    continue
+                try:
+                    cat_duration = float(message.get("cat_duration_seconds", 0) or 0)
+                except (TypeError, ValueError):
+                    cat_duration = 0.0
+                # sanitize：非负、封顶 7 天，防前端异常值（如丢失 goodbyeEnteredAt → now-0）
+                cat_duration = max(0.0, min(cat_duration, 7 * 24 * 3600))
+                cat_tier = str(message.get("tier") or "").strip().lower()[:16]
+                cat_was_auto = bool(message.get("was_auto"))
+                logger.info(f"[{lanlan_name}] cat_greeting_check: duration={cat_duration:.0f}s tier={cat_tier or '-'} was_auto={cat_was_auto}")
+                _fire_task(session_manager[lanlan_name].trigger_cat_greeting(cat_duration, cat_tier, cat_was_auto))
+
             elif action == "ping":
                 # 心跳保活消息，回复pong
                 await websocket.send_text(json.dumps({"type": "pong"}))
@@ -414,6 +432,22 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 # 字段已被 line 136-139 通用 handler 处理（``set_user_language``），
                 # 这里 no-op 以避免落到 default 分支推 UNKNOWN_ACTION 状态给前端。
                 pass
+
+            elif action in ("voice_play_start", "voice_play_end"):
+                # FRONTEND-reported real audio playback boundaries. start =
+                # buffered audio actually began playing; end = the audio queue
+                # fully drained (she truly stopped talking). This is strictly
+                # later than the realtime API's response.done (generation),
+                # so the proactive inject gate keys off THIS rather than
+                # response.done to avoid self-interruption. Rides the same ws
+                # path as every other frontend→backend action (incl. the
+                # Electron chat.html WSProxy/IPC bridge → Pet real ws), so no
+                # special proxy handling is needed.
+                session_manager[lanlan_name].on_voice_playback_signal(
+                    playing=(action == "voice_play_start"),
+                    turn_id=message.get("turnId") or message.get("turn_id") or "",
+                    source=message.get("source") or "audio_playback",
+                )
 
             else:
                 logger.warning(f"Unknown action received: {action}")

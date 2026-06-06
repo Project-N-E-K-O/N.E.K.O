@@ -7,31 +7,31 @@
       </div>
       <div class="titlebar-controls">
         <button
-          type="button"
           class="titlebar-control"
+          type="button"
           :title="t('common.minimize')"
           :aria-label="t('common.minimize')"
           @click="minimizeWindow"
         >
-          <span class="titlebar-minimize-icon"></span>
+          <span class="titlebar-minimize-icon" aria-hidden="true"></span>
         </button>
         <button
-          type="button"
           class="titlebar-control"
-          :title="isMaximized ? t('common.restore') : t('common.maximize')"
-          :aria-label="isMaximized ? t('common.restore') : t('common.maximize')"
-          @click="toggleMaximizeWindow"
+          type="button"
+          :title="maximizeLabel"
+          :aria-label="maximizeLabel"
+          @click="toggleMaximize"
         >
-          <span class="titlebar-maximize-icon" :class="{ 'is-restore': isMaximized }"></span>
+          <span class="titlebar-maximize-icon" :class="{ 'is-restored': isMaximized }" aria-hidden="true"></span>
         </button>
         <button
-          type="button"
           class="titlebar-control titlebar-control--close"
+          type="button"
           :title="t('common.close')"
           :aria-label="t('common.close')"
           @click="closeWindow"
         >
-          <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+          <svg class="titlebar-close-icon" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false">
             <path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
           </svg>
         </button>
@@ -46,7 +46,7 @@
       <div class="app-body">
         <div v-if="connectionStore.disconnected" class="connection-banner">
           <div class="connection-banner__inner">
-            ⚠️ {{ t('common.disconnected') }}
+            {{ t('common.disconnected') }}
           </div>
         </div>
 
@@ -67,87 +67,62 @@
 </template>
 
 <script setup lang="ts">
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import Sidebar from './Sidebar.vue'
 import Header from './Header.vue'
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useConnectionStore } from '@/stores/connection'
-import { restartActivePluginDashboardTutorial } from '@/yui-guide-runtime'
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 const connectionStore = useConnectionStore()
 const isMaximized = ref(false)
-
-type MaybePromise<T> = T | Promise<T>
-type NekoWindowControlApi = {
-  minimize?: () => MaybePromise<void>
-  maximize?: () => MaybePromise<{ ok?: boolean; isMaximized?: boolean } | void>
-  isMaximized?: () => MaybePromise<boolean>
-}
+const maximizeLabel = computed(() => isMaximized.value ? t('common.restore') : t('common.maximize'))
 
 function getWindowControlApi() {
-  return (window as Window & { nekoWindowControl?: NekoWindowControlApi }).nekoWindowControl
-}
-
-function logWindowControlError(context: string, error: unknown) {
-  if (!import.meta.env.PROD) {
-    console.debug(`[PluginManager] ${context} failed after getWindowControlApi()`, error)
-  }
-}
-
-function setMaximizeState(value: boolean) {
-  isMaximized.value = value
-  document.documentElement.classList.toggle('neko-window-maximized', value)
-  document.body?.classList.toggle('neko-window-maximized', value)
+  return window.nekoWindowControl
 }
 
 async function refreshMaximizeState() {
   const api = getWindowControlApi()
-  if (!api?.isMaximized) return
-
+  if (!api || typeof api.isMaximized !== 'function') return
   try {
-    setMaximizeState(Boolean(await api.isMaximized()))
-  } catch (error) {
-    logWindowControlError('refreshMaximizeState', error)
-    // 非 Electron 环境下忽略窗口状态同步失败
+    isMaximized.value = !!(await api.isMaximized())
+  } catch {
+    // 非桌面窗口环境下忽略状态查询失败
   }
 }
 
 async function minimizeWindow() {
   const api = getWindowControlApi()
-  if (!api?.minimize) return
-
+  if (!api || typeof api.minimize !== 'function') return
   try {
     await api.minimize()
-  } catch (error) {
-    logWindowControlError('minimizeWindow', error)
-    // 非 Electron 环境下忽略窗口最小化失败
+  } catch {
+    // 非桌面窗口环境下忽略最小化失败
   }
 }
 
-async function toggleMaximizeWindow() {
+async function toggleMaximize() {
   const api = getWindowControlApi()
-  if (!api?.maximize) return
-
+  if (!api || typeof api.maximize !== 'function') return
   try {
     const result = await api.maximize()
-    if (result && typeof result.isMaximized === 'boolean') {
-      setMaximizeState(result.isMaximized)
+    if (result && result.ok && typeof result.isMaximized === 'boolean') {
+      isMaximized.value = result.isMaximized
       return
     }
     await refreshMaximizeState()
-  } catch (error) {
-    logWindowControlError('toggleMaximizeWindow', error)
-    // 非 Electron 环境下忽略窗口最大化失败
+  } catch {
+    // 非桌面窗口环境下忽略最大化失败
   }
-}
-
-function closeWindow() {
-  window.close()
 }
 
 function handleWindowResize() {
   void refreshMaximizeState()
+}
+
+function closeWindow() {
+  window.close()
 }
 
 onMounted(() => {
@@ -157,10 +132,6 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', handleWindowResize)
-})
-
-watch(locale, () => {
-  restartActivePluginDashboardTutorial()
 })
 </script>
 
@@ -172,7 +143,7 @@ watch(locale, () => {
   overflow: hidden;
 }
 
-/* ── Title bar (acrylic) ── */
+/* 标题栏玻璃效果 */
 .window-titlebar {
   padding: 0 6px 0 12px;
   height: 38px;
@@ -183,7 +154,6 @@ watch(locale, () => {
   -webkit-app-region: drag;
   user-select: none;
   z-index: 9999;
-  /* Acrylic effect — matches react-neko-chat topbar */
   background:
     linear-gradient(135deg,
       rgba(75, 212, 253, 0.82) 0%,
@@ -253,48 +223,46 @@ watch(locale, () => {
 }
 
 .titlebar-control--close:hover {
-  background: rgba(255, 96, 96, 0.28);
+  background: rgba(255, 255, 255, 0.22);
 }
 
 .titlebar-minimize-icon {
   width: 12px;
-  height: 1.6px;
-  border-radius: 2px;
+  height: 1.5px;
+  border-radius: 999px;
   background: currentColor;
   transform: translateY(4px);
 }
 
 .titlebar-maximize-icon {
-  width: 12px;
-  height: 12px;
-  border: 1.6px solid currentColor;
-  border-radius: 2px;
-  box-sizing: border-box;
-}
-
-.titlebar-maximize-icon.is-restore {
   position: relative;
-  transform: translate(2px, 2px);
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid currentColor;
+  border-radius: 2px;
 }
 
-.titlebar-maximize-icon.is-restore::after {
+.titlebar-maximize-icon.is-restored {
+  transform: translate(1.5px, 1.5px);
+}
+
+.titlebar-maximize-icon.is-restored::before {
   content: '';
   position: absolute;
-  top: -5px;
-  left: 3px;
-  width: 12px;
-  height: 12px;
-  border: 1.6px solid currentColor;
+  left: -4px;
+  top: -4px;
+  width: 11px;
+  height: 11px;
+  border: 1.5px solid currentColor;
   border-radius: 2px;
-  background: rgba(75, 212, 253, 0.82);
-  box-sizing: border-box;
 }
 
-html.dark .titlebar-maximize-icon.is-restore::after {
-  background: rgba(50, 50, 72, 0.75);
+.titlebar-close-icon {
+  width: 10px;
+  height: 10px;
 }
 
-/* ── Shell layout ── */
+/* 主体布局 */
 .app-shell {
   flex: 1;
   display: flex;
@@ -341,7 +309,7 @@ html.dark .titlebar-maximize-icon.is-restore::after {
   background: var(--el-bg-color-page);
 }
 
-/* ── Connection banner ── */
+/* 连接状态提示 */
 .connection-banner {
   padding: 8px 20px 0;
 }
@@ -356,7 +324,7 @@ html.dark .titlebar-maximize-icon.is-restore::after {
   font-weight: 500;
 }
 
-/* ── Page transition ── */
+/* 页面切换动画 */
 .page-enter-active {
   transition:
     opacity 0.3s cubic-bezier(0.22, 1, 0.36, 1),
@@ -383,7 +351,7 @@ html.dark .titlebar-maximize-icon.is-restore::after {
   filter: blur(2px);
 }
 
-/* ── Dark mode acrylic overrides ── */
+/* 深色模式覆盖 */
 html.dark .window-titlebar {
   background:
     linear-gradient(135deg,

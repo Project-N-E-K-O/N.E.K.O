@@ -671,4 +671,3 @@ def _classified(
         raw_ocr_text=_bounded_raw_text(lines),
         debug=result_debug,
     )
-

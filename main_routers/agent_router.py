@@ -276,7 +276,7 @@ async def update_agent_flags(request: Request):
                 'openfang_enabled': False,
             })
             return JSONResponse({"success": False, "error": f"tool_server forward failed: {e}"}, status_code=502)
-        return {"success": True, "is_free_version": _config_manager.is_free_version()}
+        return {"success": True, "is_free_version": _config_manager.is_agent_free()}
     except Exception as e:
         return JSONResponse({"success": False, "error": str(e)}, status_code=500)
 
@@ -370,7 +370,7 @@ async def post_agent_command(request: Request):
             timing["main_total_ms"] = total_ms
             payload["timing"] = timing
             if command == "set_agent_enabled" and bool(data.get("enabled")):
-                payload["is_free_version"] = cfg.is_free_version()
+                payload["is_free_version"] = cfg.is_agent_free()
         return payload
     except Exception as e:
         total_ms = round((time.perf_counter() - t0) * 1000, 2)

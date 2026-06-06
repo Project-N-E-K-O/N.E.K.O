@@ -20,6 +20,7 @@ export default {
     minimize: '最小化',
     maximize: '最大化',
     restore: '恢复',
+    toggleSelection: '切换选中状态',
     success: '成功',
     error: '错误',
     warning: '警告',
@@ -42,7 +43,107 @@ export default {
     serverLogs: '服务器日志',
     adapters: '适配器',
     adapterUI: '适配器界面',
-    packageManager: '包管理'
+    packageManager: '包管理',
+    market: '插件市场'
+  },
+  market: {
+    title: '获取新插件',
+    subtitle: '从插件市场浏览和安装插件',
+    getNewPlugins: '获取新插件',
+    openMarket: '打开插件市场',
+    closeMarket: '收起插件市场',
+    openInBrowser: '在浏览器打开',
+    account: 'Market 账号',
+    accountConnected: '已连接: {name}',
+    login: '登录',
+    loginStarted: '已打开浏览器，请在 Market 完成授权。',
+    loginSuccess: 'Market 登录已连接',
+    loginFailed: 'Market 登录失败',
+    loginPending: 'Market 授权超时，请重试',
+    logoutSuccess: '已退出 Market 登录',
+    searchPlaceholder: '搜索插件...',
+    notConfigured: '插件市场未配置',
+    configHint: '请在环境变量中设置 NEKO_MARKET_URL',
+    noResults: '没有找到插件',
+    loadFailed: '插件市场加载失败，请稍后重试',
+    retry: '重试',
+    install: '安装',
+    installed: '已安装',
+    installing: '安装中...',
+    installSuccess: '安装完成: {name}',
+    installFailed: '安装失败',
+    installPreparing: '正在准备安装...',
+    installDialogTitle: '正在安装 {name}',
+    installDialogTitleUpgrade: '正在升级 {name}',
+    installCompleted: '安装完成',
+    installCompletedUpgrade: '升级完成',
+    rollbackRunning: '安装失败，正在回滚...',
+    rollbackCompleted: '已回滚到之前的版本',
+    installStage: {
+      pending: '准备中',
+      download: '下载',
+      verify: '校验',
+      install: '安装',
+      stop_old: '停止旧版本',
+      backup_old: '备份旧版本',
+      restart: '启动新版本',
+      rollback: '回滚',
+      completed: '完成',
+      failed: '失败',
+    },
+    noDownloadUrl: '该插件没有可用的下载地址',
+    pairRequired: '需要配对 Bridge Token',
+    recommended: '推荐',
+    allPlugins: '全部插件',
+    noDescription: '暂无描述',
+    unknownAuthor: '未知',
+    filterRules: '筛选规则',
+    filterRulesTitle: '搜索语法',
+    filterRulesHint: '点击规则插入到搜索框，支持 key:value 组合，加 - 前缀为排除',
+    filterGroups: {
+      state: '状态',
+      zone: '专区',
+      meta: '元数据'
+    },
+    filterLabels: {
+      recommended: '推荐插件',
+      installed: '已安装',
+      uninstalled: '未安装',
+      tag: '标签',
+      author: '作者',
+      name: '名称',
+      versionGte: '版本 ≥',
+      hasRepo: '含仓库',
+      hasTags: '含标签'
+    },
+    zones: {
+      game: '游戏',
+      companion: '伴侣',
+      function: '功能',
+      entertainment: '娱乐',
+      tool: '工具'
+    },
+    sortNewest: '最新',
+    sortMostDownloads: '下载量',
+    sortTopRated: '评分',
+    sortName: '名称',
+    upgrading: '升级中...',
+    upgradeTo: '升级到 v{version}',
+    upgradeSuccess: '升级成功: {name}',
+    yanked: '已撤回',
+    yankedDefault: '该版本已被作者撤回',
+    noVersionAvailable: '暂无可用版本',
+    upgradeRollback: '升级失败，已回滚到旧版本',
+    upgradeAlreadyAtTarget: '当前已是目标版本',
+    upgradeTargetNotGreater: '升级目标版本不高于已装版本',
+    pluginNotInstalled: '该插件未安装，无法升级',
+    lockWriteFailed: '安装记录写入失败'
+  },
+  settings: {
+    channel: '更新渠道',
+    channelStable: '稳定版',
+    channelBeta: '测试版',
+    channelHint: '切换后所有插件列表将按所选渠道刷新；不影响已安装插件运行'
   },
   auth: {
     unauthorized: '未授权访问',
@@ -115,6 +216,34 @@ export default {
     noEntries: '暂无入口点',
     showMetrics: '显示性能指标',
     hideMetrics: '隐藏性能指标',
+    showSourceDetail: '显示来源详情',
+    hideSourceDetail: '隐藏来源详情',
+    installSource: {
+      channel: {
+        builtin: '内置',
+        manual: '手动',
+        imported: '导入',
+        market: '市场',
+        unknown: '未知',
+      },
+      // v2: Market release channel values displayed on SourceDetailRow.
+      channelLabels: {
+        stable: '稳定版',
+        beta: '测试版',
+        unknown: '未知',
+      },
+      updateAvailable: '有新版本',
+      labels: {
+        installedAt: '安装时间',
+        packageFilename: '安装包',
+        sha256: 'SHA-256',
+        marketId: '市场 ID',
+        version: '当前版本',
+        previousVersion: '上一版本',
+        latestAvailable: '最新版本',
+        channel: '渠道',
+      },
+    },
     filterPlaceholder: '筛选插件（支持正则、拼音与 is:/type:/has: 规则）',
     filterRules: '规则',
     filterRulesTitle: '筛选规则',
@@ -168,6 +297,10 @@ export default {
     typePlugin: '插件',
     typeAdapter: '适配器',
     typeExtension: '扩展',
+    layoutList: '列表',
+    layoutSingle: '单排',
+    layoutDouble: '双排',
+    layoutCompact: '紧凑',
     openPackageManager: '包管理',
     closePackageManager: '收起包管理',
     packageManagerOpened: '包管理已展开',
@@ -192,12 +325,12 @@ export default {
     batchNoReloadable: '选中的插件中没有运行中的',
     import: '导入',
     importing: '导入中…',
-    importSuccess: '已导入 {name}，解包了 {count} 个插件',
+    importSuccess: '已导入 {name}，安装了 {count} 个插件',
     importFailed: '导入失败',
     export: '导出',
     exportSuccess: '已导出 {count} 个包',
     exportFailed: '导出失败',
-    exportPackFailed: '打包失败，无法导出',
+    exportBuildFailed: '构建失败，无法导出',
     filterRuleGroups: {
       state: '状态',
       type: '类型',
@@ -228,7 +361,7 @@ export default {
       runtime: '运行',
       plugin: '扩展功能'
     },
-    pack: '打包插件',
+    build: '构建插件',
     delete: '删除插件',
     disableExtension: '禁用扩展',
     enableExtension: '启用扩展',
@@ -257,6 +390,90 @@ export default {
       surfaceWarnings: '插件 UI 声明存在需要处理的问题',
       controlError: '插件界面控件错误',
       hostedRuntimePending: '前端容器已经识别到该 Surface。TSX/Markdown/Auto 渲染器会在后续阶段接入。'
+    }
+  },
+  package: {
+    dialog: {
+      title: '包管理执行记录',
+      subtitle: '保留最近 {count} 条执行结果'
+    },
+    empty: '执行包管理操作后，这里会显示记录',
+    viewDetail: '查看详情',
+    detail: {
+      title: '结果详情',
+      field: {
+        packageId: '包 ID',
+        kind: '类型',
+        version: '版本',
+        schema: 'Schema',
+        hashCheck: 'Hash 校验',
+        profiles: 'Profiles'
+      },
+      list: '明细',
+      warning: '注意',
+      rawJson: '原始结果 JSON'
+    },
+    hash: {
+      notVerified: '未校验',
+      passed: '通过',
+      failed: '失败'
+    },
+    kind: {
+      build: '构建',
+      inspect: '检查',
+      verify: '校验',
+      install: '安装',
+      analyze: '分析'
+    },
+    summary: {
+      // Phase 7 / req 2.31: metrics labels for buildSummaryMetrics
+      metrics: {
+        type: '类型',
+        success: '成功',
+        failed: '失败',
+        included: '包含插件',
+        status: '状态',
+        completed: '完成',
+        partialFailure: '部分失败',
+        pluginCount: '插件数',
+        profiles: 'Profiles',
+        hash: 'Hash',
+        installedPluginCount: '已处理插件',
+        conflictStrategy: '冲突策略',
+        commonDeps: '共同依赖',
+        sharedDeps: '共享依赖'
+      },
+      // Phase 7 / req 2.31: highlight labels for buildSummaryHighlights
+      highlights: {
+        bundleId: '整合包 ID',
+        bundleName: '整合包名称',
+        bundleVersion: '整合包版本',
+        outputPath: '输出路径',
+        firstPlugin: '首个插件',
+        latestPath: '最新包路径',
+        packageId: '包 ID',
+        packageType: '包类型',
+        version: '版本',
+        pluginsRoot: '插件目录',
+        profilesRoot: 'Profiles 目录',
+        currentSdk: '当前 SDK 支持',
+        recommendedIntersection: '推荐交集'
+      },
+      // Phase 7 / req 2.31: enum-like values for summary metrics/highlights
+      values: {
+        bundle: '整合包',
+        plugin: '插件包',
+        sdkAllSupported: '{version} 全部支持',
+        sdkPartiallyIncompatible: '{version} 存在不兼容'
+      },
+      // Phase 7 / req 2.31: warning strings for buildSummaryWarnings
+      warnings: {
+        bundleNeedsTwoPlugins: '整合包通常应至少包含两个插件',
+        verifyHashFailed: '包未通过 hash 校验，请不要直接导入运行环境',
+        inspectHashFailed: '当前包 hash 校验失败，内容可能已被修改',
+        sdkNotSupportedByAll: '当前 SDK 版本不被所有插件共同支持',
+        sharedDepsDetected: '检测到 {count} 个共享依赖，整合时需要重点检查版本约束'
+      }
     }
   },
   metrics: {
@@ -329,107 +546,6 @@ export default {
     cancelConfirmMessage: 'Run ID: {runId}',
     cancelSuccess: '已发送取消请求'
   },
-  packageManager: {
-    resultDialog: {
-      title: '包管理结果记录',
-      subtitle: '保留最近 {count} 条执行结果',
-      empty: '执行包管理操作后，这里会显示记录',
-      viewDetails: '查看详情',
-      detailTitle: '结果详情',
-      summaryTitle: '明细',
-      notesTitle: '注意',
-      rawJsonTitle: '原始结果 JSON',
-      kinds: {
-        pack: '打包',
-        inspect: '检查',
-        verify: '校验',
-        unpack: '解包',
-        analyze: '分析',
-      },
-      inspect: {
-        packageId: '包 ID',
-        packageType: '类型',
-        version: '版本',
-        schemaVersion: 'Schema',
-        hashCheck: 'Hash 校验',
-        profiles: 'Profiles',
-        packageTypes: {
-          bundle: '整合包',
-          plugin: '插件包',
-        },
-        hashStatus: {
-          notChecked: '未校验',
-          passed: '通过',
-          failed: '失败',
-        },
-      },
-      metrics: {
-        pack: {
-          type: '类型',
-          succeeded: '成功',
-          failed: '失败',
-          containsPlugins: '包含插件',
-          status: '状态',
-          complete: '完成',
-          partialFailed: '部分失败',
-        },
-        inspect: {
-          pluginCount: '插件数',
-          profileCount: 'Profiles',
-          hash: 'Hash',
-        },
-        unpack: {
-          processedPlugins: '已处理插件',
-          conflictStrategy: '冲突策略',
-          hash: 'Hash',
-        },
-        analyze: {
-          pluginCount: '插件数',
-          commonDependencies: '共同依赖',
-          sharedDependencies: '共享依赖',
-        },
-      },
-      highlights: {
-        pack: {
-          bundlePluginId: '整合包 ID',
-          bundleName: '整合包名称',
-          bundleVersion: '整合包版本',
-          outputPath: '输出路径',
-          firstPlugin: '第一个插件',
-          latestPackagePath: '最新包路径',
-        },
-        inspect: {
-          packageId: '包 ID',
-          packageType: '包类型',
-          version: '版本',
-        },
-        unpack: {
-          packageId: '包 ID',
-          pluginsRoot: '插件目录',
-          profilesRoot: 'Profiles 目录',
-        },
-        analyze: {
-          currentSdk: '当前 SDK 支持',
-          supported: '全部支持',
-          unsupported: '存在不兼容',
-          matchingVersions: '推荐组合',
-        },
-      },
-      list: {
-        pluginPrefix: '插件：',
-        profilePrefix: '配置：',
-        renamedSuffix: '（重命名）',
-        arrow: '→',
-      },
-      warnings: {
-        bundleNeedsTwoPlugins: '整合包通常应至少包含两个插件',
-        verifyFailed: '包未通过 hash 校验，请不要直接导入运行环境',
-        inspectHashFailed: '当前包 hash 校验失败，内容可能已被修改',
-        analyzeSdkMismatch: '当前 SDK 版本不被所有插件共同支持',
-        analyzeSharedDependencies: '检测到 {count} 个共享依赖，整合时需要重点检查版本约束',
-      },
-    },
-  },
   status: {
     running: '运行中',
     stopped: '已停止',
@@ -459,12 +575,12 @@ export default {
     pluginStarted: '插件启动成功',
     pluginStopped: '插件已停止',
     pluginReloaded: '插件重载成功',
-    pluginPacked: '插件已打包：{packageName}',
+    pluginBuilt: '插件已构建：{packageName}',
     pluginDeleted: '插件已删除',
     startFailed: '启动失败',
     stopFailed: '停止失败',
     reloadFailed: '重载失败',
-    packFailed: '打包插件失败',
+    buildFailed: '构建插件失败',
     deleteFailed: '删除插件失败',
     pluginLoadFailed: '插件加载失败，当前不可启动',
     confirmDisableExt: '确认禁用此扩展？宿主插件中的扩展功能将被卸载。',
@@ -532,14 +648,14 @@ export default {
       lines: {
         introActivationHint: '点一下这里，我就能开始说话啦～',
         introGreetingReply: '微风、阳光，还有刚刚好出现的你。初次见面，我是林悠怡，未来的日子请多关照喵！我把关于这里的一切都写进新手指南里啦！就当作是我们相遇的第一份小礼物，请查收吧！',
-        introBasic: '这里有一个神奇的小按钮！只要点击它，就可以直接和我聊天啦！想跟我分享今天的新鲜事吗？或者只是叫叫我的名字？快来试试嘛，我已经迫不及待想听到你的声音啦！喵！',
+        introBasic: '这里有一个神奇按钮！只要点击它，就可以直接和我聊天啦！想跟我分享今天的新鲜事吗？或者只是叫叫我的名字？快来试试嘛，我已经迫不及待想听到你的声音啦！喵！',
         takeoverCaptureCursor: '超级魔法开关出现！只要点一下这里，我就可以把小爪子伸到你的键盘和鼠标上啦！我会帮你打字，帮你点开网页……不过，要是那个鼠标指针动来动去的话，我可能也会忍不住扑上去抓它哦！准备好迎接我的捣乱……啊不，是帮忙了吗？喵！',
         takeoverPluginPreviewHome: '还没完呢！你快看快看，这里还有超多好玩的插件呢！',
         takeoverPluginPreviewDashboard: '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼！',
         takeoverSettingsPeekIntro: '当然啦，如果你想让本喵多和你聊聊天，也不是不行啦。给我多准备点小鱼干吧，嘿嘿。好了，不逗你啦，设置都在这个齿轮里。',
-        takeoverSettingsPeekDetail: '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘，或是修改记忆？等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉，快关掉！',
+        takeoverSettingsPeekDetail: '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘，或是修改记忆？等一下！你在干嘛？该不会是想把我换掉吧？啊！不行！快关掉，快关掉！',
         takeoverSettingsPeekDetailPart1: '你看，这里可以穿我的新衣服、给我换一个好听的声音……换一个猫娘，或是修改记忆？',
-        takeoverSettingsPeekDetailPart2: '等一下！你在干嘛？该不会是想把我换掉吧？啊啊啊不行！快关掉，快关掉！',
+        takeoverSettingsPeekDetailPart2: '等一下！你在干嘛？该不会是想把我换掉吧？啊！不行！快关掉，快关掉！',
         takeoverReturnControl: '好啦好啦，不霸占你的电脑啦！控制权还给你了喵！可不许趁我不注意乱点奇怪的设置哦！之后的日子也请你多多关照了喵！',
         interruptResistLight1: '喂！不要拽我啦，现在还没轮到你的回合呢！',
         interruptResistLight3: '等一下啦！还没结束呢，不要这么随便打断我啦！',
@@ -558,79 +674,79 @@ export default {
     steps: {
       start: {
         title: '从这里开始',
-        body: '点这个按钮可以随时重播插件管理器巡览；切换界面语言时，正在播放的教程也会同步换成新语言。'
+        body: '点这个按钮就可以随时重新播放插件管理器的教程，不会自动打扰你喵。'
       },
       stats: {
         title: '插件总览',
-        body: '这里汇总插件总数、运行中、已停止和崩溃数量，先判断插件系统整体是否正常。'
+        body: '这里会显示插件总数、运行中、已停止和崩溃数量，让你一眼看出当前状态。'
       },
       metrics: {
         title: '性能监控',
-        body: '这里展示插件服务整体 CPU、内存、线程和活跃插件数。galgame OCR 或 Agent 卡顿时，可以先看这里。'
+        body: '这里展示插件服务整体的 CPU、内存、线程和活跃插件情况，排查问题时很有用。'
       },
       server: {
         title: '服务器信息',
-        body: '这里显示 SDK 版本、插件数量和更新时间，用来确认当前后端插件服务是否处于可用状态。'
+        body: '这里可以看到 SDK 版本、插件数量和更新时间，用来确认当前插件服务是否正常。'
       },
       plugins: {
         title: '插件列表入口',
-        body: '进入插件管理后，可以启动、停止、重载、配置插件，也可以打开 galgame_plugin 的界面和教程。'
+        body: '要启动、停止、配置插件，或者查看单个插件日志，就从左侧的插件管理进入。'
       },
       pluginWorkbench: {
         title: '插件管理工作台',
-        body: '这里集中展示普通插件、适配器和扩展。galgame_plugin、B站弹幕、MCP 等插件都在这里管理。'
+        body: '这里集中展示插件、适配器和扩展，是日常管理插件的主要页面。'
       },
       pluginFilters: {
         title: '筛选和搜索',
-        body: '可以按名称、状态、类型或高级规则筛选插件。要快速找到 galgame_plugin，可以直接搜索 galgame。'
+        body: '可以按名称、状态、类型或高级规则筛选插件，插件很多时会特别好用。'
       },
       pluginLayout: {
         title: '视图布局',
-        body: '这里切换列表、单排、双排和紧凑布局。插件很多时，用双排或紧凑布局能减少滚动。'
+        body: '这里可以切换列表、单排、双排和紧凑布局，按你的屏幕空间调整显示方式。'
       },
       pluginContextMenu: {
         title: '右键操作',
-        body: '右键插件可以快速打开详情、配置、日志、界面或教程，也能执行启动、停止、重载等操作。'
+        body: '对插件右键可以快速打开详情、配置、日志，也能执行启停、重载等常用操作。'
       },
       packageManager: {
         title: '包管理侧栏',
-        body: '包管理会复用当前筛选和多选结果，用来把插件打成单插件包或整合包，也能处理本地包。'
+        body: '包管理会复用当前筛选和选择结果，用来构建、检查、校验或安装插件包。'
       },
       packageOperations: {
         title: '包管理操作区',
-        body: '这里支持打包选中/单个/全部插件、打包整合包、检查与校验包、解包，以及分析整合包依赖。'
+        body: '这里可以选择构建模式、检查插件包、安装或分析整合包；本指南不会自动执行危险操作。'
       },
       pluginDetail: {
         title: '插件详情页',
-        body: '详情页会显示插件界面、教程、基础信息、入口、性能、配置和日志。galgame_plugin 的主面板就在“界面”标签。'
+        body: '进入详情页后可以查看插件元信息、入口点、性能、配置和日志。'
       },
       pluginDetailActions: {
         title: '详情页操作',
-        body: '右上角是当前插件的快捷操作。调试 galgame_plugin 前，通常先确认它已启动，再进入界面或查看日志。'
+        body: '右上角保留了针对当前插件的快捷操作，适合在确认详情后再启动、停止或重载。'
       },
       runs: {
         title: '运行记录',
-        body: '运行记录会展示插件入口任务的执行历史和实时状态，例如安装 OCR 依赖、解释台词或总结场景。'
+        body: '运行记录会展示插件入口任务的执行历史和实时状态。'
       },
       runsList: {
         title: '运行列表',
-        body: '左侧列表用于选择某次任务运行。安装、分析或 Agent 入口执行后，可以在这里回看结果。'
+        body: '左侧列表用于选择某次运行，刷新按钮可以重新同步最新记录。'
       },
       runsDetail: {
         title: '运行详情',
-        body: '右侧显示阶段、进度、错误和导出物；可取消任务才会出现取消按钮，适合排查长任务。'
+        body: '右侧会显示阶段、进度、错误和导出物；取消按钮只对可取消任务出现。'
       },
       logs: {
         title: '服务器日志',
-        body: '服务器日志用于查看插件服务整体输出。galgame_plugin 专属日志也可以从插件详情页进入。'
+        body: '服务器日志可以帮助你查看插件服务本身的输出和错误。'
       },
       logToolbar: {
         title: '日志筛选工具',
-        body: '这里可以按级别、关键词和行数筛选日志，也能切换自动滚动。排查时建议用插件 ID 做关键词。'
+        body: '这里可以按级别、关键词和行数筛选日志，也可以控制是否自动滚动。'
       },
       logList: {
         title: '日志列表',
-        body: '日志列表按时间展示来源、级别和消息。OCR、Memory Reader、Agent 或包管理报错都可以先从这里定位。'
+        body: '日志列表按时间展示来源、级别和消息，是排查插件问题的第一站。'
       }
     }
   }

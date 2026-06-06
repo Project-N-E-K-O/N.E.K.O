@@ -24,7 +24,8 @@ class _GalgameDownloadRapidocrModelsMixin:
         try:
             current_run_id = self._resolve_current_run_id(_)
             progress_callback = self._resolve_install_progress_callback(current_run_id)
-            from ..rapidocr_support import download_rapidocr_models
+            from plugin.plugins._shared.rapidocr.rapidocr_support import download_rapidocr_models
+            from plugin.server.routes._install_task_store import update_install_task_state
 
             download_result = await download_rapidocr_models(
                 logger=self.logger,
@@ -33,9 +34,11 @@ class _GalgameDownloadRapidocrModelsMixin:
                 lang_type=self._cfg.rapidocr_lang_type,
                 timeout_seconds=float(self._cfg.ocr_reader_install_timeout_seconds or 180.0),
                 force=bool(force),
+                plugin_id="galgame_plugin",
                 task_id=current_run_id or None,
                 progress_callback=progress_callback,
                 before_completed_callback=clear_install_inspection_cache,
+                install_state_updater=update_install_task_state,
             )
             clear_install_inspection_cache()
             await self._poll_bridge(force=True)

@@ -5,6 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from plugin.plugins._shared.rapidocr import _inspect_download as shared_rapidocr_inspect
+from plugin.plugins._shared.rapidocr import _runtime as shared_rapidocr_runtime
+from plugin.plugins._shared.rapidocr import rapidocr_support as shared_rapidocr_support
 from plugin.plugins.study_companion.models import OcrSnapshot, StudyConfig, TutorReply
 from plugin.plugins.study_companion.service import (
     _available_tesseract_languages,
@@ -22,6 +25,11 @@ from plugin.plugins.study_companion.ui_api import (
 )
 
 pytestmark = pytest.mark.unit
+
+
+class _RapidOcrWithKwargs:
+    def __init__(self, config_path=None, **kwargs) -> None:
+        del config_path, kwargs
 
 
 def test_service_payload_builders_preserve_nested_state_and_reply_payloads() -> None:
@@ -83,6 +91,160 @@ def test_dependency_status_uses_installability_and_tesseract_language_fallbacks(
 
     assert status["missing_installable"] == ["rapidocr", "dxcam"]
     assert languages == {"eng"}
+
+
+def test_study_rapidocr_resolve_uses_galgame_runtime_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app_docs_dir = tmp_path / "AppDocs"
+    galgame_target = app_docs_dir / "runtimes" / "galgame_plugin" / "RapidOCR"
+    (galgame_target / "models").mkdir(parents=True)
+    (galgame_target / "models" / "japan_PP-OCRv4_rec_infer.onnx").write_bytes(
+        b"model"
+    )
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "EmptyLocalAppData"))
+    monkeypatch.setattr(shared_rapidocr_support, "is_windows_platform", lambda: True)
+    monkeypatch.setattr(
+        shared_rapidocr_support,
+        "get_config_manager",
+        lambda: SimpleNamespace(app_docs_dir=app_docs_dir),
+    )
+
+    raw_target = shared_rapidocr_support.default_rapidocr_install_target_raw(
+        plugin_id="study_companion"
+    )
+    resolved = shared_rapidocr_support.resolve_rapidocr_install_target(
+        "",
+        plugin_id="study_companion",
+    )
+
+    assert raw_target == str(
+        app_docs_dir / "runtimes" / "study_companion" / "RapidOCR"
+    )
+    assert resolved == galgame_target
+    assert shared_rapidocr_support.resolve_rapidocr_model_cache_dir(
+        "",
+        plugin_id="study_companion",
+    ) == (galgame_target / "models")
+
+
+def test_study_rapidocr_resolve_uses_galgame_fallback_when_new_target_is_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app_docs_dir = tmp_path / "AppDocs"
+    study_target = app_docs_dir / "runtimes" / "study_companion" / "RapidOCR"
+    galgame_target = app_docs_dir / "runtimes" / "galgame_plugin" / "RapidOCR"
+    study_target.mkdir(parents=True)
+    (galgame_target / "models").mkdir(parents=True)
+    (galgame_target / "models" / "japan_PP-OCRv4_rec_infer.onnx").write_bytes(
+        b"model"
+    )
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "EmptyLocalAppData"))
+    monkeypatch.setattr(shared_rapidocr_support, "is_windows_platform", lambda: True)
+    monkeypatch.setattr(
+        shared_rapidocr_support,
+        "get_config_manager",
+        lambda: SimpleNamespace(app_docs_dir=app_docs_dir),
+    )
+
+    assert shared_rapidocr_support.resolve_rapidocr_install_target(
+        "",
+        plugin_id="study_companion",
+    ) == galgame_target
+
+
+def test_study_rapidocr_resolve_uses_legacy_models_only_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app_docs_dir = tmp_path / "AppDocs"
+    legacy_root = tmp_path / "LegacyLocalAppData"
+    legacy_target = legacy_root / "Programs" / "N.E.K.O" / "RapidOCR"
+    (legacy_target / "models").mkdir(parents=True)
+    (legacy_target / "models" / "en_PP-OCRv4_rec_infer.onnx").write_bytes(b"model")
+    monkeypatch.setenv("LOCALAPPDATA", str(legacy_root))
+    monkeypatch.setattr(shared_rapidocr_support, "is_windows_platform", lambda: True)
+    monkeypatch.setattr(
+        shared_rapidocr_support,
+        "get_config_manager",
+        lambda: SimpleNamespace(app_docs_dir=app_docs_dir),
+    )
+
+    assert shared_rapidocr_support.resolve_rapidocr_install_target(
+        "",
+        plugin_id="study_companion",
+    ) == legacy_target
+
+
+def test_shared_rapidocr_kwargs_fail_when_configured_model_is_missing(
+    tmp_path: Path,
+) -> None:
+    model_cache_dir = tmp_path / "RapidOCR" / "models"
+    package_models_dir = tmp_path / "package" / "models"
+    package_models_dir.mkdir(parents=True)
+    (package_models_dir / "ch_PP-OCRv4_det_infer.onnx").write_text("", encoding="utf-8")
+    (package_models_dir / "ch_PP-OCRv4_rec_infer.onnx").write_text("", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="PP-OCRv5/ch/mobile"):
+        shared_rapidocr_runtime._build_runtime_constructor_kwargs(
+            _RapidOcrWithKwargs,
+            engine_type="onnxruntime",
+            lang_type="ch",
+            model_type="mobile",
+            ocr_version="PP-OCRv5",
+            model_cache_dir=model_cache_dir,
+            package_models_dir=package_models_dir,
+        )
+
+
+def test_shared_rapidocr_kwargs_allows_unregistered_model_fallback(
+    tmp_path: Path,
+) -> None:
+    model_cache_dir = tmp_path / "RapidOCR" / "models"
+    package_models_dir = tmp_path / "package" / "models"
+    package_models_dir.mkdir(parents=True)
+    (package_models_dir / "ch_PP-OCRv4_det_infer.onnx").write_text("", encoding="utf-8")
+    (package_models_dir / "ch_PP-OCRv4_rec_infer.onnx").write_text("", encoding="utf-8")
+
+    kwargs = shared_rapidocr_runtime._build_runtime_constructor_kwargs(
+        _RapidOcrWithKwargs,
+        engine_type="onnxruntime",
+        lang_type="multi",
+        model_type="mobile",
+        ocr_version="PP-OCRv4",
+        model_cache_dir=model_cache_dir,
+        package_models_dir=package_models_dir,
+    )
+
+    assert kwargs == {"engine_type": "onnxruntime"}
+
+
+def test_shared_rapidocr_inspection_returns_install_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_target = tmp_path / "RapidOCR"
+    install_target.mkdir()
+    (install_target / "install_state.json").write_text(
+        '{"selected_model": "PP-OCRv4/japan/mobile"}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        shared_rapidocr_inspect.importlib.util,
+        "find_spec",
+        lambda _name: SimpleNamespace(
+            origin=str(tmp_path / "rapidocr_onnxruntime" / "__init__.py")
+        ),
+    )
+
+    status = shared_rapidocr_inspect.inspect_rapidocr_installation(
+        install_target_dir_raw=str(install_target),
+        lang_type="ch",
+        ocr_version="PP-OCRv4",
+        plugin_id="study_companion",
+        platform_fn=lambda: True,
+    )
+
+    assert status["install_state"] == {"selected_model": "PP-OCRv4/japan/mobile"}
 
 
 def test_ui_api_payloads_cover_open_map_and_contribution_shapes() -> None:

@@ -1117,6 +1117,10 @@ async def get_pending_notices():
 @router.post("/pending-notices/ack")
 async def ack_pending_notices(request: Request):
     """前端展示完通知后调用，仅删除 cursor 以内的通知（游标确认，避免 TOCTOU）。"""
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
     from main_logic.core import drain_prominent_notices
     try:
         body = await _read_json_object(request)
@@ -1783,6 +1787,46 @@ def _parse_unified_phase1_result(text: str) -> dict:
     return result
 
 
+_PROACTIVE_LEGAL_SOURCE_TAGS = frozenset({"CHAT", "WEB", "PASS", "MUSIC", "MEME"})
+_PROACTIVE_SCREEN_TAG_LEAKS = frozenset({"SCREEN", "SCREENSHOT", "VISION", "WINDOW"})
+_PROACTIVE_BRACKET_TAG_RE = re.compile(r"^\[([A-Za-z][A-Za-z0-9_-]{0,31})\]\s*")
+_PROACTIVE_LEGAL_TAG_RE = re.compile(r"^\[(CHAT|WEB|PASS|MUSIC|MEME)\]\s*", re.IGNORECASE)
+
+
+def _strip_proactive_screen_tag_leak(text: str) -> tuple[str, str]:
+    """剥离 Phase 2 文本里误写的屏幕来源标签（如 ``[Screen]``）。
+
+    主动搭话屏幕-only 场景下模型偶尔把屏幕来源当成首行标签吐出来。这类标签语义上
+    就是"在聊屏幕里看到的东西"= 普通搭话，统一归一成 ``CHAT``。
+
+    返回 ``(cleaned_text, recovered_source_tag)``：
+    - 命中已知屏幕泄漏标签 → 剥掉它。若其后紧跟合法来源标签（``[Screen][CHAT]``
+      这类组合）则一并剥掉并采用该真实 tag，否则按 ``CHAT`` 兜底。
+    - 未命中（无标签 / 合法标签 / 未知标签）→ 原样返回，recovered 为空串，
+      交回调用方既有的无 tag 处理（格式自救 regen / drop）。
+
+    标签匹配大小写不敏感。
+    """
+    if not text:
+        return "", ""
+    leading_len = len(text) - len(text.lstrip())
+    leading = text[:leading_len]
+    body = text[leading_len:]
+    match = _PROACTIVE_BRACKET_TAG_RE.match(body)
+    if not match:
+        return text, ""
+    tag = match.group(1).upper()
+    if tag in _PROACTIVE_LEGAL_SOURCE_TAGS or tag not in _PROACTIVE_SCREEN_TAG_LEAKS:
+        return text, ""
+    rest = body[match.end():].lstrip()
+    # 兼容 [Screen][CHAT] 组合：泄漏标签后若紧跟合法来源标签，剥掉并采用真实 tag
+    # （否则该 [CHAT] 字面会作为正文漏给 TTS）；没有则按 CHAT 兜底。
+    legal = _PROACTIVE_LEGAL_TAG_RE.match(rest)
+    if legal:
+        return leading + rest[legal.end():].lstrip(), legal.group(1).upper()
+    return leading + rest, "CHAT"
+
+
 def _lookup_link_by_title(title: str, all_links: list[dict]) -> dict | None:
     """
     根据 Phase 1 输出的标题在 all_web_links 中查找对应链接
@@ -2406,6 +2450,22 @@ async def _maybe_deliver_mini_game_invite(
     # 一起落盘，否则 partial-state（totals 已 +1 但 ever_delivered 还是旧 false）
     # 会让重启后 force-first 重复触发——CodeRabbit Major review 指出。
     await _record_invite_delivery_persistent(lanlan_name)
+
+    try:
+        from utils.instrument import counter as _instr_counter
+        # channel 维度区分两条邀请投递通道：proactive（本函数）与 work_break
+        # （水分提醒组合路径，见 _deliver_break_reminder_via_llm 下游）。两条都
+        # 共享同一 invite state/cooldown，邀请总数需把两通道相加。force_first 仅
+        # proactive 通道有意义。
+        _instr_counter(
+            "mini_game_invited",
+            game_type=str(game_type)[:24],
+            channel="proactive",
+            force_first=bool(force_first),
+        )
+    except Exception:
+        # 埋点失败不能影响邀请投递
+        pass
 
     # 推 WS message 给前端展示三选项按钮。前端复用 ChoicePrompt 抽象（与 galgame
     # options 共用渲染），但 source='mini_game_invite' 走独立 endpoint，不翻
@@ -3150,6 +3210,10 @@ async def emotion_analysis(request: Request):
     - 根据置信度自动调整情绪类别，当置信度较低时将情绪设置为 neutral，提升结果可靠性
     - 将分析结果推送到监控系统（如果提供了 lanlan_name），实现与前端的实时交互和展示
     """
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
     try:
         _config_manager = get_config_manager()
         data = await request.json()
@@ -3295,7 +3359,7 @@ async def emotion_analysis(request: Request):
 
 
 @router.post('/steam/set-achievement-status/{name}')
-async def set_achievement_status(name: str):
+async def set_achievement_status(name: str, request: Request):
     """
     设置Steam成就状态接口
     func:
@@ -3305,6 +3369,10 @@ async def set_achievement_status(name: str):
     - 若未解锁，尝试设置成就，若成功则返回成功，否则等待1秒后重试一次
     - 最多重试10次，若仍失败则返回错误，提示可能的配置问题
     """
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
     steamworks = get_steamworks()
     if steamworks is not None:
         try:
@@ -3323,7 +3391,13 @@ async def set_achievement_status(name: str):
                     logger.info(f"成功设置成就: {name}")
                     steamworks.UserStats.StoreStats()
                     steamworks.run_callbacks()
-                    return JSONResponse(content={"success": True, "message": f"成就 {name} 处理完成"})
+                    return JSONResponse(content={
+                        "success": True,
+                        "achievement": name,
+                        "newlyUnlocked": True,
+                        "alreadyUnlocked": False,
+                        "message": f"成就 {name} 已解锁",
+                    })
                 else:
                     # 第一次失败，等待后重试一次
                     logger.warning(f"设置成就首次尝试失败，正在重试: {name}")
@@ -3334,13 +3408,25 @@ async def set_achievement_status(name: str):
                         logger.info(f"成功设置成就（重试后）: {name}")
                         steamworks.UserStats.StoreStats()
                         steamworks.run_callbacks()
-                        return JSONResponse(content={"success": True, "message": f"成就 {name} 处理完成"})
+                        return JSONResponse(content={
+                            "success": True,
+                            "achievement": name,
+                            "newlyUnlocked": True,
+                            "alreadyUnlocked": False,
+                            "message": f"成就 {name} 已解锁",
+                        })
                     else:
                         logger.error(f"设置成就失败: {name}，请确认成就ID在Steam后台已配置")
                         return JSONResponse(content={"success": False, "error": f"设置成就失败: {name}，请确认成就ID在Steam后台已配置"}, status_code=500)
             else:
                 logger.info(f"成就已解锁，无需重复设置: {name}")
-                return JSONResponse(content={"success": True, "message": f"成就 {name} 处理完成"})
+                return JSONResponse(content={
+                    "success": True,
+                    "achievement": name,
+                    "newlyUnlocked": False,
+                    "alreadyUnlocked": True,
+                    "message": f"成就 {name} 已经解锁",
+                })
         except Exception as e:
             logger.error(f"设置成就失败: {e}")
             return JSONResponse(content={"success": False, "error": str(e)}, status_code=500)
@@ -3353,6 +3439,10 @@ async def update_playtime(request: Request):
     """
     更新游戏时长统计（PLAY_TIME_SECONDS）
     """
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
     steamworks = get_steamworks()
     if steamworks is not None:
         try:
@@ -4306,20 +4396,24 @@ async def push_activity_signal(request: Request):
 
     Auth:
 
-    * Origin-present same-origin gate (zero-frontend-cost defence,
-      suggested by CodeRabbit on PR #1477): when the request carries an
-      ``Origin`` / ``Referer`` header AND that origin isn't in
-      ``_get_allowed_local_origins`` (which always includes the current
-      ``request.base_url``), reject with 403. Browser-mediated requests
-      always carry ``Origin`` for POST, so this single check blocks
-      cross-site drive-by JS without breaking ``curl`` / Electron's
-      same-origin renderer / native scripts (no Origin → allowed).
+    * Unified ``_validate_local_mutation_request`` guard (issue #1479
+      Step 2): same Origin + ``X-CSRF-Token`` contract every other
+      browser-facing mutation endpoint uses (tutorial-prompt,
+      screenshot, autostart-prompt, …). Replaces PR #1477's interim
+      Origin-only gate. Same-origin Electron renderers and browser
+      tabs send ``X-CSRF-Token`` via
+      ``window.nekoLocalMutationSecurity`` (token is exposed by
+      ``GET /api/config/page_config``); curl / Electron main-process /
+      native scripts that don't run the token bootstrap are now
+      rejected because *CSRF ≠ authentication* — pushing activity
+      from outside the same browsing context isn't a supported path
+      (see ``docs/design/security/local-mutation-auth.md`` for the
+      threat model). The guard already rejects ``Origin: null`` /
+      opaque origins because ``_normalize_origin_value`` returns
+      ``""`` for them, which then fails the membership check.
     * Per-lanlan 5s rate limit below + the tracker's per-character
-      lookup raise spam cost and bound the impact even if Origin
-      validation passes.
-    * A stricter CSRF token mechanism (parity with screenshot endpoints)
-      is tracked for a follow-up security-hardening PR; the threat
-      model write-up lives in issue #1023.
+      lookup raise spam cost and bound the impact even if the guard
+      somehow passes.
 
     Body fields (all optional except ``lanlan_name``):
       * ``lanlan_name`` (required) — which character's tracker to update
@@ -4329,44 +4423,25 @@ async def push_activity_signal(request: Request):
       * ``cpu_avg_30s`` — float in ``[0, 100]``, rolling CPU average
       * ``gpu_utilization`` — float in ``[0, 100]``, primary GPU utilisation
 
-    Returns 200 on success, 400 on malformed payload, 404 if
-    ``lanlan_name`` isn't registered, 429 if pushed faster than
-    ``_EXTERNAL_SIGNAL_MIN_INTERVAL`` (5s), 503 if the character's
-    tracker hasn't initialised yet.
+    Returns 200 on success, 400 on malformed payload, 403 on
+    Origin/CSRF rejection, 404 if ``lanlan_name`` isn't registered,
+    429 if pushed faster than ``_EXTERNAL_SIGNAL_MIN_INTERVAL`` (5s),
+    503 if the character's tracker hasn't initialised yet.
     """
-    # ── Origin-present same-origin gate ────────────────────────────
-    # When the request carries an Origin (or Referer fallback) but it's
-    # not in our allowed-origins set, refuse — that's the drive-by CSRF
-    # signature. Missing Origin means a non-browser caller (curl, Node,
-    # native script) which we explicitly allow because there's no
-    # mandatory CSRF token yet. Same-origin browser requests pass
-    # naturally because their Origin matches ``request.base_url``,
-    # which ``_get_allowed_local_origins`` always includes.
-    #
-    # Opaque-origin guard (Codex F5 on PR #1477): browsers send the
-    # literal string ``"null"`` as Origin for sandboxed iframes,
-    # ``file://`` pages, and certain extension contexts. ``urlsplit``
-    # parses "null" into an empty scheme/netloc which
-    # ``_normalize_origin_value`` turns into ``""`` — without this
-    # check that bypasses to the no-Origin "allowed" branch. We
-    # explicitly reject the raw "null" string before normalisation, on
-    # both Origin and Referer (the latter is our fallback).
-    raw_origin = (request.headers.get("origin") or "").strip().lower()
-    raw_referer = (request.headers.get("referer") or "").strip().lower()
-    if raw_origin == "null" or raw_referer == "null":
-        return _json_no_store_response(
-            {"success": False, "error": "origin not allowed"},
-            status_code=403,
-        )
-
-    request_origin = _get_request_origin(request)
-    if request_origin:
-        allowed = _get_allowed_local_origins(request)
-        if request_origin not in allowed:
-            return _json_no_store_response(
-                {"success": False, "error": "origin not allowed"},
-                status_code=403,
-            )
+    # ``error_defaults`` so the 403 body includes ``success: false``
+    # alongside the unified guard's ``ok/error_code`` fields — keeps
+    # the contract consistent with this endpoint's other error
+    # branches (existing frontend / tests grep ``success``). Also
+    # apply ``_set_no_store_headers`` since the rest of this handler's
+    # responses use that and a cached 403 would mask post-bootstrap
+    # success on the next tick (CodeRabbit Minor on PR #1532).
+    validation_error = _validate_local_mutation_request(
+        request,
+        error_defaults={"success": False},
+    )
+    if validation_error is not None:
+        _set_no_store_headers(validation_error)
+        return validation_error
 
     try:
         data = await request.json()
@@ -4576,6 +4651,10 @@ async def proactive_chat(request: Request):
     """
     主动搭话：两阶段架构 — Phase 1 合并 LLM（web筛选+music/meme关键词，1次调用），Phase 2 结合人设生成搭话
     """
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
     try:
         _config_manager = get_config_manager()
         session_manager = get_session_manager()
@@ -4596,6 +4675,7 @@ async def proactive_chat(request: Request):
         try:
             from main_routers.game_router import is_game_route_active
             if is_game_route_active(lanlan_name):
+                logger.info("[%s] 主动搭话本轮未发起：游戏路由 active", lanlan_name)
                 return JSONResponse({
                     "success": True,
                     "action": "pass",
@@ -4619,12 +4699,20 @@ async def proactive_chat(request: Request):
         # can_start_proactive 做 409 判定即可。
         if data.get('voice_mode') and mgr.is_active and isinstance(mgr.session, OmniRealtimeClient):
             # Mini-game invite 状态机推进：voice fast path 不走 activity tracker，
-            # 直接用 mgr.last_user_activity_time（session 自己跟踪 RMS / 文本输入
-            # 活动）作为「用户最后一次活动时间」喂给 advance_response。否则纯
-            # voice 用户收到 mini-game 邀请回应后，pending 永远翻不掉，邀请会被
-            # 永久抑制；CodeRabbit Major review 指出。
+            # 直接用 session 自己跟踪的「用户最后一次真实消息时间」喂给
+            # advance_response。否则纯 voice 用户收到 mini-game 邀请回应后，
+            # pending 永远翻不掉，邀请会被永久抑制；CodeRabbit Major review 指出。
+            #
+            # ⚠️ 用 last_user_message_time（仅真实非空非 echo 用户输入）而非
+            # last_user_activity_time（顶部无条件刷新，含 VAD 空噪声 + 麦克风录回
+            # AI 自己 TTS 的回声）。后者会被 AI 念邀请台词的回声污染：邀请投递后
+            # 回声立刻把 activity 刷到 > delivered_at，下一个 tick 的隐式 dismiss
+            # 误判「用户已回应」→ 把 pending 邀请清成 'later'（5min）+ 撤掉按钮，
+            # 用户随后点「现在不想玩」落到 expired、真正的 5h decline 起不来、邀请
+            # 5min 后反复重来。改用真消息时间戳后，纯点按钮（不说话）的用户活动
+            # 时间不会越过 delivered_at，pending 一直留到用户显式点按钮 / 说话。
             _voice_advance_outcome = _mini_game_invite_advance_response(
-                lanlan_name, getattr(mgr, 'last_user_activity_time', None),
+                lanlan_name, getattr(mgr, 'last_user_message_time', None),
             )
             # advance 触发了隐式 dismiss → 推 WS 让前端清掉 prompt UI（cross-window
             # 一致性）。codex P2 指出非按钮路径漏推 WS 让 UI 挂着。
@@ -4635,6 +4723,7 @@ async def proactive_chat(request: Request):
                     action=_voice_advance_outcome.get('action', 'suppress'),
                 )
             if not mgr.state.can_start_proactive(session=probe_session):
+                logger.info("[%s] 主动搭话本轮未发起：语音模式 AI 正在响应中（409）", lanlan_name)
                 return JSONResponse({
                     "success": False,
                     "error": "AI正在响应中，无法主动搭话",
@@ -4648,6 +4737,8 @@ async def proactive_chat(request: Request):
                 _mini_game_invite_count_post_response_chat(lanlan_name)
                 # 持久化"累计成功投递的主动搭话总数"，给 force-first 用。
                 await _increment_proactive_chat_total(lanlan_name)
+            else:
+                logger.info("[%s] 主动搭话本轮未发起：语音 nudge 被 guard 跳过", lanlan_name)
             return JSONResponse({
                 "success": True,
                 "action": "chat" if delivered else "pass",
@@ -4660,6 +4751,7 @@ async def proactive_chat(request: Request):
         # 各自 fire(PROACTIVE_START) 导致两路 proactive 同时进入 PHASE1。
         from main_logic.session_state import SessionEvent as _SE
         if not await mgr.state.try_start_proactive(session=probe_session):
+            logger.info("[%s] 主动搭话本轮未发起：AI 正在响应或已有一轮在跑（409）", lanlan_name)
             return JSONResponse({
                 "success": False,
                 "error": "AI正在响应中，无法主动搭话",
@@ -4695,13 +4787,28 @@ async def proactive_chat(request: Request):
                 return resp
             if not isinstance(body, dict):
                 return resp
+            # text-mode 占坑后的所有出口都经过这里。本轮最终没把话说出来
+            # （action != "chat"：各种 guard/skip/内容为空/被用户接管）就在
+            # info 留一条带原因的日志，原因取响应体 message（无则 error）。
+            # 散落各分支无需各自记；排查"她这轮为什么没主动说话"看这条即可。
+            # 占坑前的早退（游戏路由 / voice 与 text 的 409 并发拒绝）不经过
+            # 本出口，各自就地补了同前缀（"主动搭话本轮未发起："）的 info。
+            if body.get("action") != "chat":
+                logger.info(
+                    "[%s] 主动搭话本轮未发起：%s",
+                    lanlan_name,
+                    body.get("message") or body.get("error") or "(无原因说明)",
+                )
             if 'next_schedule_fixed_mode' in body:
                 return resp
             body['next_schedule_fixed_mode'] = _next_schedule_fixed_mode
             return JSONResponse(body, status_code=resp.status_code)
 
         def _proactive_preempted_json(where: str) -> dict:
-            logger.info(
+            # 细粒度的 state 快照留 debug；面向排查的"本轮未发起 + 原因"由统一
+            # 出口 _end_proactive 按 message 打 info（这些 dict 全部经它返回），
+            # 避免同一轮 skip 打出两条重复 info。
+            logger.debug(
                 "[%s] proactive %s preempted by user takeover (state=%s)",
                 lanlan_name, where, mgr.state.snapshot(),
             )
@@ -5004,6 +5111,19 @@ async def proactive_chat(request: Request):
                             "[%s] record_invite_delivery_persistent failed: %s",
                             lanlan_name, _persist_err,
                         )
+                    try:
+                        from utils.instrument import counter as _instr_counter
+                        # 与 proactive 通道共用 mini_game_invited，channel 维度区分；
+                        # 不计 persist 成败——邀请 UI 已投递给用户即算一次邀请。
+                        _instr_counter(
+                            "mini_game_invited",
+                            game_type=str(chosen_game_type)[:24],
+                            channel="work_break",
+                            force_first=False,
+                        )
+                    except Exception:
+                        # 埋点 best-effort，失败不影响邀请投递
+                        pass
                     options_payload = _build_mini_game_invite_options_payload(
                         invite_lang=_break_lang,
                         game_type=chosen_game_type,
@@ -6376,6 +6496,10 @@ async def proactive_chat(request: Request):
                             if tag_match:
                                 source_tag = tag_match.group(1).upper()
                                 cleaned = cleaned[tag_match.end():]
+                            else:
+                                cleaned, _leak_tag = _strip_proactive_screen_tag_leak(cleaned)
+                                if _leak_tag:
+                                    source_tag = _leak_tag
                             tag_parsed = True
                             
                             if source_tag == 'PASS' or '[PASS]' in cleaned.upper():
@@ -6432,6 +6556,10 @@ async def proactive_chat(request: Request):
             if tag_match:
                 source_tag = tag_match.group(1).upper()
                 cleaned = cleaned[tag_match.end():]
+            else:
+                cleaned, _leak_tag = _strip_proactive_screen_tag_leak(cleaned)
+                if _leak_tag:
+                    source_tag = _leak_tag
             if source_tag == 'PASS' or '[PASS]' in cleaned.upper():
                 aborted = True
             elif cleaned.strip():
@@ -6488,6 +6616,10 @@ async def proactive_chat(request: Request):
                 if _ftm:
                     _fix_tag = _ftm.group(1).upper()
                     _fc = _fc[_ftm.end():]
+                else:
+                    _fc, _leak_tag = _strip_proactive_screen_tag_leak(_fc)
+                    if _leak_tag:
+                        _fix_tag = _leak_tag
                 if _fix_tag and _fix_tag != "PASS" and _fc.strip() and "[PASS]" not in _fc.upper():
                     source_tag = _fix_tag
                     full_text = _fc.strip()
@@ -6517,6 +6649,9 @@ async def proactive_chat(request: Request):
                 "message": "Phase 2 流式输出被拦截或为空"
             }))
         
+        full_text, _leak_tag = _strip_proactive_screen_tag_leak(full_text)
+        if _leak_tag and not source_tag:
+            source_tag = _leak_tag
         response_text = full_text.strip()
         # 不要把 proactive 原文写进 logger（会进日志文件 / 遥测）；只记元数据。
         # 完整原文通过 print 给开发者本地查看。
@@ -6658,6 +6793,10 @@ async def proactive_chat(request: Request):
             if _tag_m:
                 regen_source_tag = _tag_m.group(1).upper()
                 _cleaned = _cleaned[_tag_m.end():]
+            else:
+                _cleaned, _leak_tag = _strip_proactive_screen_tag_leak(_cleaned)
+                if _leak_tag:
+                    regen_source_tag = _leak_tag
             # regen 输出 [PASS] / 空 → 等价于"模型放弃了"，drop 而不是退回原文。
             # 显式把 ``regen_source_tag == 'PASS'`` 也算 drop（前面剥过 [TAG] 前缀，
             # _cleaned 已不含字面 "[PASS]"，但 regen_source_tag 记下了是 PASS）。
@@ -7324,6 +7463,10 @@ async def proactive_music_played_through(request: Request):
     通道字段清空，从而让 _compute_source_weights 不再把"刚刚共享过音乐"
     继续计入对 music 通道的衰减惩罚——完整播放是用户对该通道最强的正向反馈。
     """
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
     try:
         data = await request.json()
     except Exception:
@@ -7348,14 +7491,14 @@ async def proactive_music_played_through(request: Request):
 async def translate_text_api(request: Request):
     """
     翻译文本API（供前端字幕模块使用）
-    
+
     请求格式:
     {
         "text": "要翻译的文本",
         "target_lang": "目标语言代码 ('zh', 'en', 'ja', 'ko')",
         "source_lang": "源语言代码 (可选，为null时自动检测)"
     }
-    
+
     响应格式:
     {
         "success": true/false,
@@ -7364,6 +7507,10 @@ async def translate_text_api(request: Request):
         "target_lang": "目标语言代码"
     }
     """
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
     try:
         data = await request.json()
         text = data.get('text', '').strip()
@@ -7444,25 +7591,29 @@ async def get_personal_dynamics(request: Request):
     """
     获取个性化内容数据
     """
+    validation_error = _validate_local_mutation_request(request)
+    if validation_error is not None:
+        return validation_error
+
     from utils.web_scraper import fetch_personal_dynamics, format_personal_dynamics
     try:
-        
+
         data = await request.json()
         limit = data.get('limit', 10)
-        
+
         # 获取个性化内容
         personal_content = await fetch_personal_dynamics(limit=limit)
-        
+
         if not personal_content['success']:
             return JSONResponse({
                 "success": False,
                 "error": "无法获取个性化内容",
                 "detail": personal_content.get('error', '未知错误')
             }, status_code=500)
-        
+
         # 格式化内容用于前端显示
         formatted_content = format_personal_dynamics(personal_content)
-        
+
         return JSONResponse({
             "success": True,
             "data": {
@@ -7471,7 +7622,7 @@ async def get_personal_dynamics(request: Request):
                 "platforms": [k for k in personal_content.keys() if k not in ('success', 'error', 'region')]
             }
         })
-        
+
     except Exception as e:
         logger.error(f"获取个性化内容失败: {e}")
         return JSONResponse({

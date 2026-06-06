@@ -399,6 +399,7 @@ class SdkContext:
         target_lanlan: str | None = None,
         metadata: dict[str, object] | None = None,
         priority: int = 0,
+        coalesce_key: str | None = None,
         # ── v1 legacy (each emits DeprecationWarning when used) ───────
         message_type: str | None = None,
         description: str | None = None,
@@ -449,6 +450,7 @@ class SdkContext:
             target_lanlan=target_lanlan,
             metadata=metadata,
             priority=priority,
+            coalesce_key=coalesce_key,
             message_type=message_type,
             description=description,
             content=content,

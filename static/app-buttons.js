@@ -23,6 +23,8 @@
     // 720p 下若仍超 1MB 再逐步降质兜底。
     const SCREENSHOT_JPEG_QUALITIES = [0.8, 0.72, 0.64, 0.56, 0.48];
 
+    let compactHistoryDropPayloadQueue = Promise.resolve();
+
     function isHomeTutorialInteractionLocked() {
         try {
             return typeof window.isNekoHomeTutorialInteractionLocked === 'function'
@@ -39,6 +41,19 @@
                 2500
             );
         }
+    }
+
+    function shouldSuppressCompactHistoryDropSendForVoiceMode() {
+        try {
+            if (typeof window.shouldKeepVoiceComposerHidden === 'function'
+                    && window.shouldKeepVoiceComposerHidden()) {
+                return true;
+            }
+        } catch (_) {}
+        return !!(
+            (S && (S.isRecording || S.voiceChatActive || S.voiceStartPending))
+            || window.isMicStarting
+        );
     }
 
     function getImageNaturalSize(image) {
@@ -194,6 +209,54 @@
         return /\.(avif|bmp|gif|heic|heif|ico|jpe?g|png|tiff?|webp)$/i.test(name);
     }
 
+    function getImageFilesFromFileList(fileList) {
+        return Array.from(fileList || []).filter(function (file) {
+            return file instanceof File && (file.type === '' || isLikelyImageFile(file));
+        });
+    }
+
+    function dataTransferHasFiles(dataTransfer) {
+        if (!dataTransfer) return false;
+        if (dataTransfer.files && dataTransfer.files.length > 0) return true;
+        if (dataTransfer.items && dataTransfer.items.length > 0) {
+            return Array.from(dataTransfer.items).some(function (item) {
+                return item && item.kind === 'file';
+            });
+        }
+        return Array.from(dataTransfer.types || []).some(function (type) {
+            return /^files$/i.test(String(type || ''));
+        });
+    }
+
+    function getFilesFromDataTransfer(dataTransfer) {
+        if (!dataTransfer) return [];
+        var files = Array.from(dataTransfer.files || []);
+        if (files.length > 0) return files;
+        return Array.from(dataTransfer.items || [])
+            .filter(function (item) {
+                return item && item.kind === 'file' && typeof item.getAsFile === 'function';
+            })
+            .map(function (item) {
+                return item.getAsFile();
+            })
+            .filter(function (file) {
+                return file instanceof File;
+            });
+    }
+
+    function isChatImageDropTarget(target) {
+        var targetNode = target instanceof Node ? target : null;
+        var shell = document.getElementById('react-chat-window-shell');
+        if (shell && targetNode && shell.contains(targetNode)) return true;
+        var textInputBox = S && S.dom ? S.dom.textInputBox : null;
+        if (textInputBox && targetNode && textInputBox.contains(targetNode)) return true;
+        return !!(document.body && document.body.classList.contains('electron-chat-window'));
+    }
+
+    function shouldHandleChatFileDrop(event) {
+        return !!(event && isChatImageDropTarget(event.target) && dataTransferHasFiles(event.dataTransfer));
+    }
+
     function isLikelyJpegBlob(blob) {
         if (!blob || typeof blob !== 'object') return false;
         if (/^image\/jpe?g$/i.test(blob.type || '')) return true;
@@ -316,7 +379,8 @@
      * Add a screenshot thumbnail to the pending list.
      * @param {string} dataUrl - image data URL
      */
-    mod.addScreenshotToList = function addScreenshotToList(dataUrl, avatarPosition) {
+    mod.addScreenshotToList = function addScreenshotToList(dataUrl, avatarPosition, options) {
+        options = options || {};
         S.screenshotCounter++;
 
         const screenshotsList = S.dom.screenshotsList;
@@ -327,6 +391,9 @@
         item.className = 'screenshot-item';
         item.dataset.index = S.screenshotCounter;
         item.dataset.attachmentId = 'attachment-' + Date.now() + '-' + S.screenshotCounter;
+        if (options.source) {
+            item.dataset.source = String(options.source);
+        }
         // Store avatar position metadata (captured at screenshot time)
         if (avatarPosition) {
             item.dataset.avatarPosition = JSON.stringify(avatarPosition);
@@ -336,8 +403,12 @@
         const img = document.createElement('img');
         img.className = 'screenshot-thumbnail';
         img.src = dataUrl;
-        img.alt = window.t ? window.t('chat.screenshotAlt', { index: S.screenshotCounter }) : '\u622A\u56FE ' + S.screenshotCounter;
-        img.title = window.t ? window.t('chat.screenshotTitle', { index: S.screenshotCounter }) : '\u70B9\u51FB\u67E5\u770B\u622A\u56FE ' + S.screenshotCounter;
+        img.alt = typeof options.alt === 'string' && options.alt
+            ? options.alt
+            : (window.t ? window.t('chat.screenshotAlt', { index: S.screenshotCounter }) : '\u622A\u56FE ' + S.screenshotCounter);
+        img.title = typeof options.title === 'string' && options.title
+            ? options.title
+            : (window.t ? window.t('chat.screenshotTitle', { index: S.screenshotCounter }) : '\u70B9\u51FB\u67E5\u770B\u622A\u56FE ' + S.screenshotCounter);
 
         // Click thumbnail to view in new tab
         img.addEventListener('click', function () {
@@ -376,6 +447,7 @@
         setTimeout(function () {
             screenshotsList.scrollLeft = screenshotsList.scrollWidth;
         }, 100);
+        return item;
     };
     // Backward compat
     window.addScreenshotToList = mod.addScreenshotToList;
@@ -459,31 +531,7 @@
                 return;
             }
 
-            Promise.allSettled(files.map(mod.importImageFileToPendingList))
-                .then(function (results) {
-                    var succeeded = 0;
-                    var failed = 0;
-                    for (var i = 0; i < results.length; i++) {
-                        if (results[i].status === 'fulfilled') {
-                            succeeded++;
-                        } else {
-                            failed++;
-                            console.error('[导入图片] 单张处理失败:', results[i].reason);
-                        }
-                    }
-                    if (succeeded > 0) {
-                        window.showStatusToast(
-                            window.t ? window.t('app.importImageAdded', { count: succeeded }) : '已添加 ' + succeeded + ' 张图片，发送时会一并带上',
-                            3000
-                        );
-                    }
-                    if (failed > 0) {
-                        window.showStatusToast(
-                            window.t ? window.t('app.importImageFailed') : '导入图片失败',
-                            4000
-                        );
-                    }
-                })
+            mod.importImageFilesToPendingList(files, { logPrefix: '[导入图片]' })
                 .finally(function () {
                     input.value = '';
                 });
@@ -506,6 +554,52 @@
             .then(function (dataUrl) {
                 mod.addScreenshotToList(dataUrl);
                 return dataUrl;
+            });
+    };
+
+    mod.importImageFilesToPendingList = function importImageFilesToPendingList(files, options) {
+        var inputFiles = Array.from(files || []);
+        var imageFiles = getImageFilesFromFileList(inputFiles);
+        if (!imageFiles.length) {
+            window.showStatusToast(
+                window.t ? window.t('app.importImageFailed') : '导入图片失败',
+                4000
+            );
+            return Promise.resolve({ succeeded: 0, failed: inputFiles.length });
+        }
+
+        var logPrefix = options && options.logPrefix ? options.logPrefix : '[导入图片]';
+        return Promise.allSettled(imageFiles.map(mod.importImageFileToPendingList))
+            .then(function (results) {
+                var succeeded = 0;
+                var failed = inputFiles.length - imageFiles.length;
+                for (var i = 0; i < results.length; i++) {
+                    if (results[i].status === 'fulfilled') {
+                        succeeded++;
+                    } else {
+                        failed++;
+                        console.error(logPrefix + ' 单张处理失败:', results[i].reason);
+                    }
+                }
+                if (succeeded > 0 && failed > 0) {
+                    window.showStatusToast(
+                        window.t
+                            ? window.t('app.importImagePartial', { success: succeeded, failed: failed })
+                            : '已添加 ' + succeeded + ' 张图片，' + failed + ' 张导入失败',
+                        4000
+                    );
+                } else if (succeeded > 0) {
+                    window.showStatusToast(
+                        window.t ? window.t('app.importImageAdded', { count: succeeded }) : '已添加 ' + succeeded + ' 张图片，发送时会一并带上',
+                        3000
+                    );
+                } else if (failed > 0) {
+                    window.showStatusToast(
+                        window.t ? window.t('app.importImageFailed') : '导入图片失败',
+                        4000
+                    );
+                }
+                return { succeeded: succeeded, failed: failed };
             });
     };
 
@@ -532,6 +626,183 @@
         }
     };
 
+    function refreshPendingComposerAttachmentList() {
+        var screenshotsList = S.dom.screenshotsList;
+        var screenshotThumbnailContainer = S.dom.screenshotThumbnailContainer;
+        if (!screenshotsList || !screenshotThumbnailContainer) return;
+        mod.updateScreenshotCount();
+        if (screenshotsList.children.length > 0) {
+            screenshotThumbnailContainer.classList.add('show');
+        } else {
+            screenshotThumbnailContainer.classList.remove('show');
+        }
+        mod.syncPendingComposerAttachments();
+    }
+
+    function isUnsafeHistoryImageUrl(rawUrl) {
+        var value = String(rawUrl || '').trim();
+        if (!value) return true;
+        if (/^(?:file:|[a-zA-Z]:[\\/]|~[\\/]|\/Users\/|\/home\/|\/var\/folders\/)/.test(value)) {
+            return true;
+        }
+        if (/[?&](?:access_?token|auth(?:orization)?|signature|sig|token)=/i.test(value)) {
+            return true;
+        }
+        return false;
+    }
+
+    mod.normalizeHistoryImageForPendingList = async function normalizeHistoryImageForPendingList(image) {
+        var rawUrl = typeof image === 'string' ? image : (image && image.url);
+        var url = String(rawUrl || '').trim();
+        if (isUnsafeHistoryImageUrl(url)) {
+            throw new Error('UNSAFE_HISTORY_IMAGE_URL');
+        }
+
+        if (/^data:image\//i.test(url)) {
+            return mod.normalizeImageDataUrlForPendingList(url);
+        }
+
+        var parsedUrl;
+        try {
+            parsedUrl = new URL(url, window.location.href);
+        } catch (error) {
+            throw new Error('INVALID_HISTORY_IMAGE_URL');
+        }
+
+        if (parsedUrl.protocol === 'file:') {
+            throw new Error('UNSAFE_HISTORY_IMAGE_URL');
+        }
+        if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:' && parsedUrl.protocol !== 'blob:') {
+            throw new Error('UNSUPPORTED_HISTORY_IMAGE_URL');
+        }
+        if (/[?&](?:access_?token|auth(?:orization)?|signature|sig|token)=/i.test(parsedUrl.search)) {
+            throw new Error('UNSAFE_HISTORY_IMAGE_URL');
+        }
+
+        var response = await fetch(parsedUrl.href, { credentials: 'same-origin' });
+        if (!response.ok) {
+            throw new Error('HISTORY_IMAGE_FETCH_FAILED');
+        }
+        var blob = await response.blob();
+        if (blob.type && !/^image\//i.test(blob.type)) {
+            throw new Error('INVALID_HISTORY_IMAGE_TYPE');
+        }
+        return mod.normalizeImageBlobForPendingList(blob);
+    };
+
+    mod.addHistoryImageAttachmentToPendingList = async function addHistoryImageAttachmentToPendingList(image) {
+        var dataUrl = await mod.normalizeHistoryImageForPendingList(image);
+        return mod.addScreenshotToList(dataUrl, null, {
+            alt: image && typeof image.alt === 'string' ? image.alt : '',
+            source: 'compact-history'
+        });
+    };
+    window.addHistoryImageAttachmentToPendingList = mod.addHistoryImageAttachmentToPendingList;
+
+    async function sendCompactHistoryDropPayloadNow(payload) {
+        payload = payload || {};
+        var text = typeof payload.text === 'string' ? payload.text.trim() : '';
+        var images = Array.isArray(payload.images) ? payload.images.filter(function (image) {
+            return image && typeof image.url === 'string' && image.url.trim();
+        }) : [];
+        if (!text && images.length === 0) return false;
+        if (isHomeTutorialInteractionLocked()) {
+            showHomeTutorialLockedToast();
+            return false;
+        }
+        if (shouldSuppressCompactHistoryDropSendForVoiceMode()) {
+            return true;
+        }
+
+        var normalizedImages = [];
+        try {
+            normalizedImages = await Promise.all(images.map(function (image) {
+                return mod.normalizeHistoryImageForPendingList(image).then(function (dataUrl) {
+                    return {
+                        dataUrl: dataUrl,
+                        alt: typeof image.alt === 'string' ? image.alt : ''
+                    };
+                });
+            }));
+        } catch (error) {
+            console.error('[CompactHistoryDrop] image import failed:', error);
+            window.showStatusToast(
+                window.t ? window.t('app.importImageFailed') : '\u5BFC\u5165\u56FE\u7247\u5931\u8D25',
+                4000
+            );
+            return false;
+        }
+
+        var screenshotsList = S.dom.screenshotsList;
+        if (!screenshotsList) return false;
+        if (window.reactChatWindowHost && typeof window.reactChatWindowHost.prepareCompactHistoryDropSubmit === 'function') {
+            window.reactChatWindowHost.prepareCompactHistoryDropSubmit({
+                text: text,
+                images: images,
+                requestId: typeof payload.requestId === 'string' ? payload.requestId : undefined
+            });
+        }
+        var existingItems = Array.from(screenshotsList.children);
+        var detachedExistingItems = [];
+        existingItems.forEach(function (item) {
+            detachedExistingItems.push(item);
+            item.remove();
+        });
+        refreshPendingComposerAttachmentList();
+
+        var addedItems = [];
+        function restoreExistingItems() {
+            addedItems.forEach(function (item) {
+                if (item && item.isConnected) {
+                    item.remove();
+                }
+            });
+            detachedExistingItems.forEach(function (item) {
+                screenshotsList.appendChild(item);
+            });
+            refreshPendingComposerAttachmentList();
+        }
+
+        try {
+            normalizedImages.forEach(function (image) {
+                var item = mod.addScreenshotToList(image.dataUrl, null, {
+                    alt: image.alt,
+                    source: 'compact-history'
+                });
+                if (item) {
+                    addedItems.push(item);
+                }
+            });
+            var result = await mod.sendTextPayload(text, {
+                source: 'react-chat-window',
+                requestId: typeof payload.requestId === 'string' ? payload.requestId : undefined,
+                compactHistoryDragSessionId: typeof payload.compactHistoryDragSessionId === 'string'
+                    ? payload.compactHistoryDragSessionId
+                    : undefined,
+                skipAvatarInteractionDeferral: true
+            });
+            restoreExistingItems();
+            return result === false ? false : true;
+        } catch (error) {
+            console.error('[CompactHistoryDrop] send failed:', error);
+            restoreExistingItems();
+            window.showStatusToast(
+                window.t ? window.t('app.sendFailed', { error: error.message || String(error) }) : '\u53D1\u9001\u5931\u8D25: ' + (error.message || String(error)),
+                5000
+            );
+            return false;
+        }
+    }
+
+    mod.sendCompactHistoryDropPayload = function sendCompactHistoryDropPayload(payload) {
+        var run = compactHistoryDropPayloadQueue.then(function () {
+            return sendCompactHistoryDropPayloadNow(payload);
+        });
+        compactHistoryDropPayloadQueue = run.catch(function () {});
+        return run;
+    };
+    window.sendCompactHistoryDropPayload = mod.sendCompactHistoryDropPayload;
+
     // ======================== Emotion analysis ========================
 
     /**
@@ -542,9 +813,14 @@
     mod.analyzeEmotion = async function analyzeEmotion(text) {
         console.log(window.t('console.analyzeEmotionCalled'), text);
         try {
+            var emotionHeaders = { 'Content-Type': 'application/json' };
+            var sec = window.nekoLocalMutationSecurity;
+            if (sec && typeof sec.getMutationHeaders === 'function') {
+                try { Object.assign(emotionHeaders, await sec.getMutationHeaders()); } catch (_) { }
+            }
             var response = await fetch('/api/emotion/analysis', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: emotionHeaders,
                 body: JSON.stringify({
                     text: text,
                     lanlan_name: window.lanlan_config.lanlan_name
@@ -1191,6 +1467,11 @@
                 requestId: detail && detail.requestId
             });
         });
+        if (typeof host.setOnCompactHistoryDrop === 'function') {
+            host.setOnCompactHistoryDrop(function (detail) {
+                return mod.sendCompactHistoryDropPayload(detail);
+            });
+        }
         host.setOnComposerImportImage(function () {
             return mod.openImageImportPicker();
         });
@@ -1250,7 +1531,12 @@
         // 必须靠 assistantTurnCompletedId 区分"已收尾"和"还在跑"。
         // 否则"回复跑完，用户停顿一会儿再点麦克风"会被误判成在路上，
         // 干等到 15s timeout 才进语音。
-        if (S.assistantTurnId && S.assistantTurnId !== S.assistantTurnCompletedId) return true;
+        // settledId：语音轮干净收尾后 completedId 会被清成 null（见 app-audio-playback
+        // 的 maybeFinalizeAssistantSpeech），仅凭 turnId !== completedId 会把"已说完的轮"
+        // 误判成在路上。settledId 标记该轮已收尾，turnId === settledId 即视为不在路上。
+        if (S.assistantTurnId
+                && S.assistantTurnId !== S.assistantTurnCompletedId
+                && S.assistantTurnId !== S.assistantTurnSettledId) return true;
         if (S.assistantTurnAwaitingBubble) return true;
         if (typeof window._lastSubmittedRequestId === 'string' && window._lastSubmittedRequestId) return true;
         // 纯截图 / 纯图片这类没有 typed text 的提交，sendTextPayloadInternal
@@ -1259,6 +1545,29 @@
         // pendingTextTurnSubmitAt 专门补这段，15s freshness 兜底防漏清。
         if (S.pendingTextTurnSubmitAt && (Date.now() - S.pendingTextTurnSubmitAt) < 15000) return true;
         return false;
+    }
+
+    // 常驻诊断：切语音卡 15s 时，靠这个快照看清是哪个 in-flight 标志没被清。
+    // 只含布尔/时间戳，无对话内容。
+    function snapshotInFlightFlags() {
+        return {
+            // 与 isAssistantTextResponseInFlight 同口径：已 settle 的轮（completedId
+            // 被清成 null 但 settledId 标了该轮）不算 mismatch，否则日志会在每条已说完
+            // 的语音轮误报 turnMismatch:true，反而误导排查。原始 id 仍单列在下方备查。
+            turnMismatch: !!(S.assistantTurnId
+                && S.assistantTurnId !== S.assistantTurnCompletedId
+                && S.assistantTurnId !== S.assistantTurnSettledId),
+            awaitingBubble: !!S.assistantTurnAwaitingBubble,
+            lastReqId: !!(typeof window._lastSubmittedRequestId === 'string' && window._lastSubmittedRequestId),
+            pendingSubmitMs: S.pendingTextTurnSubmitAt ? (Date.now() - S.pendingTextTurnSubmitAt) : null,
+            // 原始 id：用来区分 turnMismatch 是"completedId 标了旧 turn"还是
+            // "assistantTurnId 被重分配给没收尾的新 turn"。
+            turnId: S.assistantTurnId,
+            completedId: S.assistantTurnCompletedId,
+            settledId: S.assistantTurnSettledId,
+            pendingServerId: S.assistantPendingTurnServerId,
+            speechActiveId: S.assistantSpeechActiveTurnId
+        };
     }
 
     function waitForAssistantTurnEnd(timeoutMs) {
@@ -1273,6 +1582,8 @@
                 resolve('not_in_flight');
                 return;
             }
+            var startedAt = Date.now();
+            console.log('[VoiceSwitch] wait start — in-flight flags:', JSON.stringify(snapshotInFlightFlags()));
             var settled = false;
             function done(reason) {
                 if (settled) return;
@@ -1280,6 +1591,9 @@
                 window.removeEventListener('neko-assistant-turn-end', onEnd);
                 clearInterval(pollTimer);
                 clearTimeout(timeoutTimer);
+                console.log('[VoiceSwitch] wait done reason=' + reason
+                    + ' elapsed=' + (Date.now() - startedAt) + 'ms — flags now:',
+                    JSON.stringify(snapshotInFlightFlags()));
                 resolve(reason);
             }
             function onEnd() { done('turn_end'); }
@@ -1376,9 +1690,20 @@
 
             // Immediately activate
             micButton.classList.add('active');
-            window.syncFloatingMicButtonState(true);
+            if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(true);
             window.isMicStarting = true;
             S.voiceStartPending = true;
+            var voiceStartEpoch = (S.voiceSessionStartEpoch || 0) + 1;
+            S.voiceSessionStartEpoch = voiceStartEpoch;
+            function ensureVoiceStartCurrent() {
+                if (S.voiceSessionStartEpoch !== voiceStartEpoch
+                        || window.isMicStarting !== true
+                        || (typeof window.isNekoGoodbyeModeActive === 'function' && window.isNekoGoodbyeModeActive())) {
+                    throw (typeof window.makeNekoSessionAbortError === 'function'
+                        ? window.makeNekoSessionAbortError('Voice start cancelled')
+                        : new Error('Voice start cancelled'));
+                }
+            }
             micButton.disabled = true;
 
             // Show preparing toast
@@ -1392,6 +1717,7 @@
                 if (isAssistantTextResponseInFlight()) {
                     window.showVoicePreparingToast(window.t ? window.t('app.waitForReplyBeforeVoice') : '\u7B49\u56DE\u590D\u7ED3\u675F\u540E\u5207\u6362\u5230\u8BED\u97F3\u2026');
                     await waitForAssistantTurnEnd(15000);
+                    ensureVoiceStartCurrent();
                 }
                 S.isSwitchingMode = true;
                 if (S.socket && S.socket.readyState === WebSocket.OPEN) {
@@ -1401,6 +1727,7 @@
                 window.showStatusToast(window.t ? window.t('app.switchingToVoice') : '\u6B63\u5728\u5207\u6362\u5230\u8BED\u97F3\u6A21\u5F0F...', 3000);
                 window.showVoicePreparingToast(window.t ? window.t('app.switchingToVoice') : '\u6B63\u5728\u5207\u6362\u5230\u8BED\u97F3\u6A21\u5F0F...');
                 await new Promise(function (resolve) { setTimeout(resolve, 1500); });
+                ensureVoiceStartCurrent();
             }
 
             // Deactivate tool cursor mode (lollipop/cat paw/hammer)
@@ -1455,6 +1782,7 @@
                         throw voiceConfigTimeoutError;
                     }
                     window.showVoicePreparingToast(window.t ? window.t('app.connectingToServer') : '\u6B63\u5728\u8FDE\u63A5\u670D\u52A1\u5668...');
+                    ensureVoiceStartCurrent();
                 }
 
                 // Create a promise for session_started
@@ -1470,6 +1798,7 @@
 
                 // Send start session (ensure WS open)
                 await window.ensureWebSocketOpen();
+                ensureVoiceStartCurrent();
                 S.socket.send(JSON.stringify({
                     action: 'start_session',
                     input_type: 'audio'
@@ -1496,20 +1825,27 @@
                     }
                 }, 15000);
 
-                // Parallel: wait for session + init mic
+                // Init mic only after the session is confirmed started
                 try {
                     await window.showCurrentModel();
+                    ensureVoiceStartCurrent();
                     window.showStatusToast(window.t ? window.t('app.initializingMic') : '\u6B63\u5728\u521D\u59CB\u5316\u9EA6\u514B\u98CE...', 3000);
 
-                    await Promise.all([
-                        sessionStartPromise,
-                        window.startMicCapture()
-                    ]);
+                    // 先确认 session 启动成功，再开麦。与 CHARACTER_DISCONNECTED 自动
+                    // 重启路径（app-websocket.js）一致的串行写法：session 启动失败时
+                    // startMicCapture 根本不会被调用，不存在"mic 在外层 catch teardown
+                    // 之后才 settle、把 UI 写回录音中"的竞态，也就不需要 token / 补充
+                    // teardown 去追平它。
+                    await sessionStartPromise;
+                    ensureVoiceStartCurrent();
 
                     if (window.sessionTimeoutId) {
                         clearTimeout(window.sessionTimeoutId);
                         window.sessionTimeoutId = null;
                     }
+
+                    await window.startMicCapture();
+                    ensureVoiceStartCurrent();
                 } catch (error) {
                     if (window.sessionTimeoutId) {
                         clearTimeout(window.sessionTimeoutId);
@@ -1546,7 +1882,13 @@
                 S.isSwitchingMode = false;
 
             } catch (error) {
-                console.error(window.t('console.startVoiceSessionFailed'), error);
+                var isVoiceStartCancelled = !!(error && error.voiceStartCancelled);
+                var preserveGoodbyeUi = isVoiceStartCancelled
+                    && typeof window.isNekoGoodbyeModeActive === 'function'
+                    && window.isNekoGoodbyeModeActive();
+                if (!isVoiceStartCancelled) {
+                    console.error(window.t('console.startVoiceSessionFailed'), error);
+                }
 
                 // Cleanup
                 if (window.sessionTimeoutId) {
@@ -1556,7 +1898,7 @@
                 S.sessionStartedResolver = null;
                 S.sessionStartedRejecter = null;
 
-                if (!(error && error.voiceConfigSwitchTimedOut) && S.socket && S.socket.readyState === WebSocket.OPEN) {
+                if (!isVoiceStartCancelled && !(error && error.voiceConfigSwitchTimedOut) && S.socket && S.socket.readyState === WebSocket.OPEN) {
                     S.socket.send(JSON.stringify({ action: 'end_session' }));
                     console.log(window.t('console.sessionStartFailedEndSession'));
                 }
@@ -1581,16 +1923,23 @@
                 window.syncFloatingMicButtonState(false);
                 window.syncFloatingScreenButtonState(false);
 
-                micButton.disabled = false;
+                micButton.disabled = preserveGoodbyeUi ? true : false;
                 muteButton.disabled = true;
                 screenButton.disabled = true;
                 stopButton.disabled = true;
-                resetSessionButton.disabled = false;
-                textInputArea.classList.remove('hidden');
-                if (typeof window.syncVoiceChatComposerHidden === 'function') {
-                    window.syncVoiceChatComposerHidden(false);
+                resetSessionButton.disabled = preserveGoodbyeUi ? true : false;
+                returnSessionButton.disabled = preserveGoodbyeUi ? false : returnSessionButton.disabled;
+                if (preserveGoodbyeUi) {
+                    textInputArea.classList.add('hidden');
+                } else {
+                    textInputArea.classList.remove('hidden');
                 }
-                if (error && error.voiceConfigSwitchTimedOut) {
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(preserveGoodbyeUi);
+                }
+                if (preserveGoodbyeUi) {
+                    window.showStatusToast('', 0);
+                } else if (error && error.voiceConfigSwitchTimedOut) {
                     window.showStatusToast(error.message, 5000);
                 } else {
                     window.showStatusToast(window.t ? window.t('app.startFailed', { error: error.message }) : '\u542F\u52A8\u5931\u8D25: ' + error.message, 5000);
@@ -1620,6 +1969,15 @@
         // ----------------------------------------------------------------
         resetSessionButton.addEventListener('click', function () {
             console.log(window.t('console.resetButtonClicked'));
+            if (typeof window.cancelPendingSessionStart === 'function') {
+                window.cancelPendingSessionStart('Voice start cancelled by goodbye');
+            } else {
+                S.voiceStartPending = false;
+                window.isMicStarting = false;
+                S.sessionStartedResolver = null;
+                S.sessionStartedRejecter = null;
+            }
+            S.voiceChatActive = false;
             S.isSwitchingMode = true;
 
             var isGoodbyeMode = window.live2dManager && window.live2dManager._goodbyeClicked;
@@ -1647,6 +2005,9 @@
                 S.socket.send(JSON.stringify({ action: 'end_session' }));
             }
             window.stopRecording();
+            S.voiceStartPending = false;
+            window.isMicStarting = false;
+            S.voiceChatActive = false;
 
             (async function () {
                 await window.clearAudioQueue();
@@ -2044,7 +2405,7 @@
                     refreshHomeTutorialLockedControls(false);
 
                     updateReactOptimisticMessageStatus('failed');
-                    return; // Don't send if session start failed
+                    return false; // Don't send if session start failed
                 }
             }
 
@@ -2164,6 +2525,7 @@
                     }
 
                     window.showStatusToast(window.t ? window.t('app.textChattingShort') : '\u6B63\u5728\u6587\u672C\u804A\u5929\u4E2D', 2000);
+                    return true;
                 } catch (sendError) {
                     console.error('[Chat] send text payload failed:', sendError);
                     updateReactOptimisticMessageStatus('failed');
@@ -2173,6 +2535,7 @@
                             : '\u53D1\u9001\u5931\u8D25: ' + sendError.message,
                         5000
                     );
+                    return false;
                 }
             } else {
                 updateReactOptimisticMessageStatus('failed');
@@ -2402,10 +2765,14 @@
             //   把 hide/等待/抓图/show 全放主进程是因为渲染器端 setTimeout 在 Pet 窗口
             //   hide 后会被 backgroundThrottling 拖慢到秒级，且多次 IPC 之间有时序风险。
             var selectedSourceId = S.selectedScreenSourceId;
-            if (selectedSourceId && window.electronDesktopCapturer
+            // 注意：即使没有预选源也要走原子化路径。原子化在主进程里把"含 Live2D 的 Pet 窗口"
+            // 一起 hide 掉再抓屏，是唯一能真正抹掉立绘的途径；下面的 renderer fallback 只能
+            // 对 Pet 的 DOM 做 visibility:hidden，盖不住 WebGL 合成层 —— 那正是"隐藏NEKO
+            // 画面刷新了但立绘还在"的根因。主进程在 sourceId 缺省时会自动取主屏。
+            if (window.electronDesktopCapturer
                 && typeof window.electronDesktopCapturer.captureSourceWithoutNeko === 'function') {
                 try {
-                    var atomic = await window.electronDesktopCapturer.captureSourceWithoutNeko(selectedSourceId);
+                    var atomic = await window.electronDesktopCapturer.captureSourceWithoutNeko(selectedSourceId || null);
                     if (atomic && atomic.success && atomic.dataUrl) {
                         return atomic.dataUrl;
                     } else if (atomic && atomic.error) {
@@ -2845,6 +3212,28 @@
                 }
             }
         });
+
+        // 图片文件拖到聊天框时按「导入图片」处理，避免浏览器默认打开本地文件。
+        document.addEventListener('dragover', function (e) {
+            if (!shouldHandleChatFileDrop(e)) return;
+            e.preventDefault();
+            e.stopPropagation();
+            if (e.dataTransfer) {
+                e.dataTransfer.dropEffect = isHomeTutorialInteractionLocked() ? 'none' : 'copy';
+            }
+        }, true);
+
+        document.addEventListener('drop', function (e) {
+            if (!shouldHandleChatFileDrop(e)) return;
+            e.preventDefault();
+            e.stopPropagation();
+            if (isHomeTutorialInteractionLocked()) {
+                showHomeTutorialLockedToast();
+                return;
+            }
+            var files = getFilesFromDataTransfer(e.dataTransfer);
+            mod.importImageFilesToPendingList(files, { logPrefix: '[拖放图片]' });
+        }, true);
 
         mod.ensureImportImageInput();
         mod.syncPendingComposerAttachments();

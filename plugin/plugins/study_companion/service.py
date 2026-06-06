@@ -92,24 +92,18 @@ def build_dependency_status(config: StudyConfig) -> dict[str, Any]:
 
 
 def _inspect_rapidocr(config: StudyConfig) -> dict[str, Any]:
-    spec = importlib.util.find_spec("rapidocr_onnxruntime")
-    origin = str(getattr(spec, "origin", "") or "") if spec is not None else ""
-    installed = bool(spec)
-    return {
-        "install_supported": sys.platform == "win32",
-        "installed": installed,
-        "can_install": False,
-        "can_download_models": installed
-        and (config.rapidocr_lang_type, config.rapidocr_ocr_version)
-        != ("ch", "PP-OCRv4"),
-        "detected_path": str(Path(origin).resolve().parent) if origin else "",
-        "target_dir": config.rapidocr_install_target_dir,
-        "engine_type": config.rapidocr_engine_type,
-        "lang_type": config.rapidocr_lang_type,
-        "model_type": config.rapidocr_model_type,
-        "ocr_version": config.rapidocr_ocr_version,
-        "detail": "installed" if installed else "missing",
-    }
+    from plugin.plugins._shared.rapidocr.rapidocr_support import (
+        inspect_rapidocr_installation,
+    )
+
+    return inspect_rapidocr_installation(
+        install_target_dir_raw=config.rapidocr_install_target_dir,
+        engine_type=config.rapidocr_engine_type,
+        lang_type=config.rapidocr_lang_type,
+        model_type=config.rapidocr_model_type,
+        ocr_version=config.rapidocr_ocr_version,
+        plugin_id="study_companion",
+    )
 
 
 def _inspect_tesseract(config: StudyConfig) -> dict[str, Any]:

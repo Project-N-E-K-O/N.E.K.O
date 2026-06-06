@@ -11,6 +11,51 @@ const AVATAR_POPUP_ANIMATION_DURATION_MS = 200;
 const AVATAR_POPUP_HOVER_COLLAPSE_DELAY_MS = 260;
 const AVATAR_POPUP_HOVER_BRIDGE_GRACE_MS = 900;
 const AVATAR_POPUP_HOVER_BRIDGE_PADDING_PX = 18;
+const AVATAR_CHARACTER_MANAGER_WINDOW_WIDTH = 1240;
+const AVATAR_CHARACTER_MANAGER_WINDOW_HEIGHT = 940;
+
+function isAvatarFramedSettingsWindowUrl(finalUrl) {
+    return typeof finalUrl === 'string'
+        && (
+            finalUrl.startsWith('/character_card_manager')
+            || finalUrl.startsWith('/chara_manager')
+            || finalUrl.startsWith('/api_key')
+            || finalUrl.startsWith('/memory_browser')
+        );
+}
+
+function buildAvatarCenteredWindowFeatures(width, height) {
+    const availableWidth = Math.max(1, Number(window.screen && (window.screen.availWidth || window.screen.width)) || width);
+    const availableHeight = Math.max(1, Number(window.screen && (window.screen.availHeight || window.screen.height)) || height);
+    const windowWidth = Math.min(width, Math.max(720, availableWidth - 80));
+    const windowHeight = Math.min(height, Math.max(560, availableHeight - 80));
+    // 居中走 core 公共 helper：多显示器下叠加当前屏幕偏移，避免副屏弹窗跳回主屏。
+    if (typeof window.buildCenteredPopupFeatures === 'function') {
+        return window.buildCenteredPopupFeatures(windowWidth, windowHeight);
+    }
+    const left = Math.max(0, Math.floor((availableWidth - windowWidth) / 2));
+    const top = Math.max(0, Math.floor((availableHeight - windowHeight) / 2));
+    return `width=${windowWidth},height=${windowHeight},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+}
+
+function buildAvatarFullscreenWindowFeatures() {
+    const screenRef = window.screen || {};
+    const width = Math.max(720, Math.floor(Number(screenRef.availWidth || screenRef.width) || 1280));
+    const height = Math.max(560, Math.floor(Number(screenRef.availHeight || screenRef.height) || 900));
+    const left = Number.isFinite(screenRef.availLeft) ? screenRef.availLeft : 0;
+    const top = Number.isFinite(screenRef.availTop) ? screenRef.availTop : 0;
+    return `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes`;
+}
+
+function getAvatarNavigationWindowFeatures(finalUrl) {
+    if (isAvatarFramedSettingsWindowUrl(finalUrl)) {
+        return buildAvatarCenteredWindowFeatures(
+            AVATAR_CHARACTER_MANAGER_WINDOW_WIDTH,
+            AVATAR_CHARACTER_MANAGER_WINDOW_HEIGHT
+        );
+    }
+    return undefined;
+}
 
 function clearAvatarSidePanelHoverState(panel) {
     if (!panel) return;
@@ -819,7 +864,8 @@ function createSidePanelMenuItem(manager, prefix, item) {
                 finalUrl = `${item.urlBase}?lanlan_name=${encodeURIComponent(lanlanName)}`;
                 isOpening = true;
                 windowName = `neko_${item.id}_${encodeURIComponent(lanlanName || 'default')}`;
-                openAndPauseMainUI(finalUrl, windowName);
+                features = buildAvatarFullscreenWindowFeatures();
+                openAndPauseMainUI(finalUrl, windowName, features);
                 setTimeout(() => { isOpening = false; }, 500);
             } else if (item.id === 'voice-clone' && item.url) {
                 const lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
@@ -841,14 +887,21 @@ function createSidePanelMenuItem(manager, prefix, item) {
                 }
                 setTimeout(() => { isOpening = false; }, 500);
             } else if (item.url) {
-                if (typeof finalUrl === 'string' && (finalUrl.startsWith('/character_card_manager') || finalUrl.startsWith('/chara_manager'))) {
-                    windowName = 'neko_chara_manager';
+                if (isAvatarFramedSettingsWindowUrl(finalUrl)) {
+                    if (typeof finalUrl === 'string' && (finalUrl.startsWith('/character_card_manager') || finalUrl.startsWith('/chara_manager'))) {
+                        windowName = 'neko_chara_manager';
+                    } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/api_key')) {
+                        windowName = 'neko_api_key';
+                    } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/memory_browser')) {
+                        windowName = 'neko_memory_browser';
+                    }
+                    features = getAvatarNavigationWindowFeatures(finalUrl);
                 }
                 isOpening = true;
                 if (typeof window.openOrFocusWindow === 'function') {
-                    window.openOrFocusWindow(finalUrl, windowName);
+                    window.openOrFocusWindow(finalUrl, windowName, features);
                 } else {
-                    window.open(finalUrl, windowName);
+                    window.open(finalUrl, windowName, features);
                 }
                 setTimeout(() => { isOpening = false; }, 500);
             }
@@ -2472,7 +2525,16 @@ const AvatarPopupMixin = {
                         }
                         setTimeout(() => { isOpening = false; }, 500);
                     } else {
-                        if (typeof finalUrl === 'string' && (finalUrl.startsWith('/character_card_manager') || finalUrl.startsWith('/chara_manager'))) windowName = 'neko_chara_manager';
+                        if (isAvatarFramedSettingsWindowUrl(finalUrl)) {
+                            if (typeof finalUrl === 'string' && (finalUrl.startsWith('/character_card_manager') || finalUrl.startsWith('/chara_manager'))) {
+                                windowName = 'neko_chara_manager';
+                            } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/api_key')) {
+                                windowName = 'neko_api_key';
+                            } else if (typeof finalUrl === 'string' && finalUrl.startsWith('/memory_browser')) {
+                                windowName = 'neko_memory_browser';
+                            }
+                            features = getAvatarNavigationWindowFeatures(finalUrl);
+                        }
 
                         isOpening = true;
                         if (typeof window.openOrFocusWindow === 'function') {

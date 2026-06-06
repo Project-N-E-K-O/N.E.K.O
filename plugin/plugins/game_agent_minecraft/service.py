@@ -108,6 +108,15 @@ class GameAgentService:
         self._skip_when_busy: bool = True
         self._stream_screenshots: bool = True
         self._screenshot_cache_size: int = 3
+        # Bound each pushed frame so it fits the message_plane payload cap
+        # (default 256KB). mc-agent sends full-res frames; left untouched they
+        # blow past the cap and get silently dropped at ingest.
+        self._screenshot_max_edge_px: int = 1024
+        self._screenshot_jpeg_quality: int = 80
+        # Hard budget on the raw JPEG bytes. The wire payload base64-encodes the
+        # frame (+~33%) AND carries a raw copy, so packed payload ≈ 2.3x raw +
+        # envelope; 100KB raw → ~238KB < the 256KB message_plane cap.
+        self._screenshot_max_bytes: int = 100 * 1024
 
         # WebSocket lifecycle
         self._client: Optional[GameAgentClient] = None
@@ -242,6 +251,14 @@ class GameAgentService:
     # cycle is needed to make the new value real.
     _TRANSPORT_KEYS = ("_ws_url", "_reconnect_interval")
 
+    # [ISSUE4c] Anti-thrash floor: minimum seconds a just-claimed task must run
+    # before an overwrite=True can interrupt it. Weak dialog LLMs (esp. realtime,
+    # which has no per-turn tool-call cap) set overwrite=True on nearly every
+    # minecraft_task call, interrupting each freshly-sent task ~1s later and
+    # thrashing mc-agent between goals. A genuine {MASTER_NAME} correction of a
+    # <2s-old task is implausible; sub-2s overwrites are the runaway signature.
+    _OVERWRITE_MIN_SURVIVAL_S = 2.0
+
     def set_lang(self, lang: str) -> None:
         """Set the locale used for every push_message cue + result
         summary this service emits. Called by the plugin facade after
@@ -309,6 +326,12 @@ class GameAgentService:
             self._screenshot_cache = collections.deque(
                 self._screenshot_cache, maxlen=size
             )
+        # Frame size bounds. ``screenshot_max_edge_px=0`` disables resizing
+        # (re-encode to JPEG only). Quality is clamped to a sane 1..95.
+        self._screenshot_max_edge_px = max(0, _i("screenshot_max_edge_px", 1024))
+        self._screenshot_jpeg_quality = max(1, min(95, _i("screenshot_jpeg_quality", 80)))
+        # 0 disables the byte budget (resolution/quality caps still apply).
+        self._screenshot_max_bytes = max(0, _i("screenshot_max_bytes", 100 * 1024))
 
     async def reload_config_live(self, cfg: Dict[str, Any]) -> bool:
         """Apply a config update at runtime.
@@ -378,7 +401,7 @@ class GameAgentService:
         # for an in-game action and the dialog LLM responds with chat
         # only (no function call) leaves the plugin in a state where
         # nudge fires never trigger — _last_task_finished_at stays 0,
-        # keep_going's ``> 0`` guard fails, and Kuro stands still with
+        # keep_going's ``> 0`` guard fails, and Neko stands still with
         # no self-prompt to push her into actually dispatching.
         self._last_task_finished_at = time.time()
         self._log_info("started, ws_url={}", self._ws_url)
@@ -605,6 +628,22 @@ class GameAgentService:
         async with self._pending_lock:
             if self._pending is not None:
                 if not overwrite:
+                    return None
+                # [ISSUE4c] Anti-thrash guard: even with overwrite=True, refuse
+                # to interrupt a task that has barely started (< _OVERWRITE_MIN_
+                # SURVIVAL_S). This is the structural stop for the dispatch storm
+                # — the busy-without-overwrite gate never engaged because the LLM
+                # set overwrite=True on every call. Give a freshly-sent task a
+                # floor of run time; a real correction arrives seconds later and
+                # clears the floor. Rejected → caller returns the busy summary.
+                age = time.time() - self._pending.start_time
+                if age < self._OVERWRITE_MIN_SURVIVAL_S:
+                    self._log_info(
+                        "overwrite rejected (anti-thrash): current task age={:.2f}s "
+                        "< {:.1f}s — keeping {!r}, refusing {!r}",
+                        age, self._OVERWRITE_MIN_SURVIVAL_S,
+                        self._pending.task_text[:40], task[:40],
+                    )
                     return None
                 # overwrite=True: wake the old handler with an
                 # "interrupted" verdict before claiming the slot.
@@ -960,6 +999,74 @@ class GameAgentService:
                     # a new dispatch.
                     self._last_task_finished_at = time.time()
 
+    def _normalize_screenshot_bytes(self, img_bytes: bytes, src_mime: str) -> tuple[bytes, str]:
+        """Downscale + re-encode to JPEG under a *raw-bytes budget* so the pushed
+        frame survives the message_plane payload cap.
+
+        Capping resolution + quality alone is not enough: the wire payload encodes
+        the frame as a base64 string (``binary_base64``, +~33%) **and** carries a
+        raw ``binary_data`` copy, so the packed payload is ~2.3x the raw JPEG plus
+        envelope. A high-detail 1024px/q80 frame can land at 150-250KB raw and
+        still trip ``payload_too_big`` after expansion. So we treat
+        ``_screenshot_max_bytes`` as a hard budget on the raw JPEG and step
+        quality (then edge) down until the encode fits.
+
+        Returns ``(bytes, mime)``. Falls back to the original bytes + their source
+        mime if Pillow is missing or decoding fails — downstream tolerates either
+        mime, and shipping an oversized original is still better than crashing the
+        screenshot path. Pillow is already a transitive project dep (avatar / MMD
+        pipelines)."""
+        try:
+            from PIL import Image
+            import io
+
+            budget = int(self._screenshot_max_bytes)
+            base_edge = int(self._screenshot_max_edge_px)
+            base_quality = int(self._screenshot_jpeg_quality)
+
+            with Image.open(io.BytesIO(img_bytes)) as im:
+                im = im.convert("RGB")
+                # Edge ladder: start at the configured max, then halve twice as a
+                # fallback for frames too dense to fit at full size/quality.
+                edges: list[int] = []
+                for e in (base_edge, base_edge // 2, base_edge // 4):
+                    if e and e > 0 and e not in edges:
+                        edges.append(e)
+                if not edges:  # max_edge=0 → resizing disabled; encode at native size
+                    edges = [max(im.size) or 1]
+                # Quality ladder: never go above the configured quality.
+                qualities = [q for q in (base_quality, 65, 50, 40, 30) if q <= base_quality]
+                if not qualities:
+                    qualities = [base_quality]
+
+                smallest: bytes | None = None
+                for edge in edges:
+                    frame = im.copy()
+                    if max(frame.size) > edge:
+                        frame.thumbnail((edge, edge))  # aspect-preserving, shrink-only
+                    for ql in qualities:
+                        buf = io.BytesIO()
+                        frame.save(buf, format="JPEG", quality=ql, optimize=True)
+                        data = buf.getvalue()
+                        if budget <= 0 or len(data) <= budget:
+                            return data, "image/jpeg"
+                        if smallest is None or len(data) < len(smallest):
+                            smallest = data
+                # Nothing fit the budget — ship the smallest attempt (best effort).
+                # Still far better than the original full-res frame, and the ingest
+                # drop diagnostic will surface it if it's somehow still over cap.
+                self._log_warning(
+                    "screenshot still over budget after downscale (smallest={} > budget={}); shipping smallest",
+                    len(smallest) if smallest else -1, budget,
+                )
+                return (smallest if smallest is not None else img_bytes), "image/jpeg"
+        except Exception as exc:
+            self._log_warning(
+                "screenshot downscale failed, shipping original bytes as-is: {}: {}",
+                type(exc).__name__, exc,
+            )
+            return img_bytes, src_mime
+
     async def _on_screenshot(self, payload: str, encoding: str) -> None:
         """Decode a base64 screenshot, convert JPEG→PNG when needed, and
         either stream it into the realtime LLM session immediately or
@@ -995,31 +1102,21 @@ class GameAgentService:
         # ``encoding`` field and the mime extracted from a data: URI.
         # The explicit field wins when both are present (more
         # authoritative); the URI scheme is a fallback when the
-        # encoding is empty.
-        mime = "image/png"
+        # encoding is empty. ``src_mime`` is only the fallback tag used when
+        # Pillow is unavailable and we ship the original bytes untouched.
         enc_lower = (encoding or "").lower()
         is_jpeg_explicit = "jpeg" in enc_lower or "jpg" in enc_lower
         is_jpeg_embedded = embedded_mime in ("image/jpeg", "image/jpg")
-        if is_jpeg_explicit or (not enc_lower and is_jpeg_embedded):
-            # Gemini's realtime media input prefers PNG; convert here so
-            # downstream code can be format-agnostic. Pillow is already
-            # a transitive project dep (used by avatar/MMD pipelines).
-            try:
-                from PIL import Image
-                import io
+        src_mime = "image/jpeg" if (is_jpeg_explicit or (not enc_lower and is_jpeg_embedded)) else "image/png"
 
-                with Image.open(io.BytesIO(img_bytes)) as im:
-                    buf = io.BytesIO()
-                    im.save(buf, format="PNG")
-                    img_bytes = buf.getvalue()
-            except Exception as exc:
-                # Fall through with the original JPEG bytes — main_server
-                # won't choke if the mime type matches.
-                self._log_warning(
-                    "JPEG→PNG convert failed, sending as-is: {}: {}",
-                    type(exc).__name__, exc,
-                )
-                mime = "image/jpeg"
+        # Downscale + recompress so the pushed frame fits the message_plane
+        # payload cap. The previous JPEG→lossless-PNG conversion (done here to
+        # please Gemini's realtime input) inflated ~100KB frames into 1.5-4MB,
+        # which blew past NEKO_MESSAGE_PLANE_PAYLOAD_MAX_BYTES (default 256KB)
+        # and got silently dropped at ingest — so the dialog LLM never saw a
+        # fresh frame. A vision model needs neither 4MP nor lossless; bounding
+        # the long edge + JPEG keeps every frame comfortably under the cap.
+        img_bytes, mime = self._normalize_screenshot_bytes(img_bytes, src_mime)
 
         self._screenshot_cache.append((img_bytes, mime))
 
@@ -1034,7 +1131,8 @@ class GameAgentService:
     async def _on_alert(self, data: Dict[str, Any]) -> None:
         """High-severity event from mc-agent (HP damage / death / etc.).
 
-        Forwarded with ``ai_behavior="respond"`` + ``priority=1`` so the
+        Forwarded with ``ai_behavior="respond"`` + ``priority=9`` (highest on
+        the repo-wide HIGHER=more-important scale) so the
         dialog LLM hears about a death immediately, not 5s later on a
         nudge tick. ``cause`` (when mc-agent could infer one — nearby
         hostile, lava, fall, etc.) is rendered as a hint inside the cue
@@ -1063,7 +1161,8 @@ class GameAgentService:
                 visibility=[],
                 ai_behavior="respond",
                 parts=[{"type": "text", "text": body}],
-                priority=1,
+                priority=9,
+                coalesce_key="mc_alert",
             )
         except Exception as exc:
             self._log_error(
@@ -1166,7 +1265,8 @@ class GameAgentService:
                 visibility=[],
                 ai_behavior="respond",
                 parts=[{"type": "text", "text": body}],
-                priority=2,
+                priority=7,
+                coalesce_key="mc_completion",
             )
         except Exception as exc:
             self._log_error(
@@ -1352,21 +1452,25 @@ class GameAgentService:
         only about not flooding main_server with redundant wake-ups,
         not about real-time conversation politeness.
         """
-        # Anchor thresholds tuned from user testing: 5/5 was too tight
-        # (stream of 5-line bursts), 12/12 was too loose. Settle on 8s
-        # for both in_progress + keep_going cooldowns. nudge tone is
-        # soft ("有新内容再说") so even when fires hit, she paces
-        # naturally instead of being forced to speak every tick.
-        #   in-progress: 8s elapsed + 8s cooldown
-        #   keep-going:  8s post-finish + 8s cooldown, max 90s window
-        # (90s window matches the bumped task_timeout_seconds default so
-        # the keep_going branch can still cover a freshly timed-out task
-        # before drifting into "user has moved on" territory)
+        # Anchor thresholds. in-progress: nudge 8s into a long task, then every
+        # 8s. keep-going: first self-prompt 8s after a task ends, then re-prompt
+        # every 10s while STILL idle.
+        #
+        # [ISSUE4a] The old design had a 90s ``_KEEP_GOING_MAX_WINDOW`` upper
+        # bound: once a task had been finished for >90s, keep_going stopped
+        # firing entirely ("user has moved on"). In practice that PERMANENTLY
+        # killed the autonomous self-prompt — after one >90s idle stretch she
+        # went dead-air until something external (mc-agent self-prompt / user)
+        # restarted her (the user-reported "self-prompt 停了很久才恢复"). For an
+        # autonomous game companion the desired behaviour is the opposite: keep
+        # nudging her to play as long as she's idle. So the upper bound is gone —
+        # keep_going now fires whenever idle, forever, paced by the cooldown.
+        # (User present/absent gating is main_server's proactive SM job, not the
+        # plugin's; the plugin only paces wake-ups.)
         _IN_PROGRESS_AFTER = 8.0
         _IN_PROGRESS_COOLDOWN = 8.0
         _KEEP_GOING_AFTER = 8.0
-        _KEEP_GOING_COOLDOWN = 8.0
-        _KEEP_GOING_MAX_WINDOW = 90.0
+        _KEEP_GOING_COOLDOWN = 10.0
 
         self._log_debug(
             "system_prompt_loop started (in_progress={}/{}, keep_going={}/{}, "
@@ -1375,8 +1479,14 @@ class GameAgentService:
             _KEEP_GOING_AFTER, _KEEP_GOING_COOLDOWN,
             self._system_prompt_interval,
         )
-        try:
-            while True:
+        # [ISSUE4a] Per-iteration try/except (NOT a recursive restart): a single
+        # tick raising used to fall through and RETURN, killing self-prompt for
+        # the rest of the session. We catch each iteration, log, briefly pause to
+        # avoid hot-spin, and CONTINUE the same loop — iterative, so a persistent
+        # exception can never grow the call stack into RecursionError. Only
+        # CancelledError exits cleanly.
+        while True:
+            try:
                 await asyncio.sleep(0.5)
                 now = time.time()
 
@@ -1404,8 +1514,10 @@ class GameAgentService:
                 ):
                     since_finish = now - self._last_task_finished_at
                     since_last_keep = now - self._last_keep_going_nudge_at
+                    # No upper bound (see _KEEP_GOING_MAX_WINDOW removal note):
+                    # idle → keep nudging forever, paced by the cooldown.
                     if (
-                        _KEEP_GOING_AFTER <= since_finish <= _KEEP_GOING_MAX_WINDOW
+                        since_finish >= _KEEP_GOING_AFTER
                         and since_last_keep >= _KEEP_GOING_COOLDOWN
                     ):
                         self._log_debug(
@@ -1431,12 +1543,17 @@ class GameAgentService:
                 )
                 await self._fire_system_prompt()
                 self._last_system_prompt_time = time.time()
-        except asyncio.CancelledError:
-            return
-        except Exception as exc:
-            self._log_error(
-                "system prompt loop failed: {}: {}", type(exc).__name__, exc,
-            )
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                self._log_error(
+                    "system prompt loop iteration failed (continuing): {}: {}",
+                    type(exc).__name__, exc,
+                )
+                try:
+                    await asyncio.sleep(2.0)
+                except asyncio.CancelledError:
+                    return
 
     async def _fire_in_progress_nudge(self) -> None:
         """Push a "what are you feeling right now?" prompt + latest
@@ -1477,7 +1594,8 @@ class GameAgentService:
                 visibility=[],
                 ai_behavior="respond",
                 parts=parts,
-                priority=2,
+                priority=4,
+                coalesce_key="mc_in_progress",
             )
         except Exception as exc:
             self._log_error(
@@ -1510,7 +1628,8 @@ class GameAgentService:
                 visibility=[],
                 ai_behavior="respond",
                 parts=parts,
-                priority=2,
+                priority=3,
+                coalesce_key="mc_keep_going",
             )
         except Exception as exc:
             self._log_error(
@@ -1563,17 +1682,31 @@ class GameAgentService:
         parts: list[Dict[str, Any]] = []
         screenshots = list(self._screenshot_cache)
         self._screenshot_cache.clear()
-        for img_bytes, img_mime in screenshots:
-            # Preserve the per-frame mime — see ``_screenshot_cache``
-            # field comment for why this isn't always image/png.
+        # Bundle ONLY the most recent frame. Each cached frame is already capped
+        # at ``_screenshot_max_bytes`` individually, but stacking several into one
+        # push blows the message_plane payload cap: every frame is base64'd
+        # (~+37%) AND the legacy ``binary_data`` field carries a raw copy, so even
+        # two frames exceed 256KB and the whole burst is silently dropped at
+        # ingest. The latest frame is the most relevant; older cached frames are
+        # dropped rather than risk losing the entire visual+text cue.
+        if screenshots:
+            img_bytes, img_mime = screenshots[-1]
+            # Preserve the per-frame mime — see ``_screenshot_cache`` field
+            # comment for why this isn't always image/png.
             parts.append({"type": "image", "data": img_bytes, "mime": img_mime})
         parts.append({"type": "text", "text": prompt_text})
 
         try:
+            # General periodic state burst (inventory + recent log +
+            # screenshots). This is passive CONTEXT, not a "speak now" cue:
+            # ai_behavior="read" injects it into the model's context without
+            # forcing an AI turn, so it can't make her narrate non-stop or
+            # compete with real alert/completion cues in the pacing manager.
+            # The specific nudges (in_progress / keep_going) remain "respond".
             self._push_message(
                 source="game_agent_minecraft",
                 visibility=[],
-                ai_behavior="respond",
+                ai_behavior="read",
                 parts=parts,
                 priority=4,
             )

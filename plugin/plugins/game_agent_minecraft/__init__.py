@@ -101,7 +101,7 @@ MINECRAFT_TASK_DESCRIPTION = (
     "reasons. **CRITICAL**: when a 'busy' response comes back AND the user "
     "is actively correcting you, you MUST re-invoke with overwrite=true on "
     "the same turn — silently accepting busy while the user is asking for "
-    "a change leaves Kuro standing still doing the wrong thing.\n\n"
+    "a change leaves Neko standing still doing the wrong thing.\n\n"
     "When the cue includes a 『背包』 line, that is the character's actual "
     "inventory after the action — items not in that line don't exist; do "
     "not narrate items the line doesn't show."
@@ -274,7 +274,7 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
         Without eager-start at all, user-reported symptom: 75+s of dead
         air between "go chop trees" → dialog LLM chats but doesn't call
         ``minecraft_task`` → plugin process never wakes service → nudge
-        loop never starts → no self-prompt → Kuro stands still until
+        loop never starts → no self-prompt → Neko stands still until
         the user prods her into a second turn and analyzer finally
         lands on ``game_agent_status``.
         """
@@ -407,21 +407,22 @@ class GameAgentMinecraftPlugin(NekoPluginBase):
         if not cue:
             return
         try:
-            # ai_behavior="respond" + priority=2: the action just
+            # ai_behavior="respond" + priority=7: the action just
             # finished; the dialog LLM should immediately narrate the
             # outcome to {MASTER_NAME} and (if appropriate) decide a
             # next concrete action. Without ``respond`` the cue would
             # only land in context as silent reading material; the
             # human-facing report would be deferred to the next user
-            # turn, which feels unresponsive. Priority 2 sits between
-            # alert (1, preempts everything) and normal screenshot
-            # stream (3+, background read).
+            # turn, which feels unresponsive. Importance scale is
+            # HIGHER=more important (repo-wide): alert=9 (most important)
+            # > completion=7 > in_progress=4 > keep_going=3.
             self.push_message(
                 source="game_agent_minecraft",
                 visibility=[],
                 ai_behavior="respond",
                 parts=[{"type": "text", "text": cue}],
-                priority=2,
+                priority=7,
+                coalesce_key="mc_completion",
             )
         except Exception as exc:
             self.logger.warning(

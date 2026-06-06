@@ -66,8 +66,8 @@ dependencies = [
   "cachetools>=5.3",
   # Local memory embeddings (memory/embeddings.py): ONNX + tokenizer. CPU
   # SIMD detection reads numpy's __cpu_features__ (compiled-C probe) — we do
-  # NOT use py-cpuinfo, whose CPUID probe runs VirtualAlloc+shellcode in a
-  # multiprocessing child that Huorong quarantines as Trojan.ShellLoader.
+  # NOT use py-cpuinfo, whose low-level CPU probe runs a generated native
+  # routine in a child process that Huorong's heuristic flags as a trojan.
   "onnxruntime",
   "tokenizers",
   # Cross-platform screen capture used by galgame_plugin and potentially other
@@ -83,11 +83,15 @@ dependencies = [
   # below — it brings opencv (~109 MB on disk) which the main program does not
   # use. Build scripts (Nuitka/PyInstaller) install --group galgame explicitly
   # so the packaged dist still bundles it; plain `uv sync` skips it.
+  "imagehash>=4.3.2",
 ]
 
 [tool.hatch.version]
 path = "config/__init__.py"
 pattern = '''^APP_VERSION\s*=\s*["'](?P<version>[^"']+)["']'''
+
+[project.scripts]
+neko-plugin = "plugin.neko_plugin_cli.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = [

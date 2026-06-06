@@ -408,6 +408,50 @@ async def _mark_new_character_greeting_pending_safe(config_manager, character_na
         return False, str(exc)
 
 
+def _build_profile_rename_event(old_name: str, new_name: str) -> dict:
+    old_name = str(old_name or "").strip()
+    new_name = str(new_name or "").strip()
+    return {
+        "type": "profile_rename",
+        "old_name": old_name,
+        "new_name": new_name,
+        "renamed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+
+
+def _append_profile_rename_event(character_payload: dict, old_name: str, new_name: str) -> None:
+    """把改名事件写入隐藏 AI 上下文；角色管理页不会把 `_reserved` 渲染成普通字段。"""
+    if not isinstance(character_payload, dict):
+        return
+
+    old_name = str(old_name or "").strip()
+    new_name = str(new_name or "").strip()
+    if old_name == new_name:
+        return
+
+    existing = get_reserved(
+        character_payload,
+        "ai_context",
+        "rename_events",
+        default=[],
+    )
+    events = [event for event in existing if isinstance(event, dict)] if isinstance(existing, list) else []
+    new_event = _build_profile_rename_event(old_name, new_name)
+
+    # 防止同一次请求重放时连续写入完全相同的改名事件。
+    if events:
+        last = events[-1]
+        if (
+            last.get("type") == new_event["type"]
+            and str(last.get("old_name") or "") == new_event["old_name"]
+            and str(last.get("new_name") or "") == new_event["new_name"]
+        ):
+            return
+
+    events.append(new_event)
+    set_reserved(character_payload, "ai_context", "rename_events", events[-20:])
+
+
 def _json_no_store_response(content, *, status_code: int = 200):
     return JSONResponse(
         content=content,
@@ -1052,6 +1096,13 @@ def _validate_profile_name(name: str) -> str | None:
     return None
 
 
+def _profile_name_contains_path_separator(name: str) -> bool:
+    return validate_character_name(
+        str(name or "").strip(),
+        max_units=PROFILE_NAME_MAX_UNITS,
+    ).code == 'contains_path_separator'
+
+
 def _filter_mutable_catgirl_fields(data: dict) -> dict:
     """过滤掉角色通用编辑接口不允许写入的保留字段。"""
     if not isinstance(data, dict):
@@ -1066,6 +1117,67 @@ def _filter_mutable_catgirl_fields(data: dict) -> dict:
         for key, value in data.items()
         if key not in CHARACTER_RESERVED_FIELD_SET
     }
+
+
+def _normalize_catgirl_field_order(order, available_fields: list[str]) -> list[str]:
+    """按显式顺序排列普通设定字段，并把遗漏字段按当前存储顺序补在末尾。"""
+    available = {str(key) for key in available_fields}
+    result: list[str] = []
+    seen: set[str] = set()
+
+    if isinstance(order, list):
+        for raw_key in order:
+            key = str(raw_key or "").strip()
+            if not key or key in seen or key not in available:
+                continue
+            result.append(key)
+            seen.add(key)
+
+    for raw_key in available_fields:
+        key = str(raw_key or "").strip()
+        if key and key not in seen:
+            result.append(key)
+            seen.add(key)
+    return result
+
+
+def _extract_catgirl_field_order_payload(raw_data: dict) -> list[str] | None:
+    """读取前端提交的字段顺序；没有显式顺序时返回 None。"""
+    if not isinstance(raw_data, dict):
+        return None
+    raw_order = raw_data.get("_field_order")
+    if isinstance(raw_order, list):
+        return [str(item or "").strip() for item in raw_order]
+    reserved = raw_data.get("_reserved")
+    if isinstance(reserved, dict) and isinstance(reserved.get("field_order"), list):
+        return [str(item or "").strip() for item in reserved["field_order"]]
+    return None
+
+
+def _sync_catgirl_field_order(catgirl_data: dict, requested_order: list[str] | None = None) -> None:
+    """维护普通设定字段的创建顺序，避免数字 key 被 JS 枚举规则提前。"""
+    if not isinstance(catgirl_data, dict):
+        return
+    available_fields = [
+        str(key)
+        for key in catgirl_data.keys()
+        if key not in CHARACTER_RESERVED_FIELD_SET
+    ]
+    if requested_order is None:
+        # 也认顶层 _field_order：工坊上传卡的顺序存在顶层（上传时 _reserved 被剥离），
+        # 只读 _reserved.field_order 会漏掉它而退回 JSON key 枚举顺序（数字 key 被提前）。
+        requested_order = _extract_catgirl_field_order_payload(catgirl_data)
+    field_order = _normalize_catgirl_field_order(requested_order, available_fields)
+    set_reserved(catgirl_data, "field_order", field_order)
+
+
+def _flatten_catgirl_for_response(catgirl_data: dict) -> dict:
+    """展开保留字段前补上字段顺序，供前端按创建顺序渲染。"""
+    if not isinstance(catgirl_data, dict):
+        return catgirl_data
+    data = copy.deepcopy(catgirl_data)
+    _sync_catgirl_field_order(data)
+    return flatten_reserved(data)
 
 
 def _build_minimax_request_prefix(prefix: str, provider_label: str) -> tuple[str, str]:
@@ -1466,7 +1578,7 @@ async def get_characters(request: Request):
         # COMPAT(v1->v2): 前端仍依赖旧平铺字段，接口层按需展开。
         for cat_name, cat_data in list(characters_data['猫娘'].items()):
             if isinstance(cat_data, dict):
-                characters_data['猫娘'][cat_name] = flatten_reserved(cat_data)
+                characters_data['猫娘'][cat_name] = _flatten_catgirl_for_response(cat_data)
 
     # 尝试从请求参数或请求头获取用户语言
     user_language = request.query_params.get('language')
@@ -1491,7 +1603,7 @@ async def get_characters(request: Request):
             characters_data['主人'] = await translation_service.translate_dict(
                 characters_data['主人'],
                 user_language,
-                fields_to_translate=['档案名', '昵称']
+                fields_to_translate=['昵称']
             )
 
         # 翻译猫娘数据（并行翻译以提升性能）
@@ -1500,7 +1612,7 @@ async def get_characters(request: Request):
                 if isinstance(data, dict):
                     return name, await translation_service.translate_dict(
                         data, user_language,
-                        fields_to_translate=['档案名', '昵称', '性别']  # 注意：不翻译 system_prompt
+                        fields_to_translate=['昵称', '性别']  # 注意：不翻译档案名和 system_prompt
                     )
                 return name, data
 
@@ -2613,6 +2725,7 @@ async def rename_catgirl(old_name: str, request: Request):
 
             # 重命名角色真源
             characters['猫娘'][new_name] = characters['猫娘'].pop(old_name)
+            _append_profile_rename_event(characters['猫娘'][new_name], old_name, new_name)
             # 如果当前猫娘是被重命名的猫娘，也需要更新
             if is_current_catgirl:
                 characters['当前猫娘'] = new_name
@@ -3118,17 +3231,40 @@ async def update_master(request: Request):
     except Exception as e:
         logger.warning(f"解析主人更新请求体失败: {e}")
         return JSONResponse({'success': False, 'error': '请求体必须是合法的JSON格式'}, status_code=400)
-    if not data:
-        return JSONResponse({'success': False, 'error': '档案名为必填项'}, status_code=400)
-    profile_name = data.get('档案名')
-    err = _validate_profile_name(profile_name)
-    if err:
-        return JSONResponse({'success': False, 'error': err}, status_code=400)
-    data['档案名'] = str(profile_name).strip()
+    if not isinstance(data, dict):
+        return JSONResponse({'success': False, 'error': '请求体必须是JSON对象'}, status_code=400)
     _config_manager = get_config_manager()
     initialize_character_data = get_initialize_character_data()
     characters = await _config_manager.aload_characters()
-    characters['主人'] = {k: v for k, v in data.items() if v}
+    previous_master = characters.get('主人') if isinstance(characters.get('主人'), dict) else {}
+    previous_profile_name = ""
+    if isinstance(previous_master, dict):
+        previous_profile_name = str(previous_master.get('档案名') or '').strip()
+    requested_profile_name = str(data.get('档案名') or '').strip()
+    profile_name = previous_profile_name or requested_profile_name
+    renamed_via_body_fallback = False
+    if (
+        previous_profile_name
+        and requested_profile_name
+        and requested_profile_name != previous_profile_name
+        and _profile_name_contains_path_separator(previous_profile_name)
+    ):
+        profile_name = requested_profile_name
+        renamed_via_body_fallback = True
+    err = _validate_profile_name(profile_name)
+    if err:
+        return JSONResponse({'success': False, 'error': err}, status_code=400)
+    next_master = {
+        k: v
+        for k, v in data.items()
+        if v and k not in CHARACTER_RESERVED_FIELD_SET and k != '档案名'
+    }
+    next_master['档案名'] = profile_name
+    if isinstance(previous_master, dict) and isinstance(previous_master.get('_reserved'), dict):
+        next_master['_reserved'] = copy.deepcopy(previous_master['_reserved'])
+    if renamed_via_body_fallback:
+        _append_profile_rename_event(next_master, previous_profile_name, profile_name)
+    characters['主人'] = next_master
     await _config_manager.asave_characters(characters)
     # 自动重新加载配置
     await initialize_character_data()
@@ -3162,10 +3298,8 @@ async def rename_master(old_name: str, request: Request):
         if current_master != old_name:
             return JSONResponse({'success': False, 'error': '原主人档案名不匹配'}, status_code=400)
 
-        if new_name in characters.get('猫娘', {}):
-            return JSONResponse({'success': False, 'error': '新档案名与已有猫娘名称冲突'}, status_code=400)
-
         characters['主人']['档案名'] = new_name
+        _append_profile_rename_event(characters['主人'], old_name, new_name)
         await _config_manager.asave_characters(characters)
 
     try:
@@ -3198,6 +3332,7 @@ async def add_catgirl(request: Request):
     if err:
         return JSONResponse({'success': False, 'error': err}, status_code=400)
     data = _filter_mutable_catgirl_fields(raw_data)
+    requested_field_order = _extract_catgirl_field_order_payload(raw_data)
     data['档案名'] = str(profile_name).strip()
 
     _config_manager = get_config_manager()
@@ -3225,6 +3360,7 @@ async def add_catgirl(request: Request):
                 catgirl_data[k] = v
 
     characters['猫娘'][key] = catgirl_data
+    _sync_catgirl_field_order(catgirl_data, requested_field_order)
     # 默认走 free preset：非 free / 非 lanlan.tech 通道由 LLMSessionManager 现有 gate 清空 self.voice_id，不会泄漏给其他 TTS provider。
     # 从 free_voices['cuteGirl'] 读以避免硬编码漂移；缺失时回退到首个非空预设，再回退到旧版默认值。
     default_free_voice_id = _get_new_catgirl_default_voice_id()
@@ -3282,6 +3418,7 @@ async def update_catgirl(name: str, request: Request):
             )
 
     data = _filter_mutable_catgirl_fields(raw_data)
+    requested_field_order = _extract_catgirl_field_order_payload(raw_data)
     _config_manager = get_config_manager()
     characters = await _config_manager.aload_characters()
     if name not in characters.get('猫娘', {}):
@@ -3326,6 +3463,8 @@ async def update_catgirl(name: str, request: Request):
     # 兼容前端自动修复：若请求中带有 model_type，则同步写入保留字段。
     if model_type_in_payload and requested_model_type:
         set_reserved(characters['猫娘'][name], 'avatar', 'model_type', requested_model_type)
+
+    _sync_catgirl_field_order(characters['猫娘'][name], requested_field_order)
 
     await _config_manager.asave_characters(characters)
 
@@ -3670,6 +3809,39 @@ async def get_microphone():
         return {"microphone_id": None}
 
 
+def _build_free_intl_voice_pins(native_catalog: dict, voice_id_exists=None) -> list[dict]:
+    """海外免费（free_intl）列表顶部的两个置顶音色。
+
+    - yui：初始/默认角色音色，下发字面量 "yui"（服务端映射到 yui 专属声音）。
+    - default：与 Leda 同义，下发 "Leda"。仍以普通条目保留在 Gemini 长列表里
+      （不去重），这里只是把它再置顶一份并换成 "默认" 文案。
+
+    展示名交给前端按 i18n_key 本地化；这里只给 voice_id / i18n_key / 兜底 prefix。
+
+    voice_id_exists：若某 pin 的 voice_id 与用户已注册/克隆音色撞名（如本地 TTS
+    用户自建了一个 ID 叫 "yui"/"Leda" 的音色），runtime 路由会按撞名优先走克隆
+    路径、不再当 native（见 NativeVoiceProvider.resolve_for_routing 的 collision
+    分支），此时置顶 pin 点了也到不了 Gemini，故直接隐藏，避免误导。
+    """
+    def _pin(voice_id: str, i18n_key: str, fallback: str) -> dict | None:
+        if callable(voice_id_exists) and voice_id_exists(voice_id):
+            return None
+        meta = native_catalog.get(voice_id) or {}
+        return {
+            "voice_id": voice_id,
+            "i18n_key": i18n_key,
+            "prefix": meta.get("prefix") or fallback,
+            "provider": "free_intl",
+            "builtin": True,
+        }
+
+    pins = [
+        _pin("yui", "voice.freeVoice.yui", "Yui"),
+        _pin("Leda", "voice.freeVoice.default", "Default"),
+    ]
+    return [pin for pin in pins if pin is not None]
+
+
 @router.get('/voices')
 async def get_voices():
     """获取当前API key对应的所有已注册音色"""
@@ -3679,16 +3851,44 @@ async def get_voices():
     core_config = await _config_manager.aget_core_config()
     active_native_provider = get_active_realtime_native_provider_for_ui(_config_manager)
     if active_native_provider:
-        result["native_voices"] = get_native_voice_catalog_for_ui(active_native_provider)
+        native_catalog = get_native_voice_catalog_for_ui(active_native_provider) or {}
+        if active_native_provider == 'free_intl':
+            # 海外免费（lanlan.app/Gemini）：yui + default(=Leda) 两个置顶 pin，
+            # 其后是 Gemini 全量目录。yui 从长列表里挪到 pin（不重复展示）；
+            # Leda 不去重，仍作为普通条目留在长列表里（= default pin 的目标）。
+            # pin 的展示名由前端按 i18n_key 本地化。
+            voice_exists = getattr(_config_manager, "voice_id_exists_in_any_storage", None)
+            result["pinned_voices"] = _build_free_intl_voice_pins(
+                native_catalog,
+                voice_id_exists=voice_exists,
+            )
+            # 撞名（跨 api-key 桶存在同名克隆/自定义音色）的条目也从长列表里去掉：
+            # runtime 路由/preview 用 any-storage 撞名判定会拒绝当 native，展示了
+            # 点选也到不了 Gemini（与 pin 的撞名隐藏对偶）。前端只按当前 api 的
+            # voices 去重，跨桶撞名漏网，故在后端按同一谓词收口。
+            def _free_intl_keep(voice_id: str) -> bool:
+                if voice_id == 'yui':
+                    return False
+                if callable(voice_exists) and voice_exists(voice_id):
+                    return False
+                return True
+            native_catalog = {
+                voice_id: meta
+                for voice_id, meta in native_catalog.items()
+                if _free_intl_keep(voice_id)
+            }
+        result["native_voices"] = native_catalog
 
-    if core_config.get('IS_FREE_VERSION'):
-        core_url = core_config.get('CORE_URL', '')
-        openrouter_url = core_config.get('OPENROUTER_URL', '')
-        if 'lanlan.tech' in core_url or 'lanlan.tech' in openrouter_url:
-            from utils.api_config_loader import get_free_voices
-            free_voices = get_free_voices()
-            if free_voices:
-                result["free_voices"] = free_voices
+    # 免费预设音色只在 core=free 运行时可用（与 assist 无关）；core_url 仍须指向
+    # lanlan.tech 免费端点，海外 lanlan.app 路由由 should_block_free_voice_for_route 兜底。
+    # 此处已持有 core_config，直接读 CORE_API_TYPE（等价 is_free_voice()），省一次读取。
+    # CORE_URL 用 `or ''` 归一化：key 存在但值为 None 时 `.get(k, '')` 仍返回 None，
+    # `in None` 会抛 TypeError 让 /voices 500。
+    if core_config.get('CORE_API_TYPE') == 'free' and 'lanlan.tech' in (core_config.get('CORE_URL') or ''):
+        from utils.api_config_loader import get_free_voices
+        free_voices = get_free_voices()
+        if free_voices:
+            result["free_voices"] = free_voices
 
     # 构建 voice_id → 使用该音色的角色名列表，用于前端显示
     characters = await _config_manager.aload_characters()
@@ -3763,11 +3963,13 @@ async def get_voice_preview(
         if native_preview_provider:
             native_voice_id, _ = normalize_native_voice(native_preview_provider, voice_id)
             try:
-                if native_preview_provider in ('step', 'free'):
+                if native_preview_provider in ('step', 'free', 'free_intl'):
                     # 只读 tts_default.api_key —— 跟 step_realtime_tts_worker 走的 key 对偶；
                     # 不能回退到 audio_api_key（顶上从 tts_custom / AUDIO_API_KEY 取的，都是
                     # GPT-SoVITS / CosyVoice 这种别家 provider 的 bearer，把它透给
                     # api.stepfun.com 一律 401，错误现象比明确缺 key 难排查。
+                    # free_intl（海外免费 Gemini 代理）预览同 free，走 www.lanlan.app/tts
+                    # 流式合成（StepFun-shape，proxy 把 voice_id 透传给 Gemini）。
                     try:
                         native_tts_config = _config_manager.get_model_api_config('tts_default')
                         native_audio_api_key = native_tts_config.get('api_key', '') or ''
@@ -3784,7 +3986,7 @@ async def get_voice_preview(
                         preview_line=text,
                         preview_language=preview_language,
                         audio_api_key=native_audio_api_key,
-                        free_mode=(native_preview_provider == 'free'),
+                        free_mode=(native_preview_provider in ('free', 'free_intl')),
                     )
                 elif native_preview_provider == 'gemini':
                     core_config = await _config_manager.aget_core_config()
@@ -5064,6 +5266,7 @@ async def get_character_cards():
             try:
                 data = await read_json_async(file_path)
                 if data and data.get('name'):
+                    _sync_catgirl_field_order(data)
                     return {
                         'id': filename[:-11],  # 去掉 .chara.json 后缀
                         'name': data['name'],

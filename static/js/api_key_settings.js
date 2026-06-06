@@ -22,6 +22,7 @@ let _coreApiKeyInputDirty = false;
 let _apiSaveInProgress = false;
 // 本页已提醒过的阿里美国 API URL，避免同一轮检测重复弹窗。
 const _aliyunUsApiWarningShownKeys = new Set();
+
 // 所有模型类型
 const MODEL_TYPES = ['conversation', 'summary', 'correction', 'emotion', 'vision', 'agent', 'omni', 'tts'];
 // Model types that support connectivity testing.
@@ -37,6 +38,88 @@ function markTtsConfigDirty() {
     if (_isLoadingSavedConfig) return;
     _ttsConfigDirty = true;
 }
+
+(function registerApiKeySettingsNamedWindow() {
+    const windowNames = Array.from(new Set(['neko_api_key', window.name].filter(name => typeof name === 'string' && name.trim())));
+    const registryPrefix = 'neko:named-window:';
+    const focusPrefix = 'neko:named-window-focus:';
+    const channelName = 'neko:named-window';
+    let channel = null;
+
+    function markActive() {
+        const payload = JSON.stringify({
+            url: window.location.href,
+            timestamp: Date.now()
+        });
+        for (const name of windowNames) {
+            try {
+                window.localStorage.setItem(registryPrefix + name, payload);
+            } catch (_) {}
+        }
+    }
+
+    function clearActive() {
+        for (const name of windowNames) {
+            try {
+                window.localStorage.removeItem(registryPrefix + name);
+            } catch (_) {}
+        }
+    }
+
+    function restoreAndFocus(payload) {
+        const restoreApi = window.nekoWindowControl;
+        if (restoreApi && typeof restoreApi.restore === 'function') {
+            Promise.resolve(restoreApi.restore()).catch(() => {});
+        }
+        try {
+            window.focus();
+        } catch (_) {}
+        if (payload && payload.type === 'focus_api_key_book' && typeof expandAndScrollToKeyBook === 'function') {
+            setTimeout(() => expandAndScrollToKeyBook(), 0);
+        }
+    }
+
+    function handleSharedWindowMessage(data) {
+        if (!data || !windowNames.includes(data.windowName)) return;
+        if (data.type === 'neko:named-window-focus') {
+            restoreAndFocus(null);
+        } else if (data.type === 'neko:named-window-message') {
+            restoreAndFocus(data.payload || null);
+        }
+    }
+
+    markActive();
+    setInterval(markActive, 1000);
+
+    try {
+        if ('BroadcastChannel' in window) {
+            channel = new BroadcastChannel(channelName);
+            channel.onmessage = event => handleSharedWindowMessage(event.data);
+        }
+    } catch (_) {
+        channel = null;
+    }
+
+    window.addEventListener('storage', event => {
+        if (!event.key || !event.newValue) return;
+        if (!windowNames.some(name => event.key === focusPrefix + name)) return;
+        try {
+            handleSharedWindowMessage(JSON.parse(event.newValue));
+        } catch (_) {}
+    });
+
+    function cleanupRegistry() {
+        clearActive();
+        if (channel && typeof channel.close === 'function') {
+            try {
+                channel.close();
+            } catch (_) {}
+        }
+    }
+
+    window.addEventListener('pagehide', cleanupRegistry);
+    window.addEventListener('unload', cleanupRegistry);
+})();
 
 function setInputValue(elementId, value, placeholder) {
     const element = document.getElementById(elementId);

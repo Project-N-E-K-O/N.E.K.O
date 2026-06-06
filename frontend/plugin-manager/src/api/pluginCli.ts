@@ -5,12 +5,21 @@ import { get, post } from './index'
 import { API_BASE_URL } from '@/utils/constants'
 
 export type PluginCliConflictStrategy = 'rename' | 'fail'
-export type PluginCliPackMode = 'selected' | 'single' | 'bundle' | 'all'
+export type PluginCliBuildMode = 'selected' | 'single' | 'bundle' | 'all'
 
-export interface PluginCliPackRequest {
-  mode: PluginCliPackMode
+export interface PluginCliPluginRef {
+  root_id: 'builtin' | 'user'
+  directory_name: string
+  plugin_id?: string
+  label?: string
+}
+
+export interface PluginCliBuildRequest {
+  mode: PluginCliBuildMode
   plugin?: string
   plugins?: string[]
+  plugin_ref?: PluginCliPluginRef
+  plugin_refs?: PluginCliPluginRef[]
   out?: string
   target_dir?: string
   keep_staging?: boolean
@@ -25,7 +34,7 @@ export interface PluginCliPluginItem {
   error: string
 }
 
-export interface PluginCliPackResult {
+export interface PluginCliBuildResult {
   plugin_id: string
   package_type: string
   plugin_ids: string[]
@@ -34,16 +43,16 @@ export interface PluginCliPackResult {
   package_path: string
   staging_dir?: string | null
   profile_files: string[]
-  packaged_files: string[]
+  staged_files: string[]
   payload_hash: string
   package_size_bytes: number
-  packaged_file_count: number
+  staged_file_count: number
   profile_file_count: number
 }
 
-export interface PluginCliPackResponse {
-  packed: PluginCliPackResult[]
-  packed_count: number
+export interface PluginCliBuildResponse {
+  built: PluginCliBuildResult[]
+  built_count: number
   failed: PluginCliPluginItem[]
   failed_count: number
   ok: boolean
@@ -80,37 +89,38 @@ export interface PluginCliVerifyResponse extends PluginCliInspectResponse {
   ok: boolean
 }
 
-export interface PluginCliUnpackRequest {
+export interface PluginCliInstallRequest {
   package: string
   plugins_root?: string
   profiles_root?: string
   on_conflict?: PluginCliConflictStrategy
 }
 
-export interface PluginCliUnpackedPlugin {
+export interface PluginCliInstalledPlugin {
   source_folder: string
   target_plugin_id: string
   target_dir: string
   renamed: boolean
 }
 
-export interface PluginCliUnpackResponse {
+export interface PluginCliInstallResponse {
   package_path: string
   package_type: string
   package_id: string
   plugins_root: string
   profiles_root?: string | null
-  unpacked_plugins: PluginCliUnpackedPlugin[]
+  installed_plugins: PluginCliInstalledPlugin[]
   profile_dir?: string | null
   metadata_found: boolean
   payload_hash: string
   payload_hash_verified: boolean | null
   conflict_strategy: PluginCliConflictStrategy
-  unpacked_plugin_count: number
+  installed_plugin_count: number
 }
 
 export interface PluginCliAnalyzeRequest {
-  plugins: string[]
+  plugins?: string[]
+  plugin_refs?: PluginCliPluginRef[]
   current_sdk_version?: string
 }
 
@@ -141,6 +151,7 @@ export interface PluginCliAnalyzeResponse {
 
 export interface PluginCliLocalPluginsResponse {
   plugins: string[]
+  plugin_refs?: PluginCliPluginRef[]
   count: number
 }
 
@@ -159,7 +170,7 @@ export interface PluginCliLocalPackagesResponse {
 }
 
 /**
- * 列出当前本地可打包插件
+ * 列出当前本地可构建插件
  */
 export function getPluginCliPlugins(): Promise<PluginCliLocalPluginsResponse> {
   return get('/plugin-cli/plugins')
@@ -173,10 +184,10 @@ export function getPluginCliPackages(): Promise<PluginCliLocalPackagesResponse> 
 }
 
 /**
- * 打包一个或多个插件
+ * 构建一个或多个插件
  */
-export function packPluginCli(payload: PluginCliPackRequest): Promise<PluginCliPackResponse> {
-  return post('/plugin-cli/pack', payload)
+export function buildPluginCli(payload: PluginCliBuildRequest): Promise<PluginCliBuildResponse> {
+  return post('/plugin-cli/build', payload)
 }
 
 /**
@@ -194,10 +205,10 @@ export function verifyPluginPackage(payload: PluginCliPackageRef): Promise<Plugi
 }
 
 /**
- * 解压插件包或整合包
+ * 安装插件包或整合包
  */
-export function unpackPluginPackage(payload: PluginCliUnpackRequest): Promise<PluginCliUnpackResponse> {
-  return post('/plugin-cli/unpack', payload)
+export function installPluginPackage(payload: PluginCliInstallRequest): Promise<PluginCliInstallResponse> {
+  return post('/plugin-cli/install', payload)
 }
 
 /**
@@ -216,9 +227,9 @@ export interface PluginCliUploadResult {
   modified_at: string
 }
 
-export interface PluginCliUploadAndUnpackResult {
+export interface PluginCliUploadAndInstallResult {
   upload: PluginCliUploadResult
-  unpack: PluginCliUnpackResponse
+  install: PluginCliInstallResponse
 }
 
 /**
@@ -233,12 +244,12 @@ export function uploadPluginPackage(file: File): Promise<PluginCliUploadResult> 
 }
 
 /**
- * 上传插件包并立即解包安装
+ * 上传插件包并立即安装
  */
-export function uploadAndUnpackPlugin(
+export function uploadAndInstallPlugin(
   file: File,
   options?: { onConflict?: PluginCliConflictStrategy },
-): Promise<PluginCliUploadAndUnpackResult> {
+): Promise<PluginCliUploadAndInstallResult> {
   const formData = new FormData()
   formData.append('file', file)
   const params = new URLSearchParams()
@@ -246,7 +257,7 @@ export function uploadAndUnpackPlugin(
     params.set('on_conflict', options.onConflict)
   }
   const query = params.toString()
-  const url = `/plugin-cli/upload-and-unpack${query ? `?${query}` : ''}`
+  const url = `/plugin-cli/upload-and-install${query ? `?${query}` : ''}`
   return post(url, formData, {
     timeout: 120_000,
   })

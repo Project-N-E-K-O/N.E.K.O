@@ -65,7 +65,7 @@ from ..context_builder.builder import (
 )
 from ..dxcam_support import inspect_dxcam_installation
 from ..reader import expand_bridge_root, normalize_text, read_session_json
-from ..rapidocr_support import (
+from plugin.plugins._shared.rapidocr.rapidocr_support import (
     DEFAULT_RAPIDOCR_ENGINE_TYPE,
     DEFAULT_RAPIDOCR_LANG_TYPE,
     DEFAULT_RAPIDOCR_MODEL_TYPE,
@@ -129,7 +129,10 @@ def _build_download_guide_payload(
     )
     rapidocr_target = str(
         rapidocr.get("model_cache_dir")
-        or resolve_rapidocr_model_cache_dir(config.rapidocr_install_target_dir)
+        or resolve_rapidocr_model_cache_dir(
+            config.rapidocr_install_target_dir,
+            plugin_id="galgame_plugin",
+        )
         or ""
     )
     textractor_available = (
@@ -2414,6 +2417,7 @@ def _build_status_payload_unchecked(
             lang_type=config.rapidocr_lang_type,
             model_type=config.rapidocr_model_type,
             ocr_version=config.rapidocr_ocr_version,
+            plugin_id="galgame_plugin",
         ),
     )
     rapidocr["auto_detect_lang"] = bool(config.rapidocr_auto_detect_lang)

@@ -10,10 +10,10 @@
 
 代码现状（worktree path：`utils/token_tracker.py`）：
 
-- `_is_steam_sdk_engaged()` ([utils/token_tracker.py:523](utils/token_tracker.py)) 三个 OR 信号，首选 `sw.Users.GetSteamID() > 0`
-- `_get_telemetry_steam_user_id()` ([utils/token_tracker.py:565](utils/token_tracker.py)) 独立又调一次 `sw.Users.GetSteamID()`
-- `_get_telemetry_distribution()` ([utils/token_tracker.py:591](utils/token_tracker.py)) 调前者
-- `_report_to_server()` 在 [utils/token_tracker.py:1142-1143](utils/token_tracker.py) 紧挨着两行连调
+- `_is_steam_sdk_engaged()` (`utils/token_tracker.py:523`) 三个 OR 信号，首选 `sw.Users.GetSteamID() > 0`
+- `_get_telemetry_steam_user_id()` (`utils/token_tracker.py:565`) 独立又调一次 `sw.Users.GetSteamID()`
+- `_get_telemetry_distribution()` (`utils/token_tracker.py:591`) 调前者
+- `_report_to_server()` 在 `utils/token_tracker.py:1142-1143` 紧挨着两行连调
 
 ```python
 telemetry_distribution = _get_telemetry_distribution()    # 内部 GetSteamID() #1 → 可能 0
@@ -48,7 +48,7 @@ telemetry_steam_user_id = _get_telemetry_steam_user_id()  # 内部 GetSteamID() 
 
 ## 2. Server 端 persistence 模型
 
-参考 [local_server/telemetry_server/storage.py:207-222](local_server/telemetry_server/storage.py)：
+参考 `local_server/telemetry_server/storage.py:207-222`：
 
 ```sql
 ON CONFLICT(device_id) DO UPDATE SET

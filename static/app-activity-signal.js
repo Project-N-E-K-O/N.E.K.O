@@ -38,11 +38,22 @@
     // After this many consecutive failures, throttle the log spam (we
     // keep retrying, just stop printing every time).
     var LOG_FAILURE_QUIET_THRESHOLD = 3;
+    // After this many consecutive 403s (CSRF/Origin rejections), STOP
+    // the heartbeat — not throttle it, stop it. Issue #1479 / wehos:
+    // a 5s heartbeat that 403s forever is a silent permanent
+    // degradation (tracker falls back to local collector but nothing
+    // visible alerts the user, and we're burning HTTP cycles for
+    // nothing). 6 ticks × 5s = 30s = 2× the tracker TTL — enough room
+    // for the page_config token bootstrap to win any boot-time race
+    // before we give up.
+    var MAX_CONSECUTIVE_CSRF_FAILURES = 6;
     var ENDPOINT = '/api/activity_signal';
 
     var heartbeatTimer = null;
     var inFlight = false;            // re-entrancy guard if the previous POST is still running
     var consecutiveFailures = 0;
+    var consecutiveCsrfFailures = 0; // dedicated counter for 403 — separate from generic failures so transient 5xx don't trip the stop-the-heartbeat gate
+    var heartbeatStoppedDueToCsrf = false; // sticky flag: once we give up, don't auto-restart on visibilitychange
     var hasLoggedBridgeMissing = false;
 
     function resolveLanlanName() {
@@ -141,6 +152,53 @@
         }
     }
 
+    /**
+     * Resolve the X-CSRF-Token header from
+     * ``window.nekoLocalMutationSecurity`` (set up by
+     * ``static/app-prompt-shared.js`` after fetching
+     * ``/api/config/page_config``). Returns ``{}`` if the helper is
+     * missing or throws — the backend will then reject with 403 and
+     * the caller's retry path handles it.
+     */
+    async function getCsrfMutationHeaders() {
+        try {
+            var sec = window.nekoLocalMutationSecurity;
+            if (sec && typeof sec.getMutationHeaders === 'function') {
+                return await sec.getMutationHeaders();
+            }
+        } catch (_) { /* fall through */ }
+        return {};
+    }
+
+    /**
+     * Read a 403 response body and decide whether the rejection came
+     * from ``_validate_local_mutation_request`` (i.e. CSRF/Origin
+     * guard) vs. any other 403 — business rule, downstream service,
+     * future role-based check, etc. Mirrors the contract in
+     * ``static/app-prompt-shared.js`` 436-541 and
+     * ``static/universal-tutorial-manager.js`` 120-134: only
+     * ``error_code === "csrf_validation_failed"`` triggers the
+     * refresh / retry / stop-the-heartbeat path (CodeRabbit Major on
+     * PR #1532).
+     *
+     * ``resp.clone()`` so the caller can still read the original body
+     * if they need to (and so the original ``Response.bodyUsed`` flag
+     * doesn't trip on a second consumer).
+     */
+    async function isCsrfValidationFailure(resp) {
+        if (!resp || resp.status !== 403) return false;
+        try {
+            var cloned = typeof resp.clone === 'function' ? resp.clone() : resp;
+            var body = await cloned.json();
+            return Boolean(body && body.error_code === 'csrf_validation_failed');
+        } catch (_) {
+            // Non-JSON 403 body / parse failure → not a unified-guard
+            // rejection; treat as a generic 403 (could be a reverse
+            // proxy / WAF / future business rule).
+            return false;
+        }
+    }
+
     async function pushOnce(lanlanName) {
         // Set the in-flight latch BEFORE the bridge read so two ticks
         // can't both clear the ``if (inFlight)`` check while one is
@@ -180,27 +238,118 @@
                 return;
             }
             payload.lanlan_name = lanlanName;
-            var resp = await fetch(ENDPOINT, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload),
-                cache: 'no-store',
-                // Don't keep the page alive on close just for the heartbeat.
-                keepalive: false,
-            });
+            var body = JSON.stringify(payload);
+
+            async function sendOnce() {
+                var csrfHeaders = await getCsrfMutationHeaders();
+                return fetch(ENDPOINT, {
+                    method: 'POST',
+                    headers: Object.assign(
+                        { 'Content-Type': 'application/json' },
+                        csrfHeaders,
+                    ),
+                    body: body,
+                    cache: 'no-store',
+                    // Don't keep the page alive on close just for the heartbeat.
+                    keepalive: false,
+                });
+            }
+
+            var resp = await sendOnce();
+            // CodeRabbit Major on PR #1532: only the unified-guard's
+            // ``csrf_validation_failed`` rejection should drive the
+            // refresh / retry / stop-the-heartbeat path. Other 403s
+            // (future business rules, reverse proxy, WAF, …) need to
+            // go through the generic-failure branch instead.
+            var isCsrf403 = await isCsrfValidationFailure(resp);
+
+            // CSRF-403 retry-once: the page_config token bootstrap
+            // might not have completed on the very first heartbeat
+            // tick. Try refreshing the cached token and resending
+            // before counting this toward the stop-the-heartbeat
+            // threshold. Do NOT retry on the *second* 403 of the same
+            // call — that means the token's genuinely unavailable,
+            // not a race, and a tight retry loop would just double the
+            // 403 rate.
+            if (isCsrf403) {
+                var sec = window.nekoLocalMutationSecurity;
+                if (sec && typeof sec.refreshToken === 'function') {
+                    try {
+                        await sec.refreshToken();
+                        resp = await sendOnce();
+                        // Re-classify after retry — a successful retry
+                        // turns this from a CSRF-403 into 200 / 4xx /
+                        // 5xx, and we want the rest of this function
+                        // to treat it that way.
+                        isCsrf403 = await isCsrfValidationFailure(resp);
+                    } catch (_) { /* fall through to 403 handling below */ }
+                }
+            }
+
             if (resp.ok) {
-                if (consecutiveFailures > 0) {
+                if (consecutiveFailures > 0 || consecutiveCsrfFailures > 0) {
                     console.info('[activity-signal] recovered after '
-                        + consecutiveFailures + ' failure(s)');
+                        + (consecutiveFailures + consecutiveCsrfFailures)
+                        + ' failure(s)');
                 }
                 consecutiveFailures = 0;
+                consecutiveCsrfFailures = 0;
                 return;
             }
-            // 429 = rate-limited (we're heartbeating too fast somehow — shouldn't
-            // happen with the 5s interval, but if it does we just skip).
-            // 404 = lanlan_name not registered yet (boot race) — silent.
-            // 503 = tracker not yet initialised (boot race) — silent.
-            // Anything else: count toward failure log throttle.
+
+            // Any non-CSRF response (any 200/4xx/5xx that isn't
+            // ``csrf_validation_failed``) breaks the *consecutive*
+            // CSRF streak — without this, alternating CSRF-403 / 500
+            // / non-CSRF-403 sequences would still trip the
+            // stop-the-heartbeat threshold (Codex P2 on PR #1532).
+            if (!isCsrf403) {
+                consecutiveCsrfFailures = 0;
+            }
+
+            if (isCsrf403) {
+                // CSRF/Origin gate rejected us — different failure
+                // mode from 5xx (transient backend issue, retry) or
+                // 4xx-business (skip). Spinning forever just burns
+                // cycles. Track separately and stop the heartbeat
+                // after MAX_CONSECUTIVE_CSRF_FAILURES so the tracker
+                // degrades cleanly to its local collector instead of
+                // looking up at silent 403s forever.
+                consecutiveCsrfFailures++;
+                if (consecutiveCsrfFailures <= LOG_FAILURE_QUIET_THRESHOLD) {
+                    console.warn(
+                        '[activity-signal] push rejected with '
+                        + 'csrf_validation_failed; token may not be '
+                        + 'granted yet — will retry.',
+                    );
+                }
+                if (consecutiveCsrfFailures >= MAX_CONSECUTIVE_CSRF_FAILURES
+                    && !heartbeatStoppedDueToCsrf) {
+                    heartbeatStoppedDueToCsrf = true;
+                    console.error(
+                        '[activity-signal] '
+                        + consecutiveCsrfFailures
+                        + ' consecutive csrf_validation_failed '
+                        + 'rejections — heartbeat stopped to avoid '
+                        + 'silent spin. Tracker will fall back to its '
+                        + 'local collector (degraded mode on '
+                        + 'non-Windows / remote backends). To '
+                        + 'diagnose: verify '
+                        + '``window.nekoLocalMutationSecurity`` is '
+                        + 'exposed and ``GET /api/config/page_config``'
+                        + ' returns ``autostart_csrf_token``.',
+                    );
+                    stop();
+                }
+                return;
+            }
+
+            // Generic failure path:
+            //   429 = rate-limited (we're heartbeating too fast somehow — shouldn't
+            //       happen with the 5s interval, but if it does we just skip).
+            //   404 = lanlan_name not registered yet (boot race) — silent.
+            //   503 = tracker not yet initialised (boot race) — silent.
+            //   Other 4xx (including non-CSRF 403s like reverse-proxy rejects)
+            //       and 5xx → count toward generic failure log throttle.
             if (resp.status !== 429 && resp.status !== 404 && resp.status !== 503) {
                 consecutiveFailures++;
                 if (consecutiveFailures <= LOG_FAILURE_QUIET_THRESHOLD) {
@@ -210,6 +359,11 @@
                 }
             }
         } catch (e) {
+            // Network error / fetch threw — we never heard back from
+            // the server, so this is NOT a CSRF rejection. Don't let
+            // network blips contribute to the 403 streak (Codex P2 on
+            // PR #1532).
+            consecutiveCsrfFailures = 0;
             consecutiveFailures++;
             if (consecutiveFailures <= LOG_FAILURE_QUIET_THRESHOLD) {
                 console.warn('[activity-signal] push exception:', e);
@@ -222,6 +376,17 @@
     function start() {
         if (heartbeatTimer !== null) {
             return; // already running
+        }
+        if (heartbeatStoppedDueToCsrf) {
+            // We previously gave up after MAX_CONSECUTIVE_CSRF_FAILURES.
+            // ``visibilitychange`` would normally restart the timer
+            // when the tab comes back; suppress that here so a hidden
+            // → visible flip doesn't undo the explicit stop. A page
+            // reload starts the heartbeat fresh (sticky flag is
+            // module-scoped, not persisted), which is the right
+            // recovery path because that's also when the
+            // ``nekoLocalMutationSecurity`` helper re-bootstraps.
+            return;
         }
         if (!hasBridge()) {
             if (!hasLoggedBridgeMissing) {

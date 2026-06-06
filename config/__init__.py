@@ -13,11 +13,18 @@ from config.prompts.prompts_chara import lanlan_prompt, get_lanlan_prompt, is_de
 
 # 应用程序名称与版本配置
 APP_NAME = "N.E.K.O"
-APP_VERSION = "0.8.1"
+APP_VERSION = "0.8.2"
 logger = logging.getLogger(f"{APP_NAME}.{__name__}")
 
 # GPT-SoVITS voice_id 前缀(角色管理中使用 "gsv:<voice_id>" 格式标识 GPT-SoVITS 声音)
 GSV_VOICE_PREFIX = "gsv:"
+
+# GeoIP 区域判定的调试开关（ConfigManager._check_non_mainland 读取）：
+#   None  → 正常走真实检测（HTTP IP geo + Steam geo 双判），生产默认值
+#   True  → 强制判定为非中国大陆（走 lanlan.app 免费路径）
+#   False → 强制判定为中国大陆
+# 调试时改这里即可，不用动 config_manager 的检测逻辑；上线保持 None。
+GEOIP_FORCE_NON_MAINLAND = None
 
 # 角色档案保留字段（统一管理）
 # - system: 由系统指定功能维护，不允许通用角色编辑接口直接修改
@@ -34,6 +41,7 @@ CHARACTER_SYSTEM_RESERVED_FIELDS = (
     "lighting",
     "vrm_rotation",
     "live2d_item_id",
+    "live2d_idle_animation",
     "item_id",
     "idleAnimation",
     "idleAnimations",
@@ -42,6 +50,7 @@ CHARACTER_SYSTEM_RESERVED_FIELDS = (
     "mmd_idle_animation",
     "mmd_idle_animations",
     "touch_set",
+    "_field_order",
 )
 
 CHARACTER_WORKSHOP_RESERVED_FIELDS = (
@@ -71,12 +80,16 @@ def get_character_reserved_fields() -> tuple[str, ...]:
 RESERVED_FIELD_SCHEMA = {
     "voice_id": str,
     "system_prompt": str,
+    "field_order": list,
     "persona_override": {
         "preset_id": str,
         "selected_at": str,
         "source": str,
         "prompt_guidance": str,
         "profile": dict,
+    },
+    "ai_context": {
+        "rename_events": list,
     },
     "character_origin": {
         "source": str,
@@ -699,7 +712,6 @@ DEFAULT_CORE_API_PROFILES = {
         'CORE_URL': "wss://www.lanlan.tech/core",
         'CORE_MODEL': "free-model",
         'CORE_API_KEY': "free-access",
-        'IS_FREE_VERSION': True,
     },
     'qwen': {
         'CORE_URL': "wss://dashscope.aliyuncs.com/api-ws/v1/realtime",
@@ -739,10 +751,11 @@ DEFAULT_ASSIST_API_PROFILES = {
         'CORRECTION_MODEL': "free-model",
         'EMOTION_MODEL': "free-model",
         'VISION_MODEL': "free-vision-model",
-        'AGENT_MODEL': "free-model",
+        # 必须与 api_providers.json 的 free agent_model 及 _free_agent_model_name 一致，
+        # 否则 json 缺失回退到本 defaults 时免费 agent 不计配额、is_agent_free 误判。
+        'AGENT_MODEL': "free-agent-model",
         'AUDIO_API_KEY': "free-access",
         'OPENROUTER_API_KEY': "free-access",
-        'IS_FREE_VERSION': True,
     },
     'qwen': {
         'OPENROUTER_URL': "https://dashscope.aliyuncs.com/compatible-mode/v1",

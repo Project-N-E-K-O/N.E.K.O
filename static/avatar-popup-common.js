@@ -279,8 +279,9 @@
         }
 
         // ── Step 0.5：手机端特殊处理：向下展开而非向左/向右 ──
+        // Electron Pet 窗口永不进入手机模式，统一走 canonical 谓词。
         const screenWidth = window.innerWidth;
-        const isMobile = screenWidth <= 768;
+        const isMobile = typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (screenWidth <= 768);
         const goDown = isMobile;
 
         // ── Step 1：从 popup 获取方向（取代 getButtonZone 启发式） ──

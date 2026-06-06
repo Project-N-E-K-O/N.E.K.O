@@ -68,7 +68,7 @@ import httpx # noqa
 import time # noqa
 import signal # noqa
 from datetime import datetime, timezone # noqa
-from config import MAIN_SERVER_PORT, MONITOR_SERVER_PORT, USER_NOTIFICATION_ERROR_MAX_CHARS # noqa
+from config import MAIN_SERVER_PORT, MONITOR_SERVER_PORT, USER_NOTIFICATION_ERROR_MAX_CHARS, USER_PLUGIN_BASE # noqa
 from utils.cloudsave_autocloud import get_cloudsave_manager # noqa
 from utils.cloudsave_runtime import (
     CloudsaveDeadlineExceeded,
@@ -89,6 +89,18 @@ from utils.ssl_env_diagnostics import probe_ssl_environment, write_ssl_diagnosti
 _main_log_level = getattr(logging, (os.environ.get("NEKO_LOG_LEVEL") or "INFO").upper(), logging.INFO)
 logger, log_config = setup_logging(service_name="Main", log_level=_main_log_level, silent=not _IS_MAIN_PROCESS)
 
+
+def _resolve_user_plugin_base() -> str:
+    raw_port = os.getenv("NEKO_USER_PLUGIN_SERVER_PORT", "").strip()
+    if raw_port:
+        try:
+            port = int(raw_port)
+            if 0 < port <= 65535:
+                return f"http://127.0.0.1:{port}"
+        except ValueError:
+            logger.warning("Invalid NEKO_USER_PLUGIN_SERVER_PORT value {!r}; using configured plugin base", raw_port)
+    return USER_PLUGIN_BASE.rstrip("/")
+
 if _IS_MAIN_PROCESS:
     _ssl_precheck = probe_ssl_environment()
     if not _ssl_precheck.get("ok", True):
@@ -106,7 +118,7 @@ if _IS_MAIN_PROCESS:
 
 try:
     from fastapi import FastAPI, Request # noqa
-    from fastapi.responses import JSONResponse # noqa
+    from fastapi.responses import JSONResponse, Response # noqa
     from fastapi.staticfiles import StaticFiles # noqa
     from main_logic import core as core, cross_server as cross_server # noqa
     from main_logic.agent_event_bus import MainServerAgentBridge, notify_analyze_ack, set_main_bridge # noqa
@@ -616,6 +628,32 @@ async def _handle_agent_event(event: dict):
                 await _broadcast_to_all_connected(payload)
             return
 
+        # 免费版 Agent 每日配额耗尽：全局提示（与角色无关），广播成 status toast
+        # 到所有已连接会话。上游 config_manager 已节流（≤每 10 秒一次），这里不会刷屏。
+        # 前端已就绪：AGENT_QUOTA_EXCEEDED 在 criticalErrorCodes 里，配 i18n 文案
+        # （{{used}}/{{limit}}）走 showStatusToast。
+        if event_type == "agent_quota_exceeded":
+            import json as _json
+            status_message = _json.dumps({
+                "code": "AGENT_QUOTA_EXCEEDED",
+                "details": {
+                    "used": event.get("used", 0),
+                    "limit": event.get("limit", 300),
+                },
+            })
+            quota_payload = {"type": "status", "message": status_message}
+            mgr_for_quota = _get_session_manager(lanlan)
+            if lanlan and mgr_for_quota is not None:
+                ws_for_quota = getattr(mgr_for_quota, "websocket", None)
+                if _is_websocket_connected(ws_for_quota):
+                    try:
+                        await ws_for_quota.send_json(quota_payload)
+                    except Exception as e:
+                        logger.debug("[EventBus] agent_quota_exceeded send failed: %s", e)
+            else:
+                await _broadcast_to_all_connected(quota_payload)
+            return
+
         # Resolve target session manager; fallback to broadcast if lanlan is unknown
         mgr = _get_session_manager(lanlan)
         if not mgr and event_type == "task_update":
@@ -710,6 +748,14 @@ async def _handle_agent_event(event: dict):
             # ai_behavior=blind suppresses injection entirely.
             media_parts = event.get("media_parts") if isinstance(event.get("media_parts"), list) else []
             ai_behavior_v2 = event.get("ai_behavior")
+            # Images that must travel WITH a proactive (respond) callback so they
+            # can be streamed at the moment the pacing manager releases the cue
+            # (see LLMSessionManager._deliver_proactive_batch). Streaming them
+            # here immediately would land the image in the previous/current turn
+            # (or drop it when no session exists yet) while the text is held back
+            # by the manager — the eventual proactive response would then lack
+            # its matching visual context.
+            deferred_proactive_images: list[str] = []
             if media_parts and ai_behavior_v2 in ("respond", "read"):
                 sess = getattr(mgr, "session", None)
                 stream_image = getattr(sess, "stream_image", None) if sess else None
@@ -730,13 +776,24 @@ async def _handle_agent_event(event: dict):
                             part_type, mime,
                         )
                         continue
-                    if stream_image is None:
-                        logger.debug(
-                            "[EventBus] image media_part dropped: session=%s has no stream_image",
-                            type(sess).__name__ if sess else "None",
-                        )
-                        continue
                     if isinstance(b64, str) and b64:
+                        if ai_behavior_v2 == "respond" and text:
+                            # Defer: stream when the manager releases this cue so
+                            # the image shares the proactive response's context.
+                            # (Only when there's text — the callback that carries
+                            # these images is built in the ``if text:`` block.)
+                            deferred_proactive_images.append(b64)
+                            continue
+                        # read (passive), OR image-only respond with no text to
+                        # carry it through the pacing manager: inject now so it
+                        # isn't lost (image-only respond has no text cue to drive
+                        # a proactive turn anyway).
+                        if stream_image is None:
+                            logger.debug(
+                                "[EventBus] image media_part dropped: session=%s has no stream_image",
+                                type(sess).__name__ if sess else "None",
+                            )
+                            continue
                         # ``stream_image`` takes a base64 STRING (not bytes); pass through
                         try:
                             await stream_image(b64)
@@ -843,6 +900,18 @@ async def _handle_agent_event(event: dict):
                     # producer that lands on this branch); see the (event_type in
                     # {"task_result", "proactive_message"}) gate above.
                     origin = "event"
+                # Proactive-delivery hints from push_message (priority +
+                # coalesce_key). Lower priority = more urgent; unspecified
+                # (0) is normalised to a neutral band by the manager.
+                try:
+                    # OverflowError: JSON Infinity/-Infinity → float → int() raises;
+                    # must not let a malformed priority drop the whole callback.
+                    cb_priority = int(event.get("priority", 0) or 0)
+                except (TypeError, ValueError, OverflowError):
+                    cb_priority = 0
+                cb_coalesce_key = event.get("coalesce_key")
+                if not isinstance(cb_coalesce_key, str):
+                    cb_coalesce_key = ""
                 callback = {
                     "event": "agent_task_callback",
                     "origin": origin,
@@ -856,30 +925,38 @@ async def _handle_agent_event(event: dict):
                     "source_kind": source_kind,
                     "source_name": source_name,
                     "delivery_mode": delivery_mode,
+                    "priority": cb_priority,
+                    "coalesce_key": cb_coalesce_key,
+                    # Images to stream at manager-release time (respond only;
+                    # empty for read, which already streamed above).
+                    "media_images": deferred_proactive_images,
                     "timestamp": event.get("timestamp") or "",
                     "metadata": event_metadata,
                     "context_type": event_metadata.get("context_type") or "",
                 }
                 if delivery_mode != "silent":
-                    mgr.enqueue_agent_callback(callback)
                     if delivery_mode == "passive":
+                        # Passive cues keep the direct enqueue-only path:
+                        # they must NOT interrupt; the next user turn drains
+                        # them. The pacing manager only governs proactive.
+                        mgr.enqueue_agent_callback(callback)
                         logger.info(
                             "[EventBus] %s enqueued callback (passive); next user turn will carry it",
                             event_type,
                         )
                     else:
+                        # Proactive: hand to the delivery manager, which
+                        # orders by priority, coalesces by key, and paces
+                        # release on the frontend playback gate + min-gap.
                         logger.info(
-                            "[EventBus] %s enqueued callback, scheduling trigger_agent_callbacks",
-                            event_type,
+                            "[EventBus] %s submitting proactive callback to delivery manager (priority=%s key=%r)",
+                            event_type, cb_priority, cb_coalesce_key or "(source)",
                         )
-
-                        # Create task with exception logging
-                        async def _run_trigger_with_logging():
-                            try:
-                                await mgr.trigger_agent_callbacks()
-                            except Exception as e:
-                                logger.error("[EventBus] trigger_agent_callbacks task failed: %s", e)
-                        mgr._pending_agent_callback_task = asyncio.create_task(_run_trigger_with_logging())
+                        mgr.submit_proactive_callback(
+                            callback,
+                            priority=cb_priority,
+                            coalesce_key=cb_coalesce_key or None,
+                        )
                 else:
                     logger.info(
                         "[EventBus] %s delivery=silent: skipping LLM channel (frontend HUD still fires)",
@@ -1565,6 +1642,7 @@ from main_routers.workshop_router import router as workshop_router # noqa
 from main_routers.cookies_login_router import router as cookies_login_router # noqa
 from main_routers.game_router import router as game_router # noqa
 from main_routers.card_drop_router import router as card_drop_router # noqa
+from main_routers.card_assist_router import router as card_assist_router # noqa
 from main_routers.debug_router import router as debug_router, start_watchdog as _start_debug_health_watchdog # noqa
 from main_routers.shared_state import init_shared_state, set_steamworks_initializer # noqa
 
@@ -1638,6 +1716,87 @@ async def beacon_shutdown():
         logger.error(f"Beacon处理错误: {e}")
         return {"success": False, "error": str(e)}
 
+
+@app.api_route("/market/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+@app.api_route("/market", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+async def proxy_user_plugin_market_bridge(request: Request, path: str = ""):
+    """Proxy plugin-manager Market bridge calls to the user plugin server.
+
+    Vite dev proxies /market to USER_PLUGIN_SERVER_PORT. The packaged UI is
+    served by the main server, so it needs the same same-origin bridge here.
+    """
+
+    target = f"{_resolve_user_plugin_base()}/market"
+    if path:
+        target = f"{target}/{path}"
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+
+    hop_by_hop = {
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailers",
+        "transfer-encoding",
+        "upgrade",
+        "host",
+        "content-length",
+    }
+    # Request-side filter additionally drops Accept-Encoding so the upstream
+    # is asked for an *uncompressed* response. We can't safely forward the
+    # client's Accept-Encoding because httpx auto-decompresses on
+    # ``upstream.content`` access — which would leave the response body
+    # decompressed but the upstream's ``Content-Encoding: gzip`` header
+    # intact, and the browser would double-decompress
+    # (ERR_CONTENT_DECODING_FAILED). See bugfix.md §1.1 / §2.1.
+    #
+    # CC-1 LOCK (PR #1480 review-fix Phase 3): do **NOT** add ``authorization``
+    # to ``hop_by_hop_request``. The /market/oauth/* endpoints will (post
+    # 2.3.1 / 2.3.2) accept the bridge token via ``Authorization: Bearer``,
+    # and that header MUST survive this proxy. Stripping it would silently
+    # break Market login.
+    hop_by_hop_request = hop_by_hop | {"accept-encoding"}
+    headers = {
+        key: value
+        for key, value in request.headers.items()
+        if key.lower() not in hop_by_hop_request
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=3.0), proxy=None, trust_env=False) as client:
+            upstream = await client.request(
+                request.method,
+                target,
+                content=await request.body(),
+                headers=headers,
+            )
+    except httpx.HTTPError as exc:
+        logger.warning("Market bridge proxy failed: target=%s error=%s", target, exc)
+        return JSONResponse(
+            status_code=502,
+            content={"detail": "Market bridge unavailable", "error": str(exc)},
+        )
+
+    # Response-side filter additionally drops Content-Encoding so the body
+    # bytes (already decompressed by httpx when we read ``upstream.content``)
+    # and the response headers stay consistent. ``Content-Length`` is also
+    # dropped because httpx may have changed the byte count during
+    # decompression; FastAPI / Starlette will recompute it from the body.
+    hop_by_hop_response = hop_by_hop | {"content-encoding", "content-length"}
+    response_headers = {
+        key: value
+        for key, value in upstream.headers.items()
+        if key.lower() not in hop_by_hop_response
+    }
+    return Response(
+        content=upstream.content,
+        status_code=upstream.status_code,
+        headers=response_headers,
+        media_type=upstream.headers.get("content-type"),
+    )
+
 # 挂载全部路由
 app.include_router(config_router)
 app.include_router(proactive_router)
@@ -1659,6 +1818,7 @@ app.include_router(music_router)
 app.include_router(galgame_router)
 app.include_router(game_router)
 app.include_router(card_drop_router)  # 对话掉落卡片：本地 → 云端 N.E.K.O.Servers 代理
+app.include_router(card_assist_router)
 app.include_router(capture_router)
 app.include_router(cookies_login_router) # Cookies登录相关路由，放在最后以避免与其他API路由冲突
 app.include_router(debug_router)  # 诊断观测：/api/debug/health（轻量、零侵入，详见 debug_router.py 头注释）

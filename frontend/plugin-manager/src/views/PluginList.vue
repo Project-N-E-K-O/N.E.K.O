@@ -1,14 +1,71 @@
 <template>
   <div
     class="plugin-workbench"
-    :class="{ 'plugin-workbench--package-open': packagePanelVisible }"
+    :class="{
+      'plugin-workbench--market-open': marketPanelVisible,
+      'plugin-workbench--package-open': packagePanelVisible,
+    }"
     data-yui-guide-id="plugin-list-workbench"
   >
-    <section class="plugin-workbench__main" data-yui-guide-id="plugin-list-main">
+    <aside
+      class="plugin-workbench__rail plugin-workbench__rail--market"
+      :aria-hidden="!marketPanelVisible"
+      :inert="!marketPanelVisible"
+    >
+      <div class="plugin-workbench__rail-inner">
+        <MarketPanel
+          v-if="marketPanelEverOpened"
+          v-show="marketPanelVisible"
+          embedded
+          :active="marketPanelVisible"
+          @close="closeMarketPanel"
+        />
+      </div>
+    </aside>
+
+    <section
+      class="plugin-workbench__main"
+      data-yui-guide-id="plugin-list-main"
+      v-motion
+      :initial="{ opacity: 0, y: 16, filter: 'blur(4px)' }"
+      :enter="{ opacity: 1, y: 0, filter: 'blur(0px)', transition: { duration: 360, type: 'spring', stiffness: 240, damping: 24 } }"
+    >
       <el-card class="plugin-list-card" data-yui-guide-id="plugin-list-card-shell">
         <template #header>
           <div class="workbench-header">
             <div class="workbench-header__copy">
+              <button
+                v-if="marketUrl"
+                class="market-trigger"
+                :class="{ 'market-trigger--active': marketPanelVisible }"
+                type="button"
+                data-yui-guide-id="plugin-list-market-toggle"
+                :title="marketPanelVisible ? $t('market.closeMarket') : $t('market.openMarket')"
+                @click="toggleMarketPanel"
+              >
+                <el-icon class="market-trigger__icon"><ShoppingCart /></el-icon>
+                <span class="market-trigger__label">
+                  {{ marketPanelVisible ? $t('market.closeMarket') : $t('market.getNewPlugins') }}
+                </span>
+                <el-icon class="market-trigger__arrow">
+                  <component :is="marketPanelVisible ? ArrowLeft : ArrowRight" />
+                </el-icon>
+              </button>
+              <el-button
+                v-if="marketUrl"
+                class="market-auth-trigger"
+                :class="{ 'market-auth-trigger--connected': marketAuth.authenticated }"
+                :loading="marketAuthBusy"
+                plain
+                @click="marketAuth.authenticated ? logoutMarketAccount() : startMarketLogin()"
+              >
+                <el-icon><User /></el-icon>
+                {{
+                  marketAuth.authenticated
+                    ? $t('market.accountConnected', { name: marketAuthDisplayName })
+                    : $t('market.login')
+                }}
+              </el-button>
               <el-button
                 class="multi-select-trigger"
                 :class="{ 'multi-select-trigger--active': multiSelectEnabled }"
@@ -58,6 +115,15 @@
                 <span>{{ showMetrics ? $t('plugins.hideMetrics') : $t('plugins.showMetrics') }}</span>
               </button>
               <button
+                class="header-btn"
+                :class="{ 'header-btn--active': showSourceDetail }"
+                data-yui-guide-id="plugin-list-source-toggle"
+                @click="toggleSourceDetail"
+              >
+                <el-icon><InfoFilled /></el-icon>
+                <span>{{ showSourceDetail ? $t('plugins.hideSourceDetail') : $t('plugins.showSourceDetail') }}</span>
+              </button>
+              <button
                 class="header-btn header-btn--warn"
                 :disabled="reloadingAll || runningPlugins.length === 0"
                 @click="handleReloadAll"
@@ -77,123 +143,36 @@
             </div>
           </div>
 
-          <div class="filter-bar">
-            <div class="filter-controls">
-              <div
-                ref="filterRulesAnchorRef"
-                class="filter-rules-anchor"
-              >
-                <button
-                  class="filter-rules-trigger"
-                  :class="{ 'filter-rules-trigger--active': filterRulesVisible }"
-                  type="button"
-                  data-yui-guide-id="plugin-list-filter-rules"
-                  @click.stop="toggleFilterRules"
-                >
-                  <el-icon><Operation /></el-icon>
-                  <span>{{ $t('plugins.filterRules') }}</span>
-                  <svg class="filter-rules-trigger__arrow" viewBox="0 0 12 12" fill="none">
-                    <path d="M3 5L6 8L9 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                  </svg>
-                </button>
-              </div>
+          <WorkbenchFilterBar
+            v-model:filter-text="filterText"
+            v-model:use-regex="useRegex"
+            v-model:filter-mode="filterMode"
+            :regex-error="regexError"
+            :rule-groups="filterRuleGroups"
+            :placeholder="$t('plugins.filterPlaceholder')"
+            :rules-trigger-label="$t('plugins.filterRules')"
+            :rules-title="$t('plugins.filterRulesTitle')"
+            :rules-hint="$t('plugins.filterRulesHint')"
+            :whitelist-label="$t('plugins.filterWhitelist')"
+            :blacklist-label="$t('plugins.filterBlacklist')"
+            :invalid-regex-label="$t('plugins.invalidRegex')"
+            :guide-ids="{ rulesTrigger: 'plugin-list-filter-rules', input: 'plugin-list-filter-input' }"
+            class="filter-bar-spacing"
+          />
 
-              <Teleport to="body">
-                <Transition name="rules-panel">
-                  <div
-                    v-if="filterRulesVisible"
-                    ref="filterRulesPanelRef"
-                    class="filter-rules-dropdown"
-                    :style="rulesDropdownStyle"
-                  >
-                    <div class="filter-rules-panel">
-                      <div class="filter-rules-panel__header">
-                        <div class="filter-rules-panel__title">{{ $t('plugins.filterRulesTitle') }}</div>
-                        <div class="filter-rules-panel__hint">{{ $t('plugins.filterRulesHint') }}</div>
-                      </div>
-
-                      <div
-                        v-for="(group, gi) in filterRuleGroups"
-                        :key="group.key"
-                        class="filter-rules-group"
-                        :style="{ '--group-index': gi }"
-                      >
-                        <div class="filter-rules-group__title">{{ group.title }}</div>
-                        <div class="filter-rules-group__list">
-                          <button
-                            v-for="(rule, ri) in group.rules"
-                            :key="rule.token"
-                            type="button"
-                            class="filter-rule-chip"
-                            :style="{ '--chip-index': gi * 6 + ri }"
-                            @click="appendFilterRule(rule.token)"
-                          >
-                            <span class="filter-rule-chip__token">{{ rule.token }}</span>
-                            <span class="filter-rule-chip__label">{{ rule.label }}</span>
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </Transition>
-              </Teleport>
-
-              <el-input
-                ref="filterInputRef"
-                v-model="filterText"
-                clearable
-                class="filter-input"
-                data-yui-guide-id="plugin-list-filter-input"
-                :placeholder="$t('plugins.filterPlaceholder')"
-              />
-
-              <div class="filter-toggles">
-                <el-switch
-                  v-model="useRegex"
-                  class="filter-switch"
-                  active-text="Regex"
-                  inactive-text="Text"
-                />
-                <el-radio-group v-model="filterMode" size="small" class="filter-mode">
-                  <el-radio-button label="whitelist">{{ $t('plugins.filterWhitelist') }}</el-radio-button>
-                  <el-radio-button label="blacklist">{{ $t('plugins.filterBlacklist') }}</el-radio-button>
-                </el-radio-group>
-              </div>
-
-              <Transition name="filter-error-fade">
-                <span v-if="regexError" class="filter-error">{{ $t('plugins.invalidRegex') }}</span>
-              </Transition>
-            </div>
-          </div>
-
-          <div class="workbench-toolbar">
-            <div class="type-filter-bar">
-              <el-checkbox-group v-model="selectedTypes" class="type-filter-group" data-yui-guide-id="plugin-list-type-filter">
-                <el-checkbox-button label="plugin">
-                  <el-icon><Box /></el-icon>
-                  {{ $t('plugins.typePlugin') }} ({{ pluginCount }})
-                </el-checkbox-button>
-                <el-checkbox-button label="adapter">
-                  <el-icon><Connection /></el-icon>
-                  {{ $t('plugins.typeAdapter') }} ({{ adapterCount }})
-                </el-checkbox-button>
-                <el-checkbox-button label="extension">
-                  <el-icon><Expand /></el-icon>
-                  {{ $t('plugins.typeExtension') }} ({{ extensionCount }})
-                </el-checkbox-button>
-              </el-checkbox-group>
-            </div>
-
-            <div class="layout-toolbar" data-yui-guide-id="plugin-list-layout-mode">
-              <el-icon class="layout-toolbar__icon"><Grid /></el-icon>
-              <el-radio-group v-model="layoutMode" size="small">
-                <el-radio-button label="list">列表</el-radio-button>
-                <el-radio-button label="single">单排</el-radio-button>
-                <el-radio-button label="double">双排</el-radio-button>
-                <el-radio-button label="compact">紧凑</el-radio-button>
-              </el-radio-group>
-            </div>
-          </div>
+          <WorkbenchToolbar class="toolbar-spacing">
+            <WorkbenchGroupFilter
+              v-model:selected-ids="selectedTypes"
+              :choices="typeFilterChoices"
+              :counts="groupCounts"
+              guide-id="plugin-list-type-filter"
+            />
+            <WorkbenchLayoutSwitcher
+              v-model:layout-mode="layoutMode"
+              :choices="layoutChoices"
+              guide-id="plugin-list-layout-mode"
+            />
+          </WorkbenchToolbar>
         </template>
 
         <LoadingSpinner
@@ -204,31 +183,46 @@
         <EmptyState v-else-if="rawPlugins.length === 0" :description="$t('plugins.noPlugins')" />
 
         <template v-else>
-          <PluginGridSection
-            v-for="section in pluginSections"
+          <div
+            v-for="(section, si) in pluginSections"
             :key="section.key"
-            :title="section.title"
-            :icon="section.icon"
-            :items="section.items"
-            :layout-mode="layoutMode"
-            :multi-select-enabled="multiSelectEnabled"
-            :selected-plugin-ids="selectedPluginIds"
-            :show-metrics="showMetrics"
-            :variant="section.variant"
-            @item-click="handlePluginPrimaryAction"
-            @item-contextmenu="handlePluginContextMenu"
-            @toggle-selection="togglePluginSelection"
-          />
+            v-motion
+            :initial="{ opacity: 0, y: 20 }"
+            :enter="{ opacity: 1, y: 0, transition: { delay: 120 + si * 80, duration: 420, type: 'spring', stiffness: 220, damping: 22 } }"
+          >
+            <PluginGridSection
+              :title="section.title"
+              :icon="section.icon"
+              :items="section.items"
+              :layout-mode="layoutMode"
+              :multi-select-enabled="multiSelectEnabled"
+              :selected-plugin-ids="selectedPluginIds"
+              :show-metrics="showMetrics"
+              :show-source-detail="showSourceDetail"
+              :variant="section.variant"
+              @item-click="handlePluginPrimaryAction"
+              @item-contextmenu="handlePluginContextMenu"
+              @toggle-selection="togglePluginSelection"
+            />
+          </div>
         </template>
       </el-card>
     </section>
 
     <aside
-      class="plugin-workbench__side"
-      :class="{ 'plugin-workbench__side--visible': packagePanelVisible }"
-      data-yui-guide-id="plugin-list-package-panel"
+      class="plugin-workbench__rail plugin-workbench__rail--package"
+      :aria-hidden="!packagePanelVisible"
+      :inert="!packagePanelVisible"
     >
-      <PackageManagerPanel v-if="packagePanelVisible" embedded @close="closePackagePanel" />
+      <div class="plugin-workbench__rail-inner">
+        <PackageManagerPanel
+          v-if="packagePanelEverOpened"
+          v-show="packagePanelVisible"
+          embedded
+          :external-selected-plugin-ids="selectedPluginIds"
+          @close="closePackagePanel"
+        />
+      </div>
     </aside>
 
     <!-- Floating multi-select action bar -->
@@ -346,21 +340,34 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Expand, Operation, Finished, Sort, CircleClose, Close, Grid, VideoPlay, VideoPause, Delete, Upload, Download } from '@element-plus/icons-vue'
+import { Refresh, DataAnalysis, RefreshRight, Box, Connection, Expand, Finished, Sort, CircleClose, Close, VideoPlay, VideoPause, Delete, Upload, Download, ShoppingCart, ArrowRight, ArrowLeft, InfoFilled, User } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { usePluginStore } from '@/stores/plugin'
 import { useMetricsStore } from '@/stores/metrics'
+import { useMarketVersionsStore } from '@/stores/marketVersions'
 import PluginGridSection from '@/components/plugin/PluginGridSection.vue'
 import PluginContextMenu from '@/components/plugin/PluginContextMenu.vue'
 import PluginDangerConfirmDialog from '@/components/plugin/PluginDangerConfirmDialog.vue'
 import PackageManagerPanel from '@/components/plugin/PackageManagerPanel.vue'
+import MarketPanel from '@/components/plugin/MarketPanel.vue'
 import LoadingSpinner from '@/components/common/LoadingSpinner.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
+import WorkbenchFilterBar from '@/components/common/WorkbenchFilterBar.vue'
+import WorkbenchGroupFilter from '@/components/common/WorkbenchGroupFilter.vue'
+import WorkbenchLayoutSwitcher from '@/components/common/WorkbenchLayoutSwitcher.vue'
+import WorkbenchToolbar from '@/components/common/WorkbenchToolbar.vue'
+import type {
+  FilterRuleGroupDescriptor,
+  GroupChoiceDescriptor,
+  LayoutChoiceDescriptor,
+} from '@/composables/workbenchDescriptors'
 import { reloadAllPlugins, deletePlugin } from '@/api/plugins'
-import { uploadAndUnpackPlugin, packPluginCli, downloadPluginPackage } from '@/api/pluginCli'
+import { uploadAndInstallPlugin, buildPluginCli, downloadPluginPackage } from '@/api/pluginCli'
 import { usePluginListContextActions, type ResolvedPluginListAction } from '@/composables/usePluginListContextActions'
 import { usePluginWorkbench } from '@/composables/usePluginWorkbench'
+import { useMarketAuth } from '@/composables/useMarketAuth'
 import { METRICS_REFRESH_INTERVAL } from '@/utils/constants'
+import { formatHttpError } from '@/utils/request'
 import { resolveLocalizedText } from '@/utils/i18nLabel'
 import { useI18n } from 'vue-i18n'
 import type { PluginMeta } from '@/types/api'
@@ -378,6 +385,9 @@ const batchBusy = ref(false)
 const importing = ref(false)
 const importFileInputRef = ref<HTMLInputElement | null>(null)
 const packagePanelVisible = ref(false)
+const packagePanelEverOpened = ref(false)
+const marketPanelVisible = ref(false)
+const marketPanelEverOpened = ref(false)
 const contextMenuVisible = ref(false)
 const contextMenuPosition = ref({ x: 0, y: 0 })
 const contextMenuPlugin = ref<(PluginMeta & { status?: string; enabled?: boolean; autoStart?: boolean }) | null>(null)
@@ -386,6 +396,15 @@ const dangerDialogVisible = ref(false)
 const dangerDialogLoading = ref(false)
 const pendingDangerAction = ref<ResolvedPluginListAction | null>(null)
 const pendingDangerPlugin = ref<(PluginMeta & { status?: string; enabled?: boolean; autoStart?: boolean }) | null>(null)
+const marketUrl = ref('')
+const {
+  marketAuth,
+  marketAuthBusy,
+  marketAuthDisplayName,
+  loadMarketAuthStatus,
+  logoutMarketAccount,
+  startMarketLogin,
+} = useMarketAuth()
 
 // confirm_message 是 LocalizedText（string 或 locale-keyed dict），不能直接
 // 透传给 PluginDangerConfirmDialog 的 :message="string" prop。模板里
@@ -413,9 +432,7 @@ const {
   selectedCount,
   multiSelectEnabled,
   regexError,
-  pluginCount,
-  adapterCount,
-  extensionCount,
+  groupCounts,
   filteredPurePlugins,
   filteredAdapters,
   filteredExtensions,
@@ -429,13 +446,25 @@ const {
 } = usePluginWorkbench(rawPlugins)
 
 const loading = computed(() => pluginStore.loading)
-const filterRulesVisible = ref(false)
-const filterInputRef = ref<any>(null)
-const filterRulesAnchorRef = ref<HTMLElement | null>(null)
-const filterRulesPanelRef = ref<HTMLElement | null>(null)
 const showMetrics = ref(false)
 let metricsRefreshTimer: number | null = null
-let rulesHideTimer: number | null = null
+
+// Show-source-detail mirrors the Metrics toggle pattern. Turning it on
+// also kicks off a best-effort fetch of the Market's latest versions so
+// the "update available" badge can light up on market-installed plugins.
+const showSourceDetail = ref(false)
+const marketVersionsStore = useMarketVersionsStore()
+
+async function toggleSourceDetail() {
+  showSourceDetail.value = !showSourceDetail.value
+  if (showSourceDetail.value) {
+    // Fire-and-forget; if Market is unreachable the badge simply won't
+    // appear, which is a fine degraded state.
+    marketVersionsStore.ensureFresh().catch((err) => {
+      console.warn('Failed to refresh market versions:', err)
+    })
+  }
+}
 const pluginSections = computed(() => [
   {
     key: 'plugin',
@@ -459,7 +488,21 @@ const pluginSections = computed(() => [
     variant: 'extension' as const,
   },
 ])
-const filterRuleGroups = computed(() => [
+
+const typeFilterChoices = computed<GroupChoiceDescriptor[]>(() => [
+  { id: 'plugin', label: t('plugins.typePlugin'), icon: Box },
+  { id: 'adapter', label: t('plugins.typeAdapter'), icon: Connection },
+  { id: 'extension', label: t('plugins.typeExtension'), icon: Expand },
+])
+
+const layoutChoices = computed<LayoutChoiceDescriptor[]>(() => [
+  { value: 'list', label: t('plugins.layoutList') },
+  { value: 'single', label: t('plugins.layoutSingle') },
+  { value: 'double', label: t('plugins.layoutDouble') },
+  { value: 'compact', label: t('plugins.layoutCompact') },
+])
+
+const filterRuleGroups = computed<FilterRuleGroupDescriptor[]>(() => [
   {
     key: 'state',
     title: t('plugins.filterRuleGroups.state'),
@@ -497,112 +540,6 @@ const filterRuleGroups = computed(() => [
     ],
   },
 ])
-
-const rulesDropdownPos = ref({ top: 0, left: 0 })
-const rulesDropdownStyle = computed(() => ({
-  position: 'fixed' as const,
-  top: `${rulesDropdownPos.value.top}px`,
-  left: `${rulesDropdownPos.value.left}px`,
-}))
-
-function updateRulesDropdownPos() {
-  const anchor = filterRulesAnchorRef.value
-  if (!anchor) return
-  const rect = anchor.getBoundingClientRect()
-  rulesDropdownPos.value = {
-    top: rect.bottom + 8,
-    left: rect.left,
-  }
-}
-
-function getRulesUnionRect(pad: number) {
-  const rects: DOMRect[] = []
-  if (filterRulesAnchorRef.value) rects.push(filterRulesAnchorRef.value.getBoundingClientRect())
-  if (filterRulesPanelRef.value) rects.push(filterRulesPanelRef.value.getBoundingClientRect())
-  if (rects.length === 0) return null
-  return {
-    left: Math.min(...rects.map((r) => r.left)) - pad,
-    top: Math.min(...rects.map((r) => r.top)) - pad,
-    right: Math.max(...rects.map((r) => r.right)) + pad,
-    bottom: Math.max(...rects.map((r) => r.bottom)) + pad,
-  }
-}
-
-function isInsideRulesArea(x: number, y: number) {
-  const union = getRulesUnionRect(40)
-  if (!union) return false
-  return x >= union.left && x <= union.right && y >= union.top && y <= union.bottom
-}
-
-function clearRulesHideTimer() {
-  if (rulesHideTimer) {
-    clearTimeout(rulesHideTimer)
-    rulesHideTimer = null
-  }
-}
-
-function scheduleRulesHide() {
-  clearRulesHideTimer()
-  rulesHideTimer = window.setTimeout(() => {
-    filterRulesVisible.value = false
-    rulesHideTimer = null
-  }, 1000)
-}
-
-function onDocumentMouseMove(event: MouseEvent) {
-  if (!filterRulesVisible.value) return
-  if (isInsideRulesArea(event.clientX, event.clientY)) {
-    clearRulesHideTimer()
-  } else if (!rulesHideTimer) {
-    scheduleRulesHide()
-  }
-}
-
-function onDocumentMouseDown(event: MouseEvent) {
-  if (!filterRulesVisible.value) return
-  const anchor = filterRulesAnchorRef.value
-  const panel = filterRulesPanelRef.value
-  const target = event.target as Node
-  if (anchor?.contains(target) || panel?.contains(target)) return
-  filterRulesVisible.value = false
-  clearRulesHideTimer()
-}
-
-function startRulesListeners() {
-  document.addEventListener('mousemove', onDocumentMouseMove)
-  document.addEventListener('mousedown', onDocumentMouseDown, true)
-}
-
-function stopRulesListeners() {
-  document.removeEventListener('mousemove', onDocumentMouseMove)
-  document.removeEventListener('mousedown', onDocumentMouseDown, true)
-  clearRulesHideTimer()
-}
-
-watch(filterRulesVisible, (visible) => {
-  if (visible) {
-    startRulesListeners()
-  } else {
-    stopRulesListeners()
-  }
-})
-
-function toggleFilterRules() {
-  if (!filterRulesVisible.value) {
-    updateRulesDropdownPos()
-  }
-  filterRulesVisible.value = !filterRulesVisible.value
-}
-
-function appendFilterRule(token: string) {
-  const current = filterText.value.trim()
-  const nextValue = current ? `${current} ${token}` : token
-  filterText.value = nextValue
-  filterRulesVisible.value = false
-  nextTick(() => {
-    filterInputRef.value?.focus?.()
-  })
-}
 
 async function handleRefresh() {
   let warningMessage = ''
@@ -679,15 +616,35 @@ function toggleMultiSelectMode() {
 }
 
 function togglePackagePanel() {
-  packagePanelVisible.value = !packagePanelVisible.value
+  const next = !packagePanelVisible.value
+  packagePanelVisible.value = next
+  if (next) {
+    packagePanelEverOpened.value = true
+    marketPanelVisible.value = false
+  }
 }
 
 function openPackagePanel() {
   packagePanelVisible.value = true
+  packagePanelEverOpened.value = true
+  marketPanelVisible.value = false
 }
 
 function closePackagePanel() {
   packagePanelVisible.value = false
+}
+
+function toggleMarketPanel() {
+  const next = !marketPanelVisible.value
+  marketPanelVisible.value = next
+  if (next) {
+    marketPanelEverOpened.value = true
+    packagePanelVisible.value = false
+  }
+}
+
+function closeMarketPanel() {
+  marketPanelVisible.value = false
 }
 
 function closePluginContextMenu() {
@@ -830,7 +787,7 @@ const runningPlugins = computed(() => {
   return rawNormalPlugins.value.filter((plugin) => plugin.status === 'running')
 })
 
-// ── Import (upload + unpack) ───────────────────────────────────────────
+// ── Import (upload + install) ─────────────────────────────────────────
 
 function triggerImportFile() {
   importFileInputRef.value?.click()
@@ -846,22 +803,20 @@ async function handleImportFileChange(event: Event) {
 
   importing.value = true
   try {
-    const result = await uploadAndUnpackPlugin(file)
-    const count = result.unpack.unpacked_plugin_count ?? 0
+    const result = await uploadAndInstallPlugin(file)
+    const count = result.install.installed_plugin_count ?? 0
     ElMessage.success(t('plugins.importSuccess', { name: file.name, count }))
     await handleRefresh()
   } catch (error: any) {
     console.error('Failed to import plugin package:', error)
-    const detail = error?.response?.data?.detail || error?.message || ''
-    if (detail) {
-      ElMessage.error(t('plugins.importFailed') + ': ' + detail)
-    }
+    const detail = formatHttpError(error)
+    ElMessage.error(detail ? t('plugins.importFailed') + ': ' + detail : t('plugins.importFailed'))
   } finally {
     importing.value = false
   }
 }
 
-// ── Export (pack + download) ──────────────────────────────────────────
+// ── Export (build + download) ─────────────────────────────────────────
 
 async function handleBatchExport() {
   const plugins = getSelectedPlugins()
@@ -872,33 +827,37 @@ async function handleBatchExport() {
 
   batchBusy.value = true
   try {
-    const result = await packPluginCli(
+    const result = await buildPluginCli(
       isSingle
         ? { mode: 'single', plugin: ids[0] }
         : { mode: 'bundle', plugins: ids },
     )
 
-    if (result.packed.length === 0) {
-      ElMessage.error(t('plugins.exportPackFailed'))
+    if (result.built.length === 0) {
+      const firstFailure = result.failed?.[0]
+      const detail = firstFailure?.error
+        ? firstFailure.plugin
+          ? `${firstFailure.plugin}: ${firstFailure.error}`
+          : firstFailure.error
+        : ''
+      ElMessage.error(detail ? `${t('plugins.exportBuildFailed')}: ${detail}` : t('plugins.exportBuildFailed'))
       return
     }
 
-    // Download each packed file using the full path returned by backend
-    for (const packed of result.packed) {
-      downloadPluginPackage(packed.package_path)
+    // Download each built file using the full path returned by backend
+    for (const built of result.built) {
+      downloadPluginPackage(built.package_path)
     }
 
     if (result.failed && result.failed.length > 0) {
-      ElMessage.warning(t('plugins.batchPartial', { success: result.packed.length, fail: result.failed.length }))
+      ElMessage.warning(t('plugins.batchPartial', { success: result.built.length, fail: result.failed.length }))
     } else {
-      ElMessage.success(t('plugins.exportSuccess', { count: result.packed.length }))
+      ElMessage.success(t('plugins.exportSuccess', { count: result.built.length }))
     }
   } catch (error: any) {
     console.error('Failed to export plugins:', error)
-    const detail = error?.response?.data?.detail || error?.message || ''
-    if (detail) {
-      ElMessage.error(t('plugins.exportFailed') + ': ' + detail)
-    }
+    const detail = formatHttpError(error)
+    ElMessage.error(detail ? t('plugins.exportFailed') + ': ' + detail : t('plugins.exportFailed'))
   } finally {
     batchBusy.value = false
   }
@@ -1066,6 +1025,10 @@ watch(
     const shouldOpen = tab === 'packages'
     if (packagePanelVisible.value !== shouldOpen) {
       packagePanelVisible.value = shouldOpen
+      if (shouldOpen) {
+        packagePanelEverOpened.value = true
+        marketPanelVisible.value = false
+      }
     }
   },
   { immediate: true },
@@ -1090,6 +1053,19 @@ watch(packagePanelVisible, (visible) => {
 onMounted(async () => {
   window.addEventListener(TUTORIAL_ACTION_EVENT, handleTutorialAction)
   await handleRefresh()
+  // 获取 Market URL（用于显示"获取新插件"入口）
+  try {
+    const res = await fetch('/market/status')
+    if (res.ok) {
+      const data = await res.json()
+      if (data.market_url) {
+        marketUrl.value = data.market_url
+        loadMarketAuthStatus().catch(() => {})
+      }
+    }
+  } catch {
+    // 静默失败
+  }
 })
 
 onUnmounted(() => {
@@ -1097,54 +1073,87 @@ onUnmounted(() => {
   closePluginContextMenu()
   closeDangerDialog()
   stopMetricsAutoRefresh()
-  stopRulesListeners()
 })
 </script>
 
 <style scoped>
 .plugin-workbench {
   --plugin-entry-radius: var(--radius-card);
-  --package-panel-width: clamp(420px, 42vw, 620px);
+  --drawer-width: clamp(320px, 42vw, 620px);
+  --drawer-duration: 320ms;
+  --drawer-ease: cubic-bezier(0.22, 1, 0.36, 1);
   /* ── Unified radius system ── */
   --radius-card: 16px;       /* large containers: card, dropdown */
   --radius-panel: 14px;      /* medium panels: filter bar, toolbar, floating bar */
   --radius-control: 10px;    /* buttons, inputs, interactive controls */
-  --radius-chip: 8px;        /* small chips, tags, badges */
+  --radius-chip: 8px;
   display: flex;
-  align-items: flex-start;
+  align-items: stretch;
   gap: 20px;
   min-width: 0;
   padding-bottom: 80px; /* space for floating bar */
 }
 
 .plugin-workbench__main {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-width: 0;
 }
 
-.plugin-workbench__side {
+.plugin-workbench__rail {
   flex: 0 0 0;
+  width: 0;
   min-width: 0;
-  max-width: 0;
-  opacity: 0;
+  align-self: stretch;
+  position: relative;
   overflow: hidden;
-  pointer-events: none;
-  transform: translateX(28px) scale(0.985);
-  transform-origin: right center;
+  contain: layout paint size;
   transition:
-    flex-basis 0.32s cubic-bezier(0.22, 1, 0.36, 1),
-    max-width 0.32s cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 0.26s ease,
-    transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+    flex-basis var(--drawer-duration) var(--drawer-ease),
+    width var(--drawer-duration) var(--drawer-ease),
+    margin var(--drawer-duration) var(--drawer-ease);
+  margin: 0;
 }
 
-.plugin-workbench__side--visible {
-  flex-basis: var(--package-panel-width);
-  max-width: var(--package-panel-width);
-  opacity: 1;
-  overflow: visible;
-  pointer-events: auto;
-  transform: translateX(0) scale(1);
+/* 收起时取消它那一侧的 gap，避免主列表多出一条空白 */
+.plugin-workbench__rail--market { margin-right: -20px; }
+.plugin-workbench__rail--package { margin-left: -20px; }
+
+.plugin-workbench--market-open .plugin-workbench__rail--market,
+.plugin-workbench--package-open .plugin-workbench__rail--package {
+  flex-basis: var(--drawer-width);
+  width: var(--drawer-width);
+  margin: 0;
+}
+
+/* 面板内容固定宽度，完全脱离 rail 的 flex 布局，只靠 transform 滑入 */
+.plugin-workbench__rail-inner {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: var(--drawer-width);
+  max-width: 100%;
+  transition: transform var(--drawer-duration) var(--drawer-ease);
+  will-change: transform;
+}
+
+.plugin-workbench__rail--market .plugin-workbench__rail-inner {
+  left: 0;
+  transform: translate3d(-100%, 0, 0);
+}
+
+.plugin-workbench__rail--package .plugin-workbench__rail-inner {
+  right: 0;
+  transform: translate3d(100%, 0, 0);
+}
+
+.plugin-workbench--market-open .plugin-workbench__rail--market .plugin-workbench__rail-inner,
+.plugin-workbench--package-open .plugin-workbench__rail--package .plugin-workbench__rail-inner {
+  transform: translate3d(0, 0, 0);
+}
+
+.plugin-workbench__rail-inner > * {
+  width: 100%;
+  height: 100%;
 }
 
 .plugin-list-card {
@@ -1152,17 +1161,90 @@ onUnmounted(() => {
 }
 
 .workbench-header {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: flex-start;
-  gap: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
 }
 
 .workbench-header__copy {
   display: flex;
   align-items: center;
   min-width: 0;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* ── Market quick-access trigger (top-left) ── */
+.market-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--el-color-primary) 24%, transparent);
+  border-radius: var(--radius-control);
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--el-color-primary) 10%, transparent) 0%,
+    color-mix(in srgb, var(--el-color-primary) 2%, transparent) 100%
+  );
+  color: var(--el-color-primary);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    transform 0.22s ease,
+    box-shadow 0.22s ease,
+    border-color 0.22s ease,
+    background-color 0.22s ease;
+}
+
+.market-trigger:hover {
+  transform: translateY(-1px);
+  border-color: var(--el-color-primary);
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--el-color-primary) 18%, transparent);
+}
+
+.market-trigger--active {
+  background: var(--el-color-primary);
+  color: #fff;
+  border-color: var(--el-color-primary);
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--el-color-primary) 22%, transparent);
+}
+
+.market-trigger__icon {
+  font-size: 16px;
+}
+
+.market-trigger__arrow {
+  font-size: 14px;
+  opacity: 0.75;
+  transition: transform 0.22s ease;
+}
+
+.market-trigger:hover .market-trigger__arrow {
+  transform: translateX(2px);
+}
+
+.market-trigger--active .market-trigger__arrow {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.market-auth-trigger {
+  --el-button-border-radius: var(--radius-control);
+  font-weight: 600;
+  padding: 8px 14px;
+  gap: 6px;
+}
+
+.market-auth-trigger--connected {
+  --el-button-text-color: var(--el-color-success);
+  --el-button-border-color: color-mix(in srgb, var(--el-color-success) 35%, transparent);
+  --el-button-bg-color: color-mix(in srgb, var(--el-color-success) 8%, transparent);
 }
 
 /* ── Multi-select trigger button (top) ── */
@@ -1544,421 +1626,20 @@ onUnmounted(() => {
   align-items: center;
   flex-wrap: wrap;
   justify-content: flex-end;
+  flex: 0 1 auto;
   min-width: 0;
 }
 
-/* ── Filter bar ── */
-.filter-bar {
+/* ── Spacing for workbench filter bar + toolbar ── */
+.filter-bar-spacing {
   margin-top: 14px;
-  padding: 10px 14px;
-  background: color-mix(in srgb, var(--el-bg-color) 78%, transparent);
-  backdrop-filter: blur(16px) saturate(1.4);
-  -webkit-backdrop-filter: blur(16px) saturate(1.4);
-  border: 1px solid color-mix(in srgb, var(--el-border-color) 50%, transparent);
-  border-radius: var(--radius-panel);
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, white 30%, transparent),
-    0 4px 16px color-mix(in srgb, var(--el-text-color-primary) 4%, transparent);
 }
 
-.filter-controls {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  width: 100%;
-}
-
-.filter-input {
-  flex: 1;
-  min-width: 200px;
-}
-
-.filter-input :deep(.el-input__wrapper) {
-  border-radius: var(--radius-control);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--el-border-color) 50%, transparent) inset;
-  transition:
-    box-shadow 0.2s ease,
-    border-color 0.2s ease;
-}
-
-.filter-input :deep(.el-input__wrapper:hover) {
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--el-color-primary) 30%, var(--el-border-color)) inset;
-}
-
-.filter-input :deep(.el-input__wrapper.is-focus) {
-  box-shadow:
-    0 0 0 1px var(--el-color-primary) inset,
-    0 0 0 3px color-mix(in srgb, var(--el-color-primary) 12%, transparent);
-}
-
-.filter-toggles {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-shrink: 0;
-}
-
-.filter-switch,
-.filter-mode {
-  flex-shrink: 0;
-}
-
-.filter-mode :deep(.el-radio-button__inner) {
-  border-radius: var(--radius-chip);
-}
-
-.filter-error {
-  color: var(--el-color-danger);
-  font-size: 12px;
-  font-weight: 500;
-  flex-shrink: 0;
-  padding: 2px 8px;
-  border-radius: var(--radius-chip);
-  background: color-mix(in srgb, var(--el-color-danger) 8%, transparent);
-}
-
-.filter-error-fade-enter-active,
-.filter-error-fade-leave-active {
-  transition: opacity 0.2s ease, transform 0.2s ease;
-}
-
-.filter-error-fade-enter-from,
-.filter-error-fade-leave-to {
-  opacity: 0;
-  transform: translateX(-4px);
-}
-
-/* ── Filter rules dropdown ── */
-.filter-rules-anchor {
-  position: relative;
-  flex-shrink: 0;
-}
-
-.filter-rules-trigger {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 7px 14px;
-  border: 1px solid color-mix(in srgb, var(--el-border-color) 60%, transparent);
-  border-radius: var(--radius-control);
-  background: color-mix(in srgb, var(--el-bg-color) 90%, white);
-  color: var(--el-text-color-regular);
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  flex-shrink: 0;
-  transition:
-    background-color 0.2s ease,
-    border-color 0.2s ease,
-    color 0.2s ease,
-    transform 0.18s ease,
-    box-shadow 0.2s ease;
-}
-
-.filter-rules-trigger .el-icon {
-  font-size: 15px;
-}
-
-.filter-rules-trigger__arrow {
-  width: 12px;
-  height: 12px;
-  margin-left: 2px;
-  transition: transform 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
-}
-
-.filter-rules-trigger--active .filter-rules-trigger__arrow {
-  transform: rotate(180deg);
-}
-
-.filter-rules-trigger:hover,
-.filter-rules-trigger--active {
-  border-color: color-mix(in srgb, var(--el-color-primary) 30%, var(--el-border-color));
-  color: var(--el-color-primary);
-  background: color-mix(in srgb, var(--el-color-primary) 6%, var(--el-bg-color));
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--el-color-primary) 10%, transparent);
-}
-
-.filter-rules-trigger--active {
-  transform: translateY(0);
-  box-shadow:
-    0 0 0 2px color-mix(in srgb, var(--el-color-primary) 14%, transparent),
-    0 4px 12px color-mix(in srgb, var(--el-color-primary) 10%, transparent);
-}
-
-/* ── Filter rules dropdown (teleported to body, needs :global) ── */
-:global(.filter-rules-dropdown) {
-  z-index: 2100;
-  width: 400px;
-  padding: 16px;
-  border-radius: var(--radius-card);
-  border: 1px solid color-mix(in srgb, var(--el-border-color) 40%, transparent);
-  background: color-mix(in srgb, var(--el-bg-color) 86%, transparent);
-  backdrop-filter: blur(24px) saturate(1.8);
-  -webkit-backdrop-filter: blur(24px) saturate(1.8);
-  box-shadow:
-    0 24px 64px color-mix(in srgb, var(--el-text-color-primary) 16%, transparent),
-    0 8px 24px color-mix(in srgb, var(--el-color-primary) 6%, transparent),
-    inset 0 1px 0 color-mix(in srgb, white 30%, transparent);
-  transform-origin: top left;
-}
-
-/* ── Rules panel transition ── */
-:global(.rules-panel-enter-active) {
-  transition:
-    opacity 0.28s cubic-bezier(0.22, 1, 0.36, 1),
-    transform 0.32s cubic-bezier(0.34, 1.56, 0.64, 1),
-    filter 0.28s ease;
-}
-
-:global(.rules-panel-leave-active) {
-  transition:
-    opacity 0.2s ease,
-    transform 0.2s cubic-bezier(0.55, 0, 1, 0.45),
-    filter 0.2s ease;
-}
-
-:global(.rules-panel-enter-from) {
-  opacity: 0;
-  transform: scale(0.92) translateY(-6px);
-  filter: blur(8px);
-}
-
-:global(.rules-panel-leave-to) {
-  opacity: 0;
-  transform: scale(0.95) translateY(-4px);
-  filter: blur(4px);
-}
-
-:global(.rules-panel-enter-to),
-:global(.rules-panel-leave-from) {
-  opacity: 1;
-  transform: scale(1) translateY(0);
-  filter: blur(0);
-}
-
-:global(.filter-rules-panel) {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-:global(.filter-rules-panel__header) {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-:global(.filter-rules-panel__title) {
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--el-text-color-primary);
-}
-
-:global(.filter-rules-panel__hint) {
-  font-size: 12px;
-  color: var(--el-text-color-secondary);
-  line-height: 1.5;
-}
-
-:global(.filter-rules-group) {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  animation: group-slide-in 0.32s cubic-bezier(0.22, 1, 0.36, 1) backwards;
-  animation-delay: calc(var(--group-index, 0) * 60ms + 80ms);
-}
-
-@keyframes group-slide-in {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-:global(.filter-rules-group__title) {
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--el-text-color-secondary);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-:global(.filter-rules-group__list) {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-:global(.filter-rule-chip) {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
-  border: 1px solid color-mix(in srgb, var(--el-border-color) 50%, transparent);
-  border-radius: var(--radius-chip);
-  background: color-mix(in srgb, var(--el-bg-color) 90%, white);
-  color: var(--el-text-color-primary);
-  font-size: 12px;
-  cursor: pointer;
-  animation: chip-pop-in 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) backwards;
-  animation-delay: calc(var(--chip-index, 0) * 25ms + 120ms);
-  transition:
-    transform 0.18s ease,
-    border-color 0.18s ease,
-    box-shadow 0.18s ease,
-    background 0.18s ease,
-    color 0.18s ease;
-}
-
-@keyframes chip-pop-in {
-  from {
-    opacity: 0;
-    transform: scale(0.85) translateY(4px);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1) translateY(0);
-  }
-}
-
-:global(.filter-rule-chip:hover) {
-  transform: translateY(-2px);
-  border-color: color-mix(in srgb, var(--el-color-primary) 30%, var(--el-border-color));
-  box-shadow: 0 6px 16px color-mix(in srgb, var(--el-color-primary) 12%, transparent);
-  background: color-mix(in srgb, var(--el-color-primary) 8%, var(--el-bg-color));
-}
-
-:global(.filter-rule-chip:active) {
-  transform: translateY(0) scale(0.96);
-  transition-duration: 0.08s;
-}
-
-:global(.filter-rule-chip__token) {
-  font-family: 'JetBrains Mono', 'Fira Code', monospace;
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--el-color-primary);
-}
-
-:global(.filter-rule-chip__label) {
-  font-size: 11.5px;
-  color: var(--el-text-color-secondary);
-}
-
-/* ── Workbench toolbar (type filter + layout) ── */
-.workbench-toolbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
+.toolbar-spacing {
   margin-top: 10px;
-  padding: 8px 14px;
-  border-radius: var(--radius-panel);
-  background: color-mix(in srgb, var(--el-bg-color) 78%, transparent);
-  backdrop-filter: blur(16px) saturate(1.4);
-  -webkit-backdrop-filter: blur(16px) saturate(1.4);
-  border: 1px solid color-mix(in srgb, var(--el-border-color) 40%, transparent);
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, white 24%, transparent),
-    0 2px 8px color-mix(in srgb, var(--el-text-color-primary) 3%, transparent);
-}
-
-.type-filter-bar {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.type-filter-group {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.type-filter-group :deep(.el-checkbox-button) {
-  --el-checkbox-button-checked-bg-color: var(--el-color-primary);
-}
-
-.type-filter-group :deep(.el-checkbox-button__inner) {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  border-radius: var(--radius-control);
-  padding: 6px 14px;
-  font-size: 13px;
-  font-weight: 500;
-  border: 1px solid color-mix(in srgb, var(--el-border-color) 50%, transparent);
-  transition:
-    background-color 0.2s ease,
-    border-color 0.2s ease,
-    color 0.2s ease,
-    box-shadow 0.2s ease,
-    transform 0.18s ease;
-}
-
-.type-filter-group :deep(.el-checkbox-button__inner:hover) {
-  transform: translateY(-1px);
-}
-
-.type-filter-group :deep(.el-checkbox-button.is-checked .el-checkbox-button__inner) {
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--el-color-primary) 24%, transparent);
-  border-color: transparent;
-}
-
-.layout-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-.layout-toolbar__icon {
-  font-size: 15px;
-  color: var(--el-text-color-secondary);
-}
-
-.layout-toolbar :deep(.el-radio-button__inner) {
-  border-radius: var(--radius-chip);
-  padding: 5px 12px;
-  font-size: 12px;
-  font-weight: 500;
-  transition:
-    background-color 0.2s ease,
-    color 0.2s ease,
-    box-shadow 0.2s ease;
 }
 
 @media (max-width: 1280px) {
-  .plugin-workbench {
-    flex-direction: column;
-  }
-
-  .workbench-header {
-    grid-template-columns: 1fr;
-  }
-
-  .plugin-workbench__side,
-  .plugin-workbench__side--visible {
-    max-width: 100%;
-    min-width: 0;
-    flex-basis: auto;
-    transform: translateY(16px) scale(0.99);
-  }
-
-  .plugin-workbench__side--visible {
-    transform: translateY(0) scale(1);
-  }
-
-  .header-actions {
-    flex-wrap: wrap;
-  }
-
   .floating-select-bar__inner {
     flex-wrap: wrap;
     justify-content: center;

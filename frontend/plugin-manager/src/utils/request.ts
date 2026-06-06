@@ -10,6 +10,79 @@ import { i18n } from '@/i18n'
 
 let lastNetworkErrorShownAt = 0
 
+type HeaderBag = Record<string, unknown> & {
+  delete?: (name: string) => void
+}
+
+function isFormDataPayload(data: unknown): data is FormData {
+  return typeof FormData !== 'undefined' && data instanceof FormData
+}
+
+function readHeader(headers: HeaderBag, name: string): unknown {
+  return headers[name] ?? headers[name.toLowerCase()]
+}
+
+function deleteHeader(headers: HeaderBag, name: string): void {
+  if (typeof headers.delete === 'function') {
+    headers.delete(name)
+    return
+  }
+  delete headers[name]
+  delete headers[name.toLowerCase()]
+}
+
+export function stripJsonContentTypeForFormData(config: InternalAxiosRequestConfig): InternalAxiosRequestConfig {
+  if (!isFormDataPayload(config.data) || !config.headers) {
+    return config
+  }
+  const headers = config.headers as HeaderBag
+  const contentType = readHeader(headers, 'Content-Type')
+  if (typeof contentType === 'string' && contentType.toLowerCase().includes('application/json')) {
+    deleteHeader(headers, 'Content-Type')
+  }
+  return config
+}
+
+function stringifyDetail(value: unknown): string {
+  if (value == null) return ''
+  if (typeof value === 'string') return value.trim()
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => stringifyDetail(item))
+      .filter(Boolean)
+      .join('; ')
+  }
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    if (typeof record.msg === 'string') {
+      const loc = Array.isArray(record.loc) ? `${record.loc.join('.')}: ` : ''
+      return `${loc}${record.msg}`.trim()
+    }
+    if (typeof record.message === 'string') return record.message.trim()
+    if (typeof record.detail === 'string') return record.detail.trim()
+    try {
+      return JSON.stringify(value)
+    } catch {
+      return String(value)
+    }
+  }
+  return String(value)
+}
+
+export function formatHttpError(error: unknown): string {
+  const anyError = error as any
+  const data = anyError?.response?.data
+  const parts = [
+    stringifyDetail(data?.detail),
+    stringifyDetail(data?.message),
+    stringifyDetail(data?.code),
+    stringifyDetail(data?.details),
+  ].filter(Boolean)
+  if (parts[0]) return parts[0]
+  return !anyError?.response && error instanceof Error ? error.message : ''
+}
+
 // 创建 axios 实例
 const service: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,
@@ -22,7 +95,7 @@ const service: AxiosInstance = axios.create({
 // 请求拦截器
 service.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
-    return config
+    return stripJsonContentTypeForFormData(config)
   },
   (error: AxiosError) => {
     console.error('Request error:', error)
@@ -64,27 +137,27 @@ service.interceptors.response.use(
 
       switch (status) {
         case 400:
-          message = data.detail || i18n.global.t('messages.badRequest')
+          message = formatHttpError(error) || i18n.global.t('messages.badRequest')
           break
         case 401:
           message = i18n.global.t('auth.unauthorized')
           break
         case 403:
-          message = data.detail || i18n.global.t('auth.forbidden')
+          message = formatHttpError(error) || i18n.global.t('auth.forbidden')
           break
         case 404:
-          message = data.detail || i18n.global.t('messages.resourceNotFound')
+          message = formatHttpError(error) || i18n.global.t('messages.resourceNotFound')
           // 404 错误不显示通用错误消息，让调用方自己处理
           ElMessage.closeAll()
           break
         case 500:
-          message = data.detail || i18n.global.t('messages.internalServerError')
+          message = formatHttpError(error) || i18n.global.t('messages.internalServerError')
           break
         case 503:
-          message = data.detail || i18n.global.t('messages.serviceUnavailable')
+          message = formatHttpError(error) || i18n.global.t('messages.serviceUnavailable')
           break
         default:
-          message = data.detail || i18n.global.t('messages.requestFailedWithStatus', { status })
+          message = formatHttpError(error) || i18n.global.t('messages.requestFailedWithStatus', { status })
       }
     } else if (error.request) {
       // 请求已发出，但没有收到响应
@@ -121,4 +194,3 @@ service.interceptors.response.use(
 )
 
 export default service
-

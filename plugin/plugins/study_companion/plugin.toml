@@ -52,8 +52,22 @@ streak_timezone = "local"
 makeup_window_days = 3
 auto_derive_from_session = true
 
+[study.awareness]
+enabled = false
+snapshot_interval_seconds = 5
+context_window_minutes = 5
+classify_mode = "title_first"
+image_max_bytes = 204800
+push_to_llm_interval_seconds = 30
+push_to_llm_mode = "read"
+
+[study_companion.communication]
+enabled = true
+
 [llm]
 llm_call_timeout_seconds = 30
+llm_vision_enabled = false
+llm_vision_max_image_px = 768
 
 [ocr_reader]
 enabled = true
@@ -176,6 +190,12 @@ permissions = ["state:read", "action:call"]
 id = "quickstart"
 title = "Study Companion Quickstart"
 entry = "surfaces/quickstart.tsx"
+permissions = ["state:read"]
+
+[[plugin.ui.docs]]
+id = "onboarding"
+title = "Study Companion Onboarding"
+entry = "onboarding.md"
 permissions = ["state:read"]
 
 [plugin.i18n]
