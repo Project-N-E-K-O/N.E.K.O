@@ -157,6 +157,16 @@ def _is_default_yui_character(character_name: str, character_data: dict) -> bool
     return _normalize_live2d_model_path(model_path) == DEFAULT_YUI_LIVE2D_MODEL_PATH
 
 
+# 历史上 free_voices["yui_cn"] 用过、现已被替换的免费 YUI 预设音色 ID。
+# 这些值仍残留在存量用户的 characters.json 里，但已不在 free_voices 白名单中，
+# 会被 cleanup_invalid_voice_ids 判为 invalid 清空 → 空 voice 落到 free/step
+# provider 的 default_voice（qingchunshaonv），导致「一直吃默认 YUI、从没手动
+# 选过音色」的免费用户在音色 ID 更替后无声掉档到通用女声。cleanup 在判 invalid
+# 前先把这些值平移到现役 yui_cn 即可兜住。将来再更替 YUI 音色时，把被替换掉的
+# 旧值追加进这个集合。
+_DEPRECATED_FREE_YUI_VOICE_IDS = frozenset({"voice-tone-R6NtLH3Hk0"})
+
+
 def _get_default_yui_free_voice_id() -> str:
     from utils.api_config_loader import get_free_voices
     from utils.language_utils import get_global_language_full
@@ -2358,6 +2368,25 @@ class ConfigManager:
             voice_id.startswith("cosyvoice-v2") or voice_id.startswith("cosyvoice-v3-")
         )
 
+    @staticmethod
+    def is_deprecated_free_yui_voice_id(voice_id) -> bool:
+        """voice_id 是否是已被替换、仍残留在存量存档里的免费 YUI 预设音色。"""
+        return bool(voice_id) and str(voice_id).strip() in _DEPRECATED_FREE_YUI_VOICE_IDS
+
+    def remap_deprecated_free_yui_voice_id(self, voice_id) -> str:
+        """废弃的免费 YUI 预设音色 → 现役 yui_cn 值。
+
+        非废弃值、或现役 yui_cn 无法解析（仍落在废弃集合）时原样返回，让调用方
+        继续走既有的 validate / 清空兜底，绝不把废弃换成另一个废弃造成死循环。
+        """
+        normalized = str(voice_id or '').strip()
+        if not self.is_deprecated_free_yui_voice_id(normalized):
+            return normalized
+        current = _get_default_yui_free_voice_id()
+        if current and current not in _DEPRECATED_FREE_YUI_VOICE_IDS:
+            return current
+        return normalized
+
     def get_tts_api_key(self, provider: str) -> str | None:
         """根据 provider 统一获取 TTS API Key，返回 None 表示未配置。
 
@@ -2859,17 +2888,35 @@ class ConfigManager:
         注意：免费预设音色在此处不会被清理（validate_voice_id 白名单放行），
         实际可用性由 core.py 运行时按 free + lanlan.app/lanlan.tech 线路决定。
 
+        清空前还会先把已废弃的免费 YUI 预设音色平移到现役 yui_cn
+        （remap_deprecated_free_yui_voice_id），避免存量用户因 YUI 音色 ID 更替
+        被判 invalid 清空、无声掉档到通用默认音色。迁移命中同样触发存盘。
+
         Returns:
             (cleaned_count, legacy_cosyvoice_names): 清理总数 及 仍在使用旧版 CosyVoice 音色的角色名列表
         """
         character_data = self.load_characters()
         cleaned_count = 0
+        migrated_count = 0
         legacy_cosyvoice_names: list[str] = []
 
         catgirls = character_data.get('猫娘', {})
         for name, config in catgirls.items():
             voice_id = get_reserved(config, 'voice_id', default='', legacy_keys=('voice_id',))
             if not voice_id:
+                continue
+            # 已废弃的免费 YUI 预设音色：先平移到现役 yui_cn，再 continue 跳过后续
+            # invalid 判定（新值在 free_voices 白名单内本就合法），保住默认 YUI 音色
+            remapped = self.remap_deprecated_free_yui_voice_id(voice_id)
+            if remapped and remapped != voice_id:
+                set_reserved(config, 'voice_id', remapped)
+                migrated_count += 1
+                logger.info(
+                    "猫娘 '%s' 的废弃 YUI 预设音色 '%s' 已平移到 '%s'",
+                    name,
+                    voice_id,
+                    remapped,
+                )
                 continue
             # 旧版 CosyVoice 音色：保留 voice_id 不清空，仅记录供通知
             if self.is_legacy_cosyvoice_id(voice_id):
@@ -2885,9 +2932,12 @@ class ConfigManager:
                 set_reserved(config, 'voice_id', '')
                 cleaned_count += 1
 
-        if cleaned_count > 0:
+        if cleaned_count > 0 or migrated_count > 0:
             self.save_characters(character_data)
-            logger.info("已清理 %d 个无效的 voice_id 引用", cleaned_count)
+            if cleaned_count > 0:
+                logger.info("已清理 %d 个无效的 voice_id 引用", cleaned_count)
+            if migrated_count > 0:
+                logger.info("已平移 %d 个废弃 YUI 预设音色", migrated_count)
 
         return cleaned_count, legacy_cosyvoice_names
 
