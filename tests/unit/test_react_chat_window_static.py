@@ -190,14 +190,21 @@ def test_desktop_compact_history_uses_workarea_not_browserwindow_viewport():
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
 
     assert "normalizeCompactDesktopWorkArea" in script
+    assert "--compact-desktop-workarea-left" in script
+    assert "--compact-desktop-workarea-right" in script
     assert "--compact-desktop-workarea-width" in script
     assert "--compact-desktop-workarea-height" in script
+    assert "var workAreaWindowX = layoutOverride.windowBounds ? Math.round(layoutOverride.windowBounds.x) : Math.round(layoutOverride.workArea.left);" in script
+    assert "Math.round(layoutOverride.workArea.left - workAreaWindowX) + 'px'" in script
+    assert "Math.round(layoutOverride.workArea.right - workAreaWindowX) + 'px'" in script
 
     desktop_history_block = styles.split(
         "body.electron-chat-window.subtitle-web-host .compact-export-history-anchor",
         1,
     )[1].split(".compact-export-history-panel", 1)[0]
 
+    assert "--compact-desktop-workarea-left" in desktop_history_block
+    assert "--compact-desktop-workarea-right" in desktop_history_block
     assert "--compact-desktop-workarea-width" in desktop_history_block
     assert "--compact-desktop-workarea-height" in desktop_history_block
     assert "vh" not in desktop_history_block
@@ -240,14 +247,20 @@ def test_compact_history_size_tokens_are_ratio_based_for_ui_optimization():
     assert "--compact-export-history-half-inline-size: calc(var(--compact-export-history-inline-size) / 2);" in anchor_block
     assert "--compact-export-history-safe-inset: calc(var(--compact-export-history-viewport-gutter) / 2);" in anchor_block
     assert "--compact-export-history-center-x: calc(var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw)) + (var(--compact-export-surface-width) / 2));" in anchor_block
+    assert "--compact-export-history-viewport-inline-start: 0px;" in anchor_block
     assert "--compact-export-history-viewport-inline-size: 100vw;" in anchor_block
+    assert "--compact-export-history-viewport-inline-end: calc(" in anchor_block
     assert "left: clamp(" in anchor_block
     assert "var(--compact-export-history-center-x)" in anchor_block
-    assert "calc(var(--compact-export-history-viewport-inline-size) - var(--compact-export-history-half-inline-size) - var(--compact-export-history-safe-inset))" in anchor_block
+    assert "calc(var(--compact-export-history-viewport-inline-start) + var(--compact-export-history-half-inline-size) + var(--compact-export-history-safe-inset))" in anchor_block
+    assert "calc(var(--compact-export-history-viewport-inline-end) - var(--compact-export-history-half-inline-size) - var(--compact-export-history-safe-inset))" in anchor_block
     assert "bottom: calc(100vh - var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) + 34px);" in anchor_block
     assert "width: var(--compact-export-history-inline-size);" in anchor_block
     assert "--compact-export-history-max-inline-size: calc(var(--compact-export-history-viewport-inline-size) - var(--compact-export-history-viewport-gutter));" in anchor_block
-    assert "--compact-export-history-viewport-inline-size: var(--compact-desktop-workarea-width, 1440px);" in desktop_history_block
+    assert "--compact-export-history-viewport-inline-start: var(--compact-desktop-workarea-left, 0px);" in desktop_history_block
+    assert "--compact-export-history-viewport-inline-end: var(--compact-desktop-workarea-right, var(--compact-desktop-workarea-width, 1440px));" in desktop_history_block
+    assert "--compact-export-history-viewport-inline-size: calc(" in desktop_history_block
+    assert "var(--compact-export-history-viewport-inline-end) - var(--compact-export-history-viewport-inline-start)" in desktop_history_block
     assert "--compact-export-history-max-inline-size: calc(" in desktop_history_block
     assert "var(--compact-export-history-viewport-inline-size) - var(--compact-export-history-viewport-gutter)" in desktop_history_block
     assert "max-width: var(--compact-history-bubble-max-ratio, var(--compact-export-history-bubble-max-ratio));" in bubble_block

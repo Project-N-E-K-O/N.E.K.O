@@ -2308,7 +2308,11 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
     min(calc(var(--compact-export-surface-width) * 1.18), 63vh)
   );
   --compact-export-history-viewport-gutter: 24px;
+  --compact-export-history-viewport-inline-start: 0px;
   --compact-export-history-viewport-inline-size: 100vw;
+  --compact-export-history-viewport-inline-end: calc(
+    var(--compact-export-history-viewport-inline-start) + var(--compact-export-history-viewport-inline-size)
+  );
   --compact-export-history-width-ratio: 1.36;
   --compact-export-history-max-inline-size: calc(var(--compact-export-history-viewport-inline-size) - var(--compact-export-history-viewport-gutter));
   --compact-export-history-inline-size: min(
@@ -2319,9 +2323,9 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   --compact-export-history-safe-inset: calc(var(--compact-export-history-viewport-gutter) / 2);
   --compact-export-history-center-x: calc(var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw)) + (var(--compact-export-surface-width) / 2));
   left: clamp(
-    calc(var(--compact-export-history-half-inline-size) + var(--compact-export-history-safe-inset)),
+    calc(var(--compact-export-history-viewport-inline-start) + var(--compact-export-history-half-inline-size) + var(--compact-export-history-safe-inset)),
     var(--compact-export-history-center-x),
-    calc(var(--compact-export-history-viewport-inline-size) - var(--compact-export-history-half-inline-size) - var(--compact-export-history-safe-inset))
+    calc(var(--compact-export-history-viewport-inline-end) - var(--compact-export-history-half-inline-size) - var(--compact-export-history-safe-inset))
   );
   bottom: calc(100vh - var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) + 34px);
   /* Geometry-critical: derive collapse compensation from control metrics; do not animate layout properties here. */
@@ -2360,7 +2364,11 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
     --compact-history-slot-height,
     min(calc(var(--compact-export-surface-width) * 1.18), calc(var(--compact-desktop-workarea-height, 900px) * 0.63))
   );
-  --compact-export-history-viewport-inline-size: var(--compact-desktop-workarea-width, 1440px);
+  --compact-export-history-viewport-inline-start: var(--compact-desktop-workarea-left, 0px);
+  --compact-export-history-viewport-inline-end: var(--compact-desktop-workarea-right, var(--compact-desktop-workarea-width, 1440px));
+  --compact-export-history-viewport-inline-size: calc(
+    var(--compact-export-history-viewport-inline-end) - var(--compact-export-history-viewport-inline-start)
+  );
   --compact-export-history-max-inline-size: calc(
     var(--compact-export-history-viewport-inline-size) - var(--compact-export-history-viewport-gutter)
   );

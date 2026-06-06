@@ -1589,6 +1589,8 @@
         document.documentElement.style.removeProperty('--desktop-compact-surface-top');
         document.documentElement.style.removeProperty('--desktop-compact-surface-width');
         document.documentElement.style.removeProperty('--desktop-compact-surface-height');
+        document.documentElement.style.removeProperty('--compact-desktop-workarea-left');
+        document.documentElement.style.removeProperty('--compact-desktop-workarea-right');
         document.documentElement.style.removeProperty('--compact-desktop-workarea-width');
         document.documentElement.style.removeProperty('--compact-desktop-workarea-height');
         compactSurfaceAnchorSnapshot = '';
@@ -1651,9 +1653,14 @@
             document.documentElement.style.setProperty('--desktop-compact-surface-height', Math.round(target.height || COMPACT_SURFACE_DEFAULT_HEIGHT) + 'px');
         }
         if (layoutOverride && layoutOverride.workArea) {
+            var workAreaWindowX = layoutOverride.windowBounds ? Math.round(layoutOverride.windowBounds.x) : Math.round(layoutOverride.workArea.left);
+            document.documentElement.style.setProperty('--compact-desktop-workarea-left', Math.round(layoutOverride.workArea.left - workAreaWindowX) + 'px');
+            document.documentElement.style.setProperty('--compact-desktop-workarea-right', Math.round(layoutOverride.workArea.right - workAreaWindowX) + 'px');
             document.documentElement.style.setProperty('--compact-desktop-workarea-width', Math.round(layoutOverride.workArea.width) + 'px');
             document.documentElement.style.setProperty('--compact-desktop-workarea-height', Math.round(layoutOverride.workArea.height) + 'px');
         } else {
+            document.documentElement.style.removeProperty('--compact-desktop-workarea-left');
+            document.documentElement.style.removeProperty('--compact-desktop-workarea-right');
             document.documentElement.style.removeProperty('--compact-desktop-workarea-width');
             document.documentElement.style.removeProperty('--compact-desktop-workarea-height');
         }
