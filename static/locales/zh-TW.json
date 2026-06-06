@@ -537,7 +537,7 @@
         "modelValidationFailed": "模型驗證失敗: {{error}}",
         "modelConfigInvalid": "模型配置無效",
         "missingModelFiles": "缺少必需的模型文件",
-        "modelTooLarge": "模型大小超出限製",
+        "modelTooLarge": "模型大小超出限制",
         "compressionInProgress": "正在壓縮模型文件...",
         "decompressionInProgress": "正在解壓模型文件...",
         "compressionFailed": "壓縮失敗: {{error}}",
