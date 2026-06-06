@@ -32,21 +32,40 @@ def atomic_write_bytes(*, target: Path, payload: bytes, prefix: str) -> None:
             dir=str(target.parent),
         )
     except OSError as exc:
+        logger.exception(
+            "Failed to create temporary config file: target={}, parent={}, prefix={}, err_type={}, err={}",
+            target,
+            target.parent,
+            prefix,
+            type(exc).__name__,
+            str(exc),
+        )
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to create temporary file for {target}",
+            detail=f"Failed to create temporary file for {target}: {type(exc).__name__}: {exc}",
         ) from exc
 
     temp_file_path = Path(temp_path)
+    stage = "write_temp"
     try:
         with os.fdopen(temp_fd, "wb") as temp_file:
             temp_file.write(payload)
             temp_file.flush()
             os.fsync(temp_file.fileno())
 
+        stage = "replace"
         os.replace(temp_file_path, target)
+        stage = "fsync_parent"
         _fsync_parent_dir(target)
     except (OSError, RuntimeError, ValueError, TypeError) as exc:
+        logger.exception(
+            "Failed to persist config file: target={}, temp_path={}, stage={}, err_type={}, err={}",
+            target,
+            temp_file_path,
+            stage,
+            type(exc).__name__,
+            str(exc),
+        )
         try:
             if temp_file_path.exists():
                 temp_file_path.unlink()
@@ -58,7 +77,7 @@ def atomic_write_bytes(*, target: Path, payload: bytes, prefix: str) -> None:
             )
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to persist config file {target}",
+            detail=f"Failed to persist config file {target} while {stage}: {type(exc).__name__}: {exc}",
         ) from exc
 
 
