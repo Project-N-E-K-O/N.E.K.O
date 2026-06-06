@@ -464,6 +464,17 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert "via: 'local'" in source
     assert "return dispatchedLocal;" in source
     assert "assetUrl: options.assetUrl || _getNekoIdleReturnAssetUrl(_NEKO_IDLE_TIER_CAT1)" in source
+    mirror_state_block = source.split("function _setNekoIdleCat1CompactMirrorActive", 1)[1].split(
+        "const surfaceScreenRect = _getNekoIdleScreenRectFromCompactSurfaceRect(options.surfaceRect)",
+        1,
+    )[0]
+    assert "inactiveReason === 'compact-surface-settled'" in mirror_state_block
+    assert "clearTimeout(container.__nekoIdleCat1CompactMirrorSettleTimer);" in mirror_state_block
+    immediate_clear_index = mirror_state_block.rindex("clearTimeout(container.__nekoIdleCat1CompactMirrorSettleTimer);")
+    assert mirror_state_block.index("inactiveReason === 'compact-surface-settled'") < immediate_clear_index
+    assert immediate_clear_index < mirror_state_block.index(
+        "if (!container.__nekoIdleCat1CompactMirrorActive) return true;"
+    )
     assert "_syncNekoIdleCat1CompactMirrorReaction(button, container, reactionSrc, 'cat1-sound-reaction')" in source
     assert "_getNekoIdleGifDurationMs(reactionSrc)" in source
     assert "const remainingMs = Math.max(0, (Number(durationMs) || 0) - elapsedMs);" in source

@@ -1436,6 +1436,10 @@ function _setNekoIdleCat1CompactMirrorActive(button, container, active, options 
             }
             return true;
         }
+        if (container.__nekoIdleCat1CompactMirrorSettleTimer) {
+            clearTimeout(container.__nekoIdleCat1CompactMirrorSettleTimer);
+            container.__nekoIdleCat1CompactMirrorSettleTimer = 0;
+        }
         if (!container.__nekoIdleCat1CompactMirrorActive) return true;
         container.__nekoIdleCat1CompactMirrorActive = false;
         container.classList.remove('is-cat1-compact-mirror-active');
