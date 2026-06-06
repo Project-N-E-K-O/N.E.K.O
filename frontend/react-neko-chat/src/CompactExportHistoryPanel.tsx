@@ -185,33 +185,20 @@ function getCompactHistoryBubbleTone(
   const richContent = hasRichCompactHistoryContent(message);
   const seed = message.id || `${message.role}:${message.createdAt ?? message.time}:${index}`;
   const hash = getStableCompactHistoryHash(seed);
-  const widthSteps = roleGroup === 'system'
-    ? ['84%', '90%', '94%']
-    : richContent
-      ? ['76%', '82%', '88%']
-      : ['70%', '78%', '86%', '92%'];
-  const offsetSteps = richContent ? [0, 6, 10] : [0, 8, 14, 20];
-  const baseOffset = offsetSteps[Math.floor(hash / 7) % offsetSteps.length];
-  const signedOffset = roleGroup === 'user'
-    ? -baseOffset
-    : roleGroup === 'assistant'
-      ? baseOffset
-      : 0;
   const sameGroupGaps = ['4px', '7px', '10px'];
   const switchGroupGaps = ['15px', '19px', '23px'];
   const gapSteps = group === 'same' ? sameGroupGaps : group === 'switch' ? switchGroupGaps : ['0px'];
-  const rotateSteps = richContent || roleGroup === 'system'
-    ? ['0deg']
-    : ['-0.5deg', '-0.25deg', '0deg', '0.25deg', '0.5deg'];
 
   return {
     group,
     complexity: richContent ? 'rich' : 'plain',
     style: {
-      '--compact-history-bubble-max-ratio': widthSteps[hash % widthSteps.length],
-      '--compact-history-stagger-x': `${signedOffset}px`,
+      // 去掉随机宽度 / 水平偏移 / 旋转（强迫症友好）：气泡规整、宽度统一（比对话条窄约 48px）、不歪扭。
+      // 仅保留按分组的垂直间距（gap-before）——那是消息分组节奏，不是歪扭。
+      '--compact-history-bubble-max-ratio': 'calc(100% - 48px)',
+      '--compact-history-stagger-x': '0px',
       '--compact-history-gap-before': gapSteps[Math.floor(hash / 31) % gapSteps.length],
-      '--compact-history-rotate': rotateSteps[Math.floor(hash / 127) % rotateSteps.length],
+      '--compact-history-rotate': '0deg',
     },
   };
 }

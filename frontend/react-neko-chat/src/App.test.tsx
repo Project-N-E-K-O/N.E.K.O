@@ -690,9 +690,11 @@ describe('App', () => {
     expect(second).toHaveAttribute('data-compact-history-group', 'same');
     expect(user).toHaveAttribute('data-compact-history-group', 'switch');
     expect(image).toHaveAttribute('data-compact-history-complexity', 'rich');
-    expect(second?.style.getPropertyValue('--compact-history-bubble-max-ratio')).toMatch(/%$/);
-    expect(second?.style.getPropertyValue('--compact-history-stagger-x')).toMatch(/px$/);
-    expect(user?.style.getPropertyValue('--compact-history-stagger-x')).toMatch(/^-?\d+px$/);
+    // 去随机后：气泡宽度统一（比对话条窄约 48px）、无水平偏移、无旋转——规整不歪扭。
+    expect(second?.style.getPropertyValue('--compact-history-bubble-max-ratio')).toBe('calc(100% - 48px)');
+    expect(second?.style.getPropertyValue('--compact-history-stagger-x')).toBe('0px');
+    expect(user?.style.getPropertyValue('--compact-history-stagger-x')).toBe('0px');
+    expect(user?.style.getPropertyValue('--compact-history-rotate')).toBe('0deg');
     const initialHistoryMessageCount = 4;
     expect(first?.style.getPropertyValue('--compact-history-enter-delay')).toBe(
       computeCompactHistoryEnterDelay(0, initialHistoryMessageCount),
