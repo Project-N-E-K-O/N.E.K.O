@@ -331,11 +331,14 @@ function handleError() {
 
 async function switchToMobileModeForHostedSurface() {
   const api = window.nekoWindowControl
-  if (!api || typeof api.switchToMobileMode !== 'function') return
+  if (!api || typeof api.switchToMobileMode !== 'function') {
+    throw new Error('switch_to_mobile_mode_unavailable')
+  }
   try {
-    await api.switchToMobileMode()
+    return await api.switchToMobileMode()
   } catch (caught) {
     console.warn('[HostedSurfaceFrame] 切换手机版失败', caught)
+    throw caught
   }
 }
 
@@ -428,10 +431,6 @@ function handleMessage(event: MessageEvent) {
     if (url) openExternalUrl(url)
     return
   }
-  if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-switch-mobile-mode') {
-    void switchToMobileModeForHostedSurface()
-    return
-  }
   if (data && typeof data === 'object' && data.type === 'neko-hosted-surface-request') {
     handleHostedRequest(data)
   }
@@ -471,6 +470,11 @@ async function handleHostedRequest(data: any) {
         locale: String(locale.value),
       })
       respond({ ok: true, result: context })
+      return
+    }
+    if (method === 'switchToMobileMode') {
+      const result = await switchToMobileModeForHostedSurface()
+      respond({ ok: true, result })
       return
     }
     respond({ ok: false, error: `Unsupported hosted surface method: ${method}` })

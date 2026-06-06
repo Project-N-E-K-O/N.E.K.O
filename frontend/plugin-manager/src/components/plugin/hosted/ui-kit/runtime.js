@@ -1017,6 +1017,7 @@ const api = {
     const context = await requestHost('refresh', {});
     return refreshHostedPayload(context);
   },
+  switchToMobileMode() { return requestHost('switchToMobileMode', {}); },
 };
 function ActionButton(props) {
   const action = props.action || {};

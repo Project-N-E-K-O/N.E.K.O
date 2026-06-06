@@ -99,7 +99,7 @@ ${escapeScriptContent(uiKit.runtime)}
     if (!window.NekoUiKit || __requiredUiKitApis.some((name) => typeof window.NekoUiKit[name] !== 'function')) {
       throw new Error('N.E.K.O UI Kit failed to initialize with the required hosted TSX APIs.');
     }
-    if (!window.NekoUiKit.api || typeof window.NekoUiKit.api.call !== 'function' || typeof window.NekoUiKit.api.refresh !== 'function') {
+    if (!window.NekoUiKit.api || typeof window.NekoUiKit.api.call !== 'function' || typeof window.NekoUiKit.api.refresh !== 'function' || typeof window.NekoUiKit.api.switchToMobileMode !== 'function') {
       throw new Error('N.E.K.O UI Kit failed to initialize the hosted API bridge.');
     }
     function __normalizeHostedPayload(context) {

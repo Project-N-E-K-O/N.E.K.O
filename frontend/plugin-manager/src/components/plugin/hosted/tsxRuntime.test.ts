@@ -215,7 +215,7 @@ describe('hosted TSX document runtime', () => {
     expect(root.textContent).toContain('ok')
   })
 
-  it('bridges api.call and api.refresh through parent postMessage', async () => {
+  it('bridges hosted api methods through parent postMessage', async () => {
     const { root, messages } = executeHostedDocument(`
       export default function Panel(props) {
         const [done, setDone] = props.useLocalState("done", "idle")
@@ -223,6 +223,7 @@ describe('hosted TSX document runtime', () => {
           <button id="run" onClick={async () => {
             await props.api.call("do_it", { value: 1 })
             await props.api.refresh()
+            await props.api.switchToMobileMode()
             setDone("done")
           }}>{done}</button>
         )
@@ -235,6 +236,7 @@ describe('hosted TSX document runtime', () => {
 
     expect(messages.some((message) => message.method === 'call' && message.payload?.actionId === 'do_it')).toBe(true)
     expect(messages.some((message) => message.method === 'refresh')).toBe(true)
+    expect(messages.some((message) => message.method === 'switchToMobileMode')).toBe(true)
     expect(root.querySelector('#run')?.textContent).toBe('done')
   })
 

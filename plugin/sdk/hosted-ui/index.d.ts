@@ -28,6 +28,7 @@ export type HostedAction = {
 export type HostedApi = {
   call: (actionId: string, args?: Record<string, any>) => Promise<any>
   refresh: () => Promise<any>
+  switchToMobileMode: () => Promise<any>
 }
 
 export type HostedI18n = {
