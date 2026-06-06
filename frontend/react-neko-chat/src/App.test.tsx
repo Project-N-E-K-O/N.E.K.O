@@ -44,12 +44,6 @@ describe('App', () => {
     return exportButton!;
   };
 
-  const waitForCompactHistoryDragLayerToClear = async () => {
-    await waitFor(() => {
-      expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toBeNull();
-    });
-  };
-
   const mockHoverCapableMatchMedia = (hoverCapable = true) => {
     window.matchMedia = vi.fn().mockImplementation((query: string) => ({
       matches: hoverCapable && query === '(hover: hover) and (pointer: fine)',
@@ -63,50 +57,17 @@ describe('App', () => {
     }));
   };
 
-  const setupAvatarDropBounds = () => {
-    const live2dContainer = document.createElement('div');
-    live2dContainer.id = 'live2d-container';
-    Object.defineProperty(live2dContainer, 'getClientRects', {
-      configurable: true,
-      value: () => [{ width: 100, height: 100 }],
-    });
-    document.body.appendChild(live2dContainer);
-
-    Object.assign(window, {
-      live2dManager: {
-        currentModel: {},
-        getModelScreenBounds: () => ({
-          left: 100,
-          right: 200,
-          top: 100,
-          bottom: 200,
-          width: 100,
-          height: 100,
-        }),
-      },
-    });
-
-    return () => {
-      delete (window as Window & { live2dManager?: unknown }).live2dManager;
-      live2dContainer.remove();
-    };
-  };
-
-  const setupDesktopAvatarDropBounds = () => {
-    const hostWindow = window as Window & {
-      __nekoDesktopAvatarBounds?: unknown;
-    };
-    hostWindow.__nekoDesktopAvatarBounds = {
-      left: 100,
-      right: 200,
-      top: 100,
-      bottom: 200,
-      width: 100,
-      height: 100,
-    };
-    return () => {
-      delete hostWindow.__nekoDesktopAvatarBounds;
-    };
+  const mockMobileMatchMedia = (mobile = true) => {
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: mobile && query === '(max-width: 820px)',
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    }));
   };
 
   const renderInputApp = (
@@ -311,7 +272,7 @@ describe('App', () => {
       });
 
       await waitFor(() => {
-        expect(document.documentElement.style.getPropertyValue('--compact-surface-resize-width')).toBe('430px');
+        expect(document.documentElement.style.getPropertyValue('--compact-surface-resize-width')).toBe('280px');
       });
       fireEvent.pointerUp(rightHandle!, {
         pointerId: 22,
@@ -747,9 +708,11 @@ describe('App', () => {
     expect(second).toHaveAttribute('data-compact-history-group', 'same');
     expect(user).toHaveAttribute('data-compact-history-group', 'switch');
     expect(image).toHaveAttribute('data-compact-history-complexity', 'rich');
-    expect(second?.style.getPropertyValue('--compact-history-bubble-max-ratio')).toMatch(/%$/);
-    expect(second?.style.getPropertyValue('--compact-history-stagger-x')).toMatch(/px$/);
-    expect(user?.style.getPropertyValue('--compact-history-stagger-x')).toMatch(/^-?\d+px$/);
+    // 去随机后：气泡宽度统一（比对话条窄约 48px）、无水平偏移、无旋转——规整不歪扭。
+    expect(second?.style.getPropertyValue('--compact-history-bubble-max-ratio')).toBe('calc(100% - 48px)');
+    expect(second?.style.getPropertyValue('--compact-history-stagger-x')).toBe('0px');
+    expect(user?.style.getPropertyValue('--compact-history-stagger-x')).toBe('0px');
+    expect(user?.style.getPropertyValue('--compact-history-rotate')).toBe('0deg');
     const initialHistoryMessageCount = 4;
     expect(first?.style.getPropertyValue('--compact-history-enter-delay')).toBe(
       computeCompactHistoryEnterDelay(0, initialHistoryMessageCount),
@@ -936,914 +899,36 @@ describe('App', () => {
     }
   });
 
-  it('starts compact history image drag without selecting the source bubble', async () => {
-    const imageMessage = parseChatMessage({
-      id: 'assistant-history-image-drag',
+  it('keeps compact history bubbles selectable by click while leaving text selectable', async () => {
+    const textMessage = parseChatMessage({
+      id: 'assistant-history-selectable-text',
       role: 'assistant',
       author: 'Neko',
       time: '10:00',
       createdAt: 1,
-      blocks: [{ type: 'image', url: 'data:image/png;base64,aW1hZ2U=', alt: 'Memory image' }],
+      blocks: [{ type: 'text', text: 'Select this text or click to pick the bubble.' }],
       status: 'sent',
     });
 
     const { container } = render(
-      <App chatSurfaceMode="compact" compactChatState="input" messages={[imageMessage]} />,
+      <App chatSurfaceMode="compact" compactChatState="input" messages={[textMessage]} />,
     );
 
     await clickCompactExportTool();
     const message = container.querySelector<HTMLElement>('.compact-export-history-message')!;
     const bubble = container.querySelector<HTMLElement>('.compact-export-history-bubble')!;
-    const imageBlock = container.querySelector<HTMLElement>('.message-block-image')!;
-    vi.spyOn(bubble, 'getBoundingClientRect').mockReturnValue({
-      left: 12,
-      top: 18,
-      right: 332,
-      bottom: 138,
-      width: 320,
-      height: 120,
-      x: 12,
-      y: 18,
-      toJSON: () => ({}),
-    } as DOMRect);
-    vi.spyOn(imageBlock, 'getBoundingClientRect').mockReturnValue({
-      left: 40,
-      top: 52,
-      right: 120,
-      bottom: 100,
-      width: 80,
-      height: 48,
-      x: 40,
-      y: 52,
-      toJSON: () => ({}),
-    } as DOMRect);
 
-    fireEvent.pointerDown(imageBlock, {
-      pointerId: 31,
-      clientX: 50,
-      clientY: 62,
-      button: 0,
-      buttons: 1,
-      pointerType: 'mouse',
-    });
-    fireEvent.pointerMove(bubble, {
-      pointerId: 31,
-      clientX: 78,
-      clientY: 74,
-      buttons: 1,
-      pointerType: 'mouse',
-    });
+    // The bubble no longer captures pointers for a drag subsystem, so its text
+    // content stays in the DOM and selectable; only onClick / onKeyDown drive
+    // the export-selection toggle.
+    expect(bubble.textContent).toContain('Select this text or click to pick the bubble.');
+    expect(bubble).toHaveAttribute('role', 'button');
 
-    const dragLayer = document.body.querySelector<HTMLElement>('[data-compact-drag-layer="true"]');
-    expect(dragLayer).not.toBeNull();
-    expect(dragLayer).toHaveAttribute('data-compact-drag-type', 'image');
-    expect(dragLayer).toHaveAttribute('data-compact-drag-message-id', 'assistant-history-image-drag');
-    expect(dragLayer).toHaveAttribute('data-compact-drag-block-index', '0');
-    expect(dragLayer?.parentElement).toBe(document.body);
-    expect(dragLayer?.style.getPropertyValue('--compact-history-drag-left')).toBe('68px');
-    expect(dragLayer?.style.getPropertyValue('--compact-history-drag-top')).toBe('64px');
-    expect(dragLayer?.style.getPropertyValue('--compact-history-drag-width')).toBe('80px');
-    expect(dragLayer?.style.getPropertyValue('--compact-history-drag-height')).toBe('48px');
-    expect(message).toHaveAttribute('data-compact-history-drag-source', 'image');
-    expect(message).not.toHaveClass('is-selected');
-
-    fireEvent.pointerUp(bubble, {
-      pointerId: 31,
-      clientX: 78,
-      clientY: 74,
-      buttons: 0,
-      pointerType: 'mouse',
-    });
     fireEvent.click(bubble);
-
-    expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toHaveAttribute('data-compact-drag-phase', 'returning');
-    await waitForCompactHistoryDragLayerToClear();
-    expect(message).not.toHaveClass('is-selected');
-  });
-
-  it('emits compact history drag geometry state for the desktop bridge', async () => {
-    const onCompactHistoryDragStateChange = vi.fn();
-    const imageMessage = parseChatMessage({
-      id: 'assistant-history-drag-geometry',
-      role: 'assistant',
-      author: 'Neko',
-      time: '10:00',
-      createdAt: 1,
-      blocks: [{ type: 'image', url: 'data:image/png;base64,aW1hZ2U=', alt: 'Memory image' }],
-      status: 'sent',
-    });
-
-    const { container, rerender } = render(
-      <App
-        chatSurfaceMode="compact"
-        compactChatState="input"
-        messages={[imageMessage]}
-        onCompactHistoryDragStateChange={onCompactHistoryDragStateChange}
-      />,
-    );
-
-    await clickCompactExportTool();
-    const message = container.querySelector<HTMLElement>('.compact-export-history-message')!;
-    const bubble = container.querySelector<HTMLElement>('.compact-export-history-bubble')!;
-    const imageBlock = container.querySelector<HTMLElement>('.message-block-image')!;
-    vi.spyOn(message, 'getBoundingClientRect').mockReturnValue({
-      left: 8,
-      top: 12,
-      right: 348,
-      bottom: 156,
-      width: 340,
-      height: 144,
-      x: 8,
-      y: 12,
-      toJSON: () => ({}),
-    } as DOMRect);
-    vi.spyOn(imageBlock, 'getBoundingClientRect').mockReturnValue({
-      left: 40,
-      top: 52,
-      right: 120,
-      bottom: 100,
-      width: 80,
-      height: 48,
-      x: 40,
-      y: 52,
-      toJSON: () => ({}),
-    } as DOMRect);
-
-    fireEvent.pointerDown(imageBlock, {
-      pointerId: 42,
-      clientX: 50,
-      clientY: 62,
-      button: 0,
-      buttons: 1,
-      pointerType: 'mouse',
-    });
-    fireEvent.pointerMove(bubble, {
-      pointerId: 42,
-      clientX: 78,
-      clientY: 74,
-      buttons: 1,
-      pointerType: 'mouse',
-    });
-
-    const activeState = onCompactHistoryDragStateChange.mock.calls
-      .map(([payload]) => payload)
-      .find(payload => payload.active === true);
-    expect(activeState).toEqual(expect.objectContaining({
-      active: true,
-      phase: 'dragging',
-      dragType: 'image',
-      messageId: 'assistant-history-drag-geometry',
-      blockIndex: 0,
-      needsDesktopBounds: false,
-    }));
-    expect(activeState).toEqual(expect.objectContaining({
-      sessionId: expect.stringMatching(/^compact-history-drag-/),
-      seq: expect.any(Number),
-      pointerClient: { clientX: 78, clientY: 74 },
-      sourceFrameRect: expect.objectContaining({ left: 8, top: 12, width: 340, height: 144 }),
-      connectionVisualRect: expect.objectContaining({ width: expect.any(Number), height: expect.any(Number) }),
-      dragHitRect: expect.objectContaining({ left: 58, top: 54, width: 100, height: 68 }),
-    }));
-    expect(activeState?.dragVisualRect).toEqual(expect.objectContaining({ left: 68, top: 64 }));
-    expect(activeState?.dragVisualRect.width).toBeGreaterThanOrEqual(80);
-    expect(activeState?.dragVisualRect.height).toBeGreaterThanOrEqual(47);
-
-    act(() => {
-      window.dispatchEvent(new CustomEvent('neko:compact-history-drag-rebase', {
-        detail: {
-          deltaX: 30,
-          deltaY: 20,
-        },
-      }));
-      window.dispatchEvent(new CustomEvent('neko:compact-history-drag-rebase', {
-        detail: {
-          sessionId: 'compact-history-drag-other',
-          deltaX: 30,
-          deltaY: 20,
-        },
-      }));
-    });
-    expect(document.body.querySelector<HTMLElement>('[data-compact-drag-layer="true"]')?.style.getPropertyValue('--compact-history-drag-left')).toBe('68px');
-    expect(document.body.querySelector<HTMLElement>('[data-compact-drag-layer="true"]')?.style.getPropertyValue('--compact-history-drag-top')).toBe('64px');
-
-    act(() => {
-      window.dispatchEvent(new CustomEvent('neko:compact-history-drag-rebase', {
-        detail: {
-          sessionId: activeState?.sessionId,
-          deltaX: 30,
-          deltaY: 20,
-        },
-      }));
-    });
-
-    const rebasedActiveStates = onCompactHistoryDragStateChange.mock.calls
-      .map(([payload]) => payload)
-      .filter(payload => payload.active === true);
-    const rebasedState = rebasedActiveStates[rebasedActiveStates.length - 1];
-    expect(rebasedState).toEqual(expect.objectContaining({
-      pointerClient: { clientX: 108, clientY: 94 },
-      sourceFrameRect: expect.objectContaining({ left: 38, top: 32, width: 340, height: 144 }),
-      dragHitRect: expect.objectContaining({ left: 88, top: 74, width: 100, height: 68 }),
-    }));
-    expect(rebasedState?.dragVisualRect).toEqual(expect.objectContaining({ left: 98, top: 84 }));
-    const dragLayer = document.body.querySelector<HTMLElement>('[data-compact-drag-layer="true"]');
-    expect(dragLayer?.style.getPropertyValue('--compact-history-drag-left')).toBe('98px');
-    expect(dragLayer?.style.getPropertyValue('--compact-history-drag-top')).toBe('84px');
-    rerender(
-      <App
-        chatSurfaceMode="compact"
-        compactChatState="input"
-        messages={[imageMessage]}
-        onCompactHistoryDragStateChange={onCompactHistoryDragStateChange}
-      />,
-    );
-    expect(dragLayer?.style.getPropertyValue('--compact-history-drag-left')).toBe('98px');
-    expect(dragLayer?.style.getPropertyValue('--compact-history-drag-top')).toBe('84px');
-
-    fireEvent.pointerUp(window, {
-      pointerId: 42,
-      clientX: 108,
-      clientY: 94,
-      buttons: 0,
-      pointerType: 'mouse',
-    });
-
-    await waitFor(() => {
-      expect(onCompactHistoryDragStateChange.mock.calls.some(([payload]) => (
-        payload.active === false && payload.sessionId === activeState?.sessionId
-      ))).toBe(true);
-    });
-  });
-
-  it('starts compact history bubble drag without changing selection', async () => {
-    const textMessage = parseChatMessage({
-      id: 'assistant-history-bubble-drag',
-      role: 'assistant',
-      author: 'Neko',
-      time: '10:00',
-      createdAt: 1,
-      blocks: [{ type: 'text', text: 'Drag this whole bubble.' }],
-      status: 'sent',
-    });
-
-    const { container } = render(
-      <App chatSurfaceMode="compact" compactChatState="input" messages={[textMessage]} />,
-    );
-
-    await clickCompactExportTool();
-    const message = container.querySelector<HTMLElement>('.compact-export-history-message')!;
-    const bubble = container.querySelector<HTMLElement>('.compact-export-history-bubble')!;
-
-    fireEvent.pointerDown(bubble, {
-      pointerId: 32,
-      clientX: 36,
-      clientY: 36,
-      button: 0,
-      buttons: 1,
-      pointerType: 'mouse',
-    });
-    fireEvent.pointerMove(bubble, {
-      pointerId: 32,
-      clientX: 74,
-      clientY: 39,
-      buttons: 1,
-      pointerType: 'mouse',
-    });
-
-    const dragLayer = document.body.querySelector<HTMLElement>('[data-compact-drag-layer="true"]');
-    const anchor = container.querySelector<HTMLElement>('.compact-export-history-anchor')!;
-    expect(dragLayer).not.toBeNull();
-    expect(dragLayer).toHaveAttribute('data-compact-drag-type', 'bubble');
-    expect(dragLayer).toHaveAttribute('data-compact-drag-message-id', 'assistant-history-bubble-drag');
-    expect(dragLayer?.parentElement).toBe(document.body);
-    expect(anchor.contains(dragLayer)).toBe(false);
-    expect(message).toHaveAttribute('data-compact-history-drag-source', 'bubble');
-    expect(message).not.toHaveClass('is-selected');
-
-    fireEvent.pointerUp(bubble, {
-      pointerId: 32,
-      clientX: 74,
-      clientY: 39,
-      buttons: 0,
-      pointerType: 'mouse',
-    });
-
-    expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toHaveAttribute('data-compact-drag-phase', 'returning');
-    await waitForCompactHistoryDragLayerToClear();
-    expect(message).not.toHaveClass('is-selected');
-  });
-
-  it('clears compact history drag when the pointer is released outside the bubble', async () => {
-    const textMessage = parseChatMessage({
-      id: 'assistant-history-global-pointer-up',
-      role: 'assistant',
-      author: 'Neko',
-      time: '10:00',
-      createdAt: 1,
-      blocks: [{ type: 'text', text: 'Release this outside the bubble.' }],
-      status: 'sent',
-    });
-
-    const { container } = render(
-      <App chatSurfaceMode="compact" compactChatState="input" messages={[textMessage]} />,
-    );
-
-    await clickCompactExportTool();
-    const message = container.querySelector<HTMLElement>('.compact-export-history-message')!;
-    const bubble = container.querySelector<HTMLElement>('.compact-export-history-bubble')!;
-
-    fireEvent.pointerDown(bubble, {
-      pointerId: 37,
-      clientX: 36,
-      clientY: 36,
-      button: 0,
-      buttons: 1,
-      pointerType: 'mouse',
-    });
-    fireEvent.pointerMove(bubble, {
-      pointerId: 37,
-      clientX: 78,
-      clientY: 39,
-      buttons: 1,
-      pointerType: 'mouse',
-    });
-
-    expect(document.body.querySelector('[data-compact-drag-layer="true"]')).not.toBeNull();
-
-    fireEvent.pointerUp(window, {
-      pointerId: 37,
-      clientX: 96,
-      clientY: 42,
-      buttons: 0,
-      pointerType: 'mouse',
-    });
-    fireEvent.click(bubble);
-
-    expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toHaveAttribute('data-compact-drag-phase', 'returning');
-    await waitForCompactHistoryDragLayerToClear();
-    expect(message).not.toHaveClass('is-selected');
-  });
-
-  it('returns compact history text bubble drops on the avatar range without sending', async () => {
-    const cleanupAvatar = setupAvatarDropBounds();
-    const onCompactHistoryDrop = vi.fn();
-    const textMessage = parseChatMessage({
-      id: 'assistant-history-drop-text',
-      role: 'assistant',
-      author: 'Neko',
-      time: '10:00',
-      createdAt: 1,
-      blocks: [{ type: 'text', text: 'Send this memory again.' }],
-      status: 'sent',
-    });
-
-    try {
-      const { container } = render(
-        <App
-          chatSurfaceMode="compact"
-          compactChatState="input"
-          messages={[textMessage]}
-          onCompactHistoryDrop={onCompactHistoryDrop}
-        />,
-      );
-
-      await clickCompactExportTool();
-      const message = container.querySelector<HTMLElement>('.compact-export-history-message')!;
-      const bubble = container.querySelector<HTMLElement>('.compact-export-history-bubble')!;
-
-      fireEvent.pointerDown(bubble, {
-        pointerId: 38,
-        clientX: 36,
-        clientY: 36,
-        button: 0,
-        buttons: 1,
-        pointerType: 'mouse',
-      });
-      fireEvent.pointerMove(bubble, {
-        pointerId: 38,
-        clientX: 150,
-        clientY: 150,
-        buttons: 1,
-        pointerType: 'mouse',
-      });
-
-      const dragLayer = document.body.querySelector<HTMLElement>('[data-compact-drag-layer="true"]');
-      expect(dragLayer).toHaveAttribute('data-compact-drag-over-target', 'true');
-
-      fireEvent.pointerUp(window, {
-        pointerId: 38,
-        clientX: 150,
-        clientY: 150,
-        buttons: 0,
-        pointerType: 'mouse',
-      });
-
-      expect(onCompactHistoryDrop).not.toHaveBeenCalled();
-      expect(message).not.toHaveClass('is-selected');
-      await waitFor(() => {
-        expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toHaveAttribute('data-compact-drag-phase', 'returning');
-      });
-      await waitForCompactHistoryDragLayerToClear();
-      expect(onCompactHistoryDrop).not.toHaveBeenCalled();
-    } finally {
-      cleanupAvatar();
-    }
-  });
-
-  it('uses desktop avatar bounds for returning compact history text bubble drops without sending', async () => {
-    const cleanupAvatar = setupDesktopAvatarDropBounds();
-    const onCompactHistoryDrop = vi.fn();
-    const textMessage = parseChatMessage({
-      id: 'assistant-history-desktop-drop-text',
-      role: 'assistant',
-      author: 'Neko',
-      time: '10:00',
-      createdAt: 1,
-      blocks: [{ type: 'text', text: 'Send this desktop memory.' }],
-      status: 'sent',
-    });
-
-    try {
-      const { container } = render(
-        <App
-          chatSurfaceMode="compact"
-          compactChatState="input"
-          messages={[textMessage]}
-          onCompactHistoryDrop={onCompactHistoryDrop}
-        />,
-      );
-
-      await clickCompactExportTool();
-      const bubble = container.querySelector<HTMLElement>('.compact-export-history-bubble')!;
-
-      fireEvent.pointerDown(bubble, {
-        pointerId: 381,
-        clientX: 36,
-        clientY: 36,
-        button: 0,
-        buttons: 1,
-        pointerType: 'mouse',
-      });
-      fireEvent.pointerMove(bubble, {
-        pointerId: 381,
-        clientX: 150,
-        clientY: 150,
-        buttons: 1,
-        pointerType: 'mouse',
-      });
-
-      expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toHaveAttribute('data-compact-drag-over-target', 'true');
-
-      fireEvent.pointerUp(window, {
-        pointerId: 381,
-        clientX: 150,
-        clientY: 150,
-        buttons: 0,
-        pointerType: 'mouse',
-      });
-
-      expect(onCompactHistoryDrop).not.toHaveBeenCalled();
-      await waitFor(() => {
-        expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toHaveAttribute('data-compact-drag-phase', 'returning');
-      });
-      await waitForCompactHistoryDragLayerToClear();
-      expect(onCompactHistoryDrop).not.toHaveBeenCalled();
-    } finally {
-      cleanupAvatar();
-    }
-  });
-
-  it('accepts desktop compact history drag target feedback from NEKO-PC while returning text bubbles', async () => {
-    const onCompactHistoryDrop = vi.fn();
-    const onCompactHistoryDragStateChange = vi.fn();
-    const textMessage = parseChatMessage({
-      id: 'assistant-history-desktop-feedback-drop',
-      role: 'assistant',
-      author: 'Neko',
-      time: '10:00',
-      createdAt: 1,
-      blocks: [{ type: 'text', text: 'Send through desktop feedback.' }],
-      status: 'sent',
-    });
-
-    const { container } = render(
-      <App
-        chatSurfaceMode="compact"
-        compactChatState="input"
-        messages={[textMessage]}
-        onCompactHistoryDrop={onCompactHistoryDrop}
-        onCompactHistoryDragStateChange={onCompactHistoryDragStateChange}
-      />,
-    );
-
-    await clickCompactExportTool();
-    const bubble = container.querySelector<HTMLElement>('.compact-export-history-bubble')!;
-
-    fireEvent.pointerDown(bubble, {
-      pointerId: 382,
-      clientX: 36,
-      clientY: 36,
-      button: 0,
-      buttons: 1,
-      pointerType: 'mouse',
-    });
-    fireEvent.pointerMove(bubble, {
-      pointerId: 382,
-      clientX: 78,
-      clientY: 39,
-      buttons: 1,
-      pointerType: 'mouse',
-    });
-
-    const activeState = onCompactHistoryDragStateChange.mock.calls
-      .map(([payload]) => payload)
-      .find(payload => payload.active === true);
-    expect(activeState?.sessionId).toEqual(expect.stringMatching(/^compact-history-drag-/));
-
-    act(() => {
-      window.dispatchEvent(new CustomEvent('neko:compact-history-drag-desktop-target-change', {
-        detail: {
-          active: true,
-          desktopOverAvatar: true,
-          timestamp: Date.now(),
-        },
-      }));
-      window.dispatchEvent(new CustomEvent('neko:compact-history-drag-desktop-target-change', {
-        detail: {
-          active: true,
-          sessionId: 'compact-history-drag-other',
-          desktopOverAvatar: true,
-          timestamp: Date.now(),
-        },
-      }));
-    });
-
-    expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toHaveAttribute('data-compact-drag-over-target', 'false');
-
-    act(() => {
-      window.dispatchEvent(new CustomEvent('neko:compact-history-drag-desktop-target-change', {
-        detail: {
-          active: true,
-          sessionId: activeState?.sessionId,
-          seq: activeState?.seq,
-          desktopOverAvatar: true,
-          timestamp: Date.now(),
-        },
-      }));
-    });
-
-    expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toHaveAttribute('data-compact-drag-over-target', 'true');
-
-    fireEvent.pointerUp(window, {
-      pointerId: 382,
-      clientX: 78,
-      clientY: 39,
-      buttons: 0,
-      pointerType: 'mouse',
-    });
-
-    expect(onCompactHistoryDrop).not.toHaveBeenCalled();
-    await waitFor(() => {
-      expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toHaveAttribute('data-compact-drag-phase', 'returning');
-    });
-    await waitForCompactHistoryDragLayerToClear();
-    expect(onCompactHistoryDrop).not.toHaveBeenCalled();
-  });
-
-  it('does not send a compact history drag released outside the avatar range', async () => {
-    const cleanupAvatar = setupAvatarDropBounds();
-    const onCompactHistoryDrop = vi.fn();
-    const textMessage = parseChatMessage({
-      id: 'assistant-history-drop-miss',
-      role: 'assistant',
-      author: 'Neko',
-      time: '10:00',
-      createdAt: 1,
-      blocks: [{ type: 'text', text: 'Do not send this one.' }],
-      status: 'sent',
-    });
-
-    try {
-      const { container } = render(
-        <App
-          chatSurfaceMode="compact"
-          compactChatState="input"
-          messages={[textMessage]}
-          onCompactHistoryDrop={onCompactHistoryDrop}
-        />,
-      );
-
-      await clickCompactExportTool();
-      const message = container.querySelector<HTMLElement>('.compact-export-history-message')!;
-      const bubble = container.querySelector<HTMLElement>('.compact-export-history-bubble')!;
-
-      fireEvent.pointerDown(bubble, {
-        pointerId: 39,
-        clientX: 36,
-        clientY: 36,
-        button: 0,
-        buttons: 1,
-        pointerType: 'mouse',
-      });
-      fireEvent.pointerMove(bubble, {
-        pointerId: 39,
-        clientX: 74,
-        clientY: 39,
-        buttons: 1,
-        pointerType: 'mouse',
-      });
-      fireEvent.pointerUp(window, {
-        pointerId: 39,
-        clientX: 20,
-        clientY: 20,
-        buttons: 0,
-        pointerType: 'mouse',
-      });
-      fireEvent.click(bubble);
-
-      expect(onCompactHistoryDrop).not.toHaveBeenCalled();
-      expect(message).not.toHaveClass('is-selected');
-      expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toHaveAttribute('data-compact-drag-phase', 'returning');
-      await waitForCompactHistoryDragLayerToClear();
-    } finally {
-      cleanupAvatar();
-    }
-  });
-
-  it('sends compact history image and mixed bubble payloads through the drop callback', async () => {
-    const cleanupAvatar = setupAvatarDropBounds();
-    const onCompactHistoryDrop = vi.fn();
-    const imageMessage = parseChatMessage({
-      id: 'assistant-history-drop-image',
-      role: 'assistant',
-      author: 'Neko',
-      time: '10:00',
-      createdAt: 1,
-      blocks: [{ type: 'image', url: 'data:image/png;base64,aW1hZ2U=', alt: 'Memory image', width: 80, height: 40 }],
-      status: 'sent',
-    });
-    const mixedMessage = parseChatMessage({
-      id: 'assistant-history-drop-mixed',
-      role: 'assistant',
-      author: 'Neko',
-      time: '10:01',
-      createdAt: 2,
-      blocks: [
-        { type: 'text', text: 'Look at this.' },
-        { type: 'image', url: 'data:image/png;base64,bWl4ZWQ=', alt: 'Mixed image' },
-      ],
-      status: 'sent',
-    });
-
-    try {
-      const { container } = render(
-        <App
-          chatSurfaceMode="compact"
-          compactChatState="input"
-          messages={[imageMessage, mixedMessage]}
-          onCompactHistoryDrop={onCompactHistoryDrop}
-        />,
-      );
-
-      await clickCompactExportTool();
-      const bubbles = container.querySelectorAll<HTMLElement>('.compact-export-history-bubble');
-      const imageBlock = container.querySelector<HTMLElement>('.message-block-image')!;
-
-      fireEvent.pointerDown(imageBlock, {
-        pointerId: 40,
-        clientX: 36,
-        clientY: 36,
-        button: 0,
-        buttons: 1,
-        pointerType: 'mouse',
-      });
-      fireEvent.pointerMove(bubbles[0], {
-        pointerId: 40,
-        clientX: 150,
-        clientY: 150,
-        buttons: 1,
-        pointerType: 'mouse',
-      });
-      fireEvent.pointerUp(window, {
-        pointerId: 40,
-        clientX: 150,
-        clientY: 150,
-        buttons: 0,
-        pointerType: 'mouse',
-      });
-
-      await waitFor(() => {
-        expect(onCompactHistoryDrop).toHaveBeenCalledTimes(1);
-      });
-      expect(onCompactHistoryDrop).toHaveBeenLastCalledWith(expect.objectContaining({
-        text: '',
-        images: [expect.objectContaining({
-          url: 'data:image/png;base64,aW1hZ2U=',
-          alt: 'Memory image',
-          width: 80,
-          height: 40,
-        })],
-        dragType: 'image',
-      }));
-
-      fireEvent.pointerDown(bubbles[1], {
-        pointerId: 41,
-        clientX: 36,
-        clientY: 80,
-        button: 0,
-        buttons: 1,
-        pointerType: 'mouse',
-      });
-      fireEvent.pointerMove(bubbles[1], {
-        pointerId: 41,
-        clientX: 150,
-        clientY: 150,
-        buttons: 1,
-        pointerType: 'mouse',
-      });
-      fireEvent.pointerUp(window, {
-        pointerId: 41,
-        clientX: 150,
-        clientY: 150,
-        buttons: 0,
-        pointerType: 'mouse',
-      });
-
-      await waitFor(() => {
-        expect(onCompactHistoryDrop).toHaveBeenCalledTimes(2);
-      });
-      expect(onCompactHistoryDrop).toHaveBeenLastCalledWith(expect.objectContaining({
-        text: 'Look at this.',
-        images: [expect.objectContaining({
-          url: 'data:image/png;base64,bWl4ZWQ=',
-          alt: 'Mixed image',
-        })],
-        sourceMessageId: 'assistant-history-drop-mixed',
-        dragType: 'bubble',
-      }));
-    } finally {
-      cleanupAvatar();
-    }
-  });
-
-  it('treats compact history scroll as cancellation instead of selection or drag', async () => {
-    const textMessage = parseChatMessage({
-      id: 'assistant-history-scroll-cancel',
-      role: 'assistant',
-      author: 'Neko',
-      time: '10:00',
-      createdAt: 1,
-      blocks: [{ type: 'text', text: 'Scroll past this bubble.' }],
-      status: 'sent',
-    });
-
-    const { container } = render(
-      <App chatSurfaceMode="compact" compactChatState="input" messages={[textMessage]} />,
-    );
-
-    await clickCompactExportTool();
-    const message = container.querySelector<HTMLElement>('.compact-export-history-message')!;
-    const bubble = container.querySelector<HTMLElement>('.compact-export-history-bubble')!;
-    const scroll = container.querySelector<HTMLElement>('.compact-export-history-scroll')!;
-
-    fireEvent.pointerDown(bubble, {
-      pointerId: 33,
-      clientX: 36,
-      clientY: 36,
-      button: 0,
-      buttons: 1,
-      pointerType: 'touch',
-    });
-    fireEvent.scroll(scroll);
-    fireEvent.pointerUp(bubble, {
-      pointerId: 33,
-      clientX: 38,
-      clientY: 72,
-      buttons: 0,
-      pointerType: 'touch',
-    });
-
-    expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toBeNull();
-    expect(message).not.toHaveClass('is-selected');
-  });
-
-  it('keeps compact history pointer movement between click and drag thresholds selectable', async () => {
-    const textMessage = parseChatMessage({
-      id: 'assistant-history-threshold-cancel',
-      role: 'assistant',
-      author: 'Neko',
-      time: '10:00',
-      createdAt: 1,
-      blocks: [{ type: 'text', text: 'Move below the drag threshold and still select.' }],
-      status: 'sent',
-    });
-
-    const { container } = render(
-      <App chatSurfaceMode="compact" compactChatState="input" messages={[textMessage]} />,
-    );
-
-    await clickCompactExportTool();
-    const message = container.querySelector<HTMLElement>('.compact-export-history-message')!;
-    const bubble = container.querySelector<HTMLElement>('.compact-export-history-bubble')!;
-
-    fireEvent.pointerDown(bubble, {
-      pointerId: 34,
-      clientX: 36,
-      clientY: 36,
-      button: 0,
-      buttons: 1,
-      pointerType: 'mouse',
-    });
-    fireEvent.pointerMove(bubble, {
-      pointerId: 34,
-      clientX: 43,
-      clientY: 36,
-      buttons: 1,
-      pointerType: 'mouse',
-    });
-    fireEvent.pointerUp(bubble, {
-      pointerId: 34,
-      clientX: 43,
-      clientY: 36,
-      buttons: 0,
-      pointerType: 'mouse',
-    });
-
-    expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toBeNull();
     expect(message).toHaveClass('is-selected');
-  });
 
-  it('keeps compact history interactive blocks out of bubble drag', async () => {
-    const action = vi.fn();
-    const linkMessage = parseChatMessage({
-      id: 'assistant-history-link-drag-ignore',
-      role: 'assistant',
-      author: 'Neko',
-      time: '10:00',
-      createdAt: 1,
-      blocks: [{ type: 'link', url: 'https://example.com', title: 'Reference' }],
-      status: 'sent',
-    });
-    const buttonMessage = parseChatMessage({
-      id: 'assistant-history-button-drag-ignore',
-      role: 'assistant',
-      author: 'Neko',
-      time: '10:01',
-      createdAt: 2,
-      blocks: [{
-        type: 'buttons',
-        buttons: [{ id: 'act', label: 'Act', action: 'act' }],
-      }],
-      status: 'sent',
-    });
-
-    const { container } = render(
-      <App
-        chatSurfaceMode="compact"
-        compactChatState="input"
-        messages={[linkMessage, buttonMessage]}
-        onMessageAction={action}
-      />,
-    );
-
-    await clickCompactExportTool();
-    const linkBlock = container.querySelector<HTMLElement>('.message-block-link')!;
-    const actionButton = container.querySelector<HTMLButtonElement>('.message-action-button')!;
-    const bubbles = container.querySelectorAll<HTMLElement>('.compact-export-history-bubble');
-
-    fireEvent.pointerDown(linkBlock, {
-      pointerId: 35,
-      clientX: 36,
-      clientY: 36,
-      button: 0,
-      buttons: 1,
-      pointerType: 'mouse',
-    });
-    fireEvent.pointerMove(bubbles[0], {
-      pointerId: 35,
-      clientX: 74,
-      clientY: 39,
-      buttons: 1,
-      pointerType: 'mouse',
-    });
-    expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toBeNull();
-
-    fireEvent.pointerDown(actionButton, {
-      pointerId: 36,
-      clientX: 36,
-      clientY: 60,
-      button: 0,
-      buttons: 1,
-      pointerType: 'mouse',
-    });
-    fireEvent.pointerMove(bubbles[1], {
-      pointerId: 36,
-      clientX: 74,
-      clientY: 63,
-      buttons: 1,
-      pointerType: 'mouse',
-    });
-    expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toBeNull();
+    fireEvent.click(bubble);
+    expect(message).not.toHaveClass('is-selected');
   });
 
   it('rebuilds compact inline preview when a selected message updates without changing id', async () => {
@@ -4299,6 +3384,7 @@ describe('App', () => {
     expect(onComposerSubmit).not.toHaveBeenCalled();
     expect(fan).not.toBeNull();
     expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+    expect(fan).toHaveAttribute('data-compact-tool-wheel-layout', 'default');
     expect(fan).toHaveAttribute('data-compact-geometry-owner', 'surface');
     expect(fan).toHaveAttribute('data-compact-geometry-item', 'toolFan');
     expect(fan?.parentElement).toBe(shell);
@@ -4315,6 +3401,164 @@ describe('App', () => {
     expect(fan?.querySelectorAll('.compact-input-tool-item[data-compact-tool-wheel-slot="hidden-backward"]')).toHaveLength(1);
     expect(fan?.querySelectorAll('[tabindex="0"]')).toHaveLength(5);
     expect(container.querySelectorAll('.send-button-circle')).toHaveLength(1);
+  });
+
+  it('keeps the default compact tool wheel layout on mobile when the original arc fits', () => {
+    const originalMatchMedia = window.matchMedia;
+    const originalInnerWidth = window.innerWidth;
+    const originalInnerHeight = window.innerHeight;
+    mockMobileMatchMedia();
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 844 });
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+      const fan = container.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+      vi.spyOn(fan, 'getBoundingClientRect').mockReturnValue({
+        left: 10,
+        top: 10,
+        right: 242,
+        bottom: 242,
+        width: 232,
+        height: 232,
+        x: 10,
+        y: 10,
+        toJSON: () => ({}),
+      });
+
+      const actionButton = container.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+      expect(actionButton).not.toBeNull();
+      fireEvent.click(actionButton);
+
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-layout', 'default');
+    } finally {
+      window.matchMedia = originalMatchMedia;
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth });
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalInnerHeight });
+    }
+  });
+
+  it('uses viewport-fit compact tool wheel layout on mobile when the original arc would clip', () => {
+    const originalMatchMedia = window.matchMedia;
+    const originalInnerWidth = window.innerWidth;
+    const originalInnerHeight = window.innerHeight;
+    mockMobileMatchMedia();
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 844 });
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+      const fan = container.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+      vi.spyOn(fan, 'getBoundingClientRect').mockReturnValue({
+        left: 220,
+        top: 580,
+        right: 452,
+        bottom: 812,
+        width: 232,
+        height: 232,
+        x: 220,
+        y: 580,
+        toJSON: () => ({}),
+      });
+
+      const actionButton = container.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+      expect(actionButton).not.toBeNull();
+      fireEvent.click(actionButton);
+
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-layout', 'viewport-fit');
+    } finally {
+      window.matchMedia = originalMatchMedia;
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth });
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalInnerHeight });
+    }
+  });
+
+  it('uses the visual viewport when checking compact tool wheel clipping on mobile', () => {
+    const originalMatchMedia = window.matchMedia;
+    const originalInnerWidth = window.innerWidth;
+    const originalInnerHeight = window.innerHeight;
+    const originalVisualViewport = window.visualViewport;
+    mockMobileMatchMedia();
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 844 });
+    Object.defineProperty(window, 'visualViewport', {
+      configurable: true,
+      value: {
+        width: 390,
+        height: 180,
+        offsetLeft: 0,
+        offsetTop: 0,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      },
+    });
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+      const fan = container.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+      vi.spyOn(fan, 'getBoundingClientRect').mockReturnValue({
+        left: 10,
+        top: 10,
+        right: 242,
+        bottom: 242,
+        width: 232,
+        height: 232,
+        x: 10,
+        y: 10,
+        toJSON: () => ({}),
+      });
+
+      const actionButton = container.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+      expect(actionButton).not.toBeNull();
+      fireEvent.click(actionButton);
+
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-layout', 'viewport-fit');
+    } finally {
+      window.matchMedia = originalMatchMedia;
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth });
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalInnerHeight });
+      Object.defineProperty(window, 'visualViewport', { configurable: true, value: originalVisualViewport });
+    }
+  });
+
+  it('keeps the default compact tool wheel layout when viewport-fit would still clip at the top edge', () => {
+    const originalMatchMedia = window.matchMedia;
+    const originalInnerWidth = window.innerWidth;
+    const originalInnerHeight = window.innerHeight;
+    mockMobileMatchMedia();
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 });
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 844 });
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" compactChatState="input" />);
+      const fan = container.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+      vi.spyOn(fan, 'getBoundingClientRect').mockReturnValue({
+        left: 10,
+        top: -90,
+        right: 242,
+        bottom: 142,
+        width: 232,
+        height: 232,
+        x: 10,
+        y: -90,
+        toJSON: () => ({}),
+      });
+
+      const actionButton = container.querySelector('.compact-input-tool-toggle') as HTMLButtonElement;
+      expect(actionButton).not.toBeNull();
+      fireEvent.click(actionButton);
+
+      expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
+      expect(fan).toHaveAttribute('data-compact-tool-wheel-layout', 'default');
+    } finally {
+      window.matchMedia = originalMatchMedia;
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth });
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalInnerHeight });
+    }
   });
 
   it('anchors compact avatar tool bubbles to the fan origin instead of the rotating tool item', async () => {
@@ -5227,19 +4471,22 @@ describe('App', () => {
     }
   });
 
-  it('exposes a draggable left grip in compact input mode as part of the surface drag region', () => {
+  it('exposes a yarn-ball minimize entry in compact input and capsule states', () => {
+    const onCompactMinimizeRequest = vi.fn();
     const { container, rerender } = render(
-      <App chatSurfaceMode="compact" compactChatState="input" />,
+      <App chatSurfaceMode="compact" compactChatState="input" onCompactMinimizeRequest={onCompactMinimizeRequest} />,
     );
-    const grip = container.querySelector('.compact-chat-input-drag-grip');
-    expect(grip).not.toBeNull();
-    // 握把属于本体拖拽区：自身不是 no-drag，祖先是 drag-surface，且不在任何 no-drag 子树里。
-    expect(grip).not.toHaveAttribute('data-compact-no-drag');
-    expect(grip!.closest('[data-compact-drag-surface="true"]')).not.toBeNull();
-    expect(grip!.closest('[data-compact-no-drag="true"]')).toBeNull();
-    // 仅输入态出现；胶囊态本体本身可拖，不需要单独握把。
-    rerender(<App chatSurfaceMode="compact" compactChatState="default" />);
-    expect(container.querySelector('.compact-chat-input-drag-grip')).toBeNull();
+    const ball = container.querySelector('.compact-chat-minimize-ball');
+    expect(ball).not.toBeNull();
+    // 毛绒球走 origin-drag 手势（单击折叠 / 长按拖 surface，与右侧轮盘原点对偶），
+    // 标记 no-drag 避免宿主被动 hit-test 重复起拖。
+    expect(ball).toHaveAttribute('data-compact-no-drag', 'true');
+    // 纯单击（无拖动）折叠为 minimized。
+    fireEvent.click(ball!);
+    expect(onCompactMinimizeRequest).toHaveBeenCalledTimes(1);
+    // 胶囊态同样有毛绒球折叠入口（两态都覆盖）。
+    rerender(<App chatSurfaceMode="compact" compactChatState="default" onCompactMinimizeRequest={onCompactMinimizeRequest} />);
+    expect(container.querySelector('.compact-chat-minimize-ball')).not.toBeNull();
   });
 
   it('dispatches a compact surface drag-grab from the tool toggle when pressed and moved past threshold', () => {

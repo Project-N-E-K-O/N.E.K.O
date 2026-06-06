@@ -50,6 +50,38 @@ from utils.steam_state import get_steamworks
 logger = get_module_logger(__name__)
 
 
+class LocalStateDirectoryError(OSError):
+    """Raised when the local non-cloud state directory cannot be prepared."""
+
+    local_state_directory_error = True
+
+    def __init__(
+        self,
+        message,
+        *,
+        anchor_root=None,
+        local_state_dir=None,
+        failed_path=None,
+        reason="",
+    ):
+        self.anchor_root = str(Path(anchor_root).expanduser().resolve(strict=False)) if anchor_root else ""
+        self.local_state_dir = (
+            str(Path(local_state_dir).expanduser().resolve(strict=False)) if local_state_dir else ""
+        )
+        self.failed_path = str(Path(failed_path).expanduser().resolve(strict=False)) if failed_path else ""
+        self.reason = str(reason or "")
+        parts = [str(message or "Local state directory is unavailable")]
+        if self.anchor_root:
+            parts.append(f"anchor_root={self.anchor_root}")
+        if self.local_state_dir:
+            parts.append(f"local_state_dir={self.local_state_dir}")
+        if self.failed_path:
+            parts.append(f"failed_path={self.failed_path}")
+        if self.reason:
+            parts.append(f"reason={self.reason}")
+        super().__init__("\n".join(parts))
+
+
 def _as_bool(value, default=False):
     if isinstance(value, bool):
         return value
@@ -1696,14 +1728,109 @@ class ConfigManager:
 
     def ensure_local_state_directory(self):
         """确保本地状态目录存在。"""
+        self._last_local_state_directory_error = None
         try:
-            if not self._ensure_anchor_root_directory():
-                return False
+            if self.anchor_root.exists() and not self.anchor_root.is_dir():
+                raise LocalStateDirectoryError(
+                    "Local state anchor root is unavailable",
+                    anchor_root=self.anchor_root,
+                    local_state_dir=self.local_state_dir,
+                    failed_path=self.anchor_root,
+                    reason="anchor_root exists but is not a directory",
+                )
+            self.anchor_root.mkdir(parents=True, exist_ok=True)
+            if self.local_state_dir.exists() and not self.local_state_dir.is_dir():
+                raise LocalStateDirectoryError(
+                    "Local state directory is unavailable",
+                    anchor_root=self.anchor_root,
+                    local_state_dir=self.local_state_dir,
+                    failed_path=self.local_state_dir,
+                    reason="local_state_dir exists but is not a directory",
+                )
             self.local_state_dir.mkdir(parents=True, exist_ok=True)
+            probe_path = self.local_state_dir / f".neko_state_write_probe.{uuid.uuid4().hex}.tmp"
+            try:
+                with open(probe_path, "w", encoding="utf-8") as probe_file:
+                    probe_file.write("probe")
+                    probe_file.flush()
+            finally:
+                try:
+                    probe_path.unlink()
+                except FileNotFoundError:
+                    pass
             return True
-        except Exception as e:
+        except LocalStateDirectoryError as e:
+            self._last_local_state_directory_error = e
             print(f"Warning: Failed to create local state directory: {e}", file=sys.stderr)
             return False
+        except Exception as e:
+            diagnostic = LocalStateDirectoryError(
+                "Local state directory is unavailable",
+                anchor_root=self.anchor_root,
+                local_state_dir=self.local_state_dir,
+                failed_path=self.local_state_dir,
+                reason=str(e),
+            )
+            self._last_local_state_directory_error = diagnostic
+            print(f"Warning: Failed to create local state directory: {diagnostic}", file=sys.stderr)
+            return False
+
+    def _raise_local_state_directory_error(self, operation):
+        diagnostic = getattr(self, "_last_local_state_directory_error", None)
+        message = f"Failed to ensure local state directory before {operation}"
+        if isinstance(diagnostic, LocalStateDirectoryError):
+            raise LocalStateDirectoryError(
+                message,
+                anchor_root=diagnostic.anchor_root,
+                local_state_dir=diagnostic.local_state_dir,
+                failed_path=diagnostic.failed_path,
+                reason=diagnostic.reason,
+            ) from diagnostic
+        raise LocalStateDirectoryError(
+            message,
+            anchor_root=self.anchor_root,
+            local_state_dir=self.local_state_dir,
+            failed_path=self.local_state_dir,
+            reason="ensure_local_state_directory returned False",
+        )
+
+    def _raise_local_state_file_error(self, operation, path, reason, cause=None):
+        error = LocalStateDirectoryError(
+            f"Failed to ensure local state file before {operation}",
+            anchor_root=self.anchor_root,
+            local_state_dir=self.local_state_dir,
+            failed_path=path,
+            reason=reason,
+        )
+        if cause is not None:
+            raise error from cause
+        raise error
+
+    def _save_local_state_json_file(self, path, data, operation):
+        path = Path(path)
+        if path.exists() and not path.is_file():
+            self._raise_local_state_file_error(
+                operation,
+                path,
+                "state file target exists but is not a file",
+            )
+        try:
+            self._save_json_file(path, data)
+        except OSError as e:
+            self._raise_local_state_file_error(operation, path, str(e), cause=e)
+
+    def _load_local_state_json_file(self, path, default_value, operation):
+        path = Path(path)
+        if path.exists() and not path.is_file():
+            self._raise_local_state_file_error(
+                operation,
+                path,
+                "state file target exists but is not a file",
+            )
+        try:
+            return self._load_json_file(path, default_value)
+        except OSError as e:
+            self._raise_local_state_file_error(operation, path, str(e), cause=e)
 
     def build_default_root_state(self):
         """构建默认 root_state 内容。"""
@@ -1758,7 +1885,11 @@ class ConfigManager:
         """加载 root_state；缺失时返回默认状态。"""
         if default_value is None:
             default_value = self.build_default_root_state()
-        state = self._load_json_file(self.root_state_path, default_value)
+        state = self._load_local_state_json_file(
+            self.root_state_path,
+            default_value,
+            "loading root_state",
+        )
         if self._has_selected_root_unavailable_recovery_override():
             return self._build_selected_root_unavailable_recovery_state(state)
         return state
@@ -1766,42 +1897,61 @@ class ConfigManager:
     def save_root_state(self, data):
         """保存 root_state。"""
         if not self.ensure_local_state_directory():
-            raise OSError("Failed to ensure local state directory before saving root_state")
-        self._save_json_file(self.root_state_path, data)
+            self._raise_local_state_directory_error("saving root_state")
+        self._save_local_state_json_file(self.root_state_path, data, "saving root_state")
 
     def load_cloudsave_local_state(self, default_value=None):
         """加载 cloudsave_local_state；缺失时返回带稳定字段结构的默认值。"""
         if default_value is None:
             default_value = self.build_default_cloudsave_local_state()
-        return self._load_json_file(self.cloudsave_local_state_path, default_value)
+        return self._load_local_state_json_file(
+            self.cloudsave_local_state_path,
+            default_value,
+            "loading cloudsave_local_state",
+        )
 
     def save_cloudsave_local_state(self, data):
         """保存 cloudsave_local_state。"""
         if not self.ensure_local_state_directory():
-            raise OSError("Failed to ensure local state directory before saving cloudsave_local_state")
-        self._save_json_file(self.cloudsave_local_state_path, data)
+            self._raise_local_state_directory_error("saving cloudsave_local_state")
+        self._save_local_state_json_file(
+            self.cloudsave_local_state_path,
+            data,
+            "saving cloudsave_local_state",
+        )
 
     def load_character_tombstones_state(self, default_value=None):
         """加载角色 tombstone 本地状态。"""
         if default_value is None:
             default_value = self.build_default_character_tombstones_state()
-        return self._load_json_file(self.character_tombstones_state_path, default_value)
+        return self._load_local_state_json_file(
+            self.character_tombstones_state_path,
+            default_value,
+            "loading character_tombstones_state",
+        )
 
     def save_character_tombstones_state(self, data):
         """保存角色 tombstone 本地状态。"""
         if not self.ensure_local_state_directory():
-            raise OSError("Failed to ensure local state directory before saving character_tombstones_state")
-        self._save_json_file(self.character_tombstones_state_path, data)
+            self._raise_local_state_directory_error("saving character_tombstones_state")
+        self._save_local_state_json_file(
+            self.character_tombstones_state_path,
+            data,
+            "saving character_tombstones_state",
+        )
 
     def ensure_cloudsave_state_files(self):
         """确保本地 cloudsave 相关状态文件存在，返回是否发生创建。"""
         created = False
         if not self.ensure_local_state_directory():
+            diagnostic = getattr(self, "_last_local_state_directory_error", None)
+            diagnostic_suffix = f"\n{diagnostic}" if diagnostic is not None else ""
             raise RuntimeError(
                 "Failed to initialize local state directory for "
                 f"{self.root_state_path.name}, "
                 f"{self.cloudsave_local_state_path.name}, and "
                 f"{self.character_tombstones_state_path.name}"
+                f"{diagnostic_suffix}"
             )
 
         if not self.root_state_path.exists():

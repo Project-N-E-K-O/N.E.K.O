@@ -6,7 +6,10 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from plugin.core.state import state
+from plugin.logging_config import get_logger
 from plugin.settings import PLUGIN_CONFIG_ROOTS
+
+logger = get_logger("server.infrastructure.config_paths")
 
 
 def _resolve_registered_plugin_config_path(plugin_id: str) -> Path | None:
@@ -29,10 +32,30 @@ def _resolve_registered_plugin_config_path(plugin_id: str) -> Path | None:
             continue
         try:
             path = Path(candidate).resolve()
-        except (TypeError, ValueError, OSError, RuntimeError):
+        except (TypeError, ValueError, OSError, RuntimeError) as exc:
+            logger.warning(
+                "Plugin config registered path ignored: plugin_id={}, candidate_type={}, err_type={}, err={}",
+                plugin_id,
+                type(candidate).__name__,
+                type(exc).__name__,
+                str(exc),
+            )
             continue
         if path.is_file() and path.name == "plugin.toml":
+            logger.debug(
+                "Plugin config path resolved from registered metadata: plugin_id={}, config_path={}",
+                plugin_id,
+                path,
+            )
             return path
+        logger.warning(
+            "Plugin config registered path ignored: plugin_id={}, config_path={}, exists={}, is_file={}, name={}",
+            plugin_id,
+            path,
+            path.exists(),
+            path.is_file(),
+            path.name,
+        )
 
     return None
 
@@ -72,6 +95,12 @@ def get_plugin_config_path(plugin_id: str) -> Path:
                 continue
 
         if config_file.exists():
+            logger.debug(
+                "Plugin config path resolved from config root: plugin_id={}, root={}, config_path={}",
+                plugin_id,
+                root,
+                config_file,
+            )
             return config_file
 
     raise HTTPException(

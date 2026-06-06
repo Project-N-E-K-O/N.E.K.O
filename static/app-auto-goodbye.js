@@ -66,6 +66,9 @@
         // 变猫时刻 + 入口（自动 idle / 手动请离开），供"变回时"猫咪专属问候独立计时
         goodbyeEnteredAt: 0,
         goodbyeWasAuto: false,
+        // 用户「自动变猫」开关：true=启用自动变猫（默认）。禁用时 getIdleBlockReasons 持续上报
+        // 'user-disabled'，从而挡掉自动 idle 变猫；不影响已处猫态或手动请离开。init 时从 localStorage 读取。
+        autoCatEnabled: true,
     };
 
     function nowMs() {
@@ -327,8 +330,40 @@
         return hasVisibleElements(['[data-dragging="true"]']);
     }
 
+    var AUTO_CAT_ENABLED_STORAGE_KEY = 'neko.autoCat.enabled';
+
+    function readAutoCatEnabledPreference() {
+        try {
+            // 默认启用：只有显式存过 'false' 才视为用户禁用；未设置/异常都按启用，保持原有行为。
+            return window.localStorage.getItem(AUTO_CAT_ENABLED_STORAGE_KEY) !== 'false';
+        } catch (_) {
+            return true;
+        }
+    }
+
+    function isAutoCatEnabled() {
+        return state.autoCatEnabled !== false;
+    }
+
+    function setAutoCatEnabled(enabled) {
+        const next = enabled !== false;
+        state.autoCatEnabled = next;
+        try {
+            window.localStorage.setItem(AUTO_CAT_ENABLED_STORAGE_KEY, next ? 'true' : 'false');
+        } catch (_) {}
+        // 重新开启时刷新计时基线，避免开启瞬间因已超时而立刻变猫；
+        // 任一方向都立即重算抑制状态（禁用→进入抑制挡掉后续自动变猫，启用→解除该抑制原因）。
+        if (next) {
+            noteUserInteraction('auto-cat-enabled');
+        }
+        syncIdleSuppressionState('auto-cat-toggle');
+    }
+
     function getIdleBlockReasons() {
         const reasons = [];
+        if (!state.autoCatEnabled) {
+            reasons.push('user-disabled');
+        }
         if (isTutorialGuardActive()) {
             reasons.push('tutorial-guard');
         }
@@ -782,6 +817,9 @@
         start();
     }
 
+    // 启动即读取用户「自动变猫」开关偏好（默认启用），供 getIdleBlockReasons 判定。
+    state.autoCatEnabled = readAutoCatEnabledPreference();
+
     window.nekoAutoGoodbye = {
         noteUserInteraction: noteUserInteraction,
         hasBlockingActiveWork: hasBlockingActiveWork,
@@ -790,6 +828,8 @@
         getIdleBlockReasons: getIdleBlockReasons,
         tryAutoGoodbye: tryAutoGoodbye,
         setVisualTier: setVisualTier,
+        setAutoCatEnabled: setAutoCatEnabled,
+        isAutoCatEnabled: isAutoCatEnabled,
         clearTimers: clearTimers,
         getState: getState,
     };

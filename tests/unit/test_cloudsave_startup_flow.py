@@ -28,6 +28,10 @@ def test_launcher_prepares_cloudsave_runtime_before_starting_services(monkeypatc
         call_order.append("bootstrap")
         return {"bootstrap": True}
 
+    def _fake_ensure_local_state_directory():
+        call_order.append("state_preflight")
+        return True
+
     class _DummyCloudsaveManager:
         def import_if_needed(self, *, reason: str, fence_already_active: bool = False, **_kwargs):
             call_order.append(("import", reason, fence_already_active))
@@ -42,6 +46,7 @@ def test_launcher_prepares_cloudsave_runtime_before_starting_services(monkeypatc
     monkeypatch.setattr(launcher, "bootstrap_local_cloudsave_environment", _fake_bootstrap)
     monkeypatch.setattr(launcher, "get_cloudsave_manager", lambda _config_manager: _DummyCloudsaveManager())
     monkeypatch.setattr(launcher, "set_root_mode", _fake_set_root_mode)
+    config_manager.ensure_local_state_directory = _fake_ensure_local_state_directory
     monkeypatch.setattr(
         launcher,
         "emit_frontend_event",
@@ -50,10 +55,12 @@ def test_launcher_prepares_cloudsave_runtime_before_starting_services(monkeypatc
 
     result = launcher._prepare_cloudsave_runtime_for_launch()
 
+    state_preflight_index = call_order.index("state_preflight")
     bootstrap_index = call_order.index("bootstrap")
+    fence_enter_index = call_order.index(("fence_enter", launcher.ROOT_MODE_BOOTSTRAP_IMPORTING, "launcher_phase0_bootstrap"))
     import_index = call_order.index(("import", "launcher_phase0_prelaunch_import", True))
     fence_exit_index = call_order.index(("fence_exit", launcher.ROOT_MODE_BOOTSTRAP_IMPORTING, "launcher_phase0_bootstrap"))
-    assert bootstrap_index < import_index < fence_exit_index
+    assert state_preflight_index < fence_enter_index < bootstrap_index < import_index < fence_exit_index
     assert result["import_result"]["action"] == "imported"
     assert emitted_events[-1][0] == "cloudsave_bootstrap_ready"
     event_import_result = emitted_events[-1][1]["import_result"]
@@ -66,6 +73,58 @@ def test_launcher_prepares_cloudsave_runtime_before_starting_services(monkeypatc
     assert root_state_payload["is_normal"] is True
     assert "current_root" not in root_state_payload
     assert "last_known_good_root" not in root_state_payload
+
+
+@pytest.mark.unit
+def test_launcher_disables_cloudsave_when_local_state_directory_fails(monkeypatch):
+    import launcher
+
+    class _LocalStateFailure(OSError):
+        local_state_directory_error = True
+
+    set_root_mode_calls = []
+    reported_failures = []
+
+    monkeypatch.setattr(launcher, "freeze_support", lambda: None)
+    monkeypatch.setattr(launcher, "emit_frontend_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(launcher, "acquire_startup_lock", lambda: True)
+    monkeypatch.setattr(launcher, "apply_port_strategy", lambda: True)
+    monkeypatch.setattr(launcher, "register_shutdown_hooks", lambda: None)
+    monkeypatch.setattr(launcher, "setup_job_object", lambda: None)
+    monkeypatch.setattr(launcher, "_resolve_storage_layout_for_launch", lambda: {})
+    monkeypatch.setattr(
+        launcher,
+        "_prepare_cloudsave_runtime_for_launch",
+        lambda: (_ for _ in ()).throw(_LocalStateFailure("state directory unavailable")),
+    )
+    monkeypatch.setattr(launcher, "set_root_mode", lambda *_args, **_kwargs: set_root_mode_calls.append((_args, _kwargs)))
+    monkeypatch.setattr(
+        launcher,
+        "report_startup_failure",
+        lambda message, show_dialog=True: reported_failures.append((message, show_dialog)),
+    )
+    monkeypatch.setattr(launcher, "_ensure_playwright_browsers", lambda: None)
+    monkeypatch.setattr(launcher, "_should_use_merged_mode", lambda: False)
+    monkeypatch.setattr(launcher, "SERVERS", [{"name": "Main Server", "process": None}])
+    monkeypatch.setattr(launcher, "start_server", lambda server: True)
+    monkeypatch.setattr(
+        launcher,
+        "wait_for_servers",
+        lambda timeout=60: launcher.STARTUP_WAIT_RESULT_STORAGE_RESTART,
+    )
+    monkeypatch.setattr(launcher, "cleanup_servers", lambda: None)
+    monkeypatch.delenv(launcher.CLOUDSAVE_DISABLED_ENV, raising=False)
+
+    try:
+        result = launcher.main()
+        disabled_reason = launcher.os.environ.get(launcher.CLOUDSAVE_DISABLED_ENV)
+    finally:
+        launcher.os.environ.pop(launcher.CLOUDSAVE_DISABLED_ENV, None)
+
+    assert result == 0
+    assert disabled_reason == "local_state_unavailable"
+    assert set_root_mode_calls == []
+    assert reported_failures == []
 
 
 @pytest.mark.unit

@@ -640,3 +640,77 @@ def test_show_decision_prompt_serializes_concurrent_prompts():
             {"name": "second", "value": "second-ok"},
         ],
     }
+
+
+@pytest.mark.unit
+def test_autostart_retention_prompt_supports_link_button_variant():
+    result = _run_common_dialogs_node_scenario(
+        """
+    window.showDecisionPrompt({
+      skin: 'autostart-retention',
+      title: 'Autostart',
+      message: 'message',
+      buttons: [
+        { value: 'later', text: 'Later', variant: 'secondary' },
+        { value: 'accept', text: 'Start', variant: 'primary' },
+        { value: 'never', text: 'Never', variant: 'link' },
+      ],
+    });
+
+    await wait(10);
+    const overlay = document.querySelectorAll('.modal-overlay')[0];
+    const buttons = overlay.querySelectorAll('.modal-btn').map((button) => ({
+      text: button.textContent,
+      className: button.className,
+    }));
+
+    return { buttons };
+        """
+    )
+
+    assert result == {
+        "buttons": [
+            {"text": "Later", "className": "modal-btn modal-btn-secondary"},
+            {"text": "Start", "className": "modal-btn modal-btn-primary"},
+            {"text": "Never", "className": "modal-btn modal-btn-link"},
+        ]
+    }
+
+
+def _rule_bodies(source: str, selector: str) -> list[str]:
+    pattern = re.compile(re.escape(selector) + r"[^{]*\{(?P<body>[^}]*)\}", re.S)
+    bodies = [m.group("body") for m in pattern.finditer(source)]
+    assert bodies, f"selector not found in common_dialogs.js: {selector}"
+    return bodies
+
+
+def _assert_in_any(bodies: list[str], prop: str, selector: str) -> None:
+    assert any(prop in b for b in bodies), (
+        f"property `{prop}` not declared under `{selector}`"
+    )
+
+
+@pytest.mark.unit
+def test_autostart_retention_button_style_contract_is_scoped():
+    source = COMMON_DIALOGS_PATH.read_text(encoding="utf-8")
+
+    header_sel = ".modal-dialog-autostart-retention .modal-header"
+    header = _rule_bodies(source, header_sel)
+    _assert_in_any(header, "padding: 22px 0 0;", header_sel)
+
+    footer_sel = ".modal-dialog-autostart-retention .modal-footer"
+    footer = _rule_bodies(source, footer_sel)
+    _assert_in_any(footer, "flex-wrap: wrap;", footer_sel)
+    _assert_in_any(footer, "padding: 38px 0 34px;", footer_sel)
+
+    link_sel = ".modal-dialog-autostart-retention .modal-btn-link"
+    link = _rule_bodies(source, link_sel)
+    _assert_in_any(link, "position: absolute;", link_sel)
+    _assert_in_any(link, "right: 0;", link_sel)
+    _assert_in_any(link, "bottom: 0;", link_sel)
+
+    hover_sel = (
+        ".modal-dialog-autostart-retention .modal-btn:not(.modal-btn-link):hover"
+    )
+    hover = _rule_bodies(source, hover_sel)
+    _assert_in_any(hover, "translateY(-2px)", hover_sel)
