@@ -1774,6 +1774,7 @@
         "blockingGeneric": "目前無法使用所選存儲位置，請換一個位置或稍後重試。",
         "blockingInsufficientSpace": "目標卷剩餘空間不足，無法安全執行關閉後的遷移。",
         "blockingTargetNotWritable": "目標路徑目前不可寫，無法開始關閉後的遷移流程。",
+        "cloudsaveLocalStateUnavailable": "本機狀態目錄不可用，目前工作階段已停用雲存檔。請先修復 state 路徑並重新啟動應用程式，再變更儲存位置。",
         "cleanupRetainedRoot": "清理舊資料目錄",
         "cleanupRetainedRootConfirm": "這會刪除目前保留的舊資料目錄，且不會影響目前已生效的新目錄。要繼續嗎？",
         "cleanupRetainedRootDone": "舊資料目錄已清理，目前僅保留新的執行目錄。",

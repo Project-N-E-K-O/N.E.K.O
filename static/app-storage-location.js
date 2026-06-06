@@ -341,6 +341,8 @@
 
     function translateResponseErrorCode(code, fallbackText) {
         switch (String(code || '').trim()) {
+            case 'cloudsave_local_state_unavailable':
+                return translate('storage.cloudsaveLocalStateUnavailable', '本机状态目录不可用，当前会话已禁用云存档。请先修复 state 路径并重启应用，再进行存储位置变更。');
             case 'directory_picker_unavailable':
                 return translate('storage.pickFolderUnavailable', '当前系统目录选择器不可用，请手动输入路径。');
             case 'insufficient_space':

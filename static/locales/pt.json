@@ -1774,6 +1774,7 @@
         "blockingGeneric": "O local de armazenamento selecionado não pode ser usado agora. Escolha outro local ou tente novamente mais tarde.",
         "blockingInsufficientSpace": "O volume de destino não tem espaço livre suficiente para uma migração segura.",
         "blockingTargetNotWritable": "O caminho de destino não tem permissão de escrita, então a migração não pode começar.",
+        "cloudsaveLocalStateUnavailable": "O diretório de estado local não está disponível. O salvamento em nuvem está desativado nesta sessão; corrija o caminho state e reinicie o app antes de alterar o local de armazenamento.",
         "cleanupRetainedRoot": "Limpar diretório de dados antigo",
         "cleanupRetainedRootConfirm": "Isto vai apagar o diretório de dados antigo mantido e não afetará o novo diretório ativo. Continuar?",
         "cleanupRetainedRootDone": "O diretório de dados antigo foi limpo. Agora só resta o novo diretório de execução.",

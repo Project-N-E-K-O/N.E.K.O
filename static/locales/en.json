@@ -1774,6 +1774,7 @@
         "blockingGeneric": "The selected storage location cannot be used right now. Please choose another location or try again later.",
         "blockingInsufficientSpace": "The target volume does not have enough free space for a safe migration.",
         "blockingTargetNotWritable": "The target path is not writable, so migration cannot start.",
+        "cloudsaveLocalStateUnavailable": "The local state directory is unavailable. Cloud save is disabled for this session; fix the state path and restart the app before changing the storage location.",
         "cleanupRetainedRoot": "Clean up old data directory",
         "cleanupRetainedRootConfirm": "This will delete the retained old data directory and will not affect the new active directory. Continue?",
         "cleanupRetainedRootDone": "The old data directory has been cleaned up. Only the new runtime directory remains.",

@@ -3458,14 +3458,14 @@ color: #40C5F1;
     stroke: currentColor;
 }
 
-.sidebar-cloudsave-btn:hover {
+.sidebar-cloudsave-btn:hover:not(:disabled) {
     background: linear-gradient(135deg, #40C5F1, #5dd4f7);
     color: #fff;
     box-shadow: 0 4px 12px rgba(64, 197, 241, 0.28);
     transform: translateY(-1px);
 }
 
-.sidebar-cloudsave-btn:hover .sidebar-cloudsave-icon {
+.sidebar-cloudsave-btn:hover:not(:disabled) .sidebar-cloudsave-icon {
     color: #23a4d7;
     background: rgba(255, 255, 255, 0.95);
     transform: translateY(-1px);
@@ -3477,7 +3477,7 @@ color: #40C5F1;
     outline-offset: 2px;
 }
 
-.sidebar-cloudsave-btn:active {
+.sidebar-cloudsave-btn:active:not(:disabled) {
     transform: translateY(0);
     box-shadow: 0 2px 6px rgba(64, 197, 241, 0.2);
 }

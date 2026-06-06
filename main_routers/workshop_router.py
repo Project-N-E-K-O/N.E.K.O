@@ -31,7 +31,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from .shared_state import ensure_steamworks as get_steamworks, get_config_manager, get_initialize_character_data
-from utils.cloudsave_runtime import MaintenanceModeError, is_write_fence_active
+from utils.cloudsave_runtime import MaintenanceModeError, is_cloudsave_disabled, is_write_fence_active
 from utils.file_utils import atomic_write_json, atomic_write_json_async, read_json_async
 from utils.workshop_utils import (
     ensure_workshop_folder_exists,
@@ -236,6 +236,9 @@ def _read_first_line(path: str, encoding: str = 'utf-8') -> str:
 
 def _load_deleted_character_names(config_mgr) -> set[str]:
     deleted_names: set[str] = set()
+    if is_cloudsave_disabled():
+        return deleted_names
+
     try:
         tombstone_state = config_mgr.load_character_tombstones_state()
     except Exception as exc:
@@ -253,6 +256,9 @@ def _load_deleted_character_names(config_mgr) -> set[str]:
 
 def _remove_deleted_character_tombstones(config_mgr, character_names: list[str]) -> list[str]:
     """移除手动恢复角色对应的 tombstone，避免后续同步继续把它当作已删除。"""
+    if is_cloudsave_disabled():
+        return []
+
     target_names = {str(name or "").strip() for name in character_names}
     target_names.discard("")
     if not target_names:
@@ -281,6 +287,15 @@ def _remove_deleted_character_tombstones(config_mgr, character_names: list[str])
         "tombstones": remaining_entries,
     })
     return removed_names
+
+
+def _write_deleted_character_tombstone(config_mgr, character_name: str, build_tombstone_state) -> bool:
+    if is_cloudsave_disabled():
+        return False
+
+    tombstone_state = build_tombstone_state(config_mgr, character_name)
+    config_mgr.save_character_tombstones_state(tombstone_state)
+    return True
 
 
 def _derive_workshop_origin_display_name(raw_model_name: str, fallback_name: str) -> str:
@@ -3382,9 +3397,11 @@ async def unsubscribe_workshop_item(request: Request):
                     )
 
             async def _write_tombstone(name: str) -> None:
-                tombstone_state = _build_character_tombstones_state(config_mgr, name)
                 await asyncio.to_thread(
-                    config_mgr.save_character_tombstones_state, tombstone_state
+                    _write_deleted_character_tombstone,
+                    config_mgr,
+                    name,
+                    _build_character_tombstones_state,
                 )
 
             async def _remove_one(name: str) -> None:

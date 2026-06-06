@@ -111,6 +111,41 @@ def test_storage_startup_blocking_reason_uses_readonly_path_without_legacy_scan_
 
 
 @pytest.mark.unit
+def test_storage_startup_blocking_reason_is_clear_when_cloudsave_disabled(monkeypatch, tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+
+    def fail_root_state_read():
+        raise AssertionError("disabled cloudsave mode should not read root_state")
+
+    config_manager.load_root_state = fail_root_state_read
+    monkeypatch.setenv("NEKO_CLOUDSAVE_DISABLED", "local_state_unavailable")
+
+    assert get_storage_startup_blocking_reason(config_manager) == ""
+    assert is_storage_startup_blocked(config_manager) is False
+
+
+@pytest.mark.unit
+def test_storage_location_bootstrap_payload_is_ready_when_cloudsave_disabled(monkeypatch, tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+
+    def fail_root_state_read():
+        raise AssertionError("disabled cloudsave mode should not read root_state")
+
+    config_manager.load_root_state = fail_root_state_read
+    monkeypatch.setenv("NEKO_CLOUDSAVE_DISABLED", "local_state_unavailable")
+
+    payload = build_storage_location_bootstrap_payload(config_manager)
+
+    assert payload["selection_required"] is False
+    assert payload["migration_pending"] is False
+    assert payload["recovery_required"] is False
+    assert payload["blocking_reason"] == ""
+    assert payload["legacy_sources"] == []
+    assert payload["cloudsave_disabled"] is True
+    assert payload["cloudsave_disabled_reason"] == "local_state_unavailable"
+
+
+@pytest.mark.unit
 def test_storage_location_bootstrap_payload_uses_configured_anchor_root(tmp_path):
     config_manager = _DummyConfigManager(tmp_path)
     config_manager.anchor_root = tmp_path / "canonical-anchor" / "N.E.K.O"

@@ -1774,6 +1774,7 @@
         "blockingGeneric": "선택한 저장 위치는 지금 사용할 수 없습니다. 다른 위치를 선택하거나 잠시 후 다시 시도해 주세요.",
         "blockingInsufficientSpace": "안전하게 이전하려면 대상 볼륨에 남은 공간이 부족합니다.",
         "blockingTargetNotWritable": "대상 경로에 쓰기 권한이 없어 이전을 시작할 수 없습니다.",
+        "cloudsaveLocalStateUnavailable": "로컬 상태 디렉터리를 사용할 수 없습니다. 이 세션에서는 클라우드 저장이 비활성화되었습니다. 저장 위치를 변경하기 전에 state 경로를 복구하고 앱을 다시 시작해 주세요.",
         "cleanupRetainedRoot": "이전 데이터 디렉터리 정리",
         "cleanupRetainedRootConfirm": "보관 중인 이전 데이터 디렉터리를 삭제합니다. 현재 사용 중인 새 디렉터리에는 영향을 주지 않습니다. 계속할까요?",
         "cleanupRetainedRootDone": "이전 데이터 디렉터리를 정리했습니다. 이제 새 실행 디렉터리만 남아 있습니다.",
