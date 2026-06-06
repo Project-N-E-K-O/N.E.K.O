@@ -152,6 +152,14 @@
 .cd-login-sub { display: flex; justify-content: center; gap: 16px; margin-top: 10px; }
 .cd-link { background: none; border: none; cursor: pointer; color: rgba(255,255,255,.72); font: inherit; font-size: 12.5px; }
 .cd-link:hover { color: #fff; }
+.cd-steam { display: flex; flex-direction: column; align-items: center; gap: 8px; margin-top: 12px; }
+.cd-steam-or { position: relative; width: 100%; text-align: center; font-size: 11.5px; color: rgba(255,255,255,.45); }
+.cd-steam-or::before, .cd-steam-or::after {
+  content: ""; position: absolute; top: 50%; width: 38%; height: 1px; background: rgba(255,255,255,.16);
+}
+.cd-steam-or::before { left: 0; } .cd-steam-or::after { right: 0; }
+.cd-steam-btn { padding: 9px 18px; font-size: 13px; }
+.cd-steam-btn:disabled { opacity: .55; cursor: default; }
 
 /* rarity palettes (set as CSS vars on the reveal/card root) */
 .cd-rar-N   { --cd-c:#9aa6bd; --cd-glow:rgba(154,166,189,.5);  --cd-accent:#cfd6e4; }

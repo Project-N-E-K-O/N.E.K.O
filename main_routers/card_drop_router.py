@@ -16,14 +16,18 @@
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import os
 import random
+import time
 from pathlib import Path
+from urllib.parse import quote
 
 import httpx
-from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse
 
 logger = logging.getLogger("neko.card_drop")
 
@@ -132,14 +136,14 @@ def _access_token() -> str | None:
     return a.get("access_token") if a else None
 
 
-async def _finish_login(base: str, login_out: dict) -> dict:
-    """存 JWT + bind-client 迁移游客卡到账号。返回 user dict。"""
-    tokens = login_out.get("tokens") or {}
-    user = login_out.get("user") or {}
-    access = tokens.get("access_token")
+async def _store_session(base: str, access: str | None, refresh: str | None, user: dict) -> None:
+    """存 JWT 到 community_auth.json + bind-client 迁移游客卡到账号。
+
+    邮箱密码登录与 Steam 登录共用这一段落地逻辑。
+    """
     _save_auth({
         "access_token": access,
-        "refresh_token": tokens.get("refresh_token"),
+        "refresh_token": refresh,
         "user": {"display_name": user.get("display_name"), "email": user.get("email")},
     })
     cid = _get_client_id()
@@ -153,7 +157,54 @@ async def _finish_login(base: str, login_out: dict) -> dict:
                 )
         except (httpx.HTTPError, OSError) as exc:
             logger.info("card_drop: bind-client after login failed: %s", exc)
+
+
+async def _finish_login(base: str, login_out: dict) -> dict:
+    """邮箱密码登录落地：存 JWT + bind-client。返回 user dict。"""
+    tokens = login_out.get("tokens") or {}
+    user = login_out.get("user") or {}
+    await _store_session(base, tokens.get("access_token"), tokens.get("refresh_token"), user)
     return user
+
+
+# ---- Steam 登录：开浏览器到云端 OpenID → 云端验完重定向回本地 /steam-callback ----
+# CSRF/会话固定防护：/steam-callback 用 access_token query 参数落地，是个本机端点，恶意网页
+# 可能跨源 GET 它塞入攻击者 token（把用户游客卡 bind 到攻击者账号）。用一次性 pending 标记
+# 把回调限定在「用户刚点过 Steam 登录」的短窗口内，挡掉无端调用。
+_STEAM_PENDING_FILENAME = "community_steam_pending.json"
+_STEAM_PENDING_TTL_SEC = 600  # 点登录后 10 分钟内必须完成回调
+
+
+def _steam_pending_path() -> Path | None:
+    p = _auth_path()
+    return (p.parent / _STEAM_PENDING_FILENAME) if p else None
+
+
+def _mark_steam_pending() -> None:
+    p = _steam_pending_path()
+    if not p:
+        return
+    try:
+        p.write_text(json.dumps({"ts": time.time()}), encoding="utf-8")
+    except OSError as exc:
+        logger.debug("card_drop: mark steam pending failed: %s", exc)
+
+
+def _consume_steam_pending() -> bool:
+    """一次性消费 pending 标记：存在且未过期返回 True（消费后即删，防重放）。"""
+    p = _steam_pending_path()
+    if not p or not p.exists():
+        return False
+    ts = 0.0
+    try:
+        ts = float(json.loads(p.read_text(encoding="utf-8")).get("ts", 0))
+    except (OSError, ValueError, TypeError):
+        ts = 0.0
+    try:
+        p.unlink()
+    except OSError:
+        pass
+    return bool(ts) and (time.time() - ts) <= _STEAM_PENDING_TTL_SEC
 
 
 def _local_facts(lanlan_name: str) -> list[dict]:
@@ -294,6 +345,70 @@ async def register_endpoint(payload: dict = Body(...)):
 async def logout_endpoint():
     _clear_auth()
     return {"logged_in": False}
+
+
+def _neko_steam_callback_url(request: Request) -> str:
+    """NEKO 本地 Steam 回调地址（与请求同源，桌面端必为 localhost）。"""
+    return f"{str(request.base_url).rstrip('/')}/api/card-drop/steam-callback"
+
+
+_STEAM_CALLBACK_PAGE = """<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>登录成功</title><style>
+html,body{{margin:0;height:100%;background:#0f1020;color:#eef;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}}
+.wrap{{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center;padding:24px}}
+.ok{{font-size:46px}}.t{{font-size:20px;font-weight:600}}.s{{font-size:14px;color:#9aa;max-width:360px;line-height:1.6}}
+</style></head><body><div class="wrap">
+<div class="ok">✦</div><div class="t">{title}</div>
+<div class="s">{sub}</div></div>
+<script>setTimeout(function(){{try{{window.close();}}catch(e){{}}}},1200);</script>
+</body></html>"""
+
+
+def _steam_callback_html(title: str, sub: str) -> HTMLResponse:
+    return HTMLResponse(_STEAM_CALLBACK_PAGE.format(title=html.escape(title), sub=html.escape(sub)))
+
+
+@router.get("/steam-login", summary="返回 Steam 登录授权 URL（前端用浏览器打开）")
+async def steam_login_endpoint(request: Request):
+    base = _social_base_url()
+    callback = _neko_steam_callback_url(request)
+    _mark_steam_pending()
+    authorize_url = (
+        f"{base}/api/auth/oauth/steam/authorize?redirect_to={quote(callback, safe='')}"
+    )
+    return {"authorize_url": authorize_url, "callback": callback}
+
+
+@router.get(
+    "/steam-callback",
+    summary="Steam 登录回调：存 JWT + 迁移游客卡，返回提示页",
+    response_class=HTMLResponse,
+)
+async def steam_callback_endpoint(
+    access_token: str = Query(..., min_length=1),
+    refresh_token: str | None = Query(None),
+):
+    # 只接受「用户刚发起过 Steam 登录」窗口内的回调，挡掉无端/重放调用（会话固定防护）。
+    if not _consume_steam_pending():
+        return _steam_callback_html("登录会话已失效", "请回到 NEKO 重新点一次「Steam 登录」。")
+    base = _social_base_url()
+    user: dict = {}
+    try:
+        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
+            r = await client.get(
+                f"{base}/api/users/me",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+        if r.status_code == 200:
+            user = (r.json() or {}).get("user") or {}
+        else:
+            logger.info("card_drop: steam-callback /me returned %s", r.status_code)
+    except (httpx.HTTPError, OSError, ValueError) as exc:
+        logger.info("card_drop: steam-callback fetch /me failed: %s", exc)
+    await _store_session(base, access_token, refresh_token, user)
+    name = user.get("display_name") or "你"
+    return _steam_callback_html(f"已登录，欢迎 {name}", "卡片会存进你的卡册了，可以关掉本页回到 NEKO。")
 
 
 @router.post("/draw", summary="代理云端开卡：roll 稀有度 + 建卡（登录则卡归账号）")

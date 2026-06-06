@@ -83,6 +83,7 @@
     if (!els) return;
     els.backdrop.classList.remove('cd-open');
     state.candidates = []; state.picked = -1; state.busy = false;
+    state.steamPolling = false;
   }
 
   function setHead(title, sub) {
@@ -264,6 +265,14 @@
     actions.appendChild(submit);
     form.appendChild(actions);
 
+    // Steam 登录：开浏览器走云端 OpenID → NEKO 本地回调存 JWT，前端轮询 auth-status
+    var steamWrap = el('div', 'cd-steam');
+    steamWrap.appendChild(el('div', 'cd-steam-or', '或'));
+    var steamBtn = el('button', 'cd-btn cd-btn-ghost cd-steam-btn', '🎮 用 Steam 登录');
+    steamBtn.addEventListener('click', function () { steamLogin(steamBtn, errEl); });
+    steamWrap.appendChild(steamBtn);
+    form.appendChild(steamWrap);
+
     var toggle = el('button', 'cd-link', isReg ? '已有账号？去登录' : '没有账号？去注册');
     toggle.addEventListener('click', function () { showLogin(isReg ? 'login' : 'register'); });
     var back = el('button', 'cd-link', '← 返回卡片');
@@ -273,6 +282,62 @@
     form.appendChild(sub);
 
     els.body.appendChild(form);
+  }
+
+  function openExternalUrl(url) {
+    if (window.electronShell && typeof window.electronShell.openExternal === 'function') {
+      window.electronShell.openExternal(url);
+    } else {
+      window.open(url, '_blank', 'noopener,noreferrer');
+    }
+  }
+
+  function steamLogin(btn, errEl) {
+    if (state.steamPolling) return;
+    if (btn) btn.disabled = true;
+    if (errEl) errEl.textContent = '正在打开 Steam 登录…';
+    api('/api/card-drop/steam-login').then(function (d) {
+      var url = d && d.authorize_url;
+      if (!url) throw new Error('no_authorize_url');
+      openExternalUrl(url);
+      if (errEl) errEl.textContent = '已在浏览器打开 Steam 登录，完成后会自动返回…';
+      pollAuthUntilLoggedIn(btn, errEl);
+    }).catch(function (e) {
+      if (btn) btn.disabled = false;
+      if (errEl) errEl.textContent = (e && (e.detail || e.message)) || '打开 Steam 登录失败';
+    });
+  }
+
+  // 浏览器里完成 Steam 登录后，本地回调存好 JWT；这里轮询 auth-status 直到登录态出现。
+  function pollAuthUntilLoggedIn(btn, errEl) {
+    state.steamPolling = true;
+    var tries = 0, maxTries = 150; // ~5 分钟（2s 间隔）
+    (function tick() {
+      if (!state.steamPolling) return;
+      if (!els || !els.backdrop.classList.contains('cd-open')) { state.steamPolling = false; return; }
+      tries++;
+      api('/api/card-drop/auth-status').then(function (d) {
+        if (!state.steamPolling) return;
+        if (d && d.logged_in) {
+          state.steamPolling = false;
+          state.auth = d;
+          toast('✦ 已用 Steam 登录，卡存进卡册了', 3000);
+          reveal(state.lastCard || {}, true);
+          return;
+        }
+        if (tries >= maxTries) {
+          state.steamPolling = false;
+          if (errEl) errEl.textContent = '等待登录超时，可重试';
+          if (btn) btn.disabled = false;
+          return;
+        }
+        setTimeout(tick, 2000);
+      }).catch(function () {
+        if (!state.steamPolling) return;
+        if (tries >= maxTries) { state.steamPolling = false; if (btn) btn.disabled = false; return; }
+        setTimeout(tick, 2000);
+      });
+    })();
   }
 
   function screenFlash(cls) {
