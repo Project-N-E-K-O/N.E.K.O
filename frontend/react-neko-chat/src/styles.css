@@ -2308,8 +2308,9 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
     min(calc(var(--compact-export-surface-width) * 1.18), 63vh)
   );
   --compact-export-history-viewport-gutter: 24px;
+  --compact-export-history-viewport-inline-size: 100vw;
   --compact-export-history-width-ratio: 1.36;
-  --compact-export-history-max-inline-size: calc(100vw - var(--compact-export-history-viewport-gutter));
+  --compact-export-history-max-inline-size: calc(var(--compact-export-history-viewport-inline-size) - var(--compact-export-history-viewport-gutter));
   --compact-export-history-inline-size: min(
     calc(var(--compact-export-surface-width) * var(--compact-export-history-width-ratio)),
     var(--compact-export-history-max-inline-size)
@@ -2317,17 +2318,12 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   --compact-export-history-half-inline-size: calc(var(--compact-export-history-inline-size) / 2);
   --compact-export-history-safe-inset: calc(var(--compact-export-history-viewport-gutter) / 2);
   --compact-export-history-center-x: calc(var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw)) + (var(--compact-export-surface-width) / 2));
-  --compact-export-history-surface-gap: 20px;
   left: clamp(
     calc(var(--compact-export-history-half-inline-size) + var(--compact-export-history-safe-inset)),
     var(--compact-export-history-center-x),
-    calc(100vw - var(--compact-export-history-half-inline-size) - var(--compact-export-history-safe-inset))
+    calc(var(--compact-export-history-viewport-inline-size) - var(--compact-export-history-half-inline-size) - var(--compact-export-history-safe-inset))
   );
-  bottom: calc(
-    100vh
-    - var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh))
-    + var(--compact-export-history-surface-gap, 20px)
-  );
+  bottom: calc(100vh - var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) + 34px);
   /* Geometry-critical: derive collapse compensation from control metrics; do not animate layout properties here. */
   --compact-export-controls-padding-y: clamp(4px, calc(var(--compact-export-surface-width) * 0.0116), 6px);
   --compact-export-controls-border-width: 1px;
@@ -2364,8 +2360,9 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
     --compact-history-slot-height,
     min(calc(var(--compact-export-surface-width) * 1.18), calc(var(--compact-desktop-workarea-height, 900px) * 0.63))
   );
+  --compact-export-history-viewport-inline-size: var(--compact-desktop-workarea-width, 1440px);
   --compact-export-history-max-inline-size: calc(
-    var(--compact-desktop-workarea-width, 1440px) - var(--compact-export-history-viewport-gutter)
+    var(--compact-export-history-viewport-inline-size) - var(--compact-export-history-viewport-gutter)
   );
   max-height: min(calc(var(--compact-export-surface-width) * 1.46), calc(var(--compact-desktop-workarea-height, 900px) * 0.78));
 }

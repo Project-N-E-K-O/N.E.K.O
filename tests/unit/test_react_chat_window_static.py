@@ -240,15 +240,16 @@ def test_compact_history_size_tokens_are_ratio_based_for_ui_optimization():
     assert "--compact-export-history-half-inline-size: calc(var(--compact-export-history-inline-size) / 2);" in anchor_block
     assert "--compact-export-history-safe-inset: calc(var(--compact-export-history-viewport-gutter) / 2);" in anchor_block
     assert "--compact-export-history-center-x: calc(var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw)) + (var(--compact-export-surface-width) / 2));" in anchor_block
-    assert "--compact-export-history-surface-gap: 20px;" in anchor_block
+    assert "--compact-export-history-viewport-inline-size: 100vw;" in anchor_block
     assert "left: clamp(" in anchor_block
     assert "var(--compact-export-history-center-x)" in anchor_block
-    assert "calc(100vw - var(--compact-export-history-half-inline-size) - var(--compact-export-history-safe-inset))" in anchor_block
-    assert "+ var(--compact-export-history-surface-gap, 20px)" in anchor_block
+    assert "calc(var(--compact-export-history-viewport-inline-size) - var(--compact-export-history-half-inline-size) - var(--compact-export-history-safe-inset))" in anchor_block
+    assert "bottom: calc(100vh - var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) + 34px);" in anchor_block
     assert "width: var(--compact-export-history-inline-size);" in anchor_block
-    assert "--compact-export-history-max-inline-size: calc(100vw - var(--compact-export-history-viewport-gutter));" in anchor_block
+    assert "--compact-export-history-max-inline-size: calc(var(--compact-export-history-viewport-inline-size) - var(--compact-export-history-viewport-gutter));" in anchor_block
+    assert "--compact-export-history-viewport-inline-size: var(--compact-desktop-workarea-width, 1440px);" in desktop_history_block
     assert "--compact-export-history-max-inline-size: calc(" in desktop_history_block
-    assert "var(--compact-desktop-workarea-width, 1440px) - var(--compact-export-history-viewport-gutter)" in desktop_history_block
+    assert "var(--compact-export-history-viewport-inline-size) - var(--compact-export-history-viewport-gutter)" in desktop_history_block
     assert "max-width: var(--compact-history-bubble-max-ratio, var(--compact-export-history-bubble-max-ratio));" in bubble_block
     assert "max-width: var(--compact-history-bubble-max-ratio, var(--compact-export-history-system-bubble-max-ratio));" in system_bubble_block
     assert "max-width: var(--compact-export-preview-bubble-max-ratio);" in preview_bubble_block
