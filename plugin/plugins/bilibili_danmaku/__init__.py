@@ -1992,30 +1992,41 @@ class BiliDanmakuPlugin(NekoPluginBase):
         },
     )
     async def test_bg_llm(self, url: str = "", api_key: str = "", model: str = "", **_) -> dict:
-        """测试背景 LLM 连通性"""
+        """测试背景 LLM 连通性
+
+        安全约定：
+        - 调用方必须提供 url，否则直接拒绝。
+        - api_key 为空时仅当提交的 url 与 saved config 中的 url 一致时
+          才填充已保存的 key。这防止了 LLM 工具调用以任意 URL 触发测试
+          导致密钥外泄（saved key 只会发到 saved url 对应的服务器）。
+        - 前端不会把 api_key 明文暴露在 DOM 中。
+        """
         url = (url or "").strip()
         api_key = (api_key or "").strip()
         model = (model or "").strip()
 
-        # 任一字段留空时从已保存配置回退
-        if not url or not api_key or not model:
+        if not url:
+            return Ok({"success": False, "error": "请先填写 API 地址", "error_code": "missing_params"})
+
+        # api_key 为空时仅当 URL 匹配已保存配置才回退（防 exfiltration）
+        if not api_key:
             try:
                 config_path = Path(__file__).resolve().parent / "data" / "config.json"
                 if config_path.exists():
                     with open(config_path, "r", encoding="utf-8") as f:
                         saved = json.load(f)
                     cloud = saved.get("background_llm", {}).get("cloud", {})
-                    if not url:
-                        url = str(cloud.get("url") or "").strip()
-                    if not api_key:
+                    saved_url = str(cloud.get("url") or "").strip().rstrip("/")
+                    submitted_url = url.rstrip("/")
+                    if saved_url and submitted_url == saved_url:
                         api_key = str(cloud.get("api_key") or "").strip()
-                    if not model:
-                        model = str(cloud.get("model") or "").strip()
+                        if not model:
+                            model = str(cloud.get("model") or "").strip()
             except Exception:
                 pass
 
-        if not url:
-            return Ok({"success": False, "error": "请先填写 API 地址", "error_code": "missing_params"})
+        if not api_key:
+            return Ok({"success": False, "error": "请先填写 API Key", "error_code": "missing_key"})
 
         # 构造完整 chat/completions 地址，兼容 /v1 结尾的 base URL
         api_url = url.rstrip("/")
