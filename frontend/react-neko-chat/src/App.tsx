@@ -169,6 +169,7 @@ type CompactHistoryResizeState = {
   startPointerY: number;
   startHeight: number;
   lastHeight: number;
+  moved: boolean;
   captureTarget: Element | null;
 };
 
@@ -2860,8 +2861,11 @@ export default function App({
     const resizeState = compactHistoryResizeStateRef.current;
     if (!resizeState) return;
     if (event && resizeState.pointerId !== event.pointerId) return;
-    persistCompactHistorySlotHeight(resizeState.lastHeight);
-    setCompactHistorySlotHeight(resizeState.lastHeight);
+    // 只在真正拖动过才落库：纯点击不该把响应式默认高度锁成固定像素值（否则之后视口/宽度变化不再响应）。
+    if (resizeState.moved) {
+      persistCompactHistorySlotHeight(resizeState.lastHeight);
+      setCompactHistorySlotHeight(resizeState.lastHeight);
+    }
     const captureTarget = resizeState.captureTarget;
     if (captureTarget && typeof captureTarget.releasePointerCapture === 'function') {
       try {
@@ -2885,6 +2889,7 @@ export default function App({
       startPointerY: getCompactHistoryResizePointerY(event),
       startHeight,
       lastHeight: getClampedCompactHistorySlotHeight(startHeight),
+      moved: false,
       captureTarget: event.currentTarget,
     };
     setCompactHistoryResizeActive(true);
@@ -2900,6 +2905,7 @@ export default function App({
     event.stopPropagation();
     // bar 在堆砌区顶部：上拖（deltaY < 0）增高，下拖减高。
     const deltaY = getCompactHistoryResizePointerY(event) - resizeState.startPointerY;
+    if (deltaY !== 0) resizeState.moved = true;
     const nextHeight = getClampedCompactHistorySlotHeight(resizeState.startHeight - deltaY);
     resizeState.lastHeight = nextHeight;
     setCompactHistorySlotHeight(nextHeight);

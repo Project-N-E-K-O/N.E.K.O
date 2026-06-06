@@ -719,10 +719,16 @@ def test_compact_history_resize_bar_is_draggable_and_persisted():
 
     # bar 的 DOM：带可命中且不穿透的 hit-region，拖拽不触发面板 / 整窗拖动。
     assert "className={clsx('compact-export-history-resize-bar'" in panel_source
-    assert "data-compact-hit-region-id={historyInteractive ? 'history:resize' : undefined}" in panel_source
-    assert "data-compact-hit-region-kind={historyInteractive ? 'resize' : undefined}" in panel_source
+    # hit-region 受 historyInteractive && !choiceLayerAbove 双重 gate：choice prompt 压在历史上方时，
+    # bar 不再上报命中区（与 scroll/controls 一起惰性，Electron 下不留可拖 / 不穿透的活条）。
+    assert "data-compact-hit-region-id={historyInteractive && !choiceLayerAbove ? 'history:resize' : undefined}" in panel_source
+    assert "data-compact-hit-region-kind={historyInteractive && !choiceLayerAbove ? 'resize' : undefined}" in panel_source
     resize_bar_jsx = panel_source.split("compact-export-history-resize-bar", 1)[1].split("/>", 1)[0]
     assert 'data-compact-no-drag="true"' in resize_bar_jsx
+    # under-choice 态把 bar 一并纳入 pointer-events:none / 淡化规则。
+    assert ".compact-export-history-anchor.under-choice-prompt .compact-export-history-resize-bar," in styles
+    # 纯点击不落库：finish 仅在 moved 时 persist。
+    assert "if (resizeState.moved) {" in app_source
 
     # 高度上限写预留覆盖变量 + 独立 localStorage key；变更后触发宿主几何重算（Electron 窗口联动）。
     assert "COMPACT_HISTORY_HEIGHT_STORAGE_KEY = 'neko.reactChatWindow.compactHistorySlotHeight'" in app_source

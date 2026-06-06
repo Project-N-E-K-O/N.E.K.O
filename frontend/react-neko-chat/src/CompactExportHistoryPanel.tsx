@@ -2512,9 +2512,9 @@ export default function CompactExportHistoryPanel({
                 放在 scroll 之前，命中区随 anchor 的 children hit-scope 上报给宿主、Electron 下可点不穿透。 */}
             <div
               className={clsx('compact-export-history-resize-bar', { 'is-active': historyResizeActive })}
-              data-compact-hit-region={historyInteractive ? 'true' : undefined}
-              data-compact-hit-region-id={historyInteractive ? 'history:resize' : undefined}
-              data-compact-hit-region-kind={historyInteractive ? 'resize' : undefined}
+              data-compact-hit-region={historyInteractive && !choiceLayerAbove ? 'true' : undefined}
+              data-compact-hit-region-id={historyInteractive && !choiceLayerAbove ? 'history:resize' : undefined}
+              data-compact-hit-region-kind={historyInteractive && !choiceLayerAbove ? 'resize' : undefined}
               data-compact-no-drag="true"
               aria-hidden="true"
               onPointerDown={onHistoryResizePointerDown}

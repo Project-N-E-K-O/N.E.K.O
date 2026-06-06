@@ -2370,6 +2370,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 .compact-export-history-anchor.under-choice-prompt .compact-export-history-scroll,
 .compact-export-history-anchor.under-choice-prompt .compact-export-history-scrollbar-hit,
+.compact-export-history-anchor.under-choice-prompt .compact-export-history-resize-bar,
 .compact-export-history-anchor.under-choice-prompt .compact-export-history-controls,
 .compact-export-history-anchor.under-choice-prompt .compact-export-preview-region {
   opacity: 0.32;

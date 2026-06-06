@@ -62,6 +62,14 @@ describe('CompactExportHistoryPanel', () => {
     expect(container.querySelector('.compact-export-history-resize-bar.is-active')).not.toBeNull();
   });
 
+  it('drops the history resize bar hit-region when a choice prompt sits above', () => {
+    const { container } = renderPanel({ previewOpen: false, visibilityState: 'open', choiceLayerAbove: true });
+    const bar = container.querySelector('.compact-export-history-resize-bar');
+    expect(bar).not.toBeNull();
+    expect(bar?.getAttribute('data-compact-hit-region-id')).toBeNull();
+    expect(bar?.getAttribute('data-compact-hit-region')).toBeNull();
+  });
+
   it('pins the history list to bottom when returning from preview', () => {
     const scrollTopValues: number[] = [];
     const scrollTopByElement = new WeakMap<HTMLElement, number>();
