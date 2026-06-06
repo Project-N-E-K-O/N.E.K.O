@@ -155,6 +155,14 @@ def test_model_cat_transition_contract_is_present():
     assert "NEKO_MODEL_CAT_TRANSITION_MAX_SIZE = 680" in source
     assert "NEKO_MODEL_CAT_TRANSITION_SIZE_FACTOR = 0.86" in source
     assert "Math.round(basis * NEKO_MODEL_CAT_TRANSITION_SIZE_FACTOR)" in source
+    transition_rect_block = source[
+        source.index("function normalizeNekoTransitionRect(anchorRect, container, coverRect)"):
+        source.index("function clearNekoModelCatTransitionOverlay()")
+    ]
+    assert "left: Math.round(centerX - size / 2)" in transition_rect_block
+    assert "top: Math.round(centerY - size / 2)" in transition_rect_block
+    assert "maxLeft" not in transition_rect_block
+    assert "maxTop" not in transition_rect_block
     assert "const transitionAnchorRect = savedGoodbyeRect || activeReturnButtonContainer.getBoundingClientRect()" in source
     assert "function mergeNekoTransitionAnchorRect(anchorRect, coverRect)" in source
     assert "const coverRect = options.coverRect || null" in source
