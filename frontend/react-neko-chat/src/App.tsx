@@ -5209,6 +5209,22 @@ export default function App({
       <span className="compact-history-visibility-handle-triangle" aria-hidden="true" />
     </button>
   ) : null;
+  const compactMusicPlayerVisibility = compactExportHistoryOpen
+    ? 'open'
+    : (compactExportHistoryMounted ? 'closing' : 'closed');
+  const compactMusicPlayerMountNode = isCompactSurface ? (
+    <div
+      id="music-player-mount"
+      className="compact-music-player-mount"
+      data-music-player-mount="compact-surface"
+      data-compact-music-player-visibility={compactMusicPlayerVisibility}
+      data-compact-geometry-owner="surface"
+      data-compact-geometry-item="musicPlayer"
+      data-compact-geometry-hit-scope="children"
+      data-compact-no-drag="true"
+      aria-hidden={compactMusicPlayerVisibility === 'open' ? undefined : true}
+    />
+  ) : null;
   const compactSurfaceShellStyle = isCompactSurface
     && compactSurfaceEffectiveWidth !== null
     && !isDesktopCompactSurfaceLayoutActive()
@@ -5247,9 +5263,11 @@ export default function App({
       data-compact-export-preview-open={isCompactSurface && compactExportPreviewOpen ? 'true' : 'false'}
       data-compact-export-selected-count={isCompactSurface ? compactExportSelectedCount : 0}
       data-compact-export-auto-scroll={isCompactSurface && compactExportAutoScrollToBottom ? 'true' : 'false'}
+      data-compact-tool-layer-open={isCompactSurface && compactInputToolFanOpen ? 'true' : 'false'}
     >
       {compactExportHistoryNode}
       {compactHistoryVisibilityHandleNode}
+      {compactMusicPlayerMountNode}
       {compactChoiceLayerNode}
       {floatingFistDrops.map(drop => (
         <span
@@ -5375,7 +5393,7 @@ export default function App({
           data-chat-surface-mode={chatSurfaceMode}
           data-compact-chat-state={effectiveCompactChatState}
         >
-          <div id="music-player-mount" className="composer-music-player-mount" />
+          {!isCompactSurface ? <div id="music-player-mount" className="composer-music-player-mount" /> : null}
           <form className="composer" onSubmit={(event) => {
             event.preventDefault();
             submitDraft();
@@ -5385,6 +5403,7 @@ export default function App({
                 className="compact-chat-surface-shell"
                 ref={compactInputShellRef}
                 data-compact-chat-state={effectiveCompactChatState}
+                data-compact-tool-layer-open={compactToolToggleVisible && compactInputToolFanOpen ? 'true' : 'false'}
                 style={compactSurfaceShellStyle}
                 onBlurCapture={effectiveCompactChatState === 'input' ? scheduleCompactInputCollapse : undefined}
               >

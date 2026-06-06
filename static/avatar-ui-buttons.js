@@ -330,6 +330,14 @@ function _normalizeNekoIdleReturnTier(tier) {
     return _NEKO_IDLE_TIER_CAT1;
 }
 
+function _isNekoNativeReturnBallDragDisabled() {
+    const runtime = window.__NEKO_DESKTOP_RUNTIME__ || {};
+    return !!(
+        window.__NEKO_DISABLE_NATIVE_RETURN_BALL_DRAG__ ||
+        runtime.disableNativeReturnBallDrag
+    );
+}
+
 function _getNekoIdleReturnAssetUrl(tier) {
     const normalizedTier = _normalizeNekoIdleReturnTier(tier);
     const versionSuffix = _getNekoIdleReturnAssetVersionSuffix();
@@ -2726,6 +2734,10 @@ function _stepNekoIdleCat1Walk(button, timestamp) {
 function _startNekoIdleCat1Walk(button, target) {
     const state = _getNekoIdleCat1Journey(button);
     if (!state) return;
+    if (_isNekoIdleReturnDragActionActive(button)) return;
+    const walkContainer = _getNekoIdleReturnContainerFromButton(button);
+    const walkDragging = walkContainer && walkContainer.getAttribute('data-dragging');
+    if (walkDragging && walkDragging !== 'false') return;
     const profile = state.profile;
     state.target = target;
     state.targetKind = target && target.kind ? target.kind : '';
@@ -2963,7 +2975,8 @@ function _refreshNekoIdleCat1Observer(button) {
                 const currentState = button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey;
                 if (!currentState || currentState.paused) return;
                 if (currentState.substate === currentState.profile.walkingSubstate) return;
-                if (container.getAttribute('data-dragging') === 'true') return;
+                const observerDragging = container.getAttribute('data-dragging');
+                if (observerDragging && observerDragging !== 'false') return;
                 _scheduleNekoIdleCat1JourneySync(button);
             });
             state.containerObserver.observe(container, {
@@ -2977,6 +2990,9 @@ function _refreshNekoIdleCat1Observer(button) {
 function _syncNekoIdleCat1Journey(button, tier) {
     if (!button) return;
     if (_isNekoIdleCompactSurfaceDragging()) return;
+    const initialContainer = _getNekoIdleReturnContainerFromButton(button);
+    const initialDragging = initialContainer && initialContainer.getAttribute('data-dragging');
+    if (initialDragging && initialDragging !== 'false') return;
     const normalizedTier = _normalizeNekoIdleReturnTier(tier || button.getAttribute('data-neko-idle-tier'));
     const profile = _getNekoIdleReturnSubactionProfile(normalizedTier);
     const state = _getNekoIdleReturnSubactionState(button, profile);
@@ -3898,7 +3914,7 @@ const AvatarButtonMixin = {
             document.body.appendChild(returnButtonContainer);
             this._returnButtonContainer = returnButtonContainer;
             _applyNekoIdleReturnPresentation(returnBtn, currentTier);
-            if (!window.__NEKO_MULTI_WINDOW__) {
+            if (!window.__NEKO_MULTI_WINDOW__ || _isNekoNativeReturnBallDragDisabled()) {
                 this._setupReturnButtonDrag(returnButtonContainer);
             }
 
@@ -3911,9 +3927,40 @@ const AvatarButtonMixin = {
         ManagerPrototype._setupReturnButtonDrag = function(container) {
             let isDragging = false;
             let dragActiveDispatched = false;
+            let dragSafetyTimer = 0;
+            let dragSafetyToken = 0;
             let dragStartX = 0, dragStartY = 0, containerStartX = 0, containerStartY = 0;
 
+            const clearDragSafetyTimer = () => {
+                if (!dragSafetyTimer) return;
+                clearTimeout(dragSafetyTimer);
+                dragSafetyTimer = 0;
+            };
+
+            const finishDragState = (moved, safetyToken) => {
+                if (safetyToken !== dragSafetyToken) return;
+                container.setAttribute('data-dragging', 'false');
+                if (moved) {
+                    _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-end', {
+                        movedDistancePx: Math.hypot(
+                            (parseFloat(container.style.left) || containerStartX) - containerStartX,
+                            (parseFloat(container.style.top) || containerStartY) - containerStartY
+                        )
+                    });
+                }
+            };
+
+            const resetDragStateAfterMissingEnd = (safetyToken) => {
+                if (dragSafetyToken !== safetyToken || !isDragging) return;
+                const moved = container.getAttribute('data-dragging') === 'true';
+                isDragging = false;
+                dragActiveDispatched = false;
+                container.style.cursor = 'grab';
+                finishDragState(moved, safetyToken);
+            };
+
             const handleStart = (clientX, clientY) => {
+                clearDragSafetyTimer();
                 _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-start');
                 isDragging = true;
                 dragActiveDispatched = false;
@@ -3927,8 +3974,14 @@ const AvatarButtonMixin = {
                 container.style.bottom = '';
                 container.style.left = `${containerStartX}px`;
                 container.style.top = `${containerStartY}px`;
-                container.setAttribute('data-dragging', 'false');
+                container.setAttribute('data-dragging', 'pending');
                 container.style.cursor = 'grabbing';
+                const safetyToken = dragSafetyToken + 1;
+                dragSafetyToken = safetyToken;
+                dragSafetyTimer = setTimeout(() => {
+                    dragSafetyTimer = 0;
+                    resetDragStateAfterMissingEnd(safetyToken);
+                }, 5000);
             };
 
             const handleMove = (clientX, clientY) => {
@@ -3949,21 +4002,15 @@ const AvatarButtonMixin = {
             };
 
             const handleEnd = () => {
+                clearDragSafetyTimer();
                 if (isDragging) {
+                    const safetyToken = dragSafetyToken;
                     const moved = container.getAttribute('data-dragging') === 'true';
                     isDragging = false;
                     dragActiveDispatched = false;
                     container.style.cursor = 'grab';
                     setTimeout(() => {
-                        container.setAttribute('data-dragging', 'false');
-                        if (moved) {
-                            _dispatchNekoIdleReturnBallManualMove(container, 'return-ball-drag-end', {
-                                movedDistancePx: Math.hypot(
-                                    (parseFloat(container.style.left) || containerStartX) - containerStartX,
-                                    (parseFloat(container.style.top) || containerStartY) - containerStartY
-                                )
-                            });
-                        }
+                        finishDragState(moved, safetyToken);
                     }, 10);
                 }
             };

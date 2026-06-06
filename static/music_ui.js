@@ -353,24 +353,17 @@
 
     let musicMountObserver = null;
     let musicMountRelocationFrame = 0;
+    let musicMountGeometryFrame = 0;
     let pendingDetachedMusicBar = null;
 
-    function isCompactHistoryMusicMountInteractive(mount) {
-        if (!(mount instanceof Element)) return false;
-        if (mount.getAttribute('data-compact-hit-region') !== 'true') return false;
-        const anchor = mount.closest ? mount.closest('.compact-export-history-anchor') : null;
-        if (anchor && anchor.getAttribute('data-compact-export-history-visibility') !== 'open') return false;
-        if (window.getComputedStyle) {
-            const style = window.getComputedStyle(mount);
-            if (style && (style.display === 'none' || style.visibility === 'hidden' || style.pointerEvents === 'none')) return false;
-            if (style && Number(style.opacity) <= 0.01) return false;
-        }
-        return true;
+    function getCompactMusicMountTarget() {
+        const compactMount = document.querySelector('[data-music-player-mount="compact-surface"]');
+        return compactMount instanceof Element ? compactMount : null;
     }
 
     function getPreferredMusicMountTarget() {
-        const historyMount = document.querySelector('.compact-export-history-music-mount');
-        if (isCompactHistoryMusicMountInteractive(historyMount)) return { mountTarget: historyMount, insertBeforeEl: null };
+        const compactMount = getCompactMusicMountTarget();
+        if (compactMount) return { mountTarget: compactMount, insertBeforeEl: null };
 
         const reactMount = document.getElementById('music-player-mount');
         if (reactMount) return { mountTarget: reactMount, insertBeforeEl: null };
@@ -382,18 +375,39 @@
         };
     }
 
+    function requestCompactMusicGeometrySync() {
+        if (musicMountGeometryFrame) return;
+        const raf = window.requestAnimationFrame || ((callback) => window.setTimeout(callback, 16));
+        musicMountGeometryFrame = raf(() => {
+            musicMountGeometryFrame = 0;
+            window.dispatchEvent(new CustomEvent('neko:compact-interaction-geometry-refresh'));
+        });
+    }
+
+    function prepareMusicBarHitRegion(musicBar) {
+        if (!musicBar) return;
+        musicBar.setAttribute('data-compact-hit-region', 'true');
+        musicBar.setAttribute('data-compact-hit-region-id', 'music-player');
+        musicBar.setAttribute('data-compact-hit-region-kind', 'music');
+    }
+
     function mountMusicBar(musicBar) {
         if (!musicBar) return false;
         ensureMusicMountObserver();
         if (musicBar.dataset) delete musicBar.dataset.skipMountRelocation;
+        prepareMusicBarHitRegion(musicBar);
         const target = getPreferredMusicMountTarget();
         if (!target || !target.mountTarget) return false;
-        if (musicBar.parentNode === target.mountTarget) return true;
+        if (musicBar.parentNode === target.mountTarget) {
+            requestCompactMusicGeometrySync();
+            return true;
+        }
         if (target.insertBeforeEl && target.insertBeforeEl.parentNode === target.mountTarget) {
             target.mountTarget.insertBefore(musicBar, target.insertBeforeEl);
         } else {
             target.mountTarget.appendChild(musicBar);
         }
+        requestCompactMusicGeometrySync();
         return true;
     }
 
@@ -401,6 +415,7 @@
         if (!musicBar) return;
         if (musicBar.dataset) musicBar.dataset.skipMountRelocation = 'true';
         musicBar.remove();
+        requestCompactMusicGeometrySync();
     }
 
     function findMusicBarInNode(node) {
@@ -414,16 +429,22 @@
 
     function isMusicMountMutationNode(node) {
         if (!(node instanceof Element)) return false;
-        if (node.id === 'music-player-mount' || node.classList.contains('compact-export-history-music-mount')) return true;
-        return !!(node.querySelector && node.querySelector('#music-player-mount, .compact-export-history-music-mount'));
+        if (node.id === 'music-player-mount' || node.getAttribute('data-music-player-mount') === 'compact-surface') return true;
+        return !!(node.querySelector && node.querySelector('#music-player-mount, [data-music-player-mount="compact-surface"]'));
     }
 
     function isMusicMountMutationTarget(node) {
         if (!(node instanceof Element)) return false;
         return node.id === 'music-player-mount'
-            || node.classList.contains('compact-export-history-anchor')
-            || node.classList.contains('compact-export-history-music-mount')
-            || !!(node.closest && node.closest('.compact-export-history-anchor'));
+            || node.getAttribute('data-music-player-mount') === 'compact-surface';
+    }
+
+    function isCompactMusicGeometryMutationTarget(node) {
+        if (!(node instanceof Element)) return false;
+        const compactMusicMount = node.closest && node.closest('[data-music-player-mount="compact-surface"]');
+        if (!compactMusicMount) return false;
+        return node.classList.contains('music-bar-volume-container')
+            || node.classList.contains('music-bar-volume-slider-wrapper');
     }
 
     function scheduleMusicBarRelocation(detachedMusicBar) {
@@ -444,6 +465,10 @@
             for (const mutation of mutations) {
                 if (mutation.type === 'attributes' && isMusicMountMutationTarget(mutation.target)) {
                     scheduleMusicBarRelocation();
+                    return;
+                }
+                if (mutation.type === 'attributes' && isCompactMusicGeometryMutationTarget(mutation.target)) {
+                    requestCompactMusicGeometrySync();
                     return;
                 }
                 for (const node of mutation.removedNodes) {
@@ -471,8 +496,7 @@
             attributes: true,
             attributeFilter: [
                 'class',
-                'data-compact-export-history-visibility',
-                'data-compact-hit-region',
+                'data-music-player-mount',
                 'style'
             ]
         });
@@ -502,7 +526,10 @@
 
         if (volumeBtn) volumeBtn.onclick = (e) => {
             e.preventDefault(); e.stopPropagation();
-            if (volumeContainer) volumeContainer.classList.toggle('expanded');
+            if (volumeContainer) {
+                volumeContainer.classList.toggle('expanded');
+                requestCompactMusicGeometrySync();
+            }
         };
 
         if (volumeSliderWrapper && volumeSlider) {
@@ -622,6 +649,7 @@
             const closeOnOutside = (e) => {
                 if (volumeContainer.classList.contains('expanded') && !volumeContainer.contains(e.target)) {
                     volumeContainer.classList.remove('expanded');
+                    requestCompactMusicGeometrySync();
                 }
             };
             document.addEventListener('mousedown', closeOnOutside);
@@ -685,7 +713,7 @@
                 <button type="button" class="music-bar-play" aria-label="Play/Pause" title="Play/Pause">▶</button>
                 <div class="music-bar-volume-container">
                     <button type="button" class="music-bar-volume-btn" aria-label="Volume" title="Volume">🔊</button>
-                    <div class="music-bar-volume-slider-wrapper" data-compact-hit-region="true" data-compact-hit-region-id="history:music-player:volume" data-compact-hit-region-kind="music-volume">
+                    <div class="music-bar-volume-slider-wrapper" data-compact-hit-region="true" data-compact-hit-region-id="music-player:volume" data-compact-hit-region-kind="music-volume">
                         <div class="music-bar-volume-slider">
                             <div class="music-bar-volume-slider-fill"></div>
                             <div class="music-bar-volume-slider-handle"></div>
@@ -1443,7 +1471,7 @@
                 <button type="button" class="music-bar-play" aria-label="Play/Pause" title="Play/Pause">▶</button>
                 <div class="music-bar-volume-container">
                     <button type="button" class="music-bar-volume-btn" aria-label="Volume" title="Volume">🔊</button>
-                    <div class="music-bar-volume-slider-wrapper" data-compact-hit-region="true" data-compact-hit-region-id="history:music-player:volume" data-compact-hit-region-kind="music-volume">
+                    <div class="music-bar-volume-slider-wrapper" data-compact-hit-region="true" data-compact-hit-region-id="music-player:volume" data-compact-hit-region-kind="music-volume">
                         <div class="music-bar-volume-slider">
                             <div class="music-bar-volume-slider-fill"></div>
                             <div class="music-bar-volume-slider-handle"></div>
@@ -1735,6 +1763,7 @@
                     e.preventDefault();
                     e.stopPropagation();
                     volumeContainer.classList.toggle('expanded');
+                    requestCompactMusicGeometrySync();
                 };
 
                 let isDraggingVolume = false;
@@ -1799,6 +1828,7 @@
                 const closeVolumeOnOutsideClick = (e) => {
                     if (volumeContainer.classList.contains('expanded') && !volumeContainer.contains(e.target)) {
                         volumeContainer.classList.remove('expanded');
+                        requestCompactMusicGeometrySync();
                     }
                 };
                 addManagedListener('mousedown', closeVolumeOnOutsideClick);
