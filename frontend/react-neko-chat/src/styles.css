@@ -2975,6 +2975,14 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   -webkit-app-region: no-drag;
 }
 
+/* 音量弹层展开时滑块会向上伸进 history 区域：播放器常驻 z-index:8 低于
+   history-anchor(100001)，重叠处 history 会盖住滑块上半部并抢走点击。展开态
+   把播放器整体提到 history 之上，但仍低于工具轮盘展开态的 surface-shell(100003)，
+   不影响工具轮盘对表情按钮的让位。 */
+#music-player-mount.compact-music-player-mount:has(.music-bar-volume-container.expanded) {
+  z-index: 100002;
+}
+
 #music-player-mount.compact-music-player-mount:empty {
   display: none;
 }

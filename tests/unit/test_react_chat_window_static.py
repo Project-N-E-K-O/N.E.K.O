@@ -926,6 +926,13 @@ def test_compact_history_hit_contract_keeps_transparent_wrappers_out_of_hit_regi
     assert "+ var(--compact-music-player-reserved-block-size, 88px)" in styles
     assert "+ var(--compact-music-player-history-gap, 14px)" in styles
     assert ".app-shell:has(> .compact-music-player-mount:not(:empty)) .compact-export-history-anchor" in styles
+    # 音量弹层展开时滑块向上伸进 history 区域，播放器整体提到 history(100001) 之上，
+    # 但仍低于工具轮盘态 surface-shell(100003)，避免抢点击又不破坏工具轮盘对表情按钮的让位。
+    assert "z-index: 100002;" in css_block(
+        styles,
+        "#music-player-mount.compact-music-player-mount:has(.music-bar-volume-container.expanded) {",
+        "#music-player-mount.compact-music-player-mount:empty",
+    )
     assert 'data-compact-hit-region-id="history:preview"' in panel_source
 
 
