@@ -4207,6 +4207,37 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   .compact-chat-surface-frame[data-compact-chat-state="input"] {
     padding: 5px 8px 5px 18px;
   }
+
+  /* Only use the phone fallback when the original wheel geometry would overflow the viewport. */
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"],
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-1"],
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="0"],
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="1"],
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] {
+    opacity: 1;
+    pointer-events: auto;
+    transition: none;
+  }
+
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-2"] {
+    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(-200deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(200deg) scale(0.86);
+  }
+
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="-1"] {
+    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(-170deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(170deg) scale(0.98);
+  }
+
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="0"] {
+    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(-140deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(140deg) scale(1.04);
+  }
+
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="1"] {
+    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(-110deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(110deg) scale(0.98);
+  }
+
+  .compact-input-tool-fan[data-compact-input-tool-fan-open="true"][data-compact-tool-wheel-layout="viewport-fit"] .compact-input-tool-item[data-compact-tool-wheel-slot="2"] {
+    transform: translate(var(--compact-tool-wheel-center-x), var(--compact-tool-wheel-center-y)) rotate(-80deg) translateX(var(--compact-tool-wheel-orbit-radius)) rotate(80deg) scale(0.86);
+  }
 }
 
 /* ===================================================================
