@@ -28,6 +28,93 @@ def _open_subtitle_harness(
 
 
 @pytest.mark.frontend
+def test_subtitle_background_opacity_tracks_dark_theme(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display">
+            <div id="subtitle-scroll"><span id="subtitle-text"></span></div>
+        </div>
+        """,
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            document.documentElement.setAttribute('data-theme', 'dark');
+            window.localStorage.setItem('subtitleOpacity', '80');
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const controller = window.nekoSubtitleShared.initSubtitleUI({ host: 'web' });
+            const display = document.getElementById('subtitle-display');
+            const darkBackground = display.style.background;
+            document.documentElement.removeAttribute('data-theme');
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const lightBackground = display.style.background;
+            document.documentElement.setAttribute('data-theme', 'dark');
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            const darkBackgroundAfterAttributeChange = display.style.background;
+            controller.destroy();
+            return { darkBackground, lightBackground, darkBackgroundAfterAttributeChange };
+        }
+        """
+    )
+
+    assert "rgba(18, 29, 45, 0.8)" in result["darkBackground"]
+    assert "rgba(68, 183, 254, 0.8)" in result["lightBackground"]
+    assert "rgba(18, 29, 45, 0.8)" in result["darkBackgroundAfterAttributeChange"]
+
+
+@pytest.mark.frontend
+def test_standalone_subtitle_background_uses_stored_dark_theme_on_open(
+    mock_page: Page,
+):
+    _open_subtitle_harness(
+        mock_page,
+        "subtitle-window-host",
+        """
+        <div id="subtitle-display">
+            <div id="subtitle-scroll"><span id="subtitle-text"></span></div>
+        </div>
+        """,
+    )
+    mock_page.evaluate(
+        """
+        () => {
+            window.localStorage.setItem('neko-dark-mode', 'true');
+            window.localStorage.setItem('subtitleOpacity', '80');
+        }
+        """
+    )
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/theme-manager.js"))
+    mock_page.add_script_tag(path=str(PROJECT_ROOT / "static/subtitle-shared.js"))
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const controller = window.nekoSubtitleShared.initSubtitleUI({ host: 'window' });
+            const display = document.getElementById('subtitle-display');
+            const background = display.style.background;
+            const theme = document.documentElement.getAttribute('data-theme');
+            controller.destroy();
+            return { background, theme };
+        }
+        """
+    )
+
+    assert result["theme"] == "dark"
+    assert "rgba(18, 29, 45, 0.8)" in result["background"]
+
+
+@pytest.mark.frontend
 def test_subtitle_incremental_translation_starts_when_sentence_punctuation_arrives(
     mock_page: Page,
 ):

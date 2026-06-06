@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import CompactExportHistoryPanel from './CompactExportHistoryPanel';
 import { parseChatMessage } from './message-schema';
 
@@ -89,6 +89,183 @@ describe('CompactExportHistoryPanel', () => {
         Object.defineProperty(HTMLElement.prototype, 'scrollHeight', scrollHeightDescriptor);
       } else {
         Reflect.deleteProperty(HTMLElement.prototype, 'scrollHeight');
+      }
+      if (scrollTopDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollTop', scrollTopDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollTop');
+      }
+    }
+  });
+
+  it('shows the compact history scrollbar while the desktop cursor is over the history area', () => {
+    const { container } = renderPanel({
+      previewOpen: false,
+      visibilityState: 'open',
+    });
+
+    const scroll = container.querySelector('.compact-export-history-scroll');
+    expect(scroll).not.toBeNull();
+    expect(scroll).not.toHaveAttribute('data-compact-scrollbar-visible');
+
+    fireEvent(window, new CustomEvent('neko:compact-history-hover-state-change', {
+      detail: { active: true },
+    }));
+    expect(scroll).toHaveAttribute('data-compact-scrollbar-visible', 'true');
+
+    fireEvent(window, new CustomEvent('neko:compact-history-hover-state-change', {
+      detail: { active: false },
+    }));
+    expect(scroll).not.toHaveAttribute('data-compact-scrollbar-visible');
+  });
+
+  it('keeps the scrollbar visible while the desktop cursor remains over transparent history', () => {
+    vi.useFakeTimers();
+
+    try {
+      const { container } = renderPanel({
+        previewOpen: false,
+        visibilityState: 'open',
+      });
+
+      const scroll = container.querySelector('.compact-export-history-scroll');
+      expect(scroll).not.toBeNull();
+
+      fireEvent(window, new CustomEvent('neko:compact-history-hover-state-change', {
+        detail: { active: true },
+      }));
+      expect(scroll).toHaveAttribute('data-compact-scrollbar-visible', 'true');
+
+      fireEvent.wheel(scroll!, { deltaY: 12 });
+      act(() => {
+        vi.advanceTimersByTime(1200);
+      });
+      expect(scroll).toHaveAttribute('data-compact-scrollbar-visible', 'true');
+
+      fireEvent(window, new CustomEvent('neko:compact-history-hover-state-change', {
+        detail: { active: false },
+      }));
+      expect(scroll).not.toHaveAttribute('data-compact-scrollbar-visible');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not render the scrollbar hit area when the history cannot scroll', () => {
+    const scrollHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight');
+    const clientHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight');
+
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
+      configurable: true,
+      get() {
+        return this.classList.contains('compact-export-history-scroll') ? 240 : 0;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+      configurable: true,
+      get() {
+        return this.classList.contains('compact-export-history-scroll') ? 240 : 0;
+      },
+    });
+
+    try {
+      const { container } = renderPanel({
+        previewOpen: false,
+        visibilityState: 'open',
+      });
+
+      const scroll = container.querySelector('.compact-export-history-scroll');
+      expect(scroll).not.toBeNull();
+
+      fireEvent(window, new CustomEvent('neko:compact-history-hover-state-change', {
+        detail: { active: true },
+      }));
+      expect(scroll).toHaveAttribute('data-compact-scrollbar-visible', 'true');
+      expect(container.querySelector('.compact-export-history-scrollbar-hit')).toBeNull();
+    } finally {
+      if (scrollHeightDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollHeight', scrollHeightDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollHeight');
+      }
+      if (clientHeightDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'clientHeight', clientHeightDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'clientHeight');
+      }
+    }
+  });
+
+  it('scrolls the compact history list when the visible scrollbar hit area is dragged', () => {
+    const scrollTopByElement = new WeakMap<HTMLElement, number>();
+    const scrollHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight');
+    const clientHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight');
+    const scrollTopDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollTop');
+
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
+      configurable: true,
+      get() {
+        return this.classList.contains('compact-export-history-scroll') ? 1000 : 0;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+      configurable: true,
+      get() {
+        return this.classList.contains('compact-export-history-scroll') ? 250 : 0;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, 'scrollTop', {
+      configurable: true,
+      get() {
+        return scrollTopByElement.get(this) ?? 0;
+      },
+      set(value: number) {
+        scrollTopByElement.set(this, value);
+      },
+    });
+
+    try {
+      const { container } = renderPanel({
+        previewOpen: false,
+        visibilityState: 'open',
+      });
+      const scroll = container.querySelector<HTMLElement>('.compact-export-history-scroll');
+      expect(scroll).not.toBeNull();
+
+      fireEvent(window, new CustomEvent('neko:compact-history-hover-state-change', {
+        detail: { active: true },
+      }));
+      const hit = container.querySelector<HTMLElement>('.compact-export-history-scrollbar-hit');
+      expect(hit).not.toBeNull();
+
+      fireEvent.pointerDown(hit!, {
+        pointerId: 1,
+        pointerType: 'mouse',
+        button: 0,
+        clientY: 20,
+      });
+      fireEvent.pointerMove(hit!, {
+        pointerId: 1,
+        pointerType: 'mouse',
+        clientY: 70,
+      });
+      fireEvent.pointerUp(hit!, {
+        pointerId: 1,
+        pointerType: 'mouse',
+        clientY: 70,
+      });
+
+      expect(scroll!.scrollTop).toBeGreaterThan(0);
+    } finally {
+      if (scrollHeightDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollHeight', scrollHeightDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollHeight');
+      }
+      if (clientHeightDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'clientHeight', clientHeightDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'clientHeight');
       }
       if (scrollTopDescriptor) {
         Object.defineProperty(HTMLElement.prototype, 'scrollTop', scrollTopDescriptor);

@@ -1194,10 +1194,17 @@ body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"
 }
 
 /* 紧凑历史面板点击穿透契约：上方通用规则会重新开启 surface 子节点命中，
-   因此透明包装层必须回到 none，只保留气泡、控制区、播放器和预览可交互。 */
+   因此透明包装层必须回到 none，只保留气泡、控制区和预览可交互。 */
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #music-player-mount,
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #music-player-mount * {
     pointer-events: auto;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closing"],
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closing"] *,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closed"],
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #music-player-mount.compact-music-player-mount[data-compact-music-player-visibility="closed"] * {
+    pointer-events: none;
 }
 
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-anchor,
@@ -1210,16 +1217,28 @@ body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"
 
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-bubble,
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-controls,
-body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-music-mount,
 body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-preview-region {
     pointer-events: auto;
 }
 
-body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-anchor.under-choice-prompt .music-bar-volume-slider-wrapper,
-body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) .compact-export-history-anchor[data-compact-export-history-visibility="closing"] .music-bar-volume-slider-wrapper {
-    pointer-events: none;
+/* 工具轮盘打开时，历史记录和音乐播放器退到表情三按钮下方，避免遮挡和抢命中。 */
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"] .compact-export-history-anchor {
+    z-index: 1 !important;
 }
 
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"] .compact-export-history-anchor,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"] .compact-export-history-anchor * {
+    pointer-events: none !important;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"] .compact-chat-surface-shell {
+    z-index: 100004 !important;
+}
+
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"] .compact-input-tool-fan,
+body.subtitle-web-host #react-chat-window-shell[data-chat-surface-mode="compact"]:not(.is-minimized):not(.is-collapsing):not(.is-expanding) #react-chat-window-root .app-shell[data-compact-tool-layer-open="true"] .composer-icon-popover {
+    z-index: 100005 !important;
+}
 /* compact 态不再把最小化按钮渲染成模型旁的悬浮球：呼吸灯外发光会被 Electron 窗口形状裁切，
    且球漂在角色旁观感很怪。最小化的宿主管线（按钮 DOM、toggleMinimized、折叠动画）保留，
    compact 态下的最小化入口呈现方式后续单独设计。 */

@@ -405,11 +405,15 @@ describe('App', () => {
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('data-compact-hit-region-id', 'history:message:assistant-history-1');
     expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('data-compact-hit-region-kind', 'message');
     expect(container.querySelectorAll('#music-player-mount')).toHaveLength(1);
-    expect(container.querySelector('.composer-panel #music-player-mount')).not.toBeNull();
+    expect(container.querySelector('.compact-music-player-mount#music-player-mount')).not.toBeNull();
+    expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('data-music-player-mount', 'compact-surface');
+    expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('data-compact-music-player-visibility', 'open');
+    expect(container.querySelector('.compact-music-player-mount')).not.toHaveAttribute('aria-hidden');
+    expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('data-compact-geometry-item', 'musicPlayer');
+    expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('data-compact-geometry-hit-scope', 'children');
+    expect(container.querySelector('.composer-panel #music-player-mount')).toBeNull();
     expect(container.querySelector('.compact-export-history-panel #music-player-mount')).toBeNull();
-    expect(container.querySelector('.compact-export-history-music-mount')).toHaveAttribute('data-music-player-mount', 'compact-history');
-    expect(container.querySelector('.compact-export-history-music-mount')).toHaveAttribute('data-compact-hit-region-id', 'history:music-player');
-    expect(container.querySelector('.compact-export-history-music-mount')).toHaveAttribute('data-compact-hit-region-kind', 'music');
+    expect(container.querySelector('.compact-export-history-music-mount')).toBeNull();
     expect(container.querySelector('.compact-export-history-controls')).toBeNull();
     expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('data-compact-geometry-item', 'historyHandle');
     expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'true');
@@ -444,6 +448,8 @@ describe('App', () => {
 
       fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
       expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'closing');
+      expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('data-compact-music-player-visibility', 'closing');
+      expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('aria-hidden', 'true');
       expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'false');
       expect(exportButton).toHaveAttribute('aria-pressed', 'false');
       expect(container.querySelector('.compact-export-history-bubble')).not.toHaveAttribute('role');
@@ -451,7 +457,7 @@ describe('App', () => {
       expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('aria-disabled', 'true');
       expect(container.querySelector('.compact-export-history-bubble')).toHaveAttribute('tabindex', '-1');
       expect(container.querySelector('.compact-export-history-bubble')).not.toHaveAttribute('data-compact-hit-region');
-      expect(container.querySelector('.compact-export-history-music-mount')).not.toHaveAttribute('data-compact-hit-region');
+      expect(container.querySelector('.compact-export-history-music-mount')).toBeNull();
       expect(container.querySelector('.compact-export-history-controls')).toHaveAttribute('aria-disabled', 'true');
       expect(container.querySelector('.compact-export-history-controls')).not.toHaveAttribute('data-compact-hit-region');
       container.querySelectorAll<HTMLButtonElement>('.compact-export-history-control').forEach((button) => {
@@ -465,7 +471,10 @@ describe('App', () => {
 
       expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
       expect(container.querySelectorAll('#music-player-mount')).toHaveLength(1);
-      expect(container.querySelector('.composer-panel #music-player-mount')).not.toBeNull();
+      expect(container.querySelector('.compact-music-player-mount#music-player-mount')).not.toBeNull();
+      expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('data-compact-music-player-visibility', 'closed');
+      expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('aria-hidden', 'true');
+      expect(container.querySelector('.composer-panel #music-player-mount')).toBeNull();
       expect(container.querySelector('.compact-export-history-panel #music-player-mount')).toBeNull();
       expect(container.querySelector('[data-compact-hit-region-id^="history:"]')).toBeNull();
 
@@ -473,7 +482,9 @@ describe('App', () => {
       expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
       expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'open');
       expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-open', 'true');
-      expect(container.querySelector('.compact-export-history-music-mount')).toHaveAttribute('data-compact-hit-region-id', 'history:music-player');
+      expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('data-compact-music-player-visibility', 'open');
+      expect(container.querySelector('.compact-music-player-mount')).not.toHaveAttribute('aria-hidden');
+      expect(container.querySelector('.compact-export-history-music-mount')).toBeNull();
       expect(container.querySelector('.compact-export-history-controls')).toHaveAttribute('data-compact-hit-region-id', 'history:controls');
       expect(container.querySelector('.compact-history-visibility-handle')).toHaveAttribute('aria-expanded', 'true');
       expect(exportButton).toHaveAttribute('aria-pressed', 'true');
@@ -588,14 +599,20 @@ describe('App', () => {
       expect(handle).toHaveAttribute('aria-expanded', 'false');
       expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
       expect(container.querySelectorAll('#music-player-mount')).toHaveLength(1);
-      expect(container.querySelector('.composer-panel #music-player-mount')).not.toBeNull();
+      expect(container.querySelector('.compact-music-player-mount#music-player-mount')).not.toBeNull();
+      expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('data-compact-music-player-visibility', 'closed');
+      expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('aria-hidden', 'true');
+      expect(container.querySelector('.composer-panel #music-player-mount')).toBeNull();
 
       fireEvent.pointerDown(handle!, { pointerType: 'mouse', button: 0 });
       expect(handle).toHaveAttribute('aria-expanded', 'true');
       expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
       expect(container.querySelectorAll('#music-player-mount')).toHaveLength(1);
       expect(container.querySelector('.compact-export-history-panel #music-player-mount')).toBeNull();
-      expect(container.querySelector('.compact-export-history-music-mount')).toHaveAttribute('data-music-player-mount', 'compact-history');
+      expect(container.querySelector('.compact-export-history-music-mount')).toBeNull();
+      expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('data-music-player-mount', 'compact-surface');
+      expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('data-compact-music-player-visibility', 'open');
+      expect(container.querySelector('.compact-music-player-mount')).not.toHaveAttribute('aria-hidden');
       expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
       expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'input');
 
@@ -605,6 +622,8 @@ describe('App', () => {
       fireEvent.pointerDown(handle!, { pointerType: 'mouse', button: 0 });
       expect(handle).toHaveAttribute('aria-expanded', 'false');
       expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'closing');
+      expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('data-compact-music-player-visibility', 'closing');
+      expect(container.querySelector('.compact-music-player-mount')).toHaveAttribute('aria-hidden', 'true');
       expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('false');
 
       fireEvent.click(handle!);
@@ -1260,7 +1279,7 @@ describe('App', () => {
     expect(message).not.toHaveClass('is-selected');
   });
 
-  it('sends a compact history text bubble when dropped on the avatar range', async () => {
+  it('returns compact history text bubble drops on the avatar range without sending', async () => {
     const cleanupAvatar = setupAvatarDropBounds();
     const onCompactHistoryDrop = vi.fn();
     const textMessage = parseChatMessage({
@@ -1314,24 +1333,19 @@ describe('App', () => {
         pointerType: 'mouse',
       });
 
-      await waitFor(() => {
-        expect(onCompactHistoryDrop).toHaveBeenCalledTimes(1);
-      });
-      expect(onCompactHistoryDrop).toHaveBeenCalledWith(expect.objectContaining({
-        text: 'Send this memory again.',
-        images: [],
-        sourceMessageId: 'assistant-history-drop-text',
-        dragType: 'bubble',
-      }));
+      expect(onCompactHistoryDrop).not.toHaveBeenCalled();
       expect(message).not.toHaveClass('is-selected');
-      expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toHaveAttribute('data-compact-drag-phase', 'sending');
+      await waitFor(() => {
+        expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toHaveAttribute('data-compact-drag-phase', 'returning');
+      });
       await waitForCompactHistoryDragLayerToClear();
+      expect(onCompactHistoryDrop).not.toHaveBeenCalled();
     } finally {
       cleanupAvatar();
     }
   });
 
-  it('uses desktop avatar bounds for compact history drops in the Electron host', async () => {
+  it('uses desktop avatar bounds for returning compact history text bubble drops without sending', async () => {
     const cleanupAvatar = setupDesktopAvatarDropBounds();
     const onCompactHistoryDrop = vi.fn();
     const textMessage = parseChatMessage({
@@ -1383,20 +1397,18 @@ describe('App', () => {
         pointerType: 'mouse',
       });
 
+      expect(onCompactHistoryDrop).not.toHaveBeenCalled();
       await waitFor(() => {
-        expect(onCompactHistoryDrop).toHaveBeenCalledTimes(1);
+        expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toHaveAttribute('data-compact-drag-phase', 'returning');
       });
-      expect(onCompactHistoryDrop).toHaveBeenCalledWith(expect.objectContaining({
-        text: 'Send this desktop memory.',
-        sourceMessageId: 'assistant-history-desktop-drop-text',
-      }));
       await waitForCompactHistoryDragLayerToClear();
+      expect(onCompactHistoryDrop).not.toHaveBeenCalled();
     } finally {
       cleanupAvatar();
     }
   });
 
-  it('accepts desktop compact history drag target feedback from NEKO-PC', async () => {
+  it('accepts desktop compact history drag target feedback from NEKO-PC while returning text bubbles', async () => {
     const onCompactHistoryDrop = vi.fn();
     const onCompactHistoryDragStateChange = vi.fn();
     const textMessage = parseChatMessage({
@@ -1485,14 +1497,12 @@ describe('App', () => {
       pointerType: 'mouse',
     });
 
+    expect(onCompactHistoryDrop).not.toHaveBeenCalled();
     await waitFor(() => {
-      expect(onCompactHistoryDrop).toHaveBeenCalledTimes(1);
+      expect(document.body.querySelector('[data-compact-drag-layer="true"]')).toHaveAttribute('data-compact-drag-phase', 'returning');
     });
-    expect(onCompactHistoryDrop).toHaveBeenCalledWith(expect.objectContaining({
-      text: 'Send through desktop feedback.',
-      sourceMessageId: 'assistant-history-desktop-feedback-drop',
-    }));
     await waitForCompactHistoryDragLayerToClear();
+    expect(onCompactHistoryDrop).not.toHaveBeenCalled();
   });
 
   it('does not send a compact history drag released outside the avatar range', async () => {
@@ -4279,6 +4289,7 @@ describe('App', () => {
 
     const fan = container.querySelector('.compact-input-tool-fan');
     const shell = container.querySelector('.compact-chat-surface-shell');
+    const appShell = container.querySelector('.app-shell');
     const inlineInput = container.querySelector('[data-compact-geometry-part="inputBody"]');
     expect(onComposerSubmit).not.toHaveBeenCalled();
     expect(fan).not.toBeNull();
@@ -4288,6 +4299,8 @@ describe('App', () => {
     expect(fan?.parentElement).toBe(shell);
     expect(inlineInput?.contains(fan)).toBe(false);
     expect(shell?.contains(fan)).toBe(true);
+    expect(shell).toHaveAttribute('data-compact-tool-layer-open', 'true');
+    expect(appShell).toHaveAttribute('data-compact-tool-layer-open', 'true');
     expect(fan).not.toHaveAttribute('style');
     expect(fan?.querySelector('.compact-input-tool-fan-hit-region')).not.toBeNull();
     expect(fan?.querySelector('.compact-input-tool-wheel-charge')).not.toBeNull();
@@ -5745,6 +5758,41 @@ describe('App', () => {
     fireEvent.click(sendButton);
 
     expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Test compact send' });
+  });
+
+  it('keeps controlled compact input focused after submitting text for continuous typing', async () => {
+    const onComposerSubmit = vi.fn();
+
+    function CompactContinuousInputHarness() {
+      const [compactChatState, setCompactChatState] = useState<CompactChatState>('input');
+      return (
+        <App
+          chatSurfaceMode="compact"
+          compactChatState={compactChatState}
+          onCompactChatStateChange={setCompactChatState}
+          onComposerSubmit={onComposerSubmit}
+        />
+      );
+    }
+
+    const { container } = render(<CompactContinuousInputHarness />);
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: 'First compact message' } });
+    const sendButton = screen.getByRole('button', { name: 'Send' });
+    sendButton.focus();
+    expect(document.activeElement).toBe(sendButton);
+    fireEvent.click(sendButton);
+
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'First compact message' });
+    expect(container.querySelector('.app-shell')).toHaveAttribute('data-compact-chat-state', 'input');
+    expect(screen.getByPlaceholderText('Type a message...')).toHaveValue('');
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByPlaceholderText('Type a message...'));
+    });
+    const refocusedInput = screen.getByPlaceholderText('Type a message...') as HTMLTextAreaElement;
+    expect(refocusedInput.selectionStart).toBe(refocusedInput.value.length);
+    expect(refocusedInput.selectionEnd).toBe(refocusedInput.value.length);
   });
 
   it('returns empty compact input to subtitle state when it loses focus', async () => {

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -164,3 +165,56 @@ def test_sends_stable_user_agent(prep, monkeypatch, tmp_path):
     monkeypatch.setattr(prep.urllib.request, "urlopen", fake_urlopen)
     prep._download_one("https://huggingface.co/r/m/resolve/abc/x", tmp_path / "x")
     assert captured["ua"] == prep._USER_AGENT
+
+
+# --- main(): trusting pre-existing weights ---------------------------------
+# Since .dockerignore no longer excludes data/embedding_models, weights can ride
+# into the build context. main() must only treat them as authoritative when a
+# .prepared.json marker proves they match the pin — otherwise a stale local copy
+# would be kept and blessed as the pinned revision (silently wrong model).
+
+_INT8_FILES = ("tokenizer.json", "onnx/model_quantized.onnx", "onnx/model_quantized.onnx_data")
+_REV = "a" * 40  # main() requires a 40-char lowercase hex revision
+
+
+def _seed_profile(tmp_path, body, *, marker):
+    profile = tmp_path / "p"
+    (profile / "onnx").mkdir(parents=True)
+    for rel in _INT8_FILES:
+        (profile / rel).write_bytes(body)
+    if marker is not None:
+        (profile / ".prepared.json").write_text(json.dumps(marker), encoding="utf-8")
+    return profile
+
+
+def _run_main(prep, tmp_path):
+    return prep.main([
+        "--repo", "jinaai/x", "--revision", _REV,
+        "--profile-id", "p", "--output-root", str(tmp_path), "--variant", "int8",
+    ])
+
+
+def test_main_redownloads_unmarked_existing_weights(prep, monkeypatch, tmp_path):
+    profile = _seed_profile(tmp_path, b"STALE", marker=None)
+    seen: list[str] = []
+    _install_urlopen(monkeypatch, prep, lambda url: b"FRESH", record=seen)
+
+    assert _run_main(prep, tmp_path) == 0
+    assert seen, "expected a re-download when no marker vouches for the files"
+    assert (profile / "tokenizer.json").read_bytes() == b"FRESH"
+    assert json.loads((profile / ".prepared.json").read_text()) == {
+        "repo": "jinaai/x",
+        "revision": _REV,
+    }
+
+
+def test_main_keeps_offline_when_marker_matches(prep, monkeypatch, tmp_path):
+    profile = _seed_profile(tmp_path, b"GOOD", marker={"repo": "jinaai/x", "revision": _REV})
+
+    def explode(url):
+        raise AssertionError("must not download when a matching marker is present")
+
+    _install_urlopen(monkeypatch, prep, explode)
+
+    assert _run_main(prep, tmp_path) == 0
+    assert (profile / "tokenizer.json").read_bytes() == b"GOOD"
