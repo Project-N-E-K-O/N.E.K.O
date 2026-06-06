@@ -2309,7 +2309,7 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   position: fixed;
   --compact-export-surface-width: var(--compact-surface-resize-width, var(--desktop-compact-surface-width, var(--compact-surface-width, 430px)));
   left: calc(var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw)) + (var(--compact-export-surface-width) / 2));
-  bottom: calc(100vh - var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) + 34px);
+  bottom: calc(100vh - var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) + 10px);
   /* Geometry-critical: derive collapse compensation from control metrics; do not animate layout properties here. */
   --compact-export-controls-padding-y: clamp(4px, calc(var(--compact-export-surface-width) * 0.0116), 6px);
   --compact-export-controls-border-width: 1px;
@@ -2400,7 +2400,10 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   overflow-x: visible;
   overscroll-behavior: contain;
   touch-action: pan-y;
-  padding: 4px 6px;
+  /* 底部 padding 给最下方气泡的 box-shadow(下沿~25px) 留空间：padding 区在 scrollport(padding box)内、
+     不被 overflow-y:auto 裁，阴影完整。必须落在 scroll 盒(容器)本身——子元素 scroll-content 的 padding-bottom
+     会被 Chromium 排除出可滚区、钉底后仍贴裁剪边而无效。border-box 下不增 scroll 盒总高(=region)，只让出底部内容区。 */
+  padding: 4px 6px 26px;
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
   pointer-events: none;
