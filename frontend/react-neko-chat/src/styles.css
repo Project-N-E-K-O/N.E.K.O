@@ -2415,6 +2415,12 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   gap: 0;
   /* 稳态：撑到 scroll 盒高度，配合 first-child margin-top:auto 让内容底部对齐、内容少时不产生可滚空白。 */
   min-height: 100%;
+  /* 底部最新气泡的 box-shadow(0 7px 18px) 不占盒模型、会被 scroll 盒的 overflow 裁掉。
+     在「可滚动内容盒」自身留出 ≥ 阴影下沿延伸量（offsetY 7 + blur 18 = 25px，取 26px 含余量）的
+     padding-bottom，让最下方气泡下方始终有这段可滚空白把阴影完整收进来——稳态 / 拖动期同一常量，
+     底部气泡相对裁剪边的位置不再随 min-height(100% ↔ max) 切换而变，消除切换瞬间的跳变与阴影裁切。
+     box-sizing:border-box 下该 padding 计入 min-height，稳态盒高仍恰为 100%，不引入多余可滚区。 */
+  padding-bottom: var(--compact-history-bubble-shadow-reserve, 26px);
   overflow-anchor: none;
   pointer-events: none;
 }
