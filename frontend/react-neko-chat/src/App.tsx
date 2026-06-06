@@ -2753,6 +2753,12 @@ export default function App({
 
   const applyCompactHistorySlotHeightVar = useCallback((height: number | null) => {
     if (typeof document === 'undefined') return;
+    // 内容布局高度锚定在「最大高度」上（scroll-content min-height 用它），缩小 slot 只裁剪可视窗口、
+    // 不再让内容随 slot 收缩 reflow。max 只挂屏幕/工作区高度，会随视口变化，故每次 apply 一并刷新。
+    document.documentElement.style.setProperty(
+      '--compact-history-slot-max-height',
+      `${getCompactHistorySlotMaxHeight()}px`,
+    );
     if (height === null) {
       document.documentElement.style.removeProperty('--compact-history-slot-height');
     } else {
@@ -2762,10 +2768,11 @@ export default function App({
       );
     }
     // CSS 变量变更不会自己通知宿主；让宿主重算 history 命中 rect / Electron 窗口 bounds / 鼠标穿透区。
+    // 同时通知 panel：slot/max 已变，按 autoScrollToBottom 把可视窗口重新锚定到下端（卷帘从上往下收）。
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('neko:compact-interaction-geometry-refresh'));
     }
-  }, [getClampedCompactHistorySlotHeight]);
+  }, [getClampedCompactHistorySlotHeight, getCompactHistorySlotMaxHeight]);
 
   const finishCompactHistoryResize = useCallback((event?: ReactPointerEvent<HTMLDivElement>) => {
     const resizeState = compactHistoryResizeStateRef.current;

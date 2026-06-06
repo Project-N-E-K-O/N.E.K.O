@@ -62,6 +62,81 @@ describe('CompactExportHistoryPanel', () => {
     expect(container.querySelector('.compact-export-history-resize-bar.is-active')).not.toBeNull();
   });
 
+  it('flags the anchor as resizing so content height locks to max (no reflow on shrink)', () => {
+    const { container, rerender } = renderPanel({ previewOpen: false, visibilityState: 'open', historyResizeActive: false });
+    const anchor = container.querySelector('.compact-export-history-anchor');
+    expect(anchor?.getAttribute('data-compact-export-history-resizing')).toBe('false');
+    rerender(<CompactExportHistoryPanel {...createPanelProps({ previewOpen: false, visibilityState: 'open', historyResizeActive: true })} />);
+    expect(anchor?.getAttribute('data-compact-export-history-resizing')).toBe('true');
+  });
+
+  it('re-pins the history list to the bottom on slot-height (geometry refresh) changes only while auto-following', () => {
+    const scrollTopValues: number[] = [];
+    const scrollTopByElement = new WeakMap<HTMLElement, number>();
+    const scrollHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight');
+    const clientHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight');
+    const scrollTopDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollTop');
+
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
+      configurable: true,
+      get() {
+        return this.classList.contains('compact-export-history-scroll') ? 640 : 0;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+      configurable: true,
+      get() {
+        return this.classList.contains('compact-export-history-scroll') ? 200 : 0;
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, 'scrollTop', {
+      configurable: true,
+      get() {
+        return scrollTopByElement.get(this) ?? 0;
+      },
+      set(value: number) {
+        scrollTopByElement.set(this, value);
+        if (this.classList.contains('compact-export-history-scroll')) {
+          scrollTopValues.push(value);
+        }
+      },
+    });
+
+    try {
+      // auto-following off: shrinking (geometry refresh) must not yank the viewport away from the user's scroll position.
+      const { rerender } = renderPanel({ previewOpen: false, visibilityState: 'open', autoScrollToBottom: false });
+      scrollTopValues.length = 0;
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko:compact-interaction-geometry-refresh'));
+      });
+      expect(scrollTopValues).not.toContain(440);
+
+      // auto-following on: re-pin to bottom (scrollHeight - clientHeight) so the newest message stays anchored at the bottom edge.
+      rerender(<CompactExportHistoryPanel {...createPanelProps({ previewOpen: false, visibilityState: 'open', autoScrollToBottom: true })} />);
+      scrollTopValues.length = 0;
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko:compact-interaction-geometry-refresh'));
+      });
+      expect(scrollTopValues).toContain(440);
+    } finally {
+      if (scrollHeightDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollHeight', scrollHeightDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollHeight');
+      }
+      if (clientHeightDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'clientHeight', clientHeightDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'clientHeight');
+      }
+      if (scrollTopDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollTop', scrollTopDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollTop');
+      }
+    }
+  });
+
   it('drops the history resize bar hit-region when a choice prompt sits above', () => {
     const { container } = renderPanel({ previewOpen: false, visibilityState: 'open', choiceLayerAbove: true });
     const bar = container.querySelector('.compact-export-history-resize-bar');

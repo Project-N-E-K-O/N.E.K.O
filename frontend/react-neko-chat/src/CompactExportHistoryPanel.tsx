@@ -245,6 +245,8 @@ export default function CompactExportHistoryPanel({
   onHistoryResizePointerCancel,
 }: CompactExportHistoryPanelProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const autoScrollToBottomRef = useRef(autoScrollToBottom);
+  autoScrollToBottomRef.current = autoScrollToBottom;
   const scrollbarDragRef = useRef<ScrollbarDragState | null>(null);
   const desktopHistoryHoverActiveRef = useRef(false);
   const scrollbarVisibleTimerRef = useRef<number | null>(null);
@@ -453,6 +455,34 @@ export default function CompactExportHistoryPanel({
       }
     };
   }, [autoScrollToBottom, messages, previewOpen, visibilityState]);
+
+  // 拖动开始/结束两个边界：content 的布局高度在 resizing 切换瞬间从 100% ↔ max 跳变（见 styles.css），
+  // 若用户停在底部需同步把可视窗口重新锚定到下端，否则开始拖时内容会因 content 突然撑高而相对上移、
+  // 结束时又下落，产生跳动。useLayoutEffect 在 data 属性应用、布局更新后、绘制前同步钉底，无闪烁。
+  useLayoutEffect(() => {
+    if (!autoScrollToBottomRef.current) return;
+    const scrollNode = scrollRef.current;
+    if (!scrollNode) return;
+    scrollNode.scrollTop = scrollNode.scrollHeight - scrollNode.clientHeight;
+  }, [historyResizeActive]);
+
+  // slot / max 高度变化（拖 resize bar、视口/工作区/宽度变化触发的 reapply）只裁剪 scroll 盒可视窗口，
+  // 内容不再 reflow；这里在变更后把可视窗口重新锚定到下端（最新消息固定在底，上端被顶部 mask 折起），
+  // 实现「卷帘从上往下收」。仅当用户当前停在底部（autoScrollToBottom）时钉底，否则尊重其向上查看老消息的位置。
+  useEffect(() => {
+    function handleGeometryRefresh() {
+      if (!autoScrollToBottomRef.current) return;
+      const scrollNode = scrollRef.current;
+      if (!scrollNode) return;
+      // 事件在 CSS 变量（scroll 盒 height）写入后同步派发；同步读 scrollHeight 触发一次 layout 拿到新值，
+      // 但内容高度此刻锚定在 max（resizing 态）不变，故不额外引入内容 reflow。同步钉底比 rAF 更跟手、无掉帧。
+      scrollNode.scrollTop = scrollNode.scrollHeight - scrollNode.clientHeight;
+    }
+    window.addEventListener('neko:compact-interaction-geometry-refresh', handleGeometryRefresh);
+    return () => {
+      window.removeEventListener('neko:compact-interaction-geometry-refresh', handleGeometryRefresh);
+    };
+  }, []);
 
   useEffect(() => {
     if (!previewOpen) {
@@ -800,6 +830,7 @@ export default function CompactExportHistoryPanel({
       data-compact-no-drag="true"
       data-compact-export-history-open={historyInteractive ? 'true' : 'false'}
       data-compact-export-history-visibility={visibilityState}
+      data-compact-export-history-resizing={historyResizeActive ? 'true' : 'false'}
       data-compact-export-preview-open={previewOpen ? 'true' : 'false'}
       data-compact-export-under-choice={choiceLayerAbove ? 'true' : 'false'}
       aria-label={i18n('chat.exportConversation', 'Export Conversation')}
