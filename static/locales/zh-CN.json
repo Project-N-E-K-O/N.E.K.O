@@ -2010,6 +2010,9 @@
         "cardMakerPopupBlocked": "卡面制作页面未能自动打开，请允许浏览器弹窗后重试，或点击卡面区域手动打开。"
     },
     "app": {
+        "socialOpenFailed": "社交窗口打开失败：{{error}}",
+        "socialUnavailable": "社交服务不可用",
+        "socialDisabled": "社交服务已禁用",
         "welcomeBack": "{{name}}回来了！",
         "title": "Project N.E.K.O.",
         "catgirlResting": "{{name}}正在打盹...",

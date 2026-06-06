@@ -2200,10 +2200,15 @@
                 } catch (cidErr) {
                     console.warn('[social] client_id fetch failed (non-fatal):', cidErr);
                 }
-                if (typeof window.openOrFocusWindow === 'function') {
-                    window.openOrFocusWindow(url, 'neko-social', 'width=1200,height=800,menubar=no,toolbar=no');
+                // 猫娘社区是云端独立 Web 应用（不是 NEKO 本地窗口）。在 Electron 里用
+                // openOrFocusWindow 走 window.open 开内嵌窗口，对跨源外站会抛错 →
+                // 之前一直走进 catch 报 socialOpenFailed。改用 NEKO 既有的 electronShell
+                // 桥在系统默认浏览器打开（与聊天里外链同款）；非 Electron（浏览器直开
+                // NEKO）走 window.open('_blank') 兜底。
+                if (window.electronShell && typeof window.electronShell.openExternal === 'function') {
+                    window.electronShell.openExternal(url);
                 } else {
-                    window.open(url, 'neko-social');
+                    window.open(url, '_blank', 'noopener,noreferrer');
                 }
             } catch (err) {
                 console.error('[social] open failed:', err);

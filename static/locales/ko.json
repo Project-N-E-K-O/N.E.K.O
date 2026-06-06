@@ -2010,6 +2010,9 @@
         "cardMakerPopupBlocked": "카드 제작 페이지를 자동으로 열 수 없습니다. 브라우저의 팝업을 허용한 뒤 다시 시도하거나, 카드 영역을 클릭해 직접 열어 주세요."
     },
     "app": {
+        "socialOpenFailed": "소셜 창을 열지 못했습니다: {{error}}",
+        "socialUnavailable": "소셜 서비스를 사용할 수 없습니다",
+        "socialDisabled": "소셜 서비스가 비활성화되었습니다",
         "welcomeBack": "{{name}}이 돌아왔습니다!",
         "title": "프로젝트 N.E.K.O.",
         "catgirlResting": "{{name}}은(는) 쉬고 있습니다...",

@@ -1160,11 +1160,10 @@ window.toggleVoiceSession = function () {
  * Electron 调用此接口来触发屏幕分享按钮的切换
  */
 window.toggleScreenShare = function () {
-    // 获取浮动按钮的当前状态（Live2D / VRM / MMD）
-    const screenBtn = window.live2dManager?._floatingButtons?.screen?.button
-        || window.vrmManager?._floatingButtons?.screen?.button
-        || window.mmdManager?._floatingButtons?.screen?.button;
-    const isActive = screenBtn?.dataset.active === 'true';
+    // 屏幕共享浮动按钮槽位已被社交按钮顶替，入口移到语音 popup 二级菜单；
+    // 当前共享状态以隐藏的 #screenButton 的 .active class 为准。
+    const screenBtn = document.getElementById('screenButton');
+    const isActive = !!(screenBtn && screenBtn.classList.contains('active'));
     const isRecording = window.isRecording || false;
 
     // 屏幕分享仅在语音会话中有效
