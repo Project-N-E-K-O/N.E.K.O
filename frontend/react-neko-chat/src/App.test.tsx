@@ -538,11 +538,6 @@ describe('App', () => {
       fireEvent.click(container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle')!);
       expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'closing');
 
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
-      });
-      expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
-
       rerender(
         <App
           chatSurfaceMode="compact"
@@ -550,6 +545,16 @@ describe('App', () => {
           messages={[initialMessage, userMessage, assistantMessage]}
         />,
       );
+      expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'closing');
+      expect(container.querySelector('[data-compact-export-history-message-id="user-history-after-close"]')).toBeNull();
+      expect(container.querySelector('[data-compact-export-history-message-id="assistant-history-after-close"]')).toBeNull();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
+      });
+      expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
+
+      rerender(<App chatSurfaceMode="compact" compactChatState="input" messages={[initialMessage, userMessage, assistantMessage]} />);
       expect(container.querySelector('.compact-export-history-anchor')).toBeNull();
       expect(container.querySelector('[data-compact-export-history-message-id="user-history-after-close"]')).toBeNull();
       expect(container.querySelector('[data-compact-export-history-message-id="assistant-history-after-close"]')).toBeNull();

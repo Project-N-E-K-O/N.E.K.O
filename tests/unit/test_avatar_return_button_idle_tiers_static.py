@@ -423,9 +423,10 @@ def test_cat1_voice_sounds_are_limited_to_non_drag_and_drag_states():
     assert "_scheduleNekoIdleCat1AmbientSoundInterval(startedAt + _NEKO_IDLE_CAT1_AMBIENT_SOUND_INTERVAL_MS)" in source
     assert "normalizedTier !== _NEKO_IDLE_TIER_CAT1 || _isAnyNekoIdleReturnDragActionActive()" in source
     assert "_playNekoIdleCat1SoundReaction()" in source
-    assert "const clickSrc = _getNekoIdleReturnClickAssetUrl(_NEKO_IDLE_TIER_CAT1);" in source
     assert "state.targetKind !== _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE" in source
     assert "_playNekoIdleHoverArt(art, _NEKO_IDLE_TIER_CAT1);" in source
+    assert "const reactionSrc = art.__nekoIdleHoverSrc;" in source
+    assert "const reactionStartedAt = Math.max(0, Number(art.__nekoIdleHoverStartedAt) || Date.now());" in source
     assert "_finishNekoIdleHoverArtAfterPlayback(art, _NEKO_IDLE_TIER_CAT1);" in source
     assert "_playNekoIdleCat1DragSound(tier)" in source
     assert "_fadeOutNekoIdleCat1DragSound()" in source
@@ -463,7 +464,9 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert "via: 'local'" in source
     assert "return dispatchedLocal;" in source
     assert "assetUrl: options.assetUrl || _getNekoIdleReturnAssetUrl(_NEKO_IDLE_TIER_CAT1)" in source
-    assert "_syncNekoIdleCat1CompactMirrorReaction(button, container, clickSrc, 'cat1-sound-reaction')" in source
+    assert "_syncNekoIdleCat1CompactMirrorReaction(button, container, reactionSrc, 'cat1-sound-reaction')" in source
+    assert "_getNekoIdleGifDurationMs(reactionSrc)" in source
+    assert "const remainingMs = Math.max(0, (Number(durationMs) || 0) - elapsedMs);" in source
     assert '_NEKO_IDLE_RETURN_SUBACTION_CAT1_CHAT_FOLLOW' in source
     assert '_NEKO_IDLE_RETURN_SUBACTION_PROFILES' in source
     assert '_getNekoIdleReturnSubactionProfile' in source

@@ -211,6 +211,7 @@ const _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_DROP_PX = 52;
 const _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_DROP_ANIMATION_MS = 360;
 const _NEKO_IDLE_CAT1_COMPACT_TOP_EDGE_DROP_COOLDOWN_MS = 900;
 const _NEKO_IDLE_CAT1_COMPACT_SURFACE_SETTLE_SYNC_MS = 160;
+const _NEKO_IDLE_CAT1_COMPACT_MIRROR_SETTLE_HIDE_DELAY_MS = 180;
 const _NEKO_IDLE_CAT1_WALK_ENTER_DISTANCE_PX = 120;
 const _NEKO_IDLE_CAT1_WALK_EXIT_DISTANCE_PX = 14;
 const _NEKO_IDLE_CAT1_WALK_SPEED_PX_PER_SEC = 82;
@@ -662,7 +663,6 @@ function _syncNekoIdleCat1CompactMirrorReaction(button, container, assetUrl, rea
 }
 
 function _playNekoIdleCat1SoundReaction() {
-    const clickSrc = _getNekoIdleReturnClickAssetUrl(_NEKO_IDLE_TIER_CAT1);
     _forEachNekoIdleReturnButton((button) => {
         if (_normalizeNekoIdleReturnTier(button.getAttribute('data-neko-idle-tier')) !== _NEKO_IDLE_TIER_CAT1) return;
         if (_isNekoIdleReturnDragActionActive(button)) return;
@@ -674,13 +674,25 @@ function _playNekoIdleCat1SoundReaction() {
         if (!art) return;
 
         _playNekoIdleHoverArt(art, _NEKO_IDLE_TIER_CAT1);
+        const reactionSrc = art.__nekoIdleHoverSrc;
+        if (!reactionSrc) return;
+        const reactionStartedAt = Math.max(0, Number(art.__nekoIdleHoverStartedAt) || Date.now());
+        const hoverToken = art.__nekoIdleHoverToken || 0;
+        const mirrorToken = (art.__nekoIdleCat1CompactMirrorReactionToken || 0) + 1;
+        art.__nekoIdleCat1CompactMirrorReactionToken = mirrorToken;
         _finishNekoIdleHoverArtAfterPlayback(art, _NEKO_IDLE_TIER_CAT1);
-        _syncNekoIdleCat1CompactMirrorReaction(button, container, clickSrc, 'cat1-sound-reaction');
+        _syncNekoIdleCat1CompactMirrorReaction(button, container, reactionSrc, 'cat1-sound-reaction');
 
-        const token = art.__nekoIdleHoverToken || 0;
-        _getNekoIdleGifDurationMs(clickSrc).then((durationMs) => {
+        _getNekoIdleGifDurationMs(reactionSrc).then((durationMs) => {
+            if ((art.__nekoIdleCat1CompactMirrorReactionToken || 0) !== mirrorToken) return;
+            const elapsedMs = Math.max(0, Date.now() - reactionStartedAt);
+            const remainingMs = Math.max(0, (Number(durationMs) || 0) - elapsedMs);
             window.setTimeout(() => {
-                if ((art.__nekoIdleHoverToken || 0) !== token) return;
+                if ((art.__nekoIdleCat1CompactMirrorReactionToken || 0) !== mirrorToken) return;
+                const latestHoverToken = art.__nekoIdleHoverToken || 0;
+                const hoverStillPlaying = latestHoverToken === hoverToken;
+                const hoverFinishedThisReaction = latestHoverToken === hoverToken + 1 && !art.__nekoIdleHoverSrc;
+                if (!hoverStillPlaying && !hoverFinishedThisReaction) return;
                 const latestState = button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey;
                 const latestContainer = _getNekoIdleReturnContainerFromButton(button);
                 if (!latestState ||
@@ -695,7 +707,7 @@ function _playNekoIdleCat1SoundReaction() {
                     _getNekoIdleReturnCurrentArtUrl(button, _NEKO_IDLE_TIER_CAT1),
                     'cat1-sound-reaction-finished'
                 );
-            }, Math.max(0, Number(durationMs) || 0));
+            }, remainingMs);
         });
     });
 }
@@ -1402,7 +1414,28 @@ function _setNekoIdleCat1CompactMirrorActive(button, container, active, options 
     if (!container) return false;
     const nextActive = !!active;
     const state = button && (button.__nekoIdleReturnSubactionState || button.__nekoIdleCat1Journey);
+    if (nextActive && container.__nekoIdleCat1CompactMirrorSettleTimer) {
+        clearTimeout(container.__nekoIdleCat1CompactMirrorSettleTimer);
+        container.__nekoIdleCat1CompactMirrorSettleTimer = 0;
+    }
     if (!nextActive) {
+        const inactiveReason = options.reason || 'inactive';
+        if (
+            inactiveReason === 'compact-surface-settled' &&
+            !options.forceImmediate &&
+            container.__nekoIdleCat1CompactMirrorActive
+        ) {
+            if (!container.__nekoIdleCat1CompactMirrorSettleTimer) {
+                container.__nekoIdleCat1CompactMirrorSettleTimer = setTimeout(() => {
+                    container.__nekoIdleCat1CompactMirrorSettleTimer = 0;
+                    _setNekoIdleCat1CompactMirrorActive(button, container, false, {
+                        reason: inactiveReason,
+                        forceImmediate: true
+                    });
+                }, _NEKO_IDLE_CAT1_COMPACT_MIRROR_SETTLE_HIDE_DELAY_MS);
+            }
+            return true;
+        }
         if (!container.__nekoIdleCat1CompactMirrorActive) return true;
         container.__nekoIdleCat1CompactMirrorActive = false;
         container.classList.remove('is-cat1-compact-mirror-active');

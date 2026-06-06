@@ -1286,6 +1286,7 @@ export default function App({
   const [compactSurfaceResizeWidth, setCompactSurfaceResizeWidth] = useState<number | null>(null);
   const [compactExportHistoryOpen, setCompactExportHistoryOpen] = useState(readPersistedCompactExportHistoryOpen);
   const [compactExportHistoryMounted, setCompactExportHistoryMounted] = useState(readPersistedCompactExportHistoryOpen);
+  const [compactExportHistoryClosingMessages, setCompactExportHistoryClosingMessages] = useState<ChatMessage[] | null>(null);
   const [compactExportControlsOpen, setCompactExportControlsOpen] = useState(false);
   const [compactExportPreviewOpen, setCompactExportPreviewOpen] = useState(false);
   const [compactExportSelectedIds, setCompactExportSelectedIds] = useState<Set<string>>(() => new Set());
@@ -1557,6 +1558,7 @@ export default function App({
   }, []);
   const openCompactExportHistory = useCallback(() => {
     clearCompactExportHistoryUnmountTimer();
+    setCompactExportHistoryClosingMessages(null);
     setCompactExportHistoryMounted(true);
     setCompactExportHistoryOpen(true);
     persistCompactExportHistoryOpen(true);
@@ -1564,14 +1566,16 @@ export default function App({
   }, [clearCompactExportHistoryUnmountTimer]);
   const closeCompactExportHistory = useCallback(() => {
     clearCompactExportHistoryUnmountTimer();
+    setCompactExportHistoryClosingMessages(messages);
     setCompactExportHistoryOpen(false);
     persistCompactExportHistoryOpen(false);
     setCompactExportPreviewOpen(false);
     compactExportHistoryUnmountTimerRef.current = window.setTimeout(() => {
       setCompactExportHistoryMounted(false);
+      setCompactExportHistoryClosingMessages(null);
       compactExportHistoryUnmountTimerRef.current = null;
     }, COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
-  }, [clearCompactExportHistoryUnmountTimer]);
+  }, [clearCompactExportHistoryUnmountTimer, messages]);
   useEffect(() => () => {
     clearCompactExportHistoryUnmountTimer();
   }, [clearCompactExportHistoryUnmountTimer]);
@@ -5187,9 +5191,12 @@ export default function App({
     ? (typeof document !== 'undefined' ? createPortal(choiceLayerNode, document.body) : choiceLayerNode)
     : null;
 
+  const compactExportHistoryMessages = compactExportHistoryOpen
+    ? messages
+    : (compactExportHistoryClosingMessages || messages);
   const compactExportHistoryElement = isCompactSurface && compactExportHistoryMounted ? (
     <CompactExportHistoryPanel
-      messages={messages}
+      messages={compactExportHistoryMessages}
       selectedIds={compactExportSelectedIds}
       selectedCount={compactExportSelectedCount}
       selectableCount={compactExportSelectableCount}
