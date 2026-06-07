@@ -4102,6 +4102,15 @@
     }
 
     async function enterElectronIdleDock(screenRect) {
+        // full 独立窗口（Electron part B）完全避开 idle-dock —— 与 web 路径 enterIdleDock 的
+        // full 守卫对偶：CAT2/CAT3 idle tier 不应把展开的 full 窗口自动折叠/贴猫。full 用旧版
+        // 独立窗口折叠机制（preload 物理缩窗），不参与 idle-dock。
+        if (getCurrentChatSurfaceMode() === 'full' || isLegacyFullMinimizedBall()) return;
+        // 隐藏的聊天窗口不 idle-dock：full 激活时 compact 窗口被 .hide()（document.hidden=true）
+        // 仍会收到 idle 事件，若不挡会在后台折叠并 spawn 出与当前可见 surface 无关的毛线球。
+        // 正常 minimized 态用 dimReactChatForMinimize(setOpacity 0) 而非 hide，document.hidden
+        // 仍为 false，故此守卫不影响 minimized 态的 idle-dock 跟随。
+        if (typeof document !== 'undefined' && document.hidden) return;
         var bridge = getElectronIdleDockBridge();
         var targetRect = normalizeElectronRect(screenRect);
         if (!bridge || !targetRect) return;

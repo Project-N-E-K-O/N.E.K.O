@@ -43,6 +43,29 @@
             background: transparent !important;
         }
         #react-chat-window-backdrop { display: none !important; }
+        /* Electron 独立 full 窗口（part B）：full shell 改用「固定 30px inset 充满窗口」定位 +
+           收敛阴影，取代基础规则的 translate(-50%,-50%) 居中 + 0 30px 100px(~130px) 巨阴影。
+           两个目的：
+           (1) 阴影：基础巨阴影在「窗口≈内容」的独立窗口里会被窗口边缘大面积裁掉（"周围一圈阴影
+               被截断"）。收敛到能落在 30px inset 留白内。
+           (2) 展开飞出截断：b718b611 preload 的展开动画用 WAAPI 设 transform（替换掉 translate）、
+               结束设 shell.style.transform='none' —— 它假设 shell 不靠 transform 居中。与基础规则
+               的 translate 居中冲突 → 展开结束 translate 丢失，shell 左上角落到窗口中心、整块飞出
+               被截断。改用 inset 定位（不依赖 transform），展开全程及结束都正确贴窗、阴影留白稳定。
+           作用域：仅 Electron full 独立窗口、且非折叠球态（neko-e-collapsed）/非最小化（is-minimized）
+           —— 那两态有自己的定位/呼吸灯阴影；compact 窗口（attr=compact）走胶囊规则，均不受影响。 */
+        body.electron-chat-window #react-chat-window-shell[data-chat-surface-mode="full"]:not(.is-minimized):not(.neko-e-collapsed) {
+            top: 30px;
+            left: 30px;
+            right: 30px;
+            bottom: 30px;
+            width: auto;
+            height: auto;
+            max-width: none;
+            max-height: none;
+            transform: none;
+            box-shadow: 0 8px 20px rgba(12, 20, 34, 0.28);
+        }
         /* ──────────────────────────────────────────────────────────────────────
            full 形态（覆盖全窗口的玻璃面板）已退环境，仅在此留档：
            旧版在这里把 #react-chat-window-shell 钉成 inset:40px 的全窗口玻璃面板
