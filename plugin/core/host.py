@@ -76,7 +76,8 @@ def _inject_extensions(
     Extension 的 entry 指向一个 PluginRouter 子类，实例化后通过 include_router 注入。
 
     如果 *extension_configs* 不为空，直接使用预构建的映射（避免全量扫描 TOML）。
-    每个元素格式: {"ext_id": str, "ext_entry": str, "prefix": str}
+    每个元素格式: {"ext_id": str, "ext_entry": str, "prefix": str, "config_path": str}
+    其中 config_path 为该扩展 plugin.toml 路径，供安全导入兜底定位用户插件目录。
     """
     # 如果主进程已预构建映射，直接使用
     if extension_configs:
@@ -88,9 +89,11 @@ def _inject_extensions(
             if not ext_entry or ":" not in ext_entry:
                 logger.warning("[Extension] Pre-built config for '{}' has invalid entry, skipping", ext_id)
                 continue
+            ext_config_path_str = ext_cfg.get("config_path", "")
+            ext_config_path = Path(ext_config_path_str) if ext_config_path_str else None
             module_path, class_name = ext_entry.split(":", 1)
             try:
-                mod = importlib.import_module(module_path)
+                mod = _import_plugin_module(module_path, ext_config_path, logger)
                 router_cls = getattr(mod, class_name)
             except Exception as e:
                 logger.warning("[Extension] Failed to import extension '{}': {}", ext_id, e)
@@ -177,7 +180,7 @@ def _inject_extensions(
                 # 导入 Extension Router 类
                 module_path, class_name = ext_entry.split(":", 1)
                 try:
-                    mod = importlib.import_module(module_path)
+                    mod = _import_plugin_module(module_path, toml_path, logger)
                     router_cls = getattr(mod, class_name)
                 except (ImportError, ModuleNotFoundError) as e:
                     logger.warning(
@@ -479,13 +482,17 @@ def _import_current_plugin_from_config(module_path: str, config_path: Path, logg
     return module
 
 
-def _import_plugin_module(module_path: str, config_path: Path, logger: Any) -> Any:
-    """导入插件模块，并在用户插件命名空间失效时使用当前插件目录兜底。"""
+def _import_plugin_module(module_path: str, config_path: Path | None, logger: Any) -> Any:
+    """导入插件模块，并在用户插件命名空间失效时使用当前插件目录兜底。
+
+    *config_path* 为空时（例如运行时启用扩展却拿不到 plugin.toml 路径），跳过兜底，
+    退化为普通 ``import_module`` 行为。
+    """
 
     try:
         return importlib.import_module(module_path)
     except ModuleNotFoundError as exc:
-        if not _is_target_module_missing(exc, module_path):
+        if config_path is None or not _is_target_module_missing(exc, module_path):
             raise
         fallback_module = _import_current_plugin_from_config(module_path, config_path, logger)
         if fallback_module is None:
@@ -1546,6 +1553,8 @@ def _plugin_process_runner(
                     ext_id = msg.get("ext_id", "")
                     ext_entry = msg.get("ext_entry", "")
                     prefix = msg.get("prefix", "")
+                    ext_config_path_str = msg.get("config_path", "")
+                    ext_config_path = Path(ext_config_path_str) if ext_config_path_str else None
                     req_id = msg.get("req_id", "unknown")
                     ret = {"req_id": req_id, "success": False, "data": None, "error": None}
                     try:
@@ -1556,7 +1565,7 @@ def _plugin_process_runner(
                             ret["error"] = f"Invalid ext_entry '{ext_entry}'"
                         else:
                             mod_path, cls_name = ext_entry.split(":", 1)
-                            mod = importlib.import_module(mod_path)
+                            mod = _import_plugin_module(mod_path, ext_config_path, logger)
                             router_cls = getattr(mod, cls_name)
                             if not (isinstance(router_cls, type) and issubclass(router_cls, PluginRouter)):
                                 ret["error"] = f"'{cls_name}' is not a PluginRouter subclass"

@@ -1136,6 +1136,7 @@ class PluginLifecycleService:
                         "ext_id": ext_id,
                         "ext_entry": ext_entry_obj,
                         "prefix": prefix,
+                        "config_path": config_path_obj if isinstance(config_path_obj, str) else "",
                     },
                     timeout=10.0,
                 )

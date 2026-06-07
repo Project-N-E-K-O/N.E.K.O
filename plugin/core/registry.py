@@ -1299,6 +1299,7 @@ def _build_extension_map(
             "ext_id": ctx.pid,
             "ext_entry": ctx.entry,
             "prefix": host_conf.get("prefix", ""),
+            "config_path": str(ctx.toml_path),
         })
     
     return extension_map

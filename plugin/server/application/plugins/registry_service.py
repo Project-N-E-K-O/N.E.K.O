@@ -840,6 +840,7 @@ class PluginRegistryService:
                     "ext_id": plugin_id,
                     "ext_entry": entry_point_obj,
                     "prefix": prefix,
+                    "config_path": str(config_path) if config_path is not None else "",
                 }
             )
 
