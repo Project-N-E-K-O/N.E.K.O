@@ -42,7 +42,7 @@ export function computeCompactHistoryExitDelay(index: number): string {
   return `${Math.min(index * COMPACT_HISTORY_EXIT_DELAY_STEP_MS, COMPACT_HISTORY_EXIT_DELAY_MAX_MS)}ms`;
 }
 
-export type CompactExportFormat = 'markdown' | 'image';
+export type CompactExportFormat = 'image';
 export type CompactExportImageStyle = 'neko' | 'original' | 'poster' | 'lyrics';
 export type CompactExportImageFormat = 'png' | 'jpeg' | 'webp';
 
@@ -2021,7 +2021,6 @@ export default function CompactExportHistoryPanel({
   }
 
   const exportFormatOptions: { id: CompactExportFormat; label: string }[] = [
-    { id: 'markdown', label: i18n('chat.exportFormatMarkdown', 'Markdown') },
     { id: 'image', label: i18n('chat.exportFormatImage', 'Image') },
   ];
   const imageStyleOptions: { id: CompactExportImageStyle; label: string }[] = [
@@ -2158,21 +2157,23 @@ export default function CompactExportHistoryPanel({
           </div>
         </div>
       </div>
-      <div className="compact-export-preview-format-strip" aria-label={i18n('chat.exportFormatLabel', 'Export Format')}>
-        {exportFormatOptions.map(option => (
-          <button
-            key={option.id}
-            type="button"
-            className={clsx('compact-export-preview-chip', {
-              'is-active': exportFormat === option.id,
-            })}
-            aria-pressed={exportFormat === option.id}
-            onClick={() => setExportFormat(option.id)}
-          >
-            {option.label}
-          </button>
-        ))}
-      </div>
+      {exportFormatOptions.length > 1 ? (
+        <div className="compact-export-preview-format-strip" aria-label={i18n('chat.exportFormatLabel', 'Export Format')}>
+          {exportFormatOptions.map(option => (
+            <button
+              key={option.id}
+              type="button"
+              className={clsx('compact-export-preview-chip', {
+                'is-active': exportFormat === option.id,
+              })}
+              aria-pressed={exportFormat === option.id}
+              onClick={() => setExportFormat(option.id)}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
       {exportFormat === 'image' ? (
         <div className="compact-export-preview-options" aria-label={i18n('chat.exportFormatImage', 'Image')}>
           <div className="compact-export-preview-option-row">
