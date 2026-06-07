@@ -23,6 +23,7 @@ Day 6 的 Agent 能力展示必须以控制感为边界：
 5. `day6_agent_task_hud` 和 `day6_agent_task_hud_control` 分两句说明 HUD 进度与终止权；可以显示空状态或教程临时 HUD 高光，不创建假的后台任务，且不能和 Agent 面板同时高亮。
 6. `day6_wrap_cleanup` 负责先收起繁琐界面；最终 `day6_wrap` 重新高亮聊天窗，并在约 70% cue 同步清理高光、Ghost Cursor 和外置聊天窗状态。
 7. round 开场由 `playAvatarFloatingRound(6)` 统一先执行 `ensureChatVisible()`，并在聊天窗打开后通过 `NekoHomeTutorialFeatureController.enforce()` 再次禁用 proactive/Galgame；Agent 按钮点击与面板高光必须在聊天窗可见之后发生。
+8. 本日启用完整指南中的 Day 2-7 模型替身图片演出：教程模型可临时隐藏 5 秒，并通过全局透明 overlay 贴屏幕边缘显示。Day 6 固定触发 2 次：`day6_plugin_dashboard` 播放「有了它们……」时显示 `扒右边框.png` 于屏幕最右下，`day6_wrap_cleanup` 播放「呼……把这些繁琐的界面都收起来……」时显示 `探头.png` 于屏幕最下方偏右；不得出现在最后一句 `day6_wrap` 播放期间，也不能遮挡 Agent 面板、用户插件管理入口、任务 HUD、skip 或收尾聊天窗高光。
 
 ## 目标体验
 
@@ -122,3 +123,4 @@ Day 6 猫爪生态回访支线已移入 [七日新手教程剧场后聊天窗支
 5. 同一目标同一时刻只保留一套主 spotlight，不创建后再隐藏重复高亮。
 6. 收尾动作与 Day 1 一致：收尾台词播放期间重新高亮聊天窗，约 70% 用同一套花瓣转场 cue 同步隐藏 Ghost Cursor 并清理内置/外置 spotlight。
 7. 插件 dashboard handoff 的成功、失败和超时路径都必须关闭教程打开的插件窗口或释放接管态，并在首页恢复 Ghost Cursor 原位置，清理 Agent 面板、用户插件侧边面板、管理面板高光和 handoff 临时状态。
+8. Day 6 单轮模型替身图片固定出现 2 次：`day6_plugin_dashboard` 的「有了它们……」与 `day6_wrap_cleanup` 的「呼……把这些繁琐的界面都收起来……」；每次 5 秒后恢复模型。进入 `day6_wrap` 前如果替身仍在显示，必须立即清理替身并恢复模型。替身必须由全局透明 overlay 与高光、Ghost Cursor、花瓣一起携带完整可见状态；替身演出不得创建假任务、不得自动授权、不得影响插件 dashboard handoff 成功/失败/超时恢复路径。

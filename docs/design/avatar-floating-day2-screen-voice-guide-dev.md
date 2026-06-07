@@ -18,6 +18,7 @@ Day 2 的 scene 和台词按本文落地；导演硬约束以 `avatar-floating-7
 3. 设置入口、设置侧边栏和主动搭话入口都必须写清楚真实目标、Ghost Cursor 移动方式、是否点击和是否修改配置；不得只写“沿用某日流程”。
 4. 设置相关 scene 不保存用户设置，不打开深层页面，不触发主动搭话。
 5. 收尾三句期间重新高亮胶囊输入框；最终句约 70% cue 同步隐藏 Ghost Cursor、清理所有高光并写入 Day 2 完成态。
+6. 本日启用 `avatar-floating-7day-complete-guide-dev.md` 中的 Day 2-7 模型替身图片演出：模型可在教程期间临时隐藏 5 秒，并通过全局透明 overlay 显示替身图片。本 round 固定在 `day2_intro_context` 播放“昨天你一直在噼里啪啦打字……”时显示 `探头.png`，以及在 `day2_proactive_chat` 播放“这个小按钮也很重要哦……”时显示 `扒右边框.png`；结束或异常清理时必须恢复模型。
 
 ## 主线流程
 
@@ -78,6 +79,7 @@ UniversalTutorialManager.startAvatarFloatingGuideRound(2)
 4. 主动搭话开关只展示入口，不点击、不打开子侧栏、不改变开关状态。
 5. 收尾前必须关闭 Day 2 临时打开的设置面板和侧边栏；收尾三句必须圆角矩形高亮胶囊输入框；最终句 cue 必须同步清理高光、Ghost Cursor 和外置聊天窗状态。
 6. 外置聊天窗 / PC 全局 overlay 模式下，设置按钮和主动搭话开关的高光与 Ghost Cursor 必须由同一个 overlay 状态包同时携带；cursor 移动、spotlight refresh 或目标矩形重算都不得只发送其中一半，避免远端渲染层交替清空高亮或光标造成闪烁。
+7. 模型替身图片演出不能在每日最后一句 `day2_wrap` 播放期间出现；进入 `day2_wrap` 前如果替身仍在显示，必须立即清理替身并恢复模型。替身必须由全局透明 overlay 与高光、Ghost Cursor、花瓣一起携带完整可见状态，不能遮挡 skip、设置按钮、主动搭话开关或胶囊输入框高光；skip、destroy、angry exit 和收尾花瓣 cue 必须立即清理替身并恢复模型。
 
 ## 验收清单
 
@@ -87,3 +89,4 @@ UniversalTutorialManager.startAvatarFloatingGuideRound(2)
 4. Day 2 主线不触发屏幕分享、主动搭话或用户配置保存。
 5. Day 2 主线普通指认统一使用平滑移动和停留。
 6. Day 2 完成、skip、destroy 和 angry exit 的结束态语义不变。
+7. Day 2 单轮模型替身图片固定出现 2 次：`day2_intro_context` 使用 `探头.png`，`day2_proactive_chat` 使用 `扒右边框.png`；每次 5 秒后恢复模型，且不得出现在 `day2_wrap` 最后一句台词播放期间；替身层不拦截点击、不影响 Ghost Cursor 锚点和高光。

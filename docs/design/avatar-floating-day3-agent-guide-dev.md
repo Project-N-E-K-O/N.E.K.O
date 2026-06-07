@@ -4,6 +4,8 @@
 
 通用生命周期、skip、打断对抗、临时切模、PC 全局 overlay 和收尾花瓣，以 `avatar-floating-7day-complete-guide-dev.md` 为准。
 
+本日启用完整指南中的 Day 2-7 模型替身图片演出：教程模型可临时隐藏 5 秒，并通过全局透明 overlay 将替身贴到屏幕边缘；单轮固定触发 2 次，分别在 `day3_avatar_tools` 播放“在这个小按钮里……”时显示 `扒左边框.png`，以及在 `day3_galgame_choices` 播放“你选的每一个对话……”时显示上下翻转的 `探头.png`。替身不得出现在最后一句 `day3_wrap_ready` 播放期间。替身层只做视觉装饰，不能遮挡胶囊工具、Avatar 工具、Galgame 入口、skip、高光或 Ghost Cursor，也不能导致弧形菜单和道具菜单状态被清理。
+
 ## 主线流程
 
 进入 Day 3 round 时必须先重置弧形工具栏轮盘：调用 `setCompactToolWheelIndex(0, 'avatar-floating-guide-day3-entry-reset')`，使导入图片按钮 `.compact-input-tool-item-import` 的 `data-compact-tool-wheel-slot` 为 `0`。
@@ -47,3 +49,4 @@ PC 端教程 overlay 会把同一条聊天窗指令同时通过 `neko:tutorial-o
 6. Day 3 click 场景必须以 Ghost Cursor 到达外置聊天窗回报的目标 anchor 为点击启动条件；Day 3 配置和外置 cursor 指令不得携带显式 `durationMs` / `cursorMoveDurationMs`。若首页开始等待时 anchor 尚未回传，必须等待未来 anchor 或超时，不能因当前没有 move promise 就立即启动模拟点击。
 7. 收尾清理弧形菜单、Avatar 工具菜单、Ghost Cursor 和所有高光。
 8. PC 端重启第三天教程时，播放 `day3_avatar_tools_props` 后能在真实聊天窗 DOM 中看到 `#composer-tool-popover-compact`，并且可见 `data-avatar-tool-id` 依次包含 `lollipop`、`fist`、`hammer`；同一时刻 Ghost Cursor 只停在 Avatar 互动工具按钮，不移动到三个道具项。
+9. Day 3 单轮模型替身图片固定出现 2 次：`day3_avatar_tools` 使用 `扒左边框.png`，`day3_galgame_choices` 使用上下翻转的 `探头.png`；每次 5 秒后恢复模型。进入 `day3_wrap_ready` 前如果替身仍在显示，必须立即清理替身并恢复模型。替身必须由全局透明 overlay 与高光、Ghost Cursor、花瓣一起携带完整可见状态；替身出现期间弧形工具菜单、Avatar 工具菜单、Galgame 轮盘和外置聊天窗锚点不得被重置。

@@ -2843,6 +2843,7 @@
     var yuiGuidePcOverlaySpotlights = [];
     var yuiGuidePcOverlayCursor = null;
     var yuiGuidePcOverlayCursorEffectSuppressUntil = 0;
+    var yuiGuidePcOverlayAvatarStandIn = null;
     var yuiGuidePcOverlayActive = false;
     var yuiGuidePcOverlayReady = false;
     var yuiGuidePcOverlayRunIdOverride = '';
@@ -2882,6 +2883,15 @@
             canUseYuiGuidePcOverlayBridge()
             && getYuiGuidePcOverlayRunId()
         );
+    }
+
+    function readYuiGuidePcOverlayAvatarStandIn() {
+        try {
+            var rawValue = window.localStorage.getItem('yuiGuidePcOverlayAvatarStandIn') || '';
+            return rawValue ? JSON.parse(rawValue) : null;
+        } catch (_) {
+            return null;
+        }
     }
 
     function getYuiGuidePcOverlayMetrics() {
@@ -2950,6 +2960,7 @@
             return false;
         }
         var hasCursor = patch && Object.prototype.hasOwnProperty.call(patch, 'cursor');
+        var hasAvatarStandIn = patch && Object.prototype.hasOwnProperty.call(patch, 'avatarStandIn');
         if (patch && Object.prototype.hasOwnProperty.call(patch, 'spotlights')) {
             yuiGuidePcOverlaySpotlights = Array.isArray(patch.spotlights) ? patch.spotlights : [];
         }
@@ -2959,6 +2970,11 @@
             yuiGuidePcOverlayCursorEffectSuppressUntil = cursorEffectDurationMs > 0
                 ? Date.now() + cursorEffectDurationMs
                 : 0;
+        }
+        if (hasAvatarStandIn) {
+            yuiGuidePcOverlayAvatarStandIn = patch.avatarStandIn || null;
+        } else {
+            yuiGuidePcOverlayAvatarStandIn = readYuiGuidePcOverlayAvatarStandIn();
         }
         yuiGuidePcOverlaySequence = Math.max(yuiGuidePcOverlaySequence + 1, Date.now() * 1000);
         try {
@@ -2984,6 +3000,9 @@
                 payload.cursor = patch.cursor || null;
             } else if (yuiGuidePcOverlayCursor && !isYuiGuidePcOverlayCursorEffectActive()) {
                 payload.cursor = yuiGuidePcOverlayCursor;
+            }
+            if (yuiGuidePcOverlayAvatarStandIn || hasAvatarStandIn) {
+                payload.avatarStandIn = yuiGuidePcOverlayAvatarStandIn;
             }
             Promise.resolve(window.nekoTutorialOverlay.update({
                 tutorialRunId: tutorialRunId,

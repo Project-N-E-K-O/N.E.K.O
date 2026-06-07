@@ -318,6 +318,7 @@
     const DEFAULT_CURSOR_MOVE_SLOWDOWN_MS = 900;
     const SHORT_CURSOR_MOVE_EXTRA_MS = 2400;
     const DEFAULT_CURSOR_CLICK_VISIBLE_MS = 420;
+    const AVATAR_STAND_IN_MODEL_FADE_MS = 1000;
     const INTRO_GREETING_REPLY_TEXT = '微风、阳光，还有刚刚好出现的你。初次见面，我是林悠怡，未来的日子请多关照喵！我把关于这里的一切都写进新手指南里啦！就当作是我们相遇的第一份小礼物，请查收吧！';
     const INTRO_GREETING_REPLY_TEXT_KEY = 'tutorial.yuiGuide.lines.introGreetingReply';
     const TAKEOVER_PLUGIN_DASHBOARD_TEXT = '有了它们，我不光能看 B 站弹幕，还能帮你关灯开空调…… 本喵就是无所不能的超级猫猫神！哼哼！';
@@ -2581,6 +2582,12 @@
             this.avatarFloatingGuideSuppressionActive = false;
             this.avatarFloatingGuideTutorialModeActive = false;
             this.avatarFloatingGuidePreviousIsInTutorial = false;
+            this.avatarStandInShowTimer = null;
+            this.avatarStandInFadeTimer = null;
+            this.avatarStandInHideTimer = null;
+            this.avatarStandInOpacityRestores = null;
+            this.avatarStandInActive = false;
+            this.avatarStandInToken = 0;
             this.avatarFloatingSceneCursorAnchorPoints = Object.create(null);
             this.latestExternalizedChatCursorAnchorPoint = null;
             this.latestExternalizedChatCursorMoveSceneId = '';

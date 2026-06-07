@@ -21,6 +21,7 @@ Day 7 是毕业收尾，不扩展成进阶入口巡游：
 3. `day7_graduation_wrap` 是最终收尾，清理所有临时状态，约 70% 最终花瓣 cue 同步隐藏 Ghost Cursor、清理所有高光并至少写入 Day 7 完成态。
 4. Cookie 登录、遥测 opt-out、Agent/插件/角色/娱乐总回顾和云存档都只属于支线或帮助文档，不进入 Day 7 主线高亮。
 5. round 开场由 `playAvatarFloatingRound(7)` 统一先执行 `ensureChatVisible()`，并在聊天窗打开后通过 `NekoHomeTutorialFeatureController.enforce()` 再次禁用 proactive/Galgame；毕业主线的记忆入口高光不得在聊天窗不可见时开始。
+6. 本日启用完整指南中的 Day 2-7 模型替身图片演出：教程模型可临时隐藏 5 秒，并通过全局透明 overlay 贴屏幕边缘显示。Day 7 固定触发 2 次：`day7_memory_review` 播放「七天前……」时显示 `探头.png` 于屏幕最下方偏右，`day7_memory_control` 播放「这些小脚印……」时显示 `扒左边框.png` 于屏幕最左下；不得出现在最后一句 `day7_graduation_wrap` 播放期间，也不能遮挡记忆入口、skip 或最终毕业收尾聊天窗高光。
 
 ## 目标体验
 
@@ -101,3 +102,4 @@ Day 7 进阶入口相关支线已移入 [七日新手教程剧场后聊天窗支
 5. 不打开 Cookie 登录、遥测说明或进阶入口总回顾。
 6. 同一目标同一时刻只保留一套主 spotlight，不创建后再隐藏重复高亮。
 7. 收尾动作与 Day 1 一致：收尾台词播放期间重新高亮聊天窗，约 70% 用同一套花瓣转场 cue 同步隐藏 Ghost Cursor 并清理内置/外置 spotlight，写入 Day 7 完成态，并恢复用户原模型、按钮组和交互权限。
+8. Day 7 单轮模型替身图片固定出现 2 次：`day7_memory_review` 的「七天前……」与 `day7_memory_control` 的「这些小脚印……」；每次 5 秒后恢复模型。进入 `day7_graduation_wrap` 前如果替身仍在显示，必须立即清理替身并恢复模型。替身必须由全局透明 overlay 与高光、Ghost Cursor、花瓣一起携带完整可见状态；最终毕业花瓣 cue、skip、destroy 或 pagehide 必须立即清理替身并恢复用户原模型显示。

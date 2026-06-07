@@ -28,6 +28,14 @@
         return element;
     }
 
+    function getOverlayAssetUrl(assetPath) {
+        try {
+            return new URL(assetPath, window.location.href).toString();
+        } catch (_) {
+            return assetPath;
+        }
+    }
+
     function readSpotlightNumberAttr(element, attributeName) {
         if (!element || typeof element.getAttribute !== 'function' || !attributeName) {
             return null;
@@ -107,6 +115,7 @@
         let currentCursor = null;
         let currentCursorEffectSuppressUntil = 0;
         let currentPetal = null;
+        let currentAvatarStandIn = null;
 
         const getAssetUrl = (assetPath) => {
             try {
@@ -198,6 +207,7 @@
         const send = (patch, force) => {
             const hasCursor = patch && Object.prototype.hasOwnProperty.call(patch, 'cursor');
             const hasPetal = patch && Object.prototype.hasOwnProperty.call(patch, 'petal');
+            const hasAvatarStandIn = patch && Object.prototype.hasOwnProperty.call(patch, 'avatarStandIn');
             if (patch && Object.prototype.hasOwnProperty.call(patch, 'spotlights')) {
                 currentSpotlights = Array.isArray(patch.spotlights) ? patch.spotlights : [];
             }
@@ -211,6 +221,16 @@
             if (patch && Object.prototype.hasOwnProperty.call(patch, 'petal')) {
                 currentPetal = patch.petal || null;
             }
+            if (patch && Object.prototype.hasOwnProperty.call(patch, 'avatarStandIn')) {
+                currentAvatarStandIn = patch.avatarStandIn || null;
+                try {
+                    if (currentAvatarStandIn) {
+                        window.localStorage.setItem('yuiGuidePcOverlayAvatarStandIn', JSON.stringify(currentAvatarStandIn));
+                    } else {
+                        window.localStorage.removeItem('yuiGuidePcOverlayAvatarStandIn');
+                    }
+                } catch (_) {}
+            }
             const payload = {
                 spotlights: currentSpotlights
             };
@@ -221,6 +241,9 @@
             }
             if (currentPetal || hasPetal) {
                 payload.petal = currentPetal;
+            }
+            if (currentAvatarStandIn || hasAvatarStandIn) {
+                payload.avatarStandIn = currentAvatarStandIn;
             }
             const key = JSON.stringify(payload || {});
             if (!force && key === lastKey && remoteReady) {
@@ -340,6 +363,24 @@
                     }
                 }, durationMs + 900);
             },
+            showAvatarStandIn(standIn) {
+                if (!standIn || !standIn.url) {
+                    send({ avatarStandIn: null }, true);
+                    return;
+                }
+                send({
+                    avatarStandIn: {
+                        visible: true,
+                        url: getAssetUrl(standIn.url),
+                        resource: String(standIn.resource || ''),
+                        position: String(standIn.position || ''),
+                        durationMs: Math.max(0, Math.round(Number(standIn.durationMs) || 0))
+                    }
+                }, true);
+            },
+            clearAvatarStandIn() {
+                send({ avatarStandIn: null }, true);
+            },
             clear() {
                 lastKey = '';
                 remoteReady = false;
@@ -348,10 +389,12 @@
                 currentCursor = null;
                 currentCursorEffectSuppressUntil = 0;
                 currentPetal = null;
+                currentAvatarStandIn = null;
                 try {
                     if (window.localStorage.getItem('yuiGuidePcOverlayRunId') === runId) {
                         window.localStorage.removeItem('yuiGuidePcOverlayRunId');
                     }
+                    window.localStorage.removeItem('yuiGuidePcOverlayAvatarStandIn');
                 } catch (_) {}
                 try {
                     Promise.resolve(host.clear({ tutorialRunId: runId })).catch(() => {});
@@ -507,6 +550,7 @@
             this.preview = null;
             this.previewTitle = null;
             this.previewList = null;
+            this.avatarStandIn = null;
             this.pcOverlayBridge = createPcOverlayBridge(this.document);
             this.cursorPosition = null;
             this.cursorVisible = false;
@@ -659,6 +703,18 @@
                 preview.appendChild(previewTitle);
                 preview.appendChild(previewList);
 
+                const avatarStandIn = createElement('img', 'yui-guide-avatar-standin');
+                avatarStandIn.hidden = true;
+                avatarStandIn.setAttribute('alt', '');
+                avatarStandIn.setAttribute('aria-hidden', 'true');
+                avatarStandIn.setAttribute('data-yui-cursor-hidden', 'true');
+                avatarStandIn.style.position = 'fixed';
+                avatarStandIn.style.pointerEvents = 'none';
+                avatarStandIn.style.zIndex = '2147483620';
+                avatarStandIn.style.objectFit = 'contain';
+                avatarStandIn.style.opacity = '0';
+                avatarStandIn.style.transition = 'opacity 160ms ease';
+
                 stage.appendChild(backdrop);
                 stage.appendChild(interactionShield);
                 stage.appendChild(persistentSpotlightFrame);
@@ -666,6 +722,7 @@
                 stage.appendChild(secondaryActionSpotlightFrame);
                 stage.appendChild(bubble);
                 stage.appendChild(preview);
+                stage.appendChild(avatarStandIn);
                 root.appendChild(stage);
                 this.document.body.appendChild(root);
 
@@ -689,6 +746,7 @@
                 this.preview = preview;
                 this.previewTitle = previewTitle;
                 this.previewList = previewList;
+                this.avatarStandIn = avatarStandIn;
                 this.extraSpotlightEntries = extraSpotlightEntries;
             } else {
                 this.stage = root.querySelector('.yui-guide-stage');
@@ -718,6 +776,23 @@
                 this.preview = root.querySelector('.yui-guide-preview');
                 this.previewTitle = root.querySelector('.yui-guide-preview-title');
                 this.previewList = root.querySelector('.yui-guide-preview-list');
+                this.avatarStandIn = root.querySelector('.yui-guide-avatar-standin');
+                if (!this.avatarStandIn) {
+                    this.avatarStandIn = createElement('img', 'yui-guide-avatar-standin');
+                    this.avatarStandIn.hidden = true;
+                    this.avatarStandIn.setAttribute('alt', '');
+                    this.avatarStandIn.setAttribute('aria-hidden', 'true');
+                    this.avatarStandIn.setAttribute('data-yui-cursor-hidden', 'true');
+                    this.avatarStandIn.style.position = 'fixed';
+                    this.avatarStandIn.style.pointerEvents = 'none';
+                    this.avatarStandIn.style.zIndex = '2147483620';
+                    this.avatarStandIn.style.objectFit = 'contain';
+                    this.avatarStandIn.style.opacity = '0';
+                    this.avatarStandIn.style.transition = 'opacity 160ms ease';
+                    if (this.stage) {
+                        this.stage.appendChild(this.avatarStandIn);
+                    }
+                }
                 this.extraSpotlightEntries = [];
                 const cutouts = root.querySelectorAll('.yui-guide-backdrop-cutout-extra');
                 const frames = root.querySelectorAll('.yui-guide-spotlight-frame-extra');
@@ -1379,6 +1454,103 @@
             this.previewList.innerHTML = '';
         }
 
+        applyAvatarStandInPlacement(element, position) {
+            if (!element || !element.style) {
+                return;
+            }
+            element.style.removeProperty('left');
+            element.style.removeProperty('right');
+            element.style.removeProperty('top');
+            element.style.removeProperty('bottom');
+            element.style.removeProperty('width');
+            element.style.removeProperty('height');
+            element.style.removeProperty('max-width');
+            element.style.removeProperty('max-height');
+            element.style.transform = '';
+            const normalizedPosition = String(position || '').trim().toLowerCase();
+            if (normalizedPosition === 'left-bottom') {
+                element.style.left = '0';
+                element.style.bottom = '0';
+                element.style.maxHeight = 'min(72vh, 720px)';
+                element.style.width = 'auto';
+                return;
+            }
+            if (normalizedPosition === 'right-bottom') {
+                element.style.right = '0';
+                element.style.bottom = '0';
+                element.style.maxHeight = 'min(72vh, 720px)';
+                element.style.width = 'auto';
+                return;
+            }
+            if (normalizedPosition === 'top-left-flipped') {
+                element.style.left = 'min(14vw, 160px)';
+                element.style.top = '0';
+                element.style.maxWidth = 'min(42vw, 420px)';
+                element.style.height = 'auto';
+                element.style.transform = 'scaleY(-1)';
+                return;
+            }
+            element.style.right = 'min(16vw, 180px)';
+            element.style.bottom = '0';
+            element.style.maxWidth = 'min(42vw, 420px)';
+            element.style.height = 'auto';
+        }
+
+        showAvatarStandIn(standIn) {
+            this.ensureRoot();
+            const normalized = standIn || {};
+            const resource = String(normalized.resource || '');
+            const url = normalized.url
+                || (window.YuiGuideAvatarStandIn && typeof window.YuiGuideAvatarStandIn.getResourcePath === 'function'
+                    ? window.YuiGuideAvatarStandIn.getResourcePath(resource)
+                    : '');
+            const payload = {
+                url,
+                resource,
+                position: String(normalized.position || ''),
+                durationMs: Math.max(0, Math.round(Number(normalized.durationMs) || 0))
+            };
+            if (this.isPcOverlayActive() && this.pcOverlayBridge && typeof this.pcOverlayBridge.showAvatarStandIn === 'function') {
+                this.pcOverlayBridge.showAvatarStandIn(payload);
+                if (this.avatarStandIn) {
+                    this.avatarStandIn.hidden = true;
+                    this.avatarStandIn.style.opacity = '0';
+                }
+                return;
+            }
+            if (!this.avatarStandIn || !url) {
+                return;
+            }
+            this.avatarStandIn.src = getOverlayAssetUrl(url);
+            this.avatarStandIn.dataset.resource = resource;
+            this.avatarStandIn.dataset.position = payload.position;
+            this.applyAvatarStandInPlacement(this.avatarStandIn, payload.position);
+            this.avatarStandIn.hidden = false;
+            window.requestAnimationFrame(() => {
+                if (this.avatarStandIn) {
+                    this.avatarStandIn.style.opacity = '1';
+                }
+            });
+        }
+
+        clearAvatarStandIn() {
+            if (this.pcOverlayBridge && typeof this.pcOverlayBridge.clearAvatarStandIn === 'function') {
+                this.pcOverlayBridge.clearAvatarStandIn();
+            }
+            if (!this.avatarStandIn) {
+                return;
+            }
+            this.avatarStandIn.style.opacity = '0';
+            window.setTimeout(() => {
+                if (this.avatarStandIn && this.avatarStandIn.style.opacity === '0') {
+                    this.avatarStandIn.hidden = true;
+                    this.avatarStandIn.removeAttribute('src');
+                    delete this.avatarStandIn.dataset.resource;
+                    delete this.avatarStandIn.dataset.position;
+                }
+            }, 180);
+        }
+
         setSpotlightSuppressed(active) {
             this.spotlightsSuppressed = active === true;
             if (this.spotlightsSuppressed) {
@@ -1905,6 +2077,7 @@
         }
 
         destroy() {
+            this.clearAvatarStandIn();
             if (this.pcOverlayBridge && typeof this.pcOverlayBridge.clear === 'function') {
                 this.pcOverlayBridge.clear();
             }
@@ -1936,6 +2109,7 @@
             this.preview = null;
             this.previewTitle = null;
             this.previewList = null;
+            this.avatarStandIn = null;
             this.cursorPosition = null;
             this.cursorVisible = false;
             this.persistentHighlightedElement = null;
