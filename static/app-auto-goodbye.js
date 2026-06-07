@@ -187,7 +187,18 @@
         return !!(socket && socket.readyState === WebSocket.OPEN);
     }
 
+    function rememberGoodbyeSilentState(active, reason, pending) {
+        window.__nekoGoodbyeSilentState = {
+            active: !!active,
+            reason: reason || (active ? 'goodbye' : 'return'),
+            pending: !!pending,
+            updatedAt: nowMs(),
+        };
+    }
+
     function syncGoodbyeSilentState(active, reason) {
+        const resolvedReason = reason || (active ? 'goodbye' : 'return');
+        rememberGoodbyeSilentState(active, resolvedReason, true);
         const socket = window.appState && window.appState.socket;
         if (!socket || typeof socket.send !== 'function') {
             return;
@@ -199,8 +210,9 @@
             socket.send(JSON.stringify({
                 action: 'goodbye_state',
                 active: !!active,
-                reason: reason || (active ? 'goodbye' : 'return'),
+                reason: resolvedReason,
             }));
+            rememberGoodbyeSilentState(active, resolvedReason, false);
         } catch (_) {}
     }
 

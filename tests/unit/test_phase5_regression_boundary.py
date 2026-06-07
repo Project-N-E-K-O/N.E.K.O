@@ -57,6 +57,8 @@ def test_auto_goodbye_only_syncs_silence_without_running_goodbye_side_effects():
 
     assert "window.dispatchEvent(new CustomEvent('live2d-goodbye-click'" in source
     assert "action: 'goodbye_state'" in source
+    assert "window.__nekoGoodbyeSilentState" in source
+    assert "pending: !!pending" in source
     assert "end_session" not in source
     assert "stopProactiveChatSchedule" not in source
     assert "syncVoiceChatComposerHidden" not in source

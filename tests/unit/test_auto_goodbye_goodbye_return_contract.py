@@ -21,6 +21,7 @@ def test_auto_goodbye_reuses_existing_goodbye_base_chain():
     buttons_source = _read(APP_BUTTONS_PATH)
 
     assert "window.dispatchEvent(new CustomEvent('live2d-goodbye-click'" in auto_source
+    assert "window.__nekoGoodbyeSilentState" in auto_source
     assert "action: 'start_session'" not in auto_source
     assert "resetSessionButton.click();" in ui_source
     assert "function playModelGoodbyeExit(container, rect)" in ui_source

@@ -53,8 +53,11 @@ def test_ws_open_resyncs_goodbye_state_and_skips_regular_greeting():
     )[0]
 
     assert "window.isNekoGoodbyeModeActive()" in onopen_greeting_block
+    assert "window.__nekoGoodbyeSilentState" in onopen_greeting_block
+    assert "pendingGoodbyeState.pending === true" in onopen_greeting_block
     assert "action: 'goodbye_state'" in onopen_greeting_block
-    assert "active: true" in onopen_greeting_block
+    assert "active: !!goodbyeSyncOnOpen.active" in onopen_greeting_block
     assert "reason: 'ws-open-goodbye'" in onopen_greeting_block
-    assert "if (goodbyeActiveOnOpen)" in onopen_greeting_block
+    assert "pending: false" in onopen_greeting_block
+    assert "if (goodbyeActiveOnOpen || (goodbyeSyncOnOpen && goodbyeSyncOnOpen.active))" in onopen_greeting_block
     assert "_sendGreetingCheckIfReady();" in onopen_greeting_block
