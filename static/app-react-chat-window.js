@@ -3400,6 +3400,16 @@
                 lastRestorableChatSurfaceMode = previousChatSurfaceMode;
             }
             state.chatSurfaceMode = normalizedChatSurfaceMode;
+            if (surfaceModeChanged) {
+                // setViewProps is a public entry point (exposed + the
+                // `set-view-props` event), so it can land a real surface change —
+                // e.g. an external `{chatSurfaceMode:'full'}`. Mirror
+                // setChatSurfaceMode and persist the restorable preference, else
+                // the switch is lost on reload (readChatSurfaceModePreference
+                // returns the stale value). persistChatSurfaceModePreference
+                // no-ops for minimized, which still restores via lastRestorable.
+                persistChatSurfaceModePreference(normalizedChatSurfaceMode);
+            }
         }
         if (Object.prototype.hasOwnProperty.call(nextProps, 'compactChatState')) {
             state.compactChatState = normalizeCompactChatState(nextProps.compactChatState);
