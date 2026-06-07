@@ -1,12 +1,15 @@
 """配额掉落规则引擎（NEKO 本地）。
 
-提供两个 hook：
-- ``on_text_message(lanlan_name, text) -> None``：每次用户文本消息触发，按
-  ``config/quota_rules.yaml`` 的 word_count + keywords 两类规则判定，命中后
-  写本地 UX state + 异步调云端 drop-hint。
-- ``on_utterance(bucket, event) -> None``：M2-j v1 留位（emotion 触发 v2 再开）。
+【已退役 · 统一券经济】对话掉落的「判定 + 发券」已整体迁到 NEKO-PC Electron 私有客户端的
+forge-dropper（直接消费既有 WS 帧做判定，再调云端 ``POST /api/forge/credits/grant`` 发券）。
+NEKO 这一侧因此不再做任何判定、不再直接调云端、不再广播 ``card_drop_available`` 自动开卡——
+否则 docker 自部署（无官方客户端）会白白调用云端、规则也会暴露在公开仓。
 
-启用门槛：需同时 ``NEKO_QUOTA_DROPPER_ENABLED=1`` 且 ``NEKO_SOCIAL_BASE_URL`` 已配。
+hook：
+- ``on_text_message(lanlan_name, text) -> None``：**已退役为 no-op**（仅保留 hook 注册以兼容）。
+  原 word_count + keywords 判定 / ``cloud_sync`` / ``ux_state`` / 规则加载均废弃，下方保留这些
+  定义仅为兼容老 import，可后续随 ``config/quota_rules.yaml`` 一并删除。
+- ``on_utterance(bucket, event) -> None``：M2-j v1 留位（emotion 触发 v2 再开）。
 """
 
 from __future__ import annotations
