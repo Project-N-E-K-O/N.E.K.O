@@ -1,0 +1,100 @@
+/* ===== 猫娘社区「页内嵌入拟态窗」样式 =====
+   桌宠 pointer-events:none 穿透坑：backdrop / 窗 / iframe / 关闭按钮全部显式 pointer-events:auto
+   + 高 z-index（2000000），否则模态点不动（见 static/social-embed.js）。 */
+
+.neko-social-embed-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2000000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 10, 20, 0.55);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+  pointer-events: auto;
+  animation: neko-social-embed-fade 0.18s ease;
+}
+
+@keyframes neko-social-embed-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.neko-social-embed-window {
+  width: min(1100px, 92vw);
+  height: min(800px, 88vh);
+  display: flex;
+  flex-direction: column;
+  border-radius: 16px;
+  overflow: hidden;
+  background: #0e1118;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  pointer-events: auto;
+  animation: neko-social-embed-pop 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+
+@keyframes neko-social-embed-pop {
+  from { transform: translateY(10px) scale(0.98); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+
+.neko-social-embed-titlebar {
+  flex: 0 0 auto;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px 0 16px;
+  background: linear-gradient(180deg, #1a1f2e, #141823);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.neko-social-embed-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #eaeefb;
+  letter-spacing: 0.02em;
+}
+
+.neko-social-embed-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #ff9ecf, #b06bff);
+  box-shadow: 0 0 8px rgba(176, 107, 255, 0.7);
+}
+
+.neko-social-embed-close {
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #cfd6e4;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: background 0.15s, color 0.15s;
+  pointer-events: auto;
+}
+
+.neko-social-embed-close:hover {
+  background: rgba(255, 90, 120, 0.85);
+  color: #fff;
+}
+
+.neko-social-embed-iframe {
+  flex: 1 1 auto;
+  width: 100%;
+  border: none;
+  background: #fff;
+  pointer-events: auto;
+}

@@ -3100,31 +3100,13 @@
         });
 
         // 猫娘网络（社交平台）按钮：占用原 screen 槽位。
-        // 从 /api/system/social/config 拿云端 base URL，
-        // 从 /api/system/client-id 拿 device 身份，开独立窗口。
+        // 从 /api/system/social/config 拿云端 base URL，从 /api/system/client-id 拿 device 身份，
+        // 然后在**应用内嵌入「拟态窗」**（iframe 模态，见 static/social-embed.js）打开社区——
+        // 不再弹系统浏览器 / 新标签页。
         window.addEventListener('live2d-social-click', async () => {
-            // Electron 走 electronShell.openExternal（系统浏览器，无弹窗拦截问题）；
-            // 非 Electron（浏览器直开 NEKO）必须在用户手势的同步上下文里先占位开窗，
-            // 否则两次 await fetch 之后再 window.open 会被弹窗拦截、返回 null 静默失败。
-            const useExternal = !!(window.electronShell && typeof window.electronShell.openExternal === 'function');
-            let popupRef = null;
-            if (!useExternal) {
-                popupRef = window.open('about:blank', '_blank', 'noopener,noreferrer');
-                if (!popupRef) {
-                    if (typeof window.showStatusToast === 'function') {
-                        window.showStatusToast(
-                            window.t ? window.t('app.socialOpenFailed', { error: 'popup blocked' }) : '社交窗口打开失败：请允许弹窗',
-                            4000
-                        );
-                    }
-                    return;
-                }
-            }
-            const closePopup = () => { if (popupRef && !popupRef.closed) popupRef.close(); };
             try {
                 const cfgRes = await fetch('/api/system/social/config');
                 if (!cfgRes.ok) {
-                    closePopup();
                     if (typeof window.showStatusToast === 'function') {
                         window.showStatusToast(
                             window.t ? window.t('app.socialUnavailable') : '社交服务不可用 (config fetch failed)',
@@ -3135,7 +3117,6 @@
                 }
                 const cfg = await cfgRes.json();
                 if (cfg && cfg.enabled === false) {
-                    closePopup();
                     if (typeof window.showStatusToast === 'function') {
                         window.showStatusToast(
                             window.t ? window.t('app.socialDisabled') : '社交服务已禁用',
@@ -3146,11 +3127,10 @@
                 }
                 let url = (cfg && cfg.social_base_url) ? cfg.social_base_url.replace(/\/+$/, '') + '/feed' : null;
                 if (!url) {
-                    closePopup();
                     console.warn('[social] no social_base_url from /api/system/social/config');
                     return;
                 }
-                // 顺手把 client_id 拼进 URL（在新窗口本地 JS 里存到 storage 后用）
+                // 顺手把 client_id 拼进 URL（社区页本地 JS 据此关联游客身份）
                 try {
                     const cidRes = await fetch('/api/system/client-id');
                     if (cidRes.ok) {
@@ -3163,17 +3143,20 @@
                 } catch (cidErr) {
                     console.warn('[social] client_id fetch failed (non-fatal):', cidErr);
                 }
-                // 猫娘社区是云端独立 Web 应用（不是 NEKO 本地窗口），不能用 openOrFocusWindow
-                // 走内嵌 window.open（对跨源外站会抛错 → 之前一直 catch 报 socialOpenFailed）。
-                // Electron 用 electronShell 桥在系统默认浏览器打开（与聊天外链同款）；
-                // 浏览器走前面占位的 popupRef.location.replace，沿用已保留的用户手势。
-                if (useExternal) {
-                    window.electronShell.openExternal(url);
+                // 应用内嵌入拟态窗打开（iframe 模态，不调系统浏览器）。
+                // openSocialEmbed 由 static/social-embed.js 提供（桌宠 pe:none 穿透坑已在其内处理）。
+                if (typeof window.openSocialEmbed === 'function') {
+                    window.openSocialEmbed(url);
                 } else {
-                    popupRef.location.replace(url);
+                    console.error('[social] openSocialEmbed unavailable (social-embed.js not loaded)');
+                    if (typeof window.showStatusToast === 'function') {
+                        window.showStatusToast(
+                            window.t ? window.t('app.socialOpenFailed', { error: 'embed unavailable' }) : '社交窗口打开失败',
+                            4000
+                        );
+                    }
                 }
             } catch (err) {
-                closePopup();
                 console.error('[social] open failed:', err);
                 if (typeof window.showStatusToast === 'function') {
                     window.showStatusToast(
