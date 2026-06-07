@@ -60,7 +60,13 @@
     var lastRestorableChatSurfaceMode = 'compact';
     var _sortKeySeq = 0; // monotonically increasing sortKey counter
     var COMPACT_CHAT_STATES = ['default', 'options', 'input'];
+    // The active compact↔minimized cycle. `full` is intentionally NOT here: it is
+    // the frozen legacy surface, entered only via an explicit setChatSurfaceMode
+    // ('full') (e.g. the NEKO-PC tray toggle), never by cycling through compact.
     var CHAT_SURFACE_MODE_SEQUENCE = ['compact', 'minimized'];
+    // Full set of valid surface modes for normalization. Keeps `full` a first-class
+    // mode the host honors when set, without letting it pollute the compact cycle.
+    var CHAT_SURFACE_MODES = ['full', 'compact', 'minimized'];
 
     var state = {
         viewProps: null,
@@ -101,8 +107,7 @@
     };
 
     function normalizeChatSurfaceMode(mode) {
-        if (mode === 'full') return 'compact';
-        return CHAT_SURFACE_MODE_SEQUENCE.indexOf(mode) >= 0 ? mode : 'compact';
+        return CHAT_SURFACE_MODES.indexOf(mode) >= 0 ? mode : 'compact';
     }
 
     function normalizeCompactChatState(mode) {
@@ -164,12 +169,13 @@
         }
         try {
             var raw = localStorage.getItem(CHAT_SURFACE_MODE_STORAGE_KEY);
-            // The storage key only ever holds the restorable surface ('compact').
-            // Migrate any legacy value persisted by the old three-state build
-            // ('full') or a stray 'minimized' back to 'compact' so stale values
-            // don't linger in storage. Any other value (or first run) just
-            // resolves to 'compact' without an extra write.
-            if (raw === 'full' || raw === 'minimized') {
+            // The storage key holds the last restorable surface: 'compact'
+            // (default) or 'full' (frozen legacy, entered via the NEKO-PC tray
+            // toggle, which has its own per-window storage). Web never persists
+            // 'full' since it exposes no toggle yet. Migrate a stray 'minimized'
+            // back to 'compact' so a minimized value never lingers in storage.
+            if (raw === 'full') return 'full';
+            if (raw === 'minimized') {
                 localStorage.setItem(CHAT_SURFACE_MODE_STORAGE_KEY, 'compact');
             }
             return 'compact';
@@ -179,7 +185,9 @@
     }
 
     function persistChatSurfaceModePreference(mode) {
-        if (mode !== 'compact') return;
+        // Persist only the restorable surfaces (compact/full); minimized restores
+        // to lastRestorableChatSurfaceMode rather than being persisted directly.
+        if (mode !== 'compact' && mode !== 'full') return;
         if (!shouldPersistChatSurfaceModePreference()) return;
         try {
             localStorage.setItem(CHAT_SURFACE_MODE_STORAGE_KEY, mode);

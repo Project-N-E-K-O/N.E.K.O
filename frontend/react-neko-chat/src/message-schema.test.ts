@@ -64,14 +64,15 @@ describe('message-schema', () => {
     expect(props.compactChatState).toBe('input');
   });
 
-  it('migrates the legacy "full" surface mode to compact instead of throwing', () => {
+  it('accepts the revived "full" surface mode', () => {
+    // `full` is the frozen legacy surface revived alongside compact/minimized.
+    // The schema accepts all three; the host dispatcher routes `full` to the
+    // isolated FullChatSurface.
     const props = parseChatWindowProps({
-      // Cast: 'full' is no longer part of the public type but mixed-version
-      // hosts can still send it; the schema must migrate rather than reject.
-      chatSurfaceMode: 'full' as unknown as 'compact',
+      chatSurfaceMode: 'full',
     });
 
-    expect(props.chatSurfaceMode).toBe('compact');
+    expect(props.chatSurfaceMode).toBe('full');
   });
 
   it('accepts an avatar interaction callback in window props', () => {

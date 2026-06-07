@@ -81,7 +81,9 @@ def test_chat_surface_mode_preference_is_shared_with_electron():
     assert "electron-chat-window" not in gate_block
     assert "return true;" in gate_block
     assert "localStorage.getItem(CHAT_SURFACE_MODE_STORAGE_KEY)" in read_block
-    assert "if (mode !== 'compact') return;" in persist_block
+    # Restorable surfaces (compact + the revived legacy full) persist; minimized
+    # never does — it restores via lastRestorableChatSurfaceMode.
+    assert "if (mode !== 'compact' && mode !== 'full') return;" in persist_block
     assert "localStorage.setItem(CHAT_SURFACE_MODE_STORAGE_KEY, mode)" in persist_block
 
 
