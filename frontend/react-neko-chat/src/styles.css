@@ -3478,10 +3478,12 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 .compact-chat-surface-frame[data-compact-chat-state="input"] .composer-input {
   flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
   height: 42px;
   min-height: 42px;
   max-height: 42px;
-  padding: 10px 0;
+  padding: 10px 8px 10px 0;
   border: 0;
   background: transparent;
   color: #2f526b;
@@ -3981,7 +3983,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   }
 
   .compact-chat-surface-frame[data-compact-chat-state="input"] {
-    padding: 5px 8px 5px 18px;
+    padding: 5px 62px 5px 18px;
   }
 
   /* Only use the phone fallback when the original wheel geometry would overflow the viewport. */
