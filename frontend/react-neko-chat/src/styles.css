@@ -3983,7 +3983,7 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   }
 
   .compact-chat-surface-frame[data-compact-chat-state="input"] {
-    padding: 5px 8px 5px 18px;
+    padding: 5px 62px 5px 18px;
   }
 
   /* Only use the phone fallback when the original wheel geometry would overflow the viewport. */

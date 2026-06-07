@@ -459,6 +459,11 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
         '.compact-chat-surface-frame[data-compact-chat-state="input"] .composer-input {',
         '.compact-chat-surface-frame[data-compact-chat-state="input"] .composer-input::placeholder',
     )
+    compact_mobile_block = css_block(
+        styles,
+        "@media (max-width: 820px) {",
+        "/* ===================================================================",
+    )
     wheel_block = styles.split(".compact-input-tool-fan .compact-input-tool-item {", 1)[1].split(
         ".compact-input-tool-fan .composer-tool-btn img",
         1,
@@ -522,6 +527,9 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     assert "min-width: 0;" in compact_input_block
     assert "padding: 10px 8px 10px 0;" in compact_input_block
     assert 'padding: 5px 62px 5px 2px;' in styles
+    assert '.compact-chat-surface-frame[data-compact-chat-state="input"]' in compact_mobile_block
+    assert 'padding: 5px 62px 5px 18px;' in compact_mobile_block
+    assert 'padding: 5px 8px 5px 18px;' not in compact_mobile_block
     assert '.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"]:not([data-compact-chat-state="input"])' in styles
     assert 'padding-right: 62px;' in styles
     assert 'right: 9px;' in styles
