@@ -106,6 +106,13 @@ def test_chat_full_endpoint_uses_chat_template_with_initial_full_surface():
     assert '"initial_chat_surface_mode": "full"' not in chat_route_block
 
 
+def test_chat_templates_version_react_chat_bundle_from_react_assets():
+    chat_template = CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
+
+    assert 'neko-chat-window.css?v={{ react_chat_asset_version }}' in chat_template
+    assert 'neko-chat-window.iife.js?v={{ react_chat_asset_version }}' in chat_template
+
+
 def test_chat_full_is_reserved_from_character_page_config_routing():
     source = STATIC_INDEX_JS_PATH.read_text(encoding="utf-8")
 
