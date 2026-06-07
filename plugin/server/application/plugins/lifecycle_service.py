@@ -1108,16 +1108,15 @@ class PluginLifecycleService:
             )
 
         prefix = ""
-        config_path_obj = ext_meta.get("config_path")
-        if isinstance(config_path_obj, str) and config_path_obj:
-            config_path = Path(config_path_obj)
+        resolved_config_path = await asyncio.to_thread(_resolve_registered_config_path_sync, ext_meta)
+        if resolved_config_path is not None:
             try:
-                prefix = await asyncio.to_thread(_read_extension_prefix_sync, config_path)
+                prefix = await asyncio.to_thread(_read_extension_prefix_sync, resolved_config_path)
             except (FileNotFoundError, PermissionError, OSError, ValueError) as exc:
                 logger.warning(
                     "failed to read extension prefix: ext_id={}, config_path={}, err_type={}, err={}",
                     ext_id,
-                    str(config_path),
+                    str(resolved_config_path),
                     type(exc).__name__,
                     str(exc),
                 )
@@ -1136,7 +1135,7 @@ class PluginLifecycleService:
                         "ext_id": ext_id,
                         "ext_entry": ext_entry_obj,
                         "prefix": prefix,
-                        "config_path": config_path_obj if isinstance(config_path_obj, str) else "",
+                        "config_path": str(resolved_config_path) if resolved_config_path is not None else "",
                     },
                     timeout=10.0,
                 )

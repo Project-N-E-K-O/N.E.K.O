@@ -461,6 +461,12 @@ def _import_current_plugin_from_config(module_path: str, config_path: Path, logg
         if not _is_target_module_missing(exc, module_path):
             raise
 
+    # 文件兜底只适用于插件包本身（plugins.<id> ↔ <id>/__init__.py）。更深的子模块路径
+    # （plugins.<id>.<sub>）已由上面的命名空间 import 覆盖；这里不能拿 __init__.py 顶替，
+    # 否则缺失/拼错的子模块会被包初始化静默冒充成功，应让其抛出真正的 ModuleNotFoundError。
+    if len(parts) != 2:
+        return None
+
     spec = importlib.util.spec_from_file_location(
         module_path,
         source_file,
