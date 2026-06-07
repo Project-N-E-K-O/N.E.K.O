@@ -3024,7 +3024,7 @@
     }
 
     function shouldSuppressYuiGuideChatLocalFx(kind) {
-        if (kind === 'input') {
+        if (kind === 'input' || kind === 'capsule-input') {
             return false;
         }
         return !!(isYuiGuidePcOverlayAvailable() && yuiGuidePcOverlayReady);
@@ -3330,6 +3330,16 @@
                 || getYuiGuideChatVisibleElement('#react-chat-window-root .compact-chat-surface-shell')
                 || getYuiGuideChatVisibleElement('#react-chat-window-root .composer-panel')
                 || getYuiGuideChatVisibleElement('#react-chat-window-root .composer-input-shell')
+                || document.getElementById('text-input-area');
+        }
+
+        if (kind === 'capsule-input') {
+            return getYuiGuideChatVisibleElement('#react-chat-window-root [data-compact-geometry-part="capsuleBody"]')
+                || getYuiGuideChatVisibleElement('#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="capsule"]')
+                || getYuiGuideChatVisibleElement('#react-chat-window-root [data-compact-geometry-part="inputBody"]')
+                || getYuiGuideChatVisibleElement('#react-chat-window-root .composer-input-shell')
+                || getYuiGuideChatVisibleElement('#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="input"]')
+                || getYuiGuideChatVisibleElement('#react-chat-window-root .composer-panel')
                 || document.getElementById('text-input-area');
         }
 

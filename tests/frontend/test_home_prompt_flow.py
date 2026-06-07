@@ -4578,7 +4578,7 @@ def test_day2_proactive_chat_highlights_only_proactive_toggle(
             await director.playAvatarFloatingScene({
                 id: 'day2_proactive_chat',
                 text: '这个小按钮也很重要哦，只要你轻轻点一下，我就能在合适的时候跑过去找你啦。',
-                voiceKey: 'takeover_settings_peek_detail',
+                voiceKey: 'takeover_settings_peek_detail_part_2',
                 target: '#${p}-toggle-proactive-chat',
                 cursorAction: 'move',
             }, 2, 3, 7);
@@ -4638,7 +4638,7 @@ def test_day2_proactive_chat_closes_settings_panel_after_line(mock_page: Page):
             await director.playAvatarFloatingScene({
                 id: 'day2_proactive_chat',
                 text: '这个小按钮也很重要哦，只要你轻轻点一下，我就能在合适的时候跑过去找你啦。',
-                voiceKey: 'takeover_settings_peek_detail',
+                voiceKey: 'takeover_settings_peek_detail_part_2',
                 target: '#${p}-toggle-proactive-chat',
                 cursorAction: 'move',
             }, 2, 3, 7);

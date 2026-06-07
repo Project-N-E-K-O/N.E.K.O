@@ -361,8 +361,20 @@
         return registry[normalizedDay] || null;
     }
 
+    function collectGuideAudioFilesByKey() {
+        const registry = window.YuiGuideDailyGuides || {};
+        const result = {};
+        Object.keys(registry).forEach((day) => {
+            const guide = registry[day];
+            if (guide && guide.audioFilesByKey) {
+                Object.assign(result, guide.audioFilesByKey);
+            }
+        });
+        return result;
+    }
+
     const DAY1_HOME_GUIDE = getYuiGuideDailyGuide(1) || {};
-    const GUIDE_AUDIO_FILES_BY_KEY = Object.freeze(Object.assign({}, DAY1_HOME_GUIDE.audioFilesByKey || {}));
+    const GUIDE_AUDIO_FILES_BY_KEY = Object.freeze(collectGuideAudioFilesByKey());
     const GUIDE_AUDIO_FILE_OVERRIDES_BY_KEY = Object.freeze(Object.assign({}, DAY1_HOME_GUIDE.audioFileOverridesByKey || {}));
 
     function guideAudioSrc(key) {
@@ -2771,6 +2783,164 @@
             this.overlay.setTakingOver(isActive);
         }
 
+        getAvatarStandInCue(day, sceneId) {
+            const api = window.YuiGuideAvatarStandIn;
+            if (!api || typeof api.getCue !== 'function') {
+                return null;
+            }
+            try {
+                return api.getCue(day, sceneId);
+            } catch (_) {
+                return null;
+            }
+        }
+
+        getAvatarStandInResourcePath(resource) {
+            const api = window.YuiGuideAvatarStandIn;
+            if (api && typeof api.getResourcePath === 'function') {
+                try {
+                    return api.getResourcePath(resource);
+                } catch (_) {}
+            }
+            return '';
+        }
+
+        scheduleAvatarStandInForScene(scene, day, sceneRunId) {
+            if (!scene || scene.petalTransition === true) {
+                this.clearAvatarStandIn({ clearPending: true, restoreModel: true });
+                return;
+            }
+            const cue = this.getAvatarStandInCue(day, scene.id);
+            if (!cue) {
+                return;
+            }
+            if (this.avatarStandInShowTimer) {
+                window.clearTimeout(this.avatarStandInShowTimer);
+                this.avatarStandInShowTimer = null;
+            }
+            const token = this.avatarStandInToken + 1;
+            this.avatarStandInToken = token;
+            this.avatarStandInShowTimer = window.setTimeout(() => {
+                this.avatarStandInShowTimer = null;
+                if (
+                    token !== this.avatarStandInToken
+                    || sceneRunId !== this.sceneRunId
+                    || this.isStopping()
+                    || this.destroyed
+                ) {
+                    return;
+                }
+                this.showAvatarStandIn(cue, token);
+            }, Math.max(0, Number(cue.delayMs) || 0));
+        }
+
+        prepareAvatarStandInOpacityTargets() {
+            const elements = this.getReturnPetalTransitionOpacityElements();
+            const model = this.getReturnPetalTransitionModel();
+            const restores = [];
+            elements.forEach((element) => {
+                const originalInlineOpacity = element.style.opacity;
+                const originalInlineTransition = element.style.transition;
+                restores.push(() => {
+                    if (originalInlineTransition) {
+                        element.style.setProperty('transition', originalInlineTransition);
+                    } else {
+                        element.style.removeProperty('transition');
+                    }
+                    if (originalInlineOpacity) {
+                        element.style.setProperty('opacity', originalInlineOpacity);
+                    } else {
+                        element.style.removeProperty('opacity');
+                    }
+                });
+                element.style.setProperty('transition', 'opacity ' + AVATAR_STAND_IN_MODEL_FADE_MS + 'ms ease', 'important');
+                void element.offsetWidth;
+                element.style.setProperty('opacity', '0', 'important');
+            });
+            if (model && Number.isFinite(Number(model.alpha))) {
+                const originalAlpha = Number(model.alpha);
+                restores.push(() => {
+                    try {
+                        model.alpha = originalAlpha;
+                    } catch (_) {}
+                });
+            }
+            this.avatarStandInOpacityRestores = restores;
+        }
+
+        hideAvatarStandInModelAlpha() {
+            const model = this.getReturnPetalTransitionModel();
+            if (!model || !Number.isFinite(Number(model.alpha))) {
+                return;
+            }
+            try {
+                model.alpha = 0;
+            } catch (_) {}
+        }
+
+        showAvatarStandIn(cue, token) {
+            if (!cue || token !== this.avatarStandInToken || this.isStopping() || this.destroyed) {
+                return;
+            }
+            this.clearAvatarStandIn({ clearPending: false, restoreModel: true, preserveToken: true });
+            this.avatarStandInActive = true;
+            this.prepareAvatarStandInOpacityTargets();
+            this.avatarStandInFadeTimer = window.setTimeout(() => {
+                this.avatarStandInFadeTimer = null;
+                if (token !== this.avatarStandInToken || this.isStopping() || this.destroyed) {
+                    return;
+                }
+                this.hideAvatarStandInModelAlpha();
+                if (this.overlay && typeof this.overlay.showAvatarStandIn === 'function') {
+                    this.overlay.showAvatarStandIn({
+                        resource: cue.resource,
+                        position: cue.position,
+                        durationMs: cue.durationMs,
+                        url: this.getAvatarStandInResourcePath(cue.resource)
+                    });
+                }
+                this.avatarStandInHideTimer = window.setTimeout(() => {
+                    if (token === this.avatarStandInToken) {
+                        this.clearAvatarStandIn({ clearPending: false, restoreModel: true });
+                    }
+                }, Math.max(0, Number(cue.durationMs) || 0));
+            }, AVATAR_STAND_IN_MODEL_FADE_MS);
+        }
+
+        clearAvatarStandIn(options) {
+            const normalizedOptions = options || {};
+            if (normalizedOptions.clearPending !== false && this.avatarStandInShowTimer) {
+                window.clearTimeout(this.avatarStandInShowTimer);
+                this.avatarStandInShowTimer = null;
+            }
+            if (this.avatarStandInFadeTimer) {
+                window.clearTimeout(this.avatarStandInFadeTimer);
+                this.avatarStandInFadeTimer = null;
+            }
+            if (this.avatarStandInHideTimer) {
+                window.clearTimeout(this.avatarStandInHideTimer);
+                this.avatarStandInHideTimer = null;
+            }
+            if (normalizedOptions.preserveToken !== true) {
+                this.avatarStandInToken += 1;
+            }
+            if (this.overlay && typeof this.overlay.clearAvatarStandIn === 'function') {
+                this.overlay.clearAvatarStandIn();
+            }
+            if (normalizedOptions.restoreModel !== false) {
+                const restores = Array.isArray(this.avatarStandInOpacityRestores)
+                    ? this.avatarStandInOpacityRestores
+                    : [];
+                this.avatarStandInOpacityRestores = null;
+                restores.forEach((restore) => {
+                    try {
+                        restore();
+                    } catch (_) {}
+                });
+            }
+            this.avatarStandInActive = false;
+        }
+
         setGuideChatInputLocked(locked, reason) {
             const isLocked = locked === true;
             const lockReason = typeof reason === 'string' && reason
@@ -4753,6 +4923,36 @@
             return null;
         }
 
+        getChatCapsuleInputTarget() {
+            const preferredSelectors = [
+                '#react-chat-window-root [data-compact-geometry-part="capsuleBody"]',
+                '#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="capsule"]',
+                '#react-chat-window-root [data-compact-geometry-part="inputBody"]',
+                '#react-chat-window-root .composer-input-shell',
+                '#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="input"]',
+                '#react-chat-window-root .composer-panel',
+                '#text-input-area'
+            ];
+
+            for (let index = 0; index < preferredSelectors.length; index += 1) {
+                const element = this.resolveElement(preferredSelectors[index]);
+                if (!element) {
+                    continue;
+                }
+
+                const rect = typeof element.getBoundingClientRect === 'function'
+                    ? element.getBoundingClientRect()
+                    : null;
+                if (!rect || rect.width <= 0 || rect.height <= 0) {
+                    continue;
+                }
+
+                return element;
+            }
+
+            return this.getChatInputTarget();
+        }
+
         getChatWindowTarget() {
             const preferredSelectors = [
                 '#react-chat-window-root [data-compact-geometry-owner="surface"][data-compact-geometry-item="input"]',
@@ -6076,11 +6276,15 @@
             const normalizedScene = scene || {};
             return {
                 id: normalizedScene.id || AVATAR_FLOATING_GUIDE_INTERRUPT_STEP.id,
+                anchor: normalizedScene.target || '',
                 performance: {
-                    interruptible: true,
+                    interruptible: normalizedScene.interruptible !== false,
                     bubbleText: normalizedScene.text || '',
                     bubbleTextKey: normalizedScene.textKey || '',
-                    voiceKey: normalizedScene.voiceKey || ''
+                    voiceKey: normalizedScene.voiceKey || '',
+                    emotion: normalizedScene.emotion || '',
+                    cursorTarget: normalizedScene.cursorTarget || normalizedScene.target || '',
+                    cursorAction: normalizedScene.cursorAction || ''
                 },
                 interrupts: AVATAR_FLOATING_GUIDE_INTERRUPT_STEP.interrupts
             };
@@ -6531,6 +6735,9 @@
         }
 
         getExternalizedChatTargetKind(targetKey, scene) {
+            if (targetKey === 'chat-capsule-input') {
+                return 'capsule-input';
+            }
             if (targetKey === 'chat-input') {
                 return 'input';
             }
@@ -6815,6 +7022,9 @@
             if (selector === 'chat-input') {
                 return this.getChatInputTarget();
             }
+            if (selector === 'chat-capsule-input') {
+                return this.getChatCapsuleInputTarget();
+            }
             if (selector === 'chat-history-handle') {
                 return this.resolveElement('#react-chat-window-root .compact-history-visibility-handle')
                     || this.resolveElement('.compact-history-visibility-handle');
@@ -7093,6 +7303,19 @@
                 return this.getAvatarFloatingBaseTarget('chat-window');
             }
             return null;
+        }
+
+        applyAvatarFloatingSceneSpotlightVariant(scene, target) {
+            const variant = scene && typeof scene.spotlightVariant === 'string'
+                ? scene.spotlightVariant.trim()
+                : '';
+            if (!variant || !target) {
+                return;
+            }
+            this.setSpotlightVariantHints([{
+                element: target,
+                variant
+            }]);
         }
 
         async prepareAvatarFloatingScene(scene, options) {
@@ -8294,6 +8517,24 @@
 
         async runAvatarFloatingSceneOperation(scene, primaryTarget, narrationStartedAt) {
             const operation = typeof scene.operation === 'string' ? scene.operation : '';
+            if (operation === 'day1-managed-scene:takeover_capture_cursor') {
+                const step = this.getStep('takeover_capture_cursor') || {
+                    anchor: scene.target || '',
+                    performance: {}
+                };
+                const performance = Object.assign({}, step.performance || {}, {
+                    cursorTarget: scene.cursorTarget || scene.target || (step.performance && step.performance.cursorTarget) || '',
+                    voiceKey: scene.voiceKey || (step.performance && step.performance.voiceKey) || '',
+                    emotion: scene.emotion || (step.performance && step.performance.emotion) || ''
+                });
+                if (!this.takeoverOriginalAgentSwitches) {
+                    this.takeoverOriginalAgentSwitches = await this.getAgentSwitchSnapshot();
+                }
+                return await this.runTakeoverKeyboardControlSequence(step, performance, this.sceneRunId);
+            }
+            if (operation.indexOf('day1-managed-scene-settled:') === 0) {
+                return true;
+            }
             if (operation === 'day6-plugin-open-agent-panel-flow') {
                 return this.runDay6PluginOpenAgentPanelFlow(scene);
             }
@@ -8695,6 +8936,13 @@
                 explicitStartTargets.push(this.resolveAvatarFloatingSelector('chat-tool-toggle'));
             }
 
+            if (sceneId === 'day1_takeover_return_control') {
+                const keyboardControlAnchor = this.getAvatarFloatingSceneCursorAnchor('day1_takeover_capture_cursor');
+                if (keyboardControlAnchor) {
+                    return keyboardControlAnchor;
+                }
+            }
+
             for (let index = 0; index < explicitStartTargets.length; index += 1) {
                 const rect = this.getElementRect(explicitStartTargets[index]);
                 if (rect) {
@@ -8874,13 +9122,9 @@
 
         isDay1SpecialAvatarFloatingScene(scene) {
             const sceneId = scene && typeof scene.id === 'string' ? scene.id : '';
-            const operation = scene && typeof scene.operation === 'string' ? scene.operation : '';
             return !!(
                 sceneId === 'day1_intro_activation'
                 || sceneId === 'day1_intro_greeting'
-                || sceneId === 'day1_intro_basic_voice'
-                || operation.indexOf('day1-managed-scene:') === 0
-                || operation.indexOf('day1-managed-scene-settled:') === 0
             );
         }
 
@@ -9069,39 +9313,6 @@
             if (sceneId === 'day1_intro_greeting') {
                 return await this.playDay1IntroGreetingRoundScene(sceneRunId);
             }
-            if (sceneId === 'day1_intro_basic_voice') {
-                return await this.playDay1IntroBasicVoiceRoundScene(sceneRunId);
-            }
-
-            const operation = scene && typeof scene.operation === 'string' ? scene.operation : '';
-            if (operation.indexOf('day1-managed-scene-settled:') === 0) {
-                return sceneRunId === this.sceneRunId && !this.isStopping();
-            }
-            if (operation.indexOf('day1-managed-scene:') === 0) {
-                const managedSceneId = operation.split(':')[1] || '';
-                if (!managedSceneId) {
-                    return false;
-                }
-                if (managedSceneId === 'takeover_capture_cursor' && !this.takeoverOriginalAgentSwitches) {
-                    this.takeoverOriginalAgentSwitches = await this.getAgentSwitchSnapshot();
-                }
-                if (
-                    managedSceneId === 'takeover_capture_cursor'
-                    && previousSceneId !== 'day1_screen_entry_invite'
-                ) {
-                    this.clearExternalizedChatGuideTarget();
-                }
-                await this.playManagedScene(managedSceneId, {
-                    source: 'avatar-floating-day1-round',
-                    previousSceneId: previousSceneId || ''
-                });
-                if (managedSceneId === 'takeover_return_control') {
-                    this.takeoverFlowCompleted = true;
-                    this.takeoverOriginalAgentSwitches = null;
-                    this.setTutorialTakingOver(false);
-                }
-                return !this.isStopping() && !this.destroyed && !this.angryExitTriggered;
-            }
 
             return sceneRunId === this.sceneRunId && !this.isStopping();
         }
@@ -9129,6 +9340,7 @@
             this.clearAllVirtualSpotlights();
             this.clearSpotlightGeometryHints();
             this.clearSpotlightVariantHints();
+            this.scheduleAvatarStandInForScene(scene, day, sceneRunId);
             if (
                 this.isHomeChatExternalized()
                 && !preserveExternalizedChatGuideTarget
@@ -9366,6 +9578,7 @@
                 if (typeof day4SettingsPersistentTarget !== 'undefined') {
                     highlightConfig.persistent = day4SettingsPersistentTarget;
                 }
+                this.applyAvatarFloatingSceneSpotlightVariant(scene, primaryTarget);
                 this.applyGuideHighlights(highlightConfig);
             }
             this.enableInterrupts(this.currentStep);
@@ -9458,6 +9671,7 @@
                 if (typeof day4SettingsPersistentTarget !== 'undefined') {
                     highlightConfig.persistent = day4SettingsPersistentTarget;
                 }
+                this.applyAvatarFloatingSceneSpotlightVariant(scene, primaryTarget);
                 this.applyGuideHighlights(highlightConfig);
             }
 
@@ -9485,6 +9699,12 @@
                 await this.moveExternalizedChatCursor(scene, {
                     onClickStart: startSceneOperation
                 });
+            } else if (externalizedSceneTargetKind && scene.cursorAction === 'move') {
+                const externalizedMoveWaitMs = this.getExternalizedChatCursorMoveDurationMs(scene, 760);
+                await this.waitForExternalizedChatCursorMove(
+                    scene.id || '',
+                    externalizedMoveWaitMs > 0 ? externalizedMoveWaitMs + 500 : undefined
+                );
             } else if (!externalizedSceneTargetKind) {
                 const cursorTarget = scene.cursorTarget
                     ? await this.resolveAvatarFloatingSelector(scene.cursorTarget)
@@ -9609,6 +9829,7 @@
                 return !this.isStopping();
             } finally {
                 this.disableInterrupts();
+                this.clearAvatarStandIn({ clearPending: true, restoreModel: true });
                 this.setGuideChatInputLocked(false, 'avatar-floating-guide-day' + Number(round) + '-complete');
                 await this.closeAvatarFloatingGuidePanels({
                     clearCursor: true
@@ -11173,6 +11394,7 @@
             if (!enabledKeyboardControl || guardFailed()) {
                 return false;
             }
+            this.rememberAvatarFloatingSceneCursorAnchor('day1_takeover_capture_cursor', keyboardToggleSpotlight);
 
             const ghostCursorLookAtHandle = await this.startGhostCursorLookAtPerformance({
                 isCancelled: () => guardFailed()
@@ -14570,6 +14792,7 @@
 	            this.clearIntroFlow();
 	            this.clearSceneTimers();
 	            this.clearGuideChatStreamTimers();
+            this.clearAvatarStandIn({ clearPending: true, restoreModel: true });
             this.clearPendingGuideMessageAction();
             this.uninstallGuideMessageActionHandler();
             if (this.wakeup && typeof this.wakeup.destroy === 'function') {

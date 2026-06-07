@@ -21,9 +21,24 @@
         window.YuiGuideDailyGuides = registry;
     }
 
+    function zhAudio(fileName) {
+        return Object.freeze({
+            zh: fileName
+        });
+    }
+
     registerGuide(deepFreeze({
         day: 3,
         key: 'interaction',
+        audioFilesByKey: {
+            avatar_floating_day3_intro: zhAudio('嘻嘻，可别以为这个聊.mp3'),
+            avatar_floating_day3_avatar_tools_intro: zhAudio('在这个小按钮里，有许.mp3'),
+            avatar_floating_day3_avatar_tools_props: zhAudio('你可以随时来摸摸我的.mp3'),
+            avatar_floating_day3_galgame_intro: zhAudio('快点开这个【Galg.mp3'),
+            avatar_floating_day3_galgame_choices: zhAudio('你选的每一个对话，都.mp3'),
+            avatar_floating_day3_wrap_intro: zhAudio('今天带你认识的这些功.mp3'),
+            avatar_floating_day3_wrap_ready: zhAudio('不管是想摸摸我的头，.mp3')
+        },
         round: {
             title: '第 3 天：互动、娱乐与摸得到的陪伴',
             scenes: [

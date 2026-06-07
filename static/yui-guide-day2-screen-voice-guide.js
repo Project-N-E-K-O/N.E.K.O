@@ -21,9 +21,24 @@
         window.YuiGuideDailyGuides = registry;
     }
 
+    function zhAudio(fileName) {
+        return Object.freeze({
+            zh: fileName
+        });
+    }
+
     registerGuide(deepFreeze({
         day: 2,
         key: 'screen-voice',
+        audioFilesByKey: {
+            avatar_floating_day2_intro: zhAudio('昨天你一直在噼里啪啦.mp3'),
+            takeover_settings_peek_intro: zhAudio('在这个只属于我们的小.mp3'),
+            takeover_settings_peek_detail: zhAudio('不管是说话的温度、相.mp3'),
+            takeover_settings_peek_detail_part_2: zhAudio('这个小按钮也很重要哦.mp3'),
+            avatar_floating_day2_wrap_intro: zhAudio('今天的教程到这里就结.mp3'),
+            avatar_floating_day2_wrap_companion: zhAudio('其实只要能这样陪着你.mp3'),
+            avatar_floating_day2_wrap: zhAudio('我们不需要着急，每天.mp3')
+        },
         round: {
             title: '第 2 天：个性化、声音与主动搭话',
             scenes: [
@@ -59,7 +74,7 @@
                 {
                     id: 'day2_proactive_chat',
                     textKey: 'tutorial.avatarFloating.day2.proactiveChat',
-                    voiceKey: 'takeover_settings_peek_detail',
+                    voiceKey: 'takeover_settings_peek_detail_part_2',
                     text: '这个小按钮也很重要哦，只要你轻轻点一下，我就能在合适的时候跑过去找你啦。',
                     emotion: 'happy',
                     target: '#${p}-toggle-proactive-chat',

@@ -21,9 +21,20 @@
         window.YuiGuideDailyGuides = registry;
     }
 
+    function zhAudio(fileName) {
+        return Object.freeze({
+            zh: fileName
+        });
+    }
+
     registerGuide(deepFreeze({
         day: 7,
         key: 'graduation',
+        audioFilesByKey: {
+            avatar_floating_day7_memory_review: zhAudio('七天前，我们还只是第.mp3'),
+            avatar_floating_day7_memory_control: zhAudio('这些小脚印，也可以由.mp3'),
+            avatar_floating_day7_wrap: zhAudio('微风还在窗边，阳光也.mp3')
+        },
         round: {
             title: '第 7 天：毕业、进阶入口与共生约定',
             scenes: [

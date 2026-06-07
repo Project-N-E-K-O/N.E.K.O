@@ -21,9 +21,25 @@
         window.YuiGuideDailyGuides = registry;
     }
 
+    function zhAudio(fileName) {
+        return Object.freeze({
+            zh: fileName
+        });
+    }
+
     registerGuide(deepFreeze({
         day: 4,
         key: 'companion',
+        audioFilesByKey: {
+            avatar_floating_day4_intro: zhAudio('今天，就让我悄悄跟上.mp3'),
+            avatar_floating_day4_chat_settings: zhAudio('在这里可以决定我回复.mp3'),
+            avatar_floating_day4_model_behavior: zhAudio('如果你想要看到更精致.mp3'),
+            avatar_floating_day4_gaze_follow: zhAudio('开启这个功能后，无论.mp3'),
+            avatar_floating_day4_privacy_mode: zhAudio('这个是控制人家能不能.mp3'),
+            avatar_floating_day4_model_lock: zhAudio('总是小心不触碰到、把.mp3'),
+            avatar_floating_day4_return_home: zhAudio('如果你现在需要专注、.mp3'),
+            avatar_floating_day4_wrap: zhAudio('真正舒服的陪伴才不是.mp3')
+        },
         round: {
             title: '第 4 天：相处距离、主动陪伴与模型行为',
             scenes: [

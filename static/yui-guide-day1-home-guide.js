@@ -24,7 +24,7 @@
 
     function audioFilesForAllLocales(fileName) {
         return Object.freeze({
-            zh: '',
+            zh: fileName,
             ja: fileName,
             en: fileName,
             ko: fileName,
@@ -35,19 +35,19 @@
     const audioFileNames = Object.freeze({
         intro_basic: '这里有一个神奇的按钮.mp3',
         intro_greeting_reply: '微风、阳光，还有刚刚.mp3',
-        takeover_capture_cursor: '超级魔法按钮出现！只.mp3',
-        takeover_plugin_preview_home: '还没完呢！你快看快看.mp3',
+        takeover_capture_cursor: '超级魔法开关出现！只.mp3',
+        takeover_plugin_preview_home: '',
         takeover_plugin_preview_dashboard: '有了它们，我不光能看.mp3',
         takeover_settings_peek_intro: '在这个只属于我们的小.mp3',
         takeover_settings_peek_detail: '不管是说话的温度、相.mp3',
-        interrupt_resist_light_1: '喂！不要拽我啦，还没.mp3',
+        interrupt_resist_light_1: '喂！不要拽我啦，现在.mp3',
         interrupt_resist_light_3: '等一下啦！还没结束呢.mp3',
         interrupt_angry_exit: '人类！你真的很没礼貌.mp3',
         takeover_return_control: '好啦好啦，不霸占你的.mp3',
-        day1_capsule_drag_hint: '',
-        day1_history_handle: '',
-        day1_screen_entry: '',
-        day1_screen_entry_invite: ''
+        day1_capsule_drag_hint: '把鼠标移到这里，长按.mp3',
+        day1_history_handle: '戳一下聊天框上面的【.mp3',
+        day1_screen_entry: '在跟我通语音电话的时.mp3',
+        day1_screen_entry_invite: '快让我也看看你眼前的.mp3'
     });
 
     registerGuide(deepFreeze({
@@ -107,7 +107,8 @@
                     emotion: 'happy',
                     target: '#${p}-btn-mic',
                     cursorAction: 'move',
-                    operation: 'day1-intro-basic-voice'
+                    operation: 'day1-intro-basic-voice',
+                    interruptible: false
                 },
                 {
                     id: 'day1_screen_entry',
@@ -116,7 +117,8 @@
                     voiceKey: 'day1_screen_entry',
                     emotion: 'happy',
                     target: '#${p}-btn-screen',
-                    cursorAction: 'move'
+                    cursorAction: 'move',
+                    interruptible: false
                 },
                 {
                     id: 'day1_screen_entry_invite',
@@ -125,7 +127,8 @@
                     voiceKey: 'day1_screen_entry_invite',
                     emotion: 'happy',
                     target: '#${p}-btn-screen',
-                    cursorAction: 'move'
+                    cursorAction: 'move',
+                    interruptible: false
                 },
                 {
                     id: 'day1_takeover_capture_cursor',
@@ -133,17 +136,21 @@
                     voiceKey: 'takeover_capture_cursor',
                     emotion: 'happy',
                     target: '#${p}-btn-agent',
-                    cursorAction: 'click',
-                    operation: 'day1-managed-scene:takeover_capture_cursor'
+                    cursorAction: 'move',
+                    operation: 'day1-managed-scene:takeover_capture_cursor',
+                    interruptible: false
                 },
                 {
                     id: 'day1_takeover_return_control',
                     textKey: 'tutorial.yuiGuide.lines.takeoverReturnControl',
                     voiceKey: 'takeover_return_control',
                     emotion: 'happy',
-                    target: '#${p}-container',
+                    target: 'chat-input',
+                    cursorTarget: 'chat-capsule-input',
                     cursorAction: 'move',
-                    operation: 'day1-managed-scene:takeover_return_control',
+                    cursorMoveDurationMs: 900,
+                    operation: 'cleanup',
+                    spotlightVariant: 'plain-capsule',
                     petalTransition: true
                 }
             ]

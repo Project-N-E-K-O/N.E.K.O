@@ -21,9 +21,21 @@
         window.YuiGuideDailyGuides = registry;
     }
 
+    function zhAudio(fileName) {
+        return Object.freeze({
+            zh: fileName
+        });
+    }
+
     registerGuide(deepFreeze({
         day: 5,
         key: 'personalization',
+        audioFilesByKey: {
+            avatar_floating_day5_character_settings: zhAudio('从今天起，我就真正成.mp3'),
+            avatar_floating_day5_character_panic: zhAudio('咦，这里居然还能把我.mp3'),
+            avatar_floating_day5_memory_entry: zhAudio('如果你不小心忘记了我.mp3'),
+            avatar_floating_day5_wrap: zhAudio('')
+        },
         round: {
             title: '第 5 天：个性化与长期配置',
             scenes: [

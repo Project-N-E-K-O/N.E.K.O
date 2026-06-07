@@ -21,9 +21,25 @@
         window.YuiGuideDailyGuides = registry;
     }
 
+    function zhAudio(fileName) {
+        return Object.freeze({
+            zh: fileName
+        });
+    }
+
     registerGuide(deepFreeze({
         day: 6,
         key: 'agent',
+        audioFilesByKey: {
+            avatar_floating_day6_intro: zhAudio('噔噔噔噔！今天必须要.mp3'),
+            avatar_floating_day6_status_master: zhAudio('快跟我老实交代，这两.mp3'),
+            avatar_floating_day6_plugin_side_panel: zhAudio('除了之前介绍的功能，.mp3'),
+            avatar_floating_day6_plugin_dashboard: zhAudio('有了它们，我不光能看.mp3'),
+            avatar_floating_day6_task_hud: zhAudio('看这里看这里！当我决.mp3'),
+            avatar_floating_day6_task_hud_control: zhAudio('你要是计划有变，随时.mp3'),
+            avatar_floating_day6_wrap_cleanup: zhAudio('呼……把这些繁琐的界.mp3'),
+            avatar_floating_day6_wrap: zhAudio('你可以放心地继续做你.mp3')
+        },
         round: {
             title: '第 6 天：Agent、任务 HUD 与能力节奏',
             scenes: [
