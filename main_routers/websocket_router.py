@@ -277,7 +277,14 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             if action == "goodbye_state":
                 active = bool(message.get("active"))
                 reason = str(message.get("reason") or ("goodbye" if active else "return")).strip().lower()[:64]
-                session_manager[lanlan_name].set_goodbye_silent(active, reason)
+                goodbye_mgr = session_manager[lanlan_name]
+                goodbye_mgr.set_goodbye_silent(active, reason)
+                if not active and goodbye_mgr.pending_agent_callbacks:
+                    logger.info(
+                        "[%s] goodbye_state cleared: retrying %d pending callback(s)",
+                        lanlan_name, len(goodbye_mgr.pending_agent_callbacks),
+                    )
+                    _fire_task(goodbye_mgr.trigger_agent_callbacks())
                 continue
 
             if action == "start_session":

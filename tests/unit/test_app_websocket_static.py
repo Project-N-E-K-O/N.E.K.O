@@ -58,6 +58,8 @@ def test_ws_open_resyncs_goodbye_state_and_skips_regular_greeting():
     assert "action: 'goodbye_state'" in onopen_greeting_block
     assert "active: !!goodbyeSyncOnOpen.active" in onopen_greeting_block
     assert "reason: 'ws-open-goodbye'" in onopen_greeting_block
+    assert "pendingGoodbyeState.active === true" in onopen_greeting_block
+    assert "reason: 'ws-open-goodbye-from-sync'" in onopen_greeting_block
     assert "pending: false" in onopen_greeting_block
     assert "if (goodbyeActiveOnOpen || (goodbyeSyncOnOpen && goodbyeSyncOnOpen.active))" in onopen_greeting_block
     assert "_sendGreetingCheckIfReady();" in onopen_greeting_block

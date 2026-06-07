@@ -1384,6 +1384,12 @@
                         reason: 'ws-open-goodbye'
                     };
                 }
+                if (!goodbyeSyncOnOpen && pendingGoodbyeState && pendingGoodbyeState.active === true) {
+                    goodbyeSyncOnOpen = {
+                        active: true,
+                        reason: 'ws-open-goodbye-from-sync'
+                    };
+                }
                 if (goodbyeSyncOnOpen && _thisSocket && _thisSocket.readyState === WebSocket.OPEN) {
                     _thisSocket.send(JSON.stringify({
                         action: 'goodbye_state',
