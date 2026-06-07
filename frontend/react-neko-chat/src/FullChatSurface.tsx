@@ -3409,7 +3409,7 @@ export default function FullChatSurface({
             setToolMenuOpen(false);
           }}
         >
-          <span aria-hidden="true">脳</span>
+          <span aria-hidden="true">×</span>
         </button>
       ) : null}
       {toolMenuOpen ? (
@@ -3794,7 +3794,7 @@ export default function FullChatSurface({
               closeCompactInputToolFan();
             }}
           >
-            <span aria-hidden="true">脳</span>
+            <span aria-hidden="true">×</span>
           </button>
         ) : null}
       </div>
@@ -4198,7 +4198,7 @@ export default function FullChatSurface({
                       }
                     }}
                   >
-                    脳
+                    ×
                   </button>
                 </figure>
               ))}

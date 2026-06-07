@@ -3385,10 +3385,12 @@
 
     function setViewProps(nextViewProps) {
         var nextProps = nextViewProps || {};
+        var surfaceModeChanged = false;
         if (Object.prototype.hasOwnProperty.call(nextProps, 'chatSurfaceMode')) {
             var normalizedChatSurfaceMode = normalizeChatSurfaceMode(nextProps.chatSurfaceMode);
             var previousChatSurfaceMode = getCurrentChatSurfaceMode();
-            if (normalizedChatSurfaceMode !== previousChatSurfaceMode
+            surfaceModeChanged = normalizedChatSurfaceMode !== previousChatSurfaceMode;
+            if (surfaceModeChanged
                 && !Object.prototype.hasOwnProperty.call(nextProps, 'compactChatState')) {
                 resetCompactChatState();
             }
@@ -3407,6 +3409,16 @@
             compactChatState: getCurrentCompactChatState()
         });
         renderWindow();
+        // setViewProps can now land a real surface change (e.g. compact -> the
+        // revived `full`) because normalizeChatSurfaceMode preserves all three
+        // modes. renderWindow only updates the React tree; the host shell's
+        // data-chat-surface-mode attribute — which the compact CSS rules key off —
+        // is owned by syncChatSurfaceModeUI, so sync it here too or the shell keeps
+        // the stale mode and compact chrome leaks onto the new surface. (Minimize
+        // transitions still route through setChatSurfaceMode/setMinimized.)
+        if (surfaceModeChanged) {
+            syncChatSurfaceModeUI();
+        }
         return state.viewProps;
     }
 
