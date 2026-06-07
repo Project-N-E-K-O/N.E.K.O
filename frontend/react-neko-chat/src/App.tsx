@@ -3211,12 +3211,17 @@ function CompactChatApp({
 
   const openCompactInputToolFan = useCallback((intent: 'click' | 'hover') => {
     if (composerDisabled || compactInputHasPayload) return;
+    // hover 模式下指针抖动离开再回来会重入本函数，但 fan 其实从未关闭（只挂了延迟关闭定时器）。
+    // 复位只能发生在「真正从关闭态展开」时，否则用户刚转出来正要去够的工具会被弹回默认位。
+    const wasAlreadyOpen = compactInputToolFanOpenRef.current;
     clearCompactInputToolFanCloseTimer();
     clearCompactInputToolFanInteractiveTimer();
     compactInputToolFanOpenIntentRef.current = intent;
     setCompactInputToolWheelLayout('default');
-    // 每次展开都把轮盘转角复位到默认（环位 0 居中），不保留上次转到的位置。
-    setCompactInputToolWheelIndex(0);
+    if (!wasAlreadyOpen) {
+      // 每次展开都把轮盘转角复位到默认（环位 0 居中），不保留上次转到的位置。
+      setCompactInputToolWheelIndex(0);
+    }
     setCompactInputToolFanInteractiveState(false);
     updateCompactInputToolFanPosition();
     compactInputToolFanOpenRef.current = true;

@@ -3969,7 +3969,7 @@ describe('App', () => {
       expect(exportButton).toHaveAttribute('data-compact-tool-wheel-slot', '-2');
       expect(exportButton).toHaveAttribute('tabindex', '0');
       expect(exportButton).toHaveAttribute('aria-hidden', 'false');
-      expect(galgameButton).toHaveAttribute('data-compact-tool-wheel-slot', '2');
+      expect(galgameButton).toHaveAttribute('data-compact-tool-wheel-slot', '-1');
       expect(galgameButton).toHaveAttribute('tabindex', '0');
       expect(galgameButton).toHaveAttribute('aria-hidden', 'false');
 
@@ -3995,14 +3995,14 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
     const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
     const firstCenter = fan.querySelector('[data-compact-tool-wheel-slot="0"]');
-    expect(firstCenter).toHaveClass('compact-input-tool-item-import');
+    expect(firstCenter).toHaveClass('compact-input-tool-item-screenshot');
 
     fireEvent.pointerDown(fan, { pointerId: 1, clientX: 100, button: 0, buttons: 1, pointerType: 'mouse' });
     fireEvent.pointerMove(fan, { pointerId: 1, clientX: 60, buttons: 1, pointerType: 'mouse' });
     fireEvent.pointerUp(fan, { pointerId: 1, clientX: 60, buttons: 0, pointerType: 'mouse' });
 
     const nextCenter = fan.querySelector('[data-compact-tool-wheel-slot="0"]');
-    expect(nextCenter).toHaveClass('compact-input-tool-item-screenshot');
+    expect(nextCenter).toHaveClass('compact-input-tool-item-avatar');
     expect(fan.querySelectorAll('[tabindex="0"]')).toHaveLength(5);
   });
 
@@ -4019,7 +4019,7 @@ describe('App', () => {
     fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
     const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
     const importButton = fan.querySelector('.compact-input-tool-item-import') as HTMLButtonElement;
-    expect(importButton).toHaveAttribute('data-compact-tool-wheel-slot', '0');
+    expect(importButton).toHaveAttribute('data-compact-tool-wheel-slot', 'hidden-backward');
 
     fireEvent.pointerDown(importButton, { pointerId: 4, clientX: 100, button: 0, buttons: 1, pointerType: 'mouse' });
     fireEvent.pointerMove(importButton, { pointerId: 4, clientX: 60, buttons: 1, pointerType: 'mouse' });
@@ -4027,7 +4027,7 @@ describe('App', () => {
     fireEvent.click(importButton, { clientX: 140, clientY: 140 });
 
     expect(onComposerImportImage).not.toHaveBeenCalled();
-    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
+    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
     expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'true');
   });
 
@@ -4121,7 +4121,7 @@ describe('App', () => {
         buttons: 1,
         pointerType: 'mouse',
       });
-      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
+      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
       fireEvent.blur(window);
       act(() => {
         window.dispatchEvent(new CustomEvent('neko:desktop-compact-pointer-outside'));
@@ -4257,26 +4257,26 @@ describe('App', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
     const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
-    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-import');
+    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
 
     fireEvent.wheel(fan, { deltaY: 80 });
-    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
+    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
 
     fireEvent.wheel(fan, { deltaY: -80 });
-    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-import');
-
-    fireEvent.wheel(fan, { deltaY: 1 });
     expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
 
+    fireEvent.wheel(fan, { deltaY: 1 });
+    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
+
     fireEvent.wheel(fan, { deltaY: -1 });
-    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-import');
+    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
 
     fireEvent.pointerDown(fan, { pointerId: 7, clientX: 100, clientY: 100, button: 0, buttons: 1, pointerType: 'mouse' });
     fireEvent.pointerMove(fan, { pointerId: 7, clientX: 102, clientY: 132, buttons: 1, pointerType: 'mouse' });
-    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
+    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
 
     fireEvent.pointerMove(fan, { pointerId: 7, clientX: 101, clientY: 100, buttons: 1, pointerType: 'mouse' });
-    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-import');
+    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
 
     fireEvent.pointerUp(fan, { pointerId: 7, clientX: 101, clientY: 100, buttons: 0, pointerType: 'mouse' });
   });
@@ -4293,7 +4293,7 @@ describe('App', () => {
 
       fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
       const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
-      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-import');
+      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
 
       fireEvent.pointerDown(fan, {
         pointerId: 21,
@@ -4313,7 +4313,7 @@ describe('App', () => {
         buttons: 1,
         pointerType: 'mouse',
       });
-      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
+      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
 
       fireEvent.pointerUp(fan, {
         pointerId: 21,
@@ -4326,7 +4326,7 @@ describe('App', () => {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(900);
       });
-      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
+      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
     } finally {
       vi.useRealTimers();
     }
@@ -4692,7 +4692,7 @@ describe('App', () => {
         pointerType: 'mouse',
       });
 
-      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-galgame');
+      expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-translate');
     } finally {
       fanRectSpy.mockRestore();
     }
@@ -4708,18 +4708,18 @@ describe('App', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
     const fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
-    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-import');
+    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
 
     fireEvent.pointerMove(fan, { pointerId: 7, clientX: 40, buttons: 0, pointerType: 'mouse' });
-    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-import');
+    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
 
     fireEvent.pointerDown(fan, { pointerId: 7, clientX: 100, clientY: 100, button: 0, buttons: 1, pointerType: 'mouse' });
     fireEvent.pointerMove(fan, { pointerId: 7, clientX: 60, clientY: 102, buttons: 1, pointerType: 'mouse' });
-    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
+    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
 
     fireEvent.pointerUp(fan, { pointerId: 7, clientX: 60, clientY: 102, buttons: 0, pointerType: 'mouse' });
     fireEvent.pointerMove(fan, { pointerId: 7, clientX: 10, clientY: 102, buttons: 0, pointerType: 'mouse' });
-    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
+    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
   });
 
   it('keeps compact toggle tools open and shows their active state after toggling', async () => {
@@ -4744,12 +4744,11 @@ describe('App', () => {
       await act(async () => {
         await vi.advanceTimersByTimeAsync(240);
       });
+      // 新工具顺序里 galgame 是环位 6（默认 slot -1）。反向拖一步（wheelIndex 0→6）
+      // 把它转到正中 slot 0，再点击验证 toggle 后 fan 保持展开。
       fireEvent.pointerDown(fan, { pointerId: 1, clientX: 100, button: 0, buttons: 1, pointerType: 'mouse' });
-      fireEvent.pointerMove(fan, { pointerId: 1, clientX: 60, buttons: 1, pointerType: 'mouse' });
-      fireEvent.pointerUp(fan, { pointerId: 1, clientX: 60, buttons: 0, pointerType: 'mouse' });
-      fireEvent.pointerDown(fan, { pointerId: 2, clientX: 100, button: 0, buttons: 1, pointerType: 'mouse' });
-      fireEvent.pointerMove(fan, { pointerId: 2, clientX: 60, buttons: 1, pointerType: 'mouse' });
-      fireEvent.pointerUp(fan, { pointerId: 2, clientX: 60, buttons: 0, pointerType: 'mouse' });
+      fireEvent.pointerMove(fan, { pointerId: 1, clientX: 140, buttons: 1, pointerType: 'mouse' });
+      fireEvent.pointerUp(fan, { pointerId: 1, clientX: 140, buttons: 0, pointerType: 'mouse' });
 
       const galgameButton = fan.querySelector('.compact-input-tool-item-galgame') as HTMLButtonElement;
       expect(galgameButton).toHaveAttribute('data-compact-tool-wheel-slot', '0');
