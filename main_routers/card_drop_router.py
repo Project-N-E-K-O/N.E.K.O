@@ -439,8 +439,10 @@ async def steam_callback_endpoint(
     return _steam_callback_html(f"已登录，欢迎 {name}", sub)
 
 
-@router.post("/draw", summary="代理云端开卡：roll 稀有度 + 建卡（登录则卡归账号）")
+@router.post("/draw", summary="代理云端用券铸造：消耗 payload.credit_id 那张券 → 用券稀有度建卡")
 async def draw_endpoint(payload: dict = Body(...)):
+    # 统一券经济：payload 须带 credit_id（云端 DrawRequest 必填）。本端点纯透传 json=payload，
+    # 由铸造 UI 把选中候选的 source_text + credit_id 一并塞进来；稀有度继承券、不再 roll。
     base, cid = _require_ctx()
     headers = {"X-Client-Id": cid, "Content-Type": "application/json"}
     token = _access_token()  # 登录了就带 JWT → 云端把卡归到 user 账号
@@ -450,6 +452,22 @@ async def draw_endpoint(payload: dict = Body(...)):
     try:
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
             r = await client.post(url, headers=headers, json=payload)
+    except (httpx.HTTPError, OSError) as exc:
+        raise HTTPException(status_code=502, detail=f"cloud_unreachable: {exc}") from exc
+    return _relay(r)
+
+
+@router.get("/credits", summary="代理云端：列当前有效铸造券（供铸造 UI 显示数量/稀有度/到期）")
+async def credits_endpoint():
+    base, cid = _require_ctx()
+    headers = {"X-Client-Id": cid}
+    token = _access_token()  # 登录则按 user 账号查；否则按游客 client
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    url = f"{base}/api/forge/credits"
+    try:
+        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SEC) as client:
+            r = await client.get(url, headers=headers)
     except (httpx.HTTPError, OSError) as exc:
         raise HTTPException(status_code=502, detail=f"cloud_unreachable: {exc}") from exc
     return _relay(r)

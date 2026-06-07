@@ -92,43 +92,17 @@ def _maybe_drop(lanlan_name: str | None, trigger_type: str, cooldown_sec: int, *
 def on_text_message(lanlan_name: str, text: str) -> None:
     """register_text_user_message_hook 入口。必须返回 None 不抢现有消费者。
 
-    规则：
-    - word_count：累计字符数达 threshold 触发（消耗后归零累计）
-    - keywords：text 中包含任一关键词触发
+    【已退役 · 统一券经济】对话掉落的「判定 + 发券」全部迁到 **NEKO-PC Electron 私有客户端**
+    的 forge-dropper：它直接消费既有 WS 帧（``neko-assistant-turn-start`` /
+    ``neko-assistant-emotion-ready`` / ``game_window_state_change``）做「随机心情 combo +
+    聊满N轮 / 挂机 / 小游戏 保底」判定，并由 Electron 直接调云端
+    ``POST /api/forge/credits/grant`` 发券（服务器抽稀有度 + 落库 + 扣每日发券额度；仅登录用户）。
+
+    NEKO 这一侧因此不再做任何判定、不再直接调云端、不再广播 ``card_drop_available`` 自动开卡——
+    否则 docker 自部署（无官方客户端）会白白调用云端、规则也会暴露在公开仓。本 hook 保持 no-op；
+    下方 ``_maybe_drop`` / ``cloud_sync`` / ``ux_state`` / 规则加载均已废弃（保留定义仅为兼容老
+    import，可后续随 ``config/quota_rules.yaml`` 一并删除）。
     """
-    if not _enabled():
-        return None
-    if not isinstance(text, str) or not text.strip():
-        return None
-
-    rules = _load_rules().get("rules") or {}
-
-    # ---- keywords（优先级高于 word_count；命中即触发，不消耗字数累计）----
-    kw_cfg = rules.get("keywords") or {}
-    if kw_cfg.get("enabled", True):
-        kw_list = kw_cfg.get("list") or []
-        for kw in kw_list:
-            if not isinstance(kw, str):
-                continue
-            if kw and kw in text:
-                _maybe_drop(
-                    lanlan_name, "keywords",
-                    int(kw_cfg.get("cooldown_sec", 1800)),
-                )
-                break  # 多个 keyword 同句只算一次
-
-    # ---- word_count（每次累加；过阈值且 cooldown 满足才触发）----
-    wc_cfg = rules.get("word_count") or {}
-    if wc_cfg.get("enabled", True):
-        threshold = int(wc_cfg.get("threshold", 800))
-        cooldown = int(wc_cfg.get("cooldown_sec", 600))
-        new_total = ux_state.add_word_count(len(text))
-        if new_total >= threshold:
-            _maybe_drop(
-                lanlan_name, "word_count", cooldown,
-                reset_word=True,
-            )
-
     return None
 
 
