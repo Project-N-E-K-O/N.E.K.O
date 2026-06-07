@@ -3215,6 +3215,8 @@ function CompactChatApp({
     clearCompactInputToolFanInteractiveTimer();
     compactInputToolFanOpenIntentRef.current = intent;
     setCompactInputToolWheelLayout('default');
+    // 每次展开都把轮盘转角复位到默认（环位 0 居中），不保留上次转到的位置。
+    setCompactInputToolWheelIndex(0);
     setCompactInputToolFanInteractiveState(false);
     updateCompactInputToolFanPosition();
     compactInputToolFanOpenRef.current = true;
