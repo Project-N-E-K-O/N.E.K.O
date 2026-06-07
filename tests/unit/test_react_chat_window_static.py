@@ -8,6 +8,7 @@ MUSIC_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "music_ui.js"
 MUSIC_UI_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "music_ui.css"
 STATIC_INDEX_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "index.css"
 STATIC_DARK_MODE_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "dark-mode.css"
+STATIC_INDEX_JS_PATH = Path(__file__).resolve().parents[2] / "static" / "js" / "index.js"
 REACT_CHAT_STYLES_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "styles.css"
 REACT_CHAT_APP_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "App.tsx"
 CHAT_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "chat.html"
@@ -103,6 +104,16 @@ def test_chat_full_endpoint_uses_chat_template_with_initial_full_surface():
     )[0]
     assert '"initial_chat_surface_mode": "compact"' in chat_route_block
     assert '"initial_chat_surface_mode": "full"' not in chat_route_block
+
+
+def test_chat_full_is_reserved_from_character_page_config_routing():
+    source = STATIC_INDEX_JS_PATH.read_text(encoding="utf-8")
+
+    assert "const RESERVED_PAGE_PATHS = new Set([" in source
+    assert "'chat'" in source
+    assert "'chat_full'" in source
+    assert "RESERVED_PAGE_PATHS.has(pathParts[0])" in source
+    assert "isReservedPagePath(window.location.pathname)" in source
 
 
 def test_chat_host_initial_surface_mode_prefers_template_override_before_storage():
