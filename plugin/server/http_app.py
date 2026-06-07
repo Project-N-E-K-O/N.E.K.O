@@ -199,6 +199,7 @@ def build_plugin_server_app(title: str = "N.E.K.O User Plugin Server") -> FastAP
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["X-Error-Code"],
     )
 
     register_exception_handlers(app)

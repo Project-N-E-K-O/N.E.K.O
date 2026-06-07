@@ -45,6 +45,7 @@ class HostedUiActionRequest(BaseModel):
     args: dict[str, object] = Field(default_factory=dict)
     kind: str = "panel"
     surface_id: str = "main"
+    locale: str | None = None
 
 
 async def _get_plugin_static_dir(plugin_id: str) -> Path | None:
@@ -355,6 +356,7 @@ async def plugin_hosted_ui_action(plugin_id: str, action_id: str, request: Hoste
             args=request.args,
             kind=request.kind,
             surface_id=request.surface_id,
+            locale=request.locale,
         )
     except ServerDomainError as error:
         raise_http_from_domain(error, logger=logger)

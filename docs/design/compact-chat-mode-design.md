@@ -178,6 +178,46 @@
 4. compact surface 的用户拖动位置只影响 surface，不影响 ball。
 5. 从 compact 切到 minimized 时，桌面端必须同步 native ball 窗口；从 minimized 恢复 compact 时，必须走 compact carrier bounds 而非旧 full 面板尺寸。
 
+> 复活的 `full`（冻结 legacy 完整聊天窗口）不在上述活跃形态链内，由顶层 dispatcher 路由到自包含的 `FullChatSurface.tsx`，与 compact/minimized 严格隔离；它的最小化走独立的「左下角呼吸灯球」支路（见下方「形态切换与本地测试」）。
+
+## 形态切换与本地测试（full / compact / minimized）
+
+`chatSurfaceMode` 有三态：`full`（完整聊天窗口）/ `compact`（悬浮对话条，默认活跃形态）/ `minimized`（折叠球）。
+
+### 默认形态来源
+
+宿主 `static/app-react-chat-window.js` 的 `getDefaultChatSurfaceMode()`（用户无持久化偏好时）：
+
+- **Web / 浏览器** → `full`。
+- **Electron 桌面壳** → `compact`：chat.html（electron chat body class）与 index.html 宠物窗（`window.__LANLAN_IS_ELECTRON_PET__`）都识别为 compact。
+- **显式覆盖**：`window.__NEKO_CHAT_DEFAULT_COMPACT__ = true/false` 优先于上面的运行时识别，强制 compact / full。
+
+用户的显式选择持久化在 `localStorage['neko.reactChatWindow.chatSurfaceMode']`（值只会是 `'full'` 或 `'compact'`；`minimized` 不持久化，恢复时回到 `lastRestorableChatSurfaceMode`）。
+
+### 本地切换 / 测试配方（浏览器控制台，硬刷新生效）
+
+```js
+// 进 full
+localStorage.setItem('neko.reactChatWindow.chatSurfaceMode','full'); location.reload();
+// 进 compact
+localStorage.setItem('neko.reactChatWindow.chatSurfaceMode','compact'); location.reload();
+// 看「默认」形态（清掉显式偏好）
+localStorage.removeItem('neko.reactChatWindow.chatSurfaceMode'); location.reload();
+// 在浏览器里模拟 Electron 的 compact 默认
+window.__NEKO_CHAT_DEFAULT_COMPACT__ = true;
+localStorage.removeItem('neko.reactChatWindow.chatSurfaceMode'); location.reload();
+```
+
+### 各形态自测点
+
+- **full**：渲染完整历史列表 + 完整 composer（底部工具条：导入图片 / 截图 / GalGame / 翻译 / 点歌 / 表情工具 + 发送圆钮；窗口变窄时工具折叠进溢出菜单 `⋯`）。点最小化 → 折向**左下角的蓝色呼吸灯球**（不贴角色、不折出屏幕、不走 idle dock）；点球展开 → **优先恢复上次拖拽/缩放后的记忆位置，仅在无记忆时居中**（不再回左中）。full 是冻结快照，行为对齐删除前的 full。
+- **compact**：悬浮对话条 / 字幕胶囊 / 输入态 / 工具轮盘 / 内联历史。点最小化 → **毛线球就地折叠**到自身底左锚点附近（不再强制贴角色/猫）。注：CAT2/CAT3 视觉层级（idle tier）下 compact 仍会自动贴猫的 idle dock，那是层级自动触发的特性，不是手动点最小化的行为。
+- **minimized**：折叠球；点球恢复回 `lastRestorableChatSurfaceMode`（full 回 full、compact 回 compact）。
+
+### 三端必测（react-neko-chat 改动通用）
+
+`index.html` 宽屏 / `index.html` 窄宽（<768px 纯 CSS 手机版）/ `chat.html`（Electron，Chromium fork，部分 Web API 行为与浏览器不同）。
+
 ## Compact 内部三态
 
 `chatSurfaceMode === 'compact'` 时，内部三态如下。

@@ -6,6 +6,21 @@
 let lanlan_config = {
     lanlan_name: ""
 };
+
+const RESERVED_PAGE_PATHS = new Set([
+    'api',
+    'chat',
+    'chat_full',
+    'focus',
+    'static',
+    'templates',
+    'toast',
+]);
+
+function isReservedPagePath(pathname) {
+    const pathParts = String(pathname || '').split('/').filter(Boolean);
+    return pathParts.length > 0 && RESERVED_PAGE_PATHS.has(pathParts[0]);
+}
 window.lanlan_config = lanlan_config;
 let cubism4Model = "";
 let vrmModel = "";
@@ -68,7 +83,7 @@ async function loadPageConfig() {
         // 从路径中提取 lanlan_name (例如 /{lanlan_name})
         if (!lanlanNameFromUrl) {
             const pathParts = window.location.pathname.split('/').filter(Boolean);
-            if (pathParts.length > 0 && !['focus', 'api', 'static', 'templates', 'chat', 'toast'].includes(pathParts[0])) {
+            if (pathParts.length > 0 && !RESERVED_PAGE_PATHS.has(pathParts[0])) {
                 lanlanNameFromUrl = decodeURIComponent(pathParts[0]);
             }
         }
@@ -300,7 +315,7 @@ window.startPageConfigLoad = function startPageConfigLoad() {
                 await window.__nekoStorageLocationStartupBarrier;
             }
 
-            if (window.__NEKO_MULTI_WINDOW__ && window.location.pathname === '/chat') {
+            if (window.__NEKO_MULTI_WINDOW__ && isReservedPagePath(window.location.pathname)) {
                 return resolvePageConfig(await startMultiWindowPageConfigLoad());
             }
 

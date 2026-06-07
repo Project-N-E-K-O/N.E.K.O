@@ -445,13 +445,14 @@ export default function GameAgentMinecraftQuickstart(props: PluginSurfaceProps) 
     } catch (exc: any) {
       if (unmountedRef.current) return
       const raw = String(exc?.message || exc)
+      const code = String(exc?.code || "")
       // The plugin is manual-start (auto_start=false); until it's enabled the
       // hosted-action route rejects with PLUGIN_NOT_RUNNING. On this setup page
       // that's an expected state — keep polling so the badge keeps reflecting
       // the live enable status, but DON'T surface any alert for it (the
       // "disconnected" badge already shows it). Only real/unexpected errors
       // get an alert.
-      const notRunning = /not running|PLUGIN_NOT_RUNNING|not started/i.test(raw)
+      const notRunning = code === "PLUGIN_NOT_RUNNING" || /not running|PLUGIN_NOT_RUNNING|not started/i.test(raw)
       setState((prev) => ({
         ...prev,
         loading: false,

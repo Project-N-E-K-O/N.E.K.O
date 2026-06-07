@@ -1,4 +1,7 @@
 @import url('base.css');
+/* Frozen legacy `full` minimized breathing-light orb — isolated, gated on
+   .is-legacy-full-ball; never affects the compact yarn ball. */
+@import url('full-chat-minimize.css');
 
 :root {
     --neko-model-opacity-transition: opacity 280ms ease-in;
