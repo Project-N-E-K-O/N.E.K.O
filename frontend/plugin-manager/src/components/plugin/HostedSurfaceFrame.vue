@@ -446,6 +446,7 @@ async function handleHostedRequest(data: any) {
       const result = await callPluginHostedSurfaceAction(props.pluginId, actionId, args, {
         kind: props.surface.kind,
         id: props.surface.id,
+        locale: String(locale.value),
       })
       respond({ ok: true, result })
       return

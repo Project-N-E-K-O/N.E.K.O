@@ -201,3 +201,61 @@ def test_call_surface_action_preserves_plugin_entry_error(monkeypatch, tmp_path)
 
     assert exc_info.value.code == "PLUGIN_UI_ACTION_FAILED"
     assert exc_info.value.message == "Failed to save server config: access denied"
+
+
+def test_call_surface_action_localizes_plugin_not_running(tmp_path) -> None:
+    plugin_dir = tmp_path / "demo_plugin"
+    plugin_dir.mkdir()
+    config_path = plugin_dir / "plugin.toml"
+    config_path.write_text("[plugin]\nid='demo'\n", encoding="utf-8")
+    plugin_ui = normalize_plugin_ui_manifest(
+        {
+            "plugin": {
+                "ui": {
+                    "panel": [{
+                        "id": "main",
+                        "entry": "ui/panel.tsx",
+                        "permissions": ["action:call"],
+                    }],
+                },
+            },
+        },
+        plugin_id="demo",
+    )
+
+    plugins_backup = dict(state.plugins)
+    hosts_backup = dict(state.plugin_hosts)
+    try:
+        with state.acquire_plugins_write_lock():
+            state.plugins.clear()
+            state.plugins["demo"] = {
+                "id": "demo",
+                "config_path": str(config_path),
+                "plugin_ui": plugin_ui,
+                "entries": [{"id": "add_server", "name": "Add Server"}],
+            }
+        with state.acquire_plugin_hosts_write_lock():
+            state.plugin_hosts.clear()
+
+        with pytest.raises(ServerDomainError) as exc_info:
+            asyncio.run(
+                PluginUiQueryService().call_surface_action(
+                    "demo",
+                    action_id="add_server",
+                    args={},
+                    kind="panel",
+                    surface_id="main",
+                    locale="zh-CN",
+                )
+            )
+    finally:
+        with state.acquire_plugins_write_lock():
+            state.plugins.clear()
+            state.plugins.update(plugins_backup)
+        with state.acquire_plugin_hosts_write_lock():
+            state.plugin_hosts.clear()
+            state.plugin_hosts.update(hosts_backup)
+
+    assert exc_info.value.code == "PLUGIN_NOT_RUNNING"
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.message == "插件未运行。请先启动该插件，再执行这个操作。"
