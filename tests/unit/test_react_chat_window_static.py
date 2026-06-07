@@ -12,6 +12,7 @@ REACT_CHAT_STYLES_PATH = Path(__file__).resolve().parents[2] / "frontend" / "rea
 REACT_CHAT_APP_PATH = Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "App.tsx"
 CHAT_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "chat.html"
 SUBTITLE_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "subtitle.html"
+PAGES_ROUTER_PATH = Path(__file__).resolve().parents[2] / "main_routers" / "pages_router.py"
 COMPACT_EXPORT_HISTORY_PANEL_PATH = (
     Path(__file__).resolve().parents[2] / "frontend" / "react-neko-chat" / "src" / "CompactExportHistoryPanel.tsx"
 )
@@ -85,6 +86,39 @@ def test_chat_surface_mode_preference_is_shared_with_electron():
     # never does — it restores via lastRestorableChatSurfaceMode.
     assert "if (mode !== 'compact' && mode !== 'full') return;" in persist_block
     assert "localStorage.setItem(CHAT_SURFACE_MODE_STORAGE_KEY, mode)" in persist_block
+
+
+def test_chat_full_endpoint_uses_chat_template_with_initial_full_surface():
+    router_source = PAGES_ROUTER_PATH.read_text(encoding="utf-8")
+    template_source = CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
+
+    assert '@router.get("/chat_full", response_class=HTMLResponse)' in router_source
+    assert '"initial_chat_surface_mode": "full"' in router_source
+    assert '"initial_chat_surface_mode": "compact"' in router_source
+    assert 'data-initial-chat-surface-mode="{{ initial_chat_surface_mode|default(\'compact\', true) }}"' in template_source
+
+    chat_route_block = router_source.split('async def get_chat_page', 1)[1].split(
+        '@router.get("/chat_full"',
+        1,
+    )[0]
+    assert '"initial_chat_surface_mode": "compact"' in chat_route_block
+    assert '"initial_chat_surface_mode": "full"' not in chat_route_block
+
+
+def test_chat_host_initial_surface_mode_prefers_template_override_before_storage():
+    source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    assert "function readInitialChatSurfaceMode()" in source
+    init_block = source.split("function init()", 1)[1].split(
+        "function initAfterStorageBarrier()",
+        1,
+    )[0]
+    initial_assignment = "state.chatSurfaceMode = readInitialChatSurfaceMode();"
+    storage_read = "readChatSurfaceModePreference()"
+
+    assert initial_assignment in init_block
+    assert init_block.index(initial_assignment) < init_block.index("lastRestorableChatSurfaceMode = state.chatSurfaceMode;")
+    assert storage_read not in init_block.split(initial_assignment, 1)[0]
 
 
 def test_close_from_minimized_preserves_compact_surface_mode():

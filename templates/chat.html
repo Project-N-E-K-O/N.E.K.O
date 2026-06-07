@@ -472,7 +472,8 @@
         }
     </style>
 </head>
-<body class="electron-chat-window subtitle-web-host">
+<body class="electron-chat-window subtitle-web-host"
+      data-initial-chat-surface-mode="{{ initial_chat_surface_mode|default('compact', true) }}">
 
     <div id="status-toast"></div>
     <div id="yui-guide-chat-spotlight" hidden>
