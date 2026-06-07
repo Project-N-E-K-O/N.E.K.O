@@ -113,8 +113,13 @@ def test_chat_host_initial_surface_mode_prefers_template_override_before_storage
         "function persistChatSurfaceModePreference",
         1,
     )[0]
+    assert "var declaredModeAttr = body" in initial_reader_block
+    assert "body.getAttribute('data-initial-chat-surface-mode')" in initial_reader_block
+    assert "declaredModeAttr ? normalizeChatSurfaceMode(declaredModeAttr) : ''" in initial_reader_block
+    assert "normalizeChatSurfaceMode(body.getAttribute('data-initial-chat-surface-mode'))" not in initial_reader_block
     assert "if (declaredMode === 'compact' || declaredMode === 'full')" in initial_reader_block
     assert "return declaredMode;" in initial_reader_block
+    assert initial_reader_block.index("return declaredMode;") < initial_reader_block.index("return readChatSurfaceModePreference();")
 
     init_block = source.split("function init()", 1)[1].split(
         "function initAfterStorageBarrier()",

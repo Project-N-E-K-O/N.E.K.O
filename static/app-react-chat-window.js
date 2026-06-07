@@ -186,9 +186,10 @@
 
     function readInitialChatSurfaceMode() {
         var body = document.body;
-        var declaredMode = body
-            ? normalizeChatSurfaceMode(body.getAttribute('data-initial-chat-surface-mode'))
-            : 'compact';
+        var declaredModeAttr = body
+            ? body.getAttribute('data-initial-chat-surface-mode')
+            : '';
+        var declaredMode = declaredModeAttr ? normalizeChatSurfaceMode(declaredModeAttr) : '';
         if (declaredMode === 'compact' || declaredMode === 'full') {
             return declaredMode;
         }
