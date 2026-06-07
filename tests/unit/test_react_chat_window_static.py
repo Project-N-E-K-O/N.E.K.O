@@ -454,6 +454,11 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     app_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
 
     fan_block = css_block(styles, ".compact-input-tool-fan {", ".compact-chat-surface-shell *")
+    compact_input_block = css_block(
+        styles,
+        '.compact-chat-surface-frame[data-compact-chat-state="input"] .composer-input {',
+        '.compact-chat-surface-frame[data-compact-chat-state="input"] .composer-input::placeholder',
+    )
     wheel_block = styles.split(".compact-input-tool-fan .compact-input-tool-item {", 1)[1].split(
         ".compact-input-tool-fan .composer-tool-btn img",
         1,
@@ -513,6 +518,9 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
         '.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"] '
         '.compact-input-tool-toggle:hover'
     ) in styles
+    assert "width: auto;" in compact_input_block
+    assert "min-width: 0;" in compact_input_block
+    assert "padding: 10px 8px 10px 0;" in compact_input_block
     assert 'padding: 5px 62px 5px 2px;' in styles
     assert '.compact-chat-surface-frame[data-compact-tool-toggle-visible="true"]:not([data-compact-chat-state="input"])' in styles
     assert 'padding-right: 62px;' in styles
