@@ -290,9 +290,9 @@ async def get_chat_page(request: Request):
 
 @router.get("/chat_full", response_class=HTMLResponse)
 async def get_chat_full_page(request: Request):
-    """Web 专用完整聊天窗口页面"""
+    """Web 首页入口：打开主页并让 React Chat 以 full 模式启动。"""
     templates = get_templates()
-    return templates.TemplateResponse("templates/chat.html", {
+    return templates.TemplateResponse("templates/index.html", {
         "request": request,
         "initial_chat_surface_mode": "full",
         **_vrm_defaults_ctx(),
