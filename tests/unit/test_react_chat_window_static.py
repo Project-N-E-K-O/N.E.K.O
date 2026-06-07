@@ -106,6 +106,29 @@ def test_chat_full_endpoint_uses_chat_template_with_initial_full_surface():
     assert '"initial_chat_surface_mode": "full"' not in chat_route_block
 
 
+def test_full_inset_layout_gated_by_electron_runtime_marker():
+    """full 30px inset 布局是「仅 Electron 独立窗口」样式。chat.html 同时服务 Electron 独立窗口
+    和 web /chat_full（两者共用本模板，body.electron-chat-window 是静态写入，浏览器访问 web
+    /chat_full 时也会带它），故 inset 门禁必须用 preload 注入的运行时标记 neko-electron-runtime，
+    否则 web /chat_full 会被误改成 30px inset。"""
+    source = CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
+
+    # inset 规则用运行时标记门禁，不再用静态 electron-chat-window（web /chat_full 也会命中它）。
+    assert (
+        'body.neko-electron-runtime #react-chat-window-shell[data-chat-surface-mode="full"]'
+        in source
+    )
+    assert (
+        'body.electron-chat-window #react-chat-window-shell[data-chat-surface-mode="full"]'
+        not in source
+    )
+
+    # 运行时标记由 body 内联脚本基于 preload 信号（window.nekoChatWindow）/ Electron UA 注入；
+    # web 浏览器无这些信号 → 不打标记 → full 退回 base 居中。
+    assert "document.body.classList.add('neko-electron-runtime')" in source
+    assert "w.nekoChatWindow" in source
+
+
 def test_chat_templates_version_react_chat_bundle_from_react_assets():
     chat_template = CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
 

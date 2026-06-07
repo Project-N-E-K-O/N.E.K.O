@@ -54,7 +54,7 @@
                被截断。改用 inset 定位（不依赖 transform），展开全程及结束都正确贴窗、阴影留白稳定。
            作用域：仅 Electron full 独立窗口、且非折叠球态（neko-e-collapsed）/非最小化（is-minimized）
            —— 那两态有自己的定位/呼吸灯阴影；compact 窗口（attr=compact）走胶囊规则，均不受影响。 */
-        body.electron-chat-window #react-chat-window-shell[data-chat-surface-mode="full"]:not(.is-minimized):not(.neko-e-collapsed) {
+        body.neko-electron-runtime #react-chat-window-shell[data-chat-surface-mode="full"]:not(.is-minimized):not(.neko-e-collapsed) {
             top: 30px;
             left: 30px;
             right: 30px;
@@ -497,6 +497,24 @@
 </head>
 <body class="electron-chat-window subtitle-web-host"
       data-initial-chat-surface-mode="{{ initial_chat_surface_mode|default('compact', true) }}">
+
+    <!-- Electron 运行时标记：/chat_full 与 /chat 共用本模板，body.electron-chat-window 是静态写入，
+         浏览器访问 web /chat_full 时也会带它 —— 故「仅 Electron 独立窗口」的样式（如 full 30px inset
+         布局）不能用它做门禁，必须用运行时信号：preload 注入的 window.nekoChatWindow（compact/full
+         两个 chat preload 都暴露）/ Electron UA / process.versions.electron。preload 在页面脚本之前
+         注入，这里同步可读；内容 overlay 默认 hidden 到 React 挂载，class 早已就位，无闪。dev 浏览器
+         无这些信号 → 不打标记，full 退回 base 居中。对偶 index.html 头部的 __LANLAN_IS_ELECTRON_PET__。 -->
+    <script>(function () {
+        try {
+            var w = window;
+            var isElectronRuntime = !!w.nekoChatWindow
+                || /Electron/i.test(navigator.userAgent || '')
+                || !!(w.process && w.process.versions && w.process.versions.electron);
+            if (isElectronRuntime) {
+                document.body.classList.add('neko-electron-runtime');
+            }
+        } catch (e) { /* 检测失败按非 Electron 处理，full 退回浏览器 base 居中 */ }
+    })();</script>
 
     <div id="status-toast"></div>
     <div id="yui-guide-chat-spotlight" hidden>
