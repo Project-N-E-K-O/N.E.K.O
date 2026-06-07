@@ -189,8 +189,8 @@
         var declaredMode = body
             ? normalizeChatSurfaceMode(body.getAttribute('data-initial-chat-surface-mode'))
             : 'compact';
-        if (declaredMode === 'full') {
-            return 'full';
+        if (declaredMode === 'compact' || declaredMode === 'full') {
+            return declaredMode;
         }
         return readChatSurfaceModePreference();
     }

@@ -109,6 +109,13 @@ def test_chat_host_initial_surface_mode_prefers_template_override_before_storage
     source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
     assert "function readInitialChatSurfaceMode()" in source
+    initial_reader_block = source.split("function readInitialChatSurfaceMode()", 1)[1].split(
+        "function persistChatSurfaceModePreference",
+        1,
+    )[0]
+    assert "if (declaredMode === 'compact' || declaredMode === 'full')" in initial_reader_block
+    assert "return declaredMode;" in initial_reader_block
+
     init_block = source.split("function init()", 1)[1].split(
         "function initAfterStorageBarrier()",
         1,
