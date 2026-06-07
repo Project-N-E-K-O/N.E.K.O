@@ -216,6 +216,24 @@
         } catch (_) {}
     }
 
+    // 刷新 / 重启 renderer 后，前端 goodbye 视觉态（_goodbyeClicked）随页面重置为「她已回来」，
+    // 但后端 LLMSessionManager.goodbye_silent 跨 WS 重连存活，可能仍残留上一会话「请她离开」的
+    // 静默——使 greeting / proactive 被压住，角色看着在场却不主动搭话，直到用户显式开会话才解除。
+    // 本控制器只在 pet / 具名角色页（isEligiblePage）启动，是唯一对 goodbye 状态有权威判断的窗口；
+    // chat 等不挂 model manager 的窗口不跑本控制器，天然不会误清别的窗口里真实的 goodbye。
+    // 仅在「全新页面（无 __nekoGoodbyeSilentState 记忆）且当前不在 goodbye」时对账一次，发
+    // goodbye_state:false 清掉后端陈旧静默。同会话内的 WS 重连已有记忆 → 跳过不重复发；真处于
+    // goodbye → isGoodbyeActive 拦住，仍由现有 onopen / goodbye-click 链路重新断言 active=true。
+    function reconcileStaleGoodbyeSilentOnPrime() {
+        if (isGoodbyeActive()) {
+            return;
+        }
+        if (window.__nekoGoodbyeSilentState) {
+            return;
+        }
+        syncGoodbyeSilentState(false, 'fresh-connect-reconcile');
+    }
+
     function markIdleBaseline(source) {
         state.lastInteractionAt = nowMs();
         state.lastInteractionSource = typeof source === 'string' ? source : 'baseline-reset';
@@ -486,6 +504,7 @@
         emitStateChange('infrastructure-primed', {
             reason: 'websocket-open',
         });
+        reconcileStaleGoodbyeSilentOnPrime();
         return true;
     }
 
