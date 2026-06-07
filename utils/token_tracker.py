@@ -462,8 +462,9 @@ def _rollback_retired_proactive_interval(branch_path: Path) -> None:
         )
 
         settings = load_global_conversation_settings()
+        interval = settings.get("proactiveChatInterval")
         # 只回滚仍停在实验覆写值（20s）的；用户首启后又手动改过（!=20）的保留其选择。
-        if settings.get("proactiveChatInterval") == _RETIRED_INTERVAL_EXPERIMENT_VALUE:
+        if interval == _RETIRED_INTERVAL_EXPERIMENT_VALUE:
             save_global_conversation_settings(
                 {"proactiveChatInterval": _CONTROL_PROACTIVE_INTERVAL}
             )
@@ -472,8 +473,17 @@ def _rollback_retired_proactive_interval(branch_path: Path) -> None:
                 "(proactiveChatInterval 20s -> %ss)",
                 _CONTROL_PROACTIVE_INTERVAL,
             )
+        else:
+            # 实验组 install 但偏好已不是 20s：用户改过值 / 国内本就没被覆写（停在 15s）/
+            # 偏好读取失败返回 {} → None。打出实际值方便排查「这台为何没回滚」（None 多半
+            # 是缺 key 或读取失败，具体数值是用户手选）。
+            logger.debug(
+                "Telemetry: retired proactive_interval_20s install skipped rollback "
+                "(proactiveChatInterval=%r)",
+                interval,
+            )
     except Exception as e:
-        logger.debug(f"Token tracker: proactive_interval rollback skipped: {e}")
+        logger.debug(f"Token tracker: proactive_interval rollback skipped (error): {e}")
 
 
 def _get_telemetry_branch(config_dir: Path) -> str:
