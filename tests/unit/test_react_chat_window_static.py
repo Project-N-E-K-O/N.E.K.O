@@ -807,9 +807,12 @@ def test_electron_compact_chat_retires_full_surface_chrome():
     # frame before React mounted and collapsed it to compact ("先 full 再
     # compact" 的那一帧). chat.html must NOT re-introduce that full surface.
     #
-    # Retired full-surface artifacts that must stay gone:
-    assert "@keyframes liquidFlow" not in template            # 玻璃流光关键帧
-    assert "@keyframes lightSweep" not in template
+    # Retired *un-gated* full-surface artifacts that must stay gone — these are the
+    # ones that painted before React mounted on the SHARED /chat route ("先 full 再
+    # compact" 闪帧). 玻璃流光特效后来在独立 Electron full 窗口上带门槛复活（见
+    # test_full_chat_glass_flow_revived_and_gated），但**无门槛**的旧形态必须保持移除，
+    # 共享 /chat 这条路径才永远不会画出它。
+    assert "@keyframes lightSweep" not in template            # 死代码关键帧，未恢复
     assert "-webkit-mask-image" not in template               # 全窗口 root 四边渐隐 mask
     assert "#react-chat-window-shell:not(.is-minimized)::before" not in template
     assert "#react-chat-window-shell:not(.is-minimized)::after" not in template
@@ -821,6 +824,50 @@ def test_electron_compact_chat_retires_full_surface_chrome():
     # compact surface — parity with templates/index.html, which is what kills the
     # pre-mount full-form flash.
     assert 'id="react-chat-window-overlay" hidden' in template
+
+
+def test_full_chat_glass_flow_revived_and_gated():
+    """独立 Electron full 窗口（part B）的玻璃流光特效复活，且严格带门槛。
+
+    原 full 玻璃面板在 #1594 退「共享 /chat 的 full 玻璃壳」时随整套 full 形态删除，
+    根因是规则不带门槛、在共享 /chat 上先画空玻璃再塌成 compact（闪帧）。现在 full 是
+    独立窗口（/chat_full + data-chat-surface-mode="full" + 运行时标记 neko-electron-
+    runtime），用与 inset 几何**完全相同的门槛**把玻璃视觉挂回——只命中 Electron full
+    shell，compact 与 web /chat_full 都不命中，故不再有闪帧。
+    """
+    template = CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
+
+    # 三色流光关键帧已复活（被下方 ::after 引用）。
+    assert "@keyframes liquidFlow" in template
+    # liquidFlow 只被那一个带门槛的 ::after 消费，别处不得再引用。
+    assert template.count("animation: liquidFlow") == 1
+
+    # ::before 静态高光 + ::after 三色流光都只挂在 Electron full shell 门槛上。
+    glass_gate = (
+        'body.neko-electron-runtime '
+        '#react-chat-window-shell[data-chat-surface-mode="full"]'
+        ':not(.is-minimized):not(.neko-e-collapsed)'
+    )
+    assert glass_gate + "::before" in template      # 静态边缘/顶部高光
+    assert glass_gate + "::after" in template        # 三色流光层
+
+    # 尊重系统「减少动态」：流光在 prefers-reduced-motion 下停掉。按花括号配平取整段 media
+    # 块（而非定长切片），块体增长也不会让断言失真。
+    reduced_idx = template.find("@media (prefers-reduced-motion: reduce)")
+    assert reduced_idx != -1
+    brace_start = template.index("{", reduced_idx)
+    depth = 0
+    block_end = brace_start
+    for i in range(brace_start, len(template)):
+        if template[i] == "{":
+            depth += 1
+        elif template[i] == "}":
+            depth -= 1
+            if depth == 0:
+                block_end = i
+                break
+    media_block = template[reduced_idx:block_end + 1]
+    assert "animation: none;" in media_block
 
 
 def test_compact_history_resize_bar_is_draggable_and_persisted():

@@ -54,7 +54,17 @@
                被截断。改用 inset 定位（不依赖 transform），展开全程及结束都正确贴窗、阴影留白稳定。
            作用域：仅 Electron full 独立窗口、且非折叠球态（neko-e-collapsed）/非最小化（is-minimized）
            —— 那两态有自己的定位/呼吸灯阴影；compact 窗口（attr=compact）走胶囊规则，均不受影响。 */
+        /* 玻璃流光特效复活（与上面同一门槛/选择器，合并为单块，避免重复声明）：
+           原 full 玻璃面板（液态边缘反光 + ::before 静态高光 + ::after 三色流光 liquidFlow）
+           在 #1594 退「共享 /chat 的 full 玻璃壳」时随整套 full 形态删除——根因是旧规则不带
+           data-chat-surface-mode 门槛，在共享 /chat 上先画空玻璃再塌成 compact（"先 full 再
+           compact" 闪帧）。现在 full 是独立窗口、带上面那组门槛（neko-electron-runtime +
+           attr=full + 非折叠/最小化），compact 与 web /chat_full（无运行时标记）都不命中，故可
+           安全复活。仅还原玻璃视觉，不复活旧版顶栏 chrome 与 #react-chat-window-root 渐隐 mask
+           （mask 会裁内容）；::before/::after 自带 22px 圆角裁住光斑，不动 shell overflow，避免
+           裁掉下拉/resize 把手。 */
         body.neko-electron-runtime #react-chat-window-shell[data-chat-surface-mode="full"]:not(.is-minimized):not(.neko-e-collapsed) {
+            /* inset 充满窗口几何 */
             top: 30px;
             left: 30px;
             right: 30px;
@@ -64,18 +74,91 @@
             max-width: none;
             max-height: none;
             transform: none;
-            box-shadow: 0 8px 20px rgba(12, 20, 34, 0.28);
+            border-radius: 22px;
+            /* 液态边缘反光 — 顶部最亮、左次之，模拟顶光 */
+            border-top: 2px solid rgba(255, 255, 255, 0.7);
+            border-left: 1px solid rgba(255, 255, 255, 0.35);
+            border-right: 1px solid rgba(255, 255, 255, 0.15);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+            /* 收敛外阴影（落在 30px inset 留白内，不被窗口边缘裁掉）+ 玻璃内高光带 */
+            box-shadow:
+                0 8px 20px rgba(12, 20, 34, 0.28),
+                inset 0 2px 4px rgba(255, 255, 255, 0.5),
+                inset 0 -1px 2px rgba(255, 255, 255, 0.08);
+        }
+        /* 三色流光关键帧：7 个径向光斑各自缓慢漂移，模拟玻璃折射 */
+        @keyframes liquidFlow {
+            0%    { background-position:   0%   0%,  80%  10%,  40%  30%,  90%  50%,  20%  70%,  60%  85%,  95%  90%; }
+            12%   { background-position:  50%  15%,  20%  60%,  80%  10%,  40%  80%,  70%   5%,  10%  50%,  55%  35%; }
+            25%   { background-position:  90%  55%,  50%  90%,  15%  65%,  75%  20%,  45%  85%,  85%  15%,  20%  70%; }
+            38%   { background-position:  30%  85%,  85%  30%,  60%  95%,  10%  45%,  90%  40%,  40%  70%,  70%  10%; }
+            50%   { background-position:  70%  40%,  10%  75%,  95%  20%,  55%  90%,  15%  30%,  75%  55%,  35%  80%; }
+            63%   { background-position:  15%  70%,  65%  15%,  30%  50%,  85%  65%,  55%  95%,  25%  25%,  80%  50%; }
+            75%   { background-position:  80%  25%,  35%  85%,  70%  40%,  20%  10%,  85%  60%,  50%  90%,  10%  30%; }
+            88%   { background-position:  45%  90%,  90%  45%,  10%  75%,  60%  35%,  30%  50%,  80%  10%,  50%  65%; }
+            100%  { background-position:   0%   0%,  80%  10%,  40%  30%,  90%  50%,  20%  70%,  60%  85%,  95%  90%; }
+        }
+        /* 静态边缘高光层 — 在内容之下（z-index:0），顶部弧形高光 + 四边内高光 */
+        body.neko-electron-runtime #react-chat-window-shell[data-chat-surface-mode="full"]:not(.is-minimized):not(.neko-e-collapsed)::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            border-radius: 22px;
+            pointer-events: none;
+            z-index: 0;
+            box-shadow:
+                inset 0 2px 6px rgba(255, 255, 255, 0.5),
+                inset 0 -1px 3px rgba(255, 255, 255, 0.1),
+                inset 2px 0 4px rgba(255, 255, 255, 0.15),
+                inset -2px 0 4px rgba(255, 255, 255, 0.08);
+            background: linear-gradient(
+                180deg,
+                rgba(255, 255, 255, 0.25) 0%,
+                rgba(255, 255, 255, 0.08) 8%,
+                transparent 20%,
+                transparent 85%,
+                rgba(255, 255, 255, 0.04) 100%
+            );
+        }
+        /* 三色流光层 — 三色径向渐变缓慢漂移，模拟玻璃折射（z-index:10，输入区 z-index:15
+           盖在其上，pointer-events:none 不挡交互）。用 background-image 而非简写，避免锁死
+           background-position 让 liquidFlow 动不起来。 */
+        body.neko-electron-runtime #react-chat-window-shell[data-chat-surface-mode="full"]:not(.is-minimized):not(.neko-e-collapsed)::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            border-radius: 22px;
+            pointer-events: none;
+            z-index: 10;
+            background-image:
+                radial-gradient(circle at 15% 10%, rgba(100,180,255,0.14) 0%, transparent 22%),
+                radial-gradient(circle at 75% 15%, rgba(180,140,255,0.11) 0%, transparent 20%),
+                radial-gradient(circle at 40% 35%, rgba(220,140,240,0.12) 0%, transparent 18%),
+                radial-gradient(circle at 85% 50%, rgba(120,200,255,0.13) 0%, transparent 20%),
+                radial-gradient(circle at 25% 65%, rgba(200,160,255,0.10) 0%, transparent 19%),
+                radial-gradient(circle at 60% 80%, rgba(100,190,255,0.12) 0%, transparent 21%),
+                radial-gradient(circle at 90% 85%, rgba(240,150,200,0.10) 0%, transparent 17%);
+            background-size: 200% 200%, 200% 200%, 200% 200%, 200% 200%, 200% 200%, 200% 200%, 200% 200%;
+            background-repeat: no-repeat;
+            animation: liquidFlow 20s ease-in-out infinite;
+        }
+        /* 尊重系统「减少动态」：停掉流光漂移，仅保留静态玻璃层（::before + 边框高光）。 */
+        @media (prefers-reduced-motion: reduce) {
+            body.neko-electron-runtime #react-chat-window-shell[data-chat-surface-mode="full"]:not(.is-minimized):not(.neko-e-collapsed)::after {
+                animation: none;
+            }
         }
         /* ──────────────────────────────────────────────────────────────────────
-           full 形态（覆盖全窗口的玻璃面板）已退环境，仅在此留档：
+           full 形态在**共享 /chat（compact）**上不注入，仅在此留档：
            旧版在这里把 #react-chat-window-shell 钉成 inset:40px 的全窗口玻璃面板
            （磨砂背景 / 四边反光边框 / 外阴影 + ::before 静态高光 + ::after 流光动画
            + 顶栏 chrome + #react-chat-window-root 四边渐隐 mask）。因为这些规则不带
            data-chat-surface-mode 门槛、且 overlay 又不是 hidden，页面一加载、React 还
            没挂载时就会先画出这块空的全窗口玻璃面板，挂载后才塌成 compact —— 就是
-           "先 full 再 compact" 的那一帧。现在 shell 直接复用 index.css 的 compact 胶囊
-           规则（透明壳 + 隐藏顶栏按钮 + 去掉 ::before/::after 玻璃层），不再注入任何
-           full 形态样式/动画/mask 资源。
+           "先 full 再 compact" 的那一帧。现在 compact 直接复用 index.css 的胶囊规则
+           （透明壳 + 隐藏顶栏按钮 + 无 ::before/::after 玻璃层）——共享 /chat 这条路径
+           仍不注入任何 full 形态样式/动画/mask。玻璃流光只在上方带门槛的 Electron full
+           独立窗口（neko-electron-runtime + attr=full）复活，两者互不影响。
            ────────────────────────────────────────────────────────────────────── */
         body.yui-guide-chat-buttons-disabled #react-chat-window-shell button,
         body.yui-guide-chat-buttons-disabled #toggle-chat-btn {
@@ -278,11 +361,11 @@
                          'Hiragino Sans', 'Malgun Gothic', sans-serif !important;
             font-weight: 400 !important;
         }
-        /* full 形态的暗色顶栏底、#react-chat-window-root 四边渐隐 mask、liquidFlow /
-           lightSweep 玻璃流光关键帧、以及 shell 的 ::before/::after 玻璃层、
-           is-collapsing/is-expanding/is-minimized 全窗口几何复位，均随 full 形态一并
-           退环境。compact 态的最小化/折叠/展开几何由 index.css 的 subtitle-web-host
-           规则统一负责，这里不再注入 full 形态资源。 */
+        /* full 形态的暗色顶栏底、#react-chat-window-root 四边渐隐 mask、is-collapsing/
+           is-expanding/is-minimized 全窗口几何复位仍随旧 full 形态退环境（compact 态的
+           最小化/折叠/展开几何由 index.css 的 subtitle-web-host 规则统一负责）。注：
+           liquidFlow 玻璃流光关键帧与 shell 的 ::before/::after 玻璃层已在上方带门槛复活
+           （仅 Electron full 独立窗口），lightSweep 因从未被 animation 引用未恢复。 */
         /* 输入区提到光晕层之上，保持原始不透明度 */
         .composer-panel {
             position: relative !important;
