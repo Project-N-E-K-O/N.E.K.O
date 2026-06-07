@@ -258,6 +258,8 @@ def test_desktop_compact_history_uses_workarea_not_browserwindow_viewport():
     assert "normalizeCompactDesktopWorkArea" in script
     assert "--compact-desktop-workarea-width" in script
     assert "--compact-desktop-workarea-height" in script
+    assert "--compact-desktop-workarea-page-left" in script
+    assert "layoutOverride.workArea.left - layoutOverride.windowBounds.left" in script
 
     desktop_history_block = styles.split(
         "body.electron-chat-window.subtitle-web-host .compact-export-history-anchor",
@@ -266,6 +268,7 @@ def test_desktop_compact_history_uses_workarea_not_browserwindow_viewport():
 
     assert "--compact-desktop-workarea-width" in desktop_history_block
     assert "--compact-desktop-workarea-height" in desktop_history_block
+    assert "--compact-desktop-workarea-page-left" in desktop_history_block
     assert "vh" not in desktop_history_block
     assert "vw" not in desktop_history_block
 
@@ -303,10 +306,15 @@ def test_compact_history_size_tokens_are_ratio_based_for_ui_optimization():
     assert "--compact-export-surface-width: var(--compact-surface-resize-width, var(--desktop-compact-surface-width, var(--compact-surface-width, 430px)));" in anchor_block
     assert "--compact-export-history-inline-size: min(" in anchor_block
     assert "calc(var(--compact-export-surface-width) * var(--compact-export-history-width-ratio))" in anchor_block
+    assert "--compact-export-history-preferred-center:" in anchor_block
+    assert "--compact-export-history-safe-center-min:" in anchor_block
+    assert "--compact-export-history-safe-center-max:" in anchor_block
+    assert "left: clamp(" in anchor_block
     assert "width: var(--compact-export-history-inline-size);" in anchor_block
     assert "--compact-export-history-max-inline-size: calc(100vw - var(--compact-export-history-viewport-gutter));" in anchor_block
     assert "--compact-export-history-max-inline-size: calc(" in desktop_history_block
     assert "var(--compact-desktop-workarea-width, 1440px) - var(--compact-export-history-viewport-gutter)" in desktop_history_block
+    assert "var(--compact-desktop-workarea-page-left, 0px) +" in desktop_history_block
     assert "max-width: var(--compact-history-bubble-max-ratio, var(--compact-export-history-bubble-max-ratio));" in bubble_block
     assert "max-width: var(--compact-history-bubble-max-ratio, var(--compact-export-history-system-bubble-max-ratio));" in system_bubble_block
     assert "max-width: var(--compact-export-preview-bubble-max-ratio);" in preview_bubble_block
@@ -882,8 +890,14 @@ def test_compact_history_controls_collapse_gives_height_back_to_history_scroll()
     assert ".compact-export-history-controls-toggle" not in styles
     assert "position: fixed;" in history_handle_block
     assert "--compact-history-handle-line-width: clamp(38px, calc(var(--compact-history-handle-surface-width) * 0.102), 50px);" in history_handle_block
+    assert "--compact-history-handle-width: clamp(96px, calc(var(--compact-history-handle-surface-width) * 0.24), 132px);" in history_handle_block
+    assert "width: var(--compact-history-handle-width);" in history_handle_block
+    assert "left: clamp(" in history_handle_block
     assert ".compact-history-visibility-handle.is-open {" in history_handle_block
     assert "--compact-history-handle-line-width: 100%;" in history_handle_block
+    assert "--compact-history-handle-width: clamp(124px, calc(var(--compact-history-handle-surface-width) * 0.30), 168px);" in history_handle_block
+    assert "body.electron-chat-window.subtitle-web-host .compact-history-visibility-handle {" in history_handle_block
+    assert "var(--compact-desktop-workarea-page-left, 0px) +" in history_handle_block
     assert "top: calc(var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) + 8px);" in history_handle_block
     assert "bottom: auto;" in history_handle_block
     assert "bottom: calc(100vh - var(--desktop-compact-surface-top" not in history_handle_block

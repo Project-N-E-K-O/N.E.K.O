@@ -2308,7 +2308,6 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
 .compact-export-history-anchor {
   position: fixed;
   --compact-export-surface-width: var(--compact-surface-resize-width, var(--desktop-compact-surface-width, var(--compact-surface-width, 430px)));
-  left: calc(var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw)) + (var(--compact-export-surface-width) / 2));
   bottom: calc(100vh - var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) + 2px);
   /* Geometry-critical: derive collapse compensation from control metrics; do not animate layout properties here. */
   --compact-export-controls-padding-y: clamp(4px, calc(var(--compact-export-surface-width) * 0.0116), 6px);
@@ -2335,10 +2334,26 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
     calc(var(--compact-export-surface-width) * var(--compact-export-history-width-ratio)),
     var(--compact-export-history-max-inline-size)
   );
+  --compact-export-history-preferred-center: calc(
+    var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw)) + (var(--compact-export-surface-width) / 2)
+  );
+  --compact-export-history-safe-gutter: calc(var(--compact-export-history-viewport-gutter) / 2);
+  --compact-export-history-half-inline-size: calc(var(--compact-export-history-inline-size) / 2);
+  --compact-export-history-safe-center-min: calc(
+    var(--compact-export-history-half-inline-size) + var(--compact-export-history-safe-gutter)
+  );
+  --compact-export-history-safe-center-max: calc(
+    100vw - var(--compact-export-history-half-inline-size) - var(--compact-export-history-safe-gutter)
+  );
   --compact-export-history-bubble-max-ratio: 86%;
   --compact-export-history-system-bubble-max-ratio: 94%;
   --compact-export-preview-bubble-max-ratio: 90%;
   --compact-export-preview-system-bubble-max-ratio: 95%;
+  left: clamp(
+    var(--compact-export-history-safe-center-min),
+    var(--compact-export-history-preferred-center),
+    var(--compact-export-history-safe-center-max)
+  );
   width: var(--compact-export-history-inline-size);
   /* 与 JS getCompactHistorySlotMaxHeight 对齐：高度上限只受屏幕(78vh)约束、不再挂对话条宽度，
      否则窄宽+高屏时 JS 允许的 slot 高 > CSS anchor 高，hit region 会被裁出死区(Codex P2)。 */
@@ -2361,6 +2376,17 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   );
   --compact-export-history-max-inline-size: calc(
     var(--compact-desktop-workarea-width, 1440px) - var(--compact-export-history-viewport-gutter)
+  );
+  --compact-export-history-safe-center-min: calc(
+    var(--compact-desktop-workarea-page-left, 0px) +
+      var(--compact-export-history-half-inline-size) +
+      var(--compact-export-history-safe-gutter)
+  );
+  --compact-export-history-safe-center-max: calc(
+    var(--compact-desktop-workarea-page-left, 0px) +
+      var(--compact-desktop-workarea-width, 1440px) -
+      var(--compact-export-history-half-inline-size) -
+      var(--compact-export-history-safe-gutter)
   );
   max-height: min(calc(var(--compact-export-surface-width) * 1.46), calc(var(--compact-desktop-workarea-height, 900px) * 0.78));
 }
@@ -3008,7 +3034,19 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
   flex: 0 0 auto;
   --compact-history-handle-surface-width: var(--compact-surface-resize-width, var(--desktop-compact-surface-width, var(--compact-surface-width, 430px)));
   --compact-history-handle-line-width: clamp(38px, calc(var(--compact-history-handle-surface-width) * 0.102), 50px);
-  width: clamp(96px, calc(var(--compact-history-handle-surface-width) * 0.24), 132px);
+  --compact-history-handle-width: clamp(96px, calc(var(--compact-history-handle-surface-width) * 0.24), 132px);
+  --compact-history-handle-preferred-center: calc(
+    var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw)) + (var(--compact-history-handle-surface-width) / 2)
+  );
+  --compact-history-handle-safe-gutter: 12px;
+  --compact-history-handle-half-width: calc(var(--compact-history-handle-width) / 2);
+  --compact-history-handle-safe-center-min: calc(
+    var(--compact-history-handle-half-width) + var(--compact-history-handle-safe-gutter)
+  );
+  --compact-history-handle-safe-center-max: calc(
+    100vw - var(--compact-history-handle-half-width) - var(--compact-history-handle-safe-gutter)
+  );
+  width: var(--compact-history-handle-width);
   height: clamp(22px, calc(var(--compact-history-handle-surface-width) * 0.052), 28px);
   padding: 0;
   border: 0;
@@ -3021,7 +3059,11 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 .compact-history-visibility-handle {
   position: fixed;
-  left: calc(var(--desktop-compact-surface-left, var(--compact-surface-left, 50vw)) + (var(--compact-history-handle-surface-width) / 2));
+  left: clamp(
+    var(--compact-history-handle-safe-center-min),
+    var(--compact-history-handle-preferred-center),
+    var(--compact-history-handle-safe-center-max)
+  );
   top: calc(var(--desktop-compact-surface-top, var(--compact-surface-top, 68vh)) + 8px);
   bottom: auto;
   transform: translate(-50%, -50%);
@@ -3032,7 +3074,21 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 .compact-history-visibility-handle.is-open {
   --compact-history-handle-line-width: 100%;
-  width: clamp(124px, calc(var(--compact-history-handle-surface-width) * 0.30), 168px);
+  --compact-history-handle-width: clamp(124px, calc(var(--compact-history-handle-surface-width) * 0.30), 168px);
+}
+
+body.electron-chat-window.subtitle-web-host .compact-history-visibility-handle {
+  --compact-history-handle-safe-center-min: calc(
+    var(--compact-desktop-workarea-page-left, 0px) +
+      var(--compact-history-handle-half-width) +
+      var(--compact-history-handle-safe-gutter)
+  );
+  --compact-history-handle-safe-center-max: calc(
+    var(--compact-desktop-workarea-page-left, 0px) +
+      var(--compact-desktop-workarea-width, 1440px) -
+      var(--compact-history-handle-half-width) -
+      var(--compact-history-handle-safe-gutter)
+  );
 }
 
 .compact-history-visibility-handle::before,

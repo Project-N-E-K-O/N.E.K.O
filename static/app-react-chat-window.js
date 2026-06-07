@@ -1651,6 +1651,7 @@
         document.documentElement.style.removeProperty('--desktop-compact-surface-height');
         document.documentElement.style.removeProperty('--compact-desktop-workarea-width');
         document.documentElement.style.removeProperty('--compact-desktop-workarea-height');
+        document.documentElement.style.removeProperty('--compact-desktop-workarea-page-left');
         compactSurfaceAnchorSnapshot = '';
         compactSurfaceAnchorLocked = false;
         dispatchCompactSurfaceLayoutChange(null);
@@ -1713,9 +1714,14 @@
         if (layoutOverride && layoutOverride.workArea) {
             document.documentElement.style.setProperty('--compact-desktop-workarea-width', Math.round(layoutOverride.workArea.width) + 'px');
             document.documentElement.style.setProperty('--compact-desktop-workarea-height', Math.round(layoutOverride.workArea.height) + 'px');
+            var workAreaPageLeft = layoutOverride.windowBounds
+                ? layoutOverride.workArea.left - layoutOverride.windowBounds.left
+                : 0;
+            document.documentElement.style.setProperty('--compact-desktop-workarea-page-left', Math.round(workAreaPageLeft) + 'px');
         } else {
             document.documentElement.style.removeProperty('--compact-desktop-workarea-width');
             document.documentElement.style.removeProperty('--compact-desktop-workarea-height');
+            document.documentElement.style.removeProperty('--compact-desktop-workarea-page-left');
         }
         dispatchCompactSurfaceLayoutChange({
             left: Math.round(target.left),
