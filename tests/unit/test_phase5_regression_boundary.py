@@ -6,7 +6,6 @@ Phase 5 — 回归与边界验证：静态契约测试
 """
 
 from pathlib import Path
-import subprocess
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -25,15 +24,15 @@ def _read(path: Path) -> str:
 # ── 5.1 手动 goodbye 链路未被改写 ──────────────────────────
 
 
-def test_app_buttons_not_modified_by_feature():
-    """app-buttons.js 不在本功能的改动范围内。"""
-    result = subprocess.run(
-        ["git", "diff", "HEAD", "--", "static/app-buttons.js"],
-        capture_output=True, text=True, cwd=str(PROJECT_ROOT),
-    )
-    assert result.stdout.strip() == "", (
-        "app-buttons.js has unexpected changes"
-    )
+def test_app_buttons_preserve_goodbye_backend_silence_contract():
+    """请她离开链路必须把猫态静默同步给后端。"""
+    source = _read(APP_BUTTONS_PATH)
+
+    assert "window.isNekoGoodbyeModeActive()" in source
+    assert "action: 'end_session'" in source
+    assert "goodbye_active: !!isGoodbyeMode" in source
+    assert "action: 'goodbye_state'" in source
+    assert "reason: 'return-session'" in source
 
 
 def test_app_ui_changes_are_limited_to_return_ball_desktop_bridge_contract():
@@ -50,13 +49,14 @@ def test_app_ui_changes_are_limited_to_return_ball_desktop_bridge_contract():
     assert "start_session" not in source
 
 
-# ── 5.2 auto-goodbye 只派发 live2d-goodbye-click ──────────
+# ── 5.2 auto-goodbye 不直接执行离开副作用 ──────────
 
 
-def test_auto_goodbye_does_not_call_any_goodbye_side_effects_directly():
+def test_auto_goodbye_only_syncs_silence_without_running_goodbye_side_effects():
     source = _read(APP_AUTO_GOODBYE_PATH)
 
     assert "window.dispatchEvent(new CustomEvent('live2d-goodbye-click'" in source
+    assert "action: 'goodbye_state'" in source
     assert "end_session" not in source
     assert "stopProactiveChatSchedule" not in source
     assert "syncVoiceChatComposerHidden" not in source

@@ -1363,10 +1363,34 @@
             sendHomeTutorialState('ws-open');
 
             // ── 首次连接 / 切换角色：标记 greeting 意图，若模型已就绪则立即发送 ──
+            var goodbyeActiveOnOpen = false;
+            try {
+                goodbyeActiveOnOpen = (typeof window.isNekoGoodbyeModeActive === 'function')
+                    ? window.isNekoGoodbyeModeActive()
+                    : !!((window.live2dManager && window.live2dManager._goodbyeClicked)
+                        || (window.vrmManager && window.vrmManager._goodbyeClicked)
+                        || (window.mmdManager && window.mmdManager._goodbyeClicked));
+                if (goodbyeActiveOnOpen && _thisSocket && _thisSocket.readyState === WebSocket.OPEN) {
+                    _thisSocket.send(JSON.stringify({
+                        action: 'goodbye_state',
+                        active: true,
+                        reason: 'ws-open-goodbye'
+                    }));
+                }
+            } catch (_) {
+                goodbyeActiveOnOpen = false;
+            }
             _resetGreetingCheckRetry(true);
-            _markGreetingCheckPending(!!S._pendingGreetingSwitch, S._greetingCheckReason || 'ws-open');
-            S._pendingGreetingSwitch = false;
-            _sendGreetingCheckIfReady();
+            if (goodbyeActiveOnOpen) {
+                S._greetingCheckPending = false;
+                S._greetingCheckIsSwitch = false;
+                S._greetingCheckReason = '';
+                S._pendingGreetingSwitch = false;
+            } else {
+                _markGreetingCheckPending(!!S._pendingGreetingSwitch, S._greetingCheckReason || 'ws-open');
+                S._pendingGreetingSwitch = false;
+                _sendGreetingCheckIfReady();
+            }
 
             // ── game-window-state 重连兜底（codex P2）──
             // game_window_state_change 是 edge-triggered WS 事件——只在 activate

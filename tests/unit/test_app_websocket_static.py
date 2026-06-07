@@ -42,3 +42,19 @@ def test_goodbye_blocks_stale_audio_session_started():
     assert "window.cancelPendingSessionStart('Voice start cancelled by goodbye');" in stale_audio_guard
     assert "S.socket.send(JSON.stringify({ action: 'end_session' }));" in stale_audio_guard
     assert "return;" in stale_audio_guard
+
+
+def test_ws_open_resyncs_goodbye_state_and_skips_regular_greeting():
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    onopen_greeting_block = source.split("// ── 首次连接 / 切换角色：标记 greeting 意图", 1)[1].split(
+        "// ── game-window-state 重连兜底",
+        1,
+    )[0]
+
+    assert "window.isNekoGoodbyeModeActive()" in onopen_greeting_block
+    assert "action: 'goodbye_state'" in onopen_greeting_block
+    assert "active: true" in onopen_greeting_block
+    assert "reason: 'ws-open-goodbye'" in onopen_greeting_block
+    assert "if (goodbyeActiveOnOpen)" in onopen_greeting_block
+    assert "_sendGreetingCheckIfReady();" in onopen_greeting_block
