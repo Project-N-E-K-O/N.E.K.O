@@ -77,4 +77,13 @@ def test_build_extension_map_includes_when_ctx_enabled_and_conf_missing():
         auto_start=False,
     )
     extension_map = module._build_extension_map([ctx])
-    assert extension_map == {"host": [{"ext_id": "ext", "ext_entry": "tests.fake_ext:Plugin", "prefix": ""}]}
+    assert extension_map == {
+        "host": [
+            {
+                "ext_id": "ext",
+                "ext_entry": "tests.fake_ext:Plugin",
+                "prefix": "",
+                "config_path": str(Path("/tmp/ext/plugin.toml")),
+            }
+        ]
+    }
