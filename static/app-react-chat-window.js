@@ -4297,6 +4297,11 @@
     // Enters through chatSurfaceMode so compact/full/minimized state stays in sync.
     function enterIdleDock() {
         if (isElectronChatWindow()) return;
+        // full 完全避开 idle-dock：CAT2/CAT3 视觉层级不应把展开的 full 窗口自动
+        // 最小化成球。这个检查必须在触发最小化之前，而不只在算 dock 位置时
+        // （getIdleDockTarget 的 isLegacyFullMinimizedBall 守卫只能阻止 dock 定位，
+        // 阻止不了 setChatSurfaceMode('minimized') 本身）。
+        if (getCurrentChatSurfaceMode() === 'full' || isLegacyFullMinimizedBall()) return;
 
         if (minimized) {
             // Already minimized — save current position and dock immediately.
@@ -4812,6 +4817,21 @@
                     if (surfaceModeAfterExpand === 'minimized') {
                         return;
                     }
+                    if (surfaceModeAfterExpand === 'full') {
+                        // full 从球展开后 expandedTop = ballBottom - height，球被拖到
+                        // 视口顶部时这会是负值，full 大半跑出屏幕、标题栏够不着。
+                        // syncCompactSurfaceAnchor 只管 compact，对 full 是 no-op，
+                        // 所以这里显式 clamp 进视口（clampPosition 保留标题栏可达）。
+                        var fullShell = getShell();
+                        if (fullShell) {
+                            var fullRect = fullShell.getBoundingClientRect();
+                            var clampedFull = clampPosition(fullRect.left, fullRect.top);
+                            if (clampedFull.left !== fullRect.left || clampedFull.top !== fullRect.top) {
+                                applyPosition(clampedFull.left, clampedFull.top);
+                            }
+                        }
+                        return;
+                    }
                     syncCompactSurfaceAnchor();
                 });
             };
@@ -4861,16 +4881,14 @@
         var btnIcon = getMinimizeIcon();
         var ballIcon = ensureMinimizedBallIcon();
         var surfaceMode = getCurrentChatSurfaceMode();
-        var ariaLabel = surfaceMode === 'compact'
-            ? getI18nText('chat.reactWindowMinimize', '最小化聊天框')
-            : surfaceMode === 'minimized'
-                ? getI18nText('chat.reactWindowRestore', '恢复聊天框')
-                : getI18nText('chat.reactWindowCompact', '切换到紧凑聊天框');
-        var shortLabel = surfaceMode === 'compact'
-            ? getI18nText('chat.reactWindowMinimizeShort', '最小化')
-            : surfaceMode === 'minimized'
-                ? getI18nText('chat.reactWindowRestoreShort', '恢复')
-                : getI18nText('chat.reactWindowCompactShort', '紧凑');
+        // full 与 compact 点头部按钮的真实动作都是「最小化」（getNextChatSurfaceMode
+        // 对二者都返回 'minimized'），所以 full 态也用最小化文案，别再写「切换到紧凑」。
+        var ariaLabel = surfaceMode === 'minimized'
+            ? getI18nText('chat.reactWindowRestore', '恢复聊天框')
+            : getI18nText('chat.reactWindowMinimize', '最小化聊天框');
+        var shortLabel = surfaceMode === 'minimized'
+            ? getI18nText('chat.reactWindowRestoreShort', '恢复')
+            : getI18nText('chat.reactWindowMinimizeShort', '最小化');
         if (button) {
             button.setAttribute('aria-label', ariaLabel);
             button.title = shortLabel;
@@ -5681,7 +5699,13 @@
                         }
                     }
                 } else {
-                    restorePosition();
+                    // full 走 restoreFullPosition()：有记忆位置才还原、无记忆保持居中，
+                    // 不能像 compact/minimized 那样走 restorePosition() → 被甩回左中。
+                    if (getCurrentChatSurfaceMode() === 'full') {
+                        restoreFullPosition();
+                    } else {
+                        restorePosition();
+                    }
                     syncCompactSurfaceAnchor();
                     scheduleMobileContentLayout();
                 }

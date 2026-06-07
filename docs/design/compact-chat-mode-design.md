@@ -210,8 +210,8 @@ localStorage.removeItem('neko.reactChatWindow.chatSurfaceMode'); location.reload
 
 ### 各形态自测点
 
-- **full**：渲染完整历史列表 + 完整 composer（底部工具条：导入图片 / 截图 / GalGame / 翻译 / 点歌 / 表情工具 + 发送圆钮；窗口变窄时工具折叠进溢出菜单 `⋯`）。点最小化 → 折向**左下角的蓝色呼吸灯球**（不贴角色、不折出屏幕）；点球展开 → 窗口**居中复位**。full 是冻结快照，行为对齐删除前的 full。
-- **compact**：悬浮对话条 / 字幕胶囊 / 输入态 / 工具轮盘 / 内联历史。点最小化 → **毛线球**并贴到角色/猫（idle dock，这是 compact 刻意的特性）。
+- **full**：渲染完整历史列表 + 完整 composer（底部工具条：导入图片 / 截图 / GalGame / 翻译 / 点歌 / 表情工具 + 发送圆钮；窗口变窄时工具折叠进溢出菜单 `⋯`）。点最小化 → 折向**左下角的蓝色呼吸灯球**（不贴角色、不折出屏幕、不走 idle dock）；点球展开 → **优先恢复上次拖拽/缩放后的记忆位置，仅在无记忆时居中**（不再回左中）。full 是冻结快照，行为对齐删除前的 full。
+- **compact**：悬浮对话条 / 字幕胶囊 / 输入态 / 工具轮盘 / 内联历史。点最小化 → **毛线球就地折叠**到自身底左锚点附近（不再强制贴角色/猫）。注：CAT2/CAT3 视觉层级（idle tier）下 compact 仍会自动贴猫的 idle dock，那是层级自动触发的特性，不是手动点最小化的行为。
 - **minimized**：折叠球；点球恢复回 `lastRestorableChatSurfaceMode`（full 回 full、compact 回 compact）。
 
 ### 三端必测（react-neko-chat 改动通用）
