@@ -3014,22 +3014,63 @@
         const screenshotButton = S.dom.screenshotButton;
 
         // 麦克风按钮（toggle模式） — Live2D / VRM 浮动按钮共用
+        function isScreenSharingActive() {
+            return !!(screenButton && screenButton.classList.contains('active'));
+        }
+
+        async function startScreenSharingFromVoiceButton() {
+            if (isScreenSharingActive()) {
+                return;
+            }
+            if (typeof window.startScreenSharing !== 'function') {
+                console.error('startScreenSharing function not found');
+                return;
+            }
+            await window.startScreenSharing();
+        }
+
+        async function stopScreenSharingFromVoiceButton() {
+            if (!isScreenSharingActive()) {
+                return;
+            }
+            if (typeof window.stopScreenSharing !== 'function') {
+                console.error('stopScreenSharing function not found');
+                return;
+            }
+            await window.stopScreenSharing();
+        }
+
+        function waitForVoiceRecordingReady(timeoutMs) {
+            const startedAt = Date.now();
+            return new Promise((resolve) => {
+                const check = () => {
+                    if (S.isRecording || Date.now() - startedAt >= timeoutMs) {
+                        resolve(!!S.isRecording);
+                        return;
+                    }
+                    setTimeout(check, 50);
+                };
+                check();
+            });
+        }
+
         window.addEventListener('live2d-mic-toggle', async (e) => {
             if (e.detail.active) {
-                if (S.isRecording) {
-                    return;
-                }
-                if (!micButton.classList.contains('active')) {
+                if (!S.isRecording && !micButton.classList.contains('active')) {
                     micButton.click();
-                    return;
-                }
-                if (typeof window.startMicCapture === 'function') {
+                    await waitForVoiceRecordingReady(5000);
+                } else if (!S.isRecording && typeof window.startMicCapture === 'function') {
                     await window.startMicCapture();
+                }
+                if (S.isRecording) {
+                    await startScreenSharingFromVoiceButton();
                 }
             } else {
                 if (!S.isRecording) {
+                    await stopScreenSharingFromVoiceButton();
                     return;
                 }
+                await stopScreenSharingFromVoiceButton();
                 if (typeof window.stopMicCapture === 'function') {
                     await window.stopMicCapture();
                 }

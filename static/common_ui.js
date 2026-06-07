@@ -1162,10 +1162,10 @@ window.toggleVoiceSession = function () {
 
 /**
  * 切换屏幕分享状态（开始/结束）
- * Electron 调用此接口来触发屏幕分享按钮的切换
+ * Electron 兼容入口；可见 UI 已并入语音控制按钮。
  */
 window.toggleScreenShare = function () {
-    // 屏幕共享浮动按钮槽位已被社交按钮顶替，入口移到语音 popup 二级菜单；
+    // 屏幕共享浮动按钮槽位已被社交按钮顶替；可见入口并入语音控制按钮。
     // 当前共享状态以隐藏的 #screenButton 的 .active class 为准。
     const screenBtn = document.getElementById('screenButton');
     const isActive = !!(screenBtn && screenBtn.classList.contains('active'));

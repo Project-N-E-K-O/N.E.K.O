@@ -1525,66 +1525,6 @@
             var rightColumn = document.createElement('div');
             Object.assign(rightColumn.style, { flex: '1', minWidth: '160px', display: 'flex', flexDirection: 'column', overflowY: 'auto' });
 
-            // ===== 左栏 0. 屏幕共享开关 =====
-            // 旧的悬浮「屏幕分享」按钮槽位被「猫娘网络」社交按钮顶替，屏幕共享
-            // 入口按设计并入此语音 popup 的二级菜单（见 .claude/decisions.md）。
-            // 状态镜像隐藏的 #screenButton（.active = 正在共享），交互复用现成的
-            // live2d-screen-toggle 事件（startScreenSharing/stopScreenSharing 自带
-            // 「需先开麦」门控与提示）。仅在语音会话中可用。
-            var screenContainer = document.createElement('div');
-            screenContainer.style.padding = '8px 12px';
-
-            var screenRow = document.createElement('div');
-            Object.assign(screenRow.style, { display: 'flex', justifyContent: 'space-between', alignItems: 'center' });
-
-            var screenLabel = document.createElement('span');
-            screenLabel.textContent = window.t ? window.t('voiceControl.screenShare') : '屏幕共享';
-            screenLabel.setAttribute('data-i18n', 'voiceControl.screenShare');
-            Object.assign(screenLabel.style, { fontSize: '13px', color: 'var(--neko-popup-text)', fontWeight: '500' });
-
-            var screenBtnEl = document.getElementById('screenButton');
-            var screenOn = !!(screenBtnEl && screenBtnEl.classList.contains('active'));
-            var screenAvailable = !!S.isRecording;
-
-            var screenToggle = document.createElement('label');
-            Object.assign(screenToggle.style, { position: 'relative', display: 'inline-block', width: '36px', height: '20px', flexShrink: '0', opacity: screenAvailable ? '1' : '0.45', cursor: screenAvailable ? 'pointer' : 'not-allowed' });
-            var screenInput = document.createElement('input');
-            screenInput.type = 'checkbox';
-            screenInput.checked = screenOn;
-            screenInput.disabled = !screenAvailable;
-            Object.assign(screenInput.style, { opacity: '0', width: '0', height: '0' });
-            var screenSliderEl = document.createElement('span');
-            Object.assign(screenSliderEl.style, { position: 'absolute', cursor: screenAvailable ? 'pointer' : 'not-allowed', top: '0', left: '0', right: '0', bottom: '0', backgroundColor: screenOn ? '#4f8cff' : '#ccc', borderRadius: '10px', transition: 'background-color 0.2s' });
-            var screenKnob = document.createElement('span');
-            Object.assign(screenKnob.style, { position: 'absolute', content: '""', height: '16px', width: '16px', left: screenOn ? '18px' : '2px', bottom: '2px', backgroundColor: 'white', borderRadius: '50%', transition: 'left 0.2s' });
-            screenSliderEl.appendChild(screenKnob);
-            screenToggle.appendChild(screenInput);
-            screenToggle.appendChild(screenSliderEl);
-
-            screenInput.addEventListener('change', function () {
-                var turnOn = screenInput.checked;
-                screenSliderEl.style.backgroundColor = turnOn ? '#4f8cff' : '#ccc';
-                screenKnob.style.left = turnOn ? '18px' : '2px';
-                // start/stopScreenSharing 自带「需先开麦」门控与 toast；状态以 #screenButton 为准，
-                // 下次打开 popup 时重新镜像。
-                window.dispatchEvent(new CustomEvent('live2d-screen-toggle', { detail: { active: turnOn } }));
-            });
-
-            screenRow.appendChild(screenLabel);
-            screenRow.appendChild(screenToggle);
-            screenContainer.appendChild(screenRow);
-
-            var screenHint = document.createElement('div');
-            screenHint.textContent = window.t ? window.t('app.screenShareRequiresVoice') : '屏幕分享仅用于音视频通话';
-            screenHint.setAttribute('data-i18n', 'app.screenShareRequiresVoice');
-            Object.assign(screenHint.style, { fontSize: '11px', color: 'var(--neko-popup-text-sub)', marginTop: '6px' });
-            screenContainer.appendChild(screenHint);
-            leftColumn.appendChild(screenContainer);
-
-            var sep0 = document.createElement('div');
-            Object.assign(sep0.style, { height: '1px', backgroundColor: 'var(--neko-popup-separator)', margin: '8px 0' });
-            leftColumn.appendChild(sep0);
-
             // ===== 左栏 1. 扬声器音量 =====
             var speakerContainer = document.createElement('div');
             speakerContainer.className = 'speaker-volume-container';

@@ -3718,16 +3718,6 @@ const AvatarButtonMixin = {
                     iconOn: `/static/icons/mic_icon_on.png${iconVersion}`
                 },
                 {
-                    // N.E.K.O.Servers 社交平台入口（替代原 screen 槽位）。
-                    // 屏幕分享仍可通过聊天界面底部 toolbar 的 #screenButton 触发，
-                    // 不通过悬浮按钮暴露。详见 0N.E.K.Oserver/.claude/decisions.md。
-                    id: 'social',
-                    emoji: '👥',
-                    title: window.t ? window.t('buttons.social') : '猫娘网络',
-                    titleKey: 'buttons.social',
-                    hasPopup: false,
-                },
-                {
                     id: 'agent',
                     emoji: '🔨',
                     title: window.t ? window.t('buttons.agentTools') : 'Agent工具',
@@ -3737,6 +3727,15 @@ const AvatarButtonMixin = {
                     exclusive: 'settings',
                     iconOff: `/static/icons/Agent_off.png${iconVersion}`,
                     iconOn: `/static/icons/Agent_on.png${iconVersion}`
+                },
+                {
+                    // N.E.K.O.Servers 社交平台入口（替代原 screen 槽位）。
+                    // 屏幕分享不再暴露独立按钮，改为跟随语音控制按钮启停。
+                    id: 'social',
+                    emoji: '👥',
+                    title: window.t ? window.t('buttons.social') : '猫娘网络',
+                    titleKey: 'buttons.social',
+                    hasPopup: false,
                 },
                 {
                     id: 'settings',
@@ -4396,8 +4395,8 @@ const AvatarButtonMixin = {
                 this.setButtonActive('mic', isRecording);
             }
 
-            // 旧 screen 浮动按钮已被 social 取代；屏幕分享状态仅同步到聊天界面
-            // 底部 toolbar 的 #screenButton，本悬浮按钮组不再维护 active 状态。
+            // 旧 screen 浮动按钮已被 social 取代；屏幕分享状态由隐藏的
+            // #screenButton 作为内部锚点维护，不再暴露独立按钮。
         };
 
         /**

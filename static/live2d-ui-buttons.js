@@ -297,8 +297,7 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
                 }
             }
 
-            // 旧 screen 按钮已被 social 取代；avatar 悬浮按钮不再处理屏幕分享，
-            // 该功能保留在聊天界面底部 toolbar 的 #screenButton 上。
+            // 旧 screen 按钮已被 social 取代；屏幕分享跟随语音控制按钮启停。
 
             if (config.popupToggle) {
                 return;
