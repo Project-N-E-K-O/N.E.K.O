@@ -5000,9 +5000,9 @@ function CompactChatApp({
         aria-label={resolvedImportImageAriaLabel}
         title={importImageButtonLabel}
         disabled={compactInputToolFanActionsDisabled}
-        tabIndex={getCompactToolWheelTabIndex(0)}
-        aria-hidden={getCompactToolWheelAriaHidden(0)}
-        data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(0)}
+        tabIndex={getCompactToolWheelTabIndex(4)}
+        aria-hidden={getCompactToolWheelAriaHidden(4)}
+        data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(4)}
         onClick={compactFanRunAction(onComposerImportImage)}
       >
         <img src="/static/icons/import_image_icon.png" alt="" aria-hidden="true" />
@@ -5013,9 +5013,9 @@ function CompactChatApp({
         aria-label={resolvedScreenshotAriaLabel}
         title={screenshotButtonLabel}
         disabled={compactInputToolFanActionsDisabled}
-        tabIndex={getCompactToolWheelTabIndex(1)}
-        aria-hidden={getCompactToolWheelAriaHidden(1)}
-        data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(1)}
+        tabIndex={getCompactToolWheelTabIndex(0)}
+        aria-hidden={getCompactToolWheelAriaHidden(0)}
+        data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(0)}
         onClick={compactFanRunAction(onComposerScreenshot)}
       >
         <img src="/static/icons/screenshot_new_icon.png" alt="" aria-hidden="true" />
@@ -5027,9 +5027,9 @@ function CompactChatApp({
         aria-pressed={galgameModeEnabled}
         title={galgameToggleButtonLabel}
         disabled={compactInputToolFanActionsDisabled}
-        tabIndex={getCompactToolWheelTabIndex(2)}
-        aria-hidden={getCompactToolWheelAriaHidden(2)}
-        data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(2)}
+        tabIndex={getCompactToolWheelTabIndex(6)}
+        aria-hidden={getCompactToolWheelAriaHidden(6)}
+        data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(6)}
         data-compact-tool-active={galgameModeEnabled ? 'true' : 'false'}
         onClick={compactFanToggleOnAction(onGalgameModeToggle)}
       >
@@ -5042,9 +5042,9 @@ function CompactChatApp({
         aria-pressed={translateEnabled}
         title={translateButtonLabel}
         disabled={compactInputToolFanActionsDisabled}
-        tabIndex={getCompactToolWheelTabIndex(3)}
-        aria-hidden={getCompactToolWheelAriaHidden(3)}
-        data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(3)}
+        tabIndex={getCompactToolWheelTabIndex(2)}
+        aria-hidden={getCompactToolWheelAriaHidden(2)}
+        data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(2)}
         data-compact-tool-active={translateEnabled ? 'true' : 'false'}
         onClick={compactFanToggleOnAction(onTranslateToggle)}
       >
@@ -5056,9 +5056,9 @@ function CompactChatApp({
         aria-label={jukeboxButtonAriaLabel}
         title={jukeboxButtonLabel}
         disabled={compactInputToolFanActionsDisabled}
-        tabIndex={getCompactToolWheelTabIndex(4)}
-        aria-hidden={getCompactToolWheelAriaHidden(4)}
-        data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(4)}
+        tabIndex={getCompactToolWheelTabIndex(3)}
+        aria-hidden={getCompactToolWheelAriaHidden(3)}
+        data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(3)}
         onClick={compactFanRunAction(onJukeboxClick)}
       >
         <img src="/static/icons/jukebox_icon.png" alt="" aria-hidden="true" />
@@ -5083,8 +5083,8 @@ function CompactChatApp({
       <div
         className="composer-tool-menu compact-input-tool-item compact-input-tool-item-avatar"
         ref={toolMenuRef}
-        aria-hidden={getCompactToolWheelAriaHidden(6)}
-        data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(6)}
+        aria-hidden={getCompactToolWheelAriaHidden(1)}
+        data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(1)}
         data-compact-tool-active={toolMenuOpen || activeToolItem ? 'true' : 'false'}
       >
         <button
@@ -5095,7 +5095,7 @@ function CompactChatApp({
           aria-controls={toolMenuOpen ? 'composer-tool-popover-compact' : undefined}
           aria-expanded={toolMenuOpen}
           disabled={compactInputToolFanActionsDisabled}
-          tabIndex={getCompactToolWheelTabIndex(6)}
+          tabIndex={getCompactToolWheelTabIndex(1)}
           onClick={(event) => {
             if (shouldSuppressCompactToolClick(event)) {
               event.preventDefault();
