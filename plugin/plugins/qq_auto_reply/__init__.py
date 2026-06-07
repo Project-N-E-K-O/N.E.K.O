@@ -325,8 +325,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         settings = dict(self._qq_settings or {})
         self.logger.info(f"[qq_auto_reply debug] build_dashboard_state source settings: {settings}")
         napcat_dir = self._get_napcat_directory()
+        runtime = self._build_runtime_status()
         return {
-            "runtime": self._build_runtime_status(),
+            "runtime": runtime,
             "settings": {
                 "onebot_url": settings.get("onebot_url", ""),
                 "token": str(settings.get("token") or ""),
@@ -344,7 +345,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 "backlog_labels": list(settings.get("backlog_labels") or []),
             },
             "guide": {
-                "step_napcat_done": bool(settings.get("guide_step_napcat_done", False)) or (bool(settings.get("napcat_directory")) and bool(self._napcat_process and self._napcat_process.returncode is None)),
+                "step_napcat_done": bool(settings.get("guide_step_napcat_done", False)) or bool(runtime["napcat_managed"] and runtime["napcat_running"]),
                 "step_service_done": bool(settings.get("onebot_url")) and bool(settings.get("token")),
                 "step_contacts_done": bool(self.permission_mgr and self.permission_mgr.list_users()),
                 "step_auto_reply_done": bool(settings.get("guide_step_runtime_done", False)) and self._running,

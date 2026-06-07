@@ -23,6 +23,10 @@ from plugin.plugins.qq_auto_reply.prompting import QQAutoReplyPromptingMixin
             "<thinking_trace_variant>分析</thinking_trace_variant>结论",
             "结论",
         ),
+        (
+            "对外回复</think_never_used_trailing>",
+            "对外回复",
+        ),
     ],
 )
 def test_sanitize_generated_reply_strips_thinking_variants(raw, expected):

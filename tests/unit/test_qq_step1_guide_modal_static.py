@@ -16,7 +16,8 @@ def test_step1_state_persisted_in_config_and_backend():
     backend = (ROOT / "plugin/plugins/qq_auto_reply/__init__.py").read_text(encoding="utf-8")
     assert '"guide_step_napcat_done": False' in config_store
     assert 'guide_step_napcat_done' in backend
-    assert '"step_napcat_done": bool(settings.get("guide_step_napcat_done", False)) or' in backend
+    assert 'runtime = self._build_runtime_status()' in backend
+    assert 'runtime["napcat_managed"] and runtime["napcat_running"]' in backend
 
 
 def test_step1_frontend_handlers_present():

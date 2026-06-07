@@ -109,7 +109,7 @@
   "ui.guide.step3.desc": "至少添加一个信任用户；检测到 trusted_users 不为空时就显示已完成。",
   "ui.guide.step4.index": "STEP 4",
   "ui.guide.step4.title": "启动自动回复",
-  "ui.guide.step4.desc": "点击本卡片(按钮)即可启用自动回复后，该步骤会写入配置并显示为已完成。",
+  "ui.guide.step4.desc": "点击本卡片(按钮)即可启用自动回复，该步骤会写入配置并显示为已完成。",
   "ui.guide.step4.done_title": "停止自动回复",
   "ui.guide.step4.done_desc": "点击本卡片(按钮)后会停止自动回复，并把该步骤切回未完成状态。",
   "ui.status.title": "运行状态",

@@ -13,11 +13,7 @@ _THINK_TAG_VARIANT_PAIRED_RE = re.compile(
     r"<(?P<tag>think(?:ing)?(?:[_-][a-z0-9_:-]+)+)\s*>.*?</(?P=tag)\s*>",
     re.IGNORECASE | re.DOTALL,
 )
-_THINK_TAG_VARIANT_DANGLING_CLOSE_RE = re.compile(
-    r"^.*?</think(?:ing)?(?:[_-][a-z0-9_:-]+)+\s*>",
-    re.IGNORECASE | re.DOTALL,
-)
-_THINK_TAG_VARIANT_ANY_CLOSE_RE = re.compile(
+_THINK_TAG_VARIANT_CLOSE_RE = re.compile(
     r"</think(?:ing)?(?:[_-][a-z0-9_:-]+)+\s*>",
     re.IGNORECASE,
 )
@@ -30,8 +26,16 @@ class QQAutoReplyPromptingMixin:
         if not cleaned:
             return ""
         cleaned = _THINK_TAG_VARIANT_PAIRED_RE.sub("", cleaned)
-        if _THINK_TAG_VARIANT_ANY_CLOSE_RE.search(cleaned):
-            cleaned = _THINK_TAG_VARIANT_DANGLING_CLOSE_RE.sub("", cleaned, count=1)
+        while True:
+            match = _THINK_TAG_VARIANT_CLOSE_RE.search(cleaned)
+            if not match:
+                break
+            suffix = cleaned[match.end():]
+            if _THINK_TAG_VARIANT_CLOSE_RE.sub("", suffix).strip():
+                cleaned = suffix
+                continue
+            cleaned = _THINK_TAG_VARIANT_CLOSE_RE.sub("", cleaned)
+            break
         return cleaned.strip()
 
     async def _build_qq_session_instructions(
