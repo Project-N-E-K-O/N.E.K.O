@@ -1,14 +1,39 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from typing import Optional
 
-from utils.llm_client import create_chat_llm
+from utils.llm_client import create_chat_llm, strip_thinking_segments
 from utils.token_tracker import set_call_type
 
 
+_THINK_TAG_VARIANT_PAIRED_RE = re.compile(
+    r"<(?P<tag>think(?:ing)?(?:[_-][a-z0-9_:-]+)+)\s*>.*?</(?P=tag)\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+_THINK_TAG_VARIANT_DANGLING_CLOSE_RE = re.compile(
+    r"^.*?</think(?:ing)?(?:[_-][a-z0-9_:-]+)+\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+_THINK_TAG_VARIANT_ANY_CLOSE_RE = re.compile(
+    r"</think(?:ing)?(?:[_-][a-z0-9_:-]+)+\s*>",
+    re.IGNORECASE,
+)
+
+
 class QQAutoReplyPromptingMixin:
+    @staticmethod
+    def _sanitize_generated_reply(reply: str) -> str:
+        cleaned = strip_thinking_segments(str(reply or "")).strip()
+        if not cleaned:
+            return ""
+        cleaned = _THINK_TAG_VARIANT_PAIRED_RE.sub("", cleaned)
+        if _THINK_TAG_VARIANT_ANY_CLOSE_RE.search(cleaned):
+            cleaned = _THINK_TAG_VARIANT_DANGLING_CLOSE_RE.sub("", cleaned, count=1)
+        return cleaned.strip()
+
     async def _build_qq_session_instructions(
         self,
         her_name: str,
@@ -197,7 +222,7 @@ class QQAutoReplyPromptingMixin:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": message},
                 ])
-                fallback_reply = str(getattr(response, "content", "") or "").strip()
+                fallback_reply = self._sanitize_generated_reply(getattr(response, "content", "") or "")
                 if fallback_reply:
                     self.logger.info(f"Fallback 直连 LLM 生成成功 (length: {len(fallback_reply)})")
                     return fallback_reply
@@ -475,7 +500,7 @@ class QQAutoReplyPromptingMixin:
                     self._user_sessions.pop(session_key, None)
                     return None
 
-                ai_reply = "".join(reply_chunks).strip()
+                ai_reply = self._sanitize_generated_reply("".join(reply_chunks))
 
             if ai_reply:
                 if user_data.get("memory_enabled"):
