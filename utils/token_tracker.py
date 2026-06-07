@@ -432,9 +432,15 @@ _CONTROL_PROACTIVE_INTERVAL = 15
 def _rollback_retired_proactive_interval(branch_path: Path) -> None:
     """一次性回滚退役实验 proactive_interval_20s 覆写的 proactiveChatInterval。
 
-    仅当 ``branch_path`` 落盘的原始值正是该退役实验分支时才动手——这是「这台机器曾被
-    分到实验组」的确凿信号，把回滚面收敛到实验组 install：不碰普通手选 20s 的用户，也
-    不碰国内用户（国内被前端门禁挡住，首启从不会被覆写成 20s，其 branch 也不会是它）。
+    仅当 ``branch_path`` 落盘的原始值正是该退役实验分支时才动手——把回滚面收敛到「曾被
+    分到该实验池」的 install，不碰从没进过这个实验的普通手选 20s 用户。
+
+    已知误伤（无法从落盘数据消除）：抽签是全地区随机的，国内用户也会落到这个 branch，
+    只是前端门禁（!_isUserRegionChina()）当初没给他们覆写 interval。所以国内实验组里
+    interval==20 的一定是用户手选——本函数无法与「海外被实验覆写的 20」区分，会一并回滚
+    成 15s。这属「迁移当刻手选 20s 被误伤」的已接受范围（交集量级：国内 ∩ 落该 branch ∩
+    手选恰好 20s ∩ 当前仍停在 20s，极小）。权衡过用后端 region 判定加门禁，但后端 locale
+    口径与前端 tz+lang 不一致、反而可能误伤国内英文系统用户，故不引入。
 
     幂等性由调用点保证：本函数只在 slow path「落盘 branch 非法、即将重抽覆盖」时触发，
     重抽后 branch 文件不再是退役值，下次启动 fast path 命中合法值、不会再进来，无需额外
