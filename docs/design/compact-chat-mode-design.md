@@ -8,7 +8,7 @@
 
 本文覆盖当前分支已经落地的紧凑聊天框长期事实和维护边界，包括：
 
-1. `compact / minimized` 两态聊天形态。
+1. `compact / minimized` 两态聊天形态（活跃形态；被复活的 `full` 是冻结 legacy、与之严格隔离，见「已确认事实」第 2 条与 `FullChatSurface.tsx` 文件头，不在本文范围）。
 2. `default / options / input` 紧凑态内部三态。
 3. 紧凑 surface、最小化 ball、选项层、工具转轮、内联历史、历史气泡拖拽与发送链路。
 4. Web、独立 `/chat`、NEKO-PC 桌面壳三端的样式、geometry、命中、bounds 和拖拽边界。
@@ -79,7 +79,7 @@
 已确认事实：
 
 1. 当前聊天 UI 以 React chat 为准；旧 `#chat-container` 只作为兼容 DOM 存在。
-2. 宿主形态是 `chatSurfaceMode: 'compact' | 'minimized'`（localStorage 里遗留的 `'full'` 读入时迁移为 `'compact'`）。
+2. 宿主形态是 `chatSurfaceMode: 'full' | 'compact' | 'minimized'`。`full` 是被复活的**冻结 legacy** 完整聊天窗口，由 `App.tsx` 顶层无 hooks 的 dispatcher 路由到自包含的 `FullChatSurface.tsx`（删除前那版 App 的冻结快照），与本文覆盖的 `compact / minimized` **严格代码隔离**：两子树互斥挂载，hooks/state 不共享，full 不再迭代——本文只描述活跃的 compact/minimized，full 见 `FullChatSurface.tsx` 文件头。`full` 不进 `CHAT_SURFACE_MODE_SEQUENCE`（compact↔minimized 的 cycle），只由显式 `setChatSurfaceMode('full')`（如 NEKO-PC 托盘切换）进入。
 3. compact 内部状态是 `compactChatState: 'default' | 'options' | 'input'`。
 4. `effectiveCompactChatState` 会在存在 ChoicePrompt / GalGame options 时把 compact 推到 `options`，不需要业务层另造状态。
 5. compact 主体 DOM 已统一为：

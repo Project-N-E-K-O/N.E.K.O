@@ -84,6 +84,28 @@ describe('App', () => {
     expect(document.body.querySelector('.compact-input-tool-fan')).not.toBeNull();
   });
 
+  it('dispatches the frozen legacy full surface for chatSurfaceMode="full"', () => {
+    // The dispatcher routes `full` to the isolated FullChatSurface, which shows
+    // the full history list + full composer instead of the compact surface.
+    const message = parseChatMessage({
+      id: 'm-full',
+      role: 'assistant',
+      author: 'Neko',
+      time: '12:00',
+      blocks: [{ type: 'text', text: 'hello from full' }],
+    });
+    const { container } = render(<App chatSurfaceMode="full" messages={[message]} />);
+
+    // Full surface: history list + full composer with the persistent textarea.
+    expect(container.querySelector('.message-list')).not.toBeNull();
+    expect(screen.getByPlaceholderText('Type a message...')).toBeInTheDocument();
+    expect(container.querySelector('.composer-bottom-bar')).not.toBeNull();
+
+    // Compact surface must NOT mount — the two subtrees are mutually exclusive.
+    expect(container.querySelector('.compact-chat-surface-shell')).toBeNull();
+    expect(container.querySelector('.compact-chat-stage')).toBeNull();
+  });
+
   it('enters compact input from the subtitle capsule when used uncontrolled', () => {
     const { container } = render(<App chatSurfaceMode="compact" />);
 

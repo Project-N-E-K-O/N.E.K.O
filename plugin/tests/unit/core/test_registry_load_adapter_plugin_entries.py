@@ -59,10 +59,10 @@ def test_load_adapter_plugin_registers_entries_preview_and_handlers() -> None:
             auto_start=True,
         )
 
-        original_import_module = module.importlib.import_module
+        original_import_module = module._import_plugin_entry_module
         original_register_plugin = module.register_plugin
         try:
-            module.importlib.import_module = lambda _: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin)
+            module._import_plugin_entry_module = lambda *args, **kwargs: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin)
 
             def _register_plugin(plugin_meta, logger=None, config_path=None, entry_point=None):
                 plugin_dump = plugin_meta.model_dump()
@@ -83,7 +83,7 @@ def test_load_adapter_plugin_registers_entries_preview_and_handlers() -> None:
                 process_host_factory=lambda *args, **kwargs: _FakeHost(),
             )
         finally:
-            module.importlib.import_module = original_import_module
+            module._import_plugin_entry_module = original_import_module
             module.register_plugin = original_register_plugin
 
         assert host is not None
@@ -150,10 +150,10 @@ def test_load_adapter_plugin_rolls_back_scanned_handlers_when_register_fails() -
             auto_start=True,
         )
 
-        original_import_module = module.importlib.import_module
+        original_import_module = module._import_plugin_entry_module
         original_register_plugin = module.register_plugin
         try:
-            module.importlib.import_module = lambda _: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin)
+            module._import_plugin_entry_module = lambda *args, **kwargs: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin)
             module.register_plugin = lambda *args, **kwargs: None
 
             host = module._load_adapter_plugin(
@@ -162,7 +162,7 @@ def test_load_adapter_plugin_rolls_back_scanned_handlers_when_register_fails() -
                 process_host_factory=lambda *args, **kwargs: _FakeHost(),
             )
         finally:
-            module.importlib.import_module = original_import_module
+            module._import_plugin_entry_module = original_import_module
             module.register_plugin = original_register_plugin
 
         assert host is None
@@ -223,9 +223,9 @@ def test_load_adapter_plugin_rolls_back_scanned_handlers_when_process_start_fail
             auto_start=True,
         )
 
-        original_import_module = module.importlib.import_module
+        original_import_module = module._import_plugin_entry_module
         try:
-            module.importlib.import_module = lambda _: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin)
+            module._import_plugin_entry_module = lambda *args, **kwargs: SimpleNamespace(FakeAdapterPlugin=_FakeAdapterPlugin)
 
             def failing_process_host_factory(*args, **kwargs):
                 raise RuntimeError("boom")
@@ -236,7 +236,7 @@ def test_load_adapter_plugin_rolls_back_scanned_handlers_when_process_start_fail
                 process_host_factory=failing_process_host_factory,
             )
         finally:
-            module.importlib.import_module = original_import_module
+            module._import_plugin_entry_module = original_import_module
 
         assert host is None
         with module.state.acquire_event_handlers_read_lock():

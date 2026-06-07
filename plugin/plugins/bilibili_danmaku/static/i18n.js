@@ -41,6 +41,10 @@ const I18n = {
       add('ko');
     } else if (lower.startsWith('ru')) {
       add('ru');
+    } else if (lower.startsWith('es')) {
+      add('es');
+    } else if (lower.startsWith('pt')) {
+      add('pt');
     }
 
     // 兜底

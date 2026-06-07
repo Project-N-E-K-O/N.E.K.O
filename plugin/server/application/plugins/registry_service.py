@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 import re
 try:
     import tomllib
@@ -12,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from plugin.core.dependency import _topological_sort_plugins
+from plugin.core.host import _import_plugin_module
 from plugin.core.registry import (
     PluginContext,
     _build_plugin_meta,
@@ -431,7 +431,7 @@ def _build_discovery_payload(
                 )
                 try:
                     module_path, class_name = ctx.entry.split(":", 1)
-                    module_obj = importlib.import_module(module_path)
+                    module_obj = _import_plugin_module(module_path, ctx.toml_path, logger)
                     cls_obj = getattr(module_obj, class_name)
                     entries_preview = _extract_entries_preview(plugin_id, cls_obj, ctx.conf, ctx.pdata)
                 except (ImportError, ModuleNotFoundError) as exc:
@@ -840,6 +840,7 @@ class PluginRegistryService:
                     "ext_id": plugin_id,
                     "ext_entry": entry_point_obj,
                     "prefix": prefix,
+                    "config_path": str(config_path) if config_path is not None else "",
                 }
             )
 
