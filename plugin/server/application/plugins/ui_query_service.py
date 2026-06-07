@@ -81,7 +81,7 @@ def _to_bool(value: object, *, default: bool) -> bool:
 def _hosted_plugin_not_running_message(locale: str | None) -> str:
     normalized = str(locale or "").strip().replace("_", "-")
     lowered = normalized.lower()
-    if lowered in {"zh-tw", "zh-hk", "zh-mo"}:
+    if lowered in {"zh-tw", "zh-hk", "zh-mo"} or (lowered.startswith("zh") and "hant" in lowered):
         key = "zh-TW"
     elif lowered.startswith("zh"):
         key = "zh-CN"

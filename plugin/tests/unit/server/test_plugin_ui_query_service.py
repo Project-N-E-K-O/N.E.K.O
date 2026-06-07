@@ -12,6 +12,8 @@ from plugin.server.domain.errors import ServerDomainError
 from plugin.server.application.plugins.ui_query_service import (
     _build_plugin_list_actions_from_meta,
     _get_static_ui_config_from_meta,
+    _hosted_plugin_not_running_message,
+    _PLUGIN_NOT_RUNNING_MESSAGES,
     PluginUiQueryService,
 )
 
@@ -259,3 +261,30 @@ def test_call_surface_action_localizes_plugin_not_running(tmp_path) -> None:
     assert exc_info.value.code == "PLUGIN_NOT_RUNNING"
     assert exc_info.value.status_code == 409
     assert exc_info.value.message == "插件未运行。请先启动该插件，再执行这个操作。"
+
+
+@pytest.mark.parametrize(
+    ("locale", "expected_key"),
+    [
+        ("zh-CN", "zh-CN"),
+        ("zh-Hans", "zh-CN"),
+        ("zh", "zh-CN"),
+        ("zh-TW", "zh-TW"),
+        ("zh-HK", "zh-TW"),
+        ("zh-MO", "zh-TW"),
+        ("zh-Hant", "zh-TW"),
+        ("zh-Hant-TW", "zh-TW"),
+        ("zh_Hant", "zh-TW"),
+        ("ja-JP", "ja"),
+        ("ko", "ko"),
+        ("es-ES", "es"),
+        ("pt-BR", "pt"),
+        ("ru", "ru"),
+        ("en-US", "en"),
+        ("fr-FR", "en"),
+        (None, "en"),
+        ("", "en"),
+    ],
+)
+def test_hosted_plugin_not_running_message_locale_mapping(locale, expected_key) -> None:
+    assert _hosted_plugin_not_running_message(locale) == _PLUGIN_NOT_RUNNING_MESSAGES[expected_key]
