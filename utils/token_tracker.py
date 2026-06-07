@@ -394,30 +394,80 @@ _TELEMETRY_BRANCH_FILE = ".telemetry_branch"
 #       地区分流（仅中国地区默认隐私关），海外默认隐私开 → 对本实验天然 no-op。抽签
 #       全地区随机，海外也会落实验组但首启覆写 / 弹窗都不生效；分析时按 locale 过滤，
 #       A/B 差异主要体现在国内。
-#   - "proactive_interval_20s"：海外专属实验组，把「主动搭话间隔」
-#     （proactiveChatInterval）首启默认从控制组 15s 拉长到 20s，看更慢的搭话节奏对
-#     海外用户的影响。**不动**隐私模式 / 屏幕分享来源默认值，也没有弹窗。
-#       地区交互：与 vision_chat_default_off 方向相反——只在海外（前端
-#       _isUserRegionChina() 为 false）才覆写间隔默认值；国内落到本组天然 no-op。抽签
-#       全地区随机、三组互斥（同设备只落一个 branch），但 vision 实验差异在国内、本组
-#       只影响海外，目标地区不重叠，可同时在线观测。注意 _bucket_proactive_interval
-#       把 15s / 20s 都归进「10-30s」桶，所以 cohort 命中靠 branch 维度区分，不靠间隔桶。
 #
-# 已退役实验（老落盘值被 _read 严格校验判非法 → 下次启动按当前池随机重抽，落 main、
-# vision_chat_default_off 或 proactive_interval_20s。都是已过首启的用户，重抽只改
+# 已退役实验（老落盘值被 _read 严格校验判非法 → 下次启动按当前池随机重抽，落 main
+# 或 vision_chat_default_off。都是已过首启的用户，重抽只改
 # telemetry 标签、不动已落盘的用户偏好，对「默认值」实验无影响，故不为其单独做确定性
 # 迁移）：
 #   - "privacy_default_off_v1"（试国外隐私默认关）：前期数据效果差，已下线。
 #   - "privacy_default_off_v2"（试国内隐私默认开）：改方向去测屏幕分享来源，已下线。
 #   - "proactive_interval_25s"（试海外搭话间隔 20s→25s）：数据点没能通过 A/A 测试，
-#     下线回退到 proactive_interval_20s（15s→20s）重测；A/A 管线修好前不重新上线。
-_TELEMETRY_BRANCHES: tuple = ("main", "vision_chat_default_off", "proactive_interval_20s")
+#     曾下线回退到 proactive_interval_20s 重测；现整条搭话间隔实验线终止（见下条），
+#     不再重新上线。
+#   - "proactive_interval_20s"（试海外搭话间隔 15s→20s）：CN 本应是 AA no-op 对照，
+#     但 D1 留存出现低于 main 的偏离（单边 p≈0.1，且主要由单个放量日 cohort 驱动）。
+#     AA 组刷出「显著」本身说明噪声地板已超过判定门槛、该实验线欠功率；权衡后决定不再
+#     投入，直接下线、不重测。前端的间隔默认值覆写逻辑（app-settings.js）同步移除。
+#     与上面「通则不做确定性迁移」不同，本条是例外：对存量额外做一次性偏好回滚——落盘
+#     branch 正是本实验组的 install，在「判非法 → 重抽」时把仍停在 20s 的
+#     proactiveChatInterval 拉回控制组 15s（见 _rollback_retired_proactive_interval；
+#     重抽即天然幂等标记，不压制用户日后再手选 20s）。
+_TELEMETRY_BRANCHES: tuple = ("main", "vision_chat_default_off")
 
 # 进程级缓存：keyed by str(config_dir)。写盘失败的环境下（只读 FS / 权限拒绝），
 # 不缓存就每次 secrets.choice 重抽，导致同一 install 的 TokenTracker 上报和
 # 前端 `/conversation-settings` 拿到不同分支，A/B 归因被打散。dict.setdefault
 # 在 CPython GIL 下是原子的，足以扛住模块内的并发首抽。
 _telemetry_branch_cache: dict = {}
+
+# 退役实验 proactive_interval_20s 的一次性偏好回滚常量。该实验曾把海外用户首启的
+# proactiveChatInterval 默认从控制组 15s 覆写成 20s（见上方退役清单）。下线后既要让
+# 落盘的 20s 回到 15s，又不能误伤自己手动拖到 20s 的用户——而能精确区分两者的唯一
+# 信号，就是这台机器的 .telemetry_branch 是否曾经正是该实验组。
+_RETIRED_INTERVAL_ROLLBACK_BRANCH = "proactive_interval_20s"
+_RETIRED_INTERVAL_EXPERIMENT_VALUE = 20
+_CONTROL_PROACTIVE_INTERVAL = 15
+
+
+def _rollback_retired_proactive_interval(branch_path: Path) -> None:
+    """一次性回滚退役实验 proactive_interval_20s 覆写的 proactiveChatInterval。
+
+    仅当 ``branch_path`` 落盘的原始值正是该退役实验分支时才动手——这是「这台机器曾被
+    分到实验组」的确凿信号，把回滚面收敛到实验组 install：不碰普通手选 20s 的用户，也
+    不碰国内用户（国内被前端门禁挡住，首启从不会被覆写成 20s，其 branch 也不会是它）。
+
+    幂等性由调用点保证：本函数只在 slow path「落盘 branch 非法、即将重抽覆盖」时触发，
+    重抽后 branch 文件不再是退役值，下次启动 fast path 命中合法值、不会再进来，无需额外
+    的 migration flag。
+
+    best-effort：preferences 写入失败（如 cloudsave 维护态）时静默跳过、不阻断 branch
+    解析；此时 branch 仍会被重抽覆盖，该 install 会漏掉这次回滚（罕见，可接受）。
+    """
+    try:
+        raw = branch_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return
+    if raw != _RETIRED_INTERVAL_ROLLBACK_BRANCH:
+        return
+    try:
+        from utils.preferences import (
+            load_global_conversation_settings,
+            save_global_conversation_settings,
+        )
+
+        settings = load_global_conversation_settings()
+        # 只回滚仍停在实验覆写值（20s）的；用户首启后又手动改过（!=20）的保留其选择。
+        if settings.get("proactiveChatInterval") == _RETIRED_INTERVAL_EXPERIMENT_VALUE:
+            save_global_conversation_settings(
+                {"proactiveChatInterval": _CONTROL_PROACTIVE_INTERVAL}
+            )
+            logger.info(
+                "Telemetry: rolled back retired proactive_interval_20s default "
+                "(proactiveChatInterval 20s -> %ss)",
+                _CONTROL_PROACTIVE_INTERVAL,
+            )
+    except Exception as e:
+        logger.debug(f"Token tracker: proactive_interval rollback skipped: {e}")
 
 
 def _get_telemetry_branch(config_dir: Path) -> str:
@@ -487,6 +537,9 @@ def _get_telemetry_branch(config_dir: Path) -> str:
         # 再走一次「读到坏值 → fast path miss → slow path 拿到 FileExistsError →
         # 重抽」，cohort 在多次启动间反复翻滚。覆盖修盘保证只有这一次重抽，
         # 之后就稳定。
+        # 修盘前：若旧值是会覆写用户偏好的退役实验（proactive_interval_20s），趁这次
+        # 「判非法 → 重抽」做一次性偏好回滚（见函数 docstring；重抽即天然幂等标记）。
+        _rollback_retired_proactive_interval(p)
         try:
             with open(p, "w", encoding="utf-8") as f:
                 f.write(branch)
