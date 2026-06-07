@@ -54,7 +54,17 @@
                被截断。改用 inset 定位（不依赖 transform），展开全程及结束都正确贴窗、阴影留白稳定。
            作用域：仅 Electron full 独立窗口、且非折叠球态（neko-e-collapsed）/非最小化（is-minimized）
            —— 那两态有自己的定位/呼吸灯阴影；compact 窗口（attr=compact）走胶囊规则，均不受影响。 */
+        /* 玻璃流光特效复活（与上面同一门槛/选择器，合并为单块，避免重复声明）：
+           原 full 玻璃面板（液态边缘反光 + ::before 静态高光 + ::after 三色流光 liquidFlow）
+           在 #1594 退「共享 /chat 的 full 玻璃壳」时随整套 full 形态删除——根因是旧规则不带
+           data-chat-surface-mode 门槛，在共享 /chat 上先画空玻璃再塌成 compact（"先 full 再
+           compact" 闪帧）。现在 full 是独立窗口、带上面那组门槛（neko-electron-runtime +
+           attr=full + 非折叠/最小化），compact 与 web /chat_full（无运行时标记）都不命中，故可
+           安全复活。仅还原玻璃视觉，不复活旧版顶栏 chrome 与 #react-chat-window-root 渐隐 mask
+           （mask 会裁内容）；::before/::after 自带 22px 圆角裁住光斑，不动 shell overflow，避免
+           裁掉下拉/resize 把手。 */
         body.neko-electron-runtime #react-chat-window-shell[data-chat-surface-mode="full"]:not(.is-minimized):not(.neko-e-collapsed) {
+            /* inset 充满窗口几何 */
             top: 30px;
             left: 30px;
             right: 30px;
@@ -64,31 +74,13 @@
             max-width: none;
             max-height: none;
             transform: none;
-            box-shadow: 0 8px 20px rgba(12, 20, 34, 0.28);
-        }
-        /* ──────────────────────────────────────────────────────────────────────
-           full 独立窗口（Electron part B）玻璃流光特效复活
-           ----------------------------------------------------------------------
-           原 full 玻璃面板（液态边缘反光 + ::before 静态高光 + ::after 三色流光
-           liquidFlow）在 #1594 退「共享 /chat 的 full 玻璃壳」时随整套 full 形态一并
-           删除——根因是旧规则不带 data-chat-surface-mode 门槛，会在共享 /chat 上先画
-           空玻璃再塌成 compact（"先 full 再 compact" 闪帧）。
-           现在 full 是独立窗口（/chat_full + data-chat-surface-mode="full" + 运行时
-           标记 neko-electron-runtime），用与上方 inset 规则**完全相同的门槛**挂回：
-             · 只在 Electron full shell 命中（neko-electron-runtime 由 preload 注入）；
-             · compact（attr=compact）与 web /chat_full（无运行时标记）都不命中，不闪帧；
-             · 折叠球（neko-e-collapsed）/最小化（is-minimized）排除，各有自己的几何。
-           仅还原玻璃视觉，不复活旧版顶栏 chrome 与 #react-chat-window-root 渐隐 mask
-           （那个 mask 会裁内容）。::before/::after 自带 22px 圆角裁住光斑，不动 shell
-           overflow，避免裁掉下拉/resize 把手。 */
-        body.neko-electron-runtime #react-chat-window-shell[data-chat-surface-mode="full"]:not(.is-minimized):not(.neko-e-collapsed) {
+            border-radius: 22px;
             /* 液态边缘反光 — 顶部最亮、左次之，模拟顶光 */
             border-top: 2px solid rgba(255, 255, 255, 0.7);
             border-left: 1px solid rgba(255, 255, 255, 0.35);
             border-right: 1px solid rgba(255, 255, 255, 0.15);
             border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-            border-radius: 22px;
-            /* 收敛外阴影（同上方 inset 规则）+ 玻璃内高光带 */
+            /* 收敛外阴影（落在 30px inset 留白内，不被窗口边缘裁掉）+ 玻璃内高光带 */
             box-shadow:
                 0 8px 20px rgba(12, 20, 34, 0.28),
                 inset 0 2px 4px rgba(255, 255, 255, 0.5),

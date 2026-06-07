@@ -851,10 +851,23 @@ def test_full_chat_glass_flow_revived_and_gated():
     assert glass_gate + "::before" in template      # 静态边缘/顶部高光
     assert glass_gate + "::after" in template        # 三色流光层
 
-    # 尊重系统「减少动态」：流光在 prefers-reduced-motion 下停掉。
-    assert "@media (prefers-reduced-motion: reduce)" in template
+    # 尊重系统「减少动态」：流光在 prefers-reduced-motion 下停掉。按花括号配平取整段 media
+    # 块（而非定长切片），块体增长也不会让断言失真。
     reduced_idx = template.find("@media (prefers-reduced-motion: reduce)")
-    assert "animation: none;" in template[reduced_idx:reduced_idx + 400]
+    assert reduced_idx != -1
+    brace_start = template.index("{", reduced_idx)
+    depth = 0
+    block_end = brace_start
+    for i in range(brace_start, len(template)):
+        if template[i] == "{":
+            depth += 1
+        elif template[i] == "}":
+            depth -= 1
+            if depth == 0:
+                block_end = i
+                break
+    media_block = template[reduced_idx:block_end + 1]
+    assert "animation: none;" in media_block
 
 
 def test_compact_history_resize_bar_is_draggable_and_persisted():
