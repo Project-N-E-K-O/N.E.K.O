@@ -630,6 +630,29 @@ describe('App', () => {
     }
   });
 
+  it('keeps compact history open when the first press causes the handle to leave before click', () => {
+    window.localStorage.setItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY, 'false');
+
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" />,
+    );
+
+    const handle = container.querySelector<HTMLButtonElement>('.compact-history-visibility-handle');
+    expect(handle).not.toBeNull();
+    expect(handle).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.pointerDown(handle!, { pointerType: 'mouse', button: 0, buttons: 1 });
+    expect(handle).toHaveAttribute('aria-expanded', 'true');
+    expect(container.querySelector('.compact-export-history-anchor')).not.toBeNull();
+
+    fireEvent.pointerLeave(handle!, { pointerType: 'mouse', buttons: 1 });
+    fireEvent.click(handle!);
+
+    expect(handle).toHaveAttribute('aria-expanded', 'true');
+    expect(container.querySelector('.compact-export-history-anchor')).toHaveAttribute('data-compact-export-history-visibility', 'open');
+    expect(window.localStorage.getItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY)).toBe('true');
+  });
+
   it('keeps compact export history message actions read-only', async () => {
     const onMessageAction = vi.fn();
     const message = parseChatMessage({

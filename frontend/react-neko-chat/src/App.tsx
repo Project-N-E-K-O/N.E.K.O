@@ -5458,7 +5458,6 @@ function CompactChatApp({
       data-compact-history-open={compactExportHistoryOpen ? 'true' : 'false'}
       onPointerDown={handleCompactHistoryVisibilityPress}
       onPointerCancel={handleCompactHistoryVisibilityPointerCancel}
-      onPointerLeave={handleCompactHistoryVisibilityPointerCancel}
       onClick={handleCompactHistoryVisibilityClick}
     >
       <span className="compact-history-visibility-handle-triangle" aria-hidden="true" />
