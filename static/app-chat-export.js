@@ -1133,8 +1133,7 @@
                 return entry && entry.time ? entry.time : '';
             }).filter(Boolean);
             if (times.length === 0) return '';
-            if (times[0] === times[times.length - 1]) return times[0];
-            return times[0] + ' - ' + times[times.length - 1];
+            return times[0];
         }
 
         function fitMetaText(ctx, text, maxWidth) {
