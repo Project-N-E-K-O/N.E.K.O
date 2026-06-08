@@ -94,6 +94,7 @@ const SPEECH_PLAYBACK_STATE_STORAGE_KEY = 'neko_speech_playback_state';
 const SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';
 const COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY = 'neko.reactChatWindow.compactExportHistoryOpen';
 const COMPACT_HISTORY_HEIGHT_STORAGE_KEY = 'neko.reactChatWindow.compactHistorySlotHeight';
+const COMPACT_INPUT_TOOL_WHEEL_INDEX_STORAGE_KEY = 'neko.reactChatWindow.compactInputToolWheelIndex';
 export const COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS = 560;
 const COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT = 7;
 const COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD = 22;
@@ -357,6 +358,32 @@ function persistCompactHistorySlotHeight(value: number | null) {
   } catch {
     // localStorage can be unavailable in restricted hosts; keep the in-memory state.
   }
+}
+
+function normalizeCompactInputToolWheelIndex(value: unknown): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 0;
+  const index = Math.trunc(parsed);
+  return ((index % COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT) + COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT) % COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT;
+}
+
+function readPersistedCompactInputToolWheelIndex(): number {
+  if (typeof window === 'undefined') return 0;
+  try {
+    return normalizeCompactInputToolWheelIndex(window.localStorage?.getItem(COMPACT_INPUT_TOOL_WHEEL_INDEX_STORAGE_KEY));
+  } catch {
+    return 0;
+  }
+}
+
+function persistCompactInputToolWheelIndex(index: number) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage?.setItem(
+      COMPACT_INPUT_TOOL_WHEEL_INDEX_STORAGE_KEY,
+      String(normalizeCompactInputToolWheelIndex(index)),
+    );
+  } catch {}
 }
 
 // 历史区高度上限的基数：Electron 独立窗口用工作区高度（窗口可能只覆盖部分屏，不能用 innerHeight），
@@ -1293,7 +1320,7 @@ function CompactChatApp({
   const [compactInputToolFanOpen, setCompactInputToolFanOpen] = useState(false);
   const [compactInputToolFanInteractive, setCompactInputToolFanInteractive] = useState(false);
   const [compactInputToolWheelLayout, setCompactInputToolWheelLayout] = useState<CompactInputToolWheelLayout>('default');
-  const [compactInputToolWheelIndex, setCompactInputToolWheelIndex] = useState(0);
+  const [compactInputToolWheelIndex, setCompactInputToolWheelIndex] = useState(readPersistedCompactInputToolWheelIndex);
   const [compactInputToolWheelFastAnimation, setCompactInputToolWheelFastAnimation] = useState(false);
   const [compactInputToolWheelChargeRatio, setCompactInputToolWheelChargeRatio] = useState(0);
   const [compactInputToolWheelChargeDirection, setCompactInputToolWheelChargeDirection] = useState<1 | -1 | null>(null);
@@ -3182,6 +3209,10 @@ function CompactChatApp({
     toolMenuOpen,
   ]);
 
+  useEffect(() => {
+    persistCompactInputToolWheelIndex(compactInputToolWheelIndex);
+  }, [compactInputToolWheelIndex]);
+
   useLayoutEffect(() => {
     if (!compactInputToolFanOpen) {
       setCompactInputToolWheelLayout('default');
@@ -3211,17 +3242,11 @@ function CompactChatApp({
 
   const openCompactInputToolFan = useCallback((intent: 'click' | 'hover') => {
     if (composerDisabled || compactInputHasPayload) return;
-    // hover 模式下指针抖动离开再回来会重入本函数，但 fan 其实从未关闭（只挂了延迟关闭定时器）。
-    // 复位只能发生在「真正从关闭态展开」时，否则用户刚转出来正要去够的工具会被弹回默认位。
-    const wasAlreadyOpen = compactInputToolFanOpenRef.current;
+    // 展开时延续上次轮盘中心索引；hover 抖动重入或重新打开都不应把用户刚滚到的位置弹回默认位。
     clearCompactInputToolFanCloseTimer();
     clearCompactInputToolFanInteractiveTimer();
     compactInputToolFanOpenIntentRef.current = intent;
     setCompactInputToolWheelLayout('default');
-    if (!wasAlreadyOpen) {
-      // 每次展开都把轮盘转角复位到默认（环位 0 居中），不保留上次转到的位置。
-      setCompactInputToolWheelIndex(0);
-    }
     setCompactInputToolFanInteractiveState(false);
     updateCompactInputToolFanPosition();
     compactInputToolFanOpenRef.current = true;

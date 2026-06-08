@@ -11,9 +11,11 @@ import { parseChatMessage, type CompactChatState } from './message-schema';
 
 describe('App', () => {
   const COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY = 'neko.reactChatWindow.compactExportHistoryOpen';
+  const COMPACT_INPUT_TOOL_WHEEL_INDEX_STORAGE_KEY = 'neko.reactChatWindow.compactInputToolWheelIndex';
 
   beforeEach(() => {
     window.localStorage.removeItem(COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY);
+    window.localStorage.removeItem(COMPACT_INPUT_TOOL_WHEEL_INDEX_STORAGE_KEY);
     document.body.classList.remove('yui-guide-chat-buttons-disabled');
   });
 
@@ -4302,6 +4304,41 @@ describe('App', () => {
     expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
 
     fireEvent.pointerUp(fan, { pointerId: 7, clientX: 101, clientY: 100, buttons: 0, pointerType: 'mouse' });
+  });
+
+  it('reopens compact input tools at the last wheel position', () => {
+    const { unmount } = render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+      />,
+    );
+
+    const actionButton = screen.getByRole('button', { name: '鏇村宸ュ叿' });
+    fireEvent.click(actionButton);
+    let fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
+
+    fireEvent.wheel(fan, { deltaY: 80 });
+    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
+    expect(window.localStorage.getItem(COMPACT_INPUT_TOOL_WHEEL_INDEX_STORAGE_KEY)).toBe('1');
+
+    fireEvent.click(actionButton);
+    expect(fan).toHaveAttribute('data-compact-input-tool-fan-open', 'false');
+    fireEvent.click(actionButton);
+    fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
+
+    unmount();
+    render(
+      <App
+        chatSurfaceMode="compact"
+        compactChatState="input"
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: '鏇村宸ュ叿' }));
+    fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
+    expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
   });
 
   it('stops compact input tool wheel motion on pointer release', async () => {
