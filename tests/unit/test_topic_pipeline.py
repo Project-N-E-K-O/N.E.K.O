@@ -356,6 +356,48 @@ async def test_topic_pool_triggers_ready_hook_after_quiet_window():
 
 
 @pytest.mark.asyncio
+async def test_topic_pool_clears_pending_trigger_when_privacy_turns_on(monkeypatch):
+    delivered = []
+    privacy_enabled = False
+
+    async def fake_analyzer(*, user_msgs, ai_msgs, lang, **kwargs):
+        return [
+            {
+                "interest": "买车像进入新生活阶段",
+                "hook": "从买车背后的生活阶段感切入",
+                "priority": 95,
+            }
+        ]
+
+    async def fake_trigger(*, lanlan_name, material, lang):
+        delivered.append((lanlan_name, material["interest"], lang))
+        return True
+
+    monkeypatch.setattr(
+        "main_logic.topic_pipeline._privacy_mode_active",
+        lambda: privacy_enabled,
+    )
+    pool = TopicHookPool(
+        analyzer=fake_analyzer,
+        auto_schedule=False,
+        enable_online_enrichment=False,
+        topic_trigger=fake_trigger,
+        trigger_delay_seconds=0.01,
+        min_user_turns_for_topic=1,
+    )
+    pool.note_user_message("妮可", "我感觉买车算人生大事，最近一直在想它是不是代表生活进入新阶段", lang="zh-CN")
+
+    await pool.process_now("妮可")
+    assert pool.get_ready_materials("妮可")
+
+    privacy_enabled = True
+    await asyncio.sleep(0.03)
+
+    assert delivered == []
+    assert pool.get_ready_materials("妮可") == []
+
+
+@pytest.mark.asyncio
 async def test_topic_pool_triggers_highest_priority_material_first():
     delivered = []
 

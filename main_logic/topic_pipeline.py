@@ -442,6 +442,14 @@ class TopicHookPool:
             )
             if wait_seconds:
                 await asyncio.sleep(wait_seconds)
+            if _privacy_mode_active():
+                self._user_turns.pop(name, None)
+                self._ai_turns.pop(name, None)
+                self._signal_store.clear(name)
+                self._materials.pop(name, None)
+                self._dirty.discard(name)
+                logger.info("[%s] topic material trigger cancelled: privacy mode active", name)
+                return
             if self._seq.get(name, 0) != expected_seq:
                 return
             current = self._materials.get(name) or []
