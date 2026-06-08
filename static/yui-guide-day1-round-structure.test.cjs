@@ -112,6 +112,8 @@ test('Day1 return control cursor moves to the capsule primary target before the 
   assert.match(directorSource, /if \(targetKey === 'chat-capsule-input'\) \{\s*return 'capsule-input';/);
   assert.match(appInterpageSource, /if \(kind === 'capsule-input'\) \{[\s\S]*data-compact-geometry-part="capsuleBody"/);
   assert.match(appInterpageSource, /if \(kind === 'input' \|\| kind === 'capsule-input'\) \{\s*return false;/);
+  assert.match(directorSource, /setExternalizedChatCursorEffect\(kind,\s*effect,\s*options\)[\s\S]*this\.rememberExternalizedChatCursorHandoffPoint\(normalizedKind,\s*cursorOptions\.effect\);[\s\S]*this\.interactionTakeover\.setExternalizedChatCursor\(normalizedKind,\s*cursorOptions\);/);
+  assert.doesNotMatch(appInterpageSource, /payload\.cursor\s*=\s*yuiGuidePcOverlayCursor/);
   const moveIndex = directorSource.indexOf('await this.moveAvatarFloatingCursor(scene, cursorTarget || primaryTarget');
   const operationIndex = directorSource.indexOf('await startSceneOperation();', moveIndex);
   assert.notStrictEqual(moveIndex, -1, 'expected generic avatar floating cursor move');

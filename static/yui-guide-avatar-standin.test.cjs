@@ -36,20 +36,40 @@ test('does not return cues for final petal scenes or unselected scenes', () => {
 
 test('exports all fixed day two through seven cues with legal assets and positions', () => {
     const cues = standIn.getAllCues();
-    const allowedResources = new Set(['peek-left-border', 'peek-right-border', 'peek-head']);
-    const allowedPositions = new Set(['left-bottom', 'right-bottom', 'bottom-right', 'top-left-flipped']);
+    const allowedResources = new Set(['peek-left-border', 'peek-right-border', 'peek-head', 'day5-character-settings']);
+    const allowedPositions = new Set(['left-bottom', 'right-bottom', 'bottom-right', 'top-left-flipped', 'middle-left']);
 
     assert.equal(Object.keys(cues).length, 6);
     for (const day of [2, 3, 4, 5, 6, 7]) {
         const dayCues = Object.values(cues[String(day)] || {});
         assert.equal(dayCues.length, 2);
         for (const cue of dayCues) {
-            assert.equal(cue.delayMs, 900);
+            assert.ok(cue.delayMs === 900 || cue.delayMs === 2900);
             assert.equal(cue.durationMs, 5000);
             assert.equal(allowedResources.has(cue.resource), true);
             assert.equal(allowedPositions.has(cue.position), true);
         }
     }
+});
+
+test('day five first stand-in cue uses the supplied replacement artwork only', () => {
+    assert.deepEqual(standIn.getCue(5, 'day5_character_settings'), {
+        delayMs: 2900,
+        durationMs: 5000,
+        resource: 'day5-character-settings',
+        position: 'middle-left'
+    });
+    assert.equal(
+        standIn.getResourcePath('day5-character-settings'),
+        '/static/assets/tutorial/avatar-standins/day5-character-settings.png'
+    );
+    assert.equal(standIn.getCue(2, 'day2_proactive_chat').resource, 'peek-right-border');
+    assert.equal(standIn.getCue(6, 'day6_plugin_dashboard').resource, 'peek-right-border');
+});
+
+test('director schedules day five first stand-in two seconds later than default cues', () => {
+    assert.match(directorSource, /this\.avatarStandInShowTimer = window\.setTimeout\(\(\) => \{[\s\S]*\}, Math\.max\(0, Number\(cue\.delayMs\) \|\| 0\)\);/);
+    assert.equal(standIn.getCue(5, 'day5_character_settings').delayMs - standIn.DELAY_MS, 2000);
 });
 
 test('director fades the model before showing avatar stand-in overlay', () => {

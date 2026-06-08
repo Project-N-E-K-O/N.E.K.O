@@ -1490,6 +1490,14 @@
                 element.style.transform = 'scaleY(-1)';
                 return;
             }
+            if (normalizedPosition === 'middle-left') {
+                element.style.left = 'min(18vw, 220px)';
+                element.style.top = '50%';
+                element.style.maxWidth = 'min(42vw, 420px)';
+                element.style.height = 'auto';
+                element.style.transform = 'translateY(-50%)';
+                return;
+            }
             element.style.right = 'min(16vw, 180px)';
             element.style.bottom = '0';
             element.style.maxWidth = 'min(42vw, 420px)';

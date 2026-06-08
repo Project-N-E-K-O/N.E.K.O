@@ -8,6 +8,7 @@
     'use strict';
 
     const DELAY_MS = 900;
+    const DAY5_CHARACTER_SETTINGS_DELAY_MS = DELAY_MS + 2000;
     const DURATION_MS = 5000;
 
     const CUES = Object.freeze({
@@ -24,7 +25,7 @@
             day4_return_home: cue('peek-left-border', 'left-bottom')
         }),
         5: Object.freeze({
-            day5_character_settings: cue('peek-right-border', 'right-bottom'),
+            day5_character_settings: cue('day5-character-settings', 'middle-left', DAY5_CHARACTER_SETTINGS_DELAY_MS),
             day5_memory_entry: cue('peek-head', 'top-left-flipped')
         }),
         6: Object.freeze({
@@ -40,12 +41,13 @@
     const RESOURCE_PATHS = Object.freeze({
         'peek-left-border': '/static/assets/tutorial/avatar-standins/peek-left-border.png',
         'peek-right-border': '/static/assets/tutorial/avatar-standins/peek-right-border.png',
-        'peek-head': '/static/assets/tutorial/avatar-standins/peek-head.png'
+        'peek-head': '/static/assets/tutorial/avatar-standins/peek-head.png',
+        'day5-character-settings': '/static/assets/tutorial/avatar-standins/day5-character-settings.png'
     });
 
-    function cue(resource, position) {
+    function cue(resource, position, delayMs) {
         return Object.freeze({
-            delayMs: DELAY_MS,
+            delayMs: Number.isFinite(delayMs) ? delayMs : DELAY_MS,
             durationMs: DURATION_MS,
             resource,
             position

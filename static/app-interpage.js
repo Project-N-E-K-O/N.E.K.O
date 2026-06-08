@@ -2841,8 +2841,6 @@
 
     var yuiGuidePcOverlaySequence = 0;
     var yuiGuidePcOverlaySpotlights = [];
-    var yuiGuidePcOverlayCursor = null;
-    var yuiGuidePcOverlayCursorEffectSuppressUntil = 0;
     var yuiGuidePcOverlayAvatarStandIn = null;
     var yuiGuidePcOverlayActive = false;
     var yuiGuidePcOverlayReady = false;
@@ -2922,38 +2920,6 @@
         };
     }
 
-    function withoutTransientYuiGuideCursorEffect(cursor) {
-        if (!cursor) {
-            return null;
-        }
-        var nextCursor = Object.assign({}, cursor);
-        delete nextCursor.effect;
-        delete nextCursor.effectDurationMs;
-        return nextCursor;
-    }
-
-    function getYuiGuidePcOverlayCursorEffectDurationMs(cursor) {
-        if (!cursor || cursor.visible === false) {
-            return 0;
-        }
-        var effect = typeof cursor.effect === 'string' ? cursor.effect : '';
-        if (effect !== 'click' && effect !== 'wobble') {
-            return 0;
-        }
-        var effectDurationMs = Number.isFinite(cursor.effectDurationMs)
-            ? Math.max(0, Math.floor(cursor.effectDurationMs))
-            : 0;
-        if (effectDurationMs > 0) {
-            return effectDurationMs;
-        }
-        return effect === 'click' ? 420 : 2000;
-    }
-
-    function isYuiGuidePcOverlayCursorEffectActive() {
-        return yuiGuidePcOverlayCursorEffectSuppressUntil > 0
-            && Date.now() < yuiGuidePcOverlayCursorEffectSuppressUntil;
-    }
-
     function sendYuiGuidePcOverlayPatch(patch) {
         if (!isYuiGuidePcOverlayAvailable()) {
             yuiGuidePcOverlayReady = false;
@@ -2963,13 +2929,6 @@
         var hasAvatarStandIn = patch && Object.prototype.hasOwnProperty.call(patch, 'avatarStandIn');
         if (patch && Object.prototype.hasOwnProperty.call(patch, 'spotlights')) {
             yuiGuidePcOverlaySpotlights = Array.isArray(patch.spotlights) ? patch.spotlights : [];
-        }
-        if (patch && Object.prototype.hasOwnProperty.call(patch, 'cursor')) {
-            yuiGuidePcOverlayCursor = withoutTransientYuiGuideCursorEffect(patch.cursor);
-            var cursorEffectDurationMs = getYuiGuidePcOverlayCursorEffectDurationMs(patch.cursor);
-            yuiGuidePcOverlayCursorEffectSuppressUntil = cursorEffectDurationMs > 0
-                ? Date.now() + cursorEffectDurationMs
-                : 0;
         }
         if (hasAvatarStandIn) {
             yuiGuidePcOverlayAvatarStandIn = patch.avatarStandIn || null;
@@ -2998,8 +2957,6 @@
             };
             if (hasCursor) {
                 payload.cursor = patch.cursor || null;
-            } else if (yuiGuidePcOverlayCursor && !isYuiGuidePcOverlayCursorEffectActive()) {
-                payload.cursor = yuiGuidePcOverlayCursor;
             }
             if (yuiGuidePcOverlayAvatarStandIn || hasAvatarStandIn) {
                 payload.avatarStandIn = yuiGuidePcOverlayAvatarStandIn;

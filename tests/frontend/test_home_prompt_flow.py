@@ -7755,10 +7755,114 @@ def test_day3_first_line_externalized_chat_uses_input_spotlight_and_cursor(
     )
 
     assert "spotlight:input" in result
-    assert any(event.startswith("cursor:input:") for event in result)
-    assert "cursor:input:move" not in result
+    assert "cursor:input::0" in result
     assert "spotlight:tool-toggle" not in result
     assert "operation:open-compact-tool-fan" not in result
+
+
+@pytest.mark.frontend
+def test_day2_to_day7_first_line_externalized_chat_uses_input_spotlight_and_cursor(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.__NEKO_MULTI_WINDOW__ = true;
+            document.body.innerHTML = `<div id="react-chat-window-overlay" style="display:none;"></div>`;
+        """,
+        script_names=(
+            "yui-guide-overlay.js",
+            "yui-guide-director.js",
+            "yui-guide-day2-screen-voice-guide.js",
+            "yui-guide-day3-interaction-guide.js",
+            "yui-guide-day4-companion-guide.js",
+            "yui-guide-day5-personalization-guide.js",
+            "yui-guide-day6-agent-guide.js",
+            "yui-guide-day7-graduation-guide.js",
+        ),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const expectedFirstSceneIds = {
+                2: 'day2_intro_context',
+                3: 'day3_tool_toggle_intro',
+                4: 'day4_intro_companion',
+                5: 'day5_character_settings',
+                6: 'day6_intro_agent',
+                7: 'day7_memory_review',
+            };
+            const results = {};
+            for (const day of [2, 3, 4, 5, 6, 7]) {
+                const director = window.createYuiGuideDirector({ page: 'home' });
+                const events = [];
+                director.interactionTakeover = {
+                    setExternalizedChatSpotlight: (kind) => events.push('spotlight:' + String(kind || '')),
+                    setExternalizedChatCursor: (kind, options) => {
+                        events.push(
+                            'cursor:'
+                            + String(kind || '')
+                            + ':'
+                            + String(options && options.effect || '')
+                            + ':'
+                            + (
+                                options && Object.prototype.hasOwnProperty.call(options, 'durationMs')
+                                    ? String(options.durationMs)
+                                    : 'unset'
+                            )
+                        );
+                        window.dispatchEvent(new CustomEvent('neko:yui-guide:external-chat-cursor-anchor', {
+                            detail: {
+                                x: 640,
+                                y: 430,
+                                kind,
+                                effect: options && options.effect || '',
+                                source: 'external-chat',
+                                timestamp: Date.now(),
+                            },
+                        }));
+                    },
+                };
+                director.speakGuideLine = async () => null;
+                director.waitForSceneDelay = async () => true;
+                director.appendGuideChatMessage = () => {};
+                director.applyGuideEmotion = () => {};
+                director.prepareAvatarFloatingScene = async () => {};
+                director.resolveAvatarFloatingPersistent = async () => null;
+                director.resolveAvatarFloatingTarget = async () => null;
+                director.runAvatarFloatingSceneOperation = async (playedScene) => {
+                    events.push('operation:' + String(playedScene.operation || ''));
+                    return true;
+                };
+                director.enableInterrupts = () => {};
+                director.openSettingsPanel = async () => true;
+                director.waitForElement = async () => null;
+                director.ensureAvatarFloatingSettingsSidePanel = async () => null;
+                director.getDay4SettingsButtonSpotlightTarget = () => null;
+                director.getDay5CharacterSettingsButtonTarget = () => null;
+
+                const scene = window.YuiGuideDailyGuides[day].round.scenes[0];
+                if (scene.id !== expectedFirstSceneIds[day]) {
+                    throw new Error('Unexpected first scene for day ' + day + ': ' + scene.id);
+                }
+                await director.playAvatarFloatingScene(
+                    scene,
+                    day,
+                    0,
+                    window.YuiGuideDailyGuides[day].round.scenes.length
+                );
+                results[day] = events;
+            }
+            return results;
+        }
+        """
+    )
+
+    for day in ["2", "3", "4", "5", "6", "7"]:
+        assert "spotlight:input" in result[day]
+        assert "cursor:input::0" in result[day]
 
 
 @pytest.mark.frontend
