@@ -4511,6 +4511,26 @@ describe('App', () => {
     expect(container.querySelector('.compact-chat-minimize-ball')).not.toBeNull();
   });
 
+  it('clears the active avatar tool cursor before compact minimize', async () => {
+    const onCompactMinimizeRequest = vi.fn();
+    const { container } = render(
+      <App chatSurfaceMode="compact" compactChatState="input" onCompactMinimizeRequest={onCompactMinimizeRequest} />,
+    );
+
+    await openCompactInputTools();
+    fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+    fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
+
+    await waitFor(() => {
+      expect(document.documentElement).toHaveClass('neko-tool-cursor-active');
+    });
+
+    fireEvent.click(container.querySelector('.compact-chat-minimize-ball') as HTMLButtonElement);
+
+    expect(onCompactMinimizeRequest).toHaveBeenCalledTimes(1);
+    expect(document.documentElement).not.toHaveClass('neko-tool-cursor-active');
+  });
+
   it('dispatches a compact surface drag-grab from the tool toggle when pressed and moved past threshold', () => {
     render(
       <App
@@ -5431,6 +5451,59 @@ describe('App', () => {
         actionId: 'poke',
         touchZone: 'body',
       }));
+    } finally {
+      randomSpy.mockRestore();
+      delete (window as Window & { live2dManager?: unknown }).live2dManager;
+      live2dContainer.remove();
+    }
+  });
+
+  it('uses viewport positioning for cat-paw reward drops', async () => {
+    const onAvatarInteraction = vi.fn();
+    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0.1);
+    const live2dContainer = document.createElement('div');
+    live2dContainer.id = 'live2d-container';
+    Object.defineProperty(live2dContainer, 'getClientRects', {
+      configurable: true,
+      value: () => [{ width: 100, height: 100 }],
+    });
+    document.body.appendChild(live2dContainer);
+
+    Object.assign(window, {
+      live2dManager: {
+        currentModel: {},
+        getModelScreenBounds: () => ({
+          left: 100,
+          right: 220,
+          top: 100,
+          bottom: 220,
+          width: 120,
+          height: 120,
+        }),
+      },
+    });
+
+    try {
+      const { container } = renderInputApp({ onAvatarInteraction });
+
+      await openCompactInputTools();
+      fireEvent.click(screen.getByRole('button', { name: 'Emoji' }));
+      fireEvent.click(screen.getByRole('button', { name: '猫爪' }));
+
+      fireEvent.pointerDown(window, { button: 0, clientX: 190, clientY: 190 });
+
+      expect(onAvatarInteraction).toHaveBeenCalledWith(expect.objectContaining({
+        toolId: 'fist',
+        rewardDrop: true,
+      }));
+
+      const firstDrop = container.querySelector<HTMLElement>('.fist-floating-drop');
+      expect(firstDrop).not.toBeNull();
+      expect(window.getComputedStyle(firstDrop!).position).toBe('fixed');
+      expect(firstDrop).toHaveStyle({
+        left: '171px',
+        top: '159px',
+      });
     } finally {
       randomSpy.mockRestore();
       delete (window as Window & { live2dManager?: unknown }).live2dManager;

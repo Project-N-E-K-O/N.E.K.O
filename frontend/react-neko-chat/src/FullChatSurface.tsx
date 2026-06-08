@@ -2716,8 +2716,8 @@ export default function FullChatSurface({
       const distance = 76 + Math.random() * 42;
       return {
         id: floatingFistDropIdRef.current += 1,
-        x: clientX - 8 + (Math.random() * 28 - 14),
-        y: clientY - 24 + (Math.random() * 18 - 9),
+        x: Math.round(clientX - 8 + (Math.random() * 28 - 14)),
+        y: Math.round(clientY - 24 + (Math.random() * 18 - 9)),
         driftX: Math.round(Math.cos(launchAngleRad) * distance),
         driftY: Math.round(Math.sin(launchAngleRad) * distance),
         rotation: Math.round(-120 + Math.random() * 240),
@@ -4057,6 +4057,7 @@ export default function FullChatSurface({
           className="fist-floating-drop"
           aria-hidden="true"
           style={{
+            position: 'fixed',
             left: `${drop.x}px`,
             top: `${drop.y}px`,
             '--drop-drift-x': `${drop.driftX}px`,

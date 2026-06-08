@@ -120,7 +120,7 @@ svg {
   --drop-rotation: 0deg;
   --drop-scale: 1;
   --drop-delay: 0ms;
-  position: absolute;
+  position: fixed;
   left: calc(100% - 30px);
   top: 33px;
   z-index: 10000;
