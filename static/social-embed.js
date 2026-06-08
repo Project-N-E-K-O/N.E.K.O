@@ -22,6 +22,19 @@
 
   function open(url) {
     if (!url) return;
+    // 安全：只放行 http/https，挡掉 javascript:/data: 等（social_base_url 来自 env，
+    // 误配/被篡改时防把不可信页面高权限嵌进主界面）。
+    var parsed;
+    try {
+      parsed = new URL(url, window.location.href);
+    } catch (e) {
+      console.warn('[social-embed] invalid url:', url);
+      return;
+    }
+    if (!/^https?:$/.test(parsed.protocol)) {
+      console.warn('[social-embed] blocked non-http(s) url:', parsed.protocol);
+      return;
+    }
     close(); // 已开则先关，避免叠加多个
 
     var backdrop = document.createElement('div');
@@ -57,8 +70,12 @@
 
     var frame = document.createElement('iframe');
     frame.className = 'neko-social-embed-iframe';
-    frame.src = url;
+    frame.src = parsed.toString();
     frame.setAttribute('allow', 'clipboard-read; clipboard-write');
+    // 沙箱限权：社区是云端独立站，只给它需要的最小权限（脚本/表单/自身 origin 的 storage-cookie/弹窗），
+    // 挡掉顶层跳转等越权；referrer 不外泄。allow-same-origin 必需（社区在 iframe 内按自己 :8080 origin 登录）。
+    frame.setAttribute('sandbox', 'allow-scripts allow-forms allow-same-origin allow-popups');
+    frame.setAttribute('referrerpolicy', 'no-referrer');
 
     win.appendChild(bar);
     win.appendChild(frame);
