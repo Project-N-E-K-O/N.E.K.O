@@ -165,7 +165,11 @@
     }
 
     // Default surface when the user has no persisted preference yet.
-    //   - Web / browser → `full` (the complete chat window).
+    //   - Web / browser (wide) → `full` (the complete chat window).
+    //   - Web / browser (mobile width, non-Electron) → `compact` (the floating
+    //     bar): the full window is built for desktop and overflows a phone, so a
+    //     fresh narrow visitor opens compact. `isMobileWidth()` already excludes
+    //     both Electron runtimes, so this only ever fires for narrow web.
     //   - Electron desktop shell → `compact` (the floating bar): the chat window
     //     (chat.html, electron chat body class) and the pet window (index.html,
     //     __LANLAN_IS_ELECTRON_PET__) both opt into compact.
@@ -180,6 +184,7 @@
         try {
             if (window.__LANLAN_IS_ELECTRON_PET__) return 'compact';
         } catch (_) {}
+        if (isMobileWidth()) return 'compact';
         return 'full';
     }
 
