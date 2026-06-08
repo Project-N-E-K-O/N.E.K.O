@@ -66,6 +66,9 @@
         // 变猫时刻 + 入口（自动 idle / 手动请离开），供"变回时"猫咪专属问候独立计时
         goodbyeEnteredAt: 0,
         goodbyeWasAuto: false,
+        // 用户「自动变猫」开关：true=启用自动变猫（默认）。禁用时 getIdleBlockReasons 持续上报
+        // 'user-disabled'，从而挡掉自动 idle 变猫；不影响已处猫态或手动请离开。init 时从 localStorage 读取。
+        autoCatEnabled: true,
     };
 
     function nowMs() {
@@ -182,6 +185,53 @@
     function hasOpenSocket() {
         const socket = window.appState && window.appState.socket;
         return !!(socket && socket.readyState === WebSocket.OPEN);
+    }
+
+    function rememberGoodbyeSilentState(active, reason, pending) {
+        window.__nekoGoodbyeSilentState = {
+            active: !!active,
+            reason: reason || (active ? 'goodbye' : 'return'),
+            pending: !!pending,
+            updatedAt: nowMs(),
+        };
+    }
+
+    function syncGoodbyeSilentState(active, reason) {
+        const resolvedReason = reason || (active ? 'goodbye' : 'return');
+        rememberGoodbyeSilentState(active, resolvedReason, true);
+        const socket = window.appState && window.appState.socket;
+        if (!socket || typeof socket.send !== 'function') {
+            return;
+        }
+        if (typeof WebSocket === 'undefined' || socket.readyState !== WebSocket.OPEN) {
+            return;
+        }
+        try {
+            socket.send(JSON.stringify({
+                action: 'goodbye_state',
+                active: !!active,
+                reason: resolvedReason,
+            }));
+            rememberGoodbyeSilentState(active, resolvedReason, false);
+        } catch (_) {}
+    }
+
+    // 刷新 / 重启 renderer 后，前端 goodbye 视觉态（_goodbyeClicked）随页面重置为「她已回来」，
+    // 但后端 LLMSessionManager.goodbye_silent 跨 WS 重连存活，可能仍残留上一会话「请她离开」的
+    // 静默——使 greeting / proactive 被压住，角色看着在场却不主动搭话，直到用户显式开会话才解除。
+    // 本控制器只在 pet / 具名角色页（isEligiblePage）启动，是唯一对 goodbye 状态有权威判断的窗口；
+    // chat 等不挂 model manager 的窗口不跑本控制器，天然不会误清别的窗口里真实的 goodbye。
+    // 仅在「全新页面（无 __nekoGoodbyeSilentState 记忆）且当前不在 goodbye」时对账一次，发
+    // goodbye_state:false 清掉后端陈旧静默。同会话内的 WS 重连已有记忆 → 跳过不重复发；真处于
+    // goodbye → isGoodbyeActive 拦住，仍由现有 onopen / goodbye-click 链路重新断言 active=true。
+    function reconcileStaleGoodbyeSilentOnPrime() {
+        if (isGoodbyeActive()) {
+            return;
+        }
+        if (window.__nekoGoodbyeSilentState) {
+            return;
+        }
+        syncGoodbyeSilentState(false, 'fresh-connect-reconcile');
     }
 
     function markIdleBaseline(source) {
@@ -327,8 +377,40 @@
         return hasVisibleElements(['[data-dragging="true"]']);
     }
 
+    var AUTO_CAT_ENABLED_STORAGE_KEY = 'neko.autoCat.enabled';
+
+    function readAutoCatEnabledPreference() {
+        try {
+            // 默认启用：只有显式存过 'false' 才视为用户禁用；未设置/异常都按启用，保持原有行为。
+            return window.localStorage.getItem(AUTO_CAT_ENABLED_STORAGE_KEY) !== 'false';
+        } catch (_) {
+            return true;
+        }
+    }
+
+    function isAutoCatEnabled() {
+        return state.autoCatEnabled !== false;
+    }
+
+    function setAutoCatEnabled(enabled) {
+        const next = enabled !== false;
+        state.autoCatEnabled = next;
+        try {
+            window.localStorage.setItem(AUTO_CAT_ENABLED_STORAGE_KEY, next ? 'true' : 'false');
+        } catch (_) {}
+        // 重新开启时刷新计时基线，避免开启瞬间因已超时而立刻变猫；
+        // 任一方向都立即重算抑制状态（禁用→进入抑制挡掉后续自动变猫，启用→解除该抑制原因）。
+        if (next) {
+            noteUserInteraction('auto-cat-enabled');
+        }
+        syncIdleSuppressionState('auto-cat-toggle');
+    }
+
     function getIdleBlockReasons() {
         const reasons = [];
+        if (!state.autoCatEnabled) {
+            reasons.push('user-disabled');
+        }
         if (isTutorialGuardActive()) {
             reasons.push('tutorial-guard');
         }
@@ -422,6 +504,7 @@
         emitStateChange('infrastructure-primed', {
             reason: 'websocket-open',
         });
+        reconcileStaleGoodbyeSilentOnPrime();
         return true;
     }
 
@@ -717,11 +800,13 @@
                     reason: state.lastReason,
                 });
             }
+            syncGoodbyeSilentState(true, state.lastReason);
         });
 
         const handleReturn = () => {
             // 变回猫娘前，按"作为猫咪待了多久 + 此刻所处 tier（清醒/打盹/熟睡）"
             // 请求一次专属问候。tier 必须在 setVisualTier(NONE) 清空之前读取。
+            syncGoodbyeSilentState(false, 'return-click');
             if (state.goodbyeEnteredAt > 0) {
                 const durationSeconds = Math.max(0, Math.floor((nowMs() - state.goodbyeEnteredAt) / 1000));
                 try {
@@ -749,7 +834,7 @@
         window.addEventListener('mmd-return-click', handleReturn);
         window.addEventListener('neko:return-ball-manual-move', (event) => {
             const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
-            if (detail.reason === 'return-ball-drag-end') {
+            if (detail.reason === 'return-ball-drag-end' && detail.dragCancelled !== true) {
                 handleReturnBallDragEnd();
             }
         });
@@ -782,6 +867,9 @@
         start();
     }
 
+    // 启动即读取用户「自动变猫」开关偏好（默认启用），供 getIdleBlockReasons 判定。
+    state.autoCatEnabled = readAutoCatEnabledPreference();
+
     window.nekoAutoGoodbye = {
         noteUserInteraction: noteUserInteraction,
         hasBlockingActiveWork: hasBlockingActiveWork,
@@ -790,6 +878,8 @@
         getIdleBlockReasons: getIdleBlockReasons,
         tryAutoGoodbye: tryAutoGoodbye,
         setVisualTier: setVisualTier,
+        setAutoCatEnabled: setAutoCatEnabled,
+        isAutoCatEnabled: isAutoCatEnabled,
         clearTimers: clearTimers,
         getState: getState,
     };

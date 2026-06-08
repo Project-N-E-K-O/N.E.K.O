@@ -50,6 +50,38 @@ from utils.steam_state import get_steamworks
 logger = get_module_logger(__name__)
 
 
+class LocalStateDirectoryError(OSError):
+    """Raised when the local non-cloud state directory cannot be prepared."""
+
+    local_state_directory_error = True
+
+    def __init__(
+        self,
+        message,
+        *,
+        anchor_root=None,
+        local_state_dir=None,
+        failed_path=None,
+        reason="",
+    ):
+        self.anchor_root = str(Path(anchor_root).expanduser().resolve(strict=False)) if anchor_root else ""
+        self.local_state_dir = (
+            str(Path(local_state_dir).expanduser().resolve(strict=False)) if local_state_dir else ""
+        )
+        self.failed_path = str(Path(failed_path).expanduser().resolve(strict=False)) if failed_path else ""
+        self.reason = str(reason or "")
+        parts = [str(message or "Local state directory is unavailable")]
+        if self.anchor_root:
+            parts.append(f"anchor_root={self.anchor_root}")
+        if self.local_state_dir:
+            parts.append(f"local_state_dir={self.local_state_dir}")
+        if self.failed_path:
+            parts.append(f"failed_path={self.failed_path}")
+        if self.reason:
+            parts.append(f"reason={self.reason}")
+        super().__init__("\n".join(parts))
+
+
 def _as_bool(value, default=False):
     if isinstance(value, bool):
         return value
@@ -155,6 +187,16 @@ def _is_default_yui_character(character_name: str, character_data: dict) -> bool
         legacy_keys=("live2d",),
     )
     return _normalize_live2d_model_path(model_path) == DEFAULT_YUI_LIVE2D_MODEL_PATH
+
+
+# 历史上 free_voices["yui_cn"] 用过、现已被替换的免费 YUI 预设音色 ID。
+# 这些值仍残留在存量用户的 characters.json 里，但已不在 free_voices 白名单中，
+# 会被 cleanup_invalid_voice_ids 判为 invalid 清空 → 空 voice 落到 free/step
+# provider 的 default_voice（qingchunshaonv），导致「一直吃默认 YUI、从没手动
+# 选过音色」的免费用户在音色 ID 更替后无声掉档到通用女声。cleanup 在判 invalid
+# 前先把这些值平移到现役 yui_cn 即可兜住。将来再更替 YUI 音色时，把被替换掉的
+# 旧值追加进这个集合。
+_DEPRECATED_FREE_YUI_VOICE_IDS = frozenset({"voice-tone-R6NtLH3Hk0"})
 
 
 def _get_default_yui_free_voice_id() -> str:
@@ -1686,14 +1728,109 @@ class ConfigManager:
 
     def ensure_local_state_directory(self):
         """确保本地状态目录存在。"""
+        self._last_local_state_directory_error = None
         try:
-            if not self._ensure_anchor_root_directory():
-                return False
+            if self.anchor_root.exists() and not self.anchor_root.is_dir():
+                raise LocalStateDirectoryError(
+                    "Local state anchor root is unavailable",
+                    anchor_root=self.anchor_root,
+                    local_state_dir=self.local_state_dir,
+                    failed_path=self.anchor_root,
+                    reason="anchor_root exists but is not a directory",
+                )
+            self.anchor_root.mkdir(parents=True, exist_ok=True)
+            if self.local_state_dir.exists() and not self.local_state_dir.is_dir():
+                raise LocalStateDirectoryError(
+                    "Local state directory is unavailable",
+                    anchor_root=self.anchor_root,
+                    local_state_dir=self.local_state_dir,
+                    failed_path=self.local_state_dir,
+                    reason="local_state_dir exists but is not a directory",
+                )
             self.local_state_dir.mkdir(parents=True, exist_ok=True)
+            probe_path = self.local_state_dir / f".neko_state_write_probe.{uuid.uuid4().hex}.tmp"
+            try:
+                with open(probe_path, "w", encoding="utf-8") as probe_file:
+                    probe_file.write("probe")
+                    probe_file.flush()
+            finally:
+                try:
+                    probe_path.unlink()
+                except FileNotFoundError:
+                    pass
             return True
-        except Exception as e:
+        except LocalStateDirectoryError as e:
+            self._last_local_state_directory_error = e
             print(f"Warning: Failed to create local state directory: {e}", file=sys.stderr)
             return False
+        except Exception as e:
+            diagnostic = LocalStateDirectoryError(
+                "Local state directory is unavailable",
+                anchor_root=self.anchor_root,
+                local_state_dir=self.local_state_dir,
+                failed_path=self.local_state_dir,
+                reason=str(e),
+            )
+            self._last_local_state_directory_error = diagnostic
+            print(f"Warning: Failed to create local state directory: {diagnostic}", file=sys.stderr)
+            return False
+
+    def _raise_local_state_directory_error(self, operation):
+        diagnostic = getattr(self, "_last_local_state_directory_error", None)
+        message = f"Failed to ensure local state directory before {operation}"
+        if isinstance(diagnostic, LocalStateDirectoryError):
+            raise LocalStateDirectoryError(
+                message,
+                anchor_root=diagnostic.anchor_root,
+                local_state_dir=diagnostic.local_state_dir,
+                failed_path=diagnostic.failed_path,
+                reason=diagnostic.reason,
+            ) from diagnostic
+        raise LocalStateDirectoryError(
+            message,
+            anchor_root=self.anchor_root,
+            local_state_dir=self.local_state_dir,
+            failed_path=self.local_state_dir,
+            reason="ensure_local_state_directory returned False",
+        )
+
+    def _raise_local_state_file_error(self, operation, path, reason, cause=None):
+        error = LocalStateDirectoryError(
+            f"Failed to ensure local state file before {operation}",
+            anchor_root=self.anchor_root,
+            local_state_dir=self.local_state_dir,
+            failed_path=path,
+            reason=reason,
+        )
+        if cause is not None:
+            raise error from cause
+        raise error
+
+    def _save_local_state_json_file(self, path, data, operation):
+        path = Path(path)
+        if path.exists() and not path.is_file():
+            self._raise_local_state_file_error(
+                operation,
+                path,
+                "state file target exists but is not a file",
+            )
+        try:
+            self._save_json_file(path, data)
+        except OSError as e:
+            self._raise_local_state_file_error(operation, path, str(e), cause=e)
+
+    def _load_local_state_json_file(self, path, default_value, operation):
+        path = Path(path)
+        if path.exists() and not path.is_file():
+            self._raise_local_state_file_error(
+                operation,
+                path,
+                "state file target exists but is not a file",
+            )
+        try:
+            return self._load_json_file(path, default_value)
+        except OSError as e:
+            self._raise_local_state_file_error(operation, path, str(e), cause=e)
 
     def build_default_root_state(self):
         """构建默认 root_state 内容。"""
@@ -1748,7 +1885,11 @@ class ConfigManager:
         """加载 root_state；缺失时返回默认状态。"""
         if default_value is None:
             default_value = self.build_default_root_state()
-        state = self._load_json_file(self.root_state_path, default_value)
+        state = self._load_local_state_json_file(
+            self.root_state_path,
+            default_value,
+            "loading root_state",
+        )
         if self._has_selected_root_unavailable_recovery_override():
             return self._build_selected_root_unavailable_recovery_state(state)
         return state
@@ -1756,42 +1897,61 @@ class ConfigManager:
     def save_root_state(self, data):
         """保存 root_state。"""
         if not self.ensure_local_state_directory():
-            raise OSError("Failed to ensure local state directory before saving root_state")
-        self._save_json_file(self.root_state_path, data)
+            self._raise_local_state_directory_error("saving root_state")
+        self._save_local_state_json_file(self.root_state_path, data, "saving root_state")
 
     def load_cloudsave_local_state(self, default_value=None):
         """加载 cloudsave_local_state；缺失时返回带稳定字段结构的默认值。"""
         if default_value is None:
             default_value = self.build_default_cloudsave_local_state()
-        return self._load_json_file(self.cloudsave_local_state_path, default_value)
+        return self._load_local_state_json_file(
+            self.cloudsave_local_state_path,
+            default_value,
+            "loading cloudsave_local_state",
+        )
 
     def save_cloudsave_local_state(self, data):
         """保存 cloudsave_local_state。"""
         if not self.ensure_local_state_directory():
-            raise OSError("Failed to ensure local state directory before saving cloudsave_local_state")
-        self._save_json_file(self.cloudsave_local_state_path, data)
+            self._raise_local_state_directory_error("saving cloudsave_local_state")
+        self._save_local_state_json_file(
+            self.cloudsave_local_state_path,
+            data,
+            "saving cloudsave_local_state",
+        )
 
     def load_character_tombstones_state(self, default_value=None):
         """加载角色 tombstone 本地状态。"""
         if default_value is None:
             default_value = self.build_default_character_tombstones_state()
-        return self._load_json_file(self.character_tombstones_state_path, default_value)
+        return self._load_local_state_json_file(
+            self.character_tombstones_state_path,
+            default_value,
+            "loading character_tombstones_state",
+        )
 
     def save_character_tombstones_state(self, data):
         """保存角色 tombstone 本地状态。"""
         if not self.ensure_local_state_directory():
-            raise OSError("Failed to ensure local state directory before saving character_tombstones_state")
-        self._save_json_file(self.character_tombstones_state_path, data)
+            self._raise_local_state_directory_error("saving character_tombstones_state")
+        self._save_local_state_json_file(
+            self.character_tombstones_state_path,
+            data,
+            "saving character_tombstones_state",
+        )
 
     def ensure_cloudsave_state_files(self):
         """确保本地 cloudsave 相关状态文件存在，返回是否发生创建。"""
         created = False
         if not self.ensure_local_state_directory():
+            diagnostic = getattr(self, "_last_local_state_directory_error", None)
+            diagnostic_suffix = f"\n{diagnostic}" if diagnostic is not None else ""
             raise RuntimeError(
                 "Failed to initialize local state directory for "
                 f"{self.root_state_path.name}, "
                 f"{self.cloudsave_local_state_path.name}, and "
                 f"{self.character_tombstones_state_path.name}"
+                f"{diagnostic_suffix}"
             )
 
         if not self.root_state_path.exists():
@@ -2358,6 +2518,52 @@ class ConfigManager:
             voice_id.startswith("cosyvoice-v2") or voice_id.startswith("cosyvoice-v3-")
         )
 
+    @staticmethod
+    def is_deprecated_free_yui_voice_id(voice_id) -> bool:
+        """voice_id 是否是已被替换、仍残留在存量存档里的免费 YUI 预设音色。"""
+        return bool(voice_id) and str(voice_id).strip() in _DEPRECATED_FREE_YUI_VOICE_IDS
+
+    def remap_deprecated_free_yui_voice_id(self, voice_id):
+        """废弃的免费 YUI 预设音色 → 现役国内 yui_cn（仅国内 free 线路迁移）。
+
+        非废弃值原样返回（不做 strip 归一化），避免调用方把单纯的前后空白差异
+        误当成「已迁移」而 continue，漏掉本轮对无效 voice_id 的清理。
+
+        废弃值是国内 StepFun YUI tone，只有国内免费（lanlan.tech）线路会真正下发它，
+        也只有该线路迁移到现役 free_voices["yui_cn"]：
+          - 海外免费（lanlan.app → free_intl）：原样返回，交既有 validate 在海外线路
+            判 invalid 清空 → 落服务端默认音色 fallback。客户端不注入 "yui"/native
+            alias（PR #1643 设计原则：free_intl 继承 Gemini-native provider，不得把
+            StepFun magic id 或其 alias 漏进该 catalog；且无条件换成国内 voice-tone
+            还会让非空 voice_id 在 free_intl 落进 external TTS）。
+          - 非 free 路由：原样返回，废弃 StepFun preset 用不上，交清空兜底。
+        现役 yui_cn 缺失/为空/仍落废弃集合时也原样返回——绝不借 cuteGirl 等其它 preset
+        当替身把 YUI 串成别的音色，也不把废弃换成另一个废弃造成死循环。
+        """
+        if not self.is_deprecated_free_yui_voice_id(voice_id):
+            return voice_id
+        core_cfg = self.get_core_config() or {}
+        if (core_cfg.get("CORE_API_TYPE") or core_cfg.get("coreApi")) != "free":
+            return voice_id
+
+        # get_core_config() 已按非大陆把 CORE_URL 改写成 lanlan.app，URL 即可判海外；
+        # _check_non_mainland 兜底地理判定。与 ensure_default 同源。海外不迁移（见上）。
+        core_url = str(core_cfg.get("CORE_URL") or "")
+        overseas = is_free_lanlan_app_route("free", core_url)
+        if not overseas:
+            try:
+                overseas = bool(self._check_non_mainland())
+            except Exception:
+                overseas = False
+        if overseas:
+            return voice_id
+
+        from utils.api_config_loader import get_free_voices
+        current = str((get_free_voices() or {}).get("yui_cn") or "").strip()
+        if current and current not in _DEPRECATED_FREE_YUI_VOICE_IDS:
+            return current
+        return voice_id
+
     def get_tts_api_key(self, provider: str) -> str | None:
         """根据 provider 统一获取 TTS API Key，返回 None 表示未配置。
 
@@ -2859,17 +3065,35 @@ class ConfigManager:
         注意：免费预设音色在此处不会被清理（validate_voice_id 白名单放行），
         实际可用性由 core.py 运行时按 free + lanlan.app/lanlan.tech 线路决定。
 
+        清空前还会先把已废弃的免费 YUI 预设音色平移到现役 yui_cn
+        （remap_deprecated_free_yui_voice_id），避免存量用户因 YUI 音色 ID 更替
+        被判 invalid 清空、无声掉档到通用默认音色。迁移命中同样触发存盘。
+
         Returns:
             (cleaned_count, legacy_cosyvoice_names): 清理总数 及 仍在使用旧版 CosyVoice 音色的角色名列表
         """
         character_data = self.load_characters()
         cleaned_count = 0
+        migrated_count = 0
         legacy_cosyvoice_names: list[str] = []
 
         catgirls = character_data.get('猫娘', {})
         for name, config in catgirls.items():
             voice_id = get_reserved(config, 'voice_id', default='', legacy_keys=('voice_id',))
             if not voice_id:
+                continue
+            # 已废弃的免费 YUI 预设音色：先平移到现役 yui_cn，再 continue 跳过后续
+            # invalid 判定（新值在 free_voices 白名单内本就合法），保住默认 YUI 音色
+            remapped = self.remap_deprecated_free_yui_voice_id(voice_id)
+            if remapped and remapped != voice_id:
+                set_reserved(config, 'voice_id', remapped)
+                migrated_count += 1
+                logger.info(
+                    "猫娘 '%s' 的废弃 YUI 预设音色 '%s' 已平移到 '%s'",
+                    name,
+                    voice_id,
+                    remapped,
+                )
                 continue
             # 旧版 CosyVoice 音色：保留 voice_id 不清空，仅记录供通知
             if self.is_legacy_cosyvoice_id(voice_id):
@@ -2885,9 +3109,12 @@ class ConfigManager:
                 set_reserved(config, 'voice_id', '')
                 cleaned_count += 1
 
-        if cleaned_count > 0:
+        if cleaned_count > 0 or migrated_count > 0:
             self.save_characters(character_data)
-            logger.info("已清理 %d 个无效的 voice_id 引用", cleaned_count)
+            if cleaned_count > 0:
+                logger.info("已清理 %d 个无效的 voice_id 引用", cleaned_count)
+            if migrated_count > 0:
+                logger.info("已平移 %d 个废弃 YUI 预设音色", migrated_count)
 
         return cleaned_count, legacy_cosyvoice_names
 

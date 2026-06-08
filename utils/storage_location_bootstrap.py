@@ -3,7 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from utils.cloudsave_runtime import ROOT_MODE_DEFERRED_INIT, runtime_root_has_user_content
+from utils.cloudsave_runtime import (
+    ROOT_MODE_DEFERRED_INIT,
+    cloudsave_disabled_reason,
+    is_cloudsave_disabled_due_to_local_state_unavailable,
+    runtime_root_has_user_content,
+)
 from utils.storage_policy import compute_anchor_root, should_require_storage_selection
 from utils.storage_migration import (
     is_retained_root_cleanup_available,
@@ -197,6 +202,28 @@ def build_storage_location_bootstrap_payload(config_manager) -> dict[str, Any]:
         getattr(config_manager, "reported_current_root", current_root)
     ).expanduser().resolve(strict=False)
     anchor_root = _get_configured_anchor_root(config_manager, current_root=current_root)
+    if is_cloudsave_disabled_due_to_local_state_unavailable():
+        migration_payload = _build_migration_payload(None, "")
+        return {
+            "current_root": _normalize_path(display_current_root),
+            "recommended_root": _normalize_path(anchor_root),
+            "legacy_sources": [],
+            "anchor_root": _normalize_path(anchor_root),
+            "cloudsave_root": _normalize_path(anchor_root / "cloudsave"),
+            "selection_required": False,
+            "migration_pending": False,
+            "recovery_required": False,
+            "blocking_reason": "",
+            "legacy_cleanup_pending": False,
+            "last_known_good_root": _normalize_path(current_root),
+            "last_error_summary": "",
+            "migration": migration_payload,
+            "stage": STORAGE_LOCATION_STAGE,
+            "poll_interval_ms": STORAGE_STATUS_POLL_INTERVAL_MS,
+            "cloudsave_disabled": True,
+            "cloudsave_disabled_reason": cloudsave_disabled_reason(),
+        }
+
     root_state = config_manager.load_root_state()
     root_mode = str(root_state.get("mode") or "")
     last_migration_result = str(root_state.get("last_migration_result") or "")
@@ -258,6 +285,9 @@ def build_storage_location_bootstrap_payload(config_manager) -> dict[str, Any]:
 
 
 def get_storage_startup_blocking_reason_readonly(config_manager) -> str:
+    if is_cloudsave_disabled_due_to_local_state_unavailable():
+        return ""
+
     current_root = Path(config_manager.app_docs_dir).expanduser().resolve(strict=False)
     anchor_root = _get_configured_anchor_root(config_manager, current_root=current_root)
     root_state = config_manager.load_root_state()

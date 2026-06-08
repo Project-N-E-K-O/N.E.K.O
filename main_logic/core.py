@@ -830,6 +830,11 @@ class LLMSessionManager:
         # making check-and-claim atomic. (Text mode uses the SM's
         # try_start_proactive claim instead; voice deliberately bypasses the SM.)
         self._voice_proactive_inject_lock = asyncio.Lock()
+        # 请她离开/变猫期间的后端静默闸门。前端会在进入猫态时置 True，
+        # 回来或显式 start_session 时清掉；所有主动搭话入口统一读取它。
+        self.goodbye_silent: bool = False
+        self.goodbye_silent_reason: str = ""
+        self.goodbye_silent_updated_at: float = 0.0
         # ── Session takeover ──────────────────────────────────────────
         # 当某个外部 controller 接管这个 session 时，本地 chat LLM 的输出
         # （text/audio delta、output transcript、response.complete、
@@ -1019,6 +1024,35 @@ class LLMSessionManager:
         self._bg_tasks.add(task)
         task.add_done_callback(self._bg_tasks.discard)
         return task
+
+    def is_goodbye_silent(self) -> bool:
+        """请她离开后的猫态静默是否生效。"""
+        return bool(getattr(self, "goodbye_silent", False))
+
+    def set_goodbye_silent(self, active: bool, reason: str = "") -> None:
+        """同步前端猫态静默状态，并把已排队的主动回调停在持久队列里。"""
+        active = bool(active)
+        reason = str(reason or "")[:64]
+        was_active = self.is_goodbye_silent()
+        self.goodbye_silent = active
+        self.goodbye_silent_reason = reason
+        self.goodbye_silent_updated_at = time.time()
+        if active:
+            self._park_proactive_for_goodbye()
+        if was_active != active:
+            logger.info("[%s] goodbye_silent=%s reason=%s", self.lanlan_name, active, reason or "-")
+
+    def _park_proactive_for_goodbye(self) -> None:
+        """猫态静默时把 manager 内待释放回调转入持久队列，避免静默期间漏发或超时释放。"""
+        try:
+            leftover = self.proactive_manager.drain_pending()
+            for callback in leftover:
+                self.enqueue_agent_callback(callback)
+            self.proactive_manager.reset_gate()
+            if leftover:
+                logger.info("[%s] goodbye_silent parked proactive callbacks n=%d", self.lanlan_name, len(leftover))
+        except Exception:
+            logger.exception("[%s] goodbye_silent proactive park failed", self.lanlan_name)
 
     def _ensure_audio_stream_worker(self):
         if self._audio_stream_worker_task and not self._audio_stream_worker_task.done():
@@ -5215,6 +5249,9 @@ class LLMSessionManager:
         """
         if not self.is_active or not isinstance(self.session, OmniRealtimeClient):
             return False
+        if self.is_goodbye_silent():
+            logger.info("[%s] voice proactive nudge skipped: goodbye silent", self.lanlan_name)
+            return False
         if self._takeover_active:
             logger.info("[%s] voice proactive nudge skipped: session takeover active", self.lanlan_name)
             return False
@@ -5311,6 +5348,9 @@ class LLMSessionManager:
 
     async def prepare_proactive_delivery(self, min_idle_secs: float = 10.0) -> bool:
         """Phase 2 流式输出前的前置检查 + speech_id 生成。返回 True 表示可以继续。"""
+        if self.is_goodbye_silent():
+            logger.info("[%s] prepare_proactive_delivery: goodbye silent", self.lanlan_name)
+            return False
         # 早期抢占检查：在任何 await / sid 改写前快速短路，防止用户刚在入口之后
         # 抢占而后续 self.current_speech_id 写入覆盖用户的 user_sid。默认 reset()
         # 对活动 phase no-op（保护 auto-start 期间偶发并发 reset），但 end_session
@@ -5663,6 +5703,12 @@ class LLMSessionManager:
             self.lanlan_name, sess_type, self.state.phase.value, len(self.pending_agent_callbacks),
         )
         if not self.pending_agent_callbacks:
+            return False
+        if self.is_goodbye_silent():
+            logger.info(
+                "[%s] trigger_agent_callbacks deferred: goodbye silent, keeping %d callback(s)",
+                self.lanlan_name, len(self.pending_agent_callbacks),
+            )
             return False
         # 与 handle_text_data / handle_response_complete 等输出 handler 对偶：
         # takeover 期间普通 chat LLM 输出会被静音，所以现在派发会被吞掉、callback
@@ -6124,6 +6170,9 @@ class LLMSessionManager:
 
         流程：查询 memory_server 获取间隔 → 构建引导词 → 主动拉起 text session → 投递。
         """
+        if self.is_goodbye_silent():
+            logger.info("[%s] trigger_greeting: goodbye silent, skipping", self.lanlan_name)
+            return
         # ── 守卫：语音 session 正在启动 / 已活跃时，跳过 greeting ──
         if self._is_voice_session_active_or_starting():
             logger.info("[%s] trigger_greeting: voice session active/starting, skipping", self.lanlan_name)
@@ -6286,6 +6335,9 @@ class LLMSessionManager:
         测量并传入的猫咪停留时长（datetime gap 是"距上次对话"，这里是"作为猫咪待了多久"，
         两套时钟互不干扰）。流程：选行为/时长档 → 构建引导词 → 主动拉起 text session → 投递。
         """
+        if self.is_goodbye_silent():
+            logger.info("[%s] trigger_cat_greeting: goodbye silent, skipping", self.lanlan_name)
+            return
         # ── 守卫：语音 session 正在启动 / 已活跃时，跳过（与 trigger_greeting 对偶）──
         if self._is_voice_session_active_or_starting():
             logger.info("[%s] trigger_cat_greeting: voice session active/starting, skipping", self.lanlan_name)
@@ -6398,6 +6450,10 @@ class LLMSessionManager:
             logger.debug("[%s] trigger_new_character_greeting: no pending intent", self.lanlan_name)
             return
 
+        if self.is_goodbye_silent():
+            logger.info("[%s] trigger_new_character_greeting: goodbye silent, skipping", self.lanlan_name)
+            return
+
         if self._is_voice_session_active_or_starting():
             logger.info("[%s] trigger_new_character_greeting: voice session active/starting, skipping", self.lanlan_name)
             return
@@ -6508,6 +6564,10 @@ class LLMSessionManager:
         their existing direct enqueue-only path so ``delivery="passive"``'s
         "don't interrupt" promise is unchanged.
         """
+        if self.is_goodbye_silent():
+            self.enqueue_agent_callback(callback)
+            logger.info("[%s] proactive callback queued: goodbye silent", self.lanlan_name)
+            return
         self.proactive_manager.submit(callback, priority=priority, coalesce_key=coalesce_key)
 
     async def _deliver_proactive_batch(self, callbacks: list) -> None:
@@ -6693,6 +6753,8 @@ class LLMSessionManager:
         response.created→voice_play_start window the playback gate can't see,
         AND an active offline/text user response where try_start_proactive
         would deny the claim)."""
+        if self.is_goodbye_silent():
+            return False
         # Time-bounded read (NOT the raw _voice_playback_active flag): if the
         # frontend dropped voice_play_end, _is_voice_playing() self-heals after
         # the 30s watchdog, so a stuck flag can't make can_release return False

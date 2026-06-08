@@ -119,22 +119,26 @@ RUN mkdir -p /root/.config/uv && \
       'url = "https://pypi.tuna.tsinghua.edu.cn/simple/"' \
       > /root/.config/uv/uv.toml
 
-# 5b. Bundle the local embedding model BEFORE copying the source tree.
-# Keying this layer on the model ARGs + the downloader script alone — instead of
-# on every source change via the `COPY . /app` below — keeps it cached across
-# commits, so it only re-downloads when the pin changes. Previously this sat
-# AFTER `COPY . /app`, re-ran on every commit, and kept tripping huggingface.co's
-# per-IP rate limit (HTTP 429), failing the build. The build context excludes
-# data/embedding_models, so the later `COPY . /app` does not clobber these
-# weights. Pure-stdlib downloader run on the system python3 (the uv venv is not
-# built yet); honors the proxy ARGs. repo+revision are pinned identically to
-# .github/workflows/build-desktop.yml so every build path resolves the same
-# on-disk profile. Standard image ships only the int8 variant (the runtime
-# `auto` default) to stay lightweight; the full image bundles fp32 too.
+# 6. Copy N.E.K.O. project from local build context (with correct ownership)
+COPY --chown=neko:neko . /app
+
+# 6b. Verify (and, only for non-CI builds, download) the pinned local embedding
+# model. CI pre-fetches these weights on the native runner and caches them with
+# actions/cache, then ships them in the build context (.dockerignore no longer
+# excludes data/embedding_models), so this step finds them already present via
+# `COPY . /app` above and runs FULLY OFFLINE — no huggingface.co call. That
+# anonymous per-IP HTTP 429 throttle on shared runner egress is exactly what kept
+# failing the build at this point with no recovery. A plain `docker build` with
+# no pre-fetched weights falls back to downloading here (honoring the proxy ARGs).
+# The script force-re-downloads when the bundled (repo, revision) doesn't match
+# the pin, so a developer's stale local copy can't ship. repo+revision are pinned
+# identically to .github/workflows/{build-desktop,docker-multi-arch}.yml so every
+# build path resolves the same on-disk profile. Standard image ships only the
+# int8 variant (the runtime `auto` default) to stay lightweight; the full image
+# bundles fp32 too.
 ARG EMBEDDING_MODEL_REPO=jinaai/jina-embeddings-v5-text-nano-retrieval
 ARG EMBEDDING_MODEL_REVISION=ac5d898c8d382b17167c33e5c8af644a3519b47d
 ARG EMBEDDING_MODEL_PROFILE_ID=local-text-retrieval-v1
-COPY scripts/prepare_embedding_model.py /app/scripts/prepare_embedding_model.py
 RUN cd /app && \
     if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
     if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
@@ -146,9 +150,6 @@ RUN cd /app && \
         --variant int8 && \
     unset http_proxy && \
     unset https_proxy
-
-# 6. Copy N.E.K.O. project from local build context (with correct ownership)
-COPY --chown=neko:neko . /app
 
 # 7. Copy frontend build artifacts
 # Note: react-neko-chat's vite.config.ts writes to outDir `../../static/react/neko-chat`

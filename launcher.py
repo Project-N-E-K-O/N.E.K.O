@@ -266,6 +266,8 @@ from utils.port_utils import (
     set_port_probe_reuse,
 )
 from utils.cloudsave_runtime import (
+    CLOUDSAVE_DISABLED_ENV,
+    CLOUDSAVE_DISABLED_LOCAL_STATE_UNAVAILABLE,
     ROOT_MODE_BOOTSTRAP_IMPORTING,
     ROOT_MODE_MAINTENANCE_READONLY,
     ROOT_MODE_NORMAL,
@@ -1903,6 +1905,12 @@ def _prepare_cloudsave_runtime_for_launch() -> dict:
     reset_config_manager_cache()
     config_manager = get_config_manager(APP_NAME, migrate=False)
 
+    if not config_manager.ensure_local_state_directory():
+        diagnostic = getattr(config_manager, "_last_local_state_directory_error", None)
+        if diagnostic is not None:
+            raise diagnostic
+        raise OSError("failed to ensure local state directory")
+
     with cloud_apply_fence(
         config_manager,
         mode=ROOT_MODE_BOOTSTRAP_IMPORTING,
@@ -1952,6 +1960,18 @@ def _prepare_cloudsave_runtime_for_launch() -> dict:
     }
 
 
+def _is_local_state_directory_error(exc) -> bool:
+    if bool(getattr(exc, "local_state_directory_error", False)):
+        return True
+    cause = getattr(exc, "__cause__", None)
+    if cause is not None and cause is not exc:
+        return _is_local_state_directory_error(cause)
+    context = getattr(exc, "__context__", None)
+    if context is not None and context is not exc:
+        return _is_local_state_directory_error(context)
+    return False
+
+
 def main():
     """主函数"""
     # 支持 multiprocessing 在 Windows 上的打包
@@ -1990,17 +2010,24 @@ def main():
         try:
             _prepare_cloudsave_runtime_for_launch()
         except Exception as e:
-            try:
-                _config_manager = get_config_manager(APP_NAME)
-                set_root_mode(
-                    _config_manager,
-                    ROOT_MODE_MAINTENANCE_READONLY,
-                    last_migration_result=f"launcher_phase0_bootstrap_failed:{e}",
-                )
-            except Exception:
-                pass
-            report_startup_failure(f"Startup failed: cloudsave bootstrap error: {e}")
-            return 1
+            if not _is_local_state_directory_error(e):
+                try:
+                    _config_manager = get_config_manager(APP_NAME)
+                    set_root_mode(
+                        _config_manager,
+                        ROOT_MODE_MAINTENANCE_READONLY,
+                        last_migration_result=f"launcher_phase0_bootstrap_failed:{e}",
+                    )
+                except Exception:
+                    pass
+                report_startup_failure(f"Startup failed: cloudsave bootstrap error: {e}")
+                return 1
+            os.environ[CLOUDSAVE_DISABLED_ENV] = CLOUDSAVE_DISABLED_LOCAL_STATE_UNAVAILABLE
+            print(
+                "[Launcher] Cloudsave disabled for this session because local state is unavailable: "
+                f"{e}",
+                flush=True,
+            )
 
         # 自动安装 Playwright Chromium（browser-use 依赖）
         _ensure_playwright_browsers()

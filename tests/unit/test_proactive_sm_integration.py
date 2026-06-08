@@ -96,6 +96,9 @@ def _make_mgr(session=None) -> LLMSessionManager:
     mgr._voice_playback_active = False
     mgr._takeover_active = False
     mgr._takeover_input_dispatcher = None
+    mgr.goodbye_silent = False
+    mgr.goodbye_silent_reason = ""
+    mgr.goodbye_silent_updated_at = 0.0
     mgr._get_text_guard_max_length = MagicMock(return_value=200)
     # Patch OmniRealtimeClient / OmniOfflineClient isinstance 判定：
     # 在测试里我们只关心 OmniOfflineClient 分支，其他分支显式构造。
@@ -651,6 +654,41 @@ async def test_text_mode_sm_denied_when_session_responding():
     # callbacks 保留以便下轮重试
     assert mgr.pending_agent_callbacks == [{"status": "completed", "summary": "queued"}]
     assert mgr.state.phase is ProactivePhase.IDLE
+
+
+async def test_goodbye_silent_defers_agent_callbacks_and_keeps_queue():
+    """猫态静默时，主动回调不能绕过前端定时器直接投递。"""
+    sess = _FakeOmniOffline(delivered=True)
+    mgr = _make_mgr(session=sess)
+    mgr.goodbye_silent = True
+    cb = {"status": "completed", "summary": "queued"}
+    mgr.pending_agent_callbacks = [cb]
+
+    await LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert sess.called_with == []
+    assert mgr.pending_agent_callbacks == [cb]
+    assert mgr.state.phase is ProactivePhase.IDLE
+
+
+def test_goodbye_silent_blocks_manager_release():
+    """猫态静默时，manager 中的 proactive cue 必须继续等待。"""
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
+    mgr.goodbye_silent = True
+
+    assert LLMSessionManager._can_release_proactive(mgr) is False
+
+
+def test_submit_proactive_callback_parks_when_goodbye_silent():
+    """猫态静默期间新来的 proactive callback 进入持久队列，不触发释放泵。"""
+    mgr = _make_mgr(session=_FakeOmniOffline(delivered=True))
+    mgr.goodbye_silent = True
+    cb = {"status": "completed", "summary": "queued"}
+
+    LLMSessionManager.submit_proactive_callback(mgr, cb)
+
+    assert mgr.pending_agent_callbacks == [cb]
+    assert mgr.pending_extra_replies
 
 
 async def test_text_mode_successful_delivery_fires_full_event_sequence():
