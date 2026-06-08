@@ -282,6 +282,20 @@ async def get_chat_page(request: Request):
     templates = get_templates()
     return templates.TemplateResponse("templates/chat.html", {
         "request": request,
+        "initial_chat_surface_mode": "compact",
+        **_vrm_defaults_ctx(),
+        **_static_assets_ctx(),
+        **_react_chat_assets_ctx(),
+    })
+
+
+@router.get("/chat_full", response_class=HTMLResponse)
+async def get_chat_full_page(request: Request):
+    """Web 专用完整聊天窗口页面"""
+    templates = get_templates()
+    return templates.TemplateResponse("templates/chat.html", {
+        "request": request,
+        "initial_chat_surface_mode": "full",
         **_vrm_defaults_ctx(),
         **_static_assets_ctx(),
         **_react_chat_assets_ctx(),

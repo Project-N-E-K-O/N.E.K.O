@@ -2082,6 +2082,10 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         try:
             await self._persist_servers_config(servers_config)
         except Exception as exc:
+            self.ctx.logger.exception(
+                f"Failed to persist MCP server config while adding server '{name}' "
+                f"(transport={transport}): {exc}"
+            )
             return Err(SdkError(f"Failed to save server config: {exc}"))
         
         # 缓存配置
@@ -2154,6 +2158,10 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         try:
             await self._persist_servers_config(dict(servers_config))
         except Exception as exc:
+            self.ctx.logger.exception(
+                "Failed to persist MCP server config while removing servers "
+                f"(requested={len(server_names)}, removed={len(removed)}): {exc}"
+            )
             return Err(SdkError(f"Failed to save server config: {exc}"))
         self._servers_config = servers_config
         

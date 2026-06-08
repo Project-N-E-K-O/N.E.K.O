@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from main_routers import storage_location_router as storage_location_router_module
 from main_routers.shared_state import init_shared_state
-from utils.cloudsave_runtime import ROOT_MODE_MAINTENANCE_READONLY
+from utils.cloudsave_runtime import CLOUDSAVE_DISABLED_ENV, ROOT_MODE_MAINTENANCE_READONLY
 from utils import storage_location_bootstrap as storage_location_bootstrap_module
 from utils.config_manager import ConfigManager
 from utils.storage_layout import resolve_storage_layout
@@ -393,6 +393,88 @@ def test_storage_location_exit_allows_maintenance_readonly_shutdown(tmp_path):
         "result": "shutdown_initiated",
     }
     assert shutdown_calls == ["shutdown"]
+
+
+@pytest.mark.unit
+def test_storage_location_mutation_routes_reject_cloudsave_disabled_without_root_state_read(monkeypatch, tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+
+    def fail_root_state_read():
+        raise AssertionError("cloudsave disabled storage mutation routes should not read root_state")
+
+    config_manager.load_root_state = fail_root_state_read
+    monkeypatch.setenv(CLOUDSAVE_DISABLED_ENV, "local_state_unavailable")
+
+    shutdown_calls = []
+
+    with _build_client(config_manager, request_app_shutdown=lambda: shutdown_calls.append("shutdown")) as client:
+        responses = [
+            client.post(
+                "/api/storage/location/exit",
+                headers={"X-Neko-Storage-Action": "exit"},
+            ),
+            client.post(
+                "/api/storage/location/select",
+                json={
+                    "selected_root": str(config_manager.app_docs_dir),
+                    "selection_source": "current",
+                },
+            ),
+            client.post(
+                "/api/storage/location/preflight",
+                json={
+                    "selected_root": str(tmp_path / "target" / "N.E.K.O"),
+                    "selection_source": "custom",
+                },
+            ),
+            client.post(
+                "/api/storage/location/restart",
+                json={
+                    "selected_root": str(tmp_path / "target" / "N.E.K.O"),
+                    "selection_source": "custom",
+                },
+            ),
+            client.post("/api/storage/location/retained-source/cleanup", json={}),
+        ]
+
+    for response in responses:
+        assert response.status_code == 409
+        payload = response.json()
+        assert payload["ok"] is False
+        assert payload["error_code"] == "cloudsave_local_state_unavailable"
+        assert payload["cloudsave_disabled"] is True
+        assert payload["cloudsave_disabled_reason"] == "local_state_unavailable"
+    assert shutdown_calls == []
+
+
+@pytest.mark.unit
+def test_storage_location_mutation_routes_do_not_reject_non_local_state_cloudsave_disabled(monkeypatch, tmp_path):
+    config_manager = _DummyConfigManager(tmp_path)
+    monkeypatch.setattr(
+        storage_location_bootstrap_module,
+        "DEVELOPMENT_ALWAYS_REQUIRE_SELECTION",
+        False,
+    )
+    save_storage_policy(
+        config_manager,
+        selected_root=config_manager.app_docs_dir,
+        selection_source="current",
+        anchor_root=config_manager.anchor_root,
+    )
+    monkeypatch.setenv(CLOUDSAVE_DISABLED_ENV, "manual_disabled")
+
+    with _build_client(config_manager) as client:
+        response = client.post(
+            "/api/storage/location/preflight",
+            json={
+                "selected_root": str(tmp_path / "target" / "N.E.K.O"),
+                "selection_source": "custom",
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload.get("error_code") != "cloudsave_local_state_unavailable"
 
 
 @pytest.mark.unit

@@ -1,6 +1,7 @@
 ﻿import {
   useState,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useCallback,
@@ -11,12 +12,12 @@
   type WheelEvent as ReactWheelEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
+import FullChatSurface from './FullChatSurface';
 import CompactExportHistoryPanel, {
   COMPACT_EXPORT_SELECTION_LIMIT,
   isCompactExportMessageSelectable,
   type CompactExportActionRequest,
   type CompactExportPreviewResult,
-  type CompactHistoryDropRequest,
 } from './CompactExportHistoryPanel';
 import { i18n } from './i18n';
 import {
@@ -25,12 +26,9 @@ import {
   type ChatWindowSchemaProps,
   type ComposerSubmitPayload,
   type ComposerAttachment,
-  type CompactHistoryDropPayload,
-  type CompactHistoryDragStatePayload,
   type AvatarInteractionPayload,
   type AvatarToolStatePayload,
   type CompactChatState,
-  type MessageBlock,
   type GalgameOption,
   type ChoiceOption,
   type ChoicePromptSource,
@@ -42,8 +40,6 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
   onComposerScreenshot?: () => void;
   onComposerRemoveAttachment?: (attachmentId: ComposerAttachment['id']) => void;
   onComposerSubmit?: (payload: ComposerSubmitPayload) => void;
-  onCompactHistoryDrop?: (payload: CompactHistoryDropPayload) => unknown;
-  onCompactHistoryDragStateChange?: (payload: CompactHistoryDragStatePayload) => void;
   onAvatarInteraction?: (payload: AvatarInteractionPayload) => void;
   onAvatarToolStateChange?: (payload: AvatarToolStatePayload) => void;
   onJukeboxClick?: () => void;
@@ -55,6 +51,7 @@ export type ChatWindowProps = ChatWindowSchemaProps & {
   // callback path until the host fully migrates to the shared choice slot.
   onChoiceSelect?: (option: ChoiceOption, source: ChoicePromptSource) => void;
   onCompactChatStateChange?: (state: CompactChatState) => void;
+  onCompactMinimizeRequest?: () => void;
 };
 
 type CompactInlineExportBridge = {
@@ -96,6 +93,7 @@ const COMPACT_SPEECH_FALLBACK_REVEAL_DELAY_MS = 700;
 const SPEECH_PLAYBACK_STATE_STORAGE_KEY = 'neko_speech_playback_state';
 const SPEECH_PLAYBACK_CHANNEL_NAME = 'neko_speech_playback_channel';
 const COMPACT_EXPORT_HISTORY_OPEN_STORAGE_KEY = 'neko.reactChatWindow.compactExportHistoryOpen';
+const COMPACT_HISTORY_HEIGHT_STORAGE_KEY = 'neko.reactChatWindow.compactHistorySlotHeight';
 export const COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS = 560;
 const COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT = 7;
 const COMPACT_INPUT_TOOL_WHEEL_DRAG_THRESHOLD = 22;
@@ -117,6 +115,7 @@ const COMPACT_INPUT_TOOL_WHEEL_CENTER_Y = 116;
 const COMPACT_INPUT_TOOL_WHEEL_ORBIT_RADIUS = 91.92;
 const COMPACT_INPUT_TOOL_WHEEL_HOVER_RADIUS = 116;
 const COMPACT_INPUT_TOOL_WHEEL_ANGLE_MIN_RADIUS = 16;
+const COMPACT_INPUT_TOOL_WHEEL_VIEWPORT_MARGIN = 8;
 const COMPACT_INPUT_TOOL_TOGGLE_HOVER_OUTSET = 14;
 const COMPACT_INPUT_TOOL_FAN_ORIGIN_CLOSE_SIZE = 48;
 // 在工具轮盘中心（toggle / fan 原点）按下后，指针移动超过此像素阈值即视为「拖动文本框」
@@ -125,11 +124,38 @@ const COMPACT_INPUT_TOOL_ORIGIN_DRAG_THRESHOLD = 6;
 const COMPACT_INPUT_TOOL_FAN_INTERACTIVE_DELAY_MS = 220;
 const COMPACT_INPUT_TOOL_FAN_TRANSIENT_CLOSE_DELAY_MS = 360;
 const COMPACT_INPUT_TOOL_FAN_OUTSIDE_CLOSE_DELAY_MS = 650;
-const COMPACT_SURFACE_RESIZE_MIN_WIDTH = 430;
+const compactInputToolWheelDefaultVisibleSlots = [
+  { angleDeg: 107.35, scale: 0.86 },
+  { angleDeg: 75.82, scale: 0.98 },
+  { angleDeg: 45, scale: 1.04 },
+  { angleDeg: 14.18, scale: 0.98 },
+  { angleDeg: -17.35, scale: 0.86 },
+] as const;
+const compactInputToolWheelViewportFitVisibleSlots = [
+  { angleDeg: -200, scale: 0.86 },
+  { angleDeg: -170, scale: 0.98 },
+  { angleDeg: -140, scale: 1.04 },
+  { angleDeg: -110, scale: 0.98 },
+  { angleDeg: -80, scale: 0.86 },
+] as const;
+const COMPACT_SURFACE_RESIZE_MIN_WIDTH = 280;
+// compact 对话条默认/初始宽度（无法从 rect/CSS 量到时的回退值）。与 resize 下限解耦：
+// 减小最短宽度只动 RESIZE_MIN_WIDTH，默认仍是这个值，保证「默认宽度不变」。
+const COMPACT_SURFACE_DEFAULT_WIDTH = 430;
 const COMPACT_SURFACE_RESIZE_MOBILE_MIN_WIDTH = 280;
 const COMPACT_SURFACE_RESIZE_MAX_WIDTH = 720;
 const COMPACT_SURFACE_RESIZE_VIEWPORT_GUTTER = 32;
 const COMPACT_SURFACE_RESIZE_MOBILE_VIEWPORT_GUTTER = 16;
+// compact 历史堆砌区（CompactExportHistoryPanel）顶部 resize bar 的高度上限钳位参数。
+// 下限压到 ~1-2 个气泡以便节约屏幕；上限对齐 anchor 的 max-height（width*1.46 / 78% 视口），
+// 避免拖超 anchor 二次截断产生「拖了没反应」的死区。默认（未拖动）公式仍是 width*1.18 / 63%。
+const COMPACT_HISTORY_SLOT_MIN_HEIGHT = 120;
+const COMPACT_HISTORY_SLOT_MAX_VIEWPORT_RATIO = 0.78;
+const COMPACT_HISTORY_SLOT_DEFAULT_WIDTH_RATIO = 1.18;
+const COMPACT_HISTORY_SLOT_DEFAULT_VIEWPORT_RATIO = 0.63;
+// scroll 区上方的 bar(12px+margin) 与下方 controls(展开块 ≤44px) 的固定 chrome；
+// 从 anchor max-height 里扣掉，避免拖到上限时 scroll 吃满 anchor、controls 溢出被裁成非交互。
+const COMPACT_HISTORY_SLOT_CHROME_RESERVE = 72;
 const COMPACT_CHOICE_PLACEMENT_HYSTERESIS = 24;
 const COMPOSER_OPTION_MARQUEE_MIN_DISTANCE = 6;
 const COMPOSER_OPTION_MARQUEE_MIN_DURATION_MS = 1400;
@@ -152,79 +178,14 @@ type CompactSurfaceResizeState = {
   captureTarget: Element | null;
 };
 
-function createCompactHistoryDropRequestId() {
-  return `compact-history-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function normalizeCompactHistoryTextFragment(value: string | undefined) {
-  return typeof value === 'string' ? value.trim() : '';
-}
-
-function getCompactHistoryTextFromBlock(block: MessageBlock) {
-  if (block.type === 'text' || block.type === 'status') {
-    return normalizeCompactHistoryTextFragment(block.text);
-  }
-  if (block.type === 'link') {
-    return [
-      normalizeCompactHistoryTextFragment(block.title),
-      normalizeCompactHistoryTextFragment(block.description),
-      normalizeCompactHistoryTextFragment(block.url),
-    ].filter(Boolean).join('\n');
-  }
-  if (block.type === 'buttons') {
-    return block.buttons
-      .map(button => normalizeCompactHistoryTextFragment(button.label))
-      .filter(Boolean)
-      .join(' / ');
-  }
-  return '';
-}
-
-function buildCompactHistoryDropPayload(request: CompactHistoryDropRequest): CompactHistoryDropPayload {
-  const textParts: string[] = [];
-  const images: NonNullable<CompactHistoryDropPayload['images']> = [];
-
-  if (request.payload.type === 'image') {
-    images.push({
-      url: request.payload.url,
-      alt: request.payload.alt,
-      width: request.payload.width,
-      height: request.payload.height,
-    });
-  } else {
-    for (const block of request.payload.blocks) {
-      if (block.type === 'image') {
-        images.push({
-          url: block.url,
-          alt: block.alt,
-          width: block.width,
-          height: block.height,
-        });
-        continue;
-      }
-      const text = getCompactHistoryTextFromBlock(block);
-      if (text) {
-        textParts.push(text);
-      }
-    }
-  }
-
-  return {
-    text: textParts.join('\n').trim(),
-    images,
-    requestId: createCompactHistoryDropRequestId(),
-    sourceMessageId: request.messageId,
-    dragType: request.type,
-    compactHistoryDragSessionId: request.sessionId,
-  };
-}
-
-function normalizeCompactHistoryDropResult(result: unknown): Promise<boolean | void> | boolean | void {
-  if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
-    return Promise.resolve(result).then(value => (value === false ? false : undefined));
-  }
-  return result === false ? false : undefined;
-}
+type CompactHistoryResizeState = {
+  pointerId: number;
+  startPointerY: number;
+  startHeight: number;
+  lastHeight: number;
+  moved: boolean;
+  captureTarget: Element | null;
+};
 
 type CompactToolWheelPointerState = {
   id: number;
@@ -371,6 +332,53 @@ function persistCompactExportHistoryOpen(open: boolean) {
   } catch {
     // localStorage can be unavailable in restricted hosts; keep the in-memory state.
   }
+}
+
+function readPersistedCompactHistorySlotHeight(): number | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const persisted = window.localStorage?.getItem(COMPACT_HISTORY_HEIGHT_STORAGE_KEY);
+    if (persisted === null || persisted === undefined) return null;
+    const value = Number(persisted);
+    return Number.isFinite(value) && value > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistCompactHistorySlotHeight(value: number | null) {
+  if (typeof window === 'undefined') return;
+  try {
+    if (value === null) {
+      window.localStorage?.removeItem(COMPACT_HISTORY_HEIGHT_STORAGE_KEY);
+    } else {
+      window.localStorage?.setItem(COMPACT_HISTORY_HEIGHT_STORAGE_KEY, String(Math.round(value)));
+    }
+  } catch {
+    // localStorage can be unavailable in restricted hosts; keep the in-memory state.
+  }
+}
+
+// 历史区高度上限的基数：Electron 独立窗口用工作区高度（窗口可能只覆盖部分屏，不能用 innerHeight），
+// 网页路径用视口高度。与 styles.css 里默认公式的 63vh / workarea*0.63 取同一基数。
+function getCompactHistoryViewportBase(): number {
+  if (typeof window === 'undefined') return 900;
+  const desktopLayout = (window as typeof window & {
+    __nekoDesktopCompactLayout?: { workArea?: { height?: number } | null } | null;
+  }).__nekoDesktopCompactLayout;
+  const workAreaHeight = Number(desktopLayout?.workArea?.height);
+  if (isDesktopCompactSurfaceLayoutActive() && Number.isFinite(workAreaHeight) && workAreaHeight > 0) {
+    return workAreaHeight;
+  }
+  return window.innerHeight || 900;
+}
+
+function getCompactHistoryResizePointerY(event: ReactPointerEvent<HTMLDivElement>): number {
+  const screenY = Number(event.screenY);
+  if (Number.isFinite(screenY)) {
+    return screenY;
+  }
+  return event.clientY;
 }
 
 type SpeechPlaybackState = {
@@ -663,6 +671,7 @@ type ToolCursorVariantState = Record<string, CursorVariant>;
 type InteractionIntensity = NonNullable<AvatarInteractionPayload['intensity']>;
 type AvatarInteractionToolId = AvatarToolId;
 type AvatarTouchZone = 'ear' | 'head' | 'face' | 'body';
+type CompactInputToolWheelLayout = 'default' | 'viewport-fit';
 type AvatarInteractionPayloadByTool = {
   [K in AvatarInteractionToolId]: Extract<AvatarInteractionPayload, { toolId: K }>;
 };
@@ -700,13 +709,6 @@ type AvatarToolCacheState = {
 type AvatarRangeHit = {
   bounds: HostAvatarBounds;
   touchZone: AvatarTouchZone;
-};
-
-type CompactHistoryDesktopDropTargetDetail = {
-  active?: boolean;
-  sessionId?: string;
-  desktopOverAvatar?: boolean | null;
-  timestamp?: number;
 };
 
 function normalizeHostAvatarBounds(bounds: unknown): HostAvatarBounds | null {
@@ -1111,7 +1113,21 @@ function sanitizeInteractionTextContext(text: string): string | undefined {
   return trimmed.length > 80 ? trimmed.slice(0, 80).trimEnd() : trimmed;
 }
 
-export default function App({
+/**
+ * Top-level dispatcher. The host mounts this as the chat window root. It routes
+ * the frozen legacy `full` surface to the self-contained {@link FullChatSurface}
+ * and keeps the active `compact`/`minimized` experience on {@link CompactChatApp}.
+ * The two are sibling subtrees — only one mounts at a time, so their hooks and
+ * state stay fully isolated. Compact work never touches full, and vice versa.
+ */
+export default function ChatWindowRoot(props: ChatWindowProps) {
+  if (props.chatSurfaceMode === 'full') {
+    return <FullChatSurface {...props} />;
+  }
+  return <CompactChatApp {...props} />;
+}
+
+function CompactChatApp({
   title = i18n('chat.title', 'N.E.K.O Chat'),
   iconSrc = '/static/icons/chat_icon.png',
   messages = defaultMessages,
@@ -1151,8 +1167,6 @@ export default function App({
   onComposerScreenshot,
   onComposerRemoveAttachment,
   onComposerSubmit,
-  onCompactHistoryDrop,
-  onCompactHistoryDragStateChange,
   onAvatarInteraction,
   onAvatarToolStateChange,
   onJukeboxClick,
@@ -1166,6 +1180,7 @@ export default function App({
   choicePrompt = null,
   onChoiceSelect,
   onCompactChatStateChange,
+  onCompactMinimizeRequest,
   rollbackDraft,
   _rollbackKey,
   _toolCursorResetKey,
@@ -1229,7 +1244,6 @@ export default function App({
   const interactionBurstHistoryRef = useRef<Record<string, number[]>>({});
   const latestPointerPositionRef = useRef({ x: 0, y: 0 });
   const latestPointerTargetRef = useRef<EventTarget | null>(null);
-  const compactHistoryDesktopDropTargetRef = useRef<{ sessionId?: string; overTarget: boolean; timestamp: number } | null>(null);
   const avatarRangeHoldUntilRef = useRef(0);
   const avatarRangeHoldTimerRef = useRef<number | null>(null);
   const draftRef = useRef(draft);
@@ -1278,19 +1292,24 @@ export default function App({
   const [compactChoiceLayerPlacement, setCompactChoiceLayerPlacement] = useState<'above' | 'below'>('above');
   const [compactInputToolFanOpen, setCompactInputToolFanOpen] = useState(false);
   const [compactInputToolFanInteractive, setCompactInputToolFanInteractive] = useState(false);
+  const [compactInputToolWheelLayout, setCompactInputToolWheelLayout] = useState<CompactInputToolWheelLayout>('default');
   const [compactInputToolWheelIndex, setCompactInputToolWheelIndex] = useState(0);
   const [compactInputToolWheelFastAnimation, setCompactInputToolWheelFastAnimation] = useState(false);
   const [compactInputToolWheelChargeRatio, setCompactInputToolWheelChargeRatio] = useState(0);
   const [compactInputToolWheelChargeDirection, setCompactInputToolWheelChargeDirection] = useState<1 | -1 | null>(null);
   const [compactInputToolWheelChargeReleaseActive, setCompactInputToolWheelChargeReleaseActive] = useState(false);
   const [compactSurfaceResizeWidth, setCompactSurfaceResizeWidth] = useState<number | null>(null);
+  const [compactHistorySlotHeight, setCompactHistorySlotHeight] = useState<number | null>(readPersistedCompactHistorySlotHeight);
+  const [compactHistoryResizeActive, setCompactHistoryResizeActive] = useState(false);
   const [compactExportHistoryOpen, setCompactExportHistoryOpen] = useState(readPersistedCompactExportHistoryOpen);
   const [compactExportHistoryMounted, setCompactExportHistoryMounted] = useState(readPersistedCompactExportHistoryOpen);
+  const [compactExportHistoryClosingMessages, setCompactExportHistoryClosingMessages] = useState<ChatMessage[] | null>(null);
   const [compactExportControlsOpen, setCompactExportControlsOpen] = useState(false);
   const [compactExportPreviewOpen, setCompactExportPreviewOpen] = useState(false);
   const [compactExportSelectedIds, setCompactExportSelectedIds] = useState<Set<string>>(() => new Set());
   const [compactExportAutoScrollToBottom, setCompactExportAutoScrollToBottom] = useState(true);
   const compactSurfaceResizeStateRef = useRef<CompactSurfaceResizeState | null>(null);
+  const compactHistoryResizeStateRef = useRef<CompactHistoryResizeState | null>(null);
   const compactHistoryVisibilitySuppressClickRef = useRef(false);
   const compactExportHistoryUnmountTimerRef = useRef<number | null>(null);
   const submittingRef = useRef(false);
@@ -1533,8 +1552,8 @@ export default function App({
     if (Number.isFinite(cssWidth) && cssWidth > 0) {
       return getClampedCompactSurfaceResizeWidth(cssWidth);
     }
-    return getCompactSurfaceResizeMinAvailableWidth();
-  }, [getCompactSurfaceResizeMinAvailableWidth, getClampedCompactSurfaceResizeWidth]);
+    return getClampedCompactSurfaceResizeWidth(COMPACT_SURFACE_DEFAULT_WIDTH);
+  }, [getClampedCompactSurfaceResizeWidth]);
   const compactSurfaceEffectiveWidth = isCompactSurface
     && compactSurfaceResizeWidth !== null
     ? getClampedCompactSurfaceResizeWidth(compactSurfaceResizeWidth)
@@ -1557,6 +1576,7 @@ export default function App({
   }, []);
   const openCompactExportHistory = useCallback(() => {
     clearCompactExportHistoryUnmountTimer();
+    setCompactExportHistoryClosingMessages(null);
     setCompactExportHistoryMounted(true);
     setCompactExportHistoryOpen(true);
     persistCompactExportHistoryOpen(true);
@@ -1564,14 +1584,16 @@ export default function App({
   }, [clearCompactExportHistoryUnmountTimer]);
   const closeCompactExportHistory = useCallback(() => {
     clearCompactExportHistoryUnmountTimer();
+    setCompactExportHistoryClosingMessages(messages);
     setCompactExportHistoryOpen(false);
     persistCompactExportHistoryOpen(false);
     setCompactExportPreviewOpen(false);
     compactExportHistoryUnmountTimerRef.current = window.setTimeout(() => {
       setCompactExportHistoryMounted(false);
+      setCompactExportHistoryClosingMessages(null);
       compactExportHistoryUnmountTimerRef.current = null;
     }, COMPACT_EXPORT_HISTORY_VISIBILITY_ANIMATION_MS);
-  }, [clearCompactExportHistoryUnmountTimer]);
+  }, [clearCompactExportHistoryUnmountTimer, messages]);
   useEffect(() => () => {
     clearCompactExportHistoryUnmountTimer();
   }, [clearCompactExportHistoryUnmountTimer]);
@@ -2732,6 +2754,152 @@ export default function App({
     finishCompactSurfaceResize(event);
   }, [finishCompactSurfaceResize]);
 
+  const getCompactHistorySlotMaxHeight = useCallback(() => {
+    const base = getCompactHistoryViewportBase();
+    // 上限只受「屏幕可用高度」约束（去掉对话条宽度挂钩那条）；panel 里 scroll 上方有 bar、下方有 controls，
+    // 先扣掉这部分非滚动 chrome，scroll 区才不会吃满 anchor 把 controls / 底部气泡顶出可视/可点区。
+    const anchorMax = base * COMPACT_HISTORY_SLOT_MAX_VIEWPORT_RATIO;
+    return Math.round(Math.max(
+      COMPACT_HISTORY_SLOT_MIN_HEIGHT,
+      anchorMax - COMPACT_HISTORY_SLOT_CHROME_RESERVE,
+    ));
+  }, []);
+
+  const getClampedCompactHistorySlotHeight = useCallback((height: number) => (
+    Math.round(Math.max(
+      COMPACT_HISTORY_SLOT_MIN_HEIGHT,
+      Math.min(height, getCompactHistorySlotMaxHeight()),
+    ))
+  ), [getCompactHistorySlotMaxHeight]);
+
+  // 用户未拖动过时（slot 为 null），起拖高度取 styles.css 默认公式值（width*1.18 / 63%），
+  // 保证拖动第一帧从当前可见高度连续起步、不跳变。
+  const getCompactHistoryStartHeight = useCallback(() => {
+    // 起拖基准必须是「当前可见高度」（按当前约束 clamp 后）。存量高度可能来自更大屏 / 更宽 surface，
+    // 此时面板已被钳到 max、若用 stale 大值做基准，向下拖会出现「先拖一段没反应」的死区。
+    if (compactHistorySlotHeight !== null) {
+      return getClampedCompactHistorySlotHeight(compactHistorySlotHeight);
+    }
+    const surfaceWidth = getCurrentCompactSurfaceWidth();
+    const base = getCompactHistoryViewportBase();
+    return getClampedCompactHistorySlotHeight(Math.round(Math.min(
+      surfaceWidth * COMPACT_HISTORY_SLOT_DEFAULT_WIDTH_RATIO,
+      base * COMPACT_HISTORY_SLOT_DEFAULT_VIEWPORT_RATIO,
+    )));
+  }, [compactHistorySlotHeight, getClampedCompactHistorySlotHeight, getCurrentCompactSurfaceWidth]);
+
+  const applyCompactHistorySlotHeightVar = useCallback((height: number | null) => {
+    if (typeof document === 'undefined') return;
+    // 内容布局高度锚定在「最大高度」上（scroll-content min-height 用它），缩小 slot 只裁剪可视窗口、
+    // 不再让内容随 slot 收缩 reflow。max 只挂屏幕/工作区高度，会随视口变化，故每次 apply 一并刷新。
+    document.documentElement.style.setProperty(
+      '--compact-history-slot-max-height',
+      `${getCompactHistorySlotMaxHeight()}px`,
+    );
+    if (height === null) {
+      document.documentElement.style.removeProperty('--compact-history-slot-height');
+    } else {
+      document.documentElement.style.setProperty(
+        '--compact-history-slot-height',
+        `${getClampedCompactHistorySlotHeight(height)}px`,
+      );
+    }
+    // CSS 变量变更不会自己通知宿主；让宿主重算 history 命中 rect / Electron 窗口 bounds / 鼠标穿透区。
+    // 同时通知 panel：slot/max 已变，按 autoScrollToBottom 把可视窗口重新锚定到下端（卷帘从上往下收）。
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('neko:compact-interaction-geometry-refresh'));
+    }
+  }, [getClampedCompactHistorySlotHeight, getCompactHistorySlotMaxHeight]);
+
+  const finishCompactHistoryResize = useCallback((event?: ReactPointerEvent<HTMLDivElement>) => {
+    const resizeState = compactHistoryResizeStateRef.current;
+    if (!resizeState) return;
+    if (event && resizeState.pointerId !== event.pointerId) return;
+    // 只在真正拖动过才落库：纯点击不该把响应式默认高度锁成固定像素值（否则之后视口/宽度变化不再响应）。
+    if (resizeState.moved) {
+      persistCompactHistorySlotHeight(resizeState.lastHeight);
+      setCompactHistorySlotHeight(resizeState.lastHeight);
+    }
+    const captureTarget = resizeState.captureTarget;
+    if (captureTarget && typeof captureTarget.releasePointerCapture === 'function') {
+      try {
+        if (captureTarget.hasPointerCapture?.(resizeState.pointerId)) {
+          captureTarget.releasePointerCapture(resizeState.pointerId);
+        }
+      } catch (_) {}
+    }
+    compactHistoryResizeStateRef.current = null;
+    setCompactHistoryResizeActive(false);
+  }, []);
+
+  const handleCompactHistoryResizePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!isCompactSurface) return;
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const startHeight = getCompactHistoryStartHeight();
+    compactHistoryResizeStateRef.current = {
+      pointerId: event.pointerId,
+      startPointerY: getCompactHistoryResizePointerY(event),
+      startHeight,
+      lastHeight: getClampedCompactHistorySlotHeight(startHeight),
+      moved: false,
+      captureTarget: event.currentTarget,
+    };
+    setCompactHistoryResizeActive(true);
+    try {
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    } catch (_) {}
+  }, [getClampedCompactHistorySlotHeight, getCompactHistoryStartHeight, isCompactSurface]);
+
+  const handleCompactHistoryResizePointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const resizeState = compactHistoryResizeStateRef.current;
+    if (!resizeState || resizeState.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    // bar 在堆砌区顶部：上拖（deltaY < 0）增高，下拖减高。
+    const deltaY = getCompactHistoryResizePointerY(event) - resizeState.startPointerY;
+    if (deltaY !== 0) resizeState.moved = true;
+    const nextHeight = getClampedCompactHistorySlotHeight(resizeState.startHeight - deltaY);
+    resizeState.lastHeight = nextHeight;
+    setCompactHistorySlotHeight(nextHeight);
+    applyCompactHistorySlotHeightVar(nextHeight);
+  }, [applyCompactHistorySlotHeightVar, getClampedCompactHistorySlotHeight]);
+
+  const handleCompactHistoryResizePointerUp = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    finishCompactHistoryResize(event);
+  }, [finishCompactHistoryResize]);
+
+  const handleCompactHistoryResizePointerCancel = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    finishCompactHistoryResize(event);
+  }, [finishCompactHistoryResize]);
+
+  // 把已存/恢复的高度写进 CSS 变量（覆盖默认公式）；slot 为 null 时清掉、回落默认。
+  useEffect(() => {
+    if (!isCompactSurface) return;
+    applyCompactHistorySlotHeightVar(compactHistorySlotHeight);
+  }, [applyCompactHistorySlotHeightVar, compactHistorySlotHeight, isCompactSurface]);
+
+  // 视口 / 工作区 / compact surface 宽度变化后，按新约束重写 CSS 变量（用新 max clamp 显示高度）。
+  // 刻意不改 state、不覆盖 storage：存量 raw 值保留，换屏 / 改宽再放大时能恢复；起拖死区另由
+  // getCompactHistoryStartHeight 对基准 clamp 解决。
+  useEffect(() => {
+    if (!isCompactSurface) return undefined;
+    const reapplySlotHeight = () => applyCompactHistorySlotHeightVar(compactHistorySlotHeight);
+    window.addEventListener('resize', reapplySlotHeight);
+    window.addEventListener('neko:desktop-compact-layout-change', reapplySlotHeight);
+    window.addEventListener('neko:compact-surface-resize-width-change', reapplySlotHeight);
+    return () => {
+      window.removeEventListener('resize', reapplySlotHeight);
+      window.removeEventListener('neko:desktop-compact-layout-change', reapplySlotHeight);
+      window.removeEventListener('neko:compact-surface-resize-width-change', reapplySlotHeight);
+    };
+  }, [applyCompactHistorySlotHeightVar, compactHistorySlotHeight, isCompactSurface]);
+
   useEffect(() => {
     if (!isCompactSurface || compactSurfaceEffectiveWidth === null) {
       applyCompactSurfaceResizeWidthVar(null);
@@ -2872,6 +3040,60 @@ export default function App({
     compactInputToolFanSuppressHoverUntilLeaveRef.current = false;
   }, []);
 
+  const resolveCompactInputToolWheelLayout = useCallback((): CompactInputToolWheelLayout => {
+    if (!window.matchMedia?.('(max-width: 820px)').matches) return 'default';
+    const fanElement = compactInputToolFanRef.current;
+    const fanRect = fanElement?.getBoundingClientRect();
+    if (!fanElement || !fanRect || fanRect.width <= 0 || fanRect.height <= 0) return 'default';
+
+    const visualViewport = window.visualViewport;
+    const viewportLeft = visualViewport?.offsetLeft ?? 0;
+    const viewportTop = visualViewport?.offsetTop ?? 0;
+    const viewportWidth = visualViewport?.width ?? window.innerWidth;
+    const viewportHeight = visualViewport?.height ?? window.innerHeight;
+    if (!Number.isFinite(viewportWidth) || viewportWidth <= 0 || !Number.isFinite(viewportHeight) || viewportHeight <= 0) {
+      return 'default';
+    }
+
+    const fanStyle = window.getComputedStyle ? window.getComputedStyle(fanElement) : null;
+    const readFanPixelVar = (name: string, fallback: number) => {
+      const rawValue = fanStyle?.getPropertyValue(name).trim() || '';
+      const parsedValue = Number.parseFloat(rawValue);
+      return Number.isFinite(parsedValue) ? parsedValue : fallback;
+    };
+
+    const centerX = fanRect.left + readFanPixelVar('--compact-tool-wheel-center-x', COMPACT_INPUT_TOOL_WHEEL_CENTER_X);
+    const centerY = fanRect.top + readFanPixelVar('--compact-tool-wheel-center-y', COMPACT_INPUT_TOOL_WHEEL_CENTER_Y);
+    const orbitRadius = readFanPixelVar('--compact-tool-wheel-orbit-radius', 80);
+    const buttonSize = readFanPixelVar('--compact-tool-button-size', 38);
+    const minX = viewportLeft + COMPACT_INPUT_TOOL_WHEEL_VIEWPORT_MARGIN;
+    const minY = viewportTop + COMPACT_INPUT_TOOL_WHEEL_VIEWPORT_MARGIN;
+    const maxX = viewportLeft + viewportWidth - COMPACT_INPUT_TOOL_WHEEL_VIEWPORT_MARGIN;
+    const maxY = viewportTop + viewportHeight - COMPACT_INPUT_TOOL_WHEEL_VIEWPORT_MARGIN;
+
+    const wheelLayoutFitsViewport = (slots: ReadonlyArray<{ angleDeg: number; scale: number }>) => slots.every(({ angleDeg, scale }) => {
+      const angle = angleDeg * (Math.PI / 180);
+      const itemCenterX = centerX + (Math.cos(angle) * orbitRadius);
+      const itemCenterY = centerY + (Math.sin(angle) * orbitRadius);
+      const halfSize = (buttonSize * scale) / 2;
+      return itemCenterX - halfSize >= minX
+        && itemCenterX + halfSize <= maxX
+        && itemCenterY - halfSize >= minY
+        && itemCenterY + halfSize <= maxY;
+    });
+
+    if (wheelLayoutFitsViewport(compactInputToolWheelDefaultVisibleSlots)) return 'default';
+    if (wheelLayoutFitsViewport(compactInputToolWheelViewportFitVisibleSlots)) return 'viewport-fit';
+    return 'default';
+  }, []);
+
+  const syncCompactInputToolWheelLayout = useCallback(() => {
+    const nextLayout = resolveCompactInputToolWheelLayout();
+    setCompactInputToolWheelLayout(currentLayout => (
+      currentLayout === nextLayout ? currentLayout : nextLayout
+    ));
+  }, [resolveCompactInputToolWheelLayout]);
+
   const closeCompactInputToolFan = useCallback((options?: {
     afterClose?: () => void;
     deferDesktopAction?: boolean;
@@ -2888,6 +3110,7 @@ export default function App({
     compactInputToolWheelLastRotationAtRef.current = 0;
     resetCompactInputToolWheelCharge();
     setCompactInputToolWheelFastAnimation(false);
+    setCompactInputToolWheelLayout('default');
     setCompactInputToolFanInteractiveState(false);
     compactInputToolFanPositionSyncRef.current?.();
     compactInputToolFanOpenRef.current = false;
@@ -2959,11 +3182,46 @@ export default function App({
     toolMenuOpen,
   ]);
 
+  useLayoutEffect(() => {
+    if (!compactInputToolFanOpen) {
+      setCompactInputToolWheelLayout('default');
+      return undefined;
+    }
+
+    syncCompactInputToolWheelLayout();
+    const frameId = window.requestAnimationFrame(syncCompactInputToolWheelLayout);
+    window.addEventListener('resize', syncCompactInputToolWheelLayout);
+    window.addEventListener('neko:compact-interaction-geometry-change', syncCompactInputToolWheelLayout);
+    window.visualViewport?.addEventListener('resize', syncCompactInputToolWheelLayout);
+    window.visualViewport?.addEventListener('scroll', syncCompactInputToolWheelLayout);
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      window.removeEventListener('resize', syncCompactInputToolWheelLayout);
+      window.removeEventListener('neko:compact-interaction-geometry-change', syncCompactInputToolWheelLayout);
+      window.visualViewport?.removeEventListener('resize', syncCompactInputToolWheelLayout);
+      window.visualViewport?.removeEventListener('scroll', syncCompactInputToolWheelLayout);
+    };
+  }, [
+    compactInputToolFanOpen,
+    compactSurfaceResizeWidth,
+    effectiveCompactChatState,
+    syncCompactInputToolWheelLayout,
+  ]);
+
   const openCompactInputToolFan = useCallback((intent: 'click' | 'hover') => {
     if (composerDisabled || compactInputHasPayload) return;
+    // hover 模式下指针抖动离开再回来会重入本函数，但 fan 其实从未关闭（只挂了延迟关闭定时器）。
+    // 复位只能发生在「真正从关闭态展开」时，否则用户刚转出来正要去够的工具会被弹回默认位。
+    const wasAlreadyOpen = compactInputToolFanOpenRef.current;
     clearCompactInputToolFanCloseTimer();
     clearCompactInputToolFanInteractiveTimer();
     compactInputToolFanOpenIntentRef.current = intent;
+    setCompactInputToolWheelLayout('default');
+    if (!wasAlreadyOpen) {
+      // 每次展开都把轮盘转角复位到默认（环位 0 居中），不保留上次转到的位置。
+      setCompactInputToolWheelIndex(0);
+    }
     setCompactInputToolFanInteractiveState(false);
     updateCompactInputToolFanPosition();
     compactInputToolFanOpenRef.current = true;
@@ -4415,6 +4673,20 @@ export default function App({
     }
   }
 
+  function focusCompactInputForContinuousTyping() {
+    const inputNode = compactInputRef.current;
+    if (!inputNode || inputNode.disabled || inputNode.readOnly) return;
+    const activeElement = document.activeElement;
+    if (
+      activeElement instanceof Node
+      && compactInputShellRef.current
+      && !compactInputShellRef.current.contains(activeElement)
+    ) return;
+    inputNode.focus();
+    const selectionEnd = inputNode.value.length;
+    inputNode.setSelectionRange(selectionEnd, selectionEnd);
+  }
+
   function submitDraft() {
     if (composerDisabled) return;
     if (submittingRef.current) return;
@@ -4422,78 +4694,23 @@ export default function App({
     if (!text && composerAttachments.length === 0) return;
     closeCompactInputToolFan();
     submittingRef.current = true;
+    let shouldRefocusCompactInput = false;
     try {
       onComposerSubmit?.({ text });
       setDraft('');
       restoreCompactExportHistoryToBottomForOutgoingMessage();
-      requestCompactChatState('default');
+      shouldRefocusCompactInput = isCompactSurface
+        && effectiveCompactChatState === 'input'
+        && text.length > 0;
     } finally {
-      requestAnimationFrame(() => { submittingRef.current = false; });
+      requestAnimationFrame(() => {
+        submittingRef.current = false;
+        if (shouldRefocusCompactInput) {
+          focusCompactInputForContinuousTyping();
+        }
+      });
     }
   }
-
-  useEffect(() => {
-    function handleDesktopDropTargetChange(event: Event) {
-      const detail = (event as CustomEvent<CompactHistoryDesktopDropTargetDetail>).detail;
-      if (detail?.active === false) {
-        compactHistoryDesktopDropTargetRef.current = null;
-        return;
-      }
-      if (!detail?.sessionId || typeof detail.desktopOverAvatar !== 'boolean') return;
-      compactHistoryDesktopDropTargetRef.current = {
-        sessionId: detail.sessionId,
-        overTarget: detail.desktopOverAvatar,
-        timestamp: Number.isFinite(Number(detail.timestamp)) ? Number(detail.timestamp) : Date.now(),
-      };
-    }
-
-    window.addEventListener('neko:compact-history-drag-desktop-target-change', handleDesktopDropTargetChange);
-    return () => {
-      window.removeEventListener('neko:compact-history-drag-desktop-target-change', handleDesktopDropTargetChange);
-    };
-  }, []);
-
-  const getCompactHistoryDesktopDropTarget = useCallback((sessionId?: string) => {
-    const desktopDropTarget = compactHistoryDesktopDropTargetRef.current;
-    if (!desktopDropTarget) return null;
-    if (sessionId && desktopDropTarget.sessionId && desktopDropTarget.sessionId !== sessionId) return null;
-    if (Date.now() - desktopDropTarget.timestamp >= 800) return null;
-    return desktopDropTarget.overTarget;
-  }, []);
-
-  const isCompactHistoryDropTargetAt = useCallback((point: { clientX: number; clientY: number; sessionId?: string }) => (
-    getCompactHistoryDesktopDropTarget(point.sessionId) ?? isPointerWithinAvatarRange(point.clientX, point.clientY, avatarToolCacheState)
-  ), [avatarToolCacheState, getCompactHistoryDesktopDropTarget]);
-
-  const handleCompactHistoryDropToAvatar = useCallback((request: CompactHistoryDropRequest) => {
-    const desktopDropTarget = getCompactHistoryDesktopDropTarget(request.sessionId);
-    if (
-      desktopDropTarget !== true
-      && (desktopDropTarget !== null || !isPointerWithinAvatarRange(request.point.clientX, request.point.clientY, avatarToolCacheState))
-    ) {
-      return false;
-    }
-
-    const payload = buildCompactHistoryDropPayload(request);
-    const hasText = !!payload.text?.trim();
-    const hasImages = (payload.images?.length ?? 0) > 0;
-    if (!hasText && !hasImages) {
-      return false;
-    }
-
-    restoreCompactExportHistoryToBottomForOutgoingMessage();
-    if (onCompactHistoryDrop) {
-      return normalizeCompactHistoryDropResult(onCompactHistoryDrop(payload));
-    }
-    if (hasImages) {
-      return false;
-    }
-    onComposerSubmit?.({
-      text: payload.text ?? '',
-      requestId: payload.requestId,
-    });
-    return true;
-  }, [avatarToolCacheState, compactExportHistoryOpen, getCompactHistoryDesktopDropTarget, onCompactHistoryDrop, onComposerSubmit]);
 
   const compactFanRunAction = (action: (() => void) | undefined) => (event: ReactMouseEvent) => {
     if (shouldSuppressCompactToolClick(event)) {
@@ -4603,6 +4820,38 @@ export default function App({
     </button>
   ) : null;
 
+  // compact 输入框/胶囊左侧毛绒球：点按=折叠为 minimized（毛绒球小窗口），按住拖>6px=拖动整个 surface。
+  // 复用与右侧工具轮盘原点对偶的 origin-drag 手势：data-compact-no-drag 让宿主被动 hit-test 不重复起拖，
+  // 真正拖拽经 neko:compact-surface-drag-grab 交宿主接管（web: startDrag / Electron: preload 原生窗口拖拽）。
+  const compactMinimizeButton = (
+    <button
+      type="button"
+      className="compact-chat-minimize-ball"
+      aria-label={i18n('chat.reactWindowMinimize', 'Minimize')}
+      title={i18n('chat.reactWindowMinimize', 'Minimize')}
+      data-compact-no-drag="true"
+      onPointerDown={beginCompactToolOriginDrag}
+      onPointerMove={updateCompactToolOriginDrag}
+      onPointerUp={endCompactToolOriginDrag}
+      onPointerCancel={endCompactToolOriginDrag}
+      onClick={() => {
+        // 拖动后补发的 click 已在 origin-drag 里置位抑制，这里消费掉；仅「无拖动的纯点按」折叠。
+        if (compactToolOriginSuppressClickRef.current) {
+          compactToolOriginSuppressClickRef.current = false;
+          return;
+        }
+        onCompactMinimizeRequest?.();
+      }}
+    >
+      <img
+        className="compact-chat-minimize-ball-icon"
+        src="/static/assets/neko-idle/chat-minimized-yarn-ball.png"
+        alt=""
+        aria-hidden="true"
+      />
+    </button>
+  );
+
   const compactInputToolFanNode = compactToolToggleVisible ? (
     <div
       ref={compactInputToolFanRef}
@@ -4614,6 +4863,7 @@ export default function App({
       data-compact-no-drag="true"
       data-compact-input-tool-fan-open={compactInputToolFanOpen ? 'true' : 'false'}
       data-compact-input-tool-fan-interactive={compactInputToolFanInteractive ? 'true' : 'false'}
+      data-compact-tool-wheel-layout={compactInputToolWheelLayout}
       data-compact-tool-wheel-fast-animation={compactInputToolWheelFastAnimation ? 'true' : 'false'}
       data-compact-tool-wheel-charge-active={compactInputToolWheelChargeRatio > 0 ? 'true' : 'false'}
       data-compact-tool-wheel-charge-direction={compactInputToolWheelChargeDirection === 1 ? 'forward' : compactInputToolWheelChargeDirection === -1 ? 'backward' : 'none'}
@@ -4757,9 +5007,9 @@ export default function App({
         aria-label={resolvedImportImageAriaLabel}
         title={importImageButtonLabel}
         disabled={compactInputToolFanActionsDisabled}
-        tabIndex={getCompactToolWheelTabIndex(0)}
-        aria-hidden={getCompactToolWheelAriaHidden(0)}
-        data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(0)}
+        tabIndex={getCompactToolWheelTabIndex(4)}
+        aria-hidden={getCompactToolWheelAriaHidden(4)}
+        data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(4)}
         onClick={compactFanRunAction(onComposerImportImage)}
       >
         <img src="/static/icons/import_image_icon.png" alt="" aria-hidden="true" />
@@ -4770,9 +5020,9 @@ export default function App({
         aria-label={resolvedScreenshotAriaLabel}
         title={screenshotButtonLabel}
         disabled={compactInputToolFanActionsDisabled}
-        tabIndex={getCompactToolWheelTabIndex(1)}
-        aria-hidden={getCompactToolWheelAriaHidden(1)}
-        data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(1)}
+        tabIndex={getCompactToolWheelTabIndex(0)}
+        aria-hidden={getCompactToolWheelAriaHidden(0)}
+        data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(0)}
         onClick={compactFanRunAction(onComposerScreenshot)}
       >
         <img src="/static/icons/screenshot_new_icon.png" alt="" aria-hidden="true" />
@@ -4784,9 +5034,9 @@ export default function App({
         aria-pressed={galgameModeEnabled}
         title={galgameToggleButtonLabel}
         disabled={compactInputToolFanActionsDisabled}
-        tabIndex={getCompactToolWheelTabIndex(2)}
-        aria-hidden={getCompactToolWheelAriaHidden(2)}
-        data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(2)}
+        tabIndex={getCompactToolWheelTabIndex(6)}
+        aria-hidden={getCompactToolWheelAriaHidden(6)}
+        data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(6)}
         data-compact-tool-active={galgameModeEnabled ? 'true' : 'false'}
         onClick={compactFanToggleOnAction(onGalgameModeToggle)}
       >
@@ -4799,9 +5049,9 @@ export default function App({
         aria-pressed={translateEnabled}
         title={translateButtonLabel}
         disabled={compactInputToolFanActionsDisabled}
-        tabIndex={getCompactToolWheelTabIndex(3)}
-        aria-hidden={getCompactToolWheelAriaHidden(3)}
-        data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(3)}
+        tabIndex={getCompactToolWheelTabIndex(2)}
+        aria-hidden={getCompactToolWheelAriaHidden(2)}
+        data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(2)}
         data-compact-tool-active={translateEnabled ? 'true' : 'false'}
         onClick={compactFanToggleOnAction(onTranslateToggle)}
       >
@@ -4813,9 +5063,9 @@ export default function App({
         aria-label={jukeboxButtonAriaLabel}
         title={jukeboxButtonLabel}
         disabled={compactInputToolFanActionsDisabled}
-        tabIndex={getCompactToolWheelTabIndex(4)}
-        aria-hidden={getCompactToolWheelAriaHidden(4)}
-        data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(4)}
+        tabIndex={getCompactToolWheelTabIndex(3)}
+        aria-hidden={getCompactToolWheelAriaHidden(3)}
+        data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(3)}
         onClick={compactFanRunAction(onJukeboxClick)}
       >
         <img src="/static/icons/jukebox_icon.png" alt="" aria-hidden="true" />
@@ -4840,8 +5090,8 @@ export default function App({
       <div
         className="composer-tool-menu compact-input-tool-item compact-input-tool-item-avatar"
         ref={toolMenuRef}
-        aria-hidden={getCompactToolWheelAriaHidden(6)}
-        data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(6)}
+        aria-hidden={getCompactToolWheelAriaHidden(1)}
+        data-compact-tool-wheel-slot={getCompactToolWheelSlotValue(1)}
         data-compact-tool-active={toolMenuOpen || activeToolItem ? 'true' : 'false'}
       >
         <button
@@ -4852,7 +5102,7 @@ export default function App({
           aria-controls={toolMenuOpen ? 'composer-tool-popover-compact' : undefined}
           aria-expanded={toolMenuOpen}
           disabled={compactInputToolFanActionsDisabled}
-          tabIndex={getCompactToolWheelTabIndex(6)}
+          tabIndex={getCompactToolWheelTabIndex(1)}
           onClick={(event) => {
             if (shouldSuppressCompactToolClick(event)) {
               event.preventDefault();
@@ -5162,9 +5412,12 @@ export default function App({
     ? (typeof document !== 'undefined' ? createPortal(choiceLayerNode, document.body) : choiceLayerNode)
     : null;
 
+  const compactExportHistoryMessages = compactExportHistoryOpen
+    ? messages
+    : (compactExportHistoryClosingMessages || messages);
   const compactExportHistoryElement = isCompactSurface && compactExportHistoryMounted ? (
     <CompactExportHistoryPanel
-      messages={messages}
+      messages={compactExportHistoryMessages}
       selectedIds={compactExportSelectedIds}
       selectedCount={compactExportSelectedCount}
       selectableCount={compactExportSelectableCount}
@@ -5184,9 +5437,11 @@ export default function App({
       onBuildPreview={handleCompactInlineBuildPreview}
       onCopyExport={handleCompactInlineCopyExport}
       onDownloadExport={handleCompactInlineDownloadExport}
-      isDropTargetAt={isCompactHistoryDropTargetAt}
-      onDropToTarget={handleCompactHistoryDropToAvatar}
-      onDragStateChange={onCompactHistoryDragStateChange}
+      historyResizeActive={compactHistoryResizeActive}
+      onHistoryResizePointerDown={handleCompactHistoryResizePointerDown}
+      onHistoryResizePointerMove={handleCompactHistoryResizePointerMove}
+      onHistoryResizePointerUp={handleCompactHistoryResizePointerUp}
+      onHistoryResizePointerCancel={handleCompactHistoryResizePointerCancel}
     />
   ) : null;
   const compactExportHistoryNode = compactExportHistoryElement;
@@ -5208,6 +5463,22 @@ export default function App({
     >
       <span className="compact-history-visibility-handle-triangle" aria-hidden="true" />
     </button>
+  ) : null;
+  const compactMusicPlayerVisibility = compactExportHistoryOpen
+    ? 'open'
+    : (compactExportHistoryMounted ? 'closing' : 'closed');
+  const compactMusicPlayerMountNode = isCompactSurface ? (
+    <div
+      id="music-player-mount"
+      className="compact-music-player-mount"
+      data-music-player-mount="compact-surface"
+      data-compact-music-player-visibility={compactMusicPlayerVisibility}
+      data-compact-geometry-owner="surface"
+      data-compact-geometry-item="musicPlayer"
+      data-compact-geometry-hit-scope="children"
+      data-compact-no-drag="true"
+      aria-hidden={compactMusicPlayerVisibility === 'open' ? undefined : true}
+    />
   ) : null;
   const compactSurfaceShellStyle = isCompactSurface
     && compactSurfaceEffectiveWidth !== null
@@ -5247,9 +5518,11 @@ export default function App({
       data-compact-export-preview-open={isCompactSurface && compactExportPreviewOpen ? 'true' : 'false'}
       data-compact-export-selected-count={isCompactSurface ? compactExportSelectedCount : 0}
       data-compact-export-auto-scroll={isCompactSurface && compactExportAutoScrollToBottom ? 'true' : 'false'}
+      data-compact-tool-layer-open={isCompactSurface && compactInputToolFanOpen ? 'true' : 'false'}
     >
       {compactExportHistoryNode}
       {compactHistoryVisibilityHandleNode}
+      {compactMusicPlayerMountNode}
       {compactChoiceLayerNode}
       {floatingFistDrops.map(drop => (
         <span
@@ -5375,7 +5648,7 @@ export default function App({
           data-chat-surface-mode={chatSurfaceMode}
           data-compact-chat-state={effectiveCompactChatState}
         >
-          <div id="music-player-mount" className="composer-music-player-mount" />
+          {!isCompactSurface ? <div id="music-player-mount" className="composer-music-player-mount" /> : null}
           <form className="composer" onSubmit={(event) => {
             event.preventDefault();
             submitDraft();
@@ -5385,6 +5658,7 @@ export default function App({
                 className="compact-chat-surface-shell"
                 ref={compactInputShellRef}
                 data-compact-chat-state={effectiveCompactChatState}
+                data-compact-tool-layer-open={compactToolToggleVisible && compactInputToolFanOpen ? 'true' : 'false'}
                 style={compactSurfaceShellStyle}
                 onBlurCapture={effectiveCompactChatState === 'input' ? scheduleCompactInputCollapse : undefined}
               >
@@ -5425,14 +5699,9 @@ export default function App({
                 >
                   {effectiveCompactChatState === 'input' ? (
                     <>
-                      {/* 输入态左侧拖拽把手：textarea / 工具按钮都是 no-drag，本握把不加 no-drag，
-                          于是落在 surface 本体拖拽区里——web/X11 经 isCompactDragSurfaceTarget、
-                          Wayland 经 frame 的 -webkit-app-region:drag 区域，均可按住拖动整个输入框。
-                          宿主 mousedown 会 preventDefault，按住把手不会让 textarea 失焦收起输入态。 */}
-                      <span
-                        className="compact-chat-input-drag-grip"
-                        aria-hidden="true"
-                      />
+                      {/* 输入态左侧毛绒球：点按折叠为 minimized，按住拖动整个输入框（见 compactMinimizeButton 定义）。
+                          按住把手不会让 textarea 失焦收起输入态——宿主 mousedown 会 preventDefault。 */}
+                      {compactMinimizeButton}
                       <textarea
                         className="composer-input"
                         ref={compactInputRef}
@@ -5462,6 +5731,7 @@ export default function App({
                     </>
                   ) : (
                     <>
+                      {compactMinimizeButton}
                       <button
                         className="compact-chat-capsule-button"
                         type="button"

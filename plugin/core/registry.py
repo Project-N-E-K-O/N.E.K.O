@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
-import importlib
 import inspect
 import os
 import re
@@ -22,6 +21,15 @@ _pending_async_shutdown_tasks: set = set()
 def _wrap_logger(logger: Any) -> Any:
     """向后兼容函数，现在直接返回 logger。"""
     return logger
+
+
+def _import_plugin_entry_module(module_path: str, toml_path: Path, logger: Any) -> Any:
+    """延迟使用插件宿主导入兜底，避免用户插件命名空间被内置 plugins 包遮挡。"""
+
+    from plugin.core.host import _import_plugin_module
+
+    return _import_plugin_module(module_path, toml_path, logger)
+
 
 try:
     import tomllib  # type: ignore[attr-defined]
@@ -1291,6 +1299,7 @@ def _build_extension_map(
             "ext_id": ctx.pid,
             "ext_entry": ctx.entry,
             "prefix": host_conf.get("prefix", ""),
+            "config_path": str(ctx.toml_path),
         })
     
     return extension_map
@@ -1652,7 +1661,7 @@ def _load_adapter_plugin(
 
     try:
         module_path, class_name = entry.split(":", 1)
-        mod = importlib.import_module(module_path)
+        mod = _import_plugin_entry_module(module_path, toml_path, logger)
         cls = getattr(mod, class_name)
         if isinstance(cls, type):
             entries_preview = _extract_entries_preview(pid, cls, conf, pdata)
@@ -2032,7 +2041,7 @@ def load_plugins_from_roots(
         module_path, class_name = entry.split(":", 1)
         logger.debug("Plugin {}: importing {}:{}", pid, module_path, class_name)
         try:
-            mod = importlib.import_module(module_path)
+            mod = _import_plugin_entry_module(module_path, toml_path, logger)
             cls: Type[Any] = getattr(mod, class_name)
         except (ImportError, ModuleNotFoundError) as e:
             logger.error("Failed to import module '{}' for plugin {}: {}", module_path, pid, e, exc_info=True)

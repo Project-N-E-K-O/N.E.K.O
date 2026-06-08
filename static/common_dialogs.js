@@ -213,7 +213,6 @@
 
         .modal-overlay-autostart-retention {
             background: rgba(245, 248, 255, 0.62);
-            backdrop-filter: blur(8px);
         }
 
         .modal-dialog-autostart-retention {
@@ -615,7 +614,7 @@
         .modal-dialog-autostart-retention .exit-retention-cat-paw--right { right: 35px; transform: rotate(-20deg); }
 
         .modal-dialog-autostart-retention .modal-header {
-            padding: 0;
+            padding: 22px 0 0;
         }
 
         .modal-dialog-autostart-retention .modal-title {
@@ -647,18 +646,21 @@
         }
 
         .modal-dialog-autostart-retention .modal-footer {
-            gap: 24px;
-            padding: 30px 0 0;
+            position: relative;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 22px;
+            padding: 38px 0 34px;
         }
 
         .modal-dialog-autostart-retention .modal-btn {
-            min-width: 170px;
+            min-width: 188px;
             min-height: 0;
-            padding: 16px 42px;
+            padding: 15px 36px;
             border: 0;
-            border-radius: 30px;
-            color: #ffffff;
-            font-size: 18px;
+            border-radius: 999px;
+            font-size: 17px;
             font-weight: 900;
             line-height: 1.2;
             letter-spacing: 0;
@@ -666,14 +668,79 @@
             cursor: pointer;
             position: relative;
             overflow: hidden;
-            transition: transform 0.32s cubic-bezier(0.175, 0.885, 0.32, 1.275), box-shadow 0.22s ease, filter 0.22s ease;
+            transition: transform 0.18s ease, box-shadow 0.18s ease, filter 0.18s ease, background 0.18s ease;
         }
 
-        .modal-dialog-autostart-retention .modal-btn-primary { background: var(--exit-button-stay); box-shadow: 0 15px 30px rgba(107,176,242,0.35), inset 0 4px 8px rgba(255,255,255,0.46); }
-        .modal-dialog-autostart-retention .modal-btn-secondary { background: var(--exit-button-leave); color: #8fa3c0; box-shadow: 0 10px 20px rgba(0,0,0,0.06), inset 0 4px 8px rgba(255,255,255,0.72); }
-        .modal-dialog-autostart-retention .modal-btn:hover,
-        .modal-dialog-autostart-retention .modal-btn:focus-visible { transform: translateY(-6px) scale(1.05); outline: none; filter: brightness(1.04); }
-        .modal-dialog-autostart-retention .modal-btn:active { transform: scale(0.95); }
+        .modal-dialog-autostart-retention .modal-btn-primary {
+            color: #ffffff;
+            background: linear-gradient(135deg, #52aaf3 0%, #85c8ff 100%);
+            box-shadow: 0 14px 26px rgba(82,170,243,0.34), inset 0 3px 8px rgba(255,255,255,0.42);
+        }
+
+        .modal-dialog-autostart-retention .modal-btn-secondary {
+            color: #8798ad;
+            background: rgba(255, 255, 255, 0.86);
+            border: 1px solid rgba(174, 200, 226, 0.42);
+            box-shadow: 0 12px 22px rgba(95,135,190,0.10), inset 0 3px 8px rgba(255,255,255,0.76);
+        }
+
+        .modal-dialog-autostart-retention .modal-btn-link {
+            position: absolute;
+            right: 0;
+            bottom: 0;
+            min-width: 0;
+            padding: 4px 2px;
+            border-radius: 0;
+            color: #5f6d7f;
+            background: transparent;
+            box-shadow: none;
+            font-size: 15px;
+            font-weight: 700;
+        }
+
+        .modal-dialog-autostart-retention .modal-btn:not(.modal-btn-link):hover,
+        .modal-dialog-autostart-retention .modal-btn:not(.modal-btn-link):focus-visible {
+            transform: translateY(-2px);
+            outline: none;
+            filter: brightness(1.03);
+        }
+
+        .modal-dialog-autostart-retention .modal-btn-link:hover,
+        .modal-dialog-autostart-retention .modal-btn-link:focus-visible {
+            color: #314158;
+            text-decoration: underline;
+            outline: none;
+        }
+
+        .modal-dialog-autostart-retention .modal-btn:active {
+            transform: translateY(1px) scale(0.98);
+        }
+
+        .modal-dialog-autostart-retention .modal-btn-link:active {
+            transform: none;
+        }
+
+        @media (max-width: 560px) {
+            .modal-dialog-autostart-retention .modal-footer {
+                gap: 12px;
+                padding-bottom: 26px;
+            }
+
+            .modal-dialog-autostart-retention .modal-btn:not(.modal-btn-link) {
+                width: 100%;
+                min-width: 0;
+            }
+
+            .modal-dialog-autostart-retention .modal-btn-link {
+                right: 50%;
+                bottom: -6px;
+                transform: translateX(50%);
+            }
+
+            .modal-dialog-autostart-retention .modal-btn-link:active {
+                transform: translateX(50%);
+            }
+        }
 
         .modal-dialog-autostart-retention.state-curious .exit-retention-cat-head-group { transform: rotate(10deg) translateY(2px); }
         .modal-dialog-autostart-retention.state-curious .exit-retention-cat-ear--left { transform: rotate(-8deg); }
@@ -819,8 +886,18 @@
 
         [data-theme="dark"] .modal-dialog-autostart-retention .modal-btn-secondary {
             color: #d2deee;
-            background: rgba(255, 255, 255, 0.10);
+            background: rgba(255, 255, 255, 0.12);
+            border-color: rgba(255,255,255,0.12);
             box-shadow: 0 10px 20px rgba(0,0,0,0.22), inset 0 4px 8px rgba(255,255,255,0.10);
+        }
+
+        [data-theme="dark"] .modal-dialog-autostart-retention .modal-btn-link {
+            color: #9dafc6;
+        }
+
+        [data-theme="dark"] .modal-dialog-autostart-retention .modal-btn-link:hover,
+        [data-theme="dark"] .modal-dialog-autostart-retention .modal-btn-link:focus-visible {
+            color: #d8e6f7;
         }
     `;
     document.head.appendChild(style);
@@ -828,10 +905,53 @@
     /**
      * 创建模态对话框
      */
+    function emitDecisionPromptLifecycleEvent(type, detail) {
+        try {
+            window.dispatchEvent(new CustomEvent(type, {
+                detail: Object.assign({ source: 'common-dialogs' }, detail || {})
+            }));
+        } catch (_) {
+            // ignore
+        }
+    }
+
+    function temporarilyHideReactChatOverlayForModal(modalConfig) {
+        if (!modalConfig || modalConfig.skin !== 'autostart-retention') {
+            return function noop() {};
+        }
+        const overlay = document.getElementById('react-chat-window-overlay');
+        if (!overlay || overlay.hidden) {
+            return function noop() {};
+        }
+
+        const body = document.body;
+        const hadOpenClass = !!(
+            body
+            && body.classList
+            && typeof body.classList.contains === 'function'
+            && body.classList.contains('react-chat-window-open')
+        );
+        overlay.hidden = true;
+        if (body && body.classList && typeof body.classList.remove === 'function') {
+            body.classList.remove('react-chat-window-open');
+        }
+
+        return function restoreReactChatOverlay() {
+            if (overlay.hidden) {
+                overlay.hidden = false;
+            }
+            if (hadOpenClass && body && body.classList && typeof body.classList.add === 'function') {
+                body.classList.add('react-chat-window-open');
+            }
+        };
+    }
+
     function createModal(config) {
         return new Promise((resolve) => {
             const modalConfig = config || {};
             const isAutostartRetentionSkin = modalConfig.skin === 'autostart-retention';
+            const isDecisionPrompt = modalConfig.type === 'decision';
+            const restoreObscuredUi = temporarilyHideReactChatOverlayForModal(modalConfig);
             let settled = false;
             const dismissValue = Object.prototype.hasOwnProperty.call(modalConfig, 'dismissValue')
                 ? modalConfig.dismissValue
@@ -1029,6 +1149,13 @@
                     if (overlay.parentNode) {
                         overlay.parentNode.removeChild(overlay);
                     }
+                    if (isDecisionPrompt) {
+                        emitDecisionPromptLifecycleEvent('neko:decision-prompt-closed', {
+                            skin: modalConfig.skin || '',
+                            type: modalConfig.type || ''
+                        });
+                    }
+                    restoreObscuredUi();
                     resolve(value);
                 }, 200);
             }
@@ -1143,7 +1270,9 @@
                     const button = document.createElement('button');
                     const variant = buttonConfig.variant === 'danger'
                         ? 'modal-btn-danger'
-                        : (buttonConfig.variant === 'primary' ? 'modal-btn-primary' : 'modal-btn-secondary');
+                        : (buttonConfig.variant === 'primary'
+                            ? 'modal-btn-primary'
+                            : (buttonConfig.variant === 'link' ? 'modal-btn-link' : 'modal-btn-secondary'));
                     button.className = 'modal-btn ' + variant;
                     button.textContent = String(buttonConfig.text || ('Button ' + (index + 1)));
                     if (isAutostartRetentionSkin) {
@@ -1185,6 +1314,12 @@
 
             // 添加到页面
             document.body.appendChild(overlay);
+            if (isDecisionPrompt) {
+                emitDecisionPromptLifecycleEvent('neko:decision-prompt-opened', {
+                    skin: modalConfig.skin || '',
+                    type: modalConfig.type || ''
+                });
+            }
 
             if (typeof modalConfig.onShown === 'function') {
                 const notifyShown = function () {

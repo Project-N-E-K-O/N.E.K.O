@@ -4615,9 +4615,18 @@ async def proactive_chat(request: Request):
         if not mgr:
             return JSONResponse({"success": False, "error": f"角色 {lanlan_name} 不存在"}, status_code=404)
 
+        if getattr(mgr, "is_goodbye_silent", lambda: False)():
+            logger.info("[%s] 主动搭话本轮未发起：goodbye silent", lanlan_name)
+            return JSONResponse({
+                "success": True,
+                "action": "pass",
+                "message": "goodbye silent; proactive skipped",
+            })
+
         try:
             from main_routers.game_router import is_game_route_active
             if is_game_route_active(lanlan_name):
+                logger.info("[%s] 主动搭话本轮未发起：游戏路由 active", lanlan_name)
                 return JSONResponse({
                     "success": True,
                     "action": "pass",
@@ -4665,6 +4674,7 @@ async def proactive_chat(request: Request):
                     action=_voice_advance_outcome.get('action', 'suppress'),
                 )
             if not mgr.state.can_start_proactive(session=probe_session):
+                logger.info("[%s] 主动搭话本轮未发起：语音模式 AI 正在响应中（409）", lanlan_name)
                 return JSONResponse({
                     "success": False,
                     "error": "AI正在响应中，无法主动搭话",
@@ -4678,6 +4688,8 @@ async def proactive_chat(request: Request):
                 _mini_game_invite_count_post_response_chat(lanlan_name)
                 # 持久化"累计成功投递的主动搭话总数"，给 force-first 用。
                 await _increment_proactive_chat_total(lanlan_name)
+            else:
+                logger.info("[%s] 主动搭话本轮未发起：语音 nudge 被 guard 跳过", lanlan_name)
             return JSONResponse({
                 "success": True,
                 "action": "chat" if delivered else "pass",
@@ -4690,6 +4702,7 @@ async def proactive_chat(request: Request):
         # 各自 fire(PROACTIVE_START) 导致两路 proactive 同时进入 PHASE1。
         from main_logic.session_state import SessionEvent as _SE
         if not await mgr.state.try_start_proactive(session=probe_session):
+            logger.info("[%s] 主动搭话本轮未发起：AI 正在响应或已有一轮在跑（409）", lanlan_name)
             return JSONResponse({
                 "success": False,
                 "error": "AI正在响应中，无法主动搭话",
@@ -4725,13 +4738,28 @@ async def proactive_chat(request: Request):
                 return resp
             if not isinstance(body, dict):
                 return resp
+            # text-mode 占坑后的所有出口都经过这里。本轮最终没把话说出来
+            # （action != "chat"：各种 guard/skip/内容为空/被用户接管）就在
+            # info 留一条带原因的日志，原因取响应体 message（无则 error）。
+            # 散落各分支无需各自记；排查"她这轮为什么没主动说话"看这条即可。
+            # 占坑前的早退（游戏路由 / voice 与 text 的 409 并发拒绝）不经过
+            # 本出口，各自就地补了同前缀（"主动搭话本轮未发起："）的 info。
+            if body.get("action") != "chat":
+                logger.info(
+                    "[%s] 主动搭话本轮未发起：%s",
+                    lanlan_name,
+                    body.get("message") or body.get("error") or "(无原因说明)",
+                )
             if 'next_schedule_fixed_mode' in body:
                 return resp
             body['next_schedule_fixed_mode'] = _next_schedule_fixed_mode
             return JSONResponse(body, status_code=resp.status_code)
 
         def _proactive_preempted_json(where: str) -> dict:
-            logger.info(
+            # 细粒度的 state 快照留 debug；面向排查的"本轮未发起 + 原因"由统一
+            # 出口 _end_proactive 按 message 打 info（这些 dict 全部经它返回），
+            # 避免同一轮 skip 打出两条重复 info。
+            logger.debug(
                 "[%s] proactive %s preempted by user takeover (state=%s)",
                 lanlan_name, where, mgr.state.snapshot(),
             )
