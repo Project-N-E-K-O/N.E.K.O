@@ -80,7 +80,7 @@
                 {
                     id: 'day1_capsule_drag_hint',
                     textKey: 'tutorial.avatarFloating.day1.capsuleDragHint',
-                    text: '把鼠标移到这里，长按就可以拉着聊天框到处跑啦~ 双击两下就能随时发消息给我哦！',
+                    text: '把鼠标移到这里，长按就可以拉着聊天框到处跑啦~ 点击一下就能随时发消息给我哦！',
                     voiceKey: 'day1_capsule_drag_hint',
                     emotion: 'happy',
                     target: 'chat-input',
@@ -181,7 +181,7 @@
                     description: '点击输入框解锁首句旁白后，介绍对话窗里的语音控制按钮。'
                 },
                 performance: {
-                    bubbleText: '这里有一个神奇的按钮！只要点击它，就可以直接和我聊天啦！想跟我分享今天的新鲜事吗？或者只是叫叫我的名字？快来试试嘛，我已经迫不及待想听到你的声音啦！喵！',
+                    bubbleText: '这里有一个神奇的按钮！只要点击它，就可以直接和我聊天啦！想跟我分享今天的新新鲜事吗？或者只是叫叫我的名字？快来试试嘛，我已经迫不及待想听到你的声音啦！',
                     bubbleTextKey: 'tutorial.yuiGuide.lines.introBasic',
                     voiceKey: 'intro_basic',
                     emotion: 'happy',
@@ -204,7 +204,7 @@
                     description: '介绍猫爪总开关与键鼠控制开关，并完成首页第一段自动化演示。'
                 },
                 performance: {
-                    bubbleText: '超级魔法按钮出现！只要点一下这里，我就可以把小爪子伸到你的键盘和鼠标上啦！我会帮你打字，帮你点开网页……不过，要是那个鼠标指针动来动去的话，我可能也会忍不住扑上去抓它哦！准备好迎接我的捣乱……啊不，是帮忙了吗？喵！',
+                    bubbleText: '超级魔法开关出现！只要点一下这里，我就可以把小爪子伸到你的键盘和鼠标上啦！我会帮你打字，帮你点开网页……不过，要是那个鼠标指针动来动去的话，我可能也会忍不住扑上去抓它哦！准备好迎接我的捣乱……啊不，是帮忙了吗？喵！',
                     bubbleTextKey: 'tutorial.yuiGuide.lines.takeoverCaptureCursor',
                     voiceKey: 'takeover_capture_cursor',
                     emotion: 'happy',
@@ -230,7 +230,7 @@
                     description: '从已打开的猫爪面板继续演示用户插件与管理面板入口。'
                 },
                 performance: {
-                    bubbleText: '还没完呢！你快看快看，这里还有超～～多好玩的插件呢！',
+                    bubbleText: '还没完呢！你快看快看，这里还有超多好玩的插件呢！',
                     bubbleTextKey: 'tutorial.yuiGuide.lines.takeoverPluginPreviewHome',
                     voiceKey: 'takeover_plugin_preview_home',
                     emotion: 'happy',
@@ -306,7 +306,7 @@
                     description: '用户轻微试探时的较劲反馈。'
                 },
                 performance: {
-                    bubbleText: '喂！不要拽我啦，还没轮到你的回合呢！',
+                    bubbleText: '喂！不要拽我啦，现在还没轮到你的回合呢！',
                     bubbleTextKey: 'tutorial.yuiGuide.lines.interruptResistLight1',
                     voiceKey: 'interrupt_resist_light',
                     emotion: 'surprised',
@@ -314,8 +314,8 @@
                     cursorTarget: '#${p}-container',
                     interruptible: true,
                     resistanceVoices: [
-                        '喂！不要拽我啦，还没轮到你的回合呢！',
-                        '等一下啦！还没结束呢，不要随便打断我啦！'
+                        '喂！不要拽我啦，现在还没轮到你的回合呢！',
+                        '等一下啦！还没结束呢，不要这么随便打断我啦！'
                     ],
                     resistanceVoiceKeys: [
                         'tutorial.yuiGuide.lines.interruptResistLight1',

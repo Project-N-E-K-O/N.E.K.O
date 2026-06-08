@@ -342,6 +342,10 @@
             hideCursor() {
                 send({ cursor: { visible: false } }, true);
             },
+            clearCursorCache() {
+                currentCursor = null;
+                currentCursorEffectSuppressUntil = 0;
+            },
             playPetalTransition(origin, options) {
                 const point = origin ? toScreenPoint(origin.x, origin.y) : toScreenPoint((window.innerWidth || 1) / 2, (window.innerHeight || 1) / 2);
                 const normalized = options || {};
@@ -1695,6 +1699,9 @@
             this.finishSuppressedCursorMotion(false);
             this.cursorPosition = null;
             this.cursorVisible = false;
+            if (this.isPcOverlayActive() && this.pcOverlayBridge && typeof this.pcOverlayBridge.clearCursorCache === 'function') {
+                this.pcOverlayBridge.clearCursorCache();
+            }
         }
 
         finishSuppressedCursorMotion(completed) {
@@ -2077,11 +2084,7 @@
                 return null;
             }
             this.pcOverlayBridge.playPetalTransition(origin, options || {});
-            return (
-                this.shouldSuppressDomForPcOverlay()
-                && typeof this.pcOverlayBridge.canRenderPetalTransition === 'function'
-                && this.pcOverlayBridge.canRenderPetalTransition()
-            ) ? true : null;
+            return null;
         }
 
         destroy() {

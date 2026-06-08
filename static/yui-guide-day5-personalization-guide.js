@@ -34,7 +34,7 @@
             avatar_floating_day5_character_settings: zhAudio('从今天起，我就真正成.mp3'),
             avatar_floating_day5_character_panic: zhAudio('咦，这里居然还能把我.mp3'),
             avatar_floating_day5_memory_entry: zhAudio('如果你不小心忘记了我.mp3'),
-            avatar_floating_day5_wrap: zhAudio('')
+            avatar_floating_day5_wrap: zhAudio('好啦好啦，快去试试这.mp3')
         },
         round: {
             title: '第 5 天：个性化与长期配置',
@@ -75,7 +75,7 @@
                     voiceKey: 'avatar_floating_day5_wrap',
                     text: '好啦好啦，快去试试这些好玩的定制功能吧！换上新衣服、调好新声音，让我变成全天下最懂你、只属于你一个人的专属猫娘！我已经迫不及待想看到全新的自己啦！',
                     emotion: 'happy',
-                    target: 'chat-window',
+                    target: 'chat-input',
                     cursorAction: 'move',
                     operation: 'cleanup',
                     petalTransition: true

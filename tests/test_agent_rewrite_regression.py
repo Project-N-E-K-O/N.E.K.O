@@ -743,8 +743,9 @@ def test_day4_guide_copy_orders_privacy_before_lock_and_home():
         assert removed_title not in source
     assert "我的眼里，满满的都是你哦" not in source
     assert "开启这个功能后，无论你的鼠标移动到哪里" in source
-    assert source.index("这个是控制人家能不能看屏幕") < source.index("总是小心不触碰到")
-    assert source.index("总是小心不触碰到") < source.index("如果你现在需要专注")
+    scenes_block = source.split("scenes: [", 1)[1]
+    assert scenes_block.index("这个是控制人家能不能看屏幕") < scenes_block.index("总是不小心触碰到")
+    assert scenes_block.index("总是不小心触碰到") < scenes_block.index("如果你现在需要专注")
 
 
 def test_day6_guide_copy_is_split_into_requested_lines():
@@ -1703,12 +1704,31 @@ def test_home_yui_guide_avatar_override_does_not_persist_tutorial_model():
     assert "live2d: this.tutorialModelName" in begin_block
     assert "TUTORIAL_YUI_LIVE2D_MODEL_PATH = '/static/yui-origin/yui-origin.model3.json'" in tutorial_source
     assert "suppressInitialIdle: true" in tutorial_source
+    assert "suppressPersistentExpressions: true" in tutorial_source
     assert "suppressInitialIdle: skipIdleRestore" in interpage_source
+    assert "suppressPersistentExpressions: skipPersistentExpressions" in interpage_source
     assert "temporaryConfig" in interpage_source
     assert "skipIdleRestore" in interpage_source
+    assert "skipPersistentExpressions" in interpage_source
     assert "suppressToast" in interpage_source
     assert "async function _waitForLive2DManagerIdle" in interpage_source
     assert "await _waitForLive2DManagerIdle(30000);" in interpage_source
+
+
+def test_tutorial_live2d_load_can_skip_persistent_swz_expression():
+    live2d_source = Path("static/live2d-model.js").read_text(encoding="utf-8")
+    persistent_block = live2d_source.split("// 设置常驻表情", 1)[1].split(
+        "// 调用常驻表情应用完成的回调",
+        1,
+    )[0]
+
+    assert "const suppressPersistentExpressions = options.suppressPersistentExpressions === true;" in live2d_source
+    assert "if (suppressPersistentExpressions)" in persistent_block
+    assert "syncEmotionMappingWithServer({ replacePersistentOnly: true })" in persistent_block
+    assert "setupPersistentExpressions()" in persistent_block
+    assert persistent_block.index("if (suppressPersistentExpressions)") < persistent_block.index(
+        "syncEmotionMappingWithServer({ replacePersistentOnly: true })"
+    )
 
 
 def test_tutorial_lifecycle_modules_export_reusable_controllers():

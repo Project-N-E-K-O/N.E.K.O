@@ -3213,6 +3213,18 @@ def test_day6_status_and_plugin_lines_run_split_plugin_dashboard_flow(mock_page:
                     padding: options && options.padding,
                 });
             };
+            const realCreatePluginManagementEntrySpotlight = director.createPluginManagementEntrySpotlight.bind(director);
+            director.createPluginManagementEntrySpotlight = (button) => {
+                const spotlight = realCreatePluginManagementEntrySpotlight(button);
+                calls.push({
+                    type: 'virtualSpotlight',
+                    key: spotlight && spotlight.getAttribute('data-yui-guide-virtual-spotlight'),
+                    padding: spotlight && spotlight.getAttribute('data-yui-guide-spotlight-padding'),
+                    width: Math.round(spotlight && spotlight.getBoundingClientRect().width || 0),
+                    height: Math.round(spotlight && spotlight.getBoundingClientRect().height || 0),
+                });
+                return spotlight;
+            };
             director.applyGuideHighlights = (config) => {
                 calls.push({
                     type: 'highlight',
@@ -3318,7 +3330,7 @@ def test_day6_status_and_plugin_lines_run_split_plugin_dashboard_flow(mock_page:
             }, null, 1700000000000);
             const openedManagement = await director.runAvatarFloatingSceneOperation({
                 id: 'day6_plugin_side_panel',
-                text: '除了之前介绍的功能，这里还有超多好玩的插件呢',
+                text: '除了之前介绍的功能，这里还有超多好玩的插件呢。',
                 voiceKey: 'avatar_floating_day6_plugin_side_panel',
                 operation: 'day6-plugin-open-management-panel-flow',
             }, null, 1700000001000);
@@ -3348,7 +3360,7 @@ def test_day6_status_and_plugin_lines_run_split_plugin_dashboard_flow(mock_page:
             "primaryId": "live2d-toggle-agent-user-plugin",
             "persistentId": None,
         },
-        {"type": "move", "id": "live2d-toggle-agent-user-plugin", "durationMs": 720},
+        {"type": "move", "id": "live2d-toggle-agent-user-plugin", "durationMs": 420},
         {"type": "click", "visibleMs": 420},
         {"type": "api:ensureAgentSidePanel", "toggleId": "user-plugin"},
         {
@@ -3356,22 +3368,17 @@ def test_day6_status_and_plugin_lines_run_split_plugin_dashboard_flow(mock_page:
             "toggleId": "agent-user-plugin",
             "actionId": "management-panel",
         },
-        {
-            "type": "geometry",
-            "id": "neko-sidepanel-action-agent-user-plugin-management-panel",
-            "geometry": None,
-            "padding": 18,
-        },
+        {"type": "virtualSpotlight", "key": "plugin-management-entry", "padding": "0", "width": 216, "height": 64},
         {
             "type": "highlight",
             "key": "day6_plugin_side_panel-management-panel",
-            "primaryId": "neko-sidepanel-action-agent-user-plugin-management-panel",
+            "primaryId": "",
             "persistentId": None,
         },
         {
             "type": "move",
             "id": "neko-sidepanel-action-agent-user-plugin-management-panel",
-            "durationMs": 720,
+            "durationMs": 420,
         },
         {"type": "click", "visibleMs": 420},
         {"type": "api:waitForOpenedWindow", "windowName": "plugin_dashboard", "timeoutMs": 120},
@@ -3402,6 +3409,224 @@ def test_day6_status_and_plugin_lines_run_split_plugin_dashboard_flow(mock_page:
         {"type": "api:waitForHomeMainUIReady", "timeoutMs": 3600},
         {"type": "cursor:showAt", "x": 321, "y": 234},
     ]
+
+
+@pytest.mark.frontend
+def test_day6_management_panel_spotlight_extends_width_and_vertical_margin_without_padding(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <button
+                    id="neko-sidepanel-action-agent-user-plugin-management-panel"
+                    style="position:absolute; left:130px; top:84px; width:180px; height:44px;"
+                ></button>
+            `;
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const button = document.getElementById('neko-sidepanel-action-agent-user-plugin-management-panel');
+            const spotlight = director.createPluginManagementEntrySpotlight(button);
+            const rect = spotlight.getBoundingClientRect();
+            const buttonRect = button.getBoundingClientRect();
+                return {
+                    isVirtual: spotlight.getAttribute('data-yui-guide-virtual-spotlight'),
+                    padding: spotlight.getAttribute('data-yui-guide-spotlight-padding'),
+                    leftDelta: Math.round(buttonRect.left - rect.left),
+                    rightDelta: Math.round(rect.right - buttonRect.right),
+                    topDelta: Math.round(buttonRect.top - rect.top),
+                    bottomDelta: Math.round(rect.bottom - buttonRect.bottom),
+                    height: Math.round(rect.height),
+                    buttonHeight: Math.round(buttonRect.height),
+                };
+        }
+        """
+    )
+
+    assert result == {
+        "isVirtual": "plugin-management-entry",
+        "padding": "0",
+        "leftDelta": 18,
+        "rightDelta": 18,
+        "topDelta": 10,
+        "bottomDelta": 10,
+        "height": 64,
+        "buttonHeight": 44,
+    }
+
+
+@pytest.mark.frontend
+def test_day6_task_hud_only_moves_cursor_to_hud_without_post_line_tour(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <section
+                    id="agent-task-hud"
+                    style="position:absolute; left:120px; top:90px; width:260px; height:140px;"
+                >
+                    <button id="hud-collapse" style="position:absolute; left:20px; top:20px; width:44px; height:32px;"></button>
+                    <button id="hud-cancel" style="position:absolute; left:82px; top:20px; width:44px; height:32px;"></button>
+                </section>
+            `;
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js", "yui-guide-day6-agent-guide.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const calls = [];
+            const scene = window.YuiGuideDailyGuides[6].round.scenes.find(
+                (candidate) => candidate.id === 'day6_agent_task_hud'
+            );
+            director.currentSceneId = 'day6_plugin_dashboard';
+            director.waitForSceneDelay = async () => true;
+            director.prepareAvatarFloatingScene = async () => {};
+            director.appendGuideChatMessage = (text) => calls.push({ type: 'message', text });
+            director.applyGuideEmotion = (emotion) => calls.push({ type: 'emotion', emotion });
+            director.enableInterrupts = () => calls.push({ type: 'interrupts' });
+            director.applyGuideHighlights = (config) => {
+                calls.push({
+                    type: 'highlight',
+                    key: config.key || '',
+                    primaryId: config.primary && config.primary.id,
+                });
+            };
+            director.moveCursorToElement = async (element, durationMs) => {
+                calls.push({ type: 'move', id: element && element.id, durationMs });
+                return true;
+            };
+            director.speakGuideLine = async () => {
+                calls.push({ type: 'narration:start' });
+                calls.push({ type: 'narration:done' });
+            };
+            director.cursor = {
+                hasPosition: () => true,
+                showAt: (x, y) => calls.push({ type: 'showAt', x, y }),
+                click: () => calls.push({ type: 'click' }),
+                wobble: () => calls.push({ type: 'wobble' }),
+                cancel: () => {},
+                hide: () => calls.push({ type: 'hide' }),
+            };
+
+            await director.playAvatarFloatingScene(scene, 6, 4, 8);
+            return calls;
+        }
+        """
+    )
+
+    assert {
+        "type": "highlight",
+        "key": "day6_agent_task_hud",
+        "primaryId": "agent-task-hud",
+    } in result
+    assert [
+        call for call in result
+        if call["type"] == "move"
+    ] == [{
+        "type": "move",
+        "id": "agent-task-hud",
+        "durationMs": 760,
+    }]
+    assert {"type": "wobble"} not in result
+    assert {"type": "click"} not in result
+
+
+@pytest.mark.frontend
+def test_day6_task_hud_control_only_moves_cursor_to_hud(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <section
+                    id="agent-task-hud"
+                    style="position:absolute; left:120px; top:90px; width:260px; height:140px;"
+                ></section>
+            `;
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js", "yui-guide-day6-agent-guide.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const calls = [];
+            const scene = window.YuiGuideDailyGuides[6].round.scenes.find(
+                (candidate) => candidate.id === 'day6_agent_task_hud_control'
+            );
+            director.currentSceneId = 'day6_agent_task_hud';
+            director.waitForSceneDelay = async () => true;
+            director.prepareAvatarFloatingScene = async () => {};
+            director.appendGuideChatMessage = (text) => calls.push({ type: 'message', text });
+            director.applyGuideEmotion = (emotion) => calls.push({ type: 'emotion', emotion });
+            director.enableInterrupts = () => calls.push({ type: 'interrupts' });
+            director.applyGuideHighlights = (config) => {
+                calls.push({
+                    type: 'highlight',
+                    key: config.key || '',
+                    primaryId: config.primary && config.primary.id,
+                });
+            };
+            director.moveCursorToElement = async (element, durationMs) => {
+                calls.push({ type: 'move', id: element && element.id, durationMs });
+                return true;
+            };
+            director.speakGuideLine = async () => {
+                calls.push({ type: 'narration:start' });
+                await new Promise((resolve) => setTimeout(resolve, 20));
+                calls.push({ type: 'narration:done' });
+            };
+            director.cursor = {
+                hasPosition: () => true,
+                showAt: (x, y) => calls.push({ type: 'showAt', x, y }),
+                click: () => calls.push({ type: 'click' }),
+                wobble: () => calls.push({ type: 'wobble' }),
+                cancel: () => {},
+                hide: () => calls.push({ type: 'hide' }),
+                runPauseAwareEllipse: async (centerX, centerY, radiusX, radiusY, cycleMs) => {
+                    calls.push({
+                        type: 'ellipse',
+                        centerX: Math.round(centerX),
+                        centerY: Math.round(centerY),
+                        radiusX: Math.round(radiusX),
+                        radiusY: Math.round(radiusY),
+                        cycleMs,
+                    });
+                    await new Promise((resolve) => setTimeout(resolve, 5));
+                    return true;
+                },
+            };
+
+            await director.playAvatarFloatingScene(scene, 6, 5, 8);
+            return calls;
+        }
+        """
+    )
+
+    assert {
+        "type": "highlight",
+        "key": "day6_agent_task_hud_control",
+        "primaryId": "agent-task-hud",
+    } in result
+    assert any(
+        call["type"] == "move"
+        and call["id"] == "agent-task-hud"
+        for call in result
+    )
+    assert not any(call["type"] == "ellipse" for call in result)
+    assert {"type": "wobble"} not in result
+    assert {"type": "click"} not in result
 
 
 @pytest.mark.frontend
@@ -3477,7 +3702,7 @@ def test_day4_chat_settings_opens_settings_then_tours_sidebar(mock_page: Page):
 
             const scenePromise = director.playAvatarFloatingScene({
                 id: 'day4_chat_settings',
-                text: '在这里可以决定我回复你的长短，还能决定要不要让我带上可爱的表情，或者在人家唠叨的时候打断我哦！都可以调到让你最舒服的节奏',
+                text: '在这里可以决定我回复你的长短，还能决定要不要让我带上可爱的表情，或者在人家唠叨的时候打断我哦！都可以调到让你最舒服的节奏。',
                 voiceKey: 'avatar_floating_day4_chat_settings',
                 target: 'settings-sidepanel:chat-settings',
                 cursorAction: 'tour',
@@ -4153,7 +4378,7 @@ def test_day4_model_lock_highlights_lock_during_model_lock_line(mock_page: Page)
 
             await director.playAvatarFloatingScene({
                 id: 'day4_model_lock',
-                text: '总是小心不触碰到、把我点歪吗？那就快把我牢牢固定在当前的位置吧！开启锁定后，我就哪儿也不去，乖乖在原地陪着你~',
+                text: '总是不小心触碰到、把我点歪吗？那就快把我牢牢固定在当前的位置吧！开启锁定后，我就哪儿也不去，乖乖在原地陪着你~',
                 voiceKey: 'avatar_floating_day4_model_lock',
                 target: '#${p}-lock-icon',
                 cursorAction: 'move',
@@ -4167,7 +4392,7 @@ def test_day4_model_lock_highlights_lock_during_model_lock_line(mock_page: Page)
     assert {"type": "collapse", "id": "privacy-panel"} in result
     assert {
         "type": "message",
-        "text": "总是小心不触碰到、把我点歪吗？那就快把我牢牢固定在当前的位置吧！开启锁定后，我就哪儿也不去，乖乖在原地陪着你~",
+        "text": "总是不小心触碰到、把我点歪吗？那就快把我牢牢固定在当前的位置吧！开启锁定后，我就哪儿也不去，乖乖在原地陪着你~",
     } in result
     assert {
         "type": "highlight",
@@ -4238,7 +4463,7 @@ def test_day4_model_lock_uses_active_model_lock_icon_when_prefix_fallback_is_liv
 
             await director.playAvatarFloatingScene({
                 id: 'day4_model_lock',
-                text: '总是小心不触碰到、把我点歪吗？那就快把我牢牢固定在当前的位置吧！开启锁定后，我就哪儿也不去，乖乖在原地陪着你~',
+                text: '总是不小心触碰到、把我点歪吗？那就快把我牢牢固定在当前的位置吧！开启锁定后，我就哪儿也不去，乖乖在原地陪着你~',
                 voiceKey: 'avatar_floating_day4_model_lock',
                 target: '#${p}-lock-icon',
                 cursorAction: 'move',
@@ -6372,6 +6597,230 @@ def test_return_petal_transition_keeps_dom_fallback_without_pc_petal_capability(
 
 
 @pytest.mark.frontend
+def test_return_petal_transition_keeps_dom_fallback_with_pc_petal_capability(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.__pcOverlayUpdates = [];
+            window.nekoTutorialOverlay = {
+                capabilities: { petalTransition: true },
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 100, y: 50, width: 1200, height: 800 },
+                    contentBounds: { x: 100, y: 50, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                update: (payload) => {
+                    window.__pcOverlayUpdates.push(payload);
+                    return Promise.resolve({ ok: true });
+                },
+                begin: () => Promise.resolve({ ok: true }),
+                clear: () => Promise.resolve({ ok: true }),
+            };
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const transition = director.createReturnPetalTransition(
+                { x: 320, y: 240 },
+                {
+                    durationMs: 900,
+                    finalOpacity: 0.6,
+                    sequence: {
+                        url: '/static/assets/tutorial/petals/yui-guide-petal-transition.webp',
+                    },
+                }
+            );
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+            const layer = document.querySelector('.yui-guide-petal-transition');
+            if (transition && typeof transition.finish === 'function') {
+                await transition.finish();
+            }
+            return {
+                hasDomLayer: !!layer,
+                pcPetalUpdates: window.__pcOverlayUpdates.filter(
+                    (update) => update.payload && update.payload.petal
+                ).length,
+            };
+        }
+        """
+    )
+
+    assert result == {
+        "hasDomLayer": True,
+        "pcPetalUpdates": 1,
+    }
+
+
+@pytest.mark.frontend
+def test_avatar_floating_petal_cue_does_not_wait_for_petal_sequence_preload(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const events = [];
+            let releaseSequence;
+            const sequencePromise = new Promise((resolve) => {
+                releaseSequence = resolve;
+            });
+            director.sceneRunId = 9;
+            director.loadReturnPetalSequence = () => {
+                events.push({ type: 'load-sequence' });
+                return sequencePromise;
+            };
+            director.getAvatarFloatingNarrationDurationMs = () => 10000;
+            director.waitForSceneDelay = async (durationMs) => {
+                events.push({ type: 'delay', durationMs });
+                return true;
+            };
+            director.playReturnPetalTransition = async (options) => {
+                events.push({ type: 'transition', durationMs: options && options.durationMs });
+                if (options && typeof options.onTransitionStart === 'function') {
+                    options.onTransitionStart();
+                }
+            };
+            director.cursor.hide = () => events.push({ type: 'cursor-hide' });
+            director.clearExternalizedChatGuideTarget = () => events.push({ type: 'clear-external' });
+            director.overlay.clearPersistentSpotlight = () => events.push({ type: 'clear-persistent' });
+            director.overlay.clearActionSpotlight = () => events.push({ type: 'clear-action' });
+            director.clearSceneExtraSpotlights = () => {};
+            director.clearRetainedExtraSpotlights = () => {};
+            director.clearAllVirtualSpotlights = () => {};
+            director.clearSpotlightGeometryHints = () => {};
+            director.clearSpotlightVariantHints = () => {};
+            director.disableInterrupts = () => {};
+
+            const playPromise = director.playAvatarFloatingPetalTransitionAtCue(
+                { id: 'day6_wrap' },
+                9,
+                'avatar_floating_day6_wrap',
+                '你可以放心地继续做你自己的事情',
+                Date.now()
+            );
+            await Promise.resolve();
+            await Promise.resolve();
+            const beforeSequenceReady = events.slice();
+            releaseSequence(null);
+            await playPromise;
+            return {
+                beforeSequenceReady,
+                afterSequenceReady: events,
+            };
+        }
+        """
+    )
+
+    cue_delays = [
+        event["durationMs"]
+        for event in result["beforeSequenceReady"]
+        if event.get("type") == "delay"
+    ]
+    assert any(6990 <= duration_ms <= 7000 for duration_ms in cue_delays)
+    assert {"type": "transition", "durationMs": 3000} in result["beforeSequenceReady"]
+    assert {"type": "cursor-hide"} in result["beforeSequenceReady"]
+
+
+@pytest.mark.frontend
+def test_return_petal_transition_pc_overlay_starts_before_dom_sequence_load(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="window.history.pushState({}, '', '/');",
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const events = [];
+            let releaseSequence;
+            const sequencePromise = new Promise((resolve) => {
+                releaseSequence = resolve;
+            });
+            director.loadReturnPetalSequence = () => sequencePromise;
+            director.getReturnPetalTransitionOrigin = () => ({ x: 320, y: 240 });
+            director.shouldReduceTutorialMotion = () => false;
+            director.overlay.playPetalTransition = (origin, options) => {
+                events.push({
+                    type: 'pc-petal',
+                    x: origin && origin.x,
+                    y: origin && origin.y,
+                    durationMs: options && options.durationMs,
+                });
+                return null;
+            };
+            director.overlay.isPcOverlayActive = () => true;
+            director.createReturnPetalTransition = (origin, options) => {
+                events.push({
+                    type: 'dom-petal',
+                    skipPcOverlay: !!(options && options.skipPcOverlay),
+                    hasSequence: !!(options && options.sequence),
+                });
+                return {
+                    done: async () => events.push({ type: 'dom-done' }),
+                    finish: async () => events.push({ type: 'dom-finish' }),
+                };
+            };
+            director.fadeReturnPetalTransitionModelOut = async (durationMs) => {
+                events.push({ type: 'fade', durationMs });
+                return true;
+            };
+            director.restoreTutorialAvatarForReturnPetalTransition = async () => {
+                events.push({ type: 'restore-avatar' });
+                return true;
+            };
+            director.restoreReturnPetalTransitionOpacityTargets = () => {
+                events.push({ type: 'restore-opacity' });
+            };
+
+            const playPromise = director.playReturnPetalTransition({
+                durationMs: 3000,
+                onTransitionStart: () => events.push({ type: 'transition-start' }),
+            });
+            await Promise.resolve();
+            await Promise.resolve();
+            const beforeSequenceReady = events.slice();
+            releaseSequence({
+                url: '/static/assets/tutorial/petals/yui-guide-petal-transition.webp',
+            });
+            await playPromise;
+            return {
+                beforeSequenceReady,
+                afterSequenceReady: events,
+            };
+        }
+        """
+    )
+
+    assert result["beforeSequenceReady"] == [
+        {"type": "pc-petal", "x": 320, "y": 240, "durationMs": 6200},
+        {"type": "transition-start"},
+        {"type": "fade", "durationMs": 3000},
+    ]
+    assert {
+        "type": "dom-petal",
+        "skipPcOverlay": True,
+        "hasSequence": True,
+    } in result["afterSequenceReady"]
+
+
+@pytest.mark.frontend
 def test_day1_skip_clears_externalized_chat_cursor_immediately(mock_page: Page):
     _bootstrap_page(
         mock_page,
@@ -7693,6 +8142,503 @@ def test_day3_wrap_highlights_capsule_input_and_keeps_cursor_there(mock_page: Pa
 
 
 @pytest.mark.frontend
+def test_day4_wrap_highlights_capsule_input_and_keeps_cursor_there(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <div id="react-chat-window-root">
+                    <div
+                        id="chat-window"
+                        style="position:absolute; left:40px; top:40px; width:560px; height:280px;"
+                    ></div>
+                    <div
+                        id="compact-chat-input"
+                        data-compact-geometry-owner="surface"
+                        data-compact-geometry-item="input"
+                        style="position:absolute; left:140px; top:250px; width:360px; height:60px;"
+                    ></div>
+                </div>
+            `;
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js", "yui-guide-day4-companion-guide.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const events = [];
+            const scene = window.YuiGuideDailyGuides[4].round.scenes.find(
+                (candidate) => candidate.id === 'day4_wrap'
+            );
+            director.currentSceneId = 'day4_return_home';
+            director.cursor.showAt(540, 110);
+            director.speakGuideLine = async () => null;
+            director.waitForSceneDelay = async () => true;
+            director.appendGuideChatMessage = () => {};
+            director.applyGuideEmotion = () => {};
+            director.prepareAvatarFloatingScene = async () => {};
+            director.enableInterrupts = () => {};
+            director.playAvatarFloatingPetalTransitionAtCue = async (playedScene) => {
+                events.push({ type: 'petal', sceneId: playedScene.id });
+            };
+            director.applyGuideHighlights = (config) => {
+                events.push({
+                    type: 'highlight',
+                    key: config.key || '',
+                    primaryId: config.primary && config.primary.id,
+                    primaryItem: config.primary && config.primary.getAttribute('data-compact-geometry-item'),
+                });
+            };
+            director.runAvatarFloatingSceneOperation = async (playedScene) => {
+                events.push({ type: 'operation', operation: playedScene.operation || '' });
+                return true;
+            };
+            director.moveCursorToElement = async (element, durationMs) => {
+                const rect = element.getBoundingClientRect();
+                events.push({
+                    type: 'move',
+                    id: element.id || '',
+                    item: element.getAttribute('data-compact-geometry-item'),
+                    x: rect.left + rect.width / 2,
+                    y: rect.top + rect.height / 2,
+                    durationMs,
+                });
+                return true;
+            };
+
+            await director.playAvatarFloatingScene(scene, 4, 7, 8);
+            return events;
+        }
+        """
+    )
+
+    first_highlight = {
+        "type": "highlight",
+        "key": "day4_wrap",
+        "primaryId": "compact-chat-input",
+        "primaryItem": "input",
+    }
+    settled_highlight = {
+        "type": "highlight",
+        "key": "day4_wrap-settled",
+        "primaryId": "compact-chat-input",
+        "primaryItem": "input",
+    }
+    move = {
+        "type": "move",
+        "id": "compact-chat-input",
+        "item": "input",
+        "x": 320,
+        "y": 280,
+        "durationMs": 760,
+    }
+    operation = {"type": "operation", "operation": "cleanup"}
+    assert first_highlight in result
+    assert move in result
+    assert operation in result
+    assert settled_highlight in result
+    assert result.index(first_highlight) < result.index(move)
+    assert result.index(move) < result.index(operation)
+    assert result.index(operation) < result.index(settled_highlight)
+
+
+@pytest.mark.frontend
+def test_day5_wrap_highlights_capsule_input_and_keeps_cursor_there(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <div id="react-chat-window-root">
+                    <div
+                        id="chat-window"
+                        style="position:absolute; left:40px; top:40px; width:560px; height:280px;"
+                    ></div>
+                    <div
+                        id="compact-chat-input"
+                        data-compact-geometry-owner="surface"
+                        data-compact-geometry-item="input"
+                        style="position:absolute; left:140px; top:250px; width:360px; height:60px;"
+                    ></div>
+                </div>
+            `;
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js", "yui-guide-day5-personalization-guide.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const events = [];
+            const scene = window.YuiGuideDailyGuides[5].round.scenes.find(
+                (candidate) => candidate.id === 'day5_wrap'
+            );
+            director.currentSceneId = 'day5_memory_entry';
+            director.cursor.showAt(540, 110);
+            director.speakGuideLine = async () => null;
+            director.waitForSceneDelay = async () => true;
+            director.appendGuideChatMessage = () => {};
+            director.applyGuideEmotion = () => {};
+            director.prepareAvatarFloatingScene = async () => {};
+            director.enableInterrupts = () => {};
+            director.playAvatarFloatingPetalTransitionAtCue = async (playedScene) => {
+                events.push({ type: 'petal', sceneId: playedScene.id });
+            };
+            director.applyGuideHighlights = (config) => {
+                events.push({
+                    type: 'highlight',
+                    key: config.key || '',
+                    primaryId: config.primary && config.primary.id,
+                    primaryItem: config.primary && config.primary.getAttribute('data-compact-geometry-item'),
+                });
+            };
+            director.runAvatarFloatingSceneOperation = async (playedScene) => {
+                events.push({ type: 'operation', operation: playedScene.operation || '' });
+                return true;
+            };
+            director.moveCursorToElement = async (element, durationMs) => {
+                const rect = element.getBoundingClientRect();
+                events.push({
+                    type: 'move',
+                    id: element.id || '',
+                    item: element.getAttribute('data-compact-geometry-item'),
+                    x: rect.left + rect.width / 2,
+                    y: rect.top + rect.height / 2,
+                    durationMs,
+                });
+                return true;
+            };
+
+            await director.playAvatarFloatingScene(scene, 5, 3, 4);
+            return events;
+        }
+        """
+    )
+
+    first_highlight = {
+        "type": "highlight",
+        "key": "day5_wrap",
+        "primaryId": "compact-chat-input",
+        "primaryItem": "input",
+    }
+    settled_highlight = {
+        "type": "highlight",
+        "key": "day5_wrap-settled",
+        "primaryId": "compact-chat-input",
+        "primaryItem": "input",
+    }
+    move = {
+        "type": "move",
+        "id": "compact-chat-input",
+        "item": "input",
+        "x": 320,
+        "y": 280,
+        "durationMs": 760,
+    }
+    operation = {"type": "operation", "operation": "cleanup"}
+    assert first_highlight in result
+    assert move in result
+    assert operation in result
+    assert settled_highlight in result
+    assert result.index(first_highlight) < result.index(move)
+    assert result.index(move) < result.index(operation)
+    assert result.index(operation) < result.index(settled_highlight)
+
+
+@pytest.mark.frontend
+@pytest.mark.parametrize(
+    ("day", "script_name", "scene_id", "current_scene_id", "scene_index", "total_scenes"),
+    [
+        (6, "yui-guide-day6-agent-guide.js", "day6_wrap", "day6_wrap_cleanup", 7, 8),
+        (7, "yui-guide-day7-graduation-guide.js", "day7_graduation_wrap", "day7_memory_control", 2, 3),
+    ],
+)
+def test_day6_day7_wrap_highlights_capsule_input_and_keeps_cursor_there(
+    mock_page: Page,
+    day: int,
+    script_name: str,
+    scene_id: str,
+    current_scene_id: str,
+    scene_index: int,
+    total_scenes: int,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <div id="react-chat-window-root">
+                    <div
+                        id="chat-window"
+                        style="position:absolute; left:40px; top:40px; width:560px; height:280px;"
+                    ></div>
+                    <div
+                        id="compact-chat-input"
+                        data-compact-geometry-owner="surface"
+                        data-compact-geometry-item="input"
+                        style="position:absolute; left:140px; top:250px; width:360px; height:60px;"
+                    ></div>
+                </div>
+            `;
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js", script_name),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async ({ day, sceneId, currentSceneId, sceneIndex, totalScenes }) => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const events = [];
+            const scene = window.YuiGuideDailyGuides[day].round.scenes.find(
+                (candidate) => candidate.id === sceneId
+            );
+            director.currentSceneId = currentSceneId;
+            director.cursor.showAt(540, 110);
+            director.speakGuideLine = async () => null;
+            director.waitForSceneDelay = async () => true;
+            director.appendGuideChatMessage = () => {};
+            director.applyGuideEmotion = () => {};
+            director.prepareAvatarFloatingScene = async () => {};
+            director.enableInterrupts = () => {};
+            director.playAvatarFloatingPetalTransitionAtCue = async (playedScene) => {
+                events.push({ type: 'petal', sceneId: playedScene.id });
+            };
+            director.applyGuideHighlights = (config) => {
+                events.push({
+                    type: 'highlight',
+                    key: config.key || '',
+                    primaryId: config.primary && config.primary.id,
+                    primaryItem: config.primary && config.primary.getAttribute('data-compact-geometry-item'),
+                });
+            };
+            director.runAvatarFloatingSceneOperation = async (playedScene) => {
+                events.push({ type: 'operation', operation: playedScene.operation || '' });
+                return true;
+            };
+            director.moveCursorToElement = async (element, durationMs) => {
+                const rect = element.getBoundingClientRect();
+                events.push({
+                    type: 'move',
+                    id: element.id || '',
+                    item: element.getAttribute('data-compact-geometry-item'),
+                    x: rect.left + rect.width / 2,
+                    y: rect.top + rect.height / 2,
+                    durationMs,
+                });
+                return true;
+            };
+
+            await director.playAvatarFloatingScene(scene, day, sceneIndex, totalScenes);
+            return events;
+        }
+        """,
+        {
+            "day": day,
+            "sceneId": scene_id,
+            "currentSceneId": current_scene_id,
+            "sceneIndex": scene_index,
+            "totalScenes": total_scenes,
+        },
+    )
+
+    first_highlight = {
+        "type": "highlight",
+        "key": scene_id,
+        "primaryId": "compact-chat-input",
+        "primaryItem": "input",
+    }
+    settled_highlight = {
+        "type": "highlight",
+        "key": f"{scene_id}-settled",
+        "primaryId": "compact-chat-input",
+        "primaryItem": "input",
+    }
+    move = {
+        "type": "move",
+        "id": "compact-chat-input",
+        "item": "input",
+        "x": 320,
+        "y": 280,
+        "durationMs": 760,
+    }
+    operation = {"type": "operation", "operation": "cleanup"}
+    assert first_highlight in result
+    if scene_id == "day7_graduation_wrap":
+        assert move in result
+        assert operation in result
+        assert result.index(move) < result.index(operation)
+        assert result.index(operation) < result.index(settled_highlight)
+        assert settled_highlight in result
+        assert result.index(first_highlight) < result.index(move)
+    else:
+        assert not any(event.get("type") == "move" for event in result)
+    assert {"type": "petal", "sceneId": scene_id} in result
+
+
+@pytest.mark.frontend
+def test_day6_wrap_cleanup_moves_to_capsule_once_and_final_wrap_holds_cursor(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <section id="agent-task-hud" style="position:absolute; left:650px; top:80px; width:260px; height:140px;"></section>
+                <div id="react-chat-window-root">
+                    <div
+                        id="compact-chat-input"
+                        data-compact-geometry-owner="surface"
+                        data-compact-geometry-item="input"
+                        style="position:absolute; left:140px; top:250px; width:360px; height:60px;"
+                    ></div>
+                </div>
+            `;
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js", "yui-guide-day6-agent-guide.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const events = [];
+            const scenes = window.YuiGuideDailyGuides[6].round.scenes;
+            const cleanupScene = scenes.find((candidate) => candidate.id === 'day6_wrap_cleanup');
+            const wrapScene = scenes.find((candidate) => candidate.id === 'day6_wrap');
+            director.currentSceneId = 'day6_agent_task_hud_control';
+            director.cursor.showAt(780, 150);
+            director.speakGuideLine = async () => null;
+            director.waitForSceneDelay = async () => true;
+            director.appendGuideChatMessage = () => {};
+            director.applyGuideEmotion = () => {};
+            director.prepareAvatarFloatingScene = async () => {};
+            director.enableInterrupts = () => {};
+            director.playAvatarFloatingPetalTransitionAtCue = async () => {};
+            director.runAvatarFloatingSceneOperation = async (playedScene) => {
+                events.push({ type: 'operation', sceneId: playedScene.id, operation: playedScene.operation || '' });
+                return true;
+            };
+            director.applyGuideHighlights = (config) => {
+                events.push({
+                    type: 'highlight',
+                    key: config.key || '',
+                    primaryId: config.primary && config.primary.id,
+                    primaryItem: config.primary && config.primary.getAttribute('data-compact-geometry-item'),
+                });
+            };
+            director.moveCursorToElement = async (element, durationMs) => {
+                const rect = element.getBoundingClientRect();
+                events.push({
+                    type: 'move',
+                    id: element.id || '',
+                    item: element.getAttribute('data-compact-geometry-item'),
+                    x: rect.left + rect.width / 2,
+                    y: rect.top + rect.height / 2,
+                    durationMs,
+                    sceneId: director.currentSceneId,
+                });
+                return true;
+            };
+
+            await director.playAvatarFloatingScene(cleanupScene, 6, 6, 8);
+            await director.playAvatarFloatingScene(wrapScene, 6, 7, 8);
+            return events;
+        }
+        """
+    )
+
+    assert [
+        event for event in result
+        if event["type"] == "move"
+    ] == [{
+        "type": "move",
+        "id": "compact-chat-input",
+        "item": "input",
+        "x": 320,
+        "y": 280,
+        "durationMs": 760,
+        "sceneId": "day6_wrap_cleanup",
+    }]
+    assert {
+        "type": "highlight",
+        "key": "day6_wrap",
+        "primaryId": "compact-chat-input",
+        "primaryItem": "input",
+    } in result
+
+
+@pytest.mark.frontend
+def test_day6_wrap_cleanup_externalized_keeps_input_cursor_target_during_cleanup(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.__NEKO_MULTI_WINDOW__ = true;
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js", "yui-guide-day6-agent-guide.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const events = [];
+            const scene = window.YuiGuideDailyGuides[6].round.scenes.find(
+                (candidate) => candidate.id === 'day6_wrap_cleanup'
+            );
+            director.currentSceneId = 'day6_agent_task_hud_control';
+            director.interactionTakeover = {
+                setExternalizedChatSpotlight: (kind) => events.push({
+                    type: 'spotlight',
+                    kind: String(kind || ''),
+                }),
+                setExternalizedChatCursor: (kind, options) => events.push({
+                    type: 'cursor',
+                    kind: String(kind || ''),
+                    effect: options && options.effect || '',
+                }),
+            };
+            director.speakGuideLine = async () => null;
+            director.waitForSceneDelay = async () => true;
+            director.waitForExternalizedChatCursorMove = async (sceneId) => {
+                events.push({ type: 'wait-move', sceneId });
+                return true;
+            };
+            director.appendGuideChatMessage = () => {};
+            director.applyGuideEmotion = () => {};
+            director.enableInterrupts = () => {};
+            director.closeChatToolPopover = () => events.push({ type: 'close-tool-popover' });
+            director.collapseAvatarFloatingSidePanelsExcept = () => {};
+            director.clearSceneExtraSpotlights = () => {};
+            director.clearRetainedExtraSpotlights = () => {};
+            director.clearSpotlightGeometryHints = () => {};
+            director.clearSpotlightVariantHints = () => {};
+            director.overlay.clearActionSpotlight = () => {};
+            director.closeManagedPanels = async () => {};
+            director.collapseAgentSidePanel = () => {};
+            director.collapseCharacterSettingsSidePanel = () => {};
+
+            await director.playAvatarFloatingScene(scene, 6, 6, 8);
+            return events;
+        }
+        """
+    )
+
+    assert [event for event in result if event["type"] == "cursor"] == [{
+        "type": "cursor",
+        "kind": "input",
+        "effect": "move",
+    }]
+    assert not [
+        event for event in result
+        if event["type"] == "spotlight" and event["kind"] == ""
+    ]
+
+
+@pytest.mark.frontend
 def test_day3_first_line_externalized_chat_uses_input_spotlight_and_cursor(
     mock_page: Page,
 ):
@@ -8437,6 +9383,194 @@ def test_day3_galgame_entry_drags_wheel_down_and_moves_to_centered_galgame(
 
 
 @pytest.mark.frontend
+def test_day3_galgame_entry_rotates_wheel_before_local_drag_settles(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <div id="react-chat-window-root">
+                    <button
+                        id="tool-toggle"
+                        class="send-button-circle compact-input-tool-toggle"
+                        style="position:absolute; left:260px; top:164px; width:42px; height:42px;"
+                    ></button>
+                    <div
+                        id="tool-fan"
+                        class="compact-input-tool-fan"
+                        style="position:absolute; left:220px; top:120px; width:232px; height:232px;"
+                    >
+                        <button
+                            id="galgame"
+                            class="compact-input-tool-item-galgame composer-galgame-btn"
+                            style="position:absolute; left:164px; top:56px; width:42px; height:42px;"
+                        ></button>
+                    </div>
+                </div>
+            `;
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js", "yui-guide-day3-interaction-guide.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const events = [];
+            const scene = window.YuiGuideDailyGuides[3].round.scenes.find(
+                (candidate) => candidate.id === 'day3_galgame_entry'
+            );
+            let releaseDrag;
+            director.waitForSceneDelay = async (durationMs) => {
+                events.push({ type: 'delay', durationMs });
+                return true;
+            };
+            director.cursor.click = (durationMs) => events.push({ type: 'click', durationMs });
+            director.cursor.moveToPoint = async (x, y, options) => {
+                events.push({
+                    type: 'dragStart',
+                    x: Math.round(x),
+                    y: Math.round(y),
+                    durationMs: options && options.durationMs || 0,
+                });
+                return new Promise((resolve) => {
+                    releaseDrag = () => {
+                        events.push({ type: 'dragEnd' });
+                        resolve(true);
+                    };
+                });
+            };
+            director.moveCursorToElement = async (element, durationMs) => {
+                events.push({ type: 'move', id: element && element.id, durationMs });
+                return true;
+            };
+            director.setCompactToolFanOpen = (open, reason) => {
+                events.push({ type: 'toolFan', open, reason });
+                return true;
+            };
+            director.rotateCompactToolWheelForGuide = (direction, stepCount, reason) => {
+                events.push({ type: 'rotate', direction, stepCount, reason });
+                return true;
+            };
+
+            const runPromise = director.runDay3GalgameWheelDragScene(scene, document.getElementById('galgame'));
+            await Promise.resolve();
+            await Promise.resolve();
+            const beforeDragSettles = events.slice();
+            releaseDrag();
+            const completed = await runPromise;
+            return {
+                completed,
+                beforeDragSettles,
+                afterDragSettles: events.slice(),
+            };
+        }
+        """
+    )
+
+    rotate = {
+        "type": "rotate",
+        "direction": 1,
+        "stepCount": 1,
+        "reason": "avatar-floating-guide-galgame-drag",
+    }
+    assert result["completed"] is True
+    assert {"type": "dragStart", "x": 405, "y": 297, "durationMs": 260} in result["beforeDragSettles"]
+    assert {"type": "delay", "durationMs": 57} in result["beforeDragSettles"]
+    assert rotate in result["beforeDragSettles"]
+    assert {"type": "dragEnd"} not in result["beforeDragSettles"]
+    assert result["afterDragSettles"].index(rotate) < result["afterDragSettles"].index({"type": "dragEnd"})
+
+
+@pytest.mark.frontend
+def test_day3_galgame_entry_waits_for_rotated_slot_before_final_local_move(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            document.body.innerHTML = `
+                <div id="react-chat-window-root">
+                    <button
+                        id="tool-toggle"
+                        class="send-button-circle compact-input-tool-toggle"
+                        style="position:absolute; left:260px; top:164px; width:42px; height:42px;"
+                    ></button>
+                    <div
+                        id="tool-fan"
+                        class="compact-input-tool-fan"
+                        style="position:absolute; left:220px; top:120px; width:232px; height:232px;"
+                    >
+                        <button
+                            id="galgame"
+                            class="compact-input-tool-item-galgame composer-galgame-btn"
+                            data-compact-tool-wheel-slot="2"
+                            style="position:absolute; left:164px; top:56px; width:42px; height:42px;"
+                        ></button>
+                    </div>
+                </div>
+            `;
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js", "yui-guide-day3-interaction-guide.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            const events = [];
+            const scene = window.YuiGuideDailyGuides[3].round.scenes.find(
+                (candidate) => candidate.id === 'day3_galgame_entry'
+            );
+            const galgame = document.getElementById('galgame');
+            director.waitForSceneDelay = async () => true;
+            director.cursor.click = () => {};
+            director.cursor.moveToPoint = async () => true;
+            director.cursor.moveToRect = async (rect, options) => {
+                events.push({
+                    type: 'finalMove',
+                    x: Math.round(rect.left + rect.width / 2),
+                    y: Math.round(rect.top + rect.height / 2),
+                    durationMs: options && options.durationMs || 0,
+                    slot: galgame && galgame.getAttribute('data-compact-tool-wheel-slot'),
+                });
+                return true;
+            };
+            director.setCompactToolFanOpen = () => true;
+            director.rotateCompactToolWheelForGuide = () => {
+                events.push({ type: 'rotate' });
+                window.setTimeout(() => {
+                    galgame.setAttribute('data-compact-tool-wheel-slot', '1');
+                    galgame.style.left = '124px';
+                    galgame.style.top = '96px';
+                }, 0);
+                return true;
+            };
+
+            const completed = await director.runDay3GalgameWheelDragScene(scene, galgame);
+            return {
+                completed,
+                events,
+            };
+        }
+        """
+    )
+
+    assert result["completed"] is True
+    assert {"type": "rotate"} in result["events"]
+    assert result["events"][-1] == {
+        "type": "finalMove",
+        "x": 365,
+        "y": 237,
+        "durationMs": 520,
+        "slot": "1",
+    }
+
+
+@pytest.mark.frontend
 def test_day3_galgame_entry_externalized_drags_wheel_before_final_galgame_move(
     mock_page: Page,
 ):
@@ -8459,7 +9593,10 @@ def test_day3_galgame_entry_externalized_drags_wheel_before_final_galgame_move(
                 (candidate) => candidate.id === 'day3_galgame_entry'
             );
             director.speakGuideLine = async () => null;
-            director.waitForSceneDelay = async () => true;
+            director.waitForSceneDelay = async (durationMs) => {
+                events.push({ type: 'delay', durationMs });
+                return true;
+            };
             director.waitForExternalizedChatCursorMove = async (sceneId, maxWaitMs) => {
                 events.push({ type: 'anchorWait', sceneId, maxWaitMs });
                 return true;
@@ -8519,8 +9656,8 @@ def test_day3_galgame_entry_externalized_drags_wheel_before_final_galgame_move(
         "type": "drag",
         "kind": "galgame",
         "deltaY": 100,
-        "hasDurationMs": False,
-        "durationMs": 0,
+        "hasDurationMs": True,
+        "durationMs": 260,
         "effect": "click",
         "effectDurationMs": 900,
     }
@@ -8534,14 +9671,22 @@ def test_day3_galgame_entry_externalized_drags_wheel_before_final_galgame_move(
         "type": "cursor",
         "kind": "galgame",
         "effect": "move",
-        "durationMs": 0,
+        "durationMs": 520,
         "effectDurationMs": 0,
     }
-    assert initial_move in result
+    initial_move = dict(initial_move)
+    cursor_move_indices = [
+        index
+        for index, event in enumerate(result)
+        if event == initial_move or event == final_move
+    ]
+    assert len(cursor_move_indices) >= 2
     assert {"type": "anchorWait", "sceneId": "day3_galgame_entry", "maxWaitMs": 1800} in result
+    assert {"type": "anchorWait", "sceneId": "day3_galgame_entry", "maxWaitMs": 1020} in result
     assert drag in result
     assert rotate in result
-    assert result.index(initial_move) < result.index({
+    assert {"type": "delay", "durationMs": 57} in result
+    assert cursor_move_indices[0] < result.index({
         "type": "anchorWait",
         "sceneId": "day3_galgame_entry",
         "maxWaitMs": 1800,
@@ -8551,8 +9696,15 @@ def test_day3_galgame_entry_externalized_drags_wheel_before_final_galgame_move(
         "sceneId": "day3_galgame_entry",
         "maxWaitMs": 1800,
     }) < result.index(drag)
-    assert result.index(drag) < result.index(rotate)
-    assert result[-1] == final_move
+    assert result.index(drag) < result.index({"type": "delay", "durationMs": 57})
+    assert result.index({"type": "delay", "durationMs": 57}) < result.index(rotate)
+    assert final_move in result
+    assert result.index(rotate) < cursor_move_indices[-1]
+    assert result.index(final_move) < result.index({
+        "type": "anchorWait",
+        "sceneId": "day3_galgame_entry",
+        "maxWaitMs": 1020,
+    })
     assert result.index(rotate) < len(result) - 1
 
 
@@ -8698,6 +9850,50 @@ def test_externalized_compact_tool_wheel_rotate_request_reaches_chat_host(
                 },
             }, '*');
             await new Promise((resolve) => setTimeout(resolve, 0));
+            return window.__hostRequests;
+        }
+        """
+    )
+
+    assert result == [{
+        "direction": 1,
+        "stepCount": 2,
+        "reason": "avatar-floating-guide-galgame-drag",
+    }]
+
+
+@pytest.mark.frontend
+def test_externalized_compact_tool_wheel_rotate_broadcast_reaches_chat_host(
+    mock_page: Page,
+):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/chat');
+            window.__hostRequests = [];
+            window.reactChatWindowHost = {
+                rotateCompactToolWheel: (direction, stepCount, reason) => {
+                    window.__hostRequests.push({ direction, stepCount, reason });
+                },
+            };
+            document.body.innerHTML = `<div id="react-chat-window-root"></div>`;
+        """,
+        script_names=("app-interpage.js",),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const channel = new BroadcastChannel('neko_page_channel');
+            channel.postMessage({
+                action: 'yui_guide_rotate_compact_tool_wheel',
+                direction: 1,
+                stepCount: 2,
+                reason: 'avatar-floating-guide-galgame-drag',
+                timestamp: Date.now(),
+            });
+            await new Promise((resolve) => setTimeout(resolve, 80));
+            channel.close();
             return window.__hostRequests;
         }
         """
@@ -9604,7 +10800,7 @@ def test_day1_externalized_capsule_and_history_do_not_spotlight_chat_input(
 
             await director.playAvatarFloatingScene({
                 id: 'day1_capsule_drag_hint',
-                text: '把鼠标移到这里，长按就可以拉着聊天框到处跑啦~ 双击两下就能随时发消息给我哦！',
+                text: '把鼠标移到这里，长按就可以拉着聊天框到处跑啦~ 点击一下就能随时发消息给我哦！',
                 target: 'chat-input',
                 cursorAction: 'wobble',
                 cursorWobbleDurationMs: 2000,
@@ -10040,6 +11236,8 @@ def test_cross_window_handoff_does_not_hide_pc_overlay_cursor(mock_page: Page):
             const events = [];
             director.overlay.isPcOverlayActive = () => true;
             director.overlay.hideCursor = () => events.push('hide-cursor');
+            director.cursor.cancel = () => events.push('cancel-cursor');
+            director.cursor.clearPosition = () => events.push('clear-position');
 
             director.hideHomeCursorForExternalizedChat();
             return events;
@@ -10047,7 +11245,67 @@ def test_cross_window_handoff_does_not_hide_pc_overlay_cursor(mock_page: Page):
         """
     )
 
-    assert result == []
+    assert result == ["cancel-cursor", "clear-position"]
+
+
+@pytest.mark.frontend
+def test_externalized_chat_handoff_forgets_home_pc_cursor_cache(mock_page: Page):
+    _bootstrap_page(
+        mock_page,
+        setup_js="""
+            window.history.pushState({}, '', '/');
+            window.__NEKO_MULTI_WINDOW__ = true;
+            window.__homeOverlayUpdates = [];
+            window.nekoTutorialOverlay = {
+                getWindowMetricsSync: () => ({
+                    bounds: { x: 100, y: 50, width: 1200, height: 800 },
+                    contentBounds: { x: 100, y: 50, width: 1200, height: 800 },
+                    zoomFactor: 1,
+                }),
+                update: (payload) => {
+                    window.__homeOverlayUpdates.push(payload);
+                    return Promise.resolve({ ok: true });
+                },
+                begin: () => Promise.resolve({ ok: true }),
+                clear: () => Promise.resolve({ ok: true }),
+            };
+            document.body.innerHTML = `
+                <section id="agent-task-hud" style="position:absolute; left:650px; top:80px; width:260px; height:140px;"></section>
+                <div
+                    id="compact-chat-input"
+                    data-compact-geometry-owner="surface"
+                    data-compact-geometry-item="input"
+                    style="position:absolute; left:140px; top:250px; width:360px; height:60px;"
+                ></div>
+            `;
+        """,
+        script_names=("yui-guide-overlay.js", "yui-guide-director.js"),
+    )
+
+    result = mock_page.evaluate(
+        """
+        async () => {
+            const director = window.createYuiGuideDirector({ page: 'home' });
+            director.interactionTakeover = {
+                setExternalizedChatSpotlight: () => {},
+                setExternalizedChatCursor: () => {},
+            };
+            director.cursor.showAt(780, 150);
+            director.setExternalizedChatGuideTarget('input', { effect: 'move' });
+            director.overlay.setPersistentSpotlight(document.getElementById('compact-chat-input'));
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            return window.__homeOverlayUpdates.map((update) => update.payload || {});
+        }
+        """
+    )
+
+    assert any(
+        payload.get("cursor", {}).get("x") == 880
+        and payload["cursor"].get("y") == 200
+        for payload in result
+    )
+    assert result[-1].get("spotlights")
+    assert "cursor" not in result[-1]
 
 
 @pytest.mark.frontend

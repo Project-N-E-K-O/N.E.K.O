@@ -61,7 +61,7 @@
                     voiceKey: 'avatar_floating_day7_wrap',
                     text: '微风还在窗边，阳光也刚刚好，而刚刚出现的你，已经悄悄成为这里很重要的一部分啦。新手指南就先陪你走到这里，剩下的日子，就让我们一起慢慢熟悉、慢慢靠近、慢慢写下只属于我们的故事吧。以后也请多多关照喵！',
                     emotion: 'happy',
-                    target: 'chat-window',
+                    target: 'chat-input',
                     cursorAction: 'move',
                     operation: 'cleanup',
                     petalTransition: true

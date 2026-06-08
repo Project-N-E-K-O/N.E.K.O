@@ -383,6 +383,7 @@
             : null;
         var suppressToast = !!reloadOptions.suppressToast;
         var skipIdleRestore = !!reloadOptions.skipIdleRestore;
+        var skipPersistentExpressions = !!reloadOptions.skipPersistentExpressions;
         var throwOnError = !!reloadOptions.throwOnError;
 
         // 只有承载完整模型 UI 的页面才处理重载；Chat 等子窗口缺少渲染容器，
@@ -949,7 +950,8 @@
                             await window.live2dManager.loadModel(newModelPath, {
                                 preferences: modelPreferences,
                                 isMobile: typeof window.isMobileWidth === 'function' ? window.isMobileWidth() : (window.innerWidth <= 768),
-                                suppressInitialIdle: skipIdleRestore
+                                suppressInitialIdle: skipIdleRestore,
+                                suppressPersistentExpressions: skipPersistentExpressions
                             });
 
                             // Sync legacy global references
@@ -2032,18 +2034,21 @@
 
     function handleIcebreakerBridgeData(data) {
         if (!data || !data.action) return false;
-        if (isDuplicateMessage(data.action, data.timestamp)) return true;
         switch (data.action) {
             case 'icebreaker_append_chat_message':
+                if (isDuplicateMessage(data.action, data.timestamp)) return true;
                 appendIcebreakerChatMessage(data.message);
                 return true;
             case 'icebreaker_set_choice_prompt':
+                if (isDuplicateMessage(data.action, data.timestamp)) return true;
                 setIcebreakerChoicePromptFromBroadcast(data.prompt);
                 return true;
             case 'icebreaker_clear_choice_prompt':
+                if (isDuplicateMessage(data.action, data.timestamp)) return true;
                 clearIcebreakerChoicePromptFromBroadcast(data.sessionId);
                 return true;
             case 'icebreaker_choice_selected':
+                if (isDuplicateMessage(data.action, data.timestamp)) return true;
                 if (!isStandaloneChatPage()) {
                     window.dispatchEvent(new CustomEvent('neko:icebreaker-choice-selected', {
                         detail: data.detail || {}
@@ -2051,6 +2056,7 @@
                 }
                 return true;
             case 'icebreaker_free_text_submitted':
+                if (isDuplicateMessage(data.action, data.timestamp)) return true;
                 if (!isStandaloneChatPage()) {
                     window.dispatchEvent(new CustomEvent('neko:icebreaker-free-text-submitted', {
                         detail: data.detail || {}

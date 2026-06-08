@@ -179,6 +179,69 @@ def test_minimized_restore_uses_previous_real_surface_mode():
     assert "lastRestorableChatSurfaceMode = state.chatSurfaceMode;" in init_block
 
 
+def test_home_tutorial_input_lock_blocks_compact_capsule_input_state():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    react_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
+
+    handler_block = script.split("function handleCompactChatStateChange(nextCompactChatState)", 1)[1].split(
+        "function handleMiniGameInviteChoice(option)",
+        1,
+    )[0]
+    set_state_block = script.split("function setCompactChatState(nextCompactChatState", 1)[1].split(
+        "function setChatSurfaceMode(nextMode)",
+        1,
+    )[0]
+    capsule_block = react_source.split('className="compact-chat-capsule-button"', 1)[1].split(
+        "requestCompactChatState('input');",
+        1,
+    )[0]
+
+    assert "state.homeTutorialInputLocked || isHomeTutorialInteractionLocked()" in handler_block
+    assert "normalized === 'input'" in set_state_block
+    assert "state.homeTutorialInputLocked || isHomeTutorialInteractionLocked()" in set_state_block
+    assert "disabled={compactTextEntryLocked}" in capsule_block
+    assert "if (compactTextEntryLocked) return;" in capsule_block
+
+
+def test_home_tutorial_events_lock_chat_buttons_and_collapse_compact_input():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    react_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
+
+    interaction_lock_block = script.split("function setHomeTutorialInteractionLocked(locked, reason)", 1)[1].split(
+        "function setHomeTutorialInputLocked(locked, reason)",
+        1,
+    )[0]
+    started_block = script.split("window.addEventListener('neko:tutorial-started'", 1)[1].split(
+        "window.addEventListener('neko:tutorial-completed'",
+        1,
+    )[0]
+    completed_block = script.split("window.addEventListener('neko:tutorial-completed'", 1)[1].split(
+        "window.addEventListener('neko:tutorial-skipped'",
+        1,
+    )[0]
+    skipped_block = script.split("window.addEventListener('neko:tutorial-skipped'", 1)[1].split(
+        "window.addEventListener('neko:tutorial-ended-without-completion'",
+        1,
+    )[0]
+    ended_block = script.split("window.addEventListener('neko:tutorial-ended-without-completion'", 1)[1].split(
+        "// Refresh option list whenever an assistant turn finishes streaming.",
+        1,
+    )[0]
+    history_handle_block = react_source.split('className={`compact-history-visibility-handle', 1)[1].split(
+        "onClick={handleCompactHistoryVisibilityClick}",
+        1,
+    )[0]
+
+    assert "if (next && getCurrentCompactChatState() === 'input')" in interaction_lock_block
+    assert "resetCompactChatState();" in interaction_lock_block
+    assert "compactChatState: getCurrentCompactChatState()" in interaction_lock_block
+    assert "setHomeTutorialInteractionLocked(true, 'tutorial-started');" in started_block
+    assert "setHomeTutorialInteractionLocked(false, 'tutorial-completed');" in completed_block
+    assert "setHomeTutorialInteractionLocked(false, 'tutorial-skipped');" in skipped_block
+    assert "setHomeTutorialInteractionLocked(false, 'tutorial-ended-without-completion');" in ended_block
+    assert "disabled={composerDisabled}" in history_handle_block
+
+
 def test_desktop_compact_history_uses_workarea_not_browserwindow_viewport():
     script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")

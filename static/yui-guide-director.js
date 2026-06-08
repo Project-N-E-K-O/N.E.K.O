@@ -334,7 +334,8 @@
     const INTRO_ACTIVATION_HINT_KEY = 'tutorial.yuiGuide.lines.introActivationHint';
     const INTRO_ACTIVATION_HINT = '点一下这里，我就能开始说话啦～';
     const DEFAULT_SPOTLIGHT_PADDING = 6;
-    const PLUGIN_MANAGEMENT_ENTRY_SPOTLIGHT_EXTRA_X = 15;
+    const PLUGIN_MANAGEMENT_ENTRY_SPOTLIGHT_EXTRA_X = 18;
+    const PLUGIN_MANAGEMENT_ENTRY_SPOTLIGHT_EXTRA_Y = 10;
     const NARRATION_RESUME_BACKTRACK_MS = 320;
     const NARRATION_RESUME_MIN_REMAINING_MS = 1400;
     const PLUGIN_DASHBOARD_WINDOW_NAME = 'plugin_dashboard';
@@ -793,6 +794,9 @@
             en: 11990,
             ko: 13766,
             ru: 11964
+        }),
+        avatar_floating_day6_wrap: Object.freeze({
+            zh: 11340
         })
     });
 
@@ -3657,30 +3661,34 @@
         }
 
         createReturnPetalTransition(origin, options) {
+            const normalizedOptions = options || {};
             if (
-                this.overlay
+                !normalizedOptions.skipPcOverlay
+                && this.overlay
                 && typeof this.overlay.playPetalTransition === 'function'
-                && this.overlay.playPetalTransition(origin, {
-                    durationMs: options && options.durationMs,
-                    finalOpacity: RETURN_PETAL_FINAL_OPACITY
-                })
             ) {
-                const transitionMs = this.shouldReduceTutorialMotion()
-                    ? clamp(Math.round(Number(options && options.durationMs) || 420), 240, 720)
-                    : clamp(Math.round(Number(options && options.durationMs) || 1600), 900, 8600);
-                if (options && typeof options.onStart === 'function') {
-                    window.requestAnimationFrame(() => {
-                        try {
-                            options.onStart();
-                        } catch (error) {
-                            console.warn('[YuiGuide] PC 全局花瓣转场启动回调失败:', error);
-                        }
-                    });
+                const pcTransition = this.overlay.playPetalTransition(origin, {
+                    durationMs: normalizedOptions.durationMs,
+                    finalOpacity: RETURN_PETAL_FINAL_OPACITY
+                });
+                if (pcTransition) {
+                    const transitionMs = this.shouldReduceTutorialMotion()
+                        ? clamp(Math.round(Number(normalizedOptions.durationMs) || 420), 240, 720)
+                        : clamp(Math.round(Number(normalizedOptions.durationMs) || 1600), 900, 8600);
+                    if (typeof normalizedOptions.onStart === 'function') {
+                        window.requestAnimationFrame(() => {
+                            try {
+                                normalizedOptions.onStart();
+                            } catch (error) {
+                                console.warn('[YuiGuide] PC 全局花瓣转场启动回调失败:', error);
+                            }
+                        });
+                    }
+                    return {
+                        done: () => new Promise((resolve) => window.setTimeout(resolve, transitionMs)),
+                        finish: () => Promise.resolve()
+                    };
                 }
-                return {
-                    done: () => new Promise((resolve) => window.setTimeout(resolve, transitionMs)),
-                    finish: () => Promise.resolve()
-                };
             }
 
             const root = this.overlay && typeof this.overlay.ensureRoot === 'function'
@@ -3703,7 +3711,6 @@
             const height = Math.max(1, window.innerHeight || 1);
             const start = origin || this.getViewportCenter();
             const reducedMotion = this.shouldReduceTutorialMotion();
-            const normalizedOptions = options || {};
             const sequence = normalizedOptions.sequence || null;
             if (!sequence || !sequence.url) {
                 return null;
@@ -3833,11 +3840,7 @@
 
             this.returnPetalTransitionActive = true;
             const normalizedOptions = options || {};
-            const loadedPetalSequence = await this.loadReturnPetalSequence();
-            if (this.destroyed) {
-                this.returnPetalTransitionActive = false;
-                return;
-            }
+            const petalSequencePromise = this.loadReturnPetalSequence().catch(() => null);
             const reducedMotion = this.shouldReduceTutorialMotion();
             const explicitDurationMs = Number(normalizedOptions.durationMs);
             const hasExplicitDuration = Number.isFinite(explicitDurationMs) && explicitDurationMs >= 0;
@@ -3869,30 +3872,54 @@
             const waitForNarrationEnd = () => new Promise((resolve) => {
                 window.setTimeout(resolve, Math.max(0, baseTransitionDurationMs));
             });
-            const transition = this.createReturnPetalTransition(
-                this.getReturnPetalTransitionOrigin(),
-                {
-                    durationMs: transitionDurationMs,
-                    finalOpacity: RETURN_PETAL_FINAL_OPACITY,
-                    sequence: loadedPetalSequence,
-                    onStart: notifyTransitionStart
-                }
+            const origin = this.getReturnPetalTransitionOrigin();
+            const canStartPcPetalImmediately = !!(
+                this.overlay
+                && typeof this.overlay.isPcOverlayActive === 'function'
+                && this.overlay.isPcOverlayActive()
+                && typeof this.overlay.playPetalTransition === 'function'
             );
-            if (!transition) {
-                notifyTransitionStart();
-                await Promise.all([
-                    waitForNarrationEnd(),
-                    this.fadeReturnPetalTransitionModelOut(baseTransitionDurationMs)
-                ]);
-                await this.restoreTutorialAvatarForReturnPetalTransition();
-                this.restoreReturnPetalTransitionOpacityTargets();
-                this.returnPetalTransitionActive = false;
-                return;
-            }
+            let transition = null;
+            let fadePromise = null;
             try {
+                if (canStartPcPetalImmediately) {
+                    this.overlay.playPetalTransition(origin, {
+                        durationMs: transitionDurationMs,
+                        finalOpacity: RETURN_PETAL_FINAL_OPACITY
+                    });
+                    notifyTransitionStart();
+                    fadePromise = this.fadeReturnPetalTransitionModelOut(baseTransitionDurationMs);
+                    const loadedPetalSequence = await petalSequencePromise;
+                    if (this.destroyed) {
+                        return;
+                    }
+                    if (loadedPetalSequence) {
+                        transition = this.createReturnPetalTransition(origin, {
+                            durationMs: transitionDurationMs,
+                            finalOpacity: RETURN_PETAL_FINAL_OPACITY,
+                            sequence: loadedPetalSequence,
+                            skipPcOverlay: true
+                        });
+                    }
+                } else {
+                    const loadedPetalSequence = await petalSequencePromise;
+                    if (this.destroyed) {
+                        return;
+                    }
+                    transition = this.createReturnPetalTransition(origin, {
+                        durationMs: transitionDurationMs,
+                        finalOpacity: RETURN_PETAL_FINAL_OPACITY,
+                        sequence: loadedPetalSequence,
+                        onStart: notifyTransitionStart
+                    });
+                    if (!transition) {
+                        notifyTransitionStart();
+                    }
+                    fadePromise = this.fadeReturnPetalTransitionModelOut(baseTransitionDurationMs);
+                }
                 await Promise.all([
                     waitForNarrationEnd(),
-                    this.fadeReturnPetalTransitionModelOut(baseTransitionDurationMs)
+                    fadePromise
                 ]);
                 if (this.destroyed) {
                     return;
@@ -4192,11 +4219,11 @@
 
             return this.createVirtualSpotlight('plugin-management-entry', {
                 left: rect.left - PLUGIN_MANAGEMENT_ENTRY_SPOTLIGHT_EXTRA_X,
-                top: rect.top,
+                top: rect.top - PLUGIN_MANAGEMENT_ENTRY_SPOTLIGHT_EXTRA_Y,
                 right: rect.right + PLUGIN_MANAGEMENT_ENTRY_SPOTLIGHT_EXTRA_X,
-                bottom: rect.bottom
+                bottom: rect.bottom + PLUGIN_MANAGEMENT_ENTRY_SPOTLIGHT_EXTRA_Y
             }, {
-                padding: DEFAULT_SPOTLIGHT_PADDING + 2,
+                padding: 0,
                 radius: 18
             }) || button;
         }
@@ -6839,6 +6866,12 @@
                 && typeof this.overlay.isPcOverlayActive === 'function'
                 && this.overlay.isPcOverlayActive()
             ) {
+                if (this.cursor && typeof this.cursor.clearPosition === 'function') {
+                    this.cursor.cancel();
+                    this.cursor.clearPosition();
+                } else if (this.overlay && typeof this.overlay.clearCursorPosition === 'function') {
+                    this.overlay.clearCursorPosition();
+                }
                 return;
             }
             this.cursor.hide();
@@ -7202,7 +7235,27 @@
             await this.waitForSceneDelay(120);
             const dragDeltaY = 100;
             const dragSettleWaitMs = 260;
+            const finalCursorMoveMs = 520;
+            const dragRotateThresholdPx = 22;
+            const dragRotateDelayMs = Math.max(
+                0,
+                Math.min(
+                    dragSettleWaitMs,
+                    Math.round(
+                        (dragSettleWaitMs * dragRotateThresholdPx)
+                        / Math.max(1, Math.abs(dragDeltaY))
+                    )
+                )
+            );
             const rotateReason = 'avatar-floating-guide-galgame-drag';
+            const rotateWheelAfterDragThreshold = async () => {
+                const waited = await this.waitForSceneDelay(dragRotateDelayMs);
+                if (!waited || this.isStopping()) {
+                    return false;
+                }
+                this.rotateCompactToolWheelForGuide(1, 1, rotateReason);
+                return true;
+            };
 
             if (this.isHomeChatExternalized()) {
                 this.setExternalizedChatCursorEffect('galgame', 'move');
@@ -7219,14 +7272,25 @@
                 ) {
                     this.interactionTakeover.dragExternalizedChatCursor('galgame', {
                         deltaY: dragDeltaY,
+                        durationMs: dragSettleWaitMs,
                         effect: 'click',
                         effectDurationMs: 900
                     });
                 }
-                await this.waitForSceneDelay(dragSettleWaitMs + 80);
-                this.rotateCompactToolWheelForGuide(1, 1, rotateReason);
+                const rotated = await rotateWheelAfterDragThreshold();
+                if (!rotated) {
+                    return false;
+                }
+                const remainingDragWaitMs = Math.max(0, dragSettleWaitMs - dragRotateDelayMs);
+                await this.waitForSceneDelay(remainingDragWaitMs + 80);
                 await this.waitForSceneDelay(260);
-                this.setExternalizedChatCursorEffect('galgame', 'move');
+                this.setExternalizedChatCursorEffect('galgame', 'move', {
+                    durationMs: finalCursorMoveMs
+                });
+                await this.waitForExternalizedChatCursorMove(
+                    scene && scene.id || 'day3_galgame_entry',
+                    finalCursorMoveMs + 500
+                );
                 return true;
             }
 
@@ -7236,7 +7300,9 @@
                 return false;
             }
             this.cursor.click(900);
-            const moved = await this.cursor.moveToPoint(
+            let dragFinished = false;
+            let dragSucceeded = false;
+            const movePromise = this.cursor.moveToPoint(
                 rect.left + (rect.width / 2),
                 rect.top + (rect.height / 2) + dragDeltaY,
                 {
@@ -7244,17 +7310,65 @@
                     pauseCheck: () => this.scenePausedForResistance,
                     cancelCheck: () => this.isStopping()
                 }
-            );
+            ).then((moved) => {
+                dragFinished = true;
+                dragSucceeded = !!moved;
+                return moved;
+            }, (error) => {
+                dragFinished = true;
+                dragSucceeded = false;
+                throw error;
+            });
+            const rotatePromise = (async () => {
+                const waited = await this.waitForSceneDelay(dragRotateDelayMs);
+                if (
+                    !waited
+                    || this.isStopping()
+                    || (dragFinished && !dragSucceeded)
+                ) {
+                    return false;
+                }
+                this.rotateCompactToolWheelForGuide(1, 1, rotateReason);
+                return true;
+            })();
+            const moved = await movePromise;
+            const rotated = await rotatePromise;
             if (!moved || this.isStopping()) {
                 return false;
             }
-            this.rotateCompactToolWheelForGuide(1, 1, rotateReason);
+            if (!rotated) {
+                return false;
+            }
             await this.waitForSceneDelay(260);
-            const finalTarget = await this.resolveAvatarFloatingTarget(scene, 'primary');
+            const finalTarget = await this.resolveDay3GalgameWheelSlotTarget(1, 720)
+                || await this.resolveAvatarFloatingTarget(scene, 'primary');
             if (finalTarget) {
-                await this.moveCursorToElement(finalTarget, 520);
+                await this.moveCursorToElement(finalTarget, finalCursorMoveMs);
             }
             return true;
+        }
+
+        async resolveDay3GalgameWheelSlotTarget(slot, timeoutMs) {
+            const normalizedSlot = Number.isFinite(Number(slot)) ? String(Math.floor(Number(slot))) : '';
+            const current = this.getVisibleChatComposerElement('.compact-input-tool-item-galgame')
+                || this.getVisibleChatComposerElement('.composer-galgame-btn');
+            if (!current || !current.hasAttribute('data-compact-tool-wheel-slot')) {
+                return current || null;
+            }
+            if (current.getAttribute('data-compact-tool-wheel-slot') === normalizedSlot) {
+                this.applyChatAvatarToolButtonSpotlightHint(current);
+                return current;
+            }
+            const selector = '.compact-input-tool-item-galgame[data-compact-tool-wheel-slot="' + normalizedSlot + '"]';
+            const target = await this.waitForElement(() => {
+                const button = this.getVisibleChatComposerElement(selector);
+                return button || null;
+            }, Number.isFinite(timeoutMs) ? Math.max(0, Math.floor(timeoutMs)) : 720);
+            if (target) {
+                this.applyChatAvatarToolButtonSpotlightHint(target);
+                return target;
+            }
+            return current;
         }
 
         async resolveAvatarFloatingTarget(scene, role) {
@@ -7337,7 +7451,8 @@
         async prepareAvatarFloatingScene(scene, options) {
             const operation = typeof scene.operation === 'string' ? scene.operation : '';
             const preserveExternalizedChatGuideTarget = !!(
-                options && options.preserveExternalizedChatGuideTarget
+                (options && options.preserveExternalizedChatGuideTarget)
+                || (scene && scene.preserveExternalizedChatGuideTarget === true)
             );
             if (scene.cleanupBefore) {
                 if (preserveExternalizedChatGuideTarget) {
@@ -7398,7 +7513,9 @@
                 await this.openSettingsPanel();
             }
             if (operation === 'cleanup') {
-                await this.closeAvatarFloatingGuidePanels();
+                await this.closeAvatarFloatingGuidePanels({
+                    preserveExternalizedChatGuideTarget
+                });
             }
         }
 
@@ -7450,7 +7567,7 @@
                 key: sceneId + '-user-plugin',
                 primary: userPluginToggle
             });
-            if (!(await this.moveCursorToElement(userPluginToggle, 720)) || guardFailed()) {
+            if (!(await this.moveCursorToElement(userPluginToggle, 420)) || guardFailed()) {
                 return false;
             }
             const sidePanelShown = await this.runActionWithCursorClick(
@@ -7469,14 +7586,12 @@
             if (!managementButton || guardFailed()) {
                 return false;
             }
-            this.setSpotlightGeometryHint(managementButton, {
-                padding: 18
-            });
+            const managementSpotlightTarget = this.createPluginManagementEntrySpotlight(managementButton) || managementButton;
             this.applyGuideHighlights({
                 key: sceneId + '-management-panel',
-                primary: managementButton
+                primary: managementSpotlightTarget
             });
-            if (!(await this.moveCursorToElement(managementButton, 720)) || guardFailed()) {
+            if (!(await this.moveCursorToElement(managementButton, 420)) || guardFailed()) {
                 return false;
             }
             const managementOpenResult = await this.runActionWithCursorClick(
@@ -7625,7 +7740,7 @@
                 persistent: agentPanel(),
                 primary: userPluginToggle
             });
-            if (!(await this.moveCursorToElement(userPluginToggle, 720)) || guardFailed()) {
+            if (!(await this.moveCursorToElement(userPluginToggle, 420)) || guardFailed()) {
                 return false;
             }
             const sidePanelShown = await this.runActionWithCursorClick(
@@ -7644,12 +7759,13 @@
             if (!managementButton || guardFailed()) {
                 return false;
             }
+            const managementSpotlightTarget = this.createPluginManagementEntrySpotlight(managementButton) || managementButton;
             this.applyGuideHighlights({
                 key: sceneId + '-management-panel',
                 persistent: agentPanel(),
-                primary: managementButton
+                primary: managementSpotlightTarget
             });
-            if (!(await this.moveCursorToElement(managementButton, 720)) || guardFailed()) {
+            if (!(await this.moveCursorToElement(managementButton, 420)) || guardFailed()) {
                 return false;
             }
             const managementOpenResult = await this.runActionWithCursorClick(
@@ -8859,7 +8975,7 @@
         }
 
         async playAvatarFloatingPetalTransitionAtCue(scene, sceneRunId, voiceKey, text, narrationStartedAt) {
-            const petalSequenceReadyPromise = this.loadReturnPetalSequence().catch(() => null);
+            this.loadReturnPetalSequence().catch(() => null);
             const durationMs = this.getAvatarFloatingNarrationDurationMs(voiceKey, text);
             const cueMs = clamp(Math.round(durationMs * 0.7), 900, Math.max(900, durationMs));
             const elapsedMs = Math.max(0, Date.now() - narrationStartedAt);
@@ -8867,11 +8983,6 @@
             if (!(await this.waitForSceneDelay(waitMs))) {
                 return;
             }
-            if (sceneRunId !== this.sceneRunId || this.destroyed || this.isStopping()) {
-                return;
-            }
-
-            await petalSequenceReadyPromise;
             if (sceneRunId !== this.sceneRunId || this.destroyed || this.isStopping()) {
                 return;
             }
@@ -9128,10 +9239,15 @@
 
         async closeAvatarFloatingGuidePanels(options) {
             const shouldClearCursor = !!(options && options.clearCursor === true);
+            const preserveExternalizedChatGuideTarget = !shouldClearCursor && !!(
+                options && options.preserveExternalizedChatGuideTarget === true
+            );
             this.closeChatToolPopover();
-            this.clearExternalizedChatGuideTarget({
-                clearCursor: shouldClearCursor
-            });
+            if (!preserveExternalizedChatGuideTarget) {
+                this.clearExternalizedChatGuideTarget({
+                    clearCursor: shouldClearCursor
+                });
+            }
             this.collapseAvatarFloatingSidePanelsExcept(null);
             this.clearSceneExtraSpotlights();
             this.clearRetainedExtraSpotlights();
@@ -9371,7 +9487,10 @@
             this.currentSceneId = scene.id;
             this.currentStep = this.getAvatarFloatingInterruptStep(scene);
             const isFirstDailyScene = index === 0;
-            const preserveExternalizedChatGuideTarget = this.shouldPreserveExternalizedChatCursor(previousSceneId, scene);
+            const preserveExternalizedChatGuideTarget = !!(
+                this.shouldPreserveExternalizedChatCursor(previousSceneId, scene)
+                || (scene && scene.preserveExternalizedChatGuideTarget === true)
+            );
             const preserveIntroExternalizedChatGuideTarget = !!(
                 isFirstDailyScene
                 && this.isHomeChatExternalized()
@@ -9744,7 +9863,9 @@
                 }
                 return sceneOperationPromise;
             };
-            if (externalizedSceneTargetKind && scene.cursorAction === 'click') {
+            if (scene.cursorAction === 'hold') {
+                // Cursor is already at the intended target from the previous scene.
+            } else if (externalizedSceneTargetKind && scene.cursorAction === 'click') {
                 await this.moveExternalizedChatCursor(scene, {
                     onClickStart: startSceneOperation
                 });
@@ -9826,7 +9947,9 @@
                 this.setTutorialTakingOver(true);
             }
             this.overlay.hideBubble();
-            await this.ensureAvatarFloatingGuideSurfaceReady(round);
+            if (!options || options.surfaceReady !== true) {
+                await this.ensureAvatarFloatingGuideSurfaceReady(round);
+            }
             this.setGuideChatInputLocked(true, 'avatar-floating-guide-day' + Number(round));
             if (Number(round) === 3) {
                 this.setCompactToolWheelIndexForGuide(0, 'avatar-floating-guide-day3-entry-reset');
@@ -9845,17 +9968,17 @@
             } else {
                 this.highlightChatWindow();
             }
-            this.ensureGuideIdleSwayPerformance().catch((error) => {
-                console.warn('[YuiGuide] 悬浮窗教程常驻动作后台启动失败:', error);
-            });
             let lookAtHandle = null;
-            try {
-                lookAtHandle = await this.ensurePersistentGhostCursorLookAtPerformance({
-                    isCancelled: () => this.isStopping()
-                });
-            } catch (error) {
+            let lookAtPromise = null;
+            lookAtPromise = this.ensurePersistentGhostCursorLookAtPerformance({
+                isCancelled: () => this.isStopping()
+            }).then((handle) => {
+                lookAtHandle = handle || null;
+                return lookAtHandle;
+            }).catch((error) => {
                 console.warn('[YuiGuide] Avatar floating cursor look-at startup failed:', error);
-            }
+                return null;
+            });
             try {
                 for (let index = 0; index < config.scenes.length; index += 1) {
                     if (this.isStopping()) {
@@ -9890,6 +10013,9 @@
                 this.overlay.clearPersistentSpotlight();
                 this.overlay.clearActionSpotlight();
                 this.cursor.hide();
+                if (lookAtPromise && !lookAtHandle) {
+                    lookAtHandle = await lookAtPromise;
+                }
                 if (lookAtHandle) {
                     await this.stopIntroVoiceCursorLookAtPerformance(lookAtHandle, roundId + '_complete');
                 } else {

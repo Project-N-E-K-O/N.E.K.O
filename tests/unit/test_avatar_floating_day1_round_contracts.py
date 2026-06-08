@@ -5,6 +5,10 @@ ROOT = Path(__file__).resolve().parents[2]
 DAY1_GUIDE_PATH = ROOT / "static" / "yui-guide-day1-home-guide.js"
 DAY2_GUIDE_PATH = ROOT / "static" / "yui-guide-day2-screen-voice-guide.js"
 DAY3_GUIDE_PATH = ROOT / "static" / "yui-guide-day3-interaction-guide.js"
+DAY4_GUIDE_PATH = ROOT / "static" / "yui-guide-day4-companion-guide.js"
+DAY5_GUIDE_PATH = ROOT / "static" / "yui-guide-day5-personalization-guide.js"
+DAY6_GUIDE_PATH = ROOT / "static" / "yui-guide-day6-agent-guide.js"
+DAY7_GUIDE_PATH = ROOT / "static" / "yui-guide-day7-graduation-guide.js"
 DIRECTOR_PATH = ROOT / "static" / "yui-guide-director.js"
 INTERPAGE_PATH = ROOT / "static" / "app-interpage.js"
 REACT_APP_PATH = ROOT / "frontend" / "react-neko-chat" / "src" / "App.tsx"
@@ -44,6 +48,45 @@ EXPECTED_DAY3_SCENES = [
     "day3_galgame_choices",
     "day3_wrap",
     "day3_wrap_ready",
+]
+
+
+EXPECTED_DAY4_SCENES = [
+    "day4_intro_companion",
+    "day4_chat_settings",
+    "day4_model_behavior",
+    "day4_gaze_follow",
+    "day4_privacy_mode",
+    "day4_model_lock",
+    "day4_return_home",
+    "day4_wrap",
+]
+
+
+EXPECTED_DAY5_SCENES = [
+    "day5_character_settings",
+    "day5_character_panic",
+    "day5_memory_entry",
+    "day5_wrap",
+]
+
+
+EXPECTED_DAY6_SCENES = [
+    "day6_intro_agent",
+    "day6_agent_status_master",
+    "day6_plugin_side_panel",
+    "day6_plugin_dashboard",
+    "day6_agent_task_hud",
+    "day6_agent_task_hud_control",
+    "day6_wrap_cleanup",
+    "day6_wrap",
+]
+
+
+EXPECTED_DAY7_SCENES = [
+    "day7_memory_review",
+    "day7_memory_control",
+    "day7_graduation_wrap",
 ]
 
 
@@ -149,6 +192,100 @@ def test_day3_round_targets_new_compact_tool_flow():
     assert "target: 'chat-galgame'" in round_block
     assert "day3_chat_tools" not in round_block
     assert "day3_galgame_games" not in round_block
+
+
+def test_day4_round_wrap_returns_to_capsule_input_like_day2_wrap():
+    source = DAY4_GUIDE_PATH.read_text(encoding="utf-8")
+    round_block = source.split("round: {", 1)[1]
+    wrap_block = round_block.split("id: 'day4_wrap'", 1)[1]
+
+    for scene_id in EXPECTED_DAY4_SCENES:
+        assert f"id: '{scene_id}'" in round_block
+    assert_scene_order(round_block, EXPECTED_DAY4_SCENES)
+    assert "target: 'chat-input'" in wrap_block
+    assert "cursorAction: 'move'" in wrap_block
+    assert "operation: 'cleanup'" in wrap_block
+    assert "petalTransition: true" in wrap_block
+
+
+def test_day5_round_wrap_returns_to_capsule_input_like_day2_wrap():
+    source = DAY5_GUIDE_PATH.read_text(encoding="utf-8")
+    round_block = source.split("round: {", 1)[1]
+    wrap_block = round_block.split("id: 'day5_wrap'", 1)[1]
+
+    for scene_id in EXPECTED_DAY5_SCENES:
+        assert f"id: '{scene_id}'" in round_block
+    assert_scene_order(round_block, EXPECTED_DAY5_SCENES)
+    assert "target: 'chat-input'" in wrap_block
+    assert "cursorAction: 'move'" in wrap_block
+    assert "operation: 'cleanup'" in wrap_block
+    assert "petalTransition: true" in wrap_block
+
+
+def test_day5_wrap_voice_key_has_audio_file():
+    source = DAY5_GUIDE_PATH.read_text(encoding="utf-8")
+    audio_file = "好啦好啦，快去试试这.mp3"
+
+    assert f"avatar_floating_day5_wrap: zhAudio('{audio_file}')" in source
+    assert (ROOT / "static" / "assets" / "tutorial" / "guide-audio" / "zh" / audio_file).is_file()
+
+
+def test_day6_round_wrap_returns_to_capsule_input_like_day2_wrap():
+    source = DAY6_GUIDE_PATH.read_text(encoding="utf-8")
+    director_source = DIRECTOR_PATH.read_text(encoding="utf-8")
+    round_block = source.split("round: {", 1)[1]
+    plugin_side_panel_block = round_block.split("id: 'day6_plugin_side_panel'", 1)[1].split(
+        "id: 'day6_plugin_dashboard'",
+        1,
+    )[0]
+    task_hud_block = round_block.split("id: 'day6_agent_task_hud'", 1)[1].split(
+        "id: 'day6_agent_task_hud_control'",
+        1,
+    )[0]
+    task_hud_control_block = round_block.split("id: 'day6_agent_task_hud_control'", 1)[1].split(
+        "id: 'day6_wrap_cleanup'",
+        1,
+    )[0]
+    wrap_cleanup_block = round_block.split("id: 'day6_wrap_cleanup'", 1)[1].split(
+        "id: 'day6_wrap'",
+        1,
+    )[0]
+    wrap_block = round_block.split("id: 'day6_wrap'", 1)[1]
+
+    for scene_id in EXPECTED_DAY6_SCENES:
+        assert f"id: '{scene_id}'" in round_block
+    assert_scene_order(round_block, EXPECTED_DAY6_SCENES)
+    assert "除了之前介绍的功能，这里还有超多好玩的插件呢。" in plugin_side_panel_block
+    assert "除了之前介绍的功能，这里还有超多好玩的插件呢'," not in plugin_side_panel_block
+    assert "target: '#agent-task-hud'" in task_hud_block
+    assert "cursorAction: 'move'" in task_hud_block
+    assert "cursorAction: 'tour'" not in task_hud_block
+    assert "target: '#agent-task-hud'" in task_hud_control_block
+    assert "cursorAction: 'move'" in task_hud_control_block
+    assert "cursorAction: 'ellipse'" not in task_hud_control_block
+    assert "cursorAction: 'tour'" not in task_hud_control_block
+    assert "target: 'chat-input'" in wrap_cleanup_block
+    assert "target: 'chat-input'" in wrap_block
+    assert "preserveExternalizedChatGuideTarget: true" in wrap_cleanup_block
+    assert "cursorAction: 'hold'" in wrap_block
+    assert "cursorAction: 'move'" not in wrap_block
+    assert "petalTransition: true" in wrap_block
+    assert "avatar_floating_day6_wrap: Object.freeze({" in director_source
+    assert "zh: 11340" in director_source
+
+
+def test_day7_round_wrap_returns_to_capsule_input_like_day2_wrap():
+    source = DAY7_GUIDE_PATH.read_text(encoding="utf-8")
+    round_block = source.split("round: {", 1)[1]
+    wrap_block = round_block.split("id: 'day7_graduation_wrap'", 1)[1]
+
+    for scene_id in EXPECTED_DAY7_SCENES:
+        assert f"id: '{scene_id}'" in round_block
+    assert_scene_order(round_block, EXPECTED_DAY7_SCENES)
+    assert "target: 'chat-input'" in wrap_block
+    assert "cursorAction: 'move'" in wrap_block
+    assert "operation: 'cleanup'" in wrap_block
+    assert "petalTransition: true" in wrap_block
 
 
 def test_compact_chat_tutorial_bridge_exposes_new_targets_and_requests():
@@ -278,6 +415,63 @@ def test_day1_round_start_uses_avatar_floating_round_lifecycle():
     assert "director.playAvatarFloatingRound(round" in start_block
 
 
+def test_avatar_floating_round_start_keeps_tutorial_model_reload_before_first_scene():
+    source = MANAGER_PATH.read_text(encoding="utf-8")
+    start_block = source.split("async startAvatarFloatingGuideRound(day, options = {})", 1)[1].split(
+        "clearModelManagerTutorialRecheckTimer()",
+        1,
+    )[0]
+
+    assert "this._tutorialModelPrefix = 'live2d';" in start_block
+    assert "this.beginTutorialAvatarOverride()" in start_block
+    assert "this.ensureTutorialYuiLive2dVisible(" in start_block
+    assert "director.playAvatarFloatingRound(round" in start_block
+    assert start_block.index("this.beginTutorialAvatarOverride()") < start_block.index(
+        "director.playAvatarFloatingRound(round"
+    )
+
+
+def test_avatar_floating_round_waits_after_tutorial_model_is_visible():
+    source = MANAGER_PATH.read_text(encoding="utf-8")
+    start_block = source.split("async startAvatarFloatingGuideRound(day, options = {})", 1)[1].split(
+        "clearModelManagerTutorialRecheckTimer()",
+        1,
+    )[0]
+
+    assert "await this.sleep(1500);" in start_block
+    assert start_block.index("this.ensureTutorialYuiLive2dVisible(") < start_block.index(
+        "await this.sleep(1500);"
+    )
+    assert start_block.index("await this.sleep(1500);") < start_block.index(
+        "director.playAvatarFloatingRound(round"
+    )
+
+
+def test_avatar_floating_round_does_not_preheat_surface_before_playback():
+    source = MANAGER_PATH.read_text(encoding="utf-8")
+    start_block = source.split("async startAvatarFloatingGuideRound(day, options = {})", 1)[1].split(
+        "clearModelManagerTutorialRecheckTimer()",
+        1,
+    )[0]
+
+    assert "surfaceReadyPromise" not in start_block
+    assert "ensureAvatarFloatingGuideSurfaceReady(round)" not in start_block
+    assert "surfaceReady: true" in start_block
+
+
+def test_tutorial_avatar_override_does_not_capture_avatar_preview():
+    source = (ROOT / "static" / "tutorial-avatar-reload-controller.js").read_text(encoding="utf-8")
+    begin_block = source.split("beginOverride()", 1)[1].split("restoreOverride()", 1)[0]
+
+    assert "this.sleep(350)" not in begin_block
+    assert "captureAvatarPreview" not in source
+    assert "startIdentityOverrideCapture" not in source
+    assert "this.applyIdentityOverride({" in begin_block
+    assert begin_block.index("this.applyIdentityOverride({") > begin_block.index(
+        "await this.reloadModel(currentName, tutorialModelPayload, { temporary: true });"
+    )
+
+
 def test_day1_reset_uses_avatar_floating_day_launcher():
     source = RESET_PATH.read_text(encoding="utf-8")
     reset_block = source.split("async function resetHomeTutorialDay(day, options = {})", 1)[1].split(
@@ -288,6 +482,42 @@ def test_day1_reset_uses_avatar_floating_day_launcher():
     assert "if (round === 1)" not in reset_block
     assert "resetPageTutorial('home')" not in reset_block
     assert "startAvatarFloatingGuideDay(round" in reset_block
+
+
+def test_day_reset_fallback_player_keeps_tutorial_model_reload_before_first_step():
+    source = RESET_PATH.read_text(encoding="utf-8")
+    player_start_block = source.split("        async function start() {", 1)[1].split(
+        "        function buildShell() {",
+        1,
+    )[0]
+
+    assert "manager.beginTutorialAvatarOverride()" in player_start_block
+    assert "forceShowTutorialAvatar(manager)" in player_start_block
+    assert "usesTutorialAvatarOverride" in player_start_block
+
+
+def test_avatar_floating_round_does_not_start_idle_sway_before_first_scene():
+    source = DIRECTOR_PATH.read_text(encoding="utf-8")
+    round_block = source.split("async playAvatarFloatingRound(round, options)", 1)[1].split(
+        "getAvatarFloatingInterruptStep(scene)",
+        1,
+    )[0]
+    before_scene_loop = round_block.split("for (let index = 0; index < config.scenes.length; index += 1)", 1)[0]
+
+    assert "ensureGuideIdleSwayPerformance()" not in before_scene_loop
+
+
+def test_avatar_floating_round_does_not_await_look_at_before_first_scene():
+    source = DIRECTOR_PATH.read_text(encoding="utf-8")
+    round_block = source.split("async playAvatarFloatingRound(round, options)", 1)[1].split(
+        "getAvatarFloatingInterruptStep(scene)",
+        1,
+    )[0]
+    before_scene_loop = round_block.split("for (let index = 0; index < config.scenes.length; index += 1)", 1)[0]
+
+    assert "let lookAtPromise = null;" in before_scene_loop
+    assert "lookAtPromise = this.ensurePersistentGhostCursorLookAtPerformance(" in before_scene_loop
+    assert "await this.ensurePersistentGhostCursorLookAtPerformance(" not in before_scene_loop
 
 
 def test_day1_reset_manager_path_dispatches_reset_and_home_fallback():
@@ -404,6 +634,17 @@ def test_day1_chat_input_round_rect_highlight_excludes_mid_flow_cursor_scenes():
     assert "this.hideHomeCursorForExternalizedChat();" in activation_block
     assert "setSpotlightGeometryHint(inputTarget" in greeting_block
     assert "overlay.setPersistentSpotlight(inputTarget)" in greeting_block
+
+
+def test_day1_capsule_drag_hint_copy_uses_single_click_language():
+    source = DAY1_GUIDE_PATH.read_text(encoding="utf-8")
+    capsule_block = source.split("id: 'day1_capsule_drag_hint'", 1)[1].split(
+        "id: 'day1_history_handle'",
+        1,
+    )[0]
+
+    assert "点击一下就能随时发消息给我哦！" in capsule_block
+    assert "双击两下" not in capsule_block
 
 
 def test_day1_intro_basic_voice_moves_from_history_handle_anchor():

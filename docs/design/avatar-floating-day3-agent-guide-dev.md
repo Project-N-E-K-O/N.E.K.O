@@ -6,6 +6,8 @@
 
 本日启用完整指南中的 Day 2-7 模型替身图片演出：教程模型可临时隐藏 5 秒，并通过全局透明 overlay 将替身贴到屏幕边缘；单轮固定触发 2 次，分别在 `day3_avatar_tools` 播放“在这个小按钮里……”时显示 `扒左边框.png`，以及在 `day3_galgame_choices` 播放“你选的每一个对话……”时显示上下翻转的 `探头.png`。替身不得出现在最后一句 `day3_wrap_ready` 播放期间。替身层只做视觉装饰，不能遮挡胶囊工具、Avatar 工具、Galgame 入口、skip、高光或 Ghost Cursor，也不能导致弧形菜单和道具菜单状态被清理。
 
+Day 3 round 启动前不得预热或等待聊天窗 surface ready；`day3_tool_toggle_intro` 在本 scene 内按需打开聊天窗并建立胶囊输入框高光。临时切到 `yui-origin` 并确认模型可见后，先显示等待 1500ms 再开始播放本日流程；等待期间不得生成教程聊天头像截图、播放初始 idle/sway，或套用 `常驻/swz` 表情。教程期间胶囊输入框和聊天窗各功能按钮都禁止用户点击；工具菜单演示通过总按钮和 Director API 打开，不依赖用户点击输入胶囊或工具按钮。
+
 ## 主线流程
 
 进入 Day 3 round 时必须先重置弧形工具栏轮盘：调用 `setCompactToolWheelIndex(0, 'avatar-floating-guide-day3-entry-reset')`，使导入图片按钮 `.compact-input-tool-item-import` 的 `data-compact-tool-wheel-slot` 为 `0`。

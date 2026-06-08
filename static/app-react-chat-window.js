@@ -3213,7 +3213,11 @@
     }
 
     function handleCompactChatStateChange(nextCompactChatState) {
-        setCompactChatState(nextCompactChatState);
+        var normalized = normalizeCompactChatState(nextCompactChatState);
+        if (normalized === 'input' && (state.homeTutorialInputLocked || isHomeTutorialInteractionLocked())) {
+            return;
+        }
+        setCompactChatState(normalized);
     }
 
     function handleMiniGameInviteChoice(option) {
@@ -3586,8 +3590,12 @@
         if (state.homeTutorialInteractionLocked === next) {
             return;
         }
+        if (next && getCurrentCompactChatState() === 'input') {
+            resetCompactChatState();
+        }
         state.homeTutorialInteractionLocked = next;
         state.viewProps = Object.assign({}, ensureViewProps(), {
+            compactChatState: getCurrentCompactChatState(),
             composerDisabled: next
         });
         renderWindow();
@@ -3598,8 +3606,12 @@
         if (state.homeTutorialInputLocked === next) {
             return;
         }
+        if (next && getCurrentCompactChatState() === 'input') {
+            resetCompactChatState();
+        }
         state.homeTutorialInputLocked = next;
         state.viewProps = Object.assign({}, ensureViewProps(), {
+            compactChatState: getCurrentCompactChatState(),
             compactInputLocked: next
         });
         renderWindow();
@@ -4619,6 +4631,9 @@
 
     function setCompactChatState(nextCompactChatState) {
         var normalized = normalizeCompactChatState(nextCompactChatState);
+        if (normalized === 'input' && (state.homeTutorialInputLocked || isHomeTutorialInteractionLocked())) {
+            return getCurrentCompactChatState();
+        }
         if (state.compactChatState === normalized) {
             return normalized;
         }
@@ -5580,6 +5595,7 @@
         window.addEventListener('neko:tutorial-started', function (event) {
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
+            setHomeTutorialInteractionLocked(true, 'tutorial-started');
             setHomeTutorialInputLocked(true, 'tutorial-started');
             setGalgameModeTemporarilyDisabled(true);
         });
@@ -5588,6 +5604,7 @@
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
             setHomeTutorialInputLocked(false, 'tutorial-completed');
+            setHomeTutorialInteractionLocked(false, 'tutorial-completed');
             setGalgameModeTemporarilyDisabled(false);
         });
 
@@ -5595,6 +5612,7 @@
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
             setHomeTutorialInputLocked(false, 'tutorial-skipped');
+            setHomeTutorialInteractionLocked(false, 'tutorial-skipped');
             setGalgameModeTemporarilyDisabled(false);
         });
 
@@ -5602,6 +5620,7 @@
             var detail = event && event.detail ? event.detail : {};
             if (detail.page !== 'home') return;
             setHomeTutorialInputLocked(false, 'tutorial-ended-without-completion');
+            setHomeTutorialInteractionLocked(false, 'tutorial-ended-without-completion');
             setGalgameModeTemporarilyDisabled(false);
         });
 

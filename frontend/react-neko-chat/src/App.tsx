@@ -2640,11 +2640,12 @@ export default function App({
 
   const requestCompactChatState = useCallback((nextState: CompactChatState) => {
     if (!isCompactSurface) return;
+    if (nextState === 'input' && compactTextEntryLocked) return;
     if (!isCompactChatStateControlled) {
       setUncontrolledCompactChatState(nextState);
     }
     onCompactChatStateChange?.(nextState);
-  }, [isCompactSurface, isCompactChatStateControlled, onCompactChatStateChange]);
+  }, [compactTextEntryLocked, isCompactSurface, isCompactChatStateControlled, onCompactChatStateChange]);
 
   const applyCompactSurfaceResizeWidthVar = useCallback((width: number | null) => {
     const shell = compactInputShellRef.current;
@@ -5341,6 +5342,7 @@ export default function App({
       aria-label={compactExportHistoryToggleLabel}
       aria-expanded={compactExportHistoryOpen}
       title={compactExportHistoryToggleLabel}
+      disabled={composerDisabled}
       data-compact-geometry-owner="surface"
       data-compact-geometry-item="historyHandle"
       data-compact-no-drag="true"
@@ -5629,9 +5631,10 @@ export default function App({
                       <button
                         className="compact-chat-capsule-button"
                         type="button"
-                        disabled={composerDisabled}
+                        disabled={compactTextEntryLocked}
                         onClick={() => {
                           if (composerHidden) return;
+                          if (compactTextEntryLocked) return;
                           if (isGuideChatButtonLockActive()) return;
                           requestCompactChatState('input');
                         }}

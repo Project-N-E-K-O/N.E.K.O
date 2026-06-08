@@ -307,7 +307,7 @@
                 {
                     id: 'day4_wrap',
                     selector: '#home-avatar-floating-guide-player',
-                    text: '第四天收尾前会恢复临时设置状态，播放花瓣转场后把界面还给用户。',
+                    text: '第四天收尾前会恢复临时设置状态，Ghost Cursor 回到胶囊输入框后播放花瓣转场，再把界面还给用户。',
                     voiceKey: 'avatar_floating_day4_wrap',
                     cursorAction: 'move',
                     operation: 'cleanup',
@@ -351,7 +351,7 @@
                 {
                     id: 'day5_wrap',
                     selector: '#home-avatar-floating-guide-player',
-                    text: '这一轮会清理设置弹窗并播放每日花瓣收尾。',
+                    text: '这一轮会清理设置弹窗，Ghost Cursor 回到胶囊输入框后播放每日花瓣收尾。',
                     voiceKey: 'avatar_floating_day5_wrap',
                     cursorAction: 'move',
                     operation: 'cleanup',

@@ -19,6 +19,7 @@ Day 2 的 scene 和台词按本文落地；导演硬约束以 `avatar-floating-7
 4. 设置相关 scene 不保存用户设置，不打开深层页面，不触发主动搭话。
 5. 收尾三句期间重新高亮胶囊输入框；最终句约 70% cue 同步隐藏 Ghost Cursor、清理所有高光并写入 Day 2 完成态。
 6. 本日启用 `avatar-floating-7day-complete-guide-dev.md` 中的 Day 2-7 模型替身图片演出：模型可在教程期间临时隐藏 5 秒，并通过全局透明 overlay 显示替身图片。本 round 固定在 `day2_intro_context` 播放“昨天你一直在噼里啪啦打字……”时显示 `探头.png`，以及在 `day2_proactive_chat` 播放“这个小按钮也很重要哦……”时显示 `扒右边框.png`；结束或异常清理时必须恢复模型。
+7. round 启动前不得预热或等待聊天窗 surface ready；`day2_intro_context` 在本 scene 内按需打开聊天窗并建立首句高光。临时切到 `yui-origin` 并确认模型可见后，先显示等待 1500ms 再开始播放本日流程；等待期间不得生成教程聊天头像截图、播放初始 idle/sway，或套用 `常驻/swz` 表情。教程期间胶囊输入框和聊天窗各功能按钮都禁止用户点击；收尾讲解只保留高亮和 Ghost Cursor 指认。
 
 ## 主线流程
 

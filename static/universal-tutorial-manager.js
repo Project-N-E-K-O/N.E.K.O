@@ -512,9 +512,7 @@ class UniversalTutorialManager {
                 reloadModel: (currentName, payload, options) => this.reloadTutorialModel(currentName, payload, options),
                 setPreparing: (preparing) => this.setTutorialLive2dPreparing(preparing),
                 revealPrepared: () => this.revealTutorialLive2dPrepared(),
-                captureAvatarPreview: () => this.captureTutorialChatAvatarPreview(),
                 applyIdentityOverride: (payload) => this.applyTutorialChatIdentityOverride(payload),
-                sleep: (delayMs) => this.sleep(delayMs),
                 clearViewportWatcher: () => this.clearTutorialLive2dViewportPlacementWatcher()
             });
         }
@@ -1533,7 +1531,8 @@ class UniversalTutorialManager {
 
         await window.live2dManager.loadModel(modelPath, {
             isMobile: window.innerWidth <= 768,
-            suppressInitialIdle: true
+            suppressInitialIdle: true,
+            suppressPersistentExpressions: true
         });
         await this.applyTutorialLive2dViewportPlacement();
         if (window.LanLan1) {
@@ -1583,6 +1582,7 @@ class UniversalTutorialManager {
             if (useTemporaryConfig) {
                 reloadOptions.temporaryConfig = this.buildTutorialTemporaryModelConfig(payload);
                 reloadOptions.skipIdleRestore = true;
+                reloadOptions.skipPersistentExpressions = true;
                 reloadOptions.throwOnError = true;
             }
             try {
@@ -1854,28 +1854,6 @@ class UniversalTutorialManager {
             return Promise.resolve();
         }
         return controller.restoreOverride();
-    }
-
-    async captureTutorialChatAvatarPreview() {
-        if (!window.avatarPortrait || typeof window.avatarPortrait.capture !== 'function') {
-            return null;
-        }
-
-        try {
-            return await window.avatarPortrait.capture({
-                width: 320,
-                height: 320,
-                padding: 0.035,
-                shape: 'rounded',
-                radius: 40,
-                background: 'rgba(255, 255, 255, 0.96)',
-                includeDataUrl: true,
-                includeSourceDataUrl: false
-            });
-        } catch (error) {
-            console.warn('[Tutorial] 截取新手教程 YUI 头像失败:', error);
-            return null;
-        }
     }
 
     applyTutorialChatIdentityOverride(detail) {
@@ -2423,6 +2401,10 @@ class UniversalTutorialManager {
         this.emitTutorialStarted('home', source);
 
         try {
+            const director = this.ensureYuiGuideDirector();
+            if (!director || typeof director.playAvatarFloatingRound !== 'function') {
+                throw new Error('avatar_floating_director_unavailable');
+            }
             await this.beginTutorialAvatarOverride().catch((error) => {
                 console.warn('[Tutorial] 悬浮窗教程临时切换 YUI 失败，继续教程:', error);
             }).finally(() => {
@@ -2432,16 +2414,16 @@ class UniversalTutorialManager {
                 console.warn('[Tutorial] 悬浮窗教程确认 YUI 模型失败，继续教程:', error);
                 this.revealTutorialLive2dPrepared();
             });
-            const director = this.ensureYuiGuideDirector();
-            if (!director || typeof director.playAvatarFloatingRound !== 'function') {
-                throw new Error('avatar_floating_director_unavailable');
-            }
+            await this.sleep(1500);
             this._yuiGuideLifecycleActive = true;
             this.showSkipButton();
             window.dispatchEvent(new CustomEvent('neko:avatar-floating-guide-started', {
                 detail: { day: round, source },
             }));
-            const completed = await director.playAvatarFloatingRound(round, { source });
+            const completed = await director.playAvatarFloatingRound(round, {
+                source,
+                surfaceReady: true
+            });
             if (completed && !this._tutorialEndHandled) {
                 this.requestTutorialDestroy('complete');
             }
