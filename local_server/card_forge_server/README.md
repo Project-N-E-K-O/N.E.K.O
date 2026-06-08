@@ -20,11 +20,11 @@ uv run local_server/card_forge_server/server.py
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET  | `/arena/forge-facts` | 从 NEKO 当前猫娘的 active facts 抽取候选事实，可排除已铸造来源 |
-| POST | `/arena/forge-card-story` | 用 NEKO 核心 LLM 配置把 `storyLead` 生成卡牌专属小故事 |
+| GET  | `/forge/facts` | 从 NEKO 当前猫娘的 active facts 抽取候选事实，可排除已铸造来源 |
+| POST | `/forge/card-story` | 用 NEKO 核心 LLM 配置把 `storyLead` 生成卡牌专属小故事 |
 | GET  | `/health` | 健康检查 |
 
-### `/arena/forge-facts`
+### `/forge/facts`
 
 **查询参数**
 
@@ -51,7 +51,7 @@ uv run local_server/card_forge_server/server.py
 
 **私密性**：facts 含个人化内容；请勿把本服务暴露到公网；日志不打印完整 `text`。
 
-### `/arena/forge-card-story`
+### `/forge/card-story`
 
 该接口的 LLM 调用集中在 `forge_story_generator.py`，`server.py` 只做路由转发。复用 NEKO 主服务的模型配置与 `utils.llm_client.create_chat_llm()`，不在铸造机内硬编码 OpenAI、Gemini、DeepSeek 等服务商差异。生成时会重新解析 NEKO 当前猫娘，并用这只猫娘的人格 prompt 与主人名写入故事提示词。
 
