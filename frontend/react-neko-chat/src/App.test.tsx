@@ -4314,7 +4314,7 @@ describe('App', () => {
       />,
     );
 
-    const actionButton = screen.getByRole('button', { name: '鏇村宸ュ叿' });
+    const actionButton = screen.getByRole('button', { name: '更多工具' });
     fireEvent.click(actionButton);
     let fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
     expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-screenshot');
@@ -4336,7 +4336,7 @@ describe('App', () => {
         compactChatState="input"
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: '鏇村宸ュ叿' }));
+    fireEvent.click(screen.getByRole('button', { name: '更多工具' }));
     fan = document.body.querySelector('.compact-input-tool-fan') as HTMLDivElement;
     expect(fan.querySelector('[data-compact-tool-wheel-slot="0"]')).toHaveClass('compact-input-tool-item-avatar');
   });
