@@ -3146,7 +3146,16 @@
                 // 应用内嵌入拟态窗打开（iframe 模态，不调系统浏览器）。
                 // openSocialEmbed 由 static/social-embed.js 提供（桌宠 pe:none 穿透坑已在其内处理）。
                 if (typeof window.openSocialEmbed === 'function') {
-                    window.openSocialEmbed(url);
+                    // openSocialEmbed 返回 false = URL 非法/非 http(s) 被拒（静默失败兜底）→ 提示用户
+                    if (window.openSocialEmbed(url) === false) {
+                        console.error('[social] openSocialEmbed rejected url:', url);
+                        if (typeof window.showStatusToast === 'function') {
+                            window.showStatusToast(
+                                window.t ? window.t('app.socialOpenFailed', { error: 'invalid url' }) : '社交窗口打开失败',
+                                4000
+                            );
+                        }
+                    }
                 } else {
                     console.error('[social] openSocialEmbed unavailable (social-embed.js not loaded)');
                     if (typeof window.showStatusToast === 'function') {

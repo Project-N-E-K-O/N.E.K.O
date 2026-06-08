@@ -20,8 +20,9 @@
     if (e.key === 'Escape') { e.stopPropagation(); close(); }
   }
 
+  // 返回 true=已打开 / false=拒绝（URL 缺失/非法/非 http(s)）。调用方据此提示失败、不再当成功路径。
   function open(url) {
-    if (!url) return;
+    if (!url) return false;
     // 安全：只放行 http/https，挡掉 javascript:/data: 等（social_base_url 来自 env，
     // 误配/被篡改时防把不可信页面高权限嵌进主界面）。
     var parsed;
@@ -29,11 +30,11 @@
       parsed = new URL(url, window.location.href);
     } catch (e) {
       console.warn('[social-embed] invalid url:', url);
-      return;
+      return false;
     }
     if (!/^https?:$/.test(parsed.protocol)) {
       console.warn('[social-embed] blocked non-http(s) url:', parsed.protocol);
-      return;
+      return false;
     }
     close(); // 已开则先关，避免叠加多个
 
@@ -82,6 +83,7 @@
     backdrop.appendChild(win);
     document.body.appendChild(backdrop);
     document.addEventListener('keydown', onKey, true);
+    return true;
   }
 
   window.openSocialEmbed = open;
