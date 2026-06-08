@@ -813,7 +813,18 @@ def test_electron_compact_chat_retires_full_surface_chrome():
     # test_full_chat_glass_flow_revived_and_gated），但**无门槛**的旧形态必须保持移除，
     # 共享 /chat 这条路径才永远不会画出它。
     assert "@keyframes lightSweep" not in template            # 死代码关键帧，未恢复
-    assert "-webkit-mask-image" not in template               # 全窗口 root 四边渐隐 mask
+    # 四边渐隐 mask 已带 full gate 复活（见 test_full_chat_glass_flow_revived_and_gated）。这里只守
+    # 「无门槛」旧形态：每处 -webkit-mask-image 前必须紧邻 full gate —— 裸 #react-chat-window-root
+    # 直接带 mask 才是 #1594 在共享 /chat 上挂载前先画的闪帧根因，必须保持不存在。
+    _mask_token = "-webkit-mask-image"
+    _gate_token = 'data-chat-surface-mode="full"'
+    _scan = 0
+    while True:
+        _scan = template.find(_mask_token, _scan)
+        if _scan == -1:
+            break
+        assert _gate_token in template[max(0, _scan - 400):_scan], "发现无门槛 mask（共享 /chat 闪帧根因）"
+        _scan += len(_mask_token)
     assert "#react-chat-window-shell:not(.is-minimized)::before" not in template
     assert "#react-chat-window-shell:not(.is-minimized)::after" not in template
     assert "inset: 40px 25px 25px 20px" not in template       # 全窗口 shell 几何
@@ -850,6 +861,13 @@ def test_full_chat_glass_flow_revived_and_gated():
     )
     assert glass_gate + "::before" in template      # 静态边缘/顶部高光
     assert glass_gate + "::after" in template        # 三色流光层
+
+    # 玻璃边缘渐隐 mask 复活，且必须挂在与 ::before/::after 完全相同的 full gate 下：把不透明聊天
+    # 内容（.chat-body rgba 0.91）四边淡出、露出 ::before 高光层 —— 这才是「玻璃」本体。#1695 只复活
+    # 了浮在最上层的 ::after 流光，高光层被不透明内容盖住，故当时只有流光没有玻璃。裸 mask 会在共享
+    # /chat 挂载前画→闪帧（#1594 删它的根因），所以这里断言 mask 只出现在 gated root 选择器上。
+    assert glass_gate + " #react-chat-window-root {" in template
+    assert "-webkit-mask-image" in template
 
     # 尊重系统「减少动态」：流光在 prefers-reduced-motion 下停掉。按花括号配平取整段 media
     # 块（而非定长切片），块体增长也不会让断言失真。

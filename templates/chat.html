@@ -148,6 +148,38 @@
                 animation: none;
             }
         }
+        /* 玻璃边缘渐隐 mask 复活（与 ::before/::after 完全相同的 full gate）：把不透明聊天内容
+           （.chat-body 是 rgba(255,255,255,0.91)，近乎实心白）在四边窄带淡出，露出底下 z-index:0
+           的 ::before 静态高光层与 shell 反光边框 —— 这正是「玻璃」观感的本体。#1695 只复活了浮在
+           最上层（z-index:10）的 ::after 流光，::before 高光层被不透明内容整块盖住，故当时「只有
+           流光、没有玻璃」。补回这层 mask 让内容边缘让位、高光透出，玻璃才回来。
+           与裸选择器的旧版（#1594 因无门槛、在共享 /chat 上 React 挂载前先画 → 闪帧而删）不同：
+           这里挂在 full gate 下，compact（attr=compact）与 web /chat_full（无 neko-electron-runtime）
+           都不命中，结构上不可能在共享路径复现闪帧。
+           裁切顾虑：resize 把手 #neko-resize-handle 在 #react-chat-window-root 之外、不受 mask 影响；
+           顶 50 / 侧 12 / 底 16px 均为内容空 padding，淡出带落 padding 上不碰文字。底边收到 6px 且
+           更轻（终点 alpha 0.8 而非旧版 0.6），避免最后一行/滚动条发虚。 */
+        body.neko-electron-runtime #react-chat-window-shell[data-chat-surface-mode="full"]:not(.is-minimized):not(.neko-e-collapsed) #react-chat-window-root {
+            -webkit-mask-image:
+                linear-gradient(to bottom, rgba(0,0,0,0.3) 0px, black 10px, black calc(100% - 6px), rgba(0,0,0,0.8) 100%),
+                linear-gradient(to right, rgba(0,0,0,0.4) 0px, black 8px, black calc(100% - 8px), rgba(0,0,0,0.4) 100%);
+            -webkit-mask-composite: source-in;
+            mask-image:
+                linear-gradient(to bottom, rgba(0,0,0,0.3) 0px, black 10px, black calc(100% - 6px), rgba(0,0,0,0.8) 100%),
+                linear-gradient(to right, rgba(0,0,0,0.4) 0px, black 8px, black calc(100% - 8px), rgba(0,0,0,0.4) 100%);
+            mask-composite: intersect;
+        }
+        /* 顶栏半透明玻璃（同期 1afbc8d1d 实现：rgba 0.35，比 styles.css 默认 0.75 更透；配
+           styles.css 自带的 blur(48px) 成磨砂条）。#1695 漏了这层 → 顶栏偏实、「玻璃半透明」
+           观感缺失。只覆写背景、不动 styles.css 的 54px 高度/布局（不复活旧版 45px 顶栏 chrome）。
+           注：full 窗口 transparent:true 且同期 lanlan_frd 无 vibrancy/acrylic（已核 git 全史），
+           桌面是锐透出来的、非 OS 磨砂 —— 与当年一致，纯 CSS 半透明，无需 lanlan_frd 配合。 */
+        body.neko-electron-runtime #react-chat-window-shell[data-chat-surface-mode="full"]:not(.is-minimized):not(.neko-e-collapsed) .window-topbar {
+            background: rgba(255, 255, 255, 0.35);
+        }
+        [data-theme="dark"] body.neko-electron-runtime #react-chat-window-shell[data-chat-surface-mode="full"]:not(.is-minimized):not(.neko-e-collapsed) .window-topbar {
+            background: rgba(50, 50, 72, 0.35);
+        }
         /* ──────────────────────────────────────────────────────────────────────
            full 形态在**共享 /chat（compact）**上不注入，仅在此留档：
            旧版在这里把 #react-chat-window-shell 钉成 inset:40px 的全窗口玻璃面板
@@ -361,11 +393,11 @@
                          'Hiragino Sans', 'Malgun Gothic', sans-serif !important;
             font-weight: 400 !important;
         }
-        /* full 形态的暗色顶栏底、#react-chat-window-root 四边渐隐 mask、is-collapsing/
-           is-expanding/is-minimized 全窗口几何复位仍随旧 full 形态退环境（compact 态的
-           最小化/折叠/展开几何由 index.css 的 subtitle-web-host 规则统一负责）。注：
-           liquidFlow 玻璃流光关键帧与 shell 的 ::before/::after 玻璃层已在上方带门槛复活
-           （仅 Electron full 独立窗口），lightSweep 因从未被 animation 引用未恢复。 */
+        /* full 形态的暗色顶栏底、is-collapsing/is-expanding/is-minimized 全窗口几何复位仍随旧
+           full 形态退环境（compact 态的最小化/折叠/展开几何由 index.css 的 subtitle-web-host
+           规则统一负责）。注：liquidFlow 玻璃流光关键帧、shell 的 ::before/::after 玻璃层、以及
+           #react-chat-window-root 四边渐隐 mask 均已在上方带门槛复活（仅 Electron full 独立窗口），
+           lightSweep 因从未被 animation 引用未恢复。 */
         /* 输入区提到光晕层之上，保持原始不透明度 */
         .composer-panel {
             position: relative !important;
