@@ -1633,7 +1633,11 @@ function CompactChatApp({
   }, [clearCompactExportHistoryUnmountTimer]);
   // 展开 reveal：minimized → compact（恢复）时置 compactExpanding → 胶囊左→右展开（React state 写
    // className，不被覆盖）。~340ms 后复位。prev ref 仅在此 effect（deps 只 mode）更新，准确跟踪模式变化。
-  useEffect(() => {
+   // 用 useLayoutEffect 而非 useEffect：passive effect 在首帧绘制后才置 compactExpanding，胶囊会先
+   // 无 mask 全显一帧再重启擦除（Codex P2）。Electron 路径有壳侧 opacity-0 稳定门挡着看不出，但 web
+   // compact 路径没有那道门，layout effect 让首帧绘制前就挂上 mask，消除 web 端首帧闪。仅提前 1 帧，
+   // 340ms 擦除时长不变，prev ref 无其它时序读者 → 无竞态。
+  useLayoutEffect(() => {
     const prev = prevChatSurfaceModeRef.current;
     prevChatSurfaceModeRef.current = chatSurfaceMode;
     if (prev === 'minimized' && chatSurfaceMode === 'compact') {

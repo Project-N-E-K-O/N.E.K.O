@@ -516,6 +516,15 @@ body.neko-game-active [id$="-lock-icon"] {
     .neko-idle-return-button-container.is-cat1-dropping-from-compact-top-edge > .neko-idle-return-btn {
         animation: none;
     }
+    /* 减少动态效果偏好下，禁用毛绒球按压挤压与折叠/展开方向性擦除动画，给动画敏感
+       用户即时的折叠/展开（CodeRabbit 无障碍 nitpick）。仅影响开启该系统设置的用户。 */
+    .compact-chat-minimize-ball-icon.neko-minimize-ball-pressing {
+        animation: none;
+    }
+    .compact-chat-surface-shell.neko-compact-collapsing,
+    .compact-chat-surface-shell.neko-compact-expanding {
+        animation: none;
+    }
 }
 
 @media (max-width: 768px) {
