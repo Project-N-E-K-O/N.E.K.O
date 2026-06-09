@@ -1,9 +1,11 @@
+import re
 from pathlib import Path
 
 
 APP_REACT_CHAT_WINDOW_PATH = Path(__file__).resolve().parents[2] / "static" / "app-react-chat-window.js"
 APP_BUTTONS_PATH = Path(__file__).resolve().parents[2] / "static" / "app-buttons.js"
 APP_CHAT_EXPORT_PATH = Path(__file__).resolve().parents[2] / "static" / "app-chat-export.js"
+AVATAR_UI_POPUP_PATH = Path(__file__).resolve().parents[2] / "static" / "avatar-ui-popup.js"
 MUSIC_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "music_ui.js"
 MUSIC_UI_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "music_ui.css"
 STATIC_INDEX_CSS_PATH = Path(__file__).resolve().parents[2] / "static" / "css" / "index.css"
@@ -42,6 +44,20 @@ def assert_no_layout_transition(block: str) -> None:
     transition_section = block.split("transition:", 1)[1].split(";", 1)[0] if "transition:" in block else ""
     for prop in ("width", "height", "max-height", "min-height", "padding", "margin", "top", "right", "bottom", "left"):
         assert prop not in transition_section
+
+
+def css_z_index(block: str) -> int:
+    match = re.search(r"\bz-index:\s*(\d+)\s*;", block)
+    if not match:
+        raise AssertionError(f"missing CSS z-index in block: {block[:240]!r}")
+    return int(match.group(1))
+
+
+def inline_z_index(block: str) -> int:
+    match = re.search(r"\bzIndex:\s*['\"](\d+)['\"]", block)
+    if not match:
+        raise AssertionError(f"missing inline zIndex in block: {block[:240]!r}")
+    return int(match.group(1))
 
 
 def test_subtitle_window_dark_mode_keeps_transparent_background():
@@ -1025,6 +1041,43 @@ def test_compact_history_reduced_motion_closing_hides_immediately():
 
     assert "opacity: 0 !important;" in closing_block
     assert "visibility: hidden !important;" in closing_block
+
+
+def test_avatar_tool_cursor_overlays_stay_above_model_side_menus():
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+    popup_source = AVATAR_UI_POPUP_PATH.read_text(encoding="utf-8")
+
+    avatar_cursor_layer = css_z_index(css_block(
+        styles,
+        ".avatar-cursor-overlay {",
+        ".avatar-cursor-overlay.is-compact",
+    ))
+    hammer_cursor_layer = css_z_index(css_block(
+        styles,
+        ".hammer-cursor-overlay {",
+        ".hammer-cursor-overlay.is-compact",
+    ))
+    model_popup_layer = css_z_index(css_block(
+        popup_source,
+        ".${prefix}-popup {",
+        ".${prefix}-popup.is-positioning",
+    ))
+    model_side_panel_layer = inline_z_index(
+        popup_source.split("function createSidePanelContainer", 1)[1].split(
+            "const stopEventPropagation",
+            1,
+        )[0]
+    )
+    interval_side_panel_layer = inline_z_index(
+        popup_source.split("container.setAttribute('data-neko-sidepanel-type', `interval-${toggle.id}`);", 1)[1].split(
+            "const stopEventPropagation",
+            1,
+        )[0]
+    )
+    max_model_menu_layer = max(model_popup_layer, model_side_panel_layer, interval_side_panel_layer)
+
+    assert avatar_cursor_layer > max_model_menu_layer
+    assert hammer_cursor_layer > max_model_menu_layer
 
 
 def test_compact_history_closing_bubbles_disable_pointer_events():
