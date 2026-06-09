@@ -232,11 +232,16 @@ def test_desktop_cat1_minimized_and_compact_surface_state_are_timestamp_ordered(
     assert "if (_isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopCompactSurfaceState)) return;" in compact_listener
     assert "_nekoIdleDesktopChatMinimizedState.minimized" in compact_listener
     assert "_isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopChatMinimizedState)" in compact_listener
+    assert "const heartbeat = !!(detail && detail.heartbeat);" in compact_listener
+    assert "if (!heartbeat) {" in compact_listener
     assert "_nekoIdleDesktopChatMinimizedState = _makeNekoIdleDesktopChatMinimizedState(" in compact_listener
-    reassign_line = compact_listener[compact_listener.index("_nekoIdleDesktopChatMinimizedState = _makeNekoIdleDesktopChatMinimizedState("):]
-    assert reassign_line.index("false") < reassign_line.index("null")
-    assert reassign_line.index("null") < reassign_line.index("receivedAt")
-    assert reassign_line.index("receivedAt") < reassign_line.index("sourceUpdatedAt")
+    # heartbeat 分支必须保留原 sourceUpdatedAt，避免心跳新鲜时间戳扰乱跨状态排序
+    assert "prevCompactSourceUpdatedAt" in compact_listener
+    # minimized state 重赋值仅在 !heartbeat 分支内
+    minimized_reassign_line = compact_listener[compact_listener.index("_nekoIdleDesktopChatMinimizedState = _makeNekoIdleDesktopChatMinimizedState("):]
+    assert minimized_reassign_line.index("false") < minimized_reassign_line.index("null")
+    assert minimized_reassign_line.index("null") < minimized_reassign_line.index("receivedAt")
+    assert minimized_reassign_line.index("receivedAt") < minimized_reassign_line.index("sourceUpdatedAt")
 
 
 def test_electron_chat_loads_interpage_before_react_chat_for_desktop_cat1_sync():

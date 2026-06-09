@@ -3639,9 +3639,14 @@ function _ensureNekoIdleReturnPresentationBridge() {
             _isNekoIdleDesktopStateStaleAgainst(sourceUpdatedAt, _nekoIdleDesktopChatMinimizedState)) {
             return;
         }
-        // heartbeat 只用于维持 compact-top-edge 贴附位置同步，不得改变可见性状态缓存。
-        // 聊天框最小化后 compact-surface 心跳仍会继续广播 {visible:true,…}，如果让它
-        // 覆写 minimized state，CAT1 会在最小化后 1s 内失去毛线球步行目标。
+        // heartbeat 只用于维持 compact-top-edge 贴附位置同步，不得改变可见性状态：
+        // - 禁止通过 heartbeat 覆写 minimized state（聊天框最小化后心跳仍广播可见态，
+        //   清掉 minimized 会导致 CAT1 在最小化后 1s 内失去毛线球步行目标）。
+        // - 但 compact surface 可见时，心跳必须刷新缓存时间戳，防止 _NEKO_IDLE_DESKTOP_
+        //   COMPACT_SURFACE_RECT_STALE_MS (10s) 过期后 _getNekoIdleDesktopCompactSurfaceRect
+        //   返回 null，导致 CAT1 失去 compact-top-edge 目标。
+        // - 心跳用 receivedAt 刷新 updatedAt 防过期，但保留原 sourceUpdatedAt 避免扰乱
+        //   跨状态时间戳排序（心跳自身的新鲜时间戳会让 isStaleAgainst 永远判不出旧）。
         if (!heartbeat) {
             _nekoIdleDesktopCompactSurfaceState = _makeNekoIdleDesktopCompactSurfaceState(
                 nextVisible,
@@ -3658,6 +3663,18 @@ function _ensureNekoIdleReturnPresentationBridge() {
                     false
                 );
             }
+        } else if (nextVisible &&
+            _nekoIdleDesktopCompactSurfaceState &&
+            _nekoIdleDesktopCompactSurfaceState.visible) {
+            // 最小化时 compact state 已被 minimized listener 清为 visible:false，
+            // 此处不会进入——心跳不会把 minimized 态的「不可见 compact」刷回可见。
+            var prevCompactSourceUpdatedAt = _nekoIdleDesktopCompactSurfaceState.sourceUpdatedAt;
+            _nekoIdleDesktopCompactSurfaceState = _makeNekoIdleDesktopCompactSurfaceState(
+                true,
+                screenRect || _nekoIdleDesktopCompactSurfaceState.screenRect,
+                receivedAt,
+                prevCompactSourceUpdatedAt
+            );
         }
         _handleNekoIdleCompactSurfaceMoveState(detail);
     });
