@@ -4224,133 +4224,175 @@
         "lines": {
             "default": {
                 "swish": [
+                    "¡Limpia!",
                     "¡Limpia!"
                 ],
                 "bank": [
+                    "También cuenta con tablero.",
                     "También cuenta con tablero."
                 ],
                 "rim_in": [
+                    "Entró rebotando.",
                     "Entró rebotando."
                 ],
                 "rim_out": [
+                    "Por poco.",
                     "Por poco."
                 ],
                 "air_ball": [
+                    "El aro está al otro lado.",
                     "El aro está al otro lado."
                 ],
                 "shot_missed": [
+                    "Todavía hay oportunidad.",
                     "Todavía hay oportunidad."
                 ],
                 "game_over": [
+                    "¿Otra partida?",
                     "¿Otra partida?"
                 ],
                 "long_aim": [
+                    "Tira ya.",
                     "Tira ya."
                 ],
                 "close_to_record": [
+                    "Casi récord.",
                     "Casi récord."
                 ],
                 "new_record": [
+                    "¡Nuevo récord!",
                     "¡Nuevo récord!"
                 ],
                 "streak_5": [
+                    "¡Cinco seguidas!",
                     "¡Cinco seguidas!"
                 ],
                 "streak_10": [
+                    "¿Diez seguidas?",
                     "¿Diez seguidas?"
                 ],
                 "streak_15": [
+                    "Quince seguidas es demasiado.",
                     "Quince seguidas es demasiado."
                 ],
                 "streak_20": [
+                    "¿Veinte seguidas? Increíble.",
                     "¿Veinte seguidas? Increíble."
                 ]
             },
             "shooter": {
                 "swish": [
+                    "¡Limpia!",
                     "¡Limpia!"
                 ],
                 "bank": [
+                    "También cuenta con tablero.",
                     "También cuenta con tablero."
                 ],
                 "rim_in": [
+                    "Entró rebotando.",
                     "Entró rebotando."
                 ],
                 "rim_out": [
+                    "Por poco.",
                     "Por poco."
                 ],
                 "air_ball": [
+                    "El aro está al otro lado.",
                     "El aro está al otro lado."
                 ],
                 "shot_missed": [
+                    "Todavía hay oportunidad.",
                     "Todavía hay oportunidad."
                 ],
                 "game_over": [
+                    "¿Otra partida?",
                     "¿Otra partida?"
                 ],
                 "long_aim": [
+                    "Tira ya.",
                     "Tira ya."
                 ],
                 "close_to_record": [
+                    "Casi récord.",
                     "Casi récord."
                 ],
                 "new_record": [
+                    "¡Nuevo récord!",
                     "¡Nuevo récord!"
                 ],
                 "streak_5": [
+                    "¡Cinco seguidas!",
                     "¡Cinco seguidas!"
                 ],
                 "streak_10": [
+                    "¿Diez seguidas?",
                     "¿Diez seguidas?"
                 ],
                 "streak_15": [
+                    "Quince seguidas es demasiado.",
                     "Quince seguidas es demasiado."
                 ],
                 "streak_20": [
+                    "¿Veinte seguidas? Increíble.",
                     "¿Veinte seguidas? Increíble."
                 ]
             },
             "duel": {
                 "swish": [
+                    "¡Limpia!",
                     "¡Limpia!"
                 ],
                 "bank": [
+                    "También cuenta con tablero.",
                     "También cuenta con tablero."
                 ],
                 "rim_in": [
+                    "Entró rebotando.",
                     "Entró rebotando."
                 ],
                 "rim_out": [
+                    "Por poco.",
                     "Por poco."
                 ],
                 "air_ball": [
+                    "El aro está al otro lado.",
                     "El aro está al otro lado."
                 ],
                 "shot_missed": [
+                    "Todavía hay oportunidad.",
                     "Todavía hay oportunidad."
                 ],
                 "game_over": [
+                    "¿Otra partida?",
                     "¿Otra partida?"
                 ],
                 "long_aim": [
+                    "Tira ya.",
                     "Tira ya."
                 ],
                 "close_to_record": [
+                    "Casi récord.",
                     "Casi récord."
                 ],
                 "new_record": [
+                    "¡Nuevo récord!",
                     "¡Nuevo récord!"
                 ],
                 "streak_5": [
+                    "¡Cinco seguidas!",
                     "¡Cinco seguidas!"
                 ],
                 "streak_10": [
+                    "¿Diez seguidas?",
                     "¿Diez seguidas?"
                 ],
                 "streak_15": [
+                    "Quince seguidas es demasiado.",
                     "Quince seguidas es demasiado."
                 ],
                 "streak_20": [
+                    "¿Veinte seguidas? Increíble.",
                     "¿Veinte seguidas? Increíble."
                 ],
                 "clutch": "...Este tiene que entrar.",

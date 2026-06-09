@@ -4224,133 +4224,175 @@
         "lines": {
             "default": {
                 "swish": [
+                    "Cesta limpa!",
                     "Cesta limpa!"
                 ],
                 "bank": [
+                    "Com tabela também vale.",
                     "Com tabela também vale."
                 ],
                 "rim_in": [
+                    "Entrou no quique.",
                     "Entrou no quique."
                 ],
                 "rim_out": [
+                    "Quase.",
                     "Quase."
                 ],
                 "air_ball": [
+                    "O aro fica do outro lado.",
                     "O aro fica do outro lado."
                 ],
                 "shot_missed": [
+                    "Ainda há chance.",
                     "Ainda há chance."
                 ],
                 "game_over": [
+                    "Mais uma?",
                     "Mais uma?"
                 ],
                 "long_aim": [
+                    "Arremesse logo.",
                     "Arremesse logo."
                 ],
                 "close_to_record": [
+                    "Quase no recorde.",
                     "Quase no recorde."
                 ],
                 "new_record": [
+                    "Novo recorde!",
                     "Novo recorde!"
                 ],
                 "streak_5": [
+                    "Cinco seguidas!",
                     "Cinco seguidas!"
                 ],
                 "streak_10": [
+                    "Dez seguidas?",
                     "Dez seguidas?"
                 ],
                 "streak_15": [
+                    "Quinze seguidas é demais.",
                     "Quinze seguidas é demais."
                 ],
                 "streak_20": [
+                    "Vinte seguidas? Incrível.",
                     "Vinte seguidas? Incrível."
                 ]
             },
             "shooter": {
                 "swish": [
+                    "Cesta limpa!",
                     "Cesta limpa!"
                 ],
                 "bank": [
+                    "Com tabela também vale.",
                     "Com tabela também vale."
                 ],
                 "rim_in": [
+                    "Entrou no quique.",
                     "Entrou no quique."
                 ],
                 "rim_out": [
+                    "Quase.",
                     "Quase."
                 ],
                 "air_ball": [
+                    "O aro fica do outro lado.",
                     "O aro fica do outro lado."
                 ],
                 "shot_missed": [
+                    "Ainda há chance.",
                     "Ainda há chance."
                 ],
                 "game_over": [
+                    "Mais uma?",
                     "Mais uma?"
                 ],
                 "long_aim": [
+                    "Arremesse logo.",
                     "Arremesse logo."
                 ],
                 "close_to_record": [
+                    "Quase no recorde.",
                     "Quase no recorde."
                 ],
                 "new_record": [
+                    "Novo recorde!",
                     "Novo recorde!"
                 ],
                 "streak_5": [
+                    "Cinco seguidas!",
                     "Cinco seguidas!"
                 ],
                 "streak_10": [
+                    "Dez seguidas?",
                     "Dez seguidas?"
                 ],
                 "streak_15": [
+                    "Quinze seguidas é demais.",
                     "Quinze seguidas é demais."
                 ],
                 "streak_20": [
+                    "Vinte seguidas? Incrível.",
                     "Vinte seguidas? Incrível."
                 ]
             },
             "duel": {
                 "swish": [
+                    "Cesta limpa!",
                     "Cesta limpa!"
                 ],
                 "bank": [
+                    "Com tabela também vale.",
                     "Com tabela também vale."
                 ],
                 "rim_in": [
+                    "Entrou no quique.",
                     "Entrou no quique."
                 ],
                 "rim_out": [
+                    "Quase.",
                     "Quase."
                 ],
                 "air_ball": [
+                    "O aro fica do outro lado.",
                     "O aro fica do outro lado."
                 ],
                 "shot_missed": [
+                    "Ainda há chance.",
                     "Ainda há chance."
                 ],
                 "game_over": [
+                    "Mais uma?",
                     "Mais uma?"
                 ],
                 "long_aim": [
+                    "Arremesse logo.",
                     "Arremesse logo."
                 ],
                 "close_to_record": [
+                    "Quase no recorde.",
                     "Quase no recorde."
                 ],
                 "new_record": [
+                    "Novo recorde!",
                     "Novo recorde!"
                 ],
                 "streak_5": [
+                    "Cinco seguidas!",
                     "Cinco seguidas!"
                 ],
                 "streak_10": [
+                    "Dez seguidas?",
                     "Dez seguidas?"
                 ],
                 "streak_15": [
+                    "Quinze seguidas é demais.",
                     "Quinze seguidas é demais."
                 ],
                 "streak_20": [
+                    "Vinte seguidas? Incrível.",
                     "Vinte seguidas? Incrível."
                 ],
                 "clutch": "...Este precisa entrar.",
