@@ -278,7 +278,9 @@
                 body: JSON.stringify(body)
             }).then(function (response) {
                 if (!response.ok) throw new Error('HTTP ' + response.status);
-                return true;
+                return response.json();
+            }).then(function (data) {
+                return !!(data && data.ok);
             }).catch(function (error) {
                 console.warn('[NewUserIcebreaker] append LLM context failed:', error);
                 return false;

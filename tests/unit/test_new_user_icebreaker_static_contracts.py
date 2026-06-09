@@ -287,6 +287,21 @@ def test_icebreaker_context_appends_are_serialized_before_chat_progression():
     )
 
 
+def test_icebreaker_context_append_requires_successful_json_payload():
+    runtime = RUNTIME_PATH.read_text(encoding="utf-8")
+    append_context_block = runtime.split("function appendLlmContext(role, text, meta)", 1)[1].split(
+        "function appendChatMessage(role, text, meta)",
+        1,
+    )[0]
+
+    assert "return response.json();" in append_context_block
+    assert "return !!(data && data.ok);" in append_context_block
+    assert append_context_block.index("return response.json();") < append_context_block.index(
+        "return !!(data && data.ok);"
+    )
+    assert "return true;" not in append_context_block
+
+
 def test_icebreaker_waits_long_enough_for_react_chat_host():
     runtime = RUNTIME_PATH.read_text(encoding="utf-8")
 
