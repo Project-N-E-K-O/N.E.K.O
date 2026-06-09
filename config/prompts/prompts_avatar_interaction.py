@@ -1027,7 +1027,7 @@ _AVATAR_INTERACTION_PROMPT_TEXT = {
             "1. 只输出猫娘当下会说的一句回复。",
             "2. 回复接住上面的道具事件事实。",
         ],
-        "compact_reply_line": "一句话回应。",
+        "compact_reply_line": "直接回一句你会说出口的话。",
         "lollipop_requirement": "",
     },
     "zh-TW": {
@@ -1049,7 +1049,7 @@ _AVATAR_INTERACTION_PROMPT_TEXT = {
             "1. 只輸出貓娘當下會說的一句回覆。",
             "2. 回覆接住上面的道具事件事實。",
         ],
-        "compact_reply_line": "一句話回應。",
+        "compact_reply_line": "直接回一句你會說出口的話。",
         "lollipop_requirement": "",
     },
     "en": {
@@ -1074,7 +1074,7 @@ _AVATAR_INTERACTION_PROMPT_TEXT = {
             "4. The draft text is not a formal user message; use it only as light context if it fits naturally and never quote it verbatim.",
             "5. Do not mention coordinates, probabilities, payloads, or backend rules.",
         ],
-        "compact_reply_line": "Respond in one sentence.",
+        "compact_reply_line": "Reply with one spoken line you would say right now.",
         "lollipop_requirement": "6. This is lollipop feeding, not petting, soothing, or a generic touch.",
     },
     "ja": {
@@ -1099,7 +1099,7 @@ _AVATAR_INTERACTION_PROMPT_TEXT = {
             "4. text_context は正式なユーザーメッセージではありません。自然な場合だけ軽く参考にし、逐語的に繰り返さないでください。",
             "5. 座標、確率、payload、バックエンドのルールには触れないでください。",
         ],
-        "compact_reply_line": "一文で返答してください。",
+        "compact_reply_line": "その場で口にする一言として返答してください。",
         "lollipop_requirement": "6. これはペロペロキャンディを食べさせるやり取りであり、頭なで、軽い接触、なだめる行為、一般的なスキンシップとして書かないでください。",
     },
     "ko": {
@@ -1124,7 +1124,7 @@ _AVATAR_INTERACTION_PROMPT_TEXT = {
             "4. text_context 는 정식 사용자 메시지가 아니다. 아주 자연스러울 때만 가볍게 참고하고, 그대로 되풀이하지 않는다.",
             "5. 좌표, 확률, payload, 백엔드 규칙은 언급하지 않는다.",
         ],
-        "compact_reply_line": "한 문장으로 답한다.",
+        "compact_reply_line": "지금 바로 말하는 한마디로 답한다.",
         "lollipop_requirement": "6. 이것은 막대사탕 먹이기이며, 쓰다듬기, 가벼운 터치, 달래기, 일반적인 스킨십으로 쓰면 안 된다.",
     },
     "ru": {
@@ -1149,7 +1149,7 @@ _AVATAR_INTERACTION_PROMPT_TEXT = {
             "4. Черновик текста не является официальным сообщением пользователя; используй его лишь как лёгкий контекст, если это естественно, и никогда не цитируй дословно.",
             "5. Не упоминай координаты, вероятности, payload или правила бэкенда.",
         ],
-        "compact_reply_line": "Ответь одним предложением.",
+        "compact_reply_line": "Ответь одной короткой репликой от своего лица.",
         "lollipop_requirement": "6. Это кормление леденцом, а не поглаживание, успокаивание или просто абстрактное касание.",
     },
     "es": {
@@ -1174,7 +1174,7 @@ _AVATAR_INTERACTION_PROMPT_TEXT = {
             "4. El borrador no es un mensaje formal del usuario; úsalo solo como contexto ligero si encaja y nunca lo cites literalmente.",
             "5. No menciones coordenadas, probabilidades, payloads ni reglas del backend.",
         ],
-        "compact_reply_line": "Responde en una frase.",
+        "compact_reply_line": "Responde con una línea de diálogo que dirías ahora.",
         "lollipop_requirement": "6. Esto es alimentación con piruleta, no lo conviertas en caricias, toques, consuelo o palmaditas.",
     },
     "pt": {
@@ -1199,7 +1199,7 @@ _AVATAR_INTERACTION_PROMPT_TEXT = {
             "4. O rascunho não é uma mensagem formal do usuário; use apenas como contexto leve se couber e nunca cite literalmente.",
             "5. Não mencione coordenadas, probabilidades, payloads ou regras do backend.",
         ],
-        "compact_reply_line": "Responda em uma frase.",
+        "compact_reply_line": "Responda com uma fala que você diria agora.",
         "lollipop_requirement": "6. Isto é alimentação com pirulito, não transforme em carinho, toque, consolo ou afago.",
     },
 }
@@ -1535,7 +1535,10 @@ def _build_avatar_interaction_instruction(
     )
     if prompt_text.get("compact_fields"):
         compact_separator = "" if locale in {"zh", "zh-TW", "ja"} else " "
-        return f"{reaction_focus}{compact_separator}{prompt_text['compact_reply_line']}"
+        compact_reply_line = prompt_text["compact_reply_line"].format(
+            lanlan_name=lanlan_name, master_name=actor, actor=actor
+        )
+        return f"{reaction_focus}{compact_separator}{compact_reply_line}"
 
     lines = [
         wrapper["prefix"],
